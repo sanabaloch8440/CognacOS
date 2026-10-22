@@ -34,9 +34,13 @@ struct RegionStore(core::cell::UnsafeCell<[Region; MAX_REGIONS]>);
 unsafe impl Sync for RegionStore {}
 static REGIONS: RegionStore = RegionStore(core::cell::UnsafeCell::new([Region::EMPTY; MAX_REGIONS]));
 static REGION_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+const FREE_CAPACITY: usize = 8192;
+struct FreePages(core::cell::UnsafeCell<([u64; FREE_CAPACITY], usize)>);
+unsafe impl Sync for FreePages {}
+static FREE_PAGES: FreePages = FreePages(core::cell::UnsafeCell::new(([0; FREE_CAPACITY], 0)));
 
 #[derive(Debug, Clone, Copy)]
-pub enum AllocError { InvalidMap, TooManyRegions, OutOfMemory }
+pub enum AllocError { InvalidMap, TooManyRegions, OutOfMemory, InvalidPage, FreeListFull }
 
 fn align_up(value: u64, align: u64) -> Option<u64> {
     value.checked_add(align - 1).map(|v| v & !(align - 1))
