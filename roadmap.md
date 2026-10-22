@@ -1,21 +1,25 @@
 # RdotOS implementation roadmap
 
-Status reflects code currently present in this repository, not intended architecture. A checkbox is marked complete only when implementation and meaningful tests exist.
+Status reflects code currently present in the repository, not intended architecture. A checkbox is marked complete only when implementation and meaningful tests exist.
 
-## Foundation
+## Rust-first foundation
 
 - [x] Add Apache-2.0 license text.
 - [x] Add MIT license text and document dual licensing as Apache-2.0 OR MIT.
-- [x] Add an x86-64 UEFI application entry point and firmware-console diagnostics (bootstrap only).
-- [x] Read and report the UEFI SecureBoot variable when available (informational; no signature enforcement).
-- [x] Add CI build/package workflow for the EFI fallback path.
-- [ ] Boot and smoke-test the generated image in OVMF/QEMU in CI.
-- [ ] Establish kernel linker layout, exception/interrupt entry, serial logging, and panic handling.
-- [ ] Exit boot services safely and own the memory map before running kernel subsystems.
+- [x] Replace the C UEFI bootstrap with a Rust UEFI application in bootloader/.
+- [x] Add a separate freestanding no_std Rust kernel crate in kernel/.
+- [x] Add a kernel linker layout, COM1 diagnostic routine, and panic halt handler.
+- [x] Add CI steps to build both Rust targets and package the EFI app plus kernel ELF.
+- [ ] Compile and validate artifacts in CI; resolve any toolchain/API issues exposed by the first run.
+- [ ] Boot and smoke-test the EFI application in OVMF/QEMU in CI.
+- [ ] Load the kernel ELF from the EFI filesystem and validate its format and load ranges.
+- [ ] Define a versioned boot-information structure (memory map, framebuffer, ACPI RSDP, firmware tables).
+- [ ] Exit boot services safely, preserve the final memory map, and transfer control to the kernel entry.
+- [ ] Add exception/interrupt entry, GDT/IDT, APIC/timer, serial logging, and fault diagnostics.
 
 ## UEFI and verified boot
 
-- [ ] Detect/report firmware Secure Boot state (informational only).
+- [ ] Read/report firmware Secure Boot state for diagnostics (informational only).
 - [ ] Verify signatures and hashes for every next-stage component against an explicit trust policy.
 - [ ] Reject unsigned, revoked, malformed, or tampered boot components; add negative tests.
 - [ ] Add key enrollment/update and revocation policy.
@@ -36,7 +40,7 @@ Status reflects code currently present in this repository, not intended architec
 - [ ] Establish long-mode kernel entry, GDT/IDT, exception handlers, APIC, and timer.
 - [ ] Implement physical page allocator, virtual memory, per-process address spaces, and demand paging.
 - [ ] Support large physical memory subject to architecture/platform limits; validate memory-map handling.
-- [ ] Keep 32-bit execution and WOW64-like compatibility out of scope.
+- [x] Keep 32-bit execution and WOW64-like compatibility out of scope.
 
 ## Scheduling and heterogeneous CPUs
 
