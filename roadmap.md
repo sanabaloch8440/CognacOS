@@ -17,8 +17,8 @@ Status reflects code currently present in the repository, not intended architect
 - [x] Add a separate freestanding no_std Rust kernel crate in kernel/.
 - [x] Add a kernel linker layout, COM1 diagnostic routine, and panic halt handler.
 - [x] Add CI steps to build both Rust targets and package the EFI app plus kernel ELF.
-- [ ] Compile and validate artifacts in CI; resolve any toolchain/API issues exposed by the first run.
-- [ ] Boot and smoke-test the complete kernel handoff in OVMF/QEMU in CI.
+- [x] Compile and validate artifacts in CI; resolve toolchain/API issues exposed by the first runs.
+- [x] Boot and smoke-test the complete kernel handoff in OVMF/QEMU in CI (serial markers confirm kernel entry, CR3 activation, and allocator initialization).
 - [x] Load the kernel ELF from the EFI filesystem with a bounded read and validate ELF64 little-endian x86-64 ET_EXEC headers and PT_LOAD ranges.
 - [x] Define a versioned boot-information structure carrying the final UEFI memory-map pointer, entry count, descriptor size, and version.
 - [x] Exit boot services through the uefi-rs retrying helper and transfer control to the kernel entry using the x86-64 System V ABI.
@@ -35,11 +35,14 @@ Status reflects code currently present in the repository, not intended architect
 - [ ] Replace permissive 2 MiB bootstrap mappings with per-region mappings and NX/W^X permissions; add a direct map for RAM above 4 GiB.
 - [ ] Add boot-time checks that kernel, stack, boot-info, memory-map copy, and page-table allocations are covered by active mappings.
 - [ ] Add guarded kernel stacks, NX/W^X page permissions, and a controlled high-half mapping.
+- [x] Add early CPU feature detection and enable CR0.WP; enable EFER.NXE and SMEP only when advertised by CPUID.
+- [ ] Enable SMAP only after guarded user-memory accessors implement the required STAC/CLAC protocol; NXE alone is not page-level NX enforcement.
 
 ## Boot validation and memory hardening
 
-- [ ] Confirm the latest GitHub Actions Rust build succeeds; fix all compiler/linker errors exposed by CI.
-- [ ] Confirm OVMF/QEMU reaches the Rust kernel and emits the expected serial markers for CR3 activation and physical allocator initialization.
+- [x] Confirm GitHub Actions Rust build succeeds; resolve compiler/linker errors exposed by CI.
+- [x] Confirm OVMF/QEMU reaches the Rust kernel and emits serial markers for CR3 activation and physical allocator initialization.
+- [ ] Confirm the newly added CR0.WP, NXE, and conditional SMEP setup passes CI and QEMU smoke testing.
 - [ ] Add a reproducible regression test for malformed/truncated ELF images and overlapping PT_LOAD segments.
 - [ ] Add deterministic allocator tests for descriptor stride, conventional-memory filtering, page alignment, exhaustion, and region limits.
 - [ ] Replace the permissive 2 MiB identity map with 4 KiB mappings and explicit per-segment permissions. Do not enable NX until NX support is checked and all executing code, IDT/GDT, stack, boot-info, and page-table memory remain mapped.
