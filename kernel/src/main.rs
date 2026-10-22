@@ -153,6 +153,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Process address-space and checked user-copy self-test passed.\r\n");
         serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\r\n");
+        serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\r\n");
         let loaded_pe = match unsafe { pe::self_test(&mut address_space) } {
             Ok(image) => image,
             Err(_) => { serial_write(b"FATAL: PE32+ loader self-test failed.\r\n"); halt(); }
