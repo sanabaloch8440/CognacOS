@@ -6,9 +6,9 @@ Status reflects code currently present in this repository, not intended architec
 
 - [x] Add Apache-2.0 license text.
 - [x] Add MIT license text and document dual licensing as Apache-2.0 OR MIT.
-- [ ] Add an x86-64 UEFI application entry point and firmware-console diagnostics.
-- [ ] Read and report the UEFI SecureBoot variable when available.
-- [ ] Add CI build/package workflow for the EFI fallback path.
+- [x] Add an x86-64 UEFI application entry point and firmware-console diagnostics (bootstrap only).
+- [x] Read and report the UEFI SecureBoot variable when available (informational; no signature enforcement).
+- [x] Add CI build/package workflow for the EFI fallback path.
 - [ ] Boot and smoke-test the generated image in OVMF/QEMU in CI.
 - [ ] Establish kernel linker layout, exception/interrupt entry, serial logging, and panic handling.
 - [ ] Exit boot services safely and own the memory map before running kernel subsystems.
