@@ -22,6 +22,7 @@ struct BootInfo {
     magic: u64,
     version: u32,
     struct_size: u32,
+    pml4_physical: u64,
     memory_map: *const uefi::boot::MemoryDescriptor,
     memory_map_entries: usize,
     memory_descriptor_size: usize,
@@ -95,6 +96,14 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
     unsafe { ((stack_top - 8) as *mut u64).write(0); }
     let kernel_stack = stack_top - 8;
     uefi::println!("Allocated {} KiB kernel stack", KERNEL_STACK_PAGES * 4);
+
+    // Allocate bootstrap page tables while UEFI allocation services are still
+    // available. Keep every table below 4 GiB because the initial map is identity.
+    let pml4_physical = match build_bootstrap_page_tables() {
+        Ok(address) => address,
+        Err(status) => { uefi::println!("Page-table allocation failed: {:?}", status); return status; }
+    };
+    uefi::println!("Prepared kernel PML4 at {:#x}", pml4_physical);
     uefi::println!("Exiting UEFI boot services");
 
     // SAFETY: All filesystem protocols are closed and no UEFI allocator-backed
@@ -104,6 +113,7 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
         magic: BOOT_INFO_MAGIC,
         version: BOOT_INFO_VERSION,
         struct_size: core::mem::size_of::<BootInfo>() as u32,
+        pml4_physical,
         memory_map: memory_map.buffer().as_ptr().cast::<uefi::boot::MemoryDescriptor>(),
         memory_map_entries: memory_map.len(),
         memory_descriptor_size: memory_map.meta().desc_size,
@@ -127,4 +137,39 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
             options(noreturn)
         );
     }
+}
+
+/// Allocate a zeroed page below 4 GiB using UEFI services before the handoff.
+fn allocate_boot_page() -> Result<u64, Status> {
+    let page = boot::allocate_pages(
+        boot::AllocateType::MaxAddress(0xffff_ffff),
+        boot::MemoryType::LOADER_DATA,
+        1,
+    ).map_err(|error| error.status())?;
+    unsafe { core::ptr::write_bytes(page.as_ptr(), 0, boot::PAGE_SIZE); }
+    Ok(page.as_ptr() as u64)
+}
+
+/// Build page tables that identity-map 0..4 GiB with 2 MiB pages. The kernel
+/// takes ownership by loading this PML4 into CR3 immediately after entry.
+fn build_bootstrap_page_tables() -> Result<u64, Status> {
+    const PRESENT_WRITE: u64 = 0x003;
+    const LARGE_PAGE: u64 = 1 << 7;
+    const TWO_MIB: u64 = 2 * 1024 * 1024;
+    let pml4 = allocate_boot_page()?;
+    let pdpt = allocate_boot_page()?;
+    let mut dirs = [0u64; 4];
+    for dir in dirs.iter_mut() { *dir = allocate_boot_page()?; }
+    unsafe {
+        (pml4 as *mut u64).write(pdpt | PRESENT_WRITE);
+        for index in 0..4 {
+            (pdpt as *mut u64).add(index).write(dirs[index] | PRESENT_WRITE);
+            let table = dirs[index] as *mut u64;
+            for entry in 0..512 {
+                let physical = (index as u64 * 512 + entry as u64) * TWO_MIB;
+                table.add(entry).write(physical | PRESENT_WRITE | LARGE_PAGE);
+            }
+        }
+    }
+    Ok(pml4)
 }
