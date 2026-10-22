@@ -22,7 +22,11 @@ Status reflects code currently present in the repository, not intended architect
 - [ ] Add ELF parser unit/fuzz tests and verify segment overlap/permission policy before treating the loader as hardened.
 - [ ] Add framebuffer and ACPI RSDP to the boot-information structure.
 - [ ] Implement APIC/PIC routing, timer interrupts, and interrupt-safe diagnostics.
-- [ ] Implement physical page allocator and kernel-owned page tables; remove reliance on firmware identity mappings.
+- [ ] Verify the Rust UEFI bootloader's low-memory bootstrap PML4 and 0..4 GiB identity map under OVMF/QEMU.
+- [ ] Add tests for the physical-page allocator's descriptor-stride handling, conventional-memory filtering, alignment, exhaustion, and region-capacity limits.
+- [ ] Harden the early physical allocator (currently single-core, first-fit, and capped below 4 GiB) before enabling concurrency.
+- [ ] Replace permissive 2 MiB bootstrap mappings with per-region mappings and NX/W^X permissions; add a direct map for RAM above 4 GiB.
+- [ ] Add boot-time checks that kernel, stack, boot-info, memory-map copy, and page-table allocations are covered by active mappings.
 - [ ] Add guarded kernel stacks, NX/W^X page permissions, and a controlled high-half mapping.
 
 ## UEFI and verified boot
