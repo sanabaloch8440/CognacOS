@@ -38,14 +38,13 @@ rdotos_process_enter_user:
     mov qword ptr [rip + rdotos_process_saved_rsp], rsp
     lea rax, [rip + .Lrdotos_process_return]
     mov qword ptr [rip + rdotos_process_saved_rip], rax
+    mov qword ptr [rip + rdotos_process_pending_teb], rdx
     mov ecx, 0xc0000101
     rdmsr
     shl rdx, 32
     or rax, rdx
     mov qword ptr [rip + rdotos_process_saved_gs], rax
-    mov rax, rdx
-    // The TEB is supplied in RDX; preserve it before RDMSR clobbers EDX.
-    mov qword ptr [rip + rdotos_process_pending_teb], rdx
+    // Load the saved user TEB into IA32_GS_BASE.
     mov rax, qword ptr [rip + rdotos_process_pending_teb]
     mov rdx, rax
     shr rdx, 32
