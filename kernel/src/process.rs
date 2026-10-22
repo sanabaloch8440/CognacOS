@@ -7,8 +7,47 @@ pub const PEB_ADDRESS: u64 = 0x0000_0080_1000_0000;
 pub const TEB_ADDRESS: u64 = 0x0000_0080_2000_0000;
 pub const TLS_VECTOR_ADDRESS: u64 = 0x0000_0080_3000_0000;
 static NEXT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(4);
+const MAX_PROCESSES: usize = 64;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessState { Created, Running, Exited, Reaped }
 #[derive(Clone, Copy, Debug)]
-pub enum ProcessError { Vm(VmError), OutOfMemory, InvalidLayout }
+pub struct ProcessSnapshot { pub process_id: u64, pub state: ProcessState, pub exit_code: u64 }
+#[derive(Clone, Copy)]
+struct ProcessRecord { process_id: u64, state: ProcessState, exit_code: u64, used: bool }
+impl ProcessRecord { const EMPTY: Self = Self { process_id: 0, state: ProcessState::Created, exit_code: 0, used: false }; }
+struct ProcessTable(core::cell::UnsafeCell<[ProcessRecord; MAX_PROCESSES]>);
+unsafe impl Sync for ProcessTable {}
+static TABLE: ProcessTable = ProcessTable(core::cell::UnsafeCell::new([ProcessRecord::EMPTY; MAX_PROCESSES]));
+fn register_process(pid: u64) -> Result<(), ProcessError> {
+    let table = unsafe { &mut *TABLE.0.get() };
+    let Some(slot) = table.iter_mut().find(|r| !r.used) else { return Err(ProcessError::TooManyProcesses); };
+    *slot = ProcessRecord { process_id: pid, state: ProcessState::Created, exit_code: 0, used: true };
+    Ok(())
+}
+pub fn mark_running(pid: u64) -> bool {
+    let table = unsafe { &mut *TABLE.0.get() };
+    if let Some(r) = table.iter_mut().find(|r| r.used && r.process_id == pid && r.state == ProcessState::Created) {
+        r.state = ProcessState::Running; true
+    } else { false }
+}
+pub fn mark_exited(pid: u64, code: u64) -> bool {
+    let table = unsafe { &mut *TABLE.0.get() };
+    if let Some(r) = table.iter_mut().find(|r| r.used && r.process_id == pid && r.state == ProcessState::Running) {
+        r.state = ProcessState::Exited; r.exit_code = code; true
+    } else { false }
+}
+pub fn query(pid: u64) -> Option<ProcessSnapshot> {
+    let table = unsafe { &*TABLE.0.get() };
+    table.iter().find(|r| r.used && r.process_id == pid)
+        .map(|r| ProcessSnapshot { process_id: r.process_id, state: r.state, exit_code: r.exit_code })
+}
+pub fn reap(pid: u64) -> Option<u64> {
+    let table = unsafe { &mut *TABLE.0.get() };
+    let r = table.iter_mut().find(|r| r.used && r.process_id == pid && r.state == ProcessState::Exited)?;
+    let code = r.exit_code; r.state = ProcessState::Reaped; Some(code)
+}
+#[derive(Clone, Copy, Debug)]
+pub enum ProcessError { Vm(VmError), OutOfMemory, InvalidLayout, TooManyProcesses }
 impl From<VmError> for ProcessError { fn from(e: VmError) -> Self { Self::Vm(e) } }
 #[derive(Clone, Copy, Debug)]
 pub struct ProcessEnvironment { pub process_id: u64, pub peb: u64, pub teb: u64, pub tls_vector: u64 }
@@ -50,5 +89,6 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, stack_base: 
     put_u64(space, TEB_ADDRESS + 0x60, PEB_ADDRESS)?;
     // The x64 TLS slots begin at offset 0x1480, so TEB occupies two pages.
     put_u64(space, TEB_ADDRESS + 0x1480, 0)?;
+    register_process(pid)?;
     Ok(ProcessEnvironment { process_id: pid, peb: PEB_ADDRESS, teb: TEB_ADDRESS, tls_vector: TLS_VECTOR_ADDRESS })
 }
