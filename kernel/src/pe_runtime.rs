@@ -69,3 +69,20 @@ pub fn tls_callbacks(image_base:u64,out:&mut[u64])->Result<usize,RuntimeError>{
     if out.len()<rec.callback_count{return Err(RuntimeError::TooManyCallbacks);}
     out[..rec.callback_count].copy_from_slice(&rec.callbacks[..rec.callback_count]);Ok(rec.callback_count)
 }
+
+/// Remove an image's runtime registration before its address space is reclaimed.
+pub fn unregister_image(image_base:u64) {
+    let state=unsafe{&mut *STORE.0.get()};
+    for rec in state.0.iter_mut() {
+        if rec.used && rec.base==image_base { *rec=ImageRecord::EMPTY; }
+    }
+    let mut write=0usize;
+    for read in 0..state.2 {
+        if state.1[read].image_base!=image_base {
+            if write!=read { state.1[write]=state.1[read]; }
+            write+=1;
+        }
+    }
+    for i in write..state.2 { state.1[i]=RuntimeFunction{image_base:0,begin:0,end:0,unwind_info:0}; }
+    state.2=write;
+}
