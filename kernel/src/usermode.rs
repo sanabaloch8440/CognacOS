@@ -138,5 +138,7 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
         || crate::process::reap(env.process_id) != Some(0) {
         return Err(VmError::PermissionDenied);
     }
+    crate::pe_runtime::unregister_image(image.base);
+    unsafe { space.destroy()?; }
     Ok(())
 }
