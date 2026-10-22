@@ -2,7 +2,7 @@ name: Build RdotOS Rust UEFI and kernel artifacts
 
 on:
   push:
-    branches: [main, rust-kernel-bootstrap]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -20,21 +20,30 @@ jobs:
           rustup target add x86_64-unknown-uefi x86_64-unknown-none
       - name: Build Rust UEFI bootloader
         run: cargo build --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi --release
-      - name: Build freestanding Rust kernel
+      - name: Build freestanding Rust kernel with project linker script
+        env:
+          RUSTFLAGS: -C relocation-model=static -C link-arg=-Tkernel/linker.ld
         run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
+      - name: Validate kernel ELF and entry point
+        run: |
+          file target/x86_64-unknown-none/release/rdotos-kernel
+          readelf -h target/x86_64-unknown-none/release/rdotos-kernel
+          readelf -l target/x86_64-unknown-none/release/rdotos-kernel
+          readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -E 'Class:.*ELF64|Machine:.*X86-64|Type:.*EXEC'
       - name: Package EFI fallback image
         run: |
           sudo apt-get update
           sudo apt-get install -y dosfstools mtools
           mkdir -p build/EFI/BOOT build/kernel
           cp target/x86_64-unknown-uefi/release/rdotos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
+          cp target/x86_64-unknown-none/release/rdotos-kernel build/EFI/BOOT/rdotos-kernel.elf
           cp target/x86_64-unknown-none/release/rdotos-kernel build/kernel/rdotos-kernel.elf
           truncate -s 64M build/rdotos-uefi.img
           mkfs.vfat build/rdotos-uefi.img
           mmd -i build/rdotos-uefi.img ::/EFI
           mmd -i build/rdotos-uefi.img ::/EFI/BOOT
           mcopy -i build/rdotos-uefi.img build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-          mcopy -i build/rdotos-uefi.img build/kernel/rdotos-kernel.elf ::/EFI/BOOT/rdotos-kernel.elf
+          mcopy -i build/rdotos-uefi.img build/EFI/BOOT/rdotos-kernel.elf ::/EFI/BOOT/rdotos-kernel.elf
       - name: Upload Rust artifacts
         uses: actions/upload-artifact@v4
         with:
