@@ -206,21 +206,15 @@ unsafe extern "C" {
 
 /// Actually enter ring 3, execute an INT 0x80, and return through the controlled
 /// DPL3 gate. This is a single-core bootstrap test, not a general syscall ABI.
-pub unsafe fn ring3_self_test(space: &mut crate::vm::AddressSpace) -> Result<(), crate::vm::VmError> {
-    const CODE: u64 = 0x0000_0081_0000_0000;
+pub unsafe fn ring3_self_test(space: &mut crate::vm::AddressSpace, entry: u64) -> Result<(), crate::vm::VmError> {
     const STACK: u64 = 0x0000_0082_0000_0000;
-    let code_page = unsafe { crate::memory::allocate_page() }.map_err(|_| crate::vm::VmError::OutOfMemory)?;
+    if !space.is_user_executable(entry) { return Err(crate::vm::VmError::PermissionDenied); }
     let stack_page = unsafe { crate::memory::allocate_page() }.map_err(|_| crate::vm::VmError::OutOfMemory)?;
-    unsafe {
-        space.map_user_page(CODE, code_page, true, false)?;
-        space.map_user_page(STACK, stack_page, true, false)?;
-        space.copy_to_user(CODE, &[0xcd, 0x80, 0x0f, 0x0b])?;
-        space.protect_user_page(CODE, false, true)?;
-    }
+    unsafe { space.map_user_page(STACK, stack_page, true, false)?; }
     let kernel_cr3: u64;
     unsafe { asm!("mov {}, cr3", out(reg) kernel_cr3, options(nomem, nostack, preserves_flags)); }
     unsafe { space.activate(); }
-    unsafe { rdotos_enter_user_test(CODE, STACK + PAGE_SIZE); }
+    unsafe { rdotos_enter_user_test(entry, STACK + PAGE_SIZE); }
     unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
     Ok(())
 }
