@@ -10,7 +10,7 @@ const USER: u64 = 1 << 2;
 const LARGE: u64 = 1 << 7;
 const NX: u64 = 1 << 63;
 const ADDR: u64 = 0x000f_ffff_ffff_f000;
-const USER_START: u64 = 0x0000_0001_0000_0000;
+const USER_START: u64 = 0x0000_0080_0000_0000;
 const USER_END: u64 = 0x0000_8000_0000_0000;
 
 #[derive(Clone, Copy, Debug)]
