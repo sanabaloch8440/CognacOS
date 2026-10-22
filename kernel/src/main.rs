@@ -3,7 +3,6 @@
 
 mod arch;
 mod memory;
-mod paging;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -15,6 +14,7 @@ struct BootInfo {
     magic: u64,
     version: u32,
     struct_size: u32,
+    pml4_physical: u64,
     memory_map: *const memory::MemoryDescriptor,
     memory_map_entries: usize,
     memory_descriptor_size: usize,
@@ -46,13 +46,24 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
 
+        if info.pml4_physical == 0 || (info.pml4_physical & 0xfff) != 0 || info.pml4_physical >= 0x1_0000_0000 {
+            serial_write(b"FATAL: invalid bootstrap PML4 address.\r\n");
+            halt();
+        }
         serial_write(b"UEFI boot services exited successfully.\r\n");
         serial_write(b"Boot information version: 1\r\n");
         serial_write(b"Memory map entries: ");
         serial_write_decimal(info.memory_map_entries);
         serial_write(b"\r\n");
 
-        // Build the physical allocator from conventional-memory descriptors.
+        // Install a private descriptor table, then immediately switch CR3 to
+        // the UEFI-allocated page tables. These identity-map the boot chain.
+        arch::initialize();
+        arch::enable_kernel_paging(info.pml4_physical);
+        serial_write(b"Kernel-owned CR3 activated successfully.\\r\\n");
+
+        // Only after the new identity map is active may physical pages be touched
+        // through their physical addresses. The allocator uses conventional RAM.
         let region_count = match memory::initialize(
             info.memory_map.cast::<u8>(),
             info.memory_map_entries,
@@ -64,24 +75,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 halt();
             }
         };
+        serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\\r\\n");
         serial_write(b"Physical allocator initialized; conventional regions: ");
         serial_write_decimal(region_count);
         serial_write(b"\\r\\n");
-
-        // Install descriptor tables before creating and activating our own CR3.
-        arch::initialize();
-        serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\\r\\n");
-
-        let pml4 = match paging::build_bootstrap_identity_map() {
-            Ok(address) => address,
-            Err(_) => {
-                serial_write(b"FATAL: unable to allocate bootstrap page tables.\\r\\n");
-                halt();
-            }
-        };
-        serial_write(b"Kernel-owned identity page tables built for 0..4 GiB.\\r\\n");
-        arch::enable_kernel_paging(pml4);
-        serial_write(b"Kernel-owned CR3 activated successfully.\\r\\n");
+        serial_write(b"Kernel-owned identity map active for 0..4 GiB.\\r\\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\\r\\n");
         serial_write(b"Interrupts remain disabled until APIC/timer setup.\\r\\n");
     }
