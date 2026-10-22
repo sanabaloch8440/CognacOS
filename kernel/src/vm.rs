@@ -191,7 +191,7 @@ impl AddressSpace {
     /// Destroy this address space after switching CR3 away from it. Frees user
     /// leaves, user page-table pages, and the PML4 root; shared supervisor mappings
     /// are never traversed or reclaimed.
-    pub unsafe fn destroy(self) -> Result<(), VmError> {
+    pub unsafe fn destroy(&mut self) -> Result<(), VmError> {
         let root = self.root as *mut u64;
         for pml4_index in 1..256usize {
             let top = unsafe { root.add(pml4_index) };
@@ -227,6 +227,7 @@ impl AddressSpace {
             unsafe { top.write(0); }
         }
         unsafe { crate::memory::free_page(self.root) }.map_err(|_| VmError::OutOfMemory)?;
+        self.root = 0;
         Ok(())
     }
 
