@@ -312,15 +312,14 @@ pub unsafe fn load(
                 let thunk_rva = lookup.checked_add(offset).filter(|&e| e.checked_add(8).is_some_and(|x| x <= image_size)).ok_or(PeError::InvalidImports)?;
                 let thunk = read_image_u64(space, image_base, thunk_rva)?;
                 if thunk == 0 { break; }
-                let symbol = if thunk & IMAGE_ORDINAL_FLAG64 != 0 {
-                    ImportSymbol::Ordinal((thunk & 0xffff) as u16)
+                let resolved = if thunk & IMAGE_ORDINAL_FLAG64 != 0 {
+                    resolve_symbol(resolver, &dll[..dll_len], ImportSymbol::Ordinal((thunk & 0xffff) as u16))?
                 } else {
                     if thunk > u32::MAX as u64 { return Err(PeError::InvalidImports); }
                     let name_rva = (thunk as u32).checked_add(2).ok_or(PeError::InvalidImports)?;
                     let (name, name_len) = read_c_string(space, image_base, name_rva)?;
-                    ImportSymbol::Name(&name[..name_len])
+                    resolve_symbol(resolver, &dll[..dll_len], ImportSymbol::Name(&name[..name_len]))?
                 };
-                let resolved = resolve_symbol(resolver, &dll[..dll_len], symbol)?;
                 let iat_rva = iat_field.checked_add(offset).filter(|&e| e.checked_add(8).is_some_and(|x| x <= image_size)).ok_or(PeError::InvalidImports)?;
                 write_image_u64(space, image_base, iat_rva, resolved)?;
                 index = index.checked_add(1).ok_or(PeError::InvalidImports)?;
