@@ -296,3 +296,44 @@ pub unsafe fn load(
     }
     Ok(LoadedImage { base: image_base, entry: image_base + entry_rva as u64, image_size })
 }
+
+/// Build and load a tiny synthetic AMD64 PE32+ image to exercise header parsing,
+/// section mapping, entry validation and final RX/RO-NX permissions during boot.
+pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError> {
+    fn put16(b: &mut [u8], o: usize, v: u16) { b[o..o + 2].copy_from_slice(&v.to_le_bytes()); }
+    fn put32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_le_bytes()); }
+    fn put64(b: &mut [u8], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_le_bytes()); }
+
+    let mut image = [0u8; 0x400];
+    put16(&mut image, 0, 0x5a4d);
+    put32(&mut image, 0x3c, 0x80);
+    image[0x80..0x84].copy_from_slice(b"PE\0\0");
+    let coff = 0x84;
+    put16(&mut image, coff, 0x8664);
+    put16(&mut image, coff + 2, 1);
+    put16(&mut image, coff + 16, 240);
+    put16(&mut image, coff + 18, 0x0022);
+    let opt = coff + 20;
+    put16(&mut image, opt, 0x20b);
+    put32(&mut image, opt + 16, 0x1000);
+    put64(&mut image, opt + 24, 0x0000_0001_4000_0000);
+    put32(&mut image, opt + 32, 0x1000);
+    put32(&mut image, opt + 36, 0x200);
+    put32(&mut image, opt + 56, 0x2000);
+    put32(&mut image, opt + 60, 0x200);
+    put32(&mut image, opt + 108, 16);
+    let section = opt + 240;
+    image[section..section + 8].copy_from_slice(b".text\0\0\0");
+    put32(&mut image, section + 8, 0x100);
+    put32(&mut image, section + 12, 0x1000);
+    put32(&mut image, section + 16, 0x200);
+    put32(&mut image, section + 20, 0x200);
+    put32(&mut image, section + 36, 0x6000_0020);
+    image[0x200] = 0xc3; // RET; mapped RX but deliberately not executed in this test.
+
+    let loaded = unsafe { load(space, &image, None)? };
+    if loaded.base != 0x0000_0001_4000_0000 || loaded.entry != loaded.base + 0x1000 {
+        return Err(PeError::InvalidHeader);
+    }
+    Ok(loaded)
+}
