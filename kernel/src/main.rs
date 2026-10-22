@@ -6,6 +6,7 @@ mod memory;
 mod security;
 mod vm;
 mod user;
+mod pe;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
