@@ -104,7 +104,10 @@ jobs:
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
           grep -F 'Physical allocator initialized' build/serial.log
           grep -F 'Security: CR0.WP enabled' build/serial.log
-          grep -F 'Security: NX enabled (page policy pending)' build/serial.log
+          grep -F 'Security: NX enabled; strict page policy follows' build/serial.log
+          grep -F 'Security: 4 KiB page policy active; W^X enforced for kernel sections.' build/serial.log
+          grep -F 'Security: kernel stack guard page unmapped.' build/serial.log
+          grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
       - name: Upload Rust artifacts and boot log
         if: always()
         uses: actions/upload-artifact@v4
