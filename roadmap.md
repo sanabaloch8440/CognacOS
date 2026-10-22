@@ -36,6 +36,17 @@ Status reflects code currently present in the repository, not intended architect
 - [ ] Add boot-time checks that kernel, stack, boot-info, memory-map copy, and page-table allocations are covered by active mappings.
 - [ ] Add guarded kernel stacks, NX/W^X page permissions, and a controlled high-half mapping.
 
+## Boot validation and memory hardening
+
+- [ ] Confirm the latest GitHub Actions Rust build succeeds; fix all compiler/linker errors exposed by CI.
+- [ ] Confirm OVMF/QEMU reaches the Rust kernel and emits the expected serial markers for CR3 activation and physical allocator initialization.
+- [ ] Add a reproducible regression test for malformed/truncated ELF images and overlapping PT_LOAD segments.
+- [ ] Add deterministic allocator tests for descriptor stride, conventional-memory filtering, page alignment, exhaustion, and region limits.
+- [ ] Replace the permissive 2 MiB identity map with 4 KiB mappings and explicit per-segment permissions. Do not enable NX until NX support is checked and all executing code, IDT/GDT, stack, boot-info, and page-table memory remain mapped.
+- [ ] Introduce a higher-half mapping only with a trampoline that keeps the current identity mapping until execution, stack, IDT, and all live pointers have safely switched to the higher-half addresses.
+- [ ] Test the new mappings under OVMF/QEMU, including deliberate write-to-read-only and execute-from-NX-page fault tests.
+- [ ] Preserve the current low identity-map fallback until the stricter mapping path has passed automated boot tests.
+
 ## UEFI and verified boot
 
 - [ ] Read/report firmware Secure Boot state for diagnostics (informational only).
