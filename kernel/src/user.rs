@@ -119,7 +119,7 @@ pub unsafe fn initialize() {
 /// writable user stack with at least 16 bytes available below it.
 pub unsafe fn enter(entry: u64, stack_top: u64) -> ! {
     if entry < USER_START || entry >= USER_END || stack_top <= USER_START || stack_top >= USER_END
-        || entry & 0x8000_0000_0000_0000 != 0 || stack_top & (PAGE_SIZE - 1) == 0
+        || entry & 0x8000_0000_0000_0000 != 0 || stack_top & 0xf != 0
     {
         crate::halt();
     }
