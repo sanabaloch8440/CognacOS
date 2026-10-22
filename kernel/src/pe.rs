@@ -251,9 +251,10 @@ pub unsafe fn load(
                     ImportSymbol::Ordinal((thunk & 0xffff) as u16)
                 } else {
                     if thunk > u32::MAX as u64 { return Err(PeError::InvalidImports); }
-                    let (name, name_len) = read_c_string(space, image_base, thunk as u32 + 2)?;
+                    let name_rva = (thunk as u32).checked_add(2).ok_or(PeError::InvalidImports)?;
+                    let (name, name_len) = read_c_string(space, image_base, name_rva)?;
                     // The resolver only sees the name bytes, not the trailing NUL.
-                    let resolved = resolver.ok_or(PeError::ImportResolverMissing)?(&dll[..dll_len], ImportSymbol::Name(&name[..name_len]));
+                    let resolved = resolver.ok_or(PeError::ImportResolverMissing)?(&dll[..dll_len], ImportSymbol::Name(&name[..name_len])).ok_or(PeError::UnresolvedImport)?;
                     let iat = first_thunk.checked_add(index * 8).ok_or(PeError::InvalidImports)?;
                     write_image_u64(space, image_base, iat, resolved).map_err(|_| PeError::InvalidImports)?;
                     index += 1;
