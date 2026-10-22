@@ -68,6 +68,7 @@ pub unsafe fn initialize() {
     unsafe { crate::arch::install_user_gate(0x81, rdotos_syscall_entry as usize as u64); }
 }
 pub fn set_current_process(pid:u64,space:*const AddressSpace) {
+    LAST_EXIT.store(u64::MAX,Ordering::Release);
     CURRENT_PID.store(pid,Ordering::Release);
     let _ = crate::process::mark_running(pid);
     unsafe { *ACTIVE_SPACE.0.get()=space; }
