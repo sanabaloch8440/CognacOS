@@ -5,6 +5,7 @@ mod arch;
 mod memory;
 mod security;
 mod vm;
+mod user;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -73,6 +74,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // Install a private descriptor table, then immediately switch CR3 to
         // the UEFI-allocated page tables. These identity-map the boot chain.
         arch::initialize();
+        user::initialize();
         arch::enable_kernel_paging(info.pml4_physical);
         serial_write(b"Kernel-owned CR3 activated successfully.\r\n");
 
