@@ -13,6 +13,7 @@ use uefi::{cstr16, boot};
 
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.elf");
 const MAX_KERNEL_FILE: usize = 32 * 1024 * 1024;
+const KERNEL_STACK_PAGES: usize = 16;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
 const BOOT_INFO_VERSION: u32 = 1;
 
@@ -80,6 +81,20 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
     core::mem::forget(image);
 
     uefi::println!("Kernel segments loaded; entry = {:#x}", entry);
+    let stack = match boot::allocate_pages(
+        boot::AllocateType::AnyPages,
+        boot::MemoryType::LOADER_DATA,
+        KERNEL_STACK_PAGES,
+    ) {
+        Ok(stack) => stack,
+        Err(err) => { uefi::println!("Kernel stack allocation failed: {:?}", err); return err.status(); }
+    };
+    let stack_top = stack.as_ptr() as u64 + (KERNEL_STACK_PAGES * boot::PAGE_SIZE) as u64;
+    // SysV x86-64 function-entry alignment: RSP % 16 == 8, with a dummy
+    // return slot because the kernel entry is reached by a tail jump.
+    unsafe { ((stack_top - 8) as *mut u64).write(0); }
+    let kernel_stack = stack_top - 8;
+    uefi::println!("Allocated {} KiB kernel stack", KERNEL_STACK_PAGES * 4);
     uefi::println!("Exiting UEFI boot services");
 
     // SAFETY: All filesystem protocols are closed and no UEFI allocator-backed
@@ -103,9 +118,12 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
         core::arch::asm!(
             "cli",
             "cld",
+            "mov rsp, rsi",
+            "xor rbp, rbp",
             "jmp rax",
             in("rax") entry,
             in("rdi") boot_info_ptr,
+            in("rsi") kernel_stack,
             options(noreturn)
         );
     }
