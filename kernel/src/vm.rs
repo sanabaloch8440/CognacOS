@@ -74,7 +74,10 @@ impl AddressSpace {
         if unsafe { leaf.read() } & PRESENT != 0 { return Err(VmError::AlreadyMapped); }
         let mut flags = PRESENT | USER | NX;
         if writable { flags |= WRITE; }
-        unsafe { leaf.write(physical_address | flags); }
+        unsafe {
+            leaf.write(physical_address | flags);
+            asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
+        }
         Ok(())
     }
 
