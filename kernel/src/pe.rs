@@ -446,6 +446,8 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     put32(&mut image, opt + 112 + 9 * 8 + 4, 40);
     put32(&mut image, opt + 112 + 1 * 8, 0x3100);
     put32(&mut image, opt + 112 + 1 * 8 + 4, 40);
+    put32(&mut image, opt + 112 + 13 * 8, 0x3180);
+    put32(&mut image, opt + 112 + 13 * 8 + 4, 64);
 
     let section = opt + 240;
     image[section..section + 8].copy_from_slice(b".text\0\0\0");
@@ -479,6 +481,11 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     put16(&mut image,0x740,0); image[0x742..0x74f].copy_from_slice(b"TestFunction\0");
     put64(&mut image,0x750,0x3140); put64(&mut image,0x758,0);
     put64(&mut image,0x770,0x3140); put64(&mut image,0x778,0);
+    // Delay-load descriptor (RVA form), INT, and delay IAT.
+    put32(&mut image,0x780,1); put32(&mut image,0x784,0x3130);
+    put32(&mut image,0x78c,0x31c0); put32(&mut image,0x790,0x31b0);
+    put64(&mut image,0x7b0,0x3140); put64(&mut image,0x7b8,0);
+    put64(&mut image,0x7c0,0x3140); put64(&mut image,0x7c8,0);
     put32(&mut image, 0x400, 0x1000); // relocation block page RVA
     put32(&mut image, 0x404, 12);
     put16(&mut image, 0x408, 0xa020); // DIR64 at RVA 0x1020
@@ -517,5 +524,7 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     if relocated != loaded.base + 0x1234 { return Err(PeError::InvalidRelocations); }
     let imported = read_image_u64(space, loaded.base, 0x3170)?;
     if imported != dll_loaded.base + 0x1000 { return Err(PeError::UnresolvedImport); }
+    let delayed = read_image_u64(space, loaded.base, 0x31c0)?;
+    if delayed != dll_loaded.base + 0x1000 { return Err(PeError::UnresolvedImport); }
     Ok(loaded)
 }
