@@ -389,13 +389,13 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     fn put32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_le_bytes()); }
     fn put64(b: &mut [u8], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_le_bytes()); }
 
-    let mut image = [0u8; 0x600];
+    let mut image = [0u8; 0x800];
     put16(&mut image, 0, 0x5a4d);
     put32(&mut image, 0x3c, 0x80);
     image[0x80..0x84].copy_from_slice(b"PE\0\0");
     let coff = 0x84;
     put16(&mut image, coff, 0x8664);
-    put16(&mut image, coff + 2, 2);
+    put16(&mut image, coff + 2, 3);
     put16(&mut image, coff + 16, 240);
     put16(&mut image, coff + 18, 0x0022);
     let opt = coff + 20;
@@ -404,12 +404,17 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     put64(&mut image, opt + 24, 0x0000_0001_4000_0000);
     put32(&mut image, opt + 32, 0x1000);
     put32(&mut image, opt + 36, 0x200);
-    put32(&mut image, opt + 56, 0x3000);
+    put32(&mut image, opt + 56, 0x4000);
     put32(&mut image, opt + 60, 0x200);
     put32(&mut image, opt + 108, 16);
     // IMAGE_DIRECTORY_ENTRY_BASERELOC: RVA 0x2000, one DIR64 relocation.
     put32(&mut image, opt + 112 + 5 * 8, 0x2000);
-    put32(&mut image, opt + 112 + 5 * 8 + 4, 12);
+    put32(&mut image, opt + 112 + 5 * 8 + 4, 30);
+    // AMD64 exception table and TLS directory.
+    put32(&mut image, opt + 112 + 3 * 8, 0x3040);
+    put32(&mut image, opt + 112 + 3 * 8 + 4, 12);
+    put32(&mut image, opt + 112 + 9 * 8, 0x3000);
+    put32(&mut image, opt + 112 + 9 * 8 + 4, 40);
 
     let section = opt + 240;
     image[section..section + 8].copy_from_slice(b".text\0\0\0");
@@ -421,19 +426,52 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
 
     let reloc = section + 40;
     image[reloc..reloc + 8].copy_from_slice(b".reloc\0\0");
-    put32(&mut image, reloc + 8, 12);
+    put32(&mut image, reloc + 8, 0x100);
     put32(&mut image, reloc + 12, 0x2000);
     put32(&mut image, reloc + 16, 0x200);
     put32(&mut image, reloc + 20, 0x400);
     put32(&mut image, reloc + 36, 0x4200_0040);
 
+    let data_section = section + 80;
+    image[data_section..data_section + 8].copy_from_slice(b".data\0\0\0");
+    put32(&mut image, data_section + 8, 0x200);
+    put32(&mut image, data_section + 12, 0x3000);
+    put32(&mut image, data_section + 16, 0x200);
+    put32(&mut image, data_section + 20, 0x600);
+    put32(&mut image, data_section + 36, 0xc000_0040);
+
     image[0x200..0x20e].copy_from_slice(&[0xb8,1,0,0,0,0xcd,0x81,0x31,0xff,0xb8,0,0,0,0]);
     image[0x20e..0x210].copy_from_slice(&[0xcd,0x81]); // SYS_GETPID then SYS_EXIT via the general dispatcher.
     put64(&mut image, 0x210, 0x0000_0001_4000_1234);
     put32(&mut image, 0x400, 0x1000); // relocation block page RVA
-    put32(&mut image, 0x404, 12);     // block size
+    put32(&mut image, 0x404, 12);
     put16(&mut image, 0x408, 0xa010); // DIR64 at RVA 0x1010
-    put16(&mut image, 0x40a, 0);      // ABSOLUTE padding
+    put16(&mut image, 0x40a, 0);
+    put32(&mut image, 0x40c, 0x3000); // TLS directory/data VA relocations
+    put32(&mut image, 0x410, 18);
+    put16(&mut image, 0x414, 0xa000);
+    put16(&mut image, 0x416, 0xa008);
+    put16(&mut image, 0x418, 0xa010);
+    put16(&mut image, 0x41a, 0xa018);
+    put16(&mut image, 0x41c, 0xa0a0);
+
+    // TLS directory: template RVA 0x3080..0x3084, index at 0x3090,
+    // callback array at 0x30a0. The callback at RVA 0x1100 simply returns.
+    put64(&mut image, 0x600, 0x0000_0001_4000_3080);
+    put64(&mut image, 0x608, 0x0000_0001_4000_3084);
+    put64(&mut image, 0x610, 0x0000_0001_4000_3090);
+    put64(&mut image, 0x618, 0x0000_0001_4000_30a0);
+    put32(&mut image, 0x620, 8);
+    put32(&mut image, 0x624, 0);
+    put32(&mut image, 0x640, 0x1100);
+    put32(&mut image, 0x644, 0x1101);
+    put32(&mut image, 0x648, 0x3050);
+    image[0x650..0x654].copy_from_slice(&[1,0,0,0]);
+    image[0x680..0x684].copy_from_slice(&[0xde,0xad,0xbe,0xef]);
+    put32(&mut image, 0x690, 0);
+    put64(&mut image, 0x6a0, 0x0000_0001_4000_1100);
+    put64(&mut image, 0x6a8, 0);
+    image[0x300] = 0xc3; // TLS callback: RET
 
     let loaded = unsafe { load(space, &image, None)? };
     if loaded.base != USER_IMAGE_FALLBACK || loaded.entry != loaded.base + 0x1000 {
