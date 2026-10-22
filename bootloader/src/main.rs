@@ -8,6 +8,7 @@ mod elf;
 use alloc::vec;
 use uefi::prelude::*;
 use uefi::proto::media::file::{File, FileAttribute, FileMode};
+use uefi::mem::memory_map::MemoryMap;
 use uefi::{cstr16, boot};
 
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.elf");
@@ -88,10 +89,10 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
         magic: BOOT_INFO_MAGIC,
         version: BOOT_INFO_VERSION,
         struct_size: core::mem::size_of::<BootInfo>() as u32,
-        memory_map: memory_map.as_ptr(),
+        memory_map: memory_map.buffer().as_ptr().cast::<uefi::boot::MemoryDescriptor>(),
         memory_map_entries: memory_map.len(),
-        memory_descriptor_size: core::mem::size_of::<uefi::boot::MemoryDescriptor>(),
-        memory_descriptor_version: 1,
+        memory_descriptor_size: memory_map.meta().desc_size,
+        memory_descriptor_version: memory_map.meta().desc_version,
     };
     let boot_info_ptr = &mut boot_info as *mut BootInfo;
 
