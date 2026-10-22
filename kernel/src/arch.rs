@@ -128,3 +128,10 @@ pub extern "C" fn rdotos_exception_fatal() -> ! {
         crate::halt()
     }
 }
+
+/// Switch CR3 to the new kernel-owned PML4. The bootstrap tables identity-map
+/// all addresses used by the early kernel, stack, and boot metadata.
+pub unsafe fn enable_kernel_paging(pml4_physical: u64) {
+    // SAFETY: caller guarantees a page-aligned, valid PML4 with required mappings.
+    unsafe { asm!("mov cr3, {}", in(reg) pml4_physical, options(nostack, preserves_flags)); }
+}
