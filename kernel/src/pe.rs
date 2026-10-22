@@ -417,6 +417,7 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     if dll_loaded.base != 0x0000_0081_0000_0000 || !dll_loaded.is_dll {
         return Err(PeError::InvalidHeader);
     }
+    crate::serial_write(b"PE fixture: DLL export registration passed.\r\n");
 
     let mut image = [0u8; 0x800];
     put16(&mut image, 0, 0x5a4d);
@@ -522,9 +523,12 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     }
     let relocated = read_image_u64(space, loaded.base, 0x1020)?;
     if relocated != loaded.base + 0x1234 { return Err(PeError::InvalidRelocations); }
+    crate::serial_write(b"PE fixture: DIR64 relocation passed.\r\n");
     let imported = read_image_u64(space, loaded.base, 0x3170)?;
     if imported != dll_loaded.base + 0x1000 { return Err(PeError::UnresolvedImport); }
+    crate::serial_write(b"PE fixture: normal import binding passed.\r\n");
     let delayed = read_image_u64(space, loaded.base, 0x31e0)?;
     if delayed != dll_loaded.base + 0x1000 { return Err(PeError::UnresolvedImport); }
+    crate::serial_write(b"PE fixture: delay import binding passed.\r\n");
     Ok(loaded)
 }
