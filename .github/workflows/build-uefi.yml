@@ -108,6 +108,8 @@ jobs:
           grep -F 'Security: 4 KiB page policy active; W^X enforced for kernel sections.' build/serial.log
           grep -F 'Security: kernel stack guard page unmapped.' build/serial.log
           grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
+          grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
+          grep -F 'PE32+ loader self-test passed; image base=0x0000000140000000 entry=0x0000000140001000 (RX section and RO/NX headers).' build/serial.log
       - name: Upload Rust artifacts and boot log
         if: always()
         uses: actions/upload-artifact@v4
