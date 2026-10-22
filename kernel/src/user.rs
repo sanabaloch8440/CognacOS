@@ -106,7 +106,7 @@ pub unsafe fn initialize() {
             kds = const KERNEL_DATA,
             tss = const TSS_SELECTOR,
             out("rax") _,
-            options(nostack),
+
         );
     }
 }
