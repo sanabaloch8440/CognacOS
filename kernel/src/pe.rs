@@ -85,6 +85,18 @@ fn read_c_string(space: &AddressSpace, base: u64, rva: u32) -> Result<([u8; 260]
     }
     Err(PeError::InvalidImports)
 }
+fn resolve_symbol(resolver: Option<ImportResolver>, dll: &[u8], symbol: ImportSymbol<'_>) -> Result<u64, PeError> {
+    let host = crate::winabi::api_set_host(dll).unwrap_or(dll);
+    if let Some(resolve) = resolver {
+        if let Some(address) = resolve(host, symbol) { return Ok(address); }
+    }
+    crate::winabi::resolve_import(dll, symbol).ok_or(if resolver.is_some() {
+        PeError::UnresolvedImport
+    } else {
+        PeError::ImportResolverMissing
+    })
+}
+
 fn available_base(space: &AddressSpace, base: u64, pages: usize) -> bool {
     for i in 0..pages {
         let Some(va) = base.checked_add(i as u64 * PAGE_SIZE) else { return false; };
@@ -254,18 +266,65 @@ pub unsafe fn load(
                     let name_rva = (thunk as u32).checked_add(2).ok_or(PeError::InvalidImports)?;
                     let (name, name_len) = read_c_string(space, image_base, name_rva)?;
                     // The resolver only sees the name bytes, not the trailing NUL.
-                    let resolved = resolver.ok_or(PeError::ImportResolverMissing)?(&dll[..dll_len], ImportSymbol::Name(&name[..name_len])).ok_or(PeError::UnresolvedImport)?;
+                    let resolved = resolve_symbol(resolver, &dll[..dll_len], ImportSymbol::Name(&name[..name_len]))?;
                     let iat = first_thunk.checked_add(index * 8).ok_or(PeError::InvalidImports)?;
                     write_image_u64(space, image_base, iat, resolved).map_err(|_| PeError::InvalidImports)?;
                     index += 1;
                     continue;
                 };
-                let resolved = resolver.ok_or(PeError::ImportResolverMissing)?(&dll[..dll_len], symbol).ok_or(PeError::UnresolvedImport)?;
+                let resolved = resolve_symbol(resolver, &dll[..dll_len], symbol)?;
                 let iat = first_thunk.checked_add(index.checked_mul(8).ok_or(PeError::InvalidImports)?).ok_or(PeError::InvalidImports)?;
                 write_image_u64(space, image_base, iat, resolved)?;
                 index += 1;
             }
             descriptor = descriptor.checked_add(20).ok_or(PeError::InvalidImports)?;
+        }
+        if !terminated { return Err(PeError::InvalidImports); }
+    }
+
+    // Resolve PE32+ delay imports before final section permissions are applied.
+    // AMD64 delay descriptors must use RVA-based fields (dlattrRva bit 0).
+    let (delay_rva, delay_size) = if directory_count > 13 {
+        (u32at(file, dir + 13 * 8)?, u32at(file, dir + 13 * 8 + 4)?)
+    } else { (0, 0) };
+    if delay_rva != 0 || delay_size != 0 {
+        let delay_end = delay_rva.checked_add(delay_size).filter(|&e| e <= image_size).ok_or(PeError::InvalidImports)?;
+        if delay_rva == 0 || delay_size < 32 { return Err(PeError::InvalidImports); }
+        let mut descriptor = delay_rva;
+        let mut terminated = false;
+        while descriptor.checked_add(32).is_some_and(|e| e <= delay_end) {
+            let attrs = read_image_u32(space, image_base, descriptor)?;
+            let name_field = read_image_u32(space, image_base, descriptor + 4)?;
+            let iat_field = read_image_u32(space, image_base, descriptor + 12)?;
+            let int_field = read_image_u32(space, image_base, descriptor + 16)?;
+            if attrs == 0 && name_field == 0 && iat_field == 0 && int_field == 0 {
+                terminated = true; break;
+            }
+            if attrs & 1 == 0 || name_field == 0 || iat_field == 0 {
+                return Err(PeError::InvalidImports);
+            }
+            let (dll, dll_len) = read_c_string(space, image_base, name_field)?;
+            let lookup = if int_field != 0 { int_field } else { iat_field };
+            let mut index = 0u32;
+            loop {
+                let offset = index.checked_mul(8).ok_or(PeError::InvalidImports)?;
+                let thunk_rva = lookup.checked_add(offset).filter(|&e| e.checked_add(8).is_some_and(|x| x <= image_size)).ok_or(PeError::InvalidImports)?;
+                let thunk = read_image_u64(space, image_base, thunk_rva)?;
+                if thunk == 0 { break; }
+                let symbol = if thunk & IMAGE_ORDINAL_FLAG64 != 0 {
+                    ImportSymbol::Ordinal((thunk & 0xffff) as u16)
+                } else {
+                    if thunk > u32::MAX as u64 { return Err(PeError::InvalidImports); }
+                    let name_rva = (thunk as u32).checked_add(2).ok_or(PeError::InvalidImports)?;
+                    let (name, name_len) = read_c_string(space, image_base, name_rva)?;
+                    ImportSymbol::Name(&name[..name_len])
+                };
+                let resolved = resolve_symbol(resolver, &dll[..dll_len], symbol)?;
+                let iat_rva = iat_field.checked_add(offset).filter(|&e| e.checked_add(8).is_some_and(|x| x <= image_size)).ok_or(PeError::InvalidImports)?;
+                write_image_u64(space, image_base, iat_rva, resolved)?;
+                index = index.checked_add(1).ok_or(PeError::InvalidImports)?;
+            }
+            descriptor = descriptor.checked_add(32).ok_or(PeError::InvalidImports)?;
         }
         if !terminated { return Err(PeError::InvalidImports); }
     }
@@ -294,7 +353,16 @@ pub unsafe fn load(
         let flags = page_flags[i];
         unsafe { space.protect_user_page(image_base + i as u64 * PAGE_SIZE, flags & 1 != 0, flags & 2 != 0)?; }
     }
-    Ok(LoadedImage { base: image_base, entry: image_base + entry_rva as u64, image_size })
+    let loaded = LoadedImage { base: image_base, entry: image_base + entry_rva as u64, image_size };
+    let (pdata_rva, pdata_size) = if directory_count > 3 {
+        (u32at(file, dir + 3 * 8)?, u32at(file, dir + 3 * 8 + 4)?)
+    } else { (0, 0) };
+    let (tls_rva, tls_size) = if directory_count > 9 {
+        (u32at(file, dir + 9 * 8)?, u32at(file, dir + 9 * 8 + 4)?)
+    } else { (0, 0) };
+    unsafe { crate::pe_runtime::register(space, loaded, tls_rva, tls_size, pdata_rva, pdata_size) }
+        .map_err(|_| PeError::InvalidHeader)?;
+    Ok(loaded)
 }
 
 /// Build and load a tiny synthetic AMD64 PE32+ image to exercise header parsing,
