@@ -157,6 +157,17 @@ pub unsafe fn serial_write(bytes: &[u8]) {
     }
 }
 
+pub unsafe fn serial_write_hex(value: u64) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = [0u8; 18];
+    out[0] = b'0';
+    out[1] = b'x';
+    for i in 0..16 {
+        out[2 + i] = DIGITS[((value >> ((15 - i) * 4)) & 0xf) as usize];
+    }
+    serial_write(&out);
+}
+
 unsafe fn serial_write_decimal(mut value: usize) {
     let mut digits = [0u8; 20];
     let mut index = digits.len();
