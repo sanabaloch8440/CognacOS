@@ -7,7 +7,7 @@ const MAX_RUNTIME_FUNCTIONS: usize = 2048;
 #[derive(Clone, Copy, Debug)]
 pub enum RuntimeError { InvalidImage, TooManyImages, TooManyCallbacks, TooManyFunctions, InvalidDirectory, Vm }
 #[derive(Clone, Copy, Debug)]
-pub struct RuntimeFunction { pub begin: u32, pub end: u32, pub unwind_info: u32 }
+pub struct RuntimeFunction { pub image_base: u64, pub begin: u32, pub end: u32, pub unwind_info: u32 }
 #[derive(Clone, Copy, Debug)]
 pub struct ImageRuntime { pub base: u64, pub tls_callbacks: [u64; MAX_TLS_CALLBACKS], pub tls_count: usize, pub pdata_rva: u32, pub pdata_size: u32 }
 #[derive(Clone, Copy)]
@@ -15,7 +15,7 @@ struct ImageRecord { base:u64, size:u32, pdata_rva:u32, pdata_size:u32, callback
 impl ImageRecord { const EMPTY:Self=Self { base:0,size:0,pdata_rva:0,pdata_size:0,callbacks:[0;MAX_TLS_CALLBACKS],callback_count:0,used:false }; }
 struct Store(core::cell::UnsafeCell<([ImageRecord;MAX_IMAGES],[RuntimeFunction;MAX_RUNTIME_FUNCTIONS],usize)>);
 unsafe impl Sync for Store {}
-static STORE:Store=Store(core::cell::UnsafeCell::new(([ImageRecord::EMPTY;MAX_IMAGES],[RuntimeFunction {begin:0,end:0,unwind_info:0};MAX_RUNTIME_FUNCTIONS],0)));
+static STORE:Store=Store(core::cell::UnsafeCell::new(([ImageRecord::EMPTY;MAX_IMAGES],[RuntimeFunction {image_base:0,begin:0,end:0,unwind_info:0};MAX_RUNTIME_FUNCTIONS],0)));
 fn read(space:&AddressSpace,address:u64,out:&mut [u8])->Result<(),RuntimeError>{unsafe{space.copy_from_user(address,out).map_err(|_|RuntimeError::Vm)}}
 fn u32_at(space:&AddressSpace,base:u64,rva:u32)->Result<u32,RuntimeError>{let mut b=[0;4];read(space,base.checked_add(rva as u64).ok_or(RuntimeError::InvalidImage)?,&mut b)?;Ok(u32::from_le_bytes(b))}
 fn u64_at(space:&AddressSpace,base:u64,rva:u32)->Result<u64,RuntimeError>{let mut b=[0;8];read(space,base.checked_add(rva as u64).ok_or(RuntimeError::InvalidImage)?,&mut b)?;Ok(u64::from_le_bytes(b))}
@@ -49,7 +49,7 @@ pub unsafe fn register(space:&AddressSpace,image:LoadedImage,tls_rva:u32,tls_siz
         if state.2.checked_add(count).is_none_or(|n|n>MAX_RUNTIME_FUNCTIONS){return Err(RuntimeError::TooManyFunctions);}
         for i in 0..count{
             let r=pdata_rva+(i*12) as u32;
-            let f=RuntimeFunction{begin:u32_at(space,image.base,r)?,end:u32_at(space,image.base,r+4)?,unwind_info:u32_at(space,image.base,r+8)?};
+            let f=RuntimeFunction{image_base:image.base,begin:u32_at(space,image.base,r)?,end:u32_at(space,image.base,r+4)?,unwind_info:u32_at(space,image.base,r+8)?};
             if f.begin>=f.end||f.end>image.image_size||f.unwind_info>=image.image_size{return Err(RuntimeError::InvalidDirectory);}
             state.1[state.2]=f;state.2+=1;
         }
@@ -62,7 +62,7 @@ pub unsafe fn register(space:&AddressSpace,image:LoadedImage,tls_rva:u32,tls_siz
 /// Find a function table entry for a control PC. UNWIND_INFO interpretation is separate.
 pub fn lookup_function(image_base:u64,control_pc:u64)->Option<RuntimeFunction>{
     let state=unsafe{&*STORE.0.get()};let rva=u32::try_from(control_pc.checked_sub(image_base)?).ok()?;
-    state.1[..state.2].iter().copied().find(|f|rva>=f.begin&&rva<f.end)
+    state.1[..state.2].iter().copied().find(|f|f.image_base==image_base&&rva>=f.begin&&rva<f.end)
 }
 pub fn tls_callbacks(image_base:u64,out:&mut[u64])->Result<usize,RuntimeError>{
     let state=unsafe{&*STORE.0.get()};let rec=state.0.iter().find(|r|r.used&&r.base==image_base).ok_or(RuntimeError::InvalidImage)?;
