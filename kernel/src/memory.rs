@@ -78,6 +78,13 @@ pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Resul
 /// Allocate one zeroed physical page. The early kernel uses identity mappings,
 /// so the returned physical address is also directly writable as a pointer.
 pub unsafe fn allocate_page() -> Result<u64, AllocError> {
+    let free = unsafe { &mut *FREE_PAGES.0.get() };
+    if free.1 != 0 {
+        free.1 -= 1;
+        let page = free.0[free.1];
+        unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE as usize); }
+        return Ok(page);
+    }
     let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
     let regions = unsafe { &mut *REGIONS.0.get() };
     for region in regions.iter_mut().take(count) {
@@ -89,6 +96,19 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
         }
     }
     Err(AllocError::OutOfMemory)
+}
+
+/// Return a previously allocated low physical page to the single-core free list.
+/// The caller must ensure no active mapping or DMA operation references the page.
+pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
+    if page < LOW_RESERVED_END || page >= PHYSICAL_LIMIT || page & (PAGE_SIZE - 1) != 0 {
+        return Err(AllocError::InvalidPage);
+    }
+    let free = unsafe { &mut *FREE_PAGES.0.get() };
+    if free.1 == FREE_CAPACITY { return Err(AllocError::FreeListFull); }
+    free.0[free.1] = page;
+    free.1 += 1;
+    Ok(())
 }
 
 pub fn region_count() -> usize {
