@@ -109,7 +109,7 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
             (None,10usize,image_base,image_entry,image_size)
         } else {
             let m=dlls[i-1];
-            (Some(m),m.len,m.base,0,m.size)
+            (Some(m),m.len,m.base,m.entrypoint,m.size)
         };
         const MAIN_NAME:[u16;10]=[0x52,0x64,0x6f,0x74,0x4f,0x53,0x2e,0x65,0x78,0x65];
         for j in 0..module_len {
