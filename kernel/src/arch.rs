@@ -184,7 +184,7 @@ pub extern "C" fn rdotos_exception_fatal(vector: u64, error: u64, frame: *const 
         crate::serial_write_hex(frame.add(18).read());
         crate::serial_write(b" RFLAGS=");
         crate::serial_write_hex(frame.add(19).read());
-        crate::serial_write(b"\\r\\nRAX="); crate::serial_write_hex(frame.add(14).read());
+        crate::serial_write(b"\r\nRAX="); crate::serial_write_hex(frame.add(14).read());
         crate::serial_write(b" RBX="); crate::serial_write_hex(frame.add(13).read());
         crate::serial_write(b" RCX="); crate::serial_write_hex(frame.add(12).read());
         crate::serial_write(b" RDX="); crate::serial_write_hex(frame.add(11).read());
