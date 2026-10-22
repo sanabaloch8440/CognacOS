@@ -69,12 +69,13 @@ jobs:
             exit 1
           fi
           cp "$vars_template" build/OVMF_VARS.fd
+          rm -f build/serial.log
           set +e
           timeout 30s qemu-system-x86_64 \
-            -machine q35 -m 512M -cpu qemu64 \
+            -machine pc -m 512M -cpu qemu64 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
-            -drive format=raw,file=build/rdotos-uefi.img \
+            -drive if=ide,format=raw,file=build/rdotos-uefi.img \
             -boot order=c -display none -monitor none \
             -serial file:build/serial.log -no-reboot -no-shutdown
           qemu_status=$?
@@ -82,8 +83,13 @@ jobs:
           # The kernel intentionally halts with interrupts disabled, so timeout
           # is expected after a successful handoff. Other QEMU failures are fatal.
           if [ "$qemu_status" -ne 124 ] && [ "$qemu_status" -ne 0 ]; then
+            echo "QEMU exited unexpectedly with status $qemu_status" >&2
             cat build/serial.log || true
             exit "$qemu_status"
+          fi
+          if [ ! -f build/serial.log ]; then
+            echo "QEMU did not create the serial log" >&2
+            exit 1
           fi
           cat build/serial.log
           grep -F 'RdotOS Rust kernel entered.' build/serial.log
