@@ -127,6 +127,9 @@ pub unsafe fn enter(entry: u64, stack_top: u64) -> ! {
         asm!(
             "cli",
             "cld",
+            "mov ax, {ss}",
+            "mov ds, ax",
+            "mov es, ax",
             "push {ss}",
             "push rsi",
             "push 0x2",
@@ -149,6 +152,10 @@ global_asm!(r#"
     .type rdotos_user_exit_stub, @function
 rdotos_user_exit_stub:
     cli
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
     mov rsp, qword ptr [rip + rdotos_user_saved_rsp]
     jmp qword ptr [rip + rdotos_user_saved_rip]
 
@@ -164,6 +171,9 @@ rdotos_enter_user_test:
     mov qword ptr [rip + rdotos_user_saved_rsp], rsp
     lea rax, [rip + .Lrdotos_user_test_return]
     mov qword ptr [rip + rdotos_user_saved_rip], rax
+    mov ax, 0x1b
+    mov ds, ax
+    mov es, ax
     push 0x1b
     push rsi
     push 0x2
