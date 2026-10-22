@@ -9,10 +9,10 @@ pub enum RuntimeError { InvalidImage, TooManyImages, TooManyCallbacks, TooManyFu
 #[derive(Clone, Copy, Debug)]
 pub struct RuntimeFunction { pub image_base: u64, pub begin: u32, pub end: u32, pub unwind_info: u32 }
 #[derive(Clone, Copy, Debug)]
-pub struct ImageRuntime { pub base: u64, pub tls_callbacks: [u64; MAX_TLS_CALLBACKS], pub tls_count: usize, pub pdata_rva: u32, pub pdata_size: u32 }
+pub struct ImageRuntime { pub base: u64, pub tls_callbacks: [u64; MAX_TLS_CALLBACKS], pub tls_count: usize, pub tls_template_start: u64, pub tls_template_size: u32, pub tls_index_address: u64, pub tls_zero_fill: u32, pub pdata_rva: u32, pub pdata_size: u32 }
 #[derive(Clone, Copy)]
-struct ImageRecord { base:u64, size:u32, pdata_rva:u32, pdata_size:u32, callbacks:[u64;MAX_TLS_CALLBACKS], callback_count:usize, used:bool }
-impl ImageRecord { const EMPTY:Self=Self { base:0,size:0,pdata_rva:0,pdata_size:0,callbacks:[0;MAX_TLS_CALLBACKS],callback_count:0,used:false }; }
+struct ImageRecord { base:u64, size:u32, pdata_rva:u32, pdata_size:u32, tls_template_start:u64, tls_template_size:u32, tls_index_address:u64, tls_zero_fill:u32, callbacks:[u64;MAX_TLS_CALLBACKS], callback_count:usize, used:bool }
+impl ImageRecord { const EMPTY:Self=Self { base:0,size:0,pdata_rva:0,pdata_size:0,tls_template_start:0,tls_template_size:0,tls_index_address:0,tls_zero_fill:0,callbacks:[0;MAX_TLS_CALLBACKS],callback_count:0,used:false }; }
 struct Store(core::cell::UnsafeCell<([ImageRecord;MAX_IMAGES],[RuntimeFunction;MAX_RUNTIME_FUNCTIONS],usize)>);
 unsafe impl Sync for Store {}
 static STORE:Store=Store(core::cell::UnsafeCell::new(([ImageRecord::EMPTY;MAX_IMAGES],[RuntimeFunction {image_base:0,begin:0,end:0,unwind_info:0};MAX_RUNTIME_FUNCTIONS],0)));
@@ -26,6 +26,18 @@ pub unsafe fn register(space:&AddressSpace,image:LoadedImage,tls_rva:u32,tls_siz
     let mut rec=ImageRecord{base:image.base,size:image.image_size,pdata_rva,pdata_size,..ImageRecord::EMPTY};
     if tls_rva!=0||tls_size!=0{
         if tls_rva==0||tls_size<40||tls_rva.checked_add(tls_size).is_none_or(|e|e>image.image_size){return Err(RuntimeError::InvalidDirectory);}
+        let start_va=u64_at(space,image.base,tls_rva)?;
+        let end_va=u64_at(space,image.base,tls_rva+8)?;
+        let index_va=u64_at(space,image.base,tls_rva+16)?;
+        let template_size=if start_va==0&&end_va==0 { 0 } else {
+            if start_va<image.base||end_va<start_va||end_va>image.base+image.image_size as u64{return Err(RuntimeError::InvalidDirectory);}
+            u32::try_from(end_va-start_va).map_err(|_|RuntimeError::InvalidDirectory)?
+        };
+        if index_va!=0&&(index_va<image.base||index_va.checked_add(4).is_none_or(|e|e>image.base+image.image_size as u64)){return Err(RuntimeError::InvalidDirectory);}
+        rec.tls_template_start=start_va;
+        rec.tls_template_size=template_size;
+        rec.tls_index_address=index_va;
+        rec.tls_zero_fill=u32_at(space,image.base,tls_rva+32)?;
         let callbacks_va=u64_at(space,image.base,tls_rva+24)?;
         if callbacks_va!=0{
             if callbacks_va<image.base||callbacks_va>=image.base+image.image_size as u64{return Err(RuntimeError::InvalidDirectory);}
@@ -57,7 +69,7 @@ pub unsafe fn register(space:&AddressSpace,image:LoadedImage,tls_rva:u32,tls_siz
     let state=unsafe{&mut *STORE.0.get()};
     let Some(slot)=state.0.iter_mut().find(|r|!r.used||r.base==image.base)else{return Err(RuntimeError::TooManyImages);};
     *slot=ImageRecord{used:true,..rec};
-    Ok(ImageRuntime{base:image.base,tls_callbacks:rec.callbacks,tls_count:rec.callback_count,pdata_rva:rec.pdata_rva,pdata_size:rec.pdata_size})
+    Ok(ImageRuntime{base:image.base,tls_callbacks:rec.callbacks,tls_count:rec.callback_count,tls_template_start:rec.tls_template_start,tls_template_size:rec.tls_template_size,tls_index_address:rec.tls_index_address,tls_zero_fill:rec.tls_zero_fill,pdata_rva:rec.pdata_rva,pdata_size:rec.pdata_size})
 }
 /// Find a function table entry for a control PC. UNWIND_INFO interpretation is separate.
 pub fn lookup_function(image_base:u64,control_pc:u64)->Option<RuntimeFunction>{
@@ -85,4 +97,13 @@ pub fn unregister_image(image_base:u64) {
     }
     for i in write..state.2 { state.1[i]=RuntimeFunction{image_base:0,begin:0,end:0,unwind_info:0}; }
     state.2=write;
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct TlsLayout { pub present: bool, pub template_start: u64, pub template_size: u32, pub index_address: u64, pub zero_fill: u32 }
+pub fn tls_layout(image_base:u64)->Result<TlsLayout,RuntimeError>{
+    let state=unsafe{&*STORE.0.get()};
+    let r=state.0.iter().find(|r|r.used&&r.base==image_base).ok_or(RuntimeError::InvalidImage)?;
+    Ok(TlsLayout{present:r.tls_template_start!=0||r.tls_template_size!=0||r.tls_index_address!=0||r.tls_zero_fill!=0||r.callback_count!=0,
+        template_start:r.tls_template_start,template_size:r.tls_template_size,index_address:r.tls_index_address,zero_fill:r.tls_zero_fill})
 }
