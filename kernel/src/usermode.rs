@@ -160,6 +160,24 @@ fn callback_trampoline(callback: u64, image_base: u64) -> [u8; 40] {
     b
 }
 
+fn cleanup_process(space:&mut AddressSpace,image_base:u64,pid:u64)->Result<(),VmError>{
+    if let Some(snapshot)=crate::process::query(pid) {
+        if snapshot.state==crate::process::ProcessState::Running {
+            let _=crate::process::mark_exited(pid,u64::MAX-1);
+        }
+        let _=crate::process::reap(pid);
+    }
+    let mut modules=[crate::winabi::ModuleInfo::EMPTY;32];
+    let count=crate::winabi::module_infos(&mut modules);
+    for module in modules[..count].iter() {
+        crate::pe_runtime::unregister_image(module.base);
+        crate::winabi::unregister_module(&module.name[..module.len]);
+    }
+    crate::pe_runtime::unregister_image(image_base);
+    unsafe{space.destroy()?;}
+    Ok(())
+}
+
 /// Start a loaded image with a minimal PEB/TEB, execute registered TLS callbacks
 /// in user mode, then transfer to the image entry point. The synthetic smoke
 /// image exits through SYS_EXIT to exercise the real dispatcher.
@@ -191,6 +209,7 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     }
     let main_tls=crate::pe_runtime::tls_layout(image.base).map_err(|_|VmError::InvalidAddress)?;
     initialize_tls_block(space,main_tls,module_count as u32,env.tls_vector)?;
+    let calls_before=crate::syscall::dispatch_count();
     let kernel_cr3: u64;
     unsafe { asm!("mov {}, cr3", out(reg) kernel_cr3, options(nomem, nostack, preserves_flags)); }
     crate::syscall::set_current_process(env.process_id, space as *const _);
@@ -225,20 +244,18 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     })();
     unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
     crate::syscall::clear_current_process();
-    execution_result?;
-    let snapshot = crate::process::query(env.process_id).ok_or(VmError::InvalidAddress)?;
-    if crate::syscall::dispatch_count() < 2 || crate::syscall::last_exit_code() != 0
-        || snapshot.state != crate::process::ProcessState::Exited || snapshot.exit_code != 0
-        || crate::process::reap(env.process_id) != Some(0) {
-        return Err(VmError::PermissionDenied);
+    if let Err(error)=execution_result {
+        let _=crate::process::mark_exited(env.process_id,u64::MAX-1);
+        let _=cleanup_process(space,image.base,env.process_id);
+        return Err(error);
     }
-    let mut loaded_modules=[crate::winabi::ModuleInfo::EMPTY;32];
-    let module_count=crate::winabi::module_infos(&mut loaded_modules);
-    for module in loaded_modules[..module_count].iter() {
-        crate::pe_runtime::unregister_image(module.base);
-        crate::winabi::unregister_module(&module.name[..module.len]);
-    }
-    crate::pe_runtime::unregister_image(image.base);
-    unsafe { space.destroy()?; }
+    let snapshot=crate::process::query(env.process_id).ok_or(VmError::InvalidAddress)?;
+    let valid=crate::syscall::dispatch_count().saturating_sub(calls_before)>=2
+        && crate::syscall::last_exit_code()==0
+        && snapshot.state==crate::process::ProcessState::Exited
+        && snapshot.exit_code==0;
+    let cleanup=cleanup_process(space,image.base,env.process_id);
+    cleanup?;
+    if !valid{return Err(VmError::PermissionDenied);}
     Ok(())
 }
