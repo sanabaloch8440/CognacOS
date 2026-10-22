@@ -57,7 +57,7 @@ pub unsafe fn register_module(name: &[u8], base: u64, size: u32, entrypoint: u64
         *slot=Module { name:normalized,len,base,size,entrypoint,used:true }; return true;
     }
     if let Some(slot)=state.0.iter_mut().find(|m| !m.used) {
-        *slot=Module { name:normalized,len,base,size,used:true }; true
+        *slot=Module { name:normalized,len,base,size,entrypoint,used:true }; true
     } else { false }
 }
 /// Snapshot registered modules for constructing a process-local PEB loader list.
