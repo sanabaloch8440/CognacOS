@@ -166,7 +166,6 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             Err(_) => { serial_write(b"FATAL: PE32+ loader self-test failed.\r\n"); halt(); }
         };
         serial_write(b"PE32+ loader self-test passed; image base=");
-        serial_write(b"PE runtime TLS/unwind metadata registry initialized.\r\n");
         serial_write_hex(loaded_pe.base);
         serial_write(b" entry=");
         serial_write_hex(loaded_pe.entry);
