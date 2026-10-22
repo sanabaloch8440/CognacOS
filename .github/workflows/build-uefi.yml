@@ -24,7 +24,7 @@ jobs:
         run: cargo build --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi --release
       - name: Build freestanding Rust kernel with project linker script
         env:
-          RUSTFLAGS: -C relocation-model=static -C link-arg=-Tkernel/linker.ld
+          RUSTFLAGS: -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
         run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
       - name: Validate kernel ELF and entry point
         run: |
