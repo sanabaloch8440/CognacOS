@@ -12,6 +12,8 @@ permissions:
 jobs:
   build-rust-os:
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust targets
