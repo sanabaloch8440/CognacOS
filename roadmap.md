@@ -77,9 +77,17 @@ Status reflects code currently present in the repository, not intended architect
 
 - [ ] Establish long-mode kernel entry, GDT/IDT, exception handlers, APIC, and timer.
 - [x] Add independent PML4 address spaces, supervisor-only shared kernel mappings, checked user-copy helpers, and final per-page RX/RO/RW-NX user permissions; reject writable-executable mappings and keep user mappings in private PML4 slots.
-- [x] Add ring-3 user code/data descriptors, TSS RSP0, IRETQ entry, and a DPL3 INT 0x80 test gate; QEMU executes a loaded PE entry in ring 3 and returns to the kernel.
-- [x] Add a bounded PE32+ AMD64 loader for headers/sections, DIR64 base relocations, a kernel-provided import resolver, and final W^X section permissions; QEMU validates rebasing and runs a synthetic PE entry.
-- [ ] Implement a general syscall ABI and dispatch table, PE TLS callbacks, unwind/exception registration, delay imports, API-set resolution, PEB/TEB setup, real Windows API binding, demand paging, page unmapping/reclamation, and full process lifecycle.
+- [x] Add ring-3 user code/data descriptors, TSS RSP0, IRETQ entry, DPL3 process-exit gate, and DPL3 syscall gate; QEMU executes a loaded PE entry in ring 3 and returns to the kernel.
+- [x] Add a bounded PE32+ AMD64 loader for headers/sections, DIR64 relocations, normal and delay imports, registered DLL exports, API-set contract aliases, and final W^X section permissions; QEMU loads a synthetic DLL and binds/calls its export from a PE entry.
+- [x] Add an RdotOS x64 syscall dispatcher (GETPID, WRITE, EXIT, cooperative YIELD), a process-state table (Created/Running/Exited/Reaped), exit validation, and address-space teardown with physical-page reclamation; QEMU executes GETPID, calls an imported DLL export, exits, and reaps the process.
+- [x] Initialize a minimal Windows x64 PEB/TEB, TEB GS base, TLS vector, process parameters, and circular PEB loader lists for the executable and preloaded DLLs.
+- [x] Parse PE TLS directories, initialize a per-process static TLS block/index, and execute registered TLS callbacks in ring 3 before the image entry point.
+- [x] Register bounded AMD64 RUNTIME_FUNCTION entries from .pdata and support lookup by image/control PC.
+- [x] Resolve PE delay imports and common API-set contract families through a registry of exports parsed from loaded user-mode DLL images.
+- [ ] Implement the Windows NT syscall ABI and service table; the current syscall ABI is RdotOS-native and not binary-compatible with Windows ntdll syscall numbers.
+- [ ] Implement a full UNWIND_INFO interpreter, language-specific exception handlers, vectored exception dispatch, and process/thread exception recovery.
+- [ ] Add complete process parameters, per-process DLL loader namespaces, forwarder chains, API-set schema parsing, DLL attach/detach sequencing, demand paging, and concurrent process/thread lifecycle support.
+- [ ] Provide actual user-mode implementations of the Windows API DLLs; imports bind to registered exports, but a full kernel32/ntdll/advapi32 implementation is not claimed.
 - [ ] Support large physical memory subject to architecture/platform limits; validate memory-map handling.
 - [x] Keep 32-bit execution and WOW64-like compatibility out of scope.
 
