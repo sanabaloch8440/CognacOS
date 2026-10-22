@@ -109,7 +109,7 @@ jobs:
           grep -F 'Security: kernel stack guard page unmapped.' build/serial.log
           grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
           grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
-          grep -F 'PE32+ loader self-test passed; image base=0x0000000140000000 entry=0x0000000140001000 (RX section and RO/NX headers).' build/serial.log
+          grep -F 'PE32+ loader self-test passed; image base=0x0000200000000000 entry=0x0000200000001000 (RX section and RO/NX headers).' build/serial.log
           grep -F 'Ring-3 INT 0x80 round-trip passed; user code returned through DPL3 gate.' build/serial.log
       - name: Upload Rust artifacts and boot log
         if: always()
