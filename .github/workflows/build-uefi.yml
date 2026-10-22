@@ -110,7 +110,11 @@ jobs:
           grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
           grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
           grep -F 'PE32+ loader self-test passed; image base=0x0000200000000000 entry=0x0000200000001000 (RX section and RO/NX headers).' build/serial.log
+          grep -F 'PE fixture: DLL export registration passed.' build/serial.log
+          grep -F 'PE fixture: normal import binding passed.' build/serial.log
+          grep -F 'PE fixture: delay import binding passed.' build/serial.log
           grep -F 'Windows API-set resolution and PE TLS/unwind registration passed.' build/serial.log
+          grep -F 'PE TLS callbacks executed in ring 3; per-image TLS blocks initialized.' build/serial.log
           grep -F 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log
       - name: Upload Rust artifacts and boot log
         if: always()
