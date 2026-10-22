@@ -20,6 +20,11 @@ impl IdtEntry {
             attributes: 0x8E, offset_middle: (handler >> 16) as u16,
             offset_high: (handler >> 32) as u32, reserved: 0 }
     }
+    fn user_interrupt_gate(handler: u64) -> Self {
+        Self { offset_low: handler as u16, selector: KERNEL_CODE_SELECTOR, ist: 0,
+            attributes: 0xEE, offset_middle: (handler >> 16) as u16,
+            offset_high: (handler >> 32) as u32, reserved: 0 }
+    }
 }
 #[repr(C, packed)]
 struct DescriptorTablePointer { limit: u16, base: u64 }
@@ -162,7 +167,7 @@ pub unsafe fn initialize() {
         unsafe { idt_ptr.add(vector).write(IdtEntry::interrupt_gate(handlers[vector] as u64)); }
     }
     let pointer = DescriptorTablePointer {
-        limit: (EXCEPTION_VECTORS * size_of::<IdtEntry>() - 1) as u16,
+        limit: (IDT_ENTRIES * size_of::<IdtEntry>() - 1) as u16,
         base: idt_ptr as u64,
     };
     unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)) };
@@ -208,6 +213,14 @@ pub extern "C" fn rdotos_exception_fatal(vector: u64, error: u64, frame: *const 
         crate::serial_write(b"\r\nSystem halted.\r\n");
         crate::halt()
     }
+}
+
+/// Install a DPL3 interrupt gate for a controlled user-to-kernel entry point.
+/// External interrupts remain disabled; this is intended for software interrupts/syscalls.
+pub unsafe fn install_user_gate(vector: usize, handler: u64) {
+    if vector < EXCEPTION_VECTORS || vector >= IDT_ENTRIES { return; }
+    let idt_ptr = core::ptr::addr_of_mut!(IDT).cast::<IdtEntry>();
+    unsafe { idt_ptr.add(vector).write(IdtEntry::user_interrupt_gate(handler)); }
 }
 
 /// Switch CR3 to the kernel-owned PML4 after its identity mappings are validated.
