@@ -20,12 +20,20 @@ jobs:
         run: |
           rustup update stable
           rustup target add x86_64-unknown-uefi x86_64-unknown-none
-      - name: Build Rust UEFI bootloader
-        run: cargo build --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi --release
       - name: Build freestanding Rust kernel with project linker script
         env:
           RUSTFLAGS: -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
         run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
+      - name: Pin kernel digest into Rust bootloader trust anchor
+        id: kernel-digest
+        shell: bash
+        run: |
+          digest="$(sha256sum target/x86_64-unknown-none/release/rdotos-kernel | cut -d' ' -f1)"
+          echo "sha256=$digest" >> "$GITHUB_OUTPUT"
+      - name: Build Rust UEFI bootloader with pinned kernel digest
+        env:
+          RDOTOS_KERNEL_SHA256: ${{ steps.kernel-digest.outputs.sha256 }}
+        run: cargo build --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi --release
       - name: Validate kernel ELF and entry point
         run: |
           file target/x86_64-unknown-none/release/rdotos-kernel
