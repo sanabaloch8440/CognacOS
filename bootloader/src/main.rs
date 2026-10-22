@@ -1,21 +1,17 @@
 #![no_main]
 #![no_std]
 
-use core::fmt::Write;
 use uefi::prelude::*;
 
 #[entry]
 fn main() -> Status {
-    // Initialize the UEFI environment and its console helpers. This is a Rust
-    // EFI application; it does not yet transfer control to the kernel.
-    if let Err(error) = uefi::helpers::init() {
-        return error.status();
+    // Native Rust EFI application. Verified loading and kernel handoff are pending.
+    if let Err(status) = uefi::helpers::init() {
+        return status;
     }
-
     uefi::println!("RdotOS Rust UEFI bootloader");
     uefi::println!("Architecture: native x86-64");
-    uefi::println!("Firmware services initialized.");
-    uefi::println!("Secure Boot policy enforcement and kernel handoff are pending.");
-    let _ = uefi::system::with_stdout(|out| writeln!(out, "Boot chain is under development."));
+    uefi::println!("UEFI services initialized.");
+    uefi::println!("Secure Boot enforcement and kernel handoff are not implemented yet.");
     Status::SUCCESS
 }
