@@ -214,6 +214,7 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
             unsafe{invoke_user_function(space,callback,image.base,env.teb,USER_STACK+PAGE,trampoline_index)?;}
             trampoline_index+=1;
         }
+        crate::serial_write(b"PE TLS callbacks executed in ring 3; per-image TLS blocks initialized.\r\n");
         unsafe{rdotos_process_enter_user(image.entry,USER_STACK+PAGE,env.teb);}
         Ok(())
     })();
