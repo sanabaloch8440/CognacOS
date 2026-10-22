@@ -14,6 +14,7 @@ use uefi::{cstr16, boot};
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.elf");
 const MAX_KERNEL_FILE: usize = 32 * 1024 * 1024;
 const KERNEL_STACK_PAGES: usize = 16;
+const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
 const BOOT_INFO_VERSION: u32 = 1;
 
@@ -83,7 +84,7 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
 
     uefi::println!("Kernel segments loaded; entry = {:#x}", entry);
     let stack = match boot::allocate_pages(
-        boot::AllocateType::AnyPages,
+        boot::AllocateType::MaxAddress(0xffff_ffff),
         boot::MemoryType::LOADER_DATA,
         KERNEL_STACK_PAGES,
     ) {
@@ -106,20 +107,53 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
     uefi::println!("Prepared kernel PML4 at {:#x}", pml4_physical);
     uefi::println!("Exiting UEFI boot services");
 
-    // SAFETY: All filesystem protocols are closed and no UEFI allocator-backed
-    // object is accessed after the transition. The wrapper retries a stale map key.
+    // Reserve low identity-mapped storage for the final map and boot-info.
+    // The UEFI memory-map helper may return a buffer outside the bootstrap map.
+    let map_copy = match boot::allocate_pages(
+        boot::AllocateType::MaxAddress(0xffff_ffff),
+        boot::MemoryType::LOADER_DATA,
+        LOW_MEMORY_MAP_PAGES,
+    ) {
+        Ok(p) => p,
+        Err(err) => { uefi::println!("Low memory-map buffer allocation failed: {:?}", err); return err.status(); }
+    };
+    let boot_info_storage = match boot::allocate_pages(
+        boot::AllocateType::MaxAddress(0xffff_ffff),
+        boot::MemoryType::LOADER_DATA,
+        1,
+    ) {
+        Ok(p) => p,
+        Err(err) => { uefi::println!("Low boot-info allocation failed: {:?}", err); return err.status(); }
+    };
+
+    uefi::println!("Exiting UEFI boot services");
+    // SAFETY: All filesystem protocols are closed. The helper retries a stale map key.
     let memory_map = unsafe { boot::exit_boot_services(None) };
-    let mut boot_info = BootInfo {
+    let descriptor_size = memory_map.meta().desc_size;
+    let map_bytes = match memory_map.len().checked_mul(descriptor_size) {
+        Some(bytes) if bytes <= LOW_MEMORY_MAP_PAGES * boot::PAGE_SIZE => bytes,
+        _ => loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } },
+    };
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            memory_map.buffer().as_ptr().cast::<u8>(),
+            map_copy.as_ptr(),
+            map_bytes,
+        );
+    }
+    let boot_info = BootInfo {
         magic: BOOT_INFO_MAGIC,
         version: BOOT_INFO_VERSION,
         struct_size: core::mem::size_of::<BootInfo>() as u32,
         pml4_physical,
-        memory_map: memory_map.buffer().as_ptr().cast::<uefi::boot::MemoryDescriptor>(),
+        memory_map: map_copy.as_ptr().cast::<uefi::boot::MemoryDescriptor>(),
         memory_map_entries: memory_map.len(),
-        memory_descriptor_size: memory_map.meta().desc_size,
+        memory_descriptor_size: descriptor_size,
         memory_descriptor_version: memory_map.meta().desc_version,
     };
-    let boot_info_ptr = &mut boot_info as *mut BootInfo;
+    let boot_info_ptr = boot_info_storage.as_ptr().cast::<BootInfo>();
+    unsafe { boot_info_ptr.write(boot_info); }
+    core::mem::forget(memory_map);
 
     // x86-64 System V kernel ABI: BootInfo pointer in RDI. This first-stage
     // kernel is linked below 1 GiB and uses the firmware's existing identity map.
