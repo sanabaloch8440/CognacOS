@@ -105,9 +105,10 @@ fn read_u16(space:&crate::vm::AddressSpace,address:u64)->Result<u16,()> {
 fn read_u32(space:&crate::vm::AddressSpace,address:u64)->Result<u32,()> {
     let mut b=[0;4];read_user(space,address,&mut b)?;Ok(u32::from_le_bytes(b))
 }
-fn read_export_name(space:&crate::vm::AddressSpace,base:u64,rva:u32)->Result<([u8;NAME],usize),()> {
+fn read_export_name(space:&crate::vm::AddressSpace,base:u64,rva:u32,image_size:u32)->Result<([u8;NAME],usize),()> {
     let mut out=[0u8;NAME];
     for i in 0..NAME {
+        if rva.checked_add(i as u32).is_none_or(|end|end>=image_size){return Err(());}
         out[i]=read_u32_byte(space,base.checked_add(rva as u64).and_then(|x|x.checked_add(i as u64)).ok_or(())?)?;
         if out[i]==0{return Ok((out,i));}
         if !out[i].is_ascii(){return Err(());}
@@ -142,6 +143,9 @@ pub unsafe fn register_mapped_exports(space:&crate::vm::AddressSpace,module_name
     let names=read_u32(space,dir+32)?;
     let ordinals=read_u32(space,dir+36)?;
     if function_count>EXPORTS||name_count>EXPORTS||name_count>function_count{return Err(());}
+    if functions.checked_add((function_count*4) as u32).is_none_or(|e|e>image.image_size)
+        || names.checked_add((name_count*4) as u32).is_none_or(|e|e>image.image_size)
+        || ordinals.checked_add((name_count*2) as u32).is_none_or(|e|e>image.image_size) { return Err(()); }
     if !unsafe{register_module(module_name,base,image.image_size,image.entry)}{return Err(());}
     let mut named=[false;EXPORTS];
     for i in 0..name_count {
@@ -151,7 +155,7 @@ pub unsafe fn register_mapped_exports(space:&crate::vm::AddressSpace,module_name
         let function_rva=read_u32(space,base+functions as u64+(ordinal_index*4) as u64)?;
         if function_rva==0||function_rva>=image.image_size{return Err(());}
         if function_rva>=export_rva&&function_rva<export_rva+export_size{return Err(());}
-        let (name,len)=read_export_name(space,base,name_rva)?;
+        let (name,len)=read_export_name(space,base,name_rva,image.image_size)?;
         if len==0{return Err(());}
         let ordinal=ordinal_base.checked_add(ordinal_index as u32).filter(|&o|o<=u16::MAX as u32).ok_or(())? as u16;
         if !unsafe{register_export(module_name,&name[..len],ordinal,base+function_rva as u64)}{return Err(());}
