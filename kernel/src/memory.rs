@@ -200,12 +200,11 @@ pub unsafe fn harden_page_tables(
                 unsafe { pde_ptr.write(pde | NO_EXECUTE | WRITABLE); }
             } else {
                 let table = (pde & ADDRESS_MASK) as *mut u64;
-                let physical_base = pde & ADDRESS_MASK;
                 for pte_index in 0..512usize {
                     let pte_ptr = unsafe { table.add(pte_index) };
                     let pte = unsafe { pte_ptr.read() };
                     if pte & PRESENT != 0 {
-                        let page_address = physical_base + (pte_index as u64 * PAGE_SIZE);
+                        let page_address = pte & ADDRESS_MASK;
                         // Never make the currently executing kernel text NX, even
                         // transiently: instruction fetch could fault before policy
                         // restoration below. All other pages become NX immediately.
