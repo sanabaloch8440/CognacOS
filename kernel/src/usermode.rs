@@ -6,6 +6,7 @@ use crate::{pe::LoadedImage, vm::{AddressSpace, VmError}};
 const PAGE: u64 = 4096;
 const USER_STACK: u64 = 0x0000_0082_0000_0000;
 const CALLBACK_BASE: u64 = 0x0000_0083_0000_0000;
+const TLS_DATA_BASE: u64 = 0x0000_0080_4000_0000;
 
 global_asm!(r#"
     .section .text
@@ -113,6 +114,34 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     unsafe { space.map_user_page(USER_STACK, stack_page, true, false)?; }
     let env = unsafe { crate::process::initialize(space, image.base, USER_STACK + PAGE, USER_STACK) }
         .map_err(|_| VmError::OutOfMemory)?;
+    let mut pointer_check=[0u8;8];
+    unsafe { space.copy_from_user(env.teb+0x60,&mut pointer_check)?; }
+    if u64::from_le_bytes(pointer_check)!=env.peb { return Err(VmError::PermissionDenied); }
+    unsafe { space.copy_from_user(env.peb+0x10,&mut pointer_check)?; }
+    if u64::from_le_bytes(pointer_check)!=image.base { return Err(VmError::PermissionDenied); }
+    let tls = crate::pe_runtime::tls_layout(image.base).map_err(|_|VmError::InvalidAddress)?;
+    if tls.present {
+        let total = (tls.template_size as u64).checked_add(tls.zero_fill as u64).ok_or(VmError::InvalidAddress)?;
+        if total > 8*1024*1024 { return Err(VmError::InvalidAddress); }
+        let allocation = core::cmp::max(total,1);
+        let pages = ((allocation + PAGE - 1)/PAGE) as usize;
+        for i in 0..pages {
+            let physical=unsafe{crate::memory::allocate_page()}.map_err(|_|VmError::OutOfMemory)?;
+            unsafe{space.map_user_page(TLS_DATA_BASE+i as u64*PAGE,physical,true,false)?;}
+        }
+        let mut copied=0u64;
+        let mut buffer=[0u8;4096];
+        while copied<tls.template_size as u64 {
+            let count=core::cmp::min(buffer.len() as u64,tls.template_size as u64-copied) as usize;
+            unsafe{space.copy_from_user(tls.template_start+copied,&mut buffer[..count])?;}
+            unsafe{space.copy_to_user(TLS_DATA_BASE+copied,&buffer[..count])?;}
+            copied+=count as u64;
+        }
+        if tls.index_address!=0 {
+            unsafe{space.copy_to_user(tls.index_address,&0u32.to_le_bytes())?;}
+        }
+        unsafe{space.copy_to_user(env.tls_vector,&TLS_DATA_BASE.to_le_bytes())?;}
+    }
     let mut callbacks = [0u64; 64];
     let callback_count = crate::pe_runtime::tls_callbacks(image.base, &mut callbacks)
         .map_err(|_| VmError::InvalidAddress)?;
