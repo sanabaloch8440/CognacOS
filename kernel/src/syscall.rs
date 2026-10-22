@@ -69,6 +69,7 @@ pub unsafe fn initialize() {
 }
 pub fn set_current_process(pid:u64,space:*const AddressSpace) {
     CURRENT_PID.store(pid,Ordering::Release);
+    let _ = crate::process::mark_running(pid);
     unsafe { *ACTIVE_SPACE.0.get()=space; }
 }
 pub fn clear_current_process() {
@@ -80,7 +81,7 @@ pub fn last_exit_code()->u64 { LAST_EXIT.load(Ordering::Acquire) }
 pub fn dispatch(number:u64,args:[u64;6])->u64 {
     CALL_COUNT.fetch_add(1,Ordering::AcqRel);
     match number {
-        SYS_EXIT => { LAST_EXIT.store(args[0],Ordering::Release); EXIT_SENTINEL }
+        SYS_EXIT => { let pid=CURRENT_PID.load(Ordering::Acquire); LAST_EXIT.store(args[0],Ordering::Release); let _=crate::process::mark_exited(pid,args[0]); EXIT_SENTINEL }
         SYS_GETPID => CURRENT_PID.load(Ordering::Acquire),
         SYS_WRITE => {
             let length=core::cmp::min(args[2] as usize,MAX_WRITE);
