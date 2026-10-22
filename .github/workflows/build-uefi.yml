@@ -95,6 +95,8 @@ jobs:
           grep -F 'RdotOS Rust kernel entered.' build/serial.log
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
           grep -F 'Physical allocator initialized' build/serial.log
+          grep -F 'Security: CR0.WP enabled' build/serial.log
+          grep -F 'Security: NX enabled (page policy pending)' build/serial.log
       - name: Upload Rust artifacts and boot log
         if: always()
         uses: actions/upload-artifact@v4
