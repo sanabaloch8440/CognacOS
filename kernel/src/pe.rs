@@ -444,6 +444,8 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     put32(&mut image, opt + 112 + 3 * 8 + 4, 12);
     put32(&mut image, opt + 112 + 9 * 8, 0x3000);
     put32(&mut image, opt + 112 + 9 * 8 + 4, 40);
+    put32(&mut image, opt + 112 + 1 * 8, 0x3100);
+    put32(&mut image, opt + 112 + 1 * 8 + 4, 40);
 
     let section = opt + 240;
     image[section..section + 8].copy_from_slice(b".text\0\0\0");
@@ -469,12 +471,17 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     put32(&mut image, data_section + 20, 0x600);
     put32(&mut image, data_section + 36, 0xc000_0040);
 
-    image[0x200..0x20e].copy_from_slice(&[0xb8,1,0,0,0,0xcd,0x81,0x31,0xff,0xb8,0,0,0,0]);
-    image[0x20e..0x210].copy_from_slice(&[0xcd,0x81]); // SYS_GETPID then SYS_EXIT via the general dispatcher.
-    put64(&mut image, 0x210, 0x0000_0001_4000_1234);
+    image[0x200..0x219].copy_from_slice(&[0xb8,1,0,0,0,0xcd,0x81,0x48,0x8b,0x05,0x62,0x21,0,0,0xff,0xd0,0x31,0xff,0xb8,0,0,0,0,0xcd,0x81]);
+    put64(&mut image, 0x220, 0x0000_0001_4000_1234);
+    // Import descriptor and lookup/IAT tables for testdll.dll!TestFunction.
+    put32(&mut image,0x700,0x3150); put32(&mut image,0x70c,0x3130); put32(&mut image,0x710,0x3170);
+    image[0x730..0x73c].copy_from_slice(b"testdll.dll\0");
+    put16(&mut image,0x740,0); image[0x742..0x74f].copy_from_slice(b"TestFunction\0");
+    put64(&mut image,0x750,0x3140); put64(&mut image,0x758,0);
+    put64(&mut image,0x770,0x3140); put64(&mut image,0x778,0);
     put32(&mut image, 0x400, 0x1000); // relocation block page RVA
     put32(&mut image, 0x404, 12);
-    put16(&mut image, 0x408, 0xa010); // DIR64 at RVA 0x1010
+    put16(&mut image, 0x408, 0xa020); // DIR64 at RVA 0x1020
     put16(&mut image, 0x40a, 0);
     put32(&mut image, 0x40c, 0x3000); // TLS directory/data VA relocations
     put32(&mut image, 0x410, 18);
@@ -506,7 +513,9 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     if loaded.base != USER_IMAGE_FALLBACK || loaded.entry != loaded.base + 0x1000 {
         return Err(PeError::InvalidHeader);
     }
-    let relocated = read_image_u64(space, loaded.base, 0x1010)?;
+    let relocated = read_image_u64(space, loaded.base, 0x1020)?;
     if relocated != loaded.base + 0x1234 { return Err(PeError::InvalidRelocations); }
+    let imported = read_image_u64(space, loaded.base, 0x3170)?;
+    if imported != dll_loaded.base + 0x1000 { return Err(PeError::UnresolvedImport); }
     Ok(loaded)
 }
