@@ -5,10 +5,7 @@ extern crate alloc;
 
 mod elf;
 
-use alloc::vec;
 use uefi::prelude::*;
-use uefi::proto::media::file::{File, FileAttribute, FileMode};
-use uefi::mem::memory_map::MemoryMap;
 use uefi::{cstr16, boot};
 
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.elf");
@@ -31,8 +28,9 @@ struct BootInfo {
 }
 
 #[entry]
-fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
+fn main() -> Status {
     if let Err(status) = uefi::helpers::init() { return status; }
+    let image_handle = boot::image_handle();
     uefi::println!("RdotOS Rust UEFI bootloader");
     uefi::println!("Opening kernel ELF: \\EFI\\BOOT\\rdotos-kernel.elf");
 
