@@ -1,6 +1,8 @@
 #![no_std]
 #![no_main]
 
+mod arch;
+
 use core::arch::asm;
 use core::panic::PanicInfo;
 
@@ -43,19 +45,27 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
             halt();
         }
+        if info.memory_map_entries > 0 && info.memory_map.is_null() {
+            serial_write(b"FATAL: missing memory map.\r\n");
+            halt();
+        }
+        if info.memory_descriptor_size != core::mem::size_of::<MemoryDescriptor>() {
+            serial_write(b"FATAL: unsupported UEFI memory descriptor size.\r\n");
+            halt();
+        }
+
         serial_write(b"UEFI boot services exited successfully.\r\n");
         serial_write(b"Boot information version: 1\r\n");
         serial_write(b"Memory map entries: ");
         serial_write_decimal(info.memory_map_entries);
         serial_write(b"\r\n");
-        if info.memory_descriptor_size != core::mem::size_of::<MemoryDescriptor>() {
-            serial_write(b"WARNING: unexpected UEFI memory descriptor size.\r\n");
-        }
-        if info.memory_map_entries > 0 && info.memory_map.is_null() {
-            serial_write(b"FATAL: missing memory map.\r\n");
-            halt();
-        }
-        serial_write(b"Early kernel handoff complete; allocator/IDT not initialized.\r\n");
+
+        // Install kernel-owned descriptor tables before expanding kernel
+        // initialization. External interrupts remain disabled in this stage.
+        arch::initialize();
+        serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\r\n");
+        serial_write(b"Interrupts remain disabled until APIC/timer setup.\r\n");
+        serial_write(b"Early exception infrastructure ready; paging/allocator pending.\r\n");
     }
     halt()
 }
@@ -74,7 +84,7 @@ unsafe fn outb(port: u16, value: u8) {
     unsafe { asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags)); }
 }
 
-unsafe fn serial_write(bytes: &[u8]) {
+pub unsafe fn serial_write(bytes: &[u8]) {
     for byte in bytes {
         unsafe {
             let mut spins = 0u32;
@@ -104,11 +114,14 @@ unsafe fn serial_write_decimal(mut value: usize) {
     serial_write(&digits[index..]);
 }
 
-unsafe fn halt() -> ! {
+pub unsafe fn halt() -> ! {
     loop { unsafe { asm!("cli; hlt", options(nomem, nostack)); } }
 }
 
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
-    unsafe { halt() }
+    unsafe {
+        serial_write(b"\r\nRdotOS FATAL: Rust panic; system halted.\r\n");
+        halt()
+    }
 }
