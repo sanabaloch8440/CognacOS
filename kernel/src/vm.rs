@@ -105,6 +105,27 @@ impl AddressSpace {
         Err(VmError::NotMapped)
     }
 
+    /// Verify that a user address resolves through present user-accessible
+    /// entries and has no NX bit set at any paging level.
+    pub fn is_user_executable(&self, virtual_address: u64) -> bool {
+        if !is_user_range(virtual_address, 1) { return false; }
+        let indexes = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        let mut table = self.root as *const u64;
+        for (level, index) in indexes.iter().copied().enumerate() {
+            let entry = unsafe { table.add(index).read() };
+            if entry & PRESENT == 0 || entry & USER == 0 || entry & NX != 0 { return false; }
+            if level == 3 { return true; }
+            if entry & LARGE != 0 { return false; }
+            table = (entry & ADDR) as *const u64;
+        }
+        false
+    }
+
     /// Copy through validated page-table translations using the kernel's
     /// supervisor identity map. Each page is permission-checked before access.
     pub unsafe fn copy_from_user(&self, source: u64, destination: &mut [u8]) -> Result<(), VmError> {
