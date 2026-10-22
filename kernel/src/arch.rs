@@ -184,6 +184,21 @@ pub extern "C" fn rdotos_exception_fatal(vector: u64, error: u64, frame: *const 
         crate::serial_write_hex(frame.add(18).read());
         crate::serial_write(b" RFLAGS=");
         crate::serial_write_hex(frame.add(19).read());
+        crate::serial_write(b"\\r\\nRAX="); crate::serial_write_hex(frame.add(14).read());
+        crate::serial_write(b" RBX="); crate::serial_write_hex(frame.add(13).read());
+        crate::serial_write(b" RCX="); crate::serial_write_hex(frame.add(12).read());
+        crate::serial_write(b" RDX="); crate::serial_write_hex(frame.add(11).read());
+        crate::serial_write(b" RSI="); crate::serial_write_hex(frame.add(10).read());
+        crate::serial_write(b" RDI="); crate::serial_write_hex(frame.add(9).read());
+        crate::serial_write(b" RBP="); crate::serial_write_hex(frame.add(8).read());
+        crate::serial_write(b" R8="); crate::serial_write_hex(frame.add(7).read());
+        crate::serial_write(b" R9="); crate::serial_write_hex(frame.add(6).read());
+        crate::serial_write(b" R10="); crate::serial_write_hex(frame.add(5).read());
+        crate::serial_write(b" R11="); crate::serial_write_hex(frame.add(4).read());
+        crate::serial_write(b" R12="); crate::serial_write_hex(frame.add(3).read());
+        crate::serial_write(b" R13="); crate::serial_write_hex(frame.add(2).read());
+        crate::serial_write(b" R14="); crate::serial_write_hex(frame.add(1).read());
+        crate::serial_write(b" R15="); crate::serial_write_hex(frame.read());
         if vector == 14 {
             let cr2: u64;
             core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
