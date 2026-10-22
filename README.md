@@ -4,15 +4,15 @@ RdotOS is an experimental, x86-64-only operating-system project exploring a mode
 
 ## Implementation language and status
 
-The bootloader and kernel are written in **Rust**. C is not used for the bootloader or kernel. The Rust UEFI application now reads a bounded kernel ELF file from the EFI system partition, validates core ELF64 x86-64 executable headers and PT_LOAD bounds, loads segments at their identity-mapped physical addresses, exits UEFI boot services, and jumps to the kernel with a versioned boot-information structure. The freestanding Rust kernel validates that structure and reports the handoff and memory-map count over COM1. This is an early bootstrap, not yet a production-hardened or fully boot-tested OS.
+The bootloader and kernel are written in **Rust**. C is not used for the bootloader or kernel. The Rust UEFI application now reads a bounded kernel ELF file from the EFI system partition, validates core ELF64 x86-64 executable headers and PT_LOAD bounds, loads segments at their identity-mapped physical addresses, exits UEFI boot services, and jumps to the kernel with a versioned boot-information structure. The freestanding Rust kernel validates that structure and reports the handoff and memory-map count over COM1. The bootstrap now includes CPU mitigation setup, 4 KiB page-permission hardening for kernel sections, an unmapped kernel-stack guard page, exception-specific diagnostics, a build-time SHA-256 pin for the kernel ELF, and initial isolated user address spaces with checked copy helpers. It remains an early experimental OS, not production-hardened.
 
 See [roadmap.md](roadmap.md) for implemented work and remaining milestones.
 
 ## Build
 
-The GitHub Actions workflow installs the Rust targets x86_64-unknown-uefi and x86_64-unknown-none, builds both crates, links the kernel with `kernel/linker.ld`, checks the ELF headers/program headers, and packages BOOTX64.EFI plus `rdotos-kernel.elf` into a FAT disk image. OVMF/QEMU runtime smoke tests, signature enforcement, and hardened ELF segment-permission enforcement remain outstanding.
+The GitHub Actions workflow installs the Rust targets x86_64-unknown-uefi and x86_64-unknown-none, builds both crates, links the kernel with `kernel/linker.ld`, checks the ELF headers/program headers, and packages BOOTX64.EFI plus `rdotos-kernel.elf` into a FAT disk image. OVMF/QEMU runtime smoke tests assert the page-hardening and user-copy checks. The kernel hash is pinned into the bootloader at build time; this detects post-build tampering only if the bootloader itself is trusted. Asymmetric signature verification, firmware Secure Boot signing/enrollment, full ELF-segment permission validation, ring-3 entry, and complete process lifecycle remain outstanding.
 
-For a VM, use x86-64 UEFI firmware. The EFI application is currently unsigned and may be rejected by firmware with Secure Boot enforcement enabled. Reading or displaying firmware state is not equivalent to enforcing a verified boot policy.
+For a VM, use x86-64 UEFI firmware. The EFI application is currently unsigned and may be rejected by firmware with Secure Boot enforcement enabled. The current kernel digest pin is not a substitute for public-key signature verification. A real verified-boot chain requires a trusted/signed bootloader and a protected public-key policy; firmware Secure Boot state alone is not enough.
 
 ## Design principles
 
