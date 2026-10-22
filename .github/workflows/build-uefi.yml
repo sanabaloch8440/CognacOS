@@ -1,4 +1,4 @@
-name: Build RdotOS Rust UEFI and kernel artifacts
+name: Build and boot-test RdotOS Rust UEFI kernel
 
 on:
   push:
@@ -32,21 +32,54 @@ jobs:
           readelf -h target/x86_64-unknown-none/release/rdotos-kernel
           readelf -l target/x86_64-unknown-none/release/rdotos-kernel
           readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -E 'Class:.*ELF64|Machine:.*X86-64|Type:.*EXEC'
-      - name: Package EFI fallback image
+      - name: Package a GPT EFI System Partition image
         run: |
           sudo apt-get update
-          sudo apt-get install -y dosfstools mtools
+          sudo apt-get install -y dosfstools mtools parted qemu-system-x86 ovmf
           mkdir -p build/EFI/BOOT build/kernel
           cp target/x86_64-unknown-uefi/release/rdotos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
           cp target/x86_64-unknown-none/release/rdotos-kernel build/EFI/BOOT/rdotos-kernel.elf
           cp target/x86_64-unknown-none/release/rdotos-kernel build/kernel/rdotos-kernel.elf
-          truncate -s 64M build/rdotos-uefi.img
-          mkfs.vfat build/rdotos-uefi.img
-          mmd -i build/rdotos-uefi.img ::/EFI
-          mmd -i build/rdotos-uefi.img ::/EFI/BOOT
-          mcopy -i build/rdotos-uefi.img build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-          mcopy -i build/rdotos-uefi.img build/EFI/BOOT/rdotos-kernel.elf ::/EFI/BOOT/rdotos-kernel.elf
-      - name: Upload Rust artifacts
+          truncate -s 256M build/rdotos-uefi.img
+          parted -s build/rdotos-uefi.img mklabel gpt
+          parted -s build/rdotos-uefi.img mkpart ESP fat32 1MiB 100%
+          parted -s build/rdotos-uefi.img set 1 esp on
+          mformat -i build/rdotos-uefi.img@@1048576 -F ::
+          mmd -i build/rdotos-uefi.img@@1048576 ::/EFI
+          mmd -i build/rdotos-uefi.img@@1048576 ::/EFI/BOOT
+          mcopy -i build/rdotos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+          mcopy -i build/rdotos-uefi.img@@1048576 build/EFI/BOOT/rdotos-kernel.elf ::/EFI/BOOT/rdotos-kernel.elf
+      - name: Boot smoke test under OVMF/QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(find /usr/share/OVMF -maxdepth 1 -name 'OVMF_CODE*.fd' -print -quit)"
+          vars_template="$(find /usr/share/OVMF -maxdepth 1 -name 'OVMF_VARS*.fd' -print -quit)"
+          test -n "$code"
+          test -n "$vars_template"
+          cp "$vars_template" build/OVMF_VARS.fd
+          set +e
+          timeout 30s qemu-system-x86_64 \
+            -machine q35 -m 512M -cpu qemu64 \
+            -drive if=pflash,format=raw,readonly=on,file="$code" \
+            -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
+            -drive format=raw,file=build/rdotos-uefi.img \
+            -boot order=c -display none -monitor none \
+            -serial file:build/serial.log -no-reboot -no-shutdown
+          qemu_status=$?
+          set -e
+          # The kernel intentionally halts with interrupts disabled, so timeout
+          # is expected after a successful handoff. Other QEMU failures are fatal.
+          if [ "$qemu_status" -ne 124 ] && [ "$qemu_status" -ne 0 ]; then
+            cat build/serial.log || true
+            exit "$qemu_status"
+          fi
+          cat build/serial.log
+          grep -F 'RdotOS Rust kernel entered.' build/serial.log
+          grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
+          grep -F 'Physical allocator initialized' build/serial.log
+      - name: Upload Rust artifacts and boot log
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: rdotos-rust-uefi-kernel
@@ -54,3 +87,4 @@ jobs:
             build/EFI/BOOT/BOOTX64.EFI
             build/kernel/rdotos-kernel.elf
             build/rdotos-uefi.img
+            build/serial.log
