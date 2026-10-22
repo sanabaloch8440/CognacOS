@@ -174,7 +174,7 @@ pub unsafe fn load(
     }
     if !entry_is_executable { return Err(PeError::InvalidHeader); }
 
-    let image_base = if preferred_base >= 0x1_0000_0000
+    let image_base = if preferred_base >= 0x0000_0080_0000_0000
         && preferred_base.checked_add(page_count as u64 * PAGE_SIZE).is_some_and(|e| e <= USER_END)
         && available_base(space, preferred_base, page_count) {
         preferred_base
@@ -304,13 +304,13 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     fn put32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_le_bytes()); }
     fn put64(b: &mut [u8], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_le_bytes()); }
 
-    let mut image = [0u8; 0x400];
+    let mut image = [0u8; 0x600];
     put16(&mut image, 0, 0x5a4d);
     put32(&mut image, 0x3c, 0x80);
     image[0x80..0x84].copy_from_slice(b"PE\0\0");
     let coff = 0x84;
     put16(&mut image, coff, 0x8664);
-    put16(&mut image, coff + 2, 1);
+    put16(&mut image, coff + 2, 2);
     put16(&mut image, coff + 16, 240);
     put16(&mut image, coff + 18, 0x0022);
     let opt = coff + 20;
@@ -319,9 +319,13 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     put64(&mut image, opt + 24, 0x0000_0001_4000_0000);
     put32(&mut image, opt + 32, 0x1000);
     put32(&mut image, opt + 36, 0x200);
-    put32(&mut image, opt + 56, 0x2000);
+    put32(&mut image, opt + 56, 0x3000);
     put32(&mut image, opt + 60, 0x200);
     put32(&mut image, opt + 108, 16);
+    // IMAGE_DIRECTORY_ENTRY_BASERELOC: RVA 0x2000, one DIR64 relocation.
+    put32(&mut image, opt + 112 + 5 * 8, 0x2000);
+    put32(&mut image, opt + 112 + 5 * 8 + 4, 12);
+
     let section = opt + 240;
     image[section..section + 8].copy_from_slice(b".text\0\0\0");
     put32(&mut image, section + 8, 0x100);
@@ -329,11 +333,27 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     put32(&mut image, section + 16, 0x200);
     put32(&mut image, section + 20, 0x200);
     put32(&mut image, section + 36, 0x6000_0020);
+
+    let reloc = section + 40;
+    image[reloc..reloc + 8].copy_from_slice(b".reloc\0\0");
+    put32(&mut image, reloc + 8, 12);
+    put32(&mut image, reloc + 12, 0x2000);
+    put32(&mut image, reloc + 16, 0x200);
+    put32(&mut image, reloc + 20, 0x400);
+    put32(&mut image, reloc + 36, 0x4200_0040);
+
     image[0x200] = 0xc3; // RET; mapped RX but deliberately not executed in this test.
+    put64(&mut image, 0x210, 0x0000_0001_4000_1234);
+    put32(&mut image, 0x400, 0x1000); // relocation block page RVA
+    put32(&mut image, 0x404, 12);     // block size
+    put16(&mut image, 0x408, 0xa010); // DIR64 at RVA 0x1010
+    put16(&mut image, 0x40a, 0);      // ABSOLUTE padding
 
     let loaded = unsafe { load(space, &image, None)? };
-    if loaded.base != 0x0000_0001_4000_0000 || loaded.entry != loaded.base + 0x1000 {
+    if loaded.base != USER_IMAGE_FALLBACK || loaded.entry != loaded.base + 0x1000 {
         return Err(PeError::InvalidHeader);
     }
+    let relocated = read_image_u64(space, loaded.base, 0x1010)?;
+    if relocated != loaded.base + 0x1234 { return Err(PeError::InvalidRelocations); }
     Ok(loaded)
 }
