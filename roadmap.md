@@ -76,8 +76,10 @@ Status reflects code currently present in the repository, not intended architect
 ## x86-64 kernel and memory
 
 - [ ] Establish long-mode kernel entry, GDT/IDT, exception handlers, APIC, and timer.
-- [x] Add initial independent PML4 address spaces, supervisor-only shared kernel mappings, NX user-page mappings, and checked user-copy helpers; executable user mappings are rejected.
-- [ ] Add ring-3 transition/syscall entry, demand paging, page unmapping/reclamation, and full per-process lifecycle.
+- [x] Add independent PML4 address spaces, supervisor-only shared kernel mappings, checked user-copy helpers, and final per-page RX/RO/RW-NX user permissions; reject writable-executable mappings and keep user mappings in private PML4 slots.
+- [x] Add ring-3 user code/data descriptors, TSS RSP0, IRETQ entry, and a DPL3 INT 0x80 test gate; QEMU executes a loaded PE entry in ring 3 and returns to the kernel.
+- [x] Add a bounded PE32+ AMD64 loader for headers/sections, DIR64 base relocations, a kernel-provided import resolver, and final W^X section permissions; QEMU validates rebasing and runs a synthetic PE entry.
+- [ ] Implement a general syscall ABI and dispatch table, PE TLS callbacks, unwind/exception registration, delay imports, API-set resolution, PEB/TEB setup, real Windows API binding, demand paging, page unmapping/reclamation, and full process lifecycle.
 - [ ] Support large physical memory subject to architecture/platform limits; validate memory-map handling.
 - [x] Keep 32-bit execution and WOW64-like compatibility out of scope.
 
