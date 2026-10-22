@@ -10,7 +10,7 @@ const USER: u64 = 1 << 2;
 const LARGE: u64 = 1 << 7;
 const NX: u64 = 1 << 63;
 const ADDR: u64 = 0x000f_ffff_ffff_f000;
-const USER_START: u64 = 0x0000_0080_0000_0000;
+const USER_START: u64 = 0x0000_0001_0000_0000;
 const USER_END: u64 = 0x0000_8000_0000_0000;
 
 #[derive(Clone, Copy, Debug)]
@@ -38,8 +38,8 @@ impl AddressSpace {
 
     pub fn root_physical(&self) -> u64 { self.root }
 
-    /// Map a user page. Executable user mappings are deliberately rejected until
-    /// per-physical-frame W^X accounting and executable-page transitions exist.
+    /// Map one user page. Writable+executable mappings are forbidden; loaders
+    /// populate pages RW/NX and then transition them to final RX/RO/RW-NX permissions.
     pub unsafe fn map_user_page(&mut self, virtual_address: u64, physical_address: u64,
                                 writable: bool, executable: bool) -> Result<(), VmError> {
         if !is_user_range(virtual_address, PAGE_SIZE) { return Err(VmError::InvalidAddress); }
@@ -47,7 +47,7 @@ impl AddressSpace {
             return Err(VmError::Unaligned);
         }
         if physical_address >= 0x1_0000_0000 { return Err(VmError::InvalidAddress); }
-        if executable { return Err(VmError::ExecutableUserPageUnsupported); }
+        if writable && executable { return Err(VmError::PermissionDenied); }
 
         let indexes = [
             ((virtual_address >> 39) & 0x1ff) as usize,
@@ -72,8 +72,9 @@ impl AddressSpace {
         }
         let leaf = unsafe { table.add(indexes[3]) };
         if unsafe { leaf.read() } & PRESENT != 0 { return Err(VmError::AlreadyMapped); }
-        let mut flags = PRESENT | USER | NX;
+        let mut flags = PRESENT | USER;
         if writable { flags |= WRITE; }
+        if !executable { flags |= NX; }
         unsafe {
             leaf.write(physical_address | flags);
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
@@ -126,6 +127,42 @@ impl AddressSpace {
             let count = core::cmp::min(source.len() - done, PAGE_SIZE as usize - (va as usize & 4095));
             unsafe { core::ptr::copy_nonoverlapping(source.as_ptr().add(done), pa as *mut u8, count); }
             done += count;
+        }
+        Ok(())
+    }
+
+    /// Return the physical address backing a validated user virtual address.
+    pub fn physical_for_user(&self, virtual_address: u64) -> Result<u64, VmError> {
+        self.translate_user(virtual_address, false)
+    }
+
+    /// Change final page permissions after a loader has populated and relocated it.
+    /// W+X is rejected at this boundary as well as during initial mapping.
+    pub unsafe fn protect_user_page(&mut self, virtual_address: u64, writable: bool, executable: bool) -> Result<(), VmError> {
+        if !is_user_range(virtual_address, PAGE_SIZE) || virtual_address & (PAGE_SIZE - 1) != 0 {
+            return Err(VmError::InvalidAddress);
+        }
+        if writable && executable { return Err(VmError::PermissionDenied); }
+        let indexes = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        let mut table = self.root as *mut u64;
+        for index in indexes[..3].iter().copied() {
+            let entry = unsafe { table.add(index).read() };
+            if entry & PRESENT == 0 || entry & LARGE != 0 { return Err(VmError::NotMapped); }
+            table = (entry & ADDR) as *mut u64;
+        }
+        let leaf = unsafe { table.add(indexes[3]) };
+        let mut entry = unsafe { leaf.read() };
+        if entry & PRESENT == 0 || entry & USER == 0 { return Err(VmError::NotMapped); }
+        if writable { entry |= WRITE; } else { entry &= !WRITE; }
+        if executable { entry &= !NX; } else { entry |= NX; }
+        unsafe {
+            leaf.write(entry);
+            asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         Ok(())
     }
