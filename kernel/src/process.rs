@@ -6,6 +6,10 @@ const USER_START: u64 = 0x0000_0080_0000_0000;
 pub const PEB_ADDRESS: u64 = 0x0000_0080_1000_0000;
 pub const TEB_ADDRESS: u64 = 0x0000_0080_2000_0000;
 pub const TLS_VECTOR_ADDRESS: u64 = 0x0000_0080_3000_0000;
+pub const LDR_ADDRESS: u64 = 0x0000_0080_4000_0000;
+pub const LDR_ENTRY_ADDRESS: u64 = 0x0000_0080_5000_0000;
+pub const IMAGE_NAME_ADDRESS: u64 = 0x0000_0080_6000_0000;
+pub const PROCESS_PARAMS_ADDRESS: u64 = 0x0000_0080_7000_0000;
 static NEXT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(4);
 const MAX_PROCESSES: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,8 +68,14 @@ fn put_u64(space: &AddressSpace, address: u64, value: u64) -> Result<(), Process
 fn put_u8(space: &AddressSpace, address: u64, value: u8) -> Result<(), ProcessError> {
     unsafe { space.copy_to_user(address, &[value])?; } Ok(())
 }
+fn put_u16(space: &AddressSpace, address: u64, value: u16) -> Result<(), ProcessError> {
+    unsafe { space.copy_to_user(address, &value.to_le_bytes())?; } Ok(())
+}
+fn put_u32(space: &AddressSpace, address: u64, value: u32) -> Result<(), ProcessError> {
+    unsafe { space.copy_to_user(address, &value.to_le_bytes())?; } Ok(())
+}
 /// Initialize stable x64 PEB/TEB fields in a fresh address space.
-pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, stack_base: u64, stack_limit: u64)
+pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry: u64, image_size: u32, stack_base: u64, stack_limit: u64)
     -> Result<ProcessEnvironment, ProcessError> {
     if image_base == 0 || stack_base <= stack_limit || stack_limit < USER_START {
         return Err(ProcessError::InvalidLayout);
@@ -73,12 +83,48 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, stack_base: 
     map_zeroed(space, PEB_ADDRESS, 1)?;
     map_zeroed(space, TEB_ADDRESS, 2)?;
     map_zeroed(space, TLS_VECTOR_ADDRESS, 1)?;
+    map_zeroed(space, LDR_ADDRESS, 1)?;
+    map_zeroed(space, LDR_ENTRY_ADDRESS, 1)?;
+    map_zeroed(space, IMAGE_NAME_ADDRESS, 1)?;
+    map_zeroed(space, PROCESS_PARAMS_ADDRESS, 1)?;
     let pid = NEXT_PID.fetch_add(4, core::sync::atomic::Ordering::Relaxed);
     // PEB x64: BeingDebugged, ImageBaseAddress, Ldr, ProcessParameters.
     put_u8(space, PEB_ADDRESS + 2, 0)?;
     put_u64(space, PEB_ADDRESS + 0x10, image_base)?;
-    put_u64(space, PEB_ADDRESS + 0x18, 0)?;
-    put_u64(space, PEB_ADDRESS + 0x20, 0)?;
+    put_u64(space, PEB_ADDRESS + 0x18, LDR_ADDRESS)?;
+    put_u64(space, PEB_ADDRESS + 0x20, PROCESS_PARAMS_ADDRESS)?;
+
+    // Minimal PEB_LDR_DATA with one circular entry for the main executable.
+    put_u32(space, LDR_ADDRESS, 0x58)?;
+    put_u8(space, LDR_ADDRESS + 4, 1)?;
+    let load_head=LDR_ADDRESS+0x10; let memory_head=LDR_ADDRESS+0x20; let init_head=LDR_ADDRESS+0x30;
+    let entry=LDR_ENTRY_ADDRESS;
+    put_u64(space, load_head, entry)?; put_u64(space, load_head+8, entry)?;
+    put_u64(space, entry, load_head)?; put_u64(space, entry+8, load_head)?;
+    put_u64(space, memory_head, entry+0x10)?; put_u64(space, memory_head+8, entry+0x10)?;
+    put_u64(space, entry+0x10, memory_head)?; put_u64(space, entry+0x18, memory_head)?;
+    put_u64(space, init_head, entry+0x20)?; put_u64(space, init_head+8, entry+0x20)?;
+    put_u64(space, entry+0x20, init_head)?; put_u64(space, entry+0x28, init_head)?;
+    put_u64(space, entry+0x30, image_base)?;
+    put_u64(space, entry+0x38, image_entry)?;
+    put_u32(space, entry+0x40, image_size)?;
+    const MODULE_NAME: [u16;10]=[0x52,0x64,0x6f,0x74,0x4f,0x53,0x2e,0x65,0x78,0x65];
+    for (i,ch) in MODULE_NAME.iter().copied().enumerate() { put_u16(space, IMAGE_NAME_ADDRESS+i as u64*2, ch)?; }
+    put_u16(space, entry+0x48, 20)?; put_u16(space, entry+0x4a, 22)?;
+    put_u64(space, entry+0x50, IMAGE_NAME_ADDRESS)?;
+    put_u16(space, entry+0x58, 20)?; put_u16(space, entry+0x5a, 22)?;
+    put_u64(space, entry+0x60, IMAGE_NAME_ADDRESS)?;
+
+    // RTL_USER_PROCESS_PARAMETERS prefix and Unicode image/command-line strings.
+    put_u32(space, PROCESS_PARAMS_ADDRESS, 0x448)?;
+    put_u32(space, PROCESS_PARAMS_ADDRESS+4, 0x448)?;
+    put_u32(space, PROCESS_PARAMS_ADDRESS+8, 1)?;
+    put_u16(space, PROCESS_PARAMS_ADDRESS+0x60, 20)?;
+    put_u16(space, PROCESS_PARAMS_ADDRESS+0x62, 22)?;
+    put_u64(space, PROCESS_PARAMS_ADDRESS+0x68, IMAGE_NAME_ADDRESS)?;
+    put_u16(space, PROCESS_PARAMS_ADDRESS+0x70, 20)?;
+    put_u16(space, PROCESS_PARAMS_ADDRESS+0x72, 22)?;
+    put_u64(space, PROCESS_PARAMS_ADDRESS+0x78, IMAGE_NAME_ADDRESS)?;
     // NT_TIB-compatible TEB prefix; GS base must point here in user mode.
     put_u64(space, TEB_ADDRESS + 0x08, stack_base)?;
     put_u64(space, TEB_ADDRESS + 0x10, stack_limit)?;
