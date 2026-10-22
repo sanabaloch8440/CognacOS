@@ -11,14 +11,19 @@ Status reflects code currently present in the repository, not intended architect
 - [x] Add a kernel linker layout, COM1 diagnostic routine, and panic halt handler.
 - [x] Add CI steps to build both Rust targets and package the EFI app plus kernel ELF.
 - [ ] Compile and validate artifacts in CI; resolve any toolchain/API issues exposed by the first run.
-- [ ] Boot and smoke-test the complete kernel handoff in OVMF/QEMU in CI (the workflow currently builds and inspects ELF artifacts only).
+- [ ] Boot and smoke-test the complete kernel handoff in OVMF/QEMU in CI.
 - [x] Load the kernel ELF from the EFI filesystem with a bounded read and validate ELF64 little-endian x86-64 ET_EXEC headers and PT_LOAD ranges.
 - [x] Define a versioned boot-information structure carrying the final UEFI memory-map pointer, entry count, descriptor size, and version.
 - [x] Exit boot services through the uefi-rs retrying helper and transfer control to the kernel entry using the x86-64 System V ABI.
 - [x] Link the first-stage kernel at a low identity-mapped address, allocate a dedicated aligned kernel stack, and report the handoff details over COM1.
+- [x] Install a kernel-owned flat GDT and an IDT with fatal exception gates for CPU vectors 0-31.
+- [x] Keep external interrupts disabled until interrupt-controller and timer setup is implemented.
+- [ ] Add exception-specific assembly stubs that preserve CPU error codes and capture register state.
 - [ ] Add ELF parser unit/fuzz tests and verify segment overlap/permission policy before treating the loader as hardened.
 - [ ] Add framebuffer and ACPI RSDP to the boot-information structure.
-- [ ] Add exception/interrupt entry, GDT/IDT, APIC/timer, serial logging, and fault diagnostics.
+- [ ] Implement APIC/PIC routing, timer interrupts, and interrupt-safe diagnostics.
+- [ ] Implement physical page allocator and kernel-owned page tables; remove reliance on firmware identity mappings.
+- [ ] Add guarded kernel stacks, NX/W^X page permissions, and a controlled high-half mapping.
 
 ## UEFI and verified boot
 
