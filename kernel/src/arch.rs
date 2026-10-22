@@ -1,7 +1,4 @@
-//! Early x86-64 descriptor tables and fatal exception path.
-//! This stage intentionally keeps interrupts disabled: APIC/PIC routing and
-//! interrupt-safe scheduling are not ready yet.
-
+//! x86-64 GDT/IDT setup and exception-specific fatal diagnostics.
 use core::arch::{asm, global_asm};
 use core::mem::size_of;
 
@@ -12,44 +9,23 @@ const EXCEPTION_VECTORS: usize = 32;
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct IdtEntry {
-    offset_low: u16,
-    selector: u16,
-    ist: u8,
-    attributes: u8,
-    offset_middle: u16,
-    offset_high: u32,
-    reserved: u32,
+    offset_low: u16, selector: u16, ist: u8, attributes: u8,
+    offset_middle: u16, offset_high: u32, reserved: u32,
 }
-
 impl IdtEntry {
-    const MISSING: Self = Self {
-        offset_low: 0, selector: 0, ist: 0, attributes: 0,
-        offset_middle: 0, offset_high: 0, reserved: 0,
-    };
-
+    const MISSING: Self = Self { offset_low: 0, selector: 0, ist: 0, attributes: 0,
+        offset_middle: 0, offset_high: 0, reserved: 0 };
     fn interrupt_gate(handler: u64) -> Self {
-        Self {
-            offset_low: handler as u16,
-            selector: KERNEL_CODE_SELECTOR,
-            ist: 0,
-            attributes: 0x8E, // present, ring 0, 64-bit interrupt gate
-            offset_middle: (handler >> 16) as u16,
-            offset_high: (handler >> 32) as u32,
-            reserved: 0,
-        }
+        Self { offset_low: handler as u16, selector: KERNEL_CODE_SELECTOR, ist: 0,
+            attributes: 0x8E, offset_middle: (handler >> 16) as u16,
+            offset_high: (handler >> 32) as u32, reserved: 0 }
     }
 }
-
 #[repr(C, packed)]
-struct DescriptorTablePointer {
-    limit: u16,
-    base: u64,
-}
-
+struct DescriptorTablePointer { limit: u16, base: u64 }
 static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::MISSING; IDT_ENTRIES];
 
-global_asm!(
-    r#"
+global_asm!(r#"
     .section .rodata
     .align 8
 .Lrdotos_gdt:
@@ -79,59 +55,147 @@ rdotos_load_gdt:
     mov gs, ax
     ret
 
-    .global rdotos_exception_entry
-    .type rdotos_exception_entry, @function
-rdotos_exception_entry:
+    .macro ISR_NOERR n
+    .global rdotos_isr_\n
+    .type rdotos_isr_\n, @function
+rdotos_isr_\n:
+    push 0
+    push \n
+    jmp rdotos_exception_common
+    .endm
+
+    .macro ISR_ERR n
+    .global rdotos_isr_\n
+    .type rdotos_isr_\n, @function
+rdotos_isr_\n:
+    push \n
+    jmp rdotos_exception_common
+    .endm
+
+    ISR_NOERR 0
+    ISR_NOERR 1
+    ISR_NOERR 2
+    ISR_NOERR 3
+    ISR_NOERR 4
+    ISR_NOERR 5
+    ISR_NOERR 6
+    ISR_NOERR 7
+    ISR_ERR   8
+    ISR_NOERR 9
+    ISR_ERR   10
+    ISR_ERR   11
+    ISR_ERR   12
+    ISR_ERR   13
+    ISR_ERR   14
+    ISR_NOERR 15
+    ISR_NOERR 16
+    ISR_ERR   17
+    ISR_NOERR 18
+    ISR_NOERR 19
+    ISR_NOERR 20
+    ISR_ERR   21
+    ISR_NOERR 22
+    ISR_NOERR 23
+    ISR_NOERR 24
+    ISR_NOERR 25
+    ISR_NOERR 26
+    ISR_NOERR 27
+    ISR_NOERR 28
+    ISR_ERR   29
+    ISR_ERR   30
+    ISR_NOERR 31
+
+    .global rdotos_exception_common
+    .type rdotos_exception_common, @function
+rdotos_exception_common:
     cli
     cld
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rdx, rsp
+    mov rdi, [rsp + 120]
+    mov rsi, [rsp + 128]
     and rsp, -16
     call rdotos_exception_fatal
     ud2
-"#
-);
+"#);
 
 unsafe extern "C" {
     fn rdotos_load_gdt();
-    fn rdotos_exception_entry();
+    fn rdotos_isr_0(); fn rdotos_isr_1(); fn rdotos_isr_2(); fn rdotos_isr_3();
+    fn rdotos_isr_4(); fn rdotos_isr_5(); fn rdotos_isr_6(); fn rdotos_isr_7();
+    fn rdotos_isr_8(); fn rdotos_isr_9(); fn rdotos_isr_10(); fn rdotos_isr_11();
+    fn rdotos_isr_12(); fn rdotos_isr_13(); fn rdotos_isr_14(); fn rdotos_isr_15();
+    fn rdotos_isr_16(); fn rdotos_isr_17(); fn rdotos_isr_18(); fn rdotos_isr_19();
+    fn rdotos_isr_20(); fn rdotos_isr_21(); fn rdotos_isr_22(); fn rdotos_isr_23();
+    fn rdotos_isr_24(); fn rdotos_isr_25(); fn rdotos_isr_26(); fn rdotos_isr_27();
+    fn rdotos_isr_28(); fn rdotos_isr_29(); fn rdotos_isr_30(); fn rdotos_isr_31();
 }
 
-/// Install a private flat GDT and exception IDT. Hardware interrupts remain
-/// disabled until a later stage configures the interrupt controller and timer.
 pub unsafe fn initialize() {
-    // SAFETY: The GDT is static kernel image data and its selector layout is
-    // defined alongside the assembly that loads it.
     unsafe { rdotos_load_gdt() };
-
-    let handler = rdotos_exception_entry as usize as u64;
+    let handlers: [usize; EXCEPTION_VECTORS] = [
+        rdotos_isr_0 as usize, rdotos_isr_1 as usize, rdotos_isr_2 as usize, rdotos_isr_3 as usize,
+        rdotos_isr_4 as usize, rdotos_isr_5 as usize, rdotos_isr_6 as usize, rdotos_isr_7 as usize,
+        rdotos_isr_8 as usize, rdotos_isr_9 as usize, rdotos_isr_10 as usize, rdotos_isr_11 as usize,
+        rdotos_isr_12 as usize, rdotos_isr_13 as usize, rdotos_isr_14 as usize, rdotos_isr_15 as usize,
+        rdotos_isr_16 as usize, rdotos_isr_17 as usize, rdotos_isr_18 as usize, rdotos_isr_19 as usize,
+        rdotos_isr_20 as usize, rdotos_isr_21 as usize, rdotos_isr_22 as usize, rdotos_isr_23 as usize,
+        rdotos_isr_24 as usize, rdotos_isr_25 as usize, rdotos_isr_26 as usize, rdotos_isr_27 as usize,
+        rdotos_isr_28 as usize, rdotos_isr_29 as usize, rdotos_isr_30 as usize, rdotos_isr_31 as usize,
+    ];
     let idt_ptr = core::ptr::addr_of_mut!(IDT).cast::<IdtEntry>();
     for vector in 0..EXCEPTION_VECTORS {
-        // SAFETY: vectors are bounded by the fixed static IDT array. Entries
-        // are written before LIDT and exceptions cannot run concurrently (CLI).
-        unsafe { idt_ptr.add(vector).write(IdtEntry::interrupt_gate(handler)) };
+        unsafe { idt_ptr.add(vector).write(IdtEntry::interrupt_gate(handlers[vector] as u64)); }
     }
-
     let pointer = DescriptorTablePointer {
         limit: (EXCEPTION_VECTORS * size_of::<IdtEntry>() - 1) as u16,
         base: idt_ptr as u64,
     };
-    // SAFETY: pointer references the static IDT and remains valid indefinitely.
     unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)) };
 }
 
-/// Called only by the assembly exception entry. The original CPU exception
-/// frame is deliberately not returned to: until full diagnostics and recovery
-/// exist, all CPU exceptions stop the machine deterministically.
+/// Assembly passes the normalized vector/error-code pair and a saved register
+/// frame. This is fatal by design: returning to an untrusted exception frame
+/// is not supported until recovery and interrupt-stack switching are implemented.
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_exception_fatal() -> ! {
+pub extern "C" fn rdotos_exception_fatal(vector: u64, error: u64, frame: *const u64) -> ! {
     unsafe {
-        crate::serial_write(b"\r\nRdotOS FATAL: CPU exception; system halted.\r\n");
+        crate::serial_write(b"\r\nRdotOS FATAL CPU exception vector=");
+        crate::serial_write_hex(vector);
+        crate::serial_write(b" error=");
+        crate::serial_write_hex(error);
+        crate::serial_write(b" RIP=");
+        crate::serial_write_hex(frame.add(17).read());
+        crate::serial_write(b" CS=");
+        crate::serial_write_hex(frame.add(18).read());
+        crate::serial_write(b" RFLAGS=");
+        crate::serial_write_hex(frame.add(19).read());
+        if vector == 14 {
+            let cr2: u64;
+            core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+            crate::serial_write(b" CR2=");
+            crate::serial_write_hex(cr2);
+        }
+        crate::serial_write(b"\r\nSystem halted.\r\n");
         crate::halt()
     }
 }
 
-/// Switch CR3 to the new kernel-owned PML4. The bootstrap tables identity-map
-/// all addresses used by the early kernel, stack, and boot metadata.
+/// Switch CR3 to the kernel-owned PML4 after its identity mappings are validated.
 pub unsafe fn enable_kernel_paging(pml4_physical: u64) {
-    // SAFETY: caller guarantees a page-aligned, valid PML4 with required mappings.
     unsafe { asm!("mov cr3, {}", in(reg) pml4_physical, options(nostack, preserves_flags)); }
 }
