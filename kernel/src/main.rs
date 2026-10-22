@@ -152,16 +152,21 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Process address-space and checked user-copy self-test passed.\r\n");
-        serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\\r\\n");
+        serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\r\n");
         let loaded_pe = match unsafe { pe::self_test(&mut address_space) } {
             Ok(image) => image,
-            Err(_) => { serial_write(b"FATAL: PE32+ loader self-test failed.\\r\\n"); halt(); }
+            Err(_) => { serial_write(b"FATAL: PE32+ loader self-test failed.\r\n"); halt(); }
         };
         serial_write(b"PE32+ loader self-test passed; image base=");
         serial_write_hex(loaded_pe.base);
         serial_write(b" entry=");
         serial_write_hex(loaded_pe.entry);
-        serial_write(b" (RX section and RO/NX headers).\\r\\n");
+        serial_write(b" (RX section and RO/NX headers).\r\n");
+        if unsafe { user::ring3_self_test(&mut address_space) }.is_err() {
+            serial_write(b"FATAL: ring-3 INT 0x80 round-trip failed.\r\n");
+            halt();
+        }
+        serial_write(b"Ring-3 INT 0x80 round-trip passed; user code returned through DPL3 gate.\r\n");
 
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
