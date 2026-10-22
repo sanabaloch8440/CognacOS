@@ -4,6 +4,7 @@
 mod arch;
 mod memory;
 mod security;
+mod vm;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -100,7 +101,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Security: CR0.WP ");
         serial_write(if mitigations.write_protect { b"enabled\r\n" } else { b"FAILED\r\n" });
         serial_write(b"Security: NX ");
-        serial_write(if mitigations.nx_enabled { b"enabled (page policy pending)\r\n" } else if mitigations.nx_supported { b"supported but enable failed\r\n" } else { b"unsupported\r\n" });
+        serial_write(if mitigations.nx_enabled { b"enabled; strict page policy follows\r\n" } else if mitigations.nx_supported { b"supported but enable failed\r\n" } else { b"unsupported\r\n" });
         serial_write(b"Security: SMEP ");
         serial_write(if mitigations.smep_enabled { b"enabled\r\n" } else if mitigations.smep_supported { b"supported but enable failed\r\n" } else { b"unsupported\r\n" });
         serial_write(b"Security: SMAP ");
@@ -120,6 +121,34 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Security: 4 KiB page policy active; W^X enforced for kernel sections.\r\n");
         serial_write(b"Security: kernel stack guard page unmapped.\r\n");
+
+        // Exercise an independent user address space without activating ring 3.
+        let mut address_space = match unsafe { vm::AddressSpace::new(info.pml4_physical) } {
+            Ok(space) => space,
+            Err(_) => { serial_write(b"FATAL: address-space root allocation failed.\r\n"); halt(); }
+        };
+        let user_page = match unsafe { memory::allocate_page() } {
+            Ok(page) => page,
+            Err(_) => { serial_write(b"FATAL: user test page allocation failed.\r\n"); halt(); }
+        };
+        const TEST_USER_ADDRESS: u64 = 0x0000_0080_0000_0000;
+        if unsafe { address_space.map_user_page(TEST_USER_ADDRESS, user_page, true, false) }.is_err() {
+            serial_write(b"FATAL: user mapping setup failed.\r\n");
+            halt();
+        }
+        let sample = *b"RdotOS user-copy check";
+        if unsafe { address_space.copy_to_user(TEST_USER_ADDRESS, &sample) }.is_err() {
+            serial_write(b"FATAL: checked copy-to-user failed.\r\n");
+            halt();
+        }
+        let mut roundtrip = [0u8; 22];
+        if unsafe { address_space.copy_from_user(TEST_USER_ADDRESS, &mut roundtrip) }.is_err()
+            || roundtrip != sample
+        {
+            serial_write(b"FATAL: checked user-copy validation failed.\r\n");
+            halt();
+        }
+        serial_write(b"Process address-space and checked user-copy self-test passed.\r\n");
 
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
