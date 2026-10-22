@@ -102,8 +102,8 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
         core::arch::asm!(
             "cli",
             "cld",
-            "jmp {entry}",
-            entry = in(reg) entry,
+            "jmp rax",
+            in("rax") entry,
             in("rdi") boot_info_ptr,
             options(noreturn)
         );
