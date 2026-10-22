@@ -10,6 +10,17 @@ use core::panic::PanicInfo;
 
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
 
+unsafe extern "C" {
+    static __text_start: u8;
+    static __text_end: u8;
+    static __rodata_start: u8;
+    static __rodata_end: u8;
+    static __data_start: u8;
+    static __data_end: u8;
+    static __bss_start: u8;
+    static __bss_end: u8;
+}
+
 #[repr(C)]
 struct BootInfo {
     magic: u64,
@@ -20,6 +31,7 @@ struct BootInfo {
     memory_map_entries: usize,
     memory_descriptor_size: usize,
     memory_descriptor_version: u32,
+    kernel_stack_guard_page: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -32,7 +44,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic != BOOT_INFO_MAGIC || info.version != 1
+        if info.magic != BOOT_INFO_MAGIC || info.version != 2
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
@@ -52,7 +64,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"UEFI boot services exited successfully.\r\n");
-        serial_write(b"Boot information version: 1\r\n");
+        serial_write(b"Boot information version: 2\r\n");
         serial_write(b"Memory map entries: ");
         serial_write_decimal(info.memory_map_entries);
         serial_write(b"\r\n");
@@ -93,6 +105,21 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(if mitigations.smep_enabled { b"enabled\r\n" } else if mitigations.smep_supported { b"supported but enable failed\r\n" } else { b"unsupported\r\n" });
         serial_write(b"Security: SMAP ");
         serial_write(if mitigations.smap_supported { b"supported; deferred until safe user-copy accessors\r\n" } else { b"unsupported\r\n" });
+
+        if !mitigations.nx_enabled {
+            serial_write(b"FATAL: NX unavailable; refusing to enable strict page policy.\r\n");
+            halt();
+        }
+        let text = (core::ptr::addr_of!(__text_start) as u64, core::ptr::addr_of!(__text_end) as u64);
+        let rodata = (core::ptr::addr_of!(__rodata_start) as u64, core::ptr::addr_of!(__rodata_end) as u64);
+        let data = (core::ptr::addr_of!(__data_start) as u64, core::ptr::addr_of!(__data_end) as u64);
+        let bss = (core::ptr::addr_of!(__bss_start) as u64, core::ptr::addr_of!(__bss_end) as u64);
+        if unsafe { memory::harden_page_tables(info.pml4_physical, text, rodata, data, bss, info.kernel_stack_guard_page) }.is_err() {
+            serial_write(b"FATAL: kernel page-permission hardening failed.\r\n");
+            halt();
+        }
+        serial_write(b"Security: 4 KiB page policy active; W^X enforced for kernel sections.\r\n");
+        serial_write(b"Security: kernel stack guard page unmapped.\r\n");
 
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
