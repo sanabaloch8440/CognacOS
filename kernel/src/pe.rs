@@ -342,7 +342,7 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     put32(&mut image, reloc + 20, 0x400);
     put32(&mut image, reloc + 36, 0x4200_0040);
 
-    image[0x200] = 0xc3; // RET; mapped RX but deliberately not executed in this test.
+    image[0x200..0x204].copy_from_slice(&[0xcd, 0x80, 0x0f, 0x0b]); // INT 0x80; return to kernel before UD2.
     put64(&mut image, 0x210, 0x0000_0001_4000_1234);
     put32(&mut image, 0x400, 0x1000); // relocation block page RVA
     put32(&mut image, 0x404, 12);     // block size
