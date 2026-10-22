@@ -44,7 +44,7 @@ pub fn query(pid: u64) -> Option<ProcessSnapshot> {
 pub fn reap(pid: u64) -> Option<u64> {
     let table = unsafe { &mut *TABLE.0.get() };
     let r = table.iter_mut().find(|r| r.used && r.process_id == pid && r.state == ProcessState::Exited)?;
-    let code = r.exit_code; r.state = ProcessState::Reaped; Some(code)
+    let code = r.exit_code; r.state = ProcessState::Reaped; r.used = false; Some(code)
 }
 #[derive(Clone, Copy, Debug)]
 pub enum ProcessError { Vm(VmError), OutOfMemory, InvalidLayout, TooManyProcesses }
