@@ -171,6 +171,20 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b" entry=");
         serial_write_hex(loaded_pe.entry);
         serial_write(b" (RX section and RO/NX headers).\r\n");
+        let mut tls_callbacks = [0u64; 64];
+        let tls_count = match pe_runtime::tls_callbacks(loaded_pe.base, &mut tls_callbacks) {
+            Ok(count) => count,
+            Err(_) => { serial_write(b"FATAL: PE TLS callback registration failed.\r\n"); halt(); }
+        };
+        if tls_count != 1 || pe_runtime::lookup_function(loaded_pe.base, loaded_pe.base + 0x1100).is_none() {
+            serial_write(b"FATAL: PE TLS or unwind registration self-test failed.\r\n");
+            halt();
+        }
+        if !matches!(winabi::api_set_host(b"api-ms-win-core-file-l1-1-0"), Some(host) if host == b"kernel32.dll") {
+            serial_write(b"FATAL: API-set contract resolution self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Windows API-set resolution and PE TLS/unwind registration passed.\r\n");
         if unsafe { usermode::run_loaded_image(&mut address_space, loaded_pe) }.is_err() {
             serial_write(b"FATAL: ring-3 syscall/process lifecycle self-test failed.\r\n");
             halt();
