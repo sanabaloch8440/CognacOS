@@ -122,7 +122,8 @@ pub unsafe fn load(
         .ok_or(PeError::Truncated)? != b"PE\0\0" { return Err(PeError::BadSignature); }
     let coff = nt.checked_add(4).ok_or(PeError::InvalidHeader)?;
     if u16at(file, coff)? != 0x8664 { return Err(PeError::UnsupportedMachine); }
-    let section_count = u16at(file, coff + 2)? as usize;\n    let is_dll = u16at(file, coff + 18)? & 0x2000 != 0;
+    let section_count = u16at(file, coff + 2)? as usize;
+    let is_dll = u16at(file, coff + 18)? & 0x2000 != 0;
     let optional_size = u16at(file, coff + 16)? as usize;
     if section_count == 0 || section_count > MAX_SECTIONS || optional_size < 240 {
         return Err(PeError::InvalidHeader);
