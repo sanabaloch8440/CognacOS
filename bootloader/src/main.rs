@@ -105,8 +105,6 @@ fn main(image_handle: Handle, _system_table: SystemTable<Boot>) -> Status {
         Err(status) => { uefi::println!("Page-table allocation failed: {:?}", status); return status; }
     };
     uefi::println!("Prepared kernel PML4 at {:#x}", pml4_physical);
-    uefi::println!("Exiting UEFI boot services");
-
     // Reserve low identity-mapped storage for the final map and boot-info.
     // The UEFI memory-map helper may return a buffer outside the bootstrap map.
     let map_copy = match boot::allocate_pages(
