@@ -7,6 +7,9 @@ const MODULES: usize = 32;
 const EXPORTS: usize = 512;
 const NAME: usize = 64;
 #[derive(Clone, Copy)]
+pub struct ModuleInfo { pub name: [u8; NAME], pub len: usize, pub base: u64, pub size: u32 }
+impl ModuleInfo { pub const EMPTY: Self = Self { name:[0;NAME],len:0,base:0,size:0 }; }
+#[derive(Clone, Copy)]
 struct Module { name: [u8; NAME], len: usize, base: u64, size: u32, used: bool }
 impl Module { const EMPTY: Self = Self { name: [0; NAME], len: 0, base: 0, size: 0, used: false }; }
 #[derive(Clone, Copy)]
@@ -57,6 +60,26 @@ pub unsafe fn register_module(name: &[u8], base: u64, size: u32) -> bool {
         *slot=Module { name:normalized,len,base,size,used:true }; true
     } else { false }
 }
+/// Snapshot registered modules for constructing a process-local PEB loader list.
+pub fn module_infos(out:&mut[ModuleInfo])->usize {
+    let state=unsafe{&*REGISTRY.0.get()};
+    let mut count=0;
+    for m in state.0.iter().filter(|m|m.used).take(out.len()) {
+        out[count]=ModuleInfo{name:m.name,len:m.len,base:m.base,size:m.size};
+        count+=1;
+    }
+    count
+}
+/// Remove one DLL and every export associated with it during process teardown.
+pub fn unregister_module(name:&[u8]) {
+    let mut normalized=[0u8;NAME];
+    let Some(len)=normalize(name,&mut normalized) else{return;};
+    let state=unsafe{&mut *REGISTRY.0.get()};
+    let Some(index)=state.0.iter().position(|m|m.used&&eq_case(&m.name[..m.len],&normalized[..len])) else{return;};
+    state.0[index]=Module::EMPTY;
+    for e in state.1.iter_mut() { if e.used&&e.module==index { *e=Export::EMPTY; } }
+}
+
 /// Register an export address after parsing the PE export directory.
 pub unsafe fn register_export(module_name: &[u8], name: &[u8], ordinal: u16, address: u64) -> bool {
     let mut normalized=[0u8; NAME]; let Some(len)=normalize(module_name,&mut normalized) else { return false; };
