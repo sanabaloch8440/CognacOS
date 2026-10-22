@@ -7,11 +7,11 @@ const MODULES: usize = 32;
 const EXPORTS: usize = 512;
 const NAME: usize = 64;
 #[derive(Clone, Copy)]
-pub struct ModuleInfo { pub name: [u8; NAME], pub len: usize, pub base: u64, pub size: u32 }
-impl ModuleInfo { pub const EMPTY: Self = Self { name:[0;NAME],len:0,base:0,size:0 }; }
+pub struct ModuleInfo { pub name: [u8; NAME], pub len: usize, pub base: u64, pub size: u32, pub entrypoint: u64 }
+impl ModuleInfo { pub const EMPTY: Self = Self { name:[0;NAME],len:0,base:0,size:0,entrypoint:0 }; }
 #[derive(Clone, Copy)]
-struct Module { name: [u8; NAME], len: usize, base: u64, size: u32, used: bool }
-impl Module { const EMPTY: Self = Self { name: [0; NAME], len: 0, base: 0, size: 0, used: false }; }
+struct Module { name: [u8; NAME], len: usize, base: u64, size: u32, entrypoint: u64, used: bool }
+impl Module { const EMPTY: Self = Self { name: [0; NAME], len: 0, base: 0, size: 0, entrypoint: 0, used: false }; }
 #[derive(Clone, Copy)]
 struct Export { module: usize, name: [u8; NAME], len: usize, ordinal: u16, address: u64, used: bool }
 impl Export { const EMPTY: Self = Self { module: 0, name: [0; NAME], len: 0, ordinal: 0, address: 0, used: false }; }
@@ -49,12 +49,12 @@ pub fn api_set_host(contract: &[u8]) -> Option<&'static [u8]> {
     else { None }
 }
 /// Register a mapped DLL image before its exports are published.
-pub unsafe fn register_module(name: &[u8], base: u64, size: u32) -> bool {
+pub unsafe fn register_module(name: &[u8], base: u64, size: u32, entrypoint: u64) -> bool {
     if base < USER_START || size == 0 || base.checked_add(size as u64).is_none_or(|e| e > USER_END) { return false; }
     let mut normalized=[0u8; NAME]; let Some(len)=normalize(name,&mut normalized) else { return false; };
     let state=unsafe { &mut *REGISTRY.0.get() };
     if let Some(slot)=state.0.iter_mut().find(|m| m.used && eq_case(&m.name[..m.len],&normalized[..len])) {
-        *slot=Module { name:normalized,len,base,size,used:true }; return true;
+        *slot=Module { name:normalized,len,base,size,entrypoint,used:true }; return true;
     }
     if let Some(slot)=state.0.iter_mut().find(|m| !m.used) {
         *slot=Module { name:normalized,len,base,size,used:true }; true
@@ -65,7 +65,7 @@ pub fn module_infos(out:&mut[ModuleInfo])->usize {
     let state=unsafe{&*REGISTRY.0.get()};
     let mut count=0;
     for m in state.0.iter().filter(|m|m.used).take(out.len()) {
-        out[count]=ModuleInfo{name:m.name,len:m.len,base:m.base,size:m.size};
+        out[count]=ModuleInfo{name:m.name,len:m.len,base:m.base,size:m.size,entrypoint:m.entrypoint};
         count+=1;
     }
     count
@@ -142,7 +142,7 @@ pub unsafe fn register_mapped_exports(space:&crate::vm::AddressSpace,module_name
     let names=read_u32(space,dir+32)?;
     let ordinals=read_u32(space,dir+36)?;
     if function_count>EXPORTS||name_count>EXPORTS||name_count>function_count{return Err(());}
-    if !unsafe{register_module(module_name,base,image.image_size)}{return Err(());}
+    if !unsafe{register_module(module_name,base,image.image_size,image.entry)}{return Err(());}
     let mut named=[false;EXPORTS];
     for i in 0..name_count {
         let name_rva=read_u32(space,base+names as u64+(i*4) as u64)?;
