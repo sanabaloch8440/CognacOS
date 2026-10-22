@@ -6,7 +6,7 @@ use crate::{pe::LoadedImage, vm::{AddressSpace, VmError}};
 const PAGE: u64 = 4096;
 const USER_STACK: u64 = 0x0000_0082_0000_0000;
 const CALLBACK_BASE: u64 = 0x0000_0083_0000_0000;
-const TLS_DATA_BASE: u64 = 0x0000_0080_4000_0000;
+const TLS_DATA_BASE: u64 = 0x0000_0080_8000_0000;
 
 global_asm!(r#"
     .section .text
@@ -112,7 +112,7 @@ fn callback_trampoline(callback: u64, image_base: u64) -> [u8; 40] {
 pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> Result<(), VmError> {
     let stack_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
     unsafe { space.map_user_page(USER_STACK, stack_page, true, false)?; }
-    let env = unsafe { crate::process::initialize(space, image.base, USER_STACK + PAGE, USER_STACK) }
+    let env = unsafe { crate::process::initialize(space, image.base, image.entry, image.image_size, USER_STACK + PAGE, USER_STACK) }
         .map_err(|_| VmError::OutOfMemory)?;
     let mut pointer_check=[0u8;8];
     unsafe { space.copy_from_user(env.teb+0x60,&mut pointer_check)?; }
