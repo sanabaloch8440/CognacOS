@@ -32,7 +32,7 @@ pub enum ImportSymbol<'a> { Name(&'a [u8]), Ordinal(u16) }
 pub type ImportResolver = for<'a> fn(dll: &[u8], symbol: ImportSymbol<'a>) -> Option<u64>;
 
 #[derive(Clone, Copy, Debug)]
-pub struct LoadedImage { pub base: u64, pub entry: u64, pub image_size: u32 }
+pub struct LoadedImage { pub base: u64, pub entry: u64, pub image_size: u32, pub is_dll: bool }
 
 fn u16at(b: &[u8], o: usize) -> Result<u16, PeError> {
     Ok(u16::from_le_bytes(b.get(o..o.checked_add(2).ok_or(PeError::InvalidHeader)?)
@@ -122,7 +122,7 @@ pub unsafe fn load(
         .ok_or(PeError::Truncated)? != b"PE\0\0" { return Err(PeError::BadSignature); }
     let coff = nt.checked_add(4).ok_or(PeError::InvalidHeader)?;
     if u16at(file, coff)? != 0x8664 { return Err(PeError::UnsupportedMachine); }
-    let section_count = u16at(file, coff + 2)? as usize;
+    let section_count = u16at(file, coff + 2)? as usize;\n    let is_dll = u16at(file, coff + 18)? & 0x2000 != 0;
     let optional_size = u16at(file, coff + 16)? as usize;
     if section_count == 0 || section_count > MAX_SECTIONS || optional_size < 240 {
         return Err(PeError::InvalidHeader);
@@ -184,7 +184,7 @@ pub unsafe fn load(
         }
         sections[i] = s;
     }
-    if !entry_is_executable { return Err(PeError::InvalidHeader); }
+    if (!is_dll && !entry_is_executable) || (is_dll && entry_rva != 0 && !entry_is_executable) { return Err(PeError::InvalidHeader); }
 
     let image_base = if preferred_base >= 0x0000_0080_0000_0000
         && preferred_base.checked_add(page_count as u64 * PAGE_SIZE).is_some_and(|e| e <= USER_END)
@@ -353,7 +353,7 @@ pub unsafe fn load(
         let flags = page_flags[i];
         unsafe { space.protect_user_page(image_base + i as u64 * PAGE_SIZE, flags & 1 != 0, flags & 2 != 0)?; }
     }
-    let loaded = LoadedImage { base: image_base, entry: image_base + entry_rva as u64, image_size };
+    let loaded = LoadedImage { base: image_base, entry: if entry_rva == 0 { 0 } else { image_base + entry_rva as u64 }, image_size, is_dll };
     let (pdata_rva, pdata_size) = if directory_count > 3 {
         (u32at(file, dir + 3 * 8)?, u32at(file, dir + 3 * 8 + 4)?)
     } else { (0, 0) };
@@ -362,6 +362,23 @@ pub unsafe fn load(
     } else { (0, 0) };
     unsafe { crate::pe_runtime::register(space, loaded, tls_rva, tls_size, pdata_rva, pdata_size) }
         .map_err(|_| PeError::InvalidHeader)?;
+    Ok(loaded)
+}
+
+
+/// Load a DLL image and publish its checked export table for subsequent imports.
+/// DLL entry points are metadata only here; DllMain is run by the user-mode
+/// process startup path, never called directly by the kernel.
+pub unsafe fn load_dll(
+    space: &mut AddressSpace,
+    file: &[u8],
+    module_name: &[u8],
+    resolver: Option<ImportResolver>,
+) -> Result<LoadedImage, PeError> {
+    let loaded = unsafe { load(space, file, resolver)? };
+    if !loaded.is_dll { return Err(PeError::InvalidHeader); }
+    unsafe { crate::winabi::register_mapped_exports(space, module_name, loaded) }
+        .map_err(|_| PeError::InvalidImports)?;
     Ok(loaded)
 }
 
