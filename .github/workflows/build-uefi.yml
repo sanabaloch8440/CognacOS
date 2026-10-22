@@ -31,7 +31,9 @@ jobs:
           file target/x86_64-unknown-none/release/rdotos-kernel
           readelf -h target/x86_64-unknown-none/release/rdotos-kernel
           readelf -l target/x86_64-unknown-none/release/rdotos-kernel
-          readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -E 'Class:.*ELF64|Machine:.*X86-64|Type:.*EXEC'
+          readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -qE 'Class:.*ELF64'
+          readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -qE 'Machine:.*X86-64'
+          readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -qE 'Type:.*EXEC'
       - name: Package a GPT EFI System Partition image
         run: |
           sudo apt-get update
@@ -53,10 +55,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          code="$(find /usr/share/OVMF -maxdepth 1 -name 'OVMF_CODE*.fd' -print -quit)"
-          vars_template="$(find /usr/share/OVMF -maxdepth 1 -name 'OVMF_VARS*.fd' -print -quit)"
-          test -n "$code"
-          test -n "$vars_template"
+          # Select a matching CODE/VARS pair: mixing 2 MiB and 4 MiB
+          # firmware images can make QEMU fail before the boot test starts.
+          if [ -f /usr/share/OVMF/OVMF_CODE_4M.fd ] && [ -f /usr/share/OVMF/OVMF_VARS_4M.fd ]; then
+            code=/usr/share/OVMF/OVMF_CODE_4M.fd
+            vars_template=/usr/share/OVMF/OVMF_VARS_4M.fd
+          elif [ -f /usr/share/OVMF/OVMF_CODE.fd ] && [ -f /usr/share/OVMF/OVMF_VARS.fd ]; then
+            code=/usr/share/OVMF/OVMF_CODE.fd
+            vars_template=/usr/share/OVMF/OVMF_VARS.fd
+          else
+            echo "No matching OVMF CODE/VARS firmware pair found" >&2
+            find /usr/share/OVMF -maxdepth 1 -type f -print
+            exit 1
+          fi
           cp "$vars_template" build/OVMF_VARS.fd
           set +e
           timeout 30s qemu-system-x86_64 \
