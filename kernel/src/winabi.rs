@@ -72,6 +72,82 @@ pub unsafe fn register_export(module_name: &[u8], name: &[u8], ordinal: u16, add
         *slot=Export { module,name:exp_name,len:name.len(),ordinal,address,used:true }; true
     } else { false }
 }
+
+fn read_user(space:&crate::vm::AddressSpace,address:u64,out:&mut[u8])->Result<(),()> {
+    unsafe { space.copy_from_user(address,out).map_err(|_|()) }
+}
+fn read_u16(space:&crate::vm::AddressSpace,address:u64)->Result<u16,()> {
+    let mut b=[0;2];read_user(space,address,&mut b)?;Ok(u16::from_le_bytes(b))
+}
+fn read_u32(space:&crate::vm::AddressSpace,address:u64)->Result<u32,()> {
+    let mut b=[0;4];read_user(space,address,&mut b)?;Ok(u32::from_le_bytes(b))
+}
+fn read_export_name(space:&crate::vm::AddressSpace,base:u64,rva:u32)->Result<([u8;NAME],usize),()> {
+    let mut out=[0u8;NAME];
+    for i in 0..NAME {
+        out[i]=read_u32_byte(space,base.checked_add(rva as u64).and_then(|x|x.checked_add(i as u64)).ok_or(())?)?;
+        if out[i]==0{return Ok((out,i));}
+        if !out[i].is_ascii(){return Err(());}
+    }
+    Err(())
+}
+fn read_u32_byte(space:&crate::vm::AddressSpace,address:u64)->Result<u8,()> {
+    let mut b=[0];read_user(space,address,&mut b)?;Ok(b[0])
+}
+/// Parse a loaded PE32+ DLL export directory and publish named and ordinal
+/// exports into the bounded binding registry. Forwarded exports are rejected
+/// until their target module has been resolved explicitly.
+pub unsafe fn register_mapped_exports(space:&crate::vm::AddressSpace,module_name:&[u8],image:crate::pe::LoadedImage)->Result<usize,()> {
+    let base=image.base;
+    let mut dos=[0u8;0x40];read_user(space,base,&mut dos)?;
+    if dos[0]!=b'M'||dos[1]!=b'Z'{return Err(());}
+    let nt=u32::from_le_bytes(dos[0x3c..0x40].try_into().map_err(|_|())?) as u64;
+    let mut sig=[0u8;4];read_user(space,base.checked_add(nt).ok_or(())?,&mut sig)?;
+    if &sig!=b"PE\0\0"{return Err(());}
+    let opt_size=read_u16(space,base.checked_add(nt+20).ok_or(())?)? as u64;
+    let opt=base.checked_add(nt+24).ok_or(())?;
+    if read_u16(space,opt)?!=0x20b{return Err(());}
+    if read_u32(space,opt+108)?==0{return Err(());}
+    let export_rva=read_u32(space,opt+112)?;
+    let export_size=read_u32(space,opt+116)?;
+    if export_rva==0||export_size<40||export_rva.checked_add(export_size).is_none_or(|e|e>image.image_size){return Err(());}
+    let dir=base.checked_add(export_rva as u64).ok_or(())?;
+    let ordinal_base=read_u32(space,dir+16)?;
+    let function_count=read_u32(space,dir+20)? as usize;
+    let name_count=read_u32(space,dir+24)? as usize;
+    let functions=read_u32(space,dir+28)?;
+    let names=read_u32(space,dir+32)?;
+    let ordinals=read_u32(space,dir+36)?;
+    if function_count>EXPORTS||name_count>EXPORTS||name_count>function_count{return Err(());}
+    if !unsafe{register_module(module_name,base,image.image_size)}{return Err(());}
+    let mut named=[false;EXPORTS];
+    for i in 0..name_count {
+        let name_rva=read_u32(space,base+names as u64+(i*4) as u64)?;
+        let ordinal_index=read_u16(space,base+ordinals as u64+(i*2) as u64)? as usize;
+        if ordinal_index>=function_count{return Err(());}
+        let function_rva=read_u32(space,base+functions as u64+(ordinal_index*4) as u64)?;
+        if function_rva==0||function_rva>=image.image_size{return Err(());}
+        if function_rva>=export_rva&&function_rva<export_rva+export_size{return Err(());}
+        let (name,len)=read_export_name(space,base,name_rva)?;
+        if len==0{return Err(());}
+        let ordinal=ordinal_base.checked_add(ordinal_index as u32).filter(|&o|o<=u16::MAX as u32).ok_or(())? as u16;
+        if !unsafe{register_export(module_name,&name[..len],ordinal,base+function_rva as u64)}{return Err(());}
+        named[ordinal_index]=true;
+    }
+    let mut registered=name_count;
+    for i in 0..function_count {
+        let function_rva=read_u32(space,base+functions as u64+(i*4) as u64)?;
+        if function_rva==0||named[i]{continue;}
+        if function_rva>=image.image_size{return Err(());}
+        if function_rva>=export_rva&&function_rva<export_rva+export_size{continue;}
+        let ordinal=ordinal_base.checked_add(i as u32).filter(|&o|o<=u16::MAX as u32).ok_or(())? as u16;
+        if !unsafe{register_export(module_name,&[],ordinal,base+function_rva as u64)}{return Err(());}
+        registered+=1;
+    }
+    let _=opt_size;
+    Ok(registered)
+}
+
 /// Resolve a registered export, canonicalizing known API-set contract names.
 pub fn resolve_import(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
     let mut normalized=[0u8; NAME]; let len=normalize(dll,&mut normalized)?;
