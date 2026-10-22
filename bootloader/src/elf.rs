@@ -23,6 +23,7 @@ pub enum ElfError {
 #[derive(Clone, Copy)]
 struct ProgramHeader {
     kind: u32,
+    flags: u32,
     offset: u64,
     vaddr: u64,
     paddr: u64,
@@ -75,6 +76,7 @@ pub unsafe fn load(image: &[u8]) -> Result<u64, ElfError> {
         let o = (phoff as usize).checked_add(i * phentsize).ok_or(ElfError::BadHeader)?;
         let p = ProgramHeader {
             kind: u32le(image, o).ok_or(ElfError::Truncated)?,
+            flags: u32le(image, o + 4).ok_or(ElfError::Truncated)?,
             offset: u64le(image, o + 8).ok_or(ElfError::Truncated)?,
             vaddr: u64le(image, o + 16).ok_or(ElfError::Truncated)?,
             paddr: u64le(image, o + 24).ok_or(ElfError::Truncated)?,
@@ -116,7 +118,7 @@ pub unsafe fn load(image: &[u8]) -> Result<u64, ElfError> {
             );
         }
         loaded_any = true;
-        if entry >= dest && entry < end { entry_is_loaded = true; }
+        if (p.flags & 0x1) != 0 && entry >= dest && entry < end { entry_is_loaded = true; }
     }
     if !loaded_any || !entry_is_loaded { return Err(ElfError::BadSegment); }
     Ok(entry)
