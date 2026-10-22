@@ -7,6 +7,7 @@ const PAGE: u64 = 4096;
 const USER_STACK: u64 = 0x0000_0082_0000_0000;
 const CALLBACK_BASE: u64 = 0x0000_0083_0000_0000;
 const TLS_DATA_BASE: u64 = 0x0000_0080_8000_0000;
+const TLS_STRIDE: u64 = 0x0100_0000;
 
 global_asm!(r#"
     .section .text
@@ -90,6 +91,38 @@ pub unsafe fn initialize() {
     unsafe { crate::arch::install_user_gate(0x82, rdotos_process_exit_stub as usize as u64); }
 }
 
+fn initialize_tls_block(
+    space:&mut AddressSpace,
+    layout:crate::pe_runtime::TlsLayout,
+    index:u32,
+    tls_vector:u64,
+)->Result<(),VmError>{
+    if !layout.present{return Ok(());}
+    let total=(layout.template_size as u64).checked_add(layout.zero_fill as u64).ok_or(VmError::InvalidAddress)?;
+    if total>8*1024*1024{return Err(VmError::InvalidAddress);}
+    let allocation=core::cmp::max(total,1);
+    let base=TLS_DATA_BASE.checked_add(index as u64*TLS_STRIDE).ok_or(VmError::InvalidAddress)?;
+    let pages=((allocation+PAGE-1)/PAGE) as usize;
+    for i in 0..pages{
+        let physical=unsafe{crate::memory::allocate_page()}.map_err(|_|VmError::OutOfMemory)?;
+        unsafe{space.map_user_page(base+i as u64*PAGE,physical,true,false)?;}
+    }
+    let mut copied=0u64;let mut buffer=[0u8;4096];
+    while copied<layout.template_size as u64{
+        let count=core::cmp::min(buffer.len() as u64,layout.template_size as u64-copied) as usize;
+        unsafe{space.copy_from_user(layout.template_start+copied,&mut buffer[..count])?;}
+        unsafe{space.copy_to_user(base+copied,&buffer[..count])?;}
+        copied+=count as u64;
+    }
+    if layout.index_address!=0{
+        unsafe{space.copy_to_user(layout.index_address,&index.to_le_bytes())?;}
+        let mut check=[0u8;4];unsafe{space.copy_from_user(layout.index_address,&mut check)?;}
+        if u32::from_le_bytes(check)!=index{return Err(VmError::PermissionDenied);}
+    }
+    unsafe{space.copy_to_user(tls_vector+index as u64*8,&base.to_le_bytes())?;}
+    Ok(())
+}
+
 unsafe fn invoke_user_function(
     space: &mut AddressSpace,
     function: u64,
@@ -145,29 +178,14 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     if u64::from_le_bytes(pointer_check)!=image.base { return Err(VmError::PermissionDenied); }
     unsafe { space.copy_from_user(crate::process::LDR_ENTRY_ADDRESS,&mut pointer_check)?; }
     if u64::from_le_bytes(pointer_check)!=crate::process::LDR_ENTRY_ADDRESS+0x100 { return Err(VmError::PermissionDenied); }
-    let tls = crate::pe_runtime::tls_layout(image.base).map_err(|_|VmError::InvalidAddress)?;
-    if tls.present {
-        let total = (tls.template_size as u64).checked_add(tls.zero_fill as u64).ok_or(VmError::InvalidAddress)?;
-        if total > 8*1024*1024 { return Err(VmError::InvalidAddress); }
-        let allocation = core::cmp::max(total,1);
-        let pages = ((allocation + PAGE - 1)/PAGE) as usize;
-        for i in 0..pages {
-            let physical=unsafe{crate::memory::allocate_page()}.map_err(|_|VmError::OutOfMemory)?;
-            unsafe{space.map_user_page(TLS_DATA_BASE+i as u64*PAGE,physical,true,false)?;}
-        }
-        let mut copied=0u64;
-        let mut buffer=[0u8;4096];
-        while copied<tls.template_size as u64 {
-            let count=core::cmp::min(buffer.len() as u64,tls.template_size as u64-copied) as usize;
-            unsafe{space.copy_from_user(tls.template_start+copied,&mut buffer[..count])?;}
-            unsafe{space.copy_to_user(TLS_DATA_BASE+copied,&buffer[..count])?;}
-            copied+=count as u64;
-        }
-        if tls.index_address!=0 {
-            unsafe{space.copy_to_user(tls.index_address,&0u32.to_le_bytes())?;}
-        }
-        unsafe{space.copy_to_user(env.tls_vector,&TLS_DATA_BASE.to_le_bytes())?;}
+    let mut modules=[crate::winabi::ModuleInfo::EMPTY;32];
+    let module_count=crate::winabi::module_infos(&mut modules);
+    for (index,module) in modules[..module_count].iter().copied().enumerate() {
+        let layout=crate::pe_runtime::tls_layout(module.base).map_err(|_|VmError::InvalidAddress)?;
+        initialize_tls_block(space,layout,index as u32,env.tls_vector)?;
     }
+    let main_tls=crate::pe_runtime::tls_layout(image.base).map_err(|_|VmError::InvalidAddress)?;
+    initialize_tls_block(space,main_tls,module_count as u32,env.tls_vector)?;
     let kernel_cr3: u64;
     unsafe { asm!("mov {}, cr3", out(reg) kernel_cr3, options(nomem, nostack, preserves_flags)); }
     crate::syscall::set_current_process(env.process_id, space as *const _);
@@ -176,8 +194,6 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     // before the executable entry point. All callbacks execute in ring 3.
     let execution_result = (|| -> Result<(), VmError> {
         let mut trampoline_index=0usize;
-        let mut modules=[crate::winabi::ModuleInfo::EMPTY;32];
-        let module_count=crate::winabi::module_infos(&mut modules);
         for module in modules[..module_count].iter().copied() {
             let mut dll_callbacks=[0u64;64];
             let n=crate::pe_runtime::tls_callbacks(module.base,&mut dll_callbacks)
