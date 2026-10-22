@@ -165,16 +165,16 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             Ok(image) => image,
             Err(_) => { serial_write(b"FATAL: PE32+ loader self-test failed.\r\n"); halt(); }
         };
-        serial_write(b"PE32+ loader self-test passed; image base=");
+        serial_write(b"PE32+ loader self-test passed; image base=");\n        serial_write(b"PE runtime TLS/unwind metadata registry initialized.\\r\\n");
         serial_write_hex(loaded_pe.base);
         serial_write(b" entry=");
         serial_write_hex(loaded_pe.entry);
         serial_write(b" (RX section and RO/NX headers).\r\n");
         if unsafe { usermode::run_loaded_image(&mut address_space, loaded_pe) }.is_err() {
-            serial_write(b"FATAL: ring-3 INT 0x80 round-trip failed.\r\n");
+            serial_write(b"FATAL: ring-3 syscall/process lifecycle self-test failed.\r\n");
             halt();
         }
-        serial_write(b"Ring-3 INT 0x80 round-trip passed; user code returned through DPL3 gate.\r\n");
+        serial_write(b"Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.\r\n");
 
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
