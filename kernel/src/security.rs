@@ -78,20 +78,16 @@ unsafe fn write_cr4(value: u64) {
 /// left disabled until explicit user-copy routines are implemented.
 pub unsafe fn initialize() -> MitigationStatus {
     let basic_max = unsafe { __cpuid_count(0, 0).eax };
-    let leaf1 = if basic_max >= 1 { unsafe { __cpuid_count(1, 0) } } else {
-        core::arch::x86_64::__cpuid(0)
-    };
-    let _ = leaf1; // Reserved for future feature-policy checks.
-
     let ext_max = unsafe { __cpuid_count(0x8000_0000, 0).eax };
     let nx_supported = ext_max >= 0x8000_0001
         && (unsafe { __cpuid_count(0x8000_0001, 0).edx } & (1 << 20)) != 0;
-    let leaf7 = if basic_max >= 7 { unsafe { __cpuid_count(7, 0) } } else {
-        // No structured feature leaf means SMEP/SMAP are unavailable.
-        unsafe { __cpuid_count(0, 0) }
+    // Query structured feature flags only when CPUID advertises leaf 7.
+    let (smep_supported, smap_supported) = if basic_max >= 7 {
+        let leaf7 = unsafe { __cpuid_count(7, 0) };
+        ((leaf7.ebx & (1 << 7)) != 0, (leaf7.ebx & (1 << 20)) != 0)
+    } else {
+        (false, false)
     };
-    let smep_supported = basic_max >= 7 && (leaf7.ebx & (1 << 7)) != 0;
-    let smap_supported = basic_max >= 7 && (leaf7.ebx & (1 << 20)) != 0;
 
     // CR0.WP makes supervisor writes respect read-only PTEs once page
     // permissions become strict; it is safe with the current writable map.
