@@ -7,6 +7,10 @@ mod security;
 mod vm;
 mod user;
 mod pe;
+mod process;
+mod syscall;
+mod winabi;
+mod pe_runtime;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -163,7 +167,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b" entry=");
         serial_write_hex(loaded_pe.entry);
         serial_write(b" (RX section and RO/NX headers).\r\n");
-        if unsafe { user::ring3_self_test(&mut address_space, loaded_pe.entry) }.is_err() {
+        if unsafe { user::ring3_self_test(&mut address_space, loaded_pe.entry, loaded_pe.base) }.is_err() {
             serial_write(b"FATAL: ring-3 INT 0x80 round-trip failed.\r\n");
             halt();
         }
