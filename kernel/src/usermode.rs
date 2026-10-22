@@ -132,7 +132,10 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     unsafe { rdotos_process_enter_user(image.entry, USER_STACK + PAGE, env.teb); }
     unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
     crate::syscall::clear_current_process();
-    if crate::syscall::dispatch_count() < 2 || crate::syscall::last_exit_code() != 0 {
+    let snapshot = crate::process::query(env.process_id).ok_or(VmError::InvalidAddress)?;
+    if crate::syscall::dispatch_count() < 2 || crate::syscall::last_exit_code() != 0
+        || snapshot.state != crate::process::ProcessState::Exited || snapshot.exit_code != 0
+        || crate::process::reap(env.process_id) != Some(0) {
         return Err(VmError::PermissionDenied);
     }
     Ok(())
