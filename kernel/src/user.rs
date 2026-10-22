@@ -1,6 +1,6 @@
 //! x86-64 user-mode transition support. This installs ring-3 descriptors and a
 //! minimal TSS RSP0 stack. IST stacks and recoverable exception paths remain future work.
-use core::arch::asm;
+use core::arch::{asm, global_asm};
 
 const KERNEL_CODE: u16 = 0x08;
 const KERNEL_DATA: u16 = 0x10;
@@ -106,8 +106,8 @@ pub unsafe fn initialize() {
             kds = const KERNEL_DATA,
             tss = const TSS_SELECTOR,
             out("rax") _,
-
         );
+        crate::arch::install_user_gate(0x80, rdotos_user_exit_stub as usize as u64);
     }
 }
 
@@ -129,7 +129,7 @@ pub unsafe fn enter(entry: u64, stack_top: u64) -> ! {
             "cld",
             "push {ss}",
             "push rsi",
-            "push 0x202",
+            "push 0x2",
             "push {cs}",
             "push rdi",
             "iretq",
@@ -140,4 +140,77 @@ pub unsafe fn enter(entry: u64, stack_top: u64) -> ! {
             options(noreturn),
         );
     }
+}
+
+
+global_asm!(r#"
+    .section .text
+    .global rdotos_user_exit_stub
+    .type rdotos_user_exit_stub, @function
+rdotos_user_exit_stub:
+    cli
+    mov rsp, qword ptr [rip + rdotos_user_saved_rsp]
+    jmp qword ptr [rip + rdotos_user_saved_rip]
+
+    .global rdotos_enter_user_test
+    .type rdotos_enter_user_test, @function
+rdotos_enter_user_test:
+    push rbx
+    push rbp
+    push r12
+    push r13
+    push r14
+    push r15
+    mov qword ptr [rip + rdotos_user_saved_rsp], rsp
+    lea rax, [rip + .Lrdotos_user_test_return]
+    mov qword ptr [rip + rdotos_user_saved_rip], rax
+    push 0x1b
+    push rsi
+    push 0x2
+    push 0x23
+    push rdi
+    iretq
+.Lrdotos_user_test_return:
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbp
+    pop rbx
+    ret
+
+    .section .bss
+    .align 8
+    .global rdotos_user_saved_rsp
+rdotos_user_saved_rsp:
+    .quad 0
+    .global rdotos_user_saved_rip
+rdotos_user_saved_rip:
+    .quad 0
+"#);
+
+unsafe extern "C" {
+    fn rdotos_enter_user_test(entry: u64, stack_top: u64);
+    fn rdotos_user_exit_stub();
+}
+
+/// Actually enter ring 3, execute an INT 0x80, and return through the controlled
+/// DPL3 gate. This is a single-core bootstrap test, not a general syscall ABI.
+pub unsafe fn ring3_self_test(space: &mut crate::vm::AddressSpace) -> Result<(), crate::vm::VmError> {
+    const CODE: u64 = 0x0000_0001_5000_0000;
+    const STACK: u64 = 0x0000_0001_6000_0000;
+    let code_page = unsafe { crate::memory::allocate_page() }.map_err(|_| crate::vm::VmError::OutOfMemory)?;
+    let stack_page = unsafe { crate::memory::allocate_page() }.map_err(|_| crate::vm::VmError::OutOfMemory)?;
+    unsafe {
+        space.map_user_page(CODE, code_page, true, false)?;
+        space.map_user_page(STACK, stack_page, true, false)?;
+        space.copy_to_user(CODE, &[0xcd, 0x80, 0x0f, 0x0b])?;
+        space.protect_user_page(CODE, false, true)?;
+    }
+    let kernel_cr3: u64;
+    unsafe { asm!("mov {}, cr3", out(reg) kernel_cr3, options(nomem, nostack, preserves_flags)); }
+    unsafe { space.activate(); }
+    unsafe { rdotos_enter_user_test(CODE, STACK + PAGE_SIZE); }
+    unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
+    Ok(())
 }
