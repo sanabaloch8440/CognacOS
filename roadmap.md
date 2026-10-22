@@ -15,7 +15,7 @@ Status reflects code currently present in the repository, not intended architect
 - [x] Load the kernel ELF from the EFI filesystem with a bounded read and validate ELF64 little-endian x86-64 ET_EXEC headers and PT_LOAD ranges.
 - [x] Define a versioned boot-information structure carrying the final UEFI memory-map pointer, entry count, descriptor size, and version.
 - [x] Exit boot services through the uefi-rs retrying helper and transfer control to the kernel entry using the x86-64 System V ABI.
-- [x] Link the first-stage kernel at a low identity-mapped address and report the handoff details over COM1.
+- [x] Link the first-stage kernel at a low identity-mapped address, allocate a dedicated aligned kernel stack, and report the handoff details over COM1.
 - [ ] Add ELF parser unit/fuzz tests and verify segment overlap/permission policy before treating the loader as hardened.
 - [ ] Add framebuffer and ACPI RSDP to the boot-information structure.
 - [ ] Add exception/interrupt entry, GDT/IDT, APIC/timer, serial logging, and fault diagnostics.
