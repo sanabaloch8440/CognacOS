@@ -20,7 +20,7 @@ const KERNEL_STACK_PAGES: usize = 16;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
-const BOOT_INFO_VERSION: u32 = 1;
+const BOOT_INFO_VERSION: u32 = 2;
 
 #[repr(C)]
 struct BootInfo {
