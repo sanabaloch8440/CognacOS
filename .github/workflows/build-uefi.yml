@@ -1,0 +1,37 @@
+name: Build RdotOS UEFI image
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-uefi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: sudo apt-get update && sudo apt-get install -y clang lld dosfstools mtools
+      - name: Compile EFI application
+        run: |
+          mkdir -p build/EFI/BOOT
+          clang --target=x86_64-pc-win32-coff -ffreestanding -fno-stack-protector -fno-builtin -mno-red-zone -Wall -Wextra -Werror -c src/boot/efi_main.c -o build/efi_main.obj
+          lld-link /machine:x64 /subsystem:efi_application /entry:efi_main /nodefaultlib /out:build/EFI/BOOT/BOOTX64.EFI build/efi_main.obj
+      - name: Package FAT EFI disk image
+        run: |
+          truncate -s 64M build/rdotos-uefi.img
+          mkfs.vfat build/rdotos-uefi.img
+          mmd -i build/rdotos-uefi.img ::/EFI
+          mmd -i build/rdotos-uefi.img ::/EFI/BOOT
+          mcopy -i build/rdotos-uefi.img build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+      - name: Upload EFI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdotos-uefi
+          path: |
+            build/EFI/BOOT/BOOTX64.EFI
+            build/rdotos-uefi.img
