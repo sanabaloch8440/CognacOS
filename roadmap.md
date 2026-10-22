@@ -2,6 +2,13 @@
 
 Status reflects code currently present in the repository, not intended architecture. A checkbox is marked complete only when implementation and meaningful tests exist.
 
+## Implemented in source, pending build/boot verification
+
+- Rust UEFI bootloader allocates a low-memory PML4, PDPT, and four page directories before ExitBootServices; the bootstrap map identity-maps 0..4 GiB with 2 MiB writable pages.
+- Kernel stack, boot-info structure, and a bounded copy of the final UEFI memory map are allocated below 4 GiB so they remain reachable after CR3 changes.
+- Kernel validates the PML4 address, loads it into CR3, and then initializes a single-core first-fit physical-page allocator from EfiConventionalMemory descriptors using the firmware-provided descriptor stride.
+- These paths are not considered complete until CI compiles them and OVMF/QEMU tests prove the handoff, CR3 switch, allocator behavior, and failure paths.
+
 ## Rust-first foundation
 
 - [x] Add Apache-2.0 license text.
