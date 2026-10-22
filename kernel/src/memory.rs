@@ -117,24 +117,6 @@ pub unsafe fn harden_page_tables(
     if pml4_physical == 0 || pml4_physical >= PHYSICAL_LIMIT || pml4_physical & 0xfff != 0 {
         return Err(AllocError::InvalidMap);
     }
-    let pml4 = pml4_physical as *mut u64;
-    let pdpt_entry = unsafe { pml4.read() };
-    if pdpt_entry & PRESENT == 0 { return Err(AllocError::InvalidMap); }
-    let pdpt = (pdpt_entry & ADDRESS_MASK) as *mut u64;
-
-    // First make every 2 MiB bootstrap mapping NX. The currently executing
-    // kernel text is restored to executable PTEs below, after splitting it.
-    for pdpt_index in 0..4usize {
-        let entry = unsafe { pdpt.add(pdpt_index).read() };
-        if entry & PRESENT == 0 { return Err(AllocError::InvalidMap); }
-        let pd = (entry & ADDRESS_MASK) as *mut u64;
-        for pd_index in 0..512usize {
-            let pde = unsafe { pd.add(pd_index).read() };
-            if pde & PRESENT != 0 && pde & LARGE != 0 {
-                unsafe { pd.add(pd_index).write(pde | NO_EXECUTE | WRITABLE); }
-            }
-        }
-    }
 
     unsafe fn split(pml4_physical: u64, address: u64) -> Result<*mut u64, AllocError> {
         let pml4 = pml4_physical as *mut u64;
@@ -158,6 +140,17 @@ pub unsafe fn harden_page_tables(
         Ok(table)
     }
 
+    unsafe fn split_range(pml4_physical: u64, range: (u64, u64)) -> Result<(), AllocError> {
+        if range.0 >= range.1 { return Ok(()); }
+        let mut address = range.0 & !(PAGE_SIZE - 1);
+        let end = align_up(range.1, PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+        while address < end {
+            unsafe { split(pml4_physical, address)?; }
+            address = (address & !(0x20_0000 - 1)) + 0x20_0000;
+        }
+        Ok(())
+    }
+
     unsafe fn set_range(
         pml4_physical: u64, range: (u64, u64), writable: bool, executable: bool,
     ) -> Result<(), AllocError> {
@@ -178,6 +171,44 @@ pub unsafe fn harden_page_tables(
         Ok(())
     }
 
+    // Split every 2 MiB region containing kernel sections or the stack guard
+    // before setting NX globally. Otherwise the instruction currently executing
+    // could be marked NX by its own large-page PDE and fault mid-update.
+    unsafe {
+        split_range(pml4_physical, text)?;
+        split_range(pml4_physical, rodata)?;
+        split_range(pml4_physical, data)?;
+        split_range(pml4_physical, bss)?;
+        split(pml4_physical, guard_page)?;
+    }
+
+    let pml4 = pml4_physical as *mut u64;
+    let root_entry = unsafe { pml4.read() };
+    if root_entry & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    let pdpt = (root_entry & ADDRESS_MASK) as *mut u64;
+    for pdpt_index in 0..4usize {
+        let entry = unsafe { pdpt.add(pdpt_index).read() };
+        if entry & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+        let pd = (entry & ADDRESS_MASK) as *mut u64;
+        for pd_index in 0..512usize {
+            let pde_ptr = unsafe { pd.add(pd_index) };
+            let pde = unsafe { pde_ptr.read() };
+            if pde & PRESENT == 0 { continue; }
+            if pde & LARGE != 0 {
+                unsafe { pde_ptr.write(pde | NO_EXECUTE | WRITABLE); }
+            } else {
+                let table = (pde & ADDRESS_MASK) as *mut u64;
+                for pte_index in 0..512usize {
+                    let pte_ptr = unsafe { table.add(pte_index) };
+                    let pte = unsafe { pte_ptr.read() };
+                    if pte & PRESENT != 0 {
+                        unsafe { pte_ptr.write(pte | NO_EXECUTE | WRITABLE); }
+                    }
+                }
+            }
+        }
+    }
+
     unsafe {
         set_range(pml4_physical, text, false, true)?;
         set_range(pml4_physical, rodata, false, false)?;
@@ -186,7 +217,6 @@ pub unsafe fn harden_page_tables(
         let guard_table = split(pml4_physical, guard_page)?;
         let guard_pte = guard_table.add(((guard_page >> 12) & 0x1ff) as usize);
         guard_pte.write(0);
-        // Flush all cached translations after changing active page tables.
         core::arch::asm!("mov cr3, {}", in(reg) pml4_physical, options(nostack, preserves_flags));
     }
     Ok(())
