@@ -90,3 +90,104 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
 pub fn region_count() -> usize {
     REGION_COUNT.load(core::sync::atomic::Ordering::Acquire)
 }
+
+
+const PRESENT: u64 = 1;
+const WRITABLE: u64 = 1 << 1;
+const LARGE: u64 = 1 << 7;
+const NO_EXECUTE: u64 = 1 << 63;
+const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+const LARGE_ADDRESS_MASK: u64 = 0x000f_ffff_ffe0_0000;
+
+/// Split the bootstrap's 2 MiB identity mapping into 4 KiB pages where
+/// fine-grained permissions or a stack guard are required. All other bootstrap
+/// large pages become writable, supervisor-only, and non-executable.
+///
+/// # Safety
+/// NXE must already be enabled, pml4 must be the active identity-mapped root,
+/// and the physical allocator must have been initialized from the final UEFI map.
+pub unsafe fn harden_page_tables(
+    pml4_physical: u64,
+    text: (u64, u64),
+    rodata: (u64, u64),
+    data: (u64, u64),
+    bss: (u64, u64),
+    guard_page: u64,
+) -> Result<(), AllocError> {
+    if pml4_physical == 0 || pml4_physical >= PHYSICAL_LIMIT || pml4_physical & 0xfff != 0 {
+        return Err(AllocError::InvalidMap);
+    }
+    let pml4 = pml4_physical as *mut u64;
+    let pdpt_entry = unsafe { pml4.read() };
+    if pdpt_entry & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    let pdpt = (pdpt_entry & ADDRESS_MASK) as *mut u64;
+
+    // First make every 2 MiB bootstrap mapping NX. The currently executing
+    // kernel text is restored to executable PTEs below, after splitting it.
+    for pdpt_index in 0..4usize {
+        let entry = unsafe { pdpt.add(pdpt_index).read() };
+        if entry & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+        let pd = (entry & ADDRESS_MASK) as *mut u64;
+        for pd_index in 0..512usize {
+            let pde = unsafe { pd.add(pd_index).read() };
+            if pde & PRESENT != 0 && pde & LARGE != 0 {
+                unsafe { pd.add(pd_index).write(pde | NO_EXECUTE | WRITABLE); }
+            }
+        }
+    }
+
+    unsafe fn split(pml4_physical: u64, address: u64) -> Result<*mut u64, AllocError> {
+        let pml4 = pml4_physical as *mut u64;
+        let root_entry = unsafe { pml4.add(((address >> 39) & 0x1ff) as usize).read() };
+        if root_entry & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+        let pdpt = (root_entry & ADDRESS_MASK) as *mut u64;
+        let pdpt_entry = unsafe { pdpt.add(((address >> 30) & 0x1ff) as usize).read() };
+        if pdpt_entry & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+        let pd = (pdpt_entry & ADDRESS_MASK) as *mut u64;
+        let pde_ptr = unsafe { pd.add(((address >> 21) & 0x1ff) as usize) };
+        let pde = unsafe { pde_ptr.read() };
+        if pde & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+        if pde & LARGE == 0 { return Ok((pde & ADDRESS_MASK) as *mut u64); }
+        let table = unsafe { allocate_page()? } as *mut u64;
+        let base = pde & LARGE_ADDRESS_MASK;
+        let inherited = pde & (WRITABLE | NO_EXECUTE);
+        for i in 0..512usize {
+            unsafe { table.add(i).write(base + (i as u64 * PAGE_SIZE) | PRESENT | inherited); }
+        }
+        unsafe { pde_ptr.write((table as u64) | PRESENT | WRITABLE); }
+        Ok(table)
+    }
+
+    unsafe fn set_range(
+        pml4_physical: u64, range: (u64, u64), writable: bool, executable: bool,
+    ) -> Result<(), AllocError> {
+        if range.0 >= range.1 { return Ok(()); }
+        let start = range.0 & !(PAGE_SIZE - 1);
+        let end = align_up(range.1, PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+        let mut address = start;
+        while address < end {
+            let table = unsafe { split(pml4_physical, address)? };
+            let pte_ptr = unsafe { table.add(((address >> 12) & 0x1ff) as usize) };
+            let mut pte = unsafe { pte_ptr.read() };
+            if pte & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+            if writable { pte |= WRITABLE; } else { pte &= !WRITABLE; }
+            if executable { pte &= !NO_EXECUTE; } else { pte |= NO_EXECUTE; }
+            unsafe { pte_ptr.write(pte); }
+            address += PAGE_SIZE;
+        }
+        Ok(())
+    }
+
+    unsafe {
+        set_range(pml4_physical, text, false, true)?;
+        set_range(pml4_physical, rodata, false, false)?;
+        set_range(pml4_physical, data, true, false)?;
+        set_range(pml4_physical, bss, true, false)?;
+        let guard_table = split(pml4_physical, guard_page)?;
+        let guard_pte = guard_table.add(((guard_page >> 12) & 0x1ff) as usize);
+        guard_pte.write(0);
+        // Flush all cached translations after changing active page tables.
+        core::arch::asm!("mov cr3, {}", in(reg) pml4_physical, options(nostack, preserves_flags));
+    }
+    Ok(())
+}
