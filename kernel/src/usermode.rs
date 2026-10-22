@@ -119,7 +119,10 @@ fn initialize_tls_block(
         let mut check=[0u8;4];unsafe{space.copy_from_user(layout.index_address,&mut check)?;}
         if u32::from_le_bytes(check)!=index{return Err(VmError::PermissionDenied);}
     }
-    unsafe{space.copy_to_user(tls_vector+index as u64*8,&base.to_le_bytes())?;}
+    let vector_slot=tls_vector+index as u64*8;
+    unsafe{space.copy_to_user(vector_slot,&base.to_le_bytes())?;}
+    let mut vector_check=[0u8;8];unsafe{space.copy_from_user(vector_slot,&mut vector_check)?;}
+    if u64::from_le_bytes(vector_check)!=base{return Err(VmError::PermissionDenied);}
     Ok(())
 }
 
@@ -178,6 +181,8 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     if u64::from_le_bytes(pointer_check)!=image.base { return Err(VmError::PermissionDenied); }
     unsafe { space.copy_from_user(crate::process::LDR_ENTRY_ADDRESS,&mut pointer_check)?; }
     if u64::from_le_bytes(pointer_check)!=crate::process::LDR_ENTRY_ADDRESS+0x100 { return Err(VmError::PermissionDenied); }
+    let mut unicode_len=[0u8;2];unsafe{space.copy_from_user(crate::process::PROCESS_PARAMS_ADDRESS+0x70,&mut unicode_len)?;}
+    if u16::from_le_bytes(unicode_len)!=20{return Err(VmError::PermissionDenied);}
     let mut modules=[crate::winabi::ModuleInfo::EMPTY;32];
     let module_count=crate::winabi::module_infos(&mut modules);
     for (index,module) in modules[..module_count].iter().copied().enumerate() {
