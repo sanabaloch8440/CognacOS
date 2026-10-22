@@ -25,16 +25,19 @@ Status reflects code currently present in the repository, not intended architect
 - [x] Link the first-stage kernel at a low identity-mapped address, allocate a dedicated aligned kernel stack, and report the handoff details over COM1.
 - [x] Install a kernel-owned flat GDT and an IDT with fatal exception gates for CPU vectors 0-31.
 - [x] Keep external interrupts disabled until interrupt-controller and timer setup is implemented.
-- [x] Add exception-specific assembly stubs for CPU vectors 0–31, normalize error-code frames, and report vector/error/RIP/CS/RFLAGS plus CR2 for page faults.\n- [ ] Add a dedicated IST stack for double-fault/NMI handling before claiming recoverable stack-overflow diagnostics.
+- [x] Add exception-specific assembly stubs for CPU vectors 0–31, normalize error-code frames, and report vector/error/RIP/CS/RFLAGS plus CR2 for page faults.
+- [ ] Add a dedicated IST stack for double-fault/NMI handling before claiming recoverable stack-overflow diagnostics.
 - [ ] Add ELF parser unit/fuzz tests and verify segment overlap/permission policy before treating the loader as hardened.
 - [ ] Add framebuffer and ACPI RSDP to the boot-information structure.
 - [ ] Implement APIC/PIC routing, timer interrupts, and interrupt-safe diagnostics.
 - [ ] Verify the Rust UEFI bootloader's low-memory bootstrap PML4 and 0..4 GiB identity map under OVMF/QEMU.
 - [ ] Add tests for the physical-page allocator's descriptor-stride handling, conventional-memory filtering, alignment, exhaustion, and region-capacity limits.
 - [ ] Harden the early physical allocator (currently single-core, first-fit, and capped below 4 GiB) before enabling concurrency.
-- [x] Convert the kernel-section and stack-guard 2 MiB regions into 4 KiB PTEs; enforce NX by default and RX/RO/RW-NX section permissions, with CR0.WP active.\n- [ ] Replace the remaining general-purpose 2 MiB identity map with complete per-region mappings and add a direct map for RAM above 4 GiB.
+- [x] Convert the kernel-section and stack-guard 2 MiB regions into 4 KiB PTEs; enforce NX by default and RX/RO/RW-NX section permissions, with CR0.WP active.
+- [ ] Replace the remaining general-purpose 2 MiB identity map with complete per-region mappings and add a direct map for RAM above 4 GiB.
 - [ ] Add boot-time checks that kernel, stack, boot-info, memory-map copy, and page-table allocations are covered by active mappings.
-- [x] Reserve an unmapped page below the bootstrap kernel stack and enforce section-level NX/W^X permissions.\n- [ ] Add double-fault IST handling and a controlled high-half mapping.
+- [x] Reserve an unmapped page below the bootstrap kernel stack and enforce section-level NX/W^X permissions.
+- [ ] Add double-fault IST handling and a controlled high-half mapping.
 - [x] Add early CPU feature detection and enable CR0.WP; enable EFER.NXE and SMEP only when advertised by CPUID.
 - [ ] Enable SMAP only after guarded user-memory accessors implement the required STAC/CLAC protocol; NXE alone is not page-level NX enforcement.
 
@@ -53,8 +56,10 @@ Status reflects code currently present in the repository, not intended architect
 ## UEFI and verified boot
 
 - [ ] Read/report firmware Secure Boot state for diagnostics (informational only).
-- [x] Verify the kernel ELF SHA-256 against a build-time digest embedded in the bootloader; reject missing or mismatched digests. This is tamper detection only when the bootloader itself is trusted.\n- [ ] Add asymmetric signature verification (for example Ed25519) against an externally protected public-key trust anchor and verify every next-stage component.
-- [x] Reject an unpinned or hash-mismatched kernel ELF before parsing/loading it.\n- [ ] Reject unsigned/revoked components using a signed trust policy and add signature/revocation negative tests.
+- [x] Verify the kernel ELF SHA-256 against a build-time digest embedded in the bootloader; reject missing or mismatched digests. This is tamper detection only when the bootloader itself is trusted.
+- [ ] Add asymmetric signature verification (for example Ed25519) against an externally protected public-key trust anchor and verify every next-stage component.
+- [x] Reject an unpinned or hash-mismatched kernel ELF before parsing/loading it.
+- [ ] Reject unsigned/revoked components using a signed trust policy and add signature/revocation negative tests.
 - [ ] Add key enrollment/update and revocation policy.
 - [ ] Establish measured-boot event log and TPM 2.0 measurements.
 - [ ] Define signed release artifacts and reproducible build provenance.
@@ -71,7 +76,8 @@ Status reflects code currently present in the repository, not intended architect
 ## x86-64 kernel and memory
 
 - [ ] Establish long-mode kernel entry, GDT/IDT, exception handlers, APIC, and timer.
-- [x] Add initial independent PML4 address spaces, supervisor-only shared kernel mappings, NX user-page mappings, and checked user-copy helpers; executable user mappings are rejected.\n- [ ] Add ring-3 transition/syscall entry, demand paging, page unmapping/reclamation, and full per-process lifecycle.
+- [x] Add initial independent PML4 address spaces, supervisor-only shared kernel mappings, NX user-page mappings, and checked user-copy helpers; executable user mappings are rejected.
+- [ ] Add ring-3 transition/syscall entry, demand paging, page unmapping/reclamation, and full per-process lifecycle.
 - [ ] Support large physical memory subject to architecture/platform limits; validate memory-map handling.
 - [x] Keep 32-bit execution and WOW64-like compatibility out of scope.
 
