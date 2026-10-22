@@ -8,7 +8,7 @@ const USER_DATA: u16 = 0x1b; // GDT index 3, RPL 3
 const USER_CODE: u16 = 0x23; // GDT index 4, RPL 3
 const TSS_SELECTOR: u16 = 0x28;
 const PAGE_SIZE: u64 = 4096;
-const USER_START: u64 = 0x1_0000_0000;
+const USER_START: u64 = 0x0000_0080_0000_0000;
 const USER_END: u64 = 0x0000_8000_0000_0000;
 
 #[repr(C, packed)]
@@ -197,8 +197,8 @@ unsafe extern "C" {
 /// Actually enter ring 3, execute an INT 0x80, and return through the controlled
 /// DPL3 gate. This is a single-core bootstrap test, not a general syscall ABI.
 pub unsafe fn ring3_self_test(space: &mut crate::vm::AddressSpace) -> Result<(), crate::vm::VmError> {
-    const CODE: u64 = 0x0000_0001_5000_0000;
-    const STACK: u64 = 0x0000_0001_6000_0000;
+    const CODE: u64 = 0x0000_0081_0000_0000;
+    const STACK: u64 = 0x0000_0082_0000_0000;
     let code_page = unsafe { crate::memory::allocate_page() }.map_err(|_| crate::vm::VmError::OutOfMemory)?;
     let stack_page = unsafe { crate::memory::allocate_page() }.map_err(|_| crate::vm::VmError::OutOfMemory)?;
     unsafe {
