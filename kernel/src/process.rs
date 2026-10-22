@@ -3,9 +3,9 @@
 use crate::vm::{AddressSpace, VmError};
 const PAGE: u64 = 4096;
 const USER_START: u64 = 0x0000_0080_0000_0000;
-pub const PEB_ADDRESS: u64 = 0x0000_007f_ff00_0000;
-pub const TEB_ADDRESS: u64 = 0x0000_007f_ff10_0000;
-pub const TLS_VECTOR_ADDRESS: u64 = 0x0000_007f_ff20_0000;
+pub const PEB_ADDRESS: u64 = 0x0000_0080_1000_0000;
+pub const TEB_ADDRESS: u64 = 0x0000_0080_2000_0000;
+pub const TLS_VECTOR_ADDRESS: u64 = 0x0000_0080_3000_0000;
 static NEXT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(4);
 #[derive(Clone, Copy, Debug)]
 pub enum ProcessError { Vm(VmError), OutOfMemory, InvalidLayout }
