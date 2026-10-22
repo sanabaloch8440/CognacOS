@@ -389,6 +389,35 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     fn put32(b: &mut [u8], o: usize, v: u32) { b[o..o + 4].copy_from_slice(&v.to_le_bytes()); }
     fn put64(b: &mut [u8], o: usize, v: u64) { b[o..o + 8].copy_from_slice(&v.to_le_bytes()); }
 
+    // Synthetic PE DLL exercises export parsing and binding.
+    let mut dll = [0u8; 0x600];
+    put16(&mut dll,0,0x5a4d); put32(&mut dll,0x3c,0x80);
+    dll[0x80..0x84].copy_from_slice(b"PE\0\0");
+    let dc=0x84; put16(&mut dll,dc,0x8664); put16(&mut dll,dc+2,2);
+    put16(&mut dll,dc+16,240); put16(&mut dll,dc+18,0x2022);
+    let dop=dc+20; put16(&mut dll,dop,0x20b); put64(&mut dll,dop+24,0x0000_0081_0000_0000);
+    put32(&mut dll,dop+32,0x1000); put32(&mut dll,dop+36,0x200);
+    put32(&mut dll,dop+56,0x3000); put32(&mut dll,dop+60,0x200); put32(&mut dll,dop+108,16);
+    put32(&mut dll,dop+112,0x2000); put32(&mut dll,dop+116,0x80);
+    let ds=dop+240;
+    dll[ds..ds+8].copy_from_slice(b".text\0\0\0"); put32(&mut dll,ds+8,0x100);
+    put32(&mut dll,ds+12,0x1000); put32(&mut dll,ds+16,0x200); put32(&mut dll,ds+20,0x200);
+    put32(&mut dll,ds+36,0x6000_0020); dll[0x200]=0xc3;
+    let es=ds+40;
+    dll[es..es+8].copy_from_slice(b".edata\0\0"); put32(&mut dll,es+8,0x100);
+    put32(&mut dll,es+12,0x2000); put32(&mut dll,es+16,0x200); put32(&mut dll,es+20,0x400);
+    put32(&mut dll,es+36,0x4000_0040);
+    put32(&mut dll,0x40c,0x2050); put32(&mut dll,0x410,1);
+    put32(&mut dll,0x414,1); put32(&mut dll,0x418,1);
+    put32(&mut dll,0x41c,0x2040); put32(&mut dll,0x420,0x2044); put32(&mut dll,0x424,0x2048);
+    put32(&mut dll,0x440,0x1000); put32(&mut dll,0x444,0x2060); put16(&mut dll,0x448,0);
+    dll[0x450..0x45c].copy_from_slice(b"testdll.dll\0");
+    dll[0x460..0x46d].copy_from_slice(b"TestFunction\0");
+    let dll_loaded = unsafe { load_dll(space, &dll, b"testdll.dll", None)? };
+    if dll_loaded.base != 0x0000_0081_0000_0000 || !dll_loaded.is_dll {
+        return Err(PeError::InvalidHeader);
+    }
+
     let mut image = [0u8; 0x800];
     put16(&mut image, 0, 0x5a4d);
     put32(&mut image, 0x3c, 0x80);
