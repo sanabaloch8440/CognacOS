@@ -4,6 +4,9 @@
 extern crate alloc;
 
 mod elf;
+mod sha256;
+
+include!(concat!(env!("OUT_DIR"), "/kernel_digest.rs"));
 
 use alloc::vec;
 use uefi::prelude::*;
@@ -14,6 +17,7 @@ use uefi::{boot, cstr16};
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.elf");
 const MAX_KERNEL_FILE: usize = 32 * 1024 * 1024;
 const KERNEL_STACK_PAGES: usize = 16;
+const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
 const BOOT_INFO_VERSION: u32 = 1;
@@ -28,6 +32,7 @@ struct BootInfo {
     memory_map_entries: usize,
     memory_descriptor_size: usize,
     memory_descriptor_version: u32,
+    kernel_stack_guard_page: u64,
 }
 
 #[entry]
@@ -70,6 +75,16 @@ fn main() -> Status {
         }
     }
     image.truncate(used);
+    let Some(expected_digest) = EXPECTED_KERNEL_SHA256 else {
+        uefi::println!("FATAL: no build-time kernel trust anchor; refusing unsigned/unpinned kernel");
+        return Status::SECURITY_VIOLATION;
+    };
+    let actual_digest = sha256::digest(&image);
+    if !sha256::constant_time_eq(&actual_digest, &expected_digest) {
+        uefi::println!("FATAL: kernel SHA-256 mismatch; component rejected");
+        return Status::SECURITY_VIOLATION;
+    }
+    uefi::println!("Kernel SHA-256 matches the bootloader's build-time trust anchor");
     drop(kernel_file);
     drop(root);
     drop(fs);
@@ -87,17 +102,19 @@ fn main() -> Status {
     let stack = match boot::allocate_pages(
         boot::AllocateType::MaxAddress(0xffff_ffff),
         boot::MemoryType::LOADER_DATA,
-        KERNEL_STACK_PAGES,
+        KERNEL_STACK_ALLOCATION_PAGES,
     ) {
         Ok(stack) => stack,
         Err(err) => { uefi::println!("Kernel stack allocation failed: {:?}", err); return err.status(); }
     };
-    let stack_top = stack.as_ptr() as u64 + (KERNEL_STACK_PAGES * boot::PAGE_SIZE) as u64;
+    // The first allocated page is deliberately left unmapped as a stack guard.
+    let kernel_stack_guard_page = stack.as_ptr() as u64;
+    let stack_top = kernel_stack_guard_page + (KERNEL_STACK_ALLOCATION_PAGES * boot::PAGE_SIZE) as u64;
     // SysV x86-64 function-entry alignment: RSP % 16 == 8, with a dummy
     // return slot because the kernel entry is reached by a tail jump.
     unsafe { ((stack_top - 8) as *mut u64).write(0); }
     let kernel_stack = stack_top - 8;
-    uefi::println!("Allocated {} KiB kernel stack", KERNEL_STACK_PAGES * 4);
+    uefi::println!("Allocated {} KiB kernel stack plus one unmapped guard page", KERNEL_STACK_PAGES * 4);
 
     // Allocate bootstrap page tables while UEFI allocation services are still
     // available. Keep every table below 4 GiB because the initial map is identity.
@@ -149,6 +166,7 @@ fn main() -> Status {
         memory_map_entries: memory_map.len(),
         memory_descriptor_size: descriptor_size,
         memory_descriptor_version: memory_map.meta().desc_version,
+        kernel_stack_guard_page,
     };
     let boot_info_ptr = boot_info_storage.as_ptr().cast::<BootInfo>();
     unsafe { boot_info_ptr.write(boot_info); }
