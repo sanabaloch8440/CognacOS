@@ -60,7 +60,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // the UEFI-allocated page tables. These identity-map the boot chain.
         arch::initialize();
         arch::enable_kernel_paging(info.pml4_physical);
-        serial_write(b"Kernel-owned CR3 activated successfully.\\r\\n");
+        serial_write(b"Kernel-owned CR3 activated successfully.\r\n");
 
         // Only after the new identity map is active may physical pages be touched
         // through their physical addresses. The allocator uses conventional RAM.
@@ -71,17 +71,17 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         ) {
             Ok(count) => count,
             Err(_) => {
-                serial_write(b"FATAL: invalid or unsupported physical memory map.\\r\\n");
+                serial_write(b"FATAL: invalid or unsupported physical memory map.\r\n");
                 halt();
             }
         };
-        serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\\r\\n");
+        serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\r\n");
         serial_write(b"Physical allocator initialized; conventional regions: ");
         serial_write_decimal(region_count);
-        serial_write(b"\\r\\n");
-        serial_write(b"Kernel-owned identity map active for 0..4 GiB.\\r\\n");
-        serial_write(b"Physical page allocator online (single-core bootstrap mode).\\r\\n");
-        serial_write(b"Interrupts remain disabled until APIC/timer setup.\\r\\n");
+        serial_write(b"\r\n");
+        serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
+        serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
+        serial_write(b"Interrupts remain disabled until APIC/timer setup.\r\n");
     }
     halt()
 }
