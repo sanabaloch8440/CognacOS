@@ -427,7 +427,8 @@ pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError
     put32(&mut image, reloc + 20, 0x400);
     put32(&mut image, reloc + 36, 0x4200_0040);
 
-    image[0x200..0x20c].copy_from_slice(&[0xb8,1,0,0,0,0xcd,0x81,0xb8,0,0,0,0]);\n    image[0x20c..0x20e].copy_from_slice(&[0xcd,0x81]); // SYS_GETPID then SYS_EXIT via the general dispatcher.
+    image[0x200..0x20e].copy_from_slice(&[0xb8,1,0,0,0,0xcd,0x81,0x31,0xff,0xb8,0,0,0,0]);
+    image[0x20e..0x210].copy_from_slice(&[0xcd,0x81]); // SYS_GETPID then SYS_EXIT via the general dispatcher.
     put64(&mut image, 0x210, 0x0000_0001_4000_1234);
     put32(&mut image, 0x400, 0x1000); // relocation block page RVA
     put32(&mut image, 0x404, 12);     // block size
