@@ -83,7 +83,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
         serial_write(b"Interrupts remain disabled until APIC/timer setup.\r\n");
     }
-    halt()
+    unsafe { halt() }
 }
 
 unsafe fn serial_init() {
