@@ -188,6 +188,48 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Destroy this address space after switching CR3 away from it. Frees user
+    /// leaves, user page-table pages, and the PML4 root; shared supervisor mappings
+    /// are never traversed or reclaimed.
+    pub unsafe fn destroy(self) -> Result<(), VmError> {
+        let root = self.root as *mut u64;
+        for pml4_index in 1..256usize {
+            let top = unsafe { root.add(pml4_index) };
+            let top_entry = unsafe { top.read() };
+            if top_entry & (PRESENT | USER) != (PRESENT | USER) { continue; }
+            let pdpt = (top_entry & ADDR) as *mut u64;
+            for a in 0..512usize {
+                let pdpt_slot = unsafe { pdpt.add(a) };
+                let pdpt_entry = unsafe { pdpt_slot.read() };
+                if pdpt_entry & PRESENT == 0 { continue; }
+                if pdpt_entry & LARGE != 0 { return Err(VmError::InvalidAddress); }
+                let pd = (pdpt_entry & ADDR) as *mut u64;
+                for b in 0..512usize {
+                    let pd_slot = unsafe { pd.add(b) };
+                    let pd_entry = unsafe { pd_slot.read() };
+                    if pd_entry & PRESENT == 0 { continue; }
+                    if pd_entry & LARGE != 0 { return Err(VmError::InvalidAddress); }
+                    let pt = (pd_entry & ADDR) as *mut u64;
+                    for d in 0..512usize {
+                        let pte_slot = unsafe { pt.add(d) };
+                        let pte = unsafe { pte_slot.read() };
+                        if pte & (PRESENT | USER) == (PRESENT | USER) {
+                            unsafe { crate::memory::free_page(pte & ADDR) }.map_err(|_| VmError::OutOfMemory)?;
+                        }
+                    }
+                    unsafe { crate::memory::free_page(pt as u64) }.map_err(|_| VmError::OutOfMemory)?;
+                    unsafe { pd_slot.write(0); }
+                }
+                unsafe { crate::memory::free_page(pd as u64) }.map_err(|_| VmError::OutOfMemory)?;
+                unsafe { pdpt_slot.write(0); }
+            }
+            unsafe { crate::memory::free_page(pdpt as u64) }.map_err(|_| VmError::OutOfMemory)?;
+            unsafe { top.write(0); }
+        }
+        unsafe { crate::memory::free_page(self.root) }.map_err(|_| VmError::OutOfMemory)?;
+        Ok(())
+    }
+
     /// Switch to this address space. The kernel identity map is shared so the
     /// current instruction, stack, IDT, and physical allocator remain reachable.
     pub unsafe fn activate(&self) {
