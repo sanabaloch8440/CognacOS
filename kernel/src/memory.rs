@@ -182,6 +182,8 @@ pub unsafe fn harden_page_tables(
         split(pml4_physical, guard_page)?;
     }
 
+    let text_page_start = text.0 & !(PAGE_SIZE - 1);
+    let text_page_end = align_up(text.1, PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
     let pml4 = pml4_physical as *mut u64;
     let root_entry = unsafe { pml4.read() };
     if root_entry & PRESENT == 0 { return Err(AllocError::InvalidMap); }
@@ -198,11 +200,20 @@ pub unsafe fn harden_page_tables(
                 unsafe { pde_ptr.write(pde | NO_EXECUTE | WRITABLE); }
             } else {
                 let table = (pde & ADDRESS_MASK) as *mut u64;
+                let physical_base = pde & ADDRESS_MASK;
                 for pte_index in 0..512usize {
                     let pte_ptr = unsafe { table.add(pte_index) };
                     let pte = unsafe { pte_ptr.read() };
                     if pte & PRESENT != 0 {
-                        unsafe { pte_ptr.write(pte | NO_EXECUTE | WRITABLE); }
+                        let page_address = physical_base + (pte_index as u64 * PAGE_SIZE);
+                        // Never make the currently executing kernel text NX, even
+                        // transiently: instruction fetch could fault before policy
+                        // restoration below. All other pages become NX immediately.
+                        if page_address >= text_page_start && page_address < text_page_end {
+                            unsafe { pte_ptr.write(pte & !WRITABLE); }
+                        } else {
+                            unsafe { pte_ptr.write(pte | NO_EXECUTE | WRITABLE); }
+                        }
                     }
                 }
             }
