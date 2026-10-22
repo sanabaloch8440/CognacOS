@@ -119,6 +119,14 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     if u64::from_le_bytes(pointer_check)!=env.peb { return Err(VmError::PermissionDenied); }
     unsafe { space.copy_from_user(env.peb+0x10,&mut pointer_check)?; }
     if u64::from_le_bytes(pointer_check)!=image.base { return Err(VmError::PermissionDenied); }
+    unsafe { space.copy_from_user(env.peb+0x18,&mut pointer_check)?; }
+    if u64::from_le_bytes(pointer_check)!=crate::process::LDR_ADDRESS { return Err(VmError::PermissionDenied); }
+    unsafe { space.copy_from_user(env.peb+0x20,&mut pointer_check)?; }
+    if u64::from_le_bytes(pointer_check)!=crate::process::PROCESS_PARAMS_ADDRESS { return Err(VmError::PermissionDenied); }
+    unsafe { space.copy_from_user(crate::process::LDR_ENTRY_ADDRESS+0x30,&mut pointer_check)?; }
+    if u64::from_le_bytes(pointer_check)!=image.base { return Err(VmError::PermissionDenied); }
+    unsafe { space.copy_from_user(crate::process::LDR_ENTRY_ADDRESS,&mut pointer_check)?; }
+    if u64::from_le_bytes(pointer_check)!=crate::process::LDR_ENTRY_ADDRESS+0x100 { return Err(VmError::PermissionDenied); }
     let tls = crate::pe_runtime::tls_layout(image.base).map_err(|_|VmError::InvalidAddress)?;
     if tls.present {
         let total = (tls.template_size as u64).checked_add(tls.zero_fill as u64).ok_or(VmError::InvalidAddress)?;
@@ -166,6 +174,12 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
         || snapshot.state != crate::process::ProcessState::Exited || snapshot.exit_code != 0
         || crate::process::reap(env.process_id) != Some(0) {
         return Err(VmError::PermissionDenied);
+    }
+    let mut loaded_modules=[crate::winabi::ModuleInfo::EMPTY;32];
+    let module_count=crate::winabi::module_infos(&mut loaded_modules);
+    for module in loaded_modules[..module_count].iter() {
+        crate::pe_runtime::unregister_image(module.base);
+        crate::winabi::unregister_module(&module.name[..module.len]);
     }
     crate::pe_runtime::unregister_image(image.base);
     unsafe { space.destroy()?; }
