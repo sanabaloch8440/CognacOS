@@ -4,6 +4,8 @@ pub const MAX_WAITERS: usize = 256;
 pub const MAX_WAIT_GROUPS: usize = 64;
 pub const MAX_GROUP_OBJECTS: usize = 64;
 pub type WaitToken = u64;
+#[derive(Clone, Copy)]
+pub struct WokenWaiter { pub thread:u64, pub timed_out:bool }
 pub const DELAY_OBJECT_PREFIX: u64 = 0xffff_ffff_0000_0000;
 pub const WAIT_ALL_TIMEOUT_PREFIX: u64 = 0xffff_fffe_0000_0000;
 pub fn wait_all_timeout_object(thread:u64)->u64 { WAIT_ALL_TIMEOUT_PREFIX | (thread & 0xffff_ffff) }
@@ -29,9 +31,31 @@ pub fn enqueue(object:u64,thread:u64,deadline:u64)->Result<WaitToken,WaitError>{
 /// Cancel a pending wait; stale tokens cannot cancel a reused slot.
 pub fn cancel(t:u64)->Result<u64,WaitError>{let(i,g)=decode(t).ok_or(WaitError::StaleToken)?;let mut s=QUEUES.lock();let r=&mut s.records[i];if r.generation!=g||r.state!=WaitState::Queued{return Err(WaitError::StaleToken)}let id=r.thread;*r=Record::EMPTY;Ok(id)}
 /// Wake the oldest queued waiter for an object; caller must ready that thread.
-pub fn wake_one(object:u64)->Option<u64>{if object==0{return None}let mut s=QUEUES.lock();let i=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i)?;let id=s.records[i].thread;s.records[i]=Record::EMPTY;Some(id)}
+pub fn wake_one_timed(object:u64)->Option<WokenWaiter>{
+    if object==0{return None}
+    let now=crate::apic::monotonic_ticks();
+    let mut s=QUEUES.lock();
+    let i=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i)?;
+    let record=s.records[i];s.records[i]=Record::EMPTY;
+    Some(WokenWaiter{thread:record.thread,timed_out:record.deadline!=0&&record.deadline<=now})
+}
+pub fn wake_one(object:u64)->Option<u64>{wake_one_timed(object).map(|w|w.thread)}
 /// Wake waiters into a caller-provided buffer. Returns the number written.
-pub fn wake_all(object:u64,out:&mut[u64])->usize{if object==0||out.is_empty(){return 0}let mut s=QUEUES.lock();let mut n=0;while n<out.len(){let next=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i);let Some(i)=next else{break};out[n]=s.records[i].thread;n+=1;s.records[i]=Record::EMPTY;}n}
+pub fn wake_all_timed(object:u64,out:&mut[WokenWaiter])->usize{
+    if object==0||out.is_empty(){return 0}
+    let now=crate::apic::monotonic_ticks();let mut s=QUEUES.lock();let mut n=0;
+    while n<out.len(){
+        let next=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i);
+        let Some(i)=next else{break};let record=s.records[i];s.records[i]=Record::EMPTY;
+        out[n]=WokenWaiter{thread:record.thread,timed_out:record.deadline!=0&&record.deadline<=now};n+=1;
+    }n
+}
+pub fn wake_all(object:u64,out:&mut[u64])->usize{
+    if out.is_empty(){return 0}
+    let mut timed=[WokenWaiter{thread:0,timed_out:false};MAX_WAITERS];
+    let limit=out.len().min(timed.len());let n=wake_all_timed(object,&mut timed[..limit]);
+    for i in 0..n{out[i]=timed[i].thread;}n
+}
 /// Expire waits whose finite absolute deadline is <= now; caller readies threads.
 pub fn expire(now:u64,out:&mut[u64])->usize{if out.is_empty(){return 0}let mut s=QUEUES.lock();let mut n=0;for r in s.records.iter_mut(){if n==out.len(){break}if r.state==WaitState::Queued&&r.deadline!=0&&r.deadline<=now{out[n]=r.thread;n+=1;*r=Record::EMPTY}}n}
 pub fn pending_count()->usize{QUEUES.lock().records.iter().filter(|r|r.state==WaitState::Queued).count()}
