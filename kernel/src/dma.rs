@@ -522,12 +522,15 @@ struct MapRegisterToken { id: u64 }
 static mut MAP_REGISTER_TOKENS: [MapRegisterToken; MAX_MAP_REGISTER_ALLOCS] =
     [const { MapRegisterToken { id: 0 } }; MAX_MAP_REGISTER_ALLOCS];
 
+/// IO_ALLOCATION_ACTION returned by an adapter execution callback.
 type AdapterExecutionRoutine = unsafe extern "win64" fn(
     device_object: *mut core::ffi::c_void,
     irp: *mut core::ffi::c_void,
     map_register_base: *mut core::ffi::c_void,
     context: *mut core::ffi::c_void,
-);
+) -> u32;
+const IO_DEALLOCATE_OBJECT: u32 = 2;
+const IO_DEALLOCATE_OBJECT_KEEP_REGISTERS: u32 = 3;
 #[derive(Clone, Copy)]
 struct ChannelRequest {
     active: bool, device: usize, count: u32, routine: usize, context: usize,
@@ -606,7 +609,10 @@ pub unsafe extern "win64" fn free_adapter_channel(adapter: *mut core::ffi::c_voi
         let routine: AdapterExecutionRoutine = unsafe { core::mem::transmute(req.routine) };
         let token = if req.count == 0 { core::ptr::null_mut() }
             else { allocate_map_register_token(req.device as *mut _, req.count).unwrap_or(core::ptr::null_mut()) };
-        unsafe { routine(req.device as *mut _, core::ptr::null_mut(), token, req.context as *mut _); }
+        let action = unsafe { routine(req.device as *mut _, core::ptr::null_mut(), token, req.context as *mut _) };
+        if action == IO_DEALLOCATE_OBJECT || action == IO_DEALLOCATE_OBJECT_KEEP_REGISTERS {
+            unsafe { free_adapter_channel(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()); }
+        }
     }
 }
 
