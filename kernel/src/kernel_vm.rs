@@ -99,7 +99,7 @@ fn synchronize_kernel_tlb() {
   if crate::smp::ipi_shootdowns_enabled() && crate::smp::send_tlb_shootdown(cpu).is_err() {
    // Page tables are already changed. Reusing their frames without confirmed
    // invalidation is memory corruption, so fail-stop instead of guessing.
-   crate::halt();
+   unsafe { crate::halt(); }
   }
   while TLB_ACK[cpu].load(Ordering::Acquire) != generation { core::hint::spin_loop(); }
  }
