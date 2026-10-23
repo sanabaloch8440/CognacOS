@@ -286,7 +286,7 @@ pub fn monotonic_ticks() -> u64 {
 /// target CPU); midpoint minimises IPI latency bias. Repeat and retain the sample
 /// with the narrowest bracket in the SMP startup coordinator for best accuracy.
 pub fn record_tsc_sync_sample(logical_cpu: usize, local_before: u64, remote_sample: u64, local_after: u64) -> Result<i64, ApicError> {
-    if logical_cpu >= crate::hal::MAX_CPUS || local_after < local_before || local_after - local_before > 10_000_000 {
+    if logical_cpu == 0 || logical_cpu >= crate::hal::MAX_CPUS || local_after < local_before || local_after - local_before > 10_000_000 {
         return Err(ApicError::InvalidBase);
     }
     let midpoint = local_before + (local_after - local_before) / 2;
@@ -500,11 +500,12 @@ pub fn release_interrupt_vector(vector: u8) -> Result<(), ApicError> {
 /// Register a handler for a vector already allocated by allocate_interrupt_vector.
 /// Install the corresponding architecture IDT gate before unmasking its source.
 pub fn register_interrupt_handler(vector: u8, handler: InterruptHandler, context: *mut core::ffi::c_void) -> Result<(), ApicError> {
-    if !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector) || !VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire) {
+    if !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector) {
         return Err(ApicError::InvalidVector);
     }
     let _guard = VECTOR_REGISTRATION_LOCK.lock();
-    if VECTOR_HANDLERS[vector as usize].load(Ordering::Acquire) != 0 {
+    if !VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire)
+        || VECTOR_HANDLERS[vector as usize].load(Ordering::Acquire) != 0 {
         return Err(ApicError::InvalidVector);
     }
     VECTOR_CONTEXTS[vector as usize].store(context as usize, Ordering::Relaxed);
