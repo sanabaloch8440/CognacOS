@@ -76,8 +76,8 @@ pub unsafe extern "win64" fn mm_is_non_paged_system_address_valid(address: *cons
     (translate(va, false).is_some()) as u8
 }
 
-/// MmCopyMemory(MM_COPY_ADDRESS is an 8-byte union): flags 0 = virtual source,
-/// flags 1 = physical source. Destination must be a currently writable mapping.
+/// MmCopyMemory(MM_COPY_ADDRESS is an 8-byte union): flags 1 = physical source,
+/// flags 2 = virtual source (the documented MM_COPY_MEMORY_* flag values). Destination must be a currently writable mapping.
 /// Copies stop at the first invalid translation and report the completed prefix.
 pub unsafe extern "win64" fn mm_copy_memory(
     destination: *mut c_void,
@@ -87,8 +87,8 @@ pub unsafe extern "win64" fn mm_copy_memory(
     bytes_transferred: *mut u64,
 ) -> i32 {
     if !bytes_transferred.is_null() { unsafe { bytes_transferred.write(0); } }
-    if destination.is_null() || length == 0 || (flags != 0 && flags != 1) {
-        return if length == 0 && !destination.is_null() && (flags == 0 || flags == 1) {
+    if destination.is_null() || length == 0 || (flags != 1 && flags != 2) {
+        return if length == 0 && !destination.is_null() && (flags == 1 || flags == 2) {
             STATUS_SUCCESS
         } else { STATUS_INVALID_PARAMETER };
     }
@@ -227,7 +227,7 @@ pub fn self_test() -> bool {
     }
     let physical = unsafe { mm_get_physical_address(source.cast()) };
     let mut copied = 0u64;
-    let status = unsafe { mm_copy_memory(destination.cast(), source as u64, 128, 0, &mut copied) };
+    let status = unsafe { mm_copy_memory(destination.cast(), source as u64, 128, 2, &mut copied) };
     let valid = physical != 0
         && unsafe { mm_is_address_valid(source.cast()) } != 0
         && unsafe { mm_is_non_paged_system_address_valid(source.cast()) } != 0
