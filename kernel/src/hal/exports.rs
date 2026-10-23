@@ -6,7 +6,7 @@
 //! generic function pointers would risk corrupting driver calls.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StubState { NotImplemented }
+pub enum StubState { NotImplemented, Implemented }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HalExport { pub ordinal: u16, pub name: &'static str, pub state: StubState }
@@ -59,7 +59,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 44, name: "HalProcessorIdle", state: StubState::NotImplemented },
     HalExport { ordinal: 45, name: "HalQueryDisplayParameters", state: StubState::NotImplemented },
     HalExport { ordinal: 46, name: "HalQueryEnvironmentVariableInfoEx", state: StubState::NotImplemented },
-    HalExport { ordinal: 47, name: "HalQueryMaximumProcessorCount", state: StubState::NotImplemented },
+    HalExport { ordinal: 47, name: "HalQueryMaximumProcessorCount", state: StubState::Implemented },
     HalExport { ordinal: 48, name: "HalQueryRealTimeClock", state: StubState::NotImplemented },
     HalExport { ordinal: 49, name: "HalReadDmaCounter", state: StubState::NotImplemented },
     HalExport { ordinal: 50, name: "HalRegisterDynamicProcessor", state: StubState::NotImplemented },
@@ -96,7 +96,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 81, name: "IoWritePartitionTable", state: StubState::NotImplemented },
     HalExport { ordinal: 82, name: "KdComPortInUse", state: StubState::NotImplemented },
     HalExport { ordinal: 83, name: "KdHvComPortInUse", state: StubState::NotImplemented },
-    HalExport { ordinal: 84, name: "KeFlushWriteBuffer", state: StubState::NotImplemented },
+    HalExport { ordinal: 84, name: "KeFlushWriteBuffer", state: StubState::Implemented },
     HalExport { ordinal: 85, name: "KeQueryPerformanceCounter", state: StubState::NotImplemented },
     HalExport { ordinal: 86, name: "KeStallExecutionProcessor", state: StubState::NotImplemented },
     HalExport { ordinal: 87, name: "x86BiosAllocateBuffer", state: StubState::NotImplemented },
@@ -105,6 +105,35 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 90, name: "x86BiosReadMemory", state: StubState::NotImplemented },
     HalExport { ordinal: 91, name: "x86BiosWriteMemory", state: StubState::NotImplemented },
 ];
+
+/// Return the maximum logical-processor capacity exposed by this HAL.
+pub unsafe extern "win64" fn hal_query_maximum_processor_count() -> u32 {
+    super::MAX_CPUS as u32
+}
+
+/// Full memory barrier used by the Windows x64 write-buffer flush export.
+pub unsafe extern "win64" fn ke_flush_write_buffer() {
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
+}
+
+/// Resolve only ABI-reviewed HAL exports. Unsupported names fail closed.
+pub fn resolve(name: &[u8]) -> Option<u64> {
+    if name.eq_ignore_ascii_case(b"HalQueryMaximumProcessorCount") {
+        Some(hal_query_maximum_processor_count as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"KeFlushWriteBuffer")
+        || name.eq_ignore_ascii_case(b"HalFlushWriteBuffer") {
+        Some(ke_flush_write_buffer as usize as u64)
+    } else { None }
+}
+
+pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
+    match ordinal {
+        47 => Some(hal_query_maximum_processor_count as usize as u64),
+        84 => Some(ke_flush_write_buffer as usize as u64),
+        _ => None,
+    }
+}
 
 pub fn find_by_name(name: &[u8]) -> Option<&'static HalExport> {
     EXPORTS.iter().find(|entry| entry.name.as_bytes().eq_ignore_ascii_case(name))
@@ -122,4 +151,9 @@ pub fn self_test() -> bool {
         && find_by_name(b"halrequestipi").map(|e| e.ordinal) == Some(55)
         && find_by_ordinal(91).map(|entry| entry.name) == Some("x86BiosWriteMemory")
         && find_by_name(b"not-a-hal-export").is_none()
+        && resolve(b"HalQueryMaximumProcessorCount").is_some()
+        && resolve(b"KeFlushWriteBuffer").is_some()
+        && resolve(b"HalAcpiGetTableEx").is_none()
+        && resolve_ordinal(47).is_some()
+        && resolve_ordinal(1).is_none()
 }
