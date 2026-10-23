@@ -12,14 +12,17 @@ const STATUS_SUCCESS:i32=0;const STATUS_INVALID_PARAMETER:i32=0xC000_000Du32 as 
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_ethernet_address_to_string_w(address:*const u8,dst:*mut u16)->*mut u16 {
  if address.is_null()||dst.is_null(){return core::ptr::null_mut();}let hex=b"0123456789ABCDEF";let mut p=dst;for i in 0..6{let v=unsafe{*address.add(i)};unsafe{*p=hex[(v>>4) as usize] as u16;*p.add(1)=hex[(v&15) as usize] as u16;}p=unsafe{p.add(2)};if i!=5{unsafe{*p=45;}p=unsafe{p.add(1)};}}unsafe{*p=0;}p
 }
+fn hex_digit(v:u8)->u16 { if v<10 { (b'0'+v) as u16 } else { (b'A'+v-10) as u16 } }
+unsafe fn put_hex(dst:*mut u16,offset:usize,value:u64,digits:usize) { for i in 0..digits { let shift=(digits-1-i)*4; unsafe{*dst.add(offset+i)=hex_digit(((value>>shift)&15) as u8);} } }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_string_from_guid(g:*const RtlGuid,dst:*mut super::UnicodeString)->i32 {
- if g.is_null()||dst.is_null(){return STATUS_INVALID_PARAMETER;}let x=unsafe{&*g};let d=unsafe{&mut *dst};let needed=78usize;if d.maximum_length as usize<needed||d.buffer.is_null(){return STATUS_BUFFER_TOO_SMALL;}
- let mut chars=[0u16;39];let fmt=alloc::format!("{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}",x.data1,x.data2,x.data3,x.data4[0],x.data4[1],x.data4[2],x.data4[3],x.data4[4],x.data4[5],x.data4[6],x.data4[7]);
- chars[0]=123;for(i,b)in fmt.bytes().enumerate(){chars[i+1]=b as u16;}chars[37]=125;for i in 0..38{unsafe{*d.buffer.add(i)=chars[i];}}d.length=76;STATUS_SUCCESS
+ if g.is_null()||dst.is_null(){return STATUS_INVALID_PARAMETER;}let x=unsafe{&*g};let d=unsafe{&mut *dst};if (d.maximum_length as usize)<78||d.buffer.is_null(){return STATUS_BUFFER_TOO_SMALL;}
+ unsafe{*d.buffer=123;put_hex(d.buffer,1,x.data1 as u64,8);*d.buffer.add(9)=45;put_hex(d.buffer,10,x.data2 as u64,4);*d.buffer.add(14)=45;put_hex(d.buffer,15,x.data3 as u64,4);*d.buffer.add(19)=45;put_hex(d.buffer,20,x.data4[0] as u64,2);put_hex(d.buffer,22,x.data4[1] as u64,2);*d.buffer.add(24)=45;for i in 0..6{put_hex(d.buffer,25+i*2,x.data4[i+2] as u64,2);}*d.buffer.add(37)=125;*d.buffer.add(38)=0;}d.length=76;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_guid_from_string(s:*const super::UnicodeString,g:*mut RtlGuid)->i32 {
- if s.is_null()||g.is_null(){return STATUS_INVALID_PARAMETER;}let x=unsafe{&*s};if x.length<72||x.length%2!=0||x.buffer.is_null(){return STATUS_INVALID_PARAMETER;}let mut ascii=[0u8;38];let mut n=0;for i in 0..(x.length/2) as usize{let c=unsafe{*x.buffer.add(i)};if c==123||c==125||c==45{continue;}if c>127||n>=32{return STATUS_INVALID_PARAMETER;}ascii[n]=c as u8;n+=1;}if n!=32{return STATUS_INVALID_PARAMETER;}
+ if s.is_null()||g.is_null(){return STATUS_INVALID_PARAMETER;}let x=unsafe{&*s};if x.length<76||x.length%2!=0||x.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
+ let mut ascii=[0u8;32];let mut n=0usize;for i in 0..(x.length/2) as usize{let c=unsafe{*x.buffer.add(i)};if c==123||c==125||c==45{continue;}if c>127||n>=32{return STATUS_INVALID_PARAMETER;}ascii[n]=c as u8;n+=1;}if n!=32{return STATUS_INVALID_PARAMETER;}
  fn parse(s:&[u8])->Option<u64>{let mut v=0u64;for c in s{let d=match c{b'0'..=b'9'=>(c-b'0') as u64,b'a'..=b'f'=>(c-b'a'+10) as u64,b'A'..=b'F'=>(c-b'A'+10) as u64,_=>return None};v=(v<<4)|d;}Some(v)}
- let d1=parse(&ascii[0..8]).ok_or(()) ;let d2=parse(&ascii[8..12]).ok_or(());let d3=parse(&ascii[12..16]).ok_or(());let mut tail=[0u8;8];for i in 0..8{tail[i]=parse(&ascii[16+i*2..18+i*2]).ok_or(())? as u8;}
- let (Ok(d1),Ok(d2),Ok(d3))=(d1,d2,d3)else{return STATUS_INVALID_PARAMETER;};unsafe{*g=RtlGuid{data1:d1 as u32,data2:d2 as u16,data3:d3 as u16,data4:tail};}STATUS_SUCCESS
+ let (Some(d1),Some(d2),Some(d3))=(parse(&ascii[0..8]),parse(&ascii[8..12]),parse(&ascii[12..16])) else{return STATUS_INVALID_PARAMETER;};
+ let mut tail=[0u8;8];for i in 0..8{let Some(v)=parse(&ascii[16+i*2..18+i*2]) else{return STATUS_INVALID_PARAMETER;};tail[i]=v as u8;}
+ unsafe{*g=RtlGuid{data1:d1 as u32,data2:d2 as u16,data3:d3 as u16,data4:tail};}STATUS_SUCCESS
 }

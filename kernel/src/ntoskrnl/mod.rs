@@ -156,6 +156,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlEthernetAddressToStringW" => rtl_runtime::rtl_ethernet_address_to_string_w as usize,
   "RtlStringFromGUID" => rtl_runtime::rtl_string_from_guid as usize,
   "RtlGUIDFromString" => rtl_runtime::rtl_guid_from_string as usize,
+  "RtlIntegerToUnicode" => rtl_runtime::rtl_integer_to_unicode as usize,
+  "RtlCopyBitMapEx" => rtl_runtime::rtl_copy_bit_map_ex as usize,
   // All other names deliberately fail closed until their own signatures and semantics are implemented.
   _ => return None,
  };

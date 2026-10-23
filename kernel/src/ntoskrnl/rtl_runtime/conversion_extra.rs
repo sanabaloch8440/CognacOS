@@ -54,3 +54,7 @@ const STATUS_SUCCESS:i32=0;const STATUS_INVALID_PARAMETER:i32=0xC000_000Du32 as 
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtlx_unicode_string_to_ansi_size(s:*const UnicodeString)->u32 {
  if s.is_null(){return 0;}let x=unsafe{&*s};if x.length%2!=0{return 0;}(x.length as u32/2).saturating_add(1)
 }
+
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_integer_to_unicode(value:u32,base:u32,dst:*mut u16)->i32 {
+ if dst.is_null(){return STATUS_INVALID_PARAMETER;}let radix=if base==0{10}else{base};if !(2..=36).contains(&radix){return STATUS_INVALID_PARAMETER;}let chars=b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";let mut v=value;let mut tmp=[0u16;32];let mut n=0usize;loop{tmp[n]=chars[(v%radix) as usize] as u16;n+=1;v/=radix;if v==0{break;}}for i in 0..n{unsafe{*dst.add(i)=tmp[n-i-1];}}unsafe{*dst.add(n)=0;}STATUS_SUCCESS
+}
