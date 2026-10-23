@@ -1,9 +1,7 @@
 //! Callable NT kernel executive (Ke) routines with ABI-compatible signatures.
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::Ordering;
 
 const ALL_PROCESSOR_GROUPS: u16 = 0xffff;
-const STATUS_SUCCESS: i32 = 0;
-const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
 
 /// Windows PROCESSOR_NUMBER layout: group, group-relative number, reserved.
 #[repr(C)]
@@ -11,7 +9,7 @@ pub struct ProcessorNumber { pub group: u16, pub number: u8, pub reserved: u8 }
 
 /// Minimal x64 DISPATCHER_HEADER prefix shared by KEVENT/KSEMAPHORE.
 #[repr(C)]
-struct DispatcherHeader {
+pub struct DispatcherHeader {
     kind: u8,
     absolute: u8,
     size: u8,
@@ -23,7 +21,7 @@ struct DispatcherHeader {
 
 const EVENT_NOTIFICATION: u8 = 0;
 const EVENT_SYNCHRONIZATION: u8 = 1;
-const EVENT_SIZE: u8 = 4; // 24-byte header in 32-bit units.
+const EVENT_SIZE: u8 = 6; // sizeof(KEVENT) / sizeof(ULONG).
 
 /// IRQL is PASSIVE_LEVEL until the interrupt-priority layer is brought online.
 pub unsafe extern "win64" fn ke_get_current_irql() -> u8 { 0 }
@@ -83,8 +81,8 @@ pub unsafe extern "win64" fn ke_initialize_event(event: *mut DispatcherHeader, e
             kind: if event_type == 0 { EVENT_NOTIFICATION } else { EVENT_SYNCHRONIZATION },
             absolute: 0, size: EVENT_SIZE, inserted: 0,
             signal_state: if state != 0 { 1 } else { 0 },
-            wait_list_flink: event as u64 + core::mem::size_of::<DispatcherHeader>() as u64 - 16,
-            wait_list_blink: event as u64 + core::mem::size_of::<DispatcherHeader>() as u64 - 16,
+            wait_list_flink: event as u64 + 8,
+            wait_list_blink: event as u64 + 8,
         });
     }
 }
@@ -106,20 +104,19 @@ pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, _increme
 
 /// Semaphore header followed by the NT limit field.
 #[repr(C)]
-struct SemaphoreObject { header: DispatcherHeader, limit: i32 }
-pub unsafe extern "win64" fn ke_initialize_semaphore(semaphore: *mut SemaphoreObject, count: i32, limit: i32) -> i32 {
-    if semaphore.is_null() || count < 0 || limit <= 0 || count > limit { return STATUS_INVALID_PARAMETER; }
+pub struct SemaphoreObject { header: DispatcherHeader, limit: i32 }
+pub unsafe extern "win64" fn ke_initialize_semaphore(semaphore: *mut SemaphoreObject, count: i32, limit: i32) {
+    if semaphore.is_null() || count < 0 || limit <= 0 || count > limit { return; }
     unsafe {
         semaphore.write(SemaphoreObject {
             header: DispatcherHeader {
-                kind: 5, absolute: 0, size: 5, inserted: 0, signal_state: count,
+                kind: 5, absolute: 0, size: 8, inserted: 0, signal_state: count,
                 wait_list_flink: semaphore as u64 + 8,
                 wait_list_blink: semaphore as u64 + 8,
             },
             limit,
         });
     }
-    STATUS_SUCCESS
 }
 pub unsafe extern "win64" fn ke_read_state_semaphore(semaphore: *const SemaphoreObject) -> i32 {
     if semaphore.is_null() { return 0; }
