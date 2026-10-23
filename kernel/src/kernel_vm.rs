@@ -385,5 +385,14 @@ pub fn self_test() -> bool {
  let freed=if crate::pagefile::is_active(){allocation_pages(p).is_none()}else{free_pages(p,3).is_ok()&&allocation_pages(p).is_none()};
  freed && (!crate::smp::ipi_shootdowns_enabled() || crate::smp::tlb_ipi_count()>ipi_before)
 }
+/// Report whether a system address belongs to a pageable pool extent, even
+/// while its current PTE happens to be resident.
+pub fn is_pageable_address(address:u64)->bool {
+ if address<BASE||address>=BASE+(PAGES as u64)*PAGE{return false}
+ let page=((address-BASE)/PAGE) as usize;
+ let _g=Guard::lock();
+ unsafe{&*TABLE.0.get()}.iter().any(|e|e.live&&e.pageable&&page>=e.start&&page<e.start+e.pages)
+}
+
 pub fn allocation_pages(ptr:*const u8)->Option<usize>{let va=ptr as u64;if ptr.is_null()||va<BASE||(va-BASE)&(PAGE-1)!=0{return None}let start=((va-BASE)/PAGE)as usize;let _g=Guard::lock();unsafe{&*TABLE.0.get()}.iter().find(|e|e.live&&e.start==start).map(|e|e.pages)}
 #[cfg(test)]mod tests{use super::*;#[test]fn arena_geometry(){assert_eq!(BASE&(PAGE-1),0);assert_eq!(PAGES*PAGE as usize,1usize<<32);assert_eq!(ix(BASE)[0],256);assert_eq!(ix(BASE+PAGE)[3],1);}}
