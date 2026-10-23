@@ -758,8 +758,54 @@ mod dma_lifecycle_tests {
     fn sg_release_rejects_unknown_and_double_release() {
         let bogus = 0x1234usize as *mut ScatterGatherListAbi;
         unsafe { put_scatter_gather_list(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(), bogus, 0); }
+        {
+            let _guard = SG_LOCK.lock();
+            assert!(!unsafe { &*SG_REGISTRY.ownership.get() }.iter().any(|e| e.active && e.list == bogus as usize));
+        }
+
+        // Exercise both release of a live registry entry and idempotent
+        // rejection of the same pointer after ownership has been relinquished.
+        let list = unsafe { &mut *SG_REGISTRY.lists.get() };
+        let ptr = core::ptr::addr_of_mut!(list[0]).cast::<ScatterGatherListAbi>();
+        {
+            let _guard = SG_LOCK.lock();
+            let owners = unsafe { &mut *SG_REGISTRY.ownership.get() };
+            owners[0] = SgOwnership { active: true, device: 0x55, list: ptr as usize };
+        }
+        let adapter = core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast();
+        unsafe { put_scatter_gather_list(adapter, ptr, 0); }
+        unsafe { put_scatter_gather_list(adapter, ptr, 0); }
         let _guard = SG_LOCK.lock();
-        assert!(!unsafe { &*SG_REGISTRY.ownership.get() }.iter().any(|e| e.active && e.list == bogus as usize));
+        assert!(!unsafe { &*SG_REGISTRY.ownership.get() }.iter().any(|e| e.active && e.list == ptr as usize));
+    }
+
+    #[test]
+    fn concurrent_map_register_token_stress() {
+        // This is a genuine host-side multithreaded test of the shared registry
+        // lock and token reuse. It does not claim to emulate interrupt context
+        // or a multi-CPU kernel scheduler.
+        const THREADS: usize = 8;
+        const ITERATIONS: usize = 1000;
+        let start = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+        let adapter = core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast::<core::ffi::c_void>() as usize;
+        let mut workers = std::vec::Vec::new();
+        for worker in 0..THREADS {
+            let gate = start.clone();
+            workers.push(std::thread::spawn(move || {
+                let device = (0x1000usize + worker) as *mut core::ffi::c_void;
+                gate.wait();
+                for _ in 0..ITERATIONS {
+                    let token = loop {
+                        if let Some(token) = allocate_map_register_token(device, 1) { break token; }
+                        std::thread::yield_now();
+                    };
+                    unsafe { free_map_registers(adapter as *mut core::ffi::c_void, token, 1); }
+                }
+            }));
+        }
+        for worker in workers { worker.join().expect("stress worker panicked"); }
+        let state = MAP_REGISTERS.lock();
+        assert!(state.records.iter().all(|r| !r.active));
     }
 }
 
