@@ -85,7 +85,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 70, name: "HalStartProfileInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 71, name: "HalStopProfileInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 72, name: "HalSystemVectorDispatchEntry", state: StubState::NotImplemented },
-    HalExport { ordinal: 73, name: "HalTranslateBusAddress", state: StubState::NotImplemented },
+    HalExport { ordinal: 73, name: "HalTranslateBusAddress", state: StubState::Implemented },
     HalExport { ordinal: 74, name: "HalWheaUpdateCmciPolicy", state: StubState::NotImplemented },
     HalExport { ordinal: 75, name: "IoFlushAdapterBuffers", state: StubState::NotImplemented },
     HalExport { ordinal: 76, name: "IoFreeAdapterChannel", state: StubState::NotImplemented },
@@ -211,6 +211,37 @@ pub unsafe extern "win64" fn hal_set_bus_data(
     unsafe { hal_set_bus_data_by_offset(bus_data_type, bus_number, slot_number, buffer, 0, length) }
 }
 
+
+
+/// Translate a bus-relative address on the conventional x86 PC buses.
+///
+/// This platform currently has identity-mapped CPU/bus physical addresses and
+/// no bridge-window translation database. Support only the PC-compatible bus
+/// types for which identity translation is valid; reject unknown buses and
+/// invalid I/O-port addresses instead of returning a fabricated translation.
+pub unsafe extern "win64" fn hal_translate_bus_address(
+    interface_type: u32,
+    _bus_number: u32,
+    bus_address: *const i64,
+    address_space: *mut u32,
+    translated_address: *mut i64,
+) -> u8 {
+    if bus_address.is_null() || address_space.is_null() || translated_address.is_null() {
+        return 0;
+    }
+    // INTERFACE_TYPE: Internal, Isa, Eisa, MicroChannel, and PCIBus.
+    if !matches!(interface_type, 0 | 1 | 2 | 3 | 5) {
+        return 0;
+    }
+    let space = unsafe { address_space.read() };
+    if space > 1 { return 0; }
+    let address = unsafe { bus_address.read() };
+    if address < 0 { return 0; }
+    // x86 port I/O uses a 16-bit port number. Do not truncate a bad address.
+    if space == 1 && address > u16::MAX as i64 { return 0; }
+    unsafe { translated_address.write(address); }
+    1
+}
 
 /// Map an NT logical processor number to its firmware/APIC processor ID.
 /// Unknown or not-yet-discovered logical processors return ULONG_MAX.
@@ -368,6 +399,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         Some(hal_allocate_common_buffer as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalFreeCommonBuffer") {
         Some(hal_free_common_buffer as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalTranslateBusAddress") {
+        Some(hal_translate_bus_address as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalGetBusData") {
         Some(hal_get_bus_data as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalGetBusDataByOffset") {
@@ -402,6 +435,7 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
         26 => Some(hal_get_bus_data_by_offset as usize as u64),
         61 => Some(hal_set_bus_data as usize as u64),
         62 => Some(hal_set_bus_data_by_offset as usize as u64),
+        73 => Some(hal_translate_bus_address as usize as u64),
         55 => Some(hal_request_ipi as usize as u64),
         56 => Some(hal_request_ipi_specify_vector as usize as u64),
         33 => Some(hal_get_processor_id_by_nt_number as usize as u64),
@@ -443,6 +477,8 @@ pub fn self_test() -> bool {
         && resolve(b"HalFreeCommonBuffer").is_some()
         && resolve_ordinal(6).is_some()
         && resolve_ordinal(22).is_some()
+        && resolve(b"HalTranslateBusAddress").is_some()
+        && resolve_ordinal(73).is_some()
         && resolve(b"HalGetBusData").is_some()
         && resolve(b"HalGetBusDataByOffset").is_some()
         && resolve(b"HalSetBusData").is_some()
