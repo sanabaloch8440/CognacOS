@@ -56,6 +56,7 @@ struct BootInfo {
     memory_descriptor_size: usize,
     memory_descriptor_version: u32,
     kernel_stack_guard_page: u64,
+    rsdp_address: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -68,7 +69,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic != BOOT_INFO_MAGIC || info.version != 2
+        if info.magic != BOOT_INFO_MAGIC || info.version != 3
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
@@ -88,7 +89,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"UEFI boot services exited successfully.\r\n");
-        serial_write(b"Boot information version: 2\r\n");
+        serial_write(b"Boot information version: 3\r\n");
         serial_write(b"Memory map entries: ");
         serial_write_decimal(info.memory_map_entries);
         serial_write(b"\r\n");
@@ -147,6 +148,31 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"ACPI MADT parser self-test passed; APIC discovery primitives available.\r\n");
+
+        if info.rsdp_address != 0 {
+            match acpi::discover_madt(info.rsdp_address) {
+                Ok(firmware_madt) => {
+                    match hal::register_madt_cpus(&firmware_madt, bsp_apic_id) {
+                        Ok(discovered) => {
+                            serial_write(b"Firmware ACPI MADT validated; enabled APs discovered: ");
+                            serial_write_decimal(discovered);
+                            serial_write(b" (not started).\r\n");
+                            serial_write(b"Firmware MADT Local APIC address: ");
+                            serial_write_hex(firmware_madt.local_apic_address);
+                            serial_write(b"\r\n");
+                        }
+                        Err(_) => {
+                            serial_write(b"WARNING: MADT parsed, but HAL CPU registration failed; SMP remains disabled.\r\n");
+                        }
+                    }
+                }
+                Err(_) => {
+                    serial_write(b"WARNING: firmware ACPI RSDP/root/MADT validation failed; SMP remains disabled.\r\n");
+                }
+            }
+        } else {
+            serial_write(b"WARNING: no firmware ACPI RSDP handoff; SMP discovery skipped.\r\n");
+        }
 
         // Exercise scheduler metadata/priority/affinity without switching stacks.
         scheduler::initialize();
