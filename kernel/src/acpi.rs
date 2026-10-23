@@ -212,7 +212,7 @@ pub unsafe fn find_table(rsdp_address: u64, signature: [u8; 4], instance: usize)
     }
     let root = unsafe { core::slice::from_raw_parts(root_address as *const u8, root_len) };
     if !checksum_ok(root) { return Err(AcpiError::BadChecksum); }
-    if root.get(0..4) != Some(if is_xsdt { b"XSDT" } else { b"RSDT" }) {
+    let expected_root: &[u8] = if is_xsdt { b"XSDT" } else { b"RSDT" };\n    if root.get(0..4) != Some(expected_root) {
         return Err(AcpiError::BadSignature);
     }
     let width = if is_xsdt { 8usize } else { 4usize };
@@ -224,7 +224,7 @@ pub unsafe fn find_table(rsdp_address: u64, signature: [u8; 4], instance: usize)
         } else { u32le(root, offset)? as u64 };
         if address == 0 || address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) { continue; }
         let h = unsafe { core::slice::from_raw_parts(address as *const u8, 36) };
-        if h.get(0..4) != Some(&signature) { continue; }
+        if h.get(0..4) != Some(&signature[..]) { continue; }
         let length = u32le(h, 4)? as usize;
         if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&length)
             || address.checked_add(length as u64).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
