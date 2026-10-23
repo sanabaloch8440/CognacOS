@@ -115,7 +115,7 @@ pub unsafe fn send_init_ipi(base: u64, destination_apic_id: u8) -> Result<(), Ap
 /// safe. A caller must prepare the trampoline, stack, CR3, GDT, IDT, and state.
 pub unsafe fn send_startup_ipi(base: u64, destination_apic_id: u8, trampoline_physical: u64) -> Result<(), ApicError> {
     if base == 0 || base & 0xfff != 0 { return Err(ApicError::InvalidBase); }
-    if trampoline_physical >= 0x10_0000 || trampoline_physical & 0xfff != 0 {
+    if trampoline_physical == 0 || trampoline_physical >= 0x10_0000 || trampoline_physical & 0xfff != 0 {
         return Err(ApicError::InvalidBase);
     }
     unsafe { wait_icr_idle(base)?; }
