@@ -27,3 +27,20 @@ pub unsafe extern "win64" fn rtl_create_unicode_string_from_asciiz(dst:*mut Unic
  unsafe{*p.cast::<u16>().add(n)=0;}
  let d=unsafe{&mut *dst};d.buffer=p.cast::<u16>();d.length=(n*2) as u16;d.maximum_length=bytes as u16;1
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn allocated_unicode_constructors_release_pool_storage() {
+        let src = [b'A' as u16, b'B' as u16, 0];
+        let mut out = UnicodeString { length: 0, maximum_length: 0, buffer: core::ptr::null_mut() };
+        assert_eq!(unsafe { rtl_create_unicode_string(&mut out, src.as_ptr()) }, 1);
+        assert_eq!(out.length, 4);
+        assert_eq!(unsafe { *out.buffer.add(0) }, b'A' as u16);
+        assert_eq!(unsafe { *out.buffer.add(1) }, b'B' as u16);
+        unsafe { super::super::rtl_free_unicode_string(&mut out); }
+        assert!(out.buffer.is_null());
+        assert_eq!(out.length, 0);
+    }
+}
