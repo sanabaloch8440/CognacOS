@@ -20,9 +20,9 @@ pub fn enqueue(object:u64,thread:u64,deadline:u64)->Result<WaitToken,WaitError>{
 /// Cancel a pending wait; stale tokens cannot cancel a reused slot.
 pub fn cancel(t:u64)->Result<u64,WaitError>{let(i,g)=decode(t).ok_or(WaitError::StaleToken)?;let mut s=QUEUES.lock();let r=&mut s.records[i];if r.generation!=g||r.state!=WaitState::Queued{return Err(WaitError::StaleToken)}let id=r.thread;*r=Record::EMPTY;Ok(id)}
 /// Wake the oldest queued waiter for an object; caller must ready that thread.
-pub fn wake_one(object:u64)->Option<u64>{if object==0{return None}let mut s=QUEUES.lock();let i=s.records.iter().position(|r|r.state==WaitState::Queued&&r.object==object)?;let id=s.records[i].thread;s.records[i]=Record::EMPTY;Some(id)}
+pub fn wake_one(object:u64)->Option<u64>{if object==0{return None}let mut s=QUEUES.lock();let i=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i)?;let id=s.records[i].thread;s.records[i]=Record::EMPTY;Some(id)}
 /// Wake waiters into a caller-provided buffer. Returns the number written.
-pub fn wake_all(object:u64,out:&mut[u64])->usize{if object==0||out.is_empty(){return 0}let mut s=QUEUES.lock();let mut n=0;for r in s.records.iter_mut(){if n==out.len(){break}if r.state==WaitState::Queued&&r.object==object{out[n]=r.thread;n+=1;*r=Record::EMPTY}}n}
+pub fn wake_all(object:u64,out:&mut[u64])->usize{if object==0||out.is_empty(){return 0}let mut s=QUEUES.lock();let mut n=0;while n<out.len(){let next=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i);let Some(i)=next else{break};out[n]=s.records[i].thread;n+=1;s.records[i]=Record::EMPTY;}n}
 /// Expire waits whose finite absolute deadline is <= now; caller readies threads.
 pub fn expire(now:u64,out:&mut[u64])->usize{if out.is_empty(){return 0}let mut s=QUEUES.lock();let mut n=0;for r in s.records.iter_mut(){if n==out.len(){break}if r.state==WaitState::Queued&&r.deadline!=0&&r.deadline<=now{out[n]=r.thread;n+=1;*r=Record::EMPTY}}n}
 pub fn pending_count()->usize{QUEUES.lock().records.iter().filter(|r|r.state==WaitState::Queued).count()}
