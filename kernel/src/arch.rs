@@ -206,11 +206,11 @@ rdotos_tlb_ipi_stub:
     # Common external interrupt entry. Hardware does not push a vector or
     # error code for IRQs, so each stub normalizes the stack before dispatch.
     .macro ISR_IRQ n
-    .global rdotos_irq_\\n
-    .type rdotos_irq_\\n, @function
-rdotos_irq_\\n:
+    .global rdotos_irq_\n
+    .type rdotos_irq_\n, @function
+rdotos_irq_\n:
     push 0
-    push \\n
+    push \n
     jmp rdotos_interrupt_common
     .endm
 
