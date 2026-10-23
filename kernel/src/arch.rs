@@ -326,3 +326,36 @@ pub unsafe fn install_user_gate(vector: usize, handler: u64) {
 pub unsafe fn enable_kernel_paging(pml4_physical: u64) {
     unsafe { asm!("mov cr3, {}", in(reg) pml4_physical, options(nostack, preserves_flags)); }
 }
+
+
+global_asm!(r#"
+    .section .text
+    .global rdotos_context_switch
+    .type rdotos_context_switch, @function
+rdotos_context_switch:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi], rsp
+    mov rsp, rsi
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+"#);
+
+unsafe extern "C" {
+    fn rdotos_context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64);
+}
+
+/// Switch between saved kernel-mode contexts built for this routine.
+pub unsafe fn context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64) {
+    if old_rsp.is_null() || new_rsp.is_null() { return; }
+    unsafe { rdotos_context_switch(old_rsp, new_rsp); }
+}
