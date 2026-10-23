@@ -369,6 +369,7 @@ pub fn self_test() -> bool {
  let all_resident={let _g=Guard::lock();let mapped=unsafe{&*MAPPED_BITS.0.get()};(0..3).all(|n|mapped[(start+n)/64]&(1u64<<((start+n)%64))!=0)};
  if !all_resident {let _=free_pages(p,3);return false;}
  if crate::pagefile::is_active() {
+  if free_pages(p,3).is_err(){return false;}
   let swap_test=match allocate_pageable_pages(1){Ok(v)=>v,Err(_)=>{let _=free_pages(p,3);return false}};
   unsafe{swap_test.write(0xD3);swap_test.add(4095).write(0x6B);}
   if reclaim_pageable_pages(1)!=1 {let _=free_pages(swap_test,1);let _=free_pages(p,3);return false;}
@@ -381,7 +382,7 @@ pub fn self_test() -> bool {
   let is_resident={let _g=Guard::lock();let bits=unsafe{&*MAPPED_BITS.0.get()};let swaps=unsafe{&*SWAPPED_BITS.0.get()};bits[swap_index/64]&(1u64<<(swap_index%64))!=0 && swaps[swap_index/64]&(1u64<<(swap_index%64))==0};
   if !restored||!is_resident||free_pages(swap_test,1).is_err(){let _=free_pages(p,3);return false;}
  }
- let freed=free_pages(p,3).is_ok() && allocation_pages(p).is_none();
+ let freed=if crate::pagefile::is_active(){allocation_pages(p).is_none()}else{free_pages(p,3).is_ok()&&allocation_pages(p).is_none()};
  freed && (!crate::smp::ipi_shootdowns_enabled() || crate::smp::tlb_ipi_count()>ipi_before)
 }
 pub fn allocation_pages(ptr:*const u8)->Option<usize>{let va=ptr as u64;if ptr.is_null()||va<BASE||(va-BASE)&(PAGE-1)!=0{return None}let start=((va-BASE)/PAGE)as usize;let _g=Guard::lock();unsafe{&*TABLE.0.get()}.iter().find(|e|e.live&&e.start==start).map(|e|e.pages)}
