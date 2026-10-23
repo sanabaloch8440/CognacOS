@@ -68,7 +68,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 53, name: "HalRequestClockInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 54, name: "HalRequestDeferredRecoveryServiceInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 55, name: "HalRequestIpi", state: StubState::Implemented },
-    HalExport { ordinal: 56, name: "HalRequestIpiSpecifyVector", state: StubState::NotImplemented },
+    HalExport { ordinal: 56, name: "HalRequestIpiSpecifyVector", state: StubState::Implemented },
     HalExport { ordinal: 57, name: "HalRequestSoftwareInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 58, name: "HalReturnToFirmware", state: StubState::NotImplemented },
     HalExport { ordinal: 59, name: "HalSendNMI", state: StubState::NotImplemented },
