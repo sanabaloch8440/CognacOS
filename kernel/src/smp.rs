@@ -456,6 +456,20 @@ pub fn last_start_error_code() -> usize { LAST_START_ERROR.load(Ordering::Acquir
 pub fn ap_entry_reached_count() -> usize { AP_ENTRY_REACHED.load(Ordering::Acquire) }
 pub fn last_target_apic_id() -> usize { LAST_TARGET_APIC_ID.load(Ordering::Acquire) }
 
+/// Complete the interrupt-safety sequence around AP startup. All legacy PIC
+/// and firmware I/O APIC routes must be masked before enabling IF for IPIs.
+pub unsafe fn start_discovered_aps_with_ipi(
+    pml4_physical: u64,
+    trampoline_physical: u64,
+    madt: &crate::acpi::MadtInfo,
+    bsp_apic_id: u32,
+) -> Result<(usize, bool), SmpError> {
+    let sources_masked = unsafe { mask_interrupt_sources(pml4_physical, madt) };
+    let online = unsafe { start_discovered_aps(pml4_physical, trampoline_physical, madt.local_apic_address, bsp_apic_id)? };
+    let ipi_enabled = sources_masked && enable_ipi_interrupts();
+    Ok((online, ipi_enabled))
+}
+
 /// Enable xAPIC MMIO as uncached, install the real-mode trampoline, and bring
 /// each MADT-discovered AP online. APs are left in a safe interrupt-disabled
 /// idle loop until per-CPU interrupt routing and scheduling are implemented.
