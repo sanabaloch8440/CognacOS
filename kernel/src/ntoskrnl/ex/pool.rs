@@ -1,8 +1,9 @@
 //! NT executive pool entry points with a deliberately explicit supported subset.
 //!
-//! This is not yet Windows 11 pool parity: paged/session pool, process quota,
-//! extended allocation parameters, special-pool policy, and allocation-failure
-//! exception delivery require VM/process/exception facilities not present yet.
+//! Pageable allocations now reserve virtual extents and fault pages in on demand.
+//! This remains a Windows-compatibility subset: eviction/pagefile backing, session
+//! pool, quotas, extended parameters, special-pool policy and failure exceptions
+//! still require the storage and memory-pressure subsystems.
 //! Unsupported modes fail closed rather than silently returning the wrong pool.
 //!
 //! Windows drivers use the Microsoft x64 ABI regardless of the kernel's own
@@ -10,20 +11,30 @@
 
 #[inline]
 pub(crate) extern "win64" fn ex_allocate_pool_with_tag(pool_type: u32, size: usize, tag: u32) -> *mut u8 {
-    // POOL_TYPE: NonPagedPool=0; NonPagedPoolNx=512.
-    if pool_type != 0 && pool_type != 512 { return core::ptr::null_mut(); }
-    crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(size, tag, false)
+    // POOL_TYPE: NonPagedPool=0, PagedPool=1, NonPagedPoolNx=512.
+    match pool_type {
+        0 | 512 => crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(size, tag, false),
+        1 => crate::ntoskrnl::rtl_runtime::pool_allocate_paged_tagged(size, tag, false),
+        _ => core::ptr::null_mut(),
+    }
 }
 
-/// ExAllocatePool2: supported nonpaged flags only, zero-initialized by default.
+/// ExAllocatePool2 supports nonpaged allocations and demand-zero pageable
+/// allocations. Exactly one pool-kind flag is required; unsupported flags fail closed.
 pub(crate) extern "win64" fn ex_allocate_pool2(flags: u64, size: usize, tag: u32) -> *mut u8 {
+    const POOL_FLAG_PAGED: u64 = 0x1;
     const POOL_FLAG_NON_PAGED: u64 = 0x40;
     const POOL_FLAG_ZERO_ALLOCATION: u64 = 0x1000;
     const POOL_FLAG_UNINITIALIZED: u64 = 0x1_0000;
-    const SUPPORTED: u64 = POOL_FLAG_NON_PAGED | POOL_FLAG_ZERO_ALLOCATION | POOL_FLAG_UNINITIALIZED;
-    if flags & !SUPPORTED != 0 || flags & POOL_FLAG_NON_PAGED == 0 { return core::ptr::null_mut(); }
+    const SUPPORTED: u64 = POOL_FLAG_PAGED | POOL_FLAG_NON_PAGED | POOL_FLAG_ZERO_ALLOCATION | POOL_FLAG_UNINITIALIZED;
+    let kind = flags & (POOL_FLAG_PAGED | POOL_FLAG_NON_PAGED);
+    if flags & !SUPPORTED != 0 || (kind != POOL_FLAG_PAGED && kind != POOL_FLAG_NON_PAGED) { return core::ptr::null_mut(); }
     let zeroed = flags & POOL_FLAG_UNINITIALIZED == 0 || flags & POOL_FLAG_ZERO_ALLOCATION != 0;
-    crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(size, tag, zeroed)
+    if kind == POOL_FLAG_PAGED {
+        crate::ntoskrnl::rtl_runtime::pool_allocate_paged_tagged(size, tag, zeroed)
+    } else {
+        crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(size, tag, zeroed)
+    }
 }
 
 /// ExAllocatePool3 accepts the same base flags but extended parameters are not
@@ -40,7 +51,7 @@ pub(crate) extern "win64" fn ex_allocate_pool3(
 }
 
 /// Priority currently does not change allocation policy; only documented basic
-/// nonpaged types are accepted. Paged/session pool remains unsupported.
+/// basic nonpaged and demand-zero paged types are accepted; session pool remains unsupported.
 pub(crate) extern "win64" fn ex_allocate_pool_with_tag_priority(
     pool_type: u32,
     size: usize,
@@ -89,10 +100,19 @@ mod tests {
 
     #[test]
     fn pool_api_checks_tag_ownership_and_zeroes_by_default() {
-        assert!(ex_allocate_pool_with_tag(1, 64, 0x54455354).is_null());
+        let paged = ex_allocate_pool_with_tag(1, 64, 0x50414745);
+        assert!(!paged.is_null());
+        assert_eq!(ex_query_pool_block_size(paged, core::ptr::null_mut()), 64);
+        ex_free_pool_with_tag(paged, 0x50414745);
+        assert!(ex_allocate_pool_with_tag(2, 64, 0x54455354).is_null());
         assert!(ex_allocate_pool2(0x100, 64, 0x54455354).is_null());
         assert!(ex_allocate_pool3(0x40, 64, 0x54455354, core::ptr::null(), 1).is_null());
 
+        let paged = ex_allocate_pool2(0x1, 64, 0x50473230);
+        assert!(!paged.is_null());
+        for i in 0..64 { assert_eq!(unsafe { *paged.add(i) }, 0); }
+        ex_free_pool2(paged, 0x50473230, core::ptr::null(), 0);
+        assert!(ex_allocate_pool2(0x41, 64, 0x42414446).is_null());
         let p = ex_allocate_pool2(0x40, 32, 0x5a45524f);
         assert!(!p.is_null());
         for i in 0..32 { assert_eq!(unsafe { *p.add(i) }, 0); }
