@@ -77,6 +77,9 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "KeInitializeSemaphore" => ke::runtime::ke_initialize_semaphore as usize,
   "KeReadStateSemaphore" => ke::runtime::ke_read_state_semaphore as usize,
   "KeReleaseSemaphore" => ke::runtime::ke_release_semaphore as usize,
+  "KeWaitForSingleObject" => ke::runtime::ke_wait_for_single_object as usize,
+  "KeWaitForMultipleObjects" => ke::runtime::ke_wait_for_multiple_objects as usize,
+  "KeDelayExecutionThread" => ke::runtime::ke_delay_execution_thread as usize,
 
   "ExAllocatePoolWithTag" => ex::pool::ex_allocate_pool_with_tag as usize,
   "ExAllocatePool2" => ex::pool::ex_allocate_pool2 as usize,
