@@ -1,0 +1,191 @@
+//! Platform Hardware Abstraction Layer (HAL) for RdotOS.
+//!
+//! This layer isolates x86-64 CPU/interrupt/port primitives from executive,
+//! scheduler, and driver code. It is Windows-NT-inspired, not a binary-compatible
+//! Windows HAL or WDK implementation. Interrupt delivery remains disabled
+//! until the IDT, APIC routing, and timer are completely installed.
+
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
+
+pub const MAX_CPUS: usize = 64;
+pub const CPU_OFFLINE: u8 = 0;
+pub const CPU_DISCOVERED: u8 = 1;
+pub const CPU_STARTING: u8 = 2;
+pub const CPU_ONLINE: u8 = 3;
+pub const CPU_FAILED: u8 = 4;
+
+#[repr(C, align(64))]
+pub struct CpuLocal {
+    pub logical_id: AtomicU32,
+    pub apic_id: AtomicU32,
+    pub state: AtomicU8,
+    pub irq_depth: AtomicU32,
+    pub preempt_count: AtomicU32,
+    pub current_thread: AtomicU64,
+    pub idle_ticks: AtomicU64,
+}
+impl CpuLocal {
+    const fn new(id: u32) -> Self {
+        Self {
+            logical_id: AtomicU32::new(id), apic_id: AtomicU32::new(u32::MAX),
+            state: AtomicU8::new(CPU_OFFLINE), irq_depth: AtomicU32::new(0),
+            preempt_count: AtomicU32::new(0), current_thread: AtomicU64::new(0),
+            idle_ticks: AtomicU64::new(0),
+        }
+    }
+}
+static CPU_LOCALS: [CpuLocal; MAX_CPUS] = [
+    CpuLocal::new(0), CpuLocal::new(1), CpuLocal::new(2), CpuLocal::new(3),
+    CpuLocal::new(4), CpuLocal::new(5), CpuLocal::new(6), CpuLocal::new(7),
+    CpuLocal::new(8), CpuLocal::new(9), CpuLocal::new(10), CpuLocal::new(11),
+    CpuLocal::new(12), CpuLocal::new(13), CpuLocal::new(14), CpuLocal::new(15),
+    CpuLocal::new(16), CpuLocal::new(17), CpuLocal::new(18), CpuLocal::new(19),
+    CpuLocal::new(20), CpuLocal::new(21), CpuLocal::new(22), CpuLocal::new(23),
+    CpuLocal::new(24), CpuLocal::new(25), CpuLocal::new(26), CpuLocal::new(27),
+    CpuLocal::new(28), CpuLocal::new(29), CpuLocal::new(30), CpuLocal::new(31),
+    CpuLocal::new(32), CpuLocal::new(33), CpuLocal::new(34), CpuLocal::new(35),
+    CpuLocal::new(36), CpuLocal::new(37), CpuLocal::new(38), CpuLocal::new(39),
+    CpuLocal::new(40), CpuLocal::new(41), CpuLocal::new(42), CpuLocal::new(43),
+    CpuLocal::new(44), CpuLocal::new(45), CpuLocal::new(46), CpuLocal::new(47),
+    CpuLocal::new(48), CpuLocal::new(49), CpuLocal::new(50), CpuLocal::new(51),
+    CpuLocal::new(52), CpuLocal::new(53), CpuLocal::new(54), CpuLocal::new(55),
+    CpuLocal::new(56), CpuLocal::new(57), CpuLocal::new(58), CpuLocal::new(59),
+    CpuLocal::new(60), CpuLocal::new(61), CpuLocal::new(62), CpuLocal::new(63),
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HalError { InvalidCpu, DuplicateApicId, InvalidTransition, CpuTableFull, InvalidMmioRange }
+
+/// Reserve a logical CPU slot for an ACPI-discovered APIC ID. Does not start it.
+pub fn discover_cpu(apic_id: u32) -> Result<usize, HalError> {
+    if cpu_index_for_apic(apic_id).is_some() { return Err(HalError::DuplicateApicId); }
+    for (i, cpu) in CPU_LOCALS.iter().enumerate() {
+        if cpu.state.compare_exchange(CPU_OFFLINE, CPU_DISCOVERED, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            cpu.apic_id.store(apic_id, Ordering::Release);
+            return Ok(i);
+        }
+    }
+    Err(HalError::CpuTableFull)
+}
+pub fn cpu_index_for_apic(apic_id: u32) -> Option<usize> {
+    CPU_LOCALS.iter().position(|cpu| cpu.state.load(Ordering::Acquire) != CPU_OFFLINE
+        && cpu.apic_id.load(Ordering::Acquire) == apic_id)
+}
+pub fn cpu_state(index: usize) -> Result<u8, HalError> {
+    CPU_LOCALS.get(index).map(|c| c.state.load(Ordering::Acquire)).ok_or(HalError::InvalidCpu)
+}
+pub fn mark_cpu_starting(index: usize) -> Result<(), HalError> {
+    let cpu = CPU_LOCALS.get(index).ok_or(HalError::InvalidCpu)?;
+    cpu.state.compare_exchange(CPU_DISCOVERED, CPU_STARTING, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ()).map_err(|_| HalError::InvalidTransition)
+}
+pub fn mark_cpu_online(index: usize) -> Result<(), HalError> {
+    let cpu = CPU_LOCALS.get(index).ok_or(HalError::InvalidCpu)?;
+    cpu.state.compare_exchange(CPU_STARTING, CPU_ONLINE, Ordering::AcqRel, Ordering::Acquire)
+        .map(|_| ()).map_err(|_| HalError::InvalidTransition)
+}
+pub fn mark_cpu_failed(index: usize) -> Result<(), HalError> {
+    let cpu = CPU_LOCALS.get(index).ok_or(HalError::InvalidCpu)?;
+    let state = cpu.state.load(Ordering::Acquire);
+    if state != CPU_DISCOVERED && state != CPU_STARTING { return Err(HalError::InvalidTransition); }
+    cpu.state.store(CPU_FAILED, Ordering::Release);
+    Ok(())
+}
+pub fn online_cpu_count() -> usize {
+    CPU_LOCALS.iter().filter(|c| c.state.load(Ordering::Acquire) == CPU_ONLINE).count()
+}
+pub fn cpu_local(index: usize) -> Result<&'static CpuLocal, HalError> {
+    CPU_LOCALS.get(index).ok_or(HalError::InvalidCpu)
+}
+
+/// Install this CPU's GS base. Must run separately on every processor after its
+/// stack, GDT/TSS and interrupt state are initialized. GS:[0] then yields CpuLocal.
+pub unsafe fn install_cpu_local(index: usize) -> Result<(), HalError> {
+    let local = cpu_local(index)? as *const CpuLocal as u64;
+    const IA32_GS_BASE: u32 = 0xC000_0101;
+    const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
+    unsafe {
+        core::arch::asm!("wrmsr", in("ecx") IA32_GS_BASE, in("eax") local as u32,
+            in("edx") (local >> 32) as u32, options(nostack, preserves_flags));
+        core::arch::asm!("wrmsr", in("ecx") IA32_KERNEL_GS_BASE, in("eax") 0u32,
+            in("edx") 0u32, options(nostack, preserves_flags));
+    }
+    Ok(())
+}
+#[inline]
+pub fn current_cpu_local() -> Option<&'static CpuLocal> {
+    let ptr: u64;
+    unsafe { core::arch::asm!("mov {}, gs:[0]", out(reg) ptr, options(nostack, readonly, preserves_flags)); }
+    if ptr == 0 { None } else { Some(unsafe { &*(ptr as *const CpuLocal) }) }
+}
+
+/// A non-poisoning IRQ-save spin lock. It disables local interrupts before
+/// spinning, preventing same-CPU interrupt re-entry from deadlocking on a lock
+/// held by the interrupted code. Never hold across blocking, allocation, device
+/// waits, or calls that may sleep.
+pub struct IrqSpinLock<T> { held: AtomicBool, value: UnsafeCell<T> }
+unsafe impl<T: Send> Sync for IrqSpinLock<T> {}
+unsafe impl<T: Send> Send for IrqSpinLock<T> {}
+impl<T> IrqSpinLock<T> {
+    pub const fn new(value: T) -> Self { Self { held: AtomicBool::new(false), value: UnsafeCell::new(value) } }
+    pub fn lock(&self) -> IrqSpinLockGuard<'_, T> {
+        let flags: u64;
+        unsafe {
+            core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags));
+            core::arch::asm!("cli", options(nomem, nostack));
+        }
+        while self.held.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        IrqSpinLockGuard { lock: self, restore_interrupts: flags & (1 << 9) != 0 }
+    }
+    pub fn try_lock(&self) -> Option<IrqSpinLockGuard<'_, T>> {
+        let flags: u64;
+        unsafe {
+            core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags));
+            core::arch::asm!("cli", options(nomem, nostack));
+        }
+        if self.held.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            if flags & (1 << 9) != 0 { unsafe { core::arch::asm!("sti", options(nomem, nostack)); } }
+            return None;
+        }
+        Some(IrqSpinLockGuard { lock: self, restore_interrupts: flags & (1 << 9) != 0 })
+    }
+}
+pub struct IrqSpinLockGuard<'a, T> { lock: &'a IrqSpinLock<T>, restore_interrupts: bool }
+impl<T> core::ops::Deref for IrqSpinLockGuard<'_, T> { type Target=T; fn deref(&self)->&T { unsafe { &*self.lock.value.get() } } }
+impl<T> core::ops::DerefMut for IrqSpinLockGuard<'_, T> { fn deref_mut(&mut self)->&mut T { unsafe { &mut *self.lock.value.get() } } }
+impl<T> Drop for IrqSpinLockGuard<'_, T> {
+    fn drop(&mut self) {
+        self.lock.held.store(false, Ordering::Release);
+        if self.restore_interrupts { unsafe { core::arch::asm!("sti", options(nomem, nostack)); } }
+    }
+}
+
+/// Typed port-I/O operations live here instead of in individual device drivers.
+#[inline] pub unsafe fn read_port_u8(port: u16) -> u8 {
+    let value: u8;
+    unsafe { core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags)); }
+    value
+}
+#[inline] pub unsafe fn write_port_u8(port: u16, value: u8) {
+    unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags)); }
+}
+#[inline] pub unsafe fn read_port_u32(port: u16) -> u32 {
+    let value: u32;
+    unsafe { core::arch::asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack, preserves_flags)); }
+    value
+}
+#[inline] pub unsafe fn write_port_u32(port: u16, value: u32) {
+    unsafe { core::arch::asm!("out dx, eax", in("dx") port, in("eax") value, options(nomem, nostack, preserves_flags)); }
+}
+
+/// Validate a device MMIO span before a platform-specific mapper maps it.
+/// Mapping/cache attributes are deliberately not guessed by this helper.
+pub fn validate_mmio_range(base: u64, length: u64, physical_limit: u64) -> Result<(), HalError> {
+    if length == 0 || base & 0xfff != 0 || base.checked_add(length).filter(|end| *end <= physical_limit).is_none() {
+        return Err(HalError::InvalidMmioRange);
+    }
+    Ok(())
+}
