@@ -39,7 +39,7 @@ mod tests {
         assert_eq!(out.length, 4);
         assert_eq!(unsafe { *out.buffer.add(0) }, b'A' as u16);
         assert_eq!(unsafe { *out.buffer.add(1) }, b'B' as u16);
-        unsafe { super::super::rtl_free_unicode_string(&mut out); }
+        unsafe { super::rtl_free_unicode_string(&mut out); }
         assert!(out.buffer.is_null());
         assert_eq!(out.length, 0);
     }
