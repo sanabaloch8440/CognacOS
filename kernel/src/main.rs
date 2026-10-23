@@ -3,6 +3,7 @@
 
 mod arch;
 mod memory;
+mod kernel_vm;
 mod security;
 mod vm;
 mod user;
@@ -152,6 +153,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: cannot reserve bootstrap stack from physical allocator.\r\n");
             halt();
         }
+        if kernel_vm::initialize(info.pml4_physical).is_err() {
+            serial_write(b"FATAL: kernel virtual-memory manager initialization failed.\r\n");
+            halt();
+        }
+        serial_write(b"Kernel virtual-address arena initialized.\r\n");
         serial_write(b"Physical allocator initialized; conventional regions: ");
         serial_write_decimal(region_count);
         serial_write(b"\r\n");
