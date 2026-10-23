@@ -125,6 +125,35 @@ pub unsafe extern "win64" fn mm_copy_memory(
     if done == length { STATUS_SUCCESS } else { let _ = dest_end; STATUS_PARTIAL_COPY }
 }
 
+/// Boot-time validation uses two real kernel VM pages, checks their translations,
+/// exercises the MM copy path, and always releases the test extents.
+pub fn self_test() -> bool {
+    let source = match crate::kernel_vm::allocate_pages(1) { Ok(p) => p, Err(_) => return false };
+    let destination = match crate::kernel_vm::allocate_pages(1) {
+        Ok(p) => p,
+        Err(_) => { let _ = crate::kernel_vm::free_pages(source, 1); return false; }
+    };
+    unsafe {
+        source.write(0x39);
+        source.add(127).write(0xA6);
+        destination.write(0);
+        destination.add(127).write(0);
+    }
+    let physical = unsafe { mm_get_physical_address(source.cast()) };
+    let mut copied = 0u64;
+    let status = unsafe { mm_copy_memory(destination.cast(), source as u64, 128, 0, &mut copied) };
+    let valid = physical != 0
+        && unsafe { mm_is_address_valid(source.cast()) } != 0
+        && unsafe { mm_is_non_paged_system_address_valid(source.cast()) } != 0
+        && unsafe { mm_get_virtual_for_physical(physical) } == source.cast()
+        && status == STATUS_SUCCESS && copied == 128
+        && unsafe { destination.read() } == 0x39
+        && unsafe { destination.add(127).read() } == 0xA6;
+    let freed = crate::kernel_vm::free_pages(destination, 1).is_ok()
+        && crate::kernel_vm::free_pages(source, 1).is_ok();
+    valid && freed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
