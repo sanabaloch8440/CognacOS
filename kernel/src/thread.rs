@@ -22,7 +22,16 @@ struct IdleContext(UnsafeCell<*mut u64>);
 unsafe impl Sync for IdleContext {}
 static IDLE_CONTEXTS:[IdleContext;crate::hal::MAX_CPUS]=[const { IdleContext(UnsafeCell::new(core::ptr::null_mut())) };crate::hal::MAX_CPUS];
 
-fn cpu_index()->Result<usize,ThreadError>{crate::hal::current_cpu_local().map(|c|c.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize).filter(|i|*i<crate::hal::MAX_CPUS).ok_or(ThreadError::InvalidCpu)}
+fn cpu_index()->Result<usize,ThreadError>{
+    if let Some(local)=crate::hal::current_cpu_local(){
+        let logical=local.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize;
+        if logical<crate::hal::MAX_CPUS{return Ok(logical)}
+    }
+    // The BSP may execute before a GS-based CPU-local accessor is fully usable;
+    // fall back to the firmware-registered APIC ID, never to an arbitrary CPU slot.
+    let apic_id=(unsafe{core::arch::x86_64::__cpuid(1)}.ebx>>24)&0xff;
+    crate::hal::cpu_index_for_apic(apic_id).filter(|i|*i<crate::hal::MAX_CPUS).ok_or(ThreadError::InvalidCpu)
+}
 extern "C" fn thread_trampoline()->! {
     let entry_and_arg={let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};let id=crate::hal::cpu_local(cpu).map(|c|c.current_thread.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);let table=THREADS.lock();table.records.iter().find(|t|t.id==id&&t.state==ThreadState::Running).and_then(|t|t.entry.map(|entry|(entry,t.argument)))};
     if let Some((entry,arg))=entry_and_arg { entry(arg); }
