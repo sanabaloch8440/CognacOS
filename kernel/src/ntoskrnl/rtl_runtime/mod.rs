@@ -25,6 +25,7 @@ mod sid_abi;
 mod abi_extra;
 mod sd_convert;
 mod strings_numeric;
+mod strings_alloc;
 mod pool;
 mod timezone;
 
@@ -55,6 +56,7 @@ pub use sid_abi::*;
 pub use abi_extra::*;
 pub use sd_convert::*;
 pub use strings_numeric::*;
+pub use strings_alloc::*;
 pub use timezone::set_time_zone_bias_minutes;
 
 
