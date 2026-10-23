@@ -11,9 +11,6 @@ pub use strings::*;
 pub use security::*;
 pub use misc::*;
 
-//! ABI-correct, freestanding subset of Windows NT RTL services.
-//! Only routines whose signatures and behavior are implemented here are resolved.
-use core::ffi::c_void;
 
 #[repr(C)]
 pub struct RtlBitmap { pub size_of_bitmap: u32, pub buffer: *mut u32 }
