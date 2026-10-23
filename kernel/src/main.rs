@@ -337,17 +337,17 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         if info.rsdp_address != 0 && info.ap_trampoline_physical != 0 {
             match acpi::discover_madt(info.rsdp_address) {
                 Ok(madt) => match unsafe {
-                    smp::start_discovered_aps(
+                    smp::start_discovered_aps_with_ipi(
                         info.pml4_physical,
                         info.ap_trampoline_physical,
-                        madt.local_apic_address,
+                        &madt,
                         bsp_apic_id,
                     )
                 } {
-                    Ok(online) => {
+                    Ok((online, ipi_enabled)) => {
                         serial_write(b"SMP AP startup complete; online application processors: ");
                         serial_write_decimal(online);
-                        serial_write(b" (interrupts remain disabled).\r\n");
+                        serial_write(if ipi_enabled { b"; interrupt-driven TLB shootdowns enabled.\r\n" } else { b"; using polling TLB fallback (IPI setup unavailable).\r\n" });
                         serial_write(b"SMP startup diagnostic error code: ");
                         serial_write_decimal(smp::last_start_error_code());
                         serial_write(b"; last target APIC ID: ");
