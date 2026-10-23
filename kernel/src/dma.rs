@@ -203,6 +203,26 @@ pub struct MdlAbi {
     pub byte_offset: u32,
 }
 
+
+/// Windows DMA_OPERATIONS.AllocateCommonBufferEx. The current x64 platform is
+/// cache coherent; only zero flags are accepted until the kernel implements
+/// DMA domains, encryption attributes, and non-coherent cache maintenance.
+pub unsafe extern "win64" fn allocate_common_buffer_ex(
+    adapter: *mut core::ffi::c_void,
+    length: u32,
+    logical_address: *mut i64,
+    _cache_type: u32,
+    flags: u32,
+) -> *mut core::ffi::c_void {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+        || logical_address.is_null() || flags != 0 || length == 0 {
+        return core::ptr::null_mut();
+    }
+    unsafe {
+        crate::hal::exports::hal_allocate_common_buffer(adapter, length, logical_address, 1)
+    }
+}
+
 /// Windows DMA_OPERATIONS.MapTransfer. This no-IOMMU implementation returns
 /// the physical address corresponding to CurrentVa and shortens Length so the
 /// transfer never crosses a page boundary. Map-register tokens are not needed
@@ -287,7 +307,7 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     get_dma_adapter_info: 0,
     get_dma_transfer_info: 0,
     initialize_dma_transfer_context: 0,
-    allocate_common_buffer_ex: 0,
+    allocate_common_buffer_ex: crate::dma::allocate_common_buffer_ex as usize,
     allocate_adapter_channel_ex: 0,
     configure_adapter_channel: 0,
     cancel_adapter_channel: 0,
