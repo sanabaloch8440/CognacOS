@@ -78,6 +78,21 @@ pub fn discover_cpu(apic_id: u32) -> Result<usize, HalError> {
     }
     Err(HalError::CpuTableFull)
 }
+/// Merge enabled processors from a validated ACPI MADT into the HAL CPU
+/// registry. The BSP must already have been registered with initialize_bsp().
+/// This only discovers/reserves AP slots; it does not send INIT/SIPI or mark APs online.
+pub fn register_madt_cpus(madt: &crate::acpi::MadtInfo, bsp_apic_id: u32) -> Result<usize, HalError> {
+    if cpu_index_for_apic(bsp_apic_id).is_none() { initialize_bsp(bsp_apic_id)?; }
+    let mut discovered = 0usize;
+    for entry in madt.cpus.iter().take(madt.cpu_count) {
+        if !entry.enabled || entry.apic_id == bsp_apic_id { continue; }
+        if cpu_index_for_apic(entry.apic_id).is_some() { continue; }
+        discover_cpu(entry.apic_id)?;
+        discovered += 1;
+    }
+    Ok(discovered)
+}
+
 pub fn cpu_index_for_apic(apic_id: u32) -> Option<usize> {
     CPU_LOCALS.iter().position(|cpu| cpu.state.load(Ordering::Acquire) != CPU_OFFLINE
         && cpu.apic_id.load(Ordering::Acquire) == apic_id)
