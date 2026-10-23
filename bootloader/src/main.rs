@@ -20,7 +20,7 @@ const KERNEL_STACK_PAGES: usize = 16;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
-const BOOT_INFO_VERSION: u32 = 2;
+const BOOT_INFO_VERSION: u32 = 3;
 
 #[repr(C)]
 struct BootInfo {
@@ -33,6 +33,7 @@ struct BootInfo {
     memory_descriptor_size: usize,
     memory_descriptor_version: u32,
     kernel_stack_guard_page: u64,
+    rsdp_address: u64,
 }
 
 #[entry]
@@ -142,6 +143,13 @@ fn main() -> Status {
         Err(err) => { uefi::println!("Low boot-info allocation failed: {:?}", err); return err.status(); }
     };
 
+    let rsdp_address = find_rsdp();
+    if rsdp_address == 0 {
+        uefi::println!("WARNING: no ACPI RSDP found in UEFI configuration tables");
+    } else {
+        uefi::println!("Found ACPI RSDP at {:#x}", rsdp_address);
+    }
+
     uefi::println!("Exiting UEFI boot services");
     // SAFETY: All filesystem protocols are closed. The helper retries a stale map key.
     let memory_map = unsafe { boot::exit_boot_services(None) };
@@ -167,6 +175,7 @@ fn main() -> Status {
         memory_descriptor_size: descriptor_size,
         memory_descriptor_version: memory_map.meta().desc_version,
         kernel_stack_guard_page,
+        rsdp_address,
     };
     let boot_info_ptr = boot_info_storage.as_ptr().cast::<BootInfo>();
     unsafe { boot_info_ptr.write(boot_info); }
@@ -188,6 +197,26 @@ fn main() -> Status {
             options(noreturn)
         );
     }
+}
+
+/// Prefer the ACPI 2.0 configuration table and fall back to ACPI 1.0.
+/// UEFI configuration-table addresses remain physical across ExitBootServices;
+/// this bootstrap only accepts an RSDP inside its low 4 GiB identity map.
+fn find_rsdp() -> u64 {
+    let mut acpi2 = 0u64;
+    let mut acpi1 = 0u64;
+    uefi::system::with_config_table(|entries| {
+        for entry in entries {
+            if entry.address.is_null() { continue; }
+            if entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI2_GUID {
+                acpi2 = entry.address as u64;
+            } else if entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI_GUID {
+                acpi1 = entry.address as u64;
+            }
+        }
+    });
+    let candidate = if acpi2 != 0 { acpi2 } else { acpi1 };
+    if candidate < 0x1_0000_0000 { candidate } else { 0 }
 }
 
 /// Allocate a zeroed page below 4 GiB using UEFI services before the handoff.
