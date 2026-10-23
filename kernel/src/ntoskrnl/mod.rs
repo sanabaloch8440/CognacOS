@@ -182,7 +182,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlShiftLeftBitMapEx" => rtl_runtime::rtl_shift_left_bit_map_ex as usize,
   "RtlFindNextForwardRunClearEx" => rtl_runtime::rtl_find_next_forward_run_clear_ex as usize,
   "RtlFindNextForwardRunSetEx" => rtl_runtime::rtl_find_next_forward_run_set_ex as usize,
-  "RtlFindNextForwardRunClearCapped" => rtl_runtime::rtl_find_next_forward_run_clear_capped as usize,
+  "RtlTimeToElapsedTimeFields" => rtl_runtime::rtl_time_to_elapsed_time_fields as usize,
   "RtlSecondsSince1970ToTime" => rtl_runtime::rtl_seconds_since_1970_to_time as usize,
   "RtlSecondsSince1980ToTime" => rtl_runtime::rtl_seconds_since_1980_to_time as usize,
   "RtlTimeToSecondsSince1970" => rtl_runtime::rtl_time_to_seconds_since_1970 as usize,
