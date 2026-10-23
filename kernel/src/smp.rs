@@ -380,6 +380,9 @@ pub unsafe fn start_discovered_aps(
             Err(error) => {
                 LAST_START_ERROR.store(error_code(error), Ordering::Release);
                 let _ = hal::mark_cpu_failed(logical_id);
+                // A timed-out AP may still be executing the low-memory page.
+                // Never repatch that single-target trampoline after a failure.
+                break;
             }
         }
     }
