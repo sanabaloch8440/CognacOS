@@ -598,7 +598,10 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
         if INTERRUPTS_ENABLED.load(Ordering::Acquire) {
             unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
             CPU_INTERRUPT_READY[index].store(true, Ordering::Release);
-            loop { crate::kernel_vm::smp_tlb_poll(index); core::hint::spin_loop(); }
+            // Once the IPI path is active, sleep until a fixed-vector IPI arrives.
+            // Lock contention still polls in IrqSpinLock, but the idle path is
+            // interrupt-driven rather than acknowledging shootdowns by polling.
+            loop { unsafe { core::arch::asm!("hlt", options(nomem, nostack)); } }
         }
         crate::kernel_vm::smp_tlb_poll(index);
         core::hint::spin_loop();
