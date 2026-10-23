@@ -154,12 +154,12 @@ fn allocate_contiguous(bytes: u64, highest: u64, boundary: u64, cache_type: u32)
         return core::ptr::null_mut();
     }
     let mut table = CONTIGUOUS_ALLOCS.lock();
-    let Some(slot) = table.iter_mut().find(|entry| !entry.live) else {
+    let Some(index) = table.iter().position(|entry| !entry.live) else {
         drop(table);
         let _ = unsafe { crate::memory::free_contiguous_pages(base, pages) };
         return core::ptr::null_mut();
     };
-    *slot = ContiguousAllocation { base, pages, requested: bytes, live: true };
+    table[index] = ContiguousAllocation { base, pages, requested: bytes, live: true };
     base as *mut c_void
 }
 
