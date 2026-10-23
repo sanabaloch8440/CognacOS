@@ -20,15 +20,18 @@ const STATUS_INVALID_PARAMETER_2: i32 = 0xC000_00F0u32 as i32;
  let Some(end)=d.length.checked_add(s.length) else{return STATUS_BUFFER_TOO_SMALL;};if end>d.maximum_length{return STATUS_BUFFER_TOO_SMALL;}
  if s.length>0{unsafe{core::ptr::copy(s.buffer,d.buffer.add(d.length as usize),s.length as usize);}}d.length=end;STATUS_SUCCESS
 }
-unsafe fn transform_unicode(dst:*mut UnicodeString,src:*const UnicodeString,upper:bool)->i32 {
+unsafe fn transform_unicode(dst:*mut UnicodeString,src:*const UnicodeString,upper:bool,allocate:u8)->i32 {
  if dst.is_null()||src.is_null(){return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};
- if s.length%2!=0||d.maximum_length<s.length||(s.length>0&&(s.buffer.is_null()||d.buffer.is_null())){return STATUS_BUFFER_TOO_SMALL;}
+ if s.length%2!=0||(s.length>0&&s.buffer.is_null()){return STATUS_INVALID_PARAMETER;}
+ if allocate!=0 {let bytes=(s.length as usize).checked_add(2);let Some(bytes)=bytes else{return STATUS_BUFFER_TOO_SMALL;};let p=super::pool::allocate(bytes);if p.is_null(){return STATUS_BUFFER_TOO_SMALL;}d.buffer=p.cast::<u16>();d.maximum_length=bytes as u16;d.length=0;}
+ else if d.maximum_length<s.length||(s.length>0&&d.buffer.is_null()){return STATUS_BUFFER_TOO_SMALL;}
  if s.length>0{unsafe{core::ptr::copy(s.buffer,d.buffer,(s.length/2) as usize);}}
  for i in 0..(s.length/2) as usize{let c=unsafe{*d.buffer.add(i)};let v=if upper{if (97..=122).contains(&c){c-32}else{c}}else if (65..=90).contains(&c){c+32}else{c};unsafe{*d.buffer.add(i)=v;}}
+ if allocate!=0 { unsafe { *d.buffer.add((s.length/2) as usize)=0; } }
  d.length=s.length;STATUS_SUCCESS
 }
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_upcase_unicode_string(dst:*mut UnicodeString,src:*const UnicodeString,allocate_destination:u8)->i32 {if allocate_destination!=0{return STATUS_INVALID_PARAMETER_2;}unsafe{transform_unicode(dst,src,true)}}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_downcase_unicode_string(dst:*mut UnicodeString,src:*const UnicodeString,allocate_destination:u8)->i32 {if allocate_destination!=0{return STATUS_INVALID_PARAMETER_2;}unsafe{transform_unicode(dst,src,false)}}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_upcase_unicode_string(dst:*mut UnicodeString,src:*const UnicodeString,allocate_destination:u8)->i32 {unsafe{transform_unicode(dst,src,true,allocate_destination)}}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_downcase_unicode_string(dst:*mut UnicodeString,src:*const UnicodeString,allocate_destination:u8)->i32 {unsafe{transform_unicode(dst,src,false,allocate_destination)}}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_find_unicode_substring(hay:*const UnicodeString,needle:*const UnicodeString,case_insensitive:u8)->i32 {
  if hay.is_null()||needle.is_null(){return -1;}let h=unsafe{&*hay};let n=unsafe{&*needle};if h.length%2!=0||n.length%2!=0||(h.length>0&&h.buffer.is_null())||(n.length>0&&n.buffer.is_null()){return -1;}
  let hn=(h.length/2) as usize;let nn=(n.length/2) as usize;if nn>hn{return -1;}if nn==0{return 0;}
