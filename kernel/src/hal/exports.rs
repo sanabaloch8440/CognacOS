@@ -163,5 +163,8 @@ pub fn self_test() -> bool {
         && resolve_ordinal(47).is_some()
         && (resolve_ordinal(85).is_some() == crate::apic::tsc_frequency_hz().is_some())
         && (resolve_ordinal(86).is_some() == crate::apic::tsc_frequency_hz().is_some())
+        && resolve(b"KeFlushWriteBuffer") == Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64)
+        && (resolve(b"KeQueryPerformanceCounter") == crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64))
+        && (resolve(b"KeStallExecutionProcessor") == crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64))
         && resolve_ordinal(1).is_none()
 }
