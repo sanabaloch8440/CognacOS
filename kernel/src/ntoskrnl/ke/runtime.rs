@@ -247,11 +247,14 @@ pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, _increme
     let _object_guard = DISPATCHER_OBJECT_LOCK.lock();
     let state = unsafe { &*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>() };
     let old = state.swap(1, Ordering::AcqRel);
+    complete_ready_wait_all_groups();
     if unsafe { (*event).kind } == EVENT_SYNCHRONIZATION {
-        if let Some(thread_id) = crate::dispatcher::wake_one(event as u64) {
-            let status = crate::dispatcher::complete_wait_group(thread_id, event as u64, STATUS_SUCCESS, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
-            let _ = crate::thread::complete_wait(thread_id, status);
-            let _ = state.compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire);
+        if state.load(Ordering::Acquire) > 0 {
+            if let Some(thread_id) = crate::dispatcher::wake_one(event as u64) {
+                let status = crate::dispatcher::complete_wait_group(thread_id, event as u64, STATUS_SUCCESS, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
+                let _ = crate::thread::complete_wait(thread_id, status);
+                let _ = state.compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire);
+            }
         }
     } else {
         let mut ids = [0u64; crate::dispatcher::MAX_WAITERS];
