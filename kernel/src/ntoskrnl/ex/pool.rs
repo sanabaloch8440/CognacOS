@@ -17,7 +17,7 @@ pub(crate) extern "system" fn ex_allocate_pool2(flags: u64, size: usize, tag: u3
     const POOL_FLAG_ZERO_ALLOCATION: u64 = 0x1000;
     const POOL_FLAG_UNINITIALIZED: u64 = 0x1_0000;
     const SUPPORTED: u64 = POOL_FLAG_NON_PAGED | POOL_FLAG_ZERO_ALLOCATION | POOL_FLAG_UNINITIALIZED;
-    if flags & !SUPPORTED != 0 { return core::ptr::null_mut(); }
+    if flags & !SUPPORTED != 0 || flags & POOL_FLAG_NON_PAGED == 0 { return core::ptr::null_mut(); }
     let zeroed = flags & POOL_FLAG_UNINITIALIZED == 0 || flags & POOL_FLAG_ZERO_ALLOCATION != 0;
     crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(size, tag, zeroed)
 }
@@ -35,7 +35,9 @@ pub(crate) extern "system" fn ex_free_pool(ptr: *mut u8) {
 }
 
 /// Return requested size for an exact live allocation; unknown pointers return zero.
-pub(crate) extern "system" fn ex_query_pool_block_size(ptr: *const u8) -> usize {
+pub(crate) extern "system" fn ex_query_pool_block_size(ptr: *const u8, quota_charged: *mut u8) -> usize {
+    // This early implementation never charges process quota.
+    if !quota_charged.is_null() { unsafe { quota_charged.write(0); } }
     crate::ntoskrnl::rtl_runtime::pool_allocation_info(ptr).map(|(size, _)| size).unwrap_or(0)
 }
 
@@ -51,12 +53,14 @@ mod tests {
         let p = ex_allocate_pool2(0x40, 32, 0x5a45524f);
         assert!(!p.is_null());
         for i in 0..32 { assert_eq!(unsafe { *p.add(i) }, 0); }
-        assert_eq!(ex_query_pool_block_size(p), 32);
+        let mut quota_charged = 0xffu8;
+        assert_eq!(ex_query_pool_block_size(p, &mut quota_charged), 32);
+        assert_eq!(quota_charged, 0);
 
         ex_free_pool_with_tag(p, 0x42414421);
         assert_eq!(ex_query_pool_block_size(p), 32);
         ex_free_pool_with_tag(p, 0x5a45524f);
-        assert_eq!(ex_query_pool_block_size(p), 0);
+        assert_eq!(ex_query_pool_block_size(p, core::ptr::null_mut()), 0);
     }
 
     #[test]
