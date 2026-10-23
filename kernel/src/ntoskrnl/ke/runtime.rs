@@ -126,11 +126,14 @@ pub unsafe extern "win64" fn ke_raise_irql_to_dpc_level() -> u8 {
     let flags = unsafe { read_rflags() };
     unsafe { irq_disable(); }
     push_irq_state(flags);
-    CURRENT_IRQL[cpu_slot()].swap(DISPATCH_LEVEL, Ordering::AcqRel)
+    let old = CURRENT_IRQL[cpu_slot()].swap(DISPATCH_LEVEL, Ordering::AcqRel);
+    let _ = unsafe { crate::apic::set_task_priority(DISPATCH_LEVEL) };
+    old
 }
 pub unsafe extern "win64" fn ke_lower_irql(new_irql: u8) {
     let cpu = cpu_slot();
     CURRENT_IRQL[cpu].store(new_irql, Ordering::Release);
+    let _ = unsafe { crate::apic::set_task_priority(new_irql) };
     let flags = pop_irq_state();
     unsafe { irq_restore(flags); }
 }
@@ -143,9 +146,11 @@ pub unsafe extern "win64" fn ke_acquire_spin_lock(lock: *mut u64, old_irql: *mut
     unsafe { irq_disable(); }
     push_irq_state(flags);
     let old = CURRENT_IRQL[cpu_slot()].swap(DISPATCH_LEVEL, Ordering::AcqRel);
+    let _ = unsafe { crate::apic::set_task_priority(DISPATCH_LEVEL) };
     unsafe { old_irql.write(old); }
     let Some(word) = atomic_lock_word(lock) else {
         CURRENT_IRQL[cpu_slot()].store(old, Ordering::Release);
+        let _ = unsafe { crate::apic::set_task_priority(old) };
         let saved = pop_irq_state(); unsafe { irq_restore(saved); }
         return;
     };
@@ -159,7 +164,9 @@ pub unsafe extern "win64" fn ke_raise_irql_to_synch_level() -> u8 {
     let flags = unsafe { read_rflags() };
     unsafe { irq_disable(); }
     push_irq_state(flags);
-    CURRENT_IRQL[cpu_slot()].swap(12, Ordering::AcqRel)
+    let old = CURRENT_IRQL[cpu_slot()].swap(12, Ordering::AcqRel);
+    let _ = unsafe { crate::apic::set_task_priority(12) };
+    old
 }
 /// Acquire a spin lock at SYNCH_LEVEL and return the prior IRQL.
 pub unsafe extern "win64" fn ke_acquire_spin_lock_raise_to_synch(lock: *mut u64) -> u8 {
@@ -167,6 +174,7 @@ pub unsafe extern "win64" fn ke_acquire_spin_lock_raise_to_synch(lock: *mut u64)
     unsafe { irq_disable(); }
     push_irq_state(flags);
     let old = CURRENT_IRQL[cpu_slot()].swap(12, Ordering::AcqRel);
+    let _ = unsafe { crate::apic::set_task_priority(12) };
     let Some(word) = atomic_lock_word(lock) else {
         CURRENT_IRQL[cpu_slot()].store(old, Ordering::Release);
         let saved = pop_irq_state(); unsafe { irq_restore(saved); }
