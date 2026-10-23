@@ -67,7 +67,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 52, name: "HalReportResourceUsage", state: StubState::NotImplemented },
     HalExport { ordinal: 53, name: "HalRequestClockInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 54, name: "HalRequestDeferredRecoveryServiceInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 55, name: "HalRequestIpi", state: StubState::NotImplemented },
+    HalExport { ordinal: 55, name: "HalRequestIpi", state: StubState::Implemented },
     HalExport { ordinal: 56, name: "HalRequestIpiSpecifyVector", state: StubState::NotImplemented },
     HalExport { ordinal: 57, name: "HalRequestSoftwareInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 58, name: "HalReturnToFirmware", state: StubState::NotImplemented },
@@ -307,6 +307,12 @@ pub unsafe extern "win64" fn hal_free_common_buffer(
 
 
 /// Resolve only ABI-reviewed HAL exports. Unsupported names fail closed.
+/// Request the kernel's generic IPI on the processors selected by the NT
+/// affinity mask. Targets publish pending work for their scheduler/DPC path.
+pub unsafe extern "win64" fn hal_request_ipi(target_set: u64) {
+    unsafe { hal_request_ipi_specify_vector(target_set, crate::apic::HAL_IPI_VECTOR as u32); }
+}
+
 /// Request a caller-selected fixed-vector IPI on every online processor in
 /// the supplied NT affinity mask. The vector's IDT entry must already be
 /// installed on all target CPUs; this Windows ABI returns void.
@@ -347,6 +353,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         Some(hal_set_bus_data as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalSetBusDataByOffset") {
         Some(hal_set_bus_data_by_offset as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalRequestIpi") {
+        Some(hal_request_ipi as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalRequestIpiSpecifyVector") {
         Some(hal_request_ipi_specify_vector as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalGetProcessorIdByNtNumber") {
@@ -370,6 +378,7 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
         26 => Some(hal_get_bus_data_by_offset as usize as u64),
         61 => Some(hal_set_bus_data as usize as u64),
         62 => Some(hal_set_bus_data_by_offset as usize as u64),
+        55 => Some(hal_request_ipi as usize as u64),
         56 => Some(hal_request_ipi_specify_vector as usize as u64),
         33 => Some(hal_get_processor_id_by_nt_number as usize as u64),
         41 => Some(hal_is_hyper_threading_enabled as usize as u64),
@@ -412,6 +421,8 @@ pub fn self_test() -> bool {
         && resolve(b"HalGetBusDataByOffset").is_some()
         && resolve(b"HalSetBusData").is_some()
         && resolve(b"HalSetBusDataByOffset").is_some()
+        && resolve(b"HalRequestIpi").is_some()
+        && resolve_ordinal(55).is_some()
         && resolve(b"HalRequestIpiSpecifyVector").is_some()
         && resolve_ordinal(56).is_some()
         && resolve(b"HalGetProcessorIdByNtNumber").is_some()
