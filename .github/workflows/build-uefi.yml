@@ -108,6 +108,8 @@ jobs:
           grep -F 'RdotOS Rust kernel entered.' build/serial.log
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
           grep -F 'Physical allocator initialized' build/serial.log
+          grep -F 'HAL CPU-local registry, MMIO bounds, and x86-64 primitives initialized.' build/serial.log
+          grep -F 'I/O manager cancellation, in-flight ownership, and asynchronous completion tests passed.' build/serial.log
           grep -F 'Security: CR0.WP enabled' build/serial.log
           grep -F 'Security: NX enabled; strict page policy follows' build/serial.log
           grep -F 'Security: 4 KiB page policy active; W^X enforced for kernel sections.' build/serial.log
