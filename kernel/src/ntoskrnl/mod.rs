@@ -309,6 +309,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlSelfRelativeToAbsoluteSD" => rtl_runtime::rtl_self_relative_to_absolute_sd as usize,
   "RtlAddAce" => rtl_runtime::rtl_add_ace as usize,
   "RtlCopySidAndAttributesArray" => rtl_runtime::rtl_copy_sid_and_attributes_array as usize,
+  "RtlIsCloudFilesPlaceholder" => rtl_runtime::rtl_is_cloud_files_placeholder as usize,
+  "RtlIsPartialPlaceholderFileInfo" => rtl_runtime::rtl_is_partial_placeholder_file_info as usize,
   _ => return None,
  };
  Some(address as u64)

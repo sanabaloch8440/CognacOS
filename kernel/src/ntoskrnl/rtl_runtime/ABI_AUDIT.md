@@ -4,7 +4,7 @@ Target export catalogue: NTOSKRNL x64, Windows 11 build 10.0.26100.8036.
 
 ## Calling convention and data layout
 
-All **100 newly registered RTL export entry points** in this pass are Rust `unsafe extern "win64"` functions. On x86-64 this selects the Microsoft Windows x64 ABI: integer/pointer arguments 1–4 are passed in RCX, RDX, R8 and R9; later arguments use the stack; callers reserve the 32-byte shadow space; the stack is 16-byte aligned at call boundaries; scalar/pointer results return in RAX. This matches Microsoft's documented x64 convention: https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170.
+All **102 newly registered RTL export entry points** in this pass are Rust `unsafe extern "win64"` functions. On x86-64 this selects the Microsoft Windows x64 ABI: integer/pointer arguments 1–4 are passed in RCX, RDX, R8 and R9; later arguments use the stack; callers reserve the 32-byte shadow space; the stack is 16-byte aligned at call boundaries; scalar/pointer results return in RAX. This matches Microsoft's documented x64 convention: https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention?view=msvc-170.
 
 The new C-facing structures use `#[repr(C)]` for ACL headers, ACE headers, absolute security descriptors, UTF-8 counted strings, bitmap runs, SID-and-attributes records, generic mappings, and version-information records. Fixed-width Windows types are represented with 8/16/32/64-bit Rust integers or pointer-sized `usize` where the Windows prototype uses `SIZE_T`/pointer-sized values.
 
@@ -35,6 +35,8 @@ The new C-facing structures use `#[repr(C)]` for ACL headers, ACE headers, absol
 
 - `RtlRunOnceExecuteOnce` callback return type is a one-byte `LOGICAL/BOOLEAN`; the outer routine returns `NTSTATUS`.
 - `RtlNumberOfSetBitsUlongPtr` returns `ULONG` (32-bit), while its input remains pointer-sized.
+- `RtlGetAcesBufferSize` now follows the two-parameter `NTSTATUS` contract and returns the total ACE-byte count through `PULONG`.
+- `RtlIsPartialPlaceholder` uses its two `ULONG` inputs; `RtlIsPartialPlaceholderFileHandle` and `RtlIsPartialPlaceholderFileInfo` use their documented `NTSTATUS`/output-BOOLEAN signatures.
 - `RtlGetVersion` respects the base `OSVERSIONINFOW` size and writes the `OSVERSIONINFOEXW` tail only when the caller supplied the larger structure.
 - `RtlFindClearRuns` uses a C-layout pair of 32-bit run fields and does not allocate temporary kernel heap memory.
 - Bitmap Ex operations use pointer-sized indexes and counts; ordinary `RTL_BITMAP` range-count operations use 32-bit `ULONG` indexes/counts.
