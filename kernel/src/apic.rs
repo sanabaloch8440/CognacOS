@@ -304,7 +304,7 @@ pub fn tsc_cross_core_status() -> (bool, u64) {
     for cpu in 0..crate::hal::MAX_CPUS {
         let Some(local) = crate::hal::cpu_local(cpu).ok() else { continue; };
         if local.state.load(Ordering::Acquire) != crate::hal::CPU_ONLINE { continue; }
-        if !TSC_CPU_SYNCED[cpu].load(Ordering::Acquire) {
+        if cpu != 0 && !TSC_CPU_SYNCED[cpu].load(Ordering::Acquire) {
             synchronized = false;
             continue;
         }
@@ -500,7 +500,7 @@ pub fn register_interrupt_handler(vector: u8, handler: InterruptHandler, context
         return Err(ApicError::InvalidVector);
     }
     VECTOR_CONTEXTS[vector as usize].store(context as usize, Ordering::Relaxed);
-    VECTOR_HANDLERS[vector as usize].compare_exchange(0, handler as usize, Ordering::Release, Ordering::Acquire)
+    VECTOR_HANDLERS[vector as usize].compare_exchange(0, handler as usize, Ordering::AcqRel, Ordering::Acquire)
         .map(|_| ()).map_err(|_| ApicError::InvalidVector)
 }
 
