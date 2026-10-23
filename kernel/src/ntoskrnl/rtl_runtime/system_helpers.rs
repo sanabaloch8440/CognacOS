@@ -2,6 +2,10 @@
 const TPS:i64=10_000_000;
 const E1970:i64=116_444_736_000_000_000;
 const E1980:i64=119_600_064_000_000_000;
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+static ACTIVE_CONSOLE_ID: AtomicU32 = AtomicU32::new(u32::MAX);
+static SESSION_SKU_FLAGS: AtomicU8 = AtomicU8::new(0);
+pub fn configure_session_sku_flags(multi_session: bool, multi_users: bool) { SESSION_SKU_FLAGS.store((multi_session as u8) | ((multi_users as u8) << 1), Ordering::Release); }
 #[repr(C)] pub struct RtlTimeFields { pub year:i16,pub month:i16,pub day:i16,pub hour:i16,pub minute:i16,pub second:i16,pub milliseconds:i16,pub weekday:i16 }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_seconds_since_1970_to_time(s:u32,t:*mut i64){if !t.is_null(){unsafe{*t=E1970+(s as i64)*TPS;}}}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_seconds_since_1980_to_time(s:u32,t:*mut i64){if !t.is_null(){unsafe{*t=E1980+(s as i64)*TPS;}}}
@@ -15,8 +19,8 @@ fn civil(days:i64)->(i32,i32,i32){let z=days+719468;let era=if z>=0{z}else{z-146
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_nt_product_type(out:*mut u32)->u8{if out.is_null(){return 0;}unsafe{*out=1;}1}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_nt_global_flags()->u32{0}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_suite_mask()->u32{0}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_active_console_id()->u32{u32::MAX}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_active_console_id(_id:u32){}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_active_console_id()->u32{ACTIVE_CONSOLE_ID.load(Ordering::Acquire)}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_active_console_id(id:u32){ACTIVE_CONSOLE_ID.store(id,Ordering::Release);}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_current_service_session_id()->u32{0}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn rtl_is_processor_feature_present(feature: u32) -> u8 {
@@ -58,8 +62,8 @@ pub unsafe extern "win64" fn rtl_is_processor_feature_present(feature: u32) -> u
         0
     }
 }
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_session_sku()->u8{0}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_users_in_session_sku()->u8{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_session_sku()->u8{(SESSION_SKU_FLAGS.load(Ordering::Acquire)&1!=0) as u8}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_users_in_session_sku()->u8{(SESSION_SKU_FLAGS.load(Ordering::Acquire)&2!=0) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_elevated_rid(rid:u32)->u8{(rid==0x3000) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_nt_ddi_version_available(version:u32)->u8{(version<=0x0A000000) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_service_pack_version_installed(_major:u16,_minor:u16,_flags:u32)->u8{0}
