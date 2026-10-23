@@ -9,7 +9,7 @@ pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Cm, Se, Rtl, Zw, Other }
 #[derive(Clone, Copy, Debug)]
 pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: KernelModule }
 
-mod ex; mod ke; mod mm; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; mod zw; mod other;
+mod ex; mod ke; mod mm; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 pub mod abi_signatures;
 
@@ -43,6 +43,46 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "KeQueryActiveGroupCount" => ke::ke_query_active_group_count as usize,
   "KeGetCurrentProcessorNumberEx" => ke::ke_get_current_processor_number_ex as usize,
   "KeGetCurrentProcessorIndex" => ke::ke_get_current_processor_index as usize,
+  "RtlAreBitsClear" => rtl_runtime::rtl_are_bits_clear as usize,
+  "RtlAreBitsSet" => rtl_runtime::rtl_are_bits_set as usize,
+  "RtlClearAllBits" => rtl_runtime::rtl_clear_all_bits as usize,
+  "RtlClearBit" => rtl_runtime::rtl_clear_bit as usize,
+  "RtlClearBits" => rtl_runtime::rtl_clear_bits as usize,
+  "RtlFindClearBits" => rtl_runtime::rtl_find_clear_bits as usize,
+  "RtlFindClearBitsAndSet" => rtl_runtime::rtl_find_clear_bits_and_set as usize,
+  "RtlFindSetBits" => rtl_runtime::rtl_find_set_bits as usize,
+  "RtlFindSetBitsAndClear" => rtl_runtime::rtl_find_set_bits_and_clear as usize,
+  "RtlFindLeastSignificantBit" => rtl_runtime::rtl_find_least_significant_bit as usize,
+  "RtlFindMostSignificantBit" => rtl_runtime::rtl_find_most_significant_bit as usize,
+  "RtlNumberOfClearBits" => rtl_runtime::rtl_number_of_clear_bits as usize,
+  "RtlNumberOfSetBits" => rtl_runtime::rtl_number_of_set_bits as usize,
+  "RtlSetAllBits" => rtl_runtime::rtl_set_all_bits as usize,
+  "RtlSetBit" => rtl_runtime::rtl_set_bit as usize,
+  "RtlSetBits" => rtl_runtime::rtl_set_bits as usize,
+  "RtlTestBit" => rtl_runtime::rtl_test_bit as usize,
+  "RtlFindFirstRunClear" => rtl_runtime::rtl_find_first_run_clear as usize,
+  "RtlFindLongestRunClear" => rtl_runtime::rtl_find_longest_run_clear as usize,
+  "RtlFindNextForwardRunClear" => rtl_runtime::rtl_find_next_forward_run_clear as usize,
+  "RtlFindNextForwardRunSet" => rtl_runtime::rtl_find_next_forward_run_set as usize,
+  "RtlFindLastBackwardRunClear" => rtl_runtime::rtl_find_last_backward_run_clear as usize,
+  "RtlCompareMemory" => rtl_runtime::rtl_compare_memory as usize,
+  "RtlCompareMemoryUlong" => rtl_runtime::rtl_compare_memory_ulong as usize,
+  "RtlComputeCrc32" => rtl_runtime::rtl_compute_crc32 as usize,
+  "RtlCrc32" => rtl_runtime::rtl_crc32 as usize,
+  "RtlDowncaseUnicodeChar" => rtl_runtime::rtl_downcase_unicode_char as usize,
+  "RtlUpcaseUnicodeChar" => rtl_runtime::rtl_upcase_unicode_char as usize,
+  "RtlEqualLuid" => rtl_runtime::rtl_equal_luid as usize,
+  "RtlEqualString" => rtl_runtime::rtl_equal_string as usize,
+  "RtlCompareString" => rtl_runtime::rtl_compare_string as usize,
+  "RtlEqualUnicodeString" => rtl_runtime::rtl_equal_unicode_string as usize,
+  "RtlCompareUnicodeString" => rtl_runtime::rtl_compare_unicode_string as usize,
+  "RtlCopyLuid" => rtl_runtime::rtl_copy_luid as usize,
+  "RtlCopyString" => rtl_runtime::rtl_copy_string as usize,
+  "RtlCopyUnicodeString" => rtl_runtime::rtl_copy_unicode_string as usize,
+  "RtlAreAllAccessesGranted" => rtl_runtime::rtl_are_all_accesses_granted as usize,
+  "RtlAreAnyAccessesGranted" => rtl_runtime::rtl_are_any_accesses_granted as usize,
+  "RtlCopyMemory" => rtl_runtime::rtl_copy_memory as usize,
+  "RtlFillMemory" => rtl_runtime::rtl_fill_memory as usize,
   // All other names deliberately fail closed until their own signatures and semantics are implemented.
   _ => return None,
  };
@@ -57,5 +97,8 @@ pub fn self_test() -> bool {
  && resolve(b"kernel32.dll",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentIrql")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool2")).is_none()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"RtlAreBitsClear")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"RtlComputeCrc32")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"RtlFillMemory")).is_some()
  && abi_signatures::documented_signature("KeGetCurrentIrql").is_some()
 }
