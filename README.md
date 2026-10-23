@@ -40,7 +40,7 @@ RdotOS now has a separate `kernel/src/hal.rs` x86-64 HAL foundation. It owns fix
 
 The I/O manager now tracks IRPs in flight, permits cancellation only before dispatch begins, and supports explicit asynchronous completion. CI exercises these transitions during the QEMU boot smoke test.
 
-**This is SMP groundwork, not completed SMP.** Application processors are not yet started: RdotOS still needs a low-memory SIPI trampoline, per-CPU stacks/GDT/TSS, interrupt vectors, timer calibration, and multi-vCPU stress tests. Context switching and preemptive scheduling are also not implemented. Do not enable external interrupts or claim Windows 11 HAL/WDK binary compatibility yet. The design follows NT-style separation of HAL, executive, and driver interfaces, but is a native RdotOS interface.
+**This is SMP groundwork, not completed SMP.** Application processors are not yet started. Boot-info v4 now optionally reserves a page below 1 MiB for a future SIPI trampoline, and the kernel validates APIC IDs, trampoline address, stack alignment, and PML4 alignment in an SMP startup-target self-test. The page is currently storage only: no executable trampoline, per-AP stack setup, calibrated INIT/SIPI sequence, AP acknowledgement, or multi-vCPU stress test is wired into boot. Context switching and preemptive scheduling are also not implemented. Do not enable external interrupts or claim Windows 11 HAL/WDK binary compatibility yet. The design follows NT-style separation of HAL, executive, and driver interfaces, but is a native RdotOS interface.
 
 ## Ext filesystem Rust port status
 
