@@ -405,7 +405,7 @@ static TIMER_ISR_DIAGNOSTIC_ONCE: core::sync::atomic::AtomicBool = core::sync::a
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_timer_interrupt_handler() {
     let first = !TIMER_ISR_DIAGNOSTIC_ONCE.swap(true, core::sync::atomic::Ordering::AcqRel);
-    if first { crate::serial_write(b"APIC timer ISR entered.\\r\\n"); }
+    if first { unsafe { crate::serial_write(b"APIC timer ISR entered.\\r\\n"); } }
     crate::apic::timer_interrupt();
-    if first { crate::serial_write(b"APIC timer ISR EOI completed.\\r\\n"); }
+    if first { unsafe { crate::serial_write(b"APIC timer ISR EOI completed.\\r\\n"); } }
 }
