@@ -131,3 +131,11 @@ pub fn take_wait_status()->Option<i32>{
     let t=table.records.iter_mut().find(|t|t.id==id&&t.state==ThreadState::Running)?;
     let status=t.wait_status;t.wait_status=0;Some(status)
 }
+
+/// Clear a wake consumed by the waiter's post-enqueue state recheck.
+pub fn clear_wake_pending()->Result<(),ThreadError>{
+    let id=current_thread_id().ok_or(ThreadError::NoCurrentThread)?;
+    let mut table=THREADS.lock();
+    let t=table.records.iter_mut().find(|t|t.id==id&&t.state==ThreadState::Running).ok_or(ThreadError::InvalidState)?;
+    t.wake_pending=false;t.wait_status=0;Ok(())
+}
