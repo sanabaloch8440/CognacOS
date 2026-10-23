@@ -608,10 +608,19 @@ pub unsafe extern "win64" fn free_adapter_channel(adapter: *mut core::ffi::c_voi
     if let Some(req) = next {
         let routine: AdapterExecutionRoutine = unsafe { core::mem::transmute(req.routine) };
         let token = if req.count == 0 { core::ptr::null_mut() }
-            else { allocate_map_register_token(req.device as *mut _, req.count).unwrap_or(core::ptr::null_mut()) };
+            else { match allocate_map_register_token(req.device as *mut _, req.count) {
+                Some(p) => p,
+                None => {
+                    // Do not invoke a driver callback without the registers it requested.
+                    let mut s = CHANNEL.lock();
+                    s.owner = 0;
+                    return;
+                }
+            }};
         let action = unsafe { routine(req.device as *mut _, core::ptr::null_mut(), token, req.context as *mut _) };
         if action == IO_DEALLOCATE_OBJECT || action == IO_DEALLOCATE_OBJECT_KEEP_REGISTERS {
-            unsafe { free_adapter_channel(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()); }
+            // A callback may synchronously release its channel; doing so here
+            // would double-release ownership. Queue advancement is explicit.
         }
     }
 }
@@ -656,7 +665,7 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     allocate_adapter_channel_ex: 0,
     configure_adapter_channel: 0,
     cancel_adapter_channel: 0,
-    map_transfer_ex: crate::dma::map_transfer_ex as usize,
+    map_transfer_ex: 0,
     get_scatter_gather_list_ex: 0,
     build_scatter_gather_list_ex: 0,
     flush_adapter_buffers_ex: 0,
@@ -690,6 +699,57 @@ pub extern "win64" fn put_dma_adapter(_adapter: *mut core::ffi::c_void) {}
 pub extern "win64" fn get_dma_alignment(_adapter: *mut core::ffi::c_void) -> u32 { 1 }
 pub extern "win64" fn read_dma_counter(_adapter: *mut core::ffi::c_void) -> u32 { 0 }
 
+
+#[cfg(test)]
+mod dma_lifecycle_tests {
+    use super::*;
+
+    #[test]
+    fn map_register_tokens_require_exact_owner_token_and_count() {
+        let device = 0x1234usize as *mut core::ffi::c_void;
+        let token = allocate_map_register_token(device, 3).expect("token");
+        {
+            let state = MAP_REGISTERS.lock();
+            let rec = state.records.iter().find(|r| r.active && r.token == token as usize).unwrap();
+            assert_eq!(rec.device, device as usize);
+            assert_eq!(rec.count, 3);
+        }
+        unsafe { free_map_registers(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(), token, 2); }
+        assert!(MAP_REGISTERS.lock().records.iter().any(|r| r.active && r.token == token as usize));
+        unsafe { free_map_registers(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(), token, 3); }
+        assert!(!MAP_REGISTERS.lock().records.iter().any(|r| r.active && r.token == token as usize));
+    }
+
+    #[test]
+    fn channel_queue_is_fifo_and_bounded() {
+        let mut state = ChannelState { owner: 1, queue: [ChannelRequest::EMPTY; 32], head: 0, len: 0 };
+        for n in 0..32usize {
+            let tail = (state.head + state.len) % state.queue.len();
+            state.queue[tail] = ChannelRequest { active: true, device: n + 2, count: 0, routine: 1, context: 0 };
+            state.len += 1;
+        }
+        assert_eq!(state.len, state.queue.len());
+        assert_eq!((state.head + state.len) % state.queue.len(), state.head);
+        let first = state.queue[state.head];
+        assert_eq!(first.device, 2);
+        state.queue[state.head] = ChannelRequest::EMPTY;
+        state.head = (state.head + 1) % state.queue.len();
+        state.len -= 1;
+        let tail = (state.head + state.len) % state.queue.len();
+        state.queue[tail] = ChannelRequest { active: true, device: 99, count: 0, routine: 1, context: 0 };
+        state.len += 1;
+        assert_eq!(state.queue[state.head].device, 3);
+        assert_eq!(state.queue[(state.head + state.len - 1) % state.queue.len()].device, 99);
+    }
+
+    #[test]
+    fn sg_release_rejects_unknown_and_double_release() {
+        let bogus = 0x1234usize as *mut ScatterGatherListAbi;
+        unsafe { put_scatter_gather_list(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(), bogus, 0); }
+        let _guard = SG_LOCK.lock();
+        assert!(!unsafe { &*SG_REGISTRY.ownership.get() }.iter().any(|e| e.active && e.list == bogus as usize));
+    }
+}
 
 #[cfg(test)]
 mod tests {
