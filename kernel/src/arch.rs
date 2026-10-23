@@ -150,6 +150,18 @@ unsafe extern "C" {
     fn rdotos_isr_28(); fn rdotos_isr_29(); fn rdotos_isr_30(); fn rdotos_isr_31();
 }
 
+/// Reload the already initialized shared kernel GDT and IDT on a secondary CPU.
+/// This does not mutate the global IDT and is safe to call concurrently on APs.
+pub unsafe fn load_cpu_descriptor_tables() {
+    unsafe { rdotos_load_gdt(); }
+    let idt_ptr = core::ptr::addr_of!(IDT).cast::<IdtEntry>();
+    let pointer = DescriptorTablePointer {
+        limit: (IDT_ENTRIES * size_of::<IdtEntry>() - 1) as u16,
+        base: idt_ptr as u64,
+    };
+    unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)); }
+}
+
 pub unsafe fn initialize() {
     unsafe { rdotos_load_gdt() };
     let handlers: [usize; EXCEPTION_VECTORS] = [
