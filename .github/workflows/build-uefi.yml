@@ -20,6 +20,11 @@ jobs:
         run: |
           rustup update stable
           rustup target add x86_64-unknown-uefi x86_64-unknown-none
+      - name: Run host-side ext filesystem parser tests
+        run: |
+          mkdir -p build
+          rustc --edition=2021 --test kernel/src/extfs.rs -o build/extfs-tests
+          build/extfs-tests
       - name: Build freestanding Rust kernel with project linker script
         env:
           RUSTFLAGS: -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
