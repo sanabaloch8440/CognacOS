@@ -576,8 +576,9 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
     }
     ONLINE_APS.fetch_add(1, Ordering::AcqRel);
     // Deliberately do not STI: no external interrupt/EOI and per-CPU timer path
-    // is ready yet. This AP is online and safely parked pending scheduler work.
-    loop { core::hint::spin_loop(); }
+    // is ready yet. Poll shared-kernel TLB generations while parked so pool/VM
+    // unmaps can synchronously invalidate this CPU before backing frames recycle.
+    loop { crate::kernel_vm::smp_tlb_poll(index); core::hint::spin_loop(); }
 }
 
 pub fn online_ap_count() -> usize { ONLINE_APS.load(Ordering::Acquire) }
