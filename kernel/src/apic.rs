@@ -1,10 +1,16 @@
 //! xAPIC/I/O APIC register primitives. Interrupt delivery remains disabled until
 //! IDT vectors, timer calibration, and all required routes are installed.
-use core::sync::atomic::{compiler_fence, Ordering};
+use core::sync::atomic::{compiler_fence, AtomicU64, Ordering};
 const IA32_APIC_BASE: u32 = 0x1b;
 const APIC_ENABLE: u64 = 1 << 11;
 const X2APIC_ENABLE: u64 = 1 << 10;
 const APIC_ID: usize = 0x020;
+const APIC_TPR: usize = 0x080;
+const APIC_TIMER_INITIAL_COUNT: usize = 0x380;
+const APIC_TIMER_DIVIDE: usize = 0x3e0;
+pub const LOCAL_TIMER_VECTOR: u8 = 0xE0;
+static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
+static LAST_TSC: AtomicU64 = AtomicU64::new(0);
 const APIC_EOI: usize = 0x0b0;
 const APIC_SVR: usize = 0x0f0;
 const APIC_LVT_TIMER: usize = 0x320;
@@ -30,6 +36,8 @@ pub unsafe fn initialize_local_apic(mmio_base: u64) -> Result<u32, ApicError> {
     let current = unsafe { rdmsr(IA32_APIC_BASE) };
     if current & X2APIC_ENABLE != 0 { return Err(ApicError::X2ApicActive); }
     unsafe { wrmsr(IA32_APIC_BASE, (current & !0x000f_ffff_ffff_f000) | mmio_base | APIC_ENABLE); }
+    LOCAL_APIC_BASE.store(mmio_base, Ordering::Release);
+    unsafe { write_local(mmio_base, APIC_TPR, 0); }
     let id = unsafe { read_local(mmio_base, APIC_ID) } >> 24;
     // Keep asynchronous local sources masked until the kernel has installed
     // the IPI gate and masked legacy/I/O APIC routes.
@@ -165,4 +173,75 @@ pub unsafe fn send_startup_ipi(base: u64, destination_apic_id: u8, trampoline_ph
     unsafe { write_local(base, APIC_ICR_HIGH, (destination_apic_id as u32) << 24); }
     unsafe { write_local(base, APIC_ICR_LOW, APIC_ICR_STARTUP | ((trampoline_physical >> 12) as u32)); }
     unsafe { wait_icr_idle(base) }
+}
+
+
+//! Hardware priority and timer controls. The timer remains masked until the
+//! caller supplies a calibrated initial count and explicitly starts it.
+#[inline]
+pub fn local_apic_base() -> Option<u64> {
+    let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
+    (base != 0).then_some(base)
+}
+
+/// Set the xAPIC task-priority threshold from an NT IRQL value (0..=15).
+/// Hardware priority classes are four-bit fields in TPR; this is a conservative
+/// mapping and does not replace the full Windows HAL IRQL policy.
+pub unsafe fn set_task_priority(irql: u8) -> Result<(), ApicError> {
+    let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
+    if irql > 15 { return Err(ApicError::InvalidVector); }
+    unsafe { write_local(base, APIC_TPR, (irql as u32) << 4); }
+    Ok(())
+}
+pub unsafe fn task_priority() -> Result<u8, ApicError> {
+    let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
+    Ok(((unsafe { read_local(base, APIC_TPR) } >> 4) & 0x0f) as u8)
+}
+
+/// Read the x86 TSC as the kernel's monotonic deadline domain. Timeout values
+/// must be converted to TSC ticks by a calibrated platform clock before use.
+pub fn monotonic_ticks() -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe { core::arch::asm!("lfence", "rdtsc", out("eax") low, out("edx") high, options(nomem, nostack)); }
+    let now = ((high as u64) << 32) | low as u64;
+    let previous = LAST_TSC.fetch_max(now, Ordering::AcqRel);
+    now.max(previous)
+}
+
+/// Program a local APIC timer with a previously calibrated count. Valid divider
+/// encodings are 0,1,2,3,8,9,10,11. This function intentionally does not enable
+/// interrupts or guess a frequency; the caller owns calibration and startup.
+pub unsafe fn start_local_timer(initial_count: u32, divide: u8, periodic: bool) -> Result<(), ApicError> {
+    let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
+    if initial_count == 0 || !matches!(divide, 0 | 1 | 2 | 3 | 8 | 9 | 10 | 11) {
+        return Err(ApicError::InvalidVector);
+    }
+    unsafe {
+        write_local(base, APIC_LVT_TIMER, 1 << 16);
+        write_local(base, APIC_TIMER_DIVIDE, divide as u32);
+        write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | if periodic { 1 << 17 } else { 0 });
+        write_local(base, APIC_TIMER_INITIAL_COUNT, initial_count);
+    }
+    Ok(())
+}
+pub unsafe fn stop_local_timer() {
+    if let Some(base) = local_apic_base() {
+        unsafe { write_local(base, APIC_LVT_TIMER, (1 << 16) | LOCAL_TIMER_VECTOR as u32); }
+        unsafe { write_local(base, APIC_TIMER_INITIAL_COUNT, 0); }
+    }
+}
+
+/// Interrupt-gate callback: update the clock domain, expire due dispatcher
+/// waits, ready their threads, then acknowledge the local APIC interrupt.
+pub fn timer_interrupt() {
+    let now = monotonic_ticks();
+    let mut expired = [0u64; 64];
+    let count = crate::dispatcher::expire(now, &mut expired);
+    for id in expired[..count].iter().copied() {
+        let _ = crate::thread::wake(id);
+    }
+    if let Some(base) = local_apic_base() {
+        unsafe { local_apic_eoi(base); }
+    }
 }
