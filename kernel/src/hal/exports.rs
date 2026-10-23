@@ -115,7 +115,12 @@ static PCI_CONFIG_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::n
 #[inline]
 fn pci_config_address(bus: u32, slot: u32, offset: u32) -> Option<u32> {
     if bus > 255 || slot > 255 || offset > 255 { return None; }
-    Some(0x8000_0000 | (bus << 16) | (slot << 8) | (offset & !3))
+    // PCI_SLOT_NUMBER packs device in bits 0..4 and function in bits 5..7.
+    // Mechanism #1 places device in config-address bits 11..15 and function
+    // in bits 8..10; shifting the packed slot byte directly is incorrect.
+    let device = slot & 0x1f;
+    let function = (slot >> 5) & 0x07;
+    Some(0x8000_0000 | (bus << 16) | (device << 11) | (function << 8) | (offset & !3))
 }
 
 unsafe fn pci_read_dword(bus: u32, slot: u32, offset: u32) -> Option<u32> {
@@ -134,7 +139,9 @@ pub unsafe extern "win64" fn hal_get_bus_data_by_offset(
     buffer: *mut u8, offset: u32, length: u32,
 ) -> u32 {
     if bus_data_type != PCI_CONFIGURATION_BUS_DATA_TYPE || buffer.is_null()
-        || length == 0 || offset >= 256 || slot_number > 255 || bus_number > 255 {
+        || length == 0 || offset >= 256 || slot_number > 255 || bus_number > 255
+        // Keep this legacy API from modifying standard PCI header registers.
+        || offset < 0x40 {
         return 0;
     }
     let count = length.min(256 - offset);
@@ -299,6 +306,8 @@ pub fn self_test() -> bool {
         && find_by_name(b"not-a-hal-export").is_none()
         && resolve(b"HalQueryMaximumProcessorCount").is_some()
         && pci_config_address(0, 0, 0) == Some(0x8000_0000)
+        && pci_config_address(0, 1, 0) == Some(0x8000_0800)
+        && pci_config_address(0, 0x20, 0) == Some(0x8000_0100)
         && pci_config_address(255, 255, 255) == Some(0x80ff_fffc)
         && pci_config_address(256, 0, 0).is_none()
         && pci_config_address(0, 256, 0).is_none()
