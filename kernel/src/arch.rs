@@ -136,6 +136,52 @@ rdotos_exception_common:
     and rsp, -16
     call rdotos_exception_fatal
     ud2
+
+    # Dedicated interrupt-gate entry: preserve all registers and return with IRETQ.
+    .global rdotos_tlb_ipi_stub
+    .type rdotos_tlb_ipi_stub, @function
+rdotos_tlb_ipi_stub:
+    cld
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov r12, rsp
+    and rsp, -16
+    call rdotos_tlb_ipi_handler
+    mov rsp, r12
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
+
+    .global rdotos_spurious_stub
+    .type rdotos_spurious_stub, @function
+rdotos_spurious_stub:
+    iretq
 "#);
 
 unsafe extern "C" {
@@ -148,6 +194,7 @@ unsafe extern "C" {
     fn rdotos_isr_20(); fn rdotos_isr_21(); fn rdotos_isr_22(); fn rdotos_isr_23();
     fn rdotos_isr_24(); fn rdotos_isr_25(); fn rdotos_isr_26(); fn rdotos_isr_27();
     fn rdotos_isr_28(); fn rdotos_isr_29(); fn rdotos_isr_30(); fn rdotos_isr_31();
+    fn rdotos_tlb_ipi_stub(); fn rdotos_spurious_stub();
 }
 
 /// Reload the already initialized shared kernel GDT and IDT on a secondary CPU.
@@ -177,6 +224,12 @@ pub unsafe fn initialize() {
     let idt_ptr = core::ptr::addr_of_mut!(IDT).cast::<IdtEntry>();
     for vector in 0..EXCEPTION_VECTORS {
         unsafe { idt_ptr.add(vector).write(IdtEntry::interrupt_gate(handlers[vector] as u64)); }
+    }
+    // 0xF1 is reserved for synchronous TLB shootdowns; 0xFF is the LAPIC
+    // spurious vector and intentionally does not send an EOI.
+    unsafe {
+        idt_ptr.add(crate::apic::TLB_SHOOTDOWN_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tlb_ipi_stub as u64));
+        idt_ptr.add(0xFF).write(IdtEntry::interrupt_gate(rdotos_spurious_stub as u64));
     }
     let pointer = DescriptorTablePointer {
         limit: (IDT_ENTRIES * size_of::<IdtEntry>() - 1) as u16,
