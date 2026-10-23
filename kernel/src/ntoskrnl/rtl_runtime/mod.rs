@@ -5,6 +5,9 @@ mod strings;
 mod security;
 mod misc;
 mod conversion;
+mod strings_extra;
+mod sid;
+mod conversion_extra;
 
 pub use bitmap::*;
 pub use memory::*;
@@ -12,6 +15,9 @@ pub use strings::*;
 pub use security::*;
 pub use misc::*;
 pub use conversion::*;
+pub use strings_extra::*;
+pub use sid::*;
+pub use conversion_extra::*;
 
 
 #[repr(C)]
