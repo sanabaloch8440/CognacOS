@@ -11,6 +11,9 @@ const BASE: u64 = 0xffff_8000_0000_0000;
 const PAGES: usize = 1 << 20;
 const WORDS: usize = PAGES / 64;
 const MAX: usize = 4096;
+// Match the NT pool's current 256 MiB maximum extent. A lock-protected scratch
+// array lets free_pages invalidate all CPUs once before recycling any backing frame.
+const MAX_EXTENT_PAGES: usize = 65536;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error { NotInitialized, Invalid, NoVirtualSpace, NoPhysicalMemory, AlreadyMapped, NotMapped, TableFull }
@@ -22,6 +25,8 @@ struct Table(core::cell::UnsafeCell<[Extent; MAX]>); unsafe impl Sync for Table 
 static BITS: Bits = Bits(core::cell::UnsafeCell::new([0; WORDS]));
 static TABLE: Table = Table(core::cell::UnsafeCell::new([Extent::EMPTY; MAX]));
 static ROOT: AtomicU64 = AtomicU64::new(0);
+struct ReclaimPages(core::cell::UnsafeCell<[u64; MAX_EXTENT_PAGES]>); unsafe impl Sync for ReclaimPages {}
+static RECLAIM_PAGES: ReclaimPages = ReclaimPages(core::cell::UnsafeCell::new([0; MAX_EXTENT_PAGES]));
 // Each parked AP polls this generation because external interrupts are not enabled yet.
 static TLB_GENERATION: AtomicU64 = AtomicU64::new(0);
 static TLB_ACK: [AtomicU64; crate::hal::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::hal::MAX_CPUS];
@@ -91,7 +96,7 @@ unsafe fn unmap(root:u64,va:u64)->Result<u64,Error>{
 
 /// Allocate a contiguous virtual extent mapped to zeroed, not-necessarily-contiguous physical pages.
 pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
- if pages==0||pages>PAGES{return Err(Error::Invalid)} let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
+ if pages==0||pages>MAX_EXTENT_PAGES{return Err(Error::Invalid)} let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
  let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
  let bits=unsafe{&mut *BITS.0.get()};let mut start=0;let mut found=None;
  while start+pages<=PAGES {let mut n=0;while n<pages&&bits[(start+n)/64]&(1u64<<((start+n)%64))==0{n+=1}if n==pages{found=Some(start);break}start+=n+1;}
@@ -112,11 +117,19 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
  let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
  let start=((va-BASE)/PAGE)as usize;let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};
  let i=table.iter().position(|e|e.live&&e.start==start&&e.pages==pages).ok_or(Error::Invalid)?;
- // Check free-list capacity before changing mappings, making frame return atomic.
- for n in 0..pages {let indexes=ix(va+n as u64*PAGE);let mut t=root as *const u64;for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *const u64;}if unsafe{t.add(indexes[3]).read()}&P==0{return Err(Error::NotMapped)}}
- // Free stack may reject when full. Keep mappings intact if the first release fails.
+ // Validate every leaf and capture all backing frames before mutating page tables.
+ // The VM lock makes this scratch array private to this operation.
+ let reclaim=unsafe{&mut *RECLAIM_PAGES.0.get()};
+ for n in 0..pages {let indexes=ix(va+n as u64*PAGE);let mut t=root as *const u64;for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *const u64;}let pte=unsafe{t.add(indexes[3]).read()};if pte&P==0{return Err(Error::NotMapped)}reclaim[n]=pte&ADDR;}
+ // Remove the whole extent first, then wait for every online AP to flush stale
+ // translations before any backing frame can be recycled.
+ for n in 0..pages {let _=unsafe{unmap(root,va+n as u64*PAGE)}?;}
+ synchronize_kernel_tlb();
  let bits=unsafe{&mut *BITS.0.get()};
- for n in 0..pages {let pa=unsafe{unmap(root,va+n as u64*PAGE)}?;synchronize_kernel_tlb();if unsafe{crate::memory::free_page(pa)}.is_err(){return Err(Error::NoPhysicalMemory)}bits[(start+n)/64]&=!(1u64<<((start+n)%64));}
+ for n in 0..pages { // A saturated allocator may quarantine a frame rather than risk reuse.
+  let _=unsafe{crate::memory::free_page(reclaim[n])};
+  bits[(start+n)/64]&=!(1u64<<((start+n)%64));
+ }
  table[i]=Extent::EMPTY;Ok(())
 }
 /// Exercise a real high-half mapping and reclamation before the pool uses it.
