@@ -298,7 +298,8 @@ pub unsafe extern "win64" fn ke_release_semaphore(semaphore: *mut SemaphoreObjec
     for _ in 0..adjustment {
         let Some(thread_id) = crate::dispatcher::wake_one(semaphore as u64) else { break; };
         state.fetch_sub(1, Ordering::AcqRel);
-        let _ = crate::thread::complete_wait(thread_id, STATUS_SUCCESS);
+        let status = crate::dispatcher::complete_wait_group(thread_id, semaphore as u64, STATUS_SUCCESS, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
+        let _ = crate::thread::complete_wait(thread_id, status);
     }
     let _ = increment; // priority boosts require a scheduler priority model.
     old
