@@ -112,7 +112,7 @@ pub unsafe extern "win64" fn rtl_integer_to_char(
         n /= radix;
         if n == 0 { break; }
     }
-    if buffer_length as usize < count + 1 { return STATUS_BUFFER_TOO_SMALL; }
+    if (buffer_length as usize) < count + 1 { return STATUS_BUFFER_TOO_SMALL; }
     for i in 0..count { unsafe { *buffer.add(i) = digits[count - i - 1]; } }
     unsafe { *buffer.add(count) = 0; }
     STATUS_SUCCESS
