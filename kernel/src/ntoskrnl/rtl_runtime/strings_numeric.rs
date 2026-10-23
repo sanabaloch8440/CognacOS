@@ -56,7 +56,7 @@ pub unsafe extern "win64" fn rtl_get_product_info(
 pub unsafe extern "win64" fn rtl_query_elevation_flags(flags: *mut u32) -> i32 {
     if flags.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { *flags = 0; }
-    STATUS_NOT_IMPLEMENTED
+    STATUS_SUCCESS
 }
 
 #[unsafe(no_mangle)]

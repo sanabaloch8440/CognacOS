@@ -335,6 +335,23 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
 
   "RtlExtractBitMap" => rtl_runtime::rtl_extract_bit_map as usize,
   "RtlExtractBitMapEx" => rtl_runtime::rtl_extract_bit_map_ex as usize,
+  "RtlIpv6AddressToStringA" => rtl_runtime::rtl_ipv6_address_to_string_a as usize,
+  "RtlIpv6AddressToStringW" => rtl_runtime::rtl_ipv6_address_to_string_w as usize,
+  "RtlIpv6AddressToStringExA" => rtl_runtime::rtl_ipv6_address_to_string_ex_a as usize,
+  "RtlIpv6AddressToStringExW" => rtl_runtime::rtl_ipv6_address_to_string_ex_w as usize,
+  "RtlIpv6StringToAddressA" => rtl_runtime::rtl_ipv6_string_to_address_a as usize,
+  "RtlIpv6StringToAddressW" => rtl_runtime::rtl_ipv6_string_to_address_w as usize,
+  "RtlIpv6StringToAddressExA" => rtl_runtime::rtl_ipv6_string_to_address_ex_a as usize,
+  "RtlIpv6StringToAddressExW" => rtl_runtime::rtl_ipv6_string_to_address_ex_w as usize,
+  "RtlUnicodeStringToOemSize" => rtl_runtime::rtl_unicode_string_to_oem_size as usize,
+  "RtlOemStringToUnicodeSize" => rtl_runtime::rtl_oem_string_to_unicode_size as usize,
+  "RtlxUnicodeStringToOemSize" => rtl_runtime::rtlx_unicode_string_to_oem_size as usize,
+  "RtlxOemStringToUnicodeSize" => rtl_runtime::rtlx_oem_string_to_unicode_size as usize,
+  "RtlDuplicateUnicodeString" => rtl_runtime::rtl_duplicate_unicode_string as usize,
+  "RtlStringFromGUIDEx" => rtl_runtime::rtl_string_from_guid_ex as usize,
+  "RtlGetEnabledExtendedAndSupervisorFeatures" => rtl_runtime::rtl_get_enabled_extended_and_supervisor_features as usize,
+  "RtlPrefetchMemoryNonTemporal" => rtl_runtime::rtl_prefetch_memory_non_temporal as usize,
+  "RtlInterlockedSetClearRun" => rtl_runtime::rtl_interlocked_set_clear_run as usize,
   _ => return None,
  };
  Some(address as u64)
