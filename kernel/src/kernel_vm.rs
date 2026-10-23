@@ -203,6 +203,12 @@ pub fn handle_page_fault(address: u64, error_code: u64) -> bool {
  let Some(extent)=extent else{return false;};
  let mapped=unsafe{&mut *MAPPED_BITS.0.get()};
  if mapped[page_index/64]&(1u64<<(page_index%64))!=0 {
+  // A remote CPU may have faulted on a stale non-present translation just as
+  // another CPU completed the mapping. Confirm the leaf really is present
+  // before retrying; otherwise treat inconsistent metadata as an unhandled fault.
+  let indexes=ix(page_va);let mut t=root as *const u64;
+  for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return false;}t=(e&ADDR)as *const u64;}
+  if unsafe{t.add(indexes[3]).read()}&P==0{return false;}
   unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}
   return true;
  }
