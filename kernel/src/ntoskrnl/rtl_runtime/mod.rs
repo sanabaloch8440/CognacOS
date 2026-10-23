@@ -63,6 +63,23 @@ pub use timezone::set_time_zone_bias_minutes;
 
 
 
+/// Kernel-internal tagged nonpaged allocation interface. This currently uses
+/// the bounded RTL arena; callers must handle allocation failure and must not
+/// assume that the pool can satisfy arbitrary-size requests.
+pub(crate) fn pool_allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
+    pool::allocate_tagged(size, tag, zeroed)
+}
+
+/// Release a pool block, optionally checking its allocation tag.
+pub(crate) fn pool_free_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool {
+    pool::deallocate_tagged(ptr, expected_tag)
+}
+
+/// Inspect metadata only for an exact live pool allocation pointer.
+pub(crate) fn pool_allocation_info(ptr: *const u8) -> Option<(usize, u32)> {
+    pool::allocation_info(ptr)
+}
+
 #[repr(C)]
 pub struct RtlBitmap { pub size_of_bitmap: u32, pub buffer: *mut u32 }
 #[repr(C)]
