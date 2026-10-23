@@ -242,7 +242,21 @@ pub unsafe extern "win64" fn ke_read_state_event(event: *const DispatcherHeader)
 }
 pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, _increment: i32, _wait: u8) -> i32 {
     if event.is_null() { return 0; }
-    unsafe { (&*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>()).swap(1, Ordering::AcqRel) }
+    let state = unsafe { &*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>() };
+    let old = state.swap(1, Ordering::AcqRel);
+    if unsafe { (*event).kind } == EVENT_SYNCHRONIZATION {
+        if let Some(thread_id) = crate::dispatcher::wake_one(event as u64) {
+            let _ = crate::thread::complete_wait(thread_id, 0);
+            let _ = state.compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire);
+        }
+    } else {
+        let mut ids = [0u64; crate::dispatcher::MAX_WAITERS];
+        let count = crate::dispatcher::wake_all(event as u64, &mut ids);
+        for thread_id in ids[..count].iter().copied() {
+            let _ = crate::thread::complete_wait(thread_id, 0);
+        }
+    }
+    old
 }
 
 /// Semaphore header followed by the NT limit field.
@@ -295,4 +309,104 @@ mod tests {
         assert_eq!(EVENT_NOTIFICATION, 0);
         assert_eq!(EVENT_SYNCHRONIZATION, 1);
     }
+}
+
+
+const STATUS_SUCCESS: i32 = 0;
+const STATUS_ALERTED: i32 = 0x0000_0101;
+const STATUS_TIMEOUT: i32 = 0x0000_0102;
+const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
+const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002_u32 as i32;
+
+/// Consume a signalled event/semaphore state using an atomic compare/exchange.
+unsafe fn try_consume_dispatcher_object(object: *mut DispatcherHeader) -> bool {
+    if object.is_null() { return false; }
+    let state = unsafe { &*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>() };
+    match unsafe { (*object).kind } {
+        EVENT_NOTIFICATION => state.load(Ordering::Acquire) > 0,
+        EVENT_SYNCHRONIZATION | 5 => {
+            let mut old = state.load(Ordering::Acquire);
+            while old > 0 {
+                match state.compare_exchange_weak(old, old - 1, Ordering::AcqRel, Ordering::Acquire) {
+                    Ok(_) => return true,
+                    Err(actual) => old = actual,
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Block the current RdotOS kernel thread on a dispatcher object. This requires
+/// a thread created by the kernel thread runtime; unsupported caller contexts
+/// return STATUS_NOT_IMPLEMENTED instead of pretending that a wait occurred.
+pub unsafe extern "win64" fn ke_wait_for_single_object(
+    object: *mut DispatcherHeader,
+    _wait_reason: i32,
+    _wait_mode: i32,
+    alertable: u8,
+    timeout: *const i64,
+) -> i32 {
+    if object.is_null() { return STATUS_INVALID_PARAMETER; }
+    if alertable != 0 { return STATUS_ALERTED; }
+    let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
+    if unsafe { try_consume_dispatcher_object(object) } { return STATUS_SUCCESS; }
+    let deadline = if timeout.is_null() { 0 } else {
+        let interval = unsafe { timeout.read_unaligned() };
+        if interval == 0 { return STATUS_TIMEOUT; }
+        if interval > 0 { return STATUS_NOT_IMPLEMENTED; }
+        match crate::apic::relative_timeout_deadline(interval) {
+            Some(value) => value,
+            None => return STATUS_NOT_IMPLEMENTED,
+        }
+    };
+    let token = match crate::dispatcher::enqueue(object as u64, thread_id, deadline) {
+        Ok(value) => value,
+        Err(_) => return STATUS_NOT_IMPLEMENTED,
+    };
+    if unsafe { try_consume_dispatcher_object(object) } {
+        let _ = crate::dispatcher::cancel(token);
+        let _ = crate::thread::clear_wake_pending();
+        return STATUS_SUCCESS;
+    }
+    if crate::thread::block_current().is_err() {
+        let _ = crate::dispatcher::cancel(token);
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS)
+}
+
+/// Multiple-object waits are rejected explicitly until shared wait-block groups
+/// can provide atomic wait-all reservation and safe cancellation of wait-any peers.
+pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
+    count: u32,
+    objects: *const *mut DispatcherHeader,
+    wait_type: i32,
+    wait_reason: i32,
+    wait_mode: i32,
+    alertable: u8,
+    timeout: *const i64,
+    _wait_block_array: *mut core::ffi::c_void,
+) -> i32 {
+    if count == 0 || count > 64 || objects.is_null() || !(wait_type == 0 || wait_type == 1) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let _ = (wait_reason, wait_mode, alertable, timeout);
+    STATUS_NOT_IMPLEMENTED
+}
+
+/// Never busy-loops when the thread runtime or calibrated delay source is absent.
+pub unsafe extern "win64" fn ke_delay_execution_thread(
+    wait_mode: i32,
+    alertable: u8,
+    interval: *const i64,
+) -> i32 {
+    if interval.is_null() { return STATUS_INVALID_PARAMETER; }
+    if alertable != 0 { return STATUS_ALERTED; }
+    let value = unsafe { interval.read_unaligned() };
+    if value == 0 { return STATUS_SUCCESS; }
+    if value > 0 { return STATUS_NOT_IMPLEMENTED; }
+    let _ = wait_mode;
+    STATUS_NOT_IMPLEMENTED
 }
