@@ -216,6 +216,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"ACPI MADT parser self-test passed; APIC discovery primitives available.\r\n");
 
+        let mut local_timer_ready = false;
         if info.rsdp_address != 0 {
             match acpi::discover_madt(info.rsdp_address) {
                 Ok(firmware_madt) => {
@@ -227,6 +228,35 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                             serial_write(b"Firmware MADT Local APIC address: ");
                             serial_write_hex(firmware_madt.local_apic_address);
                             serial_write(b"\r\n");
+
+                            // The bootloader identity-maps 0..4 GiB with 2 MiB pages.
+                            // Keep legacy and I/O APIC routes masked until the local timer is ready.
+                            match unsafe { apic::initialize_local_apic(firmware_madt.local_apic_address) } {
+                                Ok(local_id) if local_id == bsp_apic_id => {
+                                    let mut routes_masked = true;
+                                    for io in firmware_madt.io_apics.iter().take(firmware_madt.io_apic_count) {
+                                        if unsafe { apic::mask_all_ioapic(io.address as u64) }.is_err() {
+                                            routes_masked = false;
+                                            break;
+                                        }
+                                    }
+                                    if routes_masked {
+                                        unsafe { outb(0x21, 0xff); outb(0xa1, 0xff); }
+                                        match unsafe { apic::calibrate_and_start_local_timer() } {
+                                            Ok(count) => {
+                                                local_timer_ready = true;
+                                                serial_write(b"Local APIC timer calibrated; 1 ms count=");
+                                                serial_write_decimal(count as usize);
+                                                serial_write(b"; legacy and I/O APIC routes masked.\r\n");
+                                            }
+                                            Err(_) => serial_write(b"WARNING: APIC timer calibration failed; interrupts stay disabled.\r\n"),
+                                        }
+                                    } else {
+                                        serial_write(b"WARNING: could not mask every I/O APIC route; interrupts stay disabled.\r\n");
+                                    }
+                                }
+                                _ => serial_write(b"WARNING: local APIC initialization failed or APIC ID mismatch; interrupts stay disabled.\r\n"),
+                            }
                         }
                         Err(_) => {
                             serial_write(b"WARNING: MADT parsed, but HAL CPU registration failed; SMP remains disabled.\r\n");
@@ -456,7 +486,12 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
-        serial_write(b"Interrupts remain disabled until APIC/timer setup.\r\n");
+        if local_timer_ready {
+            serial_write(b"Local APIC timer ready; enabling masked-route single-core interrupt mode.\r\n");
+            loop { unsafe { asm!("sti; hlt", options(nomem, nostack)); } }
+        } else {
+            serial_write(b"Interrupts remain disabled because APIC/timer setup was not fully validated.\r\n");
+        }
     }
     unsafe { halt() }
 }
