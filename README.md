@@ -36,7 +36,7 @@ The Ext3Fsd Windows ext2/ext3/ext4 driver is tracked as a pinned source submodul
 
 ## Hardware Abstraction Layer, SMP, and I/O status
 
-RdotOS now has a separate `kernel/src/hal.rs` x86-64 HAL foundation. It owns fixed per-CPU records, a logical-CPU/APIC-ID registry, CPU lifecycle states, GS-based CPU-local access, typed port-I/O primitives, MMIO range checks, and IRQ-save spin locks. The bootstrap processor registers its CPU-local record during kernel entry. Scheduler metadata and I/O request state use the HAL lock so interrupt re-entry and cross-CPU races are less likely to deadlock or double-dispatch requests.
+RdotOS now has a separate `kernel/src/hal.rs` x86-64 HAL foundation. It owns fixed per-CPU records, a logical-CPU/APIC-ID registry, CPU lifecycle states, GS-based CPU-local access, typed port-I/O primitives, MMIO range checks, and IRQ-save spin locks. The bootstrap processor registers its CPU-local record during kernel entry. The APIC layer also has bounded ICR waits and fixed/INIT/Startup IPI primitives, and the HAL can reserve CPU slots from a validated MADT. These are primitives only: no AP is started yet. Scheduler metadata and I/O request state use the HAL lock so interrupt re-entry and cross-CPU races are less likely to deadlock or double-dispatch requests.
 
 The I/O manager now tracks IRPs in flight, permits cancellation only before dispatch begins, and supports explicit asynchronous completion. CI exercises these transitions during the QEMU boot smoke test.
 
