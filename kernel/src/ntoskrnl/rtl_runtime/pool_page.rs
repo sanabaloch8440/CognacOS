@@ -218,7 +218,7 @@ mod tests {
         assert_eq!(slab.find_free_slot(), Some(0));
         slab.mark_used(0);
         assert_eq!(slab.find_free_slot(), Some(1));
-        assert!(!slab.is_empty_except(0));
+        assert!(slab.is_empty_except(0));
         slab.mark_used(1);
         assert!(!slab.is_empty_except(0));
         slab.mark_free(0);
