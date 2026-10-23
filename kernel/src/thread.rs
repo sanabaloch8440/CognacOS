@@ -52,10 +52,17 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
 fn reschedule(block:bool)->Result<(),ThreadError>{
     let cpu=cpu_index()?;
     let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
-    let current_id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
+    let mut current_id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
     let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
     let (old_rsp_ptr,new_rsp)= {
         let mut table=THREADS.lock();
+        // The bootstrapping execution context is not a TCB. If a stale/non-runtime
+        // current-thread value exists, adopt the saved idle context rather than
+        // refusing the first real thread dispatch.
+        if current_id!=0 && !table.records.iter().any(|t|t.id==current_id&&t.state==ThreadState::Running) {
+            current_id=0;
+            local.current_thread.store(0,core::sync::atomic::Ordering::Release);
+        }
         let old_rsp_ptr=if current_id==0 {idle_rsp_ptr} else {
             let current=table.records.iter_mut().find(|t|t.id==current_id&&t.state==ThreadState::Running).ok_or(ThreadError::NoCurrentThread)?;
             if block&&current.wake_pending {current.wake_pending=false;return Ok(())}
