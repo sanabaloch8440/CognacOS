@@ -254,7 +254,9 @@ pub unsafe fn set_ioapic_irq_enabled(
     unsafe { select(io_base, low_reg); }
     let current = unsafe { read(io_base) };
     let vector = (current & 0xff) as u8;
-    if enabled && (vector < 0x20 || vector == 0xff || current & (1 << 16) == 0 && vector == 0) {
+    if enabled && (!(VECTOR_FIRST..=VECTOR_LAST).contains(&vector)
+        || !VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire)
+        || VECTOR_HANDLERS[vector as usize].load(Ordering::Acquire) == 0) {
         return Err(ApicError::InvalidVector);
     }
     unsafe { write(io_base, if enabled { current & !(1 << 16) } else { current | (1 << 16) }); }
