@@ -543,7 +543,8 @@ pub unsafe fn configure_ioapic_route(
     io_base: u64, gsi_base: u32, gsi: u32, vector: u8,
     destination_apic_id: u8, active_low: bool, level_triggered: bool,
 ) -> Result<(), ApicError> {
-    if io_base == 0 || io_base & 0xfff != 0 || !(VECTOR_FIRST..=0xfe).contains(&vector) || vector == 0xff {
+    if io_base == 0 || io_base & 0xfff != 0 || !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector)
+        || !VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire) {
         return Err(ApicError::InvalidVector);
     }
     if gsi < gsi_base || gsi - gsi_base >= 120 { return Err(ApicError::InvalidGsi); }
