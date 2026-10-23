@@ -118,6 +118,12 @@ pub(crate) extern "system" fn ex_free_pool(ptr: *mut u8) {
     let _ = pool::deallocate(ptr);
 }
 
+/// Return the requested size for an exact live allocation owned by this pool.
+/// Unknown, interior, and already-freed pointers return zero.
+pub(crate) extern "system" fn ex_query_pool_block_size(ptr: *const u8) -> usize {
+    pool::allocation_info(ptr).map(|(size, _tag)| size).unwrap_or(0)
+}
+
 #[repr(C)]
 pub struct RtlBitmap { pub size_of_bitmap: u32, pub buffer: *mut u32 }
 #[repr(C)]
@@ -147,6 +153,7 @@ mod pool_api_tests {
         let p = ex_allocate_pool_with_tag(0, 64, 0x54455354);
         assert!(!p.is_null());
         assert_eq!(pool_allocation_info(p), Some((64, 0x54455354)));
+        assert_eq!(ex_query_pool_block_size(p), 64);
 
         // A mismatched tag must not release the allocation.
         ex_free_pool_with_tag(p, 0x42414421);
@@ -154,6 +161,7 @@ mod pool_api_tests {
 
         ex_free_pool_with_tag(p, 0x54455354);
         assert_eq!(pool_allocation_info(p), None);
+        assert_eq!(ex_query_pool_block_size(p), 0);
     }
 
     #[test]
