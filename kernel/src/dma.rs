@@ -200,9 +200,8 @@ mod tests {
         let fragments = [(0x1ff0, 0x40)];
         let mut out = [ScatterGatherElement::default(); 8];
         let n = build_scatter_gather(&fragments, 0x30, 0x1000, &mut out).unwrap();
-        assert_eq!(n, 3);
+        assert_eq!(n, 2);
         assert_eq!((out[0].address, out[0].length), (0x1ff0, 0x10));
         assert_eq!((out[1].address, out[1].length), (0x2000, 0x30));
-        assert_eq!((out[2].address, out[2].length), (0x2030, 0));
     }
 }
