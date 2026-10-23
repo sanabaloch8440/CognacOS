@@ -52,20 +52,20 @@ pub fn expire_detailed(now:u64,out:&mut[ExpiredWait])->usize{
 }
 
 #[derive(Clone, Copy)]
-struct WaitGroup { active:bool, wait_all:bool, thread:u64, count:usize, token_count:usize, objects:[u64;MAX_GROUP_OBJECTS], tokens:[WaitToken;MAX_GROUP_OBJECTS] }
-impl WaitGroup { const EMPTY:Self=Self{active:false,wait_all:false,thread:0,count:0,token_count:0,objects:[0;MAX_GROUP_OBJECTS],tokens:[0;MAX_GROUP_OBJECTS]}; }
+struct WaitGroup { active:bool, wait_all:bool, thread:u64, count:usize, token_count:usize, deadline:u64, objects:[u64;MAX_GROUP_OBJECTS], tokens:[WaitToken;MAX_GROUP_OBJECTS] }
+impl WaitGroup { const EMPTY:Self=Self{active:false,wait_all:false,thread:0,count:0,token_count:0,deadline:0,objects:[0;MAX_GROUP_OBJECTS],tokens:[0;MAX_GROUP_OBJECTS]}; }
 struct GroupTable { groups:[WaitGroup;MAX_WAIT_GROUPS] }
 impl GroupTable { const fn new()->Self{Self{groups:[WaitGroup::EMPTY;MAX_WAIT_GROUPS]}} }
 static GROUPS:IrqSpinLock<GroupTable>=IrqSpinLock::new(GroupTable::new());
 
 /// Register a wait-any group after all per-object queue entries have been inserted.
 /// The caller must serialize object signal transitions during this registration.
-pub fn register_wait_any(thread:u64,objects:&[u64],tokens:&[WaitToken])->Result<(),WaitError>{
+pub fn register_wait_any(thread:u64,objects:&[u64],tokens:&[WaitToken],deadline:u64)->Result<(),WaitError>{
     if thread==0{return Err(WaitError::InvalidThread)}
     if objects.is_empty()||objects.len()>MAX_GROUP_OBJECTS||objects.len()!=tokens.len(){return Err(WaitError::InvalidObject)}
     let mut groups=GROUPS.lock();
     let group=groups.groups.iter_mut().find(|g|!g.active).ok_or(WaitError::Full)?;
-    group.active=true;group.wait_all=false;group.thread=thread;group.count=objects.len();group.token_count=tokens.len();
+    group.active=true;group.wait_all=false;group.thread=thread;group.count=objects.len();group.token_count=tokens.len();group.deadline=deadline;
     for i in 0..objects.len(){group.objects[i]=objects[i];group.tokens[i]=tokens[i];}
     Ok(())
 }
@@ -77,7 +77,8 @@ pub fn complete_wait_group(thread:u64,object:u64,status:i32,success_status:i32,t
     let (result,tokens,count)={
         let mut groups=GROUPS.lock();
         let group=groups.groups.iter_mut().find(|g|g.active&&g.thread==thread)?;
-        let result=if status==timeout_status {timeout_status} else {
+        let timed_out=status==timeout_status || (group.deadline!=0 && crate::apic::monotonic_ticks()>=group.deadline);
+        let result=if timed_out {timeout_status} else {
             let index=group.objects[..group.count].iter().position(|candidate|*candidate==object)?;
             success_status+index as i32
         };
@@ -98,12 +99,12 @@ pub fn clear_wait_group(thread:u64){
 
 /// Register a wait-all group. Object signal transitions are serialized by the
 /// caller while the group is installed, so no signal can slip between check and enqueue.
-pub fn register_wait_all(thread:u64,objects:&[u64],timeout_token:Option<WaitToken>)->Result<(),WaitError>{
+pub fn register_wait_all(thread:u64,objects:&[u64],timeout_token:Option<WaitToken>,deadline:u64)->Result<(),WaitError>{
     if thread==0{return Err(WaitError::InvalidThread)}
     if objects.is_empty()||objects.len()>MAX_GROUP_OBJECTS{return Err(WaitError::InvalidObject)}
     let mut groups=GROUPS.lock();
     let group=groups.groups.iter_mut().find(|g|!g.active).ok_or(WaitError::Full)?;
-    group.active=true;group.wait_all=true;group.thread=thread;group.count=objects.len();
+    group.active=true;group.wait_all=true;group.thread=thread;group.count=objects.len();group.deadline=deadline;
     group.token_count=if let Some(token)=timeout_token {group.tokens[0]=token;1}else{0};
     for i in 0..objects.len(){group.objects[i]=objects[i];}
     Ok(())
@@ -125,6 +126,7 @@ pub fn complete_ready_wait_all(
         for group in groups.groups.iter_mut(){
             if count==out_threads.len(){break}
             if !group.active||!group.wait_all{continue}
+            if group.deadline!=0&&crate::apic::monotonic_ticks()>=group.deadline{continue}
             if !group.objects[..group.count].iter().copied().all(is_signalled){continue}
             for object in group.objects[..group.count].iter().copied(){consume(object);}
             out_threads[count]=group.thread;count+=1;
