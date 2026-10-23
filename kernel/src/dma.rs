@@ -254,7 +254,7 @@ pub unsafe extern "win64" fn flush_adapter_buffers(
     let start = m.start_va as u64;
     let va = current_va as u64;
     let Some(end) = start.checked_add(m.byte_count as u64) else { return 0; };
-    if m.byte_count == 0 || va < start || va.checked_add(length as u64).is_none_or(|e| e > end) {
+    if m.byte_count == 0 || va < start || va.checked_add(length as u64).map_or(true, |e| e > end) {
         return 0;
     }
     fence(Ordering::SeqCst);
