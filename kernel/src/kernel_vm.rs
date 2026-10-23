@@ -121,13 +121,21 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
 }
 /// Exercise a real high-half mapping and reclamation before the pool uses it.
 pub fn self_test() -> bool {
- let p = match allocate_pages(2) { Ok(p) => p, Err(_) => return false };
- unsafe {
-  p.write(0x5a);
-  p.add(PAGE as usize).write(0xa5);
-  if p.read() != 0x5a || p.add(PAGE as usize).read() != 0xa5 { let _ = free_pages(p, 2); return false; }
+ // Exercise distinct extent sizes and every page boundary, then verify exact
+ // reclamation and arena reuse. This runs once during boot and again after AP startup.
+ for pages in [1usize, 2, 3, 8, 16] {
+  let p = match allocate_pages(pages) { Ok(p) => p, Err(_) => return false };
+  unsafe {
+   for page in 0..pages { p.add(page * PAGE as usize).write((0x31u8).wrapping_add(page as u8)); }
+   for page in 0..pages {
+    if p.add(page * PAGE as usize).read() != (0x31u8).wrapping_add(page as u8) {
+     let _ = free_pages(p, pages); return false;
+    }
+   }
+  }
+  if free_pages(p, pages).is_err() || allocation_pages(p).is_some() { return false; }
  }
- free_pages(p, 2).is_ok() && allocation_pages(p).is_none()
+ true
 }
 pub fn allocation_pages(ptr:*const u8)->Option<usize>{let va=ptr as u64;if ptr.is_null()||va<BASE||(va-BASE)&(PAGE-1)!=0{return None}let start=((va-BASE)/PAGE)as usize;let _g=Guard::lock();unsafe{&*TABLE.0.get()}.iter().find(|e|e.live&&e.start==start).map(|e|e.pages)}
 #[cfg(test)]mod tests{use super::*;#[test]fn arena_geometry(){assert_eq!(BASE&(PAGE-1),0);assert_eq!(PAGES*PAGE as usize,1usize<<32);assert_eq!(ix(BASE)[0],256);assert_eq!(ix(BASE+PAGE)[3],1);}}
