@@ -347,6 +347,25 @@ unsafe fn try_consume_dispatcher_object(object: *mut DispatcherHeader) -> bool {
     unsafe { try_consume_dispatcher_object_locked(object) }
 }
 
+fn wait_all_object_signalled(object_id:u64)->bool{
+    let object=object_id as *mut DispatcherHeader;
+    if object.is_null(){return false}
+    let kind=unsafe{(*object).kind};
+    if !matches!(kind,EVENT_NOTIFICATION|EVENT_SYNCHRONIZATION|5){return false}
+    unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)>0}
+}
+fn consume_wait_all_object(object_id:u64){
+    let object=object_id as *mut DispatcherHeader;
+    if object.is_null()||unsafe{(*object).kind}==EVENT_NOTIFICATION{return}
+    let state=unsafe{&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()};
+    state.store(state.load(Ordering::Acquire)-1,Ordering::Release);
+}
+fn complete_ready_wait_all_groups(){
+    let mut ids=[0u64;crate::dispatcher::MAX_WAIT_GROUPS];
+    let count=crate::dispatcher::complete_ready_wait_all(&mut ids,wait_all_object_signalled,consume_wait_all_object);
+    for id in ids[..count].iter().copied(){let _=crate::thread::complete_wait(id,STATUS_SUCCESS);}
+}
+
 /// Block the current RdotOS kernel thread on a dispatcher object. This requires
 /// a thread created by the kernel thread runtime; unsupported caller contexts
 /// return STATUS_NOT_IMPLEMENTED instead of pretending that a wait occurred.
