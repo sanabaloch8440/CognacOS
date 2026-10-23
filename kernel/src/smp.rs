@@ -222,7 +222,9 @@ fn pit_delay_us(microseconds: u32) -> bool {
 }
 
 unsafe fn symbol_offset(symbol: *const u8) -> usize {
-    unsafe { symbol.offset_from(core::ptr::addr_of!(rdotos_ap_trampoline_start)) as usize }
+    // Linker-defined labels are contiguous in the same trampoline section; use
+    // integer addresses rather than Rust pointer provenance across extern symbols.
+    (symbol as usize).wrapping_sub(core::ptr::addr_of!(rdotos_ap_trampoline_start) as usize)
 }
 unsafe fn write_patch_u16(page: u64, symbol: *const u8, value: u16) {
     let offset = unsafe { symbol_offset(symbol) };
