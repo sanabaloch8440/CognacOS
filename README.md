@@ -27,3 +27,8 @@ For a VM, use x86-64 UEFI firmware. The EFI application is currently unsigned an
 ## Licensing
 
 RdotOS is dual-licensed under **Apache-2.0 OR MIT**, following the common Rust ecosystem licensing convention. You may choose either license. See [LICENSE-APACHE](LICENSE-APACHE) and [LICENSE-MIT](LICENSE-MIT).
+
+
+## Third-party filesystem driver reference
+
+The Ext3Fsd Windows ext2/ext3/ext4 driver is tracked as a pinned source submodule at `third_party/Ext3Fsd` for a planned Rust port. It remains a separate GPLv2-licensed upstream component; see [third_party/README.md](third_party/README.md). The Windows driver itself is not loadable by RdotOS.

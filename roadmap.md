@@ -165,3 +165,13 @@ Status reflects code currently present in the repository, not intended architect
 - [ ] QEMU/OVMF boot tests with Secure Boot on and off.
 - [ ] Fuzz EFI/ACPI/PE/ELF and storage parsers.
 - [ ] Document supported hardware, threat model, recovery path, and known limitations.
+
+
+## Third-party filesystem driver port
+
+- [x] Pin upstream Ext3Fsd sources as a separate submodule at `third_party/Ext3Fsd` for reference and staged Rust translation.
+- [ ] Audit the upstream GPLv2 notices and determine distribution/licensing treatment for any Rust translation before redistribution.
+- [ ] Port the ext2/ext3/ext4 on-disk format parser into a safe, `no_std` Rust crate with checked bounds and fuzz tests.
+- [ ] Implement a read-only ext filesystem backend against RdotOS block-device and filesystem interfaces.
+- [ ] Add ext2/ext3/ext4 image tests before considering journal replay or write support.
+- [ ] Implement driver registration/loading only after the filesystem backend passes image-based tests; the original Windows kernel driver cannot load directly in RdotOS.
