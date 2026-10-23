@@ -110,14 +110,25 @@ pub unsafe fn send_init_ipi(base: u64, destination_apic_id: u8) -> Result<(), Ap
     unsafe { wait_icr_idle(base) }
 }
 
-/// Issue the INIT deassert IPI required by the AP startup sequence.
-/// The caller must observe the platform-specified delay after INIT assert.
-pub unsafe fn send_init_deassert_ipi(base: u64, destination_apic_id: u8) -> Result<(), ApicError> {
+/// Issue the architecturally specified INIT deassert broadcast.
+/// INIT deassert is broadcast to all processors; the destination field is
+/// ignored by hardware for this delivery mode. Keep the argument for API
+/// compatibility and reject no APIC IDs here; the subsequent SIPI is targeted.
+pub unsafe fn send_init_deassert_ipi(base: u64, _destination_apic_id: u8) -> Result<(), ApicError> {
+    const APIC_ICR_DESTINATION_SHORTHAND_ALL_EXCLUDING_SELF: u32 = 0b11 << 18;
     if base == 0 || base & 0xfff != 0 { return Err(ApicError::InvalidBase); }
     unsafe { wait_icr_idle(base)?; }
-    unsafe { write_local(base, APIC_ICR_HIGH, (destination_apic_id as u32) << 24); }
-    // INIT delivery mode, level-triggered (bit 15), deassert level bit 14 clear.
-    unsafe { write_local(base, APIC_ICR_LOW, APIC_ICR_INIT | (1 << 15)); }
+    // INIT delivery mode, level-triggered, deassert level, broadcast excluding BSP.
+    unsafe { write_local(base, APIC_ICR_HIGH, 0); }
+    unsafe {
+        write_local(
+            base,
+            APIC_ICR_LOW,
+            APIC_ICR_INIT
+                | (1 << 15)
+                | APIC_ICR_DESTINATION_SHORTHAND_ALL_EXCLUDING_SELF,
+        );
+    }
     unsafe { wait_icr_idle(base) }
 }
 
