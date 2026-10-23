@@ -98,7 +98,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 83, name: "KdHvComPortInUse", state: StubState::NotImplemented },
     HalExport { ordinal: 84, name: "KeFlushWriteBuffer", state: StubState::Implemented },
     HalExport { ordinal: 85, name: "KeQueryPerformanceCounter", state: StubState::Implemented },
-    HalExport { ordinal: 86, name: "KeStallExecutionProcessor", state: StubState::NotImplemented },
+    HalExport { ordinal: 86, name: "KeStallExecutionProcessor", state: StubState::Implemented },
     HalExport { ordinal: 87, name: "x86BiosAllocateBuffer", state: StubState::NotImplemented },
     HalExport { ordinal: 88, name: "x86BiosCall", state: StubState::NotImplemented },
     HalExport { ordinal: 89, name: "x86BiosFreeBuffer", state: StubState::NotImplemented },
@@ -111,39 +111,30 @@ pub unsafe extern "win64" fn hal_query_maximum_processor_count() -> u32 {
     super::MAX_CPUS as u32
 }
 
-/// Full memory barrier used by the Windows x64 write-buffer flush export.
-pub unsafe extern "win64" fn ke_flush_write_buffer() {
-    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
-    unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
-}
+/// The Windows x64 HAL forwards Ke routines to ntoskrnl. Keep the forwarding
+/// decision here so both hal.dll name/ordinal imports and ntoskrnl imports land
+/// on the same ABI-correct implementation.
 
-/// Windows x64 KeQueryPerformanceCounter ABI: return the counter as a
-/// LARGE_INTEGER and optionally store the stable counter frequency.
-pub unsafe extern "win64" fn ke_query_performance_counter(frequency: *mut i64) -> i64 {
-    if let Some(hz) = crate::apic::tsc_frequency_hz() {
-        if !frequency.is_null() { unsafe { frequency.write(hz.min(i64::MAX as u64) as i64); } }
-    } else if !frequency.is_null() {
-        unsafe { frequency.write(0); }
-    }
-    crate::apic::monotonic_ticks().min(i64::MAX as u64) as i64
-}
 
 /// Resolve only ABI-reviewed HAL exports. Unsupported names fail closed.
 pub fn resolve(name: &[u8]) -> Option<u64> {
     if name.eq_ignore_ascii_case(b"HalQueryMaximumProcessorCount") {
         Some(hal_query_maximum_processor_count as usize as u64)
     } else if name.eq_ignore_ascii_case(b"KeFlushWriteBuffer") {
-        Some(ke_flush_write_buffer as usize as u64)
+        Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64)
     } else if name.eq_ignore_ascii_case(b"KeQueryPerformanceCounter") {
-        crate::apic::tsc_frequency_hz().map(|_| ke_query_performance_counter as usize as u64)
+        crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"KeStallExecutionProcessor") {
+        crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64)
     } else { None }
 }
 
 pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
     match ordinal {
         47 => Some(hal_query_maximum_processor_count as usize as u64),
-        84 => Some(ke_flush_write_buffer as usize as u64),
-        85 => crate::apic::tsc_frequency_hz().map(|_| ke_query_performance_counter as usize as u64),
+        84 => Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64),
+        85 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64),
+        86 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64),
         _ => None,
     }
 }
@@ -167,8 +158,10 @@ pub fn self_test() -> bool {
         && resolve(b"HalQueryMaximumProcessorCount").is_some()
         && resolve(b"KeFlushWriteBuffer").is_some()
         && (resolve(b"KeQueryPerformanceCounter").is_some() == crate::apic::tsc_frequency_hz().is_some())
+        && (resolve(b"KeStallExecutionProcessor").is_some() == crate::apic::tsc_frequency_hz().is_some())
         && resolve(b"HalAcpiGetTableEx").is_none()
         && resolve_ordinal(47).is_some()
         && (resolve_ordinal(85).is_some() == crate::apic::tsc_frequency_hz().is_some())
+        && (resolve_ordinal(86).is_some() == crate::apic::tsc_frequency_hz().is_some())
         && resolve_ordinal(1).is_none()
 }
