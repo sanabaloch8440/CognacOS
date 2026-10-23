@@ -48,7 +48,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   ImportSymbol::Name(requested) => exports().find(|e|e.name.as_bytes().eq_ignore_ascii_case(requested)).map(|e|e.name)?,
   ImportSymbol::Ordinal(ordinal) => manifest_26100::ENTRIES.iter().find(|e|e.ordinal==ordinal)?.name?,
  };
+ if name == "KeQueryPerformanceCounter" && crate::apic::tsc_frequency_hz().is_none() {
+  return None;
+ }
  let address = match name {
+  "KeQueryPerformanceCounter" => crate::hal::exports::ke_query_performance_counter as usize,
   "MmAllocateContiguousMemory" => mm::runtime::mm_allocate_contiguous_memory as usize,
   "MmAllocateContiguousMemorySpecifyCache" => mm::runtime::mm_allocate_contiguous_memory_specify_cache as usize,
   "MmFreeContiguousMemory" => mm::runtime::mm_free_contiguous_memory as usize,
