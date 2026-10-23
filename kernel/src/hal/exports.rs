@@ -33,7 +33,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 18, name: "HalEnableInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 19, name: "HalEnumerateEnvironmentVariablesEx", state: StubState::NotImplemented },
     HalExport { ordinal: 20, name: "HalEnumerateProcessors", state: StubState::NotImplemented },
-    HalExport { ordinal: 21, name: "HalFlushCommonBuffer", state: StubState::NotImplemented },
+    HalExport { ordinal: 21, name: "HalFlushCommonBuffer", state: StubState::Implemented },
     HalExport { ordinal: 22, name: "HalFreeCommonBuffer", state: StubState::Implemented },
     HalExport { ordinal: 23, name: "HalFreeHardwareCounters", state: StubState::NotImplemented },
     HalExport { ordinal: 24, name: "HalGetAdapter", state: StubState::NotImplemented },
@@ -260,6 +260,18 @@ pub unsafe extern "win64" fn hal_allocate_common_buffer(
     }
 }
 
+/// Flush CPU memory ordering for a common buffer. x86-64 PCI DMA is cache
+/// coherent; MFENCE supplies the required CPU-side ordering on this platform.
+pub unsafe extern "win64" fn hal_flush_common_buffer(
+    _adapter: *mut core::ffi::c_void,
+    length: u32,
+    _logical_address: i64,
+    virtual_address: *mut core::ffi::c_void,
+    _write_to_device: u8,
+) {
+    let _ = unsafe { crate::dma::flush_common_buffer(virtual_address.cast(), length as usize) };
+}
+
 /// Release a buffer allocated by hal_allocate_common_buffer. Adapter and cache
 /// policy are ignored on the current x86 coherent-memory, no-IOMMU path.
 pub unsafe extern "win64" fn hal_free_common_buffer(
@@ -290,6 +302,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64)
     } else if name.eq_ignore_ascii_case(b"KeStallExecutionProcessor") {
         crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalFlushCommonBuffer") {
+        Some(hal_flush_common_buffer as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalAllocateCommonBuffer") {
         Some(hal_allocate_common_buffer as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalFreeCommonBuffer") {
@@ -315,6 +329,7 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
         84 => Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64),
         85 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64),
         86 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64),
+        21 => Some(hal_flush_common_buffer as usize as u64),
         6 => Some(hal_allocate_common_buffer as usize as u64),
         22 => Some(hal_free_common_buffer as usize as u64),
         25 => Some(hal_get_bus_data as usize as u64),
@@ -350,6 +365,8 @@ pub fn self_test() -> bool {
         && pci_config_address(255, 255, 255) == Some(0x80ff_fffc)
         && pci_config_address(256, 0, 0).is_none()
         && pci_config_address(0, 256, 0).is_none()
+        && resolve(b"HalFlushCommonBuffer").is_some()
+        && resolve_ordinal(21).is_some()
         && resolve(b"HalAllocateCommonBuffer").is_some()
         && resolve(b"HalFreeCommonBuffer").is_some()
         && resolve_ordinal(6).is_some()
