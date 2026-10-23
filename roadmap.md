@@ -99,7 +99,8 @@ Status reflects code currently present in the repository, not intended architect
 - [x] Parse MADT Local APIC/x2APIC processor entries and I/O APIC GSI bases with table bounds/checksum validation.
 - [x] Provide xAPIC MMIO initialization and masked I/O APIC routing primitives.
 - [ ] Discover RSDP through UEFI configuration tables and pass ACPI roots in versioned BootInfo.
-- [ ] Bring up application processors using a low-memory SIPI trampoline and per-CPU state.
+- [x] Add a separate x86-64 HAL with fixed per-CPU records, APIC-ID registry, CPU lifecycle states, GS-based CPU-local access, typed port I/O, MMIO range validation, and IRQ-save spin locks. The bootstrap CPU is registered at kernel entry.
+- [ ] Bring up application processors using a low-memory SIPI trampoline, per-CPU stacks/GDT/TSS/IDT, calibrated startup timeouts, and APIC startup IPIs.
 - [ ] Enable timer interrupts, IRQ routing, MSI/MSI-X, interrupt remapping, and multi-vCPU regression tests.
 
 ## NT executive foundations
@@ -121,7 +122,8 @@ Status reflects code currently present in the repository, not intended architect
 ## Storage, DirectStorage-style I/O, and graphics
 
 - [x] Add bounded IRP allocation, dispatch, query, completion, and release primitives.
-- [ ] Implement asynchronous completion queues, cancellation races, request ownership, and end-to-end async I/O.
+- [x] Add exclusive in-flight IRP ownership, pre-dispatch cancellation, asynchronous completion, and IRQ-safe SMP locks; QEMU boot tests exercise the request state transitions.
+- [ ] Implement completion queues/DPCs, race-safe cancellation after dispatch begins, request timeouts, DMA-safe buffer pinning, and end-to-end asynchronous device I/O.
 - [ ] Add PCIe enumeration, NVMe/AHCI, DMA mapping, IOMMU, and storage-driver support.
 - [ ] Add safe compressed-asset streaming and decompression pipelines.
 - [ ] Add a GOP framebuffer handoff, display/device abstraction, GPU drivers, VRAM mapping, and GPU-side decompression only where hardware/driver APIs support it.
