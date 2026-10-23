@@ -65,7 +65,7 @@ fn synchronize_kernel_tlb() {
  let generation = TLB_GENERATION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
  for cpu in 1..crate::hal::MAX_CPUS {
   if crate::hal::cpu_state(cpu).ok() != Some(crate::hal::CPU_ONLINE) { continue; }
-  while TLB_ACK[cpu].load(Ordering::Acquire) < generation { core::hint::spin_loop(); }
+  while TLB_ACK[cpu].load(Ordering::Acquire) != generation { core::hint::spin_loop(); }
  }
 }
 fn ix(v:u64)->[usize;4]{[((v>>39)&511)as usize,((v>>30)&511)as usize,((v>>21)&511)as usize,((v>>12)&511)as usize]}
