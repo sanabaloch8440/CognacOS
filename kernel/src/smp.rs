@@ -55,7 +55,7 @@ rdotos_ap_trampoline_pm32:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    call 1f
+    call rdotos_ap_trampoline_pm32_pop
 rdotos_ap_trampoline_pm32_pop:
     pop esi
     .byte 0x81, 0xee
@@ -86,7 +86,7 @@ rdotos_ap_trampoline_long64:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    call 2f
+    call rdotos_ap_trampoline_long64_pop
 rdotos_ap_trampoline_long64_pop:
     pop rsi
     .byte 0x48, 0x81, 0xee
