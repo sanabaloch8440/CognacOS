@@ -9,7 +9,6 @@ const APIC_EOI: usize = 0x0b0;
 const APIC_SVR: usize = 0x0f0;
 const APIC_LVT_TIMER: usize = 0x320;
 const APIC_LVT_ERROR: usize = 0x370;
-const APIC_LVT_TIMER: usize = 0x320;
 pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xF1;
 const APIC_SPURIOUS_VECTOR: u32 = 0x100 | 0xff;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
