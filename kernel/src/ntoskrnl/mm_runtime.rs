@@ -137,7 +137,7 @@ static CONTIGUOUS_ALLOCS: crate::hal::IrqSpinLock<[ContiguousAllocation; MAX_CON
 fn allocate_contiguous(bytes: u64, highest: u64, boundary: u64, cache_type: u32) -> *mut c_void {
     // Only the default cached policy is implemented. Do not silently return
     // cached memory for callers that explicitly require UC or WC mappings.
-    if bytes == 0 || cache_type != 0 { return core::ptr::null_mut(); }
+    if bytes == 0 || cache_type != 1 { return core::ptr::null_mut(); }
     let Some(rounded) = bytes.checked_add(PAGE_SIZE - 1) else { return core::ptr::null_mut(); };
     let pages = (rounded / PAGE_SIZE) as usize;
     let base = match unsafe { crate::memory::allocate_contiguous_pages(pages) } {
@@ -165,7 +165,7 @@ fn allocate_contiguous(bytes: u64, highest: u64, boundary: u64, cache_type: u32)
 
 #[inline]
 pub unsafe extern "win64" fn mm_allocate_contiguous_memory(bytes: u64, highest: u64) -> *mut c_void {
-    allocate_contiguous(bytes, highest, 0, 0)
+    allocate_contiguous(bytes, highest, 0, 1)
 }
 
 #[inline]
@@ -181,7 +181,7 @@ unsafe fn free_contiguous(base: *mut c_void, expected_bytes: Option<u64>, cache_
         let mut table = CONTIGUOUS_ALLOCS.lock();
         let Some(entry) = table.iter_mut().find(|e| e.live && e.base == base as u64) else { return; };
         if expected_bytes.map_or(false, |n| n != entry.requested)
-            || cache_type.map_or(false, |c| c != 0) { return; }
+            || cache_type.map_or(false, |c| c != 1) { return; }
         let found = *entry;
         *entry = ContiguousAllocation::EMPTY;
         found
