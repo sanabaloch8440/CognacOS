@@ -3,7 +3,9 @@
 //! SPDX-License-Identifier: GPL-2.0-or-later
 //!
 //! The temporary AP page-table and trampoline startup design is adapted from
-//! RustOS-Dev/RustOS, src/arch/x86_64/smp.rs (GPL-2.0-or-later).
+//! RustOS-Dev/RustOS, src/arch/x86_64/smp.rs
+//! (https://github.com/RustOS-Dev/RustOS/blob/main/src/arch/x86_64/smp.rs),
+//! licensed GPL-2.0-or-later.
 //! Copyright (C) RustOS-Dev contributors; RdotOS-specific modifications
 //! Copyright (C) 2026 RdotOS contributors. Modified for RdotOS on 2026-10-23.
 use crate::{apic, arch, hal, memory};
