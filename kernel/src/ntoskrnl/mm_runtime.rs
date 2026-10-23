@@ -145,7 +145,7 @@ pub fn self_test() -> bool {
     let valid = physical != 0
         && unsafe { mm_is_address_valid(source.cast()) } != 0
         && unsafe { mm_is_non_paged_system_address_valid(source.cast()) } != 0
-        && unsafe { mm_get_virtual_for_physical(physical) } == source.cast()
+        && unsafe { mm_get_virtual_for_physical(physical) } as u64 == physical
         && status == STATUS_SUCCESS && copied == 128
         && unsafe { destination.read() } == 0x39
         && unsafe { destination.add(127).read() } == 0xA6;
