@@ -246,7 +246,8 @@ pub fn timer_interrupt() {
     let count = crate::dispatcher::expire_detailed(now, &mut expired);
     for wait in expired[..count].iter().copied() {
         let status = if crate::dispatcher::is_delay_object(wait.object) { 0 } else { 0x0000_0102 };
-        let _ = crate::thread::complete_wait(wait.thread, status);
+        let final_status = crate::dispatcher::complete_wait_group(wait.thread, wait.object, status, 0, 0x0000_0102).unwrap_or(status);
+        let _ = crate::thread::complete_wait(wait.thread, final_status);
     }
     if let Some(base) = local_apic_base() {
         unsafe { local_apic_eoi(base); }
