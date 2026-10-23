@@ -16,14 +16,25 @@ fn encode_one(cp:u32,out:&mut [u8;4])->usize{if cp<0x80{out[0]=cp as u8;1}else i
 }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_utf8_string_to_unicode_string(dst:*mut UnicodeString,src:*const Utf8String,allocate:u8)->i32 {
  if dst.is_null()||src.is_null(){return INVALID;}let d=unsafe{&mut *dst};let s=unsafe{&*src};if s.length>0&&s.buffer.is_null(){return INVALID;}
- if allocate!=0 {let Some(cap)=(s.length as usize).checked_mul(2).and_then(|n|n.checked_add(2)) else{return SMALL;};if cap>u16::MAX as usize{return SMALL;}let p=super::pool::allocate(cap);if p.is_null(){return SMALL;}d.buffer=p.cast::<u16>();d.maximum_length=cap as u16;d.length=0;}
+ if allocate!=0 {
+  let bytes=if s.length==0 {&[][..]} else {unsafe{core::slice::from_raw_parts(s.buffer,s.length as usize)}};
+  let mut i=0usize;let mut units=0usize;while i<bytes.len(){let Some((cp,n))=decode_one(bytes,i)else{return INVALID;};units=match units.checked_add(if cp>0xffff{2}else{1}){Some(v)=>v,None=>return SMALL};i+=n;}
+  let Some(cap)=units.checked_mul(2).and_then(|n|n.checked_add(2)) else{return SMALL;};if cap>u16::MAX as usize{return SMALL;}
+  let p=super::pool::allocate(cap);if p.is_null(){return SMALL;}d.buffer=p.cast::<u16>();d.maximum_length=cap as u16;d.length=0;
+ }
  let mut written=0u32;let st=unsafe{rtl_utf8_to_unicode_n(d.buffer,d.maximum_length as u32,&mut written,s.buffer,s.length as u32)};
  if st==SUCCESS{if written>u16::MAX as u32{if allocate!=0{let _=super::pool::deallocate(d.buffer.cast::<u8>());d.buffer=core::ptr::null_mut();d.maximum_length=0;}return SMALL;}d.length=written as u16;if allocate!=0{unsafe{*d.buffer.add((written/2) as usize)=0;}}}
  else if allocate!=0{let _=super::pool::deallocate(d.buffer.cast::<u8>());d.buffer=core::ptr::null_mut();d.length=0;d.maximum_length=0;}st
 }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_unicode_string_to_utf8_string(dst:*mut Utf8String,src:*const UnicodeString,allocate:u8)->i32 {
  if dst.is_null()||src.is_null(){return INVALID;}let d=unsafe{&mut *dst};let s=unsafe{&*src};if s.length%2!=0||(s.length>0&&s.buffer.is_null()){return INVALID;}
- if allocate!=0 {let Some(cap)=((s.length as usize)/2).checked_mul(3).and_then(|n|n.checked_add(1)) else{return SMALL;};if cap>u16::MAX as usize{return SMALL;}let p=super::pool::allocate(cap);if p.is_null(){return SMALL;}d.buffer=p;d.maximum_length=cap as u16;d.length=0;}
+ if allocate!=0 {
+  let units=(s.length/2) as usize;let mut i=0usize;let mut needed=0usize;
+  while i<units {let a=unsafe{*s.buffer.add(i)};let cp=if (0xd800..=0xdbff).contains(&a){if i+1>=units{return INVALID;}let b=unsafe{*s.buffer.add(i+1)};if !(0xdc00..=0xdfff).contains(&b){return INVALID;}i+=2;0x10000+(((a as u32)-0xd800)<<10)+((b as u32)-0xdc00)}else if (0xdc00..=0xdfff).contains(&a){return INVALID;}else{i+=1;a as u32};
+  let add=if cp<0x80{1}else if cp<0x800{2}else if cp<0x10000{3}else{4};needed=match needed.checked_add(add){Some(v)=>v,None=>return SMALL};}
+  let Some(cap)=needed.checked_add(1) else{return SMALL;};if cap>u16::MAX as usize{return SMALL;}
+  let p=super::pool::allocate(cap);if p.is_null(){return SMALL;}d.buffer=p;d.maximum_length=cap as u16;d.length=0;
+ }
  let mut written=0u32;let st=unsafe{rtl_unicode_to_utf8_n(d.buffer,d.maximum_length as u32,&mut written,s.buffer,s.length as u32)};
  if st==SUCCESS{if written>u16::MAX as u32{if allocate!=0{let _=super::pool::deallocate(d.buffer);d.buffer=core::ptr::null_mut();d.maximum_length=0;}return SMALL;}d.length=written as u16;if allocate!=0{unsafe{*d.buffer.add(written as usize)=0;}}}
  else if allocate!=0{let _=super::pool::deallocate(d.buffer);d.buffer=core::ptr::null_mut();d.length=0;d.maximum_length=0;}st
