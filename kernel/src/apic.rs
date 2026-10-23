@@ -176,8 +176,8 @@ pub unsafe fn send_startup_ipi(base: u64, destination_apic_id: u8, trampoline_ph
 }
 
 
-//! Hardware priority and timer controls. The timer remains masked until the
-//! caller supplies a calibrated initial count and explicitly starts it.
+// Hardware priority and timer controls. The timer remains masked until the
+// caller supplies a calibrated initial count and explicitly starts it.
 #[inline]
 pub fn local_apic_base() -> Option<u64> {
     let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
@@ -220,8 +220,8 @@ pub unsafe fn start_local_timer(initial_count: u32, divide: u8, periodic: bool) 
     unsafe {
         write_local(base, APIC_LVT_TIMER, 1 << 16);
         write_local(base, APIC_TIMER_DIVIDE, divide as u32);
-        write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | if periodic { 1 << 17 } else { 0 });
         write_local(base, APIC_TIMER_INITIAL_COUNT, initial_count);
+        write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | if periodic { 1 << 17 } else { 0 });
     }
     Ok(())
 }
