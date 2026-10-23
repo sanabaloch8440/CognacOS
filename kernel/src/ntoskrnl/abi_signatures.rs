@@ -28,6 +28,11 @@ pub type ExAllocatePoolWithTagPriorityFn = unsafe extern "win64" fn(Ulong, SizeT
 pub type ExFreePool2Fn = unsafe extern "win64" fn(Pvoid, Ulong, *const c_void, Ulong);
 pub type ExFreePoolWithTagFn = unsafe extern "win64" fn(Pvoid, Ulong);
 pub type MmGetPhysicalAddressFn = unsafe extern "win64" fn(Pvoid) -> u64;
+pub type MmAllocateContiguousMemoryFn = unsafe extern "win64" fn(SizeT, LargeInteger) -> Pvoid;
+pub type MmAllocateContiguousMemorySpecifyCacheFn = unsafe extern "win64" fn(SizeT, LargeInteger, LargeInteger, Ulong) -> Pvoid;
+pub type MmFreeContiguousMemoryFn = unsafe extern "win64" fn(Pvoid);
+pub type MmFreeContiguousMemorySpecifyCacheFn = unsafe extern "win64" fn(Pvoid, SizeT, Ulong);
+pub type MmSizeOfMdlFn = unsafe extern "win64" fn(Pvoid, SizeT) -> Ulong;
 pub type MmGetVirtualForPhysicalFn = unsafe extern "win64" fn(u64) -> Pvoid;
 pub type MmIsAddressValidFn = unsafe extern "win64" fn(Pvoid) -> Boolean;
 pub type MmIsNonPagedSystemAddressValidFn = unsafe extern "win64" fn(Pvoid) -> Boolean;
@@ -40,7 +45,7 @@ pub type ZwCloseFn = unsafe extern "win64" fn(Handle) -> NtStatus;
 pub type ZwWaitForSingleObjectFn = unsafe extern "win64" fn(Handle, Boolean, *const LargeInteger) -> NtStatus;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbiSignature { MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject }
+pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject }
 
 pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     Some(match name {
@@ -57,6 +62,11 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
         "ExAllocatePoolWithTagPriority" => AbiSignature::ExAllocatePoolWithTagPriority,
         "ExFreePool2" => AbiSignature::ExFreePool2,
         "ExFreePoolWithTag" => AbiSignature::ExFreePoolWithTag,
+        "MmAllocateContiguousMemory" => AbiSignature::MmAllocateContiguousMemory,
+        "MmAllocateContiguousMemorySpecifyCache" => AbiSignature::MmAllocateContiguousMemorySpecifyCache,
+        "MmFreeContiguousMemory" => AbiSignature::MmFreeContiguousMemory,
+        "MmFreeContiguousMemorySpecifyCache" => AbiSignature::MmFreeContiguousMemorySpecifyCache,
+        "MmSizeOfMdl" => AbiSignature::MmSizeOfMdl,
         "MmGetPhysicalAddress" => AbiSignature::MmGetPhysicalAddress,
         "MmGetVirtualForPhysical" => AbiSignature::MmGetVirtualForPhysical,
         "MmIsAddressValid" => AbiSignature::MmIsAddressValid,
@@ -75,7 +85,7 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn documented_signatures_are_registered() {
-        for name in ["MmGetPhysicalAddress","MmGetVirtualForPhysical","MmIsAddressValid","MmIsNonPagedSystemAddressValid","MmCopyMemory","KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExAllocatePool3","ExAllocatePoolWithTag","ExAllocatePoolWithTagPriority","ExFreePool2","ExFreePoolWithTag","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
+        for name in ["MmAllocateContiguousMemory","MmAllocateContiguousMemorySpecifyCache","MmFreeContiguousMemory","MmFreeContiguousMemorySpecifyCache","MmSizeOfMdl","MmGetPhysicalAddress","MmGetVirtualForPhysical","MmIsAddressValid","MmIsNonPagedSystemAddressValid","MmCopyMemory","KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExAllocatePool3","ExAllocatePoolWithTag","ExAllocatePoolWithTagPriority","ExFreePool2","ExFreePoolWithTag","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
         assert!(documented_signature("UnknownRoutine").is_none());
     }
 }
