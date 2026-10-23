@@ -9,6 +9,7 @@ static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
 static ONLINE_APS: AtomicUsize = AtomicUsize::new(0);
 static LAST_START_ERROR: AtomicUsize = AtomicUsize::new(0);
 static AP_ENTRY_REACHED: AtomicUsize = AtomicUsize::new(0);
+static LAST_TARGET_APIC_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 global_asm!(r#"
     .section .rodata.ap_trampoline,"a",@progbits
@@ -345,6 +346,7 @@ fn error_code(error: SmpError) -> usize {
 }
 pub fn last_start_error_code() -> usize { LAST_START_ERROR.load(Ordering::Acquire) }
 pub fn ap_entry_reached_count() -> usize { AP_ENTRY_REACHED.load(Ordering::Acquire) }
+pub fn last_target_apic_id() -> usize { LAST_TARGET_APIC_ID.load(Ordering::Acquire) }
 
 /// Enable xAPIC MMIO as uncached, install the real-mode trampoline, and bring
 /// each MADT-discovered AP online. APs are left in a safe interrupt-disabled
@@ -370,7 +372,19 @@ pub unsafe fn start_discovered_aps(
         if hal::cpu_state(logical_id).ok() != Some(hal::CPU_DISCOVERED) { continue; }
         let cpu = hal::cpu_local(logical_id).map_err(SmpError::Hal)?;
         let apic_id = cpu.apic_id.load(Ordering::Acquire);
-        if apic_id > u8::MAX as u32 { let _ = hal::mark_cpu_failed(logical_id); continue; }
+        LAST_TARGET_APIC_ID.store(apic_id as usize, Ordering::Release);
+        // Never send INIT to the BSP: a mistaken MADT/HAL association would
+        // reset the CPU coordinating startup and restart the boot sequence.
+        if apic_id == bsp_apic_id {
+            LAST_START_ERROR.store(error_code(SmpError::InvalidCpuState), Ordering::Release);
+            let _ = hal::mark_cpu_failed(logical_id);
+            continue;
+        }
+        if apic_id > u8::MAX as u32 {
+            LAST_START_ERROR.store(error_code(SmpError::UnsupportedApicId), Ordering::Release);
+            let _ = hal::mark_cpu_failed(logical_id);
+            continue;
+        }
         let stack_page = unsafe { memory::allocate_page() }.map_err(SmpError::Memory)?;
         let stack_top = stack_page + PAGE_SIZE as u64;
         let target = ApStartupTarget { logical_id, apic_id, trampoline_physical, stack_top, pml4_physical };
