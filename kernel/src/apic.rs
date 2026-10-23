@@ -239,7 +239,7 @@ pub fn timer_interrupt() {
     let mut expired = [0u64; 64];
     let count = crate::dispatcher::expire(now, &mut expired);
     for id in expired[..count].iter().copied() {
-        let _ = crate::thread::wake(id);
+        let _ = crate::thread::complete_wait(id, 0x0000_0102);
     }
     if let Some(base) = local_apic_base() {
         unsafe { local_apic_eoi(base); }
