@@ -57,8 +57,7 @@ rdotos_ap_trampoline_pm32:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    // Load CR3 through an absolute low-memory address; do not use CALL/POP
-    // before a valid stack exists on the reset AP.
+    # Load CR3 through an absolute low-memory address; no stack is valid yet.
     .byte 0xa1
 rdotos_ap_trampoline_pml4_absolute_patch:
     .long 0
@@ -84,8 +83,7 @@ rdotos_ap_trampoline_long64:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    // Establish the copied trampoline's physical base without touching the
-    // uninitialized AP stack.
+    # Establish the trampoline physical base without touching the AP stack.
     .byte 0x48, 0xbe
 rdotos_ap_trampoline_long64_base_patch:
     .quad 0
@@ -246,7 +244,7 @@ unsafe fn prepare_trampoline(
 ) -> Result<(), SmpError> {
     let start = core::ptr::addr_of!(rdotos_ap_trampoline_start);
     let end = core::ptr::addr_of!(rdotos_ap_trampoline_end);
-    let length = unsafe { end.offset_from(start) as usize };
+    let length = (end as usize).wrapping_sub(start as usize);
     if length == 0 || length > PAGE_SIZE { return Err(SmpError::TrampolineTooLarge); }
     unsafe { memory::configure_identity_page(pml4, page, true, false, false, false) }
         .map_err(SmpError::Memory)?;
