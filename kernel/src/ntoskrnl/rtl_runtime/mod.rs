@@ -91,6 +91,21 @@ pub(crate) extern "system" fn ex_allocate_pool_with_tag(pool_type: u32, size: us
     pool::allocate_tagged(size, tag, false)
 }
 
+/// NT 10.0.26100 ExAllocatePool2-compatible nonpaged subset.
+///
+/// Pool flags for paged, executable, quota, session, or special pool are rejected
+/// rather than silently emulated. This early pool zeroes allocations by default;
+/// POOL_FLAG_UNINITIALIZED (0x10000) opts out of zeroing.
+pub(crate) extern "system" fn ex_allocate_pool2(flags: u64, size: usize, tag: u32) -> *mut u8 {
+    const POOL_FLAG_NON_PAGED: u64 = 0x40;
+    const POOL_FLAG_ZERO_ALLOCATION: u64 = 0x1000;
+    const POOL_FLAG_UNINITIALIZED: u64 = 0x1_0000;
+    const SUPPORTED: u64 = POOL_FLAG_NON_PAGED | POOL_FLAG_ZERO_ALLOCATION | POOL_FLAG_UNINITIALIZED;
+    if flags & !SUPPORTED != 0 { return core::ptr::null_mut(); }
+    let zeroed = flags & POOL_FLAG_UNINITIALIZED == 0 || flags & POOL_FLAG_ZERO_ALLOCATION != 0;
+    pool::allocate_tagged(size, tag, zeroed)
+}
+
 /// Free a block allocated by the current kernel pool, requiring its original tag.
 pub(crate) extern "system" fn ex_free_pool_with_tag(ptr: *mut u8, tag: u32) {
     if ptr.is_null() { return; }
@@ -123,6 +138,11 @@ mod pool_api_tests {
     fn executive_pool_api_tracks_tags_and_rejects_unsupported_pool_types() {
         // Paged pool must not be advertised before the kernel has paging support.
         assert!(ex_allocate_pool_with_tag(1, 64, 0x54455354).is_null());
+        assert!(ex_allocate_pool2(0x100, 64, 0x54455354).is_null()); // paged pool unsupported
+        let zeroed = ex_allocate_pool2(0x40, 32, 0x5a45524f);
+        assert!(!zeroed.is_null());
+        for i in 0..32 { assert_eq!(unsafe { *zeroed.add(i) }, 0); }
+        ex_free_pool_with_tag(zeroed, 0x5a45524f);
 
         let p = ex_allocate_pool_with_tag(0, 64, 0x54455354);
         assert!(!p.is_null());
