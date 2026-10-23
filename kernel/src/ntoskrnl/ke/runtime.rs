@@ -153,6 +153,12 @@ pub unsafe extern "win64" fn ke_acquire_spin_lock(lock: *mut u64, old_irql: *mut
         core::hint::spin_loop();
     }
 }
+/// Acquire a spin lock while raising to DISPATCH_LEVEL; returns the prior IRQL.
+pub unsafe extern "win64" fn ke_acquire_spin_lock_raise_to_dpc(lock: *mut u64) -> u8 {
+    let mut old_irql = PASSIVE_LEVEL;
+    unsafe { ke_acquire_spin_lock(lock, &mut old_irql as *mut u8); }
+    old_irql
+}
 pub unsafe extern "win64" fn ke_release_spin_lock(lock: *mut u64, old_irql: u8) {
     if let Some(word) = atomic_lock_word(lock) { word.store(0, Ordering::Release); }
     unsafe { ke_lower_irql(old_irql); }
