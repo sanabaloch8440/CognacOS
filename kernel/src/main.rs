@@ -139,6 +139,18 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             }
         };
         serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\r\n");
+        // The bootloader reserves one guard page followed by 16 stack pages.
+        // Keep the entire allocation out of the physical allocator even if a
+        // firmware memory-map snapshot incorrectly reports part as conventional.
+        if unsafe {
+            memory::reserve_range(
+                info.kernel_stack_guard_page,
+                info.kernel_stack_guard_page + 17 * 4096,
+            )
+        }.is_err() {
+            serial_write(b"FATAL: cannot reserve bootstrap stack from physical allocator.\r\n");
+            halt();
+        }
         serial_write(b"Physical allocator initialized; conventional regions: ");
         serial_write_decimal(region_count);
         serial_write(b"\r\n");
