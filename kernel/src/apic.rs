@@ -14,6 +14,7 @@ static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
 static LAST_TSC: AtomicU64 = AtomicU64::new(0);
 static CALIBRATED_TSC_HZ: AtomicU64 = AtomicU64::new(0);
 static LOCAL_TIMER_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static TIMER_OWNER_APIC_ID: AtomicU64 = AtomicU64::new(u64::MAX);
 static CALIBRATED_TIMER_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 const APIC_EOI: usize = 0x0b0;
 const APIC_SVR: usize = 0x0f0;
@@ -191,7 +192,11 @@ pub unsafe fn send_startup_ipi(base: u64, destination_apic_id: u8, trampoline_ph
 // Hardware priority and timer controls. The timer remains masked until the
 // caller supplies a calibrated initial count and explicitly starts it.
 #[inline]
-pub fn local_timer_active() -> bool { LOCAL_TIMER_ACTIVE.load(Ordering::Acquire) }
+pub fn local_timer_active() -> bool {
+    let owner=TIMER_OWNER_APIC_ID.load(Ordering::Acquire);
+    let current=((unsafe{core::arch::x86_64::__cpuid(1)}.ebx>>24)&0xff) as u64;
+    owner==current&&LOCAL_TIMER_ACTIVE.load(Ordering::Acquire)
+}
 
 pub fn local_apic_base() -> Option<u64> {
     let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
@@ -317,6 +322,7 @@ pub unsafe fn calibrate_local_timer() -> Result<u32, ApicError> {
         crate::hal::write_port_u8(PIT_CHANNEL2, PIT_RELOAD_10MS as u8);
         crate::hal::write_port_u8(PIT_CHANNEL2, (PIT_RELOAD_10MS >> 8) as u8);
     }
+    TIMER_OWNER_APIC_ID.store(((unsafe{core::arch::x86_64::__cpuid(1)}.ebx>>24)&0xff) as u64, Ordering::Release);
     let tsc_start = monotonic_ticks();
     unsafe { crate::hal::write_port_u8(PIT_GATE_SPEAKER, (old_speaker & !0x02) | 0x01); }
     let mut spins = 0usize;
