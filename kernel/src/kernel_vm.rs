@@ -1,11 +1,11 @@
-//! Supervisor-only kernel virtual mappings and demand-zero pageable pool extents.
-//! Pageable extents are faulted in lazily; eviction/pagefile backing is not yet implemented.
+//! Supervisor-only kernel virtual mappings with demand-zero and pagefile-backed pageable extents.
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 const PAGE: u64 = 4096;
 const P: u64 = 1;
 const W: u64 = 2;
 const PS: u64 = 1 << 7;
 const NX: u64 = 1 << 63;
+const ACCESSED: u64 = 1 << 5;
 const ADDR: u64 = 0x000f_ffff_ffff_f000;
 const BASE: u64 = 0xffff_8000_0000_0000;
 const PAGES: usize = 1 << 20;
@@ -25,6 +25,11 @@ struct Bits(core::cell::UnsafeCell<[u64; WORDS]>); unsafe impl Sync for Bits {}
 struct Table(core::cell::UnsafeCell<[Extent; MAX]>); unsafe impl Sync for Table {}
 static BITS: Bits = Bits(core::cell::UnsafeCell::new([0; WORDS]));
 static MAPPED_BITS: Bits = Bits(core::cell::UnsafeCell::new([0; WORDS]));
+static SWAPPED_BITS: Bits = Bits(core::cell::UnsafeCell::new([0; WORDS]));
+struct SwapSlots(core::cell::UnsafeCell<[u16; PAGES]>); unsafe impl Sync for SwapSlots {}
+static SWAP_SLOTS: SwapSlots = SwapSlots(core::cell::UnsafeCell::new([u16::MAX; PAGES]));
+struct ReclaimSlots(core::cell::UnsafeCell<[u32; MAX_EXTENT_PAGES]>); unsafe impl Sync for ReclaimSlots {}
+static RECLAIM_SLOTS: ReclaimSlots = ReclaimSlots(core::cell::UnsafeCell::new([u32::MAX; MAX_EXTENT_PAGES]));
 static TABLE: Table = Table(core::cell::UnsafeCell::new([Extent::EMPTY; MAX]));
 static ROOT: AtomicU64 = AtomicU64::new(0);
 static OWN_ROOT_SLOT: AtomicBool = AtomicBool::new(false);
@@ -157,6 +162,63 @@ unsafe fn unmap(root:u64,va:u64)->Result<u64,Error>{
  unsafe{leaf.write(0);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));} Ok(e&ADDR)
 }
 
+unsafe fn leaf_ptr(root: u64, va: u64) -> Option<*mut u64> {
+ let indexes=ix(va); let mut table=root as *mut u64;
+ for index in indexes[..3].iter().copied() {
+  let entry=unsafe{table.add(index).read_volatile()};
+  if entry&P==0||entry&PS!=0{return None}
+  table=(entry&ADDR) as *mut u64;
+ }
+ Some(unsafe{table.add(indexes[3])})
+}
+
+/// Evict one pageable resident page. Callers hold the VM lock. A second-chance
+/// accessed-bit scan is followed by write-protection, an SMP TLB rendezvous,
+/// pagefile I/O, unmapping, a second rendezvous, and only then frame recycling.
+fn reclaim_one_locked(root:u64)->bool {
+ if !crate::pagefile::is_active(){return false}
+ let table=unsafe{&*TABLE.0.get()};
+ for extent in table.iter().copied().filter(|e|e.live&&e.pageable) {
+  for page_index in extent.start..extent.start+extent.pages {
+   let word=page_index/64;let mask=1u64<<(page_index%64);
+   let mapped=unsafe{&mut *MAPPED_BITS.0.get()};
+   let swapped=unsafe{&mut *SWAPPED_BITS.0.get()};
+   if mapped[word]&mask==0||swapped[word]&mask!=0{continue}
+   let va=BASE+page_index as u64*PAGE;
+   let Some(leaf)=(unsafe{leaf_ptr(root,va)}) else{continue};
+   let pte=unsafe{leaf.read_volatile()};
+   if pte&P==0{continue}
+   if pte&ACCESSED!=0 {
+    unsafe{leaf.write_volatile(pte&!ACCESSED);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+    synchronize_kernel_tlb();continue
+   }
+   let slot=match crate::pagefile::allocate_slot(){Ok(v)=>v,Err(_)=>return false};
+   unsafe{leaf.write_volatile(pte&!W);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+   synchronize_kernel_tlb();
+   let physical=pte&ADDR;
+   if unsafe{crate::pagefile::write_page(slot,physical as *const u8)}.is_err(){
+    unsafe{leaf.write_volatile(pte);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+    synchronize_kernel_tlb();let _=crate::pagefile::free_slot(slot);continue
+   }
+   unsafe{leaf.write_volatile(0);(&mut *SWAP_SLOTS.0.get())[page_index]=slot as u16;}
+   mapped[word]&=!mask;swapped[word]|=mask;
+   unsafe{core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+   synchronize_kernel_tlb();
+   if unsafe{crate::memory::free_page(physical)}.is_err(){unsafe{crate::halt()}}
+   return true
+  }
+ }
+ false
+}
+
+/// Reclaim pageable pool pages under memory pressure.
+pub fn reclaim_pageable_pages(target:usize)->usize {
+ if target==0||ROOT.load(Ordering::Acquire)==0{return 0}
+ let root=ROOT.load(Ordering::Acquire);let _g=Guard::lock();let mut count=0;
+ while count<target {if !reclaim_one_locked(root){break}count+=1;}
+ count
+}
+
 /// Allocate a contiguous virtual extent mapped to zeroed, not-necessarily-contiguous physical pages.
 pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
  if pages==0||pages>MAX_EXTENT_PAGES{return Err(Error::Invalid)} let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
@@ -166,7 +228,7 @@ pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
  let start=found.ok_or(Error::NoVirtualSpace)?;for n in 0..pages{bits[(start+n)/64]|=1u64<<((start+n)%64)}
  let va=BASE+start as u64*PAGE;let mut mapped=0;
  while mapped<pages {
-  let pa=match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>break};
+  let pa=match unsafe{crate::memory::allocate_page()} {Ok(p)=>p,Err(_)=>{if reclaim_one_locked(root){match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>break}}else{break}}};
   if unsafe{map(root,va+mapped as u64*PAGE,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};break} mapped+=1;
  }
  if mapped!=pages {for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,va+n as u64*PAGE)}{synchronize_kernel_tlb();let _=unsafe{crate::memory::free_page(pa)};}}for n in 0..pages{bits[(start+n)/64]&=!(1u64<<((start+n)%64))}return Err(Error::NoPhysicalMemory)}
@@ -193,32 +255,34 @@ pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
 /// Handle a supervisor not-present fault in a reserved pageable pool extent.
 /// This is demand-zero page-in only; dirty-page eviction and pagefile I/O are
 /// intentionally not claimed until a real backing-store driver exists.
-pub fn handle_page_fault(address: u64, error_code: u64) -> bool {
- if error_code & 1 != 0 || error_code & (1<<2) != 0 || error_code & (1<<3) != 0 { return false; }
- let page_va=address & !(PAGE-1);let root=ROOT.load(Ordering::Acquire);if root==0{return false;}
- if page_va<BASE || page_va>=BASE+(PAGES as u64)*PAGE{return false;}
- let page_index=((page_va-BASE)/PAGE) as usize;
- let _g=Guard::lock();
- let extent=unsafe{&*TABLE.0.get()}.iter().find(|e|e.live&&e.pageable&&page_index>=e.start&&page_index<e.start+e.pages).copied();
- let Some(extent)=extent else{return false;};
- let mapped=unsafe{&mut *MAPPED_BITS.0.get()};
- if mapped[page_index/64]&(1u64<<(page_index%64))!=0 {
-  // A remote CPU may have faulted on a stale non-present translation just as
-  // another CPU completed the mapping. Confirm the leaf really is present
-  // before retrying; otherwise treat inconsistent metadata as an unhandled fault.
-  let indexes=ix(page_va);let mut t=root as *const u64;
-  for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return false;}t=(e&ADDR)as *const u64;}
-  if unsafe{t.add(indexes[3]).read()}&P==0{return false;}
-  unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}
-  return true;
+pub fn handle_page_fault(address:u64,error_code:u64)->bool {
+ if error_code&((1<<2)|(1<<3)|(1<<4))!=0{return false}
+ let page_va=address&!(PAGE-1);let root=ROOT.load(Ordering::Acquire);
+ if root==0||page_va<BASE||page_va>=BASE+(PAGES as u64)*PAGE{return false}
+ let page_index=((page_va-BASE)/PAGE) as usize;let _g=Guard::lock();
+ if !unsafe{&*TABLE.0.get()}.iter().any(|e|e.live&&e.pageable&&page_index>=e.start&&page_index<e.start+e.pages){return false}
+ let word=page_index/64;let mask=1u64<<(page_index%64);
+ let mapped=unsafe{&mut *MAPPED_BITS.0.get()};let swapped=unsafe{&mut *SWAPPED_BITS.0.get()};
+ let is_swapped=swapped[word]&mask!=0;
+ if error_code&1!=0&&!is_swapped{return false}
+ if mapped[word]&mask!=0 {
+  if error_code&1!=0{return false}
+  let Some(leaf)=(unsafe{leaf_ptr(root,page_va)}) else{return false};
+  if unsafe{leaf.read_volatile()}&P==0{return false}
+  unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}return true
  }
- let pa=match unsafe{crate::memory::allocate_page()}{Ok(pa)=>pa,Err(_)=>return false};
- unsafe{core::ptr::write_bytes(pa as *mut u8,0,PAGE as usize);}
- if unsafe{map(root,page_va,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false;}
- mapped[page_index/64]|=1u64<<(page_index%64);
- synchronize_kernel_tlb();
- let _=extent;
- true
+ let pa=match unsafe{crate::memory::allocate_page()} {Ok(p)=>p,Err(_)=>{if !reclaim_one_locked(root){return false}match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>return false}}};
+ if is_swapped {
+  let slot=unsafe{(&*SWAP_SLOTS.0.get())[page_index]};
+  if slot==u16::MAX||unsafe{crate::pagefile::read_page(slot as u32,pa as *mut u8)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
+  if unsafe{map(root,page_va,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
+  mapped[word]|=mask;swapped[word]&=!mask;unsafe{(&mut *SWAP_SLOTS.0.get())[page_index]=u16::MAX;}
+  synchronize_kernel_tlb();let _=crate::pagefile::free_slot(slot as u32);true
+ }else{
+  unsafe{core::ptr::write_bytes(pa as *mut u8,0,PAGE as usize);}
+  if unsafe{map(root,page_va,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
+  mapped[word]|=mask;synchronize_kernel_tlb();true
+ }
 }
 
 /// Free only an exact live allocation returned by allocate_pages.
