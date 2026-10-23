@@ -317,3 +317,99 @@ pub fn parse_mcfg(bytes: &[u8]) -> Result<McfgInfo, AcpiError> {
     }
     Ok(out)
 }
+
+
+/// Intel DMAR remapping hardware discovered from ACPI. Parsing this table does
+/// not enable remapping; a DRHD must be mapped uncached and fully initialized
+/// with root/context tables and invalidation before DMA callbacks can use it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DmarUnit {
+    pub register_base: u64,
+    pub segment: u16,
+    pub include_all: bool,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmarInfo {
+    pub host_address_width: u8,
+    pub interrupt_remapping_supported: bool,
+    pub units: [DmarUnit; 8],
+    pub unit_count: usize,
+}
+impl DmarInfo {
+    pub const EMPTY: Self = Self {
+        host_address_width: 0, interrupt_remapping_supported: false,
+        units: [DmarUnit { register_base: 0, segment: 0, include_all: false }; 8],
+        unit_count: 0,
+    };
+}
+/// Parse Intel VT-d DMAR DRHD structures with strict table and structure bounds.
+pub fn parse_dmar(bytes: &[u8]) -> Result<DmarInfo, AcpiError> {
+    if bytes.len() < 48 { return Err(AcpiError::Truncated); }
+    if bytes.get(0..4) != Some(b"DMAR") { return Err(AcpiError::BadSignature); }
+    let length = u32le(bytes, 4)? as usize;
+    if length < 48 || length > bytes.len() { return Err(AcpiError::BadLength); }
+    if !checksum_ok(&bytes[..length]) { return Err(AcpiError::BadChecksum); }
+    let mut out = DmarInfo::EMPTY;
+    out.host_address_width = bytes[36].saturating_add(1);
+    out.interrupt_remapping_supported = bytes[37] & 1 != 0;
+    let mut off = 48usize;
+    while off < length {
+        if off.checked_add(4).filter(|end| *end <= length).is_none() {
+            return Err(AcpiError::MalformedEntry);
+        }
+        let kind = u16::from_le_bytes([bytes[off], bytes[off + 1]]);
+        let size = u16::from_le_bytes([bytes[off + 2], bytes[off + 3]]) as usize;
+        if size < 4 || off.checked_add(size).filter(|end| *end <= length).is_none() {
+            return Err(AcpiError::MalformedEntry);
+        }
+        if kind == 0 {
+            if size < 16 { return Err(AcpiError::MalformedEntry); }
+            if out.unit_count == out.units.len() { return Err(AcpiError::TooManyEntries); }
+            let base = u64::from_le_bytes(bytes[off + 8..off + 16].try_into().map_err(|_| AcpiError::Truncated)?);
+            if base == 0 || base & 0xfff != 0 { return Err(AcpiError::MalformedEntry); }
+            out.units[out.unit_count] = DmarUnit {
+                include_all: bytes[off + 4] & 1 != 0,
+                segment: u16::from_le_bytes([bytes[off + 6], bytes[off + 7]]),
+                register_base: base,
+            };
+            out.unit_count += 1;
+        }
+        off += size;
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod dmar_tests {
+    use super::*;
+    #[test]
+    fn dmar_rejects_truncated_header_and_bad_signature() {
+        assert_eq!(parse_dmar(&[0; 47]), Err(AcpiError::Truncated));
+        let mut table = [0u8; 48];
+        table[0..4].copy_from_slice(b"NOPE");
+        table[4..8].copy_from_slice(&(48u32).to_le_bytes());
+        assert_eq!(parse_dmar(&table), Err(AcpiError::BadSignature));
+    }
+    #[test]
+    fn dmar_parses_drhd_register_base_and_segment() {
+        let mut table = [0u8; 64];
+        table[0..4].copy_from_slice(b"DMAR");
+        table[4..8].copy_from_slice(&(64u32).to_le_bytes());
+        table[36] = 47;
+        table[37] = 1;
+        table[48..50].copy_from_slice(&(0u16).to_le_bytes());
+        table[50..52].copy_from_slice(&(16u16).to_le_bytes());
+        table[52] = 1;
+        table[54..56].copy_from_slice(&(2u16).to_le_bytes());
+        table[56..64].copy_from_slice(&(0xfed9_0000u64).to_le_bytes());
+        let checksum = table.iter().fold(0u8, |sum, b| sum.wrapping_add(*b));
+        table[9] = table[9].wrapping_sub(checksum);
+        let info = parse_dmar(&table).unwrap();
+        assert_eq!(info.host_address_width, 48);
+        assert!(info.interrupt_remapping_supported);
+        assert_eq!(info.unit_count, 1);
+        assert_eq!(info.units[0].register_base, 0xfed9_0000);
+        assert_eq!(info.units[0].segment, 2);
+        assert!(info.units[0].include_all);
+    }
+}
