@@ -166,6 +166,7 @@ impl<T> IrqSpinLock<T> {
             // APs currently run with interrupts disabled. Service shared-kernel
             // TLB requests even while contending on pool/VM locks, or a shootdown
             // waiter could deadlock behind the very lock it is waiting to acquire.
+            #[cfg(target_os = "none")]
             if let Some(cpu) = current_cpu_local() {
                 crate::kernel_vm::smp_tlb_poll(cpu.logical_id.load(Ordering::Relaxed) as usize);
             }
