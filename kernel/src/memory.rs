@@ -175,9 +175,33 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
 /// before APs are enabled or otherwise serialize allocation.
 pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError> {
     let _guard = MemoryGuard::acquire();
-
     if pages == 0 { return Err(AllocError::InvalidPage); }
     let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
+
+    // Reuse returned contiguous runs before consuming more of the bump regions.
+    let free = unsafe { &mut *FREE_PAGES.0.get() };
+    if pages <= free.1 {
+        let mut i = 0usize;
+        while i + pages <= free.1 {
+            let base = free.0[i];
+            let mut run = true;
+            for j in 1..pages {
+                if free.0[i + j] != base + (j as u64 * PAGE_SIZE) {
+                    run = false;
+                    break;
+                }
+            }
+            if run {
+                let old_len = free.1;
+                free.0.copy_within(i + pages..old_len, i);
+                free.1 = old_len - pages;
+                unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
+                return Ok(base);
+            }
+            i += 1;
+        }
+    }
+
     let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
     let regions = unsafe { &mut *REGIONS.0.get() };
     for region in regions.iter_mut().take(count) {
