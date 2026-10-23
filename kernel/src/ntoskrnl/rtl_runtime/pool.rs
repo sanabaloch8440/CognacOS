@@ -219,6 +219,11 @@ pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { 
 pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { super::pool_page::allocate_tagged(size, tag, zeroed) }
 
 #[cfg(not(target_os = "none"))]
+pub(super) fn allocate_paged_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { bounded::allocate_tagged(size, tag, zeroed) }
+#[cfg(target_os = "none")]
+pub(super) fn allocate_paged_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { super::pool_page::allocate_paged_tagged(size, tag, zeroed) }
+
+#[cfg(not(target_os = "none"))]
 pub(super) fn allocate(size: usize) -> *mut u8 { bounded::allocate(size) }
 #[cfg(target_os = "none")]
 pub(super) fn allocate(size: usize) -> *mut u8 { super::pool_page::allocate(size) }
