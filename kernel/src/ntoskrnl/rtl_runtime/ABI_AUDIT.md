@@ -59,3 +59,12 @@ This is a source-level ABI review, **not proof of full Windows behavioral equiva
 - `RtlFindNextForwardRunClearCapped` and `RtlCopyBitMapEx` remain deliberately unmapped until their local prototypes are corrected against the Windows 11 signatures.
 
 The next verification gate is the kernel build and boot smoke test in GitHub Actions. Passing compilation verifies Rust type/layout integration, not the semantic items above.
+
+
+## RTL string allocator and time-zone update
+
+The RTL runtime now has a bounded 256 KiB, 16-byte-aligned string pool in `pool.rs`. It uses a spin lock, first-fit allocation, block splitting, and adjacent-block coalescing. The pool is deliberately separate from Rust's global allocator, which is not installed in this freestanding kernel. `RtlFreeUnicodeString`, `RtlFreeAnsiString`, and `RtlFreeOemString` release buffers only when they belong to this pool; foreign pointers are never passed to a general-purpose deallocator.
+
+Allocation-requesting variants of `RtlAnsiStringToUnicodeString`, `RtlUnicodeStringToAnsiString`, `RtlUpcaseUnicodeString`, `RtlDowncaseUnicodeString`, `RtlUTF8StringToUnicodeString`, and `RtlUnicodeStringToUTF8String` now allocate pool-backed output buffers. `RtlCreateUnicodeString` and `RtlCreateUnicodeStringFromAsciiz` also construct allocated, NUL-terminated UTF-16 strings. Buffers created by these routines must be released with the matching RTL free routine.
+
+A fixed-bias time-zone service now backs `RtlLocalTimeToSystemTime` and `RtlSystemTimeToLocalTime`. The bias is configurable through the internal Rust entry point `rtl_runtime::set_time_zone_bias_minutes`, uses Windows' convention (local time plus bias equals UTC), defaults to UTC, and rejects values outside ±24 hours. Dynamic DST transitions, registry-backed time-zone loading, and per-process time zones remain unimplemented. The pool is bounded and intended for RTL strings; it is not a replacement for the general kernel pool/heap, and ANSI/OEM conversion still uses a single-byte approximation rather than active Windows code pages.
