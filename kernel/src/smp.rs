@@ -368,6 +368,11 @@ pub unsafe fn start_discovered_aps(
 pub extern "C" fn rdotos_ap_entry(logical_id: u32) -> ! {
     let index = logical_id as usize;
     unsafe { arch::load_cpu_descriptor_tables(); }
+    let mitigations = unsafe { crate::security::initialize() };
+    if !mitigations.write_protect || !mitigations.nx_enabled {
+        let _ = hal::mark_cpu_failed(index);
+        loop { core::hint::spin_loop(); }
+    }
     let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
     let apic_id = if base != 0 {
         unsafe { apic::initialize_local_apic(base) }.ok()
