@@ -267,7 +267,14 @@ fn build_bootstrap_page_tables() -> Result<u64, Status> {
             let table = dirs[index] as *mut u64;
             for entry in 0..512 {
                 let physical = (index as u64 * 512 + entry as u64) * TWO_MIB;
-                table.add(entry).write(physical | PRESENT_WRITE | LARGE_PAGE);
+                // xAPIC and I/O APIC register windows must be UC, not cacheable
+                // WB RAM. These standard legacy MMIO windows are 2 MiB aligned.
+                const PWT: u64 = 1 << 3;
+                const PCD: u64 = 1 << 4;
+                let cache_flags = if physical == 0xfec0_0000 || physical == 0xfee0_0000 {
+                    PWT | PCD
+                } else { 0 };
+                table.add(entry).write(physical | PRESENT_WRITE | LARGE_PAGE | cache_flags);
             }
         }
     }
