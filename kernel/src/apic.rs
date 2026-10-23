@@ -412,3 +412,111 @@ pub unsafe fn start_calibrated_local_timer() -> Result<(), ApicError> {
     LOCAL_TIMER_ACTIVE.store(true, Ordering::Release);
     Ok(())
 }
+
+
+/// Interrupt handler ABI used by the internal vector dispatcher. The frame is
+/// architecture-owned; handlers must not retain it after returning.
+pub type InterruptHandler = unsafe extern "win64" fn(vector: u8, frame: *mut core::ffi::c_void, context: *mut core::ffi::c_void) -> bool;
+const VECTOR_FIRST: u8 = 0x20;
+const VECTOR_LAST: u8 = 0xdf;
+static VECTOR_ALLOCATED: [core::sync::atomic::AtomicBool; 256] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; 256];
+static VECTOR_HANDLERS: [core::sync::atomic::AtomicUsize; 256] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; 256];
+static VECTOR_CONTEXTS: [core::sync::atomic::AtomicUsize; 256] =
+    [const { core::sync::atomic::AtomicUsize::new(0) }; 256];
+
+/// Reserve a device interrupt vector. Architectural exceptions, timer, IPI,
+/// and spurious/error vectors are deliberately outside the allocatable range.
+pub fn allocate_interrupt_vector() -> Result<u8, ApicError> {
+    for vector in VECTOR_FIRST..=VECTOR_LAST {
+        if VECTOR_ALLOCATED[vector as usize].compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            return Ok(vector);
+        }
+    }
+    Err(ApicError::InvalidVector)
+}
+
+/// Release an unused vector. Call only after the source is masked and its IDT
+/// gate is detached; the caller owns synchronization with in-flight interrupts.
+pub fn release_interrupt_vector(vector: u8) -> Result<(), ApicError> {
+    if !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector) { return Err(ApicError::InvalidVector); }
+    VECTOR_HANDLERS[vector as usize].store(0, Ordering::Release);
+    VECTOR_CONTEXTS[vector as usize].store(0, Ordering::Release);
+    VECTOR_ALLOCATED[vector as usize].store(false, Ordering::Release);
+    Ok(())
+}
+
+/// Register a handler for a vector already allocated by allocate_interrupt_vector.
+/// Install the corresponding architecture IDT gate before unmasking its source.
+pub fn register_interrupt_handler(vector: u8, handler: InterruptHandler, context: *mut core::ffi::c_void) -> Result<(), ApicError> {
+    if !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector) || !VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire) {
+        return Err(ApicError::InvalidVector);
+    }
+    VECTOR_CONTEXTS[vector as usize].store(context as usize, Ordering::Relaxed);
+    VECTOR_HANDLERS[vector as usize].compare_exchange(0, handler as usize, Ordering::Release, Ordering::Acquire)
+        .map(|_| ()).map_err(|_| ApicError::InvalidVector)
+}
+
+/// Dispatch an external interrupt from the IDT common entry stub. Exactly one
+/// local-APIC EOI is issued after the callback, even when it reports unhandled.
+/// The entry stub must not also EOI this vector (avoid double acknowledgement).
+pub unsafe fn dispatch_external_interrupt(vector: u8, frame: *mut core::ffi::c_void) -> bool {
+    let raw = VECTOR_HANDLERS[vector as usize].load(Ordering::Acquire);
+    let handled = if raw == 0 { false } else {
+        let callback: InterruptHandler = unsafe { core::mem::transmute(raw) };
+        let context = VECTOR_CONTEXTS[vector as usize].load(Ordering::Acquire) as *mut core::ffi::c_void;
+        unsafe { callback(vector, frame, context) }
+    };
+    if let Some(base) = local_apic_base() {
+        unsafe { local_apic_eoi(base); }
+    }
+    handled
+}
+
+/// Acknowledge a local-APIC interrupt when the handler itself owns EOI. Use
+/// this for timer/IPI handlers that do not pass through dispatch_external_interrupt.
+pub unsafe fn end_of_interrupt() -> Result<(), ApicError> {
+    let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
+    unsafe { local_apic_eoi(base); }
+    Ok(())
+}
+
+/// Program a full I/O-APIC redirection entry while keeping it masked. Supports
+/// polarity/trigger flags from ACPI Interrupt Source Overrides. The IDT handler
+/// and vector must be ready before a separate unmask operation is attempted.
+pub unsafe fn configure_ioapic_route(
+    io_base: u64, gsi_base: u32, gsi: u32, vector: u8,
+    destination_apic_id: u8, active_low: bool, level_triggered: bool,
+) -> Result<(), ApicError> {
+    if io_base == 0 || io_base & 0xfff != 0 || !(VECTOR_FIRST..=0xfe).contains(&vector) || vector == 0xff {
+        return Err(ApicError::InvalidVector);
+    }
+    if gsi < gsi_base || gsi - gsi_base >= 120 { return Err(ApicError::InvalidGsi); }
+    unsafe fn select(base: u64, reg: u8) { core::ptr::write_volatile(base as *mut u32, reg as u32); }
+    unsafe fn read(base: u64) -> u32 { core::ptr::read_volatile((base + 0x10) as *const u32) }
+    unsafe fn write(base: u64, value: u32) { core::ptr::write_volatile((base + 0x10) as *mut u32, value); }
+    let pin = (gsi - gsi_base) as u8;
+    unsafe { select(io_base, 1); }
+    if pin as u32 > ((unsafe { read(io_base) } >> 16) & 0xff) { return Err(ApicError::InvalidGsi); }
+    let low_reg = 0x10u8.wrapping_add(pin.wrapping_mul(2));
+    let mut low = vector as u32 | (1 << 16); // masked until explicitly enabled
+    if active_low { low |= 1 << 13; }
+    if level_triggered { low |= 1 << 15; }
+    unsafe {
+        select(io_base, low_reg);
+        write(io_base, low);
+        select(io_base, low_reg.wrapping_add(1));
+        write(io_base, (destination_apic_id as u32) << 24);
+    }
+    Ok(())
+}
+
+/// Send an ordinary fixed-vector IPI through the initialized local xAPIC.
+/// This is deliberately separate from the TLB shootdown vector and does not
+/// assume any particular semantics for the target handler.
+pub unsafe fn request_ipi(destination_apic_id: u8, vector: u8) -> Result<(), ApicError> {
+    let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
+    if vector < 0x20 || vector == 0xff { return Err(ApicError::InvalidVector); }
+    unsafe { send_fixed_ipi(base, destination_apic_id, vector) }
+}
