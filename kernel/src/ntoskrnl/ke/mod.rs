@@ -300,4 +300,4 @@ pub const EXPORTS: &[(&str, u16)] = &[
 
 
 // Runtime implementations are kept under ntoskrnl/ke/runtime.rs.
-pub(super) mod runtime;
+pub(crate) mod runtime;
