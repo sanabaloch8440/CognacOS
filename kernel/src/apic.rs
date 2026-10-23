@@ -7,6 +7,7 @@ const X2APIC_ENABLE: u64 = 1 << 10;
 const APIC_ID: usize = 0x020;
 const APIC_TPR: usize = 0x080;
 const APIC_TIMER_INITIAL_COUNT: usize = 0x380;
+const APIC_TIMER_CURRENT_COUNT: usize = 0x390;
 const APIC_TIMER_DIVIDE: usize = 0x3e0;
 pub const LOCAL_TIMER_VECTOR: u8 = 0xE0;
 static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
@@ -275,4 +276,35 @@ pub fn relative_timeout_deadline(interval_100ns: i64) -> Option<u64> {
     let ticks = units.checked_mul(hz as u128)? / 10_000_000u128;
     let ticks = u64::try_from(ticks).ok()?;
     monotonic_ticks().checked_add(ticks)
+}
+
+/// Calibrate the local APIC decrementer against the architectural TSC for a
+/// nominal 1 ms periodic tick, then start it. Requires an identity-mapped,
+/// uncached local-APIC MMIO page and a usable TSC frequency; it does not enable IF.
+pub unsafe fn calibrate_and_start_local_timer() -> Result<u32, ApicError> {
+    let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
+    let tsc_hz = tsc_frequency_hz().ok_or(ApicError::Unsupported)?;
+    let sample_ticks = (tsc_hz / 100).max(1); // 10 ms calibration window.
+    unsafe {
+        write_local(base, APIC_LVT_TIMER, (1 << 16) | LOCAL_TIMER_VECTOR as u32);
+        write_local(base, APIC_TIMER_DIVIDE, 0x3); // divide by 16
+        write_local(base, APIC_TIMER_INITIAL_COUNT, u32::MAX);
+    }
+    let start = monotonic_ticks();
+    let target = start.checked_add(sample_ticks).ok_or(ApicError::Timeout)?;
+    let mut spins = 0usize;
+    while monotonic_ticks() < target {
+        core::hint::spin_loop();
+        spins += 1;
+        if spins == 100_000_000 { unsafe { mask_local_timer(base); } return Err(ApicError::Timeout); }
+    }
+    let remaining = unsafe { read_local(base, APIC_TIMER_CURRENT_COUNT) };
+    let elapsed = u32::MAX.saturating_sub(remaining);
+    let per_ms = elapsed / 10;
+    if per_ms == 0 { unsafe { mask_local_timer(base); } return Err(ApicError::Unsupported); }
+    unsafe {
+        write_local(base, APIC_TIMER_INITIAL_COUNT, per_ms);
+        write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | (1 << 17));
+    }
+    Ok(per_ms)
 }
