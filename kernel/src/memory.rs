@@ -39,7 +39,7 @@ struct FreePages(core::cell::UnsafeCell<([u64; FREE_CAPACITY], usize)>);
 unsafe impl Sync for FreePages {}
 static FREE_PAGES: FreePages = FreePages(core::cell::UnsafeCell::new(([0; FREE_CAPACITY], 0)));
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocError { InvalidMap, TooManyRegions, OutOfMemory, InvalidPage, FreeListFull }
 
 fn align_up(value: u64, align: u64) -> Option<u64> {
