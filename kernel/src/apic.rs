@@ -245,3 +245,33 @@ pub fn timer_interrupt() {
         unsafe { local_apic_eoi(base); }
     }
 }
+
+/// Best-effort architectural TSC frequency discovery (CPUID 0x15, then 0x16).
+/// Returns None when firmware/hardware exposes no usable frequency.
+pub fn tsc_frequency_hz() -> Option<u64> {
+    let max = unsafe { core::arch::x86_64::__cpuid(0) }.eax;
+    if max >= 0x15 {
+        let leaf = unsafe { core::arch::x86_64::__cpuid(0x15) };
+        if leaf.eax != 0 && leaf.ebx != 0 && leaf.ecx != 0 {
+            let hz = (leaf.ecx as u128).checked_mul(leaf.ebx as u128)? / leaf.eax as u128;
+            if hz > 0 && hz <= u64::MAX as u128 { return Some(hz as u64); }
+        }
+    }
+    if max >= 0x16 {
+        let mhz = unsafe { core::arch::x86_64::__cpuid(0x16) }.eax as u64;
+        if mhz != 0 { return mhz.checked_mul(1_000_000); }
+    }
+    None
+}
+
+/// Convert a negative NT relative timeout (100 ns units) to an absolute TSC
+/// deadline. Positive absolute wall-clock deadlines need a system-time source
+/// and are intentionally not interpreted as relative durations.
+pub fn relative_timeout_deadline(interval_100ns: i64) -> Option<u64> {
+    if interval_100ns >= 0 { return None; }
+    let hz = tsc_frequency_hz()?;
+    let units = interval_100ns.unsigned_abs() as u128;
+    let ticks = units.checked_mul(hz as u128)? / 10_000_000u128;
+    let ticks = u64::try_from(ticks).ok()?;
+    monotonic_ticks().checked_add(ticks)
+}
