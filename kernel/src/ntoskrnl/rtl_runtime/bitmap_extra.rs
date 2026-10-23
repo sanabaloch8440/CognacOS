@@ -37,3 +37,9 @@ pub unsafe extern "win64" fn rtl_find_clear_runs(bitmap:*const RtlBitmap,runs:*m
  if locate_longest!=0&&capacity>0 {for i in 0..found {for j in i+1..found {if unsafe{(*runs.add(j as usize)).number_of_bits>(*runs.add(i as usize)).number_of_bits}{unsafe{core::ptr::swap(runs.add(i as usize),runs.add(j as usize));}}}}}
  found
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_extract_bit_map_ex(dst:*mut super::RtlBitmapEx,src:*const super::RtlBitmapEx,start:usize,count:usize) {
+ if dst.is_null()||src.is_null(){return;}let n=count.min(unsafe{(*dst).size_of_bitmap});
+ for i in 0..n {if unsafe{(*dst).buffer.is_null()}{return;}let idx=start.checked_add(i);let v=idx.is_some_and(|s|s<unsafe{(*src).size_of_bitmap}&&!unsafe{(*src).buffer.is_null()}&&unsafe{*(*src).buffer.add(s/32)&(1u32<<(s%32))!=0});let p=unsafe{(*dst).buffer.add(i/32)};let m=1u32<<(i%32);unsafe{if v{*p|=m}else{*p&=!m}}}
+}
