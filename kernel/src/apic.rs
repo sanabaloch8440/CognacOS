@@ -626,6 +626,42 @@ pub unsafe fn configure_ioapic_route(
     Ok(())
 }
 
+/// Install and unmask one legacy ISA IRQ using validated MADT overrides.
+/// The I/O-APIC MMIO page must already be mapped uncached and the target APIC
+/// ID must be addressable by xAPIC. Returns the allocated vector on success.
+pub unsafe fn install_isa_irq_route(
+    madt: &crate::acpi::MadtInfo,
+    isa_irq: u8,
+    destination_apic_id: u8,
+    handler: InterruptHandler,
+    context: *mut core::ffi::c_void,
+) -> Result<u8, ApicError> {
+    let (gsi, active_low, level_triggered) = crate::acpi::resolve_isa_irq(madt, isa_irq);
+    let mut selected: Option<crate::acpi::IoApicEntry> = None;
+    for entry in madt.io_apics.iter().take(madt.io_apic_count) {
+        if entry.gsi_base <= gsi && selected.is_none_or(|old| entry.gsi_base > old.gsi_base) {
+            selected = Some(*entry);
+        }
+    }
+    let io = selected.ok_or(ApicError::InvalidGsi)?;
+    let vector = allocate_interrupt_vector()?;
+    if let Err(error) = register_interrupt_handler(vector, handler, context) {
+        let _ = release_interrupt_vector(vector);
+        return Err(error);
+    }
+    if let Err(error) = unsafe {
+        configure_ioapic_route(io.address as u64, io.gsi_base, gsi, vector, destination_apic_id, active_low, level_triggered)
+    } {
+        let _ = release_interrupt_vector(vector);
+        return Err(error);
+    }
+    if let Err(error) = unsafe { set_ioapic_irq_enabled(io.address as u64, io.gsi_base, gsi, true) } {
+        let _ = release_interrupt_vector(vector);
+        return Err(error);
+    }
+    Ok(vector)
+}
+
 /// Send an ordinary fixed-vector IPI through the initialized local xAPIC.
 /// This is deliberately separate from the TLB shootdown vector and does not
 /// assume any particular semantics for the target handler.
