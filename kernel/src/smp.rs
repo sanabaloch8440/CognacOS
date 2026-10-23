@@ -30,7 +30,7 @@ rdotos_ap_trampoline_start:
     mov ax, cs
     mov ds, ax
     mov es, ax
-    lgdt [rdotos_ap_trampoline_gdt_pointer - rdotos_ap_trampoline_start]
+    lgdt [RDOTOS_AP_GDT_PTR_OFF]
     mov eax, cr0
     or eax, 1
     mov cr0, eax
@@ -46,9 +46,10 @@ rdotos_ap_trampoline_pm32:
     mov es, ax
     mov ss, ax
     call 1f
-1:  pop esi
-    sub esi, (1b - rdotos_ap_trampoline_start)
-    mov eax, dword ptr [esi + rdotos_ap_trampoline_pml4 - rdotos_ap_trampoline_start]
+rdotos_ap_trampoline_pm32_pop:
+    pop esi
+    sub esi, RDOTOS_AP_PM32_POP_OFF
+    mov eax, dword ptr [esi + RDOTOS_AP_PML4_OFF]
     mov cr3, eax
     mov eax, cr4
     or eax, 0x20
@@ -72,13 +73,14 @@ rdotos_ap_trampoline_long64:
     mov es, ax
     mov ss, ax
     call 2f
-2:  pop rsi
-    sub rsi, (2b - rdotos_ap_trampoline_start)
-    mov rsp, qword ptr [rsi + rdotos_ap_trampoline_stack - rdotos_ap_trampoline_start]
+rdotos_ap_trampoline_long64_pop:
+    pop rsi
+    sub rsi, RDOTOS_AP_LONG64_POP_OFF
+    mov rsp, qword ptr [rsi + RDOTOS_AP_STACK_OFF]
     and rsp, -16
     sub rsp, 8
-    mov edi, dword ptr [rsi + rdotos_ap_trampoline_logical - rdotos_ap_trampoline_start]
-    mov rax, qword ptr [rsi + rdotos_ap_trampoline_entry - rdotos_ap_trampoline_start]
+    mov edi, dword ptr [rsi + RDOTOS_AP_LOGICAL_OFF]
+    mov rax, qword ptr [rsi + RDOTOS_AP_ENTRY_OFF]
     jmp rax
 3:  pause
     jmp 3b
@@ -101,6 +103,13 @@ rdotos_ap_trampoline_entry:
     .quad 0
 rdotos_ap_trampoline_logical:
     .long 0
+    .set RDOTOS_AP_GDT_PTR_OFF, rdotos_ap_trampoline_gdt_pointer - rdotos_ap_trampoline_start
+    .set RDOTOS_AP_PM32_POP_OFF, rdotos_ap_trampoline_pm32_pop - rdotos_ap_trampoline_start
+    .set RDOTOS_AP_LONG64_POP_OFF, rdotos_ap_trampoline_long64_pop - rdotos_ap_trampoline_start
+    .set RDOTOS_AP_PML4_OFF, rdotos_ap_trampoline_pml4 - rdotos_ap_trampoline_start
+    .set RDOTOS_AP_STACK_OFF, rdotos_ap_trampoline_stack - rdotos_ap_trampoline_start
+    .set RDOTOS_AP_ENTRY_OFF, rdotos_ap_trampoline_entry - rdotos_ap_trampoline_start
+    .set RDOTOS_AP_LOGICAL_OFF, rdotos_ap_trampoline_logical - rdotos_ap_trampoline_start
 rdotos_ap_trampoline_end:
 "#);
 
@@ -226,7 +235,7 @@ unsafe fn prepare_trampoline(
             (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_long64)) as u64) as u32);
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pml4), pml4 as u32);
         write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_stack), stack_top);
-        write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_entry), rdotos_ap_entry as usize as u64);
+        write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_entry), rdotos_ap_entry as *const () as usize as u64);
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_logical), logical_id as u32);
         memory::configure_identity_page(pml4, page, false, true, false, false)
             .map_err(SmpError::Memory)?;
