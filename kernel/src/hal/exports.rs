@@ -1,38 +1,26 @@
 //! Windows 11 x64 HAL export compatibility catalogue.
 //!
-//! The Windows 11 x64 HAL export directory exposes these names (the modern
-//! HAL forwards many of them to ntoskrnl). This catalogue is a compatibility
-//! inventory, not proof that RdotOS implements Windows HAL semantics.
-//!
-//! Exports remain deliberately non-callable until their exact ABI and semantics
-//! are implemented. Returning an arbitrary generic function pointer here would
-//! make driver imports appear resolved while risking stack/argument corruption.
+//! The modern Windows x64 HAL forwards these exports to ntoskrnl. This is a
+//! name/ordinal inventory only: it does not claim Windows-compatible semantics.
+//! No export is callable until its exact ABI and behavior are implemented;
+//! generic function pointers would risk corrupting driver calls.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StubState {
-    /// Export name/ordinal is known; no ABI-safe implementation yet.
-    NotImplemented,
-}
+pub enum StubState { NotImplemented }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HalExport {
-    pub ordinal: u16,
-    pub name: &'static str,
-    pub state: StubState,
-}
+pub struct HalExport { pub ordinal: u16, pub name: &'static str, pub state: StubState }
 
-/// Windows 11 x64 hal.dll export table, based on WinExports' 10.0.26100 data.
-/// Ordinals are the table's Windows 11 x64 ordinals; no data exports are
-/// currently identified in this inventory.
+/// Windows 11 x64 10.0.26100 HAL exports, in ordinal order.
 pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 1, name: "HalAcpiGetTableEx", state: StubState::NotImplemented },
     HalExport { ordinal: 2, name: "HalAcquireDisplayOwnership", state: StubState::NotImplemented },
     HalExport { ordinal: 3, name: "HalAdjustResourceList", state: StubState::NotImplemented },
-    HalExport { ordinal: 4, name: "HalAllocateAdapterChannel", state: StubState::NotImplemented },
-    HalExport { ordinal: 5, name: "HalAllocateCommonBuffer", state: StubState::NotImplemented },
-    HalExport { ordinal: 6, name: "HalAllocateCrashDumpRegisters", state: StubState::NotImplemented },
-    HalExport { ordinal: 7, name: "HalAllocateHardwareCounters", state: StubState::NotImplemented },
-    HalExport { ordinal: 8, name: "HalAllProcessorsStarted", state: StubState::NotImplemented },
+    HalExport { ordinal: 4, name: "HalAllProcessorsStarted", state: StubState::NotImplemented },
+    HalExport { ordinal: 5, name: "HalAllocateAdapterChannel", state: StubState::NotImplemented },
+    HalExport { ordinal: 6, name: "HalAllocateCommonBuffer", state: StubState::NotImplemented },
+    HalExport { ordinal: 7, name: "HalAllocateCrashDumpRegisters", state: StubState::NotImplemented },
+    HalExport { ordinal: 8, name: "HalAllocateHardwareCounters", state: StubState::NotImplemented },
     HalExport { ordinal: 9, name: "HalAssignSlotResources", state: StubState::NotImplemented },
     HalExport { ordinal: 10, name: "HalBugCheckSystem", state: StubState::NotImplemented },
     HalExport { ordinal: 11, name: "HalCalibratePerformanceCounter", state: StubState::NotImplemented },
@@ -61,10 +49,10 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 34, name: "HalGetVectorInput", state: StubState::NotImplemented },
     HalExport { ordinal: 35, name: "HalHandleMcheck", state: StubState::NotImplemented },
     HalExport { ordinal: 36, name: "HalHandleNMI", state: StubState::NotImplemented },
-    HalExport { ordinal: 37, name: "HalInitializeBios", state: StubState::NotImplemented },
-    HalExport { ordinal: 38, name: "HalInitializeOnResume", state: StubState::NotImplemented },
-    HalExport { ordinal: 39, name: "HalInitializeProcessor", state: StubState::NotImplemented },
-    HalExport { ordinal: 40, name: "HalInitSystem", state: StubState::NotImplemented },
+    HalExport { ordinal: 37, name: "HalInitSystem", state: StubState::NotImplemented },
+    HalExport { ordinal: 38, name: "HalInitializeBios", state: StubState::NotImplemented },
+    HalExport { ordinal: 39, name: "HalInitializeOnResume", state: StubState::NotImplemented },
+    HalExport { ordinal: 40, name: "HalInitializeProcessor", state: StubState::NotImplemented },
     HalExport { ordinal: 41, name: "HalIsHyperThreadingEnabled", state: StubState::NotImplemented },
     HalExport { ordinal: 42, name: "HalMakeBeep", state: StubState::NotImplemented },
     HalExport { ordinal: 43, name: "HalPerformEndOfInterrupt", state: StubState::NotImplemented },
@@ -121,18 +109,17 @@ pub const EXPORTS: &[HalExport] = &[
 pub fn find_by_name(name: &[u8]) -> Option<&'static HalExport> {
     EXPORTS.iter().find(|entry| entry.name.as_bytes().eq_ignore_ascii_case(name))
 }
-
 pub fn find_by_ordinal(ordinal: u16) -> Option<&'static HalExport> {
     EXPORTS.iter().find(|entry| entry.ordinal == ordinal)
 }
-
 pub fn count() -> usize { EXPORTS.len() }
 
 pub fn self_test() -> bool {
     EXPORTS.len() == 91
         && EXPORTS.iter().enumerate().all(|(i, entry)| entry.ordinal as usize == i + 1)
-        && find_by_name(b"HalAcpiGetTableEx").is_some()
-        && find_by_name(b"halrequestipi").is_some()
+        && find_by_name(b"HalAcpiGetTableEx").map(|e| e.ordinal) == Some(1)
+        && find_by_name(b"HalAllProcessorsStarted").map(|e| e.ordinal) == Some(4)
+        && find_by_name(b"halrequestipi").map(|e| e.ordinal) == Some(55)
         && find_by_ordinal(91).map(|entry| entry.name) == Some("x86BiosWriteMemory")
         && find_by_name(b"not-a-hal-export").is_none()
 }
