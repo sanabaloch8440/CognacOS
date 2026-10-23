@@ -228,3 +228,6 @@ pub fn self_test() -> bool {
         && CPU_LOCALS[0].state.load(Ordering::Relaxed) == CPU_ONLINE
         && CPU_LOCALS.iter().skip(1).all(|cpu| cpu.state.load(Ordering::Relaxed) == CPU_OFFLINE)
 }
+
+/// Windows HAL export compatibility inventory and fail-closed stub metadata.
+pub mod exports;
