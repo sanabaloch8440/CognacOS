@@ -18,26 +18,6 @@ use super::RtlBitmap;
  if dst.is_null()||src.is_null(){return;}let n=unsafe{(*dst).size_of_bitmap.min((*src).size_of_bitmap)};for i in 0..n{let v=unsafe{read_bit(src,i)};unsafe{write_bit(dst,i,v);}}
 }
 
-#[repr(C)]
-pub struct RtlBitmapRun { pub starting_index:u32, pub number_of_bits:u32 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn rtl_extract_bit_map(dst:*mut RtlBitmap,src:*const RtlBitmap,start:u32,count:u32) {
- if dst.is_null()||src.is_null(){return;}
- let n=count.min(unsafe{(*dst).size_of_bitmap});
- for i in 0..n {let v=start.checked_add(i).is_some_and(|s|s<unsafe{(*src).size_of_bitmap}&&unsafe{read_bit(src,s)});unsafe{write_bit(dst,i,v);}}
- for i in n..unsafe{(*dst).size_of_bitmap}{unsafe{write_bit(dst,i,false);}}
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn rtl_find_clear_runs(bitmap:*const RtlBitmap,runs:*mut RtlBitmapRun,capacity:u32,locate_longest:u8)->u32 {
- if bitmap.is_null()||(capacity!=0&&runs.is_null()){return 0;}
- let size=unsafe{(*bitmap).size_of_bitmap};let mut found=0u32;let mut i=0u32;
- while i<size {if unsafe{read_bit(bitmap,i)}{i+=1;continue;}let start=i;while i<size&&!unsafe{read_bit(bitmap,i)}{i+=1;}
- if found<capacity{unsafe{*runs.add(found as usize)=RtlBitmapRun{starting_index:start,number_of_bits:i-start};found+=1;}}
- }
- if locate_longest!=0&&capacity>0 {for i in 0..found {for j in i+1..found {if unsafe{(*runs.add(j as usize)).number_of_bits>(*runs.add(i as usize)).number_of_bits}{unsafe{core::ptr::swap(runs.add(i as usize),runs.add(j as usize));}}}}}
- found
-}
-
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn rtl_extract_bit_map_ex(dst:*mut super::RtlBitmapEx,src:*const super::RtlBitmapEx,start:usize,count:usize) {
  if dst.is_null()||src.is_null(){return;}let n=count.min(unsafe{(*dst).size_of_bitmap});
