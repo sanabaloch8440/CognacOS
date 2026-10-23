@@ -90,6 +90,7 @@ fn resolve_symbol(resolver: Option<ImportResolver>, dll: &[u8], symbol: ImportSy
     if let Some(resolve) = resolver {
         if let Some(address) = resolve(host, symbol) { return Ok(address); }
     }
+    if let Some(address) = crate::ntoskrnl::resolve(host, symbol) { return Ok(address); }
     crate::winabi::resolve_import(dll, symbol).ok_or(if resolver.is_some() {
         PeError::UnresolvedImport
     } else {
