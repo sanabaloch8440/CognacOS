@@ -205,6 +205,13 @@ pub unsafe extern "win64" fn io_get_dma_adapter(
     if version > 1 || size < 4 {
         return core::ptr::null_mut();
     }
+    // If firmware advertises Intel VT-d, do not silently hand a driver an
+    // identity-mapped adapter: remapping is not yet initialized and bypassing
+    // firmware isolation can DMA into arbitrary physical memory.
+    let rsdp = crate::acpi::rsdp_address();
+    if rsdp != 0 && unsafe { crate::acpi::find_table(rsdp, *b"DMAR", 0) }.is_ok() {
+        return core::ptr::null_mut();
+    }
     unsafe { number_of_map_registers.write(0); }
     core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
 }
