@@ -297,9 +297,8 @@ pub unsafe fn start_one_ap(
     if !delay_us(10_000) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
     // Do not send the legacy INIT-deassert IPI here. Its delivery mode is
     // deprecated and firmware/APIC implementations differ in how they handle
-    // it. The architectural startup sequence is INIT assert, startup delay,
-    // then one targeted SIPI (with a second SIPI only if the AP stays offline).
-    if !delay_us(200) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
+    // it. After the INIT recovery interval, send the first SIPI immediately;
+    // the mandatory 200 us inter-SIPI delay belongs after that first SIPI.
     if let Err(error) = unsafe { apic::send_startup_ipi(local_apic_base, target.apic_id as u8, target.trampoline_physical) } {
         let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::Apic(error));
     }
