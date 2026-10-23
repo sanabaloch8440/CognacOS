@@ -14,6 +14,7 @@ static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
 static LAST_TSC: AtomicU64 = AtomicU64::new(0);
 static CALIBRATED_TSC_HZ: AtomicU64 = AtomicU64::new(0);
 static LOCAL_TIMER_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static CALIBRATED_TIMER_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 const APIC_EOI: usize = 0x0b0;
 const APIC_SVR: usize = 0x0f0;
 const APIC_LVT_TIMER: usize = 0x320;
@@ -298,7 +299,7 @@ pub fn relative_timeout_deadline(interval_100ns: i64) -> Option<u64> {
 /// Calibrate the local APIC decrementer against the architectural TSC for a
 /// nominal 1 ms periodic tick, then start it. Requires an identity-mapped,
 /// uncached local-APIC MMIO page and a usable TSC frequency; it does not enable IF.
-pub unsafe fn calibrate_and_start_local_timer() -> Result<u32, ApicError> {
+pub unsafe fn calibrate_local_timer() -> Result<u32, ApicError> {
     let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
     const PIT_COMMAND: u16 = 0x43;
     const PIT_CHANNEL2: u16 = 0x42;
@@ -346,10 +347,23 @@ pub unsafe fn calibrate_and_start_local_timer() -> Result<u32, ApicError> {
         unsafe { mask_local_timer(base); }
         return Err(ApicError::Unsupported);
     }
+    CALIBRATED_TIMER_COUNT.store(per_ms, Ordering::Release);
+    LOCAL_TIMER_ACTIVE.store(false, Ordering::Release);
+    // Keep the LVT masked until AP startup and kernel self-tests have completed.
+    unsafe { mask_local_timer(base); }
+    Ok(per_ms)
+}
+
+/// Start the calibrated BSP local timer only after all interrupt-routing checks pass.
+pub unsafe fn start_calibrated_local_timer() -> Result<(), ApicError> {
+    let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
+    let count = CALIBRATED_TIMER_COUNT.load(Ordering::Acquire);
+    if count == 0 { return Err(ApicError::Unsupported); }
     unsafe {
-        write_local(base, APIC_TIMER_INITIAL_COUNT, per_ms);
+        write_local(base, APIC_TIMER_DIVIDE, 0x3);
+        write_local(base, APIC_TIMER_INITIAL_COUNT, count);
         write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | (1 << 17));
     }
     LOCAL_TIMER_ACTIVE.store(true, Ordering::Release);
-    Ok(per_ms)
+    Ok(())
 }
