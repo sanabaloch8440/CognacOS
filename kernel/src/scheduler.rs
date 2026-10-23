@@ -19,7 +19,7 @@ impl SchedulerState {
 }
 static SCHED:IrqSpinLock<SchedulerState>=IrqSpinLock::new(SchedulerState::new());
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum SchedulerError { NotInitialized, Full, InvalidPriority, InvalidAffinity, UnknownTask, InvalidCpu, CpuBusy, AffinityConflict }
+pub enum SchedulerError { NotInitialized, Full, InvalidPriority, InvalidAffinity, UnknownTask, InvalidCpu, CpuBusy, AffinityConflict, InvalidState }
 
 pub fn initialize(){ SCHED.lock().initialized=true; }
 pub fn create_task(priority:u8,affinity:u64,stack_top:u64,instruction_pointer:u64)->Result<u64,SchedulerError>{
@@ -65,4 +65,39 @@ pub fn set_affinity(id:u64,mask:u64)->Result<(),SchedulerError>{
 pub fn task_snapshot(id:u64)->Result<Task,SchedulerError>{
  let s=SCHED.lock();
  s.tasks.iter().find(|t|t.id==id&&t.state!=TaskState::Empty).copied().ok_or(SchedulerError::UnknownTask)
+}
+
+
+/// Mark a task blocked and detach it from its CPU's current-task slot.
+/// This is scheduler metadata only; a caller must switch to another saved context
+/// before using this from a running thread.
+pub fn block_task(id: u64) -> Result<(), SchedulerError> {
+    let mut s = SCHED.lock();
+    let index = s.tasks.iter().position(|t| t.id == id && t.state != TaskState::Empty)
+        .ok_or(SchedulerError::UnknownTask)?;
+    match s.tasks[index].state {
+        TaskState::Ready => s.tasks[index].state = TaskState::Blocked,
+        TaskState::Running => {
+            let cpu = s.current.iter().position(|current| *current == id)
+                .ok_or(SchedulerError::UnknownTask)?;
+            s.current[cpu] = 0;
+            s.tasks[index].state = TaskState::Blocked;
+        }
+        TaskState::Blocked | TaskState::Exited | TaskState::Empty => {
+            return Err(SchedulerError::InvalidState);
+        }
+    }
+    Ok(())
+}
+
+/// Make a blocked task eligible for selection by choose_next().
+pub fn wake_task(id: u64) -> Result<(), SchedulerError> {
+    let mut s = SCHED.lock();
+    let index = s.tasks.iter().position(|t| t.id == id && t.state != TaskState::Empty)
+        .ok_or(SchedulerError::UnknownTask)?;
+    if s.tasks[index].state != TaskState::Blocked {
+        return Err(SchedulerError::InvalidState);
+    }
+    s.tasks[index].state = TaskState::Ready;
+    Ok(())
 }
