@@ -1,16 +1,16 @@
-//! CM-family NTOSKRNL import stubs, generated from manifest_19041.json.
-//! Names/ordinals are source metadata; every address still points at a generic placeholder.
+//! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
+//! Entries describe export names/ordinals only; they are not all implemented APIs.
 pub const EXPORTS: &[(&str, u16)] = &[
-    ("CmCallbackGetKeyObjectID", 101),
-    ("CmCallbackGetKeyObjectIDEx", 102),
-    ("CmCallbackReleaseKeyObjectIDEx", 103),
-    ("CmGetBoundTransaction", 104),
-    ("CmGetCallbackVersion", 105),
-    ("CmKeyObjectType", 106),
-    ("CmRegisterCallback", 107),
-    ("CmRegisterCallbackEx", 108),
-    ("CmRegisterMachineHiveLoadedNotification", 109),
-    ("CmSetCallbackObjectContext", 110),
-    ("CmUnRegisterCallback", 111),
-    ("CmUnregisterMachineHiveLoadedNotification", 112),
+    ("CmCallbackGetKeyObjectID", 132),
+    ("CmCallbackGetKeyObjectIDEx", 133),
+    ("CmCallbackReleaseKeyObjectIDEx", 134),
+    ("CmGetBoundTransaction", 135),
+    ("CmGetCallbackVersion", 136),
+    ("CmKeyObjectType", 137),
+    ("CmRegisterCallback", 138),
+    ("CmRegisterCallbackEx", 139),
+    ("CmRegisterMachineHiveLoadedNotification", 140),
+    ("CmSetCallbackObjectContext", 141),
+    ("CmUnRegisterCallback", 142),
+    ("CmUnregisterMachineHiveLoadedNotification", 143),
 ];
