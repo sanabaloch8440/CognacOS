@@ -506,6 +506,123 @@ pub unsafe extern "win64" fn build_scatter_gather_list(
     0
 }
 
+
+/// Bounded legacy map-register tokens. Direct-DMA mode uses tokens to enforce
+/// adapter ownership/lifetime; these tokens do not create IOMMU mappings.
+const MAX_MAP_REGISTER_ALLOCS: usize = 64;
+const MAX_MAP_REGISTERS_PER_ALLOCATION: u32 = 256;
+#[derive(Clone, Copy)]
+struct MapRegisterRecord { active: bool, token: usize, count: u32, device: usize }
+impl MapRegisterRecord { const EMPTY: Self = Self { active: false, token: 0, count: 0, device: 0 }; }
+struct MapRegisterState { records: [MapRegisterRecord; MAX_MAP_REGISTER_ALLOCS], next: usize }
+static MAP_REGISTERS: crate::hal::IrqSpinLock<MapRegisterState> =
+    crate::hal::IrqSpinLock::new(MapRegisterState { records: [MapRegisterRecord::EMPTY; MAX_MAP_REGISTER_ALLOCS], next: 1 });
+#[repr(C, align(16))]
+struct MapRegisterToken { id: u64 }
+static mut MAP_REGISTER_TOKENS: [MapRegisterToken; MAX_MAP_REGISTER_ALLOCS] =
+    [const { MapRegisterToken { id: 0 } }; MAX_MAP_REGISTER_ALLOCS];
+
+type AdapterExecutionRoutine = unsafe extern "win64" fn(
+    device_object: *mut core::ffi::c_void,
+    irp: *mut core::ffi::c_void,
+    map_register_base: *mut core::ffi::c_void,
+    context: *mut core::ffi::c_void,
+);
+#[derive(Clone, Copy)]
+struct ChannelRequest {
+    active: bool, device: usize, count: u32, routine: usize, context: usize,
+}
+impl ChannelRequest { const EMPTY: Self = Self { active: false, device: 0, count: 0, routine: 0, context: 0 }; }
+struct ChannelState { owner: usize, queue: [ChannelRequest; 32], head: usize, len: usize }
+static CHANNEL: crate::hal::IrqSpinLock<ChannelState> = crate::hal::IrqSpinLock::new(
+    ChannelState { owner: 0, queue: [ChannelRequest::EMPTY; 32], head: 0, len: 0 });
+
+/// Serialize adapter-channel callbacks and queue requests while the channel is
+/// owned. Queued callbacks are dispatched by FreeAdapterChannel; no IRP is
+/// fabricated, and callers must tolerate STATUS_PENDING.
+pub unsafe extern "win64" fn allocate_adapter_channel(
+    adapter: *mut core::ffi::c_void, device: *mut core::ffi::c_void,
+    number_of_map_registers: u32, routine: Option<AdapterExecutionRoutine>,
+    context: *mut core::ffi::c_void,
+) -> i32 {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+        || device.is_null() || number_of_map_registers > MAX_MAP_REGISTERS_PER_ALLOCATION
+        || routine.is_none() { return 0xC000000D_u32 as i32; }
+    let req = ChannelRequest { active: true, device: device as usize,
+        count: number_of_map_registers, routine: routine.unwrap() as usize, context: context as usize };
+    let mut state = CHANNEL.lock();
+    if state.owner == 0 {
+        state.owner = device as usize;
+        drop(state);
+        let token = if number_of_map_registers == 0 { core::ptr::null_mut() }
+            else { match allocate_map_register_token(device, number_of_map_registers) {
+                Some(p) => p, None => { let mut s=CHANNEL.lock(); s.owner=0; return 0xC000009A_u32 as i32; }
+            }};
+        unsafe { routine.unwrap()(device, core::ptr::null_mut(), token, context); }
+        return 0;
+    }
+    if state.len == state.queue.len() { return 0xC000009A_u32 as i32; }
+    let tail = (state.head + state.len) % state.queue.len();
+    state.queue[tail] = req; state.len += 1;
+    0x00000103 // STATUS_PENDING
+}
+
+fn allocate_map_register_token(device: *mut core::ffi::c_void, count: u32) -> Option<*mut core::ffi::c_void> {
+    if count == 0 || count > MAX_MAP_REGISTERS_PER_ALLOCATION { return None; }
+    let mut state = MAP_REGISTERS.lock();
+    let idx = state.records.iter().position(|r| !r.active)?;
+    let id = state.next; state.next = state.next.wrapping_add(1).max(1);
+    let token = unsafe { core::ptr::addr_of_mut!(MAP_REGISTER_TOKENS[idx]) };
+    unsafe { (*token).id = id; }
+    let ptr = token.cast::<core::ffi::c_void>();
+    state.records[idx] = MapRegisterRecord { active: true, token: ptr as usize, count, device: device as usize };
+    Some(ptr)
+}
+
+pub unsafe extern "win64" fn free_map_registers(
+    adapter: *mut core::ffi::c_void, map_register_base: *mut core::ffi::c_void,
+    number_of_map_registers: u32,
+) {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast() || map_register_base.is_null() { return; }
+    let mut state = MAP_REGISTERS.lock();
+    if let Some(r) = state.records.iter_mut().find(|r| r.active && r.token == map_register_base as usize && r.count == number_of_map_registers) {
+        *r = MapRegisterRecord::EMPTY;
+    }
+}
+
+pub unsafe extern "win64" fn free_adapter_channel(adapter: *mut core::ffi::c_void) {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast() { return; }
+    let next = {
+        let mut s = CHANNEL.lock();
+        if s.owner == 0 { return; }
+        s.owner = 0;
+        if s.len == 0 { None } else {
+            let req = s.queue[s.head]; s.queue[s.head] = ChannelRequest::EMPTY;
+            s.head = (s.head + 1) % s.queue.len(); s.len -= 1;
+            s.owner = req.device; Some(req)
+        }
+    };
+    if let Some(req) = next {
+        let routine: AdapterExecutionRoutine = unsafe { core::mem::transmute(req.routine) };
+        let token = if req.count == 0 { core::ptr::null_mut() }
+            else { allocate_map_register_token(req.device as *mut _, req.count).unwrap_or(core::ptr::null_mut()) };
+        unsafe { routine(req.device as *mut _, core::ptr::null_mut(), token, req.context as *mut _); }
+    }
+}
+
+/// Extended variants currently accept only flags that preserve the legacy
+/// direct-DMA contract; unsupported remapping/flush semantics fail closed.
+pub unsafe extern "win64" fn map_transfer_ex(
+    adapter: *mut core::ffi::c_void, _context: *mut core::ffi::c_void,
+    mdl: *mut MdlAbi, map_register_base: *mut core::ffi::c_void,
+    current_va: *mut core::ffi::c_void, length: *mut u32, direction: u32,
+    _scatter_gather: *mut core::ffi::c_void,
+) -> i32 {
+    if direction > 2 || map_register_base.is_null() { return 0xC000000D_u32 as i32; }
+    let address = unsafe { map_transfer(adapter, mdl, map_register_base, current_va, length, (direction == 1) as u8) };
+    if address == 0 { 0xC000000D_u32 as i32 } else { 0 }
+}
+
 /// The legacy x64 DMA adapter currently provides real common-buffer allocation
 /// only. Mapping, channel ownership and SG callbacks stay null until MDL and
 /// device-object lifetimes are implemented; advertising fake callbacks is unsafe.
@@ -514,10 +631,10 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     put_dma_adapter: crate::dma::put_dma_adapter as usize,
     allocate_common_buffer: crate::hal::exports::hal_allocate_common_buffer as usize,
     free_common_buffer: crate::hal::exports::hal_free_common_buffer as usize,
-    allocate_adapter_channel: 0,
+    allocate_adapter_channel: crate::dma::allocate_adapter_channel as usize,
     flush_adapter_buffers: crate::dma::flush_adapter_buffers as usize,
-    free_adapter_channel: 0,
-    free_map_registers: 0,
+    free_adapter_channel: crate::dma::free_adapter_channel as usize,
+    free_map_registers: crate::dma::free_map_registers as usize,
     map_transfer: crate::dma::map_transfer as usize,
     get_dma_alignment: crate::dma::get_dma_alignment as usize,
     read_dma_counter: 0,
@@ -533,7 +650,7 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     allocate_adapter_channel_ex: 0,
     configure_adapter_channel: 0,
     cancel_adapter_channel: 0,
-    map_transfer_ex: 0,
+    map_transfer_ex: crate::dma::map_transfer_ex as usize,
     get_scatter_gather_list_ex: 0,
     build_scatter_gather_list_ex: 0,
     flush_adapter_buffers_ex: 0,
