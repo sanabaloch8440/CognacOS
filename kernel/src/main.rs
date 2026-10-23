@@ -275,10 +275,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                                     }
                                     if routes_masked {
                                         unsafe { outb(0x21, 0xff); outb(0xa1, 0xff); }
-                                        match unsafe { apic::calibrate_and_start_local_timer() } {
+                                        match unsafe { apic::calibrate_local_timer() } {
                                             Ok(count) => {
                                                 local_timer_ready = true;
-                                                serial_write(b"Local APIC timer calibrated; 1 ms count=");
+                                                serial_write(b"Local APIC timer calibrated (still masked); 1 ms count=");
                                                 serial_write_decimal(count as usize);
                                                 serial_write(b"; legacy and I/O APIC routes masked.\r\n");
                                             }
@@ -573,10 +573,15 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
         if local_timer_ready {
-            serial_write(b"Local APIC timer ready; enabling masked-route single-core interrupt mode.\r\n");
-            loop {
-                unsafe { asm!("sti; hlt", options(nomem, nostack)); }
-                if thread::has_ready_threads() { let _ = thread::yield_current(); }
+            match unsafe { apic::start_calibrated_local_timer() } {
+                Ok(()) => {
+                    serial_write(b"Local APIC timer enabled after AP startup/self-tests; external routes remain masked.\r\n");
+                    loop {
+                        unsafe { asm!("sti; hlt", options(nomem, nostack)); }
+                        if thread::has_ready_threads() { let _ = thread::yield_current(); }
+                    }
+                }
+                Err(_) => serial_write(b"WARNING: calibrated APIC timer could not start; interrupts remain disabled.\r\n"),
             }
         } else {
             serial_write(b"Interrupts remain disabled because APIC/timer setup was not fully validated.\r\n");
