@@ -151,10 +151,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"HAL CPU-local registry, MMIO bounds, and x86-64 primitives initialized.\r\n");
 
         if !smp::self_test() {
-            serial_write(b"FATAL: SMP startup-target validation self-test failed.\\r\\n");
+            serial_write(b"FATAL: SMP startup-target validation self-test failed.\r\n");
             halt();
         }
-        serial_write(b"SMP startup target validation passed; hardware AP startup remains gated on trampoline installation.\\r\\n");
+        serial_write(b"SMP startup target validation passed; hardware AP startup remains gated on trampoline installation.\r\n");
 
         // Validate the bounded ACPI parser against a minimal synthetic MADT.
         let mut madt = [0u8; 44];
