@@ -58,6 +58,7 @@ struct BootInfo {
     memory_descriptor_version: u32,
     kernel_stack_guard_page: u64,
     rsdp_address: u64,
+    ap_trampoline_physical: u64,
 }
 
 #[unsafe(no_mangle)]
@@ -70,7 +71,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic != BOOT_INFO_MAGIC || info.version != 3
+        if info.magic != BOOT_INFO_MAGIC || info.version != 4
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
@@ -90,7 +91,20 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"UEFI boot services exited successfully.\r\n");
-        serial_write(b"Boot information version: 3\r\n");
+        serial_write(b"Boot information version: 4\r\n");
+        if info.ap_trampoline_physical != 0
+            && (info.ap_trampoline_physical >= 0x10_0000 || info.ap_trampoline_physical & 0xfff != 0)
+        {
+            serial_write(b"FATAL: invalid low-memory AP trampoline reservation.\r\n");
+            halt();
+        }
+        if info.ap_trampoline_physical == 0 {
+            serial_write(b"WARNING: AP trampoline page unavailable; SMP startup disabled.\r\n");
+        } else {
+            serial_write(b"AP trampoline storage reserved at: ");
+            serial_write_hex(info.ap_trampoline_physical);
+            serial_write(b" (not yet executable).\r\n");
+        }
         serial_write(b"Memory map entries: ");
         serial_write_decimal(info.memory_map_entries);
         serial_write(b"\r\n");
