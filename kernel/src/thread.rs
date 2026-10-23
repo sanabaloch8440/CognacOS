@@ -69,9 +69,12 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
             local.current_thread.store(next_record.id,core::sync::atomic::Ordering::Release);
             (old_rsp_ptr,next_record.context_rsp)
         } else if current_id!=0 {
-            local.current_thread.store(0,core::sync::atomic::Ordering::Release);
             let idle=unsafe{*idle_rsp_ptr};
-            if idle.is_null(){return Err(ThreadError::InvalidState)}
+            if idle.is_null() {
+                if let Some(current)=table.records.iter_mut().find(|t|t.id==current_id){current.state=ThreadState::Running;}
+                return Err(ThreadError::InvalidState);
+            }
+            local.current_thread.store(0,core::sync::atomic::Ordering::Release);
             (old_rsp_ptr,idle)
         } else { return Ok(()) }
     };
