@@ -1,6 +1,8 @@
 //! Bounded dispatcher wait queue core. This records waits but does not suspend a CPU.
 use crate::hal::IrqSpinLock;
 pub const MAX_WAITERS: usize = 256;
+pub const MAX_WAIT_GROUPS: usize = 64;
+pub const MAX_GROUP_OBJECTS: usize = 64;
 pub type WaitToken = u64;
 pub const DELAY_OBJECT_PREFIX: u64 = 0xffff_ffff_0000_0000;
 #[derive(Clone, Copy)]
@@ -45,4 +47,48 @@ pub fn expire_detailed(now:u64,out:&mut[ExpiredWait])->usize{
         }
     }
     n
+}
+
+#[derive(Clone, Copy)]
+struct WaitGroup { active:bool, thread:u64, count:usize, objects:[u64;MAX_GROUP_OBJECTS], tokens:[WaitToken;MAX_GROUP_OBJECTS] }
+impl WaitGroup { const EMPTY:Self=Self{active:false,thread:0,count:0,objects:[0;MAX_GROUP_OBJECTS],tokens:[0;MAX_GROUP_OBJECTS]}; }
+struct GroupTable { groups:[WaitGroup;MAX_WAIT_GROUPS] }
+impl GroupTable { const fn new()->Self{Self{groups:[WaitGroup::EMPTY;MAX_WAIT_GROUPS]}} }
+static GROUPS:IrqSpinLock<GroupTable>=IrqSpinLock::new(GroupTable::new());
+
+/// Register a wait-any group after all per-object queue entries have been inserted.
+/// The caller must serialize object signal transitions during this registration.
+pub fn register_wait_any(thread:u64,objects:&[u64],tokens:&[WaitToken])->Result<(),WaitError>{
+    if thread==0{return Err(WaitError::InvalidThread)}
+    if objects.is_empty()||objects.len()>MAX_GROUP_OBJECTS||objects.len()!=tokens.len(){return Err(WaitError::InvalidObject)}
+    let mut groups=GROUPS.lock();
+    let group=groups.groups.iter_mut().find(|g|!g.active).ok_or(WaitError::Full)?;
+    group.active=true;group.thread=thread;group.count=objects.len();
+    for i in 0..objects.len(){group.objects[i]=objects[i];group.tokens[i]=tokens[i];}
+    Ok(())
+}
+
+/// Complete a registered wait-any group when one object signals or its deadline expires.
+/// Returns the final NTSTATUS and cancels all sibling registrations. A stale dequeued
+/// token is harmless because cancellation checks queue-slot generations.
+pub fn complete_wait_group(thread:u64,object:u64,status:i32,success_status:i32,timeout_status:i32)->Option<i32>{
+    let (result,tokens,count)={
+        let mut groups=GROUPS.lock();
+        let group=groups.groups.iter_mut().find(|g|g.active&&g.thread==thread)?;
+        let result=if status==timeout_status {timeout_status} else {
+            let index=group.objects[..group.count].iter().position(|candidate|*candidate==object)?;
+            success_status+index as i32
+        };
+        let tokens=group.tokens;let count=group.count;
+        *group=WaitGroup::EMPTY;
+        (result,tokens,count)
+    };
+    for token in tokens[..count].iter().copied(){let _=cancel(token);}
+    Some(result)
+}
+
+/// Remove a wait group after a scheduler/context-switch failure.
+pub fn clear_wait_group(thread:u64){
+    let mut groups=GROUPS.lock();
+    if let Some(group)=groups.groups.iter_mut().find(|g|g.active&&g.thread==thread){*group=WaitGroup::EMPTY;}
 }
