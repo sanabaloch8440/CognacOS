@@ -45,7 +45,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 30, name: "HalGetInterruptVector", state: StubState::NotImplemented },
     HalExport { ordinal: 31, name: "HalGetMemoryCachingRequirements", state: StubState::NotImplemented },
     HalExport { ordinal: 32, name: "HalGetMessageRoutingInfo", state: StubState::NotImplemented },
-    HalExport { ordinal: 33, name: "HalGetProcessorIdByNtNumber", state: StubState::NotImplemented },
+    HalExport { ordinal: 33, name: "HalGetProcessorIdByNtNumber", state: StubState::Implemented },
     HalExport { ordinal: 34, name: "HalGetVectorInput", state: StubState::NotImplemented },
     HalExport { ordinal: 35, name: "HalHandleMcheck", state: StubState::NotImplemented },
     HalExport { ordinal: 36, name: "HalHandleNMI", state: StubState::NotImplemented },
@@ -53,7 +53,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 38, name: "HalInitializeBios", state: StubState::NotImplemented },
     HalExport { ordinal: 39, name: "HalInitializeOnResume", state: StubState::NotImplemented },
     HalExport { ordinal: 40, name: "HalInitializeProcessor", state: StubState::NotImplemented },
-    HalExport { ordinal: 41, name: "HalIsHyperThreadingEnabled", state: StubState::NotImplemented },
+    HalExport { ordinal: 41, name: "HalIsHyperThreadingEnabled", state: StubState::Implemented },
     HalExport { ordinal: 42, name: "HalMakeBeep", state: StubState::NotImplemented },
     HalExport { ordinal: 43, name: "HalPerformEndOfInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 44, name: "HalProcessorIdle", state: StubState::NotImplemented },
@@ -204,6 +204,32 @@ pub unsafe extern "win64" fn hal_set_bus_data(
     unsafe { hal_set_bus_data_by_offset(bus_data_type, bus_number, slot_number, buffer, 0, length) }
 }
 
+
+/// Map an NT logical processor number to its firmware/APIC processor ID.
+/// Unknown or not-yet-discovered logical processors return ULONG_MAX.
+pub unsafe extern "win64" fn hal_get_processor_id_by_nt_number(nt_number: u32) -> u32 {
+    let Ok(cpu) = crate::hal::cpu_local(nt_number as usize) else { return u32::MAX; };
+    let id = cpu.apic_id.load(core::sync::atomic::Ordering::Acquire);
+    if id == u32::MAX { u32::MAX } else { id }
+}
+
+/// Report SMT availability from architectural CPUID topology. This reports
+/// what the current processor exposes to the OS, not a vendor-specific brand.
+pub unsafe extern "win64" fn hal_is_hyper_threading_enabled() -> u8 {
+    let max_leaf = unsafe { core::arch::x86_64::__cpuid(0) }.eax;
+    if max_leaf >= 0x0b {
+        let topology = unsafe { core::arch::x86_64::__cpuid_count(0x0b, 0) };
+        if topology.ebx != 0 { return (topology.ebx > 1) as u8; }
+    }
+    if max_leaf >= 1 {
+        let leaf = unsafe { core::arch::x86_64::__cpuid(1) };
+        let htt = (leaf.edx & (1 << 28)) != 0;
+        let logical_count = (leaf.ebx >> 16) & 0xff;
+        return (htt && logical_count > 1) as u8;
+    }
+    0
+}
+
 /// Return the maximum logical-processor capacity exposed by this HAL.
 pub unsafe extern "win64" fn hal_query_maximum_processor_count() -> u32 {
     super::MAX_CPUS as u32
@@ -232,6 +258,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         Some(hal_set_bus_data as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalSetBusDataByOffset") {
         Some(hal_set_bus_data_by_offset as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalGetProcessorIdByNtNumber") {
+        Some(hal_get_processor_id_by_nt_number as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalIsHyperThreadingEnabled") {
+        Some(hal_is_hyper_threading_enabled as usize as u64)
     } else { None }
 }
 
@@ -245,6 +275,8 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
         26 => Some(hal_get_bus_data_by_offset as usize as u64),
         61 => Some(hal_set_bus_data as usize as u64),
         62 => Some(hal_set_bus_data_by_offset as usize as u64),
+        33 => Some(hal_get_processor_id_by_nt_number as usize as u64),
+        41 => Some(hal_is_hyper_threading_enabled as usize as u64),
         _ => None,
     }
 }
@@ -270,6 +302,10 @@ pub fn self_test() -> bool {
         && resolve(b"HalGetBusDataByOffset").is_some()
         && resolve(b"HalSetBusData").is_some()
         && resolve(b"HalSetBusDataByOffset").is_some()
+        && resolve(b"HalGetProcessorIdByNtNumber").is_some()
+        && resolve(b"HalIsHyperThreadingEnabled").is_some()
+        && resolve_ordinal(33).is_some()
+        && resolve_ordinal(41).is_some()
         && resolve_ordinal(25).is_some()
         && resolve_ordinal(26).is_some()
         && resolve_ordinal(61).is_some()
