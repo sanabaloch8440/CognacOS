@@ -111,7 +111,7 @@ const LOW_IDENTITY_LIMIT: u64 = 0x1_0000_0000;
 /// The bootstrap identity-maps only 0..4 GiB, so physical ranges are checked
 /// before dereferencing. This routine discovers topology but enables no devices.
 pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
-    if rsdp_address == 0 || rsdp_address >= LOW_IDENTITY_LIMIT {
+    if rsdp_address == 0 || rsdp_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
         return Err(AcpiError::AddressOutOfRange);
     }
     let rsdp_prefix = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, 36) };
@@ -131,7 +131,7 @@ pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
     } else if roots.rsdt_address != 0 {
         (roots.rsdt_address as u64, false)
     } else { return Err(AcpiError::MissingRoot); };
-    if root_address == 0 || root_address >= LOW_IDENTITY_LIMIT {
+    if root_address == 0 || root_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
         return Err(AcpiError::AddressOutOfRange);
     }
     let root_header = unsafe { core::slice::from_raw_parts(root_address as *const u8, 36) };
