@@ -96,6 +96,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "KeWaitForMultipleObjects" => ke::runtime::ke_wait_for_multiple_objects as usize,
   "KeDelayExecutionThread" => ke::runtime::ke_delay_execution_thread as usize,
   "HalRequestIpiSpecifyVector" => crate::hal::exports::hal_request_ipi_specify_vector as usize,
+  "HalAllProcessorsStarted" => crate::hal::exports::hal_all_processors_started as usize,
   "HalAllocateCommonBuffer" => crate::hal::exports::hal_allocate_common_buffer as usize,
   "HalFlushCommonBuffer" => crate::hal::exports::hal_flush_common_buffer as usize,
   "HalFreeCommonBuffer" => crate::hal::exports::hal_free_common_buffer as usize,
