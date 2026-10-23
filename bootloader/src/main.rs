@@ -16,7 +16,7 @@ use uefi::{boot, cstr16};
 
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.elf");
 const MAX_KERNEL_FILE: usize = 32 * 1024 * 1024;
-const KERNEL_STACK_PAGES: usize = 16;
+const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
