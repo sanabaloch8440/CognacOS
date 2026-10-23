@@ -215,7 +215,7 @@ fn reclaim_one_locked(root:u64)->bool {
 pub fn reclaim_pageable_pages(target:usize)->usize {
  if target==0||ROOT.load(Ordering::Acquire)==0{return 0}
  let root=ROOT.load(Ordering::Acquire);let _g=Guard::lock();let mut count=0;
- while count<target {if !reclaim_one_locked(root){break}count+=1;}
+ while count<target {if reclaim_one_locked(root){count+=1}else if reclaim_one_locked(root){count+=1}else{break}}
  count
 }
 
@@ -228,7 +228,7 @@ pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
  let start=found.ok_or(Error::NoVirtualSpace)?;for n in 0..pages{bits[(start+n)/64]|=1u64<<((start+n)%64)}
  let va=BASE+start as u64*PAGE;let mut mapped=0;
  while mapped<pages {
-  let pa=match unsafe{crate::memory::allocate_page()} {Ok(p)=>p,Err(_)=>{if reclaim_one_locked(root){match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>break}}else{break}}};
+  let pa=match unsafe{crate::memory::allocate_page()} {Ok(p)=>p,Err(_)=>{if reclaim_one_locked(root)||reclaim_one_locked(root){match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>break}}else{break}}};
   if unsafe{map(root,va+mapped as u64*PAGE,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};break} mapped+=1;
  }
  if mapped!=pages {for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,va+n as u64*PAGE)}{synchronize_kernel_tlb();let _=unsafe{crate::memory::free_page(pa)};}}for n in 0..pages{bits[(start+n)/64]&=!(1u64<<((start+n)%64))}return Err(Error::NoPhysicalMemory)}
@@ -271,7 +271,7 @@ pub fn handle_page_fault(address:u64,error_code:u64)->bool {
   if unsafe{leaf.read_volatile()}&P==0{return false}
   unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}return true
  }
- let pa=match unsafe{crate::memory::allocate_page()} {Ok(p)=>p,Err(_)=>{if !reclaim_one_locked(root){return false}match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>return false}}};
+ let pa=match unsafe{crate::memory::allocate_page()} {Ok(p)=>p,Err(_)=>{if !reclaim_one_locked(root)&&!reclaim_one_locked(root){return false}match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>return false}}};
  if is_swapped {
   let slot=unsafe{(&*SWAP_SLOTS.0.get())[page_index]};
   if slot==u16::MAX||unsafe{crate::pagefile::read_page(slot as u32,pa as *mut u8)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
@@ -293,10 +293,26 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
  let i=table.iter().position(|e|e.live&&e.start==start&&e.pages==pages).ok_or(Error::Invalid)?;
  // Validate mapped leaves and capture physical frames; nonresident pageable
  // pages have no backing frame to reclaim.
- let reclaim=unsafe{&mut *RECLAIM_PAGES.0.get()};let mapped=unsafe{&*MAPPED_BITS.0.get()};
+ let reclaim=unsafe{&mut *RECLAIM_PAGES.0.get()};
+ let reclaim_slots=unsafe{&mut *RECLAIM_SLOTS.0.get()};
+ let mapped=unsafe{&*MAPPED_BITS.0.get()};
+ let swapped=unsafe{&*SWAPPED_BITS.0.get()};
  for n in 0..pages {
-  if mapped[(start+n)/64]&(1u64<<((start+n)%64))==0 { if !table[i].pageable{return Err(Error::NotMapped)} reclaim[n]=0;continue; }
-  let indexes=ix(va+n as u64*PAGE);let mut t=root as *const u64;for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *const u64;}let pte=unsafe{t.add(indexes[3]).read()};if pte&P==0{return Err(Error::NotMapped)}reclaim[n]=pte&ADDR;
+  let word=(start+n)/64;let mask=1u64<<((start+n)%64);
+  if mapped[word]&mask==0 {
+   if !table[i].pageable{return Err(Error::NotMapped)}
+   reclaim[n]=0;
+   if swapped[word]&mask!=0 {
+    let slot=unsafe{(&*SWAP_SLOTS.0.get())[start+n]};
+    if slot==u16::MAX{return Err(Error::NotMapped)}
+    reclaim_slots[n]=slot as u32;
+   }else{reclaim_slots[n]=u32::MAX;}
+   continue;
+  }
+  let indexes=ix(va+n as u64*PAGE);let mut t=root as *const u64;
+  for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *const u64;}
+  let pte=unsafe{t.add(indexes[3]).read()};if pte&P==0{return Err(Error::NotMapped)}
+  reclaim[n]=pte&ADDR;reclaim_slots[n]=u32::MAX;
  }
  // Unmap all resident pages before a single SMP rendezvous, then recycle frames.
  for n in 0..pages {if reclaim[n]!=0 {let _=unsafe{unmap(root,va+n as u64*PAGE)}?;}}
@@ -306,7 +322,13 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
  let bits=unsafe{&mut *BITS.0.get()};let mapped=unsafe{&mut *MAPPED_BITS.0.get()};
  for n in 0..pages {
   if reclaim[n]!=0 { let _=unsafe{crate::memory::free_page(reclaim[n])}; }
-  bits[(start+n)/64]&=!(1u64<<((start+n)%64));mapped[(start+n)/64]&=!(1u64<<((start+n)%64));
+  if reclaim_slots[n]!=u32::MAX {
+   let _=crate::pagefile::free_slot(reclaim_slots[n]);
+   unsafe{(&mut *SWAP_SLOTS.0.get())[start+n]=u16::MAX;}
+  }
+  let word=(start+n)/64;let mask=1u64<<((start+n)%64);
+  bits[word]&=!mask;mapped[word]&=!mask;
+  unsafe{(&mut *SWAPPED_BITS.0.get())[word]&=!mask;}
  }
  let tables=unsafe{&*RECLAIM_TABLES.0.get()};
  for pa in tables.iter().take(table_count).copied() { let _=unsafe{crate::memory::free_page(pa)}; }
