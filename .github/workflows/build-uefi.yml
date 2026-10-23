@@ -56,6 +56,7 @@ jobs:
           cp target/x86_64-unknown-none/release/rdotos-kernel build/EFI/BOOT/rdotos-kernel.elf
           cp target/x86_64-unknown-none/release/rdotos-kernel build/kernel/rdotos-kernel.elf
           truncate -s 256M build/rdotos-uefi.img
+          truncate -s 128M build/pagefile.img
           parted -s build/rdotos-uefi.img mklabel gpt
           parted -s build/rdotos-uefi.img mkpart ESP fat32 1MiB 100%
           parted -s build/rdotos-uefi.img set 1 esp on
@@ -109,6 +110,9 @@ jobs:
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
           grep -F 'NT memory manager: physical translation, validity, and checked-copy self-test passed.' build/serial.log
           grep -F 'Physical allocator initialized' build/serial.log
+          grep -F 'Pagefile storage initialized on dedicated ATA primary-slave disk; slots:' build/serial.log
+          grep -F 'Pagefile storage read/write self-test passed.' build/serial.log
+          grep -F 'Pagefile-backed pageable eviction and fault-driven page-in self-test passed.' build/serial.log
           grep -F 'HAL CPU-local registry, MMIO bounds, and x86-64 primitives initialized.' build/serial.log
           grep -F 'SMP startup target validation passed.' build/serial.log
           grep -E 'SMP AP startup complete; online application processors: [1-9][0-9]*' build/serial.log
