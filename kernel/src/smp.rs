@@ -375,6 +375,27 @@ pub unsafe fn start_discovered_aps(
         let stack_top = stack_page + PAGE_SIZE as u64;
         let target = ApStartupTarget { logical_id, apic_id, trampoline_physical, stack_top, pml4_physical };
         unsafe { prepare_trampoline(pml4_physical, trampoline_physical, stack_top, logical_id)?; }
+        unsafe {
+            let long_target = core::ptr::read_unaligned(
+                (trampoline_physical as *const u8)
+                    .add(symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_long64_patch)))
+                    .cast::<u32>(),
+            );
+            let entry_target = core::ptr::read_unaligned(
+                (trampoline_physical as *const u8)
+                    .add(symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_entry)))
+                    .cast::<u64>(),
+            );
+            crate::serial_write(b"SMP starting logical CPU ");
+            crate::serial_write_decimal(logical_id);
+            crate::serial_write(b" APIC ID ");
+            crate::serial_write_decimal(apic_id as usize);
+            crate::serial_write(b" long-mode target ");
+            crate::serial_write_hex(long_target as u64);
+            crate::serial_write(b" entry target ");
+            crate::serial_write_hex(entry_target);
+            crate::serial_write(b"\\r\\n");
+        }
         match unsafe { start_one_ap(local_apic_base, target, pit_delay_us) } {
             Ok(()) => { online += 1; }
             Err(error) => {
