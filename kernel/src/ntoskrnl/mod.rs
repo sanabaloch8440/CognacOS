@@ -332,6 +332,9 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlCopySidAndAttributesArray" => rtl_runtime::rtl_copy_sid_and_attributes_array as usize,
   "RtlIsCloudFilesPlaceholder" => rtl_runtime::rtl_is_cloud_files_placeholder as usize,
   "RtlIsPartialPlaceholderFileInfo" => rtl_runtime::rtl_is_partial_placeholder_file_info as usize,
+
+  "RtlExtractBitMap" => rtl_runtime::rtl_extract_bit_map as usize,
+  "RtlFindClearRuns" => rtl_runtime::rtl_find_clear_runs as usize,
   _ => return None,
  };
  Some(address as u64)
