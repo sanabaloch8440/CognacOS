@@ -225,9 +225,31 @@ pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
         return Err(AllocError::InvalidPage);
     }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
-    if free.1 == FREE_CAPACITY { return Err(AllocError::FreeListFull); }
-    free.0[free.1] = page;
-    free.1 += 1;
+    if free.1 < FREE_CAPACITY {
+        free.0[free.1] = page;
+        free.1 += 1;
+        return Ok(());
+    }
+
+    // When the LIFO free-page cache is full, return this page as a one-page
+    // extent instead of losing the frame. The allocator lock protects both
+    // structures, so the page is never simultaneously visible in both.
+    let end = page + PAGE_SIZE;
+    let regions = unsafe { &mut *REGIONS.0.get() };
+    let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    for region in regions.iter_mut().take(count) {
+        if end == region.next {
+            region.next = page;
+            return Ok(());
+        }
+        if page == region.end {
+            region.end = end;
+            return Ok(());
+        }
+    }
+    if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+    regions[count] = Region { next: page, end };
+    REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
     Ok(())
 }
 
