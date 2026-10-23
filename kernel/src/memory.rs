@@ -75,6 +75,44 @@ pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Resul
     Ok(count)
 }
 
+/// Exclude a bootloader-owned physical interval from the early allocator.
+///
+/// UEFI memory maps should already classify allocated pages as loader data, but
+/// explicitly reserving the active bootstrap stack also protects against
+/// firmware/map-copy inconsistencies. The interval is half-open [start, end).
+pub unsafe fn reserve_range(start: u64, end: u64) -> Result<(), AllocError> {
+    if start >= end || end > PHYSICAL_LIMIT {
+        return Err(AllocError::InvalidMap);
+    }
+    let start = start & !(PAGE_SIZE - 1);
+    let end = align_up(end, PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+    let regions = unsafe { &mut *REGIONS.0.get() };
+    let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    let mut rebuilt = [Region::EMPTY; MAX_REGIONS];
+    let mut rebuilt_count = 0usize;
+    for region in regions.iter().take(count).copied() {
+        if end <= region.next || start >= region.end {
+            if rebuilt_count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
+            rebuilt[rebuilt_count] = region;
+            rebuilt_count += 1;
+            continue;
+        }
+        if region.next < start {
+            if rebuilt_count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
+            rebuilt[rebuilt_count] = Region { next: region.next, end: start.min(region.end) };
+            rebuilt_count += 1;
+        }
+        if end < region.end {
+            if rebuilt_count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
+            rebuilt[rebuilt_count] = Region { next: end.max(region.next), end: region.end };
+            rebuilt_count += 1;
+        }
+    }
+    regions.copy_from_slice(&rebuilt);
+    REGION_COUNT.store(rebuilt_count, core::sync::atomic::Ordering::Release);
+    Ok(())
+}
+
 /// Allocate one zeroed physical page. The early kernel uses identity mappings,
 /// so the returned physical address is also directly writable as a pointer.
 pub unsafe fn allocate_page() -> Result<u64, AllocError> {
