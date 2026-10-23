@@ -1,6 +1,6 @@
 //! xAPIC/I/O APIC register primitives. Interrupt delivery remains disabled until
 //! IDT vectors, timer calibration, and all required routes are installed.
-use core::sync::atomic::{compiler_fence, AtomicU64, Ordering};
+use core::sync::atomic::{compiler_fence, AtomicI64, AtomicU64, Ordering};
 const IA32_APIC_BASE: u32 = 0x1b;
 const APIC_ENABLE: u64 = 1 << 11;
 const X2APIC_ENABLE: u64 = 1 << 10;
@@ -11,7 +11,7 @@ const APIC_TIMER_CURRENT_COUNT: usize = 0x390;
 const APIC_TIMER_DIVIDE: usize = 0x3e0;
 pub const LOCAL_TIMER_VECTOR: u8 = 0xE0;
 static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
-static LAST_TSC: AtomicU64 = AtomicU64::new(0);
+static LAST_TSC: AtomicU64 = AtomicU64::new(0);\nstatic TSC_CPU_OFFSETS: [AtomicI64; crate::hal::MAX_CPUS] = [const { AtomicI64::new(0) }; crate::hal::MAX_CPUS];\nstatic TSC_CPU_SYNCED: [core::sync::atomic::AtomicBool; crate::hal::MAX_CPUS] = [const { core::sync::atomic::AtomicBool::new(false) }; crate::hal::MAX_CPUS];
 static CALIBRATED_TSC_HZ: AtomicU64 = AtomicU64::new(0);
 static LOCAL_TIMER_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static TIMER_OWNER_APIC_ID: AtomicU64 = AtomicU64::new(u64::MAX);
@@ -258,13 +258,59 @@ pub unsafe fn set_ioapic_irq_enabled(
 
 /// Read the x86 TSC as the kernel's monotonic deadline domain. Timeout values
 /// must be converted to TSC ticks by a calibrated platform clock before use.
+/// Read the current CPU's TSC after applying a measured per-CPU epoch offset.
+/// A global atomic high-water mark makes the returned domain nondecreasing even
+/// before all APs have completed synchronization; it cannot replace calibration.
 pub fn monotonic_ticks() -> u64 {
     let low: u32;
     let high: u32;
     unsafe { core::arch::asm!("lfence", "rdtsc", out("eax") low, out("edx") high, options(nomem, nostack)); }
-    let now = ((high as u64) << 32) | low as u64;
-    let previous = LAST_TSC.fetch_max(now, Ordering::AcqRel);
-    now.max(previous)
+    let raw = ((high as u64) << 32) | low as u64;
+    let slot = crate::hal::current_cpu_local()
+        .map(|cpu| cpu.logical_id.load(Ordering::Relaxed) as usize)
+        .filter(|id| *id < crate::hal::MAX_CPUS).unwrap_or(0);
+    let offset = TSC_CPU_OFFSETS[slot].load(Ordering::Acquire);
+    let adjusted = if offset >= 0 {
+        raw.saturating_add(offset as u64)
+    } else {
+        raw.saturating_sub(offset.unsigned_abs())
+    };
+    let previous = LAST_TSC.fetch_max(adjusted, Ordering::AcqRel);
+    adjusted.max(previous)
+}
+
+/// Record an AP's TSC offset from a BSP-side bracketed sample. local_before and
+/// local_after are BSP TSC readings surrounding remote_sample (captured on the
+/// target CPU); midpoint minimises IPI latency bias. Repeat and retain the sample
+/// with the narrowest bracket in the SMP startup coordinator for best accuracy.
+pub fn record_tsc_sync_sample(logical_cpu: usize, local_before: u64, remote_sample: u64, local_after: u64) -> Result<i64, ApicError> {
+    if logical_cpu >= crate::hal::MAX_CPUS || local_after < local_before || local_after - local_before > 10_000_000 {
+        return Err(ApicError::InvalidBase);
+    }
+    let midpoint = local_before + (local_after - local_before) / 2;
+    let delta = midpoint as i128 - remote_sample as i128;
+    let offset = i64::try_from(delta).map_err(|_| ApicError::InvalidBase)?;
+    TSC_CPU_OFFSETS[logical_cpu].store(offset, Ordering::Release);
+    TSC_CPU_SYNCED[logical_cpu].store(true, Ordering::Release);
+    Ok(offset)
+}
+
+/// Check whether every online CPU has an epoch sample and report the worst
+/// measured offset magnitude. The monotonic high-water clamp is not a substitute
+/// for this check: large skew can distort elapsed-time measurements.
+pub fn tsc_cross_core_status() -> (bool, u64) {
+    let mut synchronized = true;
+    let mut worst = 0u64;
+    for cpu in 0..crate::hal::MAX_CPUS {
+        let Some(local) = crate::hal::cpu_local(cpu).ok() else { continue; };
+        if local.state.load(Ordering::Acquire) != crate::hal::CPU_ONLINE { continue; }
+        if !TSC_CPU_SYNCED[cpu].load(Ordering::Acquire) {
+            synchronized = false;
+            continue;
+        }
+        worst = worst.max(TSC_CPU_OFFSETS[cpu].load(Ordering::Acquire).unsigned_abs());
+    }
+    (synchronized, worst)
 }
 
 /// Program a local APIC timer with a previously calibrated count. Valid divider
