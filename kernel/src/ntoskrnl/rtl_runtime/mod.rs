@@ -25,6 +25,8 @@ mod sid_abi;
 mod abi_extra;
 mod sd_convert;
 mod strings_numeric;
+mod pool;
+mod timezone;
 
 
 pub use bitmap::*;
@@ -53,6 +55,7 @@ pub use sid_abi::*;
 pub use abi_extra::*;
 pub use sd_convert::*;
 pub use strings_numeric::*;
+pub use timezone::set_time_zone_bias_minutes;
 
 
 
