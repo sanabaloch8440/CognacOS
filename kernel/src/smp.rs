@@ -80,7 +80,7 @@ rdotos_ap_trampoline_pml4_offset_patch:
     .byte 0xea
 rdotos_ap_trampoline_long64_patch:
     .long 0
-    .word 0x08
+    .word 0x18
 
     .code64
 rdotos_ap_trampoline_long64:
@@ -112,10 +112,11 @@ rdotos_ap_trampoline_entry_offset_patch:
     .balign 8
 rdotos_ap_trampoline_gdt:
     .quad 0
-    .quad 0x00af9a000000ffff
+    .quad 0x00cf9a000000ffff
     .quad 0x00cf92000000ffff
+    .quad 0x00af9a000000ffff
 rdotos_ap_trampoline_gdt_pointer:
-    .word 23
+    .word 31
 rdotos_ap_trampoline_gdt_base_patch:
     .long 0
     .balign 8
