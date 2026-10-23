@@ -356,6 +356,7 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
         let interval = unsafe { timeout.read_unaligned() };
         if interval == 0 { return STATUS_TIMEOUT; }
         if interval > 0 { return STATUS_NOT_IMPLEMENTED; }
+        if !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
         match crate::apic::relative_timeout_deadline(interval) {
             Some(value) => value,
             None => return STATUS_NOT_IMPLEMENTED,
@@ -409,6 +410,7 @@ pub unsafe extern "win64" fn ke_delay_execution_thread(
     if value > 0 { return STATUS_NOT_IMPLEMENTED; }
     let _ = wait_mode;
     let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
+    if !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
     let deadline = match crate::apic::relative_timeout_deadline(value) {
         Some(value) => value,
         None => return STATUS_NOT_IMPLEMENTED,
