@@ -1,0 +1,23 @@
+//! Zw system-service entry points. Stubs do not perform system calls.
+pub const NAMES: &[&str] = &[
+"ZwClose","ZwCreateFile","ZwOpenFile","ZwReadFile","ZwWriteFile","ZwQueryInformationFile",
+"ZwSetInformationFile","ZwDeviceIoControlFile","ZwFsControlFile","ZwCreateSection","ZwOpenSection",
+"ZwMapViewOfSection","ZwUnmapViewOfSection","ZwAllocateVirtualMemory","ZwFreeVirtualMemory",
+"ZwProtectVirtualMemory","ZwQueryVirtualMemory","ZwCreateProcess","ZwCreateProcessEx","ZwOpenProcess",
+"ZwTerminateProcess","ZwCreateThread","ZwCreateThreadEx","ZwOpenThread","ZwTerminateThread",
+"ZwSuspendThread","ZwResumeThread","ZwQueryInformationProcess","ZwSetInformationProcess",
+"ZwQueryInformationThread","ZwSetInformationThread","ZwWaitForSingleObject","ZwWaitForMultipleObjects",
+"ZwDelayExecution","ZwQuerySystemInformation","ZwSetSystemInformation","ZwQueryObject","ZwDuplicateObject",
+"ZwCreateEvent","ZwOpenEvent","ZwSetEvent","ZwResetEvent","ZwClearEvent","ZwCreateMutant","ZwOpenMutant",
+"ZwReleaseMutant","ZwCreateSemaphore","ZwOpenSemaphore","ZwReleaseSemaphore","ZwCreateTimer","ZwOpenTimer",
+"ZwSetTimer","ZwCancelTimer","ZwCreateKey","ZwOpenKey","ZwOpenKeyEx","ZwCreateKeyTransacted",
+"ZwQueryKey","ZwSetValueKey","ZwQueryValueKey","ZwEnumerateKey","ZwEnumerateValueKey","ZwDeleteKey",
+"ZwDeleteValueKey","ZwFlushKey","ZwLoadDriver","ZwUnloadDriver","ZwQueryDirectoryFile","ZwNotifyChangeDirectoryFile",
+"ZwCreateSymbolicLinkObject","ZwOpenSymbolicLinkObject","ZwQuerySymbolicLinkObject","ZwCreateDirectoryObject",
+"ZwOpenDirectoryObject","ZwQueryDirectoryObject","ZwCreateIoCompletion","ZwSetIoCompletion","ZwRemoveIoCompletion",
+"ZwCreatePort","ZwConnectPort","ZwRequestWaitReplyPort","ZwReplyWaitReceivePort","ZwAlpcCreatePort",
+"ZwAlpcSendWaitReceivePort","ZwAlpcConnectPort","ZwCreateToken","ZwOpenProcessToken","ZwOpenThreadToken",
+"ZwAdjustPrivilegesToken","ZwQueryInformationToken","ZwSetInformationToken","ZwDuplicateToken",
+"ZwAllocateVirtualMemoryEx","ZwMapViewOfSectionEx","ZwFlushInstructionCache","ZwQueryPerformanceCounter",
+"ZwGetNextProcess","ZwGetNextThread","ZwPlugPlayControl",
+];

@@ -20,6 +20,7 @@ mod scheduler;
 mod object;
 mod io;
 mod extfs;
+mod ntoskrnl;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
