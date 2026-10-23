@@ -321,6 +321,98 @@ pub type ScatterGatherExecuteRoutine = unsafe extern "win64" fn(
     context: *mut core::ffi::c_void,
 );
 
+
+const MAX_OWNED_SG_LISTS: usize = 32;
+
+#[repr(C)]
+struct ScatterGatherListStorage {
+    number_of_elements: u32,
+    reserved: u32,
+    elements: [ScatterGatherElement; MAX_SG_SEGMENTS],
+}
+#[derive(Clone, Copy)]
+struct SgOwnership { active: bool, device: usize, list: usize }
+impl SgOwnership { const EMPTY: Self = Self { active: false, device: 0, list: 0 }; }
+struct SgRegistry {
+    ownership: core::cell::UnsafeCell<[SgOwnership; MAX_OWNED_SG_LISTS]>,
+    lists: core::cell::UnsafeCell<[ScatterGatherListStorage; MAX_OWNED_SG_LISTS]>,
+}
+unsafe impl Sync for SgRegistry {}
+static SG_REGISTRY: SgRegistry = SgRegistry {
+    ownership: core::cell::UnsafeCell::new([SgOwnership::EMPTY; MAX_OWNED_SG_LISTS]),
+    lists: core::cell::UnsafeCell::new([const { ScatterGatherListStorage {
+        number_of_elements: 0, reserved: 0,
+        elements: [ScatterGatherElement { address: 0, length: 0, reserved: 0 }; MAX_SG_SEGMENTS],
+    }}; MAX_OWNED_SG_LISTS]),
+};
+static SG_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
+
+/// Obtain an owned SG list. The callback is invoked after the registry lock is
+/// released; the list remains valid until PutScatterGatherList releases it.
+/// This bootstrap path invokes the callback synchronously (no channel queue yet).
+pub unsafe extern "win64" fn get_scatter_gather_list(
+    adapter: *mut core::ffi::c_void,
+    device_object: *mut core::ffi::c_void,
+    mdl: *mut MdlAbi,
+    current_va: *mut core::ffi::c_void,
+    length: u32,
+    execution_routine: Option<ScatterGatherExecuteRoutine>,
+    context: *mut core::ffi::c_void,
+    _write_to_device: u8,
+) -> i32 {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+        || device_object.is_null() || mdl.is_null() || current_va.is_null()
+        || length == 0 || execution_routine.is_none() {
+        return 0xC000_000D_u32 as i32;
+    }
+    let m = unsafe { &*mdl };
+    if validate_mdl_range(m, current_va as u64, length).is_none() {
+        return 0xC000_000D_u32 as i32;
+    }
+    let page_count = (((current_va as u64 & (PAGE_SIZE - 1)) + length as u64 + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+    if page_count == 0 || page_count > MAX_SG_SEGMENTS { return 0xC000_009A_u32 as i32; }
+    let _guard = SG_LOCK.lock();
+    let owners = unsafe { &mut *SG_REGISTRY.ownership.get() };
+    let Some(index) = owners.iter().position(|entry| !entry.active) else {
+        return 0xC000_009A_u32 as i32;
+    };
+    let lists = unsafe { &mut *SG_REGISTRY.lists.get() };
+    let list = &mut lists[index];
+    let mut va = current_va as u64;
+    let mut remaining = length as u64;
+    for i in 0..page_count {
+        let chunk = remaining.min(PAGE_SIZE - (va & (PAGE_SIZE - 1)));
+        let physical = unsafe { crate::ntoskrnl::mm::runtime::mm_get_physical_address(va as *mut core::ffi::c_void) };
+        if physical == 0 || physical >= 0x1_0000_0000 { return 0xC000_000D_u32 as i32; }
+        list.elements[i] = ScatterGatherElement { address: physical, length: chunk as u32, reserved: 0 };
+        va += chunk;
+        remaining -= chunk;
+    }
+    list.number_of_elements = page_count as u32;
+    list.reserved = 0;
+    let list_ptr = (core::ptr::addr_of_mut!(*list)).cast::<ScatterGatherListAbi>();
+    owners[index] = SgOwnership { active: true, device: device_object as usize, list: list_ptr as usize };
+    drop(_guard);
+    fence(Ordering::SeqCst);
+    unsafe { execution_routine.unwrap()(device_object, core::ptr::null_mut(), list_ptr, context); }
+    0
+}
+
+/// Release only an SG list previously issued by GetScatterGatherList.
+pub unsafe extern "win64" fn put_scatter_gather_list(
+    adapter: *mut core::ffi::c_void,
+    scatter_gather: *mut ScatterGatherListAbi,
+    _write_to_device: u8,
+) {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast() || scatter_gather.is_null() { return; }
+    let _guard = SG_LOCK.lock();
+    let owners = unsafe { &mut *SG_REGISTRY.ownership.get() };
+    if let Some(slot) = owners.iter_mut().find(|e| e.active && e.list == scatter_gather as usize) {
+        *slot = SgOwnership::EMPTY;
+        fence(Ordering::SeqCst);
+    }
+}
+
 /// Validate an MDL transfer range using checked arithmetic.
 fn validate_mdl_range(mdl: &MdlAbi, current_va: u64, length: u32) -> Option<u64> {
     if mdl.start_va.is_null() || mdl.byte_count == 0 || length == 0 { return None; }
@@ -429,8 +521,8 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     map_transfer: crate::dma::map_transfer as usize,
     get_dma_alignment: crate::dma::get_dma_alignment as usize,
     read_dma_counter: 0,
-    get_scatter_gather_list: 0,
-    put_scatter_gather_list: 0,
+    get_scatter_gather_list: crate::dma::get_scatter_gather_list as usize,
+    put_scatter_gather_list: crate::dma::put_scatter_gather_list as usize,
     calculate_scatter_gather_list_size: crate::dma::calculate_scatter_gather_list_size as usize,
     build_scatter_gather_list: crate::dma::build_scatter_gather_list as usize,
     build_mdl_from_scatter_gather_list: 0,
