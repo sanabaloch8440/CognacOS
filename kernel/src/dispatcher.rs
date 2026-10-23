@@ -161,3 +161,49 @@ pub fn complete_ready_wait_all(
     for token in cancel_tokens[..cancel_count].iter().copied(){let _=cancel(token);}
     count
 }
+
+
+static SELFTEST_SIGNAL_A: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(1);
+static SELFTEST_SIGNAL_B: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(1);
+fn selftest_is_signalled(object:u64)->bool{
+    match object {
+        0x301=>SELFTEST_SIGNAL_A.load(core::sync::atomic::Ordering::Acquire)>0,
+        0x302=>SELFTEST_SIGNAL_B.load(core::sync::atomic::Ordering::Acquire)>0,
+        _=>false,
+    }
+}
+fn selftest_consume(object:u64){
+    match object {
+        0x301=>{SELFTEST_SIGNAL_A.fetch_sub(1,core::sync::atomic::Ordering::AcqRel);},
+        0x302=>{SELFTEST_SIGNAL_B.fetch_sub(1,core::sync::atomic::Ordering::AcqRel);},
+        _=>{},
+    }
+}
+
+/// Boot-time validation for FIFO order, generation-safe cancellation, grouped
+/// wait-any peer removal, wait-all signal consumption, and finite deadline expiry.
+pub fn self_test()->bool{
+    if pending_count()!=0{return false}
+    let first=match enqueue(0x101,0x11,0){Ok(t)=>t,Err(_)=>return false};
+    let second=match enqueue(0x101,0x22,0){Ok(t)=>t,Err(_)=>return false};
+    if wake_one(0x101)!=Some(0x11)||cancel(second)!=Ok(0x22)||cancel(first)!=Err(WaitError::StaleToken){return false}
+
+    let a=match enqueue(0x201,0x33,0){Ok(t)=>t,Err(_)=>return false};
+    let b=match enqueue(0x202,0x33,0){Ok(t)=>t,Err(_)=>return false};
+    if register_wait_any(0x33,&[0x201,0x202],&[a,b],0).is_err(){return false}
+    if wake_one(0x202)!=Some(0x33){return false}
+    if complete_wait_group(0x33,0x202,0,0,0x102)!=Some(1)||pending_count()!=0{return false}
+
+    SELFTEST_SIGNAL_A.store(1,core::sync::atomic::Ordering::Release);
+    SELFTEST_SIGNAL_B.store(1,core::sync::atomic::Ordering::Release);
+    if register_wait_all(0x44,&[0x301,0x302],None,0).is_err(){return false}
+    let mut ready=[0u64;4];
+    let count=complete_ready_wait_all(&mut ready,selftest_is_signalled,selftest_consume);
+    if count!=1||ready[0]!=0x44||SELFTEST_SIGNAL_A.load(core::sync::atomic::Ordering::Acquire)!=0||SELFTEST_SIGNAL_B.load(core::sync::atomic::Ordering::Acquire)!=0{return false}
+
+    let deadline=crate::apic::monotonic_ticks();
+    if enqueue(0x401,0x55,deadline).is_err(){return false}
+    let mut expired=[ExpiredWait{thread:0,object:0};4];
+    let count=expire_detailed(crate::apic::monotonic_ticks(),&mut expired);
+    count==1&&expired[0].thread==0x55&&expired[0].object==0x401&&pending_count()==0
+}
