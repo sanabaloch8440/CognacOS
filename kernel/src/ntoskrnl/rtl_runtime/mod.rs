@@ -113,3 +113,33 @@ pub struct UnicodeString { pub length: u16, pub maximum_length: u16, pub buffer:
 #[derive(Clone, Copy)]
 pub struct Luid { pub low_part: u32, pub high_part: i32 }
 
+
+
+#[cfg(test)]
+mod pool_api_tests {
+    use super::*;
+
+    #[test]
+    fn executive_pool_api_tracks_tags_and_rejects_unsupported_pool_types() {
+        // Paged pool must not be advertised before the kernel has paging support.
+        assert!(ex_allocate_pool_with_tag(1, 64, 0x54455354).is_null());
+
+        let p = ex_allocate_pool_with_tag(0, 64, 0x54455354);
+        assert!(!p.is_null());
+        assert_eq!(pool_allocation_info(p), Some((64, 0x54455354)));
+
+        // A mismatched tag must not release the allocation.
+        ex_free_pool_with_tag(p, 0x42414421);
+        assert_eq!(pool_allocation_info(p), Some((64, 0x54455354)));
+
+        ex_free_pool_with_tag(p, 0x54455354);
+        assert_eq!(pool_allocation_info(p), None);
+    }
+
+    #[test]
+    fn executive_pool_api_zero_size_and_null_free_are_safe() {
+        assert!(ex_allocate_pool_with_tag(0, 0, 0x54455354).is_null());
+        ex_free_pool(core::ptr::null_mut());
+        ex_free_pool_with_tag(core::ptr::null_mut(), 0);
+    }
+}
