@@ -137,6 +137,6 @@ mod tests {
         let mut foreign = [0u8; 32];
         assert!(allocate(0).is_null());
         assert!(!deallocate(foreign.as_mut_ptr()));
-        assert!(!allocate(ARENA_SIZE).is_null() == false);
+        assert!(allocate(ARENA_SIZE).is_null());
     }
 }
