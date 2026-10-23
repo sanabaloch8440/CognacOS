@@ -400,4 +400,6 @@ pub unsafe fn context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64) {
     if old_rsp.is_null() || new_rsp.is_null() { return; }
     unsafe { rdotos_context_switch(old_rsp, new_rsp); }
 }
-\n#[unsafe(no_mangle)]\npub extern "C" fn rdotos_timer_interrupt_handler() { crate::apic::timer_interrupt(); }\n
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rdotos_timer_interrupt_handler() { crate::apic::timer_interrupt(); }
