@@ -99,6 +99,7 @@ Status reflects code currently present in the repository, not intended architect
 - [x] Parse MADT Local APIC/x2APIC processor entries and I/O APIC GSI bases with table bounds/checksum validation.
 - [x] Provide xAPIC MMIO initialization, masked I/O APIC routing, bounded ICR waits, and fixed/INIT/Startup IPI primitives (not yet invoked by a boot-time AP-startup coordinator).
 - [x] Discover the ACPI 2.0 RSDP (falling back to ACPI 1.0) through UEFI configuration tables and pass it in boot-info v3.
+- [x] Pass boot-info v4 with an optional UEFI-reserved SIPI-vector page below 1 MiB; validate AP startup-target address/alignment/APIC-ID constraints in the kernel and assert the self-test in QEMU CI (page reserved only, not yet executable).
 - [x] Validate firmware RSDP and RSDT/XSDT checksums/bounds, locate the MADT, and register enabled processors in the HAL CPU registry (discovery only; no AP startup).
 - [x] Add a separate x86-64 HAL with fixed per-CPU records, APIC-ID registry, ACPI MADT CPU-registration API, CPU lifecycle states, GS-based CPU-local access, typed port I/O, MMIO range validation, and IRQ-save spin locks. The bootstrap CPU is registered at kernel entry.
 - [ ] Bring up application processors using a low-memory SIPI trampoline, per-CPU stacks/GDT/TSS/IDT, calibrated startup timeouts, and APIC startup IPIs.
