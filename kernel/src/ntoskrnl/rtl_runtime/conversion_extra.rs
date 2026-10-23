@@ -4,22 +4,47 @@ const STATUS_SUCCESS:i32=0;const STATUS_INVALID_PARAMETER:i32=0xC000_000Du32 as 
  if s.is_null(){return STATUS_INVALID_PARAMETER;}let x=unsafe{&*s};if x.length%2!=0||x.maximum_length%2!=0||x.length>x.maximum_length||(x.length>0&&x.buffer.is_null()){return STATUS_INVALID_PARAMETER;}STATUS_SUCCESS
 }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_ansi_string_to_unicode_string(dst:*mut UnicodeString,src:*const AnsiString,allocate:u8)->i32 {
- if dst.is_null()||src.is_null()||allocate!=0{return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};if s.length>0&&s.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
- let bytes=(s.length as usize).saturating_mul(2);if bytes>d.maximum_length as usize||bytes>u16::MAX as usize{return STATUS_BUFFER_TOO_SMALL;}if bytes>0&&d.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
- for i in 0..s.length as usize{unsafe{*d.buffer.add(i)=*s.buffer.add(i) as u16;}}d.length=bytes as u16;STATUS_SUCCESS
+ if dst.is_null()||src.is_null(){return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};
+ if s.length>0&&s.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
+ let bytes=(s.length as usize).checked_mul(2).and_then(|v|v.checked_add(if allocate!=0{2}else{0}));let Some(total)=bytes else{return STATUS_BUFFER_TOO_SMALL;};
+ if allocate!=0 {let p=super::pool::allocate(total);if p.is_null(){return STATUS_BUFFER_TOO_SMALL;}d.buffer=p.cast::<u16>();d.maximum_length=total as u16;d.length=0;}
+ else if s.length as usize*2>d.maximum_length as usize{return STATUS_BUFFER_TOO_SMALL;}
+ if s.length>0&&d.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
+ for i in 0..s.length as usize{unsafe{*d.buffer.add(i)=*s.buffer.add(i) as u16;}}
+ if allocate!=0{unsafe{*d.buffer.add(s.length as usize)=0;}}
+ d.length=(s.length as usize*2) as u16;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_unicode_string_to_ansi_string(dst:*mut AnsiString,src:*const UnicodeString,allocate:u8)->i32 {
- if dst.is_null()||src.is_null()||allocate!=0{return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};if s.length%2!=0||(s.length>0&&s.buffer.is_null()){return STATUS_INVALID_PARAMETER;}
- let n=(s.length/2) as usize;if n>d.maximum_length as usize{return STATUS_BUFFER_TOO_SMALL;}if n>0&&d.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
- for i in 0..n{let c=unsafe{*s.buffer.add(i)};if c>255{return STATUS_INVALID_PARAMETER;}unsafe{*d.buffer.add(i)=c as u8;}}d.length=(n as u16);STATUS_SUCCESS
+ if dst.is_null()||src.is_null(){return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};
+ if s.length%2!=0||(s.length>0&&s.buffer.is_null()){return STATUS_INVALID_PARAMETER;}let n=(s.length/2) as usize;
+ if n>0&&s.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
+ for i in 0..n{if unsafe{*s.buffer.add(i)}>255{return STATUS_INVALID_PARAMETER;}}
+ let total=n.checked_add(if allocate!=0{1}else{0});let Some(total)=total else{return STATUS_BUFFER_TOO_SMALL;};
+ if allocate!=0{let p=super::pool::allocate(total);if p.is_null(){return STATUS_BUFFER_TOO_SMALL;}d.buffer=p;d.maximum_length=total as u16;d.length=0;}
+ else if n>d.maximum_length as usize{return STATUS_BUFFER_TOO_SMALL;}
+ if n>0&&d.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
+ for i in 0..n{unsafe{*d.buffer.add(i)=*s.buffer.add(i) as u8;}}
+ if allocate!=0{unsafe{*d.buffer.add(n)=0;}}d.length=n as u16;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_upcase_unicode_string_to_ansi_string(dst:*mut AnsiString,src:*const UnicodeString,allocate:u8)->i32 {
- if dst.is_null()||src.is_null()||allocate!=0{return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};if s.length%2!=0||(s.length>0&&s.buffer.is_null()){return STATUS_INVALID_PARAMETER;}let n=(s.length/2) as usize;if n>d.maximum_length as usize{return STATUS_BUFFER_TOO_SMALL;}if n>0&&d.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
- for i in 0..n{let mut c=unsafe{*s.buffer.add(i)};if (97..=122).contains(&c){c-=32;}if c>255{return STATUS_INVALID_PARAMETER;}unsafe{*d.buffer.add(i)=c as u8;}}d.length=n as u16;STATUS_SUCCESS
+ if dst.is_null()||src.is_null(){return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};
+ if s.length%2!=0||(s.length>0&&s.buffer.is_null()){return STATUS_INVALID_PARAMETER;}let n=(s.length/2) as usize;
+ for i in 0..n{let ch=unsafe{*s.buffer.add(i)};if ch>255{return STATUS_INVALID_PARAMETER;}}
+ let total=n.checked_add(if allocate!=0{1}else{0});let Some(total)=total else{return STATUS_BUFFER_TOO_SMALL;};
+ if allocate!=0{let p=super::pool::allocate(total);if p.is_null(){return STATUS_BUFFER_TOO_SMALL;}d.buffer=p;d.maximum_length=total as u16;d.length=0;}else if n>d.maximum_length as usize{return STATUS_BUFFER_TOO_SMALL;}
+ if n>0&&d.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
+ for i in 0..n{let mut ch=unsafe{*s.buffer.add(i)};if (97..=122).contains(&ch){ch-=32;}unsafe{*d.buffer.add(i)=ch as u8;}}
+ if allocate!=0{unsafe{*d.buffer.add(n)=0;}}d.length=n as u16;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_downcase_unicode_string_to_ansi_string(dst:*mut AnsiString,src:*const UnicodeString,allocate:u8)->i32 {
- if dst.is_null()||src.is_null()||allocate!=0{return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};if s.length%2!=0||(s.length>0&&s.buffer.is_null()){return STATUS_INVALID_PARAMETER;}let n=(s.length/2) as usize;if n>d.maximum_length as usize{return STATUS_BUFFER_TOO_SMALL;}if n>0&&d.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
- for i in 0..n{let mut c=unsafe{*s.buffer.add(i)};if (65..=90).contains(&c){c+=32;}if c>255{return STATUS_INVALID_PARAMETER;}unsafe{*d.buffer.add(i)=c as u8;}}d.length=n as u16;STATUS_SUCCESS
+ if dst.is_null()||src.is_null(){return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};
+ if s.length%2!=0||(s.length>0&&s.buffer.is_null()){return STATUS_INVALID_PARAMETER;}let n=(s.length/2) as usize;
+ for i in 0..n{let ch=unsafe{*s.buffer.add(i)};if ch>255{return STATUS_INVALID_PARAMETER;}}
+ let total=n.checked_add(if allocate!=0{1}else{0});let Some(total)=total else{return STATUS_BUFFER_TOO_SMALL;};
+ if allocate!=0{let p=super::pool::allocate(total);if p.is_null(){return STATUS_BUFFER_TOO_SMALL;}d.buffer=p;d.maximum_length=total as u16;d.length=0;}else if n>d.maximum_length as usize{return STATUS_BUFFER_TOO_SMALL;}
+ if n>0&&d.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
+ for i in 0..n{let mut ch=unsafe{*s.buffer.add(i)};if (65..=90).contains(&ch){ch+=32;}unsafe{*d.buffer.add(i)=ch as u8;}}
+ if allocate!=0{unsafe{*d.buffer.add(n)=0;}}d.length=n as u16;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_ansi_char_to_unicode_char(source:*mut *const u8)->u16 {
  if source.is_null()||unsafe{*source}.is_null(){return 0;}let p=unsafe{*source};let c=unsafe{*p};unsafe{*source=p.add(1);}c as u16
