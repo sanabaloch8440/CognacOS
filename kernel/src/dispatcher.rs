@@ -33,8 +33,8 @@ pub fn cancel(t:u64)->Result<u64,WaitError>{let(i,g)=decode(t).ok_or(WaitError::
 /// Wake the oldest queued waiter for an object; caller must ready that thread.
 pub fn wake_one_timed(object:u64)->Option<WokenWaiter>{
     if object==0{return None}
-    let now=crate::apic::monotonic_ticks();
     let mut s=QUEUES.lock();
+    let now=crate::apic::monotonic_ticks();
     let i=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i)?;
     let record=s.records[i];s.records[i]=Record::EMPTY;
     Some(WokenWaiter{thread:record.thread,timed_out:record.deadline!=0&&record.deadline<=now})
@@ -43,7 +43,7 @@ pub fn wake_one(object:u64)->Option<u64>{wake_one_timed(object).map(|w|w.thread)
 /// Wake waiters into a caller-provided buffer. Returns the number written.
 pub fn wake_all_timed(object:u64,out:&mut[WokenWaiter])->usize{
     if object==0||out.is_empty(){return 0}
-    let now=crate::apic::monotonic_ticks();let mut s=QUEUES.lock();let mut n=0;
+    let mut s=QUEUES.lock();let now=crate::apic::monotonic_ticks();let mut n=0;
     while n<out.len(){
         let next=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i);
         let Some(i)=next else{break};let record=s.records[i];s.records[i]=Record::EMPTY;
