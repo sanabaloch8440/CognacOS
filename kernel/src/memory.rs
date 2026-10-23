@@ -136,6 +136,27 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
     Err(AllocError::OutOfMemory)
 }
 
+/// Allocate a physically contiguous, zeroed run of pages from one conventional
+/// memory region. The early allocator is single-threaded; callers must use this
+/// before APs are enabled or otherwise serialize allocation.
+pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError> {
+    if pages == 0 { return Err(AllocError::InvalidPage); }
+    let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
+    let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    let regions = unsafe { &mut *REGIONS.0.get() };
+    for region in regions.iter_mut().take(count) {
+        if let Some(end) = region.next.checked_add(bytes) {
+            if end <= region.end {
+                let base = region.next;
+                region.next = end;
+                unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
+                return Ok(base);
+            }
+        }
+    }
+    Err(AllocError::OutOfMemory)
+}
+
 /// Return a previously allocated low physical page to the single-core free list.
 /// The caller must ensure no active mapping or DMA operation references the page.
 pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
