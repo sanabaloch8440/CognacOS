@@ -1,6 +1,7 @@
 //! Small, bounded non-paged RTL string pool.
 //! Independent of Rust's global allocator; blocks and returned payloads are 16-byte aligned,
 //! locked, split on allocation, and coalesced on free. Intended for RTL-owned string buffers.
+#[cfg(not(target_os = "none"))]
 use core::sync::atomic::{AtomicBool, Ordering};
 const ARENA_SIZE: usize = 256 * 1024;
 const ALIGN: usize = 16;
@@ -12,12 +13,29 @@ struct Block { size: usize, next: usize, free: usize, _reserved: usize }
 #[repr(C, align(16))]
 struct Arena([u8; ARENA_SIZE]);
 
+// On the real kernel target, disable local interrupts while holding the pool lock.
+// Otherwise an interrupt that calls an RTL allocation/free routine could re-enter
+// this allocator on the same CPU and spin forever. Host-side tests use the atomic
+// fallback because privileged CLI/STI instructions cannot run in user mode.
+#[cfg(target_os = "none")]
+static IRQ_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
+#[cfg(not(target_os = "none"))]
 static LOCK: AtomicBool = AtomicBool::new(false);
+
 // Align the arena itself, not just its headers: payload alignment depends on the base address.
 static mut ARENA: Arena = Arena([0; ARENA_SIZE]);
 static mut INITIALIZED: bool = false;
 
+#[cfg(target_os = "none")]
+struct Guard(crate::hal::IrqSpinLockGuard<'static, ()>);
+#[cfg(target_os = "none")]
+impl Guard {
+    fn acquire() -> Self { Self(IRQ_LOCK.lock()) }
+}
+
+#[cfg(not(target_os = "none"))]
 struct Guard;
+#[cfg(not(target_os = "none"))]
 impl Guard {
     fn acquire() -> Self {
         while LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
@@ -26,6 +44,7 @@ impl Guard {
         Self
     }
 }
+#[cfg(not(target_os = "none"))]
 impl Drop for Guard { fn drop(&mut self) { LOCK.store(false, Ordering::Release); } }
 
 #[inline]
