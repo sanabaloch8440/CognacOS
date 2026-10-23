@@ -14,6 +14,7 @@ mod pe_runtime;
 mod usermode;
 mod acpi;
 mod apic;
+mod hal;
 mod scheduler;
 mod object;
 mod io;
@@ -114,6 +115,13 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Physical allocator initialized; conventional regions: ");
         serial_write_decimal(region_count);
         serial_write(b"\r\n");
+
+        // Validate the separate HAL before using its synchronization primitives.
+        if !hal::self_test() {
+            serial_write(b"FATAL: HAL self-test failed.\\r\\n");
+            halt();
+        }
+        serial_write(b"HAL CPU-local registry, MMIO bounds, and x86-64 primitives initialized.\\r\\n");
 
         // Validate the bounded ACPI parser against a minimal synthetic MADT.
         let mut madt = [0u8; 44];
