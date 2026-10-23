@@ -99,6 +99,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "HalGetBusDataByOffset" => crate::hal::exports::hal_get_bus_data_by_offset as usize,
   "HalSetBusData" => crate::hal::exports::hal_set_bus_data as usize,
   "HalSetBusDataByOffset" => crate::hal::exports::hal_set_bus_data_by_offset as usize,
+  "HalGetProcessorIdByNtNumber" => crate::hal::exports::hal_get_processor_id_by_nt_number as usize,
+  "HalIsHyperThreadingEnabled" => crate::hal::exports::hal_is_hyper_threading_enabled as usize,
 
   "ExAllocatePoolWithTag" => ex::pool::ex_allocate_pool_with_tag as usize,
   "ExAllocatePool2" => ex::pool::ex_allocate_pool2 as usize,
@@ -439,6 +441,8 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalGetBusDataByOffset")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalSetBusData")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalSetBusDataByOffset")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalGetProcessorIdByNtNumber")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalIsHyperThreadingEnabled")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool2")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool3")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePool2")).is_some()
