@@ -9,7 +9,7 @@ pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Cm, Se, Rtl, Zw, Other }
 #[derive(Clone, Copy, Debug)]
 pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: KernelModule }
 
-mod ex; #[path = "ke/mod.rs"] mod ke; mod mm; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
+mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke; mod mm; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 pub mod abi_signatures;
 
@@ -48,11 +48,13 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   ImportSymbol::Name(requested) => exports().find(|e|e.name.as_bytes().eq_ignore_ascii_case(requested)).map(|e|e.name)?,
   ImportSymbol::Ordinal(ordinal) => manifest_26100::ENTRIES.iter().find(|e|e.ordinal==ordinal)?.name?,
  };
- if name == "KeQueryPerformanceCounter" && crate::apic::tsc_frequency_hz().is_none() {
+ if matches!(name, "KeQueryPerformanceCounter" | "KeStallExecutionProcessor")
+     && crate::apic::tsc_frequency_hz().is_none() {
   return None;
  }
  let address = match name {
-  "KeQueryPerformanceCounter" => crate::hal::exports::ke_query_performance_counter as usize,
+  "KeQueryPerformanceCounter" => ke::runtime::ke_query_performance_counter as usize,
+  "KeStallExecutionProcessor" => ke::runtime::ke_stall_execution_processor as usize,
   "MmAllocateContiguousMemory" => mm::runtime::mm_allocate_contiguous_memory as usize,
   "MmAllocateContiguousMemorySpecifyCache" => mm::runtime::mm_allocate_contiguous_memory_specify_cache as usize,
   "MmFreeContiguousMemory" => mm::runtime::mm_free_contiguous_memory as usize,
