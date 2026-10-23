@@ -269,7 +269,8 @@ pub fn self_test() -> bool {
  unsafe { p.write(0xA7);p.add(PAGE as usize+17).write(0x5C);p.add(2*PAGE as usize+31).write(0xE1); }
  if unsafe{p.read()}!=0xA7 || unsafe{p.add(PAGE as usize+17).read()}!=0x5C || unsafe{p.add(2*PAGE as usize+31).read()}!=0xE1 {let _=free_pages(p,3);return false;}
  let start=((p as u64-BASE)/PAGE) as usize;
- {let _g=Guard::lock();let mapped=unsafe{&*MAPPED_BITS.0.get()};if (0..3).any(|n|mapped[(start+n)/64]&(1u64<<((start+n)%64))==0){let _=free_pages(p,3);return false;}}
+ let all_resident={let _g=Guard::lock();let mapped=unsafe{&*MAPPED_BITS.0.get()};(0..3).all(|n|mapped[(start+n)/64]&(1u64<<((start+n)%64))!=0)};
+ if !all_resident {let _=free_pages(p,3);return false;}
  free_pages(p,3).is_ok() && allocation_pages(p).is_none()
 }
 pub fn allocation_pages(ptr:*const u8)->Option<usize>{let va=ptr as u64;if ptr.is_null()||va<BASE||(va-BASE)&(PAGE-1)!=0{return None}let start=((va-BASE)/PAGE)as usize;let _g=Guard::lock();unsafe{&*TABLE.0.get()}.iter().find(|e|e.live&&e.start==start).map(|e|e.pages)}
