@@ -306,7 +306,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlInterlockedClearBitRun" => rtl_runtime::rtl_interlocked_clear_bit_run as usize,
   "RtlInterlockedSetBitRunEx" => rtl_runtime::rtl_interlocked_set_bit_run_ex as usize,
   "RtlInterlockedClearBitRunEx" => rtl_runtime::rtl_interlocked_clear_bit_run_ex as usize,
-  "RtlFindClearRuns" => rtl_runtime::rtl_find_clear_runs as usize,
+  "RtlFindClearRuns" => rtl_runtime::bitmap_abi::rtl_find_clear_runs as usize,
   "RtlCopyLuidAndAttributesArray" => rtl_runtime::rtl_copy_luid_and_attributes_array as usize,
   "RtlConvertSidToUnicodeString" => rtl_runtime::rtl_convert_sid_to_unicode_string as usize,
   "RtlEqualWnfChangeStamps" => rtl_runtime::rtl_equal_wnf_change_stamps as usize,
