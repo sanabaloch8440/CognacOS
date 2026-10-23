@@ -34,6 +34,15 @@ pub fn memory_manager_self_test() -> bool { mm::runtime::self_test() }
 /// Return an address only when the requested symbol has an ABI-correct callable
 /// implementation. Export presence alone is not sufficient to resolve a driver import.
 pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
+ // Windows x64 HAL imports are resolved separately from ntoskrnl imports.
+ // Only signature-compatible implementations are returned; unsupported HAL
+ // exports must remain unresolved rather than point at a generic stub.
+ if dll.eq_ignore_ascii_case(b"hal.dll") {
+  return match symbol {
+   ImportSymbol::Name(requested) => crate::hal::exports::resolve(requested),
+   ImportSymbol::Ordinal(ordinal) => crate::hal::exports::resolve_ordinal(ordinal),
+  };
+ }
  if !(dll.eq_ignore_ascii_case(b"ntoskrnl.exe") || dll.eq_ignore_ascii_case(b"ntkrnlmp.exe") || dll.eq_ignore_ascii_case(b"ntkrnlpa.exe") || dll.eq_ignore_ascii_case(b"ntkrpamp.exe")) { return None; }
  let name = match symbol {
   ImportSymbol::Name(requested) => exports().find(|e|e.name.as_bytes().eq_ignore_ascii_case(requested)).map(|e|e.name)?,
