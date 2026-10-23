@@ -2,6 +2,11 @@
 use crate::hal::IrqSpinLock;
 pub const MAX_WAITERS: usize = 256;
 pub type WaitToken = u64;
+pub const DELAY_OBJECT_PREFIX: u64 = 0xffff_ffff_0000_0000;
+#[derive(Clone, Copy)]
+pub struct ExpiredWait { pub thread:u64, pub object:u64 }
+pub fn delay_object(thread:u64)->u64 { DELAY_OBJECT_PREFIX | (thread & 0xffff_ffff) }
+pub fn is_delay_object(object:u64)->bool { object & 0xffff_ffff_0000_0000 == DELAY_OBJECT_PREFIX }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum WaitState { Free=0, Queued=1, Signalled=2, TimedOut=3, Cancelled=4 }
@@ -27,3 +32,17 @@ pub fn wake_all(object:u64,out:&mut[u64])->usize{if object==0||out.is_empty(){re
 pub fn expire(now:u64,out:&mut[u64])->usize{if out.is_empty(){return 0}let mut s=QUEUES.lock();let mut n=0;for r in s.records.iter_mut(){if n==out.len(){break}if r.state==WaitState::Queued&&r.deadline!=0&&r.deadline<=now{out[n]=r.thread;n+=1;*r=Record::EMPTY}}n}
 pub fn pending_count()->usize{QUEUES.lock().records.iter().filter(|r|r.state==WaitState::Queued).count()}
 #[cfg(test)] mod tests { use super::*; #[test] fn fifo_and_cancel(){let a=enqueue(0x100,0x11,0).unwrap();let b=enqueue(0x100,0x22,0).unwrap();assert_eq!(wake_one(0x100),Some(0x11));assert_eq!(cancel(b),Ok(0x22));assert_eq!(cancel(a),Err(WaitError::StaleToken));} #[test] fn deadline(){let _=enqueue(0x200,0x31,100).unwrap();let _=enqueue(0x200,0x32,0).unwrap();let mut out=[0;4];assert_eq!(expire(99,&mut out),0);assert_eq!(expire(100,&mut out),1);assert_eq!(out[0],0x31);assert_eq!(wake_one(0x200),Some(0x32));} }
+
+/// Expire waits while preserving the object key so delay timers can distinguish
+/// successful delays from dispatcher timeouts.
+pub fn expire_detailed(now:u64,out:&mut[ExpiredWait])->usize{
+    if out.is_empty(){return 0}
+    let mut s=QUEUES.lock();let mut n=0;
+    for r in s.records.iter_mut(){
+        if n==out.len(){break}
+        if r.state==WaitState::Queued&&r.deadline!=0&&r.deadline<=now{
+            out[n]=ExpiredWait{thread:r.thread,object:r.object};n+=1;*r=Record::EMPTY;
+        }
+    }
+    n
+}
