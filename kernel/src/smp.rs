@@ -386,6 +386,16 @@ pub unsafe fn start_discovered_aps(
                     .add(symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_entry)))
                     .cast::<u64>(),
             );
+            let stack_target = core::ptr::read_unaligned(
+                (trampoline_physical as *const u8)
+                    .add(symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_stack)))
+                    .cast::<u64>(),
+            );
+            let logical_target = core::ptr::read_unaligned(
+                (trampoline_physical as *const u8)
+                    .add(symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_logical)))
+                    .cast::<u32>(),
+            );
             crate::serial_write(b"SMP starting logical CPU ");
             crate::serial_write_decimal(logical_id);
             crate::serial_write(b" APIC ID ");
@@ -394,6 +404,10 @@ pub unsafe fn start_discovered_aps(
             crate::serial_write_hex(long_target as u64);
             crate::serial_write(b" entry target ");
             crate::serial_write_hex(entry_target);
+            crate::serial_write(b" stack target ");
+            crate::serial_write_hex(stack_target);
+            crate::serial_write(b" logical field ");
+            crate::serial_write_decimal(logical_target as usize);
             crate::serial_write(b"\r\n");
         }
         match unsafe { start_one_ap(local_apic_base, target, pit_delay_us) } {
