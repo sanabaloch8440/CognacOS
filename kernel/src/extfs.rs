@@ -138,4 +138,140 @@ pub fn self_test()->bool{let mut b=[0u8;SUPERBLOCK_BYTES];b[0..4].copy_from_slic
  let mut root=[0u8;60];root[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());root[2..4].copy_from_slice(&1u16.to_le_bytes());root[4..6].copy_from_slice(&4u16.to_le_bytes());root[6..8].copy_from_slice(&0u16.to_le_bytes());root[12..16].copy_from_slice(&7u32.to_le_bytes());root[16..18].copy_from_slice(&2u16.to_le_bytes());root[20..24].copy_from_slice(&100u32.to_le_bytes());
  struct NoRead;impl ReadOnlyBlockDevice for NoRead{type DeviceError=();fn capacity_bytes(&self)->u64{4096*1024}fn read_at(&mut self,_:u64,_:&mut[u8])->Result<(),Self::DeviceError>{Err(())}}
  let mut dev=NoRead;let mut scratch=[0u8;1024];if map_extent_block(&mut dev,&s,&root,8,&mut scratch)!=Ok(Some(101)){return false}if map_extent_block(&mut dev,&s,&root,20,&mut scratch)!=Ok(None){return false}
- root[0..2].copy_from_slice(&0u16.to_le_bytes());inspect_extent_node(&root,8,&s,Some(0))==Err(Error::InvalidExtentTree)}
+ root[0..2].copy_from_slice(&0u16.to_le_bytes());inspect_extent_node(&root,8,&s,Some(0))==Err(Error::InvalidExtentTree) && legacy_mapping_self_test(&s)}
+
+
+/// Resolve an ext2/ext3 legacy block map (12 direct, single, double and
+/// triple indirect pointers). This is needed for older ext2/ext3 volumes and
+/// inodes without EXTENTS. The caller supplies two block-sized scratch buffers
+/// so indirect levels can be traversed without allocation. A zero pointer is a
+/// sparse hole and must be returned as zero-filled file data by the caller.
+pub fn map_legacy_block<D: ReadOnlyBlockDevice>(
+    dev: &mut D,
+    sb: &Superblock,
+    inode_i_block: &[u8],
+    logical: u64,
+    scratch_a: &mut [u8],
+    scratch_b: &mut [u8],
+) -> Result<Option<u64>, Error> {
+    if inode_i_block.len() < 60
+        || scratch_a.len() != sb.block_size as usize
+        || scratch_b.len() != sb.block_size as usize
+        || sb.block_size < 1024
+        || sb.block_size % 4 != 0
+    {
+        return Err(Error::UnsupportedFormat);
+    }
+    let pointers_per_block = (sb.block_size / 4) as u64;
+    let direct_count = 12u64;
+    let single_span = pointers_per_block;
+    let double_span = pointers_per_block.checked_mul(pointers_per_block).ok_or(Error::OutOfRange)?;
+    let triple_span = double_span.checked_mul(pointers_per_block).ok_or(Error::OutOfRange)?;
+    let (root_slot, depth, mut index) = if logical < direct_count {
+        let p = u32at(inode_i_block, logical as usize * 4)? as u64;
+        return validate_legacy_data_pointer(sb, p);
+    } else {
+        let n = logical - direct_count;
+        if n < single_span {
+            (12usize, 1u32, n)
+        } else if n - single_span < double_span {
+            (13usize, 2u32, n - single_span)
+        } else if n - single_span - double_span < triple_span {
+            (14usize, 3u32, n - single_span - double_span)
+        } else {
+            return Err(Error::OutOfRange);
+        }
+    };
+
+    let mut divisor = 1u64;
+    for _ in 1..depth {
+        divisor = divisor.checked_mul(pointers_per_block).ok_or(Error::OutOfRange)?;
+    }
+    let mut indices = [0usize; 3];
+    for level in 0..depth as usize {
+        indices[level] = (index / divisor) as usize;
+        index %= divisor;
+        if level + 1 < depth as usize {
+            divisor /= pointers_per_block;
+        }
+    }
+
+    let mut block = u32at(inode_i_block, root_slot * 4)? as u64;
+    if block == 0 {
+        return Ok(None);
+    }
+    if block >= sb.blocks_count as u64 {
+        return Err(Error::OutOfRange);
+    }
+    let mut use_a = true;
+    for level in 0..depth as usize {
+        let target = if use_a { &mut *scratch_a } else { &mut *scratch_b };
+        read_block(dev, sb, block, target)?;
+        let entry_offset = indices[level].checked_mul(4).ok_or(Error::OutOfRange)?;
+        block = u32at(target, entry_offset)? as u64;
+        if block == 0 {
+            return Ok(None);
+        }
+        if block >= sb.blocks_count as u64 {
+            return Err(Error::OutOfRange);
+        }
+        if level + 1 == depth as usize {
+            return Ok(Some(block));
+        }
+        use_a = !use_a;
+    }
+    Err(Error::OutOfRange)
+}
+
+fn validate_legacy_data_pointer(sb: &Superblock, block: u64) -> Result<Option<u64>, Error> {
+    if block == 0 {
+        Ok(None)
+    } else if block >= sb.blocks_count as u64 {
+        Err(Error::OutOfRange)
+    } else {
+        Ok(Some(block))
+    }
+}
+
+fn legacy_mapping_self_test(sb: &Superblock) -> bool {
+    struct FixtureDevice;
+    impl ReadOnlyBlockDevice for FixtureDevice {
+        type DeviceError = ();
+        fn capacity_bytes(&self) -> u64 { 4096 * 1024 }
+        fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Self::DeviceError> {
+            out.fill(0);
+            if out.len() != 1024 || offset % 1024 != 0 { return Err(()); }
+            let block = offset / 1024;
+            let put = |out: &mut [u8], slot: usize, value: u32| {
+                out[slot * 4..slot * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            };
+            match block {
+                20 => { put(out, 0, 30); put(out, 1, 31); }
+                21 => put(out, 0, 22),
+                22 => put(out, 0, 32),
+                23 => put(out, 0, 24),
+                24 => put(out, 0, 25),
+                25 => put(out, 0, 33),
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+    let mut dev = FixtureDevice;
+    let mut inode = [0u8; 60];
+    inode[0..4].copy_from_slice(&15u32.to_le_bytes());
+    inode[12 * 4..13 * 4].copy_from_slice(&20u32.to_le_bytes());
+    inode[13 * 4..14 * 4].copy_from_slice(&21u32.to_le_bytes());
+    inode[14 * 4..15 * 4].copy_from_slice(&23u32.to_le_bytes());
+    let mut a = [0u8; 1024];
+    let mut b = [0u8; 1024];
+    if map_legacy_block(&mut dev, sb, &inode, 0, &mut a, &mut b) != Ok(Some(15)) { return false; }
+    if map_legacy_block(&mut dev, sb, &inode, 12, &mut a, &mut b) != Ok(Some(30)) { return false; }
+    if map_legacy_block(&mut dev, sb, &inode, 13, &mut a, &mut b) != Ok(Some(31)) { return false; }
+    if map_legacy_block(&mut dev, sb, &inode, 12 + 256, &mut a, &mut b) != Ok(Some(32)) { return false; }
+    if map_legacy_block(&mut dev, sb, &inode, 12 + 256 + 256 * 256, &mut a, &mut b) != Ok(Some(33)) { return false; }
+    inode[12 * 4..13 * 4].copy_from_slice(&0u32.to_le_bytes());
+    if map_legacy_block(&mut dev, sb, &inode, 12, &mut a, &mut b) != Ok(None) { return false; }
+    inode[0..4].copy_from_slice(&4096u32.to_le_bytes());
+    map_legacy_block(&mut dev, sb, &inode, 0, &mut a, &mut b) == Err(Error::OutOfRange)
+}
