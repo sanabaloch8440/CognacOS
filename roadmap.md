@@ -175,6 +175,8 @@ Status reflects code currently present in the repository, not intended architect
 - [ ] Add property/fuzz tests and validate against real ext2/ext3/ext4 disk images, including current Ubuntu-created 64-bit ext4 images.
 - [x] Add bounds-checked ext2/ext3 legacy direct, single-, double-, and triple-indirect block mapping with synthetic fixtures; wire it into the parser self-test.
 - [x] Add the ext4 CRC32C primitive and superblock metadata-checksum verifier, with host-side corruption tests. This is a foundation only: metadata_csum remains rejected by the mount parser until all consumed metadata types are verified.
-- [ ] Implement 64-bit block-count/group-descriptor support, feature-correct group descriptor/inode/extent/directory checksums, and a read-only ext filesystem backend against RdotOS block-device and filesystem interfaces.
+- [x] Parse ext4 64-bit block counts and 64-byte group-descriptor block pointers/counts with overflow/range checks; host and boot self-tests cover high block-count parsing.
+- [ ] Verify feature-correct group-descriptor, inode, extent, directory, bitmap, and journal checksums before consuming metadata; modern metadata_csum filesystems remain rejected until these checks are complete.
+- [ ] Implement a read-only ext filesystem backend against RdotOS block-device and filesystem interfaces, including htree-indexed directories and validated inode-table reads.
 - [ ] Add ext2/ext3/ext4 image tests before considering journal replay or write support.
 - [ ] Add an NT-style filesystem-driver adapter only after the filesystem backend passes image-based tests. This is a native RdotOS implementation, not a Windows 11 .sys binary; the original Windows kernel driver cannot load directly in RdotOS.
