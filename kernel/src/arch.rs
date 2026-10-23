@@ -401,5 +401,11 @@ pub unsafe fn context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64) {
     unsafe { rdotos_context_switch(old_rsp, new_rsp); }
 }
 
+static TIMER_ISR_DIAGNOSTIC_ONCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_timer_interrupt_handler() { crate::apic::timer_interrupt(); }
+pub extern "C" fn rdotos_timer_interrupt_handler() {
+    let first = !TIMER_ISR_DIAGNOSTIC_ONCE.swap(true, core::sync::atomic::Ordering::AcqRel);
+    if first { crate::serial_write(b"APIC timer ISR entered.\\r\\n"); }
+    crate::apic::timer_interrupt();
+    if first { crate::serial_write(b"APIC timer ISR EOI completed.\\r\\n"); }
+}
