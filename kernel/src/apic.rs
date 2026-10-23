@@ -12,6 +12,7 @@ const APIC_TIMER_DIVIDE: usize = 0x3e0;
 pub const LOCAL_TIMER_VECTOR: u8 = 0xE0;
 static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
 static LAST_TSC: AtomicU64 = AtomicU64::new(0);
+static CALIBRATED_TSC_HZ: AtomicU64 = AtomicU64::new(0);
 static LOCAL_TIMER_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 const APIC_EOI: usize = 0x0b0;
 const APIC_SVR: usize = 0x0f0;
@@ -257,6 +258,8 @@ pub fn timer_interrupt() {
 /// Best-effort architectural TSC frequency discovery (CPUID 0x15, then 0x16).
 /// Returns None when firmware/hardware exposes no usable frequency.
 pub fn tsc_frequency_hz() -> Option<u64> {
+    let calibrated = CALIBRATED_TSC_HZ.load(Ordering::Acquire);
+    if calibrated != 0 { return Some(calibrated); }
     let max = unsafe { core::arch::x86_64::__cpuid(0) }.eax;
     if max >= 0x15 {
         let leaf = unsafe { core::arch::x86_64::__cpuid(0x15) };
@@ -304,8 +307,9 @@ pub unsafe fn calibrate_and_start_local_timer() -> Result<u32, ApicError> {
         crate::hal::write_port_u8(PIT_COMMAND, 0xb0);
         crate::hal::write_port_u8(PIT_CHANNEL2, PIT_RELOAD_10MS as u8);
         crate::hal::write_port_u8(PIT_CHANNEL2, (PIT_RELOAD_10MS >> 8) as u8);
-        crate::hal::write_port_u8(PIT_GATE_SPEAKER, (old_speaker & !0x02) | 0x01);
     }
+    let tsc_start = monotonic_ticks();
+    unsafe { crate::hal::write_port_u8(PIT_GATE_SPEAKER, (old_speaker & !0x02) | 0x01); }
     let mut spins = 0usize;
     let mut elapsed = false;
     while spins < 100_000_000 {
@@ -316,10 +320,16 @@ pub unsafe fn calibrate_and_start_local_timer() -> Result<u32, ApicError> {
         core::hint::spin_loop();
         spins += 1;
     }
+    let tsc_end = monotonic_ticks();
     unsafe { crate::hal::write_port_u8(PIT_GATE_SPEAKER, old_speaker); }
     if !elapsed {
         unsafe { mask_local_timer(base); }
         return Err(ApicError::Timeout);
+    }
+    if tsc_end > tsc_start {
+        if let Some(hz) = (tsc_end - tsc_start).checked_mul(100) {
+            CALIBRATED_TSC_HZ.store(hz, Ordering::Release);
+        }
     }
     let remaining = unsafe { read_local(base, APIC_TIMER_CURRENT_COUNT) };
     let elapsed_apic = u32::MAX.saturating_sub(remaining);
