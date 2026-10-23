@@ -12,7 +12,7 @@ pub const INCOMPAT_FLEX_BG:u32=0x0200;
 const SUPPORTED_RO_COMPAT:u32=0x0003; // sparse_super and large_file only
 const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,Io}
+pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,InvalidChecksum,Io}
 fn u16at(b:&[u8],o:usize)->Result<u16,Error>{let e=o.checked_add(2).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u16::from_le_bytes([s[0],s[1]]))}
 fn u32at(b:&[u8],o:usize)->Result<u32,Error>{let e=o.checked_add(4).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -138,7 +138,7 @@ pub fn self_test()->bool{let mut b=[0u8;SUPERBLOCK_BYTES];b[0..4].copy_from_slic
  let mut root=[0u8;60];root[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());root[2..4].copy_from_slice(&1u16.to_le_bytes());root[4..6].copy_from_slice(&4u16.to_le_bytes());root[6..8].copy_from_slice(&0u16.to_le_bytes());root[12..16].copy_from_slice(&7u32.to_le_bytes());root[16..18].copy_from_slice(&2u16.to_le_bytes());root[20..24].copy_from_slice(&100u32.to_le_bytes());
  struct NoRead;impl ReadOnlyBlockDevice for NoRead{type DeviceError=();fn capacity_bytes(&self)->u64{4096*1024}fn read_at(&mut self,_:u64,_:&mut[u8])->Result<(),Self::DeviceError>{Err(())}}
  let mut dev=NoRead;let mut scratch=[0u8;1024];if map_extent_block(&mut dev,&s,&root,8,&mut scratch)!=Ok(Some(101)){return false}if map_extent_block(&mut dev,&s,&root,20,&mut scratch)!=Ok(None){return false}
- root[0..2].copy_from_slice(&0u16.to_le_bytes());inspect_extent_node(&root,8,&s,Some(0))==Err(Error::InvalidExtentTree) && legacy_mapping_self_test(&s)}
+ root[0..2].copy_from_slice(&0u16.to_le_bytes());inspect_extent_node(&root,8,&s,Some(0))==Err(Error::InvalidExtentTree) && legacy_mapping_self_test(&s) && crc32c(!0u32,b"123456789")==0x1cf9_6d7c && validate_superblock_checksum(&b)==Ok(())}
 
 
 /// Resolve an ext2/ext3 legacy block map (12 direct, single, double and
@@ -274,4 +274,36 @@ fn legacy_mapping_self_test(sb: &Superblock) -> bool {
     if map_legacy_block(&mut dev, sb, &inode, 12, &mut a, &mut b) != Ok(None) { return false; }
     inode[0..4].copy_from_slice(&4096u32.to_le_bytes());
     map_legacy_block(&mut dev, sb, &inode, 0, &mut a, &mut b) == Err(Error::OutOfRange)
+}
+
+
+/// Reflected CRC32C (Castagnoli) used by ext4 metadata checksums. The seed
+/// is passed through unchanged and there is no implicit final XOR, matching
+/// Linux's crc32c(seed, data, len) convention.
+pub fn crc32c(seed: u32, bytes: &[u8]) -> u32 {
+    let mut crc = seed;
+    for byte in bytes {
+        crc ^= *byte as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0x82f6_3b78 } else { crc >> 1 };
+        }
+    }
+    crc
+}
+
+/// Verify the ext4 superblock checksum when metadata_csum is enabled.
+/// This does not make the filesystem mountable by itself: group descriptors,
+/// inode records, extent blocks, directory blocks and journal records also
+/// need their own feature-correct validation before being consumed.
+pub fn validate_superblock_checksum(raw: &[u8]) -> Result<(), Error> {
+    const RO_COMPAT_METADATA_CSUM: u32 = 0x0400;
+    const CHECKSUM_TYPE_OFFSET: usize = 373;
+    const CHECKSUM_OFFSET: usize = 1020;
+    if raw.len() < SUPERBLOCK_BYTES { return Err(Error::Truncated); }
+    let ro_compat = u32at(raw, 100)?;
+    if ro_compat & RO_COMPAT_METADATA_CSUM == 0 { return Ok(()); }
+    if raw[CHECKSUM_TYPE_OFFSET] != 1 { return Err(Error::UnsupportedFormat); }
+    let stored = u32at(raw, CHECKSUM_OFFSET)?;
+    let calculated = crc32c(!0u32, &raw[..CHECKSUM_OFFSET]);
+    if stored == calculated { Ok(()) } else { Err(Error::InvalidChecksum) }
 }
