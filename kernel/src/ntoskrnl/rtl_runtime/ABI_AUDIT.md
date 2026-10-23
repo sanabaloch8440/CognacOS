@@ -36,7 +36,7 @@ The new C-facing structures use `#[repr(C)]` for ACL headers, ACE headers, absol
 - `RtlRunOnceExecuteOnce` callback return type is a one-byte `LOGICAL/BOOLEAN`; the outer routine returns `NTSTATUS`.
 - `RtlNumberOfSetBitsUlongPtr` returns `ULONG` (32-bit), while its input remains pointer-sized.
 - `RtlGetAcesBufferSize` now follows the two-parameter `NTSTATUS` contract and returns the total ACE-byte count through `PULONG`.
-- `RtlIsPartialPlaceholder` uses its two `ULONG` inputs; `RtlIsPartialPlaceholderFileHandle` and `RtlIsPartialPlaceholderFileInfo` use their documented `NTSTATUS`/output-BOOLEAN signatures.
+- `RtlIsPartialPlaceholder` uses its two `ULONG` inputs; `RtlIsPartialPlaceholderFileHandle` and `RtlIsPartialPlaceholderFileInfo`, `RtlIsCloudFilesPlaceholder` use their documented `NTSTATUS`/output-BOOLEAN signatures.
 - `RtlGetVersion` respects the base `OSVERSIONINFOW` size and writes the `OSVERSIONINFOEXW` tail only when the caller supplied the larger structure.
 - `RtlFindClearRuns` uses a C-layout pair of 32-bit run fields and does not allocate temporary kernel heap memory.
 - Bitmap Ex operations use pointer-sized indexes and counts; ordinary `RTL_BITMAP` range-count operations use 32-bit `ULONG` indexes/counts.

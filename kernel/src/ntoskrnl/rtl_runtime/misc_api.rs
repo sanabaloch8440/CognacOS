@@ -20,4 +20,3 @@ const SUCCESS:i32=0;const INVALID:i32=0xC000000Du32 as i32;const INVALID_SD:i32=
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_partial_placeholder_file_handle(handle:*mut core::ffi::c_void,out:*mut u8)->i32{if handle.is_null()||out.is_null(){return INVALID;}0xC0000002u32 as i32}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_partial_placeholder_file_info(info:*const core::ffi::c_void,info_class:u32,out:*mut u8)->i32{if info.is_null()||out.is_null(){return INVALID;}if info_class!=35{return 0xC0000003u32 as i32;}let p=info as *const u32;let attrs=unsafe{*p};let tag=unsafe{*p.add(1)};unsafe{*out=rtl_is_partial_placeholder(attrs,tag);}SUCCESS}
 
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_partial_placeholder_file_handle(_handle:*mut core::ffi::c_void)->u8{0}
