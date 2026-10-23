@@ -489,6 +489,26 @@ mod tests {
         assert_eq!(core::mem::offset_of!(MdlAbi, byte_count), 40);
     }
     #[test]
+    fn calculate_sg_size_accounts_for_unaligned_page_span() {
+        let mut mdl = MdlAbi {
+            next: core::ptr::null_mut(), size: 48, flags: 0,
+            process: core::ptr::null_mut(), mapped_system_va: core::ptr::null_mut(),
+            start_va: 0x1000usize as *mut core::ffi::c_void,
+            byte_count: 0x2000, byte_offset: 0,
+        };
+        let mut size = 0u32;
+        let status = unsafe {
+            calculate_scatter_gather_list_size(
+                core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(),
+                &mut mdl, 0x1003usize as *mut core::ffi::c_void, 4096, &mut size, 0,
+            )
+        };
+        assert_eq!(status, 0);
+        assert_eq!(size as usize, core::mem::size_of::<ScatterGatherListAbi>()
+            + 2 * core::mem::size_of::<ScatterGatherElement>());
+    }
+
+    #[test]
     fn scatter_gather_splits_at_boundaries_and_limits() {
         let fragments = [(0x1ff0, 0x40)];
         let mut out = [ScatterGatherElement::default(); 8];
