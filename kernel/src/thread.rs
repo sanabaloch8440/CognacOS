@@ -84,7 +84,30 @@ pub fn yield_current()->Result<(),ThreadError>{reschedule(false)}
 pub fn block_current()->Result<(),ThreadError>{reschedule(true)}
 /// Wake a blocked thread. If it is still running, remember the wake to close enqueue/block races.
 pub fn wake(id:u64)->Result<(),ThreadError>{let mut table=THREADS.lock();let t=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty).ok_or(ThreadError::InvalidState)?;match t.state{ThreadState::Blocked=>{t.state=ThreadState::Ready;Ok(())},ThreadState::Running=>{t.wake_pending=true;Ok(())},ThreadState::Ready=>Ok(()),ThreadState::Exited|ThreadState::Empty=>Err(ThreadError::InvalidState)}}
-fn exit_current()->! {if let Ok(cpu)=cpu_index(){if let Ok(local)=crate::hal::cpu_local(cpu){let id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);let mut table=THREADS.lock();if let Some(t)=table.records.iter_mut().find(|t|t.id==id){t.state=ThreadState::Exited;t.entry=None;t.argument=core::ptr::null_mut();}local.current_thread.store(0,core::sync::atomic::Ordering::Release);drop(table);let _=reschedule(true);}}loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}}
-
+fn exit_current()->! {
+    let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
+    let local=match crate::hal::cpu_local(cpu){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
+    let id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
+    let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
+    let (old_rsp_ptr,new_rsp)={
+        let mut table=THREADS.lock();
+        let current=match table.records.iter_mut().find(|t|t.id==id&&t.state==ThreadState::Running){Some(t)=>t,None=>loop{core::hint::spin_loop()}};
+        current.state=ThreadState::Exited;current.entry=None;current.argument=core::ptr::null_mut();
+        let old_rsp_ptr=&mut current.context_rsp as *mut *mut u64;
+        let bit=1u64.checked_shl(cpu as u32).unwrap_or(0);
+        if let Some(index)=table.records.iter().position(|t|t.state==ThreadState::Ready&&t.affinity&bit!=0){
+            let next=&mut table.records[index];next.state=ThreadState::Running;
+            local.current_thread.store(next.id,core::sync::atomic::Ordering::Release);
+            (old_rsp_ptr,next.context_rsp)
+        }else{
+            local.current_thread.store(0,core::sync::atomic::Ordering::Release);
+            let idle=unsafe{*idle_rsp_ptr};
+            if idle.is_null(){loop{core::hint::spin_loop()}}
+            (old_rsp_ptr,idle)
+        }
+    };
+    unsafe{crate::arch::context_switch(old_rsp_ptr,new_rsp)};
+    loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}
+}
 pub fn current_thread_id()->Option<u64>{let cpu=cpu_index().ok()?;let id=crate::hal::cpu_local(cpu).ok()?.current_thread.load(core::sync::atomic::Ordering::Acquire);(id!=0).then_some(id)}
 pub fn state(id:u64)->Option<ThreadState>{THREADS.lock().records.iter().find(|t|t.id==id).map(|t|t.state)}
