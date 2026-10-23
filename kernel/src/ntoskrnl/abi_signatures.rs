@@ -21,7 +21,11 @@ pub type KeQueryActiveGroupCountFn = unsafe extern "win64" fn() -> Ushort;
 pub type KeGetCurrentProcessorNumberExFn = unsafe extern "win64" fn(*mut ProcessorNumber);
 pub type KeGetCurrentProcessorIndexFn = unsafe extern "win64" fn() -> Ulong;
 pub type KeStallExecutionProcessorFn = unsafe extern "win64" fn(Ulong);
-pub type ExAllocatePool2Fn = unsafe extern "win64" fn(UlongPtr, SizeT, Ulong) -> Pvoid;\npub type ExAllocatePool3Fn = unsafe extern "win64" fn(UlongPtr, SizeT, Ulong, *const c_void, Ulong) -> Pvoid;\npub type ExAllocatePoolWithTagFn = unsafe extern "win64" fn(Ulong, SizeT, Ulong) -> Pvoid;\npub type ExAllocatePoolWithTagPriorityFn = unsafe extern "win64" fn(Ulong, SizeT, Ulong, Ulong) -> Pvoid;\npub type ExFreePool2Fn = unsafe extern "win64" fn(Pvoid, Ulong, *const c_void, Ulong);
+pub type ExAllocatePool2Fn = unsafe extern "win64" fn(UlongPtr, SizeT, Ulong) -> Pvoid;
+pub type ExAllocatePool3Fn = unsafe extern "win64" fn(UlongPtr, SizeT, Ulong, *const c_void, Ulong) -> Pvoid;
+pub type ExAllocatePoolWithTagFn = unsafe extern "win64" fn(Ulong, SizeT, Ulong) -> Pvoid;
+pub type ExAllocatePoolWithTagPriorityFn = unsafe extern "win64" fn(Ulong, SizeT, Ulong, Ulong) -> Pvoid;
+pub type ExFreePool2Fn = unsafe extern "win64" fn(Pvoid, Ulong, *const c_void, Ulong);
 pub type ExFreePoolWithTagFn = unsafe extern "win64" fn(Pvoid, Ulong);
 pub type MmGetPhysicalAddressFn = unsafe extern "win64" fn(Pvoid) -> u64;
 pub type ObfReferenceObjectFn = unsafe extern "win64" fn(Pvoid);
@@ -43,7 +47,11 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
         "KeGetCurrentProcessorNumberEx" => AbiSignature::KeGetCurrentProcessorNumberEx,
         "KeGetCurrentProcessorIndex" => AbiSignature::KeGetCurrentProcessorIndex,
         "KeStallExecutionProcessor" => AbiSignature::KeStallExecutionProcessor,
-        "ExAllocatePool2" => AbiSignature::ExAllocatePool2,\n        "ExAllocatePool3" => AbiSignature::ExAllocatePool3,\n        "ExAllocatePoolWithTag" => AbiSignature::ExAllocatePoolWithTag,\n        "ExAllocatePoolWithTagPriority" => AbiSignature::ExAllocatePoolWithTagPriority,\n        "ExFreePool2" => AbiSignature::ExFreePool2,
+        "ExAllocatePool2" => AbiSignature::ExAllocatePool2,
+        "ExAllocatePool3" => AbiSignature::ExAllocatePool3,
+        "ExAllocatePoolWithTag" => AbiSignature::ExAllocatePoolWithTag,
+        "ExAllocatePoolWithTagPriority" => AbiSignature::ExAllocatePoolWithTagPriority,
+        "ExFreePool2" => AbiSignature::ExFreePool2,
         "ExFreePoolWithTag" => AbiSignature::ExFreePoolWithTag,
         "MmGetPhysicalAddress" => AbiSignature::MmGetPhysicalAddress,
         "ObfReferenceObject" => AbiSignature::ObfReferenceObject,
