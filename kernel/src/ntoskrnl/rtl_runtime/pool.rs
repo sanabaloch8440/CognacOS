@@ -6,10 +6,10 @@ use core::sync::atomic::{AtomicBool, Ordering};
 const ARENA_SIZE: usize = 256 * 1024;
 const ALIGN: usize = 16;
 const NONE: usize = usize::MAX;
-const HEADER_SIZE: usize = 32;
+const HEADER_SIZE: usize = 48;
 
 #[repr(C, align(16))]
-struct Block { size: usize, next: usize, free: usize, _reserved: usize }
+struct Block { size: usize, next: usize, free: usize, tag: u32, _padding: u32, requested: usize }
 #[repr(C, align(16))]
 struct Arena([u8; ARENA_SIZE]);
 
@@ -54,14 +54,17 @@ unsafe fn init_locked() {
     if unsafe { INITIALIZED } { return; }
     let h = base().cast::<Block>();
     unsafe {
-        h.write(Block { size: ARENA_SIZE - HEADER_SIZE, next: NONE, free: 1, _reserved: 0 });
+        h.write(Block { size: ARENA_SIZE - HEADER_SIZE, next: NONE, free: 1, tag: 0, _padding: 0, requested: 0 });
         INITIALIZED = true;
     }
 }
 
 /// Allocate an uninitialized buffer from the bounded RTL pool.
 /// Returns null for zero-sized requests, overflow, or exhaustion.
-pub(super) fn allocate(size: usize) -> *mut u8 {
+/// Allocate from the bounded nonpaged arena while recording the caller's tag and
+/// requested byte count. The arena is currently fixed-size; this metadata is the
+/// compatibility foundation for tagged ExAllocatePool/ExFreePool services.
+pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
     if size == 0 || size > ARENA_SIZE - HEADER_SIZE { return core::ptr::null_mut(); }
     let Some(wanted) = size.checked_add(ALIGN - 1).map(|n| n & !(ALIGN - 1)) else {
         return core::ptr::null_mut();
@@ -76,13 +79,16 @@ pub(super) fn allocate(size: usize) -> *mut u8 {
             if remain >= HEADER_SIZE + ALIGN {
                 let next_off = off + HEADER_SIZE + wanted;
                 let next = unsafe { &mut *base().add(next_off).cast::<Block>() };
-                *next = Block { size: remain - HEADER_SIZE, next: h.next, free: 1, _reserved: 0 };
+                *next = Block { size: remain - HEADER_SIZE, next: h.next, free: 1, tag: 0, _padding: 0, requested: 0 };
                 h.next = next_off;
                 h.size = wanted;
             }
             h.free = 0;
+            h.tag = tag;
+            h.requested = size;
             let payload = unsafe { base().add(off + HEADER_SIZE) };
             debug_assert_eq!((payload as usize) % ALIGN, 0);
+            if zeroed { unsafe { core::ptr::write_bytes(payload, 0, size); } }
             return payload;
         }
         if h.next == NONE { break; }
@@ -91,8 +97,14 @@ pub(super) fn allocate(size: usize) -> *mut u8 {
     core::ptr::null_mut()
 }
 
+/// Legacy RTL string allocator entry point; strings do not use a pool tag.
+pub(super) fn allocate(size: usize) -> *mut u8 { allocate_tagged(size, 0, false) }
+
 /// Release only live pointers owned by this pool; foreign and duplicate frees are rejected.
-pub(super) fn deallocate(ptr: *mut u8) -> bool {
+pub(super) fn deallocate(ptr: *mut u8) -> bool { deallocate_tagged(ptr, None) }
+
+/// Free an owned block, optionally requiring its allocation tag to match.
+pub(super) fn deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool {
     if ptr.is_null() { return true; }
     let start = base() as usize;
     let p = ptr as usize;
@@ -106,8 +118,10 @@ pub(super) fn deallocate(ptr: *mut u8) -> bool {
     while off < ARENA_SIZE {
         let h = unsafe { &mut *base().add(off).cast::<Block>() };
         if off == target {
-            if h.free != 0 { return false; }
+            if h.free != 0 || expected_tag.is_some_and(|tag| h.tag != tag) { return false; }
             h.free = 1;
+            h.tag = 0;
+            h.requested = 0;
             // Coalesce adjacent free nodes; the list is kept in address order.
             let mut cur = 0usize;
             while cur < ARENA_SIZE {
