@@ -538,43 +538,156 @@ type AdapterExecutionRoutine = unsafe extern "win64" fn(
 ) -> u32;
 const IO_DEALLOCATE_OBJECT: u32 = 2;
 const IO_DEALLOCATE_OBJECT_KEEP_REGISTERS: u32 = 3;
+const STATUS_PENDING: i32 = 0x0000_0103;
+const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
+const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009A_u32 as i32;
+
 #[derive(Clone, Copy)]
 struct ChannelRequest {
-    active: bool, device: usize, count: u32, routine: usize, context: usize,
+    active: bool,
+    device: usize,
+    count: u32,
+    routine: usize,
+    context: usize,
+    token: usize,
 }
-impl ChannelRequest { const EMPTY: Self = Self { active: false, device: 0, count: 0, routine: 0, context: 0 }; }
-struct ChannelState { owner: usize, queue: [ChannelRequest; 32], head: usize, len: usize }
+impl ChannelRequest {
+    const EMPTY: Self = Self { active: false, device: 0, count: 0, routine: 0, context: 0, token: 0 };
+}
+struct ChannelState {
+    owner: usize,
+    owner_generation: u64,
+    next_generation: u64,
+    callback_active: bool,
+    dispatch_pending: bool,
+    queue: [ChannelRequest; 32],
+    head: usize,
+    len: usize,
+}
 static CHANNEL: crate::hal::IrqSpinLock<ChannelState> = crate::hal::IrqSpinLock::new(
-    ChannelState { owner: 0, queue: [ChannelRequest::EMPTY; 32], head: 0, len: 0 });
+    ChannelState {
+        owner: 0, owner_generation: 0, next_generation: 1,
+        callback_active: false, dispatch_pending: false,
+        queue: [ChannelRequest::EMPTY; 32], head: 0, len: 0,
+    });
 
-/// Serialize adapter-channel callbacks and queue requests while the channel is
-/// owned. Queued callbacks are dispatched by FreeAdapterChannel; no IRP is
-/// fabricated, and callers must tolerate STATUS_PENDING.
+fn release_token(device: usize, token: usize, count: u32) {
+    if token != 0 {
+        // Internal cleanup uses the same exact-token/count validation as the
+        // exported callback. Device ownership is checked by the registry too.
+        let mut state = MAP_REGISTERS.lock();
+        if let Some(record) = state.records.iter_mut().find(|r|
+            r.active && r.token == token && r.count == count && r.device == device) {
+            *record = MapRegisterRecord::EMPTY;
+        }
+    }
+}
+
+fn take_next_channel_locked(state: &mut ChannelState) -> Option<(ChannelRequest, u64)> {
+    while state.len != 0 {
+        let req = state.queue[state.head];
+        state.queue[state.head] = ChannelRequest::EMPTY;
+        state.head = (state.head + 1) % state.queue.len();
+        state.len -= 1;
+        if !req.active { continue; }
+        let generation = state.next_generation;
+        state.next_generation = state.next_generation.wrapping_add(1).max(1);
+        state.owner = req.device;
+        state.owner_generation = generation;
+        state.callback_active = true;
+        state.dispatch_pending = false;
+        return Some((req, generation));
+    }
+    state.owner = 0;
+    state.owner_generation = 0;
+    state.dispatch_pending = false;
+    None
+}
+
+/// Run callbacks outside locks. Generation checks prevent an old/reentrant
+/// callback's return value from releasing a newer owner's channel. Queued
+/// requests reserve their bounded map-register token before enqueue, so a later
+/// dispatch cannot strand the FIFO due to token-allocation failure.
+fn dispatch_channel_callbacks(mut current: Option<(ChannelRequest, u64)>) {
+    while let Some((req, generation)) = current {
+        let routine: AdapterExecutionRoutine = unsafe { core::mem::transmute(req.routine) };
+        let token = req.token as *mut core::ffi::c_void;
+        let action = unsafe {
+            routine(req.device as *mut _, core::ptr::null_mut(), token, req.context as *mut _)
+        };
+        let auto_release = action == IO_DEALLOCATE_OBJECT || action == IO_DEALLOCATE_OBJECT_KEEP_REGISTERS;
+        if action == IO_DEALLOCATE_OBJECT {
+            release_token(req.device, req.token, req.count);
+        }
+
+        let mut state = CHANNEL.lock();
+        state.callback_active = false;
+        let still_owner = state.owner != 0 && state.owner_generation == generation;
+        if auto_release && still_owner {
+            state.owner = 0;
+            state.owner_generation = 0;
+        }
+        // A callback may call FreeAdapterChannel itself. In that case owner
+        // has already changed; never apply its stale action to the next owner.
+        if state.owner == 0 && (auto_release || state.dispatch_pending) {
+            current = take_next_channel_locked(&mut state);
+        } else {
+            current = None;
+        }
+    }
+}
+
+/// Queue requests fairly and reserve all bookkeeping resources before returning
+/// STATUS_PENDING. This is bookkeeping only, not hardware IOMMU/map-register
+/// programming; the adapter remains unavailable when remapping is required.
 pub unsafe extern "win64" fn allocate_adapter_channel(
-    adapter: *mut core::ffi::c_void, device: *mut core::ffi::c_void,
-    number_of_map_registers: u32, routine: Option<AdapterExecutionRoutine>,
+    adapter: *mut core::ffi::c_void,
+    device: *mut core::ffi::c_void,
+    number_of_map_registers: u32,
+    routine: Option<AdapterExecutionRoutine>,
     context: *mut core::ffi::c_void,
 ) -> i32 {
     if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
-        || device.is_null() || number_of_map_registers > MAX_MAP_REGISTERS_PER_ALLOCATION
-        || routine.is_none() { return 0xC000000D_u32 as i32; }
-    let req = ChannelRequest { active: true, device: device as usize,
-        count: number_of_map_registers, routine: routine.unwrap() as usize, context: context as usize };
-    let mut state = CHANNEL.lock();
-    if state.owner == 0 {
-        state.owner = device as usize;
-        drop(state);
-        let token = if number_of_map_registers == 0 { core::ptr::null_mut() }
-            else { match allocate_map_register_token(device, number_of_map_registers) {
-                Some(p) => p, None => { let mut s=CHANNEL.lock(); s.owner=0; return 0xC000009A_u32 as i32; }
-            }};
-        unsafe { routine.unwrap()(device, core::ptr::null_mut(), token, context); }
-        return 0;
+        || device.is_null()
+        || number_of_map_registers > MAX_MAP_REGISTERS_PER_ALLOCATION
+        || routine.is_none() {
+        return STATUS_INVALID_PARAMETER;
     }
-    if state.len == state.queue.len() { return 0xC000009A_u32 as i32; }
-    let tail = (state.head + state.len) % state.queue.len();
-    state.queue[tail] = req; state.len += 1;
-    0x00000103 // STATUS_PENDING
+
+    let token = if number_of_map_registers == 0 { 0 } else {
+        match allocate_map_register_token(device, number_of_map_registers) {
+            Some(p) => p as usize,
+            None => return STATUS_INSUFFICIENT_RESOURCES,
+        }
+    };
+    let req = ChannelRequest {
+        active: true, device: device as usize, count: number_of_map_registers,
+        routine: routine.unwrap() as usize, context: context as usize, token,
+    };
+
+    let immediate = {
+        let mut state = CHANNEL.lock();
+        if state.owner == 0 && !state.callback_active {
+            let generation = state.next_generation;
+            state.next_generation = state.next_generation.wrapping_add(1).max(1);
+            state.owner = req.device;
+            state.owner_generation = generation;
+            state.callback_active = true;
+            state.dispatch_pending = false;
+            Some((req, generation))
+        } else if state.len == state.queue.len() {
+            drop(state);
+            release_token(req.device, req.token, req.count);
+            return STATUS_INSUFFICIENT_RESOURCES;
+        } else {
+            let tail = (state.head + state.len) % state.queue.len();
+            state.queue[tail] = req;
+            state.len += 1;
+            return STATUS_PENDING;
+        }
+    };
+    dispatch_channel_callbacks(immediate);
+    0
 }
 
 fn allocate_map_register_token(device: *mut core::ffi::c_void, count: u32) -> Option<*mut core::ffi::c_void> {
@@ -583,58 +696,42 @@ fn allocate_map_register_token(device: *mut core::ffi::c_void, count: u32) -> Op
     let idx = state.records.iter().position(|r| !r.active)?;
     let id = state.next; state.next = state.next.wrapping_add(1).max(1);
     let token = unsafe { core::ptr::addr_of_mut!(MAP_REGISTER_TOKENS[idx]) };
-    unsafe { (*token).id = id; }
+    unsafe { (*token).id = id as u64; }
     let ptr = token.cast::<core::ffi::c_void>();
     state.records[idx] = MapRegisterRecord { active: true, token: ptr as usize, count, device: device as usize };
     Some(ptr)
 }
 
 pub unsafe extern "win64" fn free_map_registers(
-    adapter: *mut core::ffi::c_void, map_register_base: *mut core::ffi::c_void,
+    adapter: *mut core::ffi::c_void,
+    map_register_base: *mut core::ffi::c_void,
     number_of_map_registers: u32,
 ) {
     if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast() || map_register_base.is_null() { return; }
     let mut state = MAP_REGISTERS.lock();
-    if let Some(r) = state.records.iter_mut().find(|r| r.active && r.token == map_register_base as usize && r.count == number_of_map_registers) {
+    if let Some(r) = state.records.iter_mut().find(|r|
+        r.active && r.token == map_register_base as usize && r.count == number_of_map_registers) {
         *r = MapRegisterRecord::EMPTY;
     }
 }
 
+/// Release the current channel. If called reentrantly from a driver callback,
+/// defer FIFO dispatch until that callback returns, avoiding nested callbacks
+/// and stale outer IO_ALLOCATION_ACTION values releasing the next owner.
 pub unsafe extern "win64" fn free_adapter_channel(adapter: *mut core::ffi::c_void) {
     if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast() { return; }
     let next = {
-        let mut s = CHANNEL.lock();
-        if s.owner == 0 { return; }
-        s.owner = 0;
-        if s.len == 0 { None } else {
-            let req = s.queue[s.head]; s.queue[s.head] = ChannelRequest::EMPTY;
-            s.head = (s.head + 1) % s.queue.len(); s.len -= 1;
-            s.owner = req.device; Some(req)
+        let mut state = CHANNEL.lock();
+        if state.owner == 0 { return; }
+        state.owner = 0;
+        state.owner_generation = 0;
+        if state.callback_active {
+            state.dispatch_pending = true;
+            return;
         }
+        take_next_channel_locked(&mut state)
     };
-    if let Some(req) = next {
-        let routine: AdapterExecutionRoutine = unsafe { core::mem::transmute(req.routine) };
-        let token = if req.count == 0 { core::ptr::null_mut() }
-            else { match allocate_map_register_token(req.device as *mut _, req.count) {
-                Some(p) => p,
-                None => {
-                    // Do not invoke a driver callback without the registers it requested.
-                    let mut s = CHANNEL.lock();
-                    s.owner = 0;
-                    return;
-                }
-            }};
-        let action = unsafe { routine(req.device as *mut _, core::ptr::null_mut(), token, req.context as *mut _) };
-        if action == IO_DEALLOCATE_OBJECT || action == IO_DEALLOCATE_OBJECT_KEEP_REGISTERS {
-            if action == IO_DEALLOCATE_OBJECT && !token.is_null() {
-                unsafe { free_map_registers(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(), token, req.count); }
-            }
-            // Windows' allocation-action return transfers channel release to
-            // the I/O manager. This advances the FIFO; maximum recursion depth
-            // is bounded by the fixed 32-entry queue.
-            unsafe { free_adapter_channel(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()); }
-        }
-    }
+    dispatch_channel_callbacks(next);
 }
 
 /// Extended variants currently accept only flags that preserve the legacy
@@ -734,10 +831,10 @@ mod dma_lifecycle_tests {
 
     #[test]
     fn channel_queue_is_fifo_and_bounded() {
-        let mut state = ChannelState { owner: 1, queue: [ChannelRequest::EMPTY; 32], head: 0, len: 0 };
+        let mut state = ChannelState { owner: 1, owner_generation: 1, next_generation: 2, callback_active: false, dispatch_pending: false, queue: [ChannelRequest::EMPTY; 32], head: 0, len: 0 };
         for n in 0..32usize {
             let tail = (state.head + state.len) % state.queue.len();
-            state.queue[tail] = ChannelRequest { active: true, device: n + 2, count: 0, routine: 1, context: 0 };
+            state.queue[tail] = ChannelRequest { active: true, device: n + 2, count: 0, routine: 1, context: 0, token: 0 };
             state.len += 1;
         }
         assert_eq!(state.len, state.queue.len());
@@ -748,7 +845,7 @@ mod dma_lifecycle_tests {
         state.head = (state.head + 1) % state.queue.len();
         state.len -= 1;
         let tail = (state.head + state.len) % state.queue.len();
-        state.queue[tail] = ChannelRequest { active: true, device: 99, count: 0, routine: 1, context: 0 };
+        state.queue[tail] = ChannelRequest { active: true, device: 99, count: 0, routine: 1, context: 0, token: 0 };
         state.len += 1;
         assert_eq!(state.queue[state.head].device, 3);
         assert_eq!(state.queue[(state.head + state.len - 1) % state.queue.len()].device, 99);
