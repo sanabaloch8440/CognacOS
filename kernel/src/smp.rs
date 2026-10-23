@@ -17,6 +17,14 @@ global_asm!(r#"
     .global rdotos_ap_trampoline_long64
     .global rdotos_ap_trampoline_gdt
     .global rdotos_ap_trampoline_gdt_base_patch
+    .global rdotos_ap_trampoline_gdt_pointer
+    .global rdotos_ap_trampoline_gdt_offset_patch
+    .global rdotos_ap_trampoline_pm32_pop_patch
+    .global rdotos_ap_trampoline_pml4_offset_patch
+    .global rdotos_ap_trampoline_long64_pop_patch
+    .global rdotos_ap_trampoline_stack_offset_patch
+    .global rdotos_ap_trampoline_entry_offset_patch
+    .global rdotos_ap_trampoline_logical_offset_patch
     .global rdotos_ap_trampoline_pm32_patch
     .global rdotos_ap_trampoline_long64_patch
     .global rdotos_ap_trampoline_pml4
@@ -30,7 +38,9 @@ rdotos_ap_trampoline_start:
     mov ax, cs
     mov ds, ax
     mov es, ax
-    lgdt [RDOTOS_AP_GDT_PTR_OFF]
+    .byte 0x0f, 0x01, 0x16
+rdotos_ap_trampoline_gdt_offset_patch:
+    .word 0
     mov eax, cr0
     or eax, 1
     mov cr0, eax
@@ -48,8 +58,12 @@ rdotos_ap_trampoline_pm32:
     call 1f
 rdotos_ap_trampoline_pm32_pop:
     pop esi
-    sub esi, RDOTOS_AP_PM32_POP_OFF
-    mov eax, dword ptr [esi + RDOTOS_AP_PML4_OFF]
+    .byte 0x81, 0xee
+rdotos_ap_trampoline_pm32_pop_patch:
+    .long 0
+    .byte 0x8b, 0x86
+rdotos_ap_trampoline_pml4_offset_patch:
+    .long 0
     mov cr3, eax
     mov eax, cr4
     or eax, 0x20
@@ -75,12 +89,20 @@ rdotos_ap_trampoline_long64:
     call 2f
 rdotos_ap_trampoline_long64_pop:
     pop rsi
-    sub rsi, RDOTOS_AP_LONG64_POP_OFF
-    mov rsp, qword ptr [rsi + RDOTOS_AP_STACK_OFF]
+    .byte 0x48, 0x81, 0xee
+rdotos_ap_trampoline_long64_pop_patch:
+    .long 0
+    .byte 0x48, 0x8b, 0xa6
+rdotos_ap_trampoline_stack_offset_patch:
+    .long 0
     and rsp, -16
     sub rsp, 8
-    mov edi, dword ptr [rsi + RDOTOS_AP_LOGICAL_OFF]
-    mov rax, qword ptr [rsi + RDOTOS_AP_ENTRY_OFF]
+    .byte 0x8b, 0xbe
+rdotos_ap_trampoline_logical_offset_patch:
+    .long 0
+    .byte 0x48, 0x8b, 0x86
+rdotos_ap_trampoline_entry_offset_patch:
+    .long 0
     jmp rax
 3:  pause
     jmp 3b
@@ -103,13 +125,6 @@ rdotos_ap_trampoline_entry:
     .quad 0
 rdotos_ap_trampoline_logical:
     .long 0
-    .set RDOTOS_AP_GDT_PTR_OFF, rdotos_ap_trampoline_gdt_pointer - rdotos_ap_trampoline_start
-    .set RDOTOS_AP_PM32_POP_OFF, rdotos_ap_trampoline_pm32_pop - rdotos_ap_trampoline_start
-    .set RDOTOS_AP_LONG64_POP_OFF, rdotos_ap_trampoline_long64_pop - rdotos_ap_trampoline_start
-    .set RDOTOS_AP_PML4_OFF, rdotos_ap_trampoline_pml4 - rdotos_ap_trampoline_start
-    .set RDOTOS_AP_STACK_OFF, rdotos_ap_trampoline_stack - rdotos_ap_trampoline_start
-    .set RDOTOS_AP_ENTRY_OFF, rdotos_ap_trampoline_entry - rdotos_ap_trampoline_start
-    .set RDOTOS_AP_LOGICAL_OFF, rdotos_ap_trampoline_logical - rdotos_ap_trampoline_start
 rdotos_ap_trampoline_end:
 "#);
 
@@ -120,6 +135,14 @@ unsafe extern "C" {
     static rdotos_ap_trampoline_long64: u8;
     static rdotos_ap_trampoline_gdt: u8;
     static rdotos_ap_trampoline_gdt_base_patch: u8;
+    static rdotos_ap_trampoline_gdt_pointer: u8;
+    static rdotos_ap_trampoline_gdt_offset_patch: u8;
+    static rdotos_ap_trampoline_pm32_pop_patch: u8;
+    static rdotos_ap_trampoline_pml4_offset_patch: u8;
+    static rdotos_ap_trampoline_long64_pop_patch: u8;
+    static rdotos_ap_trampoline_stack_offset_patch: u8;
+    static rdotos_ap_trampoline_entry_offset_patch: u8;
+    static rdotos_ap_trampoline_logical_offset_patch: u8;
     static rdotos_ap_trampoline_pm32_patch: u8;
     static rdotos_ap_trampoline_long64_patch: u8;
     static rdotos_ap_trampoline_pml4: u8;
@@ -201,6 +224,10 @@ fn pit_delay_us(microseconds: u32) -> bool {
 unsafe fn symbol_offset(symbol: *const u8) -> usize {
     unsafe { symbol.offset_from(core::ptr::addr_of!(rdotos_ap_trampoline_start)) as usize }
 }
+unsafe fn write_patch_u16(page: u64, symbol: *const u8, value: u16) {
+    let offset = unsafe { symbol_offset(symbol) };
+    unsafe { core::ptr::write_unaligned((page as *mut u8).add(offset).cast::<u16>(), value); }
+}
 unsafe fn write_patch_u32(page: u64, symbol: *const u8, value: u32) {
     let offset = unsafe { symbol_offset(symbol) };
     unsafe { core::ptr::write_unaligned((page as *mut u8).add(offset).cast::<u32>(), value); }
@@ -229,6 +256,20 @@ unsafe fn prepare_trampoline(
         core::ptr::copy_nonoverlapping(start, page as *mut u8, length);
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_gdt_base_patch),
             (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_gdt)) as u64) as u32);
+        write_patch_u16(page, core::ptr::addr_of!(rdotos_ap_trampoline_gdt_offset_patch),
+            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_gdt_pointer)) as u16);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pm32_pop_patch),
+            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_pm32_pop)) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pml4_offset_patch),
+            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_pml4)) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_long64_pop_patch),
+            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_long64_pop)) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_stack_offset_patch),
+            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_stack)) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_logical_offset_patch),
+            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_logical)) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_entry_offset_patch),
+            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_entry)) as u32);
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pm32_patch),
             (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_pm32)) as u64) as u32);
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_long64_patch),
