@@ -308,6 +308,32 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Security: 4 KiB page policy active; W^X enforced for kernel sections.\r\n");
         serial_write(b"Security: kernel stack guard page unmapped.\r\n");
+        // Start discovered application processors only after the shared kernel
+        // mappings are hardened and the executable low-memory trampoline can be
+        // installed with explicit page permissions.
+        if info.rsdp_address != 0 && info.ap_trampoline_physical != 0 {
+            match acpi::discover_madt(info.rsdp_address) {
+                Ok(madt) => match unsafe {
+                    smp::start_discovered_aps(
+                        info.pml4_physical,
+                        info.ap_trampoline_physical,
+                        madt.local_apic_address,
+                        bsp_apic_id,
+                    )
+                } {
+                    Ok(online) => {
+                        serial_write(b"SMP AP startup complete; online application processors: ");
+                        serial_write_decimal(online);
+                        serial_write(b" (interrupts remain disabled).\r\n");
+                    }
+                    Err(_) => serial_write(b"WARNING: AP startup initialization failed; retaining BSP-only operation.\r\n"),
+                },
+                Err(_) => serial_write(b"WARNING: MADT unavailable at AP startup; retaining BSP-only operation.\r\n"),
+            }
+        } else {
+            serial_write(b"SMP startup skipped: firmware MADT or low-memory trampoline unavailable.\r\n");
+        }
+
 
         // Exercise an independent user address space without activating ring 3.
         let mut address_space = match unsafe { vm::AddressSpace::new(info.pml4_physical) } {
