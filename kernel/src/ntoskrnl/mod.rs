@@ -28,6 +28,9 @@ pub fn exports() -> impl Iterator<Item = Export> {
  .chain(other::EXPORTS.iter().map(|&(name,ordinal)|Export{name,ordinal,module:KernelModule::Other}))
 }
 
+/// Validate the implemented page-table translation and checked-copy ABI surface.
+pub fn memory_manager_self_test() -> bool { mm_runtime::self_test() }
+
 /// Return an address only when the requested symbol has an ABI-correct callable
 /// implementation. Export presence alone is not sufficient to resolve a driver import.
 pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
