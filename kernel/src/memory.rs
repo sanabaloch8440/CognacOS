@@ -34,10 +34,38 @@ struct RegionStore(core::cell::UnsafeCell<[Region; MAX_REGIONS]>);
 unsafe impl Sync for RegionStore {}
 static REGIONS: RegionStore = RegionStore(core::cell::UnsafeCell::new([Region::EMPTY; MAX_REGIONS]));
 static REGION_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-const FREE_CAPACITY: usize = 8192;
+const FREE_CAPACITY: usize = 65536;
 struct FreePages(core::cell::UnsafeCell<([u64; FREE_CAPACITY], usize)>);
 unsafe impl Sync for FreePages {}
 static FREE_PAGES: FreePages = FreePages(core::cell::UnsafeCell::new(([0; FREE_CAPACITY], 0)));
+
+#[cfg(target_os = "none")]
+static MEMORY_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
+#[cfg(not(target_os = "none"))]
+static MEMORY_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+struct MemoryGuard {
+    #[cfg(target_os = "none")]
+    _guard: crate::hal::IrqSpinLockGuard<'static, ()>,
+}
+impl MemoryGuard {
+    #[inline]
+    fn acquire() -> Self {
+        #[cfg(target_os = "none")]
+        { Self { _guard: MEMORY_LOCK.lock() } }
+        #[cfg(not(target_os = "none"))]
+        {
+            while MEMORY_LOCK.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() {
+                core::hint::spin_loop();
+            }
+            Self {}
+        }
+    }
+}
+#[cfg(not(target_os = "none"))]
+impl Drop for MemoryGuard {
+    fn drop(&mut self) { MEMORY_LOCK.store(false, core::sync::atomic::Ordering::Release); }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocError { InvalidMap, TooManyRegions, OutOfMemory, InvalidPage, FreeListFull }
@@ -49,6 +77,8 @@ fn align_up(value: u64, align: u64) -> Option<u64> {
 /// Initialize from the final UEFI map. Descriptor stride is supplied by firmware
 /// and is not assumed to equal Rust's descriptor struct size.
 pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Result<usize, AllocError> {
+    let _guard = MemoryGuard::acquire();
+
     if (entries != 0 && map.is_null()) || stride < core::mem::size_of::<MemoryDescriptor>() {
         return Err(AllocError::InvalidMap);
     }
@@ -81,6 +111,8 @@ pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Resul
 /// explicitly reserving the active bootstrap stack also protects against
 /// firmware/map-copy inconsistencies. The interval is half-open [start, end).
 pub unsafe fn reserve_range(start: u64, end: u64) -> Result<(), AllocError> {
+    let _guard = MemoryGuard::acquire();
+
     if start >= end || end > PHYSICAL_LIMIT {
         return Err(AllocError::InvalidMap);
     }
@@ -116,6 +148,8 @@ pub unsafe fn reserve_range(start: u64, end: u64) -> Result<(), AllocError> {
 /// Allocate one zeroed physical page. The early kernel uses identity mappings,
 /// so the returned physical address is also directly writable as a pointer.
 pub unsafe fn allocate_page() -> Result<u64, AllocError> {
+    let _guard = MemoryGuard::acquire();
+
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if free.1 != 0 {
         free.1 -= 1;
@@ -140,6 +174,8 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
 /// memory region. The early allocator is single-threaded; callers must use this
 /// before APs are enabled or otherwise serialize allocation.
 pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError> {
+    let _guard = MemoryGuard::acquire();
+
     if pages == 0 { return Err(AllocError::InvalidPage); }
     let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
     let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
@@ -160,6 +196,8 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
 /// Return a previously allocated low physical page to the single-core free list.
 /// The caller must ensure no active mapping or DMA operation references the page.
 pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
+    let _guard = MemoryGuard::acquire();
+
     if page < LOW_RESERVED_END || page >= PHYSICAL_LIMIT || page & (PAGE_SIZE - 1) != 0 {
         return Err(AllocError::InvalidPage);
     }
@@ -167,6 +205,26 @@ pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
     if free.1 == FREE_CAPACITY { return Err(AllocError::FreeListFull); }
     free.0[free.1] = page;
     free.1 += 1;
+    Ok(())
+}
+
+/// Return a contiguous allocation to the physical free-page stack atomically.
+/// No pages are released if the free stack cannot hold the entire run.
+pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), AllocError> {
+    if pages == 0 || base < LOW_RESERVED_END || base & (PAGE_SIZE - 1) != 0 {
+        return Err(AllocError::InvalidPage);
+    }
+    let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
+    let end = base.checked_add(bytes).filter(|end| *end <= PHYSICAL_LIMIT).ok_or(AllocError::InvalidPage)?;
+    let _guard = MemoryGuard::acquire();
+    let free = unsafe { &mut *FREE_PAGES.0.get() };
+    if pages > FREE_CAPACITY - free.1 { return Err(AllocError::FreeListFull); }
+    let mut page = base;
+    while page < end {
+        free.0[free.1] = page;
+        free.1 += 1;
+        page += PAGE_SIZE;
+    }
     Ok(())
 }
 
