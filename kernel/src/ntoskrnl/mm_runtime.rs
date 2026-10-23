@@ -71,9 +71,9 @@ pub unsafe extern "win64" fn mm_is_address_valid(address: *const c_void) -> u8 {
 
 #[inline]
 pub unsafe extern "win64" fn mm_is_non_paged_system_address_valid(address: *const c_void) -> u8 {
-    // Until paging can evict and restore arbitrary system mappings, a present
-    // translation is the strongest honest nonpaged-address guarantee.
-    (translate(address as u64, false).is_some()) as u8
+    let va = address as u64;
+    if crate::kernel_vm::is_pageable_address(va) { return 0; }
+    (translate(va, false).is_some()) as u8
 }
 
 /// MmCopyMemory(MM_COPY_ADDRESS is an 8-byte union): flags 0 = virtual source,
