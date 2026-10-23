@@ -438,36 +438,25 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
             return STATUS_INVALID_PARAMETER;
         }
     }
-    let thread_id = crate::thread::current_thread_id();
+    let current_id = crate::thread::current_thread_id();
     let guard = DISPATCHER_OBJECT_LOCK.lock();
     if wait_type == 1 {
         for (index, object) in object_list.iter().copied().enumerate() {
             if unsafe { try_consume_dispatcher_object_locked(object) } {
-                return index as i32; // STATUS_WAIT_0 + object index.
+                return index as i32;
             }
         }
     } else {
         let all_signalled = object_list.iter().copied().all(|object| {
-            let kind = unsafe { (*object).kind };
-            let state = unsafe { (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire) };
-            match kind { EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 => state > 0, _ => false }
+            unsafe { (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire) > 0 }
         });
         if all_signalled {
-            for object in object_list.iter().copied() {
-                let kind = unsafe { (*object).kind };
-                if kind != EVENT_NOTIFICATION {
-                    let state = unsafe { &*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>() };
-                    state.store(state.load(Ordering::Acquire) - 1, Ordering::Release);
-                }
-            }
+            for object in object_list.iter().copied() { consume_wait_all_object(object as u64); }
             return STATUS_SUCCESS;
         }
     }
     if !timeout.is_null() && unsafe { timeout.read_unaligned() } == 0 { return STATUS_TIMEOUT; }
-    // Wait-all blocking needs atomic reservation across every object. Do not
-    // emulate it by polling or by waking on only the first object.
-    if wait_type == 0 { return STATUS_NOT_IMPLEMENTED; }
-    let Some(thread_id) = thread_id else { return STATUS_NOT_IMPLEMENTED; };
+    let Some(thread_id) = current_id else { return STATUS_NOT_IMPLEMENTED; };
     let deadline = if timeout.is_null() { 0 } else {
         let interval = unsafe { timeout.read_unaligned() };
         if interval > 0 || !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
@@ -476,11 +465,29 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
             None => return STATUS_NOT_IMPLEMENTED,
         }
     };
-    let object_ids: [u64; 64] = {
-        let mut values = [0u64; 64];
-        for (index, object) in object_list.iter().copied().enumerate() { values[index] = object as u64; }
-        values
-    };
+    let mut object_ids = [0u64; 64];
+    for (index, object) in object_list.iter().copied().enumerate() { object_ids[index] = object as u64; }
+
+    if wait_type == 0 {
+        let timeout_token = if deadline != 0 {
+            match crate::dispatcher::enqueue(crate::dispatcher::wait_all_timeout_object(thread_id), thread_id, deadline) {
+                Ok(token) => Some(token),
+                Err(_) => return STATUS_NOT_IMPLEMENTED,
+            }
+        } else { None };
+        if crate::dispatcher::register_wait_all(thread_id, &object_ids[..count as usize], timeout_token).is_err() {
+            if let Some(token) = timeout_token { let _ = crate::dispatcher::cancel(token); }
+            return STATUS_NOT_IMPLEMENTED;
+        }
+        drop(guard);
+        if crate::thread::block_current().is_err() {
+            crate::dispatcher::clear_wait_group(thread_id);
+            if let Some(token) = timeout_token { let _ = crate::dispatcher::cancel(token); }
+            return STATUS_NOT_IMPLEMENTED;
+        }
+        return crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS);
+    }
+
     let mut tokens = [0u64; 64];
     let mut registered = 0usize;
     for object in object_ids[..count as usize].iter().copied() {
