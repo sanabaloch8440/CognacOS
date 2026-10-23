@@ -114,10 +114,14 @@ pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
     if rsdp_address == 0 || rsdp_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
         return Err(AcpiError::AddressOutOfRange);
     }
-    let rsdp_prefix = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, 36) };
-    let revision = *rsdp_prefix.get(15).ok_or(AcpiError::Truncated)?;
+    let rsdp_v1 = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, 20) };
+    let revision = *rsdp_v1.get(15).ok_or(AcpiError::Truncated)?;
     let rsdp_len = if revision >= 2 {
-        let n = u32le(rsdp_prefix, 20)? as usize;
+        if rsdp_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
+            return Err(AcpiError::AddressOutOfRange);
+        }
+        let rsdp_v2_prefix = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, 36) };
+        let n = u32le(rsdp_v2_prefix, 20)? as usize;
         if !(36..=4096).contains(&n) { return Err(AcpiError::BadLength); }
         n
     } else { 20 };
