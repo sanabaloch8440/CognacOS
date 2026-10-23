@@ -9,6 +9,8 @@ const APIC_EOI: usize = 0x0b0;
 const APIC_SVR: usize = 0x0f0;
 const APIC_LVT_TIMER: usize = 0x320;
 const APIC_LVT_ERROR: usize = 0x370;
+const APIC_LVT_TIMER: usize = 0x320;
+pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xF1;
 const APIC_SPURIOUS_VECTOR: u32 = 0x100 | 0xff;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApicError { Unsupported, X2ApicActive, InvalidBase, InvalidVector, InvalidGsi, Timeout }
@@ -30,7 +32,10 @@ pub unsafe fn initialize_local_apic(mmio_base: u64) -> Result<u32, ApicError> {
     if current & X2APIC_ENABLE != 0 { return Err(ApicError::X2ApicActive); }
     unsafe { wrmsr(IA32_APIC_BASE, (current & !0x000f_ffff_ffff_f000) | mmio_base | APIC_ENABLE); }
     let id = unsafe { read_local(mmio_base, APIC_ID) } >> 24;
-    unsafe { write_local(mmio_base, APIC_LVT_ERROR, 0xFE); }
+    // Keep asynchronous local sources masked until the kernel has installed
+    // the IPI gate and masked legacy/I/O APIC routes.
+    unsafe { write_local(mmio_base, APIC_LVT_ERROR, 1 << 16); }
+    unsafe { write_local(mmio_base, APIC_LVT_TIMER, 1 << 16); }
     unsafe { write_local(mmio_base, APIC_SVR, APIC_SPURIOUS_VECTOR); }
     Ok(id)
 }
@@ -67,6 +72,23 @@ pub unsafe fn configure_ioapic_masked(io_base: u64, gsi_base: u32, gsi: u32, vec
 }
 /// Timer remains masked; calibration and scheduler integration are separate steps.
 pub unsafe fn mask_local_timer(mmio_base: u64) { unsafe { write_local(mmio_base, APIC_LVT_TIMER, 1 << 16); } }
+
+/// Mask every redirection entry in one I/O APIC before enabling IF on any CPU.
+/// The caller must first map the register page as uncached device memory.
+pub unsafe fn mask_all_ioapic(io_base: u64) -> Result<(), ApicError> {
+    if io_base == 0 || io_base & 0xfff != 0 { return Err(ApicError::InvalidBase); }
+    unsafe fn select(base: u64, reg: u8) { unsafe { core::ptr::write_volatile(base as *mut u32, reg as u32); } }
+    unsafe fn read(base: u64) -> u32 { unsafe { core::ptr::read_volatile((base + 0x10) as *const u32) } }
+    unsafe fn write(base: u64, value: u32) { unsafe { core::ptr::write_volatile((base + 0x10) as *mut u32, value); } }
+    unsafe { select(io_base, 0x01); }
+    let max_pin = (unsafe { read(io_base) } >> 16) & 0xff;
+    if max_pin > 119 { return Err(ApicError::InvalidGsi); }
+    for pin in 0..=max_pin {
+        let low = 0x10u8.wrapping_add((pin as u8).wrapping_mul(2));
+        unsafe { select(io_base, low); let value = read(io_base); write(io_base, value | (1 << 16)); }
+    }
+    Ok(())
+}
 
 
 const APIC_ICR_LOW: usize = 0x300;
