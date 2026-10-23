@@ -8,4 +8,4 @@ pub fn set_time_zone_bias_minutes(bias:i32)->bool{if !(-1440..=1440).contains(&b
 pub(super) fn bias_minutes()->i32{BIAS_MINUTES.load(Ordering::Acquire)}
 pub(super) fn local_to_system(local:i64)->Option<i64>{local.checked_add((bias_minutes() as i64).checked_mul(600_000_000)?)}
 pub(super) fn system_to_local(system:i64)->Option<i64>{system.checked_sub((bias_minutes() as i64).checked_mul(600_000_000)?)}
-#[cfg(test)]mod tests{use super::*;#[test]fn bias_round_trips_and_checks_range(){assert!(set_time_zone_bias_minutes(300));let local=132_000_000_000_000_000i64;let utc=local_to_system(local).unwrap();assert_eq!(system_to_local(utc),Some(local));assert!(!set_bias_minutes(2000));assert!(set_bias_minutes(0));}}
+#[cfg(test)]mod tests{use super::*;#[test]fn bias_round_trips_and_checks_range(){assert!(set_time_zone_bias_minutes(300));let local=132_000_000_000_000_000i64;let utc=local_to_system(local).unwrap();assert_eq!(system_to_local(utc),Some(local));assert!(!set_time_zone_bias_minutes(2000));assert!(set_time_zone_bias_minutes(0));}}
