@@ -1,5 +1,5 @@
 //! Counted UTF-8 string and explicit-length Unicode conversion helpers.
-//! These routines never allocate; AllocateDestinationString=true is rejected.
+//! Conversion helpers support caller buffers or the bounded RTL string pool.
 use super::{AnsiString,UnicodeString};
 const SUCCESS:i32=0;const INVALID:i32=0xC000000Du32 as i32;const SMALL:i32=0xC0000023u32 as i32;
 #[repr(C)] pub struct Utf8String {pub length:u16,pub maximum_length:u16,pub buffer:*mut u8}
