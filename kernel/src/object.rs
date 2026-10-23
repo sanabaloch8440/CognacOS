@@ -1,9 +1,7 @@
 //! Minimal NT-inspired object/handle foundation. Access checks are explicit and
 //! names are byte strings; this is not yet the full NT Object Manager namespace.
 use core::sync::atomic::{AtomicBool,Ordering};
-pub const MAX_HANDLES:usize=128;
-pub const MAX_NAMED_OBJECTS:usize=32;
-pub const MAX_NAME:usize=48;
+pub const MAX_HANDLES:usize=128;pub const MAX_NAMED_OBJECTS:usize=32;pub const MAX_NAME:usize=48;
 pub const ACCESS_READ:u32=1;pub const ACCESS_WRITE:u32=2;pub const ACCESS_CONTROL:u32=4;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 #[repr(u8)]
@@ -25,28 +23,26 @@ pub enum ObjectError{InvalidName,NameTooLong,NameExists,NotFound,TableFull,Acces
 pub fn create(kind:ObjectType,access:u32)->Result<HandleInfo,ObjectError>{
  if kind==ObjectType::None{return Err(ObjectError::InvalidHandle);}
  lock();let s=unsafe{&mut *STATE.state.get()};
- let Some(slot)=s.handles.iter_mut().find(|h|!h.used)else{unlock();return Err(ObjectError::TableFull);};
+ let Some(index)=s.handles.iter().position(|h|!h.used)else{unlock();return Err(ObjectError::TableFull);};
  let handle=s.next_handle;s.next_handle=s.next_handle.wrapping_add(4).max(4);let id=s.next_object;s.next_object=s.next_object.wrapping_add(1).max(1);
- *slot=HandleInfo{handle,object_id:id,kind,access,used:true};let out=*slot;unlock();Ok(out)
+ let out=HandleInfo{handle,object_id:id,kind,access,used:true};s.handles[index]=out;unlock();Ok(out)
 }
 pub fn lookup(handle:u32,required_access:u32)->Result<HandleInfo,ObjectError>{
  lock();let s=unsafe{&*STATE.state.get()};let out=s.handles.iter().find(|h|h.used&&h.handle==handle).copied();unlock();
  let h=out.ok_or(ObjectError::InvalidHandle)?;if h.access&required_access!=required_access{return Err(ObjectError::AccessDenied);}Ok(h)
 }
 pub fn close(handle:u32)->Result<(),ObjectError>{
- lock();let s=unsafe{&mut *STATE.state.get()};let Some(h)=s.handles.iter_mut().find(|h|h.used&&h.handle==handle)else{unlock();return Err(ObjectError::InvalidHandle);};*h=HandleInfo::EMPTY;unlock();Ok(())
+ lock();let s=unsafe{&mut *STATE.state.get()};let Some(index)=s.handles.iter().position(|h|h.used&&h.handle==handle)else{unlock();return Err(ObjectError::InvalidHandle);};s.handles[index]=HandleInfo::EMPTY;unlock();Ok(())
 }
 pub fn name_object(name:&[u8],object_id:u64,kind:ObjectType)->Result<(),ObjectError>{
  if name.is_empty(){return Err(ObjectError::InvalidName);}if name.len()>MAX_NAME{return Err(ObjectError::NameTooLong);}
  lock();let s=unsafe{&mut *STATE.state.get()};
  if s.names.iter().any(|n|n.used&&n.len as usize==name.len()&&n.name[..name.len()]==*name){unlock();return Err(ObjectError::NameExists);}
- let Some(slot)=s.names.iter_mut().find(|n|!n.used)else{unlock();return Err(ObjectError::TableFull);};
- slot.name[..name.len()].copy_from_slice(name);slot.len=name.len() as u8;slot.object_id=object_id;slot.kind=kind;slot.used=true;unlock();Ok(())
+ let Some(index)=s.names.iter().position(|n|!n.used)else{unlock();return Err(ObjectError::TableFull);};
+ let mut entry=Named::EMPTY;entry.name[..name.len()].copy_from_slice(name);entry.len=name.len() as u8;entry.object_id=object_id;entry.kind=kind;entry.used=true;s.names[index]=entry;unlock();Ok(())
 }
 pub fn open_named(name:&[u8],required_access:u32)->Result<HandleInfo,ObjectError>{
  let (id,kind)={lock();let s=unsafe{&*STATE.state.get()};let found=s.names.iter().find(|n|n.used&&n.len as usize==name.len()&&n.name[..name.len()]==*name).map(|n|(n.object_id,n.kind));unlock();found.ok_or(ObjectError::NotFound)?};
- let h=create(kind,required_access)?;lock();let s=unsafe{&mut *STATE.state.get()};if let Some(slot)=s.handles.iter_mut().find(|h|h.used&&h.handle==h.handle){let _=slot;};unlock();
- // Replace the generated ID with the namespace target before exposing the handle.
- lock();let s=unsafe{&mut *STATE.state.get()};if let Some(slot)=s.handles.iter_mut().find(|slot|slot.used&&slot.handle==h.handle){slot.object_id=id;}unlock();
- Ok(HandleInfo{object_id:id,..h})
+ lock();let s=unsafe{&mut *STATE.state.get()};let Some(index)=s.handles.iter().position(|h|!h.used)else{unlock();return Err(ObjectError::TableFull);};
+ let handle=s.next_handle;s.next_handle=s.next_handle.wrapping_add(4).max(4);s.handles[index]=HandleInfo{handle,object_id:id,kind,access:required_access,used:true};let out=s.handles[index];unlock();Ok(out)
 }
