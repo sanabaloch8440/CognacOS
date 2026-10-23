@@ -18,7 +18,46 @@ fn civil(days:i64)->(i32,i32,i32){let z=days+719468;let era=if z>=0{z}else{z-146
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_active_console_id()->u32{u32::MAX}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_active_console_id(_id:u32){}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_current_service_session_id()->u32{0}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_processor_feature_present(_feature:u32)->u8{0}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_is_processor_feature_present(feature: u32) -> u8 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::{__cpuid, __cpuid_count};
+        let basic_max = unsafe { __cpuid(0).eax };
+        let leaf1 = if basic_max >= 1 { unsafe { __cpuid(1) } } else { unsafe { __cpuid(0) } };
+        let ext_max = unsafe { __cpuid(0x8000_0000).eax };
+        let ext1 = if ext_max >= 0x8000_0001 { unsafe { __cpuid(0x8000_0001) } } else { unsafe { __cpuid(0) } };
+        let leaf7 = if basic_max >= 7 { unsafe { __cpuid_count(7, 0) } } else { unsafe { __cpuid(0) } };
+        let has = match feature {
+            2 => true, // CMPXCHG8B is mandatory on supported x86-64 CPUs.
+            3 => leaf1.edx & (1 << 23) != 0, // MMX
+            6 => leaf1.edx & (1 << 25) != 0, // SSE
+            8 => leaf1.edx & (1 << 4) != 0, // RDTSC
+            9 => leaf1.edx & (1 << 6) != 0, // PAE
+            10 => leaf1.edx & (1 << 26) != 0, // SSE2
+            12 => ext1.edx & (1 << 20) != 0, // NX
+            13 => leaf1.ecx & (1 << 0) != 0, // SSE3
+            14 => leaf1.ecx & (1 << 13) != 0, // CMPXCHG16B
+            17 => leaf1.ecx & (1 << 26) != 0 && leaf1.ecx & (1 << 27) != 0, // XSAVE and OSXSAVE
+            22 => leaf7.ebx & 1 != 0, // FSGSBASE
+            28 => leaf1.ecx & (1 << 30) != 0, // RDRAND
+            32 => ext1.edx & (1 << 27) != 0, // RDTSCP
+            36 => leaf1.ecx & (1 << 9) != 0, // SSSE3
+            37 => leaf1.ecx & (1 << 19) != 0, // SSE4.1
+            38 => leaf1.ecx & (1 << 20) != 0, // SSE4.2
+            50 => leaf7.ebx & (1 << 8) != 0, // BMI2
+            // AVX-family flags require XCR0 state validation before advertising them.
+            39 | 40 | 41 => false,
+            _ => false,
+        };
+        has as u8
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        let _ = feature;
+        0
+    }
+}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_session_sku()->u8{0}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_users_in_session_sku()->u8{0}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_elevated_rid(rid:u32)->u8{(rid==0x3000) as u8}
