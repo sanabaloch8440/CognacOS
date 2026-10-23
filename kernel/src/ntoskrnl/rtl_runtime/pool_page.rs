@@ -40,11 +40,12 @@ struct Slab {
     base: u64,
     block_size: usize,
     slots: usize,
+    pageable: bool,
     used: [u64; BITMAP_WORDS],
     live: bool,
 }
 impl Slab {
-    const EMPTY: Self = Self { base: 0, block_size: 0, slots: 0, used: [0; BITMAP_WORDS], live: false };
+    const EMPTY: Self = Self { base: 0, block_size: 0, slots: 0, pageable: false, used: [0; BITMAP_WORDS], live: false };
     fn find_free_slot(&self) -> Option<usize> {
         (0..self.slots).find(|&slot| self.used[slot / 64] & (1u64 << (slot % 64)) == 0)
     }
@@ -102,6 +103,14 @@ fn small_class(size: usize) -> Option<usize> {
 /// always zeroed when first acquired, and the requested bytes are zeroed when the
 /// caller requests zero-initialized semantics.
 pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
+    allocate_tagged_mode(size, tag, zeroed, false)
+}
+
+pub(super) fn allocate_paged_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
+    allocate_tagged_mode(size, tag, zeroed, true)
+}
+
+fn allocate_tagged_mode(size: usize, tag: u32, zeroed: bool, pageable: bool) -> *mut u8 {
     if size == 0 { return core::ptr::null_mut(); }
     let _guard = Guard::acquire();
     let table = unsafe { &mut *ALLOCATIONS.0.get() };
@@ -109,15 +118,15 @@ pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
 
     if let Some(class_size) = small_class(size) {
         let slabs = unsafe { &mut *SLABS.0.get() };
-        let mut slab_index = slabs.iter().position(|s| s.live && s.block_size == class_size && s.find_free_slot().is_some());
+        let mut slab_index = slabs.iter().position(|s| s.live && s.block_size == class_size && s.pageable == pageable && s.find_free_slot().is_some());
         if slab_index.is_none() {
             let Some(empty_index) = slabs.iter().position(|s| !s.live) else { return core::ptr::null_mut(); };
-            let page = match unsafe { crate::kernel_vm::allocate_pages(1).map(|p| p as u64) } {
+            let page = match unsafe { if pageable { crate::kernel_vm::allocate_pageable_pages(1) } else { crate::kernel_vm::allocate_pages(1) }.map(|p| p as u64) } {
                 Ok(base) => base,
                 Err(_) => return core::ptr::null_mut(),
             };
             slabs[empty_index] = Slab {
-                base: page, block_size: class_size, slots: PAGE_SIZE / class_size,
+                base: page, block_size: class_size, slots: PAGE_SIZE / class_size, pageable,
                 used: [0; BITMAP_WORDS], live: true,
             };
             slab_index = Some(empty_index);
@@ -139,7 +148,7 @@ pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
         return core::ptr::null_mut();
     };
     if pages == 0 || pages > MAX_PAGES_PER_ALLOCATION { return core::ptr::null_mut(); }
-    let base = match unsafe { crate::kernel_vm::allocate_pages(pages).map(|p| p as u64) } {
+    let base = match unsafe { if pageable { crate::kernel_vm::allocate_pageable_pages(pages) } else { crate::kernel_vm::allocate_pages(pages) }.map(|p| p as u64) } {
         Ok(base) => base,
         Err(_) => return core::ptr::null_mut(),
     };
@@ -212,7 +221,7 @@ mod tests {
     #[test]
     fn slab_bitmap_reuses_slots_and_detects_last_live_block() {
         let mut slab = Slab {
-            base: 0x200000, block_size: 16, slots: PAGE_SIZE / 16,
+            base: 0x200000, block_size: 16, slots: PAGE_SIZE / 16, pageable: false,
             used: [0; BITMAP_WORDS], live: true,
         };
         assert_eq!(slab.find_free_slot(), Some(0));
