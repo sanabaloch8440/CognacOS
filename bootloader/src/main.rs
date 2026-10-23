@@ -20,7 +20,7 @@ const KERNEL_STACK_PAGES: usize = 16;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
-const BOOT_INFO_VERSION: u32 = 3;
+const BOOT_INFO_VERSION: u32 = 4;
 
 #[repr(C)]
 struct BootInfo {
@@ -34,6 +34,7 @@ struct BootInfo {
     memory_descriptor_version: u32,
     kernel_stack_guard_page: u64,
     rsdp_address: u64,
+    ap_trampoline_physical: u64,
 }
 
 #[entry]
@@ -142,6 +143,24 @@ fn main() -> Status {
         Ok(p) => p,
         Err(err) => { uefi::println!("Low boot-info allocation failed: {:?}", err); return err.status(); }
     };
+    // Reserve a SIPI-vector page below 1 MiB now, while UEFI allocation is
+    // available. It is only storage at this stage; the kernel must copy and
+    // validate a position-independent trampoline before sending any SIPI.
+    let ap_trampoline_physical = match boot::allocate_pages(
+        boot::AllocateType::MaxAddress(0x000f_ffff),
+        boot::MemoryType::LOADER_DATA,
+        1,
+    ) {
+        Ok(page) => {
+            unsafe { core::ptr::write_bytes(page.as_ptr(), 0, boot::PAGE_SIZE); }
+            uefi::println!("Reserved low-memory AP trampoline page at {:#x}", page.as_ptr() as u64);
+            page.as_ptr() as u64
+        }
+        Err(err) => {
+            uefi::println!("WARNING: no low-memory AP trampoline page; single-CPU fallback: {:?}", err);
+            0
+        }
+    };
 
     let rsdp_address = find_rsdp();
     if rsdp_address == 0 {
@@ -176,6 +195,7 @@ fn main() -> Status {
         memory_descriptor_version: memory_map.meta().desc_version,
         kernel_stack_guard_page,
         rsdp_address,
+        ap_trampoline_physical,
     };
     let boot_info_ptr = boot_info_storage.as_ptr().cast::<BootInfo>();
     unsafe { boot_info_ptr.write(boot_info); }
