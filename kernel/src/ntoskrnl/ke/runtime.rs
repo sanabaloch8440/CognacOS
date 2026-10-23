@@ -193,18 +193,18 @@ pub unsafe extern "win64" fn ke_initialize_event(event: *mut DispatcherHeader, e
 }
 pub unsafe extern "win64" fn ke_clear_event(event: *mut DispatcherHeader) -> i32 {
     if event.is_null() { return 0; }
-    unsafe { core::ptr::replace(&mut (*event).signal_state, 0) }
+    unsafe { (&*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>()).swap(0, Ordering::AcqRel) }
 }
 pub unsafe extern "win64" fn ke_reset_event(event: *mut DispatcherHeader) -> i32 {
     unsafe { ke_clear_event(event) }
 }
 pub unsafe extern "win64" fn ke_read_state_event(event: *const DispatcherHeader) -> i32 {
     if event.is_null() { return 0; }
-    unsafe { core::ptr::read_volatile(&(*event).signal_state) }
+    unsafe { (&*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire) }
 }
 pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, _increment: i32, _wait: u8) -> i32 {
     if event.is_null() { return 0; }
-    unsafe { core::ptr::replace(&mut (*event).signal_state, 1) }
+    unsafe { (&*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>()).swap(1, Ordering::AcqRel) }
 }
 
 /// Semaphore header followed by the NT limit field.
@@ -225,17 +225,22 @@ pub unsafe extern "win64" fn ke_initialize_semaphore(semaphore: *mut SemaphoreOb
 }
 pub unsafe extern "win64" fn ke_read_state_semaphore(semaphore: *const SemaphoreObject) -> i32 {
     if semaphore.is_null() { return 0; }
-    unsafe { core::ptr::read_volatile(&(*semaphore).header.signal_state) }
+    unsafe { (&*core::ptr::addr_of!((*semaphore).header.signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire) }
 }
 pub unsafe extern "win64" fn ke_release_semaphore(semaphore: *mut SemaphoreObject, increment: i32, adjustment: i32, _wait: u8) -> i32 {
     if semaphore.is_null() || adjustment <= 0 { return 0; }
-    let header = unsafe { &mut (*semaphore).header };
-    let old = unsafe { core::ptr::read_volatile(&header.signal_state) };
+    let state = unsafe { &*core::ptr::addr_of!((*semaphore).header.signal_state).cast::<core::sync::atomic::AtomicI32>() };
     let limit = unsafe { (*semaphore).limit };
-    let Some(next) = old.checked_add(adjustment) else { return 0; };
-    if next > limit { return 0; }
-    unsafe { core::ptr::write_volatile(&mut header.signal_state, next); }
-    let _ = increment; // priority boosts are not supported without a scheduler.
+    let mut old = state.load(Ordering::Acquire);
+    loop {
+        let Some(next) = old.checked_add(adjustment) else { return 0; };
+        if next > limit { return 0; }
+        match state.compare_exchange_weak(old, next, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break,
+            Err(actual) => old = actual,
+        }
+    }
+    let _ = increment; // priority boosts require a scheduler and thread priority model.
     old
 }
 
