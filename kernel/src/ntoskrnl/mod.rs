@@ -95,6 +95,10 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "KeWaitForSingleObject" => ke::runtime::ke_wait_for_single_object as usize,
   "KeWaitForMultipleObjects" => ke::runtime::ke_wait_for_multiple_objects as usize,
   "KeDelayExecutionThread" => ke::runtime::ke_delay_execution_thread as usize,
+  "HalGetBusData" => crate::hal::exports::hal_get_bus_data as usize,
+  "HalGetBusDataByOffset" => crate::hal::exports::hal_get_bus_data_by_offset as usize,
+  "HalSetBusData" => crate::hal::exports::hal_set_bus_data as usize,
+  "HalSetBusDataByOffset" => crate::hal::exports::hal_set_bus_data_by_offset as usize,
 
   "ExAllocatePoolWithTag" => ex::pool::ex_allocate_pool_with_tag as usize,
   "ExAllocatePool2" => ex::pool::ex_allocate_pool2 as usize,
@@ -431,6 +435,10 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"kernel32.dll",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentIrql")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalGetBusData")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalGetBusDataByOffset")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalSetBusData")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalSetBusDataByOffset")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool2")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool3")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePool2")).is_some()
