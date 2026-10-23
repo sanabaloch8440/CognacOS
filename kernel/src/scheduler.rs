@@ -1,6 +1,6 @@
-//! Bounded scheduler core: task metadata, priorities, CPU affinity, and ready queues.
-//! This module does not switch stacks yet; AP startup and interrupt/preemption must
-//! be integrated before it is treated as a preemptive SMP scheduler.
+//! Bounded scheduler core: task metadata, priorities, and CPU affinity.
+//! Stack switching/preemption and AP startup must be integrated before this is a
+//! preemptive SMP scheduler.
 use core::sync::atomic::{AtomicBool, Ordering};
 pub const MAX_TASKS: usize = 128;
 pub const MAX_CPUS: usize = 64;
@@ -28,18 +28,17 @@ pub fn create_task(priority:u8,affinity:u64,stack_top:u64,instruction_pointer:u6
  if affinity==0{return Err(SchedulerError::InvalidAffinity);}
  SCHED.lock.lock();let s=unsafe{&mut *SCHED.state.get()};
  if !s.initialized {SCHED.lock.unlock();return Err(SchedulerError::NotInitialized);}
- let Some(slot)=s.tasks.iter_mut().find(|t|t.state==TaskState::Empty) else {SCHED.lock.unlock();return Err(SchedulerError::Full);};
+ let Some(index)=s.tasks.iter().position(|t|t.state==TaskState::Empty) else {SCHED.lock.unlock();return Err(SchedulerError::Full);};
  let id=s.next_id;s.next_id=s.next_id.wrapping_add(1).max(1);
- *slot=Task{id,state:TaskState::Ready,priority,affinity,stack_top,instruction_pointer};SCHED.lock.unlock();Ok(id)
+ s.tasks[index]=Task{id,state:TaskState::Ready,priority,affinity,stack_top,instruction_pointer};SCHED.lock.unlock();Ok(id)
 }
 /// Select the highest-priority ready task eligible on the supplied logical CPU.
-/// The caller owns context switching and must invoke this with interrupts disabled.
+/// Caller owns context switching and must invoke this with interrupts disabled.
 pub fn choose_next(cpu:usize)->Result<Option<Task>,SchedulerError>{
  if cpu>=MAX_CPUS{return Err(SchedulerError::InvalidCpu);}
  SCHED.lock.lock();let s=unsafe{&mut *SCHED.state.get()};
  if !s.initialized{SCHED.lock.unlock();return Err(SchedulerError::NotInitialized);}
- let bit=1u64<<cpu;
- let mut best:Option<usize>=None;
+ let bit=1u64<<cpu;let mut best:Option<usize>=None;
  for (i,t) in s.tasks.iter().enumerate(){if t.state==TaskState::Ready&&t.affinity&bit!=0&&best.map_or(true,|b|t.priority>s.tasks[b].priority){best=Some(i);}}
  let result=if let Some(i)=best {s.tasks[i].state=TaskState::Running;s.current[cpu]=s.tasks[i].id;Some(s.tasks[i])}else{None};
  SCHED.lock.unlock();Ok(result)
@@ -47,12 +46,12 @@ pub fn choose_next(cpu:usize)->Result<Option<Task>,SchedulerError>{
 pub fn yield_current(cpu:usize)->Result<(),SchedulerError>{
  if cpu>=MAX_CPUS{return Err(SchedulerError::InvalidCpu);}
  SCHED.lock.lock();let s=unsafe{&mut *SCHED.state.get()};let id=s.current[cpu];
- let Some(t)=s.tasks.iter_mut().find(|t|t.id==id&&t.state==TaskState::Running)else{SCHED.lock.unlock();return Err(SchedulerError::UnknownTask);};
- t.state=TaskState::Ready;s.current[cpu]=0;SCHED.lock.unlock();Ok(())
+ let Some(index)=s.tasks.iter().position(|t|t.id==id&&t.state==TaskState::Running)else{SCHED.lock.unlock();return Err(SchedulerError::UnknownTask);};
+ s.tasks[index].state=TaskState::Ready;s.current[cpu]=0;SCHED.lock.unlock();Ok(())
 }
 pub fn set_affinity(id:u64,mask:u64)->Result<(),SchedulerError>{
  if mask==0{return Err(SchedulerError::InvalidAffinity);}
  SCHED.lock.lock();let s=unsafe{&mut *SCHED.state.get()};
- let Some(t)=s.tasks.iter_mut().find(|t|t.id==id&&t.state!=TaskState::Empty)else{SCHED.lock.unlock();return Err(SchedulerError::UnknownTask);};
- t.affinity=mask;SCHED.lock.unlock();Ok(())
+ let Some(index)=s.tasks.iter().position(|t|t.id==id&&t.state!=TaskState::Empty)else{SCHED.lock.unlock();return Err(SchedulerError::UnknownTask);};
+ s.tasks[index].affinity=mask;SCHED.lock.unlock();Ok(())
 }
