@@ -159,7 +159,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Object handles, named lookup, and access checks self-test passed.\r\n");
 
         // Exercise an IRP through a registered synthetic device dispatch routine.
-        let mut dispatch = [None; 16];
+        let mut dispatch: [Option<io::DispatchFn>; 16] = [None; 16];
         dispatch[io::IRP_MJ_READ as usize] = Some(io_smoke_dispatch);
         let device = match io::register_device(b"\\Device\\Smoke", dispatch) {
             Ok(id) => id, Err(_) => { serial_write(b"FATAL: I/O device registration failed.\r\n"); halt(); }
