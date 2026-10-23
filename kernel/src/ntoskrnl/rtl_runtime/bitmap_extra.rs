@@ -23,3 +23,28 @@ pub unsafe extern "win64" fn rtl_extract_bit_map_ex(dst:*mut super::RtlBitmapEx,
  if dst.is_null()||src.is_null(){return;}let n=count.min(unsafe{(*dst).size_of_bitmap});
  for i in 0..n {if unsafe{(*dst).buffer.is_null()}{return;}let idx=start.checked_add(i);let v=idx.is_some_and(|s|s<unsafe{(*src).size_of_bitmap}&&!unsafe{(*src).buffer.is_null()}&&unsafe{*(*src).buffer.add(s/32)&(1u32<<(s%32))!=0});let p=unsafe{(*dst).buffer.add(i/32)};let m=1u32<<(i%32);unsafe{if v{*p|=m}else{*p&=!m}}}
 }
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_extract_bit_map(
+    dst: *mut RtlBitmap,
+    src: *const RtlBitmap,
+    start: u32,
+    count: u32,
+) {
+    if dst.is_null() || src.is_null() {
+        return;
+    }
+    let dst_size = unsafe { (*dst).size_of_bitmap };
+    let src_size = unsafe { (*src).size_of_bitmap };
+    let n = count.min(dst_size);
+    if n > 0 && (unsafe { (*dst).buffer.is_null() } || unsafe { (*src).buffer.is_null() }) {
+        return;
+    }
+    for i in 0..n {
+        let source_index = start.checked_add(i);
+        let value = source_index.is_some_and(|index| {
+            index < src_size && unsafe { read_bit(src, index) }
+        });
+        unsafe { write_bit(dst, i, value); }
+    }
+}
