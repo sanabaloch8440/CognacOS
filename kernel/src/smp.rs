@@ -468,6 +468,18 @@ pub unsafe fn start_discovered_aps_with_ipi(
     let sources_masked = unsafe { mask_interrupt_sources(pml4_physical, madt) };
     let online = unsafe { start_discovered_aps(pml4_physical, trampoline_physical, madt.local_apic_address, bsp_apic_id)? };
     let ipi_enabled = sources_masked && enable_ipi_interrupts();
+    if ipi_enabled {
+        // Calibrate every online AP into the BSP's TSC epoch only after the
+        // dedicated sync IPI gate is installed and target CPUs have enabled IF.
+        for logical_id in 1..hal::MAX_CPUS {
+            if hal::cpu_state(logical_id).ok() != Some(hal::CPU_ONLINE) { continue; }
+            let Ok(cpu) = hal::cpu_local(logical_id) else { continue; };
+            let apic_id = cpu.apic_id.load(Ordering::Acquire);
+            if apic_id <= u8::MAX as u32 {
+                let _ = unsafe { apic::synchronize_tsc_with_cpu(logical_id, apic_id as u8) };
+            }
+        }
+    }
     Ok((online, ipi_enabled))
 }
 
