@@ -250,20 +250,22 @@ pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, _increme
     complete_ready_wait_all_groups();
     if unsafe { (*event).kind } == EVENT_SYNCHRONIZATION {
         if state.load(Ordering::Acquire) > 0 {
-            if let Some(thread_id) = crate::dispatcher::wake_one(event as u64) {
-                let status = crate::dispatcher::complete_wait_group(thread_id, event as u64, STATUS_SUCCESS, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
-                let _ = crate::thread::complete_wait(thread_id, status);
+            if let Some(waiter) = crate::dispatcher::wake_one_timed(event as u64) {
+                let signal_status = if waiter.timed_out { STATUS_TIMEOUT } else { STATUS_SUCCESS };
+                let status = crate::dispatcher::complete_wait_group(waiter.thread, event as u64, signal_status, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(signal_status);
+                let _ = crate::thread::complete_wait(waiter.thread, status);
                 if status == STATUS_SUCCESS {
                     let _ = state.compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire);
                 }
             }
         }
     } else {
-        let mut ids = [0u64; crate::dispatcher::MAX_WAITERS];
-        let count = crate::dispatcher::wake_all(event as u64, &mut ids);
-        for thread_id in ids[..count].iter().copied() {
-            let status = crate::dispatcher::complete_wait_group(thread_id, event as u64, STATUS_SUCCESS, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
-            let _ = crate::thread::complete_wait(thread_id, status);
+        let mut waiters = [crate::dispatcher::WokenWaiter { thread: 0, timed_out: false }; crate::dispatcher::MAX_WAITERS];
+        let count = crate::dispatcher::wake_all_timed(event as u64, &mut waiters);
+        for waiter in waiters[..count].iter().copied() {
+            let signal_status = if waiter.timed_out { STATUS_TIMEOUT } else { STATUS_SUCCESS };
+            let status = crate::dispatcher::complete_wait_group(waiter.thread, event as u64, signal_status, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(signal_status);
+            let _ = crate::thread::complete_wait(waiter.thread, status);
         }
     }
     old
@@ -302,11 +304,12 @@ pub unsafe extern "win64" fn ke_release_semaphore(semaphore: *mut SemaphoreObjec
     // Each waiter consumes one available count before becoming runnable.
     loop {
         if state.load(Ordering::Acquire) <= 0 { break; }
-        let Some(thread_id) = crate::dispatcher::wake_one(semaphore as u64) else { break; };
-        state.fetch_sub(1, Ordering::AcqRel);
-        let status = crate::dispatcher::complete_wait_group(thread_id, semaphore as u64, STATUS_SUCCESS, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
-        if status == STATUS_TIMEOUT { state.fetch_add(1, Ordering::AcqRel); }
-        let _ = crate::thread::complete_wait(thread_id, status);
+        let Some(waiter) = crate::dispatcher::wake_one_timed(semaphore as u64) else { break; };
+        let signal_status = if waiter.timed_out { STATUS_TIMEOUT } else { STATUS_SUCCESS };
+        if !waiter.timed_out { state.fetch_sub(1, Ordering::AcqRel); }
+        let status = crate::dispatcher::complete_wait_group(waiter.thread, semaphore as u64, signal_status, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(signal_status);
+        if status == STATUS_TIMEOUT && !waiter.timed_out { state.fetch_add(1, Ordering::AcqRel); }
+        let _ = crate::thread::complete_wait(waiter.thread, status);
     }
     let _ = increment; // priority boosts require a scheduler priority model.
     old
