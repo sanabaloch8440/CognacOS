@@ -5,6 +5,8 @@ pub const MAX_WAIT_GROUPS: usize = 64;
 pub const MAX_GROUP_OBJECTS: usize = 64;
 pub type WaitToken = u64;
 pub const DELAY_OBJECT_PREFIX: u64 = 0xffff_ffff_0000_0000;
+pub const WAIT_ALL_TIMEOUT_PREFIX: u64 = 0xffff_fffe_0000_0000;
+pub fn wait_all_timeout_object(thread:u64)->u64 { WAIT_ALL_TIMEOUT_PREFIX | (thread & 0xffff_ffff) }
 #[derive(Clone, Copy)]
 pub struct ExpiredWait { pub thread:u64, pub object:u64 }
 pub fn delay_object(thread:u64)->u64 { DELAY_OBJECT_PREFIX | (thread & 0xffff_ffff) }
@@ -50,8 +52,8 @@ pub fn expire_detailed(now:u64,out:&mut[ExpiredWait])->usize{
 }
 
 #[derive(Clone, Copy)]
-struct WaitGroup { active:bool, thread:u64, count:usize, objects:[u64;MAX_GROUP_OBJECTS], tokens:[WaitToken;MAX_GROUP_OBJECTS] }
-impl WaitGroup { const EMPTY:Self=Self{active:false,thread:0,count:0,objects:[0;MAX_GROUP_OBJECTS],tokens:[0;MAX_GROUP_OBJECTS]}; }
+struct WaitGroup { active:bool, wait_all:bool, thread:u64, count:usize, token_count:usize, objects:[u64;MAX_GROUP_OBJECTS], tokens:[WaitToken;MAX_GROUP_OBJECTS] }
+impl WaitGroup { const EMPTY:Self=Self{active:false,wait_all:false,thread:0,count:0,token_count:0,objects:[0;MAX_GROUP_OBJECTS],tokens:[0;MAX_GROUP_OBJECTS]}; }
 struct GroupTable { groups:[WaitGroup;MAX_WAIT_GROUPS] }
 impl GroupTable { const fn new()->Self{Self{groups:[WaitGroup::EMPTY;MAX_WAIT_GROUPS]}} }
 static GROUPS:IrqSpinLock<GroupTable>=IrqSpinLock::new(GroupTable::new());
@@ -63,7 +65,7 @@ pub fn register_wait_any(thread:u64,objects:&[u64],tokens:&[WaitToken])->Result<
     if objects.is_empty()||objects.len()>MAX_GROUP_OBJECTS||objects.len()!=tokens.len(){return Err(WaitError::InvalidObject)}
     let mut groups=GROUPS.lock();
     let group=groups.groups.iter_mut().find(|g|!g.active).ok_or(WaitError::Full)?;
-    group.active=true;group.thread=thread;group.count=objects.len();
+    group.active=true;group.wait_all=false;group.thread=thread;group.count=objects.len();group.token_count=tokens.len();
     for i in 0..objects.len(){group.objects[i]=objects[i];group.tokens[i]=tokens[i];}
     Ok(())
 }
@@ -79,7 +81,8 @@ pub fn complete_wait_group(thread:u64,object:u64,status:i32,success_status:i32,t
             let index=group.objects[..group.count].iter().position(|candidate|*candidate==object)?;
             success_status+index as i32
         };
-        let tokens=group.tokens;let count=group.count;
+        if group.wait_all && status != timeout_status { return None; }
+        let tokens=group.tokens;let count=group.token_count;
         *group=WaitGroup::EMPTY;
         (result,tokens,count)
     };
@@ -91,4 +94,44 @@ pub fn complete_wait_group(thread:u64,object:u64,status:i32,success_status:i32,t
 pub fn clear_wait_group(thread:u64){
     let mut groups=GROUPS.lock();
     if let Some(group)=groups.groups.iter_mut().find(|g|g.active&&g.thread==thread){*group=WaitGroup::EMPTY;}
+}
+
+/// Register a wait-all group. Object signal transitions are serialized by the
+/// caller while the group is installed, so no signal can slip between check and enqueue.
+pub fn register_wait_all(thread:u64,objects:&[u64],timeout_token:Option<WaitToken>)->Result<(),WaitError>{
+    if thread==0{return Err(WaitError::InvalidThread)}
+    if objects.is_empty()||objects.len()>MAX_GROUP_OBJECTS{return Err(WaitError::InvalidObject)}
+    let mut groups=GROUPS.lock();
+    let group=groups.groups.iter_mut().find(|g|!g.active).ok_or(WaitError::Full)?;
+    group.active=true;group.wait_all=true;group.thread=thread;group.count=objects.len();
+    group.token_count=if let Some(token)=timeout_token {group.tokens[0]=token;1}else{0};
+    for i in 0..objects.len(){group.objects[i]=objects[i];}
+    Ok(())
+}
+
+/// Atomically complete all wait-all groups whose objects are currently signalled.
+/// Caller holds the global dispatcher-object state lock. Notification events remain
+/// signalled; synchronization events and semaphores are consumed exactly once.
+pub fn complete_ready_wait_all(
+    out_threads:&mut[u64],
+    is_signalled:fn(u64)->bool,
+    consume:fn(u64),
+)->usize{
+    if out_threads.is_empty(){return 0}
+    let mut cancel_tokens=[0u64;MAX_WAIT_GROUPS];let mut cancel_count=0usize;
+    let mut count=0usize;
+    {
+        let mut groups=GROUPS.lock();
+        for group in groups.groups.iter_mut(){
+            if count==out_threads.len(){break}
+            if !group.active||!group.wait_all{continue}
+            if !group.objects[..group.count].iter().copied().all(is_signalled){continue}
+            for object in group.objects[..group.count].iter().copied(){consume(object);}
+            out_threads[count]=group.thread;count+=1;
+            if group.token_count>0&&cancel_count<cancel_tokens.len(){cancel_tokens[cancel_count]=group.tokens[0];cancel_count+=1;}
+            *group=WaitGroup::EMPTY;
+        }
+    }
+    for token in cancel_tokens[..cancel_count].iter().copied(){let _=cancel(token);}
+    count
 }
