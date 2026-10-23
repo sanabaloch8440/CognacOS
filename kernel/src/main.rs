@@ -327,6 +327,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         serial_write(b" (interrupts remain disabled).\r\n");
                         serial_write(b"SMP startup diagnostic error code: ");
                         serial_write_decimal(smp::last_start_error_code());
+                        serial_write(b"; last target APIC ID: ");
+                        serial_write_decimal(smp::last_target_apic_id());
                         serial_write(b"; AP entry functions reached: ");
                         serial_write_decimal(smp::ap_entry_reached_count());
                         serial_write(b"\r\n");
