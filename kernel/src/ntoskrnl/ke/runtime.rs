@@ -5,6 +5,7 @@ const ALL_PROCESSOR_GROUPS: u16 = 0xffff;
 const PASSIVE_LEVEL: u8 = 0;
 const DISPATCH_LEVEL: u8 = 2;
 const IRQL_STACK_DEPTH: usize = 16;
+static DISPATCHER_OBJECT_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 static CURRENT_IRQL: [core::sync::atomic::AtomicU8; 64] =
     [const { core::sync::atomic::AtomicU8::new(PASSIVE_LEVEL) }; 64];
 static IRQL_DEPTH: [core::sync::atomic::AtomicU8; 64] =
@@ -231,6 +232,7 @@ pub unsafe extern "win64" fn ke_initialize_event(event: *mut DispatcherHeader, e
 }
 pub unsafe extern "win64" fn ke_clear_event(event: *mut DispatcherHeader) -> i32 {
     if event.is_null() { return 0; }
+    let _object_guard = DISPATCHER_OBJECT_LOCK.lock();
     unsafe { (&*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>()).swap(0, Ordering::AcqRel) }
 }
 pub unsafe extern "win64" fn ke_reset_event(event: *mut DispatcherHeader) -> i32 {
@@ -242,6 +244,7 @@ pub unsafe extern "win64" fn ke_read_state_event(event: *const DispatcherHeader)
 }
 pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, _increment: i32, _wait: u8) -> i32 {
     if event.is_null() { return 0; }
+    let _object_guard = DISPATCHER_OBJECT_LOCK.lock();
     let state = unsafe { &*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>() };
     let old = state.swap(1, Ordering::AcqRel);
     if unsafe { (*event).kind } == EVENT_SYNCHRONIZATION {
@@ -319,23 +322,23 @@ const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
 const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002_u32 as i32;
 
 /// Consume a signalled event/semaphore state using an atomic compare/exchange.
-unsafe fn try_consume_dispatcher_object(object: *mut DispatcherHeader) -> bool {
+unsafe fn try_consume_dispatcher_object_locked(object: *mut DispatcherHeader) -> bool {
     if object.is_null() { return false; }
     let state = unsafe { &*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>() };
     match unsafe { (*object).kind } {
         EVENT_NOTIFICATION => state.load(Ordering::Acquire) > 0,
         EVENT_SYNCHRONIZATION | 5 => {
-            let mut old = state.load(Ordering::Acquire);
-            while old > 0 {
-                match state.compare_exchange_weak(old, old - 1, Ordering::AcqRel, Ordering::Acquire) {
-                    Ok(_) => return true,
-                    Err(actual) => old = actual,
-                }
-            }
-            false
+            let old = state.load(Ordering::Acquire);
+            if old <= 0 { return false; }
+            state.store(old - 1, Ordering::Release);
+            true
         }
         _ => false,
     }
+}
+unsafe fn try_consume_dispatcher_object(object: *mut DispatcherHeader) -> bool {
+    let _guard = DISPATCHER_OBJECT_LOCK.lock();
+    unsafe { try_consume_dispatcher_object_locked(object) }
 }
 
 /// Block the current RdotOS kernel thread on a dispatcher object. This requires
@@ -393,7 +396,35 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     if count == 0 || count > 64 || objects.is_null() || !(wait_type == 0 || wait_type == 1) {
         return STATUS_INVALID_PARAMETER;
     }
-    let _ = (wait_reason, wait_mode, alertable, timeout);
+    let _ = (wait_reason, wait_mode);
+    if alertable != 0 { return STATUS_NOT_IMPLEMENTED; }
+    let object_list = unsafe { core::slice::from_raw_parts(objects, count as usize) };
+    if object_list.iter().any(|object| object.is_null()) { return STATUS_INVALID_PARAMETER; }
+    let _guard = DISPATCHER_OBJECT_LOCK.lock();
+    if wait_type == 1 {
+        for (index, object) in object_list.iter().copied().enumerate() {
+            if unsafe { try_consume_dispatcher_object_locked(object) } {
+                return index as i32; // STATUS_WAIT_0 + object index.
+            }
+        }
+    } else {
+        let all_signalled = object_list.iter().copied().all(|object| {
+            let kind = unsafe { (*object).kind };
+            let state = unsafe { (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire) };
+            match kind { EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 => state > 0, _ => false }
+        });
+        if all_signalled {
+            for object in object_list.iter().copied() {
+                let kind = unsafe { (*object).kind };
+                if kind != EVENT_NOTIFICATION {
+                    let state = unsafe { &*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>() };
+                    state.store(state.load(Ordering::Acquire) - 1, Ordering::Release);
+                }
+            }
+            return STATUS_SUCCESS;
+        }
+    }
+    if !timeout.is_null() && unsafe { timeout.read_unaligned() } == 0 { return STATUS_TIMEOUT; }
     STATUS_NOT_IMPLEMENTED
 }
 
