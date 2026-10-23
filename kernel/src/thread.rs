@@ -63,11 +63,14 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
             &mut current.context_rsp as *mut *mut u64
         };
         let bit=1u64.checked_shl(cpu as u32).unwrap_or(0);
-        let next=table.records.iter().position(|t|t.state==ThreadState::Ready&&t.affinity&bit!=0);
+        let next=table.records.iter().position(|t|t.state==ThreadState::Ready&&t.affinity&bit!=0&&(current_id==0||t.id!=current_id));
         if let Some(index)=next {
             let next_record=&mut table.records[index];next_record.state=ThreadState::Running;
             local.current_thread.store(next_record.id,core::sync::atomic::Ordering::Release);
             (old_rsp_ptr,next_record.context_rsp)
+        } else if current_id!=0 && !block {
+            if let Some(current)=table.records.iter_mut().find(|t|t.id==current_id){current.state=ThreadState::Running;}
+            return Ok(());
         } else if current_id!=0 {
             let idle=unsafe{*idle_rsp_ptr};
             if idle.is_null() {
