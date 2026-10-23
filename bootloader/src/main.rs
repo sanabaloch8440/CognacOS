@@ -208,9 +208,9 @@ fn find_rsdp() -> u64 {
     uefi::system::with_config_table(|entries| {
         for entry in entries {
             if entry.address.is_null() { continue; }
-            if entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI2_GUID {
+            if entry.guid == uefi::table::cfg::ACPI2_GUID {
                 acpi2 = entry.address as u64;
-            } else if entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI_GUID {
+            } else if entry.guid == uefi::table::cfg::ACPI_GUID {
                 acpi1 = entry.address as u64;
             }
         }
