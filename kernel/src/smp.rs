@@ -302,12 +302,20 @@ pub unsafe fn start_one_ap(
         let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::Apic(error));
     }
     if !delay_us(200) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
+    // Allow the first SIPI a real startup window before retrying. APs may still
+    // be switching modes and installing the long-mode context after 200 us;
+    // a second SIPI at that point can obscure the original transition failure.
+    let mut waited = 0u32;
+    while waited < 10_000 {
+        if hal::cpu_state(target.logical_id).ok() == Some(hal::CPU_ONLINE) { return Ok(()); }
+        if !delay_us(100) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
+        waited += 100;
+    }
     if hal::cpu_state(target.logical_id).ok() != Some(hal::CPU_ONLINE) {
         if let Err(error) = unsafe { apic::send_startup_ipi(local_apic_base, target.apic_id as u8, target.trampoline_physical) } {
             let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::Apic(error));
         }
     }
-    let mut waited = 0u32;
     while waited < 100_000 {
         if hal::cpu_state(target.logical_id).ok() == Some(hal::CPU_ONLINE) { return Ok(()); }
         if !delay_us(100) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
