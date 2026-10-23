@@ -1,11 +1,11 @@
 //! Bounded ACPI table parsing primitives for platform discovery.
 //! Callers must pass a readable, mapped byte slice obtained from firmware data.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 static LAST_RSDP_ADDRESS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Remember the firmware RSDP discovered during boot for later HAL table queries.
 pub fn rsdp_address() -> u64 { LAST_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Acquire) }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AcpiError { Truncated, BadSignature, BadLength, BadChecksum, TooManyEntries, MalformedEntry, MissingRoot, MissingMadt, AddressOutOfRange }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
