@@ -195,6 +195,14 @@ pub fn self_test() -> bool {
    }
   }
   if free_pages(p, pages).is_err() || allocation_pages(p).is_some() { return false; }
+  if OWN_ROOT_SLOT.load(Ordering::Acquire) {
+   let _g=Guard::lock();
+   let no_live_extents=unsafe{&*TABLE.0.get()}.iter().all(|extent|!extent.live);
+   if no_live_extents {
+    let root=ROOT.load(Ordering::Acquire) as *const u64;
+    if unsafe{root.add(ix(BASE)[0]).read()}&P!=0 { return false; }
+   }
+  }
  }
  true
 }
