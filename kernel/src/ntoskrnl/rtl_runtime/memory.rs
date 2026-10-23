@@ -48,3 +48,66 @@ mod tests {
         assert_eq!(unsafe { rtl_is_zero_memory([0u8; 4].as_ptr() as *const c_void, 4) }, 1);
     }
 }
+
+
+// Volatile RTL memory primitives. These deliberately use the compiler's volatile
+// accesses so MMIO-like callers do not have their operations elided or folded.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_copy_volatile_memory(dst: *mut c_void, src: *const c_void, n: u64) -> *mut c_void {
+    if n != 0 && !dst.is_null() && !src.is_null() {
+        for i in 0..n as usize {
+            let value = unsafe { core::ptr::read_volatile((src as *const u8).add(i)) };
+            unsafe { core::ptr::write_volatile((dst as *mut u8).add(i), value) };
+        }
+    }
+    dst
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_move_volatile_memory(dst: *mut c_void, src: *const c_void, n: u64) -> *mut c_void {
+    if n != 0 && !dst.is_null() && !src.is_null() {
+        // Match memmove overlap semantics while retaining volatile accesses.
+        if (dst as usize) <= (src as usize) || (dst as usize) >= (src as usize).saturating_add(n as usize) {
+            for i in 0..n as usize {
+                let value = unsafe { core::ptr::read_volatile((src as *const u8).add(i)) };
+                unsafe { core::ptr::write_volatile((dst as *mut u8).add(i), value) };
+            }
+        } else {
+            for i in (0..n as usize).rev() {
+                let value = unsafe { core::ptr::read_volatile((src as *const u8).add(i)) };
+                unsafe { core::ptr::write_volatile((dst as *mut u8).add(i), value) };
+            }
+        }
+    }
+    dst
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_zero_volatile_memory(dst: *mut c_void, n: u64) -> *mut c_void {
+    if n != 0 && !dst.is_null() {
+        for i in 0..n as usize {
+            unsafe { core::ptr::write_volatile((dst as *mut u8).add(i), 0) };
+        }
+    }
+    dst
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_fill_memory_ulong(dst: *mut c_void, n: u64, pattern: u32) {
+    if n == 0 || dst.is_null() { return; }
+    let words = n as usize / core::mem::size_of::<u32>();
+    let out = dst as *mut u32;
+    for i in 0..words {
+        unsafe { core::ptr::write_unaligned(out.add(i), pattern) };
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_fill_memory_ulonglong(dst: *mut c_void, n: u64, pattern: u64) {
+    if n == 0 || dst.is_null() { return; }
+    let words = n as usize / core::mem::size_of::<u64>();
+    let out = dst as *mut u64;
+    for i in 0..words {
+        unsafe { core::ptr::write_unaligned(out.add(i), pattern) };
+    }
+}
