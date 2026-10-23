@@ -1,0 +1,90 @@
+//! Real kernel-thread contexts and a bounded cooperative ready queue.
+//! Stacks are supplied by the caller and must remain mapped for the thread lifetime.
+use core::cell::UnsafeCell;
+use core::ffi::c_void;
+use crate::hal::IrqSpinLock;
+
+pub const MAX_THREADS: usize = 64;
+pub type ThreadEntry = extern "C" fn(*mut c_void);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadState { Empty, Ready, Running, Blocked, Exited }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThreadError { InvalidStack, InvalidAffinity, Full, NoCurrentThread, InvalidState, InvalidCpu }
+#[derive(Clone, Copy)]
+struct ThreadRecord { id:u64, state:ThreadState, affinity:u64, context_rsp:*mut u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool }
+impl ThreadRecord { const EMPTY:Self=Self{id:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),entry:None,argument:core::ptr::null_mut(),wake_pending:false}; }
+unsafe impl Send for ThreadRecord {}
+struct ThreadTable { records:[ThreadRecord;MAX_THREADS], next_id:u64 }
+impl ThreadTable { const fn new()->Self { Self{records:[ThreadRecord::EMPTY;MAX_THREADS],next_id:1} } }
+unsafe impl Send for ThreadTable {}
+static THREADS:IrqSpinLock<ThreadTable>=IrqSpinLock::new(ThreadTable::new());
+struct IdleContext(UnsafeCell<*mut u64>);
+unsafe impl Sync for IdleContext {}
+static IDLE_CONTEXTS:[IdleContext;crate::hal::MAX_CPUS]=[const { IdleContext(UnsafeCell::new(core::ptr::null_mut())) };crate::hal::MAX_CPUS];
+
+fn cpu_index()->Result<usize,ThreadError>{crate::hal::current_cpu_local().map(|c|c.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize).filter(|i|*i<crate::hal::MAX_CPUS).ok_or(ThreadError::InvalidCpu)}
+extern "C" fn thread_trampoline()->! {
+    let entry_and_arg={let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};let id=crate::hal::cpu_local(cpu).map(|c|c.current_thread.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);let table=THREADS.lock();table.records.iter().find(|t|t.id==id&&t.state==ThreadState::Running).and_then(|t|t.entry.map(|entry|(entry,t.argument)))};
+    if let Some((entry,arg))=entry_and_arg { entry(arg); }
+    exit_current()
+}
+
+/// Create a runnable kernel thread on a caller-owned, permanently mapped stack.
+/// The supplied entry must return normally; its return transitions the thread to Exited.
+pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mut c_void)->Result<u64,ThreadError>{
+    if affinity==0{return Err(ThreadError::InvalidAffinity)}
+    if stack.len()<256{return Err(ThreadError::InvalidStack)}
+    let top=(stack.as_mut_ptr() as usize+stack.len())&!0xfusize;
+    if top<stack.as_ptr() as usize+128{return Err(ThreadError::InvalidStack)}
+    // Keep the synthetic frame 16-byte aligned before restore; RET enters the
+    // trampoline with the x86-64 function-entry RSP alignment (RSP % 16 == 8).
+    let frame=(top-64) as *mut u64;
+    unsafe { for i in 0..6 { frame.add(i).write(0); } frame.add(6).write(thread_trampoline as usize as u64); }
+    let mut table=THREADS.lock();
+    let slot=table.records.iter().position(|t|t.state==ThreadState::Empty).ok_or(ThreadError::Full)?;
+    let id=table.next_id;table.next_id=table.next_id.wrapping_add(1).max(1);
+    table.records[slot]=ThreadRecord{id,state:ThreadState::Ready,affinity,context_rsp:frame,entry:Some(entry),argument,wake_pending:false};
+    Ok(id)
+}
+
+/// Select the highest-ID-independent first runnable thread and switch stacks.
+/// If the ready queue is empty, a blocked/yielding thread switches back to its saved idle context.
+fn reschedule(block:bool)->Result<(),ThreadError>{
+    let cpu=cpu_index()?;
+    let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
+    let current_id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
+    let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
+    let (old_rsp_ptr,new_rsp)= {
+        let mut table=THREADS.lock();
+        let old_rsp_ptr=if current_id==0 {idle_rsp_ptr} else {
+            let current=table.records.iter_mut().find(|t|t.id==current_id&&t.state==ThreadState::Running).ok_or(ThreadError::NoCurrentThread)?;
+            if block&&current.wake_pending {current.wake_pending=false;return Ok(())}
+            current.state=if block{ThreadState::Blocked}else{ThreadState::Ready};
+            &mut current.context_rsp as *mut *mut u64
+        };
+        let bit=1u64.checked_shl(cpu as u32).unwrap_or(0);
+        let next=table.records.iter().position(|t|t.state==ThreadState::Ready&&t.affinity&bit!=0);
+        if let Some(index)=next {
+            let next_record=&mut table.records[index];next_record.state=ThreadState::Running;
+            local.current_thread.store(next_record.id,core::sync::atomic::Ordering::Release);
+            (old_rsp_ptr,next_record.context_rsp)
+        } else if current_id!=0 {
+            local.current_thread.store(0,core::sync::atomic::Ordering::Release);
+            let idle=unsafe{*idle_rsp_ptr};
+            if idle.is_null(){return Err(ThreadError::InvalidState)}
+            (old_rsp_ptr,idle)
+        } else { return Ok(()) }
+    };
+    unsafe{crate::arch::context_switch(old_rsp_ptr,new_rsp)};
+    Ok(())
+}
+
+pub fn yield_current()->Result<(),ThreadError>{reschedule(false)}
+/// Block the current thread. A wake racing before this call is remembered and cancels the block.
+pub fn block_current()->Result<(),ThreadError>{reschedule(true)}
+/// Wake a blocked thread. If it is still running, remember the wake to close enqueue/block races.
+pub fn wake(id:u64)->Result<(),ThreadError>{let mut table=THREADS.lock();let t=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty).ok_or(ThreadError::InvalidState)?;match t.state{ThreadState::Blocked=>{t.state=ThreadState::Ready;Ok(())},ThreadState::Running=>{t.wake_pending=true;Ok(())},ThreadState::Ready=>Ok(()),ThreadState::Exited|ThreadState::Empty=>Err(ThreadError::InvalidState)}}
+fn exit_current()->! {if let Ok(cpu)=cpu_index(){if let Ok(local)=crate::hal::cpu_local(cpu){let id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);let mut table=THREADS.lock();if let Some(t)=table.records.iter_mut().find(|t|t.id==id){t.state=ThreadState::Exited;t.entry=None;t.argument=core::ptr::null_mut();}local.current_thread.store(0,core::sync::atomic::Ordering::Release);drop(table);let _=reschedule(true);}}loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}}
+
+pub fn current_thread_id()->Option<u64>{let cpu=cpu_index().ok()?;let id=crate::hal::cpu_local(cpu).ok()?.current_thread.load(core::sync::atomic::Ordering::Acquire);(id!=0).then_some(id)}
+pub fn state(id:u64)->Option<ThreadState>{THREADS.lock().records.iter().find(|t|t.id==id).map(|t|t.state)}
