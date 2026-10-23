@@ -496,6 +496,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         serial_write(b"; AP entry functions reached: ");
                         serial_write_decimal(smp::ap_entry_reached_count());
                         serial_write(b"\r\n");
+                        let (tsc_synced, worst_offset) = apic::tsc_cross_core_status();
+                        serial_write(if tsc_synced {
+                            b"TSC cross-core synchronization passed; max offset magnitude="
+                        } else {
+                            b"WARNING: TSC sync incomplete; global monotonic clamp remains active; max offset magnitude="
+                        });
+                        serial_write_decimal(worst_offset as usize);
+                        serial_write(b" ticks.\r\n");
                     }
                     Err(_) => serial_write(b"WARNING: AP startup initialization failed; retaining BSP-only operation.\r\n"),
                 },
