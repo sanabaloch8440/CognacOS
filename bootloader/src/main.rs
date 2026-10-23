@@ -203,19 +203,19 @@ fn main() -> Status {
 /// UEFI configuration-table addresses remain physical across ExitBootServices;
 /// this bootstrap only accepts an RSDP inside its low 4 GiB identity map.
 fn find_rsdp() -> u64 {
-    let mut acpi2 = 0u64;
-    let mut acpi1 = 0u64;
+    let acpi2 = core::cell::Cell::new(0u64);
+    let acpi1 = core::cell::Cell::new(0u64);
     uefi::system::with_config_table(|entries| {
         for entry in entries {
             if entry.address.is_null() { continue; }
             if entry.guid == uefi::table::cfg::ACPI2_GUID {
-                acpi2 = entry.address as u64;
+                acpi2.set(entry.address as u64);
             } else if entry.guid == uefi::table::cfg::ACPI_GUID {
-                acpi1 = entry.address as u64;
+                acpi1.set(entry.address as u64);
             }
         }
     });
-    let candidate = if acpi2 != 0 { acpi2 } else { acpi1 };
+    let candidate = if acpi2.get() != 0 { acpi2.get() } else { acpi1.get() };
     if candidate < 0x1_0000_0000 { candidate } else { 0 }
 }
 
