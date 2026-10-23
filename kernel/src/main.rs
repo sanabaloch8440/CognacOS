@@ -231,7 +231,15 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
                             // The bootloader identity-maps 0..4 GiB with 2 MiB pages.
                             // Keep legacy and I/O APIC routes masked until the local timer is ready.
-                            match unsafe { apic::initialize_local_apic(firmware_madt.local_apic_address) } {
+                            match (if firmware_madt.local_apic_address == 0xfee0_0000
+                                && firmware_madt.io_apics.iter().take(firmware_madt.io_apic_count)
+                                    .all(|io| (io.address as u64) >= 0xfec0_0000 && (io.address as u64) < 0xfee0_0000)
+                            {
+                                // The bootloader maps these standard MMIO windows UC.
+                                unsafe { apic::initialize_local_apic(firmware_madt.local_apic_address) }
+                            } else {
+                                Err(apic::ApicError::InvalidBase)
+                            }) {
                                 Ok(local_id) if local_id == bsp_apic_id => {
                                     let mut routes_masked = true;
                                     for io in firmware_madt.io_apics.iter().take(firmware_madt.io_apic_count) {
