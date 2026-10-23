@@ -473,6 +473,7 @@ static VECTOR_HANDLERS: [core::sync::atomic::AtomicUsize; 256] =
     [const { core::sync::atomic::AtomicUsize::new(0) }; 256];
 static VECTOR_CONTEXTS: [core::sync::atomic::AtomicUsize; 256] =
     [const { core::sync::atomic::AtomicUsize::new(0) }; 256];
+static VECTOR_REGISTRATION_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 
 /// Reserve a device interrupt vector. Architectural exceptions, timer, IPI,
 /// and spurious/error vectors are deliberately outside the allocatable range.
@@ -489,6 +490,7 @@ pub fn allocate_interrupt_vector() -> Result<u8, ApicError> {
 /// gate is detached; the caller owns synchronization with in-flight interrupts.
 pub fn release_interrupt_vector(vector: u8) -> Result<(), ApicError> {
     if !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector) { return Err(ApicError::InvalidVector); }
+    let _guard = VECTOR_REGISTRATION_LOCK.lock();
     VECTOR_HANDLERS[vector as usize].store(0, Ordering::Release);
     VECTOR_CONTEXTS[vector as usize].store(0, Ordering::Release);
     VECTOR_ALLOCATED[vector as usize].store(false, Ordering::Release);
@@ -501,9 +503,13 @@ pub fn register_interrupt_handler(vector: u8, handler: InterruptHandler, context
     if !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector) || !VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire) {
         return Err(ApicError::InvalidVector);
     }
+    let _guard = VECTOR_REGISTRATION_LOCK.lock();
+    if VECTOR_HANDLERS[vector as usize].load(Ordering::Acquire) != 0 {
+        return Err(ApicError::InvalidVector);
+    }
     VECTOR_CONTEXTS[vector as usize].store(context as usize, Ordering::Relaxed);
-    VECTOR_HANDLERS[vector as usize].compare_exchange(0, handler as usize, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ()).map_err(|_| ApicError::InvalidVector)
+    VECTOR_HANDLERS[vector as usize].store(handler as usize, Ordering::Release);
+    Ok(())
 }
 
 /// Dispatch an external interrupt from the IDT common entry stub. Exactly one
@@ -541,9 +547,9 @@ pub unsafe fn configure_ioapic_route(
         return Err(ApicError::InvalidVector);
     }
     if gsi < gsi_base || gsi - gsi_base >= 120 { return Err(ApicError::InvalidGsi); }
-    unsafe fn select(base: u64, reg: u8) { core::ptr::write_volatile(base as *mut u32, reg as u32); }
-    unsafe fn read(base: u64) -> u32 { core::ptr::read_volatile((base + 0x10) as *const u32) }
-    unsafe fn write(base: u64, value: u32) { core::ptr::write_volatile((base + 0x10) as *mut u32, value); }
+    unsafe fn select(base: u64, reg: u8) { unsafe { core::ptr::write_volatile(base as *mut u32, reg as u32); } }
+    unsafe fn read(base: u64) -> u32 { unsafe { core::ptr::read_volatile((base + 0x10) as *const u32) } }
+    unsafe fn write(base: u64, value: u32) { unsafe { core::ptr::write_volatile((base + 0x10) as *mut u32, value); } }
     let pin = (gsi - gsi_base) as u8;
     unsafe { select(io_base, 1); }
     if pin as u32 > ((unsafe { read(io_base) } >> 16) & 0xff) { return Err(ApicError::InvalidGsi); }
