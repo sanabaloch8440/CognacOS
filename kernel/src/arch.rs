@@ -133,8 +133,30 @@ rdotos_exception_common:
     mov rdx, rsp
     mov rdi, [rsp + 120]
     mov rsi, [rsp + 128]
+    mov r12, rsp
     and rsp, -16
-    call rdotos_exception_fatal
+    call rdotos_exception_dispatch
+    mov rsp, r12
+    test rax, rax
+    jz .Lrdotos_unhandled_exception
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    add rsp, 16
+    iretq
+.Lrdotos_unhandled_exception:
     ud2
 
     # Dedicated interrupt-gate entry: preserve all registers and return with IRETQ.
@@ -278,6 +300,18 @@ pub extern "C" fn rdotos_exception_fatal(vector: u64, error: u64, frame: *const 
         crate::serial_write(b"\r\nSystem halted.\r\n");
         crate::halt()
     }
+}
+
+/// Dispatch recoverable faults. A return value of one asks the assembly stub to
+/// restore the original frame and IRETQ; fatal/unrecognized exceptions halt.
+#[unsafe(no_mangle)]
+pub extern "C" fn rdotos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
+    if vector == 14 {
+        let cr2: u64;
+        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+        if crate::kernel_vm::handle_page_fault(cr2, error) { return 1; }
+    }
+    rdotos_exception_fatal(vector, error, frame)
 }
 
 /// Install a DPL3 interrupt gate for a controlled user-to-kernel entry point.
