@@ -74,7 +74,7 @@ pub(crate) fn pool_allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut 
 /// Kernel-internal demand-zero pageable pool interface. Fault-in is supported;
 /// page-out/backing-store I/O remains unavailable until a block/pagefile driver exists.
 pub(crate) fn pool_allocate_paged_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
-    pool_page::allocate_paged_tagged(size, tag, zeroed)
+    pool::allocate_paged_tagged(size, tag, zeroed)
 }
 
 /// Release a pool block, optionally checking its allocation tag.
