@@ -667,6 +667,15 @@ pub unsafe extern "win64" fn allocate_adapter_channel(
 
     let immediate = {
         let mut state = CHANNEL.lock();
+        // WDM permits only one pending legacy AllocateAdapterChannel request
+        // per DEVICE_OBJECT. Reject duplicates instead of creating ambiguous
+        // cancellation/ownership semantics.
+        if state.owner == req.device
+            || state.queue.iter().any(|queued| queued.active && queued.device == req.device) {
+            drop(state);
+            release_token(req.device, req.token, req.count);
+            return STATUS_INVALID_PARAMETER;
+        }
         if state.owner == 0 && !state.callback_active {
             let generation = state.next_generation;
             state.next_generation = state.next_generation.wrapping_add(1).max(1);
@@ -849,6 +858,26 @@ mod dma_lifecycle_tests {
         state.len += 1;
         assert_eq!(state.queue[state.head].device, 3);
         assert_eq!(state.queue[(state.head + state.len - 1) % state.queue.len()].device, 99);
+    }
+
+    #[test]
+    fn dequeue_assigns_a_fresh_generation_and_marks_callback_active() {
+        let mut state = ChannelState {
+            owner: 0, owner_generation: 0, next_generation: 41,
+            callback_active: false, dispatch_pending: false,
+            queue: [ChannelRequest::EMPTY; 32], head: 7, len: 1,
+        };
+        state.queue[7] = ChannelRequest {
+            active: true, device: 0x77, count: 0, routine: 1, context: 0, token: 0,
+        };
+        let (req, generation) = take_next_channel_locked(&mut state).expect("queued request");
+        assert_eq!(req.device, 0x77);
+        assert_eq!(generation, 41);
+        assert_eq!(state.owner, 0x77);
+        assert_eq!(state.owner_generation, 41);
+        assert!(state.callback_active);
+        assert_eq!(state.len, 0);
+        assert_eq!(state.next_generation, 42);
     }
 
     #[test]
