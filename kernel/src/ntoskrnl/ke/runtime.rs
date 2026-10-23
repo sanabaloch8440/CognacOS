@@ -296,9 +296,10 @@ pub unsafe extern "win64" fn ke_release_semaphore(semaphore: *mut SemaphoreObjec
     let Some(next) = old.checked_add(adjustment) else { return 0; };
     if next > limit { return 0; }
     state.store(next, Ordering::Release);
-    // Each dequeued semaphore waiter consumes one released count before it is
-    // made ready, so waking a thread cannot leave an extra semaphore token behind.
-    for _ in 0..adjustment {
+    complete_ready_wait_all_groups();
+    // Each waiter consumes one available count before becoming runnable.
+    loop {
+        if state.load(Ordering::Acquire) <= 0 { break; }
         let Some(thread_id) = crate::dispatcher::wake_one(semaphore as u64) else { break; };
         state.fetch_sub(1, Ordering::AcqRel);
         let status = crate::dispatcher::complete_wait_group(thread_id, semaphore as u64, STATUS_SUCCESS, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
