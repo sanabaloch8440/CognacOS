@@ -14,7 +14,7 @@ const SUCCESS:i32=0;const INVALID:i32=0xC000000Du32 as i32;const INVALID_SD:i32=
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_nt_ddi_version_available_ex(version:u32)->u8{(version<=0x0A000000) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_valid_oem_character_ex(c:u16)->u8{(c>0&&c<=255) as u8}
 
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_non_empty_directory_reparse_point_allowed()->u8{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_non_empty_directory_reparse_point_allowed(_reparse_tag:u32)->u8{0}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_partial_placeholder(file_attributes:u32,reparse_tag:u32)->u8{let cloud=(reparse_tag&0xFFFF0FFF)==0x9000001A;let recall=file_attributes&(0x00040000|0x00400000)!=0;(cloud&&recall) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_cloud_files_placeholder(file_attributes:u32,reparse_tag:u32)->u8{((file_attributes&0x00000400)!=0&&(reparse_tag&0xFFFF0FFF)==0x9000001A) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_partial_placeholder_file_handle(handle:*mut core::ffi::c_void,out:*mut u8)->i32{if handle.is_null()||out.is_null(){return INVALID;}0xC0000002u32 as i32}

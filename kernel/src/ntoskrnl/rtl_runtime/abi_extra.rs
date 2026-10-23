@@ -1,5 +1,5 @@
 //! PE-image inspection and compatibility-state RTL routines.
-use core::sync::atomic::{AtomicU32,AtomicU8,Ordering};
+use core::sync::atomic::{AtomicU64,AtomicI8,AtomicU8,Ordering};
 const SUCCESS:i32=0;const INVALID:i32=0xC000000Du32 as i32;const SMALL:i32=0xC0000023u32 as i32;
 #[repr(C)] pub struct RtlVersionInfoExW{pub size:u32,pub major:u32,pub minor:u32,pub build:u32,pub platform:u32,pub service_pack:[u16;128],pub service_pack_major:u16,pub service_pack_minor:u16,pub suite_mask:u16,pub product_type:u8,pub reserved:u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_image_nt_header(base:*const u8)->*mut u8{if base.is_null()||unsafe{*(base as *const u16)}!=0x5a4d{return core::ptr::null_mut();}let off=unsafe{*(base.add(0x3c) as *const u32)} as usize;if off>16*1024*1024{return core::ptr::null_mut();}let p=unsafe{base.add(off)};if unsafe{*(p as *const u32)}!=0x00004550{return core::ptr::null_mut();}p as *mut u8}
@@ -12,16 +12,16 @@ fn cmp(v:u64,refv:u64,cond:u32)->bool{match cond{1=>v<refv,2=>v==refv,3=>v<=refv
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_number_generic_table_elements(table:*const core::ffi::c_void)->u32{if table.is_null(){return 0;}unsafe{*(table.cast::<u8>().add(36) as *const u32)}}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_number_generic_table_elements_avl(table:*const core::ffi::c_void)->u32{if table.is_null(){return 0;}unsafe{*(table.cast::<u8>().add(20) as *const u32)}}
 pub(super) static PORTABLE:AtomicU8=AtomicU8::new(0);
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_portable_operating_system(v:u8){PORTABLE.store((v!=0) as u8,Ordering::Release);}
-static CONSOLE_PID:AtomicU32=AtomicU32::new(0);
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_portable_operating_system(v:u8)->i32{PORTABLE.store((v!=0) as u8,Ordering::Release);0}
+static CONSOLE_PID:AtomicU64=AtomicU64::new(0);
 static SYSTEM_ROOT:[u16;12]=[92,83,121,115,116,101,109,82,111,111,116,0];
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_console_session_foreground_process_id(pid:u32){CONSOLE_PID.store(pid,Ordering::Release);}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_console_session_foreground_process_id()->u32{CONSOLE_PID.load(Ordering::Acquire)}
-static PROCESS_PLACEHOLDER:AtomicU8=AtomicU8::new(0);
-static THREAD_PLACEHOLDER:AtomicU8=AtomicU8::new(0);
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_process_placeholder_compatibility_mode(mode:u8)->u8{PROCESS_PLACEHOLDER.swap(mode,Ordering::AcqRel)}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_query_process_placeholder_compatibility_mode()->u8{PROCESS_PLACEHOLDER.load(Ordering::Acquire)}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_thread_placeholder_compatibility_mode(mode:u8)->u8{THREAD_PLACEHOLDER.swap(mode,Ordering::AcqRel)}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_query_thread_placeholder_compatibility_mode()->u8{THREAD_PLACEHOLDER.load(Ordering::Acquire)}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_console_session_foreground_process_id(pid:u64){CONSOLE_PID.store(pid,Ordering::Release);}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_console_session_foreground_process_id()->u64{CONSOLE_PID.load(Ordering::Acquire)}
+static PROCESS_PLACEHOLDER:AtomicI8=AtomicI8::new(0);
+static THREAD_PLACEHOLDER:AtomicI8=AtomicI8::new(0);
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_process_placeholder_compatibility_mode(mode:i8)->i8{if !(0..=2).contains(&mode){return -1;}PROCESS_PLACEHOLDER.swap(mode,Ordering::AcqRel)}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_query_process_placeholder_compatibility_mode()->i8{PROCESS_PLACEHOLDER.load(Ordering::Acquire)}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_thread_placeholder_compatibility_mode(mode:i8)->i8{if !(0..=2).contains(&mode){return -1;}THREAD_PLACEHOLDER.swap(mode,Ordering::AcqRel)}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_query_thread_placeholder_compatibility_mode()->i8{THREAD_PLACEHOLDER.load(Ordering::Acquire)}
 
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_nt_system_root()->*const u16{SYSTEM_ROOT.as_ptr()}

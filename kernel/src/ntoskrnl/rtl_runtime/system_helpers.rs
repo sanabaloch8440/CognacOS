@@ -25,7 +25,7 @@ fn civil(days:i64)->(i32,i32,i32){let z=days+719468;let era=if z>=0{z}else{z-146
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_nt_ddi_version_available(version:u32)->u8{(version<=0x0A000000) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_service_pack_version_installed(_major:u16,_minor:u16,_flags:u32)->u8{0}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_state_separation_enabled()->u8{0}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_check_portable_operating_system()->u8{super::abi_extra::PORTABLE.load(core::sync::atomic::Ordering::Acquire)}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_check_portable_operating_system(out:*mut u8)->i32{if out.is_null(){return 0xC000000Du32 as i32;}unsafe{*out=super::abi_extra::PORTABLE.load(core::sync::atomic::Ordering::Acquire);}0}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_valid_oem_character(c:u16)->u8{(c>0&&c<=255) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_nt_status_to_dos_error(s:u32)->u32{match s{0=>0,0xC0000005=>998,0xC0000008=>6,0xC000000D=>87,0xC000000F=>2,0xC0000017=>8,0xC0000022=>5,0xC0000034=>2,0xC0000035=>183,0xC000003A=>3,0xC000009A=>8,0xC00000BB=>50,0xC0000002=>120,_=>317}}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_nt_status_to_dos_error_no_teb(s:u32)->u32{unsafe{rtl_nt_status_to_dos_error(s)}}

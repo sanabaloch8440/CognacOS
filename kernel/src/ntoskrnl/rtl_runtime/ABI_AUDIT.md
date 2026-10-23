@@ -33,7 +33,10 @@ The new C-facing structures use `#[repr(C)]` for ACL headers, ACE headers, absol
 
 ## ABI corrections and validation
 
-- `RtlRunOnceExecuteOnce` callback return type is a one-byte `LOGICAL/BOOLEAN`; the outer routine returns `NTSTATUS`.
+- `RtlRunOnceExecuteOnce` callback return type is 32-bit `ULONG`/`LOGICAL`; the outer routine returns `NTSTATUS`.
+- `RtlCheckPortableOperatingSystem` is `NTSTATUS` plus `PBOOLEAN`; `RtlSetPortableOperatingSystem` returns `NTSTATUS`.
+- `RtlIsNonEmptyDirectoryReparsePointAllowed` accepts a 32-bit reparse tag; the console-session foreground process ID uses a 64-bit return value.
+- Placeholder compatibility mode APIs use signed 8-bit `CHAR` values, including negative error returns.
 - `RtlNumberOfSetBitsUlongPtr` returns `ULONG` (32-bit), while its input remains pointer-sized.
 - `RtlGetAcesBufferSize` now follows the two-parameter `NTSTATUS` contract and returns the total ACE-byte count through `PULONG`.
 - `RtlIsPartialPlaceholder` uses its two `ULONG` inputs; `RtlIsPartialPlaceholderFileHandle` and `RtlIsPartialPlaceholderFileInfo`, `RtlIsCloudFilesPlaceholder` use their documented `NTSTATUS`/output-BOOLEAN signatures.
