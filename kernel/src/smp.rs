@@ -5,7 +5,7 @@
 //! The temporary AP page-table and trampoline startup design is adapted from
 //! RustOS-Dev/RustOS, src/arch/x86_64/smp.rs (GPL-2.0-or-later).
 //! Copyright (C) RustOS-Dev contributors; RdotOS-specific modifications
-//! Copyright (C) 2026 RdotOS contributors.
+//! Copyright (C) 2026 RdotOS contributors. Modified for RdotOS on 2026-10-23.
 use crate::{apic, arch, hal, memory};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::arch::global_asm;
@@ -41,6 +41,8 @@ global_asm!(r#"
     .global rdotos_ap_trampoline_logical
     .global rdotos_ap_trampoline_kernel_pml4
     .global rdotos_ap_trampoline_kernel_pml4_offset_patch
+    .global rdotos_ap_trampoline_cr4
+    .global rdotos_ap_trampoline_cr4_offset_patch
 rdotos_ap_trampoline_start:
     .code16
     cli
@@ -70,15 +72,21 @@ rdotos_ap_trampoline_pm32:
 rdotos_ap_trampoline_pml4_absolute_patch:
     .long 0
     mov cr3, eax
-    mov eax, cr4
+    # Match the BSP CR4 state, force PAE, and clear PCIDE before paging.
+    .byte 0x8b, 0x86
+rdotos_ap_trampoline_cr4_offset_patch:
+    .long 0
     or eax, 0x20
+    and eax, 0xfffdffff
     mov cr4, eax
     mov ecx, 0xc0000080
     rdmsr
-    or eax, 0x100
+    # Enable SCE, LME and NXE before activating page tables with NX entries.
+    or eax, 0x901
     wrmsr
     mov eax, cr0
-    or eax, 0x80000000
+    # Enable paging, write protection, and protected mode as on the BSP.
+    or eax, 0x80010001
     mov cr0, eax
     .byte 0xea
 rdotos_ap_trampoline_long64_patch:
@@ -137,6 +145,9 @@ rdotos_ap_trampoline_logical:
     .balign 8
 rdotos_ap_trampoline_kernel_pml4:
     .quad 0
+    .balign 8
+rdotos_ap_trampoline_cr4:
+    .long 0
 rdotos_ap_trampoline_end:
 "#);
 
@@ -162,6 +173,8 @@ unsafe extern "C" {
     static rdotos_ap_trampoline_logical: u8;
     static rdotos_ap_trampoline_kernel_pml4: u8;
     static rdotos_ap_trampoline_kernel_pml4_offset_patch: u8;
+    static rdotos_ap_trampoline_cr4: u8;
+    static rdotos_ap_trampoline_cr4_offset_patch: u8;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -360,6 +373,11 @@ unsafe fn prepare_trampoline(
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_kernel_pml4_offset_patch),
             symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_kernel_pml4)) as u32);
         write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_kernel_pml4), pml4);
+        let bsp_cr4: u64;
+        core::arch::asm!("mov {}, cr4", out(reg) bsp_cr4, options(nomem, nostack, preserves_flags));
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_cr4_offset_patch),
+            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_cr4)) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_cr4), (bsp_cr4 as u32) & !(1 << 17));
         memory::configure_identity_page(pml4, page, false, true, false, false)
             .map_err(SmpError::Memory)?;
 
@@ -471,8 +489,11 @@ pub unsafe fn start_discovered_aps(
             let _ = hal::mark_cpu_failed(logical_id);
             continue;
         }
-        let stack_page = unsafe { memory::allocate_page() }.map_err(SmpError::Memory)?;
-        let stack_top = stack_page + PAGE_SIZE as u64;
+        // Match the proven RustOS bring-up pattern: give each AP a real kernel
+        // stack, not a single 4 KiB page that can overflow during initialization.
+        const AP_STACK_PAGES: usize = 16;
+        let stack_base = unsafe { memory::allocate_contiguous_pages(AP_STACK_PAGES) }.map_err(SmpError::Memory)?;
+        let stack_top = stack_base + (AP_STACK_PAGES * PAGE_SIZE) as u64;
         let target = ApStartupTarget { logical_id, apic_id, trampoline_physical, stack_top, pml4_physical };
         unsafe { prepare_trampoline(pml4_physical, startup_pml4, trampoline_physical, stack_top, logical_id)?; }
         unsafe {
