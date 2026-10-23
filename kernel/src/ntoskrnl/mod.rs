@@ -334,6 +334,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlIsPartialPlaceholderFileInfo" => rtl_runtime::rtl_is_partial_placeholder_file_info as usize,
 
   "RtlExtractBitMap" => rtl_runtime::rtl_extract_bit_map as usize,
+  "RtlExtractBitMapEx" => rtl_runtime::rtl_extract_bit_map_ex as usize,
   "RtlFindClearRuns" => rtl_runtime::rtl_find_clear_runs as usize,
   _ => return None,
  };
