@@ -125,6 +125,92 @@ pub unsafe extern "win64" fn mm_copy_memory(
     if done == length { STATUS_SUCCESS } else { let _ = dest_end; STATUS_PARTIAL_COPY }
 }
 
+const PAGE_SIZE: u64 = 4096;
+const MDL_HEADER_SIZE: u64 = 48;
+const MAX_CONTIGUOUS_ALLOCS: usize = 128;
+#[derive(Clone, Copy)]
+struct ContiguousAllocation { base: u64, pages: usize, requested: u64, live: bool }
+impl ContiguousAllocation { const EMPTY: Self = Self { base: 0, pages: 0, requested: 0, live: false }; }
+static CONTIGUOUS_ALLOCS: crate::hal::IrqSpinLock<[ContiguousAllocation; MAX_CONTIGUOUS_ALLOCS]> =
+    crate::hal::IrqSpinLock::new([ContiguousAllocation::EMPTY; MAX_CONTIGUOUS_ALLOCS]);
+
+fn allocate_contiguous(bytes: u64, highest: u64, boundary: u64, cache_type: u32) -> *mut c_void {
+    // Only the default cached policy is implemented. Do not silently return
+    // cached memory for callers that explicitly require UC or WC mappings.
+    if bytes == 0 || cache_type != 0 { return core::ptr::null_mut(); }
+    let Some(rounded) = bytes.checked_add(PAGE_SIZE - 1) else { return core::ptr::null_mut(); };
+    let pages = (rounded / PAGE_SIZE) as usize;
+    let base = match unsafe { crate::memory::allocate_contiguous_pages(pages) } {
+        Ok(p) => p, Err(_) => return core::ptr::null_mut(),
+    };
+    let Some(end) = base.checked_add((pages as u64) * PAGE_SIZE) else {
+        let _ = unsafe { crate::memory::free_contiguous_pages(base, pages) };
+        return core::ptr::null_mut();
+    };
+    if end == 0 || end - 1 > highest
+        || (boundary != 0 && base / boundary != (end - 1) / boundary)
+    {
+        let _ = unsafe { crate::memory::free_contiguous_pages(base, pages) };
+        return core::ptr::null_mut();
+    }
+    let mut table = CONTIGUOUS_ALLOCS.lock();
+    let Some(slot) = table.iter_mut().find(|entry| !entry.live) else {
+        drop(table);
+        let _ = unsafe { crate::memory::free_contiguous_pages(base, pages) };
+        return core::ptr::null_mut();
+    };
+    *slot = ContiguousAllocation { base, pages, requested: bytes, live: true };
+    base as *mut c_void
+}
+
+#[inline]
+pub unsafe extern "win64" fn mm_allocate_contiguous_memory(bytes: u64, highest: u64) -> *mut c_void {
+    allocate_contiguous(bytes, highest, 0, 0)
+}
+
+#[inline]
+pub unsafe extern "win64" fn mm_allocate_contiguous_memory_specify_cache(
+    bytes: u64, highest: u64, boundary: u64, cache_type: u32,
+) -> *mut c_void {
+    allocate_contiguous(bytes, highest, boundary, cache_type)
+}
+
+unsafe fn free_contiguous(base: *mut c_void, expected_bytes: Option<u64>, cache_type: Option<u32>) {
+    if base.is_null() { return; }
+    let allocation = {
+        let mut table = CONTIGUOUS_ALLOCS.lock();
+        let Some(entry) = table.iter_mut().find(|e| e.live && e.base == base as u64) else { return; };
+        if expected_bytes.map_or(false, |n| n != entry.requested)
+            || cache_type.map_or(false, |c| c != 0) { return; }
+        let found = *entry;
+        *entry = ContiguousAllocation::EMPTY;
+        found
+    };
+    let _ = unsafe { crate::memory::free_contiguous_pages(allocation.base, allocation.pages) };
+}
+
+pub unsafe extern "win64" fn mm_free_contiguous_memory(base: *mut c_void) {
+    unsafe { free_contiguous(base, None, None); }
+}
+
+pub unsafe extern "win64" fn mm_free_contiguous_memory_specify_cache(
+    base: *mut c_void, bytes: u64, cache_type: u32,
+) {
+    unsafe { free_contiguous(base, Some(bytes), Some(cache_type)); }
+}
+
+/// Calculate an x64 MDL header plus PFN array without allocating it.
+/// This is useful to drivers preparing an MDL in their own nonpaged storage.
+pub unsafe extern "win64" fn mm_size_of_mdl(base: *const c_void, length: u64) -> u32 {
+    let offset = (base as u64) & (PAGE_SIZE - 1);
+    let Some(span) = offset.checked_add(length) else { return 0; };
+    let Some(rounded) = span.checked_add(PAGE_SIZE - 1) else { return 0; };
+    let pages = rounded / PAGE_SIZE;
+    let Some(pfn_bytes) = pages.checked_mul(core::mem::size_of::<u64>() as u64) else { return 0; };
+    let Some(total) = MDL_HEADER_SIZE.checked_add(pfn_bytes) else { return 0; };
+    if total > u32::MAX as u64 { 0 } else { total as u32 }
+}
+
 /// Boot-time validation uses two real kernel VM pages, checks their translations,
 /// exercises the MM copy path, and always releases the test extents.
 pub fn self_test() -> bool {
