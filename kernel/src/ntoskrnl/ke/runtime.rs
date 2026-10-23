@@ -284,18 +284,21 @@ pub unsafe extern "win64" fn ke_read_state_semaphore(semaphore: *const Semaphore
 }
 pub unsafe extern "win64" fn ke_release_semaphore(semaphore: *mut SemaphoreObject, increment: i32, adjustment: i32, _wait: u8) -> i32 {
     if semaphore.is_null() || adjustment <= 0 { return 0; }
+    let _object_guard = DISPATCHER_OBJECT_LOCK.lock();
     let state = unsafe { &*core::ptr::addr_of!((*semaphore).header.signal_state).cast::<core::sync::atomic::AtomicI32>() };
     let limit = unsafe { (*semaphore).limit };
-    let mut old = state.load(Ordering::Acquire);
-    loop {
-        let Some(next) = old.checked_add(adjustment) else { return 0; };
-        if next > limit { return 0; }
-        match state.compare_exchange_weak(old, next, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => break,
-            Err(actual) => old = actual,
-        }
+    let old = state.load(Ordering::Acquire);
+    let Some(next) = old.checked_add(adjustment) else { return 0; };
+    if next > limit { return 0; }
+    state.store(next, Ordering::Release);
+    // Each dequeued semaphore waiter consumes one released count before it is
+    // made ready, so waking a thread cannot leave an extra semaphore token behind.
+    for _ in 0..adjustment {
+        let Some(thread_id) = crate::dispatcher::wake_one(semaphore as u64) else { break; };
+        state.fetch_sub(1, Ordering::AcqRel);
+        let _ = crate::thread::complete_wait(thread_id, STATUS_SUCCESS);
     }
-    let _ = increment; // priority boosts require a scheduler and thread priority model.
+    let _ = increment; // priority boosts require a scheduler priority model.
     old
 }
 
