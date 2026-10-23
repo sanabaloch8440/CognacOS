@@ -5,6 +5,7 @@
 //! so foreign/interior/double frees never cause an arbitrary header dereference.
 //! The current bootstrap maps physical memory identity-wise only below 4 GiB.
 use core::cell::UnsafeCell;
+#[cfg(not(target_os = "none"))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
 const PAGE_SIZE: usize = 4096;
