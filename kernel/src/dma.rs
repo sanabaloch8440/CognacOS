@@ -619,8 +619,13 @@ pub unsafe extern "win64" fn free_adapter_channel(adapter: *mut core::ffi::c_voi
             }};
         let action = unsafe { routine(req.device as *mut _, core::ptr::null_mut(), token, req.context as *mut _) };
         if action == IO_DEALLOCATE_OBJECT || action == IO_DEALLOCATE_OBJECT_KEEP_REGISTERS {
-            // A callback may synchronously release its channel; doing so here
-            // would double-release ownership. Queue advancement is explicit.
+            if action == IO_DEALLOCATE_OBJECT && !token.is_null() {
+                unsafe { free_map_registers(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(), token, req.count); }
+            }
+            // Windows' allocation-action return transfers channel release to
+            // the I/O manager. This advances the FIFO; maximum recursion depth
+            // is bounded by the fixed 32-entry queue.
+            unsafe { free_adapter_channel(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()); }
         }
     }
 }
