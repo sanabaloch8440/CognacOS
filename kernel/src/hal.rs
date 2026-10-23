@@ -25,6 +25,7 @@ pub struct CpuLocal {
     pub preempt_count: AtomicU32,
     pub current_thread: AtomicU64,
     pub idle_ticks: AtomicU64,
+    pub ipi_pending: AtomicU32,
 }
 impl CpuLocal {
     const fn new(id: u32) -> Self {
@@ -32,7 +33,7 @@ impl CpuLocal {
             self_pointer: AtomicU64::new(0), logical_id: AtomicU32::new(id), apic_id: AtomicU32::new(u32::MAX),
             state: AtomicU8::new(CPU_OFFLINE), irq_depth: AtomicU32::new(0),
             preempt_count: AtomicU32::new(0), current_thread: AtomicU64::new(0),
-            idle_ticks: AtomicU64::new(0),
+            idle_ticks: AtomicU64::new(0), ipi_pending: AtomicU32::new(0),
         }
     }
 }
@@ -97,6 +98,17 @@ pub fn cpu_index_for_apic(apic_id: u32) -> Option<usize> {
     CPU_LOCALS.iter().position(|cpu| cpu.state.load(Ordering::Acquire) != CPU_OFFLINE
         && cpu.apic_id.load(Ordering::Acquire) == apic_id)
 }
+/// Number of generic HAL IPIs awaiting processing on this logical CPU.
+pub fn take_pending_ipi(index: usize) -> Result<bool, HalError> {
+    let cpu = cpu_local(index)?;
+    Ok(cpu.ipi_pending.swap(0, Ordering::AcqRel) != 0)
+}
+pub fn mark_ipi_pending(index: usize) -> Result<(), HalError> {
+    let cpu = cpu_local(index)?;
+    cpu.ipi_pending.store(1, Ordering::Release);
+    Ok(())
+}
+
 pub fn cpu_state(index: usize) -> Result<u8, HalError> {
     CPU_LOCALS.get(index).map(|c| c.state.load(Ordering::Acquire)).ok_or(HalError::InvalidCpu)
 }
