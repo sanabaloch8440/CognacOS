@@ -67,9 +67,11 @@ pub fn smp_tlb_poll(logical_id: usize) {
 /// physical frame can be recycled. APs poll rather than use IPIs while IRQs are off.
 fn synchronize_kernel_tlb() {
  if crate::hal::online_cpu_count() <= 1 { return; }
+ let current = crate::hal::current_cpu_local()
+  .map(|cpu| cpu.logical_id.load(Ordering::Acquire) as usize).unwrap_or(0);
  let generation = TLB_GENERATION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
  for cpu in 1..crate::hal::MAX_CPUS {
-  if crate::hal::cpu_state(cpu).ok() != Some(crate::hal::CPU_ONLINE) { continue; }
+  if cpu == current || crate::hal::cpu_state(cpu).ok() != Some(crate::hal::CPU_ONLINE) { continue; }
   while TLB_ACK[cpu].load(Ordering::Acquire) != generation { core::hint::spin_loop(); }
  }
 }
