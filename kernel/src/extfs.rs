@@ -10,13 +10,13 @@ pub const INCOMPAT_EXTENTS:u32=0x0040;
 pub const INCOMPAT_64BIT:u32=0x0080;
 pub const INCOMPAT_FLEX_BG:u32=0x0200;
 const SUPPORTED_RO_COMPAT:u32=0x0003; // sparse_super and large_file only
-const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG;
+const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG|INCOMPAT_64BIT;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,InvalidChecksum,Io}
 fn u16at(b:&[u8],o:usize)->Result<u16,Error>{let e=o.checked_add(2).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u16::from_le_bytes([s[0],s[1]]))}
 fn u32at(b:&[u8],o:usize)->Result<u32,Error>{let e=o.checked_add(4).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct Superblock{pub inodes_count:u32,pub blocks_count:u32,pub first_data_block:u32,pub block_size:u32,pub blocks_per_group:u32,pub inodes_per_group:u32,pub inode_size:u16,pub revision:u32,pub feature_compat:u32,pub feature_incompat:u32,pub feature_ro_compat:u32,pub read_only:bool}
+pub struct Superblock{pub inodes_count:u32,pub blocks_count:u64,pub first_data_block:u32,pub block_size:u32,pub blocks_per_group:u32,pub inodes_per_group:u32,pub inode_size:u16,pub descriptor_size:u16,pub revision:u32,pub feature_compat:u32,pub feature_incompat:u32,pub feature_ro_compat:u32,pub read_only:bool}
 impl Superblock{
  pub fn parse(b:&[u8])->Result<Self,Error>{
   if b.len()<SUPERBLOCK_BYTES{return Err(Error::Truncated)} if u16at(b,56)?!=EXT_MAGIC{return Err(Error::BadMagic)}
@@ -24,35 +24,39 @@ impl Superblock{
   let block_size=1024u32.checked_shl(log).ok_or(Error::InvalidBlockSize)?;
   let inode_size=if revision==0{128}else{u16at(b,88)?};
   if inode_size<128||inode_size as u32>block_size||!inode_size.is_power_of_two(){return Err(Error::InvalidInodeSize)}
-  let inodes_count=u32at(b,0)?;let blocks_count=u32at(b,4)?;let first_data_block=u32at(b,20)?;
+  let feature_compat=u32at(b,92)?;let feature_incompat=u32at(b,96)?;let feature_ro_compat=u32at(b,100)?;
+  let inodes_count=u32at(b,0)?;let blocks_lo=u32at(b,4)?;
+  let blocks_count=if feature_incompat&INCOMPAT_64BIT!=0{((u32at(b,336)? as u64)<<32)|(blocks_lo as u64)}else{blocks_lo as u64};
+  let descriptor_size=if feature_incompat&INCOMPAT_64BIT!=0{let n=u16at(b,254)?;if n<64||n as u32>block_size||n%8!=0{return Err(Error::UnsupportedFormat)}n}else{32};
+  let first_data_block=u32at(b,20)?;
   let blocks_per_group=u32at(b,32)?;let inodes_per_group=u32at(b,40)?;
-  if inodes_count==0||blocks_count==0||blocks_per_group==0||inodes_per_group==0||first_data_block>=blocks_count||(block_size==1024&&first_data_block!=1)||(block_size>1024&&first_data_block!=0){return Err(Error::InvalidGeometry)}
-  let feature_compat=u32at(b,92)?;let feature_incompat=u32at(b,96)?;let feature_ro_compat=u32at(b,100)?;if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
+  if inodes_count==0||blocks_count==0||blocks_per_group==0||inodes_per_group==0||(first_data_block as u64)>=blocks_count||(block_size==1024&&first_data_block!=1)||(block_size>1024&&first_data_block!=0){return Err(Error::InvalidGeometry)}
+  if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
   // DIR_INDEX requires htree-aware directory parsing; never treat an indexed root as linear entries.
   if feature_compat & 0x0020 != 0{return Err(Error::UnsupportedCompatFeature)}if revision>1{return Err(Error::UnsupportedFormat)}
   if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
   if revision>1{return Err(Error::UnsupportedFormat)}
-  if feature_incompat&INCOMPAT_64BIT!=0||feature_incompat&INCOMPAT_META_BG!=0||feature_incompat&!KNOWN_INCOMPAT!=0{return Err(Error::UnsupportedIncompatFeature)}
-  Ok(Self{inodes_count,blocks_count,first_data_block,block_size,blocks_per_group,inodes_per_group,inode_size,revision,feature_compat,feature_incompat,feature_ro_compat,read_only:true})
+  if feature_incompat&INCOMPAT_META_BG!=0||feature_incompat&!KNOWN_INCOMPAT!=0{return Err(Error::UnsupportedIncompatFeature)}
+  Ok(Self{inodes_count,blocks_count,first_data_block,block_size,blocks_per_group,inodes_per_group,inode_size,descriptor_size,revision,feature_compat,feature_incompat,feature_ro_compat,read_only:true})
  }
- pub fn group_count(&self)->Result<u32,Error>{let n=self.blocks_count.checked_sub(self.first_data_block).ok_or(Error::InvalidGeometry)?;let n=n.checked_add(self.blocks_per_group-1).ok_or(Error::OutOfRange)?/self.blocks_per_group;if n==0{Err(Error::InvalidGeometry)}else{Ok(n)}}
+ pub fn group_count(&self)->Result<u32,Error>{let n=self.blocks_count.checked_sub(self.first_data_block as u64).ok_or(Error::InvalidGeometry)?;let n=n.checked_add(self.blocks_per_group as u64-1).ok_or(Error::OutOfRange)?/(self.blocks_per_group as u64);if n==0||n>u32::MAX as u64{Err(Error::InvalidGeometry)}else{Ok(n as u32)}}
  pub fn inode_location(&self,ino:u32)->Result<(u32,u32),Error>{if ino==0||ino>self.inodes_count{return Err(Error::OutOfRange)}let z=ino-1;let g=z/self.inodes_per_group;if g>=self.group_count()?{return Err(Error::OutOfRange)}Ok((g,(z%self.inodes_per_group).checked_mul(self.inode_size as u32).ok_or(Error::OutOfRange)?))}
  pub fn has_extents(&self)->bool{self.feature_incompat&INCOMPAT_EXTENTS!=0}
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct GroupDescriptor{pub block_bitmap:u32,pub inode_bitmap:u32,pub inode_table:u32,pub free_blocks_count:u16,pub free_inodes_count:u16}
-impl GroupDescriptor{pub fn parse(b:&[u8],sb:&Superblock)->Result<Self,Error>{if b.len()<32{return Err(Error::Truncated)}if sb.feature_incompat&INCOMPAT_64BIT!=0{return Err(Error::UnsupportedFormat)}let d=Self{block_bitmap:u32at(b,0)?,inode_bitmap:u32at(b,4)?,inode_table:u32at(b,8)?,free_blocks_count:u16at(b,12)?,free_inodes_count:u16at(b,14)?};if d.block_bitmap>=sb.blocks_count||d.inode_bitmap>=sb.blocks_count||d.inode_table>=sb.blocks_count{return Err(Error::OutOfRange)}Ok(d)}}
+pub struct GroupDescriptor{pub block_bitmap:u64,pub inode_bitmap:u64,pub inode_table:u64,pub free_blocks_count:u32,pub free_inodes_count:u32}
+impl GroupDescriptor{pub fn parse(b:&[u8],sb:&Superblock)->Result<Self,Error>{if b.len()<sb.descriptor_size as usize{return Err(Error::Truncated)}let wide=sb.feature_incompat&INCOMPAT_64BIT!=0;let bb=u32at(b,0)? as u64;let ib=u32at(b,4)? as u64;let it=u32at(b,8)? as u64;let (bb_hi,ib_hi,it_hi,fb_hi,fi_hi)=if wide{(u16at(b,32)? as u64,u16at(b,36)? as u64,u16at(b,40)? as u64,u16at(b,44)? as u32,u16at(b,46)? as u32)}else{(0,0,0,0,0)};let d=Self{block_bitmap:bb|(bb_hi<<32),inode_bitmap:ib|(ib_hi<<32),inode_table:it|(it_hi<<32),free_blocks_count:u16at(b,12)? as u32|(fb_hi<<16),free_inodes_count:u16at(b,14)? as u32|(fi_hi<<16)};if d.block_bitmap>=sb.blocks_count||d.inode_bitmap>=sb.blocks_count||d.inode_table>=sb.blocks_count{return Err(Error::OutOfRange)}Ok(d)}}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct Inode{pub mode:u16,pub size:u64,pub blocks_512:u32,pub flags:u32,pub is_directory:bool,pub is_regular_file:bool,pub is_symlink:bool}
 impl Inode{pub fn parse(b:&[u8],size:u16,revision:u32,ro_compat:u32)->Result<Self,Error>{if size<128||b.len()<size as usize{return Err(Error::Truncated)}let mode=u16at(b,0)?;let size_lo=u32at(b,4)? as u64;let blocks_512=u32at(b,28)?;let flags=u32at(b,32)?;let is_regular_file=mode&0xf000==0x8000;let is_directory=mode&0xf000==0x4000;let is_symlink=mode&0xf000==0xa000;let hi=if is_regular_file&&revision!=0&&ro_compat&2!=0&&size>=112{u32at(b,108)? as u64}else{0};Ok(Self{mode,size:(hi<<32)|size_lo,blocks_512,flags,is_directory,is_regular_file,is_symlink})}}
 pub fn validate_directory_block(b:&[u8],total_inodes:u32)->Result<usize,Error>{if b.is_empty(){return Err(Error::Truncated)}let(mut off,mut count)=(0usize,0usize);while off<b.len(){if b.len()-off<8{return Err(Error::InvalidDirectoryEntry)}let ino=u32at(b,off)?;let rec=u16at(b,off+4)? as usize;let n=b[off+6] as usize;if rec<8||rec&3!=0||rec>b.len()-off||n>rec-8||(ino!=0&&ino>total_inodes){return Err(Error::InvalidDirectoryEntry)}if b[off+8..off+8+n].iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}count+=1;off+=rec;}Ok(count)}
 pub trait ReadOnlyBlockDevice{type DeviceError;fn capacity_bytes(&self)->u64;fn read_at(&mut self,offset:u64,out:&mut[u8])->Result<(),Self::DeviceError>;}
-pub fn read_superblock<D:ReadOnlyBlockDevice>(dev:&mut D)->Result<Superblock,Error>{let end=SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64).ok_or(Error::OutOfRange)?;if dev.capacity_bytes()<end{return Err(Error::OutOfRange)}let mut b=[0u8;SUPERBLOCK_BYTES];dev.read_at(SUPERBLOCK_DISK_OFFSET,&mut b).map_err(|_|Error::Io)?;let sb=Superblock::parse(&b)?;let fs_end=(sb.blocks_count as u64).checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;if fs_end>dev.capacity_bytes(){return Err(Error::OutOfRange)}Ok(sb)}
+pub fn read_superblock<D:ReadOnlyBlockDevice>(dev:&mut D)->Result<Superblock,Error>{let end=SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64).ok_or(Error::OutOfRange)?;if dev.capacity_bytes()<end{return Err(Error::OutOfRange)}let mut b=[0u8;SUPERBLOCK_BYTES];dev.read_at(SUPERBLOCK_DISK_OFFSET,&mut b).map_err(|_|Error::Io)?;let sb=Superblock::parse(&b)?;let fs_end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;if fs_end>dev.capacity_bytes(){return Err(Error::OutOfRange)}Ok(sb)}
 
 /// Reads one complete filesystem block. The device read is rejected if either
 /// the filesystem geometry or the physical device capacity would be exceeded.
 pub fn read_block<D:ReadOnlyBlockDevice>(dev:&mut D,sb:&Superblock,block:u64,out:&mut[u8])->Result<(),Error>{
- if out.len()!=sb.block_size as usize||block>=sb.blocks_count as u64{return Err(Error::OutOfRange)}
+ if out.len()!=sb.block_size as usize||block>=sb.blocks_count{return Err(Error::OutOfRange)}
  let offset=block.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;
  let end=offset.checked_add(out.len() as u64).ok_or(Error::OutOfRange)?;
  let fs_end=(sb.blocks_count as u64).checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;
@@ -87,7 +91,7 @@ fn inspect_extent_node(node:&[u8],logical:u32,sb:&Superblock,expected_depth:Opti
    let physical=((u16at(node,o+6)? as u64)<<32)|(u32at(node,o+8)? as u64);
    let logical_end=(first as u64).checked_add(len).ok_or(Error::OutOfRange)?;
    let physical_end=physical.checked_add(len).ok_or(Error::OutOfRange)?;
-   if previous_end.map_or(false,|end|(first as u64) < end)||physical==0||physical_end>sb.blocks_count as u64{return Err(Error::InvalidExtentTree)}
+   if previous_end.map_or(false,|end|(first as u64) < end)||physical==0||physical_end>sb.blocks_count{return Err(Error::InvalidExtentTree)}
    previous_end=Some(logical_end);
    if logical>=first&&(logical as u64)<logical_end{
     result=if uninitialized{ExtentStep::ZeroOrHole}else{ExtentStep::Found(physical+(logical-first) as u64)};
@@ -101,7 +105,7 @@ fn inspect_extent_node(node:&[u8],logical:u32,sb:&Superblock,expected_depth:Opti
    let o=EXTENT_HEADER_SIZE+i*EXTENT_ENTRY_SIZE;
    let key=u32at(node,o)?;
    let child=((u16at(node,o+8)? as u64)<<32)|(u32at(node,o+4)? as u64);
-   if previous_key.map_or(false,|prev|key<=prev)||child==0||child>=sb.blocks_count as u64{return Err(Error::InvalidExtentTree)}
+   if previous_key.map_or(false,|prev|key<=prev)||child==0||child>=sb.blocks_count{return Err(Error::InvalidExtentTree)}
    previous_key=Some(key);
    if key<=logical{selected=Some(child)}
   }
@@ -134,7 +138,7 @@ pub fn map_extent_block<D:ReadOnlyBlockDevice>(dev:&mut D,sb:&Superblock,root:&[
  Err(Error::InvalidExtentTree)
 }
 
-pub fn self_test()->bool{let mut b=[0u8;SUPERBLOCK_BYTES];b[0..4].copy_from_slice(&512u32.to_le_bytes());b[4..8].copy_from_slice(&4096u32.to_le_bytes());b[20..24].copy_from_slice(&1u32.to_le_bytes());b[32..36].copy_from_slice(&1024u32.to_le_bytes());b[40..44].copy_from_slice(&128u32.to_le_bytes());b[56..58].copy_from_slice(&EXT_MAGIC.to_le_bytes());b[76..80].copy_from_slice(&1u32.to_le_bytes());b[88..90].copy_from_slice(&128u16.to_le_bytes());b[96..100].copy_from_slice(&(INCOMPAT_FILETYPE|INCOMPAT_EXTENTS).to_le_bytes());let s=match Superblock::parse(&b){Ok(s)=>s,Err(_)=>return false};if s.block_size!=1024||s.inode_size!=128||s.group_count()!=Ok(4)||s.inode_location(129)!=Ok((1,0))||!s.read_only{return false}let mut bad=b;bad[96..100].copy_from_slice(&INCOMPAT_64BIT.to_le_bytes());if Superblock::parse(&bad)!=Err(Error::UnsupportedIncompatFeature){return false}let mut d=[0u8;12];d[0..4].copy_from_slice(&2u32.to_le_bytes());d[4..6].copy_from_slice(&12u16.to_le_bytes());d[6]=4;d[8..12].copy_from_slice(b"test");if validate_directory_block(&d,512)!=Ok(1){return false}d[4..6].copy_from_slice(&0u16.to_le_bytes());if validate_directory_block(&d,512)!=Err(Error::InvalidDirectoryEntry){return false}
+pub fn self_test()->bool{let mut b=[0u8;SUPERBLOCK_BYTES];b[0..4].copy_from_slice(&512u32.to_le_bytes());b[4..8].copy_from_slice(&4096u32.to_le_bytes());b[20..24].copy_from_slice(&1u32.to_le_bytes());b[32..36].copy_from_slice(&1024u32.to_le_bytes());b[40..44].copy_from_slice(&128u32.to_le_bytes());b[56..58].copy_from_slice(&EXT_MAGIC.to_le_bytes());b[76..80].copy_from_slice(&1u32.to_le_bytes());b[88..90].copy_from_slice(&128u16.to_le_bytes());b[96..100].copy_from_slice(&(INCOMPAT_FILETYPE|INCOMPAT_EXTENTS).to_le_bytes());let s=match Superblock::parse(&b){Ok(s)=>s,Err(_)=>return false};if s.block_size!=1024||s.inode_size!=128||s.group_count()!=Ok(4)||s.inode_location(129)!=Ok((1,0))||!s.read_only{return false}let mut wide=b;wide[96..100].copy_from_slice(&(INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_64BIT).to_le_bytes());wide[254..256].copy_from_slice(&64u16.to_le_bytes());wide[336..340].copy_from_slice(&1u32.to_le_bytes());if !matches!(Superblock::parse(&wide),Ok(v) if v.blocks_count==0x1_0000_1000 && v.descriptor_size==64){return false}let mut bad=b;bad[96..100].copy_from_slice(&0x8000_0000u32.to_le_bytes());if Superblock::parse(&bad)!=Err(Error::UnsupportedIncompatFeature){return false}let mut d=[0u8;12];d[0..4].copy_from_slice(&2u32.to_le_bytes());d[4..6].copy_from_slice(&12u16.to_le_bytes());d[6]=4;d[8..12].copy_from_slice(b"test");if validate_directory_block(&d,512)!=Ok(1){return false}d[4..6].copy_from_slice(&0u16.to_le_bytes());if validate_directory_block(&d,512)!=Err(Error::InvalidDirectoryEntry){return false}
  let mut root=[0u8;60];root[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());root[2..4].copy_from_slice(&1u16.to_le_bytes());root[4..6].copy_from_slice(&4u16.to_le_bytes());root[6..8].copy_from_slice(&0u16.to_le_bytes());root[12..16].copy_from_slice(&7u32.to_le_bytes());root[16..18].copy_from_slice(&2u16.to_le_bytes());root[20..24].copy_from_slice(&100u32.to_le_bytes());
  struct NoRead;impl ReadOnlyBlockDevice for NoRead{type DeviceError=();fn capacity_bytes(&self)->u64{4096*1024}fn read_at(&mut self,_:u64,_:&mut[u8])->Result<(),Self::DeviceError>{Err(())}}
  let mut dev=NoRead;let mut scratch=[0u8;1024];if map_extent_block(&mut dev,&s,&root,8,&mut scratch)!=Ok(Some(101)){return false}if map_extent_block(&mut dev,&s,&root,20,&mut scratch)!=Ok(None){return false}
@@ -200,7 +204,7 @@ pub fn map_legacy_block<D: ReadOnlyBlockDevice>(
     if block == 0 {
         return Ok(None);
     }
-    if block >= sb.blocks_count as u64 {
+    if block >= sb.blocks_count {
         return Err(Error::OutOfRange);
     }
     let mut use_a = true;
@@ -212,7 +216,7 @@ pub fn map_legacy_block<D: ReadOnlyBlockDevice>(
         if block == 0 {
             return Ok(None);
         }
-        if block >= sb.blocks_count as u64 {
+        if block >= sb.blocks_count {
             return Err(Error::OutOfRange);
         }
         if level + 1 == depth as usize {
@@ -226,7 +230,7 @@ pub fn map_legacy_block<D: ReadOnlyBlockDevice>(
 fn validate_legacy_data_pointer(sb: &Superblock, block: u64) -> Result<Option<u64>, Error> {
     if block == 0 {
         Ok(None)
-    } else if block >= sb.blocks_count as u64 {
+    } else if block >= sb.blocks_count {
         Err(Error::OutOfRange)
     } else {
         Ok(Some(block))
