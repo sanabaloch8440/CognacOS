@@ -96,7 +96,11 @@ fn synchronize_kernel_tlb() {
  let generation = TLB_GENERATION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
  for cpu in 1..crate::hal::MAX_CPUS {
   if cpu == current || crate::hal::cpu_state(cpu).ok() != Some(crate::hal::CPU_ONLINE) { continue; }
-  if crate::smp::ipi_shootdowns_enabled() { let _ = crate::smp::send_tlb_shootdown(cpu); }
+  if crate::smp::ipi_shootdowns_enabled() && crate::smp::send_tlb_shootdown(cpu).is_err() {
+   // Page tables are already changed. Reusing their frames without confirmed
+   // invalidation is memory corruption, so fail-stop instead of guessing.
+   crate::halt();
+  }
   while TLB_ACK[cpu].load(Ordering::Acquire) != generation { core::hint::spin_loop(); }
  }
 }
