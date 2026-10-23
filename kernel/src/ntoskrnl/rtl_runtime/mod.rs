@@ -80,6 +80,29 @@ pub(crate) fn pool_allocation_info(ptr: *const u8) -> Option<(usize, u32)> {
     pool::allocation_info(ptr)
 }
 
+/// NT executive compatibility shim for ExAllocatePoolWithTag.
+///
+/// This early allocator only supports nonpaged pool and allocations that fit
+/// the bounded RTL arena. Unsupported pool types and exhaustion return NULL.
+pub(crate) extern "system" fn ex_allocate_pool_with_tag(pool_type: u32, size: usize, tag: u32) -> *mut u8 {
+    // POOL_TYPE values: NonPagedPool=0, NonPagedPoolNx=512. Paged pool is
+    // intentionally rejected until page-fault-backed paging is available.
+    if pool_type != 0 && pool_type != 512 { return core::ptr::null_mut(); }
+    pool::allocate_tagged(size, tag, false)
+}
+
+/// Free a block allocated by the current kernel pool, requiring its original tag.
+pub(crate) extern "system" fn ex_free_pool_with_tag(ptr: *mut u8, tag: u32) {
+    if ptr.is_null() { return; }
+    let _ = pool::deallocate_tagged(ptr, Some(tag));
+}
+
+/// Free a block without tag checking, matching ExFreePool's ownership contract.
+pub(crate) extern "system" fn ex_free_pool(ptr: *mut u8) {
+    if ptr.is_null() { return; }
+    let _ = pool::deallocate(ptr);
+}
+
 #[repr(C)]
 pub struct RtlBitmap { pub size_of_bitmap: u32, pub buffer: *mut u32 }
 #[repr(C)]
