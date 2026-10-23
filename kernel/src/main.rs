@@ -92,6 +92,13 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // Install a private descriptor table, then immediately switch CR3 to
         // the UEFI-allocated page tables. These identity-map the boot chain.
         arch::initialize();
+        let bsp_apic_id = (core::arch::x86_64::__cpuid(1).ebx >> 24) & 0xff;
+        if hal::initialize_bsp(bsp_apic_id).is_err()
+            || unsafe { hal::install_cpu_local(0) }.is_err()
+        {
+            serial_write(b"FATAL: bootstrap CPU-local HAL setup failed.\\r\\n");
+            halt();
+        }
         user::initialize();
         syscall::initialize();
         usermode::initialize();
