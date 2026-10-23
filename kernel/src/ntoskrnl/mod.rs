@@ -461,7 +461,8 @@ pub fn self_test() -> bool {
  && resolve(b"hal.dll",ImportSymbol::Name(b"HalAcpiGetTableEx")).is_some()
  && resolve(b"hal.dll",ImportSymbol::Name(b"HalQueryRealTimeClock")).is_some()
  && resolve(b"hal.dll",ImportSymbol::Name(b"HalTranslateBusAddress")).is_some()
- && resolve(b"hal.dll",ImportSymbol::Ordinal(1)).is_none()
+ && resolve(b"hal.dll",ImportSymbol::Ordinal(1)).is_some()
+ && resolve(b"hal.dll",ImportSymbol::Ordinal(48)).is_some()
  // Windows x64 exposes KeQueryPerformanceCounter through HAL imports and,
  // on modern x64 releases, also through the kernel. Both import paths must
  // converge on one implementation so counter epoch/frequency cannot diverge.
