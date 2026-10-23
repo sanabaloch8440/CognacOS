@@ -224,6 +224,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlQueryElevationFlags" => rtl_runtime::rtl_query_elevation_flags as usize,
   "RtlLocalTimeToSystemTime" => rtl_runtime::rtl_local_time_to_system_time as usize,
   "RtlSystemTimeToLocalTime" => rtl_runtime::rtl_system_time_to_local_time as usize,
+  "RtlIsBitmapClear" => rtl_runtime::rtl_is_bitmap_clear as usize,
+  "RtlIsBitmapEmptyEx" => rtl_runtime::rtl_is_bitmap_empty_ex as usize,
+  "RtlFindNextForwardRunClearCapped" => rtl_runtime::rtl_find_next_forward_run_clear_capped as usize,
+  "RtlIsNtDdiVersionAvailableEx" => rtl_runtime::rtl_is_nt_ddi_version_available_ex as usize,
+  "RtlIsValidOemCharacterEx" => rtl_runtime::rtl_is_valid_oem_character_ex as usize,
   // All other names deliberately fail closed until their own signatures and semantics are implemented.
   "RtlCreateAcl" => rtl_runtime::rtl_create_acl as usize,
   "RtlValidAcl" => rtl_runtime::rtl_valid_acl as usize,
