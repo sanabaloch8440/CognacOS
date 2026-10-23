@@ -7,6 +7,8 @@ use core::arch::global_asm;
 const PAGE_SIZE: usize = 4096;
 static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
 static ONLINE_APS: AtomicUsize = AtomicUsize::new(0);
+static LAST_START_ERROR: AtomicUsize = AtomicUsize::new(0);
+static AP_ENTRY_REACHED: AtomicUsize = AtomicUsize::new(0);
 
 global_asm!(r#"
     .section .rodata.ap_trampoline,"a",@progbits
@@ -327,6 +329,22 @@ pub unsafe fn start_one_ap(
     Err(SmpError::StartupTimeout)
 }
 
+fn error_code(error: SmpError) -> usize {
+    match error {
+        SmpError::InvalidTarget => 1,
+        SmpError::UnsupportedApicId => 2,
+        SmpError::InvalidCpuState => 3,
+        SmpError::StartupTimeout => 4,
+        SmpError::Apic(_) => 5,
+        SmpError::Hal(_) => 6,
+        SmpError::Memory(_) => 7,
+        SmpError::DelayUnavailable => 8,
+        SmpError::TrampolineTooLarge => 9,
+    }
+}
+pub fn last_start_error_code() -> usize { LAST_START_ERROR.load(Ordering::Acquire) }
+pub fn ap_entry_reached_count() -> usize { AP_ENTRY_REACHED.load(Ordering::Acquire) }
+
 /// Enable xAPIC MMIO as uncached, install the real-mode trampoline, and bring
 /// each MADT-discovered AP online. APs are left in a safe interrupt-disabled
 /// idle loop until per-CPU interrupt routing and scheduling are implemented.
@@ -358,7 +376,10 @@ pub unsafe fn start_discovered_aps(
         unsafe { prepare_trampoline(pml4_physical, trampoline_physical, stack_top, logical_id)?; }
         match unsafe { start_one_ap(local_apic_base, target, pit_delay_us) } {
             Ok(()) => { online += 1; }
-            Err(_) => { let _ = hal::mark_cpu_failed(logical_id); }
+            Err(error) => {
+                LAST_START_ERROR.store(error_code(error), Ordering::Release);
+                let _ = hal::mark_cpu_failed(logical_id);
+            }
         }
     }
     Ok(online)
@@ -366,6 +387,7 @@ pub unsafe fn start_discovered_aps(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_ap_entry(logical_id: u32) -> ! {
+    AP_ENTRY_REACHED.fetch_add(1, Ordering::AcqRel);
     let index = logical_id as usize;
     unsafe { arch::load_cpu_descriptor_tables(); }
     let mitigations = unsafe { crate::security::initialize() };
