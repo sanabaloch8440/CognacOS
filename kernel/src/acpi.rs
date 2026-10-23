@@ -7,6 +7,8 @@ pub enum AcpiError { Truncated, BadSignature, BadLength, BadChecksum, TooManyEnt
 pub struct CpuEntry { pub apic_id: u32, pub processor_uid: u32, pub enabled: bool, pub x2apic: bool }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct IoApicEntry { pub id: u8, pub address: u32, pub gsi_base: u32 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct IrqOverride { pub bus: u8, pub source_irq: u8, pub gsi: u32, pub active_low: bool, pub level_triggered: bool }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MadtInfo {
     pub local_apic_address: u64,
@@ -15,9 +17,11 @@ pub struct MadtInfo {
     pub cpu_count: usize,
     pub io_apics: [IoApicEntry; 8],
     pub io_apic_count: usize,
+    pub irq_overrides: [IrqOverride; 16],
+    pub irq_override_count: usize,
 }
 impl MadtInfo {
-    pub const EMPTY: Self = Self { local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0 };
+    pub const EMPTY: Self = Self { local_apic_address: 0, flags: 0, cpus: [CpuEntry { apic_id: 0, processor_uid: 0, enabled: false, x2apic: false }; 64], cpu_count: 0, io_apics: [IoApicEntry { id: 0, address: 0, gsi_base: 0 }; 8], io_apic_count: 0, irq_overrides: [IrqOverride { bus: 0, source_irq: 0, gsi: 0, active_low: false, level_triggered: false }; 16], irq_override_count: 0 };
 }
 fn u32le(b: &[u8], o: usize) -> Result<u32, AcpiError> {
     let s = b.get(o..o + 4).ok_or(AcpiError::Truncated)?;
@@ -53,6 +57,18 @@ pub fn parse_madt(bytes: &[u8]) -> Result<MadtInfo, AcpiError> {
                 if out.io_apic_count == out.io_apics.len() { return Err(AcpiError::TooManyEntries); }
                 out.io_apics[out.io_apic_count] = IoApicEntry { id: e[2], address: u32le(e, 4)?, gsi_base: u32le(e, 8)? };
                 out.io_apic_count += 1;
+            }
+            2 if size >= 10 => {
+                if out.irq_override_count == out.irq_overrides.len() { return Err(AcpiError::TooManyEntries); }
+                let flags = u16::from_le_bytes([e[8], e[9]]);
+                let polarity = flags & 0x3;
+                let trigger = (flags >> 2) & 0x3;
+                if polarity == 2 || trigger == 2 { return Err(AcpiError::MalformedEntry); }
+                out.irq_overrides[out.irq_override_count] = IrqOverride {
+                    bus: e[2], source_irq: e[3], gsi: u32le(e, 4)?,
+                    active_low: polarity == 3, level_triggered: trigger == 3,
+                };
+                out.irq_override_count += 1;
             }
             5 if size >= 12 => out.local_apic_address = u64::from_le_bytes([e[4],e[5],e[6],e[7],e[8],e[9],e[10],e[11]]),
             9 if size >= 16 => {
