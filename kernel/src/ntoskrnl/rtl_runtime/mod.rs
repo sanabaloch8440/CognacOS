@@ -4,12 +4,14 @@ mod memory;
 mod strings;
 mod security;
 mod misc;
+mod conversion;
 
 pub use bitmap::*;
 pub use memory::*;
 pub use strings::*;
 pub use security::*;
 pub use misc::*;
+pub use conversion::*;
 
 
 #[repr(C)]
