@@ -24,6 +24,7 @@ mod bitmap_abi;
 mod sid_abi;
 mod abi_extra;
 mod sd_convert;
+mod strings_numeric;
 
 
 pub use bitmap::*;
@@ -51,6 +52,7 @@ pub use bitmap_abi::*;
 pub use sid_abi::*;
 pub use abi_extra::*;
 pub use sd_convert::*;
+pub use strings_numeric::*;
 
 
 
