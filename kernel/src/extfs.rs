@@ -12,7 +12,7 @@ pub const INCOMPAT_FLEX_BG:u32=0x0200;
 const SUPPORTED_RO_COMPAT:u32=0x0003; // sparse_super and large_file only
 const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,InvalidExtentTree,Io}
+pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,Io}
 fn u16at(b:&[u8],o:usize)->Result<u16,Error>{let e=o.checked_add(2).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u16::from_le_bytes([s[0],s[1]]))}
 fn u32at(b:&[u8],o:usize)->Result<u32,Error>{let e=o.checked_add(4).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -27,7 +27,9 @@ impl Superblock{
   let inodes_count=u32at(b,0)?;let blocks_count=u32at(b,4)?;let first_data_block=u32at(b,20)?;
   let blocks_per_group=u32at(b,32)?;let inodes_per_group=u32at(b,40)?;
   if inodes_count==0||blocks_count==0||blocks_per_group==0||inodes_per_group==0||first_data_block>=blocks_count||(block_size==1024&&first_data_block!=1)||(block_size>1024&&first_data_block!=0){return Err(Error::InvalidGeometry)}
-  let feature_compat=u32at(b,92)?;let feature_incompat=u32at(b,96)?;let feature_ro_compat=u32at(b,100)?;if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}if revision>1{return Err(Error::UnsupportedFormat)}
+  let feature_compat=u32at(b,92)?;let feature_incompat=u32at(b,96)?;let feature_ro_compat=u32at(b,100)?;if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
+  // DIR_INDEX requires htree-aware directory parsing; never treat an indexed root as linear entries.
+  if feature_compat & 0x0020 != 0{return Err(Error::UnsupportedCompatFeature)}if revision>1{return Err(Error::UnsupportedFormat)}
   if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
   if revision>1{return Err(Error::UnsupportedFormat)}
   if feature_incompat&INCOMPAT_64BIT!=0||feature_incompat&INCOMPAT_META_BG!=0||feature_incompat&!KNOWN_INCOMPAT!=0{return Err(Error::UnsupportedIncompatFeature)}
@@ -85,7 +87,7 @@ fn inspect_extent_node(node:&[u8],logical:u32,sb:&Superblock,expected_depth:Opti
    let physical=((u16at(node,o+6)? as u64)<<32)|(u32at(node,o+8)? as u64);
    let logical_end=(first as u64).checked_add(len).ok_or(Error::OutOfRange)?;
    let physical_end=physical.checked_add(len).ok_or(Error::OutOfRange)?;
-   if previous_end.map_or(false,|end|first as u64<end)||physical==0||physical_end>sb.blocks_count as u64{return Err(Error::InvalidExtentTree)}
+   if previous_end.map_or(false,|end|(first as u64) < end)||physical==0||physical_end>sb.blocks_count as u64{return Err(Error::InvalidExtentTree)}
    previous_end=Some(logical_end);
    if logical>=first&&(logical as u64)<logical_end{
     result=if uninitialized{ExtentStep::ZeroOrHole}else{ExtentStep::Found(physical+(logical-first) as u64)};
