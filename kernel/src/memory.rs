@@ -241,13 +241,33 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
     let end = base.checked_add(bytes).filter(|end| *end <= PHYSICAL_LIMIT).ok_or(AllocError::InvalidPage)?;
     let _guard = MemoryGuard::acquire();
     let free = unsafe { &mut *FREE_PAGES.0.get() };
-    if pages > FREE_CAPACITY - free.1 { return Err(AllocError::FreeListFull); }
-    let mut page = base;
-    while page < end {
-        free.0[free.1] = page;
-        free.1 += 1;
-        page += PAGE_SIZE;
+    if pages <= FREE_CAPACITY - free.1 {
+        let mut page = base;
+        while page < end {
+            free.0[free.1] = page;
+            free.1 += 1;
+            page += PAGE_SIZE;
+        }
+        return Ok(());
     }
+
+    // If the stack is full, retain the whole run as a free region instead of
+    // partially freeing it. Adjacent runs can extend an existing free extent.
+    let regions = unsafe { &mut *REGIONS.0.get() };
+    let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    for region in regions.iter_mut().take(count) {
+        if end == region.next {
+            region.next = base;
+            return Ok(());
+        }
+        if base == region.end {
+            region.end = end;
+            return Ok(());
+        }
+    }
+    if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+    regions[count] = Region { next: base, end };
+    REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
     Ok(())
 }
 
