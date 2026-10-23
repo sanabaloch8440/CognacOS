@@ -266,3 +266,44 @@ pub fn resolve_isa_irq(madt: &MadtInfo, irq: u8) -> (u32, bool, bool) {
     }
     (irq as u32, false, false)
 }
+
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct McfgAllocation {
+    pub base_address: u64,
+    pub segment: u16,
+    pub start_bus: u8,
+    pub end_bus: u8,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct McfgInfo { pub allocations: [McfgAllocation; 16], pub count: usize }
+impl McfgInfo {
+    pub const EMPTY: Self = Self { allocations: [McfgAllocation { base_address: 0, segment: 0, start_bus: 0, end_bus: 0 }; 16], count: 0 };
+}
+
+/// Parse ACPI MCFG allocations. This describes physical ECAM windows only; the
+/// memory manager must establish an uncached device mapping before PCI ECAM reads.
+pub fn parse_mcfg(bytes: &[u8]) -> Result<McfgInfo, AcpiError> {
+    if bytes.len() < 44 { return Err(AcpiError::Truncated); }
+    if bytes.get(0..4) != Some(b"MCFG") { return Err(AcpiError::BadSignature); }
+    let length = u32le(bytes, 4)? as usize;
+    if length < 44 || length > bytes.len() { return Err(AcpiError::BadLength); }
+    if !checksum_ok(&bytes[..length]) { return Err(AcpiError::BadChecksum); }
+    if (length - 44) % 16 != 0 { return Err(AcpiError::MalformedEntry); }
+    let mut out = McfgInfo::EMPTY;
+    for offset in (44..length).step_by(16) {
+        if out.count == out.allocations.len() { return Err(AcpiError::TooManyEntries); }
+        let base = u64::from_le_bytes(bytes[offset..offset + 8].try_into().map_err(|_| AcpiError::Truncated)?);
+        let segment = u16::from_le_bytes([bytes[offset + 8], bytes[offset + 9]]);
+        let start_bus = bytes[offset + 10];
+        let end_bus = bytes[offset + 11];
+        if base == 0 || base & 0xfffff != 0 || end_bus < start_bus {
+            return Err(AcpiError::MalformedEntry);
+        }
+        let span = ((end_bus as u64 - start_bus as u64) + 1).checked_mul(1 << 20).ok_or(AcpiError::BadLength)?;
+        base.checked_add(span).ok_or(AcpiError::AddressOutOfRange)?;
+        out.allocations[out.count] = McfgAllocation { base_address: base, segment, start_bus, end_bus };
+        out.count += 1;
+    }
+    Ok(out)
+}
