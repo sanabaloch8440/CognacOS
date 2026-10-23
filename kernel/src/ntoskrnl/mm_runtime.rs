@@ -237,7 +237,21 @@ pub fn self_test() -> bool {
         && unsafe { destination.add(127).read() } == 0xA6;
     let freed = crate::kernel_vm::free_pages(destination, 1).is_ok()
         && crate::kernel_vm::free_pages(source, 1).is_ok();
-    valid && freed
+    let contiguous = unsafe { mm_allocate_contiguous_memory(5000, 0xffff_ffff) };
+    let contiguous_ok = if contiguous.is_null() {
+        false
+    } else {
+        unsafe {
+            (contiguous as *mut u8).write(0x42);
+            (contiguous as *mut u8).add(4999).write(0x91);
+        }
+        let mdl_size = unsafe { mm_size_of_mdl(contiguous, 5000) };
+        let bytes_ok = unsafe { (contiguous as *const u8).read() == 0x42
+            && (contiguous as *const u8).add(4999).read() == 0x91 };
+        unsafe { mm_free_contiguous_memory(contiguous); }
+        bytes_ok && mdl_size == 64
+    };
+    valid && freed && contiguous_ok
 }
 
 #[cfg(test)]
