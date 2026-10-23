@@ -204,6 +204,46 @@ rdotos_tlb_ipi_stub:
     .type rdotos_spurious_stub, @function
 rdotos_spurious_stub:
     iretq
+
+    .global rdotos_timer_stub
+    .type rdotos_timer_stub, @function
+rdotos_timer_stub:
+    cld
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov r12, rsp
+    and rsp, -16
+    call rdotos_timer_interrupt_handler
+    mov rsp, r12
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
 "#);
 
 unsafe extern "C" {
@@ -216,7 +256,7 @@ unsafe extern "C" {
     fn rdotos_isr_20(); fn rdotos_isr_21(); fn rdotos_isr_22(); fn rdotos_isr_23();
     fn rdotos_isr_24(); fn rdotos_isr_25(); fn rdotos_isr_26(); fn rdotos_isr_27();
     fn rdotos_isr_28(); fn rdotos_isr_29(); fn rdotos_isr_30(); fn rdotos_isr_31();
-    fn rdotos_tlb_ipi_stub(); fn rdotos_spurious_stub();
+    fn rdotos_tlb_ipi_stub(); fn rdotos_spurious_stub(); fn rdotos_timer_stub();
 }
 
 /// Reload the already initialized shared kernel GDT and IDT on a secondary CPU.
@@ -252,6 +292,7 @@ pub unsafe fn initialize() {
     unsafe {
         idt_ptr.add(crate::apic::TLB_SHOOTDOWN_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tlb_ipi_stub as u64));
         idt_ptr.add(0xFF).write(IdtEntry::interrupt_gate(rdotos_spurious_stub as u64));
+        idt_ptr.add(crate::apic::LOCAL_TIMER_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_timer_stub as u64));
     }
     let pointer = DescriptorTablePointer {
         limit: (IDT_ENTRIES * size_of::<IdtEntry>() - 1) as u16,
@@ -359,3 +400,4 @@ pub unsafe fn context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64) {
     if old_rsp.is_null() || new_rsp.is_null() { return; }
     unsafe { rdotos_context_switch(old_rsp, new_rsp); }
 }
+\n#[unsafe(no_mangle)]\npub extern "C" fn rdotos_timer_interrupt_handler() { crate::apic::timer_interrupt(); }\n
