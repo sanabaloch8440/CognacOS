@@ -97,9 +97,9 @@ Status reflects code currently present in the repository, not intended architect
 ## ACPI, APIC, and SMP
 
 - [x] Parse MADT Local APIC/x2APIC processor entries and I/O APIC GSI bases with table bounds/checksum validation.
-- [x] Provide xAPIC MMIO initialization and masked I/O APIC routing primitives.
+- [x] Provide xAPIC MMIO initialization, masked I/O APIC routing, bounded ICR waits, and fixed/INIT/Startup IPI primitives (not yet invoked by a boot-time AP-startup coordinator).
 - [ ] Discover RSDP through UEFI configuration tables and pass ACPI roots in versioned BootInfo.
-- [x] Add a separate x86-64 HAL with fixed per-CPU records, APIC-ID registry, CPU lifecycle states, GS-based CPU-local access, typed port I/O, MMIO range validation, and IRQ-save spin locks. The bootstrap CPU is registered at kernel entry.
+- [x] Add a separate x86-64 HAL with fixed per-CPU records, APIC-ID registry, ACPI MADT CPU-registration API, CPU lifecycle states, GS-based CPU-local access, typed port I/O, MMIO range validation, and IRQ-save spin locks. The bootstrap CPU is registered at kernel entry.
 - [ ] Bring up application processors using a low-memory SIPI trampoline, per-CPU stacks/GDT/TSS/IDT, calibrated startup timeouts, and APIC startup IPIs.
 - [ ] Enable timer interrupts, IRQ routing, MSI/MSI-X, interrupt remapping, and multi-vCPU regression tests.
 
