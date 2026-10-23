@@ -203,18 +203,57 @@ pub fn local_apic_base() -> Option<u64> {
     (base != 0).then_some(base)
 }
 
-/// Set the xAPIC task-priority threshold from an NT IRQL value (0..=15).
-/// Hardware priority classes are four-bit fields in TPR; this is a conservative
-/// mapping and does not replace the full Windows HAL IRQL policy.
+/// Map NT IRQL onto the four-bit xAPIC task-priority class. NT IRQL has
+/// more levels than the APIC TPR, so adjacent high DIRQLs share a hardware
+/// class; software still tracks the exact IRQL in the executive.
+#[inline]
+pub const fn irql_to_apic_class(irql: u8) -> u8 {
+    if irql <= 1 { 0 } else if irql == 2 { 1 } else {
+        let class = irql.saturating_sub(1);
+        if class > 15 { 15 } else { class }
+    }
+}
 pub unsafe fn set_task_priority(irql: u8) -> Result<(), ApicError> {
     let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
-    if irql > 15 { return Err(ApicError::InvalidVector); }
-    unsafe { write_local(base, APIC_TPR, (irql as u32) << 4); }
+    unsafe { write_local(base, APIC_TPR, (irql_to_apic_class(irql) as u32) << 4); }
     Ok(())
 }
 pub unsafe fn task_priority() -> Result<u8, ApicError> {
     let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
     Ok(((unsafe { read_local(base, APIC_TPR) } >> 4) & 0x0f) as u8)
+}
+
+/// Enable or disable an already configured I/O-APIC GSI. Unknown/unconfigured
+/// entries are never unmasked: an unmask request requires a valid vector in
+/// the existing redirection entry. Caller must ensure the matching IDT gate
+/// and ISR are installed before enabling the source.
+pub unsafe fn set_ioapic_irq_enabled(
+    io_base: u64, gsi_base: u32, gsi: u32, enabled: bool,
+) -> Result<(), ApicError> {
+    if io_base == 0 || io_base & 0xfff != 0 { return Err(ApicError::InvalidBase); }
+    if gsi < gsi_base || gsi - gsi_base >= 120 { return Err(ApicError::InvalidGsi); }
+    unsafe fn select(base: u64, reg: u8) {
+        unsafe { core::ptr::write_volatile(base as *mut u32, reg as u32); }
+    }
+    unsafe fn read(base: u64) -> u32 {
+        unsafe { core::ptr::read_volatile((base + 0x10) as *const u32) }
+    }
+    unsafe fn write(base: u64, value: u32) {
+        unsafe { core::ptr::write_volatile((base + 0x10) as *mut u32, value); }
+    }
+    let index = (gsi - gsi_base) as u8;
+    unsafe { select(io_base, 0x01); }
+    let max_pin = (unsafe { read(io_base) } >> 16) & 0xff;
+    if index as u32 > max_pin { return Err(ApicError::InvalidGsi); }
+    let low_reg = 0x10u8.wrapping_add(index.wrapping_mul(2));
+    unsafe { select(io_base, low_reg); }
+    let current = unsafe { read(io_base) };
+    let vector = (current & 0xff) as u8;
+    if enabled && (vector < 0x20 || vector == 0xff || current & (1 << 16) == 0 && vector == 0) {
+        return Err(ApicError::InvalidVector);
+    }
+    unsafe { write(io_base, if enabled { current & !(1 << 16) } else { current | (1 << 16) }); }
+    Ok(())
 }
 
 /// Read the x86 TSC as the kernel's monotonic deadline domain. Timeout values
