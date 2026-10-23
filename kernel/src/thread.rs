@@ -176,3 +176,10 @@ pub fn initialize(){
         unsafe { *IDLE_CONTEXTS[cpu].0.get()=core::ptr::null_mut(); }
     }
 }
+
+/// Fast scheduler predicate for the interruptible idle loop.
+pub fn has_ready_threads()->bool{
+    let cpu=cpu_index().unwrap_or(0);
+    let bit=1u64.checked_shl(cpu as u32).unwrap_or(0);
+    THREADS.lock().records.iter().any(|t|t.state==ThreadState::Ready&&t.affinity&bit!=0)
+}
