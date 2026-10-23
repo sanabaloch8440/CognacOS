@@ -17,6 +17,10 @@ static LOCAL_TIMER_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::
 const APIC_EOI: usize = 0x0b0;
 const APIC_SVR: usize = 0x0f0;
 const APIC_LVT_TIMER: usize = 0x320;
+const APIC_LVT_THERMAL: usize = 0x330;
+const APIC_LVT_PERFORMANCE: usize = 0x340;
+const APIC_LVT_LINT0: usize = 0x350;
+const APIC_LVT_LINT1: usize = 0x360;
 const APIC_LVT_ERROR: usize = 0x370;
 pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xF1;
 const APIC_SPURIOUS_VECTOR: u32 = 0x100 | 0xff;
@@ -46,6 +50,10 @@ pub unsafe fn initialize_local_apic(mmio_base: u64) -> Result<u32, ApicError> {
     // the IPI gate and masked legacy/I/O APIC routes.
     unsafe { write_local(mmio_base, APIC_LVT_ERROR, 1 << 16); }
     unsafe { write_local(mmio_base, APIC_LVT_TIMER, 1 << 16); }
+    unsafe { write_local(mmio_base, APIC_LVT_THERMAL, 1 << 16); }
+    unsafe { write_local(mmio_base, APIC_LVT_PERFORMANCE, 1 << 16); }
+    unsafe { write_local(mmio_base, APIC_LVT_LINT0, 1 << 16); }
+    unsafe { write_local(mmio_base, APIC_LVT_LINT1, 1 << 16); }
     unsafe { write_local(mmio_base, APIC_SVR, APIC_SPURIOUS_VECTOR); }
     Ok(id)
 }
