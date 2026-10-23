@@ -135,7 +135,16 @@ mod tests {
     fn integer_char_formats_and_checks_capacity() {
         let mut buf = [0u8; 8];
         assert_eq!(unsafe { rtl_integer_to_char(255, 16, buf.len() as u32, buf.as_mut_ptr()) }, STATUS_SUCCESS);
-        assert_eq!(&buf[..3], b"FF\\0");
+        assert_eq!(&buf[..3], b"FF\0");
         assert_eq!(unsafe { rtl_integer_to_char(255, 16, 2, buf.as_mut_ptr()) }, STATUS_BUFFER_TOO_SMALL);
     }
+}
+
+/// Returns the required UTF-16 byte count for an ANSI_STRING, including the terminator.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_ansi_string_to_unicode_size(string: *const super::AnsiString) -> u32 {
+    if string.is_null() { return 0; }
+    let s = unsafe { &*string };
+    // Windows' documented size helper includes space for a trailing WCHAR NUL.
+    (s.length as u32).saturating_add(1).saturating_mul(2)
 }

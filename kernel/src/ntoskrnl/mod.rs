@@ -107,6 +107,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlUnicodeStringToInteger" => rtl_runtime::rtl_unicode_string_to_integer as usize,
   "RtlIntegerToUnicodeString" => rtl_runtime::rtl_integer_to_unicode_string as usize,
   "RtlIntegerToChar" => rtl_runtime::rtl_integer_to_char as usize,
+  "RtlAnsiStringToUnicodeSize" => rtl_runtime::rtl_ansi_string_to_unicode_size as usize,
   // All other names deliberately fail closed until their own signatures and semantics are implemented.
   _ => return None,
  };
