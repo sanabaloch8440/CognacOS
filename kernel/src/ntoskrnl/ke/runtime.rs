@@ -387,6 +387,9 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     timeout: *const i64,
 ) -> i32 {
     if object.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !matches!(unsafe { (*object).kind }, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5) {
+        return STATUS_NOT_IMPLEMENTED;
+    }
     if alertable != 0 { return STATUS_NOT_IMPLEMENTED; } // APC delivery is not yet implemented.
     let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
     if unsafe { try_consume_dispatcher_object(object) } { return STATUS_SUCCESS; }
