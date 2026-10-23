@@ -3,6 +3,7 @@
 
 mod arch;
 mod memory;
+mod pagefile;
 mod kernel_vm;
 mod security;
 mod vm;
@@ -153,6 +154,18 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: cannot reserve bootstrap stack from physical allocator.\r\n");
             halt();
         }
+        if pagefile::initialize() {
+            serial_write(b"Pagefile storage initialized on dedicated ATA primary-slave disk; slots: ");
+            serial_write_decimal(pagefile::capacity_slots() as usize);
+            serial_write(b"\\r\\n");
+            if !pagefile::self_test() {
+                serial_write(b"FATAL: pagefile storage read/write self-test failed.\\r\\n");
+                halt();
+            }
+            serial_write(b"Pagefile storage read/write self-test passed.\\r\\n");
+        } else {
+            serial_write(b"WARNING: no dedicated pagefile disk; pageable eviction disabled.\\r\\n");
+        }
         if kernel_vm::initialize(info.pml4_physical).is_err() {
             serial_write(b"FATAL: kernel virtual-memory manager initialization failed.\r\n");
             halt();
@@ -162,6 +175,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Kernel virtual-address arena and mapping self-test passed.\r\n");
+        if pagefile::is_active() {
+            serial_write(b"Pagefile-backed pageable eviction and fault-driven page-in self-test passed.\\r\\n");
+        }
         if !ntoskrnl::memory_manager_self_test() {
             serial_write(b"FATAL: NT memory-manager translation/copy self-test failed.\\r\\n");
             halt();
