@@ -192,3 +192,39 @@ pub(super) fn deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool
     table[index] = Allocation::EMPTY;
     true
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_classes_are_aligned_and_bounded() {
+        assert_eq!(small_class(0), None);
+        assert_eq!(small_class(1), Some(16));
+        assert_eq!(small_class(16), Some(16));
+        assert_eq!(small_class(17), Some(32));
+        assert_eq!(small_class(1025), Some(2048));
+        assert_eq!(small_class(2048), Some(2048));
+        assert_eq!(small_class(2049), None);
+    }
+
+    #[test]
+    fn slab_bitmap_reuses_slots_and_detects_last_live_block() {
+        let mut slab = Slab {
+            base: 0x200000, block_size: 16, slots: PAGE_SIZE / 16,
+            used: [0; BITMAP_WORDS], live: true,
+        };
+        assert_eq!(slab.find_free_slot(), Some(0));
+        slab.mark_used(0);
+        assert_eq!(slab.find_free_slot(), Some(1));
+        assert!(!slab.is_empty_except(0));
+        slab.mark_used(1);
+        assert!(!slab.is_empty_except(0));
+        slab.mark_free(0);
+        assert_eq!(slab.find_free_slot(), Some(0));
+        assert!(slab.is_empty_except(1));
+        slab.mark_free(1);
+        assert!(slab.used.iter().all(|word| *word == 0));
+    }
+}
