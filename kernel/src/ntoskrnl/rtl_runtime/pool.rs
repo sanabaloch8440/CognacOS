@@ -103,6 +103,29 @@ pub(super) fn allocate(size: usize) -> *mut u8 { allocate_tagged(size, 0, false)
 /// Release only live pointers owned by this pool; foreign and duplicate frees are rejected.
 pub(super) fn deallocate(ptr: *mut u8) -> bool { deallocate_tagged(ptr, None) }
 
+/// Return requested byte count and tag for an exact live allocation pointer.
+pub(super) fn allocation_info(ptr: *const u8) -> Option<(usize, u32)> {
+    if ptr.is_null() { return None; }
+    let start = base() as usize;
+    let p = ptr as usize;
+    if p < start + HEADER_SIZE || p >= start + ARENA_SIZE || (p - start - HEADER_SIZE) % ALIGN != 0 {
+        return None;
+    }
+    let _guard = Guard::acquire();
+    unsafe { init_locked(); }
+    let target = p - start - HEADER_SIZE;
+    let mut off = 0usize;
+    while off < ARENA_SIZE {
+        let h = unsafe { &*base().add(off).cast::<Block>() };
+        if off == target {
+            return if h.free == 0 { Some((h.requested, h.tag)) } else { None };
+        }
+        if h.next == NONE { break; }
+        off = h.next;
+    }
+    None
+}
+
 /// Free an owned block, optionally requiring its allocation tag to match.
 pub(super) fn deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool {
     if ptr.is_null() { return true; }
@@ -163,6 +186,18 @@ mod tests {
         assert!(!c.is_null());
         assert_eq!((c as usize) % ALIGN, 0);
         assert!(deallocate(c));
+    }
+
+    #[test]
+    fn tagged_pool_tracks_requested_size_and_rejects_wrong_tag_free() {
+        let p = allocate_tagged(37, 0x52544c31, true);
+        assert!(!p.is_null());
+        assert_eq!(allocation_info(p), Some((37, 0x52544c31)));
+        for i in 0..37 { assert_eq!(unsafe { *p.add(i) }, 0); }
+        assert!(!deallocate_tagged(p, Some(0x42414421)));
+        assert_eq!(allocation_info(p), Some((37, 0x52544c31)));
+        assert!(deallocate_tagged(p, Some(0x52544c31)));
+        assert_eq!(allocation_info(p), None);
     }
 
     #[test]
