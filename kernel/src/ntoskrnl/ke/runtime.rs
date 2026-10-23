@@ -475,7 +475,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
                 Err(_) => return STATUS_NOT_IMPLEMENTED,
             }
         } else { None };
-        if crate::dispatcher::register_wait_all(thread_id, &object_ids[..count as usize], timeout_token).is_err() {
+        if crate::dispatcher::register_wait_all(thread_id, &object_ids[..count as usize], timeout_token, deadline).is_err() {
             if let Some(token) = timeout_token { let _ = crate::dispatcher::cancel(token); }
             return STATUS_NOT_IMPLEMENTED;
         }
@@ -499,7 +499,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
             }
         }
     }
-    if crate::dispatcher::register_wait_any(thread_id, &object_ids[..count as usize], &tokens[..registered]).is_err() {
+    if crate::dispatcher::register_wait_any(thread_id, &object_ids[..count as usize], &tokens[..registered], deadline).is_err() {
         for token in tokens[..registered].iter().copied() { let _ = crate::dispatcher::cancel(token); }
         return STATUS_NOT_IMPLEMENTED;
     }
