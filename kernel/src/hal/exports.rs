@@ -121,8 +121,7 @@ pub unsafe extern "win64" fn ke_flush_write_buffer() {
 pub fn resolve(name: &[u8]) -> Option<u64> {
     if name.eq_ignore_ascii_case(b"HalQueryMaximumProcessorCount") {
         Some(hal_query_maximum_processor_count as usize as u64)
-    } else if name.eq_ignore_ascii_case(b"KeFlushWriteBuffer")
-        || name.eq_ignore_ascii_case(b"HalFlushWriteBuffer") {
+    } else if name.eq_ignore_ascii_case(b"KeFlushWriteBuffer") {
         Some(ke_flush_write_buffer as usize as u64)
     } else { None }
 }
