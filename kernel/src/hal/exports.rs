@@ -13,7 +13,7 @@ pub struct HalExport { pub ordinal: u16, pub name: &'static str, pub state: Stub
 
 /// Windows 11 x64 10.0.26100 HAL exports, in ordinal order.
 pub const EXPORTS: &[HalExport] = &[
-    HalExport { ordinal: 1, name: "HalAcpiGetTableEx", state: StubState::NotImplemented },
+    HalExport { ordinal: 1, name: "HalAcpiGetTableEx", state: StubState::Implemented },
     HalExport { ordinal: 2, name: "HalAcquireDisplayOwnership", state: StubState::NotImplemented },
     HalExport { ordinal: 3, name: "HalAdjustResourceList", state: StubState::NotImplemented },
     HalExport { ordinal: 4, name: "HalAllProcessorsStarted", state: StubState::Implemented },
@@ -256,6 +256,46 @@ pub unsafe extern "win64" fn hal_translate_bus_address(
     1
 }
 
+
+/// Retrieve a validated firmware ACPI table by four-byte signature and instance.
+///
+/// This x64 HAL entry point is available after ACPI discovery has recorded the
+/// RSDP. The returned pointer references the firmware table in the early
+/// identity-mapped physical window and remains firmware-owned; callers must
+/// treat it as read-only. STATUS_NOT_FOUND is returned when discovery has not
+/// run or the requested instance is absent.
+pub unsafe extern "win64" fn hal_acpi_get_table_ex(
+    signature: u32,
+    instance: u32,
+    table: *mut *mut core::ffi::c_void,
+    table_size: *mut u32,
+) -> i32 {
+    const STATUS_SUCCESS: i32 = 0;
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
+    const STATUS_NOT_FOUND: i32 = 0xC000_0225_u32 as i32;
+    if table.is_null() || table_size.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe {
+        table.write(core::ptr::null_mut());
+        table_size.write(0);
+    }
+    let rsdp = crate::acpi::rsdp_address();
+    if rsdp == 0 { return STATUS_NOT_FOUND; }
+    let signature = signature.to_le_bytes();
+    match unsafe { crate::acpi::find_table(rsdp, signature, instance as usize) } {
+        Ok(bytes) => {
+            let Ok(length) = u32::try_from(bytes.len()) else { return STATUS_INVALID_PARAMETER; };
+            unsafe {
+                table.write(bytes.as_ptr() as *mut core::ffi::c_void);
+                table_size.write(length);
+            }
+            STATUS_SUCCESS
+        }
+        Err(_) => STATUS_NOT_FOUND,
+    }
+}
+
 /// Map an NT logical processor number to its firmware/APIC processor ID.
 /// Unknown or not-yet-discovered logical processors return ULONG_MAX.
 pub unsafe extern "win64" fn hal_get_processor_id_by_nt_number(nt_number: u32) -> u32 {
@@ -394,7 +434,9 @@ pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vec
 }
 
 pub fn resolve(name: &[u8]) -> Option<u64> {
-    if name.eq_ignore_ascii_case(b"HalDisplayString") {
+    if name.eq_ignore_ascii_case(b"HalAcpiGetTableEx") {
+        Some(hal_acpi_get_table_ex as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalDisplayString") {
         Some(hal_display_string as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalQueryMaximumProcessorCount") {
         Some(hal_query_maximum_processor_count as usize as u64)
@@ -435,6 +477,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
 
 pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
     match ordinal {
+        1 => Some(hal_acpi_get_table_ex as usize as u64),
         4 => Some(hal_all_processors_started as usize as u64),
         15 => Some(hal_display_string as usize as u64),
         47 => Some(hal_query_maximum_processor_count as usize as u64),
@@ -473,6 +516,8 @@ pub fn self_test() -> bool {
         && find_by_name(b"halrequestipi").map(|e| e.ordinal) == Some(55)
         && find_by_ordinal(91).map(|entry| entry.name) == Some("x86BiosWriteMemory")
         && find_by_name(b"not-a-hal-export").is_none()
+        && resolve(b"HalAcpiGetTableEx").is_some()
+        && resolve_ordinal(1).is_some()
         && resolve(b"HalDisplayString").is_some()
         && resolve_ordinal(15).is_some()
         && resolve(b"HalQueryMaximumProcessorCount").is_some()
