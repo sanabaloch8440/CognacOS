@@ -209,6 +209,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlNumberOfSetBitsUlongPtr" => rtl_runtime::rtl_number_of_set_bits_ulong_ptr as usize,
   "RtlUdiv128" => rtl_runtime::rtl_udiv128 as usize,
   "RtlFreeUnicodeString" => rtl_runtime::rtl_free_unicode_string as usize,
+  "RtlCreateUnicodeString" => rtl_runtime::rtl_create_unicode_string as usize,
+  "RtlCreateUnicodeStringFromAsciiz" => rtl_runtime::rtl_create_unicode_string_from_asciiz as usize,
   "RtlFreeAnsiString" => rtl_runtime::rtl_free_ansi_string as usize,
   "RtlFreeOemString" => rtl_runtime::rtl_free_oem_string as usize,
   "RtlFreeUTF8String" => rtl_runtime::rtl_free_utf8_string as usize,
