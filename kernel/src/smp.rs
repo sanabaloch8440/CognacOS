@@ -275,10 +275,6 @@ unsafe fn prepare_trampoline(
         memory::configure_identity_page(pml4, page, false, true, false, false)
             .map_err(SmpError::Memory)?;
 
-        // SIPI starts an AP with caches disabled. Ensure trampoline bytes and
-        // patched parameters have reached memory before the AP fetches them;
-        // otherwise the AP may execute stale contents left by firmware.
-        core::arch::asm!("wbinvd", options(nostack, preserves_flags));
     }
     Ok(())
 }
