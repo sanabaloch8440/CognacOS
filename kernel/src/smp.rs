@@ -274,6 +274,11 @@ unsafe fn prepare_trampoline(
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_logical), logical_id as u32);
         memory::configure_identity_page(pml4, page, false, true, false, false)
             .map_err(SmpError::Memory)?;
+
+        // SIPI starts an AP with caches disabled. Ensure trampoline bytes and
+        // patched parameters have reached memory before the AP fetches them;
+        // otherwise the AP may execute stale contents left by firmware.
+        core::arch::asm!("wbinvd", options(nostack, preserves_flags));
     }
     Ok(())
 }
