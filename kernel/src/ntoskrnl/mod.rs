@@ -450,10 +450,13 @@ pub fn self_test() -> bool {
  && resolve(b"hal.dll",ImportSymbol::Ordinal(47)).is_some()
  && resolve(b"hal.dll",ImportSymbol::Name(b"HalAcpiGetTableEx")).is_none()
  && resolve(b"hal.dll",ImportSymbol::Ordinal(1)).is_none()
- && (resolve(b"hal.dll",ImportSymbol::Name(b"KeQueryPerformanceCounter")).is_some()
-     == crate::apic::tsc_frequency_hz().is_some())
- && (resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryPerformanceCounter")).is_some()
-     == crate::apic::tsc_frequency_hz().is_some())
+ // Windows x64 exposes KeQueryPerformanceCounter through HAL imports and,
+ // on modern x64 releases, also through the kernel. Both import paths must
+ // converge on one implementation so counter epoch/frequency cannot diverge.
+ && (resolve(b"hal.dll",ImportSymbol::Name(b"KeQueryPerformanceCounter"))
+     == crate::apic::tsc_frequency_hz().map(|_| ke::runtime::ke_query_performance_counter as usize as u64))
+ && (resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryPerformanceCounter"))
+     == crate::apic::tsc_frequency_hz().map(|_| ke::runtime::ke_query_performance_counter as usize as u64))
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeFlushWriteBuffer")).is_some()
  && (resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeStallExecutionProcessor")).is_some()
      == crate::apic::tsc_frequency_hz().is_some())
