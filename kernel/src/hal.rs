@@ -17,6 +17,7 @@ pub const CPU_FAILED: u8 = 4;
 
 #[repr(C, align(64))]
 pub struct CpuLocal {
+    self_pointer: AtomicU64,
     pub logical_id: AtomicU32,
     pub apic_id: AtomicU32,
     pub state: AtomicU8,
@@ -28,7 +29,7 @@ pub struct CpuLocal {
 impl CpuLocal {
     const fn new(id: u32) -> Self {
         Self {
-            logical_id: AtomicU32::new(id), apic_id: AtomicU32::new(u32::MAX),
+            self_pointer: AtomicU64::new(0), logical_id: AtomicU32::new(id), apic_id: AtomicU32::new(u32::MAX),
             state: AtomicU8::new(CPU_OFFLINE), irq_depth: AtomicU32::new(0),
             preempt_count: AtomicU32::new(0), current_thread: AtomicU64::new(0),
             idle_ticks: AtomicU64::new(0),
@@ -58,6 +59,15 @@ static CPU_LOCALS: [CpuLocal; MAX_CPUS] = [
 pub enum HalError { InvalidCpu, DuplicateApicId, InvalidTransition, CpuTableFull, InvalidMmioRange }
 
 /// Reserve a logical CPU slot for an ACPI-discovered APIC ID. Does not start it.
+/// Mark the bootstrap processor online in logical slot zero before AP discovery.
+pub fn initialize_bsp(apic_id: u32) -> Result<usize, HalError> {
+    let cpu = &CPU_LOCALS[0];
+    cpu.state.compare_exchange(CPU_OFFLINE, CPU_ONLINE, Ordering::AcqRel, Ordering::Acquire)
+        .map_err(|_| HalError::InvalidTransition)?;
+    cpu.apic_id.store(apic_id, Ordering::Release);
+    Ok(0)
+}
+
 pub fn discover_cpu(apic_id: u32) -> Result<usize, HalError> {
     if cpu_index_for_apic(apic_id).is_some() { return Err(HalError::DuplicateApicId); }
     for (i, cpu) in CPU_LOCALS.iter().enumerate() {
@@ -102,7 +112,9 @@ pub fn cpu_local(index: usize) -> Result<&'static CpuLocal, HalError> {
 /// Install this CPU's GS base. Must run separately on every processor after its
 /// stack, GDT/TSS and interrupt state are initialized. GS:[0] then yields CpuLocal.
 pub unsafe fn install_cpu_local(index: usize) -> Result<(), HalError> {
-    let local = cpu_local(index)? as *const CpuLocal as u64;
+    let cpu = cpu_local(index)?;
+    let local = cpu as *const CpuLocal as u64;
+    cpu.self_pointer.store(local, Ordering::Release);
     const IA32_GS_BASE: u32 = 0xC000_0101;
     const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
     unsafe {
