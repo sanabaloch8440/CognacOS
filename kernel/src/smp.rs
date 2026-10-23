@@ -143,6 +143,8 @@ unsafe extern "C" {
     static rdotos_ap_trampoline_stack_offset_patch: u8;
     static rdotos_ap_trampoline_entry_offset_patch: u8;
     static rdotos_ap_trampoline_logical_offset_patch: u8;
+    static rdotos_ap_trampoline_pm32_pop: u8;
+    static rdotos_ap_trampoline_long64_pop: u8;
     static rdotos_ap_trampoline_pm32_patch: u8;
     static rdotos_ap_trampoline_long64_patch: u8;
     static rdotos_ap_trampoline_pml4: u8;
