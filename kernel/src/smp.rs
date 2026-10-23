@@ -22,14 +22,13 @@ global_asm!(r#"
     .global rdotos_ap_trampoline_gdt_base_patch
     .global rdotos_ap_trampoline_gdt_pointer
     .global rdotos_ap_trampoline_gdt_offset_patch
-    .global rdotos_ap_trampoline_pm32_pop_patch
-    .global rdotos_ap_trampoline_pml4_offset_patch
-    .global rdotos_ap_trampoline_long64_pop_patch
     .global rdotos_ap_trampoline_stack_offset_patch
     .global rdotos_ap_trampoline_entry_offset_patch
     .global rdotos_ap_trampoline_logical_offset_patch
     .global rdotos_ap_trampoline_pm32_patch
     .global rdotos_ap_trampoline_long64_patch
+    .global rdotos_ap_trampoline_pml4_absolute_patch
+    .global rdotos_ap_trampoline_long64_base_patch
     .global rdotos_ap_trampoline_pml4
     .global rdotos_ap_trampoline_stack
     .global rdotos_ap_trampoline_entry
@@ -58,14 +57,10 @@ rdotos_ap_trampoline_pm32:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    call rdotos_ap_trampoline_pm32_pop
-rdotos_ap_trampoline_pm32_pop:
-    pop esi
-    .byte 0x81, 0xee
-rdotos_ap_trampoline_pm32_pop_patch:
-    .long 0
-    .byte 0x8b, 0x86
-rdotos_ap_trampoline_pml4_offset_patch:
+    // Load CR3 through an absolute low-memory address; do not use CALL/POP
+    // before a valid stack exists on the reset AP.
+    .byte 0xa1
+rdotos_ap_trampoline_pml4_absolute_patch:
     .long 0
     mov cr3, eax
     mov eax, cr4
@@ -89,12 +84,11 @@ rdotos_ap_trampoline_long64:
     mov ds, ax
     mov es, ax
     mov ss, ax
-    call rdotos_ap_trampoline_long64_pop
-rdotos_ap_trampoline_long64_pop:
-    pop rsi
-    .byte 0x48, 0x81, 0xee
-rdotos_ap_trampoline_long64_pop_patch:
-    .long 0
+    // Establish the copied trampoline's physical base without touching the
+    // uninitialized AP stack.
+    .byte 0x48, 0xbe
+rdotos_ap_trampoline_long64_base_patch:
+    .quad 0
     .byte 0x48, 0x8b, 0xa6
 rdotos_ap_trampoline_stack_offset_patch:
     .long 0
@@ -141,16 +135,13 @@ unsafe extern "C" {
     static rdotos_ap_trampoline_gdt_base_patch: u8;
     static rdotos_ap_trampoline_gdt_pointer: u8;
     static rdotos_ap_trampoline_gdt_offset_patch: u8;
-    static rdotos_ap_trampoline_pm32_pop_patch: u8;
-    static rdotos_ap_trampoline_pml4_offset_patch: u8;
-    static rdotos_ap_trampoline_long64_pop_patch: u8;
     static rdotos_ap_trampoline_stack_offset_patch: u8;
     static rdotos_ap_trampoline_entry_offset_patch: u8;
     static rdotos_ap_trampoline_logical_offset_patch: u8;
-    static rdotos_ap_trampoline_pm32_pop: u8;
-    static rdotos_ap_trampoline_long64_pop: u8;
     static rdotos_ap_trampoline_pm32_patch: u8;
     static rdotos_ap_trampoline_long64_patch: u8;
+    static rdotos_ap_trampoline_pml4_absolute_patch: u8;
+    static rdotos_ap_trampoline_long64_base_patch: u8;
     static rdotos_ap_trampoline_pml4: u8;
     static rdotos_ap_trampoline_stack: u8;
     static rdotos_ap_trampoline_entry: u8;
@@ -266,12 +257,9 @@ unsafe fn prepare_trampoline(
             (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_gdt)) as u64) as u32);
         write_patch_u16(page, core::ptr::addr_of!(rdotos_ap_trampoline_gdt_offset_patch),
             symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_gdt_pointer)) as u16);
-        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pm32_pop_patch),
-            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_pm32_pop)) as u32);
-        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pml4_offset_patch),
-            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_pml4)) as u32);
-        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_long64_pop_patch),
-            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_long64_pop)) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pml4_absolute_patch),
+            (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_pml4)) as u64) as u32);
+        write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_long64_base_patch), page);
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_stack_offset_patch),
             symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_stack)) as u32);
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_logical_offset_patch),
