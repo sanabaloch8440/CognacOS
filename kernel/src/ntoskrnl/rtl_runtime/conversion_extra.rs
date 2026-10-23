@@ -7,6 +7,7 @@ const STATUS_SUCCESS:i32=0;const STATUS_INVALID_PARAMETER:i32=0xC000_000Du32 as 
  if dst.is_null()||src.is_null(){return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};
  if s.length>0&&s.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
  let bytes=(s.length as usize).checked_mul(2).and_then(|v|v.checked_add(if allocate!=0{2}else{0}));let Some(total)=bytes else{return STATUS_BUFFER_TOO_SMALL;};
+ if allocate!=0&&total>u16::MAX as usize{return STATUS_BUFFER_TOO_SMALL;}
  if allocate!=0 {let p=super::pool::allocate(total);if p.is_null(){return STATUS_BUFFER_TOO_SMALL;}d.buffer=p.cast::<u16>();d.maximum_length=total as u16;d.length=0;}
  else if s.length as usize*2>d.maximum_length as usize{return STATUS_BUFFER_TOO_SMALL;}
  if s.length>0&&d.buffer.is_null(){return STATUS_INVALID_PARAMETER;}
