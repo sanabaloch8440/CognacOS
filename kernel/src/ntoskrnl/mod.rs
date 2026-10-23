@@ -9,7 +9,7 @@ pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Cm, Se, Rtl, Zw, Other }
 #[derive(Clone, Copy, Debug)]
 pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: KernelModule }
 
-mod ex; mod ke; mod mm; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
+mod ex; #[path = "ke/mod.rs"] mod ke; mod mm; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 pub mod abi_signatures;
 
@@ -50,7 +50,23 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "MmIsAddressValid" => mm::runtime::mm_is_address_valid as usize,
   "MmIsNonPagedSystemAddressValid" => mm::runtime::mm_is_non_paged_system_address_valid as usize,
   "MmCopyMemory" => mm::runtime::mm_copy_memory as usize,
-  "KeGetCurrentIrql" => ke::ke_get_current_irql as usize,
+  "KeGetCurrentIrql" => ke::runtime::ke_get_current_irql as usize,
+  "KeQueryMaximumProcessorCountEx" => ke::runtime::ke_query_maximum_processor_count_ex as usize,
+  "KeQueryMaximumProcessorCount" => ke::runtime::ke_query_maximum_processor_count as usize,
+  "KeGetCurrentNodeNumber" => ke::runtime::ke_get_current_node_number as usize,
+  "KeGetRecommendedSharedDataAlignment" => ke::runtime::ke_get_recommended_shared_data_alignment as usize,
+  "KeInitializeSpinLock" => ke::runtime::ke_initialize_spin_lock as usize,
+  "KeTestSpinLock" => ke::runtime::ke_test_spin_lock as usize,
+  "KeFlushWriteBuffer" => ke::runtime::ke_flush_write_buffer as usize,
+  "KeInitializeEvent" => ke::runtime::ke_initialize_event as usize,
+  "KeClearEvent" => ke::runtime::ke_clear_event as usize,
+  "KeResetEvent" => ke::runtime::ke_reset_event as usize,
+  "KeReadStateEvent" => ke::runtime::ke_read_state_event as usize,
+  "KeSetEvent" => ke::runtime::ke_set_event as usize,
+  "KeInitializeSemaphore" => ke::runtime::ke_initialize_semaphore as usize,
+  "KeReadStateSemaphore" => ke::runtime::ke_read_state_semaphore as usize,
+  "KeReleaseSemaphore" => ke::runtime::ke_release_semaphore as usize,
+
   "ExAllocatePoolWithTag" => ex::pool::ex_allocate_pool_with_tag as usize,
   "ExAllocatePool2" => ex::pool::ex_allocate_pool2 as usize,
   "ExAllocatePool3" => ex::pool::ex_allocate_pool3 as usize,
@@ -59,11 +75,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "ExFreePool" => ex::pool::ex_free_pool as usize,
   "ExFreePool2" => ex::pool::ex_free_pool2 as usize,
   "ExQueryPoolBlockSize" => ex::pool::ex_query_pool_block_size as usize,
-  "KeQueryActiveProcessorCountEx" => ke::ke_query_active_processor_count_ex as usize,
-  "KeQueryActiveProcessorCount" => ke::ke_query_active_processor_count as usize,
-  "KeQueryActiveGroupCount" => ke::ke_query_active_group_count as usize,
-  "KeGetCurrentProcessorNumberEx" => ke::ke_get_current_processor_number_ex as usize,
-  "KeGetCurrentProcessorIndex" => ke::ke_get_current_processor_index as usize,
+  "KeQueryActiveProcessorCountEx" => ke::runtime::ke_query_active_processor_count_ex as usize,
+  "KeQueryActiveProcessorCount" => ke::runtime::ke_query_active_processor_count as usize,
+  "KeQueryActiveGroupCount" => ke::runtime::ke_query_active_group_count as usize,
+  "KeGetCurrentProcessorNumberEx" => ke::runtime::ke_get_current_processor_number_ex as usize,
+  "KeGetCurrentProcessorIndex" => ke::runtime::ke_get_current_processor_index as usize,
   "RtlAreBitsClear" => rtl_runtime::rtl_are_bits_clear as usize,
   "RtlAreBitsSet" => rtl_runtime::rtl_are_bits_set as usize,
   "RtlClearAllBits" => rtl_runtime::rtl_clear_all_bits as usize,
