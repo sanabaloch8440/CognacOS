@@ -123,12 +123,12 @@ pub unsafe extern "win64" fn ke_read_state_semaphore(semaphore: *const Semaphore
     unsafe { core::ptr::read_volatile(&(*semaphore).header.signal_state) }
 }
 pub unsafe extern "win64" fn ke_release_semaphore(semaphore: *mut SemaphoreObject, increment: i32, adjustment: i32, _wait: u8) -> i32 {
-    if semaphore.is_null() || adjustment <= 0 { return STATUS_INVALID_PARAMETER; }
+    if semaphore.is_null() || adjustment <= 0 { return 0; }
     let header = unsafe { &mut (*semaphore).header };
     let old = unsafe { core::ptr::read_volatile(&header.signal_state) };
     let limit = unsafe { (*semaphore).limit };
-    let Some(next) = old.checked_add(adjustment) else { return STATUS_INVALID_PARAMETER; };
-    if next > limit { return STATUS_INVALID_PARAMETER; }
+    let Some(next) = old.checked_add(adjustment) else { return 0; };
+    if next > limit { return 0; }
     unsafe { core::ptr::write_volatile(&mut header.signal_state, next); }
     let _ = increment; // priority boosts are not supported without a scheduler.
     old
