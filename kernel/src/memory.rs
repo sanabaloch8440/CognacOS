@@ -1,6 +1,6 @@
 //! Early physical-page allocator built only from UEFI EfiConventionalMemory ranges.
-//! This allocator is single-threaded and intentionally capped at the first 4 GiB
-//! until direct-map and high-memory support are implemented.
+//! Mutations are serialized with an interrupt-safe lock on the kernel target.
+//! Physical allocation remains capped at the first 4 GiB until high-memory support.
 
 use core::ptr;
 
@@ -170,9 +170,8 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
     Err(AllocError::OutOfMemory)
 }
 
-/// Allocate a physically contiguous, zeroed run of pages from one conventional
-/// memory region. The early allocator is single-threaded; callers must use this
-/// before APs are enabled or otherwise serialize allocation.
+/// Allocate a physically contiguous, zeroed run of pages from returned free runs
+/// or a conventional-memory region. Allocation is serialized across CPUs and IRQs.
 pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError> {
     let _guard = MemoryGuard::acquire();
     if pages == 0 { return Err(AllocError::InvalidPage); }
@@ -217,7 +216,7 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
     Err(AllocError::OutOfMemory)
 }
 
-/// Return a previously allocated low physical page to the single-core free list.
+/// Return a previously allocated low physical page to the shared free list.
 /// The caller must ensure no active mapping or DMA operation references the page.
 pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
     let _guard = MemoryGuard::acquire();
