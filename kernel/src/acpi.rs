@@ -228,7 +228,8 @@ pub unsafe fn find_table(rsdp_address: u64, signature: [u8; 4], instance: usize)
     }
     let root = unsafe { core::slice::from_raw_parts(root_address as *const u8, root_len) };
     if !checksum_ok(root) { return Err(AcpiError::BadChecksum); }
-    let expected_root: &[u8] = if is_xsdt { b"XSDT" } else { b"RSDT" };\n    if root.get(0..4) != Some(expected_root) {
+    let expected_root: &[u8] = if is_xsdt { b"XSDT" } else { b"RSDT" };
+    if root.get(0..4) != Some(expected_root) {
         return Err(AcpiError::BadSignature);
     }
     let width = if is_xsdt { 8usize } else { 4usize };
