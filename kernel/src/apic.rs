@@ -236,10 +236,11 @@ pub unsafe fn stop_local_timer() {
 /// waits, ready their threads, then acknowledge the local APIC interrupt.
 pub fn timer_interrupt() {
     let now = monotonic_ticks();
-    let mut expired = [0u64; 64];
-    let count = crate::dispatcher::expire(now, &mut expired);
-    for id in expired[..count].iter().copied() {
-        let _ = crate::thread::complete_wait(id, 0x0000_0102);
+    let mut expired = [crate::dispatcher::ExpiredWait { thread: 0, object: 0 }; 64];
+    let count = crate::dispatcher::expire_detailed(now, &mut expired);
+    for wait in expired[..count].iter().copied() {
+        let status = if crate::dispatcher::is_delay_object(wait.object) { 0 } else { 0x0000_0102 };
+        let _ = crate::thread::complete_wait(wait.thread, status);
     }
     if let Some(base) = local_apic_base() {
         unsafe { local_apic_eoi(base); }
