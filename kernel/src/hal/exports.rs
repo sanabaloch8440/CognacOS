@@ -16,7 +16,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 1, name: "HalAcpiGetTableEx", state: StubState::NotImplemented },
     HalExport { ordinal: 2, name: "HalAcquireDisplayOwnership", state: StubState::NotImplemented },
     HalExport { ordinal: 3, name: "HalAdjustResourceList", state: StubState::NotImplemented },
-    HalExport { ordinal: 4, name: "HalAllProcessorsStarted", state: StubState::NotImplemented },
+    HalExport { ordinal: 4, name: "HalAllProcessorsStarted", state: StubState::Implemented },
     HalExport { ordinal: 5, name: "HalAllocateAdapterChannel", state: StubState::NotImplemented },
     HalExport { ordinal: 6, name: "HalAllocateCommonBuffer", state: StubState::Implemented },
     HalExport { ordinal: 7, name: "HalAllocateCrashDumpRegisters", state: StubState::NotImplemented },
@@ -242,6 +242,20 @@ pub unsafe extern "win64" fn hal_query_maximum_processor_count() -> u32 {
     super::MAX_CPUS as u32
 }
 
+/// Reports whether every CPU reserved by MADT discovery has completed AP
+/// startup. Failed/offline discovered processors keep this false; this avoids
+/// telling the NT kernel that SMP initialization completed when it did not.
+pub extern "win64" fn hal_all_processors_started() -> u8 {
+    for index in 0..crate::hal::MAX_CPUS {
+        match crate::hal::cpu_state(index) {
+            Ok(crate::hal::CPU_DISCOVERED | crate::hal::CPU_STARTING) => return 0,
+            Ok(crate::hal::CPU_FAILED) => return 0,
+            _ => {}
+        }
+    }
+    crate::hal::online_cpu_count() != 0
+}
+
 /// Legacy HAL common-buffer entry point. The early x64 DMA path is limited to
 /// physically contiguous, identity-mapped memory below 4 GiB without an IOMMU.
 pub unsafe extern "win64" fn hal_allocate_common_buffer(
@@ -311,6 +325,8 @@ pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vec
 pub fn resolve(name: &[u8]) -> Option<u64> {
     if name.eq_ignore_ascii_case(b"HalQueryMaximumProcessorCount") {
         Some(hal_query_maximum_processor_count as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalAllProcessorsStarted") {
+        Some(hal_all_processors_started as usize as u64)
     } else if name.eq_ignore_ascii_case(b"KeFlushWriteBuffer") {
         Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64)
     } else if name.eq_ignore_ascii_case(b"KeQueryPerformanceCounter") {
@@ -342,6 +358,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
 
 pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
     match ordinal {
+        4 => Some(hal_all_processors_started as usize as u64),
         47 => Some(hal_query_maximum_processor_count as usize as u64),
         84 => Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64),
         85 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64),
@@ -377,6 +394,8 @@ pub fn self_test() -> bool {
         && find_by_ordinal(91).map(|entry| entry.name) == Some("x86BiosWriteMemory")
         && find_by_name(b"not-a-hal-export").is_none()
         && resolve(b"HalQueryMaximumProcessorCount").is_some()
+        && resolve(b"HalAllProcessorsStarted").is_some()
+        && resolve_ordinal(4).is_some()
         && pci_config_address(0, 0, 0) == Some(0x8000_0000)
         && pci_config_address(0, 1, 0) == Some(0x8000_0800)
         && pci_config_address(0, 0x20, 0) == Some(0x8000_0100)
