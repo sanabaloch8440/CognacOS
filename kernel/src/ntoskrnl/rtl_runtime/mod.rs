@@ -8,6 +8,9 @@ mod conversion;
 mod strings_extra;
 mod sid;
 mod conversion_extra;
+mod misc_extra;
+mod bitmap_extra;
+mod network;
 
 pub use bitmap::*;
 pub use memory::*;
@@ -18,6 +21,9 @@ pub use conversion::*;
 pub use strings_extra::*;
 pub use sid::*;
 pub use conversion_extra::*;
+pub use misc_extra::*;
+pub use bitmap_extra::*;
+pub use network::*;
 
 
 #[repr(C)]
