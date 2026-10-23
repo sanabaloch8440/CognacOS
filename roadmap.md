@@ -171,7 +171,8 @@ Status reflects code currently present in the repository, not intended architect
 
 - [x] Pin upstream Ext3Fsd sources as a separate submodule at `third_party/Ext3Fsd` for reference and staged Rust translation.
 - [ ] Audit the upstream GPLv2 notices and determine distribution/licensing treatment for any Rust translation before redistribution.
-- [ ] Port the ext2/ext3/ext4 on-disk format parser into a safe, `no_std` Rust crate with checked bounds and fuzz tests.
-- [ ] Implement a read-only ext filesystem backend against RdotOS block-device and filesystem interfaces.
+- [x] Start a safe `no_std` Rust translation with checked ext superblock, geometry, inode-location, group-descriptor, inode-metadata, and directory-entry parsers; add synthetic boot self-tests.
+- [ ] Add property/fuzz tests and validate against real ext2/ext3/ext4 disk images.
+- [ ] Implement block mapping (direct/indirect blocks and extents) and a read-only ext filesystem backend against RdotOS block-device and filesystem interfaces.
 - [ ] Add ext2/ext3/ext4 image tests before considering journal replay or write support.
-- [ ] Implement driver registration/loading only after the filesystem backend passes image-based tests; the original Windows kernel driver cannot load directly in RdotOS.
+- [ ] Add an NT-style filesystem-driver adapter only after the filesystem backend passes image-based tests. This is a native RdotOS implementation, not a Windows 11 .sys binary; the original Windows kernel driver cannot load directly in RdotOS.

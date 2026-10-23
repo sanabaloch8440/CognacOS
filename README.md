@@ -32,3 +32,10 @@ RdotOS is dual-licensed under **Apache-2.0 OR MIT**, following the common Rust e
 ## Third-party filesystem driver reference
 
 The Ext3Fsd Windows ext2/ext3/ext4 driver is tracked as a pinned source submodule at `third_party/Ext3Fsd` for a planned Rust port. It remains a separate GPLv2-licensed upstream component; see [third_party/README.md](third_party/README.md). The Windows driver itself is not loadable by RdotOS.
+
+
+## Ext filesystem Rust port status
+
+A first safe `no_std` Rust parser validates ext superblock geometry and feature flags, legacy group descriptors, common inode metadata, inode locations, and directory-record bounds. It is read-only, rejects unsupported incompatible features (including 64-bit block-count format), and runs a synthetic parser self-test during the QEMU smoke test. Block mapping, real image fixtures, journal replay, writes, and filesystem registration are not implemented yet.
+
+“Windows 11 compatible” here means designing the eventual RdotOS filesystem service/driver adapter with explicit NT-style concepts where useful; the Rust component is not a Windows 11 kernel driver and cannot be loaded by Windows. The original Ext3Fsd sources target older Windows releases and have documented unsupported ext4 features and corruption warnings; see [upstream README](https://github.com/matt-wu/Ext3Fsd) and [release notes](https://github.com/matt-wu/Ext3Fsd/releases).

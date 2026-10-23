@@ -17,6 +17,7 @@ mod apic;
 mod scheduler;
 mod object;
 mod io;
+mod extfs;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -175,6 +176,12 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"I/O manager device dispatch and IRP completion self-test passed.\r\n");
+        // Read-only native Rust ext filesystem parser self-test.
+        if !extfs::self_test() {
+            serial_write(b"FATAL: ext filesystem parser self-test failed.\\r\\n");
+            halt();
+        }
+        serial_write(b"Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).\\r\\n");
 
         // APIC registers are intentionally not enabled here: no firmware MADT
         // handoff, AP startup trampoline, timer calibration, or complete IRQ
