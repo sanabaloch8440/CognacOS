@@ -1,7 +1,5 @@
-//! ABI signatures transcribed from publicly documented WDK kernel routines.
-//! These aliases preserve the x64 argument/return ABI for the listed routines only.
-//! They are signature metadata, not implementations and are not yet used as callable dispatch targets.
-//! References: Microsoft Learn WDK documentation for each named routine.
+//! Publicly documented NT kernel ABI declarations and supported signature registry.
+//! Function-pointer aliases are x64 ABI types; aliases alone do not implement routines.
 use core::ffi::c_void;
 
 pub type NtStatus = i32;
@@ -17,6 +15,11 @@ pub type LargeInteger = i64;
 
 pub type KeGetCurrentIrqlFn = unsafe extern "win64" fn() -> Kirql;
 pub type KeQueryActiveProcessorCountExFn = unsafe extern "win64" fn(Ushort) -> Ulong;
+pub type KeQueryActiveProcessorCountFn = unsafe extern "win64" fn() -> Ulong;
+pub type KeQueryActiveGroupCountFn = unsafe extern "win64" fn() -> Ushort;
+#[repr(C)] pub struct ProcessorNumber { pub group: Ushort, pub number: u8, pub reserved: u8 }
+pub type KeGetCurrentProcessorNumberExFn = unsafe extern "win64" fn(*mut ProcessorNumber);
+pub type KeGetCurrentProcessorIndexFn = unsafe extern "win64" fn() -> Ulong;
 pub type KeStallExecutionProcessorFn = unsafe extern "win64" fn(Ulong);
 pub type ExAllocatePool2Fn = unsafe extern "win64" fn(UlongPtr, SizeT, Ulong) -> Pvoid;
 pub type ExFreePoolWithTagFn = unsafe extern "win64" fn(Pvoid, Ulong);
@@ -29,12 +32,16 @@ pub type ZwCloseFn = unsafe extern "win64" fn(Handle) -> NtStatus;
 pub type ZwWaitForSingleObjectFn = unsafe extern "win64" fn(Handle, Boolean, *const LargeInteger) -> NtStatus;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbiSignature { KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeStallExecutionProcessor, ExAllocatePool2, ExFreePoolWithTag, MmGetPhysicalAddress, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject }
+pub enum AbiSignature { KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExFreePoolWithTag, MmGetPhysicalAddress, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject }
 
 pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     Some(match name {
         "KeGetCurrentIrql" => AbiSignature::KeGetCurrentIrql,
         "KeQueryActiveProcessorCountEx" => AbiSignature::KeQueryActiveProcessorCountEx,
+        "KeQueryActiveProcessorCount" => AbiSignature::KeQueryActiveProcessorCount,
+        "KeQueryActiveGroupCount" => AbiSignature::KeQueryActiveGroupCount,
+        "KeGetCurrentProcessorNumberEx" => AbiSignature::KeGetCurrentProcessorNumberEx,
+        "KeGetCurrentProcessorIndex" => AbiSignature::KeGetCurrentProcessorIndex,
         "KeStallExecutionProcessor" => AbiSignature::KeStallExecutionProcessor,
         "ExAllocatePool2" => AbiSignature::ExAllocatePool2,
         "ExFreePoolWithTag" => AbiSignature::ExFreePoolWithTag,
@@ -49,12 +56,10 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     })
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(test)] mod tests {
     use super::*;
-    #[test]
-    fn documented_signatures_are_registered() {
-        for name in ["KeGetCurrentIrql", "KeQueryActiveProcessorCountEx", "KeStallExecutionProcessor", "ExAllocatePool2", "ExFreePoolWithTag", "MmGetPhysicalAddress", "ObfReferenceObject", "ObfDereferenceObject", "PsGetCurrentProcessId", "PsGetCurrentThreadId", "ZwClose", "ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
-        assert!(documented_signature("UndocumentedOrUnknownRoutine").is_none());
+    #[test] fn documented_signatures_are_registered() {
+        for name in ["KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExFreePoolWithTag","MmGetPhysicalAddress","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
+        assert!(documented_signature("UnknownRoutine").is_none());
     }
 }
