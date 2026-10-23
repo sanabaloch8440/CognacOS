@@ -113,3 +113,30 @@ use super::RtlBitmap;
     if !run_len.is_null(){unsafe{*run_len=0;}}if b.is_null(){return u32::MAX;}let size=unsafe{(*b).size_of_bitmap};let mut i=from.min(size.saturating_sub(1));
     while i>0&&unsafe{bit(b,i)}{i-=1;}if unsafe{bit(b,i)}{return u32::MAX;}let end=i;while i>0&&!unsafe{bit(b,i-1)}{i-=1;}if !run_len.is_null(){unsafe{*run_len=end-i+1;}}i
 }
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_initialize_bit_map(bitmap: *mut RtlBitmap, buffer: *mut u32, size: u32) {
+    if bitmap.is_null() { return; }
+    unsafe { (*bitmap).size_of_bitmap = size; (*bitmap).buffer = buffer; }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_is_bitmap_clear(bitmap: *const RtlBitmap) -> u8 {
+    if bitmap.is_null() { return 0; }
+    (unsafe { rtl_number_of_set_bits(bitmap) == 0 }) as u8
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bitmap_basic_operations() {
+        let mut words = [0u32; 2];
+        let mut b = RtlBitmap { size_of_bitmap: 64, buffer: words.as_mut_ptr() };
+        unsafe {
+            rtl_set_bits(&mut b, 5, 3);
+            assert_eq!(rtl_number_of_set_bits(&b), 3);
+            assert_eq!(rtl_find_set_bits(&b, 3, 0), 5);
+            assert_eq!(rtl_are_bits_set(&b, 5, 3), 1);
+            rtl_clear_bits(&mut b, 5, 3);
+            assert_eq!(rtl_number_of_set_bits(&b), 0);
+        }
+    }
+}

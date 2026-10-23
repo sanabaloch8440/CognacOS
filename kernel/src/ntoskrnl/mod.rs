@@ -93,6 +93,12 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlPrefixUnicodeString" => rtl_runtime::rtl_prefix_unicode_string as usize,
   "RtlAppendUnicodeStringToString" => rtl_runtime::rtl_append_unicode_string_to_string as usize,
   "RtlAppendUnicodeToString" => rtl_runtime::rtl_append_unicode_to_string as usize,
+  "RtlInitializeBitMap" => rtl_runtime::rtl_initialize_bit_map as usize,
+  "RtlIsZeroMemory" => rtl_runtime::rtl_is_zero_memory as usize,
+  "RtlUnsignedMultiplyHigh" => rtl_runtime::rtl_unsigned_multiply_high as usize,
+  "RtlRandom" => rtl_runtime::rtl_random as usize,
+  "RtlRandomEx" => rtl_runtime::rtl_random_ex as usize,
+  "RtlCharToInteger" => rtl_runtime::rtl_char_to_integer as usize,
   // All other names deliberately fail closed until their own signatures and semantics are implemented.
   _ => return None,
  };
