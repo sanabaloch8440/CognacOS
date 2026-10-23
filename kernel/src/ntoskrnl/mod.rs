@@ -42,6 +42,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "ExAllocatePool2" => rtl_runtime::ex_allocate_pool2 as usize,
   "ExFreePoolWithTag" => rtl_runtime::ex_free_pool_with_tag as usize,
   "ExFreePool" => rtl_runtime::ex_free_pool as usize,
+  "ExQueryPoolBlockSize" => rtl_runtime::ex_query_pool_block_size as usize,
   "KeQueryActiveProcessorCountEx" => ke::ke_query_active_processor_count_ex as usize,
   "KeQueryActiveProcessorCount" => ke::ke_query_active_processor_count as usize,
   "KeQueryActiveGroupCount" => ke::ke_query_active_group_count as usize,
@@ -373,6 +374,7 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePoolWithTag")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePoolWithTag")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePool")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExQueryPoolBlockSize")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"RtlAreBitsClear")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"RtlComputeCrc32")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"RtlFillMemory")).is_some()
