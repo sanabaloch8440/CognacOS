@@ -394,7 +394,7 @@ pub unsafe fn start_discovered_aps(
             crate::serial_write_hex(long_target as u64);
             crate::serial_write(b" entry target ");
             crate::serial_write_hex(entry_target);
-            crate::serial_write(b"\\r\\n");
+            crate::serial_write(b"\r\n");
         }
         match unsafe { start_one_ap(local_apic_base, target, pit_delay_us) } {
             Ok(()) => { online += 1; }
