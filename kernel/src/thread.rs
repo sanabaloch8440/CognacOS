@@ -11,8 +11,8 @@ pub enum ThreadState { Empty, Ready, Running, Blocked, Exited }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadError { InvalidStack, InvalidAffinity, Full, NoCurrentThread, InvalidState, InvalidCpu }
 #[derive(Clone, Copy)]
-struct ThreadRecord { id:u64, state:ThreadState, affinity:u64, context_rsp:*mut u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool }
-impl ThreadRecord { const EMPTY:Self=Self{id:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),entry:None,argument:core::ptr::null_mut(),wake_pending:false}; }
+struct ThreadRecord { id:u64, state:ThreadState, affinity:u64, context_rsp:*mut u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32 }
+impl ThreadRecord { const EMPTY:Self=Self{id:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0}; }
 unsafe impl Send for ThreadRecord {}
 struct ThreadTable { records:[ThreadRecord;MAX_THREADS], next_id:u64 }
 impl ThreadTable { const fn new()->Self { Self{records:[ThreadRecord::EMPTY;MAX_THREADS],next_id:1} } }
@@ -43,7 +43,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     let mut table=THREADS.lock();
     let slot=table.records.iter().position(|t|t.state==ThreadState::Empty).ok_or(ThreadError::Full)?;
     let id=table.next_id;table.next_id=table.next_id.wrapping_add(1).max(1);
-    table.records[slot]=ThreadRecord{id,state:ThreadState::Ready,affinity,context_rsp:frame,entry:Some(entry),argument,wake_pending:false};
+    table.records[slot]=ThreadRecord{id,state:ThreadState::Ready,affinity,context_rsp:frame,entry:Some(entry),argument,wake_pending:false,wait_status:0};
     Ok(id)
 }
 
@@ -111,3 +111,23 @@ fn exit_current()->! {
 }
 pub fn current_thread_id()->Option<u64>{let cpu=cpu_index().ok()?;let id=crate::hal::cpu_local(cpu).ok()?.current_thread.load(core::sync::atomic::Ordering::Acquire);(id!=0).then_some(id)}
 pub fn state(id:u64)->Option<ThreadState>{THREADS.lock().records.iter().find(|t|t.id==id).map(|t|t.state)}
+
+/// Complete a wait before making its thread runnable. Running-thread completion
+/// is remembered so a signal between queue insertion and blocking cannot be lost.
+pub fn complete_wait(id:u64,status:i32)->Result<(),ThreadError>{
+    let mut table=THREADS.lock();
+    let t=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty).ok_or(ThreadError::InvalidState)?;
+    t.wait_status=status;
+    match t.state {
+        ThreadState::Blocked=>{t.state=ThreadState::Ready;Ok(())},
+        ThreadState::Running=>{t.wake_pending=true;Ok(())},
+        ThreadState::Ready=>Ok(()),
+        ThreadState::Exited|ThreadState::Empty=>Err(ThreadError::InvalidState),
+    }
+}
+pub fn take_wait_status()->Option<i32>{
+    let id=current_thread_id()?;
+    let mut table=THREADS.lock();
+    let t=table.records.iter_mut().find(|t|t.id==id&&t.state==ThreadState::Running)?;
+    let status=t.wait_status;t.wait_status=0;Some(status)
+}
