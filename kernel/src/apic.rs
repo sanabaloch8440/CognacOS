@@ -12,6 +12,7 @@ const APIC_TIMER_DIVIDE: usize = 0x3e0;
 pub const LOCAL_TIMER_VECTOR: u8 = 0xE0;
 static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
 static LAST_TSC: AtomicU64 = AtomicU64::new(0);
+static LOCAL_TIMER_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 const APIC_EOI: usize = 0x0b0;
 const APIC_SVR: usize = 0x0f0;
 const APIC_LVT_TIMER: usize = 0x320;
@@ -180,6 +181,8 @@ pub unsafe fn send_startup_ipi(base: u64, destination_apic_id: u8, trampoline_ph
 // Hardware priority and timer controls. The timer remains masked until the
 // caller supplies a calibrated initial count and explicitly starts it.
 #[inline]
+pub fn local_timer_active() -> bool { LOCAL_TIMER_ACTIVE.load(Ordering::Acquire) }
+
 pub fn local_apic_base() -> Option<u64> {
     let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
     (base != 0).then_some(base)
@@ -224,6 +227,7 @@ pub unsafe fn start_local_timer(initial_count: u32, divide: u8, periodic: bool) 
         write_local(base, APIC_TIMER_INITIAL_COUNT, initial_count);
         write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | if periodic { 1 << 17 } else { 0 });
     }
+    LOCAL_TIMER_ACTIVE.store(true, Ordering::Release);
     Ok(())
 }
 pub unsafe fn stop_local_timer() {
@@ -231,6 +235,7 @@ pub unsafe fn stop_local_timer() {
         unsafe { write_local(base, APIC_LVT_TIMER, (1 << 16) | LOCAL_TIMER_VECTOR as u32); }
         unsafe { write_local(base, APIC_TIMER_INITIAL_COUNT, 0); }
     }
+    LOCAL_TIMER_ACTIVE.store(false, Ordering::Release);
 }
 
 /// Interrupt-gate callback: update the clock domain, expire due dispatcher
@@ -306,5 +311,6 @@ pub unsafe fn calibrate_and_start_local_timer() -> Result<u32, ApicError> {
         write_local(base, APIC_TIMER_INITIAL_COUNT, per_ms);
         write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | (1 << 17));
     }
+    LOCAL_TIMER_ACTIVE.store(true, Ordering::Release);
     Ok(per_ms)
 }
