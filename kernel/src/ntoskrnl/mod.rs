@@ -39,9 +39,9 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
  let address = match name {
   "KeGetCurrentIrql" => ke::ke_get_current_irql as usize,
   "ExAllocatePoolWithTag" => ex::pool::ex_allocate_pool_with_tag as usize,
-  "ExAllocatePool2" => ex::pool::ex_allocate_pool2 as usize,
+  "ExAllocatePool2" => ex::pool::ex_allocate_pool2 as usize,\n  "ExAllocatePool3" => ex::pool::ex_allocate_pool3 as usize,\n  "ExAllocatePoolWithTagPriority" => ex::pool::ex_allocate_pool_with_tag_priority as usize,
   "ExFreePoolWithTag" => ex::pool::ex_free_pool_with_tag as usize,
-  "ExFreePool" => ex::pool::ex_free_pool as usize,
+  "ExFreePool" => ex::pool::ex_free_pool as usize,\n  "ExFreePool2" => ex::pool::ex_free_pool2 as usize,
   "ExQueryPoolBlockSize" => ex::pool::ex_query_pool_block_size as usize,
   "KeQueryActiveProcessorCountEx" => ke::ke_query_active_processor_count_ex as usize,
   "KeQueryActiveProcessorCount" => ke::ke_query_active_processor_count as usize,
@@ -370,7 +370,7 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"kernel32.dll",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentIrql")).is_some()
- && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool2")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool2")).is_some()\n && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool3")).is_some()\n && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePool2")).is_some()\n && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePoolWithTagPriority")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePoolWithTag")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePoolWithTag")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePool")).is_some()
