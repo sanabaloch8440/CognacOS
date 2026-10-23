@@ -325,6 +325,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         serial_write(b"SMP AP startup complete; online application processors: ");
                         serial_write_decimal(online);
                         serial_write(b" (interrupts remain disabled).\r\n");
+                        serial_write(b"SMP startup diagnostic error code: ");
+                        serial_write_decimal(smp::last_start_error_code());
+                        serial_write(b"; AP entry functions reached: ");
+                        serial_write_decimal(smp::ap_entry_reached_count());
+                        serial_write(b"\r\n");
                     }
                     Err(_) => serial_write(b"WARNING: AP startup initialization failed; retaining BSP-only operation.\r\n"),
                 },
