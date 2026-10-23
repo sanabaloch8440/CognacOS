@@ -9,7 +9,7 @@ pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Cm, Se, Rtl, Zw, Other }
 #[derive(Clone, Copy, Debug)]
 pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: KernelModule }
 
-mod ex; mod ke; mod mm; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
+mod ex; mod ke; mod mm; mod mm_runtime; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 pub mod abi_signatures;
 
@@ -37,6 +37,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   ImportSymbol::Ordinal(ordinal) => manifest_26100::ENTRIES.iter().find(|e|e.ordinal==ordinal)?.name?,
  };
  let address = match name {
+  "MmGetPhysicalAddress" => mm_runtime::mm_get_physical_address as usize,
+  "MmGetVirtualForPhysical" => mm_runtime::mm_get_virtual_for_physical as usize,
+  "MmIsAddressValid" => mm_runtime::mm_is_address_valid as usize,
+  "MmIsNonPagedSystemAddressValid" => mm_runtime::mm_is_non_paged_system_address_valid as usize,
+  "MmCopyMemory" => mm_runtime::mm_copy_memory as usize,
   "KeGetCurrentIrql" => ke::ke_get_current_irql as usize,
   "ExAllocatePoolWithTag" => ex::pool::ex_allocate_pool_with_tag as usize,
   "ExAllocatePool2" => ex::pool::ex_allocate_pool2 as usize,
