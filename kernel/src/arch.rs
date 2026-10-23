@@ -179,10 +179,12 @@ rdotos_tlb_ipi_stub:
     push r13
     push r14
     push r15
-    mov r12, rsp
+    mov rax, rsp
     and rsp, -16
+    sub rsp, 16
+    mov [rsp + 8], rax
     call rdotos_tlb_ipi_handler
-    mov rsp, r12
+    mov rsp, [rsp + 8]
     pop r15
     pop r14
     pop r13
@@ -224,10 +226,12 @@ rdotos_timer_stub:
     push r13
     push r14
     push r15
-    mov r12, rsp
+    mov rax, rsp
     and rsp, -16
+    sub rsp, 16
+    mov [rsp + 8], rax
     call rdotos_timer_interrupt_handler
-    mov rsp, r12
+    mov rsp, [rsp + 8]
     pop r15
     pop r14
     pop r13
