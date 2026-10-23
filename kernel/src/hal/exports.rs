@@ -235,11 +235,11 @@ pub unsafe extern "win64" fn hal_set_bus_data(
 pub unsafe extern "win64" fn hal_translate_bus_address(
     interface_type: u32,
     _bus_number: u32,
-    bus_address: *const i64,
+    bus_address: i64,
     address_space: *mut u32,
     translated_address: *mut i64,
 ) -> u8 {
-    if bus_address.is_null() || address_space.is_null() || translated_address.is_null() {
+    if address_space.is_null() || translated_address.is_null() {
         return 0;
     }
     // INTERFACE_TYPE: Internal, Isa, Eisa, MicroChannel, and PCIBus.
@@ -248,7 +248,7 @@ pub unsafe extern "win64" fn hal_translate_bus_address(
     }
     let space = unsafe { address_space.read() };
     if space > 1 { return 0; }
-    let address = unsafe { bus_address.read() };
+    let address = bus_address;
     if address < 0 { return 0; }
     // x86 port I/O uses a 16-bit port number. Do not truncate a bad address.
     if space == 1 && address > u16::MAX as i64 { return 0; }
