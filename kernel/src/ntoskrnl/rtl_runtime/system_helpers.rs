@@ -1,0 +1,32 @@
+//! RTL time arithmetic and architecture-independent utility routines.
+const TPS:i64=10_000_000;
+const E1970:i64=116_444_736_000_000_000;
+const E1980:i64=119_600_064_000_000_000;
+#[repr(C)] pub struct RtlTimeFields { pub year:i16,pub month:i16,pub day:i16,pub hour:i16,pub minute:i16,pub second:i16,pub milliseconds:i16,pub weekday:i16 }
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_seconds_since_1970_to_time(s:u32,t:*mut i64){if !t.is_null(){unsafe{*t=E1970+(s as i64)*TPS;}}}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_seconds_since_1980_to_time(s:u32,t:*mut i64){if !t.is_null(){unsafe{*t=E1980+(s as i64)*TPS;}}}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_time_to_seconds_since_1970(t:*const i64,s:*mut u32)->u8{if t.is_null()||s.is_null(){return 0;}let v=unsafe{*t};if v<E1970{return 0;}let n=((v-E1970)/TPS) as u64;if n>u32::MAX as u64{return 0;}unsafe{*s=n as u32;}1}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_time_to_seconds_since_1980(t:*const i64,s:*mut u32)->u8{if t.is_null()||s.is_null(){return 0;}let v=unsafe{*t};if v<E1980{return 0;}let n=((v-E1980)/TPS) as u64;if n>u32::MAX as u64{return 0;}unsafe{*s=n as u32;}1}
+fn leap(y:i32)->bool{y%4==0&&(y%100!=0||y%400==0)}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_time_fields_to_time(f:*const RtlTimeFields,t:*mut i64)->u8{if f.is_null()||t.is_null(){return 0;}let x=unsafe{&*f};let y=x.year as i32;let m=x.month as usize;let d=x.day as i32;if y<1601||!(1..=12).contains(&m)||x.hour<0||x.hour>23||x.minute<0||x.minute>59||x.second<0||x.second>59||x.milliseconds<0||x.milliseconds>999{return 0;}let md=[31,if leap(y){29}else{28},31,30,31,30,31,31,30,31,30,31];if d<1||d>md[m-1]{return 0;}let mut days=0i64;for yr in 1601..y{days+=if leap(yr){366}else{365};}for mo in 1..m{days+=md[mo-1] as i64;}days+=d as i64-1;unsafe{*t=days*864_000_000_000+(x.hour as i64)*36_000_000_000+(x.minute as i64)*600_000_000+(x.second as i64)*TPS+(x.milliseconds as i64)*10_000;}1}
+fn civil(days:i64)->(i32,i32,i32){let z=days+719468;let era=if z>=0{z}else{z-146096}/146097;let doe=z-era*146097;let yoe=(doe-doe/1460+doe/36524-doe/146096)/365;let mut y=yoe as i32+era as i32*400;let doy=doe-(365*yoe+yoe/4-yoe/100);let mp=(5*doy+2)/153;let d=(doy-(153*mp+2)/5+1) as i32;let m=(mp+if mp<10{3}else{-9}) as i32;if m<=2{y+=1;}(y,m,d)}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_time_to_time_fields(t:*const i64,f:*mut RtlTimeFields){if t.is_null()||f.is_null(){return;}let mut v=unsafe{*t};if v<0{return;}let days=v/864_000_000_000;v%=864_000_000_000;let(y,m,d)=civil(days-134774);unsafe{*f=RtlTimeFields{year:y as i16,month:m as i16,day:d as i16,hour:(v/36_000_000_000) as i16,minute:((v/600_000_000)%60) as i16,second:((v/TPS)%60) as i16,milliseconds:((v%TPS)/10_000) as i16,weekday:((days+1)%7) as i16};}}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_nt_product_type(out:*mut u32)->u8{if out.is_null(){return 0;}unsafe{*out=1;}1}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_nt_global_flags()->u32{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_suite_mask()->u32{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_active_console_id()->u32{u32::MAX}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_active_console_id(_id:u32){}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_current_service_session_id()->u32{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_processor_feature_present(_feature:u32)->u8{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_session_sku()->u8{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_users_in_session_sku()->u8{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_elevated_rid(rid:u32)->u8{(rid==0x3000) as u8}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_nt_ddi_version_available(version:u32)->u8{(version<=0x0A000000) as u8}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_service_pack_version_installed(_major:u16,_minor:u16,_flags:u32)->u8{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_state_separation_enabled()->u8{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_check_portable_operating_system()->u8{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_valid_oem_character(c:u16)->u8{(c>0&&c<=255) as u8}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_nt_status_to_dos_error(s:u32)->u32{match s{0=>0,0xC0000005=>998,0xC0000008=>6,0xC000000D=>87,0xC000000F=>2,0xC0000017=>8,0xC0000022=>5,0xC0000034=>2,0xC0000035=>183,0xC000003A=>3,0xC000009A=>8,0xC00000BB=>50,0xC0000002=>120,_=>317}}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_nt_status_to_dos_error_no_teb(s:u32)->u32{unsafe{rtl_nt_status_to_dos_error(s)}}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_number_of_set_bits_ulong_ptr(v:usize)->usize{v.count_ones() as usize}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_udiv128(high:u64,low:u64,divisor:u64,remainder:*mut u64)->u64{if divisor==0{if !remainder.is_null(){unsafe{*remainder=0;}}return u64::MAX;}let n=((high as u128)<<64)|(low as u128);let q=n/(divisor as u128);if !remainder.is_null(){unsafe{*remainder=(n%(divisor as u128)) as u64;}}q as u64}
