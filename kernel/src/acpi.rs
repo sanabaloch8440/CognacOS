@@ -254,3 +254,15 @@ pub unsafe fn find_table(rsdp_address: u64, signature: [u8; 4], instance: usize)
     }
     Err(AcpiError::MissingRoot)
 }
+
+
+/// Resolve an ISA IRQ through MADT Interrupt Source Overrides. Without an
+/// override, ISA IRQs use the architectural legacy defaults: active-high edge.
+pub fn resolve_isa_irq(madt: &MadtInfo, irq: u8) -> (u32, bool, bool) {
+    for entry in madt.irq_overrides.iter().take(madt.irq_override_count) {
+        if entry.bus == 0 && entry.source_irq == irq {
+            return (entry.gsi, entry.active_low, entry.level_triggered);
+        }
+    }
+    (irq as u32, false, false)
+}
