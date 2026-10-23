@@ -1,9 +1,8 @@
 //! Early x64 DMA primitives and Windows DMA ABI layout.
 //!
-//! This is not yet a published Windows DMA adapter: the WDK callback signatures
-//! and MDL integration must be wired before exposing a DMA_OPERATIONS pointer to
-//! a third-party driver. Helpers here are usable internally and fail closed when
-//! the allocator cannot satisfy a physical-contiguity or address-mask constraint.
+//! Windows x64 bootstrap DMA adapter and DMA_OPERATIONS callbacks.
+//! Direct physical mapping and coherent common buffers are supported below 4 GiB;
+//! IOMMU domains, map-register scheduling, and MDL-backed scatter/gather remain unavailable.
 use core::sync::atomic::{fence, Ordering};
 
 pub const PAGE_SIZE: u64 = 4096;
