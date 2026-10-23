@@ -67,3 +67,59 @@ pub unsafe fn configure_ioapic_masked(io_base: u64, gsi_base: u32, gsi: u32, vec
 }
 /// Timer remains masked; calibration and scheduler integration are separate steps.
 pub unsafe fn mask_local_timer(mmio_base: u64) { unsafe { write_local(mmio_base, APIC_LVT_TIMER, 1 << 16); } }
+
+
+const APIC_ICR_LOW: usize = 0x300;
+const APIC_ICR_HIGH: usize = 0x310;
+const APIC_ICR_DELIVERY_PENDING: u32 = 1 << 12;
+const APIC_ICR_INIT: u32 = 0b101 << 8;
+const APIC_ICR_STARTUP: u32 = 0b110 << 8;
+
+/// Wait for the local APIC's previous IPI transaction to finish. The bounded
+/// loop avoids hanging the boot CPU forever if the controller is unavailable.
+unsafe fn wait_icr_idle(base: u64) -> Result<(), ApicError> {
+    for _ in 0..1_000_000usize {
+        if unsafe { read_local(base, APIC_ICR_LOW) } & APIC_ICR_DELIVERY_PENDING == 0 {
+            return Ok(());
+        }
+        core::hint::spin_loop();
+    }
+    Err(ApicError::Timeout)
+}
+
+/// Send a fixed-vector IPI using legacy xAPIC destination IDs (8-bit).
+/// Requires a mapped, uncached local APIC MMIO page and a valid IDT vector on
+/// the target. This primitive does not configure the target's IDT or scheduler.
+pub unsafe fn send_fixed_ipi(base: u64, destination_apic_id: u8, vector: u8) -> Result<(), ApicError> {
+    if base == 0 || base & 0xfff != 0 || vector < 0x20 || vector == 0xff {
+        return Err(ApicError::InvalidVector);
+    }
+    unsafe { wait_icr_idle(base)?; }
+    unsafe { write_local(base, APIC_ICR_HIGH, (destination_apic_id as u32) << 24); }
+    unsafe { write_local(base, APIC_ICR_LOW, vector as u32); }
+    unsafe { wait_icr_idle(base) }
+}
+
+/// Issue an INIT assert IPI. Startup sequencing and required hardware delays
+/// remain the responsibility of the SMP coordinator.
+pub unsafe fn send_init_ipi(base: u64, destination_apic_id: u8) -> Result<(), ApicError> {
+    if base == 0 || base & 0xfff != 0 { return Err(ApicError::InvalidBase); }
+    unsafe { wait_icr_idle(base)?; }
+    unsafe { write_local(base, APIC_ICR_HIGH, (destination_apic_id as u32) << 24); }
+    unsafe { write_local(base, APIC_ICR_LOW, APIC_ICR_INIT | (1 << 14) | (1 << 15)); }
+    unsafe { wait_icr_idle(base) }
+}
+
+/// Send one Startup IPI to a 4 KiB-aligned trampoline below 1 MiB.
+/// This is only a low-level primitive; it does not by itself make AP startup
+/// safe. A caller must prepare the trampoline, stack, CR3, GDT, IDT, and state.
+pub unsafe fn send_startup_ipi(base: u64, destination_apic_id: u8, trampoline_physical: u64) -> Result<(), ApicError> {
+    if base == 0 || base & 0xfff != 0 { return Err(ApicError::InvalidBase); }
+    if trampoline_physical >= 0x10_0000 || trampoline_physical & 0xfff != 0 {
+        return Err(ApicError::InvalidBase);
+    }
+    unsafe { wait_icr_idle(base)?; }
+    unsafe { write_local(base, APIC_ICR_HIGH, (destination_apic_id as u32) << 24); }
+    unsafe { write_local(base, APIC_ICR_LOW, APIC_ICR_STARTUP | ((trampoline_physical >> 12) as u32)); }
+    unsafe { wait_icr_idle(base) }
+}
