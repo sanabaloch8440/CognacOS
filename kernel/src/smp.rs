@@ -1,68 +1,344 @@
-//! SMP startup coordination. AP startup remains disabled until a real trampoline is installed.
-use crate::{apic, hal};
+//! Early x86-64 AP startup. APs are brought online with interrupts disabled;
+//! scheduling and external interrupt delivery remain separate milestones.
+use crate::{apic, arch, hal, memory};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::arch::global_asm;
+
+const PAGE_SIZE: usize = 4096;
+static LOCAL_APIC_BASE: AtomicU64 = AtomicU64::new(0);
+static ONLINE_APS: AtomicUsize = AtomicUsize::new(0);
+
+global_asm!(r#"
+    .section .rodata.ap_trampoline,"a",@progbits
+    .balign 16
+    .global rdotos_ap_trampoline_start
+    .global rdotos_ap_trampoline_end
+    .global rdotos_ap_trampoline_pm32
+    .global rdotos_ap_trampoline_long64
+    .global rdotos_ap_trampoline_gdt
+    .global rdotos_ap_trampoline_gdt_base_patch
+    .global rdotos_ap_trampoline_pm32_patch
+    .global rdotos_ap_trampoline_long64_patch
+    .global rdotos_ap_trampoline_pml4
+    .global rdotos_ap_trampoline_stack
+    .global rdotos_ap_trampoline_entry
+    .global rdotos_ap_trampoline_logical
+rdotos_ap_trampoline_start:
+    .code16
+    cli
+    cld
+    mov ax, cs
+    mov ds, ax
+    mov es, ax
+    lgdt [rdotos_ap_trampoline_gdt_pointer - rdotos_ap_trampoline_start]
+    mov eax, cr0
+    or eax, 1
+    mov cr0, eax
+    .byte 0x66, 0xea
+rdotos_ap_trampoline_pm32_patch:
+    .long 0
+    .word 0x08
+
+    .code32
+rdotos_ap_trampoline_pm32:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    call 1f
+1:  pop esi
+    sub esi, (1b - rdotos_ap_trampoline_start)
+    mov eax, dword ptr [esi + rdotos_ap_trampoline_pml4 - rdotos_ap_trampoline_start]
+    mov cr3, eax
+    mov eax, cr4
+    or eax, 0x20
+    mov cr4, eax
+    mov ecx, 0xc0000080
+    rdmsr
+    or eax, 0x100
+    wrmsr
+    mov eax, cr0
+    or eax, 0x80000000
+    mov cr0, eax
+    .byte 0xea
+rdotos_ap_trampoline_long64_patch:
+    .long 0
+    .word 0x08
+
+    .code64
+rdotos_ap_trampoline_long64:
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    call 2f
+2:  pop rsi
+    sub rsi, (2b - rdotos_ap_trampoline_start)
+    mov rsp, qword ptr [rsi + rdotos_ap_trampoline_stack - rdotos_ap_trampoline_start]
+    and rsp, -16
+    sub rsp, 8
+    mov edi, dword ptr [rsi + rdotos_ap_trampoline_logical - rdotos_ap_trampoline_start]
+    mov rax, qword ptr [rsi + rdotos_ap_trampoline_entry - rdotos_ap_trampoline_start]
+    jmp rax
+3:  pause
+    jmp 3b
+
+    .balign 8
+rdotos_ap_trampoline_gdt:
+    .quad 0
+    .quad 0x00af9a000000ffff
+    .quad 0x00cf92000000ffff
+rdotos_ap_trampoline_gdt_pointer:
+    .word 23
+rdotos_ap_trampoline_gdt_base_patch:
+    .long 0
+    .balign 8
+rdotos_ap_trampoline_pml4:
+    .long 0
+rdotos_ap_trampoline_stack:
+    .quad 0
+rdotos_ap_trampoline_entry:
+    .quad 0
+rdotos_ap_trampoline_logical:
+    .long 0
+rdotos_ap_trampoline_end:
+"#);
+
+unsafe extern "C" {
+    static rdotos_ap_trampoline_start: u8;
+    static rdotos_ap_trampoline_end: u8;
+    static rdotos_ap_trampoline_pm32: u8;
+    static rdotos_ap_trampoline_long64: u8;
+    static rdotos_ap_trampoline_gdt: u8;
+    static rdotos_ap_trampoline_gdt_base_patch: u8;
+    static rdotos_ap_trampoline_pm32_patch: u8;
+    static rdotos_ap_trampoline_long64_patch: u8;
+    static rdotos_ap_trampoline_pml4: u8;
+    static rdotos_ap_trampoline_stack: u8;
+    static rdotos_ap_trampoline_entry: u8;
+    static rdotos_ap_trampoline_logical: u8;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SmpError { InvalidTarget, UnsupportedApicId, InvalidCpuState, StartupTimeout, Apic(apic::ApicError) }
+pub enum SmpError {
+    InvalidTarget,
+    UnsupportedApicId,
+    InvalidCpuState,
+    StartupTimeout,
+    Apic(apic::ApicError),
+    Hal(hal::HalError),
+    Memory(memory::AllocError),
+    DelayUnavailable,
+    TrampolineTooLarge,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ApStartupTarget { pub logical_id: usize, pub apic_id: u32, pub trampoline_physical: u64, pub stack_top: u64, pub pml4_physical: u64 }
+pub struct ApStartupTarget {
+    pub logical_id: usize,
+    pub apic_id: u32,
+    pub trampoline_physical: u64,
+    pub stack_top: u64,
+    pub pml4_physical: u64,
+}
 impl ApStartupTarget {
     pub fn validate(self) -> Result<Self, SmpError> {
-        if self.logical_id == 0 || self.trampoline_physical == 0 || self.trampoline_physical >= 0x100000 || self.trampoline_physical & 0xfff != 0 || self.stack_top == 0 || self.stack_top & 0xf != 0 || self.stack_top >= 0x1_0000_0000 || self.pml4_physical == 0 || self.pml4_physical & 0xfff != 0 || self.pml4_physical >= 0x1_0000_0000 { return Err(SmpError::InvalidTarget); }
-        if self.apic_id > 255 { return Err(SmpError::UnsupportedApicId); }
+        if self.logical_id == 0 || self.trampoline_physical == 0
+            || self.trampoline_physical >= 0x10_0000 || self.trampoline_physical & 0xfff != 0
+            || self.stack_top == 0 || self.stack_top & 0xf != 0
+            || self.stack_top >= 0x1_0000_0000 || self.pml4_physical == 0
+            || self.pml4_physical & 0xfff != 0 || self.pml4_physical >= 0x1_0000_0000
+        { return Err(SmpError::InvalidTarget); }
+        if self.apic_id > u8::MAX as u32 { return Err(SmpError::UnsupportedApicId); }
         Ok(self)
     }
 }
-/// Serialized INIT/deassert/SIPI sequence for one discovered AP.
-/// The caller must provide a calibrated delay function and an initialized,
-/// uncached xAPIC mapping. This routine is not invoked by boot until a real
-/// trampoline and AP-side acknowledgement path are installed.
+
+#[inline]
+unsafe fn outb(port: u16, value: u8) {
+    unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags)); }
+}
+#[inline]
+unsafe fn inb(port: u16) -> u8 {
+    let value: u8;
+    unsafe { core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags)); }
+    value
+}
+
+/// Calibrated early delay from the PC-compatible PIT channel 2 oscillator.
+/// Returns false if OUT2 never transitions before the bounded poll expires.
+fn pit_delay_us(microseconds: u32) -> bool {
+    if microseconds == 0 { return true; }
+    let ticks = ((microseconds as u64 * 1_193_182) + 999_999) / 1_000_000;
+    if ticks == 0 || ticks > u16::MAX as u64 { return false; }
+    unsafe {
+        let speaker = inb(0x61);
+        outb(0x61, speaker & !0x03);
+        outb(0x43, 0xB0); // channel 2, lo/hi byte, mode 0, binary
+        outb(0x42, ticks as u8);
+        outb(0x42, (ticks >> 8) as u8);
+        outb(0x61, (speaker & !0x02) | 0x01); // gate on, speaker off
+        for _ in 0..10_000_000usize {
+            if inb(0x61) & 0x20 != 0 {
+                outb(0x61, inb(0x61) & !0x01);
+                return true;
+            }
+            core::hint::spin_loop();
+        }
+        outb(0x61, inb(0x61) & !0x01);
+    }
+    false
+}
+
+unsafe fn symbol_offset(symbol: *const u8) -> usize {
+    unsafe { symbol.offset_from(core::ptr::addr_of!(rdotos_ap_trampoline_start)) as usize }
+}
+unsafe fn write_patch_u32(page: u64, symbol: *const u8, value: u32) {
+    let offset = unsafe { symbol_offset(symbol) };
+    unsafe { core::ptr::write_unaligned((page as *mut u8).add(offset).cast::<u32>(), value); }
+}
+unsafe fn write_patch_u64(page: u64, symbol: *const u8, value: u64) {
+    let offset = unsafe { symbol_offset(symbol) };
+    unsafe { core::ptr::write_unaligned((page as *mut u8).add(offset).cast::<u64>(), value); }
+}
+
+/// Copy and relocate the self-contained real-mode trampoline. The page is made
+/// writable/NX while patched and RX/RO before any SIPI is sent.
+unsafe fn prepare_trampoline(
+    pml4: u64,
+    page: u64,
+    stack_top: u64,
+    logical_id: usize,
+) -> Result<(), SmpError> {
+    let start = core::ptr::addr_of!(rdotos_ap_trampoline_start);
+    let end = core::ptr::addr_of!(rdotos_ap_trampoline_end);
+    let length = unsafe { end.offset_from(start) as usize };
+    if length == 0 || length > PAGE_SIZE { return Err(SmpError::TrampolineTooLarge); }
+    unsafe { memory::configure_identity_page(pml4, page, true, false, false, false) }
+        .map_err(SmpError::Memory)?;
+    unsafe {
+        core::ptr::write_bytes(page as *mut u8, 0, PAGE_SIZE);
+        core::ptr::copy_nonoverlapping(start, page as *mut u8, length);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_gdt_base_patch),
+            (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_gdt)) as u64) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pm32_patch),
+            (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_pm32)) as u64) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_long64_patch),
+            (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_long64)) as u64) as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pml4), pml4 as u32);
+        write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_stack), stack_top);
+        write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_entry), rdotos_ap_entry as usize as u64);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_logical), logical_id as u32);
+        memory::configure_identity_page(pml4, page, false, true, false, false)
+            .map_err(SmpError::Memory)?;
+    }
+    Ok(())
+}
+
+/// Start one discovered AP. The supplied delay must be a calibrated monotonic
+/// delay; IF stays clear and no AP is marked online until its entry confirms setup.
 pub unsafe fn start_one_ap(
     local_apic_base: u64,
     target: ApStartupTarget,
-    delay_us: fn(u32),
+    delay_us: fn(u32) -> bool,
 ) -> Result<(), SmpError> {
     let target = target.validate()?;
     if hal::cpu_state(target.logical_id).ok() != Some(hal::CPU_DISCOVERED)
         || hal::cpu_local(target.logical_id)
-            .map(|cpu| cpu.apic_id.load(core::sync::atomic::Ordering::Acquire)).ok()
-            != Some(target.apic_id)
-    {
-        return Err(SmpError::InvalidCpuState);
-    }
-    hal::mark_cpu_starting(target.logical_id).map_err(|_| SmpError::InvalidCpuState)?;
-    if let Err(error) = unsafe { apic::send_init_ipi(local_apic_base, target.apic_id as u8) } {
-        let _ = hal::mark_cpu_failed(target.logical_id);
-        return Err(SmpError::Apic(error));
-    }
-    delay_us(10_000);
+            .map(|cpu| cpu.apic_id.load(Ordering::Acquire)).ok() != Some(target.apic_id)
+    { return Err(SmpError::InvalidCpuState); }
+    hal::mark_cpu_starting(target.logical_id).map_err(SmpError::Hal)?;
+    let startup = unsafe { apic::send_init_ipi(local_apic_base, target.apic_id as u8) };
+    if let Err(error) = startup { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::Apic(error)); }
+    if !delay_us(10_000) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
     if let Err(error) = unsafe { apic::send_init_deassert_ipi(local_apic_base, target.apic_id as u8) } {
-        let _ = hal::mark_cpu_failed(target.logical_id);
-        return Err(SmpError::Apic(error));
+        let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::Apic(error));
     }
-    delay_us(200);
+    if !delay_us(200) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
     if let Err(error) = unsafe { apic::send_startup_ipi(local_apic_base, target.apic_id as u8, target.trampoline_physical) } {
-        let _ = hal::mark_cpu_failed(target.logical_id);
-        return Err(SmpError::Apic(error));
+        let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::Apic(error));
     }
-    delay_us(200);
+    if !delay_us(200) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
     if hal::cpu_state(target.logical_id).ok() != Some(hal::CPU_ONLINE) {
         if let Err(error) = unsafe { apic::send_startup_ipi(local_apic_base, target.apic_id as u8, target.trampoline_physical) } {
-            let _ = hal::mark_cpu_failed(target.logical_id);
-            return Err(SmpError::Apic(error));
+            let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::Apic(error));
         }
     }
-    let mut waited = 0;
+    let mut waited = 0u32;
     while waited < 100_000 {
-        if hal::cpu_state(target.logical_id).ok() == Some(hal::CPU_ONLINE) {
-            return Ok(());
-        }
-        delay_us(100);
+        if hal::cpu_state(target.logical_id).ok() == Some(hal::CPU_ONLINE) { return Ok(()); }
+        if !delay_us(100) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
         waited += 100;
     }
     let _ = hal::mark_cpu_failed(target.logical_id);
     Err(SmpError::StartupTimeout)
 }
 
+/// Enable xAPIC MMIO as uncached, install the real-mode trampoline, and bring
+/// each MADT-discovered AP online. APs are left in a safe interrupt-disabled
+/// idle loop until per-CPU interrupt routing and scheduling are implemented.
+pub unsafe fn start_discovered_aps(
+    pml4_physical: u64,
+    trampoline_physical: u64,
+    local_apic_base: u64,
+    bsp_apic_id: u32,
+) -> Result<usize, SmpError> {
+    if trampoline_physical == 0 || trampoline_physical >= 0x10_0000
+        || trampoline_physical & 0xfff != 0 || local_apic_base == 0
+        || local_apic_base >= 0x1_0000_0000 || local_apic_base & 0xfff != 0
+    { return Err(SmpError::InvalidTarget); }
+    unsafe { memory::configure_identity_page(pml4_physical, local_apic_base, true, false, true, true) }
+        .map_err(SmpError::Memory)?;
+    let current_id = unsafe { apic::initialize_local_apic(local_apic_base) }.map_err(SmpError::Apic)?;
+    if current_id != bsp_apic_id { return Err(SmpError::InvalidCpuState); }
+    LOCAL_APIC_BASE.store(local_apic_base, Ordering::Release);
+
+    let mut online = 0usize;
+    for logical_id in 1..hal::MAX_CPUS {
+        if hal::cpu_state(logical_id).ok() != Some(hal::CPU_DISCOVERED) { continue; }
+        let cpu = hal::cpu_local(logical_id).map_err(SmpError::Hal)?;
+        let apic_id = cpu.apic_id.load(Ordering::Acquire);
+        if apic_id > u8::MAX as u32 { let _ = hal::mark_cpu_failed(logical_id); continue; }
+        let stack_page = unsafe { memory::allocate_page() }.map_err(SmpError::Memory)?;
+        let stack_top = stack_page + PAGE_SIZE as u64;
+        let target = ApStartupTarget { logical_id, apic_id, trampoline_physical, stack_top, pml4_physical };
+        unsafe { prepare_trampoline(pml4_physical, trampoline_physical, stack_top, logical_id)?; }
+        match unsafe { start_one_ap(local_apic_base, target, pit_delay_us) } {
+            Ok(()) => { online += 1; }
+            Err(_) => { let _ = hal::mark_cpu_failed(logical_id); }
+        }
+    }
+    Ok(online)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rdotos_ap_entry(logical_id: u32) -> ! {
+    let index = logical_id as usize;
+    unsafe { arch::load_cpu_descriptor_tables(); }
+    let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
+    let apic_id = if base != 0 {
+        unsafe { apic::initialize_local_apic(base) }.ok()
+    } else { None };
+    let expected = hal::cpu_local(index)
+        .map(|cpu| cpu.apic_id.load(Ordering::Acquire)).ok();
+    if apic_id.is_none() || apic_id != expected
+        || unsafe { hal::install_cpu_local(index) }.is_err()
+        || hal::mark_cpu_online(index).is_err()
+    {
+        let _ = hal::mark_cpu_failed(index);
+        loop { core::hint::spin_loop(); }
+    }
+    ONLINE_APS.fetch_add(1, Ordering::AcqRel);
+    // Deliberately do not STI: no external interrupt/EOI and per-CPU timer path
+    // is ready yet. This AP is online and safely parked pending scheduler work.
+    loop { core::hint::spin_loop(); }
+}
+
+pub fn online_ap_count() -> usize { ONLINE_APS.load(Ordering::Acquire) }
+
 pub fn self_test() -> bool {
     let target = ApStartupTarget { logical_id: 1, apic_id: 2, trampoline_physical: 0x8000, stack_top: 0x204000, pml4_physical: 0x1000 };
-    target.validate() == Ok(target) && ApStartupTarget { apic_id: 256, ..target }.validate() == Err(SmpError::UnsupportedApicId) && ApStartupTarget { trampoline_physical: 0, ..target }.validate() == Err(SmpError::InvalidTarget)
+    target.validate() == Ok(target)
+        && ApStartupTarget { apic_id: 256, ..target }.validate() == Err(SmpError::UnsupportedApicId)
+        && ApStartupTarget { trampoline_physical: 0, ..target }.validate() == Err(SmpError::InvalidTarget)
+        && ApStartupTarget { stack_top: 0x204003, ..target }.validate() == Err(SmpError::InvalidTarget)
 }
