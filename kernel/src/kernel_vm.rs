@@ -1,5 +1,5 @@
-//! Supervisor-only virtual mappings backed by independently allocated physical pages.
-//! This is not a pagefile-backed pager: no eviction/demand paging is claimed.
+//! Supervisor-only kernel virtual mappings and demand-zero pageable pool extents.
+//! Pageable extents are faulted in lazily; eviction/pagefile backing is not yet implemented.
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 const PAGE: u64 = 4096;
 const P: u64 = 1;
@@ -19,11 +19,12 @@ const MAX_RECLAIM_TABLES: usize = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error { NotInitialized, Invalid, NoVirtualSpace, NoPhysicalMemory, AlreadyMapped, NotMapped, TableFull }
 #[derive(Clone, Copy)]
-struct Extent { start: usize, pages: usize, live: bool }
-impl Extent { const EMPTY: Self = Self { start: 0, pages: 0, live: false }; }
+struct Extent { start: usize, pages: usize, pageable: bool, live: bool }
+impl Extent { const EMPTY: Self = Self { start: 0, pages: 0, pageable: false, live: false }; }
 struct Bits(core::cell::UnsafeCell<[u64; WORDS]>); unsafe impl Sync for Bits {}
 struct Table(core::cell::UnsafeCell<[Extent; MAX]>); unsafe impl Sync for Table {}
 static BITS: Bits = Bits(core::cell::UnsafeCell::new([0; WORDS]));
+static MAPPED_BITS: Bits = Bits(core::cell::UnsafeCell::new([0; WORDS]));
 static TABLE: Table = Table(core::cell::UnsafeCell::new([Extent::EMPTY; MAX]));
 static ROOT: AtomicU64 = AtomicU64::new(0);
 static OWN_ROOT_SLOT: AtomicBool = AtomicBool::new(false);
@@ -166,7 +167,48 @@ pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
  }
  if mapped!=pages {for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,va+n as u64*PAGE)}{synchronize_kernel_tlb();let _=unsafe{crate::memory::free_page(pa)};}}for n in 0..pages{bits[(start+n)/64]&=!(1u64<<((start+n)%64))}return Err(Error::NoPhysicalMemory)}
  synchronize_kernel_tlb();
- table[ti]=Extent{start,pages,live:true};Ok(va as *mut u8)
+ let mapped_bits=unsafe{&mut *MAPPED_BITS.0.get()};for n in 0..pages{mapped_bits[(start+n)/64]|=1u64<<((start+n)%64);}
+ table[ti]=Extent{start,pages,pageable:false,live:true};Ok(va as *mut u8)
+}
+/// Reserve a virtual extent for demand-zero pageable pool memory. Physical
+/// frames and leaf PTEs are created only when a page-fault handler first touches it.
+pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
+ if pages == 0 || pages > MAX_EXTENT_PAGES { return Err(Error::Invalid); }
+ if ROOT.load(Ordering::Acquire) == 0 { return Err(Error::NotInitialized); }
+ let _g=Guard::lock();
+ let table=unsafe{&mut *TABLE.0.get()};
+ let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
+ let bits=unsafe{&mut *BITS.0.get()};let mut start=0usize;let mut found=None;
+ while start+pages<=PAGES { let mut n=0;while n<pages&&bits[(start+n)/64]&(1u64<<((start+n)%64))==0{n+=1;}if n==pages{found=Some(start);break;}start+=n+1; }
+ let start=found.ok_or(Error::NoVirtualSpace)?;
+ for n in 0..pages { bits[(start+n)/64]|=1u64<<((start+n)%64); }
+ table[ti]=Extent{start,pages,pageable:true,live:true};
+ Ok((BASE+start as u64*PAGE) as *mut u8)
+}
+
+/// Handle a supervisor not-present fault in a reserved pageable pool extent.
+/// This is demand-zero page-in only; dirty-page eviction and pagefile I/O are
+/// intentionally not claimed until a real backing-store driver exists.
+pub fn handle_page_fault(address: u64, error_code: u64) -> bool {
+ if error_code & 1 != 0 || error_code & (1<<2) != 0 || error_code & (1<<3) != 0 { return false; }
+ let page_va=address & !(PAGE-1);let root=ROOT.load(Ordering::Acquire);if root==0{return false;}
+ if page_va<BASE || page_va>=BASE+(PAGES as u64)*PAGE{return false;}
+ let page_index=((page_va-BASE)/PAGE) as usize;
+ let _g=Guard::lock();
+ let extent=unsafe{&*TABLE.0.get()}.iter().find(|e|e.live&&e.pageable&&page_index>=e.start&&page_index<e.start+e.pages).copied();
+ let Some(extent)=extent else{return false;};
+ let mapped=unsafe{&mut *MAPPED_BITS.0.get()};
+ if mapped[page_index/64]&(1u64<<(page_index%64))!=0 {
+  unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}
+  return true;
+ }
+ let pa=match unsafe{crate::memory::allocate_page()}{Ok(pa)=>pa,Err(_)=>return false};
+ unsafe{core::ptr::write_bytes(pa as *mut u8,0,PAGE as usize);}
+ if unsafe{map(root,page_va,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false;}
+ mapped[page_index/64]|=1u64<<(page_index%64);
+ synchronize_kernel_tlb();
+ let _=extent;
+ true
 }
 
 /// Free only an exact live allocation returned by allocate_pages.
@@ -175,20 +217,22 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
  let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
  let start=((va-BASE)/PAGE)as usize;let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};
  let i=table.iter().position(|e|e.live&&e.start==start&&e.pages==pages).ok_or(Error::Invalid)?;
- // Validate every leaf and capture all backing frames before mutating page tables.
- // The VM lock makes this scratch array private to this operation.
- let reclaim=unsafe{&mut *RECLAIM_PAGES.0.get()};
- for n in 0..pages {let indexes=ix(va+n as u64*PAGE);let mut t=root as *const u64;for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *const u64;}let pte=unsafe{t.add(indexes[3]).read()};if pte&P==0{return Err(Error::NotMapped)}reclaim[n]=pte&ADDR;}
- // Remove the whole extent first, then wait for every online AP to flush stale
- // translations before any backing frame can be recycled.
- for n in 0..pages {let _=unsafe{unmap(root,va+n as u64*PAGE)}?;}
+ // Validate mapped leaves and capture physical frames; nonresident pageable
+ // pages have no backing frame to reclaim.
+ let reclaim=unsafe{&mut *RECLAIM_PAGES.0.get()};let mapped=unsafe{&*MAPPED_BITS.0.get()};
+ for n in 0..pages {
+  if mapped[(start+n)/64]&(1u64<<((start+n)%64))==0 { if !table[i].pageable{return Err(Error::NotMapped)} reclaim[n]=0;continue; }
+  let indexes=ix(va+n as u64*PAGE);let mut t=root as *const u64;for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *const u64;}let pte=unsafe{t.add(indexes[3]).read()};if pte&P==0{return Err(Error::NotMapped)}reclaim[n]=pte&ADDR;
+ }
+ // Unmap all resident pages before a single SMP rendezvous, then recycle frames.
+ for n in 0..pages {if reclaim[n]!=0 {let _=unsafe{unmap(root,va+n as u64*PAGE)}?;}}
  let mut table_count=0usize;
- for n in 0..pages {unsafe{prune_empty_tables(root,va+n as u64*PAGE,&mut table_count)}}
- synchronize_kernel_tlb();
- let bits=unsafe{&mut *BITS.0.get()};
- for n in 0..pages { // A saturated allocator may quarantine a frame rather than risk reuse.
-  let _=unsafe{crate::memory::free_page(reclaim[n])};
-  bits[(start+n)/64]&=!(1u64<<((start+n)%64));
+ for n in 0..pages {if reclaim[n]!=0 {unsafe{prune_empty_tables(root,va+n as u64*PAGE,&mut table_count)}}}
+ if reclaim[..pages].iter().any(|pa|*pa!=0) { synchronize_kernel_tlb(); }
+ let bits=unsafe{&mut *BITS.0.get()};let mapped=unsafe{&mut *MAPPED_BITS.0.get()};
+ for n in 0..pages {
+  if reclaim[n]!=0 { let _=unsafe{crate::memory::free_page(reclaim[n])}; }
+  bits[(start+n)/64]&=!(1u64<<((start+n)%64));mapped[(start+n)/64]&=!(1u64<<((start+n)%64));
  }
  let tables=unsafe{&*RECLAIM_TABLES.0.get()};
  for pa in tables.iter().take(table_count).copied() { let _=unsafe{crate::memory::free_page(pa)}; }
