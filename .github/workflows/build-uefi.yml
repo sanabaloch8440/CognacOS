@@ -90,6 +90,7 @@ jobs:
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=ide,format=raw,file=build/rdotos-uefi.img \
+            -drive if=ide,format=raw,index=1,file=build/pagefile.img \
             -boot order=c -display none -monitor none \
             -serial file:build/serial.log -no-reboot -no-shutdown
           qemu_status=$?
