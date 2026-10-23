@@ -145,3 +145,14 @@ pub fn clear_wake_pending()->Result<(),ThreadError>{
     let t=table.records.iter_mut().find(|t|t.id==id&&t.state==ThreadState::Running).ok_or(ThreadError::InvalidState)?;
     t.wake_pending=false;t.wait_status=0;Ok(())
 }
+
+/// Initialize the runtime's per-CPU current-thread slots. The bootstrap context
+/// is the idle context until the first explicit thread switch.
+pub fn initialize(){
+    for cpu in 0..crate::hal::MAX_CPUS {
+        if let Ok(local)=crate::hal::cpu_local(cpu) {
+            local.current_thread.store(0,core::sync::atomic::Ordering::Release);
+        }
+        unsafe { *IDLE_CONTEXTS[cpu].0.get()=core::ptr::null_mut(); }
+    }
+}
