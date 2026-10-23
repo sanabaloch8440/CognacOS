@@ -366,6 +366,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Kernel thread block, cross-thread wake, resume, and exit passed.\r\n");
+        if !dispatcher::self_test() {
+            serial_write(b"FATAL: dispatcher FIFO, cancellation, wait-group, or timeout self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Dispatcher FIFO, cancellation, wait-any/wait-all, and timeout self-tests passed.\r\n");
 
         // Exercise typed handles and explicit access checks.
         let event = match object::create(object::ObjectType::Event, object::ACCESS_READ) {
