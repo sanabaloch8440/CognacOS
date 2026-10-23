@@ -162,6 +162,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Kernel virtual-address arena and mapping self-test passed.\r\n");
+        if !ntoskrnl::memory_manager_self_test() {
+            serial_write(b"FATAL: NT memory-manager translation/copy self-test failed.\\r\\n");
+            halt();
+        }
+        serial_write(b"NT memory manager: physical translation, validity, and checked-copy self-test passed.\\r\\n");
         serial_write(b"Physical allocator initialized; conventional regions: ");
         serial_write_decimal(region_count);
         serial_write(b"\r\n");
