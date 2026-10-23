@@ -121,7 +121,7 @@ fn allocate_tagged_mode(size: usize, tag: u32, zeroed: bool, pageable: bool) -> 
         let mut slab_index = slabs.iter().position(|s| s.live && s.block_size == class_size && s.pageable == pageable && s.find_free_slot().is_some());
         if slab_index.is_none() {
             let Some(empty_index) = slabs.iter().position(|s| !s.live) else { return core::ptr::null_mut(); };
-            let page = match unsafe { if pageable { crate::kernel_vm::allocate_pageable_pages(1) } else { crate::kernel_vm::allocate_pages(1) }.map(|p| p as u64) } {
+            let page = match unsafe { (if pageable { crate::kernel_vm::allocate_pageable_pages(1) } else { crate::kernel_vm::allocate_pages(1) }).map(|p| p as u64) } {
                 Ok(base) => base,
                 Err(_) => return core::ptr::null_mut(),
             };
@@ -148,7 +148,7 @@ fn allocate_tagged_mode(size: usize, tag: u32, zeroed: bool, pageable: bool) -> 
         return core::ptr::null_mut();
     };
     if pages == 0 || pages > MAX_PAGES_PER_ALLOCATION { return core::ptr::null_mut(); }
-    let base = match unsafe { if pageable { crate::kernel_vm::allocate_pageable_pages(pages) } else { crate::kernel_vm::allocate_pages(pages) }.map(|p| p as u64) } {
+    let base = match unsafe { (if pageable { crate::kernel_vm::allocate_pageable_pages(pages) } else { crate::kernel_vm::allocate_pages(pages) }).map(|p| p as u64) } {
         Ok(base) => base,
         Err(_) => return core::ptr::null_mut(),
     };
