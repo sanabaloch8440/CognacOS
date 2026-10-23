@@ -101,6 +101,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "HalRequestIpiSpecifyVector" => crate::hal::exports::hal_request_ipi_specify_vector as usize,
   "HalAllProcessorsStarted" => crate::hal::exports::hal_all_processors_started as usize,
   "HalDisplayString" => crate::hal::exports::hal_display_string as usize,
+  "IoGetDmaAdapter" => crate::dma::io_get_dma_adapter as usize,
   "HalGetAdapter" => crate::hal::exports::hal_get_adapter as usize,
   "HalAllocateCommonBuffer" => crate::hal::exports::hal_allocate_common_buffer as usize,
   "HalFlushCommonBuffer" => crate::hal::exports::hal_flush_common_buffer as usize,
