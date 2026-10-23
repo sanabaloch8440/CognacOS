@@ -21,6 +21,7 @@ static LAST_TARGET_APIC_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static INTERRUPTS_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static IPI_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static CPU_INTERRUPT_READY: [core::sync::atomic::AtomicBool; hal::MAX_CPUS] = [const { core::sync::atomic::AtomicBool::new(false) }; hal::MAX_CPUS];
+static TLB_IPI_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 global_asm!(r#"
     .section .rodata.ap_trampoline,"a",@progbits
@@ -641,6 +642,7 @@ pub fn enable_ipi_interrupts() -> bool {
 }
 
 pub fn ipi_shootdowns_enabled() -> bool { IPI_ACTIVE.load(Ordering::Acquire) }
+pub fn tlb_ipi_count() -> u64 { TLB_IPI_COUNT.load(Ordering::Acquire) }
 
 /// Send a fixed-vector IPI to a logical CPU. The target's IDT gate and LAPIC
 /// are already initialized by the AP startup protocol.
@@ -655,6 +657,7 @@ pub fn send_tlb_shootdown(logical_id: usize) -> Result<(), apic::ApicError> {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_tlb_ipi_handler() {
+    TLB_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
     crate::kernel_vm::handle_tlb_ipi();
     let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
     if base != 0 { unsafe { apic::local_apic_eoi(base); } }
