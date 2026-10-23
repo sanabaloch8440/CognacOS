@@ -2,6 +2,58 @@
 use core::sync::atomic::Ordering;
 
 const ALL_PROCESSOR_GROUPS: u16 = 0xffff;
+const PASSIVE_LEVEL: u8 = 0;
+const DISPATCH_LEVEL: u8 = 2;
+const IRQL_STACK_DEPTH: usize = 16;
+static CURRENT_IRQL: [core::sync::atomic::AtomicU8; 64] =
+    [const { core::sync::atomic::AtomicU8::new(PASSIVE_LEVEL) }; 64];
+static IRQL_DEPTH: [core::sync::atomic::AtomicU8; 64] =
+    [const { core::sync::atomic::AtomicU8::new(0) }; 64];
+static IRQL_FLAGS: [core::sync::atomic::AtomicU64; 64 * IRQL_STACK_DEPTH] =
+    [const { core::sync::atomic::AtomicU64::new(0) }; 64 * IRQL_STACK_DEPTH];
+
+#[inline]
+fn cpu_slot() -> usize {
+    crate::hal::current_cpu_local()
+        .map(|cpu| cpu.logical_id.load(Ordering::Relaxed) as usize)
+        .filter(|id| *id < 64)
+        .unwrap_or(0)
+}
+#[inline]
+unsafe fn read_rflags() -> u64 {
+    let flags: u64;
+    unsafe { core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags)); }
+    flags
+}
+#[inline]
+unsafe fn irq_disable() { unsafe { core::arch::asm!("cli", options(nomem, nostack)); } }
+#[inline]
+unsafe fn irq_restore(flags: u64) {
+    if flags & (1 << 9) != 0 {
+        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    }
+}
+fn push_irq_state(flags: u64) {
+    let cpu = cpu_slot();
+    let depth = IRQL_DEPTH[cpu].load(Ordering::Relaxed) as usize;
+    if depth < IRQL_STACK_DEPTH {
+        IRQL_FLAGS[cpu * IRQL_STACK_DEPTH + depth].store(flags, Ordering::Relaxed);
+        IRQL_DEPTH[cpu].store((depth + 1) as u8, Ordering::Release);
+    }
+}
+fn pop_irq_state() -> u64 {
+    let cpu = cpu_slot();
+    let depth = IRQL_DEPTH[cpu].load(Ordering::Acquire) as usize;
+    if depth == 0 { return 0; }
+    IRQL_DEPTH[cpu].store((depth - 1) as u8, Ordering::Release);
+    IRQL_FLAGS[cpu * IRQL_STACK_DEPTH + depth - 1].load(Ordering::Relaxed)
+}
+#[inline]
+fn atomic_lock_word(lock: *mut u64) -> Option<&'static core::sync::atomic::AtomicU64> {
+    if lock.is_null() || (lock as usize) % core::mem::align_of::<u64>() != 0 { return None; }
+    Some(unsafe { &*(lock.cast::<core::sync::atomic::AtomicU64>()) })
+}
+
 
 /// Windows PROCESSOR_NUMBER layout: group, group-relative number, reserved.
 #[repr(C)]
@@ -24,7 +76,7 @@ const EVENT_SYNCHRONIZATION: u8 = 1;
 const EVENT_SIZE: u8 = 6; // sizeof(KEVENT) / sizeof(ULONG).
 
 /// IRQL is PASSIVE_LEVEL until the interrupt-priority layer is brought online.
-pub unsafe extern "win64" fn ke_get_current_irql() -> u8 { 0 }
+pub unsafe extern "win64" fn ke_get_current_irql() -> u8 { CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) }
 
 pub unsafe extern "win64" fn ke_query_active_processor_count_ex(group: u16) -> u32 {
     let count = crate::hal::online_cpu_count() as u32;
@@ -58,14 +110,67 @@ pub unsafe extern "win64" fn ke_get_current_processor_index() -> u32 {
 pub unsafe extern "win64" fn ke_get_current_node_number() -> u32 { 0 }
 pub unsafe extern "win64" fn ke_get_recommended_shared_data_alignment() -> u32 { 64 }
 
-/// Initialize an NT spin-lock word. Actual IRQL raising/spin ownership is not
-/// advertised until the scheduler/interrupt-priority layer exists.
+/// Initialize a Windows x64 KSPIN_LOCK word.
 pub unsafe extern "win64" fn ke_initialize_spin_lock(lock: *mut u64) {
-    if !lock.is_null() { unsafe { core::ptr::write_volatile(lock, 0); } }
+    if let Some(word) = atomic_lock_word(lock) { word.store(0, Ordering::Release); }
 }
 pub unsafe extern "win64" fn ke_test_spin_lock(lock: *const u64) -> u8 {
-    if lock.is_null() { return 0; }
-    (unsafe { core::ptr::read_volatile(lock) } == 0) as u8
+    if lock.is_null() || (lock as usize) % core::mem::align_of::<u64>() != 0 { return 0; }
+    let word = unsafe { &*(lock.cast::<core::sync::atomic::AtomicU64>()) };
+    (word.load(Ordering::Relaxed) == 0) as u8
+}
+
+/// Raise to the kernel's conservative DISPATCH_LEVEL model. Until an APIC TPR
+/// policy is installed, local interrupts are masked rather than priority-filtered.
+pub unsafe extern "win64" fn ke_raise_irql_to_dpc_level() -> u8 {
+    let flags = unsafe { read_rflags() };
+    unsafe { irq_disable(); }
+    push_irq_state(flags);
+    CURRENT_IRQL[cpu_slot()].swap(DISPATCH_LEVEL, Ordering::AcqRel)
+}
+pub unsafe extern "win64" fn ke_lower_irql(new_irql: u8) {
+    let cpu = cpu_slot();
+    CURRENT_IRQL[cpu].store(new_irql, Ordering::Release);
+    let flags = pop_irq_state();
+    unsafe { irq_restore(flags); }
+}
+
+/// KeAcquireSpinLock: disable local interrupts, raise logical IRQL, then acquire
+/// atomically so an interrupt handler cannot recursively deadlock this CPU.
+pub unsafe extern "win64" fn ke_acquire_spin_lock(lock: *mut u64, old_irql: *mut u8) {
+    if old_irql.is_null() { return; }
+    let flags = unsafe { read_rflags() };
+    unsafe { irq_disable(); }
+    push_irq_state(flags);
+    let old = CURRENT_IRQL[cpu_slot()].swap(DISPATCH_LEVEL, Ordering::AcqRel);
+    unsafe { old_irql.write(old); }
+    let Some(word) = atomic_lock_word(lock) else {
+        CURRENT_IRQL[cpu_slot()].store(old, Ordering::Release);
+        let saved = pop_irq_state(); unsafe { irq_restore(saved); }
+        return;
+    };
+    while word.compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+}
+pub unsafe extern "win64" fn ke_release_spin_lock(lock: *mut u64, old_irql: u8) {
+    if let Some(word) = atomic_lock_word(lock) { word.store(0, Ordering::Release); }
+    unsafe { ke_lower_irql(old_irql); }
+}
+pub unsafe extern "win64" fn ke_acquire_spin_lock_at_dpc_level(lock: *mut u64) {
+    let Some(word) = atomic_lock_word(lock) else { return; };
+    while word.compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+}
+pub unsafe extern "win64" fn ke_release_spin_lock_from_dpc_level(lock: *mut u64) {
+    if let Some(word) = atomic_lock_word(lock) { word.store(0, Ordering::Release); }
+}
+pub unsafe extern "win64" fn ke_try_to_acquire_spin_lock_at_dpc_level(lock: *mut u64) -> u8 {
+    match atomic_lock_word(lock) {
+        Some(word) => word.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() as u8,
+        None => 0,
+    }
 }
 pub unsafe extern "win64" fn ke_flush_write_buffer() {
     core::sync::atomic::fence(Ordering::SeqCst);
