@@ -197,6 +197,37 @@ impl<T> Drop for IrqSpinLockGuard<'_, T> {
     }
 }
 
+/// Save RFLAGS and disable maskable interrupts on the current CPU. The
+/// returned token must be passed to restore_interrupts on the same CPU and
+/// execution path; it is not an IRQL token and does not mask NMI.
+#[inline]
+pub unsafe fn disable_interrupts() -> u64 {
+    let flags: u64;
+    unsafe {
+        core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags));
+        core::arch::asm!("cli", options(nomem, nostack));
+    }
+    flags
+}
+
+/// Restore only the caller's prior IF state. Never unconditionally execute STI
+/// from a nested critical section that entered with interrupts already disabled.
+#[inline]
+pub unsafe fn restore_interrupts(saved_rflags: u64) {
+    if saved_rflags & (1 << 9) != 0 {
+        unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    } else {
+        unsafe { core::arch::asm!("cli", options(nomem, nostack)); }
+    }
+}
+
+#[inline]
+pub fn interrupts_enabled() -> bool {
+    let flags: u64;
+    unsafe { core::arch::asm!("pushfq", "pop {}", out(reg) flags, options(nomem, preserves_flags)); }
+    flags & (1 << 9) != 0
+}
+
 /// Typed port-I/O operations live here instead of in individual device drivers.
 #[inline] pub unsafe fn read_port_u8(port: u16) -> u8 {
     let value: u8;
@@ -234,6 +265,12 @@ pub fn self_test() -> bool {
         && CPU_LOCALS[MAX_CPUS - 1].logical_id.load(Ordering::Relaxed) == (MAX_CPUS - 1) as u32
         && CPU_LOCALS[0].state.load(Ordering::Relaxed) == CPU_ONLINE
         && CPU_LOCALS.iter().skip(1).all(|cpu| cpu.state.load(Ordering::Relaxed) == CPU_OFFLINE)
+        && crate::apic::irql_to_apic_class(0) == 0
+        && crate::apic::irql_to_apic_class(1) == 0
+        && crate::apic::irql_to_apic_class(2) == 1
+        && crate::apic::irql_to_apic_class(3) == 2
+        && crate::apic::irql_to_apic_class(12) == 11
+        && crate::apic::irql_to_apic_class(31) == 15
         && exports::self_test()
 }
 
