@@ -23,7 +23,7 @@ const STATUS_INVALID_PARAMETER_2: i32 = 0xC000_00F0u32 as i32;
 unsafe fn transform_unicode(dst:*mut UnicodeString,src:*const UnicodeString,upper:bool,allocate:u8)->i32 {
  if dst.is_null()||src.is_null(){return STATUS_INVALID_PARAMETER;}let d=unsafe{&mut *dst};let s=unsafe{&*src};
  if s.length%2!=0||(s.length>0&&s.buffer.is_null()){return STATUS_INVALID_PARAMETER;}
- if allocate!=0 {let bytes=(s.length as usize).checked_add(2);let Some(bytes)=bytes else{return STATUS_BUFFER_TOO_SMALL;};let p=super::pool::allocate(bytes);if p.is_null(){return STATUS_BUFFER_TOO_SMALL;}d.buffer=p.cast::<u16>();d.maximum_length=bytes as u16;d.length=0;}
+ if allocate!=0 {let bytes=(s.length as usize).checked_add(2);let Some(bytes)=bytes else{return STATUS_BUFFER_TOO_SMALL;};if bytes>u16::MAX as usize{return STATUS_BUFFER_TOO_SMALL;}let p=super::pool::allocate(bytes);if p.is_null(){return STATUS_BUFFER_TOO_SMALL;}d.buffer=p.cast::<u16>();d.maximum_length=bytes as u16;d.length=0;}
  else if d.maximum_length<s.length||(s.length>0&&d.buffer.is_null()){return STATUS_BUFFER_TOO_SMALL;}
  if s.length>0{unsafe{core::ptr::copy(s.buffer,d.buffer,(s.length/2) as usize);}}
  for i in 0..(s.length/2) as usize{let c=unsafe{*d.buffer.add(i)};let v=if upper{if (97..=122).contains(&c){c-32}else{c}}else if (65..=90).contains(&c){c+32}else{c};unsafe{*d.buffer.add(i)=v;}}
