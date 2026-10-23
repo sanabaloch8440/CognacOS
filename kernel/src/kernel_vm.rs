@@ -62,10 +62,8 @@ pub fn initialize(root: u64) -> Result<(), Error> {
 }
 pub fn is_initialized()->bool { ROOT.load(Ordering::Acquire)!=0 }
 
-/// Called by the interrupt-disabled AP idle loop. A generation change means shared
-/// kernel page tables changed; reloading CR3 invalidates this CPU's non-global TLB.
-pub fn smp_tlb_poll(logical_id: usize) {
- if logical_id == 0 || logical_id >= crate::hal::MAX_CPUS { return; }
+fn flush_and_ack(logical_id: usize) {
+ if logical_id >= crate::hal::MAX_CPUS { return; }
  let generation = TLB_GENERATION.load(Ordering::Acquire);
  if TLB_ACK[logical_id].load(Ordering::Relaxed) != generation {
   unsafe { let cr3: u64; core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags)); }
@@ -73,8 +71,23 @@ pub fn smp_tlb_poll(logical_id: usize) {
  }
 }
 
+/// Polling fallback retained for CPUs with IF clear or an unavailable IPI path.
+pub fn smp_tlb_poll(logical_id: usize) {
+ if logical_id == 0 || logical_id >= crate::hal::MAX_CPUS { return; }
+ flush_and_ack(logical_id);
+}
+
+/// Interrupt handler target: reload CR3 before acknowledging the generation.
+/// It intentionally takes no VM or pool locks and is safe during lock contention.
+pub fn handle_tlb_ipi() {
+ if let Some(cpu) = crate::hal::current_cpu_local() {
+  flush_and_ack(cpu.logical_id.load(Ordering::Acquire) as usize);
+ }
+}
+
 /// Invalidate shared kernel translations on every online AP before any backing
-/// physical frame can be recycled. APs poll rather than use IPIs while IRQs are off.
+/// physical frame can be recycled. Prefer fixed-vector IPIs; AP polling remains
+/// a fallback for early boot and failed IPI delivery.
 fn synchronize_kernel_tlb() {
  if crate::hal::online_cpu_count() <= 1 { return; }
  let current = crate::hal::current_cpu_local()
@@ -82,6 +95,7 @@ fn synchronize_kernel_tlb() {
  let generation = TLB_GENERATION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
  for cpu in 1..crate::hal::MAX_CPUS {
   if cpu == current || crate::hal::cpu_state(cpu).ok() != Some(crate::hal::CPU_ONLINE) { continue; }
+  if crate::smp::ipi_shootdowns_enabled() { let _ = crate::smp::send_tlb_shootdown(cpu); }
   while TLB_ACK[cpu].load(Ordering::Acquire) != generation { core::hint::spin_loop(); }
  }
 }
