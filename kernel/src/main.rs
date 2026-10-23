@@ -20,6 +20,7 @@ mod hal;
 mod smp;
 mod scheduler;
 mod dispatcher;
+mod thread;
 mod object;
 mod io;
 mod extfs;
