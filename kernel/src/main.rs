@@ -39,6 +39,12 @@ fn io_smoke_pending_dispatch(_irp: &mut io::Irp) -> io::IoStatus {
 }
 
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
+static mut THREAD_SMOKE_STACK: [u8; 4096] = [0; 4096];
+static THREAD_SMOKE_RAN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn thread_smoke_entry(_argument: *mut core::ffi::c_void) {
+    THREAD_SMOKE_RAN.store(true, core::sync::atomic::Ordering::Release);
+}
 
 unsafe extern "C" {
     static __text_start: u8;
@@ -293,6 +299,23 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Scheduler priority, affinity, and cooperative-yield metadata self-test passed.\r\n");
+
+        // Exercise a real saved-stack transition, thread trampoline, exit, and
+        // return to the bootstrap context before enabling timer interrupts.
+        let smoke_stack_ptr = core::ptr::addr_of_mut!(THREAD_SMOKE_STACK).cast::<u8>();
+        let smoke_stack: &'static mut [u8] = core::slice::from_raw_parts_mut(smoke_stack_ptr, 4096);
+        let smoke_thread = match thread::spawn(smoke_stack, 1, thread_smoke_entry, core::ptr::null_mut()) {
+            Ok(id) => id,
+            Err(_) => { serial_write(b"FATAL: kernel thread context creation failed.\r\n"); halt(); }
+        };
+        if thread::yield_current().is_err()
+            || !THREAD_SMOKE_RAN.load(core::sync::atomic::Ordering::Acquire)
+            || thread::state(smoke_thread) != Some(thread::ThreadState::Exited)
+        {
+            serial_write(b"FATAL: x86-64 context-switch/thread-exit self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Kernel thread stack switch, trampoline, exit, and bootstrap resume passed.\r\n");
 
         // Exercise typed handles and explicit access checks.
         let event = match object::create(object::ObjectType::Event, object::ACCESS_READ) {
