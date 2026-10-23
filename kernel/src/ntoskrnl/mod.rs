@@ -40,6 +40,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   ImportSymbol::Ordinal(ordinal) => manifest_26100::ENTRIES.iter().find(|e|e.ordinal==ordinal)?.name?,
  };
  let address = match name {
+  "MmAllocateContiguousMemory" => mm_runtime::mm_allocate_contiguous_memory as usize,
+  "MmAllocateContiguousMemorySpecifyCache" => mm_runtime::mm_allocate_contiguous_memory_specify_cache as usize,
+  "MmFreeContiguousMemory" => mm_runtime::mm_free_contiguous_memory as usize,
+  "MmFreeContiguousMemorySpecifyCache" => mm_runtime::mm_free_contiguous_memory_specify_cache as usize,
+  "MmSizeOfMdl" => mm_runtime::mm_size_of_mdl as usize,
   "MmGetPhysicalAddress" => mm_runtime::mm_get_physical_address as usize,
   "MmGetVirtualForPhysical" => mm_runtime::mm_get_virtual_for_physical as usize,
   "MmIsAddressValid" => mm_runtime::mm_is_address_valid as usize,
