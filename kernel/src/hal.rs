@@ -163,6 +163,12 @@ impl<T> IrqSpinLock<T> {
             core::arch::asm!("cli", options(nomem, nostack));
         }
         while self.held.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            // APs currently run with interrupts disabled. Service shared-kernel
+            // TLB requests even while contending on pool/VM locks, or a shootdown
+            // waiter could deadlock behind the very lock it is waiting to acquire.
+            if let Some(cpu) = current_cpu_local() {
+                crate::kernel_vm::smp_tlb_poll(cpu.logical_id.load(Ordering::Relaxed) as usize);
+            }
             core::hint::spin_loop();
         }
         IrqSpinLockGuard { lock: self, restore_interrupts: flags & (1 << 9) != 0 }
