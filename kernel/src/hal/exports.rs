@@ -293,6 +293,21 @@ pub unsafe extern "win64" fn hal_free_common_buffer(
 
 
 /// Resolve only ABI-reviewed HAL exports. Unsupported names fail closed.
+/// Request a caller-selected fixed-vector IPI on every online processor in
+/// the supplied NT affinity mask. The vector's IDT entry must already be
+/// installed on all target CPUs; this Windows ABI returns void.
+pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vector: u32) {
+    if vector < 0x20 || vector >= 0xff { return; }
+    for logical_id in 0..crate::hal::MAX_CPUS {
+        if target_set & (1u64 << logical_id) == 0 { continue; }
+        if crate::hal::cpu_state(logical_id).ok() != Some(crate::hal::CPU_ONLINE) { continue; }
+        let Ok(cpu) = crate::hal::cpu_local(logical_id) else { continue; };
+        let apic_id = cpu.apic_id.load(core::sync::atomic::Ordering::Acquire);
+        if apic_id > u8::MAX as u32 { continue; }
+        let _ = unsafe { crate::apic::request_ipi(apic_id as u8, vector as u8) };
+    }
+}
+
 pub fn resolve(name: &[u8]) -> Option<u64> {
     if name.eq_ignore_ascii_case(b"HalQueryMaximumProcessorCount") {
         Some(hal_query_maximum_processor_count as usize as u64)
@@ -316,6 +331,8 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         Some(hal_set_bus_data as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalSetBusDataByOffset") {
         Some(hal_set_bus_data_by_offset as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalRequestIpiSpecifyVector") {
+        Some(hal_request_ipi_specify_vector as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalGetProcessorIdByNtNumber") {
         Some(hal_get_processor_id_by_nt_number as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalIsHyperThreadingEnabled") {
@@ -336,6 +353,7 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
         26 => Some(hal_get_bus_data_by_offset as usize as u64),
         61 => Some(hal_set_bus_data as usize as u64),
         62 => Some(hal_set_bus_data_by_offset as usize as u64),
+        56 => Some(hal_request_ipi_specify_vector as usize as u64),
         33 => Some(hal_get_processor_id_by_nt_number as usize as u64),
         41 => Some(hal_is_hyper_threading_enabled as usize as u64),
         _ => None,
@@ -375,6 +393,8 @@ pub fn self_test() -> bool {
         && resolve(b"HalGetBusDataByOffset").is_some()
         && resolve(b"HalSetBusData").is_some()
         && resolve(b"HalSetBusDataByOffset").is_some()
+        && resolve(b"HalRequestIpiSpecifyVector").is_some()
+        && resolve_ordinal(56).is_some()
         && resolve(b"HalGetProcessorIdByNtNumber").is_some()
         && resolve(b"HalIsHyperThreadingEnabled").is_some()
         && resolve_ordinal(33).is_some()
