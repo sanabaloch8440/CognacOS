@@ -458,7 +458,9 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePool2")).is_some()
  && resolve(b"hal.dll",ImportSymbol::Name(b"HalQueryMaximumProcessorCount")).is_some()
  && resolve(b"hal.dll",ImportSymbol::Ordinal(47)).is_some()
- && resolve(b"hal.dll",ImportSymbol::Name(b"HalAcpiGetTableEx")).is_none()
+ && resolve(b"hal.dll",ImportSymbol::Name(b"HalAcpiGetTableEx")).is_some()
+ && resolve(b"hal.dll",ImportSymbol::Name(b"HalQueryRealTimeClock")).is_some()
+ && resolve(b"hal.dll",ImportSymbol::Name(b"HalTranslateBusAddress")).is_some()
  && resolve(b"hal.dll",ImportSymbol::Ordinal(1)).is_none()
  // Windows x64 exposes KeQueryPerformanceCounter through HAL imports and,
  // on modern x64 releases, also through the kernel. Both import paths must
