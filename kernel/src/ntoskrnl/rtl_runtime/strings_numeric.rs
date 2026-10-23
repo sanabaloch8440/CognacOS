@@ -9,21 +9,17 @@ const STATUS_NOT_IMPLEMENTED: i32 = 0xC0000002u32 as i32;
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn rtl_free_unicode_string(string: *mut UnicodeString) {
     if string.is_null() { return; }
-    // RdotOS does not yet provide the Windows RTL pool allocator contract.
-    // Only reset caller-visible metadata; never free memory with an unknown allocator.
     let s = unsafe { &mut *string };
-    s.length = 0;
-    s.maximum_length = 0;
-    s.buffer = core::ptr::null_mut();
+    if !s.buffer.is_null() { let _ = super::pool::deallocate(s.buffer.cast::<u8>()); }
+    s.length = 0; s.maximum_length = 0; s.buffer = core::ptr::null_mut();
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn rtl_free_ansi_string(string: *mut AnsiString) {
     if string.is_null() { return; }
     let s = unsafe { &mut *string };
-    s.length = 0;
-    s.maximum_length = 0;
-    s.buffer = core::ptr::null_mut();
+    if !s.buffer.is_null() { let _ = super::pool::deallocate(s.buffer); }
+    s.length = 0; s.maximum_length = 0; s.buffer = core::ptr::null_mut();
 }
 
 #[unsafe(no_mangle)]
@@ -60,7 +56,11 @@ pub unsafe extern "win64" fn rtl_get_product_info(
 pub unsafe extern "win64" fn rtl_query_elevation_flags(flags: *mut u32) -> i32 {
     if flags.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { *flags = 0; }
-    STATUS_NOT_IMPLEMENTED
+    let value = unsafe { *system_time };
+    match super::timezone::system_to_local(value) {
+        Some(converted) => { unsafe { *local_time = converted; } STATUS_SUCCESS }
+        None => STATUS_INVALID_PARAMETER,
+    }
 }
 
 #[unsafe(no_mangle)]
@@ -68,8 +68,11 @@ pub unsafe extern "win64" fn rtl_local_time_to_system_time(
     local_time: *const i64, system_time: *mut i64
 ) -> i32 {
     if local_time.is_null() || system_time.is_null() { return STATUS_INVALID_PARAMETER; }
-    // No configured timezone bias exists yet; local time cannot be converted safely.
-    STATUS_NOT_IMPLEMENTED
+    let value = unsafe { *local_time };
+    match super::timezone::local_to_system(value) {
+        Some(converted) => { unsafe { *system_time = converted; } STATUS_SUCCESS }
+        None => STATUS_INVALID_PARAMETER,
+    }
 }
 
 #[unsafe(no_mangle)]
