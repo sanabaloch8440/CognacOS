@@ -29,6 +29,9 @@ Status reflects code currently present in the repository, not intended architect
 - [ ] Add a dedicated IST stack for double-fault/NMI handling before claiming recoverable stack-overflow diagnostics.
 - [ ] Add ELF parser unit/fuzz tests and verify segment overlap/permission policy before treating the loader as hardened.
 - [ ] Add framebuffer and ACPI RSDP to the boot-information structure.
+- [x] Add bounded ACPI RSDP checksum validation and ACPI MADT parsing for xAPIC/x2APIC CPU entries and I/O APIC GSI bases; synthetic MADT parser self-test passes.
+- [x] Add guarded xAPIC and I/O APIC register primitives, local EOI, masked GSI routing, and timer-mask support.
+- [ ] Wire firmware RSDP discovery into BootInfo, map APIC MMIO as uncacheable, install IRQ vectors, calibrate a timer, and enable interrupts only after routing is validated.
 - [ ] Implement APIC/PIC routing, timer interrupts, and interrupt-safe diagnostics.
 - [ ] Verify the Rust UEFI bootloader's low-memory bootstrap PML4 and 0..4 GiB identity map under OVMF/QEMU.
 - [ ] Add tests for the physical-page allocator's descriptor-stride handling, conventional-memory filtering, alignment, exhaustion, and region-capacity limits.
@@ -91,9 +94,25 @@ Status reflects code currently present in the repository, not intended architect
 - [ ] Support large physical memory subject to architecture/platform limits; validate memory-map handling.
 - [x] Keep 32-bit execution and WOW64-like compatibility out of scope.
 
+## ACPI, APIC, and SMP
+
+- [x] Parse MADT Local APIC/x2APIC processor entries and I/O APIC GSI bases with table bounds/checksum validation.
+- [x] Provide xAPIC MMIO initialization and masked I/O APIC routing primitives.
+- [ ] Discover RSDP through UEFI configuration tables and pass ACPI roots in versioned BootInfo.
+- [ ] Bring up application processors using a low-memory SIPI trampoline and per-CPU state.
+- [ ] Enable timer interrupts, IRQ routing, MSI/MSI-X, interrupt remapping, and multi-vCPU regression tests.
+
+## NT executive foundations
+
+- [x] Add bounded typed handles, basic named objects, explicit access masks, and device IRP dispatch primitives.
+- [ ] Implement NT-compatible object namespace/security reference monitor, process/thread objects, events/semaphores, and reference counting.
+- [ ] Implement the Windows NT syscall ABI/service table, ALPC/LPC, registry hives, and executive services.
+- [ ] Implement actual context switching, preemption, and process/thread lifecycle beyond the current fixture.
+
 ## Scheduling and heterogeneous CPUs
 
-- [ ] Implement preemptive scheduler, per-CPU run queues, affinity, priorities, and load balancing.
+- [x] Add a bounded scheduler metadata core with task states, priority selection, CPU-affinity masks, and cooperative yield metadata; CI smoke-tests policy selection.
+- [ ] Implement actual context switching, timer-driven preemption, per-CPU run queues, affinity migration, load balancing, AP startup, and scheduler locking validated on multiple vCPUs.
 - [ ] Discover topology using ACPI/CPUID and identify core types where supported.
 - [ ] Add optional Intel Thread Director telemetry integration on supported processors.
 - [ ] Add generic ARM big.LITTLE capacity-aware scheduling only if/when an ARM64 port is planned.
@@ -101,10 +120,11 @@ Status reflects code currently present in the repository, not intended architect
 
 ## Storage, DirectStorage-style I/O, and graphics
 
-- [ ] Implement async I/O requests, completion queues, cancellation, and bounded queues.
-- [ ] Add PCIe, NVMe, DMA, IOMMU, and storage-driver support.
+- [x] Add bounded IRP allocation, dispatch, query, completion, and release primitives.
+- [ ] Implement asynchronous completion queues, cancellation races, request ownership, and end-to-end async I/O.
+- [ ] Add PCIe enumeration, NVMe/AHCI, DMA mapping, IOMMU, and storage-driver support.
 - [ ] Add safe compressed-asset streaming and decompression pipelines.
-- [ ] Add GPU drivers, VRAM mapping, and GPU-side decompression only where hardware/driver APIs support it.
+- [ ] Add a GOP framebuffer handoff, display/device abstraction, GPU drivers, VRAM mapping, and GPU-side decompression only where hardware/driver APIs support it.
 - [ ] Measure CPU overhead and end-to-end latency against a baseline; do not claim DirectStorage compatibility until implemented.
 
 ## Power management
@@ -116,14 +136,16 @@ Status reflects code currently present in the repository, not intended architect
 
 ## Isolation, containers, and sandboxing
 
-- [ ] Implement process isolation, capabilities, handles, and access-control policy.
+- [x] Add a bounded typed kernel handle table, named-object lookup, and per-handle access-mask checks with boot self-tests.
+- [ ] Add per-process handle tables, object reference counting, namespace security descriptors, capabilities, and access-control policy.
 - [ ] Add namespaces/resource limits and filesystem/network isolation primitives.
 - [ ] Build disposable sandbox environments on top of tested isolation primitives.
 - [ ] Add adversarial boundary tests and verify teardown releases all resources.
 
 ## Driver isolation / user-mode drivers
 
-- [ ] Define a stable user-mode driver IPC and device-object model.
+- [x] Add an initial device/IRP dispatch contract with bounded request buffers, dispatch callbacks, completion status, and a synthetic device self-test.
+- [ ] Define stable user-mode driver IPC and a production device-object model.
 - [ ] Implement driver host processes, request timeouts, crash detection, and restart.
 - [ ] Add permission-checked DMA through IOMMU and safe device reset/recovery.
 - [ ] Port eligible device classes to user mode; kernel-mode drivers remain necessary for selected low-level paths.
