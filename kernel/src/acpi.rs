@@ -172,3 +172,68 @@ pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
     }
     Err(AcpiError::MissingMadt)
 }
+
+
+/// Locate the Nth ACPI system-description table matching a four-byte signature.
+/// This validates the RSDP, root table, each candidate SDT length and checksum.
+/// The current bootstrap identity map is limited to 4 GiB; XSDT entries above
+/// that limit are skipped rather than dereferenced. The returned slice borrows
+/// firmware-owned physical memory and is valid only while that mapping remains.
+pub unsafe fn find_table(rsdp_address: u64, signature: [u8; 4], instance: usize) -> Result<&'static [u8], AcpiError> {
+    if rsdp_address == 0 || rsdp_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
+        return Err(AcpiError::AddressOutOfRange);
+    }
+    let prefix = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, 36) };
+    let revision = prefix[15];
+    let rsdp_len = if revision >= 2 {
+        let n = u32le(prefix, 20)? as usize;
+        if !(36..=4096).contains(&n) { return Err(AcpiError::BadLength); }
+        n
+    } else { 20 };
+    if rsdp_address.checked_add(rsdp_len as u64).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
+        return Err(AcpiError::AddressOutOfRange);
+    }
+    let rsdp = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, rsdp_len) };
+    let roots = parse_rsdp(rsdp)?;
+    let (root_address, is_xsdt) = if revision >= 2 && roots.xsdt_address != 0
+        && roots.xsdt_address < LOW_IDENTITY_LIMIT {
+        (roots.xsdt_address, true)
+    } else if roots.rsdt_address != 0 {
+        (roots.rsdt_address as u64, false)
+    } else { return Err(AcpiError::MissingRoot); };
+    if root_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
+        return Err(AcpiError::AddressOutOfRange);
+    }
+    let header = unsafe { core::slice::from_raw_parts(root_address as *const u8, 36) };
+    let root_len = u32le(header, 4)? as usize;
+    if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&root_len)
+        || root_address.checked_add(root_len as u64).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
+        return Err(AcpiError::BadLength);
+    }
+    let root = unsafe { core::slice::from_raw_parts(root_address as *const u8, root_len) };
+    if !checksum_ok(root) { return Err(AcpiError::BadChecksum); }
+    if root.get(0..4) != Some(if is_xsdt { b"XSDT" } else { b"RSDT" }) {
+        return Err(AcpiError::BadSignature);
+    }
+    let width = if is_xsdt { 8usize } else { 4usize };
+    if (root_len - 36) % width != 0 { return Err(AcpiError::MalformedEntry); }
+    let mut seen = 0usize;
+    for offset in (36..root_len).step_by(width) {
+        let address = if is_xsdt {
+            u64::from_le_bytes(root[offset..offset + 8].try_into().map_err(|_| AcpiError::Truncated)?)
+        } else { u32le(root, offset)? as u64 };
+        if address == 0 || address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) { continue; }
+        let h = unsafe { core::slice::from_raw_parts(address as *const u8, 36) };
+        if h.get(0..4) != Some(&signature) { continue; }
+        let length = u32le(h, 4)? as usize;
+        if !(36..=MAX_ACPI_TABLE_LENGTH).contains(&length)
+            || address.checked_add(length as u64).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
+            return Err(AcpiError::BadLength);
+        }
+        let table = unsafe { core::slice::from_raw_parts(address as *const u8, length) };
+        if !checksum_ok(table) { return Err(AcpiError::BadChecksum); }
+        if seen == instance { return Ok(table); }
+        seen += 1;
+    }
+    Err(AcpiError::MissingRoot)
+}
