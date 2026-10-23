@@ -297,3 +297,55 @@ pub const EXPORTS: &[(&str, u16)] = &[
     ("KiCheckForKernelApcDelivery", 1502),
     ("KitLogFeatureUsage", 1503),
 ];
+
+
+// ---- Implemented Ke processor services ------------------------------------
+// These live in the Ke module so implementation ownership matches the export
+// catalogue above. Only these routines currently have callable implementations.
+use core::sync::atomic::Ordering as KeOrdering;
+
+const ALL_PROCESSOR_GROUPS: u16 = 0xffff;
+
+/// IRQL levels are not yet implemented; current execution is PASSIVE_LEVEL.
+pub unsafe extern "win64" fn ke_get_current_irql() -> u8 { 0 }
+
+/// Return active logical processors for group zero or all groups.
+pub unsafe extern "win64" fn ke_query_active_processor_count_ex(group: u16) -> u32 {
+    let count = crate::hal::online_cpu_count() as u32;
+    if group == 0 || group == ALL_PROCESSOR_GROUPS { count } else { 0 }
+}
+
+pub unsafe extern "win64" fn ke_query_active_processor_count() -> u32 {
+    unsafe { ke_query_active_processor_count_ex(0) }
+}
+
+pub unsafe extern "win64" fn ke_query_active_group_count() -> u16 {
+    if crate::hal::online_cpu_count() == 0 { 0 } else { 1 }
+}
+
+/// Windows PROCESSOR_NUMBER layout: group, group-relative number, reserved.
+#[repr(C)]
+pub struct ProcessorNumber { pub group: u16, pub number: u8, pub reserved: u8 }
+
+pub unsafe extern "win64" fn ke_get_current_processor_number_ex(out: *mut ProcessorNumber) {
+    if out.is_null() { return; }
+    let Some(cpu) = crate::hal::current_cpu_local() else { return; };
+    let logical = cpu.logical_id.load(KeOrdering::Acquire);
+    if logical >= 64 { return; }
+    unsafe { out.write(ProcessorNumber { group: 0, number: logical as u8, reserved: 0 }); }
+}
+
+pub unsafe extern "win64" fn ke_get_current_processor_index() -> u32 {
+    crate::hal::current_cpu_local()
+        .map(|cpu| cpu.logical_id.load(KeOrdering::Acquire))
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod processor_service_tests {
+    use super::*;
+    #[test]
+    fn all_processor_groups_constant_matches_nt_contract() {
+        assert_eq!(ALL_PROCESSOR_GROUPS, 0xffff);
+    }
+}

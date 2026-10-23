@@ -12,7 +12,7 @@ pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: Kernel
 mod ex; mod ke; mod mm; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; mod zw; mod other;
 mod manifest_26100;
 pub mod abi_signatures;
-pub mod services;
+
 
 pub fn exports() -> impl Iterator<Item = Export> {
  ex::EXPORTS.iter().map(|&(name,ordinal)|Export{name,ordinal,module:KernelModule::Ex})
@@ -37,12 +37,12 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   ImportSymbol::Ordinal(ordinal) => manifest_26100::ENTRIES.iter().find(|e|e.ordinal==ordinal)?.name?,
  };
  let address = match name {
-  "KeGetCurrentIrql" => services::ke_get_current_irql as usize,
-  "KeQueryActiveProcessorCountEx" => services::ke_query_active_processor_count_ex as usize,
-  "KeQueryActiveProcessorCount" => services::ke_query_active_processor_count as usize,
-  "KeQueryActiveGroupCount" => services::ke_query_active_group_count as usize,
-  "KeGetCurrentProcessorNumberEx" => services::ke_get_current_processor_number_ex as usize,
-  "KeGetCurrentProcessorIndex" => services::ke_get_current_processor_index as usize,
+  "KeGetCurrentIrql" => ke::ke_get_current_irql as usize,
+  "KeQueryActiveProcessorCountEx" => ke::ke_query_active_processor_count_ex as usize,
+  "KeQueryActiveProcessorCount" => ke::ke_query_active_processor_count as usize,
+  "KeQueryActiveGroupCount" => ke::ke_query_active_group_count as usize,
+  "KeGetCurrentProcessorNumberEx" => ke::ke_get_current_processor_number_ex as usize,
+  "KeGetCurrentProcessorIndex" => ke::ke_get_current_processor_index as usize,
   // All other names deliberately fail closed until their own signatures and semantics are implemented.
   _ => return None,
  };
