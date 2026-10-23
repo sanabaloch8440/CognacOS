@@ -307,3 +307,27 @@ pub fn validate_superblock_checksum(raw: &[u8]) -> Result<(), Error> {
     let calculated = crc32c(!0u32, &raw[..CHECKSUM_OFFSET]);
     if stored == calculated { Ok(()) } else { Err(Error::InvalidChecksum) }
 }
+
+
+#[cfg(test)]
+mod host_tests {
+    use super::*;
+
+    #[test]
+    fn parser_mapping_and_crc_smoke_tests_pass() {
+        assert!(self_test());
+    }
+
+    #[test]
+    fn metadata_csum_superblock_is_checked_and_corruption_rejected() {
+        let mut raw = [0u8; SUPERBLOCK_BYTES];
+        raw[100..104].copy_from_slice(&0x0400u32.to_le_bytes());
+        raw[CHECKSUM_TYPE_OFFSET_FOR_TEST..CHECKSUM_TYPE_OFFSET_FOR_TEST + 1].copy_from_slice(&[1]);
+        let checksum = crc32c(!0u32, &raw[..1020]);
+        raw[1020..1024].copy_from_slice(&checksum.to_le_bytes());
+        assert_eq!(validate_superblock_checksum(&raw), Ok(()));
+        raw[200] ^= 0x40;
+        assert_eq!(validate_superblock_checksum(&raw), Err(Error::InvalidChecksum));
+    }
+}
+const CHECKSUM_TYPE_OFFSET_FOR_TEST: usize = 373;
