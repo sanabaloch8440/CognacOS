@@ -196,12 +196,16 @@ pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
 /// that limit are skipped rather than dereferenced. The returned slice borrows
 /// firmware-owned physical memory and is valid only while that mapping remains.
 pub unsafe fn find_table(rsdp_address: u64, signature: [u8; 4], instance: usize) -> Result<&'static [u8], AcpiError> {
-    if rsdp_address == 0 || rsdp_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
+    if rsdp_address == 0 || rsdp_address.checked_add(20).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
         return Err(AcpiError::AddressOutOfRange);
     }
-    let prefix = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, 36) };
-    let revision = prefix[15];
+    let v1 = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, 20) };
+    let revision = v1[15];
     let rsdp_len = if revision >= 2 {
+        if rsdp_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
+            return Err(AcpiError::AddressOutOfRange);
+        }
+        let prefix = unsafe { core::slice::from_raw_parts(rsdp_address as *const u8, 36) };
         let n = u32le(prefix, 20)? as usize;
         if !(36..=4096).contains(&n) { return Err(AcpiError::BadLength); }
         n
