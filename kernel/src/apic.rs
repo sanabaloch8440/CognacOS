@@ -289,25 +289,45 @@ pub fn relative_timeout_deadline(interval_100ns: i64) -> Option<u64> {
 /// uncached local-APIC MMIO page and a usable TSC frequency; it does not enable IF.
 pub unsafe fn calibrate_and_start_local_timer() -> Result<u32, ApicError> {
     let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
-    let tsc_hz = tsc_frequency_hz().ok_or(ApicError::Unsupported)?;
-    let sample_ticks = (tsc_hz / 100).max(1); // 10 ms calibration window.
+    const PIT_COMMAND: u16 = 0x43;
+    const PIT_CHANNEL2: u16 = 0x42;
+    const PIT_GATE_SPEAKER: u16 = 0x61;
+    const PIT_RELOAD_10MS: u16 = 11_932; // 1,193,182 Hz / 100 ~= 10 ms.
+    let old_speaker = unsafe { crate::hal::read_port_u8(PIT_GATE_SPEAKER) };
     unsafe {
         write_local(base, APIC_LVT_TIMER, (1 << 16) | LOCAL_TIMER_VECTOR as u32);
         write_local(base, APIC_TIMER_DIVIDE, 0x3); // divide by 16
         write_local(base, APIC_TIMER_INITIAL_COUNT, u32::MAX);
+        // PIT channel 2, low/high byte, mode 0, binary counter. Poll OUT2;
+        // no PIC interrupt or calibrated TSC frequency is required.
+        crate::hal::write_port_u8(PIT_GATE_SPEAKER, old_speaker & !0x03);
+        crate::hal::write_port_u8(PIT_COMMAND, 0xb0);
+        crate::hal::write_port_u8(PIT_CHANNEL2, PIT_RELOAD_10MS as u8);
+        crate::hal::write_port_u8(PIT_CHANNEL2, (PIT_RELOAD_10MS >> 8) as u8);
+        crate::hal::write_port_u8(PIT_GATE_SPEAKER, (old_speaker & !0x02) | 0x01);
     }
-    let start = monotonic_ticks();
-    let target = start.checked_add(sample_ticks).ok_or(ApicError::Timeout)?;
     let mut spins = 0usize;
-    while monotonic_ticks() < target {
+    let mut elapsed = false;
+    while spins < 100_000_000 {
+        if unsafe { crate::hal::read_port_u8(PIT_GATE_SPEAKER) } & 0x20 != 0 {
+            elapsed = true;
+            break;
+        }
         core::hint::spin_loop();
         spins += 1;
-        if spins == 100_000_000 { unsafe { mask_local_timer(base); } return Err(ApicError::Timeout); }
+    }
+    unsafe { crate::hal::write_port_u8(PIT_GATE_SPEAKER, old_speaker); }
+    if !elapsed {
+        unsafe { mask_local_timer(base); }
+        return Err(ApicError::Timeout);
     }
     let remaining = unsafe { read_local(base, APIC_TIMER_CURRENT_COUNT) };
-    let elapsed = u32::MAX.saturating_sub(remaining);
-    let per_ms = elapsed / 10;
-    if per_ms == 0 { unsafe { mask_local_timer(base); } return Err(ApicError::Unsupported); }
+    let elapsed_apic = u32::MAX.saturating_sub(remaining);
+    let per_ms = elapsed_apic / 10;
+    if per_ms == 0 {
+        unsafe { mask_local_timer(base); }
+        return Err(ApicError::Unsupported);
+    }
     unsafe {
         write_local(base, APIC_TIMER_INITIAL_COUNT, per_ms);
         write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | (1 << 17));
