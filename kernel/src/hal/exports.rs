@@ -60,7 +60,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 45, name: "HalQueryDisplayParameters", state: StubState::NotImplemented },
     HalExport { ordinal: 46, name: "HalQueryEnvironmentVariableInfoEx", state: StubState::NotImplemented },
     HalExport { ordinal: 47, name: "HalQueryMaximumProcessorCount", state: StubState::Implemented },
-    HalExport { ordinal: 48, name: "HalQueryRealTimeClock", state: StubState::NotImplemented },
+    HalExport { ordinal: 48, name: "HalQueryRealTimeClock", state: StubState::Implemented },
     HalExport { ordinal: 49, name: "HalReadDmaCounter", state: StubState::NotImplemented },
     HalExport { ordinal: 50, name: "HalRegisterDynamicProcessor", state: StubState::NotImplemented },
     HalExport { ordinal: 51, name: "HalRegisterErrataCallbacks", state: StubState::NotImplemented },
@@ -225,6 +225,90 @@ pub unsafe extern "win64" fn hal_set_bus_data(
 }
 
 
+
+
+/// Windows TIME_FIELDS-compatible structure used by the legacy RTC HAL API.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct HalTimeFields {
+    pub year: i16,
+    pub month: i16,
+    pub day: i16,
+    pub hour: i16,
+    pub minute: i16,
+    pub second: i16,
+    pub milliseconds: i16,
+    pub weekday: i16,
+}
+
+static CMOS_RTC_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
+
+unsafe fn cmos_read(register: u8) -> u8 {
+    unsafe {
+        crate::hal::write_port_u8(0x70, register & 0x7f);
+        crate::hal::read_port_u8(0x71)
+    }
+}
+
+fn rtc_decode(value: u8, binary_mode: bool) -> Option<u8> {
+    if binary_mode { return Some(value); }
+    let lo = value & 0x0f;
+    let hi = (value >> 4) & 0x0f;
+    if lo > 9 || hi > 9 { return None; }
+    Some(hi * 10 + lo)
+}
+
+/// Read the battery-backed CMOS real-time clock. This implementation rejects
+/// an updating or malformed RTC sample instead of returning fabricated time.
+pub unsafe extern "win64" fn hal_query_real_time_clock(fields: *mut HalTimeFields) -> u8 {
+    if fields.is_null() { return 0; }
+    let _guard = CMOS_RTC_LOCK.lock();
+    let mut sample = [0u8; 8];
+    let mut accepted = false;
+    for _ in 0..1000 {
+        let status_a = unsafe { cmos_read(0x0a) };
+        if status_a & 0x80 != 0 { continue; }
+        let status_b = unsafe { cmos_read(0x0b) };
+        sample[0] = unsafe { cmos_read(0x00) };
+        sample[1] = unsafe { cmos_read(0x02) };
+        sample[2] = unsafe { cmos_read(0x04) };
+        sample[3] = unsafe { cmos_read(0x06) };
+        sample[4] = unsafe { cmos_read(0x07) };
+        sample[5] = unsafe { cmos_read(0x08) };
+        sample[6] = unsafe { cmos_read(0x09) };
+        sample[7] = unsafe { cmos_read(0x32) };
+        if unsafe { cmos_read(0x0a) } & 0x80 == 0 {
+            let binary = status_b & 0x04 != 0;
+            let hour_pm = sample[2] & 0x80 != 0;
+            let raw_hour = sample[2] & 0x7f;
+            let Some(second) = rtc_decode(sample[0], binary) else { return 0; };
+            let Some(minute) = rtc_decode(sample[1], binary) else { return 0; };
+            let Some(mut hour) = rtc_decode(raw_hour, binary) else { return 0; };
+            let Some(weekday) = rtc_decode(sample[3], binary) else { return 0; };
+            let Some(day) = rtc_decode(sample[4], binary) else { return 0; };
+            let Some(month) = rtc_decode(sample[5], binary) else { return 0; };
+            let Some(year) = rtc_decode(sample[6], binary) else { return 0; };
+            let century = rtc_decode(sample[7], binary).filter(|v| (19..=99).contains(v)).unwrap_or(20);
+            if status_b & 0x02 == 0 {
+                if !(1..=12).contains(&hour) { return 0; }
+                hour = (hour % 12) + if hour_pm { 12 } else { 0 };
+            } else if hour > 23 { return 0; }
+            if second > 59 || minute > 59 || day == 0 || day > 31 || month == 0 || month > 12 || weekday == 0 || weekday > 7 {
+                return 0;
+            }
+            let decoded = HalTimeFields {
+                year: (century as i16 * 100 + year as i16),
+                month: month as i16, day: day as i16, hour: hour as i16,
+                minute: minute as i16, second: second as i16,
+                milliseconds: 0, weekday: (weekday as i16 - 1),
+            };
+            unsafe { fields.write(decoded); }
+            accepted = true;
+            break;
+        }
+    }
+    accepted as u8
+}
 
 /// Translate a bus-relative address on the conventional x86 PC buses.
 ///
@@ -434,7 +518,9 @@ pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vec
 }
 
 pub fn resolve(name: &[u8]) -> Option<u64> {
-    if name.eq_ignore_ascii_case(b"HalAcpiGetTableEx") {
+    if name.eq_ignore_ascii_case(b"HalQueryRealTimeClock") {
+        Some(hal_query_real_time_clock as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalAcpiGetTableEx") {
         Some(hal_acpi_get_table_ex as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalDisplayString") {
         Some(hal_display_string as usize as u64)
@@ -477,6 +563,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
 
 pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
     match ordinal {
+        48 => Some(hal_query_real_time_clock as usize as u64),
         1 => Some(hal_acpi_get_table_ex as usize as u64),
         4 => Some(hal_all_processors_started as usize as u64),
         15 => Some(hal_display_string as usize as u64),
@@ -516,6 +603,8 @@ pub fn self_test() -> bool {
         && find_by_name(b"halrequestipi").map(|e| e.ordinal) == Some(55)
         && find_by_ordinal(91).map(|entry| entry.name) == Some("x86BiosWriteMemory")
         && find_by_name(b"not-a-hal-export").is_none()
+        && resolve(b"HalQueryRealTimeClock").is_some()
+        && resolve_ordinal(48).is_some()
         && resolve(b"HalAcpiGetTableEx").is_some()
         && resolve_ordinal(1).is_some()
         && resolve(b"HalDisplayString").is_some()
