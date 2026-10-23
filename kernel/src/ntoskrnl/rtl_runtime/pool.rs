@@ -1,3 +1,5 @@
+#[cfg(not(target_os = "none"))]
+mod bounded {
 //! Small, bounded non-paged RTL string pool.
 //! Independent of Rust's global allocator; blocks and returned payloads are 16-byte aligned,
 //! locked, split on allocation, and coalesced on free. Intended for RTL-owned string buffers.
@@ -208,3 +210,30 @@ mod tests {
         assert!(allocate(ARENA_SIZE).is_null());
     }
 }
+
+}
+
+#[cfg(not(target_os = "none"))]
+pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { bounded::allocate_tagged(size, tag, zeroed) }
+#[cfg(target_os = "none")]
+pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { super::pool_page::allocate_tagged(size, tag, zeroed) }
+
+#[cfg(not(target_os = "none"))]
+pub(super) fn allocate(size: usize) -> *mut u8 { bounded::allocate(size) }
+#[cfg(target_os = "none")]
+pub(super) fn allocate(size: usize) -> *mut u8 { super::pool_page::allocate(size) }
+
+#[cfg(not(target_os = "none"))]
+pub(super) fn deallocate(ptr: *mut u8) -> bool { bounded::deallocate(ptr) }
+#[cfg(target_os = "none")]
+pub(super) fn deallocate(ptr: *mut u8) -> bool { super::pool_page::deallocate(ptr) }
+
+#[cfg(not(target_os = "none"))]
+pub(super) fn allocation_info(ptr: *const u8) -> Option<(usize, u32)> { bounded::allocation_info(ptr) }
+#[cfg(target_os = "none")]
+pub(super) fn allocation_info(ptr: *const u8) -> Option<(usize, u32)> { super::pool_page::allocation_info(ptr) }
+
+#[cfg(not(target_os = "none"))]
+pub(super) fn deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool { bounded::deallocate_tagged(ptr, expected_tag) }
+#[cfg(target_os = "none")]
+pub(super) fn deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool { super::pool_page::deallocate_tagged(ptr, expected_tag) }
