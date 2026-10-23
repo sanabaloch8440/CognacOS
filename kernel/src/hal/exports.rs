@@ -36,7 +36,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 21, name: "HalFlushCommonBuffer", state: StubState::Implemented },
     HalExport { ordinal: 22, name: "HalFreeCommonBuffer", state: StubState::Implemented },
     HalExport { ordinal: 23, name: "HalFreeHardwareCounters", state: StubState::NotImplemented },
-    HalExport { ordinal: 24, name: "HalGetAdapter", state: StubState::NotImplemented },
+    HalExport { ordinal: 24, name: "HalGetAdapter", state: StubState::Implemented },
     HalExport { ordinal: 25, name: "HalGetBusData", state: StubState::Implemented },
     HalExport { ordinal: 26, name: "HalGetBusDataByOffset", state: StubState::Implemented },
     HalExport { ordinal: 27, name: "HalGetEnvironmentVariable", state: StubState::NotImplemented },
