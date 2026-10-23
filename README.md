@@ -34,6 +34,14 @@ RdotOS is dual-licensed under **Apache-2.0 OR MIT**, following the common Rust e
 The Ext3Fsd Windows ext2/ext3/ext4 driver is tracked as a pinned source submodule at `third_party/Ext3Fsd` for a planned Rust port. It remains a separate GPLv2-licensed upstream component; see [third_party/README.md](third_party/README.md). The Windows driver itself is not loadable by RdotOS.
 
 
+## Hardware Abstraction Layer, SMP, and I/O status
+
+RdotOS now has a separate `kernel/src/hal.rs` x86-64 HAL foundation. It owns fixed per-CPU records, a logical-CPU/APIC-ID registry, CPU lifecycle states, GS-based CPU-local access, typed port-I/O primitives, MMIO range checks, and IRQ-save spin locks. The bootstrap processor registers its CPU-local record during kernel entry. Scheduler metadata and I/O request state use the HAL lock so interrupt re-entry and cross-CPU races are less likely to deadlock or double-dispatch requests.
+
+The I/O manager now tracks IRPs in flight, permits cancellation only before dispatch begins, and supports explicit asynchronous completion. CI exercises these transitions during the QEMU boot smoke test.
+
+**This is SMP groundwork, not completed SMP.** Application processors are not yet started: RdotOS still needs the firmware RSDP handoff, real MADT discovery, a low-memory SIPI trampoline, per-CPU stacks/GDT/TSS, interrupt vectors, timer calibration, and multi-vCPU stress tests. Context switching and preemptive scheduling are also not implemented. Do not enable external interrupts or claim Windows 11 HAL/WDK binary compatibility yet. The design follows NT-style separation of HAL, executive, and driver interfaces, but is a native RdotOS interface.
+
 ## Ext filesystem Rust port status
 
 A conservative `no_std` Rust parser validates ext superblock geometry, common inode metadata, legacy group descriptors, and directory-record bounds. It now has checked device-capacity/filesystem-bound block reads and a bounded ext4 extent-tree mapper with depth, entry-count, logical-range, and physical-range validation. It is read-only and never replays journals or writes. Unsupported read-only-compatible features (including metadata checksums, bigalloc, and indexed directories) are rejected rather than interpreted without their required validation; consequently many modern ext4 volumes will not yet mount. Group-descriptor checksums, inode checksums, real disk-image fixtures, directory traversal, indirect-block mapping, journal-state handling, and filesystem registration remain outstanding. The parser is not yet a production-ready filesystem driver.
