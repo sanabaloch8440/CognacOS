@@ -111,3 +111,32 @@ pub unsafe extern "win64" fn rtl_fill_memory_ulonglong(dst: *mut c_void, n: u64,
         unsafe { core::ptr::write_unaligned(out.add(i), pattern) };
     }
 }
+
+#[cfg(test)]
+mod volatile_tests {
+    use super::*;
+
+    #[test]
+    fn volatile_copy_move_zero_and_fill() {
+        let src = [1u8, 2, 3, 4];
+        let mut dst = [0u8; 4];
+        assert_eq!(unsafe { rtl_copy_volatile_memory(dst.as_mut_ptr() as *mut c_void, src.as_ptr() as *const c_void, 4) }, dst.as_mut_ptr() as *mut c_void);
+        assert_eq!(dst, src);
+
+        // Overlapping move must copy backwards when destination starts inside source.
+        let mut overlap = [0u8, 1, 2, 3, 4, 5];
+        unsafe { rtl_move_volatile_memory(overlap.as_mut_ptr().add(1) as *mut c_void, overlap.as_ptr() as *const c_void, 5); }
+        assert_eq!(overlap, [0, 0, 1, 2, 3, 4]);
+
+        unsafe { rtl_zero_volatile_memory(dst.as_mut_ptr() as *mut c_void, 4); }
+        assert_eq!(dst, [0; 4]);
+
+        let mut words = [0u32; 3];
+        unsafe { rtl_fill_memory_ulong(words.as_mut_ptr() as *mut c_void, 12, 0xAABB_CCDD); }
+        assert_eq!(words, [0xAABB_CCDD; 3]);
+
+        let mut wide = [0u64; 2];
+        unsafe { rtl_fill_memory_ulonglong(wide.as_mut_ptr() as *mut c_void, 16, 0x0123_4567_89AB_CDEF); }
+        assert_eq!(wide, [0x0123_4567_89AB_CDEF; 2]);
+    }
+}
