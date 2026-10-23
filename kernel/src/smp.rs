@@ -1,5 +1,11 @@
 //! Early x86-64 AP startup. APs are brought online with interrupts disabled;
 //! scheduling and external interrupt delivery remain separate milestones.
+//! SPDX-License-Identifier: GPL-2.0-or-later
+//!
+//! The temporary AP page-table and trampoline startup design is adapted from
+//! RustOS-Dev/RustOS, src/arch/x86_64/smp.rs (GPL-2.0-or-later).
+//! Copyright (C) RustOS-Dev contributors; RdotOS-specific modifications
+//! Copyright (C) 2026 RdotOS contributors.
 use crate::{apic, arch, hal, memory};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::arch::global_asm;
@@ -33,6 +39,8 @@ global_asm!(r#"
     .global rdotos_ap_trampoline_stack
     .global rdotos_ap_trampoline_entry
     .global rdotos_ap_trampoline_logical
+    .global rdotos_ap_trampoline_kernel_pml4
+    .global rdotos_ap_trampoline_kernel_pml4_offset_patch
 rdotos_ap_trampoline_start:
     .code16
     cli
@@ -98,6 +106,11 @@ rdotos_ap_trampoline_logical_offset_patch:
     .byte 0x48, 0x8b, 0x86
 rdotos_ap_trampoline_entry_offset_patch:
     .long 0
+    # Pass permanent kernel CR3 as the second SysV argument to AP entry.
+    .byte 0x48, 0x8b, 0x96
+rdotos_ap_trampoline_kernel_pml4_offset_patch:
+    .long 0
+    mov rsi, rdx
     jmp rax
 3:  pause
     jmp 3b
@@ -121,6 +134,9 @@ rdotos_ap_trampoline_entry:
     .quad 0
 rdotos_ap_trampoline_logical:
     .long 0
+    .balign 8
+rdotos_ap_trampoline_kernel_pml4:
+    .quad 0
 rdotos_ap_trampoline_end:
 "#);
 
@@ -144,6 +160,8 @@ unsafe extern "C" {
     static rdotos_ap_trampoline_stack: u8;
     static rdotos_ap_trampoline_entry: u8;
     static rdotos_ap_trampoline_logical: u8;
+    static rdotos_ap_trampoline_kernel_pml4: u8;
+    static rdotos_ap_trampoline_kernel_pml4_offset_patch: u8;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,10 +252,77 @@ unsafe fn write_patch_u64(page: u64, symbol: *const u8, value: u64) {
     unsafe { core::ptr::write_unaligned((page as *mut u8).add(offset).cast::<u64>(), value); }
 }
 
+/// Build a temporary CR3 from the kernel page tables while guaranteeing a
+/// 2 MiB identity mapping for the low-memory SIPI trampoline. This follows the
+/// RustOS-Dev/RustOS AP-startup design: preserve existing mappings, clone the
+/// low PDPT/PD, and replace only PD[0] with an identity-mapped 2 MiB page.
+/// The temporary root is used only during trampoline execution; AP entry
+/// switches immediately to the permanent kernel CR3.
+unsafe fn prepare_ap_temporary_page_tables(kernel_pml4: u64) -> Result<u64, SmpError> {
+    const PRESENT: u64 = 1;
+    const WRITABLE: u64 = 1 << 1;
+    const LARGE: u64 = 1 << 7;
+    const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+    const LARGE_1G_MASK: u64 = 0x000f_ffff_c000_0000;
+    const LARGE_2M_MASK: u64 = 0x000f_ffff_ffe0_0000;
+    if kernel_pml4 == 0 || kernel_pml4 >= 0x1_0000_0000 || kernel_pml4 & 0xfff != 0 {
+        return Err(SmpError::InvalidTarget);
+    }
+    let temporary_pml4 = unsafe { memory::allocate_page() }.map_err(SmpError::Memory)?;
+    let temporary_pdpt = unsafe { memory::allocate_page() }.map_err(SmpError::Memory)?;
+    let temporary_pd = unsafe { memory::allocate_page() }.map_err(SmpError::Memory)?;
+    unsafe {
+        let source_pml4 = kernel_pml4 as *const u64;
+        let target_pml4 = temporary_pml4 as *mut u64;
+        core::ptr::copy_nonoverlapping(source_pml4, target_pml4, 512);
+
+        let source_pdpt_entry = *source_pml4;
+        let target_pdpt = temporary_pdpt as *mut u64;
+        if source_pdpt_entry & PRESENT != 0 {
+            core::ptr::copy_nonoverlapping(
+                (source_pdpt_entry & ADDRESS_MASK) as *const u64,
+                target_pdpt,
+                512,
+            );
+        } else {
+            core::ptr::write_bytes(target_pdpt, 0, 512);
+        }
+
+        let old_pdpt0 = *target_pdpt;
+        let target_pd = temporary_pd as *mut u64;
+        if old_pdpt0 & PRESENT != 0 && old_pdpt0 & LARGE != 0 {
+            let base = old_pdpt0 & LARGE_1G_MASK;
+            let inherited = old_pdpt0 & (WRITABLE | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 8) | (1 << 63));
+            for index in 0..512usize {
+                target_pd.add(index).write(
+                    (base + index as u64 * 0x20_0000) & LARGE_2M_MASK
+                        | PRESENT | LARGE | inherited,
+                );
+            }
+        } else if old_pdpt0 & PRESENT != 0 {
+            core::ptr::copy_nonoverlapping(
+                (old_pdpt0 & ADDRESS_MASK) as *const u64,
+                target_pd,
+                512,
+            );
+        } else {
+            core::ptr::write_bytes(target_pd, 0, 512);
+        }
+
+        // The temporary mapping guarantees the AP can fetch the SIPI vector
+        // and read its patched parameters before switching to the kernel CR3.
+        target_pd.write(0x0000_0000_0000_0083);
+        target_pdpt.write(temporary_pd | PRESENT | WRITABLE);
+        target_pml4.write(temporary_pdpt | PRESENT | WRITABLE);
+    }
+    Ok(temporary_pml4)
+}
+
 /// Copy and relocate the self-contained real-mode trampoline. The page is made
 /// writable/NX while patched and RX/RO before any SIPI is sent.
 unsafe fn prepare_trampoline(
     pml4: u64,
+    startup_pml4: u64,
     page: u64,
     stack_top: u64,
     logical_id: usize,
@@ -268,10 +353,13 @@ unsafe fn prepare_trampoline(
             (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_pm32)) as u64) as u32);
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_long64_patch),
             (page + symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_long64)) as u64) as u32);
-        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pml4), pml4 as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_pml4), startup_pml4 as u32);
         write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_stack), stack_top);
         write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_entry), rdotos_ap_entry as *const () as usize as u64);
         write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_logical), logical_id as u32);
+        write_patch_u32(page, core::ptr::addr_of!(rdotos_ap_trampoline_kernel_pml4_offset_patch),
+            symbol_offset(core::ptr::addr_of!(rdotos_ap_trampoline_kernel_pml4)) as u32);
+        write_patch_u64(page, core::ptr::addr_of!(rdotos_ap_trampoline_kernel_pml4), pml4);
         memory::configure_identity_page(pml4, page, false, true, false, false)
             .map_err(SmpError::Memory)?;
 
@@ -363,6 +451,7 @@ pub unsafe fn start_discovered_aps(
     let current_id = unsafe { apic::initialize_local_apic(local_apic_base) }.map_err(SmpError::Apic)?;
     if current_id != bsp_apic_id { return Err(SmpError::InvalidCpuState); }
     LOCAL_APIC_BASE.store(local_apic_base, Ordering::Release);
+    let startup_pml4 = unsafe { prepare_ap_temporary_page_tables(pml4_physical)? };
 
     let mut online = 0usize;
     for logical_id in 1..hal::MAX_CPUS {
@@ -385,7 +474,7 @@ pub unsafe fn start_discovered_aps(
         let stack_page = unsafe { memory::allocate_page() }.map_err(SmpError::Memory)?;
         let stack_top = stack_page + PAGE_SIZE as u64;
         let target = ApStartupTarget { logical_id, apic_id, trampoline_physical, stack_top, pml4_physical };
-        unsafe { prepare_trampoline(pml4_physical, trampoline_physical, stack_top, logical_id)?; }
+        unsafe { prepare_trampoline(pml4_physical, startup_pml4, trampoline_physical, stack_top, logical_id)?; }
         unsafe {
             let long_target = core::ptr::read_unaligned(
                 (trampoline_physical as *const u8)
@@ -436,7 +525,10 @@ pub unsafe fn start_discovered_aps(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_ap_entry(logical_id: u32) -> ! {
+pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
+    // The trampoline uses temporary tables to guarantee its low-memory mapping.
+    // Switch to the permanent kernel root before touching global CPU state.
+    unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_pml4, options(nostack, preserves_flags)); }
     AP_ENTRY_REACHED.fetch_add(1, Ordering::AcqRel);
     unsafe { crate::serial_write(b"SMP AP entry reached.\r\n"); }
     let index = logical_id as usize;
