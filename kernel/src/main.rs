@@ -326,11 +326,17 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             Ok(id) => id,
             Err(_) => { serial_write(b"FATAL: kernel thread context creation failed.\r\n"); halt(); }
         };
-        if thread::yield_current().is_err()
-            || !THREAD_SMOKE_RAN.load(core::sync::atomic::Ordering::Acquire)
-            || thread::state(smoke_thread) != Some(thread::ThreadState::Exited)
-        {
-            serial_write(b"FATAL: x86-64 context-switch/thread-exit self-test failed.\r\n");
+        let smoke_switch = thread::yield_current();
+        let smoke_ran = THREAD_SMOKE_RAN.load(core::sync::atomic::Ordering::Acquire);
+        let smoke_state = thread::state(smoke_thread);
+        if smoke_switch.is_err() || !smoke_ran || smoke_state != Some(thread::ThreadState::Exited) {
+            serial_write(b"FATAL: x86-64 context-switch/thread-exit self-test failed; switch=");
+            serial_write_decimal(smoke_switch.is_ok() as usize);
+            serial_write(b" ran=");
+            serial_write_decimal(smoke_ran as usize);
+            serial_write(b" state=");
+            serial_write_decimal(match smoke_state { Some(thread::ThreadState::Empty) => 0, Some(thread::ThreadState::Ready) => 1, Some(thread::ThreadState::Running) => 2, Some(thread::ThreadState::Blocked) => 3, Some(thread::ThreadState::Exited) => 4, None => 5 });
+            serial_write(b"\r\n");
             halt();
         }
         serial_write(b"Kernel thread stack switch, trampoline, exit, and bootstrap resume passed.\r\n");
