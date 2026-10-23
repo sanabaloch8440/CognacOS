@@ -38,11 +38,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
  };
  let address = match name {
   "KeGetCurrentIrql" => ke::ke_get_current_irql as usize,
-  "ExAllocatePoolWithTag" => rtl_runtime::ex_allocate_pool_with_tag as usize,
-  "ExAllocatePool2" => rtl_runtime::ex_allocate_pool2 as usize,
-  "ExFreePoolWithTag" => rtl_runtime::ex_free_pool_with_tag as usize,
-  "ExFreePool" => rtl_runtime::ex_free_pool as usize,
-  "ExQueryPoolBlockSize" => rtl_runtime::ex_query_pool_block_size as usize,
+  "ExAllocatePoolWithTag" => ex::pool::ex_allocate_pool_with_tag as usize,
+  "ExAllocatePool2" => ex::pool::ex_allocate_pool2 as usize,
+  "ExFreePoolWithTag" => ex::pool::ex_free_pool_with_tag as usize,
+  "ExFreePool" => ex::pool::ex_free_pool as usize,
+  "ExQueryPoolBlockSize" => ex::pool::ex_query_pool_block_size as usize,
   "KeQueryActiveProcessorCountEx" => ke::ke_query_active_processor_count_ex as usize,
   "KeQueryActiveProcessorCount" => ke::ke_query_active_processor_count as usize,
   "KeQueryActiveGroupCount" => ke::ke_query_active_group_count as usize,
