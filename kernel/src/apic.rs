@@ -27,6 +27,9 @@ const APIC_LVT_LINT0: usize = 0x350;
 const APIC_LVT_LINT1: usize = 0x360;
 const APIC_LVT_ERROR: usize = 0x370;
 pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xF1;
+pub const TSC_SYNC_VECTOR: u8 = 0xF2;
+static TSC_SYNC_SAMPLES: [AtomicU64; crate::hal::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::hal::MAX_CPUS];
+static TSC_SYNC_SEQUENCE: [AtomicU64; crate::hal::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::hal::MAX_CPUS];
 const APIC_SPURIOUS_VECTOR: u32 = 0x100 | 0xff;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApicError { Unsupported, X2ApicActive, InvalidBase, InvalidVector, InvalidGsi, Timeout }
@@ -279,6 +282,59 @@ pub fn monotonic_ticks() -> u64 {
     };
     let previous = LAST_TSC.fetch_max(adjusted, Ordering::AcqRel);
     adjusted.max(previous)
+}
+
+/// Capture a raw TSC sample on the CPU that received TSC_SYNC_VECTOR.
+/// The dedicated IDT stub acknowledges the IPI after this publication.
+pub fn capture_tsc_sync_sample() {
+    let Some(cpu) = crate::hal::current_cpu_local() else { return; };
+    let slot = cpu.logical_id.load(Ordering::Acquire) as usize;
+    if slot == 0 || slot >= crate::hal::MAX_CPUS { return; }
+    let low: u32;
+    let high: u32;
+    unsafe { core::arch::asm!("lfence", "rdtsc", out("eax") low, out("edx") high, options(nomem, nostack)); }
+    TSC_SYNC_SAMPLES[slot].store(((high as u64) << 32) | low as u64, Ordering::Release);
+    TSC_SYNC_SEQUENCE[slot].fetch_add(1, Ordering::AcqRel);
+}
+
+/// Calibrate one AP against the BSP using repeated bracketed fixed-vector IPIs.
+/// The narrowest successful sample is used to minimise interrupt-delivery bias.
+pub unsafe fn synchronize_tsc_with_cpu(logical_cpu: usize, destination_apic_id: u8) -> Result<i64, ApicError> {
+    if logical_cpu == 0 || logical_cpu >= crate::hal::MAX_CPUS { return Err(ApicError::InvalidBase); }
+    let base = local_apic_base().ok_or(ApicError::InvalidBase)?;
+    let mut best_width = u64::MAX;
+    let mut best_before = 0u64;
+    let mut best_after = 0u64;
+    let mut best_remote = 0u64;
+    for _ in 0..8 {
+        let sequence = TSC_SYNC_SEQUENCE[logical_cpu].load(Ordering::Acquire);
+        let before = read_tsc_raw();
+        unsafe { send_fixed_ipi(base, destination_apic_id, TSC_SYNC_VECTOR)?; }
+        let mut spins = 0usize;
+        while TSC_SYNC_SEQUENCE[logical_cpu].load(Ordering::Acquire) == sequence && spins < 5_000_000 {
+            core::hint::spin_loop();
+            spins += 1;
+        }
+        let after = read_tsc_raw();
+        if TSC_SYNC_SEQUENCE[logical_cpu].load(Ordering::Acquire) == sequence || after < before { continue; }
+        let width = after - before;
+        if width < best_width {
+            best_width = width;
+            best_before = before;
+            best_after = after;
+            best_remote = TSC_SYNC_SAMPLES[logical_cpu].load(Ordering::Acquire);
+        }
+    }
+    if best_width == u64::MAX { return Err(ApicError::Timeout); }
+    record_tsc_sync_sample(logical_cpu, best_before, best_remote, best_after)
+}
+
+#[inline]
+fn read_tsc_raw() -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe { core::arch::asm!("lfence", "rdtsc", out("eax") low, out("edx") high, options(nomem, nostack)); }
+    ((high as u64) << 32) | low as u64
 }
 
 /// Record an AP's TSC offset from a BSP-side bracketed sample. local_before and
