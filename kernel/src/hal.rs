@@ -210,5 +210,6 @@ pub fn self_test() -> bool {
         && validate_mmio_range(u64::MAX - 0xfff, 0x2000, u64::MAX) == Err(HalError::InvalidMmioRange)
         && CPU_LOCALS[0].logical_id.load(Ordering::Relaxed) == 0
         && CPU_LOCALS[MAX_CPUS - 1].logical_id.load(Ordering::Relaxed) == (MAX_CPUS - 1) as u32
-        && CPU_LOCALS.iter().all(|cpu| cpu.state.load(Ordering::Relaxed) == CPU_OFFLINE)
+        && CPU_LOCALS[0].state.load(Ordering::Relaxed) == CPU_ONLINE
+        && CPU_LOCALS.iter().skip(1).all(|cpu| cpu.state.load(Ordering::Relaxed) == CPU_OFFLINE)
 }
