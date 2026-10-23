@@ -253,7 +253,9 @@ pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, _increme
             if let Some(thread_id) = crate::dispatcher::wake_one(event as u64) {
                 let status = crate::dispatcher::complete_wait_group(thread_id, event as u64, STATUS_SUCCESS, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
                 let _ = crate::thread::complete_wait(thread_id, status);
-                let _ = state.compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire);
+                if status == STATUS_SUCCESS {
+                    let _ = state.compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire);
+                }
             }
         }
     } else {
@@ -303,6 +305,7 @@ pub unsafe extern "win64" fn ke_release_semaphore(semaphore: *mut SemaphoreObjec
         let Some(thread_id) = crate::dispatcher::wake_one(semaphore as u64) else { break; };
         state.fetch_sub(1, Ordering::AcqRel);
         let status = crate::dispatcher::complete_wait_group(thread_id, semaphore as u64, STATUS_SUCCESS, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
+        if status == STATUS_TIMEOUT { state.fetch_add(1, Ordering::AcqRel); }
         let _ = crate::thread::complete_wait(thread_id, status);
     }
     let _ = increment; // priority boosts require a scheduler priority model.
