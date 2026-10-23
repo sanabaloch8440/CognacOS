@@ -110,6 +110,17 @@ pub unsafe fn send_init_ipi(base: u64, destination_apic_id: u8) -> Result<(), Ap
     unsafe { wait_icr_idle(base) }
 }
 
+/// Issue the INIT deassert IPI required by the AP startup sequence.
+/// The caller must observe the platform-specified delay after INIT assert.
+pub unsafe fn send_init_deassert_ipi(base: u64, destination_apic_id: u8) -> Result<(), ApicError> {
+    if base == 0 || base & 0xfff != 0 { return Err(ApicError::InvalidBase); }
+    unsafe { wait_icr_idle(base)?; }
+    unsafe { write_local(base, APIC_ICR_HIGH, (destination_apic_id as u32) << 24); }
+    // INIT delivery mode, level-triggered, deasserted (level bit 15 clear).
+    unsafe { write_local(base, APIC_ICR_LOW, APIC_ICR_INIT | (1 << 14)); }
+    unsafe { wait_icr_idle(base) }
+}
+
 /// Send one Startup IPI to a 4 KiB-aligned trampoline below 1 MiB.
 /// This is only a low-level primitive; it does not by itself make AP startup
 /// safe. A caller must prepare the trampoline, stack, CR3, GDT, IDT, and state.
