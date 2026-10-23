@@ -333,6 +333,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         if smoke_switch.is_err() || !smoke_ran || smoke_state != Some(thread::ThreadState::Exited) {
             serial_write(b"FATAL: x86-64 context-switch/thread-exit self-test failed; switch=");
             serial_write_decimal(smoke_switch.is_ok() as usize);
+            serial_write(b" error=");
+            serial_write_decimal(match smoke_switch { Ok(()) => 0, Err(thread::ThreadError::InvalidStack) => 1, Err(thread::ThreadError::InvalidAffinity) => 2, Err(thread::ThreadError::Full) => 3, Err(thread::ThreadError::NoCurrentThread) => 4, Err(thread::ThreadError::InvalidState) => 5, Err(thread::ThreadError::InvalidCpu) => 6 });
             serial_write(b" ran=");
             serial_write_decimal(smoke_ran as usize);
             serial_write(b" state=");
