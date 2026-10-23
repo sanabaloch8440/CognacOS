@@ -1,10 +1,9 @@
-//! Generated NTOSKRNL export-name/ordinal coverage from WinExports NT 10.0 x64 build 19041.
-//! This is a stub-coverage reference, NOT a Windows 11 build-26100 ABI manifest.
-//! The source does not provide PE section/forwarder classification; do not infer export kind.
-
+//! Generated NTOSKRNL export metadata from WinExports NT 10.0 x64 build 19041.
+//! Stub-coverage reference only; not a Windows 11 build-26100 ABI manifest.
 #[derive(Clone, Copy, Debug)]
 pub struct ManifestEntry { pub ordinal: u16, pub name: Option<&'static str> }
-
+#[derive(Clone, Copy, Debug)]
+pub struct OrdinalOnly { pub ordinal: u16 }
 pub const SOURCE_VERSION: &str = "10.0.19041.3803-AMD64";
 pub const ENTRIES: &[ManifestEntry] = &[
     ManifestEntry { ordinal: 1, name: None },
@@ -3100,4 +3099,29 @@ pub const ENTRIES: &[ManifestEntry] = &[
     ManifestEntry { ordinal: 3091, name: Some("x86BiosFreeBuffer") },
     ManifestEntry { ordinal: 3092, name: Some("x86BiosReadMemory") },
     ManifestEntry { ordinal: 3093, name: Some("x86BiosWriteMemory") },
+];
+pub const ORDINAL_ONLY: &[OrdinalOnly] = &[
+    OrdinalOnly { ordinal: 1 },
+    OrdinalOnly { ordinal: 2 },
+    OrdinalOnly { ordinal: 3 },
+    OrdinalOnly { ordinal: 4 },
+    OrdinalOnly { ordinal: 5 },
+    OrdinalOnly { ordinal: 6 },
+    OrdinalOnly { ordinal: 7 },
+    OrdinalOnly { ordinal: 9 },
+    OrdinalOnly { ordinal: 12 },
+    OrdinalOnly { ordinal: 13 },
+    OrdinalOnly { ordinal: 14 },
+    OrdinalOnly { ordinal: 15 },
+    OrdinalOnly { ordinal: 16 },
+    OrdinalOnly { ordinal: 17 },
+    OrdinalOnly { ordinal: 19 },
+    OrdinalOnly { ordinal: 20 },
+    OrdinalOnly { ordinal: 21 },
+    OrdinalOnly { ordinal: 22 },
+    OrdinalOnly { ordinal: 23 },
+    OrdinalOnly { ordinal: 24 },
+    OrdinalOnly { ordinal: 25 },
+    OrdinalOnly { ordinal: 27 },
+    OrdinalOnly { ordinal: 28 },
 ];

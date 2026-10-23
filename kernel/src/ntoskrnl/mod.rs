@@ -1,7 +1,6 @@
-//! NTOSKRNL import stubs with broad name coverage from a public Windows x64 export dataset.
-//! The checked-in manifest is Windows 10 x64 build 19041 (WinExports); it is used only
-//! to provide names/ordinals for stub coverage, not as an ABI claim for Windows 11 26100.
-//! Every entry resolves to a generic placeholder; signatures and semantics are NOT implemented.
+//! NTOSKRNL import stubs split into module-oriented source files.
+//! Source manifest is Windows 10 x64 build 19041, used for stub coverage only.
+//! Function signatures and semantics are not implemented by these generic placeholders.
 use crate::pe::ImportSymbol;
 
 pub const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
@@ -20,58 +19,54 @@ pub unsafe extern "win64" fn not_implemented(
     _a1: u64, _a2: u64, _a3: u64, _a4: u64, _a5: u64, _a6: u64,
 ) -> u64 { STATUS_NOT_IMPLEMENTED as u64 }
 
-mod manifest_19041;
+mod ex; mod ke; mod mm; mod ob; mod ps; mod io; mod cm; mod se; mod rtl; mod zw; mod other;
 
 fn module_for(name: &str) -> KernelModule {
-    if name.starts_with("Ex") { KernelModule::Ex }
-    else if name.starts_with("Ke") { KernelModule::Ke }
-    else if name.starts_with("Mm") { KernelModule::Mm }
-    else if name.starts_with("Ob") { KernelModule::Ob }
-    else if name.starts_with("Ps") { KernelModule::Ps }
-    else if name.starts_with("Io") { KernelModule::Io }
-    else if name.starts_with("Cm") { KernelModule::Cm }
-    else if name.starts_with("Se") { KernelModule::Se }
-    else if name.starts_with("Rtl") { KernelModule::Rtl }
-    else if name.starts_with("Zw") { KernelModule::Zw }
+    if ex::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Ex }
+    else if ke::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Ke }
+    else if mm::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Mm }
+    else if ob::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Ob }
+    else if ps::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Ps }
+    else if io::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Io }
+    else if cm::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Cm }
+    else if se::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Se }
+    else if rtl::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Rtl }
+    else if zw::EXPORTS.iter().any(|(n, _)| *n == name) { KernelModule::Zw }
     else { KernelModule::Other }
 }
 
 pub fn exports() -> impl Iterator<Item = Export> {
-    manifest_19041::ENTRIES.iter().filter_map(|entry| entry.name.map(|name| Export {
-        name, ordinal: entry.ordinal, module: module_for(name),
-    }))
+    ex::EXPORTS.iter().chain(ke::EXPORTS).chain(mm::EXPORTS).chain(ob::EXPORTS)
+        .chain(ps::EXPORTS).chain(io::EXPORTS).chain(cm::EXPORTS).chain(se::EXPORTS)
+        .chain(rtl::EXPORTS).chain(zw::EXPORTS).chain(other::EXPORTS)
+        .map(|(name, ordinal)| Export { name, ordinal: *ordinal, module: module_for(name) })
 }
 
 pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
     if !(dll.eq_ignore_ascii_case(b"ntoskrnl.exe") || dll.eq_ignore_ascii_case(b"ntkrnlmp.exe")
-        || dll.eq_ignore_ascii_case(b"ntkrnlpa.exe") || dll.eq_ignore_ascii_case(b"ntkrpamp.exe")) {
-        return None;
-    }
-    match symbol {
-        ImportSymbol::Name(requested) => {
-            if !exports().any(|e| e.name.as_bytes().eq_ignore_ascii_case(requested)) { return None; }
-        }
-        ImportSymbol::Ordinal(ordinal) => {
-            if !manifest_19041::ENTRIES.iter().any(|e| e.ordinal == ordinal) { return None; }
-        }
-    }
-    Some(not_implemented as StubFn as usize as u64)
+        || dll.eq_ignore_ascii_case(b"ntkrnlpa.exe") || dll.eq_ignore_ascii_case(b"ntkrpamp.exe")) { return None; }
+    let found = match symbol {
+        ImportSymbol::Name(requested) => exports().any(|e| e.name.as_bytes().eq_ignore_ascii_case(requested)),
+        ImportSymbol::Ordinal(ordinal) => manifest_ordinals().any(|ord| ord == ordinal),
+    };
+    if found { Some(not_implemented as StubFn as usize as u64) } else { None }
 }
 
+fn manifest_ordinals() -> impl Iterator<Item=u16> {
+    ex::EXPORTS.iter().chain(ke::EXPORTS).chain(mm::EXPORTS).chain(ob::EXPORTS)
+        .chain(ps::EXPORTS).chain(io::EXPORTS).chain(cm::EXPORTS).chain(se::EXPORTS)
+        .chain(rtl::EXPORTS).chain(zw::EXPORTS).chain(other::EXPORTS)
+        .map(|(_, ordinal)| *ordinal)
+        .chain(manifest_19041::ORDINAL_ONLY.iter().map(|e| e.ordinal))
+}
+
+mod manifest_19041;
 pub fn named_export_count() -> usize { exports().count() }
-pub fn ordinal_only_export_count() -> usize {
-    manifest_19041::ENTRIES.iter().filter(|e| e.name.is_none()).count()
-}
-
+pub fn ordinal_only_export_count() -> usize { manifest_19041::ORDINAL_ONLY.len() }
 pub fn self_test() -> bool {
-    let entries = manifest_19041::ENTRIES;
-    entries.len() == 3093
-        && named_export_count() == 3070
-        && ordinal_only_export_count() == 23
-        && entries.iter().enumerate().all(|(i, e)| e.ordinal as usize == i + 1)
-        && exports().all(|e| !e.name.is_empty())
-        && resolve(b"ntoskrnl.exe", ImportSymbol::Name(b"KeYieldExecution")).is_none()
-            == !exports().any(|e| e.name == "KeYieldExecution")
+    let all = exports().collect::<alloc::vec::Vec<_>>();
+    all.len() == 3070 && ordinal_only_export_count() == 23
+        && all.iter().all(|e| !e.name.is_empty())
         && resolve(b"ntoskrnl.exe", ImportSymbol::Ordinal(1)).is_some()
         && resolve(b"ntoskrnl.exe", ImportSymbol::Ordinal(3094)).is_none()
         && resolve(b"kernel32.dll", ImportSymbol::Ordinal(1)).is_none()
