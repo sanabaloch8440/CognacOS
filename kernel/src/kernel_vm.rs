@@ -14,6 +14,7 @@ const MAX: usize = 4096;
 // Match the NT pool's current 256 MiB maximum extent. A lock-protected scratch
 // array lets free_pages invalidate all CPUs once before recycling any backing frame.
 const MAX_EXTENT_PAGES: usize = 65536;
+const MAX_RECLAIM_TABLES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error { NotInitialized, Invalid, NoVirtualSpace, NoPhysicalMemory, AlreadyMapped, NotMapped, TableFull }
@@ -25,6 +26,9 @@ struct Table(core::cell::UnsafeCell<[Extent; MAX]>); unsafe impl Sync for Table 
 static BITS: Bits = Bits(core::cell::UnsafeCell::new([0; WORDS]));
 static TABLE: Table = Table(core::cell::UnsafeCell::new([Extent::EMPTY; MAX]));
 static ROOT: AtomicU64 = AtomicU64::new(0);
+static OWN_ROOT_SLOT: AtomicBool = AtomicBool::new(false);
+struct ReclaimTables(core::cell::UnsafeCell<[u64; MAX_RECLAIM_TABLES]>); unsafe impl Sync for ReclaimTables {}
+static RECLAIM_TABLES: ReclaimTables = ReclaimTables(core::cell::UnsafeCell::new([0; MAX_RECLAIM_TABLES]));
 struct ReclaimPages(core::cell::UnsafeCell<[u64; MAX_EXTENT_PAGES]>); unsafe impl Sync for ReclaimPages {}
 static RECLAIM_PAGES: ReclaimPages = ReclaimPages(core::cell::UnsafeCell::new([0; MAX_EXTENT_PAGES]));
 // Each parked AP polls this generation because external interrupts are not enabled yet.
@@ -48,6 +52,12 @@ pub fn initialize(root: u64) -> Result<(), Error> {
  if root == 0 || root >= 0x1_0000_0000 || root & (PAGE-1) != 0 { return Err(Error::Invalid); }
  let _g=Guard::lock(); let old=ROOT.load(Ordering::Acquire);
  if old != 0 && old != root { return Err(Error::Invalid); }
+ if old == 0 {
+  // Reserve PML4 slot 256 for this arena when it is initially unused. Only
+  // then may we reclaim intermediate tables created beneath that slot.
+  let slot=unsafe{(root as *const u64).add(ix(BASE)[0]).read()};
+  OWN_ROOT_SLOT.store(slot&P==0,Ordering::Release);
+ }
  ROOT.store(root,Ordering::Release); Ok(())
 }
 pub fn is_initialized()->bool { ROOT.load(Ordering::Acquire)!=0 }
@@ -89,6 +99,38 @@ unsafe fn map(root:u64, va:u64, pa:u64)->Result<(),Error>{
  unsafe{leaf.write((pa&ADDR)|P|W|NX); core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
  Ok(())
 }
+fn table_is_empty(table:*const u64)->bool {
+ (0..512).all(|i| unsafe { table.add(i).read() } & P == 0)
+}
+
+/// Reclaim empty intermediate tables only when PML4 slot 256 was vacant at
+/// initialization and is therefore exclusively owned by the kernel VM arena.
+/// Removed table frames are deferred until the subsequent SMP TLB rendezvous.
+unsafe fn prune_empty_tables(root:u64,va:u64,count:&mut usize) {
+ if !OWN_ROOT_SLOT.load(Ordering::Acquire) { return; }
+ let indexes=ix(va); let pml4=root as *mut u64;
+ let pml4_slot=unsafe{pml4.add(indexes[0])}; let e4=unsafe{pml4_slot.read()};
+ if e4&P==0 { return; }
+ let pdpt=(e4&ADDR) as *mut u64;
+ let pdpt_slot=unsafe{pdpt.add(indexes[1])}; let e3=unsafe{pdpt_slot.read()};
+ if e3&P==0 || e3&PS!=0 { return; }
+ let pd=(e3&ADDR) as *mut u64;
+ let pd_slot=unsafe{pd.add(indexes[2])}; let e2=unsafe{pd_slot.read()};
+ if e2&P==0 || e2&PS!=0 { return; }
+ let pt_pa=e2&ADDR; let pt=pt_pa as *const u64;
+ if !table_is_empty(pt) { return; }
+ let reclaimed=unsafe{&mut *RECLAIM_TABLES.0.get()};
+ if *count < MAX_RECLAIM_TABLES { reclaimed[*count]=pt_pa; *count+=1; unsafe{pd_slot.write(0)}; } else { return; }
+ if table_is_empty(pd as *const u64) {
+  let pd_pa=e3&ADDR;
+  if *count < MAX_RECLAIM_TABLES { reclaimed[*count]=pd_pa; *count+=1; unsafe{pdpt_slot.write(0)}; } else { return; }
+  if table_is_empty(pdpt as *const u64) {
+   let pdpt_pa=e4&ADDR;
+   if *count < MAX_RECLAIM_TABLES { reclaimed[*count]=pdpt_pa; *count+=1; unsafe{pml4_slot.write(0)}; }
+  }
+ }
+}
+
 unsafe fn unmap(root:u64,va:u64)->Result<u64,Error>{
  let indexes=ix(va); let mut t=root as *mut u64;
  for i in indexes[..3].iter().copied(){let e=unsafe{t.add(i).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *mut u64;}
@@ -126,12 +168,16 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
  // Remove the whole extent first, then wait for every online AP to flush stale
  // translations before any backing frame can be recycled.
  for n in 0..pages {let _=unsafe{unmap(root,va+n as u64*PAGE)}?;}
+ let mut table_count=0usize;
+ for n in 0..pages {unsafe{prune_empty_tables(root,va+n as u64*PAGE,&mut table_count)}}
  synchronize_kernel_tlb();
  let bits=unsafe{&mut *BITS.0.get()};
  for n in 0..pages { // A saturated allocator may quarantine a frame rather than risk reuse.
   let _=unsafe{crate::memory::free_page(reclaim[n])};
   bits[(start+n)/64]&=!(1u64<<((start+n)%64));
  }
+ let tables=unsafe{&*RECLAIM_TABLES.0.get()};
+ for pa in tables.iter().take(table_count).copied() { let _=unsafe{crate::memory::free_page(pa)}; }
  table[i]=Extent::EMPTY;Ok(())
 }
 /// Exercise a real high-half mapping and reclamation before the pool uses it.
