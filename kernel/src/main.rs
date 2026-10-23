@@ -28,6 +28,10 @@ fn io_smoke_dispatch(irp: &mut io::Irp) -> io::IoStatus {
     io::IoStatus::Success
 }
 
+fn io_smoke_pending_dispatch(_irp: &mut io::Irp) -> io::IoStatus {
+    io::IoStatus::Pending
+}
+
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
 
 unsafe extern "C" {
@@ -190,7 +194,35 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: I/O manager IRP dispatch self-test failed.\r\n");
             halt();
         }
-        serial_write(b"I/O manager device dispatch and IRP completion self-test passed.\r\n");
+        serial_write(b"I/O manager device dispatch and IRP completion self-test passed.\\r\\n");
+
+        // Verify pre-dispatch cancellation and asynchronous single-owner completion.
+        let cancelled = match io::submit(device, io::IRP_MJ_READ, 0, 16) {
+            Ok(id) => id, Err(_) => { serial_write(b"FATAL: I/O cancel fixture allocation failed.\\r\\n"); halt(); }
+        };
+        if io::cancel_irp(cancelled).is_err()
+            || !matches!(io::query_irp(cancelled), Some(r) if r.status == io::IoStatus::Cancelled && r.completed)
+            || io::release_irp(cancelled).is_err()
+        {
+            serial_write(b"FATAL: I/O cancellation self-test failed.\\r\\n"); halt();
+        }
+        let mut pending_dispatch: [Option<io::DispatchFn>; 16] = [None; 16];
+        pending_dispatch[io::IRP_MJ_READ as usize] = Some(io_smoke_pending_dispatch);
+        let pending_device = match io::register_device(b"\\Device\\AsyncSmoke", pending_dispatch) {
+            Ok(id) => id, Err(_) => { serial_write(b"FATAL: asynchronous I/O device registration failed.\\r\\n"); halt(); }
+        };
+        let pending_irp = match io::submit(pending_device, io::IRP_MJ_READ, 0, 64) {
+            Ok(id) => id, Err(_) => { serial_write(b"FATAL: pending IRP allocation failed.\\r\\n"); halt(); }
+        };
+        if io::dispatch_one(pending_irp) != Ok(io::IoStatus::Pending)
+            || io::dispatch_one(pending_irp) != Err(io::IoError::AlreadyInFlight)
+            || io::complete_irp(pending_irp, io::IoStatus::Success, 64).is_err()
+            || !matches!(io::query_irp(pending_irp), Some(r) if r.completed && !r.in_flight && r.information == 64)
+            || io::release_irp(pending_irp).is_err()
+        {
+            serial_write(b"FATAL: asynchronous IRP ownership/completion self-test failed.\\r\\n"); halt();
+        }
+        serial_write(b"I/O manager cancellation, in-flight ownership, and asynchronous completion tests passed.\\r\\n");
         // Read-only native Rust ext filesystem parser self-test.
         if !extfs::self_test() {
             serial_write(b"FATAL: ext filesystem parser self-test failed.\r\n");
