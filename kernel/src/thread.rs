@@ -30,7 +30,11 @@ fn cpu_index()->Result<usize,ThreadError>{
     // The BSP may execute before a GS-based CPU-local accessor is fully usable;
     // fall back to the firmware-registered APIC ID, never to an arbitrary CPU slot.
     let apic_id=(unsafe{core::arch::x86_64::__cpuid(1)}.ebx>>24)&0xff;
-    crate::hal::cpu_index_for_apic(apic_id).filter(|i|*i<crate::hal::MAX_CPUS).ok_or(ThreadError::InvalidCpu)
+    if let Some(index)=crate::hal::cpu_index_for_apic(apic_id).filter(|i|*i<crate::hal::MAX_CPUS){return Ok(index)}
+    // The runtime deliberately starts only the BSP. Until AP startup is complete,
+    // a single-online-CPU machine has an unambiguous scheduler slot.
+    if crate::hal::online_cpu_count()==1 { return Ok(0); }
+    Err(ThreadError::InvalidCpu)
 }
 extern "C" fn thread_trampoline()->! {
     let entry_and_arg={let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};let id=crate::hal::cpu_local(cpu).map(|c|c.current_thread.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);let table=THREADS.lock();table.records.iter().find(|t|t.id==id&&t.state==ThreadState::Running).and_then(|t|t.entry.map(|entry|(entry,t.argument)))};
