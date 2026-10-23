@@ -22,6 +22,9 @@ struct Table(core::cell::UnsafeCell<[Extent; MAX]>); unsafe impl Sync for Table 
 static BITS: Bits = Bits(core::cell::UnsafeCell::new([0; WORDS]));
 static TABLE: Table = Table(core::cell::UnsafeCell::new([Extent::EMPTY; MAX]));
 static ROOT: AtomicU64 = AtomicU64::new(0);
+// Each parked AP polls this generation because external interrupts are not enabled yet.
+static TLB_GENERATION: AtomicU64 = AtomicU64::new(0);
+static TLB_ACK: [AtomicU64; crate::hal::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::hal::MAX_CPUS];
 #[cfg(target_os = "none")]
 static LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 #[cfg(not(target_os = "none"))]
@@ -43,6 +46,28 @@ pub fn initialize(root: u64) -> Result<(), Error> {
  ROOT.store(root,Ordering::Release); Ok(())
 }
 pub fn is_initialized()->bool { ROOT.load(Ordering::Acquire)!=0 }
+
+/// Called by the interrupt-disabled AP idle loop. A generation change means shared
+/// kernel page tables changed; reloading CR3 invalidates this CPU's non-global TLB.
+pub fn smp_tlb_poll(logical_id: usize) {
+ if logical_id == 0 || logical_id >= crate::hal::MAX_CPUS { return; }
+ let generation = TLB_GENERATION.load(Ordering::Acquire);
+ if TLB_ACK[logical_id].load(Ordering::Relaxed) != generation {
+  unsafe { let cr3: u64; core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags)); }
+  TLB_ACK[logical_id].store(generation, Ordering::Release);
+ }
+}
+
+/// Invalidate shared kernel translations on every online AP before any backing
+/// physical frame can be recycled. APs poll rather than use IPIs while IRQs are off.
+fn synchronize_kernel_tlb() {
+ if crate::hal::online_cpu_count() <= 1 { return; }
+ let generation = TLB_GENERATION.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+ for cpu in 1..crate::hal::MAX_CPUS {
+  if crate::hal::cpu_state(cpu).ok() != Some(crate::hal::CPU_ONLINE) { continue; }
+  while TLB_ACK[cpu].load(Ordering::Acquire) < generation { core::hint::spin_loop(); }
+ }
+}
 fn ix(v:u64)->[usize;4]{[((v>>39)&511)as usize,((v>>30)&511)as usize,((v>>21)&511)as usize,((v>>12)&511)as usize]}
 
 unsafe fn map(root:u64, va:u64, pa:u64)->Result<(),Error>{
@@ -76,7 +101,8 @@ pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
   let pa=match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>break};
   if unsafe{map(root,va+mapped as u64*PAGE,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};break} mapped+=1;
  }
- if mapped!=pages {for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,va+n as u64*PAGE)}{let _=unsafe{crate::memory::free_page(pa)};}}for n in 0..pages{bits[(start+n)/64]&=!(1u64<<((start+n)%64))}return Err(Error::NoPhysicalMemory)}
+ if mapped!=pages {for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,va+n as u64*PAGE)}{synchronize_kernel_tlb();let _=unsafe{crate::memory::free_page(pa)};}}for n in 0..pages{bits[(start+n)/64]&=!(1u64<<((start+n)%64))}return Err(Error::NoPhysicalMemory)}
+ synchronize_kernel_tlb();
  table[ti]=Extent{start,pages,live:true};Ok(va as *mut u8)
 }
 
@@ -90,7 +116,7 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
  for n in 0..pages {let indexes=ix(va+n as u64*PAGE);let mut t=root as *const u64;for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *const u64;}if unsafe{t.add(indexes[3]).read()}&P==0{return Err(Error::NotMapped)}}
  // Free stack may reject when full. Keep mappings intact if the first release fails.
  let bits=unsafe{&mut *BITS.0.get()};
- for n in 0..pages {let pa=unsafe{unmap(root,va+n as u64*PAGE)}?;if unsafe{crate::memory::free_page(pa)}.is_err(){return Err(Error::NoPhysicalMemory)}bits[(start+n)/64]&=!(1u64<<((start+n)%64));}
+ for n in 0..pages {let pa=unsafe{unmap(root,va+n as u64*PAGE)}?;synchronize_kernel_tlb();if unsafe{crate::memory::free_page(pa)}.is_err(){return Err(Error::NoPhysicalMemory)}bits[(start+n)/64]&=!(1u64<<((start+n)%64));}
  table[i]=Extent::EMPTY;Ok(())
 }
 /// Exercise a real high-half mapping and reclamation before the pool uses it.
