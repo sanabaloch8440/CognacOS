@@ -40,10 +40,28 @@ fn io_smoke_pending_dispatch(_irp: &mut io::Irp) -> io::IoStatus {
 
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
 static mut THREAD_SMOKE_STACK: [u8; 4096] = [0; 4096];
+static mut THREAD_BLOCK_STACK: [u8; 4096] = [0; 4096];
+static mut THREAD_WAKE_STACK: [u8; 4096] = [0; 4096];
 static THREAD_SMOKE_RAN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static THREAD_BLOCK_STAGE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
 extern "C" fn thread_smoke_entry(_argument: *mut core::ffi::c_void) {
     THREAD_SMOKE_RAN.store(true, core::sync::atomic::Ordering::Release);
+}
+extern "C" fn thread_block_smoke_entry(_argument: *mut core::ffi::c_void) {
+    THREAD_BLOCK_STAGE.store(1, core::sync::atomic::Ordering::Release);
+    if thread::block_current().is_err() {
+        THREAD_BLOCK_STAGE.store(0xff, core::sync::atomic::Ordering::Release);
+        return;
+    }
+    THREAD_BLOCK_STAGE.store(3, core::sync::atomic::Ordering::Release);
+}
+extern "C" fn thread_wake_smoke_entry(argument: *mut core::ffi::c_void) {
+    if thread::wake(argument as u64).is_ok() {
+        THREAD_BLOCK_STAGE.store(2, core::sync::atomic::Ordering::Release);
+    } else {
+        THREAD_BLOCK_STAGE.store(0xfe, core::sync::atomic::Ordering::Release);
+    }
 }
 
 unsafe extern "C" {
@@ -316,6 +334,29 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Kernel thread stack switch, trampoline, exit, and bootstrap resume passed.\r\n");
+
+        let block_stack_ptr = core::ptr::addr_of_mut!(THREAD_BLOCK_STACK).cast::<u8>();
+        let wake_stack_ptr = core::ptr::addr_of_mut!(THREAD_WAKE_STACK).cast::<u8>();
+        let block_stack: &'static mut [u8] = core::slice::from_raw_parts_mut(block_stack_ptr, 4096);
+        let wake_stack: &'static mut [u8] = core::slice::from_raw_parts_mut(wake_stack_ptr, 4096);
+        THREAD_BLOCK_STAGE.store(0, core::sync::atomic::Ordering::Release);
+        let blocked_thread = match thread::spawn(block_stack, 1, thread_block_smoke_entry, core::ptr::null_mut()) {
+            Ok(id) => id,
+            Err(_) => { serial_write(b"FATAL: blocked-thread fixture creation failed.\r\n"); halt(); }
+        };
+        let wake_thread = match thread::spawn(wake_stack, 1, thread_wake_smoke_entry, blocked_thread as *mut core::ffi::c_void) {
+            Ok(id) => id,
+            Err(_) => { serial_write(b"FATAL: wake-thread fixture creation failed.\r\n"); halt(); }
+        };
+        if thread::yield_current().is_err()
+            || THREAD_BLOCK_STAGE.load(core::sync::atomic::Ordering::Acquire) != 3
+            || thread::state(blocked_thread) != Some(thread::ThreadState::Exited)
+            || thread::state(wake_thread) != Some(thread::ThreadState::Exited)
+        {
+            serial_write(b"FATAL: kernel thread block/wake/resume self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Kernel thread block, cross-thread wake, resume, and exit passed.\r\n");
 
         // Exercise typed handles and explicit access checks.
         let event = match object::create(object::ObjectType::Event, object::ACCESS_READ) {
