@@ -255,3 +255,61 @@ pub unsafe fn harden_page_tables(
     }
     Ok(())
 }
+
+
+/// Configure one identity-mapped 4 KiB page after splitting its 2 MiB mapping
+/// if necessary. Cache-disable/write-through are used for device MMIO; callers
+/// must avoid creating cache-type aliases for the same physical device page.
+pub unsafe fn configure_identity_page(
+    pml4_physical: u64,
+    address: u64,
+    writable: bool,
+    executable: bool,
+    cache_disable: bool,
+    write_through: bool,
+) -> Result<(), AllocError> {
+    const PWT: u64 = 1 << 3;
+    const PCD: u64 = 1 << 4;
+    if pml4_physical == 0 || pml4_physical >= PHYSICAL_LIMIT
+        || pml4_physical & (PAGE_SIZE - 1) != 0
+        || address >= PHYSICAL_LIMIT
+    {
+        return Err(AllocError::InvalidMap);
+    }
+    let address = address & !(PAGE_SIZE - 1);
+    let pml4 = pml4_physical as *mut u64;
+    let pml4e = unsafe { pml4.add(((address >> 39) & 0x1ff) as usize).read() };
+    if pml4e & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    let pdpt = (pml4e & ADDRESS_MASK) as *mut u64;
+    let pdpte = unsafe { pdpt.add(((address >> 30) & 0x1ff) as usize).read() };
+    if pdpte & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    let pd = (pdpte & ADDRESS_MASK) as *mut u64;
+    let pde_ptr = unsafe { pd.add(((address >> 21) & 0x1ff) as usize) };
+    let pde = unsafe { pde_ptr.read() };
+    if pde & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    let table = if pde & LARGE != 0 {
+        let table_phys = unsafe { allocate_page()? };
+        let table = table_phys as *mut u64;
+        let base = pde & LARGE_ADDRESS_MASK;
+        let inherited = pde & (WRITABLE | NO_EXECUTE | PWT | PCD);
+        for i in 0..512usize {
+            unsafe { table.add(i).write(base + i as u64 * PAGE_SIZE | PRESENT | inherited); }
+        }
+        unsafe { pde_ptr.write(table_phys | PRESENT | WRITABLE); }
+        table
+    } else {
+        (pde & ADDRESS_MASK) as *mut u64
+    };
+    let pte_ptr = unsafe { table.add(((address >> 12) & 0x1ff) as usize) };
+    let mut pte = unsafe { pte_ptr.read() };
+    if pte & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    if writable { pte |= WRITABLE; } else { pte &= !WRITABLE; }
+    if executable { pte &= !NO_EXECUTE; } else { pte |= NO_EXECUTE; }
+    if cache_disable { pte |= PCD; } else { pte &= !PCD; }
+    if write_through { pte |= PWT; } else { pte &= !PWT; }
+    unsafe { pte_ptr.write(pte); }
+    // Splitting a large page changes neighboring translations too; flush the
+    // entire local TLB rather than invalidating only this single page.
+    unsafe { core::arch::asm!("mov cr3, {}", in(reg) pml4_physical, options(nostack, preserves_flags)); }
+    Ok(())
+}
