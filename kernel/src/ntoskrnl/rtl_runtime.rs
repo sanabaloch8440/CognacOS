@@ -149,3 +149,36 @@ pub struct Luid { pub low_part: u32, pub high_part: i32 }
     #[test] fn bitmap_ranges_and_search_work() { let mut words=[0u32;2];let mut b=RtlBitmap{size_of_bitmap:64,buffer:words.as_mut_ptr()};unsafe{rtl_set_bits(&mut b,5,3);assert_eq!(rtl_number_of_set_bits(&b),3);assert_eq!(rtl_find_clear_bits(&b,3,0),0);assert_eq!(rtl_find_set_bits(&b,3,0),5);assert_eq!(rtl_are_bits_set(&b,5,3),1);rtl_clear_bits(&mut b,5,3);assert_eq!(rtl_number_of_set_bits(&b),0);} }
     #[test] fn crc_and_memory_match_expected_basics() { let data=b"123456789";assert_eq!(unsafe{rtl_compute_crc32(0,data.as_ptr(),9)},0xcbf43926);assert_eq!(unsafe{rtl_compare_memory(data.as_ptr(),data.as_ptr(),9)},9); }
 }
+
+
+#[no_mangle] pub unsafe extern "win64" fn rtl_copy_memory_non_temporal(dst:*mut c_void,src:*const c_void,n:u64) { unsafe { rtl_copy_memory(dst,src,n) } }
+#[no_mangle] pub unsafe extern "win64" fn rtl_fill_memory_non_temporal(dst:*mut c_void,n:u64,value:u8) { unsafe { rtl_fill_memory(dst,n,value) } }
+#[no_mangle] pub unsafe extern "win64" fn rtl_move_memory(dst:*mut c_void,src:*const c_void,n:u64) { if n>0&&!dst.is_null()&&!src.is_null(){unsafe{core::ptr::copy(src as *const u8,dst as *mut u8,n as usize);}} }
+#[no_mangle] pub unsafe extern "win64" fn rtl_zero_memory(dst:*mut c_void,n:u64) { if n>0&&!dst.is_null(){unsafe{core::ptr::write_bytes(dst as *mut u8,0,n as usize);}} }
+#[no_mangle] pub unsafe extern "win64" fn rtl_init_ansi_string(dst:*mut AnsiString,src:*const u8) {
+    if dst.is_null(){return;}let d=unsafe{&mut *dst};d.buffer=src as *mut u8;if src.is_null(){d.length=0;d.maximum_length=0;return;}
+    let mut n=0usize;while n<u16::MAX as usize-1&&unsafe{*src.add(n)}!=0{n+=1;}d.length=n as u16;d.maximum_length=(n+1) as u16;
+}
+#[no_mangle] pub unsafe extern "win64" fn rtl_init_string(dst:*mut AnsiString,src:*const u8) { unsafe{rtl_init_ansi_string(dst,src)} }
+#[no_mangle] pub unsafe extern "win64" fn rtl_init_unicode_string(dst:*mut UnicodeString,src:*const u16) {
+    if dst.is_null(){return;}let d=unsafe{&mut *dst};d.buffer=src as *mut u16;if src.is_null(){d.length=0;d.maximum_length=0;return;}
+    let mut n=0usize;while n<(u16::MAX as usize/2)-1&&unsafe{*src.add(n)}!=0{n+=1;}d.length=(n*2) as u16;d.maximum_length=((n+1)*2) as u16;
+}
+#[no_mangle] pub unsafe extern "win64" fn rtl_prefix_unicode_string(prefix:*const UnicodeString,string:*const UnicodeString,case_insensitive:u8)->u8 {
+    if prefix.is_null()||string.is_null(){return 0;}let p=unsafe{&*prefix};let s=unsafe{&*string};if p.length>s.length||p.length%2!=0||s.length%2!=0{return 0;}
+    if p.length==0{return 1;}if p.buffer.is_null()||s.buffer.is_null(){return 0;}
+    for i in 0..(p.length/2) as usize{let mut a=unsafe{*p.buffer.add(i)};let mut b=unsafe{*s.buffer.add(i)};if case_insensitive!=0{a=unsafe{rtl_downcase_unicode_char(a)};b=unsafe{rtl_downcase_unicode_char(b)};}if a!=b{return 0;}}1
+}
+#[no_mangle] pub unsafe extern "win64" fn rtl_append_unicode_string_to_string(dst:*mut UnicodeString,src:*const UnicodeString)->i32 {
+    const STATUS_SUCCESS:i32=0;const STATUS_BUFFER_TOO_SMALL:i32=0xC000_0023u32 as i32;
+    if dst.is_null(){return STATUS_BUFFER_TOO_SMALL;}let d=unsafe{&mut *dst};if src.is_null(){return STATUS_SUCCESS;}let s=unsafe{&*src};
+    if s.length==0{return STATUS_SUCCESS;}if s.buffer.is_null()||d.buffer.is_null()||d.length%2!=0||s.length%2!=0{return STATUS_BUFFER_TOO_SMALL;}
+    let Some(end)=d.length.checked_add(s.length) else{return STATUS_BUFFER_TOO_SMALL;};if end>d.maximum_length{return STATUS_BUFFER_TOO_SMALL;}
+    unsafe{core::ptr::copy(s.buffer,d.buffer.add((d.length/2) as usize),(s.length/2) as usize);}d.length=end;STATUS_SUCCESS
+}
+#[no_mangle] pub unsafe extern "win64" fn rtl_append_unicode_to_string(dst:*mut UnicodeString,src:*const u16)->i32 {
+    const STATUS_SUCCESS:i32=0;const STATUS_BUFFER_TOO_SMALL:i32=0xC000_0023u32 as i32;
+    if dst.is_null(){return STATUS_BUFFER_TOO_SMALL;}let d=unsafe{&mut *dst};if src.is_null(){return STATUS_SUCCESS;}if d.buffer.is_null()||d.length%2!=0{return STATUS_BUFFER_TOO_SMALL;}
+    let mut n=0usize;while n<(u16::MAX as usize/2)&&unsafe{*src.add(n)}!=0{n+=1;}let bytes=n.saturating_mul(2);let Some(end)=d.length.checked_add(bytes as u16) else{return STATUS_BUFFER_TOO_SMALL;};if end>=d.maximum_length{return STATUS_BUFFER_TOO_SMALL;}
+    unsafe{core::ptr::copy(src,d.buffer.add((d.length/2) as usize),n);*d.buffer.add((end/2) as usize)=0;}d.length=end;STATUS_SUCCESS
+}

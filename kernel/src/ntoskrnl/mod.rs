@@ -83,6 +83,16 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlAreAnyAccessesGranted" => rtl_runtime::rtl_are_any_accesses_granted as usize,
   "RtlCopyMemory" => rtl_runtime::rtl_copy_memory as usize,
   "RtlFillMemory" => rtl_runtime::rtl_fill_memory as usize,
+  "RtlCopyMemoryNonTemporal" => rtl_runtime::rtl_copy_memory_non_temporal as usize,
+  "RtlFillMemoryNonTemporal" => rtl_runtime::rtl_fill_memory_non_temporal as usize,
+  "RtlMoveMemory" => rtl_runtime::rtl_move_memory as usize,
+  "RtlZeroMemory" => rtl_runtime::rtl_zero_memory as usize,
+  "RtlInitAnsiString" => rtl_runtime::rtl_init_ansi_string as usize,
+  "RtlInitString" => rtl_runtime::rtl_init_string as usize,
+  "RtlInitUnicodeString" => rtl_runtime::rtl_init_unicode_string as usize,
+  "RtlPrefixUnicodeString" => rtl_runtime::rtl_prefix_unicode_string as usize,
+  "RtlAppendUnicodeStringToString" => rtl_runtime::rtl_append_unicode_string_to_string as usize,
+  "RtlAppendUnicodeToString" => rtl_runtime::rtl_append_unicode_to_string as usize,
   // All other names deliberately fail closed until their own signatures and semantics are implemented.
   _ => return None,
  };
