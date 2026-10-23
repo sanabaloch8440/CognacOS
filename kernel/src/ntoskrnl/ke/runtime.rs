@@ -153,6 +153,30 @@ pub unsafe extern "win64" fn ke_acquire_spin_lock(lock: *mut u64, old_irql: *mut
         core::hint::spin_loop();
     }
 }
+/// Raise to SYNCH_LEVEL. Local interrupts are conservatively masked because
+/// this kernel does not yet program APIC task-priority registers.
+pub unsafe extern "win64" fn ke_raise_irql_to_synch_level() -> u8 {
+    let flags = unsafe { read_rflags() };
+    unsafe { irq_disable(); }
+    push_irq_state(flags);
+    CURRENT_IRQL[cpu_slot()].swap(12, Ordering::AcqRel)
+}
+/// Acquire a spin lock at SYNCH_LEVEL and return the prior IRQL.
+pub unsafe extern "win64" fn ke_acquire_spin_lock_raise_to_synch(lock: *mut u64) -> u8 {
+    let flags = unsafe { read_rflags() };
+    unsafe { irq_disable(); }
+    push_irq_state(flags);
+    let old = CURRENT_IRQL[cpu_slot()].swap(12, Ordering::AcqRel);
+    let Some(word) = atomic_lock_word(lock) else {
+        CURRENT_IRQL[cpu_slot()].store(old, Ordering::Release);
+        let saved = pop_irq_state(); unsafe { irq_restore(saved); }
+        return old;
+    };
+    while word.compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+    old
+}
 /// Acquire a spin lock while raising to DISPATCH_LEVEL; returns the prior IRQL.
 pub unsafe extern "win64" fn ke_acquire_spin_lock_raise_to_dpc(lock: *mut u64) -> u8 {
     let mut old_irql = PASSIVE_LEVEL;
