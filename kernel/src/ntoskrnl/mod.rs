@@ -449,6 +449,8 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"kernel32.dll",ImportSymbol::Ordinal(1)).is_none()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeGetCurrentIrql")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoGetDmaAdapter")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalGetAdapter")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalGetBusData")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalGetBusDataByOffset")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalSetBusData")).is_some()
