@@ -445,6 +445,29 @@ pub extern "win64" fn hal_all_processors_started() -> u8 {
     crate::hal::online_cpu_count() != 0
 }
 
+
+/// Return the bootstrap DMA_ADAPTER for legacy drivers that request a
+/// DEVICE_DESCRIPTION. Only common-buffer operations are exposed today;
+/// transfer/map-register and scatter-gather callbacks remain null in the
+/// operations table, and the returned map-register count is therefore zero.
+pub unsafe extern "win64" fn hal_get_adapter(
+    device_description: *const core::ffi::c_void,
+    number_of_map_registers: *mut u32,
+) -> *mut core::ffi::c_void {
+    if device_description.is_null() || number_of_map_registers.is_null() {
+        return core::ptr::null_mut();
+    }
+    // DEVICE_DESCRIPTION begins with USHORT Version, USHORT Size on x64.
+    let header = unsafe { core::slice::from_raw_parts(device_description.cast::<u8>(), 4) };
+    let version = u16::from_le_bytes([header[0], header[1]]);
+    let size = u16::from_le_bytes([header[2], header[3]]);
+    if version > 1 || size < 32 {
+        return core::ptr::null_mut();
+    }
+    unsafe { number_of_map_registers.write(0); }
+    core::ptr::addr_of!(crate::dma::DMA_ADAPTER).cast_mut().cast()
+}
+
 /// Legacy HAL common-buffer entry point. The early x64 DMA path is limited to
 /// physically contiguous, identity-mapped memory below 4 GiB without an IOMMU.
 pub unsafe extern "win64" fn hal_allocate_common_buffer(
@@ -540,7 +563,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         Some(hal_allocate_common_buffer as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalFreeCommonBuffer") {
         Some(hal_free_common_buffer as usize as u64)
-    } else if name.eq_ignore_ascii_case(b"HalTranslateBusAddress") {
+    } else if name.eq_ignore_ascii_case(b"HalGetAdapter") {\n        Some(hal_get_adapter as usize as u64)\n    } else if name.eq_ignore_ascii_case(b"HalTranslateBusAddress") {
         Some(hal_translate_bus_address as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalGetBusData") {
         Some(hal_get_bus_data as usize as u64)
@@ -578,7 +601,7 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
         26 => Some(hal_get_bus_data_by_offset as usize as u64),
         61 => Some(hal_set_bus_data as usize as u64),
         62 => Some(hal_set_bus_data_by_offset as usize as u64),
-        73 => Some(hal_translate_bus_address as usize as u64),
+        24 => Some(hal_get_adapter as usize as u64),\n        73 => Some(hal_translate_bus_address as usize as u64),
         55 => Some(hal_request_ipi as usize as u64),
         56 => Some(hal_request_ipi_specify_vector as usize as u64),
         33 => Some(hal_get_processor_id_by_nt_number as usize as u64),
