@@ -188,6 +188,28 @@ pub fn build_scatter_gather(
 
 
 
+
+/// IoGetDmaAdapter for the bootstrap direct-DMA adapter. No IOMMU or
+/// adapter-channel scheduler is present yet; callers receive zero map registers.
+pub unsafe extern "win64" fn io_get_dma_adapter(
+    device_object: *mut core::ffi::c_void,
+    device_description: *const core::ffi::c_void,
+    number_of_map_registers: *mut u32,
+) -> *mut core::ffi::c_void {
+    if device_object.is_null() || device_description.is_null() || number_of_map_registers.is_null() {
+        return core::ptr::null_mut();
+    }
+    // DEVICE_DESCRIPTION's stable header is Version, Size.
+    let header = unsafe { core::slice::from_raw_parts(device_description.cast::<u8>(), 4) };
+    let version = u16::from_le_bytes([header[0], header[1]]);
+    let size = u16::from_le_bytes([header[2], header[3]]);
+    if version > 1 || size < 4 {
+        return core::ptr::null_mut();
+    }
+    unsafe { number_of_map_registers.write(0); }
+    core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+}
+
 /// The stable prefix of the Windows x64 MDL. PFN entries follow this header;
 /// this implementation translates CurrentVa through the active kernel page tables
 /// and deliberately limits a transfer to the current physically contiguous page.
