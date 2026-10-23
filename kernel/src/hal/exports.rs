@@ -139,9 +139,7 @@ pub unsafe extern "win64" fn hal_get_bus_data_by_offset(
     buffer: *mut u8, offset: u32, length: u32,
 ) -> u32 {
     if bus_data_type != PCI_CONFIGURATION_BUS_DATA_TYPE || buffer.is_null()
-        || length == 0 || offset >= 256 || slot_number > 255 || bus_number > 255
-        // Keep this legacy API from modifying standard PCI header registers.
-        || offset < 0x40 {
+        || length == 0 || offset >= 256 || slot_number > 255 || bus_number > 255 {
         return 0;
     }
     let count = length.min(256 - offset);
@@ -169,7 +167,9 @@ pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
     buffer: *const u8, offset: u32, length: u32,
 ) -> u32 {
     if bus_data_type != PCI_CONFIGURATION_BUS_DATA_TYPE || buffer.is_null()
-        || length == 0 || offset >= 256 || slot_number > 255 || bus_number > 255 {
+        || length == 0 || offset >= 256 || slot_number > 255 || bus_number > 255
+        // Keep this legacy API from modifying standard PCI header registers.
+        || offset < 0x40 {
         return 0;
     }
     let count = length.min(256 - offset);
