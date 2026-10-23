@@ -148,6 +148,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: bootstrap CPU-local HAL setup failed.\r\n");
             halt();
         }
+        thread::initialize();
         user::initialize();
         syscall::initialize();
         usermode::initialize();
