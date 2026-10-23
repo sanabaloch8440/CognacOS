@@ -154,7 +154,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: SMP startup-target validation self-test failed.\r\n");
             halt();
         }
-        serial_write(b"SMP startup target validation passed; hardware AP startup remains gated on trampoline installation.\r\n");
+        serial_write(b"SMP startup target validation passed.\r\n");
 
         // Validate the bounded ACPI parser against a minimal synthetic MADT.
         let mut madt = [0u8; 44];
