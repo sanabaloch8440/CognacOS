@@ -1,6 +1,11 @@
 //! Bounded ACPI table parsing primitives for platform discovery.
 //! Callers must pass a readable, mapped byte slice obtained from firmware data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+static LAST_RSDP_ADDRESS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Remember the firmware RSDP discovered during boot for later HAL table queries.
+pub fn rsdp_address() -> u64 { LAST_RSDP_ADDRESS.load(core::sync::atomic::Ordering::Acquire) }
+
 pub enum AcpiError { Truncated, BadSignature, BadLength, BadChecksum, TooManyEntries, MalformedEntry, MissingRoot, MissingMadt, AddressOutOfRange }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -127,6 +132,7 @@ const LOW_IDENTITY_LIMIT: u64 = 0x1_0000_0000;
 /// The bootstrap identity-maps only 0..4 GiB, so physical ranges are checked
 /// before dereferencing. This routine discovers topology but enables no devices.
 pub unsafe fn discover_madt(rsdp_address: u64) -> Result<MadtInfo, AcpiError> {
+    LAST_RSDP_ADDRESS.store(rsdp_address, core::sync::atomic::Ordering::Release);
     if rsdp_address == 0 || rsdp_address.checked_add(36).is_none_or(|end| end > LOW_IDENTITY_LIMIT) {
         return Err(AcpiError::AddressOutOfRange);
     }
