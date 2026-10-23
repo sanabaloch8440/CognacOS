@@ -97,7 +97,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 82, name: "KdComPortInUse", state: StubState::NotImplemented },
     HalExport { ordinal: 83, name: "KdHvComPortInUse", state: StubState::NotImplemented },
     HalExport { ordinal: 84, name: "KeFlushWriteBuffer", state: StubState::Implemented },
-    HalExport { ordinal: 85, name: "KeQueryPerformanceCounter", state: StubState::NotImplemented },
+    HalExport { ordinal: 85, name: "KeQueryPerformanceCounter", state: StubState::Implemented },
     HalExport { ordinal: 86, name: "KeStallExecutionProcessor", state: StubState::NotImplemented },
     HalExport { ordinal: 87, name: "x86BiosAllocateBuffer", state: StubState::NotImplemented },
     HalExport { ordinal: 88, name: "x86BiosCall", state: StubState::NotImplemented },
@@ -117,12 +117,25 @@ pub unsafe extern "win64" fn ke_flush_write_buffer() {
     unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
 }
 
+/// Windows x64 KeQueryPerformanceCounter ABI: return the counter as a
+/// LARGE_INTEGER and optionally store the stable counter frequency.
+pub unsafe extern "win64" fn ke_query_performance_counter(frequency: *mut i64) -> i64 {
+    if let Some(hz) = crate::apic::tsc_frequency_hz() {
+        if !frequency.is_null() { unsafe { frequency.write(hz.min(i64::MAX as u64) as i64); } }
+    } else if !frequency.is_null() {
+        unsafe { frequency.write(0); }
+    }
+    crate::apic::monotonic_ticks().min(i64::MAX as u64) as i64
+}
+
 /// Resolve only ABI-reviewed HAL exports. Unsupported names fail closed.
 pub fn resolve(name: &[u8]) -> Option<u64> {
     if name.eq_ignore_ascii_case(b"HalQueryMaximumProcessorCount") {
         Some(hal_query_maximum_processor_count as usize as u64)
     } else if name.eq_ignore_ascii_case(b"KeFlushWriteBuffer") {
         Some(ke_flush_write_buffer as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"KeQueryPerformanceCounter") {
+        crate::apic::tsc_frequency_hz().map(|_| ke_query_performance_counter as usize as u64)
     } else { None }
 }
 
@@ -130,6 +143,7 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
     match ordinal {
         47 => Some(hal_query_maximum_processor_count as usize as u64),
         84 => Some(ke_flush_write_buffer as usize as u64),
+        85 => crate::apic::tsc_frequency_hz().map(|_| ke_query_performance_counter as usize as u64),
         _ => None,
     }
 }
@@ -152,7 +166,9 @@ pub fn self_test() -> bool {
         && find_by_name(b"not-a-hal-export").is_none()
         && resolve(b"HalQueryMaximumProcessorCount").is_some()
         && resolve(b"KeFlushWriteBuffer").is_some()
+        && (resolve(b"KeQueryPerformanceCounter").is_some() == crate::apic::tsc_frequency_hz().is_some())
         && resolve(b"HalAcpiGetTableEx").is_none()
         && resolve_ordinal(47).is_some()
+        && (resolve_ordinal(85).is_some() == crate::apic::tsc_frequency_hz().is_some())
         && resolve_ordinal(1).is_none()
 }
