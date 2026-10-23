@@ -187,6 +187,81 @@ pub fn build_scatter_gather(
 
 
 
+
+/// The stable prefix of the Windows x64 MDL. PFN entries follow this header;
+/// this implementation translates CurrentVa through the active kernel page tables
+/// and deliberately limits a transfer to the current physically contiguous page.
+#[repr(C)]
+pub struct MdlAbi {
+    pub next: *mut MdlAbi,
+    pub size: i16,
+    pub flags: i16,
+    pub process: *mut core::ffi::c_void,
+    pub mapped_system_va: *mut core::ffi::c_void,
+    pub start_va: *mut core::ffi::c_void,
+    pub byte_count: u32,
+    pub byte_offset: u32,
+}
+
+/// Windows DMA_OPERATIONS.MapTransfer. This no-IOMMU implementation returns
+/// the physical address corresponding to CurrentVa and shortens Length so the
+/// transfer never crosses a page boundary. Map-register tokens are not needed
+/// for this direct-mapped mode and must not be treated as IOMMU mappings.
+pub unsafe extern "win64" fn map_transfer(
+    adapter: *mut core::ffi::c_void,
+    mdl: *mut MdlAbi,
+    _map_register_base: *mut core::ffi::c_void,
+    current_va: *mut core::ffi::c_void,
+    length: *mut u32,
+    _write_to_device: u8,
+) -> i64 {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+        || mdl.is_null() || current_va.is_null() || length.is_null() {
+        return 0;
+    }
+    let requested = unsafe { length.read() };
+    if requested == 0 { return 0; }
+    let m = unsafe { &*mdl };
+    if m.byte_count == 0 || m.start_va.is_null() { return 0; }
+    let start = m.start_va as u64;
+    let va = current_va as u64;
+    let end = match start.checked_add(m.byte_count as u64) { Some(v) => v, None => return 0 };
+    if va < start || va >= end { return 0; }
+    let available = (end - va).min(PAGE_SIZE - (va & (PAGE_SIZE - 1)));
+    let actual = (requested as u64).min(available);
+    if actual == 0 { return 0; }
+    let physical = unsafe { crate::ntoskrnl::mm::runtime::mm_get_physical_address(current_va) };
+    if physical == 0 || physical >= 0x1_0000_0000 { return 0; }
+    unsafe { length.write(actual as u32); }
+    physical as i64
+}
+
+/// Windows DMA_OPERATIONS.FlushAdapterBuffers. x86-64 is cache coherent for
+/// ordinary PCI bus mastering; this supplies ordering and validates the MDL range.
+pub unsafe extern "win64" fn flush_adapter_buffers(
+    adapter: *mut core::ffi::c_void,
+    mdl: *mut MdlAbi,
+    _map_register_base: *mut core::ffi::c_void,
+    current_va: *mut core::ffi::c_void,
+    length: u32,
+    _write_to_device: u8,
+) -> u8 {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+        || mdl.is_null() || current_va.is_null() || length == 0 {
+        return 0;
+    }
+    let m = unsafe { &*mdl };
+    let start = m.start_va as u64;
+    let va = current_va as u64;
+    let Some(end) = start.checked_add(m.byte_count as u64) else { return 0; };
+    if m.byte_count == 0 || va < start || va.checked_add(length as u64).is_none_or(|e| e > end) {
+        return 0;
+    }
+    fence(Ordering::SeqCst);
+    unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
+    1
+}
+
 /// The legacy x64 DMA adapter currently provides real common-buffer allocation
 /// only. Mapping, channel ownership and SG callbacks stay null until MDL and
 /// device-object lifetimes are implemented; advertising fake callbacks is unsafe.
@@ -196,10 +271,10 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     allocate_common_buffer: crate::hal::exports::hal_allocate_common_buffer as usize,
     free_common_buffer: crate::hal::exports::hal_free_common_buffer as usize,
     allocate_adapter_channel: 0,
-    flush_adapter_buffers: 0,
+    flush_adapter_buffers: crate::dma::flush_adapter_buffers as usize,
     free_adapter_channel: 0,
     free_map_registers: 0,
-    map_transfer: 0,
+    map_transfer: crate::dma::map_transfer as usize,
     get_dma_alignment: crate::dma::get_dma_alignment as usize,
     read_dma_counter: 0,
     get_scatter_gather_list: 0,
@@ -257,7 +332,7 @@ mod tests {
         assert_eq!(core::mem::offset_of!(DmaOperations, put_dma_adapter), 8);
         assert_eq!(DmaOperations::POINTER_COUNT, 41);
         assert_eq!(DmaOperations::ABI_SIZE, 336);
-        assert_eq!(core::mem::size_of::<DmaAdapterAbi>(), 16);
+        assert_eq!(core::mem::size_of::<DmaAdapterAbi>(), 16);\n        assert_eq!(core::mem::size_of::<MdlAbi>(), 48);\n        assert_eq!(core::mem::offset_of!(MdlAbi, byte_count), 40);
     }
     #[test]
     fn scatter_gather_splits_at_boundaries_and_limits() {
