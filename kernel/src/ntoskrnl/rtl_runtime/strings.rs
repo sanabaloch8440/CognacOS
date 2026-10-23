@@ -63,3 +63,61 @@ use super::{AnsiString, UnicodeString};
     let mut n=0usize;while n<(u16::MAX as usize/2)&&unsafe{*src.add(n)}!=0{n+=1;}let bytes=n.saturating_mul(2);let Some(end)=d.length.checked_add(bytes as u16) else{return STATUS_BUFFER_TOO_SMALL;};if end>=d.maximum_length{return STATUS_BUFFER_TOO_SMALL;}
     unsafe{core::ptr::copy(src,d.buffer.add((d.length/2) as usize),n);*d.buffer.add((end/2) as usize)=0;}d.length=end;STATUS_SUCCESS
 }
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_init_ansi_string_ex(dst: *mut AnsiString, src: *const u8) -> i32 {
+    if dst.is_null() { return 0xC000_000Du32 as i32; }
+    unsafe { rtl_init_ansi_string(dst, src); }
+    if src.is_null() { return 0; }
+    let d = unsafe { &*dst };
+    if d.length == u16::MAX || d.maximum_length == u16::MAX { return 0xC000_000Du32 as i32; }
+    0
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_init_unicode_string_ex(dst: *mut UnicodeString, src: *const u16) -> i32 {
+    if dst.is_null() { return 0xC000_000Du32 as i32; }
+    unsafe { rtl_init_unicode_string(dst, src); }
+    if src.is_null() { return 0; }
+    let d = unsafe { &*dst };
+    if d.length > u16::MAX - 2 { return 0xC000_000Du32 as i32; }
+    0
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_prefix_string(prefix: *const AnsiString, string: *const AnsiString, case_insensitive: u8) -> u8 {
+    if prefix.is_null() || string.is_null() { return 0; }
+    let p = unsafe { &*prefix }; let s = unsafe { &*string };
+    if p.length > s.length { return 0; }
+    if p.length == 0 { return 1; }
+    if p.buffer.is_null() || s.buffer.is_null() { return 0; }
+    for i in 0..p.length as usize {
+        let mut a = unsafe { *p.buffer.add(i) }; let mut b = unsafe { *s.buffer.add(i) };
+        if case_insensitive != 0 { a = a.to_ascii_lowercase(); b = b.to_ascii_lowercase(); }
+        if a != b { return 0; }
+    }
+    1
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_suffix_unicode_string(suffix: *const UnicodeString, string: *const UnicodeString, case_insensitive: u8) -> u8 {
+    if suffix.is_null() || string.is_null() { return 0; }
+    let p = unsafe { &*suffix }; let s = unsafe { &*string };
+    if p.length > s.length || p.length % 2 != 0 || s.length % 2 != 0 { return 0; }
+    if p.length == 0 { return 1; }
+    if p.buffer.is_null() || s.buffer.is_null() { return 0; }
+    let offset = ((s.length - p.length) / 2) as usize;
+    for i in 0..(p.length / 2) as usize {
+        let mut a = unsafe { *p.buffer.add(i) }; let mut b = unsafe { *s.buffer.add(offset + i) };
+        if case_insensitive != 0 { a = unsafe { rtl_downcase_unicode_char(a) }; b = unsafe { rtl_downcase_unicode_char(b) }; }
+        if a != b { return 0; }
+    }
+    1
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_compare_unicode_strings(a: *const u16, a_len: usize, b: *const u16, b_len: usize, case_insensitive: u8) -> i32 {
+    if (a_len != 0 && a.is_null()) || (b_len != 0 && b.is_null()) { return 0; }
+    let n = a_len.min(b_len);
+    for i in 0..n {
+        let mut x = unsafe { *a.add(i) }; let mut y = unsafe { *b.add(i) };
+        if case_insensitive != 0 { x = unsafe { rtl_downcase_unicode_char(x) }; y = unsafe { rtl_downcase_unicode_char(y) }; }
+        if x != y { return x as i32 - y as i32; }
+    }
+    a_len.cmp(&b_len) as i32
+}

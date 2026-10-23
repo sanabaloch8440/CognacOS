@@ -99,6 +99,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "RtlRandom" => rtl_runtime::rtl_random as usize,
   "RtlRandomEx" => rtl_runtime::rtl_random_ex as usize,
   "RtlCharToInteger" => rtl_runtime::rtl_char_to_integer as usize,
+  "RtlInitAnsiStringEx" => rtl_runtime::rtl_init_ansi_string_ex as usize,
+  "RtlInitUnicodeStringEx" => rtl_runtime::rtl_init_unicode_string_ex as usize,
+  "RtlPrefixString" => rtl_runtime::rtl_prefix_string as usize,
+  "RtlSuffixUnicodeString" => rtl_runtime::rtl_suffix_unicode_string as usize,
+  "RtlCompareUnicodeStrings" => rtl_runtime::rtl_compare_unicode_strings as usize,
   // All other names deliberately fail closed until their own signatures and semantics are implemented.
   _ => return None,
  };
