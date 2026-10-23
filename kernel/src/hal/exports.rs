@@ -18,7 +18,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 3, name: "HalAdjustResourceList", state: StubState::NotImplemented },
     HalExport { ordinal: 4, name: "HalAllProcessorsStarted", state: StubState::NotImplemented },
     HalExport { ordinal: 5, name: "HalAllocateAdapterChannel", state: StubState::NotImplemented },
-    HalExport { ordinal: 6, name: "HalAllocateCommonBuffer", state: StubState::NotImplemented },
+    HalExport { ordinal: 6, name: "HalAllocateCommonBuffer", state: StubState::Implemented },
     HalExport { ordinal: 7, name: "HalAllocateCrashDumpRegisters", state: StubState::NotImplemented },
     HalExport { ordinal: 8, name: "HalAllocateHardwareCounters", state: StubState::NotImplemented },
     HalExport { ordinal: 9, name: "HalAssignSlotResources", state: StubState::NotImplemented },
@@ -34,7 +34,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 19, name: "HalEnumerateEnvironmentVariablesEx", state: StubState::NotImplemented },
     HalExport { ordinal: 20, name: "HalEnumerateProcessors", state: StubState::NotImplemented },
     HalExport { ordinal: 21, name: "HalFlushCommonBuffer", state: StubState::NotImplemented },
-    HalExport { ordinal: 22, name: "HalFreeCommonBuffer", state: StubState::NotImplemented },
+    HalExport { ordinal: 22, name: "HalFreeCommonBuffer", state: StubState::Implemented },
     HalExport { ordinal: 23, name: "HalFreeHardwareCounters", state: StubState::NotImplemented },
     HalExport { ordinal: 24, name: "HalGetAdapter", state: StubState::NotImplemented },
     HalExport { ordinal: 25, name: "HalGetBusData", state: StubState::Implemented },
@@ -242,6 +242,39 @@ pub unsafe extern "win64" fn hal_query_maximum_processor_count() -> u32 {
     super::MAX_CPUS as u32
 }
 
+/// Legacy HAL common-buffer entry point. The early x64 DMA path is limited to
+/// physically contiguous, identity-mapped memory below 4 GiB without an IOMMU.
+pub unsafe extern "win64" fn hal_allocate_common_buffer(
+    _adapter: *mut core::ffi::c_void,
+    length: u32,
+    logical_address: *mut i64,
+    _cache_enabled: u8,
+) -> *mut core::ffi::c_void {
+    if logical_address.is_null() || length == 0 { return core::ptr::null_mut(); }
+    match unsafe { crate::dma::allocate_common_buffer(length as usize, 0xffff_ffff) } {
+        Ok((virtual_address, physical_address)) => {
+            unsafe { logical_address.write(physical_address as i64); }
+            virtual_address.cast()
+        }
+        Err(_) => core::ptr::null_mut(),
+    }
+}
+
+/// Release a buffer allocated by hal_allocate_common_buffer. Adapter and cache
+/// policy are ignored on the current x86 coherent-memory, no-IOMMU path.
+pub unsafe extern "win64" fn hal_free_common_buffer(
+    _adapter: *mut core::ffi::c_void,
+    length: u32,
+    logical_address: i64,
+    virtual_address: *mut core::ffi::c_void,
+    _cache_enabled: u8,
+) {
+    if logical_address < 0 { return; }
+    let _ = unsafe {
+        crate::dma::free_common_buffer(virtual_address.cast(), logical_address as u64, length as usize)
+    };
+}
+
 /// The Windows x64 HAL forwards Ke routines to ntoskrnl. Keep the forwarding
 /// decision here so both hal.dll name/ordinal imports and ntoskrnl imports land
 /// on the same ABI-correct implementation.
@@ -257,6 +290,10 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
         crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64)
     } else if name.eq_ignore_ascii_case(b"KeStallExecutionProcessor") {
         crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalAllocateCommonBuffer") {
+        Some(hal_allocate_common_buffer as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalFreeCommonBuffer") {
+        Some(hal_free_common_buffer as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalGetBusData") {
         Some(hal_get_bus_data as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalGetBusDataByOffset") {
@@ -278,6 +315,8 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
         84 => Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64),
         85 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64),
         86 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64),
+        6 => Some(hal_allocate_common_buffer as usize as u64),
+        22 => Some(hal_free_common_buffer as usize as u64),
         25 => Some(hal_get_bus_data as usize as u64),
         26 => Some(hal_get_bus_data_by_offset as usize as u64),
         61 => Some(hal_set_bus_data as usize as u64),
@@ -311,6 +350,10 @@ pub fn self_test() -> bool {
         && pci_config_address(255, 255, 255) == Some(0x80ff_fffc)
         && pci_config_address(256, 0, 0).is_none()
         && pci_config_address(0, 256, 0).is_none()
+        && resolve(b"HalAllocateCommonBuffer").is_some()
+        && resolve(b"HalFreeCommonBuffer").is_some()
+        && resolve_ordinal(6).is_some()
+        && resolve_ordinal(22).is_some()
         && resolve(b"HalGetBusData").is_some()
         && resolve(b"HalGetBusDataByOffset").is_some()
         && resolve(b"HalSetBusData").is_some()
