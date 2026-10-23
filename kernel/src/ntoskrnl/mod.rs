@@ -327,6 +327,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
  Some(address as u64)
 }
 
+/// Configure the fixed Windows-style time-zone bias used by RTL conversions.
+pub fn set_time_zone_bias_minutes(bias_minutes: i32) -> bool {
+ rtl_runtime::set_time_zone_bias_minutes(bias_minutes)
+}
+
 pub fn named_export_count() -> usize { exports().count() }
 pub fn ordinal_only_export_count() -> usize { manifest_26100::ORDINAL_ONLY.len() }
 pub fn self_test() -> bool {
