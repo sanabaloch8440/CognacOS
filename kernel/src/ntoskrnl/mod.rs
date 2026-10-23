@@ -55,6 +55,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "KeRaiseIrqlToDpcLevel" => ke::runtime::ke_raise_irql_to_dpc_level as usize,
   "KeLowerIrql" => ke::runtime::ke_lower_irql as usize,
   "KeAcquireSpinLock" => ke::runtime::ke_acquire_spin_lock as usize,
+  "KeAcquireSpinLockRaiseToDpc" => ke::runtime::ke_acquire_spin_lock_raise_to_dpc as usize,
   "KeReleaseSpinLock" => ke::runtime::ke_release_spin_lock as usize,
   "KeAcquireSpinLockAtDpcLevel" => ke::runtime::ke_acquire_spin_lock_at_dpc_level as usize,
   "KeReleaseSpinLockFromDpcLevel" => ke::runtime::ke_release_spin_lock_from_dpc_level as usize,
