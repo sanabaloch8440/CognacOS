@@ -12,9 +12,19 @@ mod syscall;
 mod winabi;
 mod pe_runtime;
 mod usermode;
+mod acpi;
+mod apic;
+mod scheduler;
+mod object;
+mod io;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
+
+fn io_smoke_dispatch(irp: &mut io::Irp) -> io::IoStatus {
+    irp.information = irp.length;
+    io::IoStatus::Success
+}
 
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
 
@@ -103,6 +113,72 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Physical allocator initialized; conventional regions: ");
         serial_write_decimal(region_count);
         serial_write(b"\r\n");
+
+        // Validate the bounded ACPI parser against a minimal synthetic MADT.
+        let mut madt = [0u8; 44];
+        madt[0..4].copy_from_slice(b"APIC");
+        madt[4..8].copy_from_slice(&(44u32).to_le_bytes());
+        madt[36..40].copy_from_slice(&(0xfee0_0000u32).to_le_bytes());
+        madt[40..44].copy_from_slice(&(1u32).to_le_bytes());
+        let sum = madt.iter().fold(0u8, |acc, byte| acc.wrapping_add(*byte));
+        madt[9] = 0u8.wrapping_sub(sum);
+        if !matches!(acpi::parse_madt(&madt), Ok(info) if info.local_apic_address == 0xfee0_0000 && info.flags == 1) {
+            serial_write(b"FATAL: ACPI MADT parser self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"ACPI MADT parser self-test passed; APIC discovery primitives available.\r\n");
+
+        // Exercise scheduler metadata/priority/affinity without switching stacks.
+        scheduler::initialize();
+        let low = match scheduler::create_task(1, 1, 0x7000, 0x1000) {
+            Ok(id) => id, Err(_) => { serial_write(b"FATAL: scheduler task creation failed.\r\n"); halt(); }
+        };
+        if scheduler::create_task(6, 1, 0x9000, 0x2000).is_err()
+            || !matches!(scheduler::choose_next(0), Ok(Some(task)) if task.priority == 6)
+            || scheduler::yield_current(0).is_err()
+            || scheduler::set_affinity(low, 0).is_ok()
+        {
+            serial_write(b"FATAL: scheduler priority/affinity self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Scheduler priority, affinity, and cooperative-yield metadata self-test passed.\r\n");
+
+        // Exercise typed handles and explicit access checks.
+        let event = match object::create(object::ObjectType::Event, object::ACCESS_READ) {
+            Ok(h) => h, Err(_) => { serial_write(b"FATAL: object handle creation failed.\r\n"); halt(); }
+        };
+        if !matches!(object::lookup(event.handle, object::ACCESS_READ), Ok(h) if h.object_id == event.object_id)
+            || !matches!(object::lookup(event.handle, object::ACCESS_WRITE), Err(object::ObjectError::AccessDenied))
+            || object::name_object(b"\\BaseNamedObjects\\SmokeEvent", event.object_id, object::ObjectType::Event).is_err()
+            || !matches!(object::open_named(b"\\BaseNamedObjects\\SmokeEvent", object::ACCESS_READ), Ok(h) if h.object_id == event.object_id)
+            || object::close(event.handle).is_err()
+        {
+            serial_write(b"FATAL: object manager handle/access self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Object handles, named lookup, and access checks self-test passed.\r\n");
+
+        // Exercise an IRP through a registered synthetic device dispatch routine.
+        let mut dispatch = [None; 16];
+        dispatch[io::IRP_MJ_READ as usize] = Some(io_smoke_dispatch);
+        let device = match io::register_device(b"\\Device\\Smoke", dispatch) {
+            Ok(id) => id, Err(_) => { serial_write(b"FATAL: I/O device registration failed.\r\n"); halt(); }
+        };
+        let irp = match io::submit(device, io::IRP_MJ_READ, 0, 128) {
+            Ok(id) => id, Err(_) => { serial_write(b"FATAL: IRP allocation failed.\r\n"); halt(); }
+        };
+        if !matches!(io::dispatch_one(irp), Ok(io::IoStatus::Success))
+            || !matches!(io::query_irp(irp), Some(r) if r.completed && r.information == 128)
+            || io::release_irp(irp).is_err()
+        {
+            serial_write(b"FATAL: I/O manager IRP dispatch self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"I/O manager device dispatch and IRP completion self-test passed.\r\n");
+
+        // APIC registers are intentionally not enabled here: no firmware MADT
+        // handoff, AP startup trampoline, timer calibration, or complete IRQ
+        // routing is installed yet. Keep IF clear until those prerequisites exist.
 
         // Activate processor-enforced baseline mitigations only after the
         // kernel-owned page tables are live. NXE prepares the CPU to honor NX
