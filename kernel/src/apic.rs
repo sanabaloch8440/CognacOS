@@ -117,7 +117,7 @@ pub unsafe fn send_init_deassert_ipi(base: u64, destination_apic_id: u8) -> Resu
     unsafe { wait_icr_idle(base)?; }
     unsafe { write_local(base, APIC_ICR_HIGH, (destination_apic_id as u32) << 24); }
     // INIT delivery mode, level-triggered, deasserted (level bit 15 clear).
-    unsafe { write_local(base, APIC_ICR_LOW, APIC_ICR_INIT | (1 << 14)); }
+    unsafe { write_local(base, APIC_ICR_LOW, APIC_ICR_INIT | (1 << 15)); }
     unsafe { wait_icr_idle(base) }
 }
 
