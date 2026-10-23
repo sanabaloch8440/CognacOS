@@ -1,4 +1,4 @@
-//! Page-backed NT nonpaged pool backend.
+//! Virtual-memory-backed NT pool backend.
 //!
 //! Small blocks share zeroed physical pages through power-of-two slabs; large
 //! allocations use contiguous page extents. A locked ownership table validates
@@ -112,7 +112,7 @@ pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
         let mut slab_index = slabs.iter().position(|s| s.live && s.block_size == class_size && s.find_free_slot().is_some());
         if slab_index.is_none() {
             let Some(empty_index) = slabs.iter().position(|s| !s.live) else { return core::ptr::null_mut(); };
-            let page = match unsafe { crate::memory::allocate_contiguous_pages(1) } {
+            let page = match unsafe { crate::kernel_vm::allocate_pages(1).map(|p| p as u64) } {
                 Ok(base) => base,
                 Err(_) => return core::ptr::null_mut(),
             };
@@ -139,7 +139,7 @@ pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
         return core::ptr::null_mut();
     };
     if pages == 0 || pages > MAX_PAGES_PER_ALLOCATION { return core::ptr::null_mut(); }
-    let base = match unsafe { crate::memory::allocate_contiguous_pages(pages) } {
+    let base = match unsafe { crate::kernel_vm::allocate_pages(pages).map(|p| p as u64) } {
         Ok(base) => base,
         Err(_) => return core::ptr::null_mut(),
     };
@@ -178,14 +178,14 @@ pub(super) fn deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool
         if slab.is_empty_except(slot) {
             // Do not discard the ownership record unless the backing page is
             // actually returned; a full physical free list can be retried later.
-            if unsafe { crate::memory::free_contiguous_pages(allocation.backing_base, 1) }.is_err() {
+            if unsafe { crate::kernel_vm::free_pages(allocation.backing_base as *mut u8, 1) }.is_err() {
                 return false;
             }
             slabs[slab_index] = Slab::EMPTY;
         } else {
             slabs[slab_index].mark_free(slot);
         }
-    } else if unsafe { crate::memory::free_contiguous_pages(allocation.backing_base, allocation.pages) }.is_err() {
+    } else if unsafe { crate::kernel_vm::free_pages(allocation.backing_base as *mut u8, allocation.pages) }.is_err() {
         // Keep the record live if the physical allocator cannot accept the run.
         return false;
     }
