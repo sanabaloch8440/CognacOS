@@ -15,6 +15,7 @@ mod winabi;
 mod pe_runtime;
 mod usermode;
 mod acpi;
+mod pci;
 mod apic;
 mod hal;
 mod smp;
