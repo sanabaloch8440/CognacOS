@@ -20,7 +20,7 @@ mod strings_abi;
 mod network_extra;
 mod run_once;
 mod misc_api;
-mod bitmap_abi;
+pub mod bitmap_abi;
 mod sid_abi;
 mod abi_extra;
 mod sd_convert;
