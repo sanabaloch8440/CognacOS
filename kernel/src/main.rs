@@ -576,7 +576,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"Local APIC timer ready; enabling masked-route single-core interrupt mode.\r\n");
             loop {
                 unsafe { asm!("sti; hlt", options(nomem, nostack)); }
-                let _ = thread::yield_current();
+                if thread::has_ready_threads() { let _ = thread::yield_current(); }
             }
         } else {
             serial_write(b"Interrupts remain disabled because APIC/timer setup was not fully validated.\r\n");
