@@ -27,7 +27,7 @@ pub const EXPORTS: &[HalExport] = &[
     HalExport { ordinal: 12, name: "HalClearSoftwareInterrupt", state: StubState::NotImplemented },
     HalExport { ordinal: 13, name: "HalConvertDeviceIdtToIrql", state: StubState::NotImplemented },
     HalExport { ordinal: 14, name: "HalDisableInterrupt", state: StubState::NotImplemented },
-    HalExport { ordinal: 15, name: "HalDisplayString", state: StubState::NotImplemented },
+    HalExport { ordinal: 15, name: "HalDisplayString", state: StubState::Implemented },
     HalExport { ordinal: 16, name: "HalDmaAllocateCrashDumpRegistersEx", state: StubState::NotImplemented },
     HalExport { ordinal: 17, name: "HalDmaFreeCrashDumpRegistersEx", state: StubState::NotImplemented },
     HalExport { ordinal: 18, name: "HalEnableInterrupt", state: StubState::NotImplemented },
@@ -242,6 +242,27 @@ pub unsafe extern "win64" fn hal_query_maximum_processor_count() -> u32 {
     super::MAX_CPUS as u32
 }
 
+/// Early boot/debug display path. This compatibility implementation writes
+/// a bounded NUL-terminated string to the kernel's initialized COM1 console.
+pub unsafe extern "win64" fn hal_display_string(string: *const u8) {
+    if string.is_null() { return; }
+    let mut chunk = [0u8; 128];
+    let mut used = 0usize;
+    for index in 0..4096usize {
+        let byte = unsafe { string.add(index).read() };
+        if byte == 0 { break; }
+        chunk[used] = byte;
+        used += 1;
+        if used == chunk.len() {
+            unsafe { crate::serial_write(&chunk); }
+            used = 0;
+        }
+    }
+    if used != 0 {
+        unsafe { crate::serial_write(&chunk[..used]); }
+    }
+}
+
 /// Reports whether every CPU reserved by MADT discovery has completed AP
 /// startup. Failed/offline discovered processors keep this false; this avoids
 /// telling the NT kernel that SMP initialization completed when it did not.
@@ -329,7 +350,9 @@ pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vec
 }
 
 pub fn resolve(name: &[u8]) -> Option<u64> {
-    if name.eq_ignore_ascii_case(b"HalQueryMaximumProcessorCount") {
+    if name.eq_ignore_ascii_case(b"HalDisplayString") {
+        Some(hal_display_string as usize as u64)
+    } else if name.eq_ignore_ascii_case(b"HalQueryMaximumProcessorCount") {
         Some(hal_query_maximum_processor_count as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalAllProcessorsStarted") {
         Some(hal_all_processors_started as usize as u64)
@@ -367,6 +390,7 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
 pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
     match ordinal {
         4 => Some(hal_all_processors_started as usize as u64),
+        15 => Some(hal_display_string as usize as u64),
         47 => Some(hal_query_maximum_processor_count as usize as u64),
         84 => Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64),
         85 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64),
@@ -402,6 +426,8 @@ pub fn self_test() -> bool {
         && find_by_name(b"halrequestipi").map(|e| e.ordinal) == Some(55)
         && find_by_ordinal(91).map(|entry| entry.name) == Some("x86BiosWriteMemory")
         && find_by_name(b"not-a-hal-export").is_none()
+        && resolve(b"HalDisplayString").is_some()
+        && resolve_ordinal(15).is_some()
         && resolve(b"HalQueryMaximumProcessorCount").is_some()
         && resolve(b"HalAllProcessorsStarted").is_some()
         && resolve_ordinal(4).is_some()
