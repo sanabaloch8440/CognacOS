@@ -185,6 +185,70 @@ pub fn build_scatter_gather(
     Ok(count)
 }
 
+
+
+/// The legacy x64 DMA adapter currently provides real common-buffer allocation
+/// only. Mapping, channel ownership and SG callbacks stay null until MDL and
+/// device-object lifetimes are implemented; advertising fake callbacks is unsafe.
+pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
+    size: DmaOperations::ABI_SIZE as u32,
+    put_dma_adapter: crate::dma::put_dma_adapter as usize,
+    allocate_common_buffer: crate::hal::exports::hal_allocate_common_buffer as usize,
+    free_common_buffer: crate::hal::exports::hal_free_common_buffer as usize,
+    allocate_adapter_channel: 0,
+    flush_adapter_buffers: 0,
+    free_adapter_channel: 0,
+    free_map_registers: 0,
+    map_transfer: 0,
+    get_dma_alignment: crate::dma::get_dma_alignment as usize,
+    read_dma_counter: crate::dma::read_dma_counter as usize,
+    get_scatter_gather_list: 0,
+    put_scatter_gather_list: 0,
+    calculate_scatter_gather_list_size: 0,
+    build_scatter_gather_list: 0,
+    build_mdl_from_scatter_gather_list: 0,
+    get_dma_adapter_info: 0,
+    get_dma_transfer_info: 0,
+    initialize_dma_transfer_context: 0,
+    allocate_common_buffer_ex: 0,
+    allocate_adapter_channel_ex: 0,
+    configure_adapter_channel: 0,
+    cancel_adapter_channel: 0,
+    map_transfer_ex: 0,
+    get_scatter_gather_list_ex: 0,
+    build_scatter_gather_list_ex: 0,
+    flush_adapter_buffers_ex: 0,
+    free_adapter_object: 0,
+    cancel_mapped_transfer: 0,
+    allocate_domain_common_buffer: 0,
+    flush_dma_buffer: 0,
+    join_dma_domain: 0,
+    leave_dma_domain: 0,
+    get_dma_domain: 0,
+    allocate_common_buffer_with_bounds: 0,
+    allocate_common_buffer_vector: 0,
+    get_common_buffer_from_vector_by_index: 0,
+    free_common_buffer_from_vector: 0,
+    free_common_buffer_vector: 0,
+    create_common_buffer_from_mdl: 0,
+    register_fault_callback: 0,
+    unregister_fault_callback: 0,
+};
+
+/// Shared stateless adapter object; DMA_ADAPTER is a leading Version/Size/
+—Operations structure on x64.
+pub static DMA_ADAPTER: DmaAdapterAbi = DmaAdapterAbi {
+    version: 1,
+    size: core::mem::size_of::<DmaAdapterAbi>() as u16,
+    operations: &DMA_OPERATIONS as *const DmaOperations,
+};
+unsafe impl Sync for DmaAdapterAbi {}
+
+pub extern "win64" fn put_dma_adapter(_adapter: *mut core::ffi::c_void) {}
+pub extern "win64" fn get_dma_alignment(_adapter: *mut core::ffi::c_void) -> u32 { 1 }
+pub extern "win64" fn read_dma_counter(_adapter: *mut core::ffi::c_void) -> u32 { 0 }
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
