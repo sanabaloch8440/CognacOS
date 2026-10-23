@@ -160,16 +160,26 @@ pub unsafe extern "win64" fn hal_get_bus_data_by_offset(
     count
 }
 
-/// Write PCI configuration space using legacy mechanism #1. This is retained
-/// for legacy compatibility; modern drivers should use the bus interface.
+/// Conservative byte-level write policy for legacy PCI configuration access.
+/// The command register is needed by ordinary bus drivers to enable memory/I/O
+/// decoding and bus mastering. Its adjacent status register is write-one-to-clear,
+/// so bytes 0x06..0x07 must never be included in a read/modify/write. Extended
+/// capability bytes are a legacy best-effort path; drivers should prefer the PCI
+/// bus interface, which can apply device-specific policy.
+#[inline]
+fn pci_config_byte_writable(offset: u32) -> bool {
+    offset == 0x04 || offset == 0x05 || offset >= 0x40
+}
+
+/// Write PCI configuration space using legacy mechanism #1. Writes to the
+/// vendor/device ID, BARs, and status register are rejected. Returns the number
+/// of bytes actually written, which can be smaller than the requested length.
 pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
     bus_data_type: u32, bus_number: u32, slot_number: u32,
     buffer: *const u8, offset: u32, length: u32,
 ) -> u32 {
     if bus_data_type != PCI_CONFIGURATION_BUS_DATA_TYPE || buffer.is_null()
-        || length == 0 || offset >= 256 || slot_number > 255 || bus_number > 255
-        // Keep this legacy API from modifying standard PCI header registers.
-        || offset < 0x40 {
+        || length == 0 || offset >= 256 || slot_number > 255 || bus_number > 255 {
         return 0;
     }
     let count = length.min(256 - offset);
@@ -179,8 +189,10 @@ pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
         None => return 0,
     };
     if vendor == 0xffff { return 0; }
+    let mut written = 0u32;
     for index in 0..count {
         let at = offset + index;
+        if !pci_config_byte_writable(at) { continue; }
         let address = match pci_config_address(bus_number, slot_number, at) {
             Some(value) => value,
             None => break,
@@ -193,8 +205,9 @@ pub unsafe extern "win64" fn hal_set_bus_data_by_offset(
             let updated = (old & !(0xff << shift)) | (byte << shift);
             crate::hal::write_port_u32(PCI_CONFIG_DATA, updated);
         }
+        written += 1;
     }
-    count
+    written
 }
 
 pub unsafe extern "win64" fn hal_get_bus_data(
@@ -471,6 +484,12 @@ pub fn self_test() -> bool {
         && pci_config_address(255, 255, 255) == Some(0x80ff_fffc)
         && pci_config_address(256, 0, 0).is_none()
         && pci_config_address(0, 256, 0).is_none()
+        && pci_config_byte_writable(0x04)
+        && pci_config_byte_writable(0x05)
+        && !pci_config_byte_writable(0x00)
+        && !pci_config_byte_writable(0x06)
+        && !pci_config_byte_writable(0x10)
+        && pci_config_byte_writable(0x40)
         && resolve(b"HalFlushCommonBuffer").is_some()
         && resolve_ordinal(21).is_some()
         && resolve(b"HalAllocateCommonBuffer").is_some()
