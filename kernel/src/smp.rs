@@ -18,6 +18,9 @@ static ONLINE_APS: AtomicUsize = AtomicUsize::new(0);
 static LAST_START_ERROR: AtomicUsize = AtomicUsize::new(0);
 static AP_ENTRY_REACHED: AtomicUsize = AtomicUsize::new(0);
 static LAST_TARGET_APIC_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
+static INTERRUPTS_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static IPI_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static CPU_INTERRUPT_READY: [core::sync::atomic::AtomicBool; hal::MAX_CPUS] = [const { core::sync::atomic::AtomicBool::new(false) }; hal::MAX_CPUS];
 
 global_asm!(r#"
     .section .rodata.ap_trampoline,"a",@progbits
@@ -575,13 +578,70 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
         loop { core::hint::spin_loop(); }
     }
     ONLINE_APS.fetch_add(1, Ordering::AcqRel);
-    // Deliberately do not STI: no external interrupt/EOI and per-CPU timer path
-    // is ready yet. Poll shared-kernel TLB generations while parked so pool/VM
-    // unmaps can synchronously invalidate this CPU before backing frames recycle.
-    loop { crate::kernel_vm::smp_tlb_poll(index); core::hint::spin_loop(); }
+    // Until the BSP masks all legacy and I/O APIC routes, keep IF clear. Once
+    // enabled, retain polling as a fail-safe if an IPI send cannot be delivered.
+    loop {
+        if INTERRUPTS_ENABLED.load(Ordering::Acquire) {
+            unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+            CPU_INTERRUPT_READY[index].store(true, Ordering::Release);
+            loop { crate::kernel_vm::smp_tlb_poll(index); core::hint::spin_loop(); }
+        }
+        crate::kernel_vm::smp_tlb_poll(index);
+        core::hint::spin_loop();
+    }
 }
 
 pub fn online_ap_count() -> usize { ONLINE_APS.load(Ordering::Acquire) }
+
+/// Mask legacy PIC and every firmware-described I/O APIC route before IF is
+/// enabled. I/O APIC MMIO is explicitly configured uncached first.
+pub unsafe fn mask_interrupt_sources(pml4_physical: u64, madt: &crate::acpi::MadtInfo) -> bool {
+    unsafe { hal::write_port_u8(0x21, 0xff); hal::write_port_u8(0xa1, 0xff); }
+    for io in madt.io_apics.iter().take(madt.io_apic_count) {
+        let base = io.address as u64;
+        if base == 0 || base >= 0x1_0000_0000 || base & 0xfff != 0 { return false; }
+        if unsafe { memory::configure_identity_page(pml4_physical, base, true, false, true, true) }.is_err() { return false; }
+        if unsafe { apic::mask_all_ioapic(base) }.is_err() { return false; }
+    }
+    true
+}
+
+/// Enable only the dedicated TLB IPI path after all external interrupt sources
+/// are masked. APs acknowledge that STI has executed before the BSP enables IF.
+pub fn enable_ipi_interrupts() -> bool {
+    INTERRUPTS_ENABLED.store(true, Ordering::Release);
+    for cpu in 1..hal::MAX_CPUS {
+        if hal::cpu_state(cpu).ok() != Some(hal::CPU_ONLINE) { continue; }
+        let mut spins = 0usize;
+        while !CPU_INTERRUPT_READY[cpu].load(Ordering::Acquire) && spins < 10_000_000 {
+            spins += 1; core::hint::spin_loop();
+        }
+        if !CPU_INTERRUPT_READY[cpu].load(Ordering::Acquire) { return false; }
+    }
+    IPI_ACTIVE.store(true, Ordering::Release);
+    unsafe { core::arch::asm!("sti", options(nomem, nostack)); }
+    true
+}
+
+pub fn ipi_shootdowns_enabled() -> bool { IPI_ACTIVE.load(Ordering::Acquire) }
+
+/// Send a fixed-vector IPI to a logical CPU. The target's IDT gate and LAPIC
+/// are already initialized by the AP startup protocol.
+pub fn send_tlb_shootdown(logical_id: usize) -> Result<(), apic::ApicError> {
+    if !ipi_shootdowns_enabled() { return Err(apic::ApicError::Unsupported); }
+    let cpu = hal::cpu_local(logical_id).map_err(|_| apic::ApicError::InvalidBase)?;
+    let apic_id = cpu.apic_id.load(Ordering::Acquire);
+    if apic_id > u8::MAX as u32 { return Err(apic::ApicError::InvalidBase); }
+    let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
+    unsafe { apic::send_fixed_ipi(base, apic_id as u8, apic::TLB_SHOOTDOWN_VECTOR) }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rdotos_tlb_ipi_handler() {
+    crate::kernel_vm::handle_tlb_ipi();
+    let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
+    if base != 0 { unsafe { apic::local_apic_eoi(base); } }
+}
 
 pub fn self_test() -> bool {
     let target = ApStartupTarget { logical_id: 1, apic_id: 2, trampoline_physical: 0x8000, stack_top: 0x204000, pml4_physical: 0x1000 };
