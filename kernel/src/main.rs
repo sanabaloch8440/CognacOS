@@ -19,6 +19,7 @@ mod apic;
 mod hal;
 mod smp;
 mod scheduler;
+mod dispatcher;
 mod object;
 mod io;
 mod extfs;
