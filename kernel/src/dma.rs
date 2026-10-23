@@ -201,7 +201,7 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     free_map_registers: 0,
     map_transfer: 0,
     get_dma_alignment: crate::dma::get_dma_alignment as usize,
-    read_dma_counter: crate::dma::read_dma_counter as usize,
+    read_dma_counter: 0,
     get_scatter_gather_list: 0,
     put_scatter_gather_list: 0,
     calculate_scatter_gather_list_size: 0,
