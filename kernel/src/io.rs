@@ -63,6 +63,17 @@ pub fn dispatch_one(irp_id:u64)->Result<IoStatus,IoError>{
  let index=s.irps.iter().position(|i|i.id==irp_id&&i.status!=IoStatus::Free).ok_or(IoError::UnknownIrp)?;
  s.irps[index]=irp;Ok(status)
 }
+/// Complete an asynchronously dispatched IRP. Only the callback-owned
+/// in-flight request may be completed; terminal states cannot be overwritten.
+pub fn complete_irp(id:u64,status:IoStatus,information:usize)->Result<(),IoError>{
+ if status==IoStatus::Free||status==IoStatus::Pending{return Err(IoError::AlreadyCompleted);}
+ let mut s=STATE.lock();
+ let irp=s.irps.iter_mut().find(|i|i.id==id&&i.status!=IoStatus::Free).ok_or(IoError::UnknownIrp)?;
+ if irp.completed{return Err(IoError::AlreadyCompleted);}
+ if !irp.in_flight{return Err(IoError::NotCancellable);}
+ if information>irp.length{return Err(IoError::BufferTooLarge);}
+ irp.information=information;irp.status=status;irp.completed=true;irp.in_flight=false;Ok(())
+}
 pub fn query_irp(id:u64)->Option<Irp>{
  let s=STATE.lock();s.irps.iter().find(|i|i.id==id&&i.status!=IoStatus::Free).copied()
 }
