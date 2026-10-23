@@ -349,7 +349,7 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     timeout: *const i64,
 ) -> i32 {
     if object.is_null() { return STATUS_INVALID_PARAMETER; }
-    if alertable != 0 { return STATUS_ALERTED; }
+    if alertable != 0 { return STATUS_NOT_IMPLEMENTED; } // APC delivery is not yet implemented.
     let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
     if unsafe { try_consume_dispatcher_object(object) } { return STATUS_SUCCESS; }
     let deadline = if timeout.is_null() { 0 } else {
@@ -403,10 +403,23 @@ pub unsafe extern "win64" fn ke_delay_execution_thread(
     interval: *const i64,
 ) -> i32 {
     if interval.is_null() { return STATUS_INVALID_PARAMETER; }
-    if alertable != 0 { return STATUS_ALERTED; }
+    if alertable != 0 { return STATUS_NOT_IMPLEMENTED; }
     let value = unsafe { interval.read_unaligned() };
     if value == 0 { return STATUS_SUCCESS; }
     if value > 0 { return STATUS_NOT_IMPLEMENTED; }
     let _ = wait_mode;
-    STATUS_NOT_IMPLEMENTED
+    let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
+    let deadline = match crate::apic::relative_timeout_deadline(value) {
+        Some(value) => value,
+        None => return STATUS_NOT_IMPLEMENTED,
+    };
+    let token = match crate::dispatcher::enqueue(crate::dispatcher::delay_object(thread_id), thread_id, deadline) {
+        Ok(value) => value,
+        Err(_) => return STATUS_NOT_IMPLEMENTED,
+    };
+    if crate::thread::block_current().is_err() {
+        let _ = crate::dispatcher::cancel(token);
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS)
 }
