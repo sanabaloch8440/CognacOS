@@ -85,7 +85,7 @@ jobs:
           rm -f build/serial.log
           set +e
           timeout 30s qemu-system-x86_64 \
-            -machine pc -m 512M -cpu qemu64 \
+            -machine pc -m 512M -cpu qemu64 -smp 4 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=ide,format=raw,file=build/rdotos-uefi.img \
@@ -110,6 +110,7 @@ jobs:
           grep -F 'Physical allocator initialized' build/serial.log
           grep -F 'HAL CPU-local registry, MMIO bounds, and x86-64 primitives initialized.' build/serial.log
           grep -F 'SMP startup target validation passed; hardware AP startup remains gated on trampoline installation.' build/serial.log
+          grep -E 'SMP AP startup complete; online application processors: [1-9][0-9]*' build/serial.log
           grep -F 'Firmware ACPI MADT validated; enabled APs discovered:' build/serial.log
           grep -F 'I/O manager cancellation, in-flight ownership, and asynchronous completion tests passed.' build/serial.log
           grep -F 'Security: CR0.WP enabled' build/serial.log
