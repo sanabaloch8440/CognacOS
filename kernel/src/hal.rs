@@ -189,3 +189,14 @@ pub fn validate_mmio_range(base: u64, length: u64, physical_limit: u64) -> Resul
     }
     Ok(())
 }
+
+
+/// Pure validation checks safe to run before interrupt controllers are enabled.
+pub fn self_test() -> bool {
+    validate_mmio_range(0xfee0_0000, 0x1000, 0x1_0000_0000).is_ok()
+        && validate_mmio_range(0xfee0_0001, 0x1000, 0x1_0000_0000) == Err(HalError::InvalidMmioRange)
+        && validate_mmio_range(u64::MAX - 0xfff, 0x2000, u64::MAX) == Err(HalError::InvalidMmioRange)
+        && CPU_LOCALS[0].logical_id.load(Ordering::Relaxed) == 0
+        && CPU_LOCALS[MAX_CPUS - 1].logical_id.load(Ordering::Relaxed) == (MAX_CPUS - 1) as u32
+        && CPU_LOCALS.iter().all(|cpu| cpu.state.load(Ordering::Relaxed) == CPU_OFFLINE)
+}
