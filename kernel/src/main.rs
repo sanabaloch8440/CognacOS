@@ -365,6 +365,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
 
 
+        // Re-run the VM extent stress test after AP startup. This forces the
+        // pool's shared-kernel mapping path to complete its SMP TLB rendezvous.
+        if !kernel_vm::self_test() {
+            serial_write(b"FATAL: SMP kernel VM/TLB shootdown self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Kernel VM extent stress and SMP TLB shootdown self-test passed.\r\n");
+
         // Exercise an independent user address space without activating ring 3.
         let mut address_space = match unsafe { vm::AddressSpace::new(info.pml4_physical) } {
             Ok(space) => space,
