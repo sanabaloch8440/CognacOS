@@ -56,11 +56,7 @@ pub unsafe extern "win64" fn rtl_get_product_info(
 pub unsafe extern "win64" fn rtl_query_elevation_flags(flags: *mut u32) -> i32 {
     if flags.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { *flags = 0; }
-    let value = unsafe { *system_time };
-    match super::timezone::system_to_local(value) {
-        Some(converted) => { unsafe { *local_time = converted; } STATUS_SUCCESS }
-        None => STATUS_INVALID_PARAMETER,
-    }
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[unsafe(no_mangle)]
@@ -80,5 +76,10 @@ pub unsafe extern "win64" fn rtl_system_time_to_local_time(
     system_time: *const i64, local_time: *mut i64
 ) -> i32 {
     if system_time.is_null() || local_time.is_null() { return STATUS_INVALID_PARAMETER; }
-    STATUS_NOT_IMPLEMENTED
+    let value = unsafe { *system_time };
+    match super::timezone::system_to_local(value) {
+        Some(converted) => { unsafe { *local_time = converted; } STATUS_SUCCESS }
+        None => STATUS_INVALID_PARAMETER,
+    }
 }
+
