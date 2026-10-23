@@ -14,8 +14,20 @@ use super::RtlBitmap;
  if bitmap.is_null(){return;}let n=unsafe{(*bitmap).size_of_bitmap};if n==0{return;}if shift>=n{for i in 0..n{unsafe{write_bit(bitmap,i,false);}}return;}for i in (0..n).rev(){let v=if i>=shift{unsafe{read_bit(bitmap,i-shift)}}else{false};unsafe{write_bit(bitmap,i,v);}}
 }
 
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_copy_bit_map_ex(dst:*mut RtlBitmap,src:*const RtlBitmap,_start:u32,_count:u32) {
- if dst.is_null()||src.is_null(){return;}let n=unsafe{(*dst).size_of_bitmap.min((*src).size_of_bitmap)};for i in 0..n{let v=unsafe{read_bit(src,i)};unsafe{write_bit(dst,i,v);}}
+/// Copies a bounded source bit range into the destination starting at bit zero.
+/// Bits outside the copied range are left unchanged, matching the Ex operation's
+/// range contract rather than silently copying the entire bitmap.
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_copy_bit_map_ex(dst:*mut RtlBitmap,src:*const RtlBitmap,start:u32,count:u32) {
+ if dst.is_null()||src.is_null(){return;}
+ let dst_size=unsafe{(*dst).size_of_bitmap};
+ let src_size=unsafe{(*src).size_of_bitmap};
+ let n=count.min(dst_size);
+ if n>0&&(unsafe{(*dst).buffer.is_null()}||unsafe{(*src).buffer.is_null()}){return;}
+ for i in 0..n {
+   let source_index=start.checked_add(i);
+   let value=source_index.is_some_and(|index|index<src_size&&unsafe{read_bit(src,index)});
+   unsafe{write_bit(dst,i,value);}
+ }
 }
 
 #[unsafe(no_mangle)]
