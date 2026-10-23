@@ -54,7 +54,9 @@ fn translate(va: u64, require_write: bool) -> Option<u64> {
 
 #[inline]
 pub unsafe extern "win64" fn mm_get_physical_address(address: *const c_void) -> u64 {
-    translate(address as u64, false).unwrap_or(0)
+    let va = address as u64;
+    if va < 0xffff_8000_0000_0000 || crate::kernel_vm::is_pageable_address(va) { return 0; }
+    translate(va, false).unwrap_or(0)
 }
 
 #[inline]
@@ -66,13 +68,14 @@ pub unsafe extern "win64" fn mm_get_virtual_for_physical(address: u64) -> *mut c
 
 #[inline]
 pub unsafe extern "win64" fn mm_is_address_valid(address: *const c_void) -> u8 {
-    (translate(address as u64, false).is_some()) as u8
+    let va = address as u64;
+    (va >= 0xffff_8000_0000_0000 && translate(va, false).is_some()) as u8
 }
 
 #[inline]
 pub unsafe extern "win64" fn mm_is_non_paged_system_address_valid(address: *const c_void) -> u8 {
     let va = address as u64;
-    if crate::kernel_vm::is_pageable_address(va) { return 0; }
+    if va < 0xffff_8000_0000_0000 || crate::kernel_vm::is_pageable_address(va) { return 0; }
     (translate(va, false).is_some()) as u8
 }
 
@@ -87,7 +90,7 @@ pub unsafe extern "win64" fn mm_copy_memory(
     bytes_transferred: *mut u64,
 ) -> i32 {
     if !bytes_transferred.is_null() { unsafe { bytes_transferred.write(0); } }
-    if destination.is_null() || length == 0 || (flags != 1 && flags != 2) {
+    if destination.is_null() || (destination as u64) < 0xffff_8000_0000_0000 || crate::kernel_vm::is_pageable_address(destination as u64) || length == 0 || (flags != 1 && flags != 2) {
         return if length == 0 && !destination.is_null() && (flags == 1 || flags == 2) {
             STATUS_SUCCESS
         } else { STATUS_INVALID_PARAMETER };
@@ -104,6 +107,7 @@ pub unsafe extern "win64" fn mm_copy_memory(
             if src_va >= 0x1_0000_0000 { break; }
             src_va
         } else {
+            if src_va < 0xffff_8000_0000_0000 || crate::kernel_vm::is_pageable_address(src_va) { break; }
             match translate(src_va, false) { Some(p) => p, None => break }
         };
         let dst_pa = match translate(dst_va, true) { Some(p) => p, None => break };
