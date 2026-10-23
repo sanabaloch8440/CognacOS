@@ -427,6 +427,7 @@ pub unsafe fn start_discovered_aps(
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_ap_entry(logical_id: u32) -> ! {
     AP_ENTRY_REACHED.fetch_add(1, Ordering::AcqRel);
+    unsafe { crate::serial_write(b"SMP AP entry reached.\r\n"); }
     let index = logical_id as usize;
     unsafe { arch::load_cpu_descriptor_tables(); }
     let mitigations = unsafe { crate::security::initialize() };
