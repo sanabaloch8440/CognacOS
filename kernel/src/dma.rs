@@ -305,6 +305,115 @@ pub unsafe extern "win64" fn flush_adapter_buffers(
     1
 }
 
+
+/// Windows SCATTER_GATHER_LIST header followed by NumberOfElements elements.
+#[repr(C)]
+pub struct ScatterGatherListAbi {
+    pub number_of_elements: u32,
+    pub reserved: u32,
+    pub elements: [ScatterGatherElement; 0],
+}
+
+pub type ScatterGatherExecuteRoutine = unsafe extern "win64" fn(
+    device_object: *mut core::ffi::c_void,
+    irp: *mut core::ffi::c_void,
+    scatter_gather: *mut ScatterGatherListAbi,
+    context: *mut core::ffi::c_void,
+);
+
+/// Validate an MDL transfer range using checked arithmetic.
+fn validate_mdl_range(mdl: &MdlAbi, current_va: u64, length: u32) -> Option<u64> {
+    if mdl.start_va.is_null() || mdl.byte_count == 0 || length == 0 { return None; }
+    let start = (mdl.start_va as u64).checked_add(mdl.byte_offset as u64)?;
+    let end = start.checked_add(mdl.byte_count as u64)?;
+    let transfer_end = current_va.checked_add(length as u64)?;
+    if current_va < start || transfer_end > end { return None; }
+    Some(start)
+}
+
+/// Calculate the caller-provided storage size for a worst-case page-fragmented
+/// SCATTER_GATHER_LIST. This does not allocate memory or retain an MDL.
+pub unsafe extern "win64" fn calculate_scatter_gather_list_size(
+    adapter: *mut core::ffi::c_void,
+    mdl: *mut MdlAbi,
+    current_va: *mut core::ffi::c_void,
+    length: u32,
+    list_size: *mut u32,
+    flags: u32,
+) -> i32 {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+        || mdl.is_null() || current_va.is_null() || list_size.is_null() || flags != 0 {
+        return 0xC000_000D_u32 as i32; // STATUS_INVALID_PARAMETER
+    }
+    let m = unsafe { &*mdl };
+    if validate_mdl_range(m, current_va as u64, length).is_none() {
+        return 0xC000_000D_u32 as i32;
+    }
+    let first_offset = (current_va as u64) & (PAGE_SIZE - 1);
+    let span = match first_offset.checked_add(length as u64) { Some(v) => v, None => return 0xC000_000D_u32 as i32 };
+    let pages = (span + PAGE_SIZE - 1) / PAGE_SIZE;
+    let bytes = match core::mem::size_of::<ScatterGatherListAbi>()
+        .checked_add((pages as usize).saturating_mul(core::mem::size_of::<ScatterGatherElement>())) {
+        Some(v) if v <= u32::MAX as usize => v as u32,
+        _ => return 0xC000_009A_u32 as i32, // STATUS_INSUFFICIENT_RESOURCES
+    };
+    unsafe { list_size.write(bytes); }
+    0
+}
+
+/// Build an SG list in caller-owned nonpaged storage and invoke the driver's
+/// execution callback synchronously. Each entry covers one physically contiguous
+/// page fragment; this early implementation does not create IOMMU mappings.
+pub unsafe extern "win64" fn build_scatter_gather_list(
+    adapter: *mut core::ffi::c_void,
+    device_object: *mut core::ffi::c_void,
+    mdl: *mut MdlAbi,
+    current_va: *mut core::ffi::c_void,
+    length: u32,
+    execution_routine: Option<ScatterGatherExecuteRoutine>,
+    context: *mut core::ffi::c_void,
+    _write_to_device: u8,
+    scatter_gather_buffer: *mut core::ffi::c_void,
+    scatter_gather_buffer_length: u32,
+) -> i32 {
+    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+        || device_object.is_null() || mdl.is_null() || current_va.is_null()
+        || scatter_gather_buffer.is_null() || execution_routine.is_none() {
+        return 0xC000_000D_u32 as i32;
+    }
+    let m = unsafe { &*mdl };
+    if validate_mdl_range(m, current_va as u64, length).is_none() {
+        return 0xC000_000D_u32 as i32;
+    }
+    let first_offset = (current_va as u64) & (PAGE_SIZE - 1);
+    let pages = (first_offset + length as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
+    if pages == 0 || pages > MAX_SG_SEGMENTS as u64 { return 0xC000_009A_u32 as i32; }
+    let needed = core::mem::size_of::<ScatterGatherListAbi>()
+        + pages as usize * core::mem::size_of::<ScatterGatherElement>();
+    if needed > scatter_gather_buffer_length as usize { return 0xC000_0023_u32 as i32; }
+    let list = scatter_gather_buffer.cast::<ScatterGatherListAbi>();
+    unsafe {
+        core::ptr::addr_of_mut!((*list).number_of_elements).write(pages as u32);
+        core::ptr::addr_of_mut!((*list).reserved).write(0);
+    }
+    let mut va = current_va as u64;
+    let mut remaining = length as u64;
+    for index in 0..pages as usize {
+        let chunk = remaining.min(PAGE_SIZE - (va & (PAGE_SIZE - 1)));
+        let physical = unsafe { crate::ntoskrnl::mm::runtime::mm_get_physical_address(va as *mut core::ffi::c_void) };
+        if physical == 0 || physical >= 0x1_0000_0000 {
+            return 0xC000_000D_u32 as i32;
+        }
+        let element = ScatterGatherElement { address: physical, length: chunk as u32, reserved: 0 };
+        unsafe { core::ptr::addr_of_mut!((*list).elements).cast::<ScatterGatherElement>().add(index).write(element); }
+        va += chunk;
+        remaining -= chunk;
+    }
+    core::sync::atomic::fence(Ordering::SeqCst);
+    unsafe { execution_routine.unwrap()(device_object, core::ptr::null_mut(), list, context); }
+    0
+}
+
 /// The legacy x64 DMA adapter currently provides real common-buffer allocation
 /// only. Mapping, channel ownership and SG callbacks stay null until MDL and
 /// device-object lifetimes are implemented; advertising fake callbacks is unsafe.
@@ -322,8 +431,8 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     read_dma_counter: 0,
     get_scatter_gather_list: 0,
     put_scatter_gather_list: 0,
-    calculate_scatter_gather_list_size: 0,
-    build_scatter_gather_list: 0,
+    calculate_scatter_gather_list_size: crate::dma::calculate_scatter_gather_list_size as usize,
+    build_scatter_gather_list: crate::dma::build_scatter_gather_list as usize,
     build_mdl_from_scatter_gather_list: 0,
     get_dma_adapter_info: 0,
     get_dma_transfer_info: 0,
@@ -375,7 +484,9 @@ mod tests {
         assert_eq!(core::mem::offset_of!(DmaOperations, put_dma_adapter), 8);
         assert_eq!(DmaOperations::POINTER_COUNT, 41);
         assert_eq!(DmaOperations::ABI_SIZE, 336);
-        assert_eq!(core::mem::size_of::<DmaAdapterAbi>(), 16);\n        assert_eq!(core::mem::size_of::<MdlAbi>(), 48);\n        assert_eq!(core::mem::offset_of!(MdlAbi, byte_count), 40);
+        assert_eq!(core::mem::size_of::<DmaAdapterAbi>(), 16);
+        assert_eq!(core::mem::size_of::<MdlAbi>(), 48);
+        assert_eq!(core::mem::offset_of!(MdlAbi, byte_count), 40);
     }
     #[test]
     fn scatter_gather_splits_at_boundaries_and_limits() {
