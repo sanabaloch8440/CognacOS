@@ -211,10 +211,39 @@ pub unsafe extern "win64" fn ke_try_to_acquire_spin_lock_at_dpc_level(lock: *mut
         None => 0,
     }
 }
+/// Query the architectural monotonic TSC using the Windows x64 LARGE_INTEGER ABI.
+/// Frequency is reported in ticks per second and is only advertised when the
+/// platform exposes a defensible TSC frequency.
+pub unsafe extern "win64" fn ke_query_performance_counter(frequency: *mut i64) -> i64 {
+    if let Some(hz) = crate::apic::tsc_frequency_hz() {
+        if !frequency.is_null() {
+            unsafe { frequency.write(hz.min(i64::MAX as u64) as i64); }
+        }
+    } else if !frequency.is_null() {
+        unsafe { frequency.write(0); }
+    }
+    crate::apic::monotonic_ticks().min(i64::MAX as u64) as i64
+}
+
+/// Serialize prior writes before returning to a caller that requires the
+/// legacy KeFlushWriteBuffer ordering guarantee.
 pub unsafe extern "win64" fn ke_flush_write_buffer() {
     core::sync::atomic::fence(Ordering::SeqCst);
-    #[cfg(target_arch = "x86_64")]
     unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
+}
+
+/// Busy-wait for a bounded microsecond interval using the calibrated/stable TSC.
+/// If no usable frequency is known, fail closed by returning without pretending
+/// that a guessed delay was accurate; HAL import resolution hides this export.
+pub unsafe extern "win64" fn ke_stall_execution_processor(microseconds: u32) {
+    if microseconds == 0 { return; }
+    let Some(hz) = crate::apic::tsc_frequency_hz() else { return; };
+    let ticks = ((hz as u128) * (microseconds as u128) + 999_999) / 1_000_000;
+    let Ok(ticks) = u64::try_from(ticks) else { return; };
+    let start = crate::apic::monotonic_ticks();
+    while crate::apic::monotonic_ticks().wrapping_sub(start) < ticks {
+        core::hint::spin_loop();
+    }
 }
 
 /// Initialize notification (type 0) or synchronization (type 1) events.
