@@ -404,3 +404,174 @@ mod extended_token_tests {
         assert_eq!(unsafe { RdotSeUnregisterTokenMetadata(token) }, STATUS_SUCCESS);
     }
 }
+
+
+// --- Length-aware security descriptor primitives (RdotOS extension ABI) ---
+// These helpers deliberately take explicit lengths. Unlike the Windows Se ABI,
+// they do not assume that caller memory is readable beyond the supplied span.
+// They are not substitutes for a kernel probe/capture routine.
+const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
+const STATUS_DATA_ERROR: i32 = 0xC000_003Eu32 as i32;
+
+fn bounded_sid_size(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 8 || bytes[0] != 1 || bytes[1] > 15 { return None; }
+    let n = 8usize.checked_add((bytes[1] as usize).checked_mul(4)?)?;
+    (n <= bytes.len()).then_some(n)
+}
+
+fn bounded_acl_size(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < 8 || bytes[0] > 4 { return None; }
+    let size = u16le(bytes, 2)? as usize;
+    let count = u16le(bytes, 4)? as usize;
+    if size < 8 || size > bytes.len() { return None; }
+    let mut cursor = 8usize;
+    for _ in 0..count {
+        let head = bytes.get(cursor..cursor.checked_add(4)?)?;
+        let ace_size = u16le(head, 2)? as usize;
+        if ace_size < 4 || cursor.checked_add(ace_size)? > size { return None; }
+        // For common SID-bearing ACEs, verify the SID fits wholly inside the ACE.
+        if matches!(head[0], 0 | 1 | 2 | 3) {
+            if ace_size < 16 { return None; }
+            let sid_start = cursor.checked_add(8)?;
+            let sid = bytes.get(sid_start..cursor.checked_add(ace_size)?)?;
+            if bounded_sid_size(sid).is_none() { return None; }
+        }
+        cursor = cursor.checked_add(ace_size)?;
+    }
+    (cursor <= size).then_some(size)
+}
+
+/// Validate one SID in an explicitly bounded readable buffer. Returns its byte length, or 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeValidateSid(sid: *const u8, length: usize) -> usize {
+    if sid.is_null() || length < 8 { return 0; }
+    let bytes = unsafe { core::slice::from_raw_parts(sid, length) };
+    bounded_sid_size(bytes).unwrap_or(0)
+}
+
+/// Compare two explicitly bounded SID buffers; only exact valid SID encodings compare equal.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeSidEqual(
+    left: *const u8, left_len: usize, right: *const u8, right_len: usize,
+) -> u8 {
+    if left.is_null() || right.is_null() || left_len < 8 || right_len < 8 { return 0; }
+    let a = unsafe { core::slice::from_raw_parts(left, left_len) };
+    let b = unsafe { core::slice::from_raw_parts(right, right_len) };
+    match (bounded_sid_size(a), bounded_sid_size(b)) {
+        (Some(na), Some(nb)) => (na == nb && a[..na] == b[..nb]) as u8,
+        _ => 0,
+    }
+}
+
+/// Validate an ACL from a caller-provided bounded buffer; returns ACL size or 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeValidateAcl(acl: *const u8, length: usize) -> usize {
+    if acl.is_null() || length < 8 { return 0; }
+    let bytes = unsafe { core::slice::from_raw_parts(acl, length) };
+    bounded_acl_size(bytes).unwrap_or(0)
+}
+
+/// Read a self-relative descriptor's control word from an explicit bounded span.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeQueryDescriptorControl(
+    descriptor: *const u8, length: usize, control_out: *mut u16,
+) -> i32 {
+    if descriptor.is_null() || control_out.is_null() { return STATUS_INVALID_PARAMETER; }
+    if length < 20 { return STATUS_BUFFER_TOO_SMALL; }
+    let bytes = unsafe { core::slice::from_raw_parts(descriptor, length) };
+    if bytes[0] != 1 { return STATUS_DATA_ERROR; }
+    let control = u16le(bytes, 2).unwrap_or(0);
+    if control & 0x8000 == 0 { return STATUS_DATA_ERROR; }
+    unsafe { core::ptr::write_unaligned(control_out, control); }
+    STATUS_SUCCESS
+}
+
+/// Return a component's offset and validated length. component: 0 owner, 1 group,
+/// 2 SACL, 3 DACL. Zero offset means absent and yields STATUS_SUCCESS with length 0.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeQueryDescriptorComponent(
+    descriptor: *const u8, descriptor_len: usize, component: u32,
+    offset_out: *mut u32, length_out: *mut u32,
+) -> i32 {
+    if descriptor.is_null() || offset_out.is_null() || length_out.is_null() || component > 3 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if descriptor_len < 20 { return STATUS_BUFFER_TOO_SMALL; }
+    let bytes = unsafe { core::slice::from_raw_parts(descriptor, descriptor_len) };
+    if bytes[0] != 1 { return STATUS_DATA_ERROR; }
+    let control = u16le(bytes, 2).unwrap_or(0);
+    if control & 0x8000 == 0 { return STATUS_DATA_ERROR; }
+    let field = [4usize, 8, 12, 16][component as usize];
+    let off = u32le(bytes, field).ok_or(STATUS_DATA_ERROR).unwrap_or(0) as usize;
+    if off == 0 {
+        unsafe { core::ptr::write_unaligned(offset_out, 0); core::ptr::write_unaligned(length_out, 0); }
+        return STATUS_SUCCESS;
+    }
+    if off < 20 || off >= descriptor_len { return STATUS_DATA_ERROR; }
+    let size = if component < 2 {
+        bounded_sid_size(&bytes[off..]).ok_or(STATUS_DATA_ERROR)
+    } else {
+        bounded_acl_size(&bytes[off..]).ok_or(STATUS_DATA_ERROR)
+    };
+    let size = match size { Ok(n) => n, Err(s) => return s };
+    let Some(end) = off.checked_add(size) else { return STATUS_DATA_ERROR; };
+    if end > descriptor_len || end > u32::MAX as usize || off > u32::MAX as usize {
+        return STATUS_DATA_ERROR;
+    }
+    unsafe {
+        core::ptr::write_unaligned(offset_out, off as u32);
+        core::ptr::write_unaligned(length_out, size as u32);
+    }
+    STATUS_SUCCESS
+}
+
+/// Check that an explicit privilege bitmap contains every requested privilege bit.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSePrivilegeBitmapSatisfies(available: u64, required: u64) -> u8 {
+    ((available & required) == required) as u8
+}
+
+/// Check a bounded access mask using explicit allowed/denied masks. Deny always wins.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeAccessMaskAllowed(
+    requested: u32, allowed: u32, denied: u32,
+) -> u8 {
+    (requested & denied == 0 && requested & allowed == requested) as u8
+}
+
+#[cfg(test)]
+mod bounded_security_tests {
+    use super::*;
+    #[test]
+    fn bounded_sid_and_acl_validation_reject_truncation() {
+        let sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0];
+        assert_eq!(unsafe { RdotSeValidateSid(sid.as_ptr(), sid.len()) }, 12);
+        assert_eq!(unsafe { RdotSeValidateSid(sid.as_ptr(), 8) }, 0);
+        assert_eq!(unsafe { RdotSeSidEqual(sid.as_ptr(), 12, sid.as_ptr(), 12) }, 1);
+        assert_eq!(unsafe { RdotSeSidEqual(sid.as_ptr(), 8, sid.as_ptr(), 12) }, 0);
+        let acl = [2u8, 0, 8, 0, 0, 0, 0, 0];
+        assert_eq!(unsafe { RdotSeValidateAcl(acl.as_ptr(), acl.len()) }, 8);
+        assert_eq!(unsafe { RdotSeValidateAcl(acl.as_ptr(), 7) }, 0);
+    }
+    #[test]
+    fn descriptor_component_query_is_length_aware() {
+        let mut sd = [0u8; 32];
+        sd[0] = 1;
+        sd[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        sd[4..8].copy_from_slice(&20u32.to_le_bytes());
+        sd[20..32].copy_from_slice(&[1, 1, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0]);
+        let mut off = 99u32;
+        let mut len = 99u32;
+        assert_eq!(unsafe { RdotSeQueryDescriptorComponent(sd.as_ptr(), sd.len(), 0, &mut off, &mut len) }, STATUS_SUCCESS);
+        assert_eq!((off, len), (20, 12));
+        assert_eq!(unsafe { RdotSeQueryDescriptorComponent(sd.as_ptr(), 24, 0, &mut off, &mut len) }, STATUS_DATA_ERROR);
+        assert_eq!(unsafe { RdotSeQueryDescriptorControl(sd.as_ptr(), 19, &mut 0u16) }, STATUS_BUFFER_TOO_SMALL);
+    }
+    #[test]
+    fn privilege_and_access_mask_helpers_are_conservative() {
+        assert_eq!(unsafe { RdotSePrivilegeBitmapSatisfies(0b1110, 0b0110) }, 1);
+        assert_eq!(unsafe { RdotSePrivilegeBitmapSatisfies(0b0010, 0b0110) }, 0);
+        assert_eq!(unsafe { RdotSeAccessMaskAllowed(0b011, 0b111, 0) }, 1);
+        assert_eq!(unsafe { RdotSeAccessMaskAllowed(0b011, 0b111, 0b001) }, 0);
+    }
+}
