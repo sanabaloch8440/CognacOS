@@ -4,7 +4,7 @@
 //! section backing below 4 GiB and maps each section at ImageBase + RVA.
 use uefi::boot::{self, AllocateType, MemoryType, PAGE_SIZE};
 
-const IMAGE_BASE: u64 = 0xffff_ffff_7ff0_0000;
+const IMAGE_BASE: u64 = 0xffff_ffff_7fe0_0000;
 const PE_HEADER_LIMIT: usize = 4096;
 const MAX_SECTIONS: usize = 4; // BootInfo carries four physical section ranges.
 const IMAGE_FILE_MACHINE_AMD64: u16 = 0x8664;
