@@ -134,7 +134,7 @@ impl<'h,'a> Key<'h,'a>{
 }
 fn key_matches(k:&Key<'_, '_>,name:&[u16])->Result<bool,Error>{let mut temp=[0u16;512];let n=k.name_utf16(&mut temp)?;Ok(eq_name(&temp[..n],name))}
 #[derive(Clone,Copy)]
-pub struct Value<'h,'a>{hive:&'h Hive<'a>,cell:&'a[u8],name:&'a[u8],compressed:bool,pub kind:u32,data_len:u32,data_offset:u32,inline:bool}
+pub struct Value<'h,'a>{hive:&'h Hive<'a>,cell:&'a[u8],name:&'a[u8],compressed:bool,pub kind:u32,pub data_len:u32,data_offset:u32,inline:bool}
 impl<'h,'a> Value<'h,'a>{
  fn parse(hive:&'h Hive<'a>,index:u32)->Result<Self,Error>{
   let c=hive.cell(index)?;if c.get(0..2)!=Some(&b"vk"[..])||c.len()<0x14{return Err(Error::InvalidValue)}
