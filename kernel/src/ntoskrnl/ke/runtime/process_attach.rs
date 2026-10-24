@@ -1,8 +1,6 @@
 // Process attach/detach: switch CR3 to a referenced, registered process root.
 // KAPC_STATE storage is treated as an opaque caller-owned key; Windows private
 // bytes are not read or written. Per-thread side metadata supports nesting.
-use core::sync::atomic::Ordering;
-
 const MAX_PROCESS_ATTACHES: usize = 128;
 #[derive(Clone, Copy)]
 struct AttachRecord {
