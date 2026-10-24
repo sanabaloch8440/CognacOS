@@ -1449,5 +1449,8 @@ pub extern "C" fn rdotos_timer_interrupt_handler() {
     let first = !TIMER_ISR_DIAGNOSTIC_ONCE.swap(true, core::sync::atomic::Ordering::AcqRel);
     if first { unsafe { crate::serial_write(b"APIC timer ISR entered.\r\n"); } }
     crate::hal::local_clock_event_interrupt();
+    // Switching here saves the complete interrupt path on the interrupted
+    // thread's kernel stack; IRETQ resumes that thread when it is scheduled again.
+    crate::thread::preempt_from_timer_interrupt();
     if first { unsafe { crate::serial_write(b"APIC timer ISR EOI completed.\r\n"); } }
 }
