@@ -540,6 +540,15 @@ mod tests{
   unsafe{register_object(body,ty,&[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16,b'\\' as u16,b'O' as u16,b'b' as u16,junk: 0],false,core::ptr::null(),0).unwrap();}
  }
 
+ #[test]fn symbolic_link_prefixes_resolve_within_namespace(){
+  let ty=register_type(&[97],1,2,4,7,7).unwrap();
+  let target=[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16,b'\\' as u16,b'O' as u16,b'b' as u16,b'j' as u16];
+  let link=[b'\\' as u16,b'D' as u16,b'o' as u16,b's' as u16,b'D' as u16,b'e' as u16,b'v' as u16];
+  let requested=[b'\\' as u16,b'D' as u16,b'o' as u16,b's' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'\\' as u16,b'O' as u16,b'b' as u16,b'j' as u16];
+  let body=0x9238usize as *mut c_void;unsafe{register_object(body,ty,&target,false,core::ptr::null(),0).unwrap();}
+  create_symbolic_link(&link,&[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16],false).unwrap();
+  let h=open_by_name(&requested,1,998,true,0).unwrap();assert_eq!(reference_by_handle(h,1,ty,998,true).unwrap(),body);assert!(dereference_body(body));close_handle(h,998).unwrap();
+ }
  #[test]fn named_reference_is_case_insensitive_and_name_copy_is_stable(){
   let ty=register_type(&[93],1,2,4,7,7).unwrap();let body=0x4234usize as *mut c_void;
   unsafe{register_object(body,ty,&[92,93],false,core::ptr::null(),0).unwrap();}
