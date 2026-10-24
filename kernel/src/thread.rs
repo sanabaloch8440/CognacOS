@@ -198,6 +198,7 @@ fn exit_current()->! {
     let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
     let local=match crate::hal::cpu_local(cpu){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
     let id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
+    crate::ntoskrnl::ke::runtime::thread_exit_cleanup(id);
     let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
     let (old_rsp_ptr,new_rsp)={
         let mut table=THREADS.lock();
