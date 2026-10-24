@@ -585,6 +585,14 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
     AP_ENTRY_REACHED.fetch_add(1, Ordering::AcqRel);
     unsafe { crate::serial_write(b"SMP AP entry reached.\r\n"); }
     let index = logical_id as usize;
+    // Reject corrupt trampoline metadata before indexing CPU-local state. The
+    // AP has already switched to the permanent CR3, but is not yet published.
+    if index == 0 || index >= hal::MAX_CPUS {
+        unsafe { crate::serial_write(b"SMP AP rejected invalid logical CPU index.\\r\\n"); }
+        loop { core::hint::spin_loop(); }
+    }
+    // GDT/IDT loads are local CPU instructions: every AP must execute them
+    // itself before its LAPIC can receive the fixed-vector interrupt suite.
     unsafe { arch::load_cpu_descriptor_tables(); }
     let mitigations = unsafe { crate::security::initialize() };
     if !mitigations.write_protect || !mitigations.nx_enabled {
@@ -661,6 +669,29 @@ pub fn enable_ipi_interrupts() -> bool {
 
 pub fn ipi_shootdowns_enabled() -> bool { IPI_ACTIVE.load(Ordering::Acquire) }
 pub fn tlb_ipi_count() -> u64 { TLB_IPI_COUNT.load(Ordering::Acquire) }
+
+/// Stress the actual per-CPU IDT/LAPIC path after all APs have installed their
+/// descriptor tables, enabled IF, and acknowledged interrupt readiness. Each
+/// AP must service every directed IPI before the bounded deadline; a failed
+/// delivery disables the test result rather than being mistaken for a pass.
+pub fn interrupt_setup_stress_test(rounds: u32) -> bool {
+    if rounds == 0 || !IPI_ACTIVE.load(Ordering::Acquire) { return false; }
+    for logical_id in 1..hal::MAX_CPUS {
+        if hal::cpu_state(logical_id).ok() != Some(hal::CPU_ONLINE) { continue; }
+        if !CPU_INTERRUPT_READY[logical_id].load(Ordering::Acquire) { return false; }
+        for _ in 0..rounds {
+            let before = TLB_IPI_COUNT.load(Ordering::Acquire);
+            if send_tlb_shootdown(logical_id).is_err() { return false; }
+            let mut spins = 0usize;
+            while TLB_IPI_COUNT.load(Ordering::Acquire) == before && spins < 5_000_000 {
+                spins += 1;
+                core::hint::spin_loop();
+            }
+            if TLB_IPI_COUNT.load(Ordering::Acquire) == before { return false; }
+        }
+    }
+    true
+}
 
 /// Send a fixed-vector IPI to a logical CPU. The target's IDT gate and LAPIC
 /// are already initialized by the AP startup protocol.
