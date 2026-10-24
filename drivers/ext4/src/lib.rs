@@ -527,5 +527,71 @@ mod host_tests {
             Err(WriteError::OutOfRange)
         );
     }
+
+    struct MemDisk { bytes:[u8;8192] }
+    impl ReadOnlyBlockDevice for MemDisk {
+        type DeviceError=();
+        fn capacity_bytes(&self)->u64{self.bytes.len() as u64}
+        fn read_at(&mut self,offset:u64,out:&mut[u8])->Result<(),Self::DeviceError>{
+            let start=offset as usize;let end=start.checked_add(out.len()).ok_or(())?;
+            let src=self.bytes.get(start..end).ok_or(())?;out.copy_from_slice(src);Ok(())
+        }
+    }
+    impl BlockDevice for MemDisk {
+        fn write_at(&mut self,offset:u64,data:&[u8])->Result<(),Self::DeviceError>{
+            let start=offset as usize;let end=start.checked_add(data.len()).ok_or(())?;
+            let dst=self.bytes.get_mut(start..end).ok_or(())?;dst.copy_from_slice(data);Ok(())
+        }
+        fn flush(&mut self)->Result<(),Self::DeviceError>{Ok(())}
+    }
+
+    #[test]
+    fn mbr_partition_view_translates_and_contains_io() {
+        let mut disk=MemDisk{bytes:[0;8192]};
+        disk.bytes[510]=0x55;disk.bytes[511]=0xaa;
+        let e=446;
+        disk.bytes[e+4]=0x83;
+        disk.bytes[e+8..e+12].copy_from_slice(&2u32.to_le_bytes());
+        disk.bytes[e+12..e+16].copy_from_slice(&4u32.to_le_bytes());
+        let p=read_mbr_partition(&mut disk,0,512).unwrap();
+        assert_eq!(p,DiskPartition{first_lba:2,sector_count:4,sector_size:512});
+        let mut view=PartitionDevice::new(disk,p).unwrap();
+        view.write_at(512,&[0xa5,0x5a]).unwrap();
+        let mut got=[0;2];view.read_at(512,&mut got).unwrap();
+        assert_eq!(got,[0xa5,0x5a]);
+        assert_eq!(view.read_at(2048,&mut got),Err(PartitionIoError::OutOfRange));
+        assert_eq!(view.write_at(2047,&[1,2]),Err(PartitionIoError::OutOfRange));
+        let disk=view.into_device();
+        assert_eq!(&disk.bytes[2*512+512..2*512+514],&[0xa5,0x5a]);
+    }
+
+    #[test]
+    fn gpt_header_and_entry_array_crc_are_validated() {
+        let mut disk=MemDisk{bytes:[0;8192]};
+        let entries=&mut disk.bytes[2*512..2*512+128];
+        entries[..16].fill(0x11);
+        entries[32..40].copy_from_slice(&4u64.to_le_bytes());
+        entries[40..48].copy_from_slice(&7u64.to_le_bytes());
+        let entries_crc=crc32_ieee(entries);
+        let h=&mut disk.bytes[512..1024];
+        h[..8].copy_from_slice(b"EFI PART");
+        h[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+        h[12..16].copy_from_slice(&92u32.to_le_bytes());
+        h[24..32].copy_from_slice(&1u64.to_le_bytes());
+        h[32..40].copy_from_slice(&15u64.to_le_bytes());
+        h[40..48].copy_from_slice(&3u64.to_le_bytes());
+        h[48..56].copy_from_slice(&14u64.to_le_bytes());
+        h[72..80].copy_from_slice(&2u64.to_le_bytes());
+        h[80..84].copy_from_slice(&1u32.to_le_bytes());
+        h[84..88].copy_from_slice(&128u32.to_le_bytes());
+        h[88..92].copy_from_slice(&entries_crc.to_le_bytes());
+        let crc=crc32_ieee(&h[..92]);
+        h[16..20].copy_from_slice(&crc.to_le_bytes());
+        let p=read_gpt_partition(&mut disk,0,512).unwrap();
+        assert_eq!(p,DiskPartition{first_lba:4,sector_count:4,sector_size:512});
+        disk.bytes[512+24]^=1;
+        assert_eq!(read_gpt_partition(&mut disk,0,512),Err(Error::InvalidChecksum));
+    }
+
 }
 const CHECKSUM_TYPE_OFFSET_FOR_TEST: usize = 373;
