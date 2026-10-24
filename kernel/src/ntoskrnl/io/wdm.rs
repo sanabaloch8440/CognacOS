@@ -266,6 +266,8 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  state.devices[index].deleting=true;
  // Defer reclamation while external references, remove-lock owners, or power transitions remain.
  if state.devices[index].object.reference_count > 1 || state.devices[index].remove_lock_count != 0 || state.devices[index].power_transition { return; }
+ // Ob references and handles may outlive Io callers; only reclaim the backing slot after Ob has removed its header record.
+ if !crate::ntoskrnl::ob::runtime::object_rundown_complete(device.cast()) { return; }
  let lower=state.devices[index].attached_to;
  let upper=state.devices[index].object.attached_device;
  if !lower.is_null() {
