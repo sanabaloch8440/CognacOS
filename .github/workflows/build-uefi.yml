@@ -51,14 +51,16 @@ jobs:
           grep -Fq '#![no_std]' drivers/acpi/src/lib.rs
           grep -Fq '#![no_std]' drivers/pci/src/lib.rs
           echo "HAL and independent driver source-boundary checks passed."
-      - name: Test independent platform and driver crates
-        run: |
-          set -euo pipefail
-          cargo test --manifest-path drivers/hal/Cargo.toml
-          cargo test --manifest-path drivers/acpi/Cargo.toml
-          cargo test --manifest-path drivers/pci/Cargo.toml
-          cargo test --manifest-path drivers/processor/Cargo.toml
-          cargo test --manifest-path drivers/ext4/Cargo.toml
+      - name: Test HAL contract crate
+        run: cargo test --manifest-path drivers/hal/Cargo.toml
+      - name: Test ACPI driver crate
+        run: cargo test --manifest-path drivers/acpi/Cargo.toml
+      - name: Test PCI driver crate
+        run: cargo test --manifest-path drivers/pci/Cargo.toml
+      - name: Test processor driver crate
+        run: cargo test --manifest-path drivers/processor/Cargo.toml
+      - name: Test ext4 driver crate
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml
       - name: Install Rust targets
         run: |
           rustup update stable
