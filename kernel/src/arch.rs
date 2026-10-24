@@ -554,6 +554,48 @@ rdotos_hal_ipi_stub:
     pop rax
     iretq
 
+    .global rdotos_ke_broadcast_ipi_stub
+    .type rdotos_ke_broadcast_ipi_stub, @function
+rdotos_ke_broadcast_ipi_stub:
+    cld
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rax, rsp
+    and rsp, -16
+    sub rsp, 16
+    mov [rsp + 8], rax
+    call rdotos_ke_broadcast_ipi_handler
+    mov rsp, [rsp + 8]
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
+
     .global rdotos_tsc_sync_stub
     .type rdotos_tsc_sync_stub, @function
 rdotos_tsc_sync_stub:
@@ -654,7 +696,7 @@ unsafe extern "C" {
     fn rdotos_isr_20(); fn rdotos_isr_21(); fn rdotos_isr_22(); fn rdotos_isr_23();
     fn rdotos_isr_24(); fn rdotos_isr_25(); fn rdotos_isr_26(); fn rdotos_isr_27();
     fn rdotos_isr_28(); fn rdotos_isr_29(); fn rdotos_isr_30(); fn rdotos_isr_31();
-    fn rdotos_tlb_ipi_stub(); fn rdotos_hal_ipi_stub(); fn rdotos_tsc_sync_stub(); fn rdotos_spurious_stub(); fn rdotos_timer_stub();
+    fn rdotos_tlb_ipi_stub(); fn rdotos_hal_ipi_stub(); fn rdotos_ke_broadcast_ipi_stub(); fn rdotos_tsc_sync_stub(); fn rdotos_spurious_stub(); fn rdotos_timer_stub();
     fn rdotos_irq_32();
     fn rdotos_irq_33();
     fn rdotos_irq_34();
@@ -1184,6 +1226,7 @@ pub unsafe fn initialize() {
     unsafe {
         idt_ptr.add(crate::apic::TLB_SHOOTDOWN_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tlb_ipi_stub as u64));
         idt_ptr.add(crate::apic::HAL_IPI_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_hal_ipi_stub as u64));
+        idt_ptr.add(crate::apic::KE_BROADCAST_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_ke_broadcast_ipi_stub as u64));
         idt_ptr.add(crate::apic::TSC_SYNC_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tsc_sync_stub as u64));
         idt_ptr.add(0xFF).write(IdtEntry::interrupt_gate(rdotos_spurious_stub as u64));
         idt_ptr.add(crate::apic::LOCAL_TIMER_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_timer_stub as u64));
@@ -1362,10 +1405,18 @@ pub extern "C" fn rdotos_hal_ipi_handler() {
         let id = cpu.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize;
         let _ = crate::hal::mark_ipi_pending(id);
     }
-    // Dispatch a serialized cross-processor Ke call before acknowledging the IPI.
-    crate::ntoskrnl::ke::runtime::handle_broadcast_ipi();
     if let Some(base) = crate::apic::local_apic_base() {
         unsafe { crate::apic::local_apic_eoi(base); }
+    }
+}
+
+/// Dedicated cross-processor Ke broadcast handler. The callback rendezvous
+/// owns the logical IRQL transition and all callback/completion bookkeeping.
+#[unsafe(no_mangle)]
+pub extern "C" fn rdotos_ke_broadcast_ipi_handler() {
+    crate::ntoskrnl::ke::runtime::handle_broadcast_ipi();
+    if let Some(base)=crate::apic::local_apic_base(){
+        unsafe{crate::apic::local_apic_eoi(base);}
     }
 }
 
