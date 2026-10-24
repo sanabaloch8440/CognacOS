@@ -125,7 +125,7 @@ fn synchronize_kernel_tlb() {
 }
 fn ix(v:u64)->[usize;4]{[((v>>39)&511)as usize,((v>>30)&511)as usize,((v>>21)&511)as usize,((v>>12)&511)as usize]}
 
-unsafe fn map(root:u64, va:u64, pa:u64)->Result<(),Error>{
+unsafe fn map_with_flags(root:u64, va:u64, pa:u64, leaf_flags:u64)->Result<(),Error>{
  let indexes=ix(va); let mut t=root as *mut u64;
  for i in indexes[..3].iter().copied(){
   let slot=unsafe{t.add(i)}; let mut e=unsafe{slot.read()};
@@ -134,8 +134,11 @@ unsafe fn map(root:u64, va:u64, pa:u64)->Result<(),Error>{
   t=(e&ADDR)as *mut u64;
  }
  let leaf=unsafe{t.add(indexes[3])}; if unsafe{leaf.read()}&P!=0{return Err(Error::AlreadyMapped)}
- unsafe{leaf.write((pa&ADDR)|P|W|NX); core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+ unsafe{leaf.write((pa&ADDR)|P|leaf_flags); core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
  Ok(())
+}
+unsafe fn map(root:u64, va:u64, pa:u64)->Result<(),Error>{
+ unsafe{map_with_flags(root,va,pa,W|NX)}
 }
 fn table_is_empty(table:*const u64)->bool {
  (0..512).all(|i| unsafe { table.add(i).read() } & P == 0)
@@ -287,14 +290,15 @@ pub fn handle_page_fault(address:u64,error_code:u64)->bool {
  {
   if error_code&1!=0{return false} // not a protection fault: it must be absent
   let physical=page_va-direct_base;
-  if physical<0x1_0000_0000 || !crate::memory::is_ram_physical_address(physical){return false}
+  if !crate::memory::is_ram_physical_address(physical){return false}
   let _direct_guard=DirectMapGuard::lock();
   // Another CPU may have installed this leaf while this CPU waited.
   if unsafe{leaf_ptr(root,page_va)}.is_some_and(|leaf|unsafe{leaf.read_volatile()}&P!=0) {
    unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}
    return true
   }
-  return unsafe{map(root,page_va,physical)}.is_ok()
+  let leaf_flags=NX | if crate::memory::direct_map_page_writable(physical) { W } else { 0 };
+  return unsafe{map_with_flags(root,page_va,physical,leaf_flags)}.is_ok()
  }
 
  if page_va<BASE||page_va>=BASE+(PAGES as u64)*PAGE{return false}
