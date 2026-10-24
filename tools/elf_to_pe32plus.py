@@ -111,7 +111,7 @@ def build_export_directory(exports, image_base):
     strings.extend(dll_name)
     name_string_offsets = []
     for name, _ordinal, _value in names:
-        name_string_offsets.append(strings_off + len(strings) - len(dll_name))
+        name_string_offsets.append(strings_off + len(strings))
         strings.extend(name.encode("ascii") + b"\\0")
     data = bytearray(strings_off + len(strings))
     # PE RVA is based on the section RVA; the caller patches this directory using
