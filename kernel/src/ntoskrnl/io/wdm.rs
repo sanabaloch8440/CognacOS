@@ -14,6 +14,8 @@ pub const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
 pub const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009A_u32 as i32;
 pub const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010_u32 as i32;
 pub const STATUS_DELETE_PENDING: i32 = 0xC000_0056_u32 as i32;
+pub const STATUS_OBJECT_NAME_NOT_FOUND: i32 = 0xC000_0034_u32 as i32;
+pub const STATUS_OBJECT_NAME_COLLISION: i32 = 0xC000_0035_u32 as i32;
 pub const IRP_SIZE_X64: usize = 0xD0;
 pub const IO_STACK_LOCATION_SIZE_X64: usize = 0x48;
 const MAX_WDM_DEVICES: usize = 32;
@@ -483,6 +485,59 @@ pub fn is_file_system_registered(device:*mut DeviceObject)->bool {
 }
 
 
+const MAX_SYMBOLIC_LINKS:usize=32;
+const MAX_SYMBOLIC_LINK_CHARS:usize=260;
+#[derive(Clone,Copy)]
+struct SymbolicLink { used:bool, name_len:usize, target_len:usize, name:[u16;MAX_SYMBOLIC_LINK_CHARS], target:[u16;MAX_SYMBOLIC_LINK_CHARS] }
+impl SymbolicLink { const EMPTY:Self=Self{used:false,name_len:0,target_len:0,name:[0;MAX_SYMBOLIC_LINK_CHARS],target:[0;MAX_SYMBOLIC_LINK_CHARS]}; }
+struct NamespaceState { links:[SymbolicLink;MAX_SYMBOLIC_LINKS] }
+impl NamespaceState { const fn new()->Self{Self{links:[SymbolicLink::EMPTY;MAX_SYMBOLIC_LINKS]}} }
+static NAMESPACE:IrqSpinLock<NamespaceState>=IrqSpinLock::new(NamespaceState::new());
+
+fn valid_unicode_name(name:*mut UnicodeString)->Option<(usize,*const u16)> {
+ if name.is_null(){return None}
+ let value=unsafe{&*name};
+ let len=value.length as usize;
+ if len==0||len%2!=0||len>MAX_SYMBOLIC_LINK_CHARS*2||len>value.maximum_length as usize||value.buffer.is_null(){return None}
+ Some((len/2,value.buffer.cast_const()))
+}
+fn unicode_equal_folded(a:&[u16],b:&[u16])->bool {
+ a.len()==b.len()&&a.iter().zip(b).all(|(x,y)| {
+  let fold=|c:u16| if (b'A' as u16..=b'Z' as u16).contains(&c){c+32}else{c};
+  fold(*x)==fold(*y)
+ })
+}
+
+/// Create a bounded object-manager symbolic-link mapping. Resolution through
+/// this namespace is intentionally separate from this storage primitive.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_create_symbolic_link(link_name:*mut UnicodeString,target_name:*mut UnicodeString)->i32 {
+ let Some((name_len,name_ptr))=valid_unicode_name(link_name) else{return STATUS_INVALID_PARAMETER};
+ let Some((target_len,target_ptr))=valid_unicode_name(target_name) else{return STATUS_INVALID_PARAMETER};
+ let mut name=[0u16;MAX_SYMBOLIC_LINK_CHARS];
+ let mut target=[0u16;MAX_SYMBOLIC_LINK_CHARS];
+ unsafe{ptr::copy_nonoverlapping(name_ptr,name.as_mut_ptr(),name_len);ptr::copy_nonoverlapping(target_ptr,target.as_mut_ptr(),target_len);}
+ let mut state=NAMESPACE.lock();
+ if state.links.iter().any(|l|l.used&&unicode_equal_folded(&l.name[..l.name_len],&name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
+ let Some(slot)=state.links.iter_mut().find(|l|!l.used) else{return STATUS_INSUFFICIENT_RESOURCES};
+ *slot=SymbolicLink::EMPTY;slot.used=true;slot.name_len=name_len;slot.target_len=target_len;
+ slot.name[..name_len].copy_from_slice(&name[..name_len]);slot.target[..target_len].copy_from_slice(&target[..target_len]);
+ STATUS_SUCCESS
+}
+
+/// Delete a previously created symbolic-link mapping by its counted name.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_delete_symbolic_link(link_name:*mut UnicodeString)->i32 {
+ let Some((name_len,name_ptr))=valid_unicode_name(link_name) else{return STATUS_INVALID_PARAMETER};
+ let mut name=[0u16;MAX_SYMBOLIC_LINK_CHARS];
+ unsafe{ptr::copy_nonoverlapping(name_ptr,name.as_mut_ptr(),name_len);}
+ let mut state=NAMESPACE.lock();
+ let Some(slot)=state.links.iter_mut().find(|l|l.used&&unicode_equal_folded(&l.name[..l.name_len],&name[..name_len])) else{return STATUS_OBJECT_NAME_NOT_FOUND};
+ *slot=SymbolicLink::EMPTY;
+ STATUS_SUCCESS
+}
+
+
 #[cfg(test)]
 mod wdm_tests {
  use super::*;
@@ -607,6 +662,20 @@ mod wdm_tests {
   unsafe{io_unregister_file_system(device);}
   assert!(!is_file_system_registered(device));
   unsafe{io_delete_device(device);}
+ }
+
+ #[test]
+ fn symbolic_links_validate_names_collide_case_insensitively_and_delete() {
+  let mut link=[b'\\' as u16,b'?' as u16,b'?' as u16,b'\\' as u16,b'X' as u16];
+  let mut target=[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16,b'\\' as u16,b'E' as u16,b'x' as u16,b't' as u16,b'4' as u16];
+  let mut link_name=UnicodeString{length:(link.len()*2) as u16,maximum_length:(link.len()*2) as u16,buffer:link.as_mut_ptr()};
+  let mut target_name=UnicodeString{length:(target.len()*2) as u16,maximum_length:(target.len()*2) as u16,buffer:target.as_mut_ptr()};
+  assert_eq!(unsafe{io_create_symbolic_link(&mut link_name,&mut target_name)},STATUS_SUCCESS);
+  let mut lower_link=[b'\\' as u16,b'?' as u16,b'?' as u16,b'\\' as u16,b'x' as u16];
+  let mut lower_name=UnicodeString{length:(lower_link.len()*2) as u16,maximum_length:(lower_link.len()*2) as u16,buffer:lower_link.as_mut_ptr()};
+  assert_eq!(unsafe{io_create_symbolic_link(&mut lower_name,&mut target_name)},STATUS_OBJECT_NAME_COLLISION);
+  assert_eq!(unsafe{io_delete_symbolic_link(&mut lower_name)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_delete_symbolic_link(&mut lower_name)},STATUS_OBJECT_NAME_NOT_FOUND);
  }
 
 }
