@@ -250,8 +250,8 @@ struct ScatterGatherListStorage {
     elements: [ScatterGatherElement; MAX_SG_SEGMENTS],
 }
 #[derive(Clone, Copy)]
-struct SgOwnership { active: bool, device: usize, list: usize }
-impl SgOwnership { const EMPTY: Self = Self { active: false, device: 0, list: 0 }; }
+struct SgOwnership { active: bool, device: usize, list: usize, token:usize, count:u32 }
+impl SgOwnership { const EMPTY: Self = Self { active: false, device: 0, list: 0, token:0, count:0 }; }
 struct SgRegistry {
     ownership: core::cell::UnsafeCell<[SgOwnership; MAX_OWNED_SG_LISTS]>,
     lists: core::cell::UnsafeCell<[ScatterGatherListStorage; MAX_OWNED_SG_LISTS]>,
@@ -280,20 +280,21 @@ pub unsafe extern "win64" fn get_scatter_gather_list(
  let _guard=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};
  let Some(index)=owners.iter().position(|e|!e.active)else{return 0xC000_009Au32 as i32};
  let lists=unsafe{&mut *SG_REGISTRY.lists.get()};let list=&mut lists[index];let device=match adapter_device(adapter){Some(v)=>v,None=>return 0xC000_000Du32 as i32};
+ let token=match allocate_map_register_token(device as *mut core::ffi::c_void,pages as u32){Some(t)=>t,None=>return 0xC000_009Au32 as i32};
  let mut va=current_va as u64;let mut remaining=length as u64;let mut mapped=0usize;
  for i in 0..pages{
   let chunk=remaining.min(PAGE_SIZE-(va&(PAGE_SIZE-1))) as u32;
   let physical=unsafe{crate::ntoskrnl::mm::mm_get_physical_address(va as *mut core::ffi::c_void)};
-  if physical==0{for j in 0..mapped{let _=iommu::unmap_logical(device,list.elements[j].address);}return 0xC000_000Du32 as i32}
-  match iommu::map_fragment(device,adapter as usize,physical,chunk,write_to_device){
+  if physical==0{for j in 0..mapped{let _=iommu::unmap_logical(device,list.elements[j].address);}unsafe{free_map_registers(adapter,token,pages as u32)}return 0xC000_000Du32 as i32}
+  match iommu::map_fragment(adapter,token,physical,chunk,write_to_device){
    Ok(logical)=>{list.elements[i]=ScatterGatherElement{address:logical,length:chunk,reserved:0};mapped+=1;}
-   Err(_)=>{for j in 0..mapped{let _=iommu::unmap_logical(device,list.elements[j].address);}return 0xC000_009Au32 as i32}
+   Err(_)=>{for j in 0..mapped{let _=iommu::unmap_logical(device,list.elements[j].address);}unsafe{free_map_registers(adapter,token,pages as u32)}return 0xC000_009Au32 as i32}
   }
   va+=chunk as u64;remaining-=chunk as u64;
  }
  list.number_of_elements=pages as u32;list.reserved=0;
  let list_ptr=(core::ptr::addr_of_mut!(*list)).cast::<ScatterGatherListAbi>();
- owners[index]=SgOwnership{active:true,device:device_object as usize,list:list_ptr as usize};
+ owners[index]=SgOwnership{active:true,device:device_object as usize,list:list_ptr as usize,token:token as usize,count:pages as u32};
  drop(_guard);fence(Ordering::SeqCst);
  unsafe{execution_routine.unwrap()(device_object,core::ptr::null_mut(),list_ptr,context)};0
 }
@@ -817,7 +818,7 @@ mod dma_lifecycle_tests {
         {
             let _guard = SG_LOCK.lock();
             let owners = unsafe { &mut *SG_REGISTRY.ownership.get() };
-            owners[0] = SgOwnership { active: true, device: 0x55, list: ptr as usize };
+            owners[0] = SgOwnership { active: true, device: 0x55, list: ptr as usize, token:0, count:0 };
         }
         let adapter = core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast();
         unsafe { put_scatter_gather_list(adapter, ptr, 0); }
