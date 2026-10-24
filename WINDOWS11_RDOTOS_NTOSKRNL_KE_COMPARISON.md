@@ -13,15 +13,15 @@
 
 ## Summary and calculated compatibility
 
-This expanded pass documents **116 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 116 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
+This expanded pass documents **129 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 129 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
 
 | Metric | Calculation | Result |
 |---|---|---:|
-| Source-level signature / x64 ABI declaration coverage | 116 documented declarations/call paths ÷ 116 | **116/116 = 100%** |
-| Name-based import resolution | 116 scoped routine names resolving to callable implementations ÷ 116 | **116/116 = 100%** |
-| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 116 | **10/116 = 8.6%** |
-| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 116 | **106/116 = 91.4%** |
-| Combined project score | (100% ABI declarations + 8.6% strict behavior) ÷ 2 | **54.3%** |
+| Source-level signature / x64 ABI declaration coverage | 129 documented declarations/call paths ÷ 129 | **129/129 = 100%** |
+| Name-based import resolution | 129 scoped routine names resolving to callable implementations ÷ 129 | **116/116 = 100%** |
+| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 129 | **10/129 = 7.8%** |
+| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 129 | **119/129 = 92.2%** |
+| Combined project score | (100% ABI declarations + 7.8% strict behavior) ÷ 2 | **53.9%** |
 
 **Important:** 54.3% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
 
@@ -157,29 +157,37 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 115 | LOGICAL KeTryToAcquireQueuedSpinLockRaiseToSynch(KSPIN_LOCK_QUEUE_NUMBER Number, PKIRQL OldIrql) | ke_try_to_acquire_queued_spin_lock_raise_to_synch(); nonblocking ticket reservation | Attempts acquisition at synchronization IRQL and restores IRQL on failure; this is a reserved internal-style export. **Partial/reserved.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 116 | LONG KeReadStateQueue(PRKQUEUE Queue) | ke_read_state_queue(); reads queue dispatcher signal state | Reports the queue entry count encoded in the dispatcher header. **Match for initialized RdotOS KQUEUE objects.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 
+| 117 | ULONGLONG KeQueryUnbiasedInterruptTimePrecise(PULONGLONG QpcTimeStamp) | ke_query_unbiased_interrupt_time_precise(); monotonic TSC sample | Writes the QPC sample and returns monotonic 100-ns time. Suspend/resume bias is not modelled, so it is not a full unbiased-time implementation. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequeryunbiasedinterrupttimeprecise) |
+| 118 | VOID KeGetClockTimerResolution(PULONG MaximumTime, PULONG MinimumTime, PULONG CurrentTime) | ke_get_clock_timer_resolution(); reports configured quantum | Writes 10,000 (1 ms) to non-null outputs. Resolution is fixed rather than dynamically programmed. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 119 | ULONG KeGetNextClockTickDuration(VOID) | ke_get_next_clock_tick_duration(); earliest active timer deadline | Converts the nearest known timer deadline to 100-ns units; returns a 1-ms fallback if no deadline exists. Depends on calibrated TSC and does not model all clock events. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 120 | VOID KeFlushIoBuffers(PMDL Mdl, BOOLEAN ReadOperation, BOOLEAN DmaOperation) | ke_flush_io_buffers(); x86-64 fences | Enforces CPU memory ordering on the current coherent-DMA target; ignores MDL ranges and does not perform non-coherent cache maintenance. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 121 | VOID KeInitializeDeviceQueue(PKDEVICE_QUEUE DeviceQueue, PKSPIN_LOCK Lock) | ke_initialize_device_queue(); intrusive queue initialization | Initializes queue/list/busy metadata and retains the supplied lock pointer. Private Windows queue object layout and lock discipline are not fully reproduced. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 122 | BOOLEAN KeInsertDeviceQueue(PKDEVICE_QUEUE DeviceQueue, PKDEVICE_QUEUE_ENTRY DeviceQueueEntry) | ke_insert_device_queue(); busy-state and FIFO insertion | Returns FALSE when caller should start the request and marks the queue busy; returns TRUE when entry is queued. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 123 | BOOLEAN KeInsertByKeyDeviceQueue(PKDEVICE_QUEUE DeviceQueue, PKDEVICE_QUEUE_ENTRY DeviceQueueEntry, ULONG SortKey) | ke_insert_by_key_device_queue(); stable sort-key insertion | Inserts queued entries in ascending key order and reports whether it queued the entry. Uses a global IRQ-safe lock rather than the caller's Windows interrupt-spin-lock protocol. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 124 | PKDEVICE_QUEUE_ENTRY KeRemoveDeviceQueue(PKDEVICE_QUEUE DeviceQueue) | ke_remove_device_queue(); FIFO head removal | Removes and returns the next entry, or clears Busy and returns NULL when empty. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 125 | KPRIORITY KeSetPriorityThread(PKTHREAD Thread, KPRIORITY Priority) | ke_set_priority_thread(); bounded per-thread priority side table | Stores priorities in the documented 0–31 range and returns the previous value. Cooperative scheduler ordering/boost behavior is not updated. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 126 | KPRIORITY KeQueryPriorityThread(PKTHREAD Thread) | ke_query_priority_thread(); per-thread priority side table | Returns tracked current priority or default 8. Metadata is not yet tied to scheduler dispatch policy. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 127 | LONG KeSetBasePriorityThread(PKTHREAD Thread, LONG Increment) | ke_set_base_priority_thread(); base/current priority metadata | Applies a clamped 0–31 base-priority increment and returns the previous base priority. Scheduler quantum/boost behavior remains absent. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 128 | VOID KeBugCheck(ULONG BugCheckCode) | ke_bug_check(); terminal halt path | Records the bugcheck code and halts with interrupts disabled. No crash dump, parameter report, or reboot policy yet. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 129 | VOID KeBugCheckEx(ULONG BugCheckCode, ULONG_PTR P1, ULONG_PTR P2, ULONG_PTR P3, ULONG_PTR P4) | ke_bug_check_ex(); terminal halt path | Records the code and four parameters, then halts. Diagnostic reporting and dump capture remain absent. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+
 ## Additional Ke exports still unsupported
 
-The entries below remain **unresolved or unimplemented** in this pass. The preceding routine table now covers 116 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
+The entries below remain **unresolved or unimplemented** after the current implementation batch. The preceding routine table now covers 129 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
 
 | Routine | Current status | Public contract / next work |
 |---|---|---|
 | KeAcquireInterruptSpinLock, KeReleaseInterruptSpinLock | Stub / unresolved | Integrate interrupt object synchronization and restore the caller's prior IRQL. |
 | KeInitializeTimer2, KeSetTimer2, KeCancelTimer2 | Stub / unresolved | Implement timer2 ABI separately; do not alias it to legacy timer layouts. |
-| KeInitializeDeviceQueue, KeInsertDeviceQueue, KeInsertByKeyDeviceQueue, KeRemoveDeviceQueue | Stub / unresolved | Implement device queue busy state, keyed ordering and dispatcher handoff. |
 | KeInitializeApc, KeInsertQueueApc, KeRemoveQueueApc | Stub / unresolved | Implement APC object layout, kernel/user delivery points and rundown. KeAlertThread/KeTestAlertThread only model alert state. |
 | KeGenericCallDpc, KeIpiGenericCall, KeSignalCallDpcDone, KeSignalCallDpcSynchronize | Stub / unresolved | Implement all-processor rendezvous, per-CPU callbacks and completion barriers. |
 | KeRegisterNmiCallback, KeDeregisterNmiCallback | Stub / unresolved | Add safe NMI callback registration/rundown and interrupt-context restrictions. |
 | KeRegisterProcessorChangeCallback, KeDeregisterProcessorChangeCallback | Stub / unresolved | Connect callback lifecycle to processor hot-add/remove and startup sequencing. |
-| KeFlushIoBuffers | Stub / unresolved | Implement architecture/platform cache-coherency contract for MDL-backed I/O buffers. |
 | KeSynchronizeExecution | Stub / unresolved | Synchronize a caller-supplied routine with a specific interrupt object and its ISR lock. |
 | KeQueryLogicalProcessorRelationship | Stub / unresolved | Add ACPI topology relationships and documented variable-sized output buffer handling. |
-| KeGetClockTimerResolution, KeGetNextClockTickDuration | Stub / unresolved | Expose real clock/timer resolution and next deadline duration. |
-| KeQueryUnbiasedInterruptTimePrecise | Stub / unresolved | Add precise unbiased time and suspend/resume bias accounting. |
-| KeSetPriorityThread, KeQueryPriorityThread, KeSetBasePriorityThread | Stub / unresolved | Add Windows-compatible priority ranges, boosts and scheduler policy. |
 | KeSetAffinityThread, KeSetSystemGroupAffinityThread, KeRevertToUserGroupAffinityThread | Stub / unresolved | Implement thread affinity masks and processor-group-aware dispatch. |
 | KeStackAttachProcess, KeUnstackDetachProcess, KeAttachProcess, KeDetachProcess | Stub / unresolved | Implement APC-state save/restore, address-space switching and exception-safe detach. |
 | KeSaveExtendedProcessorState, KeRestoreExtendedProcessorState, KeSaveFloatingPointState, KeRestoreFloatingPointState | Stub / unresolved | Implement XSAVE feature masks, per-thread extended-state ownership and validation. |
-| KeBugCheck, KeBugCheckEx | Stub / unresolved | Add fatal stop path, bugcheck data, crash diagnostics and safe behavior at high IRQL. |
 
 Microsoft's DDI index describes the documented roles of [spin locks](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-keacquirespinlock), [event signaling](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kesetevent), [single-object waits](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kewaitforsingleobject), [thread delays](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kedelayexecutionthread), and [critical/guarded regions](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/critical-regions-and-guarded-regions). Exact private Windows kernel implementation details are not public; this comparison is against public WDK ABI and behavioral contracts.
 ## Return values, ABI, and call-path details
