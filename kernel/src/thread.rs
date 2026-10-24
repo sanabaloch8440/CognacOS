@@ -271,6 +271,44 @@ pub fn bind_current_process(pid:u64)->bool{
  let mut table=THREADS.lock();
  if let Some(t)=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty){t.process_id=pid;true}else{false}
 }
+pub fn assign_thread_impersonation_token(thread_object: *mut c_void, token: *mut c_void) -> i32 {
+    const STATUS_SUCCESS: i32 = 0;
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    if thread_object.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !token.is_null() && unsafe { crate::ntoskrnl::se::runtime::se_internal_ReferenceToken(token) } != STATUS_SUCCESS {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let old = {
+        let mut table = THREADS.lock();
+        let Some(record) = table.records.iter_mut().find(|t|
+            t.state != ThreadState::Empty &&
+            core::ptr::addr_of_mut!(**t).cast::<c_void>() == thread_object) else {
+            if !token.is_null() { let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) }; }
+            return STATUS_INVALID_PARAMETER;
+        };
+        let old = record.impersonation_token;
+        record.impersonation_token = token as usize;
+        old
+    };
+    if old != 0 { let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(old as *mut c_void) }; }
+    STATUS_SUCCESS
+}
+
+pub fn reference_current_impersonation_token() -> *mut c_void {
+    let Some(id) = current_thread_id() else { return core::ptr::null_mut(); };
+    let token = {
+        let table = THREADS.lock();
+        table.records.iter().find(|t| t.id == id && t.state != ThreadState::Empty)
+            .map(|t| t.impersonation_token).unwrap_or(0)
+    };
+    if token == 0 { return core::ptr::null_mut(); }
+    let pointer = token as *mut c_void;
+    if unsafe { crate::ntoskrnl::se::runtime::se_internal_ReferenceToken(pointer) } != 0 {
+        return core::ptr::null_mut();
+    }
+    pointer
+}
+
 pub fn current_process_id()->u64{
  let Some(id)=current_thread_id() else{return 0};
  let table=THREADS.lock();
