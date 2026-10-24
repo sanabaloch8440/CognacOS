@@ -9,18 +9,42 @@ mod sha256;
 include!(concat!(env!("OUT_DIR"), "/kernel_digest.rs"));
 
 use alloc::vec;
+use alloc::vec::Vec;
 use uefi::prelude::*;
 use uefi::mem::memory_map::MemoryMap;
-use uefi::proto::media::file::{File, FileAttribute, FileMode};
+use uefi::proto::media::file::{Directory, File, FileAttribute, FileMode};
 use uefi::{boot, cstr16};
 
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.exe");
+const HIVE_PATHS: [(&uefi::CStr16,&uefi::CStr16,usize);7] = [
+ (cstr16!("\\Windows\\System32\\config\\SYSTEM"),cstr16!("\\EFI\\RdotOS\\Hives\\SYSTEM"),128*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\SOFTWARE"),cstr16!("\\EFI\\RdotOS\\Hives\\SOFTWARE"),256*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\SECURITY"),cstr16!("\\EFI\\RdotOS\\Hives\\SECURITY"),64*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\SAM"),cstr16!("\\EFI\\RdotOS\\Hives\\SAM"),64*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\DEFAULT"),cstr16!("\\EFI\\RdotOS\\Hives\\DEFAULT"),64*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\COMPONENTS"),cstr16!("\\EFI\\RdotOS\\Hives\\COMPONENTS"),256*1024*1024),
+ (cstr16!("\\EFI\\Microsoft\\Boot\\BCD"),cstr16!("\\EFI\\RdotOS\\Hives\\BCD00000000"),64*1024*1024),
+];
+const NLS_PATHS: [(&uefi::CStr16,&uefi::CStr16,usize);8] = [
+ (cstr16!("\\Windows\\System32\\c_037.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\c_037.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\c_437.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\c_437.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\c_1252.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\c_1252.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\locale.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\locale.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\sortkey.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\sortkey.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\sorttbls.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\sorttbls.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\ctype.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\ctype.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\unicode.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\unicode.nls"),16*1024*1024),
+];
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct BootFile { address:u64, length:u64 }
+impl BootFile { const EMPTY:Self=Self{address:0,length:0}; }
 const MAX_KERNEL_FILE: usize = 32 * 1024 * 1024;
 const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
-const BOOT_INFO_VERSION: u32 = 6;
+const BOOT_INFO_VERSION: u32 = 7;
 const HIGH_HALF_PT_PAGES: usize = 64;
 const KERNEL_STACK_VIRTUAL_GUARD: u64 = 0xffff_ff00_0000_0000;
 
@@ -41,6 +65,24 @@ struct BootInfo {
     ap_trampoline_physical: u64,
     kernel_physical_sections: [(u64, u64); 4],
     kernel_physical_section_count: usize,
+    registry_hives: [BootFile;7],
+    nls_files: [BootFile;8],
+}
+
+
+fn read_optional_file(root:&mut Directory,path:&uefi::CStr16,maximum:usize)->Option<Vec<u8>>{
+ let handle=root.open(path,FileMode::Read,FileAttribute::empty()).ok()?;
+ let mut file=handle.into_regular_file()?;
+ let mut bytes=Vec::new();let mut chunk=[0u8;8192];
+ loop{let n=file.read(&mut chunk).ok()?;if n==0{break;}if bytes.len().checked_add(n)? > maximum{return None;}bytes.extend_from_slice(&chunk[..n]);}
+ if bytes.is_empty(){None}else{Some(bytes)}
+}
+fn stage_optional_file(root:&mut Directory,primary:&uefi::CStr16,fallback:&uefi::CStr16,maximum:usize)->BootFile{
+ let bytes=match read_optional_file(root,primary,maximum).or_else(||read_optional_file(root,fallback,maximum)){Some(b)=>b,None=>return BootFile::EMPTY};
+ let pages=match bytes.len().checked_add(uefi::boot::PAGE_SIZE-1){Some(n)=>n/uefi::boot::PAGE_SIZE,None=>return BootFile::EMPTY};
+ let allocation=match boot::allocate_pages(boot::AllocateType::MaxAddress(0xffff_ffff),boot::MemoryType::LOADER_DATA,pages){Ok(p)=>p,Err(_)=>return BootFile::EMPTY};
+ unsafe{core::ptr::write_bytes(allocation.as_ptr(),0,pages*uefi::boot::PAGE_SIZE);core::ptr::copy_nonoverlapping(bytes.as_ptr(),allocation.as_ptr(),bytes.len());}
+ BootFile{address:allocation.as_ptr() as u64,length:bytes.len() as u64}
 }
 
 #[entry]
@@ -94,6 +136,15 @@ fn main() -> Status {
     }
     uefi::println!("Kernel SHA-256 matches the bootloader's build-time trust anchor");
     drop(kernel_file);
+    uefi::println!("Staging optional native Windows registry hives and NLS tables");
+    let mut registry_hives=[BootFile::EMPTY;7];
+    for (i,(primary,fallback,limit)) in HIVE_PATHS.iter().enumerate(){
+        registry_hives[i]=stage_optional_file(&mut root,primary,fallback,*limit);
+    }
+    let mut nls_files=[BootFile::EMPTY;8];
+    for (i,(primary,fallback,limit)) in NLS_PATHS.iter().enumerate(){
+        nls_files[i]=stage_optional_file(&mut root,primary,fallback,*limit);
+    }
     drop(root);
     drop(fs);
 
@@ -264,6 +315,8 @@ fn main() -> Status {
         ap_trampoline_physical,
         kernel_physical_sections,
         kernel_physical_section_count,
+        registry_hives,
+        nls_files,
     };
     let boot_info_ptr = boot_info_storage.as_ptr().cast::<BootInfo>();
     unsafe { boot_info_ptr.write(boot_info); }
