@@ -119,7 +119,7 @@ pub unsafe fn load(image: &[u8]) -> Result<LoadedKernel, ElfError> {
         let virtual_end = p.vaddr.checked_add(p.memsz).ok_or(ElfError::BadSegment)?;
         if dest < 0x10_0000 || end > MAX_KERNEL_END || end <= dest
             || p.vaddr < 0xffff_8000_0000_0000
-            || virtual_end <= p.vaddr || virtual_end - 1 > 0xffff_ffff_ffff_ffff
+            || virtual_end <= p.vaddr
             || (p.align > 1 && !p.align.is_power_of_two())
         { return Err(ElfError::BadSegment); }
         if p.align > 1 && (p.vaddr.wrapping_sub(p.offset) & (p.align - 1)) != 0 {
