@@ -11,8 +11,8 @@ pub enum ThreadState { Empty, Ready, Running, Blocked, Exited }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadError { InvalidStack, InvalidAffinity, Full, NoCurrentThread, InvalidState, InvalidCpu }
 #[derive(Clone, Copy)]
-struct ThreadRecord { id:u64, state:ThreadState, affinity:u64, context_rsp:*mut u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32 }
-impl ThreadRecord { const EMPTY:Self=Self{id:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0}; }
+struct ThreadRecord { id:u64, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32 }
+impl ThreadRecord { const EMPTY:Self=Self{id:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0}; }
 unsafe impl Send for ThreadRecord {}
 struct ThreadTable { records:[ThreadRecord;MAX_THREADS], next_id:u64 }
 impl ThreadTable { const fn new()->Self { Self{records:[ThreadRecord::EMPTY;MAX_THREADS],next_id:1} } }
@@ -21,6 +21,10 @@ static THREADS:IrqSpinLock<ThreadTable>=IrqSpinLock::new(ThreadTable::new());
 struct IdleContext(UnsafeCell<*mut u64>);
 unsafe impl Sync for IdleContext {}
 static IDLE_CONTEXTS:[IdleContext;crate::hal::MAX_CPUS]=[const { IdleContext(UnsafeCell::new(core::ptr::null_mut())) };crate::hal::MAX_CPUS];
+static IDLE_STACK_TOPS:[core::sync::atomic::AtomicU64;crate::hal::MAX_CPUS]=[const { core::sync::atomic::AtomicU64::new(0) };crate::hal::MAX_CPUS];
+static STRESS_LOCK:IrqSpinLock<u64>=IrqSpinLock::new(0);
+static STRESS_COMPLETED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static mut STRESS_STACKS:[[u8;8192];8]=[[0;8192];8];
 
 fn cpu_index()->Result<usize,ThreadError>{
     if let Some(local)=crate::hal::current_cpu_local(){
@@ -56,7 +60,9 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     let mut table=THREADS.lock();
     let slot=table.records.iter().position(|t|t.state==ThreadState::Empty).ok_or(ThreadError::Full)?;
     let id=table.next_id;table.next_id=table.next_id.wrapping_add(1).max(1);
-    table.records[slot]=ThreadRecord{id,state:ThreadState::Ready,affinity,context_rsp:frame,entry:Some(entry),argument,wake_pending:false,wait_status:0};
+    table.records[slot]=ThreadRecord{id,state:ThreadState::Ready,affinity,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0};
+    drop(table);
+    notify_affinity(affinity);
     Ok(id)
 }
 
@@ -65,6 +71,9 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
 fn reschedule(block:bool)->Result<(),ThreadError>{
     let cpu=cpu_index()?;
     let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
+    let mut observed_rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) observed_rsp, options(nomem, nostack, preserves_flags)); }
+    let _ = IDLE_STACK_TOPS[cpu].compare_exchange(0, observed_rsp, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire);
     let mut current_id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
     let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
     let (old_rsp_ptr,new_rsp)= {
@@ -87,7 +96,10 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
         if let Some(index)=next {
             let next_record=&mut table.records[index];next_record.state=ThreadState::Running;
             local.current_thread.store(next_record.id,core::sync::atomic::Ordering::Release);
-            (old_rsp_ptr,next_record.context_rsp)
+            let next_rsp = next_record.context_rsp;
+            let next_stack_top = next_record.stack_top;
+            let _ = crate::arch::set_kernel_stack(cpu, next_stack_top);
+            (old_rsp_ptr,next_rsp)
         } else if current_id!=0 && !block {
             if let Some(current)=table.records.iter_mut().find(|t|t.id==current_id){current.state=ThreadState::Running;}
             return Ok(());
@@ -98,6 +110,8 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
                 return Err(ThreadError::InvalidState);
             }
             local.current_thread.store(0,core::sync::atomic::Ordering::Release);
+            let idle_top = IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
+            if idle_top != 0 { let _ = crate::arch::set_kernel_stack(cpu, idle_top); }
             (old_rsp_ptr,idle)
         } else { return Ok(()) }
     };
@@ -109,7 +123,28 @@ pub fn yield_current()->Result<(),ThreadError>{reschedule(false)}
 /// Block the current thread. A wake racing before this call is remembered and cancels the block.
 pub fn block_current()->Result<(),ThreadError>{reschedule(true)}
 /// Wake a blocked thread. If it is still running, remember the wake to close enqueue/block races.
-pub fn wake(id:u64)->Result<(),ThreadError>{let mut table=THREADS.lock();let t=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty).ok_or(ThreadError::InvalidState)?;match t.state{ThreadState::Blocked=>{t.state=ThreadState::Ready;Ok(())},ThreadState::Running=>{t.wake_pending=true;Ok(())},ThreadState::Ready=>Ok(()),ThreadState::Exited|ThreadState::Empty=>Err(ThreadError::InvalidState)}}
+pub fn wake(id:u64)->Result<(),ThreadError>{
+    let mut table=THREADS.lock();
+    let t=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty).ok_or(ThreadError::InvalidState)?;
+    let affinity=t.affinity;
+    match t.state {
+        ThreadState::Blocked=>t.state=ThreadState::Ready,
+        ThreadState::Running=>t.wake_pending=true,
+        ThreadState::Ready=>{},
+        ThreadState::Exited|ThreadState::Empty=>return Err(ThreadError::InvalidState),
+    }
+    drop(table);
+    notify_affinity(affinity);
+    Ok(())
+}
+fn notify_affinity(affinity:u64) {
+    for cpu in 0..crate::hal::MAX_CPUS {
+        if affinity & (1u64 << cpu) != 0
+            && crate::hal::cpu_state(cpu).ok() == Some(crate::hal::CPU_ONLINE) {
+            let _ = crate::smp::request_reschedule(cpu);
+        }
+    }
+}
 fn exit_current()->! {
     let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
     let local=match crate::hal::cpu_local(cpu){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
@@ -124,11 +159,16 @@ fn exit_current()->! {
         if let Some(index)=table.records.iter().position(|t|t.state==ThreadState::Ready&&t.affinity&bit!=0){
             let next=&mut table.records[index];next.state=ThreadState::Running;
             local.current_thread.store(next.id,core::sync::atomic::Ordering::Release);
-            (old_rsp_ptr,next.context_rsp)
+            let next_rsp=next.context_rsp;
+            let next_stack_top=next.stack_top;
+            let _=crate::arch::set_kernel_stack(cpu,next_stack_top);
+            (old_rsp_ptr,next_rsp)
         }else{
             local.current_thread.store(0,core::sync::atomic::Ordering::Release);
             let idle=unsafe{*idle_rsp_ptr};
             if idle.is_null(){loop{core::hint::spin_loop()}}
+            let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
+            if idle_top!=0 { let _=crate::arch::set_kernel_stack(cpu,idle_top); }
             (old_rsp_ptr,idle)
         }
     };
@@ -174,7 +214,45 @@ pub fn initialize(){
             local.current_thread.store(0,core::sync::atomic::Ordering::Release);
         }
         unsafe { *IDLE_CONTEXTS[cpu].0.get()=core::ptr::null_mut(); }
+        IDLE_STACK_TOPS[cpu].store(0,core::sync::atomic::Ordering::Release);
     }
+}
+
+extern "C" fn lock_stress_worker(_argument:*mut c_void) {
+    for _ in 0..256 {
+        {
+            let mut guard=STRESS_LOCK.lock();
+            *guard=guard.wrapping_add(1);
+        }
+        let _=yield_current();
+    }
+    STRESS_COMPLETED.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
+}
+
+/// Exercise contended IRQ-save locking, cross-CPU wake IPIs, context switching,
+/// and thread-record teardown. Intended for the post-SMP boot self-test.
+pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
+    if online_cpus==0 || online_cpus>crate::hal::MAX_CPUS { return false; }
+    *STRESS_LOCK.lock()=0;
+    STRESS_COMPLETED.store(0,core::sync::atomic::Ordering::Release);
+    let affinity=if online_cpus>=64 {u64::MAX} else {(1u64<<online_cpus)-1};
+    let mut ids=[0u64;8];
+    for slot in 0..8 {
+        let stack=unsafe { &mut *core::ptr::addr_of_mut!(STRESS_STACKS[slot]) };
+        match spawn(stack,affinity,lock_stress_worker,core::ptr::null_mut()) {
+            Ok(id)=>ids[slot]=id,
+            Err(_)=>return false,
+        }
+    }
+    let mut spins=0usize;
+    while STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)<ids.len() && spins<100_000_000 {
+        let _=yield_current();
+        core::hint::spin_loop();
+        spins+=1;
+    }
+    if STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)!=ids.len()
+        || *STRESS_LOCK.lock()!=8*256 { return false; }
+    ids.iter().all(|id|state(*id)==Some(ThreadState::Exited))
 }
 
 /// Fast scheduler predicate for the interruptible idle loop.
