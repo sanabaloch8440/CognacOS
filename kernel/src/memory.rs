@@ -863,6 +863,25 @@ mod allocator_map_tests {
     }
 
     #[test]
+    fn high_regions_clip_to_direct_map_and_filter_nonconventional_memory() {
+        let descriptors = [
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0xffff_f000, 4),
+            descriptor(6, 0x1_0000_0000, 16),
+            descriptor(EFI_CONVENTIONAL_MEMORY, DIRECT_MAP_PHYSICAL_LIMIT - PAGE_SIZE, 4),
+        ];
+        let mut regions = [Region::EMPTY; MAX_REGIONS];
+        let count = collect_high_regions(
+            descriptors.as_ptr().cast(), descriptors.len(),
+            core::mem::size_of::<MemoryDescriptor>(), &mut regions,
+        ).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(regions[0].next, PHYSICAL_LIMIT);
+        assert_eq!(regions[0].end, PHYSICAL_LIMIT + 3 * PAGE_SIZE);
+        assert_eq!(regions[1].next, DIRECT_MAP_PHYSICAL_LIMIT - PAGE_SIZE);
+        assert_eq!(regions[1].end, DIRECT_MAP_PHYSICAL_LIMIT);
+    }
+
+    #[test]
     fn alignment_helper_rejects_overflow_and_rounds_up() {
         assert_eq!(align_up(0x1001, PAGE_SIZE), Some(0x2000));
         assert_eq!(align_up(0x2000, PAGE_SIZE), Some(0x2000));
