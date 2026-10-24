@@ -191,13 +191,13 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack, preserves_flags));
         asm!("mov {}, cr3", out(reg) active_cr3, options(nomem, nostack, preserves_flags));
         if active_cr3 & !0xfff != info.pml4_physical {
-            serial_write(b"FATAL: active CR3 does not match the validated bootstrap root.\\r\\n");
+            serial_write(b"FATAL: active CR3 does not match the validated bootstrap root.\r\n");
             halt();
         }
         let map_bytes = match (info.memory_map_entries as u64)
             .checked_mul(info.memory_descriptor_size as u64) {
             Some(bytes) => bytes,
-            None => { serial_write(b"FATAL: memory-map byte length overflow.\\r\\n"); halt(); }
+            None => { serial_write(b"FATAL: memory-map byte length overflow.\r\n"); halt(); }
         };
         let bootstrap_ranges = [
             (info.pml4_physical, 4096u64),
@@ -227,10 +227,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             mapping_ok = false;
         }
         if !mapping_ok {
-            serial_write(b"FATAL: bootstrap page-table inspection found an unmapped or non-identity live dependency.\\r\\n");
+            serial_write(b"FATAL: bootstrap page-table inspection found an unmapped or non-identity live dependency.\r\n");
             halt();
         }
-        serial_write(b"Page-table inspection passed: low boot data, physical stack backing, APIC windows, and firmware handoff mappings are valid.\\r\\n");
+        serial_write(b"Page-table inspection passed: low boot data, physical stack backing, APIC windows, and firmware handoff mappings are valid.\r\n");
 
         let stack_end_virtual = info.kernel_stack_virtual_guard.checked_add(stack_allocation_bytes);
         let expected_stack_physical = current_rsp.checked_sub(info.kernel_stack_virtual_guard)
@@ -295,7 +295,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             || info.kernel_physical_section_count > info.kernel_physical_sections.len()
             || info.kernel_physical_sections[..info.kernel_physical_section_count]
                 .iter().any(|(start, end)| *start == 0 || *start >= *end) {
-            serial_write(b"FATAL: invalid PE section physical-backing metadata.\\r\\n");
+            serial_write(b"FATAL: invalid PE section physical-backing metadata.\r\n");
             halt();
         }
         memory::set_direct_map_readonly_ranges([
@@ -649,12 +649,12 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         serial_write(b"\r\n");
                         if ipi_enabled {
                             if !smp::interrupt_setup_stress_test(64) {
-                                serial_write(b"FATAL: per-CPU IDT/LAPIC IPI stress test failed.\\r\\n");
+                                serial_write(b"FATAL: per-CPU IDT/LAPIC IPI stress test failed.\r\n");
                                 halt();
                             }
-                            serial_write(b"Per-CPU interrupt setup stress passed: 64 acknowledged IPIs per online AP.\\r\\n");
+                            serial_write(b"Per-CPU interrupt setup stress passed: 64 acknowledged IPIs per online AP.\r\n");
                         } else {
-                            serial_write(b"WARNING: per-CPU IPI stress skipped because interrupt-driven IPIs are unavailable.\\r\\n");
+                            serial_write(b"WARNING: per-CPU IPI stress skipped because interrupt-driven IPIs are unavailable.\r\n");
                         }
                         let (tsc_synced, worst_offset) = apic::tsc_cross_core_status();
                         serial_write(if tsc_synced {
