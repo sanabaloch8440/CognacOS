@@ -67,7 +67,7 @@ fn key_from_handle(s:&State,h:*mut core::ffi::c_void)->Option<u32>{
 fn handle(id:u32)->*mut core::ffi::c_void{(HANDLE_BASE+id as usize) as *mut core::ffi::c_void}
 unsafe fn object_path(oa:*const ObjectAttributes)->Result<([u16;MAX_NAME],usize,u32),i32>{
  if oa.is_null(){return Err(STATUS_INVALID_PARAMETER);}
- let o=unsafe{&*oa};if o.object_name.is_null(){return Err(STATUS_INVALID_PARAMETER);}
+ let o=unsafe{&*oa};if (o.length as usize)<core::mem::size_of::<ObjectAttributes>()||o.object_name.is_null(){return Err(STATUS_INVALID_PARAMETER);}
  let mut name=[0u16;MAX_NAME];let n=unsafe{read_name(o.object_name,&mut name)}?;
  let s=state();let parent=if o.root_directory.is_null(){0}else{key_from_handle(s,o.root_directory).ok_or(STATUS_INVALID_PARAMETER)?};
  Ok((name,n,parent))
