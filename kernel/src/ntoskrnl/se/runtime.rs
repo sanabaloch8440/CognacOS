@@ -732,10 +732,20 @@ struct SecurityTokenIdentity {
     count: u8,
     lengths: [u8; SECURITY_TOKEN_SIDS],
     sids: [[u8; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS],
+    restricted_count: u8,
+    restricted_lengths: [u8; SECURITY_TOKEN_SIDS],
+    restricted_sids: [[u8; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS],
+    capability_count: u8,
+    capability_lengths: [u8; SECURITY_TOKEN_SIDS],
+    capability_sids: [[u8; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS],
 }
 impl SecurityTokenIdentity {
     const EMPTY: Self = Self { used: false, token: 0, count: 0,
-        lengths: [0; SECURITY_TOKEN_SIDS], sids: [[0; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS] };
+        lengths: [0; SECURITY_TOKEN_SIDS], sids: [[0; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS],
+        restricted_count: 0, restricted_lengths: [0; SECURITY_TOKEN_SIDS],
+        restricted_sids: [[0; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS],
+        capability_count: 0, capability_lengths: [0; SECURITY_TOKEN_SIDS],
+        capability_sids: [[0; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS] };
 }
 static SECURITY_TOKEN_LOCK: TokenMetaLock = TokenMetaLock::new();
 static mut SECURITY_TOKEN_IDENTITIES: [SecurityTokenIdentity; SECURITY_TOKEN_SLOTS] =
@@ -765,6 +775,65 @@ pub(crate) unsafe fn se_internal_RegisterTokenSids(
         .or_else(|| entries.iter().position(|e| !e.used));
     let Some(i) = slot else { return 0xC000_009Au32 as i32; };
     entries[i] = entry;
+    STATUS_SUCCESS
+}
+
+
+unsafe fn copy_sid_set(
+    sid_ptrs: *const *const u8, lengths: *const u8, count: u32,
+) -> Option<([[u8; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS], [u8; SECURITY_TOKEN_SIDS])> {
+    if count == 0 || count as usize > SECURITY_TOKEN_SIDS || sid_ptrs.is_null() || lengths.is_null() { return None; }
+    let mut values = [[0u8; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS];
+    let mut sizes = [0u8; SECURITY_TOKEN_SIDS];
+    for i in 0..count as usize {
+        let ptr = unsafe { core::ptr::read_unaligned(sid_ptrs.add(i)) };
+        let len = unsafe { core::ptr::read_unaligned(lengths.add(i)) } as usize;
+        if ptr.is_null() || len < 8 || len > SECURITY_SID_BYTES { return None; }
+        let sid = unsafe { core::slice::from_raw_parts(ptr, len) };
+        if bounded_sid_size(sid) != Some(len) { return None; }
+        values[i][..len].copy_from_slice(sid);
+        sizes[i] = len as u8;
+    }
+    Some((values, sizes))
+}
+
+/// Internal token-construction hook for restricting SIDs. The token metadata entry
+/// must exist first; all SIDs are validated and copied before publishing the set.
+pub(crate) unsafe fn se_internal_RegisterRestrictedTokenSids(
+    token: *mut c_void, sid_ptrs: *const *const u8, lengths: *const u8, count: u32,
+) -> i32 {
+    if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some((sids, sizes)) = (unsafe { copy_sid_set(sid_ptrs, lengths, count) }) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let _guard = SECURITY_TOKEN_LOCK.lock();
+    let entries = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
+    let Some(entry) = entries.iter_mut().find(|e| e.used && e.token == token as usize) else {
+        return 0xC000_0008u32 as i32;
+    };
+    entry.restricted_sids = sids;
+    entry.restricted_lengths = sizes;
+    entry.restricted_count = count as u8;
+    STATUS_SUCCESS
+}
+
+/// Internal AppContainer capability registration hook. Capability SIDs are kept
+/// separately from ordinary group SIDs so access checks can apply the capability pass.
+pub(crate) unsafe fn se_internal_RegisterTokenCapabilities(
+    token: *mut c_void, sid_ptrs: *const *const u8, lengths: *const u8, count: u32,
+) -> i32 {
+    if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some((sids, sizes)) = (unsafe { copy_sid_set(sid_ptrs, lengths, count) }) else {
+        return STATUS_INVALID_PARAMETER;
+    };
+    let _guard = SECURITY_TOKEN_LOCK.lock();
+    let entries = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
+    let Some(entry) = entries.iter_mut().find(|e| e.used && e.token == token as usize) else {
+        return 0xC000_0008u32 as i32;
+    };
+    entry.capability_sids = sids;
+    entry.capability_lengths = sizes;
+    entry.capability_count = count as u8;
     STATUS_SUCCESS
 }
 
