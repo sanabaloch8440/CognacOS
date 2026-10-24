@@ -210,3 +210,4 @@ jobs:
             build/kernel/rdotos-kernel.exe
             build/rdotos-uefi.img
             build/serial.log
+            build/serial-smp-*.log
