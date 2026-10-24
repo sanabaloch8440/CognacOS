@@ -236,6 +236,10 @@ fn main() -> Status {
         uefi::println!("FATAL: could not establish high-half kernel/stack aliases");
         loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
     }
+    if loaded_kernel.segment_count == 0 || loaded_kernel.segment_count > 4 {
+        uefi::println!("Kernel PE image has too many physical sections for the handoff contract");
+        return Status::LOAD_ERROR;
+    }
     let mut kernel_physical_sections = [(0u64, 0u64); 4];
     let kernel_physical_section_count = loaded_kernel.segment_count.min(kernel_physical_sections.len());
     for (index, segment) in loaded_kernel.segments[..kernel_physical_section_count].iter().copied().enumerate() {
