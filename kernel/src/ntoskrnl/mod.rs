@@ -158,6 +158,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "KeGetRecommendedSharedDataAlignment" => ke::runtime::ke_get_recommended_shared_data_alignment as usize,
   "KeAcquireInStackQueuedSpinLock" => ke::runtime::ke_acquire_in_stack_queued_spin_lock as usize,
   "KeReleaseInStackQueuedSpinLock" => ke::runtime::ke_release_in_stack_queued_spin_lock as usize,
+  "KeAcquireInStackQueuedSpinLockRaiseToSynch" => ke::runtime::ke_acquire_in_stack_queued_spin_lock_raise_to_synch as usize,
   "KeAcquireInStackQueuedSpinLockAtDpcLevel" => ke::runtime::ke_acquire_in_stack_queued_spin_lock_at_dpc_level as usize,
   "KeReleaseInStackQueuedSpinLockFromDpcLevel" => ke::runtime::ke_release_in_stack_queued_spin_lock_from_dpc_level as usize,
   "KeAcquireQueuedSpinLock" => ke::runtime::ke_acquire_queued_spin_lock as usize,
