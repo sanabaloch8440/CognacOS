@@ -954,6 +954,42 @@ pub struct SeSecuritySubjectContext {
     pub primary_token: *mut c_void,
     pub process_audit_id: *mut c_void,
 }
+/// Capture the current process primary token and current thread impersonation token
+/// into a kernel subject-context record, holding references until release.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeCaptureSubjectContext(subject_context: *mut SeSecuritySubjectContext) {
+    if subject_context.is_null() { return; }
+    let pid = crate::thread::current_process_id();
+    let primary = crate::process::reference_primary_token(pid);
+    let client = crate::thread::reference_current_impersonation_token();
+    let level = if client.is_null() { 0 } else { unsafe { SeTokenImpersonationLevel(client) } };
+    let context = SeSecuritySubjectContext {
+        client_token: client,
+        impersonation_level: level,
+        primary_token: primary,
+        process_audit_id: core::ptr::null_mut(),
+    };
+    unsafe { core::ptr::write_unaligned(subject_context, context); }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeReleaseSubjectContext(subject_context: *mut SeSecuritySubjectContext) {
+    if subject_context.is_null() { return; }
+    let context = unsafe { core::ptr::read_unaligned(subject_context) };
+    if !context.client_token.is_null() {
+        let _ = unsafe { se_internal_DereferenceToken(context.client_token) };
+    }
+    if !context.primary_token.is_null() {
+        let _ = unsafe { se_internal_DereferenceToken(context.primary_token) };
+    }
+    unsafe {
+        core::ptr::write_unaligned(subject_context, SeSecuritySubjectContext {
+            client_token: core::ptr::null_mut(), impersonation_level: 0,
+            primary_token: core::ptr::null_mut(), process_audit_id: core::ptr::null_mut(),
+        });
+    }
+}
+
 fn map_generic_access(mask: u32, mapping: &SeGenericMapping) -> u32 {
     let mut out = mask;
     if out & 0x8000_0000 != 0 { out = (out & !0x8000_0000) | mapping.generic_read; }
