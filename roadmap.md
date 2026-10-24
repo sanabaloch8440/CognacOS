@@ -521,3 +521,5 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [ ] Run the current workflow and verify the new Se host tests compile and execute.
 - [ ] Implement and test a real ACE evaluator with generic mapping, deny/allow ordering, object ACE handling, restricted-token second pass, and privilege grants before exposing SeAccessCheck.
 - [ ] Integrate these primitives with real Ps token ownership and safe user-memory capture; extension helpers are not Windows export ABI replacements.
+
+- [x] Extend bounded inspection with SID authority fields, ACL metadata/ACE-type counting, basic SID-in-ACL search, descriptor component presence, and access/privilege mask utilities.
