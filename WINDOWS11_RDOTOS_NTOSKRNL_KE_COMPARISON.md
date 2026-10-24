@@ -13,22 +13,22 @@
 
 ## Summary and calculated compatibility
 
-This pass now covers **25 Ke routines** in this comparison: the original 20, four critical/guarded-region routines, and a corrected KeGetCurrentProcessorNumberEx ABI/return path. New routines use the x64 Windows calling convention (extern "win64") and documented argument/return widths.
+This expanded pass documents **64 Ke routines**: the original 25-routine comparison plus alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. The import resolver maps these public names to callable routines. This is source-level ABI coverage, not proof that opaque Windows object layouts or all DDI edge cases match.
 
 | Metric | Calculation | Result |
 |---|---|---:|
-| Source-level signature / x64 ABI shape | 25 matching parameter and return-width declarations ÷ 25 | **25/25 = 100%** |
-| Name-based import resolution | 25 routine names resolving to callable implementations ÷ 25 | **25/25 = 100%** |
-| Behavior match within the currently advertised topology | 10 processor-group / NUMA routines matching RdotOS's group-0/node-0 model ÷ 25 | **10/25 = 40%** |
-| Partial or limited behavior | Remaining routines with documented gaps ÷ 25 | **15/25 = 60%** |
-| Combined project score | (100% ABI + 40% behavior) ÷ 2 | **70%** |
+| Source-level signature / x64 ABI declaration coverage | 64 documented declarations/call paths ÷ 64 | **64/64 = 100%** |
+| Name-based import resolution | 64 scoped routine names resolving to callable implementations ÷ 64 | **64/64 = 100%** |
+| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 64 | **10/64 = 15.6%** |
+| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 64 | **54/64 = 84.4%** |
+| Combined project score | (100% ABI declarations + 15.6% strict behavior) ÷ 2 | **57.8%** |
 
-**Important:** 70% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. Matching an ABI does not imply matching semantics. The behavior score counts topology queries as matches only within the explicitly supported single-group, single-node model. It does not imply compatibility with arbitrary NUMA or multi-group Windows systems.
+**Important:** 57.8% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% score applied to the smaller 25-routine subset and must not be compared as though the denominator were unchanged. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
 
 ### Scoring rules
 
 - **ABI score** checks x64 calling convention, argument count/order, pointer/structure shape, integer widths, and return type. It does not claim Windows internal object layouts are reproduced. The processor-number routine was corrected to return the systemwide index as documented.
-- **Behavior score** counts ten processor-group / NUMA queries as matching the topology currently exposed by RdotOS. Critical/guarded-region nesting is tracked per CPU slot rather than per thread, so APC and region behavior remains partial on migratable threads. Event pulse now serializes signal/wake/reset, but complete Windows wait handoff and priority boosting remain partial.
+- **Behavior score** counts ten processor-group / NUMA queries as strict matches within the current topology. Timer/DPC callbacks are driven by the APIC timer hook, but the DPC queue is bounded and flush executes locally; queued spin locks use bounded ticket-lock metadata; mutant ownership uses RdotOS thread IDs; and KQUEUE is implemented using a public-layout queue header and intrusive entries. These remain partial Windows behavioral matches, not complete executive equivalence.
 - **Combined score** is the unweighted mean of the two percentages, shown for progress tracking only.
 
 ## Routine-by-routine comparison
@@ -63,33 +63,63 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 24 | VOID KeLeaveGuardedRegion(VOID) | ke_leave_guarded_region(); direct name resolver | Decrements nesting without underflow. Correct only while execution remains on the same CPU slot; scheduler integration is still required. **Partial.** [Docs](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/critical-regions-and-guarded-regions) |
 | 25 | ULONG KeGetCurrentProcessorNumberEx(PPROCESSOR_NUMBER ProcNumber) | ke_get_current_processor_number_ex(out); normal name resolver | Now writes the optional group/number structure and returns the systemwide processor index (instead of the prior incorrect void return). Group 0 only. **Match within stated topology.** [Docs](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-kegetcurrentprocessornumberex) |
 
-## Additional Ke exports present in the manifest but still unsupported
+| 26 | BOOLEAN KeAlertThread(PKTHREAD Thread, KPROCESSOR_MODE AlertMode) | ke_alert_thread(); thread record alert flag and blocked alertable-wait wakeup | Sets pending alert state and can ready an alertable blocked thread. Does not queue/deliver kernel or user APC objects. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-kealertthread) |
+| 27 | BOOLEAN KeTestAlertThread(KPROCESSOR_MODE AlertMode) | ke_test_alert_thread(); consumes current thread's alert flag | Returns and clears pending alert state; not a full APC delivery/test implementation. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 28 | VOID KeInitializeTimer(PKTIMER Timer) | ke_initialize_timer(); timer side table | Initializes notification timer header and bounded timer metadata. Private Windows timer layout/linked-list internals are not reproduced. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 29 | VOID KeInitializeTimerEx(PKTIMER Timer, TIMER_TYPE Type) | ke_initialize_timer_ex(); timer side table | Supports notification and synchronization timer types. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 30 | BOOLEAN KeSetTimer(PKTIMER Timer, LARGE_INTEGER DueTime, PKDPC Dpc) | ke_set_timer(); due time passed by value using x64 ABI | Schedules absolute wall-clock or negative relative due time; return indicates prior active state. Requires calibrated TSC for deadlines. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 31 | BOOLEAN KeSetTimerEx(PKTIMER Timer, LARGE_INTEGER DueTime, LONG Period, PKDPC Dpc) | ke_set_timer_ex(); APIC timer deadline table | Supports periodic interval and optional DPC; periodic catch-up is coalesced if the clock is late. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 32 | BOOLEAN KeCancelTimer(PKTIMER Timer) | ke_cancel_timer(); deactivates side-table entry | Cancels an active deadline and prevents a not-yet-dispatched timer DPC; does not retract a callback already taken for dispatch. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 33 | LONG KeReadStateTimer(PKTIMER Timer) | ke_read_state_timer(); reads dispatcher signal state | Reports the timer's current signaled state. **Match for initialized RdotOS timer objects.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 34 | VOID KeInitializeDpc(PRKDPC Dpc, PKDEFERRED_ROUTINE DeferredRoutine, PVOID DeferredContext) | ke_initialize_dpc(); bounded DPC side table | Stores routine/context and marks the DPC initialized; Windows private KDPC layout is not recreated. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 35 | BOOLEAN KeInsertQueueDpc(PRKDPC Dpc, PVOID SystemArgument1, PVOID SystemArgument2) | ke_insert_queue_dpc(); bounded queue | Queues once and returns false if already queued. Dispatch runs from the APIC timer path or explicit flush. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 36 | BOOLEAN KeRemoveQueueDpc(PRKDPC Dpc) | ke_remove_queue_dpc(); clears queued flag | Removes a pending DPC if it has not started dispatch. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 37 | VOID KeFlushQueuedDpcs(VOID) | ke_flush_queued_dpcs(); local DPC drain | Drains queued callbacks on the calling CPU; lacks Windows' systemwide drain/rundown guarantees. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 38 | VOID KeAcquireInStackQueuedSpinLock(PKSPIN_LOCK SpinLock, PKLOCK_QUEUE_HANDLE LockHandle) | ke_acquire_in_stack_queued_spin_lock(); FIFO ticket side table | Raises to DISPATCH_LEVEL and takes a FIFO ticket. The handle's opaque Windows private layout is not fully emulated. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-keacquireinstackqueuedspinlock) |
+| 39 | VOID KeReleaseInStackQueuedSpinLock(PKLOCK_QUEUE_HANDLE LockHandle) | ke_release_in_stack_queued_spin_lock(); ticket release and IRQL restore | Releases ticket and restores saved IRQL; handle must be paired with its acquisition. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kereleaseinstackqueuedspinlock) |
+| 40 | VOID KeAcquireInStackQueuedSpinLockAtDpcLevel(PKSPIN_LOCK SpinLock, PKLOCK_QUEUE_HANDLE LockHandle) | ke_acquire_in_stack_queued_spin_lock_at_dpc_level() | FIFO ticket acquisition without raising IRQL. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-keacquireinstackqueuedspinlockatdpclevel) |
+| 41 | VOID KeReleaseInStackQueuedSpinLockFromDpcLevel(PKLOCK_QUEUE_HANDLE LockHandle) | ke_release_in_stack_queued_spin_lock_from_dpc_level() | Releases ticket without changing IRQL. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kereleaseinstackqueuedspinlockfromdpclevel) |
+| 42 | VOID KeAcquireInStackQueuedSpinLockForDpc(PKSPIN_LOCK SpinLock, PKLOCK_QUEUE_HANDLE LockHandle) | ke_acquire_in_stack_queued_spin_lock_for_dpc() | DPC-level ticket-lock variant; target processor and queue semantics are simplified. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 43 | VOID KeReleaseInStackQueuedSpinLockForDpc(PKLOCK_QUEUE_HANDLE LockHandle) | ke_release_in_stack_queued_spin_lock_for_dpc() | Releases DPC-level queued handle. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 44 | KIRQL KeAcquireQueuedSpinLock(KSPIN_LOCK_QUEUE_NUMBER LockQueue) | ke_acquire_queued_spin_lock(); global lock-number ticket slot | Acquires a bounded global ticket lock and raises to DISPATCH_LEVEL; lock-number mapping is RdotOS-defined. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 45 | VOID KeReleaseQueuedSpinLock(KSPIN_LOCK_QUEUE_NUMBER LockQueue, KIRQL OldIrql) | ke_release_queued_spin_lock(); ticket release and IRQL restore | Releases corresponding global ticket lock. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 46 | KIRQL KeAcquireQueuedSpinLockRaiseToSynch(KSPIN_LOCK_QUEUE_NUMBER LockQueue) | ke_acquire_queued_spin_lock_raise_to_synch() | Acquires global ticket slot at synchronization IRQL. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 47 | VOID KeReleaseQueuedSpinLockFromSynchLevel(KSPIN_LOCK_QUEUE_NUMBER LockQueue, KIRQL OldIrql) | ke_release_queued_spin_lock_from_synch_level() | Releases global ticket slot and restores caller IRQL. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 48 | VOID KeInitializeMutex(PRKMUTEX Mutex, ULONG Level) | ke_initialize_mutex(); mutant ownership table | Initializes signaled mutex and ownership metadata. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-keinitializemutex) |
+| 49 | LONG KeReleaseMutex(PRKMUTEX Mutex, BOOLEAN Wait) | ke_release_mutex(); recursion/owner check and waiter handoff | Releases only for owning thread, supports recursive ownership and wakes one waiter; Wait handoff/boost semantics remain incomplete. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 50 | LONG KeReadStateMutex(PRKMUTEX Mutex) | ke_read_state_mutex(); signal-state read | Reports signaled state for initialized RdotOS mutex objects. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 51 | VOID KeInitializeMutant(PRKMUTANT Mutant, BOOLEAN InitialOwner) | ke_initialize_mutant(); owner and recursion table | Supports optional current-thread initial ownership. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 52 | LONG KeReleaseMutant(PRKMUTANT Mutant, KPRIORITY Increment, BOOLEAN Abandoned, BOOLEAN Wait) | ke_release_mutant(); recursive release/abandon path | Tracks recursive owner state and abandoned release; scheduler priority boosts and exact NT status edge cases remain incomplete. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 53 | LONG KeReadStateMutant(PRKMUTANT Mutant) | ke_read_state_mutant(); signal-state read | Returns signal state from the initialized mutant header. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 54 | VOID KeInitializeGuardedMutex(PKGUARDED_MUTEX Mutex) | ke_initialize_guarded_mutex(); guarded mutex metadata | Initializes ownership metadata and guarded-region semantics. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 55 | VOID KeAcquireGuardedMutex(PKGUARDED_MUTEX Mutex) | ke_acquire_guarded_mutex(); ownership and guarded region | Acquires guarded mutex with current-thread ownership; full contention/wait semantics remain limited. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 56 | VOID KeReleaseGuardedMutex(PKGUARDED_MUTEX Mutex) | ke_release_guarded_mutex(); ownership release | Releases guarded mutex and restores guarded-region nesting. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 57 | BOOLEAN KeTryToAcquireGuardedMutex(PKGUARDED_MUTEX Mutex) | ke_try_to_acquire_guarded_mutex(); nonblocking ownership attempt | Returns success only when lock acquisition succeeds. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 58 | VOID KeAcquireGuardedMutexUnsafe(PKGUARDED_MUTEX Mutex) | ke_acquire_guarded_mutex_unsafe(); caller guarded-region precondition | Uses the unsafe acquisition path without automatically providing the full Windows guarded-region contract. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 59 | VOID KeReleaseGuardedMutexUnsafe(PKGUARDED_MUTEX Mutex) | ke_release_guarded_mutex_unsafe(); ownership release | Releases unsafe guarded mutex; caller must balance region/precondition. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 60 | VOID KeInitializeQueue(PRKQUEUE Queue, ULONG Count) | ke_initialize_queue(); public-layout ExecutiveQueue header and intrusive LIST_ENTRY head | Initializes queue header and linked-list heads. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-keinitializequeue) |
+| 61 | LONG KeInsertQueue(PRKQUEUE Queue, PVOID Entry) | ke_insert_queue(); list-tail insertion and waiter handoff | Inserts entry or directly hands it to a waiting thread; return reflects prior signal state. Entry must be a compatible list entry in this implementation. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 62 | LONG KeInsertHeadQueue(PRKQUEUE Queue, PVOID Entry) | ke_insert_head_queue(); list-head insertion | Head insertion with the same simplified waiter handoff. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 63 | PVOID KeRemoveQueue(PRKQUEUE Queue, KPROCESSOR_MODE WaitMode, PLARGE_INTEGER Timeout) | ke_remove_queue(); dequeue, wait, then waiter-handoff entry | Supports blocking thread contexts and zero/relative timeout paths; returns status-coded pointer values on timeout/failure as Windows callers expect. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 64 | PLIST_ENTRY KeRundownQueue(PRKQUEUE Queue) | ke_rundown_queue(); detaches list and wakes waiters | Detaches queued entries and wakes waiters with abandoned status. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 
-The pinned export catalogue contains many more Ke names than the callable runtime implements. These entries are documented here as **stubs/unresolved imports**, not claimed as working routines. The resolver intentionally returns no function pointer for these until an ABI-correct implementation is wired in.
+## Additional Ke exports still unsupported
+
+The entries below remain **unresolved or unimplemented** in this pass. The preceding routine table now covers implemented timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, and executive-queue APIs. These remaining names must not be mistaken for working exports.
 
 | Routine | Current status | Public contract / next work |
 |---|---|---|
-| KeAcquireGuardedMutex, KeReleaseGuardedMutex, KeTryToAcquireGuardedMutex | Stub / unresolved | Implement guarded mutex ownership, recursion rules and guarded-region/APC interaction. |
-| KeAcquireGuardedMutexUnsafe, KeReleaseGuardedMutexUnsafe | Stub / unresolved | Implement caller-held guarded-region preconditions and ownership validation. |
-| KeAcquireInStackQueuedSpinLock, KeReleaseInStackQueuedSpinLock | Stub / unresolved | Implement ABI-correct KLOCK_QUEUE_HANDLE and fair queued lock handoff. |
-| KeAcquireInStackQueuedSpinLockAtDpcLevel, KeReleaseInStackQueuedSpinLockFromDpcLevel | Stub / unresolved | Add queued lock variants with exact DPC-level IRQL contract. |
-| KeAcquireQueuedSpinLock, KeReleaseQueuedSpinLock | Stub / unresolved | Add per-lock queue state and lock-number mapping. |
 | KeAcquireInterruptSpinLock, KeReleaseInterruptSpinLock | Stub / unresolved | Integrate interrupt object synchronization and restore the caller's prior IRQL. |
-| KeInitializeDpc, KeInsertQueueDpc, KeRemoveQueueDpc, KeFlushQueuedDpcs | Stub / unresolved | Implement DPC object layout, queueing, cancellation and execution/drain guarantees. |
-| KeInitializeTimer, KeInitializeTimerEx, KeSetTimer, KeSetTimerEx, KeCancelTimer | Stub / unresolved | Implement dispatcher timer objects, deadline queueing, cancellation races and DPC firing. |
-| KeInitializeTimer2, KeSetTimer2, KeCancelTimer2 | Stub / unresolved | Implement the newer timer2 ABI separately; do not alias it to legacy timer layouts. |
-| KeInitializeMutex, KeReleaseMutex, KeReadStateMutex | Stub / unresolved | Implement mutant ownership, recursion, abandonment and waiter priority semantics. |
-| KeInitializeMutant, KeReleaseMutant, KeReadStateMutant | Stub / unresolved | Implement mutant dispatcher object state and owner-thread accounting. |
-| KeInitializeQueue, KeInsertQueue, KeInsertHeadQueue, KeRemoveQueue, KeRundownQueue | Stub / unresolved | Implement executive queue object, waiters, quotas, timeout and rundown. |
-| KeInitializeDeviceQueue, KeInsertDeviceQueue, KeInsertByKeyDeviceQueue, KeRemoveDeviceQueue | Stub / unresolved | Implement device queue busy state and keyed ordering. |
-| KeInitializeApc, KeInsertQueueApc, KeRemoveQueueApc, KeAlertThread, KeTestAlertThread | Stub / unresolved | Implement APC object/queue layout, delivery points, alert states and rundown. |
+| KeInitializeTimer2, KeSetTimer2, KeCancelTimer2 | Stub / unresolved | Implement timer2 ABI separately; do not alias it to legacy timer layouts. |
+| KeInitializeDeviceQueue, KeInsertDeviceQueue, KeInsertByKeyDeviceQueue, KeRemoveDeviceQueue | Stub / unresolved | Implement device queue busy state, keyed ordering and dispatcher handoff. |
+| KeInitializeApc, KeInsertQueueApc, KeRemoveQueueApc | Stub / unresolved | Implement APC object layout, kernel/user delivery points and rundown. KeAlertThread/KeTestAlertThread only model alert state. |
 | KeGenericCallDpc, KeIpiGenericCall, KeSignalCallDpcDone, KeSignalCallDpcSynchronize | Stub / unresolved | Implement all-processor rendezvous, per-CPU callbacks and completion barriers. |
 | KeRegisterNmiCallback, KeDeregisterNmiCallback | Stub / unresolved | Add safe NMI callback registration/rundown and interrupt-context restrictions. |
 | KeRegisterProcessorChangeCallback, KeDeregisterProcessorChangeCallback | Stub / unresolved | Connect callback lifecycle to processor hot-add/remove and startup sequencing. |
 | KeFlushIoBuffers | Stub / unresolved | Implement architecture/platform cache-coherency contract for MDL-backed I/O buffers. |
 | KeSynchronizeExecution | Stub / unresolved | Synchronize a caller-supplied routine with a specific interrupt object and its ISR lock. |
 | KeQueryLogicalProcessorRelationship | Stub / unresolved | Add ACPI topology relationships and documented variable-sized output buffer handling. |
-| KeQueryTimeIncrement, KeGetClockTimerResolution, KeGetNextClockTickDuration | Stub / unresolved | Expose clock/timer resolution backed by the real periodic/deadline clock. |
+| KeGetClockTimerResolution, KeGetNextClockTickDuration | Stub / unresolved | Expose real clock/timer resolution and next deadline duration. |
 | KeQueryUnbiasedInterruptTimePrecise | Stub / unresolved | Add precise unbiased time and suspend/resume bias accounting. |
 | KeSetPriorityThread, KeQueryPriorityThread, KeSetBasePriorityThread | Stub / unresolved | Add Windows-compatible priority ranges, boosts and scheduler policy. |
 | KeSetAffinityThread, KeSetSystemGroupAffinityThread, KeRevertToUserGroupAffinityThread | Stub / unresolved | Implement thread affinity masks and processor-group-aware dispatch. |
@@ -124,8 +154,8 @@ Microsoft's DDI index describes the documented roles of [spin locks](https://lea
 
 1. Maintain an interrupt-time epoch from boot and advance it from the clock interrupt; account for sleep/resume bias.
 2. Add system-time setting/synchronization and suspend/resume correction to the new RTC-anchored, counter-interpolated wall clock.
-3. Move APC disable and guarded-region nesting from CPU slots into thread-local state, then connect those counters to real APC delivery.
-4. Finish event pulse's scheduler/wait-block atomicity, Wait handoff and priority boosts.
+3. Connect thread-local APC/guarded-region counters and alert state to real kernel/user APC object delivery and rundown.
+4. Finish event pulse's scheduler/wait-block atomicity, multi-object wait-any cancellation races, Wait handoff and priority boosts.
 5. Replace the opaque RdotOS thread-record token with a stable NT-compatible thread object abstraction for supported driver-visible operations.
 6. Expand ACPI SRAT/SLIT NUMA discovery and multi-group topology before claiming compatibility beyond one group/node.
 7. Run the full freestanding build and OVMF/QEMU smoke/SMP matrix. Signature review is not runtime verification.
