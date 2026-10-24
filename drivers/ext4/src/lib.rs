@@ -64,10 +64,22 @@ pub enum WriteError{Filesystem(Error),ReadOnly,OutOfRange,Io,PartialBlock}
 pub struct ExtFilesystem<D>{device:D,superblock:Superblock,read_only:bool}
 impl<D:ReadOnlyBlockDevice> ExtFilesystem<D>{
  pub fn mount_read_only(mut device:D)->Result<Self,Error>{let sb=read_superblock(&mut device)?;Ok(Self{device,superblock:sb,read_only:true})}
+ /// Mount a filesystem from a bounded partition view of a whole-disk device.
+ pub fn mount_partition_read_only(device:D,partition:DiskPartition)->Result<ExtFilesystem<PartitionDevice<D>>,Error>{
+  let view=PartitionDevice::new(device,partition)?;
+  ExtFilesystem::mount_read_only(view)
+ }
  pub fn superblock(&self)->&Superblock{&self.superblock}
  pub fn into_device(self)->D{self.device}
 }
 impl<D:BlockDevice> ExtFilesystem<D>{
+ /// Mount writable only through a partition-bounded block-device view. The
+ /// existing filesystem policy still rejects unsupported journaling/checksum
+ /// features and does not allocate blocks or mutate metadata.
+ pub fn mount_partition_writable(device:D,partition:DiskPartition)->Result<ExtFilesystem<PartitionDevice<D>>,Error>{
+  let view=PartitionDevice::new(device,partition)?;
+  ExtFilesystem::mount_writable(view)
+ }
  pub fn mount_writable(mut device:D)->Result<Self,Error>{
   let mut raw=[0u8;SUPERBLOCK_BYTES];device.read_at(SUPERBLOCK_DISK_OFFSET,&mut raw).map_err(|_|Error::Io)?;
   let sb=Superblock::parse(&raw)?;validate_superblock_checksum(&raw)?;
@@ -543,7 +555,7 @@ mod host_tests {
         );
     }
 
-    struct MemDisk { bytes:[u8;8192] }
+    struct MemDisk { bytes:[u8;32768] }
     impl ReadOnlyBlockDevice for MemDisk {
         type DeviceError=();
         fn capacity_bytes(&self)->u64{self.bytes.len() as u64}
@@ -562,7 +574,7 @@ mod host_tests {
 
     #[test]
     fn mbr_partition_view_translates_and_contains_io() {
-        let mut disk=MemDisk{bytes:[0;8192]};
+        let mut disk=MemDisk{bytes:[0;32768]};
         disk.bytes[510]=0x55;disk.bytes[511]=0xaa;
         let e=446;
         disk.bytes[e+4]=0x83;
