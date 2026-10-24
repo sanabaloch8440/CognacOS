@@ -120,11 +120,12 @@ fn main() -> Status {
 
     // Allocate bootstrap page tables while UEFI allocation services are still
     // available. Keep every table below 4 GiB because the initial map is identity.
-    let pml4_physical = match build_bootstrap_page_tables() {
-        Ok(address) => address,
+    let (pml4_physical, pt_pool_physical) = match build_bootstrap_page_tables() {
+        Ok(addresses) => addresses,
         Err(status) => { uefi::println!("Page-table allocation failed: {:?}", status); return status; }
     };
-    uefi::println!("Prepared kernel PML4 at {:#x}", pml4_physical);
+    uefi::println!("Prepared kernel PML4 at {:#x}; 4 KiB PT pool at {:#x}",
+        pml4_physical, pt_pool_physical);
     // Reserve low identity-mapped storage for the final map and boot-info.
     // The UEFI memory-map helper may return a buffer outside the bootstrap map.
     let map_copy = match boot::allocate_pages(
@@ -186,6 +187,7 @@ fn main() -> Status {
     }
     if unsafe { populate_bootstrap_page_tables(
         pml4_physical,
+        pt_pool_physical,
         map_copy.as_ptr().cast::<u8>(),
         memory_map.len(),
         descriptor_size,
@@ -278,23 +280,35 @@ fn allocate_boot_page() -> Result<u64, Status> {
     Ok(page.as_ptr() as u64)
 }
 
-/// Allocate an empty low-4-GiB page-table skeleton. Leaf mappings are
-/// populated from the final UEFI memory map after ExitBootServices, so holes
-/// are not accidentally identity-mapped merely because they are below 4 GiB.
-fn build_bootstrap_page_tables() -> Result<u64, Status> {
+const LOW_IDENTITY_PT_PAGES: usize = 2048; // one PT per 2 MiB in the first 4 GiB
+
+/// Allocate a four-level identity map with a 4 KiB PT for every 2 MiB window.
+/// This avoids mapping reserved holes just because they share a large page.
+fn build_bootstrap_page_tables() -> Result<(u64, u64), Status> {
     const PRESENT_WRITE: u64 = 0x003;
     let pml4 = allocate_boot_page()?;
     let pdpt = allocate_boot_page()?;
     let mut dirs = [0u64; 4];
     for dir in dirs.iter_mut() { *dir = allocate_boot_page()?; }
+    let pt_pool = boot::allocate_pages(
+        boot::AllocateType::MaxAddress(0xffff_ffff),
+        boot::MemoryType::LOADER_DATA,
+        LOW_IDENTITY_PT_PAGES,
+    ).map_err(|error| error.status())?;
     unsafe {
+        core::ptr::write_bytes(pt_pool.as_ptr(), 0, LOW_IDENTITY_PT_PAGES * boot::PAGE_SIZE);
         (pml4 as *mut u64).write(pdpt | PRESENT_WRITE);
         for index in 0..4 {
             (pdpt as *mut u64).add(index).write(dirs[index] | PRESENT_WRITE);
-            // allocate_boot_page zeroes every page-directory entry.
+            let directory = dirs[index] as *mut u64;
+            for slot in 0..512 {
+                let physical = pt_pool.as_ptr() as u64
+                    + ((index * 512 + slot) * boot::PAGE_SIZE) as u64;
+                directory.add(slot).write(physical | PRESENT_WRITE);
+            }
         }
     }
-    Ok(pml4)
+    Ok((pml4, pt_pool.as_ptr() as u64))
 }
 
 #[repr(C)]
@@ -313,11 +327,10 @@ struct RawMemoryDescriptor {
 /// uncovered physical holes remain not-present. All mapped regions start
 /// supervisor/writable; kernel section permissions are a later kernel phase.
 unsafe fn populate_bootstrap_page_tables(
-    pml4_physical: u64, map: *const u8, entries: usize, stride: usize,
+    pml4_physical: u64, pt_pool_physical: u64,
+    map: *const u8, entries: usize, stride: usize,
 ) -> Result<(), ()> {
     const PRESENT_WRITE: u64 = 0x003;
-    const LARGE_PAGE: u64 = 1 << 7;
-    const TWO_MIB: u64 = 2 * 1024 * 1024;
     const FOUR_GIB: u64 = 0x1_0000_0000;
     const PWT: u64 = 1 << 3;
     const PCD: u64 = 1 << 4;
@@ -336,53 +349,53 @@ unsafe fn populate_bootstrap_page_tables(
         let address = (map as usize).checked_add(offset).ok_or(())?;
         let descriptor = unsafe { core::ptr::read_unaligned(address as *const RawMemoryDescriptor) };
         if descriptor.number_of_pages == 0 { continue; }
+        if descriptor.physical_start & 0xfff != 0 { return Err(()); }
         let bytes = descriptor.number_of_pages.checked_mul(4096).ok_or(())?;
         let raw_end = descriptor.physical_start.checked_add(bytes).ok_or(())?;
-        let start = descriptor.physical_start & !(TWO_MIB - 1);
-        let end = raw_end.min(FOUR_GIB).checked_add(TWO_MIB - 1).ok_or(())? & !(TWO_MIB - 1);
-        if start >= end || start >= FOUR_GIB { continue; }
-        let mut physical = start;
-        while physical < end.min(FOUR_GIB) {
-            let pdpt_index = (physical >> 30) as usize;
-            let pd_index = ((physical >> 21) & 0x1ff) as usize;
-            let pdpte = unsafe { pdpt.add(pdpt_index).read() };
-            if pdpte & 1 == 0 || pdpte & LARGE_PAGE != 0 { return Err(()); }
-            let pd = (pdpte & 0x000f_ffff_ffff_f000) as *mut u64;
-            // xAPIC and I/O APIC windows must not be cached as ordinary WB RAM.
+        let mut physical = descriptor.physical_start;
+        let end = raw_end.min(FOUR_GIB);
+        if physical >= end || physical >= FOUR_GIB { continue; }
+        while physical < end {
+            let pt_index = (physical >> 21) as usize;
+            if pt_index >= LOW_IDENTITY_PT_PAGES { return Err(()); }
+            let table = (pt_pool_physical + pt_index as u64 * 4096) as *mut u64;
+            let slot = ((physical >> 12) & 0x1ff) as usize;
+            if unsafe { table.add(slot).read() } & 1 != 0 { return Err(()); }
             let cache_flags = if physical == 0xfec0_0000 || physical == 0xfee0_0000 {
                 PWT | PCD
             } else { 0 };
-            unsafe { pd.add(pd_index).write(physical | PRESENT_WRITE | LARGE_PAGE | cache_flags); }
-            physical += TWO_MIB;
+            unsafe { table.add(slot).write(physical | PRESENT_WRITE | cache_flags); }
+            physical = physical.checked_add(4096).ok_or(())?;
         }
     }
 
-    // Keep the standard local-APIC and I/O-APIC windows mapped even on firmware
-    // that omits MMIO apertures from its descriptor list. They are UC mappings.
+    // Firmware may omit APIC MMIO windows from its descriptor list. Map only
+    // the exact 4 KiB register pages, not surrounding physical apertures.
     for physical in [0xfec0_0000u64, 0xfee0_0000u64] {
-        let pdpt_index = (physical >> 30) as usize;
-        let pd_index = ((physical >> 21) & 0x1ff) as usize;
-        let pdpte = unsafe { pdpt.add(pdpt_index).read() };
-        if pdpte & 1 == 0 || pdpte & LARGE_PAGE != 0 { return Err(()); }
-        let pd = (pdpte & 0x000f_ffff_ffff_f000) as *mut u64;
-        unsafe { pd.add(pd_index).write(physical | PRESENT_WRITE | LARGE_PAGE | PWT | PCD); }
+        let table = (pt_pool_physical + ((physical >> 21) * 4096)) as *mut u64;
+        let slot = ((physical >> 12) & 0x1ff) as usize;
+        unsafe { table.add(slot).write(physical | PRESENT_WRITE | PWT | PCD); }
     }
     Ok(())
 }
 
 /// Confirm that a physical address is currently identity-mapped by a 2 MiB leaf.
 unsafe fn bootstrap_identity_mapped(pml4_physical: u64, address: u64) -> bool {
-    const LARGE_PAGE: u64 = 1 << 7;
-    const TWO_MIB: u64 = 2 * 1024 * 1024;
+    const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
     if address >= 0x1_0000_0000 { return false; }
     let pml4 = pml4_physical as *const u64;
     let pml4e = unsafe { pml4.read() };
     if pml4e & 1 == 0 { return false; }
-    let pdpt = (pml4e & 0x000f_ffff_ffff_f000) as *const u64;
+    let pdpt = (pml4e & ADDRESS_MASK) as *const u64;
     let pdpte = unsafe { pdpt.add(((address >> 30) & 0x3) as usize).read() };
     if pdpte & 1 == 0 { return false; }
-    let pd = (pdpte & 0x000f_ffff_ffff_f000) as *const u64;
+    let pd = (pdpte & ADDRESS_MASK) as *const u64;
     let pde = unsafe { pd.add(((address >> 21) & 0x1ff) as usize).read() };
-    pde & (1 | LARGE_PAGE) == (1 | LARGE_PAGE)
-        && (pde & 0x000f_ffff_ffe0_0000) + (address & (TWO_MIB - 1)) == address
+    if pde & 1 == 0 { return false; }
+    if pde & (1 << 7) != 0 {
+        return (pde & 0x000f_ffff_ffe0_0000) + (address & 0x1f_ffff) == address;
+    }
+    let pt = (pde & ADDRESS_MASK) as *const u64;
+    let pte = unsafe { pt.add(((address >> 12) & 0x1ff) as usize).read() };
+    pte & 1 != 0 && (pte & ADDRESS_MASK) + (address & 0xfff) == address
 }
