@@ -166,7 +166,7 @@ pub unsafe extern "win64" fn ObSetSecurityObject(object:*mut c_void,security_inf
 pub unsafe extern "win64" fn ObQuerySecurityObject(object:*mut c_void,security_information:u32,sd:*mut u8,length:u32,needed:*mut u32)->i32{
  if security_information==0||security_information&!0x0fu32!=0||needed.is_null(){return STATUS_INVALID_PARAMETER}
  let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,object as usize)else{return STATUS_INVALID_PARAMETER};let n=s.objects[i].sd_len as usize;
- unsafe{needed.write(n as u32)}if n==0{return STATUS_OBJECT_NAME_NOT_FOUND}if sd.is_null()||length as usize<n{return STATUS_BUFFER_TOO_SMALL}
+ unsafe{needed.write(n as u32)}if n==0{return STATUS_OBJECT_NAME_NOT_FOUND}if sd.is_null()||(length as usize)<n{return STATUS_BUFFER_TOO_SMALL}
  unsafe{core::ptr::copy_nonoverlapping(s.objects[i].sd.as_ptr(),sd,n)}STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
@@ -200,7 +200,7 @@ pub fn reference_body(body:*mut c_void,expected_type:u16,desired:u32,kernel_mode
  let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];
  if expected_type!=0&&s.objects[i].type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
  let granted=map_access(&t,desired);if granted&!t.valid!=0{return Err(STATUS_ACCESS_DENIED)}
- if !kernel_mode&&!access_check(s,&s.objects[i],granted,owner){return Err(STATUS_ACCESS_DENIED)}
+ if !kernel_mode&&!access_check(s,&s.objects[i],granted,0){return Err(STATUS_ACCESS_DENIED)}
  s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,0,4,desired,granted,STATUS_SUCCESS);Ok(body)
 }
 pub fn dereference_body(body:*mut c_void)->bool{
@@ -217,7 +217,7 @@ pub fn open_by_name(name:&[u16],desired:u32,owner:usize,kernel_mode:bool,attrs:u
  let g=s.handles[hi].generation.max(1);s.handles[hi]=HandleEntry{used:true,generation:g,object:i,owner:if attrs&OBJ_KERNEL_HANDLE!=0{usize::MAX}else{owner},access:granted,attributes:attrs};audit_locked(s,s.objects[i].body,owner,1,desired,granted,STATUS_SUCCESS);Ok(encode_handle(hi,g))
 }
 pub fn open_by_pointer(body:*mut c_void,desired:u32,owner:usize,kernel_mode:bool,attrs:u32)->Result<*mut c_void,i32>{
- let _g=LOCK.lock();let s=state();let i=object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let requested=map_access(&t,desired&!MAXIMUM_ALLOWED);let allowed=if kernel_mode{t.valid}else{dacl_allowed(&s.objects[i])&t.valid};let granted=if desired&MAXIMUM_ALLOWED!=0{allowed}else{requested};
+ let _g=LOCK.lock();let s=state();let i=object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let requested=map_access(&t,desired&!MAXIMUM_ALLOWED);let allowed=if kernel_mode{t.valid}else{dacl_allowed(s,&s.objects[i],owner)&t.valid};let granted=if desired&MAXIMUM_ALLOWED!=0{allowed}else{requested};
  if granted&!t.valid!=0||requested&!allowed!=0{return Err(STATUS_ACCESS_DENIED)}
  let hi=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].handles+=1;let g=s.handles[hi].generation.max(1);s.handles[hi]=HandleEntry{used:true,generation:g,object:i,owner:if attrs&OBJ_KERNEL_HANDLE!=0{usize::MAX}else{owner},access:granted,attributes:attrs};audit_locked(s,s.objects[i].body,owner,2,desired,granted,STATUS_SUCCESS);Ok(encode_handle(hi,g))
 }
@@ -236,7 +236,7 @@ pub fn reference_by_name(name:&[u16],expected_type:u16,desired:u32,kernel_mode:b
  let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
  if expected_type!=0&&s.objects[i].type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
  let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let granted=map_access(&t,desired);
- if granted&!t.valid!=0||(!kernel_mode&&!access_check(&s.objects[i],granted)){return Err(STATUS_ACCESS_DENIED)}
+ if granted&!t.valid!=0||(!kernel_mode&&!access_check(s,&s.objects[i],granted,0)){return Err(STATUS_ACCESS_DENIED)}
  s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;Ok(s.objects[i].body as *mut c_void)
 }
 pub fn object_name(body:*mut c_void,out:&mut [u16;MAX_NAME])->Result<usize,i32>{
