@@ -63,8 +63,14 @@ jobs:
         run: cargo check --manifest-path drivers/pci/Cargo.toml --lib
       - name: Check processor driver library
         run: cargo check --manifest-path drivers/processor/Cargo.toml --lib
-      - name: Test ext4 driver crate
-        run: cargo test --manifest-path drivers/ext4/Cargo.toml --lib
+      - name: Check ext4 driver library
+        run: cargo check --manifest-path drivers/ext4/Cargo.toml --lib
+      - name: Test ext4 parser and extent mapping
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --lib parser_mapping_and_crc_smoke_tests_pass
+      - name: Test ext4 metadata checksum validation
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --lib metadata_csum_superblock_is_checked_and_corruption_rejected
+      - name: Test ext4 writes reject requests beyond EOF
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --lib writes_past_inode_eof_are_rejected_before_device_io
       - name: Build separate native PE32+ HAL and driver images
         shell: bash
         run: |
@@ -105,8 +111,6 @@ jobs:
           mkdir -p build
           rustc --edition=2021 --test kernel/src/memory.rs -o build/memory-tests
           build/memory-tests
-      - name: Run ext filesystem driver host tests
-        run: cargo test --manifest-path drivers/ext4/Cargo.toml
       - name: Run host-side Ke timer-generation regression tests
         run: |
           mkdir -p build
