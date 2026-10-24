@@ -308,6 +308,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "HalAllProcessorsStarted" => crate::hal::exports::hal_all_processors_started as usize,
   "HalDisplayString" => crate::hal::exports::hal_display_string as usize,
   "IoGetDmaAdapter" => crate::dma::io_get_dma_adapter as usize,
+  "IoAcquireCancelSpinLock" => crate::io::io_acquire_cancel_spin_lock as usize,
+  "IoReleaseCancelSpinLock" => crate::io::io_release_cancel_spin_lock as usize,
   "IoIsWdmVersionAvailable" => crate::io::io_is_wdm_version_available as usize,
   "IoGetConfigurationInformation" => crate::io::io_get_configuration_information as usize,
   "HalGetAdapter" => crate::hal::exports::hal_get_adapter as usize,
@@ -703,6 +705,8 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalIsHyperThreadingEnabled")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoIsWdmVersionAvailable")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoGetConfigurationInformation")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoAcquireCancelSpinLock")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoReleaseCancelSpinLock")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool2")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool3")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePool2")).is_some()
