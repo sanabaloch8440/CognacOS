@@ -594,7 +594,7 @@ pub unsafe extern "win64" fn ke_are_all_apcs_disabled() -> u8 {
 /// BOOLEAN KeAlertThread(PKTHREAD Thread, KPROCESSOR_MODE AlertMode).
 /// This implements thread alert state, not kernel/user APC object delivery.
 pub unsafe extern "win64" fn ke_alert_thread(thread:*mut core::ffi::c_void,_alert_mode:i32)->u8{
-    let Some(id)=crate::thread::thread_id_from_object(thread) else{return 0};
+    let Some(id)=crate::thread::thread_id_from_object(thread) else{return 0;};
     crate::thread::set_alert_pending(id).unwrap_or(false) as u8
 }
 /// BOOLEAN KeTestAlertThread(KPROCESSOR_MODE AlertMode).
