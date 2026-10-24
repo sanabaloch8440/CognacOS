@@ -311,6 +311,13 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, _access_m
         } else if va >= 0xffff_8000_0000_0000 && !crate::kernel_vm::is_pageable_address(va) {
             translate(va, write_access)
         } else { None };
+        if pa.is_none() { return; }
+    }
+    for index in 0..pages as usize {
+        let va = start + index as u64 * PAGE_SIZE;
+        let pa = if crate::vm::is_user_range(va, 1) {
+            translate_current_user(va, write_access)
+        } else { translate(va, write_access) };
         let Some(pa) = pa else { return; };
         unsafe { destination.add(index).write(pa / PAGE_SIZE); }
     }
