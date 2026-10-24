@@ -90,10 +90,6 @@ pub unsafe extern "win64" fn ke_read_state_mutant(object:*const DispatcherHeader
 /// Mark mutexes owned by a terminating thread abandoned and wake their next waiter.
 pub fn thread_exit_cleanup(thread:u64){
     if thread==0{return}
-    // Address-space attachments must be unwound before this thread is switched
-    // out, otherwise the next thread can inherit the wrong CR3 and pin process
-    // objects indefinitely.
-    process_attach_thread_exit_cleanup(thread);
     let mut objects=[0usize;128];let mut count=0;
     {
         let mut table=MUTANTS.lock();
