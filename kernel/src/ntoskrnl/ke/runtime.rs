@@ -750,8 +750,8 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     if !matches!(unsafe { (*object).kind }, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 | TIMER_NOTIFICATION | TIMER_SYNCHRONIZATION | QUEUE_OBJECT | MUTANT_OBJECT) {
         return STATUS_NOT_IMPLEMENTED;
     }
-    if alertable != 0 { return STATUS_NOT_IMPLEMENTED; } // APC delivery is not yet implemented.
     let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
+    if alertable != 0 && crate::thread::take_alert_pending() { return STATUS_ALERTED; }
     if unsafe { try_consume_dispatcher_object(object) } { return STATUS_SUCCESS; }
     let deadline = if timeout.is_null() { 0 } else {
         let interval = unsafe { timeout.read_unaligned() };
@@ -763,20 +763,28 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
             None => return STATUS_NOT_IMPLEMENTED,
         }
     };
+    let _ = crate::thread::set_wait_alertable(alertable != 0);
     let token = match crate::dispatcher::enqueue(object as u64, thread_id, deadline) {
         Ok(value) => value,
-        Err(_) => return STATUS_NOT_IMPLEMENTED,
+        Err(_) => { let _=crate::thread::set_wait_alertable(false); return STATUS_NOT_IMPLEMENTED; },
     };
+    if alertable != 0 && crate::thread::take_alert_pending() {
+        let _=crate::dispatcher::cancel(token);let _=crate::thread::set_wait_alertable(false);return STATUS_ALERTED;
+    }
     if unsafe { try_consume_dispatcher_object(object) } {
         let _ = crate::dispatcher::cancel(token);
         let _ = crate::thread::clear_wake_pending();
+        let _=crate::thread::set_wait_alertable(false);
         return STATUS_SUCCESS;
     }
     if crate::thread::block_current().is_err() {
         let _ = crate::dispatcher::cancel(token);
+        let _=crate::thread::set_wait_alertable(false);
         return STATUS_NOT_IMPLEMENTED;
     }
-    crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS)
+    let status=crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS);
+    let _=crate::thread::set_wait_alertable(false);
+    status
 }
 
 /// Multiple-object waits are rejected explicitly until shared wait-block groups
@@ -795,7 +803,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
         return STATUS_INVALID_PARAMETER;
     }
     let _ = (wait_reason, wait_mode);
-    if alertable != 0 { return STATUS_NOT_IMPLEMENTED; }
+    if alertable != 0 && crate::thread::take_alert_pending() { return STATUS_ALERTED; }
     let object_list = unsafe { core::slice::from_raw_parts(objects, count as usize) };
     if object_list.iter().any(|object| object.is_null()) { return STATUS_INVALID_PARAMETER; }
     for i in 0..object_list.len() {
@@ -844,17 +852,24 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
                 Err(_) => return STATUS_NOT_IMPLEMENTED,
             }
         } else { None };
+        let _=crate::thread::set_wait_alertable(alertable!=0);
         if crate::dispatcher::register_wait_all(thread_id, &object_ids[..count as usize], timeout_token, deadline).is_err() {
             if let Some(token) = timeout_token { let _ = crate::dispatcher::cancel(token); }
-            return STATUS_NOT_IMPLEMENTED;
+            let _=crate::thread::set_wait_alertable(false);return STATUS_NOT_IMPLEMENTED;
         }
         drop(guard);
+        if alertable!=0 && crate::thread::take_alert_pending(){
+            crate::dispatcher::clear_wait_group(thread_id);if let Some(token)=timeout_token{let _=crate::dispatcher::cancel(token);}
+            let _=crate::thread::set_wait_alertable(false);return STATUS_ALERTED;
+        }
         if crate::thread::block_current().is_err() {
             crate::dispatcher::clear_wait_group(thread_id);
             if let Some(token) = timeout_token { let _ = crate::dispatcher::cancel(token); }
-            return STATUS_NOT_IMPLEMENTED;
+            let _=crate::thread::set_wait_alertable(false);return STATUS_NOT_IMPLEMENTED;
         }
-        return crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS);
+        let status=crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS);
+        let _=crate::thread::set_wait_alertable(false);
+        return status;
     }
 
     let mut tokens = [0u64; 64];
@@ -868,17 +883,24 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
             }
         }
     }
+    let _=crate::thread::set_wait_alertable(alertable!=0);
     if crate::dispatcher::register_wait_any(thread_id, &object_ids[..count as usize], &tokens[..registered], deadline).is_err() {
         for token in tokens[..registered].iter().copied() { let _ = crate::dispatcher::cancel(token); }
-        return STATUS_NOT_IMPLEMENTED;
+        let _=crate::thread::set_wait_alertable(false);return STATUS_NOT_IMPLEMENTED;
     }
     drop(guard);
+    if alertable!=0 && crate::thread::take_alert_pending(){
+        crate::dispatcher::clear_wait_group(thread_id);for token in tokens[..registered].iter().copied(){let _=crate::dispatcher::cancel(token);}
+        let _=crate::thread::set_wait_alertable(false);return STATUS_ALERTED;
+    }
     if crate::thread::block_current().is_err() {
         crate::dispatcher::clear_wait_group(thread_id);
         for token in tokens[..registered].iter().copied() { let _ = crate::dispatcher::cancel(token); }
-        return STATUS_NOT_IMPLEMENTED;
+        let _=crate::thread::set_wait_alertable(false);return STATUS_NOT_IMPLEMENTED;
     }
-    crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS)
+    let status=crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS);
+    let _=crate::thread::set_wait_alertable(false);
+    status
 }
 
 /// Never busy-loops when the thread runtime or calibrated delay source is absent.
