@@ -839,7 +839,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             } else {
             match unsafe { hal::start_local_clock_event() } {
                 Ok(()) => {
-                    serial_write(b"Local APIC timer enabled after AP startup/self-tests; external routes remain masked.\r\n");
+                    thread::set_preemption_enabled(true);
+                    serial_write(b"Local APIC timer enabled after AP startup/self-tests; timer-driven preemption enabled.\r\n");
                     loop {
                         unsafe { asm!("sti; hlt", options(nomem, nostack)); }
                         ntoskrnl::ke::runtime::dispatch_threaded_dpcs();
