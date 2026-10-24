@@ -27,12 +27,13 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Add kernel APC queue metadata, PASSIVE_LEVEL safe-point delivery, and queued APC rundown callbacks during thread exit.
 - [x] Add user APC delivery at the RdotOS ring-3 syscall IRET return path after an alertable wait; the normal routine receives RCX/RDX/R8 arguments and the interrupted RIP is used as its return address.
 - [x] Add processor-change callback registration/deregistration, opaque handles, add-existing replay, in-flight accounting, and HAL online/offline notification hooks.
-- [x] Add nested process attach/detach with referenced process roots, CR3 switching, LIFO restoration, and a teardown guard that refuses to destroy referenced address spaces.
+- [x] Add nested process attach/detach with referenced process roots, CR3 switching, LIFO restoration, and a teardown guard that refuses to destroy referenced address spaces; thread-exit cleanup now restores the oldest pre-attach CR3 and releases all attach-held process references.
 - [x] Synchronize Ke priority metadata with scheduler priority bands; dispatcher wake boosts now affect runnable-task ordering.
 - [x] Serialize timer-triggered wait-all checks with dispatcher-object state; reuse the locked object-consumption primitive for supported event/semaphore/timer objects and reject duplicate objects.
 - [x] Add x64 layout assertions for PROCESSOR_NUMBER, DISPATCHER_HEADER, semaphore/group affinity, processor-change context, and device queues.
 - [ ] Run current host tests, freestanding build, PE32+ validation, UEFI/QEMU smoke, and 2/4/8-vCPU SMP matrix; the implementation commits are not considered validated until this run passes.
 - [ ] Add dedicated tests for user APC frame injection/rundown, process attach nesting and destroy races, processor callback lifecycle under concurrent unregister, wait-all timeout/signal races, and priority boost/decay behavior.
+- [ ] Complete exception-safe attach/detach: thread-exit rundown is implemented, but SEH/unwind-driven detach, current-process/thread ownership integration, nested-attach race tests, and address-space teardown stress remain open.
 - [ ] Do not claim full Windows opaque object compatibility: private KAPC/KAPC_STATE/KTHREAD/EPROCESS bytes are not reproduced; validate public WDK size/layout expectations for each supported kit.
 
 ### Ke / ntoskrnl compatibility pass (2026-10-24)
