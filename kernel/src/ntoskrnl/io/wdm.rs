@@ -235,3 +235,36 @@ pub unsafe extern "system" fn io_set_completion_routine(
   (*stack).control=(if invoke_success!=0{0x40}else{0})|(if invoke_error!=0{0x80}else{0})|(if invoke_cancel!=0{0x20}else{0});
  }
 }
+
+
+#[cfg(test)]
+mod wdm_tests {
+ use super::*;
+ #[test]
+ fn x64_wdm_prefix_layouts_match_expected_offsets() {
+  assert_eq!(core::mem::size_of::<UnicodeString>(),16);
+  assert_eq!(core::mem::size_of::<IoStatusBlock>(),16);
+  assert_eq!(core::mem::size_of::<IoStackLocation>(),IO_STACK_LOCATION_SIZE_X64);
+  assert_eq!(core::mem::offset_of!(DriverObject,major_function),112);
+  assert_eq!(core::mem::offset_of!(DeviceObject,driver_object),8);
+  assert_eq!(core::mem::size_of::<Irp>(),IRP_SIZE_X64);
+ }
+ #[test]
+ fn create_delete_device_and_allocate_irp_stack() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device: *mut DeviceObject=ptr::null_mut();
+  let status=unsafe{io_create_device(&mut driver,32,ptr::null_mut(),7,0,0,&mut device)};
+  assert_eq!(status,STATUS_SUCCESS);
+  assert!(!device.is_null());
+  assert_eq!(unsafe{(*device).device_extension.is_null()},false);
+  assert_eq!(driver.device_object,device);
+  unsafe{io_delete_device(device);}
+  assert!(driver.device_object.is_null());
+
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  assert!(!unsafe{io_get_current_irp_stack_location(irp)}.is_null());
+  assert!(!unsafe{io_get_next_irp_stack_location(irp)}.is_null());
+  unsafe{io_free_irp(irp);}
+ }
+}
