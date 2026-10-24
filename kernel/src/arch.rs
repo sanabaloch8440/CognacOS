@@ -1408,6 +1408,10 @@ pub extern "C" fn rdotos_hal_ipi_handler() {
     if let Some(base) = crate::apic::local_apic_base() {
         unsafe { crate::apic::local_apic_eoi(base); }
     }
+    // A reschedule IPI is also the remote DPC kick. Run the target CPU's
+    // queued DPCs before returning so KeFlushQueuedDpcs can wait for a real
+    // systemwide drain rather than merely observing a cleared queue bit.
+    crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();
 }
 
 /// Dedicated cross-processor Ke broadcast handler. The callback rendezvous
