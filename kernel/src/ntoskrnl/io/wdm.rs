@@ -68,8 +68,10 @@ pub struct IoStackLocation {
     pub file_object: *mut c_void, pub completion_routine: Option<IoCompletionRoutine>,
     pub context: *mut c_void,
 }
+#[repr(C)]
 struct DeviceSlot { used: bool, deleting: bool, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
+#[repr(C)]
 struct IrpSlot { used: bool, object: Irp, stack: [IoStackLocation;16] }
 unsafe impl Send for IrpSlot {}
 struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WDM_IRPS] }
@@ -147,7 +149,8 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
  slot.used=true;slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
- slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
+ let allocation_size=IRP_SIZE_X64+stack_size as usize*IO_STACK_LOCATION_SIZE_X64;
+ slot.object.bytes[2..4].copy_from_slice(&(allocation_size as u16).to_le_bytes());
  slot.object.bytes[0x42]=stack_size as u8;slot.object.bytes[0x43]=(stack_size+1) as u8;
  slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
  let object=&mut slot.object as *mut Irp;
@@ -260,6 +263,8 @@ mod wdm_tests {
   assert_eq!(core::mem::offset_of!(DeviceObject,stack_size),76);
   assert_eq!(core::mem::size_of::<DeviceObject>(),0x150);
   assert_eq!(core::mem::size_of::<Irp>(),IRP_SIZE_X64);
+  assert_eq!(core::mem::size_of::<DeviceObject>(),0x150);
+  assert_eq!(IRP_STACK_OFFSET,0xB8);
   assert_eq!(IRP_STACK_OFFSET,0xB8);
   assert_eq!(IRP_STATUS_OFFSET,0x30);
   assert_eq!(IRP_INFORMATION_OFFSET,0x38);
@@ -299,7 +304,9 @@ mod wdm_tests {
   let irp=unsafe{io_allocate_irp(2,0)};
   assert!(!irp.is_null());
   assert!(!unsafe{io_get_current_irp_stack_location(irp)}.is_null());
-  assert!(!unsafe{io_get_next_irp_stack_location(irp)}.is_null());
+  let next=unsafe{io_get_next_irp_stack_location(irp)};
+  assert!(!next.is_null());
+  assert_eq!(next as usize,irp as usize+IRP_SIZE_X64+IO_STACK_LOCATION_SIZE_X64);
   unsafe{io_free_irp(irp);}
  }
 }
