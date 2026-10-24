@@ -91,7 +91,7 @@ jobs:
           rm -f build/serial.log
           set +e
           timeout 30s qemu-system-x86_64 \
-            -machine pc -m 512M -cpu qemu64 -smp 4 \
+            -machine pc -m 5G -cpu qemu64 -smp 4 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=ide,format=raw,file=build/rdotos-uefi.img \
