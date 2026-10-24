@@ -640,7 +640,9 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64, ap_stack_to
             // If setup timed out, keep polling so the documented fallback cannot deadlock.
             loop {
                 if IPI_ACTIVE.load(Ordering::Acquire) {
-                    unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }
+                    // STI;HLT closes the check-to-sleep lost-wakeup window:
+                    // an IPI arriving after the check will wake this HLT.
+                    unsafe { core::arch::asm!("sti; hlt", options(nomem, nostack)); }
                     if hal::take_pending_ipi(index).unwrap_or(false)
                         || crate::thread::has_ready_threads() {
                         let _ = crate::thread::yield_current();
