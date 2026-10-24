@@ -1739,6 +1739,202 @@ static DPCS: crate::hal::IrqSpinLock<DpcTable> = crate::hal::IrqSpinLock::new(Dp
 static DPC_DISPATCHING: [core::sync::atomic::AtomicBool; 64] =
     [const { core::sync::atomic::AtomicBool::new(false) };64];
 
+// ---- Cross-processor call rendezvous -----------------------------------------
+// The HAL IPI vector is shared with scheduler reschedule notifications. A
+// broadcast request is armed only after every target IPI has been sent, so an
+// early-arriving AP waits in its interrupt handler rather than observing a
+// partially published callback descriptor.
+const BROADCAST_IDLE:u8=0;
+const BROADCAST_PREPARING:u8=1;
+const BROADCAST_ARMED:u8=2;
+const BROADCAST_ABORTED:u8=3;
+const BROADCAST_IPI_CALL:u8=1;
+const BROADCAST_DPC_CALL:u8=2;
+const IPI_LEVEL:u8=12;
+static BROADCAST_LOCK:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static BROADCAST_STATE:core::sync::atomic::AtomicU8=core::sync::atomic::AtomicU8::new(BROADCAST_IDLE);
+static BROADCAST_MODE:core::sync::atomic::AtomicU8=core::sync::atomic::AtomicU8::new(0);
+static BROADCAST_EPOCH:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BROADCAST_LAST_EPOCH:[core::sync::atomic::AtomicU64;64]=[const{core::sync::atomic::AtomicU64::new(0)};64];
+static BROADCAST_TARGETS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BROADCAST_EXPECTED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static BROADCAST_COMPLETED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static BROADCAST_CALLBACK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static BROADCAST_CONTEXT:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static DPC_SYNC_ARRIVED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static DPC_DONE_ARRIVED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+#[repr(C,align(16))]
+struct BroadcastDpcStorage([u64;8]);
+static BROADCAST_DPC:BroadcastDpcStorage=BroadcastDpcStorage([0;8]);
+
+pub type IpiGenericRoutine=unsafe extern "win64" fn(usize)->usize;
+
+fn acquire_broadcast_lock(){
+    while BROADCAST_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){
+        core::hint::spin_loop();
+    }
+}
+fn release_broadcast_lock(){BROADCAST_LOCK.store(false,Ordering::Release);}
+
+fn online_broadcast_mask()->Option<u64>{
+    let mut mask=0u64;
+    for cpu in 0..crate::hal::MAX_CPUS.min(64){
+        if crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){
+            let local=crate::hal::cpu_local(cpu).ok()?;
+            if cpu!=cpu_slot() && local.apic_id.load(Ordering::Acquire)>u8::MAX as u32{return None}
+            mask|=1u64<<cpu;
+        }
+    }
+    if mask==0 { mask=1u64<<cpu_slot(); }
+    Some(mask)
+}
+
+/// Send one rendezvous IPI to each online processor other than the caller.
+/// Early recipients wait in rdotos_hal_ipi_handler until BROADCAST_ARMED.
+fn begin_broadcast(mode:u8,callback:usize,context:usize)->Option<(u64,u64)>{
+    acquire_broadcast_lock();
+    if crate::hal::online_cpu_count()>1&&!crate::smp::ipi_shootdowns_enabled(){
+        release_broadcast_lock();return None;
+    }
+    let Some(mask)=online_broadcast_mask() else{release_broadcast_lock();return None};
+    let current=cpu_slot();
+    let epoch=BROADCAST_EPOCH.fetch_add(1,Ordering::AcqRel).wrapping_add(1).max(1);
+    BROADCAST_MODE.store(mode,Ordering::Relaxed);
+    BROADCAST_CALLBACK.store(callback,Ordering::Relaxed);
+    BROADCAST_CONTEXT.store(context,Ordering::Relaxed);
+    BROADCAST_TARGETS.store(mask,Ordering::Relaxed);
+    BROADCAST_EXPECTED.store(mask.count_ones() as usize,Ordering::Relaxed);
+    BROADCAST_COMPLETED.store(0,Ordering::Relaxed);
+    DPC_SYNC_ARRIVED.store(0,Ordering::Relaxed);
+    DPC_DONE_ARRIVED.store(0,Ordering::Relaxed);
+    BROADCAST_STATE.store(BROADCAST_PREPARING,Ordering::Release);
+    for cpu in 0..crate::hal::MAX_CPUS.min(64){
+        if cpu==current||mask&(1u64<<cpu)==0{continue}
+        if !crate::smp::request_reschedule(cpu){
+            BROADCAST_STATE.store(BROADCAST_ABORTED,Ordering::Release);
+            while (0..crate::hal::MAX_CPUS.min(64)).any(|id|
+                mask&(1u64<<id)!=0 && id!=current
+                    && BROADCAST_LAST_EPOCH[id].load(Ordering::Acquire)==epoch
+                    && BROADCAST_COMPLETED.load(Ordering::Acquire)<BROADCAST_EXPECTED.load(Ordering::Acquire)){
+                core::hint::spin_loop();
+            }
+            BROADCAST_STATE.store(BROADCAST_IDLE,Ordering::Release);
+            release_broadcast_lock();return None;
+        }
+    }
+    // Publish the epoch before arming. The per-CPU epoch check suppresses
+    // duplicate delivery without holding a global lock inside interrupt code.
+    for cpu in 0..crate::hal::MAX_CPUS.min(64){
+        if mask&(1u64<<cpu)!=0{BROADCAST_LAST_EPOCH[cpu].store(epoch.wrapping_sub(1),Ordering::Release);}
+    }
+    BROADCAST_STATE.store(BROADCAST_ARMED,Ordering::Release);
+    Some((mask,epoch))
+}
+
+fn execute_broadcast_callback(cpu:usize)->usize{
+    let mode=BROADCAST_MODE.load(Ordering::Acquire);
+    let callback=BROADCAST_CALLBACK.load(Ordering::Acquire);
+    if callback==0{return 0}
+    if mode==BROADCAST_IPI_CALL{
+        let old=CURRENT_IRQL[cpu].swap(IPI_LEVEL,Ordering::AcqRel);
+        let function:IpiGenericRoutine=unsafe{core::mem::transmute(callback)};
+        let context=BROADCAST_CONTEXT.load(Ordering::Acquire);
+        let result=unsafe{function(context)};
+        CURRENT_IRQL[cpu].store(old,Ordering::Release);
+        result
+    }else if mode==BROADCAST_DPC_CALL{
+        let old=CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL,Ordering::AcqRel);
+        let was_dispatching=DPC_DISPATCHING[cpu].swap(true,Ordering::AcqRel);
+        let function:DpcRoutine=unsafe{core::mem::transmute(callback)};
+        let context=BROADCAST_CONTEXT.load(Ordering::Acquire);
+        let done_arg=core::ptr::addr_of!(DPC_DONE_ARRIVED) as *mut core::ffi::c_void;
+        let sync_arg=core::ptr::addr_of!(DPC_SYNC_ARRIVED) as *mut core::ffi::c_void;
+        unsafe{
+            function(
+                core::ptr::addr_of!(BROADCAST_DPC) as *mut core::ffi::c_void,
+                context as *mut core::ffi::c_void,
+                done_arg,
+                sync_arg,
+            );
+        }
+        DPC_DISPATCHING[cpu].store(was_dispatching,Ordering::Release);
+        CURRENT_IRQL[cpu].store(old,Ordering::Release);
+        0
+    }else{0}
+}
+
+/// Called by the HAL-vector handler on the receiving processor. It deliberately
+/// runs without a Rust lock held: callbacks may enter ordinary Ke routines.
+pub fn handle_broadcast_ipi(){
+    let cpu=cpu_slot();
+    if cpu>=64{return}
+    let state=BROADCAST_STATE.load(Ordering::Acquire);
+    if state==BROADCAST_IDLE||state==BROADCAST_ABORTED{return}
+    if BROADCAST_TARGETS.load(Ordering::Acquire)&(1u64<<cpu)==0{return}
+    if state==BROADCAST_PREPARING{
+        let mut spins=0usize;
+        while BROADCAST_STATE.load(Ordering::Acquire)==BROADCAST_PREPARING && spins<100_000_000{
+            spins+=1;core::hint::spin_loop();
+        }
+    }
+    if BROADCAST_STATE.load(Ordering::Acquire)!=BROADCAST_ARMED{return}
+    let epoch=BROADCAST_EPOCH.load(Ordering::Acquire);
+    if BROADCAST_LAST_EPOCH[cpu].compare_exchange(epoch.wrapping_sub(1),epoch,Ordering::AcqRel,Ordering::Acquire).is_err(){return}
+    let _=execute_broadcast_callback(cpu);
+    BROADCAST_COMPLETED.fetch_add(1,Ordering::AcqRel);
+}
+
+/// VOID KeIpiGenericCall(PKIPI_BROADCAST_WORKER Function, ULONG_PTR Context).
+/// The return is the current processor's callback result; completion is not
+/// reported until every online processor in the current HAL topology returns.
+pub unsafe extern "win64" fn ke_ipi_generic_call(function:Option<IpiGenericRoutine>,context:usize)->usize{
+    let Some(function)=function else{return 0};
+    let Some((mask,_epoch))=begin_broadcast(BROADCAST_IPI_CALL,function as usize,context) else{return 0};
+    let current=cpu_slot();
+    let local_result=execute_broadcast_callback(current);
+    BROADCAST_COMPLETED.fetch_add(1,Ordering::AcqRel);
+    let expected=mask.count_ones() as usize;
+    while BROADCAST_COMPLETED.load(Ordering::Acquire)<expected{core::hint::spin_loop();}
+    BROADCAST_STATE.store(BROADCAST_IDLE,Ordering::Release);
+    release_broadcast_lock();
+    local_result
+}
+
+/// VOID KeGenericCallDpc(PKDEFERRED_ROUTINE Routine, PVOID Context).
+/// One callback runs on every online CPU. The callback's SystemArgument1 and
+/// SystemArgument2 point at the shared Done and Synchronize barriers.
+pub unsafe extern "win64" fn ke_generic_call_dpc(routine:Option<DpcRoutine>,context:*mut core::ffi::c_void){
+    let Some(routine)=routine else{return};
+    let Some((mask,_epoch))=begin_broadcast(BROADCAST_DPC_CALL,routine as usize,context as usize) else{return};
+    let current=cpu_slot();
+    let _=execute_broadcast_callback(current);
+    BROADCAST_COMPLETED.fetch_add(1,Ordering::AcqRel);
+    let expected=mask.count_ones() as usize;
+    while BROADCAST_COMPLETED.load(Ordering::Acquire)<expected{core::hint::spin_loop();}
+    BROADCAST_STATE.store(BROADCAST_IDLE,Ordering::Release);
+    release_broadcast_lock();
+}
+
+/// BOOLEAN KeSignalCallDpcSynchronize(PVOID SystemArgument2).
+/// Each participant signals the rendezvous and waits for all participants.
+pub unsafe extern "win64" fn ke_signal_call_dpc_synchronize(argument:*mut core::ffi::c_void)->u8{
+    if argument!=core::ptr::addr_of!(DPC_SYNC_ARRIVED) as *mut core::ffi::c_void{return 0}
+    DPC_SYNC_ARRIVED.fetch_add(1,Ordering::AcqRel);
+    let expected=BROADCAST_EXPECTED.load(Ordering::Acquire);
+    while DPC_SYNC_ARRIVED.load(Ordering::Acquire)<expected{core::hint::spin_loop();}
+    1
+}
+
+/// VOID KeSignalCallDpcDone(PVOID SystemArgument1).
+/// The barrier releases only after every callback has signaled completion.
+pub unsafe extern "win64" fn ke_signal_call_dpc_done(argument:*mut core::ffi::c_void){
+    if argument!=core::ptr::addr_of!(DPC_DONE_ARRIVED) as *mut core::ffi::c_void{return}
+    DPC_DONE_ARRIVED.fetch_add(1,Ordering::AcqRel);
+    let expected=BROADCAST_EXPECTED.load(Ordering::Acquire);
+    while DPC_DONE_ARRIVED.load(Ordering::Acquire)<expected{core::hint::spin_loop();}
+}
+
+
 fn timer_slot(object:usize)->Option<usize>{
     let table=TIMERS.lock();
     table.records.iter().position(|r|r.object==object)
