@@ -58,6 +58,15 @@ The CI workflow is the authoritative build recipe. Development generally require
 
 This is a project-specific, fixed-base PE32+ kernel format—not a general Windows kernel loader. The image deliberately has no imports or base relocations, and it is not yet loaded by the Windows boot manager. Windows x64 driver compatibility remains a long-term goal, not an achieved compatibility claim.
 
+## Recent milestone: tracked user-mode MDL mappings
+
+- `MmMapLockedPagesSpecifyCache` now has a user-mode mapping path for a registered process whose address-space root is active. It reserves a range in a dedicated user VA arena and maps the MDL's locked PFNs without taking ownership of those physical frames.
+- Mapping records bind the MDL, process object, address-space root, base VA, and page count. Unmapping validates the same process/root and PFN sequence before removing aliases. External user PTEs are distinguished so address-space teardown does not free the MDL-owned frames.
+- Probe/map/unmap/unlock entry points share an IRQ-safe lifecycle lock; MDL free checks avoid releasing an owned MDL while it remains locked or mapped.
+- CI run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed after the MDL teardown comparison fix.
+
+This milestone is **not** full Windows MM/process compatibility. User mappings require an active registered process and resident locked PFNs. Demand-zero/pagefile-backed user page-in, Windows-style exception delivery/recovery, scheduler-driven current-process/thread semantics, complete object/handle lifetime behavior, and race/WDK conformance tests remain open.
+
 ## Security and compatibility notes
 
 - The embedded PE32+ kernel SHA-256 digest detects a changed kernel only when the bootloader is trusted. It is **not** public-key signature verification or a complete verified-boot chain.
@@ -66,7 +75,7 @@ This is a project-specific, fixed-base PE32+ kernel format—not a general Windo
 - The EFI application is not necessarily signed for Secure Boot enforcement.
 - AP startup, interrupt routing, timer-driven preemption, full process/thread semantics, hardware storage drivers, graphics, and power management remain incomplete.
 - Windows-style names and export metadata do not by themselves provide Windows ABI or semantic compatibility. The current syscall ABI is RdotOS-native.
-- The MDL exports use explicit Windows x64 calling-convention signatures. This remains a bounded subset: probing can fault in tracked pageable kernel-pool pages but does not page in arbitrary user buffers; system mappings support non-contiguous PFNs using an MM-owned virtual extent, while user-mode MDL mappings and cache-policy variants beyond cached mappings remain unsupported. The internal EPROCESS-compatible structure is not binary-compatible with a private Windows build layout. Cross-process copying is supported only for RdotOS-registered process objects and is serialized against address-space mutation/destruction.
+- The MDL exports use explicit Windows x64 calling-convention signatures and remain a bounded subset. `MmProbeAndLockPages` can fault in tracked pageable kernel-pool pages and pins resident user pages only when their mappings are valid; it does not yet provide demand-zero/pagefile-backed user page-in or Windows SEH-style exception delivery for invalid buffers. `MmMapLockedPagesSpecifyCache` supports non-contiguous PFNs in a kernel VA extent and a tracked user VA alias in the active registered process; user aliases must be unmapped from the same process/address space before unlock, and cached mappings are the only supported cache policy. Probe/map/unmap/unlock bookkeeping is serialized by an IRQ-safe lifecycle lock, but teardown races and WDK edge cases still need stress validation. The internal EPROCESS-compatible structure is not binary-compatible with a private Windows build layout. Cross-process copying is supported only for RdotOS-registered process objects and is serialized against address-space mutation/destruction.
 - DMA/IOMMU code must fail safely when a required hardware translation or mapping feature is unavailable; bookkeeping tokens are not equivalent to hardware-backed mappings.
 - The ext parser is read-only. It does not replay journals or write filesystem metadata.
 
