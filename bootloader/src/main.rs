@@ -284,9 +284,9 @@ fn main() -> Status {
     }
     core::mem::forget(memory_map);
 
-    // x86-64 System V kernel ABI: BootInfo pointer in RDI. This first-stage
-    // kernel is linked below 1 GiB and uses the firmware's existing identity map.
-    // SAFETY: ELF validation ensured the entry lies inside a loaded PT_LOAD range.
+    // x86-64 System V kernel ABI: BootInfo pointer in RDI. A low identity-mapped
+    // trampoline switches to the new CR3 and enters the high-half ELF entry on
+    // its validated high stack alias. SAFETY: ELF and page-table checks cover it.
     unsafe {
         core::arch::asm!(
             "cli",
