@@ -64,23 +64,23 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
  // manifest, so resolve their exact documented names without fabricating ordinals.
  if let ImportSymbol::Name(requested) = symbol {
   let direct = if requested.eq_ignore_ascii_case(b"IoGetAttachedDevice") {
-   Some(io::io_get_attached_device as usize)
+   Some(crate::io::io_get_attached_device as usize)
   } else if requested.eq_ignore_ascii_case(b"IoGetDeviceAttachmentBaseRef") {
-   Some(io::io_get_device_attachment_base_ref as usize)
+   Some(crate::io::io_get_device_attachment_base_ref as usize)
   } else if requested.eq_ignore_ascii_case(b"IoGetLowerDeviceObject") {
-   Some(io::io_get_lower_device_object as usize)
+   Some(crate::io::io_get_lower_device_object as usize)
   } else if requested.eq_ignore_ascii_case(b"IoReuseIrp") {
-   Some(io::io_reuse_irp as usize)
+   Some(crate::io::io_reuse_irp as usize)
   } else if requested.eq_ignore_ascii_case(b"IoAttachDeviceToDeviceStack") {
-   Some(io::io_attach_device_to_device_stack as usize)
+   Some(crate::io::io_attach_device_to_device_stack as usize)
   } else if requested.eq_ignore_ascii_case(b"IoDetachDevice") {
-   Some(io::io_detach_device as usize)
+   Some(crate::io::io_detach_device as usize)
   } else if requested.eq_ignore_ascii_case(b"IoInitializeIrp") {
-   Some(io::io_initialize_irp as usize)
+   Some(crate::io::io_initialize_irp as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCopyCurrentIrpStackLocationToNext") {
-   Some(io::io_copy_current_irp_stack_location_to_next as usize)
+   Some(crate::io::io_copy_current_irp_stack_location_to_next as usize)
   } else if requested.eq_ignore_ascii_case(b"IoSkipCurrentIrpStackLocation") {
-   Some(io::io_skip_current_irp_stack_location as usize)
+   Some(crate::io::io_skip_current_irp_stack_location as usize)
   } else if requested.eq_ignore_ascii_case(b"MmFreeMdl") {
    Some(mm::runtime::mm_free_mdl as usize)
   } else if requested.eq_ignore_ascii_case(b"MmPrepareMdlForReuse") {
