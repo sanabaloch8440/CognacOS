@@ -894,6 +894,7 @@ pub(crate) unsafe fn se_internal_RegisterTokenCapabilities(
 
 pub(crate) unsafe fn se_internal_UnregisterTokenSids(token: *mut c_void) -> i32 {
     if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    if se_internal_TokenReferenceCount(token) != 0 { return 0xC000_009Eu32 as i32; }
     let _guard = SECURITY_TOKEN_LOCK.lock();
     let entries = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
     if let Some(e) = entries.iter_mut().find(|e| e.used && e.token == token as usize) {
