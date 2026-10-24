@@ -676,6 +676,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     halt();
                 }
                 serial_write(b"Per-CPU interrupt setup stress passed: 64 acknowledged IPIs per online AP.\r\n");
+                if !ntoskrnl::ke::runtime::broadcast_rendezvous_self_test() {
+                    serial_write(b"FATAL: KeIpiGenericCall/KeGenericCallDpc rendezvous or barrier self-test failed.\r\n");
+                    halt();
+                }
+                serial_write(b"Ke broadcast rendezvous and DPC synchronization/completion barriers passed on every online CPU.\r\n");
             } else {
                 serial_write(b"WARNING: per-CPU IPI stress skipped because interrupt-driven IPIs are unavailable.\r\n");
             }
