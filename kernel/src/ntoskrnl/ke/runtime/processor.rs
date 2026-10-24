@@ -69,6 +69,7 @@ pub unsafe extern "win64" fn ke_lower_irql(new_irql: u8) {
     let flags = pop_irq_state();
     unsafe { irq_restore(flags); }
     if new_irql < DISPATCH_LEVEL { dispatch_queued_dpcs(); }
+    if new_irql == PASSIVE_LEVEL { ke_deliver_pending_kernel_apcs(); }
 }
 
 /// KeAcquireSpinLock: disable local interrupts, raise logical IRQL, then acquire
