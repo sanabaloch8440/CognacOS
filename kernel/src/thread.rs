@@ -30,6 +30,7 @@ static mut STRESS_STACKS:[[u8;8192];8]=[[0;8192];8];
 static mut THREADED_DPC_WORKER_STACKS:[[u8;8192];crate::hal::MAX_CPUS]=[[0;8192];crate::hal::MAX_CPUS];
 static THREADED_DPC_WORKERS:[core::sync::atomic::AtomicU64;crate::hal::MAX_CPUS]=[const{core::sync::atomic::AtomicU64::new(0)};crate::hal::MAX_CPUS];
 static THREADED_DPC_WORKERS_INITIALIZED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static PREEMPTION_ENABLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
 fn cpu_index()->Result<usize,ThreadError>{
     if let Some(local)=crate::hal::current_cpu_local(){
@@ -230,7 +231,11 @@ pub fn wake_threaded_dpc_worker(cpu:usize)->bool{
 }
 /// Timer-ISR entry: preempt only when this CPU has a runnable peer. The
 /// interrupt frame remains on the interrupted thread's stack while switched out.
+pub fn set_preemption_enabled(enabled:bool){
+    PREEMPTION_ENABLED.store(enabled,core::sync::atomic::Ordering::Release);
+}
 pub fn preempt_from_timer_interrupt(){
+    if !PREEMPTION_ENABLED.load(core::sync::atomic::Ordering::Acquire){return}
     let Ok(cpu)=cpu_index() else{return};
     let Some(id)=current_thread_id() else{return};
     if crate::scheduler::has_runnable_for_cpu(cpu,id){let _=reschedule(false);}
