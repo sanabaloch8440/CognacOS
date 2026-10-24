@@ -229,3 +229,15 @@ The parser is read-only and not a production filesystem driver. The original Ext
 6. Add signed boot, stronger isolation, power management, graphics, and release-grade hardware validation.
 
 Update these checkboxes alongside code changes, and only mark work complete after its relevant tests pass.
+
+
+## Windows 11 Ke DDI comparison pass (2026-10-24)
+
+- [x] Add 20 Ke routine implementations covering IRQL, interrupt/system time queries, processor-group and NUMA queries, current-thread identity, APC-disabled queries, and event pulse.
+- [x] Add name-based ntoskrnl resolver paths for the 20 routines and include resolver self-tests.
+- [x] Add [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md), documenting public WDK signatures, return values, call paths, limitations, sources, and a reproducible compatibility calculation.
+- [x] Link the comparison document from README.
+- [ ] Verify the Rust freestanding build and QEMU/OVMF smoke test for this change.
+- [ ] Close documented semantic gaps: boot-epoch interrupt time, precise wall-clock interpolation, per-thread APC nesting, atomic event pulse semantics, stable NT-compatible thread-object abstraction, and multi-group/multi-node NUMA discovery.
+
+**Current scoped score:** 20/20 (100%) source-level ABI shapes and name resolver paths; 9/20 (45%) behavior matches within the currently advertised single-group/single-node topology; combined project metric 72.5%. This is a progress estimate only and is not a statement of overall Windows 11 compatibility.
