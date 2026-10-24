@@ -150,5 +150,4 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
             assert!(documented_signature(name).is_some(), "missing ABI registry entry for {name}");
         }
     }
-    }
 }
