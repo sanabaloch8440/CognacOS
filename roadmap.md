@@ -14,7 +14,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
 | SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
-| NT executive/syscall compatibility | 116 Ke export names documented and mapped in comparison scope; per-thread APC/alert state, timer/DPC lifecycle, queued spin locks, mutant/mutex ownership and KQUEUE implemented | Full kernel/user APC delivery, systemwide DPC drain, complete Windows opaque object layouts, remaining device queues/APC APIs, exact wait-all reservation/priority boosts, timer2 and other unresolved Ke exports |
+| NT executive/syscall compatibility | 132 Ke export names documented and mapped in comparison scope; per-thread APC/alert state, timer/DPC lifecycle, queued spin locks, mutant/mutex ownership and KQUEUE implemented | Full kernel/user APC delivery, systemwide DPC drain, complete Windows opaque object layouts, remaining device queue/APC APIs, exact wait-all reservation/priority boosts, timer2 and other unresolved Ke exports |
 | I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
@@ -32,7 +32,7 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Implement public-layout KQUEUE/ExecutiveQueue headers, intrusive entry lists, head/tail insertion, blocking removal, rundown, and waiter handoff.
 - [x] Correct KeSetTimer and KeSetTimerEx LARGE_INTEGER x64 by-value ABI and argument order.
 - [x] Strengthen wait validation: support absolute/relative timer deadlines and reject wait-all for mutant/queue objects until ownership/entry reservation can be atomic.
-- [x] Expand WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md to all 116 mapped Ke export names and refresh the remaining unresolved-export inventory.
+- [x] Expand WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md to all 132 mapped Ke export names and refresh the remaining unresolved-export inventory.
 - [ ] Complete actual kernel/user APC object delivery, rundown, and delivery points.
 - [ ] Add systemwide DPC dispatch/drain guarantees, timer cancellation-versus-callback rundown, and broader periodic-timer race tests.
 - [ ] Complete wait-all reservation for mutants/queues, alert-versus-signal ordering, priority boosts, and timeout/cancellation race tests.
