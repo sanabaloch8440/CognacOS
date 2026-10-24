@@ -14,7 +14,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
 | SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
-| NT executive/syscall compatibility | 25 Ke routines in comparison scope; APC region counters and serialized event pulse improved | Thread-local APC bookkeeping/delivery, full timer/DPC/mutex/queue semantics, precise time, many unresolved Ke exports, NT syscall ABI and complete executive semantics |
+| NT executive/syscall compatibility | 64 Ke routines documented and mapped in comparison scope; per-thread APC/alert state, timer/DPC lifecycle, queued spin locks, mutant/mutex ownership and KQUEUE implemented | Full kernel/user APC delivery, systemwide DPC drain, complete Windows opaque object layouts, remaining device queues/APC APIs, exact wait-all reservation/priority boosts, timer2 and other unresolved Ke exports |
 | I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
@@ -24,16 +24,20 @@ This roadmap tracks code and validation currently present in the repository, not
 
 ### Ke / ntoskrnl compatibility pass (2026-10-24)
 
-- [x] Add ABI-shaped runtime implementations for 20 Ke routines and name-based resolution, with public WDK/DDI comparison.
-- [x] Add KeEnterCriticalRegion, KeLeaveCriticalRegion, KeEnterGuardedRegion, and KeLeaveGuardedRegion with bounded nesting counters.
-- [x] Correct KeGetCurrentProcessorNumberEx to return the systemwide processor index while optionally writing PROCESSOR_NUMBER.
-- [x] Serialize KePulseEvent's state transition, waiter wakeup, and reset under the dispatcher-object lock.
-- [x] Expand WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md to 25 routines and list additional manifest exports that remain unsupported.
-- [ ] Move critical/guarded-region state from CPU slots to per-thread state and implement actual APC delivery.
-- [ ] Complete pulse/wait atomicity with scheduler wait-block ownership and priority boosts.
-- [ ] Implement and test dispatcher timers, DPCs, mutex/mutant ownership, executive queues, and queued spin locks.
-- [ ] Replace the first-query interrupt-time origin with a boot-anchored clock; add system-time setting/synchronization and suspend/resume bias to the new RTC-anchored wall-clock interpolation.
-- [ ] Run CI build, unit tests, OVMF/QEMU smoke, and the 2/4/8-vCPU matrix after this pass; do not treat ABI matching or the project score as driver-compatibility proof.
+- [x] Keep per-thread critical/guarded-region nesting and alert state in the thread record; alertable blocked waits can be made runnable.
+- [x] Implement legacy notification/synchronization timers, relative/absolute deadline conversion, periodic timer handling, and timer-driven DPC insertion.
+- [x] Implement bounded DPC initialization, duplicate-safe insertion/removal, and local dispatch/flush at logical DISPATCH_LEVEL.
+- [x] Implement FIFO ticket-lock foundations for in-stack and global queued-spin-lock exports, with saved IRQL in the handle.
+- [x] Implement mutant/mutex ownership, recursion, abandoned-owner cleanup, and waiter handoff; add guarded-mutex wrappers.
+- [x] Implement public-layout KQUEUE/ExecutiveQueue headers, intrusive entry lists, head/tail insertion, blocking removal, rundown, and waiter handoff.
+- [x] Correct KeSetTimer and KeSetTimerEx LARGE_INTEGER x64 by-value ABI and argument order.
+- [x] Strengthen wait validation: support absolute/relative timer deadlines and reject wait-all for mutant/queue objects until ownership/entry reservation can be atomic.
+- [x] Expand WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md to 64 routines and refresh the remaining unresolved-export inventory.
+- [ ] Complete actual kernel/user APC object delivery, rundown, and delivery points.
+- [ ] Add systemwide DPC dispatch/drain guarantees, timer cancellation-versus-callback rundown, and broader periodic-timer race tests.
+- [ ] Complete wait-all reservation for mutants/queues, alert-versus-signal ordering, priority boosts, and timeout/cancellation race tests.
+- [ ] Validate queued-spin-lock handle layout and lock-number mapping against Windows WDK ABI; implement true cross-processor queue semantics and stress tests.
+- [ ] Run the freestanding build, host tests, OVMF/QEMU smoke test, and 2/4/8-vCPU SMP matrix after this pass. A passing build does not establish general Windows driver compatibility.
 
 ### Status legend
 
