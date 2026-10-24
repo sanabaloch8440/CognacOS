@@ -26,7 +26,7 @@ jobs:
           fi
           test ! -e third_party/Ext3Fsd
           test ! -e third_party/README.md
-      - name: Enforce HAL/ntoskrnl dependency boundary
+      - name: Reject HAL dependencies on NTOSKRNL and ACPI
         shell: bash
         run: |
           set -euo pipefail
@@ -34,10 +34,18 @@ jobs:
             echo "HAL implementation must not depend on ntoskrnl or ACPI parsing types." >&2
             exit 1
           fi
+      - name: Reject obsolete root APIC references
+        shell: bash
+        run: |
+          set -euo pipefail
           if grep -RInF 'crate::apic' kernel/src --include='*.rs' || grep -RInE 'use crate::\{[^}]*apic' kernel/src --include='*.rs'; then
             echo "APIC implementation must only be reached through HAL service contracts." >&2
             exit 1
           fi
+      - name: Verify independent platform driver boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
           test ! -e kernel/src/acpi.rs
           test ! -e kernel/src/pci.rs
           grep -Fq '#![no_std]' drivers/acpi/src/lib.rs
