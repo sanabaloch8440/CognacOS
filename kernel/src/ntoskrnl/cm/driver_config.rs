@@ -7,7 +7,7 @@ pub enum Error{Hive(HiveError),MissingService,MissingImagePath,InvalidImagePath,
 impl From<HiveError> for Error{fn from(e:HiveError)->Self{Self::Hive(e)}}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct ServiceConfig<'a>{pub start:u32,pub service_type:u32,pub image_path:&'a[u16],pub error_control:u32}
-fn dword(key:Key<'_>,name:&[u16])->Result<u32,Error>{let v=key.find_value(name)?;if v.kind!=4||v.data_len!=4{return Err(Error::InvalidImagePath)}let mut b=[0u8;4];v.data(&mut b)?;Ok(u32::from_le_bytes(b))}
+fn dword(key:Key<'_, '_>,name:&[u16])->Result<u32,Error>{let v=key.find_value(name)?;if v.kind!=4||v.data_len!=4{return Err(Error::InvalidImagePath)}let mut b=[0u8;4];v.data(&mut b)?;Ok(u32::from_le_bytes(b))}
 fn utf16_ascii(s:&str,out:&mut[u16])->Result<usize,Error>{let mut n=0;for c in s.encode_utf16(){if n==out.len(){return Err(Error::BufferTooSmall)}out[n]=c;n+=1;}Ok(n)}
 pub fn query_service<'h,'b>(hive:&'h Hive<'h>,service_name:&[u16],path_buf:&'b mut[u16])->Result<ServiceConfig<'b>,Error>{
  if service_name.is_empty()||service_name.len()>128||service_name.iter().any(|c|*c==0||*c==b'\\' as u16){return Err(Error::InvalidImagePath)}
