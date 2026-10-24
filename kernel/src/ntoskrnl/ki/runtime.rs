@@ -36,5 +36,5 @@ pub(crate) fn ki_request_dispatch(cpu: usize) -> bool {
     if cpu >= crate::hal::MAX_CPUS || crate::hal::cpu_state(cpu).ok() != Some(crate::hal::CPU_ONLINE) {
         return false;
     }
-    crate::smp::request_reschedule(cpu).is_ok()
+    crate::smp::request_reschedule(cpu)
 }
