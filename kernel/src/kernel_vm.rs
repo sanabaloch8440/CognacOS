@@ -32,6 +32,20 @@ struct ReclaimSlots(core::cell::UnsafeCell<[u32; MAX_EXTENT_PAGES]>); unsafe imp
 static RECLAIM_SLOTS: ReclaimSlots = ReclaimSlots(core::cell::UnsafeCell::new([u32::MAX; MAX_EXTENT_PAGES]));
 static TABLE: Table = Table(core::cell::UnsafeCell::new([Extent::EMPTY; MAX]));
 static ROOT: AtomicU64 = AtomicU64::new(0);
+// Serializes demand-created direct-map leafs independently of the pageable arena lock.
+static DIRECT_MAP_LOCK: AtomicBool = AtomicBool::new(false);
+struct DirectMapGuard;
+impl DirectMapGuard {
+ fn lock() -> Self {
+  while DIRECT_MAP_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+   core::hint::spin_loop();
+  }
+  Self
+ }
+}
+impl Drop for DirectMapGuard {
+ fn drop(&mut self) { DIRECT_MAP_LOCK.store(false, Ordering::Release); }
+}
 static OWN_ROOT_SLOT: AtomicBool = AtomicBool::new(false);
 struct ReclaimTables(core::cell::UnsafeCell<[u64; MAX_RECLAIM_TABLES]>); unsafe impl Sync for ReclaimTables {}
 static RECLAIM_TABLES: ReclaimTables = ReclaimTables(core::cell::UnsafeCell::new([0; MAX_RECLAIM_TABLES]));
@@ -258,7 +272,28 @@ pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
 pub fn handle_page_fault(address:u64,error_code:u64)->bool {
  if error_code&((1<<2)|(1<<3)|(1<<4))!=0{return false}
  let page_va=address&!(PAGE-1);let root=ROOT.load(Ordering::Acquire);
- if root==0||page_va<BASE||page_va>=BASE+(PAGES as u64)*PAGE{return false}
+ if root==0{return false}
+
+ // A supervisor data fault in the high direct-map window may lazily establish
+ // a writable, NX mapping, but only if the final UEFI map identifies the target
+ // physical page as RAM. Device/MMIO and reserved ranges are never admitted.
+ let direct_base=crate::memory::DIRECT_MAP_BASE;
+ if page_va>=direct_base
+     && page_va.wrapping_sub(direct_base)<crate::memory::DIRECT_MAP_PHYSICAL_LIMIT
+ {
+  if error_code&1!=0{return false} // not a protection fault: it must be absent
+  let physical=page_va-direct_base;
+  if physical<0x1_0000_0000 || !crate::memory::is_ram_physical_address(physical){return false}
+  let _direct_guard=DirectMapGuard::lock();
+  // Another CPU may have installed this leaf while this CPU waited.
+  if unsafe{leaf_ptr(root,page_va)}.is_some_and(|leaf|unsafe{leaf.read_volatile()}&P!=0) {
+   unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}
+   return true
+  }
+  return unsafe{map(root,page_va,physical)}.is_ok()
+ }
+
+ if page_va<BASE||page_va>=BASE+(PAGES as u64)*PAGE{return false}
  let page_index=((page_va-BASE)/PAGE) as usize;let _g=Guard::lock();
  if !unsafe{&*TABLE.0.get()}.iter().any(|e|e.live&&e.pageable&&page_index>=e.start&&page_index<e.start+e.pages){return false}
  let word=page_index/64;let mask=1u64<<(page_index%64);
