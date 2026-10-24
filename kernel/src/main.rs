@@ -6,6 +6,7 @@ mod memory;
 mod pagefile;
 mod kernel_vm;
 mod security;
+mod vm_range;
 mod vm;
 mod user;
 mod pe;
