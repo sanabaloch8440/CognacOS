@@ -1124,6 +1124,15 @@ unsafe fn release_in_stack(handle:*mut LockQueueHandle,lower:bool){
     unsafe{(*handle).lock_queue=core::ptr::null_mut();}
     if lower{unsafe{ke_lower_irql(old)}}
 }
+pub unsafe extern "win64" fn ke_acquire_in_stack_queued_spin_lock_raise_to_synch(lock:*mut u64,handle:*mut LockQueueHandle){
+    if lock.is_null()||handle.is_null()||(lock as usize)%8!=0{return}
+    let old=unsafe{ke_raise_irql_to_synch_level()};
+    let Some(index)=acquire_ticket(lock as usize) else{unsafe{ke_lower_irql(old)};return};
+    if let Some(word)=atomic_lock_word(lock){
+        while word.compare_exchange_weak(0,1,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}
+    }else{release_ticket(index);unsafe{ke_lower_irql(old)};return}
+    unsafe{handle.write(LockQueueHandle{entry_next:0,entry_lock:lock as u64,lock_queue:lock,old_irql:old,reserved:[0;7]});}
+}
 pub unsafe extern "win64" fn ke_acquire_in_stack_queued_spin_lock(lock:*mut u64,handle:*mut LockQueueHandle){unsafe{acquire_in_stack(lock,handle,true)}}
 pub unsafe extern "win64" fn ke_release_in_stack_queued_spin_lock(handle:*mut LockQueueHandle){unsafe{release_in_stack(handle,true)}}
 pub unsafe extern "win64" fn ke_acquire_in_stack_queued_spin_lock_at_dpc_level(lock:*mut u64,handle:*mut LockQueueHandle){unsafe{acquire_in_stack(lock,handle,false)}}
