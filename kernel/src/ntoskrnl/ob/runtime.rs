@@ -292,7 +292,7 @@ pub fn object_name(body:*mut c_void,out:&mut [u16;MAX_NAME])->Result<usize,i32>{
 }
 pub fn make_temporary(body:*mut c_void){let _g=LOCK.lock();let s=state();if let Some(i)=object_idx(s,body as usize){s.objects[i].permanent=false;}}
 #[cfg(test)] pub fn current_owner()->usize{0}
-#[cfg(not(test))] pub fn current_owner()->usize{let pid=crate::thread::current_process_id();if pid==0{0}else{crate::process::eprocess_for_pid(pid).map(|p|p as usize).unwrap_or(0)}}
+#[cfg(not(test))] pub fn current_owner()->usize{crate::thread::current_process_id() as usize}
 pub fn type_id_from_pointer(ptr:*mut ObjectType)->Result<u16,i32>{expected_type_id(ptr).filter(|id|*id!=0).ok_or(STATUS_OBJECT_TYPE_MISMATCH)}
 
 pub fn object_type(body:*mut c_void)->*mut ObjectType{let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,body as usize)else{return core::ptr::null_mut()};let Some(ti)=type_idx(s,s.objects[i].type_id)else{return core::ptr::null_mut()};core::ptr::addr_of_mut!(s.type_objects[ti])}
