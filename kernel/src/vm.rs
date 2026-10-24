@@ -13,6 +13,9 @@ const ADDR: u64 = 0x000f_ffff_ffff_f000;
 const USER_START: u64 = 0x0000_0080_0000_0000;
 const USER_END: u64 = 0x0000_8000_0000_0000;
 
+/// Serializes address-space mutations/destruction with cross-process virtual copies.
+pub static ADDRESS_SPACE_LIFETIME_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
+
 #[derive(Clone, Copy, Debug)]
 pub enum VmError { InvalidAddress, Unaligned, OutOfMemory, AlreadyMapped, NotMapped, PermissionDenied, ExecutableUserPageUnsupported }
 
@@ -42,6 +45,7 @@ impl AddressSpace {
     /// populate pages RW/NX and then transition them to final RX/RO/RW-NX permissions.
     pub unsafe fn map_user_page(&mut self, virtual_address: u64, physical_address: u64,
                                 writable: bool, executable: bool) -> Result<(), VmError> {
+        let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
         if !is_user_range(virtual_address, PAGE_SIZE) { return Err(VmError::InvalidAddress); }
         if virtual_address & (PAGE_SIZE - 1) != 0 || physical_address & (PAGE_SIZE - 1) != 0 {
             return Err(VmError::Unaligned);
@@ -129,6 +133,7 @@ impl AddressSpace {
     /// Copy through validated page-table translations using the kernel's
     /// supervisor identity map. Each page is permission-checked before access.
     pub unsafe fn copy_from_user(&self, source: u64, destination: &mut [u8]) -> Result<(), VmError> {
+        let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
         let mut done = 0usize;
         while done < destination.len() {
             let va = source.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
@@ -141,6 +146,7 @@ impl AddressSpace {
     }
 
     pub unsafe fn copy_to_user(&self, destination: u64, source: &[u8]) -> Result<(), VmError> {
+        let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
         let mut done = 0usize;
         while done < source.len() {
             let va = destination.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
@@ -160,6 +166,7 @@ impl AddressSpace {
     /// Change final page permissions after a loader has populated and relocated it.
     /// W+X is rejected at this boundary as well as during initial mapping.
     pub unsafe fn protect_user_page(&mut self, virtual_address: u64, writable: bool, executable: bool) -> Result<(), VmError> {
+        let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
         if !is_user_range(virtual_address, PAGE_SIZE) || virtual_address & (PAGE_SIZE - 1) != 0 {
             return Err(VmError::InvalidAddress);
         }
@@ -192,6 +199,7 @@ impl AddressSpace {
     /// leaves, user page-table pages, and the PML4 root; shared supervisor mappings
     /// are never traversed or reclaimed.
     pub unsafe fn destroy(&mut self) -> Result<(), VmError> {
+        let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
         let root = self.root as *mut u64;
         // Preflight all user leaves before freeing any frame. An MDL-pinned
         // page must keep its address space intact until MmUnlockPages runs.
@@ -252,6 +260,7 @@ impl AddressSpace {
             unsafe { crate::memory::free_page(pdpt as u64) }.map_err(|_| VmError::OutOfMemory)?;
             unsafe { top.write(0); }
         }
+        crate::process::detach_address_space(self.root);
         unsafe { crate::memory::free_page(self.root) }.map_err(|_| VmError::OutOfMemory)?;
         self.root = 0;
         Ok(())
@@ -262,6 +271,39 @@ impl AddressSpace {
     pub unsafe fn activate(&self) {
         unsafe { asm!("mov cr3, {}", in(reg) self.root, options(nostack, preserves_flags)); }
     }
+}
+
+
+/// Translate an address through a specific process root. The caller must hold
+/// ADDRESS_SPACE_LIFETIME_LOCK so page tables cannot be mutated or destroyed
+/// during the walk and subsequent physical-memory access.
+pub fn translate_in_root_locked(root_physical: u64, virtual_address: u64, write: bool, user_only: bool) -> Option<u64> {
+    if root_physical == 0 { return None; }
+    let high = virtual_address >> 48;
+    let sign = (virtual_address >> 47) & 1;
+    if (sign == 0 && high != 0) || (sign == 1 && high != 0xffff) { return None; }
+    let user_address = is_user_range(virtual_address, 1);
+    if user_only && !user_address { return None; }
+    if !user_address && virtual_address < 0xffff_8000_0000_0000 { return None; }
+    let indexes = [
+        ((virtual_address >> 39) & 0x1ff) as usize,
+        ((virtual_address >> 30) & 0x1ff) as usize,
+        ((virtual_address >> 21) & 0x1ff) as usize,
+        ((virtual_address >> 12) & 0x1ff) as usize,
+    ];
+    let mut table = (root_physical & ADDR) as *const u64;
+    for (level, index) in indexes.iter().copied().enumerate() {
+        let entry = unsafe { table.add(index).read_volatile() };
+        if entry & PRESENT == 0 || (write && entry & WRITE == 0) { return None; }
+        if user_address && entry & USER == 0 { return None; }
+        if !user_address && entry & USER != 0 { return None; }
+        if level == 3 {
+            return Some((entry & ADDR) | (virtual_address & (PAGE_SIZE - 1)));
+        }
+        if entry & LARGE != 0 { return None; }
+        table = (entry & ADDR) as *const u64;
+    }
+    None
 }
 
 pub fn is_user_range(address: u64, length: u64) -> bool {
