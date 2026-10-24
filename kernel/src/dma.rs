@@ -99,7 +99,10 @@ pub(crate) fn adapter_device(adapter:*mut core::ffi::c_void)->Option<usize>{
  let s=ADAPTERS.lock();s.iter().find(|a|a.used&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())).map(|a|a.device)
 }
 pub(crate) fn release_adapter(adapter:*mut core::ffi::c_void){
- let mut s=ADAPTERS.lock();if let Some(a)=s.iter_mut().find(|a|a.used&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())){a.used=false;a.device=0;a.version=0;a.abi.operations=core::ptr::null();}
+ let device={let s=ADAPTERS.lock();s.iter().find(|a|a.used&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())).map(|a|a.device)};
+ let Some(device)=device else{return};
+ if iommu::device_busy(device)||MAP_REGISTERS.lock().records.iter().any(|r|r.active&&r.device==device){return}
+ let mut s=ADAPTERS.lock();if let Some(a)=s.iter_mut().find(|a|a.used&&a.device==device&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())){a.used=false;a.device=0;a.version=0;a.abi.operations=core::ptr::null();}
 }
 
 #[derive(Clone, Copy)]
@@ -520,6 +523,7 @@ pub unsafe extern "win64" fn allocate_adapter_channel(
     context: *mut core::ffi::c_void,
 ) -> i32 {
     if !is_dma_adapter(adapter)
+        || adapter_device(adapter)!=Some(device as usize)
         || device.is_null()
         || number_of_map_registers > MAX_MAP_REGISTERS_PER_ALLOCATION
         || routine.is_none() {
