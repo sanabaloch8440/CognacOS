@@ -90,6 +90,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   else if requested.eq_ignore_ascii_case(b"RdotObDuplicateHandle") { Some(ob::runtime::RdotObDuplicateHandle as usize) }
   else { None };
   if object_manager.is_some() { return object_manager.map(|p|p as u64); }
+  if requested.eq_ignore_ascii_case(b"SeValidSecurityDescriptor") { return Some(se::runtime::SeValidSecurityDescriptor as usize as u64); }
   let direct = if requested.eq_ignore_ascii_case(b"IoAllocateMdl") {
    Some(crate::io::io_allocate_mdl as usize)
   } else if requested.eq_ignore_ascii_case(b"IoFreeMdl") {
