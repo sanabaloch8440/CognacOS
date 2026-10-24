@@ -44,6 +44,18 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   };
  }
  if !(dll.eq_ignore_ascii_case(b"ntoskrnl.exe") || dll.eq_ignore_ascii_case(b"ntkrnlmp.exe") || dll.eq_ignore_ascii_case(b"ntkrnlpa.exe") || dll.eq_ignore_ascii_case(b"ntkrpamp.exe")) { return None; }
+ // These supported MDL lifecycle routines are absent from the pinned ordinal
+ // manifest, so resolve their exact documented names without fabricating ordinals.
+ if let ImportSymbol::Name(requested) = symbol {
+  let direct = if requested.eq_ignore_ascii_case(b"MmFreeMdl") {
+   Some(mm::runtime::mm_free_mdl as usize)
+  } else if requested.eq_ignore_ascii_case(b"MmPrepareMdlForReuse") {
+   Some(mm::runtime::mm_prepare_mdl_for_reuse as usize)
+  } else if requested.eq_ignore_ascii_case(b"MmBuildPartialMdl") {
+   Some(mm::runtime::mm_build_partial_mdl as usize)
+  } else { None };
+  if direct.is_some() { return direct.map(|address| address as u64); }
+ }
  let name = match symbol {
   ImportSymbol::Name(requested) => exports().find(|e|e.name.as_bytes().eq_ignore_ascii_case(requested)).map(|e|e.name)?,
   ImportSymbol::Ordinal(ordinal) => manifest_26100::ENTRIES.iter().find(|e|e.ordinal==ordinal)?.name?,
