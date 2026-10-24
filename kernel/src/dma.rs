@@ -4,7 +4,7 @@
 //! DMA is fail-closed unless a real platform IOMMU backend is registered. Logical
 //! addresses are IOMMU outputs, not physical-address aliases.
 use core::sync::atomic::{fence, Ordering};
-#[path = "dma/iommu.rs"] mod iommu;
+#[path = "dma/iommu.rs"] pub(crate) mod iommu;
 
 pub const PAGE_SIZE: u64 = 4096;
 pub const MAX_COMMON_BUFFERS: usize = 128;
@@ -771,6 +771,23 @@ mod dma_lifecycle_tests {
         unsafe { free_map_registers(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(), token, 2); }
         assert!(MAP_REGISTERS.lock().records.iter().any(|r| r.active && r.token == token as usize));
         unsafe { free_map_registers(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(), token, 3); }
+        assert!(!MAP_REGISTERS.lock().records.iter().any(|r| r.active && r.token == token as usize));
+    }
+
+    #[test]
+    fn map_register_release_waits_for_live_mapping_references() {
+        let device = 0x2345usize as *mut core::ffi::c_void;
+        let adapter = core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast();
+        let token = allocate_map_register_token(device, 2).expect("map-register token");
+        assert!(consume_map_register(token, device as usize));
+        unsafe { free_map_registers(adapter, token, 2); }
+        {
+            let state = MAP_REGISTERS.lock();
+            let record = state.records.iter().find(|r| r.active && r.token == token as usize).unwrap();
+            assert_eq!(record.in_use, 1);
+            assert!(record.free_pending);
+        }
+        return_map_register(token, device as usize);
         assert!(!MAP_REGISTERS.lock().records.iter().any(|r| r.active && r.token == token as usize));
     }
 
