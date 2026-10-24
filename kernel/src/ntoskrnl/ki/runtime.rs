@@ -4,6 +4,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 static CLOCK_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
 static LAST_CLOCK_TICK: AtomicU64 = AtomicU64::new(0);
 
+/// Register the executive clock consumer before enabling the HAL clock event.
+pub(crate) fn register_clock_interrupt_handler() -> Result<(), crate::hal::HalError> {
+    crate::hal::register_clock_interrupt_notifier(ki_clock_interrupt)
+}
+
 /// Runs timer/DPC expiry before dispatcher timeout completion on a clock tick.
 /// This is deliberately a project-internal routine, not a Windows export.
 pub(crate) fn ki_clock_interrupt(now: u64) {
