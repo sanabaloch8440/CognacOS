@@ -19,7 +19,7 @@ pub const IO_STACK_LOCATION_SIZE_X64: usize = 0x48;
 const MAX_WDM_DEVICES: usize = 32;
 const MAX_WDM_IRPS: usize = 64;
 const MAX_DEVICE_EXTENSION: usize = 512;
-const IRP_STACK_OFFSET: usize = 0xB8;
+const IRP_STACK_OFFSET: usize = 0xB0;
 const IRP_STATUS_OFFSET: usize = 0x30;
 const IRP_INFORMATION_OFFSET: usize = 0x38;
 
@@ -260,6 +260,9 @@ mod wdm_tests {
   assert_eq!(core::mem::offset_of!(DeviceObject,stack_size),76);
   assert_eq!(core::mem::size_of::<DeviceObject>(),0x150);
   assert_eq!(core::mem::size_of::<Irp>(),IRP_SIZE_X64);
+  assert_eq!(IRP_STACK_OFFSET,0xB0);
+  assert_eq!(IRP_STATUS_OFFSET,0x30);
+  assert_eq!(IRP_INFORMATION_OFFSET,0x38);
  }
  unsafe extern "system" fn test_dispatch(device:*mut DeviceObject, irp:*mut Irp)->i32 {
   if device.is_null() || irp.is_null() { return STATUS_INVALID_PARAMETER; }
