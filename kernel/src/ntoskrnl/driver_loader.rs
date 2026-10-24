@@ -102,3 +102,32 @@ pub unsafe fn load_allocated(file:&[u8],driver_object:*mut DriverObject,context:
   Err(error)=>{let _=crate::kernel_vm::free_pages(mapped,pages);Err(error)}
  }
 }
+
+/// Errors from resolving and loading a service selected by the native SYSTEM hive.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum RegistryDriverLoadError{
+ ServiceConfig(crate::ntoskrnl::cm::driver_config::Error),
+ StartTypeUnsupported,NotKernelDriver,ImageResolutionFailed,ImageTooLarge,
+ Load(DriverLoadError),
+}
+/// Resolve a service under the active ControlSet in SYSTEM, read its ImagePath,
+/// obtain the image through the caller's filesystem resolver, then load it.
+/// No driver filename or service name is baked into the loader.
+pub unsafe fn load_registered_service<'h,'p,F>(
+ hive:&'h crate::ntoskrnl::cm::hive::Hive<'h>,
+ service_name:&[u16],
+ path_buffer:&'p mut[u16],
+ image_buffer:&mut[u8],
+ driver_object:*mut DriverObject,
+ context:*mut c_void,
+ mut resolve_image:F,
+)->Result<LoadedDriver,RegistryDriverLoadError>
+where F:FnMut(&[u16],&mut[u8])->Option<usize>{
+ let config=crate::ntoskrnl::cm::driver_config::query_service(hive,service_name,path_buffer)
+  .map_err(RegistryDriverLoadError::ServiceConfig)?;
+ if config.start>1{return Err(RegistryDriverLoadError::StartTypeUnsupported);}
+ if config.service_type!=1&&config.service_type!=2{return Err(RegistryDriverLoadError::NotKernelDriver);}
+ let len=resolve_image(config.image_path,image_buffer).ok_or(RegistryDriverLoadError::ImageResolutionFailed)?;
+ if len==0||len>image_buffer.len(){return Err(RegistryDriverLoadError::ImageTooLarge);}
+ unsafe{load_allocated(&image_buffer[..len],driver_object,context)}.map_err(RegistryDriverLoadError::Load)
+}
