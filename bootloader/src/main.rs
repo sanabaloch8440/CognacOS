@@ -346,7 +346,15 @@ fn main() -> Status {
                 == Some(kernel_stack_guard_page + boot::PAGE_SIZE as u64)
             && bootstrap_physical_at(pml4_physical, KERNEL_STACK_VIRTUAL_GUARD).is_none()
     };
-    if !stack_range_ok || !kernel_aliases_ok
+    let assets_mapped = registry_hives.iter().chain(nls_files.iter()).all(|asset| {
+        if asset.address == 0 && asset.length == 0 { return true; }
+        if asset.address == 0 || asset.length == 0 { return false; }
+        let end = match asset.address.checked_add(asset.length) { Some(v) => v, None => return false };
+        (asset.address..end).step_by(boot::PAGE_SIZE).all(|address| unsafe {
+            bootstrap_identity_mapped(pml4_physical, address)
+        })
+    });
+    if !stack_range_ok || !kernel_aliases_ok || !assets_mapped
         || dependencies.into_iter().filter(|address| *address != 0)
             .any(|address| unsafe { !bootstrap_identity_mapped(pml4_physical, address) }) {
         uefi::println!("FATAL: final UEFI map omitted a live bootstrap dependency or high-half alias");
