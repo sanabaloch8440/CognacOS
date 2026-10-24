@@ -114,6 +114,7 @@ jobs:
           cat build/serial.log
           grep -F 'RdotOS Rust kernel entered.' build/serial.log
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
+          grep -F 'Page-table inspection passed: high-half kernel sections, stack alias, low boot data, and guard pages validated.' build/serial.log
           grep -F 'High RAM direct-map fault-in mapping self-test passed.' build/serial.log
           grep -F 'NT memory manager: physical translation, validity, and checked-copy self-test passed.' build/serial.log
           grep -F 'Physical allocator initialized' build/serial.log
