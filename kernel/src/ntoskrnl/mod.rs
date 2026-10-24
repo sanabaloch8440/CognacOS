@@ -69,6 +69,12 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   else if requested.eq_ignore_ascii_case(b"ObfDereferenceObject") { Some(ob::runtime::ObfDereferenceObject as usize) }
   else if requested.eq_ignore_ascii_case(b"ObReferenceObjectByHandle") { Some(ob::runtime::ObReferenceObjectByHandle as usize) }
   else if requested.eq_ignore_ascii_case(b"ObGetObjectType") { Some(ob::runtime::ObGetObjectType as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObReferenceObjectByPointerWithTag") { Some(ob::runtime::ObReferenceObjectByPointerWithTag as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObReferenceObjectByHandleWithTag") { Some(ob::runtime::ObReferenceObjectByHandleWithTag as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObOpenObjectByPointer") { Some(ob::runtime::ObOpenObjectByPointer as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObReferenceObjectByName") { Some(ob::runtime::ObReferenceObjectByName as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObQueryNameString") { Some(ob::runtime::ObQueryNameString as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObMakeTemporaryObject") { Some(ob::runtime::ObMakeTemporaryObject as usize) }
   else if requested.eq_ignore_ascii_case(b"ObfReferenceObject") { Some(ob::runtime::ObfReferenceObject as usize) }
   else if requested.eq_ignore_ascii_case(b"ObCloseHandle") { Some(ob::runtime::ObCloseHandle as usize) }
   else if requested.eq_ignore_ascii_case(b"ObIsKernelHandle") { Some(ob::runtime::ObIsKernelHandle as usize) }
