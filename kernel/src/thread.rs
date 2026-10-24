@@ -195,6 +195,7 @@ fn notify_affinity(affinity:u64) {
     }
 }
 fn exit_current()->! {
+    if let Some(id)=current_thread_id(){crate::ntoskrnl::ke::runtime::ke_rundown_apcs_for_thread(id);}
     let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
     let local=match crate::hal::cpu_local(cpu){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
     let id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
