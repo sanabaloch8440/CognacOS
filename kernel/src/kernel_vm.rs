@@ -264,6 +264,50 @@ pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
  let mapped_bits=unsafe{&mut *MAPPED_BITS.0.get()};for n in 0..pages{mapped_bits[(start+n)/64]|=1u64<<((start+n)%64);}
  table[ti]=Extent{start,pages,pageable:false,owns_frames:true,live:true};Ok(va as *mut u8)
 }
+/// Allocate an image extent at an exact supervisor virtual address. This is
+/// used for fixed-base native PE images whose headers currently omit relocations.
+pub fn allocate_pages_at(address:u64,pages:usize)->Result<*mut u8,Error>{
+ if pages==0||pages>MAX_EXTENT_PAGES||address<PAGE+BASE||address&(PAGE-1)!=0{return Err(Error::Invalid)}
+ let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
+ let start=usize::try_from((address-BASE)/PAGE).map_err(|_|Error::Invalid)?;
+ if start.checked_add(pages).is_none_or(|end|end>PAGES){return Err(Error::NoVirtualSpace)}
+ let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
+ let bits=unsafe{&mut *BITS.0.get()};if (start..start+pages).any(|n|bits[n/64]&(1u64<<(n%64))!=0){return Err(Error::AlreadyMapped)}
+ for n in start..start+pages{bits[n/64]|=1u64<<(n%64);}
+ let mut mapped=0usize;
+ while mapped<pages{
+  let pa=match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>break};
+  if unsafe{map(root,address+mapped as u64*PAGE,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};break;}
+  mapped+=1;
+ }
+ if mapped!=pages{
+  for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,address+n as u64*PAGE)}{let _=unsafe{crate::memory::free_page(pa)};}}
+  for n in start..start+pages{bits[n/64]&=!(1u64<<(n%64));}
+  return Err(Error::NoPhysicalMemory)
+ }
+ synchronize_kernel_tlb();let mapped_bits=unsafe{&mut *MAPPED_BITS.0.get()};
+ for n in start..start+pages{mapped_bits[n/64]|=1u64<<(n%64);}
+ table[ti]=Extent{start,pages,pageable:false,owns_frames:true,live:true};Ok(address as *mut u8)
+}
+
+/// Change permissions on a page-aligned subrange of a live kernel VM extent.
+/// Read permission is implicit on x86-64; executable and writable are exclusive.
+pub fn protect_pages(address:u64,pages:usize,writable:bool,executable:bool)->Result<(),Error>{
+ if pages==0||address&(PAGE-1)!=0||writable&&executable{return Err(Error::Invalid)}
+ let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
+ let start=usize::try_from(address.checked_sub(BASE).ok_or(Error::Invalid)?/PAGE).map_err(|_|Error::Invalid)?;
+ if start.checked_add(pages).is_none_or(|end|end>PAGES){return Err(Error::Invalid)}
+ let _g=Guard::lock();let table=unsafe{&*TABLE.0.get()};
+ if !table.iter().any(|e|e.live&&start>=e.start&&start+pages<=e.start+e.pages){return Err(Error::NotMapped)}
+ for n in 0..pages{
+  let va=address+n as u64*PAGE;let leaf=unsafe{leaf_ptr(root,va)}.ok_or(Error::NotMapped)?;
+  let mut entry=unsafe{leaf.read_volatile()};if entry&P==0{return Err(Error::NotMapped)}
+  entry&=!(W|NX);if writable{entry|=W;}if !executable{entry|=NX;}
+  unsafe{leaf.write_volatile(entry);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+ }
+ synchronize_kernel_tlb();Ok(())
+}
+
 /// Map an arbitrary list of caller-owned physical pages into a contiguous
 /// supervisor virtual extent. The caller retains ownership of every frame;
 /// this extent only owns the virtual mapping and must be released with
