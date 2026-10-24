@@ -553,6 +553,73 @@ pub(crate) fn threaded_dpc_self_test()->bool{
     THREADED_DPC_TEST_COUNT.load(Ordering::Acquire)==1
         && DPC_IN_FLIGHT.load(Ordering::Acquire)==0
 }
+
+#[repr(C,align(16))]
+struct DpcRundownTestStorage([u64;8]);
+static DPC_RUNDOWN_TEST_OBJECT:DpcRundownTestStorage=DpcRundownTestStorage([0;8]);
+static DPC_RUNDOWN_TEST_COUNT:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+unsafe extern "win64" fn dpc_rundown_test_routine(
+    dpc:*mut core::ffi::c_void,_context:*mut core::ffi::c_void,
+    _arg1:*mut core::ffi::c_void,_arg2:*mut core::ffi::c_void,
+){
+    DPC_RUNDOWN_TEST_COUNT.fetch_add(1,Ordering::AcqRel);
+    // Reinitialization during the callback must be ignored until rundown clears.
+    unsafe{ke_initialize_dpc(dpc,Some(dpc_rundown_test_routine),core::ptr::null_mut());}
+}
+
+#[repr(C,align(16))]
+struct Timer2RundownTestStorage([u64;8]);
+static TIMER2_RUNDOWN_TEST_OBJECT:Timer2RundownTestStorage=Timer2RundownTestStorage([0;8]);
+static TIMER2_RUNDOWN_TEST_COUNT:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+unsafe extern "win64" fn timer2_rundown_test_routine(
+    timer:*mut core::ffi::c_void,_context:*mut core::ffi::c_void,
+){
+    TIMER2_RUNDOWN_TEST_COUNT.fetch_add(1,Ordering::AcqRel);
+    unsafe{
+        let _=ke_cancel_timer2(timer);
+        // This initializer must not replace the callback/context while running.
+        ke_initialize_timer2(timer,Some(timer2_rundown_test_routine),core::ptr::null_mut());
+    }
+}
+
+/// Stress-facing boot regression for queued cancellation, callback rundown,
+/// reinitialization while running, and timer-generation invalidation.
+pub(crate) fn timer_dpc_rundown_self_test()->bool{
+    let dpc=core::ptr::addr_of!(DPC_RUNDOWN_TEST_OBJECT).cast_mut().cast::<core::ffi::c_void>();
+    DPC_RUNDOWN_TEST_COUNT.store(0,Ordering::Release);
+    unsafe{ke_initialize_dpc(dpc,Some(dpc_rundown_test_routine),core::ptr::null_mut());}
+    if unsafe{ke_insert_queue_dpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())}==0{return false}
+    if unsafe{ke_remove_queue_dpc(dpc)}==0{return false}
+    dispatch_queued_dpcs();
+    if DPC_RUNDOWN_TEST_COUNT.load(Ordering::Acquire)!=0{return false}
+    if unsafe{ke_insert_queue_dpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())}==0{return false}
+    dispatch_queued_dpcs();
+    if DPC_RUNDOWN_TEST_COUNT.load(Ordering::Acquire)!=1
+        ||DPC_IN_FLIGHT.load(Ordering::Acquire)!=0{return false}
+
+    let timer=core::ptr::addr_of_mut!(TIMER_DPC_CANCEL_TEST_TIMER);
+    unsafe{ke_initialize_timer_ex(timer,0);}
+    if unsafe{ke_set_timer(timer,0,core::ptr::null_mut())}==0{return false}
+    if unsafe{ke_cancel_timer(timer)}==0{return false}
+    timer_tick(crate::hal::query_performance_counter().saturating_add(u64::MAX/4));
+    if unsafe{ke_read_state_timer(timer)}!=0{return false}
+
+    let timer2=core::ptr::addr_of!(TIMER2_RUNDOWN_TEST_OBJECT).cast_mut().cast::<core::ffi::c_void>();
+    TIMER2_RUNDOWN_TEST_COUNT.store(0,Ordering::Release);
+    unsafe{ke_initialize_timer2(timer2,Some(timer2_rundown_test_routine),core::ptr::null_mut());}
+    if unsafe{ke_set_timer2(timer2,0,0,0)}==0{return false}
+    timer_tick(crate::hal::query_performance_counter().saturating_add(1));
+    let table=TIMERS.lock();
+    let record=table.records.iter().find(|r|r.object==timer2 as usize&&r.timer2);
+    TIMER2_RUNDOWN_TEST_COUNT.load(Ordering::Acquire)==1
+        && record.is_some_and(|r|!r.callback_running&&!r.active&&r.callback==timer2_rundown_test_routine as usize)
+        && DPC_IN_FLIGHT.load(Ordering::Acquire)==0
+}
+
+static mut TIMER_DPC_CANCEL_TEST_TIMER:DispatcherHeader=DispatcherHeader{
+    kind:TIMER_NOTIFICATION,absolute:0,size:6,inserted:0,signal_state:0,
+    wait_list_flink:0,wait_list_blink:0,
+};
 unsafe extern "win64" fn flush_dpc_rendezvous(
     _dpc:*mut core::ffi::c_void,_context:*mut core::ffi::c_void,
     done:*mut core::ffi::c_void,sync:*mut core::ffi::c_void,
@@ -849,6 +916,7 @@ pub(crate) fn ki_initialize_kernel(report: &ProcessorStartupReport) -> bool {
     report.scheduler_stress_passed
         && report.vm_stress_passed
         && threaded_dpc_self_test()
+        && timer_dpc_rundown_self_test()
 }
 
 /// Minimal Ke processor-query routines backed by the live HAL processor table.
