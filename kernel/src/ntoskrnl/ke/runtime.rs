@@ -1022,7 +1022,8 @@ pub unsafe extern "win64" fn ke_release_guarded_mutex(object:*mut DispatcherHead
     let _=release_mutant(object,false);unsafe{ke_leave_guarded_region();}
 }
 pub unsafe extern "win64" fn ke_try_to_acquire_guarded_mutex(object:*mut DispatcherHeader)->u8{
-    if unsafe{try_consume_dispatcher_object(object)}{unsafe{ke_enter_guarded_region();}1}else{0}
+    unsafe{ke_enter_guarded_region();}
+    if unsafe{try_consume_dispatcher_object(object)}{1}else{unsafe{ke_leave_guarded_region();}0}
 }
 pub unsafe extern "win64" fn ke_acquire_guarded_mutex_unsafe(object:*mut DispatcherHeader){
     let _=unsafe{ke_wait_for_single_object(object,0,0,0,core::ptr::null())};
@@ -1230,7 +1231,7 @@ unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
     if object.is_null(){return}
     let current=crate::thread::current_thread_id().unwrap_or(0);
     let owns=initial_owner!=0&&current!=0;
-    unsafe{object.write(DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:8,inserted:0,signal_state:if owns{0}else{1},wait_list_flink:object as u64+8,wait_list_blink:object as u64+8});}
+    unsafe{object.write(DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:if owns{0}else{1},wait_list_flink:object as u64+8,wait_list_blink:object as u64+8});}
     let mut table=MUTANTS.lock();
     let slot=table.records.iter().position(|r|r.object==object as usize).or_else(||table.records.iter().position(|r|r.object==0));
     if let Some(i)=slot{table.records[i]=MutantRecord{object:object as usize,owner:if owns{current}else{0},recursion:if owns{1}else{0},abandoned:false};}
@@ -1370,7 +1371,7 @@ fn timer_deadline(due:i64)->Option<u64>{
 unsafe fn initialize_timer(timer:*mut DispatcherHeader, timer_type:i32){
     if timer.is_null()||!(timer_type==0||timer_type==1){return}
     let kind=if timer_type==0{TIMER_NOTIFICATION}else{TIMER_SYNCHRONIZATION};
-    unsafe{timer.write(DispatcherHeader{kind,absolute:0,size:10,inserted:0,signal_state:0,wait_list_flink:timer as u64+8,wait_list_blink:timer as u64+8});}
+    unsafe{timer.write(DispatcherHeader{kind,absolute:0,size:16,inserted:0,signal_state:0,wait_list_flink:timer as u64+8,wait_list_blink:timer as u64+8});}
     let mut table=TIMERS.lock();
     let slot=table.records.iter().position(|r|r.object==timer as usize)
         .or_else(||table.records.iter().position(|r|r.object==0));
