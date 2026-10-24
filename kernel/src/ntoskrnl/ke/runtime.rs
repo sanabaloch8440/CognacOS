@@ -1034,12 +1034,14 @@ pub unsafe extern "win64" fn ke_set_priority_thread(thread:*mut core::ffi::c_voi
  let base=if table.records[slot].id==id{table.records[slot].base}else{priority};
  table.records[slot]=ThreadPriorityRecord{id,base,current:priority};old
 }
-pub unsafe extern "win64" fn ke_set_base_priority_thread(thread:*mut core::ffi::c_void,increment:i32)->i8{
- let current=unsafe{ke_query_priority_thread(thread)};
- let base=(current as i32+increment).clamp(0,31) as i8;
- let _=unsafe{ke_set_priority_thread(thread,base)};
- if let Some(id)=priority_id(thread){let mut table=THREAD_PRIORITIES.lock();if let Some(r)=table.records.iter_mut().find(|r|r.id==id){r.base=base;}}
- base
+pub unsafe extern "win64" fn ke_set_base_priority_thread(thread:*mut core::ffi::c_void,increment:i32)->i32{
+ let Some(id)=priority_id(thread) else{return 0};
+ let mut table=THREAD_PRIORITIES.lock();
+ let Some(slot)=table.records.iter().position(|r|r.id==id) else{return 0};
+ let old=table.records[slot].base as i32;
+ let base=(old+increment).clamp(0,31) as i8;
+ table.records[slot].base=base;table.records[slot].current=base;
+ old
 }
 
 /// Never busy-loops when the thread runtime or calibrated delay source is absent.
