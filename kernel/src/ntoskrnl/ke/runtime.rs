@@ -1692,9 +1692,6 @@ pub unsafe extern "win64" fn ke_get_xsave_feature_flags()->u64{
     ((hi as u64)<<32)|lo as u64
 }
 pub unsafe extern "win64" fn ke_dynamic_partitioning_supported()->u8{0}
-pub unsafe extern "win64" fn ke_should_yield_processor()->u8{
-    crate::thread::has_ready_threads() as u8
-}
 
 // ---- Timer and DPC executive ------------------------------------------------
 // Driver-owned timer/DPC object storage is opaque to this implementation. The
