@@ -916,7 +916,32 @@ pub unsafe fn load_cpu_descriptor_tables(logical_id: usize, rsp0: u64) -> Result
         base: idt_ptr as u64,
     };
     unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)); }
+    if !per_cpu_tss_self_test(logical_id) { return Err(()); }
     Ok(())
+}
+
+/// Validate the active per-CPU TSS descriptor and the exception IST wiring.
+pub fn per_cpu_tss_self_test(cpu: usize) -> bool {
+    if cpu >= crate::hal::MAX_CPUS { return false; }
+    unsafe {
+        let tss = core::ptr::addr_of!(CPU_TSS[cpu]);
+        let rsp0 = core::ptr::addr_of!((*tss).rsp0).read_unaligned();
+        let ist1 = core::ptr::addr_of!((*tss).ist[0]).read_unaligned();
+        let ist2 = core::ptr::addr_of!((*tss).ist[1]).read_unaligned();
+        let ist3 = core::ptr::addr_of!((*tss).ist[2]).read_unaligned();
+        let descriptor = core::ptr::addr_of!(CPU_GDT[cpu][3]).read();
+        let high = core::ptr::addr_of!(CPU_GDT[cpu][4]).read();
+        let idt = core::ptr::addr_of!(IDT).cast::<IdtEntry>();
+        let nmi_ist = core::ptr::addr_of!((*idt.add(2)).ist).read_unaligned() & 7;
+        let df_ist = core::ptr::addr_of!((*idt.add(8)).ist).read_unaligned() & 7;
+        let mc_ist = core::ptr::addr_of!((*idt.add(18)).ist).read_unaligned() & 7;
+        rsp0 != 0 && ist1 != 0 && ist2 != 0 && ist3 != 0
+            && ist1 & 0xf == 0 && ist2 & 0xf == 0 && ist3 & 0xf == 0
+            && ist1 != ist2 && ist1 != ist3 && ist2 != ist3
+            && ((descriptor >> 40) & 0xff) == 0x89
+            && high == (tss as u64 >> 32)
+            && nmi_ist == 2 && df_ist == 1 && mc_ist == 3
+    }
 }
 
 /// Update the privilege-transition stack when a kernel thread is dispatched.
