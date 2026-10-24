@@ -143,6 +143,10 @@ The third-party third-party filesystem driver source reference has been removed 
 
 Contributions should be small enough to review, document their assumptions, include meaningful tests where practical, and avoid claiming compatibility beyond what has been validated. For kernel-facing changes, include relevant build or QEMU results and keep failure paths bounded and safe.
 
+## Windows 11 Se security compatibility tracking
+
+The Se export catalogue remains metadata, not proof that its routines are callable. The initial Se runtime is organized under `kernel/src/ntoskrnl/se/`; it currently implements a bounded `SeValidSecurityDescriptor` validator for self-relative security descriptors and routes that exact symbol through the import resolver. Token privileges, impersonation, access-state semantics, SACL/audit policy, and the broader Se surface remain incomplete. See [Windows 11 vs RdotOS Se comparison](WINDOWS11_RDOTOS_NTOSKRNL_SE_COMPARISON.md).
+
 ## Windows 11 Ke compatibility tracking
 
 The current Ke inventory is maintained in [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md), which tracks 169 Ke export names, public WDK contracts, return values, resolver paths, unresolved exports, and the scoring method. The comparison's current project-defined combined score is 65.1% (100% declaration/resolver coverage plus 51/169 scoped strict behavior matches); it is not a Microsoft score or proof of Windows driver compatibility. APC delivery, processor callbacks, process attach, priority bands and wait-all reservations have new implementation foundations but remain partial and need current CI/QEMU, SMP and driver-facing validation. Private Windows object layouts are not inferred from opaque names; only the public layouts currently asserted by the code are claimed.
