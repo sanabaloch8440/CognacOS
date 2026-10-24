@@ -59,6 +59,7 @@ const IRP_MN_SET_POWER:u8=0x02;
 const IRP_MN_QUERY_POWER:u8=0x03;
 const STATUS_SUCCESS:i32=0;
 const STATUS_PENDING:i32=0x0000_0103;
+const STATUS_DEVICE_BUSY:i32=0x8000_0011u32 as i32;
 const STATUS_INVALID_DEVICE_REQUEST:i32=0xC000_0010u32 as i32;
 const STATUS_DELETE_PENDING:i32=0xC000_0056u32 as i32;
 const STATUS_INSUFFICIENT_RESOURCES:i32=0xC000_009Au32 as i32;
@@ -96,7 +97,7 @@ pub(crate) unsafe fn po_prepare_irp_dispatch(device:*mut DeviceObject,irp:*mut W
      match SYSTEM_POWER_IRP.compare_exchange(core::ptr::null_mut(),irp,Ordering::AcqRel,Ordering::Acquire) {
       Ok(_)=>{},
       Err(existing) if existing==irp=>{},
-      Err(_)=>return STATUS_PENDING,
+      Err(_)=>return STATUS_DEVICE_BUSY,
      }
     }
     (3,raw as u8)
