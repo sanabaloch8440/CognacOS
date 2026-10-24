@@ -441,6 +441,48 @@ pub unsafe extern "system" fn io_reuse_irp(irp:*mut Irp, status:i32) {
 }
 
 
+const MAX_REGISTERED_FILESYSTEMS:usize=16;
+struct FileSystemRegistry { devices:[*mut DeviceObject;MAX_REGISTERED_FILESYSTEMS], count:usize }
+unsafe impl Send for FileSystemRegistry {}
+impl FileSystemRegistry { const fn new()->Self{Self{devices:[ptr::null_mut();MAX_REGISTERED_FILESYSTEMS],count:0}} }
+static FILESYSTEMS:IrqSpinLock<FileSystemRegistry>=IrqSpinLock::new(FileSystemRegistry::new());
+
+/// Register a filesystem control device so the I/O manager can discover it.
+/// Mount dispatch, VPB allocation and mount-volume arbitration are separate
+/// features and are not implied by registration alone.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_register_file_system(device:*mut DeviceObject) {
+    if device.is_null(){return}
+    let valid={let state=WDM.lock();state.devices.iter().any(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device))};
+    if !valid{return}
+    let mut registry=FILESYSTEMS.lock();
+    if registry.devices[..registry.count].contains(&device){return}
+    if registry.count<MAX_REGISTERED_FILESYSTEMS {
+        let index=registry.count;
+        registry.devices[index]=device;
+        registry.count+=1;
+    }
+}
+
+/// Remove a filesystem from discovery. The caller must first prevent new mount
+/// requests and drain existing volumes; this routine only removes registration.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_unregister_file_system(device:*mut DeviceObject) {
+    if device.is_null(){return}
+    let mut registry=FILESYSTEMS.lock();
+    let Some(index)=registry.devices[..registry.count].iter().position(|d|*d==device) else{return};
+    for i in index..registry.count-1 {registry.devices[i]=registry.devices[i+1];}
+    registry.count-=1;
+    registry.devices[registry.count]=ptr::null_mut();
+}
+
+pub fn is_file_system_registered(device:*mut DeviceObject)->bool {
+    if device.is_null(){return false}
+    let registry=FILESYSTEMS.lock();
+    registry.devices[..registry.count].contains(&device)
+}
+
+
 #[cfg(test)]
 mod wdm_tests {
  use super::*;
@@ -553,6 +595,18 @@ mod wdm_tests {
   assert_eq!(unsafe{(*irp).bytes[0x43]},3);
   assert_eq!(unsafe{io_get_current_irp_stack_location(irp)} as usize,irp as usize+IRP_SIZE_X64+2*IO_STACK_LOCATION_SIZE_X64);
   unsafe{io_free_irp(irp);io_detach_device(lower);io_delete_device(upper);io_delete_device(lower);}
+ }
+
+ #[test]
+ fn file_system_registration_is_bounded_idempotent_and_removable() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  unsafe{io_register_file_system(device);io_register_file_system(device);}
+  assert!(is_file_system_registered(device));
+  unsafe{io_unregister_file_system(device);}
+  assert!(!is_file_system_registered(device));
+  unsafe{io_delete_device(device);}
  }
 
 }
