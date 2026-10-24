@@ -1,49 +1,79 @@
 # RdotOS
 
-RdotOS is an experimental, x86-64-only operating-system project exploring a modern UEFI-first architecture, hardware-backed security, isolation, and low-latency I/O.
+**RdotOS is an experimental, Rust-first x86-64 operating system built around a UEFI boot path and NT-inspired kernel interfaces.** Its long-term goal is to provide a native platform capable of hosting Windows-style x64 drivers. That compatibility is a work in progress; RdotOS is not currently a Windows 11 replacement and does not claim general Windows driver or WDK binary compatibility.
 
-## Implementation language and status
+[![Build and QEMU boot test](https://github.com/umarfarooq7869/RdotOS/actions/workflows/build-uefi.yml/badge.svg)](https://github.com/umarfarooq7869/RdotOS/actions/workflows/build-uefi.yml)
 
-The bootloader and kernel are written in **Rust**. C is not used for the bootloader or kernel. The Rust UEFI application now reads a bounded kernel ELF file from the EFI system partition, validates core ELF64 x86-64 executable headers and PT_LOAD bounds, loads segments at their identity-mapped physical addresses, exits UEFI boot services, and jumps to the kernel with a versioned boot-information structure. The freestanding Rust kernel validates that structure and reports the handoff and memory-map count over COM1. The bootstrap now includes CPU mitigation setup, 4 KiB page-permission hardening for kernel sections, an unmapped kernel-stack guard page, exception-specific diagnostics, a build-time SHA-256 pin for the kernel ELF, and initial isolated user address spaces with checked copy helpers. It remains an early experimental OS, not production-hardened.
+- **Language:** Rust (no_std kernel and Rust UEFI loader)
+- **Architecture:** x86-64
+- **Boot mode:** UEFI
+- **License:** GPL-2.0-or-later — see [LICENSE](LICENSE)
+- **Project status:** Experimental; implementation and hardware support are incomplete
 
-The kernel now also contains bounded ACPI MADT parsing, xAPIC/I/O APIC register primitives, a priority/affinity scheduler policy core, typed handles with access checks, and an initial device/IRP dispatch layer. These are foundations only: AP startup, interrupt/timer activation, actual context switching, full NT executive semantics, hardware storage drivers, filesystems, and graphics drivers are not yet implemented. Interrupts remain disabled until routing and per-CPU entry paths are complete.
+See the [implementation roadmap](roadmap.md) for feature status, known gaps, and planned work.
 
-See [roadmap.md](roadmap.md) for implemented work and remaining milestones.
+## Project goals
 
-## Build
+- Build a maintainable operating-system kernel in Rust.
+- Establish explicit boundaries between architecture code, the HAL, memory management, the NT-inspired executive, and device I/O.
+- Develop memory isolation, executable-image loading, scheduling, and driver-facing interfaces incrementally.
+- Validate changes through host-side tests and automated OVMF/QEMU boot tests.
+- Pursue Windows x64 driver compatibility through real ABI and semantic implementations, not export-name lists or placeholder functions.
 
-The GitHub Actions workflow installs the Rust targets x86_64-unknown-uefi and x86_64-unknown-none, builds both crates, links the kernel with `kernel/linker.ld`, checks the ELF headers/program headers, and packages BOOTX64.EFI plus `rdotos-kernel.elf` into a FAT disk image. OVMF/QEMU runtime smoke tests assert the page-hardening and user-copy checks. The kernel hash is pinned into the bootloader at build time; this detects post-build tampering only if the bootloader itself is trusted. Asymmetric signature verification, firmware Secure Boot signing/enrollment, full ELF-segment permission validation, ring-3 entry, and complete process lifecycle remain outstanding.
+## Current implementation
 
-For a VM, use x86-64 UEFI firmware. The EFI application is currently unsigned and may be rejected by firmware with Secure Boot enforcement enabled. The current kernel digest pin is not a substitute for public-key signature verification. A real verified-boot chain requires a trusted/signed bootloader and a protected public-key policy; firmware Secure Boot state alone is not enough.
+The repository contains working foundations in several areas. “Implemented” here means code and tests exist; it does not imply production readiness or complete Windows compatibility.
 
-## Design principles
+| Area | Current state |
+| --- | --- |
+| UEFI boot | Rust EFI application loads a bounded ELF64 x86-64 kernel image, checks a build-pinned SHA-256 digest, exits boot services, and transfers control through versioned boot information. |
+| Kernel bootstrap | Freestanding Rust kernel, kernel-owned GDT/IDT, exception diagnostics, COM1 logging, CR3 activation, and physical-page allocation. |
+| Memory protection | 4 KiB kernel-section permissions, CR0.WP, NX where supported, stack guard page, isolated user address spaces, checked user-copy helpers, and W^X checks in implemented mapping paths. |
+| ACPI and HAL | RSDP/RSDT/XSDT validation, MADT parsing, CPU-local records, APIC-ID registry, port-I/O primitives, MMIO bounds checks, and IRQ-save locks. |
+| SMP | AP startup trampoline and bounded startup coordination exist; multi-CPU startup and scheduling remain experimental and require broader validation. |
+| Executable loading | Bounded PE32+ AMD64 loading, relocations, normal/delay imports, registered exports, API-set aliases, TLS setup/callbacks, and basic unwind metadata registration. |
+| User mode | Ring-3 transition and a small RdotOS-native syscall/process lifecycle test path. This is not the Windows NT syscall ABI. |
+| Kernel services | Initial scheduler policy, typed handles/access checks, dispatcher primitives, and device/IRP request lifecycle foundations. |
+| DMA and IOMMU | DMA request/channel foundations and Intel VT-d ACPI discovery exist. Real DMA mapping, full VT-d initialization, and AMD IOMMU support are incomplete. |
+| ext filesystem | A conservative read-only ext2/ext3/ext4 metadata parser with bounds checks and selected block mapping. It rejects unsupported features and is not a production filesystem driver. |
 
-- Native x86-64; no 32-bit compatibility subsystem is planned.
-- Rust for both bootloader and kernel; freestanding kernel code uses no_std.
-- Explicit trust boundaries: firmware, boot chain, kernel, isolated services, and drivers.
-- Security claims are only marked complete after enforcement and negative tests exist.
-- Hardware-specific scheduling, NVMe/GPU direct I/O, Modern Standby, and virtualization require staged platform support; they are not implied by the bootstrap.
+## Build and test
 
-## Licensing
+The CI workflow builds the Rust UEFI application and freestanding kernel, validates the kernel ELF, packages a GPT/FAT EFI image, and boots it under OVMF/QEMU. Serial-log assertions check kernel entry and selected subsystem self-tests. Host-side tests also exercise the ext filesystem parser.
 
-RdotOS is licensed under **GNU General Public License v2.0 or (at your option) any later version** (SPDX: `GPL-2.0-or-later`). See [LICENSE](LICENSE). The AP startup trampoline and temporary-page-table approach in `kernel/src/smp.rs` are adapted from [RustOS-Dev/RustOS](https://github.com/RustOS-Dev/RustOS), which is also GPL-2.0-or-later; the relevant source and adaptation are identified in the source-file notice. Third-party components retain their own applicable licenses; see their in-tree notices and submodule documentation.
+For the canonical build and boot-test result, see [GitHub Actions](https://github.com/umarfarooq7869/RdotOS/actions/workflows/build-uefi.yml). A successful CI run verifies only the paths covered by that run; it is not evidence of support for all hardware or Windows drivers.
 
+### Development prerequisites
 
-## Third-party filesystem driver reference
+The CI workflow is the authoritative build recipe. Development generally requires a recent Rust toolchain with the x86_64-unknown-uefi and x86_64-unknown-none targets, the repository's linker script, and (for the runtime smoke test) OVMF and QEMU.
 
-The Ext3Fsd Windows ext2/ext3/ext4 driver is tracked as a pinned source submodule at `third_party/Ext3Fsd` for a planned Rust port. It remains a separate GPLv2-licensed upstream component; see [third_party/README.md](third_party/README.md). The Windows driver itself is not loadable by RdotOS.
+## Security and compatibility notes
 
+- The embedded kernel SHA-256 digest detects a changed kernel only when the bootloader is trusted. It is **not** public-key signature verification or a complete verified-boot chain.
+- The EFI application is not necessarily signed for Secure Boot enforcement.
+- AP startup, interrupt routing, timer-driven preemption, full process/thread semantics, hardware storage drivers, graphics, and power management remain incomplete.
+- Windows-style names and export metadata do not by themselves provide Windows ABI or semantic compatibility. The current syscall ABI is RdotOS-native.
+- DMA/IOMMU code must fail safely when a required hardware translation or mapping feature is unavailable; bookkeeping tokens are not equivalent to hardware-backed mappings.
+- The ext parser is read-only. It does not replay journals or write filesystem metadata.
 
-## Hardware Abstraction Layer, SMP, and I/O status
+## Repository layout
 
-RdotOS now has a separate `kernel/src/hal.rs` x86-64 HAL foundation. It owns fixed per-CPU records, a logical-CPU/APIC-ID registry, CPU lifecycle states, GS-based CPU-local access, typed port-I/O primitives, MMIO range checks, and IRQ-save spin locks. The bootstrap processor registers its CPU-local record during kernel entry. The Rust UEFI loader passes the ACPI RSDP from firmware configuration tables through boot-info v3; the kernel validates the RSDP and RSDT/XSDT, finds/checksums the MADT, and registers enabled processors with the HAL. The APIC layer also has bounded ICR waits and fixed/INIT/Startup IPI primitives. The AP startup path now uses a low-memory trampoline and a temporary page-table root that preserves the kernel mappings while explicitly identity-mapping the trampoline region. Scheduler metadata and I/O request state use the HAL lock so interrupt re-entry and cross-CPU races are less likely to deadlock or double-dispatch requests.
+| Path | Purpose |
+| --- | --- |
+| bootloader/ | Rust UEFI application |
+| kernel/ | Freestanding Rust kernel, architecture code, HAL, memory manager, executive and I/O foundations |
+| third_party/Ext3Fsd | Pinned upstream filesystem-driver source reference for a planned Rust port |
+| .github/workflows/ | Automated build and OVMF/QEMU validation |
+| [roadmap.md](roadmap.md) | Implemented features, incomplete work, and next milestones |
 
-The I/O manager now tracks IRPs in flight, permits cancellation only before dispatch begins, and supports explicit asynchronous completion. CI exercises these transitions during the QEMU boot smoke test.
+## Third-party filesystem reference
 
-**SMP remains experimental.** The kernel now attempts INIT-SIPI-SIPI startup using a relocated real-mode trampoline, a temporary page-table root, per-AP stacks, and an AP-entry acknowledgement with a bounded timeout. This is not yet a production scheduler: AP interrupt routing, timer activation, context switching, and multi-vCPU stress testing remain incomplete. Context switching and preemptive scheduling are also not implemented. Do not enable external interrupts or claim Windows 11 HAL/WDK binary compatibility yet. The design follows NT-style separation of HAL, executive, and driver interfaces, but is a native RdotOS interface.
+The third_party/Ext3Fsd submodule is retained as a separate upstream reference for a possible staged Rust port. The original Windows driver is **not loadable by RdotOS**. See [third_party/README.md](third_party/README.md) and the upstream [Ext3Fsd repository](https://github.com/matt-wu/Ext3Fsd) for project and licensing context.
 
-## Ext filesystem Rust port status
+## Contributing
 
-A conservative `no_std` Rust parser validates ext superblock geometry, common inode metadata, legacy group descriptors, and directory-record bounds. It now has checked device-capacity/filesystem-bound block reads and a bounded ext4 extent-tree mapper with depth, entry-count, logical-range, and physical-range validation. It is read-only and never replays journals or writes. Unsupported read-only-compatible features (including metadata checksums, bigalloc, and indexed directories) are rejected rather than interpreted without their required validation; consequently many modern ext4 volumes will not yet mount. Group-descriptor checksums, inode checksums, real disk-image fixtures, directory traversal, indirect-block mapping, journal-state handling, and filesystem registration remain outstanding. The parser is not yet a production-ready filesystem driver.
+Contributions should be small enough to review, document their assumptions, include meaningful tests where practical, and avoid claiming compatibility beyond what has been validated. For kernel-facing changes, include relevant build or QEMU results and keep failure paths bounded and safe.
 
-“Windows 11 compatible” here means designing the eventual RdotOS filesystem service/driver adapter with explicit NT-style concepts where useful; the Rust component is not a Windows 11 kernel driver and cannot be loaded by Windows. The original Ext3Fsd sources target older Windows releases and have documented unsupported ext4 features and corruption warnings; see [upstream README](https://github.com/matt-wu/Ext3Fsd) and [release notes](https://github.com/matt-wu/Ext3Fsd/releases).
+## License
+
+RdotOS is licensed under **GNU General Public License v2.0 or (at your option) any later version** (SPDX: GPL-2.0-or-later). See [LICENSE](LICENSE). The AP startup trampoline and temporary-page-table approach in kernel/src/smp.rs are adapted from [RustOS-Dev/RustOS](https://github.com/RustOS-Dev/RustOS), which is also GPL-2.0-or-later; the source-file notice identifies the adaptation. Third-party components retain their applicable licenses and notices.
