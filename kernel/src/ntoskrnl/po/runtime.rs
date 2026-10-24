@@ -52,9 +52,156 @@ pub unsafe extern "system" fn PoSetPowerState(
     }
 }
 
-/// Kept for legacy WDM drivers; modern power IRPs still require real dispatch.
+
+const IRP_MJ_POWER:u8=0x16;
+const IRP_MJ_PNP:u8=0x1b;
+const IRP_MN_SET_POWER:u8=0x02;
+const IRP_MN_QUERY_POWER:u8=0x03;
+const STATUS_SUCCESS:i32=0;
+const STATUS_PENDING:i32=0x0000_0103;
+const STATUS_INVALID_DEVICE_REQUEST:i32=0xC000_0010u32 as i32;
+const STATUS_DELETE_PENDING:i32=0xC000_0056u32 as i32;
+const STATUS_INSUFFICIENT_RESOURCES:i32=0xC000_009Au32 as i32;
+const MAX_POWER_TRANSITIONS:usize=64;
+
+#[derive(Clone,Copy)]
+struct Transition { used:bool, irp:*mut WdmIrp, device:*mut DeviceObject, kind:u8, target:u8, minor:u8 }
+unsafe impl Send for Transition {}
+impl Transition { const EMPTY:Self=Self{used:false,irp:core::ptr::null_mut(),device:core::ptr::null_mut(),kind:0,target:0,minor:0}; }
+struct TransitionState { slots:[Transition;MAX_POWER_TRANSITIONS] }
+impl TransitionState { const fn new()->Self{Self{slots:[Transition::EMPTY;MAX_POWER_TRANSITIONS]}} }
+static TRANSITIONS:crate::hal::IrqSpinLock<TransitionState>=crate::hal::IrqSpinLock::new(TransitionState::new());
+static SYSTEM_POWER_TRANSITION:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+
+fn add_transition(t:Transition)->Result<(),i32>{
+ let mut s=TRANSITIONS.lock();
+ if s.slots.iter().any(|v|v.used&&v.irp==t.irp&&v.device==t.device){return Err(STATUS_INVALID_DEVICE_REQUEST)}
+ let Some(slot)=s.slots.iter_mut().find(|v|!v.used) else{return Err(STATUS_INSUFFICIENT_RESOURCES)};
+ *slot=t;Ok(())
+}
+
+/// Called by IoCallDriver before power/PnP dispatch. Device references and
+/// transition reservations survive STATUS_PENDING until IoCompleteRequest.
+pub(crate) unsafe fn po_prepare_irp_dispatch(device:*mut DeviceObject,irp:*mut WdmIrp,major:u8,minor:u8,parameters:[u64;4])->i32{
+ if major!=IRP_MJ_POWER&&major!=IRP_MJ_PNP{return STATUS_SUCCESS}
+ let (kind,target)=if major==IRP_MJ_POWER {
+  if minor==IRP_MN_QUERY_POWER{return STATUS_SUCCESS}
+  if minor!=IRP_MN_SET_POWER{return STATUS_SUCCESS}
+  let state_type=parameters[0] as u32;
+  let raw=(parameters[0]>>32) as u32;
+  match state_type {
+   0 if (1..=6).contains(&raw)=>{
+    if SYSTEM_POWER_TRANSITION.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return STATUS_PENDING}
+    (3,raw as u8)
+   }
+   1 if (1..=4).contains(&raw)=>{
+    let refd=unsafe{io::io_reference_device_object(device)};
+    if refd.is_null(){return STATUS_DELETE_PENDING}
+    let status=unsafe{io::io_begin_device_power_transition(device,(raw-1) as u8)};
+    if status!=STATUS_SUCCESS{unsafe{io::io_dereference_device_object(device)};return status}
+    (1,(raw-1) as u8)
+   }
+   _=>return STATUS_INVALID_DEVICE_REQUEST,
+  }
+ } else {
+  if !matches!(minor,0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x17){return STATUS_SUCCESS}
+  let refd=unsafe{io::io_reference_device_object(device)};
+  if refd.is_null(){return STATUS_DELETE_PENDING}
+  let status=unsafe{io::io_begin_pnp_transition(device,minor)};
+  if status!=STATUS_SUCCESS{unsafe{io::io_dereference_device_object(device)};return status}
+  (2,0)
+ };
+ if let Err(status)=add_transition(Transition{used:true,irp,device,kind,target,minor}) {
+  match kind {
+   1=>unsafe{let _=io::io_complete_device_power_transition(device,target,STATUS_INVALID_DEVICE_REQUEST);io::io_dereference_device_object(device)},
+   2=>unsafe{let _=io::io_complete_pnp_transition(device,minor,STATUS_INVALID_DEVICE_REQUEST);io::io_dereference_device_object(device)},
+   3=>SYSTEM_POWER_TRANSITION.store(false,Ordering::Release),
+   _=>{}
+  }
+  return status
+ }
+ STATUS_SUCCESS
+}
+pub(crate) fn po_finish_dispatch_return(irp:*mut WdmIrp,device:*mut DeviceObject,status:i32){
+ if status==STATUS_PENDING{return}
+ finish_matching(irp,Some(device),status);
+}
+fn finish_matching(irp:*mut WdmIrp,device:Option<*mut DeviceObject>,status:i32){
+ let mut ready=[Transition::EMPTY;MAX_POWER_TRANSITIONS];let mut n=0usize;
+ {
+  let mut s=TRANSITIONS.lock();
+  for slot in s.slots.iter_mut(){
+   if slot.used&&slot.irp==irp&&device.is_none_or(|d|slot.device==d){ready[n]=*slot;n+=1;*slot=Transition::EMPTY;}
+  }
+ }
+ for t in ready.iter().take(n){
+  match t.kind{
+   1=>unsafe{let _=io::io_complete_device_power_transition(t.device,t.target,status);io::io_dereference_device_object(t.device)},
+   2=>unsafe{let _=io::io_complete_pnp_transition(t.device,t.minor,status);io::io_dereference_device_object(t.device)},
+   3=>{if status==STATUS_SUCCESS{SYSTEM_POWER_STATE.store(t.target as u32,Ordering::Release)}SYSTEM_POWER_TRANSITION.store(false,Ordering::Release);},
+   _=>{}
+  }
+ }
+}
+pub(crate) fn po_complete_irp(irp:*mut WdmIrp,status:i32){finish_matching(irp,None,status);finish_power_request(irp,status);}
+
+pub type PowerRequestComplete=unsafe extern "system" fn(*mut DeviceObject,u8,PowerState,*mut core::ffi::c_void,*mut WdmIrp);
+const MAX_POWER_REQUESTS:usize=32;
+#[derive(Clone,Copy)]
+struct PowerRequest{used:bool,irp:*mut WdmIrp,device:*mut DeviceObject,minor:u8,state:u32,context:*mut core::ffi::c_void,callback:Option<PowerRequestComplete>,returned:bool,completed:bool}
+unsafe impl Send for PowerRequest{}
+impl PowerRequest{const EMPTY:Self=Self{used:false,irp:core::ptr::null_mut(),device:core::ptr::null_mut(),minor:0,state:0,context:core::ptr::null_mut(),callback:None,returned:false,completed:false};}
+struct RequestState{slots:[PowerRequest;MAX_POWER_REQUESTS]}
+impl RequestState{const fn new()->Self{Self{slots:[PowerRequest::EMPTY;MAX_POWER_REQUESTS]}}}
+static POWER_REQUESTS:crate::hal::IrqSpinLock<RequestState>=crate::hal::IrqSpinLock::new(RequestState::new());
+
+/// Request a device power transition through its driver's IRP_MJ_POWER routine.
+/// The manager owns the IRP and invokes the optional completion callback once.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoStartNextPowerIrp(_irp: *mut WdmIrp) {}
+pub unsafe extern "system" fn PoRequestPowerIrp(device:*mut DeviceObject,minor:u8,state:PowerState,callback:Option<PowerRequestComplete>,context:*mut core::ffi::c_void,output_irp:*mut *mut WdmIrp)->i32{
+ if device.is_null()||minor!=IRP_MN_SET_POWER{return STATUS_INVALID_DEVICE_REQUEST}
+ if !output_irp.is_null(){unsafe{output_irp.write(core::ptr::null_mut())}}
+ let stack_size=unsafe{(*device).stack_size.max(1) as i16};
+ let irp=unsafe{io::io_allocate_irp(stack_size,0)};
+ if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
+ let target=unsafe{state.device_state};
+ if !(1..=4).contains(&target){unsafe{io::io_free_irp(irp)};return STATUS_INVALID_DEVICE_REQUEST}
+ let stack=unsafe{io::io_get_next_irp_stack_location(irp)};
+ if stack.is_null(){unsafe{io::io_free_irp(irp)};return STATUS_INSUFFICIENT_RESOURCES}
+ unsafe{(*stack).major_function=IRP_MJ_POWER;(*stack).minor_function=minor;(*stack).parameters[0]=1u64|((target as u64)<<32);}
+ {
+  let mut requests=POWER_REQUESTS.lock();
+  let Some(slot)=requests.slots.iter_mut().find(|r|!r.used) else{drop(requests);unsafe{io::io_free_irp(irp)};return STATUS_INSUFFICIENT_RESOURCES};
+  *slot=PowerRequest{used:true,irp,device,minor,state:target,context,callback,returned:false,completed:false};
+ }
+ if !output_irp.is_null(){unsafe{output_irp.write(irp)}}
+ let status=unsafe{io::io_call_driver(device,irp)};
+ let synth={
+  let requests=POWER_REQUESTS.lock();
+  requests.slots.iter().find(|r|r.used&&r.irp==irp).is_some_and(|r|!r.completed&&status!=STATUS_PENDING)
+ };
+ if synth{unsafe{(*irp).bytes[0x30..0x34].copy_from_slice(&status.to_le_bytes());io::io_complete_request(irp,0);}}
+ let free={
+  let mut requests=POWER_REQUESTS.lock();
+  if let Some(r)=requests.slots.iter_mut().find(|r|r.used&&r.irp==irp){r.returned=true;if r.completed{*r=PowerRequest::EMPTY;true}else{false}}else{false}
+ };
+ if free{unsafe{io::io_free_irp(irp)}}
+ status
+}
+fn finish_power_request(irp:*mut WdmIrp,_status:i32){
+ let snapshot={
+  let mut requests=POWER_REQUESTS.lock();
+  let Some(r)=requests.slots.iter_mut().find(|r|r.used&&r.irp==irp)else{return};
+  if r.completed{return}
+  r.completed=true;let snap=*r;if r.returned{*r=PowerRequest::EMPTY;}snap
+ };
+ if let Some(callback)=snapshot.callback{unsafe{callback(snapshot.device,snapshot.minor,PowerState{device_state:snapshot.state},snapshot.context,irp)}}
+ if snapshot.returned{unsafe{io::io_free_irp(irp)}}
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn PoStartNextPowerIrp(_irp:*mut WdmIrp){}
+
 
 #[cfg(test)]
 mod tests {
