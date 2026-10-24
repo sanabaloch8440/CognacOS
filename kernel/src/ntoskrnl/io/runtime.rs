@@ -252,7 +252,7 @@ pub extern "system" fn io_acquire_cancel_spin_lock(old_irql: *mut u8) {
     if old_irql.is_null() {
         return;
     }
-    let previous = crate::ntoskrnl::ke::runtime::ke_raise_irql_to_dpc_level();
+    let previous = unsafe { crate::ntoskrnl::ke::runtime::ke_raise_irql_to_dpc_level() };
     while IO_CANCEL_SPIN_LOCK
         .compare_exchange_weak(
             false,
@@ -271,5 +271,5 @@ pub extern "system" fn io_acquire_cancel_spin_lock(old_irql: *mut u8) {
 #[unsafe(no_mangle)]
 pub extern "system" fn io_release_cancel_spin_lock(old_irql: u8) {
     IO_CANCEL_SPIN_LOCK.store(false, core::sync::atomic::Ordering::Release);
-    crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql);
+    unsafe { crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql); }
 }
