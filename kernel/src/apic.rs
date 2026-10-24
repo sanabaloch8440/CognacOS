@@ -403,14 +403,7 @@ pub unsafe fn stop_local_timer() {
 /// waits, ready their threads, then acknowledge the local APIC interrupt.
 pub fn timer_interrupt() {
     let now = monotonic_ticks();
-    crate::ntoskrnl::ke::runtime::timer_tick(now);
-    let mut expired = [crate::dispatcher::ExpiredWait { thread: 0, object: 0 }; 64];
-    let count = crate::dispatcher::expire_detailed(now, &mut expired);
-    for wait in expired[..count].iter().copied() {
-        let status = if crate::dispatcher::is_delay_object(wait.object) { 0 } else { 0x0000_0102 };
-        let final_status = crate::dispatcher::complete_wait_group(wait.thread, wait.object, status, 0, 0x0000_0102).unwrap_or(status);
-        let _ = crate::thread::complete_wait(wait.thread, final_status);
-    }
+    crate::ntoskrnl::ki::runtime::ki_clock_interrupt(now);
     if let Some(base) = local_apic_base() {
         unsafe { local_apic_eoi(base); }
     }
