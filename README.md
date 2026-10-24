@@ -105,6 +105,10 @@ Contributions should be small enough to review, document their assumptions, incl
 
 The current Ke inventory is maintained in [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md), which tracks 165 scoped Ke export names, public WDK contracts, return values, resolver paths, remaining stubs, and the scoring method. Recent work adds single-group KAFFINITY_EX operations, Timer2 deadline/callback handling, an XSAVE feature query, fixed-topology dynamic-partition reporting, and an internal Ki clock-interrupt/dispatcher layer. The current 65.5% figure is a project-defined scoped progress metric—not a Microsoft score or proof of Windows driver compatibility. Timer2 and affinity implementations are bounded/single-group, APC delivery and cross-processor Windows-equivalent DPC semantics remain incomplete, and CI/QEMU plus SMP validation are still required.
 
+## Ke runtime source organization
+
+Ke implementations are organized under `kernel/src/ntoskrnl/ke/runtime/` by responsibility: processor/IRQL and spin primitives, dispatcher objects, time, thread waits/APC state, interrupt/scheduler helpers, device queues, executive queues, queued spin locks, mutexes, affinity, and timer/DPC/rendezvous. `runtime.rs` is the compatibility facade included by the import resolver. These files are currently included into the same Rust module scope to preserve shared private state and avoid changing ABI or behavior during this mechanical refactor; follow-up work can extract true Rust submodules after shared interfaces are made explicit.
+
 ## License
 
 RdotOS is licensed under **GNU General Public License v2.0 or (at your option) any later version** (SPDX: GPL-2.0-or-later). See [LICENSE](LICENSE). The AP startup trampoline and temporary-page-table approach in kernel/src/smp.rs are adapted from [RustOS-Dev/RustOS](https://github.com/RustOS-Dev/RustOS), which is also GPL-2.0-or-later; the source-file notice identifies the adaptation. Third-party components retain their applicable licenses and notices.
