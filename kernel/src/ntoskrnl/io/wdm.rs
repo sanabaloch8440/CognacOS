@@ -313,6 +313,7 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
   slot.object.bytes.fill(0);slot.used=false;
   mdl
  };
+ crate::dma::release_irp_mappings(irp.cast());
  if !owned_mdl.is_null(){unsafe{crate::ntoskrnl::mm::runtime::mm_free_mdl(owned_mdl);}}
 }
 #[unsafe(no_mangle)]
@@ -401,7 +402,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   if current==0xff{return}
   let next=unsafe{stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
   unsafe { (*irp).bytes[0x43]=current.saturating_add(1); write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast()); }
-  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {finalize_irp_status(irp);let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};crate::ntoskrnl::po::runtime::po_complete_irp(irp,status);return}
+  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {finalize_irp_status(irp);let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};crate::dma::release_irp_mappings(irp.cast());crate::ntoskrnl::po::runtime::po_complete_irp(irp,status);return}
  }
 }
 #[unsafe(no_mangle)]
@@ -731,6 +732,9 @@ pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
   } else {ptr::null_mut()}
  };
  unsafe{routine(device,irp);}
+ // The cancel routine owns stopping the device; once it returns, drop any
+ // remaining IRP-bound IOMMU mappings. Completion performs the same idempotent rundown.
+ crate::dma::release_irp_mappings(irp.cast());
  1
 }
 
