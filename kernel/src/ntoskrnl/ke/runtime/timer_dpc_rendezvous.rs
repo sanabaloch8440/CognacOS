@@ -11,8 +11,8 @@ const MAX_TIMER_OBJECTS: usize = 128;
 const MAX_TIMER2_OBJECTS:usize=64;
 pub type Timer2Routine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut core::ffi::c_void);
 #[derive(Clone,Copy)]
-struct Timer2Record{object:usize,callback:usize,context:usize,active:bool,due:u64,period:u64,tolerable_delay:u32}
-impl Timer2Record{const EMPTY:Self=Self{object:0,callback:0,context:0,active:false,due:0,period:0,tolerable_delay:0};}
+struct Timer2Record{object:usize,callback:usize,context:usize,active:bool,due:u64,period:u64,tolerable_delay:u32,generation:u64}
+impl Timer2Record{const EMPTY:Self=Self{object:0,callback:0,context:0,active:false,due:0,period:0,tolerable_delay:0,generation:0};}
 struct Timer2Table{records:[Timer2Record;MAX_TIMER2_OBJECTS]}
 impl Timer2Table{const fn new()->Self{Self{records:[Timer2Record::EMPTY;MAX_TIMER2_OBJECTS]}}}
 static TIMERS2:crate::hal::IrqSpinLock<Timer2Table>=crate::hal::IrqSpinLock::new(Timer2Table::new());
@@ -22,8 +22,8 @@ const TIMER_NOTIFICATION: u8 = 8;
 const TIMER_SYNCHRONIZATION: u8 = 9;
 pub type DpcRoutine = unsafe extern "win64" fn(*mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void);
 #[derive(Clone, Copy)]
-struct TimerRecord { object: usize, active: bool, due: u64, period: u64, dpc: usize }
-impl TimerRecord { const EMPTY: Self = Self { object:0, active:false, due:0, period:0, dpc:0 }; }
+struct TimerRecord { object: usize, active: bool, due: u64, period: u64, dpc: usize, generation:u64 }
+impl TimerRecord { const EMPTY: Self = Self { object:0, active:false, due:0, period:0, dpc:0, generation:0 }; }
 struct TimerTable { records: [TimerRecord; MAX_TIMER_OBJECTS] }
 impl TimerTable { const fn new()->Self { Self { records:[TimerRecord::EMPTY;MAX_TIMER_OBJECTS] } } }
 static TIMERS: crate::hal::IrqSpinLock<TimerTable> = crate::hal::IrqSpinLock::new(TimerTable::new());
@@ -340,7 +340,7 @@ pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_tim
         let mut table=TIMERS.lock();
         let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
         let old=(record.active,record.dpc);
-        record.active=true;record.due=deadline;record.period=period;record.dpc=dpc as usize;
+        record.active=true;record.due=deadline;record.period=period;record.dpc=dpc as usize;record.generation=record.generation.wrapping_add(1).max(1);
         old
     };
     if was_active&&old_dpc!=0{let _=unsafe{ke_remove_queue_dpc(old_dpc as *mut core::ffi::c_void)};}
@@ -352,7 +352,7 @@ pub unsafe extern "win64" fn ke_cancel_timer(timer:*mut DispatcherHeader)->u8{
     let (was_active,dpc)={
         let mut table=TIMERS.lock();
         let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
-        let old=(record.active,record.dpc);record.active=false;record.dpc=0;old
+        let old=(record.active,record.dpc);record.active=false;record.dpc=0;if old.0{record.generation=record.generation.wrapping_add(1).max(1);}old
     };
     if was_active&&dpc!=0{let _=unsafe{ke_remove_queue_dpc(dpc as *mut core::ffi::c_void)};}
     was_active as u8
@@ -517,14 +517,14 @@ pub unsafe extern "win64" fn ke_set_timer2(timer:*mut core::ffi::c_void,due_time
     let mut table=TIMERS2.lock();
     let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
     let was_active=record.active;
-    record.active=true;record.due=deadline;record.period=period;record.tolerable_delay=tolerable_delay_ms;
+    record.active=true;record.due=deadline;record.period=period;record.tolerable_delay=tolerable_delay_ms;record.generation=record.generation.wrapping_add(1).max(1);
     was_active as u8
 }
 pub unsafe extern "win64" fn ke_cancel_timer2(timer:*mut core::ffi::c_void)->u8{
     if timer.is_null(){return 0}
     let mut table=TIMERS2.lock();
     let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
-    let was_active=record.active;record.active=false;was_active as u8
+    let was_active=record.active;record.active=false;if was_active{record.generation=record.generation.wrapping_add(1).max(1);}was_active as u8
 }
 fn timer2_tick(now:u64){
     let mut expired=[Timer2Record::EMPTY;MAX_TIMER2_OBJECTS];let mut count=0usize;
@@ -542,6 +542,10 @@ fn timer2_tick(now:u64){
     }
     for record in expired[..count].iter().copied(){
         if record.callback==0{continue}
+        // Cancellation/rearming after expiry but before callback dispatch
+        // invalidates this snapshot; a one-shot expiry remains deliverable.
+        let still_current={let table=TIMERS2.lock();table.records.iter().any(|r|r.object==record.object&&r.generation==record.generation)};
+        if !still_current{continue}
         let callback:Timer2Routine=unsafe{core::mem::transmute(record.callback)};
         unsafe{callback(record.object as *mut core::ffi::c_void,record.context as *mut core::ffi::c_void);}
     }
@@ -569,7 +573,7 @@ pub fn timer_tick(now:u64){
         if timer.is_null(){continue}
         unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
         let _guard=DISPATCHER_OBJECT_LOCK.lock();
-        { let _dispatcher_guard=DISPATCHER_OBJECT_LOCK.lock(); complete_ready_wait_all_groups(); }
+        complete_ready_wait_all_groups();
         let mut waiters=[crate::dispatcher::WokenWaiter{thread:0,timed_out:false};crate::dispatcher::MAX_WAITERS];
         let woke=if unsafe{(*timer).kind}==TIMER_NOTIFICATION{
             crate::dispatcher::wake_all_timed(timer as u64,&mut waiters)
@@ -586,7 +590,13 @@ pub fn timer_tick(now:u64){
             let _=crate::thread::complete_wait(waiter.thread,status);
         }
         drop(_guard);
-        if record.dpc!=0{let _=unsafe{ke_insert_queue_dpc(record.dpc as *mut _,core::ptr::null_mut(),core::ptr::null_mut())};}
+        if record.dpc!=0{
+            // Timer reset/cancel can race the post-expiry wakeup processing.
+            // Publish the DPC only while this expiry still belongs to the
+            // current timer generation; cancellation invalidates stale ticks.
+            let still_current={let table=TIMERS.lock();table.records.iter().any(|r|r.object==record.object&&r.generation==record.generation)};
+            if still_current{let _=unsafe{ke_insert_queue_dpc(record.dpc as *mut _,core::ptr::null_mut(),core::ptr::null_mut())};}
+        }
     }
     dispatch_queued_dpcs();
     timer2_tick(now);
