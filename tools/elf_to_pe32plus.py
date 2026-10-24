@@ -136,7 +136,7 @@ def finalize_export_directory(data, metadata, section_rva, exports):
     for i, string_off in enumerate(metadata["name_string_offsets"]):
         struct.pack_into("<I", out, names_off + i * 4, section_rva + string_off)
     dll_name_rva = section_rva + metadata["dll_name_off"]
-    directory = struct.pack("<IIHHIIIIIIII", 0, 0, 0, 0, dll_name_rva, 1,
+    directory = struct.pack("<IIHHIIIIIII", 0, 0, 0, 0, dll_name_rva, 1,
                             max(ordinal for _name, ordinal, _value in exports), len(exports),
                             section_rva + eat_off, section_rva + names_off, section_rva + ords_off)
     out[:40] = directory
