@@ -129,7 +129,7 @@ pub fn complete_wait_group(thread:u64,object:u64,status:i32,success_status:i32,t
         let timed_out=status==timeout_status || (group.deadline!=0 && crate::hal::query_performance_counter()>=group.deadline);
         let result=if timed_out {timeout_status} else {
             let index=group.objects[..group.count].iter().position(|candidate|*candidate==object)?;
-            success_status+index as i32
+            if status!=success_status{status+index as i32}else{success_status+index as i32}
         };
         if group.wait_all && status != timeout_status { return None; }
         let tokens=group.tokens;let count=group.token_count;
@@ -218,6 +218,11 @@ pub fn self_test()->bool{
     if register_wait_any(0x33,&[0x201,0x202],&[a,b],0).is_err(){return false}
     if wake_one(0x202)!=Some(0x33){return false}
     if complete_wait_group(0x33,0x202,0,0,0x102)!=Some(1)||pending_count()!=0{return false}
+
+    let abandoned=match enqueue(0x203,0x34,0){Ok(t)=>t,Err(_)=>return false};
+    if register_wait_any(0x34,&[0x203],&[abandoned],0).is_err(){return false}
+    if wake_one(0x203)!=Some(0x34){return false}
+    if complete_wait_group(0x34,0x203,0x80,0,0x102)!=Some(0x80)||pending_count()!=0{return false}
 
     SELFTEST_SIGNAL_A.store(1,core::sync::atomic::Ordering::Release);
     SELFTEST_SIGNAL_B.store(1,core::sync::atomic::Ordering::Release);
