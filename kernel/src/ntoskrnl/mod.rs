@@ -10,7 +10,7 @@ pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Po, Cm, Se, Rtl, Zw, Other }
 pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: KernelModule }
 
 pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
-pub(crate) mod ki; pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
+pub(crate) mod ki; pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 pub(crate) mod driver_loader;
 pub mod abi_signatures;
@@ -91,6 +91,12 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   else { None };
   if object_manager.is_some() { return object_manager.map(|p|p as u64); }
   if requested.eq_ignore_ascii_case(b"SeValidSecurityDescriptor") { return Some(se::runtime::SeValidSecurityDescriptor as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"SeTokenIsAdmin") { return Some(se::runtime::SeTokenIsAdmin as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"SeTokenIsRestricted") { return Some(se::runtime::SeTokenIsRestricted as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"SeTokenIsWriteRestricted") { return Some(se::runtime::SeTokenIsWriteRestricted as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"SeTokenType") { return Some(se::runtime::SeTokenType as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"SeTokenImpersonationLevel") { return Some(se::runtime::SeTokenImpersonationLevel as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"SeSinglePrivilegeCheck") { return Some(se::runtime::SeSinglePrivilegeCheck as usize as u64); }
   let direct = if requested.eq_ignore_ascii_case(b"IoAllocateMdl") {
    Some(crate::io::io_allocate_mdl as usize)
   } else if requested.eq_ignore_ascii_case(b"IoFreeMdl") {
