@@ -72,14 +72,16 @@ pub unsafe extern "win64" fn ke_initialize_apc(
  if apc.is_null(){return}
  let Some(thread_id)=crate::thread::thread_id_from_object(thread) else{return};
  let mut table=APC_TABLE.lock();
- let slot=table.records.iter().position(|r|r.object==apc as usize)
-  .or_else(||table.records.iter().position(|r|r.object==0));
+ let existing=table.records.iter().position(|r|r.object==apc as usize);
+ if existing.is_some_and(|i|table.records[i].inserted||table.records[i].delivering){return}
+ let slot=existing.or_else(||table.records.iter().position(|r|r.object==0));
  if let Some(slot)=slot{
   table.records[slot]=ApcRecord{object:apc as usize,thread_id,
    kernel_routine:kernel_routine.map(|f|f as usize).unwrap_or(0),
    rundown_routine:rundown_routine.map(|f|f as usize).unwrap_or(0),
    normal_routine:normal_routine.map(|f|f as usize).unwrap_or(0),
-   normal_context:normal_context as usize,arg1:0,arg2:0,environment,mode,inserted:false};
+   normal_context:normal_context as usize,arg1:0,arg2:0,environment,mode,inserted:false,
+   delivering:false,kernel_routine_done:false};
  }
 }
 
