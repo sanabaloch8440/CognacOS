@@ -130,7 +130,7 @@ pub mod disk {
     #[derive(Clone,Copy,Debug,PartialEq,Eq)] pub struct ParsedCdb { pub operation:BlockOperation, pub lba:u64, pub sectors:u32 }
     pub fn parse_rw_cdb(cdb:&[u8], geometry:Geometry)->Result<ParsedCdb,StorageError>{
         let (op,lba,count)=match cdb.first().copied().ok_or(StorageError::InvalidArgument)? {
-            SCSI_READ10|SCSI_WRITE10=>{if cdb.len()<10{return Err(StorageError::InvalidArgument)} (cdb[0],u32::from_be_bytes([0,cdb[2],cdb[3],cdb[4]]),u16::from_be_bytes([cdb[7],cdb[8]]) as u32)}
+            SCSI_READ10|SCSI_WRITE10=>{if cdb.len()<10{return Err(StorageError::InvalidArgument)} (cdb[0],u32::from_be_bytes([cdb[2],cdb[3],cdb[4],cdb[5]]) as u64,u16::from_be_bytes([cdb[7],cdb[8]]) as u32)}
             SCSI_READ16|SCSI_WRITE16=>{if cdb.len()<16{return Err(StorageError::InvalidArgument)} (cdb[0],u64::from_be_bytes(cdb[2..10].try_into().map_err(|_|StorageError::InvalidArgument)?),u32::from_be_bytes(cdb[10..14].try_into().map_err(|_|StorageError::InvalidArgument)?))}
             _=>return Err(StorageError::Unsupported)
         };
