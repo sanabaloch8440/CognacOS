@@ -91,10 +91,14 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   else { None };
   if object_manager.is_some() { return object_manager.map(|p|p as u64); }
   if requested.eq_ignore_ascii_case(b"PsAssignImpersonationToken") { return Some(crate::thread::PsAssignImpersonationToken as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"PsReferencePrimaryToken") { return Some(crate::process::PsReferencePrimaryToken as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"PsDereferencePrimaryToken") { return Some(crate::process::PsDereferencePrimaryToken as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeAccessCheck") { return Some(se::runtime::SeAccessCheck as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SePrivilegeCheck") { return Some(se::runtime::SePrivilegeCheck as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeLockSubjectContext") { return Some(se::runtime::SeLockSubjectContext as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeUnlockSubjectContext") { return Some(se::runtime::SeUnlockSubjectContext as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"SeCaptureSubjectContext") { return Some(se::runtime::SeCaptureSubjectContext as usize as u64); }
+  if requested.eq_ignore_ascii_case(b"SeReleaseSubjectContext") { return Some(se::runtime::SeReleaseSubjectContext as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeValidSecurityDescriptor") { return Some(se::runtime::SeValidSecurityDescriptor as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeTokenIsAdmin") { return Some(se::runtime::SeTokenIsAdmin as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeTokenIsRestricted") { return Some(se::runtime::SeTokenIsRestricted as usize as u64); }
