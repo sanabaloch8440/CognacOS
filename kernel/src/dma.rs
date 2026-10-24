@@ -281,7 +281,7 @@ pub unsafe extern "win64" fn map_transfer(
     let available = (end - va).min(PAGE_SIZE - (va & (PAGE_SIZE - 1)));
     let actual = (requested as u64).min(available);
     if actual == 0 { return 0; }
-    let physical = unsafe { crate::ntoskrnl::mm::runtime::mm_get_physical_address(current_va) };
+    let physical = unsafe { crate::ntoskrnl::mm::mm_get_physical_address(current_va) };
     if physical == 0 || physical >= 0x1_0000_0000 { return 0; }
     unsafe { length.write(actual as u32); }
     physical as i64
@@ -391,7 +391,7 @@ pub unsafe extern "win64" fn get_scatter_gather_list(
     let mut remaining = length as u64;
     for i in 0..page_count {
         let chunk = remaining.min(PAGE_SIZE - (va & (PAGE_SIZE - 1)));
-        let physical = unsafe { crate::ntoskrnl::mm::runtime::mm_get_physical_address(va as *mut core::ffi::c_void) };
+        let physical = unsafe { crate::ntoskrnl::mm::mm_get_physical_address(va as *mut core::ffi::c_void) };
         if physical == 0 || physical >= 0x1_0000_0000 { return 0xC000_000D_u32 as i32; }
         list.elements[i] = ScatterGatherElement { address: physical, length: chunk as u32, reserved: 0 };
         va += chunk;
@@ -501,7 +501,7 @@ pub unsafe extern "win64" fn build_scatter_gather_list(
     let mut remaining = length as u64;
     for index in 0..pages as usize {
         let chunk = remaining.min(PAGE_SIZE - (va & (PAGE_SIZE - 1)));
-        let physical = unsafe { crate::ntoskrnl::mm::runtime::mm_get_physical_address(va as *mut core::ffi::c_void) };
+        let physical = unsafe { crate::ntoskrnl::mm::mm_get_physical_address(va as *mut core::ffi::c_void) };
         if physical == 0 || physical >= 0x1_0000_0000 {
             return 0xC000_000D_u32 as i32;
         }
