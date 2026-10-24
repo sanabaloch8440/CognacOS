@@ -92,3 +92,5 @@ include!("runtime/spinlocks.rs");
 include!("runtime/mutex.rs");
 include!("runtime/affinity.rs");
 include!("runtime/timer_dpc_rendezvous.rs");
+
+include!("runtime/process_attach.rs");
