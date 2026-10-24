@@ -13,7 +13,7 @@ pub unsafe extern "win64" fn ke_raise_irql(new_irql: u8, old_irql: *mut u8) {
     unsafe { irq_disable(); }
     push_irq_state(flags);
     CURRENT_IRQL[cpu].store(new_irql, Ordering::Release);
-    let _ = unsafe { crate::apic::set_task_priority(new_irql) };
+    let _ = unsafe { crate::hal::set_interrupt_priority(new_irql) };
 }
 
 /// ULONGLONG KeQueryInterruptTime(void), in 100-nanosecond units.
@@ -21,7 +21,7 @@ pub unsafe extern "win64" fn ke_query_interrupt_time() -> u64 { interrupt_time_1
 
 /// ULONGLONG KeQueryInterruptTimePrecise(PULONG64 QpcTimeStamp).
 pub unsafe extern "win64" fn ke_query_interrupt_time_precise(qpc_timestamp: *mut u64) -> u64 {
-    let qpc = crate::apic::monotonic_ticks();
+    let qpc = crate::hal::query_performance_counter();
     if !qpc_timestamp.is_null() { unsafe { qpc_timestamp.write(qpc); } }
     interrupt_time_100ns()
 }
@@ -73,7 +73,7 @@ static SYSTEM_TIME_BASE_TSC: core::sync::atomic::AtomicU64 =
 /// after initialization, but is not a substitute for OS time-setting, NTP, or
 /// suspend/resume correction and inherits the RTC sample's initial accuracy.
 fn precise_system_time_100ns() -> Option<u64> {
-    let Some(hz) = crate::apic::tsc_frequency_hz().filter(|hz| *hz != 0) else {
+    let Some(hz) = crate::hal::query_performance_frequency_hz().filter(|hz| *hz != 0) else {
         return rtc_system_time_100ns();
     };
     loop {
@@ -81,7 +81,7 @@ fn precise_system_time_100ns() -> Option<u64> {
             2 => {
                 let base = SYSTEM_TIME_BASE_100NS.load(Ordering::Relaxed);
                 let start = SYSTEM_TIME_BASE_TSC.load(Ordering::Relaxed);
-                let elapsed = crate::apic::monotonic_ticks().wrapping_sub(start);
+                let elapsed = crate::hal::query_performance_counter().wrapping_sub(start);
                 let delta = ((elapsed as u128) * 10_000_000u128 / hz as u128)
                     .min(u64::MAX as u128) as u64;
                 return Some(base.saturating_add(delta));
@@ -95,7 +95,7 @@ fn precise_system_time_100ns() -> Option<u64> {
                     SYSTEM_TIME_BASE_STATE.store(0, Ordering::Release);
                     return None;
                 };
-                let start = crate::apic::monotonic_ticks();
+                let start = crate::hal::query_performance_counter();
                 SYSTEM_TIME_BASE_100NS.store(base, Ordering::Relaxed);
                 SYSTEM_TIME_BASE_TSC.store(start, Ordering::Relaxed);
                 SYSTEM_TIME_BASE_STATE.store(2, Ordering::Release);
