@@ -362,26 +362,27 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
         let Some(va) = start.checked_add(index as u64 * PAGE_SIZE) else { return; };
         if access_mode == 1 && !crate::vm::is_user_range(va, 1) { return; }
         let pa = if crate::vm::is_user_range(va, 1) {
-            // This VM currently has no user demand-paging metadata: only present
-            // user mappings are probeable. Never fault arbitrary user addresses in.
+            // No user demand-paging metadata exists yet; only present user
+            // mappings can be probed safely.
             translate_current_user(va, write_access)
         } else if va >= 0xffff_8000_0000_0000 {
             if crate::kernel_vm::is_pageable_address(va)
                 && !crate::kernel_vm::ensure_page_resident(va, write_access) { return; }
             translate(va, write_access)
         } else { None };
-        if pa.is_none() { return; }
+        let Some(pa) = pa else { return; };
+        if !crate::memory::is_ram_physical_address(pa & !(PAGE_SIZE-1)) { return; }
     }
+    // Exclude pageable eviction while re-translating, writing PFNs and pinning
+    // them. If a page was evicted in the gap above, fail closed.
+    let _pageable_guard = crate::kernel_vm::lock_pageable_mappings();
     for index in 0..pages as usize {
         let va = start + index as u64 * PAGE_SIZE;
         let pa = if crate::vm::is_user_range(va, 1) {
             translate_current_user(va, write_access)
-        } else {
-            if crate::kernel_vm::is_pageable_address(va)
-                && !crate::kernel_vm::ensure_page_resident(va, write_access) { return; }
-            translate(va, write_access)
-        };
+        } else { translate(va, write_access) };
         let Some(pa) = pa else { return; };
+        if !crate::memory::is_ram_physical_address(pa & !(PAGE_SIZE-1)) { return; }
         unsafe { destination.add(index).write(pa / PAGE_SIZE); }
     }
     let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, pages as usize) };
