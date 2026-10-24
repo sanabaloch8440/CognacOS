@@ -27,5 +27,6 @@ impl<'a>NlsFile<'a>{
  pub fn bytes(&self)->&'a[u8]{self.bytes}
  pub fn len(&self)->usize{self.bytes.len()}
  pub fn is_empty(&self)->bool{self.bytes.is_empty()}
+ pub fn copy_raw_to(&self,out:&mut[u8])->Result<usize,Error>{if out.len()<self.bytes.len(){return Err(Error::Truncated)}out[..self.bytes.len()].copy_from_slice(self.bytes);Ok(self.bytes.len())}
 }
 #[cfg(test)]mod tests{use super::*;#[test]fn catalogues_windows_names(){for f in FILES{assert_eq!(descriptor(f.name).unwrap().kind,f.kind);}}#[test]fn preserves_bytes_without_conversion(){let b=[0x81u8;256];let f=NlsFile::open("C_1252.NLS",&b).unwrap();assert_eq!(f.bytes(),&b);}}
