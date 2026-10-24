@@ -1,5 +1,6 @@
 //! NTOSKRNL export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
-//! Entries describe export names/ordinals only; they are not all implemented APIs.
+//! Export catalogue plus the bounded security runtime under `ntoskrnl/se/`.
+#[path = "se/runtime.rs"] pub(crate) mod runtime;
 pub const EXPORTS: &[(&str, u16)] = &[
     ("SeAccessCheck", 2688),
     ("SeAccessCheckEx", 2689),
