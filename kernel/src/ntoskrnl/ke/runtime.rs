@@ -1776,7 +1776,7 @@ static BROADCAST_TEST_SYNC_OK:core::sync::atomic::AtomicU32=core::sync::atomic::
 static BROADCAST_TEST_DONE_RETURNED:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
 unsafe extern "win64" fn broadcast_test_ipi(_context:usize)->usize{
     let cpu=cpu_slot();
-    if cpu<64{BROADCAST_TEST_COUNTS[cpu].fetch_add(1,Ordering::AcqRel)+1}else{0}
+    if cpu<64{(BROADCAST_TEST_COUNTS[cpu].fetch_add(1,Ordering::AcqRel)+1) as usize}else{0}
 }
 unsafe extern "win64" fn broadcast_test_dpc(
     _dpc:*mut core::ffi::c_void,_context:*mut core::ffi::c_void,
