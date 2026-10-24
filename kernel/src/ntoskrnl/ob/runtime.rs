@@ -109,15 +109,15 @@ pub fn dereference_body(body:*mut c_void)->bool{
 }
 pub fn open_by_name(name:&[u16],desired:u32,owner:usize,kernel_mode:bool,attrs:u32)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
- let ti=type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?;let t=s.types[ti];let granted=if desired&MAXIMUM_ALLOWED!=0{t.valid}else{map_access(&t,desired)};
- if granted&!t.valid!=0||(!kernel_mode&&!access_check(&s.objects[i],granted)){return Err(STATUS_ACCESS_DENIED)}
+ let ti=type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?;let t=s.types[ti];let requested=map_access(&t,desired&!MAXIMUM_ALLOWED);let allowed=if kernel_mode{t.valid}else{dacl_allowed(&s.objects[i])&t.valid};let granted=if desired&MAXIMUM_ALLOWED!=0{allowed}else{requested};
+ if granted&!t.valid!=0||requested&!allowed!=0{return Err(STATUS_ACCESS_DENIED)}
  let hi=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
  s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].handles+=1;
  let g=s.handles[hi].generation.max(1);s.handles[hi]=HandleEntry{used:true,generation:g,object:i,owner:if attrs&OBJ_KERNEL_HANDLE!=0{usize::MAX}else{owner},access:granted,attributes:attrs};Ok(encode_handle(hi,g))
 }
 pub fn open_by_pointer(body:*mut c_void,desired:u32,owner:usize,kernel_mode:bool,attrs:u32)->Result<*mut c_void,i32>{
- let _g=LOCK.lock();let s=state();let i=object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let granted=if desired&MAXIMUM_ALLOWED!=0{t.valid}else{map_access(&t,desired)};
- if granted&!t.valid!=0||(!kernel_mode&&!access_check(&s.objects[i],granted)){return Err(STATUS_ACCESS_DENIED)}
+ let _g=LOCK.lock();let s=state();let i=object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let requested=map_access(&t,desired&!MAXIMUM_ALLOWED);let allowed=if kernel_mode{t.valid}else{dacl_allowed(&s.objects[i])&t.valid};let granted=if desired&MAXIMUM_ALLOWED!=0{allowed}else{requested};
+ if granted&!t.valid!=0||requested&!allowed!=0{return Err(STATUS_ACCESS_DENIED)}
  let hi=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].handles+=1;let g=s.handles[hi].generation.max(1);s.handles[hi]=HandleEntry{used:true,generation:g,object:i,owner:if attrs&OBJ_KERNEL_HANDLE!=0{usize::MAX}else{owner},access:granted,attributes:attrs};Ok(encode_handle(hi,g))
 }
 pub fn reference_by_handle(h:*mut c_void,desired:u32,expected_type:u16,owner:usize,kernel_mode:bool)->Result<*mut c_void,i32>{
@@ -153,19 +153,21 @@ fn read_u32(b:&[u8],o:usize)->Option<u32>{Some(u32::from_le_bytes([*b.get(o)?,*b
 /// Evaluate a bounded Windows self-relative security descriptor DACL for the Everyone SID.
 /// Kernel-mode references bypass DACL checks as in NT; user-mode token/SID evaluation is
 /// not implemented, so only an explicit Everyone allow ACE can grant user-mode access.
-fn access_check(o:&Object,desired:u32)->bool{
- if o.sd_len==0{return false}let b=&o.sd[..o.sd_len as usize];if b.len()<20||b[0]!=1{return false}
- let control=read_u16(b,2).unwrap_or(0);if control&0x8000==0{return false}
- let off=read_u32(b,16).unwrap_or(0) as usize;if off==0{return control&0x0004!=0}
- if off+8>b.len(){return false}let acl_size=read_u16(b,off+2).unwrap_or(0) as usize;let ace_count=read_u16(b,off+4).unwrap_or(0) as usize;
- if acl_size<8||off.checked_add(acl_size).is_none_or(|e|e>b.len()){return false}
+fn dacl_allowed(o:&Object)->u32{
+ if o.sd_len==0{return 0}let b=&o.sd[..o.sd_len as usize];if b.len()<20||b[0]!=1{return 0}
+ let control=read_u16(b,2).unwrap_or(0);if control&0x8000==0{return 0}
+ if control&0x0004==0{return u32::MAX}
+ let off=read_u32(b,16).unwrap_or(0) as usize;if off==0{return u32::MAX}
+ if off+8>b.len(){return 0}let acl_size=read_u16(b,off+2).unwrap_or(0) as usize;let ace_count=read_u16(b,off+4).unwrap_or(0) as usize;
+ if acl_size<8||off.checked_add(acl_size).is_none_or(|e|e>b.len()){return 0}
  let mut p=off+8;let mut granted=0u32;let mut denied=0u32;
- for _ in 0..ace_count{if p+8>off+acl_size{return false}let ty=b[p];let size=read_u16(b,p+2).unwrap_or(0) as usize;if size<8||p.checked_add(size).is_none_or(|e|e>off+acl_size){return false}
+ for _ in 0..ace_count{if p+8>off+acl_size{return 0}let ty=b[p];let size=read_u16(b,p+2).unwrap_or(0) as usize;if size<8||p.checked_add(size).is_none_or(|e|e>off+acl_size){return 0}
   let mask=read_u32(b,p+4).unwrap_or(0);let sid=&b[p+8..p+size];let everyone=sid.len()>=12&&sid[0]==1&&sid[1]==1&&sid[2..8].iter().all(|x|*x==0)&&sid[8..12]==[1,0,0,0];
   if everyone{if ty==1{denied|=mask}else if ty==0{granted|=mask}}p+=size;
  }
- granted&!denied&desired==desired
+ granted&!denied
 }
+fn access_check(o:&Object,desired:u32)->bool{dacl_allowed(o)&desired==desired}
 
 /// Windows x64 export: ObReferenceObjectByPointer.
 #[unsafe(no_mangle)]
@@ -256,6 +258,12 @@ mod tests{
   unsafe{register_object(body,ty,&[91],false,sd.as_ptr(),sd.len()).unwrap();}
   let h=open_by_pointer(body,1,42,true,0).unwrap();assert_eq!(reference_by_handle(h,1,0,7,false).unwrap_err(),STATUS_INVALID_HANDLE);
   assert_eq!(reference_by_handle(h,1,0,42,false).unwrap(),body);assert!(dereference_body(body));close_handle(h,42).unwrap();assert!(dereference_body(body));
+ }
+ #[test]fn named_reference_is_case_insensitive_and_name_copy_is_stable(){
+  let ty=register_type(&[93],1,2,4,7,7).unwrap();let body=0x4234usize as *mut c_void;
+  unsafe{register_object(body,ty,&[92,93],false,core::ptr::null(),0).unwrap();}
+  assert_eq!(reference_by_name(&[92,93],ty,1,true).unwrap(),body);assert!(dereference_body(body));
+  let mut out=[0u16;MAX_NAME];assert_eq!(object_name(body,&mut out).unwrap(),2);assert_eq!(&out[..2],&[92,93]);assert!(dereference_body(body));
  }
  #[test]fn access_masks_and_deny_by_default(){let t=TypeEntry{used:true,id:1,gr:1,gw:2,gx:4,ga:7,valid:7,..TypeEntry::EMPTY};assert_eq!(map_access(&t,GENERIC_READ|GENERIC_WRITE),3);assert!(!access_check(&Object::EMPTY,1));}
  #[test]fn stale_handle_cannot_alias_reused_slot(){let ty=register_type(&[88],1,2,4,7,7).unwrap();let body=0x2234usize as *mut c_void;unsafe{register_object(body,ty,&[89],false,core::ptr::null(),0).unwrap();}let h=open_by_pointer(body,1,0,true,0).unwrap();close_handle(h,0).unwrap();let h2=open_by_pointer(body,1,0,true,0).unwrap();assert_ne!(h,h2);assert_eq!(reference_by_handle(h,1,0,0,true).unwrap_err(),STATUS_INVALID_HANDLE);}
