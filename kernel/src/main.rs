@@ -839,6 +839,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     serial_write(b"Local APIC timer enabled after AP startup/self-tests; external routes remain masked.\r\n");
                     loop {
                         unsafe { asm!("sti; hlt", options(nomem, nostack)); }
+                        ntoskrnl::ke::runtime::dispatch_threaded_dpcs();
                         if thread::has_ready_threads() { let _ = thread::yield_current(); }
                     }
                 }
