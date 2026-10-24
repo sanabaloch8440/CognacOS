@@ -17,6 +17,7 @@ const STATUS_SUCCESS: i32 = 0;
 const STATUS_ACCESS_VIOLATION: i32 = 0xC000_0005u32 as i32;
 const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
 const STATUS_PARTIAL_COPY: i32 = 0x8000_000Du32 as i32;
+const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
 
 #[inline]
 fn entry_allowed(entry: u64, require_write: bool) -> bool {
@@ -408,9 +409,12 @@ pub unsafe extern "win64" fn mm_copy_virtual_memory(
             || translate(output, true).is_none() { return STATUS_INVALID_PARAMETER; }
         unsafe { return_size.write(0); }
     }
-    if source_process.is_null() || target_process.is_null() || source_process != target_process
+    if source_process.is_null() || target_process.is_null()
         || (source_address as u64) == 0 || (target_address as u64) == 0
-        || length > 0x0000_8000_0000_0000 { return STATUS_INVALID_PARAMETER; }
+        || length > 0x0000_8000_0000_0000 || (previous_mode != 0 && previous_mode != 1) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if source_process != target_process { return STATUS_NOT_IMPLEMENTED; }
     if length == 0 { return STATUS_SUCCESS; }
     let src = source_address as u64;
     let dst = target_address as u64;
