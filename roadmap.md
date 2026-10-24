@@ -9,7 +9,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | Subsystem | Status | Main gaps |
 | --- | --- | --- |
 | UEFI boot and kernel handoff | PE32+ native kernel handoff; CI/QEMU validated | Signature-based verified boot, relocatable images, broader malformed-image tests |
-| Memory management/protection | High-half mappings and RAM direct-map foundation; boot-tested | Fine-grained descriptor edges, more fault-negative tests, full isolation policy |
+| Memory management/protection | High-half mappings, RAM direct-map, validated MDLs and physical-page pinning; boot-tested foundation | Fine-grained descriptor edges, pageable faults, arbitrary MDL mappings, process-object-aware cross-process VM |
 | PE32+ loader and ring-3 test path | Foundation implemented; boot-tested | Full NT loader, unwind/exception handling, Windows user-mode DLLs |
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
 | SMP/AP startup | Experimental | Reliable multi-vCPU boot, per-CPU interrupt setup, stress tests |
@@ -57,6 +57,12 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Add private user address spaces, supervisor-only shared kernel mappings, checked user-copy helpers, and W^X validation in implemented paths.
 - [x] Add kernel virtual mapping/reclamation and pagefile-backed eviction/page-in test paths.
 - [x] Add NT memory-manager physical translation, address-validity, and checked-copy self-tests.
+- [x] Add Windows x64 ABI wiring and typed signature records for MmCreateMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, and MmCopyVirtualMemory.
+- [x] Validate MDL header/PFN-array bounds before access; preflight source mappings; maintain reference-counted physical-page pins and prevent allocator reuse while pinned.
+- [x] Build MDLs for resident nonpaged pool buffers and support direct-map aliases for MDLs whose PFNs form a physically contiguous RAM run.
+- [x] Add a bounded MmCopyVirtualMemory path against the active address space; invalid ranges and different source/target process identities fail closed.
+- [ ] Register real EPROCESS objects with their address-space roots and implement safe cross-process copy under process/address-space lifetime locks.
+- [ ] Add arbitrary scatter/gather kernel mappings, user-mode MDL mappings, page-fault-driven probing of pageable buffers, and complete MDL allocation/free lifecycle semantics.
 - [x] Build bootstrap identity mappings from the final UEFI memory-map descriptors, leaving uncovered physical holes not-present and explicitly mapping APIC MMIO windows.
 - [ ] Replace 2 MiB descriptor-interior leaves with finer 4 KiB mappings at descriptor boundaries and where stricter per-region permissions are required.
 - [x] Add a demand-mapped direct-map window for UEFI-described RAM above 4 GiB; reject reserved/MMIO addresses and validate the path in the 5 GiB QEMU boot test.
