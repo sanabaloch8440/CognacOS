@@ -87,7 +87,7 @@ static CPU_LOCALS: [CpuLocal; MAX_CPUS] = [
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HalError { InvalidCpu, DuplicateApicId, InvalidTransition, CpuTableFull, InvalidMmioRange }
+pub enum HalError { InvalidCpu, DuplicateApicId, InvalidTransition, CpuTableFull, InvalidMmioRange, InvalidInterruptBase, PlatformFailure }
 
 /// Reserve a logical CPU slot for an ACPI-discovered APIC ID. Does not start it.
 /// Mark the bootstrap processor online in logical slot zero before AP discovery.
@@ -375,7 +375,6 @@ pub unsafe fn set_interrupt_priority(irql: u8) -> Result<(), ()> {
 
 /// Platform interrupt-controller services. These are the only intended
 /// consumers of the xAPIC/I/O-APIC implementation outside the HAL.
-pub type PlatformInterruptError = apic::ApicError;
 pub const LOCAL_TIMER_VECTOR: u8 = 0xE0;
 pub const KE_BROADCAST_VECTOR: u8 = 0xEF;
 pub const HAL_IPI_VECTOR: u8 = 0xF0;
@@ -383,20 +382,23 @@ pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xF1;
 pub const TSC_SYNC_VECTOR: u8 = 0xF2;
 
 #[inline]
-pub unsafe fn initialize_local_interrupt_controller(base: u64) -> Result<u32, apic::ApicError> {
-    unsafe { apic::initialize_local_apic(base) }
+pub unsafe fn initialize_local_interrupt_controller(base: u64) -> Result<u32, HalError> {
+    unsafe { apic::initialize_local_apic(base) }.map_err(|error| match error {
+        apic::ApicError::InvalidBase => HalError::InvalidInterruptBase,
+        _ => HalError::PlatformFailure,
+    })
 }
 #[inline]
-pub unsafe fn mask_interrupt_controller_routes(base: u64) -> Result<(), apic::ApicError> {
-    unsafe { apic::mask_all_ioapic(base) }
+pub unsafe fn mask_interrupt_controller_routes(base: u64) -> Result<(), HalError> {
+    unsafe { apic::mask_all_ioapic(base) }.map_err(|_| HalError::PlatformFailure)
 }
 #[inline]
-pub unsafe fn calibrate_local_clock_event() -> Result<u32, apic::ApicError> {
-    unsafe { apic::calibrate_local_timer() }
+pub unsafe fn calibrate_local_clock_event() -> Result<u32, HalError> {
+    unsafe { apic::calibrate_local_timer() }.map_err(|_| HalError::PlatformFailure)
 }
 #[inline]
-pub unsafe fn start_local_clock_event() -> Result<(), apic::ApicError> {
-    unsafe { apic::start_calibrated_local_timer() }
+pub unsafe fn start_local_clock_event() -> Result<(), HalError> {
+    unsafe { apic::start_calibrated_local_timer() }.map_err(|_| HalError::PlatformFailure)
 }
 #[inline]
 pub fn local_interrupt_controller_base() -> Option<u64> { apic::local_apic_base() }
