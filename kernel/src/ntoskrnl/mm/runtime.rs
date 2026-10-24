@@ -340,8 +340,12 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
         let Some(va) = start.checked_add(index as u64 * PAGE_SIZE) else { return; };
         if access_mode == 1 && !crate::vm::is_user_range(va, 1) { return; }
         let pa = if crate::vm::is_user_range(va, 1) {
+            // This VM currently has no user demand-paging metadata: only present
+            // user mappings are probeable. Never fault arbitrary user addresses in.
             translate_current_user(va, write_access)
-        } else if va >= 0xffff_8000_0000_0000 && !crate::kernel_vm::is_pageable_address(va) {
+        } else if va >= 0xffff_8000_0000_0000 {
+            if crate::kernel_vm::is_pageable_address(va)
+                && !crate::kernel_vm::ensure_page_resident(va, write_access) { return; }
             translate(va, write_access)
         } else { None };
         if pa.is_none() { return; }
@@ -350,7 +354,11 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
         let va = start + index as u64 * PAGE_SIZE;
         let pa = if crate::vm::is_user_range(va, 1) {
             translate_current_user(va, write_access)
-        } else { translate(va, write_access) };
+        } else {
+            if crate::kernel_vm::is_pageable_address(va)
+                && !crate::kernel_vm::ensure_page_resident(va, write_access) { return; }
+            translate(va, write_access)
+        };
         let Some(pa) = pa else { return; };
         unsafe { destination.add(index).write(pa / PAGE_SIZE); }
     }
@@ -553,33 +561,58 @@ pub unsafe extern "win64" fn mm_build_partial_mdl(
 /// Fault-in requests are intentionally bounded to the current resident mappings;
 /// the kernel has no pageable-buffer fault completion path yet.
 
-/// Map only MDLs whose PFNs form a verified contiguous RAM run into the direct-map window.
+/// Map locked PFNs through a contiguous supervisor VA range. Physical pages
+/// may be non-contiguous; the mapping owns only its virtual extent, never the
+/// caller's frames. User-mode mappings are rejected until per-process user VA
+/// reservations and teardown tracking are available.
 pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
     mdl: *mut c_void, access_mode: i8, cache_type: i32, requested_address: *mut c_void,
     _bug_check_on_failure: u8, _priority: u32,
 ) -> *mut c_void {
-    if mdl.is_null() || access_mode != 0 || cache_type != 1 || !requested_address.is_null() { return core::ptr::null_mut(); }
+    if mdl.is_null() || access_mode != 0 || cache_type != 1 || !requested_address.is_null() {
+        return core::ptr::null_mut();
+    }
     let address = mdl as u64;
-    if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return core::ptr::null_mut(); }
+    if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) {
+        return core::ptr::null_mut();
+    }
     let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
     if header.flags & (MDL_LOCKED | MDL_NONPAGED_POOL) == 0 { return core::ptr::null_mut(); }
-    if header.flags & MDL_MAPPED_SYSTEM_VA != 0 && !header.mapped_system_va.is_null() { return header.mapped_system_va; }
-    let Some(pages) = mdl_page_count(header.byte_offset as u64, header.byte_count as u64) else { return core::ptr::null_mut(); };
-    if pages == 0 || pages as usize > MAX_LOCKED_PAGES { return core::ptr::null_mut(); }
-    let required = match MDL_HEADER_SIZE.checked_add(pages.saturating_mul(8)) { Some(v) => v, None => return core::ptr::null_mut() };
-    if header.size < 0 || (header.size as u64) < required { return core::ptr::null_mut(); }
-    let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return core::ptr::null_mut() };
-    if pfn_address.checked_add(pages.saturating_mul(8)).is_none() { return core::ptr::null_mut(); }
-    let mut first_alias = 0u64;
-    for index in 0..pages {
-        let at = match pfn_address.checked_add(index * 8) { Some(v) => v, None => return core::ptr::null_mut() };
-        if translate(at, false).is_none() { return core::ptr::null_mut(); }
-        let pfn = unsafe { (at as *const u64).read() };
-        let Some(alias) = crate::memory::direct_map_address(pfn.saturating_mul(PAGE_SIZE)) else { return core::ptr::null_mut(); };
-        if index == 0 { first_alias = alias; }
-        else if alias != first_alias.saturating_add(index * PAGE_SIZE) { return core::ptr::null_mut(); }
+    if header.flags & MDL_MAPPED_SYSTEM_VA != 0 && !header.mapped_system_va.is_null() {
+        return header.mapped_system_va;
     }
-    let Some(mapped) = first_alias.checked_add(header.byte_offset as u64) else { return core::ptr::null_mut(); };
+    let Some(pages) = mdl_page_count(header.byte_offset as u64, header.byte_count as u64) else {
+        return core::ptr::null_mut();
+    };
+    if pages == 0 || pages as usize > MAX_LOCKED_PAGES { return core::ptr::null_mut(); }
+    let required = match MDL_HEADER_SIZE.checked_add(pages.saturating_mul(8)) {
+        Some(value) => value, None => return core::ptr::null_mut(),
+    };
+    if header.size < 0 || (header.size as u64) < required { return core::ptr::null_mut(); }
+    let pfn_address = match address.checked_add(MDL_HEADER_SIZE) {
+        Some(value) => value, None => return core::ptr::null_mut(),
+    };
+    let pfn_end = match pfn_address.checked_add(pages.saturating_mul(8)) {
+        Some(value) => value, None => return core::ptr::null_mut(),
+    };
+    let mut cursor = pfn_address;
+    while cursor < pfn_end {
+        if translate(cursor, false).is_none() { return core::ptr::null_mut(); }
+        cursor = core::cmp::min(pfn_end, (cursor & !(PAGE_SIZE-1)).saturating_add(PAGE_SIZE));
+    }
+    let mut pfns = [0u64; MAX_LOCKED_PAGES];
+    for index in 0..pages as usize {
+        pfns[index] = unsafe { ((pfn_address as *const u64).add(index)).read() };
+        let Some(pa) = pfns[index].checked_mul(PAGE_SIZE) else { return core::ptr::null_mut(); };
+        if !crate::memory::is_ram_physical_address(pa) { return core::ptr::null_mut(); }
+    }
+    let mapping = match crate::kernel_vm::map_external_pages(&pfns[..pages as usize]) { Ok(value) => value, Err(_) => {
+        return core::ptr::null_mut();
+    }};
+    let Some(mapped = (mapping as u64).checked_add(header.byte_offset as u64) else {
+        let _ = crate::kernel_vm::unmap_external_pages(mapping, pages as usize);
+        return core::ptr::null_mut();
+    };
     header.mapped_system_va = mapped as *mut c_void;
     header.flags |= MDL_MAPPED_SYSTEM_VA;
     header.mapped_system_va
@@ -593,6 +626,19 @@ pub unsafe extern "win64" fn mm_unmap_locked_pages(base: *mut c_void, mdl: *mut 
     if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
     let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
     if header.flags & MDL_MAPPED_SYSTEM_VA == 0 || header.mapped_system_va != base { return; }
+    // Nonpaged-pool MDLs may describe an existing VA rather than an MM-owned
+    // alias. Only release addresses inside the dedicated kernel mapping arena.
+    let base_va = base as u64;
+    if base_va >= 0xffff_8000_0000_0000 && crate::kernel_vm::is_pageable_address(base_va) {
+        // Pageable pool extents are not external MDL mappings; don't free them.
+        return;
+    }
+    if base_va >= 0xffff_8000_0000_0000 {
+        let offset = header.byte_offset as u64;
+        let aligned = match base_va.checked_sub(offset) { Some(v) => v as *mut u8, None => return };
+        let pages = match mdl_page_count(offset, header.byte_count as u64) { Some(v) if v > 0 && v <= MAX_LOCKED_PAGES as u64 => v as usize, _ => return };
+        if crate::kernel_vm::unmap_external_pages(aligned, pages).is_err() { return; }
+    } else { return; }
     header.flags &= !MDL_MAPPED_SYSTEM_VA;
     header.mapped_system_va = core::ptr::null_mut();
 }
@@ -631,13 +677,17 @@ pub unsafe extern "win64" fn mm_copy_virtual_memory(
                 let Some(dva) = dst.checked_add(done) else { break; };
                 let Some(spa) = crate::vm::translate_in_root_locked(source_root, sva, false, user_only) else { break; };
                 let Some(dpa) = crate::vm::translate_in_root_locked(target_root, dva, true, user_only) else { break; };
+                let Some(source_ptr) = crate::memory::physical_access_pointer(spa & !(PAGE_SIZE-1)) else { break; };
+                let Some(target_ptr) = crate::memory::physical_access_pointer(dpa & !(PAGE_SIZE-1)) else { break; };
+                let source_ptr = unsafe { source_ptr.add((spa & (PAGE_SIZE-1)) as usize) };
+                let target_ptr = unsafe { target_ptr.add((dpa & (PAGE_SIZE-1)) as usize) };
                 let count = core::cmp::min(length - done, core::cmp::min(
                     PAGE_SIZE - (sva & (PAGE_SIZE - 1)),
                     PAGE_SIZE - (dva & (PAGE_SIZE - 1)))) as usize;
                 if count == 0 { break; }
                 // copy permits overlap for same-process moves and avoids the
                 // undefined behavior of copy_nonoverlapping for aliased pages.
-                unsafe { core::ptr::copy(spa as *const u8, dpa as *mut u8, count); }
+                unsafe { core::ptr::copy(source_ptr, target_ptr, count); }
                 done += count as u64;
             }
             done
