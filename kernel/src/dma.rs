@@ -219,8 +219,8 @@ pub unsafe extern "win64" fn io_get_dma_adapter(
     if rsdp != 0 && unsafe { crate::acpi::find_table(rsdp, *b"DMAR", 0) }.is_ok() {
         return core::ptr::null_mut();
     }
+    let adapter = match version { 0 | 1 => core::ptr::addr_of!(DMA_ADAPTER_V1).cast_mut().cast(), 2 => core::ptr::addr_of!(DMA_ADAPTER_V2).cast_mut().cast(), 3 => core::ptr::addr_of!(DMA_ADAPTER_V3).cast_mut().cast(), _ => return core::ptr::null_mut() };
     unsafe { number_of_map_registers.write(0); }
-    let adapter = match version { 0 | 1 => core::ptr::addr_of!(DMA_ADAPTER_V1).cast_mut().cast(), 2 => core::ptr::addr_of!(DMA_ADAPTER_V2).cast_mut().cast(), 3 => core::ptr::addr_of!(DMA_ADAPTER_V3).cast_mut().cast(), _ => core::ptr::null_mut() };
     adapter
 }
 
@@ -250,7 +250,7 @@ pub unsafe extern "win64" fn allocate_common_buffer_ex(
     _cache_type: u32,
     flags: u32,
 ) -> *mut core::ffi::c_void {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+    if !is_dma_adapter(adapter)
         || logical_address.is_null() || flags != 0 || length == 0 {
         return core::ptr::null_mut();
     }
