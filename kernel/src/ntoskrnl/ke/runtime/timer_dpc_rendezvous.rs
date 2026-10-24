@@ -7,25 +7,38 @@
 // side tables track only lifecycle metadata, avoiding assumptions about private
 // Windows LIST_ENTRY/KDPC internals while preserving the public DDI signatures.
 const MAX_TIMER_OBJECTS: usize = 128;
-
-const MAX_TIMER2_OBJECTS:usize=64;
-pub type Timer2Routine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut core::ffi::c_void);
-#[derive(Clone,Copy)]
-struct Timer2Record{object:usize,callback:usize,context:usize,active:bool,due:u64,period:u64,tolerable_delay:u32,generation:u64}
-impl Timer2Record{const EMPTY:Self=Self{object:0,callback:0,context:0,active:false,due:0,period:0,tolerable_delay:0,generation:0};}
-struct Timer2Table{records:[Timer2Record;MAX_TIMER2_OBJECTS]}
-impl Timer2Table{const fn new()->Self{Self{records:[Timer2Record::EMPTY;MAX_TIMER2_OBJECTS]}}}
-static TIMERS2:crate::hal::IrqSpinLock<Timer2Table>=crate::hal::IrqSpinLock::new(Timer2Table::new());
-
 const MAX_DPC_OBJECTS: usize = 128;
 const TIMER_NOTIFICATION: u8 = 8;
 const TIMER_SYNCHRONIZATION: u8 = 9;
 pub type DpcRoutine = unsafe extern "win64" fn(*mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void);
+pub type Timer2Routine = unsafe extern "win64" fn(*mut core::ffi::c_void, *mut core::ffi::c_void);
+
+/// One metadata table owns both classic KTIMER and KTIMER2 deadlines. The
+/// `timer2` discriminator changes expiry delivery, not the scheduling engine.
 #[derive(Clone, Copy)]
-struct TimerRecord { object: usize, active: bool, due: u64, period: u64, dpc: usize, generation:u64 }
-impl TimerRecord { const EMPTY: Self = Self { object:0, active:false, due:0, period:0, dpc:0, generation:0 }; }
+struct TimerRecord {
+    object: usize,
+    active: bool,
+    due: u64,
+    period: u64,
+    dpc: usize,
+    callback: usize,
+    context: usize,
+    tolerable_delay: u32,
+    timer2: bool,
+    generation: u64,
+}
+impl TimerRecord {
+    const EMPTY: Self = Self {
+        object: 0, active: false, due: 0, period: 0, dpc: 0,
+        callback: 0, context: 0, tolerable_delay: 0, timer2: false,
+        generation: 0,
+    };
+}
 struct TimerTable { records: [TimerRecord; MAX_TIMER_OBJECTS] }
-impl TimerTable { const fn new()->Self { Self { records:[TimerRecord::EMPTY;MAX_TIMER_OBJECTS] } } }
+impl TimerTable {
+    const fn new() -> Self { Self { records: [TimerRecord::EMPTY; MAX_TIMER_OBJECTS] } }
+}
 static TIMERS: crate::hal::IrqSpinLock<TimerTable> = crate::hal::IrqSpinLock::new(TimerTable::new());
 #[derive(Clone, Copy)]
 struct DpcRecord { object: usize, routine: usize, context: usize, arg1: usize, arg2: usize, target_cpu: usize, importance:u8, threaded: bool, active: bool, queued: bool, running: bool }
@@ -312,7 +325,12 @@ unsafe fn initialize_timer(timer:*mut DispatcherHeader, timer_type:i32){
     let mut table=TIMERS.lock();
     let slot=table.records.iter().position(|r|r.object==timer as usize)
         .or_else(||table.records.iter().position(|r|r.object==0));
-    if let Some(i)=slot{table.records[i]=TimerRecord{object:timer as usize,..TimerRecord::EMPTY};}
+    if let Some(i)=slot {
+        // Preserve monotonic identity across reinitialization so an old expiry
+        // snapshot cannot become valid again after the same address is reused.
+        let generation=next_timer_generation(table.records[i].generation);
+        table.records[i]=TimerRecord{object:timer as usize,generation,..TimerRecord::EMPTY};
+    }
 }
 pub unsafe extern "win64" fn ke_initialize_timer(timer:*mut DispatcherHeader){
     unsafe{initialize_timer(timer,0)}
@@ -521,118 +539,147 @@ pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
     }
 }
 
-/// Initializes an opaque KTIMER2 through side metadata; no private Windows
-/// object fields are read or written by RdotOS.
-pub unsafe extern "win64" fn ke_initialize_timer2(timer:*mut core::ffi::c_void,callback:Option<Timer2Routine>,context:*mut core::ffi::c_void){
-    if timer.is_null(){return}
-    let mut table=TIMERS2.lock();
-    let slot=table.records.iter().position(|r|r.object==timer as usize)
-        .or_else(||table.records.iter().position(|r|r.object==0));
-    if let Some(i)=slot{table.records[i]=Timer2Record{object:timer as usize,callback:callback.map(|f|f as usize).unwrap_or(0),context:context as usize,active:false,due:0,period:0,tolerable_delay:0,generation:0};}
+/// Initializes an opaque KTIMER2 in the same deadline table used by KTIMER.
+pub unsafe extern "win64" fn ke_initialize_timer2(
+    timer: *mut core::ffi::c_void,
+    callback: Option<Timer2Routine>,
+    context: *mut core::ffi::c_void,
+) {
+    if timer.is_null() { return; }
+    let mut table = TIMERS.lock();
+    let slot = table.records.iter().position(|r| r.object == timer as usize)
+        .or_else(|| table.records.iter().position(|r| r.object == 0));
+    if let Some(i) = slot {
+        let generation = next_timer_generation(table.records[i].generation);
+        table.records[i] = TimerRecord {
+            object: timer as usize,
+            callback: callback.map(|f| f as usize).unwrap_or(0),
+            context: context as usize,
+            timer2: true,
+            generation,
+            ..TimerRecord::EMPTY
+        };
+    }
 }
-pub unsafe extern "win64" fn ke_set_timer2(timer:*mut core::ffi::c_void,due_time:i64,period_ms:u32,tolerable_delay_ms:u32)->u8{
-    if timer.is_null(){return 0}
-    let Some(deadline)=timer_deadline(due_time) else{return 0};
-    let hz=crate::apic::tsc_frequency_hz().unwrap_or(0);
-    let period=if period_ms==0||hz==0{0}else{((hz as u128)*(period_ms as u128)/1000).min(u64::MAX as u128) as u64};
-    let mut table=TIMERS2.lock();
-    let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
-    let was_active=record.active;
-    record.active=true;record.due=deadline;record.period=period;record.tolerable_delay=tolerable_delay_ms;record.generation=next_timer_generation(record.generation);
+pub unsafe extern "win64" fn ke_set_timer2(
+    timer: *mut core::ffi::c_void,
+    due_time: i64,
+    period_ms: u32,
+    tolerable_delay_ms: u32,
+) -> u8 {
+    if timer.is_null() { return 0; }
+    let Some(deadline) = timer_deadline(due_time) else { return 0; };
+    let hz = crate::apic::tsc_frequency_hz().unwrap_or(0);
+    let period = if period_ms == 0 || hz == 0 { 0 }
+        else { ((hz as u128) * (period_ms as u128) / 1000).min(u64::MAX as u128) as u64 };
+    let mut table = TIMERS.lock();
+    let Some(record) = table.records.iter_mut().find(|r| r.object == timer as usize && r.timer2) else { return 0; };
+    let was_active = record.active;
+    record.active = true;
+    record.due = deadline;
+    record.period = period;
+    record.tolerable_delay = tolerable_delay_ms;
+    record.generation = next_timer_generation(record.generation);
     was_active as u8
 }
-pub unsafe extern "win64" fn ke_cancel_timer2(timer:*mut core::ffi::c_void)->u8{
-    if timer.is_null(){return 0}
-    let mut table=TIMERS2.lock();
-    let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
-    let was_active=record.active;
-    record.active=false;
-    // A one-shot may already be inactive while its callback snapshot is still
-    // waiting for dispatch. Always bump the generation to invalidate that snapshot.
-    record.generation=next_timer_generation(record.generation);
+pub unsafe extern "win64" fn ke_cancel_timer2(timer: *mut core::ffi::c_void) -> u8 {
+    if timer.is_null() { return 0; }
+    let mut table = TIMERS.lock();
+    let Some(record) = table.records.iter_mut().find(|r| r.object == timer as usize && r.timer2) else { return 0; };
+    let was_active = record.active;
+    record.active = false;
+    record.generation = next_timer_generation(record.generation);
     was_active as u8
 }
-fn timer2_tick(now:u64){
-    let mut expired=[Timer2Record::EMPTY;MAX_TIMER2_OBJECTS];let mut count=0usize;
+
+/// One scheduler services classic KTIMER waits/DPCs and KTIMER2 callbacks.
+/// Expiry snapshots are copied under the single timer lock and delivered after
+/// releasing it; cancellation/rearm invalidates snapshots by generation.
+pub fn timer_tick(now: u64) {
+    let mut expired = [TimerRecord::EMPTY; MAX_TIMER_OBJECTS];
+    let mut count = 0usize;
     {
-        let mut table=TIMERS2.lock();
-        for record in table.records.iter_mut(){
-            if !record.active||record.due>now{continue}
-            if count<expired.len(){expired[count]=*record;count+=1;}
-            if record.period==0{record.active=false;}
-            else{
-                record.due=record.due.saturating_add(record.period);
-                if record.due<=now{record.due=now.saturating_add(record.period);}
+        let mut table = TIMERS.lock();
+        for record in table.records.iter_mut() {
+            if !record.active || record.due > now { continue; }
+            if count < expired.len() { expired[count] = *record; count += 1; }
+            if record.period != 0 {
+                record.due = record.due.saturating_add(record.period);
+                if record.due <= now { record.due = now.saturating_add(record.period); }
+            } else {
+                record.active = false;
             }
         }
     }
-    for record in expired[..count].iter().copied(){
-        if record.callback==0{continue}
-        // Cancellation/rearming after expiry but before callback dispatch
-        // invalidates this snapshot; a one-shot expiry remains deliverable.
-        let still_current={let table=TIMERS2.lock();table.records.iter().any(|r|timer_snapshot_is_current(record.object,record.generation,r.object,r.generation))};
-        if !still_current{continue}
-        let callback:Timer2Routine=unsafe{core::mem::transmute(record.callback)};
-        unsafe{callback(record.object as *mut core::ffi::c_void,record.context as *mut core::ffi::c_void);}
-    }
-}
 
-/// Called by the APIC clock interrupt after dispatcher timeout processing.
-/// Expiration is serialized with timer cancellation; callbacks run outside the
-/// timer-table lock and at logical DISPATCH_LEVEL.
-pub fn timer_tick(now:u64){
-    let mut expired=[TimerRecord::EMPTY;MAX_TIMER_OBJECTS];
-    let mut count=0usize;
-    {
-        let mut table=TIMERS.lock();
-        for record in table.records.iter_mut(){
-            if !record.active||record.due>now{continue}
-            if count<expired.len(){expired[count]=*record;count+=1}
-            if record.period!=0{
-                record.due=record.due.saturating_add(record.period);
-                if record.due<=now{record.due=now.saturating_add(record.period);}
-            }else{record.active=false;}
+    for record in expired[..count].iter().copied() {
+        // A cancellation, rearm, or reinitialization after snapshot invalidates
+        // delivery for both timer styles, including already-inactive one-shots.
+        let still_current = {
+            let table = TIMERS.lock();
+            table.records.iter().any(|r|
+                timer_snapshot_is_current(record.object, record.generation, r.object, r.generation)
+                    && r.timer2 == record.timer2
+            )
+        };
+        if !still_current { continue; }
+
+        if record.timer2 {
+            if record.callback == 0 { continue; }
+            let callback: Timer2Routine = unsafe { core::mem::transmute(record.callback) };
+            unsafe {
+                callback(record.object as *mut core::ffi::c_void,
+                         record.context as *mut core::ffi::c_void);
+            }
+            continue;
         }
-    }
-    for record in expired[..count].iter().copied(){
-        let timer=record.object as *mut DispatcherHeader;
-        if timer.is_null(){continue}
-        unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
-        let _guard=DISPATCHER_OBJECT_LOCK.lock();
+
+        let timer = record.object as *mut DispatcherHeader;
+        if timer.is_null() { continue; }
+        unsafe {
+            (&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>())
+                .store(1, Ordering::Release);
+        }
+        let _guard = DISPATCHER_OBJECT_LOCK.lock();
         complete_ready_wait_all_groups();
-        let mut waiters=[crate::dispatcher::WokenWaiter{thread:0,timed_out:false};crate::dispatcher::MAX_WAITERS];
-        let woke=if unsafe{(*timer).kind}==TIMER_NOTIFICATION{
-            crate::dispatcher::wake_all_timed(timer as u64,&mut waiters)
-        }else if let Some(waiter)=crate::dispatcher::wake_one_timed(timer as u64){
-            waiters[0]=waiter;1
-        }else{0};
-        let consumed=woke!=0&&waiters[..woke].iter().any(|waiter|!waiter.timed_out);
-        if consumed && unsafe{(*timer).kind}==TIMER_SYNCHRONIZATION{
-            unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
+        let mut waiters = [crate::dispatcher::WokenWaiter { thread: 0, timed_out: false }; crate::dispatcher::MAX_WAITERS];
+        let woke = if unsafe { (*timer).kind } == TIMER_NOTIFICATION {
+            crate::dispatcher::wake_all_timed(timer as u64, &mut waiters)
+        } else if let Some(waiter) = crate::dispatcher::wake_one_timed(timer as u64) {
+            waiters[0] = waiter; 1
+        } else { 0 };
+        let consumed = woke != 0 && waiters[..woke].iter().any(|waiter| !waiter.timed_out);
+        if consumed && unsafe { (*timer).kind } == TIMER_SYNCHRONIZATION {
+            unsafe {
+                (&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>())
+                    .store(0, Ordering::Release);
+            }
         }
-        for waiter in waiters[..woke].iter().copied(){
-            let signal_status=if waiter.timed_out{STATUS_TIMEOUT}else{STATUS_SUCCESS};
-            let status=crate::dispatcher::complete_wait_group(waiter.thread,timer as u64,signal_status,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(signal_status);
-            let _=crate::thread::complete_wait(waiter.thread,status);
+        for waiter in waiters[..woke].iter().copied() {
+            let signal_status = if waiter.timed_out { STATUS_TIMEOUT } else { STATUS_SUCCESS };
+            let status = crate::dispatcher::complete_wait_group(waiter.thread, timer as u64, signal_status, STATUS_SUCCESS, STATUS_TIMEOUT)
+                .unwrap_or(signal_status);
+            let _ = crate::thread::complete_wait(waiter.thread, status);
         }
         drop(_guard);
-        if record.dpc!=0{
-            // Enqueue while the timer-generation lock is held. This closes the
-            // check-then-enqueue race: a concurrent periodic-timer cancel will
-            // either invalidate this expiry first or remove its queued DPC.
-            let target={
-                let table=TIMERS.lock();
-                if table.records.iter().any(|r|r.object==record.object&&r.generation==record.generation){
-                    queue_dpc_deferred(record.dpc as *mut _,core::ptr::null_mut(),core::ptr::null_mut())
-                }else{None}
+
+        if record.dpc != 0 {
+            // Keep timer -> DPC lock order consistent with set/cancel.
+            let target = {
+                let table = TIMERS.lock();
+                if table.records.iter().any(|r|
+                    timer_snapshot_is_current(record.object, record.generation, r.object, r.generation)
+                        && !r.timer2
+                ) {
+                    queue_dpc_deferred(record.dpc as *mut _, core::ptr::null_mut(), core::ptr::null_mut())
+                } else { None }
             };
-            if let Some(target)=target{
-                if target!=cpu_slot(){let _=crate::smp::request_reschedule(target);}
+            if let Some(target) = target {
+                if target != cpu_slot() { let _ = crate::smp::request_reschedule(target); }
             }
         }
     }
     dispatch_queued_dpcs();
-    timer2_tick(now);
 }
 
 /// Result of the Ki processor-start phase. A successful AP count means APs
