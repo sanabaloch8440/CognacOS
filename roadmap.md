@@ -97,7 +97,7 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Initialize per-AP GDT/TSS/IDT and CPU-local state before marking APs online.
 - [ ] Implement interrupt vectors, complete IRQ routing, MSI/MSI-X, and interrupt remapping.
 - [ ] Calibrate and enable a reliable APIC timer and monotonic clock.
-- [ ] Add multi-vCPU race/stress tests for locks, interrupts, startup, TLB invalidation, concurrent user-MDL map/unmap, process exit, and MDL unlock ordering.
+- [ ] Add multi-vCPU race/stress tests for locks, interrupts, startup, TLB invalidation, concurrent user-MDL map/unmap, process exit, and MDL unlock ordering. Mapping/probe/unlock entry points now share an IRQ-safe MDL lifecycle lock; runtime stress and teardown-race validation remain outstanding.
 - [ ] Keep external interrupts disabled until interrupt entry, routing, and per-CPU state are proven safe.
 
 Discovery and startup primitives do not by themselves establish a production-ready SMP kernel.

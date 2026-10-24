@@ -166,7 +166,11 @@ pub fn reference_process_for_root(root: u64) -> Option<*mut core::ffi::c_void> {
     if root == 0 { return None; }
     let mut registry = TABLE.lock();
     let p = registry.0.iter_mut().find(|p| p.used && p.magic == EPROCESS_MAGIC
-        && p.address_space_root == root && p.state == ProcessState::Running)?;
+        && p.address_space_root == root
+        && (p.state == ProcessState::Running || p.state == ProcessState::Created))?;
+    // Activating a registered root is the first reliable evidence that its
+    // process has begun execution; older launch paths did not set Running.
+    if p.state == ProcessState::Created { p.state = ProcessState::Running; }
     p.references = p.references.checked_add(1)?;
     Some(p as *mut EProcess as *mut core::ffi::c_void)
 }

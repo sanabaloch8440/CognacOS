@@ -230,6 +230,7 @@ static LOCKED_PAGES: crate::hal::IrqSpinLock<[LockedPage; MAX_LOCKED_PAGES]> =
 
 
 const MAX_USER_MDL_MAPPINGS: usize = 256;
+static MDL_MAPPING_LIFETIME_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 #[derive(Clone, Copy)]
 struct UserMdlMapping { mdl: u64, process: u64, root: u64, base: u64, pages: usize, live: bool }
 impl UserMdlMapping { const EMPTY: Self = Self { mdl: 0, process: 0, root: 0, base: 0, pages: 0, live: false }; }
@@ -341,6 +342,7 @@ pub unsafe extern "win64" fn mm_create_mdl(mdl: *mut c_void, base: *mut c_void, 
 }
 /// Probe and pin the current process's user pages or resident supervisor pages.
 pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mode: i8, operation: u32) {
+    let _lifetime_guard = MDL_MAPPING_LIFETIME_LOCK.lock();
     if mdl.is_null() || operation > 2 || (access_mode != 0 && access_mode != 1) { return; }
     let address = mdl as u64;
     if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
@@ -420,6 +422,7 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
 }
 /// Release physical-frame references acquired by MmProbeAndLockPages.
 pub unsafe extern "win64" fn mm_unlock_pages(mdl: *mut c_void) {
+    let _lifetime_guard = MDL_MAPPING_LIFETIME_LOCK.lock();
     if mdl.is_null() { return; }
     let address = mdl as u64;
     if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
@@ -535,6 +538,8 @@ pub unsafe extern "win64" fn mm_free_mdl(mdl: *mut c_void) {
     if header.flags & MDL_LOCKED != 0 && header.flags & MDL_NONPAGED_POOL == 0 {
         unsafe { mm_unlock_pages(mdl); }
     }
+    let header_after = unsafe { &*mdl.cast::<MdlHeader>() };
+    if header_after.flags & (MDL_LOCKED | MDL_MAPPED_SYSTEM_VA) != 0 { return; }
     if !unregister_owned_mdl(address) { return; }
     let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl.cast(), Some(0x4c444d4d));
 }
@@ -623,6 +628,7 @@ pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
     mdl: *mut c_void, access_mode: i8, cache_type: i32, requested_address: *mut c_void,
     _bug_check_on_failure: u8, _priority: u32,
 ) -> *mut c_void {
+    let _lifetime_guard = MDL_MAPPING_LIFETIME_LOCK.lock();
     if mdl.is_null() || (access_mode != 0 && access_mode != 1) || cache_type != 1 || !requested_address.is_null() {
         return core::ptr::null_mut();
     }
@@ -701,6 +707,7 @@ pub unsafe extern "win64" fn mm_map_locked_pages(mdl: *mut c_void, access_mode: 
     unsafe { mm_map_locked_pages_specify_cache(mdl, access_mode, 1, core::ptr::null_mut(), 0, 0) }
 }
 pub unsafe extern "win64" fn mm_unmap_locked_pages(base: *mut c_void, mdl: *mut c_void) {
+    let _lifetime_guard = MDL_MAPPING_LIFETIME_LOCK.lock();
     if mdl.is_null() || base.is_null() { return; }
     let address = mdl as u64;
     if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
@@ -718,6 +725,17 @@ pub unsafe extern "win64" fn mm_unmap_locked_pages(base: *mut c_void, mdl: *mut 
             && m.base == aligned && header.process as u64 != 0) else { return; };
         let record = mappings[index];
         let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
+        let required = match MDL_HEADER_SIZE.checked_add((record.pages as u64).saturating_mul(8)) { Some(v) => v, None => return };
+        if header.size < 0 || header.size as u64 < required
+            || mdl_page_count(header.byte_offset as u64, header.byte_count as u64) != Some(record.pages as u64) {
+            return;
+        }
+        let pfn_end = match pfn_address.checked_add((record.pages as u64).saturating_mul(8)) { Some(v) => v, None => return };
+        let mut cursor = pfn_address;
+        while cursor < pfn_end {
+            if translate(cursor, false).is_none() { return; }
+            cursor = core::cmp::min(pfn_end, (cursor & !(PAGE_SIZE-1)).saturating_add(PAGE_SIZE));
+        }
         let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, record.pages) };
         if unsafe { crate::vm::unmap_external_user_pages_active(record.base, pfns) }.is_err() { return; }
         mappings[index] = UserMdlMapping::EMPTY;
