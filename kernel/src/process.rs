@@ -178,6 +178,7 @@ pub fn reference_process_for_root(root: u64) -> Option<*mut core::ffi::c_void> {
 /// The returned reference must be released with ObfDereferenceObject.
 pub fn reference_process_root(pointer:*mut core::ffi::c_void)->Option<u64>{
     if pointer.is_null(){return None}
+    let _address_space_guard=crate::vm::ADDRESS_SPACE_LIFETIME_LOCK.lock();
     let mut registry=TABLE.lock();
     let process=registry.0.iter_mut().find(|p|
         core::ptr::addr_of!(**p) as *mut EProcess as *mut core::ffi::c_void==pointer
@@ -186,6 +187,13 @@ pub fn reference_process_root(pointer:*mut core::ffi::c_void)->Option<u64>{
         && p.address_space_root!=0)?;
     process.references=process.references.checked_add(1)?;
     Some(process.address_space_root)
+}
+/// True while any process-object reference can still use this address-space root.
+/// AddressSpace::destroy calls this while holding ADDRESS_SPACE_LIFETIME_LOCK.
+pub fn address_space_has_references(root:u64)->bool{
+ if root==0{return false}
+ let registry=TABLE.lock();
+ registry.0.iter().any(|p|p.used&&p.magic==EPROCESS_MAGIC&&p.address_space_root==root&&p.references!=0)
 }
 pub fn process_matches_root(pointer: *mut core::ffi::c_void, root: u64) -> bool {
     let registry = TABLE.lock();
