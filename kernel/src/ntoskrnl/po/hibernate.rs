@@ -144,6 +144,62 @@ pub fn validate_hibernation_images()->i32{let o=match platform(){Ok(v)=>v,Err(e)
 #[cfg(test)]
 mod tests{
  use super::*;
+ use core::{cell::UnsafeCell,sync::atomic::{AtomicU8,Ordering}};
  #[test]fn rle_roundtrip_and_rejects_corruption(){let input=[0x5au8;1024];let mut enc=[0u8;2048];let n=rle_encode(&input,&mut enc);assert!(n<input.len());let mut out=[0u8;1024];assert_eq!(rle_decode(&enc[..n],&mut out,input.len()),Ok(()));assert_eq!(input,out);assert!(rle_decode(&[0,3],&mut out,2).is_err());assert!(rle_decode(&[3,3],&mut out,2).is_err());}
  #[test]fn torn_or_uncommitted_header_is_rejected(){let h=Header{generation:1,count:1,cpu_len:0,cpu_offset:DATA,total:DATA,table_crc:1,cpu_crc:crc(&[])};let b=h.encode(true);assert!(Header::decode(&b).is_ok());let mut torn=b;torn[64]^=1;assert!(Header::decode(&torn).is_err());assert!(Header::decode(&h.encode(false)).is_err());}
+
+ struct Storage(UnsafeCell<[[u8;16384];2]>);
+ unsafe impl Sync for Storage {}
+ static STORAGE:Storage=Storage(UnsafeCell::new([[0;16384];2]));
+ static MEMORY:[u8;4096]=[0x42;4096];
+ static CPU:[u8;4]=[1,2,3,4];
+ static RESTORED_FIRST:AtomicU8=AtomicU8::new(0);
+ static CPU_RESTORED:AtomicU8=AtomicU8::new(0);
+ unsafe extern "system" fn quiesce(_: *mut c_void)->i32{OK}
+ unsafe extern "system" fn resume(_: *mut c_void)->i32{OK}
+ unsafe extern "system" fn enter(_: *mut c_void)->i32{OK}
+ unsafe extern "system" fn enumerate(_: *mut c_void,out:*mut HiberMemoryRegion,cap:usize,count:*mut usize)->i32{
+  if out.is_null()||count.is_null()||cap<1{return INVALID}
+  unsafe{out.write(HiberMemoryRegion{physical_start:0x100000,source:MEMORY.as_ptr(),length:MEMORY.len() as u64});count.write(1);}OK
+ }
+ unsafe extern "system" fn capture(_: *mut c_void,out:*mut u8,cap:usize,written:*mut usize)->i32{
+  if out.is_null()||written.is_null()||cap<CPU.len(){return NO_MEMORY}
+  unsafe{ptr::copy_nonoverlapping(CPU.as_ptr(),out,CPU.len());written.write(CPU.len());}OK
+ }
+ unsafe extern "system" fn restore_cpu(_: *mut c_void,data:*const u8,len:usize)->i32{
+  if len!=CPU.len()||data.is_null(){return DATA_ERROR}
+  let got=unsafe{core::slice::from_raw_parts(data,len)};
+  if got!=CPU{return DATA_ERROR}
+  CPU_RESTORED.store(1,Ordering::SeqCst);OK
+ }
+ unsafe extern "system" fn write(_: *mut c_void,slot:u32,offset:u64,data:*const u8,len:usize)->i32{
+  if slot>1||data.is_null(){return INVALID}
+  let start=offset as usize;let Some(end)=start.checked_add(len)else{return INVALID};if end>16384{return NO_MEMORY}
+  unsafe{ptr::copy_nonoverlapping(data,(*STORAGE.0.get())[slot as usize].as_mut_ptr().add(start),len);}OK
+ }
+ unsafe extern "system" fn read(_: *mut c_void,slot:u32,offset:u64,out:*mut u8,len:usize)->i32{
+  if slot>1||out.is_null(){return INVALID}
+  let start=offset as usize;let Some(end)=start.checked_add(len)else{return INVALID};if end>16384{return NO_MEMORY}
+  unsafe{ptr::copy_nonoverlapping((*STORAGE.0.get())[slot as usize].as_ptr().add(start),out,len);}OK
+ }
+ unsafe extern "system" fn flush(_: *mut c_void,_slot:u32)->i32{OK}
+ unsafe extern "system" fn restore_mem(_: *mut c_void,physical:u64,data:*const u8,len:usize)->i32{
+  if physical<0x100000||physical.checked_add(len as u64).is_none_or(|x|x>0x101000)||data.is_null()||len==0{return DATA_ERROR}
+  RESTORED_FIRST.store(unsafe{*data},Ordering::SeqCst);OK
+ }
+ static OPS:HiberPlatformOps=HiberPlatformOps{size:core::mem::size_of::<HiberPlatformOps>() as u32,context:ptr::null_mut(),quiesce_devices:Some(quiesce),resume_devices:Some(resume),enumerate_memory:Some(enumerate),capture_cpu_state:Some(capture),restore_cpu_state:Some(restore_cpu),write_slot:Some(write),read_slot:Some(read),flush_slot:Some(flush),restore_memory:Some(restore_mem),enter_s4:Some(enter)};
+
+ #[test]fn interrupted_newest_image_falls_back_to_previous_committed_generation(){
+  assert_eq!(unsafe{register_platform((&OPS as *const HiberPlatformOps).cast_mut())},OK);
+  assert_eq!(initiate_s4(),OK);
+  assert_eq!(initiate_s4(),OK);
+  assert!(validate_slot(platform().unwrap(),0).is_ok());
+  assert!(validate_slot(platform().unwrap(),1).is_ok());
+  // Simulate a torn/corrupted newest slot after power loss. The older committed
+  // slot must still validate and be selected before any restore writes occur.
+  unsafe{let storage=STORAGE.0.get();(*storage)[1][DATA as usize+13]^=0x80;}
+  assert_eq!(resume_from_hibernation(),OK);
+  assert_eq!(RESTORED_FIRST.load(Ordering::SeqCst),0x42);
+  assert_eq!(CPU_RESTORED.load(Ordering::SeqCst),1);
+ }
 }
