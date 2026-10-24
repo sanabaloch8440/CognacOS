@@ -69,7 +69,7 @@ pub struct IoStackLocation {
 }
 struct DeviceSlot { used: bool, deleting: bool, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
-struct IrpSlot { used: bool, object: Irp }
+struct IrpSlot { used: bool, object: Irp, stack: [IoStackLocation;16] }
 unsafe impl Send for IrpSlot {}
 struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WDM_IRPS] }
 impl WdmState {
@@ -82,7 +82,7 @@ impl WdmState {
     device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;7],queue:[0;4],
     alignment_requirement:0,device_queue:[0;6],dpc:[0;8],device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, object: Irp { bytes:[0;IRP_SIZE_X64] } } }; MAX_WDM_IRPS],
+   irps: [const { IrpSlot { used:false, object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16] } }; MAX_WDM_IRPS],
   }
  }
 }
@@ -148,8 +148,10 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
  slot.object.bytes[0x42]=stack_size as u8;slot.object.bytes[0x43]=(stack_size+1) as u8;
+ slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
  let object=&mut slot.object as *mut Irp;
- unsafe { write_ptr(object.bytes.as_mut_ptr(),IRP_STACK_OFFSET,ptr::null_mut()); }
+ let one_past=unsafe{slot.stack.as_mut_ptr().add(stack_size as usize).cast::<c_void>()};
+ unsafe { write_ptr(object.bytes.as_mut_ptr(),IRP_STACK_OFFSET,one_past); }
  object
 }
 #[unsafe(no_mangle)]
@@ -180,9 +182,14 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
   }
  };
  if deleting||driver.is_null(){return STATUS_DELETE_PENDING}
- let stack=unsafe{io_get_current_irp_stack_location(irp)};
- if stack.is_null(){return STATUS_INVALID_PARAMETER}
- let major=unsafe{ptr::read_unaligned(stack.cast::<u8>())} as usize;
+ let current=unsafe{io_get_current_irp_stack_location(irp)};
+ if current.is_null(){return STATUS_INVALID_PARAMETER}
+ let stack=unsafe{current.cast::<u8>().sub(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
+ unsafe { write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast()); }
+ let location=unsafe{(*irp).bytes[0x43]};
+ if location<=1{return STATUS_INVALID_DEVICE_REQUEST}
+ unsafe { (*irp).bytes[0x43]=location-1; }
+ let major=unsafe{(*stack).major_function as usize};
  if major>=28{return STATUS_INVALID_DEVICE_REQUEST}
  let dispatch=unsafe{(*driver).major_function[major]};
  let Some(dispatch)=dispatch else{return STATUS_INVALID_DEVICE_REQUEST};
