@@ -29,7 +29,7 @@ pub struct UnicodeString { pub length: u16, pub maximum_length: u16, pub buffer:
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct IoStatusBlock { pub status: isize, pub information: usize }
-pub type DriverDispatch = unsafe extern "system" fn(*mut DriverObject, *mut Irp) -> i32;
+pub type DriverDispatch = unsafe extern "system" fn(*mut DeviceObject, *mut Irp) -> i32;
 pub type DriverUnload = unsafe extern "system" fn(*mut DriverObject);
 pub type IoCompletionRoutine = unsafe extern "system" fn(*mut DeviceObject, *mut Irp, *mut c_void) -> i32;
 
@@ -53,7 +53,7 @@ pub struct DeviceObject {
     pub device_type: u32, pub stack_size: u8, pub queue_padding: [u8; 7],
     pub queue: [usize; 4], pub alignment_requirement: u32,
     pub device_queue: [usize; 6], pub dpc: [usize; 8],
-    pub device_object_extension: *mut c_void, pub reserved: *mut c_void,
+    pub device_object_extension: *mut c_void, pub reserved: *mut c_void, pub reserved_tail: [u8; 80],
 }
 /// Opaque storage for the x64 WDK IRP. Fields used here are accessed by their
 /// documented x64 offsets to avoid pretending that Rust's high-level fields
@@ -81,7 +81,7 @@ impl WdmState {
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
     device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;7],queue:[0;4],
-    alignment_requirement:0,device_queue:[0;6],dpc:[0;8],device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
+    alignment_requirement:0,device_queue:[0;6],dpc:[0;8],device_object_extension:ptr::null_mut(),reserved:ptr::null_mut(),reserved_tail:[0;80]
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
    irps: [const { IrpSlot { used:false, object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16] } }; MAX_WDM_IRPS],
   }
@@ -171,6 +171,14 @@ pub unsafe extern "system" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut
  if irp.is_null(){return ptr::null_mut()}
  let current=unsafe{io_get_current_irp_stack_location(irp)};
  if current.is_null(){return ptr::null_mut()}
+ let state=WDM.lock();
+ let Some(slot)=state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return ptr::null_mut()};
+ let count=slot.object.bytes[0x42] as usize;
+ if count==0||count>slot.stack.len(){return ptr::null_mut()}
+ let base=slot.stack.as_ptr() as usize;
+ let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
+ let cur=current as usize;
+ if cur<=base||cur>end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return ptr::null_mut()}
  unsafe{current.cast::<u8>().sub(IO_STACK_LOCATION_SIZE_X64).cast()}
 }
 #[unsafe(no_mangle)]
@@ -183,19 +191,20 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
   }
  };
  if deleting||driver.is_null(){return STATUS_DELETE_PENDING}
- let current=unsafe{io_get_current_irp_stack_location(irp)};
- if current.is_null(){return STATUS_INVALID_PARAMETER}
- let stack=unsafe{current.cast::<u8>().sub(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
- unsafe { write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast()); }
+ let stack=unsafe{io_get_next_irp_stack_location(irp)};
+ if stack.is_null(){return STATUS_INVALID_PARAMETER}
  let location=unsafe{(*irp).bytes[0x43]};
  if location<=1{return STATUS_INVALID_DEVICE_REQUEST}
- unsafe { (*irp).bytes[0x43]=location-1; }
- unsafe { (*stack).device_object=device; }
+ unsafe {
+  write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast());
+  (*irp).bytes[0x43]=location-1;
+  (*stack).device_object=device;
+ }
  let major=unsafe{(*stack).major_function as usize};
  if major>=28{return STATUS_INVALID_DEVICE_REQUEST}
  let dispatch=unsafe{(*driver).major_function[major]};
  let Some(dispatch)=dispatch else{return STATUS_INVALID_DEVICE_REQUEST};
- unsafe{dispatch(driver,irp)}
+ unsafe{dispatch(device,irp)}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:i8) {
