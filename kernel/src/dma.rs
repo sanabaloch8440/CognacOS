@@ -394,8 +394,8 @@ pub unsafe extern "win64" fn build_scatter_gather_list(
 const MAX_MAP_REGISTER_ALLOCS: usize = 64;
 const MAX_MAP_REGISTERS_PER_ALLOCATION: u32 = 256;
 #[derive(Clone, Copy)]
-struct MapRegisterRecord { active: bool, token: usize, count: u32, device: usize, in_use:u32 }
-impl MapRegisterRecord { const EMPTY: Self = Self { active: false, token: 0, count: 0, device: 0, in_use:0 }; }
+struct MapRegisterRecord { active: bool, token: usize, count: u32, device: usize, in_use:u32, free_pending:bool }
+impl MapRegisterRecord { const EMPTY: Self = Self { active: false, token: 0, count: 0, device: 0, in_use:0, free_pending:false }; }
 struct MapRegisterState { records: [MapRegisterRecord; MAX_MAP_REGISTER_ALLOCS], next: usize }
 static MAP_REGISTERS: crate::hal::IrqSpinLock<MapRegisterState> =
     crate::hal::IrqSpinLock::new(MapRegisterState { records: [MapRegisterRecord::EMPTY; MAX_MAP_REGISTER_ALLOCS], next: 1 });
@@ -453,7 +453,7 @@ fn release_token(device: usize, token: usize, count: u32) {
         let mut state = MAP_REGISTERS.lock();
         if let Some(record) = state.records.iter_mut().find(|r|
             r.active && r.token == token && r.count == count && r.device == device) {
-            *record = MapRegisterRecord::EMPTY;
+            if record.in_use==0{*record=MapRegisterRecord::EMPTY;}else{record.free_pending=true;}
         }
     }
 }
@@ -580,7 +580,10 @@ pub(crate) fn consume_map_register(token:*mut core::ffi::c_void,device:usize)->b
  if let Some(r)=s.records.iter_mut().find(|r|r.active&&r.token==token as usize&&r.device==device&&r.in_use<r.count){r.in_use+=1;true}else{false}
 }
 pub(crate) fn return_map_register(token:*mut core::ffi::c_void,device:usize){
- if token.is_null(){return}let mut s=MAP_REGISTERS.lock();if let Some(r)=s.records.iter_mut().find(|r|r.active&&r.token==token as usize&&r.device==device&&r.in_use>0){r.in_use-=1;}
+ if token.is_null(){return}let mut s=MAP_REGISTERS.lock();
+ if let Some(r)=s.records.iter_mut().find(|r|r.active&&r.token==token as usize&&r.device==device&&r.in_use>0){
+  r.in_use-=1;if r.in_use==0&&r.free_pending{*r=MapRegisterRecord::EMPTY;}
+ }
 }
 fn allocate_map_register_token(device: *mut core::ffi::c_void, count: u32) -> Option<*mut core::ffi::c_void> {
     if count == 0 || count > MAX_MAP_REGISTERS_PER_ALLOCATION { return None; }
@@ -590,7 +593,7 @@ fn allocate_map_register_token(device: *mut core::ffi::c_void, count: u32) -> Op
     let token = unsafe { core::ptr::addr_of_mut!(MAP_REGISTER_TOKENS[idx]) };
     unsafe { (*token).id = id as u64; }
     let ptr = token.cast::<core::ffi::c_void>();
-    state.records[idx] = MapRegisterRecord { active: true, token: ptr as usize, count, device: device as usize, in_use:0 };
+    state.records[idx] = MapRegisterRecord { active: true, token: ptr as usize, count, device: device as usize, in_use:0, free_pending:false };
     Some(ptr)
 }
 
@@ -602,8 +605,9 @@ pub unsafe extern "win64" fn free_map_registers(
     if !is_dma_adapter(adapter) || map_register_base.is_null() { return; }
     let mut state = MAP_REGISTERS.lock();
     if let Some(r) = state.records.iter_mut().find(|r|
-        r.active && r.token == map_register_base as usize && r.count == number_of_map_registers && r.in_use==0) {
-        *r = MapRegisterRecord::EMPTY;
+        r.active && r.token == map_register_base as usize && r.count == number_of_map_registers
+        && adapter_device(adapter).is_none_or(|d|d==r.device)) {
+        if r.in_use==0{*r=MapRegisterRecord::EMPTY;}else{r.free_pending=true;}
     }
 }
 
