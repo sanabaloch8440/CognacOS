@@ -202,11 +202,14 @@ pub unsafe extern "win64" fn io_get_dma_adapter(
     if device_object.is_null() || device_description.is_null() || number_of_map_registers.is_null() {
         return core::ptr::null_mut();
     }
-    // DEVICE_DESCRIPTION's stable header is Version, Size.
-    let header = unsafe { core::slice::from_raw_parts(device_description.cast::<u8>(), 4) };
-    let version = u16::from_le_bytes([header[0], header[1]]);
-    let size = u16::from_le_bytes([header[2], header[3]]);
-    if version > 1 || size < 4 {
+    // DEVICE_DESCRIPTION begins with ULONG Version followed by BOOLEAN
+    // flags; it has no Size field. Read the WDK-defined prefix, not a fictitious
+    // USHORT Version/Size pair. This bootstrap adapter only supports bus masters.
+    let header = unsafe { core::slice::from_raw_parts(device_description.cast::<u8>(), 12) };
+    let version = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
+    let master = header[4] != 0;
+    let reserved1 = header[10];
+    if version > 3 || !master || reserved1 != 0 {
         return core::ptr::null_mut();
     }
     // If firmware advertises Intel VT-d, do not silently hand a driver an
@@ -217,7 +220,8 @@ pub unsafe extern "win64" fn io_get_dma_adapter(
         return core::ptr::null_mut();
     }
     unsafe { number_of_map_registers.write(0); }
-    core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+    let adapter = match version { 0 | 1 => core::ptr::addr_of!(DMA_ADAPTER_V1).cast_mut().cast(), 2 => core::ptr::addr_of!(DMA_ADAPTER_V2).cast_mut().cast(), 3 => core::ptr::addr_of!(DMA_ADAPTER_V3).cast_mut().cast(), _ => core::ptr::null_mut() };
+    adapter
 }
 
 /// The stable prefix of the Windows x64 MDL. PFN entries follow this header;
@@ -809,12 +813,61 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     unregister_fault_callback: core::ptr::null(),
 };
 
+#[repr(C)]
+pub struct DmaOperationsV1 {
+    pub size:u32,
+    pub put_dma_adapter:*const (), pub allocate_common_buffer:*const (), pub free_common_buffer:*const (),
+    pub allocate_adapter_channel:*const (), pub flush_adapter_buffers:*const (), pub free_adapter_channel:*const (),
+    pub free_map_registers:*const (), pub map_transfer:*const (), pub get_dma_alignment:*const (),
+    pub read_dma_counter:*const (), pub get_scatter_gather_list:*const (), pub put_scatter_gather_list:*const (),
+}
+unsafe impl Sync for DmaOperationsV1 {}
+#[repr(C)]
+pub struct DmaOperationsV2 {
+    pub size:u32,
+    pub put_dma_adapter:*const (), pub allocate_common_buffer:*const (), pub free_common_buffer:*const (),
+    pub allocate_adapter_channel:*const (), pub flush_adapter_buffers:*const (), pub free_adapter_channel:*const (),
+    pub free_map_registers:*const (), pub map_transfer:*const (), pub get_dma_alignment:*const (),
+    pub read_dma_counter:*const (), pub get_scatter_gather_list:*const (), pub put_scatter_gather_list:*const (),
+    pub calculate_scatter_gather_list_size:*const (), pub build_scatter_gather_list:*const (),
+    pub build_mdl_from_scatter_gather_list:*const (),
+}
+unsafe impl Sync for DmaOperationsV2 {}
+pub static DMA_OPERATIONS_V1:DmaOperationsV1=DmaOperationsV1 {
+ size:104, put_dma_adapter:put_dma_adapter as *const (),
+ allocate_common_buffer:crate::hal::exports::hal_allocate_common_buffer as *const (),
+ free_common_buffer:crate::hal::exports::hal_free_common_buffer as *const (),
+ allocate_adapter_channel:allocate_adapter_channel as *const (),flush_adapter_buffers:flush_adapter_buffers as *const (),
+ free_adapter_channel:free_adapter_channel as *const (),free_map_registers:free_map_registers as *const (),
+ map_transfer:map_transfer as *const (),get_dma_alignment:get_dma_alignment as *const (),read_dma_counter:read_dma_counter as *const (),
+ get_scatter_gather_list:get_scatter_gather_list as *const (),put_scatter_gather_list:put_scatter_gather_list as *const (),
+};
+pub static DMA_OPERATIONS_V2:DmaOperationsV2=DmaOperationsV2 {
+ size:128, put_dma_adapter:put_dma_adapter as *const (),
+ allocate_common_buffer:crate::hal::exports::hal_allocate_common_buffer as *const (),
+ free_common_buffer:crate::hal::exports::hal_free_common_buffer as *const (),
+ allocate_adapter_channel:allocate_adapter_channel as *const (),flush_adapter_buffers:flush_adapter_buffers as *const (),
+ free_adapter_channel:free_adapter_channel as *const (),free_map_registers:free_map_registers as *const (),
+ map_transfer:map_transfer as *const (),get_dma_alignment:get_dma_alignment as *const (),read_dma_counter:read_dma_counter as *const (),
+ get_scatter_gather_list:get_scatter_gather_list as *const (),put_scatter_gather_list:put_scatter_gather_list as *const (),
+ calculate_scatter_gather_list_size:calculate_scatter_gather_list_size as *const (),
+ build_scatter_gather_list:build_scatter_gather_list as *const (),build_mdl_from_scatter_gather_list:core::ptr::null(),
+};
+fn is_dma_adapter(adapter:*mut core::ffi::c_void)->bool {
+ adapter==core::ptr::addr_of!(DMA_ADAPTER_V1).cast_mut().cast()
+ || adapter==core::ptr::addr_of!(DMA_ADAPTER_V2).cast_mut().cast()
+ || adapter==core::ptr::addr_of!(DMA_ADAPTER_V3).cast_mut().cast()
+}
+
 /// Shared stateless adapter object; DMA_ADAPTER contains Version, Size, and Operations on x64.
-pub static DMA_ADAPTER: DmaAdapterAbi = DmaAdapterAbi {
+pub static DMA_ADAPTER_V3: DmaAdapterAbi = DmaAdapterAbi {
     version: 1,
     size: core::mem::size_of::<DmaAdapterAbi>() as u16,
     operations: &DMA_OPERATIONS as *const DmaOperations,
 };
+pub static DMA_ADAPTER_V1: DmaAdapterAbi = DmaAdapterAbi { version:1, size:core::mem::size_of::<DmaAdapterAbi>() as u16, operations: core::ptr::addr_of!(DMA_OPERATIONS_V1).cast() };
+pub static DMA_ADAPTER_V2: DmaAdapterAbi = DmaAdapterAbi { version:1, size:core::mem::size_of::<DmaAdapterAbi>() as u16, operations: core::ptr::addr_of!(DMA_OPERATIONS_V2).cast() };
+pub use DMA_ADAPTER_V3 as DMA_ADAPTER;
 unsafe impl Sync for DmaAdapterAbi {}
 
 pub extern "win64" fn put_dma_adapter(_adapter: *mut core::ffi::c_void) {}
@@ -942,6 +995,28 @@ mod dma_lifecycle_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn dma_adapter_operation_tables_match_requested_wdk_version() {
+        assert_eq!(core::mem::size_of::<DmaOperationsV1>(),104);
+        assert_eq!(core::mem::size_of::<DmaOperationsV2>(),128);
+        assert_eq!(DMA_OPERATIONS_V1.size,104);
+        assert_eq!(DMA_OPERATIONS_V2.size,128);
+        assert_eq!(DMA_OPERATIONS.size as usize,DmaOperations::ABI_SIZE);
+    }
+
+    #[test]
+    fn device_description_uses_ulong_version_and_boolean_flags() {
+        let mut desc=[0u8;64];
+        desc[0..4].copy_from_slice(&3u32.to_le_bytes());
+        desc[4]=1; // Master
+        desc[5]=1; // ScatterGather
+        desc[11]=1; // Dma64BitAddresses
+        assert_eq!(u32::from_le_bytes(desc[0..4].try_into().unwrap()),3);
+        assert_eq!(desc[4],1);
+        desc[10]=1; // Reserved1 must remain zero.
+        assert_eq!(desc[10],1);
+    }
+
     #[test]
     fn windows_dma_operations_layout_matches_x64_slots() {
         assert_eq!(core::mem::offset_of!(DmaOperations, put_dma_adapter), 8);
