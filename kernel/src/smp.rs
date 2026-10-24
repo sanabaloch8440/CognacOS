@@ -740,6 +740,19 @@ pub fn request_reschedule(logical_id: usize) -> bool {
     base != 0 && unsafe { apic::send_fixed_ipi(base, apic_id as u8, apic::HAL_IPI_VECTOR) }.is_ok()
 }
 
+/// Send a dedicated Ke rendezvous IPI. This vector is distinct from the
+/// scheduler/reschedule vector so unrelated scheduler IPIs cannot consume a
+/// broadcast callback or accidentally execute it twice.
+pub fn request_ke_broadcast(logical_id:usize)->bool{
+    if !IPI_ACTIVE.load(Ordering::Acquire)||logical_id>=hal::MAX_CPUS
+        ||hal::cpu_state(logical_id).ok()!=Some(hal::CPU_ONLINE){return false}
+    let Ok(cpu)=hal::cpu_local(logical_id) else{return false};
+    let apic_id=cpu.apic_id.load(Ordering::Acquire);
+    if apic_id>u8::MAX as u32{return false}
+    let base=LOCAL_APIC_BASE.load(Ordering::Acquire);
+    base!=0&&unsafe{apic::send_fixed_ipi(base,apic_id as u8,apic::KE_BROADCAST_VECTOR)}.is_ok()
+}
+
 pub fn send_tlb_shootdown(logical_id: usize) -> Result<(), apic::ApicError> {
     if !ipi_shootdowns_enabled() { return Err(apic::ApicError::Unsupported); }
     let cpu = hal::cpu_local(logical_id).map_err(|_| apic::ApicError::InvalidBase)?;
