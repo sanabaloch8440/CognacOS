@@ -438,6 +438,11 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     if alertable != 0 && crate::thread::take_alert_pending() {
         let _=crate::dispatcher::cancel(token);let _=crate::thread::set_wait_alertable(false);return STATUS_ALERTED;
     }
+    if alertable != 0 && has_pending_user_apc(thread_id) {
+        let _=crate::thread::set_user_apc_delivery_pending(thread_id,true);
+        let _=crate::dispatcher::cancel(token);let _=crate::thread::clear_wake_pending();let _=crate::thread::set_wait_alertable(false);
+        return STATUS_USER_APC;
+    }
     let acquired=if unsafe{(*object).kind}==MUTANT_OBJECT{
         try_acquire_mutant_status(object)
     }else if unsafe{try_consume_dispatcher_object(object)}{Some(STATUS_SUCCESS)}else{None};
@@ -539,6 +544,11 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
             crate::dispatcher::clear_wait_group(thread_id);if let Some(token)=timeout_token{let _=crate::dispatcher::cancel(token);}
             let _=crate::thread::set_wait_alertable(false);return STATUS_ALERTED;
         }
+        if alertable!=0 && has_pending_user_apc(thread_id){
+            let _=crate::thread::set_user_apc_delivery_pending(thread_id,true);crate::dispatcher::clear_wait_group(thread_id);
+            if let Some(token)=timeout_token{let _=crate::dispatcher::cancel(token);}
+            let _=crate::thread::clear_wake_pending();let _=crate::thread::set_wait_alertable(false);return STATUS_USER_APC;
+        }
         if crate::thread::block_current().is_err() {
             crate::dispatcher::clear_wait_group(thread_id);
             if let Some(token) = timeout_token { let _ = crate::dispatcher::cancel(token); }
@@ -569,6 +579,11 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     if alertable!=0 && crate::thread::take_alert_pending(){
         crate::dispatcher::clear_wait_group(thread_id);for token in tokens[..registered].iter().copied(){let _=crate::dispatcher::cancel(token);}
         let _=crate::thread::set_wait_alertable(false);return STATUS_ALERTED;
+    }
+    if alertable!=0 && has_pending_user_apc(thread_id){
+        let _=crate::thread::set_user_apc_delivery_pending(thread_id,true);crate::dispatcher::clear_wait_group(thread_id);
+        for token in tokens[..registered].iter().copied(){let _=crate::dispatcher::cancel(token);}
+        let _=crate::thread::clear_wake_pending();let _=crate::thread::set_wait_alertable(false);return STATUS_USER_APC;
     }
     if crate::thread::block_current().is_err() {
         crate::dispatcher::clear_wait_group(thread_id);
