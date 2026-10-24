@@ -88,7 +88,13 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(ke::runtime::ke_get_processor_number_from_index as usize)
   } else if requested.eq_ignore_ascii_case(b"KeQueryNodeActiveAffinity2") {
    Some(ke::runtime::ke_query_node_active_affinity2 as usize)
-  } else if requested.eq_ignore_ascii_case(b"KePulseEvent") {
+  } else if requested.eq_ignore_ascii_case(b"KeInitializeApc") {
+    Some(ke::runtime::ke_initialize_apc as usize)
+   } else if requested.eq_ignore_ascii_case(b"KeInsertQueueApc") {
+    Some(ke::runtime::ke_insert_queue_apc as usize)
+   } else if requested.eq_ignore_ascii_case(b"KeRemoveQueueApc") {
+    Some(ke::runtime::ke_remove_queue_apc as usize)
+   } else if requested.eq_ignore_ascii_case(b"KePulseEvent") {
    Some(ke::runtime::ke_pulse_event as usize)
   } else if requested.eq_ignore_ascii_case(b"KeAreApcsDisabled") {
    Some(ke::runtime::ke_are_apcs_disabled as usize)
