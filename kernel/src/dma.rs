@@ -8,6 +8,8 @@ use core::sync::atomic::{fence, Ordering};
 pub const PAGE_SIZE: u64 = 4096;
 pub const MAX_COMMON_BUFFERS: usize = 128;
 pub const MAX_SG_SEGMENTS: usize = 256;
+const MDL_PAGES_LOCKED: i16 = 0x0002;
+const MDL_SOURCE_IS_NONPAGED_POOL: i16 = 0x0004;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DmaError { InvalidLength, OutOfMemory, AddressMask, RegistryFull, NotFound, TooManySegments, InvalidPageList }
@@ -424,7 +426,8 @@ pub unsafe extern "win64" fn put_scatter_gather_list(
 
 /// Validate an MDL transfer range using checked arithmetic.
 fn validate_mdl_range(mdl: &MdlAbi, current_va: u64, length: u32) -> Option<u64> {
-    if mdl.start_va.is_null() || mdl.byte_count == 0 || length == 0 { return None; }
+    if mdl.start_va.is_null() || mdl.byte_count == 0 || length == 0
+        || mdl.flags & (MDL_PAGES_LOCKED | MDL_SOURCE_IS_NONPAGED_POOL) == 0 { return None; }
     let start = (mdl.start_va as u64).checked_add(mdl.byte_offset as u64)?;
     let end = start.checked_add(mdl.byte_count as u64)?;
     let transfer_end = current_va.checked_add(length as u64)?;
@@ -951,7 +954,7 @@ mod tests {
     #[test]
     fn calculate_sg_size_accounts_for_unaligned_page_span() {
         let mut mdl = MdlAbi {
-            next: core::ptr::null_mut(), size: 48, flags: 0,
+            next: core::ptr::null_mut(), size: 48, flags: MDL_PAGES_LOCKED,
             process: core::ptr::null_mut(), mapped_system_va: core::ptr::null_mut(),
             start_va: 0x1000usize as *mut core::ffi::c_void,
             byte_count: 0x2000, byte_offset: 0,
@@ -966,6 +969,20 @@ mod tests {
         assert_eq!(status, 0);
         assert_eq!(size as usize, core::mem::size_of::<ScatterGatherListAbi>()
             + 2 * core::mem::size_of::<ScatterGatherElement>());
+    }
+
+    #[test]
+    fn dma_rejects_unlocked_mdl_before_exposing_physical_addresses() {
+        let mut mdl = MdlAbi {
+            next: core::ptr::null_mut(), size: 48, flags: 0,
+            process: core::ptr::null_mut(), mapped_system_va: core::ptr::null_mut(),
+            start_va: 0x1000usize as *mut core::ffi::c_void,
+            byte_count: 0x2000, byte_offset: 0,
+        };
+        assert!(validate_mdl_range(&mdl, 0x1000, 512).is_none());
+        mdl.flags = MDL_SOURCE_IS_NONPAGED_POOL;
+        assert!(validate_mdl_range(&mdl, 0x1000, 512).is_some());
+        assert!(validate_mdl_range(&mdl, 0x2ff0, 32).is_none());
     }
 
     #[test]
