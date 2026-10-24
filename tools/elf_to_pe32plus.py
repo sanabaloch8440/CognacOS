@@ -12,7 +12,7 @@ import argparse
 import struct
 import sys
 
-BASE = 0xFFFFFFFF7FF00000
+BASE = 0xFFFFFFFF7FE00000
 PAGE = 0x1000
 FILE_ALIGN = 0x200
 SECT_ALIGN = 0x1000
