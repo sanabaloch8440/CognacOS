@@ -113,6 +113,31 @@ pub fn install_primary_token(pid: u64, token: *mut core::ffi::c_void) -> bool {
     true
 }
 
+pub fn reference_primary_token_for_object(process_object: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
+    if process_object.is_null() { return core::ptr::null_mut(); }
+    let token = {
+        let registry = TABLE.lock();
+        registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC
+            && core::ptr::addr_of!(**p).cast::<core::ffi::c_void>() == process_object
+            && p.state != ProcessState::Reaped).map(|p| p.primary_token).unwrap_or(0)
+    };
+    if token == 0 { return core::ptr::null_mut(); }
+    let pointer = token as *mut core::ffi::c_void;
+    if unsafe { crate::ntoskrnl::se::runtime::se_internal_ReferenceToken(pointer) } != crate::ntoskrnl::se::runtime::STATUS_SUCCESS {
+        return core::ptr::null_mut();
+    }
+    pointer
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn PsReferencePrimaryToken(process_object: *mut core::ffi::c_void) -> *mut core::ffi::c_void {
+    reference_primary_token_for_object(process_object)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn PsDereferencePrimaryToken(token: *mut core::ffi::c_void) {
+    if !token.is_null() { let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) }; }
+}
+
 /// Return a referenced process primary token. The caller must dereference it.
 pub fn reference_primary_token(pid: u64) -> *mut core::ffi::c_void {
     let token = {
