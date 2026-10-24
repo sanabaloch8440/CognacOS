@@ -661,8 +661,8 @@ pub(crate) fn ki_initialize_kernel(report: &ProcessorStartupReport) -> bool {
 }
 
 /// Minimal Ke processor-query routines backed by the live HAL processor table.
-pub unsafe extern "win64" fn ke_get_current_processor_number() -> u32 {
-    unsafe { ke_get_current_processor_index() }
+pub unsafe extern "win64" fn ke_get_current_processor_number() -> u8 {
+    unsafe { ke_get_current_processor_index().min(u8::MAX as u32) as u8 }
 }
 pub unsafe extern "win64" fn ke_query_active_processors() -> u64 {
     let mut mask = 0u64;
