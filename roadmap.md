@@ -42,9 +42,9 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [x] Integrate local timer interrupts, rescheduling, per-CPU ready queues, affinity-aware stealing, and delayed ready-queue publication until the outgoing RSP is saved.
 - [x] Run threaded DPC callbacks only at PASSIVE_LEVEL using per-CPU workers; track queued and in-flight callbacks for flush/rundown.
 - [x] Track APCs while delivering, avoid rerunning the kernel routine when a user-return frame must be retried, and reclaim completed APC records.
-- [x] Add wait-any queue-entry transfer, mutant abandoned-status propagation, and atomic immediate wait-all mutant acquisition.
+- [x] Add wait-any queue-entry transfer, mutant abandoned-status propagation, atomic immediate wait-all mutant acquisition, and blocking wait-all mutant reservations keyed to the waiting thread.
 - [ ] Implement full Windows user APC dispatcher ABI (including safe shadow space/return trampoline) and user-mode exception/SEH delivery; unhandled user exceptions are not yet fully isolated.
-- [ ] Complete blocking wait-all reservations for mutants and queue objects, plus broader WDK race/conformance stress tests.
+- [ ] Add wait-all queue-entry reservation (queue wait-any is supported) and broader WDK race/conformance stress tests.
 - [ ] Add recovery diagnostics for an online but unresponsive processor.
 
 ## Milestone 4 — Object Manager, security, and process identity
