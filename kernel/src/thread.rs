@@ -30,6 +30,10 @@ static mut STRESS_STACKS:[[u8;8192];8]=[[0;8192];8];
 static mut THREADED_DPC_WORKER_STACKS:[[u8;8192];crate::hal::MAX_CPUS]=[[0;8192];crate::hal::MAX_CPUS];
 static THREADED_DPC_WORKERS:[core::sync::atomic::AtomicU64;crate::hal::MAX_CPUS]=[const{core::sync::atomic::AtomicU64::new(0)};crate::hal::MAX_CPUS];
 static THREADED_DPC_WORKERS_INITIALIZED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static mut PREEMPTION_TEST_STACKS:[[u8;8192];2]=[[0;8192];2];
+static PREEMPTION_TEST_BUSY_DONE:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static PREEMPTION_TEST_OBSERVED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static PREEMPTION_TEST_PROGRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static PREEMPTION_ENABLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
 fn cpu_index()->Result<usize,ThreadError>{
@@ -234,6 +238,43 @@ pub fn wake_threaded_dpc_worker(cpu:usize)->bool{
     if cpu>=crate::hal::MAX_CPUS{return false}
     let id=THREADED_DPC_WORKERS[cpu].load(core::sync::atomic::Ordering::Acquire);
     id!=0&&wake(id).is_ok()
+}
+
+extern "C" fn preemption_busy_worker(_argument:*mut c_void){
+    for _ in 0..5_000_000{PREEMPTION_TEST_PROGRESS.fetch_add(1,core::sync::atomic::Ordering::Relaxed);}
+    PREEMPTION_TEST_BUSY_DONE.store(true,core::sync::atomic::Ordering::Release);
+}
+extern "C" fn preemption_observer_worker(_argument:*mut c_void){
+    PREEMPTION_TEST_OBSERVED.store(!PREEMPTION_TEST_BUSY_DONE.load(core::sync::atomic::Ordering::Acquire),core::sync::atomic::Ordering::Release);
+}
+/// Verify timer-driven preemption by requiring a peer to run while a pinned
+/// CPU-bound kernel thread is still executing without voluntarily yielding.
+pub fn timer_preemption_self_test()->bool{
+    let cpu=match cpu_index(){Ok(cpu)=>cpu,Err(_)=>return false};
+    if cpu!=0||!crate::hal::local_clock_event_active(){return false}
+    let prior=crate::arch::interrupts_enabled();
+    PREEMPTION_TEST_BUSY_DONE.store(false,core::sync::atomic::Ordering::Release);
+    PREEMPTION_TEST_OBSERVED.store(false,core::sync::atomic::Ordering::Release);
+    PREEMPTION_TEST_PROGRESS.store(0,core::sync::atomic::Ordering::Release);
+    let busy_stack=unsafe{core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PREEMPTION_TEST_STACKS[0]).cast::<u8>(),8192)};
+    let observer_stack=unsafe{core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PREEMPTION_TEST_STACKS[1]).cast::<u8>(),8192)};
+    if spawn(busy_stack,1,preemption_busy_worker,core::ptr::null_mut()).is_err()
+        ||spawn(observer_stack,1,preemption_observer_worker,core::ptr::null_mut()).is_err(){
+        crate::arch::set_interrupts_enabled(prior);return false
+    }
+    crate::arch::set_interrupts_enabled(true);
+    let mut spins=0usize;
+    while spins<10_000_000
+        && (!PREEMPTION_TEST_BUSY_DONE.load(core::sync::atomic::Ordering::Acquire)
+            ||!PREEMPTION_TEST_OBSERVED.load(core::sync::atomic::Ordering::Acquire)){
+        let _=yield_current();
+        core::hint::spin_loop();spins+=1;
+    }
+    let ok=PREEMPTION_TEST_BUSY_DONE.load(core::sync::atomic::Ordering::Acquire)
+        && PREEMPTION_TEST_OBSERVED.load(core::sync::atomic::Ordering::Acquire)
+        && PREEMPTION_TEST_PROGRESS.load(core::sync::atomic::Ordering::Acquire)==5_000_000;
+    crate::arch::set_interrupts_enabled(prior);
+    ok
 }
 /// Timer-ISR entry: preempt only when this CPU has a runnable peer. The
 /// interrupt frame remains on the interrupted thread's stack while switched out.
