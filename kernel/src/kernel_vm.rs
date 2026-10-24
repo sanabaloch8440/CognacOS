@@ -15,6 +15,11 @@ const MAX: usize = 4096;
 // array lets free_pages invalidate all CPUs once before recycling any backing frame.
 const MAX_EXTENT_PAGES: usize = 65536;
 const MAX_RECLAIM_TABLES: usize = 4096;
+const DRIVER_SLOT_OFFSETS:[u64;4]=[0xc000_0000,0xd000_0000,0xe000_0000,0xf000_0000];
+const DRIVER_SLOT_SIZE:u64=0x0800_0000;
+const DRIVER_SLOT_PAGES:usize=(DRIVER_SLOT_SIZE/PAGE) as usize;
+fn is_driver_slot_base(address:u64)->bool{DRIVER_SLOT_OFFSETS.iter().any(|offset|BASE+*offset==address)}
+fn is_driver_reserved_page(page:usize)->bool{let offset=page as u64*PAGE;DRIVER_SLOT_OFFSETS.iter().any(|start|offset>=*start&&offset<*start+DRIVER_SLOT_SIZE)}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error { NotInitialized, Invalid, NoVirtualSpace, NoPhysicalMemory, AlreadyMapped, NotMapped, TableFull }
@@ -83,6 +88,10 @@ pub fn initialize(root: u64) -> Result<(), Error> {
   let slot=unsafe{(root as *const u64).add(ix(BASE)[0]).read()};
   OWN_ROOT_SLOT.store(slot&P==0,Ordering::Release);
  }
+ // Keep four 128 MiB image slots unavailable to ordinary kernel allocations.
+ // Each fixed-base driver may occupy at most 32 MiB within its reserved slot.
+ let bits=unsafe{&mut *BITS.0.get()};
+ for offset in DRIVER_SLOT_OFFSETS { let start=(offset/PAGE) as usize;for n in start..start+DRIVER_SLOT_PAGES{bits[n/64]|=1u64<<(n%64);} }
  ROOT.store(root,Ordering::Release); Ok(())
 }
 pub fn is_initialized()->bool { ROOT.load(Ordering::Acquire)!=0 }
@@ -272,7 +281,9 @@ pub fn allocate_pages_at(address:u64,pages:usize)->Result<*mut u8,Error>{
  let start=usize::try_from((address-BASE)/PAGE).map_err(|_|Error::Invalid)?;
  if start.checked_add(pages).is_none_or(|end|end>PAGES){return Err(Error::NoVirtualSpace)}
  let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
- let bits=unsafe{&mut *BITS.0.get()};if (start..start+pages).any(|n|bits[n/64]&(1u64<<(n%64))!=0){return Err(Error::AlreadyMapped)}
+ let bits=unsafe{&mut *BITS.0.get()};let mapped_bits=unsafe{&*MAPPED_BITS.0.get()};
+ let reserved=is_driver_slot_base(address)&&pages<=DRIVER_SLOT_PAGES;
+ if (start..start+pages).any(|n|(bits[n/64]&(1u64<<(n%64))!=0&&!reserved)||mapped_bits[n/64]&(1u64<<(n%64))!=0){return Err(Error::AlreadyMapped)}
  for n in start..start+pages{bits[n/64]|=1u64<<(n%64);}
  let mut mapped=0usize;
  while mapped<pages{
@@ -282,7 +293,7 @@ pub fn allocate_pages_at(address:u64,pages:usize)->Result<*mut u8,Error>{
  }
  if mapped!=pages{
   for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,address+n as u64*PAGE)}{synchronize_kernel_tlb();let _=unsafe{crate::memory::free_page(pa)};}}
-  for n in start..start+pages{bits[n/64]&=!(1u64<<(n%64));}
+  for n in start..start+pages{if !is_driver_reserved_page(n){bits[n/64]&=!(1u64<<(n%64));}}
   return Err(Error::NoPhysicalMemory)
  }
  synchronize_kernel_tlb();let mapped_bits=unsafe{&mut *MAPPED_BITS.0.get()};
@@ -519,7 +530,7 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
    unsafe{(&mut *SWAP_SLOTS.0.get())[start+n]=u16::MAX;}
   }
   let word=(start+n)/64;let mask=1u64<<((start+n)%64);
-  bits[word]&=!mask;mapped[word]&=!mask;
+  if !is_driver_reserved_page(start+n){bits[word]&=!mask;}mapped[word]&=!mask;
   unsafe{(&mut *SWAPPED_BITS.0.get())[word]&=!mask;}
  }
  let tables=unsafe{&*RECLAIM_TABLES.0.get()};
