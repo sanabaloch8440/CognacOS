@@ -63,7 +63,15 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
  // These supported MDL lifecycle routines are absent from the pinned ordinal
  // manifest, so resolve their exact documented names without fabricating ordinals.
  if let ImportSymbol::Name(requested) = symbol {
-  let direct = if requested.eq_ignore_ascii_case(b"IoAttachDeviceToDeviceStack") {
+  let direct = if requested.eq_ignore_ascii_case(b"IoGetAttachedDevice") {
+   Some(io::io_get_attached_device as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoGetDeviceAttachmentBaseRef") {
+   Some(io::io_get_device_attachment_base_ref as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoGetLowerDeviceObject") {
+   Some(io::io_get_lower_device_object as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoReuseIrp") {
+   Some(io::io_reuse_irp as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoAttachDeviceToDeviceStack") {
    Some(io::io_attach_device_to_device_stack as usize)
   } else if requested.eq_ignore_ascii_case(b"IoDetachDevice") {
    Some(io::io_detach_device as usize)
