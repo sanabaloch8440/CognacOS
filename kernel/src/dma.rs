@@ -80,17 +80,17 @@ pub struct DmaAdapterAbi {
 }
 
 const MAX_ADAPTERS:usize=32;
-struct AdapterSlot { used:bool,device:usize,version:u32,abi:DmaAdapterAbi }
+struct AdapterSlot { used:bool,device:usize,version:u32,maximum_address:u64,abi:DmaAdapterAbi }
 unsafe impl Send for AdapterSlot {}
-impl AdapterSlot { const EMPTY:Self=Self{used:false,device:0,version:0,abi:DmaAdapterAbi{version:1,size:core::mem::size_of::<DmaAdapterAbi>() as u16,operations:core::ptr::null()}}; }
+impl AdapterSlot { const EMPTY:Self=Self{used:false,device:0,version:0,maximum_address:0,abi:DmaAdapterAbi{version:1,size:core::mem::size_of::<DmaAdapterAbi>() as u16,operations:core::ptr::null()}}; }
 static ADAPTERS:crate::hal::IrqSpinLock<[AdapterSlot;MAX_ADAPTERS]>=crate::hal::IrqSpinLock::new([const{AdapterSlot::EMPTY};MAX_ADAPTERS]);
-fn create_device_adapter(device:*mut core::ffi::c_void,version:u32)->*mut core::ffi::c_void{
+fn create_device_adapter(device:*mut core::ffi::c_void,version:u32,maximum_address:u64)->*mut core::ffi::c_void{
  if device.is_null()||!iommu::available(){return core::ptr::null_mut()}
  let mut s=ADAPTERS.lock();
  if let Some(slot)=s.iter_mut().find(|a|a.used&&a.device==device as usize){return core::ptr::addr_of_mut!(slot.abi).cast()}
  let Some(slot)=s.iter_mut().find(|a|!a.used)else{return core::ptr::null_mut()};
  let operations=match version{0|1=>core::ptr::addr_of!(DMA_OPERATIONS_V1).cast(),2=>core::ptr::addr_of!(DMA_OPERATIONS_V2).cast(),3=>core::ptr::addr_of!(DMA_OPERATIONS).cast(),_=>return core::ptr::null_mut()};
- slot.used=true;slot.device=device as usize;slot.version=version;
+ slot.used=true;slot.device=device as usize;slot.version=version;slot.maximum_address=maximum_address;
  slot.abi=DmaAdapterAbi{version:1,size:core::mem::size_of::<DmaAdapterAbi>() as u16,operations};
  core::ptr::addr_of_mut!(slot.abi).cast()
 }
@@ -98,11 +98,12 @@ pub(crate) fn adapter_device(adapter:*mut core::ffi::c_void)->Option<usize>{
  if adapter.is_null(){return None}
  let s=ADAPTERS.lock();s.iter().find(|a|a.used&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())).map(|a|a.device)
 }
+pub(crate) fn adapter_maximum_address(adapter:*mut core::ffi::c_void)->u64{let s=ADAPTERS.lock();s.iter().find(|a|a.used&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())).map(|a|a.maximum_address).unwrap_or(0)}
 pub(crate) fn release_adapter(adapter:*mut core::ffi::c_void){
  let device={let s=ADAPTERS.lock();s.iter().find(|a|a.used&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())).map(|a|a.device)};
  let Some(device)=device else{return};
  if iommu::device_busy(device)||MAP_REGISTERS.lock().records.iter().any(|r|r.active&&r.device==device){return}
- let mut s=ADAPTERS.lock();if let Some(a)=s.iter_mut().find(|a|a.used&&a.device==device&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())){a.used=false;a.device=0;a.version=0;a.abi.operations=core::ptr::null();}
+ let mut s=ADAPTERS.lock();if let Some(a)=s.iter_mut().find(|a|a.used&&a.device==device&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())){a.used=false;a.device=0;a.version=0;a.maximum_address=0;a.abi.operations=core::ptr::null();}
 }
 
 #[derive(Clone, Copy)]
@@ -175,7 +176,7 @@ fn parse_device_description_prefix(bytes:&[u8])->Option<u32> {
     let version=u32::from_le_bytes(bytes[0..4].try_into().ok()?);
     let master=bytes[4]!=0;
     let reserved1=bytes[10];
-    if version>3 || !master || reserved1!=0 { return None; }
+    if version>3 || !master || reserved1!=0 || bytes[11]>1 { return None; }
     Some(version)
 }
 
@@ -184,7 +185,8 @@ pub unsafe extern "win64" fn io_get_dma_adapter(device_object:*mut core::ffi::c_
  if device_object.is_null()||device_description.is_null()||number_of_map_registers.is_null()||!iommu::available(){return core::ptr::null_mut()}
  let header=unsafe{core::slice::from_raw_parts(device_description.cast::<u8>(),12)};
  let Some(version)=parse_device_description_prefix(header)else{return core::ptr::null_mut()};
- let adapter=create_device_adapter(device_object,version);if adapter.is_null(){return adapter}
+ let maximum=if header[11]!=0{u64::MAX}else{0xffff_ffff};
+ let adapter=create_device_adapter(device_object,version,maximum);if adapter.is_null(){return adapter}
  unsafe{number_of_map_registers.write(MAX_MAP_REGISTERS_PER_ALLOCATION)}adapter
 }
 
