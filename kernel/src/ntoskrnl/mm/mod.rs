@@ -1,6 +1,7 @@
 //! NTOSKRNL memory-manager export catalogue for Windows 11 x64 build 10.0.26100.8036-AMD64.
 //! Entries describe export names/ordinals only; they are not all implemented APIs.
 pub(super) mod runtime;
+pub use runtime::mm_get_physical_address;
 
 pub const EXPORTS: &[(&str, u16)] = &[
     ("Mm64BitPhysicalAddress", 1531),
