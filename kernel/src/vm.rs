@@ -59,23 +59,53 @@ impl AddressSpace {
             ((virtual_address >> 21) & 0x1ff) as usize,
             ((virtual_address >> 12) & 0x1ff) as usize,
         ];
+        // Keep an undo log for intermediate tables created by this operation.
+        // Mapping failures must not leak page-table pages or leave half-built trees.
+        let mut created_slots = [core::ptr::null_mut::<u64>(); 3];
+        let mut created_pages = [0u64; 3];
+        let mut created = 0usize;
         let mut table = self.root as *mut u64;
         for index in indexes[..3].iter().copied() {
             let slot = unsafe { table.add(index) };
             let mut entry = unsafe { slot.read() };
             if entry & PRESENT == 0 {
-                let page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+                let page = match unsafe { crate::memory::allocate_page() } {
+                    Ok(page) => page,
+                    Err(_) => {
+                        for undo in (0..created).rev() {
+                            unsafe { created_slots[undo].write(0); }
+                            let _ = unsafe { crate::memory::free_page(created_pages[undo]) };
+                        }
+                        return Err(VmError::OutOfMemory);
+                    }
+                };
                 entry = page | PRESENT | WRITE | USER;
                 unsafe { slot.write(entry); }
+                created_slots[created] = slot;
+                created_pages[created] = page;
+                created += 1;
             } else {
-                if entry & LARGE != 0 { return Err(VmError::InvalidAddress); }
-                entry |= USER;
-                unsafe { slot.write(entry); }
+                // Never turn a pre-existing supervisor-only hierarchy into a
+                // user hierarchy: that could expose unrelated kernel mappings.
+                if entry & LARGE != 0 || entry & USER == 0 {
+                    for undo in (0..created).rev() {
+                        unsafe { created_slots[undo].write(0); }
+                        let _ = unsafe { crate::memory::free_page(created_pages[undo]) };
+                    }
+                    return Err(VmError::PermissionDenied);
+                }
             }
             table = (entry & ADDR) as *mut u64;
         }
+
         let leaf = unsafe { table.add(indexes[3]) };
-        if unsafe { leaf.read() } & PRESENT != 0 { return Err(VmError::AlreadyMapped); }
+        if unsafe { leaf.read() } & PRESENT != 0 {
+            for undo in (0..created).rev() {
+                unsafe { created_slots[undo].write(0); }
+                let _ = unsafe { crate::memory::free_page(created_pages[undo]) };
+            }
+            return Err(VmError::AlreadyMapped);
+        }
         let mut flags = PRESENT | USER;
         if writable { flags |= WRITE; }
         if !executable { flags |= NX; }
