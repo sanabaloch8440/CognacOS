@@ -60,6 +60,7 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Add Windows x64 ABI wiring and typed signature records for MmCreateMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, and MmCopyVirtualMemory.
 - [x] Validate MDL header/PFN-array bounds before access; preflight source mappings; maintain reference-counted physical-page pins and prevent allocator reuse while pinned.
 - [x] Build MDLs for resident nonpaged pool buffers and support direct-map aliases for MDLs whose PFNs form a physically contiguous RAM run.
+- [x] Implement MmAdvanceMdl with range/PFN-array bounds checks and balanced pin-reference release for pages removed from a locked MDL.
 - [x] Add a bounded MmCopyVirtualMemory path against the active address space; invalid ranges and different source/target process identities fail closed.
 - [ ] Register real EPROCESS objects with their address-space roots and implement safe cross-process copy under process/address-space lifetime locks.
 - [ ] Add arbitrary scatter/gather kernel mappings, user-mode MDL mappings, page-fault-driven probing of pageable buffers, and complete MDL allocation/free lifecycle semantics.
