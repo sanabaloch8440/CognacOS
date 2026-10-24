@@ -19,6 +19,7 @@ const DRIVER_SLOT_OFFSETS:[u64;4]=[0xc000_0000,0xd000_0000,0xe000_0000,0xf000_00
 const DRIVER_SLOT_SIZE:u64=0x0800_0000;
 const DRIVER_SLOT_PAGES:usize=(DRIVER_SLOT_SIZE/PAGE) as usize;
 fn is_driver_slot_base(address:u64)->bool{DRIVER_SLOT_OFFSETS.iter().any(|offset|BASE+*offset==address)}
+pub fn is_driver_image_base(address:u64)->bool{is_driver_slot_base(address)}
 fn is_driver_reserved_page(page:usize)->bool{let offset=page as u64*PAGE;DRIVER_SLOT_OFFSETS.iter().any(|start|offset>=*start&&offset<*start+DRIVER_SLOT_SIZE)}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
