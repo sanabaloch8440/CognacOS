@@ -215,6 +215,7 @@ fn selftest_consume(_thread:u64,object:u64)->i32{
         0x302=>{SELFTEST_SIGNAL_B.fetch_sub(1,core::sync::atomic::Ordering::AcqRel);},
         _=>{},
     }
+    0
 }
 
 /// Boot-time validation for FIFO order, generation-safe cancellation, grouped
@@ -241,7 +242,7 @@ pub fn self_test()->bool{
     if register_wait_all(0x44,&[0x301,0x302],None,0).is_err(){return false}
     let mut ready=[WaitCompletion::EMPTY;4];
     let count=complete_ready_wait_all(&mut ready,selftest_is_signalled,selftest_consume);
-    if count!=1||ready[0]!=0x44||SELFTEST_SIGNAL_A.load(core::sync::atomic::Ordering::Acquire)!=0||SELFTEST_SIGNAL_B.load(core::sync::atomic::Ordering::Acquire)!=0{return false}
+    if count!=1||ready[0].thread!=0x44||ready[0].status!=0||SELFTEST_SIGNAL_A.load(core::sync::atomic::Ordering::Acquire)!=0||SELFTEST_SIGNAL_B.load(core::sync::atomic::Ordering::Acquire)!=0{return false}
 
     let deadline=crate::hal::query_performance_counter();
     if enqueue(0x401,0x55,deadline).is_err(){return false}
