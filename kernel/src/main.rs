@@ -400,7 +400,18 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         if info.rsdp_address != 0 {
             match acpi::discover_madt(info.rsdp_address) {
                 Ok(firmware_madt) => {
-                    match hal::register_madt_cpus(&firmware_madt, bsp_apic_id) {
+                    let discovery = (|| -> Result<usize, hal::HalError> {
+                        if hal::cpu_index_for_apic(bsp_apic_id).is_none() { hal::initialize_bsp(bsp_apic_id)?; }
+                        let mut discovered = 0usize;
+                        for entry in firmware_madt.cpus.iter().take(firmware_madt.cpu_count) {
+                            if !entry.enabled || entry.apic_id == bsp_apic_id { continue; }
+                            if hal::cpu_index_for_apic(entry.apic_id).is_some() { continue; }
+                            hal::discover_cpu(entry.apic_id)?;
+                            discovered += 1;
+                        }
+                        Ok(discovered)
+                    })();
+                    match discovery {
                         Ok(discovered) => {
                             serial_write(b"Firmware ACPI MADT validated; enabled APs discovered: ");
                             serial_write_decimal(discovered);
@@ -771,6 +782,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
         if local_timer_ready {
+            if crate::ntoskrnl::ki::runtime::register_clock_interrupt_handler().is_err() {
+                serial_write(b"WARNING: NT clock callback registration failed; local timer remains disabled.\r\n");
+            } else {
             match unsafe { hal::start_local_clock_event() } {
                 Ok(()) => {
                     serial_write(b"Local APIC timer enabled after AP startup/self-tests; external routes remain masked.\r\n");
@@ -780,6 +794,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     }
                 }
                 Err(_) => serial_write(b"WARNING: calibrated APIC timer could not start; interrupts remain disabled.\r\n"),
+            }
             }
         } else {
             serial_write(b"Interrupts remain disabled because APIC/timer setup was not fully validated.\r\n");
