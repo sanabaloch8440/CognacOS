@@ -462,6 +462,17 @@ pub unsafe fn copy_from_user_root(root_physical: u64, source: u64, destination: 
     if destination.is_empty() { return Ok(()); }
     if root_physical == 0 || !is_user_range(source, destination.len() as u64) { return Err(VmError::InvalidAddress); }
     let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+
+    // Probe the complete range before modifying the caller's destination. This
+    // prevents a bad final page from producing a silently truncated kernel copy.
+    // The lifetime lock keeps the validated translations stable until copying ends.
+    let mut probe = 0usize;
+    while probe < destination.len() {
+        let va = source.checked_add(probe as u64).ok_or(VmError::InvalidAddress)?;
+        translate_user_root(root_physical, va, false)?;
+        probe += core::cmp::min(destination.len() - probe, PAGE_SIZE as usize - (va as usize & 4095));
+    }
+
     let mut done = 0usize;
     while done < destination.len() {
         let va = source.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
@@ -478,6 +489,17 @@ pub unsafe fn copy_to_user_root(root_physical: u64, destination: u64, source: &[
     if source.is_empty() { return Ok(()); }
     if root_physical == 0 || !is_user_range(destination, source.len() as u64) { return Err(VmError::InvalidAddress); }
     let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+
+    // Validate every destination page before writing any user bytes. With the
+    // address-space lifetime lock held, unmap/protect/destroy cannot invalidate
+    // the validation between this pass and the actual copy.
+    let mut probe = 0usize;
+    while probe < source.len() {
+        let va = destination.checked_add(probe as u64).ok_or(VmError::InvalidAddress)?;
+        translate_user_root(root_physical, va, true)?;
+        probe += core::cmp::min(source.len() - probe, PAGE_SIZE as usize - (va as usize & 4095));
+    }
+
     let mut done = 0usize;
     while done < source.len() {
         let va = destination.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
