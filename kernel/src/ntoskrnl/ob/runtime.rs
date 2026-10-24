@@ -202,7 +202,7 @@ pub unsafe extern "win64" fn ObOpenObjectByPointer(object:*mut c_void,handle_att
  if !passed_access_state.is_null(){return STATUS_NOT_SUPPORTED}
  let expected=match expected_type_id(object_type){Some(v)=>v,None=>return STATUS_OBJECT_TYPE_MISMATCH};
  let actual={let _g=LOCK.lock();let s=state();object_idx(s,object as usize).map(|i|s.objects[i].type_id)};
- if actual!=Some(expected)||object.is_null(){return STATUS_OBJECT_TYPE_MISMATCH}
+ if (expected!=0&&actual!=Some(expected))||object.is_null(){return STATUS_OBJECT_TYPE_MISMATCH}
  match open_by_pointer(object,desired_access,0,access_mode==0,handle_attributes){Ok(h)=>{unsafe{out_handle.write(h)}STATUS_SUCCESS},Err(e)=>e}
 }
 #[unsafe(no_mangle)]
@@ -220,7 +220,7 @@ pub unsafe extern "win64" fn ObQueryNameString(object:*mut c_void,buffer:*mut c_
  let mut name=[0u16;MAX_NAME];let n=match object_name(object,&mut name){Ok(n)=>n,Err(e)=>return e};
  let need=core::mem::size_of::<UnicodeString>()+(n+1)*2;
  if !return_length.is_null(){unsafe{return_length.write(need as u32)}}
- if length as usize<need{return STATUS_INFO_LENGTH_MISMATCH}
+ if (length as usize)<need{return STATUS_INFO_LENGTH_MISMATCH}
  let text=unsafe{buffer.cast::<u8>().add(core::mem::size_of::<UnicodeString>()).cast::<u16>()};
  unsafe{core::ptr::copy_nonoverlapping(name.as_ptr(),text,n);text.add(n).write(0);}
  let u=UnicodeString{length:(n*2) as u16,maximum_length:((n+1)*2) as u16,buffer:text};
