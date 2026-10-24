@@ -6,6 +6,18 @@ const KERNEL_CODE_SELECTOR: u16 = 0x08;
 const IDT_ENTRIES: usize = 256;
 const EXCEPTION_VECTORS: usize = 32;
 
+/// Read the current IF bit without changing interrupt state.
+pub fn interrupts_enabled()->bool{
+    let flags:u64;
+    unsafe{asm!("pushfq","pop {}",out(reg) flags,options(nomem,preserves_flags));}
+    flags&(1<<9)!=0
+}
+/// Restore the caller's saved interrupt-enable state after a context switch.
+pub fn set_interrupts_enabled(enabled:bool){
+    if enabled{unsafe{asm!("sti",options(nomem,nostack));}}
+    else{unsafe{asm!("cli",options(nomem,nostack));}}
+}
+
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct IdtEntry {
