@@ -248,15 +248,29 @@ The parser is read-only and not a production filesystem driver. The original Ext
 Update these checkboxes alongside code changes, and only mark work complete after its relevant tests pass.
 
 
-## Windows 11 Ke DDI comparison pass (2026-10-24)
+## Windows 11 Ke executive implementation pass (2026-10-24)
 
-- [x] Add 20 Ke routine implementations covering IRQL, interrupt/system time queries, processor-group and NUMA queries, current-thread identity, APC-disabled queries, and event pulse.
-- [x] Add name-based ntoskrnl resolver paths for the 20 routines and include resolver self-tests.
-- [x] Add [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md), documenting public WDK signatures, return values, call paths, limitations, sources, and a reproducible compatibility calculation.
-- [x] Link the comparison document from README.
-- [x] Verify freestanding Rust kernel build, PE32+ conversion, UEFI bootloader build, and image validation (workflow #903; these steps passed).
-- [x] Verify the OVMF/QEMU boot smoke test (workflow #903 passed the smoke-test step).
-- [ ] Verify the 2/4/8-vCPU SMP boot and interrupt stress matrix (workflow #903 was still running this step at last check).
-- [ ] Close documented semantic gaps: boot-epoch interrupt time, precise wall-clock interpolation, per-thread APC nesting, atomic event pulse semantics, stable NT-compatible thread-object abstraction, and multi-group/multi-node NUMA discovery.
+- [x] Move critical/guarded-region nesting into each schedulable thread record; retain a bounded bootstrap-only counter before a thread exists.
+- [x] Track per-thread alert state, cancel dispatcher wait registrations on alert, wake alertable blocked threads, and return STATUS_ALERTED from alertable waits/delays.
+- [x] Add legacy notification/synchronization timer lifecycle, relative/absolute deadline conversion, periodic timers, cancellation, signal/waiter completion, and timer DPC queueing.
+- [x] Add bounded DPC registry and queue, duplicate-insertion detection, removal, callback execution, target-processor selection, importance metadata, threaded-DPC registration metadata, and queue draining.
+- [x] Add ticket-ordered in-stack queued spin locks, DPC-level variants, queue-number locks, and SYNCH_LEVEL acquisition variants.
+- [x] Add mutant/mutex owner tracking, recursion, release/waiter handoff, abandoned-owner cleanup, and guarded-mutex wrappers.
+- [x] Add executive KQUEUE initialization, FIFO/head insertion, dequeue, direct handoff to a waiting thread, and rundown.
+- [x] Strengthen single/multiple-object waits with timer dispatcher types, absolute timeout conversion, alert cancellation, and fail-closed rejection of unsupported multi-wait queue/mutant cases.
+- [x] Add focused Ke tests for APC nesting, processor-number ABI, DPC duplicate queueing/callback execution, timer expiration, mutant initialization, and executive queue ordering/rundown.
+- [x] Expand [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md) to 111 scoped Ke names and public contract / stub inventory.
 
-**Current scoped score:** 20/20 (100%) source-level ABI shapes and name resolver paths; 9/20 (45%) behavior matches within the currently advertised single-group/single-node topology; combined project metric 72.5%. This is a progress estimate only and is not a statement of overall Windows 11 compatibility.
+### Remaining correctness and validation gaps
+
+- [ ] Run the latest workflow to completion, including OVMF/QEMU smoke and the 2/4/8-vCPU stress matrix; fix any compiler/test failures before calling this pass validated.
+- [ ] Implement actual kernel/user APC objects, delivery, rundown, and alert-vs-APC status distinctions.
+- [ ] Run threaded DPC callbacks on PASSIVE_LEVEL worker threads; current threaded-DPC metadata still dispatches at DISPATCH_LEVEL.
+- [ ] Make DPC flushing a true cross-processor completion barrier and validate target-CPU DPC IPI delivery under SMP stress.
+- [ ] Integrate timer deadlines with per-CPU clock events, preemption, suspend/resume, and race-tested timeout/signal completion.
+- [ ] Complete KQUEUE concurrency limits, wait-list scheduling, rundown lifecycle, and Windows-compatible queue result semantics.
+- [ ] Validate mutant/guarded-mutex recursion, abandoned-state return codes, and all release-vs-timeout races against WDK behavior.
+- [ ] Replace fixed-capacity timer/DPC/mutant/queue side tables with lifetime-safe executive objects or dynamic bounded allocation.
+- [ ] Add concurrent tests for wait-any cancellation, wait-all reservation, queue handoff, DPC cancellation/flush, and timer cancel-vs-expire races.
+
+**Scope note:** The comparison now lists 111 Ke export names. Its current project-defined score is 54.5% (100% source-level declaration coverage and 9.0% strict behavior matches in the currently advertised topology); this is a scoped progress metric, not a Microsoft metric or a Windows driver-compatibility claim.
