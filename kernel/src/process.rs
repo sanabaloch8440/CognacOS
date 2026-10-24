@@ -44,10 +44,28 @@ static TABLE: crate::hal::IrqSpinLock<ProcessRegistry> =
 
 fn register_process(pid: u64, address_space_root: u64) -> Result<(), ProcessError> {
     if address_space_root == 0 { return Err(ProcessError::InvalidLayout); }
-    let mut registry = TABLE.lock();
-    let Some(slot) = registry.0.iter_mut().find(|p| !p.used) else { return Err(ProcessError::TooManyProcesses); };
-    *slot = EProcess { magic: EPROCESS_MAGIC, process_id: pid, state: ProcessState::Created,
-        used: true, address_space_root, references: 0, _reserved: 0, exit_code: 0 };
+    let pointer = {
+        let mut registry = TABLE.lock();
+        let Some(index) = registry.0.iter().position(|p| !p.used) else { return Err(ProcessError::TooManyProcesses); };
+        registry.0[index] = EProcess { magic: EPROCESS_MAGIC, process_id: pid, state: ProcessState::Created,
+            used: true, address_space_root, references: 0, _reserved: 0, exit_code: 0 };
+        core::ptr::addr_of_mut!(registry.0[index])
+    };
+    // Every registered process is also an Object Manager object. The object body
+    // remains owned by the process registry; Ob rundown never frees this storage.
+    let mut name = [0u16; 32];
+    let prefix = [b'\\' as u16,b'P' as u16,b'r' as u16,b'o' as u16,b'c' as u16,b'e' as u16,b's' as u16,b's' as u16,b'\\' as u16];
+    name[..prefix.len()].copy_from_slice(&prefix);
+    let mut digits = [0u16; 20]; let mut value = pid; let mut count = 0;
+    loop { digits[count] = (b'0' as u64 + value % 10) as u16; count += 1; value /= 10; if value == 0 { break; } }
+    for i in 0..count { name[prefix.len()+i] = digits[count-1-i]; }
+    let full_len = prefix.len()+count;
+    let ty = [b'P' as u16,b'r' as u16,b'o' as u16,b'c' as u16,b'e' as u16,b's' as u16,b's' as u16];
+    if unsafe { crate::ntoskrnl::ob::runtime::register_external_object(pointer.cast(), &ty, &name[..full_len], false, core::ptr::null(), 0) }.is_err() {
+        let mut registry = TABLE.lock();
+        if let Some(p) = registry.0.iter_mut().find(|p| core::ptr::eq(p, pointer)) { *p = EProcess::EMPTY; }
+        return Err(ProcessError::TooManyProcesses);
+    }
     Ok(())
 }
 
@@ -140,15 +158,17 @@ pub fn query(pid: u64) -> Option<ProcessSnapshot> {
         .map(|p| ProcessSnapshot { process_id: p.process_id, state: p.state, exit_code: p.exit_code })
 }
 pub fn reap(pid: u64) -> Option<u64> {
+    let (pointer, code) = {
+        let registry = TABLE.lock();
+        let p = registry.0.iter().find(|p| p.used && p.process_id == pid && p.state == ProcessState::Exited)?;
+        // A process object cannot be recycled while its address-space root is still registered.
+        if p.references != 0 || p.address_space_root != 0 { return None; }
+        (p as *const EProcess as *mut EProcess, p.exit_code)
+    };
+    if !crate::ntoskrnl::ob::runtime::unregister_object(pointer.cast()) { return None; }
     let mut registry = TABLE.lock();
-    let p = registry.0.iter_mut().find(|p| p.used && p.process_id == pid && p.state == ProcessState::Exited)?;
-    // A process object cannot be recycled while its address-space root is still registered.
-    if p.references != 0 || p.address_space_root != 0 { return None; }
-    let code = p.exit_code;
-    p.state = ProcessState::Reaped;
-    p.used = false;
-    p.address_space_root = 0;
-    p.magic = 0;
+    let p = registry.0.iter_mut().find(|p| core::ptr::eq(p, pointer) && p.used && p.process_id == pid && p.state == ProcessState::Exited)?;
+    p.state = ProcessState::Reaped; p.used = false; p.address_space_root = 0; p.magic = 0;
     Some(code)
 }
 
