@@ -136,6 +136,15 @@ pub fn remove_completion_packet_until(port_id:u32,deadline_tick:Option<u64>)->Re
  Ok(None)
 }
 
+/// Complete an IRP and publish one packet to a completion port. If posting
+/// fails because the bounded queue is full, the IRP remains completed and the
+/// caller receives the queue error so it can recover without losing status.
+pub fn complete_irp_to_port(id:u64,status:IoStatus,information:usize,port_id:u32,key:u64,apc_context:u64)->Result<(),IoError>{
+ complete_irp(id,status,information)?;
+ let irp=query_irp(id).ok_or(IoError::UnknownIrp)?;
+ post_completion_packet(port_id,CompletionPacket{key,apc_context,irp_id:id,status:irp.status,information:irp.information,completed_at:crate::apic::monotonic_ticks()})
+}
+
 pub fn query_irp(id:u64)->Option<Irp>{
  let s=STATE.lock();s.irps.iter().find(|i|i.id==id&&i.status!=IoStatus::Free).copied()
 }
@@ -144,4 +153,21 @@ pub fn release_irp(id:u64)->Result<(),IoError>{
  let index=s.irps.iter().position(|i|i.id==id&&i.status!=IoStatus::Free).ok_or(IoError::UnknownIrp)?;
  if !s.irps[index].completed||s.irps[index].in_flight{return Err(IoError::AlreadyCompleted);}
  s.irps[index]=Irp::EMPTY;Ok(())
+}
+
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    #[test]
+    fn completion_port_is_fifo_and_bounded() {
+        let port=create_completion_port().expect("completion port");
+        let first=CompletionPacket{key:11,apc_context:12,irp_id:13,status:IoStatus::Success,information:14,completed_at:15};
+        let second=CompletionPacket{key:21,apc_context:22,irp_id:23,status:IoStatus::Cancelled,information:0,completed_at:25};
+        post_completion_packet(port,first).expect("post first");
+        post_completion_packet(port,second).expect("post second");
+        assert_eq!(try_remove_completion_packet(port).unwrap(),Some(first));
+        assert_eq!(try_remove_completion_packet(port).unwrap(),Some(second));
+        assert_eq!(try_remove_completion_packet(port).unwrap(),None);
+    }
 }
