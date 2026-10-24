@@ -47,6 +47,9 @@ fn cpu_index()->Result<usize,ThreadError>{
     Err(ThreadError::InvalidCpu)
 }
 extern "C" fn thread_trampoline()->! {
+    // A fresh thread selected from an interrupt-gate context inherits IF=0
+    // until its first Rust instruction explicitly enables interrupts.
+    crate::arch::set_interrupts_enabled(true);
     let entry_and_arg={let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};let id=crate::hal::cpu_local(cpu).map(|c|c.current_thread.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);let table=THREADS.lock();table.records.iter().find(|t|t.id==id&&t.state==ThreadState::Running).and_then(|t|t.entry.map(|entry|(entry,t.argument)))};
     if let Some((entry,arg))=entry_and_arg { entry(arg); }
     exit_current()
