@@ -58,9 +58,9 @@ pub type ZwCloseFn = unsafe extern "win64" fn(Handle) -> NtStatus;
 pub type ZwWaitForSingleObjectFn = unsafe extern "win64" fn(Handle, Boolean, *const LargeInteger) -> NtStatus;
 pub type SeAccessCheckFn = unsafe extern "win64" fn(
     *const c_void, *mut SeSecuritySubjectContext, *mut Boolean, Ulong, Ulong,
-    *mut *mut c_void, *const SeGenericMapping, Kirql, *mut Ulong, *mut NtStatus,
+    *mut *mut c_void, *const SeGenericMapping, i8, *mut Ulong, *mut NtStatus,
 ) -> Boolean;
-pub type SePrivilegeCheckFn = unsafe extern "win64" fn(*const c_void, *mut SeSecuritySubjectContext, Kirql) -> Boolean;
+pub type SePrivilegeCheckFn = unsafe extern "win64" fn(*const c_void, *mut SeSecuritySubjectContext, i8) -> Boolean;
 pub type SeSubjectContextFn = unsafe extern "win64" fn(*mut SeSecuritySubjectContext);
 pub type PsAssignImpersonationTokenFn = unsafe extern "win64" fn(Handle, Handle) -> NtStatus;
 pub type PsReferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid) -> Pvoid;
