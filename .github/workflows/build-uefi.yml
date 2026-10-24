@@ -46,6 +46,7 @@ jobs:
           assert p[off:off+4] == b"PE\0\0", "missing PE signature"
           assert struct.unpack_from("<H", p, off+4)[0] == 0x8664, "not AMD64"
           assert struct.unpack_from("<H", p, off+24)[0] == 0x20b, "not PE32+"
+          sections = struct.unpack_from("<H", p, off+6)[0]
           opt = off + 24
           assert struct.unpack_from("<Q", p, opt+24)[0] == 0xffffffff7ff00000, "unexpected kernel image base"
           assert struct.unpack_from("<H", p, opt+68)[0] == 1, "kernel must use native subsystem"
