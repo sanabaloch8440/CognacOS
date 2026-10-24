@@ -268,6 +268,46 @@ pub unsafe extern "win64" fn ke_query_node_active_affinity2(
     STATUS_SUCCESS
 }
 
+static mut MULTIWAIT_TEST_MUTANT_A:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
+static mut MULTIWAIT_TEST_MUTANT_B:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
+static mut MULTIWAIT_TEST_MUTANT_C:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
+static mut MULTIWAIT_TEST_QUEUE:core::mem::MaybeUninit<ExecutiveQueue>=core::mem::MaybeUninit::uninit();
+static mut MULTIWAIT_TEST_QUEUE_ENTRY:ListEntry=ListEntry{flink:core::ptr::null_mut(),blink:core::ptr::null_mut()};
+
+/// Exercise the real kernel wait path from a scheduled thread: abandoned
+/// wait-any mutant status, atomic immediate wait-all acquisition, and queue
+/// entry transfer to the waiting thread.
+pub(crate) fn dispatcher_extended_self_test()->bool{
+    if crate::thread::current_thread_id().is_none(){return false}
+    let a=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_TEST_MUTANT_A)};
+    let b=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_TEST_MUTANT_B)};
+    let c=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_TEST_MUTANT_C)};
+    unsafe{ke_initialize_mutant(a,0);ke_initialize_mutant(b,0);ke_initialize_mutant(c,0);}
+    {
+        let mut table=MUTANTS.lock();
+        let Some(record)=table.records.iter_mut().find(|r|r.object==a as usize) else{return false};
+        record.abandoned=true;
+    }
+    let one=[a];
+    let status=unsafe{ke_wait_for_multiple_objects(1,one.as_ptr(),1,0,0,0,core::ptr::null(),core::ptr::null_mut())};
+    if status!=STATUS_ABANDONED_WAIT_0{return false}
+    let _=unsafe{ke_release_mutant(a,0,0,0)};
+    let both=[b,c];
+    if unsafe{ke_wait_for_multiple_objects(2,both.as_ptr(),0,0,0,0,core::ptr::null(),core::ptr::null_mut())}!=STATUS_SUCCESS{return false}
+    let _=unsafe{ke_release_mutant(b,0,0,0)};
+    let _=unsafe{ke_release_mutant(c,0,0,0)};
+    if unsafe{ke_read_state_mutant(b)}!=1||unsafe{ke_read_state_mutant(c)}!=1{return false}
+
+    let queue=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_TEST_QUEUE).cast::<ExecutiveQueue>()};
+    unsafe{ke_initialize_queue(queue,1);}
+    let entry=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_TEST_QUEUE_ENTRY)};
+    let _=unsafe{ke_insert_queue(queue,entry)};
+    let queue_object=queue.cast::<DispatcherHeader>();
+    let one_queue=[queue_object];
+    if unsafe{ke_wait_for_multiple_objects(1,one_queue.as_ptr(),1,0,0,0,core::ptr::null(),core::ptr::null_mut())}!=0{return false}
+    crate::thread::take_queue_entry()==Some(entry as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
