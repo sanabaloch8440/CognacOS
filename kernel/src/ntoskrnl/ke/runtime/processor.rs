@@ -227,7 +227,7 @@ pub unsafe extern "win64" fn ke_register_processor_change_callback(
 }
 
 /// Unregister and wait for callbacks already in flight to finish.
-pub unsafe extern "win64" fn ke_deregister_processor_change_callback(handle:*mut core::ffi::c_void,wait:u8){
+pub unsafe extern "win64" fn ke_deregister_processor_change_callback(handle:*mut core::ffi::c_void){
  if handle.is_null(){return}
  let raw=handle as usize;
  if raw==0||raw>MAX_PROCESSOR_CHANGE_CALLBACKS{return}
@@ -237,7 +237,7 @@ pub unsafe extern "win64" fn ke_deregister_processor_change_callback(handle:*mut
   if !table.records[slot].active{return}
   table.records[slot]=ProcessorCallbackRecord::EMPTY;
  }
- if wait!=0 {while PROCESSOR_CALLBACK_IN_FLIGHT[slot].load(Ordering::Acquire)!=0 {core::hint::spin_loop();}}
+ while PROCESSOR_CALLBACK_IN_FLIGHT[slot].load(Ordering::Acquire)!=0 {core::hint::spin_loop();}
 }
 
 /// Called by HAL after a processor lifecycle transition has been published.
@@ -296,7 +296,7 @@ mod processor_callback_tests {
         assert!(!handle.is_null());
         notify_processor_change(0,KE_PROCESSOR_CHANGE_ADD_COMPLETE);
         assert_eq!(CALLS.load(Ordering::Acquire),1);
-        unsafe{ke_deregister_processor_change_callback(handle,1);}
+        unsafe{ke_deregister_processor_change_callback(handle);}
         notify_processor_change(0,KE_PROCESSOR_CHANGE_ADD_COMPLETE);
         assert_eq!(CALLS.load(Ordering::Acquire),1);
     }
