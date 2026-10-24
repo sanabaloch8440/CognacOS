@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
 
+[dependencies]
+rdotos-acpi = { path = "../drivers/acpi" }
+rdotos-pci = { path = "../drivers/pci" }
+rdotos-hal-contract = { path = "../drivers/hal" }
+
 [profile.dev]
 panic = "abort"
 
