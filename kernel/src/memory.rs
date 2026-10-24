@@ -372,9 +372,33 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
 /// Return a previously allocated low physical page to the shared free list.
 /// The caller must ensure no active mapping or DMA operation references the page.
 pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
-    let _guard = MemoryGuard::acquire();
+    if page >= PHYSICAL_LIMIT {
+        if page >= DIRECT_MAP_PHYSICAL_LIMIT || page & (PAGE_SIZE - 1) != 0
+            || !is_ram_physical_address(page) {
+            return Err(AllocError::InvalidPage);
+        }
+        let _guard = MemoryGuard::acquire();
+        let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
+        if free.1 < FREE_CAPACITY {
+            free.0[free.1] = page;
+            free.1 += 1;
+            return Ok(());
+        }
+        let regions = unsafe { &mut *HIGH_REGIONS.0.get() };
+        let count = HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+        let end = page.checked_add(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
+        for region in regions.iter_mut().take(count) {
+            if end == region.next { region.next = page; return Ok(()); }
+            if page == region.end { region.end = end; return Ok(()); }
+        }
+        if count == MAX_REGIONS { return Err(AllocError::FreeListFull); }
+        regions[count] = Region { next: page, end };
+        HIGH_REGION_COUNT.store(count + 1, core::sync::atomic::Ordering::Release);
+        return Ok(());
+    }
 
-    if page < LOW_RESERVED_END || page >= PHYSICAL_LIMIT || page & (PAGE_SIZE - 1) != 0 {
+    let _guard = MemoryGuard::acquire();
+    if page < LOW_RESERVED_END || page & (PAGE_SIZE - 1) != 0 {
         return Err(AllocError::InvalidPage);
     }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
