@@ -215,6 +215,8 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
  // Run registered completion routines while unwinding toward the original caller.
  // APC delivery, event signaling, MDL cleanup and thread-owned IRP teardown remain TODO.
  for _ in 0..16 {
+  let (location,stack_count)=unsafe{((*irp).bytes[0x43] as usize,(*irp).bytes[0x42] as usize)};
+  if location==0 || location>stack_count || stack_count==0 || stack_count>16 {return}
   let stack=unsafe{io_get_current_irp_stack_location(irp)};
   if stack.is_null(){return}
   let control=unsafe{(*stack).control};
