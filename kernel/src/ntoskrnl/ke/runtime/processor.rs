@@ -220,7 +220,7 @@ pub unsafe extern "win64" fn ke_register_processor_change_callback(
  let handle=(slot+1) as *mut core::ffi::c_void;
  if flags & KE_PROCESSOR_CHANGE_ADD_EXISTING != 0 {
   for cpu in 0..crate::hal::MAX_CPUS {
-   if crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){notify_processor_change(cpu,KE_PROCESSOR_CHANGE_ADD_COMPLETE);}
+   if crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){notify_processor_callback(slot,cpu,KE_PROCESSOR_CHANGE_ADD_COMPLETE);}
   }
  }
  handle
@@ -241,6 +241,20 @@ pub unsafe extern "win64" fn ke_deregister_processor_change_callback(handle:*mut
 }
 
 /// Called by HAL after a processor lifecycle transition has been published.
+fn notify_processor_callback(slot:usize,cpu:usize,change_type:u32){
+ let record={
+  let table=PROCESSOR_CALLBACKS.lock();
+  let Some(record)=table.records.get(slot).copied().filter(|r|r.active) else{return};
+  PROCESSOR_CALLBACK_IN_FLIGHT[slot].fetch_add(1,Ordering::AcqRel);
+  record
+ };
+ let Ok(state)=crate::hal::cpu_state(cpu) else{PROCESSOR_CALLBACK_IN_FLIGHT[slot].fetch_sub(1,Ordering::AcqRel);return};
+ if cpu>u8::MAX as usize{PROCESSOR_CALLBACK_IN_FLIGHT[slot].fetch_sub(1,Ordering::AcqRel);return}
+ let mut notification=ProcessorChangeNotifyContext{processor_number:ProcessorNumber{group:0,number:cpu as u8,reserved:0},change_type,status:0,reserved:state as u32};
+ let routine:ProcessorChangeRoutine=unsafe{core::mem::transmute(record.routine)};
+ unsafe{routine(record.context as *mut _,&mut notification,change_type);}
+ PROCESSOR_CALLBACK_IN_FLIGHT[slot].fetch_sub(1,Ordering::AcqRel);
+}
 pub fn notify_processor_change(cpu:usize,change_type:u32){
  let Ok(state)=crate::hal::cpu_state(cpu) else{return};
  if cpu>u8::MAX as usize{return}
@@ -255,8 +269,7 @@ pub fn notify_processor_change(cpu:usize,change_type:u32){
   }
   copy
  };
- let mut number=ProcessorNumber{group:0,number:cpu as u8,reserved:0};
- let mut notification=ProcessorChangeNotifyContext{processor_number:number,change_type,status:state as i32,reserved:0};
+ let mut notification=ProcessorChangeNotifyContext{processor_number:ProcessorNumber{group:0,number:cpu as u8,reserved:0},change_type,status:0,reserved:state as u32};
  for (i,record) in snapshot.iter().enumerate(){
   if !record.active{continue}
   let routine:ProcessorChangeRoutine=unsafe{core::mem::transmute(record.routine)};
