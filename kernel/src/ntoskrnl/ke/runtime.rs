@@ -1295,10 +1295,10 @@ pub unsafe extern "win64" fn ke_read_state_timer(timer:*const DispatcherHeader)-
 /// BOOLEAN KeSetTimer(PKTIMER Timer, LARGE_INTEGER DueTime, PKDPC Dpc).
 /// LARGE_INTEGER is passed by value in the x64 Windows ABI.
 pub unsafe extern "win64" fn ke_set_timer(timer:*mut DispatcherHeader,due_time:i64,dpc:*mut core::ffi::c_void)->u8{
-    unsafe{ke_set_timer_ex(timer,due_time,dpc,0)}
+    unsafe{ke_set_timer_ex(timer,due_time,0,dpc)}
 }
-/// BOOLEAN KeSetTimerEx(PKTIMER Timer, LARGE_INTEGER DueTime, PKDPC Dpc, LONG Period).
-pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_time:i64,dpc:*mut core::ffi::c_void,period_ms:u32)->u8{
+/// BOOLEAN KeSetTimerEx(PKTIMER Timer, LARGE_INTEGER DueTime, LONG Period, PKDPC Dpc).
+pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_time:i64,period_ms:u32,dpc:*mut core::ffi::c_void)->u8{
     if timer.is_null()||!matches!(unsafe{(*timer).kind},TIMER_NOTIFICATION|TIMER_SYNCHRONIZATION){return 0}
     let value=due_time;
     let Some(deadline)=timer_deadline(value) else{return 0};
