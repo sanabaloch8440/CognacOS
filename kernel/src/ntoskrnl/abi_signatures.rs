@@ -61,6 +61,8 @@ pub type SeAccessCheckFn = unsafe extern "win64" fn(
     *mut *mut c_void, *const SeGenericMapping, i8, *mut Ulong, *mut NtStatus,
 ) -> Boolean;
 pub type SePrivilegeCheckFn = unsafe extern "win64" fn(*const c_void, *mut SeSecuritySubjectContext, i8) -> Boolean;
+pub type SeSinglePrivilegeCheckFn = unsafe extern "win64" fn(u64, i8) -> Boolean;
+pub type SeValidSecurityDescriptorFn = unsafe extern "win64" fn(*const c_void) -> Boolean;
 pub type SeSubjectContextFn = unsafe extern "win64" fn(*mut SeSecuritySubjectContext);
 pub type PsAssignImpersonationTokenFn = unsafe extern "win64" fn(Handle, Handle) -> NtStatus;
 pub type PsReferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid) -> Pvoid;
@@ -68,7 +70,7 @@ pub type PsDereferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid);
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmFreeMdl, MmPrepareMdlForReuse, MmBuildPartialMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, PsLookupProcessByProcessId, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject, SeAccessCheck, SePrivilegeCheck, SeCaptureSubjectContext, SeReleaseSubjectContext, SeLockSubjectContext, SeUnlockSubjectContext, PsAssignImpersonationToken, PsReferencePrimaryToken, PsDereferencePrimaryToken }
+pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmFreeMdl, MmPrepareMdlForReuse, MmBuildPartialMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, PsLookupProcessByProcessId, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject, SeAccessCheck, SePrivilegeCheck, SeSinglePrivilegeCheck, SeValidSecurityDescriptor, SeCaptureSubjectContext, SeReleaseSubjectContext, SeLockSubjectContext, SeUnlockSubjectContext, PsAssignImpersonationToken, PsReferencePrimaryToken, PsDereferencePrimaryToken }
 
 pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     Some(match name {
@@ -115,6 +117,8 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
         "ZwWaitForSingleObject" => AbiSignature::ZwWaitForSingleObject,
         "SeAccessCheck" => AbiSignature::SeAccessCheck,
         "SePrivilegeCheck" => AbiSignature::SePrivilegeCheck,
+        "SeSinglePrivilegeCheck" => AbiSignature::SeSinglePrivilegeCheck,
+        "SeValidSecurityDescriptor" => AbiSignature::SeValidSecurityDescriptor,
         "SeCaptureSubjectContext" => AbiSignature::SeCaptureSubjectContext,
         "SeReleaseSubjectContext" => AbiSignature::SeReleaseSubjectContext,
         "SeLockSubjectContext" => AbiSignature::SeLockSubjectContext,
@@ -137,6 +141,8 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     fn implemented_security_exports_match_declared_abis() {
         let _: SeAccessCheckFn = crate::ntoskrnl::se::runtime::SeAccessCheck;
         let _: SePrivilegeCheckFn = crate::ntoskrnl::se::runtime::SePrivilegeCheck;
+        let _: SeSinglePrivilegeCheckFn = crate::ntoskrnl::se::runtime::SeSinglePrivilegeCheck;
+        let _: SeValidSecurityDescriptorFn = crate::ntoskrnl::se::runtime::SeValidSecurityDescriptor;
         let _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeCaptureSubjectContext;
         let _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeReleaseSubjectContext;
         let _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeLockSubjectContext;
@@ -144,7 +150,7 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
         let _: PsAssignImpersonationTokenFn = crate::thread::PsAssignImpersonationToken;
         let _: PsReferencePrimaryTokenFn = crate::process::PsReferencePrimaryToken;
         let _: PsDereferencePrimaryTokenFn = crate::process::PsDereferencePrimaryToken;
-        for name in ["SeAccessCheck", "SePrivilegeCheck", "SeCaptureSubjectContext",
+        for name in ["SeAccessCheck", "SePrivilegeCheck", "SeSinglePrivilegeCheck", "SeValidSecurityDescriptor", "SeCaptureSubjectContext",
             "SeReleaseSubjectContext", "SeLockSubjectContext", "SeUnlockSubjectContext",
             "PsAssignImpersonationToken", "PsReferencePrimaryToken", "PsDereferencePrimaryToken"] {
             assert!(documented_signature(name).is_some(), "missing ABI registry entry for {name}");
