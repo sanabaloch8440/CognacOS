@@ -487,9 +487,9 @@ pub unsafe fn validate_translation_range(
     Ok(())
 }
 
-/// Split the bootstrap's 2 MiB identity mapping into 4 KiB pages where
-/// fine-grained permissions or a stack guard are required. All other bootstrap
-/// large pages become writable, supervisor-only, and non-executable.
+/// Enforce section W^X and guarded-stack permissions on the 4 KiB bootstrap
+/// mappings. Low identity aliases of the kernel image and stack are removed
+/// after their high-half aliases have been validated.
 ///
 /// # Safety
 /// NXE must already be enabled, pml4 must be the active identity-mapped root,
