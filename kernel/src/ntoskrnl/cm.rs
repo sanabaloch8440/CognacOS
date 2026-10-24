@@ -14,3 +14,5 @@ pub const EXPORTS: &[(&str, u16)] = &[
     ("CmUnRegisterCallback", 142),
     ("CmUnregisterMachineHiveLoadedNotification", 143),
 ];
+
+#[path = "cm/runtime.rs"] pub(crate) mod runtime;
