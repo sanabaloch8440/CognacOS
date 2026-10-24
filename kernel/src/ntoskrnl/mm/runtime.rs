@@ -182,10 +182,15 @@ fn mdl_page_count(byte_offset: u64, byte_count: u64) -> Option<u64> {
 pub unsafe extern "win64" fn mm_build_mdl_for_non_paged_pool(mdl: *mut c_void) {
     let address = mdl as u64;
     if mdl.is_null() || address < 0xffff_8000_0000_0000
-        || crate::kernel_vm::is_pageable_address(address)
-        || translate(address, true).is_none()
-        || address.checked_add(MDL_HEADER_SIZE).is_none() {
+        || crate::kernel_vm::is_pageable_address(address) {
         return;
+    }
+    let Some(header_end) = address.checked_add(MDL_HEADER_SIZE) else { return; };
+    let mut header_cursor = address;
+    while header_cursor < header_end {
+        if translate(header_cursor, true).is_none() { return; }
+        header_cursor = core::cmp::min(header_end,
+            (header_cursor & !(PAGE_SIZE - 1)).saturating_add(PAGE_SIZE));
     }
     let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
     let start = header.start_va as u64;
@@ -360,6 +365,23 @@ pub fn self_test() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mdl_page_count_handles_offsets_boundaries_and_overflow() {
+        assert_eq!(mdl_page_count(0, 0), Some(0));
+        assert_eq!(mdl_page_count(0, 1), Some(1));
+        assert_eq!(mdl_page_count(PAGE_SIZE - 1, 1), Some(1));
+        assert_eq!(mdl_page_count(PAGE_SIZE - 1, 2), Some(2));
+        assert_eq!(mdl_page_count(PAGE_SIZE, 1), None);
+        assert_eq!(mdl_page_count(0, u64::MAX), None);
+    }
+
+    #[test]
+    fn mdl_header_matches_x64_abi_size() {
+        assert_eq!(core::mem::size_of::<MdlHeader>(), MDL_HEADER_SIZE as usize);
+        assert_eq!(core::mem::offset_of!(MdlHeader, byte_count), 40);
+        assert_eq!(core::mem::offset_of!(MdlHeader, byte_offset), 44);
+    }
+
     #[test]
     fn status_values_match_nt_contract() {
         assert_eq!(STATUS_SUCCESS, 0);
