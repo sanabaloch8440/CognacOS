@@ -340,7 +340,7 @@ pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_tim
         let mut table=TIMERS.lock();
         let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
         let old=(record.active,record.dpc);
-        record.active=true;record.due=deadline;record.period=period;record.dpc=dpc as usize;record.generation=record.generation.wrapping_add(1).max(1);
+        record.active=true;record.due=deadline;record.period=period;record.dpc=dpc as usize;record.generation=next_timer_generation(record.generation);
         // Keep timer mutation and removal serialized with timer_tick's
         // timer-lock -> DPC-lock enqueue path, so an old cancellation cannot
         // accidentally remove a newly queued expiry for the rearmed timer.
@@ -356,7 +356,9 @@ pub unsafe extern "win64" fn ke_cancel_timer(timer:*mut DispatcherHeader)->u8{
         let mut table=TIMERS.lock();
         let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
         let old=(record.active,record.dpc);record.active=false;record.dpc=0;
-        if old.0{record.generation=record.generation.wrapping_add(1).max(1);}
+        // Invalidate an expiry snapshot even if the one-shot timer has already
+        // transitioned inactive but its DPC has not yet been enqueued.
+        record.generation=next_timer_generation(record.generation);
         // Serialize removal with rearm and expiry enqueue; no DPC callback is
         // dispatched by KeRemoveQueueDpc itself.
         if old.0 && old.1!=0 { let _=unsafe{ke_remove_queue_dpc(old.1 as *mut core::ffi::c_void)}; }
@@ -536,14 +538,19 @@ pub unsafe extern "win64" fn ke_set_timer2(timer:*mut core::ffi::c_void,due_time
     let mut table=TIMERS2.lock();
     let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
     let was_active=record.active;
-    record.active=true;record.due=deadline;record.period=period;record.tolerable_delay=tolerable_delay_ms;record.generation=record.generation.wrapping_add(1).max(1);
+    record.active=true;record.due=deadline;record.period=period;record.tolerable_delay=tolerable_delay_ms;record.generation=next_timer_generation(record.generation);
     was_active as u8
 }
 pub unsafe extern "win64" fn ke_cancel_timer2(timer:*mut core::ffi::c_void)->u8{
     if timer.is_null(){return 0}
     let mut table=TIMERS2.lock();
     let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
-    let was_active=record.active;record.active=false;if was_active{record.generation=record.generation.wrapping_add(1).max(1);}was_active as u8
+    let was_active=record.active;
+    record.active=false;
+    // A one-shot may already be inactive while its callback snapshot is still
+    // waiting for dispatch. Always bump the generation to invalidate that snapshot.
+    record.generation=next_timer_generation(record.generation);
+    was_active as u8
 }
 fn timer2_tick(now:u64){
     let mut expired=[Timer2Record::EMPTY;MAX_TIMER2_OBJECTS];let mut count=0usize;
