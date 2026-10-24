@@ -100,11 +100,43 @@ pub fn dispatch(number:u64,args:[u64;6])->u64 {
     }
 }
 #[unsafe(no_mangle)]
+/// Prepare a user-mode APC by turning the interrupted return context into
+/// a normal x64 call frame. The interrupted RIP is placed at user RSP-8 as the
+/// routine's return address; RDX/R8 carry the two APC arguments.
+pub fn prepare_user_apc_return(frame:*mut u64)->bool {
+    if frame.is_null(){return false}
+    unsafe {
+        // Saved registers occupy [0..15], followed by the five-word IRET frame.
+        if (*frame.add(16) & 3) != 3 { return false; }
+        let original_rip=*frame.add(15);
+        let original_rsp=*frame.add(18);
+        if original_rsp<8 || original_rsp>=0x0000_8000_0000_0000 { return false; }
+        let space_ptr=*ACTIVE_SPACE.0.get();
+        if space_ptr.is_null(){return false}
+        let space=&*space_ptr;
+        let Some((object,normal,context,arg1,arg2))=crate::ntoskrnl::ke::runtime::take_pending_user_apc() else{return false};
+        let _=object;
+        if normal==0 || !space.is_user_executable(normal as u64) { return false; }
+        let return_slot=original_rsp-8;
+        if space.copy_to_user(return_slot,&original_rip.to_ne_bytes()).is_err(){return false}
+        *frame.add(15)=normal as u64;
+        *frame.add(18)=return_slot;
+        *frame.add(12)=context as u64; // RCX = NormalContext
+        *frame.add(11)=arg1 as u64;     // RDX = SystemArgument1
+        *frame.add(7)=arg2 as u64;     // R8  = SystemArgument2
+        true
+    }
+}
 pub extern "C" fn rdotos_syscall_dispatch(frame:*mut u64)->u64 {
     if frame.is_null(){return ERR_BAD_ADDRESS;}
-    unsafe {
+    let result=unsafe {
         // Saved stack: r15,r14,r13,r12,r11,r10,r9,r8,rbp,rdi,rsi,rdx,rcx,rbx,rax.
         let f=core::slice::from_raw_parts(frame,15);
         dispatch(f[14],[f[9],f[10],f[11],f[5],f[7],f[6]])
+    };
+    if result!=EXIT_SENTINEL {
+        crate::ntoskrnl::ke::runtime::ke_deliver_pending_kernel_apcs();
+        let _=prepare_user_apc_return(frame);
     }
+    result
 }
