@@ -247,7 +247,7 @@ pub fn reference_body(body:*mut c_void,expected_type:u16,desired:u32,kernel_mode
  let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];
  if expected_type!=0&&s.objects[i].type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
  let granted=map_access(&t,desired);if granted&!t.valid!=0{return Err(STATUS_ACCESS_DENIED)}
- if !kernel_mode&&!access_check(s,&s.objects[i],granted,0){return Err(STATUS_ACCESS_DENIED)}
+ if !kernel_mode&&!access_check(s,&s.objects[i],granted,current_owner()){return Err(STATUS_ACCESS_DENIED)}
  s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,0,4,desired,granted,STATUS_SUCCESS);Ok(body)
 }
 pub fn dereference_body(body:*mut c_void)->bool{
@@ -284,7 +284,7 @@ pub fn reference_by_name(name:&[u16],expected_type:u16,desired:u32,kernel_mode:b
  let _g=LOCK.lock();let s=state();let mut resolved=[0u16;MAX_NAME];let n=resolve_symbolic_prefixes(s,name,&mut resolved)?;let name=&resolved[..n];let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
  if expected_type!=0&&s.objects[i].type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
  let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let granted=map_access(&t,desired);
- if granted&!t.valid!=0||(!kernel_mode&&!access_check(s,&s.objects[i],granted,0)){return Err(STATUS_ACCESS_DENIED)}
+ if granted&!t.valid!=0||(!kernel_mode&&!access_check(s,&s.objects[i],granted,current_owner())){return Err(STATUS_ACCESS_DENIED)}
  s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;Ok(s.objects[i].body as *mut c_void)
 }
 pub fn object_name(body:*mut c_void,out:&mut [u16;MAX_NAME])->Result<usize,i32>{
@@ -390,7 +390,7 @@ pub unsafe extern "win64" fn ObReferenceObjectByHandle(handle:*mut c_void,desire
  match reference_by_handle(handle,desired_access,expected,current_owner(),access_mode==0){Ok(o)=>{unsafe{out_object.write(o)}STATUS_SUCCESS},Err(e)=>e}
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn ObCloseHandle(handle:*mut c_void,previous_mode:u8)->i32{close_handle(handle,if previous_mode==0{current_owner()}else{current_owner()}).map_or_else(|e|e,|_|STATUS_SUCCESS)}
+pub unsafe extern "win64" fn ObCloseHandle(handle:*mut c_void,previous_mode:u8)->i32{if previous_mode!=0&&unsafe{ObIsKernelHandle(handle)}!=0{return STATUS_INVALID_HANDLE}close_handle(handle,current_owner()).map_or_else(|e|e,|_|STATUS_SUCCESS)}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObGetObjectType(object:*mut c_void)->*mut ObjectType{object_type(object)}
 #[unsafe(no_mangle)]
