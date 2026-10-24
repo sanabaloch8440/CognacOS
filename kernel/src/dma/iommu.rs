@@ -49,13 +49,16 @@ pub fn map_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u3
  if !super::consume_map_register(token,device){return Err(DmaError::OutOfMemory)}
  match map_one(device,token as usize,0,physical,length,direction){Ok(v)=>Ok(v),Err(e)=>{super::return_map_register(token,device);Err(e)}}
 }
-pub fn sync_transfer(adapter:*mut c_void,token:*mut c_void,logical:u64,length:u32,direction:u8)->bool{
+pub fn sync_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u32,direction:u8)->bool{
  let Some(device)=super::adapter_device(adapter)else{return false};let Ok(b)=backend()else{return false};
- let found={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token as usize&&m.logical==logical&&m.length==length)};
+ let found={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token as usize&&m.physical==physical&&m.length==length)};
  let Some(index)=found else{return false};let m={let s=STATE.lock();s.maps[index]};
- if unsafe{(b.sync.unwrap())(b.context,device,logical,length,direction)}!=OK{return false}
- if !unmap_index(index){return false}super::return_map_register(token,device);fence(Ordering::SeqCst);let _=m;true
+ if unsafe{(b.sync.unwrap())(b.context,device,m.logical,length,direction)}!=OK{return false}
+ if !unmap_index(index){return false}super::return_map_register(token,device);fence(Ordering::SeqCst);true
 }
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn RdotDmaBindTransferToIrp(adapter:*mut c_void,token:*mut c_void,logical:u64,irp:*mut c_void)->i32{bind_irp(adapter,token,logical,irp)}
+pub(crate) fn release_irp_mappings(irp:*mut c_void){release_irp(irp)}
 pub fn bind_irp(adapter:*mut c_void,token:*mut c_void,logical:u64,irp:*mut c_void)->i32{
  if irp.is_null(){return INVALID}let Some(device)=super::adapter_device(adapter)else{return INVALID};let mut s=STATE.lock();
  if let Some(m)=s.maps.iter_mut().find(|m|m.used&&m.device==device&&m.token==token as usize&&m.logical==logical){m.irp=irp as usize;return OK}INVALID
