@@ -1279,11 +1279,12 @@ pub unsafe extern "win64" fn SeAccessCheck(
             Some(v) => v, None => return false,
         };
         let mut effective_allowed = allowed;
+        let mut privilege_grants = 0u32;
         if let Some(m) = meta {
             // Windows privilege-assisted grants for the special security-system and
             // ownership rights. Privilege IDs follow the NT LUID low-part mapping.
-            if m.privileges & (1u64 << 8) != 0 { effective_allowed |= 0x0100_0000; }
-            if m.privileges & (1u64 << 9) != 0 { effective_allowed |= 0x0008_0000; }
+            if m.privileges & (1u64 << 8) != 0 { privilege_grants |= 0x0100_0000; }
+            if m.privileges & (1u64 << 9) != 0 { privilege_grants |= 0x0008_0000; }
             let write_access = requested & (0x0001_0000 | 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0000_0116) != 0;
             if m.restricted || m.app_container || (m.write_restricted && write_access) {
                 let restricted = match evaluate_dacl(token, sd, requested, 0, true) {
@@ -1294,6 +1295,7 @@ pub unsafe extern "win64" fn SeAccessCheck(
             if (m.restricted || m.app_container) && !token_has_restricting_sids(token) { return false; }
             if m.write_restricted && write_access && !token_has_restricting_sids(token) { return false; }
         }
+        effective_allowed |= privilege_grants;
         let explicit = desired & !0x0200_0000;
         if explicit & !(effective_allowed | previous) != 0 { return false; }
         let grant = if max_allowed { (effective_allowed | previous) & !0x0200_0000 } else { explicit | previous };
