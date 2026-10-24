@@ -336,6 +336,22 @@ pub fn self_test() -> bool {
         destination.add(127).write(0);
     }
     let physical = unsafe { mm_get_physical_address(source.cast()) };
+    #[repr(C)]
+    struct TestMdl { header: MdlHeader, pfns: [u64; 1] }
+    let mut test_mdl = TestMdl {
+        header: MdlHeader {
+            next: core::ptr::null_mut(), size: (MDL_HEADER_SIZE + 8) as i16,
+            flags: 0, _padding: 0, process: core::ptr::null_mut(),
+            mapped_system_va: core::ptr::null_mut(), start_va: source.cast(),
+            byte_count: 128, byte_offset: 0,
+        },
+        pfns: [0],
+    };
+    unsafe { mm_build_mdl_for_non_paged_pool((&mut test_mdl as *mut TestMdl).cast()); }
+    let mdl_ok = test_mdl.pfns[0] == physical / PAGE_SIZE
+        && test_mdl.header.mapped_system_va == source.cast()
+        && test_mdl.header.flags & (MDL_PAGES_LOCKED | MDL_SOURCE_IS_NONPAGED_POOL | MDL_MAPPED_TO_SYSTEM_VA)
+            == (MDL_PAGES_LOCKED | MDL_SOURCE_IS_NONPAGED_POOL | MDL_MAPPED_TO_SYSTEM_VA);
     let mut copied = 0u64;
     let status = unsafe { mm_copy_memory(destination.cast(), source as u64, 128, 2, &mut copied) };
     let valid = physical != 0
@@ -364,7 +380,7 @@ pub fn self_test() -> bool {
         unsafe { mm_free_contiguous_memory(contiguous); }
         bytes_ok && mdl_size == 64
     };
-    valid && freed && contiguous_ok
+    valid && mdl_ok && freed && contiguous_ok
 }
 
 #[cfg(test)]
