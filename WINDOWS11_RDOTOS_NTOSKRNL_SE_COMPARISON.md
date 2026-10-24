@@ -1,28 +1,33 @@
 # Windows 11 vs RdotOS Se compatibility
 
-Target reference: Windows 11 x64 10.0.26100.8036-AMD64. The Se export list in `kernel/src/ntoskrnl/se.rs` is inventory metadata; an export name or ordinal does not imply implementation.
+Target reference: Windows 11 x64 10.0.26100.8036-AMD64. The Se export list in `kernel/src/ntoskrnl/se/mod.rs` is inventory metadata; an export name or ordinal does not imply implementation.
 
 ## Implemented
 
 | Routine | Implementation | Scope |
 | --- | --- | --- |
-| `SeValidSecurityDescriptor` | `kernel/src/ntoskrnl/se/runtime.rs` | Bounded structural validation of self-relative security descriptors: revision and control checks, owner/group SID structure, ACL/ACE bounds, offset checks, and component overlap rejection. |
+| `SeValidSecurityDescriptor` | `kernel/src/ntoskrnl/se/runtime.rs` | Bounded structural validation of self-relative descriptors: revision/control, SID and ACL/ACE bounds, offsets and overlap checks. |
+| `SeTokenIsAdmin`, `SeTokenIsRestricted`, `SeTokenIsWriteRestricted` | `se/runtime.rs` | Query registered RdotOS token metadata; unknown tokens fail closed. |
+| `SeTokenType`, `SeTokenImpersonationLevel` | `se/runtime.rs` | Query registered token kind/impersonation level; unknown or non-impersonation tokens return 0. |
+| `SeSinglePrivilegeCheck` | `se/runtime.rs` | Kernel-mode bypass; user-mode requests fail closed until current-thread token/privilege integration exists. |
+| `RdotSeRegisterTokenMetadata`, `RdotSeUnregisterTokenMetadata`, `RdotSeTokenHasPrivilege` | `se/runtime.rs` | RdotOS-only bounded metadata and privilege-bitmap interface for tests and future Ps token integration. |
 
-The routine is explicitly wired in `ntoskrnl::resolve` by name. Unit tests cover a minimal self-relative descriptor and malformed SID/offset cases.
+The Se export catalogue is now located at `kernel/src/ntoskrnl/se/mod.rs`; the old top-level `se.rs` catalogue was removed. The import resolver routes only routines with implemented entry points.
 
-## Not yet implemented
+## Remaining work
 
-- `SeAccessCheck` family and Windows-compatible access-state semantics.
-- Process/thread primary tokens, impersonation tokens, privilege sets, restricted tokens, linked tokens, logon sessions, and token lifetime/rundown.
-- Subject-context capture/lock/release and safe capture of user-provided security descriptors.
+- Integrate token metadata with real Ps primary/impersonation token objects, references and rundown; this table is not a Windows TOKEN implementation.
+- Implement `SePrivilegeCheck` against real `PRIVILEGE_SET` and subject-context layouts.
+- Implement the `SeAccessCheck` family and Windows-compatible access-state semantics.
+- Subject-context capture/lock/release and safe capture of user-provided descriptors.
 - Security descriptor assignment/inheritance and complete owner/group/DACL/SACL semantics.
-- Audit policy, privilege auditing, SACL evaluation, callbacks, and transactional audit events.
-- AppContainer/capability and silo policy, signing-level policy, secure-boot policy integration, and WDK conformance.
+- Audit policy, privilege auditing, SACL evaluation, callbacks and transactional audit events.
+- AppContainer/capability and silo policy, signing-level policy, secure-boot policy integration and WDK conformance.
 
 ## Safety and validation notes
 
-The current validator accepts a raw pointer without a length, matching the export's pointer-only shape, and inspects a maximum 4-KiB window. The caller must already guarantee that this memory is readable; this is not a user-buffer probe/capture implementation. Before exposing further Se routines, RdotOS needs scheduler-bound current-process identity and actual token/privilege state. Existing Object Manager SID-list DACL checks are a separate bounded mechanism and are not full Se integration.
+The descriptor validator accepts a raw pointer without a length and inspects a maximum 4-KiB window. The caller must guarantee that memory is readable; this is not a user-buffer probe/capture implementation. Token queries recognize only explicitly registered RdotOS metadata and are not compatible with arbitrary Windows token pointers. The Se single-privilege check denies user-mode requests because current-thread token binding is not yet implemented. These changes establish a limited implementation foundation, not complete Windows security semantics.
 
 ## Validation status
 
-The source includes focused Rust unit tests. They are not considered CI-validated until a workflow run executes them successfully. No general Windows 11 security subsystem or driver compatibility is claimed.
+Focused Rust unit tests were added for malformed descriptors, token metadata registration/query/unregistration and fail-closed privilege behavior. A new CI run must complete before this revision is considered validated; Windows WDK conformance remains outstanding.
