@@ -40,6 +40,9 @@ pub type MmCopyMemoryFn = unsafe extern "win64" fn(Pvoid, u64, SizeT, Ulong, *mu
 pub type MmBuildMdlForNonPagedPoolFn = unsafe extern "win64" fn(Pvoid);
 pub type MmAdvanceMdlFn = unsafe extern "win64" fn(Pvoid, Ulong);
 pub type MmCreateMdlFn = unsafe extern "win64" fn(Pvoid, Pvoid, SizeT) -> Pvoid;
+pub type MmFreeMdlFn = unsafe extern "win64" fn(Pvoid);
+pub type MmPrepareMdlForReuseFn = unsafe extern "win64" fn(Pvoid);
+pub type MmBuildPartialMdlFn = unsafe extern "win64" fn(Pvoid, Pvoid, Pvoid, Ulong);
 pub type MmProbeAndLockPagesFn = unsafe extern "win64" fn(Pvoid, i8, Ulong);
 pub type MmUnlockPagesFn = unsafe extern "win64" fn(Pvoid);
 pub type MmMapLockedPagesSpecifyCacheFn = unsafe extern "win64" fn(Pvoid, i8, i32, Pvoid, Boolean, Ulong) -> Pvoid;
@@ -53,7 +56,7 @@ pub type ZwCloseFn = unsafe extern "win64" fn(Handle) -> NtStatus;
 pub type ZwWaitForSingleObjectFn = unsafe extern "win64" fn(Handle, Boolean, *const LargeInteger) -> NtStatus;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject }
+pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmFreeMdl, MmPrepareMdlForReuse, MmBuildPartialMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject }
 
 pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     Some(match name {
@@ -83,6 +86,9 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
         "MmBuildMdlForNonPagedPool" => AbiSignature::MmBuildMdlForNonPagedPool,
         "MmAdvanceMdl" => AbiSignature::MmAdvanceMdl,
         "MmCreateMdl" => AbiSignature::MmCreateMdl,
+        "MmFreeMdl" => AbiSignature::MmFreeMdl,
+        "MmPrepareMdlForReuse" => AbiSignature::MmPrepareMdlForReuse,
+        "MmBuildPartialMdl" => AbiSignature::MmBuildPartialMdl,
         "MmProbeAndLockPages" => AbiSignature::MmProbeAndLockPages,
         "MmUnlockPages" => AbiSignature::MmUnlockPages,
         "MmMapLockedPagesSpecifyCache" => AbiSignature::MmMapLockedPagesSpecifyCache,
@@ -101,7 +107,7 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
 #[cfg(test)] mod tests {
     use super::*;
     #[test] fn documented_signatures_are_registered() {
-        for name in ["MmAllocateContiguousMemory","MmAllocateContiguousMemorySpecifyCache","MmFreeContiguousMemory","MmFreeContiguousMemorySpecifyCache","MmSizeOfMdl","MmGetPhysicalAddress","MmGetVirtualForPhysical","MmIsAddressValid","MmIsNonPagedSystemAddressValid","MmCopyMemory","MmBuildMdlForNonPagedPool","MmAdvanceMdl","MmCreateMdl","MmProbeAndLockPages","MmUnlockPages","MmMapLockedPagesSpecifyCache","MmUnmapLockedPages","MmCopyVirtualMemory","KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExAllocatePool3","ExAllocatePoolWithTag","ExAllocatePoolWithTagPriority","ExFreePool2","ExFreePoolWithTag","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
+        for name in ["MmAllocateContiguousMemory","MmAllocateContiguousMemorySpecifyCache","MmFreeContiguousMemory","MmFreeContiguousMemorySpecifyCache","MmSizeOfMdl","MmGetPhysicalAddress","MmGetVirtualForPhysical","MmIsAddressValid","MmIsNonPagedSystemAddressValid","MmCopyMemory","MmBuildMdlForNonPagedPool","MmAdvanceMdl","MmCreateMdl","MmFreeMdl","MmPrepareMdlForReuse","MmBuildPartialMdl","MmProbeAndLockPages","MmUnlockPages","MmMapLockedPagesSpecifyCache","MmUnmapLockedPages","MmCopyVirtualMemory","KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExAllocatePool3","ExAllocatePoolWithTag","ExAllocatePoolWithTagPriority","ExFreePool2","ExFreePoolWithTag","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
         assert!(documented_signature("UnknownRoutine").is_none());
     }
 }
