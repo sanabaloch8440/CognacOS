@@ -364,18 +364,24 @@ pub unsafe extern "win64" fn build_scatter_gather_list(
  if pages==0||pages>MAX_SG_SEGMENTS as u64{return 0xC000_009Au32 as i32}
  let needed=core::mem::size_of::<ScatterGatherListAbi>()+pages as usize*core::mem::size_of::<ScatterGatherElement>();
  if needed>scatter_gather_buffer_length as usize{return 0xC000_0023u32 as i32}
+ {let _g=SG_LOCK.lock();let owners=unsafe{&*SG_REGISTRY.ownership.get()};if owners.iter().any(|o|o.active&&o.list==scatter_gather_buffer as usize){return 0xC000_000Du32 as i32}}
  let list=scatter_gather_buffer.cast::<ScatterGatherListAbi>();unsafe{core::ptr::addr_of_mut!((*list).number_of_elements).write(pages as u32);core::ptr::addr_of_mut!((*list).reserved).write(0);}
- let domain=match adapter_device(adapter){Some(v)=>v,None=>return 0xC000_000Du32 as i32};let mut va=current_va as u64;let mut remaining=length as u64;let mut mapped=0usize;
+ let domain=match adapter_device(adapter){Some(v)=>v,None=>return 0xC000_000Du32 as i32};
+ let token=match allocate_map_register_token(domain as *mut core::ffi::c_void,pages as u32){Some(t)=>t,None=>return 0xC000_009Au32 as i32};
+ let mut va=current_va as u64;let mut remaining=length as u64;let mut mapped=0usize;
  for i in 0..pages as usize{
   let chunk=remaining.min(PAGE_SIZE-(va&(PAGE_SIZE-1))) as u32;let physical=unsafe{crate::ntoskrnl::mm::mm_get_physical_address(va as *mut core::ffi::c_void)};
-  if physical==0{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}return 0xC000_000Du32 as i32}
-  match iommu::map_fragment(domain,adapter as usize,physical,chunk,write_to_device){
+  if physical==0{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}unsafe{free_map_registers(adapter,token,pages as u32)}return 0xC000_000Du32 as i32}
+  match iommu::map_fragment(adapter,token,physical,chunk,write_to_device){
    Ok(logical)=>{unsafe{core::ptr::addr_of_mut!((*list).elements).cast::<ScatterGatherElement>().add(i).write(ScatterGatherElement{address:logical,length:chunk,reserved:0});}mapped+=1;}
-   Err(_)=>{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}return 0xC000_009Au32 as i32}
+   Err(_)=>{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}unsafe{free_map_registers(adapter,token,pages as u32)}return 0xC000_009Au32 as i32}
   }
   va+=chunk as u64;remaining-=chunk as u64;
  }
- let _=write_to_device;fence(Ordering::SeqCst);unsafe{execution_routine.unwrap()(device_object,core::ptr::null_mut(),list,context)};0
+ let owner_index={let _g=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};owners.iter().position(|o|!o.active)};
+ let Some(owner_index)=owner_index else{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}unsafe{free_map_registers(adapter,token,pages as u32)}return 0xC000_009Au32 as i32};
+ {let _g=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};if owners[owner_index].active{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}unsafe{free_map_registers(adapter,token,pages as u32)}return 0xC000_009Au32 as i32}owners[owner_index]=SgOwnership{active:true,device:device_object as usize,list:list as usize,token:token as usize,count:pages as u32};}
+ fence(Ordering::SeqCst);unsafe{execution_routine.unwrap()(device_object,core::ptr::null_mut(),list,context)};0
 }
 
 
