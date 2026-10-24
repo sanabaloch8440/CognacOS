@@ -40,7 +40,7 @@ impl Value { const EMPTY: Self = Self { used:false,key_id:0,name:[0;MAX_NAME],na
 struct SpinLock(AtomicBool);
 impl SpinLock {
  const fn new()->Self{Self(AtomicBool::new(false))}
- fn lock(&self)->Guard<'_>{while self.0.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}Guard(self)}
+ fn lock(&self)->Guard<'_>{while self.0.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}Guard(&self.0)}
 }
 struct Guard<'a>(&'a AtomicBool);
 impl Drop for Guard<'_>{fn drop(&mut self){self.0.store(false,Ordering::Release);}}
