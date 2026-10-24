@@ -188,3 +188,35 @@ mod completion_tests {
         release_irp(id).expect("release terminal IRP");
     }
 }
+
+
+/// Windows WDM version gate. RdotOS currently implements the WDM 1.0
+/// baseline only; newer requested minor versions are rejected rather than
+/// claiming capabilities that are not present.
+#[unsafe(no_mangle)]
+pub extern "system" fn io_is_wdm_version_available(major_version: u16, minor_version: u16) -> u8 {
+    u8::from(major_version == 0 || (major_version == 1 && minor_version == 0))
+}
+
+/// Public NT configuration counters returned by IoGetConfigurationInformation.
+/// The device enumerator is not yet wired to these counters, so they remain zero
+/// until the relevant bus/device classes are registered.
+#[repr(C)]
+pub struct ConfigurationInformation {
+    pub disk_count: u32,
+    pub floppy_count: u32,
+    pub cd_rom_count: u32,
+    pub tape_count: u32,
+    pub scsi_port_count: u32,
+    pub serial_count: u32,
+    pub parallel_count: u32,
+}
+static CONFIGURATION_INFORMATION: ConfigurationInformation = ConfigurationInformation {
+    disk_count: 0, floppy_count: 0, cd_rom_count: 0, tape_count: 0,
+    scsi_port_count: 0, serial_count: 0, parallel_count: 0,
+};
+
+#[unsafe(no_mangle)]
+pub extern "system" fn io_get_configuration_information() -> *mut ConfigurationInformation {
+    core::ptr::addr_of!(CONFIGURATION_INFORMATION) as *mut ConfigurationInformation
+}
