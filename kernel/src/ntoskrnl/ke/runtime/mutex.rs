@@ -72,6 +72,7 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
         let status=crate::dispatcher::complete_wait_group(id,object as u64,final_status,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(final_status);
         let _=crate::thread::complete_wait(id,status);
     }
+    complete_ready_wait_all_groups();
     old
 }
 pub unsafe extern "win64" fn ke_release_mutex(object:*mut DispatcherHeader,wait:u8)->i32{
@@ -123,6 +124,7 @@ pub fn thread_exit_cleanup(thread:u64){
             let _=crate::thread::complete_wait(id,status);
         }
     }
+    complete_ready_wait_all_groups();
 }
 
 
