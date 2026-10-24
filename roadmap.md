@@ -207,7 +207,7 @@ The parser is read-only and not a production filesystem driver. The original Ext
 - [x] Run host-side ext parser tests.
 - [x] Boot with OVMF/QEMU (5 GiB RAM, four vCPUs) and assert serial markers for PE32+ handoff, high-half/page-table validation, direct-map/memory-manager checks, and selected subsystem self-tests.
 - [ ] Add focused tests for allocator, scheduler, dispatcher, HAL exports, DMA, and parser boundaries.
-- [ ] Add repeatable multi-vCPU, timeout, cancellation, and concurrency stress tests.
+- [x] Add OVMF/QEMU SMP boot and per-CPU directed-IPI stress matrix for 2, 4, and 8 vCPUs; the first CI result is pending.\n- [ ] Add broader timeout/cancellation and concurrent kernel-object/MDL teardown stress tests.
 - [ ] Fuzz ELF, PE, ACPI, and filesystem parsers.
 - [ ] Test Secure Boot on/off after signed boot support exists.
 - [ ] Document tested hardware, threat model, recovery/debug procedure, and known limitations.
@@ -217,7 +217,7 @@ The parser is read-only and not a production filesystem driver. The original Ext
 
 1. Keep CI green and expand PE32+ converter/loader tests, especially malformed headers, section overlap, and permission edge cases.
 2. Finish fine-grained bootstrap mapping boundaries and validate all live boot dependencies and direct-map permissions.
-3. Complete real context switching, scheduler queue integration, timer interrupts, and multi-vCPU stress tests.
+3. Validate the new SMP stress matrix, then complete per-CPU TSS/IST setup, real context switching, scheduler queue integration, timer interrupts, and broader concurrency stress tests.
 4. Implement real DMA mappings, IOMMU initialization, PCI enumeration, and one end-to-end storage driver.
 5. Expand Windows compatibility through small, tested batches of ABI-correct RTL/NT/HAL routines and executive semantics.
 6. Add signed boot, stronger isolation, power management, graphics, and release-grade hardware validation.
