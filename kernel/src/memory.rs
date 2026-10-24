@@ -363,6 +363,60 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
     Err(AllocError::OutOfMemory)
 }
 
+/// Allocate a physically contiguous, zeroed run whose end stays below an
+/// exclusive physical-address limit. AP bootstrap stacks use this because the
+/// early startup path relies on the bootloader's low 4-GiB identity mapping.
+pub unsafe fn allocate_contiguous_pages_below(
+    pages: usize,
+    exclusive_limit: u64,
+) -> Result<u64, AllocError> {
+    let _guard = MemoryGuard::acquire();
+    if pages == 0 || exclusive_limit < PAGE_SIZE {
+        return Err(AllocError::InvalidPage);
+    }
+    let bytes = (pages as u64)
+        .checked_mul(PAGE_SIZE)
+        .ok_or(AllocError::InvalidPage)?;
+
+    let free = unsafe { &mut *FREE_PAGES.0.get() };
+    if pages <= free.1 {
+        let mut i = 0usize;
+        while i + pages <= free.1 {
+            let base = free.0[i];
+            let end = base.checked_add(bytes);
+            let mut run = end.is_some_and(|end| end <= exclusive_limit);
+            for j in 1..pages {
+                if free.0[i + j] != base + (j as u64 * PAGE_SIZE) {
+                    run = false;
+                    break;
+                }
+            }
+            if run {
+                let old_len = free.1;
+                free.0.copy_within(i + pages..old_len, i);
+                free.1 = old_len - pages;
+                unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
+                return Ok(base);
+            }
+            i += 1;
+        }
+    }
+
+    let count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    let regions = unsafe { &mut *REGIONS.0.get() };
+    for region in regions.iter_mut().take(count) {
+        if let Some(end) = region.next.checked_add(bytes) {
+            if end <= region.end && end <= exclusive_limit {
+                let base = region.next;
+                region.next = end;
+                unsafe { ptr::write_bytes(base as *mut u8, 0, bytes as usize); }
+                return Ok(base);
+            }
+        }
+    }
+    Err(AllocError::OutOfMemory)
+}
+
 /// Allocate a physically contiguous, zeroed run of pages from returned free runs
 /// or a conventional-memory region. Allocation is serialized across CPUs and IRQs.
 pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError> {
