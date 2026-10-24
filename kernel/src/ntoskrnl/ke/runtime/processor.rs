@@ -260,6 +260,11 @@ pub unsafe extern "win64" fn ke_register_processor_change_callback(
 )->*mut core::ffi::c_void{
  let Some(callback)=callback else{return core::ptr::null_mut()};
  if flags & !KE_PROCESSOR_CHANGE_ADD_EXISTING != 0{return core::ptr::null_mut()}
+ // Invert the dependency: Ke registers an observer with HAL; HAL never calls
+ // into ntoskrnl by name or imports the executive module.
+ if crate::hal::register_processor_change_notifier(notify_processor_change).is_err() {
+  return core::ptr::null_mut();
+ }
  let slot={
   let mut table=PROCESSOR_CALLBACKS.lock();
   let Some(slot)=table.records.iter().enumerate().position(|(i,r)|!r.active && PROCESSOR_CALLBACK_IN_FLIGHT[i].load(Ordering::Acquire)==0) else{return core::ptr::null_mut()};
