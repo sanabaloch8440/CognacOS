@@ -184,12 +184,16 @@ pub fn complete_wait(id:u64,status:i32)->Result<(),ThreadError>{
     let mut table=THREADS.lock();
     let t=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty).ok_or(ThreadError::InvalidState)?;
     t.wait_status=status;
+    let affinity=t.affinity;
     match t.state {
-        ThreadState::Blocked=>{t.state=ThreadState::Ready;Ok(())},
-        ThreadState::Running=>{t.wake_pending=true;Ok(())},
-        ThreadState::Ready=>Ok(()),
-        ThreadState::Exited|ThreadState::Empty=>Err(ThreadError::InvalidState),
+        ThreadState::Blocked=>t.state=ThreadState::Ready,
+        ThreadState::Running=>t.wake_pending=true,
+        ThreadState::Ready=>{},
+        ThreadState::Exited|ThreadState::Empty=>return Err(ThreadError::InvalidState),
     }
+    drop(table);
+    notify_affinity(affinity);
+    Ok(())
 }
 pub fn take_wait_status()->Option<i32>{
     let id=current_thread_id()?;
@@ -235,7 +239,13 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
     if online_cpus==0 || online_cpus>crate::hal::MAX_CPUS { return false; }
     *STRESS_LOCK.lock()=0;
     STRESS_COMPLETED.store(0,core::sync::atomic::Ordering::Release);
-    let affinity=if online_cpus>=64 {u64::MAX} else {(1u64<<online_cpus)-1};
+    let mut affinity=0u64;
+    for cpu in 0..crate::hal::MAX_CPUS {
+        if crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE) {
+            affinity|=1u64<<cpu;
+        }
+    }
+    if affinity.count_ones() as usize != online_cpus { return false; }
     let mut ids=[0u64;8];
     for slot in 0..8 {
         let stack=unsafe { &mut *core::ptr::addr_of_mut!(STRESS_STACKS[slot]) };
