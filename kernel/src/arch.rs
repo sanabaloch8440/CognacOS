@@ -1122,7 +1122,7 @@ pub extern "C" fn rdotos_exception_dispatch(vector: u64, error: u64, frame: *con
             let recovery = EXPECTED_PROTECTION_RECOVERY.load(core::sync::atomic::Ordering::Relaxed);
             EXPECTED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
             OBSERVED_PROTECTION_FAULT.store(expected, core::sync::atomic::Ordering::Release);
-            unsafe { frame.add(17).write(recovery); }
+            unsafe { (frame as *mut u64).add(17).write(recovery); }
             return 1;
         }
     }
