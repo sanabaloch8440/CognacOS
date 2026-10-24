@@ -350,3 +350,19 @@ mod processor_callback_tests {
         assert_eq!(CALLS.load(Ordering::Acquire),1);
     }
 }
+
+
+#[cfg(test)]
+mod logical_processor_layout_tests {
+    use super::*;
+    #[test]
+    fn single_core_relationship_record_has_expected_x64_offsets() {
+        let mut bytes=[0u8;PROCESSOR_CORE_RECORD_SIZE];
+        unsafe{write_processor_core_record(bytes.as_mut_ptr(),3);}
+        assert_eq!(u32::from_le_bytes(bytes[0..4].try_into().unwrap()),0);
+        assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()),48);
+        assert_eq!(u16::from_le_bytes(bytes[30..32].try_into().unwrap()),1);
+        assert_eq!(u64::from_le_bytes(bytes[32..40].try_into().unwrap()),8);
+        assert_eq!(u16::from_le_bytes(bytes[40..42].try_into().unwrap()),0);
+    }
+}
