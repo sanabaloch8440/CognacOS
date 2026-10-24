@@ -323,3 +323,12 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [ ] Validate that HAL IPI dispatch does not starve reschedule/TLB work under simultaneous SMP stress.
 
 The new routines are marked partial until the multi-vCPU workflow passes. The current comparison reports 169 tracked names, 100% source-level declaration/resolver coverage, 51/169 strict scoped behavior matches (30.2%), and a project-defined combined score of 65.1%; this is not a Windows driver compatibility guarantee.
+
+
+## Ke runtime maintainability refactor (2026-10-24)
+
+- [x] Split the monolithic Ke runtime source into functional source files under `kernel/src/ntoskrnl/ke/runtime/`.
+- [x] Keep `runtime.rs` as the existing resolver-facing facade and preserve routine signatures and shared state during the source-only refactor.
+- [x] Group processor/IRQL, dispatcher objects, time, waits/APC, interrupt/scheduler, device queue, executive queue, spin locks, mutexes, affinity, and timer/DPC/rendezvous code separately.
+- [ ] Validate the refactor with the latest freestanding build, UEFI/QEMU smoke test, and 2/4/8-vCPU SMP workflow.
+- [ ] In a later cleanup, turn the included source fragments into independently scoped Rust modules after defining explicit shared-state interfaces.
