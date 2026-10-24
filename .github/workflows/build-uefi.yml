@@ -94,6 +94,12 @@ jobs:
           mkdir -p build
           rustc --edition=2021 --test kernel/src/ntoskrnl/ke/timer_generation.rs -o build/ke-timer-generation-tests
           build/ke-timer-generation-tests
+      - name: Run host-side registry runtime tests
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          rustc --edition=2024 --test kernel/src/ntoskrnl/cm/runtime.rs -o build/registry-tests
+          build/registry-tests
       - name: Build freestanding Rust kernel with project linker script
         env:
           RUSTFLAGS: -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
