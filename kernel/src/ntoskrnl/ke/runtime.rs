@@ -676,7 +676,7 @@ pub unsafe extern "win64" fn ke_query_active_processors() -> u64 {
 pub unsafe extern "win64" fn ke_query_time_increment() -> u32 {
     // NT's default 100-ns time increment is not exposed until the timer source
     // is calibrated; return zero rather than advertise a fabricated tick rate.
-    if crate::apic::tsc_frequency_hz().is_some() { 156_250 } else { 0 }
+    if crate::apic::local_timer_active() { 156_250 } else { 0 }
 }
 pub unsafe extern "win64" fn ke_should_yield_processor() -> u8 {
     crate::thread::has_ready_threads() as u8
