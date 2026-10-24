@@ -180,13 +180,17 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: bootstrap CPU-local HAL setup failed.\r\n");
             halt();
         }
-        ntoskrnl::ex::runtime::initialize_threading();
+        ntoskrnl::ke::runtime::ke_initialize_executive();
         let bsp_stack_top = match info.kernel_stack_virtual_guard.checked_add(stack_allocation_bytes) {
             Some(top) if top != 0 => top,
             _ => { serial_write(b"FATAL: bootstrap stack-top calculation overflow.\r\n"); halt(); }
         };
         if !thread::set_idle_stack_top(0, bsp_stack_top) {
             serial_write(b"FATAL: BSP idle stack/TSS RSP0 setup failed.\r\n");
+            halt();
+        }
+        if !ntoskrnl::ke::runtime::ki_initialize_processor(0) {
+            serial_write(b"FATAL: KiInitializeProcessor BSP validation failed.\r\n");
             halt();
         }
         user::initialize();
@@ -638,7 +642,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Protection self-tests passed: read-only write trapped and NX execution trapped.\r\n");
         // The NT executive owns processor-start sequencing; the platform layer
         // supplies firmware handoff data and reports the resulting status.
-        let processor_startup = ntoskrnl::ex::runtime::initialize_processors(
+        let processor_startup = ntoskrnl::ke::runtime::ki_start_all_processors(
             info.pml4_physical,
             info.ap_trampoline_physical,
             info.rsdp_address,
@@ -688,6 +692,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Kernel VM extent stress and SMP TLB shootdown self-test passed.\r\n");
+        if !ntoskrnl::ke::runtime::ki_initialize_kernel(&processor_startup) {
+            serial_write(b"FATAL: KiInitializeKernel executive validation failed.\r\n");
+            halt();
+        }
+        serial_write(b"KiInitializeKernel startup gate passed.\r\n");
 
         // Exercise an independent user address space without activating ring 3.
         let mut address_space = match unsafe { vm::AddressSpace::new(info.pml4_physical) } {
