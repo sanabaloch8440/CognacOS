@@ -519,7 +519,12 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [x] Add explicit-length self-relative descriptor control/component queries with bounds checks and output-pointer validation.
 - [x] Add pure privilege-bitmap and allow/deny mask predicates, plus focused tests for truncation and malformed ranges.
 - [ ] Run the current workflow and verify the new Se host tests compile and execute.
-- [ ] Implement and test a real ACE evaluator with generic mapping, deny/allow ordering, object ACE handling, restricted-token second pass, and privilege grants before exposing SeAccessCheck.
-- [ ] Integrate these primitives with real Ps token ownership and safe user-memory capture; extension helpers are not Windows export ABI replacements.
+- [x] Add a bounded `SeAccessCheck` export and exact-name resolver path for self-relative descriptors, generic mapping, owner `READ_CONTROL`/`WRITE_DAC`, and basic allow/deny ACE evaluation against explicitly registered token SIDs and Everyone.
+- [x] Add an internal copied-SID token identity registry with validation, unregister/rundown hook, and a focused access-granted unit test.
+- [ ] Integrate SID registration/unregistration into Ps token creation, duplication, impersonation, and rundown; current identity registry is not automatically populated by process/token lifecycle.
+- [ ] Add object/callback ACEs, restricted-token second evaluation, privilege grants, AppContainer/capability checks, audit/SACL policy, and fault-safe user-buffer capture before claiming Windows 11 access-check parity.
 
 - [x] Extend bounded inspection with SID authority fields, ACL metadata/ACE-type counting, basic SID-in-ACL search, descriptor component presence, and access/privilege mask utilities.
+
+
+**SeAccessCheck status (2026-10-25):** a real, name-resolved Windows-named entry point now exists, with a deliberately bounded basic-ACE evaluator and an internal token-SID registration hook. It is not full Security Reference Monitor compatibility: token lifecycle is not wired automatically, the routine requires a caller-locked subject context, descriptor access assumes a readable 4-KiB window, unsupported ACE families fail closed, and WDK conformance has not been established.
