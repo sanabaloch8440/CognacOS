@@ -270,9 +270,9 @@ pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
  Ok((BASE+start as u64*PAGE) as *mut u8)
 }
 
-/// Handle a supervisor not-present fault in a reserved pageable pool extent.
-/// This is demand-zero page-in only; dirty-page eviction and pagefile I/O are
-/// intentionally not claimed until a real backing-store driver exists.
+/// Handle supervisor non-present faults in the RAM direct-map window and the
+/// pageable virtual pool. Pageable extents support demand-zero allocation and
+/// pagefile-backed page-in; unrelated/protection faults remain fatal.
 pub fn handle_page_fault(address:u64,error_code:u64)->bool {
  if error_code&((1<<2)|(1<<3)|(1<<4))!=0{return false}
  let page_va=address&!(PAGE-1);let root=ROOT.load(Ordering::Acquire);
