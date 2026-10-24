@@ -76,7 +76,7 @@ pub fn reference_eprocess(pointer: *mut core::ffi::c_void) -> bool {
 pub fn dereference_eprocess(pointer: *mut core::ffi::c_void) -> bool {
     let mut registry = TABLE.lock();
     let Some(p) = registry.0.iter_mut().find(|p|
-        p as *mut EProcess as *mut core::ffi::c_void == pointer
+        core::ptr::addr_of!(**p) as *mut EProcess as *mut core::ffi::c_void == pointer
             && p.used && p.magic == EPROCESS_MAGIC) else { return false; };
     if p.references == 0 { return false; }
     p.references -= 1;
