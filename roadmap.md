@@ -8,8 +8,8 @@ This roadmap tracks code and validation currently present in the repository, not
 
 | Subsystem | Status | Main gaps |
 | --- | --- | --- |
-| UEFI boot and kernel handoff | Implemented; CI/QEMU validated | Signature-based verified boot and stronger ELF tests |
-| Memory management/protection | Foundation implemented; boot-tested | Complete mappings, high memory, fault-negative tests |
+| UEFI boot and kernel handoff | PE32+ native kernel handoff; CI/QEMU validated | Signature-based verified boot, relocatable images, broader malformed-image tests |
+| Memory management/protection | High-half mappings and RAM direct-map foundation; boot-tested | Fine-grained descriptor edges, more fault-negative tests, full isolation policy |
 | PE32+ loader and ring-3 test path | Foundation implemented; boot-tested | Full NT loader, unwind/exception handling, Windows user-mode DLLs |
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
 | SMP/AP startup | Experimental | Reliable multi-vCPU boot, per-CPU interrupt setup, stress tests |
@@ -20,7 +20,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
-**Latest checked verification:** GitHub Actions run [40072557930](https://github.com/umarfarooq7869/RdotOS/actions/runs/40072557930) succeeded for commit 9956d639, including the workflow's QEMU boot smoke test and serial assertions. This validates only the paths covered by CI; it does not establish support for all hardware, all SMP conditions, or Windows drivers.
+**Latest checked verification before this documentation update:** GitHub Actions run [40076832024](https://github.com/umarfarooq7869/RdotOS/actions/runs/40076832024) succeeded for commit `519a1750d1c9745c6924b5748a1577f178fd049f`. It passed host allocator and ext-parser tests, kernel and UEFI-loader builds, ELF-to-PE32+ conversion and header checks, EFI image packaging, and the OVMF/QEMU smoke test with serial assertions. Documentation changes trigger another workflow run; check the badge/actions page for its result. CI covers only its listed paths and does not establish support for all hardware or Windows drivers.
 
 ### Status legend
 
@@ -31,14 +31,17 @@ This roadmap tracks code and validation currently present in the repository, not
 ## 1. Boot chain and kernel foundation
 
 - [x] Rust UEFI application and separate freestanding no_std Rust kernel.
-- [x] Bounded ELF64 little-endian x86-64 kernel loading with core header and PT_LOAD range validation.
+- [x] Convert the fixed-base, linked ELF64 x86-64 kernel to a PE32+ AMD64 native-subsystem image; validate PE headers, fixed image base, section RVAs, and no-import/no-relocation policy in CI.
+- [x] Strict bootloader PE32+ section validation and physical backing allocation; verify the build-pinned SHA-256 digest before loading.
+- [x] Enter the fixed high-half kernel through a low identity-mapped CR3 transition trampoline; validate the active CR3 and critical live bootstrap dependencies.
 - [x] Versioned boot information, UEFI boot-services exit, and kernel handoff.
 - [x] Build-time kernel SHA-256 pin; reject missing or mismatched digests.
 - [x] Kernel-owned GDT/IDT and exception diagnostics for CPU vectors 0–31.
 - [x] COM1 diagnostics and OVMF/QEMU boot validation in CI.
 - [ ] Dedicated IST stacks for double-fault and NMI handling.
-- [ ] ELF unit/fuzz tests for malformed inputs, overlapping segments, overflow, and permission policy.
-- [ ] Validate final permissions for every loaded segment and reject unexpected layouts.
+- [ ] Expand converter and PE-loader unit/fuzz tests for malformed inputs, overlapping sections, arithmetic overflow, unsupported directories, and permission policy.
+- [x] Validate high-half PE section backing, executable entry point, and section layout; enforce 4 KiB section permissions in the kernel.
+- [ ] Add more negative tests for malformed PE images and section permission combinations.
 - [ ] Add framebuffer handoff and document the boot-information ABI.
 - [ ] Add asymmetric signature verification, signed trust policy, key enrollment/update, and revocation.
 - [ ] Add measured-boot event logging, TPM 2.0 measurements, and reproducible signed releases.
@@ -54,12 +57,16 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Add private user address spaces, supervisor-only shared kernel mappings, checked user-copy helpers, and W^X validation in implemented paths.
 - [x] Add kernel virtual mapping/reclamation and pagefile-backed eviction/page-in test paths.
 - [x] Add NT memory-manager physical translation, address-validity, and checked-copy self-tests.
-- [ ] Replace the remaining broad 2 MiB identity map with explicit per-region mappings.
-- [ ] Add a safe direct map for RAM above 4 GiB.
-- [ ] Test allocator descriptor stride, filtering, alignment, exhaustion, invalid maps, and region capacity; harden concurrency.
+- [x] Build bootstrap identity mappings from the final UEFI memory-map descriptors, leaving uncovered physical holes not-present and explicitly mapping APIC MMIO windows.
+- [ ] Replace 2 MiB descriptor-interior leaves with finer 4 KiB mappings at descriptor boundaries and where stricter per-region permissions are required.
+- [x] Add a demand-mapped direct-map window for UEFI-described RAM above 4 GiB; reject reserved/MMIO addresses and validate the path in the 5 GiB QEMU boot test.
+- [x] Add host-side allocator-map tests and transactional descriptor parsing with firmware descriptor stride and conventional-memory filtering.
+- [ ] Expand tests for allocator exhaustion, region-capacity edges, overlap/duplicate descriptors, high-memory allocation/free, and SMP concurrency.
 - [ ] Add deliberate write-to-read-only and execute-from-NX fault tests.
-- [ ] Add a tested higher-half transition and validate all live pointers, stacks, and descriptor state.
-- [ ] Enable SMAP only after all guarded user access paths use the required STAC/CLAC protocol.
+- [x] Enter the high-half kernel and validate active CR3, kernel-section virtual-to-physical backing, current stack translation, low boot dependencies, and an unmapped virtual stack guard.
+- [ ] Extend validation to every live pointer/descriptor and all future bootstrap allocations as the boot-info ABI evolves.
+- [x] Keep SMAP disabled until guarded user-access paths are fully audited; SMEP and supported NX/W^X protections are configured independently.
+- [ ] Enable SMAP only after all guarded user-access paths consistently use the required STAC/CLAC protocol.
 - [ ] Complete pageable memory semantics, working-set policy, and robust page-fault recovery.
 
 ## 3. ACPI, architecture, HAL, and SMP
@@ -177,9 +184,9 @@ The parser is read-only and not a production filesystem driver. The original Ext
 ## 11. Testing and release engineering
 
 - [x] Build the UEFI application and freestanding kernel in GitHub Actions.
-- [x] Validate the kernel ELF and package a GPT/FAT EFI image.
+- [x] Validate the linked ELF source and generated PE32+ native kernel; package the PE32+ image in a GPT/FAT EFI System Partition.
 - [x] Run host-side ext parser tests.
-- [x] Boot with OVMF/QEMU and assert selected serial markers for kernel entry and subsystem self-tests.
+- [x] Boot with OVMF/QEMU (5 GiB RAM, four vCPUs) and assert serial markers for PE32+ handoff, high-half/page-table validation, direct-map/memory-manager checks, and selected subsystem self-tests.
 - [ ] Add focused tests for allocator, scheduler, dispatcher, HAL exports, DMA, and parser boundaries.
 - [ ] Add repeatable multi-vCPU, timeout, cancellation, and concurrency stress tests.
 - [ ] Fuzz ELF, PE, ACPI, and filesystem parsers.
@@ -189,9 +196,9 @@ The parser is read-only and not a production filesystem driver. The original Ext
 
 ## Recommended implementation order
 
-1. Keep CI green and verify the full build plus QEMU workflow after each change.
-2. Complete real context switching, scheduler queue integration, timer interrupts, and multi-vCPU stress tests.
-3. Tighten memory mappings, allocator edge cases, page faults, and ELF/PE parser tests.
+1. Keep CI green and expand PE32+ converter/loader tests, especially malformed headers, section overlap, and permission edge cases.
+2. Finish fine-grained bootstrap mapping boundaries and validate all live boot dependencies and direct-map permissions.
+3. Complete real context switching, scheduler queue integration, timer interrupts, and multi-vCPU stress tests.
 4. Implement real DMA mappings, IOMMU initialization, PCI enumeration, and one end-to-end storage driver.
 5. Expand Windows compatibility through small, tested batches of ABI-correct RTL/NT/HAL routines and executive semantics.
 6. Add signed boot, stronger isolation, power management, graphics, and release-grade hardware validation.
