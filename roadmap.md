@@ -301,7 +301,8 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [ ] Implement actual kernel/user APC objects, delivery, rundown, and alert-vs-APC status distinctions.
 - [ ] Run threaded DPC callbacks on PASSIVE_LEVEL worker threads; current threaded-DPC metadata still dispatches at DISPATCH_LEVEL.
 - [x] Validate cross-processor `KeGenericCallDpc` and Synchronize/Done completion barriers across the 2/4/8-vCPU QEMU matrix (workflow run #1162).
-- [ ] Make `KeFlushQueuedDpcs` a strict cross-processor drain with explicit failure reporting; current bounded fallback can return while queued work remains, and target-CPU delivery/offline-CPU and timer-rundown races still need stress tests.
+- [x] Remove the bounded-round early return from `KeFlushQueuedDpcs`; it now repeats cross-processor rendezvous and checks queued, in-flight, and remote-dispatcher state before returning. The flush can still wait indefinitely if a processor remains marked online but stops participating.
+- [ ] Add safe recovery/diagnostics for an online-but-unresponsive CPU, and stress target-CPU delivery plus timer/DPC rundown races.
 - [ ] Integrate timer deadlines with per-CPU clock events, preemption, suspend/resume, and race-tested timeout/signal completion.
 - [ ] Complete KQUEUE concurrency limits, wait-list scheduling, rundown lifecycle, and Windows-compatible queue result semantics.
 - [ ] Validate mutant/guarded-mutex recursion, abandoned-state return codes, and all release-vs-timeout races against WDK behavior.
@@ -341,7 +342,8 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Add import-resolver mappings and self-test assertions for all four exports.
 - [x] Run a boot-time Ke rendezvous self-test that checks exactly-once callback counts and DPC Synchronize/Done barrier returns on the online CPU set.
 - [x] Update `WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md` with public signatures, call paths, limitations, and the recalculated project score.
-- [ ] Validate callback counts, barriers, callback IRQL, and return values in QEMU with 2, 4, and 8 vCPUs.
+- [x] Validate broadcast callback counts and DPC Synchronize/Done barriers in QEMU with 2, 4, and 8 vCPUs (workflow #1162).
+- [ ] Add timeout/failure recovery for an online-but-unresponsive processor and validate under concurrent HAL IPI stress.
 - [ ] Add bounded timeout/failure recovery for a processor that goes offline or fails to service the broadcast IPI.
 - [ ] Validate that HAL IPI dispatch does not starve reschedule/TLB work under simultaneous SMP stress.
 
@@ -353,7 +355,7 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [x] Split the monolithic Ke runtime source into functional source files under `kernel/src/ntoskrnl/ke/runtime/`.
 - [x] Keep `runtime.rs` as the existing resolver-facing facade and preserve routine signatures and shared state during the source-only refactor.
 - [x] Group processor/IRQL, dispatcher objects, time, waits/APC, interrupt/scheduler, device queue, executive queue, spin locks, mutexes, affinity, and timer/DPC/rendezvous code separately.
-- [ ] Validate the refactor with the latest freestanding build, UEFI/QEMU smoke test, and 2/4/8-vCPU SMP workflow.
+- [x] Validate the source-fragment refactor with freestanding build, UEFI/QEMU smoke, and the 2/4/8-vCPU SMP workflow (#1162); the later standalone timer-test and cancellation changes still require a fresh workflow run.
 - [ ] In a later cleanup, turn the included source fragments into independently scoped Rust modules after defining explicit shared-state interfaces.
 
 
