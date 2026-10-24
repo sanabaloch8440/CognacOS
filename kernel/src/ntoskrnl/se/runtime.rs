@@ -849,11 +849,34 @@ fn evaluate_dacl(token: *mut c_void, sd: &[u8], requested: u32, owner_rights: u3
 /// mapping, owner READ_CONTROL/WRITE_DAC, and basic allow/deny ACEs for registered
 /// token SIDs plus Everyone. It intentionally fails closed for unknown tokens,
 /// malformed descriptors, unsupported ACE forms, and absent token identity metadata.
+static SUBJECT_CONTEXT_LOCK: AtomicBool = AtomicBool::new(false);
+fn acquire_subject_context_lock() {
+    while SUBJECT_CONTEXT_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        core::hint::spin_loop();
+    }
+}
+fn release_subject_context_lock() {
+    SUBJECT_CONTEXT_LOCK.store(false, Ordering::Release);
+}
+
+/// Windows SeLockSubjectContext ABI. RdotOS currently serializes subject-context
+/// operations through one kernel lock until per-token/process locks are available.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeLockSubjectContext(subject_context: *mut SeSecuritySubjectContext) {
+    if subject_context.is_null() { return; }
+    acquire_subject_context_lock();
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeUnlockSubjectContext(subject_context: *mut SeSecuritySubjectContext) {
+    if subject_context.is_null() { return; }
+    release_subject_context_lock();
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn SeAccessCheck(
     security_descriptor: *const c_void,
     subject_context: *mut SeSecuritySubjectContext,
-    subject_context_locked: u8,
+    subject_context_locked: *mut u8,
     desired_access: u32,
     previously_granted_access: u32,
     privileges: *mut *mut c_void,
@@ -866,35 +889,53 @@ pub unsafe extern "win64" fn SeAccessCheck(
     if !privileges.is_null() { unsafe { core::ptr::write_unaligned(privileges, core::ptr::null_mut()); } }
     if !granted_access.is_null() { unsafe { core::ptr::write_unaligned(granted_access, 0); } }
     if !access_status.is_null() { unsafe { core::ptr::write_unaligned(access_status, STATUS_ACCESS_DENIED); } }
-    if security_descriptor.is_null() || subject_context.is_null() || generic_mapping.is_null()
-        || granted_access.is_null() || access_status.is_null() || access_mode > 1
-        || subject_context_locked == 0 {
+    if security_descriptor.is_null() || subject_context.is_null() || subject_context_locked.is_null()
+        || generic_mapping.is_null() || granted_access.is_null() || access_status.is_null() || access_mode > 1 {
         return 0;
     }
-    let context = unsafe { core::ptr::read_unaligned(subject_context) };
-    let token = if !context.client_token.is_null() {
-        if context.impersonation_level < 2 { return 0; }
-        context.client_token
-    } else { context.primary_token };
-    if token.is_null() || token_meta(token).is_none() { return 0; }
-    let mapping = unsafe { core::ptr::read_unaligned(generic_mapping) };
-    let desired = map_generic_access(desired_access, &mapping);
-    let previous = map_generic_access(previously_granted_access, &mapping);
-    let sd = unsafe { core::slice::from_raw_parts(security_descriptor.cast::<u8>(), 4096) };
-    if unsafe { SeValidSecurityDescriptor(security_descriptor) } == 0 { return 0; }
-    let owner = match descriptor_component(sd, 4, false) { Some(s) => s, None => &[] };
-    let owner_rights = if !owner.is_empty() && sid_matches_subject(token, owner) { 0x0002_0000 | 0x0004_0000 } else { 0 };
-    let max_allowed = desired & 0x0200_0000 != 0;
-    let requested = if max_allowed { 0x000F_FFFF } else { desired & !0x0200_0000 };
-    let allowed = match evaluate_dacl(token, sd, requested, owner_rights) { Some(v) => v, None => return 0 };
-    let explicit = desired & !0x0200_0000;
-    if explicit & !(allowed | previous) != 0 { return 0; }
-    let grant = if max_allowed { (allowed | previous) & !0x0200_0000 } else { explicit | previous };
-    unsafe {
-        core::ptr::write_unaligned(granted_access, grant);
-        core::ptr::write_unaligned(access_status, STATUS_SUCCESS);
+
+    let already_locked = unsafe { core::ptr::read_unaligned(subject_context_locked) } != 0;
+    if !already_locked {
+        acquire_subject_context_lock();
+        unsafe { core::ptr::write_unaligned(subject_context_locked, 1); }
     }
-    1
+    let success = (|| -> bool {
+        let context = unsafe { core::ptr::read_unaligned(subject_context) };
+        let token = if !context.client_token.is_null() {
+            if context.impersonation_level < 2 { return false; }
+            context.client_token
+        } else { context.primary_token };
+        if token.is_null() || token_meta(token).is_none() { return false; }
+        let mapping = unsafe { core::ptr::read_unaligned(generic_mapping) };
+        let desired = map_generic_access(desired_access, &mapping);
+        let previous = map_generic_access(previously_granted_access, &mapping);
+        // SeAccessCheck consumes a captured kernel security descriptor. User-mode
+        // callers must use the capture/probe path before passing this pointer.
+        let sd = unsafe { core::slice::from_raw_parts(security_descriptor.cast::<u8>(), 4096) };
+        if unsafe { SeValidSecurityDescriptor(security_descriptor) } == 0 { return false; }
+        let owner = match descriptor_component(sd, 4, false) { Some(s) => s, None => &[] };
+        let owner_rights = if !owner.is_empty() && sid_matches_subject(token, owner) {
+            0x0002_0000 | 0x0004_0000
+        } else { 0 };
+        let max_allowed = desired & 0x0200_0000 != 0;
+        let requested = if max_allowed { 0x000F_FFFF } else { desired & !0x0200_0000 };
+        let allowed = match evaluate_dacl(token, sd, requested, owner_rights) {
+            Some(v) => v, None => return false,
+        };
+        let explicit = desired & !0x0200_0000;
+        if explicit & !(allowed | previous) != 0 { return false; }
+        let grant = if max_allowed { (allowed | previous) & !0x0200_0000 } else { explicit | previous };
+        unsafe {
+            core::ptr::write_unaligned(granted_access, grant);
+            core::ptr::write_unaligned(access_status, STATUS_SUCCESS);
+        }
+        true
+    })();
+    if !already_locked {
+        unsafe { core::ptr::write_unaligned(subject_context_locked, 0); }
+        release_subject_context_lock();
+    }
+    success as u8
 }
 
 #[cfg(test)]
