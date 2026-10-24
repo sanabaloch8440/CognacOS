@@ -85,11 +85,8 @@ jobs:
           mkdir -p build
           rustc --edition=2021 --test kernel/src/memory.rs -o build/memory-tests
           build/memory-tests
-      - name: Run host-side ext filesystem parser tests
-        run: |
-          mkdir -p build
-          rustc --edition=2021 --test kernel/src/extfs.rs -o build/extfs-tests
-          build/extfs-tests
+      - name: Run ext filesystem driver host tests
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml
       - name: Run host-side Ke timer-generation regression tests
         run: |
           mkdir -p build
