@@ -846,7 +846,9 @@ pub(crate) fn ki_start_all_processors(
 /// KiInitializeKernel is the fail-closed validation gate used after the
 /// processor-start phase and before later boot-time self-tests continue.
 pub(crate) fn ki_initialize_kernel(report: &ProcessorStartupReport) -> bool {
-    report.scheduler_stress_passed && report.vm_stress_passed
+    report.scheduler_stress_passed
+        && report.vm_stress_passed
+        && threaded_dpc_self_test()
 }
 
 /// Minimal Ke processor-query routines backed by the live HAL processor table.
