@@ -197,7 +197,9 @@ jobs:
             cat "$log"
             expected_aps=$((cpus - 1))
             grep -F "SMP AP startup complete; online application processors: $expected_aps; interrupt-driven TLB shootdowns enabled." "$log"
+            grep -F "Per-CPU TSS/IST setup self-test passed." "$log"
             grep -F "Per-CPU interrupt setup stress passed: 64 acknowledged IPIs per online AP." "$log"
+            grep -F "SMP scheduler, cross-CPU wakeup, contended-lock, and thread teardown stress passed." "$log"
             grep -F "Kernel VM extent stress and SMP TLB shootdown self-test passed." "$log"
           done
       - name: Upload Rust artifacts and boot log
