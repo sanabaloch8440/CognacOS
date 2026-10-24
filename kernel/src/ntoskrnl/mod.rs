@@ -163,7 +163,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   ImportSymbol::Ordinal(ordinal) => manifest_26100::ENTRIES.iter().find(|e|e.ordinal==ordinal)?.name?,
  };
  if matches!(name, "KeQueryPerformanceCounter" | "KeStallExecutionProcessor")
-     && crate::apic::tsc_frequency_hz().is_none() {
+     && crate::hal::query_performance_frequency_hz().is_none() {
   return None;
  }
  let address = match name {
@@ -721,12 +721,12 @@ pub fn self_test() -> bool {
  // on modern x64 releases, also through the kernel. Both import paths must
  // converge on one implementation so counter epoch/frequency cannot diverge.
  && (resolve(b"hal.dll",ImportSymbol::Name(b"KeQueryPerformanceCounter"))
-     == crate::apic::tsc_frequency_hz().map(|_| ke::runtime::ke_query_performance_counter as usize as u64))
+     == crate::hal::query_performance_frequency_hz().map(|_| ke::runtime::ke_query_performance_counter as usize as u64))
  && (resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeQueryPerformanceCounter"))
-     == crate::apic::tsc_frequency_hz().map(|_| ke::runtime::ke_query_performance_counter as usize as u64))
+     == crate::hal::query_performance_frequency_hz().map(|_| ke::runtime::ke_query_performance_counter as usize as u64))
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeFlushWriteBuffer")).is_some()
  && (resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"KeStallExecutionProcessor")).is_some()
-     == crate::apic::tsc_frequency_hz().is_some())
+     == crate::hal::query_performance_frequency_hz().is_some())
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePoolWithTagPriority")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePoolWithTag")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePoolWithTag")).is_some()
