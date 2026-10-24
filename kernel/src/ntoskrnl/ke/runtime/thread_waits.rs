@@ -269,6 +269,18 @@ pub unsafe extern "win64" fn ke_query_node_active_affinity2(
 }
 
 static mut MULTIWAIT_TEST_MUTANT_A:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
+static mut MULTIWAIT_BLOCKING_TEST_MUTANT:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
+static mut MULTIWAIT_BLOCKING_TEST_STACK:[u8;8192]=[0;8192];
+static MULTIWAIT_BLOCKING_TEST_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static MULTIWAIT_BLOCKING_TEST_STATUS:core::sync::atomic::AtomicI32=core::sync::atomic::AtomicI32::new(STATUS_NOT_IMPLEMENTED);
+extern "C" fn multiwait_blocking_mutant_waiter(_argument:*mut core::ffi::c_void){
+    MULTIWAIT_BLOCKING_TEST_STARTED.store(true,Ordering::Release);
+    let mutant=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_BLOCKING_TEST_MUTANT)};
+    let objects=[mutant];
+    let status=unsafe{ke_wait_for_multiple_objects(1,objects.as_ptr(),0,0,0,0,core::ptr::null(),core::ptr::null_mut())};
+    MULTIWAIT_BLOCKING_TEST_STATUS.store(status,Ordering::Release);
+    if status==STATUS_SUCCESS{let _=unsafe{ke_release_mutant(mutant,0,0,0)};}
+}
 static mut MULTIWAIT_TEST_MUTANT_B:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
 static mut MULTIWAIT_TEST_MUTANT_C:DispatcherHeader=DispatcherHeader{kind:MUTANT_OBJECT,absolute:0,size:14,inserted:0,signal_state:1,wait_list_flink:0,wait_list_blink:0};
 static mut MULTIWAIT_TEST_QUEUE:core::mem::MaybeUninit<ExecutiveQueue>=core::mem::MaybeUninit::uninit();
@@ -297,6 +309,28 @@ pub(crate) fn dispatcher_extended_self_test()->bool{
     let _=unsafe{ke_release_mutant(b,0,0,0)};
     let _=unsafe{ke_release_mutant(c,0,0,0)};
     if unsafe{ke_read_state_mutant(b)}!=1||unsafe{ke_read_state_mutant(c)}!=1{return false}
+
+    let blocking_mutant=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_BLOCKING_TEST_MUTANT)};
+    unsafe{ke_initialize_mutant(blocking_mutant,1);}
+    MULTIWAIT_BLOCKING_TEST_STARTED.store(false,Ordering::Release);
+    MULTIWAIT_BLOCKING_TEST_STATUS.store(STATUS_NOT_IMPLEMENTED,Ordering::Release);
+    let cpu=match crate::thread::current_thread_id(){Some(_)=>crate::hal::current_cpu_local().map(|l|l.logical_id.load(Ordering::Acquire) as usize).unwrap_or(0),None=>return false};
+    let stack=unsafe{core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(MULTIWAIT_BLOCKING_TEST_STACK).cast::<u8>(),8192)};
+    let waiter=match crate::thread::spawn(stack,1u64<<cpu,multiwait_blocking_mutant_waiter,core::ptr::null_mut()){Ok(id)=>id,Err(_)=>return false};
+    let mut spins=0usize;
+    while spins<10000&&crate::thread::state(waiter)!=Some(crate::thread::ThreadState::Blocked){
+        let _=crate::thread::yield_current();spins+=1;
+    }
+    if crate::thread::state(waiter)!=Some(crate::thread::ThreadState::Blocked){
+        let _=unsafe{ke_release_mutant(blocking_mutant,0,0,0)};return false
+    }
+    let _=unsafe{ke_release_mutant(blocking_mutant,0,0,0)};
+    spins=0;
+    while spins<10000&&crate::thread::state(waiter)!=Some(crate::thread::ThreadState::Exited){
+        let _=crate::thread::yield_current();spins+=1;
+    }
+    if crate::thread::state(waiter)!=Some(crate::thread::ThreadState::Exited)
+        ||MULTIWAIT_BLOCKING_TEST_STATUS.load(Ordering::Acquire)!=STATUS_SUCCESS{return false}
 
     let queue=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_TEST_QUEUE).cast::<ExecutiveQueue>()};
     unsafe{ke_initialize_queue(queue,1);}
