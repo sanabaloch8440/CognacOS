@@ -142,6 +142,7 @@ pub unsafe extern "win64" fn ke_lower_irql(new_irql: u8) {
     let _ = unsafe { crate::apic::set_task_priority(new_irql) };
     let flags = pop_irq_state();
     unsafe { irq_restore(flags); }
+    if new_irql < DISPATCH_LEVEL { dispatch_queued_dpcs(); }
 }
 
 /// KeAcquireSpinLock: disable local interrupts, raise logical IRQL, then acquire
@@ -1005,9 +1006,7 @@ pub unsafe extern "win64" fn ke_remove_queue(queue:*mut ExecutiveQueue,wait_mode
     if status!=STATUS_SUCCESS{return status as isize as *mut ListEntry}
     if let Some(entry)=crate::thread::take_queue_entry(){return entry as *mut ListEntry}
     let _guard=DISPATCHER_OBJECT_LOCK.lock();
-    let state=unsafe{&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()};
     let entry=unsafe{list_remove_head(core::ptr::addr_of_mut!((*queue).entry_list_head))};
-    if !entry.is_null(){state.fetch_sub(1,Ordering::AcqRel);}
     if entry.is_null(){STATUS_TIMEOUT as isize as *mut ListEntry}else{entry}
 }
 pub unsafe extern "win64" fn ke_rundown_queue(queue:*mut ExecutiveQueue)->*mut ListEntry{
@@ -1015,7 +1014,13 @@ pub unsafe extern "win64" fn ke_rundown_queue(queue:*mut ExecutiveQueue)->*mut L
     let _guard=DISPATCHER_OBJECT_LOCK.lock();
     let head=unsafe{core::ptr::addr_of_mut!((*queue).entry_list_head)};
     let first=unsafe{(*head).flink};
-    unsafe{list_initialize(head);(&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
+    unsafe{
+        (&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);
+        if first==head{list_initialize(head)}else{
+            let tail=(*head).blink;(*tail).flink=first;(*first).blink=tail;
+            (*head).flink=head;(*head).blink=head;
+        }
+    }
     let mut waiters=[crate::dispatcher::WokenWaiter{thread:0,timed_out:false};crate::dispatcher::MAX_WAITERS];
     let count=crate::dispatcher::wake_all_timed(queue as u64,&mut waiters);
     for waiter in waiters[..count].iter().copied(){
@@ -1409,7 +1414,10 @@ pub unsafe extern "win64" fn ke_insert_queue_dpc(dpc:*mut core::ffi::c_void,arg1
     let mut table=DPCS.lock();
     let Some(record)=table.records.iter_mut().find(|r|r.active&&r.object==dpc as usize) else{return 0};
     if record.queued{return 0}
-    record.arg1=arg1 as usize;record.arg2=arg2 as usize;record.queued=true;1
+    record.arg1=arg1 as usize;record.arg2=arg2 as usize;record.queued=true;
+    drop(table);
+    if CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire)<DISPATCH_LEVEL { dispatch_queued_dpcs(); }
+    1
 }
 pub unsafe extern "win64" fn ke_remove_queue_dpc(dpc:*mut core::ffi::c_void)->u8{
     if dpc.is_null(){return 0}
@@ -1468,6 +1476,9 @@ pub fn timer_tick(now:u64){
         }else{
             crate::dispatcher::wake_one_timed(timer as u64,&mut waiters[..1])
         };
+        if woke!=0 && unsafe{(*timer).kind}==TIMER_SYNCHRONIZATION{
+            unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
+        }
         for waiter in waiters[..woke].iter().copied(){
             let status=crate::dispatcher::complete_wait_group(waiter.thread,timer as u64,STATUS_SUCCESS,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
             let _=crate::thread::complete_wait(waiter.thread,status);
