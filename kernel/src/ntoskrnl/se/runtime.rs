@@ -79,6 +79,61 @@ pub unsafe extern "win64" fn SeValidSecurityDescriptor(descriptor: *const c_void
     1
 }
 
+
+/// Copy a user-mode self-relative security descriptor into kernel-owned storage.
+/// Every source page is translated and permission-checked through the currently
+/// bound process page tables; no user virtual pointer is directly dereferenced.
+pub(crate) unsafe fn se_internal_CaptureUserSecurityDescriptor(
+    source: *const c_void, destination: *mut u8, destination_length: usize,
+) -> i32 {
+    const STATUS_ACCESS_VIOLATION: i32 = 0xC000_0005u32 as i32;
+    if source.is_null() || destination.is_null() || destination_length < 4096 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut local = [0u8; 4096];
+    let mut header = [0u8; 20];
+    if unsafe { crate::process::copy_from_current_user(source as u64, &mut header) }.is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    if header[0] != 1 || u16le(&header, 2).is_none_or(|v| v & 0x8000 == 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    local[..20].copy_from_slice(&header);
+    for (field, is_acl) in [(4usize, false), (8, false), (12, true), (16, true)] {
+        let offset = u32le(&local, field).ok_or(STATUS_INVALID_PARAMETER);
+        let offset = match offset { Ok(v) => v as usize, Err(s) => return s };
+        if offset == 0 { continue; }
+        if offset < 20 || offset.checked_add(8).is_none_or(|end| end > local.len()) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        let Some(src) = (source as u64).checked_add(offset as u64) else { return STATUS_INVALID_PARAMETER; };
+        let mut head = [0u8; 8];
+        if unsafe { crate::process::copy_from_current_user(src, &mut head) }.is_err() {
+            return STATUS_ACCESS_VIOLATION;
+        }
+        let length = if is_acl {
+            let size = u16le(&head, 2).unwrap_or(0) as usize;
+            if size < 8 { return STATUS_INVALID_PARAMETER; }
+            size
+        } else {
+            if head[0] != 1 || head[1] > 15 { return STATUS_INVALID_PARAMETER; }
+            8 + head[1] as usize * 4
+        };
+        if offset.checked_add(length).is_none_or(|end| end > local.len()) {
+            return STATUS_INVALID_PARAMETER;
+        }
+        let Some(src) = (source as u64).checked_add(offset as u64) else { return STATUS_INVALID_PARAMETER; };
+        if unsafe { crate::process::copy_from_current_user(src, &mut local[offset..offset + length]) }.is_err() {
+            return STATUS_ACCESS_VIOLATION;
+        }
+    }
+    if unsafe { SeValidSecurityDescriptor(local.as_ptr().cast()) } == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { core::ptr::copy_nonoverlapping(local.as_ptr(), destination, local.len()); }
+    STATUS_SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
