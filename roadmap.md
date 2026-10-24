@@ -285,7 +285,7 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Implement KDEVICE_QUEUE initialization, FIFO insertion, keyed insertion, busy-state transitions, and removal.
 - [x] Add per-thread KeSetPriorityThread, KeQueryPriorityThread, and KeSetBasePriorityThread metadata with Windows priority-range validation; scheduler priority ordering/boosts remain incomplete.
 - [x] Implement terminal KeBugCheck/KeBugCheckEx paths that record code/parameters and halt with interrupts disabled; crash dump/diagnostic reporting remains incomplete.
-- [x] Wire these 13 names through ntoskrnl import resolution and update the Ke comparison to 132 callable names.
+- [x] Wire these 13 names through ntoskrnl import resolution and update the Ke comparison to 135 callable names.
 - [x] Verify freestanding Rust build, PE32+ conversion, UEFI image validation, and OVMF/QEMU boot smoke (workflow #995 passed these steps).
 - [ ] Finish the 2/4/8-vCPU SMP stress matrix (workflow #995 was still running this step at last check).
 - [ ] Implement remaining Ke interrupt-spin-lock, timer2, APC, cross-CPU generic DPC/IPI, NMI callback, processor-change callback, interrupt synchronization, logical-topology, affinity, process-attach, and extended-state APIs.
@@ -293,3 +293,6 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Add conservative per-interrupt spin-lock tokens and KeSynchronizeExecution callback serialization; hardware ISR synchronization remains limited until the HAL owns interrupt-object SynchronizeIrql and ISR locks.
 - [x] Wire KeAcquireInterruptSpinLock, KeReleaseInterruptSpinLock, and KeSynchronizeExecution into the resolver and comparison.
 - [ ] Add hardware interrupt-object locking and verify synchronization callbacks against a real ISR path.
+
+- [x] Add group-0 KeSetAffinityThread, KeSetSystemGroupAffinityThread, and KeRevertToUserGroupAffinityThread with scheduler-backed masks and bounded restore state; safe live-context migration and multi-group affinity remain unsupported.
+- [ ] Verify the affinity and interrupt synchronization changes through the latest complete QEMU/SMP workflow.
