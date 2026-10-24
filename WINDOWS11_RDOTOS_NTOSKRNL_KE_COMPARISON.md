@@ -13,17 +13,17 @@
 
 ## Summary and calculated compatibility
 
-This expanded pass documents **111 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 111 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
+This expanded pass documents **116 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 111 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
 
 | Metric | Calculation | Result |
 |---|---|---:|
-| Source-level signature / x64 ABI declaration coverage | 111 documented declarations/call paths ÷ 111 | **111/111 = 100%** |
-| Name-based import resolution | 111 scoped routine names resolving to callable implementations ÷ 111 | **111/111 = 100%** |
-| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 111 | **10/111 = 9.0%** |
-| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 111 | **101/111 = 91.0%** |
-| Combined project score | (100% ABI declarations + 9.0% strict behavior) ÷ 2 | **54.5%** |
+| Source-level signature / x64 ABI declaration coverage | 116 documented declarations/call paths ÷ 116 | **116/116 = 100%** |
+| Name-based import resolution | 116 scoped routine names resolving to callable implementations ÷ 116 | **111/111 = 100%** |
+| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 116 | **10/116 = 8.6%** |
+| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 116 | **106/116 = 91.4%** |
+| Combined project score | (100% ABI declarations + 8.6% strict behavior) ÷ 2 | **54.3%** |
 
-**Important:** 54.5% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
+**Important:** 54.3% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
 
 ### Scoring rules
 
@@ -151,9 +151,15 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 110 | ULONG KeQueryTimeIncrement(VOID) | ke_query_time_increment(); configured nominal clock increment | Returns RdotOS's configured nominal tick increment, not a Windows registry/clock policy. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 111 | BOOLEAN KeShouldYieldProcessor(VOID) | ke_should_yield_processor(); scheduler/reschedule state | Reports the local scheduler yield hint; it is not a substitute for Windows' complete dispatcher policy. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 
+| 112 | KIRQL KeAcquireSpinLockForDpc(PKSPIN_LOCK SpinLock) | ke_acquire_spin_lock_for_dpc(); conditional DPC-level raise and atomic lock | Raises to DISPATCH_LEVEL only when needed and returns prior IRQL. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-keacquirespinlockfordpc) |
+| 113 | VOID KeReleaseSpinLockForDpc(PKSPIN_LOCK SpinLock, KIRQL OldIrql) | ke_release_spin_lock_for_dpc(); releases and restores prior IRQL | Restores PASSIVE/DISPATCH-level caller state; logical IRQL remains an approximation of Windows hardware priority. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kereleasespinlockfordpc) |
+| 114 | LOGICAL KeTryToAcquireQueuedSpinLock(KSPIN_LOCK_QUEUE_NUMBER Number, PKIRQL OldIrql) | ke_try_to_acquire_queued_spin_lock(); nonblocking ticket reservation | Implements nonblocking ticket acquisition and restores IRQL on failure. Microsoft documents this export as reserved for system use. **Partial/reserved.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-ketrytoacquirequeuedspinlock) |
+| 115 | LOGICAL KeTryToAcquireQueuedSpinLockRaiseToSynch(KSPIN_LOCK_QUEUE_NUMBER Number, PKIRQL OldIrql) | ke_try_to_acquire_queued_spin_lock_raise_to_synch(); nonblocking ticket reservation | Attempts acquisition at synchronization IRQL and restores IRQL on failure; this is a reserved internal-style export. **Partial/reserved.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 116 | LONG KeReadStateQueue(PRKQUEUE Queue) | ke_read_state_queue(); reads queue dispatcher signal state | Reports the queue entry count encoded in the dispatcher header. **Match for initialized RdotOS KQUEUE objects.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+
 ## Additional Ke exports still unsupported
 
-The entries below remain **unresolved or unimplemented** in this pass. The preceding routine table now covers 111 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
+The entries below remain **unresolved or unimplemented** in this pass. The preceding routine table now covers 116 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
 
 | Routine | Current status | Public contract / next work |
 |---|---|---|
