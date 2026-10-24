@@ -557,63 +557,28 @@ pub unsafe extern "win64" fn ke_get_processor_number_from_index(
     STATUS_SUCCESS
 }
 
-// APC-disable nesting is currently attached to the executing CPU slot because
-// RdotOS does not yet expose per-thread APC bookkeeping. Migration while inside
-// a region remains a known limitation, not full Windows thread semantics.
-static CRITICAL_REGION_DEPTH: [core::sync::atomic::AtomicU32; 64] =
-    [const { core::sync::atomic::AtomicU32::new(0) }; 64];
-static GUARDED_REGION_DEPTH: [core::sync::atomic::AtomicU32; 64] =
-    [const { core::sync::atomic::AtomicU32::new(0) }; 64];
-
-/// VOID KeEnterCriticalRegion(void): disable normal kernel APC delivery.
+/// Critical and guarded region nesting lives in the current thread record.
+/// Bootstrap/no-thread contexts cannot retain per-thread APC state and therefore
+/// do not manufacture a process-global substitute.
 pub unsafe extern "win64" fn ke_enter_critical_region() {
-    let depth = &CRITICAL_REGION_DEPTH[cpu_slot()];
-    let mut current = depth.load(Ordering::Acquire);
-    while current != u32::MAX {
-        match depth.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => break, Err(actual) => current = actual,
-        }
-    }
+    let _ = crate::thread::adjust_apc_region(false, true);
 }
-/// VOID KeLeaveCriticalRegion(void): balance a prior KeEnterCriticalRegion.
 pub unsafe extern "win64" fn ke_leave_critical_region() {
-    let depth = &CRITICAL_REGION_DEPTH[cpu_slot()];
-    let mut current = depth.load(Ordering::Acquire);
-    while current != 0 {
-        match depth.compare_exchange_weak(current, current - 1, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => break, Err(actual) => current = actual,
-        }
-    }
+    let _ = crate::thread::adjust_apc_region(false, false);
 }
-/// VOID KeEnterGuardedRegion(void): disable normal and special kernel APCs.
 pub unsafe extern "win64" fn ke_enter_guarded_region() {
-    let depth = &GUARDED_REGION_DEPTH[cpu_slot()];
-    let mut current = depth.load(Ordering::Acquire);
-    while current != u32::MAX {
-        match depth.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => break, Err(actual) => current = actual,
-        }
-    }
+    let _ = crate::thread::adjust_apc_region(true, true);
 }
-/// VOID KeLeaveGuardedRegion(void): balance a prior KeEnterGuardedRegion.
 pub unsafe extern "win64" fn ke_leave_guarded_region() {
-    let depth = &GUARDED_REGION_DEPTH[cpu_slot()];
-    let mut current = depth.load(Ordering::Acquire);
-    while current != 0 {
-        match depth.compare_exchange_weak(current, current - 1, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => break, Err(actual) => current = actual,
-        }
-    }
+    let _ = crate::thread::adjust_apc_region(true, false);
 }
-/// BOOLEAN KeAreApcsDisabled(void). Critical regions or APC_LEVEL disable normal APCs.
 pub unsafe extern "win64" fn ke_are_apcs_disabled() -> u8 {
-    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) >= 1
-        || CRITICAL_REGION_DEPTH[cpu_slot()].load(Ordering::Acquire) != 0) as u8
+    let (critical, _) = crate::thread::apc_region_depths();
+    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) >= 1 || critical != 0) as u8
 }
-/// BOOLEAN KeAreAllApcsDisabled(void). Guarded regions or APC_LEVEL disable all APCs.
 pub unsafe extern "win64" fn ke_are_all_apcs_disabled() -> u8 {
-    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) >= 1
-        || GUARDED_REGION_DEPTH[cpu_slot()].load(Ordering::Acquire) != 0) as u8
+    let (critical, guarded) = crate::thread::apc_region_depths();
+    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) >= 1 || critical != 0 || guarded != 0) as u8
 }
 
 /// LONG KePulseEvent(PKEVENT, KPRIORITY, BOOLEAN).
