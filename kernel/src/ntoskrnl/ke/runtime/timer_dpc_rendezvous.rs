@@ -336,25 +336,32 @@ pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_tim
     let Some(deadline)=timer_deadline(value) else{return 0};
     let hz=crate::apic::tsc_frequency_hz().unwrap_or(0);
     let period=if period_ms<=0||hz==0{0}else{((hz as u128)*(period_ms as u32 as u128)/1000).min(u64::MAX as u128) as u64};
-    let (was_active,old_dpc)={
+    let (was_active,_old_dpc)={
         let mut table=TIMERS.lock();
         let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
         let old=(record.active,record.dpc);
         record.active=true;record.due=deadline;record.period=period;record.dpc=dpc as usize;record.generation=record.generation.wrapping_add(1).max(1);
+        // Keep timer mutation and removal serialized with timer_tick's
+        // timer-lock -> DPC-lock enqueue path, so an old cancellation cannot
+        // accidentally remove a newly queued expiry for the rearmed timer.
+        if old.0 && old.1!=0 { let _=unsafe{ke_remove_queue_dpc(old.1 as *mut core::ffi::c_void)}; }
         old
     };
-    if was_active&&old_dpc!=0{let _=unsafe{ke_remove_queue_dpc(old_dpc as *mut core::ffi::c_void)};}
     unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
     was_active as u8
 }
 pub unsafe extern "win64" fn ke_cancel_timer(timer:*mut DispatcherHeader)->u8{
     if timer.is_null(){return 0}
-    let (was_active,dpc)={
+    let was_active={
         let mut table=TIMERS.lock();
         let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
-        let old=(record.active,record.dpc);record.active=false;record.dpc=0;if old.0{record.generation=record.generation.wrapping_add(1).max(1);}old
+        let old=(record.active,record.dpc);record.active=false;record.dpc=0;
+        if old.0{record.generation=record.generation.wrapping_add(1).max(1);}
+        // Serialize removal with rearm and expiry enqueue; no DPC callback is
+        // dispatched by KeRemoveQueueDpc itself.
+        if old.0 && old.1!=0 { let _=unsafe{ke_remove_queue_dpc(old.1 as *mut core::ffi::c_void)}; }
+        old.0
     };
-    if was_active&&dpc!=0{let _=unsafe{ke_remove_queue_dpc(dpc as *mut core::ffi::c_void)};}
     was_active as u8
 }
 pub unsafe extern "win64" fn ke_initialize_dpc(dpc:*mut core::ffi::c_void,routine:Option<DpcRoutine>,context:*mut core::ffi::c_void){
