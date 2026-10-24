@@ -192,6 +192,15 @@ pub fn build_scatter_gather(
 
 
 
+fn parse_device_description_prefix(bytes:&[u8])->Option<u32> {
+    if bytes.len()<12 { return None; }
+    let version=u32::from_le_bytes(bytes[0..4].try_into().ok()?);
+    let master=bytes[4]!=0;
+    let reserved1=bytes[10];
+    if version>3 || !master || reserved1!=0 { return None; }
+    Some(version)
+}
+
 /// IoGetDmaAdapter for the bootstrap direct-DMA adapter. No IOMMU or
 /// adapter-channel scheduler is present yet; callers receive zero map registers.
 pub unsafe extern "win64" fn io_get_dma_adapter(
@@ -206,12 +215,7 @@ pub unsafe extern "win64" fn io_get_dma_adapter(
     // flags; it has no Size field. Read the WDK-defined prefix, not a fictitious
     // USHORT Version/Size pair. This bootstrap adapter only supports bus masters.
     let header = unsafe { core::slice::from_raw_parts(device_description.cast::<u8>(), 12) };
-    let version = u32::from_le_bytes([header[0], header[1], header[2], header[3]]);
-    let master = header[4] != 0;
-    let reserved1 = header[10];
-    if version > 3 || !master || reserved1 != 0 {
-        return core::ptr::null_mut();
-    }
+    let Some(version)=parse_device_description_prefix(header) else { return core::ptr::null_mut(); };
     // If firmware advertises Intel VT-d, do not silently hand a driver an
     // identity-mapped adapter: remapping is not yet initialized and bypassing
     // firmware isolation can DMA into arbitrary physical memory.
@@ -220,7 +224,9 @@ pub unsafe extern "win64" fn io_get_dma_adapter(
         return core::ptr::null_mut();
     }
     let adapter = match version { 0 | 1 => core::ptr::addr_of!(DMA_ADAPTER_V1).cast_mut().cast(), 2 => core::ptr::addr_of!(DMA_ADAPTER_V2).cast_mut().cast(), 3 => core::ptr::addr_of!(DMA_ADAPTER_V3).cast_mut().cast(), _ => return core::ptr::null_mut() };
-    unsafe { number_of_map_registers.write(0); }
+    // Direct-DMA mode needs no IOMMU map registers, but exposes a bounded
+    // page-fragment budget consistent with the SG builder's 1 MiB maximum.
+    unsafe { number_of_map_registers.write(MAX_SG_SEGMENTS as u32); }
     adapter
 }
 
@@ -1005,16 +1011,20 @@ mod tests {
     }
 
     #[test]
-    fn device_description_uses_ulong_version_and_boolean_flags() {
+    fn device_description_uses_ulong_version_and_validates_master_flags() {
         let mut desc=[0u8;64];
         desc[0..4].copy_from_slice(&3u32.to_le_bytes());
         desc[4]=1; // Master
         desc[5]=1; // ScatterGather
         desc[11]=1; // Dma64BitAddresses
-        assert_eq!(u32::from_le_bytes(desc[0..4].try_into().unwrap()),3);
-        assert_eq!(desc[4],1);
-        desc[10]=1; // Reserved1 must remain zero.
-        assert_eq!(desc[10],1);
+        assert_eq!(parse_device_description_prefix(&desc),Some(3));
+        desc[4]=0;
+        assert_eq!(parse_device_description_prefix(&desc),None);
+        desc[4]=1;desc[10]=1; // Reserved1 must remain zero.
+        assert_eq!(parse_device_description_prefix(&desc),None);
+        desc[10]=0;desc[0..4].copy_from_slice(&4u32.to_le_bytes());
+        assert_eq!(parse_device_description_prefix(&desc),None);
+        assert_eq!(parse_device_description_prefix(&desc[..8]),None);
     }
 
     #[test]
