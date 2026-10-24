@@ -588,8 +588,9 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     status
 }
 
-/// Multiple-object waits are rejected explicitly until shared wait-block groups
-/// can provide atomic wait-all reservation and safe cancellation of wait-any peers.
+/// Multiple-object waits use shared wait groups for wait-any and wait-all, including
+/// per-thread mutant reservations. Queue entries are supported for wait-any only;
+/// wait-all queue-entry reservation remains unsupported.
 pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     count: u32,
     objects: *const *mut DispatcherHeader,
