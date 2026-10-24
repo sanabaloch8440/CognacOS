@@ -361,6 +361,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "IoGetDmaAdapter" => crate::dma::io_get_dma_adapter as usize,
   "IoCreateDevice" => crate::io::io_create_device as usize,
   "IoDeleteDevice" => crate::io::io_delete_device as usize,
+  "PoSetPowerState" => crate::io::PoSetPowerState as usize,
+  "PoStartNextPowerIrp" => crate::io::PoStartNextPowerIrp as usize,
   "IoAllocateIrp" => crate::io::io_allocate_irp as usize,
   "IoFreeIrp" => crate::io::io_free_irp as usize,
   "IoCallDriver" => crate::io::io_call_driver as usize,
