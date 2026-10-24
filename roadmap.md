@@ -15,8 +15,9 @@ This roadmap tracks code and validation currently present in the repository, not
 | SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
 | NT executive/syscall compatibility | 169 Ke export names tracked; kernel APC safe points/rundown, alertable user APC IRET injection, processor callback table, referenced CR3 attach/detach, scheduler-backed priority bands, serialized event/semaphore/timer wait-all reservations, device queue lifecycle checks, public x64 layout assertions, and cross-CPU generic-DPC Synchronize/Done barriers validated by 2/4/8-vCPU QEMU CI; synchronous global DPC flush and timer-generation rundown hardening implemented but latest validation pending | Failed/offline-target and flush-versus-insert stress proof; timer cancellation/rearm/rundown stress; user APC trap/SEH and WDK tests; real processor hot-remove; exception-safe process detach and process/thread integration; mutant/queue wait-all reservations; Windows priority decay/quantum; exact private Windows object layouts are intentionally not mirrored; broader Ke export semantics |
-| Registry / Configuration Manager | Bounded volatile registry; initial `Nt/ZwCreateKey`, `OpenKey`, `SetValueKey`, `QueryValueKey` partial-information class, `DeleteValueKey`, `DeleteKey`, and `FlushKey` | Persistent hives, robust handle/access checks, full key/value information classes, enumeration, notifications/callbacks, transactions, security, and WDK tests |
+| Registry / Configuration Manager | Volatile `Nt/Zw` APIs; native `regf`/`hbin` read-only parser, base-block/HBIN/cell validation, common subkey indexes, seven hive identities, empty native hive creator, SYSTEM service lookup, raw BCD element access | Dirty-hive log replay, persistent mutation/writeback, complete NT handles/access checks, full query/enumeration classes, callbacks/notifications, transactions, security, WDK tests |
 | I/O manager | Runtime moved to `ntoskrnl/io/runtime.rs`; bounded FIFO completion ports, deadline-aware IRPs, pre-dispatch timeout expiry, WDM 1.0 version gate, configuration-information and cancel-spin-lock exports, 16-bit port I/O and ordered volatile MMIO accessors | Dispatcher-integrated completion waits, live device counters/enumeration, safe in-flight cancellation, ABI-correct IRP/device-object APIs, real device dispatch/interrupt/DMA paths, and hardware tests |
+| NLS / globalization | Native-name catalogue and byte-preserving reader/copy API for `c_037.nls`, `c_437.nls`, `c_1252.nls`, `locale.nls`, `sortkey.nls`, `sorttbls.nls`, `ctype.nls`, `unicode.nls`; optional boot-asset staging | Parse NLS internal tables, code-page conversion, globalization APIs, filesystem writeback, locate files on a separate Windows/NTFS partition |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
@@ -48,6 +49,21 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Extend registry semantics with persistent hive storage, canonical full paths, access/handle checks, enumeration and full information classes, callbacks/notifications, transactions, security, and WDK tests.
 
 **Validation status:** workflow build and artifact generation have been configured but not yet observed passing for this revision. A PE image build is not evidence of a working runtime load path or Windows 11 driver compatibility.
+
+### Native registry hive and NLS ingestion (2026-10-24)
+
+- [x] Add a no-conversion native Windows `regf` parser with checksum/sequence validation, HBIN/cell bounds, NK/VK traversal, and `li`/`lf`/`lh`/`ri` subkey indexes.
+- [x] Add a native empty-hive image creator and catalogue for `SYSTEM`, `SOFTWARE`, `SECURITY`, `SAM`, `DEFAULT`, `COMPONENTS`, and `BCD00000000`.
+- [x] Read driver service configuration from `Select\\Current` and the active `ControlSetNNN\\Services` key; add raw BCD element access for loader component policy.
+- [x] Add opaque, byte-preserving access/copy support for the eight requested NLS file names.
+- [x] Extend boot-info v7 to stage optional hive/NLS files from the boot volume, validate their bounds/content, and expose zero-copy kernel accessors.
+- [ ] Implement hive log replay for dirty hives, registry mutation/writeback and complete native hive allocation/index updates; current hive creation only creates an empty root.
+- [ ] Implement NTFS and disk/partition discovery so RdotOS can locate files on a separate Windows 11 installation rather than only the UEFI boot volume.
+- [ ] Parse and consume NLS internals; current NLS support preserves raw bytes and does not yet provide Windows code-page, locale, or sorting semantics.
+- [ ] Connect registry-selected service loading to a real filesystem resolver and boot policy; implement PE import resolution, relocations, dependency binding, unload/rundown, and actual HAL initialization.
+- [ ] Validate on genuine clean Windows 11 hives and NLS assets, including large SOFTWARE/COMPONENTS hives and BCD; dirty hives require log replay before safe use.
+
+**Validation status:** parser/NLS host-test steps are configured in CI, but the new workflow revision has not yet been observed passing. Optional assets must be accessible on the bootloader's current volume; this is not yet arbitrary Windows-partition access.
 
 ### HAL / ntoskrnl dependency boundary (2026-10-24)
 
