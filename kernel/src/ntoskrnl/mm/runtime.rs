@@ -364,7 +364,8 @@ pub unsafe extern "win64" fn mm_advance_mdl(mdl: *mut c_void, number_of_bytes: u
     if !mdl_header_is_writable(address) { return; }
     let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
     let old_count = header.byte_count as u64;
-    if number_of_bytes as u64 > old_count { return; }
+    if header.flags & (MDL_LOCKED | MDL_NONPAGED_POOL) == 0
+        || number_of_bytes as u64 > old_count { return; }
     if number_of_bytes == 0 { return; }
     let old_offset = header.byte_offset as u64;
     let Some(old_pages) = mdl_page_count(old_offset, old_count) else { return; };
@@ -381,6 +382,7 @@ pub unsafe extern "win64" fn mm_advance_mdl(mdl: *mut c_void, number_of_bytes: u
     let new_count = old_count - number_of_bytes as u64;
     let Some(new_pages) = mdl_page_count(new_offset, new_count) else { return; };
     if dropped > old_pages || new_pages > old_pages - dropped { return; }
+    let Some(new_start) = (header.start_va as u64).checked_add(dropped * PAGE_SIZE) else { return; };
     let pfns = pfn_address as *mut u64;
     if header.flags & MDL_LOCKED != 0 && header.flags & MDL_NONPAGED_POOL == 0 {
         let removed = unsafe { core::slice::from_raw_parts(pfns as *const u64, dropped as usize) };
@@ -390,7 +392,6 @@ pub unsafe extern "win64" fn mm_advance_mdl(mdl: *mut c_void, number_of_bytes: u
     for index in new_pages as usize..old_pages as usize {
         unsafe { pfns.add(index).write(0); }
     }
-    let Some(new_start) = (header.start_va as u64).checked_add(dropped * PAGE_SIZE) else { return; };
     header.start_va = new_start as *mut c_void;
     header.byte_offset = new_offset as u32;
     header.byte_count = new_count as u32;
