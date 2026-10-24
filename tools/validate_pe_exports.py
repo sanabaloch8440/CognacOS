@@ -11,7 +11,7 @@ def u32(b, o): return struct.unpack_from("<I", b, o)[0]
 
 
 def cstring(b, o):
-    end = b.find(b"\\0", o)
+    end = b.find(b"\0", o)
     if end < 0: raise ValueError("unterminated PE export string")
     return b[o:end].decode("ascii")
 
@@ -32,7 +32,7 @@ def rva_to_offset(blob, rva, sections, headers_size):
 def parse_exports(blob):
     if blob[:2] != b"MZ": raise ValueError("missing MZ signature")
     pe = u32(blob, 0x3c)
-    if blob[pe:pe + 4] != b"PE\\0\\0": raise ValueError("missing PE signature")
+    if blob[pe:pe + 4] != b"PE\0\0": raise ValueError("missing PE signature")
     if u16(blob, pe + 4) != 0x8664: raise ValueError("not AMD64")
     if u16(blob, pe + 24) != 0x20b: raise ValueError("not PE32+")
     section_count = u16(blob, pe + 6)
