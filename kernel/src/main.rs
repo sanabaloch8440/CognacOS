@@ -176,6 +176,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             (current_rsp, 8u64),
             (_start as usize as u64, 1u64),
             (serial_write as usize as u64, 1u64),
+            (0xfec0_0000, 4096u64),
+            (0xfee0_0000, 4096u64),
         ];
         let mut mapping_ok = true;
         for (start, length) in bootstrap_ranges {
