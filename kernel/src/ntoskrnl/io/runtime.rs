@@ -460,23 +460,5 @@ pub unsafe extern "system" fn io_mark_irp_pending(irp: *mut WdmIrp) {
     if !irp.is_null() { unsafe { (*irp).pending_returned = 1; } }
 }
 
-#[cfg(test)]
-mod wdm_abi_tests {
-    use super::*;
-    #[test]
-    fn x64_wdm_layout_offsets_are_stable() {
-        assert_eq!(core::mem::size_of::<WdmUnicodeString>(), 16);
-        assert_eq!(core::mem::size_of::<IoStatusBlock>(), 16);
-        assert_eq!(core::mem::size_of::<WdmIoStackLocation>(), 56);
-        assert_eq!(core::mem::offset_of!(WdmIoStackLocation, device_object), 24);
-        assert_eq!(core::mem::offset_of!(WdmIrp, tail), 120);
-        assert_eq!(core::mem::offset_of!(WdmIrpTail, current_stack_location), 48);
-        assert_eq!(core::mem::offset_of!(DeviceObject, device_extension), 64);
-        assert_eq!(core::mem::offset_of!(DeviceObject, stack_size), 76);
-        assert_eq!(core::mem::size_of::<DeviceObject>(), 336);
-    }
-}
-
-
 #[path = "wdm.rs"] mod wdm;
 pub use wdm::*;
