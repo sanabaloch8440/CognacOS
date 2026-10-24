@@ -310,7 +310,6 @@ pub unsafe fn reserve_range(start: u64, end: u64) -> Result<(), AllocError> {
 pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
     let high_page = {
         let _guard = MemoryGuard::acquire();
-        if crate::ntoskrnl::mm::runtime::is_page_locked(page) { return Err(AllocError::InvalidPage); }
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 != 0 {
             free.1 -= 1;
@@ -419,6 +418,7 @@ pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
             return Err(AllocError::InvalidPage);
         }
         let _guard = MemoryGuard::acquire();
+        if crate::ntoskrnl::mm::runtime::is_page_locked(page) { return Err(AllocError::InvalidPage); }
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 < FREE_CAPACITY {
             free.0[free.1] = page;
