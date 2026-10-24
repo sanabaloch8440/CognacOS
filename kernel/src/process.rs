@@ -72,6 +72,17 @@ fn register_process(pid: u64, address_space_root: u64) -> Result<(), ProcessErro
 /// Return the stable process-object address registered for a process ID.
 /// Look up an EPROCESS-compatible object by PID and return it referenced.
 /// The caller must eventually release the reference with ObfDereferenceObject.
+pub fn eprocess_pointer_for_pid(pid:u64)->*mut EProcess{
+ let registry=TABLE.lock();registry.0.iter().find(|p|p.used&&p.magic==EPROCESS_MAGIC&&p.process_id==pid).map(|p|p as *const EProcess as *mut EProcess).unwrap_or(core::ptr::null_mut())
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ps_get_current_process()->*mut core::ffi::c_void{
+ let pid=crate::thread::current_process_id();eprocess_pointer_for_pid(pid).cast()
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ps_get_current_process_id()->*mut core::ffi::c_void{
+ crate::thread::current_process_id() as usize as *mut core::ffi::c_void
+}
 pub fn eprocess_for_pid(pid: u64) -> Option<*mut EProcess> {
     let mut registry = TABLE.lock();
     let index = registry.0.iter().position(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid)?;
