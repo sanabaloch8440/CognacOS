@@ -475,7 +475,8 @@ pub unsafe extern "system" fn io_unregister_file_system(device:*mut DeviceObject
     let Some(index)=registry.devices[..registry.count].iter().position(|d|*d==device) else{return};
     for i in index..registry.count-1 {registry.devices[i]=registry.devices[i+1];}
     registry.count-=1;
-    registry.devices[registry.count]=ptr::null_mut();
+    let new_count=registry.count;
+    registry.devices[new_count]=ptr::null_mut();
 }
 
 pub fn is_file_system_registered(device:*mut DeviceObject)->bool {
