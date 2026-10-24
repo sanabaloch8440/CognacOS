@@ -211,12 +211,32 @@ pub struct ConfigurationInformation {
     pub serial_count: u32,
     pub parallel_count: u32,
 }
-static CONFIGURATION_INFORMATION: ConfigurationInformation = ConfigurationInformation {
+static mut CONFIGURATION_INFORMATION: ConfigurationInformation = ConfigurationInformation {
     disk_count: 0, floppy_count: 0, cd_rom_count: 0, tape_count: 0,
     scsi_port_count: 0, serial_count: 0, parallel_count: 0,
 };
 
 #[unsafe(no_mangle)]
 pub extern "system" fn io_get_configuration_information() -> *mut ConfigurationInformation {
-    core::ptr::addr_of!(CONFIGURATION_INFORMATION) as *mut ConfigurationInformation
+    core::ptr::addr_of_mut!(CONFIGURATION_INFORMATION)
+}
+
+
+#[cfg(test)]
+mod io_export_tests {
+    use super::*;
+
+    #[test]
+    fn wdm_version_gate_only_advertises_implemented_baseline() {
+        assert_eq!(io_is_wdm_version_available(1, 0), 1);
+        assert_eq!(io_is_wdm_version_available(1, 1), 0);
+        assert_eq!(io_is_wdm_version_available(2, 0), 0);
+    }
+
+    #[test]
+    fn configuration_information_has_stable_public_layout() {
+        assert_eq!(core::mem::size_of::<ConfigurationInformation>(), 28);
+        let ptr = io_get_configuration_information();
+        assert!(!ptr.is_null());
+    }
 }
