@@ -855,6 +855,30 @@ fn token_contains_sid(token: *mut c_void, sid: &[u8]) -> bool {
         (0..e.count as usize).any(|i| {
             let n = e.lengths[i] as usize;
             n == sid.len() && e.sids[i][..n] == *sid
+        }) || (0..e.capability_count as usize).any(|i| {
+            let n = e.capability_lengths[i] as usize;
+            n == sid.len() && e.capability_sids[i][..n] == *sid
+        })
+    })
+}
+fn token_has_restricting_sids(token: *mut c_void) -> bool {
+    if token.is_null() { return false; }
+    let _guard = SECURITY_TOKEN_LOCK.lock();
+    let entries = unsafe { &*core::ptr::addr_of!(SECURITY_TOKEN_IDENTITIES) };
+    entries.iter().find(|e| e.used && e.token == token as usize)
+        .is_some_and(|e| e.restricted_count != 0 || e.capability_count != 0)
+}
+fn token_contains_restricting_sid(token: *mut c_void, sid: &[u8]) -> bool {
+    if token.is_null() || sid.len() < 8 { return false; }
+    let _guard = SECURITY_TOKEN_LOCK.lock();
+    let entries = unsafe { &*core::ptr::addr_of!(SECURITY_TOKEN_IDENTITIES) };
+    entries.iter().find(|e| e.used && e.token == token as usize).is_some_and(|e| {
+        (0..e.restricted_count as usize).any(|i| {
+            let n = e.restricted_lengths[i] as usize;
+            n == sid.len() && e.restricted_sids[i][..n] == *sid
+        }) || (0..e.capability_count as usize).any(|i| {
+            let n = e.capability_lengths[i] as usize;
+            n == sid.len() && e.capability_sids[i][..n] == *sid
         })
     })
 }
@@ -888,8 +912,9 @@ fn is_everyone_sid(sid: &[u8]) -> bool {
         && sid[2..7].iter().all(|v| *v == 0) && sid[7] == 1
         && sid[8..12] == [0, 0, 0, 0]
 }
-fn sid_matches_subject(token: *mut c_void, sid: &[u8]) -> bool {
-    is_everyone_sid(sid) || token_contains_sid(token, sid)
+fn sid_matches_subject(token: *mut c_void, sid: &[u8], restricting_pass: bool) -> bool {
+    if restricting_pass { token_contains_restricting_sid(token, sid) }
+    else { is_everyone_sid(sid) || token_contains_sid(token, sid) }
 }
 fn descriptor_component<'a>(bytes: &'a [u8], field: usize, acl: bool) -> Option<&'a [u8]> {
     let off = u32le(bytes, field)? as usize;
@@ -898,7 +923,7 @@ fn descriptor_component<'a>(bytes: &'a [u8], field: usize, acl: bool) -> Option<
     let n = if acl { bounded_acl_size(&bytes[off..])? } else { bounded_sid_size(&bytes[off..])? };
     bytes.get(off..off.checked_add(n)?)
 }
-fn evaluate_dacl(token: *mut c_void, sd: &[u8], requested: u32, owner_rights: u32) -> Option<u32> {
+fn evaluate_dacl(token: *mut c_void, sd: &[u8], requested: u32, owner_rights: u32, restricting_pass: bool) -> Option<u32> {
     if sd.len() < 20 || sd[0] != 1 { return None; }
     let control = u16le(sd, 2)?;
     if control & 0x8000 == 0 { return None; }
@@ -925,7 +950,7 @@ fn evaluate_dacl(token: *mut c_void, sd: &[u8], requested: u32, owner_rights: u3
             let sid = ace.get(8..)?;
             let sid_n = bounded_sid_size(sid)?;
             let sid = &sid[..sid_n];
-            if sid_matches_subject(token, sid) {
+            if sid_matches_subject(token, sid, restricting_pass) {
                 if ace_type == 1 && (mask & remaining) != 0 { return Some(granted); }
                 if ace_type == 0 {
                     let take = mask & remaining;
@@ -1011,17 +1036,30 @@ pub unsafe extern "win64" fn SeAccessCheck(
         let sd = unsafe { core::slice::from_raw_parts(security_descriptor.cast::<u8>(), 4096) };
         if unsafe { SeValidSecurityDescriptor(security_descriptor) } == 0 { return false; }
         let owner = match descriptor_component(sd, 4, false) { Some(s) => s, None => &[] };
-        let owner_rights = if !owner.is_empty() && sid_matches_subject(token, owner) {
+        let owner_rights = if !owner.is_empty() && sid_matches_subject(token, owner, false) {
             0x0002_0000 | 0x0004_0000
         } else { 0 };
         let max_allowed = desired & 0x0200_0000 != 0;
         let requested = if max_allowed { 0x000F_FFFF } else { desired & !0x0200_0000 };
-        let allowed = match evaluate_dacl(token, sd, requested, owner_rights) {
+        let meta = token_meta(token).ok_or(()).ok();
+        let allowed = match evaluate_dacl(token, sd, requested, owner_rights, false) {
             Some(v) => v, None => return false,
         };
+        let mut effective_allowed = allowed;
+        if let Some(m) = meta {
+            let write_access = requested & (0x0001_0000 | 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0000_0116) != 0;
+            if m.restricted || (m.write_restricted && write_access) {
+                let restricted = match evaluate_dacl(token, sd, requested, 0, true) {
+                    Some(v) => v, None => return false,
+                };
+                effective_allowed &= restricted;
+            }
+            if m.restricted && !token_has_restricting_sids(token) { return false; }
+            if m.write_restricted && write_access && !token_has_restricting_sids(token) { return false; }
+        }
         let explicit = desired & !0x0200_0000;
-        if explicit & !(allowed | previous) != 0 { return false; }
-        let grant = if max_allowed { (allowed | previous) & !0x0200_0000 } else { explicit | previous };
+        if explicit & !(effective_allowed | previous) != 0 { return false; }
+        let grant = if max_allowed { (effective_allowed | previous) & !0x0200_0000 } else { explicit | previous };
         unsafe {
             core::ptr::write_unaligned(granted_access, grant);
             core::ptr::write_unaligned(access_status, STATUS_SUCCESS);
