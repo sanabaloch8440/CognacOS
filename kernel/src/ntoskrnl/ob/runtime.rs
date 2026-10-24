@@ -507,6 +507,13 @@ mod tests{
   let mut init=[0u8;0x78];init[..2].copy_from_slice(&0x78u16.to_le_bytes());init[8..12].copy_from_slice(&1u32.to_le_bytes());init[12..16].copy_from_slice(&2u32.to_le_bytes());init[16..20].copy_from_slice(&4u32.to_le_bytes());init[20..24].copy_from_slice(&7u32.to_le_bytes());init[24..28].copy_from_slice(&0xffu32.to_le_bytes());
   let mut out=core::ptr::null_mut();assert_eq!(unsafe{ObCreateObjectType(&u,init.as_ptr(),core::ptr::null_mut(),&mut out)},STATUS_SUCCESS);assert!(!out.is_null());assert!(type_id_from_pointer(out).is_ok());
  }
+ #[test]fn concurrent_handle_reference_close_stress(){
+  let ty=register_type(&[b'C' as u16,b'o' as u16,b'n' as u16,b'c' as u16,b'u' as u16,b'r' as u16,b'r' as u16,b'e' as u16,b'n' as u16,b't' as u16,b'O' as u16,b'b' as u16],1,2,4,7,0xff).unwrap();
+  let body=0x8abcusize as *mut c_void;unsafe{register_object(body,ty,&[],false,core::ptr::null(),0).unwrap();}
+  let mut threads=Vec::new();
+  for worker in 0..8usize{threads.push(std::thread::spawn(move||{for _ in 0..128{let owner=1000+worker;let h=open_by_pointer(body as usize as *mut c_void,1,owner,true,0).unwrap();let referenced=reference_by_handle(h,0,ty,owner,true).unwrap();assert_eq!(referenced as usize,body as usize);assert!(dereference_body(referenced));close_handle(h,owner).unwrap();}}));}
+  for t in threads{t.join().unwrap()}assert!(dereference_body(body));assert!(reference_body(body,ty,0,true).is_err());
+ }
  #[test]fn object_create_insert_delete_rundown(){
   let name=[b'O' as u16,b'b' as u16,b'J' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'C' as u16,b'r' as u16,b'e' as u16,b'a' as u16,b't' as u16,b'e' as u16];
   let u=UnicodeString{length:(name.len()*2) as u16,maximum_length:((name.len()+1)*2) as u16,buffer:name.as_ptr()};
