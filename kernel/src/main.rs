@@ -168,6 +168,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // Install a private descriptor table while the bootloader-established
         // high-half CR3 is active. The explicit reload below verifies ownership.
         arch::initialize();
+        if !arch::per_cpu_tss_self_test(0) {
+            serial_write(b"FATAL: BSP TSS/IST descriptor self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Per-CPU TSS/IST setup self-test passed.\r\n");
         let bsp_apic_id = (core::arch::x86_64::__cpuid(1).ebx >> 24) & 0xff;
         if hal::initialize_bsp(bsp_apic_id).is_err()
             || unsafe { hal::install_cpu_local(0) }.is_err()
