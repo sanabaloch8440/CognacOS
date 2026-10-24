@@ -32,7 +32,7 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Move critical/guarded-region state from CPU slots to per-thread state and implement actual APC delivery.
 - [ ] Complete pulse/wait atomicity with scheduler wait-block ownership and priority boosts.
 - [ ] Implement and test dispatcher timers, DPCs, mutex/mutant ownership, executive queues, and queued spin locks.
-- [ ] Replace the nominal interrupt-time origin and RTC-only wall clock with a boot-anchored clock and counter interpolation; implement suspend/resume bias.
+- [ ] Replace the first-query interrupt-time origin with a boot-anchored clock; add system-time setting/synchronization and suspend/resume bias to the new RTC-anchored wall-clock interpolation.
 - [ ] Run CI build, unit tests, OVMF/QEMU smoke, and the 2/4/8-vCPU matrix after this pass; do not treat ABI matching or the project score as driver-compatibility proof.
 
 ### Status legend
