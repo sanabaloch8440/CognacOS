@@ -93,6 +93,14 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(ke::runtime::ke_are_apcs_disabled as usize)
   } else if requested.eq_ignore_ascii_case(b"KeAreAllApcsDisabled") {
    Some(ke::runtime::ke_are_all_apcs_disabled as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeEnterCriticalRegion") {
+   Some(ke::runtime::ke_enter_critical_region as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeLeaveCriticalRegion") {
+   Some(ke::runtime::ke_leave_critical_region as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeEnterGuardedRegion") {
+   Some(ke::runtime::ke_enter_guarded_region as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeLeaveGuardedRegion") {
+   Some(ke::runtime::ke_leave_guarded_region as usize)
   } else { None };
   if direct.is_some() { return direct.map(|address| address as u64); }
  }
@@ -131,6 +139,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "PsLookupProcessByProcessId" => crate::process::ps_lookup_process_by_process_id as usize,
   "ObfReferenceObject" => crate::process::obf_reference_process_object as usize,
   "ObfDereferenceObject" => crate::process::obf_dereference_process_object as usize,
+  "KeGetCurrentProcessorNumberEx" => ke::runtime::ke_get_current_processor_number_ex as usize,
   "KeGetCurrentIrql" => ke::runtime::ke_get_current_irql as usize,
   "KeGetEffectiveIrql" => ke::runtime::ke_get_current_irql as usize,
   "KeRaiseIrqlToDpcLevel" => ke::runtime::ke_raise_irql_to_dpc_level as usize,
