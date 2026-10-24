@@ -1,3 +1,0 @@
-[submodule "third_party/Ext3Fsd"]
-	path = third_party/Ext3Fsd
-	url = https://github.com/matt-wu/Ext3Fsd.git
