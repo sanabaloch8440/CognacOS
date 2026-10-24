@@ -355,3 +355,12 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [x] Group processor/IRQL, dispatcher objects, time, waits/APC, interrupt/scheduler, device queue, executive queue, spin locks, mutexes, affinity, and timer/DPC/rendezvous code separately.
 - [ ] Validate the refactor with the latest freestanding build, UEFI/QEMU smoke test, and 2/4/8-vCPU SMP workflow.
 - [ ] In a later cleanup, turn the included source fragments into independently scoped Rust modules after defining explicit shared-state interfaces.
+
+
+### Timer/DPC expiry-generation regression coverage (2026-10-24)
+
+- [x] Centralize the timer expiry snapshot validity predicate: an expiry may proceed only when both object identity and nonzero generation match the live record.
+- [x] Use the same predicate for legacy timer DPC enqueue validation and Timer2 callback dispatch validation.
+- [x] Add focused unit tests for valid snapshots, object reuse, cancellation/rearm generation changes, and uninitialized generations.
+- [ ] Run the repository host tests and full freestanding/PE32+/UEFI/QEMU 2/4/8-vCPU workflow on this branch; these tests are added but not yet executed here.
+- [ ] Continue with integration stress for concurrent cancel/rearm versus expiry, DPC removal/reinitialization during callback, and flush-versus-insert. Pure generation predicate tests do not prove those interleavings race-free.
