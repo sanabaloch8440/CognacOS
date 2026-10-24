@@ -410,45 +410,77 @@ pub unsafe extern "win64" fn ke_remove_queue_dpc(dpc:*mut core::ffi::c_void)->u8
     let Some(record)=table.records.iter_mut().find(|r|r.active&&r.object==dpc as usize) else{return 0};
     let was=record.queued;record.queued=false;was as u8
 }
-pub fn dispatch_queued_dpcs(){
-    let cpu=cpu_slot();
-    if CURRENT_IRQL[cpu].load(Ordering::Acquire)>DISPATCH_LEVEL{return}
-    if DPC_DISPATCHING[cpu].swap(true,Ordering::AcqRel){return}
-    let prior=CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL,Ordering::AcqRel);
-    for _ in 0..MAX_DPC_OBJECTS {
+/// Drain this CPU's queue while the caller owns DPC_DISPATCHING and has
+/// raised the logical IRQL to DISPATCH_LEVEL. Returns false only when the
+/// bounded callback budget was exhausted and work remains.
+fn drain_local_dpc_queue(cpu:usize)->bool{
+    for _ in 0..(MAX_DPC_OBJECTS*16) {
         let callback={
             let mut table=DPCS.lock();
-            let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued&&r.target_cpu==cpu) else{break};
+            let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued&&r.target_cpu==cpu) else {return true};
             record.queued=false;
-            if record.routine==0{None}else{DPC_IN_FLIGHT.fetch_add(1,Ordering::AcqRel);Some((record.routine,record.object,record.context,record.arg1,record.arg2))}
+            if record.routine==0 {None} else {
+                DPC_IN_FLIGHT.fetch_add(1,Ordering::AcqRel);
+                Some((record.routine,record.object,record.context,record.arg1,record.arg2))
+            }
         };
-        if let Some((routine,object,context,arg1,arg2))=callback{
+        if let Some((routine,object,context,arg1,arg2))=callback {
             let function:DpcRoutine=unsafe{core::mem::transmute(routine)};
             unsafe{function(object as *mut _,context as *mut _,arg1 as *mut _,arg2 as *mut _);}
             DPC_IN_FLIGHT.fetch_sub(1,Ordering::AcqRel);
         }
     }
+    let table=DPCS.lock();
+    !table.records.iter().any(|r|r.active&&r.queued&&r.target_cpu==cpu)
+}
+pub fn dispatch_queued_dpcs(){
+    let cpu=cpu_slot();
+    if cpu>=64||CURRENT_IRQL[cpu].load(Ordering::Acquire)>DISPATCH_LEVEL{return}
+    if DPC_DISPATCHING[cpu].swap(true,Ordering::AcqRel){return}
+    let prior=CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL,Ordering::AcqRel);
+    let _=drain_local_dpc_queue(cpu);
     CURRENT_IRQL[cpu].store(prior,Ordering::Release);
     DPC_DISPATCHING[cpu].store(false,Ordering::Release);
 }
+unsafe extern "win64" fn flush_dpc_rendezvous(
+    _dpc:*mut core::ffi::c_void,_context:*mut core::ffi::c_void,
+    done:*mut core::ffi::c_void,sync:*mut core::ffi::c_void,
+){
+    if unsafe{ke_signal_call_dpc_synchronize(sync)}==0{return}
+    let cpu=cpu_slot();
+    if cpu<64 {
+        // KeGenericCallDpc already owns this CPU's dispatch guard and is running
+        // at DISPATCH_LEVEL; drain directly rather than recursively dispatching.
+        let _=drain_local_dpc_queue(cpu);
+    }
+    unsafe{ke_signal_call_dpc_done(done);}
+}
 pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
     let current=cpu_slot();
-    for cpu in 0..crate::hal::MAX_CPUS{
-        if cpu!=current&&crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){
-            let _=crate::smp::request_reschedule(cpu);
-        }
-    }
-    loop{
+    let online=crate::hal::online_cpu_count();
+    if online<=1 {
         dispatch_queued_dpcs();
-        let pending={let table=DPCS.lock();table.records.iter().any(|r|r.active&&r.queued)}
-            || DPC_IN_FLIGHT.load(Ordering::Acquire)!=0
-            || DPC_DISPATCHING.iter().any(|state|state.load(Ordering::Acquire));
+        while DPC_IN_FLIGHT.load(Ordering::Acquire)!=0 {core::hint::spin_loop();}
+        return
+    }
+    // A synchronous generic-DPC rendezvous drains every CPU in the online
+    // topology. Repeat because a callback may queue follow-on DPCs while a
+    // different processor is draining its local queue.
+    let mut rounds=0usize;
+    loop {
+        unsafe{ke_generic_call_dpc(Some(flush_dpc_rendezvous),core::ptr::null_mut());}
+        dispatch_queued_dpcs();
+        let pending={
+            let table=DPCS.lock();
+            table.records.iter().any(|r|r.active&&r.queued)
+        }||DPC_IN_FLIGHT.load(Ordering::Acquire)!=0
+          ||DPC_DISPATCHING.iter().enumerate().any(|(cpu,state)|cpu!=current&&state.load(Ordering::Acquire));
         if !pending{return}
-        for cpu in 0..crate::hal::MAX_CPUS{
-            if cpu!=current&&crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){
-                let _=crate::smp::request_reschedule(cpu);
-            }
-        }
+        rounds+=1;
+        // Avoid a permanent kernel hang when the platform cannot complete a
+        // rendezvous (e.g. an AP failed after being marked online). This is a
+        // fail-safe, not a successful flush: leave queued work intact.
+        if rounds>=1024{return}
         core::hint::spin_loop();
     }
 }
