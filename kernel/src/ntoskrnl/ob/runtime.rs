@@ -29,6 +29,9 @@ const MAX_HANDLES:usize=256;
 const MAX_NAME:usize=128;
 const MAX_TYPES:usize=32;
 const MAX_AUDIT_EVENTS:usize=64;
+const MAX_TOKENS:usize=32;
+const MAX_TOKEN_SIDS:usize=8;
+const MAX_SID_BYTES:usize=68;
 const HANDLE_TAG:usize=0x5244_4f54_0000_0000;
 const HANDLE_TAG_MASK:usize=0xffff_ffff_0000_0000;
 const HANDLE_SLOT_BITS:usize=8;
@@ -57,12 +60,14 @@ struct Lock(AtomicBool);
 impl Lock { const fn new()->Self{Self(AtomicBool::new(false))} fn lock(&self)->Guard<'_>{while self.0.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop()} Guard(&self.0)} }
 struct Guard<'a>(&'a AtomicBool);
 impl Drop for Guard<'_>{fn drop(&mut self){self.0.store(false,Ordering::Release)}}
+#[derive(Clone,Copy)] struct TokenEntry { used:bool,owner:usize,count:u8,lengths:[u8;MAX_TOKEN_SIDS],sids:[[u8;MAX_SID_BYTES];MAX_TOKEN_SIDS] }
+impl TokenEntry { const EMPTY:Self=Self{used:false,owner:0,count:0,lengths:[0;MAX_TOKEN_SIDS],sids:[[0;MAX_SID_BYTES];MAX_TOKEN_SIDS]}; }
 #[derive(Clone,Copy)] pub struct AuditEvent { pub sequence:u64, pub object:usize, pub owner:usize, pub operation:u8, pub desired:u32, pub granted:u32, pub status:i32 }
 impl AuditEvent { const EMPTY:Self=Self{sequence:0,object:0,owner:0,operation:0,desired:0,granted:0,status:0}; }
 #[derive(Clone,Copy)] struct DirectoryBody { magic:u64 }
 impl DirectoryBody { const EMPTY:Self=Self{magic:0}; }
-struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],type_objects:[ObjectType;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],audit:[AuditEvent;MAX_AUDIT_EVENTS],audit_next:u64,next_type:u16 }
-impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],type_objects:[const { ObjectType{name:UnicodeString{length:0,maximum_length:0,buffer:core::ptr::null()},type_index:0,reserved:0,generic_read:0,generic_write:0,generic_execute:0,generic_all:0,valid_access:0} };MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],audit_next:1,next_type:1}} }
+struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],type_objects:[ObjectType;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],tokens:[TokenEntry;MAX_TOKENS],audit:[AuditEvent;MAX_AUDIT_EVENTS],audit_next:u64,next_type:u16 }
+impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],type_objects:[const { ObjectType{name:UnicodeString{length:0,maximum_length:0,buffer:core::ptr::null()},type_index:0,reserved:0,generic_read:0,generic_write:0,generic_execute:0,generic_all:0,valid_access:0} };MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],tokens:[TokenEntry::EMPTY;MAX_TOKENS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],audit_next:1,next_type:1}} }
 static LOCK:Lock=Lock::new();
 static mut STATE:State=State::new();
 fn state()->&'static mut State{unsafe{&mut *core::ptr::addr_of_mut!(STATE)}}
@@ -93,6 +98,29 @@ pub unsafe fn register_object(body:*mut c_void,type_id:u16,name:&[u16],permanent
  let mut o=Object{used:true,body:body as usize,type_id,name_len:name.len() as u16,refs:1,permanent,..Object::EMPTY};o.name[..name.len()].copy_from_slice(name);
  if sd_len!=0{unsafe{core::ptr::copy_nonoverlapping(sd,o.sd.as_mut_ptr(),sd_len)}o.sd_len=sd_len as u16;}
  s.objects[i]=o;Ok(())
+}
+pub fn set_token_sids(owner:usize,sids:&[&[u8]])->Result<(),i32>{
+ if sids.len()>MAX_TOKEN_SIDS{return Err(STATUS_INVALID_PARAMETER)}
+ let mut entry=TokenEntry{used:true,owner,count:sids.len() as u8,..TokenEntry::EMPTY};
+ for (i,sid) in sids.iter().enumerate(){if sid.len()<8||sid.len()>MAX_SID_BYTES||sid[0]!=1||sid[1] as usize*4+8!=sid.len(){return Err(STATUS_INVALID_PARAMETER)}
+  entry.lengths[i]=sid.len() as u8;entry.sids[i][..sid.len()].copy_from_slice(sid);
+ }
+ let _g=LOCK.lock();let s=state();let i=s.tokens.iter().position(|t|t.used&&t.owner==owner).or_else(||s.tokens.iter().position(|t|!t.used)).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+ s.tokens[i]=entry;Ok(())
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotObSetProcessTokenSids(owner:usize,sid_ptrs:*const *const u8,lengths:*const u8,count:u32)->i32{
+ if count as usize>MAX_TOKEN_SIDS||(count!=0&&(sid_ptrs.is_null()||lengths.is_null())){return STATUS_INVALID_PARAMETER}
+ let mut owned=[[0u8;MAX_SID_BYTES];MAX_TOKEN_SIDS];let mut lens=[0usize;MAX_TOKEN_SIDS];
+ for i in 0..count as usize{let p=unsafe{core::ptr::read_unaligned(sid_ptrs.add(i))};let n=unsafe{core::ptr::read_unaligned(lengths.add(i))} as usize;if p.is_null()||n>MAX_SID_BYTES||n<8{return STATUS_INVALID_PARAMETER}
+  unsafe{core::ptr::copy_nonoverlapping(p,owned[i].as_mut_ptr(),n)}lens[i]=n;
+ }
+ let refs: [&[u8];MAX_TOKEN_SIDS]=core::array::from_fn(|i|&owned[i][..lens[i]]);
+ set_token_sids(owner,&refs[..count as usize]).map_or_else(|e|e,|_|STATUS_SUCCESS)
+}
+fn sid_matches(s:&State,owner:usize,sid:&[u8])->bool{
+ let everyone=sid.len()==12&&sid[0]==1&&sid[1]==1&&sid[2..7].iter().all(|x|*x==0)&&sid[7]==1&&sid[8..12]==[0,0,0,0];
+ everyone||s.tokens.iter().find(|t|t.used&&t.owner==owner).is_some_and(|t|(0..t.count as usize).any(|i|t.lengths[i] as usize==sid.len()&&t.sids[i][..sid.len()]==*sid))
 }
 pub fn ensure_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u16,i32>{
  {let _g=LOCK.lock();let s=state();if let Some(t)=s.types.iter().find(|t|t.used&&eq(&t.name[..t.len as usize],name)){return Ok(t.id)}}
@@ -136,7 +164,7 @@ pub fn reference_body(body:*mut c_void,expected_type:u16,desired:u32,kernel_mode
  let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];
  if expected_type!=0&&s.objects[i].type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
  let granted=map_access(&t,desired);if granted&!t.valid!=0{return Err(STATUS_ACCESS_DENIED)}
- if !kernel_mode&&!access_check(&s.objects[i],granted){return Err(STATUS_ACCESS_DENIED)}
+ if !kernel_mode&&!access_check(s,&s.objects[i],granted,owner){return Err(STATUS_ACCESS_DENIED)}
  s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,0,4,desired,granted,STATUS_SUCCESS);Ok(body)
 }
 pub fn dereference_body(body:*mut c_void)->bool{
@@ -146,7 +174,7 @@ pub fn dereference_body(body:*mut c_void)->bool{
 }
 pub fn open_by_name(name:&[u16],desired:u32,owner:usize,kernel_mode:bool,attrs:u32)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
- let ti=type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?;let t=s.types[ti];let requested=map_access(&t,desired&!MAXIMUM_ALLOWED);let allowed=if kernel_mode{t.valid}else{dacl_allowed(&s.objects[i])&t.valid};let granted=if desired&MAXIMUM_ALLOWED!=0{allowed}else{requested};
+ let ti=type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?;let t=s.types[ti];let requested=map_access(&t,desired&!MAXIMUM_ALLOWED);let allowed=if kernel_mode{t.valid}else{dacl_allowed(s,&s.objects[i],owner)&t.valid};let granted=if desired&MAXIMUM_ALLOWED!=0{allowed}else{requested};
  if granted&!t.valid!=0||requested&!allowed!=0{return Err(STATUS_ACCESS_DENIED)}
  let hi=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
  s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].handles+=1;
@@ -159,7 +187,7 @@ pub fn open_by_pointer(body:*mut c_void,desired:u32,owner:usize,kernel_mode:bool
 }
 pub fn reference_by_handle(h:*mut c_void,desired:u32,expected_type:u16,owner:usize,kernel_mode:bool)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,if kernel_mode{usize::MAX}else{owner}).ok_or(STATUS_INVALID_HANDLE)?;let e=s.handles[hi];let o=s.objects.get(e.object).ok_or(STATUS_INVALID_HANDLE)?;if !o.used||o.deleting{return Err(STATUS_INVALID_HANDLE)}if expected_type!=0&&o.type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
- let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let mapped=map_access(&t,desired);if mapped&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}if !kernel_mode&&!access_check(o,mapped){return Err(STATUS_ACCESS_DENIED)}let body=o.body as *mut c_void;
+ let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let mapped=map_access(&t,desired);if mapped&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}if !kernel_mode&&!access_check(s,o,mapped,owner){return Err(STATUS_ACCESS_DENIED)}let body=o.body as *mut c_void;
  let s=state();s.objects[e.object].refs=s.objects[e.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,owner,3,desired,desired,STATUS_SUCCESS);let _=t;Ok(body)
 }
 pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
@@ -190,7 +218,7 @@ fn read_u32(b:&[u8],o:usize)->Option<u32>{Some(u32::from_le_bytes([*b.get(o)?,*b
 /// Evaluate a bounded Windows self-relative security descriptor DACL for the Everyone SID.
 /// Kernel-mode references bypass DACL checks as in NT; user-mode token/SID evaluation is
 /// not implemented, so only an explicit Everyone allow ACE can grant user-mode access.
-fn dacl_allowed(o:&Object)->u32{
+fn dacl_allowed(s:&State,o:&Object,owner:usize)->u32{
  if o.sd_len==0{return 0}let b=&o.sd[..o.sd_len as usize];if b.len()<20||b[0]!=1{return 0}
  let control=read_u16(b,2).unwrap_or(0);if control&0x8000==0{return 0}
  if control&0x0004==0{return u32::MAX}
@@ -199,12 +227,12 @@ fn dacl_allowed(o:&Object)->u32{
  if acl_size<8||off.checked_add(acl_size).is_none_or(|e|e>b.len()){return 0}
  let mut p=off+8;let mut granted=0u32;let mut denied=0u32;
  for _ in 0..ace_count{if p+8>off+acl_size{return 0}let ty=b[p];let size=read_u16(b,p+2).unwrap_or(0) as usize;if size<8||p.checked_add(size).is_none_or(|e|e>off+acl_size){return 0}
-  let mask=read_u32(b,p+4).unwrap_or(0);let sid=&b[p+8..p+size];let everyone=sid.len()>=12&&sid[0]==1&&sid[1]==1&&sid[2..7].iter().all(|x|*x==0)&&sid[7]==1&&sid[8..12]==[0,0,0,0];
-  if everyone{if ty==1{denied|=mask}else if ty==0{granted|=mask}}p+=size;
+  let mask=read_u32(b,p+4).unwrap_or(0);let sid=&b[p+8..p+size];
+  if sid_matches(s,owner,sid){if ty==1{denied|=mask}else if ty==0{granted|=mask}}p+=size;
  }
  granted&!denied
 }
-fn access_check(o:&Object,desired:u32)->bool{dacl_allowed(o)&desired==desired}
+fn access_check(s:&State,o:&Object,desired:u32,owner:usize)->bool{dacl_allowed(s,o,owner)&desired==desired}
 
 /// Windows x64 export: ObReferenceObjectByPointer.
 #[unsafe(no_mangle)]
@@ -340,7 +368,7 @@ mod tests{
   let mut o=Object::EMPTY;o.used=true;o.sd_len=48;o.sd[0]=1;o.sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());o.sd[16..20].copy_from_slice(&20u32.to_le_bytes());
   o.sd[20]=2;o.sd[22..24].copy_from_slice(&28u16.to_le_bytes());o.sd[24..26].copy_from_slice(&1u16.to_le_bytes());
   o.sd[28]=0;o.sd[30..32].copy_from_slice(&20u16.to_le_bytes());o.sd[32..36].copy_from_slice(&1u32.to_le_bytes());o.sd[36]=1;o.sd[37]=1;o.sd[43]=1;
-  assert!(access_check(&o,1));assert!(!access_check(&o,2));
+  let s=state();assert!(access_check(s,&o,1,0));assert!(!access_check(s,&o,2,0));
  }
  #[test]fn user_handles_are_owner_scoped(){
   let ty=register_type(&[90],1,2,4,7,7).unwrap();let body=0x3234usize as *mut c_void;let mut sd=[0u8;48];
@@ -356,6 +384,13 @@ mod tests{
   unsafe{register_object(body,ty,&[92,93],false,core::ptr::null(),0).unwrap();}
   assert_eq!(reference_by_name(&[92,93],ty,1,true).unwrap(),body);assert!(dereference_body(body));
   let mut out=[0u16;MAX_NAME];assert_eq!(object_name(body,&mut out).unwrap(),2);assert_eq!(&out[..2],&[92,93]);assert!(dereference_body(body));
+ }
+ #[test]fn token_sid_dacl_grants_only_matching_owner(){
+  let sid=[1u8,1,0,0,0,0,0,5,18,0,0,0];set_token_sids(777,&[&sid]).unwrap();
+  let mut o=Object::EMPTY;o.used=true;o.sd_len=48;o.sd[0]=1;o.sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());o.sd[16..20].copy_from_slice(&20u32.to_le_bytes());
+  o.sd[20]=2;o.sd[22..24].copy_from_slice(&28u16.to_le_bytes());o.sd[24..26].copy_from_slice(&1u16.to_le_bytes());
+  o.sd[28]=0;o.sd[30..32].copy_from_slice(&20u16.to_le_bytes());o.sd[32..36].copy_from_slice(&1u32.to_le_bytes());o.sd[36..48].copy_from_slice(&sid);
+  let s=state();assert!(access_check(s,&o,1,777));assert!(!access_check(s,&o,1,778));
  }
  #[test]fn created_type_pointer_is_stable_and_roundtrips(){
   let name=[b'O' as u16,b'b' as u16,b'T' as u16,b'y' as u16,b'p' as u16,b'e' as u16,b'X' as u16];
@@ -375,6 +410,6 @@ mod tests{
   let mut reopened=core::ptr::null_mut();assert_eq!(unsafe{ZwOpenDirectoryObject(&mut reopened,1,&child_oa)},STATUS_SUCCESS);
   assert_eq!(unsafe{ZwClose(reopened)},STATUS_SUCCESS);assert_eq!(unsafe{ZwClose(child)},STATUS_SUCCESS);assert_eq!(unsafe{ZwClose(root)},STATUS_SUCCESS);
  }
- #[test]fn access_masks_and_deny_by_default(){let t=TypeEntry{used:true,id:1,gr:1,gw:2,gx:4,ga:7,valid:7,..TypeEntry::EMPTY};assert_eq!(map_access(&t,GENERIC_READ|GENERIC_WRITE),3);assert!(!access_check(&Object::EMPTY,1));}
+ #[test]fn access_masks_and_deny_by_default(){let t=TypeEntry{used:true,id:1,gr:1,gw:2,gx:4,ga:7,valid:7,..TypeEntry::EMPTY};assert_eq!(map_access(&t,GENERIC_READ|GENERIC_WRITE),3);assert!(!access_check(state(),&Object::EMPTY,1,0));}
  #[test]fn stale_handle_cannot_alias_reused_slot(){let ty=register_type(&[88],1,2,4,7,7).unwrap();let body=0x2234usize as *mut c_void;unsafe{register_object(body,ty,&[89],false,core::ptr::null(),0).unwrap();}let h=open_by_pointer(body,1,0,true,0).unwrap();close_handle(h,0).unwrap();let h2=open_by_pointer(body,1,0,true,0).unwrap();assert_ne!(h,h2);assert_eq!(reference_by_handle(h,1,0,0,true).unwrap_err(),STATUS_INVALID_HANDLE);}
 }
