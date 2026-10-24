@@ -110,11 +110,11 @@ const TOKEN_META_SLOTS: usize = 32;
 #[derive(Clone, Copy)]
 struct TokenMeta {
     used: bool, token: usize, token_type: u32, impersonation_level: u32,
-    admin: bool, restricted: bool, write_restricted: bool, privileges: u64, session_id: u32, authentication_id: u64,
+    admin: bool, restricted: bool, write_restricted: bool, privileges: u64, session_id: u32, authentication_id: u64, references: u32,
 }
 impl TokenMeta {
     const EMPTY: Self = Self { used:false, token:0, token_type:0, impersonation_level:0,
-        admin:false, restricted:false, write_restricted:false, privileges:0, session_id:0, authentication_id:0 };
+        admin:false, restricted:false, write_restricted:false, privileges:0, session_id:0, authentication_id:0, references:0 };
 }
 struct TokenMetaLock(AtomicBool);
 impl TokenMetaLock {
@@ -147,10 +147,37 @@ pub(crate) unsafe fn se_internal_RegisterTokenMetadata(
     let slot = entries.iter().position(|e| e.used && e.token == token as usize)
         .or_else(|| entries.iter().position(|e| !e.used));
     let Some(i) = slot else { return 0xC000_009Au32 as i32; };
+    if entries[i].used && entries[i].references != 0 { return 0xC000_009Eu32 as i32; }
     entries[i] = TokenMeta { used:true, token:token as usize, token_type,
         impersonation_level, admin:flags & 1 != 0, restricted:flags & 2 != 0,
-        write_restricted:flags & 4 != 0, privileges, session_id, authentication_id };
+        write_restricted:flags & 4 != 0, privileges, session_id, authentication_id, references:0 };
     STATUS_SUCCESS
+}
+
+pub(crate) unsafe fn se_internal_ReferenceToken(token: *mut c_void) -> i32 {
+    if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    let _guard = TOKEN_META_LOCK.lock();
+    let entries = unsafe { &mut *core::ptr::addr_of_mut!(TOKEN_META) };
+    let Some(entry) = entries.iter_mut().find(|e| e.used && e.token == token as usize) else {
+        return 0xC000_0008u32 as i32;
+    };
+    let Some(next) = entry.references.checked_add(1) else { return 0xC000_009Au32 as i32; };
+    entry.references = next;
+    STATUS_SUCCESS
+}
+pub(crate) unsafe fn se_internal_DereferenceToken(token: *mut c_void) -> i32 {
+    if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    let _guard = TOKEN_META_LOCK.lock();
+    let entries = unsafe { &mut *core::ptr::addr_of_mut!(TOKEN_META) };
+    let Some(entry) = entries.iter_mut().find(|e| e.used && e.token == token as usize) else {
+        return 0xC000_0008u32 as i32;
+    };
+    if entry.references == 0 { return STATUS_INVALID_PARAMETER; }
+    entry.references -= 1;
+    STATUS_SUCCESS
+}
+pub(crate) fn se_internal_TokenReferenceCount(token: *mut c_void) -> u32 {
+    token_meta(token).map_or(0, |m| m.references)
 }
 
 pub(crate) unsafe fn se_internal_UnregisterTokenMetadata(token: *mut c_void) -> i32 {
@@ -158,6 +185,7 @@ pub(crate) unsafe fn se_internal_UnregisterTokenMetadata(token: *mut c_void) -> 
     let _guard = TOKEN_META_LOCK.lock();
     let entries = unsafe { &mut *core::ptr::addr_of_mut!(TOKEN_META) };
     if let Some(e) = entries.iter_mut().find(|e| e.used && e.token == token as usize) {
+        if e.references != 0 { return 0xC000_009Eu32 as i32; }
         *e = TokenMeta::EMPTY; STATUS_SUCCESS
     } else { 0xC000_0008u32 as i32 }
 }
