@@ -51,8 +51,8 @@ pub struct ObjectType { pub name:UnicodeString,pub type_index:u16,pub reserved:u
 struct TypeEntry { used:bool,id:u16,name:[u16;32],len:u8,gr:u32,gw:u32,gx:u32,ga:u32,valid:u32 }
 impl TypeEntry { const EMPTY:Self=Self{used:false,id:0,name:[0;32],len:0,gr:0,gw:0,gx:0,ga:0,valid:u32::MAX}; }
 #[derive(Clone,Copy)]
-struct Object { used:bool, deleting:bool, body:usize, type_id:u16, name:[u16;MAX_NAME], name_len:u16, refs:u32, handles:u32, permanent:bool, sd:[u8;256], sd_len:u16 }
-impl Object { const EMPTY:Self=Self{used:false,deleting:false,body:0,type_id:0,name:[0;MAX_NAME],name_len:0,refs:0,handles:0,permanent:false,sd:[0;256],sd_len:0}; }
+struct Object { used:bool, deleting:bool, inserted:bool, body:usize, type_id:u16, name:[u16;MAX_NAME], name_len:u16, refs:u32, handles:u32, permanent:bool, sd:[u8;256], sd_len:u16 }
+impl Object { const EMPTY:Self=Self{used:false,deleting:false,inserted:false,body:0,type_id:0,name:[0;MAX_NAME],name_len:0,refs:0,handles:0,permanent:false,sd:[0;256],sd_len:0}; }
 #[derive(Clone,Copy)]
 struct HandleEntry { used:bool,generation:u16,object:usize,owner:usize,access:u32,attributes:u32 }
 impl HandleEntry { const EMPTY:Self=Self{used:false,generation:1,object:0,owner:0,access:0,attributes:0}; }
@@ -66,8 +66,8 @@ impl TokenEntry { const EMPTY:Self=Self{used:false,owner:0,count:0,lengths:[0;MA
 impl AuditEvent { const EMPTY:Self=Self{sequence:0,object:0,owner:0,operation:0,desired:0,granted:0,status:0}; }
 #[derive(Clone,Copy)] struct DirectoryBody { magic:u64 }
 impl DirectoryBody { const EMPTY:Self=Self{magic:0}; }
-struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],type_objects:[ObjectType;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],tokens:[TokenEntry;MAX_TOKENS],audit:[AuditEvent;MAX_AUDIT_EVENTS],audit_next:u64,next_type:u16 }
-impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],type_objects:[const { ObjectType{name:UnicodeString{length:0,maximum_length:0,buffer:core::ptr::null()},type_index:0,reserved:0,generic_read:0,generic_write:0,generic_execute:0,generic_all:0,valid_access:0} };MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],tokens:[TokenEntry::EMPTY;MAX_TOKENS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],audit_next:1,next_type:1}} }
+struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],type_objects:[ObjectType;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],tokens:[TokenEntry;MAX_TOKENS],audit:[AuditEvent;MAX_AUDIT_EVENTS],body_storage:[[u8;512];MAX_OBJECTS],audit_next:u64,next_type:u16 }
+impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],type_objects:[const { ObjectType{name:UnicodeString{length:0,maximum_length:0,buffer:core::ptr::null()},type_index:0,reserved:0,generic_read:0,generic_write:0,generic_execute:0,generic_all:0,valid_access:0} };MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],tokens:[TokenEntry::EMPTY;MAX_TOKENS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],body_storage:[[0;512];MAX_OBJECTS],audit_next:1,next_type:1}} }
 static LOCK:Lock=Lock::new();
 static mut STATE:State=State::new();
 fn state()->&'static mut State{unsafe{&mut *core::ptr::addr_of_mut!(STATE)}}
@@ -82,7 +82,7 @@ unsafe fn read_unicode(s:*const UnicodeString,out:&mut [u16;MAX_NAME])->Result<u
 fn map_access(t:&TypeEntry,mask:u32)->u32{let mut m=mask;if m&GENERIC_READ!=0{m=(m&!GENERIC_READ)|t.gr}if m&GENERIC_WRITE!=0{m=(m&!GENERIC_WRITE)|t.gw}if m&GENERIC_EXECUTE!=0{m=(m&!GENERIC_EXECUTE)|t.gx}if m&GENERIC_ALL!=0{m=(m&!GENERIC_ALL)|t.ga}m}
 fn type_idx(s:&State,id:u16)->Option<usize>{s.types.iter().position(|t|t.used&&t.id==id)}
 fn object_idx(s:&State,body:usize)->Option<usize>{s.objects.iter().position(|o|o.used&&o.body==body&&!o.deleting)}
-fn find_name(s:&State,name:&[u16])->Option<usize>{s.objects.iter().position(|o|o.used&&!o.deleting&&o.name_len as usize==name.len()&&eq(&o.name[..o.name_len as usize],name))}
+fn find_name(s:&State,name:&[u16])->Option<usize>{s.objects.iter().position(|o|o.used&&!o.deleting&&o.inserted&&o.name_len as usize==name.len()&&eq(&o.name[..o.name_len as usize],name))}
 fn encode_handle(i:usize,g:u16)->*mut c_void{(HANDLE_TAG|((g as usize)<<HANDLE_SLOT_BITS)|i) as *mut c_void}
 fn decode_handle(h:*mut c_void)->Option<(usize,u16)>{let v=h as usize;if v&HANDLE_TAG_MASK!=HANDLE_TAG{return None}Some((v&HANDLE_SLOT_MASK,(v>>HANDLE_SLOT_BITS) as u16))}
 fn handle_idx(s:&State,h:*mut c_void,owner:usize)->Option<usize>{let(i,g)=decode_handle(h)?;let e=s.handles.get(i)?;if e.used&&e.generation==g&&(e.owner==owner||owner==usize::MAX){Some(i)}else{None}}
@@ -92,10 +92,10 @@ fn handle_idx(s:&State,h:*mut c_void,owner:usize)->Option<usize>{let(i,g)=decode
 pub unsafe fn register_object(body:*mut c_void,type_id:u16,name:&[u16],permanent:bool,sd:*const u8,sd_len:usize)->Result<(),i32>{
  if body.is_null()||name.len()>MAX_NAME||sd_len>256||(sd_len!=0&&sd.is_null()){return Err(STATUS_INVALID_PARAMETER)}
  let _g=LOCK.lock();let s=state();if type_idx(s,type_id).is_none(){return Err(STATUS_OBJECT_TYPE_MISMATCH)}
- if object_idx(s,body as usize).is_some(){return Err(STATUS_OBJECT_NAME_COLLISION)}
+ if raw_object_idx(s,body as usize).is_some(){return Err(STATUS_OBJECT_NAME_COLLISION)}
  if !name.is_empty()&&find_name(s,name).is_some(){return Err(STATUS_OBJECT_NAME_COLLISION)}
  let Some(i)=s.objects.iter().position(|o|!o.used)else{return Err(STATUS_INSUFFICIENT_RESOURCES)};
- let mut o=Object{used:true,body:body as usize,type_id,name_len:name.len() as u16,refs:1,permanent,..Object::EMPTY};o.name[..name.len()].copy_from_slice(name);
+ let mut o=Object{used:true,body:body as usize,type_id,name_len:name.len() as u16,refs:1,permanent,inserted:true,..Object::EMPTY};o.name[..name.len()].copy_from_slice(name);
  if sd_len!=0{unsafe{core::ptr::copy_nonoverlapping(sd,o.sd.as_mut_ptr(),sd_len)}o.sd_len=sd_len as u16;}
  s.objects[i]=o;Ok(())
 }
@@ -186,7 +186,7 @@ pub fn create_directory(name:&[u16],sd:*const u8,sd_len:usize)->Result<*mut c_vo
  let _g=LOCK.lock();let s=state();if find_name(s,name).is_some(){return Err(STATUS_OBJECT_NAME_COLLISION)}
  let i=s.objects.iter().position(|o|!o.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
  s.directories[i].magic=0x52444f5444495231;let body=core::ptr::addr_of_mut!(s.directories[i]).cast::<c_void>();
- let mut o=Object{used:true,body:body as usize,type_id:ty,name_len:name.len() as u16,refs:1,permanent:true,..Object::EMPTY};o.name[..name.len()].copy_from_slice(name);
+ let mut o=Object{used:true,body:body as usize,type_id:ty,name_len:name.len() as u16,refs:1,permanent:true,inserted:true,..Object::EMPTY};o.name[..name.len()].copy_from_slice(name);
  if sd_len!=0{unsafe{core::ptr::copy_nonoverlapping(sd,o.sd.as_mut_ptr(),sd_len)}o.sd_len=sd_len as u16;}s.objects[i]=o;Ok(body)
 }
 pub fn register_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u16,i32>{
@@ -271,6 +271,40 @@ fn dacl_allowed(s:&State,o:&Object,owner:usize)->u32{
 fn access_check(s:&State,o:&Object,desired:u32,owner:usize)->bool{dacl_allowed(s,o,owner)&desired==desired}
 
 /// Windows x64 export: ObReferenceObjectByPointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObCreateObject(previous_mode:u8,object_type:*mut ObjectType,oa:*const ObjectAttributes,object_mode:u8,parse_context:*mut c_void,body_size:usize,paged_charge:usize,nonpaged_charge:usize,out_object:*mut *mut c_void)->i32{
+ if out_object.is_null()||body_size>512{return STATUS_INVALID_PARAMETER}unsafe{out_object.write(core::ptr::null_mut())}
+ if !parse_context.is_null()||object_mode>1||previous_mode>1{return STATUS_NOT_SUPPORTED}
+ let ty=match expected_type_id(object_type){Some(id)if id!=0=>id,_=>return STATUS_OBJECT_TYPE_MISMATCH};
+ let mut name=[0u16;MAX_NAME];let name_len=if oa.is_null(){0}else{
+  let a=unsafe{&*oa};if (a.length as usize)<core::mem::size_of::<ObjectAttributes>()||!a.security_descriptor.is_null(){return STATUS_NOT_SUPPORTED}
+  if a.object_name.is_null(){0}else{match unsafe{resolve_attributes_name(oa,&mut name)}{Ok(n)=>n,Err(e)=>return e}}
+ };
+ let _g=LOCK.lock();let s=state();let i=match s.objects.iter().position(|o|!o.used){Some(i)=>i,None=>return STATUS_INSUFFICIENT_RESOURCES};
+ if name_len!=0&&find_name(s,&name[..name_len]).is_some(){return STATUS_OBJECT_NAME_COLLISION}
+ s.body_storage[i]=[0;512];let body=core::ptr::addr_of_mut!(s.body_storage[i]).cast::<u8>().cast::<c_void>();
+ let mut o=Object{used:true,body:body as usize,type_id:ty,name,name_len:name_len as u16,refs:1,permanent:false,inserted:false,..Object::EMPTY};
+ if name_len!=0{o.name[..name_len].copy_from_slice(&name[..name_len]);}
+ s.objects[i]=o;unsafe{out_object.write(body)}let _=(paged_charge,nonpaged_charge);STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObInsertObject(object:*mut c_void,access_state:*mut c_void,desired_access:u32,pointer_bias:u32,new_object:*mut *mut c_void,out_handle:*mut *mut c_void)->i32{
+ if object.is_null()||out_handle.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out_handle.write(core::ptr::null_mut())}
+ if !access_state.is_null(){return STATUS_NOT_SUPPORTED}
+ {
+  let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,object as usize)else{return STATUS_INVALID_PARAMETER};
+  if s.objects[i].inserted{return STATUS_OBJECT_NAME_COLLISION}
+  if s.objects[i].name_len!=0&&find_name(s,&s.objects[i].name[..s.objects[i].name_len as usize]).is_some(){return STATUS_OBJECT_NAME_COLLISION}
+  s.objects[i].inserted=true;
+ }
+ match open_by_pointer(object,desired_access,0,true,0){
+  Ok(h)=>{if !new_object.is_null(){unsafe{new_object.write(object)}}unsafe{out_handle.write(h)}
+   if pointer_bias>0{let _=reference_body(object,0,0,true);}STATUS_SUCCESS},
+  Err(e)=>{let _g=LOCK.lock();let s=state();if let Some(i)=raw_object_idx(s,object as usize){s.objects[i].inserted=false;}e}
+ }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObDeleteObject(object:*mut c_void){let _=unregister_object(object);}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObCreateObjectType(name:*const UnicodeString,initializer:*const u8,default_sd:*mut c_void,out_type:*mut *mut ObjectType)->i32{
  if out_type.is_null()||initializer.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out_type.write(core::ptr::null_mut())}
