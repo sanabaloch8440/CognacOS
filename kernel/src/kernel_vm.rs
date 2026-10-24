@@ -579,6 +579,22 @@ pub fn self_test() -> bool {
    }
   }
  }
+ // Fixed-address image extents must be allocatable and transition from
+ // writable/NX staging to strict RX and RW/NX pages without W+X permissions.
+ let fixed_va=BASE+0x0f000000;
+ let fixed=match allocate_pages_at(fixed_va,2){Ok(p)=>p,Err(_)=>return false};
+ if fixed as u64!=fixed_va{let _=free_pages(fixed,2);return false;}
+ unsafe{fixed.write(0x51);fixed.add(PAGE as usize).write(0x62);}
+ if protect_pages(fixed_va,2,false,false).is_err()
+  ||protect_pages(fixed_va,1,false,true).is_err()
+  ||protect_pages(fixed_va+PAGE,1,true,false).is_err(){let _=free_pages(fixed,2);return false;}
+ let root=ROOT.load(Ordering::Acquire);
+ let rx=unsafe{crate::memory::inspect_mapping(root,fixed_va)};
+ let rw=unsafe{crate::memory::inspect_mapping(root,fixed_va+PAGE)};
+ if !matches!(rx,Ok(m) if !m.writable&&m.executable&&!m.user_accessible)
+  ||!matches!(rw,Ok(m) if m.writable&&!m.executable&&!m.user_accessible)
+  ||unsafe{fixed.read()}!=0x51||unsafe{fixed.add(PAGE as usize).read()}!=0x62
+  ||free_pages(fixed,2).is_err(){return false;}
  // Demand-zero pageable extents must fault pages in independently and still
  // participate in the same SMP-safe reclamation path.
  let p=match allocate_pageable_pages(3){Ok(p)=>p,Err(_)=>return false};
