@@ -4,6 +4,8 @@
 //! device-memory attributes before calling these routines. This module does not
 //! assume a universal ECAM base or silently identity-map arbitrary physical RAM.
 #![no_std]
+#[cfg(test)]
+extern crate std;
 use core::sync::atomic::Ordering;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
