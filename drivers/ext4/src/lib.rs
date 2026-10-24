@@ -594,7 +594,7 @@ mod host_tests {
 
     #[test]
     fn gpt_header_and_entry_array_crc_are_validated() {
-        let mut disk=MemDisk{bytes:[0;8192]};
+        let mut disk=MemDisk{bytes:[0;32768]};
         let entries=&mut disk.bytes[2*512..2*512+128];
         entries[..16].fill(0x11);
         entries[32..40].copy_from_slice(&4u64.to_le_bytes());
@@ -638,7 +638,7 @@ mod host_tests {
         let fs=ExtFilesystem::mount_partition_read_only(disk,partition).unwrap();
         assert!(fs.superblock().read_only);
         assert_eq!(fs.superblock().blocks_count,4);
-        let disk=fs.into_device();
+        let disk=fs.into_device().into_device();
         assert_eq!(&disk.bytes[start+56..start+58],&EXT_MAGIC.to_le_bytes());
     }
 
