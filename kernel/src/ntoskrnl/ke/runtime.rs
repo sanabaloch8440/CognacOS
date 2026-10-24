@@ -1772,6 +1772,8 @@ static BROADCAST_DPC:BroadcastDpcStorage=BroadcastDpcStorage([0;8]);
 pub type IpiGenericRoutine=unsafe extern "win64" fn(usize)->usize;
 
 static BROADCAST_TEST_COUNTS:[core::sync::atomic::AtomicU32;64]=[const{core::sync::atomic::AtomicU32::new(0)};64];
+static BROADCAST_TEST_SYNC_OK:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
+static BROADCAST_TEST_DONE_RETURNED:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
 unsafe extern "win64" fn broadcast_test_ipi(_context:usize)->usize{
     let cpu=cpu_slot();
     if cpu<64{BROADCAST_TEST_COUNTS[cpu].fetch_add(1,Ordering::AcqRel)+1}else{0}
@@ -1783,7 +1785,11 @@ unsafe extern "win64" fn broadcast_test_dpc(
     let cpu=cpu_slot();
     if cpu<64{BROADCAST_TEST_COUNTS[cpu].fetch_add(1,Ordering::AcqRel);}
     let synchronized=unsafe{ke_signal_call_dpc_synchronize(sync)};
-    if synchronized!=0{unsafe{ke_signal_call_dpc_done(done);}}
+    if synchronized!=0{
+        BROADCAST_TEST_SYNC_OK.fetch_add(1,Ordering::AcqRel);
+        unsafe{ke_signal_call_dpc_done(done);}
+        BROADCAST_TEST_DONE_RETURNED.fetch_add(1,Ordering::AcqRel);
+    }
 }
 /// Exercise both broadcast paths on the actual online CPU set. This is called
 /// only after the HAL IPI path is enabled and the boot-time SMP stress is ready.
@@ -1796,7 +1802,11 @@ pub fn broadcast_rendezvous_self_test()->bool{
         if mask&(1u64<<cpu)!=0&&BROADCAST_TEST_COUNTS[cpu].load(Ordering::Acquire)!=1{return false}
     }
     for cpu in 0..64{BROADCAST_TEST_COUNTS[cpu].store(0,Ordering::Release);}
+    BROADCAST_TEST_SYNC_OK.store(0,Ordering::Release);
+    BROADCAST_TEST_DONE_RETURNED.store(0,Ordering::Release);
     unsafe{ke_generic_call_dpc(Some(broadcast_test_dpc),core::ptr::null_mut());}
+    let expected=mask.count_ones();
+    if BROADCAST_TEST_SYNC_OK.load(Ordering::Acquire)!=expected||BROADCAST_TEST_DONE_RETURNED.load(Ordering::Acquire)!=expected{return false}
     for cpu in 0..64{
         if mask&(1u64<<cpu)!=0&&BROADCAST_TEST_COUNTS[cpu].load(Ordering::Acquire)!=1{return false}
     }
