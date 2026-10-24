@@ -421,18 +421,23 @@ pub fn read_gpt_partition<D:ReadOnlyBlockDevice>(device:&mut D,slot:u32,sector_s
     let mut copy=[0u8;4096];copy[..header_size].copy_from_slice(&sector[..header_size]);copy[16..20].fill(0);
     if crc32_ieee(&copy[..header_size])!=stored{return Err(Error::InvalidChecksum)}
     let current=u64::from_le_bytes(sector[24..32].try_into().map_err(|_|Error::Truncated)?);
+    let backup=u64::from_le_bytes(sector[32..40].try_into().map_err(|_|Error::Truncated)?);
     let first_usable=u64::from_le_bytes(sector[40..48].try_into().map_err(|_|Error::Truncated)?);
     let last_usable=u64::from_le_bytes(sector[48..56].try_into().map_err(|_|Error::Truncated)?);
     let entries_lba=u64::from_le_bytes(sector[72..80].try_into().map_err(|_|Error::Truncated)?);
     let count=u32::from_le_bytes(sector[80..84].try_into().map_err(|_|Error::Truncated)?);
     let size=u32::from_le_bytes(sector[84..88].try_into().map_err(|_|Error::Truncated)?);
     let entries_crc=u32::from_le_bytes(sector[88..92].try_into().map_err(|_|Error::Truncated)?);
-    if current!=1||first_usable>last_usable||last_usable>=disk_sectors||count==0||count>128||slot>=count||size!=128{
+    if current!=1||backup>=disk_sectors||backup==current||first_usable>last_usable||last_usable>=disk_sectors
+        ||count==0||count>128||slot>=count||size!=128||entries_lba<2 {
         return Err(Error::UnsupportedPartitionTable)
     }
     let array_len=(count as usize).checked_mul(size as usize).ok_or(Error::OutOfRange)?;
     let array_offset=entries_lba.checked_mul(sector_size as u64).ok_or(Error::OutOfRange)?;
-    if array_offset.checked_add(array_len as u64).ok_or(Error::OutOfRange)?>device.capacity_bytes(){return Err(Error::OutOfRange)}
+    let array_end=array_offset.checked_add(array_len as u64).ok_or(Error::OutOfRange)?;
+    let first_usable_offset=first_usable.checked_mul(sector_size as u64).ok_or(Error::OutOfRange)?;
+    if array_end>device.capacity_bytes(){return Err(Error::OutOfRange)}
+    if array_end>first_usable_offset{return Err(Error::InvalidPartitionTable)}
     let mut entries=[0u8;128*128];
     device.read_at(array_offset,&mut entries[..array_len]).map_err(|_|Error::Io)?;
     if crc32_ieee(&entries[..array_len])!=entries_crc{return Err(Error::InvalidChecksum)}
