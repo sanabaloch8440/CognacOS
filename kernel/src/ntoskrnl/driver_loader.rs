@@ -165,14 +165,14 @@ fn apply_imports(image:&mut[u8],rva:u32,size:u32,resolver:crate::pe::ImportResol
    let src=(source as usize).checked_add(thunk_index.checked_mul(8).ok_or(DriverLoadError::InvalidImport)?).ok_or(DriverLoadError::InvalidImport)?;
    let dst=(first as usize).checked_add(thunk_index.checked_mul(8).ok_or(DriverLoadError::InvalidImport)?).ok_or(DriverLoadError::InvalidImport)?;
    let thunk=u64at(image,src)?;if thunk==0{thunk_terminated=true;break;}
-   let symbol=if thunk&(1u64<<63)!=0{
+   let mut symbol_buf=[0u8;512];let symbol=if thunk&(1u64<<63)!=0{
     if thunk&0x7fff_ffff_ffff_0000!=0{return Err(DriverLoadError::InvalidImport)}
     ImportSymbol::Ordinal((thunk&0xffff) as u16)
    }else{
     if thunk>u32::MAX as u64{return Err(DriverLoadError::InvalidImport)}
     let name_offset=(thunk as usize).checked_add(2).ok_or(DriverLoadError::InvalidImport)?;
     let name_rva=u32::try_from(name_offset).map_err(|_|DriverLoadError::InvalidImport)?;
-    let symbol_src=c_string(image,name_rva,512)?;let symbol_len=symbol_src.len();let mut symbol_buf=[0u8;512];symbol_buf[..symbol_len].copy_from_slice(symbol_src);ImportSymbol::Name(&symbol_buf[..symbol_len])
+    let symbol_src=c_string(image,name_rva,512)?;let symbol_len=symbol_src.len();symbol_buf[..symbol_len].copy_from_slice(symbol_src);ImportSymbol::Name(&symbol_buf[..symbol_len])
    };
    let address=resolver(dll,symbol).ok_or(DriverLoadError::ImportNotFound)?;
    put_u64(image,dst,address)?;thunk_index+=1;
