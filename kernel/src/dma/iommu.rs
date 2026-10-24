@@ -53,7 +53,11 @@ fn unmap_index(index:usize)->bool{
 pub fn map_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;
  if !super::consume_map_register(token,device){return Err(DmaError::OutOfMemory)}
- match map_one(device,token as usize,0,physical,length,direction){Ok(v)=>Ok(v),Err(e)=>{super::return_map_register(token,device);Err(e)}}
+ match map_one(device,token as usize,0,physical,length,direction){
+  Ok(v) if v.checked_add(length as u64).is_some_and(|end|end>0&&end-1<=super::adapter_maximum_address(adapter))=>Ok(v),
+  Ok(v)=>{let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token as usize&&m.logical==v)};if let Some(i)=idx{let _=unmap_index(i);}Err(DmaError::AddressMask)},
+  Err(e)=>{super::return_map_register(token,device);Err(e)}
+ }
 }
 pub fn sync_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u32,_direction:u8)->bool{
  let Some(device)=super::adapter_device(adapter)else{return false};
@@ -85,7 +89,7 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
  let pages=length.checked_add(PAGE_SIZE as usize-1).ok_or(DmaError::InvalidLength)?/PAGE_SIZE as usize;
  let physical=unsafe{crate::memory::allocate_contiguous_pages(pages)}.map_err(|_|DmaError::OutOfMemory)?;
  let bytes=(pages as u64).checked_mul(PAGE_SIZE).ok_or(DmaError::InvalidLength)?;
- if bytes>u32::MAX as u64||physical.checked_add(bytes-1).is_none_or(|end|end>maximum){for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
+ if bytes>u32::MAX as u64||physical.checked_add(bytes-1).is_none(){for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
  let Some(cpu)=crate::memory::direct_map_address(physical)else{for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)};
  unsafe{ptr::write_bytes(cpu as *mut u8,0,bytes as usize);}
  let b=backend().map_err(|_|DmaError::AddressMask)?;let mut logical=0;let mut cookie=0;
