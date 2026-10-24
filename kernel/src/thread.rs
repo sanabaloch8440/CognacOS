@@ -251,6 +251,14 @@ pub fn clear_wake_pending()->Result<(),ThreadError>{
     t.wake_pending=false;t.wait_status=0;Ok(())
 }
 
+/// Publish the actual top of a CPU's permanent idle/bootstrap stack. This
+/// value is used both for TSS.RSP0 and when a blocked/exiting thread returns to idle.
+pub fn set_idle_stack_top(cpu:usize,stack_top:u64)->bool{
+    if cpu>=crate::hal::MAX_CPUS||stack_top==0||stack_top&0xf!=0{return false;}
+    IDLE_STACK_TOPS[cpu].store(stack_top,core::sync::atomic::Ordering::Release);
+    crate::arch::set_kernel_stack(cpu,stack_top)
+}
+
 /// Initialize the runtime's per-CPU current-thread slots. The bootstrap context
 /// is the idle context until the first explicit thread switch.
 pub fn initialize(){
