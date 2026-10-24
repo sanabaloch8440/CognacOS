@@ -1,6 +1,6 @@
 //! Early physical-page allocator built only from UEFI EfiConventionalMemory ranges.
 //! Mutations are serialized with an interrupt-safe lock on the kernel target.
-//! Physical allocation remains capped at the first 4 GiB until high-memory support.
+//! Page-table frames stay below 4 GiB; data frames may use high RAM through the direct map.
 
 use core::ptr;
 
@@ -34,6 +34,8 @@ struct RegionStore(core::cell::UnsafeCell<[Region; MAX_REGIONS]>);
 unsafe impl Sync for RegionStore {}
 static REGIONS: RegionStore = RegionStore(core::cell::UnsafeCell::new([Region::EMPTY; MAX_REGIONS]));
 static REGION_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static HIGH_REGIONS: RegionStore = RegionStore(core::cell::UnsafeCell::new([Region::EMPTY; MAX_REGIONS]));
+static HIGH_REGION_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 // The immutable final UEFI map is retained for validating high-memory direct-map faults.
 static FIRMWARE_MAP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRMWARE_MAP_ENTRIES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
@@ -72,6 +74,16 @@ pub fn direct_map_address(physical_address: u64) -> Option<u64> {
     DIRECT_MAP_BASE.checked_add(physical_address)
 }
 
+/// Return a virtual pointer suitable for CPU access to a physical RAM page.
+/// Low memory uses its identity alias; high memory uses the fault-created direct map.
+pub fn physical_access_pointer(physical_address: u64) -> Option<*mut u8> {
+    if physical_address < PHYSICAL_LIMIT {
+        Some(physical_address as *mut u8)
+    } else {
+        direct_map_address(physical_address).map(|address| address as *mut u8)
+    }
+}
+
 /// Find a conventional-memory page above 4 GiB for a non-destructive direct-map test.
 pub fn first_high_conventional_page() -> Option<u64> {
     let base = FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire);
@@ -94,6 +106,9 @@ const FREE_CAPACITY: usize = 65536;
 struct FreePages(core::cell::UnsafeCell<([u64; FREE_CAPACITY], usize)>);
 unsafe impl Sync for FreePages {}
 static FREE_PAGES: FreePages = FreePages(core::cell::UnsafeCell::new(([0; FREE_CAPACITY], 0)));
+struct HighFreePages(core::cell::UnsafeCell<([u64; FREE_CAPACITY], usize)>);
+unsafe impl Sync for HighFreePages {}
+static HIGH_FREE_PAGES: HighFreePages = HighFreePages(core::cell::UnsafeCell::new(([0; FREE_CAPACITY], 0)));
 
 #[cfg(target_os = "none")]
 static MEMORY_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
@@ -162,19 +177,50 @@ fn collect_regions(map: *const u8, entries: usize, stride: usize,
     Ok(count)
 }
 
+fn collect_high_regions(map: *const u8, entries: usize, stride: usize,
+                        out: &mut [Region; MAX_REGIONS]) -> Result<usize, AllocError> {
+    if (entries != 0 && map.is_null())
+        || stride < core::mem::size_of::<MemoryDescriptor>()
+        || (entries > 1 && entries.checked_mul(stride).is_none()) {
+        return Err(AllocError::InvalidMap);
+    }
+    let mut count = 0usize;
+    for i in 0..entries {
+        let offset = i.checked_mul(stride).ok_or(AllocError::InvalidMap)?;
+        let address = (map as usize).checked_add(offset).ok_or(AllocError::InvalidMap)?;
+        let d = unsafe { ptr::read_unaligned(address as *const MemoryDescriptor) };
+        if d.kind != EFI_CONVENTIONAL_MEMORY || d.number_of_pages == 0 { continue; }
+        let bytes = d.number_of_pages.checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+        let raw_end = d.physical_start.checked_add(bytes).ok_or(AllocError::InvalidMap)?;
+        let start = align_up(d.physical_start.max(PHYSICAL_LIMIT), PAGE_SIZE)
+            .ok_or(AllocError::InvalidMap)?;
+        let end = raw_end.min(DIRECT_MAP_PHYSICAL_LIMIT) & !(PAGE_SIZE - 1);
+        if start >= end { continue; }
+        if count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
+        out[count] = Region { next: start, end };
+        count += 1;
+    }
+    Ok(count)
+}
+
 pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Result<usize, AllocError> {
     let _guard = MemoryGuard::acquire();
     let mut staged = [Region::EMPTY; MAX_REGIONS];
+    let mut staged_high = [Region::EMPTY; MAX_REGIONS];
     let count = collect_regions(map, entries, stride, &mut staged)?;
+    let high_count = collect_high_regions(map, entries, stride, &mut staged_high)?;
+    let regions = unsafe { &mut *REGIONS.0.get() };
+    regions.copy_from_slice(&staged);
+    let high_regions = unsafe { &mut *HIGH_REGIONS.0.get() };
+    high_regions.copy_from_slice(&staged_high);
+    // Reinitialization must not retain frames returned by a previous map.
+    unsafe { (&mut *FREE_PAGES.0.get()).1 = 0; }
+    unsafe { (&mut *HIGH_FREE_PAGES.0.get()).1 = 0; }
     FIRMWARE_MAP.store(map as u64, core::sync::atomic::Ordering::Release);
     FIRMWARE_MAP_ENTRIES.store(entries, core::sync::atomic::Ordering::Release);
     FIRMWARE_MAP_STRIDE.store(stride, core::sync::atomic::Ordering::Release);
-    let regions = unsafe { &mut *REGIONS.0.get() };
-    regions.copy_from_slice(&staged);
-    // Reinitialization must not retain frames returned by a previous map.
-    let free = unsafe { &mut *FREE_PAGES.0.get() };
-    free.1 = 0;
     REGION_COUNT.store(count, core::sync::atomic::Ordering::Release);
+    HIGH_REGION_COUNT.store(high_count, core::sync::atomic::Ordering::Release);
     Ok(count)
 }
 
@@ -216,6 +262,40 @@ pub unsafe fn reserve_range(start: u64, end: u64) -> Result<(), AllocError> {
     regions.copy_from_slice(&rebuilt);
     REGION_COUNT.store(rebuilt_count, core::sync::atomic::Ordering::Release);
     Ok(())
+}
+
+/// Allocate a zeroed data frame, preferring conventional RAM above 4 GiB.
+/// Must only be used after the kernel page-fault/direct-map handler is initialized.
+/// Page-table pages must continue to use allocate_page(), which is guaranteed low.
+pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
+    let high_page = {
+        let _guard = MemoryGuard::acquire();
+        let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
+        if free.1 != 0 {
+            free.1 -= 1;
+            Some(free.0[free.1])
+        } else {
+            let count = HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+            let regions = unsafe { &mut *HIGH_REGIONS.0.get() };
+            let mut found = None;
+            for region in regions.iter_mut().take(count) {
+                if region.next.checked_add(PAGE_SIZE).is_some_and(|end| end <= region.end) {
+                    let page = region.next;
+                    region.next += PAGE_SIZE;
+                    found = Some(page);
+                    break;
+                }
+            }
+            found
+        }
+    };
+    if let Some(page) = high_page {
+        let pointer = direct_map_address(page).ok_or(AllocError::InvalidMap)?;
+        unsafe { ptr::write_bytes(pointer as *mut u8, 0, PAGE_SIZE as usize); }
+        Ok(page)
+    } else {
+        unsafe { allocate_page() }
+    }
 }
 
 /// Allocate one zeroed physical page. The early kernel uses identity mappings,
