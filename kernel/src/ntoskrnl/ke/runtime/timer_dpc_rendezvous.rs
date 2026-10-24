@@ -463,7 +463,7 @@ fn drain_local_dpc_queue(cpu:usize)->bool{
     for _ in 0..(MAX_DPC_OBJECTS*16) {
         let callback={
             let mut table=DPCS.lock();
-            let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued&&r.target_cpu==cpu) else {return true};
+            let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued&&r.target_cpu==cpu&&!r.threaded) else {return true};
             record.queued=false;
             if record.routine==0 {None} else {
                 // Mark the object before dropping the table lock so cancel,
@@ -497,6 +497,37 @@ pub fn dispatch_queued_dpcs(){
     CURRENT_IRQL[cpu].store(prior,Ordering::Release);
     DPC_DISPATCHING[cpu].store(false,Ordering::Release);
 }
+
+/// Run threaded DPC callbacks only from a PASSIVE_LEVEL scheduler safe point.
+/// The callback is claimed under the table lock; removal/reinitialization and
+/// global flush observe its in-flight lifetime until it returns.
+pub fn dispatch_threaded_dpcs(){
+    let cpu=cpu_slot();
+    if cpu>=64||CURRENT_IRQL[cpu].load(Ordering::Acquire)!=PASSIVE_LEVEL
+        ||DPC_DISPATCHING[cpu].load(Ordering::Acquire)
+        ||THREADED_DPC_DISPATCHING[cpu].swap(true,Ordering::AcqRel){return}
+    for _ in 0..(MAX_DPC_OBJECTS*16){
+        let callback={
+            let mut table=DPCS.lock();
+            let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued&&r.target_cpu==cpu&&r.threaded) else{break};
+            record.queued=false;
+            if record.routine==0{None}else{
+                record.running=true;
+                DPC_IN_FLIGHT.fetch_add(1,Ordering::AcqRel);
+                Some((record.routine,record.object,record.context,record.arg1,record.arg2))
+            }
+        };
+        if let Some((routine,object,context,arg1,arg2))=callback{
+            let function:DpcRoutine=unsafe{core::mem::transmute(routine)};
+            unsafe{function(object as *mut _,context as *mut _,arg1 as *mut _,arg2 as *mut _);}
+            let mut table=DPCS.lock();
+            if let Some(record)=table.records.iter_mut().find(|r|r.object==object&&r.running){record.running=false;}
+            drop(table);
+            DPC_IN_FLIGHT.fetch_sub(1,Ordering::AcqRel);
+        }
+    }
+    THREADED_DPC_DISPATCHING[cpu].store(false,Ordering::Release);
+}
 unsafe extern "win64" fn flush_dpc_rendezvous(
     _dpc:*mut core::ffi::c_void,_context:*mut core::ffi::c_void,
     done:*mut core::ffi::c_void,sync:*mut core::ffi::c_void,
@@ -517,6 +548,7 @@ pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
     let online=crate::hal::online_cpu_count();
     if online<=1 {
         dispatch_queued_dpcs();
+        dispatch_threaded_dpcs();
         while DPC_IN_FLIGHT.load(Ordering::Acquire)!=0 {core::hint::spin_loop();}
         return
     }
@@ -529,6 +561,7 @@ pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
     loop {
         unsafe{ke_generic_call_dpc(Some(flush_dpc_rendezvous),core::ptr::null_mut());}
         dispatch_queued_dpcs();
+        dispatch_threaded_dpcs();
         let pending={
             let table=DPCS.lock();
             table.records.iter().any(|r|r.active&&r.queued)
