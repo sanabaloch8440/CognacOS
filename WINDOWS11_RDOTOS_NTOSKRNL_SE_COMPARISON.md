@@ -2,7 +2,7 @@
 
 Target reference: Windows 11 x64 10.0.26100.8036-AMD64. The Se export list in `kernel/src/ntoskrnl/se/mod.rs` is inventory metadata; an export name or ordinal does not imply implementation.
 
-## Implemented
+## Implemented Se exports
 
 | Routine | Implementation | Scope |
 | --- | --- | --- |
@@ -10,9 +10,10 @@ Target reference: Windows 11 x64 10.0.26100.8036-AMD64. The Se export list in `k
 | `SeTokenIsAdmin`, `SeTokenIsRestricted`, `SeTokenIsWriteRestricted` | `se/runtime.rs` | Query registered RdotOS token metadata; unknown tokens fail closed. |
 | `SeTokenType`, `SeTokenImpersonationLevel` | `se/runtime.rs` | Query registered token kind/impersonation level; unknown or non-impersonation tokens return 0. |
 | `SeSinglePrivilegeCheck` | `se/runtime.rs` | Kernel-mode bypass; user-mode requests fail closed until current-thread token/privilege integration exists. |
-| `RdotSeRegisterTokenMetadata`, `RdotSeUnregisterTokenMetadata`, `RdotSeTokenHasPrivilege` | `se/runtime.rs` | RdotOS-only bounded metadata and privilege-bitmap interface for tests and future Ps token integration. |
+| `SeQuerySessionIdToken`, `SeQuerySessionIdTokenEx` | `se/runtime.rs` | Query session ID from registered token metadata with pointer and token validation. |
+| `SeQueryAuthenticationIdToken` | `se/runtime.rs` | Query authentication LUID stored in registered token metadata. |
 
-The Se export catalogue is now located at `kernel/src/ntoskrnl/se/mod.rs`; the old top-level `se.rs` catalogue was removed. The import resolver routes only routines with implemented entry points.
+The Se export catalogue is located at `kernel/src/ntoskrnl/se/mod.rs`; the old top-level `se.rs` catalogue was removed. Six additional RdotOS-only helpers provide metadata registration, removal, and privilege-bitmap queries. The import resolver routes the ten implemented Se export entry points by exact name.
 
 ## Remaining work
 
@@ -30,4 +31,4 @@ The descriptor validator accepts a raw pointer without a length and inspects a m
 
 ## Validation status
 
-Focused Rust unit tests were added for malformed descriptors, token metadata registration/query/unregistration and fail-closed privilege behavior. A new CI run must complete before this revision is considered validated; Windows WDK conformance remains outstanding.
+Focused Rust unit tests cover malformed descriptors, token metadata registration/query/unregistration, session/authentication ID queries, and fail-closed privilege behavior. A new CI run must complete before this revision is considered validated; Windows WDK conformance remains outstanding.
