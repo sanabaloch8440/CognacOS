@@ -69,6 +69,44 @@ fn detach(state_key:Option<usize>)->bool {
     true
 }
 
+/// Restore the original address space and release process references when a
+/// thread exits while still attached. This is the final safety net for leaked
+/// attach scopes; it does not replace SEH/unwind integration for normal exits.
+pub fn process_attach_thread_exit_cleanup(thread:u64) {
+    if thread==0 || crate::thread::current_thread_id()!=Some(thread) { return; }
+    let mut detached=[AttachRecord::EMPTY;MAX_PROCESS_ATTACHES];
+    let mut count=0usize;
+    let restore_root={
+        let mut table=ATTACHES.lock();
+        let first=table.records.iter()
+            .filter(|r|r.active && r.thread==thread)
+            .min_by_key(|r|r.sequence)
+            .copied();
+        let Some(first)=first else { return; };
+        if first.previous_root==0 { return; }
+        let root=first.previous_root;
+        for record in table.records.iter_mut() {
+            if record.active && record.thread==thread && count<detached.len() {
+                detached[count]=*record;
+                count+=1;
+                *record=AttachRecord::EMPTY;
+            }
+        }
+        root
+    };
+    // Switch out of the attached address space before dropping references that
+    // keep its page tables alive. Only the current exiting thread may do this.
+    unsafe { core::arch::asm!("mov cr3, {}", in(reg) restore_root, options(nostack, preserves_flags)); }
+    for record in detached[..count].iter().copied() {
+        if record.process!=0 {
+            unsafe { crate::process::obf_dereference_process_object(record.process as *mut core::ffi::c_void); }
+        }
+        if record.previous_process!=0 {
+            unsafe { crate::process::obf_dereference_process_object(record.previous_process as *mut core::ffi::c_void); }
+        }
+    }
+}
+
 /// VOID KeStackAttachProcess(PRKPROCESS Process, PRKAPC_STATE ApcState).
 pub unsafe extern "win64" fn ke_stack_attach_process(process:*mut core::ffi::c_void,apc_state:*mut core::ffi::c_void) {
     if apc_state.is_null() { return; }
