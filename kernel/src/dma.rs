@@ -209,7 +209,7 @@ pub struct MdlAbi {
 /// AllocateCommonBufferEx maps backing pages into this adapter's IOMMU domain.
 pub unsafe extern "win64" fn allocate_common_buffer_ex(adapter:*mut core::ffi::c_void,length:u32,logical_address:*mut i64,_cache_type:u32,flags:u32)->*mut core::ffi::c_void{
  if !is_dma_adapter(adapter)||logical_address.is_null()||flags!=0||length==0{return core::ptr::null_mut()}
- match unsafe{iommu::allocate_common(adapter,length as usize,u64::MAX)}{Ok((cpu,logical))=>{unsafe{logical_address.write(logical as i64)}cpu.cast()},Err(_)=>core::ptr::null_mut()}
+ match unsafe{iommu::allocate_common(adapter,length as usize,adapter_maximum_address(adapter))}{Ok((cpu,logical))=>{unsafe{logical_address.write(logical as i64)}cpu.cast()},Err(_)=>core::ptr::null_mut()}
 }
 /// MapTransfer returns only an IOMMU logical address. A valid allocated map-register
 /// token is mandatory; no physical-address fallback exists.
