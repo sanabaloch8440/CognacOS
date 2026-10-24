@@ -307,3 +307,18 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 
 - [x] Add group-0 KeSetAffinityThread, KeSetSystemGroupAffinityThread, and KeRevertToUserGroupAffinityThread with scheduler-backed masks and bounded restore state; safe live-context migration and multi-group affinity remain unsupported.
 - [ ] Verify the affinity and interrupt synchronization changes through the latest complete QEMU/SMP workflow.
+
+
+## Ke cross-processor rendezvous implementation (2026-10-24)
+
+- [x] Implement `KeIpiGenericCall` with one broadcast callback invocation per online processor and synchronous completion on the caller.
+- [x] Implement `KeGenericCallDpc` with per-CPU callback execution at logical DISPATCH_LEVEL.
+- [x] Implement `KeSignalCallDpcSynchronize` and `KeSignalCallDpcDone` using shared synchronization and completion barriers.
+- [x] Route HAL IPI notifications through the active rendezvous descriptor and execute callbacks on the target CPU before local-APIC EOI.
+- [x] Add import-resolver mappings and self-test assertions for all four exports.
+- [x] Update `WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md` with public signatures, call paths, limitations, and the recalculated project score.
+- [ ] Validate callback counts, barriers, callback IRQL, and return values in QEMU with 2, 4, and 8 vCPUs.
+- [ ] Add bounded timeout/failure recovery for a processor that goes offline or fails to service the broadcast IPI.
+- [ ] Validate that HAL IPI dispatch does not starve reschedule/TLB work under simultaneous SMP stress.
+
+The new routines are marked partial until the multi-vCPU workflow passes. The current comparison reports 169 tracked names, 100% source-level declaration/resolver coverage, 51/169 strict scoped behavior matches (30.2%), and a project-defined combined score of 65.1%; this is not a Windows driver compatibility guarantee.
