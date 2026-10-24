@@ -111,9 +111,7 @@ static BUFFERS: BufferStore = BufferStore(core::cell::UnsafeCell::new([BufferRec
 static BUFFER_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 
 /// Allocate DMA-safe common memory and map it into the requesting device's IOMMU domain.
-pub unsafe fn allocate_common_buffer(length:usize,maximum_address:u64)->Result<(*mut u8,u64),DmaError>{
- unsafe { iommu::allocate_common(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(),length,maximum_address) }
-}
+pub unsafe fn allocate_common_buffer(_length:usize,_maximum_address:u64)->Result<(*mut u8,u64),DmaError>{ Err(DmaError::AddressMask) }
 pub unsafe fn flush_common_buffer_for_adapter(adapter:*mut core::ffi::c_void,cpu_address:*mut u8,length:usize)->Result<(),DmaError>{iommu::flush_common(adapter,cpu_address,length)}
 pub unsafe fn free_common_buffer_for_adapter(adapter:*mut core::ffi::c_void,cpu_address:*mut u8,logical_address:u64,length:usize)->Result<(),DmaError>{unsafe{iommu::free_common(adapter,cpu_address,logical_address,length)}}
 
@@ -435,8 +433,8 @@ pub unsafe extern "win64" fn build_scatter_gather_list(
 const MAX_MAP_REGISTER_ALLOCS: usize = 64;
 const MAX_MAP_REGISTERS_PER_ALLOCATION: u32 = 256;
 #[derive(Clone, Copy)]
-struct MapRegisterRecord { active: bool, token: usize, count: u32, device: usize }
-impl MapRegisterRecord { const EMPTY: Self = Self { active: false, token: 0, count: 0, device: 0 }; }
+struct MapRegisterRecord { active: bool, token: usize, count: u32, device: usize, in_use:u32 }
+impl MapRegisterRecord { const EMPTY: Self = Self { active: false, token: 0, count: 0, device: 0, in_use:0 }; }
 struct MapRegisterState { records: [MapRegisterRecord; MAX_MAP_REGISTER_ALLOCS], next: usize }
 static MAP_REGISTERS: crate::hal::IrqSpinLock<MapRegisterState> =
     crate::hal::IrqSpinLock::new(MapRegisterState { records: [MapRegisterRecord::EMPTY; MAX_MAP_REGISTER_ALLOCS], next: 1 });
@@ -563,7 +561,7 @@ pub unsafe extern "win64" fn allocate_adapter_channel(
     routine: Option<AdapterExecutionRoutine>,
     context: *mut core::ffi::c_void,
 ) -> i32 {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+    if !is_dma_adapter(adapter)
         || device.is_null()
         || number_of_map_registers > MAX_MAP_REGISTERS_PER_ALLOCATION
         || routine.is_none() {
@@ -615,6 +613,13 @@ pub unsafe extern "win64" fn allocate_adapter_channel(
     0
 }
 
+pub(crate) fn consume_map_register(token:*mut core::ffi::c_void,device:usize)->bool{
+ if token.is_null(){return false}let mut s=MAP_REGISTERS.lock();
+ if let Some(r)=s.records.iter_mut().find(|r|r.active&&r.token==token as usize&&r.device==device&&r.in_use<r.count){r.in_use+=1;true}else{false}
+}
+pub(crate) fn return_map_register(token:*mut core::ffi::c_void,device:usize){
+ if token.is_null(){return}let mut s=MAP_REGISTERS.lock();if let Some(r)=s.records.iter_mut().find(|r|r.active&&r.token==token as usize&&r.device==device&&r.in_use>0){r.in_use-=1;}
+}
 fn allocate_map_register_token(device: *mut core::ffi::c_void, count: u32) -> Option<*mut core::ffi::c_void> {
     if count == 0 || count > MAX_MAP_REGISTERS_PER_ALLOCATION { return None; }
     let mut state = MAP_REGISTERS.lock();
@@ -623,7 +628,7 @@ fn allocate_map_register_token(device: *mut core::ffi::c_void, count: u32) -> Op
     let token = unsafe { core::ptr::addr_of_mut!(MAP_REGISTER_TOKENS[idx]) };
     unsafe { (*token).id = id as u64; }
     let ptr = token.cast::<core::ffi::c_void>();
-    state.records[idx] = MapRegisterRecord { active: true, token: ptr as usize, count, device: device as usize };
+    state.records[idx] = MapRegisterRecord { active: true, token: ptr as usize, count, device: device as usize, in_use:0 };
     Some(ptr)
 }
 
@@ -632,10 +637,10 @@ pub unsafe extern "win64" fn free_map_registers(
     map_register_base: *mut core::ffi::c_void,
     number_of_map_registers: u32,
 ) {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast() || map_register_base.is_null() { return; }
+    if !is_dma_adapter(adapter) || map_register_base.is_null() { return; }
     let mut state = MAP_REGISTERS.lock();
     if let Some(r) = state.records.iter_mut().find(|r|
-        r.active && r.token == map_register_base as usize && r.count == number_of_map_registers) {
+        r.active && r.token == map_register_base as usize && r.count == number_of_map_registers && r.in_use==0) {
         *r = MapRegisterRecord::EMPTY;
     }
 }
@@ -644,7 +649,7 @@ pub unsafe extern "win64" fn free_map_registers(
 /// defer FIFO dispatch until that callback returns, avoiding nested callbacks
 /// and stale outer IO_ALLOCATION_ACTION values releasing the next owner.
 pub unsafe extern "win64" fn free_adapter_channel(adapter: *mut core::ffi::c_void) {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast() { return; }
+    if !is_dma_adapter(adapter) { return; }
     let next = {
         let mut state = CHANNEL.lock();
         if state.owner == 0 { return; }
@@ -761,9 +766,10 @@ pub static DMA_OPERATIONS_V2:DmaOperationsV2=DmaOperationsV2 {
  build_scatter_gather_list:build_scatter_gather_list as *const (),build_mdl_from_scatter_gather_list:core::ptr::null(),
 };
 fn is_dma_adapter(adapter:*mut core::ffi::c_void)->bool {
- adapter==core::ptr::addr_of!(DMA_ADAPTER_V1).cast_mut().cast()
+ !adapter.is_null() && (adapter_device(adapter).is_some()
+ || adapter==core::ptr::addr_of!(DMA_ADAPTER_V1).cast_mut().cast()
  || adapter==core::ptr::addr_of!(DMA_ADAPTER_V2).cast_mut().cast()
- || adapter==core::ptr::addr_of!(DMA_ADAPTER_V3).cast_mut().cast()
+ || adapter==core::ptr::addr_of!(DMA_ADAPTER_V3).cast_mut().cast())
 }
 
 /// Shared stateless adapter object; DMA_ADAPTER contains Version, Size, and Operations on x64.
@@ -777,7 +783,7 @@ pub static DMA_ADAPTER_V2: DmaAdapterAbi = DmaAdapterAbi { version:1, size:core:
 pub use DMA_ADAPTER_V3 as DMA_ADAPTER;
 unsafe impl Sync for DmaAdapterAbi {}
 
-pub extern "win64" fn put_dma_adapter(_adapter: *mut core::ffi::c_void) {}
+pub extern "win64" fn put_dma_adapter(adapter: *mut core::ffi::c_void) { release_adapter(adapter); }
 pub extern "win64" fn get_dma_alignment(_adapter: *mut core::ffi::c_void) -> u32 { 1 }
 pub extern "win64" fn read_dma_counter(_adapter: *mut core::ffi::c_void) -> u32 { 0 }
 
