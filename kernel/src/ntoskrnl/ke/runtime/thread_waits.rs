@@ -287,8 +287,8 @@ static mut MULTIWAIT_TEST_QUEUE:core::mem::MaybeUninit<ExecutiveQueue>=core::mem
 static mut MULTIWAIT_TEST_QUEUE_ENTRY:ListEntry=ListEntry{flink:core::ptr::null_mut(),blink:core::ptr::null_mut()};
 
 /// Exercise the real kernel wait path from a scheduled thread: abandoned
-/// wait-any mutant status, atomic immediate wait-all acquisition, and queue
-/// entry transfer to the waiting thread.
+/// wait-any/wait-all mutant status, immediate and blocking wait-all reservation,
+/// and queue-entry transfer to the waiting thread.
 pub(crate) fn dispatcher_extended_self_test()->bool{
     if crate::thread::current_thread_id().is_none(){return false}
     let a=unsafe{core::ptr::addr_of_mut!(MULTIWAIT_TEST_MUTANT_A)};
