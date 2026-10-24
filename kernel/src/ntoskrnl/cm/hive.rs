@@ -184,5 +184,7 @@ pub fn create_minimal_hive(out:&mut[u8])->Result<usize,Error>{
 mod tests{
  use super::*;
  #[test]fn creates_openable_native_hive(){let mut bytes=[0u8;8192];let n=create_minimal_hive(&mut bytes).unwrap();assert_eq!(n,8192);let h=Hive::open(&bytes[..n]).unwrap();assert_eq!(h.info.root_cell,0x20);assert_eq!(h.root().unwrap().subkey_count().unwrap(),0);}
- #[test]fn mounts_named_hives_without_reencoding(){let mut bytes=[0u8;8192];let n=create_named_hive("SYSTEM",&mut bytes).unwrap();let mut set=HiveSet::new();set.mount("system",&bytes[..n]).unwrap();assert_eq!(set.mount_count(),1);assert_eq!(set.open("SYSTEM").unwrap().info.root_cell,0x20);assert!(create_named_hive("not-a-hive",&mut bytes).is_err());}\n #[test]fn rejects_bad_checksum(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[0x1fc]^=0x10;assert!(matches!(Hive::open(&bytes),Err(Error::BadChecksum)));}
+ #[test]fn mounts_named_hives_without_reencoding(){let mut bytes=[0u8;8192];let n=create_named_hive("SYSTEM",&mut bytes).unwrap();let mut set=HiveSet::new();set.mount("system",&bytes[..n]).unwrap();assert_eq!(set.mount_count(),1);assert_eq!(set.open("SYSTEM").unwrap().info.root_cell,0x20);assert!(create_named_hive("not-a-hive",&mut bytes).is_err());}
+ #[test]fn rejects_bad_checksum(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[0x1fc]^=0x10;assert!(matches!(Hive::open(&bytes),Err(Error::BadChecksum)));}
+ #[test]fn rejects_dirty_hive_until_log_replay(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[8..12].copy_from_slice(&2u32.to_le_bytes());assert!(matches!(Hive::open(&bytes),Err(Error::DirtyHive)));}
 }
