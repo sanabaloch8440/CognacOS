@@ -15,6 +15,22 @@ pub union PowerState {
 
 static SYSTEM_POWER_STATE: AtomicU32 = AtomicU32::new(1);
 
+
+/// Register the platform-specific storage, memory, device, and CPU restore backend.
+/// This RdotOS-private hook is not a Windows WDK export.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn RdotPoRegisterHibernationBackend(ops:*mut super::hibernate::HiberPlatformOps)->i32 {
+    unsafe { super::hibernate::register_platform(ops) }
+}
+/// Request S4. Returns only if the platform's enter-S4 routine returns.
+#[unsafe(no_mangle)]
+pub extern "system" fn RdotPoInitiateS4()->i32 { super::hibernate::initiate_s4() }
+/// Boot/resume-loader hook; must be invoked from a resume-safe execution environment.
+#[unsafe(no_mangle)]
+pub extern "system" fn RdotPoResumeFromHibernation()->i32 { super::hibernate::resume_from_hibernation() }
+#[unsafe(no_mangle)]
+pub extern "system" fn RdotPoValidateHibernationImages()->i32 { super::hibernate::validate_hibernation_images() }
+
 /// Report the committed state after a driver has completed its power transition.
 /// Hardware sequencing remains owned by the driver's IRP_MJ_POWER path.
 #[unsafe(no_mangle)]
