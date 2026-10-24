@@ -86,34 +86,46 @@ pub unsafe extern "win64" fn ke_query_priority_thread(thread:*mut core::ffi::c_v
  table.records.iter().find(|r|r.id==id).map(|r|r.current).unwrap_or(8)
 }
 pub unsafe extern "win64" fn ke_set_priority_thread(thread:*mut core::ffi::c_void,priority:i8)->i8{
- let Some(id)=priority_id(thread) else{return 8};if !(0..=31).contains(&priority){return unsafe{ke_query_priority_thread(thread)}}
- let mut table=THREAD_PRIORITIES.lock();
- let Some(slot)=table.records.iter().position(|r|r.id==id).or_else(||table.records.iter().position(|r|r.id==0)) else{return 8};
- let old=if table.records[slot].id==id{table.records[slot].current}else{8};
- let base=if table.records[slot].id==id{table.records[slot].base}else{priority};
- table.records[slot]=ThreadPriorityRecord{id,base,current:priority};old
+ let Some(id)=priority_id(thread) else{return 8};
+ if !(0..=31).contains(&priority){return unsafe{ke_query_priority_thread(thread)}}
+ let old={
+  let mut table=THREAD_PRIORITIES.lock();
+  let Some(slot)=table.records.iter().position(|r|r.id==id).or_else(||table.records.iter().position(|r|r.id==0)) else{return 8};
+  let old=if table.records[slot].id==id{table.records[slot].current}else{8};
+  let base=if table.records[slot].id==id{table.records[slot].base}else{priority};
+  table.records[slot]=ThreadPriorityRecord{id,base,current:priority};old
+ };
+ let _=crate::thread::set_scheduler_priority(id,(priority as u8/4).min(7));
+ old
 }
-/// Apply a dispatcher wake boost to dynamic priority metadata. The current
-/// cooperative ready queue does not yet reorder runnable threads by priority.
+/// Apply a dispatcher wake boost to dynamic priority and scheduler metadata.
 fn boost_thread_priority(id:u64,increment:i32){
  if increment<=0{return}
- let mut table=THREAD_PRIORITIES.lock();
- let slot=table.records.iter().position(|r|r.id==id)
-  .or_else(||table.records.iter().position(|r|r.id==0));
- if let Some(slot)=slot{
-  let record=table.records[slot];
-  let base=if record.id==id{record.base}else{8};
-  let current=if record.id==id{record.current}else{8};
-  table.records[slot]=ThreadPriorityRecord{id,base,current:((current as i32)+increment).clamp(0,31) as i8};
- }
+ let current={
+  let mut table=THREAD_PRIORITIES.lock();
+  let slot=table.records.iter().position(|r|r.id==id).or_else(||table.records.iter().position(|r|r.id==0));
+  if let Some(slot)=slot{
+   let record=table.records[slot];
+   let base=if record.id==id{record.base}else{8};
+   let old=if record.id==id{record.current}else{8};
+   let current=((old as i32)+increment).clamp(0,31) as i8;
+   table.records[slot]=ThreadPriorityRecord{id,base,current};
+   Some(current)
+  }else{None}
+ };
+ if let Some(current)=current{let _=crate::thread::set_scheduler_priority(id,(current as u8/4).min(7));}
 }
 pub unsafe extern "win64" fn ke_set_base_priority_thread(thread:*mut core::ffi::c_void,increment:i32)->i32{
  let Some(id)=priority_id(thread) else{return 0};
- let mut table=THREAD_PRIORITIES.lock();
- let Some(slot)=table.records.iter().position(|r|r.id==id) else{return 0};
- let old=table.records[slot].base as i32;
- let base=(old+increment).clamp(0,31) as i8;
- table.records[slot].base=base;table.records[slot].current=base;
+ let (old,base)={
+  let mut table=THREAD_PRIORITIES.lock();
+  let Some(slot)=table.records.iter().position(|r|r.id==id) else{return 0};
+  let old=table.records[slot].base as i32;
+  let base=(old+increment).clamp(0,31) as i8;
+  table.records[slot].base=base;table.records[slot].current=base;
+  (old,base)
+ };
+ let _=crate::thread::set_scheduler_priority(id,(base as u8/4).min(7));
  old
 }
 
