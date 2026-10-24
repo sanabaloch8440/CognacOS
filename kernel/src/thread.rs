@@ -11,8 +11,8 @@ pub enum ThreadState { Empty, Ready, Running, Blocked, Exited }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadError { InvalidStack, InvalidAffinity, Full, NoCurrentThread, InvalidState, InvalidCpu }
 #[derive(Clone, Copy)]
-struct ThreadRecord { id:u64, scheduler_id:u64, process_id:u64, impersonation_token:usize, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32, critical_region_depth:u16, guarded_region_depth:u16, alert_pending:bool, alertable_wait:bool, user_apc_delivery_pending:bool, queue_entry:u64 }
-impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,process_id:0,impersonation_token:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0}; }
+struct ThreadRecord { id:u64, scheduler_id:u64, process_id:u64, impersonation_token:usize, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32, critical_region_depth:u16, guarded_region_depth:u16, alert_pending:bool, alertable_wait:bool, user_apc_delivery_pending:bool, queue_entry:u64, context_saved:bool }
+impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,process_id:0,impersonation_token:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:false}; }
 unsafe impl Send for ThreadRecord {}
 struct ThreadTable { records:[ThreadRecord;MAX_THREADS], next_id:u64 }
 impl ThreadTable { const fn new()->Self { Self{records:[ThreadRecord::EMPTY;MAX_THREADS],next_id:1} } }
@@ -79,7 +79,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     let scheduler_id=crate::scheduler::create_task(
         2, eligible_mask, top as u64, thread_trampoline as usize as u64,
     ).map_err(|_|ThreadError::Full)?;
-    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Ready,affinity:eligible_mask,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0};
+    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Ready,affinity:eligible_mask,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:true};
     drop(table);
     notify_affinity(eligible_mask);
     Ok(id)
@@ -107,6 +107,7 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
             let current=table.records.iter_mut().find(|t|t.id==current_id&&t.state==ThreadState::Running).ok_or(ThreadError::NoCurrentThread)?;
             if block&&current.wake_pending{current.wake_pending=false;return Ok(())}
             let scheduler_id=current.scheduler_id;
+            current.context_saved=false;
             current.state=if block{ThreadState::Blocked}else{ThreadState::Ready};
             if block {
                 crate::scheduler::block_task(scheduler_id).map_err(|_|ThreadError::InvalidState)?;
@@ -135,13 +136,18 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
             let _=crate::arch::set_kernel_stack(cpu,next.stack_top);
             next.context_rsp
         };
-        unsafe{crate::arch::context_switch(old_rsp_ptr,next_rsp)};
+        if current_id!=0 {
+            unsafe{crate::arch::context_switch_publish(old_rsp_ptr,next_rsp,publish_switched_out,current_scheduler_id as usize)};
+        } else {
+            unsafe{crate::arch::context_switch(old_rsp_ptr,next_rsp)};
+        }
         Ok(())
     }else if current_id!=0&&!block {
         crate::scheduler::resume_task(cpu,current_scheduler_id).map_err(|_|ThreadError::InvalidState)?;
         let mut table=THREADS.lock();
         if let Some(current)=table.records.iter_mut().find(|t|t.id==current_id){
             current.state=ThreadState::Running;
+            current.context_saved=true;
         }
         Ok(())
     }else if current_id!=0 {
@@ -156,13 +162,30 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
         local.current_thread.store(0,core::sync::atomic::Ordering::Release);
         let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
         if idle_top!=0{let _=crate::arch::set_kernel_stack(cpu,idle_top);}
-        unsafe{crate::arch::context_switch(old_rsp_ptr,idle)};
+        unsafe{crate::arch::context_switch_publish(old_rsp_ptr,idle,publish_switched_out,current_scheduler_id as usize)};
         Ok(())
     }else{
         Ok(())
     }
 }
 
+
+extern "C" fn publish_switched_out(scheduler_id:usize){
+    let cpu=cpu_index().unwrap_or(0);
+    let (publish_ready,wake_blocked,affinity)={
+        let mut table=THREADS.lock();
+        let Some(thread)=table.records.iter_mut().find(|t|t.scheduler_id==scheduler_id as u64&&t.state!=ThreadState::Empty) else{return};
+        thread.context_saved=true;
+        let ready=thread.state==ThreadState::Ready;
+        let wake=thread.state==ThreadState::Blocked&&thread.wake_pending;
+        if wake{thread.wake_pending=false;thread.state=ThreadState::Ready;}
+        (ready,wake,thread.affinity)
+    };
+    if publish_ready{let _=crate::scheduler::publish_ready_task(scheduler_id as u64,cpu);}
+    if wake_blocked{
+        if crate::scheduler::wake_task(scheduler_id as u64).is_ok(){notify_affinity(affinity);}
+    }
+}
 pub fn yield_current()->Result<(),ThreadError>{
     crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();
     crate::ntoskrnl::ke::runtime::dispatch_threaded_dpcs();
@@ -219,8 +242,12 @@ pub fn wake(id:u64)->Result<(),ThreadError>{
     let affinity=t.affinity;
     match t.state{
         ThreadState::Blocked=>{
-            crate::scheduler::wake_task(t.scheduler_id).map_err(|_|ThreadError::InvalidState)?;
-            t.state=ThreadState::Ready;
+            if !t.context_saved {
+                t.wake_pending=true;
+            } else {
+                crate::scheduler::wake_task(t.scheduler_id).map_err(|_|ThreadError::InvalidState)?;
+                t.state=ThreadState::Ready;
+            }
         },
         ThreadState::Running=>t.wake_pending=true,
         ThreadState::Ready=>{},
@@ -296,7 +323,7 @@ pub fn set_thread_affinity(id:u64,mask:u64)->Option<u64>{
     if id==0||mask==0{return None}
     let (scheduler_id,old)={
         let table=THREADS.lock();
-        let t=table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty)?;
+        let t=table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty&&t.context_saved)?;
         (t.scheduler_id,t.affinity)
     };
     if crate::scheduler::set_affinity(scheduler_id,mask).is_err(){return None}
