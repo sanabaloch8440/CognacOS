@@ -376,6 +376,8 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
     // Exclude pageable eviction while re-translating, writing PFNs and pinning
     // them. If a page was evicted in the gap above, fail closed.
     let _pageable_guard = crate::kernel_vm::lock_pageable_mappings();
+    // Preflight every translation again while eviction is excluded, before
+    // writing even the first PFN into the caller's descriptor.
     for index in 0..pages as usize {
         let va = start + index as u64 * PAGE_SIZE;
         let pa = if crate::vm::is_user_range(va, 1) {
@@ -383,6 +385,13 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
         } else { translate(va, write_access) };
         let Some(pa) = pa else { return; };
         if !crate::memory::is_ram_physical_address(pa & !(PAGE_SIZE-1)) { return; }
+    }
+    for index in 0..pages as usize {
+        let va = start + index as u64 * PAGE_SIZE;
+        let pa = if crate::vm::is_user_range(va, 1) {
+            translate_current_user(va, write_access)
+        } else { translate(va, write_access) };
+        let Some(pa) = pa else { return; };
         unsafe { destination.add(index).write(pa / PAGE_SIZE); }
     }
     let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, pages as usize) };
