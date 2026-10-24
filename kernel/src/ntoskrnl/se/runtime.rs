@@ -1332,7 +1332,7 @@ mod se_access_check_tests {
         let mut status = 0i32;
         let mut privileges: *mut c_void = core::ptr::null_mut();
         let mut locked = 1u8;
-        assert_eq!(unsafe { SeAccessCheck(sd.as_ptr().cast(), (&context as *const _).cast_mut(), &mut locked,
+        assert_eq!(unsafe { SeAccessCheck(sd.as_ptr().cast(), (&context as *const SeSecuritySubjectContext).cast_mut(), &mut locked,
             1, 0, &mut privileges, &mapping, 1, &mut granted, &mut status) }, 1);
         assert_eq!(granted, 1);
         assert_eq!(status, STATUS_SUCCESS);
