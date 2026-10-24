@@ -63,7 +63,7 @@ def convert(blob, image_base=BASE, dll=False):
             raise ValueError("PT_LOAD outside fixed high-half image")
         if (vaddr - image_base) & (PAGE - 1):
             raise ValueError("PT_LOAD RVA must be page aligned")
-        if filesz and (p_offset & (FILE_ALIGN - 1)) != ((vaddr - BASE) & (FILE_ALIGN - 1)):
+        if filesz and (p_offset & (FILE_ALIGN - 1)) != ((vaddr - image_base) & (FILE_ALIGN - 1)):
             # This is not required for PE raw layout, but ELF segment congruence
             # is still checked by the ELF loader contract.
             if (vaddr - p_offset) & (PAGE - 1):
@@ -118,7 +118,7 @@ def convert(blob, image_base=BASE, dll=False):
                      sum(s["raw_size"] for s in segments if s["flags"] & PF_X),
                      sum(s["raw_size"] for s in segments if not s["flags"] & PF_X),
                      sum(max(0, s["memsz"] - s["filesz"]) for s in segments),
-                     entry - BASE, min(s["rva"] for s in segments if s["flags"] & PF_X))
+                     entry - image_base, min(s["rva"] for s in segments if s["flags"] & PF_X))
     struct.pack_into("<QII", out, o + 24, image_base, SECT_ALIGN, FILE_ALIGN)
     struct.pack_into("<HHHHHH", out, o + 40, 6, 0, 0, 0, 6, 0)
     struct.pack_into("<IIII", out, o + 52, 0, size_image, headers_size, 0)
