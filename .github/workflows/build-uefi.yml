@@ -162,6 +162,44 @@ jobs:
           grep -F 'PE TLS callbacks executed in ring 3; per-image TLS blocks initialized.' build/serial.log
           grep -F 'Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).' build/serial.log
           grep -F 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log
+      - name: SMP boot and interrupt stress matrix (2, 4, 8 vCPUs)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f /usr/share/OVMF/OVMF_CODE_4M.fd ] && [ -f /usr/share/OVMF/OVMF_VARS_4M.fd ]; then
+            code=/usr/share/OVMF/OVMF_CODE_4M.fd
+            vars_template=/usr/share/OVMF/OVMF_VARS_4M.fd
+          else
+            code=/usr/share/OVMF/OVMF_CODE.fd
+            vars_template=/usr/share/OVMF/OVMF_VARS.fd
+          fi
+          for cpus in 2 4 8; do
+            echo "=== SMP stress boot: $cpus vCPUs ==="
+            cp "$vars_template" "build/OVMF_VARS_smp_$cpus.fd"
+            log="build/serial-smp-$cpus.log"
+            rm -f "$log"
+            set +e
+            timeout 22s qemu-system-x86_64 \
+              -machine pc -m 5G -cpu qemu64 -smp "$cpus" \
+              -drive if=pflash,format=raw,readonly=on,file="$code" \
+              -drive if=pflash,format=raw,file="build/OVMF_VARS_smp_$cpus.fd" \
+              -drive if=ide,format=raw,file=build/rdotos-uefi.img \
+              -drive if=ide,format=raw,index=1,file=build/pagefile.img \
+              -boot order=c -display none -monitor none \
+              -serial "file:$log" -no-reboot -no-shutdown
+            status=$?
+            set -e
+            if [ "$status" -ne 124 ] && [ "$status" -ne 0 ]; then
+              echo "QEMU SMP stress boot failed (vCPUs=$cpus, status=$status)" >&2
+              cat "$log" || true
+              exit "$status"
+            fi
+            cat "$log"
+            expected_aps=$((cpus - 1))
+            grep -F "SMP AP startup complete; online application processors: $expected_aps; interrupt-driven TLB shootdowns enabled." "$log"
+            grep -F "Per-CPU interrupt setup stress passed: 64 acknowledged IPIs per online AP." "$log"
+            grep -F "Kernel VM extent stress and SMP TLB shootdown self-test passed." "$log"
+          done
       - name: Upload Rust artifacts and boot log
         if: always()
         uses: actions/upload-artifact@v4
