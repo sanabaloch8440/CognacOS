@@ -80,6 +80,9 @@ const QUEUE_OBJECT: u8 = 4;
 const EVENT_SIZE: u8 = 6; // sizeof(KEVENT) / sizeof(ULONG).
 
 
+// Keep the pure generation predicate separately testable by the host CI runner.
+include!("timer_generation.rs");
+
 // Routine groups are kept as source fragments in one module scope for now. This
 // preserves shared private state and ABI while making functional areas navigable.
 include!("runtime/processor.rs");
