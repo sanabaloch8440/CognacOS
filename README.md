@@ -22,8 +22,8 @@
 | --- | --- | --- |
 | Boot and architecture | Rust UEFI loader, digest-pinned PE32+ kernel handoff, GDT/IDT, exception diagnostics, CR3 activation | Secure-boot signature chain, broader hardware validation |
 | Memory management | Kernel mappings and permissions, user address-space roots, checked user copies, MDL/pinning foundations, RAM direct map above 4 GiB | User demand paging/working sets, exception-safe probes, complete process isolation |
-| SMP and scheduling | AP startup, per-CPU GDT/TSS and IST stacks, directed IPI acknowledgements, cooperative dispatch and wake IPIs | Timer-driven preemption, load balancing, full Windows scheduling semantics |
-| NT executive | Growing Ke/Ki runtime, dispatcher primitives, APC/DPC foundations, bounded Object Manager and security hooks | Full NT object/process/thread semantics, all-export behavioral parity, WDK conformance |
+| SMP and scheduling | Per-CPU ready queues, affinity-aware stealing, saved-context publication, timer preemption, wake IPIs, threaded DPC workers | Full Windows quantum/priority decay and scheduler semantics |
+| NT executive | Ke/Ki runtime, timer/DPC rundown checks, PASSIVE-level threaded DPCs, APC lifecycle, queue/mutant wait foundations | Full user-mode SEH/APC dispatcher, blocking wait-all for every object type, WDK conformance |
 | I/O and drivers | Initial WDM object/IRP layouts, dispatch/completion, device rundown, restricted PE driver loader | General driver compatibility, complete cancellation/rundown, PnP and storage integration |
 | Registry and NLS | Bounded native hive parser, empty hive image creator, service lookup, raw NLS staging | Log replay, persistent registry writes, NLS interpretation, NTFS discovery |
 | Platform and storage | Separate ACPI/PCI/HAL-contract/processor crates; storage protocol foundations; native Rust ext-family driver | Hardware drivers, DMA/IOMMU backend, full VFS and writable filesystem |
