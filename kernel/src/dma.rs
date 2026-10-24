@@ -804,8 +804,7 @@ pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     unregister_fault_callback: 0,
 };
 
-/// Shared stateless adapter object; DMA_ADAPTER is a leading Version/Size/
-—Operations structure on x64.
+/// Shared stateless adapter object; DMA_ADAPTER contains Version, Size, and Operations on x64.
 pub static DMA_ADAPTER: DmaAdapterAbi = DmaAdapterAbi {
     version: 1,
     size: core::mem::size_of::<DmaAdapterAbi>() as u16,
