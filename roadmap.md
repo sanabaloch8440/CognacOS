@@ -11,7 +11,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | UEFI boot and kernel handoff | PE32+ native kernel handoff; CI/QEMU validated | Signature-based verified boot, relocatable images, broader malformed-image tests |
 | Memory management/protection | 4 KiB descriptor-driven bootstrap mappings, RAM direct-map, MDL validation/pinning/lifecycle helpers, pageable kernel-pool page-in, non-contiguous kernel and tracked active-process user MDL aliases, registered process-root cross-process copy | Demand-zero/pagefile-backed user faults, Windows-style exception recovery, scheduler-integrated current-process semantics, complete object/handle manager, stress and WDK conformance |
 | PE32+ loader and ring-3 test path | Foundation implemented; boot-tested | Full NT loader, unwind/exception handling, Windows user-mode DLLs |
-| ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
+| ACPI and HAL | Foundations implemented; processor lifecycle notification now uses a one-way HAL contract | Complete interrupt routing/timer support; remove remaining NT-runtime direct APIC calls; isolate platform implementation behind HAL services |
 | SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
 | NT executive/syscall compatibility | 169 Ke export names tracked; kernel APC safe points/rundown, alertable user APC IRET injection, processor callback table, referenced CR3 attach/detach, scheduler-backed priority bands, serialized event/semaphore/timer wait-all reservations, device queue lifecycle checks, public x64 layout assertions, and cross-CPU generic-DPC Synchronize/Done barriers validated by 2/4/8-vCPU QEMU CI; synchronous global DPC flush and timer-generation rundown hardening implemented but latest validation pending | Failed/offline-target and flush-versus-insert stress proof; timer cancellation/rearm/rundown stress; user APC trap/SEH and WDK tests; real processor hot-remove; exception-safe process detach and process/thread integration; mutant/queue wait-all reservations; Windows priority decay/quantum; exact private Windows object layouts are intentionally not mirrored; broader Ke export semantics |
@@ -21,6 +21,18 @@ This roadmap tracks code and validation currently present in the repository, not
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
 **Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; subsequent Ke/Ki affinity, Timer2, and clock-path changes are pending CI verification. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
+
+### HAL / ntoskrnl dependency boundary (2026-10-24)
+
+- [x] Replace HAL's direct calls into `ntoskrnl::ke::runtime` with a registered processor-lifecycle notifier contract.
+- [x] Keep CPU topology transitions owned by HAL; Ke registers the observer and receives add/remove-complete notifications using stable codes.
+- [x] Make observer registration idempotent for the same function and reject conflicting replacement.
+- [ ] Route all Ke/Ki/Io platform operations (monotonic clock, counter frequency, timer state, APIC task priority, IPIs and interrupt routing) through explicit HAL services; eliminate direct NT-runtime imports of `crate::apic`.
+- [ ] Separate platform discovery data from NT executive types and isolate APIC/ACPI/MMIO/port-I/O implementation behind HAL-private modules.
+- [ ] Add host tests for notifier registration, duplicate registration, conflicting observer rejection, and lifecycle notification ordering; run the full freestanding build and OVMF/QEMU SMP matrix.
+- [ ] Define and validate the public HAL-facing contract independently of Windows private HAL binary layouts. Similar naming is not proof of Windows 11 ABI compatibility.
+
+**Boundary status:** dependency direction is corrected for processor lifecycle callbacks only. RdotOS is still a single Rust kernel crate, and some NT runtime routines still access APIC services directly; do not describe the whole HAL boundary as complete until those paths are migrated and checked by CI.
 
 ### Ke APC / process / scheduling follow-up (2026-10-24)
 
