@@ -72,7 +72,7 @@ fn object_idx(s:&State,body:usize)->Option<usize>{s.objects.iter().position(|o|o
 fn find_name(s:&State,name:&[u16])->Option<usize>{s.objects.iter().position(|o|o.used&&!o.deleting&&o.name_len as usize==name.len()&&eq(&o.name[..o.name_len as usize],name))}
 fn encode_handle(i:usize,g:u16)->*mut c_void{(HANDLE_TAG|((g as usize)<<HANDLE_SLOT_BITS)|i) as *mut c_void}
 fn decode_handle(h:*mut c_void)->Option<(usize,u16)>{let v=h as usize;if v&0xffff_0000usize!=HANDLE_TAG{return None}Some((v&HANDLE_SLOT_MASK,(v>>HANDLE_SLOT_BITS) as u16))}
-fn handle_idx(s:&State,h:*mut c_void,owner:usize)->Option<usize>{let(i,g)=decode_handle(h)?;let e=s.handles.get(i)?;if e.used&&e.generation==g&&(e.owner==owner||e.owner==usize::MAX){Some(i)}else{None}}
+fn handle_idx(s:&State,h:*mut c_void,owner:usize)->Option<usize>{let(i,g)=decode_handle(h)?;let e=s.handles.get(i)?;if e.used&&e.generation==g&&(e.owner==owner||owner==usize::MAX){Some(i)}else{None}}
 
 /// Register a typed object body. Body storage/lifetime remains owned by its creator.
 /// A namespace name is optional; names are case-insensitive and unique.
@@ -118,7 +118,7 @@ pub fn open_by_pointer(body:*mut c_void,desired:u32,owner:usize,kernel_mode:bool
  let hi=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].handles+=1;let g=s.handles[hi].generation.max(1);s.handles[hi]=HandleEntry{used:true,generation:g,object:i,owner:if attrs&OBJ_KERNEL_HANDLE!=0{usize::MAX}else{owner},access:granted,attributes:attrs};Ok(encode_handle(hi,g))
 }
 pub fn reference_by_handle(h:*mut c_void,desired:u32,expected_type:u16,owner:usize,kernel_mode:bool)->Result<*mut c_void,i32>{
- let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,owner).ok_or(STATUS_INVALID_HANDLE)?;let e=s.handles[hi];if desired&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}let o=s.objects.get(e.object).ok_or(STATUS_INVALID_HANDLE)?;if !o.used||o.deleting{return Err(STATUS_INVALID_HANDLE)}if expected_type!=0&&o.type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
+ let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,if kernel_mode{usize::MAX}else{owner}).ok_or(STATUS_INVALID_HANDLE)?;let e=s.handles[hi];if desired&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}let o=s.objects.get(e.object).ok_or(STATUS_INVALID_HANDLE)?;if !o.used||o.deleting{return Err(STATUS_INVALID_HANDLE)}if expected_type!=0&&o.type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
  let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];if !kernel_mode&&!access_check(o,desired){return Err(STATUS_ACCESS_DENIED)}let body=o.body as *mut c_void;
  let s=state();s.objects[e.object].refs=s.objects[e.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;let _=t;Ok(body)
 }
@@ -160,9 +160,9 @@ pub unsafe extern "win64" fn ObReferenceObjectByPointer(object:*mut c_void,desir
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObDereferenceObject(object:*mut c_void)->*mut c_void{let _=dereference_body(object);object}
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn ObfReferenceObject(object:*mut c_void)->*mut c_void{let _=reference_body(object,0,0,true);object}
+pub unsafe extern "win64" fn ObfReferenceObject(object:*mut c_void){let _=reference_body(object,0,0,true);}
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn ObfDereferenceObject(object:*mut c_void)->*mut c_void{let _=dereference_body(object);object}
+pub unsafe extern "win64" fn ObfDereferenceObject(object:*mut c_void){let _=dereference_body(object);}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObReferenceObjectByHandle(handle:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8,out_object:*mut *mut c_void,_handle_information:*mut u32)->i32{
  if out_object.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out_object.write(core::ptr::null_mut())}
