@@ -60,6 +60,7 @@ pub unsafe extern "win64" fn ke_pulse_event(
                 let signal_status = if waiter.timed_out { STATUS_TIMEOUT } else { STATUS_SUCCESS };
                 let status = crate::dispatcher::complete_wait_group(waiter.thread, event as u64, signal_status, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(signal_status);
                 let _ = crate::thread::complete_wait(waiter.thread, status);
+                if status == STATUS_SUCCESS { boost_thread_priority(waiter.thread, increment); }
             }
         }
         EVENT_SYNCHRONIZATION => {
@@ -67,12 +68,13 @@ pub unsafe extern "win64" fn ke_pulse_event(
                 let signal_status = if waiter.timed_out { STATUS_TIMEOUT } else { STATUS_SUCCESS };
                 let status = crate::dispatcher::complete_wait_group(waiter.thread, event as u64, signal_status, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(signal_status);
                 let _ = crate::thread::complete_wait(waiter.thread, status);
+                if status == STATUS_SUCCESS { boost_thread_priority(waiter.thread, increment); }
             }
         }
         _ => {}
     }
     state.store(0, Ordering::Release);
-    let _ = (increment, wait); // Priority boosts and atomic Wait handoff remain unsupported.
+    let _ = wait; // The cooperative scheduler has no atomic set-and-wait handoff yet.
     previous
 }
 
