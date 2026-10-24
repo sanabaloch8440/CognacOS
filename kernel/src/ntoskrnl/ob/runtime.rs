@@ -162,7 +162,7 @@ fn dacl_allowed(o:&Object)->u32{
  if acl_size<8||off.checked_add(acl_size).is_none_or(|e|e>b.len()){return 0}
  let mut p=off+8;let mut granted=0u32;let mut denied=0u32;
  for _ in 0..ace_count{if p+8>off+acl_size{return 0}let ty=b[p];let size=read_u16(b,p+2).unwrap_or(0) as usize;if size<8||p.checked_add(size).is_none_or(|e|e>off+acl_size){return 0}
-  let mask=read_u32(b,p+4).unwrap_or(0);let sid=&b[p+8..p+size];let everyone=sid.len()>=12&&sid[0]==1&&sid[1]==1&&sid[2..8].iter().all(|x|*x==0)&&sid[8..12]==[1,0,0,0];
+  let mask=read_u32(b,p+4).unwrap_or(0);let sid=&b[p+8..p+size];let everyone=sid.len()>=12&&sid[0]==1&&sid[1]==1&&sid[2..7].iter().all(|x|*x==0)&&sid[7]==1&&sid[8..12]==[0,0,0,0];
   if everyone{if ty==1{denied|=mask}else if ty==0{granted|=mask}}p+=size;
  }
  granted&!denied
@@ -247,7 +247,7 @@ mod tests{
  #[test]fn self_relative_dacl_grants_only_explicit_everyone_mask(){
   let mut o=Object::EMPTY;o.used=true;o.sd_len=48;o.sd[0]=1;o.sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());o.sd[16..20].copy_from_slice(&20u32.to_le_bytes());
   o.sd[20]=2;o.sd[22..24].copy_from_slice(&28u16.to_le_bytes());o.sd[24..26].copy_from_slice(&1u16.to_le_bytes());
-  o.sd[28]=0;o.sd[30..32].copy_from_slice(&20u16.to_le_bytes());o.sd[32..36].copy_from_slice(&1u32.to_le_bytes());o.sd[36]=1;o.sd[37]=1;o.sd[44..48].copy_from_slice(&[1,0,0,0]);
+  o.sd[28]=0;o.sd[30..32].copy_from_slice(&20u16.to_le_bytes());o.sd[32..36].copy_from_slice(&1u32.to_le_bytes());o.sd[36]=1;o.sd[37]=1;o.sd[43]=1;
   assert!(access_check(&o,1));assert!(!access_check(&o,2));
  }
  #[test]fn user_handles_are_owner_scoped(){
