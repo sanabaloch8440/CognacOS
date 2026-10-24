@@ -130,7 +130,7 @@ pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
  if s.objects[oi].refs==0&&s.objects[oi].handles==0&&!s.objects[oi].permanent{s.objects[oi]=Object::EMPTY;}Ok(())
 }
 pub fn object_type(body:*mut c_void)->*mut ObjectType{let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,body as usize)else{return core::ptr::null_mut()};let Some(ti)=type_idx(s,s.objects[i].type_id)else{return core::ptr::null_mut()};core::ptr::addr_of_mut!(s.types[ti]).cast::<ObjectType>()}
-fn expected_type_id(ptr:*mut ObjectType)->Option<u16>{if ptr.is_null(){return Some(0)}let _g=LOCK.lock();let s=state();s.types.iter().find(|t|t.used&&core::ptr::eq((t as *const TypeEntry).cast::<ObjectType>(),ptr)).map(|t|t.id)}
+fn expected_type_id(ptr:*mut ObjectType)->Option<u16>{if ptr.is_null(){return Some(0)}let _g=LOCK.lock();let s=state();s.types.iter().find(|t|t.used&&core::ptr::eq((*t as *const TypeEntry).cast::<ObjectType>(),ptr)).map(|t|t.id)}
 
 pub fn set_permanent(body:*mut c_void,permanent:bool)->Result<(),i32>{let _g=LOCK.lock();let s=state();let i=object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;s.objects[i].permanent=permanent;Ok(())}
 fn read_u16(b:&[u8],o:usize)->Option<u16>{Some(u16::from_le_bytes([*b.get(o)?,*b.get(o+1)?]))}
@@ -182,7 +182,7 @@ mod tests{
  use super::*;
  #[test]fn typed_names_handles_and_generation_rundown(){
   let ty=register_type(&[b'T' as u16,b'e' as u16,b's' as u16,b't' as u16],1,2,4,7,0xff).unwrap();
-  let body=0x1234usize as *mut c_void;register_object(body,ty,&[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16],false,core::ptr::null(),0).unwrap();
+  let body=0x1234usize as *mut c_void;unsafe{register_object(body,ty,&[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16],false,core::ptr::null(),0).unwrap();}
   let h=open_by_name(&[b'\\' as u16,b'd' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16],GENERIC_READ,0,true,0).unwrap();
   assert_eq!(reference_by_handle(h,1,ty,0,true).unwrap(),body);assert!(dereference_body(body));close_handle(h,0).unwrap();assert!(dereference_body(body));assert!(reference_body(body,ty,0,true).is_err());
  }
@@ -193,10 +193,10 @@ mod tests{
   assert!(access_check(&o,1));assert!(!access_check(&o,2));
  }
  #[test]fn user_handles_are_owner_scoped(){
-  let ty=register_type(&[90],1,2,4,7,7).unwrap();let body=0x3234usize as *mut c_void;register_object(body,ty,&[91],false,core::ptr::null(),0).unwrap();
+  let ty=register_type(&[90],1,2,4,7,7).unwrap();let body=0x3234usize as *mut c_void;unsafe{register_object(body,ty,&[91],false,core::ptr::null(),0).unwrap();}
   let h=open_by_pointer(body,1,42,true,0).unwrap();assert_eq!(reference_by_handle(h,1,0,7,false).unwrap_err(),STATUS_INVALID_HANDLE);
   assert_eq!(reference_by_handle(h,1,0,42,false).unwrap(),body);assert!(dereference_body(body));close_handle(h,42).unwrap();assert!(dereference_body(body));
  }
  #[test]fn access_masks_and_deny_by_default(){let t=TypeEntry{used:true,id:1,gr:1,gw:2,gx:4,ga:7,valid:7,..TypeEntry::EMPTY};assert_eq!(map_access(&t,GENERIC_READ|GENERIC_WRITE),3);assert!(!access_check(&Object::EMPTY,1));}
- #[test]fn stale_handle_cannot_alias_reused_slot(){let ty=register_type(&[88],1,2,4,7,7).unwrap();let body=0x2234usize as *mut c_void;register_object(body,ty,&[89],false,core::ptr::null(),0).unwrap();let h=open_by_pointer(body,1,0,true,0).unwrap();close_handle(h,0).unwrap();let h2=open_by_pointer(body,1,0,true,0).unwrap();assert_ne!(h,h2);assert_eq!(reference_by_handle(h,1,0,0,true).unwrap_err(),STATUS_INVALID_HANDLE);}
+ #[test]fn stale_handle_cannot_alias_reused_slot(){let ty=register_type(&[88],1,2,4,7,7).unwrap();let body=0x2234usize as *mut c_void;unsafe{register_object(body,ty,&[89],false,core::ptr::null(),0).unwrap();}let h=open_by_pointer(body,1,0,true,0).unwrap();close_handle(h,0).unwrap();let h2=open_by_pointer(body,1,0,true,0).unwrap();assert_ne!(h,h2);assert_eq!(reference_by_handle(h,1,0,0,true).unwrap_err(),STATUS_INVALID_HANDLE);}
 }
