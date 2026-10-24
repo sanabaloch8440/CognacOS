@@ -68,8 +68,9 @@ impl AuditEvent { const EMPTY:Self=Self{sequence:0,object:0,owner:0,operation:0,
 impl DirectoryBody { const EMPTY:Self=Self{magic:0}; }
 #[derive(Clone,Copy)] struct SymbolicLinkBody { magic:u64,target_len:u16,target:[u16;MAX_NAME] }
 impl SymbolicLinkBody { const EMPTY:Self=Self{magic:0,target_len:0,target:[0;MAX_NAME]}; }
-struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],type_objects:[ObjectType;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],symbolic_links:[SymbolicLinkBody;MAX_OBJECTS],tokens:[TokenEntry;MAX_TOKENS],audit:[AuditEvent;MAX_AUDIT_EVENTS],body_storage:[[u8;512];MAX_OBJECTS],audit_next:u64,next_type:u16 }
-impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],type_objects:[const { ObjectType{name:UnicodeString{length:0,maximum_length:0,buffer:core::ptr::null()},type_index:0,reserved:0,generic_read:0,generic_write:0,generic_execute:0,generic_all:0,valid_access:0} };MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],symbolic_links:[SymbolicLinkBody::EMPTY;MAX_OBJECTS],tokens:[TokenEntry::EMPTY;MAX_TOKENS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],body_storage:[[0;512];MAX_OBJECTS],audit_next:1,next_type:1}} }
+#[repr(C,align(16))] struct ObjectBodyStorage([u8;512]);
+struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],type_objects:[ObjectType;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],symbolic_links:[SymbolicLinkBody;MAX_OBJECTS],tokens:[TokenEntry;MAX_TOKENS],audit:[AuditEvent;MAX_AUDIT_EVENTS],body_storage:[ObjectBodyStorage;MAX_OBJECTS],audit_next:u64,next_type:u16 }
+impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],type_objects:[const { ObjectType{name:UnicodeString{length:0,maximum_length:0,buffer:core::ptr::null()},type_index:0,reserved:0,generic_read:0,generic_write:0,generic_execute:0,generic_all:0,valid_access:0} };MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],symbolic_links:[SymbolicLinkBody::EMPTY;MAX_OBJECTS],tokens:[TokenEntry::EMPTY;MAX_TOKENS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],body_storage:[const { ObjectBodyStorage([0;512]) };MAX_OBJECTS],audit_next:1,next_type:1}} }
 static LOCK:Lock=Lock::new();
 static mut STATE:State=State::new();
 fn state()->&'static mut State{unsafe{&mut *core::ptr::addr_of_mut!(STATE)}}
@@ -293,7 +294,7 @@ pub unsafe extern "win64" fn ObCreateObject(previous_mode:u8,object_type:*mut Ob
  };
  let _g=LOCK.lock();let s=state();let i=match s.objects.iter().position(|o|!o.used){Some(i)=>i,None=>return STATUS_INSUFFICIENT_RESOURCES};
  if name_len!=0&&find_name(s,&name[..name_len]).is_some(){return STATUS_OBJECT_NAME_COLLISION}
- s.body_storage[i]=[0;512];let body=core::ptr::addr_of_mut!(s.body_storage[i]).cast::<u8>().cast::<c_void>();
+ s.body_storage[i].0=[0;512];let body=core::ptr::addr_of_mut!(s.body_storage[i].0).cast::<u8>().cast::<c_void>();
  let mut o=Object{used:true,body:body as usize,type_id:ty,name,name_len:name_len as u16,refs:1,permanent:false,inserted:false,..Object::EMPTY};
  if name_len!=0{o.name[..name_len].copy_from_slice(&name[..name_len]);}
  s.objects[i]=o;unsafe{out_object.write(body)}let _=(paged_charge,nonpaged_charge);STATUS_SUCCESS
