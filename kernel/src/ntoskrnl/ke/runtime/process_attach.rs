@@ -10,12 +10,13 @@ struct AttachRecord {
     thread: u64,
     state_key: usize,
     previous_root: u64,
+    previous_process: usize,
     target_root: u64,
     process: usize,
     sequence: u64,
 }
 impl AttachRecord {
-    const EMPTY: Self = Self { active:false, thread:0, state_key:0, previous_root:0, target_root:0, process:0, sequence:0 };
+    const EMPTY: Self = Self { active:false, thread:0, state_key:0, previous_root:0, previous_process:0, target_root:0, process:0, sequence:0 };
 }
 struct AttachTable { records:[AttachRecord;MAX_PROCESS_ATTACHES], next_sequence:u64 }
 impl AttachTable { const fn new()->Self { Self { records:[AttachRecord::EMPTY;MAX_PROCESS_ATTACHES], next_sequence:1 } } }
@@ -26,8 +27,10 @@ fn attach(process:*mut core::ffi::c_void, state_key:usize)->bool {
     let Some(thread)=crate::thread::current_thread_id() else { return false; };
     let Some(target_root)=crate::process::reference_process_root(process) else { return false; };
     let previous_root=crate::vm::active_root_physical();
+    let previous_process=crate::process::reference_process_for_root(previous_root).unwrap_or(core::ptr::null_mut());
     if previous_root==0 || target_root==0 {
         unsafe { crate::process::obf_dereference_process_object(process); }
+        if !previous_process.is_null(){unsafe{crate::process::obf_dereference_process_object(previous_process);}}
         return false;
     }
     {
@@ -35,11 +38,12 @@ fn attach(process:*mut core::ffi::c_void, state_key:usize)->bool {
         let Some(slot)=table.records.iter().position(|r|!r.active) else {
             drop(table);
             unsafe { crate::process::obf_dereference_process_object(process); }
+            if !previous_process.is_null(){unsafe{crate::process::obf_dereference_process_object(previous_process);}}
             return false;
         };
         let sequence=table.next_sequence;
         table.next_sequence=table.next_sequence.wrapping_add(1).max(1);
-        table.records[slot]=AttachRecord{active:true,thread,state_key,previous_root,target_root,process:process as usize,sequence};
+        table.records[slot]=AttachRecord{active:true,thread,state_key,previous_root,previous_process:previous_process as usize,target_root,process:process as usize,sequence};
     }
     unsafe { core::arch::asm!("mov cr3, {}", in(reg) target_root, options(nostack, preserves_flags)); }
     true
@@ -63,6 +67,7 @@ fn detach(state_key:Option<usize>)->bool {
     };
     unsafe { core::arch::asm!("mov cr3, {}", in(reg) record.previous_root, options(nostack, preserves_flags)); }
     unsafe { crate::process::obf_dereference_process_object(record.process as *mut core::ffi::c_void); }
+    if record.previous_process!=0 { unsafe { crate::process::obf_dereference_process_object(record.previous_process as *mut core::ffi::c_void); } }
     true
 }
 
@@ -88,7 +93,7 @@ mod layout_tests {
     use super::*;
     #[test]
     fn side_metadata_has_no_windows_private_layout_dependency() {
-        assert_eq!(core::mem::size_of::<AttachRecord>(), 56);
+        assert_eq!(core::mem::size_of::<AttachRecord>(), 64);
         assert_eq!(core::mem::align_of::<AttachRecord>(), 8);
     }
 }
