@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(p.state,ahci::PortState::Stopped);
     }
     #[test] fn ahci_and_nvme_encode_lba48_requests() {
-        let g=Geometry{sector_count:0x1_0000_0000,logical_sector_size:512,physical_sector_size:512};
+        let g=Geometry{sector_count:0x20_0000_0000_0000,logical_sector_size:512,physical_sector_size:512};
         let req=BlockRequest{operation:BlockOperation::Read,lba:0x1234_5678_9abc,sectors:2,buffer_physical:0x2000,byte_length:1024,request_id:1};
         let fis=build_ahci_rw_fis(req,g).unwrap();
         assert_eq!(fis.command,0x25); assert_eq!([fis.lba0,fis.lba1,fis.lba2,fis.lba3,fis.lba4,fis.lba5],[0xbc,0x9a,0x78,0x56,0x34,0x12]);
