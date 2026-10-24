@@ -132,6 +132,16 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  let mut state=WDM.lock();
  let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return};
  slot.deleting=true;
+ // Keep attachment chains valid even if a driver violates the expected detach-before-delete order.
+ if !slot.attached_to.is_null() {
+  let lower=slot.attached_to;
+  unsafe { if (*lower).attached_device==device { (*lower).attached_device=slot.object.attached_device; } }
+  if !slot.object.attached_device.is_null() {
+   if let Some(upper)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,slot.object.attached_device)) { upper.attached_to=lower; }
+  }
+ } else if !slot.object.attached_device.is_null() {
+  if let Some(upper)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,slot.object.attached_device)) { upper.attached_to=ptr::null_mut(); }
+ }
  let driver=slot.object.driver_object;
  if !driver.is_null() {
   unsafe {
@@ -519,6 +529,26 @@ mod wdm_tests {
   unsafe{io_initialize_irp(irp, storage.len() as u16, 2);}
   assert_eq!(unsafe{(*irp).bytes[0x42]},2);
   assert_eq!(unsafe{io_get_current_irp_stack_location(irp)} as usize,storage.as_ptr() as usize+storage.len());
+ }
+
+ #[test]
+ fn attachment_queries_and_irp_reuse_preserve_allocation() {
+  let mut lower_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut upper_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut lower:*mut DeviceObject=ptr::null_mut();
+  let mut upper:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut lower_driver,0,ptr::null_mut(),7,0,0,&mut lower)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_create_device(&mut upper_driver,0,ptr::null_mut(),7,0,0,&mut upper)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_attach_device_to_device_stack(upper,lower)},lower);
+  assert_eq!(unsafe{io_get_attached_device(lower)},upper);
+  assert_eq!(unsafe{io_get_device_attachment_base_ref(upper)},lower);
+  assert_eq!(unsafe{io_get_lower_device_object(upper)},lower);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  unsafe{io_reuse_irp(irp,STATUS_SUCCESS);}
+  assert_eq!(unsafe{(*irp).bytes[0x43]},3);
+  assert_eq!(unsafe{io_get_current_irp_stack_location(irp)} as usize,irp as usize+IRP_SIZE_X64+2*IO_STACK_LOCATION_SIZE_X64);
+  unsafe{io_free_irp(irp);io_detach_device(lower);io_delete_device(upper);io_delete_device(lower);}
  }
 
 }
