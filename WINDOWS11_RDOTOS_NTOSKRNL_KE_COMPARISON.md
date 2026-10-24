@@ -23,7 +23,7 @@ This expanded pass documents **138 callable Ke export names**: the original comp
 | Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 138 | **128/138 = 92.8%** |
 | Combined project score | (100% ABI declarations + 7.2% strict behavior) ÷ 2 | **53.6%** |
 
-**Important:** 53.8% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
+**Important:** 53.6% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
 
 ### Scoring rules
 
@@ -185,7 +185,7 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 
 ## Additional Ke exports still unsupported
 
-The entries below remain **unresolved or unimplemented** after the current implementation batch. The preceding routine table now covers 132 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
+The entries below remain **unresolved or unimplemented** after the current implementation batch. The preceding routine table now covers 138 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
 
 | Routine | Current status | Public contract / next work |
 |---|---|---|
