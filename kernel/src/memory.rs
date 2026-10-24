@@ -551,7 +551,7 @@ mod allocator_map_tests {
     #[test]
     fn region_capacity_is_checked_before_state_commit() {
         let stride = core::mem::size_of::<MemoryDescriptor>();
-        let mut descriptors = vec![descriptor(EFI_CONVENTIONAL_MEMORY, 0x100000 + (i as u64) * 0x2000, 1) for i in 0..=MAX_REGIONS];
+        let mut descriptors: Vec<_> = (0..=MAX_REGIONS).map(|i| descriptor(EFI_CONVENTIONAL_MEMORY, 0x100000 + (i as u64) * 0x2000, 1)).collect();
         let mut regions = [Region::EMPTY; MAX_REGIONS];
         assert_eq!(collect_regions(descriptors.as_mut_ptr().cast(), descriptors.len(), stride, &mut regions), Err(AllocError::TooManyRegions));
     }
