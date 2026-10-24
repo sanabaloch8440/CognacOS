@@ -264,7 +264,7 @@ pub(crate) mod runtime {
         pub ipi_enabled: bool,
         pub interrupt_stress_passed: bool,
         pub tsc_synced: bool,
-        pub worst_tsc_offset: i64,
+        pub worst_tsc_offset: u64,
         pub scheduler_stress_passed: bool,
         pub vm_stress_passed: bool,
     }
