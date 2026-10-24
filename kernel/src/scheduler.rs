@@ -1,5 +1,5 @@
-//! SMP-safe scheduler metadata core. This module does not claim real context
-//! switching until the architecture switch frame and timer preemption are wired.
+//! SMP-aware scheduler state integrated with the cooperative kernel-thread runtime.
+//! Context switches use the architecture stack-switch routine; timer preemption remains pending.
 use crate::hal::IrqSpinLock;
 pub const MAX_TASKS: usize = 128;
 pub const MAX_CPUS: usize = 64;
