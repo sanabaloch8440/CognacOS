@@ -233,3 +233,63 @@ mod tests {
         unsafe { io_delete_device(device); }
     }
 }
+
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+    use core::ptr;
+    use core::sync::atomic::{AtomicU32, Ordering};
+    use crate::io::{io_allocate_irp,io_call_driver,io_complete_request,io_create_device,io_delete_device,io_free_irp,io_get_next_irp_stack_location,io_pnp_state,device_power_state,DriverObject,STATUS_PENDING};
+
+    unsafe extern "system" fn success_dispatch(_device:*mut DeviceObject,_irp:*mut WdmIrp)->i32 { 0 }
+    unsafe extern "system" fn pending_dispatch(_device:*mut DeviceObject,_irp:*mut WdmIrp)->i32 { STATUS_PENDING }
+    static CALLBACK_COUNT:AtomicU32=AtomicU32::new(0);
+    unsafe extern "system" fn request_callback(_device:*mut DeviceObject,_minor:u8,_state:PowerState,_context:*mut core::ffi::c_void,_irp:*mut WdmIrp) {
+        CALLBACK_COUNT.fetch_add(1,Ordering::SeqCst);
+    }
+
+    #[test]
+    fn pnp_start_is_committed_only_after_dispatch_success() {
+        let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+        let mut device:*mut DeviceObject=ptr::null_mut();
+        assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},0);
+        driver.major_function[IRP_MJ_PNP as usize]=Some(success_dispatch);
+        let irp=unsafe{io_allocate_irp(1,0)};
+        let stack=unsafe{io_get_next_irp_stack_location(irp)};
+        unsafe{(*stack).major_function=IRP_MJ_PNP;(*stack).minor_function=0x00;}
+        assert_eq!(unsafe{io_call_driver(device,irp)},0);
+        assert_eq!(io_pnp_state(device),1);
+        unsafe{io_free_irp(irp);io_delete_device(device);}
+    }
+
+    #[test]
+    fn pending_device_power_irp_commits_only_when_completed() {
+        let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+        let mut device:*mut DeviceObject=ptr::null_mut();
+        assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},0);
+        driver.major_function[IRP_MJ_POWER as usize]=Some(pending_dispatch);
+        let irp=unsafe{io_allocate_irp(1,0)};
+        let stack=unsafe{io_get_next_irp_stack_location(irp)};
+        unsafe{(*stack).major_function=IRP_MJ_POWER;(*stack).minor_function=IRP_MN_SET_POWER;(*stack).parameters[0]=1u64|(4u64<<32);}
+        assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
+        assert_eq!(device_power_state(device),0);
+        unsafe{(*irp).bytes[0x30..0x34].copy_from_slice(&0i32.to_le_bytes());io_complete_request(irp,0);}
+        assert_eq!(device_power_state(device),3);
+        unsafe{io_free_irp(irp);io_delete_device(device);}
+    }
+
+    #[test]
+    fn po_request_power_irp_dispatches_and_calls_completion_once() {
+        CALLBACK_COUNT.store(0,Ordering::SeqCst);
+        let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+        let mut device:*mut DeviceObject=ptr::null_mut();
+        assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},0);
+        driver.major_function[IRP_MJ_POWER as usize]=Some(success_dispatch);
+        let status=unsafe{PoRequestPowerIrp(device,IRP_MN_SET_POWER,PowerState{device_state:4},Some(request_callback),ptr::null_mut(),ptr::null_mut())};
+        assert_eq!(status,0);
+        assert_eq!(CALLBACK_COUNT.load(Ordering::SeqCst),1);
+        assert_eq!(device_power_state(device),3);
+        unsafe{io_delete_device(device);}
+    }
+}
