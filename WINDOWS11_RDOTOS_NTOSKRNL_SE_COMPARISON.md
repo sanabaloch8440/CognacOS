@@ -61,7 +61,7 @@ All RdotOS-only SID, ACL, descriptor, token-metadata and mask helpers are ordina
 - The access evaluator supports self-relative descriptors, absent/null DACL semantics, owner `READ_CONTROL`/`WRITE_DAC`, generic access mapping, and basic `ACCESS_ALLOWED_ACE` / `ACCESS_DENIED_ACE` processing. Unsupported object/callback ACE families, unknown tokens, malformed descriptors, and unlocked subject contexts fail closed.
 - Added a focused unit test for a registered token SID and an allow ACE.
 
-**Important integration and compatibility limits:** token SID registration is currently an internal hook and is not yet called by Ps token creation/rundown; callers must register identities and unregister them before token storage is reclaimed. The implementation uses a bounded 4-KiB readable-memory contract because the Windows routine does not receive a descriptor length; this is not fault-safe probing/capture. Privilege-set construction/auditing, restricted-token double evaluation, AppContainer/capability checks, full object/callback ACE semantics, kernel subject-context locking, and WDK conformance remain incomplete. This is a real but intentionally scoped implementation, not full Windows 11 Security Reference Monitor parity.
+**Status note:** this paragraph describes the first implementation pass and is superseded by the follow-up section below. The implementation remains partial; see the latest integration limits and validation status.
 
 
 ### SePrivilegeCheck follow-up (2026-10-25)
@@ -71,3 +71,15 @@ All RdotOS-only SID, ACL, descriptor, token-metadata and mask helpers are ordina
 - Kernel-mode checks retain the documented privilege-check bypass behavior.
 
 **Remaining limitations:** the privilege namespace is currently a 64-bit internal bitmap rather than the full Windows LUID/token privilege representation; token lifecycle and subject-context lock/reference semantics are not integrated with Ps; user-memory fault-safe capture and WDK conformance remain outstanding.
+
+
+## Security lifecycle, access evaluation, and export validation follow-up (2026-10-25)
+
+- Corrected SeAccessCheck's SubjectContextLocked argument to a BOOLEAN pointer and used signed-byte KPROCESSOR_MODE for access-mode arguments. Added compile-time function-pointer signature checks for the implemented Se/Ps routines.
+- Added SeCaptureSubjectContext/SeReleaseSubjectContext, global serialized SeLockSubjectContext/SeUnlockSubjectContext, primary-token references on process objects, impersonation-token references on thread records, PsAssignImpersonationToken, and PsReferencePrimaryToken/PsDereferencePrimaryToken. Process/thread rundown releases held token references. Internal token-duplication metadata propagation copies ordinary, restricting, and capability SID sets plus privilege metadata.
+- Added restricted-token second-pass DACL evaluation, a 64-event SACL audit ring for supported audit ACEs, privilege-assisted ACCESS_SYSTEM_SECURITY/WRITE_OWNER grants, capability SID matching, and page-table-validated user-memory copy helpers. The internal descriptor capture helper copies bounded descriptor components into kernel storage.
+- Basic ACEs, unqualified object ACEs, and conditionless callback ACEs are handled. GUID-qualified object ACEs and callback ACEs with application-data conditions fail closed because this API lacks object-type-list context and a Windows conditional-ACE expression evaluator.
+- Added a host-side test harness for Se runtime validation, access checks, privilege checking, restricted-token evaluation, and SACL audit-event recording.
+- Updated PE conversion to build an .edata directory from defined global function symbols whose names and ordinals exist in manifest_26100.json. CI checks every final PE export against the pinned Windows 11 10.0.26100.8036-AMD64 manifest and requires implemented security exports.
+
+**Still incomplete:** the repository does not yet have a full token allocator/Windows TOKEN object model or a complete Ps token creation/duplication pipeline that automatically invokes every internal registration hook. Process primary-token assignment is an internal lifecycle API; callers must use it after token metadata creation. The global subject-context lock is a serialized compatibility foundation, not Windows' exact per-token lock implementation. The bounded user-copy helper is available to capture code, but exported SeAccessCheck consumes a kernel-captured descriptor and does not itself probe arbitrary user pointers. Conditional callback ACE evaluation, GUID-aware object-type access lists, restricted-token edge cases, full privilege-set output allocation, comprehensive SACL policy/audit delivery, AppContainer package-SID semantics, WDK tests, and a successful final CI run remain open. Exported names are constrained to names in the pinned Windows table; unsupported Windows exports remain unimplemented.
