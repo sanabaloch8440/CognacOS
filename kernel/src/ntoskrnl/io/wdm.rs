@@ -74,7 +74,7 @@ pub struct IoStackLocation {
     pub context: *mut c_void,
 }
 #[repr(C)]
-struct DeviceSlot { used: bool, deleting: bool, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
+struct DeviceSlot { used: bool, deleting: bool, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
 struct IrpSlot { used: bool, owned_mdl: *mut c_void, object: Irp, stack: [IoStackLocation;16] }
@@ -83,7 +83,7 @@ struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WD
 impl WdmState {
  const fn new() -> Self {
   Self {
-   devices: [const { DeviceSlot { used:false, deleting:false, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
+   devices: [const { DeviceSlot { used:false, deleting:false, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
@@ -149,7 +149,6 @@ pub unsafe extern "system" fn io_begin_device_power_transition(device:*mut Devic
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
  if s.deleting{return STATUS_DELETE_PENDING}
  if s.power_transition{return STATUS_PENDING}
- if target==s.power_state{return STATUS_SUCCESS}
  s.power_target=target;s.power_transition=true;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
@@ -163,6 +162,33 @@ pub unsafe extern "system" fn io_complete_device_power_transition(device:*mut De
   s.power_transition=false;s.deleting&&s.remove_lock_count==0&&s.object.reference_count<=1
  };
  if finalize{unsafe{io_delete_device(device)}}status
+}
+
+pub(crate) const PNP_STATE_NOT_STARTED:u8=0;
+pub(crate) const PNP_STATE_STARTED:u8=1;
+pub(crate) const PNP_STATE_STOPPED:u8=2;
+pub(crate) const PNP_STATE_REMOVED:u8=3;
+pub(crate) unsafe fn io_begin_pnp_transition(device:*mut DeviceObject,minor:u8)->i32 {
+ if device.is_null(){return STATUS_INVALID_PARAMETER}
+ let mut state=WDM.lock();
+ let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
+ if s.deleting||s.pnp_state==PNP_STATE_REMOVED{return STATUS_DELETE_PENDING}
+ if s.pnp_transition{return STATUS_PENDING}
+ let valid=match minor {0x00=>s.pnp_state==PNP_STATE_NOT_STARTED||s.pnp_state==PNP_STATE_STOPPED,0x01|0x05=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0,0x02|0x17=>true,0x03=>s.pnp_pending==0x01,0x04=>s.pnp_state==PNP_STATE_STARTED,0x06=>s.pnp_pending==0x05,_=>false};
+ if !valid{return STATUS_INVALID_DEVICE_REQUEST}
+ s.pnp_transition=true;s.pnp_transition_minor=minor;STATUS_SUCCESS
+}
+pub(crate) unsafe fn io_complete_pnp_transition(device:*mut DeviceObject,minor:u8,status:i32)->i32 {
+ if device.is_null(){return STATUS_INVALID_PARAMETER}
+ let mut state=WDM.lock();
+ let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
+ if !s.pnp_transition||s.pnp_transition_minor!=minor{return STATUS_INVALID_DEVICE_REQUEST}
+ if status==STATUS_SUCCESS {match minor {0x00=>{s.pnp_state=PNP_STATE_STARTED;s.pnp_pending=0;},0x01|0x05=>s.pnp_pending=minor,0x02|0x17=>{s.pnp_state=PNP_STATE_REMOVED;s.pnp_pending=0;},0x03|0x06=>s.pnp_pending=0,0x04=>{s.pnp_state=PNP_STATE_STOPPED;s.pnp_pending=0;},_=>{}}}
+ s.pnp_transition=false;STATUS_SUCCESS
+}
+pub(crate) fn io_pnp_state(device:*mut DeviceObject)->i32 {
+ if device.is_null(){return -1}
+ let state=WDM.lock();state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)).map(|s|s.pnp_state as i32).unwrap_or(-1)
 }
 /// Atomically publish a committed D-state while the device is still live.
 /// The Po layer owns the WDK ABI; this helper only protects I/O device metadata.
@@ -208,7 +234,7 @@ pub unsafe extern "system" fn io_create_device(
  let mut state=WDM.lock();
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.deleting=false;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.attached_to=ptr::null_mut();
+ slot.used=true;slot.deleting=false;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
  slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
@@ -331,7 +357,11 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  if major>=28{return STATUS_INVALID_DEVICE_REQUEST}
  let dispatch=unsafe{(*driver).major_function[major]};
  let Some(dispatch)=dispatch else{return STATUS_INVALID_DEVICE_REQUEST};
- unsafe{dispatch(device,irp)}
+ let prepare=unsafe{crate::ntoskrnl::po::runtime::po_prepare_irp_dispatch(device,irp,major as u8,(*stack).minor_function,(*stack).parameters)};
+ if prepare!=STATUS_SUCCESS{return prepare}
+ let status=unsafe{dispatch(device,irp)};
+ crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
+ status
 }
 fn finalize_irp_status(irp:*mut Irp) {
  if irp.is_null(){return}
@@ -370,7 +400,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   if current==0xff{return}
   let next=unsafe{stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
   unsafe { (*irp).bytes[0x43]=current.saturating_add(1); write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast()); }
-  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {finalize_irp_status(irp);return}
+  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {finalize_irp_status(irp);let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};crate::ntoskrnl::po::runtime::po_complete_irp(irp,status);return}
  }
 }
 #[unsafe(no_mangle)]
