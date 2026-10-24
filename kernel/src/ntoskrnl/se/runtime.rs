@@ -110,11 +110,11 @@ const TOKEN_META_SLOTS: usize = 32;
 #[derive(Clone, Copy)]
 struct TokenMeta {
     used: bool, token: usize, token_type: u32, impersonation_level: u32,
-    admin: bool, restricted: bool, write_restricted: bool, privileges: u64, session_id: u32, authentication_id: u64, references: u32,
+    admin: bool, restricted: bool, write_restricted: bool, app_container: bool, privileges: u64, session_id: u32, authentication_id: u64, references: u32,
 }
 impl TokenMeta {
     const EMPTY: Self = Self { used:false, token:0, token_type:0, impersonation_level:0,
-        admin:false, restricted:false, write_restricted:false, privileges:0, session_id:0, authentication_id:0, references:0 };
+        admin:false, restricted:false, write_restricted:false, app_container:false, privileges:0, session_id:0, authentication_id:0, references:0 };
 }
 struct TokenMetaLock(AtomicBool);
 impl TokenMetaLock {
@@ -139,7 +139,7 @@ pub(crate) unsafe fn se_internal_RegisterTokenMetadata(
 ) -> i32 {
     if token.is_null() || !(token_type == 1 || token_type == 2)
         || (token_type == 1 && impersonation_level != 0)
-        || (token_type == 2 && impersonation_level > 3) || flags & !7 != 0 {
+        || (token_type == 2 && impersonation_level > 3) || flags & !15 != 0 {
         return STATUS_INVALID_PARAMETER;
     }
     let _guard = TOKEN_META_LOCK.lock();
@@ -150,7 +150,7 @@ pub(crate) unsafe fn se_internal_RegisterTokenMetadata(
     if entries[i].used && entries[i].references != 0 { return 0xC000_009Eu32 as i32; }
     entries[i] = TokenMeta { used:true, token:token as usize, token_type,
         impersonation_level, admin:flags & 1 != 0, restricted:flags & 2 != 0,
-        write_restricted:flags & 4 != 0, privileges, session_id, authentication_id, references:0 };
+        write_restricted:flags & 4 != 0, app_container:flags & 8 != 0, privileges, session_id, authentication_id, references:0 };
     STATUS_SUCCESS
 }
 
@@ -1048,13 +1048,13 @@ pub unsafe extern "win64" fn SeAccessCheck(
         let mut effective_allowed = allowed;
         if let Some(m) = meta {
             let write_access = requested & (0x0001_0000 | 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0000_0116) != 0;
-            if m.restricted || (m.write_restricted && write_access) {
+            if m.restricted || m.app_container || (m.write_restricted && write_access) {
                 let restricted = match evaluate_dacl(token, sd, requested, 0, true) {
                     Some(v) => v, None => return false,
                 };
                 effective_allowed &= restricted;
             }
-            if m.restricted && !token_has_restricting_sids(token) { return false; }
+            if (m.restricted || m.app_container) && !token_has_restricting_sids(token) { return false; }
             if m.write_restricted && write_access && !token_has_restricting_sids(token) { return false; }
         }
         let explicit = desired & !0x0200_0000;
