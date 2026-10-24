@@ -214,7 +214,7 @@ pub fn initialize_threaded_dpc_workers()->bool{
     for cpu in 0..crate::hal::MAX_CPUS{
         if crate::hal::cpu_state(cpu).ok()!=Some(crate::hal::CPU_ONLINE){continue}
         if THREADED_DPC_WORKERS[cpu].load(core::sync::atomic::Ordering::Acquire)!=0{continue}
-        let stack_ptr=core::ptr::addr_of_mut!(THREADED_DPC_WORKER_STACKS[cpu]).cast::<u8>();
+        let stack_ptr=unsafe{core::ptr::addr_of_mut!(THREADED_DPC_WORKER_STACKS[cpu]).cast::<u8>()};
         let stack=unsafe{core::slice::from_raw_parts_mut(stack_ptr,8192)};
         let Ok(id)=spawn(stack,1u64<<cpu,threaded_dpc_worker_entry,cpu as *mut c_void) else{return false};
         THREADED_DPC_WORKERS[cpu].store(id,core::sync::atomic::Ordering::Release);
