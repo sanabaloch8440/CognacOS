@@ -164,6 +164,7 @@ pub(crate) fn detach_address_space(root: u64) {
 
 pub fn reference_process_for_root(root: u64) -> Option<*mut core::ffi::c_void> {
     if root == 0 { return None; }
+    let _address_space_guard=crate::vm::ADDRESS_SPACE_LIFETIME_LOCK.lock();
     let mut registry = TABLE.lock();
     let p = registry.0.iter_mut().find(|p| p.used && p.magic == EPROCESS_MAGIC
         && p.address_space_root == root
