@@ -181,6 +181,55 @@ pub unsafe extern "win64" fn ke_stall_execution_processor(microseconds: u32) {
 
 
 
+// Windows LOGICAL_PROCESSOR_RELATIONSHIP::RelationProcessorCore = 0.
+// The current HAL models one logical processor per core and one processor group.
+const STATUS_INFO_LENGTH_MISMATCH:i32=0xC000_0004u32 as i32;
+const STATUS_NOT_SUPPORTED:i32=0xC000_00BBu32 as i32;
+const STATUS_INVALID_PARAMETER_NT:i32=0xC000_000Du32 as i32;
+const PROCESSOR_CORE_RECORD_SIZE:usize=48;
+unsafe fn write_processor_core_record(output:*mut u8,cpu:usize){
+ unsafe{
+  core::ptr::write_bytes(output,0,PROCESSOR_CORE_RECORD_SIZE);
+  output.cast::<u32>().write_unaligned(0); // RelationProcessorCore
+  output.add(4).cast::<u32>().write_unaligned(PROCESSOR_CORE_RECORD_SIZE as u32);
+  output.add(30).cast::<u16>().write_unaligned(1); // GroupCount
+  output.add(32).cast::<u64>().write_unaligned(1u64<<cpu); // GROUP_AFFINITY.Mask
+  output.add(40).cast::<u16>().write_unaligned(0); // Group
+ }
+}
+
+/// NTSTATUS KeQueryLogicalProcessorRelationship(PPROCESSOR_NUMBER, relationship,
+/// PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX, PULONG Length).
+pub unsafe extern "win64" fn ke_query_logical_processor_relationship(
+ processor_number:*const ProcessorNumber,relationship:i32,buffer:*mut core::ffi::c_void,length:*mut u32,
+)->i32{
+ if length.is_null(){return STATUS_INVALID_PARAMETER_NT}
+ if relationship!=0{return STATUS_NOT_SUPPORTED}
+ let input_length=unsafe{length.read_unaligned()} as usize;
+ let mut cpus=[0usize;crate::hal::MAX_CPUS];let mut count=0usize;
+ if processor_number.is_null(){
+  for cpu in 0..crate::hal::MAX_CPUS{
+   if crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){cpus[count]=cpu;count+=1;}
+  }
+ }else{
+  let number=unsafe{processor_number.read_unaligned()};
+  let cpu=number.number as usize;
+  if number.group!=0||cpu>=crate::hal::MAX_CPUS||crate::hal::cpu_state(cpu).ok()!=Some(crate::hal::CPU_ONLINE){
+   unsafe{length.write_unaligned(PROCESSOR_CORE_RECORD_SIZE as u32);}
+   return STATUS_INVALID_PARAMETER_NT;
+  }
+  cpus[0]=cpu;count=1;
+ }
+ let required=count.saturating_mul(PROCESSOR_CORE_RECORD_SIZE);
+ unsafe{length.write_unaligned(required.min(u32::MAX as usize) as u32);}
+ if required==0{return STATUS_INVALID_PARAMETER_NT}
+ if buffer.is_null()||input_length<required{return STATUS_INFO_LENGTH_MISMATCH}
+ for (index,cpu) in cpus[..count].iter().copied().enumerate(){
+  unsafe{write_processor_core_record((buffer as *mut u8).add(index*PROCESSOR_CORE_RECORD_SIZE),cpu);}
+ }
+ 0
+}
+
 // Processor-change callbacks use side metadata: callers' callback handles are
 // stable kernel pointers, while notification storage is valid only for the call.
 pub const KE_PROCESSOR_CHANGE_ADD_EXISTING:u32=0x1;
