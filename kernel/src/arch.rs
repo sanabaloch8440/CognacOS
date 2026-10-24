@@ -1284,6 +1284,7 @@ pub extern "C" fn rdotos_exception_fatal(vector: u64, error: u64, frame: *const 
 /// restore the original frame and IRETQ; fatal/unrecognized exceptions halt.
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
+    if vector == 2 && crate::ntoskrnl::ke::runtime::dispatch_nmi_callbacks() { return 1; }
     if vector == 14 {
         let cr2: u64;
         unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
