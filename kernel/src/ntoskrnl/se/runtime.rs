@@ -943,24 +943,31 @@ fn evaluate_dacl(token: *mut c_void, sd: &[u8], requested: u32, owner_rights: u3
         let ace_size = u16le(header, 2)? as usize;
         if ace_size < 8 || cursor.checked_add(ace_size)? > acl_size { return None; }
         let ace = acl.get(cursor..cursor.checked_add(ace_size)?)?;
-        // Access-check-relevant basic allow/deny ACEs only. Callback, object and
-        // compound ACEs are rejected rather than accidentally granting access.
-        if ace_type == 0 || ace_type == 1 {
+        if matches!(ace_type, 0 | 1 | 5 | 6 | 9 | 10 | 11 | 12) {
             let mask = u32le(ace, 4)?;
-            let sid = ace.get(8..)?;
+            let object_ace = matches!(ace_type, 5 | 6 | 11 | 12);
+            let callback_ace = matches!(ace_type, 9 | 10 | 11 | 12);
+            let mut sid_offset = if object_ace { 12usize } else { 8usize };
+            if object_ace {
+                let flags = u32le(ace, 8)?;
+                if flags & !3 != 0 { return None; }
+                if flags & 1 != 0 { sid_offset = sid_offset.checked_add(16)?; }
+                if flags & 2 != 0 { sid_offset = sid_offset.checked_add(16)?; }
+                if flags != 0 { return None; }
+            }
+            let sid = ace.get(sid_offset..)?;
             let sid_n = bounded_sid_size(sid)?;
             let sid = &sid[..sid_n];
             if sid_matches_subject(token, sid, restricting_pass) {
-                if ace_type == 1 && (mask & remaining) != 0 { return Some(granted); }
-                if ace_type == 0 {
+                if callback_ace && ace.len() > sid_offset + sid_n { return None; }
+                if matches!(ace_type, 1 | 6 | 10 | 12) && (mask & remaining) != 0 { return Some(granted); }
+                if matches!(ace_type, 0 | 5 | 9 | 11) {
                     let take = mask & remaining;
                     granted |= take;
                     remaining &= !take;
                     if remaining == 0 { return Some(granted); }
                 }
             }
-        } else if matches!(ace_type, 5 | 6 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16) {
-            return None;
         }
         cursor = cursor.checked_add(ace_size)?;
     }
