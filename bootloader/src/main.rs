@@ -356,11 +356,24 @@ unsafe fn populate_bootstrap_page_tables(
             physical += TWO_MIB;
         }
     }
+
+    // Keep the standard local-APIC and I/O-APIC windows mapped even on firmware
+    // that omits MMIO apertures from its descriptor list. They are UC mappings.
+    for physical in [0xfec0_0000u64, 0xfee0_0000u64] {
+        let pdpt_index = (physical >> 30) as usize;
+        let pd_index = ((physical >> 21) & 0x1ff) as usize;
+        let pdpte = unsafe { pdpt.add(pdpt_index).read() };
+        if pdpte & 1 == 0 || pdpte & LARGE_PAGE != 0 { return Err(()); }
+        let pd = (pdpte & 0x000f_ffff_ffff_f000) as *mut u64;
+        unsafe { pd.add(pd_index).write(physical | PRESENT_WRITE | LARGE_PAGE | PWT | PCD); }
+    }
     Ok(())
 }
 
 /// Confirm that a physical address is currently identity-mapped by a 2 MiB leaf.
 unsafe fn bootstrap_identity_mapped(pml4_physical: u64, address: u64) -> bool {
+    const LARGE_PAGE: u64 = 1 << 7;
+    const TWO_MIB: u64 = 2 * 1024 * 1024;
     if address >= 0x1_0000_0000 { return false; }
     let pml4 = pml4_physical as *const u64;
     let pml4e = unsafe { pml4.read() };
