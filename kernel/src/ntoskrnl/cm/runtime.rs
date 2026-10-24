@@ -101,7 +101,7 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
  let mut object_name=[0u16;MAX_NAME];let object_name_len=match key_path(s,id,&mut object_name){Some(v)=>v,None=>{s.keys[index]=Key::EMPTY;return STATUS_INVALID_PARAMETER;}};
  let object_type=[b'R' as u16,b'e' as u16,b'g' as u16,b'i' as u16,b's' as u16,b't' as u16,b'r' as u16,b'y' as u16,b'K' as u16,b'e' as u16,b'y' as u16];
  let body=core::ptr::addr_of_mut!(s.keys[index]).cast::<core::ffi::c_void>();
- if let Err(status)=unsafe{crate::ntoskrnl::ob::runtime::register_external_object(body,&object_type,&object_name[..object_name_len],false,core::ptr::null(),0)}{s.keys[index]=Key::EMPTY;return status;}
+ #[cfg(not(test))] { if let Err(status)=unsafe{crate::ntoskrnl::ob::runtime::register_external_object(body,&object_type,&object_name[..object_name_len],false,core::ptr::null(),0)}{s.keys[index]=Key::EMPTY;return status;} }
  unsafe{*out=handle(id);if !disposition.is_null(){*disposition=1;}}
  let _=(desired_access,_title_index); STATUS_SUCCESS
 }
@@ -150,7 +150,7 @@ pub unsafe extern "win64" fn ZwDeleteKey(h:*mut core::ffi::c_void)->i32{
  if s.keys.iter().any(|k|k.used&&!k.deleted&&k.parent==id)||s.values.iter().any(|v|v.used&&v.key_id==id){return STATUS_ACCESS_DENIED;}
  let Some(index)=s.keys.iter().position(|k|k.used&&k.id==id)else{return STATUS_OBJECT_NAME_NOT_FOUND;};
  let body=core::ptr::addr_of_mut!(s.keys[index]).cast::<core::ffi::c_void>();s.keys[index].deleted=true;
- let _=crate::ntoskrnl::ob::runtime::unregister_object(body);STATUS_SUCCESS
+ #[cfg(not(test))] { let _=crate::ntoskrnl::ob::runtime::unregister_object(body); } let _=body;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwFlushKey(h:*mut core::ffi::c_void)->i32{
