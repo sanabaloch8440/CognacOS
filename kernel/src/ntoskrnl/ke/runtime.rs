@@ -441,6 +441,96 @@ pub unsafe extern "win64" fn ke_get_current_thread() -> *mut core::ffi::c_void {
     crate::thread::current_thread_object()
 }
 
+
+/// ULONG KeQueryHighestNodeNumber(void). RdotOS currently models NUMA node zero only.
+pub unsafe extern "win64" fn ke_query_highest_node_number() -> u32 { 0 }
+
+/// USHORT KeQueryMaximumGroupCount(void). RdotOS currently exposes processor group zero only.
+pub unsafe extern "win64" fn ke_query_maximum_group_count() -> u16 { 1 }
+
+/// KAFFINITY KeQueryGroupAffinity(USHORT GroupNumber).
+pub unsafe extern "win64" fn ke_query_group_affinity(group: u16) -> u64 {
+    if group != 0 { return 0; }
+    let mut mask = 0u64;
+    for cpu in 0..crate::hal::MAX_CPUS.min(64) {
+        if crate::hal::cpu_state(cpu).ok() == Some(crate::hal::CPU_ONLINE) { mask |= 1u64 << cpu; }
+    }
+    mask
+}
+
+/// ULONG KeQueryNodeActiveProcessorCount(USHORT NodeNumber).
+pub unsafe extern "win64" fn ke_query_node_active_processor_count(node: u16) -> u32 {
+    if node == 0 { crate::hal::online_cpu_count() as u32 } else { 0 }
+}
+
+/// USHORT KeQueryNodeMaximumProcessorCount(USHORT NodeNumber).
+pub unsafe extern "win64" fn ke_query_node_maximum_processor_count(node: u16) -> u16 {
+    if node == 0 { crate::hal::MAX_CPUS as u16 } else { 0 }
+}
+
+/// VOID KeQueryNodeActiveAffinity(USHORT, PGROUP_AFFINITY, PUSHORT).
+pub unsafe extern "win64" fn ke_query_node_active_affinity(
+    node: u16, affinity: *mut GroupAffinity, count: *mut u16,
+) {
+    if node != 0 {
+        if !count.is_null() { unsafe { count.write(0); } }
+        return;
+    }
+    let mask = unsafe { ke_query_group_affinity(0) };
+    if !affinity.is_null() {
+        unsafe { affinity.write(GroupAffinity { mask, group: 0, reserved: [0; 3] }); }
+    }
+    if !count.is_null() { unsafe { count.write(mask.count_ones() as u16); } }
+}
+
+/// ULONG KeGetProcessorIndexFromNumber(PCPROCESSOR_NUMBER).
+pub unsafe extern "win64" fn ke_get_processor_index_from_number(number: *const ProcessorNumber) -> u32 {
+    if number.is_null() { return u32::MAX; }
+    let n = unsafe { &*number };
+    if n.group != 0 || n.number as usize >= crate::hal::MAX_CPUS
+        || crate::hal::cpu_state(n.number as usize).ok() != Some(crate::hal::CPU_ONLINE) {
+        return u32::MAX;
+    }
+    n.number as u32
+}
+
+/// NTSTATUS KeGetProcessorNumberFromIndex(ULONG, PPROCESSOR_NUMBER).
+pub unsafe extern "win64" fn ke_get_processor_number_from_index(
+    index: u32, number: *mut ProcessorNumber,
+) -> i32 {
+    if number.is_null() || index as usize >= crate::hal::MAX_CPUS
+        || crate::hal::cpu_state(index as usize).ok() != Some(crate::hal::CPU_ONLINE) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { number.write(ProcessorNumber { group: 0, number: index as u8, reserved: 0 }); }
+    STATUS_SUCCESS
+}
+
+/// VOID KeInitializeNotificationEvent(PKEVENT).
+pub unsafe extern "win64" fn ke_initialize_notification_event(event: *mut DispatcherHeader) {
+    unsafe { ke_initialize_event(event, EVENT_NOTIFICATION as i32, 0); }
+}
+
+/// VOID KeInitializeSynchronizationEvent(PKEVENT).
+pub unsafe extern "win64" fn ke_initialize_synchronization_event(event: *mut DispatcherHeader) {
+    unsafe { ke_initialize_event(event, EVENT_SYNCHRONIZATION as i32, 0); }
+}
+
+/// LONG KePulseEvent(PKEVENT, KPRIORITY, BOOLEAN).
+pub unsafe extern "win64" fn ke_pulse_event(
+    event: *mut DispatcherHeader, increment: i32, wait: u8,
+) -> i32 {
+    let previous = unsafe { ke_set_event(event, increment, wait) };
+    let _ = unsafe { ke_reset_event(event) };
+    previous
+}
+
+/// LONG KeSetEventBoostPriority(PKEVENT). Event signaling is supported;
+/// Windows-compatible scheduler priority boosting is not yet modeled.
+pub unsafe extern "win64" fn ke_set_event_boost_priority(event: *mut DispatcherHeader) -> i32 {
+    unsafe { ke_set_event(event, 0, 0) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
