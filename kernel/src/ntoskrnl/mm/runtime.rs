@@ -253,7 +253,9 @@ fn mdl_header_is_writable(address: u64) -> bool {
 }
 /// Build an MDL in caller storage, or allocate a nonpaged MDL when mdl is null.
 pub unsafe extern "win64" fn mm_create_mdl(mdl: *mut c_void, base: *mut c_void, length: u64) -> *mut c_void {
-    if base.is_null() || length > u32::MAX as u64 { return core::ptr::null_mut(); }
+    if base.is_null() || length > u32::MAX as u64 || (base as u64).checked_add(length).is_none() {
+        return core::ptr::null_mut();
+    }
     let size = unsafe { mm_size_of_mdl(base, length) };
     if size == 0 || size > i16::MAX as u32 { return core::ptr::null_mut(); }
     let address = if mdl.is_null() {
@@ -266,7 +268,6 @@ pub unsafe extern "win64" fn mm_create_mdl(mdl: *mut c_void, base: *mut c_void, 
         return core::ptr::null_mut();
     }
     let start = (base as u64) & !(PAGE_SIZE - 1);
-    let Some(_end) = (base as u64).checked_add(length) else { return core::ptr::null_mut(); };
     let header = unsafe { &mut *address.cast::<MdlHeader>() };
     header.next = core::ptr::null_mut();
     header.size = size as i16;
@@ -336,8 +337,11 @@ pub unsafe extern "win64" fn mm_unlock_pages(mdl: *mut c_void) {
     let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
     if header.flags & MDL_LOCKED == 0 || header.flags & MDL_NONPAGED_POOL != 0 { return; }
     let Some(pages) = mdl_page_count(header.byte_offset as u64, header.byte_count as u64) else { return; };
-    if pages as usize > 8192 { return; }
+    if pages as usize > MAX_LOCKED_PAGES { return; }
+    let required = match MDL_HEADER_SIZE.checked_add(pages.saturating_mul(8)) { Some(v) => v, None => return };
+    if header.size < 0 || (header.size as u64) < required { return; }
     let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
+    if pfn_address.checked_add(pages.saturating_mul(8)).is_none() { return; }
     for index in 0..pages as usize {
         let at = match pfn_address.checked_add(index as u64 * 8) { Some(v) => v, None => return };
         if translate(at, false).is_none() { return; }
@@ -359,8 +363,11 @@ pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
     if header.flags & (MDL_LOCKED | MDL_NONPAGED_POOL) == 0 { return core::ptr::null_mut(); }
     if header.flags & MDL_MAPPED_SYSTEM_VA != 0 && !header.mapped_system_va.is_null() { return header.mapped_system_va; }
     let Some(pages) = mdl_page_count(header.byte_offset as u64, header.byte_count as u64) else { return core::ptr::null_mut(); };
-    if pages == 0 || pages as usize > 8192 { return core::ptr::null_mut(); }
+    if pages == 0 || pages as usize > MAX_LOCKED_PAGES { return core::ptr::null_mut(); }
+    let required = match MDL_HEADER_SIZE.checked_add(pages.saturating_mul(8)) { Some(v) => v, None => return core::ptr::null_mut() };
+    if header.size < 0 || (header.size as u64) < required { return core::ptr::null_mut(); }
     let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return core::ptr::null_mut() };
+    if pfn_address.checked_add(pages.saturating_mul(8)).is_none() { return core::ptr::null_mut(); }
     let mut first_alias = 0u64;
     for index in 0..pages {
         let at = match pfn_address.checked_add(index * 8) { Some(v) => v, None => return core::ptr::null_mut() };
@@ -394,7 +401,12 @@ pub unsafe extern "win64" fn mm_copy_virtual_memory(
     target_process: *mut c_void, target_address: *mut c_void,
     length: u64, previous_mode: i8, return_size: *mut u64,
 ) -> i32 {
-    if !return_size.is_null() { unsafe { return_size.write(0); } }
+    if !return_size.is_null() {
+        let output = return_size as u64;
+        if output < 0xffff_8000_0000_0000 || crate::kernel_vm::is_pageable_address(output)
+            || translate(output, true).is_none() { return STATUS_INVALID_PARAMETER; }
+        unsafe { return_size.write(0); }
+    }
     if source_process.is_null() || target_process.is_null() || source_process != target_process
         || (source_address as u64) == 0 || (target_address as u64) == 0
         || length > 0x0000_8000_0000_0000 { return STATUS_INVALID_PARAMETER; }
