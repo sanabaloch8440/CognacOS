@@ -12,7 +12,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | Memory management/protection | 4 KiB descriptor-driven bootstrap mappings, RAM direct-map, MDL validation/pinning/lifecycle helpers, pageable kernel-pool page-in, non-contiguous kernel and tracked active-process user MDL aliases, registered process-root cross-process copy | Demand-zero/pagefile-backed user faults, Windows-style exception recovery, scheduler-integrated current-process semantics, complete object/handle manager, stress and WDK conformance |
 | PE32+ loader and ring-3 test path | Foundation implemented; boot-tested | Full NT loader, unwind/exception handling, Windows user-mode DLLs |
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
-| SMP/AP startup | Experimental | Reliable multi-vCPU boot, per-CPU interrupt setup, stress tests |
+| SMP/AP startup | Experimental; AP-local descriptor/LAPIC setup and directed-IPI stress implemented | Multi-vCPU CI results pending; per-CPU TSS/IST, scheduler integration, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
 | NT executive/syscall compatibility | Partial foundations | NT syscall ABI and complete executive semantics |
 | I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
@@ -20,7 +20,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
-**Latest checked verification before this documentation update:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) succeeded for commit `925e6f06` (MDL teardown comparison fix). The workflow passed host allocator and ext-parser tests, the freestanding kernel and UEFI-loader builds, ELF-to-PE32+ conversion and header validation, EFI image packaging, and the configured OVMF/QEMU smoke test. This confirms the source compiles and the covered boot path runs; it does not prove user-MDL concurrency safety, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility. Documentation changes trigger another workflow run; check the Actions page for its result.
+**Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. This SMP pass adds an AP-local descriptor-table load, bounds-checks AP logical IDs, requires every online AP to acknowledge 64 directed IPIs, and adds OVMF/QEMU boots at 2, 4, and 8 vCPUs. The new changes are not considered verified until the resulting Actions run passes all configurations. Even a pass does not prove real-hardware reliability, per-CPU TSS/IST support, scheduler integration, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
 
 ### Status legend
 
@@ -92,12 +92,15 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Provide xAPIC access, EOI, masked I/O APIC routing primitives, bounded ICR waits, and fixed/INIT/SIPI helpers.
 - [x] Register the bootstrap processor in the HAL CPU-local registry.
 - [x] Add per-CPU records, APIC-ID lookup, lifecycle states, GS-based access, typed port I/O, MMIO range checks, and IRQ-save spin locks.
-- [x] Add an experimental low-memory AP startup trampoline, temporary page-table setup, AP stack preparation, and bounded acknowledgement logic.
-- [ ] Validate AP startup on supported QEMU configurations and real hardware.
-- [ ] Initialize per-AP GDT/TSS/IDT and CPU-local state before marking APs online.
+- [x] Add a low-memory AP startup trampoline, temporary page-table setup, 16-page AP stacks, bounded INIT/SIPI coordination, APIC-ID verification, and online acknowledgement.
+- [x] Have every AP load the kernel GDT/IDT locally, initialize its local APIC, install GS-based CPU-local state, and publish interrupt readiness before interrupt-driven IPIs are enabled.
+- [x] Stress the per-CPU IDT/LAPIC route with 64 directed IPIs per online AP; missing acknowledgements fail the boot self-test.
+- [ ] Validate the 2/4/8-vCPU QEMU matrix in CI and on real hardware.
+- [ ] Add a dedicated per-CPU TSS and IST stacks for NMI/double-fault and privilege transitions.
 - [ ] Implement interrupt vectors, complete IRQ routing, MSI/MSI-X, and interrupt remapping.
 - [ ] Calibrate and enable a reliable APIC timer and monotonic clock.
-- [ ] Add multi-vCPU race/stress tests for locks, interrupts, startup, TLB invalidation, concurrent user-MDL map/unmap, process exit, and MDL unlock ordering. Mapping/probe/unlock entry points now share an IRQ-safe MDL lifecycle lock; runtime stress and teardown-race validation remain outstanding.
+- [x] Add repeatable multi-vCPU QEMU boot and directed-IPI stress coverage for 2, 4, and 8 vCPUs, alongside the existing post-startup VM/TLB shootdown self-test. CI results are pending.
+- [ ] Add multi-vCPU race/stress tests for locks, concurrent user-MDL map/unmap, process exit, and MDL unlock ordering. Mapping/probe/unlock entry points now share an IRQ-safe MDL lifecycle lock; runtime stress and teardown-race validation remain outstanding.
 - [ ] Keep external interrupts disabled until interrupt entry, routing, and per-CPU state are proven safe.
 
 Discovery and startup primitives do not by themselves establish a production-ready SMP kernel.
