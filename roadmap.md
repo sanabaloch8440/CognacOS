@@ -259,7 +259,7 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Add executive KQUEUE initialization, FIFO/head insertion, dequeue, direct handoff to a waiting thread, and rundown.
 - [x] Strengthen single/multiple-object waits with timer dispatcher types, absolute timeout conversion, alert cancellation, and fail-closed rejection of unsupported multi-wait queue/mutant cases.
 - [x] Add focused Ke tests for APC nesting, processor-number ABI, DPC duplicate queueing/callback execution, timer expiration, mutant initialization, and executive queue ordering/rundown.
-- [x] Expand [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md) to 111 scoped Ke names and public contract / stub inventory.
+- [x] Expand [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md) to 116 scoped Ke names and public contract / stub inventory.
 
 ### Remaining correctness and validation gaps
 
@@ -273,4 +273,4 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [ ] Replace fixed-capacity timer/DPC/mutant/queue side tables with lifetime-safe executive objects or dynamic bounded allocation.
 - [ ] Add concurrent tests for wait-any cancellation, wait-all reservation, queue handoff, DPC cancellation/flush, and timer cancel-vs-expire races.
 
-**Scope note:** The comparison now lists 111 Ke export names. Its current project-defined score is 54.5% (100% source-level declaration coverage and 9.0% strict behavior matches in the currently advertised topology); this is a scoped progress metric, not a Microsoft metric or a Windows driver-compatibility claim.
+**Scope note:** The comparison now lists 116 Ke export names. Its current project-defined score is 54.3% (100% source-level declaration coverage and 8.6% strict behavior matches in the currently advertised topology); this is a scoped progress metric, not a Microsoft metric or a Windows driver-compatibility claim.
