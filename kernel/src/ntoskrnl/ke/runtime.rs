@@ -74,6 +74,8 @@ pub struct DispatcherHeader {
 
 const EVENT_NOTIFICATION: u8 = 0;
 const EVENT_SYNCHRONIZATION: u8 = 1;
+const MUTANT_OBJECT: u8 = 2;
+const QUEUE_OBJECT: u8 = 4;
 const EVENT_SIZE: u8 = 6; // sizeof(KEVENT) / sizeof(ULONG).
 
 /// IRQL is PASSIVE_LEVEL until the interrupt-priority layer is brought online.
@@ -580,6 +582,16 @@ pub unsafe extern "win64" fn ke_are_all_apcs_disabled() -> u8 {
     let (critical, guarded) = crate::thread::apc_region_depths();
     (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) >= 1 || critical != 0 || guarded != 0) as u8
 }
+/// BOOLEAN KeAlertThread(PKTHREAD Thread, KPROCESSOR_MODE AlertMode).
+/// This implements thread alert state, not kernel/user APC object delivery.
+pub unsafe extern "win64" fn ke_alert_thread(thread:*mut core::ffi::c_void,_alert_mode:i32)->u8{
+    let Some(id)=crate::thread::thread_id_from_object(thread) else{return 0};
+    crate::thread::set_alert_pending(id).unwrap_or(false) as u8
+}
+/// BOOLEAN KeTestAlertThread(KPROCESSOR_MODE AlertMode).
+pub unsafe extern "win64" fn ke_test_alert_thread(_alert_mode:i32)->u8{
+    crate::thread::take_alert_pending() as u8
+}
 
 /// LONG KePulseEvent(PKEVENT, KPRIORITY, BOOLEAN).
 pub unsafe extern "win64" fn ke_pulse_event(
@@ -690,8 +702,8 @@ unsafe fn try_consume_dispatcher_object_locked(object: *mut DispatcherHeader) ->
     if object.is_null() { return false; }
     let state = unsafe { &*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>() };
     match unsafe { (*object).kind } {
-        EVENT_NOTIFICATION => state.load(Ordering::Acquire) > 0,
-        EVENT_SYNCHRONIZATION | 5 => {
+        EVENT_NOTIFICATION | TIMER_NOTIFICATION => state.load(Ordering::Acquire) > 0,
+        EVENT_SYNCHRONIZATION | 5 | TIMER_SYNCHRONIZATION => {
             let old = state.load(Ordering::Acquire);
             if old <= 0 { return false; }
             state.store(old - 1, Ordering::Release);
@@ -709,12 +721,12 @@ fn wait_all_object_signalled(object_id:u64)->bool{
     let object=object_id as *mut DispatcherHeader;
     if object.is_null(){return false}
     let kind=unsafe{(*object).kind};
-    if !matches!(kind,EVENT_NOTIFICATION|EVENT_SYNCHRONIZATION|5){return false}
+    if !matches!(kind,EVENT_NOTIFICATION|EVENT_SYNCHRONIZATION|5|TIMER_NOTIFICATION|TIMER_SYNCHRONIZATION|QUEUE_OBJECT){return false}
     unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)>0}
 }
 fn consume_wait_all_object(object_id:u64){
     let object=object_id as *mut DispatcherHeader;
-    if object.is_null()||unsafe{(*object).kind}==EVENT_NOTIFICATION{return}
+    if object.is_null()||matches!(unsafe{(*object).kind},EVENT_NOTIFICATION|TIMER_NOTIFICATION){return}
     let state=unsafe{&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()};
     state.store(state.load(Ordering::Acquire)-1,Ordering::Release);
 }
@@ -735,7 +747,7 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     timeout: *const i64,
 ) -> i32 {
     if object.is_null() { return STATUS_INVALID_PARAMETER; }
-    if !matches!(unsafe { (*object).kind }, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5) {
+    if !matches!(unsafe { (*object).kind }, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 | TIMER_NOTIFICATION | TIMER_SYNCHRONIZATION | QUEUE_OBJECT | MUTANT_OBJECT) {
         return STATUS_NOT_IMPLEMENTED;
     }
     if alertable != 0 { return STATUS_NOT_IMPLEMENTED; } // APC delivery is not yet implemented.
@@ -788,7 +800,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     if object_list.iter().any(|object| object.is_null()) { return STATUS_INVALID_PARAMETER; }
     for i in 0..object_list.len() {
         let kind = unsafe { (*object_list[i]).kind };
-        if !matches!(kind, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5) {
+        if !matches!(kind, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 | TIMER_NOTIFICATION | TIMER_SYNCHRONIZATION | QUEUE_OBJECT | MUTANT_OBJECT) {
             return STATUS_NOT_IMPLEMENTED;
         }
         if object_list[..i].iter().any(|previous| *previous == object_list[i]) {
