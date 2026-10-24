@@ -45,6 +45,20 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   };
  }
  if !(dll.eq_ignore_ascii_case(b"ntoskrnl.exe") || dll.eq_ignore_ascii_case(b"ntkrnlmp.exe") || dll.eq_ignore_ascii_case(b"ntkrnlpa.exe") || dll.eq_ignore_ascii_case(b"ntkrpamp.exe")) { return None; }
+ // Initial volatile Configuration Manager registry operations. These exact
+ // callable implementations are resolved by name rather than treating export
+ // catalogue entries as implemented routines.
+ if let ImportSymbol::Name(requested) = symbol {
+  let registry = if requested.eq_ignore_ascii_case(b"ZwCreateKey") || requested.eq_ignore_ascii_case(b"NtCreateKey") { Some(cm::runtime::ZwCreateKey as usize) }
+  else if requested.eq_ignore_ascii_case(b"ZwOpenKey") || requested.eq_ignore_ascii_case(b"NtOpenKey") { Some(cm::runtime::ZwOpenKey as usize) }
+  else if requested.eq_ignore_ascii_case(b"ZwSetValueKey") || requested.eq_ignore_ascii_case(b"NtSetValueKey") { Some(cm::runtime::ZwSetValueKey as usize) }
+  else if requested.eq_ignore_ascii_case(b"ZwQueryValueKey") || requested.eq_ignore_ascii_case(b"NtQueryValueKey") { Some(cm::runtime::ZwQueryValueKey as usize) }
+  else if requested.eq_ignore_ascii_case(b"ZwDeleteValueKey") || requested.eq_ignore_ascii_case(b"NtDeleteValueKey") { Some(cm::runtime::ZwDeleteValueKey as usize) }
+  else if requested.eq_ignore_ascii_case(b"ZwDeleteKey") || requested.eq_ignore_ascii_case(b"NtDeleteKey") { Some(cm::runtime::ZwDeleteKey as usize) }
+  else if requested.eq_ignore_ascii_case(b"ZwFlushKey") || requested.eq_ignore_ascii_case(b"NtFlushKey") { Some(cm::runtime::ZwFlushKey as usize) }
+  else { None };
+  if registry.is_some() { return registry.map(|p| p as u64); }
+ }
  // These supported MDL lifecycle routines are absent from the pinned ordinal
  // manifest, so resolve their exact documented names without fabricating ordinals.
  if let ImportSymbol::Name(requested) = symbol {
