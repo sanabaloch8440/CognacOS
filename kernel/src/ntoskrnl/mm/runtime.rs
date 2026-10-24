@@ -244,6 +244,8 @@ fn translate_current_user(va: u64, require_write: bool) -> Option<u64> {
     None
 }
 fn mdl_header_is_writable(address: u64) -> bool {
+    if address & 7 != 0 || address < 0xffff_8000_0000_0000
+        || crate::kernel_vm::is_pageable_address(address) { return false; }
     let Some(end) = address.checked_add(MDL_HEADER_SIZE) else { return false; };
     let mut cursor = address;
     while cursor < end {
@@ -441,7 +443,7 @@ pub unsafe extern "win64" fn mm_copy_virtual_memory(
 /// so malformed ranges never leave a partially populated PFN array.
 pub unsafe extern "win64" fn mm_build_mdl_for_non_paged_pool(mdl: *mut c_void) {
     let address = mdl as u64;
-    if mdl.is_null() || address < 0xffff_8000_0000_0000
+    if mdl.is_null() || address & 7 != 0 || address < 0xffff_8000_0000_0000
         || crate::kernel_vm::is_pageable_address(address) {
         return;
     }
