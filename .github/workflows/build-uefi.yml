@@ -57,10 +57,10 @@ jobs:
             python3 tools/elf_to_pe32plus.py "target/driver-$name/x86_64-unknown-none/release/$bin" \\
               "build/drivers/$output" --image-base "$base" --dll
           }
-          build_driver hal drivers/hal hal 0xffff800010000000 Hal.dll
-          build_driver acpi drivers/acpi acpi 0xffff800020000000 acpi.sys
-          build_driver pci drivers/pci pci 0xffff800030000000 pci.sys
-          build_driver processor drivers/processor processor 0xffff800040000000 processor.sys
+          build_driver hal drivers/hal hal 0xffff8000c0000000 Hal.dll
+          build_driver acpi drivers/acpi acpi 0xffff8000d0000000 acpi.sys
+          build_driver pci drivers/pci pci 0xffff8000e0000000 pci.sys
+          build_driver processor drivers/processor processor 0xffff8000f0000000 processor.sys
           python3 - <<'PY'
           import struct
           from pathlib import Path
