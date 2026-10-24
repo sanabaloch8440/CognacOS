@@ -110,11 +110,11 @@ const TOKEN_META_SLOTS: usize = 32;
 #[derive(Clone, Copy)]
 struct TokenMeta {
     used: bool, token: usize, token_type: u32, impersonation_level: u32,
-    admin: bool, restricted: bool, write_restricted: bool, privileges: u64,
+    admin: bool, restricted: bool, write_restricted: bool, privileges: u64, session_id: u32, authentication_id: u64,
 }
 impl TokenMeta {
     const EMPTY: Self = Self { used:false, token:0, token_type:0, impersonation_level:0,
-        admin:false, restricted:false, write_restricted:false, privileges:0 };
+        admin:false, restricted:false, write_restricted:false, privileges:0, session_id:0, authentication_id:0 };
 }
 struct TokenMetaLock(AtomicBool);
 impl TokenMetaLock {
@@ -136,7 +136,7 @@ static mut TOKEN_META: [TokenMeta; TOKEN_META_SLOTS] = [TokenMeta::EMPTY; TOKEN_
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn RdotSeRegisterTokenMetadata(
     token: *mut c_void, token_type: u32, impersonation_level: u32,
-    flags: u32, privileges: u64,
+    flags: u32, privileges: u64, session_id: u32, authentication_id: u64,
 ) -> i32 {
     if token.is_null() || !(token_type == 1 || token_type == 2)
         || (token_type == 1 && impersonation_level != 0)
@@ -150,7 +150,7 @@ pub unsafe extern "win64" fn RdotSeRegisterTokenMetadata(
     let Some(i) = slot else { return 0xC000_009Au32 as i32; };
     entries[i] = TokenMeta { used:true, token:token as usize, token_type,
         impersonation_level, admin:flags & 1 != 0, restricted:flags & 2 != 0,
-        write_restricted:flags & 4 != 0, privileges };
+        write_restricted:flags & 4 != 0, privileges, session_id, authentication_id };
     STATUS_SUCCESS
 }
 
@@ -213,7 +213,7 @@ mod token_metadata_tests {
         let mut storage = 0u64;
         let token = (&mut storage as *mut u64).cast::<c_void>();
         assert_eq!(unsafe { SeTokenIsAdmin(token) }, 0);
-        assert_eq!(unsafe { RdotSeRegisterTokenMetadata(token, 2, 2, 0b011, 1 << 9) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { RdotSeRegisterTokenMetadata(token, 2, 2, 0b011, 1 << 9, 7, 0x1234) }, STATUS_SUCCESS);
         assert_eq!(unsafe { SeTokenIsAdmin(token) }, 1);
         assert_eq!(unsafe { SeTokenIsRestricted(token) }, 1);
         assert_eq!(unsafe { SeTokenIsWriteRestricted(token) }, 0);
@@ -229,4 +229,26 @@ mod token_metadata_tests {
         assert_eq!(unsafe { SeSinglePrivilegeCheck(3, 1) }, 0);
         assert_eq!(unsafe { SeSinglePrivilegeCheck(3, 0) }, 1);
     }
+}
+
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeQuerySessionIdToken(token: *mut c_void, session_id: *mut u32) -> i32 {
+    if session_id.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
+    unsafe { core::ptr::write_unaligned(session_id, meta.session_id); }
+    STATUS_SUCCESS
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeQuerySessionIdTokenEx(token: *mut c_void, session_id: *mut u32) -> i32 {
+    unsafe { SeQuerySessionIdToken(token, session_id) }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeQueryAuthenticationIdToken(token: *mut c_void, authentication_id: *mut u64) -> i32 {
+    if authentication_id.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
+    unsafe { core::ptr::write_unaligned(authentication_id, meta.authentication_id); }
+    STATUS_SUCCESS
 }
