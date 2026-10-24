@@ -2,7 +2,9 @@
 //! IRPs, single-dispatch ownership, cancellation before dispatch, and completion.
 //! This is not yet a full NT IRP stack or hardware DMA implementation.
 use crate::hal::IrqSpinLock;
-pub const MAX_DEVICES:usize=16;pub const MAX_IRPS:usize=64;pub const MAX_IRP_BYTES:usize=4096;\npub const MAX_COMPLETION_PORTS:usize=16;\npub const MAX_COMPLETION_PACKETS:usize=64;
+pub const MAX_DEVICES:usize=16;pub const MAX_IRPS:usize=64;pub const MAX_IRP_BYTES:usize=4096; 
+pub const MAX_COMPLETION_PORTS:usize=16; 
+pub const MAX_COMPLETION_PACKETS:usize=64;
 pub const IRP_MJ_CREATE:u8=0;pub const IRP_MJ_CLOSE:u8=2;pub const IRP_MJ_READ:u8=3;pub const IRP_MJ_WRITE:u8=4;pub const IRP_MJ_DEVICE_CONTROL:u8=14;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum IoStatus{Free,Pending,Success,InvalidRequest,NoSuchDevice,BufferTooLarge,DeviceError,Cancelled,TimedOut}
