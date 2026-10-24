@@ -73,7 +73,7 @@ pub fn unmap_logical(device:usize,logical:u64)->bool{
 }
 pub fn map_sg(device:usize,token:usize,fragments:&[(u64,u32)],direction:u8,out:&mut [ScatterGatherElement])->Result<usize,DmaError>{
  if device==0||token==0||fragments.is_empty()||fragments.len()>out.len()||fragments.len()>MAX_SG_SEGMENTS{return Err(DmaError::InvalidPageList)}
- let mut count=0;for &(physical,length) in fragments{match map_one(device,token,0,physical,length,direction){Ok(logical)=>{out[count]=ScatterGatherElement{address:logical,length,reserved:0};count+=1},Err(e)=>{while count>0{count-=1;let logical=out[count].address;let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token&&m.logical==logical)};if let Some(i)=idx{let _=unmap_index(i)}}return Err(e)}}}Ok(count)
+ let mut count=0;for &(physical,length) in fragments{match map_one(device,token,0,physical,length,direction){Ok(logical)=>{out[count]=ScatterGatherElement{address:logical,length,reserved:0};count+=1},Err(e)=>{while count>0{count-=1;let logical=out[count].address;let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token&&m.logical==logical)};if let Some(i)=idx{let _=unmap_index(i);}}return Err(e)}}}Ok(count)
 }
 pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Result<(*mut u8,u64),DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;if length==0{return Err(DmaError::InvalidLength)}
