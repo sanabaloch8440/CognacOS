@@ -330,29 +330,39 @@ pub unsafe extern "system" fn io_initialize_irp(
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mut Irp) {
     if irp.is_null(){return}
-    let current=unsafe{io_get_current_irp_stack_location(irp)};
-    let next=unsafe{io_get_next_irp_stack_location(irp)};
-    if current.is_null()||next.is_null()||current==next{return}
     let state=WDM.lock();
-    if !state.irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp)){return}
-    unsafe{ptr::copy_nonoverlapping(current,next,1);}
+    let Some(slot)=state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+    let count=slot.object.bytes[0x42] as usize;
+    if count==0||count>slot.stack.len(){return}
+    let current=unsafe{io_get_current_irp_stack_location(irp)};
+    let base=slot.stack.as_ptr() as usize;
+    let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
+    let cur=current as usize;
+    if cur<base||cur>=end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return}
+    let next=cur.checked_sub(IO_STACK_LOCATION_SIZE_X64).unwrap_or(0);
+    if next<base{return}
+    unsafe{ptr::copy_nonoverlapping(current, next as *mut IoStackLocation, 1);}
 }
 
-/// Reuse the current location rather than copying it for a lower driver.
+/// Arrange for IoCallDriver to reuse the current stack slot instead of
+/// consuming another one: advance the current pointer so the dispatch decrement
+/// returns it to the same slot.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
     if irp.is_null(){return}
     let state=WDM.lock();
     let Some(slot)=state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
     let count=slot.object.bytes[0x42] as usize;
+    if count==0||count>slot.stack.len(){return}
     let current=unsafe{io_get_current_irp_stack_location(irp)};
     let base=slot.stack.as_ptr() as usize;
     let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
     let cur=current as usize;
-    if count==0||count>slot.stack.len()||cur<=base||cur>end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return}
+    if cur<base||cur>=end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return}
+    if cur+IO_STACK_LOCATION_SIZE_X64>end{return}
     unsafe{
-        write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,current.cast());
-        (*irp).bytes[0x43]=(*irp).bytes[0x43].saturating_sub(1);
+        write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,(cur+IO_STACK_LOCATION_SIZE_X64) as *mut c_void);
+        (*irp).bytes[0x43]=(*irp).bytes[0x43].saturating_add(1);
     }
 }
 
@@ -423,4 +433,32 @@ mod wdm_tests {
   assert_eq!(next as usize,irp as usize+IRP_SIZE_X64+IO_STACK_LOCATION_SIZE_X64);
   unsafe{io_free_irp(irp);}
  }
+ #[test]
+ fn attach_detach_tracks_filter_stack_and_stack_depth() {
+  let mut lower_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut upper_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut lower:*mut DeviceObject=ptr::null_mut();
+  let mut upper:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut lower_driver,0,ptr::null_mut(),7,0,0,&mut lower)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_create_device(&mut upper_driver,0,ptr::null_mut(),7,0,0,&mut upper)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_attach_device_to_device_stack(upper,lower)},lower);
+  assert_eq!(unsafe{(*lower).attached_device},upper);
+  assert_eq!(unsafe{(*upper).stack_size},2);
+  unsafe{io_detach_device(lower);}
+  assert!(unsafe{(*lower).attached_device.is_null()});
+  assert_eq!(unsafe{(*upper).stack_size},1);
+  unsafe{io_delete_device(upper);io_delete_device(lower);}
+ }
+
+ #[test]
+ fn initialize_irp_rejects_short_packet_and_sets_stack_bounds() {
+  let mut storage=[0u8;IRP_SIZE_X64+2*IO_STACK_LOCATION_SIZE_X64];
+  let irp=storage.as_mut_ptr().cast::<Irp>();
+  unsafe{io_initialize_irp(irp, (storage.len()-1) as u16, 2);}
+  assert_eq!(unsafe{(*irp).bytes[0x42]},0);
+  unsafe{io_initialize_irp(irp, storage.len() as u16, 2);}
+  assert_eq!(unsafe{(*irp).bytes[0x42]},2);
+  assert_eq!(unsafe{io_get_current_irp_stack_location(irp)} as usize,storage.as_ptr() as usize+storage.len());
+ }
+
 }
