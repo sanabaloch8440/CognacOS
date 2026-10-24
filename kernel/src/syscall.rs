@@ -115,15 +115,29 @@ pub fn prepare_user_apc_return(frame:*mut u64)->bool {
         let space=&*space_ptr;
         if !crate::thread::take_user_apc_delivery_pending(){return false;}
         let Some((object,normal,context,arg1,arg2))=crate::ntoskrnl::ke::runtime::take_pending_user_apc() else{return false};
-        let _=object;
-        if normal==0 || !space.is_user_executable(normal as u64) { return false; }
+        if normal==0 {
+            crate::ntoskrnl::ke::runtime::complete_user_apc_delivery(object);
+            return false;
+        }
+        if !space.is_user_executable(normal as u64) {
+            if crate::ntoskrnl::ke::runtime::requeue_pending_user_apc(object,normal,context,arg1,arg2) {
+                let _=crate::thread::set_user_apc_delivery_pending(crate::thread::current_thread_id().unwrap_or(0),true);
+            }
+            return false;
+        }
         let return_slot=original_rsp-8;
-        if space.copy_to_user(return_slot,&original_rip.to_ne_bytes()).is_err(){return false}
+        if space.copy_to_user(return_slot,&original_rip.to_ne_bytes()).is_err(){
+            if crate::ntoskrnl::ke::runtime::requeue_pending_user_apc(object,normal,context,arg1,arg2) {
+                let _=crate::thread::set_user_apc_delivery_pending(crate::thread::current_thread_id().unwrap_or(0),true);
+            }
+            return false;
+        }
         *frame.add(15)=normal as u64;
         *frame.add(18)=return_slot;
         *frame.add(12)=context as u64; // RCX = NormalContext
         *frame.add(11)=arg1 as u64;     // RDX = SystemArgument1
         *frame.add(7)=arg2 as u64;     // R8  = SystemArgument2
+        crate::ntoskrnl::ke::runtime::complete_user_apc_delivery(object);
         true
     }
 }
