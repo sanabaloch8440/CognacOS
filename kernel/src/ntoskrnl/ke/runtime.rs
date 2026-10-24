@@ -940,6 +940,26 @@ pub unsafe extern "win64" fn ke_delay_execution_thread(
 
 
 
+
+pub unsafe extern "win64" fn ke_initialize_guarded_mutex(object:*mut DispatcherHeader){unsafe{initialize_mutant(object,0)}}
+pub unsafe extern "win64" fn ke_acquire_guarded_mutex(object:*mut DispatcherHeader){
+    unsafe{ke_enter_guarded_region();}
+    let status=unsafe{ke_wait_for_single_object(object,0,0,0,core::ptr::null())};
+    if status!=STATUS_SUCCESS{unsafe{ke_leave_guarded_region();}}
+}
+pub unsafe extern "win64" fn ke_release_guarded_mutex(object:*mut DispatcherHeader){
+    let _=release_mutant(object,false);unsafe{ke_leave_guarded_region();}
+}
+pub unsafe extern "win64" fn ke_try_to_acquire_guarded_mutex(object:*mut DispatcherHeader)->u8{
+    if unsafe{try_consume_dispatcher_object(object)}{unsafe{ke_enter_guarded_region();}1}else{0}
+}
+pub unsafe extern "win64" fn ke_acquire_guarded_mutex_unsafe(object:*mut DispatcherHeader){
+    let _=unsafe{ke_wait_for_single_object(object,0,0,0,core::ptr::null())};
+}
+pub unsafe extern "win64" fn ke_release_guarded_mutex_unsafe(object:*mut DispatcherHeader){
+    let _=release_mutant(object,false);
+}
+
 // ---- Executive KQUEUE --------------------------------------------------------
 #[repr(C)]
 pub struct ListEntry{pub flink:*mut ListEntry,pub blink:*mut ListEntry}
