@@ -106,7 +106,7 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
  let s=state();
  if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n])){
   #[cfg(test)] unsafe{*out=handle(k.id);}
-  #[cfg(not(test))] {let body=core::ptr::addr_of!(**k) as *mut Key as *mut core::ffi::c_void;match crate::ntoskrnl::ob::runtime::open_by_pointer(body,desired_access,crate::ntoskrnl::ob::runtime::current_owner(),true,0){Ok(h)=>unsafe{*out=h},Err(e)=>return e}}
+  #[cfg(not(test))] {let body=core::ptr::addr_of!(*k) as *mut Key as *mut core::ffi::c_void;match crate::ntoskrnl::ob::runtime::open_by_pointer(body,desired_access,crate::ntoskrnl::ob::runtime::current_owner(),true,0){Ok(h)=>unsafe{*out=h},Err(e)=>return e}}
   if !disposition.is_null(){unsafe{*disposition=2;}}return STATUS_SUCCESS;
  }
  let Some(index)=s.keys.iter().position(key_slot_reusable)else{return STATUS_INSUFFICIENT_RESOURCES;};
@@ -133,7 +133,7 @@ pub unsafe extern "win64" fn ZwOpenKey(out:*mut *mut core::ffi::c_void,access:u3
  let found=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n]));
  if let Some(k)=found{
   #[cfg(test)] unsafe{*out=handle(k.id);}
-  #[cfg(not(test))] {let body=core::ptr::addr_of!(**k) as *mut Key as *mut core::ffi::c_void;match crate::ntoskrnl::ob::runtime::open_by_pointer(body,access,crate::ntoskrnl::ob::runtime::current_owner(),true,0){Ok(h)=>unsafe{*out=h},Err(e)=>return e}}
+  #[cfg(not(test))] {let body=core::ptr::addr_of!(*k) as *mut Key as *mut core::ffi::c_void;match crate::ntoskrnl::ob::runtime::open_by_pointer(body,access,crate::ntoskrnl::ob::runtime::current_owner(),true,0){Ok(h)=>unsafe{*out=h},Err(e)=>return e}}
   STATUS_SUCCESS
  }else{STATUS_OBJECT_NAME_NOT_FOUND}
 }
