@@ -10,7 +10,7 @@ pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Po, Cm, Se, Rtl, Zw, Other }
 pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: KernelModule }
 
 pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
-pub(crate) mod ki; pub(crate) mod mm; mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
+pub(crate) mod ki; pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 pub(crate) mod driver_loader;
 pub mod abi_signatures;
@@ -64,6 +64,14 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
  // These supported MDL lifecycle routines are absent from the pinned ordinal
  // manifest, so resolve their exact documented names without fabricating ordinals.
  if let ImportSymbol::Name(requested) = symbol {
+  let object_manager = if requested.eq_ignore_ascii_case(b"ObReferenceObjectByPointer") { Some(ob::runtime::ObReferenceObjectByPointer as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObDereferenceObject") { Some(ob::runtime::ObDereferenceObject as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObfDereferenceObject") { Some(ob::runtime::ObfDereferenceObject as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObfReferenceObject") { Some(ob::runtime::ObfReferenceObject as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObCloseHandle") { Some(ob::runtime::ObCloseHandle as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObIsKernelHandle") { Some(ob::runtime::ObIsKernelHandle as usize) }
+  else { None };
+  if object_manager.is_some() { return object_manager.map(|p|p as u64); }
   let direct = if requested.eq_ignore_ascii_case(b"IoAllocateMdl") {
    Some(crate::io::io_allocate_mdl as usize)
   } else if requested.eq_ignore_ascii_case(b"IoFreeMdl") {
