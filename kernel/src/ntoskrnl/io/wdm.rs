@@ -768,4 +768,20 @@ mod wdm_tests {
   unsafe{io_free_irp(irp);}
  }
 
+ #[test]
+ fn named_device_lookup_and_duplicate_rejection() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut duplicate_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut name=std::string::String::from("\\Device\\Ext4");
+  let mut utf16=name.encode_utf16().collect::<std::vec::Vec<u16>>();
+  let mut unicode=UnicodeString{length:(utf16.len()*2) as u16,maximum_length:(utf16.len()*2) as u16,buffer:utf16.as_mut_ptr()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,&mut unicode,7,0,0,&mut device)},STATUS_SUCCESS);
+  assert_eq!(unsafe{lookup_device_object(&mut unicode)},device);
+  let mut duplicate:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut duplicate_driver,0,&mut unicode,7,0,0,&mut duplicate)},STATUS_OBJECT_NAME_COLLISION);
+  unsafe{io_delete_device(device);}
+  assert!(unsafe{lookup_device_object(&mut unicode)}.is_null());
+ }
+
 }
