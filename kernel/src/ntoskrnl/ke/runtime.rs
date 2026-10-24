@@ -962,7 +962,7 @@ fn try_acquire_mutant(object:*mut DispatcherHeader)->bool{
     let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) else{return false};
     if record.owner==thread{
         record.recursion=record.recursion.saturating_add(1);
-        unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(-(record.recursion as i32),Ordering::Release);}
+        unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-(record.recursion as i32),Ordering::Release);}
         return true
     }
     if record.owner!=0{return false}
@@ -990,7 +990,7 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
         let waiter=crate::dispatcher::wake_one_timed(object as u64);
         if let Some(waiter)=waiter{
             record.owner=waiter.thread;record.recursion=1;
-            let was_abandoned=record.abandoned||waiter.timed_out&&false;
+            let was_abandoned=record.abandoned;
             record.abandoned=false;
             unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
             (old,Some(waiter.thread),if was_abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
@@ -1051,7 +1051,7 @@ const MAX_TIMER_OBJECTS: usize = 128;
 const MAX_DPC_OBJECTS: usize = 128;
 const TIMER_NOTIFICATION: u8 = 8;
 const TIMER_SYNCHRONIZATION: u8 = 9;
-type DpcRoutine = unsafe extern "win64" fn(*mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void);
+pub type DpcRoutine = unsafe extern "win64" fn(*mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void);
 #[derive(Clone, Copy)]
 struct TimerRecord { object: usize, active: bool, due: u64, period: u64, dpc: usize }
 impl TimerRecord { const EMPTY: Self = Self { object:0, active:false, due:0, period:0, dpc:0 }; }
