@@ -340,7 +340,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  let (driver, deleting)={
   let state=WDM.lock();
   match state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)) {
-   Some(slot)=>(slot.object.driver_object,slot.deleting),None=>(unsafe{(*device).driver_object},true)
+   Some(slot)=>(slot.object.driver_object,slot.deleting||slot.pnp_state==PNP_STATE_REMOVED),None=>(unsafe{(*device).driver_object},true)
   }
  };
  if deleting||driver.is_null(){return STATUS_DELETE_PENDING}
