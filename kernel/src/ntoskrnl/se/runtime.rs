@@ -892,6 +892,38 @@ pub(crate) unsafe fn se_internal_RegisterTokenCapabilities(
     STATUS_SUCCESS
 }
 
+/// Copy registered SID sets, restriction/capability state and privilege metadata
+/// to a newly allocated token object during Ps/Se token duplication.
+pub(crate) unsafe fn se_internal_DuplicateTokenSecurity(
+    source: *mut c_void, destination: *mut c_void, token_type: u32, impersonation_level: u32,
+) -> i32 {
+    if source.is_null() || destination.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(meta) = token_meta(source) else { return 0xC000_0008u32 as i32; };
+    let flags = (meta.admin as u32) | ((meta.restricted as u32) << 1)
+        | ((meta.write_restricted as u32) << 2) | ((meta.app_container as u32) << 3);
+    let status = unsafe { se_internal_RegisterTokenMetadata(destination, token_type, impersonation_level,
+        flags, meta.privileges, meta.session_id, meta.authentication_id) };
+    if status != STATUS_SUCCESS { return status; }
+    let copied = {
+        let _guard = SECURITY_TOKEN_LOCK.lock();
+        let entries = unsafe { &*core::ptr::addr_of!(SECURITY_TOKEN_IDENTITIES) };
+        entries.iter().find(|e| e.used && e.token == source as usize).copied()
+    };
+    if let Some(mut identity) = copied {
+        identity.token = destination as usize;
+        let _guard = SECURITY_TOKEN_LOCK.lock();
+        let entries = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
+        let slot = entries.iter().position(|e| e.used && e.token == destination as usize)
+            .or_else(|| entries.iter().position(|e| !e.used));
+        let Some(i) = slot else {
+            let _ = unsafe { se_internal_UnregisterTokenMetadata(destination) };
+            return 0xC000_009Au32 as i32;
+        };
+        entries[i] = identity;
+    }
+    STATUS_SUCCESS
+}
+
 pub(crate) unsafe fn se_internal_UnregisterTokenSids(token: *mut c_void) -> i32 {
     if token.is_null() { return STATUS_INVALID_PARAMETER; }
     if se_internal_TokenReferenceCount(token) != 0 { return 0xC000_009Eu32 as i32; }
