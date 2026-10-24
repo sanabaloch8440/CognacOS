@@ -638,6 +638,10 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
             loop {
                 if IPI_ACTIVE.load(Ordering::Acquire) {
                     unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }
+                    if hal::take_pending_ipi(index).unwrap_or(false)
+                        || crate::thread::has_ready_threads() {
+                        let _ = crate::thread::yield_current();
+                    }
                 } else {
                     crate::kernel_vm::smp_tlb_poll(index);
                     core::hint::spin_loop();
@@ -709,6 +713,20 @@ pub fn interrupt_setup_stress_test(rounds: u32) -> bool {
 
 /// Send a fixed-vector IPI to a logical CPU. The target's IDT gate and LAPIC
 /// are already initialized by the AP startup protocol.
+/// Notify an online CPU that runnable kernel-thread work may be available.
+/// This uses a distinct HAL vector and never overloads the synchronous TLB IPI.
+pub fn request_reschedule(logical_id: usize) -> bool {
+    if !IPI_ACTIVE.load(Ordering::Acquire) || logical_id >= hal::MAX_CPUS
+        || hal::cpu_state(logical_id).ok() != Some(hal::CPU_ONLINE) {
+        return false;
+    }
+    let Ok(cpu) = hal::cpu_local(logical_id) else { return false; };
+    let apic_id = cpu.apic_id.load(Ordering::Acquire);
+    if apic_id > u8::MAX as u32 { return false; }
+    let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
+    base != 0 && unsafe { apic::send_fixed_ipi(base, apic_id as u8, apic::HAL_IPI_VECTOR) }.is_ok()
+}
+
 pub fn send_tlb_shootdown(logical_id: usize) -> Result<(), apic::ApicError> {
     if !ipi_shootdowns_enabled() { return Err(apic::ApicError::Unsupported); }
     let cpu = hal::cpu_local(logical_id).map_err(|_| apic::ApicError::InvalidBase)?;
