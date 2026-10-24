@@ -520,8 +520,9 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [x] Add pure privilege-bitmap and allow/deny mask predicates, plus focused tests for truncation and malformed ranges.
 - [ ] Run the current workflow and verify the new Se host tests compile and execute.
 - [x] Add a bounded `SeAccessCheck` export and exact-name resolver path for self-relative descriptors, generic mapping, owner `READ_CONTROL`/`WRITE_DAC`, and basic allow/deny ACE evaluation against explicitly registered token SIDs and Everyone.
+- [x] Add `SePrivilegeCheck` with exact-name resolution, bounded `PRIVILEGE_SET` parsing, all-necessary/any-necessary semantics, and registered-token privilege bitmap evaluation.
 - [x] Add an internal copied-SID token identity registry with validation, unregister/rundown hook, and a focused access-granted unit test.
-- [ ] Integrate SID registration/unregistration into Ps token creation, duplication, impersonation, and rundown; current identity registry is not automatically populated by process/token lifecycle.
+- [ ] Integrate SID/privilege registration and unregistration into Ps token creation, duplication, impersonation, and rundown; current identity registry is not automatically populated by process/token lifecycle.
 - [ ] Add object/callback ACEs, restricted-token second evaluation, privilege grants, AppContainer/capability checks, audit/SACL policy, and fault-safe user-buffer capture before claiming Windows 11 access-check parity.
 
 - [x] Extend bounded inspection with SID authority fields, ACL metadata/ACE-type counting, basic SID-in-ACL search, descriptor component presence, and access/privilege mask utilities.
