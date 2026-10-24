@@ -313,4 +313,31 @@ mod tests {
     fn zero_length_mdl_has_header_only() {
         assert_eq!(unsafe { mm_size_of_mdl(core::ptr::null(), 0) }, MDL_HEADER_SIZE as u32);
     }
+
+    #[test]
+    fn copy_memory_rejects_bad_flags_and_null_destination_without_touching_source() {
+        let mut transferred = 99u64;
+        let bad_flags = unsafe {
+            mm_copy_memory(core::ptr::null_mut(), u64::MAX, 8, 0, &mut transferred)
+        };
+        assert_eq!(bad_flags, STATUS_INVALID_PARAMETER);
+        assert_eq!(transferred, 0);
+
+        transferred = 99;
+        let null_destination = unsafe {
+            mm_copy_memory(core::ptr::null_mut(), u64::MAX, 8, 2, &mut transferred)
+        };
+        assert_eq!(null_destination, STATUS_INVALID_PARAMETER);
+        assert_eq!(transferred, 0);
+    }
+
+    #[test]
+    fn copy_memory_accepts_empty_copy_only_with_valid_flag_and_destination() {
+        let mut transferred = 7u64;
+        let invalid = unsafe {
+            mm_copy_memory(core::ptr::null_mut(), 0, 0, 2, &mut transferred)
+        };
+        assert_eq!(invalid, STATUS_INVALID_PARAMETER);
+        assert_eq!(transferred, 0);
+    }
 }
