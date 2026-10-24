@@ -66,6 +66,11 @@ pub fn bind_irp(adapter:*mut c_void,token:*mut c_void,logical:u64,irp:*mut c_voi
 pub fn release_irp(irp:*mut c_void){
  if irp.is_null(){return}loop{let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.irp==irp as usize)};let Some(i)=idx else{break};let token={let s=STATE.lock();s.maps[i].token};let device={let s=STATE.lock();s.maps[i].device};if unmap_index(i){super::return_map_register(token as *mut c_void,device)}else{break}}
 }
+pub fn map_fragment(device:usize,token:usize,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{map_one(device,token,0,physical,length,direction)}
+pub fn unmap_logical(device:usize,logical:u64)->bool{
+ let index={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.logical==logical&&m.irp==0)};
+ index.is_some_and(unmap_index)
+}
 pub fn map_sg(device:usize,token:usize,fragments:&[(u64,u32)],direction:u8,out:&mut [ScatterGatherElement])->Result<usize,DmaError>{
  if device==0||token==0||fragments.is_empty()||fragments.len()>out.len()||fragments.len()>MAX_SG_SEGMENTS{return Err(DmaError::InvalidPageList)}
  let mut count=0;for &(physical,length) in fragments{match map_one(device,token,0,physical,length,direction){Ok(logical)=>{out[count]=ScatterGatherElement{address:logical,length,reserved:0};count+=1},Err(e)=>{while count>0{count-=1;let logical=out[count].address;let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token&&m.logical==logical)};if let Some(i)=idx{let _=unmap_index(i)}}return Err(e)}}}Ok(count)
