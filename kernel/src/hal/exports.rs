@@ -522,7 +522,7 @@ pub unsafe extern "win64" fn hal_free_common_buffer(
 /// Request the kernel's generic IPI on the processors selected by the NT
 /// affinity mask. Targets publish pending work for their scheduler/DPC path.
 pub unsafe extern "win64" fn hal_request_ipi(target_set: u64) {
-    unsafe { hal_request_ipi_specify_vector(target_set, crate::apic::HAL_IPI_VECTOR as u32); }
+    unsafe { hal_request_ipi_specify_vector(target_set, super::apic::HAL_IPI_VECTOR as u32); }
 }
 
 /// Request a caller-selected fixed-vector IPI on every online processor in
@@ -536,7 +536,7 @@ pub unsafe extern "win64" fn hal_request_ipi_specify_vector(target_set: u64, vec
         let Ok(cpu) = crate::hal::cpu_local(logical_id) else { continue; };
         let apic_id = cpu.apic_id.load(core::sync::atomic::Ordering::Acquire);
         if apic_id > u8::MAX as u32 { continue; }
-        let _ = unsafe { crate::apic::request_ipi(apic_id as u8, vector as u8) };
+        let _ = unsafe { super::apic::request_ipi(apic_id as u8, vector as u8) };
     }
 }
 
@@ -554,9 +554,9 @@ pub fn resolve(name: &[u8]) -> Option<u64> {
     } else if name.eq_ignore_ascii_case(b"KeFlushWriteBuffer") {
         Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64)
     } else if name.eq_ignore_ascii_case(b"KeQueryPerformanceCounter") {
-        crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64)
+        super::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64)
     } else if name.eq_ignore_ascii_case(b"KeStallExecutionProcessor") {
-        crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64)
+        super::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalFlushCommonBuffer") {
         Some(hal_flush_common_buffer as usize as u64)
     } else if name.eq_ignore_ascii_case(b"HalAllocateCommonBuffer") {
@@ -594,8 +594,8 @@ pub fn resolve_ordinal(ordinal: u16) -> Option<u64> {
         15 => Some(hal_display_string as usize as u64),
         47 => Some(hal_query_maximum_processor_count as usize as u64),
         84 => Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64),
-        85 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64),
-        86 => crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64),
+        85 => super::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64),
+        86 => super::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64),
         21 => Some(hal_flush_common_buffer as usize as u64),
         6 => Some(hal_allocate_common_buffer as usize as u64),
         22 => Some(hal_free_common_buffer as usize as u64),
@@ -675,12 +675,12 @@ pub fn self_test() -> bool {
         && resolve_ordinal(61).is_some()
         && resolve_ordinal(62).is_some()
         && resolve(b"KeFlushWriteBuffer").is_some()
-        && (resolve(b"KeQueryPerformanceCounter").is_some() == crate::apic::tsc_frequency_hz().is_some())
-        && (resolve(b"KeStallExecutionProcessor").is_some() == crate::apic::tsc_frequency_hz().is_some())
+        && (resolve(b"KeQueryPerformanceCounter").is_some() == super::apic::tsc_frequency_hz().is_some())
+        && (resolve(b"KeStallExecutionProcessor").is_some() == super::apic::tsc_frequency_hz().is_some())
         && resolve_ordinal(47).is_some()
-        && (resolve_ordinal(85).is_some() == crate::apic::tsc_frequency_hz().is_some())
-        && (resolve_ordinal(86).is_some() == crate::apic::tsc_frequency_hz().is_some())
+        && (resolve_ordinal(85).is_some() == super::apic::tsc_frequency_hz().is_some())
+        && (resolve_ordinal(86).is_some() == super::apic::tsc_frequency_hz().is_some())
         && resolve(b"KeFlushWriteBuffer") == Some(crate::ntoskrnl::ke::runtime::ke_flush_write_buffer as usize as u64)
-        && (resolve(b"KeQueryPerformanceCounter") == crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64))
-        && (resolve(b"KeStallExecutionProcessor") == crate::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64))
+        && (resolve(b"KeQueryPerformanceCounter") == super::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_query_performance_counter as usize as u64))
+        && (resolve(b"KeStallExecutionProcessor") == super::apic::tsc_frequency_hz().map(|_| crate::ntoskrnl::ke::runtime::ke_stall_execution_processor as usize as u64))
 }
