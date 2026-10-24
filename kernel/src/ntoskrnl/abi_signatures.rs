@@ -133,4 +133,22 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
         for name in ["MmAllocateContiguousMemory","MmAllocateContiguousMemorySpecifyCache","MmFreeContiguousMemory","MmFreeContiguousMemorySpecifyCache","MmSizeOfMdl","MmGetPhysicalAddress","MmGetVirtualForPhysical","MmIsAddressValid","MmIsNonPagedSystemAddressValid","MmCopyMemory","MmBuildMdlForNonPagedPool","MmAdvanceMdl","MmCreateMdl","MmFreeMdl","MmPrepareMdlForReuse","MmBuildPartialMdl","MmProbeAndLockPages","MmUnlockPages","MmMapLockedPagesSpecifyCache","MmUnmapLockedPages","MmCopyVirtualMemory","PsLookupProcessByProcessId","KeGetCurrentIrql","KeQueryActiveProcessorCountEx","KeQueryActiveProcessorCount","KeQueryActiveGroupCount","KeGetCurrentProcessorNumberEx","KeGetCurrentProcessorIndex","KeStallExecutionProcessor","ExAllocatePool2","ExAllocatePool3","ExAllocatePoolWithTag","ExAllocatePoolWithTagPriority","ExFreePool2","ExFreePoolWithTag","ObfReferenceObject","ObfDereferenceObject","PsGetCurrentProcessId","PsGetCurrentThreadId","ZwClose","ZwWaitForSingleObject"] { assert!(documented_signature(name).is_some(), "missing signature for {name}"); }
         assert!(documented_signature("UnknownRoutine").is_none());
     }
+    #[test]
+    fn implemented_security_exports_match_declared_abis() {
+        let _: SeAccessCheckFn = crate::ntoskrnl::se::runtime::SeAccessCheck;
+        let _: SePrivilegeCheckFn = crate::ntoskrnl::se::runtime::SePrivilegeCheck;
+        let _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeCaptureSubjectContext;
+        let _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeReleaseSubjectContext;
+        let _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeLockSubjectContext;
+        let _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeUnlockSubjectContext;
+        let _: PsAssignImpersonationTokenFn = crate::thread::PsAssignImpersonationToken;
+        let _: PsReferencePrimaryTokenFn = crate::process::PsReferencePrimaryToken;
+        let _: PsDereferencePrimaryTokenFn = crate::process::PsDereferencePrimaryToken;
+        for name in ["SeAccessCheck", "SePrivilegeCheck", "SeCaptureSubjectContext",
+            "SeReleaseSubjectContext", "SeLockSubjectContext", "SeUnlockSubjectContext",
+            "PsAssignImpersonationToken", "PsReferencePrimaryToken", "PsDereferencePrimaryToken"] {
+            assert!(documented_signature(name).is_some(), "missing ABI registry entry for {name}");
+        }
+    }
+    }
 }
