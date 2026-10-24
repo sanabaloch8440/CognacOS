@@ -60,7 +60,8 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Implement hive log replay for dirty hives, registry mutation/writeback and complete native hive allocation/index updates; current hive creation only creates an empty root.
 - [ ] Implement NTFS and disk/partition discovery so RdotOS can locate files on a separate Windows 11 installation rather than only the UEFI boot volume.
 - [ ] Parse and consume NLS internals; current NLS support preserves raw bytes and does not yet provide Windows code-page, locale, or sorting semantics.
-- [ ] Connect registry-selected service loading to a real filesystem resolver and boot policy; implement PE import resolution, relocations, dependency binding, unload/rundown, and actual HAL initialization.
+- [x] Implement PE AMD64 DIR64 relocations, import descriptor/thunk binding, dynamic kernel-VM image allocation, and pluggable dependency symbol resolution.
+- [ ] Connect registry-selected service loading to a real filesystem resolver and boot policy; supply loaded-module dependency binding for WDF, Storport, class drivers and other imports, plus unload/rundown and actual HAL initialization.
 - [ ] Validate on genuine clean Windows 11 hives and NLS assets, including large SOFTWARE/COMPONENTS hives and BCD; dirty hives require log replay before safe use.
 
 **Validation status:** parser/NLS host-test steps are configured in CI, but the new workflow revision has not yet been observed passing. Optional assets must be accessible on the bootloader's current volume; this is not yet arbitrary Windows-partition access.
