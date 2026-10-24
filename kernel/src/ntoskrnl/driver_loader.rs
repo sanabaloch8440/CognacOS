@@ -1,7 +1,7 @@
 //! Restricted kernel-mode PE32+ driver loader.
-//! The caller must reserve/map the image at its preferred virtual base with W^X
-//! section permissions before invoking this routine. Imports and relocations are
-//! deliberately rejected until kernel-module dependency binding is implemented.
+//! Validates AMD64 native PE32+ images, applies DIR64 relocations, binds imports
+//! through a pluggable resolver, and applies section-derived W^X permissions.
+//! Third-party support is bounded by the exports/dependencies the resolver provides.
 use core::ffi::c_void;
 use crate::pe::ImportSymbol;
 
@@ -54,8 +54,6 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
  let reloc_size=if dirs>5{u32at(file,opt+112+5*8+4)?}else{0};
  if mapped.as_mut_ptr() as u64!=base{return Err(DriverLoadError::WrongBase);}
  if (import_rva==0)!=(import_size==0)||(reloc_rva==0)!=(reloc_size==0){return Err(DriverLoadError::InvalidHeader);}
- if import_rva!=0{range(usize::MAX,import_rva,import_size)?;}
- if reloc_rva!=0{range(usize::MAX,reloc_rva,reloc_size)?;}
  if image_size==0||image_size>MAX_IMAGE_SIZE||mapped.len()<image_size||headers==0||headers>file.len()||headers>image_size||section_align<4096||!section_align.is_power_of_two()||file_align==0||!file_align.is_power_of_two()||entry_rva as usize>=image_size{return Err(DriverLoadError::InvalidHeader);}
  if import_rva!=0{let _=range(image_size,import_rva,import_size)?;}
  if reloc_rva!=0{let _=range(image_size,reloc_rva,reloc_size)?;}
