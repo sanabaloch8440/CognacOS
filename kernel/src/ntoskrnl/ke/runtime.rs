@@ -1570,11 +1570,13 @@ pub fn timer_tick(now:u64){
         }else if let Some(waiter)=crate::dispatcher::wake_one_timed(timer as u64){
             waiters[0]=waiter;1
         }else{0};
-        if woke!=0 && unsafe{(*timer).kind}==TIMER_SYNCHRONIZATION{
+        let consumed=woke!=0&&waiters[..woke].iter().any(|waiter|!waiter.timed_out);
+        if consumed && unsafe{(*timer).kind}==TIMER_SYNCHRONIZATION{
             unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
         }
         for waiter in waiters[..woke].iter().copied(){
-            let status=crate::dispatcher::complete_wait_group(waiter.thread,timer as u64,STATUS_SUCCESS,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
+            let signal_status=if waiter.timed_out{STATUS_TIMEOUT}else{STATUS_SUCCESS};
+            let status=crate::dispatcher::complete_wait_group(waiter.thread,timer as u64,signal_status,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(signal_status);
             let _=crate::thread::complete_wait(waiter.thread,status);
         }
         drop(_guard);
