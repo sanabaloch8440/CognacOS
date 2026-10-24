@@ -1,0 +1,20 @@
+[package]
+name = "rdotos-storage"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "storahci"
+path = "src/bin/storahci.rs"
+
+[[bin]]
+name = "stornvme"
+path = "src/bin/stornvme.rs"
+
+[[bin]]
+name = "disk"
+path = "src/bin/disk.rs"
