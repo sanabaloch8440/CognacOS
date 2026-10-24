@@ -263,7 +263,7 @@ pub fn adjust_apc_region(guarded:bool,enter:bool)->bool{
 pub fn thread_id_from_object(object:*mut c_void)->Option<u64>{
     if object.is_null(){return None}
     let table=THREADS.lock();
-    table.records.iter().find(|t|core::ptr::eq((t as *const ThreadRecord).cast::<c_void>(),object)&&t.state!=ThreadState::Empty).map(|t|t.id)
+    table.records.iter().find(|t|core::ptr::eq((**t as *const ThreadRecord).cast::<c_void>(),object)&&t.state!=ThreadState::Empty).map(|t|t.id)
 }
 pub fn set_wait_alertable(alertable:bool)->bool{
     let Some(id)=current_thread_id() else{return false};
