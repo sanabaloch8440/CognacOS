@@ -578,3 +578,106 @@ pub unsafe extern "win64" fn ke_delay_execution_thread(
     }
     crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS)
 }
+
+
+/// Result of the Ki processor-start phase. A successful AP count means APs
+/// reached the online state; it does not imply Windows binary compatibility.
+pub(crate) struct ProcessorStartupReport {
+    pub online_aps: usize,
+    pub startup_ok: bool,
+    pub ipi_enabled: bool,
+    pub interrupt_stress_passed: bool,
+    pub tsc_synced: bool,
+    pub worst_tsc_offset: u64,
+    pub scheduler_stress_passed: bool,
+    pub vm_stress_passed: bool,
+}
+
+/// KeInitializeExecutive-style early executive initialization. The hardware
+/// startup path remains in Ki routines and architecture/HAL modules.
+pub(crate) fn ke_initialize_executive() {
+    crate::scheduler::initialize();
+    crate::thread::initialize();
+}
+
+/// KiInitializeProcessor performs the software-visible checks that can be
+/// verified after the CPU's private GDT/TSS/IDT and GS-local state are installed.
+pub(crate) fn ki_initialize_processor(logical_id: usize) -> bool {
+    if logical_id >= crate::hal::MAX_CPUS
+        || crate::hal::cpu_state(logical_id).is_err()
+    {
+        return false;
+    }
+    crate::arch::per_cpu_tss_self_test(logical_id)
+}
+
+/// KiStartAllProcessors coordinates ACPI topology discovery, AP startup,
+/// per-CPU IPI stress and cross-core TSC diagnostics. BSP remains usable if
+/// firmware topology or AP startup is unavailable.
+pub(crate) fn ki_start_all_processors(
+    pml4_physical: u64,
+    trampoline_physical: u64,
+    rsdp_address: u64,
+    bsp_apic_id: u32,
+) -> ProcessorStartupReport {
+    let mut report = ProcessorStartupReport {
+        online_aps: 0,
+        startup_ok: false,
+        ipi_enabled: false,
+        interrupt_stress_passed: false,
+        tsc_synced: false,
+        worst_tsc_offset: 0,
+        scheduler_stress_passed: false,
+        vm_stress_passed: false,
+    };
+    if rsdp_address != 0 && trampoline_physical != 0 {
+        if let Ok(madt) = crate::acpi::discover_madt(rsdp_address) {
+            if let Ok((online, ipi_enabled)) = unsafe {
+                crate::smp::start_discovered_aps_with_ipi(
+                    pml4_physical, trampoline_physical, &madt, bsp_apic_id,
+                )
+            } {
+                report.online_aps = online;
+                report.startup_ok = true;
+                report.ipi_enabled = ipi_enabled;
+                report.interrupt_stress_passed = ipi_enabled
+                    && crate::smp::interrupt_setup_stress_test(64);
+                let (synced, offset) = crate::apic::tsc_cross_core_status();
+                report.tsc_synced = synced;
+                report.worst_tsc_offset = offset;
+            }
+        }
+    }
+    report.scheduler_stress_passed =
+        crate::thread::smp_scheduler_stress_test(crate::hal::online_cpu_count());
+    report.vm_stress_passed = crate::kernel_vm::self_test();
+    report
+}
+
+/// KiInitializeKernel is the fail-closed validation gate used after the
+/// processor-start phase and before later boot-time self-tests continue.
+pub(crate) fn ki_initialize_kernel(report: &ProcessorStartupReport) -> bool {
+    report.scheduler_stress_passed && report.vm_stress_passed
+}
+
+/// Minimal Ke processor-query routines backed by the live HAL processor table.
+pub unsafe extern "win64" fn ke_get_current_processor_number() -> u32 {
+    unsafe { ke_get_current_processor_index() }
+}
+pub unsafe extern "win64" fn ke_query_active_processors() -> u64 {
+    let mut mask = 0u64;
+    for cpu in 0..crate::hal::MAX_CPUS.min(64) {
+        if crate::hal::cpu_state(cpu).ok() == Some(crate::hal::CPU_ONLINE) {
+            mask |= 1u64 << cpu;
+        }
+    }
+    mask
+}
+pub unsafe extern "win64" fn ke_query_time_increment() -> u32 {
+    // NT's default 100-ns time increment is not exposed until the timer source
+    // is calibrated; return zero rather than advertise a fabricated tick rate.
+    if crate::apic::tsc_frequency_hz().is_some() { 156_250 } else { 0 }
+}
+pub unsafe extern "win64" fn ke_should_yield_processor() -> u8 {
+    crate::thread::has_ready_threads() as u8
+}
