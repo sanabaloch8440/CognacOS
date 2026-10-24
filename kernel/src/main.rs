@@ -456,7 +456,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Security: SMEP ");
         serial_write(if mitigations.smep_enabled { b"enabled\r\n" } else if mitigations.smep_supported { b"supported but enable failed\r\n" } else { b"unsupported\r\n" });
         serial_write(b"Security: SMAP ");
-        serial_write(if mitigations.smap_supported { b"supported; deferred until safe user-copy accessors\r\n" } else { b"unsupported\r\n" });
+        serial_write(if mitigations.smap_supported && !mitigations.smap_enabled { b"supported; explicitly disabled until guarded user-copy STAC/CLAC paths are complete\r\n" } else if mitigations.smap_enabled { b"FATAL: SMAP unexpectedly enabled before guarded user-copy audit\r\n" } else { b"unsupported and disabled\r\n" });
+        if mitigations.smap_enabled { serial_write(b"FATAL: refusing to continue with unaudited SMAP state.\r\n"); halt(); }
 
         if !mitigations.nx_enabled {
             serial_write(b"FATAL: NX unavailable; refusing to enable strict page policy.\r\n");
