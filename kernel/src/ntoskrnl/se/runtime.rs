@@ -1071,6 +1071,88 @@ fn evaluate_dacl(token: *mut c_void, sd: &[u8], requested: u32, owner_rights: u3
 /// mapping, owner READ_CONTROL/WRITE_DAC, and basic allow/deny ACEs for registered
 /// token SIDs plus Everyone. It intentionally fails closed for unknown tokens,
 /// malformed descriptors, unsupported ACE forms, and absent token identity metadata.
+const SECURITY_AUDIT_CAPACITY: usize = 64;
+#[derive(Clone, Copy)]
+struct SecurityAuditEvent {
+    sequence: u64,
+    token: usize,
+    desired: u32,
+    granted: u32,
+    status: i32,
+    ace_type: u8,
+}
+impl SecurityAuditEvent {
+    const EMPTY: Self = Self { sequence: 0, token: 0, desired: 0, granted: 0, status: 0, ace_type: 0 };
+}
+static SECURITY_AUDIT_LOCK: TokenMetaLock = TokenMetaLock::new();
+static mut SECURITY_AUDIT_EVENTS: [SecurityAuditEvent; SECURITY_AUDIT_CAPACITY] =
+    [SecurityAuditEvent::EMPTY; SECURITY_AUDIT_CAPACITY];
+static mut SECURITY_AUDIT_NEXT: u64 = 1;
+
+fn record_security_audit(sd: &[u8], token: *mut c_void, desired: u32, granted: u32, success: bool) {
+    if sd.len() < 20 || sd[0] != 1 { return; }
+    let Some(control) = u16le(sd, 2) else { return; };
+    if control & 0x0010 == 0 { return; }
+    let Some(acl) = descriptor_component(sd, 12, true) else { return; };
+    let Some(ace_count) = u16le(acl, 4).map(|v| v as usize) else { return; };
+    let acl_size = u16le(acl, 2).unwrap_or(0) as usize;
+    let mut cursor = 8usize;
+    for _ in 0..ace_count {
+        let Some(header) = acl.get(cursor..cursor.saturating_add(4)) else { return; };
+        let kind = header[0];
+        let flags = header[1];
+        let ace_size = u16le(header, 2).unwrap_or(0) as usize;
+        if ace_size < 8 || cursor.checked_add(ace_size).is_none_or(|end| end > acl_size) { return; }
+        let Some(ace) = acl.get(cursor..cursor + ace_size) else { return; };
+        if matches!(kind, 2 | 3 | 7 | 8 | 13 | 14 | 15 | 16) {
+            let object_ace = matches!(kind, 7 | 8 | 15 | 16);
+            let callback_ace = matches!(kind, 13 | 14 | 15 | 16);
+            let mut sid_offset = if object_ace { 12usize } else { 8usize };
+            let mut object_flags = 0u32;
+            if object_ace {
+                object_flags = u32le(ace, 8).unwrap_or(u32::MAX);
+                if object_flags & !3 != 0 { cursor += ace_size; continue; }
+                if object_flags & 1 != 0 { sid_offset = match sid_offset.checked_add(16) { Some(v) => v, None => return }; }
+                if object_flags & 2 != 0 { sid_offset = match sid_offset.checked_add(16) { Some(v) => v, None => return }; }
+            }
+            if object_flags == 0 || !object_ace {
+                if let Some(sid_data) = ace.get(sid_offset..) {
+                    if let Some(sid_len) = bounded_sid_size(sid_data) {
+                        let audit_flag = if success { 0x40 } else { 0x80 };
+                        let mask = u32le(ace, 4).unwrap_or(0);
+                        let has_callback_data = callback_ace && ace.len() > sid_offset + sid_len;
+                        if !has_callback_data && flags & audit_flag != 0 && mask & desired != 0
+                            && sid_matches_subject(token, &sid_data[..sid_len], false) {
+                            let _guard = SECURITY_AUDIT_LOCK.lock();
+                            let events = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_AUDIT_EVENTS) };
+                            let next = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(SECURITY_AUDIT_NEXT)) };
+                            events[(next as usize - 1) % SECURITY_AUDIT_CAPACITY] = SecurityAuditEvent {
+                                sequence: next, token: token as usize, desired, granted,
+                                status: if success { STATUS_SUCCESS } else { 0xC000_0022u32 as i32 },
+                                ace_type: kind,
+                            };
+                            unsafe { core::ptr::write_volatile(core::ptr::addr_of_mut!(SECURITY_AUDIT_NEXT), next.wrapping_add(1).max(1)); }
+                        }
+                    }
+                }
+            }
+        }
+        cursor += ace_size;
+    }
+}
+
+pub(crate) fn se_internal_ReadSecurityAuditEvent(sequence: u64, output: *mut u8, output_length: usize) -> i32 {
+    if output.is_null() || output_length < core::mem::size_of::<SecurityAuditEvent>() || sequence == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let _guard = SECURITY_AUDIT_LOCK.lock();
+    let events = unsafe { &*core::ptr::addr_of!(SECURITY_AUDIT_EVENTS) };
+    let event = events.iter().find(|e| e.sequence == sequence).copied();
+    let Some(event) = event else { return 0xC000_0034u32 as i32; };
+    unsafe { core::ptr::copy_nonoverlapping((&event as *const SecurityAuditEvent).cast::<u8>(), output, core::mem::size_of::<SecurityAuditEvent>()); }
+    STATUS_SUCCESS
+}
+
 static SUBJECT_CONTEXT_LOCK: AtomicBool = AtomicBool::new(false);
 fn acquire_subject_context_lock() {
     while SUBJECT_CONTEXT_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
