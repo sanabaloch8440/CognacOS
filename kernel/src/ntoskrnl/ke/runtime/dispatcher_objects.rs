@@ -1,4 +1,4 @@
-//! events and semaphore dispatcher objects.
+// events and semaphore dispatcher objects.
 // This file is included by the Ke runtime facade so existing shared private
 // state and cross-routine helpers retain their original module scope.
 
