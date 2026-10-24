@@ -177,6 +177,24 @@ fn mdl_page_count(byte_offset: u64, byte_count: u64) -> Option<u64> {
         .map(|span| span / PAGE_SIZE)
 }
 
+#[inline]
+fn mdl_range_is_canonical(start_va: u64, byte_offset: u64, byte_count: u64) -> bool {
+    if start_va & (PAGE_SIZE-1) != 0 || byte_offset >= PAGE_SIZE { return false; }
+    let Some(start) = start_va.checked_add(byte_offset) else { return false; };
+    let Some(end) = start.checked_add(byte_count) else { return false; };
+    let canonical = |address: u64| {
+        let high = address >> 48;
+        if (address >> 47) & 1 == 0 { high == 0 } else { high == 0xffff }
+    };
+    if !canonical(start) || (byte_count != 0 && !canonical(end-1)) { return false; }
+    if start < 0x0000_8000_0000_0000 {
+        end <= 0x0000_8000_0000_0000
+    } else {
+        start >= 0xffff_8000_0000_0000
+            && (byte_count == 0 || end == 0 || end-1 >= 0xffff_8000_0000_0000)
+    }
+}
+
 const MDL_LOCKED: i16 = 0x0002;
 const MDL_NONPAGED_POOL: i16 = 0x0004;
 const MDL_MAPPED_SYSTEM_VA: i16 = 0x0001;
@@ -279,7 +297,9 @@ fn mdl_header_is_writable(address: u64) -> bool {
 }
 /// Build an MDL in caller storage, or allocate a nonpaged MDL when mdl is null.
 pub unsafe extern "win64" fn mm_create_mdl(mdl: *mut c_void, base: *mut c_void, length: u64) -> *mut c_void {
-    if base.is_null() || length > u32::MAX as u64 || (base as u64).checked_add(length).is_none() {
+    if base.is_null() || length > u32::MAX as u64
+        || (base as u64).checked_add(length).is_none()
+        || !mdl_range_is_canonical((base as u64) & !(PAGE_SIZE-1), (base as u64) & (PAGE_SIZE-1), length) {
         return core::ptr::null_mut();
     }
     let size = unsafe { mm_size_of_mdl(base, length) };
@@ -323,7 +343,9 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
     let length = header.byte_count as u64;
     let Some(pages) = mdl_page_count(offset, length) else { return; };
     let Some(span) = offset.checked_add(length) else { return; };
-    if start & (PAGE_SIZE - 1) != 0 || (length != 0 && start.checked_add(span).is_none()) { return; }
+    if start & (PAGE_SIZE - 1) != 0 || (length != 0 && start.checked_add(span).is_none())
+        || !mdl_range_is_canonical(start, offset, length) { return; }
+    if length == 0 { return; }
     let required = match MDL_HEADER_SIZE.checked_add(pages.saturating_mul(8)) { Some(v) => v, None => return };
     if header.size < 0 || (header.size as u64) < required { return; }
     let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
@@ -918,6 +940,16 @@ mod tests {
         assert_eq!(mdl_page_count(PAGE_SIZE - 1, 2), Some(2));
         assert_eq!(mdl_page_count(PAGE_SIZE, 1), None);
         assert_eq!(mdl_page_count(0, u64::MAX), None);
+    }
+
+    #[test]
+    fn mdl_range_validation_rejects_noncanonical_and_cross_boundary_ranges() {
+        assert!(mdl_range_is_canonical(0x0000_0000_0000_1000, 0xfff, 1));
+        assert!(!mdl_range_is_canonical(0x0000_0000_0000_1000, 0xfff, 2));
+        assert!(mdl_range_is_canonical(0xffff_8000_0000_1000, 0, 4096));
+        assert!(!mdl_range_is_canonical(0x0000_7fff_ffff_f000, 0, 8192));
+        assert!(!mdl_range_is_canonical(0x0000_8000_0000_0000, 0, 1));
+        assert!(!mdl_range_is_canonical(0xffff_8000_0000_1001, 0, 1));
     }
 
     #[test]
