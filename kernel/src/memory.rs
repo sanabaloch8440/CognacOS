@@ -71,6 +71,25 @@ pub fn direct_map_address(physical_address: u64) -> Option<u64> {
     { return None; }
     DIRECT_MAP_BASE.checked_add(physical_address)
 }
+
+/// Find a conventional-memory page above 4 GiB for a non-destructive direct-map test.
+pub fn first_high_conventional_page() -> Option<u64> {
+    let base = FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire);
+    let entries = FIRMWARE_MAP_ENTRIES.load(core::sync::atomic::Ordering::Acquire);
+    let stride = FIRMWARE_MAP_STRIDE.load(core::sync::atomic::Ordering::Acquire);
+    if base == 0 || stride < core::mem::size_of::<MemoryDescriptor>() { return None; }
+    for i in 0..entries {
+        let offset = i.checked_mul(stride)?;
+        let pointer = (base as usize).checked_add(offset)?;
+        let d = unsafe { ptr::read_unaligned(pointer as *const MemoryDescriptor) };
+        if d.kind != EFI_CONVENTIONAL_MEMORY || d.number_of_pages == 0 { continue; }
+        let bytes = d.number_of_pages.checked_mul(PAGE_SIZE)?;
+        let end = d.physical_start.checked_add(bytes)?;
+        let start = align_up(d.physical_start.max(PHYSICAL_LIMIT), PAGE_SIZE)?;
+        if start < end && start < DIRECT_MAP_PHYSICAL_LIMIT { return Some(start); }
+    }
+    None
+}
 const FREE_CAPACITY: usize = 65536;
 struct FreePages(core::cell::UnsafeCell<([u64; FREE_CAPACITY], usize)>);
 unsafe impl Sync for FreePages {}
@@ -381,7 +400,8 @@ pub unsafe fn inspect_mapping(pml4_physical: u64, virtual_address: u64)
     const USER: u64 = 1 << 2;
     if pml4_physical == 0 || pml4_physical >= PHYSICAL_LIMIT
         || pml4_physical & (PAGE_SIZE - 1) != 0
-        || virtual_address >= (1u64 << 48)
+        || !(virtual_address <= 0x0000_7fff_ffff_ffff
+            || virtual_address >= 0xffff_8000_0000_0000)
     {
         return Err(AllocError::InvalidMap);
     }
