@@ -142,7 +142,8 @@ pub fn query(pid: u64) -> Option<ProcessSnapshot> {
 pub fn reap(pid: u64) -> Option<u64> {
     let mut registry = TABLE.lock();
     let p = registry.0.iter_mut().find(|p| p.used && p.process_id == pid && p.state == ProcessState::Exited)?;
-    if p.references != 0 { return None; }
+    // A process object cannot be recycled while its address-space root is still registered.
+    if p.references != 0 || p.address_space_root != 0 { return None; }
     let code = p.exit_code;
     p.state = ProcessState::Reaped;
     p.used = false;
