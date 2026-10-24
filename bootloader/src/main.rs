@@ -4,7 +4,6 @@
 extern crate alloc;
 
 mod pe_kernel;
-mod pe;
 mod sha256;
 
 include!(concat!(env!("OUT_DIR"), "/kernel_digest.rs"));
@@ -99,7 +98,7 @@ fn main() -> Status {
     drop(fs);
 
     uefi::println!("Read {} bytes; validating PE32+ headers and sections", image.len());
-    let loaded_kernel = match unsafe { pe::load(&image) } {
+    let loaded_kernel = match unsafe { pe_kernel::load(&image) } {
         Ok(kernel) => kernel,
         Err(err) => { uefi::println!("Rejected kernel PE32+ image: {:?}", err); return Status::LOAD_ERROR; }
     };
@@ -497,7 +496,7 @@ unsafe fn map_high_page(
 }
 
 unsafe fn populate_high_half_mappings(
-    pml4_physical: u64, pool: u64, kernel: &elf::LoadedKernel, stack_guard_physical: u64,
+    pml4_physical: u64, pool: u64, kernel: &pe_kernel::LoadedKernel, stack_guard_physical: u64,
 ) -> Result<(), ()> {
     let mut used = 0usize;
     for segment in kernel.segments[..kernel.segment_count].iter().copied() {
