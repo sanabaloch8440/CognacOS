@@ -13,12 +13,12 @@
 
 ## Summary and calculated compatibility
 
-This expanded pass documents **116 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 111 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
+This expanded pass documents **116 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 116 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
 
 | Metric | Calculation | Result |
 |---|---|---:|
 | Source-level signature / x64 ABI declaration coverage | 116 documented declarations/call paths ÷ 116 | **116/116 = 100%** |
-| Name-based import resolution | 116 scoped routine names resolving to callable implementations ÷ 116 | **111/111 = 100%** |
+| Name-based import resolution | 116 scoped routine names resolving to callable implementations ÷ 116 | **116/116 = 100%** |
 | Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 116 | **10/116 = 8.6%** |
 | Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 116 | **106/116 = 91.4%** |
 | Combined project score | (100% ABI declarations + 8.6% strict behavior) ÷ 2 | **54.3%** |
