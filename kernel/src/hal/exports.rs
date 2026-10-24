@@ -442,7 +442,7 @@ pub extern "win64" fn hal_all_processors_started() -> u8 {
             _ => {}
         }
     }
-    crate::hal::online_cpu_count() != 0
+    (crate::hal::online_cpu_count() != 0) as u8
 }
 
 
