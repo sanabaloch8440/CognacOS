@@ -213,14 +213,11 @@ pub unsafe extern "win64" fn ke_register_processor_change_callback(
  if flags & !KE_PROCESSOR_CHANGE_ADD_EXISTING != 0{return core::ptr::null_mut()}
  let slot={
   let mut table=PROCESSOR_CALLBACKS.lock();
-  let Some(slot)=table.records.iter().position(|r|!r.active) else{return core::ptr::null_mut()};
+  let Some(slot)=table.records.iter().enumerate().position(|(i,r)|!r.active && PROCESSOR_CALLBACK_IN_FLIGHT[i].load(Ordering::Acquire)==0) else{return core::ptr::null_mut()};
   table.records[slot]=ProcessorCallbackRecord{active:true,routine:callback as usize,context:context as usize,flags};
   slot
  };
- let handle=core::ptr::addr_of_mut!(PROCESSOR_CALLBACKS.get_mut_unchecked_placeholder);
- let _=handle;
- let handle=unsafe{core::ptr::addr_of_mut!((*core::ptr::addr_of_mut!(PROCESSOR_CALLBACKS) as *mut ProcessorCallbackTable).as_mut().unwrap().records[slot])};
- let handle=handle.cast::<core::ffi::c_void>();
+ let handle=(slot+1) as *mut core::ffi::c_void;
  if flags & KE_PROCESSOR_CHANGE_ADD_EXISTING != 0 {
   for cpu in 0..crate::hal::MAX_CPUS {
    if crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){notify_processor_change(cpu,KE_PROCESSOR_CHANGE_ADD_COMPLETE);}
@@ -232,19 +229,14 @@ pub unsafe extern "win64" fn ke_register_processor_change_callback(
 /// Unregister and wait for callbacks already in flight to finish.
 pub unsafe extern "win64" fn ke_deregister_processor_change_callback(handle:*mut core::ffi::c_void,wait:u8){
  if handle.is_null(){return}
- let slot={
+ let raw=handle as usize;
+ if raw==0||raw>MAX_PROCESSOR_CHANGE_CALLBACKS{return}
+ let slot=raw-1;
+ {
   let mut table=PROCESSOR_CALLBACKS.lock();
-  let Some(slot)=table.records.iter().enumerate().find(|(_,r)|r.active
-    && core::ptr::addr_of!(table.records[0]) as usize + 0 == 0
-    && (core::ptr::addr_of!(table.records[0]) as usize)==handle as usize).map(|(i,_)|i) else {
-      // Handles are the address of the indexed record; compare every slot below.
-      let found=(0..MAX_PROCESSOR_CHANGE_CALLBACKS).find(|i|
-       core::ptr::addr_of!(table.records[*i]) as usize==handle as usize && table.records[*i].active);
-      let Some(slot)=found else{return};
-      table.records[slot].active=false;table.records[slot]=ProcessorCallbackRecord::EMPTY;slot
-    };
-  table.records[slot].active=false;table.records[slot]=ProcessorCallbackRecord::EMPTY;slot
- };
+  if !table.records[slot].active{return}
+  table.records[slot]=ProcessorCallbackRecord::EMPTY;
+ }
  if wait!=0 {while PROCESSOR_CALLBACK_IN_FLIGHT[slot].load(Ordering::Acquire)!=0 {core::hint::spin_loop();}}
 }
 
