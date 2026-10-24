@@ -1362,6 +1362,8 @@ pub extern "C" fn rdotos_hal_ipi_handler() {
         let id = cpu.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize;
         let _ = crate::hal::mark_ipi_pending(id);
     }
+    // Dispatch a serialized cross-processor Ke call before acknowledging the IPI.
+    crate::ntoskrnl::ke::runtime::handle_broadcast_ipi();
     if let Some(base) = crate::apic::local_apic_base() {
         unsafe { crate::apic::local_apic_eoi(base); }
     }
