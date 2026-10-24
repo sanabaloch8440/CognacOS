@@ -134,6 +134,21 @@ impl<'a> Value<'a>{
  }
 }
 
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum HiveKind{System,Software,Security,Sam,Default,Components,Bcd}
+pub const HIVE_NAMES:[&str;7]=["SYSTEM","SOFTWARE","SECURITY","SAM","DEFAULT","COMPONENTS","BCD00000000"];
+pub fn hive_kind(name:&str)->Result<HiveKind,Error>{match name.to_ascii_uppercase().as_str(){"SYSTEM"=>Ok(HiveKind::System),"SOFTWARE"=>Ok(HiveKind::Software),"SECURITY"=>Ok(HiveKind::Security),"SAM"=>Ok(HiveKind::Sam),"DEFAULT"=>Ok(HiveKind::Default),"COMPONENTS"=>Ok(HiveKind::Components),"BCD00000000"=>Ok(HiveKind::Bcd),_=>Err(Error::BadSignature)}}
+pub struct HiveSet<'a>{entries:[Option<&'a[u8]>;7]}
+impl<'a> HiveSet<'a>{
+ pub const fn new()->Self{Self{entries:[None;7]}}
+ pub fn mount(&mut self,name:&str,bytes:&'a[u8])->Result<(),Error>{let kind=hive_kind(name)?;let _=Hive::open(bytes)?;self.entries[kind as usize]=Some(bytes);Ok(())}
+ pub fn open(&self,name:&str)->Result<Hive<'a>,Error>{let kind=hive_kind(name)?;Hive::open(self.entries[kind as usize].ok_or(Error::NotFound)?)}
+ pub fn is_mounted(&self,name:&str)->bool{hive_kind(name).ok().and_then(|k|self.entries[k as usize]).is_some()}
+ pub fn mount_count(&self)->usize{self.entries.iter().filter(|e|e.is_some()).count()}
+}
+pub fn create_named_hive(name:&str,out:&mut[u8])->Result<usize,Error>{let _=hive_kind(name)?;create_minimal_hive(out)}
+
 pub fn create_minimal_hive(out:&mut[u8])->Result<usize,Error>{
  const TOTAL:usize=BASE_BLOCK_SIZE+0x1000;const ROOT_CELL:u32=0x20;
  if out.len()<TOTAL{return Err(Error::OutputTooSmall)}out[..TOTAL].fill(0);
@@ -151,5 +166,5 @@ pub fn create_minimal_hive(out:&mut[u8])->Result<usize,Error>{
 mod tests{
  use super::*;
  #[test]fn creates_openable_native_hive(){let mut bytes=[0u8;8192];let n=create_minimal_hive(&mut bytes).unwrap();assert_eq!(n,8192);let h=Hive::open(&bytes[..n]).unwrap();assert_eq!(h.info.root_cell,0x20);assert_eq!(h.root().unwrap().subkey_count().unwrap(),0);}
- #[test]fn rejects_bad_checksum(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[0x1fc]^=0x10;assert!(matches!(Hive::open(&bytes),Err(Error::BadChecksum)));}
+ #[test]fn mounts_named_hives_without_reencoding(){let mut bytes=[0u8;8192];let n=create_named_hive("SYSTEM",&mut bytes).unwrap();let mut set=HiveSet::new();set.mount("system",&bytes[..n]).unwrap();assert_eq!(set.mount_count(),1);assert_eq!(set.open("SYSTEM").unwrap().info.root_cell,0x20);assert!(create_named_hive("not-a-hive",&mut bytes).is_err());}\n #[test]fn rejects_bad_checksum(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[0x1fc]^=0x10;assert!(matches!(Hive::open(&bytes),Err(Error::BadChecksum)));}
 }
