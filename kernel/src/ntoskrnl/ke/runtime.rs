@@ -1105,14 +1105,14 @@ pub unsafe extern "win64" fn ke_release_guarded_mutex_unsafe(object:*mut Dispatc
 #[repr(C)]
 pub struct DeviceQueueEntry{pub entry_type:i16,pub size:i16,pub device_list_entry:ListEntry,pub sort_key:u32,pub inserted:u8,pub reserved:[u8;3]}
 #[repr(C)]
-pub struct DeviceQueue{pub queue_type:i16,pub size:i16,pub device_list_head:ListEntry,pub lock:*mut u64,pub busy:u8,pub reserved:[u8;3],pub hint:*mut DeviceQueueEntry}
+pub struct DeviceQueue{pub queue_type:i16,pub size:i16,pub device_list_head:ListEntry,pub lock:u64,pub busy:u8,pub reserved:[u8;3],pub hint:*mut DeviceQueueEntry}
 static DEVICE_QUEUE_LOCK:crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
-pub unsafe extern "win64" fn ke_initialize_device_queue(queue:*mut DeviceQueue,lock:*mut u64){
+pub unsafe extern "win64" fn ke_initialize_device_queue(queue:*mut DeviceQueue){
  if queue.is_null(){return}
  unsafe{
   (*queue).queue_type=0x15;(*queue).size=core::mem::size_of::<DeviceQueue>() as i16;
   list_initialize(core::ptr::addr_of_mut!((*queue).device_list_head));
-  (*queue).lock=lock;(*queue).busy=0;(*queue).reserved=[0;3];(*queue).hint=core::ptr::null_mut();
+  (*queue).lock=0;(*queue).busy=0;(*queue).reserved=[0;3];(*queue).hint=core::ptr::null_mut();
  }
 }
 unsafe fn device_queue_insert(queue:*mut DeviceQueue,entry:*mut DeviceQueueEntry,key:u32,sorted:bool)->u8{
@@ -1137,6 +1137,36 @@ unsafe fn device_queue_insert(queue:*mut DeviceQueue,entry:*mut DeviceQueueEntry
 }
 pub unsafe extern "win64" fn ke_insert_device_queue(queue:*mut DeviceQueue,entry:*mut DeviceQueueEntry)->u8{unsafe{device_queue_insert(queue,entry,0,false)}}
 pub unsafe extern "win64" fn ke_insert_by_key_device_queue(queue:*mut DeviceQueue,entry:*mut DeviceQueueEntry,key:u32)->u8{unsafe{device_queue_insert(queue,entry,key,true)}}
+unsafe fn device_queue_remove_entry(queue:*mut DeviceQueue,entry:*mut DeviceQueueEntry)->bool{
+ if queue.is_null()||entry.is_null(){return false}
+ let _guard=DEVICE_QUEUE_LOCK.lock();
+ if unsafe{(*entry).inserted}==0{return false}
+ let link=unsafe{core::ptr::addr_of_mut!((*entry).device_list_entry)};
+ unsafe{let prev=(*link).blink;let next=(*link).flink;(*prev).flink=next;(*next).blink=prev;(*link).flink=link;(*link).blink=link;(*entry).inserted=0;}
+ true
+}
+pub unsafe extern "win64" fn ke_remove_entry_device_queue(queue:*mut DeviceQueue,entry:*mut DeviceQueueEntry)->u8{
+ unsafe{device_queue_remove_entry(queue,entry)} as u8
+}
+pub unsafe extern "win64" fn ke_remove_by_key_device_queue(queue:*mut DeviceQueue,key:u32)->*mut DeviceQueueEntry{
+ if queue.is_null(){return core::ptr::null_mut()}
+ let _guard=DEVICE_QUEUE_LOCK.lock();
+ let head=unsafe{core::ptr::addr_of_mut!((*queue).device_list_head)};
+ let mut link=unsafe{(*head).flink};
+ while link!=head{
+  let entry=unsafe{(link as *mut u8).sub(8).cast::<DeviceQueueEntry>()};
+  if unsafe{(*entry).sort_key}==key{
+   unsafe{let prev=(*link).blink;let next=(*link).flink;(*prev).flink=next;(*next).blink=prev;(*link).flink=link;(*link).blink=link;(*entry).inserted=0;(*queue).hint=entry;}
+   return entry
+  }
+  link=unsafe{(*link).flink};
+ }
+ core::ptr::null_mut()
+}
+pub unsafe extern "win64" fn ke_remove_by_key_device_queue_if_busy(queue:*mut DeviceQueue,key:u32)->*mut DeviceQueueEntry{
+ if queue.is_null()||unsafe{(*queue).busy}==0{return core::ptr::null_mut()}
+ unsafe{ke_remove_by_key_device_queue(queue,key)}
+}
 pub unsafe extern "win64" fn ke_remove_device_queue(queue:*mut DeviceQueue)->*mut DeviceQueueEntry{
  if queue.is_null(){return core::ptr::null_mut()}
  let _guard=DEVICE_QUEUE_LOCK.lock();let head=unsafe{core::ptr::addr_of_mut!((*queue).device_list_head)};
