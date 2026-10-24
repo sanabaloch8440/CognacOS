@@ -34,13 +34,13 @@ The repository contains working foundations in several areas. “Implemented” 
 | SMP | AP startup uses a temporary low-memory page-table root, bounded INIT/SIPI coordination, APIC-ID validation, per-CPU GDT/TSS, dedicated NMI/double-fault/machine-check IST stacks, local APIC/GS state, and 64 directed IPI acknowledgements per AP. Cooperative kernel-thread dispatch is connected to scheduler task state, per-CPU TSS RSP0, and cross-CPU wake IPIs; `ntoskrnl/ke/runtime.rs` now owns Ke/Ki startup: `KeInitializeExecutive`-style scheduler setup, `KiInitializeProcessor` validation, `KiStartAllProcessors` ACPI/AP startup, and `KiInitializeKernel` post-startup validation. `Ex` remains the executive resource/object layer rather than the processor-startup owner. | Still experimental: 2/4/8-vCPU CI results are pending; timer preemption, per-CPU run queues/load balancing, IST guard pages, MDL teardown races, and real-hardware validation remain incomplete. |
 | Executable loading | Bounded PE32+ AMD64 loading, relocations, normal/delay imports, registered exports, API-set aliases, TLS setup/callbacks, and basic unwind metadata registration. |
 | User mode | Ring-3 transition and a small RdotOS-native syscall/process lifecycle test path. This is not the Windows NT syscall ABI. |
-| Kernel services | Initial scheduler policy, typed handles/access checks, dispatcher primitives, deadline-aware IRPs, bounded I/O completion ports, typed port/MMIO accessors, and callable `IoIsWdmVersionAvailable` / `IoGetConfigurationInformation` exports. |
+| Kernel services | Initial scheduler policy, typed handles/access checks, dispatcher primitives, deadline-aware internal IRPs, bounded completion ports, initial x64 WDM `DRIVER_OBJECT`/`DEVICE_OBJECT`/`IRP`/`IO_STACK_LOCATION` layouts, `IoCreateDevice`, `IoDeleteDevice`, `IoAllocateIrp`, `IofCallDriver`, `IofCompleteRequest`, cancel-lock and WDM-version exports. This is an incomplete WDM foundation, not general Windows-driver compatibility. |
 | Registry / Configuration Manager | Volatile registry APIs plus a native `regf`/`hbin` parser, native empty-hive image creation for seven standard hive names, read-only key/value traversal, SYSTEM service configuration lookup and raw BCD element access. | Dirty-hive log replay, persistent mutations/writeback, complete NT object handles/access checks, all query/enumeration classes, callbacks/notifications, transactions, security, and WDK conformance. |
 | NLS | Raw Windows NLS file catalogue/read/copy APIs for `c_037.nls`, `c_437.nls`, `c_1252.nls`, `locale.nls`, `sortkey.nls`, `sorttbls.nls`, `ctype.nls`, and `unicode.nls`; boot handoff accepts validated opaque NLS blobs. | NLS table interpretation/code-page conversion, filesystem writeback, and loading from non-boot Windows partitions. |
 | DMA and IOMMU | DMA request/channel foundations and Intel VT-d ACPI discovery exist. Real DMA mapping, full VT-d initialization, and AMD IOMMU support are incomplete. |
 | ext filesystem driver (`drivers/ext4`) | Independent `no_std` crate linked into the kernel, checked ext2/ext3/ext4 metadata parser, block-device read/write/flush contract, read-only mount, and restricted writes into already allocated initialized extents with partial-block read-modify-write. Writable mount refuses journaled/recovery/metadata-checksummed volumes rather than risking corruption. | No block-device adapter/VFS registration yet; no block/inode allocation, directory/inode/bitmap mutation, journal replay/commit, checksum updates, ext4 htree directories, or crash consistency. Not yet a complete general-purpose writable ext4 driver. |
 
-The legacy `third_party/Ext3Fsd` submodule declaration has been removed; RdotOS uses its own Rust driver implementation. The current kernel I/O runtime is still a bounded internal IRP simulation, not yet the Windows 11 `IoCreateDevice`/`IoCallDriver`/filesystem-device-stack ABI needed to mount and use this filesystem through ordinary file objects.
+The Ext3Fsd submodule declaration and its third-party reference README have been removed. RdotOS uses its own Rust ext-family driver. Initial WDM object/dispatch APIs now exist, but completion/APC behavior, cancellation and remove rundown, MDLs, device-stack attachment, storage requests, and filesystem/VFS integration remain incomplete.
 
 ## Split platform and driver crates
 
@@ -125,13 +125,12 @@ This milestone is **not** full Windows MM/process compatibility. User mappings r
 | --- | --- |
 | bootloader/ | Rust UEFI application |
 | kernel/ | Freestanding Rust kernel, architecture code, HAL, memory manager, executive and I/O foundations |
-| third_party/Ext3Fsd | Pinned upstream filesystem-driver source reference for a planned Rust port |
 | .github/workflows/ | Automated build and OVMF/QEMU validation |
 | [roadmap.md](roadmap.md) | Implemented features, incomplete work, and next milestones |
 
 ## Third-party filesystem reference
 
-The third_party/Ext3Fsd submodule is retained as a separate upstream reference for a possible staged Rust port. The original Windows driver is **not loadable by RdotOS**. See [third_party/README.md](third_party/README.md) and the upstream [Ext3Fsd repository](https://github.com/matt-wu/Ext3Fsd) for project and licensing context.
+The third-party Ext3Fsd source reference has been removed from project documentation and the submodule declaration. The RdotOS Rust ext4 implementation is independent and does not import or translate Ext3Fsd source.
 
 ## Contributing
 
