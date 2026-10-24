@@ -4,7 +4,7 @@
 use uefi::boot::{self, AllocateType, MemoryType, PAGE_SIZE};
 use crate::elf::{LoadSegment, LoadedKernel};
 
-const IMAGE_BASE: u64 = 0xffff_ffff_8000_0000;
+const IMAGE_BASE: u64 = 0xffff_ffff_7ff0_0000;
 const PE_HEADER_MIN: usize = 24;
 const SECTION_HEADER_SIZE: usize = 40;
 const MAX_SECTIONS: usize = 128;
