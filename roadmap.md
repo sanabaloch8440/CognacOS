@@ -363,6 +363,7 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [x] Use the same predicate for legacy timer DPC enqueue validation and Timer2 callback dispatch validation.
 - [x] Add focused unit tests for valid snapshots, object reuse, cancellation/rearm generation changes, and uninitialized generations.
 - [x] Extract the pure predicate and tests to `kernel/src/ntoskrnl/ke/timer_generation.rs`, include it in the Ke runtime, and add a dedicated host-test step to `.github/workflows/build-uefi.yml`.
+- [x] Invalidate stale legacy-timer and Timer2 expiry snapshots on every cancellation call, including cancellation after a one-shot has already transitioned inactive; centralize nonzero generation advancement and test wraparound.
 - [x] Inspect workflow #1162 logs: the preceding revision passed host allocator/filesystem tests, freestanding build, PE32+ conversion/validation, UEFI packaging, OVMF/QEMU smoke, and 2/4/8-vCPU SMP stress; Ke broadcast rendezvous and Synchronize/Done barriers passed on every online CPU.
 - [ ] Wait for the workflow triggered by this commit to validate the new standalone Ke timer-generation tests and current source revision.
 - [ ] Continue with integration stress for concurrent cancel/rearm versus expiry, DPC removal/reinitialization during callback, and flush-versus-insert. Predicate tests alone do not prove those interleavings race-free.
