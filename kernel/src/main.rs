@@ -175,7 +175,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: bootstrap CPU-local HAL setup failed.\r\n");
             halt();
         }
-        thread::initialize();
+        ntoskrnl::ex::runtime::initialize_threading();
         user::initialize();
         syscall::initialize();
         usermode::initialize();
@@ -623,60 +623,54 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Protection self-tests passed: read-only write trapped and NX execution trapped.\r\n");
-        // Start discovered application processors only after the shared kernel
-        // mappings are hardened and the executable low-memory trampoline can be
-        // installed with explicit page permissions.
-        if info.rsdp_address != 0 && info.ap_trampoline_physical != 0 {
-            match acpi::discover_madt(info.rsdp_address) {
-                Ok(madt) => match unsafe {
-                    smp::start_discovered_aps_with_ipi(
-                        info.pml4_physical,
-                        info.ap_trampoline_physical,
-                        &madt,
-                        bsp_apic_id,
-                    )
-                } {
-                    Ok((online, ipi_enabled)) => {
-                        serial_write(b"SMP AP startup complete; online application processors: ");
-                        serial_write_decimal(online);
-                        serial_write(if ipi_enabled { b"; interrupt-driven TLB shootdowns enabled.\r\n" } else { b"; using polling TLB fallback (IPI setup unavailable).\r\n" });
-                        serial_write(b"SMP startup diagnostic error code: ");
-                        serial_write_decimal(smp::last_start_error_code());
-                        serial_write(b"; last target APIC ID: ");
-                        serial_write_decimal(smp::last_target_apic_id());
-                        serial_write(b"; AP entry functions reached: ");
-                        serial_write_decimal(smp::ap_entry_reached_count());
-                        serial_write(b"\r\n");
-                        if ipi_enabled {
-                            if !smp::interrupt_setup_stress_test(64) {
-                                serial_write(b"FATAL: per-CPU IDT/LAPIC IPI stress test failed.\r\n");
-                                halt();
-                            }
-                            serial_write(b"Per-CPU interrupt setup stress passed: 64 acknowledged IPIs per online AP.\r\n");
-                        } else {
-                            serial_write(b"WARNING: per-CPU IPI stress skipped because interrupt-driven IPIs are unavailable.\r\n");
-                        }
-                        let (tsc_synced, worst_offset) = apic::tsc_cross_core_status();
-                        serial_write(if tsc_synced {
-                            b"TSC cross-core synchronization passed; max offset magnitude="
-                        } else {
-                            b"WARNING: TSC sync incomplete; global monotonic clamp remains active; max offset magnitude="
-                        });
-                        serial_write_decimal(worst_offset as usize);
-                        serial_write(b" ticks.\r\n");
-                    }
-                    Err(_) => serial_write(b"WARNING: AP startup initialization failed; retaining BSP-only operation.\r\n"),
-                },
-                Err(_) => serial_write(b"WARNING: MADT unavailable at AP startup; retaining BSP-only operation.\r\n"),
+        // The NT executive owns processor-start sequencing; the platform layer
+        // supplies firmware handoff data and reports the resulting status.
+        let processor_startup = ntoskrnl::ex::runtime::initialize_processors(
+            info.pml4_physical,
+            info.ap_trampoline_physical,
+            info.rsdp_address,
+            bsp_apic_id,
+        );
+        if processor_startup.startup_ok {
+            serial_write(b"SMP AP startup complete; online application processors: ");
+            serial_write_decimal(processor_startup.online_aps);
+            serial_write(if processor_startup.ipi_enabled {
+                b"; interrupt-driven TLB shootdowns enabled.\r\n"
+            } else {
+                b"; using polling TLB fallback (IPI setup unavailable).\r\n"
+            });
+            serial_write(b"SMP startup diagnostic error code: ");
+            serial_write_decimal(smp::last_start_error_code());
+            serial_write(b"; last target APIC ID: ");
+            serial_write_decimal(smp::last_target_apic_id());
+            serial_write(b"; AP entry functions reached: ");
+            serial_write_decimal(smp::ap_entry_reached_count());
+            serial_write(b"\r\n");
+            if processor_startup.ipi_enabled {
+                if !processor_startup.interrupt_stress_passed {
+                    serial_write(b"FATAL: per-CPU IDT/TSS/LAPIC IPI stress test failed.\r\n");
+                    halt();
+                }
+                serial_write(b"Per-CPU interrupt setup stress passed: 64 acknowledged IPIs per online AP.\r\n");
+            } else {
+                serial_write(b"WARNING: per-CPU IPI stress skipped because interrupt-driven IPIs are unavailable.\r\n");
             }
+            serial_write(if processor_startup.tsc_synced {
+                b"TSC cross-core synchronization passed; max offset magnitude="
+            } else {
+                b"WARNING: TSC sync incomplete; global monotonic clamp remains active; max offset magnitude="
+            });
+            serial_write_decimal(processor_startup.worst_tsc_offset.unsigned_abs() as usize);
+            serial_write(b" ticks.\r\n");
         } else {
-            serial_write(b"SMP startup skipped: firmware MADT or low-memory trampoline unavailable.\r\n");
+            serial_write(b"WARNING: executive processor startup unavailable; retaining BSP-only operation.\r\n");
         }
-
-
-        // Re-run the VM extent stress test after AP startup. This forces the
-        // pool's shared-kernel mapping path to complete its SMP TLB rendezvous.
-        if !kernel_vm::self_test() {
+        if !processor_startup.scheduler_stress_passed {
+            serial_write(b"FATAL: SMP scheduler, lock contention, or thread teardown stress failed.\r\n");
+            halt();
+        }
+        serial_write(b"SMP scheduler, cross-CPU wakeup, contended-lock, and thread teardown stress passed.\r\n");
+        if !processor_startup.vm_stress_passed {
             serial_write(b"FATAL: SMP kernel VM/TLB shootdown self-test failed.\r\n");
             halt();
         }
