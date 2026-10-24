@@ -5,12 +5,12 @@ use crate::pe::ImportSymbol;
 pub const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
 pub const STATUS_PROCEDURE_NOT_FOUND: u32 = 0xC000_007A;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Cm, Se, Rtl, Zw, Other }
+pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Po, Cm, Se, Rtl, Zw, Other }
 #[derive(Clone, Copy, Debug)]
 pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: KernelModule }
 
 pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
-pub(crate) mod ki; pub(crate) mod mm; mod ob; mod ps; mod io; pub(crate) mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
+pub(crate) mod ki; pub(crate) mod mm; mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 pub(crate) mod driver_loader;
 pub mod abi_signatures;
@@ -23,6 +23,7 @@ pub fn exports() -> impl Iterator<Item = Export> {
  .chain(ob::EXPORTS.iter().map(|&(name,ordinal)|Export{name,ordinal,module:KernelModule::Ob}))
  .chain(ps::EXPORTS.iter().map(|&(name,ordinal)|Export{name,ordinal,module:KernelModule::Ps}))
  .chain(io::EXPORTS.iter().map(|&(name,ordinal)|Export{name,ordinal,module:KernelModule::Io}))
+ .chain(po::EXPORTS.iter().map(|&(name,ordinal)|Export{name,ordinal,module:KernelModule::Po}))
  .chain(cm::EXPORTS.iter().map(|&(name,ordinal)|Export{name,ordinal,module:KernelModule::Cm}))
  .chain(se::EXPORTS.iter().map(|&(name,ordinal)|Export{name,ordinal,module:KernelModule::Se}))
  .chain(rtl::EXPORTS.iter().map(|&(name,ordinal)|Export{name,ordinal,module:KernelModule::Rtl}))
@@ -361,8 +362,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "IoGetDmaAdapter" => crate::dma::io_get_dma_adapter as usize,
   "IoCreateDevice" => crate::io::io_create_device as usize,
   "IoDeleteDevice" => crate::io::io_delete_device as usize,
-  "PoSetPowerState" => crate::io::PoSetPowerState as usize,
-  "PoStartNextPowerIrp" => crate::io::PoStartNextPowerIrp as usize,
+  "PoSetPowerState" => po::runtime::PoSetPowerState as usize,
+  "PoStartNextPowerIrp" => po::runtime::PoStartNextPowerIrp as usize,
   "IoAllocateIrp" => crate::io::io_allocate_irp as usize,
   "IoFreeIrp" => crate::io::io_free_irp as usize,
   "IoCallDriver" => crate::io::io_call_driver as usize,
