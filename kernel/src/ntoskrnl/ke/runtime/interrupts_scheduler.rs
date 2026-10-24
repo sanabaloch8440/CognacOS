@@ -1,4 +1,4 @@
-//! interrupt synchronization, scheduler, delay, and guarded mutex helpers.
+// interrupt synchronization, scheduler, delay, and guarded mutex helpers.
 // This file is included by the Ke runtime facade so existing shared private
 // state and cross-routine helpers retain their original module scope.
 
