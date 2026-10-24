@@ -68,7 +68,7 @@ jobs:
               p = path.read_bytes()
               assert p[:2] == b"MZ", f"{path}: missing MZ"
               pe = struct.unpack_from("<I", p, 0x3c)[0]
-              assert p[pe:pe+4] == b"PE\\0\\0", f"{path}: missing PE"
+              assert p[pe:pe+4] == b"PE\0\0", f"{path}: missing PE"
               assert struct.unpack_from("<H", p, pe+4)[0] == 0x8664, f"{path}: wrong machine"
               assert struct.unpack_from("<H", p, pe+22)[0] & 0x2000, f"{path}: not a DLL image"
               opt = pe + 24
