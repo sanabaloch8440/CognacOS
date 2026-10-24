@@ -181,6 +181,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         ntoskrnl::ex::runtime::initialize_threading();
+        let bsp_stack_top = match info.kernel_stack_virtual_guard.checked_add(stack_allocation_bytes) {
+            Some(top) if top != 0 => top,
+            _ => { serial_write(b"FATAL: bootstrap stack-top calculation overflow.\r\n"); halt(); }
+        };
+        if !thread::set_idle_stack_top(0, bsp_stack_top) {
+            serial_write(b"FATAL: BSP idle stack/TSS RSP0 setup failed.\r\n");
+            halt();
+        }
         user::initialize();
         syscall::initialize();
         usermode::initialize();
