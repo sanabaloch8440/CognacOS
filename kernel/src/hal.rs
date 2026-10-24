@@ -345,5 +345,30 @@ pub fn self_test() -> bool {
         && exports::self_test()
 }
 
+/// Platform clock services consumed by the NT executive. Keep APIC/TSC
+/// details private to the HAL implementation rather than importing them in Ke.
+#[inline]
+pub fn query_performance_counter() -> u64 { crate::apic::monotonic_ticks() }
+
+#[inline]
+pub fn query_performance_frequency_hz() -> Option<u64> { crate::apic::tsc_frequency_hz() }
+
+#[inline]
+pub fn relative_timeout_deadline(interval_100ns: i64) -> Option<u64> {
+    crate::apic::relative_timeout_deadline(interval_100ns)
+}
+
+#[inline]
+pub fn local_clock_event_active() -> bool { crate::apic::local_timer_active() }
+
+#[inline]
+pub fn query_cross_core_clock_status() -> (bool, u64) { crate::apic::tsc_cross_core_status() }
+
+/// Apply an NT logical IRQL to the platform interrupt-priority mechanism.
+#[inline]
+pub unsafe fn set_interrupt_priority(irql: u8) -> Result<(), crate::apic::ApicError> {
+    unsafe { crate::apic::set_task_priority(irql) }
+}
+
 /// Windows HAL export compatibility inventory and fail-closed stub metadata.
 pub mod exports;
