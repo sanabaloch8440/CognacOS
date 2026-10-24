@@ -107,7 +107,6 @@ pub fn with_registered_process_roots<R>(
     let _address_spaces = crate::vm::ADDRESS_SPACE_LIFETIME_LOCK.lock();
     let (source_index, target_index, source_root, target_root) = {
         let mut registry = TABLE.lock();
-        let base = registry.0.as_mut_ptr();
         let find = |pointer: *mut core::ffi::c_void, entries: &[EProcess]| -> Option<usize> {
             entries.iter().position(|p| {
                 (p as *const EProcess as *mut core::ffi::c_void) == pointer
@@ -124,7 +123,6 @@ pub fn with_registered_process_roots<R>(
         registry.0[target_index].references += 1;
         let roots = (source_index, target_index,
             registry.0[source_index].address_space_root, registry.0[target_index].address_space_root);
-        let _ = base;
         roots
     };
     let result = operation(source_root, target_root);
