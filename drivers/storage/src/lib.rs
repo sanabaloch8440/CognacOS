@@ -145,7 +145,10 @@ pub mod nvme {
         if namespace_id == 0 || (req.operation != super::BlockOperation::Read && req.operation != super::BlockOperation::Write) {
             return Err(StorageError::InvalidArgument);
         }
-        if req.buffer_physical & 0x3 != 0 { return Err(StorageError::InvalidArgument); }
+        // Until a PRP-list allocator is wired into the DMA layer, issue only
+        // single-page transfers with a page-aligned PRP1; never submit a command
+        // whose payload would require an uninitialized PRP2/list.
+        if req.buffer_physical & 0xfff != 0 || req.byte_length > 4096 { return Err(StorageError::Unsupported); }
         Ok(SubmissionEntry {
             opcode: if req.operation == super::BlockOperation::Read { 0x02 } else { 0x01 },
             command_id, nsid: namespace_id,
@@ -213,6 +216,8 @@ mod tests {
         assert_eq!(fis.command,0x25); assert_eq!([fis.lba0,fis.lba1,fis.lba2,fis.lba3,fis.lba4,fis.lba5],[0xbc,0x9a,0x78,0x56,0x34,0x12]);
         let cmd=nvme::build_rw_command(req,g,1,7).unwrap();
         assert_eq!(cmd.opcode,0x02); assert_eq!(cmd.command_id,7); assert_eq!(cmd.cdw10,0x5678_9abc); assert_eq!(cmd.cdw11,0x1234); assert_eq!(cmd.cdw12,1);
+        let large=BlockRequest{byte_length:8192,sectors:16,..req};
+        assert_eq!(nvme::build_rw_command(large,g,1,8),Err(StorageError::Unsupported));
     }
     #[test] fn nvme_queue_tracks_outstanding_and_phase(){
         let mut q=nvme::Queue::new(4).unwrap(); assert_eq!(q.submit(),Ok(0)); assert_eq!(q.submit(),Ok(1));
