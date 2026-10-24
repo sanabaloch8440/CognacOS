@@ -28,7 +28,7 @@ This roadmap tracks code and validation currently present in the repository, not
 
 - [x] Correct `IoGetDmaAdapter` parsing to read `DEVICE_DESCRIPTION.Version` as a 32-bit field and validate bus-master/reserved fields instead of interpreting the first four bytes as a fictitious Version/Size pair.
 - [x] Return version-specific DMA operation table prefixes for `DEVICE_DESCRIPTION_VERSION`, `VERSION1`, and `VERSION2`, and the full table for `VERSION3`; preserve the documented adapter ABI version value.
-- [x] Require DMA MDLs to be locked or sourced from nonpaged pool before exposing physical addresses through map-transfer and scatter/gather paths.
+- [x] Require DMA MDLs to be locked or sourced from nonpaged pool before mapping their physical backing into a device IOMMU domain.
 - [x] Remove physical-address fallback from WDM MapTransfer and Get/BuildScatterGatherList. Each per-device adapter is returned only when a platform IOMMU backend is registered; absent hardware translation, adapter acquisition and DMA mapping fail closed.
 - [x] Add device-object reference tracking, remove-lock rundown, deferred device deletion, and serialized D-state transition bookkeeping in the I/O manager; move the `PoSetPowerState` / `PoStartNextPowerIrp` ABI implementation and the Po export catalogue into `ntoskrnl/po`.
 - [x] Route `IRP_MJ_POWER` set/query requests through driver major-function dispatch; serialize device/system power transitions, commit state only after success, and retain device references across pending IRPs.
