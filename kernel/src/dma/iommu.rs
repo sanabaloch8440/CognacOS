@@ -81,12 +81,14 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
  let pages=length.checked_add(PAGE_SIZE as usize-1).ok_or(DmaError::InvalidLength)?/PAGE_SIZE as usize;
  let physical=unsafe{crate::memory::allocate_contiguous_pages(pages)}.map_err(|_|DmaError::OutOfMemory)?;
  let bytes=(pages as u64).checked_mul(PAGE_SIZE).ok_or(DmaError::InvalidLength)?;
- if physical.checked_add(bytes-1).is_none_or(|end|end>maximum){for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
+ if bytes>u32::MAX as u64||physical.checked_add(bytes-1).is_none_or(|end|end>maximum){for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
+ let Some(cpu)=crate::memory::direct_map_address(physical)else{for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)};
+ unsafe{ptr::write_bytes(cpu as *mut u8,0,bytes as usize);}
  let b=backend().map_err(|_|DmaError::AddressMask)?;let mut logical=0;let mut cookie=0;
  let st=unsafe{(b.map.unwrap())(b.context,device,physical,bytes as u32,2,&mut logical,&mut cookie)};
  if st!=OK||logical==0||cookie==0||logical.checked_add(bytes).is_none_or(|e|e-1>maximum){if st==OK&&cookie!=0{let _=unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)};}for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
  let mut s=STATE.lock();let Some(slot)=s.common.iter_mut().find(|c|!c.used)else{drop(s);let _=unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)};for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::RegistryFull)};
- *slot=Common{used:true,device,cpu:physical as usize,physical,logical,length,pages,cookie};fence(Ordering::SeqCst);Ok((physical as *mut u8,logical))
+ *slot=Common{used:true,device,cpu:cpu as usize,physical,logical,length,pages,cookie};fence(Ordering::SeqCst);Ok((cpu as *mut u8,logical))
 }
 pub unsafe fn free_common(adapter:*mut c_void,cpu:*mut u8,logical:u64,length:usize)->Result<(),DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;
