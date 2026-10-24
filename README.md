@@ -52,7 +52,12 @@ This is an architectural step, **not yet a complete Windows 11-equivalent HAL sp
 
 The intended dependency direction is:
 
-`ntoskrnl (Ke/Ki/Io/Ex/Mm)` → `HAL contract` → `x86-64 platform implementation (APIC, ACPI, MMIO, port I/O)`
+- `ntoskrnl (Ke/Ki/Io/Ex/Mm)` → versioned `HAL service contract` → `HAL platform backend (APIC, MMIO, port I/O)`
+- `ACPI.sys`-style driver → firmware table discovery/parsing → HAL topology/interrupt services
+- `pci.sys`-style bus driver → PCI/PCIe enumeration and resource/interrupt allocation → HAL MMIO/interrupt services
+- `processor.sys`-style driver → generic CPU capability and power policy → HAL processor/timer services
+
+Today, only the ACPI parser and PCI ECAM primitives have been moved into separate packages and linked into the kernel. The other two driver layers are contract/policy scaffolding, not separately loaded modules.
 
 HAL must not depend on NT executive internals. Windows HAL export names and matching Rust interfaces alone do not establish binary compatibility with Windows 11's private HAL ABI.
 
