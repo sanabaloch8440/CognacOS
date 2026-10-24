@@ -600,16 +600,16 @@ pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
         if translate(cursor, false).is_none() { return core::ptr::null_mut(); }
         cursor = core::cmp::min(pfn_end, (cursor & !(PAGE_SIZE-1)).saturating_add(PAGE_SIZE));
     }
-    let mut pfns = [0u64; MAX_LOCKED_PAGES];
-    for index in 0..pages as usize {
-        pfns[index] = unsafe { ((pfn_address as *const u64).add(index)).read() };
-        let Some(pa) = pfns[index].checked_mul(PAGE_SIZE) else { return core::ptr::null_mut(); };
+    let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, pages as usize) };
+    for pfn in pfns.iter().copied() {
+        let Some(pa) = pfn.checked_mul(PAGE_SIZE) else { return core::ptr::null_mut(); };
         if !crate::memory::is_ram_physical_address(pa) { return core::ptr::null_mut(); }
     }
-    let mapping = match crate::kernel_vm::map_external_pages(&pfns[..pages as usize]) { Ok(value) => value, Err(_) => {
-        return core::ptr::null_mut();
-    }};
-    let Some(mapped = (mapping as u64).checked_add(header.byte_offset as u64) else {
+    let mapping = match crate::kernel_vm::map_external_pages(pfns) {
+        Ok(value) => value,
+        Err(_) => return core::ptr::null_mut(),
+    };
+    let Some(mapped) = (mapping as u64).checked_add(header.byte_offset as u64) else {
         let _ = crate::kernel_vm::unmap_external_pages(mapping, pages as usize);
         return core::ptr::null_mut();
     };
