@@ -90,6 +90,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   else if requested.eq_ignore_ascii_case(b"RdotObDuplicateHandle") { Some(ob::runtime::RdotObDuplicateHandle as usize) }
   else { None };
   if object_manager.is_some() { return object_manager.map(|p|p as u64); }
+  if requested.eq_ignore_ascii_case(b"PsAssignImpersonationToken") { return Some(crate::thread::PsAssignImpersonationToken as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeAccessCheck") { return Some(se::runtime::SeAccessCheck as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SePrivilegeCheck") { return Some(se::runtime::SePrivilegeCheck as usize as u64); }
   if requested.eq_ignore_ascii_case(b"SeLockSubjectContext") { return Some(se::runtime::SeLockSubjectContext as usize as u64); }
