@@ -163,8 +163,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write_decimal(info.memory_map_entries);
         serial_write(b"\r\n");
 
-        // Install a private descriptor table, then immediately switch CR3 to
-        // the UEFI-allocated page tables. These identity-map the boot chain.
+        // Install a private descriptor table while the bootloader-established
+        // high-half CR3 is active. The explicit reload below verifies ownership.
         arch::initialize();
         let bsp_apic_id = (core::arch::x86_64::__cpuid(1).ebx >> 24) & 0xff;
         if hal::initialize_bsp(bsp_apic_id).is_err()
@@ -228,7 +228,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: bootstrap page-table inspection found an unmapped or non-identity live dependency.\\r\\n");
             halt();
         }
-        serial_write(b"Page-table inspection passed: kernel, stack, boot info, UEFI map, root, and handoff pages are identity mapped.\\r\\n");
+        serial_write(b"Page-table inspection passed: low boot data, physical stack backing, APIC windows, and firmware handoff mappings are valid.\\r\\n");
 
         let stack_end_virtual = info.kernel_stack_virtual_guard.checked_add(stack_allocation_bytes);
         let expected_stack_physical = current_rsp.checked_sub(info.kernel_stack_virtual_guard)
@@ -280,9 +280,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             }
         };
         serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\r\n");
-        // The bootloader reserves one guard page followed by 16 stack pages.
-        // Keep the entire allocation out of the physical allocator even if a
-        // firmware memory-map snapshot incorrectly reports part as conventional.
+        // Keep the entire physical stack allocation out of the allocator even
+        // if firmware's final map incorrectly reports any page as conventional.
         if unsafe {
             memory::reserve_range(
                 info.kernel_stack_guard_page,
