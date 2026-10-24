@@ -194,7 +194,26 @@ fn collect_regions(map: *const u8, entries: usize, stride: usize,
         out[count] = Region { next: start, end };
         count += 1;
     }
+    validate_region_edges(out, count)?;
     Ok(count)
+}
+
+/// Reject overlapping normalized descriptors: duplicate physical frames in
+/// allocator input can otherwise be handed out to two independent callers.
+fn validate_region_edges(regions: &[Region; MAX_REGIONS], count: usize) -> Result<(), AllocError> {
+    for i in 0..count {
+        if regions[i].next >= regions[i].end
+            || regions[i].next & (PAGE_SIZE - 1) != 0
+            || regions[i].end & (PAGE_SIZE - 1) != 0 {
+            return Err(AllocError::InvalidMap);
+        }
+        for j in 0..i {
+            if regions[i].next < regions[j].end && regions[j].next < regions[i].end {
+                return Err(AllocError::InvalidMap);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn collect_high_regions(map: *const u8, entries: usize, stride: usize,
@@ -220,6 +239,7 @@ fn collect_high_regions(map: *const u8, entries: usize, stride: usize,
         out[count] = Region { next: start, end };
         count += 1;
     }
+    validate_region_edges(out, count)?;
     Ok(count)
 }
 
@@ -906,5 +926,43 @@ mod allocator_map_tests {
         assert_eq!(align_up(0x1001, PAGE_SIZE), Some(0x2000));
         assert_eq!(align_up(0x2000, PAGE_SIZE), Some(0x2000));
         assert_eq!(align_up(u64::MAX, PAGE_SIZE), None);
+    }
+
+    #[test]
+    fn overlapping_descriptors_are_rejected_to_prevent_double_allocation() {
+        let descriptors = [
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0x100000, 4),
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0x102000, 4),
+        ];
+        let mut regions = [Region::EMPTY; MAX_REGIONS];
+        assert_eq!(collect_regions(descriptors.as_ptr().cast(), descriptors.len(),
+            core::mem::size_of::<MemoryDescriptor>(), &mut regions),
+            Err(AllocError::InvalidMap));
+    }
+
+    #[test]
+    fn adjacent_descriptors_and_empty_normalized_ranges_are_handled() {
+        let descriptors = [
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0x100000, 1),
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0x101000, 2),
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0x200001, 1),
+        ];
+        let mut regions = [Region::EMPTY; MAX_REGIONS];
+        let count = collect_regions(descriptors.as_ptr().cast(), descriptors.len(),
+            core::mem::size_of::<MemoryDescriptor>(), &mut regions).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!((regions[0].next, regions[0].end), (0x100000, 0x101000));
+        assert_eq!((regions[1].next, regions[1].end), (0x101000, 0x103000));
+    }
+
+    #[test]
+    fn nonconventional_overflowing_descriptors_are_ignored() {
+        let descriptors = [
+            descriptor(6, u64::MAX - 0xfff, u64::MAX),
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0x100000, 1),
+        ];
+        let mut regions = [Region::EMPTY; MAX_REGIONS];
+        assert_eq!(collect_regions(descriptors.as_ptr().cast(), descriptors.len(),
+            core::mem::size_of::<MemoryDescriptor>(), &mut regions).unwrap(), 1);
     }
 }
