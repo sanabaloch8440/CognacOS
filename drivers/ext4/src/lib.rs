@@ -386,5 +386,33 @@ mod host_tests {
         raw[200] ^= 0x40;
         assert_eq!(validate_superblock_checksum(&raw), Err(Error::InvalidChecksum));
     }
+
+    struct NoIoDevice;
+    impl ReadOnlyBlockDevice for NoIoDevice {
+        type DeviceError = ();
+        fn capacity_bytes(&self) -> u64 { 4096 }
+        fn read_at(&mut self, _: u64, _: &mut [u8]) -> Result<(), Self::DeviceError> { Err(()) }
+    }
+    impl BlockDevice for NoIoDevice {
+        fn write_at(&mut self, _: u64, _: &[u8]) -> Result<(), Self::DeviceError> { Err(()) }
+        fn flush(&mut self) -> Result<(), Self::DeviceError> { Err(()) }
+    }
+
+    #[test]
+    fn writes_past_inode_eof_are_rejected_before_device_io() {
+        let sb = Superblock {
+            inodes_count: 1, blocks_count: 4, first_data_block: 1,
+            block_size: 1024, blocks_per_group: 3, inodes_per_group: 1,
+            inode_size: 128, descriptor_size: 32, revision: 1,
+            feature_compat: 0, feature_incompat: INCOMPAT_EXTENTS,
+            feature_ro_compat: 0, read_only: true,
+        };
+        let mut fs = ExtFilesystem { device: NoIoDevice, superblock: sb, read_only: false };
+        let mut scratch = [0u8; 1024];
+        assert_eq!(
+            fs.write_file_data(&[0; 60], 4, 4, &[1], &mut scratch),
+            Err(WriteError::OutOfRange)
+        );
+    }
 }
 const CHECKSUM_TYPE_OFFSET_FOR_TEST: usize = 373;
