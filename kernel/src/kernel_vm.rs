@@ -19,8 +19,8 @@ const MAX_RECLAIM_TABLES: usize = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error { NotInitialized, Invalid, NoVirtualSpace, NoPhysicalMemory, AlreadyMapped, NotMapped, TableFull }
 #[derive(Clone, Copy)]
-struct Extent { start: usize, pages: usize, pageable: bool, live: bool }
-impl Extent { const EMPTY: Self = Self { start: 0, pages: 0, pageable: false, live: false }; }
+struct Extent { start: usize, pages: usize, pageable: bool, owns_frames: bool, live: bool }
+impl Extent { const EMPTY: Self = Self { start: 0, pages: 0, pageable: false, owns_frames: false, live: false }; }
 struct Bits(core::cell::UnsafeCell<[u64; WORDS]>); unsafe impl Sync for Bits {}
 struct Table(core::cell::UnsafeCell<[Extent; MAX]>); unsafe impl Sync for Table {}
 static BITS: Bits = Bits(core::cell::UnsafeCell::new([0; WORDS]));
@@ -255,8 +255,89 @@ pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
  if mapped!=pages {for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,va+n as u64*PAGE)}{synchronize_kernel_tlb();let _=unsafe{crate::memory::free_page(pa)};}}for n in 0..pages{bits[(start+n)/64]&=!(1u64<<((start+n)%64))}return Err(Error::NoPhysicalMemory)}
  synchronize_kernel_tlb();
  let mapped_bits=unsafe{&mut *MAPPED_BITS.0.get()};for n in 0..pages{mapped_bits[(start+n)/64]|=1u64<<((start+n)%64);}
- table[ti]=Extent{start,pages,pageable:false,live:true};Ok(va as *mut u8)
+ table[ti]=Extent{start,pages,pageable:false,owns_frames:true,live:true};Ok(va as *mut u8)
 }
+/// Map an arbitrary list of caller-owned physical pages into a contiguous
+/// supervisor virtual extent. The caller retains ownership of every frame;
+/// this extent only owns the virtual mapping and must be released with
+/// unmap_external_pages. All frames must be firmware-described RAM.
+pub fn map_external_pages(pfns: &[u64]) -> Result<*mut u8, Error> {
+ if pfns.is_empty() || pfns.len() > MAX_EXTENT_PAGES { return Err(Error::Invalid); }
+ if ROOT.load(Ordering::Acquire) == 0 { return Err(Error::NotInitialized); }
+ for pfn in pfns {
+  let pa = pfn.checked_mul(PAGE).ok_or(Error::Invalid)?;
+  if pa & (PAGE-1) != 0 || !crate::memory::is_ram_physical_address(pa) { return Err(Error::Invalid); }
+ }
+ let root = ROOT.load(Ordering::Acquire);
+ let _g = Guard::lock();
+ let table = unsafe { &mut *TABLE.0.get() };
+ let ti = table.iter().position(|e| !e.live).ok_or(Error::TableFull)?;
+ let bits = unsafe { &mut *BITS.0.get() };
+ let pages = pfns.len();
+ let mut start = 0usize;
+ let mut found = None;
+ while start.checked_add(pages).is_some_and(|end| end <= PAGES) {
+  let mut n = 0;
+  while n < pages && bits[(start+n)/64] & (1u64 << ((start+n)%64)) == 0 { n += 1; }
+  if n == pages { found = Some(start); break; }
+  start += n + 1;
+ }
+ let start = found.ok_or(Error::NoVirtualSpace)?;
+ for n in 0..pages { bits[(start+n)/64] |= 1u64 << ((start+n)%64); }
+ let va = BASE + start as u64 * PAGE;
+ let mut mapped = 0usize;
+ while mapped < pages {
+  let pa = pfns[mapped].checked_mul(PAGE).ok_or(Error::Invalid)?;
+  if unsafe { map(root, va + mapped as u64 * PAGE, pa) }.is_err() { break; }
+  mapped += 1;
+ }
+ if mapped != pages {
+  for n in 0..mapped { let _ = unsafe { unmap(root, va+n as u64*PAGE) }; }
+  if mapped != 0 { synchronize_kernel_tlb(); }
+  for n in 0..pages { bits[(start+n)/64] &= !(1u64 << ((start+n)%64)); }
+  return Err(Error::NoPhysicalMemory);
+ }
+ synchronize_kernel_tlb();
+ let mapped_bits = unsafe { &mut *MAPPED_BITS.0.get() };
+ for n in 0..pages { mapped_bits[(start+n)/64] |= 1u64 << ((start+n)%64); }
+ table[ti] = Extent { start, pages, pageable: false, owns_frames: false, live: true };
+ Ok(va as *mut u8)
+}
+
+/// Tear down a mapping created by map_external_pages without freeing its PFNs.
+pub fn unmap_external_pages(ptr: *mut u8, pages: usize) -> Result<(), Error> {
+ let va = ptr as u64;
+ if ptr.is_null() || va < BASE || (va-BASE) & (PAGE-1) != 0 || pages == 0 { return Err(Error::Invalid); }
+ let root = ROOT.load(Ordering::Acquire);
+ if root == 0 { return Err(Error::NotInitialized); }
+ let start = ((va-BASE)/PAGE) as usize;
+ let _g = Guard::lock();
+ let table = unsafe { &mut *TABLE.0.get() };
+ let index = table.iter().position(|e| e.live && e.start == start && e.pages == pages && !e.owns_frames && !e.pageable).ok_or(Error::Invalid)?;
+ for n in 0..pages {
+  let word = (start+n)/64; let mask = 1u64 << ((start+n)%64);
+  if unsafe { &*MAPPED_BITS.0.get() }[word] & mask == 0 { return Err(Error::NotMapped); }
+  let indexes = ix(va+n as u64*PAGE); let mut walk = root as *const u64;
+  for j in indexes[..3].iter().copied() { let e = unsafe { walk.add(j).read() }; if e&P == 0 || e&PS != 0 { return Err(Error::NotMapped); } walk = (e&ADDR) as *const u64; }
+  let pte = unsafe { walk.add(indexes[3]).read() };
+  if pte&P == 0 { return Err(Error::NotMapped); }
+ }
+ for n in 0..pages { let _ = unsafe { unmap(root, va+n as u64*PAGE) }?; }
+ synchronize_kernel_tlb();
+ let bits = unsafe { &mut *BITS.0.get() }; let mapped = unsafe { &mut *MAPPED_BITS.0.get() };
+ for n in 0..pages { let word=(start+n)/64; let mask=1u64<<((start+n)%64); bits[word]&=!mask; mapped[word]&=!mask; }
+ table[index] = Extent::EMPTY;
+ Ok(())
+}
+
+/// Fault in one tracked pageable-pool page before a caller probes or pins it.
+/// The fault handler validates extent ownership and uses the normal page-in path.
+pub fn ensure_page_resident(address: u64, write: bool) -> bool {
+ if !is_pageable_address(address) { return false; }
+ let page = address & !(PAGE-1);
+ handle_page_fault(page, if write { 2 } else { 0 })
+}
+
 /// Reserve a virtual extent for demand-zero pageable pool memory. Physical
 /// frames and leaf PTEs are created only when a page-fault handler first touches it.
 pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
@@ -269,7 +350,7 @@ pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
  while start+pages<=PAGES { let mut n=0;while n<pages&&bits[(start+n)/64]&(1u64<<((start+n)%64))==0{n+=1;}if n==pages{found=Some(start);break;}start+=n+1; }
  let start=found.ok_or(Error::NoVirtualSpace)?;
  for n in 0..pages { bits[(start+n)/64]|=1u64<<((start+n)%64); }
- table[ti]=Extent{start,pages,pageable:true,live:true};
+ table[ti]=Extent{start,pages,pageable:true,owns_frames:true,live:true};
  Ok((BASE+start as u64*PAGE) as *mut u8)
 }
 
@@ -366,7 +447,7 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
  if reclaim[..pages].iter().any(|pa|*pa!=0) { synchronize_kernel_tlb(); }
  let bits=unsafe{&mut *BITS.0.get()};let mapped=unsafe{&mut *MAPPED_BITS.0.get()};
  for n in 0..pages {
-  if reclaim[n]!=0 { let _=unsafe{crate::memory::free_page(reclaim[n])}; }
+  if reclaim[n]!=0 && table[i].owns_frames { let _=unsafe{crate::memory::free_page(reclaim[n])}; }
   if reclaim_slots[n]!=u32::MAX {
    let _=crate::pagefile::free_slot(reclaim_slots[n]);
    unsafe{(&mut *SWAP_SLOTS.0.get())[start+n]=u16::MAX;}
