@@ -355,6 +355,48 @@ pub unsafe extern "win64" fn mm_unlock_pages(mdl: *mut c_void) {
     header.flags &= !(MDL_LOCKED | MDL_MAPPED_SYSTEM_VA);
     header.mapped_system_va = core::ptr::null_mut();
 }
+
+/// Advance an MDL's represented byte range while releasing references to pages
+/// no longer covered by a locked MDL. The backing allocation remains caller-owned.
+pub unsafe extern "win64" fn mm_advance_mdl(mdl: *mut c_void, number_of_bytes: u32) {
+    if mdl.is_null() { return; }
+    let address = mdl as u64;
+    if !mdl_header_is_writable(address) { return; }
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    let old_count = header.byte_count as u64;
+    if number_of_bytes as u64 > old_count { return; }
+    if number_of_bytes == 0 { return; }
+    let old_offset = header.byte_offset as u64;
+    let Some(old_pages) = mdl_page_count(old_offset, old_count) else { return; };
+    let required = match MDL_HEADER_SIZE.checked_add(old_pages.saturating_mul(8)) { Some(v) => v, None => return };
+    if header.size < 0 || (header.size as u64) < required || old_pages as usize > MAX_LOCKED_PAGES { return; }
+    let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
+    if pfn_address.checked_add(old_pages.saturating_mul(8)).is_none() { return; }
+    for index in 0..old_pages as usize {
+        if translate(pfn_address + index as u64 * 8, false).is_none() { return; }
+    }
+    let consumed = match old_offset.checked_add(number_of_bytes as u64) { Some(v) => v, None => return };
+    let dropped = consumed / PAGE_SIZE;
+    let new_offset = consumed % PAGE_SIZE;
+    let new_count = old_count - number_of_bytes as u64;
+    let Some(new_pages) = mdl_page_count(new_offset, new_count) else { return; };
+    if dropped > old_pages || new_pages > old_pages - dropped { return; }
+    let pfns = pfn_address as *mut u64;
+    if header.flags & MDL_LOCKED != 0 && header.flags & MDL_NONPAGED_POOL == 0 {
+        let removed = unsafe { core::slice::from_raw_parts(pfns as *const u64, dropped as usize) };
+        unlock_pfns(removed);
+    }
+    unsafe { core::ptr::copy(pfns.add(dropped as usize), pfns, new_pages as usize); }
+    for index in new_pages as usize..old_pages as usize {
+        unsafe { pfns.add(index).write(0); }
+    }
+    let Some(new_start) = (header.start_va as u64).checked_add(dropped * PAGE_SIZE) else { return; };
+    header.start_va = new_start as *mut c_void;
+    header.byte_offset = new_offset as u32;
+    header.byte_count = new_count as u32;
+    header.flags &= !MDL_MAPPED_SYSTEM_VA;
+    header.mapped_system_va = core::ptr::null_mut();
+}
 /// Map only MDLs whose PFNs form a verified contiguous RAM run into the direct-map window.
 pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
     mdl: *mut c_void, access_mode: i8, cache_type: i32, requested_address: *mut c_void,
