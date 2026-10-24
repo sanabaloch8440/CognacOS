@@ -12,7 +12,7 @@ import argparse
 import struct
 import sys
 
-BASE = 0xFFFFFFFF80000000
+BASE = 0xFFFFFFFF7FF00000
 PAGE = 0x1000
 FILE_ALIGN = 0x200
 SECT_ALIGN = 0x1000
@@ -78,8 +78,9 @@ def convert(blob):
     if not segments or not entry_ok:
         raise ValueError("no loadable executable segment contains entry point")
     segments.sort(key=lambda s: s["vaddr"])
-    if BASE != min(s["vaddr"] for s in segments) & ~(PAGE - 1):
-        raise ValueError("unexpected image base; update PE base deliberately")
+    first_rva = min(s["vaddr"] - BASE for s in segments)
+    if BASE & 0xFFFF or first_rva < PAGE or first_rva & (PAGE - 1):
+        raise ValueError("image base must be 64 KiB aligned with a nonzero section RVA")
 
     # PE headers use fixed offsets and section raw data is laid out contiguously.
     peoff = 0x80
