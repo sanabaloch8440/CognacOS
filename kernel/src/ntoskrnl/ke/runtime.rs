@@ -560,27 +560,33 @@ pub unsafe extern "win64" fn ke_get_processor_number_from_index(
     STATUS_SUCCESS
 }
 
+// The BSP/bootstrap path can call APC-region helpers before a schedulable
+// thread exists. These counters are used only for that no-thread context.
+static BOOTSTRAP_CRITICAL_DEPTH:[core::sync::atomic::AtomicU32;64]=[const{core::sync::atomic::AtomicU32::new(0)};64];
+static BOOTSTRAP_GUARDED_DEPTH:[core::sync::atomic::AtomicU32;64]=[const{core::sync::atomic::AtomicU32::new(0)};64];
 /// Critical and guarded region nesting lives in the current thread record.
 /// Bootstrap/no-thread contexts cannot retain per-thread APC state and therefore
 /// do not manufacture a process-global substitute.
 pub unsafe extern "win64" fn ke_enter_critical_region() {
-    let _ = crate::thread::adjust_apc_region(false, true);
+    if !crate::thread::adjust_apc_region(false, true) { BOOTSTRAP_CRITICAL_DEPTH[cpu_slot()].fetch_add(1,Ordering::AcqRel); }
 }
 pub unsafe extern "win64" fn ke_leave_critical_region() {
-    let _ = crate::thread::adjust_apc_region(false, false);
+    if !crate::thread::adjust_apc_region(false, false) { let depth=&BOOTSTRAP_CRITICAL_DEPTH[cpu_slot()];let _=depth.fetch_update(Ordering::AcqRel,Ordering::Acquire,|v|Some(v.saturating_sub(1))); }
 }
 pub unsafe extern "win64" fn ke_enter_guarded_region() {
-    let _ = crate::thread::adjust_apc_region(true, true);
+    if !crate::thread::adjust_apc_region(true, true) { BOOTSTRAP_GUARDED_DEPTH[cpu_slot()].fetch_add(1,Ordering::AcqRel); }
 }
 pub unsafe extern "win64" fn ke_leave_guarded_region() {
-    let _ = crate::thread::adjust_apc_region(true, false);
+    if !crate::thread::adjust_apc_region(true, false) { let depth=&BOOTSTRAP_GUARDED_DEPTH[cpu_slot()];let _=depth.fetch_update(Ordering::AcqRel,Ordering::Acquire,|v|Some(v.saturating_sub(1))); }
 }
 pub unsafe extern "win64" fn ke_are_apcs_disabled() -> u8 {
     let (critical, _) = crate::thread::apc_region_depths();
+    let critical=if crate::thread::current_thread_id().is_some(){critical as u32}else{BOOTSTRAP_CRITICAL_DEPTH[cpu_slot()].load(Ordering::Acquire)};
     (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) >= 1 || critical != 0) as u8
 }
 pub unsafe extern "win64" fn ke_are_all_apcs_disabled() -> u8 {
     let (critical, guarded) = crate::thread::apc_region_depths();
+    let (critical,guarded)=if crate::thread::current_thread_id().is_some(){(critical as u32,guarded as u32)}else{(BOOTSTRAP_CRITICAL_DEPTH[cpu_slot()].load(Ordering::Acquire),BOOTSTRAP_GUARDED_DEPTH[cpu_slot()].load(Ordering::Acquire))};
     (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) >= 1 || critical != 0 || guarded != 0) as u8
 }
 /// BOOLEAN KeAlertThread(PKTHREAD Thread, KPROCESSOR_MODE AlertMode).
