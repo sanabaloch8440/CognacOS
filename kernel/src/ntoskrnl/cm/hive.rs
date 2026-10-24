@@ -22,7 +22,7 @@ pub struct BaseInfo { pub root_cell:u32,pub bins_size:u32,pub major:u32,pub mino
 pub struct Hive<'a>{bytes:&'a [u8],pub info:BaseInfo}
 impl<'a> Hive<'a>{
  pub fn open(bytes:&'a[u8])->Result<Self,Error>{
-  if bytes.len()<BASE_BLOCK_SIZE||bytes.get(0..4)!=Some(REGF_SIGNATURE){return Err(Error::BadSignature)}
+  if bytes.len()<BASE_BLOCK_SIZE||bytes.get(0..4)!=Some(&b"regf"[..]){return Err(Error::BadSignature)}
   let major=u32at(bytes,0x14)?;let minor=u32at(bytes,0x18)?;
   if major!=1||minor<3||minor>6{return Err(Error::UnsupportedVersion)}
   let bins_size=u32at(bytes,0x28)?;
@@ -36,7 +36,7 @@ impl<'a> Hive<'a>{
  fn validate_bins(&self)->Result<(),Error>{
   let end=BASE_BLOCK_SIZE+self.info.bins_size as usize;let mut pos=BASE_BLOCK_SIZE;
   while pos<end{
-   if self.bytes.get(pos..pos+4)!=Some(b"hbin"){return Err(Error::InvalidBin)}
+   if self.bytes.get(pos..pos+4)!=Some(&b"hbin"[..]){return Err(Error::InvalidBin)}
    let rel=u32at(self.bytes,pos+4)? as usize;let size=u32at(self.bytes,pos+8)? as usize;
    if rel!=pos-BASE_BLOCK_SIZE||size<0x1000||size%0x1000!=0||pos.checked_add(size).filter(|e|*e<=end).is_none(){return Err(Error::InvalidBin)}
    let mut cell=pos+0x20;let bin_end=pos+size;
@@ -63,7 +63,7 @@ impl<'a> Hive<'a>{
   self.bytes.get(abs+4..end).ok_or(Error::Truncated)
  }
  fn key(&self,index:u32)->Result<Key<'a>,Error>{
-  let c=self.cell(index)?;if c.get(0..2)!=Some(b"nk")||c.len()<0x4c{return Err(Error::InvalidKey)}
+  let c=self.cell(index)?;if c.get(0..2)!=Some(&b"nk"[..])||c.len()<0x4c{return Err(Error::InvalidKey)}
   let flags=u16at(c,2)?;let name_len=u16at(c,0x48)? as usize;
   if name_len>c.len()-0x4c{return Err(Error::InvalidKey)}
   Ok(Key{hive:self,index,cell:c,flags,name:&c[0x4c..0x4c+name_len]})
@@ -118,7 +118,7 @@ fn key_matches(k:&Key<'_>,name:&[u16])->Result<bool,Error>{let mut temp=[0u16;51
 pub struct Value<'a>{hive:&'a Hive<'a>,cell:&'a[u8],name:&'a[u8],compressed:bool,pub kind:u32,data_len:u32,data_offset:u32,inline:bool}
 impl<'a> Value<'a>{
  fn parse(hive:&'a Hive<'a>,index:u32)->Result<Self,Error>{
-  let c=hive.cell(index)?;if c.get(0..2)!=Some(b"vk")||c.len()<0x14{return Err(Error::InvalidValue)}
+  let c=hive.cell(index)?;if c.get(0..2)!=Some(&b"vk"[..])||c.len()<0x14{return Err(Error::InvalidValue)}
   let n=u16at(c,2)? as usize;if n>c.len().saturating_sub(0x14){return Err(Error::InvalidValue)}
   let flags=u16at(c,0x10)?;let raw_len=u32at(c,4)?;let inline=raw_len&0x8000_0000!=0;let data_len=raw_len&0x7fff_ffff;
   Ok(Self{hive,cell:c,name:&c[0x14..0x14+n],compressed:flags&1!=0,kind:u32at(c,0xc)?,data_len,data_offset:u32at(c,8)?,inline})
@@ -151,5 +151,5 @@ pub fn create_minimal_hive(out:&mut[u8])->Result<usize,Error>{
 mod tests{
  use super::*;
  #[test]fn creates_openable_native_hive(){let mut bytes=[0u8;8192];let n=create_minimal_hive(&mut bytes).unwrap();assert_eq!(n,8192);let h=Hive::open(&bytes[..n]).unwrap();assert_eq!(h.info.root_cell,0x20);assert_eq!(h.root().unwrap().subkey_count().unwrap(),0);}
- #[test]fn rejects_bad_checksum(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[0x1fc]^=0x10;assert_eq!(Hive::open(&bytes),Err(Error::BadChecksum));}
+ #[test]fn rejects_bad_checksum(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[0x1fc]^=0x10;assert!(matches!(Hive::open(&bytes),Err(Error::BadChecksum)));}
 }
