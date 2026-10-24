@@ -363,6 +363,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "IoCreateDevice" => crate::io::io_create_device as usize,
   "IoDeleteDevice" => crate::io::io_delete_device as usize,
   "PoSetPowerState" => po::runtime::PoSetPowerState as usize,
+  "PoRequestPowerIrp" => po::runtime::PoRequestPowerIrp as usize,
   "PoStartNextPowerIrp" => po::runtime::PoStartNextPowerIrp as usize,
   "IoAllocateIrp" => crate::io::io_allocate_irp as usize,
   "IoFreeIrp" => crate::io::io_free_irp as usize,
