@@ -11,8 +11,8 @@ pub enum ThreadState { Empty, Ready, Running, Blocked, Exited }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadError { InvalidStack, InvalidAffinity, Full, NoCurrentThread, InvalidState, InvalidCpu }
 #[derive(Clone, Copy)]
-struct ThreadRecord { id:u64, scheduler_id:u64, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32 }
-impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0}; }
+struct ThreadRecord { id:u64, scheduler_id:u64, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32, critical_region_depth:u16, guarded_region_depth:u16, alert_pending:bool, queue_entry:u64 }
+impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,queue_entry:0}; }
 unsafe impl Send for ThreadRecord {}
 struct ThreadTable { records:[ThreadRecord;MAX_THREADS], next_id:u64 }
 impl ThreadTable { const fn new()->Self { Self{records:[ThreadRecord::EMPTY;MAX_THREADS],next_id:1} } }
@@ -81,7 +81,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     let scheduler_id=crate::scheduler::create_task(
         4, owner_affinity, top as u64, thread_trampoline as usize as u64,
     ).map_err(|_|ThreadError::Full)?;
-    table.records[slot]=ThreadRecord{id,scheduler_id,state:ThreadState::Ready,affinity:owner_affinity,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0};
+    table.records[slot]=ThreadRecord{id,scheduler_id,state:ThreadState::Ready,affinity:owner_affinity,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,queue_entry:0};
     drop(table);
     notify_affinity(owner_affinity);
     Ok(id)
@@ -243,6 +243,48 @@ pub fn current_thread_object() -> *mut c_void {
 
 pub fn current_thread_id()->Option<u64>{let cpu=cpu_index().ok()?;let id=crate::hal::cpu_local(cpu).ok()?.current_thread.load(core::sync::atomic::Ordering::Acquire);(id!=0).then_some(id)}
 pub fn state(id:u64)->Option<ThreadState>{THREADS.lock().records.iter().find(|t|t.id==id).map(|t|t.state)}
+/// Per-thread APC disable nesting. Critical regions suppress normal APCs;
+/// guarded regions suppress both normal and special APCs.
+pub fn apc_region_depths()->(u16,u16){
+    let Some(id)=current_thread_id() else{return (0,0)};
+    let table=THREADS.lock();
+    table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty)
+        .map(|t|(t.critical_region_depth,t.guarded_region_depth)).unwrap_or((0,0))
+}
+pub fn adjust_apc_region(guarded:bool,enter:bool)->bool{
+    let Some(id)=current_thread_id() else{return false};
+    let mut table=THREADS.lock();
+    let Some(t)=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty) else{return false};
+    let depth=if guarded{&mut t.guarded_region_depth}else{&mut t.critical_region_depth};
+    if enter { *depth=depth.saturating_add(1); } else { *depth=depth.saturating_sub(1); }
+    true
+}
+pub fn set_alert_pending(id:u64)->bool{
+    let mut table=THREADS.lock();
+    if let Some(t)=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty){
+        t.alert_pending=true;let affinity=t.affinity;drop(table);notify_affinity(affinity);true
+    }else{false}
+}
+pub fn take_alert_pending()->bool{
+    let Some(id)=current_thread_id() else{return false};
+    let mut table=THREADS.lock();
+    let Some(t)=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty) else{return false};
+    let pending=t.alert_pending;t.alert_pending=false;pending
+}
+pub fn alert_pending(id:u64)->bool{
+    THREADS.lock().records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty).is_some_and(|t|t.alert_pending)
+}
+pub fn set_queue_entry(id:u64,entry:u64)->bool{
+    let mut table=THREADS.lock();
+    if let Some(t)=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty){t.queue_entry=entry;true}else{false}
+}
+pub fn take_queue_entry()->Option<u64>{
+    let id=current_thread_id()?;
+    let mut table=THREADS.lock();
+    let t=table.records.iter_mut().find(|t|t.id==id&&t.state==ThreadState::Running)?;
+    let entry=t.queue_entry;t.queue_entry=0;(entry!=0).then_some(entry)
+}
+
 
 /// Complete a wait before making its thread runnable. Running-thread completion
 /// is remembered so a signal between queue insertion and blocking cannot be lost.
