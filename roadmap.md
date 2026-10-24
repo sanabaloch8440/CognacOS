@@ -259,7 +259,7 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Add executive KQUEUE initialization, FIFO/head insertion, dequeue, direct handoff to a waiting thread, and rundown.
 - [x] Strengthen single/multiple-object waits with timer dispatcher types, absolute timeout conversion, alert cancellation, and fail-closed rejection of unsupported multi-wait queue/mutant cases.
 - [x] Add focused Ke tests for APC nesting, processor-number ABI, DPC duplicate queueing/callback execution, timer expiration, mutant initialization, and executive queue ordering/rundown.
-- [x] Expand [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md) to 116 scoped Ke names and public contract / stub inventory.
+- [x] Expand [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md) to 129 scoped Ke names and public contract / stub inventory.
 
 ### Remaining correctness and validation gaps
 
@@ -273,4 +273,17 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [ ] Replace fixed-capacity timer/DPC/mutant/queue side tables with lifetime-safe executive objects or dynamic bounded allocation.
 - [ ] Add concurrent tests for wait-any cancellation, wait-all reservation, queue handoff, DPC cancellation/flush, and timer cancel-vs-expire races.
 
-**Scope note:** The comparison now lists 116 Ke export names. Its current project-defined score is 54.3% (100% source-level declaration coverage and 8.6% strict behavior matches in the currently advertised topology); this is a scoped progress metric, not a Microsoft metric or a Windows driver-compatibility claim.
+**Scope note:** The comparison now lists 129 Ke export names. Its current project-defined score is 53.9% (100% source-level declaration coverage and 7.8% strict behavior matches in the currently advertised topology); this is a scoped progress metric, not a Microsoft metric or a Windows driver-compatibility claim.
+
+
+## Additional Ke export implementation batch (2026-10-24)
+
+- [x] Implement KeQueryUnbiasedInterruptTimePrecise with QPC sample output; suspend/resume bias remains unmodelled.
+- [x] Implement KeGetClockTimerResolution and KeGetNextClockTickDuration using the configured 1-ms quantum and active timer deadline table.
+- [x] Implement KeFlushIoBuffers with x86-64 ordering fences for the current coherent-DMA target; non-coherent cache maintenance remains unsupported.
+- [x] Implement KDEVICE_QUEUE initialization, FIFO insertion, keyed insertion, busy-state transitions, and removal.
+- [x] Add per-thread KeSetPriorityThread, KeQueryPriorityThread, and KeSetBasePriorityThread metadata with Windows priority-range validation; scheduler priority ordering/boosts remain incomplete.
+- [x] Implement terminal KeBugCheck/KeBugCheckEx paths that record code/parameters and halt with interrupts disabled; crash dump/diagnostic reporting remains incomplete.
+- [x] Wire these 13 names through ntoskrnl import resolution and update the Ke comparison to 129 callable names.
+- [ ] Verify the latest Rust build, UEFI image validation, OVMF/QEMU boot, and 2/4/8-vCPU matrix before marking this implementation batch validated.
+- [ ] Implement remaining Ke interrupt-spin-lock, timer2, APC, cross-CPU generic DPC/IPI, NMI callback, processor-change callback, interrupt synchronization, logical-topology, affinity, process-attach, and extended-state APIs.
