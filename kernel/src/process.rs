@@ -12,8 +12,7 @@ pub const IMAGE_NAME_ADDRESS: u64 = 0x0000_0080_6000_0000;
 pub const PROCESS_PARAMS_ADDRESS: u64 = 0x0000_0080_7000_0000;
 static NEXT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(4);
 const MAX_PROCESSES: usize = 64;
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(u32)]
+#repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessState { Created, Running, Exited, Reaped }
 #[derive(Clone, Copy, Debug)]
@@ -117,7 +116,9 @@ pub fn with_registered_process_roots<R>(
         };
         let source_index = find(source, &registry.0)?;
         let target_index = find(target, &registry.0)?;
-        if registry.0[source_index].references == u32::MAX
+        if source_index == target_index {
+            if registry.0[source_index].references > u32::MAX - 2 { return None; }
+        } else if registry.0[source_index].references == u32::MAX
             || registry.0[target_index].references == u32::MAX { return None; }
         registry.0[source_index].references += 1;
         registry.0[target_index].references += 1;
