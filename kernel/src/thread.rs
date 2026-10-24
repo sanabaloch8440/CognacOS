@@ -201,12 +201,14 @@ fn exit_current()->! {
     let id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
     crate::ntoskrnl::ke::runtime::thread_exit_cleanup(id);
     let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
-    let (old_rsp_ptr,new_rsp)={
+    let (old_rsp_ptr,new_rsp,old_token)={
         let mut table=THREADS.lock();
         let current=match table.records.iter_mut().find(|t|t.id==id&&t.state==ThreadState::Running){Some(t)=>t,None=>loop{core::hint::spin_loop()}};
         current.state=ThreadState::Exited;
         current.entry=None;
         current.argument=core::ptr::null_mut();
+        let old_token=current.impersonation_token;
+        current.impersonation_token=0;
         let scheduler_id=current.scheduler_id;
         let old_rsp_ptr=&mut current.context_rsp as *mut *mut u64;
         if crate::scheduler::exit_task(scheduler_id).is_err(){loop{core::hint::spin_loop()}}
@@ -220,16 +222,17 @@ fn exit_current()->! {
             let next_rsp=next.context_rsp;
             let next_stack_top=next.stack_top;
             let _=crate::arch::set_kernel_stack(cpu,next_stack_top);
-            (old_rsp_ptr,next_rsp)
+            (old_rsp_ptr,next_rsp,old_token)
         }else{
             local.current_thread.store(0,core::sync::atomic::Ordering::Release);
             let idle=unsafe{*idle_rsp_ptr};
             if idle.is_null(){loop{core::hint::spin_loop()}}
             let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
             if idle_top!=0{let _=crate::arch::set_kernel_stack(cpu,idle_top);}
-            (old_rsp_ptr,idle)
+            (old_rsp_ptr,idle,old_token)
         }
     };
+    if old_token != 0 { let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(old_token as *mut c_void) }; }
     unsafe{crate::arch::context_switch(old_rsp_ptr,new_rsp)};
     loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}
 }
