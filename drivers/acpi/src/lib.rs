@@ -1,5 +1,6 @@
 //! Bounded ACPI table parsing primitives for platform discovery.
 //! Callers must pass a readable, mapped byte slice obtained from firmware data.
+#![no_std]
 static LAST_RSDP_ADDRESS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// Remember the firmware RSDP discovered during boot for later HAL table queries.
