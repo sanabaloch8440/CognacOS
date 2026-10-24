@@ -1433,7 +1433,7 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
             break (old,Some(waiter.thread),if was_abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
         }
     };
-    for id in timed_out[..timed_count].iter().copied(){let _=crate::thread::complete_wait(id,STATUS_TIMEOUT);}
+    for id in timed_out[..timed_count].iter().copied(){let status=crate::dispatcher::complete_wait_group(id,object as u64,STATUS_TIMEOUT,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_TIMEOUT);let _=crate::thread::complete_wait(id,status);}
     if let Some(id)=waiter_id{
         let status=crate::dispatcher::complete_wait_group(id,object as u64,final_status,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(final_status);
         let _=crate::thread::complete_wait(id,status);
