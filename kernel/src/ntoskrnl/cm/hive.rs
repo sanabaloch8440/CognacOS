@@ -138,7 +138,7 @@ impl<'a> Value<'a>{
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum HiveKind{System,Software,Security,Sam,Default,Components,Bcd}
 pub const HIVE_NAMES:[&str;7]=["SYSTEM","SOFTWARE","SECURITY","SAM","DEFAULT","COMPONENTS","BCD00000000"];
-pub fn hive_kind(name:&str)->Result<HiveKind,Error>{match name.to_ascii_uppercase().as_str(){"SYSTEM"=>Ok(HiveKind::System),"SOFTWARE"=>Ok(HiveKind::Software),"SECURITY"=>Ok(HiveKind::Security),"SAM"=>Ok(HiveKind::Sam),"DEFAULT"=>Ok(HiveKind::Default),"COMPONENTS"=>Ok(HiveKind::Components),"BCD00000000"=>Ok(HiveKind::Bcd),_=>Err(Error::BadSignature)}}
+pub fn hive_kind(name:&str)->Result<HiveKind,Error>{if name.eq_ignore_ascii_case("SYSTEM"){Ok(HiveKind::System)}else if name.eq_ignore_ascii_case("SOFTWARE"){Ok(HiveKind::Software)}else if name.eq_ignore_ascii_case("SECURITY"){Ok(HiveKind::Security)}else if name.eq_ignore_ascii_case("SAM"){Ok(HiveKind::Sam)}else if name.eq_ignore_ascii_case("DEFAULT"){Ok(HiveKind::Default)}else if name.eq_ignore_ascii_case("COMPONENTS"){Ok(HiveKind::Components)}else if name.eq_ignore_ascii_case("BCD00000000"){Ok(HiveKind::Bcd)}else{Err(Error::BadSignature)}}
 pub struct HiveSet<'a>{entries:[Option<&'a[u8]>;7]}
 impl<'a> HiveSet<'a>{
  pub const fn new()->Self{Self{entries:[None;7]}}
