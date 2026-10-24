@@ -116,6 +116,11 @@ jobs:
               assert struct.unpack_from("<II", p, opt+112+5*8) == (0, 0), f"{path}: relocations unsupported by stage-1 loader"
               print(f"validated native PE32+ driver: {path} ({len(p)} bytes)")
           PY
+      - name: Test user virtual-range validation
+        run: |
+          set -euo pipefail
+          rustc --edition=2024 --test tools/vm_range_host_tests.rs -o /tmp/rdotos-vm-range-tests
+          /tmp/rdotos-vm-range-tests
       - name: Run host-side physical allocator map tests
         run: |
           mkdir -p build
