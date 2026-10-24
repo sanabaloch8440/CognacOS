@@ -425,3 +425,38 @@ pub fn is_user_range(address: u64, length: u64) -> bool {
         && address < USER_END
         && address.checked_add(length).is_some_and(|end| end <= USER_END)
 }
+
+
+/// Copy user bytes through the supplied process page tables. Page translation and
+/// the copy are serialized against address-space destruction/unmapping; arbitrary
+/// user virtual addresses are never dereferenced directly.
+pub unsafe fn copy_from_user_root(root_physical: u64, source: u64, destination: &mut [u8]) -> Result<(), VmError> {
+    if destination.is_empty() { return Ok(()); }
+    if root_physical == 0 || !is_user_range(source, destination.len() as u64) { return Err(VmError::InvalidAddress); }
+    let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+    let mut done = 0usize;
+    while done < destination.len() {
+        let va = source.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
+        let pa = translate_root(root_physical, va, false, true).ok_or(VmError::NotMapped)?;
+        let count = core::cmp::min(destination.len() - done, PAGE_SIZE as usize - (va as usize & 4095));
+        unsafe { core::ptr::copy_nonoverlapping(pa as *const u8, destination.as_mut_ptr().add(done), count); }
+        done += count;
+    }
+    Ok(())
+}
+
+/// Copy kernel bytes to a user buffer after writable user-page validation.
+pub unsafe fn copy_to_user_root(root_physical: u64, destination: u64, source: &[u8]) -> Result<(), VmError> {
+    if source.is_empty() { return Ok(()); }
+    if root_physical == 0 || !is_user_range(destination, source.len() as u64) { return Err(VmError::InvalidAddress); }
+    let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+    let mut done = 0usize;
+    while done < source.len() {
+        let va = destination.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
+        let pa = translate_root(root_physical, va, true, true).ok_or(VmError::PermissionDenied)?;
+        let count = core::cmp::min(source.len() - done, PAGE_SIZE as usize - (va as usize & 4095));
+        unsafe { core::ptr::copy_nonoverlapping(source.as_ptr().add(done), pa as *mut u8, count); }
+        done += count;
+    }
+    Ok(())
+}
