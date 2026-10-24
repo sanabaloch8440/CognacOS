@@ -375,9 +375,11 @@ fn wait_all_object_signalled(object_id:u64)->bool{
 }
 fn consume_wait_all_object(object_id:u64){
     let object=object_id as *mut DispatcherHeader;
-    if object.is_null()||matches!(unsafe{(*object).kind},EVENT_NOTIFICATION|TIMER_NOTIFICATION){return}
-    let state=unsafe{&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()};
-    state.store(state.load(Ordering::Acquire)-1,Ordering::Release);
+    if object.is_null(){return}
+    // The caller holds DISPATCHER_OBJECT_LOCK. Reuse the same reservation
+    // primitive as single-object waits so notification objects remain signalled
+    // and synchronization events/semaphores cannot underflow.
+    let _=unsafe{try_consume_dispatcher_object_locked(object)};
 }
 fn complete_ready_wait_all_groups(){
     let mut ids=[0u64;crate::dispatcher::MAX_WAIT_GROUPS];
