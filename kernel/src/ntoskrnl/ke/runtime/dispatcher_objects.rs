@@ -115,8 +115,8 @@ pub struct GroupAffinity {
 }
 
 fn interrupt_time_100ns() -> u64 {
-    let Some(hz) = crate::apic::tsc_frequency_hz().filter(|hz| *hz != 0) else { return 0; };
-    let now = crate::apic::monotonic_ticks();
+    let Some(hz) = crate::hal::query_performance_frequency_hz().filter(|hz| *hz != 0) else { return 0; };
+    let now = crate::hal::query_performance_counter();
     let origin = match INTERRUPT_TIME_ORIGIN.compare_exchange(0, now.max(1), Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => now.max(1),
         Err(existing) => existing,
