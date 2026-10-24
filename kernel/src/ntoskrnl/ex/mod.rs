@@ -253,3 +253,69 @@ pub const EXPORTS: &[(&str, u16)] = &[
 ];
 
 pub mod pool;
+
+
+/// Windows-NT-inspired executive startup orchestration. Hardware-specific
+/// primitives remain in HAL/APIC/SMP modules; the executive owns sequencing.
+pub(crate) mod runtime {
+    pub(crate) struct ProcessorStartupReport {
+        pub online_aps: usize,
+        pub startup_ok: bool,
+        pub ipi_enabled: bool,
+        pub interrupt_stress_passed: bool,
+        pub tsc_synced: bool,
+        pub worst_tsc_offset: i64,
+        pub scheduler_stress_passed: bool,
+        pub vm_stress_passed: bool,
+    }
+
+    /// Initialize executive scheduling state before any processor is released
+    /// into the idle path. The actual stack switch remains in the thread runtime.
+    pub(crate) fn initialize_threading() {
+        crate::scheduler::initialize();
+        crate::thread::initialize();
+    }
+
+    /// ExInitializeExecutive-style processor phase: discover firmware topology,
+    /// start APs, validate per-CPU interrupt delivery, then stress scheduler and
+    /// VM/TLB paths before normal kernel startup proceeds.
+    pub(crate) fn initialize_processors(
+        pml4_physical: u64,
+        trampoline_physical: u64,
+        rsdp_address: u64,
+        bsp_apic_id: u32,
+    ) -> ProcessorStartupReport {
+        let mut report = ProcessorStartupReport {
+            online_aps: 0,
+            startup_ok: false,
+            ipi_enabled: false,
+            interrupt_stress_passed: false,
+            tsc_synced: false,
+            worst_tsc_offset: 0,
+            scheduler_stress_passed: false,
+            vm_stress_passed: false,
+        };
+        if rsdp_address != 0 && trampoline_physical != 0 {
+            if let Ok(madt) = crate::acpi::discover_madt(rsdp_address) {
+                if let Ok((online, ipi_enabled)) = unsafe {
+                    crate::smp::start_discovered_aps_with_ipi(
+                        pml4_physical, trampoline_physical, &madt, bsp_apic_id,
+                    )
+                } {
+                    report.online_aps = online;
+                    report.startup_ok = true;
+                    report.ipi_enabled = ipi_enabled;
+                    report.interrupt_stress_passed = ipi_enabled
+                        && crate::smp::interrupt_setup_stress_test(64);
+                    let (synced, offset) = crate::apic::tsc_cross_core_status();
+                    report.tsc_synced = synced;
+                    report.worst_tsc_offset = offset;
+                }
+            }
+        }
+        report.scheduler_stress_passed =
+            crate::thread::smp_scheduler_stress_test(crate::hal::online_cpu_count());
+        report.vm_stress_passed = crate::kernel_vm::self_test();
+        report
+    }
+}
