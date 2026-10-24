@@ -119,10 +119,10 @@ pub unsafe extern "win64" fn ke_set_base_priority_thread(thread:*mut core::ffi::
  let Some(id)=priority_id(thread) else{return 0};
  let (old,base)={
   let mut table=THREAD_PRIORITIES.lock();
-  let Some(slot)=table.records.iter().position(|r|r.id==id) else{return 0};
-  let old=table.records[slot].base as i32;
+  let Some(slot)=table.records.iter().position(|r|r.id==id).or_else(||table.records.iter().position(|r|r.id==0)) else{return 0};
+  let old=if table.records[slot].id==id{table.records[slot].base as i32}else{8};
   let base=(old+increment).clamp(0,31) as i8;
-  table.records[slot].base=base;table.records[slot].current=base;
+  table.records[slot]=ThreadPriorityRecord{id,base,current:base};
   (old,base)
  };
  let _=crate::thread::set_scheduler_priority(id,(base as u8/4).min(7));
