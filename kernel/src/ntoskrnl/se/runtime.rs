@@ -1203,6 +1203,9 @@ pub unsafe extern "win64" fn SeAccessCheck(
         acquire_subject_context_lock();
         unsafe { core::ptr::write_unaligned(subject_context_locked, 1); }
     }
+    let mut audit_token = core::ptr::null_mut();
+    let mut audit_desired = desired_access;
+    let mut audit_granted = 0u32;
     let success = (|| -> bool {
         let context = unsafe { core::ptr::read_unaligned(subject_context) };
         let token = if !context.client_token.is_null() {
@@ -1210,8 +1213,10 @@ pub unsafe extern "win64" fn SeAccessCheck(
             context.client_token
         } else { context.primary_token };
         if token.is_null() || token_meta(token).is_none() { return false; }
+        audit_token = token;
         let mapping = unsafe { core::ptr::read_unaligned(generic_mapping) };
         let desired = map_generic_access(desired_access, &mapping);
+        audit_desired = desired;
         let previous = map_generic_access(previously_granted_access, &mapping);
         // SeAccessCheck consumes a captured kernel security descriptor. User-mode
         // callers must use the capture/probe path before passing this pointer.
@@ -1229,6 +1234,10 @@ pub unsafe extern "win64" fn SeAccessCheck(
         };
         let mut effective_allowed = allowed;
         if let Some(m) = meta {
+            // Windows privilege-assisted grants for the special security-system and
+            // ownership rights. Privilege IDs follow the NT LUID low-part mapping.
+            if m.privileges & (1u64 << 8) != 0 { effective_allowed |= 0x0100_0000; }
+            if m.privileges & (1u64 << 9) != 0 { effective_allowed |= 0x0008_0000; }
             let write_access = requested & (0x0001_0000 | 0x0002_0000 | 0x0004_0000 | 0x0008_0000 | 0x0000_0116) != 0;
             if m.restricted || m.app_container || (m.write_restricted && write_access) {
                 let restricted = match evaluate_dacl(token, sd, requested, 0, true) {
@@ -1242,12 +1251,17 @@ pub unsafe extern "win64" fn SeAccessCheck(
         let explicit = desired & !0x0200_0000;
         if explicit & !(effective_allowed | previous) != 0 { return false; }
         let grant = if max_allowed { (effective_allowed | previous) & !0x0200_0000 } else { explicit | previous };
+        audit_granted = grant;
         unsafe {
             core::ptr::write_unaligned(granted_access, grant);
             core::ptr::write_unaligned(access_status, STATUS_SUCCESS);
         }
         true
     })();
+    if !audit_token.is_null() && unsafe { SeValidSecurityDescriptor(security_descriptor) } != 0 {
+        let sd = unsafe { core::slice::from_raw_parts(security_descriptor.cast::<u8>(), 4096) };
+        record_security_audit(sd, audit_token, audit_desired, audit_granted, success);
+    }
     if !already_locked {
         unsafe { core::ptr::write_unaligned(subject_context_locked, 0); }
         release_subject_context_lock();
