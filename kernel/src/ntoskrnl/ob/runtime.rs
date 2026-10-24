@@ -507,6 +507,26 @@ mod tests{
   let mut init=[0u8;0x78];init[..2].copy_from_slice(&0x78u16.to_le_bytes());init[8..12].copy_from_slice(&1u32.to_le_bytes());init[12..16].copy_from_slice(&2u32.to_le_bytes());init[16..20].copy_from_slice(&4u32.to_le_bytes());init[20..24].copy_from_slice(&7u32.to_le_bytes());init[24..28].copy_from_slice(&0xffu32.to_le_bytes());
   let mut out=core::ptr::null_mut();assert_eq!(unsafe{ObCreateObjectType(&u,init.as_ptr(),core::ptr::null_mut(),&mut out)},STATUS_SUCCESS);assert!(!out.is_null());assert!(type_id_from_pointer(out).is_ok());
  }
+ #[test]fn object_create_insert_delete_rundown(){
+  let name=[b'O' as u16,b'b' as u16,b'J' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'C' as u16,b'r' as u16,b'e' as u16,b'a' as u16,b't' as u16,b'e' as u16];
+  let u=UnicodeString{length:(name.len()*2) as u16,maximum_length:((name.len()+1)*2) as u16,buffer:name.as_ptr()};
+  let mut init=[0u8;0x78];init[..2].copy_from_slice(&0x78u16.to_le_bytes());init[24..28].copy_from_slice(&0xffu32.to_le_bytes());
+  let mut ty=core::ptr::null_mut();assert_eq!(unsafe{ObCreateObjectType(&u,init.as_ptr(),core::ptr::null_mut(),&mut ty)},STATUS_SUCCESS);
+  let mut object=core::ptr::null_mut();assert_eq!(unsafe{ObCreateObject(0,ty,core::ptr::null(),0,core::ptr::null_mut(),64,0,0,&mut object)},STATUS_SUCCESS);
+  let mut handle=core::ptr::null_mut();assert_eq!(unsafe{ObInsertObject(object,core::ptr::null_mut(),7,0,core::ptr::null_mut(),&mut handle)},STATUS_SUCCESS);
+  assert_eq!(unsafe{ObGetObjectType(object)},ty);unsafe{ObDeleteObject(object)};assert_eq!(unsafe{ZwClose(handle)},STATUS_SUCCESS);
+ }
+ #[test]fn symbolic_link_target_roundtrips(){
+  let name=[b'\\' as u16,b'O' as u16,b'b' as u16,b'j' as u16,b'S' as u16,b'y' as u16,b'm' as u16,b'T' as u16,b'e' as u16,b's' as u16,b't' as u16];
+  let target=[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16,b'\\' as u16,b'T' as u16];
+  let u=UnicodeString{length:(name.len()*2) as u16,maximum_length:((name.len()+1)*2) as u16,buffer:name.as_ptr()};
+  let t=UnicodeString{length:(target.len()*2) as u16,maximum_length:((target.len()+1)*2) as u16,buffer:target.as_ptr()};
+  let oa=ObjectAttributes{length:core::mem::size_of::<ObjectAttributes>() as u32,root_directory:core::ptr::null_mut(),object_name:&u,attributes:0x10,security_descriptor:core::ptr::null_mut(),security_qos:core::ptr::null_mut()};
+  let mut h=core::ptr::null_mut();assert_eq!(unsafe{ZwCreateSymbolicLinkObject(&mut h,7,&oa,&t)},STATUS_SUCCESS);
+  let mut output=[0u16;32];let mut out=UnicodeString{length:0,maximum_length:64,buffer:output.as_mut_ptr()};
+  assert_eq!(unsafe{ZwQuerySymbolicLinkObject(h,&mut out,core::ptr::null_mut())},STATUS_SUCCESS);assert_eq!(&output[..target.len()],&target);
+  assert_eq!(unsafe{ZwClose(h)},STATUS_SUCCESS);
+ }
  #[test]fn directory_handles_resolve_relative_names(){
   let root_name=[b'\\' as u16,b'O' as u16,b'b' as u16,b'j' as u16,b'T' as u16,b'e' as u16,b's' as u16,b't' as u16,b'D' as u16,b'i' as u16,b'r' as u16];
   let root_u=UnicodeString{length:(root_name.len()*2) as u16,maximum_length:((root_name.len()+1)*2) as u16,buffer:root_name.as_ptr()};
