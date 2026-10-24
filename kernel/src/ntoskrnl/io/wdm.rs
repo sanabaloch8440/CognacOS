@@ -244,12 +244,21 @@ pub unsafe extern "system" fn io_create_device(
  slot.object.next_device=unsafe{(*driver).device_object};
  let object=&mut slot.object as *mut DeviceObject;
  unsafe { (*driver).device_object=object; output.write(object); }
+ drop(state);
+ let mut ob_name=[0u16;128];
+ if name_len>ob_name.len() { unsafe{io_delete_device(object)}; return STATUS_INVALID_PARAMETER; }
+ ob_name[..name_len].copy_from_slice(&counted_name[..name_len]);
+ let type_name=[b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16];
+ if unsafe{crate::ntoskrnl::ob::runtime::register_external_object(object.cast(),&type_name,&ob_name[..name_len],false,ptr::null(),0)}.is_err() {
+  unsafe{io_delete_device(object)}; return STATUS_INSUFFICIENT_RESOURCES;
+ }
  STATUS_SUCCESS
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  if device.is_null(){return}
+ let _ = crate::ntoskrnl::ob::runtime::unregister_object(device.cast());
  let mut state=WDM.lock();
  let Some(index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return};
  state.devices[index].deleting=true;
