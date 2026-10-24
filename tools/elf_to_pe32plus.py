@@ -117,8 +117,8 @@ def convert(blob):
     struct.pack_into("<HBBIIIII", out, o, 0x20B, 0, 0,
                      sum(s["raw_size"] for s in segments if s["flags"] & PF_X),
                      sum(s["raw_size"] for s in segments if not s["flags"] & PF_X),
-                     0, entry - BASE, min(s["rva"] for s in segments if s["flags"] & PF_X),
-                     0)
+                     sum(max(0, s["memsz"] - s["filesz"]) for s in segments),
+                     entry - BASE, min(s["rva"] for s in segments if s["flags"] & PF_X))
     struct.pack_into("<QII", out, o + 24, BASE, SECT_ALIGN, FILE_ALIGN)
     struct.pack_into("<HHHHHH", out, o + 40, 6, 0, 0, 0, 6, 0)
     struct.pack_into("<IIII", out, o + 52, 0, size_image, headers_size, 0)
