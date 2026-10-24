@@ -100,6 +100,8 @@ struct BootInfo {
     kernel_stack_virtual_guard: u64,
     rsdp_address: u64,
     ap_trampoline_physical: u64,
+    kernel_physical_sections: [(u64, u64); 4],
+    kernel_physical_section_count: usize,
 }
 
 #[unsafe(no_mangle)]
@@ -112,7 +114,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic != BOOT_INFO_MAGIC || info.version != 5
+        if info.magic != BOOT_INFO_MAGIC || info.version != 6
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
@@ -281,10 +283,17 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         };
         // Publish direct-map W^X policy before any high-RAM probe can fault in
         // a leaf. An uninitialized policy intentionally defaults to read-only.
-        memory::set_direct_map_readonly_ranges(unsafe { [
-            (core::ptr::addr_of!(__text_phys_start) as u64, core::ptr::addr_of!(__text_phys_end) as u64),
-            (core::ptr::addr_of!(__rodata_phys_start) as u64, core::ptr::addr_of!(__rodata_phys_end) as u64),
-        ] });
+        if info.kernel_physical_section_count == 0
+            || info.kernel_physical_section_count > info.kernel_physical_sections.len()
+            || info.kernel_physical_sections[..info.kernel_physical_section_count]
+                .iter().any(|(start, end)| *start == 0 || *start >= *end) {
+            serial_write(b"FATAL: invalid PE section physical-backing metadata.\\r\\n");
+            halt();
+        }
+        memory::set_direct_map_readonly_ranges([
+            info.kernel_physical_sections[0],
+            info.kernel_physical_sections.get(1).copied().unwrap_or((0, 0)),
+        ]);
         serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\r\n");
         // Keep the entire physical stack allocation out of the allocator even
         // if firmware's final map incorrectly reports any page as conventional.
@@ -590,12 +599,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             info.kernel_stack_virtual_guard + 4096,
             info.kernel_stack_virtual_guard + stack_allocation_bytes,
         );
-        let physical_sections = unsafe { [
-            (core::ptr::addr_of!(__text_phys_start) as u64, core::ptr::addr_of!(__text_phys_end) as u64),
-            (core::ptr::addr_of!(__rodata_phys_start) as u64, core::ptr::addr_of!(__rodata_phys_end) as u64),
-            (core::ptr::addr_of!(__data_phys_start) as u64, core::ptr::addr_of!(__data_phys_end) as u64),
-            (core::ptr::addr_of!(__bss_phys_start) as u64, core::ptr::addr_of!(__bss_phys_end) as u64),
-        ] };
+        let physical_sections = info.kernel_physical_sections;
         if unsafe { memory::harden_page_tables(
             info.pml4_physical, text, rodata, data, bss,
             info.kernel_stack_guard_page, stack_virtual, info.kernel_stack_virtual_guard,
