@@ -290,7 +290,7 @@ Discovery and startup primitives do not by themselves establish a production-rea
 - [ ] Defer journal replay and write support until read-only behavior and metadata validation are robust.
 - [ ] Review licensing before redistributing any Rust translation derived from upstream code.
 
-The ext-family parser now lives in a standalone source/build crate and has a constrained write path for already allocated initialized data extents. This is not yet a complete writable filesystem: allocation, metadata updates, journal handling, crash consistency, and VFS/block-device registration remain outstanding. The removed third-party Ext3Fsd Windows driver is not used by RdotOS.
+The ext-family parser now lives in a standalone source/build crate and has a constrained write path for already allocated initialized data extents. This is not yet a complete writable filesystem: allocation, metadata updates, journal handling, crash consistency, and VFS/block-device registration remain outstanding. No third-party Windows filesystem driver sources are included in the repository.
 
 ## 9. Isolation and security
 
