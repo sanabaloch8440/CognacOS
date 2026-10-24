@@ -265,6 +265,14 @@ pub fn thread_affinity(id:u64)->Option<u64>{
     table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty).map(|t|t.affinity)
 }
 pub fn current_thread_id()->Option<u64>{let cpu=cpu_index().ok()?;let id=crate::hal::cpu_local(cpu).ok()?.current_thread.load(core::sync::atomic::Ordering::Acquire);(id!=0).then_some(id)}
+/// Synchronize a Windows dynamic/base priority with the scheduler's 0..7 bands.
+pub fn set_scheduler_priority(id:u64,priority:u8)->Option<u8>{
+ let scheduler_id={
+  let table=THREADS.lock();
+  table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty).map(|t|t.scheduler_id)?
+ };
+ crate::scheduler::set_task_priority(scheduler_id,priority).ok()
+}
 pub fn state(id:u64)->Option<ThreadState>{THREADS.lock().records.iter().find(|t|t.id==id).map(|t|t.state)}
 /// Per-thread APC disable nesting. Critical regions suppress normal APCs;
 /// guarded regions suppress both normal and special APCs.
