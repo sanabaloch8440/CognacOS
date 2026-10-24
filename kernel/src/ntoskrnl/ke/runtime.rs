@@ -1698,6 +1698,16 @@ pub unsafe extern "win64" fn ke_dynamic_partitioning_supported()->u8{0}
 // side tables track only lifecycle metadata, avoiding assumptions about private
 // Windows LIST_ENTRY/KDPC internals while preserving the public DDI signatures.
 const MAX_TIMER_OBJECTS: usize = 128;
+
+const MAX_TIMER2_OBJECTS:usize=64;
+pub type Timer2Routine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut core::ffi::c_void);
+#[derive(Clone,Copy)]
+struct Timer2Record{object:usize,callback:usize,context:usize,active:bool,due:u64,period:u64,tolerable_delay:u32}
+impl Timer2Record{const EMPTY:Self=Self{object:0,callback:0,context:0,active:false,due:0,period:0,tolerable_delay:0};}
+struct Timer2Table{records:[Timer2Record;MAX_TIMER2_OBJECTS]}
+impl Timer2Table{const fn new()->Self{Self{records:[Timer2Record::EMPTY;MAX_TIMER2_OBJECTS]}}}
+static TIMERS2:crate::hal::IrqSpinLock<Timer2Table>=crate::hal::IrqSpinLock::new(Timer2Table::new());
+
 const MAX_DPC_OBJECTS: usize = 128;
 const TIMER_NOTIFICATION: u8 = 8;
 const TIMER_SYNCHRONIZATION: u8 = 9;
@@ -1878,6 +1888,54 @@ pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
         core::hint::spin_loop();
     }
 }
+
+/// Initializes an opaque KTIMER2 through side metadata; no private Windows
+/// object fields are read or written by RdotOS.
+pub unsafe extern "win64" fn ke_initialize_timer2(timer:*mut core::ffi::c_void,callback:Option<Timer2Routine>,context:*mut core::ffi::c_void){
+    if timer.is_null(){return}
+    let mut table=TIMERS2.lock();
+    let slot=table.records.iter().position(|r|r.object==timer as usize)
+        .or_else(||table.records.iter().position(|r|r.object==0));
+    if let Some(i)=slot{table.records[i]=Timer2Record{object:timer as usize,callback:callback.map(|f|f as usize).unwrap_or(0),context:context as usize,active:false,due:0,period:0,tolerable_delay:0};}
+}
+pub unsafe extern "win64" fn ke_set_timer2(timer:*mut core::ffi::c_void,due_time:i64,period_ms:u32,tolerable_delay_ms:u32)->u8{
+    if timer.is_null(){return 0}
+    let Some(deadline)=timer_deadline(due_time) else{return 0};
+    let hz=crate::apic::tsc_frequency_hz().unwrap_or(0);
+    let period=if period_ms==0||hz==0{0}else{((hz as u128)*(period_ms as u128)/1000).min(u64::MAX as u128) as u64};
+    let mut table=TIMERS2.lock();
+    let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
+    let was_active=record.active;
+    record.active=true;record.due=deadline;record.period=period;record.tolerable_delay=tolerable_delay_ms;
+    was_active as u8
+}
+pub unsafe extern "win64" fn ke_cancel_timer2(timer:*mut core::ffi::c_void)->u8{
+    if timer.is_null(){return 0}
+    let mut table=TIMERS2.lock();
+    let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
+    let was_active=record.active;record.active=false;was_active as u8
+}
+fn timer2_tick(now:u64){
+    let mut expired=[Timer2Record::EMPTY;MAX_TIMER2_OBJECTS];let mut count=0usize;
+    {
+        let mut table=TIMERS2.lock();
+        for record in table.records.iter_mut(){
+            if !record.active||record.due>now{continue}
+            if count<expired.len(){expired[count]=*record;count+=1;}
+            if record.period==0{record.active=false;}
+            else{
+                record.due=record.due.saturating_add(record.period);
+                if record.due<=now{record.due=now.saturating_add(record.period);}
+            }
+        }
+    }
+    for record in expired[..count].iter().copied(){
+        if record.callback==0{continue}
+        let callback:Timer2Routine=unsafe{core::mem::transmute(record.callback)};
+        unsafe{callback(record.object as *mut core::ffi::c_void,record.context as *mut core::ffi::c_void);}
+    }
+}
+
 /// Called by the APIC clock interrupt after dispatcher timeout processing.
 /// Expiration is serialized with timer cancellation; callbacks run outside the
 /// timer-table lock and at logical DISPATCH_LEVEL.
@@ -1920,6 +1978,7 @@ pub fn timer_tick(now:u64){
         if record.dpc!=0{let _=unsafe{ke_insert_queue_dpc(record.dpc as *mut _,core::ptr::null_mut(),core::ptr::null_mut())};}
     }
     dispatch_queued_dpcs();
+    timer2_tick(now);
 }
 
 /// Result of the Ki processor-start phase. A successful AP count means APs
