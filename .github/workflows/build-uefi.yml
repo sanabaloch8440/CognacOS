@@ -34,32 +34,46 @@ jobs:
         env:
           RUSTFLAGS: -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
         run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
-      - name: Pin kernel digest into Rust bootloader trust anchor
+      - name: Convert fixed-base kernel ELF to PE32+
+        run: |
+          python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/release/rdotos-kernel build/rdotos-kernel.exe
+          file build/rdotos-kernel.exe
+          python3 - <<'PY'
+          import struct
+          p = open("build/rdotos-kernel.exe", "rb").read()
+          assert p[:2] == b"MZ", "missing DOS MZ signature"
+          off = struct.unpack_from("<I", p, 0x3c)[0]
+          assert p[off:off+4] == b"PE\\0\\0", "missing PE signature"
+          assert struct.unpack_from("<H", p, off+4)[0] == 0x8664, "not AMD64"
+          assert struct.unpack_from("<H", p, off+24)[0] == 0x20b, "not PE32+"
+          assert struct.unpack_from("<Q", p, off+24+24)[0] == 0xffffffff80000000, "unexpected kernel image base"
+          print("PE32+ kernel header validation passed")
+          PY
+      - name: Pin PE32+ kernel digest into Rust bootloader trust anchor
         id: kernel-digest
         shell: bash
         run: |
-          digest="$(sha256sum target/x86_64-unknown-none/release/rdotos-kernel | cut -d' ' -f1)"
+          digest="$(sha256sum build/rdotos-kernel.exe | cut -d' ' -f1)"
           echo "sha256=$digest" >> "$GITHUB_OUTPUT"
       - name: Build Rust UEFI bootloader with pinned kernel digest
         env:
           RDOTOS_KERNEL_SHA256: ${{ steps.kernel-digest.outputs.sha256 }}
         run: cargo build --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi --release
-      - name: Validate kernel ELF and entry point
+      - name: Validate source ELF and PE32+ kernel image
         run: |
-          file target/x86_64-unknown-none/release/rdotos-kernel
-          readelf -h target/x86_64-unknown-none/release/rdotos-kernel
-          readelf -l target/x86_64-unknown-none/release/rdotos-kernel
+          file target/x86_64-unknown-none/release/rdotos-kernel build/rdotos-kernel.exe
           readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -qE 'Class:.*ELF64'
           readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -qE 'Machine:.*X86-64'
           readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -qE 'Type:.*EXEC'
+          file build/rdotos-kernel.exe | grep -q 'PE32+'
       - name: Package a GPT EFI System Partition image
         run: |
           sudo apt-get update
           sudo apt-get install -y dosfstools mtools parted qemu-system-x86 ovmf
           mkdir -p build/EFI/BOOT build/kernel
           cp target/x86_64-unknown-uefi/release/rdotos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
-          cp target/x86_64-unknown-none/release/rdotos-kernel build/EFI/BOOT/rdotos-kernel.elf
-          cp target/x86_64-unknown-none/release/rdotos-kernel build/kernel/rdotos-kernel.elf
+          cp build/rdotos-kernel.exe build/EFI/BOOT/rdotos-kernel.exe
+          cp build/rdotos-kernel.exe build/kernel/rdotos-kernel.exe
           truncate -s 256M build/rdotos-uefi.img
           truncate -s 128M build/pagefile.img
           parted -s build/rdotos-uefi.img mklabel gpt
@@ -69,7 +83,7 @@ jobs:
           mmd -i build/rdotos-uefi.img@@1048576 ::/EFI
           mmd -i build/rdotos-uefi.img@@1048576 ::/EFI/BOOT
           mcopy -i build/rdotos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-          mcopy -i build/rdotos-uefi.img@@1048576 build/EFI/BOOT/rdotos-kernel.elf ::/EFI/BOOT/rdotos-kernel.elf
+          mcopy -i build/rdotos-uefi.img@@1048576 build/EFI/BOOT/rdotos-kernel.exe ::/EFI/BOOT/rdotos-kernel.exe
       - name: Boot smoke test under OVMF/QEMU
         shell: bash
         run: |
@@ -148,6 +162,6 @@ jobs:
           name: rdotos-rust-uefi-kernel
           path: |
             build/EFI/BOOT/BOOTX64.EFI
-            build/kernel/rdotos-kernel.elf
+            build/kernel/rdotos-kernel.exe
             build/rdotos-uefi.img
             build/serial.log
