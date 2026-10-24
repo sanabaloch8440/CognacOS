@@ -600,6 +600,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Security: 4 KiB page policy active; W^X enforced for kernel sections.\r\n");
         serial_write(b"Security: kernel stack guard page unmapped.\r\n");
+        if !arch::permission_fault_self_test(_start as usize as u64) {
+            serial_write(b"FATAL: write-protect or NX permission-fault self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Protection self-tests passed: read-only write trapped and NX execution trapped.\r\n");
         // Start discovered application processors only after the shared kernel
         // mappings are hardened and the executable low-memory trampoline can be
         // installed with explicit page permissions.
