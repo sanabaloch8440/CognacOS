@@ -765,9 +765,8 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     let deadline = if timeout.is_null() { 0 } else {
         let interval = unsafe { timeout.read_unaligned() };
         if interval == 0 { return STATUS_TIMEOUT; }
-        if interval > 0 { return STATUS_NOT_IMPLEMENTED; }
         if !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
-        match crate::apic::relative_timeout_deadline(interval) {
+        match timer_deadline(interval) {
             Some(value) => value,
             None => return STATUS_NOT_IMPLEMENTED,
         }
@@ -845,8 +844,8 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     let Some(thread_id) = current_id else { return STATUS_NOT_IMPLEMENTED; };
     let deadline = if timeout.is_null() { 0 } else {
         let interval = unsafe { timeout.read_unaligned() };
-        if interval > 0 || !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
-        match crate::apic::relative_timeout_deadline(interval) {
+        if !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
+        match timer_deadline(interval) {
             Some(value) => value,
             None => return STATUS_NOT_IMPLEMENTED,
         }
@@ -919,33 +918,33 @@ pub unsafe extern "win64" fn ke_delay_execution_thread(
     interval: *const i64,
 ) -> i32 {
     if interval.is_null() { return STATUS_INVALID_PARAMETER; }
-    if alertable != 0 { return STATUS_NOT_IMPLEMENTED; }
     let value = unsafe { interval.read_unaligned() };
     if value == 0 { return STATUS_SUCCESS; }
-    if value > 0 { return STATUS_NOT_IMPLEMENTED; }
-    let _ = wait_mode;
     let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
+    if alertable != 0 && crate::thread::take_alert_pending() { return STATUS_ALERTED; }
     if !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
-    let deadline = match crate::apic::relative_timeout_deadline(value) {
+    let deadline = match timer_deadline(value) {
         Some(value) => value,
         None => return STATUS_NOT_IMPLEMENTED,
     };
+    let _ = wait_mode;
+    let _ = crate::thread::set_wait_alertable(alertable != 0);
     let token = match crate::dispatcher::enqueue(crate::dispatcher::delay_object(thread_id), thread_id, deadline) {
         Ok(value) => value,
-        Err(_) => return STATUS_NOT_IMPLEMENTED,
+        Err(_) => { let _=crate::thread::set_wait_alertable(false); return STATUS_NOT_IMPLEMENTED; },
     };
+    if alertable != 0 && crate::thread::take_alert_pending() {
+        let _=crate::dispatcher::cancel(token);let _=crate::thread::set_wait_alertable(false);return STATUS_ALERTED;
+    }
     if crate::thread::block_current().is_err() {
         let _ = crate::dispatcher::cancel(token);
+        let _=crate::thread::set_wait_alertable(false);
         return STATUS_NOT_IMPLEMENTED;
     }
-    crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS)
+    let status=crate::thread::take_wait_status().unwrap_or(STATUS_SUCCESS);
+    let _=crate::thread::set_wait_alertable(false);
+    status
 }
-
-
-
-
-
-
 
 pub unsafe extern "win64" fn ke_initialize_guarded_mutex(object:*mut DispatcherHeader){unsafe{initialize_mutant(object,0)}}
 pub unsafe extern "win64" fn ke_acquire_guarded_mutex(object:*mut DispatcherHeader){
