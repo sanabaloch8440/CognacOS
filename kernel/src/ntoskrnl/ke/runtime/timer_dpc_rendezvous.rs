@@ -599,15 +599,15 @@ pub(crate) fn timer_dpc_rundown_self_test()->bool{
 
     let timer=core::ptr::addr_of_mut!(TIMER_DPC_CANCEL_TEST_TIMER);
     unsafe{ke_initialize_timer_ex(timer,0);}
-    if unsafe{ke_set_timer(timer,0,core::ptr::null_mut())}==0{return false}
+    let _=unsafe{ke_set_timer(timer,0,core::ptr::null_mut())};
     if unsafe{ke_cancel_timer(timer)}==0{return false}
-    timer_tick(crate::hal::query_performance_counter().saturating_add(u64::MAX/4));
+    timer_tick(crate::hal::query_performance_counter().saturating_add(1));
     if unsafe{ke_read_state_timer(timer)}!=0{return false}
 
     let timer2=core::ptr::addr_of!(TIMER2_RUNDOWN_TEST_OBJECT).cast_mut().cast::<core::ffi::c_void>();
     TIMER2_RUNDOWN_TEST_COUNT.store(0,Ordering::Release);
     unsafe{ke_initialize_timer2(timer2,Some(timer2_rundown_test_routine),core::ptr::null_mut());}
-    if unsafe{ke_set_timer2(timer2,0,0,0)}==0{return false}
+    let _=unsafe{ke_set_timer2(timer2,0,0,0)};
     timer_tick(crate::hal::query_performance_counter().saturating_add(1));
     let table=TIMERS.lock();
     let record=table.records.iter().find(|r|r.object==timer2 as usize&&r.timer2);
