@@ -130,19 +130,19 @@ pub unsafe extern "system" fn io_create_device(
 pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  if device.is_null(){return}
  let mut state=WDM.lock();
- let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return};
- slot.deleting=true;
- // Keep attachment chains valid even if a driver violates the expected detach-before-delete order.
- if !slot.attached_to.is_null() {
-  let lower=slot.attached_to;
-  unsafe { if (*lower).attached_device==device { (*lower).attached_device=slot.object.attached_device; } }
-  if !slot.object.attached_device.is_null() {
-   if let Some(upper)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,slot.object.attached_device)) { upper.attached_to=lower; }
-  }
- } else if !slot.object.attached_device.is_null() {
-  if let Some(upper)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,slot.object.attached_device)) { upper.attached_to=ptr::null_mut(); }
+ let Some(index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return};
+ state.devices[index].deleting=true;
+ let lower=state.devices[index].attached_to;
+ let upper=state.devices[index].object.attached_device;
+ if !lower.is_null() {
+  unsafe { if (*lower).attached_device==device { (*lower).attached_device=upper; } }
  }
- let driver=slot.object.driver_object;
+ if !upper.is_null() {
+  if let Some(upper_index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,upper)) {
+   state.devices[upper_index].attached_to=lower;
+  }
+ }
+ let driver=state.devices[index].object.driver_object;
  if !driver.is_null() {
   unsafe {
    let mut cursor=ptr::addr_of_mut!((*driver).device_object);
@@ -152,10 +152,14 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
    }
   }
  }
- slot.object.device_extension=ptr::null_mut();slot.object.driver_object=ptr::null_mut();
- slot.object.next_device=ptr::null_mut();slot.used=false;slot.deleting=false;
+ let slot=&mut state.devices[index];
+ slot.object.device_extension=ptr::null_mut();
+ slot.object.driver_object=ptr::null_mut();
+ slot.object.next_device=ptr::null_mut();
+ slot.object.attached_device=ptr::null_mut();
+ slot.attached_to=ptr::null_mut();
+ slot.used=false;slot.deleting=false;
 }
-
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->*mut Irp {
  if stack_size<=0||stack_size>16||charge_quota>1{return ptr::null_mut()}
