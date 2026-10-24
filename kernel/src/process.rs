@@ -91,6 +91,26 @@ pub fn eprocess_for_pid(pid: u64) -> Option<*mut EProcess> {
     Some(core::ptr::addr_of!(registry.0[index]) as *mut EProcess)
 }
 
+/// Copy from/to the currently bound process's user address space. The process
+/// reference pins the address-space root against process reaping while VM's lifetime
+/// lock serializes page-table walking against unmap/destroy operations.
+pub unsafe fn copy_from_current_user(source: u64, destination: &mut [u8]) -> Result<(), crate::vm::VmError> {
+    let pid = crate::thread::current_process_id();
+    let process = eprocess_for_pid(pid).ok_or(crate::vm::VmError::InvalidAddress)?;
+    let root = unsafe { (*process).address_space_root };
+    let result = unsafe { crate::vm::copy_from_user_root(root, source, destination) };
+    let _ = dereference_eprocess(process.cast());
+    result
+}
+pub unsafe fn copy_to_current_user(destination: u64, source: &[u8]) -> Result<(), crate::vm::VmError> {
+    let pid = crate::thread::current_process_id();
+    let process = eprocess_for_pid(pid).ok_or(crate::vm::VmError::InvalidAddress)?;
+    let root = unsafe { (*process).address_space_root };
+    let result = unsafe { crate::vm::copy_to_user_root(root, destination, source) };
+    let _ = dereference_eprocess(process.cast());
+    result
+}
+
 /// Add an object reference for a registered process. Used by NT process lookup
 /// and generic object reference entry points.
 pub fn reference_eprocess(pointer: *mut core::ffi::c_void) -> bool {
