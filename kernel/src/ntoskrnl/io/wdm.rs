@@ -14,6 +14,7 @@ pub const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
 pub const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009A_u32 as i32;
 pub const STATUS_INVALID_DEVICE_REQUEST: i32 = 0xC000_0010_u32 as i32;
 pub const STATUS_DELETE_PENDING: i32 = 0xC000_0056_u32 as i32;
+pub const STATUS_DEVICE_BUSY: i32 = 0x8000_0011_u32 as i32;
 pub const STATUS_OBJECT_NAME_NOT_FOUND: i32 = 0xC000_0034_u32 as i32;
 pub const STATUS_OBJECT_NAME_COLLISION: i32 = 0xC000_0035_u32 as i32;
 pub const IRP_SIZE_X64: usize = 0xD0;
@@ -148,7 +149,7 @@ pub unsafe extern "system" fn io_begin_device_power_transition(device:*mut Devic
  let mut state=WDM.lock();
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
  if s.deleting{return STATUS_DELETE_PENDING}
- if s.power_transition{return STATUS_PENDING}
+ if s.power_transition{return STATUS_DEVICE_BUSY}
  s.power_target=target;s.power_transition=true;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
@@ -173,7 +174,7 @@ pub(crate) unsafe fn io_begin_pnp_transition(device:*mut DeviceObject,minor:u8)-
  let mut state=WDM.lock();
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
  if s.deleting||s.pnp_state==PNP_STATE_REMOVED{return STATUS_DELETE_PENDING}
- if s.pnp_transition{return STATUS_PENDING}
+ if s.pnp_transition{return STATUS_DEVICE_BUSY}
  let valid=match minor {0x00=>s.pnp_state==PNP_STATE_NOT_STARTED||s.pnp_state==PNP_STATE_STOPPED,0x01|0x05=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0,0x02|0x17=>true,0x03=>s.pnp_pending==0x01,0x04=>s.pnp_state==PNP_STATE_STARTED,0x06=>s.pnp_pending==0x05,_=>false};
  if !valid{return STATUS_INVALID_DEVICE_REQUEST}
  s.pnp_transition=true;s.pnp_transition_minor=minor;STATUS_SUCCESS
@@ -925,7 +926,7 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut d)},STATUS_SUCCESS);
   assert_eq!(device_power_state(d),0);
   assert_eq!(unsafe{io_begin_device_power_transition(d,DEVICE_POWER_D3)},STATUS_SUCCESS);
-  assert_eq!(unsafe{io_begin_device_power_transition(d,DEVICE_POWER_D1)},STATUS_PENDING);
+  assert_eq!(unsafe{io_begin_device_power_transition(d,DEVICE_POWER_D1)},STATUS_DEVICE_BUSY);
   assert_eq!(unsafe{io_complete_device_power_transition(d,DEVICE_POWER_D3,STATUS_INVALID_DEVICE_REQUEST)},STATUS_INVALID_DEVICE_REQUEST);
   assert_eq!(device_power_state(d),0);
   assert_eq!(unsafe{io_begin_device_power_transition(d,DEVICE_POWER_D3)},STATUS_SUCCESS);
