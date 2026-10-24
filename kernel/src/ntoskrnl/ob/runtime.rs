@@ -27,7 +27,8 @@ const MAX_OBJECTS:usize=128;
 const MAX_HANDLES:usize=256;
 const MAX_NAME:usize=128;
 const MAX_TYPES:usize=32;
-const HANDLE_TAG:usize=0x4f42_0000;
+const HANDLE_TAG:usize=0x5244_4f54_0000_0000;
+const HANDLE_TAG_MASK:usize=0xffff_ffff_0000_0000;
 const HANDLE_SLOT_BITS:usize=8;
 const HANDLE_SLOT_MASK:usize=(1<<HANDLE_SLOT_BITS)-1;
 const ACCESS_SYSTEM_SECURITY:u32=0x0100_0000;
@@ -71,7 +72,7 @@ fn type_idx(s:&State,id:u16)->Option<usize>{s.types.iter().position(|t|t.used&&t
 fn object_idx(s:&State,body:usize)->Option<usize>{s.objects.iter().position(|o|o.used&&o.body==body&&!o.deleting)}
 fn find_name(s:&State,name:&[u16])->Option<usize>{s.objects.iter().position(|o|o.used&&!o.deleting&&o.name_len as usize==name.len()&&eq(&o.name[..o.name_len as usize],name))}
 fn encode_handle(i:usize,g:u16)->*mut c_void{(HANDLE_TAG|((g as usize)<<HANDLE_SLOT_BITS)|i) as *mut c_void}
-fn decode_handle(h:*mut c_void)->Option<(usize,u16)>{let v=h as usize;if v&0xffff_0000usize!=HANDLE_TAG{return None}Some((v&HANDLE_SLOT_MASK,(v>>HANDLE_SLOT_BITS) as u16))}
+fn decode_handle(h:*mut c_void)->Option<(usize,u16)>{let v=h as usize;if v&HANDLE_TAG_MASK!=HANDLE_TAG{return None}Some((v&HANDLE_SLOT_MASK,(v>>HANDLE_SLOT_BITS) as u16))}
 fn handle_idx(s:&State,h:*mut c_void,owner:usize)->Option<usize>{let(i,g)=decode_handle(h)?;let e=s.handles.get(i)?;if e.used&&e.generation==g&&(e.owner==owner||owner==usize::MAX){Some(i)}else{None}}
 
 /// Register a typed object body. Body storage/lifetime remains owned by its creator.
@@ -184,6 +185,17 @@ mod tests{
   let body=0x1234usize as *mut c_void;register_object(body,ty,&[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16],false,core::ptr::null(),0).unwrap();
   let h=open_by_name(&[b'\\' as u16,b'd' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16],GENERIC_READ,0,true,0).unwrap();
   assert_eq!(reference_by_handle(h,1,ty,0,true).unwrap(),body);assert!(dereference_body(body));close_handle(h,0).unwrap();assert!(dereference_body(body));assert!(reference_body(body,ty,0,true).is_err());
+ }
+ #[test]fn self_relative_dacl_grants_only_explicit_everyone_mask(){
+  let mut o=Object::EMPTY;o.used=true;o.sd_len=48;o.sd[0]=1;o.sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());o.sd[16..20].copy_from_slice(&20u32.to_le_bytes());
+  o.sd[20]=2;o.sd[22..24].copy_from_slice(&28u16.to_le_bytes());o.sd[24..26].copy_from_slice(&1u16.to_le_bytes());
+  o.sd[28]=0;o.sd[30..32].copy_from_slice(&20u16.to_le_bytes());o.sd[32..36].copy_from_slice(&1u32.to_le_bytes());o.sd[36]=1;o.sd[37]=1;o.sd[44..48].copy_from_slice(&[1,0,0,0]);
+  assert!(access_check(&o,1));assert!(!access_check(&o,2));
+ }
+ #[test]fn user_handles_are_owner_scoped(){
+  let ty=register_type(&[90],1,2,4,7,7).unwrap();let body=0x3234usize as *mut c_void;register_object(body,ty,&[91],false,core::ptr::null(),0).unwrap();
+  let h=open_by_pointer(body,1,42,true,0).unwrap();assert_eq!(reference_by_handle(h,1,0,7,false).unwrap_err(),STATUS_INVALID_HANDLE);
+  assert_eq!(reference_by_handle(h,1,0,42,false).unwrap(),body);assert!(dereference_body(body));close_handle(h,42).unwrap();assert!(dereference_body(body));
  }
  #[test]fn access_masks_and_deny_by_default(){let t=TypeEntry{used:true,id:1,gr:1,gw:2,gx:4,ga:7,valid:7,..TypeEntry::EMPTY};assert_eq!(map_access(&t,GENERIC_READ|GENERIC_WRITE),3);assert!(!access_check(&Object::EMPTY,1));}
  #[test]fn stale_handle_cannot_alias_reused_slot(){let ty=register_type(&[88],1,2,4,7,7).unwrap();let body=0x2234usize as *mut c_void;register_object(body,ty,&[89],false,core::ptr::null(),0).unwrap();let h=open_by_pointer(body,1,0,true,0).unwrap();close_handle(h,0).unwrap();let h2=open_by_pointer(body,1,0,true,0).unwrap();assert_ne!(h,h2);assert_eq!(reference_by_handle(h,1,0,0,true).unwrap_err(),STATUS_INVALID_HANDLE);}
