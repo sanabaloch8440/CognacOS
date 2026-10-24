@@ -33,6 +33,7 @@ impl DpcRecord { const EMPTY: Self = Self { object:0,routine:0,context:0,arg1:0,
 struct DpcTable { records:[DpcRecord;MAX_DPC_OBJECTS] }
 impl DpcTable { const fn new()->Self { Self { records:[DpcRecord::EMPTY;MAX_DPC_OBJECTS] } } }
 static DPCS: crate::hal::IrqSpinLock<DpcTable> = crate::hal::IrqSpinLock::new(DpcTable::new());
+static DPC_IN_FLIGHT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 static DPC_DISPATCHING: [core::sync::atomic::AtomicBool; 64] =
     [const { core::sync::atomic::AtomicBool::new(false) };64];
 
@@ -419,11 +420,12 @@ pub fn dispatch_queued_dpcs(){
             let mut table=DPCS.lock();
             let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued&&r.target_cpu==cpu) else{break};
             record.queued=false;
-            if record.routine==0{None}else{Some((record.routine,record.object,record.context,record.arg1,record.arg2))}
+            if record.routine==0{None}else{DPC_IN_FLIGHT.fetch_add(1,Ordering::AcqRel);Some((record.routine,record.object,record.context,record.arg1,record.arg2))}
         };
         if let Some((routine,object,context,arg1,arg2))=callback{
             let function:DpcRoutine=unsafe{core::mem::transmute(routine)};
             unsafe{function(object as *mut _,context as *mut _,arg1 as *mut _,arg2 as *mut _);}
+            DPC_IN_FLIGHT.fetch_sub(1,Ordering::AcqRel);
         }
     }
     CURRENT_IRQL[cpu].store(prior,Ordering::Release);
@@ -438,7 +440,9 @@ pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
     }
     for _ in 0..10_000_000usize{
         dispatch_queued_dpcs();
-        let pending={let table=DPCS.lock();table.records.iter().any(|r|r.active&&r.queued)};
+        let pending={let table=DPCS.lock();table.records.iter().any(|r|r.active&&r.queued)}
+            || DPC_IN_FLIGHT.load(Ordering::Acquire)!=0
+            || DPC_DISPATCHING.iter().any(|state|state.load(Ordering::Acquire));
         if !pending{return}
         for cpu in 0..crate::hal::MAX_CPUS{
             if cpu!=current&&crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){
