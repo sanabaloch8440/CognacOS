@@ -40,6 +40,12 @@ static HIGH_REGION_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::
 static FIRMWARE_MAP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRMWARE_MAP_ENTRIES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 static FIRMWARE_MAP_STRIDE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+struct DirectMapReadOnlyRanges(core::cell::UnsafeCell<[(u64, u64); 2]>);
+unsafe impl Sync for DirectMapReadOnlyRanges {}
+static DIRECT_MAP_READ_ONLY: DirectMapReadOnlyRanges =
+    DirectMapReadOnlyRanges(core::cell::UnsafeCell::new([(0, 0); 2]));
+static DIRECT_MAP_PROTECTIONS_READY: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 pub const DIRECT_MAP_BASE: u64 = 0xffff_9000_0000_0000;
 /// Highest physical address representable in this canonical direct-map window.
@@ -67,21 +73,35 @@ pub fn is_ram_physical_address(address: u64) -> bool {
 /// Convert a high physical address to its canonical direct-map virtual address.
 /// Mapping is demand-created on first access; only UEFI-described RAM is eligible.
 pub fn direct_map_address(physical_address: u64) -> Option<u64> {
-    if physical_address < PHYSICAL_LIMIT
-        || physical_address >= DIRECT_MAP_PHYSICAL_LIMIT
+    if physical_address >= DIRECT_MAP_PHYSICAL_LIMIT
         || !is_ram_physical_address(physical_address)
     { return None; }
     DIRECT_MAP_BASE.checked_add(physical_address)
 }
 
-/// Return a virtual pointer suitable for CPU access to a physical RAM page.
-/// Low memory uses its identity alias; high memory uses the fault-created direct map.
-pub fn physical_access_pointer(physical_address: u64) -> Option<*mut u8> {
-    if physical_address < PHYSICAL_LIMIT {
-        Some(physical_address as *mut u8)
-    } else {
-        direct_map_address(physical_address).map(|address| address as *mut u8)
+/// Protect physical kernel text and rodata in the direct map as read-only/NX,
+/// so the direct map cannot bypass the high-half W^X aliases.
+pub fn set_direct_map_readonly_ranges(mut ranges: [(u64, u64); 2]) {
+    for range in ranges.iter_mut() {
+        range.0 &= !(PAGE_SIZE - 1);
+        range.1 = align_up(range.1, PAGE_SIZE).unwrap_or(DIRECT_MAP_PHYSICAL_LIMIT);
     }
+    unsafe { *DIRECT_MAP_READ_ONLY.0.get() = ranges; }
+    DIRECT_MAP_PROTECTIONS_READY.store(true, core::sync::atomic::Ordering::Release);
+}
+
+pub fn direct_map_page_writable(physical_address: u64) -> bool {
+    if !DIRECT_MAP_PROTECTIONS_READY.load(core::sync::atomic::Ordering::Acquire) {
+        return false;
+    }
+    let ranges = unsafe { &*DIRECT_MAP_READ_ONLY.0.get() };
+    !ranges.iter().any(|(start, end)| *start < *end
+        && physical_address >= *start && physical_address < *end)
+}
+
+/// Return a demand-mapped direct-map pointer for any UEFI-described RAM page.
+pub fn physical_access_pointer(physical_address: u64) -> Option<*mut u8> {
+    direct_map_address(physical_address).map(|address| address as *mut u8)
 }
 
 /// Find a conventional-memory page above 4 GiB for a non-destructive direct-map test.
