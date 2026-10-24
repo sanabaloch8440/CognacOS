@@ -2,21 +2,6 @@
 // This file is included by the Ke runtime facade so existing shared private
 // state and cross-routine helpers retain their original module scope.
 
-// Expiry snapshots are valid only while both object identity and generation
-// match. Generation changes invalidate callbacks captured before cancel/rearm.
-#[inline]
-fn timer_snapshot_is_current(
-    snapshot_object: usize,
-    snapshot_generation: u64,
-    current_object: usize,
-    current_generation: u64,
-) -> bool {
-    snapshot_object != 0
-        && snapshot_generation != 0
-        && snapshot_object == current_object
-        && snapshot_generation == current_generation
-}
-
 // ---- Timer and DPC executive ------------------------------------------------
 // Driver-owned timer/DPC object storage is opaque to this implementation. The
 // side tables track only lifecycle metadata, avoiding assumptions about private
@@ -743,24 +728,4 @@ pub unsafe extern "win64" fn ke_query_time_increment() -> u32 {
 }
 pub unsafe extern "win64" fn ke_should_yield_processor() -> u8 {
     crate::thread::has_ready_threads() as u8
-}
-
-#[cfg(test)]
-mod timer_generation_tests {
-    use super::timer_snapshot_is_current;
-
-    #[test]
-    fn expiry_snapshot_is_valid_only_for_same_object_and_generation() {
-        assert!(timer_snapshot_is_current(0x1000, 7, 0x1000, 7));
-        assert!(!timer_snapshot_is_current(0x1000, 7, 0x1000, 8));
-        assert!(!timer_snapshot_is_current(0x1000, 7, 0x2000, 7));
-    }
-
-    #[test]
-    fn uninitialized_or_invalidated_generation_never_dispatches() {
-        assert!(!timer_snapshot_is_current(0, 1, 0, 1));
-        assert!(!timer_snapshot_is_current(0x1000, 0, 0x1000, 0));
-        // A cancelled/rearmed timer has a newer generation than its snapshot.
-        assert!(!timer_snapshot_is_current(0x1000, 41, 0x1000, 42));
-    }
 }
