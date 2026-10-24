@@ -144,14 +144,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test kernel/src/ntoskrnl/ob/runtime.rs -o build/object-manager-tests --test-threads=1
-          build/object-manager-tests
+          rustc --edition=2024 --test kernel/src/ntoskrnl/ob/runtime.rs -o build/object-manager-tests
+          build/object-manager-tests --test-threads=1
       - name: Run host-side Security Reference Monitor tests
         run: |
           set -euo pipefail
           mkdir -p build
-          rustc --edition=2024 --test tools/security_runtime_host_tests.rs -o build/security-runtime-tests --test-threads=1
-          build/security-runtime-tests
+          rustc --edition=2024 --test tools/security_runtime_host_tests.rs -o build/security-runtime-tests
+          build/security-runtime-tests --test-threads=1
       - name: Run S4 hibernation codec and power-loss recovery tests
         run: |
           set -euo pipefail
