@@ -52,10 +52,14 @@ fn register_process(pid: u64, address_space_root: u64) -> Result<(), ProcessErro
 }
 
 /// Return the stable process-object address registered for a process ID.
+/// Look up an EPROCESS-compatible object by PID and return it referenced.
+/// The caller must eventually release the reference with ObfDereferenceObject.
 pub fn eprocess_for_pid(pid: u64) -> Option<*mut EProcess> {
-    let registry = TABLE.lock();
-    registry.0.iter().position(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid)
-        .map(|index| core::ptr::addr_of!(registry.0[index]) as *mut EProcess)
+    let mut registry = TABLE.lock();
+    let index = registry.0.iter().position(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid)?;
+    let next = registry.0[index].references.checked_add(1)?;
+    registry.0[index].references = next;
+    Some(core::ptr::addr_of!(registry.0[index]) as *mut EProcess)
 }
 
 /// Add an object reference for a registered process. Used by NT process lookup
@@ -63,7 +67,7 @@ pub fn eprocess_for_pid(pid: u64) -> Option<*mut EProcess> {
 pub fn reference_eprocess(pointer: *mut core::ffi::c_void) -> bool {
     let mut registry = TABLE.lock();
     let Some(p) = registry.0.iter_mut().find(|p|
-        p as *mut EProcess as *mut core::ffi::c_void == pointer
+        core::ptr::addr_of!(**p) as *mut EProcess as *mut core::ffi::c_void == pointer
             && p.used && p.magic == EPROCESS_MAGIC) else { return false; };
     let Some(next) = p.references.checked_add(1) else { return false; };
     p.references = next;
