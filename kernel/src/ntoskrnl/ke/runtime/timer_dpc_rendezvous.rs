@@ -557,9 +557,11 @@ pub(crate) fn threaded_dpc_self_test()->bool{
     let object=core::ptr::addr_of!(THREADED_DPC_TEST_OBJECT).cast_mut().cast::<core::ffi::c_void>();
     THREADED_DPC_TEST_COUNT.store(0,Ordering::Release);
     unsafe{ke_initialize_threaded_dpc(object,Some(threaded_dpc_test_routine),core::ptr::null_mut());}
-    if unsafe{ke_insert_queue_dpc(object,core::ptr::null_mut(),core::ptr::null_mut())}==0{return false}
+    let cpu=cpu_slot();let prior=CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL,Ordering::AcqRel);
+    let inserted=unsafe{ke_insert_queue_dpc(object,core::ptr::null_mut(),core::ptr::null_mut())}!=0;
     dispatch_queued_dpcs();
-    if THREADED_DPC_TEST_COUNT.load(Ordering::Acquire)!=0{return false}
+    CURRENT_IRQL[cpu].store(prior,Ordering::Release);
+    if !inserted||THREADED_DPC_TEST_COUNT.load(Ordering::Acquire)!=0{return false}
     dispatch_threaded_dpcs();
     THREADED_DPC_TEST_COUNT.load(Ordering::Acquire)==1
         && DPC_IN_FLIGHT.load(Ordering::Acquire)==0
@@ -599,15 +601,21 @@ pub(crate) fn timer_dpc_rundown_self_test()->bool{
     let dpc=core::ptr::addr_of!(DPC_RUNDOWN_TEST_OBJECT).cast_mut().cast::<core::ffi::c_void>();
     DPC_RUNDOWN_TEST_COUNT.store(0,Ordering::Release);
     unsafe{ke_initialize_dpc(dpc,Some(dpc_rundown_test_routine),core::ptr::null_mut());}
-    if unsafe{ke_insert_queue_dpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())}==0{return false}
-    if unsafe{ke_remove_queue_dpc(dpc)}==0{return false}
-    dispatch_queued_dpcs();
-    if DPC_RUNDOWN_TEST_COUNT.load(Ordering::Acquire)!=0{return false}
-    if unsafe{ke_insert_queue_dpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())}==0{return false}
-    dispatch_queued_dpcs();
-    if DPC_RUNDOWN_TEST_COUNT.load(Ordering::Acquire)!=1
-        ||DPC_IN_FLIGHT.load(Ordering::Acquire)!=0{return false}
-
+    let cpu=cpu_slot();let prior=CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL,Ordering::AcqRel);
+    for _ in 0..64{
+        if unsafe{ke_insert_queue_dpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())}==0
+            ||unsafe{ke_remove_queue_dpc(dpc)}==0{
+            CURRENT_IRQL[cpu].store(prior,Ordering::Release);return false;
+        }
+        if unsafe{ke_insert_queue_dpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())}==0{
+            CURRENT_IRQL[cpu].store(prior,Ordering::Release);return false;
+        }
+        CURRENT_IRQL[cpu].store(prior,Ordering::Release);
+        dispatch_queued_dpcs();
+        if DPC_RUNDOWN_TEST_COUNT.load(Ordering::Acquire)!=(_+1)
+            ||DPC_IN_FLIGHT.load(Ordering::Acquire)!=0{return false}
+        if _!=63{CURRENT_IRQL[cpu].store(DISPATCH_LEVEL,Ordering::Release);}
+    }
     let timer=core::ptr::addr_of_mut!(TIMER_DPC_CANCEL_TEST_TIMER);
     unsafe{ke_initialize_timer_ex(timer,0);}
     let _=unsafe{ke_set_timer(timer,0,core::ptr::null_mut())};
