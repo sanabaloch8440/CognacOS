@@ -13,15 +13,15 @@
 
 ## Summary and calculated compatibility
 
-This expanded pass documents **132 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 132 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
+This expanded pass documents **135 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 135 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
 
 | Metric | Calculation | Result |
 |---|---|---:|
-| Source-level signature / x64 ABI declaration coverage | 132 documented declarations/call paths ÷ 132 | **132/132 = 100%** |
-| Name-based import resolution | 132 scoped routine names resolving to callable implementations ÷ 132 | **132/132 = 100%** |
-| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 132 | **10/132 = 7.6%** |
-| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 132 | **122/132 = 92.4%** |
-| Combined project score | (100% ABI declarations + 7.6% strict behavior) ÷ 2 | **53.8%** |
+| Source-level signature / x64 ABI declaration coverage | 135 documented declarations/call paths ÷ 135 | **135/135 = 100%** |
+| Name-based import resolution | 135 scoped routine names resolving to callable implementations ÷ 135 | **132/132 = 100%** |
+| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 135 | **10/135 = 7.4%** |
+| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 135 | **125/135 = 92.6%** |
+| Combined project score | (100% ABI declarations + 7.4% strict behavior) ÷ 2 | **53.7%** |
 
 **Important:** 53.8% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
 
@@ -175,19 +175,21 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 131 | BOOLEAN KeRemoveEntryDeviceQueue(PKDEVICE_QUEUE DeviceQueue, PKDEVICE_QUEUE_ENTRY DeviceQueueEntry) | ke_remove_entry_device_queue(); explicit list unlink | Removes a queued entry only when its inserted flag is set. Uses the RdotOS global device-queue lock, not Windows' interrupt-object lock discipline. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 132 | PKDEVICE_QUEUE_ENTRY KeRemoveByKeyDeviceQueueIfBusy(PKDEVICE_QUEUE DeviceQueue, ULONG SortKey) | ke_remove_by_key_device_queue_if_busy(); busy check then keyed removal | Returns NULL when not busy; otherwise performs keyed removal. Busy-check/removal atomicity and exact Windows private semantics remain incomplete. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 
+| 133 | KIRQL KeAcquireInterruptSpinLock(PKINTERRUPT Interrupt) | ke_acquire_interrupt_spin_lock(); bounded interrupt-lock side table | Raises to the conservative DPC-level model and serializes callers on a per-interrupt token. Actual interrupt SynchronizeIrql/ISR lock layout is not exposed, so this is **partial**, not DIRQL-equivalent. [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 134 | VOID KeReleaseInterruptSpinLock(PKINTERRUPT Interrupt, KIRQL OldIrql) | ke_release_interrupt_spin_lock(); releases token and restores IRQL | Releases the registered token and restores caller IRQL. The interrupt object's actual ISR lock remains outside this model. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 135 | BOOLEAN KeSynchronizeExecution(PKINTERRUPT Interrupt, PKSYNCHRONIZE_ROUTINE SynchronizeRoutine, PVOID SynchronizeContext) | ke_synchronize_execution(); invoke callback under interrupt token | Runs the supplied callback under the same conservative per-interrupt critical section and returns its BOOLEAN. It cannot synchronize with a hardware ISR until the HAL interrupt-object lock is integrated. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+
 ## Additional Ke exports still unsupported
 
 The entries below remain **unresolved or unimplemented** after the current implementation batch. The preceding routine table now covers 132 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
 
 | Routine | Current status | Public contract / next work |
 |---|---|---|
-| KeAcquireInterruptSpinLock, KeReleaseInterruptSpinLock | Stub / unresolved | Integrate interrupt object synchronization and restore the caller's prior IRQL. |
 | KeInitializeTimer2, KeSetTimer2, KeCancelTimer2 | Stub / unresolved | Implement timer2 ABI separately; do not alias it to legacy timer layouts. |
 | KeInitializeApc, KeInsertQueueApc, KeRemoveQueueApc | Stub / unresolved | Implement APC object layout, kernel/user delivery points and rundown. KeAlertThread/KeTestAlertThread only model alert state. |
 | KeGenericCallDpc, KeIpiGenericCall, KeSignalCallDpcDone, KeSignalCallDpcSynchronize | Stub / unresolved | Implement all-processor rendezvous, per-CPU callbacks and completion barriers. |
 | KeRegisterNmiCallback, KeDeregisterNmiCallback | Stub / unresolved | Add safe NMI callback registration/rundown and interrupt-context restrictions. |
 | KeRegisterProcessorChangeCallback, KeDeregisterProcessorChangeCallback | Stub / unresolved | Connect callback lifecycle to processor hot-add/remove and startup sequencing. |
-| KeSynchronizeExecution | Stub / unresolved | Synchronize a caller-supplied routine with a specific interrupt object and its ISR lock. |
 | KeQueryLogicalProcessorRelationship | Stub / unresolved | Add ACPI topology relationships and documented variable-sized output buffer handling. |
 | KeSetAffinityThread, KeSetSystemGroupAffinityThread, KeRevertToUserGroupAffinityThread | Stub / unresolved | Implement thread affinity masks and processor-group-aware dispatch. |
 | KeStackAttachProcess, KeUnstackDetachProcess, KeAttachProcess, KeDetachProcess | Stub / unresolved | Implement APC-state save/restore, address-space switching and exception-safe detach. |
