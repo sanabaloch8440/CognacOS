@@ -338,7 +338,7 @@ mod tests {
         unsafe{ke_initialize_timer(timer);}
         assert_eq!(unsafe{ke_read_state_timer(timer)},0);
         assert_eq!(unsafe{ke_set_timer(timer,0,core::ptr::null_mut())},0);
-        timer_tick(crate::apic::monotonic_ticks());
+        timer_tick(crate::hal::query_performance_counter());
         assert_eq!(unsafe{ke_read_state_timer(timer)},1);
         assert_eq!(unsafe{ke_cancel_timer(timer)},0);
     }
@@ -424,7 +424,7 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     let deadline = if timeout.is_null() { 0 } else {
         let interval = unsafe { timeout.read_unaligned() };
         if interval == 0 { return STATUS_TIMEOUT; }
-        if !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
+        if !crate::hal::local_clock_event_active() { return STATUS_NOT_IMPLEMENTED; }
         match timer_deadline(interval) {
             Some(value) => value,
             None => return STATUS_NOT_IMPLEMENTED,
@@ -518,7 +518,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     let Some(thread_id) = current_id else { return STATUS_NOT_IMPLEMENTED; };
     let deadline = if timeout.is_null() { 0 } else {
         let interval = unsafe { timeout.read_unaligned() };
-        if !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
+        if !crate::hal::local_clock_event_active() { return STATUS_NOT_IMPLEMENTED; }
         match timer_deadline(interval) {
             Some(value) => value,
             None => return STATUS_NOT_IMPLEMENTED,
