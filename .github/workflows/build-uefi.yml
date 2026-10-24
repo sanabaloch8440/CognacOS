@@ -16,6 +16,19 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
+      - name: Enforce HAL/ntoskrnl dependency boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -nE 'crate::ntoskrnl|crate::acpi::' kernel/src/hal.rs kernel/src/hal/apic.rs; then
+            echo "HAL implementation must not depend on ntoskrnl or ACPI parsing types." >&2
+            exit 1
+          fi
+          if grep -RInE 'crate::apic|use crate::\\{[^}]*\\bapic\\b' kernel/src --include='*.rs'; then
+            echo "APIC implementation must only be reached through HAL service contracts." >&2
+            exit 1
+          fi
+          echo "HAL dependency-boundary source checks passed."
       - name: Install Rust targets
         run: |
           rustup update stable
