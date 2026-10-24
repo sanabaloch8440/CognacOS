@@ -176,6 +176,241 @@ fn mdl_page_count(byte_offset: u64, byte_count: u64) -> Option<u64> {
         .map(|span| span / PAGE_SIZE)
 }
 
+const MDL_LOCKED: i16 = 0x0002;
+const MDL_NONPAGED_POOL: i16 = 0x0004;
+const MDL_MAPPED_SYSTEM_VA: i16 = 0x0001;
+const MAX_LOCKED_PAGES: usize = 8192;
+#[derive(Clone, Copy)]
+struct LockedPage { pfn: u64, references: u32, live: bool }
+impl LockedPage { const EMPTY: Self = Self { pfn: 0, references: 0, live: false }; }
+static LOCKED_PAGES: crate::hal::IrqSpinLock<[LockedPage; MAX_LOCKED_PAGES]> =
+    crate::hal::IrqSpinLock::new([LockedPage::EMPTY; MAX_LOCKED_PAGES]);
+
+/// Used by the physical allocator to prevent recycling frames still pinned by an MDL.
+pub fn is_page_locked(physical_page: u64) -> bool {
+    let pfn = physical_page / PAGE_SIZE;
+    LOCKED_PAGES.lock().iter().any(|p| p.live && p.pfn == pfn && p.references != 0)
+}
+fn lock_pfns(pfns: &[u64]) -> bool {
+    let mut table = LOCKED_PAGES.lock();
+    let mut new_entries = 0usize;
+    for (i, pfn) in pfns.iter().copied().enumerate() {
+        if pfns[..i].contains(&pfn) { continue; }
+        let occurrences = pfns.iter().filter(|candidate| **candidate == pfn).count() as u32;
+        if let Some(entry) = table.iter().find(|entry| entry.live && entry.pfn == pfn) {
+            if entry.references.checked_add(occurrences).is_none() { return false; }
+        } else { new_entries += 1; }
+    }
+    if table.iter().filter(|entry| !entry.live).count() < new_entries { return false; }
+    for pfn in pfns.iter().copied() {
+        if let Some(entry) = table.iter_mut().find(|entry| entry.live && entry.pfn == pfn) {
+            entry.references += 1;
+        } else if let Some(entry) = table.iter_mut().find(|entry| !entry.live) {
+            *entry = LockedPage { pfn, references: 1, live: true };
+        } else { return false; }
+    }
+    true
+}
+fn unlock_pfns(pfns: &[u64]) {
+    let mut table = LOCKED_PAGES.lock();
+    for pfn in pfns.iter().copied() {
+        if let Some(entry) = table.iter_mut().find(|entry| entry.live && entry.pfn == pfn) {
+            if entry.references > 1 { entry.references -= 1; }
+            else { *entry = LockedPage::EMPTY; }
+        }
+    }
+}
+/// Translate a user-mode VA in the currently active process. Only the active CR3 is known.
+fn translate_current_user(va: u64, require_write: bool) -> Option<u64> {
+    if !crate::vm::is_user_range(va, 1) { return None; }
+    let cr3: u64;
+    unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); }
+    let root = (cr3 & ADDRESS_MASK) as *const u64;
+    if root.is_null() { return None; }
+    let indexes = [
+        ((va >> 39) & 0x1ff) as usize, ((va >> 30) & 0x1ff) as usize,
+        ((va >> 21) & 0x1ff) as usize, ((va >> 12) & 0x1ff) as usize,
+    ];
+    let mut table = root;
+    for (level, index) in indexes.iter().copied().enumerate() {
+        let entry = unsafe { table.add(index).read_volatile() };
+        if entry & (PRESENT | USER) != (PRESENT | USER)
+            || (require_write && entry & WRITE == 0) { return None; }
+        if level == 3 { return Some((entry & ADDRESS_MASK) | (va & (PAGE_SIZE - 1))); }
+        if entry & LARGE != 0 { return None; }
+        table = (entry & ADDRESS_MASK) as *const u64;
+    }
+    None
+}
+fn mdl_header_is_writable(address: u64) -> bool {
+    let Some(end) = address.checked_add(MDL_HEADER_SIZE) else { return false; };
+    let mut cursor = address;
+    while cursor < end {
+        if translate(cursor, true).is_none() { return false; }
+        cursor = core::cmp::min(end, (cursor & !(PAGE_SIZE - 1)).saturating_add(PAGE_SIZE));
+    }
+    true
+}
+/// Build an MDL in caller storage, or allocate a nonpaged MDL when mdl is null.
+pub unsafe extern "win64" fn mm_create_mdl(mdl: *mut c_void, base: *mut c_void, length: u64) -> *mut c_void {
+    if base.is_null() || length > u32::MAX as u64 { return core::ptr::null_mut(); }
+    let size = unsafe { mm_size_of_mdl(base, length) };
+    if size == 0 || size > i16::MAX as u32 { return core::ptr::null_mut(); }
+    let address = if mdl.is_null() {
+        crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(size as usize, 0x4c444d4d, true)
+    } else { mdl.cast::<u8>() };
+    if address.is_null() { return core::ptr::null_mut(); }
+    let raw = address as u64;
+    if raw < 0xffff_8000_0000_0000 || !mdl_header_is_writable(raw) {
+        if mdl.is_null() { let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(address, Some(0x4c444d4d)); }
+        return core::ptr::null_mut();
+    }
+    let start = (base as u64) & !(PAGE_SIZE - 1);
+    let Some(_end) = (base as u64).checked_add(length) else { return core::ptr::null_mut(); };
+    let header = unsafe { &mut *address.cast::<MdlHeader>() };
+    header.next = core::ptr::null_mut();
+    header.size = size as i16;
+    header.flags = 0;
+    header._padding = 0;
+    header.process = core::ptr::null_mut();
+    header.mapped_system_va = core::ptr::null_mut();
+    header.start_va = start as *mut c_void;
+    header.byte_count = length as u32;
+    header.byte_offset = ((base as u64) & (PAGE_SIZE - 1)) as u32;
+    address.cast()
+}
+/// Probe and pin the current process's user pages or resident supervisor pages.
+pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, _access_mode: i8, operation: u32) {
+    if mdl.is_null() || operation > 2 { return; }
+    let address = mdl as u64;
+    if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    if header.flags & MDL_LOCKED != 0 || header.flags & MDL_NONPAGED_POOL != 0 { return; }
+    let start = header.start_va as u64;
+    let offset = header.byte_offset as u64;
+    let length = header.byte_count as u64;
+    let Some(pages) = mdl_page_count(offset, length) else { return; };
+    let Some(span) = offset.checked_add(length) else { return; };
+    if start & (PAGE_SIZE - 1) != 0 || (length != 0 && start.checked_add(span).is_none()) { return; }
+    let required = match MDL_HEADER_SIZE.checked_add(pages.saturating_mul(8)) { Some(v) => v, None => return };
+    if header.size < 0 || (header.size as u64) < required { return; }
+    let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
+    let pfn_end = match pfn_address.checked_add(pages.saturating_mul(8)) { Some(v) => v, None => return };
+    let mut cursor = pfn_address;
+    while cursor < pfn_end {
+        if translate(cursor, true).is_none() { return; }
+        cursor = core::cmp::min(pfn_end, (cursor & !(PAGE_SIZE - 1)).saturating_add(PAGE_SIZE));
+    }
+    let write_access = operation != 0;
+    let mut pfns = [0u64; 8192];
+    if pages as usize > pfns.len() { return; }
+    for index in 0..pages as usize {
+        let Some(va) = start.checked_add(index as u64 * PAGE_SIZE) else { return; };
+        let pa = if crate::vm::is_user_range(va, 1) {
+            translate_current_user(va, write_access)
+        } else if va >= 0xffff_8000_0000_0000 && !crate::kernel_vm::is_pageable_address(va) {
+            translate(va, write_access)
+        } else { None };
+        let Some(pa) = pa else { return; };
+        pfns[index] = pa / PAGE_SIZE;
+    }
+    if !lock_pfns(&pfns[..pages as usize]) { return; }
+    let destination = pfn_address as *mut u64;
+    for index in 0..pages as usize { unsafe { destination.add(index).write(pfns[index]); } }
+    header.flags |= MDL_LOCKED;
+}
+/// Release physical-frame references acquired by MmProbeAndLockPages.
+pub unsafe extern "win64" fn mm_unlock_pages(mdl: *mut c_void) {
+    if mdl.is_null() { return; }
+    let address = mdl as u64;
+    if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    if header.flags & MDL_LOCKED == 0 || header.flags & MDL_NONPAGED_POOL != 0 { return; }
+    let Some(pages) = mdl_page_count(header.byte_offset as u64, header.byte_count as u64) else { return; };
+    if pages as usize > 8192 { return; }
+    let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
+    let mut pfns = [0u64; 8192];
+    for index in 0..pages as usize {
+        let at = match pfn_address.checked_add(index as u64 * 8) { Some(v) => v, None => return };
+        if translate(at, false).is_none() { return; }
+        pfns[index] = unsafe { (at as *const u64).read() };
+    }
+    unlock_pfns(&pfns[..pages as usize]);
+    header.flags &= !(MDL_LOCKED | MDL_MAPPED_SYSTEM_VA);
+    header.mapped_system_va = core::ptr::null_mut();
+}
+/// Map only MDLs whose PFNs form a verified contiguous RAM run into the direct-map window.
+pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
+    mdl: *mut c_void, access_mode: i8, cache_type: i32, requested_address: *mut c_void,
+    _bug_check_on_failure: u8, _priority: u32,
+) -> *mut c_void {
+    if mdl.is_null() || access_mode != 0 || cache_type != 1 || !requested_address.is_null() { return core::ptr::null_mut(); }
+    let address = mdl as u64;
+    if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return core::ptr::null_mut(); }
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    if header.flags & (MDL_LOCKED | MDL_NONPAGED_POOL) == 0 { return core::ptr::null_mut(); }
+    if header.flags & MDL_MAPPED_SYSTEM_VA != 0 && !header.mapped_system_va.is_null() { return header.mapped_system_va; }
+    let Some(pages) = mdl_page_count(header.byte_offset as u64, header.byte_count as u64) else { return core::ptr::null_mut(); };
+    if pages == 0 || pages as usize > 8192 { return core::ptr::null_mut(); }
+    let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return core::ptr::null_mut() };
+    let mut first_alias = 0u64;
+    for index in 0..pages {
+        let at = match pfn_address.checked_add(index * 8) { Some(v) => v, None => return core::ptr::null_mut() };
+        if translate(at, false).is_none() { return core::ptr::null_mut(); }
+        let pfn = unsafe { (at as *const u64).read() };
+        let Some(alias) = crate::memory::direct_map_address(pfn.saturating_mul(PAGE_SIZE)) else { return core::ptr::null_mut(); };
+        if index == 0 { first_alias = alias; }
+        else if alias != first_alias.saturating_add(index * PAGE_SIZE) { return core::ptr::null_mut(); }
+    }
+    let Some(mapped) = first_alias.checked_add(header.byte_offset as u64) else { return core::ptr::null_mut(); };
+    header.mapped_system_va = mapped as *mut c_void;
+    header.flags |= MDL_MAPPED_SYSTEM_VA;
+    header.mapped_system_va
+}
+pub unsafe extern "win64" fn mm_map_locked_pages(mdl: *mut c_void, access_mode: i8) -> *mut c_void {
+    unsafe { mm_map_locked_pages_specify_cache(mdl, access_mode, 1, core::ptr::null_mut(), 0, 0) }
+}
+pub unsafe extern "win64" fn mm_unmap_locked_pages(base: *mut c_void, mdl: *mut c_void) {
+    if mdl.is_null() || base.is_null() { return; }
+    let address = mdl as u64;
+    if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    if header.flags & MDL_MAPPED_SYSTEM_VA == 0 || header.mapped_system_va != base { return; }
+    header.flags &= !MDL_MAPPED_SYSTEM_VA;
+    header.mapped_system_va = core::ptr::null_mut();
+}
+/// Same-process virtual copy using the active process page tables. Cross-process
+/// copies remain unsupported until process objects own registered address spaces.
+pub unsafe extern "win64" fn mm_copy_virtual_memory(
+    source_process: *mut c_void, source_address: *const c_void,
+    target_process: *mut c_void, target_address: *mut c_void,
+    length: u64, previous_mode: i8, return_size: *mut u64,
+) -> i32 {
+    if !return_size.is_null() { unsafe { return_size.write(0); } }
+    if source_process.is_null() || target_process.is_null() || source_process != target_process
+        || (source_address as u64) == 0 || (target_address as u64) == 0
+        || length > 0x0000_8000_0000_0000 { return STATUS_INVALID_PARAMETER; }
+    if length == 0 { return STATUS_SUCCESS; }
+    let src = source_address as u64;
+    let dst = target_address as u64;
+    if src.checked_add(length).is_none() || dst.checked_add(length).is_none() { return STATUS_INVALID_PARAMETER; }
+    let mut done = 0u64;
+    while done < length {
+        let sva = match src.checked_add(done) { Some(v) => v, None => break };
+        let dva = match dst.checked_add(done) { Some(v) => v, None => break };
+        let spa = if previous_mode == 1 || crate::vm::is_user_range(sva, 1) { translate_current_user(sva, false) } else { None };
+        let dpa = if previous_mode == 1 || crate::vm::is_user_range(dva, 1) { translate_current_user(dva, true) } else { None };
+        let (Some(spa), Some(dpa)) = (spa, dpa) else { break; };
+        let count = core::cmp::min(length - done, core::cmp::min(
+            PAGE_SIZE - (sva & (PAGE_SIZE - 1)), PAGE_SIZE - (dva & (PAGE_SIZE - 1)))) as usize;
+        if count == 0 { break; }
+        unsafe { core::ptr::copy(spa as *const u8, dpa as *mut u8, count); }
+        done += count as u64;
+    }
+    if !return_size.is_null() { unsafe { return_size.write(done); } }
+    if done == length { STATUS_SUCCESS } else { STATUS_PARTIAL_COPY }
+}
+
 /// Populate an MDL created by IoAllocateMdl for a nonpaged kernel buffer.
 /// Preflights every mapping and the complete PFN destination before writing,
 /// so malformed ranges never leave a partially populated PFN array.
