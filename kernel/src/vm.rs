@@ -427,6 +427,26 @@ pub fn is_user_range(address: u64, length: u64) -> bool {
 }
 
 
+fn translate_user_root(root_physical: u64, virtual_address: u64, write: bool) -> Result<u64, VmError> {
+    if root_physical == 0 || !is_user_range(virtual_address, 1) { return Err(VmError::InvalidAddress); }
+    let indexes = [
+        ((virtual_address >> 39) & 0x1ff) as usize,
+        ((virtual_address >> 30) & 0x1ff) as usize,
+        ((virtual_address >> 21) & 0x1ff) as usize,
+        ((virtual_address >> 12) & 0x1ff) as usize,
+    ];
+    let mut table = (root_physical & ADDR) as *const u64;
+    for (level, index) in indexes.iter().copied().enumerate() {
+        let entry = unsafe { table.add(index).read_volatile() };
+        if entry & PRESENT == 0 || entry & USER == 0 { return Err(VmError::NotMapped); }
+        if write && entry & WRITE == 0 { return Err(VmError::PermissionDenied); }
+        if level == 3 { return Ok((entry & ADDR) | (virtual_address & (PAGE_SIZE - 1))); }
+        if entry & LARGE != 0 { return Err(VmError::NotMapped); }
+        table = (entry & ADDR) as *const u64;
+    }
+    Err(VmError::NotMapped)
+}
+
 /// Copy user bytes through the supplied process page tables. Page translation and
 /// the copy are serialized against address-space destruction/unmapping; arbitrary
 /// user virtual addresses are never dereferenced directly.
@@ -437,7 +457,7 @@ pub unsafe fn copy_from_user_root(root_physical: u64, source: u64, destination: 
     let mut done = 0usize;
     while done < destination.len() {
         let va = source.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
-        let pa = translate_root(root_physical, va, false, true).ok_or(VmError::NotMapped)?;
+        let pa = translate_user_root(root_physical, va, false)?;
         let count = core::cmp::min(destination.len() - done, PAGE_SIZE as usize - (va as usize & 4095));
         unsafe { core::ptr::copy_nonoverlapping(pa as *const u8, destination.as_mut_ptr().add(done), count); }
         done += count;
@@ -453,7 +473,7 @@ pub unsafe fn copy_to_user_root(root_physical: u64, destination: u64, source: &[
     let mut done = 0usize;
     while done < source.len() {
         let va = destination.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
-        let pa = translate_root(root_physical, va, true, true).ok_or(VmError::PermissionDenied)?;
+        let pa = translate_user_root(root_physical, va, true)?;
         let count = core::cmp::min(source.len() - done, PAGE_SIZE as usize - (va as usize & 4095));
         unsafe { core::ptr::copy_nonoverlapping(source.as_ptr().add(done), pa as *mut u8, count); }
         done += count;
