@@ -1185,7 +1185,7 @@ pub unsafe extern "win64" fn SeAccessCheck(
     previously_granted_access: u32,
     privileges: *mut *mut c_void,
     generic_mapping: *const SeGenericMapping,
-    access_mode: u8,
+    access_mode: i8,
     granted_access: *mut u32,
     access_status: *mut i32,
 ) -> u8 {
@@ -1194,7 +1194,7 @@ pub unsafe extern "win64" fn SeAccessCheck(
     if !granted_access.is_null() { unsafe { core::ptr::write_unaligned(granted_access, 0); } }
     if !access_status.is_null() { unsafe { core::ptr::write_unaligned(access_status, STATUS_ACCESS_DENIED); } }
     if security_descriptor.is_null() || subject_context.is_null() || subject_context_locked.is_null()
-        || generic_mapping.is_null() || granted_access.is_null() || access_status.is_null() || access_mode > 1 {
+        || generic_mapping.is_null() || granted_access.is_null() || access_status.is_null() || !(0..=1).contains(&access_mode) {
         return 0;
     }
 
@@ -1316,9 +1316,9 @@ mod se_access_check_tests {
 pub unsafe extern "win64" fn SePrivilegeCheck(
     required_privileges: *const c_void,
     subject_context: *mut SeSecuritySubjectContext,
-    access_mode: u8,
+    access_mode: i8,
 ) -> u8 {
-    if access_mode > 1 || required_privileges.is_null() || subject_context.is_null() { return 0; }
+    if !(0..=1).contains(&access_mode) || required_privileges.is_null() || subject_context.is_null() { return 0; }
     if access_mode == 0 { return 1; }
     let context = unsafe { core::ptr::read_unaligned(subject_context) };
     let token = if !context.client_token.is_null() {
