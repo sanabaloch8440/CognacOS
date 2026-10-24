@@ -416,6 +416,7 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
  let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
  let start=((va-BASE)/PAGE)as usize;let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};
  let i=table.iter().position(|e|e.live&&e.start==start&&e.pages==pages).ok_or(Error::Invalid)?;
+ if !table[i].owns_frames { return Err(Error::Invalid); }
  // Validate mapped leaves and capture physical frames; nonresident pageable
  // pages have no backing frame to reclaim.
  let reclaim=unsafe{&mut *RECLAIM_PAGES.0.get()};
