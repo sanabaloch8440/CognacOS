@@ -16,6 +16,10 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@v4
+      - name: Install Rust targets
+        run: |
+          rustup update stable
+          rustup target add x86_64-unknown-uefi x86_64-unknown-none
       - name: Ensure third-party filesystem sources are absent
         shell: bash
         run: |
@@ -61,10 +65,6 @@ jobs:
         run: cargo check --manifest-path drivers/processor/Cargo.toml --lib
       - name: Test ext4 driver crate
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --lib
-      - name: Install Rust targets
-        run: |
-          rustup update stable
-          rustup target add x86_64-unknown-uefi x86_64-unknown-none
       - name: Build separate native PE32+ HAL and driver images
         shell: bash
         run: |
