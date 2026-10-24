@@ -12,7 +12,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | Memory management/protection | 4 KiB descriptor-driven bootstrap mappings, RAM direct-map, MDL validation/pinning/lifecycle helpers, pageable kernel-pool page-in, non-contiguous kernel and tracked active-process user MDL aliases, registered process-root cross-process copy | Demand-zero/pagefile-backed user faults, Windows-style exception recovery, scheduler-integrated current-process semantics, complete object/handle manager, stress and WDK conformance |
 | PE32+ loader and ring-3 test path | Foundation implemented; boot-tested | Full NT loader, unwind/exception handling, Windows user-mode DLLs |
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
-| SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; executive-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
+| SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
 | NT executive/syscall compatibility | Partial foundations | NT syscall ABI and complete executive semantics |
 | I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
@@ -121,7 +121,8 @@ Discovery and startup primitives do not by themselves establish a production-rea
 
 ## 5. NT executive and Windows compatibility
 
-- [x] Add an `ntoskrnl/ex` executive processor-start phase that sequences MADT discovery, AP startup, per-CPU interrupt checks, scheduler/lock/thread/IRP/object lifecycle and teardown stress, and VM/TLB validation; the boot entry now delegates this phase to the executive.
+- [x] Move processor startup ownership into `ntoskrnl/ke`: `KeInitializeExecutive`-style threading initialization, `KiInitializeProcessor` checks, `KiStartAllProcessors` MADT/AP startup and interrupt stress, and `KiInitializeKernel` post-startup validation. `ntoskrnl/ex` no longer owns kernel/processor initialization.
+- [x] Wire additional Ke processor queries (`KeGetCurrentProcessorNumber`, `KeQueryActiveProcessors`, `KeQueryTimeIncrement`, `KeShouldYieldProcessor`) to live HAL/timer/scheduler state; unimplemented `Ki*` internals remain internal routines, not falsely advertised as Windows exports.
 - [x] Add typed kernel handles, basic named-object lookup, access-mask checks, and object-manager self-tests.
 - [x] Add initial device/IRP dispatch interfaces and bounded request handling.
 - [x] Add initial process address spaces, checked user-copy, ring-3 entry/exit, and a small RdotOS-native syscall path.
