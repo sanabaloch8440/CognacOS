@@ -14,7 +14,7 @@ pub const INCOMPAT_FLEX_BG:u32=0x0200;
 const SUPPORTED_RO_COMPAT:u32=0x0003; // sparse_super and large_file only
 const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG|INCOMPAT_64BIT;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,InvalidChecksum,Io}
+pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,InvalidChecksum,InvalidPartitionTable,UnsupportedPartitionTable,Io}
 fn u16at(b:&[u8],o:usize)->Result<u16,Error>{let e=o.checked_add(2).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u16::from_le_bytes([s[0],s[1]]))}
 fn u32at(b:&[u8],o:usize)->Result<u32,Error>{let e=o.checked_add(4).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -364,6 +364,118 @@ pub fn validate_superblock_checksum(raw: &[u8]) -> Result<(), Error> {
     let stored = u32at(raw, CHECKSUM_OFFSET)?;
     let calculated = crc32c(!0u32, &raw[..CHECKSUM_OFFSET]);
     if stored == calculated { Ok(()) } else { Err(Error::InvalidChecksum) }
+}
+
+
+/// Checked half-open partition extent, expressed in logical sectors.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct DiskPartition { pub first_lba:u64, pub sector_count:u64, pub sector_size:u32 }
+impl DiskPartition {
+    pub fn validate<D:ReadOnlyBlockDevice>(&self,device:&D)->Result<(),Error>{
+        if self.sector_size<512||!self.sector_size.is_power_of_two()||self.sector_count==0{return Err(Error::InvalidGeometry)}
+        let start=self.first_lba.checked_mul(self.sector_size as u64).ok_or(Error::OutOfRange)?;
+        let bytes=self.sector_count.checked_mul(self.sector_size as u64).ok_or(Error::OutOfRange)?;
+        if start.checked_add(bytes).ok_or(Error::OutOfRange)?>device.capacity_bytes(){return Err(Error::OutOfRange)}
+        Ok(())
+    }
+    pub fn start_byte(&self)->Result<u64,Error>{self.first_lba.checked_mul(self.sector_size as u64).ok_or(Error::OutOfRange)}
+    pub fn capacity_bytes(&self)->Result<u64,Error>{self.sector_count.checked_mul(self.sector_size as u64).ok_or(Error::OutOfRange)}
+}
+
+/// Read a primary MBR partition by zero-based slot. Extended/logical partition
+/// chains are deliberately rejected; use GPT on modern disks.
+pub fn read_mbr_partition<D:ReadOnlyBlockDevice>(device:&mut D,slot:usize,sector_size:u32)->Result<DiskPartition,Error>{
+    if slot>=4||sector_size<512||!sector_size.is_power_of_two(){return Err(Error::InvalidGeometry)}
+    if device.capacity_bytes()<sector_size as u64{return Err(Error::Truncated)}
+    let mut sector=[0u8;512];
+    device.read_at(0,&mut sector).map_err(|_|Error::Io)?;
+    if sector[510]!=0x55||sector[511]!=0xaa{return Err(Error::InvalidPartitionTable)}
+    let o=446+slot*16;let kind=sector[o+4];
+    let first=u32::from_le_bytes([sector[o+8],sector[o+9],sector[o+10],sector[o+11]]) as u64;
+    let count=u32::from_le_bytes([sector[o+12],sector[o+13],sector[o+14],sector[o+15]]) as u64;
+    if kind==0||count==0{return Err(Error::InvalidPartitionTable)}
+    if matches!(kind,0x05|0x0f|0x85){return Err(Error::UnsupportedPartitionTable)}
+    let p=DiskPartition{first_lba:first,sector_count:count,sector_size};p.validate(device)?;Ok(p)
+}
+
+/// IEEE CRC-32 used by GPT (not ext4's CRC32C).
+pub fn crc32_ieee(bytes:&[u8])->u32{
+    let mut crc=!0u32;
+    for byte in bytes{crc^=*byte as u32;for _ in 0..8{crc=if crc&1!=0{(crc>>1)^0xedb8_8320}else{crc>>1};}}
+    !crc
+}
+
+/// Validate the primary GPT header and entry-array CRCs and return one
+/// zero-based partition entry. Bounds are capped to 128 standard 128-byte
+/// entries to keep early-boot memory use predictable.
+pub fn read_gpt_partition<D:ReadOnlyBlockDevice>(device:&mut D,slot:u32,sector_size:u32)->Result<DiskPartition,Error>{
+    if sector_size<512||sector_size>4096||!sector_size.is_power_of_two(){return Err(Error::InvalidGeometry)}
+    let disk_sectors=device.capacity_bytes()/(sector_size as u64);
+    if disk_sectors<3{return Err(Error::Truncated)}
+    let ss=sector_size as usize;let mut sector=[0u8;4096];
+    device.read_at(sector_size as u64,&mut sector[..ss]).map_err(|_|Error::Io)?;
+    if &sector[..8]!=b"EFI PART"{return Err(Error::InvalidPartitionTable)}
+    let header_size=u32::from_le_bytes(sector[12..16].try_into().map_err(|_|Error::Truncated)?) as usize;
+    if header_size<92||header_size>ss{return Err(Error::InvalidPartitionTable)}
+    let stored=u32::from_le_bytes(sector[16..20].try_into().map_err(|_|Error::Truncated)?);
+    let mut copy=[0u8;4096];copy[..header_size].copy_from_slice(&sector[..header_size]);copy[16..20].fill(0);
+    if crc32_ieee(&copy[..header_size])!=stored{return Err(Error::InvalidChecksum)}
+    let current=u64::from_le_bytes(sector[24..32].try_into().map_err(|_|Error::Truncated)?);
+    let first_usable=u64::from_le_bytes(sector[40..48].try_into().map_err(|_|Error::Truncated)?);
+    let last_usable=u64::from_le_bytes(sector[48..56].try_into().map_err(|_|Error::Truncated)?);
+    let entries_lba=u64::from_le_bytes(sector[72..80].try_into().map_err(|_|Error::Truncated)?);
+    let count=u32::from_le_bytes(sector[80..84].try_into().map_err(|_|Error::Truncated)?);
+    let size=u32::from_le_bytes(sector[84..88].try_into().map_err(|_|Error::Truncated)?);
+    let entries_crc=u32::from_le_bytes(sector[88..92].try_into().map_err(|_|Error::Truncated)?);
+    if current!=1||first_usable>last_usable||last_usable>=disk_sectors||count==0||count>128||slot>=count||size!=128{
+        return Err(Error::UnsupportedPartitionTable)
+    }
+    let array_len=(count as usize).checked_mul(size as usize).ok_or(Error::OutOfRange)?;
+    let array_offset=entries_lba.checked_mul(sector_size as u64).ok_or(Error::OutOfRange)?;
+    if array_offset.checked_add(array_len as u64).ok_or(Error::OutOfRange)?>device.capacity_bytes(){return Err(Error::OutOfRange)}
+    let mut entries=[0u8;128*128];
+    device.read_at(array_offset,&mut entries[..array_len]).map_err(|_|Error::Io)?;
+    if crc32_ieee(&entries[..array_len])!=entries_crc{return Err(Error::InvalidChecksum)}
+    let o=slot as usize*128;let e=&entries[o..o+128];
+    if e[..16].iter().all(|b|*b==0){return Err(Error::InvalidPartitionTable)}
+    let first=u64::from_le_bytes(e[32..40].try_into().map_err(|_|Error::Truncated)?);
+    let last=u64::from_le_bytes(e[40..48].try_into().map_err(|_|Error::Truncated)?);
+    if first<first_usable||last>last_usable||first>last{return Err(Error::InvalidPartitionTable)}
+    let p=DiskPartition{first_lba:first,sector_count:last.checked_sub(first).and_then(|n|n.checked_add(1)).ok_or(Error::OutOfRange)?,sector_size};
+    p.validate(device)?;Ok(p)
+}
+
+#[derive(Debug,PartialEq,Eq)]
+pub enum PartitionIoError<E>{OutOfRange,Device(E)}
+
+/// A block-device view restricted to a previously validated partition.
+pub struct PartitionDevice<D>{device:D,partition:DiskPartition}
+impl<D:ReadOnlyBlockDevice> PartitionDevice<D>{
+    pub fn new(device:D,partition:DiskPartition)->Result<Self,Error>{partition.validate(&device)?;Ok(Self{device,partition})}
+    pub fn partition(&self)->DiskPartition{self.partition}
+    pub fn into_device(self)->D{self.device}
+    fn translate(&self,offset:u64,len:usize)->Result<u64,PartitionIoError<D::DeviceError>>{
+        let cap=self.partition.sector_count.checked_mul(self.partition.sector_size as u64).ok_or(PartitionIoError::OutOfRange)?;
+        let end=offset.checked_add(len as u64).ok_or(PartitionIoError::OutOfRange)?;
+        if end>cap{return Err(PartitionIoError::OutOfRange)}
+        self.partition.first_lba.checked_mul(self.partition.sector_size as u64)
+            .and_then(|base|base.checked_add(offset)).ok_or(PartitionIoError::OutOfRange)
+    }
+}
+impl<D:ReadOnlyBlockDevice> ReadOnlyBlockDevice for PartitionDevice<D>{
+    type DeviceError=PartitionIoError<D::DeviceError>;
+    fn capacity_bytes(&self)->u64{self.partition.sector_count.saturating_mul(self.partition.sector_size as u64)}
+    fn read_at(&mut self,offset:u64,out:&mut[u8])->Result<(),Self::DeviceError>{
+        let absolute=self.translate(offset,out.len()).map_err(|e|e)?;
+        self.device.read_at(absolute,out).map_err(PartitionIoError::Device)
+    }
+}
+impl<D:BlockDevice> BlockDevice for PartitionDevice<D>{
+    fn write_at(&mut self,offset:u64,data:&[u8])->Result<(),Self::DeviceError>{
+        let absolute=self.translate(offset,data.len()).map_err(|e|e)?;
+        self.device.write_at(absolute,data).map_err(PartitionIoError::Device)
+    }
+    fn flush(&mut self)->Result<(),Self::DeviceError>{self.device.flush().map_err(PartitionIoError::Device)}
 }
 
 
