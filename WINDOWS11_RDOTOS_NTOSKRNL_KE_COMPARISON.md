@@ -13,22 +13,22 @@
 
 ## Summary and calculated compatibility
 
-This pass adds **20 Ke routine implementations** and **20 name-based ntoskrnl import-resolution paths**. All use Rust's x64 Windows calling convention (extern "win64") and matching documented argument/return widths.
+This pass now covers **25 Ke routines** in this comparison: the original 20, four critical/guarded-region routines, and a corrected KeGetCurrentProcessorNumberEx ABI/return path. New routines use the x64 Windows calling convention (extern "win64") and documented argument/return widths.
 
 | Metric | Calculation | Result |
 |---|---|---:|
-| Source-level signature / x64 ABI shape | 20 matching parameter and return-width declarations ÷ 20 | **20/20 = 100%** |
-| Name-based import resolution | New routine names resolving to callable implementations ÷ 20 | **20/20 = 100%** |
-| Behavior match within the currently advertised topology | 9 processor-group / NUMA routines matching RdotOS's group-0/node-0 model ÷ 20 | **9/20 = 45%** |
-| Partial or limited behavior | Remaining routines with documented gaps ÷ 20 | **11/20 = 55%** |
-| Combined project score | (100% ABI + 45% behavior) ÷ 2 | **72.5%** |
+| Source-level signature / x64 ABI shape | 25 matching parameter and return-width declarations ÷ 25 | **25/25 = 100%** |
+| Name-based import resolution | 25 routine names resolving to callable implementations ÷ 25 | **25/25 = 100%** |
+| Behavior match within the currently advertised topology | 9 processor-group / NUMA routines matching RdotOS's group-0/node-0 model ÷ 25 | **9/25 = 36%** |
+| Partial or limited behavior | Remaining routines with documented gaps ÷ 25 | **16/25 = 64%** |
+| Combined project score | (100% ABI + 36% behavior) ÷ 2 | **68%** |
 
 **Important:** 72.5% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. Matching an ABI does not imply matching semantics. The behavior score counts topology queries as matches only within the explicitly supported single-group, single-node model. It does not imply compatibility with arbitrary NUMA or multi-group Windows systems.
 
 ### Scoring rules
 
-- **ABI score** checks x64 calling convention, argument count/order, pointer/structure shape, integer widths, and return type. It does not claim Windows internal object layouts are reproduced.
-- **Behavior score** counts nine processor-group / NUMA queries as matching the topology currently exposed by RdotOS. Timekeeping, APC state, event pulse atomicity, and thread object semantics remain partial.
+- **ABI score** checks x64 calling convention, argument count/order, pointer/structure shape, integer widths, and return type. It does not claim Windows internal object layouts are reproduced. The processor-number routine was corrected to return the systemwide index as documented.
+- **Behavior score** counts nine processor-group / NUMA queries as matching the topology currently exposed by RdotOS. Critical/guarded-region nesting is tracked per CPU slot rather than per thread, so APC and region behavior remains partial on migratable threads. Event pulse now serializes signal/wake/reset, but complete Windows wait handoff and priority boosting remain partial.
 - **Combined score** is the unweighted mean of the two percentages, shown for progress tracking only.
 
 ## Routine-by-routine comparison
@@ -58,6 +58,47 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 19 | BOOLEAN KeAreApcsDisabled(VOID) | ke_are_apcs_disabled() | Returns true when logical IRQL is above APC level. APC-disable nesting/counts are not maintained, so it can miss disabled APCs at lower IRQL. **Partial.** [WDM DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/) |
 | 20 | BOOLEAN KeAreAllApcsDisabled(VOID) | ke_are_all_apcs_disabled() | Same IRQL-based approximation; special APC / guarded-region nesting is not tracked. **Partial.** [WDM DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/) |
 
+| 21 | VOID KeEnterCriticalRegion(VOID) | ke_enter_critical_region(); direct name resolver | Increments normal-kernel-APC disable nesting. Counter is per CPU slot, not per thread; migration and APC delivery are not implemented. **Partial.** [Docs](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-keentercriticalregion) |
+| 22 | VOID KeLeaveCriticalRegion(VOID) | ke_leave_critical_region(); direct name resolver | Decrements the nesting counter without underflow; callers must balance enter/leave. Per-thread semantics and APC delivery remain incomplete. **Partial.** [Docs](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-keleavecriticalregion) |
+| 23 | VOID KeEnterGuardedRegion(VOID) | ke_enter_guarded_region(); direct name resolver | Increments guarded-region nesting, intended to disable special APC delivery too. Per-CPU storage is an approximation until thread-local APC state exists. **Partial.** [Docs](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/critical-regions-and-guarded-regions) |
+| 24 | VOID KeLeaveGuardedRegion(VOID) | ke_leave_guarded_region(); direct name resolver | Decrements nesting without underflow. Correct only while execution remains on the same CPU slot; scheduler integration is still required. **Partial.** [Docs](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/critical-regions-and-guarded-regions) |
+| 25 | ULONG KeGetCurrentProcessorNumberEx(PPROCESSOR_NUMBER ProcNumber) | ke_get_current_processor_number_ex(out); normal name resolver | Now writes the optional group/number structure and returns the systemwide processor index (instead of the prior incorrect void return). Group 0 only. **Match within stated topology.** [Docs](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-kegetcurrentprocessornumberex) |
+
+## Additional Ke exports present in the manifest but still unsupported
+
+The pinned export catalogue contains many more Ke names than the callable runtime implements. These entries are documented here as **stubs/unresolved imports**, not claimed as working routines. The resolver intentionally returns no function pointer for these until an ABI-correct implementation is wired in.
+
+| Routine | Current status | Public contract / next work |
+|---|---|---|
+| KeAcquireGuardedMutex, KeReleaseGuardedMutex, KeTryToAcquireGuardedMutex | Stub / unresolved | Implement guarded mutex ownership, recursion rules and guarded-region/APC interaction. |
+| KeAcquireGuardedMutexUnsafe, KeReleaseGuardedMutexUnsafe | Stub / unresolved | Implement caller-held guarded-region preconditions and ownership validation. |
+| KeAcquireInStackQueuedSpinLock, KeReleaseInStackQueuedSpinLock | Stub / unresolved | Implement ABI-correct KLOCK_QUEUE_HANDLE and fair queued lock handoff. |
+| KeAcquireInStackQueuedSpinLockAtDpcLevel, KeReleaseInStackQueuedSpinLockFromDpcLevel | Stub / unresolved | Add queued lock variants with exact DPC-level IRQL contract. |
+| KeAcquireQueuedSpinLock, KeReleaseQueuedSpinLock | Stub / unresolved | Add per-lock queue state and lock-number mapping. |
+| KeAcquireInterruptSpinLock, KeReleaseInterruptSpinLock | Stub / unresolved | Integrate interrupt object synchronization and restore the caller's prior IRQL. |
+| KeInitializeDpc, KeInsertQueueDpc, KeRemoveQueueDpc, KeFlushQueuedDpcs | Stub / unresolved | Implement DPC object layout, queueing, cancellation and execution/drain guarantees. |
+| KeInitializeTimer, KeInitializeTimerEx, KeSetTimer, KeSetTimerEx, KeCancelTimer | Stub / unresolved | Implement dispatcher timer objects, deadline queueing, cancellation races and DPC firing. |
+| KeInitializeTimer2, KeSetTimer2, KeCancelTimer2 | Stub / unresolved | Implement the newer timer2 ABI separately; do not alias it to legacy timer layouts. |
+| KeInitializeMutex, KeReleaseMutex, KeReadStateMutex | Stub / unresolved | Implement mutant ownership, recursion, abandonment and waiter priority semantics. |
+| KeInitializeMutant, KeReleaseMutant, KeReadStateMutant | Stub / unresolved | Implement mutant dispatcher object state and owner-thread accounting. |
+| KeInitializeQueue, KeInsertQueue, KeInsertHeadQueue, KeRemoveQueue, KeRundownQueue | Stub / unresolved | Implement executive queue object, waiters, quotas, timeout and rundown. |
+| KeInitializeDeviceQueue, KeInsertDeviceQueue, KeInsertByKeyDeviceQueue, KeRemoveDeviceQueue | Stub / unresolved | Implement device queue busy state and keyed ordering. |
+| KeInitializeApc, KeInsertQueueApc, KeRemoveQueueApc, KeAlertThread, KeTestAlertThread | Stub / unresolved | Implement APC object/queue layout, delivery points, alert states and rundown. |
+| KeGenericCallDpc, KeIpiGenericCall, KeSignalCallDpcDone, KeSignalCallDpcSynchronize | Stub / unresolved | Implement all-processor rendezvous, per-CPU callbacks and completion barriers. |
+| KeRegisterNmiCallback, KeDeregisterNmiCallback | Stub / unresolved | Add safe NMI callback registration/rundown and interrupt-context restrictions. |
+| KeRegisterProcessorChangeCallback, KeDeregisterProcessorChangeCallback | Stub / unresolved | Connect callback lifecycle to processor hot-add/remove and startup sequencing. |
+| KeFlushIoBuffers | Stub / unresolved | Implement architecture/platform cache-coherency contract for MDL-backed I/O buffers. |
+| KeSynchronizeExecution | Stub / unresolved | Synchronize a caller-supplied routine with a specific interrupt object and its ISR lock. |
+| KeQueryLogicalProcessorRelationship | Stub / unresolved | Add ACPI topology relationships and documented variable-sized output buffer handling. |
+| KeQueryTimeIncrement, KeGetClockTimerResolution, KeGetNextClockTickDuration | Stub / unresolved | Expose clock/timer resolution backed by the real periodic/deadline clock. |
+| KeQueryUnbiasedInterruptTimePrecise | Stub / unresolved | Add precise unbiased time and suspend/resume bias accounting. |
+| KeSetPriorityThread, KeQueryPriorityThread, KeSetBasePriorityThread | Stub / unresolved | Add Windows-compatible priority ranges, boosts and scheduler policy. |
+| KeSetAffinityThread, KeSetSystemGroupAffinityThread, KeRevertToUserGroupAffinityThread | Stub / unresolved | Implement thread affinity masks and processor-group-aware dispatch. |
+| KeStackAttachProcess, KeUnstackDetachProcess, KeAttachProcess, KeDetachProcess | Stub / unresolved | Implement APC-state save/restore, address-space switching and exception-safe detach. |
+| KeSaveExtendedProcessorState, KeRestoreExtendedProcessorState, KeSaveFloatingPointState, KeRestoreFloatingPointState | Stub / unresolved | Implement XSAVE feature masks, per-thread extended-state ownership and validation. |
+| KeBugCheck, KeBugCheckEx | Stub / unresolved | Add fatal stop path, bugcheck data, crash diagnostics and safe behavior at high IRQL. |
+
+Microsoft's DDI index describes the documented roles of [spin locks](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-keacquirespinlock), [event signaling](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kesetevent), [single-object waits](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kewaitforsingleobject), [thread delays](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kedelayexecutionthread), and [critical/guarded regions](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/critical-regions-and-guarded-regions). Exact private Windows kernel implementation details are not public; this comparison is against public WDK ABI and behavioral contracts.
 ## Return values, ABI, and call-path details
 
 - New resolver entries are name-based and scoped to ntoskrnl.exe and accepted kernel aliases. No export ordinals are fabricated.
@@ -84,8 +125,8 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 
 1. Maintain an interrupt-time epoch from boot and advance it from the clock interrupt; account for sleep/resume bias.
 2. Maintain a kernel system-time base synchronized from RTC/firmware and interpolate it with the calibrated counter for KeQuerySystemTimePrecise.
-3. Track APC disable and guarded-region nesting per thread.
-4. Make event pulse atomic with waiter satisfaction; implement Wait handoff and priority boosts.
+3. Move APC disable and guarded-region nesting from CPU slots into thread-local state, then connect those counters to real APC delivery.
+4. Finish event pulse's scheduler/wait-block atomicity, Wait handoff and priority boosts.
 5. Replace the opaque RdotOS thread-record token with a stable NT-compatible thread object abstraction for supported driver-visible operations.
 6. Expand ACPI SRAT/SLIT NUMA discovery and multi-group topology before claiming compatibility beyond one group/node.
 7. Run the full freestanding build and OVMF/QEMU smoke/SMP matrix. Signature review is not runtime verification.
