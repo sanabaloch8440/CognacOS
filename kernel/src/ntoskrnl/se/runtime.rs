@@ -1441,8 +1441,6 @@ mod se_restricted_access_tests {
             &mut locked, 1, 0, &mut privileges, &mapping, 1, &mut granted, &mut status) }, 0);
         assert_eq!(status, 0xC000_0022u32 as i32);
         assert_eq!(unsafe { se_internal_UnregisterTokenSids(token) }, STATUS_SUCCESS);
-        // Clear the restricting SID set as well before dropping token metadata.
-        assert_eq!(unsafe { se_internal_RegisterRestrictedTokenSids(token, restricted_ptrs.as_ptr(), lengths.as_ptr(), 1) }, STATUS_SUCCESS);
         assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
     }
 }
