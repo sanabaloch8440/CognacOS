@@ -5,6 +5,9 @@
 //! Windows HAL or WDK implementation. Interrupt delivery remains disabled
 //! until the IDT, APIC routing, and timer are completely installed.
 
+#[path = "hal/apic.rs"]
+mod apic;
+
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
@@ -336,43 +339,43 @@ pub fn self_test() -> bool {
         && CPU_LOCALS[MAX_CPUS - 1].logical_id.load(Ordering::Relaxed) == (MAX_CPUS - 1) as u32
         && CPU_LOCALS[0].state.load(Ordering::Relaxed) == CPU_ONLINE
         && CPU_LOCALS.iter().skip(1).all(|cpu| cpu.state.load(Ordering::Relaxed) == CPU_OFFLINE)
-        && crate::apic::irql_to_apic_class(0) == 0
-        && crate::apic::irql_to_apic_class(1) == 0
-        && crate::apic::irql_to_apic_class(2) == 1
-        && crate::apic::irql_to_apic_class(3) == 2
-        && crate::apic::irql_to_apic_class(12) == 11
-        && crate::apic::irql_to_apic_class(31) == 15
+        && apic::irql_to_apic_class(0) == 0
+        && apic::irql_to_apic_class(1) == 0
+        && apic::irql_to_apic_class(2) == 1
+        && apic::irql_to_apic_class(3) == 2
+        && apic::irql_to_apic_class(12) == 11
+        && apic::irql_to_apic_class(31) == 15
         && exports::self_test()
 }
 
 /// Platform clock services consumed by the NT executive. Keep APIC/TSC
 /// details private to the HAL implementation rather than importing them in Ke.
 #[inline]
-pub fn query_performance_counter() -> u64 { crate::apic::monotonic_ticks() }
+pub fn query_performance_counter() -> u64 { apic::monotonic_ticks() }
 
 #[inline]
-pub fn query_performance_frequency_hz() -> Option<u64> { crate::apic::tsc_frequency_hz() }
+pub fn query_performance_frequency_hz() -> Option<u64> { apic::tsc_frequency_hz() }
 
 #[inline]
 pub fn relative_timeout_deadline(interval_100ns: i64) -> Option<u64> {
-    crate::apic::relative_timeout_deadline(interval_100ns)
+    apic::relative_timeout_deadline(interval_100ns)
 }
 
 #[inline]
-pub fn local_clock_event_active() -> bool { crate::apic::local_timer_active() }
+pub fn local_clock_event_active() -> bool { apic::local_timer_active() }
 
 #[inline]
-pub fn query_cross_core_clock_status() -> (bool, u64) { crate::apic::tsc_cross_core_status() }
+pub fn query_cross_core_clock_status() -> (bool, u64) { apic::tsc_cross_core_status() }
 
 /// Apply an NT logical IRQL to the platform interrupt-priority mechanism.
 #[inline]
 pub unsafe fn set_interrupt_priority(irql: u8) -> Result<(), ()> {
-    unsafe { crate::apic::set_task_priority(irql).map_err(|_| ()) }
+    unsafe { apic::set_task_priority(irql).map_err(|_| ()) }
 }
 
 /// Platform interrupt-controller services. These are the only intended
 /// consumers of the xAPIC/I/O-APIC implementation outside the HAL.
-pub type PlatformInterruptError = crate::apic::ApicError;
+pub type PlatformInterruptError = apic::ApicError;
 pub const LOCAL_TIMER_VECTOR: u8 = 0xE0;
 pub const KE_BROADCAST_VECTOR: u8 = 0xEF;
 pub const HAL_IPI_VECTOR: u8 = 0xF0;
@@ -380,37 +383,37 @@ pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xF1;
 pub const TSC_SYNC_VECTOR: u8 = 0xF2;
 
 #[inline]
-pub unsafe fn initialize_local_interrupt_controller(base: u64) -> Result<u32, crate::apic::ApicError> {
-    unsafe { crate::apic::initialize_local_apic(base) }
+pub unsafe fn initialize_local_interrupt_controller(base: u64) -> Result<u32, apic::ApicError> {
+    unsafe { apic::initialize_local_apic(base) }
 }
 #[inline]
-pub unsafe fn mask_interrupt_controller_routes(base: u64) -> Result<(), crate::apic::ApicError> {
-    unsafe { crate::apic::mask_all_ioapic(base) }
+pub unsafe fn mask_interrupt_controller_routes(base: u64) -> Result<(), apic::ApicError> {
+    unsafe { apic::mask_all_ioapic(base) }
 }
 #[inline]
-pub unsafe fn calibrate_local_clock_event() -> Result<u32, crate::apic::ApicError> {
-    unsafe { crate::apic::calibrate_local_timer() }
+pub unsafe fn calibrate_local_clock_event() -> Result<u32, apic::ApicError> {
+    unsafe { apic::calibrate_local_timer() }
 }
 #[inline]
-pub unsafe fn start_local_clock_event() -> Result<(), crate::apic::ApicError> {
-    unsafe { crate::apic::start_calibrated_local_timer() }
+pub unsafe fn start_local_clock_event() -> Result<(), apic::ApicError> {
+    unsafe { apic::start_calibrated_local_timer() }
 }
 #[inline]
-pub fn local_interrupt_controller_base() -> Option<u64> { crate::apic::local_apic_base() }
+pub fn local_interrupt_controller_base() -> Option<u64> { apic::local_apic_base() }
 #[inline]
 pub unsafe fn end_local_interrupt() {
     if let Some(base) = local_interrupt_controller_base() {
-        unsafe { crate::apic::local_apic_eoi(base); }
+        unsafe { apic::local_apic_eoi(base); }
     }
 }
 #[inline]
-pub fn capture_clock_synchronization_sample() { crate::apic::capture_tsc_sync_sample(); }
+pub fn capture_clock_synchronization_sample() { apic::capture_tsc_sync_sample(); }
 #[inline]
 pub unsafe fn dispatch_platform_interrupt(vector: u8, frame: *mut core::ffi::c_void) -> bool {
-    unsafe { crate::apic::dispatch_external_interrupt(vector, frame) }
+    unsafe { apic::dispatch_external_interrupt(vector, frame) }
 }
 #[inline]
-pub fn local_clock_event_interrupt() { crate::apic::timer_interrupt(); }
+pub fn local_clock_event_interrupt() { apic::timer_interrupt(); }
 
 /// Windows HAL export compatibility inventory and fail-closed stub metadata.
 pub mod exports;
