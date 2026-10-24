@@ -440,7 +440,7 @@ pub fn read_gpt_partition<D:ReadOnlyBlockDevice>(device:&mut D,slot:u32,sector_s
     let count=u32::from_le_bytes(sector[80..84].try_into().map_err(|_|Error::Truncated)?);
     let size=u32::from_le_bytes(sector[84..88].try_into().map_err(|_|Error::Truncated)?);
     let entries_crc=u32::from_le_bytes(sector[88..92].try_into().map_err(|_|Error::Truncated)?);
-    if current!=1||backup>=disk_sectors||backup==current||first_usable>last_usable||last_usable>=disk_sectors
+    if current!=1||backup!=disk_sectors-1||backup==current||first_usable>last_usable||last_usable>=disk_sectors
         ||count==0||count>128||slot>=count||size!=128||entries_lba<2 {
         return Err(Error::UnsupportedPartitionTable)
     }
@@ -605,9 +605,9 @@ mod host_tests {
         h[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
         h[12..16].copy_from_slice(&92u32.to_le_bytes());
         h[24..32].copy_from_slice(&1u64.to_le_bytes());
-        h[32..40].copy_from_slice(&15u64.to_le_bytes());
+        h[32..40].copy_from_slice(&63u64.to_le_bytes());
         h[40..48].copy_from_slice(&3u64.to_le_bytes());
-        h[48..56].copy_from_slice(&14u64.to_le_bytes());
+        h[48..56].copy_from_slice(&62u64.to_le_bytes());
         h[72..80].copy_from_slice(&2u64.to_le_bytes());
         h[80..84].copy_from_slice(&1u32.to_le_bytes());
         h[84..88].copy_from_slice(&128u32.to_le_bytes());
