@@ -22,7 +22,7 @@ fn next_timer_generation(current: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::timer_snapshot_is_current;
+    use super::{next_timer_generation, timer_snapshot_is_current};
 
     #[test]
     fn expiry_snapshot_requires_same_object_and_generation() {
