@@ -417,21 +417,21 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                                     .all(|io| (io.address as u64) >= 0xfec0_0000 && (io.address as u64) < 0xfee0_0000)
                             {
                                 // The bootloader maps these standard MMIO windows UC.
-                                unsafe { apic::initialize_local_apic(firmware_madt.local_apic_address) }
+                                unsafe { hal::initialize_local_interrupt_controller(firmware_madt.local_apic_address) }
                             } else {
-                                Err(apic::ApicError::InvalidBase)
+                                Err(hal::PlatformInterruptError::InvalidBase)
                             }) {
                                 Ok(local_id) if local_id == bsp_apic_id => {
                                     let mut routes_masked = true;
                                     for io in firmware_madt.io_apics.iter().take(firmware_madt.io_apic_count) {
-                                        if unsafe { apic::mask_all_ioapic(io.address as u64) }.is_err() {
+                                        if unsafe { hal::mask_interrupt_controller_routes(io.address as u64) }.is_err() {
                                             routes_masked = false;
                                             break;
                                         }
                                     }
                                     if routes_masked {
                                         unsafe { outb(0x21, 0xff); outb(0xa1, 0xff); }
-                                        match unsafe { apic::calibrate_local_timer() } {
+                                        match unsafe { hal::calibrate_local_clock_event() } {
                                             Ok(count) => {
                                                 local_timer_ready = true;
                                                 serial_write(b"Local APIC timer calibrated (still masked); 1 ms count=");
@@ -772,7 +772,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
         if local_timer_ready {
-            match unsafe { apic::start_calibrated_local_timer() } {
+            match unsafe { hal::start_local_clock_event() } {
                 Ok(()) => {
                     serial_write(b"Local APIC timer enabled after AP startup/self-tests; external routes remain masked.\r\n");
                     loop {
