@@ -74,7 +74,7 @@ pub struct IoStackLocation {
     pub context: *mut c_void,
 }
 #[repr(C)]
-struct DeviceSlot { used: bool, deleting: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
+struct DeviceSlot { used: bool, deleting: bool, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
 struct IrpSlot { used: bool, owned_mdl: *mut c_void, object: Irp, stack: [IoStackLocation;16] }
@@ -83,7 +83,7 @@ struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WD
 impl WdmState {
  const fn new() -> Self {
   Self {
-   devices: [const { DeviceSlot { used:false, deleting:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
+   devices: [const { DeviceSlot { used:false, deleting:false, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
@@ -97,6 +97,76 @@ impl WdmState {
  }
 }
 static WDM: IrqSpinLock<WdmState> = IrqSpinLock::new(WdmState::new());
+
+pub const DEVICE_POWER_D0:u8=0; pub const DEVICE_POWER_D1:u8=1; pub const DEVICE_POWER_D2:u8=2; pub const DEVICE_POWER_D3:u8=3;
+
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_reference_device_object(device:*mut DeviceObject)->*mut DeviceObject {
+ if device.is_null(){return ptr::null_mut()}
+ let mut state=WDM.lock();
+ let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)&&!s.deleting) else{return ptr::null_mut()};
+ let Some(next)=slot.object.reference_count.checked_add(1) else{return ptr::null_mut()};
+ slot.object.reference_count=next;device
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_dereference_device_object(device:*mut DeviceObject) {
+ if device.is_null(){return}
+ let finalize={
+  let mut state=WDM.lock();
+  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return};
+  if s.object.reference_count>1{s.object.reference_count-=1;}
+  s.deleting&&s.object.reference_count<=1&&s.remove_lock_count==0&&!s.power_transition
+ };
+ if finalize{unsafe{io_delete_device(device)}}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_acquire_device_remove_lock(device:*mut DeviceObject)->i32 {
+ if device.is_null(){return STATUS_INVALID_PARAMETER}
+ let mut state=WDM.lock();
+ let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
+ if s.deleting{return STATUS_DELETE_PENDING}
+ let Some(n)=s.remove_lock_count.checked_add(1) else{return STATUS_INSUFFICIENT_RESOURCES};
+ s.remove_lock_count=n;STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_release_device_remove_lock(device:*mut DeviceObject) {
+ if device.is_null(){return}
+ let finalize={
+  let mut state=WDM.lock();
+  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return};
+  if s.remove_lock_count==0{return}
+  s.remove_lock_count-=1;s.deleting&&s.remove_lock_count==0&&s.object.reference_count<=1&&!s.power_transition
+ };
+ if finalize{unsafe{io_delete_device(device)}}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_begin_device_power_transition(device:*mut DeviceObject,target:u8)->i32 {
+ if device.is_null()||target>DEVICE_POWER_D3{return STATUS_INVALID_PARAMETER}
+ let mut state=WDM.lock();
+ let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
+ if s.deleting{return STATUS_DELETE_PENDING}
+ if s.power_transition{return STATUS_PENDING}
+ if target==s.power_state{return STATUS_SUCCESS}
+ s.power_target=target;s.power_transition=true;STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_complete_device_power_transition(device:*mut DeviceObject,target:u8,status:i32)->i32 {
+ if device.is_null()||target>DEVICE_POWER_D3{return STATUS_INVALID_PARAMETER}
+ let finalize={
+  let mut state=WDM.lock();
+  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
+  if !s.power_transition||s.power_target!=target{return STATUS_INVALID_DEVICE_REQUEST}
+  if status==STATUS_SUCCESS{s.power_state=target}
+  s.power_transition=false;s.deleting&&s.remove_lock_count==0&&s.object.reference_count<=1
+ };
+ if finalize{unsafe{io_delete_device(device)}}status
+}
+pub fn device_power_state(device:*mut DeviceObject)->i32 {
+ if device.is_null(){return -1}
+ let state=WDM.lock();
+ state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)).map(|s|s.power_state as i32).unwrap_or(-1)
+}
+
 unsafe fn read_ptr(base:*const u8, offset:usize)->*mut c_void { unsafe { ptr::read_unaligned(base.add(offset).cast::<*mut c_void>()) } }
 unsafe fn write_ptr(base:*mut u8, offset:usize, value:*mut c_void) { unsafe { ptr::write_unaligned(base.add(offset).cast::<*mut c_void>(),value); } }
 unsafe fn write_usize(base:*mut u8, offset:usize, value:usize) { unsafe { ptr::write_unaligned(base.add(offset).cast::<usize>(),value); } }
@@ -124,7 +194,7 @@ pub unsafe extern "system" fn io_create_device(
  let mut state=WDM.lock();
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.deleting=false;slot.attached_to=ptr::null_mut();
+ slot.used=true;slot.deleting=false;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.attached_to=ptr::null_mut();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
  slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
@@ -142,6 +212,8 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  let mut state=WDM.lock();
  let Some(index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return};
  state.devices[index].deleting=true;
+ // Defer reclamation while external references, remove-lock owners, or power transitions remain.
+ if state.devices[index].object.reference_count > 1 || state.devices[index].remove_lock_count != 0 || state.devices[index].power_transition { return; }
  let lower=state.devices[index].attached_to;
  let upper=state.devices[index].object.attached_device;
  if !lower.is_null() {
@@ -789,6 +861,32 @@ mod wdm_tests {
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
   assert_eq!(unsafe{(*irp).bytes[IRP_STATUS_OFFSET]},0);
   unsafe{io_free_irp(irp);io_delete_device(device);}
+ }
+ #[test]
+ fn removal_waits_for_remove_lock_and_reference_rundown() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};let mut d:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut d)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_reference_device_object(d)},d);
+  assert_eq!(unsafe{io_acquire_device_remove_lock(d)},STATUS_SUCCESS);
+  unsafe{io_delete_device(d);}
+  assert_eq!(unsafe{io_acquire_device_remove_lock(d)},STATUS_DELETE_PENDING);
+  unsafe{io_dereference_device_object(d);}
+  assert!(!driver.device_object.is_null());
+  unsafe{io_release_device_remove_lock(d);}
+  assert!(driver.device_object.is_null());
+ }
+ #[test]
+ fn power_transition_serializes_and_commits_only_success() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};let mut d:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut d)},STATUS_SUCCESS);
+  assert_eq!(device_power_state(d),0);
+  assert_eq!(unsafe{io_begin_device_power_transition(d,DEVICE_POWER_D3)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_begin_device_power_transition(d,DEVICE_POWER_D1)},STATUS_PENDING);
+  assert_eq!(unsafe{io_complete_device_power_transition(d,DEVICE_POWER_D3,STATUS_INVALID_DEVICE_REQUEST)},STATUS_INVALID_DEVICE_REQUEST);
+  assert_eq!(device_power_state(d),0);
+  assert_eq!(unsafe{io_begin_device_power_transition(d,DEVICE_POWER_D3)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_complete_device_power_transition(d,DEVICE_POWER_D3,STATUS_SUCCESS)},STATUS_SUCCESS);
+  assert_eq!(device_power_state(d),3);unsafe{io_delete_device(d);}
  }
  #[test]
  fn create_delete_device_and_allocate_irp_stack() {
