@@ -193,6 +193,32 @@ impl AddressSpace {
     /// are never traversed or reclaimed.
     pub unsafe fn destroy(&mut self) -> Result<(), VmError> {
         let root = self.root as *mut u64;
+        // Preflight all user leaves before freeing any frame. An MDL-pinned
+        // page must keep its address space intact until MmUnlockPages runs.
+        for pml4_index in 1..256usize {
+            let top_entry = unsafe { root.add(pml4_index).read() };
+            if top_entry & (PRESENT | USER) != (PRESENT | USER) { continue; }
+            let pdpt = (top_entry & ADDR) as *const u64;
+            for a in 0..512usize {
+                let e3 = unsafe { pdpt.add(a).read() };
+                if e3 & PRESENT == 0 { continue; }
+                if e3 & LARGE != 0 { return Err(VmError::InvalidAddress); }
+                let pd = (e3 & ADDR) as *const u64;
+                for b in 0..512usize {
+                    let e2 = unsafe { pd.add(b).read() };
+                    if e2 & PRESENT == 0 { continue; }
+                    if e2 & LARGE != 0 { return Err(VmError::InvalidAddress); }
+                    let pt = (e2 & ADDR) as *const u64;
+                    for d in 0..512usize {
+                        let pte = unsafe { pt.add(d).read() };
+                        if pte & (PRESENT | USER) == (PRESENT | USER)
+                            && crate::ntoskrnl::mm::runtime::is_page_locked(pte & ADDR) {
+                            return Err(VmError::PermissionDenied);
+                        }
+                    }
+                }
+            }
+        }
         for pml4_index in 1..256usize {
             let top = unsafe { root.add(pml4_index) };
             let top_entry = unsafe { top.read() };
