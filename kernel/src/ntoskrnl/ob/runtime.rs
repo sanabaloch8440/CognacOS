@@ -107,7 +107,7 @@ fn audit_locked(s:&mut State,object:usize,owner:usize,operation:u8,desired:u32,g
 }
 pub fn unregister_object(body:*mut c_void)->bool{
  if body.is_null(){return false}let _g=LOCK.lock();let s=state();let Some(i)=raw_object_idx(s,body as usize)else{return false};
- s.objects[i].deleting=true;s.objects[i].permanent=false;s.objects[i].refs=s.objects[i].refs.saturating_sub(1);
+ if s.objects[i].deleting{return true} s.objects[i].deleting=true;s.objects[i].permanent=false;s.objects[i].refs=s.objects[i].refs.saturating_sub(1);
  if s.objects[i].refs==0&&s.objects[i].handles==0{s.objects[i]=Object::EMPTY;}true
 }
 pub fn read_audit_events(out:&mut [AuditEvent])->usize{
@@ -356,6 +356,24 @@ mod tests{
   unsafe{register_object(body,ty,&[92,93],false,core::ptr::null(),0).unwrap();}
   assert_eq!(reference_by_name(&[92,93],ty,1,true).unwrap(),body);assert!(dereference_body(body));
   let mut out=[0u16;MAX_NAME];assert_eq!(object_name(body,&mut out).unwrap(),2);assert_eq!(&out[..2],&[92,93]);assert!(dereference_body(body));
+ }
+ #[test]fn created_type_pointer_is_stable_and_roundtrips(){
+  let name=[b'O' as u16,b'b' as u16,b'T' as u16,b'y' as u16,b'p' as u16,b'e' as u16,b'X' as u16];
+  let u=UnicodeString{length:(name.len()*2) as u16,maximum_length:((name.len()+1)*2) as u16,buffer:name.as_ptr()};
+  let mut init=[0u8;0x78];init[..2].copy_from_slice(&0x78u16.to_le_bytes());init[8..12].copy_from_slice(&1u32.to_le_bytes());init[12..16].copy_from_slice(&2u32.to_le_bytes());init[16..20].copy_from_slice(&4u32.to_le_bytes());init[20..24].copy_from_slice(&7u32.to_le_bytes());init[24..28].copy_from_slice(&0xffu32.to_le_bytes());
+  let mut out=core::ptr::null_mut();assert_eq!(unsafe{ObCreateObjectType(&u,init.as_ptr(),core::ptr::null_mut(),&mut out)},STATUS_SUCCESS);assert!(!out.is_null());assert!(type_id_from_pointer(out).is_ok());
+ }
+ #[test]fn directory_handles_resolve_relative_names(){
+  let root_name=[b'\\' as u16,b'O' as u16,b'b' as u16,b'j' as u16,b'T' as u16,b'e' as u16,b's' as u16,b't' as u16,b'D' as u16,b'i' as u16,b'r' as u16];
+  let root_u=UnicodeString{length:(root_name.len()*2) as u16,maximum_length:((root_name.len()+1)*2) as u16,buffer:root_name.as_ptr()};
+  let oa=ObjectAttributes{length:core::mem::size_of::<ObjectAttributes>() as u32,root_directory:core::ptr::null_mut(),object_name:&root_u,attributes:0,security_descriptor:core::ptr::null_mut(),security_qos:core::ptr::null_mut()};
+  let mut root=core::ptr::null_mut();assert_eq!(unsafe{ZwCreateDirectoryObject(&mut root,7,&oa)},STATUS_SUCCESS);
+  let child_name=[b'C' as u16,b'h' as u16,b'i' as u16,b'l' as u16,b'd' as u16];
+  let child_u=UnicodeString{length:(child_name.len()*2) as u16,maximum_length:((child_name.len()+1)*2) as u16,buffer:child_name.as_ptr()};
+  let child_oa=ObjectAttributes{root_directory:root,object_name:&child_u,..oa};
+  let mut child=core::ptr::null_mut();assert_eq!(unsafe{ZwCreateDirectoryObject(&mut child,7,&child_oa)},STATUS_SUCCESS);
+  let mut reopened=core::ptr::null_mut();assert_eq!(unsafe{ZwOpenDirectoryObject(&mut reopened,1,&child_oa)},STATUS_SUCCESS);
+  assert_eq!(unsafe{ZwClose(reopened)},STATUS_SUCCESS);assert_eq!(unsafe{ZwClose(child)},STATUS_SUCCESS);assert_eq!(unsafe{ZwClose(root)},STATUS_SUCCESS);
  }
  #[test]fn access_masks_and_deny_by_default(){let t=TypeEntry{used:true,id:1,gr:1,gw:2,gx:4,ga:7,valid:7,..TypeEntry::EMPTY};assert_eq!(map_access(&t,GENERIC_READ|GENERIC_WRITE),3);assert!(!access_check(&Object::EMPTY,1));}
  #[test]fn stale_handle_cannot_alias_reused_slot(){let ty=register_type(&[88],1,2,4,7,7).unwrap();let body=0x2234usize as *mut c_void;unsafe{register_object(body,ty,&[89],false,core::ptr::null(),0).unwrap();}let h=open_by_pointer(body,1,0,true,0).unwrap();close_handle(h,0).unwrap();let h2=open_by_pointer(body,1,0,true,0).unwrap();assert_ne!(h,h2);assert_eq!(reference_by_handle(h,1,0,0,true).unwrap_err(),STATUS_INVALID_HANDLE);}
