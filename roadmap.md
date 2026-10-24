@@ -12,7 +12,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | Memory management/protection | 4 KiB descriptor-driven bootstrap mappings, RAM direct-map, MDL validation/pinning/lifecycle helpers, pageable kernel-pool page-in, non-contiguous kernel and tracked active-process user MDL aliases, registered process-root cross-process copy | Demand-zero/pagefile-backed user faults, Windows-style exception recovery, scheduler-integrated current-process semantics, complete object/handle manager, stress and WDK conformance |
 | PE32+ loader and ring-3 test path | Foundation implemented; boot-tested | Full NT loader, unwind/exception handling, Windows user-mode DLLs |
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
-| SMP/AP startup | Experimental; AP-local descriptor/LAPIC setup and directed-IPI stress implemented | Multi-vCPU CI results pending; per-CPU TSS/IST, scheduler integration, and real-hardware validation remain open |
+| SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; executive-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
 | NT executive/syscall compatibility | Partial foundations | NT syscall ABI and complete executive semantics |
 | I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
@@ -20,7 +20,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
-**Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. This SMP pass adds an AP-local descriptor-table load, bounds-checks AP logical IDs, requires every online AP to acknowledge 64 directed IPIs, and adds OVMF/QEMU boots at 2, 4, and 8 vCPUs. The new changes are not considered verified until the resulting Actions run passes all configurations. Even a pass does not prove real-hardware reliability, per-CPU TSS/IST support, scheduler integration, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
+**Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread-teardown, and VM/TLB tests; these newer changes remain unverified until the resulting Actions run passes. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
 
 ### Status legend
 
@@ -95,26 +95,28 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Add a low-memory AP startup trampoline, temporary page-table setup, 16-page AP stacks, bounded INIT/SIPI coordination, APIC-ID verification, and online acknowledgement.
 - [x] Have every AP load the kernel GDT/IDT locally, initialize its local APIC, install GS-based CPU-local state, and publish interrupt readiness before interrupt-driven IPIs are enabled.
 - [x] Stress the per-CPU IDT/LAPIC route with 64 directed IPIs per online AP; missing acknowledgements fail the boot self-test.
-- [ ] Validate the 2/4/8-vCPU QEMU matrix in CI and on real hardware.
-- [ ] Add a dedicated per-CPU TSS and IST stacks for NMI/double-fault and privilege transitions.
+- [ ] Validate the 2/4/8-vCPU QEMU matrix in CI and on real hardware; code and assertions are committed, but the new run is not yet confirmed.
+- [x] Allocate a private per-CPU GDT/TSS descriptor and dedicated IST stacks for double fault (IST1), NMI (IST2), and machine check (IST3); install the TSS with LTR and verify descriptor/gate wiring. The TSS RSP0 follows the active cooperative kernel-thread stack.
+- [ ] Add guard pages and fault-injection tests for each IST stack.
 - [ ] Implement interrupt vectors, complete IRQ routing, MSI/MSI-X, and interrupt remapping.
 - [ ] Calibrate and enable a reliable APIC timer and monotonic clock.
-- [x] Add repeatable multi-vCPU QEMU boot and directed-IPI stress coverage for 2, 4, and 8 vCPUs, alongside the existing post-startup VM/TLB shootdown self-test. CI results are pending.
-- [ ] Add multi-vCPU race/stress tests for locks, concurrent user-MDL map/unmap, process exit, and MDL unlock ordering. Mapping/probe/unlock entry points now share an IRQ-safe MDL lifecycle lock; runtime stress and teardown-race validation remain outstanding.
+- [x] Add repeatable multi-vCPU QEMU boots for 2, 4, and 8 vCPUs, asserting per-CPU TSS/IST setup, 64 directed IPIs per online AP, scheduler wakeups, contended IRQ-save locking, thread exit/teardown, and the VM/TLB self-test. CI results are pending.
+- [ ] Add concurrent user-MDL map/unmap, process-exit, and MDL unlock-ordering stress. Mapping/probe/unlock entry points share an IRQ-safe MDL lifecycle lock, but these MDL teardown races are not yet exercised.
 - [ ] Keep external interrupts disabled until interrupt entry, routing, and per-CPU state are proven safe.
 
 Discovery and startup primitives do not by themselves establish a production-ready SMP kernel.
 
 ## 4. Scheduler, threads, and dispatcher
 
-- [x] Add scheduler metadata for task states, priorities, affinity masks, selection policy, and cooperative-yield metadata.
-- [x] Add kernel-thread block/wake/resume test paths and dispatcher self-tests for FIFO, cancellation, wait-any/wait-all, and timeout cases.
-- [ ] Establish a complete thread control block, saved register context, initial stack frame, and tested x86-64 context-switch routine.
-- [ ] Connect blocking waits to scheduler queues so blocked threads are switched out and woken threads can run.
-- [ ] Add per-CPU run queues, priority handling, affinity migration, load balancing, and scheduler locking.
+- [x] Connect the kernel-thread runtime to scheduler task-state/affinity metadata for create, select, yield, block, wake, resume, and exit transitions.
+- [x] Add cross-CPU HAL IPI notifications when runnable work is created or woken; AP idle loops dispatch eligible threads after wakeup.
+- [x] Maintain each CPU's TSS RSP0 as cooperative kernel threads switch stacks; verify context switching, lock contention, and thread teardown in the SMP stress test.
+- [x] Add kernel-thread block/wake/resume paths and dispatcher self-tests for FIFO, cancellation, wait-any/wait-all, and timeout cases.
+- [ ] Add per-CPU run queues, priority-aware preemption, affinity migration, load balancing, and timer-driven preemption.
 - [ ] Implement timer-driven preemption and race-safe timeout-versus-signal completion.
 - [ ] Implement alertable waits and NT-compatible single-object/multiple-object wait semantics.
-- [ ] Add multi-threaded stress tests for cancellation, wakeup, and timeout races.
+- [x] Add a bounded eight-thread lock-contention, cross-CPU wakeup, and exit/teardown stress test; the QEMU CI assertions are pending.
+- [ ] Add multi-threaded cancellation, timeout-versus-signal, and user-MDL/process-exit teardown race tests.
 
 ## 5. NT executive and Windows compatibility
 
@@ -218,7 +220,7 @@ The parser is read-only and not a production filesystem driver. The original Ext
 
 1. Keep CI green and expand PE32+ converter/loader tests, especially malformed headers, section overlap, and permission edge cases.
 2. Finish fine-grained bootstrap mapping boundaries and validate all live boot dependencies and direct-map permissions.
-3. Validate the new SMP stress matrix, then complete per-CPU TSS/IST setup, real context switching, scheduler queue integration, timer interrupts, and broader concurrency stress tests.
+3. Validate the new SMP matrix, add IST guard pages/fault injection and real-hardware checks, then implement timer-driven preemption, per-CPU run queues/load balancing, and concurrent user-MDL/process-exit teardown tests.
 4. Implement real DMA mappings, IOMMU initialization, PCI enumeration, and one end-to-end storage driver.
 5. Expand Windows compatibility through small, tested batches of ABI-correct RTL/NT/HAL routines and executive semantics.
 6. Add signed boot, stronger isolation, power management, graphics, and release-grade hardware validation.
