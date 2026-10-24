@@ -101,3 +101,132 @@ mod tests {
         assert_eq!(unsafe { SeValidSecurityDescriptor(sd.as_ptr().cast()) }, 0);
     }
 }
+
+
+// Bounded RdotOS token metadata, pending integration with real Ps token objects.
+// Unknown token pointers fail closed; this is not the private Windows TOKEN layout.
+use core::sync::atomic::{AtomicBool, Ordering};
+const TOKEN_META_SLOTS: usize = 32;
+#[derive(Clone, Copy)]
+struct TokenMeta {
+    used: bool, token: usize, token_type: u32, impersonation_level: u32,
+    admin: bool, restricted: bool, write_restricted: bool, privileges: u64,
+}
+impl TokenMeta {
+    const EMPTY: Self = Self { used:false, token:0, token_type:0, impersonation_level:0,
+        admin:false, restricted:false, write_restricted:false, privileges:0 };
+}
+struct TokenMetaLock(AtomicBool);
+impl TokenMetaLock {
+    const fn new() -> Self { Self(AtomicBool::new(false)) }
+    fn lock(&self) -> TokenMetaGuard<'_> {
+        while self.0.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        TokenMetaGuard(&self.0)
+    }
+}
+struct TokenMetaGuard<'a>(&'a AtomicBool);
+impl Drop for TokenMetaGuard<'_> { fn drop(&mut self) { self.0.store(false, Ordering::Release); } }
+static TOKEN_META_LOCK: TokenMetaLock = TokenMetaLock::new();
+static mut TOKEN_META: [TokenMeta; TOKEN_META_SLOTS] = [TokenMeta::EMPTY; TOKEN_META_SLOTS];
+
+/// Register RdotOS-owned token facts. token_type: 1=primary, 2=impersonation.
+/// The token must remain alive until explicitly unregistered.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeRegisterTokenMetadata(
+    token: *mut c_void, token_type: u32, impersonation_level: u32,
+    flags: u32, privileges: u64,
+) -> i32 {
+    if token.is_null() || !(token_type == 1 || token_type == 2)
+        || (token_type == 1 && impersonation_level != 0)
+        || (token_type == 2 && impersonation_level > 3) || flags & !7 != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let _guard = TOKEN_META_LOCK.lock();
+    let entries = unsafe { &mut *core::ptr::addr_of_mut!(TOKEN_META) };
+    let slot = entries.iter().position(|e| e.used && e.token == token as usize)
+        .or_else(|| entries.iter().position(|e| !e.used));
+    let Some(i) = slot else { return 0xC000_009Au32 as i32; };
+    entries[i] = TokenMeta { used:true, token:token as usize, token_type,
+        impersonation_level, admin:flags & 1 != 0, restricted:flags & 2 != 0,
+        write_restricted:flags & 4 != 0, privileges };
+    STATUS_SUCCESS
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeUnregisterTokenMetadata(token: *mut c_void) -> i32 {
+    if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    let _guard = TOKEN_META_LOCK.lock();
+    let entries = unsafe { &mut *core::ptr::addr_of_mut!(TOKEN_META) };
+    if let Some(e) = entries.iter_mut().find(|e| e.used && e.token == token as usize) {
+        *e = TokenMeta::EMPTY; STATUS_SUCCESS
+    } else { 0xC000_0008u32 as i32 }
+}
+fn token_meta(token: *mut c_void) -> Option<TokenMeta> {
+    if token.is_null() { return None; }
+    let _guard = TOKEN_META_LOCK.lock();
+    let entries = unsafe { &*core::ptr::addr_of!(TOKEN_META) };
+    entries.iter().find(|e| e.used && e.token == token as usize).copied()
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeTokenIsAdmin(token: *mut c_void) -> u8 {
+    token_meta(token).is_some_and(|m| m.admin) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeTokenIsRestricted(token: *mut c_void) -> u8 {
+    token_meta(token).is_some_and(|m| m.restricted) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeTokenIsWriteRestricted(token: *mut c_void) -> u8 {
+    token_meta(token).is_some_and(|m| m.write_restricted) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeTokenType(token: *mut c_void) -> u32 {
+    token_meta(token).map_or(0, |m| m.token_type)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeTokenImpersonationLevel(token: *mut c_void) -> u32 {
+    token_meta(token).filter(|m| m.token_type == 2).map_or(0, |m| m.impersonation_level)
+}
+
+/// Without a current-thread token binding, user-mode privilege checks deny by
+/// default. Kernel-mode checks retain the NT privilege-check bypass behavior.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeSinglePrivilegeCheck(_privilege: u64, previous_mode: i8) -> u8 {
+    if previous_mode == 0 { 1 } else { 0 }
+}
+
+/// RdotOS extension for checking a privilege bit on an explicitly registered token.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenHasPrivilege(token: *mut c_void, privilege: u32) -> u8 {
+    if privilege >= 64 { return 0; }
+    token_meta(token).is_some_and(|m| (m.privileges & (1u64 << privilege)) != 0) as u8
+}
+
+#[cfg(test)]
+mod token_metadata_tests {
+    use super::*;
+    #[test]
+    fn token_metadata_queries_fail_closed_and_round_trip() {
+        let mut storage = 0u64;
+        let token = (&mut storage as *mut u64).cast::<c_void>();
+        assert_eq!(unsafe { SeTokenIsAdmin(token) }, 0);
+        assert_eq!(unsafe { RdotSeRegisterTokenMetadata(token, 2, 2, 0b011, 1 << 9) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { SeTokenIsAdmin(token) }, 1);
+        assert_eq!(unsafe { SeTokenIsRestricted(token) }, 1);
+        assert_eq!(unsafe { SeTokenIsWriteRestricted(token) }, 0);
+        assert_eq!(unsafe { SeTokenType(token) }, 2);
+        assert_eq!(unsafe { SeTokenImpersonationLevel(token) }, 2);
+        assert_eq!(unsafe { RdotSeTokenHasPrivilege(token, 9) }, 1);
+        assert_eq!(unsafe { RdotSeTokenHasPrivilege(token, 10) }, 0);
+        assert_eq!(unsafe { RdotSeUnregisterTokenMetadata(token) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { SeTokenType(token) }, 0);
+    }
+    #[test]
+    fn single_privilege_check_is_fail_closed_without_thread_token() {
+        assert_eq!(unsafe { SeSinglePrivilegeCheck(3, 1) }, 0);
+        assert_eq!(unsafe { SeSinglePrivilegeCheck(3, 0) }, 1);
+    }
+}
