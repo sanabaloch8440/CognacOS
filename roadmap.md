@@ -9,8 +9,10 @@ This roadmap tracks code and validation currently present in the repository, not
 The current pass hardens user-buffer transfers and records the remaining isolation work explicitly. It is **not** a claim that Windows-grade process or driver fault containment is complete.
 
 - [x] Validate user-copy ranges against the user address interval before walking page tables.
+- [x] Share the user-range validator with a host-side regression harness; test lower/upper boundaries, exact upper-bound acceptance, zero-length pointer rules, and integer overflow.
 - [x] Preflight every page in a multi-page copy before transferring bytes, so an unmapped or read-only later page does not cause a partial transfer. The address-space lifetime lock is held across preflight and copy to prevent concurrent unmap/destruction from invalidating checked translations.
-- [ ] Add host-side tests for cross-page copy failure, overflow, read-only destination pages, and mapping teardown races.
+- [x] Make user-page mapping transactional: roll back newly allocated intermediate page tables on allocation/permission/already-mapped failures, and reject attempts to promote a pre-existing supervisor-only hierarchy to user-accessible.
+- [ ] Add integration tests for cross-page copy failure, read-only destination pages, and mapping teardown races.
 - [ ] Deliver user-mode exceptions through a defined trap-frame/exception path and terminate only the faulting process; current unhandled CPU exceptions still take the fatal kernel path.
 - [ ] Integrate timer-driven preemption into context switching and prove that a non-yielding thread cannot monopolize the CPU.
 - [ ] Complete demand-zero/page-in handling for user mappings and process working-set accounting.
