@@ -7,7 +7,7 @@ pub const BASE_BLOCK_SIZE: usize = 4096;
 pub const REGF_SIGNATURE: &[u8;4] = b"regf";
 pub const STATUS_SUCCESS: i32 = 0;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error { Truncated, BadSignature, BadChecksum, UnsupportedVersion, InvalidHiveSize, InvalidBin, InvalidCell, InvalidKey, NotFound, InvalidValue, BufferTooSmall, OutputTooSmall, UnsupportedIndex }
+pub enum Error { Truncated, BadSignature, BadChecksum, DirtyHive, UnsupportedVersion, InvalidHiveSize, InvalidBin, InvalidCell, InvalidKey, NotFound, InvalidValue, BufferTooSmall, OutputTooSmall, UnsupportedIndex }
 
 fn u16at(b:&[u8],o:usize)->Result<u16,Error>{let s=b.get(o..o.checked_add(2).ok_or(Error::Truncated)?).ok_or(Error::Truncated)?;Ok(u16::from_le_bytes([s[0],s[1]]))}
 fn u32at(b:&[u8],o:usize)->Result<u32,Error>{let s=b.get(o..o.checked_add(4).ok_or(Error::Truncated)?).ok_or(Error::Truncated)?;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
@@ -23,6 +23,8 @@ pub struct Hive<'a>{bytes:&'a [u8],pub info:BaseInfo}
 impl<'a> Hive<'a>{
  pub fn open(bytes:&'a[u8])->Result<Self,Error>{
   if bytes.len()<BASE_BLOCK_SIZE||bytes.get(0..4)!=Some(&b"regf"[..]){return Err(Error::BadSignature)}
+  let sequence_primary=u32at(bytes,4)?;let sequence_secondary=u32at(bytes,8)?;
+  if sequence_primary!=sequence_secondary{return Err(Error::DirtyHive)}
   let major=u32at(bytes,0x14)?;let minor=u32at(bytes,0x18)?;
   if major!=1||minor<3||minor>6{return Err(Error::UnsupportedVersion)}
   let bins_size=u32at(bytes,0x28)?;
@@ -30,7 +32,7 @@ impl<'a> Hive<'a>{
   if bins_size<0x1000||bins_size as usize%0x1000!=0||BASE_BLOCK_SIZE.checked_add(bins_size as usize).ok_or(Error::InvalidHiveSize)?>bytes.len(){return Err(Error::InvalidHiveSize)}
   let stored=u32at(bytes,0x1fc)?;let mut checksum=0u32;for off in (0..0x1fc).step_by(4){checksum^=u32at(bytes,off)?;}
   if checksum!=stored && !(checksum==0xffff_ffff&&stored==0xffff_ffff) && !(checksum==0&&stored==1){return Err(Error::BadChecksum)}
-  let hive=Self{bytes,info:BaseInfo{root_cell,bins_size,major,minor,sequence_primary:u32at(bytes,4)?,sequence_secondary:u32at(bytes,8)?}};
+  let hive=Self{bytes,info:BaseInfo{root_cell,bins_size,major,minor,sequence_primary,sequence_secondary}};
   hive.validate_bins()?;hive.key(root_cell)?;Ok(hive)
  }
  fn validate_bins(&self)->Result<(),Error>{
