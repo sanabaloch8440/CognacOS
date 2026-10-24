@@ -545,6 +545,22 @@ mod tests{
   create_symbolic_link(&link,&[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16],false).unwrap();
   let h=open_by_name(&requested,1,998,true,0).unwrap();assert_eq!(reference_by_handle(h,1,ty,998,true).unwrap(),body);assert!(dereference_body(body));close_handle(h,998).unwrap();
  }
+ #[test]fn generic_mapping_is_preserved_during_handle_duplication(){
+  let ty=register_type(&[98],1,2,4,7,0xff).unwrap();let body=0x9240usize as *mut c_void;
+  unsafe{register_object(body,ty,&[99],false,core::ptr::null(),0).unwrap();}
+  let source=open_by_pointer(body,GENERIC_READ,22,true,0).unwrap();
+  let duplicate=duplicate_handle(source,22,23,GENERIC_READ,false,false).unwrap();
+  assert_eq!(reference_by_handle(duplicate,1,ty,23,true).unwrap(),body);
+  assert!(dereference_body(body));close_handle(duplicate,23).unwrap();close_handle(source,22).unwrap();assert!(dereference_body(body));
+ }
+ #[test]fn user_mode_cannot_close_or_reference_kernel_handle(){
+  let ty=register_type(&[100],1,2,4,7,7).unwrap();let body=0x9244usize as *mut c_void;
+  unsafe{register_object(body,ty,&[101],false,core::ptr::null(),0).unwrap();}
+  let h=open_by_pointer(body,1,42,true,OBJ_KERNEL_HANDLE).unwrap();
+  assert_eq!(reference_by_handle(h,0,ty,42,false).unwrap_err(),STATUS_INVALID_HANDLE);
+  assert_eq!(unsafe{ObCloseHandle(h,1)},STATUS_INVALID_HANDLE);
+  assert_eq!(unsafe{ObCloseHandle(h,0)},STATUS_SUCCESS);assert!(dereference_body(body));
+ }
  #[test]fn named_reference_is_case_insensitive_and_name_copy_is_stable(){
   let ty=register_type(&[93],1,2,4,7,7).unwrap();let body=0x4234usize as *mut c_void;
   unsafe{register_object(body,ty,&[92,93],false,core::ptr::null(),0).unwrap();}
