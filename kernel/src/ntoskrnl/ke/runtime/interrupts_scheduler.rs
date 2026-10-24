@@ -39,7 +39,7 @@ pub unsafe extern "win64" fn ke_synchronize_execution(interrupt:*mut core::ffi::
 
 /// Precise monotonic time; suspend/resume bias is not modelled yet.
 pub unsafe extern "win64" fn ke_query_unbiased_interrupt_time_precise(qpc_timestamp:*mut u64)->u64{
- if !qpc_timestamp.is_null(){unsafe{qpc_timestamp.write(crate::apic::monotonic_ticks());}}
+ if !qpc_timestamp.is_null(){unsafe{qpc_timestamp.write(crate::hal::query_performance_counter());}}
  interrupt_time_100ns()
 }
 /// Clock resolution in 100-ns units. Until dynamic clock programming is wired,
@@ -48,8 +48,8 @@ pub unsafe extern "win64" fn ke_get_clock_timer_resolution(maximum:*mut u32,mini
  for p in [maximum,minimum,current]{if !p.is_null(){unsafe{p.write(10_000);}}}
 }
 pub unsafe extern "win64" fn ke_get_next_clock_tick_duration()->u32{
- let hz=crate::apic::tsc_frequency_hz().unwrap_or(0);if hz==0{return 0}
- let now=crate::apic::monotonic_ticks();
+ let hz=crate::hal::query_performance_frequency_hz().unwrap_or(0);if hz==0{return 0}
+ let now=crate::hal::query_performance_counter();
  let earliest={let table=TIMERS.lock();table.records.iter().filter(|r|r.active).map(|r|r.due).min()};
  let Some(deadline)=earliest else{return 10_000};
  ((deadline.saturating_sub(now) as u128*10_000_000u128/hz as u128).min(u32::MAX as u128)) as u32
@@ -140,7 +140,7 @@ pub unsafe extern "win64" fn ke_delay_execution_thread(
     if value == 0 { return STATUS_SUCCESS; }
     let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
     if alertable != 0 && crate::thread::take_alert_pending() { return STATUS_ALERTED; }
-    if !crate::apic::local_timer_active() { return STATUS_NOT_IMPLEMENTED; }
+    if !crate::hal::local_clock_event_active() { return STATUS_NOT_IMPLEMENTED; }
     let deadline = match timer_deadline(value) {
         Some(value) => value,
         None => return STATUS_NOT_IMPLEMENTED,
