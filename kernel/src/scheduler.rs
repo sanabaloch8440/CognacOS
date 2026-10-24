@@ -115,11 +115,21 @@ pub fn exit_task(id:u64)->Result<(),SchedulerError>{
  }
  remove_from_queues(&mut s,id);s.tasks[index].state=TaskState::Exited;Ok(())
 }
+/// Detach the current task without publishing it to any run queue. The
+/// architecture switch path must save its RSP before publish_ready_task is called.
 pub fn yield_current(cpu:usize)->Result<(),SchedulerError>{
  if cpu>=MAX_CPUS{return Err(SchedulerError::InvalidCpu);}
  let mut s=SCHED.lock();let id=s.current[cpu];
  let index=s.tasks.iter().position(|t|t.id==id&&t.state==TaskState::Running).ok_or(SchedulerError::UnknownTask)?;
- s.current[cpu]=0;s.tasks[index].state=TaskState::Ready;enqueue_ready(&mut s,index,Some(cpu))
+ s.current[cpu]=0;s.tasks[index].state=TaskState::Ready;Ok(())
+}
+/// Publish a switched-out task only after its saved context is fully written.
+pub fn publish_ready_task(id:u64,cpu:usize)->Result<(),SchedulerError>{
+ if cpu>=MAX_CPUS{return Err(SchedulerError::InvalidCpu);}
+ let mut s=SCHED.lock();
+ let index=s.tasks.iter().position(|t|t.id==id&&t.state==TaskState::Ready).ok_or(SchedulerError::UnknownTask)?;
+ if s.queues.iter().any(|q|q.ids[..q.len].contains(&id)){return Ok(())}
+ enqueue_ready(&mut s,index,Some(cpu))
 }
 pub fn set_affinity(id:u64,mask:u64)->Result<(),SchedulerError>{
  let mask=eligible_mask(mask);if mask==0{return Err(SchedulerError::InvalidAffinity);}
