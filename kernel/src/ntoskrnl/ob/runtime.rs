@@ -51,8 +51,8 @@ pub struct ObjectType { pub name:UnicodeString,pub type_index:u16,pub reserved:u
 struct TypeEntry { used:bool,id:u16,name:[u16;32],len:u8,gr:u32,gw:u32,gx:u32,ga:u32,valid:u32 }
 impl TypeEntry { const EMPTY:Self=Self{used:false,id:0,name:[0;32],len:0,gr:0,gw:0,gx:0,ga:0,valid:u32::MAX}; }
 #[derive(Clone,Copy)]
-struct Object { used:bool, deleting:bool, inserted:bool, body:usize, type_id:u16, name:[u16;MAX_NAME], name_len:u16, refs:u32, handles:u32, permanent:bool, sd:[u8;256], sd_len:u16 }
-impl Object { const EMPTY:Self=Self{used:false,deleting:false,inserted:false,body:0,type_id:0,name:[0;MAX_NAME],name_len:0,refs:0,handles:0,permanent:false,sd:[0;256],sd_len:0}; }
+struct Object { used:bool, deleting:bool, inserted:bool, body:usize, type_id:u16, name:[u16;MAX_NAME], name_len:u16, refs:u32, handles:u32, permanent:bool, sd:[u8;256], sd_len:u16, finalizer:Option<unsafe extern "win64" fn(*mut c_void)> }
+impl Object { const EMPTY:Self=Self{used:false,deleting:false,inserted:false,body:0,type_id:0,name:[0;MAX_NAME],name_len:0,refs:0,handles:0,permanent:false,sd:[0;256],sd_len:0,finalizer:None}; }
 #[derive(Clone,Copy)]
 struct HandleEntry { used:bool,generation:u16,object:usize,owner:usize,access:u32,attributes:u32 }
 impl HandleEntry { const EMPTY:Self=Self{used:false,generation:1,object:0,owner:0,access:0,attributes:0}; }
@@ -141,14 +141,30 @@ pub fn ensure_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u1
 pub unsafe fn register_external_object(body:*mut c_void,type_name:&[u16],name:&[u16],permanent:bool,sd:*const u8,sd_len:usize)->Result<u16,i32>{
  let ty=ensure_type(type_name,1,2,4,7,u32::MAX)?;unsafe{register_object(body,ty,name,permanent,sd,sd_len)?;}Ok(ty)
 }
+pub unsafe fn register_external_object_with_finalizer(body:*mut c_void,type_name:&[u16],name:&[u16],permanent:bool,sd:*const u8,sd_len:usize,finalizer:unsafe extern "win64" fn(*mut c_void))->Result<u16,i32>{
+ let ty=unsafe{register_external_object(body,type_name,name,permanent,sd,sd_len)?};
+ let _g=LOCK.lock();let s=state();let i=raw_object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;s.objects[i].finalizer=Some(finalizer);Ok(ty)
+}
+pub fn object_rundown_complete(body:*mut c_void)->bool{
+ if body.is_null(){return false}let _g=LOCK.lock();let s=state();raw_object_idx(s,body as usize).is_none()
+}
+fn reclaim_if_drained(s:&mut State,i:usize)->Option<(usize,Option<unsafe extern "win64" fn(*mut c_void)>)>{
+ let o=s.objects.get(i)?;if !o.used||o.refs!=0||o.handles!=0||(o.permanent&&!o.deleting){return None}
+ let result=(o.body,o.finalizer);s.objects[i]=Object::EMPTY;Some(result)
+}
+unsafe fn invoke_finalizer(v:Option<(usize,Option<unsafe extern "win64" fn(*mut c_void)>)>){
+ if let Some((body,Some(f)))=v{unsafe{f(body as *mut c_void)}}
+}
 fn raw_object_idx(s:&State,body:usize)->Option<usize>{s.objects.iter().position(|o|o.used&&o.body==body)}
 fn audit_locked(s:&mut State,object:usize,owner:usize,operation:u8,desired:u32,granted:u32,status:i32){
  let i=(s.audit_next as usize)%MAX_AUDIT_EVENTS;s.audit[i]=AuditEvent{sequence:s.audit_next,object,owner,operation,desired,granted,status};s.audit_next=s.audit_next.wrapping_add(1).max(1);
 }
 pub fn unregister_object(body:*mut c_void)->bool{
- if body.is_null(){return false}let _g=LOCK.lock();let s=state();let Some(i)=raw_object_idx(s,body as usize)else{return false};
- if s.objects[i].deleting{return true} s.objects[i].deleting=true;s.objects[i].permanent=false;s.objects[i].refs=s.objects[i].refs.saturating_sub(1);
- if s.objects[i].refs==0&&s.objects[i].handles==0{s.objects[i]=Object::EMPTY;}true
+ if body.is_null(){return false}
+ let (found,reclaimed)={let _g=LOCK.lock();let s=state();let Some(i)=raw_object_idx(s,body as usize)else{return false};
+ if !s.objects[i].deleting{s.objects[i].deleting=true;s.objects[i].permanent=false;s.objects[i].refs=s.objects[i].refs.saturating_sub(1);}
+ let reclaimed=reclaim_if_drained(s,i);(true,reclaimed)};
+ unsafe{invoke_finalizer(reclaimed)}found
 }
 pub fn duplicate_handle(source:*mut c_void,source_owner:usize,target_owner:usize,desired:u32,same_access:bool,kernel_target:bool)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let hi=handle_idx(s,source,source_owner).ok_or(STATUS_INVALID_HANDLE)?;let src=s.handles[hi];let granted=if same_access{src.access}else{if desired&!src.access!=0{return Err(STATUS_ACCESS_DENIED)}desired};
@@ -216,9 +232,10 @@ pub fn reference_body(body:*mut c_void,expected_type:u16,desired:u32,kernel_mode
  s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,0,4,desired,granted,STATUS_SUCCESS);Ok(body)
 }
 pub fn dereference_body(body:*mut c_void)->bool{
- if body.is_null(){return false}let _g=LOCK.lock();let s=state();let Some(i)=raw_object_idx(s,body as usize)else{return false};
- if s.objects[i].refs==0{return false}s.objects[i].refs-=1;
- if s.objects[i].refs==0&&s.objects[i].handles==0&&(!s.objects[i].permanent||s.objects[i].deleting){s.objects[i]=Object::EMPTY;}true
+ if body.is_null(){return false}
+ let reclaimed={let _g=LOCK.lock();let s=state();let Some(i)=raw_object_idx(s,body as usize)else{return false};
+ if s.objects[i].refs==0{return false}s.objects[i].refs-=1;reclaim_if_drained(s,i)};
+ unsafe{invoke_finalizer(reclaimed)}true
 }
 pub fn open_by_name(name:&[u16],desired:u32,owner:usize,kernel_mode:bool,attrs:u32)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
@@ -239,10 +256,10 @@ pub fn reference_by_handle(h:*mut c_void,desired:u32,expected_type:u16,owner:usi
  let s=state();s.objects[e.object].refs=s.objects[e.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,owner,3,desired,desired,STATUS_SUCCESS);let _=t;Ok(body)
 }
 pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
- let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,owner).ok_or(STATUS_INVALID_HANDLE)?;let oi=s.handles[hi].object;
+ let reclaimed={let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,owner).ok_or(STATUS_INVALID_HANDLE)?;let oi=s.handles[hi].object;
  s.handles[hi].used=false;s.handles[hi].object=0;s.handles[hi].generation=s.handles[hi].generation.wrapping_add(1).max(1);
- if s.objects[oi].handles>0{s.objects[oi].handles-=1}if s.objects[oi].refs>0{s.objects[oi].refs-=1}
- if s.objects[oi].refs==0&&s.objects[oi].handles==0&&!s.objects[oi].permanent{s.objects[oi]=Object::EMPTY;}else if s.objects[oi].refs==0&&s.objects[oi].handles==0&&s.objects[oi].deleting{s.objects[oi]=Object::EMPTY;}Ok(())
+ if s.objects[oi].handles>0{s.objects[oi].handles-=1}if s.objects[oi].refs>0{s.objects[oi].refs-=1}reclaim_if_drained(s,oi)};
+ unsafe{invoke_finalizer(reclaimed)}Ok(())
 }
 pub fn reference_by_name(name:&[u16],expected_type:u16,desired:u32,kernel_mode:bool)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
