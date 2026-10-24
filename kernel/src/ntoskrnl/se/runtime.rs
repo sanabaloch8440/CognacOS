@@ -688,3 +688,248 @@ mod bounded_security_inspection_tests {
         assert_eq!(unsafe { se_internal_PrivilegeMaskFirst(0) }, u32::MAX);
     }
 }
+
+
+// --- Subject-token SID identity and SeAccessCheck implementation ---
+// This is a bounded RdotOS token identity registry, not the private Windows TOKEN
+// layout. Process/token creation must register validated user/group SIDs and unregister
+// them before token storage is reclaimed. Unknown tokens and unsupported DACL ACEs deny.
+const SECURITY_TOKEN_SLOTS: usize = 32;
+const SECURITY_TOKEN_SIDS: usize = 8;
+const SECURITY_SID_BYTES: usize = 68;
+#[derive(Clone, Copy)]
+struct SecurityTokenIdentity {
+    used: bool,
+    token: usize,
+    count: u8,
+    lengths: [u8; SECURITY_TOKEN_SIDS],
+    sids: [[u8; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS],
+}
+impl SecurityTokenIdentity {
+    const EMPTY: Self = Self { used: false, token: 0, count: 0,
+        lengths: [0; SECURITY_TOKEN_SIDS], sids: [[0; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS] };
+}
+static SECURITY_TOKEN_LOCK: TokenMetaLock = TokenMetaLock::new();
+static mut SECURITY_TOKEN_IDENTITIES: [SecurityTokenIdentity; SECURITY_TOKEN_SLOTS] =
+    [SecurityTokenIdentity::EMPTY; SECURITY_TOKEN_SLOTS];
+
+/// Internal integration hook for Ps token creation. Copies the user SID and group SIDs;
+/// each SID pointer must refer to readable kernel-owned memory for its supplied length.
+pub(crate) unsafe fn se_internal_RegisterTokenSids(
+    token: *mut c_void, sid_ptrs: *const *const u8, lengths: *const u8, count: u32,
+) -> i32 {
+    if token.is_null() || count == 0 || count as usize > SECURITY_TOKEN_SIDS
+        || sid_ptrs.is_null() || lengths.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut entry = SecurityTokenIdentity { used: true, token: token as usize, ..SecurityTokenIdentity::EMPTY };
+    for i in 0..count as usize {
+        let ptr = unsafe { core::ptr::read_unaligned(sid_ptrs.add(i)) };
+        let len = unsafe { core::ptr::read_unaligned(lengths.add(i)) } as usize;
+        if ptr.is_null() || len < 8 || len > SECURITY_SID_BYTES { return STATUS_INVALID_PARAMETER; }
+        let sid = unsafe { core::slice::from_raw_parts(ptr, len) };
+        if bounded_sid_size(sid) != Some(len) { return STATUS_INVALID_PARAMETER; }
+        entry.lengths[i] = len as u8;
+        entry.sids[i][..len].copy_from_slice(sid);
+    }
+    entry.count = count as u8;
+    let _guard = SECURITY_TOKEN_LOCK.lock();
+    let entries = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
+    let slot = entries.iter().position(|e| e.used && e.token == token as usize)
+        .or_else(|| entries.iter().position(|e| !e.used));
+    let Some(i) = slot else { return 0xC000_009Au32 as i32; };
+    entries[i] = entry;
+    STATUS_SUCCESS
+}
+
+pub(crate) unsafe fn se_internal_UnregisterTokenSids(token: *mut c_void) -> i32 {
+    if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    let _guard = SECURITY_TOKEN_LOCK.lock();
+    let entries = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
+    if let Some(e) = entries.iter_mut().find(|e| e.used && e.token == token as usize) {
+        *e = SecurityTokenIdentity::EMPTY;
+        STATUS_SUCCESS
+    } else { 0xC000_0008u32 as i32 }
+}
+
+fn token_contains_sid(token: *mut c_void, sid: &[u8]) -> bool {
+    if token.is_null() || sid.len() < 8 { return false; }
+    let _guard = SECURITY_TOKEN_LOCK.lock();
+    let entries = unsafe { &*core::ptr::addr_of!(SECURITY_TOKEN_IDENTITIES) };
+    entries.iter().find(|e| e.used && e.token == token as usize).is_some_and(|e| {
+        (0..e.count as usize).any(|i| {
+            let n = e.lengths[i] as usize;
+            n == sid.len() && e.sids[i][..n] == *sid
+        })
+    })
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SeGenericMapping {
+    pub generic_read: u32,
+    pub generic_write: u32,
+    pub generic_execute: u32,
+    pub generic_all: u32,
+}
+#[repr(C)]
+pub struct SeSecuritySubjectContext {
+    pub client_token: *mut c_void,
+    pub impersonation_level: u32,
+    pub primary_token: *mut c_void,
+    pub process_audit_id: *mut c_void,
+}
+fn map_generic_access(mask: u32, mapping: &SeGenericMapping) -> u32 {
+    let mut out = mask;
+    if out & 0x8000_0000 != 0 { out = (out & !0x8000_0000) | mapping.generic_read; }
+    if out & 0x4000_0000 != 0 { out = (out & !0x4000_0000) | mapping.generic_write; }
+    if out & 0x2000_0000 != 0 { out = (out & !0x2000_0000) | mapping.generic_execute; }
+    if out & 0x1000_0000 != 0 { out = (out & !0x1000_0000) | mapping.generic_all; }
+    out
+}
+fn is_everyone_sid(sid: &[u8]) -> bool {
+    sid.len() == 12 && sid[0] == 1 && sid[1] == 1
+        && sid[2..7].iter().all(|v| *v == 0) && sid[7] == 1
+        && sid[8..12] == [0, 0, 0, 0]
+}
+fn sid_matches_subject(token: *mut c_void, sid: &[u8]) -> bool {
+    is_everyone_sid(sid) || token_contains_sid(token, sid)
+}
+fn descriptor_component<'a>(bytes: &'a [u8], field: usize, acl: bool) -> Option<&'a [u8]> {
+    let off = u32le(bytes, field)? as usize;
+    if off == 0 { return None; }
+    if off < 20 || off >= bytes.len() { return None; }
+    let n = if acl { bounded_acl_size(&bytes[off..])? } else { bounded_sid_size(&bytes[off..])? };
+    bytes.get(off..off.checked_add(n)?)
+}
+fn evaluate_dacl(token: *mut c_void, sd: &[u8], requested: u32, owner_rights: u32) -> Option<u32> {
+    if sd.len() < 20 || sd[0] != 1 { return None; }
+    let control = u16le(sd, 2)?;
+    if control & 0x8000 == 0 { return None; }
+    let dacl_present = control & 0x0004 != 0;
+    if !dacl_present { return Some(u32::MAX); } // NULL/absent DACL grants all access.
+    let dacl_off = u32le(sd, 16)? as usize;
+    if dacl_off == 0 { return Some(u32::MAX); }
+    let acl = descriptor_component(sd, 16, true)?;
+    let acl_size = u16le(acl, 2)? as usize;
+    let ace_count = u16le(acl, 4)? as usize;
+    let mut cursor = 8usize;
+    let mut remaining = requested & !owner_rights;
+    let mut granted = owner_rights;
+    for _ in 0..ace_count {
+        let header = acl.get(cursor..cursor.checked_add(4)?)?;
+        let ace_type = header[0];
+        let ace_size = u16le(header, 2)? as usize;
+        if ace_size < 8 || cursor.checked_add(ace_size)? > acl_size { return None; }
+        let ace = acl.get(cursor..cursor.checked_add(ace_size)?)?;
+        // Access-check-relevant basic allow/deny ACEs only. Callback, object and
+        // compound ACEs are rejected rather than accidentally granting access.
+        if ace_type == 0 || ace_type == 1 {
+            let mask = u32le(ace, 4)?;
+            let sid = ace.get(8..)?;
+            let sid_n = bounded_sid_size(sid)?;
+            let sid = &sid[..sid_n];
+            if sid_matches_subject(token, sid) {
+                if ace_type == 1 && (mask & remaining) != 0 { return Some(granted); }
+                if ace_type == 0 {
+                    let take = mask & remaining;
+                    granted |= take;
+                    remaining &= !take;
+                    if remaining == 0 { return Some(granted); }
+                }
+            }
+        } else if matches!(ace_type, 5 | 6 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16) {
+            return None;
+        }
+        cursor = cursor.checked_add(ace_size)?;
+    }
+    Some(granted)
+}
+
+/// Windows SeAccessCheck ABI. Supports bounded self-relative descriptors, generic
+/// mapping, owner READ_CONTROL/WRITE_DAC, and basic allow/deny ACEs for registered
+/// token SIDs plus Everyone. It intentionally fails closed for unknown tokens,
+/// malformed descriptors, unsupported ACE forms, and absent token identity metadata.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SeAccessCheck(
+    security_descriptor: *const c_void,
+    subject_context: *mut SeSecuritySubjectContext,
+    subject_context_locked: u8,
+    desired_access: u32,
+    previously_granted_access: u32,
+    privileges: *mut *mut c_void,
+    generic_mapping: *const SeGenericMapping,
+    access_mode: u8,
+    granted_access: *mut u32,
+    access_status: *mut i32,
+) -> u8 {
+    const STATUS_ACCESS_DENIED: i32 = 0xC000_0022u32 as i32;
+    if !privileges.is_null() { unsafe { core::ptr::write_unaligned(privileges, core::ptr::null_mut()); } }
+    if !granted_access.is_null() { unsafe { core::ptr::write_unaligned(granted_access, 0); } }
+    if !access_status.is_null() { unsafe { core::ptr::write_unaligned(access_status, STATUS_ACCESS_DENIED); } }
+    if security_descriptor.is_null() || subject_context.is_null() || generic_mapping.is_null()
+        || granted_access.is_null() || access_status.is_null() || access_mode > 1
+        || subject_context_locked == 0 {
+        return 0;
+    }
+    let context = unsafe { core::ptr::read_unaligned(subject_context) };
+    let token = if !context.client_token.is_null() {
+        if context.impersonation_level < 2 { return 0; }
+        context.client_token
+    } else { context.primary_token };
+    if token.is_null() || token_meta(token).is_none() { return 0; }
+    let mapping = unsafe { core::ptr::read_unaligned(generic_mapping) };
+    let desired = map_generic_access(desired_access, &mapping);
+    let previous = map_generic_access(previously_granted_access, &mapping);
+    let sd = unsafe { core::slice::from_raw_parts(security_descriptor.cast::<u8>(), 4096) };
+    if unsafe { SeValidSecurityDescriptor(security_descriptor) } == 0 { return 0; }
+    let owner = match descriptor_component(sd, 4, false) { Some(s) => s, None => &[] };
+    let owner_rights = if !owner.is_empty() && sid_matches_subject(token, owner) { 0x0002_0000 | 0x0004_0000 } else { 0 };
+    let max_allowed = desired & 0x0200_0000 != 0;
+    let requested = if max_allowed { 0x000F_FFFF } else { desired & !0x0200_0000 };
+    let allowed = match evaluate_dacl(token, sd, requested, owner_rights) { Some(v) => v, None => return 0 };
+    let explicit = desired & !0x0200_0000;
+    if explicit & !(allowed | previous) != 0 { return 0; }
+    let grant = if max_allowed { (allowed | previous) & !0x0200_0000 } else { explicit | previous };
+    unsafe {
+        core::ptr::write_unaligned(granted_access, grant);
+        core::ptr::write_unaligned(access_status, STATUS_SUCCESS);
+    }
+    1
+}
+
+#[cfg(test)]
+mod se_access_check_tests {
+    use super::*;
+    #[test]
+    fn registered_token_sid_controls_basic_dacl_access() {
+        let mut token_storage = 0u64;
+        let token = (&mut token_storage as *mut u64).cast::<c_void>();
+        let sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0];
+        let ptrs = [sid.as_ptr()];
+        let lens = [sid.len() as u8];
+        assert_eq!(unsafe { se_internal_RegisterTokenMetadata(token, 1, 0, 0, 0, 0, 1) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_RegisterTokenSids(token, ptrs.as_ptr(), lens.as_ptr(), 1) }, STATUS_SUCCESS);
+        // Self-relative SD: DACL_PRESENT, one ACCESS_ALLOWED_ACE for mask 0x1.
+        let mut sd = [0u8; 4096];
+        sd[0] = 1;
+        sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        sd[16..20].copy_from_slice(&20u32.to_le_bytes());
+        sd[20..22].copy_from_slice(&2u16.to_le_bytes());
+        sd[22..24].copy_from_slice(&24u16.to_le_bytes());
+        sd[24..26].copy_from_slice(&1u16.to_le_bytes());
+        sd[28] = 0; sd[30..32].copy_from_slice(&20u16.to_le_bytes());
+        sd[32..36].copy_from_slice(&1u32.to_le_bytes());
+        sd[36..48].copy_from_slice(&sid);
+        let context = SeSecuritySubjectContext { client_token: core::ptr::null_mut(),
+            impersonation_level: 0, primary_token: token, process_audit_id: core::ptr::null_mut() };
+        let mapping = SeGenericMapping { generic_read: 1, generic_write: 2, generic_execute: 4, generic_all: 7 };
+        let mut granted = 0u32;
+        let mut status = 0i32;
+        let mut privileges: *mut c_void = core::ptr::null_mut();
+        assert_eq!(unsafe { SeAccessCheck(sd.as_ptr().cast(), (&context as *const _).cast_mut(), 1,
+            1, 0, &mut privileges, &mapping, 1, &mut granted, &mut status) }, 1);
+        assert_eq!(granted, 1);
+        assert_eq!(status, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_UnregisterTokenSids(token) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
+    }
+}
