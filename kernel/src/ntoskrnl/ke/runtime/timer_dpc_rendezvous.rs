@@ -411,6 +411,18 @@ pub unsafe extern "win64" fn ke_insert_queue_dpc(dpc:*mut core::ffi::c_void,arg1
     else if CURRENT_IRQL[current].load(Ordering::Acquire)<DISPATCH_LEVEL { dispatch_queued_dpcs(); }
     1
 }
+/// Queue a DPC without dispatching it immediately. Timer expiry uses this
+/// while holding the timer-generation lock so cancellation can either invalidate
+/// the expiry before enqueue or remove the already-enqueued DPC afterward.
+fn queue_dpc_deferred(dpc:*mut core::ffi::c_void,arg1:*mut core::ffi::c_void,arg2:*mut core::ffi::c_void)->Option<usize>{
+    if dpc.is_null(){return None}
+    let mut table=DPCS.lock();
+    let record=table.records.iter_mut().find(|r|r.active&&r.object==dpc as usize)?;
+    if record.queued{return None}
+    record.arg1=arg1 as usize;record.arg2=arg2 as usize;record.queued=true;
+    Some(record.target_cpu)
+}
+
 pub unsafe extern "win64" fn ke_remove_queue_dpc(dpc:*mut core::ffi::c_void)->u8{
     if dpc.is_null(){return 0}
     let mut table=DPCS.lock();
@@ -591,11 +603,18 @@ pub fn timer_tick(now:u64){
         }
         drop(_guard);
         if record.dpc!=0{
-            // Timer reset/cancel can race the post-expiry wakeup processing.
-            // Publish the DPC only while this expiry still belongs to the
-            // current timer generation; cancellation invalidates stale ticks.
-            let still_current={let table=TIMERS.lock();table.records.iter().any(|r|r.object==record.object&&r.generation==record.generation)};
-            if still_current{let _=unsafe{ke_insert_queue_dpc(record.dpc as *mut _,core::ptr::null_mut(),core::ptr::null_mut())};}
+            // Enqueue while the timer-generation lock is held. This closes the
+            // check-then-enqueue race: a concurrent periodic-timer cancel will
+            // either invalidate this expiry first or remove its queued DPC.
+            let target={
+                let table=TIMERS.lock();
+                if table.records.iter().any(|r|r.object==record.object&&r.generation==record.generation){
+                    queue_dpc_deferred(record.dpc as *mut _,core::ptr::null_mut(),core::ptr::null_mut())
+                }else{None}
+            };
+            if let Some(target)=target{
+                if target!=cpu_slot(){let _=crate::smp::request_reschedule(target);}
+            }
         }
     }
     dispatch_queued_dpcs();
