@@ -139,4 +139,21 @@ mod tests {
  use super::*;
  #[test] fn name_comparison_is_case_insensitive(){assert!(eq(&[b'S' as u16,b'y' as u16],[b's' as u16,b'Y' as u16].as_slice()));}
  #[test] fn status_values_match_ntstatus(){assert_eq!(STATUS_SUCCESS,0);assert_eq!(STATUS_OBJECT_NAME_NOT_FOUND,0xC0000034u32 as i32);}
+ #[test] fn create_set_and_query_value_round_trip(){
+  let key_name:[u16;19]=[82,101,103,105,115,116,114,121,82,117,110,116,105,109,101,84,101,115,116];
+  let key_us=UnicodeString{length:(key_name.len()*2) as u16,maximum_length:(key_name.len()*2) as u16,buffer:key_name.as_ptr()};
+  let oa=ObjectAttributes{length:core::mem::size_of::<ObjectAttributes>() as u32,root_directory:core::ptr::null_mut(),object_name:&key_us,attributes:0,security_descriptor:core::ptr::null_mut(),security_qos:core::ptr::null_mut()};
+  let mut key=core::ptr::null_mut();let mut disposition=0;
+  assert_eq!(unsafe{ZwCreateKey(&mut key,0,&oa,core::ptr::null_mut(),core::ptr::null(),0,&mut disposition)},STATUS_SUCCESS);
+  assert_eq!(disposition,1);
+  let value_name:[u16;4]=[68,119,111,114];let value_us=UnicodeString{length:8,maximum_length:8,buffer:value_name.as_ptr()};
+  let value:u32=0x1234_abcd;
+  assert_eq!(unsafe{ZwSetValueKey(key,&value_us,0,4,(&value as *const u32).cast(),4)},STATUS_SUCCESS);
+  let mut output=[0u32;16];let mut required=0;
+  assert_eq!(unsafe{ZwQueryValueKey(key,&value_us,2,output.as_mut_ptr().cast(),core::mem::size_of_val(&output) as u32,&mut required)},STATUS_SUCCESS);
+  assert_eq!(required,16);
+  assert_eq!(output[1],4);
+  assert_eq!(output[2],4);
+  assert_eq!(output[3],value);
+ }
 }
