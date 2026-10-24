@@ -13,17 +13,17 @@
 
 ## Summary and calculated compatibility
 
-This expanded pass documents **129 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 129 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
+This expanded pass documents **132 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 132 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
 
 | Metric | Calculation | Result |
 |---|---|---:|
-| Source-level signature / x64 ABI declaration coverage | 129 documented declarations/call paths ÷ 129 | **129/129 = 100%** |
-| Name-based import resolution | 129 scoped routine names resolving to callable implementations ÷ 129 | **129/129 = 100%** |
-| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 129 | **10/129 = 7.8%** |
-| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 129 | **119/129 = 92.2%** |
-| Combined project score | (100% ABI declarations + 7.8% strict behavior) ÷ 2 | **53.9%** |
+| Source-level signature / x64 ABI declaration coverage | 132 documented declarations/call paths ÷ 132 | **132/132 = 100%** |
+| Name-based import resolution | 132 scoped routine names resolving to callable implementations ÷ 132 | **129/129 = 100%** |
+| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 132 | **10/132 = 7.6%** |
+| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 132 | **122/132 = 92.4%** |
+| Combined project score | (100% ABI declarations + 7.6% strict behavior) ÷ 2 | **53.8%** |
 
-**Important:** 53.9% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
+**Important:** 53.8% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
 
 ### Scoring rules
 
@@ -161,7 +161,7 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 118 | VOID KeGetClockTimerResolution(PULONG MaximumTime, PULONG MinimumTime, PULONG CurrentTime) | ke_get_clock_timer_resolution(); reports configured quantum | Writes 10,000 (1 ms) to non-null outputs. Resolution is fixed rather than dynamically programmed. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 119 | ULONG KeGetNextClockTickDuration(VOID) | ke_get_next_clock_tick_duration(); earliest active timer deadline | Converts the nearest known timer deadline to 100-ns units; returns a 1-ms fallback if no deadline exists. Depends on calibrated TSC and does not model all clock events. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 120 | VOID KeFlushIoBuffers(PMDL Mdl, BOOLEAN ReadOperation, BOOLEAN DmaOperation) | ke_flush_io_buffers(); x86-64 fences | Enforces CPU memory ordering on the current coherent-DMA target; ignores MDL ranges and does not perform non-coherent cache maintenance. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
-| 121 | VOID KeInitializeDeviceQueue(PKDEVICE_QUEUE DeviceQueue, PKSPIN_LOCK Lock) | ke_initialize_device_queue(); intrusive queue initialization | Initializes queue/list/busy metadata and retains the supplied lock pointer. Private Windows queue object layout and lock discipline are not fully reproduced. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 121 | VOID KeInitializeDeviceQueue(PKDEVICE_QUEUE DeviceQueue) | ke_initialize_device_queue(); intrusive queue initialization | Initializes queue/list/busy metadata and embedded lock word. Private Windows queue object layout and lock discipline are not fully reproduced. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 122 | BOOLEAN KeInsertDeviceQueue(PKDEVICE_QUEUE DeviceQueue, PKDEVICE_QUEUE_ENTRY DeviceQueueEntry) | ke_insert_device_queue(); busy-state and FIFO insertion | Returns FALSE when caller should start the request and marks the queue busy; returns TRUE when entry is queued. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 123 | BOOLEAN KeInsertByKeyDeviceQueue(PKDEVICE_QUEUE DeviceQueue, PKDEVICE_QUEUE_ENTRY DeviceQueueEntry, ULONG SortKey) | ke_insert_by_key_device_queue(); stable sort-key insertion | Inserts queued entries in ascending key order and reports whether it queued the entry. Uses a global IRQ-safe lock rather than the caller's Windows interrupt-spin-lock protocol. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 124 | PKDEVICE_QUEUE_ENTRY KeRemoveDeviceQueue(PKDEVICE_QUEUE DeviceQueue) | ke_remove_device_queue(); FIFO head removal | Removes and returns the next entry, or clears Busy and returns NULL when empty. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
@@ -171,9 +171,13 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 128 | VOID KeBugCheck(ULONG BugCheckCode) | ke_bug_check(); terminal halt path | Records the bugcheck code and halts with interrupts disabled. No crash dump, parameter report, or reboot policy yet. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 129 | VOID KeBugCheckEx(ULONG BugCheckCode, ULONG_PTR P1, ULONG_PTR P2, ULONG_PTR P3, ULONG_PTR P4) | ke_bug_check_ex(); terminal halt path | Records the code and four parameters, then halts. Diagnostic reporting and dump capture remain absent. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 
+| 130 | PKDEVICE_QUEUE_ENTRY KeRemoveByKeyDeviceQueue(PKDEVICE_QUEUE DeviceQueue, ULONG SortKey) | ke_remove_by_key_device_queue(); keyed intrusive-list removal | Removes the first entry with the exact sort key, clears its inserted flag and updates the hint. Exact Windows key-selection semantics require further conformance testing. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 131 | BOOLEAN KeRemoveEntryDeviceQueue(PKDEVICE_QUEUE DeviceQueue, PKDEVICE_QUEUE_ENTRY DeviceQueueEntry) | ke_remove_entry_device_queue(); explicit list unlink | Removes a queued entry only when its inserted flag is set. Uses the RdotOS global device-queue lock, not Windows' interrupt-object lock discipline. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 132 | PKDEVICE_QUEUE_ENTRY KeRemoveByKeyDeviceQueueIfBusy(PKDEVICE_QUEUE DeviceQueue, ULONG SortKey) | ke_remove_by_key_device_queue_if_busy(); busy check then keyed removal | Returns NULL when not busy; otherwise performs keyed removal. Busy-check/removal atomicity and exact Windows private semantics remain incomplete. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+
 ## Additional Ke exports still unsupported
 
-The entries below remain **unresolved or unimplemented** after the current implementation batch. The preceding routine table now covers 129 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
+The entries below remain **unresolved or unimplemented** after the current implementation batch. The preceding routine table now covers 132 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
 
 | Routine | Current status | Public contract / next work |
 |---|---|---|
