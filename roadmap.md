@@ -19,7 +19,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | I/O manager | Runtime under `ntoskrnl/io/runtime.rs`; initial x64 WDM object layouts, device create/delete, fixed-pool IRP/stack allocation, IofCallDriver dispatch, completion-routine unwinding, deadline-aware internal IRPs and cancel-lock exports | Verify exact ABI layouts against WDK, robust stack-copy/attachment semantics, asynchronous completion and APCs, cancellation ownership, remove rundown, MDL paths, storage dispatch, integration tests and real hardware |
 | NLS / globalization | Native-name catalogue and byte-preserving reader/copy API for `c_037.nls`, `c_437.nls`, `c_1252.nls`, `locale.nls`, `sortkey.nls`, `sorttbls.nls`, `ctype.nls`, `unicode.nls`; optional boot-asset staging | Parse NLS internal tables, code-page conversion, globalization APIs, filesystem writeback, locate files on a separate Windows/NTFS partition |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
-| ext filesystem | Separate `drivers/ext4` Rust crate; bounded read-only mount and guarded writes to existing extents | Remove any remaining gitlink entry; block-device/partition layer; NT I/O manager device/IRP dispatch integration; VFS/file objects; allocation and metadata updates; journal/checksum handling; crash consistency and image/fuzz tests |
+| ext filesystem | Separate `drivers/ext4` Rust crate; bounded read-only mount and guarded writes to existing extents; checked primary MBR/GPT partition discovery; CRC-validated GPT header/entry array; partition-scoped read/write adapter that rejects out-of-range I/O | NT I/O manager device/IRP dispatch integration; discover disks from real storage drivers; extended/logical MBR partitions; VFS/file objects; allocation and metadata updates; journal/checksum handling; crash consistency and image/fuzz tests |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
 **Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; subsequent Ke/Ki affinity, Timer2, and clock-path changes are pending CI verification. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
@@ -49,6 +49,18 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Extend registry semantics with persistent hive storage, canonical full paths, access/handle checks, enumeration and full information classes, callbacks/notifications, transactions, security, and WDK tests.
 
 **Validation status:** workflow build and artifact generation have been configured but not yet observed passing for this revision. A PE image build is not evidence of a working runtime load path or Windows 11 driver compatibility.
+
+### Storage and filesystem integration foundation (2026-10-24)
+
+- [x] Add bounded primary MBR partition parsing with signature, empty-entry, extended-partition, arithmetic, and device-capacity checks.
+- [x] Add primary GPT parsing with header CRC, entry-array CRC, usable-LBA validation, bounded standard-entry geometry, and disk-capacity checks.
+- [x] Add a partition-scoped block-device adapter for reads/writes/flush. All offsets are translated with checked arithmetic and rejected when they cross the selected partition boundary.
+- [x] Add host tests for MBR parsing, GPT checksum rejection, partition offset translation, and read/write boundary rejection.
+- [ ] Wire a real storage driver through NT IRP dispatch into this block-device trait; current parser/adapter operates on a supplied block device and does not discover hardware by itself.
+- [ ] Add GPT backup-header recovery, extended/logical MBR chains, disk hotplug/removal rundown, and fuzzed malformed-table coverage.
+- [ ] Mount ext4 from the discovered partition through the kernel VFS/file-object layer and validate end-to-end read paths.
+
+**Status:** partition isolation is implemented as a reusable crate-level foundation. It is not yet a physical storage stack and does not imply that ext4 can currently mount an arbitrary attached disk.
 
 ### Native registry hive and NLS ingestion (2026-10-24)
 
