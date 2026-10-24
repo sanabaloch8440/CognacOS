@@ -1408,32 +1408,36 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
     if object.is_null(){return 0}
     let Some(current)=crate::thread::current_thread_id() else{return 0};
     let _object_guard=DISPATCHER_OBJECT_LOCK.lock();
+    let mut timed_out=[0u64;crate::dispatcher::MAX_WAITERS];let mut timed_count=0usize;
     let (old,waiter_id,final_status)={
         let mut table=MUTANTS.lock();
         let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) else{return 0};
         if record.owner!=current||record.recursion==0{return unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)}}
-        let old=-(record.recursion as i32-1);
+        let old=1-record.recursion as i32;
         if record.recursion>1{
             record.recursion-=1;
-            unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-(record.recursion as i32),Ordering::Release);}
+            unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);}
             return old;
         }
         record.owner=0;record.recursion=0;record.abandoned=abandoned;
         unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
-        let waiter=crate::dispatcher::wake_one_timed(object as u64);
-        if let Some(waiter)=waiter{
+        loop{
+            let Some(waiter)=crate::dispatcher::wake_one_timed(object as u64) else{break (old,None,STATUS_SUCCESS)};
+            if waiter.timed_out{
+                if timed_count<timed_out.len(){timed_out[timed_count]=waiter.thread;timed_count+=1;}
+                continue
+            }
             record.owner=waiter.thread;record.recursion=1;
-            let was_abandoned=record.abandoned;
-            record.abandoned=false;
+            let was_abandoned=record.abandoned;record.abandoned=false;
             unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
-            (old,Some(waiter.thread),if was_abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
-        }else{(old,None,STATUS_SUCCESS)}
+            break (old,Some(waiter.thread),if was_abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
+        }
     };
+    for id in timed_out[..timed_count].iter().copied(){let _=crate::thread::complete_wait(id,STATUS_TIMEOUT);}
     if let Some(id)=waiter_id{
         let status=crate::dispatcher::complete_wait_group(id,object as u64,final_status,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(final_status);
         let _=crate::thread::complete_wait(id,status);
     }
-    let _=crate::thread::current_thread_id();
     old
 }
 pub unsafe extern "win64" fn ke_release_mutex(object:*mut DispatcherHeader,wait:u8)->i32{
@@ -1466,12 +1470,23 @@ pub fn thread_exit_cleanup(thread:u64){
         let header=object as *mut DispatcherHeader;
         let _guard=DISPATCHER_OBJECT_LOCK.lock();
         unsafe{(&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
-        if let Some(waiter)=crate::dispatcher::wake_one_timed(object as u64){
+        let mut timed_out=[0u64;crate::dispatcher::MAX_WAITERS];let mut timed_count=0usize;
+        let mut owner_waiter=None;
+        loop{
+            let Some(waiter)=crate::dispatcher::wake_one_timed(object as u64) else{break};
+            if waiter.timed_out{
+                if timed_count<timed_out.len(){timed_out[timed_count]=waiter.thread;timed_count+=1;}
+                continue
+            }
+            owner_waiter=Some(waiter.thread);break
+        }
+        for id in timed_out[..timed_count].iter().copied(){let _=crate::thread::complete_wait(id,STATUS_TIMEOUT);}
+        if let Some(id)=owner_waiter{
             let mut table=MUTANTS.lock();
-            if let Some(record)=table.records.iter_mut().find(|r|r.object==object){record.owner=waiter.thread;record.recursion=1;record.abandoned=false;}
+            if let Some(record)=table.records.iter_mut().find(|r|r.object==object){record.owner=id;record.recursion=1;record.abandoned=false;}
             unsafe{(&*core::ptr::addr_of!((*header).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
-            let status=crate::dispatcher::complete_wait_group(waiter.thread,object as u64,STATUS_ABANDONED_WAIT_0,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_ABANDONED_WAIT_0);
-            let _=crate::thread::complete_wait(waiter.thread,status);
+            let status=crate::dispatcher::complete_wait_group(id,object as u64,STATUS_ABANDONED_WAIT_0,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_ABANDONED_WAIT_0);
+            let _=crate::thread::complete_wait(id,status);
         }
     }
 }
