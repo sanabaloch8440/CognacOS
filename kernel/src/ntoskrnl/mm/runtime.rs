@@ -151,6 +151,82 @@ pub unsafe extern "win64" fn mm_copy_memory(
 
 const PAGE_SIZE: u64 = 4096;
 const MDL_HEADER_SIZE: u64 = 48;
+const MDL_PAGES_LOCKED: i16 = 0x0002;
+const MDL_SOURCE_IS_NONPAGED_POOL: i16 = 0x0004;
+const MDL_MAPPED_TO_SYSTEM_VA: i16 = 0x0001;
+
+#[repr(C)]
+struct MdlHeader {
+    next: *mut MdlHeader,
+    size: i16,
+    flags: i16,
+    _padding: u32,
+    process: *mut c_void,
+    mapped_system_va: *mut c_void,
+    start_va: *mut c_void,
+    byte_count: u32,
+    byte_offset: u32,
+}
+
+fn mdl_page_count(byte_offset: u64, byte_count: u64) -> Option<u64> {
+    if byte_offset >= PAGE_SIZE { return None; }
+    if byte_count == 0 { return Some(0); }
+    byte_offset.checked_add(byte_count)?
+        .checked_add(PAGE_SIZE - 1)
+        .map(|span| span / PAGE_SIZE)
+}
+
+/// Populate an MDL created by IoAllocateMdl for a nonpaged kernel buffer.
+/// Preflights every mapping and the complete PFN destination before writing,
+/// so malformed ranges never leave a partially populated PFN array.
+pub unsafe extern "win64" fn mm_build_mdl_for_non_paged_pool(mdl: *mut c_void) {
+    let address = mdl as u64;
+    if mdl.is_null() || address < 0xffff_8000_0000_0000
+        || crate::kernel_vm::is_pageable_address(address)
+        || translate(address, true).is_none()
+        || address.checked_add(MDL_HEADER_SIZE).is_none() {
+        return;
+    }
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    let start = header.start_va as u64;
+    let count = header.byte_count as u64;
+    let offset = header.byte_offset as u64;
+    let Some(pages) = mdl_page_count(offset, count) else { return; };
+    let Some(span) = offset.checked_add(count) else { return; };
+    let Some(end) = start.checked_add(span) else { return; };
+    if start < 0xffff_8000_0000_0000 || start & (PAGE_SIZE - 1) != 0
+        || end < start || (count != 0 && crate::kernel_vm::is_pageable_address(start)) {
+        return;
+    }
+    let pfn_bytes = match pages.checked_mul(core::mem::size_of::<u64>() as u64) {
+        Some(n) => n,
+        None => return,
+    };
+    let pfn_start = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
+    let pfn_end = match pfn_start.checked_add(pfn_bytes) { Some(v) => v, None => return };
+    if pfn_end < pfn_start { return; }
+    let mut cursor = pfn_start;
+    while cursor < pfn_end {
+        if translate(cursor, true).is_none() { return; }
+        cursor = core::cmp::min(pfn_end, (cursor & !(PAGE_SIZE - 1)).saturating_add(PAGE_SIZE));
+    }
+    for index in 0..pages {
+        let Some(va) = start.checked_add(index * PAGE_SIZE) else { return; };
+        if va < 0xffff_8000_0000_0000 || crate::kernel_vm::is_pageable_address(va)
+            || translate(va, false).is_none() {
+            return;
+        }
+    }
+    let pfns = pfn_start as *mut u64;
+    for index in 0..pages {
+        let va = start + index * PAGE_SIZE;
+        let Some(pa) = translate(va, false) else { return; };
+        unsafe { pfns.add(index as usize).write(pa / PAGE_SIZE); }
+    }
+    header.mapped_system_va = (start + offset) as *mut c_void;
+    header.flags |= MDL_PAGES_LOCKED | MDL_SOURCE_IS_NONPAGED_POOL | MDL_MAPPED_TO_SYSTEM_VA;
+}
+
 const MAX_CONTIGUOUS_ALLOCS: usize = 128;
 #[derive(Clone, Copy)]
 struct ContiguousAllocation { base: u64, pages: usize, requested: u64, live: bool }
