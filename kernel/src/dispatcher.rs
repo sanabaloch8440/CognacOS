@@ -34,7 +34,7 @@ pub fn cancel(t:u64)->Result<u64,WaitError>{let(i,g)=decode(t).ok_or(WaitError::
 pub fn wake_one_timed(object:u64)->Option<WokenWaiter>{
     if object==0{return None}
     let mut s=QUEUES.lock();
-    let now=crate::apic::monotonic_ticks();
+    let now=crate::hal::query_performance_counter();
     let i=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i)?;
     let record=s.records[i];s.records[i]=Record::EMPTY;
     Some(WokenWaiter{thread:record.thread,timed_out:record.deadline!=0&&record.deadline<=now})
@@ -43,7 +43,7 @@ pub fn wake_one(object:u64)->Option<u64>{wake_one_timed(object).map(|w|w.thread)
 /// Wake waiters into a caller-provided buffer. Returns the number written.
 pub fn wake_all_timed(object:u64,out:&mut[WokenWaiter])->usize{
     if object==0||out.is_empty(){return 0}
-    let mut s=QUEUES.lock();let now=crate::apic::monotonic_ticks();let mut n=0;
+    let mut s=QUEUES.lock();let now=crate::hal::query_performance_counter();let mut n=0;
     while n<out.len(){
         let next=s.records.iter().enumerate().filter(|(_,r)|r.state==WaitState::Queued&&r.object==object).min_by_key(|(_,r)|r.generation).map(|(i,_)|i);
         let Some(i)=next else{break};let record=s.records[i];s.records[i]=Record::EMPTY;
@@ -126,7 +126,7 @@ pub fn complete_wait_group(thread:u64,object:u64,status:i32,success_status:i32,t
     let (result,tokens,count)={
         let mut groups=GROUPS.lock();
         let group=groups.groups.iter_mut().find(|g|g.active&&g.thread==thread)?;
-        let timed_out=status==timeout_status || (group.deadline!=0 && crate::apic::monotonic_ticks()>=group.deadline);
+        let timed_out=status==timeout_status || (group.deadline!=0 && crate::hal::query_performance_counter()>=group.deadline);
         let result=if timed_out {timeout_status} else {
             let index=group.objects[..group.count].iter().position(|candidate|*candidate==object)?;
             success_status+index as i32
@@ -175,7 +175,7 @@ pub fn complete_ready_wait_all(
         for group in groups.groups.iter_mut(){
             if count==out_threads.len(){break}
             if !group.active||!group.wait_all{continue}
-            if group.deadline!=0&&crate::apic::monotonic_ticks()>=group.deadline{continue}
+            if group.deadline!=0&&crate::hal::query_performance_counter()>=group.deadline{continue}
             if !group.objects[..group.count].iter().copied().all(is_signalled){continue}
             for object in group.objects[..group.count].iter().copied(){consume(object);}
             out_threads[count]=group.thread;count+=1;
@@ -226,9 +226,9 @@ pub fn self_test()->bool{
     let count=complete_ready_wait_all(&mut ready,selftest_is_signalled,selftest_consume);
     if count!=1||ready[0]!=0x44||SELFTEST_SIGNAL_A.load(core::sync::atomic::Ordering::Acquire)!=0||SELFTEST_SIGNAL_B.load(core::sync::atomic::Ordering::Acquire)!=0{return false}
 
-    let deadline=crate::apic::monotonic_ticks();
+    let deadline=crate::hal::query_performance_counter();
     if enqueue(0x401,0x55,deadline).is_err(){return false}
     let mut expired=[ExpiredWait{thread:0,object:0};4];
-    let count=expire_detailed(crate::apic::monotonic_ticks(),&mut expired);
+    let count=expire_detailed(crate::hal::query_performance_counter(),&mut expired);
     count==1&&expired[0].thread==0x55&&expired[0].object==0x401&&pending_count()==0
 }
