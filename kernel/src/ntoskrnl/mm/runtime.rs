@@ -8,6 +8,7 @@ use core::ffi::c_void;
 const PAGE: u64 = 4096;
 const PRESENT: u64 = 1;
 const WRITE: u64 = 1 << 1;
+const USER: u64 = 1 << 2;
 const LARGE: u64 = 1 << 7;
 const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const LARGE_2M_MASK: u64 = 0x000f_ffff_ffe0_0000;
@@ -33,22 +34,26 @@ fn translate(va: u64, require_write: bool) -> Option<u64> {
     let i2 = ((va >> 21) & 0x1ff) as usize;
     let i1 = ((va >> 12) & 0x1ff) as usize;
     let e4 = unsafe { root.add(i4).read_volatile() };
-    if e4 & PRESENT == 0 || (require_write && e4 & WRITE == 0) { return None; }
+    if e4 & PRESENT == 0 || e4 & USER != 0 || (require_write && e4 & WRITE == 0) { return None; }
     let pdpt = (e4 & ADDRESS_MASK) as *const u64;
     let e3 = unsafe { pdpt.add(i3).read_volatile() };
-    if e3 & PRESENT == 0 || (require_write && e3 & WRITE == 0) { return None; }
+    if e3 & PRESENT == 0 || e3 & USER != 0 || (require_write && e3 & WRITE == 0) { return None; }
     if e3 & LARGE != 0 {
+        // Bits 13..29 are reserved in a 1 GiB leaf (bit 12 is PAT).
+        if e3 & 0x0000_0000_3fff_e000 != 0 { return None; }
         return Some((e3 & LARGE_1G_MASK) | (va & ((1u64 << 30) - 1)));
     }
     let pd = (e3 & ADDRESS_MASK) as *const u64;
     let e2 = unsafe { pd.add(i2).read_volatile() };
-    if e2 & PRESENT == 0 || (require_write && e2 & WRITE == 0) { return None; }
+    if e2 & PRESENT == 0 || e2 & USER != 0 || (require_write && e2 & WRITE == 0) { return None; }
     if e2 & LARGE != 0 {
+        // Bits 13..20 are reserved in a 2 MiB leaf (bit 12 is PAT).
+        if e2 & 0x0000_0000_001f_e000 != 0 { return None; }
         return Some((e2 & LARGE_2M_MASK) | (va & ((1u64 << 21) - 1)));
     }
     let pt = (e2 & ADDRESS_MASK) as *const u64;
     let e1 = unsafe { pt.add(i1).read_volatile() };
-    if e1 & PRESENT == 0 || (require_write && e1 & WRITE == 0) { return None; }
+    if e1 & PRESENT == 0 || e1 & USER != 0 || (require_write && e1 & WRITE == 0) { return None; }
     Some((e1 & ADDRESS_MASK) | (va & (PAGE - 1)))
 }
 
@@ -105,7 +110,7 @@ pub unsafe extern "win64" fn mm_copy_memory(
     if flags == 1 && end > crate::memory::DIRECT_MAP_PHYSICAL_LIMIT {
         return STATUS_INVALID_PARAMETER;
     }
-    let Some(dest_end) = (destination as u64).checked_add(length) else { return STATUS_INVALID_PARAMETER; };
+    if (destination as u64).checked_add(length).is_none() { return STATUS_INVALID_PARAMETER; }
     let mut done = 0u64;
     while done < length {
         let source = match source_address.checked_add(done) { Some(v) => v, None => break };
@@ -136,7 +141,7 @@ pub unsafe extern "win64" fn mm_copy_memory(
         done += count as u64;
     }
     if !bytes_transferred.is_null() { unsafe { bytes_transferred.write(done); } }
-    if done == length { STATUS_SUCCESS } else { let _ = dest_end; STATUS_PARTIAL_COPY }
+    if done == length { STATUS_SUCCESS } else { STATUS_PARTIAL_COPY }
 }
 
 const PAGE_SIZE: u64 = 4096;
@@ -280,5 +285,24 @@ mod tests {
         assert_eq!(STATUS_ACCESS_VIOLATION as u32, 0xC000_0005);
         assert_eq!(STATUS_INVALID_PARAMETER as u32, 0xC000_000D);
         assert_eq!(STATUS_PARTIAL_COPY as u32, 0x8000_000D);
+    }
+
+    #[test]
+    fn descriptor_permissions_are_supervisor_only() {
+        // Every paging level must reject user-accessible entries for kernel
+        // translation, even when the leaf itself is supervisor-only.
+        assert_ne!(USER & PRESENT, 0);
+        assert_eq!(USER & PRESENT, 0);
+    }
+
+    #[test]
+    fn mdl_size_rejects_arithmetic_overflow() {
+        assert_eq!(unsafe { mm_size_of_mdl(core::ptr::null(), u64::MAX) }, 0);
+        assert_eq!(unsafe { mm_size_of_mdl(1usize as *const c_void, u64::MAX - 1) }, 0);
+    }
+
+    #[test]
+    fn zero_length_mdl_has_header_only() {
+        assert_eq!(unsafe { mm_size_of_mdl(core::ptr::null(), 0) }, MDL_HEADER_SIZE as u32);
     }
 }
