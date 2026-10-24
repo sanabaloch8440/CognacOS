@@ -71,7 +71,7 @@ impl Transition { const EMPTY:Self=Self{used:false,irp:core::ptr::null_mut(),dev
 struct TransitionState { slots:[Transition;MAX_POWER_TRANSITIONS] }
 impl TransitionState { const fn new()->Self{Self{slots:[Transition::EMPTY;MAX_POWER_TRANSITIONS]}} }
 static TRANSITIONS:crate::hal::IrqSpinLock<TransitionState>=crate::hal::IrqSpinLock::new(TransitionState::new());
-static SYSTEM_POWER_TRANSITION:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static SYSTEM_POWER_IRP:core::sync::atomic::AtomicPtr<WdmIrp>=core::sync::atomic::AtomicPtr::new(core::ptr::null_mut());
 
 fn add_transition(t:Transition)->Result<(),i32>{
  let mut s=TRANSITIONS.lock();
@@ -91,7 +91,14 @@ pub(crate) unsafe fn po_prepare_irp_dispatch(device:*mut DeviceObject,irp:*mut W
   let raw=(parameters[0]>>32) as u32;
   match state_type {
    0 if (1..=6).contains(&raw)=>{
-    if SYSTEM_POWER_TRANSITION.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return STATUS_PENDING}
+    let owner=SYSTEM_POWER_IRP.load(Ordering::Acquire);
+    if owner!=irp {
+     match SYSTEM_POWER_IRP.compare_exchange(core::ptr::null_mut(),irp,Ordering::AcqRel,Ordering::Acquire) {
+      Ok(_)=>{},
+      Err(existing) if existing==irp=>{},
+      Err(_)=>return STATUS_PENDING,
+     }
+    }
     (3,raw as u8)
    }
    1 if (1..=4).contains(&raw)=>{
@@ -115,12 +122,16 @@ pub(crate) unsafe fn po_prepare_irp_dispatch(device:*mut DeviceObject,irp:*mut W
   match kind {
    1=>unsafe{let _=io::io_complete_device_power_transition(device,target,STATUS_INVALID_DEVICE_REQUEST);io::io_dereference_device_object(device)},
    2=>unsafe{let _=io::io_complete_pnp_transition(device,minor,STATUS_INVALID_DEVICE_REQUEST);io::io_dereference_device_object(device)},
-   3=>SYSTEM_POWER_TRANSITION.store(false,Ordering::Release),
+   3=>release_system_power_irp(irp),
    _=>{}
   }
   return status
  }
  STATUS_SUCCESS
+}
+fn release_system_power_irp(irp:*mut WdmIrp) {
+ let still_active={let s=TRANSITIONS.lock();s.slots.iter().any(|t|t.used&&t.irp==irp&&t.kind==3)};
+ if !still_active {let _=SYSTEM_POWER_IRP.compare_exchange(irp,core::ptr::null_mut(),Ordering::AcqRel,Ordering::Acquire);}
 }
 pub(crate) fn po_finish_dispatch_return(irp:*mut WdmIrp,device:*mut DeviceObject,status:i32){
  if status==STATUS_PENDING{return}
@@ -138,7 +149,7 @@ fn finish_matching(irp:*mut WdmIrp,device:Option<*mut DeviceObject>,status:i32){
   match t.kind{
    1=>unsafe{let _=io::io_complete_device_power_transition(t.device,t.target,status);io::io_dereference_device_object(t.device)},
    2=>unsafe{let _=io::io_complete_pnp_transition(t.device,t.minor,status);io::io_dereference_device_object(t.device)},
-   3=>{if status==STATUS_SUCCESS{SYSTEM_POWER_STATE.store(t.target as u32,Ordering::Release)}SYSTEM_POWER_TRANSITION.store(false,Ordering::Release);},
+   3=>{if status==STATUS_SUCCESS{SYSTEM_POWER_STATE.store(t.target as u32,Ordering::Release)}release_system_power_irp(irp);},
    _=>{}
   }
  }
