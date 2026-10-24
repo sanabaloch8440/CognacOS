@@ -168,6 +168,23 @@ mod completion_tests {
         post_completion_packet(port,second).expect("post second");
         assert_eq!(try_remove_completion_packet(port).unwrap(),Some(first));
         assert_eq!(try_remove_completion_packet(port).unwrap(),Some(second));
+        for n in 0..MAX_COMPLETION_PACKETS {
+            post_completion_packet(port,CompletionPacket{key:n as u64,apc_context:0,irp_id:n as u64,status:IoStatus::Success,information:0,completed_at:0}).expect("fill queue");
+        }
+        assert_eq!(post_completion_packet(port,first),Err(IoError::CompletionQueueFull));
+        for n in 0..MAX_COMPLETION_PACKETS { assert_eq!(try_remove_completion_packet(port).unwrap().unwrap().key,n as u64); }
         assert_eq!(try_remove_completion_packet(port).unwrap(),None);
+    }
+    #[test]
+    fn zero_deadline_is_terminal_before_dispatch() {
+        let mut dispatch:[Option<DispatchFn>;16]=[None;16];
+        dispatch[IRP_MJ_READ as usize]=Some(|_|IoStatus::Success);
+        let device=register_device(b"timeout-zero-test",dispatch).expect("register test device");
+        let id=submit_with_timeout(device,IRP_MJ_READ,0,16,Some(0)).expect("submit timed out IRP");
+        let irp=query_irp(id).expect("query timed out IRP");
+        assert_eq!(irp.status,IoStatus::TimedOut);
+        assert!(irp.completed);
+        assert_eq!(dispatch_one(id),Err(IoError::AlreadyCompleted));
+        release_irp(id).expect("release terminal IRP");
     }
 }
