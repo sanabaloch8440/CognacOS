@@ -89,6 +89,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
 /// Select the highest-ID-independent first runnable thread and switch stacks.
 /// If the ready queue is empty, a blocked/yielding thread switches back to its saved idle context.
 fn reschedule(block:bool)->Result<(),ThreadError>{
+    let prior_interrupts_enabled=crate::arch::interrupts_enabled();
     let cpu=cpu_index()?;
     let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
     let mut observed_rsp:u64;
@@ -142,6 +143,7 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
         } else {
             unsafe{crate::arch::context_switch(old_rsp_ptr,next_rsp)};
         }
+        crate::arch::set_interrupts_enabled(prior_interrupts_enabled);
         Ok(())
     }else if current_id!=0&&!block {
         crate::scheduler::resume_task(cpu,current_scheduler_id).map_err(|_|ThreadError::InvalidState)?;
@@ -164,6 +166,7 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
         let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
         if idle_top!=0{let _=crate::arch::set_kernel_stack(cpu,idle_top);}
         unsafe{crate::arch::context_switch_publish(old_rsp_ptr,idle,publish_switched_out,current_scheduler_id as usize)};
+        crate::arch::set_interrupts_enabled(prior_interrupts_enabled);
         Ok(())
     }else{
         Ok(())
