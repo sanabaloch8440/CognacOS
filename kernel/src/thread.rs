@@ -62,28 +62,23 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     let mut table=THREADS.lock();
     let slot=table.records.iter().position(|t|t.state==ThreadState::Empty).ok_or(ThreadError::Full)?;
     let id=table.next_id;
-    let mut eligible=[0usize;crate::hal::MAX_CPUS];
-    let mut eligible_count=0usize;
+    let mut eligible_mask=0u64;
     for cpu in 0..crate::hal::MAX_CPUS {
         if affinity&(1u64<<cpu)!=0
             && crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE) {
-            eligible[eligible_count]=cpu;
-            eligible_count+=1;
+            eligible_mask|=1u64<<cpu;
         }
     }
-    if eligible_count==0{return Err(ThreadError::InvalidAffinity);}
-    // Until migration-safe context publication/per-CPU run queues exist, bind
-    // each context to one allowed online CPU. Round-robin placement distributes
-    // all-CPU-affinity tasks without allowing another CPU to resume an unsaved RSP.
-    let owner_cpu=eligible[(id.wrapping_sub(1) as usize)%eligible_count];
-    let owner_affinity=1u64<<owner_cpu;
+    if eligible_mask==0{return Err(ThreadError::InvalidAffinity);}
+    // The saved context is published before it enters a run queue. Once a
+    // running thread is switched out, any eligible CPU may claim that context.
     table.next_id=table.next_id.wrapping_add(1).max(1);
     let scheduler_id=crate::scheduler::create_task(
-        2, owner_affinity, top as u64, thread_trampoline as usize as u64,
+        2, eligible_mask, top as u64, thread_trampoline as usize as u64,
     ).map_err(|_|ThreadError::Full)?;
-    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Ready,affinity:owner_affinity,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0};
+    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Ready,affinity:eligible_mask,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0};
     drop(table);
-    notify_affinity(owner_affinity);
+    notify_affinity(eligible_mask);
     Ok(id)
 }
 
@@ -165,9 +160,26 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
     }
 }
 
-pub fn yield_current()->Result<(),ThreadError>{crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();crate::ntoskrnl::ke::runtime::ke_deliver_pending_kernel_apcs();reschedule(false)}
+pub fn yield_current()->Result<(),ThreadError>{
+    crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();
+    crate::ntoskrnl::ke::runtime::dispatch_threaded_dpcs();
+    crate::ntoskrnl::ke::runtime::ke_deliver_pending_kernel_apcs();
+    reschedule(false)
+}
 /// Block the current thread. A wake racing before this call is remembered and cancels the block.
-pub fn block_current()->Result<(),ThreadError>{reschedule(true)?;crate::ntoskrnl::ke::runtime::ke_deliver_pending_kernel_apcs();Ok(())}
+pub fn block_current()->Result<(),ThreadError>{
+    crate::ntoskrnl::ke::runtime::dispatch_threaded_dpcs();
+    reschedule(true)?;
+    crate::ntoskrnl::ke::runtime::ke_deliver_pending_kernel_apcs();
+    Ok(())
+}
+/// Timer-ISR entry: preempt only when this CPU has a runnable peer. The
+/// interrupt frame remains on the interrupted thread's stack while switched out.
+pub fn preempt_from_timer_interrupt(){
+    let Ok(cpu)=cpu_index() else{return};
+    let Some(id)=current_thread_id() else{return};
+    if crate::scheduler::has_runnable_for_cpu(cpu,id){let _=reschedule(false);}
+}
 /// Wake a blocked thread. If it is still running, remember the wake to close enqueue/block races.
 pub fn wake(id:u64)->Result<(),ThreadError>{
     let mut table=THREADS.lock();
