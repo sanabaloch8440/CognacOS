@@ -596,8 +596,10 @@ pub unsafe extern "win64" fn mm_unmap_locked_pages(base: *mut c_void, mdl: *mut 
     header.flags &= !MDL_MAPPED_SYSTEM_VA;
     header.mapped_system_va = core::ptr::null_mut();
 }
-/// Same-process virtual copy using the active process page tables. Cross-process
-/// copies remain unsupported until process objects own registered address spaces.
+/// Copy between registered process address spaces while pinning both EPROCESS
+/// objects and holding the address-space lifetime lock. Page-table mutations
+/// and teardown use the same lock, so translated frames cannot be reclaimed
+/// or remapped between validation and the actual copy.
 pub unsafe extern "win64" fn mm_copy_virtual_memory(
     source_process: *mut c_void, source_address: *const c_void,
     target_process: *mut c_void, target_address: *mut c_void,
@@ -614,24 +616,33 @@ pub unsafe extern "win64" fn mm_copy_virtual_memory(
         || length > 0x0000_8000_0000_0000 || (previous_mode != 0 && previous_mode != 1) {
         return STATUS_INVALID_PARAMETER;
     }
-    if source_process != target_process { return STATUS_NOT_IMPLEMENTED; }
     if length == 0 { return STATUS_SUCCESS; }
     let src = source_address as u64;
     let dst = target_address as u64;
-    if src.checked_add(length).is_none() || dst.checked_add(length).is_none() { return STATUS_INVALID_PARAMETER; }
-    let mut done = 0u64;
-    while done < length {
-        let sva = match src.checked_add(done) { Some(v) => v, None => break };
-        let dva = match dst.checked_add(done) { Some(v) => v, None => break };
-        let spa = if previous_mode == 1 || crate::vm::is_user_range(sva, 1) { translate_current_user(sva, false) } else { None };
-        let dpa = if previous_mode == 1 || crate::vm::is_user_range(dva, 1) { translate_current_user(dva, true) } else { None };
-        let (Some(spa), Some(dpa)) = (spa, dpa) else { break; };
-        let count = core::cmp::min(length - done, core::cmp::min(
-            PAGE_SIZE - (sva & (PAGE_SIZE - 1)), PAGE_SIZE - (dva & (PAGE_SIZE - 1)))) as usize;
-        if count == 0 { break; }
-        unsafe { core::ptr::copy(spa as *const u8, dpa as *mut u8, count); }
-        done += count as u64;
+    if src.checked_add(length).is_none() || dst.checked_add(length).is_none() {
+        return STATUS_INVALID_PARAMETER;
     }
+    let user_only = previous_mode == 1;
+    let copied = crate::process::with_registered_process_roots(
+        source_process, target_process, |source_root, target_root| {
+            let mut done = 0u64;
+            while done < length {
+                let Some(sva) = src.checked_add(done) else { break; };
+                let Some(dva) = dst.checked_add(done) else { break; };
+                let Some(spa) = crate::vm::translate_in_root_locked(source_root, sva, false, user_only) else { break; };
+                let Some(dpa) = crate::vm::translate_in_root_locked(target_root, dva, true, user_only) else { break; };
+                let count = core::cmp::min(length - done, core::cmp::min(
+                    PAGE_SIZE - (sva & (PAGE_SIZE - 1)),
+                    PAGE_SIZE - (dva & (PAGE_SIZE - 1)))) as usize;
+                if count == 0 { break; }
+                // copy permits overlap for same-process moves and avoids the
+                // undefined behavior of copy_nonoverlapping for aliased pages.
+                unsafe { core::ptr::copy(spa as *const u8, dpa as *mut u8, count); }
+                done += count as u64;
+            }
+            done
+        });
+    let Some(done) = copied else { return STATUS_INVALID_PARAMETER; };
     if !return_size.is_null() { unsafe { return_size.write(done); } }
     if done == length { STATUS_SUCCESS } else { STATUS_PARTIAL_COPY }
 }
