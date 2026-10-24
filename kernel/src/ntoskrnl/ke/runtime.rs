@@ -94,3 +94,36 @@ include!("runtime/affinity.rs");
 include!("runtime/timer_dpc_rendezvous.rs");
 
 include!("runtime/process_attach.rs");
+
+
+#[cfg(test)]
+mod abi_layout_tests {
+    use super::*;
+
+    #[test]
+    fn public_x64_dispatcher_prefix_layouts_are_stable() {
+        assert_eq!(core::mem::size_of::<ProcessorNumber>(), 4);
+        assert_eq!(core::mem::offset_of!(ProcessorNumber, group), 0);
+        assert_eq!(core::mem::offset_of!(ProcessorNumber, number), 2);
+        assert_eq!(core::mem::offset_of!(ProcessorNumber, reserved), 3);
+
+        assert_eq!(core::mem::size_of::<DispatcherHeader>(), 24);
+        assert_eq!(core::mem::offset_of!(DispatcherHeader, kind), 0);
+        assert_eq!(core::mem::offset_of!(DispatcherHeader, signal_state), 4);
+        assert_eq!(core::mem::offset_of!(DispatcherHeader, wait_list_flink), 8);
+        assert_eq!(core::mem::offset_of!(DispatcherHeader, wait_list_blink), 16);
+        assert_eq!(core::mem::size_of::<SemaphoreObject>(), 32);
+        assert_eq!(core::mem::offset_of!(SemaphoreObject, limit), 24);
+        assert_eq!(core::mem::size_of::<GroupAffinity>(), 16);
+        assert_eq!(core::mem::offset_of!(GroupAffinity, group), 8);
+    }
+
+    #[test]
+    fn processor_change_notification_abi_is_stable() {
+        assert_eq!(core::mem::size_of::<ProcessorChangeNotifyContext>(), 16);
+        assert_eq!(core::mem::offset_of!(ProcessorChangeNotifyContext, processor_number), 0);
+        assert_eq!(core::mem::offset_of!(ProcessorChangeNotifyContext, change_type), 4);
+        assert_eq!(core::mem::offset_of!(ProcessorChangeNotifyContext, status), 8);
+        assert_eq!(core::mem::offset_of!(ProcessorChangeNotifyContext, reserved), 12);
+    }
+}
