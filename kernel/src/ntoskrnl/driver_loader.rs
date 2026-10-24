@@ -46,8 +46,8 @@ pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut Driver
  if preferred!=base{return Err(DriverLoadError::WrongBase);}
  if image_size==0||image_size>MAX_IMAGE_SIZE||mapped.len()<image_size||headers==0||headers>file.len()||headers>image_size||section_align<4096||!section_align.is_power_of_two()||file_align==0||!file_align.is_power_of_two()||entry_rva as usize>=image_size{return Err(DriverLoadError::InvalidHeader);}
  if mapped.as_mut_ptr() as u64!=base{return Err(DriverLoadError::WrongBase);}
- if dirs>1&&u32at(file,opt+112+8)?!=0&&u32at(file,opt+112+12)?!=0{return Err(DriverLoadError::ImportsUnsupported);}
- if dirs>5&&u32at(file,opt+112+5*8)?!=0&&u32at(file,opt+112+5*8+4)?!=0{return Err(DriverLoadError::RelocationsUnsupported);}
+ if dirs>1&&(u32at(file,opt+112+8)?!=0||u32at(file,opt+112+12)?!=0){return Err(DriverLoadError::ImportsUnsupported);}
+ if dirs>5&&(u32at(file,opt+112+5*8)?!=0||u32at(file,opt+112+5*8+4)?!=0){return Err(DriverLoadError::RelocationsUnsupported);}
  let table=opt.checked_add(opt_size).ok_or(DriverLoadError::InvalidHeader)?;
  if table.checked_add(count*40).is_none_or(|e|e>file.len()){return Err(DriverLoadError::Truncated);}
  mapped[..image_size].fill(0);mapped[..headers].copy_from_slice(file.get(..headers).ok_or(DriverLoadError::Truncated)?);
@@ -56,7 +56,7 @@ pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut Driver
   let o=table+i*40;let virtual_size=u32at(file,o+8)?;let rva=u32at(file,o+12)?;let raw_size=u32at(file,o+16)?;let raw_off=u32at(file,o+20)?;let flags=u32at(file,o+36)?;
   let span=core::cmp::max(virtual_size,raw_size);
   let end=(rva as usize).checked_add(span as usize).ok_or(DriverLoadError::InvalidSection)?;
-  if rva as usize%section_align!=0||end>image_size||rva as usize<headers||raw_size>0&&raw_off<headers as u32{return Err(DriverLoadError::InvalidSection);}
+  if (rva as usize)%section_align!=0||end>image_size||(rva as usize)<headers||(raw_size>0&&raw_off<headers as u32){return Err(DriverLoadError::InvalidSection);}
   if flags&IMAGE_SCN_MEM_EXECUTE!=0&&flags&IMAGE_SCN_MEM_WRITE!=0{return Err(DriverLoadError::WxSection);}
   if flags&IMAGE_SCN_MEM_EXECUTE!=0&&entry_rva>=rva&&entry_rva<rva.saturating_add(span){entry_executable=true;}
   if raw_size!=0{let src=range(file.len(),raw_off,raw_size)?;let dst=(rva as usize)..(rva as usize+raw_size as usize);mapped[dst].copy_from_slice(&file[src]);}
