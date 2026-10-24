@@ -610,6 +610,36 @@ pub unsafe fn lookup_device_object(name:*mut UnicodeString)->*mut DeviceObject {
 }
 
 
+/// Build a bounded asynchronous READ/WRITE IRP for a device that uses neither
+/// buffered nor direct I/O. Buffered-I/O system buffers and MDL-backed direct
+/// I/O are rejected until their full lifetime/locking contracts are available.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
+ major:u32, device:*mut DeviceObject, buffer:*mut c_void, length:u32,
+ starting_offset:*const i64, io_status:*mut IoStatusBlock
+)->*mut Irp {
+ if device.is_null()||io_status.is_null()||(major!=3&&major!=4)||(length!=0&&buffer.is_null()){return ptr::null_mut()}
+ let (stack_size,flags)={let state=WDM.lock();let Some(slot)=state.devices.iter().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};(slot.object.stack_size,slot.object.flags)};
+ // DO_BUFFERED_IO=0x4 and DO_DIRECT_IO=0x2 need their respective buffer/MDL paths.
+ if flags&0x6!=0{return ptr::null_mut()}
+ let offset=if starting_offset.is_null(){0}else{unsafe{starting_offset.read_unaligned()}};
+ let irp=unsafe{io_allocate_irp(stack_size as i16,0)};
+ if irp.is_null(){return ptr::null_mut()}
+ let next=unsafe{io_get_next_irp_stack_location(irp)};
+ if next.is_null(){unsafe{io_free_irp(irp)};return ptr::null_mut()}
+ unsafe{
+  (*next).major_function=major as u8;
+  (*next).parameters[0]=length as u64;
+  (*next).parameters[1]=offset as u64;
+  write_ptr((*irp).bytes.as_mut_ptr(),0x70,buffer);
+  write_ptr((*irp).bytes.as_mut_ptr(),0x48,io_status.cast());
+  ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_PENDING);
+  ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
+ }
+ irp
+}
+
+
 #[cfg(test)]
 mod wdm_tests {
  use super::*;
@@ -782,6 +812,23 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_device(&mut duplicate_driver,0,&mut unicode,7,0,0,&mut duplicate)},STATUS_OBJECT_NAME_COLLISION);
   unsafe{io_delete_device(device);}
   assert!(unsafe{lookup_device_object(&mut unicode)}.is_null());
+ }
+
+ #[test]
+ fn asynchronous_fsd_request_sets_read_parameters_and_iosb() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let mut status=IoStatusBlock{status:STATUS_PENDING as isize,information:0};
+  let mut buffer=[0u8;512];
+  let offset=4096i64;
+  let irp=unsafe{io_build_asynchronous_fsd_request(3,device,buffer.as_mut_ptr().cast(),buffer.len() as u32,&offset,&mut status)};
+  assert!(!irp.is_null());
+  let stack=unsafe{io_get_next_irp_stack_location(irp)};
+  assert_eq!(unsafe{(*stack).major_function},3);
+  assert_eq!(unsafe{(*stack).parameters[0]},512);
+  assert_eq!(unsafe{(*stack).parameters[1]},4096);
+  unsafe{io_free_irp(irp);io_delete_device(device);}
  }
 
 }
