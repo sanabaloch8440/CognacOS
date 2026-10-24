@@ -433,7 +433,7 @@ pub unsafe extern "win64" fn mm_prepare_mdl_for_reuse(mdl: *mut c_void) {
     let address = mdl as u64;
     if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
     let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
-    if header.size < MDL_HEADER_SIZE as i16 { return; }
+    if header.size < 0 || header.size < MDL_HEADER_SIZE as i16 { return; }
     let pages = match mdl_page_count(header.byte_offset as u64, header.byte_count as u64) {
         Some(value) => value,
         None => return,
@@ -459,9 +459,8 @@ pub unsafe extern "win64" fn mm_prepare_mdl_for_reuse(mdl: *mut c_void) {
     header.flags = 0;
     header.process = core::ptr::null_mut();
     header.mapped_system_va = core::ptr::null_mut();
-    header.start_va = core::ptr::null_mut();
-    header.byte_count = 0;
-    header.byte_offset = 0;
+    // Preserve StartVa/ByteOffset/ByteCount: callers reuse the descriptor for
+    // the same buffer range and may immediately probe/lock it again.
 }
 
 /// Free only MDLs allocated by MmCreateMdl; caller-owned IoAllocateMdl-style
