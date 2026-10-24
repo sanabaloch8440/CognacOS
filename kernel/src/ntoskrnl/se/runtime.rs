@@ -1370,7 +1370,8 @@ pub unsafe extern "win64" fn SePrivilegeCheck(
         if offset == usize::MAX { return 0; }
         let low = unsafe { core::ptr::read_unaligned(set.add(offset).cast::<u32>()) };
         let high = unsafe { core::ptr::read_unaligned(set.add(offset + 4).cast::<u32>()) };
-        if high == 0 && low < 64 && meta.privileges & (1u64 << low) != 0 { found += 1; }
+        let attributes = unsafe { core::ptr::read_unaligned(set.add(offset + 8).cast::<u32>()) };
+        if high == 0 && low < 64 && attributes & 2 != 0 && meta.privileges & (1u64 << low) != 0 { found += 1; }
         else if control & 1 != 0 { return 0; }
     }
     if control & 1 != 0 { (found == count) as u8 } else { (found != 0) as u8 }
@@ -1390,7 +1391,9 @@ mod se_privilege_check_tests {
         set[0..4].copy_from_slice(&2u32.to_le_bytes());
         set[4..8].copy_from_slice(&1u32.to_le_bytes());
         set[8..12].copy_from_slice(&3u32.to_le_bytes());
+        set[16..20].copy_from_slice(&2u32.to_le_bytes());
         set[20..24].copy_from_slice(&7u32.to_le_bytes());
+        set[28..32].copy_from_slice(&2u32.to_le_bytes());
         assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const _).cast_mut(), 1) }, 1);
         set[20..24].copy_from_slice(&8u32.to_le_bytes());
         assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const _).cast_mut(), 1) }, 0);
