@@ -28,8 +28,8 @@ struct TimerTable { records: [TimerRecord; MAX_TIMER_OBJECTS] }
 impl TimerTable { const fn new()->Self { Self { records:[TimerRecord::EMPTY;MAX_TIMER_OBJECTS] } } }
 static TIMERS: crate::hal::IrqSpinLock<TimerTable> = crate::hal::IrqSpinLock::new(TimerTable::new());
 #[derive(Clone, Copy)]
-struct DpcRecord { object: usize, routine: usize, context: usize, arg1: usize, arg2: usize, target_cpu: usize, importance:u8, threaded: bool, active: bool, queued: bool }
-impl DpcRecord { const EMPTY: Self = Self { object:0,routine:0,context:0,arg1:0,arg2:0,target_cpu:0,importance:1,threaded:false,active:false,queued:false }; }
+struct DpcRecord { object: usize, routine: usize, context: usize, arg1: usize, arg2: usize, target_cpu: usize, importance:u8, threaded: bool, active: bool, queued: bool, running: bool }
+impl DpcRecord { const EMPTY: Self = Self { object:0,routine:0,context:0,arg1:0,arg2:0,target_cpu:0,importance:1,threaded:false,active:false,queued:false,running:false }; }
 struct DpcTable { records:[DpcRecord;MAX_DPC_OBJECTS] }
 impl DpcTable { const fn new()->Self { Self { records:[DpcRecord::EMPTY;MAX_DPC_OBJECTS] } } }
 static DPCS: crate::hal::IrqSpinLock<DpcTable> = crate::hal::IrqSpinLock::new(DpcTable::new());
@@ -362,7 +362,14 @@ pub unsafe extern "win64" fn ke_initialize_dpc(dpc:*mut core::ffi::c_void,routin
     let mut table=DPCS.lock();
     let slot=table.records.iter().position(|r|r.object==dpc as usize)
         .or_else(||table.records.iter().position(|r|!r.active));
-    if let Some(i)=slot{table.records[i]=DpcRecord{object:dpc as usize,routine:routine.map(|f|f as usize).unwrap_or(0),context:context as usize,arg1:0,arg2:0,target_cpu:cpu_slot(),importance:1,threaded:false,active:true,queued:false};}
+    if let Some(i)=slot{
+        // Do not recycle caller-owned KDPC metadata while its previous callback
+        // is queued or executing. The public initializer has no failure return,
+        // so an unsafe reinitialization attempt is ignored until rundown ends.
+        let existing=table.records[i];
+        if existing.object==dpc as usize && (existing.queued || existing.running) { return; }
+        table.records[i]=DpcRecord{object:dpc as usize,routine:routine.map(|f|f as usize).unwrap_or(0),context:context as usize,arg1:0,arg2:0,target_cpu:cpu_slot(),importance:1,threaded:false,active:true,queued:false,running:false};
+    }
 }
 /// Threaded DPCs share the public callback ABI; execution remains at DISPATCH_LEVEL
 /// until the scheduler grows a dedicated PASSIVE_LEVEL worker queue.
@@ -420,6 +427,9 @@ fn drain_local_dpc_queue(cpu:usize)->bool{
             let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued&&r.target_cpu==cpu) else {return true};
             record.queued=false;
             if record.routine==0 {None} else {
+                // Mark the object before dropping the table lock so cancel,
+                // reinitialize, and rundown observe the executing callback.
+                record.running=true;
                 DPC_IN_FLIGHT.fetch_add(1,Ordering::AcqRel);
                 Some((record.routine,record.object,record.context,record.arg1,record.arg2))
             }
@@ -427,6 +437,12 @@ fn drain_local_dpc_queue(cpu:usize)->bool{
         if let Some((routine,object,context,arg1,arg2))=callback {
             let function:DpcRoutine=unsafe{core::mem::transmute(routine)};
             unsafe{function(object as *mut _,context as *mut _,arg1 as *mut _,arg2 as *mut _);}
+            {
+                let mut table=DPCS.lock();
+                if let Some(record)=table.records.iter_mut().find(|r|r.object==object && r.running) {
+                    record.running=false;
+                }
+            }
             DPC_IN_FLIGHT.fetch_sub(1,Ordering::AcqRel);
         }
     }
@@ -466,9 +482,11 @@ pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
         return
     }
     // A synchronous generic-DPC rendezvous drains every CPU in the online
-    // topology. Repeat because a callback may queue follow-on DPCs while a
-    // different processor is draining its local queue.
-    let mut rounds=0usize;
+    // topology. Repeat because callbacks can queue follow-on DPCs while a
+    // different processor is draining its local queue. Never report success
+    // while any queue, callback, or remote dispatcher remains active. Like the
+    // Windows contract, this can wait indefinitely if an online CPU stops
+    // participating; returning early would silently violate completion.
     loop {
         unsafe{ke_generic_call_dpc(Some(flush_dpc_rendezvous),core::ptr::null_mut());}
         dispatch_queued_dpcs();
@@ -478,11 +496,6 @@ pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
         }||DPC_IN_FLIGHT.load(Ordering::Acquire)!=0
           ||DPC_DISPATCHING.iter().enumerate().any(|(cpu,state)|cpu!=current&&state.load(Ordering::Acquire));
         if !pending{return}
-        rounds+=1;
-        // Avoid a permanent kernel hang when the platform cannot complete a
-        // rendezvous (e.g. an AP failed after being marked online). This is a
-        // fail-safe, not a successful flush: leave queued work intact.
-        if rounds>=1024{return}
         core::hint::spin_loop();
     }
 }
