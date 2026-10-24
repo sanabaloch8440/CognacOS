@@ -175,7 +175,7 @@ pub unsafe extern "win64" fn ObCloseHandle(handle:*mut c_void,previous_mode:u8)-
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObGetObjectType(object:*mut c_void)->*mut ObjectType{object_type(object)}
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn ObIsKernelHandle(handle:*mut c_void)->u8{let _g=LOCK.lock();let s=state();handle_idx(s,handle,usize::MAX).is_some() as u8}
+pub unsafe extern "win64" fn ObIsKernelHandle(handle:*mut c_void)->u8{let _g=LOCK.lock();let s=state();let Some((i,g))=decode_handle(handle)else{return 0};s.handles.get(i).is_some_and(|e|e.used&&e.generation==g&&e.owner==usize::MAX) as u8}
 
 #[cfg(test)]
 mod tests{
