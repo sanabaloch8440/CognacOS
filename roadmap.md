@@ -207,7 +207,8 @@ The parser is read-only and not a production filesystem driver. The original Ext
 - [x] Run host-side ext parser tests.
 - [x] Boot with OVMF/QEMU (5 GiB RAM, four vCPUs) and assert serial markers for PE32+ handoff, high-half/page-table validation, direct-map/memory-manager checks, and selected subsystem self-tests.
 - [ ] Add focused tests for allocator, scheduler, dispatcher, HAL exports, DMA, and parser boundaries.
-- [x] Add OVMF/QEMU SMP boot and per-CPU directed-IPI stress matrix for 2, 4, and 8 vCPUs; the first CI result is pending.\n- [ ] Add broader timeout/cancellation and concurrent kernel-object/MDL teardown stress tests.
+- [x] Add OVMF/QEMU SMP boot and per-CPU directed-IPI stress matrix for 2, 4, and 8 vCPUs; the first CI result is pending.
+- [ ] Add broader timeout/cancellation and concurrent kernel-object/MDL teardown stress tests.
 - [ ] Fuzz ELF, PE, ACPI, and filesystem parsers.
 - [ ] Test Secure Boot on/off after signed boot support exists.
 - [ ] Document tested hardware, threat model, recovery/debug procedure, and known limitations.
