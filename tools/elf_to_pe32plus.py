@@ -36,7 +36,114 @@ def u64(data, off):
     return struct.unpack_from("<Q", data, off)[0]
 
 
-def convert(blob, image_base=BASE, dll=False):
+
+def _u64(data, off):
+    return struct.unpack_from("<Q", data, off)[0]
+
+
+def read_elf_function_exports(blob, manifest_path):
+    """Return only defined global function symbols present in the pinned Windows manifest."""
+    import json
+    with open(manifest_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+    allowed = {e["name"]: e["ordinal"] for e in manifest.get("exports", [])
+               if e.get("name") is not None and isinstance(e.get("ordinal"), int)}
+    if len(blob) < 64:
+        raise ValueError("truncated ELF symbol table")
+    shoff = _u64(blob, 40)
+    shentsize, shnum = u16(blob, 58), u16(blob, 60)
+    if shentsize < 64 or shnum == 0 or shoff + shentsize * shnum > len(blob):
+        raise ValueError("invalid ELF section-header table")
+    sections = []
+    for i in range(shnum):
+        off = shoff + i * shentsize
+        sections.append(struct.unpack_from("<IIQQQQIIQQ", blob, off))
+    found = {}
+    for sec in sections:
+        _name, kind, _flags, _addr, off, size, link, _info, _align, entsize = sec
+        if kind != 2:  # SHT_SYMTAB (dynamic symbols are not used in this static image)
+            continue
+        if link >= len(sections) or entsize < 24 or off + size > len(blob):
+            raise ValueError("invalid ELF symbol/string table")
+        strings_sec = sections[link]
+        str_off, str_size = strings_sec[4], strings_sec[5]
+        if str_off + str_size > len(blob):
+            raise ValueError("invalid ELF symbol string table")
+        strings = blob[str_off:str_off + str_size]
+        for pos in range(off, off + size, entsize):
+            if pos + 24 > len(blob):
+                raise ValueError("truncated ELF symbol entry")
+            name_off, info, _other, shndx, value, _sym_size = struct.unpack_from("<IBBHQQ", blob, pos)
+            if shndx == 0 or (info >> 4) not in (1, 2) or (info & 0x0f) != 2:
+                continue
+            if name_off >= len(strings):
+                continue
+            end = strings.find(b"\\0", name_off)
+            if end < 0:
+                continue
+            try:
+                name = strings[name_off:end].decode("ascii")
+            except UnicodeDecodeError:
+                continue
+            if name in allowed:
+                if name in found and found[name][0] != value:
+                    raise ValueError(f"duplicate Windows export symbol {name}")
+                found[name] = (value, allowed[name])
+    return [(name, ordinal, value) for name, (value, ordinal) in sorted(found.items())]
+
+
+def build_export_directory(exports, image_base):
+    """Build a PE export directory with Windows-manifest ordinals and no non-Windows names."""
+    if not exports:
+        return b""
+    max_ordinal = max(ordinal for _name, ordinal, _value in exports)
+    if max_ordinal < 1 or max_ordinal > 65535:
+        raise ValueError("invalid export ordinal range")
+    names = sorted(exports, key=lambda item: item[0])
+    directory_size = 40
+    eat_off = directory_size
+    names_off = eat_off + max_ordinal * 4
+    ords_off = names_off + len(names) * 4
+    strings_off = ords_off + len(names) * 2
+    strings = bytearray()
+    dll_name = b"ntoskrnl.exe\\0"
+    dll_name_off = strings_off
+    strings.extend(dll_name)
+    name_string_offsets = []
+    for name, _ordinal, _value in names:
+        name_string_offsets.append(strings_off + len(strings) - (strings_off + len(dll_name)))
+        strings.extend(name.encode("ascii") + b"\\0")
+    data = bytearray(strings_off + len(strings) - strings_off)
+    # PE RVA is based on the section RVA; the caller patches this directory using
+    # the known .edata RVA after the final section layout has been selected.
+    for name, ordinal, value in exports:
+        if value < image_base or value - image_base > 0xffffffff:
+            raise ValueError(f"export {name} is outside the PE image")
+        struct.pack_into("<I", data, eat_off + (ordinal - 1) * 4, value - image_base)
+    for i, (name, ordinal, _value) in enumerate(names):
+        struct.pack_into("<H", data, ords_off + i * 2, ordinal - 1)
+    data[strings_off:strings_off + len(strings)] = strings
+    # Relative string offsets are converted to image RVAs by finalize_export_directory.
+    return bytes(data), {"eat_off": eat_off, "names_off": names_off, "ords_off": ords_off,
+                         "dll_name_off": dll_name_off,
+                         "name_string_offsets": name_string_offsets, "names": names}
+
+
+def finalize_export_directory(data, metadata, section_rva, exports):
+    out = bytearray(data)
+    eat_off, names_off, ords_off = metadata["eat_off"], metadata["names_off"], metadata["ords_off"]
+    # The name pointer table uses RVAs, not offsets into .edata.
+    for i, string_off in enumerate(metadata["name_string_offsets"]):
+        struct.pack_into("<I", out, names_off + i * 4, section_rva + string_off)
+    dll_name_rva = section_rva + metadata["dll_name_off"]
+    directory = struct.pack("<IIHHIIIIIIII", 0, 0, 0, 0, dll_name_rva, 1,
+                            max(ordinal for _name, ordinal, _value in exports), len(exports),
+                            section_rva + eat_off, section_rva + names_off, section_rva + ords_off)
+    out[:40] = directory
+    return bytes(out)
+
+
+def convert(blob, image_base=BASE, dll=False, export_manifest=None):
     if len(blob) < 64 or blob[:4] != b"\x7fELF":
         raise ValueError("input is not ELF")
     if blob[4:7] != b"\x02\x01\x01" or u16(blob, 16) != 2 or u16(blob, 18) != 62:
@@ -82,6 +189,20 @@ def convert(blob, image_base=BASE, dll=False):
     if image_base & 0xFFFF or first_rva < PAGE or first_rva & (PAGE - 1):
         raise ValueError("image base must be 64 KiB aligned with a nonzero section RVA")
 
+    export_data = b""
+    export_meta = None
+    export_rva = 0
+    if export_manifest:
+        exports = read_elf_function_exports(blob, export_manifest)
+        if exports:
+            export_rva = align(max(s["vaddr"] + s["memsz"] for s in segments) - image_base, SECT_ALIGN)
+            export_data, export_meta = build_export_directory(exports, image_base)
+            export_data = finalize_export_directory(export_data, export_meta, export_rva, exports)
+            segments.append({"vaddr": image_base + export_rva, "filesz": len(export_data),
+                             "memsz": len(export_data), "offset": 0, "flags": PF_R,
+                             "name_override": ".edata", "generated_data": export_data})
+            segments.sort(key=lambda s: s["vaddr"])
+
     # PE headers use fixed offsets and section raw data is laid out contiguously.
     peoff = 0x80
     optional_size = 240
@@ -125,6 +246,8 @@ def convert(blob, image_base=BASE, dll=False):
     struct.pack_into("<HH", out, o + 68, 1, 0x0100)  # IMAGE_SUBSYSTEM_NATIVE, NX_COMPAT
     struct.pack_into("<QQQQ", out, o + 72, 0x100000, 0x1000, 0x100000, 0x1000)
     struct.pack_into("<II", out, o + 104, 0, 16)  # loader flags, data-directory count
+    if export_data:
+        struct.pack_into("<II", out, o + 112, export_rva, len(export_data))
     # No imports, relocations, TLS, or exception directory: this is a fixed-base
     # static kernel image, not a Windows user-mode executable.
     shoff = o + optional_size
@@ -132,7 +255,10 @@ def convert(blob, image_base=BASE, dll=False):
         out[shoff + i * 40:shoff + (i + 1) * 40] = sh
     for s in segments:
         if s["raw_size"]:
-            out[s["raw_offset"]:s["raw_offset"] + s["filesz"]] = blob[s["offset"]:s["offset"] + s["filesz"]]
+            payload = s.get("generated_data")
+            if payload is None:
+                payload = blob[s["offset"]:s["offset"] + s["filesz"]]
+            out[s["raw_offset"]:s["raw_offset"] + s["filesz"]] = payload
     return bytes(out)
 
 
@@ -142,11 +268,12 @@ def main():
     parser.add_argument("output")
     parser.add_argument("--image-base", type=lambda v: int(v, 0), default=BASE)
     parser.add_argument("--dll", action="store_true", help="mark the PE image as a native driver DLL")
+    parser.add_argument("--export-manifest", help="Windows export manifest; export only defined global function symbols present in this manifest")
     args = parser.parse_args()
     try:
         with open(args.input, "rb") as f:
             source = f.read()
-        result = convert(source, image_base=args.image_base, dll=args.dll)
+        result = convert(source, image_base=args.image_base, dll=args.dll, export_manifest=args.export_manifest)
         with open(args.output, "wb") as f:
             f.write(result)
         print(f"PE32+ kernel image written: {len(result)} bytes")
