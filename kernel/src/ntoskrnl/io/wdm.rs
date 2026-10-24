@@ -99,32 +99,7 @@ impl WdmState {
 static WDM: IrqSpinLock<WdmState> = IrqSpinLock::new(WdmState::new());
 
 pub const DEVICE_POWER_D0:u8=0; pub const DEVICE_POWER_D1:u8=1; pub const DEVICE_POWER_D2:u8=2; pub const DEVICE_POWER_D3:u8=3;
-#[repr(C)]
-#[derive(Clone,Copy)]
-pub union PowerState { pub system_state:u32, pub device_state:u32 }
-static SYSTEM_POWER_STATE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(1);
 
-/// WDM PoSetPowerState ABI. This reports the committed state; it does not
-/// itself perform a hardware transition or replace IRP_MJ_POWER dispatch.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoSetPowerState(device:*mut DeviceObject,state_type:u32,new_state:PowerState)->PowerState {
- if state_type==0 {
-  let next=unsafe{new_state.system_state};
-  if next>6{return PowerState{system_state:0}}
-  let old=SYSTEM_POWER_STATE.swap(next,core::sync::atomic::Ordering::AcqRel);
-  return PowerState{system_state:old};
- }
- if state_type!=1||device.is_null(){return PowerState{device_state:0}}
- let raw=unsafe{new_state.device_state};
- if !(1..=4).contains(&raw){return PowerState{device_state:0}}
- let mut state=WDM.lock();
- let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)&&!s.deleting) else{return PowerState{device_state:0}};
- let old=slot.power_state as u32+1;
- slot.power_state=(raw-1) as u8;
- PowerState{device_state:old}
-}
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoStartNextPowerIrp(_irp:*mut Irp) { /* compatibility no-op */ }
 
 
 
@@ -189,6 +164,17 @@ pub unsafe extern "system" fn io_complete_device_power_transition(device:*mut De
  };
  if finalize{unsafe{io_delete_device(device)}}status
 }
+/// Atomically publish a committed D-state while the device is still live.
+/// The Po layer owns the WDK ABI; this helper only protects I/O device metadata.
+pub(crate) fn io_set_device_power_state(device:*mut DeviceObject,next:u8)->Option<u8> {
+ if device.is_null() || next>DEVICE_POWER_D3 { return None; }
+ let mut state=WDM.lock();
+ let slot=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)&&!s.deleting)?;
+ let old=slot.power_state;
+ slot.power_state=next;
+ Some(old)
+}
+
 pub fn device_power_state(device:*mut DeviceObject)->i32 {
  if device.is_null(){return -1}
  let state=WDM.lock();
@@ -902,16 +888,6 @@ mod wdm_tests {
   assert!(!driver.device_object.is_null());
   unsafe{io_release_device_remove_lock(d);}
   assert!(driver.device_object.is_null());
- }
- #[test]
- fn po_set_power_state_reports_previous_device_and_system_states() {
-  let mut driver:DriverObject=unsafe{core::mem::zeroed()};let mut d:*mut DeviceObject=ptr::null_mut();
-  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut d)},STATUS_SUCCESS);
-  let old=unsafe{PoSetPowerState(d,1,PowerState{device_state:4})};
-  assert_eq!(unsafe{old.device_state},1);assert_eq!(device_power_state(d),3);
-  let sys=unsafe{PoSetPowerState(ptr::null_mut(),0,PowerState{system_state:3})};
-  assert_eq!(unsafe{sys.system_state},1);
-  unsafe{io_delete_device(d);}
  }
  #[test]
  fn power_transition_serializes_and_commits_only_success() {
