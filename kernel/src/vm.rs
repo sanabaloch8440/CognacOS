@@ -2,6 +2,7 @@
 //! User mappings occupy PML4 slots 1..255 (512 GiB..128 TiB) so they do not
 //! collide with the bootstrap's supervisor-only identity map at slot 0.
 use core::arch::asm;
+pub use crate::vm_range::is_user_range;
 
 const PAGE_SIZE: u64 = 4096;
 const PRESENT: u64 = 1;
@@ -10,8 +11,6 @@ const USER: u64 = 1 << 2;
 const LARGE: u64 = 1 << 7;
 const NX: u64 = 1 << 63;
 const ADDR: u64 = 0x000f_ffff_ffff_f000;
-const USER_START: u64 = 0x0000_0080_0000_0000;
-const USER_END: u64 = 0x0000_8000_0000_0000;
 
 /// Serializes address-space mutations/destruction with cross-process virtual copies.
 pub static ADDRESS_SPACE_LIFETIME_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
@@ -468,12 +467,6 @@ pub fn translate_in_root_locked(root_physical: u64, virtual_address: u64, write:
     None
 }
 
-pub fn is_user_range(address: u64, length: u64) -> bool {
-    if length == 0 { return address >= USER_START && address < USER_END; }
-    address >= USER_START
-        && address < USER_END
-        && address.checked_add(length).is_some_and(|end| end <= USER_END)
-}
 
 
 fn translate_user_root(root_physical: u64, virtual_address: u64, write: bool) -> Result<u64, VmError> {
