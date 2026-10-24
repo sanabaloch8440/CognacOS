@@ -128,6 +128,12 @@ This milestone is **not** full Windows MM/process compatibility. User mappings r
 | .github/workflows/ | Automated build and OVMF/QEMU validation |
 | [roadmap.md](roadmap.md) | Implemented features, incomplete work, and next milestones |
 
+## NT I/O manager and ext4 integration status
+
+The NT I/O layer now has an initial WDM x64 foundation in `kernel/src/ntoskrnl/io/runtime.rs` and `wdm.rs`: device/IRP/stack ABI layout checks, named device creation and lookup, attachment/detachment and stack queries, IRP initialization/reuse and dispatch, completion routines with caller `IO_STATUS_BLOCK` publication, cancel-routine registration/dispatch, MDL allocation/freeing, and bounded filesystem/symbolic-link registration. `IoBuildAsynchronousFsdRequest` supports non-buffered I/O and direct I/O through locked MDLs; buffered I/O is rejected rather than silently mishandled.
+
+This remains a partial kernel I/O manager, not a general Windows driver compatibility claim. File objects and `IoGetDeviceObjectPointer`, VPBs and mount-volume arbitration, buffered-I/O system buffers, full cancellation/completion/remove-lock rundown, a production block/partition driver contract, and end-to-end ext4 mount/read/write/flush dispatch are still outstanding. The ext4 crate remains a parser plus a constrained existing-extent write path; it is not yet a production-ready mounted filesystem. Track the next work in [roadmap.md](roadmap.md).
+
 ## Third-party filesystem reference
 
 The third-party third-party filesystem driver source reference has been removed from project documentation and the submodule declaration. The RdotOS Rust ext4 implementation is independent and does not import or translate third-party filesystem driver source.
