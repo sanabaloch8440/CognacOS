@@ -3,6 +3,7 @@
 //! section permissions before invoking this routine. Imports and relocations are
 //! deliberately rejected until kernel-module dependency binding is implemented.
 use core::ffi::c_void;
+use crate::pe::ImportSymbol;
 
 const IMAGE_FILE_DLL:u16=0x2000;
 const IMAGE_SCN_MEM_EXECUTE:u32=0x2000_0000;
@@ -12,7 +13,7 @@ const MAX_SECTIONS:usize=32;
 const MAX_IMAGE_SIZE:usize=32*1024*1024;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum DriverLoadError { Truncated, BadDosHeader, BadPeSignature, WrongMachine, WrongSubsystem, NotDll, InvalidHeader, InvalidSection, ImageTooLarge, WrongBase, ImportsUnsupported, RelocationsUnsupported, WxSection, EntryNotExecutable, MappingFailed, NoMemory, EntryFailed(i32) }
+pub enum DriverLoadError { Truncated, BadDosHeader, BadPeSignature, WrongMachine, WrongSubsystem, NotDll, InvalidHeader, InvalidSection, ImageTooLarge, WrongBase, ImportsUnsupported, ImportNotFound, InvalidImport, RelocationsUnsupported, RelocationUnsupported, WxSection, EntryNotExecutable, MappingFailed, NoMemory, EntryFailed(i32) }
 #[derive(Clone,Copy,Debug)]
 pub struct LoadedDriver { pub image_base:u64,pub image_size:u32,pub entry_point:u64,pub status:i32 }
 #[repr(C)]
@@ -23,10 +24,13 @@ fn u32at(b:&[u8],o:usize)->Result<u32,DriverLoadError>{Ok(u32::from_le_bytes(b.g
 fn u64at(b:&[u8],o:usize)->Result<u64,DriverLoadError>{Ok(u64::from_le_bytes(b.get(o..o.checked_add(8).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?.try_into().map_err(|_|DriverLoadError::Truncated)?))}
 fn range(total:usize,start:u32,len:u32)->Result<core::ops::Range<usize>,DriverLoadError>{let a=start as usize;let z=a.checked_add(len as usize).ok_or(DriverLoadError::InvalidHeader)?;if z>total{Err(DriverLoadError::Truncated)}else{Ok(a..z)}}
 
-/// Load and invoke a native-subsystem AMD64 driver image already mapped at its
-/// preferred base. Caller owns page allocation and final RX/R/RW page protection.
-/// This deliberately supports only self-contained images with no imports/relocs.
+/// Load and invoke a native-subsystem AMD64 image using the kernel's current
+/// implemented-export resolver. The mapped image is writable/NX staging memory.
 pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut DriverObject,context:*mut c_void)->Result<LoadedDriver,DriverLoadError>{
+ unsafe{load_with_resolver(file,mapped,base,driver_object,context,crate::ntoskrnl::resolve)}
+}
+/// Loader variant accepting the dependency manager's symbol resolver.
+pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut DriverObject,context:*mut c_void,resolver:crate::pe::ImportResolver)->Result<LoadedDriver,DriverLoadError>{
  if file.len()<0x40{return Err(DriverLoadError::Truncated);}
  if u16at(file,0)?!=0x5a4d{return Err(DriverLoadError::BadDosHeader);}
  let nt=u32at(file,0x3c)? as usize;
@@ -43,11 +47,19 @@ pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut Driver
  let section_align=u32at(file,opt+32)? as usize;let file_align=u32at(file,opt+36)? as usize;
  let image_size=u32at(file,opt+56)? as usize;let headers=u32at(file,opt+60)? as usize;
  let dirs=u32at(file,opt+108)? as usize;
- if preferred!=base{return Err(DriverLoadError::WrongBase);}
- if image_size==0||image_size>MAX_IMAGE_SIZE||mapped.len()<image_size||headers==0||headers>file.len()||headers>image_size||section_align<4096||!section_align.is_power_of_two()||file_align==0||!file_align.is_power_of_two()||entry_rva as usize>=image_size{return Err(DriverLoadError::InvalidHeader);}
+ if dirs>16{return Err(DriverLoadError::InvalidHeader);}
+ let import_rva=if dirs>1{u32at(file,opt+112+8)?}else{0};
+ let import_size=if dirs>1{u32at(file,opt+112+12)?}else{0};
+ let reloc_rva=if dirs>5{u32at(file,opt+112+5*8)?}else{0};
+ let reloc_size=if dirs>5{u32at(file,opt+112+5*8+4)?}else{0};
  if mapped.as_mut_ptr() as u64!=base{return Err(DriverLoadError::WrongBase);}
- if dirs>1&&(u32at(file,opt+112+8)?!=0||u32at(file,opt+112+12)?!=0){return Err(DriverLoadError::ImportsUnsupported);}
- if dirs>5&&(u32at(file,opt+112+5*8)?!=0||u32at(file,opt+112+5*8+4)?!=0){return Err(DriverLoadError::RelocationsUnsupported);}
+ if (import_rva==0)!=(import_size==0)||(reloc_rva==0)!=(reloc_size==0){return Err(DriverLoadError::InvalidHeader);}
+ if import_rva!=0{range(usize::MAX,import_rva,import_size)?;}
+ if reloc_rva!=0{range(usize::MAX,reloc_rva,reloc_size)?;}
+ if image_size==0||image_size>MAX_IMAGE_SIZE||mapped.len()<image_size||headers==0||headers>file.len()||headers>image_size||section_align<4096||!section_align.is_power_of_two()||file_align==0||!file_align.is_power_of_two()||entry_rva as usize>=image_size{return Err(DriverLoadError::InvalidHeader);}
+ if import_rva!=0{let _=range(image_size,import_rva,import_size)?;}
+ if reloc_rva!=0{let _=range(image_size,reloc_rva,reloc_size)?;}
+ if base!=preferred&&reloc_rva==0{return Err(DriverLoadError::RelocationsUnsupported);}
  let table=opt.checked_add(opt_size).ok_or(DriverLoadError::InvalidHeader)?;
  if table.checked_add(count*40).is_none_or(|e|e>file.len()){return Err(DriverLoadError::Truncated);}
  mapped[..image_size].fill(0);mapped[..headers].copy_from_slice(file.get(..headers).ok_or(DriverLoadError::Truncated)?);
@@ -65,6 +77,8 @@ pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut Driver
   if raw_size!=0{let src=range(file.len(),raw_off,raw_size)?;let dst=(rva as usize)..(rva as usize+raw_size as usize);mapped[dst].copy_from_slice(&file[src]);}
  }
  if !entry_executable{return Err(DriverLoadError::EntryNotExecutable);}
+ if reloc_rva!=0{apply_relocations(mapped,base,preferred,reloc_rva,reloc_size)?;}
+ if import_rva!=0{apply_imports(mapped,import_rva,import_size,resolver)?;}
  // Default the whole image to read-only/NX, then grant only the section
  // permissions declared by validated section characteristics.
  let image_pages=(image_size+4095)/4096;
@@ -83,24 +97,92 @@ pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut Driver
  Ok(LoadedDriver{image_base:base,image_size:image_size as u32,entry_point:entry,status})
 }
 
-/// Allocate the preferred-base extent from the kernel VM arena, map/protect the
-/// image, and invoke DriverEntry. Failed loads release the exact allocated extent.
+/// Allocate an image at its preferred reserved slot when available, otherwise
+/// allocate another kernel-VM extent and apply AMD64 base relocations.
 pub unsafe fn load_allocated(file:&[u8],driver_object:*mut DriverObject,context:*mut c_void)->Result<LoadedDriver,DriverLoadError>{
+ unsafe{load_allocated_with_resolver(file,driver_object,context,crate::ntoskrnl::resolve)}
+}
+pub unsafe fn load_allocated_with_resolver(file:&[u8],driver_object:*mut DriverObject,context:*mut c_void,resolver:crate::pe::ImportResolver)->Result<LoadedDriver,DriverLoadError>{
  if file.len()<0x40||u16at(file,0)?!=0x5a4d{return Err(DriverLoadError::BadDosHeader);}
  let nt=u32at(file,0x3c)? as usize;
  if file.get(nt..nt.checked_add(4).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?!=b"PE\\0\\0"{return Err(DriverLoadError::BadPeSignature);}
  let opt=nt.checked_add(4+20).ok_or(DriverLoadError::InvalidHeader)?;
  if u16at(file,nt+4)?!=0x8664||u16at(file,opt)?!=0x20b{return Err(DriverLoadError::WrongMachine);}
- let base=u64at(file,opt+24)?;let size=u32at(file,opt+56)? as usize;
- if !crate::kernel_vm::is_driver_image_base(base){return Err(DriverLoadError::WrongBase);}
+ let preferred=u64at(file,opt+24)?;let size=u32at(file,opt+56)? as usize;
  if size==0||size>MAX_IMAGE_SIZE{return Err(DriverLoadError::ImageTooLarge);}
  let pages=size.checked_add(4095).ok_or(DriverLoadError::InvalidHeader)?/4096;
- let mapped=crate::kernel_vm::allocate_pages_at(base,pages).map_err(|_|DriverLoadError::NoMemory)?;
+ let preferred_mapping=if crate::kernel_vm::is_driver_image_base(preferred){crate::kernel_vm::allocate_pages_at(preferred,pages).ok()}else{None};
+ let mapped=match preferred_mapping{Some(p)=>p,None=>crate::kernel_vm::allocate_pages(pages).map_err(|_|DriverLoadError::NoMemory)?};
+ let base=mapped as u64;
  let image=unsafe{core::slice::from_raw_parts_mut(mapped,size)};
- match unsafe{load(file,image,base,driver_object,context)}{
+ match unsafe{load_with_resolver(file,image,base,driver_object,context,resolver)}{
   Ok(driver)=>Ok(driver),
   Err(error)=>{let _=crate::kernel_vm::free_pages(mapped,pages);Err(error)}
  }
+}
+
+fn put_u64(bytes:&mut[u8],offset:usize,value:u64)->Result<(),DriverLoadError>{
+ let end=offset.checked_add(8).ok_or(DriverLoadError::InvalidHeader)?;
+ bytes.get_mut(offset..end).ok_or(DriverLoadError::Truncated)?.copy_from_slice(&value.to_le_bytes());Ok(())
+}
+fn c_string(bytes:&[u8],rva:u32,maximum:usize)->Result<&[u8],DriverLoadError>{
+ let tail=bytes.get(rva as usize..).ok_or(DriverLoadError::InvalidImport)?;
+ let len=tail.iter().take(maximum).position(|b|*b==0).ok_or(DriverLoadError::InvalidImport)?;
+ if len==0{return Err(DriverLoadError::InvalidImport)}Ok(&tail[..len])
+}
+fn apply_relocations(image:&mut[u8],base:u64,preferred:u64,rva:u32,size:u32)->Result<(),DriverLoadError>{
+ if base==preferred{return Ok(())}
+ let delta=base as i128-preferred as i128;let start=rva as usize;let end=start.checked_add(size as usize).ok_or(DriverLoadError::InvalidHeader)?;
+ if end>image.len(){return Err(DriverLoadError::Truncated)}
+ let mut cursor=start;
+ while cursor<end{
+  if cursor+8>end{return Err(DriverLoadError::InvalidHeader)}
+  let page=u32at(image,cursor)?;let block=u32at(image,cursor+4)? as usize;
+  if block<8||block%2!=0||cursor.checked_add(block).is_none_or(|e|e>end){return Err(DriverLoadError::InvalidHeader)}
+  let count=(block-8)/2;
+  for i in 0..count{
+   let entry=u16at(image,cursor+8+i*2)?;let kind=entry>>12;let offset=(entry&0x0fff) as usize;
+   if kind==0{continue;}if kind!=10{return Err(DriverLoadError::RelocationUnsupported);}
+   let target=(page as usize).checked_add(offset).ok_or(DriverLoadError::InvalidHeader)?;
+   let old=u64at(image,target)? as i128;let value=old+delta;
+   if value<0||value>u64::MAX as i128{return Err(DriverLoadError::InvalidHeader);}
+   put_u64(image,target,value as u64)?;
+  }
+  cursor+=block;
+ }
+ if cursor!=end{return Err(DriverLoadError::InvalidHeader)}Ok(())
+}
+fn apply_imports(image:&mut[u8],rva:u32,size:u32,resolver:crate::pe::ImportResolver)->Result<(),DriverLoadError>{
+ let start=rva as usize;let end=start.checked_add(size as usize).ok_or(DriverLoadError::InvalidHeader)?;
+ if end>image.len()||size<20{return Err(DriverLoadError::InvalidImport)}
+ let mut desc=start;let mut terminated=false;
+ while desc.checked_add(20).is_some_and(|e|e<=end){
+  let original=u32at(image,desc)?;let name_rva=u32at(image,desc+12)?;let first=u32at(image,desc+16)?;
+  if original==0&&name_rva==0&&first==0{terminated=true;break;}
+  if name_rva==0||first==0{return Err(DriverLoadError::InvalidImport)}
+  let dll=c_string(image,name_rva,260)?;
+  let source=if original==0{first}else{original};
+  let max_thunks=image.len()/8;let mut thunk_index=0usize;let mut thunk_terminated=false;
+  while thunk_index<max_thunks{
+   let src=(source as usize).checked_add(thunk_index.checked_mul(8).ok_or(DriverLoadError::InvalidImport)?).ok_or(DriverLoadError::InvalidImport)?;
+   let dst=(first as usize).checked_add(thunk_index.checked_mul(8).ok_or(DriverLoadError::InvalidImport)?).ok_or(DriverLoadError::InvalidImport)?;
+   let thunk=u64at(image,src)?;if thunk==0{thunk_terminated=true;break;}
+   let symbol=if thunk&(1u64<<63)!=0{
+    if thunk&0x7fff_ffff_ffff_0000!=0{return Err(DriverLoadError::InvalidImport)}
+    ImportSymbol::Ordinal((thunk&0xffff) as u16)
+   }else{
+    if thunk>u32::MAX as u64{return Err(DriverLoadError::InvalidImport)}
+    let name_offset=(thunk as usize).checked_add(2).ok_or(DriverLoadError::InvalidImport)?;
+    let name_rva=u32::try_from(name_offset).map_err(|_|DriverLoadError::InvalidImport)?;
+    ImportSymbol::Name(c_string(image,name_rva,512)?)
+   };
+   let address=resolver(dll,symbol).ok_or(DriverLoadError::ImportNotFound)?;
+   put_u64(image,dst,address)?;thunk_index+=1;
+  }
+  if !thunk_terminated{return Err(DriverLoadError::InvalidImport)}
+  desc+=20;
+ }
+ if !terminated{return Err(DriverLoadError::InvalidImport)}Ok(())
 }
 
 /// Errors from resolving and loading a service selected by the native SYSTEM hive.
