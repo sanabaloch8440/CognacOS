@@ -32,3 +32,15 @@ The descriptor validator accepts a raw pointer without a length and inspects a m
 ## Validation status
 
 Focused Rust unit tests cover malformed descriptors, token metadata registration/query/unregistration, session/authentication ID queries, and fail-closed privilege behavior. A new CI run must complete before this revision is considered validated; Windows WDK conformance remains outstanding.
+
+
+## Additional length-aware security primitives (2026-10-25)
+
+The runtime now also includes the following **RdotOS extension helpers**, which are not Windows-export ABI implementations:
+
+- RdotSeValidateSid and RdotSeSidEqual: validate/compare SID encodings only within explicit caller-supplied readable spans.
+- RdotSeValidateAcl: validates ACL size and ACE boundaries within an explicit span and checks SID bounds for common basic ACE forms.
+- RdotSeQueryDescriptorControl and RdotSeQueryDescriptorComponent: length-aware self-relative descriptor control/component queries, including component offset and length validation.
+- RdotSePrivilegeBitmapSatisfies and RdotSeAccessMaskAllowed: small pure predicates for explicit privilege bitmaps and allow/deny masks.
+
+Focused unit tests cover truncated SID/ACL buffers, SID equality, descriptor component bounds, privilege masks, and deny-wins access-mask behavior. These helpers do not yet provide a complete ACE evaluator, generic mapping, restricted-token double evaluation, privilege-set ABI handling, subject-context capture, auditing, or a Windows SeAccessCheck implementation. Caller-supplied pointers must still refer to readable memory for the exact explicit span; this is length-aware validation, not fault-safe user-buffer probing.
