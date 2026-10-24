@@ -41,7 +41,7 @@ static FIRMWARE_MAP_STRIDE: core::sync::atomic::AtomicUsize = core::sync::atomic
 
 pub const DIRECT_MAP_BASE: u64 = 0xffff_9000_0000_0000;
 /// Highest physical address representable in this canonical direct-map window.
-pub const DIRECT_MAP_PHYSICAL_LIMIT: u64 = 0x0000_7000_0000_0000;
+pub const DIRECT_MAP_PHYSICAL_LIMIT: u64 = 0x0000_6f00_0000_0000;
 
 /// Return true only for physical pages described by UEFI as RAM-like memory.
 /// MMIO, reserved, unusable, and port-I/O descriptors are deliberately excluded.
