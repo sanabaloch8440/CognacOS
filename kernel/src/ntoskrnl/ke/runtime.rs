@@ -428,15 +428,63 @@ fn rtc_system_time_100ns() -> Option<u64> {
     u64::try_from(windows_seconds as i128 * 10_000_000 + millis as i128 * 10_000).ok()
 }
 
-/// VOID KeQuerySystemTime(PLARGE_INTEGER CurrentTime), RTC-derived.
+static SYSTEM_TIME_BASE_STATE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(0); // 0=uninitialized, 1=initializing, 2=ready
+static SYSTEM_TIME_BASE_100NS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+static SYSTEM_TIME_BASE_TSC: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+/// Anchor wall-clock time to the first valid RTC sample, then interpolate it
+/// with the calibrated monotonic counter. This gives sub-millisecond resolution
+/// after initialization, but is not a substitute for OS time-setting, NTP, or
+/// suspend/resume correction and inherits the RTC sample's initial accuracy.
+fn precise_system_time_100ns() -> Option<u64> {
+    let Some(hz) = crate::apic::tsc_frequency_hz().filter(|hz| *hz != 0) else {
+        return rtc_system_time_100ns();
+    };
+    loop {
+        match SYSTEM_TIME_BASE_STATE.load(Ordering::Acquire) {
+            2 => {
+                let base = SYSTEM_TIME_BASE_100NS.load(Ordering::Relaxed);
+                let start = SYSTEM_TIME_BASE_TSC.load(Ordering::Relaxed);
+                let elapsed = crate::apic::monotonic_ticks().wrapping_sub(start);
+                let delta = ((elapsed as u128) * 10_000_000u128 / hz as u128)
+                    .min(u64::MAX as u128) as u64;
+                return Some(base.saturating_add(delta));
+            }
+            1 => core::hint::spin_loop(),
+            _ => {
+                if SYSTEM_TIME_BASE_STATE.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_err() {
+                    continue;
+                }
+                let Some(base) = rtc_system_time_100ns() else {
+                    SYSTEM_TIME_BASE_STATE.store(0, Ordering::Release);
+                    return None;
+                };
+                let start = crate::apic::monotonic_ticks();
+                SYSTEM_TIME_BASE_100NS.store(base, Ordering::Relaxed);
+                SYSTEM_TIME_BASE_TSC.store(start, Ordering::Relaxed);
+                SYSTEM_TIME_BASE_STATE.store(2, Ordering::Release);
+                return Some(base);
+            }
+        }
+    }
+}
+
+/// VOID KeQuerySystemTime(PLARGE_INTEGER CurrentTime).
 pub unsafe extern "win64" fn ke_query_system_time(current_time: *mut i64) {
-    if !current_time.is_null() { unsafe { current_time.write(rtc_system_time_100ns().unwrap_or(0) as i64); } }
+    if !current_time.is_null() {
+        unsafe { current_time.write(precise_system_time_100ns().unwrap_or(0) as i64); }
+    }
 }
 
 /// VOID KeQuerySystemTimePrecise(PLARGE_INTEGER CurrentTime).
-/// Current RTC source is only second-resolution; this does not yet meet Windows' microsecond accuracy bound.
+/// Uses the same bootstrapped wall-clock base with monotonic-counter interpolation.
 pub unsafe extern "win64" fn ke_query_system_time_precise(current_time: *mut i64) {
-    unsafe { ke_query_system_time(current_time); }
+    if !current_time.is_null() {
+        unsafe { current_time.write(precise_system_time_100ns().unwrap_or(0) as i64); }
+    }
 }
 
 /// PKTHREAD KeGetCurrentThread(void); the pointer is an opaque thread-record token.
