@@ -522,7 +522,7 @@ pub fn timer_tick(now:u64){
         if timer.is_null(){continue}
         unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
         let _guard=DISPATCHER_OBJECT_LOCK.lock();
-        complete_ready_wait_all_groups();
+        { let _dispatcher_guard=DISPATCHER_OBJECT_LOCK.lock(); complete_ready_wait_all_groups(); }
         let mut waiters=[crate::dispatcher::WokenWaiter{thread:0,timed_out:false};crate::dispatcher::MAX_WAITERS];
         let woke=if unsafe{(*timer).kind}==TIMER_NOTIFICATION{
             crate::dispatcher::wake_all_timed(timer as u64,&mut waiters)
