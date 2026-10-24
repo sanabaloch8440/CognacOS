@@ -10,3 +10,9 @@ rdotos-hal-contract = { path = "../hal" }
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "processor"
+path = "src/bin/processor.rs"
+test = false
+bench = false
