@@ -157,8 +157,8 @@ fn apply_imports(image:&mut[u8],rva:u32,size:u32,resolver:crate::pe::ImportResol
  if end>image.len()||size<20{return Err(DriverLoadError::InvalidImport)}
  let mut desc=start;let mut terminated=false;
  while desc.checked_add(20).is_some_and(|e|e<=end){
-  let original=u32at(image,desc)?;let name_rva=u32at(image,desc+12)?;let first=u32at(image,desc+16)?;
-  if original==0&&name_rva==0&&first==0{terminated=true;break;}
+  let original=u32at(image,desc)?;let timestamp=u32at(image,desc+4)?;let forwarder=u32at(image,desc+8)?;let name_rva=u32at(image,desc+12)?;let first=u32at(image,desc+16)?;
+  if original==0&&timestamp==0&&forwarder==0&&name_rva==0&&first==0{terminated=true;break;}
   if name_rva==0||first==0{return Err(DriverLoadError::InvalidImport)}
   let dll=c_string(image,name_rva,260)?;
   let source=if original==0{first}else{original};
@@ -196,13 +196,16 @@ pub enum RegistryDriverLoadError{
 /// obtain the image through the caller's filesystem resolver, then load it.
 /// No driver filename or service name is baked into the loader.
 pub unsafe fn load_registered_service<'h,'p,F>(
- hive:&'h crate::ntoskrnl::cm::hive::Hive<'h>,
- service_name:&[u16],
- path_buffer:&'p mut[u16],
- image_buffer:&mut[u8],
- driver_object:*mut DriverObject,
- context:*mut c_void,
- mut resolve_image:F,
+ hive:&'h crate::ntoskrnl::cm::hive::Hive<'h>,service_name:&[u16],path_buffer:&'p mut[u16],
+ image_buffer:&mut[u8],driver_object:*mut DriverObject,context:*mut c_void,resolve_image:F,
+)->Result<LoadedDriver,RegistryDriverLoadError>
+where F:FnMut(&[u16],&mut[u8])->Option<usize>{
+ unsafe{load_registered_service_with_resolver(hive,service_name,path_buffer,image_buffer,driver_object,context,resolve_image,crate::ntoskrnl::resolve)}
+}
+pub unsafe fn load_registered_service_with_resolver<'h,'p,F>(
+ hive:&'h crate::ntoskrnl::cm::hive::Hive<'h>,service_name:&[u16],path_buffer:&'p mut[u16],
+ image_buffer:&mut[u8],driver_object:*mut DriverObject,context:*mut c_void,mut resolve_image:F,
+ symbol_resolver:crate::pe::ImportResolver,
 )->Result<LoadedDriver,RegistryDriverLoadError>
 where F:FnMut(&[u16],&mut[u8])->Option<usize>{
  let config=crate::ntoskrnl::cm::driver_config::query_service(hive,service_name,path_buffer)
@@ -211,5 +214,5 @@ where F:FnMut(&[u16],&mut[u8])->Option<usize>{
  if config.service_type!=1&&config.service_type!=2{return Err(RegistryDriverLoadError::NotKernelDriver);}
  let len=resolve_image(config.image_path,image_buffer).ok_or(RegistryDriverLoadError::ImageResolutionFailed)?;
  if len==0||len>image_buffer.len(){return Err(RegistryDriverLoadError::ImageTooLarge);}
- unsafe{load_allocated(&image_buffer[..len],driver_object,context)}.map_err(RegistryDriverLoadError::Load)
+ unsafe{load_allocated_with_resolver(&image_buffer[..len],driver_object,context,symbol_resolver)}.map_err(RegistryDriverLoadError::Load)
 }
