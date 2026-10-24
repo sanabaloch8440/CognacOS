@@ -167,7 +167,7 @@ pub fn reap(pid: u64) -> Option<u64> {
     };
     if !crate::ntoskrnl::ob::runtime::unregister_object(pointer.cast()) { return None; }
     let mut registry = TABLE.lock();
-    let p = registry.0.iter_mut().find(|p| core::ptr::eq(p, pointer) && p.used && p.process_id == pid && p.state == ProcessState::Exited)?;
+    let p = registry.0.iter_mut().find(|p| core::ptr::eq(&**p, pointer) && p.used && p.process_id == pid && p.state == ProcessState::Exited)?;
     p.state = ProcessState::Reaped; p.used = false; p.address_space_root = 0; p.magic = 0;
     Some(code)
 }
