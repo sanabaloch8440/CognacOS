@@ -38,6 +38,12 @@ The repository contains working foundations in several areas. “Implemented” 
 | DMA and IOMMU | DMA request/channel foundations and Intel VT-d ACPI discovery exist. Real DMA mapping, full VT-d initialization, and AMD IOMMU support are incomplete. |
 | ext filesystem | A conservative read-only ext2/ext3/ext4 metadata parser with bounds checks and selected block mapping. It rejects unsupported features and is not a production filesystem driver. |
 
+## Split platform and driver crates
+
+ACPI table parsing and checked PCI ECAM access are now separate Rust packages under `drivers/acpi` and `drivers/pci`, consumed by the kernel through Cargo dependencies rather than private source modules. `drivers/hal` defines a versioned, platform-neutral HAL service-table contract, and `drivers/processor` contains a generic processor-class policy boundary that validates the HAL contract and records processor capabilities. CI runs host tests for each package.
+
+These are independent source/build crates, **not yet standalone Windows `.sys`/HAL PE images or loadable drivers**. The running kernel still owns the hardware HAL implementation and ACPI boot handoff; PCI enumeration/resource allocation, ACPI power/PnP integration, processor power-state control, module loading, driver entry/unload, and a real binary ABI remain future work. In particular, generic processor performance-state requests deliberately return unsupported until vendor-safe policy and hardware hooks exist.
+
 ## HAL / ntoskrnl architectural boundary
 
 The dependency direction is explicit for processor lifecycle and clock interrupts: HAL owns CPU topology state and publishes add/remove completion and clock events through narrow registered callback contracts. Ke/Ki register their observers; the HAL/APIC implementation no longer calls `ntoskrnl` or imports ACPI data types. APIC implementation code now lives at `kernel/src/hal/apic.rs` as a private child module of HAL; the root `mod apic` was removed. Boot-time controller setup, interrupt entry handling, clock/timeout queries, timer state, cross-core clock status, and logical interrupt priority are routed through HAL service functions. The notification contract uses stable codes (add complete = 1, remove complete = 2), and registration is idempotent for the same observer while rejecting replacement.
