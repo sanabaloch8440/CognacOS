@@ -284,7 +284,7 @@ pub use wdm::{
     io_unregister_file_system, io_create_symbolic_link, io_delete_symbolic_link,
     io_reference_device_object, io_dereference_device_object, io_acquire_device_remove_lock,
     io_release_device_remove_lock, io_begin_device_power_transition, io_complete_device_power_transition,
-    device_power_state, io_pnp_state,
+    device_power_state,
     io_set_cancel_routine, io_cancel_irp, io_build_asynchronous_fsd_request,
     io_allocate_mdl, io_free_mdl, DriverCancelRoutine,
     io_free_irp, io_get_current_irp_stack_location,
@@ -292,5 +292,5 @@ pub use wdm::{
     DeviceObject, DriverObject, IoCompletionRoutine, IoStackLocation, IoStatusBlock,
     UnicodeString,
 };
-pub(crate) use wdm::{io_set_device_power_state, io_begin_pnp_transition, io_complete_pnp_transition};
+pub(crate) use wdm::{io_set_device_power_state, io_begin_pnp_transition, io_complete_pnp_transition, io_pnp_state};
 pub use wdm::Irp as WdmIrp;
