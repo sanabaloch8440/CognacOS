@@ -379,6 +379,24 @@ unsafe fn try_consume_dispatcher_object(object: *mut DispatcherHeader) -> bool {
     let _guard = DISPATCHER_OBJECT_LOCK.lock();
     unsafe { try_consume_dispatcher_object_locked(object) }
 }
+unsafe fn try_take_queue_entry_locked(object:*mut DispatcherHeader,thread_id:u64)->bool{
+    if object.is_null()||unsafe{(*object).kind}!=QUEUE_OBJECT{return false}
+    let queue=object.cast::<ExecutiveQueue>();
+    let head=unsafe{core::ptr::addr_of_mut!((*queue).entry_list_head)};
+    let entry=unsafe{list_remove_head(head)};
+    if entry.is_null(){return false}
+    unsafe{
+        (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>())
+            .fetch_sub(1,Ordering::AcqRel);
+    }
+    let _=crate::thread::set_queue_entry(thread_id,entry as u64);
+    true
+}
+fn mutant_available_to_thread(object:*mut DispatcherHeader,thread_id:u64)->bool{
+    let table=MUTANTS.lock();
+    table.records.iter().find(|r|r.object==object as usize)
+        .is_some_and(|r|r.owner==0||r.owner==thread_id)
+}
 
 fn wait_all_object_signalled(object_id:u64)->bool{
     let object=object_id as *mut DispatcherHeader;
@@ -484,15 +502,12 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     if object_list.iter().any(|object| object.is_null()) { return STATUS_INVALID_PARAMETER; }
     for i in 0..object_list.len() {
         let kind = unsafe { (*object_list[i]).kind };
-        if !matches!(kind, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 | TIMER_NOTIFICATION | TIMER_SYNCHRONIZATION) {
+        if !matches!(kind, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 | TIMER_NOTIFICATION | TIMER_SYNCHRONIZATION | MUTANT_OBJECT | QUEUE_OBJECT) {
             return STATUS_NOT_IMPLEMENTED;
         }
-        // Mutants need an abandoned-status result and queues need entry transfer.
-        // Keep both out of the generic multi-wait path until their per-object
-        // reservations can be committed atomically for wait-any and wait-all.
-        if matches!(kind, MUTANT_OBJECT | QUEUE_OBJECT) {
-            return STATUS_NOT_IMPLEMENTED;
-        }
+        // Queue entries can be transferred atomically for wait-any. Wait-all
+        // cannot reserve a queue entry alongside other objects in this ABI yet.
+        if kind==QUEUE_OBJECT && wait_type==0{return STATUS_NOT_IMPLEMENTED}
         if object_list[..i].iter().any(|previous| *previous == object_list[i]) {
             return STATUS_INVALID_PARAMETER;
         }
@@ -501,18 +516,37 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     let guard = DISPATCHER_OBJECT_LOCK.lock();
     if wait_type == 1 {
         for (index, object) in object_list.iter().copied().enumerate() {
-            if unsafe { try_consume_dispatcher_object_locked(object) } {
+            let kind=unsafe{(*object).kind};
+            if kind==MUTANT_OBJECT {
+                if let Some(status)=try_acquire_mutant_status(object){
+                    return if status==STATUS_ABANDONED_WAIT_0{STATUS_ABANDONED_WAIT_0+index as i32}else{index as i32};
+                }
+            } else if kind==QUEUE_OBJECT {
+                if current_id.is_some_and(|id|unsafe{try_take_queue_entry_locked(object,id)}) {return index as i32;}
+            } else if unsafe { try_consume_dispatcher_object_locked(object) } {
                 return index as i32;
             }
         }
     } else {
-        let all_signalled = object_list.iter().copied().all(|object| {
-            unsafe { (&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire) > 0 }
-        });
+        // Mutants are available when unowned or recursively owned by this
+        // thread. Queue objects are excluded above because entry transfer is
+        // consumptive and cannot participate in wait-all reservation.
+        let has_mutant=object_list.iter().any(|object|unsafe{(**object).kind}==MUTANT_OBJECT);
+        let all_signalled = current_id.is_some_and(|id|object_list.iter().copied().all(|object|{
+            if unsafe{(*object).kind}==MUTANT_OBJECT{mutant_available_to_thread(object,id)}
+            else{unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)>0}}
+        }));
         if all_signalled {
-            for object in object_list.iter().copied() { consume_wait_all_object(object as u64); }
-            return STATUS_SUCCESS;
+            let mut abandoned=false;
+            for (index,object) in object_list.iter().copied().enumerate(){
+                if unsafe{(*object).kind}==MUTANT_OBJECT{
+                    if try_acquire_mutant_status(object)==Some(STATUS_ABANDONED_WAIT_0){abandoned=true;}
+                }else{consume_wait_all_object(object as u64);}
+                let _=index;
+            }
+            return if abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS};
         }
+        if has_mutant{return STATUS_NOT_IMPLEMENTED;}
     }
     if !timeout.is_null() && unsafe { timeout.read_unaligned() } == 0 { return STATUS_TIMEOUT; }
     let Some(thread_id) = current_id else { return STATUS_NOT_IMPLEMENTED; };
