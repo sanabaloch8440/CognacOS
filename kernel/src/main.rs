@@ -42,6 +42,14 @@ fn io_smoke_pending_dispatch(_irp: &mut io::Irp) -> io::IoStatus {
 }
 
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249;
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct BootFile { address:u64, length:u64 }
+impl BootFile { const EMPTY:Self=Self{address:0,length:0}; }
+static BOOT_HIVE_ADDRESS:[core::sync::atomic::AtomicU64;7]=[const{core::sync::atomic::AtomicU64::new(0)};7];
+static BOOT_HIVE_LENGTH:[core::sync::atomic::AtomicU64;7]=[const{core::sync::atomic::AtomicU64::new(0)};7];
+static BOOT_NLS_ADDRESS:[core::sync::atomic::AtomicU64;8]=[const{core::sync::atomic::AtomicU64::new(0)};8];
+static BOOT_NLS_LENGTH:[core::sync::atomic::AtomicU64;8]=[const{core::sync::atomic::AtomicU64::new(0)};8];
 static mut THREAD_SMOKE_STACK: [u8; 4096] = [0; 4096];
 static mut THREAD_BLOCK_STACK: [u8; 4096] = [0; 4096];
 static mut THREAD_WAKE_STACK: [u8; 4096] = [0; 4096];
@@ -103,6 +111,8 @@ struct BootInfo {
     ap_trampoline_physical: u64,
     kernel_physical_sections: [(u64, u64); 4],
     kernel_physical_section_count: usize,
+    registry_hives: [BootFile;7],
+    nls_files: [BootFile;8],
 }
 
 #[unsafe(no_mangle)]
@@ -115,7 +125,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic != BOOT_INFO_MAGIC || info.version != 6
+        if info.magic != BOOT_INFO_MAGIC || info.version != 7
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
