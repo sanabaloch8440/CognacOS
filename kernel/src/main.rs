@@ -116,7 +116,6 @@ struct BootInfo {
 }
 
 
-const HIVE_NAMES:[&str;7]=["SYSTEM","SOFTWARE","SECURITY","SAM","DEFAULT","COMPONENTS","BCD00000000"];
 pub fn boot_hive_bytes(name:&str)->Option<&'static [u8]>{
  let kind=ntoskrnl::cm::hive::hive_kind(name).ok()? as usize;
  let address=BOOT_HIVE_ADDRESS.get(kind)?.load(core::sync::atomic::Ordering::Acquire);
@@ -135,17 +134,17 @@ unsafe fn install_boot_assets(info:&BootInfo){
  let mut hive_count=0usize;let mut nls_count=0usize;
  for i in 0..info.registry_hives.len(){
   let file=info.registry_hives[i];if file.address==0&&file.length==0{continue;}
-  if file.address==0||file.length==0||file.length>256*1024*1024||file.address.checked_add(file.length).is_none_or(|e|e>0x1_0000_0000){serial_write(b"Rejected malformed boot registry asset descriptor.\r\n");continue;}
+  if file.address==0||file.length==0||file.length>256*1024*1024||file.address.checked_add(file.length).is_none_or(|e|e>0x1_0000_0000){unsafe{serial_write(b"Rejected malformed boot registry asset descriptor.\r\n");}continue;}
   let bytes=unsafe{core::slice::from_raw_parts(file.address as *const u8,file.length as usize)};
-  if ntoskrnl::cm::hive::Hive::open(bytes).is_err(){serial_write(b"Rejected invalid or dirty native registry hive.\r\n");continue;}
+  if ntoskrnl::cm::hive::Hive::open(bytes).is_err(){unsafe{serial_write(b"Rejected invalid or dirty native registry hive.\r\n");}continue;}
   BOOT_HIVE_ADDRESS[i].store(file.address,core::sync::atomic::Ordering::Release);
   BOOT_HIVE_LENGTH[i].store(file.length,core::sync::atomic::Ordering::Release);hive_count+=1;
  }
  for i in 0..info.nls_files.len(){
   let file=info.nls_files[i];if file.address==0&&file.length==0{continue;}
-  if file.address==0||file.length==0||file.length>nls::MAX_NLS_FILE_SIZE as u64||file.address.checked_add(file.length).is_none_or(|e|e>0x1_0000_0000){serial_write(b"Rejected malformed boot NLS asset descriptor.\r\n");continue;}
+  if file.address==0||file.length==0||file.length>nls::MAX_NLS_FILE_SIZE as u64||file.address.checked_add(file.length).is_none_or(|e|e>0x1_0000_0000){unsafe{serial_write(b"Rejected malformed boot NLS asset descriptor.\r\n");}continue;}
   let bytes=unsafe{core::slice::from_raw_parts(file.address as *const u8,file.length as usize)};
-  if nls::NlsFile::open(nls::FILES[i].name,bytes).is_err(){serial_write(b"Rejected invalid native NLS file.\r\n");continue;}
+  if nls::NlsFile::open(nls::FILES[i].name,bytes).is_err(){unsafe{serial_write(b"Rejected invalid native NLS file.\r\n");}continue;}
   BOOT_NLS_ADDRESS[i].store(file.address,core::sync::atomic::Ordering::Release);
   BOOT_NLS_LENGTH[i].store(file.length,core::sync::atomic::Ordering::Release);nls_count+=1;
  }
