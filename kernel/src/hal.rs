@@ -46,6 +46,27 @@ pub type ProcessorChangeNotifier = fn(usize, u32);
 static PROCESSOR_CHANGE_NOTIFIER: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 
+/// NT clock/timer callback registered by Ki. HAL publishes clock events without
+/// depending on dispatcher, timer, or scheduler internals.
+pub type ClockInterruptNotifier = fn(u64);
+static CLOCK_INTERRUPT_NOTIFIER: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+pub fn register_clock_interrupt_notifier(notifier: ClockInterruptNotifier) -> Result<(), HalError> {
+    let raw = notifier as usize;
+    match CLOCK_INTERRUPT_NOTIFIER.compare_exchange(0, raw, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => Ok(()),
+        Err(existing) if existing == raw => Ok(()),
+        Err(_) => Err(HalError::InvalidTransition),
+    }
+}
+fn notify_clock_interrupt(now: u64) -> bool {
+    let raw = CLOCK_INTERRUPT_NOTIFIER.load(Ordering::Acquire);
+    if raw == 0 { return false; }
+    let notifier: ClockInterruptNotifier = unsafe { core::mem::transmute(raw) };
+    notifier(now);
+    true
+}
+
 /// Install the NT executive's processor-change observer. Registration is
 /// idempotent for the same callback and rejects attempts to replace an observer.
 pub fn register_processor_change_notifier(notifier: ProcessorChangeNotifier) -> Result<(), HalError> {
@@ -108,20 +129,6 @@ pub fn discover_cpu(apic_id: u32) -> Result<usize, HalError> {
         }
     }
     Err(HalError::CpuTableFull)
-}
-/// Merge enabled processors from a validated ACPI MADT into the HAL CPU
-/// registry. The BSP must already have been registered with initialize_bsp().
-/// This only discovers/reserves AP slots; it does not send INIT/SIPI or mark APs online.
-pub fn register_madt_cpus(madt: &crate::acpi::MadtInfo, bsp_apic_id: u32) -> Result<usize, HalError> {
-    if cpu_index_for_apic(bsp_apic_id).is_none() { initialize_bsp(bsp_apic_id)?; }
-    let mut discovered = 0usize;
-    for entry in madt.cpus.iter().take(madt.cpu_count) {
-        if !entry.enabled || entry.apic_id == bsp_apic_id { continue; }
-        if cpu_index_for_apic(entry.apic_id).is_some() { continue; }
-        discover_cpu(entry.apic_id)?;
-        discovered += 1;
-    }
-    Ok(discovered)
 }
 
 pub fn cpu_index_for_apic(apic_id: u32) -> Option<usize> {
@@ -416,6 +423,45 @@ pub unsafe fn dispatch_platform_interrupt(vector: u8, frame: *mut core::ffi::c_v
 }
 #[inline]
 pub fn local_clock_event_interrupt() { apic::timer_interrupt(); }
+#[inline]
+pub fn publish_clock_interrupt(now: u64) -> bool { notify_clock_interrupt(now) }
+
+#[inline]
+pub unsafe fn send_fixed_ipi(destination_apic_id: u8, vector: u8) -> Result<(), HalError> {
+    let base = apic::local_apic_base().ok_or(HalError::PlatformFailure)?;
+    unsafe { apic::send_fixed_ipi(base, destination_apic_id, vector) }.map_err(|_| HalError::PlatformFailure)
+}
+#[inline]
+pub unsafe fn send_processor_init(destination_apic_id: u8) -> Result<(), HalError> {
+    let base = apic::local_apic_base().ok_or(HalError::PlatformFailure)?;
+    unsafe { apic::send_init_ipi(base, destination_apic_id) }.map_err(|_| HalError::PlatformFailure)
+}
+#[inline]
+pub unsafe fn send_processor_init_deassert(destination_apic_id: u8) -> Result<(), HalError> {
+    let base = apic::local_apic_base().ok_or(HalError::PlatformFailure)?;
+    unsafe { apic::send_init_deassert_ipi(base, destination_apic_id) }.map_err(|_| HalError::PlatformFailure)
+}
+#[inline]
+pub unsafe fn send_processor_startup(destination_apic_id: u8, trampoline_physical: u64) -> Result<(), HalError> {
+    let base = apic::local_apic_base().ok_or(HalError::PlatformFailure)?;
+    unsafe { apic::send_startup_ipi(base, destination_apic_id, trampoline_physical) }.map_err(|_| HalError::PlatformFailure)
+}
+#[inline]
+pub unsafe fn request_processor_ipi(destination_apic_id: u8, vector: u8) -> Result<(), HalError> {
+    unsafe { apic::request_ipi(destination_apic_id, vector) }.map_err(|_| HalError::PlatformFailure)
+}
+#[inline]
+pub unsafe fn configure_interrupt_route(
+    io_base: u64, gsi_base: u32, gsi: u32, vector: u8,
+    destination_apic_id: u8, active_low: bool, level_triggered: bool,
+) -> Result<(), HalError> {
+    unsafe { apic::configure_ioapic_route(io_base, gsi_base, gsi, vector, destination_apic_id, active_low, level_triggered) }
+        .map_err(|_| HalError::PlatformFailure)
+}
+#[inline]
+pub unsafe fn set_interrupt_route_enabled(io_base: u64, gsi_base: u32, gsi: u32, enabled: bool) -> Result<(), HalError> {
+    unsafe { apic::set_ioapic_irq_enabled(io_base, gsi_base, gsi, enabled) }.map_err(|_| HalError::PlatformFailure)
+}
 
 /// Windows HAL export compatibility inventory and fail-closed stub metadata.
 pub mod exports;
