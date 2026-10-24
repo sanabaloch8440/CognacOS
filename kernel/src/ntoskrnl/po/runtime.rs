@@ -180,7 +180,7 @@ pub unsafe extern "system" fn PoRequestPowerIrp(device:*mut DeviceObject,minor:u
   let requests=POWER_REQUESTS.lock();
   requests.slots.iter().find(|r|r.used&&r.irp==irp).is_some_and(|r|!r.completed&&status!=STATUS_PENDING)
  };
- if synth{unsafe{(&mut (*irp).bytes)[0x30..0x34].copy_from_slice(&status.to_le_bytes());io::io_complete_request(irp,0);}}
+ if synth{unsafe{(&mut (*irp).bytes)[0x30..0x34].copy_from_slice(&status.to_le_bytes());}finish_power_request(irp,status);}
  let free={
   let mut requests=POWER_REQUESTS.lock();
   if let Some(r)=requests.slots.iter_mut().find(|r|r.used&&r.irp==irp){r.returned=true;if r.completed{*r=PowerRequest::EMPTY;true}else{false}}else{false}
