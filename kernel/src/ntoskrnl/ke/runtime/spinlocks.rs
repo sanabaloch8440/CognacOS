@@ -1,4 +1,4 @@
-//! queued and in-stack spin-lock routines.
+// queued and in-stack spin-lock routines.
 // This file is included by the Ke runtime facade so existing shared private
 // state and cross-routine helpers retain their original module scope.
 
