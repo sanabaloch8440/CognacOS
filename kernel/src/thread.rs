@@ -303,9 +303,18 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
         core::hint::spin_loop();
         spins+=1;
     }
+    let scheduler_teardown_ok=ids.iter().all(|id|{
+        let scheduler_id={
+            let table=THREADS.lock();
+            table.records.iter().find(|t|t.id==*id).map(|t|t.scheduler_id)
+        };
+        scheduler_id.and_then(|sid|crate::scheduler::task_snapshot(sid).ok())
+            .is_some_and(|task|task.state==crate::scheduler::TaskState::Exited)
+    });
     STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)==ids.len()
         && *STRESS_LOCK.lock()==8*256
         && ids.iter().all(|id|state(*id)==Some(ThreadState::Exited))
+        && scheduler_teardown_ok
 }
 
 /// Fast scheduler predicate for the interruptible idle loop.
