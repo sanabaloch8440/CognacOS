@@ -102,15 +102,15 @@ impl<'a> Key<'a>{
  fn search_index(&self,list:u32,count:u32,name:&[u16],depth:u8)->Result<Key<'a>,Error>{
   if depth>8{return Err(Error::InvalidKey)}let c=self.hive.cell(list)?;let sig=c.get(0..2).ok_or(Error::InvalidKey)?;
   if sig==b"li"{
-   if c.len()<4+count as usize*4{return Err(Error::InvalidKey)}
-   for i in 0..count{let k=self.hive.key(u32at(c,4+i as usize*4)?)?;if key_matches(&k,name)?{return Ok(k)}}
+   if c.len()<2+count as usize*4{return Err(Error::InvalidKey)}
+   for i in 0..count{let k=self.hive.key(u32at(c,2+i as usize*4)?)?;if key_matches(&k,name)?{return Ok(k)}}
   }else if sig==b"lf"||sig==b"lh"{
-   if c.len()<4+count as usize*8{return Err(Error::InvalidKey)}
-   for i in 0..count{let k=self.hive.key(u32at(c,4+i as usize*8)?)?;if key_matches(&k,name)?{return Ok(k)}}
+   if c.len()<2+count as usize*8{return Err(Error::InvalidKey)}
+   for i in 0..count{let k=self.hive.key(u32at(c,2+i as usize*8)?)?;if key_matches(&k,name)?{return Ok(k)}}
   }else if sig==b"ri"{
-   let n=(c.len().saturating_sub(4))/4;
-   for i in 0..n{let sub=u32at(c,4+i*4)?;let sc=self.hive.cell(sub)?;let ss=sc.get(0..2).ok_or(Error::InvalidKey)?;
-    let entries=if ss==b"li"||ss==b"ri"{sc.len().saturating_sub(4)/4}else if ss==b"lf"||ss==b"lh"{sc.len().saturating_sub(4)/8}else{return Err(Error::UnsupportedIndex)} as u32;
+   let n=(c.len().saturating_sub(2))/4;
+   for i in 0..n{let sub=u32at(c,2+i*4)?;let sc=self.hive.cell(sub)?;let ss=sc.get(0..2).ok_or(Error::InvalidKey)?;
+    let entries=if ss==b"li"||ss==b"ri"{sc.len().saturating_sub(2)/4}else if ss==b"lf"||ss==b"lh"{sc.len().saturating_sub(2)/8}else{return Err(Error::UnsupportedIndex)} as u32;
     if let Ok(k)=self.search_index(sub,entries,name,depth+1){return Ok(k)}
    }
   }else{return Err(Error::UnsupportedIndex)}
