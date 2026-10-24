@@ -938,7 +938,8 @@ pub fn per_cpu_tss_self_test(cpu: usize) -> bool {
         rsp0 != 0 && ist1 != 0 && ist2 != 0 && ist3 != 0
             && ist1 & 0xf == 0 && ist2 & 0xf == 0 && ist3 & 0xf == 0
             && ist1 != ist2 && ist1 != ist3 && ist2 != ist3
-            && ((descriptor >> 40) & 0xff) == 0x89
+            // LTR marks an available 64-bit TSS descriptor busy (type 0xB).
+            && ((descriptor >> 40) & 0xff) == 0x8b
             && high == (tss as u64 >> 32)
             && nmi_ist == 2 && df_ist == 1 && mc_ist == 3
     }
