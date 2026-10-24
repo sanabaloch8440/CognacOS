@@ -665,7 +665,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             } else {
                 b"WARNING: TSC sync incomplete; global monotonic clamp remains active; max offset magnitude="
             });
-            serial_write_decimal(processor_startup.worst_tsc_offset.unsigned_abs() as usize);
+            serial_write_decimal(processor_startup.worst_tsc_offset as usize);
             serial_write(b" ticks.\r\n");
         } else {
             serial_write(b"WARNING: executive processor startup unavailable; retaining BSP-only operation.\r\n");
