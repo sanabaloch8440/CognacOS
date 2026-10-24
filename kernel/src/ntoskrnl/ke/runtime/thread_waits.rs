@@ -554,18 +554,18 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
         }));
         if all_signalled {
             let id=current_id.unwrap_or(0);
-            let mut abandoned=false;
-            for object in object_list.iter().copied(){
+            let mut abandoned_index=None;
+            for (index,object) in object_list.iter().copied().enumerate(){
                 if unsafe{(*object).kind}==MUTANT_OBJECT{
                     if let Some(record)=mutants.records.iter_mut().find(|r|r.object==object as usize){
                         if record.owner==id{record.recursion=record.recursion.saturating_add(1);}
                         else{record.owner=id;record.recursion=1;}
-                        if record.abandoned{abandoned=true;record.abandoned=false;}
+                        if record.abandoned{if abandoned_index.is_none(){abandoned_index=Some(index);}record.abandoned=false;}
                         unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);}
                     }
                 }else{consume_wait_all_object(object as u64);}
             }
-            return if abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS};
+            return abandoned_index.map_or(STATUS_SUCCESS,|index|STATUS_ABANDONED_WAIT_0+index as i32);
         }
         drop(mutants);
         if has_mutant{return STATUS_NOT_IMPLEMENTED;}
