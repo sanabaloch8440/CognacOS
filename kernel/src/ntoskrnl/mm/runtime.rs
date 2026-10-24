@@ -547,7 +547,10 @@ unsafe fn free_contiguous(base: *mut c_void, expected_bytes: Option<u64>, cache_
         let mut table = CONTIGUOUS_ALLOCS.lock();
         let Some(entry) = table.iter_mut().find(|e| e.live && e.base == base as u64) else { return; };
         if expected_bytes.map_or(false, |n| n != entry.requested)
-            || cache_type.map_or(false, |c| c != 1) { return; }
+            || cache_type.map_or(false, |c| c != 1)
+            || (0..entry.pages).any(|index| is_page_locked(entry.base + index as u64 * PAGE_SIZE)) {
+            return;
+        }
         let found = *entry;
         *entry = ContiguousAllocation::EMPTY;
         found
