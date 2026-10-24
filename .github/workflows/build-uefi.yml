@@ -140,6 +140,12 @@ jobs:
           mkdir -p build
           rustc --edition=2024 --test kernel/src/ntoskrnl/cm/runtime.rs -o build/registry-tests
           build/registry-tests
+      - name: Run host-side Object Manager lifecycle and security tests
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          rustc --edition=2024 --test kernel/src/ntoskrnl/ob/runtime.rs -o build/object-manager-tests
+          build/object-manager-tests
       - name: Run S4 hibernation codec and power-loss recovery tests
         run: |
           set -euo pipefail
