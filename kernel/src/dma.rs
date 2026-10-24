@@ -176,7 +176,7 @@ fn parse_device_description_prefix(bytes:&[u8])->Option<u32> {
     let version=u32::from_le_bytes(bytes[0..4].try_into().ok()?);
     let master=bytes[4]!=0;
     let reserved1=bytes[10];
-    if version>3 || !master || reserved1!=0 || bytes[11]>1 { return None; }
+    if version>3 || !master || reserved1!=0 || bytes[8]>1 || bytes[11]>1 { return None; }
     Some(version)
 }
 
@@ -185,7 +185,7 @@ pub unsafe extern "win64" fn io_get_dma_adapter(device_object:*mut core::ffi::c_
  if device_object.is_null()||device_description.is_null()||number_of_map_registers.is_null()||!iommu::available(){return core::ptr::null_mut()}
  let header=unsafe{core::slice::from_raw_parts(device_description.cast::<u8>(),12)};
  let Some(version)=parse_device_description_prefix(header)else{return core::ptr::null_mut()};
- let maximum=if header[11]!=0{u64::MAX}else{0xffff_ffff};
+ let maximum=if header[11]!=0{u64::MAX}else if header[8]!=0{0xffff_ffff}else{0x00ff_ffff};
  let adapter=create_device_adapter(device_object,version,maximum);if adapter.is_null(){return adapter}
  unsafe{number_of_map_registers.write(MAX_MAP_REGISTERS_PER_ALLOCATION)}adapter
 }
