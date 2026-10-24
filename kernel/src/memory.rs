@@ -503,6 +503,7 @@ pub unsafe fn harden_page_tables(
     guard_page: u64,
     stack: (u64, u64),
     virtual_guard_page: u64,
+    physical_sections: [(u64, u64); 4],
 ) -> Result<(), AllocError> {
     if pml4_physical == 0 || pml4_physical >= PHYSICAL_LIMIT || pml4_physical & 0xfff != 0 {
         return Err(AllocError::InvalidMap);
@@ -537,6 +538,22 @@ pub unsafe fn harden_page_tables(
         while address < end {
             unsafe { split(pml4_physical, address)?; }
             address = (address & !(0x20_0000 - 1)) + 0x20_0000;
+        }
+        Ok(())
+    }
+
+    unsafe fn unmap_identity_range(
+        pml4_physical: u64, range: (u64, u64),
+    ) -> Result<(), AllocError> {
+        if range.0 >= range.1 { return Ok(()); }
+        let mut address = range.0 & !(PAGE_SIZE - 1);
+        let end = align_up(range.1, PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+        while address < end {
+            let table = unsafe { split(pml4_physical, address)? };
+            let leaf = unsafe { table.add(((address >> 12) & 0x1ff) as usize) };
+            if unsafe { leaf.read() } & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+            unsafe { leaf.write(0); }
+            address = address.checked_add(PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
         }
         Ok(())
     }
@@ -619,6 +636,16 @@ pub unsafe fn harden_page_tables(
         if inspect_mapping(pml4_physical, virtual_guard_page).is_ok() {
             return Err(AllocError::InvalidMap);
         }
+        // Remove writable low identity aliases for the kernel image and its
+        // active stack. Their validated high-half aliases are now authoritative,
+        // preventing a writable alias from bypassing text/rodata protections.
+        for range in physical_sections {
+            unmap_identity_range(pml4_physical, range)?;
+        }
+        unmap_identity_range(pml4_physical, (
+            guard_page + PAGE_SIZE,
+            guard_page.checked_add(stack.1 - stack.0 + PAGE_SIZE).ok_or(AllocError::InvalidMap)?,
+        ))?;
         let guard_table = split(pml4_physical, guard_page)?;
         let guard_pte = guard_table.add(((guard_page >> 12) & 0x1ff) as usize);
         guard_pte.write(0);
