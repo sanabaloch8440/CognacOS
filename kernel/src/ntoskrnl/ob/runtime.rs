@@ -138,6 +138,42 @@ pub fn unregister_object(body:*mut c_void)->bool{
  if s.objects[i].deleting{return true} s.objects[i].deleting=true;s.objects[i].permanent=false;s.objects[i].refs=s.objects[i].refs.saturating_sub(1);
  if s.objects[i].refs==0&&s.objects[i].handles==0{s.objects[i]=Object::EMPTY;}true
 }
+pub fn duplicate_handle(source:*mut c_void,source_owner:usize,target_owner:usize,desired:u32,same_access:bool,kernel_target:bool)->Result<*mut c_void,i32>{
+ let _g=LOCK.lock();let s=state();let hi=handle_idx(s,source,source_owner).ok_or(STATUS_INVALID_HANDLE)?;let src=s.handles[hi];let granted=if same_access{src.access}else{if desired&!src.access!=0{return Err(STATUS_ACCESS_DENIED)}desired};
+ let new_owner=if kernel_target{usize::MAX}else{target_owner};let ni=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+ if !s.objects[src.object].used||s.objects[src.object].deleting{return Err(STATUS_INVALID_HANDLE)}
+ s.objects[src.object].refs=s.objects[src.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[src.object].handles=s.objects[src.object].handles.saturating_add(1);
+ let generation=s.handles[ni].generation.max(1);s.handles[ni]=HandleEntry{used:true,generation,object:src.object,owner:new_owner,access:granted,attributes:src.attributes};
+ audit_locked(s,s.objects[src.object].body,target_owner,5,desired,granted,STATUS_SUCCESS);Ok(encode_handle(ni,generation))
+}
+unsafe fn security_descriptor_length(sd:*const u8)->Result<usize,i32>{
+ if sd.is_null(){return Err(STATUS_INVALID_PARAMETER)}let b=unsafe{core::slice::from_raw_parts(sd,20)};
+ if b[0]!=1||read_u16(b,2).unwrap_or(0)&0x8000==0{return Err(STATUS_NOT_SUPPORTED)}
+ let mut need=20usize;
+ for off_at in [4usize,8usize]{let off=read_u32(b,off_at).unwrap_or(0) as usize;if off!=0{if off+8>256{return Err(STATUS_INVALID_PARAMETER)}let count=unsafe{*sd.add(off+1)} as usize;let len=8usize.checked_add(count.checked_mul(4).ok_or(STATUS_INVALID_PARAMETER)?).ok_or(STATUS_INVALID_PARAMETER)?;if off+len>256{return Err(STATUS_INVALID_PARAMETER)}need=need.max(off+len);}}
+ for off_at in [12usize,16usize]{let off=read_u32(b,off_at).unwrap_or(0) as usize;if off!=0{if off+8>256{return Err(STATUS_INVALID_PARAMETER)}let len=read_u16(unsafe{core::slice::from_raw_parts(sd,256)},off+2).unwrap_or(0) as usize;if len<8||off.checked_add(len).is_none_or(|e|e>256){return Err(STATUS_INVALID_PARAMETER)}need=need.max(off+len);}}
+ if need>256{return Err(STATUS_INVALID_PARAMETER)}Ok(need)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObSetSecurityObject(object:*mut c_void,security_information:u32,sd:*const u8)->i32{
+ if security_information==0||security_information&!0x0fu32!=0{return STATUS_INVALID_PARAMETER}
+ let len=match unsafe{security_descriptor_length(sd)}{Ok(n)=>n,Err(e)=>return e};
+ let mut copy=[0u8;256];unsafe{core::ptr::copy_nonoverlapping(sd,copy.as_mut_ptr(),len)}
+ let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,object as usize)else{return STATUS_INVALID_PARAMETER};
+ s.objects[i].sd=copy;s.objects[i].sd_len=len as u16;STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObQuerySecurityObject(object:*mut c_void,security_information:u32,sd:*mut u8,length:u32,needed:*mut u32)->i32{
+ if security_information==0||security_information&!0x0fu32!=0||needed.is_null(){return STATUS_INVALID_PARAMETER}
+ let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,object as usize)else{return STATUS_INVALID_PARAMETER};let n=s.objects[i].sd_len as usize;
+ unsafe{needed.write(n as u32)}if n==0{return STATUS_OBJECT_NAME_NOT_FOUND}if sd.is_null()||length as usize<n{return STATUS_BUFFER_TOO_SMALL}
+ unsafe{core::ptr::copy_nonoverlapping(s.objects[i].sd.as_ptr(),sd,n)}STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotObDuplicateHandle(source:*mut c_void,source_owner:usize,target_owner:usize,desired_access:u32,same_access:u8,kernel_target:u8,out:*mut *mut c_void)->i32{
+ if out.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out.write(core::ptr::null_mut())}
+ match duplicate_handle(source,source_owner,target_owner,desired_access,same_access!=0,kernel_target!=0){Ok(h)=>{unsafe{out.write(h)}STATUS_SUCCESS},Err(e)=>e}
+}
 pub fn read_audit_events(out:&mut [AuditEvent])->usize{
  let _g=LOCK.lock();let s=state();let available=(s.audit_next.saturating_sub(1) as usize).min(MAX_AUDIT_EVENTS).min(out.len());
  let first=s.audit_next.saturating_sub(available as u64);
