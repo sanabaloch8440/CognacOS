@@ -42,7 +42,8 @@ fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:
 fn unmap_index(index:usize)->bool{
  let mapping={let mut s=STATE.lock();if index>=s.maps.len()||!s.maps[index].used{return false}let m=s.maps[index];s.maps[index]=Mapping::EMPTY;m};
  let Ok(b)=backend()else{return false};let status=unsafe{(b.unmap.unwrap())(b.context,mapping.device,mapping.logical,mapping.cookie)};
- if status!=OK{let mut s=STATE.lock();if let Some(slot)=s.maps.iter_mut().find(|x|!x.used){*slot=mapping;}return false}fence(Ordering::SeqCst);true
+ if status!=OK{let mut s=STATE.lock();if let Some(slot)=s.maps.iter_mut().find(|x|!x.used){*slot=mapping;}return false}
+ super::return_map_register(mapping.token as *mut c_void,mapping.device);fence(Ordering::SeqCst);true
 }
 pub fn map_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;
@@ -54,7 +55,7 @@ pub fn sync_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u
  let found={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token as usize&&m.physical==physical&&m.length==length)};
  let Some(index)=found else{return false};let m={let s=STATE.lock();s.maps[index]};
  if unsafe{(b.sync.unwrap())(b.context,device,m.logical,length,direction)}!=OK{return false}
- if !unmap_index(index){return false}super::return_map_register(token,device);fence(Ordering::SeqCst);true
+ if !unmap_index(index){return false}fence(Ordering::SeqCst);true
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn RdotDmaBindTransferToIrp(adapter:*mut c_void,token:*mut c_void,logical:u64,irp:*mut c_void)->i32{bind_irp(adapter,token,logical,irp)}
@@ -64,9 +65,9 @@ pub fn bind_irp(adapter:*mut c_void,token:*mut c_void,logical:u64,irp:*mut c_voi
  if let Some(m)=s.maps.iter_mut().find(|m|m.used&&m.device==device&&m.token==token as usize&&m.logical==logical){m.irp=irp as usize;return OK}INVALID
 }
 pub fn release_irp(irp:*mut c_void){
- if irp.is_null(){return}loop{let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.irp==irp as usize)};let Some(i)=idx else{break};let token={let s=STATE.lock();s.maps[i].token};let device={let s=STATE.lock();s.maps[i].device};if unmap_index(i){super::return_map_register(token as *mut c_void,device)}else{break}}
+ if irp.is_null(){return}loop{let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.irp==irp as usize)};let Some(i)=idx else{break};if !unmap_index(i){break}}
 }
-pub fn map_fragment(device:usize,token:usize,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{map_one(device,token,0,physical,length,direction)}
+pub fn map_fragment(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{map_transfer(adapter,token,physical,length,direction)}
 pub fn unmap_logical(device:usize,logical:u64)->bool{
  let index={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.logical==logical&&m.irp==0)};
  index.is_some_and(unmap_index)
