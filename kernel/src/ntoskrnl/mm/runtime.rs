@@ -726,7 +726,7 @@ pub unsafe extern "win64" fn mm_unmap_locked_pages(base: *mut c_void, mdl: *mut 
         let record = mappings[index];
         let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
         let required = match MDL_HEADER_SIZE.checked_add((record.pages as u64).saturating_mul(8)) { Some(v) => v, None => return };
-        if header.size < 0 || header.size as u64 < required
+        if header.size < 0 || (header.size as u64) < required
             || mdl_page_count(header.byte_offset as u64, header.byte_count as u64) != Some(record.pages as u64) {
             return;
         }
