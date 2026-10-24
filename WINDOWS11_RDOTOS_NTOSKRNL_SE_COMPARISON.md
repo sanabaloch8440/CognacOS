@@ -52,3 +52,13 @@ The same extension layer now also exposes bounded SID revision/subauthority/iden
 ## Export-table boundary correction
 
 All RdotOS-only SID, ACL, descriptor, token-metadata and mask helpers are ordinary crate-internal Rust functions; they are not `no_mangle` symbols and are not added to the Windows kernel export table. The security runtime retains unmangled Windows-named ABI entry points only for the Se routines that are explicitly implemented and listed by the project's Windows 11 export catalogue. Do not expose private helper routines as kernel exports. The catalogue may contain unsupported Windows exports for tracking purposes; listing a name does not claim the routine is implemented.
+
+
+## SeAccessCheck implementation pass (2026-10-25)
+
+- Added the Windows-named `SeAccessCheck` entry point and name-based import resolution. The ABI surface uses a subject-context record, generic mapping, granted-access output, access status, and optional privilege-set output.
+- Added a bounded internal token SID registry. The registration hook validates and copies up to eight SIDs per token, and access checks only match SIDs registered for the selected primary/impersonation token or the Everyone SID.
+- The access evaluator supports self-relative descriptors, absent/null DACL semantics, owner `READ_CONTROL`/`WRITE_DAC`, generic access mapping, and basic `ACCESS_ALLOWED_ACE` / `ACCESS_DENIED_ACE` processing. Unsupported object/callback ACE families, unknown tokens, malformed descriptors, and unlocked subject contexts fail closed.
+- Added a focused unit test for a registered token SID and an allow ACE.
+
+**Important integration and compatibility limits:** token SID registration is currently an internal hook and is not yet called by Ps token creation/rundown; callers must register identities and unregister them before token storage is reclaimed. The implementation uses a bounded 4-KiB readable-memory contract because the Windows routine does not receive a descriptor length; this is not fault-safe probing/capture. Privilege-set construction/auditing, restricted-token double evaluation, AppContainer/capability checks, full object/callback ACE semantics, kernel subject-context locking, and WDK conformance remain incomplete. This is a real but intentionally scoped implementation, not full Windows 11 Security Reference Monitor parity.
