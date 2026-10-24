@@ -247,6 +247,19 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  let Some(dispatch)=dispatch else{return STATUS_INVALID_DEVICE_REQUEST};
  unsafe{dispatch(device,irp)}
 }
+fn finalize_irp_status(irp:*mut Irp) {
+ if irp.is_null(){return}
+ let base=unsafe{(*irp).bytes.as_mut_ptr()};
+ let iosb=unsafe{read_ptr(base,0x48)};
+ if iosb.is_null(){return}
+ let status=unsafe{ptr::read_unaligned(base.add(IRP_STATUS_OFFSET).cast::<i32>())};
+ let information=unsafe{ptr::read_unaligned(base.add(IRP_INFORMATION_OFFSET).cast::<usize>())};
+ unsafe {
+  ptr::write_unaligned(iosb.cast::<u8>().cast::<isize>(),status as isize);
+  ptr::write_unaligned(iosb.cast::<u8>().add(core::mem::size_of::<isize>()).cast::<usize>(),information);
+ }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:i8) {
  if irp.is_null(){return}
@@ -271,7 +284,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   if current==0xff{return}
   let next=unsafe{stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
   unsafe { (*irp).bytes[0x43]=current.saturating_add(1); write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast()); }
-  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {return}
+  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {finalize_irp_status(irp);return}
  }
 }
 #[unsafe(no_mangle)]
@@ -920,6 +933,31 @@ mod wdm_tests {
   assert_eq!(unsafe{(*stack).major_function},3);
   assert_eq!(unsafe{(*stack).parameters[0]},512);
   assert_eq!(unsafe{(*stack).parameters[1]},4096);
+  unsafe{io_free_irp(irp);io_delete_device(device);}
+ }
+
+ unsafe extern "system" fn completing_dispatch(device:*mut DeviceObject,irp:*mut Irp)->i32 {
+  if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
+  unsafe{
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),123);
+   io_complete_request(irp,0);
+  }
+  STATUS_SUCCESS
+ }
+ #[test]
+ fn completed_async_request_publishes_iosb_status_and_information() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  driver.major_function[3]=Some(completing_dispatch);
+  let mut status=IoStatusBlock{status:STATUS_PENDING as isize,information:0};
+  let mut buffer=[0u8;512];
+  let irp=unsafe{io_build_asynchronous_fsd_request(3,device,buffer.as_mut_ptr().cast(),buffer.len() as u32,ptr::null(),&mut status)};
+  assert!(!irp.is_null());
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
+  assert_eq!(status.status,STATUS_SUCCESS as isize);
+  assert_eq!(status.information,123);
   unsafe{io_free_irp(irp);io_delete_device(device);}
  }
 
