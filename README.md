@@ -145,7 +145,7 @@ Contributions should be small enough to review, document their assumptions, incl
 
 ## Windows 11 Se security compatibility tracking
 
-The Se export catalogue remains metadata, not proof that its routines are callable. The initial Se runtime is organized under `kernel/src/ntoskrnl/se/`; it currently implements a bounded `SeValidSecurityDescriptor` validator for self-relative security descriptors and routes that exact symbol through the import resolver. Token privileges, impersonation, access-state semantics, SACL/audit policy, and the broader Se surface remain incomplete. See [Windows 11 vs RdotOS Se comparison](WINDOWS11_RDOTOS_NTOSKRNL_SE_COMPARISON.md).
+The Se export catalogue and runtime are organized under `kernel/src/ntoskrnl/se/` (`mod.rs` and `runtime.rs`). Ten Se export entry points currently have implementations: bounded self-relative descriptor validation; token admin/restriction/type/impersonation queries; fail-closed single-privilege checking; and token session/authentication ID queries. These token routines use an explicit bounded RdotOS metadata registry and are not yet connected to real Ps token objects or the Windows TOKEN ABI. User-mode privilege checking currently denies by default. The broader Se surface, access-state semantics, subject-context capture, SACL/auditing, and WDK conformance remain incomplete. See [Windows 11 vs RdotOS Se comparison](WINDOWS11_RDOTOS_NTOSKRNL_SE_COMPARISON.md). See [Windows 11 vs RdotOS Se comparison](WINDOWS11_RDOTOS_NTOSKRNL_SE_COMPARISON.md).
 
 ## Windows 11 Ke compatibility tracking
 
