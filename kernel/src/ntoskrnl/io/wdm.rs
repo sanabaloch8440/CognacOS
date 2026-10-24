@@ -61,6 +61,7 @@ pub struct DeviceObject {
 #[repr(C, align(16))]
 pub struct Irp { pub bytes: [u8; IRP_SIZE_X64] }
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct IoStackLocation {
     pub major_function: u8, pub minor_function: u8, pub flags: u8, pub control: u8,
     pub parameters: [u64; 4], pub device_object: *mut DeviceObject,
