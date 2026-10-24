@@ -451,13 +451,17 @@ pub fn set_alert_pending(id:u64)->Option<bool>{
     let mut table=THREADS.lock();
     let t=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty)?;
     let prior=t.alert_pending;t.alert_pending=true;let affinity=t.affinity;
+    let mut notify=false;
     if t.alertable_wait && t.state==ThreadState::Blocked {
         let _=crate::dispatcher::cancel_thread_waits(id);
         t.wait_status=0x0000_0101;
-        let _=crate::scheduler::wake_task(t.scheduler_id);
-        t.state=ThreadState::Ready;
+        if t.context_saved {
+            if crate::scheduler::wake_task(t.scheduler_id).is_ok(){t.state=ThreadState::Ready;notify=true;}
+        } else {
+            t.wake_pending=true;
+        }
     }
-    drop(table);notify_affinity(affinity);Some(prior)
+    drop(table);if notify{notify_affinity(affinity);}Some(prior)
 }
 pub fn take_alert_pending()->bool{
     let Some(id)=current_thread_id() else{return false};
@@ -487,17 +491,22 @@ pub fn complete_wait(id:u64,status:i32)->Result<(),ThreadError>{
     let t=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty).ok_or(ThreadError::InvalidState)?;
     t.wait_status=status;
     let affinity=t.affinity;
+    let mut notify=false;
     match t.state {
         ThreadState::Blocked=>{
-            crate::scheduler::wake_task(t.scheduler_id).map_err(|_|ThreadError::InvalidState)?;
-            t.state=ThreadState::Ready;
+            if !t.context_saved {
+                t.wake_pending=true;
+            } else {
+                crate::scheduler::wake_task(t.scheduler_id).map_err(|_|ThreadError::InvalidState)?;
+                t.state=ThreadState::Ready;notify=true;
+            }
         },
         ThreadState::Running=>t.wake_pending=true,
         ThreadState::Ready=>{},
         ThreadState::Exited|ThreadState::Empty=>return Err(ThreadError::InvalidState),
     }
     drop(table);
-    notify_affinity(affinity);
+    if notify{notify_affinity(affinity);}
     Ok(())
 }
 pub fn take_wait_status()->Option<i32>{
