@@ -519,7 +519,7 @@ pub unsafe extern "win64" fn ke_initialize_timer2(timer:*mut core::ffi::c_void,c
     let mut table=TIMERS2.lock();
     let slot=table.records.iter().position(|r|r.object==timer as usize)
         .or_else(||table.records.iter().position(|r|r.object==0));
-    if let Some(i)=slot{table.records[i]=Timer2Record{object:timer as usize,callback:callback.map(|f|f as usize).unwrap_or(0),context:context as usize,active:false,due:0,period:0,tolerable_delay:0};}
+    if let Some(i)=slot{table.records[i]=Timer2Record{object:timer as usize,callback:callback.map(|f|f as usize).unwrap_or(0),context:context as usize,active:false,due:0,period:0,tolerable_delay:0,generation:0};}
 }
 pub unsafe extern "win64" fn ke_set_timer2(timer:*mut core::ffi::c_void,due_time:i64,period_ms:u32,tolerable_delay_ms:u32)->u8{
     if timer.is_null(){return 0}
