@@ -24,6 +24,7 @@ mod scheduler;
 mod dispatcher;
 mod thread;
 mod object;
+#[path = "ntoskrnl/io/runtime.rs"]
 mod io;
 mod extfs;
 mod ntoskrnl;
