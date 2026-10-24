@@ -13,15 +13,15 @@
 
 ## Summary and calculated compatibility
 
-This expanded pass documents **135 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 135 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
+This expanded pass documents **138 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 138 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
 
 | Metric | Calculation | Result |
 |---|---|---:|
-| Source-level signature / x64 ABI declaration coverage | 135 documented declarations/call paths ÷ 135 | **135/135 = 100%** |
-| Name-based import resolution | 135 scoped routine names resolving to callable implementations ÷ 135 | **132/132 = 100%** |
-| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 135 | **10/135 = 7.4%** |
-| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 135 | **125/135 = 92.6%** |
-| Combined project score | (100% ABI declarations + 7.4% strict behavior) ÷ 2 | **53.7%** |
+| Source-level signature / x64 ABI declaration coverage | 138 documented declarations/call paths ÷ 138 | **138/138 = 100%** |
+| Name-based import resolution | 138 scoped routine names resolving to callable implementations ÷ 138 | **132/132 = 100%** |
+| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 138 | **10/138 = 7.2%** |
+| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 138 | **128/138 = 92.8%** |
+| Combined project score | (100% ABI declarations + 7.2% strict behavior) ÷ 2 | **53.6%** |
 
 **Important:** 53.8% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
 
@@ -179,6 +179,10 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 134 | VOID KeReleaseInterruptSpinLock(PKINTERRUPT Interrupt, KIRQL OldIrql) | ke_release_interrupt_spin_lock(); releases token and restores IRQL | Releases the registered token and restores caller IRQL. The interrupt object's actual ISR lock remains outside this model. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 135 | BOOLEAN KeSynchronizeExecution(PKINTERRUPT Interrupt, PKSYNCHRONIZE_ROUTINE SynchronizeRoutine, PVOID SynchronizeContext) | ke_synchronize_execution(); invoke callback under interrupt token | Runs the supplied callback under the same conservative per-interrupt critical section and returns its BOOLEAN. It cannot synchronize with a hardware ISR until the HAL interrupt-object lock is integrated. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 
+| 136 | KAFFINITY KeSetAffinityThread(PKTHREAD Thread, KAFFINITY Affinity) | ke_set_affinity_thread(); scheduler-backed thread mask | Returns the prior affinity and attempts to update scheduler/thread metadata. A running cooperative context cannot migrate away from its current CPU, and processor groups beyond group 0 are unsupported. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 137 | VOID KeSetSystemGroupAffinityThread(PKTHREAD Thread, const GROUP_AFFINITY *Affinity, PGROUP_AFFINITY PreviousAffinity) | ke_set_system_group_affinity_thread(); group-0 mask and saved prior mask | Applies a group-0 affinity mask and optionally returns the prior group/mask. Rejects other groups and cannot migrate a live saved context. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 138 | VOID KeRevertToUserGroupAffinityThread(PKTHREAD Thread) | ke_revert_to_user_group_affinity_thread(); saved-affinity restore table | Restores the prior mask captured by the matching group-affinity call. Saved state is bounded and limited to group 0. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+
 ## Additional Ke exports still unsupported
 
 The entries below remain **unresolved or unimplemented** after the current implementation batch. The preceding routine table now covers 132 callable export names, including timer/DPC, mutex/mutant, guarded-mutex, queued-spin-lock, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
@@ -191,7 +195,6 @@ The entries below remain **unresolved or unimplemented** after the current imple
 | KeRegisterNmiCallback, KeDeregisterNmiCallback | Stub / unresolved | Add safe NMI callback registration/rundown and interrupt-context restrictions. |
 | KeRegisterProcessorChangeCallback, KeDeregisterProcessorChangeCallback | Stub / unresolved | Connect callback lifecycle to processor hot-add/remove and startup sequencing. |
 | KeQueryLogicalProcessorRelationship | Stub / unresolved | Add ACPI topology relationships and documented variable-sized output buffer handling. |
-| KeSetAffinityThread, KeSetSystemGroupAffinityThread, KeRevertToUserGroupAffinityThread | Stub / unresolved | Implement thread affinity masks and processor-group-aware dispatch. |
 | KeStackAttachProcess, KeUnstackDetachProcess, KeAttachProcess, KeDetachProcess | Stub / unresolved | Implement APC-state save/restore, address-space switching and exception-safe detach. |
 | KeSaveExtendedProcessorState, KeRestoreExtendedProcessorState, KeSaveFloatingPointState, KeRestoreFloatingPointState | Stub / unresolved | Implement XSAVE feature masks, per-thread extended-state ownership and validation. |
 
