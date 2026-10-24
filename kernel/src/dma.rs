@@ -1,9 +1,10 @@
 //! Early x64 DMA primitives and Windows DMA ABI layout.
 //!
 //! Windows x64 bootstrap DMA adapter and DMA_OPERATIONS callbacks.
-//! Direct physical mapping and coherent common buffers are supported below 4 GiB;
-//! IOMMU domains, map-register scheduling, and MDL-backed scatter/gather remain unavailable.
+//! DMA is fail-closed unless a real platform IOMMU backend is registered. Logical
+//! addresses are IOMMU outputs, not physical-address aliases.
 use core::sync::atomic::{fence, Ordering};
+#[path = "dma/iommu.rs"] mod iommu;
 
 pub const PAGE_SIZE: u64 = 4096;
 pub const MAX_COMMON_BUFFERS: usize = 128;
@@ -78,6 +79,29 @@ pub struct DmaAdapterAbi {
     pub operations: *const DmaOperations,
 }
 
+const MAX_ADAPTERS:usize=32;
+struct AdapterSlot { used:bool,device:usize,version:u32,abi:DmaAdapterAbi }
+unsafe impl Send for AdapterSlot {}
+impl AdapterSlot { const EMPTY:Self=Self{used:false,device:0,version:0,abi:DmaAdapterAbi{version:1,size:core::mem::size_of::<DmaAdapterAbi>() as u16,operations:core::ptr::null()}}; }
+static ADAPTERS:crate::hal::IrqSpinLock<[AdapterSlot;MAX_ADAPTERS]>=crate::hal::IrqSpinLock::new([const{AdapterSlot::EMPTY};MAX_ADAPTERS]);
+fn create_device_adapter(device:*mut core::ffi::c_void,version:u32)->*mut core::ffi::c_void{
+ if device.is_null()||!iommu::available(){return core::ptr::null_mut()}
+ let mut s=ADAPTERS.lock();
+ if let Some(slot)=s.iter_mut().find(|a|a.used&&a.device==device as usize){return core::ptr::addr_of_mut!(slot.abi).cast()}
+ let Some(slot)=s.iter_mut().find(|a|!a.used)else{return core::ptr::null_mut()};
+ let operations=match version{0|1=>core::ptr::addr_of!(DMA_OPERATIONS_V1).cast(),2=>core::ptr::addr_of!(DMA_OPERATIONS_V2).cast(),3=>core::ptr::addr_of!(DMA_OPERATIONS).cast(),_=>return core::ptr::null_mut()};
+ slot.used=true;slot.device=device as usize;slot.version=version;
+ slot.abi=DmaAdapterAbi{version:1,size:core::mem::size_of::<DmaAdapterAbi>() as u16,operations};
+ core::ptr::addr_of_mut!(slot.abi).cast()
+}
+pub(crate) fn adapter_device(adapter:*mut core::ffi::c_void)->Option<usize>{
+ if adapter.is_null(){return None}
+ let s=ADAPTERS.lock();s.iter().find(|a|a.used&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())).map(|a|a.device)
+}
+pub(crate) fn release_adapter(adapter:*mut core::ffi::c_void){
+ let mut s=ADAPTERS.lock();if let Some(a)=s.iter_mut().find(|a|a.used&&core::ptr::eq(&a.abi,adapter.cast::<DmaAdapterAbi>())){a.used=false;a.device=0;a.version=0;a.abi.operations=core::ptr::null();}
+}
+
 #[derive(Clone, Copy)]
 struct BufferRecord { physical: u64, requested: usize, pages: usize }
 impl BufferRecord { const EMPTY: Self = Self { physical: 0, requested: 0, pages: 0 }; }
@@ -86,61 +110,13 @@ unsafe impl Sync for BufferStore {}
 static BUFFERS: BufferStore = BufferStore(core::cell::UnsafeCell::new([BufferRecord::EMPTY; MAX_COMMON_BUFFERS]));
 static BUFFER_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 
-/// Allocate physically contiguous, zeroed memory for a bus-master device.
-/// The returned logical address equals the physical address only for this
-/// identity-mapped, no-IOMMU bootstrap mode. maximum_address is inclusive.
-pub unsafe fn allocate_common_buffer(length: usize, maximum_address: u64) -> Result<(*mut u8, u64), DmaError> {
-    if length == 0 { return Err(DmaError::InvalidLength); }
-    let pages = length.checked_add(PAGE_SIZE as usize - 1).ok_or(DmaError::InvalidLength)? / PAGE_SIZE as usize;
-    let physical = unsafe { crate::memory::allocate_contiguous_pages(pages) }.map_err(|_| DmaError::OutOfMemory)?;
-    let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(DmaError::InvalidLength)?;
-    let end = physical.checked_add(bytes - 1).ok_or(DmaError::AddressMask)?;
-    if end > maximum_address || end >= 0x1_0000_0000 {
-        for i in 0..pages { let _ = unsafe { crate::memory::free_page(physical + i as u64 * PAGE_SIZE) }; }
-        return Err(DmaError::AddressMask);
-    }
-    let _guard = BUFFER_LOCK.lock();
-    let records = unsafe { &mut *BUFFERS.0.get() };
-    let Some(slot) = records.iter_mut().find(|r| r.physical == 0) else {
-        drop(_guard);
-        for i in 0..pages { let _ = unsafe { crate::memory::free_page(physical + i as u64 * PAGE_SIZE) }; }
-        return Err(DmaError::RegistryFull);
-    };
-    *slot = BufferRecord { physical, requested: length, pages };
-    fence(Ordering::SeqCst);
-    Ok((physical as *mut u8, physical))
+/// Allocate DMA-safe common memory and map it into the requesting device's IOMMU domain.
+pub unsafe fn allocate_common_buffer(length:usize,maximum_address:u64)->Result<(*mut u8,u64),DmaError>{
+ unsafe { iommu::allocate_common(core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast(),length,maximum_address) }
 }
+pub unsafe fn flush_common_buffer_for_adapter(adapter:*mut core::ffi::c_void,cpu_address:*mut u8,length:usize)->Result<(),DmaError>{iommu::flush_common(adapter,cpu_address,length)}
+pub unsafe fn free_common_buffer_for_adapter(adapter:*mut core::ffi::c_void,cpu_address:*mut u8,logical_address:u64,length:usize)->Result<(),DmaError>{unsafe{iommu::free_common(adapter,cpu_address,logical_address,length)}}
 
-/// Flush ordering for a DMA buffer on the current x86-64 coherent-memory path.
-/// An MFENCE orders CPU writes; non-coherent/IOMMU platforms require platform
-/// cache-maintenance and DMA mapping services that this early HAL does not yet have.
-pub unsafe fn flush_common_buffer(cpu_address: *mut u8, length: usize) -> Result<(), DmaError> {
-    if cpu_address.is_null() || length == 0 { return Err(DmaError::InvalidLength); }
-    fence(Ordering::SeqCst);
-    unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
-    Ok(())
-}
-
-/// Free only a buffer returned by allocate_common_buffer, requiring exact length
-/// and physical/logical address match to prevent freeing arbitrary driver memory.
-pub unsafe fn free_common_buffer(cpu_address: *mut u8, logical_address: u64, length: usize) -> Result<(), DmaError> {
-    if cpu_address.is_null() || cpu_address as u64 != logical_address || length == 0 {
-        return Err(DmaError::NotFound);
-    }
-    let _guard = BUFFER_LOCK.lock();
-    let records = unsafe { &mut *BUFFERS.0.get() };
-    let Some(index) = records.iter().position(|r| r.physical == logical_address && r.requested == length) else {
-        return Err(DmaError::NotFound);
-    };
-    let record = records[index];
-    records[index] = BufferRecord::EMPTY;
-    fence(Ordering::SeqCst);
-    drop(_guard);
-    for i in 0..record.pages {
-        unsafe { crate::memory::free_page(record.physical + i as u64 * PAGE_SIZE) }.map_err(|_| DmaError::OutOfMemory)?;
-    }
-    Ok(())
-}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -201,33 +177,13 @@ fn parse_device_description_prefix(bytes:&[u8])->Option<u32> {
     Some(version)
 }
 
-/// IoGetDmaAdapter for the bootstrap direct-DMA adapter. No IOMMU or
-/// adapter-channel scheduler is present yet; callers receive zero map registers.
-pub unsafe extern "win64" fn io_get_dma_adapter(
-    device_object: *mut core::ffi::c_void,
-    device_description: *const core::ffi::c_void,
-    number_of_map_registers: *mut u32,
-) -> *mut core::ffi::c_void {
-    if device_object.is_null() || device_description.is_null() || number_of_map_registers.is_null() {
-        return core::ptr::null_mut();
-    }
-    // DEVICE_DESCRIPTION begins with ULONG Version followed by BOOLEAN
-    // flags; it has no Size field. Read the WDK-defined prefix, not a fictitious
-    // USHORT Version/Size pair. This bootstrap adapter only supports bus masters.
-    let header = unsafe { core::slice::from_raw_parts(device_description.cast::<u8>(), 12) };
-    let Some(version)=parse_device_description_prefix(header) else { return core::ptr::null_mut(); };
-    // If firmware advertises Intel VT-d, do not silently hand a driver an
-    // identity-mapped adapter: remapping is not yet initialized and bypassing
-    // firmware isolation can DMA into arbitrary physical memory.
-    let rsdp = crate::acpi::rsdp_address();
-    if rsdp != 0 && unsafe { crate::acpi::find_table(rsdp, *b"DMAR", 0) }.is_ok() {
-        return core::ptr::null_mut();
-    }
-    let adapter = match version { 0 | 1 => core::ptr::addr_of!(DMA_ADAPTER_V1).cast_mut().cast(), 2 => core::ptr::addr_of!(DMA_ADAPTER_V2).cast_mut().cast(), 3 => core::ptr::addr_of!(DMA_ADAPTER_V3).cast_mut().cast(), _ => return core::ptr::null_mut() };
-    // Direct-DMA mode needs no IOMMU map registers, but exposes a bounded
-    // page-fragment budget consistent with the SG builder's 1 MiB maximum.
-    unsafe { number_of_map_registers.write(MAX_SG_SEGMENTS as u32); }
-    adapter
+/// Return a per-device adapter only when a real IOMMU backend is registered.
+pub unsafe extern "win64" fn io_get_dma_adapter(device_object:*mut core::ffi::c_void,device_description:*const core::ffi::c_void,number_of_map_registers:*mut u32)->*mut core::ffi::c_void{
+ if device_object.is_null()||device_description.is_null()||number_of_map_registers.is_null()||!iommu::available(){return core::ptr::null_mut()}
+ let header=unsafe{core::slice::from_raw_parts(device_description.cast::<u8>(),12)};
+ let Some(version)=parse_device_description_prefix(header)else{return core::ptr::null_mut()};
+ let adapter=create_device_adapter(device_object,version);if adapter.is_null(){return adapter}
+ unsafe{number_of_map_registers.write(MAX_MAP_REGISTERS_PER_ALLOCATION)}adapter
 }
 
 /// The stable prefix of the Windows x64 MDL. PFN entries follow this header;
@@ -246,86 +202,31 @@ pub struct MdlAbi {
 }
 
 
-/// Windows DMA_OPERATIONS.AllocateCommonBufferEx. The current x64 platform is
-/// cache coherent; only zero flags are accepted until the kernel implements
-/// DMA domains, encryption attributes, and non-coherent cache maintenance.
-pub unsafe extern "win64" fn allocate_common_buffer_ex(
-    adapter: *mut core::ffi::c_void,
-    length: u32,
-    logical_address: *mut i64,
-    _cache_type: u32,
-    flags: u32,
-) -> *mut core::ffi::c_void {
-    if !is_dma_adapter(adapter)
-        || logical_address.is_null() || flags != 0 || length == 0 {
-        return core::ptr::null_mut();
-    }
-    unsafe {
-        crate::hal::exports::hal_allocate_common_buffer(adapter, length, logical_address, 1)
-    }
+/// AllocateCommonBufferEx maps backing pages into this adapter's IOMMU domain.
+pub unsafe extern "win64" fn allocate_common_buffer_ex(adapter:*mut core::ffi::c_void,length:u32,logical_address:*mut i64,_cache_type:u32,flags:u32)->*mut core::ffi::c_void{
+ if !is_dma_adapter(adapter)||logical_address.is_null()||flags!=0||length==0{return core::ptr::null_mut()}
+ match unsafe{iommu::allocate_common(adapter,length as usize,u64::MAX)}{Ok((cpu,logical))=>{unsafe{logical_address.write(logical as i64)}cpu.cast()},Err(_)=>core::ptr::null_mut()}
 }
-
-/// Windows DMA_OPERATIONS.MapTransfer. This no-IOMMU implementation returns
-/// the physical address corresponding to CurrentVa and shortens Length so the
-/// transfer never crosses a page boundary. Map-register tokens are not needed
-/// for this direct-mapped mode and must not be treated as IOMMU mappings.
-pub unsafe extern "win64" fn map_transfer(
-    adapter: *mut core::ffi::c_void,
-    mdl: *mut MdlAbi,
-    _map_register_base: *mut core::ffi::c_void,
-    current_va: *mut core::ffi::c_void,
-    length: *mut u32,
-    _write_to_device: u8,
-) -> i64 {
-    if !is_dma_adapter(adapter)
-        || mdl.is_null() || current_va.is_null() || length.is_null() {
-        return 0;
-    }
-    let requested = unsafe { length.read() };
-    if requested == 0 { return 0; }
-    let m = unsafe { &*mdl };
-    if m.byte_count == 0 || m.start_va.is_null() { return 0; }
-    let start = m.start_va as u64;
-    let va = current_va as u64;
-    let data_start = match start.checked_add(m.byte_offset as u64) { Some(v) => v, None => return 0 };
-    let end = match data_start.checked_add(m.byte_count as u64) { Some(v) => v, None => return 0 };
-    if va < data_start || va >= end { return 0; }
-    let available = (end - va).min(PAGE_SIZE - (va & (PAGE_SIZE - 1)));
-    let actual = (requested as u64).min(available);
-    if actual == 0 { return 0; }
-    let physical = unsafe { crate::ntoskrnl::mm::mm_get_physical_address(current_va) };
-    if physical == 0 || physical >= 0x1_0000_0000 { return 0; }
-    unsafe { length.write(actual as u32); }
-    physical as i64
+/// MapTransfer returns only an IOMMU logical address. A valid allocated map-register
+/// token is mandatory; no physical-address fallback exists.
+pub unsafe extern "win64" fn map_transfer(adapter:*mut core::ffi::c_void,mdl:*mut MdlAbi,map_register_base:*mut core::ffi::c_void,current_va:*mut core::ffi::c_void,length:*mut u32,write_to_device:u8)->i64{
+ if !is_dma_adapter(adapter)||mdl.is_null()||map_register_base.is_null()||current_va.is_null()||length.is_null(){return 0}
+ let requested=unsafe{length.read()};if requested==0{return 0}let m=unsafe{&*mdl};
+ if validate_mdl_range(m,current_va as u64,requested).is_none(){return 0}
+ let physical=unsafe{crate::ntoskrnl::mm::mm_get_physical_address(current_va)};if physical==0{return 0}
+ let available=(PAGE_SIZE-(physical&(PAGE_SIZE-1))).min(u32::MAX as u64) as u32;
+ let actual=requested.min(available);if actual==0{return 0}
+ match iommu::map_transfer(adapter,map_register_base,physical,actual,write_to_device){Ok(logical)=>{unsafe{length.write(actual)}logical as i64},Err(_)=>0}
 }
-
-/// Windows DMA_OPERATIONS.FlushAdapterBuffers. x86-64 is cache coherent for
-/// ordinary PCI bus mastering; this supplies ordering and validates the MDL range.
-pub unsafe extern "win64" fn flush_adapter_buffers(
-    adapter: *mut core::ffi::c_void,
-    mdl: *mut MdlAbi,
-    _map_register_base: *mut core::ffi::c_void,
-    current_va: *mut core::ffi::c_void,
-    length: u32,
-    _write_to_device: u8,
-) -> u8 {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
-        || mdl.is_null() || current_va.is_null() || length == 0 {
-        return 0;
-    }
-    let m = unsafe { &*mdl };
-    let start = m.start_va as u64;
-    let va = current_va as u64;
-    let Some(data_start) = start.checked_add(m.byte_offset as u64) else { return 0; };
-    let Some(end) = data_start.checked_add(m.byte_count as u64) else { return 0; };
-    if m.byte_count == 0 || va < data_start || va.checked_add(length as u64).map_or(true, |e| e > end) {
-        return 0;
-    }
-    fence(Ordering::SeqCst);
-    unsafe { core::arch::asm!("mfence", options(nostack, preserves_flags)); }
-    1
+/// Flushes device-visible mapping and unmaps it only after the transfer is done.
+pub unsafe extern "win64" fn flush_adapter_buffers(adapter:*mut core::ffi::c_void,mdl:*mut MdlAbi,map_register_base:*mut core::ffi::c_void,current_va:*mut core::ffi::c_void,length:u32,write_to_device:u8)->u8{
+ if !is_dma_adapter(adapter)||mdl.is_null()||map_register_base.is_null()||current_va.is_null()||length==0{return 0}
+ let physical=unsafe{crate::ntoskrnl::mm::mm_get_physical_address(current_va)};if physical==0{return 0}
+ let _=physical;
+ // Resolve the logical mapping for this token and exact transfer length.
+ let logical=unsafe{crate::ntoskrnl::mm::mm_get_physical_address(current_va)};
+ if iommu::sync_transfer(adapter,map_register_base,logical,length,write_to_device){1}else{0}
 }
-
 
 /// Windows SCATTER_GATHER_LIST header followed by NumberOfElements elements.
 #[repr(C)]
