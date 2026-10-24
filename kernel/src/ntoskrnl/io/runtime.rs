@@ -282,7 +282,7 @@ pub use wdm::{
     io_initialize_irp, io_copy_current_irp_stack_location_to_next,
     io_skip_current_irp_stack_location, io_reuse_irp, lookup_device_object, io_register_file_system,
     io_unregister_file_system, io_create_symbolic_link, io_delete_symbolic_link,
-    io_set_cancel_routine, io_cancel_irp, DriverCancelRoutine,
+    io_set_cancel_routine, io_cancel_irp, io_build_asynchronous_fsd_request, DriverCancelRoutine,
     io_free_irp, io_get_current_irp_stack_location,
     io_get_next_irp_stack_location, io_mark_irp_pending, io_set_completion_routine,
     DeviceObject, DriverObject, IoCompletionRoutine, IoStackLocation, IoStatusBlock,
