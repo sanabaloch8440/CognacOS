@@ -418,7 +418,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                                 // The bootloader maps these standard MMIO windows UC.
                                 unsafe { hal::initialize_local_interrupt_controller(firmware_madt.local_apic_address) }
                             } else {
-                                Err(hal::PlatformInterruptError::InvalidBase)
+                                Err(hal::HalError::InvalidInterruptBase)
                             }) {
                                 Ok(local_id) if local_id == bsp_apic_id => {
                                     let mut routes_masked = true;
