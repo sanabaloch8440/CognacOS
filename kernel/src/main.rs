@@ -840,6 +840,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             match unsafe { hal::start_local_clock_event() } {
                 Ok(()) => {
                     thread::set_preemption_enabled(true);
+                    if thread::timer_preemption_self_test() {
+                        serial_write(b"Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.\r\n");
+                    } else {
+                        serial_write(b"Timer preemption stress FAILED.\r\n");
+                    }
                     serial_write(b"Local APIC timer enabled after AP startup/self-tests; timer-driven preemption enabled.\r\n");
                     loop {
                         unsafe { asm!("sti; hlt", options(nomem, nostack)); }
