@@ -357,6 +357,7 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
   for j in indexes[..3].iter().copied(){let e=unsafe{t.add(j).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *const u64;}
   let pte=unsafe{t.add(indexes[3]).read()};if pte&P==0{return Err(Error::NotMapped)}
   reclaim[n]=pte&ADDR;reclaim_slots[n]=u32::MAX;
+  if crate::ntoskrnl::mm::runtime::is_page_locked(reclaim[n]) { return Err(Error::Invalid); }
  }
  // Unmap all resident pages before a single SMP rendezvous, then recycle frames.
  for n in 0..pages {if reclaim[n]!=0 {let _=unsafe{unmap(root,va+n as u64*PAGE)}?;}}
