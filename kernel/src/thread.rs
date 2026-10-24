@@ -231,6 +231,16 @@ fn exit_current()->! {
     unsafe{crate::arch::context_switch(old_rsp_ptr,new_rsp)};
     loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}
 }
+/// Return the address of the current live thread record as an opaque KTHREAD token.
+/// The record table is static, so the address remains stable until the slot is reused.
+pub fn current_thread_object() -> *mut c_void {
+    let Some(id) = current_thread_id() else { return core::ptr::null_mut(); };
+    let mut table = THREADS.lock();
+    table.records.iter_mut().find(|t| t.id == id && t.state != ThreadState::Empty)
+        .map(|record| (record as *mut ThreadRecord).cast::<c_void>())
+        .unwrap_or(core::ptr::null_mut())
+}
+
 pub fn current_thread_id()->Option<u64>{let cpu=cpu_index().ok()?;let id=crate::hal::cpu_local(cpu).ok()?.current_thread.load(core::sync::atomic::Ordering::Acquire);(id!=0).then_some(id)}
 pub fn state(id:u64)->Option<ThreadState>{THREADS.lock().records.iter().find(|t|t.id==id).map(|t|t.state)}
 
