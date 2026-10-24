@@ -319,6 +319,91 @@ const NO_EXECUTE: u64 = 1 << 63;
 const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
 const LARGE_ADDRESS_MASK: u64 = 0x000f_ffff_ffe0_0000;
 
+const HUGE_ADDRESS_MASK: u64 = 0x000f_ffff_c000_0000;
+const HUGE: u64 = 1 << 7;
+
+/// Read-only summary of a live x86-64 page-table translation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MappingInfo {
+    pub physical_address: u64,
+    pub page_size: u64,
+    pub writable: bool,
+    pub executable: bool,
+    pub user_accessible: bool,
+}
+
+/// Inspect the active bootstrap's four-level page tables without allocating or
+/// modifying anything. Supports 1 GiB, 2 MiB and 4 KiB leaves. The caller must
+/// ensure the root and every referenced table are identity-accessible.
+pub unsafe fn inspect_mapping(pml4_physical: u64, virtual_address: u64)
+    -> Result<MappingInfo, AllocError>
+{
+    const USER: u64 = 1 << 2;
+    if pml4_physical == 0 || pml4_physical >= PHYSICAL_LIMIT
+        || pml4_physical & (PAGE_SIZE - 1) != 0
+        || virtual_address >= (1u64 << 48)
+    {
+        return Err(AllocError::InvalidMap);
+    }
+    let pml4 = pml4_physical as *const u64;
+    let pml4e = unsafe { pml4.add(((virtual_address >> 39) & 0x1ff) as usize).read() };
+    if pml4e & PRESENT == 0 || pml4e & LARGE != 0 { return Err(AllocError::InvalidMap); }
+    let pdpt = (pml4e & ADDRESS_MASK) as *const u64;
+    let pdpte = unsafe { pdpt.add(((virtual_address >> 30) & 0x1ff) as usize).read() };
+    if pdpte & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    if pdpte & LARGE != 0 {
+        let base = pdpte & HUGE_ADDRESS_MASK;
+        let offset = virtual_address & ((1u64 << 30) - 1);
+        return Ok(MappingInfo {
+            physical_address: base + offset, page_size: 1u64 << 30,
+            writable: pml4e & pdpte & WRITABLE != 0,
+            executable: (pml4e | pdpte) & NO_EXECUTE == 0,
+            user_accessible: pml4e & pdpte & USER != 0,
+        });
+    }
+    let pd = (pdpte & ADDRESS_MASK) as *const u64;
+    let pde = unsafe { pd.add(((virtual_address >> 21) & 0x1ff) as usize).read() };
+    if pde & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    if pde & LARGE != 0 {
+        let base = pde & LARGE_ADDRESS_MASK;
+        let offset = virtual_address & ((1u64 << 21) - 1);
+        return Ok(MappingInfo {
+            physical_address: base + offset, page_size: 1u64 << 21,
+            writable: pml4e & pdpte & pde & WRITABLE != 0,
+            executable: (pml4e | pdpte | pde) & NO_EXECUTE == 0,
+            user_accessible: pml4e & pdpte & pde & USER != 0,
+        });
+    }
+    let pt = (pde & ADDRESS_MASK) as *const u64;
+    let pte = unsafe { pt.add(((virtual_address >> 12) & 0x1ff) as usize).read() };
+    if pte & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    Ok(MappingInfo {
+        physical_address: (pte & ADDRESS_MASK) | (virtual_address & (PAGE_SIZE - 1)),
+        page_size: PAGE_SIZE,
+        writable: pml4e & pdpte & pde & pte & WRITABLE != 0,
+        executable: (pml4e | pdpte | pde | pte) & NO_EXECUTE == 0,
+        user_accessible: pml4e & pdpte & pde & pte & USER != 0,
+    })
+}
+
+/// Verify every page touched by a bootstrap dependency is present and identity
+/// mapped. This deliberately validates the existing bootstrap contract before
+/// any permission hardening or page-table restructuring is attempted.
+pub unsafe fn validate_identity_range(
+    pml4_physical: u64, start: u64, length: u64,
+) -> Result<(), AllocError> {
+    if length == 0 { return Ok(()); }
+    let end = start.checked_add(length).ok_or(AllocError::InvalidMap)?;
+    if end > PHYSICAL_LIMIT { return Err(AllocError::InvalidMap); }
+    let mut address = start & !(PAGE_SIZE - 1);
+    while address < end {
+        let mapping = unsafe { inspect_mapping(pml4_physical, address)? };
+        if mapping.physical_address != address { return Err(AllocError::InvalidMap); }
+        address = address.checked_add(PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+    }
+    Ok(())
+}
+
 /// Split the bootstrap's 2 MiB identity mapping into 4 KiB pages where
 /// fine-grained permissions or a stack guard are required. All other bootstrap
 /// large pages become writable, supervisor-only, and non-executable.
