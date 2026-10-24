@@ -61,12 +61,13 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Validate MDL header/PFN-array bounds before access; preflight source mappings; maintain reference-counted physical-page pins and prevent allocator reuse while pinned.
 - [x] Keep MDL PFN writes behind mapping preflight; validate page counts/capacity before walking PFN arrays; reject invalid operation modes and fail closed on unsupported mapping cases.
 - [x] Build MDLs for resident nonpaged pool buffers and support direct-map aliases for MDLs whose PFNs form a physically contiguous RAM run.
-- [x] Implement `MmSizeOfMdl`/`MmCreateMdl` sizing and creation paths with checked lengths and MDL header validation (complete Windows pool allocation/free ownership is still outstanding).
+- [x] Implement `MmSizeOfMdl`/`MmCreateMdl` sizing and creation paths with checked lengths and MDL header validation; track `MmCreateMdl` pool-owned headers separately from caller-owned MDLs.
 - [x] Implement MmAdvanceMdl with range/PFN-array bounds checks and balanced pin-reference release for pages removed from a locked MDL.
 - [x] Wire `MmCopyVirtualMemory` with the Windows x64 argument layout and validate length/output ranges; same-process copies use the active page tables and return partial-copy status when a page is unavailable.
-- [ ] Register real EPROCESS objects with their address-space roots and implement safe cross-process copy under process/address-space lifetime locks.
-- [ ] Implement MDL allocation/free pool ownership and complete `MmPrepareMdlForReuse`/partial MDL construction semantics where required by driver consumers.
-- [ ] Add arbitrary scatter/gather kernel mappings, user-mode MDL mappings, page-fault-driven probing of pageable buffers, and complete MDL allocation/free lifecycle semantics.
+- [ ] Register real EPROCESS objects with their address-space roots and implement safe cross-process copy under process/address-space lifetime locks; current process records do not yet own stable NT process objects or address-space lifetime guards.
+- [x] Add bounded `MmFreeMdl`, `MmPrepareMdlForReuse`, and `MmBuildPartialMdl` entry points. Pool freeing is restricted to headers allocated by `MmCreateMdl`; partial MDLs validate source/target ranges and acquire independent pin references for locked source pages. Full WDK edge-case parity and stress validation remain pending.
+- [ ] Add arbitrary scatter/gather kernel mappings and user-mode MDL mappings; current mapper only returns direct-map aliases for physically contiguous PFNs.
+- [ ] Add page-fault-driven probing of pageable buffers and complete Windows MDL lifecycle semantics, including all allocation-source combinations and teardown races.
 - [x] Build bootstrap identity mappings from the final UEFI memory-map descriptors, leaving uncovered physical holes not-present and explicitly mapping APIC MMIO windows.
 - [ ] Replace 2 MiB descriptor-interior leaves with finer 4 KiB mappings at descriptor boundaries and where stricter per-region permissions are required.
 - [x] Add a demand-mapped direct-map window for UEFI-described RAM above 4 GiB; reject reserved/MMIO addresses and validate the path in the 5 GiB QEMU boot test.
