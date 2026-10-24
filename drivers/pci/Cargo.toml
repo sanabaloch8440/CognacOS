@@ -7,3 +7,9 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "pci"
+path = "src/bin/pci.rs"
+test = false
+bench = false
