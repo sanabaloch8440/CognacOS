@@ -1394,11 +1394,11 @@ mod se_privilege_check_tests {
         set[16..20].copy_from_slice(&2u32.to_le_bytes());
         set[20..24].copy_from_slice(&7u32.to_le_bytes());
         set[28..32].copy_from_slice(&2u32.to_le_bytes());
-        assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const _).cast_mut(), 1) }, 1);
+        assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const SeSecuritySubjectContext).cast_mut(), 1) }, 1);
         set[20..24].copy_from_slice(&8u32.to_le_bytes());
-        assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const _).cast_mut(), 1) }, 0);
+        assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const SeSecuritySubjectContext).cast_mut(), 1) }, 0);
         set[4..8].copy_from_slice(&0u32.to_le_bytes());
-        assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const _).cast_mut(), 1) }, 1);
+        assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const SeSecuritySubjectContext).cast_mut(), 1) }, 1);
         assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
     }
 }
