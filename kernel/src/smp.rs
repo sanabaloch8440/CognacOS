@@ -8,7 +8,7 @@
 //! licensed GPL-2.0-or-later.
 //! Copyright (C) RustOS-Dev contributors; RdotOS-specific modifications
 //! Copyright (C) 2026 RdotOS contributors. Modified for RdotOS on 2026-10-23.
-use crate::{apic, arch, hal, memory};
+use crate::{arch, hal, memory};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::arch::global_asm;
 
@@ -191,7 +191,7 @@ pub enum SmpError {
     UnsupportedApicId,
     InvalidCpuState,
     StartupTimeout,
-    Apic(apic::ApicError),
+    Apic(hal::HalError),
     Hal(hal::HalError),
     Memory(memory::AllocError),
     DelayUnavailable,
@@ -406,14 +406,14 @@ pub unsafe fn start_one_ap(
             .map(|cpu| cpu.apic_id.load(Ordering::Acquire)).ok() != Some(target.apic_id)
     { return Err(SmpError::InvalidCpuState); }
     hal::mark_cpu_starting(target.logical_id).map_err(SmpError::Hal)?;
-    let startup = unsafe { apic::send_init_ipi(local_apic_base, target.apic_id as u8) };
+    let startup = unsafe { hal::send_processor_init(local_apic_base, target.apic_id as u8) };
     if let Err(error) = startup { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::Apic(error)); }
     if !delay_us(10_000) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
     // Do not send the legacy INIT-deassert IPI here. Its delivery mode is
     // deprecated and firmware/APIC implementations differ in how they handle
     // it. After the INIT recovery interval, send the first SIPI immediately;
     // the mandatory 200 us inter-SIPI delay belongs after that first SIPI.
-    if let Err(error) = unsafe { apic::send_startup_ipi(local_apic_base, target.apic_id as u8, target.trampoline_physical) } {
+    if let Err(error) = unsafe { hal::send_processor_startup(local_apic_base, target.apic_id as u8, target.trampoline_physical) } {
         let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::Apic(error));
     }
     if !delay_us(200) { let _ = hal::mark_cpu_failed(target.logical_id); return Err(SmpError::DelayUnavailable); }
@@ -423,7 +423,7 @@ pub unsafe fn start_one_ap(
     // while a delayed retry can miss the compatibility window on some platforms.
     if hal::cpu_state(target.logical_id).ok() != Some(hal::CPU_ONLINE) {
         if let Err(error) = unsafe {
-            apic::send_startup_ipi(local_apic_base, target.apic_id as u8, target.trampoline_physical)
+            hal::send_processor_startup(local_apic_base, target.apic_id as u8, target.trampoline_physical)
         } {
             let _ = hal::mark_cpu_failed(target.logical_id);
             return Err(SmpError::Apic(error));
@@ -478,7 +478,7 @@ pub unsafe fn start_discovered_aps_with_ipi(
             let Ok(cpu) = hal::cpu_local(logical_id) else { continue; };
             let apic_id = cpu.apic_id.load(Ordering::Acquire);
             if apic_id <= u8::MAX as u32 {
-                let _ = unsafe { apic::synchronize_tsc_with_cpu(logical_id, apic_id as u8) };
+                let _ = unsafe { hal::synchronize_processor_clock(logical_id, apic_id as u8) };
             }
         }
     }
@@ -500,7 +500,7 @@ pub unsafe fn start_discovered_aps(
     { return Err(SmpError::InvalidTarget); }
     unsafe { memory::configure_identity_page(pml4_physical, local_apic_base, true, false, true, true) }
         .map_err(SmpError::Memory)?;
-    let current_id = unsafe { apic::initialize_local_apic(local_apic_base) }.map_err(SmpError::Apic)?;
+    let current_id = unsafe { hal::initialize_processor_interrupt_controller(local_apic_base) }.map_err(SmpError::Apic)?;
     if current_id != bsp_apic_id { return Err(SmpError::InvalidCpuState); }
     LOCAL_APIC_BASE.store(local_apic_base, Ordering::Release);
     let startup_pml4 = unsafe { prepare_ap_temporary_page_tables(pml4_physical)? };
@@ -618,7 +618,7 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64, ap_stack_to
     }
     let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
     let apic_id = if base != 0 {
-        unsafe { apic::initialize_local_apic(base) }.ok()
+        unsafe { hal::initialize_processor_interrupt_controller(base) }.ok()
     } else { None };
     let expected = hal::cpu_local(index)
         .map(|cpu| cpu.apic_id.load(Ordering::Acquire)).ok();
@@ -676,7 +676,7 @@ pub unsafe fn mask_interrupt_sources(pml4_physical: u64, madt: &crate::acpi::Mad
         let base = io.address as u64;
         if base == 0 || base >= 0x1_0000_0000 || base & 0xfff != 0 { return false; }
         if unsafe { memory::configure_identity_page(pml4_physical, base, true, false, true, true) }.is_err() { return false; }
-        if unsafe { apic::mask_all_ioapic(base) }.is_err() { return false; }
+        if unsafe { hal::mask_interrupt_controller_routes(base) }.is_err() { return false; }
     }
     true
 }
@@ -737,7 +737,7 @@ pub fn request_reschedule(logical_id: usize) -> bool {
     let apic_id = cpu.apic_id.load(Ordering::Acquire);
     if apic_id > u8::MAX as u32 { return false; }
     let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
-    base != 0 && unsafe { apic::send_fixed_ipi(base, apic_id as u8, apic::HAL_IPI_VECTOR) }.is_ok()
+    base != 0 && unsafe { hal::send_fixed_ipi(base, apic_id as u8, hal::HAL_IPI_VECTOR) }.is_ok()
 }
 
 /// Send a dedicated Ke rendezvous IPI. This vector is distinct from the
@@ -750,16 +750,16 @@ pub fn request_ke_broadcast(logical_id:usize)->bool{
     let apic_id=cpu.apic_id.load(Ordering::Acquire);
     if apic_id>u8::MAX as u32{return false}
     let base=LOCAL_APIC_BASE.load(Ordering::Acquire);
-    base!=0&&unsafe{apic::send_fixed_ipi(base,apic_id as u8,apic::KE_BROADCAST_VECTOR)}.is_ok()
+    base!=0&&unsafe{hal::send_fixed_ipi(base,apic_id as u8,hal::KE_BROADCAST_VECTOR)}.is_ok()
 }
 
-pub fn send_tlb_shootdown(logical_id: usize) -> Result<(), apic::ApicError> {
-    if !ipi_shootdowns_enabled() { return Err(apic::ApicError::Unsupported); }
-    let cpu = hal::cpu_local(logical_id).map_err(|_| apic::ApicError::InvalidBase)?;
+pub fn send_tlb_shootdown(logical_id: usize) -> Result<(), hal::HalError> {
+    if !ipi_shootdowns_enabled() { return Err(hal::HalError::PlatformFailure); }
+    let cpu = hal::cpu_local(logical_id).map_err(|_| hal::HalError::InvalidCpu)?;
     let apic_id = cpu.apic_id.load(Ordering::Acquire);
-    if apic_id > u8::MAX as u32 { return Err(apic::ApicError::InvalidBase); }
+    if apic_id > u8::MAX as u32 { return Err(hal::HalError::PlatformFailure); }
     let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
-    unsafe { apic::send_fixed_ipi(base, apic_id as u8, apic::TLB_SHOOTDOWN_VECTOR) }
+    unsafe { hal::send_fixed_ipi(base, apic_id as u8, hal::TLB_SHOOTDOWN_VECTOR) }
 }
 
 #[unsafe(no_mangle)]
@@ -767,7 +767,7 @@ pub extern "C" fn rdotos_tlb_ipi_handler() {
     TLB_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
     crate::kernel_vm::handle_tlb_ipi();
     let base = LOCAL_APIC_BASE.load(Ordering::Acquire);
-    if base != 0 { unsafe { apic::local_apic_eoi(base); } }
+    if base != 0 { unsafe { hal::end_local_interrupt(); } }
 }
 
 pub fn self_test() -> bool {
