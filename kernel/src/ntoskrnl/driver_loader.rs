@@ -12,7 +12,7 @@ const MAX_SECTIONS:usize=32;
 const MAX_IMAGE_SIZE:usize=32*1024*1024;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum DriverLoadError { Truncated, BadDosHeader, BadPeSignature, WrongMachine, WrongSubsystem, NotDll, InvalidHeader, InvalidSection, ImageTooLarge, WrongBase, ImportsUnsupported, RelocationsUnsupported, WxSection, EntryNotExecutable, EntryFailed(i32) }
+pub enum DriverLoadError { Truncated, BadDosHeader, BadPeSignature, WrongMachine, WrongSubsystem, NotDll, InvalidHeader, InvalidSection, ImageTooLarge, WrongBase, ImportsUnsupported, RelocationsUnsupported, WxSection, EntryNotExecutable, MappingFailed, NoMemory, EntryFailed(i32) }
 #[derive(Clone,Copy,Debug)]
 pub struct LoadedDriver { pub image_base:u64,pub image_size:u32,pub entry_point:u64,pub status:i32 }
 #[repr(C)]
@@ -62,9 +62,39 @@ pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut Driver
   if raw_size!=0{let src=range(file.len(),raw_off,raw_size)?;let dst=(rva as usize)..(rva as usize+raw_size as usize);mapped[dst].copy_from_slice(&file[src]);}
  }
  if !entry_executable{return Err(DriverLoadError::EntryNotExecutable);}
+ // Default the whole image to read-only/NX, then grant only the section
+ // permissions declared by validated section characteristics.
+ let image_pages=(image_size+4095)/4096;
+ crate::kernel_vm::protect_pages(base,image_pages,false,false).map_err(|_|DriverLoadError::MappingFailed)?;
+ for i in 0..count{
+  let o=table+i*40;let virtual_size=u32at(file,o+8)?;let rva=u32at(file,o+12)?;let raw_size=u32at(file,o+16)?;let flags=u32at(file,o+36)?;
+  let span=core::cmp::max(virtual_size,raw_size) as usize;
+  if span==0{continue;}
+  let pages=(span+4095)/4096;
+  crate::kernel_vm::protect_pages(base+rva as u64,pages,flags&IMAGE_SCN_MEM_WRITE!=0,flags&IMAGE_SCN_MEM_EXECUTE!=0).map_err(|_|DriverLoadError::MappingFailed)?;
+ }
  let entry=base.checked_add(entry_rva as u64).ok_or(DriverLoadError::InvalidHeader)?;
  let routine:unsafe extern "win64" fn(*mut DriverObject,*mut c_void)->i32=unsafe{core::mem::transmute(entry as usize)};
  let status=unsafe{routine(driver_object,context)};
  if status<0{return Err(DriverLoadError::EntryFailed(status));}
  Ok(LoadedDriver{image_base:base,image_size:image_size as u32,entry_point:entry,status})
+}
+
+/// Allocate the preferred-base extent from the kernel VM arena, map/protect the
+/// image, and invoke DriverEntry. Failed loads release the exact allocated extent.
+pub unsafe fn load_allocated(file:&[u8],driver_object:*mut DriverObject,context:*mut c_void)->Result<LoadedDriver,DriverLoadError>{
+ if file.len()<0x40||u16at(file,0)?!=0x5a4d{return Err(DriverLoadError::BadDosHeader);}
+ let nt=u32at(file,0x3c)? as usize;
+ if file.get(nt..nt.checked_add(4).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?!=b"PE\\0\\0"{return Err(DriverLoadError::BadPeSignature);}
+ let opt=nt.checked_add(4+20).ok_or(DriverLoadError::InvalidHeader)?;
+ if u16at(file,nt+4)?!=0x8664||u16at(file,opt)?!=0x20b{return Err(DriverLoadError::WrongMachine);}
+ let base=u64at(file,opt+24)?;let size=u32at(file,opt+56)? as usize;
+ if size==0||size>MAX_IMAGE_SIZE{return Err(DriverLoadError::ImageTooLarge);}
+ let pages=size.checked_add(4095).ok_or(DriverLoadError::InvalidHeader)?/4096;
+ let mapped=crate::kernel_vm::allocate_pages_at(base,pages).map_err(|_|DriverLoadError::NoMemory)?;
+ let image=unsafe{core::slice::from_raw_parts_mut(mapped,size)};
+ match unsafe{load(file,image,base,driver_object,context)}{
+  Ok(driver)=>Ok(driver),
+  Err(error)=>{let _=crate::kernel_vm::free_pages(mapped,pages);Err(error)}
+ }
 }
