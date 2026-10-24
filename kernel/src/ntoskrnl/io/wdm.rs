@@ -77,7 +77,7 @@ pub struct IoStackLocation {
 struct DeviceSlot { used: bool, deleting: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
-struct IrpSlot { used: bool, object: Irp, stack: [IoStackLocation;16] }
+struct IrpSlot { used: bool, owned_mdl: *mut c_void, object: Irp, stack: [IoStackLocation;16] }
 unsafe impl Send for IrpSlot {}
 struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WDM_IRPS] }
 impl WdmState {
@@ -92,7 +92,7 @@ impl WdmState {
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16] } }; MAX_WDM_IRPS],
+   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16] } }; MAX_WDM_IRPS],
   }
  }
 }
@@ -192,8 +192,15 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
  if irp.is_null(){return}
- let mut state=WDM.lock();
- if let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) {slot.object.bytes.fill(0);slot.used=false;}
+ let owned_mdl={
+  let mut state=WDM.lock();
+  let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+  let mdl=slot.owned_mdl;
+  slot.owned_mdl=ptr::null_mut();
+  slot.object.bytes.fill(0);slot.used=false;
+  mdl
+ };
+ if !owned_mdl.is_null(){unsafe{crate::ntoskrnl::mm::runtime::mm_free_mdl(owned_mdl);}}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_get_current_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
@@ -620,13 +627,24 @@ pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
 )->*mut Irp {
  if device.is_null()||io_status.is_null()||(major!=3&&major!=4)||(length!=0&&buffer.is_null()){return ptr::null_mut()}
  let (stack_size,flags)={let state=WDM.lock();let Some(slot)=state.devices.iter().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};(slot.object.stack_size,slot.object.flags)};
- // DO_BUFFERED_IO=0x4 and DO_DIRECT_IO=0x2 need their respective buffer/MDL paths.
- if flags&0x6!=0{return ptr::null_mut()}
+ // Buffered I/O requires a dedicated system-buffer pool, so fail closed.
+ if flags&0x4!=0{return ptr::null_mut()}
  let offset=if starting_offset.is_null(){0}else{unsafe{starting_offset.read_unaligned()}};
  let irp=unsafe{io_allocate_irp(stack_size as i16,0)};
  if irp.is_null(){return ptr::null_mut()}
  let next=unsafe{io_get_next_irp_stack_location(irp)};
  if next.is_null(){unsafe{io_free_irp(irp)};return ptr::null_mut()}
+ let mut owned_mdl=ptr::null_mut();
+ if flags&0x2!=0 {
+  owned_mdl=unsafe{io_allocate_mdl(buffer,length,0,0,irp)};
+  if owned_mdl.is_null(){unsafe{io_free_irp(irp)};return ptr::null_mut()}
+  // A READ writes into the caller's buffer; a WRITE reads from it.
+  unsafe{crate::ntoskrnl::mm::runtime::mm_probe_and_lock_pages(owned_mdl,0,if major==3{1}else{0});}
+  let mdl_flags=unsafe{ptr::read_unaligned(owned_mdl.cast::<u8>().add(0x0a).cast::<i16>())};
+  if mdl_flags&0x0002==0 {unsafe{io_free_mdl(owned_mdl);io_free_irp(irp);}return ptr::null_mut()}
+  let mut state=WDM.lock();
+  if let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)){slot.owned_mdl=owned_mdl;}
+ }
  unsafe{
   (*next).major_function=major as u8;
   (*next).parameters[0]=length as u64;
@@ -637,6 +655,80 @@ pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
  }
  irp
+}
+
+
+/// Allocate an MDL descriptor and optionally link it into an IRP's MDL chain.
+/// Page locking is deliberately separate, matching MmProbeAndLockPages.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_allocate_mdl(
+ base:*mut c_void,length:u32,secondary_buffer:u8,charge_quota:u8,irp:*mut Irp
+)->*mut c_void {
+ if base.is_null()||length==0||secondary_buffer>1||charge_quota!=0{return ptr::null_mut()}
+ if !irp.is_null() {
+  let valid={let state=WDM.lock();state.irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp))};
+  if !valid{return ptr::null_mut()}
+ }
+ let mdl=unsafe{crate::ntoskrnl::mm::runtime::mm_create_mdl(ptr::null_mut(),base,length as u64)};
+ if mdl.is_null(){return ptr::null_mut()}
+ if !irp.is_null() {
+  let mut state=WDM.lock();
+  let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else {
+   unsafe{crate::ntoskrnl::mm::runtime::mm_free_mdl(mdl);}
+   return ptr::null_mut()
+  };
+  let head=unsafe{read_ptr(slot.object.bytes.as_ptr(),0x08)};
+  if secondary_buffer==0 {
+   unsafe{write_ptr(mdl.cast(),0,head);}
+   unsafe{write_ptr(slot.object.bytes.as_mut_ptr(),0x08,mdl);}
+  } else if head.is_null() {
+   unsafe{write_ptr(slot.object.bytes.as_mut_ptr(),0x08,mdl);}
+  } else {
+   let mut tail=head;
+   let mut found=false;
+   for _ in 0..64 {
+    let next=unsafe{read_ptr(tail.cast(),0)};
+    if next.is_null(){unsafe{write_ptr(tail.cast(),0,mdl);}found=true;break}
+    tail=next;
+   }
+   if !found {
+    drop(state);
+    unsafe{crate::ntoskrnl::mm::runtime::mm_free_mdl(mdl);}
+    return ptr::null_mut()
+   }
+  }
+ }
+ mdl
+}
+
+/// Unlink and free an MDL allocated by IoAllocateMdl.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_free_mdl(mdl:*mut c_void) {
+ if mdl.is_null(){return}
+ {
+  let mut state=WDM.lock();
+  for slot in state.irps.iter_mut().filter(|s|s.used) {
+   if slot.owned_mdl==mdl {slot.owned_mdl=ptr::null_mut();}
+   let mut head=unsafe{read_ptr(slot.object.bytes.as_ptr(),0x08)};
+   if head==mdl {
+    head=unsafe{read_ptr(mdl.cast(),0)};
+    unsafe{write_ptr(slot.object.bytes.as_mut_ptr(),0x08,head);}
+    continue
+   }
+   let mut cursor=head;
+   for _ in 0..64 {
+    if cursor.is_null(){break}
+    let next=unsafe{read_ptr(cursor.cast(),0)};
+    if next==mdl {
+     let after=unsafe{read_ptr(mdl.cast(),0)};
+     unsafe{write_ptr(cursor.cast(),0,after);}
+     break
+    }
+    cursor=next;
+   }
+  }
+ }
+ unsafe{crate::ntoskrnl::mm::runtime::mm_free_mdl(mdl);}
 }
 
 
