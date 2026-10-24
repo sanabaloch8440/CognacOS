@@ -4,6 +4,7 @@
 extern crate alloc;
 
 mod elf;
+mod pe;
 mod sha256;
 
 include!(concat!(env!("OUT_DIR"), "/kernel_digest.rs"));
@@ -14,7 +15,7 @@ use uefi::mem::memory_map::MemoryMap;
 use uefi::proto::media::file::{File, FileAttribute, FileMode};
 use uefi::{boot, cstr16};
 
-const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.elf");
+const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.exe");
 const MAX_KERNEL_FILE: usize = 32 * 1024 * 1024;
 const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
@@ -46,7 +47,7 @@ fn main() -> Status {
     if let Err(error) = uefi::helpers::init() { return error.status(); }
     let image_handle = boot::image_handle();
     uefi::println!("RdotOS Rust UEFI bootloader");
-    uefi::println!("Opening kernel ELF: \\EFI\\BOOT\\rdotos-kernel.elf");
+    uefi::println!("Opening PE32+ kernel image: \\EFI\\BOOT\\rdotos-kernel.exe");
 
     let mut fs = match boot::get_image_file_system(image_handle) {
         Ok(fs) => fs,
@@ -58,7 +59,7 @@ fn main() -> Status {
     };
     let handle = match root.open(KERNEL_PATH, FileMode::Read, FileAttribute::empty()) {
         Ok(file) => file,
-        Err(err) => { uefi::println!("Cannot open kernel ELF: {:?}", err); return err.status(); }
+        Err(err) => { uefi::println!("Cannot open PE32+ kernel image: {:?}", err); return err.status(); }
     };
     let mut kernel_file = match handle.into_regular_file() {
         Some(file) => file,
@@ -71,7 +72,7 @@ fn main() -> Status {
     let mut used = 0usize;
     loop {
         if used == image.len() {
-            uefi::println!("Kernel ELF exceeds the 32 MiB limit");
+            uefi::println!("Kernel PE image exceeds the 32 MiB limit");
             return Status::BAD_BUFFER_SIZE;
         }
         match kernel_file.read(&mut image[used..]) {
@@ -95,17 +96,17 @@ fn main() -> Status {
     drop(root);
     drop(fs);
 
-    uefi::println!("Read {} bytes; validating ELF64 headers and load segments", image.len());
-    let loaded_kernel = match unsafe { elf::load(&image) } {
+    uefi::println!("Read {} bytes; validating PE32+ headers and sections", image.len());
+    let loaded_kernel = match unsafe { pe::load(&image) } {
         Ok(kernel) => kernel,
-        Err(err) => { uefi::println!("Rejected kernel ELF: {:?}", err); return Status::LOAD_ERROR; }
+        Err(err) => { uefi::println!("Rejected kernel PE32+ image: {:?}", err); return Status::LOAD_ERROR; }
     };
     let entry = loaded_kernel.entry;
     // No heap-backed value or protocol handle may be dropped after this point.
     // Leak the file buffer so allocator cleanup cannot call boot services.
     core::mem::forget(image);
 
-    uefi::println!("Kernel segments loaded; entry = {:#x}", entry);
+    uefi::println!("PE32+ kernel sections loaded; entry = {:#x}", entry);
     let stack = match boot::allocate_pages(
         boot::AllocateType::MaxAddress(0xffff_ffff),
         boot::MemoryType::LOADER_DATA,
