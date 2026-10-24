@@ -1184,7 +1184,12 @@ pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
     EXPECTED_PROTECTION_RECOVERY.store(rdotos_fault_probe_write_ro_recovery as *const () as u64,
         core::sync::atomic::Ordering::Relaxed);
     EXPECTED_PROTECTION_FAULT.store(1, core::sync::atomic::Ordering::Release);
+    let original_byte = unsafe { core::ptr::read_volatile(read_only_executable_address as *const u8) };
     let write_result = unsafe { rdotos_fault_probe_write_ro(read_only_executable_address as *mut u8) };
+    if write_result != 0 {
+        // If protection is broken, restore the byte before reporting failure.
+        unsafe { core::ptr::write_volatile(read_only_executable_address as *mut u8, original_byte); }
+    }
     let write_ok = write_result == 0
         && OBSERVED_PROTECTION_FAULT.swap(0, core::sync::atomic::Ordering::AcqRel) == 1
         && EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire) == 0;
