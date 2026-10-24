@@ -476,3 +476,7 @@ mod wdm_abi_tests {
         assert_eq!(core::mem::size_of::<DeviceObject>(), 336);
     }
 }
+
+
+#[path = "wdm.rs"] mod wdm;
+pub use wdm::*;
