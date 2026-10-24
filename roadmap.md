@@ -31,7 +31,9 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Require DMA MDLs to be locked or sourced from nonpaged pool before exposing physical addresses through map-transfer and scatter/gather paths.
 - [x] Refuse identity-mapped DMA when firmware exposes an ACPI DMAR table; this remains a safe refusal, not VT-d/IOMMU support.
 - [x] Add device-object reference tracking, remove-lock rundown, deferred device deletion, and serialized D-state transition bookkeeping in the I/O manager; move the `PoSetPowerState` / `PoStartNextPowerIrp` ABI implementation and the Po export catalogue into `ntoskrnl/po`.
-- [ ] Connect `ntoskrnl/po` state tracking to actual `IRP_MJ_POWER` dispatch, PnP start/stop/remove sequencing, scheduler-backed waits, and asynchronous completion.
+- [x] Route `IRP_MJ_POWER` set/query requests through driver major-function dispatch; serialize device/system power transitions, commit state only after success, and retain device references across pending IRPs.
+- [x] Add bounded `PoRequestPowerIrp` allocation/dispatch/callback handling and basic PnP start/query-stop/cancel/stop/remove/surprise-remove lifecycle sequencing with success-only commits.
+- [ ] Complete system-wide device power ordering, wait/wake, idle policy, power IRP cancellation, scheduler-backed waits, and full PnP relations/resources/capabilities semantics; current PnP tracking is not a complete bus-enumeration framework.
 - [ ] Replace direct-physical DMA with IOMMU-backed logical mappings, DMA-safe common buffers, correct map-register accounting, and transfer lifetime tied to IRP cancellation/completion.
 - [ ] Implement a complete Object Manager (typed objects, namespaces, handles, access checks, security descriptors, and generic reference/dereference semantics) before claiming third-party Windows driver compatibility.
 
