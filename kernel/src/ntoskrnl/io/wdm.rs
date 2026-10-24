@@ -43,17 +43,19 @@ pub struct DriverObject {
     pub driver_start_io: *mut c_void, pub driver_unload: Option<DriverUnload>,
     pub major_function: [Option<DriverDispatch>; 28],
 }
-#[repr(C)]
+#[repr(C, align(16))]
 pub struct DeviceObject {
     pub object_type: i16, pub size: u16, pub reference_count: i32,
     pub driver_object: *mut DriverObject, pub next_device: *mut DeviceObject,
     pub attached_device: *mut DeviceObject, pub current_irp: *mut Irp,
     pub timer: *mut c_void, pub flags: u32, pub characteristics: u32,
     pub vpb: *mut c_void, pub device_extension: *mut c_void,
-    pub device_type: u32, pub stack_size: u8, pub queue_padding: [u8; 7],
-    pub queue: [usize; 4], pub alignment_requirement: u32,
-    pub device_queue: [usize; 6], pub dpc: [usize; 8],
-    pub device_object_extension: *mut c_void, pub reserved: *mut c_void, pub reserved_tail: [u8; 80],
+    pub device_type: u32, pub stack_size: u8, pub queue_padding: [u8; 3],
+    pub queue: [u8; 0x48], pub alignment_requirement: u32, pub device_queue_padding: [u8; 4],
+    pub device_queue: [u8; 0x28], pub dpc: [u8; 0x40], pub active_thread_count: u32,
+    pub security_descriptor: *mut c_void, pub device_lock: [u8; 0x18],
+    pub sector_size: u16, pub spare1: u16, pub device_object_extension: *mut c_void,
+    pub reserved: *mut c_void,
 }
 /// Opaque storage for the x64 WDK IRP. Fields used here are accessed by their
 /// documented x64 offsets to avoid pretending that Rust's high-level fields
@@ -82,8 +84,10 @@ impl WdmState {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
-    device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;7],queue:[0;4],
-    alignment_requirement:0,device_queue:[0;6],dpc:[0;8],device_object_extension:ptr::null_mut(),reserved:ptr::null_mut(),reserved_tail:[0;80]
+    device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],
+    alignment_requirement:0,device_queue_padding:[0;4],device_queue:[0;0x28],dpc:[0;0x40],active_thread_count:0,
+    security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
+    device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
    irps: [const { IrpSlot { used:false, object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16] } }; MAX_WDM_IRPS],
   }
@@ -113,7 +117,7 @@ pub unsafe extern "system" fn io_create_device(
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
  slot.used=true;slot.deleting=false;
  slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
- slot.object.size=core::mem::size_of::<DeviceObject>() as u16;
+ slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
  slot.object.device_extension=if extension_size==0 {ptr::null_mut()} else {slot.extension.as_mut_ptr().cast()};
  slot.object.stack_size=1;
  slot.object.next_device=unsafe{(*driver).device_object};
@@ -263,6 +267,11 @@ mod wdm_tests {
   assert_eq!(core::mem::offset_of!(DeviceObject,driver_object),8);
   assert_eq!(core::mem::offset_of!(DeviceObject,device_extension),64);
   assert_eq!(core::mem::offset_of!(DeviceObject,stack_size),76);
+  assert_eq!(core::mem::offset_of!(DeviceObject,queue),0x50);
+  assert_eq!(core::mem::offset_of!(DeviceObject,alignment_requirement),0x98);
+  assert_eq!(core::mem::offset_of!(DeviceObject,device_queue),0xA0);
+  assert_eq!(core::mem::offset_of!(DeviceObject,dpc),0xC8);
+  assert_eq!(core::mem::offset_of!(DeviceObject,device_object_extension),0x138);
   assert_eq!(core::mem::size_of::<DeviceObject>(),0x150);
   assert_eq!(core::mem::size_of::<Irp>(),IRP_SIZE_X64);
   assert_eq!(core::mem::size_of::<DeviceObject>(),0x150);
@@ -299,6 +308,7 @@ mod wdm_tests {
   assert_eq!(status,STATUS_SUCCESS);
   assert!(!device.is_null());
   assert_eq!(unsafe{(*device).device_extension.is_null()},false);
+  assert_eq!(unsafe{(*device).size},(core::mem::size_of::<DeviceObject>()+32) as u16);
   assert_eq!(driver.device_object,device);
   unsafe{io_delete_device(device);}
   assert!(driver.device_object.is_null());
