@@ -234,7 +234,7 @@ pub fn open_by_pointer(body:*mut c_void,desired:u32,owner:usize,kernel_mode:bool
  let hi=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].handles+=1;let g=s.handles[hi].generation.max(1);s.handles[hi]=HandleEntry{used:true,generation:g,object:i,owner:if attrs&OBJ_KERNEL_HANDLE!=0{usize::MAX}else{owner},access:granted,attributes:attrs};audit_locked(s,s.objects[i].body,owner,2,desired,granted,STATUS_SUCCESS);Ok(encode_handle(hi,g))
 }
 pub fn reference_by_handle(h:*mut c_void,desired:u32,expected_type:u16,owner:usize,kernel_mode:bool)->Result<*mut c_void,i32>{
- let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,owner).ok_or(STATUS_INVALID_HANDLE)?;let e=s.handles[hi];let o=s.objects.get(e.object).ok_or(STATUS_INVALID_HANDLE)?;if !o.used||o.deleting{return Err(STATUS_INVALID_HANDLE)}if expected_type!=0&&o.type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
+ let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,owner).ok_or(STATUS_INVALID_HANDLE)?;let e=s.handles[hi];if e.owner==usize::MAX&&!kernel_mode{return Err(STATUS_INVALID_HANDLE)}let o=s.objects.get(e.object).ok_or(STATUS_INVALID_HANDLE)?;if !o.used||o.deleting{return Err(STATUS_INVALID_HANDLE)}if expected_type!=0&&o.type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
  let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let mapped=if desired&MAXIMUM_ALLOWED!=0{e.access}else{map_access(&t,desired)};if mapped&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}if !kernel_mode&&!access_check(s,o,mapped,owner){return Err(STATUS_ACCESS_DENIED)}let body=o.body as *mut c_void;
  let s=state();s.objects[e.object].refs=s.objects[e.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,owner,3,desired,desired,STATUS_SUCCESS);let _=t;Ok(body)
 }
@@ -310,7 +310,7 @@ pub unsafe extern "win64" fn ObInsertObject(object:*mut c_void,access_state:*mut
   if s.objects[i].name_len!=0&&find_name(s,&s.objects[i].name[..s.objects[i].name_len as usize]).is_some(){return STATUS_OBJECT_NAME_COLLISION}
   s.objects[i].inserted=true;
  }
- match open_by_pointer(object,desired_access,0,true,0){
+ match open_by_pointer(object,desired_access,current_owner(),true,0){
   Ok(h)=>{if !new_object.is_null(){unsafe{new_object.write(object)}}unsafe{out_handle.write(h)}
    for _ in 0..pointer_bias{if reference_body(object,0,0,true).is_err(){let _=close_handle(h,usize::MAX);return STATUS_INSUFFICIENT_RESOURCES;}}STATUS_SUCCESS},
   Err(e)=>{let _g=LOCK.lock();let s=state();if let Some(i)=raw_object_idx(s,object as usize){s.objects[i].inserted=false;}e}
@@ -350,10 +350,10 @@ pub unsafe extern "win64" fn ObfDereferenceObject(object:*mut c_void){let _=dere
 pub unsafe extern "win64" fn ObReferenceObjectByHandle(handle:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8,out_object:*mut *mut c_void,_handle_information:*mut u32)->i32{
  if out_object.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out_object.write(core::ptr::null_mut())}
  let expected=match expected_type_id(object_type){Some(v)=>v,None=>return STATUS_OBJECT_TYPE_MISMATCH};
- match reference_by_handle(handle,desired_access,expected,0,access_mode==0){Ok(o)=>{unsafe{out_object.write(o)}STATUS_SUCCESS},Err(e)=>e}
+ match reference_by_handle(handle,desired_access,expected,current_owner(),access_mode==0){Ok(o)=>{unsafe{out_object.write(o)}STATUS_SUCCESS},Err(e)=>e}
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn ObCloseHandle(handle:*mut c_void,previous_mode:u8)->i32{close_handle(handle,if previous_mode==0{usize::MAX}else{0}).map_or_else(|e|e,|_|STATUS_SUCCESS)}
+pub unsafe extern "win64" fn ObCloseHandle(handle:*mut c_void,previous_mode:u8)->i32{close_handle(handle,if previous_mode==0{current_owner()}else{current_owner()}).map_or_else(|e|e,|_|STATUS_SUCCESS)}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObGetObjectType(object:*mut c_void)->*mut ObjectType{object_type(object)}
 #[unsafe(no_mangle)]
@@ -372,7 +372,7 @@ pub unsafe extern "win64" fn ObOpenObjectByPointer(object:*mut c_void,handle_att
  let expected=match expected_type_id(object_type){Some(v)=>v,None=>return STATUS_OBJECT_TYPE_MISMATCH};
  let actual={let _g=LOCK.lock();let s=state();object_idx(s,object as usize).map(|i|s.objects[i].type_id)};
  if (expected!=0&&actual!=Some(expected))||object.is_null(){return STATUS_OBJECT_TYPE_MISMATCH}
- match open_by_pointer(object,desired_access,0,access_mode==0,handle_attributes){Ok(h)=>{unsafe{out_handle.write(h)}STATUS_SUCCESS},Err(e)=>e}
+ match open_by_pointer(object,desired_access,current_owner(),access_mode==0,handle_attributes){Ok(h)=>{unsafe{out_handle.write(h)}STATUS_SUCCESS},Err(e)=>e}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObReferenceObjectByName(name:*const UnicodeString,attributes:u32,passed_access_state:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8,parse_context:*mut c_void,out_object:*mut *mut c_void)->i32{
@@ -450,7 +450,7 @@ pub unsafe extern "win64" fn ZwCreateDirectoryObject(out:*mut *mut c_void,desire
 pub unsafe extern "win64" fn ZwOpenDirectoryObject(out:*mut *mut c_void,desired_access:u32,oa:*const ObjectAttributes)->i32{
  if out.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out.write(core::ptr::null_mut())}
  let mut name=[0u16;MAX_NAME];let n=match unsafe{resolve_attributes_name(oa,&mut name)}{Ok(n)=>n,Err(e)=>return e};
- match open_by_name(&name[..n],desired_access,0,true,0){Ok(h)=>{let dir=ensure_type(&[b'D' as u16,b'i' as u16,b'r' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'o' as u16,b'r' as u16,b'y' as u16],1,2,4,7,u32::MAX);if let Ok(ty)=dir{if let Ok(body)=reference_by_handle(h,0,ty,current_owner(),true){let _=dereference_body(body);unsafe{out.write(h)}return STATUS_SUCCESS}}let _=close_handle(h,0);STATUS_OBJECT_TYPE_MISMATCH},Err(e)=>e}
+ match open_by_name(&name[..n],desired_access,current_owner(),true,0){Ok(h)=>{let dir=ensure_type(&[b'D' as u16,b'i' as u16,b'r' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'o' as u16,b'r' as u16,b'y' as u16],1,2,4,7,u32::MAX);if let Ok(ty)=dir{if let Ok(body)=reference_by_handle(h,0,ty,current_owner(),true){let _=dereference_body(body);unsafe{out.write(h)}return STATUS_SUCCESS}}let _=close_handle(h,current_owner());STATUS_OBJECT_TYPE_MISMATCH},Err(e)=>e}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwClose(handle:*mut c_void)->i32{close_handle(handle,current_owner()).map_or_else(|e|e,|_|STATUS_SUCCESS)}
