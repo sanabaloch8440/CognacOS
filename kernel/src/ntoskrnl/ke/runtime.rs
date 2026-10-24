@@ -695,6 +695,62 @@ mod tests {
         assert_eq!(number.reserved, 0);
         assert_eq!(unsafe { ke_get_current_processor_number_ex(core::ptr::null_mut()) }, index);
     }
+
+    #[test]
+    fn executive_queue_fifo_lifo_and_rundown() {
+        let mut queue=core::mem::MaybeUninit::<ExecutiveQueue>::uninit();
+        unsafe{ke_initialize_queue(queue.as_mut_ptr(),2);}
+        let queue=unsafe{&mut *queue.as_mut_ptr()};
+        let mut first=ListEntry{flink:core::ptr::null_mut(),blink:core::ptr::null_mut()};
+        let mut second=ListEntry{flink:core::ptr::null_mut(),blink:core::ptr::null_mut()};
+        assert_eq!(unsafe{ke_insert_queue(queue,&mut first)},0);
+        assert_eq!(unsafe{ke_insert_head_queue(queue,&mut second)},1);
+        assert_eq!(queue.header.signal_state,2);
+        let no_wait=0i64;
+        assert!(core::ptr::eq(unsafe{ke_remove_queue(queue,0,&no_wait)},&mut second));
+        assert!(core::ptr::eq(unsafe{ke_remove_queue(queue,0,&no_wait)},&mut first));
+        assert_eq!(queue.header.signal_state,0);
+        assert!(unsafe{ke_rundown_queue(queue)}.is_null());
+    }
+
+    static DPC_TEST_COUNT:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+    unsafe extern "win64" fn dpc_test_routine(_: *mut core::ffi::c_void,_: *mut core::ffi::c_void,_: *mut core::ffi::c_void,_: *mut core::ffi::c_void){
+        DPC_TEST_COUNT.fetch_add(1,Ordering::AcqRel);
+    }
+    #[test]
+    fn dpc_queue_rejects_duplicates_and_runs_once(){
+        let mut object=0u64;
+        let dpc=(&mut object as *mut u64).cast::<core::ffi::c_void>();
+        DPC_TEST_COUNT.store(0,Ordering::Release);
+        let cpu=cpu_slot();let prior=CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL,Ordering::AcqRel);
+        unsafe{ke_initialize_dpc(dpc,Some(dpc_test_routine),core::ptr::null_mut());}
+        assert_eq!(unsafe{ke_insert_queue_dpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())},1);
+        assert_eq!(unsafe{ke_insert_queue_dpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())},0);
+        CURRENT_IRQL[cpu].store(prior,Ordering::Release);
+        unsafe{ke_flush_queued_dpcs();}
+        assert_eq!(DPC_TEST_COUNT.load(Ordering::Acquire),1);
+        assert_eq!(unsafe{ke_remove_queue_dpc(dpc)},0);
+    }
+
+    #[test]
+    fn timer_object_expires_and_signals(){
+        let mut storage=core::mem::MaybeUninit::<DispatcherHeader>::uninit();
+        let timer=storage.as_mut_ptr();
+        unsafe{ke_initialize_timer(timer);}
+        assert_eq!(unsafe{ke_read_state_timer(timer)},0);
+        assert_eq!(unsafe{ke_set_timer(timer,0,core::ptr::null_mut())},0);
+        timer_tick(crate::apic::monotonic_ticks());
+        assert_eq!(unsafe{ke_read_state_timer(timer)},1);
+        assert_eq!(unsafe{ke_cancel_timer(timer)},0);
+    }
+
+    #[test]
+    fn mutant_initial_state_is_signalled(){
+        let mut storage=core::mem::MaybeUninit::<DispatcherHeader>::uninit();
+        let mutant=storage.as_mut_ptr();
+        unsafe{ke_initialize_mutant(mutant,0);}
+        assert_eq!(unsafe{ke_read_state_mutant(mutant)},1);
+    }
 }
 
 
