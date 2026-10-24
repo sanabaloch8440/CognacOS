@@ -36,7 +36,7 @@ pub fn submit(device_id:u32,major:u8,user_buffer:u64,length:usize)->Result<u64,I
 /// Expiry is enforced before dispatch and when an asynchronous completion arrives.
 pub fn submit_with_timeout(device_id:u32,major:u8,user_buffer:u64,length:usize,timeout_ticks:Option<u64>)->Result<u64,IoError>{
  if major as usize>=16{return Err(IoError::InvalidMajor);}if length>MAX_IRP_BYTES{return Err(IoError::BufferTooLarge);}
- let now=crate::apic::monotonic_ticks();
+ let now=crate::hal::query_performance_counter();
  let deadline=match timeout_ticks{Some(0)=>now,Some(t)=>now.checked_add(t).ok_or(IoError::BufferTooLarge)?,None=>0};
  let mut s=STATE.lock();
  if !s.devices.iter().any(|d|d.used&&d.id==device_id){return Err(IoError::UnknownDevice);}
@@ -47,7 +47,7 @@ pub fn submit_with_timeout(device_id:u32,major:u8,user_buffer:u64,length:usize,t
 /// Expire requests that have not yet been claimed by a driver. In-flight
 /// hardware operations require a driver-specific cancellation protocol.
 pub fn expire_timeouts()->usize{
- let now=crate::apic::monotonic_ticks();let mut count=0;
+ let now=crate::hal::query_performance_counter();let mut count=0;
  let mut s=STATE.lock();
  for irp in s.irps.iter_mut(){
   if irp.status==IoStatus::Pending&&!irp.completed&&!irp.in_flight&&irp.deadline_tick!=0&&now>=irp.deadline_tick{
@@ -73,7 +73,7 @@ pub fn dispatch_one(irp_id:u64)->Result<IoStatus,IoError>{
   let index=s.irps.iter().position(|i|i.id==irp_id&&i.status!=IoStatus::Free).ok_or(IoError::UnknownIrp)?;
   if s.irps[index].completed{return Err(IoError::AlreadyCompleted);}
   if s.irps[index].in_flight{return Err(IoError::AlreadyInFlight);}
-  if s.irps[index].deadline_tick!=0&&crate::apic::monotonic_ticks()>=s.irps[index].deadline_tick{
+  if s.irps[index].deadline_tick!=0&&crate::hal::query_performance_counter()>=s.irps[index].deadline_tick{
    s.irps[index].status=IoStatus::TimedOut;s.irps[index].completed=true;s.irps[index].information=0;return Ok(IoStatus::TimedOut);
   }
   let d=s.devices.iter().find(|d|d.used&&d.id==s.irps[index].device_id).ok_or(IoError::UnknownDevice)?;
@@ -95,7 +95,7 @@ pub fn complete_irp(id:u64,status:IoStatus,information:usize)->Result<(),IoError
  let irp=s.irps.iter_mut().find(|i|i.id==id&&i.status!=IoStatus::Free).ok_or(IoError::UnknownIrp)?;
  if irp.completed{return Err(IoError::AlreadyCompleted);}
  if !irp.in_flight{return Err(IoError::NotCancellable);}
- if irp.deadline_tick!=0&&crate::apic::monotonic_ticks()>=irp.deadline_tick{
+ if irp.deadline_tick!=0&&crate::hal::query_performance_counter()>=irp.deadline_tick{
   irp.information=0;irp.status=IoStatus::TimedOut;irp.completed=true;irp.in_flight=false;return Ok(())
  }
  if information>irp.length{return Err(IoError::BufferTooLarge);}
@@ -132,7 +132,7 @@ pub fn try_remove_completion_packet(port_id:u32)->Result<Option<CompletionPacket
 /// retries with dispatcher waits instead of busy-spinning in kernel context.
 pub fn remove_completion_packet_until(port_id:u32,deadline_tick:Option<u64>)->Result<Option<CompletionPacket>,IoError>{
  if let Some(packet)=try_remove_completion_packet(port_id)?{return Ok(Some(packet))}
- if deadline_tick.is_some_and(|deadline|crate::apic::monotonic_ticks()>=deadline){return Ok(None)}
+ if deadline_tick.is_some_and(|deadline|crate::hal::query_performance_counter()>=deadline){return Ok(None)}
  Ok(None)
 }
 
@@ -142,7 +142,7 @@ pub fn remove_completion_packet_until(port_id:u32,deadline_tick:Option<u64>)->Re
 pub fn complete_irp_to_port(id:u64,status:IoStatus,information:usize,port_id:u32,key:u64,apc_context:u64)->Result<(),IoError>{
  complete_irp(id,status,information)?;
  let irp=query_irp(id).ok_or(IoError::UnknownIrp)?;
- post_completion_packet(port_id,CompletionPacket{key,apc_context,irp_id:id,status:irp.status,information:irp.information,completed_at:crate::apic::monotonic_ticks()})
+ post_completion_packet(port_id,CompletionPacket{key,apc_context,irp_id:id,status:irp.status,information:irp.information,completed_at:crate::hal::query_performance_counter()})
 }
 
 pub fn query_irp(id:u64)->Option<Irp>{
