@@ -161,6 +161,8 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  slot.object.attached_device=ptr::null_mut();
  slot.attached_to=ptr::null_mut();
  slot.used=false;slot.deleting=false;
+ drop(state);
+ unsafe{io_unregister_file_system(device);}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->*mut Irp {
