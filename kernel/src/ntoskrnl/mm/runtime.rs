@@ -207,6 +207,11 @@ pub unsafe extern "win64" fn mm_build_mdl_for_non_paged_pool(mdl: *mut c_void) {
         Some(n) => n,
         None => return,
     };
+    let required_size = match MDL_HEADER_SIZE.checked_add(pfn_bytes) {
+        Some(n) => n,
+        None => return,
+    };
+    if header.size < 0 || (header.size as u64) < required_size { return; }
     let pfn_start = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
     let pfn_end = match pfn_start.checked_add(pfn_bytes) { Some(v) => v, None => return };
     if pfn_end < pfn_start { return; }
