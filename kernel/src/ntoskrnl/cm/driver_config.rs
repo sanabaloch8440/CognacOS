@@ -15,7 +15,7 @@ pub fn query_service<'h,'b>(hive:&'h Hive<'h>,service_name:&[u16],path_buf:&'b m
  let select=hive.find_path(&select_path[..sn])?;
  let current=dword(select,&[67,117,114,114,101,110,116])?;
  if current==0||current>999{return Err(Error::InvalidImagePath)}
- let control_name=if current<10{let mut b=[0u16;12];let n=utf16_ascii("ControlSet00",&mut b)?;b[n]=b'0' as u16+current as u16;(b,n+1)}else if current<100{let mut b=[0u16;12];let n=utf16_ascii("ControlSet0",&mut b)?;b[n]=b'0' as u16+(current/10) as u16;b[n+1]=b'0' as u16+(current%10) as u16;(b,n+2)}else{let mut b=[0u16;12];let n=utf16_ascii("ControlSet",&mut b)?;b[n]=b'0' as u16+(current/100) as u16;b[n+1]=b'0' as u16+((current/10)%10) as u16;b[n+2]=b'0' as u16+(current%10) as u16;(b,n+3)};
+ let control_name=if current<10{let mut b=[0u16;16];let n=utf16_ascii("ControlSet00",&mut b)?;b[n]=b'0' as u16+current as u16;(b,n+1)}else if current<100{let mut b=[0u16;16];let n=utf16_ascii("ControlSet0",&mut b)?;b[n]=b'0' as u16+(current/10) as u16;b[n+1]=b'0' as u16+(current%10) as u16;(b,n+2)}else{let mut b=[0u16;16];let n=utf16_ascii("ControlSet",&mut b)?;b[n]=b'0' as u16+(current/100) as u16;b[n+1]=b'0' as u16+((current/10)%10) as u16;b[n+2]=b'0' as u16+(current%10) as u16;(b,n+3)};
  let mut path=[0u16;256];let mut n=0;
  for c in control_name.0[..control_name.1].iter().copied().chain("\\Services\\".encode_utf16()).chain(service_name.iter().copied()){if n==path.len(){return Err(Error::InvalidImagePath)}path[n]=c;n+=1;}
  let key=hive.find_path(&path[..n]).map_err(|e|if e==HiveError::NotFound{Error::MissingService}else{Error::Hive(e)})?;
