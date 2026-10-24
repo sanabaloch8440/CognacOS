@@ -241,6 +241,11 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
  }
 }
 #[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
+ if !irp.is_null() { unsafe { (*irp).bytes[0x41]=1; } }
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_set_completion_routine(
  irp:*mut Irp, routine:Option<IoCompletionRoutine>, context:*mut c_void,
  invoke_success:u8, invoke_error:u8, invoke_cancel:u8
