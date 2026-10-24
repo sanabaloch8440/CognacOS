@@ -26,12 +26,13 @@ impl<'a> Hive<'a>{
   let sequence_primary=u32at(bytes,4)?;let sequence_secondary=u32at(bytes,8)?;
   if sequence_primary!=sequence_secondary{return Err(Error::DirtyHive)}
   let major=u32at(bytes,0x14)?;let minor=u32at(bytes,0x18)?;
-  if major!=1||minor<3||minor>6{return Err(Error::UnsupportedVersion)}
+  if major!=1||minor<3||minor>6||u32at(bytes,0x20)?!=1{return Err(Error::UnsupportedVersion)}
   let bins_size=u32at(bytes,0x28)?;
   let root_cell=u32at(bytes,0x24)?;
   if bins_size<0x1000||bins_size as usize%0x1000!=0||BASE_BLOCK_SIZE.checked_add(bins_size as usize).ok_or(Error::InvalidHiveSize)?>bytes.len(){return Err(Error::InvalidHiveSize)}
   let stored=u32at(bytes,0x1fc)?;let mut checksum=0u32;for off in (0..0x1fc).step_by(4){checksum^=u32at(bytes,off)?;}
-  if checksum!=stored && !(checksum==0xffff_ffff&&stored==0xffff_ffff) && !(checksum==0&&stored==1){return Err(Error::BadChecksum)}
+  let expected=if checksum==0{1}else if checksum==u32::MAX{u32::MAX-1}else{checksum};
+  if expected!=stored{return Err(Error::BadChecksum)}
   let hive=Self{bytes,info:BaseInfo{root_cell,bins_size,major,minor,sequence_primary,sequence_secondary}};
   hive.validate_bins()?;hive.key(root_cell)?;Ok(hive)
  }
