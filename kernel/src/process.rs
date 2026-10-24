@@ -88,10 +88,13 @@ pub unsafe extern "win64" fn ps_lookup_process_by_process_id(
     const STATUS_SUCCESS: i32 = 0;
     const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
     const STATUS_NOT_FOUND: i32 = 0xC000_0225u32 as i32;
-    if process_out.is_null() || (process_out as u64) < 0xffff_8000_0000_0000
-        || crate::kernel_vm::is_pageable_address(process_out as u64)
+    let output = process_out as u64;
+    let Some(output_end) = output.checked_add(7) else { return STATUS_INVALID_PARAMETER; };
+    if process_out.is_null() || output < 0xffff_8000_0000_0000
+        || crate::kernel_vm::is_pageable_address(output)
+        || crate::kernel_vm::is_pageable_address(output_end)
         || unsafe { crate::ntoskrnl::mm::runtime::mm_is_non_paged_system_address_valid(process_out.cast()) } == 0
-        || unsafe { crate::ntoskrnl::mm::runtime::mm_is_non_paged_system_address_valid((process_out as u64 + 7) as *const core::ffi::c_void) } == 0 {
+        || unsafe { crate::ntoskrnl::mm::runtime::mm_is_non_paged_system_address_valid(output_end as *const core::ffi::c_void) } == 0 {
         return STATUS_INVALID_PARAMETER;
     }
     unsafe { process_out.write(core::ptr::null_mut()); }
