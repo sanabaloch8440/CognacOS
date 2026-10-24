@@ -264,7 +264,7 @@ pub fn timer_preemption_self_test()->bool{
     }
     crate::arch::set_interrupts_enabled(true);
     let mut spins=0usize;
-    while spins<10_000_000
+    while spins<100_000
         && (!PREEMPTION_TEST_BUSY_DONE.load(core::sync::atomic::Ordering::Acquire)
             ||!PREEMPTION_TEST_OBSERVED.load(core::sync::atomic::Ordering::Acquire)){
         let _=yield_current();
