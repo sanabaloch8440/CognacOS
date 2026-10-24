@@ -25,6 +25,7 @@ static IDLE_STACK_TOPS:[core::sync::atomic::AtomicU64;crate::hal::MAX_CPUS]=[con
 static STRESS_LOCK:IrqSpinLock<u64>=IrqSpinLock::new(0);
 static STRESS_COMPLETED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static STRESS_CPU_MASK:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static STRESS_FAILURES:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static mut STRESS_STACKS:[[u8;8192];8]=[[0;8192];8];
 
 fn cpu_index()->Result<usize,ThreadError>{
@@ -288,14 +289,40 @@ pub fn initialize(){
     }
 }
 
-extern "C" fn lock_stress_worker(_argument:*mut c_void) {
+fn smp_stress_io_dispatch(irp:&mut crate::io::Irp)->crate::io::IoStatus{
+    irp.information=irp.length;
+    crate::io::IoStatus::Success
+}
+
+extern "C" fn lock_stress_worker(argument:*mut c_void) {
+    let device_id=argument as usize as u32;
     if let Ok(cpu)=cpu_index() {
         STRESS_CPU_MASK.fetch_or(1u64<<cpu,core::sync::atomic::Ordering::AcqRel);
     }
-    for _ in 0..256 {
+    for round in 0..256 {
         {
             let mut guard=STRESS_LOCK.lock();
             *guard=(*guard).wrapping_add(1);
+        }
+        if round%8==0 {
+            let irp=crate::io::submit(device_id,crate::io::IRP_MJ_READ,0,32);
+            match irp {
+                Ok(id)=>{
+                    let valid=crate::io::dispatch_one(id)==Ok(crate::io::IoStatus::Success)
+                        && matches!(crate::io::query_irp(id),Some(r) if r.completed&&!r.in_flight&&r.status==crate::io::IoStatus::Success)
+                        && crate::io::release_irp(id).is_ok();
+                    if !valid{STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);}
+                },
+                Err(_)=>{STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);}
+            }
+            match crate::object::create(crate::object::ObjectType::Event,0x1f) {
+                Ok(object)=>{
+                    if crate::object::close(object.handle).is_err(){
+                        STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
+                    }
+                },
+                Err(_)=>{STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);}
+            }
         }
         let _=yield_current();
     }
@@ -309,6 +336,13 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
     *STRESS_LOCK.lock()=0;
     STRESS_COMPLETED.store(0,core::sync::atomic::Ordering::Release);
     STRESS_CPU_MASK.store(0,core::sync::atomic::Ordering::Release);
+    STRESS_FAILURES.store(0,core::sync::atomic::Ordering::Release);
+    let mut dispatch:[Option<crate::io::DispatchFn>;16]=[None;16];
+    dispatch[crate::io::IRP_MJ_READ as usize]=Some(smp_stress_io_dispatch);
+    let device_id=match crate::io::register_device(b"\\Device\\SmpStress",dispatch){
+        Ok(id)=>id,
+        Err(_)=>return false,
+    };
     let mut cpu_ids=[0usize;8];
     let mut cpu_count=0usize;
     for cpu in 0..crate::hal::MAX_CPUS {
@@ -324,7 +358,7 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
         let stack: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(STRESS_STACKS[slot]) };
         let target_cpu=if smp_active{cpu_ids[slot%worker_cpu_count]}else{0};
         let affinity=1u64<<target_cpu;
-        match spawn(stack,affinity,lock_stress_worker,core::ptr::null_mut()) {
+        match spawn(stack,affinity,lock_stress_worker,device_id as usize as *mut c_void) {
             Ok(id)=>ids[slot]=id,
             Err(_)=>return false,
         }
@@ -348,6 +382,7 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
     let expected_cpu_count=if smp_active{core::cmp::min(online_cpus,8)}else{1};
     STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)==ids.len()
         && *STRESS_LOCK.lock()==8*256
+        && STRESS_FAILURES.load(core::sync::atomic::Ordering::Acquire)==0
         && STRESS_CPU_MASK.load(core::sync::atomic::Ordering::Acquire).count_ones() as usize>=expected_cpu_count
         && ids.iter().all(|id|state(*id)==Some(ThreadState::Exited))
         && scheduler_teardown_ok
