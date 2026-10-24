@@ -438,11 +438,16 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 
 ### Ext filesystem and NT I/O integration (2026-10-24)
 
-- [x] Remove the third-party third-party filesystem driver submodule declaration and stop depending on its Windows driver sources.
-- [x] Move the native Rust ext-family parser into `drivers/ext4` and configure CI to test that crate instead of the deleted `kernel/src/extfs.rs` path.
-- [x] Remove the third-party filesystem-driver submodule declaration, gitlink, and source-inventory document from the repository tree.
-- [ ] Replace the bounded internal IRP test harness with ABI-correct WDM `DEVICE_OBJECT`, `DRIVER_OBJECT`, `IRP`, `IO_STACK_LOCATION`, `IoCreateDevice`, `IoCallDriver`, `IoCompleteRequest`, and cancel/rundown semantics; current routines are not yet safe for arbitrary WDK binaries.
-- [ ] Add a real block-device/partition contract and route filesystem read/write/flush requests through IRPs, with bounded buffers, alignment checks, completion status propagation, and device removal rundown.
-- [ ] Add ext4 VFS mount/file objects, pathname lookup, inode/directory operations, allocation, metadata checksums, journal recovery/commit, and power-loss tests before enabling general writable mounts.
+- [x] Remove the third-party filesystem-driver submodule declaration, gitlink, and source-inventory document; keep the native Rust ext-family parser in `drivers/ext4`.
+- [x] Establish x64 WDM object prefixes and layout tests for `DRIVER_OBJECT`, `DEVICE_OBJECT`, `IRP`, `IO_STACK_LOCATION`, `UNICODE_STRING`, and `IO_STATUS_BLOCK`.
+- [x] Implement bounded `IoCreateDevice`/`IoDeleteDevice`, named device registration/lookup, attachment/detachment, attached/base/lower-device queries, and stack-size propagation.
+- [x] Implement IRP allocation/free/initialization/reuse, stack-location helpers, dispatch, completion-routine unwinding, and propagation of final status/information to a caller `IO_STATUS_BLOCK`.
+- [x] Add cancel-routine registration and one-shot cancel callback claiming under the cancel-spin-lock protocol.
+- [x] Add MDL allocation/freeing using the memory manager's MDL lifecycle; asynchronous READ/WRITE request construction can pin pages for direct I/O and rejects buffered I/O until a real system-buffer pool exists.
+- [x] Add bounded filesystem registration/unregistration and counted UTF-16 symbolic-link create/delete primitives.
+- [ ] Harden cancellation-versus-completion races, IRP ownership, device remove rundown, stack completion edge cases, and driver unload with dedicated concurrent tests; these routines are not yet safe for arbitrary WDK binaries.
+- [ ] Implement `FILE_OBJECT` lifecycle and `IoGetDeviceObjectPointer`, VPBs, mount-volume arbitration, and filesystem-control dispatch.
+- [ ] Add real block-device/partition driver contracts and route ext4 read/write/flush requests through IRPs with alignment validation, correct buffer ownership, completion status propagation, and device-removal rundown.
+- [ ] Integrate ext4 into a VFS with mount/file objects, pathname lookup, inode/directory operations, safe allocation and metadata mutation, journal recovery/commit, and power-loss tests before enabling general writable mounts.
 
-**Safety status:** this is not production-ready ext4 and must not be mounted read-write on valuable data. The existing write method can change existing data blocks but is not transactional and does not update inode metadata or guarantee rollback after partial I/O failure.
+**Safety status:** the WDM implementation is an initial compatibility base, not a production NT I/O manager. The ext4 crate is not yet a production-ready mounted filesystem and must not be mounted read-write on valuable data. Its current write path is limited to existing allocated extents and is not transactional; it does not provide full inode/metadata updates or rollback after partial I/O failure.
