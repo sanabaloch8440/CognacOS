@@ -619,9 +619,10 @@ pub unsafe extern "win64" fn free_map_registers(
 /// and stale outer IO_ALLOCATION_ACTION values releasing the next owner.
 pub unsafe extern "win64" fn free_adapter_channel(adapter: *mut core::ffi::c_void) {
     if !is_dma_adapter(adapter) { return; }
+    let Some(domain)=adapter_device(adapter) else { return; };
     let next = {
         let mut state = CHANNEL.lock();
-        if state.owner == 0 { return; }
+        if state.owner == 0 || state.owner!=domain { return; }
         state.owner = 0;
         state.owner_generation = 0;
         if state.callback_active {
