@@ -19,7 +19,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | I/O manager | Runtime moved to `ntoskrnl/io/runtime.rs`; bounded FIFO completion ports, deadline-aware IRPs, pre-dispatch timeout expiry, WDM 1.0 version gate, configuration-information and cancel-spin-lock exports, 16-bit port I/O and ordered volatile MMIO accessors | Dispatcher-integrated completion waits, live device counters/enumeration, safe in-flight cancellation, ABI-correct IRP/device-object APIs, real device dispatch/interrupt/DMA paths, and hardware tests |
 | NLS / globalization | Native-name catalogue and byte-preserving reader/copy API for `c_037.nls`, `c_437.nls`, `c_1252.nls`, `locale.nls`, `sortkey.nls`, `sorttbls.nls`, `ctype.nls`, `unicode.nls`; optional boot-asset staging | Parse NLS internal tables, code-page conversion, globalization APIs, filesystem writeback, locate files on a separate Windows/NTFS partition |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
-| ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
+| ext filesystem | Separate `drivers/ext4` crate; read-only mount and restricted writes to existing initialized extents via writable block-device contract | VFS/block-device registration, allocation and metadata mutation, journal/checksum support, crash consistency, image/fuzz tests |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
 **Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; subsequent Ke/Ki affinity, Timer2, and clock-path changes are pending CI verification. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
@@ -291,7 +291,7 @@ Discovery and startup primitives do not by themselves establish a production-rea
 - [ ] Defer journal replay and write support until read-only behavior and metadata validation are robust.
 - [ ] Review licensing before redistributing any Rust translation derived from upstream code.
 
-The parser is read-only and not a production filesystem driver. The original Ext3Fsd Windows driver cannot be loaded by RdotOS.
+The ext-family parser now lives in a standalone source/build crate and has a constrained write path for already allocated initialized data extents. This is not yet a complete writable filesystem: allocation, metadata updates, journal handling, crash consistency, and VFS/block-device registration remain outstanding. The original Ext3Fsd Windows driver cannot be loaded by RdotOS.
 
 ## 9. Isolation and security
 
