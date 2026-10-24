@@ -1,6 +1,6 @@
 // Lock-free NMI callback dispatch. NMI can interrupt code holding ordinary
 // kernel locks, so the dispatch path must never acquire a spin lock.
-use core::sync::atomic::{AtomicU8,AtomicUsize,Ordering};
+use core::sync::atomic::{AtomicU8,AtomicUsize};
 const MAX_NMI_CALLBACKS:usize=64;
 type NmiRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void,u8)->u8;
 static NMI_STATE:[AtomicU8;MAX_NMI_CALLBACKS]=[const{AtomicU8::new(0)};MAX_NMI_CALLBACKS];
