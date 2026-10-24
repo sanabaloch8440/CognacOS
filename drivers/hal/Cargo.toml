@@ -7,3 +7,9 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
+
+[[bin]]
+name = "hal"
+path = "src/bin/hal.rs"
+test = false
+bench = false
