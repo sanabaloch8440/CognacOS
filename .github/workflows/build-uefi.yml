@@ -20,6 +20,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if git ls-tree HEAD third_party/Ext3Fsd | grep -q .; then
+            echo "Third-party filesystem driver gitlink must not be present in the source tree." >&2
+            exit 1
+          fi
+          test ! -e third_party/Ext3Fsd
+          test ! -e third_party/README.md
           if grep -nE 'crate::ntoskrnl|crate::acpi::' kernel/src/hal.rs kernel/src/hal/apic.rs; then
             echo "HAL implementation must not depend on ntoskrnl or ACPI parsing types." >&2
             exit 1
