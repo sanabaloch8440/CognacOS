@@ -109,6 +109,47 @@ pub unsafe extern "win64" fn ke_remove_queue_apc(apc:*mut core::ffi::c_void)->u8
  let was=record.inserted;record.inserted=false;was as u8
 }
 
+/// Take one user APC for the current thread. Its kernel routine runs on the
+/// kernel stack immediately before the syscall's user-return frame is rewritten.
+pub fn take_pending_user_apc()->Option<(usize,usize,usize,usize,usize)>{
+ let thread_id=crate::thread::current_thread_id()?;
+ let record={
+  let mut table=APC_TABLE.lock();
+  let slot=table.records.iter().position(|r|r.inserted&&r.thread_id==thread_id&&r.mode!=0)?;
+  let record=table.records[slot];table.records[slot].inserted=false;record
+ };
+ let mut normal=record.normal_routine;
+ let mut context=record.normal_context as *mut core::ffi::c_void;
+ let mut arg1=record.arg1 as *mut core::ffi::c_void;
+ let mut arg2=record.arg2 as *mut core::ffi::c_void;
+ if record.kernel_routine!=0{
+  let routine:ApcKernelRoutine=unsafe{core::mem::transmute(record.kernel_routine)};
+  unsafe{routine(record.object as *mut _,&mut normal,&mut context,&mut arg1,&mut arg2);}
+ }
+ Some((record.object,normal,context as usize,arg1 as usize,arg2 as usize))
+}
+
+/// Invoke queued APC rundown routines when a thread exits; never call drivers
+/// while holding the APC side-table lock.
+pub fn ke_rundown_apcs_for_thread(thread_id:u64){
+ let mut rundown=[(0usize,0usize);128];let mut count=0usize;
+ {
+  let mut table=APC_TABLE.lock();
+  for record in table.records.iter_mut(){
+   if record.object!=0&&record.thread_id==thread_id {
+    if record.inserted&&record.rundown_routine!=0&&count<rundown.len(){
+     rundown[count]=(record.object,record.rundown_routine);count+=1;
+    }
+    *record=ApcRecord::EMPTY;
+   }
+  }
+ }
+ for (object,routine) in rundown[..count].iter().copied(){
+  let callback:ApcRundownRoutine=unsafe{core::mem::transmute(routine)};
+  unsafe{callback(object as *mut _);}
+ }
+}
+
 /// Deliver queued kernel APCs only at a PASSIVE_LEVEL safe point with APCs
 /// enabled. User APCs remain queued for a future user-mode trap-return path.
 pub fn ke_deliver_pending_kernel_apcs(){
