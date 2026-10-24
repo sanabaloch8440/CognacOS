@@ -158,7 +158,7 @@ fn apply_imports(image:&mut[u8],rva:u32,size:u32,resolver:crate::pe::ImportResol
   let original=u32at(image,desc)?;let timestamp=u32at(image,desc+4)?;let forwarder=u32at(image,desc+8)?;let name_rva=u32at(image,desc+12)?;let first=u32at(image,desc+16)?;
   if original==0&&timestamp==0&&forwarder==0&&name_rva==0&&first==0{terminated=true;break;}
   if name_rva==0||first==0{return Err(DriverLoadError::InvalidImport)}
-  let dll=c_string(image,name_rva,260)?;
+  let dll_src=c_string(image,name_rva,260)?;let dll_len=dll_src.len();let mut dll_buf=[0u8;260];dll_buf[..dll_len].copy_from_slice(dll_src);let dll=core::str::from_utf8(&dll_buf[..dll_len]).map_err(|_|DriverLoadError::InvalidImport)?;
   let source=if original==0{first}else{original};
   let max_thunks=image.len()/8;let mut thunk_index=0usize;let mut thunk_terminated=false;
   while thunk_index<max_thunks{
@@ -172,7 +172,7 @@ fn apply_imports(image:&mut[u8],rva:u32,size:u32,resolver:crate::pe::ImportResol
     if thunk>u32::MAX as u64{return Err(DriverLoadError::InvalidImport)}
     let name_offset=(thunk as usize).checked_add(2).ok_or(DriverLoadError::InvalidImport)?;
     let name_rva=u32::try_from(name_offset).map_err(|_|DriverLoadError::InvalidImport)?;
-    ImportSymbol::Name(c_string(image,name_rva,512)?)
+    let symbol_src=c_string(image,name_rva,512)?;let symbol_len=symbol_src.len();let mut symbol_buf=[0u8;512];symbol_buf[..symbol_len].copy_from_slice(symbol_src);ImportSymbol::Name(core::str::from_utf8(&symbol_buf[..symbol_len]).map_err(|_|DriverLoadError::InvalidImport)?)
    };
    let address=resolver(dll,symbol).ok_or(DriverLoadError::ImportNotFound)?;
    put_u64(image,dst,address)?;thunk_index+=1;
