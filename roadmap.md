@@ -37,7 +37,8 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Add systemwide DPC dispatch/drain guarantees, timer cancellation-versus-callback rundown, and broader periodic-timer race tests.
 - [ ] Complete wait-all reservation for mutants/queues, alert-versus-signal ordering, priority boosts, and timeout/cancellation race tests.
 - [ ] Validate queued-spin-lock handle layout and lock-number mapping against Windows WDK ABI; implement true cross-processor queue semantics and stress tests.
-- [ ] Run the freestanding build, host tests, OVMF/QEMU smoke test, and 2/4/8-vCPU SMP matrix after this pass. A passing build does not establish general Windows driver compatibility.
+- [x] Latest Ke-runtime workflow passed host-side tests, freestanding build, PE32+ validation, UEFI loader build, image packaging, and OVMF/QEMU smoke: [run #997](https://github.com/umarfarooq7869/RdotOS/actions/runs/40092050955).
+- [ ] Confirm run #997's 2/4/8-vCPU SMP stress matrix and artifact upload; they were still running at last check. A passing build does not establish general Windows driver compatibility.
 
 ### Status legend
 
