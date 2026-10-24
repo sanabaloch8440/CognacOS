@@ -35,6 +35,11 @@ pub fn create_task(priority:u8,affinity:u64,stack_top:u64,instruction_pointer:u6
 /// Select at most one task per CPU. Caller must still perform the architecture
 /// context switch; the lock only protects scheduler metadata.
 pub fn choose_next(cpu:usize)->Result<Option<Task>,SchedulerError>{
+ choose_next_excluding(cpu,0)
+}
+/// Select a ready task except the caller's current task, allowing cooperative
+/// round-robin behavior without accidentally switching to the same saved frame.
+pub fn choose_next_excluding(cpu:usize,exclude_id:u64)->Result<Option<Task>,SchedulerError>{
  if cpu>=MAX_CPUS{return Err(SchedulerError::InvalidCpu);}
  let mut s=SCHED.lock();
  if !s.initialized{return Err(SchedulerError::NotInitialized);}
@@ -42,9 +47,28 @@ pub fn choose_next(cpu:usize)->Result<Option<Task>,SchedulerError>{
  let bit=1u64<<cpu;
  let mut best:Option<usize>=None;
  for (i,t) in s.tasks.iter().enumerate(){
-  if t.state==TaskState::Ready&&t.affinity&bit!=0&&best.map_or(true,|b|t.priority>s.tasks[b].priority){best=Some(i);}
+  if t.state==TaskState::Ready&&t.id!=exclude_id&&t.affinity&bit!=0&&best.map_or(true,|b|t.priority>s.tasks[b].priority){best=Some(i);}
  }
  if let Some(i)=best {s.tasks[i].state=TaskState::Running;s.current[cpu]=s.tasks[i].id;Ok(Some(s.tasks[i]))}else{Ok(None)}
+}
+/// Restore a just-yielded task when no peer is runnable on this CPU.
+pub fn resume_task(cpu:usize,id:u64)->Result<(),SchedulerError>{
+ if cpu>=MAX_CPUS{return Err(SchedulerError::InvalidCpu);}
+ let mut s=SCHED.lock();
+ if !s.initialized{return Err(SchedulerError::NotInitialized);}
+ if s.current[cpu]!=0{return Err(SchedulerError::CpuBusy);}
+ let index=s.tasks.iter().position(|t|t.id==id&&t.state==TaskState::Ready&&t.affinity&(1u64<<cpu)!=0).ok_or(SchedulerError::UnknownTask)?;
+ s.tasks[index].state=TaskState::Running;s.current[cpu]=id;Ok(())
+}
+/// Retire a completed task and release its CPU ownership slot.
+pub fn exit_task(id:u64)->Result<(),SchedulerError>{
+ let mut s=SCHED.lock();
+ let index=s.tasks.iter().position(|t|t.id==id&&t.state!=TaskState::Empty).ok_or(SchedulerError::UnknownTask)?;
+ if s.tasks[index].state==TaskState::Running {
+  let cpu=s.current.iter().position(|current|*current==id).ok_or(SchedulerError::UnknownTask)?;
+  s.current[cpu]=0;
+ }
+ s.tasks[index].state=TaskState::Exited;Ok(())
 }
 pub fn yield_current(cpu:usize)->Result<(),SchedulerError>{
  if cpu>=MAX_CPUS{return Err(SchedulerError::InvalidCpu);}
