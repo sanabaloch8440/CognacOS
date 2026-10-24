@@ -127,6 +127,9 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   } else if requested.eq_ignore_ascii_case(b"KeQueryGroupAffinityEx") { Some(ke::runtime::ke_query_group_affinity_ex as usize)
   } else if requested.eq_ignore_ascii_case(b"KeXorAffinityEx") { Some(ke::runtime::ke_xor_affinity_ex as usize)
   } else if requested.eq_ignore_ascii_case(b"KeGetXSaveFeatureFlags") { Some(ke::runtime::ke_get_xsave_feature_flags as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeInitializeTimer2") { Some(ke::runtime::ke_initialize_timer2 as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeSetTimer2") { Some(ke::runtime::ke_set_timer2 as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeCancelTimer2") { Some(ke::runtime::ke_cancel_timer2 as usize)
   } else if requested.eq_ignore_ascii_case(b"KeDynamicPartitioningSupported") { Some(ke::runtime::ke_dynamic_partitioning_supported as usize)
   } else if requested.eq_ignore_ascii_case(b"KeShouldYieldProcessor") { Some(ke::runtime::ke_should_yield_processor as usize)
   } else { None };
