@@ -65,15 +65,15 @@ impl<'a> Hive<'a>{
   if size<8||end>BASE_BLOCK_SIZE+self.info.bins_size as usize{return Err(Error::InvalidCell)}
   self.bytes.get(abs+4..end).ok_or(Error::Truncated)
  }
- fn key(&self,index:u32)->Result<Key<'a>,Error>{
+ fn key(&self,index:u32)->Result<Key<'_, 'a>,Error>{
   let c=self.cell(index)?;if c.get(0..2)!=Some(&b"nk"[..])||c.len()<0x4c{return Err(Error::InvalidKey)}
   let flags=u16at(c,2)?;let name_len=u16at(c,0x48)? as usize;
   if name_len>c.len()-0x4c{return Err(Error::InvalidKey)}
   Ok(Key{hive:self,index,cell:c,flags,name:&c[0x4c..0x4c+name_len]})
  }
- pub fn root(&self)->Result<Key<'a>,Error>{self.key(self.info.root_cell)}
- pub fn key_at(&self,index:u32)->Result<Key<'a>,Error>{self.key(index)}
- pub fn find_path(&self,path:&[u16])->Result<Key<'a>,Error>{
+ pub fn root(&self)->Result<Key<'_, 'a>,Error>{self.key(self.info.root_cell)}
+ pub fn key_at(&self,index:u32)->Result<Key<'_, 'a>,Error>{self.key(index)}
+ pub fn find_path(&self,path:&[u16])->Result<Key<'_, 'a>,Error>{
   let mut current=self.root()?;let mut start=0;
   while start<path.len(){while start<path.len()&&path[start]==b'\\' as u16{start+=1}if start==path.len(){break}
    let mut end=start;while end<path.len()&&path[end]!=b'\\' as u16{end+=1}
@@ -83,8 +83,8 @@ impl<'a> Hive<'a>{
  pub fn raw_bytes(&self)->&'a[u8]{self.bytes}
 }
 #[derive(Clone,Copy)]
-pub struct Key<'a>{hive:&'a Hive<'a>,index:u32,cell:&'a[u8],flags:u16,name:&'a[u8]}
-impl<'a> Key<'a>{
+pub struct Key<'h,'a>{hive:&'h Hive<'a>,index:u32,cell:&'a[u8],flags:u16,name:&'a[u8]}
+impl<'h,'a> Key<'h,'a>{
  pub fn cell_index(&self)->u32{self.index}
  pub fn name_bytes(&self)->&'a[u8]{self.name}
  pub fn is_compressed_name(&self)->bool{self.flags&0x20!=0}
@@ -95,7 +95,7 @@ impl<'a> Key<'a>{
   else{for i in 0..n{out[i]=u16::from_le_bytes([self.name[i*2],self.name[i*2+1]]);}}
   Ok(n)
  }
- pub fn find_path(&self,path:&[u16])->Result<Key<'a>,Error>{
+ pub fn find_path(&self,path:&[u16])->Result<Key<'_, 'a>,Error>{
   let mut current=*self;let mut start=0;
   while start<path.len(){while start<path.len()&&path[start]==b'\\' as u16{start+=1}if start==path.len(){break}
    let mut end=start;while end<path.len()&&path[end]!=b'\\' as u16{end+=1}
@@ -103,12 +103,12 @@ impl<'a> Key<'a>{
   }Ok(current)
  }
  pub fn subkey_count(&self)->Result<u32,Error>{u32at(self.cell,0x14)}
- pub fn find_subkey(&self,name:&[u16])->Result<Key<'a>,Error>{
+ pub fn find_subkey(&self,name:&[u16])->Result<Key<'_, 'a>,Error>{
   let count=u32at(self.cell,0x14)?;let list=u32at(self.cell,0x1c)?;
   if count>1_000_000{return Err(Error::InvalidKey)}if count==0{return Err(Error::NotFound)}
   self.search_index(list,count,name,0)
  }
- fn search_index(&self,list:u32,count:u32,name:&[u16],depth:u8)->Result<Key<'a>,Error>{
+ fn search_index(&self,list:u32,count:u32,name:&[u16],depth:u8)->Result<Key<'_, 'a>,Error>{
   if depth>8{return Err(Error::InvalidKey)}let c=self.hive.cell(list)?;let sig=c.get(0..2).ok_or(Error::InvalidKey)?;
   if sig==b"li"{
    if c.len()<2+count as usize*4{return Err(Error::InvalidKey)}
@@ -126,17 +126,17 @@ impl<'a> Key<'a>{
   Err(Error::NotFound)
  }
  pub fn value_count(&self)->Result<u32,Error>{u32at(self.cell,0x24)}
- pub fn find_value(&self,name:&[u16])->Result<Value<'a>,Error>{
+ pub fn find_value(&self,name:&[u16])->Result<Value<'_, 'a>,Error>{
   let count=self.value_count()?;if count>1_000_000{return Err(Error::InvalidKey)}if count==0{return Err(Error::NotFound)}
   let list=u32at(self.cell,0x28)?;let c=self.hive.cell(list)?;if c.len()<count as usize*4{return Err(Error::InvalidValue)}
   for i in 0..count{let v=Value::parse(self.hive,u32at(c,i as usize*4)?)?;if v.name_matches(name)?{return Ok(v)}}Err(Error::NotFound)
  }
 }
-fn key_matches(k:&Key<'_>,name:&[u16])->Result<bool,Error>{let mut temp=[0u16;512];let n=k.name_utf16(&mut temp)?;Ok(eq_name(&temp[..n],name))}
+fn key_matches(k:&Key<'_, '_>,name:&[u16])->Result<bool,Error>{let mut temp=[0u16;512];let n=k.name_utf16(&mut temp)?;Ok(eq_name(&temp[..n],name))}
 #[derive(Clone,Copy)]
-pub struct Value<'a>{hive:&'a Hive<'a>,cell:&'a[u8],name:&'a[u8],compressed:bool,pub kind:u32,data_len:u32,data_offset:u32,inline:bool}
-impl<'a> Value<'a>{
- fn parse(hive:&'a Hive<'a>,index:u32)->Result<Self,Error>{
+pub struct Value<'h,'a>{hive:&'h Hive<'a>,cell:&'a[u8],name:&'a[u8],compressed:bool,pub kind:u32,data_len:u32,data_offset:u32,inline:bool}
+impl<'h,'a> Value<'h,'a>{
+ fn parse(hive:&'h Hive<'a>,index:u32)->Result<Self,Error>{
   let c=hive.cell(index)?;if c.get(0..2)!=Some(&b"vk"[..])||c.len()<0x14{return Err(Error::InvalidValue)}
   let n=u16at(c,2)? as usize;if n>c.len().saturating_sub(0x14){return Err(Error::InvalidValue)}
   let flags=u16at(c,0x10)?;let raw_len=u32at(c,4)?;let inline=raw_len&0x8000_0000!=0;let data_len=raw_len&0x7fff_ffff;
