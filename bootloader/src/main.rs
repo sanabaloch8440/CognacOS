@@ -20,7 +20,9 @@ const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
-const BOOT_INFO_VERSION: u32 = 4;
+const BOOT_INFO_VERSION: u32 = 5;
+const HIGH_HALF_PT_PAGES: usize = 64;
+const KERNEL_STACK_VIRTUAL_GUARD: u64 = 0xffff_ff00_0000_0000;
 
 #[repr(C)]
 struct BootInfo {
@@ -33,6 +35,8 @@ struct BootInfo {
     memory_descriptor_size: usize,
     memory_descriptor_version: u32,
     kernel_stack_guard_page: u64,
+    kernel_stack_pages: u64,
+    kernel_stack_virtual_guard: u64,
     rsdp_address: u64,
     ap_trampoline_physical: u64,
 }
@@ -92,10 +96,11 @@ fn main() -> Status {
     drop(fs);
 
     uefi::println!("Read {} bytes; validating ELF64 headers and load segments", image.len());
-    let entry = match unsafe { elf::load(&image) } {
-        Ok(entry) => entry,
+    let loaded_kernel = match unsafe { elf::load(&image) } {
+        Ok(kernel) => kernel,
         Err(err) => { uefi::println!("Rejected kernel ELF: {:?}", err); return Status::LOAD_ERROR; }
     };
+    let entry = loaded_kernel.entry;
     // No heap-backed value or protocol handle may be dropped after this point.
     // Leak the file buffer so allocator cleanup cannot call boot services.
     core::mem::forget(image);
@@ -115,7 +120,10 @@ fn main() -> Status {
     // SysV x86-64 function-entry alignment: RSP % 16 == 8, with a dummy
     // return slot because the kernel entry is reached by a tail jump.
     unsafe { ((stack_top - 8) as *mut u64).write(0); }
-    let kernel_stack = stack_top - 8;
+    // The physical stack remains identity-mapped for bootstrap safety, while
+    // the kernel enters on a separate high-half alias with an unmapped guard.
+    let kernel_stack = KERNEL_STACK_VIRTUAL_GUARD
+        + (KERNEL_STACK_ALLOCATION_PAGES * boot::PAGE_SIZE) as u64 - 8;
     uefi::println!("Allocated {} KiB kernel stack plus one unmapped guard page", KERNEL_STACK_PAGES * 4);
 
     // Allocate bootstrap page tables while UEFI allocation services are still
@@ -126,6 +134,17 @@ fn main() -> Status {
     };
     uefi::println!("Prepared kernel PML4 at {:#x}; 4 KiB PT pool at {:#x}",
         pml4_physical, pt_pool_physical);
+    let high_pt_pool = match boot::allocate_pages(
+        boot::AllocateType::MaxAddress(0xffff_ffff),
+        boot::MemoryType::LOADER_DATA,
+        HIGH_HALF_PT_PAGES,
+    ) {
+        Ok(pool) => {
+            unsafe { core::ptr::write_bytes(pool.as_ptr(), 0, HIGH_HALF_PT_PAGES * boot::PAGE_SIZE); }
+            pool.as_ptr() as u64
+        }
+        Err(error) => { uefi::println!("High-half page-table pool allocation failed: {:?}", error); return error.status(); }
+    };
     // Reserve low identity-mapped storage for the final map and boot-info.
     // The UEFI memory-map helper may return a buffer outside the bootstrap map.
     let map_copy = match boot::allocate_pages(
@@ -195,6 +214,12 @@ fn main() -> Status {
         uefi::println!("FATAL: could not build explicit identity mappings from final UEFI map");
         loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
     }
+    if unsafe { populate_high_half_mappings(
+        pml4_physical, high_pt_pool, &loaded_kernel, kernel_stack_guard_page,
+    ) }.is_err() {
+        uefi::println!("FATAL: could not establish high-half kernel/stack aliases");
+        loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
+    }
     let boot_info = BootInfo {
         magic: BOOT_INFO_MAGIC,
         version: BOOT_INFO_VERSION,
@@ -205,6 +230,8 @@ fn main() -> Status {
         memory_descriptor_size: descriptor_size,
         memory_descriptor_version: memory_map.meta().desc_version,
         kernel_stack_guard_page,
+        kernel_stack_pages: KERNEL_STACK_PAGES as u64,
+        kernel_stack_virtual_guard: KERNEL_STACK_VIRTUAL_GUARD,
         rsdp_address,
         ap_trampoline_physical,
     };
@@ -217,16 +244,28 @@ fn main() -> Status {
     });
     let dependencies = [
         pml4_physical,
+        pt_pool_physical,
+        high_pt_pool,
         map_copy.as_ptr() as u64,
         boot_info_storage.as_ptr() as u64,
-        entry,
-        kernel_stack,
+        kernel_stack_guard_page,
         if rsdp_address < 0x1_0000_0000 { rsdp_address } else { 0 },
         ap_trampoline_physical,
     ];
-    if !stack_range_ok || dependencies.into_iter().filter(|address| *address != 0)
-        .any(|address| unsafe { !bootstrap_identity_mapped(pml4_physical, address) }) {
-        uefi::println!("FATAL: final UEFI map omitted a live bootstrap dependency");
+    let kernel_aliases_ok = loaded_kernel.segments[..loaded_kernel.segment_count].iter().all(|segment| {
+        let va = segment.virtual_start;
+        let pa = segment.physical_start;
+        unsafe { bootstrap_physical_at(pml4_physical, va) == Some(pa) }
+    }) && unsafe {
+        bootstrap_physical_at(pml4_physical, entry).is_some()
+            && bootstrap_physical_at(pml4_physical, KERNEL_STACK_VIRTUAL_GUARD + boot::PAGE_SIZE as u64)
+                == Some(kernel_stack_guard_page + boot::PAGE_SIZE as u64)
+            && bootstrap_physical_at(pml4_physical, KERNEL_STACK_VIRTUAL_GUARD).is_none()
+    };
+    if !stack_range_ok || !kernel_aliases_ok
+        || dependencies.into_iter().filter(|address| *address != 0)
+            .any(|address| unsafe { !bootstrap_identity_mapped(pml4_physical, address) }) {
+        uefi::println!("FATAL: final UEFI map omitted a live bootstrap dependency or high-half alias");
         loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
     }
     core::mem::forget(memory_map);
@@ -238,12 +277,14 @@ fn main() -> Status {
         core::arch::asm!(
             "cli",
             "cld",
+            "mov cr3, rcx",
             "mov rsp, rsi",
             "xor rbp, rbp",
             "jmp rax",
             in("rax") entry,
             in("rdi") boot_info_ptr,
             in("rsi") kernel_stack,
+            in("rcx") pml4_physical,
             options(noreturn)
         );
     }
@@ -377,6 +418,102 @@ unsafe fn populate_bootstrap_page_tables(
         unsafe { table.add(slot).write(physical | PRESENT_WRITE | PWT | PCD); }
     }
     Ok(())
+}
+
+unsafe fn allocate_high_table(pool: u64, used: &mut usize) -> Result<u64, ()> {
+    if *used >= HIGH_HALF_PT_PAGES { return Err(()); }
+    let page = pool.checked_add((*used as u64).checked_mul(4096).ok_or(())?).ok_or(())?;
+    *used += 1;
+    unsafe { core::ptr::write_bytes(page as *mut u8, 0, 4096); }
+    Ok(page)
+}
+
+unsafe fn ensure_high_child(
+    parent: *mut u64, index: usize, pool: u64, used: &mut usize,
+) -> Result<*mut u64, ()> {
+    const PRESENT_WRITE: u64 = 3;
+    const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+    let slot = unsafe { parent.add(index) };
+    let mut entry = unsafe { slot.read() };
+    if entry & 1 == 0 {
+        let child = unsafe { allocate_high_table(pool, used)? };
+        entry = child | PRESENT_WRITE;
+        unsafe { slot.write(entry); }
+    } else if entry & (1 << 7) != 0 {
+        return Err(());
+    }
+    Ok((entry & ADDRESS_MASK) as *mut u64)
+}
+
+/// Map one high virtual page to its low physical backing using preallocated
+/// page-table pages; this runs after ExitBootServices and cannot allocate via UEFI.
+unsafe fn map_high_page(
+    pml4_physical: u64, pool: u64, used: &mut usize, virtual_address: u64, physical_address: u64,
+) -> Result<(), ()> {
+    const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+    const PRESENT_WRITE: u64 = 3;
+    if virtual_address < 0xffff_8000_0000_0000
+        || virtual_address & 0xfff != physical_address & 0xfff
+        || physical_address >= 0x1_0000_0000
+    { return Err(()); }
+    let pml4 = pml4_physical as *mut u64;
+    let pdpt = unsafe { ensure_high_child(pml4, ((virtual_address >> 39) & 0x1ff) as usize, pool, used)? };
+    let pd = unsafe { ensure_high_child(pdpt, ((virtual_address >> 30) & 0x1ff) as usize, pool, used)? };
+    let pt = unsafe { ensure_high_child(pd, ((virtual_address >> 21) & 0x1ff) as usize, pool, used)? };
+    let leaf = unsafe { pt.add(((virtual_address >> 12) & 0x1ff) as usize) };
+    if unsafe { leaf.read() } & 1 != 0 { return Err(()); }
+    unsafe { leaf.write((physical_address & ADDRESS_MASK) | PRESENT_WRITE); }
+    Ok(())
+}
+
+unsafe fn populate_high_half_mappings(
+    pml4_physical: u64, pool: u64, kernel: &elf::LoadedKernel, stack_guard_physical: u64,
+) -> Result<(), ()> {
+    let mut used = 0usize;
+    for segment in kernel.segments[..kernel.segment_count].iter().copied() {
+        if segment.virtual_start & 0xfff != segment.physical_start & 0xfff { return Err(()); }
+        let virtual_start = segment.virtual_start & !0xfff;
+        let physical_start = segment.physical_start & !0xfff;
+        let end = segment.virtual_start.checked_add(segment.memory_size).ok_or(())?;
+        let virtual_end = end.checked_add(0xfff).ok_or(())? & !0xfff;
+        let mut va = virtual_start;
+        while va < virtual_end {
+            let pa = physical_start.checked_add(va - virtual_start).ok_or(())?;
+            unsafe { map_high_page(pml4_physical, pool, &mut used, va, pa)?; }
+            va = va.checked_add(4096).ok_or(())?;
+        }
+    }
+    // Leave the first virtual stack page unmapped as a guard. Physical identity
+    // mappings remain until kernel hardening has validated the new stack.
+    for page in 1..KERNEL_STACK_ALLOCATION_PAGES {
+        let va = KERNEL_STACK_VIRTUAL_GUARD + page as u64 * 4096;
+        let pa = stack_guard_physical + page as u64 * 4096;
+        unsafe { map_high_page(pml4_physical, pool, &mut used, va, pa)?; }
+    }
+    Ok(())
+}
+
+unsafe fn bootstrap_physical_at(pml4_physical: u64, address: u64) -> Option<u64> {
+    const ADDRESS_MASK: u64 = 0x000f_ffff_ffff_f000;
+    let pml4 = pml4_physical as *const u64;
+    let pml4e = unsafe { pml4.add(((address >> 39) & 0x1ff) as usize).read() };
+    if pml4e & 1 == 0 { return None; }
+    let pdpt = (pml4e & ADDRESS_MASK) as *const u64;
+    let pdpte = unsafe { pdpt.add(((address >> 30) & 0x1ff) as usize).read() };
+    if pdpte & 1 == 0 { return None; }
+    if pdpte & (1 << 7) != 0 {
+        return Some((pdpte & 0x000f_ffff_c000_0000) + (address & 0x3fff_ffff));
+    }
+    let pd = (pdpte & ADDRESS_MASK) as *const u64;
+    let pde = unsafe { pd.add(((address >> 21) & 0x1ff) as usize).read() };
+    if pde & 1 == 0 { return None; }
+    if pde & (1 << 7) != 0 {
+        return Some((pde & 0x000f_ffff_ffe0_0000) + (address & 0x1f_ffff));
+    }
+    let pt = (pde & ADDRESS_MASK) as *const u64;
+    let pte = unsafe { pt.add(((address >> 12) & 0x1ff) as usize).read() };
+    if pte & 1 == 0 { return None; }
+    Some((pte & ADDRESS_MASK) + (address & 0xfff))
 }
 
 /// Confirm that a physical address is currently identity-mapped by a 2 MiB leaf.
