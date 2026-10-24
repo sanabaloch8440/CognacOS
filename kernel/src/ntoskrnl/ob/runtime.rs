@@ -477,7 +477,7 @@ mod tests{
   let mut o=Object::EMPTY;o.used=true;o.sd_len=48;o.sd[0]=1;o.sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());o.sd[16..20].copy_from_slice(&20u32.to_le_bytes());
   o.sd[20]=2;o.sd[22..24].copy_from_slice(&28u16.to_le_bytes());o.sd[24..26].copy_from_slice(&1u16.to_le_bytes());
   o.sd[28]=0;o.sd[30..32].copy_from_slice(&20u16.to_le_bytes());o.sd[32..36].copy_from_slice(&1u32.to_le_bytes());o.sd[36]=1;o.sd[37]=1;o.sd[43]=1;
-  let s=state();assert!(access_check(s,&o,1,0));assert!(!access_check(s,&o,2,0));
+  let _g=LOCK.lock();let s=state();assert!(access_check(s,&o,1,0));assert!(!access_check(s,&o,2,0));
  }
  #[test]fn user_handles_are_owner_scoped(){
   let ty=register_type(&[90],1,2,4,7,7).unwrap();let body=0x3234usize as *mut c_void;let mut sd=[0u8;48];
@@ -499,7 +499,7 @@ mod tests{
   let mut o=Object::EMPTY;o.used=true;o.sd_len=48;o.sd[0]=1;o.sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());o.sd[16..20].copy_from_slice(&20u32.to_le_bytes());
   o.sd[20]=2;o.sd[22..24].copy_from_slice(&28u16.to_le_bytes());o.sd[24..26].copy_from_slice(&1u16.to_le_bytes());
   o.sd[28]=0;o.sd[30..32].copy_from_slice(&20u16.to_le_bytes());o.sd[32..36].copy_from_slice(&1u32.to_le_bytes());o.sd[36..48].copy_from_slice(&sid);
-  let s=state();assert!(access_check(s,&o,1,777));assert!(!access_check(s,&o,1,778));
+  let _g=LOCK.lock();let s=state();assert!(access_check(s,&o,1,777));assert!(!access_check(s,&o,1,778));
  }
  #[test]fn created_type_pointer_is_stable_and_roundtrips(){
   let name=[b'O' as u16,b'b' as u16,b'T' as u16,b'y' as u16,b'p' as u16,b'e' as u16,b'X' as u16];
@@ -539,6 +539,6 @@ mod tests{
   let mut reopened=core::ptr::null_mut();assert_eq!(unsafe{ZwOpenDirectoryObject(&mut reopened,1,&child_oa)},STATUS_SUCCESS);
   assert_eq!(unsafe{ZwClose(reopened)},STATUS_SUCCESS);assert_eq!(unsafe{ZwClose(child)},STATUS_SUCCESS);assert_eq!(unsafe{ZwClose(root)},STATUS_SUCCESS);
  }
- #[test]fn access_masks_and_deny_by_default(){let t=TypeEntry{used:true,id:1,gr:1,gw:2,gx:4,ga:7,valid:7,..TypeEntry::EMPTY};assert_eq!(map_access(&t,GENERIC_READ|GENERIC_WRITE),3);assert!(!access_check(state(),&Object::EMPTY,1,0));}
+ #[test]fn access_masks_and_deny_by_default(){let t=TypeEntry{used:true,id:1,gr:1,gw:2,gx:4,ga:7,valid:7,..TypeEntry::EMPTY};assert_eq!(map_access(&t,GENERIC_READ|GENERIC_WRITE),3);let _g=LOCK.lock();assert!(!access_check(state(),&Object::EMPTY,1,0));}
  #[test]fn stale_handle_cannot_alias_reused_slot(){let ty=register_type(&[88],1,2,4,7,7).unwrap();let body=0x2234usize as *mut c_void;unsafe{register_object(body,ty,&[89],false,core::ptr::null(),0).unwrap();}let h=open_by_pointer(body,1,0,true,0).unwrap();close_handle(h,0).unwrap();let h2=open_by_pointer(body,1,0,true,0).unwrap();assert_ne!(h,h2);assert_eq!(reference_by_handle(h,1,0,0,true).unwrap_err(),STATUS_INVALID_HANDLE);}
 }
