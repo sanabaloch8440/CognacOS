@@ -97,6 +97,10 @@ The third_party/Ext3Fsd submodule is retained as a separate upstream reference f
 
 Contributions should be small enough to review, document their assumptions, include meaningful tests where practical, and avoid claiming compatibility beyond what has been validated. For kernel-facing changes, include relevant build or QEMU results and keep failure paths bounded and safe.
 
+## Windows 11 Ke compatibility tracking
+
+The current Ke routine ABI/behavior inventory is maintained in [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md). It documents 20 additional Ke routine names, public WDK signatures, return values, resolver paths, known semantic gaps, and the project-defined compatibility calculation. The current 72.5% score is a scoped engineering metric, not a claim of general Windows 11 driver compatibility; the QEMU build and boot matrix must pass before runtime verification is claimed.
+
 ## License
 
 RdotOS is licensed under **GNU General Public License v2.0 or (at your option) any later version** (SPDX: GPL-2.0-or-later). See [LICENSE](LICENSE). The AP startup trampoline and temporary-page-table approach in kernel/src/smp.rs are adapted from [RustOS-Dev/RustOS](https://github.com/RustOS-Dev/RustOS), which is also GPL-2.0-or-later; the source-file notice identifies the adaptation. Third-party components retain their applicable licenses and notices.
