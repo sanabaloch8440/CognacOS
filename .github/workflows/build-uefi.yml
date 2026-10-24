@@ -50,17 +50,17 @@ jobs:
           set -euo pipefail
           mkdir -p build/drivers
           build_driver() {
-            local name="$1" package="$2" bin="$3" base="$4"
+            local name="$1" package="$2" bin="$3" base="$4" output="$5"
             RUSTFLAGS="-C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/$package/driver.ld" \\
               cargo build --manifest-path "$package/Cargo.toml" --target x86_64-unknown-none \\
                 --target-dir "target/driver-$name" --release --bin "$bin"
             python3 tools/elf_to_pe32plus.py "target/driver-$name/x86_64-unknown-none/release/$bin" \\
-              "build/drivers/$name" --image-base "$base" --dll
+              "build/drivers/$output" --image-base "$base" --dll
           }
-          build_driver hal drivers/hal hal 0xfffff80010000000
-          build_driver acpi drivers/acpi acpi 0xfffff80020000000
-          build_driver pci drivers/pci pci 0xfffff80030000000
-          build_driver processor drivers/processor processor 0xfffff80040000000
+          build_driver hal drivers/hal hal 0xfffff80010000000 Hal.dll
+          build_driver acpi drivers/acpi acpi 0xfffff80020000000 acpi.sys
+          build_driver pci drivers/pci pci 0xfffff80030000000 pci.sys
+          build_driver processor drivers/processor processor 0xfffff80040000000 processor.sys
           python3 - <<'PY'
           import struct
           from pathlib import Path
@@ -277,3 +277,7 @@ jobs:
             build/rdotos-uefi.img
             build/serial.log
             build/serial-smp-*.log
+            build/drivers/Hal.dll
+            build/drivers/acpi.sys
+            build/drivers/pci.sys
+            build/drivers/processor.sys
