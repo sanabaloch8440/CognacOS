@@ -114,6 +114,7 @@ static BUFFER_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new((
 pub unsafe fn allocate_common_buffer(_length:usize,_maximum_address:u64)->Result<(*mut u8,u64),DmaError>{ Err(DmaError::AddressMask) }
 pub unsafe fn flush_common_buffer_for_adapter(adapter:*mut core::ffi::c_void,cpu_address:*mut u8,length:usize)->Result<(),DmaError>{iommu::flush_common(adapter,cpu_address,length)}
 pub unsafe fn free_common_buffer_for_adapter(adapter:*mut core::ffi::c_void,cpu_address:*mut u8,logical_address:u64,length:usize)->Result<(),DmaError>{unsafe{iommu::free_common(adapter,cpu_address,logical_address,length)}}
+pub(crate) unsafe fn iommu_allocate_common(adapter:*mut core::ffi::c_void,length:usize,maximum_address:u64)->Result<(*mut u8,u64),DmaError>{unsafe{iommu::allocate_common(adapter,length,maximum_address)}}
 
 
 #[repr(C)]
@@ -220,10 +221,8 @@ pub unsafe extern "win64" fn map_transfer(adapter:*mut core::ffi::c_void,mdl:*mu
 pub unsafe extern "win64" fn flush_adapter_buffers(adapter:*mut core::ffi::c_void,mdl:*mut MdlAbi,map_register_base:*mut core::ffi::c_void,current_va:*mut core::ffi::c_void,length:u32,write_to_device:u8)->u8{
  if !is_dma_adapter(adapter)||mdl.is_null()||map_register_base.is_null()||current_va.is_null()||length==0{return 0}
  let physical=unsafe{crate::ntoskrnl::mm::mm_get_physical_address(current_va)};if physical==0{return 0}
- let _=physical;
- // Resolve the logical mapping for this token and exact transfer length.
- let logical=unsafe{crate::ntoskrnl::mm::mm_get_physical_address(current_va)};
- if iommu::sync_transfer(adapter,map_register_base,logical,length,write_to_device){1}else{0}
+ if validate_mdl_range(unsafe{&*mdl},current_va as u64,length).is_none(){return 0}
+ if iommu::sync_transfer(adapter,map_register_base,physical,length,write_to_device){1}else{0}
 }
 
 /// Windows SCATTER_GATHER_LIST header followed by NumberOfElements elements.
