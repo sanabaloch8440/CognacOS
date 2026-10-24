@@ -316,6 +316,7 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Implement `KeSignalCallDpcSynchronize` and `KeSignalCallDpcDone` using shared synchronization and completion barriers.
 - [x] Route a dedicated Ke broadcast IPI vector through the active rendezvous descriptor and execute callbacks on the target CPU before local-APIC EOI.
 - [x] Add import-resolver mappings and self-test assertions for all four exports.
+- [x] Run a boot-time Ke rendezvous self-test that checks exactly-once callback counts and DPC Synchronize/Done barrier returns on the online CPU set.
 - [x] Update `WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md` with public signatures, call paths, limitations, and the recalculated project score.
 - [ ] Validate callback counts, barriers, callback IRQL, and return values in QEMU with 2, 4, and 8 vCPUs.
 - [ ] Add bounded timeout/failure recovery for a processor that goes offline or fails to service the broadcast IPI.
