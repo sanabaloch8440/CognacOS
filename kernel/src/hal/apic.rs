@@ -15,7 +15,7 @@ static LAST_TSC: AtomicU64 = AtomicU64::new(0);
 static TSC_CPU_OFFSETS: [AtomicI64; crate::hal::MAX_CPUS] = [const { AtomicI64::new(0) }; crate::hal::MAX_CPUS];
 static TSC_CPU_SYNCED: [core::sync::atomic::AtomicBool; crate::hal::MAX_CPUS] = [const { core::sync::atomic::AtomicBool::new(false) }; crate::hal::MAX_CPUS];
 static CALIBRATED_TSC_HZ: AtomicU64 = AtomicU64::new(0);
-static LOCAL_TIMER_ACTIVE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static LOCAL_TIMER_ACTIVE: [core::sync::atomic::AtomicBool; crate::hal::MAX_CPUS] = [const { core::sync::atomic::AtomicBool::new(false) }; crate::hal::MAX_CPUS];
 static TIMER_OWNER_APIC_ID: AtomicU64 = AtomicU64::new(u64::MAX);
 static CALIBRATED_TIMER_COUNT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 const APIC_EOI: usize = 0x0b0;
@@ -200,9 +200,8 @@ pub unsafe fn send_startup_ipi(base: u64, destination_apic_id: u8, trampoline_ph
 // caller supplies a calibrated initial count and explicitly starts it.
 #[inline]
 pub fn local_timer_active() -> bool {
-    let owner=TIMER_OWNER_APIC_ID.load(Ordering::Acquire);
-    let current=((unsafe{core::arch::x86_64::__cpuid(1)}.ebx>>24)&0xff) as u64;
-    owner==current&&LOCAL_TIMER_ACTIVE.load(Ordering::Acquire)
+    let cpu=crate::hal::current_cpu_local().map(|c|c.logical_id.load(Ordering::Acquire) as usize).filter(|i|*i<crate::hal::MAX_CPUS).unwrap_or(0);
+    LOCAL_TIMER_ACTIVE[cpu].load(Ordering::Acquire)
 }
 
 pub fn local_apic_base() -> Option<u64> {
@@ -389,7 +388,7 @@ pub unsafe fn start_local_timer(initial_count: u32, divide: u8, periodic: bool) 
         write_local(base, APIC_TIMER_INITIAL_COUNT, initial_count);
         write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | if periodic { 1 << 17 } else { 0 });
     }
-    LOCAL_TIMER_ACTIVE.store(true, Ordering::Release);
+    LOCAL_TIMER_ACTIVE[crate::hal::current_cpu_local().map(|c|c.logical_id.load(Ordering::Acquire) as usize).filter(|i|*i<crate::hal::MAX_CPUS).unwrap_or(0)].store(true, Ordering::Release);
     Ok(())
 }
 pub unsafe fn stop_local_timer() {
@@ -397,7 +396,7 @@ pub unsafe fn stop_local_timer() {
         unsafe { write_local(base, APIC_LVT_TIMER, (1 << 16) | LOCAL_TIMER_VECTOR as u32); }
         unsafe { write_local(base, APIC_TIMER_INITIAL_COUNT, 0); }
     }
-    LOCAL_TIMER_ACTIVE.store(false, Ordering::Release);
+    LOCAL_TIMER_ACTIVE[crate::hal::current_cpu_local().map(|c|c.logical_id.load(Ordering::Acquire) as usize).filter(|i|*i<crate::hal::MAX_CPUS).unwrap_or(0)].store(false, Ordering::Release);
 }
 
 /// Publish the monotonic clock event through the HAL callback contract, then
@@ -495,7 +494,7 @@ pub unsafe fn calibrate_local_timer() -> Result<u32, ApicError> {
         return Err(ApicError::Unsupported);
     }
     CALIBRATED_TIMER_COUNT.store(per_ms, Ordering::Release);
-    LOCAL_TIMER_ACTIVE.store(false, Ordering::Release);
+    LOCAL_TIMER_ACTIVE[crate::hal::current_cpu_local().map(|c|c.logical_id.load(Ordering::Acquire) as usize).filter(|i|*i<crate::hal::MAX_CPUS).unwrap_or(0)].store(false, Ordering::Release);
     // Keep the LVT masked until AP startup and kernel self-tests have completed.
     unsafe { mask_local_timer(base); }
     Ok(per_ms)
@@ -511,7 +510,7 @@ pub unsafe fn start_calibrated_local_timer() -> Result<(), ApicError> {
         write_local(base, APIC_TIMER_INITIAL_COUNT, count);
         write_local(base, APIC_LVT_TIMER, LOCAL_TIMER_VECTOR as u32 | (1 << 17));
     }
-    LOCAL_TIMER_ACTIVE.store(true, Ordering::Release);
+    LOCAL_TIMER_ACTIVE[crate::hal::current_cpu_local().map(|c|c.logical_id.load(Ordering::Acquire) as usize).filter(|i|*i<crate::hal::MAX_CPUS).unwrap_or(0)].store(true, Ordering::Release);
     Ok(())
 }
 
