@@ -277,3 +277,27 @@ pub fn notify_processor_change(cpu:usize,change_type:u32){
   PROCESSOR_CALLBACK_IN_FLIGHT[i].fetch_sub(1,Ordering::AcqRel);
  }
 }
+
+
+#[cfg(test)]
+mod processor_callback_tests {
+    use super::*;
+    static CALLS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+    unsafe extern "win64" fn callback(_: *mut core::ffi::c_void, context:*mut ProcessorChangeNotifyContext, change:u32)->i32 {
+        if !context.is_null() && unsafe{(*context).change_type}==change {
+            CALLS.fetch_add(1,Ordering::AcqRel);
+        }
+        0
+    }
+    #[test]
+    fn processor_callback_registration_and_deregistration() {
+        CALLS.store(0,Ordering::Release);
+        let handle=unsafe{ke_register_processor_change_callback(Some(callback),core::ptr::null_mut(),0)};
+        assert!(!handle.is_null());
+        notify_processor_change(0,KE_PROCESSOR_CHANGE_ADD_COMPLETE);
+        assert_eq!(CALLS.load(Ordering::Acquire),1);
+        unsafe{ke_deregister_processor_change_callback(handle,1);}
+        notify_processor_change(0,KE_PROCESSOR_CHANGE_ADD_COMPLETE);
+        assert_eq!(CALLS.load(Ordering::Acquire),1);
+    }
+}
