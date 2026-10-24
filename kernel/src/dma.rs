@@ -271,7 +271,7 @@ pub unsafe extern "win64" fn map_transfer(
     length: *mut u32,
     _write_to_device: u8,
 ) -> i64 {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+    if !is_dma_adapter(adapter)
         || mdl.is_null() || current_va.is_null() || length.is_null() {
         return 0;
     }
