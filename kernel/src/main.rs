@@ -17,7 +17,6 @@ mod usermode;
 mod acpi;
 mod pci;
 mod dma;
-mod apic;
 mod hal;
 mod smp;
 mod scheduler;
