@@ -19,7 +19,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | I/O manager | Runtime moved to `ntoskrnl/io/runtime.rs`; bounded FIFO completion ports, deadline-aware IRPs, pre-dispatch timeout expiry, WDM 1.0 version gate, configuration-information and cancel-spin-lock exports, 16-bit port I/O and ordered volatile MMIO accessors | Dispatcher-integrated completion waits, live device counters/enumeration, safe in-flight cancellation, ABI-correct IRP/device-object APIs, real device dispatch/interrupt/DMA paths, and hardware tests |
 | NLS / globalization | Native-name catalogue and byte-preserving reader/copy API for `c_037.nls`, `c_437.nls`, `c_1252.nls`, `locale.nls`, `sortkey.nls`, `sorttbls.nls`, `ctype.nls`, `unicode.nls`; optional boot-asset staging | Parse NLS internal tables, code-page conversion, globalization APIs, filesystem writeback, locate files on a separate Windows/NTFS partition |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
-| ext filesystem | Separate `drivers/ext4` crate; read-only mount and restricted writes to existing initialized extents via writable block-device contract | VFS/block-device registration, allocation and metadata mutation, journal/checksum support, crash consistency, image/fuzz tests |
+| ext filesystem | Separate `drivers/ext4` Rust crate; bounded read-only mount and guarded writes to existing extents | Remove any remaining gitlink entry; block-device/partition layer; NT I/O manager device/IRP dispatch integration; VFS/file objects; allocation and metadata updates; journal/checksum handling; crash consistency and image/fuzz tests |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
 **Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; subsequent Ke/Ki affinity, Timer2, and clock-path changes are pending CI verification. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
@@ -435,3 +435,15 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [x] Inspect workflow #1162 logs: the preceding revision passed host allocator/filesystem tests, freestanding build, PE32+ conversion/validation, UEFI packaging, OVMF/QEMU smoke, and 2/4/8-vCPU SMP stress; Ke broadcast rendezvous and Synchronize/Done barriers passed on every online CPU.
 - [ ] Wait for the workflow triggered by this commit to validate the new standalone Ke timer-generation tests and current source revision.
 - [ ] Continue with integration stress for concurrent cancel/rearm versus expiry, DPC removal/reinitialization during callback, and flush-versus-insert. Predicate tests alone do not prove those interleavings race-free.
+
+
+### Ext filesystem and NT I/O integration (2026-10-24)
+
+- [x] Remove the third-party Ext3Fsd submodule declaration and stop depending on its Windows driver sources.
+- [x] Move the native Rust ext-family parser into `drivers/ext4` and configure CI to test that crate instead of the deleted `kernel/src/extfs.rs` path.
+- [ ] Remove the orphaned `third_party/Ext3Fsd` gitlink entry from the repository tree if it remains after submodule metadata removal.
+- [ ] Replace the bounded internal IRP test harness with ABI-correct WDM `DEVICE_OBJECT`, `DRIVER_OBJECT`, `IRP`, `IO_STACK_LOCATION`, `IoCreateDevice`, `IoCallDriver`, `IoCompleteRequest`, and cancel/rundown semantics; current routines are not yet safe for arbitrary WDK binaries.
+- [ ] Add a real block-device/partition contract and route filesystem read/write/flush requests through IRPs, with bounded buffers, alignment checks, completion status propagation, and device removal rundown.
+- [ ] Add ext4 VFS mount/file objects, pathname lookup, inode/directory operations, allocation, metadata checksums, journal recovery/commit, and power-loss tests before enabling general writable mounts.
+
+**Safety status:** this is not production-ready ext4 and must not be mounted read-write on valuable data. The existing write method can change existing data blocks but is not transactional and does not update inode metadata or guarantee rollback after partial I/O failure.
