@@ -15,9 +15,8 @@ pub union PowerState {
 
 static SYSTEM_POWER_STATE: AtomicU32 = AtomicU32::new(1);
 
-/// Report a committed system/device power state and return the previous state.
-/// This bookkeeping entry point does not perform a hardware transition or
-/// replace IRP_MJ_POWER dispatch, PnP sequencing, or asynchronous completion.
+/// Report the committed state after a driver has completed its power transition.
+/// Hardware sequencing remains owned by the driver's IRP_MJ_POWER path.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn PoSetPowerState(
     device: *mut DeviceObject,
@@ -60,7 +59,7 @@ const IRP_MN_SET_POWER:u8=0x02;
 const IRP_MN_QUERY_POWER:u8=0x03;
 const STATUS_CANCELLED:i32=0xC000_0120u32 as i32;
 const MAX_IDLE_DEVICES:usize=32;
-const TICKS_PER_SECOND:u64=1_000_000_000;
+fn performance_ticks_per_second()->u64 { crate::hal::query_performance_frequency_hz().unwrap_or(1).max(1) }
 const STATUS_SUCCESS:i32=0;
 const STATUS_PENDING:i32=0x0000_0103;
 const STATUS_DEVICE_BUSY:i32=0x8000_0011u32 as i32;
@@ -332,7 +331,7 @@ pub unsafe extern "system" fn PoPollIdleDevices()->u32 {
    if !s.used||s.busy_count!=0{continue}
    let seconds=if conserve{s.conservation_seconds}else{s.performance_seconds};
    if seconds==0||seconds==u32::MAX{continue}
-   let ticks=(seconds as u64).saturating_mul(TICKS_PER_SECOND);
+   let ticks=(seconds as u64).saturating_mul(performance_ticks_per_second());
    if now.saturating_sub(s.last_busy)>=ticks{
     requests[count]=(s.device,s.target_state as u32+1);count+=1;s.last_busy=now;
    }
