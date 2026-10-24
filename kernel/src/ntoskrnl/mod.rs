@@ -63,7 +63,11 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
  // These supported MDL lifecycle routines are absent from the pinned ordinal
  // manifest, so resolve their exact documented names without fabricating ordinals.
  if let ImportSymbol::Name(requested) = symbol {
-  let direct = if requested.eq_ignore_ascii_case(b"IoBuildAsynchronousFsdRequest") {
+  let direct = if requested.eq_ignore_ascii_case(b"IoAllocateMdl") {
+   Some(crate::io::io_allocate_mdl as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoFreeMdl") {
+   Some(crate::io::io_free_mdl as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoBuildAsynchronousFsdRequest") {
    Some(crate::io::io_build_asynchronous_fsd_request as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCancelIrp") {
    Some(crate::io::io_cancel_irp as usize)
