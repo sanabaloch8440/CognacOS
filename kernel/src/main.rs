@@ -279,6 +279,12 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 halt();
             }
         };
+        // Publish direct-map W^X policy before any high-RAM probe can fault in
+        // a leaf. An uninitialized policy intentionally defaults to read-only.
+        memory::set_direct_map_readonly_ranges(unsafe { [
+            (core::ptr::addr_of!(__text_phys_start) as u64, core::ptr::addr_of!(__text_phys_end) as u64),
+            (core::ptr::addr_of!(__rodata_phys_start) as u64, core::ptr::addr_of!(__rodata_phys_end) as u64),
+        ] });
         serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\r\n");
         // Keep the entire physical stack allocation out of the allocator even
         // if firmware's final map incorrectly reports any page as conventional.
