@@ -59,13 +59,13 @@ pub unsafe extern "win64" fn ke_raise_irql_to_dpc_level() -> u8 {
     unsafe { irq_disable(); }
     push_irq_state(flags);
     let old = CURRENT_IRQL[cpu_slot()].swap(DISPATCH_LEVEL, Ordering::AcqRel);
-    let _ = unsafe { crate::apic::set_task_priority(DISPATCH_LEVEL) };
+    let _ = unsafe { crate::hal::set_interrupt_priority(DISPATCH_LEVEL) };
     old
 }
 pub unsafe extern "win64" fn ke_lower_irql(new_irql: u8) {
     let cpu = cpu_slot();
     CURRENT_IRQL[cpu].store(new_irql, Ordering::Release);
-    let _ = unsafe { crate::apic::set_task_priority(new_irql) };
+    let _ = unsafe { crate::hal::set_interrupt_priority(new_irql) };
     let flags = pop_irq_state();
     unsafe { irq_restore(flags); }
     if new_irql < DISPATCH_LEVEL { dispatch_queued_dpcs(); }
@@ -80,11 +80,11 @@ pub unsafe extern "win64" fn ke_acquire_spin_lock(lock: *mut u64, old_irql: *mut
     unsafe { irq_disable(); }
     push_irq_state(flags);
     let old = CURRENT_IRQL[cpu_slot()].swap(DISPATCH_LEVEL, Ordering::AcqRel);
-    let _ = unsafe { crate::apic::set_task_priority(DISPATCH_LEVEL) };
+    let _ = unsafe { crate::hal::set_interrupt_priority(DISPATCH_LEVEL) };
     unsafe { old_irql.write(old); }
     let Some(word) = atomic_lock_word(lock) else {
         CURRENT_IRQL[cpu_slot()].store(old, Ordering::Release);
-        let _ = unsafe { crate::apic::set_task_priority(old) };
+        let _ = unsafe { crate::hal::set_interrupt_priority(old) };
         let saved = pop_irq_state(); unsafe { irq_restore(saved); }
         return;
     };
@@ -99,7 +99,7 @@ pub unsafe extern "win64" fn ke_raise_irql_to_synch_level() -> u8 {
     unsafe { irq_disable(); }
     push_irq_state(flags);
     let old = CURRENT_IRQL[cpu_slot()].swap(12, Ordering::AcqRel);
-    let _ = unsafe { crate::apic::set_task_priority(12) };
+    let _ = unsafe { crate::hal::set_interrupt_priority(12) };
     old
 }
 /// Acquire a spin lock at SYNCH_LEVEL and return the prior IRQL.
@@ -108,7 +108,7 @@ pub unsafe extern "win64" fn ke_acquire_spin_lock_raise_to_synch(lock: *mut u64)
     unsafe { irq_disable(); }
     push_irq_state(flags);
     let old = CURRENT_IRQL[cpu_slot()].swap(12, Ordering::AcqRel);
-    let _ = unsafe { crate::apic::set_task_priority(12) };
+    let _ = unsafe { crate::hal::set_interrupt_priority(12) };
     let Some(word) = atomic_lock_word(lock) else {
         CURRENT_IRQL[cpu_slot()].store(old, Ordering::Release);
         let saved = pop_irq_state(); unsafe { irq_restore(saved); }
@@ -148,14 +148,14 @@ pub unsafe extern "win64" fn ke_try_to_acquire_spin_lock_at_dpc_level(lock: *mut
 /// Frequency is reported in ticks per second and is only advertised when the
 /// platform exposes a defensible TSC frequency.
 pub unsafe extern "win64" fn ke_query_performance_counter(frequency: *mut i64) -> i64 {
-    if let Some(hz) = crate::apic::tsc_frequency_hz() {
+    if let Some(hz) = crate::hal::query_performance_frequency_hz() {
         if !frequency.is_null() {
             unsafe { frequency.write(hz.min(i64::MAX as u64) as i64); }
         }
     } else if !frequency.is_null() {
         unsafe { frequency.write(0); }
     }
-    crate::apic::monotonic_ticks().min(i64::MAX as u64) as i64
+    crate::hal::query_performance_counter().min(i64::MAX as u64) as i64
 }
 
 /// Serialize prior writes before returning to a caller that requires the
@@ -170,11 +170,11 @@ pub unsafe extern "win64" fn ke_flush_write_buffer() {
 /// that a guessed delay was accurate; HAL import resolution hides this export.
 pub unsafe extern "win64" fn ke_stall_execution_processor(microseconds: u32) {
     if microseconds == 0 { return; }
-    let Some(hz) = crate::apic::tsc_frequency_hz() else { return; };
+    let Some(hz) = crate::hal::query_performance_frequency_hz() else { return; };
     let ticks = ((hz as u128) * (microseconds as u128) + 999_999) / 1_000_000;
     let Ok(ticks) = u64::try_from(ticks) else { return; };
-    let start = crate::apic::monotonic_ticks();
-    while crate::apic::monotonic_ticks().wrapping_sub(start) < ticks {
+    let start = crate::hal::query_performance_counter();
+    while crate::hal::query_performance_counter().wrapping_sub(start) < ticks {
         core::hint::spin_loop();
     }
 }
