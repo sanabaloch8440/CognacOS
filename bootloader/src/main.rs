@@ -184,6 +184,15 @@ fn main() -> Status {
             map_bytes,
         );
     }
+    if unsafe { populate_bootstrap_page_tables(
+        pml4_physical,
+        map_copy.as_ptr().cast::<u8>(),
+        memory_map.len(),
+        descriptor_size,
+    ) }.is_err() {
+        uefi::println!("FATAL: could not build explicit identity mappings from final UEFI map");
+        loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
+    }
     let boot_info = BootInfo {
         magic: BOOT_INFO_MAGIC,
         version: BOOT_INFO_VERSION,
@@ -199,6 +208,25 @@ fn main() -> Status {
     };
     let boot_info_ptr = boot_info_storage.as_ptr().cast::<BootInfo>();
     unsafe { boot_info_ptr.write(boot_info); }
+    // Refuse the handoff unless each live physical dependency has an explicit
+    // identity leaf in the new tables. Validate all pages of the kernel stack.
+    let stack_range_ok = (0..KERNEL_STACK_ALLOCATION_PAGES).all(|page| unsafe {
+        bootstrap_identity_mapped(pml4_physical, kernel_stack_guard_page + page as u64 * boot::PAGE_SIZE as u64)
+    });
+    let dependencies = [
+        pml4_physical,
+        map_copy.as_ptr() as u64,
+        boot_info_storage.as_ptr() as u64,
+        entry,
+        kernel_stack,
+        if rsdp_address < 0x1_0000_0000 { rsdp_address } else { 0 },
+        ap_trampoline_physical,
+    ];
+    if !stack_range_ok || dependencies.into_iter().filter(|address| *address != 0)
+        .any(|address| unsafe { !bootstrap_identity_mapped(pml4_physical, address) }) {
+        uefi::println!("FATAL: final UEFI map omitted a live bootstrap dependency");
+        loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
+    }
     core::mem::forget(memory_map);
 
     // x86-64 System V kernel ABI: BootInfo pointer in RDI. This first-stage
@@ -250,12 +278,11 @@ fn allocate_boot_page() -> Result<u64, Status> {
     Ok(page.as_ptr() as u64)
 }
 
-/// Build page tables that identity-map 0..4 GiB with 2 MiB pages. The kernel
-/// takes ownership by loading this PML4 into CR3 immediately after entry.
+/// Allocate an empty low-4-GiB page-table skeleton. Leaf mappings are
+/// populated from the final UEFI memory map after ExitBootServices, so holes
+/// are not accidentally identity-mapped merely because they are below 4 GiB.
 fn build_bootstrap_page_tables() -> Result<u64, Status> {
     const PRESENT_WRITE: u64 = 0x003;
-    const LARGE_PAGE: u64 = 1 << 7;
-    const TWO_MIB: u64 = 2 * 1024 * 1024;
     let pml4 = allocate_boot_page()?;
     let pdpt = allocate_boot_page()?;
     let mut dirs = [0u64; 4];
@@ -264,19 +291,85 @@ fn build_bootstrap_page_tables() -> Result<u64, Status> {
         (pml4 as *mut u64).write(pdpt | PRESENT_WRITE);
         for index in 0..4 {
             (pdpt as *mut u64).add(index).write(dirs[index] | PRESENT_WRITE);
-            let table = dirs[index] as *mut u64;
-            for entry in 0..512 {
-                let physical = (index as u64 * 512 + entry as u64) * TWO_MIB;
-                // xAPIC and I/O APIC register windows must be UC, not cacheable
-                // WB RAM. These standard legacy MMIO windows are 2 MiB aligned.
-                const PWT: u64 = 1 << 3;
-                const PCD: u64 = 1 << 4;
-                let cache_flags = if physical == 0xfec0_0000 || physical == 0xfee0_0000 {
-                    PWT | PCD
-                } else { 0 };
-                table.add(entry).write(physical | PRESENT_WRITE | LARGE_PAGE | cache_flags);
-            }
+            // allocate_boot_page zeroes every page-directory entry.
         }
     }
     Ok(pml4)
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct RawMemoryDescriptor {
+    kind: u32,
+    _padding: u32,
+    physical_start: u64,
+    virtual_start: u64,
+    number_of_pages: u64,
+    attributes: u64,
+}
+
+/// Populate identity mappings only for physical regions described by the final
+/// UEFI map. The 2 MiB leaf granularity is retained for bootstrap simplicity;
+/// uncovered physical holes remain not-present. All mapped regions start
+/// supervisor/writable; kernel section permissions are a later kernel phase.
+unsafe fn populate_bootstrap_page_tables(
+    pml4_physical: u64, map: *const u8, entries: usize, stride: usize,
+) -> Result<(), ()> {
+    const PRESENT_WRITE: u64 = 0x003;
+    const LARGE_PAGE: u64 = 1 << 7;
+    const TWO_MIB: u64 = 2 * 1024 * 1024;
+    const FOUR_GIB: u64 = 0x1_0000_0000;
+    const PWT: u64 = 1 << 3;
+    const PCD: u64 = 1 << 4;
+    if pml4_physical == 0 || pml4_physical >= FOUR_GIB || pml4_physical & 0xfff != 0
+        || (entries != 0 && map.is_null())
+        || stride < core::mem::size_of::<RawMemoryDescriptor>()
+        || entries.checked_mul(stride).is_none()
+    { return Err(()); }
+
+    let pml4 = pml4_physical as *mut u64;
+    let root_entry = unsafe { pml4.read() };
+    if root_entry & 1 == 0 { return Err(()); }
+    let pdpt = (root_entry & 0x000f_ffff_ffff_f000) as *mut u64;
+    for i in 0..entries {
+        let offset = i.checked_mul(stride).ok_or(())?;
+        let address = (map as usize).checked_add(offset).ok_or(())?;
+        let descriptor = unsafe { core::ptr::read_unaligned(address as *const RawMemoryDescriptor) };
+        if descriptor.number_of_pages == 0 { continue; }
+        let bytes = descriptor.number_of_pages.checked_mul(4096).ok_or(())?;
+        let raw_end = descriptor.physical_start.checked_add(bytes).ok_or(())?;
+        let start = descriptor.physical_start & !(TWO_MIB - 1);
+        let end = raw_end.min(FOUR_GIB).checked_add(TWO_MIB - 1).ok_or(())? & !(TWO_MIB - 1);
+        if start >= end || start >= FOUR_GIB { continue; }
+        let mut physical = start;
+        while physical < end.min(FOUR_GIB) {
+            let pdpt_index = (physical >> 30) as usize;
+            let pd_index = ((physical >> 21) & 0x1ff) as usize;
+            let pdpte = unsafe { pdpt.add(pdpt_index).read() };
+            if pdpte & 1 == 0 || pdpte & LARGE_PAGE != 0 { return Err(()); }
+            let pd = (pdpte & 0x000f_ffff_ffff_f000) as *mut u64;
+            // xAPIC and I/O APIC windows must not be cached as ordinary WB RAM.
+            let cache_flags = if physical == 0xfec0_0000 || physical == 0xfee0_0000 {
+                PWT | PCD
+            } else { 0 };
+            unsafe { pd.add(pd_index).write(physical | PRESENT_WRITE | LARGE_PAGE | cache_flags); }
+            physical += TWO_MIB;
+        }
+    }
+    Ok(())
+}
+
+/// Confirm that a physical address is currently identity-mapped by a 2 MiB leaf.
+unsafe fn bootstrap_identity_mapped(pml4_physical: u64, address: u64) -> bool {
+    if address >= 0x1_0000_0000 { return false; }
+    let pml4 = pml4_physical as *const u64;
+    let pml4e = unsafe { pml4.read() };
+    if pml4e & 1 == 0 { return false; }
+    let pdpt = (pml4e & 0x000f_ffff_ffff_f000) as *const u64;
+    let pdpte = unsafe { pdpt.add(((address >> 30) & 0x3) as usize).read() };
+    if pdpte & 1 == 0 { return false; }
+    let pd = (pdpte & 0x000f_ffff_ffff_f000) as *const u64;
+    let pde = unsafe { pd.add(((address >> 21) & 0x1ff) as usize).read() };
+    pde & (1 | LARGE_PAGE) == (1 | LARGE_PAGE)
+        && (pde & 0x000f_ffff_ffe0_0000) + (address & (TWO_MIB - 1)) == address
 }
