@@ -180,7 +180,31 @@ fn mdl_page_count(byte_offset: u64, byte_count: u64) -> Option<u64> {
 const MDL_LOCKED: i16 = 0x0002;
 const MDL_NONPAGED_POOL: i16 = 0x0004;
 const MDL_MAPPED_SYSTEM_VA: i16 = 0x0001;
+const MDL_PARTIAL: i16 = 0x0010;
+const MDL_PARTIAL_HAS_BEEN_MAPPED: i16 = 0x0020;
 const MAX_LOCKED_PAGES: usize = 8192;
+const MAX_OWNED_MDLS: usize = 256;
+#[derive(Clone, Copy)]
+struct OwnedMdl { address: u64, live: bool }
+impl OwnedMdl { const EMPTY: Self = Self { address: 0, live: false }; }
+static OWNED_MDLS: crate::hal::IrqSpinLock<[OwnedMdl; MAX_OWNED_MDLS]> =
+    crate::hal::IrqSpinLock::new([OwnedMdl::EMPTY; MAX_OWNED_MDLS]);
+
+fn register_owned_mdl(address: u64) -> bool {
+    let mut owned = OWNED_MDLS.lock();
+    let Some(slot) = owned.iter_mut().find(|entry| !entry.live) else { return false; };
+    *slot = OwnedMdl { address, live: true };
+    true
+}
+fn is_owned_mdl(address: u64) -> bool {
+    OWNED_MDLS.lock().iter().any(|entry| entry.live && entry.address == address)
+}
+fn unregister_owned_mdl(address: u64) -> bool {
+    let mut owned = OWNED_MDLS.lock();
+    let Some(slot) = owned.iter_mut().find(|entry| entry.live && entry.address == address) else { return false; };
+    *slot = OwnedMdl::EMPTY;
+    true
+}
 #[derive(Clone, Copy)]
 struct LockedPage { pfn: u64, references: u32, live: bool }
 impl LockedPage { const EMPTY: Self = Self { pfn: 0, references: 0, live: false }; }
@@ -261,13 +285,18 @@ pub unsafe extern "win64" fn mm_create_mdl(mdl: *mut c_void, base: *mut c_void, 
     }
     let size = unsafe { mm_size_of_mdl(base, length) };
     if size == 0 || size > i16::MAX as u32 { return core::ptr::null_mut(); }
-    let address = if mdl.is_null() {
+    let allocated = mdl.is_null();
+    let address = if allocated {
         crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(size as usize, 0x4c444d4d, true)
     } else { mdl.cast::<u8>() };
     if address.is_null() { return core::ptr::null_mut(); }
     let raw = address as u64;
     if raw < 0xffff_8000_0000_0000 || !mdl_header_is_writable(raw) {
-        if mdl.is_null() { let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(address, Some(0x4c444d4d)); }
+        if allocated { let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(address, Some(0x4c444d4d)); }
+        return core::ptr::null_mut();
+    }
+    if allocated && !register_owned_mdl(raw) {
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(address, Some(0x4c444d4d));
         return core::ptr::null_mut();
     }
     let start = (base as u64) & !(PAGE_SIZE - 1);
@@ -398,6 +427,131 @@ pub unsafe extern "win64" fn mm_advance_mdl(mdl: *mut c_void, number_of_bytes: u
     header.flags &= !MDL_MAPPED_SYSTEM_VA;
     header.mapped_system_va = core::ptr::null_mut();
 }
+
+/// Reset a reusable MDL without releasing its caller-owned header allocation.
+pub unsafe extern "win64" fn mm_prepare_mdl_for_reuse(mdl: *mut c_void) {
+    if mdl.is_null() { return; }
+    let address = mdl as u64;
+    if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    if header.size < MDL_HEADER_SIZE as i16 { return; }
+    let pages = match mdl_page_count(header.byte_offset as u64, header.byte_count as u64) {
+        Some(value) => value,
+        None => return,
+    };
+    let required = match MDL_HEADER_SIZE.checked_add(pages.saturating_mul(8)) {
+        Some(value) => value,
+        None => return,
+    };
+    if header.size as u64 < required { return; }
+    let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(value) => value, None => return };
+    for index in 0..pages {
+        let Some(at) = pfn_address.checked_add(index * 8) else { return; };
+        if translate(at, true).is_none() { return; }
+    }
+    if header.flags & MDL_LOCKED != 0 && header.flags & MDL_NONPAGED_POOL == 0 {
+        let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, pages as usize) };
+        unlock_pfns(pfns);
+    }
+    for index in 0..pages as usize {
+        unsafe { ((pfn_address as *mut u64).add(index)).write(0); }
+    }
+    header.next = core::ptr::null_mut();
+    header.flags = 0;
+    header.process = core::ptr::null_mut();
+    header.mapped_system_va = core::ptr::null_mut();
+    header.start_va = core::ptr::null_mut();
+    header.byte_count = 0;
+    header.byte_offset = 0;
+}
+
+/// Free only MDLs allocated by MmCreateMdl; caller-owned IoAllocateMdl-style
+/// storage is never returned to the pool by this routine.
+pub unsafe extern "win64" fn mm_free_mdl(mdl: *mut c_void) {
+    if mdl.is_null() { return; }
+    let address = mdl as u64;
+    if !is_owned_mdl(address) || address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
+    let header = unsafe { &*mdl.cast::<MdlHeader>() };
+    if header.flags & MDL_LOCKED != 0 && header.flags & MDL_NONPAGED_POOL == 0 {
+        unsafe { mm_unlock_pages(mdl); }
+    }
+    if !unregister_owned_mdl(address) { return; }
+    let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl.cast(), Some(0x4c444d4d));
+}
+
+/// Construct a partial MDL referencing a validated subrange of a source MDL.
+/// Locked source PFNs acquire independent pin references so either MDL can be
+/// released first. Nonpaged-pool source buffers retain their nonpaged semantics.
+pub unsafe extern "win64" fn mm_build_partial_mdl(
+    source_mdl: *mut c_void, target_mdl: *mut c_void,
+    virtual_address: *mut c_void, length: u32,
+) {
+    if source_mdl.is_null() || target_mdl.is_null() || virtual_address.is_null() { return; }
+    let src_addr = source_mdl as u64;
+    let dst_addr = target_mdl as u64;
+    if src_addr < 0xffff_8000_0000_0000 || dst_addr < 0xffff_8000_0000_0000
+        || !mdl_header_is_writable(src_addr) || !mdl_header_is_writable(dst_addr) { return; }
+    let src = unsafe { &*source_mdl.cast::<MdlHeader>() };
+    if src.flags & (MDL_LOCKED | MDL_NONPAGED_POOL) == 0 { return; }
+    let src_start = src.start_va as u64;
+    let src_offset = src.byte_offset as u64;
+    let src_len = src.byte_count as u64;
+    let request = virtual_address as u64;
+    let Some(src_begin) = src_start.checked_add(src_offset) else { return; };
+    let Some(src_end) = src_begin.checked_add(src_len) else { return; };
+    let Some(req_end) = request.checked_add(length as u64) else { return; };
+    if request < src_begin || req_end > src_end { return; }
+    let relative = request - src_begin;
+    let absolute = src_offset.checked_add(relative).unwrap_or(u64::MAX);
+    let first_page = absolute / PAGE_SIZE;
+    let new_offset = request & (PAGE_SIZE - 1);
+    let Some(pages) = mdl_page_count(new_offset, length as u64) else { return; };
+    let required = match MDL_HEADER_SIZE.checked_add(pages.saturating_mul(8)) { Some(v) => v, None => return };
+    let dst = unsafe { &mut *target_mdl.cast::<MdlHeader>() };
+    if dst_addr == src_addr || dst.size < 0 || (dst.size as u64) < required { return; }
+    let dst_pfns = match dst_addr.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
+    for index in 0..pages {
+        if translate(dst_pfns + index * 8, true).is_none() { return; }
+        if translate(src_addr + MDL_HEADER_SIZE + (first_page + index) * 8, false).is_none() { return; }
+    }
+    let mut copied = [0u64; 2];
+    // A small stack staging buffer covers only the most common tiny partial MDLs;
+    // larger ones are copied directly after all bounds are preflighted.
+    let _ = &mut copied;
+    for index in 0..pages {
+        let source_pfn = unsafe { ((src_addr + MDL_HEADER_SIZE + (first_page + index) * 8) as *const u64).read() };
+        unsafe { ((dst_pfns + index * 8) as *mut u64).write(source_pfn); }
+    }
+    let dst_start = request & !(PAGE_SIZE - 1);
+    dst.next = core::ptr::null_mut();
+    dst._padding = 0;
+    dst.process = src.process;
+    dst.mapped_system_va = core::ptr::null_mut();
+    dst.start_va = dst_start as *mut c_void;
+    dst.byte_offset = new_offset as u32;
+    dst.byte_count = length;
+    dst.flags = (src.flags & MDL_NONPAGED_POOL) | MDL_PARTIAL;
+    if src.flags & MDL_NONPAGED_POOL != 0 {
+        dst.flags |= MDL_LOCKED | MDL_MAPPED_SYSTEM_VA;
+        dst.mapped_system_va = virtual_address;
+    } else {
+        let pfns = unsafe { core::slice::from_raw_parts(dst_pfns as *const u64, pages as usize) };
+        if !lock_pfns(pfns) {
+            for index in 0..pages { unsafe { ((dst_pfns + index * 8) as *mut u64).write(0); } }
+            dst.flags = 0;
+            dst.process = core::ptr::null_mut();
+            dst.start_va = core::ptr::null_mut();
+            dst.byte_count = 0;
+            dst.byte_offset = 0;
+            return;
+        }
+        dst.flags |= MDL_LOCKED;
+    }
+}
+
+/// Fault-in requests are intentionally bounded to the current resident mappings;
+/// the kernel has no pageable-buffer fault completion path yet.
+
 /// Map only MDLs whose PFNs form a verified contiguous RAM run into the direct-map window.
 pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
     mdl: *mut c_void, access_mode: i8, cache_type: i32, requested_address: *mut c_void,
