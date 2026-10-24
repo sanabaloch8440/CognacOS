@@ -978,6 +978,42 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
 }
 
 
+
+/// Interrupt-object synchronization side table. Until HAL interrupt objects expose
+/// their real SynchronizeIrql and ISR lock, this uses a conservative DPC-level
+/// critical section; it serializes RdotOS callers but is not a Windows DIRQL clone.
+const MAX_INTERRUPT_LOCKS:usize=128;
+struct InterruptLockSlot{object:core::sync::atomic::AtomicUsize,word:core::sync::atomic::AtomicU64}
+impl InterruptLockSlot{const fn new()->Self{Self{object:core::sync::atomic::AtomicUsize::new(0),word:core::sync::atomic::AtomicU64::new(0)}}}
+static INTERRUPT_LOCKS:[InterruptLockSlot;MAX_INTERRUPT_LOCKS]=[const{InterruptLockSlot::new()};MAX_INTERRUPT_LOCKS];
+static INTERRUPT_LOCK_REGISTRY:crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
+fn interrupt_lock_slot(interrupt:*mut core::ffi::c_void)->Option<usize>{
+ if interrupt.is_null(){return None}
+ let _guard=INTERRUPT_LOCK_REGISTRY.lock();
+ if let Some(i)=INTERRUPT_LOCKS.iter().position(|s|s.object.load(Ordering::Acquire)==interrupt as usize){return Some(i)}
+ let i=INTERRUPT_LOCKS.iter().position(|s|s.object.load(Ordering::Acquire)==0)?;
+ INTERRUPT_LOCKS[i].object.store(interrupt as usize,Ordering::Release);Some(i)
+}
+fn acquire_interrupt_lock(interrupt:*mut core::ffi::c_void)->Option<u8>{
+ let i=interrupt_lock_slot(interrupt)?;let old=unsafe{ke_raise_irql_to_dpc_level()};let word=&INTERRUPT_LOCKS[i].word;
+ while word.compare_exchange_weak(0,1,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();}
+ Some(old)
+}
+pub unsafe extern "win64" fn ke_acquire_interrupt_spin_lock(interrupt:*mut core::ffi::c_void)->u8{
+ acquire_interrupt_lock(interrupt).unwrap_or_else(||unsafe{ke_get_current_irql()})
+}
+pub unsafe extern "win64" fn ke_release_interrupt_spin_lock(interrupt:*mut core::ffi::c_void,old_irql:u8){
+ if let Some(i)=interrupt_lock_slot(interrupt){INTERRUPT_LOCKS[i].word.store(0,Ordering::Release);unsafe{ke_lower_irql(old_irql);}}
+}
+pub type SynchronizeRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void)->u8;
+pub unsafe extern "win64" fn ke_synchronize_execution(interrupt:*mut core::ffi::c_void,routine:Option<SynchronizeRoutine>,context:*mut core::ffi::c_void)->u8{
+ let Some(routine)=routine else{return 0};
+ let Some(old)=acquire_interrupt_lock(interrupt) else{return 0};
+ let result=unsafe{routine(context)};
+ unsafe{ke_release_interrupt_spin_lock(interrupt,old);}
+ result
+}
+
 /// Precise monotonic time; suspend/resume bias is not modelled yet.
 pub unsafe extern "win64" fn ke_query_unbiased_interrupt_time_precise(qpc_timestamp:*mut u64)->u64{
  if !qpc_timestamp.is_null(){unsafe{qpc_timestamp.write(crate::apic::monotonic_ticks());}}
