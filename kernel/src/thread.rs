@@ -24,6 +24,7 @@ static IDLE_CONTEXTS:[IdleContext;crate::hal::MAX_CPUS]=[const { IdleContext(Uns
 static IDLE_STACK_TOPS:[core::sync::atomic::AtomicU64;crate::hal::MAX_CPUS]=[const { core::sync::atomic::AtomicU64::new(0) };crate::hal::MAX_CPUS];
 static STRESS_LOCK:IrqSpinLock<u64>=IrqSpinLock::new(0);
 static STRESS_COMPLETED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static EXTENDED_DISPATCHER_TEST_ONCE:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static STRESS_CPU_MASK:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static STRESS_FAILURES:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static mut STRESS_STACKS:[[u8;8192];8]=[[0;8192];8];
@@ -604,6 +605,10 @@ fn smp_stress_io_dispatch(irp:&mut crate::io::Irp)->crate::io::IoStatus{
 }
 
 extern "C" fn lock_stress_worker(argument:*mut c_void) {
+    if !EXTENDED_DISPATCHER_TEST_ONCE.swap(true,core::sync::atomic::Ordering::AcqRel)
+        && !crate::ntoskrnl::ke::runtime::dispatcher_extended_self_test(){
+        STRESS_FAILURES.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
+    }
     let device_id=argument as usize as u32;
     if let Ok(cpu)=cpu_index() {
         STRESS_CPU_MASK.fetch_or(1u64<<cpu,core::sync::atomic::Ordering::AcqRel);
