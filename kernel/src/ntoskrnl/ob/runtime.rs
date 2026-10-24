@@ -254,7 +254,7 @@ mod tests{
   let ty=register_type(&[90],1,2,4,7,7).unwrap();let body=0x3234usize as *mut c_void;let mut sd=[0u8;48];
   sd[0]=1;sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());sd[16..20].copy_from_slice(&20u32.to_le_bytes());
   sd[20]=2;sd[22..24].copy_from_slice(&28u16.to_le_bytes());sd[24..26].copy_from_slice(&1u16.to_le_bytes());
-  sd[28]=0;sd[30..32].copy_from_slice(&20u16.to_le_bytes());sd[32..36].copy_from_slice(&1u32.to_le_bytes());sd[36]=1;sd[37]=1;sd[44..48].copy_from_slice(&[1,0,0,0]);
+  sd[28]=0;sd[30..32].copy_from_slice(&20u16.to_le_bytes());sd[32..36].copy_from_slice(&1u32.to_le_bytes());sd[36]=1;sd[37]=1;sd[43]=1;
   unsafe{register_object(body,ty,&[91],false,sd.as_ptr(),sd.len()).unwrap();}
   let h=open_by_pointer(body,1,42,true,0).unwrap();assert_eq!(reference_by_handle(h,1,0,7,false).unwrap_err(),STATUS_INVALID_HANDLE);
   assert_eq!(reference_by_handle(h,1,0,42,false).unwrap(),body);assert!(dereference_body(body));close_handle(h,42).unwrap();assert!(dereference_body(body));
