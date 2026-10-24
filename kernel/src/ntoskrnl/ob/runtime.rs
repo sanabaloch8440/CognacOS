@@ -81,6 +81,7 @@ fn handle_idx(s:&State,h:*mut c_void,owner:usize)->Option<usize>{let(i,g)=decode
 pub unsafe fn register_object(body:*mut c_void,type_id:u16,name:&[u16],permanent:bool,sd:*const u8,sd_len:usize)->Result<(),i32>{
  if body.is_null()||name.len()>MAX_NAME||sd_len>256||(sd_len!=0&&sd.is_null()){return Err(STATUS_INVALID_PARAMETER)}
  let _g=LOCK.lock();let s=state();if type_idx(s,type_id).is_none(){return Err(STATUS_OBJECT_TYPE_MISMATCH)}
+ if object_idx(s,body as usize).is_some(){return Err(STATUS_OBJECT_NAME_COLLISION)}
  if !name.is_empty()&&find_name(s,name).is_some(){return Err(STATUS_OBJECT_NAME_COLLISION)}
  let Some(i)=s.objects.iter().position(|o|!o.used)else{return Err(STATUS_INSUFFICIENT_RESOURCES)};
  let mut o=Object{used:true,body:body as usize,type_id,name_len:name.len() as u16,refs:1,permanent,..Object::EMPTY};o.name[..name.len()].copy_from_slice(name);
@@ -120,8 +121,8 @@ pub fn open_by_pointer(body:*mut c_void,desired:u32,owner:usize,kernel_mode:bool
  let hi=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[i].handles+=1;let g=s.handles[hi].generation.max(1);s.handles[hi]=HandleEntry{used:true,generation:g,object:i,owner:if attrs&OBJ_KERNEL_HANDLE!=0{usize::MAX}else{owner},access:granted,attributes:attrs};Ok(encode_handle(hi,g))
 }
 pub fn reference_by_handle(h:*mut c_void,desired:u32,expected_type:u16,owner:usize,kernel_mode:bool)->Result<*mut c_void,i32>{
- let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,if kernel_mode{usize::MAX}else{owner}).ok_or(STATUS_INVALID_HANDLE)?;let e=s.handles[hi];if desired&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}let o=s.objects.get(e.object).ok_or(STATUS_INVALID_HANDLE)?;if !o.used||o.deleting{return Err(STATUS_INVALID_HANDLE)}if expected_type!=0&&o.type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
- let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];if !kernel_mode&&!access_check(o,desired){return Err(STATUS_ACCESS_DENIED)}let body=o.body as *mut c_void;
+ let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,if kernel_mode{usize::MAX}else{owner}).ok_or(STATUS_INVALID_HANDLE)?;let e=s.handles[hi];let o=s.objects.get(e.object).ok_or(STATUS_INVALID_HANDLE)?;if !o.used||o.deleting{return Err(STATUS_INVALID_HANDLE)}if expected_type!=0&&o.type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
+ let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let mapped=map_access(&t,desired);if mapped&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}if !kernel_mode&&!access_check(o,mapped){return Err(STATUS_ACCESS_DENIED)}let body=o.body as *mut c_void;
  let s=state();s.objects[e.object].refs=s.objects[e.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;let _=t;Ok(body)
 }
 pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
