@@ -288,3 +288,7 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Verify freestanding Rust build, PE32+ conversion, UEFI image validation, and OVMF/QEMU boot smoke (workflow #995 passed these steps).
 - [ ] Finish the 2/4/8-vCPU SMP stress matrix (workflow #995 was still running this step at last check).
 - [ ] Implement remaining Ke interrupt-spin-lock, timer2, APC, cross-CPU generic DPC/IPI, NMI callback, processor-change callback, interrupt synchronization, logical-topology, affinity, process-attach, and extended-state APIs.
+
+- [x] Add conservative per-interrupt spin-lock tokens and KeSynchronizeExecution callback serialization; hardware ISR synchronization remains limited until the HAL owns interrupt-object SynchronizeIrql and ISR locks.
+- [x] Wire KeAcquireInterruptSpinLock, KeReleaseInterruptSpinLock, and KeSynchronizeExecution into the resolver and comparison.
+- [ ] Add hardware interrupt-object locking and verify synchronization callbacks against a real ISR path.
