@@ -29,6 +29,36 @@ impl IdtEntry {
 #[repr(C, packed)]
 struct DescriptorTablePointer { limit: u16, base: u64 }
 static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::MISSING; IDT_ENTRIES];
+static EXPECTED_PROTECTION_FAULT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static EXPECTED_PROTECTION_ADDRESS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static EXPECTED_PROTECTION_RECOVERY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static OBSERVED_PROTECTION_FAULT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+global_asm!(r#"
+    .section .text
+    .global rdotos_fault_probe_write_ro
+    .type rdotos_fault_probe_write_ro, @function
+rdotos_fault_probe_write_ro:
+    mov byte ptr [rdi], 0x90
+    mov eax, 1
+    ret
+    .global rdotos_fault_probe_write_ro_recovery
+    .type rdotos_fault_probe_write_ro_recovery, @function
+rdotos_fault_probe_write_ro_recovery:
+    xor eax, eax
+    ret
+
+    .global rdotos_fault_probe_execute_nx
+    .type rdotos_fault_probe_execute_nx, @function
+rdotos_fault_probe_execute_nx:
+    jmp rdi
+    .global rdotos_fault_probe_execute_nx_recovery
+    .type rdotos_fault_probe_execute_nx_recovery, @function
+rdotos_fault_probe_execute_nx_recovery:
+    xor eax, eax
+    ret
+"#);
+
 
 global_asm!(r#"
     .section .rodata
@@ -1078,6 +1108,23 @@ pub extern "C" fn rdotos_exception_dispatch(vector: u64, error: u64, frame: *con
         let cr2: u64;
         unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
         if crate::kernel_vm::handle_page_fault(cr2, error) { return 1; }
+
+        // Permit only the two explicitly armed, exact-address permission probes
+        // used by the boot self-test. Every other protection fault remains fatal.
+        let expected = EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire);
+        let expected_address = EXPECTED_PROTECTION_ADDRESS.load(core::sync::atomic::Ordering::Relaxed);
+        let expected_error = match expected {
+            1 => error & 0x1f == 0x3,  // present-page supervisor write protection fault
+            2 => error & 0x1f == 0x11, // present-page supervisor instruction-fetch NX fault
+            _ => false,
+        };
+        if expected != 0 && cr2 == expected_address && expected_error {
+            let recovery = EXPECTED_PROTECTION_RECOVERY.load(core::sync::atomic::Ordering::Relaxed);
+            EXPECTED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
+            OBSERVED_PROTECTION_FAULT.store(expected, core::sync::atomic::Ordering::Release);
+            unsafe { frame.add(17).write(recovery); }
+            return 1;
+        }
     }
     rdotos_exception_fatal(vector, error, frame)
 }
@@ -1120,6 +1167,43 @@ rdotos_context_switch:
 
 unsafe extern "C" {
     fn rdotos_context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64);
+}
+unsafe extern "C" {
+    fn rdotos_fault_probe_write_ro(address: *mut u8) -> u64;
+    fn rdotos_fault_probe_write_ro_recovery();
+    fn rdotos_fault_probe_execute_nx(address: *mut u8) -> u64;
+    fn rdotos_fault_probe_execute_nx_recovery();
+}
+
+
+/// Deliberately verify CR0.WP and NX enforcement without hiding unrelated faults.
+/// The recovery labels are armed for one exact CR2 address and one expected error code.
+pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
+    OBSERVED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
+    EXPECTED_PROTECTION_ADDRESS.store(read_only_executable_address, core::sync::atomic::Ordering::Relaxed);
+    EXPECTED_PROTECTION_RECOVERY.store(rdotos_fault_probe_write_ro_recovery as *const () as u64,
+        core::sync::atomic::Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT.store(1, core::sync::atomic::Ordering::Release);
+    let write_result = unsafe { rdotos_fault_probe_write_ro(read_only_executable_address as *mut u8) };
+    let write_ok = write_result == 0
+        && OBSERVED_PROTECTION_FAULT.swap(0, core::sync::atomic::Ordering::AcqRel) == 1
+        && EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire) == 0;
+    EXPECTED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
+    if !write_ok { return false; }
+
+    let mut nx_code = [0u8; 16];
+    unsafe { core::ptr::write_volatile(nx_code.as_mut_ptr(), 0xc3); }
+    let target = nx_code.as_mut_ptr();
+    EXPECTED_PROTECTION_ADDRESS.store(target as u64, core::sync::atomic::Ordering::Relaxed);
+    EXPECTED_PROTECTION_RECOVERY.store(rdotos_fault_probe_execute_nx_recovery as *const () as u64,
+        core::sync::atomic::Ordering::Relaxed);
+    EXPECTED_PROTECTION_FAULT.store(2, core::sync::atomic::Ordering::Release);
+    let execute_result = unsafe { rdotos_fault_probe_execute_nx(target) };
+    let execute_ok = execute_result == 0
+        && OBSERVED_PROTECTION_FAULT.swap(0, core::sync::atomic::Ordering::AcqRel) == 2
+        && EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire) == 0;
+    EXPECTED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
+    execute_ok
 }
 
 /// Switch between saved kernel-mode contexts built for this routine.
