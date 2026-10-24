@@ -624,6 +624,14 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64, ap_stack_to
         .map(|cpu| cpu.apic_id.load(Ordering::Acquire)).ok();
     if apic_id.is_none() || apic_id != expected
         || unsafe { hal::install_cpu_local(index) }.is_err()
+    {
+        let _ = hal::mark_cpu_failed(index);
+        loop { core::hint::spin_loop(); }
+    }
+    // Keep the Ki processor-initialization gate common to BSP and APs. The
+    // descriptor tables and GS-local pointer are installed before validation;
+    // only a validated processor is published online.
+    if !crate::ntoskrnl::ke::runtime::ki_initialize_processor(index)
         || hal::mark_cpu_online(index).is_err()
     {
         let _ = hal::mark_cpu_failed(index);
