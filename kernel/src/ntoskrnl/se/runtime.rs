@@ -1402,3 +1402,83 @@ mod se_privilege_check_tests {
         assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
     }
 }
+
+
+#[cfg(test)]
+mod se_restricted_access_tests {
+    use super::*;
+    #[test]
+    fn restricted_token_requires_second_dacl_pass() {
+        let mut token_storage = 0u64;
+        let token = (&mut token_storage as *mut u64).cast::<c_void>();
+        let user_sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0];
+        let restricted_sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0];
+        let user_ptrs = [user_sid.as_ptr()];
+        let restricted_ptrs = [restricted_sid.as_ptr()];
+        let lengths = [12u8];
+        assert_eq!(unsafe { se_internal_RegisterTokenMetadata(token, 1, 0, 2, 0, 0, 2) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_RegisterTokenSids(token, user_ptrs.as_ptr(), lengths.as_ptr(), 1) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_RegisterRestrictedTokenSids(token, restricted_ptrs.as_ptr(), lengths.as_ptr(), 1) }, STATUS_SUCCESS);
+        let mut sd = [0u8; 4096];
+        sd[0] = 1;
+        sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
+        sd[16..20].copy_from_slice(&20u32.to_le_bytes());
+        sd[20] = 2;
+        sd[22..24].copy_from_slice(&28u16.to_le_bytes());
+        sd[24..26].copy_from_slice(&1u16.to_le_bytes());
+        sd[28] = 0;
+        sd[30..32].copy_from_slice(&20u16.to_le_bytes());
+        sd[32..36].copy_from_slice(&1u32.to_le_bytes());
+        sd[36..48].copy_from_slice(&user_sid);
+        let context = SeSecuritySubjectContext { client_token: core::ptr::null_mut(),
+            impersonation_level: 0, primary_token: token, process_audit_id: core::ptr::null_mut() };
+        let mapping = SeGenericMapping { generic_read: 1, generic_write: 2, generic_execute: 4, generic_all: 7 };
+        let mut granted = 0u32;
+        let mut status = 0i32;
+        let mut privileges: *mut c_void = core::ptr::null_mut();
+        let mut locked = 1u8;
+        assert_eq!(unsafe { SeAccessCheck(sd.as_ptr().cast(), (&context as *const SeSecuritySubjectContext).cast_mut(),
+            &mut locked, 1, 0, &mut privileges, &mapping, 1, &mut granted, &mut status) }, 0);
+        assert_eq!(status, 0xC000_0022u32 as i32);
+        assert_eq!(unsafe { se_internal_UnregisterTokenSids(token) }, STATUS_SUCCESS);
+        // Clear the restricting SID set as well before dropping token metadata.
+        assert_eq!(unsafe { se_internal_RegisterRestrictedTokenSids(token, restricted_ptrs.as_ptr(), lengths.as_ptr(), 1) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
+    }
+}
+
+#[cfg(test)]
+mod se_sacl_audit_tests {
+    use super::*;
+    #[test]
+    fn success_audit_ace_emits_bounded_event() {
+        let mut token_storage = 0u64;
+        let token = (&mut token_storage as *mut u64).cast::<c_void>();
+        let sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0];
+        let pointers = [sid.as_ptr()];
+        let lengths = [12u8];
+        assert_eq!(unsafe { se_internal_RegisterTokenSids(token, pointers.as_ptr(), lengths.as_ptr(), 1) }, STATUS_SUCCESS);
+        let mut sd = [0u8; 4096];
+        sd[0] = 1;
+        sd[2..4].copy_from_slice(&0x8010u16.to_le_bytes());
+        sd[12..16].copy_from_slice(&20u32.to_le_bytes());
+        sd[20] = 2;
+        sd[22..24].copy_from_slice(&28u16.to_le_bytes());
+        sd[24..26].copy_from_slice(&1u16.to_le_bytes());
+        sd[28] = 2;
+        sd[29] = 0x40;
+        sd[30..32].copy_from_slice(&20u16.to_le_bytes());
+        sd[32..36].copy_from_slice(&1u32.to_le_bytes());
+        sd[36..48].copy_from_slice(&sid);
+        let before = {
+            let _guard = SECURITY_AUDIT_LOCK.lock();
+            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(SECURITY_AUDIT_NEXT)) }
+        };
+        record_security_audit(&sd, token, 1, 1, true);
+        let mut event = [0u8; 32];
+        assert_eq!(se_internal_ReadSecurityAuditEvent(before, event.as_mut_ptr(), event.len()), STATUS_SUCCESS);
+        assert_eq!(u64::from_le_bytes(event[0..8].try_into().unwrap()), before);
+        assert_eq!(i32::from_le_bytes(event[24..28].try_into().unwrap()), STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_UnregisterTokenSids(token) }, STATUS_SUCCESS);
+    }
+}
