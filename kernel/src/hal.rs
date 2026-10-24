@@ -435,8 +435,7 @@ pub unsafe fn send_processor_init(base: u64, destination_apic_id: u8) -> Result<
     unsafe { apic::send_init_ipi(base, destination_apic_id) }.map_err(|_| HalError::PlatformFailure)
 }
 #[inline]
-pub unsafe fn send_processor_init_deassert(destination_apic_id: u8) -> Result<(), HalError> {
-    let base = apic::local_apic_base().ok_or(HalError::PlatformFailure)?;
+pub unsafe fn send_processor_init_deassert(base: u64, destination_apic_id: u8) -> Result<(), HalError> {
     unsafe { apic::send_init_deassert_ipi(base, destination_apic_id) }.map_err(|_| HalError::PlatformFailure)
 }
 #[inline]
