@@ -773,7 +773,6 @@ unsafe fn try_consume_dispatcher_object_locked(object: *mut DispatcherHeader) ->
             state.store(old - 1, Ordering::Release);
             true
         }
-        QUEUE_OBJECT => state.load(Ordering::Acquire) > 0,
         _ => false,
     }
 }
@@ -1393,7 +1392,7 @@ pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_tim
     let value=due_time;
     let Some(deadline)=timer_deadline(value) else{return 0};
     let hz=crate::apic::tsc_frequency_hz().unwrap_or(0);
-    let period=if period_ms==0||hz==0{0}else{((hz as u128)*(period_ms as u128)/1000).min(u64::MAX as u128) as u64};
+    let period=if period_ms<=0||hz==0{0}else{((hz as u128)*(period_ms as u128)/1000).min(u64::MAX as u128) as u64};
     let mut table=TIMERS.lock();
     let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
     let was_active=record.active;
@@ -1447,8 +1446,11 @@ pub unsafe extern "win64" fn ke_insert_queue_dpc(dpc:*mut core::ffi::c_void,arg1
     let Some(record)=table.records.iter_mut().find(|r|r.active&&r.object==dpc as usize) else{return 0};
     if record.queued{return 0}
     record.arg1=arg1 as usize;record.arg2=arg2 as usize;record.queued=true;
+    let target=record.target_cpu;
     drop(table);
-    if CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire)<DISPATCH_LEVEL { dispatch_queued_dpcs(); }
+    let current=cpu_slot();
+    if target!=current{let _=crate::smp::request_reschedule(target);}
+    else if CURRENT_IRQL[current].load(Ordering::Acquire)<DISPATCH_LEVEL { dispatch_queued_dpcs(); }
     1
 }
 pub unsafe extern "win64" fn ke_remove_queue_dpc(dpc:*mut core::ffi::c_void)->u8{
@@ -1478,7 +1480,23 @@ pub fn dispatch_queued_dpcs(){
     DPC_DISPATCHING[cpu].store(false,Ordering::Release);
 }
 pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
-    dispatch_queued_dpcs();
+    let current=cpu_slot();
+    for cpu in 0..crate::hal::MAX_CPUS{
+        if cpu!=current&&crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){
+            let _=crate::smp::request_reschedule(cpu);
+        }
+    }
+    for _ in 0..10_000_000usize{
+        dispatch_queued_dpcs();
+        let pending={let table=DPCS.lock();table.records.iter().any(|r|r.active&&r.queued)};
+        if !pending{return}
+        for cpu in 0..crate::hal::MAX_CPUS{
+            if cpu!=current&&crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){
+                let _=crate::smp::request_reschedule(cpu);
+            }
+        }
+        core::hint::spin_loop();
+    }
 }
 /// Called by the APIC clock interrupt after dispatcher timeout processing.
 /// Expiration is serialized with timer cancellation; callbacks run outside the
