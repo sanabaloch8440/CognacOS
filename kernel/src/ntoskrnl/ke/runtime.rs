@@ -1293,12 +1293,15 @@ pub unsafe extern "win64" fn ke_read_state_timer(timer:*const DispatcherHeader)-
     if timer.is_null(){return 0}
     unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)}
 }
-pub unsafe extern "win64" fn ke_set_timer(timer:*mut DispatcherHeader,due_time:*const i64,dpc:*mut core::ffi::c_void)->u8{
+/// BOOLEAN KeSetTimer(PKTIMER Timer, LARGE_INTEGER DueTime, PKDPC Dpc).
+/// LARGE_INTEGER is passed by value in the x64 Windows ABI.
+pub unsafe extern "win64" fn ke_set_timer(timer:*mut DispatcherHeader,due_time:i64,dpc:*mut core::ffi::c_void)->u8{
     unsafe{ke_set_timer_ex(timer,due_time,dpc,0)}
 }
-pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_time:*const i64,dpc:*mut core::ffi::c_void,period_ms:u32)->u8{
-    if timer.is_null()||due_time.is_null()||!matches!(unsafe{(*timer).kind},TIMER_NOTIFICATION|TIMER_SYNCHRONIZATION){return 0}
-    let value=unsafe{due_time.read_unaligned()};
+/// BOOLEAN KeSetTimerEx(PKTIMER Timer, LARGE_INTEGER DueTime, PKDPC Dpc, LONG Period).
+pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_time:i64,dpc:*mut core::ffi::c_void,period_ms:u32)->u8{
+    if timer.is_null()||!matches!(unsafe{(*timer).kind},TIMER_NOTIFICATION|TIMER_SYNCHRONIZATION){return 0}
+    let value=due_time;
     let Some(deadline)=timer_deadline(value) else{return 0};
     let hz=crate::apic::tsc_frequency_hz().unwrap_or(0);
     let period=if period_ms==0||hz==0{0}else{((hz as u128)*(period_ms as u128)/1000).min(u64::MAX as u128) as u64};
