@@ -194,7 +194,7 @@ pub struct ProcessorChangeNotifyContext {
     pub status:i32,
     pub reserved:u32,
 }
-type ProcessorChangeRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut ProcessorChangeNotifyContext,u32)->i32;
+pub type ProcessorChangeRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut ProcessorChangeNotifyContext,u32)->i32;
 const MAX_PROCESSOR_CHANGE_CALLBACKS:usize=64;
 #[derive(Clone,Copy)]
 struct ProcessorCallbackRecord { active:bool, routine:usize, context:usize, flags:u32 }
