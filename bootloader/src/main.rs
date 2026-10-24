@@ -3,7 +3,7 @@
 
 extern crate alloc;
 
-mod elf;
+mod pe_kernel;
 mod pe;
 mod sha256;
 
@@ -78,7 +78,7 @@ fn main() -> Status {
         match kernel_file.read(&mut image[used..]) {
             Ok(0) => break,
             Ok(n) => used += n,
-            Err(err) => { uefi::println!("Kernel ELF read failed: {:?}", err); return err.status(); }
+            Err(err) => { uefi::println!("Kernel PE32+ image read failed: {:?}", err); return err.status(); }
         }
     }
     image.truncate(used);
@@ -286,7 +286,7 @@ fn main() -> Status {
     core::mem::forget(memory_map);
 
     // x86-64 System V kernel ABI: BootInfo pointer in RDI. A low identity-mapped
-    // trampoline switches to the new CR3 and enters the high-half ELF entry on
+    // trampoline switches to the new CR3 and enters the fixed-base PE32+ image on
     // its validated high stack alias. SAFETY: ELF and page-table checks cover it.
     unsafe {
         core::arch::asm!(
