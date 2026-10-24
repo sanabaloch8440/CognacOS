@@ -40,6 +40,8 @@ The repository contains working foundations in several areas. “Implemented” 
 | DMA and IOMMU | DMA request/channel foundations and Intel VT-d ACPI discovery exist. Real DMA mapping, full VT-d initialization, and AMD IOMMU support are incomplete. |
 | ext filesystem driver (`drivers/ext4`) | Independent `no_std` crate linked into the kernel, checked ext2/ext3/ext4 metadata parser, block-device read/write/flush contract, read-only mount, and restricted writes into already allocated initialized extents with partial-block read-modify-write. Writable mount refuses journaled/recovery/metadata-checksummed volumes rather than risking corruption. | No block-device adapter/VFS registration yet; no block/inode allocation, directory/inode/bitmap mutation, journal replay/commit, checksum updates, ext4 htree directories, or crash consistency. Not yet a complete general-purpose writable ext4 driver. |
 
+The legacy `third_party/Ext3Fsd` submodule declaration has been removed; RdotOS uses its own Rust driver implementation. The current kernel I/O runtime is still a bounded internal IRP simulation, not yet the Windows 11 `IoCreateDevice`/`IoCallDriver`/filesystem-device-stack ABI needed to mount and use this filesystem through ordinary file objects.
+
 ## Split platform and driver crates
 
 ACPI parsing, PCI ECAM primitives, the HAL contract, and generic processor policy live in separate Rust packages. CI now builds four distinct AMD64 PE32+ native DLL-format images with separate fixed image bases and publishes them as workflow artifacts: `Hal.dll`, `acpi.sys`, `pci.sys`, and `processor.sys`. Each image has a `DriverEntry` symbol and the native subsystem/DLL characteristics.
