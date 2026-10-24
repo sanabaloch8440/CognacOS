@@ -242,6 +242,27 @@ pub fn current_thread_object() -> *mut c_void {
         .unwrap_or(core::ptr::null_mut())
 }
 
+/// Update scheduler/thread affinity metadata without migrating a live saved
+/// context. The scheduler rejects masks that would strand a running thread.
+pub fn set_thread_affinity(id:u64,mask:u64)->Option<u64>{
+    if id==0||mask==0{return None}
+    let (scheduler_id,old)={
+        let table=THREADS.lock();
+        let t=table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty)?;
+        (t.scheduler_id,t.affinity)
+    };
+    if crate::scheduler::set_affinity(scheduler_id,mask).is_err(){return None}
+    let affinity={
+        let mut table=THREADS.lock();
+        let t=table.records.iter_mut().find(|t|t.id==id&&t.state!=ThreadState::Empty)?;
+        t.affinity=mask;t.affinity
+    };
+    notify_affinity(affinity);Some(old)
+}
+pub fn thread_affinity(id:u64)->Option<u64>{
+    let table=THREADS.lock();
+    table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty).map(|t|t.affinity)
+}
 pub fn current_thread_id()->Option<u64>{let cpu=cpu_index().ok()?;let id=crate::hal::cpu_local(cpu).ok()?.current_thread.load(core::sync::atomic::Ordering::Acquire);(id!=0).then_some(id)}
 pub fn state(id:u64)->Option<ThreadState>{THREADS.lock().records.iter().find(|t|t.id==id).map(|t|t.state)}
 /// Per-thread APC disable nesting. Critical regions suppress normal APCs;
