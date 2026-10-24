@@ -13,23 +13,24 @@
 
 ## Summary and calculated compatibility
 
-This expanded pass documents **138 callable Ke export names**: the original comparison, processor/IRQL/spin-lock and dispatcher APIs, alert state, legacy timer/DPC lifecycle, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. All 138 names have a resolver path to a runtime function. This is source-level ABI declaration coverage, not proof that opaque Windows object layouts or every DDI edge case match.
+This comparison now tracks **169 callable Ke export names**: the prior 165 routines plus the four cross-processor broadcast exports implemented in this pass. The new call path uses the HAL IPI vector, per-CPU callback execution, and shared synchronization/completion barriers. It is wired into the resolver and has resolver self-test assertions; real multi-vCPU execution remains subject to the current CI/QEMU matrix.
 
 | Metric | Calculation | Result |
 |---|---|---:|
-| Source-level signature / x64 ABI declaration coverage | 138 documented declarations/call paths ÷ 138 | **138/138 = 100%** |
-| Name-based import resolution | 138 scoped routine names resolving to callable implementations ÷ 138 | **138/138 = 100%** |
-| Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 138 | **10/138 = 7.2%** |
-| Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 138 | **128/138 = 92.8%** |
-| Combined project score | (100% ABI declarations + 7.2% strict behavior) ÷ 2 | **53.6%** |
+| Source-level signature / x64 ABI declaration coverage | 169 documented declarations/call paths ÷ 169 tracked names | **169/169 = 100%** |
+| Name-based import resolution | 169 tracked names with a resolver path ÷ 169 | **169/169 = 100%** |
+| Strict behavior matches within the currently advertised topology | 51 existing scoped matches ÷ 169 | **51/169 = 30.2%** |
+| Partial or not yet stress-verified behavior | 118 names ÷ 169 | **118/169 = 69.8%** |
+| Combined project score | (100% declaration coverage + 30.2% strict behavior) ÷ 2 | **65.1%** |
 
-**Important:** 65.5% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 53.6% score used a strict numerator of 10 behavior matches across 138 rows. This revision documents 165 callable names and counts 51 routines whose behavior matches within the explicitly limited RdotOS scope: one-group/one-node topology, initialized RdotOS objects, x64 memory ordering, and the supported single-group affinity bitmap. Partial behavior—including APC delivery, private KTHREAD/KDPC layouts, systemwide DPC rendezvous, multiple processor groups, and timer coalescing—is not counted as a strict match.
+**Important:** 65.1% is a project-defined progress metric, not a Microsoft metric, binary-similarity score, or proof of general Windows 11 driver compatibility. The new rendezvous exports are classified as **partial pending multi-vCPU validation**, not as strict behavior matches. Windows' private kernel implementation and internal object layouts are proprietary; this document compares public WDK signatures and documented contracts against the RdotOS implementation.
 
 ### Scoring rules
 
-- **ABI declaration coverage** checks that each tracked callable name has an explicit x64 declaration/resolver and that documented signatures are checked for argument count/order, pointer shape, integer widths, and return type. It does not mean every undocumented internal export has Microsoft-published prototype confirmation, nor that private Windows object layouts are reproduced. The affinity bitmap prototypes were aligned to public NTOSP-style declarations; KeQueryActiveProcessorCount includes its optional output mask.
-- **Behavior score** is 51/165 = **30.9%**. It counts ten previously validated topology queries, 21 affinity-bitmap operations that match in the current single-group topology, the XSAVE enabled-feature query and unsupported-dynamic-partitioning result, plus 18 exact state/initialization/primitive routines (timer/event/semaphore/mutant/queue state, supported timer/DPC initialization, pending-DPC removal, event/semaphore initialization and reset, spin-lock initialization/testing, x64 write-buffer fence, and active-affinity query). Timer2 operations remain partial because callback timing/coalescing and bounded capacity need more conformance testing. It does not count partial waits, mutex acquisition, APC, process-attach, or cross-processor behavior as strict matches.
-- **Combined score** = (100% declared ABI-shape coverage + 30.9% scoped behavior) / 2 = **65.5%** after rounding. This is a conservative project-scoped tally, not a claim of private Windows implementation equivalence.
+- **Declaration / ABI shape** means the tracked name has a source-level x64 declaration and an explicit import-resolver path. It does not prove exact private Windows object layouts or conformance of every edge case.
+- **Strict behavior** counts only the existing 51 routines described above that match within the documented RdotOS scope: one processor group/node, supported affinity bitmap, initialized RdotOS dispatcher objects, x64 memory-ordering primitives, and current fixed-topology configuration.
+- **Partial behavior** includes unverified cross-CPU callbacks, incomplete APC delivery, private KTHREAD/KDPC layout differences, multiple processor groups, hardware interrupt-object semantics, timeout/recovery gaps, and other explicitly noted limitations.
+- **Combined score** = (100% declaration coverage + 30.2% scoped strict behavior) / 2 = **65.1%** rounded to one decimal. Do not interpret this as a measured rate of Windows drivers that will load or run.
 
 ## Routine-by-routine comparison
 
@@ -212,14 +213,19 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 164 | ULONG64 KeGetXSaveFeatureFlags(VOID) | ke_get_xsave_feature_flags(); CPUID + guarded XGETBV | Returns the enabled XCR0 feature mask only when CPUID reports XSAVE and OSXSAVE; otherwise zero. **Match for the current x64 feature configuration.** [Windows kernel DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 165 | BOOLEAN KeDynamicPartitioningSupported(VOID) | ke_dynamic_partitioning_supported(); constant false | Reports false because runtime processor partitioning/hot-add is not implemented. **Match for the current fixed-topology configuration.** [Export manifest](https://github.com/umarfarooq7869/RdotOS/blob/main/kernel/src/ntoskrnl/ke/mod.rs) |
 
+| 166 | ULONG_PTR KeIpiGenericCall(PKIPI_BROADCAST_WORKER Function, ULONG_PTR Context) | ke_ipi_generic_call(); broadcasts via HAL IPI vector, invokes the callback on each online CPU, returns the local CPU's callback result after all callbacks complete | **Partial.** Serialized one-group/one-node rendezvous and callback completion are implemented; unsupported/unavailable IPI setup returns zero, there is no recovery if a target stops responding, and APIC IDs must fit legacy xAPIC's 8-bit destination. **Not yet counted as a strict match pending SMP stress.** [Microsoft DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-keipigenericcall) |
+| 167 | VOID KeGenericCallDpc(PKDEFERRED_ROUTINE Routine, PVOID Context) | ke_generic_call_dpc(); dispatches the routine on each online CPU at logical DISPATCH_LEVEL with shared synchronization/completion arguments | **Partial.** The DPC callback is executed per CPU and the rendezvous waits for callbacks to return. Threaded DPC semantics, processor-group scaling, timeout recovery, and complete Windows KDPC object layout are not provided. [Microsoft DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kegenericcalldpc) |
+| 168 | BOOLEAN KeSignalCallDpcSynchronize(PVOID SystemArgument2) | ke_signal_call_dpc_synchronize(); increments and waits on the active broadcast synchronization barrier | **Partial.** Works for the matching active RdotOS KeGenericCallDpc call when each participant reaches the barrier; invalid or stale barrier arguments return FALSE. No cancellation/recovery if a participant never arrives. [Microsoft DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kesignalcalldpcsynchronize) |
+| 169 | VOID KeSignalCallDpcDone(PVOID SystemArgument1) | ke_signal_call_dpc_done(); increments and waits on the active broadcast completion barrier | **Partial.** Works for the matching active RdotOS KeGenericCallDpc call when every participant calls Done; invalid or stale barrier arguments are ignored. No cancellation/recovery if a participant never signals completion. [Microsoft DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kesignalcalldpcdone) |
+
 ## Additional Ke exports still unsupported
 
-The entries below remain **unresolved or unimplemented** after the current implementation batch. The preceding routine table now covers 165 callable export names, including timer/DPC, Timer2, mutex/mutant, guarded-mutex, queued-spin-lock, affinity-bitmap helpers, XSAVE feature query, alert, processor/IRQL, event/semaphore, wait, and executive-queue APIs. These remaining names must not be mistaken for working exports.
+The entries below remain **unresolved or unimplemented** after the current implementation batch. The preceding routine table now covers 169 callable export names, including the newly wired cross-processor broadcast APIs. The remaining names must not be mistaken for working exports.
 
 | Routine | Current status | Public contract / next work |
 |---|---|---|
 | KeInitializeApc, KeInsertQueueApc, KeRemoveQueueApc | Stub / unresolved | Implement APC object layout, kernel/user delivery points and rundown. KeAlertThread/KeTestAlertThread only model alert state. |
-| KeGenericCallDpc, KeIpiGenericCall, KeSignalCallDpcDone, KeSignalCallDpcSynchronize | Stub / unresolved | Implement all-processor rendezvous, per-CPU callbacks and completion barriers. |
+| KeGenericCallDpc, KeIpiGenericCall, KeSignalCallDpcDone, KeSignalCallDpcSynchronize | Implemented; partial / SMP validation pending | Uses the HAL IPI vector, per-CPU callback dispatch and shared completion/synchronization barriers. Add bounded failure recovery and validate callback/barrier behavior on 2/4/8 vCPUs. |
 | KeRegisterNmiCallback, KeDeregisterNmiCallback | Stub / unresolved | Add safe NMI callback registration/rundown and interrupt-context restrictions. |
 | KeRegisterProcessorChangeCallback, KeDeregisterProcessorChangeCallback | Stub / unresolved | Connect callback lifecycle to processor hot-add/remove and startup sequencing. |
 | KeQueryLogicalProcessorRelationship | Stub / unresolved | Add ACPI topology relationships and documented variable-sized output buffer handling. |
