@@ -1,0 +1,10 @@
+title: RdotOS Documentation
+description: Project status, development roadmap, and Windows 11 x64 compatibility tracking for RdotOS.
+url: https://umarfarooq7869.github.io
+baseurl: /RdotOS
+theme: minima
+markdown: kramdown
+header_pages:
+  - project.md
+  - roadmap.md
+  - compatibility/index.md
