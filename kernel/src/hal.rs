@@ -120,7 +120,19 @@ pub fn mark_cpu_starting(index: usize) -> Result<(), HalError> {
 pub fn mark_cpu_online(index: usize) -> Result<(), HalError> {
     let cpu = CPU_LOCALS.get(index).ok_or(HalError::InvalidCpu)?;
     cpu.state.compare_exchange(CPU_STARTING, CPU_ONLINE, Ordering::AcqRel, Ordering::Acquire)
-        .map(|_| ()).map_err(|_| HalError::InvalidTransition)
+        .map_err(|_| HalError::InvalidTransition)?;
+    crate::ntoskrnl::ke::runtime::notify_processor_change(index, crate::ntoskrnl::ke::runtime::KE_PROCESSOR_CHANGE_ADD_COMPLETE);
+    Ok(())
+}
+/// Publish processor removal after the caller has quiesced that CPU and migrated
+/// its runnable work. The BSP cannot be offlined through this helper.
+pub fn mark_cpu_offline(index: usize) -> Result<(), HalError> {
+    if index==0 { return Err(HalError::InvalidTransition); }
+    let cpu=CPU_LOCALS.get(index).ok_or(HalError::InvalidCpu)?;
+    cpu.state.compare_exchange(CPU_ONLINE,CPU_OFFLINE,Ordering::AcqRel,Ordering::Acquire)
+        .map_err(|_|HalError::InvalidTransition)?;
+    crate::ntoskrnl::ke::runtime::notify_processor_change(index,crate::ntoskrnl::ke::runtime::KE_PROCESSOR_CHANGE_REMOVE_COMPLETE);
+    Ok(())
 }
 pub fn mark_cpu_failed(index: usize) -> Result<(), HalError> {
     let cpu = CPU_LOCALS.get(index).ok_or(HalError::InvalidCpu)?;
