@@ -110,7 +110,12 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
 pub unsafe fn free_common(adapter:*mut c_void,cpu:*mut u8,logical:u64,length:usize)->Result<(),DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;
  let rec={let mut s=STATE.lock();let Some(i)=s.common.iter().position(|c|c.used&&c.device==device&&c.cpu==cpu as usize&&c.logical==logical&&c.length==length)else{return Err(DmaError::NotFound)};let c=s.common[i];s.common[i]=Common::EMPTY;c};
- let b=backend().map_err(|_|DmaError::AddressMask)?;let st=unsafe{(b.unmap.unwrap())(b.context,device,rec.logical,rec.cookie)};if st!=OK{let mut s=STATE.lock();if let Some(slot)=s.common.iter_mut().find(|c|!c.used){*slot=rec;}return Err(DmaError::AddressMask)}
+ let b=backend().map_err(|_|DmaError::AddressMask)?;
+ let mapped_bytes=(rec.pages as u64*PAGE_SIZE) as u32;
+ let sync=unsafe{(b.sync.unwrap())(b.context,device,rec.logical,mapped_bytes,2)};
+ if sync!=OK{let mut s=STATE.lock();if let Some(slot)=s.common.iter_mut().find(|c|!c.used){*slot=rec;}return Err(DmaError::AddressMask)}
+ let st=unsafe{(b.unmap.unwrap())(b.context,device,rec.logical,rec.cookie)};
+ if st!=OK{let mut s=STATE.lock();if let Some(slot)=s.common.iter_mut().find(|c|!c.used){*slot=rec;}return Err(DmaError::AddressMask)}
  for i in 0..rec.pages{unsafe{crate::memory::free_page(rec.physical+i as u64*PAGE_SIZE)}.map_err(|_|DmaError::OutOfMemory)?;}Ok(())
 }
 pub fn flush_common(adapter:*mut c_void,cpu:*mut u8,length:usize)->Result<(),DmaError>{
