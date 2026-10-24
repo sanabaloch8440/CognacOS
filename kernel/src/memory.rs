@@ -411,6 +411,13 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
 
 /// Return a previously allocated low physical page to the shared free list.
 /// The caller must ensure no active mapping or DMA operation references the page.
+#[cfg(target_os = "none")]
+fn page_is_locked(page: u64) -> bool {
+    crate::ntoskrnl::mm::runtime::is_page_locked(page)
+}
+#[cfg(not(target_os = "none"))]
+fn page_is_locked(_page: u64) -> bool { false }
+
 pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
     if page >= PHYSICAL_LIMIT {
         if page >= DIRECT_MAP_PHYSICAL_LIMIT || page & (PAGE_SIZE - 1) != 0
@@ -483,7 +490,7 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
     let _guard = MemoryGuard::acquire();
     let mut locked_page = base;
     while locked_page < end {
-        if crate::ntoskrnl::mm::runtime::is_page_locked(locked_page) { return Err(AllocError::InvalidPage); }
+        if page_is_locked(locked_page) { return Err(AllocError::InvalidPage); }
         locked_page += PAGE_SIZE;
     }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
