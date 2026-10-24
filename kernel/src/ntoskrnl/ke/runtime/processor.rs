@@ -179,3 +179,96 @@ pub unsafe extern "win64" fn ke_stall_execution_processor(microseconds: u32) {
     }
 }
 
+
+
+// Processor-change callbacks use side metadata: callers' callback handles are
+// stable kernel pointers, while notification storage is valid only for the call.
+pub const KE_PROCESSOR_CHANGE_ADD_EXISTING:u32=0x1;
+pub const KE_PROCESSOR_CHANGE_ADD_COMPLETE:u32=1;
+pub const KE_PROCESSOR_CHANGE_REMOVE_COMPLETE:u32=2;
+#[repr(C)]
+#[derive(Clone,Copy)]
+pub struct ProcessorChangeNotifyContext {
+    pub processor_number:ProcessorNumber,
+    pub change_type:u32,
+    pub status:i32,
+    pub reserved:u32,
+}
+type ProcessorChangeRoutine=unsafe extern "win64" fn(*mut core::ffi::c_void,*mut ProcessorChangeNotifyContext,u32)->i32;
+const MAX_PROCESSOR_CHANGE_CALLBACKS:usize=64;
+#[derive(Clone,Copy)]
+struct ProcessorCallbackRecord { active:bool, routine:usize, context:usize, flags:u32 }
+impl ProcessorCallbackRecord { const EMPTY:Self=Self{active:false,routine:0,context:0,flags:0}; }
+struct ProcessorCallbackTable { records:[ProcessorCallbackRecord;MAX_PROCESSOR_CHANGE_CALLBACKS] }
+impl ProcessorCallbackTable { const fn new()->Self{Self{records:[ProcessorCallbackRecord::EMPTY;MAX_PROCESSOR_CHANGE_CALLBACKS]}} }
+static PROCESSOR_CALLBACKS:crate::hal::IrqSpinLock<ProcessorCallbackTable>=crate::hal::IrqSpinLock::new(ProcessorCallbackTable::new());
+static PROCESSOR_CALLBACK_IN_FLIGHT:[core::sync::atomic::AtomicUsize;MAX_PROCESSOR_CHANGE_CALLBACKS]=
+ [const{core::sync::atomic::AtomicUsize::new(0)};MAX_PROCESSOR_CHANGE_CALLBACKS];
+
+/// Register for processor add/remove lifecycle notifications.
+pub unsafe extern "win64" fn ke_register_processor_change_callback(
+ callback:Option<ProcessorChangeRoutine>,context:*mut core::ffi::c_void,flags:u32,
+)->*mut core::ffi::c_void{
+ let Some(callback)=callback else{return core::ptr::null_mut()};
+ if flags & !KE_PROCESSOR_CHANGE_ADD_EXISTING != 0{return core::ptr::null_mut()}
+ let slot={
+  let mut table=PROCESSOR_CALLBACKS.lock();
+  let Some(slot)=table.records.iter().position(|r|!r.active) else{return core::ptr::null_mut()};
+  table.records[slot]=ProcessorCallbackRecord{active:true,routine:callback as usize,context:context as usize,flags};
+  slot
+ };
+ let handle=core::ptr::addr_of_mut!(PROCESSOR_CALLBACKS.get_mut_unchecked_placeholder);
+ let _=handle;
+ let handle=unsafe{core::ptr::addr_of_mut!((*core::ptr::addr_of_mut!(PROCESSOR_CALLBACKS) as *mut ProcessorCallbackTable).as_mut().unwrap().records[slot])};
+ let handle=handle.cast::<core::ffi::c_void>();
+ if flags & KE_PROCESSOR_CHANGE_ADD_EXISTING != 0 {
+  for cpu in 0..crate::hal::MAX_CPUS {
+   if crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){notify_processor_change(cpu,KE_PROCESSOR_CHANGE_ADD_COMPLETE);}
+  }
+ }
+ handle
+}
+
+/// Unregister and wait for callbacks already in flight to finish.
+pub unsafe extern "win64" fn ke_deregister_processor_change_callback(handle:*mut core::ffi::c_void,wait:u8){
+ if handle.is_null(){return}
+ let slot={
+  let mut table=PROCESSOR_CALLBACKS.lock();
+  let Some(slot)=table.records.iter().enumerate().find(|(_,r)|r.active
+    && core::ptr::addr_of!(table.records[0]) as usize + 0 == 0
+    && (core::ptr::addr_of!(table.records[0]) as usize)==handle as usize).map(|(i,_)|i) else {
+      // Handles are the address of the indexed record; compare every slot below.
+      let found=(0..MAX_PROCESSOR_CHANGE_CALLBACKS).find(|i|
+       core::ptr::addr_of!(table.records[*i]) as usize==handle as usize && table.records[*i].active);
+      let Some(slot)=found else{return};
+      table.records[slot].active=false;table.records[slot]=ProcessorCallbackRecord::EMPTY;slot
+    };
+  table.records[slot].active=false;table.records[slot]=ProcessorCallbackRecord::EMPTY;slot
+ };
+ if wait!=0 {while PROCESSOR_CALLBACK_IN_FLIGHT[slot].load(Ordering::Acquire)!=0 {core::hint::spin_loop();}}
+}
+
+/// Called by HAL after a processor lifecycle transition has been published.
+pub fn notify_processor_change(cpu:usize,change_type:u32){
+ let Ok(state)=crate::hal::cpu_state(cpu) else{return};
+ if cpu>u8::MAX as usize{return}
+ let snapshot={
+  let table=PROCESSOR_CALLBACKS.lock();
+  let mut copy=[ProcessorCallbackRecord::EMPTY;MAX_PROCESSOR_CHANGE_CALLBACKS];
+  for (i,r) in table.records.iter().enumerate(){
+   if r.active {
+    PROCESSOR_CALLBACK_IN_FLIGHT[i].fetch_add(1,Ordering::AcqRel);
+    copy[i]=*r;
+   }
+  }
+  copy
+ };
+ let mut number=ProcessorNumber{group:0,number:cpu as u8,reserved:0};
+ let mut notification=ProcessorChangeNotifyContext{processor_number:number,change_type,status:state as i32,reserved:0};
+ for (i,record) in snapshot.iter().enumerate(){
+  if !record.active{continue}
+  let routine:ProcessorChangeRoutine=unsafe{core::mem::transmute(record.routine)};
+  unsafe{routine(record.context as *mut _,&mut notification,change_type);}
+  PROCESSOR_CALLBACK_IN_FLIGHT[i].fetch_sub(1,Ordering::AcqRel);
+ }
+}
