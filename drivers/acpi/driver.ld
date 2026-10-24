@@ -1,7 +1,7 @@
 ENTRY(DriverEntry)
 PHDRS { text PT_LOAD FLAGS(5); rodata PT_LOAD FLAGS(4); data PT_LOAD FLAGS(6); }
 SECTIONS {
- . = 0xfffff80020000000 + 0x1000;
+ . = 0xffff800020000000 + 0x1000;
  .text : ALIGN(0x1000) { *(.text .text.*) } :text
  . = ALIGN(0x1000);
  .rodata : { *(.rodata .rodata.*) *(.eh_frame .eh_frame.*) } :rodata
