@@ -367,6 +367,66 @@ pub unsafe extern "system" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
 }
 
 
+/// Return the highest device object currently attached above the input device.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_get_attached_device(device:*mut DeviceObject)->*mut DeviceObject {
+    if device.is_null(){return ptr::null_mut()}
+    let state=WDM.lock();
+    if !state.devices.iter().any(|s|s.used&&ptr::eq(&s.object,device)){return ptr::null_mut()}
+    let mut top=device;
+    for _ in 0..MAX_WDM_DEVICES {
+        let next=unsafe{(*top).attached_device};
+        if next.is_null(){return top}
+        if !state.devices.iter().any(|s|s.used&&ptr::eq(&s.object,next)){return ptr::null_mut()}
+        top=next;
+    }
+    ptr::null_mut()
+}
+
+/// Return the bottom/base object of an attachment stack.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_get_device_attachment_base_ref(device:*mut DeviceObject)->*mut DeviceObject {
+    if device.is_null(){return ptr::null_mut()}
+    let state=WDM.lock();
+    let Some(mut index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};
+    let mut base=device;
+    for _ in 0..MAX_WDM_DEVICES {
+        let lower=state.devices[index].attached_to;
+        if lower.is_null(){return base}
+        let Some(lower_index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,lower)) else{return ptr::null_mut()};
+        base=lower;index=lower_index;
+    }
+    ptr::null_mut()
+}
+
+/// Return the next lower object in the stack, or NULL for a base device.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_get_lower_device_object(device:*mut DeviceObject)->*mut DeviceObject {
+    if device.is_null(){return ptr::null_mut()}
+    let state=WDM.lock();
+    let Some(slot)=state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};
+    slot.attached_to
+}
+
+/// Reset an allocated IRP for reuse without releasing its allocation.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_reuse_irp(irp:*mut Irp, status:i32) {
+    if irp.is_null(){return}
+    let mut state=WDM.lock();
+    let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+    let count=slot.object.bytes[0x42] as usize;
+    if count==0||count>slot.stack.len(){return}
+    slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
+    slot.object.bytes[0x30..0x34].copy_from_slice(&status.to_le_bytes());
+    slot.object.bytes[0x38..0x40].fill(0);
+    slot.object.bytes[0x41]=0;
+    slot.object.bytes[0x44]=0;
+    slot.object.bytes[0x43]=(count+1) as u8;
+    let current=unsafe{slot.stack.as_mut_ptr().add(count).cast::<c_void>()};
+    unsafe{write_ptr(slot.object.bytes.as_mut_ptr(),IRP_STACK_OFFSET,current);}
+}
+
+
 #[cfg(test)]
 mod wdm_tests {
  use super::*;
