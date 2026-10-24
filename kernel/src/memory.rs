@@ -310,6 +310,7 @@ pub unsafe fn reserve_range(start: u64, end: u64) -> Result<(), AllocError> {
 pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
     let high_page = {
         let _guard = MemoryGuard::acquire();
+        if crate::ntoskrnl::mm::runtime::is_page_locked(page) { return Err(AllocError::InvalidPage); }
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 != 0 {
             free.1 -= 1;
@@ -441,6 +442,7 @@ pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
     if page < LOW_RESERVED_END || page & (PAGE_SIZE - 1) != 0 {
         return Err(AllocError::InvalidPage);
     }
+    if crate::ntoskrnl::mm::runtime::is_page_locked(page) { return Err(AllocError::InvalidPage); }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if free.1 < FREE_CAPACITY {
         free.0[free.1] = page;
@@ -479,6 +481,11 @@ pub unsafe fn free_contiguous_pages(base: u64, pages: usize) -> Result<(), Alloc
     let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
     let end = base.checked_add(bytes).filter(|end| *end <= PHYSICAL_LIMIT).ok_or(AllocError::InvalidPage)?;
     let _guard = MemoryGuard::acquire();
+    let mut locked_page = base;
+    while locked_page < end {
+        if crate::ntoskrnl::mm::runtime::is_page_locked(locked_page) { return Err(AllocError::InvalidPage); }
+        locked_page += PAGE_SIZE;
+    }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if pages <= FREE_CAPACITY - free.1 {
         let mut page = base;
