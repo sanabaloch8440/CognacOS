@@ -4,7 +4,7 @@ use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use crate::hal::IrqSpinLock;
 
-pub const MAX_THREADS: usize = 64;
+pub const MAX_THREADS: usize = 128;
 pub type ThreadEntry = extern "C" fn(*mut c_void);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadState { Empty, Ready, Running, Blocked, Exited }
@@ -27,6 +27,9 @@ static STRESS_COMPLETED:core::sync::atomic::AtomicUsize=core::sync::atomic::Atom
 static STRESS_CPU_MASK:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static STRESS_FAILURES:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static mut STRESS_STACKS:[[u8;8192];8]=[[0;8192];8];
+static mut THREADED_DPC_WORKER_STACKS:[[u8;8192];crate::hal::MAX_CPUS]=[[0;8192];crate::hal::MAX_CPUS];
+static THREADED_DPC_WORKERS:[core::sync::atomic::AtomicU64;crate::hal::MAX_CPUS]=[const{core::sync::atomic::AtomicU64::new(0)};crate::hal::MAX_CPUS];
+static THREADED_DPC_WORKERS_INITIALIZED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
 fn cpu_index()->Result<usize,ThreadError>{
     if let Some(local)=crate::hal::current_cpu_local(){
@@ -172,6 +175,35 @@ pub fn block_current()->Result<(),ThreadError>{
     reschedule(true)?;
     crate::ntoskrnl::ke::runtime::ke_deliver_pending_kernel_apcs();
     Ok(())
+}
+
+extern "C" fn threaded_dpc_worker_entry(_argument:*mut c_void){
+    loop{
+        crate::ntoskrnl::ke::runtime::dispatch_threaded_dpcs();
+        let _=block_current();
+    }
+}
+
+/// Start one PASSIVE_LEVEL threaded-DPC worker on each online CPU. Stacks are
+/// statically owned and remain mapped for the lifetime of their worker threads.
+pub fn initialize_threaded_dpc_workers()->bool{
+    if THREADED_DPC_WORKERS_INITIALIZED.load(core::sync::atomic::Ordering::Acquire){return true}
+    for cpu in 0..crate::hal::MAX_CPUS{
+        if crate::hal::cpu_state(cpu).ok()!=Some(crate::hal::CPU_ONLINE){continue}
+        if THREADED_DPC_WORKERS[cpu].load(core::sync::atomic::Ordering::Acquire)!=0{continue}
+        let stack_ptr=core::ptr::addr_of_mut!(THREADED_DPC_WORKER_STACKS[cpu]).cast::<u8>();
+        let stack=unsafe{core::slice::from_raw_parts_mut(stack_ptr,8192)};
+        let Ok(id)=spawn(stack,1u64<<cpu,threaded_dpc_worker_entry,cpu as *mut c_void) else{return false};
+        THREADED_DPC_WORKERS[cpu].store(id,core::sync::atomic::Ordering::Release);
+    }
+    THREADED_DPC_WORKERS_INITIALIZED.store(true,core::sync::atomic::Ordering::Release);
+    true
+}
+/// Wake the worker pinned to a target CPU after a threaded DPC is queued.
+pub fn wake_threaded_dpc_worker(cpu:usize)->bool{
+    if cpu>=crate::hal::MAX_CPUS{return false}
+    let id=THREADED_DPC_WORKERS[cpu].load(core::sync::atomic::Ordering::Acquire);
+    id!=0&&wake(id).is_ok()
 }
 /// Timer-ISR entry: preempt only when this CPU has a runnable peer. The
 /// interrupt frame remains on the interrupted thread's stack while switched out.
