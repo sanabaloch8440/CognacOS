@@ -75,8 +75,9 @@ unsafe fn object_path(oa:*const ObjectAttributes)->Result<([u16;MAX_NAME],usize,
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired_access:u32,oa:*const ObjectAttributes,_title:*mut core::ffi::c_void,_class:*const UnicodeString,options:u32,disposition:*mut u32)->i32{
  if out.is_null(){return STATUS_INVALID_PARAMETER;}if options&!0x0000_0002!=0{return STATUS_INVALID_PARAMETER;}
+ let _g=LOCK.lock();
  let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
- let _g=LOCK.lock();let s=state();
+ let s=state();
  if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n])){unsafe{*out=handle(k.id);if !disposition.is_null(){*disposition=2;}}return STATUS_SUCCESS;}
  let Some(index)=s.keys.iter().position(|k|!k.used||k.deleted)else{return STATUS_INSUFFICIENT_RESOURCES;};
  let id=s.next_id;s.next_id=s.next_id.wrapping_add(1).max(1);
@@ -111,7 +112,7 @@ pub unsafe extern "win64" fn ZwQueryValueKey(h:*mut core::ffi::c_void,name:*cons
  let Some(v)=s.values.iter().find(|v|v.used&&v.key_id==id&&eq(&v.name[..v.name_len as usize],&nbuf[..n]))else{return STATUS_OBJECT_NAME_NOT_FOUND;};
  let need=core::mem::offset_of!(KeyValuePartialInformation,data)+v.len as usize;
  if !result_len.is_null(){unsafe{*result_len=need as u32;}}
- if out_len as usize<need{return STATUS_BUFFER_TOO_SMALL;}
+ if (out_len as usize)<need{return STATUS_BUFFER_TOO_SMALL;}
  unsafe{let p=out.cast::<KeyValuePartialInformation>();(*p).title_index=0;(*p).kind=v.kind;(*p).data_length=v.len as u32;core::ptr::copy_nonoverlapping(v.data.as_ptr(),(*p).data.as_mut_ptr(),v.len as usize);}
  STATUS_SUCCESS
 }
