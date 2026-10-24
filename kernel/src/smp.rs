@@ -600,9 +600,14 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
         unsafe { crate::serial_write(b"SMP AP rejected invalid logical CPU index.\\r\\n"); }
         loop { core::hint::spin_loop(); }
     }
-    // GDT/IDT loads are local CPU instructions: every AP must execute them
-    // itself before its LAPIC can receive the fixed-vector interrupt suite.
-    unsafe { arch::load_cpu_descriptor_tables(); }
+    // Install a private TSS/GDT and dedicated IST stacks on this CPU before
+    // it can receive interrupts. RSP is already on the permanent AP stack.
+    let mut ap_rsp: u64;
+    unsafe { core::arch::asm!("mov {}, rsp", out(reg) ap_rsp, options(nomem, nostack, preserves_flags)); }
+    if unsafe { arch::load_cpu_descriptor_tables(index, ap_rsp) }.is_err() {
+        let _ = hal::mark_cpu_failed(index);
+        loop { core::hint::spin_loop(); }
+    }
     let mitigations = unsafe { crate::security::initialize() };
     if !mitigations.write_protect || !mitigations.nx_enabled {
         let _ = hal::mark_cpu_failed(index);
