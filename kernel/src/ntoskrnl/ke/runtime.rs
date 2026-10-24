@@ -58,6 +58,7 @@ fn atomic_lock_word(lock: *mut u64) -> Option<&'static core::sync::atomic::Atomi
 
 /// Windows PROCESSOR_NUMBER layout: group, group-relative number, reserved.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct ProcessorNumber { pub group: u16, pub number: u8, pub reserved: u8 }
 
 /// Minimal x64 DISPATCHER_HEADER prefix shared by KEVENT/KSEMAPHORE.
