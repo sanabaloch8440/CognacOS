@@ -27,7 +27,7 @@ pub unsafe extern "win64" fn ke_read_state_event(event: *const DispatcherHeader)
     if event.is_null() { return 0; }
     unsafe { (&*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire) }
 }
-pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, _increment: i32, _wait: u8) -> i32 {
+pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, increment: i32, _wait: u8) -> i32 {
     if event.is_null() { return 0; }
     let _object_guard = DISPATCHER_OBJECT_LOCK.lock();
     let state = unsafe { &*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>() };
