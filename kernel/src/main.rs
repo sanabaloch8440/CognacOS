@@ -26,6 +26,7 @@ mod object;
 #[path = "ntoskrnl/io/runtime.rs"]
 mod io;
 mod extfs;
+mod nls;
 mod ntoskrnl;
 
 use core::arch::asm;
