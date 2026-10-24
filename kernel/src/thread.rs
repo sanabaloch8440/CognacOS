@@ -276,6 +276,10 @@ pub fn current_process_id()->u64{
  let table=THREADS.lock();
  table.records.iter().find(|t|t.id==id&&t.state!=ThreadState::Empty).map(|t|t.process_id).unwrap_or(0)
 }
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ps_get_current_thread()->*mut c_void{current_thread_object()}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ps_get_current_thread_id()->*mut c_void{current_thread_id().unwrap_or(0) as usize as *mut c_void}
 pub fn current_thread_id()->Option<u64>{let cpu=cpu_index().ok()?;let id=crate::hal::cpu_local(cpu).ok()?.current_thread.load(core::sync::atomic::Ordering::Acquire);(id!=0).then_some(id)}
 /// Synchronize a Windows dynamic/base priority with the scheduler's 0..7 bands.
 pub fn set_scheduler_priority(id:u64,priority:u8)->Option<u8>{
