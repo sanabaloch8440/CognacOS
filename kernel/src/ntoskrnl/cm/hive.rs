@@ -73,7 +73,7 @@ impl<'a> Hive<'a>{
  }
  pub fn root(&self)->Result<Key<'_, 'a>,Error>{self.key(self.info.root_cell)}
  pub fn key_at(&self,index:u32)->Result<Key<'_, 'a>,Error>{self.key(index)}
- pub fn find_path(&self,path:&[u16])->Result<Key<'_, 'a>,Error>{
+ pub fn find_path(&self,path:&[u16])->Result<Key<'h, 'a>,Error>{
   let mut current=self.root()?;let mut start=0;
   while start<path.len(){while start<path.len()&&path[start]==b'\\' as u16{start+=1}if start==path.len(){break}
    let mut end=start;while end<path.len()&&path[end]!=b'\\' as u16{end+=1}
@@ -103,12 +103,12 @@ impl<'h,'a> Key<'h,'a>{
   }Ok(current)
  }
  pub fn subkey_count(&self)->Result<u32,Error>{u32at(self.cell,0x14)}
- pub fn find_subkey(&self,name:&[u16])->Result<Key<'_, 'a>,Error>{
+ pub fn find_subkey(&self,name:&[u16])->Result<Key<'h, 'a>,Error>{
   let count=u32at(self.cell,0x14)?;let list=u32at(self.cell,0x1c)?;
   if count>1_000_000{return Err(Error::InvalidKey)}if count==0{return Err(Error::NotFound)}
   self.search_index(list,count,name,0)
  }
- fn search_index(&self,list:u32,count:u32,name:&[u16],depth:u8)->Result<Key<'_, 'a>,Error>{
+ fn search_index(&self,list:u32,count:u32,name:&[u16],depth:u8)->Result<Key<'h, 'a>,Error>{
   if depth>8{return Err(Error::InvalidKey)}let c=self.hive.cell(list)?;let sig=c.get(0..2).ok_or(Error::InvalidKey)?;
   if sig==b"li"{
    if c.len()<2+count as usize*4{return Err(Error::InvalidKey)}
