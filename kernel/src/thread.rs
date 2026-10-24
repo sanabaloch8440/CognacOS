@@ -296,14 +296,16 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
         }
     }
     let mut spins=0usize;
-    while STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)<ids.len() && spins<100_000_000 {
+    while spins<100_000_000
+        && (STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)<ids.len()
+            || ids.iter().any(|id|state(*id)!=Some(ThreadState::Exited))) {
         let _=yield_current();
         core::hint::spin_loop();
         spins+=1;
     }
-    if STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)!=ids.len()
-        || *STRESS_LOCK.lock()!=8*256 { return false; }
-    ids.iter().all(|id|state(*id)==Some(ThreadState::Exited))
+    STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)==ids.len()
+        && *STRESS_LOCK.lock()==8*256
+        && ids.iter().all(|id|state(*id)==Some(ThreadState::Exited))
 }
 
 /// Fast scheduler predicate for the interruptible idle loop.
