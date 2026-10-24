@@ -368,6 +368,7 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [x] Invalidate stale legacy-timer and Timer2 expiry snapshots on every cancellation call, including cancellation after a one-shot has already transitioned inactive; centralize nonzero generation advancement and test wraparound.
 - [x] Consolidate classic KTIMER and NT-style KTIMER2 into one timer metadata table and one APIC-driven expiry scan; remove the parallel `TIMERS2` table and `timer2_tick` loop.
 - [x] Keep delivery semantics in the shared expiry loop: classic timers signal dispatcher waits and optionally queue a KDPC; KTIMER2 records invoke their registered callback at logical DISPATCH_LEVEL.
+- [x] Remove a legacy timer's queued associated KDPC on cancel/rearm even after a one-shot has become inactive; executing-callback rundown remains open.
 - [ ] Implement KTIMER2 tolerable-delay coalescing and race-safe callback rundown; the tolerance is currently retained but not applied, and generation checks alone do not guarantee cancellation waits for an already-starting callback.
 - [x] Inspect workflow #1162 logs: the preceding revision passed host allocator/filesystem tests, freestanding build, PE32+ conversion/validation, UEFI packaging, OVMF/QEMU smoke, and 2/4/8-vCPU SMP stress; Ke broadcast rendezvous and Synchronize/Done barriers passed on every online CPU.
 - [ ] Wait for the workflow triggered by this commit to validate the new standalone Ke timer-generation tests and current source revision.
