@@ -28,6 +28,7 @@ const APIC_LVT_LINT1: usize = 0x360;
 const APIC_LVT_ERROR: usize = 0x370;
 pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xF1;
 pub const HAL_IPI_VECTOR: u8 = 0xF0;
+pub const KE_BROADCAST_VECTOR: u8 = 0xEF;
 pub const TSC_SYNC_VECTOR: u8 = 0xF2;
 static TSC_SYNC_SAMPLES: [AtomicU64; crate::hal::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::hal::MAX_CPUS];
 static TSC_SYNC_SEQUENCE: [AtomicU64; crate::hal::MAX_CPUS] = [const { AtomicU64::new(0) }; crate::hal::MAX_CPUS];
