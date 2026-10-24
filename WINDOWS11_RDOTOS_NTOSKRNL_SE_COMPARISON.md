@@ -62,3 +62,12 @@ All RdotOS-only SID, ACL, descriptor, token-metadata and mask helpers are ordina
 - Added a focused unit test for a registered token SID and an allow ACE.
 
 **Important integration and compatibility limits:** token SID registration is currently an internal hook and is not yet called by Ps token creation/rundown; callers must register identities and unregister them before token storage is reclaimed. The implementation uses a bounded 4-KiB readable-memory contract because the Windows routine does not receive a descriptor length; this is not fault-safe probing/capture. Privilege-set construction/auditing, restricted-token double evaluation, AppContainer/capability checks, full object/callback ACE semantics, kernel subject-context locking, and WDK conformance remain incomplete. This is a real but intentionally scoped implementation, not full Windows 11 Security Reference Monitor parity.
+
+
+### SePrivilegeCheck follow-up (2026-10-25)
+
+- Added the Windows-named `SePrivilegeCheck` export and exact-name resolver mapping.
+- The implementation evaluates bounded `PRIVILEGE_SET` LUID entries against the selected registered token's 64-bit privilege bitmap, honors `PRIVILEGE_SET_ALL_NECESSARY`, rejects more than 64 entries, and denies unknown tokens.
+- Kernel-mode checks retain the documented privilege-check bypass behavior.
+
+**Remaining limitations:** the privilege namespace is currently a 64-bit internal bitmap rather than the full Windows LUID/token privilege representation; token lifecycle and subject-context lock/reference semantics are not integrated with Ps; user-memory fault-safe capture and WDK conformance remain outstanding.
