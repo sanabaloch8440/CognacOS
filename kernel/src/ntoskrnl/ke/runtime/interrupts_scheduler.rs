@@ -93,6 +93,20 @@ pub unsafe extern "win64" fn ke_set_priority_thread(thread:*mut core::ffi::c_voi
  let base=if table.records[slot].id==id{table.records[slot].base}else{priority};
  table.records[slot]=ThreadPriorityRecord{id,base,current:priority};old
 }
+/// Apply a dispatcher wake boost to dynamic priority metadata. The current
+/// cooperative ready queue does not yet reorder runnable threads by priority.
+fn boost_thread_priority(id:u64,increment:i32){
+ if increment<=0{return}
+ let mut table=THREAD_PRIORITIES.lock();
+ let slot=table.records.iter().position(|r|r.id==id)
+  .or_else(||table.records.iter().position(|r|r.id==0));
+ if let Some(slot)=slot{
+  let record=table.records[slot];
+  let base=if record.id==id{record.base}else{8};
+  let current=if record.id==id{record.current}else{8};
+  table.records[slot]=ThreadPriorityRecord{id,base,current:((current as i32)+increment).clamp(0,31) as i8};
+ }
+}
 pub unsafe extern "win64" fn ke_set_base_priority_thread(thread:*mut core::ffi::c_void,increment:i32)->i32{
  let Some(id)=priority_id(thread) else{return 0};
  let mut table=THREAD_PRIORITIES.lock();
