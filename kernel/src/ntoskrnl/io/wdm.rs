@@ -34,6 +34,7 @@ pub struct IoStatusBlock { pub status: isize, pub information: usize }
 pub type DriverDispatch = unsafe extern "system" fn(*mut DeviceObject, *mut Irp) -> i32;
 pub type DriverUnload = unsafe extern "system" fn(*mut DriverObject);
 pub type IoCompletionRoutine = unsafe extern "system" fn(*mut DeviceObject, *mut Irp, *mut c_void) -> i32;
+pub type DriverCancelRoutine = unsafe extern "system" fn(*mut DeviceObject, *mut Irp);
 
 #[repr(C)]
 pub struct DriverObject {
@@ -541,6 +542,43 @@ pub unsafe extern "system" fn io_delete_symbolic_link(link_name:*mut UnicodeStri
 }
 
 
+const IRP_CANCEL_ROUTINE_OFFSET:usize=0x68;
+/// Atomically replace the IRP cancel callback and return the previous callback.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_set_cancel_routine(
+ irp:*mut Irp, routine:Option<DriverCancelRoutine>
+)->Option<DriverCancelRoutine> {
+ if irp.is_null(){return None}
+ let valid={let state=WDM.lock();state.irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp))};
+ if !valid{return None}
+ let slot=unsafe{(*irp).bytes.as_mut_ptr().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
+ let replacement=routine.map_or(ptr::null_mut(),|r|r as *const () as *mut c_void);
+ let previous=unsafe{&*slot}.swap(replacement,core::sync::atomic::Ordering::AcqRel);
+ if previous.is_null(){None}else{Some(unsafe{core::mem::transmute::<*mut c_void,DriverCancelRoutine>(previous)})}
+}
+
+/// Request cancellation using the global cancel-spin-lock protocol. A driver
+/// callback is invoked only after the lock and raised IRQL have been released.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
+ if irp.is_null(){return 0}
+ let valid={let state=WDM.lock();state.irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp))};
+ if !valid{return 0}
+ let mut old_irql=0u8;
+ unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ unsafe{(*irp).bytes[0x44]=1;}
+ let cancel_slot=unsafe{(*irp).bytes.as_mut_ptr().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
+ let callback=unsafe{&*cancel_slot}.swap(ptr::null_mut(),core::sync::atomic::Ordering::AcqRel);
+ unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ if callback.is_null(){return 0}
+ let routine:DriverCancelRoutine=unsafe{core::mem::transmute(callback)};
+ let stack=unsafe{io_get_current_irp_stack_location(irp)};
+ let device=if stack.is_null(){ptr::null_mut()}else{unsafe{(*stack).device_object}};
+ unsafe{routine(device,irp);}
+ 1
+}
+
+
 #[cfg(test)]
 mod wdm_tests {
  use super::*;
@@ -679,6 +717,24 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_symbolic_link(&mut lower_name,&mut target_name)},STATUS_OBJECT_NAME_COLLISION);
   assert_eq!(unsafe{io_delete_symbolic_link(&mut lower_name)},STATUS_SUCCESS);
   assert_eq!(unsafe{io_delete_symbolic_link(&mut lower_name)},STATUS_OBJECT_NAME_NOT_FOUND);
+ }
+
+ static CANCEL_CALLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+ unsafe extern "system" fn test_cancel(device:*mut DeviceObject,irp:*mut Irp) {
+  if !irp.is_null() { CANCEL_CALLED.store(true,core::sync::atomic::Ordering::Release); }
+  let _=device;
+ }
+ #[test]
+ fn cancel_routine_is_atomically_claimed_and_called_once() {
+  CANCEL_CALLED.store(false,core::sync::atomic::Ordering::Release);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  assert!(unsafe{io_set_cancel_routine(irp,Some(test_cancel))}.is_none());
+  assert_eq!(unsafe{io_cancel_irp(irp)},1);
+  assert!(CANCEL_CALLED.load(core::sync::atomic::Ordering::Acquire));
+  assert_eq!(unsafe{io_cancel_irp(irp)},0);
+  assert!(unsafe{io_set_cancel_routine(irp,None)}.is_none());
+  unsafe{io_free_irp(irp);}
  }
 
 }
