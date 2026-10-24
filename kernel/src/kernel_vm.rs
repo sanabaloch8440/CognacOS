@@ -372,6 +372,17 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
 /// Exercise a real high-half mapping and reclamation before the pool uses it.
 pub fn self_test() -> bool {
  let ipi_before=crate::smp::tlb_ipi_count();
+ // If firmware reports conventional RAM above 4 GiB, touch one byte through
+ // the direct map and verify the resulting leaf is supervisor, writable, NX,
+ // and translates back to the expected physical page.
+ if let Some(physical)=crate::memory::first_high_conventional_page() {
+  let Some(virtual_address)=crate::memory::direct_map_address(physical) else{return false};
+  let _sample=unsafe{(virtual_address as *const u8).read_volatile()};
+  let root=ROOT.load(Ordering::Acquire);
+  let Ok(mapping)=(unsafe{crate::memory::inspect_mapping(root,virtual_address)}) else{return false};
+  if mapping.physical_address!=physical || mapping.page_size!=PAGE
+      || !mapping.writable || mapping.executable || mapping.user_accessible {return false}
+ }
  // Exercise distinct extent sizes and every page boundary, then verify exact
  // reclamation and arena reuse. This runs once during boot and again after AP startup.
  for pages in [1usize, 2, 3, 8, 16] {
