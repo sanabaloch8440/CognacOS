@@ -524,8 +524,17 @@ pub unsafe fn start_discovered_aps(
         // Match the proven RustOS bring-up pattern: give each AP a real kernel
         // stack, not a single 4 KiB page that can overflow during initialization.
         const AP_STACK_PAGES: usize = 16;
-        let stack_base = unsafe { memory::allocate_contiguous_pages(AP_STACK_PAGES) }.map_err(SmpError::Memory)?;
+        let stack_base = unsafe {
+            memory::allocate_contiguous_pages_below(
+                AP_STACK_PAGES,
+                0xffff_f000,
+            )
+        }.map_err(SmpError::Memory)?;
         let stack_top = stack_base + (AP_STACK_PAGES * PAGE_SIZE) as u64;
+        if stack_top >= 0x1_0000_0000 {
+            let _ = hal::mark_cpu_failed(logical_id);
+            return Err(SmpError::InvalidTarget);
+        }
         let target = ApStartupTarget { logical_id, apic_id, trampoline_physical, stack_top, pml4_physical };
         unsafe { prepare_trampoline(pml4_physical, startup_pml4, trampoline_physical, stack_top, logical_id)?; }
         unsafe {
