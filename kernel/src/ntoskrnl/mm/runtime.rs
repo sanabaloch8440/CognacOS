@@ -908,6 +908,18 @@ mod tests {
     }
 
     #[test]
+    fn owned_mdl_registry_tracks_only_pool_owned_headers() {
+        let address = 0xffff_8000_1234_5000;
+        assert!(!is_owned_mdl(address));
+        assert!(register_owned_mdl(address));
+        assert!(is_owned_mdl(address));
+        assert!(!register_owned_mdl(address + 8));
+        assert!(unregister_owned_mdl(address));
+        assert!(!is_owned_mdl(address));
+        assert!(!unregister_owned_mdl(address));
+    }
+
+    #[test]
     fn mdl_page_pin_registry_is_reference_counted() {
         let pfn = 0x5a17_0001u64;
         assert!(!is_page_locked(pfn * PAGE_SIZE));
