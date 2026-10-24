@@ -21,7 +21,7 @@ const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
-const BOOT_INFO_VERSION: u32 = 5;
+const BOOT_INFO_VERSION: u32 = 6;
 const HIGH_HALF_PT_PAGES: usize = 64;
 const KERNEL_STACK_VIRTUAL_GUARD: u64 = 0xffff_ff00_0000_0000;
 
@@ -40,6 +40,8 @@ struct BootInfo {
     kernel_stack_virtual_guard: u64,
     rsdp_address: u64,
     ap_trampoline_physical: u64,
+    kernel_physical_sections: [(u64, u64); 4],
+    kernel_physical_section_count: usize,
 }
 
 #[entry]
@@ -234,6 +236,15 @@ fn main() -> Status {
         uefi::println!("FATAL: could not establish high-half kernel/stack aliases");
         loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
     }
+    let mut kernel_physical_sections = [(0u64, 0u64); 4];
+    let kernel_physical_section_count = loaded_kernel.segment_count.min(kernel_physical_sections.len());
+    for (index, segment) in loaded_kernel.segments[..kernel_physical_section_count].iter().copied().enumerate() {
+        let end = match segment.physical_start.checked_add(segment.memory_size) {
+            Some(end) => end,
+            None => return Status::LOAD_ERROR,
+        };
+        kernel_physical_sections[index] = (segment.physical_start, end);
+    }
     let boot_info = BootInfo {
         magic: BOOT_INFO_MAGIC,
         version: BOOT_INFO_VERSION,
@@ -248,6 +259,8 @@ fn main() -> Status {
         kernel_stack_virtual_guard: KERNEL_STACK_VIRTUAL_GUARD,
         rsdp_address,
         ap_trampoline_physical,
+        kernel_physical_sections,
+        kernel_physical_section_count,
     };
     let boot_info_ptr = boot_info_storage.as_ptr().cast::<BootInfo>();
     unsafe { boot_info_ptr.write(boot_info); }
