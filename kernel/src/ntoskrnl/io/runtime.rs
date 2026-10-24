@@ -461,4 +461,11 @@ pub unsafe extern "system" fn io_mark_irp_pending(irp: *mut WdmIrp) {
 }
 
 #[path = "wdm.rs"] mod wdm;
-pub use wdm::*;
+pub use wdm::{
+    io_allocate_irp, io_call_driver, io_complete_request, io_create_device,
+    io_delete_device, io_free_irp, io_get_current_irp_stack_location,
+    io_get_next_irp_stack_location, io_mark_irp_pending, io_set_completion_routine,
+    DeviceObject, DriverObject, IoCompletionRoutine, IoStackLocation, IoStatusBlock,
+    UnicodeString,
+};
+pub use wdm::Irp as WdmIrp;
