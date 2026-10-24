@@ -148,8 +148,7 @@ unsafe fn install_boot_assets(info:&BootInfo){
   BOOT_NLS_ADDRESS[i].store(file.address,core::sync::atomic::Ordering::Release);
   BOOT_NLS_LENGTH[i].store(file.length,core::sync::atomic::Ordering::Release);nls_count+=1;
  }
- serial_write(b"Native Windows assets staged: registry hives=");
- serial_write_hex(hive_count as u64);serial_write(b", NLS tables=");serial_write_hex(nls_count as u64);serial_write(b"\r\n");
+ unsafe{serial_write(b"Native Windows assets staged: registry hives=");serial_write_hex(hive_count as u64);serial_write(b", NLS tables=");serial_write_hex(nls_count as u64);serial_write(b"\r\n");}
 }
 
 #[unsafe(no_mangle)]
