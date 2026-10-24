@@ -29,6 +29,13 @@ jobs:
             exit 1
           fi
           echo "HAL dependency-boundary source checks passed."
+      - name: Test independent platform and driver crates
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path drivers/hal/Cargo.toml
+          cargo test --manifest-path drivers/acpi/Cargo.toml
+          cargo test --manifest-path drivers/pci/Cargo.toml
+          cargo test --manifest-path drivers/processor/Cargo.toml
       - name: Install Rust targets
         run: |
           rustup update stable
