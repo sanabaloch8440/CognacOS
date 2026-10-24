@@ -464,15 +464,22 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         let low = match scheduler::create_task(1, 1, 0x7000, 0x1000) {
             Ok(id) => id, Err(_) => { serial_write(b"FATAL: scheduler task creation failed.\r\n"); halt(); }
         };
-        if scheduler::create_task(6, 1, 0x9000, 0x2000).is_err()
-            || !matches!(scheduler::choose_next(0), Ok(Some(task)) if task.priority == 6)
+        let high = match scheduler::create_task(6, 1, 0x9000, 0x2000) {
+            Ok(id) => id, Err(_) => { serial_write(b"FATAL: scheduler task creation failed.\r\n"); halt(); }
+        };
+        if !matches!(scheduler::choose_next(0), Ok(Some(task)) if task.priority == 6 && task.id == high)
             || scheduler::yield_current(0).is_err()
             || scheduler::set_affinity(low, 0).is_ok()
+            || scheduler::exit_task(low).is_err()
+            || scheduler::exit_task(high).is_err()
         {
             serial_write(b"FATAL: scheduler priority/affinity self-test failed.\r\n");
             halt();
         }
-        serial_write(b"Scheduler priority, affinity, and cooperative-yield metadata self-test passed.\r\n");
+        // The metadata fixture must not leave synthetic READY tasks in the
+        // production scheduler: their fake IDs have no ThreadRecord/context,
+        // and a later dispatch would select them ahead of real kernel threads.
+        serial_write(b"Scheduler priority, affinity, cooperative-yield, and fixture cleanup self-test passed.\r\n");
 
         // Exercise a real saved-stack transition, thread trampoline, exit, and
         // return to the bootstrap context before enabling timer interrupts.
