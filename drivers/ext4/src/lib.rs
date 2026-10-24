@@ -77,7 +77,16 @@ impl<D:BlockDevice> ExtFilesystem<D>{
   if end>device.capacity_bytes(){return Err(Error::OutOfRange)}
   Ok(Self{device,superblock:sb,read_only:false})
  }
- pub fn write_existing_extent(&mut self,extent_root:&[u8],file_offset:u64,data:&[u8],scratch:&mut[u8])->Result<usize,WriteError>{
+ /// Write within an existing regular file's current logical size. This prevents
+ /// a data-write request from using a valid extent beyond EOF to overwrite data
+ /// that belongs to another file or filesystem structure. Allocation and inode
+ /// size changes are intentionally not performed here.
+ pub fn write_file_data(&mut self,extent_root:&[u8],inode_size:u64,file_offset:u64,data:&[u8],scratch:&mut[u8])->Result<usize,WriteError>{
+  let end=file_offset.checked_add(data.len() as u64).ok_or(WriteError::OutOfRange)?;
+  if end>inode_size{return Err(WriteError::OutOfRange)}
+  self.write_existing_extent_unchecked(extent_root,file_offset,data,scratch)
+ }
+ fn write_existing_extent_unchecked(&mut self,extent_root:&[u8],file_offset:u64,data:&[u8],scratch:&mut[u8])->Result<usize,WriteError>{
   if self.read_only{return Err(WriteError::ReadOnly)}if data.is_empty(){return Ok(0)}
   let bs=self.superblock.block_size as usize;if scratch.len()!=bs{return Err(WriteError::PartialBlock)}
   let mut written=0usize;
