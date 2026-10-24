@@ -17,7 +17,7 @@ This expanded pass documents **111 callable Ke export names**: the original comp
 
 | Metric | Calculation | Result |
 |---|---|---:|
-| Source-level signature / x64 ABI declaration coverage | 64 documented declarations/call paths ÷ 64 | **64/64 = 100%** |
+| Source-level signature / x64 ABI declaration coverage | 111 documented declarations/call paths ÷ 111 | **111/111 = 100%** |
 | Name-based import resolution | 111 scoped routine names resolving to callable implementations ÷ 111 | **111/111 = 100%** |
 | Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 111 | **10/111 = 9.0%** |
 | Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 111 | **101/111 = 91.0%** |
@@ -72,7 +72,7 @@ Signatures below normalize the public WDK declarations to x64 C notation and omi
 | 32 | BOOLEAN KeCancelTimer(PKTIMER Timer) | ke_cancel_timer(); deactivates side-table entry | Cancels an active deadline and prevents a not-yet-dispatched timer DPC; does not retract a callback already taken for dispatch. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 33 | LONG KeReadStateTimer(PKTIMER Timer) | ke_read_state_timer(); reads dispatcher signal state | Reports the timer's current signaled state. **Match for initialized RdotOS timer objects.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 34 | VOID KeInitializeDpc(PRKDPC Dpc, PKDEFERRED_ROUTINE DeferredRoutine, PVOID DeferredContext) | ke_initialize_dpc(); bounded DPC side table | Stores routine/context and marks the DPC initialized; Windows private KDPC layout is not recreated. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
-| 35 | BOOLEAN KeInsertQueueDpc(PRKDPC Dpc, PVOID SystemArgument1, PVOID SystemArgument2) | ke_insert_queue_dpc(); bounded queue | Queues once and returns false if already queued. Dispatch runs from the APIC timer path or explicit flush. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
+| 35 | BOOLEAN KeInsertQueueDpc(PRKDPC Dpc, PVOID SystemArgument1, PVOID SystemArgument2) | ke_insert_queue_dpc(); bounded queue | Queues once and returns false if already queued. Dispatch runs from the APIC timer path, local IRQL lowering, target-CPU reschedule service, or explicit bounded flush. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 36 | BOOLEAN KeRemoveQueueDpc(PRKDPC Dpc) | ke_remove_queue_dpc(); clears queued flag | Removes a pending DPC if it has not started dispatch. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 37 | VOID KeFlushQueuedDpcs(VOID) | ke_flush_queued_dpcs(); local DPC drain | Drains queued callbacks on the calling CPU; lacks Windows' systemwide drain/rundown guarantees. **Partial.** [DDI index](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/) |
 | 38 | VOID KeAcquireInStackQueuedSpinLock(PKSPIN_LOCK SpinLock, PKLOCK_QUEUE_HANDLE LockHandle) | ke_acquire_in_stack_queued_spin_lock(); FIFO ticket side table | Raises to DISPATCH_LEVEL and takes a FIFO ticket. The handle's opaque Windows private layout is not fully emulated. **Partial.** [DDI](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-keacquireinstackqueuedspinlock) |
@@ -186,6 +186,11 @@ Microsoft's DDI index describes the documented roles of [spin locks](https://lea
 - KeRaiseIrql writes prior 8-bit IRQL through OldIrql and returns void.
 - KePulseEvent returns the previous event signal state as a 32-bit LONG; priority boosting and atomic pulse/wait handoff are not fully Windows-equivalent.
 - KeGetCurrentThread has the correct pointer ABI but is not safe for code that assumes Windows internal KTHREAD/ETHREAD offsets.
+- Critical/guarded-region nesting and alert flags now live in schedulable thread records. Alertable waits can be interrupted and dispatcher registrations are cancelled; actual kernel/user APC objects, delivery routines, and rundown remain unsupported.
+- Legacy timer records use a bounded side table keyed by the caller's timer address. Due times support negative relative intervals and positive absolute system times; periodic expirations coalesce missed intervals. The APIC timer hook expires timers and queues timer DPCs, but timer precision, per-CPU clock-event ownership, and suspend/resume remain incomplete.
+- DPCs use bounded side-table metadata and FIFO queueing, reject duplicate insertion, support removal and target-CPU selection, and run callbacks at logical DISPATCH_LEVEL. Threaded-DPC registrations currently use the same dispatch level rather than a PASSIVE_LEVEL worker. Cross-CPU flush is bounded and depends on the target CPU servicing its reschedule IPI.
+- In-stack queued spin locks use ticket metadata plus the caller's lock word. They preserve mutual exclusion with the ordinary spin-lock path but do not reproduce the private Windows queue-entry layout or all IRQL/APIC details.
+- Mutex/mutant records track owner thread ID, recursion and abandonment. KQUEUE uses the public header/list shape, caller-owned LIST_ENTRY entries, direct waiter handoff, and rundown; concurrency limits and all Windows wait/boost corner cases remain incomplete.
 
 ## Public sources used
 
@@ -195,15 +200,15 @@ Microsoft's DDI index describes the documented roles of [spin locks](https://lea
 4. Microsoft Learn, [KeQueryInterruptTime](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequeryinterrupttime), [KeQueryInterruptTimePrecise](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequeryinterrupttimeprecise), [KeQueryUnbiasedInterruptTime](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequeryunbiasedinterrupttime), and [KeQueryTickCount](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequerytickcount).
 5. Microsoft Learn, [KeQuerySystemTime](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequerysystemtime) and [KeQuerySystemTimePrecise](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequerysystemtimeprecise).
 6. Microsoft Learn, [KeQueryNodeActiveAffinity](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequerynodeactiveaffinity), [KeQueryNodeMaximumProcessorCount](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequerynodemaximumprocessorcount), [KeGetProcessorIndexFromNumber](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kegetprocessorindexfromnumber), [KeGetProcessorNumberFromIndex](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kegetprocessornumberfromindex), and [KeQueryNodeActiveAffinity2](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-kequerynodeactiveaffinity2).
-7. Microsoft Learn, [KePulseEvent](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-kepulseevent).
+7. Microsoft Learn, [KePulseEvent](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntddk/nf-ntddk-kepulseevent), [timer objects and DPCs](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/timer-objects-and-dpcs), [KeInitializeTimer](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-keinitializetimer), [KeInsertQueueDpc](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/nf-wdm-keinsertqueuedpc), [KeInitializeQueue](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-keinitializequeue), [KeInsertQueue](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-keinsertqueue), and [KeRemoveQueue](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/nf-ntifs-keremovequeue).
 8. Microsoft-maintained public DDI source: [MicrosoftDocs/windows-driver-docs-ddi](https://github.com/MicrosoftDocs/windows-driver-docs-ddi).
 
 ## Follow-up needed for a stronger Windows 11 match
 
 1. Maintain an interrupt-time epoch from boot and advance it from the clock interrupt; account for sleep/resume bias.
 2. Add system-time setting/synchronization and suspend/resume correction to the new RTC-anchored, counter-interpolated wall clock.
-3. Connect thread-local APC/guarded-region counters and alert state to real kernel/user APC object delivery and rundown.
-4. Finish event pulse's scheduler/wait-block atomicity, multi-object wait-any cancellation races, Wait handoff and priority boosts.
+3. Connect the new thread-local APC/guarded-region counters and alert state to real kernel/user APC object delivery and rundown.
+4. Finish event pulse's scheduler/wait-block atomicity, multi-object wait-any cancellation races, Wait handoff and priority boosts; stress timer cancellation, queue handoff, DPC flush, and mutant abandonment races.
 5. Replace the opaque RdotOS thread-record token with a stable NT-compatible thread object abstraction for supported driver-visible operations.
 6. Expand ACPI SRAT/SLIT NUMA discovery and multi-group topology before claiming compatibility beyond one group/node.
 7. Run the full freestanding build and OVMF/QEMU smoke/SMP matrix. Signature review is not runtime verification.
