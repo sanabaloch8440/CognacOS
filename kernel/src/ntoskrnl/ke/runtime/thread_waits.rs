@@ -655,7 +655,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
                         if record.abandoned{if abandoned_index.is_none(){abandoned_index=Some(index);}record.abandoned=false;}
                         unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);}
                     }
-                }else{consume_wait_all_object(object as u64);}
+                }else{let _=consume_wait_all_object(id,object as u64);}
             }
             return abandoned_index.map_or(STATUS_SUCCESS,|index|STATUS_ABANDONED_WAIT_0+index as i32);
         }
