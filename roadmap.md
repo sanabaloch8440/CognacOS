@@ -497,3 +497,17 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [ ] Integrate ext4 into a VFS with mount/file objects, pathname lookup, inode/directory operations, safe allocation and metadata mutation, journal recovery/commit, and power-loss tests before enabling general writable mounts.
 
 **Safety status:** the WDM implementation is an initial compatibility base, not a production NT I/O manager. The ext4 crate is not yet a production-ready mounted filesystem and must not be mounted read-write on valuable data. Its current write path is limited to existing allocated extents and is not transactional; it does not provide full inode/metadata updates or rollback after partial I/O failure.
+
+
+## Windows 11 Se security reference monitor pass (2026-10-25)
+
+- [x] Move Se runtime implementation source under `kernel/src/ntoskrnl/se/`, retaining `se.rs` as the export catalogue/module facade so existing export enumeration remains stable.
+- [x] Implement bounded `SeValidSecurityDescriptor` validation for self-relative descriptors: revision/control checks, SID and ACL structural validation, ACE bounds, offset bounds, and overlapping-component rejection.
+- [x] Resolve `SeValidSecurityDescriptor` by name to its implementation instead of allowing the export catalogue alone to imply support.
+- [x] Add focused unit tests for minimal self-relative descriptors and malformed owner/SID offsets.
+- [ ] Run the current CI workflow and ensure the security runtime tests are included in the actual host-test path.
+- [ ] Implement ABI-verified subject-context capture/release and token query/privilege operations after RdotOS has real process/thread token ownership and privilege state.
+- [ ] Integrate Se access checks with Ob's DACL evaluator, generic mapping, privilege evaluation, process identity, impersonation, and audit/SACL policy; do not claim Windows parity from descriptor validation alone.
+- [ ] Add malformed descriptor fuzz/property tests and fault-safe user-buffer capture before resolving routines that dereference caller-provided descriptors.
+
+**Scope limitation:** the current validator assumes the supplied pointer references a readable 4-KiB window because the NT ABI does not provide an input length. It checks descriptor-relative offsets within that bounded window, but it cannot safely probe arbitrary user memory. It must not be treated as a substitute for `SeCaptureSecurityDescriptor` or full access-check semantics.
