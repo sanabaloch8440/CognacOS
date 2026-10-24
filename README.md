@@ -103,7 +103,7 @@ Contributions should be small enough to review, document their assumptions, incl
 
 ## Windows 11 Ke compatibility tracking
 
-The current Ke inventory is maintained in [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md), which tracks 116 scoped Ke export names and documents public WDK contracts, return values, resolver paths, remaining stubs, and the scoring method. The runtime now includes per-thread APC-region and alert state, legacy timers/DPCs, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. The current 54.3% figure is a project-defined scoped progress metric, not a Microsoft score or proof of Windows driver compatibility; CI/QEMU and SMP validation are still required.
+The current Ke inventory is maintained in [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md), which tracks 132 scoped Ke export names and documents public WDK contracts, return values, resolver paths, remaining stubs, and the scoring method. The runtime now includes per-thread APC-region and alert state, legacy timers/DPCs, queued spin locks, mutex/mutant ownership, guarded mutexes, and executive queues. The current 53.8% figure is a project-defined scoped progress metric, not a Microsoft score or proof of Windows driver compatibility; CI/QEMU and SMP validation are still required.
 
 ## License
 
