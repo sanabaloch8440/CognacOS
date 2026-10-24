@@ -76,9 +76,13 @@ unsafe extern "C" {
     static __bss_start: u8;
     static __bss_end: u8;
     static __text_phys_start: u8;
+    static __text_phys_end: u8;
     static __rodata_phys_start: u8;
+    static __rodata_phys_end: u8;
     static __data_phys_start: u8;
+    static __data_phys_end: u8;
     static __bss_phys_start: u8;
+    static __bss_phys_end: u8;
 }
 
 #[repr(C)]
@@ -581,9 +585,16 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             info.kernel_stack_virtual_guard + 4096,
             info.kernel_stack_virtual_guard + stack_allocation_bytes,
         );
+        let physical_sections = unsafe { [
+            (core::ptr::addr_of!(__text_phys_start) as u64, core::ptr::addr_of!(__text_phys_end) as u64),
+            (core::ptr::addr_of!(__rodata_phys_start) as u64, core::ptr::addr_of!(__rodata_phys_end) as u64),
+            (core::ptr::addr_of!(__data_phys_start) as u64, core::ptr::addr_of!(__data_phys_end) as u64),
+            (core::ptr::addr_of!(__bss_phys_start) as u64, core::ptr::addr_of!(__bss_phys_end) as u64),
+        ] };
         if unsafe { memory::harden_page_tables(
             info.pml4_physical, text, rodata, data, bss,
             info.kernel_stack_guard_page, stack_virtual, info.kernel_stack_virtual_guard,
+            physical_sections,
         ) }.is_err() {
             serial_write(b"FATAL: kernel page-permission hardening failed.\r\n");
             halt();
