@@ -220,7 +220,7 @@ impl AddressSpace {
                     for d in 0..512usize {
                         let pte = unsafe { pt.add(d).read() };
                         if pte & (PRESENT | USER) == (PRESENT | USER)
-                            && crate::ntoskrnl::mm::runtime::is_page_locked(pte & ADDR) {
+                            && (pte & EXTERNAL_USER != 0 || crate::ntoskrnl::mm::runtime::is_page_locked(pte & ADDR)) {
                             return Err(VmError::PermissionDenied);
                         }
                     }
@@ -248,7 +248,9 @@ impl AddressSpace {
                         let pte_slot = unsafe { pt.add(d) };
                         let pte = unsafe { pte_slot.read() };
                         if pte & (PRESENT | USER) == (PRESENT | USER) {
-                            unsafe { crate::memory::free_page(pte & ADDR) }.map_err(|_| VmError::OutOfMemory)?;
+                            if pte & EXTERNAL_USER == 0 {
+                                unsafe { crate::memory::free_page(pte & ADDR) }.map_err(|_| VmError::OutOfMemory)?;
+                            }
                         }
                     }
                     unsafe { crate::memory::free_page(pt as u64) }.map_err(|_| VmError::OutOfMemory)?;
@@ -273,6 +275,116 @@ impl AddressSpace {
     }
 }
 
+
+
+const EXTERNAL_USER: u64 = 1 << 9;
+const MDL_USER_BASE: u64 = 0x0000_7000_0000_0000;
+const MDL_USER_LIMIT: u64 = 0x0000_7000_1000_0000;
+pub fn active_root_physical() -> u64 {
+    let cr3: u64;
+    unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); }
+    cr3 & ADDR
+}
+pub unsafe fn map_external_user_pages_active(pfns: &[u64], writable: bool) -> Result<u64, VmError> {
+    if pfns.is_empty() || pfns.len() > 8192 { return Err(VmError::InvalidAddress); }
+    let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+    let root_phys = active_root_physical();
+    if root_phys == 0 { return Err(VmError::InvalidAddress); }
+    let root = root_phys as *mut u64;
+    let bytes = (pfns.len() as u64).checked_mul(PAGE_SIZE).ok_or(VmError::InvalidAddress)?;
+    let limit = MDL_USER_LIMIT.checked_sub(bytes).ok_or(VmError::InvalidAddress)?;
+    let mut candidate = MDL_USER_BASE;
+    while candidate <= limit {
+        let mut free = true;
+        let mut off = 0u64;
+        while off < bytes {
+            if translate_in_root_locked(root_phys, candidate + off, false, true).is_some() { free = false; break; }
+            off += PAGE_SIZE;
+        }
+        if free {
+            let mut mapped = 0usize;
+            for (index, pfn) in pfns.iter().copied().enumerate() {
+                let Some(pa) = pfn.checked_mul(PAGE_SIZE) else { break; };
+                if !crate::memory::is_ram_physical_address(pa) { break; }
+                let va = candidate + index as u64 * PAGE_SIZE;
+                let indexes = [
+                    ((va >> 39) & 0x1ff) as usize, ((va >> 30) & 0x1ff) as usize,
+                    ((va >> 21) & 0x1ff) as usize, ((va >> 12) & 0x1ff) as usize,
+                ];
+                let mut table = root;
+                let mut failed = false;
+                for idx in indexes[..3].iter().copied() {
+                    let slot = unsafe { table.add(idx) };
+                    let mut entry = unsafe { slot.read() };
+                    if entry & PRESENT == 0 {
+                        let page = match unsafe { crate::memory::allocate_page() } {
+                            Ok(page) => page, Err(_) => { failed = true; break; }
+                        };
+                        entry = page | PRESENT | WRITE | USER;
+                        unsafe { slot.write(entry); }
+                    } else {
+                        if entry & LARGE != 0 || entry & USER == 0 { failed = true; break; }
+                        entry |= WRITE | USER;
+                        unsafe { slot.write(entry); }
+                    }
+                    table = (entry & ADDR) as *mut u64;
+                }
+                if failed { break; }
+                let leaf = unsafe { table.add(indexes[3]) };
+                if unsafe { leaf.read() } & PRESENT != 0 { break; }
+                let mut flags = PRESENT | USER | EXTERNAL_USER | NX;
+                if writable { flags |= WRITE; }
+                unsafe { leaf.write(pa | flags); asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags)); }
+                mapped += 1;
+            }
+            if mapped == pfns.len() { return Ok(candidate); }
+            for index in 0..mapped {
+                let va = candidate + index as u64 * PAGE_SIZE;
+                if let Some((leaf, _)) = unsafe { external_user_leaf(root, va) } {
+                    unsafe { leaf.write(0); asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags)); }
+                }
+            }
+            return Err(VmError::OutOfMemory);
+        }
+        candidate = candidate.checked_add(PAGE_SIZE).ok_or(VmError::InvalidAddress)?;
+    }
+    Err(VmError::OutOfMemory)
+}
+unsafe fn external_user_leaf(root: *mut u64, va: u64) -> Option<(*mut u64, u64)> {
+    if !is_user_range(va, 1) { return None; }
+    let indexes = [
+        ((va >> 39) & 0x1ff) as usize, ((va >> 30) & 0x1ff) as usize,
+        ((va >> 21) & 0x1ff) as usize, ((va >> 12) & 0x1ff) as usize,
+    ];
+    let mut table = root;
+    for idx in indexes[..3].iter().copied() {
+        let entry = unsafe { table.add(idx).read() };
+        if entry & PRESENT == 0 || entry & USER == 0 || entry & LARGE != 0 { return None; }
+        table = (entry & ADDR) as *mut u64;
+    }
+    let leaf = unsafe { table.add(indexes[3]) };
+    let entry = unsafe { leaf.read() };
+    if entry & (PRESENT | USER | EXTERNAL_USER) != (PRESENT | USER | EXTERNAL_USER) { return None; }
+    Some((leaf, entry & ADDR))
+}
+pub unsafe fn unmap_external_user_pages_active(base: u64, pfns: &[u64]) -> Result<(), VmError> {
+    if base & (PAGE_SIZE - 1) != 0 || pfns.is_empty() { return Err(VmError::InvalidAddress); }
+    let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+    let root_phys = active_root_physical();
+    if root_phys == 0 { return Err(VmError::InvalidAddress); }
+    let root = root_phys as *mut u64;
+    for (index, pfn) in pfns.iter().copied().enumerate() {
+        let va = base.checked_add(index as u64 * PAGE_SIZE).ok_or(VmError::InvalidAddress)?;
+        let Some((_, pa)) = (unsafe { external_user_leaf(root, va) }) else { return Err(VmError::NotMapped); };
+        if pa / PAGE_SIZE != pfn { return Err(VmError::PermissionDenied); }
+    }
+    for index in 0..pfns.len() {
+        let va = base + index as u64 * PAGE_SIZE;
+        let Some((leaf, _)) = (unsafe { external_user_leaf(root, va) }) else { return Err(VmError::NotMapped); };
+        unsafe { leaf.write(0); asm!("invlpg [{}]", in(reg) va, options(nostack, preserves_flags)); }
+    }
+    Ok(())
+}
 
 /// Translate an address through a specific process root. The caller must hold
 /// ADDRESS_SPACE_LIFETIME_LOCK so page tables cannot be mutated or destroyed

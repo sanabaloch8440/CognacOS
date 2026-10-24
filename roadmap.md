@@ -68,8 +68,10 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Add bounded `MmFreeMdl`, `MmPrepareMdlForReuse`, and `MmBuildPartialMdl` entry points. Pool freeing is restricted to headers allocated by `MmCreateMdl`; partial MDLs validate source/target ranges and acquire independent pin references for locked source pages. Full WDK edge-case parity and stress validation remain pending.
 - [x] Add arbitrary scatter/gather kernel MDL mappings: `MmMapLockedPagesSpecifyCache` maps the MDL PFN array into a contiguous supervisor VA extent without taking ownership of backing frames; `MmUnmapLockedPages` tears down only the matching external mapping and reclaims empty page tables. The current implementation accepts cached mappings only.
 - [x] Fault in tracked pageable kernel-pool buffers during `MmProbeAndLockPages` through the existing page-fault/page-in handler before PFN capture; MDL ranges are checked for overflow, canonicality, and user/kernel-boundary crossing.
-- [ ] Add user-mode MDL mappings and pageable user-address faulting; this requires current-process association, user-VA reservation and per-process mapping teardown, plus exception-safe probe semantics.
-- [ ] Complete Windows MDL lifecycle semantics across all allocation-source combinations and validate races/edge cases against WDK consumers.
+- [x] Add active-process user-mode MDL aliases in a reserved VA arena; track the MDL/process/root tuple, validate teardown in the same active address space, and mark user PTEs as external so address-space destruction never frees MDL-owned frames. Cached mappings only; mapping requires a registered running process and resident locked PFNs.
+- [ ] Add per-process VMA metadata and demand-zero/pagefile-backed user page-in. Absent user pages currently fail closed rather than being mapped speculatively.
+- [ ] Add exception-safe `MmProbeAndLockPages` semantics (NT exception/status contract, guarded user access, and recovery from access violations); the current void ABI entry point validates resident mappings and fails closed but does not yet provide Windows SEH-style exception delivery.
+- [ ] Complete Windows MDL lifecycle semantics across all allocation-source combinations and validate races/edge cases against WDK consumers, including process exit during mapping, repeated unmap/unlock, malformed PFN arrays, and mapping-table exhaustion.
 - [x] Build bootstrap identity mappings from the final UEFI memory-map descriptors, leaving uncovered physical holes not-present and explicitly mapping APIC MMIO windows.
 - [x] Build the bootstrap identity map with 4 KiB PTEs for every 2 MiB window and populate only pages covered by final UEFI memory descriptors; holes remain not-present, with exact 4 KiB APIC MMIO mappings added explicitly. Per-region read-only/NX protection remains a later kernel phase.
 - [x] Add a demand-mapped direct-map window for UEFI-described RAM above 4 GiB; reject reserved/MMIO addresses and validate the path in the 5 GiB QEMU boot test.
@@ -95,7 +97,7 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Initialize per-AP GDT/TSS/IDT and CPU-local state before marking APs online.
 - [ ] Implement interrupt vectors, complete IRQ routing, MSI/MSI-X, and interrupt remapping.
 - [ ] Calibrate and enable a reliable APIC timer and monotonic clock.
-- [ ] Add multi-vCPU race/stress tests for locks, interrupts, startup, and TLB invalidation.
+- [ ] Add multi-vCPU race/stress tests for locks, interrupts, startup, TLB invalidation, concurrent user-MDL map/unmap, process exit, and MDL unlock ordering.
 - [ ] Keep external interrupts disabled until interrupt entry, routing, and per-CPU state are proven safe.
 
 Discovery and startup primitives do not by themselves establish a production-ready SMP kernel.
@@ -119,7 +121,8 @@ Discovery and startup primitives do not by themselves establish a production-rea
 - [x] Add a bounded PE32+ AMD64 loader with relocations, normal/delay imports, registered exports, API-set aliases, TLS setup/callbacks, and basic runtime-function registration.
 - [x] Create minimal PEB/TEB structures, GS-based TEB access, TLS blocks, and loader lists for the current test path.
 - [ ] Implement the Windows NT x64 syscall numbers, service table, calling semantics, and validation.
-- [ ] Implement NT-compatible process/thread objects, reference counting, namespaces, security descriptors, events, semaphores, and executive services.
+- [ ] Integrate process identity with scheduler thread switches and current-thread/current-process NT APIs; MDL user mappings currently require a registered running process root to be active.
+- [ ] Implement complete NT-compatible process/thread objects, generic object-type dispatch, per-process handle tables, namespaces, security descriptors, events, semaphores, and executive services.
 - [ ] Complete loader namespaces, forwarder chains, API-set schema parsing, DllMain failure/detach handling, and concurrent lifecycle operations.
 - [ ] Implement full AMD64 UNWIND_INFO interpretation, language-specific handlers, vectored exception dispatch, and recovery.
 - [ ] Provide actual Windows user-mode API implementations; export fixtures are not ntdll/kernel32/advapi32 compatibility.

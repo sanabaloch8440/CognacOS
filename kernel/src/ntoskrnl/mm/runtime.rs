@@ -228,6 +228,14 @@ impl LockedPage { const EMPTY: Self = Self { pfn: 0, references: 0, live: false 
 static LOCKED_PAGES: crate::hal::IrqSpinLock<[LockedPage; MAX_LOCKED_PAGES]> =
     crate::hal::IrqSpinLock::new([LockedPage::EMPTY; MAX_LOCKED_PAGES]);
 
+
+const MAX_USER_MDL_MAPPINGS: usize = 256;
+#[derive(Clone, Copy)]
+struct UserMdlMapping { mdl: u64, process: u64, root: u64, base: u64, pages: usize, live: bool }
+impl UserMdlMapping { const EMPTY: Self = Self { mdl: 0, process: 0, root: 0, base: 0, pages: 0, live: false }; }
+static USER_MDL_MAPPINGS: crate::hal::IrqSpinLock<[UserMdlMapping; MAX_USER_MDL_MAPPINGS]> =
+    crate::hal::IrqSpinLock::new([UserMdlMapping::EMPTY; MAX_USER_MDL_MAPPINGS]);
+
 /// Used by the physical allocator to prevent recycling frames still pinned by an MDL.
 pub fn is_page_locked(physical_page: u64) -> bool {
     let pfn = physical_page / PAGE_SIZE;
@@ -399,6 +407,15 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
         for index in 0..pages as usize { unsafe { destination.add(index).write(0); } }
         return;
     }
+    if crate::vm::is_user_range(start, 1) {
+        let root = crate::vm::active_root_physical();
+        let Some(process) = crate::process::reference_process_for_root(root) else {
+            unlock_pfns(pfns);
+            for index in 0..pages as usize { unsafe { destination.add(index).write(0); } }
+            return;
+        };
+        header.process = process;
+    }
     header.flags |= MDL_LOCKED;
 }
 /// Release physical-frame references acquired by MmProbeAndLockPages.
@@ -419,7 +436,12 @@ pub unsafe extern "win64" fn mm_unlock_pages(mdl: *mut c_void) {
         if translate(at, false).is_none() { return; }
     }
     let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, pages as usize) };
+    if USER_MDL_MAPPINGS.lock().iter().any(|m| m.live && m.mdl == address) { return; }
     unlock_pfns(pfns);
+    if !header.process.is_null() {
+        let _ = crate::process::dereference_eprocess(header.process);
+        header.process = core::ptr::null_mut();
+    }
     header.flags &= !(MDL_LOCKED | MDL_MAPPED_SYSTEM_VA);
     header.mapped_system_va = core::ptr::null_mut();
 }
@@ -601,7 +623,7 @@ pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
     mdl: *mut c_void, access_mode: i8, cache_type: i32, requested_address: *mut c_void,
     _bug_check_on_failure: u8, _priority: u32,
 ) -> *mut c_void {
-    if mdl.is_null() || access_mode != 0 || cache_type != 1 || !requested_address.is_null() {
+    if mdl.is_null() || (access_mode != 0 && access_mode != 1) || cache_type != 1 || !requested_address.is_null() {
         return core::ptr::null_mut();
     }
     let address = mdl as u64;
@@ -637,9 +659,35 @@ pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
         let Some(pa) = pfn.checked_mul(PAGE_SIZE) else { return core::ptr::null_mut(); };
         if !crate::memory::is_ram_physical_address(pa) { return core::ptr::null_mut(); }
     }
+    if access_mode == 1 {
+        let root = crate::vm::active_root_physical();
+        let process = header.process;
+        if process.is_null() || !crate::process::process_matches_root(process, root) {
+            return core::ptr::null_mut();
+        }
+        if USER_MDL_MAPPINGS.lock().iter().any(|m| m.live && m.mdl == address) {
+            return core::ptr::null_mut();
+        }
+        let mapping = match unsafe { crate::vm::map_external_user_pages_active(pfns, true) } {
+            Ok(value) => value, Err(_) => return core::ptr::null_mut(),
+        };
+        let Some(mapped) = mapping.checked_add(header.byte_offset as u64) else {
+            let _ = unsafe { crate::vm::unmap_external_user_pages_active(mapping, pfns) };
+            return core::ptr::null_mut();
+        };
+        let mut mappings = USER_MDL_MAPPINGS.lock();
+        let Some(slot) = mappings.iter_mut().find(|m| !m.live) else {
+            drop(mappings);
+            let _ = unsafe { crate::vm::unmap_external_user_pages_active(mapping, pfns) };
+            return core::ptr::null_mut();
+        };
+        *slot = UserMdlMapping { mdl: address, process: process as u64, root, base: mapping, pages: pages as usize, live: true };
+        header.mapped_system_va = mapped as *mut c_void;
+        header.flags |= MDL_MAPPED_SYSTEM_VA;
+        return header.mapped_system_va;
+    }
     let mapping = match crate::kernel_vm::map_external_pages(pfns) {
-        Ok(value) => value,
-        Err(_) => return core::ptr::null_mut(),
+        Ok(value) => value, Err(_) => return core::ptr::null_mut(),
     };
     let Some(mapped) = (mapping as u64).checked_add(header.byte_offset as u64) else {
         let _ = crate::kernel_vm::unmap_external_pages(mapping, pages as usize);
@@ -658,9 +706,28 @@ pub unsafe extern "win64" fn mm_unmap_locked_pages(base: *mut c_void, mdl: *mut 
     if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
     let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
     if header.flags & MDL_MAPPED_SYSTEM_VA == 0 || header.mapped_system_va != base { return; }
+    // User aliases must be torn down in the same active process/root.
+    let base_va = base as u64;
+    if base_va < 0x0000_8000_0000_0000 {
+        let offset = header.byte_offset as u64;
+        let aligned = match base_va.checked_sub(offset) { Some(v) => v, None => return };
+        let root = crate::vm::active_root_physical();
+        let mut mappings = USER_MDL_MAPPINGS.lock();
+        let Some(index) = mappings.iter().position(|m| m.live && m.mdl == address
+            && m.process == header.process as u64 && m.root == root
+            && m.base == aligned && header.process as u64 != 0) else { return; };
+        let record = mappings[index];
+        let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
+        let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, record.pages) };
+        if unsafe { crate::vm::unmap_external_user_pages_active(record.base, pfns) }.is_err() { return; }
+        mappings[index] = UserMdlMapping::EMPTY;
+        drop(mappings);
+        header.flags &= !MDL_MAPPED_SYSTEM_VA;
+        header.mapped_system_va = core::ptr::null_mut();
+        return;
+    }
     // Nonpaged-pool MDLs may describe an existing VA rather than an MM-owned
     // alias. Only release addresses inside the dedicated kernel mapping arena.
-    let base_va = base as u64;
     if base_va >= 0xffff_8000_0000_0000 && crate::kernel_vm::is_pageable_address(base_va) {
         // Pageable pool extents are not external MDL mappings; don't free them.
         return;

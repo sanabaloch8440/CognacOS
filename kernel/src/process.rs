@@ -161,6 +161,22 @@ pub(crate) fn detach_address_space(root: u64) {
     }
 }
 
+
+pub fn reference_process_for_root(root: u64) -> Option<*mut core::ffi::c_void> {
+    if root == 0 { return None; }
+    let mut registry = TABLE.lock();
+    let p = registry.0.iter_mut().find(|p| p.used && p.magic == EPROCESS_MAGIC
+        && p.address_space_root == root && p.state == ProcessState::Running)?;
+    p.references = p.references.checked_add(1)?;
+    Some(p as *mut EProcess as *mut core::ffi::c_void)
+}
+pub fn process_matches_root(pointer: *mut core::ffi::c_void, root: u64) -> bool {
+    let registry = TABLE.lock();
+    registry.0.iter().any(|p| p.used && p.magic == EPROCESS_MAGIC
+        && (p as *const EProcess as *mut core::ffi::c_void) == pointer
+        && p.address_space_root == root && p.state == ProcessState::Running)
+}
+
 /// Execute a cross-process operation with both registered process objects
 /// referenced and both address spaces protected against concurrent mutation or
 /// destruction. Lock order is always address-space lifetime lock, then registry.
