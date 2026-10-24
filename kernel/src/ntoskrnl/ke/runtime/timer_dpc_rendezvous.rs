@@ -457,6 +457,8 @@ unsafe extern "win64" fn flush_dpc_rendezvous(
 }
 pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
     let current=cpu_slot();
+    // A synchronous flush cannot safely wait while running at DISPATCH_LEVEL.
+    if CURRENT_IRQL[current].load(Ordering::Acquire)>1{return}
     let online=crate::hal::online_cpu_count();
     if online<=1 {
         dispatch_queued_dpcs();
