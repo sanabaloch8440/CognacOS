@@ -1,4 +1,4 @@
-//! timer, DPC, and cross-processor rendezvous routines.
+// timer, DPC, and cross-processor rendezvous routines.
 // This file is included by the Ke runtime facade so existing shared private
 // state and cross-routine helpers retain their original module scope.
 
