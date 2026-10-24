@@ -65,15 +65,15 @@ impl<'a> Hive<'a>{
   if size<8||end>BASE_BLOCK_SIZE+self.info.bins_size as usize{return Err(Error::InvalidCell)}
   self.bytes.get(abs+4..end).ok_or(Error::Truncated)
  }
- fn key(&self,index:u32)->Result<Key<'_, 'a>,Error>{
+ fn key<'h>(&'h self,index:u32)->Result<Key<'h, 'a>,Error>{
   let c=self.cell(index)?;if c.get(0..2)!=Some(&b"nk"[..])||c.len()<0x4c{return Err(Error::InvalidKey)}
   let flags=u16at(c,2)?;let name_len=u16at(c,0x48)? as usize;
   if name_len>c.len()-0x4c{return Err(Error::InvalidKey)}
   Ok(Key{hive:self,index,cell:c,flags,name:&c[0x4c..0x4c+name_len]})
  }
- pub fn root(&self)->Result<Key<'_, 'a>,Error>{self.key(self.info.root_cell)}
- pub fn key_at(&self,index:u32)->Result<Key<'_, 'a>,Error>{self.key(index)}
- pub fn find_path(&self,path:&[u16])->Result<Key<'h, 'a>,Error>{
+ pub fn root<'h>(&'h self)->Result<Key<'h, 'a>,Error>{self.key(self.info.root_cell)}
+ pub fn key_at<'h>(&'h self,index:u32)->Result<Key<'h, 'a>,Error>{self.key(index)}
+ pub fn find_path<'h>(&'h self,path:&[u16])->Result<Key<'h, 'a>,Error>{
   let mut current=self.root()?;let mut start=0;
   while start<path.len(){while start<path.len()&&path[start]==b'\\' as u16{start+=1}if start==path.len(){break}
    let mut end=start;while end<path.len()&&path[end]!=b'\\' as u16{end+=1}
@@ -95,7 +95,7 @@ impl<'h,'a> Key<'h,'a>{
   else{for i in 0..n{out[i]=u16::from_le_bytes([self.name[i*2],self.name[i*2+1]]);}}
   Ok(n)
  }
- pub fn find_path(&self,path:&[u16])->Result<Key<'_, 'a>,Error>{
+ pub fn find_path(&self,path:&[u16])->Result<Key<'h, 'a>,Error>{
   let mut current=*self;let mut start=0;
   while start<path.len(){while start<path.len()&&path[start]==b'\\' as u16{start+=1}if start==path.len(){break}
    let mut end=start;while end<path.len()&&path[end]!=b'\\' as u16{end+=1}
