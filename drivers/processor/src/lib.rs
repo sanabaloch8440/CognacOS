@@ -1,5 +1,7 @@
 //! Generic processor-class driver policy and HAL capability validation.
 #![no_std]
+#[cfg(test)]
+extern crate std;
 use rdotos_hal_contract::{HalServiceTable, HAL_CONTRACT_VERSION};
 
 pub const PROCESSOR_DRIVER_VERSION: u32 = 1;
