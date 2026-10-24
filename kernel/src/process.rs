@@ -174,6 +174,19 @@ pub fn reference_process_for_root(root: u64) -> Option<*mut core::ffi::c_void> {
     p.references = p.references.checked_add(1)?;
     Some(p as *mut EProcess as *mut core::ffi::c_void)
 }
+/// Reference a registered process object and snapshot its live address-space root.
+/// The returned reference must be released with ObfDereferenceObject.
+pub fn reference_process_root(pointer:*mut core::ffi::c_void)->Option<u64>{
+    if pointer.is_null(){return None}
+    let mut registry=TABLE.lock();
+    let process=registry.0.iter_mut().find(|p|
+        core::ptr::addr_of!(**p) as *mut EProcess as *mut core::ffi::c_void==pointer
+        && p.used && p.magic==EPROCESS_MAGIC
+        && (p.state==ProcessState::Running||p.state==ProcessState::Created)
+        && p.address_space_root!=0)?;
+    process.references=process.references.checked_add(1)?;
+    Some(process.address_space_root)
+}
 pub fn process_matches_root(pointer: *mut core::ffi::c_void, root: u64) -> bool {
     let registry = TABLE.lock();
     registry.0.iter().any(|p| p.used && p.magic == EPROCESS_MAGIC
