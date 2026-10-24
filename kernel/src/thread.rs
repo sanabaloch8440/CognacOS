@@ -24,6 +24,7 @@ static IDLE_CONTEXTS:[IdleContext;crate::hal::MAX_CPUS]=[const { IdleContext(Uns
 static IDLE_STACK_TOPS:[core::sync::atomic::AtomicU64;crate::hal::MAX_CPUS]=[const { core::sync::atomic::AtomicU64::new(0) };crate::hal::MAX_CPUS];
 static STRESS_LOCK:IrqSpinLock<u64>=IrqSpinLock::new(0);
 static STRESS_COMPLETED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static STRESS_CPU_MASK:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static mut STRESS_STACKS:[[u8;8192];8]=[[0;8192];8];
 
 fn cpu_index()->Result<usize,ThreadError>{
@@ -272,6 +273,9 @@ pub fn initialize(){
 }
 
 extern "C" fn lock_stress_worker(_argument:*mut c_void) {
+    if let Ok(cpu)=cpu_index() {
+        STRESS_CPU_MASK.fetch_or(1u64<<cpu,core::sync::atomic::Ordering::AcqRel);
+    }
     for _ in 0..256 {
         {
             let mut guard=STRESS_LOCK.lock();
@@ -288,16 +292,22 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
     if online_cpus==0 || online_cpus>crate::hal::MAX_CPUS { return false; }
     *STRESS_LOCK.lock()=0;
     STRESS_COMPLETED.store(0,core::sync::atomic::Ordering::Release);
-    let mut affinity=0u64;
+    STRESS_CPU_MASK.store(0,core::sync::atomic::Ordering::Release);
+    let mut cpu_ids=[0usize;8];
+    let mut cpu_count=0usize;
     for cpu in 0..crate::hal::MAX_CPUS {
         if crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE) {
-            affinity|=1u64<<cpu;
+            if cpu_count<cpu_ids.len(){cpu_ids[cpu_count]=cpu;cpu_count+=1;}
         }
     }
-    if affinity.count_ones() as usize != online_cpus { return false; }
+    if cpu_count==0 || crate::hal::online_cpu_count()!=online_cpus { return false; }
+    let smp_active=crate::smp::ipi_shootdowns_enabled();
+    let worker_cpu_count=if smp_active{cpu_count}else{1};
     let mut ids=[0u64;8];
     for slot in 0..8 {
         let stack: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(STRESS_STACKS[slot]) };
+        let target_cpu=if smp_active{cpu_ids[slot%worker_cpu_count]}else{0};
+        let affinity=1u64<<target_cpu;
         match spawn(stack,affinity,lock_stress_worker,core::ptr::null_mut()) {
             Ok(id)=>ids[slot]=id,
             Err(_)=>return false,
@@ -319,8 +329,10 @@ pub fn smp_scheduler_stress_test(online_cpus:usize)->bool {
         scheduler_id.and_then(|sid|crate::scheduler::task_snapshot(sid).ok())
             .is_some_and(|task|task.state==crate::scheduler::TaskState::Exited)
     });
+    let expected_cpu_count=if smp_active{core::cmp::min(online_cpus,8)}else{1};
     STRESS_COMPLETED.load(core::sync::atomic::Ordering::Acquire)==ids.len()
         && *STRESS_LOCK.lock()==8*256
+        && STRESS_CPU_MASK.load(core::sync::atomic::Ordering::Acquire).count_ones() as usize>=expected_cpu_count
         && ids.iter().all(|id|state(*id)==Some(ThreadState::Exited))
         && scheduler_teardown_ok
 }
