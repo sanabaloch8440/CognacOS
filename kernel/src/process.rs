@@ -12,7 +12,7 @@ pub const IMAGE_NAME_ADDRESS: u64 = 0x0000_0080_6000_0000;
 pub const PROCESS_PARAMS_ADDRESS: u64 = 0x0000_0080_7000_0000;
 static NEXT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(4);
 const MAX_PROCESSES: usize = 64;
-#repr(u32)]
+#[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessState { Created, Running, Exited, Reaped }
 #[derive(Clone, Copy, Debug)]
