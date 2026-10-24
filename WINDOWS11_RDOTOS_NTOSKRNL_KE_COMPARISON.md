@@ -23,7 +23,7 @@ This pass now covers **25 Ke routines** in this comparison: the original 20, fou
 | Partial or limited behavior | Remaining routines with documented gaps ÷ 25 | **15/25 = 60%** |
 | Combined project score | (100% ABI + 40% behavior) ÷ 2 | **70%** |
 
-**Important:** 72.5% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. Matching an ABI does not imply matching semantics. The behavior score counts topology queries as matches only within the explicitly supported single-group, single-node model. It does not imply compatibility with arbitrary NUMA or multi-group Windows systems.
+**Important:** 70% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. Matching an ABI does not imply matching semantics. The behavior score counts topology queries as matches only within the explicitly supported single-group, single-node model. It does not imply compatibility with arbitrary NUMA or multi-group Windows systems.
 
 ### Scoring rules
 
