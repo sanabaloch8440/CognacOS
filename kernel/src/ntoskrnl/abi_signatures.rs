@@ -1,6 +1,7 @@
 //! Publicly documented NT kernel ABI declarations and supported signature registry.
 //! Function-pointer aliases are x64 ABI types; aliases alone do not implement routines.
 use core::ffi::c_void;
+use crate::ntoskrnl::se::runtime::{SeGenericMapping, SeSecuritySubjectContext};
 
 pub type NtStatus = i32;
 pub type Handle = *mut c_void;
@@ -55,9 +56,19 @@ pub type PsGetCurrentProcessIdFn = unsafe extern "win64" fn() -> Handle;
 pub type PsGetCurrentThreadIdFn = unsafe extern "win64" fn() -> Handle;
 pub type ZwCloseFn = unsafe extern "win64" fn(Handle) -> NtStatus;
 pub type ZwWaitForSingleObjectFn = unsafe extern "win64" fn(Handle, Boolean, *const LargeInteger) -> NtStatus;
+pub type SeAccessCheckFn = unsafe extern "win64" fn(
+    *const c_void, *mut SeSecuritySubjectContext, *mut Boolean, Ulong, Ulong,
+    *mut *mut c_void, *const SeGenericMapping, Kirql, *mut Ulong, *mut NtStatus,
+) -> Boolean;
+pub type SePrivilegeCheckFn = unsafe extern "win64" fn(*const c_void, *mut SeSecuritySubjectContext, Kirql) -> Boolean;
+pub type SeSubjectContextFn = unsafe extern "win64" fn(*mut SeSecuritySubjectContext);
+pub type PsAssignImpersonationTokenFn = unsafe extern "win64" fn(Handle, Handle) -> NtStatus;
+pub type PsReferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid) -> Pvoid;
+pub type PsDereferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid);
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmFreeMdl, MmPrepareMdlForReuse, MmBuildPartialMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, PsLookupProcessByProcessId, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject }
+pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmBuildMdlForNonPagedPool, MmAdvanceMdl, MmCreateMdl, MmFreeMdl, MmPrepareMdlForReuse, MmBuildPartialMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, PsLookupProcessByProcessId, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject, SeAccessCheck, SePrivilegeCheck, SeCaptureSubjectContext, SeReleaseSubjectContext, SeLockSubjectContext, SeUnlockSubjectContext, PsAssignImpersonationToken, PsReferencePrimaryToken, PsDereferencePrimaryToken }
 
 pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     Some(match name {
@@ -102,6 +113,16 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
         "PsGetCurrentThreadId" => AbiSignature::PsGetCurrentThreadId,
         "ZwClose" => AbiSignature::ZwClose,
         "ZwWaitForSingleObject" => AbiSignature::ZwWaitForSingleObject,
+        "SeAccessCheck" => AbiSignature::SeAccessCheck,
+        "SePrivilegeCheck" => AbiSignature::SePrivilegeCheck,
+        "SeCaptureSubjectContext" => AbiSignature::SeCaptureSubjectContext,
+        "SeReleaseSubjectContext" => AbiSignature::SeReleaseSubjectContext,
+        "SeLockSubjectContext" => AbiSignature::SeLockSubjectContext,
+        "SeUnlockSubjectContext" => AbiSignature::SeUnlockSubjectContext,
+        "PsAssignImpersonationToken" => AbiSignature::PsAssignImpersonationToken,
+        "PsReferencePrimaryToken" => AbiSignature::PsReferencePrimaryToken,
+        "PsDereferencePrimaryToken" => AbiSignature::PsDereferencePrimaryToken,
+
         _ => return None,
     })
 }
