@@ -18,7 +18,7 @@ This expanded pass documents **138 callable Ke export names**: the original comp
 | Metric | Calculation | Result |
 |---|---|---:|
 | Source-level signature / x64 ABI declaration coverage | 138 documented declarations/call paths ÷ 138 | **138/138 = 100%** |
-| Name-based import resolution | 138 scoped routine names resolving to callable implementations ÷ 138 | **132/132 = 100%** |
+| Name-based import resolution | 138 scoped routine names resolving to callable implementations ÷ 138 | **138/138 = 100%** |
 | Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 138 | **10/138 = 7.2%** |
 | Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 138 | **128/138 = 92.8%** |
 | Combined project score | (100% ABI declarations + 7.2% strict behavior) ÷ 2 | **53.6%** |
