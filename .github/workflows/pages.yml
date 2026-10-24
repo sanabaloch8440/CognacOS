@@ -27,6 +27,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      - name: Sync canonical compatibility inventories into the site
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md docs/compatibility/ke.md
+          cp WINDOWS11_RDOTOS_NTOSKRNL_SE_COMPARISON.md docs/compatibility/se.md
+          sed -i 's](WINDOWS11_RDOTOS_NTOSKRNL_SE_COMPARISON.md)](se.md)]g; s](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md)](ke.md)]g; s](roadmap.md)](../roadmap.md)]g' docs/compatibility/ke.md docs/compatibility/se.md
       - uses: actions/jekyll-build-pages@v1
         with:
           source: .
