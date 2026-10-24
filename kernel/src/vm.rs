@@ -440,8 +440,16 @@ fn translate_user_root(root_physical: u64, virtual_address: u64, write: bool) ->
         let entry = unsafe { table.add(index).read_volatile() };
         if entry & PRESENT == 0 || entry & USER == 0 { return Err(VmError::NotMapped); }
         if write && entry & WRITE == 0 { return Err(VmError::PermissionDenied); }
+        if entry & LARGE != 0 {
+            if level == 1 {
+                return Ok((entry & 0x000F_FFFF_C000_0000) | (virtual_address & 0x3FFF_FFFF));
+            }
+            if level == 2 {
+                return Ok((entry & 0x000F_FFFF_FFE0_0000) | (virtual_address & 0x1F_FFFF));
+            }
+            return Err(VmError::NotMapped);
+        }
         if level == 3 { return Ok((entry & ADDR) | (virtual_address & (PAGE_SIZE - 1))); }
-        if entry & LARGE != 0 { return Err(VmError::NotMapped); }
         table = (entry & ADDR) as *const u64;
     }
     Err(VmError::NotMapped)
