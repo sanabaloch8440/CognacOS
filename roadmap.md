@@ -110,6 +110,7 @@ Discovery and startup primitives do not by themselves establish a production-rea
 
 - [x] Connect the kernel-thread runtime to scheduler task-state/affinity metadata for create, select, yield, block, wake, resume, and exit transitions.
 - [x] Add cross-CPU HAL IPI notifications when runnable work is created or woken; AP idle loops dispatch eligible threads after wakeup.
+- [x] Pin each cooperative saved context to one allowed online CPU until migration-safe context publication is implemented; round-robin initial placement avoids stale-RSP migration races.
 - [x] Maintain each CPU's TSS RSP0 as cooperative kernel threads switch stacks; verify context switching, lock contention, and thread teardown in the SMP stress test.
 - [x] Add kernel-thread block/wake/resume paths and dispatcher self-tests for FIFO, cancellation, wait-any/wait-all, and timeout cases.
 - [ ] Add per-CPU run queues, priority-aware preemption, affinity migration, load balancing, and timer-driven preemption.
