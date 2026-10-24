@@ -34,6 +34,43 @@ struct RegionStore(core::cell::UnsafeCell<[Region; MAX_REGIONS]>);
 unsafe impl Sync for RegionStore {}
 static REGIONS: RegionStore = RegionStore(core::cell::UnsafeCell::new([Region::EMPTY; MAX_REGIONS]));
 static REGION_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+// The immutable final UEFI map is retained for validating high-memory direct-map faults.
+static FIRMWARE_MAP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRMWARE_MAP_ENTRIES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static FIRMWARE_MAP_STRIDE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+pub const DIRECT_MAP_BASE: u64 = 0xffff_9000_0000_0000;
+/// Highest physical address representable in this canonical direct-map window.
+pub const DIRECT_MAP_PHYSICAL_LIMIT: u64 = 0x0000_7000_0000_0000;
+
+/// Return true only for physical pages described by UEFI as RAM-like memory.
+/// MMIO, reserved, unusable, and port-I/O descriptors are deliberately excluded.
+pub fn is_ram_physical_address(address: u64) -> bool {
+    let base = FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire);
+    let entries = FIRMWARE_MAP_ENTRIES.load(core::sync::atomic::Ordering::Acquire);
+    let stride = FIRMWARE_MAP_STRIDE.load(core::sync::atomic::Ordering::Acquire);
+    if base == 0 || stride < core::mem::size_of::<MemoryDescriptor>() { return false; }
+    for i in 0..entries {
+        let Some(offset) = i.checked_mul(stride) else { return false; };
+        let Some(pointer) = (base as usize).checked_add(offset) else { return false; };
+        let d = unsafe { ptr::read_unaligned(pointer as *const MemoryDescriptor) };
+        if !matches!(d.kind, 1..=7 | 9 | 10 | 14) || d.number_of_pages == 0 { continue; }
+        let Some(bytes) = d.number_of_pages.checked_mul(PAGE_SIZE) else { continue; };
+        let Some(end) = d.physical_start.checked_add(bytes) else { continue; };
+        if address >= d.physical_start && address < end { return true; }
+    }
+    false
+}
+
+/// Convert a high physical address to its canonical direct-map virtual address.
+/// Mapping is demand-created on first access; only UEFI-described RAM is eligible.
+pub fn direct_map_address(physical_address: u64) -> Option<u64> {
+    if physical_address < PHYSICAL_LIMIT
+        || physical_address >= DIRECT_MAP_PHYSICAL_LIMIT
+        || !is_ram_physical_address(physical_address)
+    { return None; }
+    DIRECT_MAP_BASE.checked_add(physical_address)
+}
 const FREE_CAPACITY: usize = 65536;
 struct FreePages(core::cell::UnsafeCell<([u64; FREE_CAPACITY], usize)>);
 unsafe impl Sync for FreePages {}
@@ -110,6 +147,9 @@ pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Resul
     let _guard = MemoryGuard::acquire();
     let mut staged = [Region::EMPTY; MAX_REGIONS];
     let count = collect_regions(map, entries, stride, &mut staged)?;
+    FIRMWARE_MAP.store(map as u64, core::sync::atomic::Ordering::Release);
+    FIRMWARE_MAP_ENTRIES.store(entries, core::sync::atomic::Ordering::Release);
+    FIRMWARE_MAP_STRIDE.store(stride, core::sync::atomic::Ordering::Release);
     let regions = unsafe { &mut *REGIONS.0.get() };
     regions.copy_from_slice(&staged);
     // Reinitialization must not retain frames returned by a previous map.
