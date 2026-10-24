@@ -9,7 +9,7 @@ Target reference: Windows 11 x64 10.0.26100.8036-AMD64. The Se export list in `k
 | `SeValidSecurityDescriptor` | `kernel/src/ntoskrnl/se/runtime.rs` | Bounded structural validation of self-relative descriptors: revision/control, SID and ACL/ACE bounds, offsets and overlap checks. |
 | `SeTokenIsAdmin`, `SeTokenIsRestricted`, `SeTokenIsWriteRestricted` | `se/runtime.rs` | Query registered RdotOS token metadata; unknown tokens fail closed. |
 | `SeTokenType`, `SeTokenImpersonationLevel` | `se/runtime.rs` | Query registered token kind/impersonation level; unknown or non-impersonation tokens return 0. |
-| `SeSinglePrivilegeCheck` | `se/runtime.rs` | Kernel-mode bypass; user-mode requests fail closed until current-thread token/privilege integration exists. |
+| `SeSinglePrivilegeCheck` | `se/runtime.rs` | Kernel-mode bypass; user-mode checks query the referenced effective thread/process token privilege bitmap. |
 | `SeQuerySessionIdToken`, `SeQuerySessionIdTokenEx` | `se/runtime.rs` | Query session ID from registered token metadata with pointer and token validation. |
 | `SeQueryAuthenticationIdToken` | `se/runtime.rs` | Query authentication LUID stored in registered token metadata. |
 
@@ -17,13 +17,13 @@ The Se export catalogue is located at `kernel/src/ntoskrnl/se/mod.rs`; the old t
 
 ## Remaining work
 
-- Integrate token metadata with real Ps primary/impersonation token objects, references and rundown; this table is not a Windows TOKEN implementation.
-- Implement `SePrivilegeCheck` against real `PRIVILEGE_SET` and subject-context layouts.
-- Implement the `SeAccessCheck` family and Windows-compatible access-state semantics.
-- Subject-context capture/lock/release and safe capture of user-provided descriptors.
-- Security descriptor assignment/inheritance and complete owner/group/DACL/SACL semantics.
-- Audit policy, privilege auditing, SACL evaluation, callbacks and transactional audit events.
-- AppContainer/capability and silo policy, signing-level policy, secure-boot policy integration and WDK conformance.
+- Complete the Windows TOKEN object allocator and automatically populate SID/privilege metadata during all real Ps token creation and duplication paths.
+- Complete conditional callback ACE expression evaluation and GUID-qualified object ACE evaluation with object-type-list context.
+- Implement full privilege-set output allocation and privilege/audit reporting from SeAccessCheck.
+- Add per-token subject-context locking and exact Windows capture/reference semantics; the current global lock is a serialized foundation.
+- Integrate full SACL policy, audit delivery/policy, AppContainer package SID semantics, capabilities and silo policy.
+- Implement descriptor assignment/inheritance and remaining Se exports only when their ABI and behavior can be validated.
+- Run WDK conformance tests and verify the final built PE export table in CI against the pinned manifest; the current CI path checks names/ordinals are a subset of Windows 11 and rejects extra names.
 
 ## Safety and validation notes
 
