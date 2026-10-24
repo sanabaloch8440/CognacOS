@@ -38,12 +38,17 @@ Focused Rust unit tests cover malformed descriptors, token metadata registration
 
 The runtime now also includes the following **RdotOS extension helpers**, which are not Windows-export ABI implementations:
 
-- RdotSeValidateSid and RdotSeSidEqual: validate/compare SID encodings only within explicit caller-supplied readable spans.
-- RdotSeValidateAcl: validates ACL size and ACE boundaries within an explicit span and checks SID bounds for common basic ACE forms.
-- RdotSeQueryDescriptorControl and RdotSeQueryDescriptorComponent: length-aware self-relative descriptor control/component queries, including component offset and length validation.
-- RdotSePrivilegeBitmapSatisfies and RdotSeAccessMaskAllowed: small pure predicates for explicit privilege bitmaps and allow/deny masks.
+- internal Se helper and internal Se helper: validate/compare SID encodings only within explicit caller-supplied readable spans.
+- internal Se helper: validates ACL size and ACE boundaries within an explicit span and checks SID bounds for common basic ACE forms.
+- internal Se helper and internal Se helper: length-aware self-relative descriptor control/component queries, including component offset and length validation.
+- internal Se helper and internal Se helper: small pure predicates for explicit privilege bitmaps and allow/deny masks.
 
 Focused unit tests cover truncated SID/ACL buffers, SID equality, descriptor component bounds, privilege masks, and deny-wins access-mask behavior. These helpers do not yet provide a complete ACE evaluator, generic mapping, restricted-token double evaluation, privilege-set ABI handling, subject-context capture, auditing, or a Windows SeAccessCheck implementation. Caller-supplied pointers must still refer to readable memory for the exact explicit span; this is length-aware validation, not fault-safe user-buffer probing.
 
 
 The same extension layer now also exposes bounded SID revision/subauthority/identifier-authority queries; ACL metadata and ACE-type counting; basic SID membership search in ACLs; descriptor self-relative/component-presence predicates; and access/privilege mask utilities. Invalid or truncated inputs return conservative failure values. The SID-in-ACL search only understands common basic SID-bearing ACE types and is not an authorization decision.
+
+
+## Export-table boundary correction
+
+All RdotOS-only SID, ACL, descriptor, token-metadata and mask helpers are ordinary crate-internal Rust functions; they are not `no_mangle` symbols and are not added to the Windows kernel export table. The security runtime retains unmangled Windows-named ABI entry points only for the Se routines that are explicitly implemented and listed by the project's Windows 11 export catalogue. Do not expose private helper routines as kernel exports. The catalogue may contain unsupported Windows exports for tracking purposes; listing a name does not claim the routine is implemented.
