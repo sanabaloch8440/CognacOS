@@ -162,23 +162,35 @@ pub fn register_wait_all(thread:u64,objects:&[u64],timeout_token:Option<WaitToke
 /// Atomically complete all wait-all groups whose objects are currently signalled.
 /// Caller holds the global dispatcher-object state lock. Notification events remain
 /// signalled; synchronization events and semaphores are consumed exactly once.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct WaitCompletion{pub thread:u64,pub status:i32}
+impl WaitCompletion{pub const EMPTY:Self=Self{thread:0,status:0};}
+
+/// Atomically reserve every object for a ready wait-all group. The object
+/// callbacks receive the waiting thread identity so ownership-bearing objects
+/// such as mutants can be reserved for the correct thread.
 pub fn complete_ready_wait_all(
-    out_threads:&mut[u64],
-    is_signalled:fn(u64)->bool,
-    consume:fn(u64),
+    out:&mut[WaitCompletion],
+    is_signalled:fn(u64,u64)->bool,
+    consume:fn(u64,u64)->i32,
 )->usize{
-    if out_threads.is_empty(){return 0}
+    if out.is_empty(){return 0}
     let mut cancel_tokens=[0u64;MAX_WAIT_GROUPS];let mut cancel_count=0usize;
     let mut count=0usize;
     {
         let mut groups=GROUPS.lock();
         for group in groups.groups.iter_mut(){
-            if count==out_threads.len(){break}
+            if count==out.len(){break}
             if !group.active||!group.wait_all{continue}
             if group.deadline!=0&&crate::hal::query_performance_counter()>=group.deadline{continue}
-            if !group.objects[..group.count].iter().copied().all(is_signalled){continue}
-            for object in group.objects[..group.count].iter().copied(){consume(object);}
-            out_threads[count]=group.thread;count+=1;
+            if !group.objects[..group.count].iter().copied().all(|object|is_signalled(group.thread,object)){continue}
+            let mut status=0i32;
+            for (index,object) in group.objects[..group.count].iter().copied().enumerate(){
+                let object_status=consume(group.thread,object);
+                if object_status==0x80&&status==0{status=0x80+index as i32;}
+                else if object_status!=0&&status==0{status=object_status;}
+            }
+            out[count]=WaitCompletion{thread:group.thread,status};count+=1;
             if group.token_count>0&&cancel_count<cancel_tokens.len(){cancel_tokens[cancel_count]=group.tokens[0];cancel_count+=1;}
             *group=WaitGroup::EMPTY;
         }
@@ -190,14 +202,14 @@ pub fn complete_ready_wait_all(
 
 static SELFTEST_SIGNAL_A: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(1);
 static SELFTEST_SIGNAL_B: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(1);
-fn selftest_is_signalled(object:u64)->bool{
+fn selftest_is_signalled(_thread:u64,object:u64)->bool{
     match object {
         0x301=>SELFTEST_SIGNAL_A.load(core::sync::atomic::Ordering::Acquire)>0,
         0x302=>SELFTEST_SIGNAL_B.load(core::sync::atomic::Ordering::Acquire)>0,
         _=>false,
     }
 }
-fn selftest_consume(object:u64){
+fn selftest_consume(_thread:u64,object:u64)->i32{
     match object {
         0x301=>{SELFTEST_SIGNAL_A.fetch_sub(1,core::sync::atomic::Ordering::AcqRel);},
         0x302=>{SELFTEST_SIGNAL_B.fetch_sub(1,core::sync::atomic::Ordering::AcqRel);},
@@ -227,7 +239,7 @@ pub fn self_test()->bool{
     SELFTEST_SIGNAL_A.store(1,core::sync::atomic::Ordering::Release);
     SELFTEST_SIGNAL_B.store(1,core::sync::atomic::Ordering::Release);
     if register_wait_all(0x44,&[0x301,0x302],None,0).is_err(){return false}
-    let mut ready=[0u64;4];
+    let mut ready=[WaitCompletion::EMPTY;4];
     let count=complete_ready_wait_all(&mut ready,selftest_is_signalled,selftest_consume);
     if count!=1||ready[0]!=0x44||SELFTEST_SIGNAL_A.load(core::sync::atomic::Ordering::Acquire)!=0||SELFTEST_SIGNAL_B.load(core::sync::atomic::Ordering::Acquire)!=0{return false}
 
