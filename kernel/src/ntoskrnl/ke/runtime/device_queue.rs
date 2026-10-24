@@ -92,3 +92,20 @@ pub unsafe extern "win64" fn ke_remove_device_queue(queue:*mut DeviceQueue)->*mu
  unsafe{(*entry).inserted=0;(*queue).hint=entry;}entry
 }
 
+
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn device_queue_x64_layout_is_stable() {
+        assert_eq!(core::mem::offset_of!(DeviceQueueEntry, device_list_entry), 8);
+        assert_eq!(core::mem::offset_of!(DeviceQueueEntry, sort_key), 24);
+        assert_eq!(core::mem::size_of::<DeviceQueueEntry>(), 32);
+        assert_eq!(core::mem::offset_of!(DeviceQueue, device_list_head), 8);
+        assert_eq!(core::mem::offset_of!(DeviceQueue, lock), 24);
+        assert_eq!(core::mem::offset_of!(DeviceQueue, hint), 40);
+        assert_eq!(core::mem::size_of::<DeviceQueue>(), 48);
+    }
+}
