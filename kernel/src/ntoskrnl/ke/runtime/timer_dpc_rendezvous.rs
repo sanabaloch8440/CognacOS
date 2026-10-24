@@ -438,7 +438,7 @@ pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
             let _=crate::smp::request_reschedule(cpu);
         }
     }
-    for _ in 0..10_000_000usize{
+    loop{
         dispatch_queued_dpcs();
         let pending={let table=DPCS.lock();table.records.iter().any(|r|r.active&&r.queued)}
             || DPC_IN_FLIGHT.load(Ordering::Acquire)!=0
