@@ -535,10 +535,6 @@ mod tests{
   let h=open_by_pointer(body,1,876,true,0).unwrap();assert!(unregister_object(body));assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst),0);
   close_handle(h,876).unwrap();assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst),1);assert!(object_rundown_complete(body));
  }
- #[test]fn symbolic_link_prefixes_resolve_within_namespace(){
-  let ty=register_type(&[96],1,2,4,7,7).unwrap();let body=0x9238usize as *mut c_void;
-  unsafe{register_object(body,ty,&[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16,b'\\' as u16,b'O' as u16,b'b' as u16,junk: 0],false,core::ptr::null(),0).unwrap();}
- }
 
  #[test]fn symbolic_link_prefixes_resolve_within_namespace(){
   let ty=register_type(&[97],1,2,4,7,7).unwrap();
