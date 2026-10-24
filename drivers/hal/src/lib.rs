@@ -1,5 +1,7 @@
 //! Versioned platform-neutral service contract between the NT executive and HAL.
 #![no_std]
+#[cfg(test)]
+extern crate std;
 
 pub const HAL_CONTRACT_VERSION: u32 = 1;
 
