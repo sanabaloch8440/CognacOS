@@ -399,11 +399,11 @@ pub fn read_mbr_partition<D:ReadOnlyBlockDevice>(device:&mut D,slot:usize,sector
 }
 
 /// IEEE CRC-32 used by GPT (not ext4's CRC32C).
-pub fn crc32_ieee(bytes:&[u8])->u32{
-    let mut crc=!0u32;
+fn crc32_ieee_extend(mut crc:u32,bytes:&[u8])->u32{
     for byte in bytes{crc^=*byte as u32;for _ in 0..8{crc=if crc&1!=0{(crc>>1)^0xedb8_8320}else{crc>>1};}}
-    !crc
+    crc
 }
+pub fn crc32_ieee(bytes:&[u8])->u32{!crc32_ieee_extend(!0u32,bytes)}
 
 /// Validate the primary GPT header and entry-array CRCs and return one
 /// zero-based partition entry. Bounds are capped to 128 standard 128-byte
@@ -438,10 +438,20 @@ pub fn read_gpt_partition<D:ReadOnlyBlockDevice>(device:&mut D,slot:u32,sector_s
     let first_usable_offset=first_usable.checked_mul(sector_size as u64).ok_or(Error::OutOfRange)?;
     if array_end>device.capacity_bytes(){return Err(Error::OutOfRange)}
     if array_end>first_usable_offset{return Err(Error::InvalidPartitionTable)}
-    let mut entries=[0u8;128*128];
-    device.read_at(array_offset,&mut entries[..array_len]).map_err(|_|Error::Io)?;
-    if crc32_ieee(&entries[..array_len])!=entries_crc{return Err(Error::InvalidChecksum)}
-    let o=slot as usize*128;let e=&entries[o..o+128];
+    // Stream the bounded entry array through CRC32 using the existing sector
+    // buffer instead of allocating a 16 KiB table on the early kernel stack.
+    let mut crc=!0u32;let mut done=0usize;
+    while done<array_len {
+        let n=(array_len-done).min(sector.len());
+        let offset=array_offset.checked_add(done as u64).ok_or(Error::OutOfRange)?;
+        device.read_at(offset,&mut sector[..n]).map_err(|_|Error::Io)?;
+        crc=crc32_ieee_extend(crc,&sector[..n]);done+=n;
+    }
+    if !crc!=entries_crc{return Err(Error::InvalidChecksum)}
+    let entry_offset=array_offset.checked_add((slot as u64).checked_mul(128).ok_or(Error::OutOfRange)?).ok_or(Error::OutOfRange)?;
+    let mut entry=[0u8;128];
+    device.read_at(entry_offset,&mut entry).map_err(|_|Error::Io)?;
+    let e=&entry[..];
     if e[..16].iter().all(|b|*b==0){return Err(Error::InvalidPartitionTable)}
     let first=u64::from_le_bytes(e[32..40].try_into().map_err(|_|Error::Truncated)?);
     let last=u64::from_le_bytes(e[40..48].try_into().map_err(|_|Error::Truncated)?);
