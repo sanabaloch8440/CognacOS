@@ -20,7 +20,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
-**Latest checked verification before this documentation update:** GitHub Actions run [40076832024](https://github.com/umarfarooq7869/RdotOS/actions/runs/40076832024) succeeded for commit `519a1750d1c9745c6924b5748a1577f178fd049f`. It passed host allocator and ext-parser tests, kernel and UEFI-loader builds, ELF-to-PE32+ conversion and header checks, EFI image packaging, and the OVMF/QEMU smoke test with serial assertions. Documentation changes trigger another workflow run; check the badge/actions page for its result. CI covers only its listed paths and does not establish support for all hardware or Windows drivers.
+**Latest checked verification before this documentation update:** GitHub Actions run [40079214772](https://github.com/umarfarooq7869/RdotOS/actions/runs/40079214772) succeeded for commit `f4506942` (MDL advancement lifecycle documentation). The workflow passed the repository's configured build and OVMF/QEMU validation; see the run for exact jobs and steps. It passed host allocator and ext-parser tests, kernel and UEFI-loader builds, ELF-to-PE32+ conversion and header checks, EFI image packaging, and the OVMF/QEMU smoke test with serial assertions. Documentation changes trigger another workflow run; check the badge/actions page for its result. CI covers only its listed paths and does not establish support for all hardware or Windows drivers.
 
 ### Status legend
 
@@ -59,10 +59,13 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Add NT memory-manager physical translation, address-validity, and checked-copy self-tests.
 - [x] Add Windows x64 ABI wiring and typed signature records for MmCreateMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, and MmCopyVirtualMemory.
 - [x] Validate MDL header/PFN-array bounds before access; preflight source mappings; maintain reference-counted physical-page pins and prevent allocator reuse while pinned.
+- [x] Keep MDL PFN writes behind mapping preflight; validate page counts/capacity before walking PFN arrays; reject invalid operation modes and fail closed on unsupported mapping cases.
 - [x] Build MDLs for resident nonpaged pool buffers and support direct-map aliases for MDLs whose PFNs form a physically contiguous RAM run.
+- [x] Implement `MmSizeOfMdl`/`MmCreateMdl` sizing and creation paths with checked lengths and MDL header validation (complete Windows pool allocation/free ownership is still outstanding).
 - [x] Implement MmAdvanceMdl with range/PFN-array bounds checks and balanced pin-reference release for pages removed from a locked MDL.
-- [x] Add a bounded MmCopyVirtualMemory path against the active address space; invalid ranges and different source/target process identities fail closed.
+- [x] Wire `MmCopyVirtualMemory` with the Windows x64 argument layout and validate length/output ranges; same-process copies use the active page tables and return partial-copy status when a page is unavailable.
 - [ ] Register real EPROCESS objects with their address-space roots and implement safe cross-process copy under process/address-space lifetime locks.
+- [ ] Implement MDL allocation/free pool ownership and complete `MmPrepareMdlForReuse`/partial MDL construction semantics where required by driver consumers.
 - [ ] Add arbitrary scatter/gather kernel mappings, user-mode MDL mappings, page-fault-driven probing of pageable buffers, and complete MDL allocation/free lifecycle semantics.
 - [x] Build bootstrap identity mappings from the final UEFI memory-map descriptors, leaving uncovered physical holes not-present and explicitly mapping APIC MMIO windows.
 - [ ] Replace 2 MiB descriptor-interior leaves with finer 4 KiB mappings at descriptor boundaries and where stricter per-region permissions are required.
