@@ -456,7 +456,7 @@ pub unsafe extern "win64" fn hal_get_adapter(_device_description:*const core::ff
 /// Allocate common memory mapped through the adapter's registered IOMMU domain.
 pub unsafe extern "win64" fn hal_allocate_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:*mut i64,_cache_enabled:u8)->*mut core::ffi::c_void{
  if adapter.is_null()||logical_address.is_null()||length==0{return core::ptr::null_mut()}
- match unsafe{crate::dma::iommu_allocate_common(adapter,length as usize,0xffff_ffff)}{
+ match unsafe{crate::dma::iommu_allocate_common(adapter,length as usize,crate::dma::adapter_maximum_address(adapter))}{
   Ok((cpu,logical))=>{unsafe{logical_address.write(logical as i64)}cpu.cast()},
   Err(_)=>core::ptr::null_mut()
  }
