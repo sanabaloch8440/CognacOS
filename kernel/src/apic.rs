@@ -403,6 +403,7 @@ pub unsafe fn stop_local_timer() {
 /// waits, ready their threads, then acknowledge the local APIC interrupt.
 pub fn timer_interrupt() {
     let now = monotonic_ticks();
+    crate::ntoskrnl::ke::runtime::timer_tick(now);
     let mut expired = [crate::dispatcher::ExpiredWait { thread: 0, object: 0 }; 64];
     let count = crate::dispatcher::expire_detailed(now, &mut expired);
     for wait in expired[..count].iter().copied() {
