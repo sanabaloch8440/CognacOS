@@ -938,3 +938,6 @@ mod tests {
         assert_eq!((out[1].address, out[1].length), (0x2000, 0x30));
     }
 }
+
+/// Release every IOMMU mapping explicitly associated with this IRP.
+pub(crate) fn release_irp_mappings(irp:*mut core::ffi::c_void){iommu::release_irp_mappings(irp)}
