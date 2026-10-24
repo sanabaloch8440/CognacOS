@@ -25,9 +25,41 @@ impl IdtEntry {
             attributes: 0xEE, offset_middle: (handler >> 16) as u16,
             offset_high: (handler >> 32) as u32, reserved: 0 }
     }
+    fn interrupt_gate_ist(handler: u64, ist: u8) -> Self {
+        Self { offset_low: handler as u16, selector: KERNEL_CODE_SELECTOR, ist: ist & 7,
+            attributes: 0x8E, offset_middle: (handler >> 16) as u16,
+            offset_high: (handler >> 32) as u32, reserved: 0 }
+    }
 }
 #[repr(C, packed)]
 struct DescriptorTablePointer { limit: u16, base: u64 }
+
+/// 64-bit architectural TSS. Each CPU owns a distinct descriptor and IST stacks.
+#[repr(C, packed)]
+struct TaskStateSegment {
+    reserved0: u32,
+    rsp0: u64,
+    rsp1: u64,
+    rsp2: u64,
+    reserved1: u64,
+    ist: [u64; 7],
+    reserved2: u64,
+    reserved3: u16,
+    iomap_base: u16,
+}
+impl TaskStateSegment {
+    const fn new() -> Self {
+        Self { reserved0: 0, rsp0: 0, rsp1: 0, rsp2: 0, reserved1: 0,
+            ist: [0; 7], reserved2: 0, reserved3: 0,
+            iomap_base: core::mem::size_of::<Self>() as u16 }
+    }
+}
+const IST_STACK_BYTES: usize = 16 * 1024;
+static mut CPU_GDT: [[u64; 5]; crate::hal::MAX_CPUS] = [[0; 5]; crate::hal::MAX_CPUS];
+static mut CPU_TSS: [TaskStateSegment; crate::hal::MAX_CPUS] =
+    [const { TaskStateSegment::new() }; crate::hal::MAX_CPUS];
+static mut CPU_IST_STACKS: [[[u8; IST_STACK_BYTES]; 3]; crate::hal::MAX_CPUS] =
+    [[[0; IST_STACK_BYTES]; 3]; crate::hal::MAX_CPUS];
 static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::MISSING; IDT_ENTRIES];
 static EXPECTED_PROTECTION_FAULT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static EXPECTED_PROTECTION_ADDRESS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -817,20 +849,91 @@ unsafe extern "C" {
     fn rdotos_irq_223();
 }
 
-/// Reload the already initialized shared kernel GDT and IDT on a secondary CPU.
-/// This does not mutate the global IDT and is safe to call concurrently on APs.
-pub unsafe fn load_cpu_descriptor_tables() {
-    unsafe { rdotos_load_gdt(); }
+/// Build and load a private GDT/TSS for one logical processor. IST1 is the
+/// double-fault stack, IST2 the NMI stack, and IST3 the machine-check stack.
+unsafe fn initialize_cpu_tss(cpu: usize, rsp0: u64) -> Result<(), ()> {
+    if cpu >= crate::hal::MAX_CPUS || rsp0 == 0 { return Err(()); }
+    let tss = unsafe { core::ptr::addr_of_mut!(CPU_TSS[cpu]) };
+    unsafe { core::ptr::addr_of_mut!((*tss).rsp0).write_unaligned(rsp0); }
+    for slot in 0..3 {
+        let base = unsafe { core::ptr::addr_of_mut!(CPU_IST_STACKS[cpu][slot][0]) as u64 };
+        let top = base.checked_add(IST_STACK_BYTES as u64).ok_or(())? & !0xf;
+        unsafe { core::ptr::addr_of_mut!((*tss).ist[slot]).write_unaligned(top); }
+    }
+    let tss_base = tss as u64;
+    let limit = (size_of::<TaskStateSegment>() - 1) as u64;
+    let low = (limit & 0xffff)
+        | ((tss_base & 0x00ff_ffff) << 16)
+        | (0x89u64 << 40)
+        | ((limit & 0x000f_0000) << 32)
+        | ((tss_base & 0xff00_0000) << 32);
+    unsafe {
+        let gdt = core::ptr::addr_of_mut!(CPU_GDT[cpu][0]);
+        gdt.write(0);
+        gdt.add(1).write(0x00af_9a00_0000_ffff);
+        gdt.add(2).write(0x00cf_9200_0000_ffff);
+        gdt.add(3).write(low);
+        gdt.add(4).write(tss_base >> 32);
+    }
+    Ok(())
+}
+
+unsafe fn load_cpu_gdt(cpu: usize) -> Result<(), ()> {
+    if cpu >= crate::hal::MAX_CPUS { return Err(()); }
+    let gdt = unsafe { core::ptr::addr_of!(CPU_GDT[cpu][0]) };
+    let pointer = DescriptorTablePointer { limit: (5 * size_of::<u64>() - 1) as u16, base: gdt as u64 };
+    unsafe {
+        asm!("lgdt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags));
+        asm!(
+            "push 0x08",
+            "lea rax, [rip + 2f]",
+            "push rax",
+            "retfq",
+            "2:",
+            "mov ax, 0x10",
+            "mov ds, ax",
+            "mov es, ax",
+            "mov ss, ax",
+            "xor eax, eax",
+            "mov fs, ax",
+            "mov gs, ax",
+            "mov ax, 0x18",
+            "ltr ax",
+            out("rax") _,
+            options(preserves_flags)
+        );
+    }
+    Ok(())
+}
+
+/// Install this CPU's private GDT/TSS and the shared IDT. Must run on the CPU
+/// being initialized; the AP stack must already be valid in the permanent CR3.
+pub unsafe fn load_cpu_descriptor_tables(logical_id: usize, rsp0: u64) -> Result<(), ()> {
+    unsafe { initialize_cpu_tss(logical_id, rsp0)?; load_cpu_gdt(logical_id)?; }
     let idt_ptr = core::ptr::addr_of!(IDT).cast::<IdtEntry>();
     let pointer = DescriptorTablePointer {
         limit: (IDT_ENTRIES * size_of::<IdtEntry>() - 1) as u16,
         base: idt_ptr as u64,
     };
     unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)); }
+    Ok(())
+}
+
+/// Update the privilege-transition stack when a kernel thread is dispatched.
+pub fn set_kernel_stack(cpu: usize, stack_top: u64) -> bool {
+    if cpu >= crate::hal::MAX_CPUS || stack_top == 0 { return false; }
+    unsafe { core::ptr::addr_of_mut!(CPU_TSS[cpu].rsp0).write_unaligned(stack_top); }
+    true
 }
 
 pub unsafe fn initialize() {
-    unsafe { rdotos_load_gdt() };
+    let mut rsp0: u64;
+    unsafe { asm!("mov {}, rsp", out(reg) rsp0, options(nomem, nostack, preserves_flags)); }
+    unsafe {
+        if initialize_cpu_tss(0, rsp0).is_err() || load_cpu_gdt(0).is_err() {
+            loop { core::hint::spin_loop(); }
+        }
+    }
     let handlers: [usize; EXCEPTION_VECTORS] = [
         rdotos_isr_0 as usize, rdotos_isr_1 as usize, rdotos_isr_2 as usize, rdotos_isr_3 as usize,
         rdotos_isr_4 as usize, rdotos_isr_5 as usize, rdotos_isr_6 as usize, rdotos_isr_7 as usize,
@@ -844,6 +947,12 @@ pub unsafe fn initialize() {
     let idt_ptr = core::ptr::addr_of_mut!(IDT).cast::<IdtEntry>();
     for vector in 0..EXCEPTION_VECTORS {
         unsafe { idt_ptr.add(vector).write(IdtEntry::interrupt_gate(handlers[vector] as u64)); }
+    }
+    // Hardware IST selection avoids using a potentially corrupt interrupted stack.
+    unsafe {
+        idt_ptr.add(2).write(IdtEntry::interrupt_gate_ist(handlers[2] as u64, 2));
+        idt_ptr.add(8).write(IdtEntry::interrupt_gate_ist(handlers[8] as u64, 1));
+        idt_ptr.add(18).write(IdtEntry::interrupt_gate_ist(handlers[18] as u64, 3));
     }
     let irq_handlers: [usize; 192] = [
         rdotos_irq_32 as usize,
