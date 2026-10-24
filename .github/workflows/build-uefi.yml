@@ -267,6 +267,7 @@ jobs:
             exit 1
           fi
           cat build/serial.log
+          grep -F 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.' build/serial.log
           grep -F 'RdotOS Rust kernel entered.' build/serial.log
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
           grep -F 'Page-table inspection passed: high-half kernel sections, stack alias, low boot data, and guard pages validated.' build/serial.log
