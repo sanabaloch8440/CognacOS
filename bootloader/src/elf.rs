@@ -21,6 +21,23 @@ pub enum ElfError {
 }
 
 #[derive(Clone, Copy)]
+pub struct LoadSegment {
+    pub virtual_start: u64,
+    pub physical_start: u64,
+    pub memory_size: u64,
+    pub flags: u32,
+}
+impl LoadSegment {
+    const EMPTY: Self = Self { virtual_start: 0, physical_start: 0, memory_size: 0, flags: 0 };
+}
+
+pub struct LoadedKernel {
+    pub entry: u64,
+    pub segments: [LoadSegment; 128],
+    pub segment_count: usize,
+}
+
+#[derive(Clone, Copy)]
 struct ProgramHeader {
     kind: u32,
     flags: u32,
@@ -45,10 +62,10 @@ fn range_ok(offset: u64, len: u64, total: usize) -> bool {
     offset.checked_add(len).is_some_and(|end| end <= total as u64)
 }
 
-/// Validate and load PT_LOAD segments. Returns the executable entry address.
-/// All destinations are allocated at their ELF physical addresses, and the
-/// early kernel is linked for identity mapping. No relocation is performed.
-pub unsafe fn load(image: &[u8]) -> Result<u64, ElfError> {
+/// Validate and load PT_LOAD segments at their low physical addresses while
+/// retaining their high-half virtual ranges for bootstrap page-table creation.
+/// No relocations are performed; only static ET_EXEC images are accepted.
+pub unsafe fn load(image: &[u8]) -> Result<LoadedKernel, ElfError> {
     const MAX_SEGMENTS: usize = 128;
     const MAX_ALLOCATION_RANGES: usize = 256;
     const EMPTY: ProgramHeader = ProgramHeader {
@@ -99,8 +116,11 @@ pub unsafe fn load(image: &[u8]) -> Result<u64, ElfError> {
         }
         let dest = if p.paddr != 0 { p.paddr } else { p.vaddr };
         let end = dest.checked_add(p.memsz).ok_or(ElfError::BadSegment)?;
+        let virtual_end = p.vaddr.checked_add(p.memsz).ok_or(ElfError::BadSegment)?;
         if dest < 0x10_0000 || end > MAX_KERNEL_END || end <= dest
-            || p.vaddr != dest || (p.align > 1 && !p.align.is_power_of_two())
+            || p.vaddr < 0xffff_8000_0000_0000
+            || virtual_end <= p.vaddr || virtual_end - 1 > 0xffff_ffff_ffff_ffff
+            || (p.align > 1 && !p.align.is_power_of_two())
         { return Err(ElfError::BadSegment); }
         if p.align > 1 && (p.vaddr.wrapping_sub(p.offset) & (p.align - 1)) != 0 {
             return Err(ElfError::BadSegment);
@@ -111,8 +131,14 @@ pub unsafe fn load(image: &[u8]) -> Result<u64, ElfError> {
             if dest < prev_end && prev_start < end {
                 return Err(ElfError::BadSegment);
             }
+            let previous_virtual_end = previous.vaddr.checked_add(previous.memsz).ok_or(ElfError::BadSegment)?;
+            if p.vaddr < previous_virtual_end && previous.vaddr < virtual_end {
+                return Err(ElfError::BadSegment);
+            }
         }
-        if (p.flags & 0x1) != 0 && entry >= dest && entry < end { entry_is_loaded = true; }
+        if (p.flags & 0x1) != 0 && entry >= p.vaddr && entry < virtual_end {
+            entry_is_loaded = true;
+        }
         segments[segment_count] = p;
         segment_count += 1;
     }
@@ -168,5 +194,14 @@ pub unsafe fn load(image: &[u8]) -> Result<u64, ElfError> {
             );
         }
     }
-    Ok(entry)
+    let mut loaded_segments = [LoadSegment::EMPTY; MAX_SEGMENTS];
+    for (index, p) in segments[..segment_count].iter().copied().enumerate() {
+        loaded_segments[index] = LoadSegment {
+            virtual_start: p.vaddr,
+            physical_start: if p.paddr != 0 { p.paddr } else { p.vaddr },
+            memory_size: p.memsz,
+            flags: p.flags,
+        };
+    }
+    Ok(LoadedKernel { entry, segments: loaded_segments, segment_count })
 }
