@@ -256,7 +256,30 @@ mod wdm_tests {
   assert_eq!(core::mem::size_of::<IoStackLocation>(),IO_STACK_LOCATION_SIZE_X64);
   assert_eq!(core::mem::offset_of!(DriverObject,major_function),112);
   assert_eq!(core::mem::offset_of!(DeviceObject,driver_object),8);
+  assert_eq!(core::mem::offset_of!(DeviceObject,device_extension),64);
+  assert_eq!(core::mem::offset_of!(DeviceObject,stack_size),76);
+  assert_eq!(core::mem::size_of::<DeviceObject>(),0x150);
   assert_eq!(core::mem::size_of::<Irp>(),IRP_SIZE_X64);
+ }
+ unsafe extern "system" fn test_dispatch(device:*mut DeviceObject, irp:*mut Irp)->i32 {
+  if device.is_null() || irp.is_null() { return STATUS_INVALID_PARAMETER; }
+  unsafe { (*irp).bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&STATUS_SUCCESS.to_le_bytes()); }
+  STATUS_SUCCESS
+ }
+ #[test]
+ fn device_dispatch_uses_wdm_device_object_signature() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device: *mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  driver.major_function[0]=Some(test_dispatch);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  let next=unsafe{io_get_next_irp_stack_location(irp)};
+  assert!(!next.is_null());
+  unsafe { (*next).major_function=0; }
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
+  assert_eq!(unsafe{(*irp).bytes[IRP_STATUS_OFFSET]},0);
+  unsafe{io_free_irp(irp);io_delete_device(device);}
  }
  #[test]
  fn create_delete_device_and_allocate_irp_stack() {
