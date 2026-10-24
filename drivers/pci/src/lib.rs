@@ -3,6 +3,7 @@
 //! The caller must map the firmware-described ECAM aperture with uncached,
 //! device-memory attributes before calling these routines. This module does not
 //! assume a universal ECAM base or silently identity-map arbitrary physical RAM.
+#![no_std]
 use core::sync::atomic::Ordering;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
