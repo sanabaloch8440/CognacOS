@@ -301,9 +301,9 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, _access_m
         if translate(cursor, true).is_none() { return; }
         cursor = core::cmp::min(pfn_end, (cursor & !(PAGE_SIZE - 1)).saturating_add(PAGE_SIZE));
     }
+    if pages as usize > MAX_LOCKED_PAGES { return; }
     let write_access = operation != 0;
-    let mut pfns = [0u64; 8192];
-    if pages as usize > pfns.len() { return; }
+    let destination = pfn_address as *mut u64;
     for index in 0..pages as usize {
         let Some(va) = start.checked_add(index as u64 * PAGE_SIZE) else { return; };
         let pa = if crate::vm::is_user_range(va, 1) {
@@ -312,11 +312,13 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, _access_m
             translate(va, write_access)
         } else { None };
         let Some(pa) = pa else { return; };
-        pfns[index] = pa / PAGE_SIZE;
+        unsafe { destination.add(index).write(pa / PAGE_SIZE); }
     }
-    if !lock_pfns(&pfns[..pages as usize]) { return; }
-    let destination = pfn_address as *mut u64;
-    for index in 0..pages as usize { unsafe { destination.add(index).write(pfns[index]); } }
+    let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, pages as usize) };
+    if !lock_pfns(pfns) {
+        for index in 0..pages as usize { unsafe { destination.add(index).write(0); } }
+        return;
+    }
     header.flags |= MDL_LOCKED;
 }
 /// Release physical-frame references acquired by MmProbeAndLockPages.
@@ -329,13 +331,12 @@ pub unsafe extern "win64" fn mm_unlock_pages(mdl: *mut c_void) {
     let Some(pages) = mdl_page_count(header.byte_offset as u64, header.byte_count as u64) else { return; };
     if pages as usize > 8192 { return; }
     let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(v) => v, None => return };
-    let mut pfns = [0u64; 8192];
     for index in 0..pages as usize {
         let at = match pfn_address.checked_add(index as u64 * 8) { Some(v) => v, None => return };
         if translate(at, false).is_none() { return; }
-        pfns[index] = unsafe { (at as *const u64).read() };
     }
-    unlock_pfns(&pfns[..pages as usize]);
+    let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, pages as usize) };
+    unlock_pfns(pfns);
     header.flags &= !(MDL_LOCKED | MDL_MAPPED_SYSTEM_VA);
     header.mapped_system_va = core::ptr::null_mut();
 }
