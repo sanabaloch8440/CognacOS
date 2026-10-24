@@ -35,14 +35,15 @@ The repository contains working foundations in several areas. “Implemented” 
 | Executable loading | Bounded PE32+ AMD64 loading, relocations, normal/delay imports, registered exports, API-set aliases, TLS setup/callbacks, and basic unwind metadata registration. |
 | User mode | Ring-3 transition and a small RdotOS-native syscall/process lifecycle test path. This is not the Windows NT syscall ABI. |
 | Kernel services | Initial scheduler policy, typed handles/access checks, dispatcher primitives, deadline-aware IRPs, bounded I/O completion ports, typed port/MMIO accessors, and callable `IoIsWdmVersionAvailable` / `IoGetConfigurationInformation` exports. |
+| Registry / Configuration Manager | Bounded volatile registry key/value store with case-insensitive UTF-16 names and callable `Nt/ZwCreateKey`, `OpenKey`, `SetValueKey`, `QueryValueKey` (partial-information class), `DeleteValueKey`, `DeleteKey`, and `FlushKey` routines. | Hive persistence, complete key-path parsing, handles/access checks, full query/enumeration information classes, security descriptors, notifications/callbacks, transactions, and WDK conformance. |
 | DMA and IOMMU | DMA request/channel foundations and Intel VT-d ACPI discovery exist. Real DMA mapping, full VT-d initialization, and AMD IOMMU support are incomplete. |
 | ext filesystem | A conservative read-only ext2/ext3/ext4 metadata parser with bounds checks and selected block mapping. It rejects unsupported features and is not a production filesystem driver. |
 
 ## Split platform and driver crates
 
-ACPI table parsing and checked PCI ECAM access are now separate Rust packages under `drivers/acpi` and `drivers/pci`, consumed by the kernel through Cargo dependencies rather than private source modules. `drivers/hal` defines a versioned, platform-neutral HAL service-table contract, and `drivers/processor` contains a generic processor-class policy boundary that validates the HAL contract and records processor capabilities. CI is configured to run host tests for each package; the newly added workflow has not yet been confirmed passing.
+ACPI parsing, PCI ECAM primitives, the HAL contract, and generic processor policy live in separate Rust packages. CI now builds four distinct AMD64 PE32+ native DLL-format images with separate fixed image bases and publishes them as workflow artifacts: `Hal.dll`, `acpi.sys`, `pci.sys`, and `processor.sys`. Each image has a `DriverEntry` symbol and the native subsystem/DLL characteristics.
 
-These are independent source/build crates, **not yet standalone Windows `.sys`/HAL PE images or loadable drivers**. The running kernel still owns the hardware HAL implementation and ACPI boot handoff; PCI enumeration/resource allocation, ACPI power/PnP integration, processor power-state control, module loading, driver entry/unload, and a real binary ABI remain future work. In particular, generic processor performance-state requests deliberately return unsupported until vendor-safe policy and hardware hooks exist.
+The kernel also has a restricted `ntoskrnl::driver_loader` entry path that validates AMD64 PE32+ headers, section ranges and W^X flags, requires a pre-mapped image at its preferred base, rejects import and relocation directories, copies sections into the mapped image, and invokes the entry point. **This is a first-stage loader, not yet a general driver loader:** images must be self-contained and pre-mapped; memory allocation/protection, dependency/import binding, relocations, unload/rundown, registry-path setup, and boot-time discovery/loading are not integrated. The four current `DriverEntry` routines are minimal success-returning scaffolds, not implementations of the Windows HAL or PnP bus/processor drivers. Windows WDK or Windows 11 binary compatibility is not claimed.
 
 ## HAL / ntoskrnl architectural boundary
 
@@ -57,7 +58,7 @@ The intended dependency direction is:
 - `pci.sys`-style bus driver → PCI/PCIe enumeration and resource/interrupt allocation → HAL MMIO/interrupt services
 - `processor.sys`-style driver → generic CPU capability and power policy → HAL processor/timer services
 
-Today, only the ACPI parser and PCI ECAM primitives have been moved into separate packages and linked into the kernel. The other two driver layers are contract/policy scaffolding, not separately loaded modules.
+Today, all four package targets emit distinct PE32+ images, but the HAL backend and actual ACPI/PCI/processor runtime responsibilities remain in-kernel or incomplete; the images are not automatically loaded during boot.
 
 HAL must not depend on NT executive internals. Windows HAL export names and matching Rust interfaces alone do not establish binary compatibility with Windows 11's private HAL ABI.
 
