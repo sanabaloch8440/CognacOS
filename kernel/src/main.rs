@@ -24,7 +24,7 @@ mod dispatcher;
 mod thread;
 mod object;
 #[path = "ntoskrnl/io/runtime.rs"]
-mod io;
+pub(crate) mod io;
 use rdotos_ext4 as extfs;
 mod nls;
 mod ntoskrnl;
