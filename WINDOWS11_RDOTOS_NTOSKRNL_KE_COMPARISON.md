@@ -19,16 +19,16 @@ This pass now covers **25 Ke routines** in this comparison: the original 20, fou
 |---|---|---:|
 | Source-level signature / x64 ABI shape | 25 matching parameter and return-width declarations ÷ 25 | **25/25 = 100%** |
 | Name-based import resolution | 25 routine names resolving to callable implementations ÷ 25 | **25/25 = 100%** |
-| Behavior match within the currently advertised topology | 9 processor-group / NUMA routines matching RdotOS's group-0/node-0 model ÷ 25 | **9/25 = 36%** |
-| Partial or limited behavior | Remaining routines with documented gaps ÷ 25 | **16/25 = 64%** |
-| Combined project score | (100% ABI + 36% behavior) ÷ 2 | **68%** |
+| Behavior match within the currently advertised topology | 10 processor-group / NUMA routines matching RdotOS's group-0/node-0 model ÷ 25 | **10/25 = 40%** |
+| Partial or limited behavior | Remaining routines with documented gaps ÷ 25 | **15/25 = 60%** |
+| Combined project score | (100% ABI + 40% behavior) ÷ 2 | **70%** |
 
 **Important:** 72.5% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. Matching an ABI does not imply matching semantics. The behavior score counts topology queries as matches only within the explicitly supported single-group, single-node model. It does not imply compatibility with arbitrary NUMA or multi-group Windows systems.
 
 ### Scoring rules
 
 - **ABI score** checks x64 calling convention, argument count/order, pointer/structure shape, integer widths, and return type. It does not claim Windows internal object layouts are reproduced. The processor-number routine was corrected to return the systemwide index as documented.
-- **Behavior score** counts nine processor-group / NUMA queries as matching the topology currently exposed by RdotOS. Critical/guarded-region nesting is tracked per CPU slot rather than per thread, so APC and region behavior remains partial on migratable threads. Event pulse now serializes signal/wake/reset, but complete Windows wait handoff and priority boosting remain partial.
+- **Behavior score** counts ten processor-group / NUMA queries as matching the topology currently exposed by RdotOS. Critical/guarded-region nesting is tracked per CPU slot rather than per thread, so APC and region behavior remains partial on migratable threads. Event pulse now serializes signal/wake/reset, but complete Windows wait handoff and priority boosting remain partial.
 - **Combined score** is the unweighted mean of the two percentages, shown for progress tracking only.
 
 ## Routine-by-routine comparison
