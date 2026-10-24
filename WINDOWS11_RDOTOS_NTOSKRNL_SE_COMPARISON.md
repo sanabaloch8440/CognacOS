@@ -13,7 +13,7 @@ Target reference: Windows 11 x64 10.0.26100.8036-AMD64. The Se export list in `k
 | `SeQuerySessionIdToken`, `SeQuerySessionIdTokenEx` | `se/runtime.rs` | Query session ID from registered token metadata with pointer and token validation. |
 | `SeQueryAuthenticationIdToken` | `se/runtime.rs` | Query authentication LUID stored in registered token metadata. |
 
-The Se export catalogue is located at `kernel/src/ntoskrnl/se/mod.rs`; the old top-level `se.rs` catalogue was removed. Six additional RdotOS-only helpers provide metadata registration, removal, and privilege-bitmap queries. The import resolver routes the ten implemented Se export entry points by exact name.
+The Se export catalogue is located at `kernel/src/ntoskrnl/se/mod.rs`; the old top-level `se.rs` catalogue was removed. Twenty-one additional RdotOS-only security helpers provide token kind/known-state queries, packed flags, privilege bitmap and range checks, privilege counts, session/logon matching, impersonation-level checks, and output-parameter query variants. These internal helpers do not claim Windows export ABI compatibility. The import resolver routes the ten implemented Se export entry points by exact name.
 
 ## Remaining work
 
