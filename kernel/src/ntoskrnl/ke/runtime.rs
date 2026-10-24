@@ -1146,7 +1146,7 @@ unsafe fn device_queue_remove_entry(queue:*mut DeviceQueue,entry:*mut DeviceQueu
  true
 }
 pub unsafe extern "win64" fn ke_remove_entry_device_queue(queue:*mut DeviceQueue,entry:*mut DeviceQueueEntry)->u8{
- unsafe{device_queue_remove_entry(queue,entry)} as u8
+ (unsafe{device_queue_remove_entry(queue,entry)}) as u8
 }
 pub unsafe extern "win64" fn ke_remove_by_key_device_queue(queue:*mut DeviceQueue,key:u32)->*mut DeviceQueueEntry{
  if queue.is_null(){return core::ptr::null_mut()}
@@ -1172,7 +1172,7 @@ pub unsafe extern "win64" fn ke_remove_device_queue(queue:*mut DeviceQueue)->*mu
  let _guard=DEVICE_QUEUE_LOCK.lock();let head=unsafe{core::ptr::addr_of_mut!((*queue).device_list_head)};
  let link=unsafe{list_remove_head(head)};
  if link.is_null(){unsafe{(*queue).busy=0;(*queue).hint=core::ptr::null_mut();}return core::ptr::null_mut()}
- let entry=(link as *mut u8).sub(8).cast::<DeviceQueueEntry>();
+ let entry=unsafe{(link as *mut u8).sub(8).cast::<DeviceQueueEntry>()};
  unsafe{(*entry).inserted=0;(*queue).hint=entry;}entry
 }
 
