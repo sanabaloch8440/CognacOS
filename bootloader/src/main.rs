@@ -393,9 +393,10 @@ struct RawMemoryDescriptor {
 }
 
 /// Populate identity mappings only for physical regions described by the final
-/// UEFI map. The 2 MiB leaf granularity is retained for bootstrap simplicity;
-/// uncovered physical holes remain not-present. All mapped regions start
-/// supervisor/writable; kernel section permissions are a later kernel phase.
+/// UEFI map. Each 2 MiB window is backed by a 4 KiB page table, so descriptor
+/// edges and holes are represented at page granularity instead of being rounded
+/// into large leaves. All mapped regions start supervisor/writable; kernel
+/// section permissions are applied by a later kernel phase.
 unsafe fn populate_bootstrap_page_tables(
     pml4_physical: u64, pt_pool_physical: u64,
     map: *const u8, entries: usize, stride: usize,
