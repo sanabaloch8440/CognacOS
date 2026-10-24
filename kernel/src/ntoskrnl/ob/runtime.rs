@@ -509,9 +509,9 @@ mod tests{
  }
  #[test]fn concurrent_handle_reference_close_stress(){
   let ty=register_type(&[b'C' as u16,b'o' as u16,b'n' as u16,b'c' as u16,b'u' as u16,b'r' as u16,b'r' as u16,b'e' as u16,b'n' as u16,b't' as u16,b'O' as u16,b'b' as u16],1,2,4,7,0xff).unwrap();
-  let body=0x8abcusize as *mut c_void;unsafe{register_object(body,ty,&[],false,core::ptr::null(),0).unwrap();}
+  let body=0x8abcusize as *mut c_void;let body_addr=body as usize;unsafe{register_object(body,ty,&[],false,core::ptr::null(),0).unwrap();}
   let mut threads=Vec::new();
-  for worker in 0..8usize{threads.push(std::thread::spawn(move||{for _ in 0..128{let owner=1000+worker;let h=open_by_pointer(body as usize as *mut c_void,1,owner,true,0).unwrap();let referenced=reference_by_handle(h,0,ty,owner,true).unwrap();assert_eq!(referenced as usize,body as usize);assert!(dereference_body(referenced));close_handle(h,owner).unwrap();}}));}
+  for worker in 0..8usize{threads.push(std::thread::spawn(move||{for _ in 0..128{let owner=1000+worker;let h=open_by_pointer(body_addr as *mut c_void,1,owner,true,0).unwrap();let referenced=reference_by_handle(h,0,ty,owner,true).unwrap();assert_eq!(referenced as usize,body_addr);assert!(dereference_body(referenced));close_handle(h,owner).unwrap();}}));}
   for t in threads{t.join().unwrap()}assert!(dereference_body(body));assert!(reference_body(body,ty,0,true).is_err());
  }
  #[test]fn object_create_insert_delete_rundown(){
