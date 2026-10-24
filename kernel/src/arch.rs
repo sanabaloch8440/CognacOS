@@ -1224,12 +1224,12 @@ pub unsafe fn initialize() {
     // 0xF1 is reserved for synchronous TLB shootdowns; 0xFF is the LAPIC
     // spurious vector and intentionally does not send an EOI.
     unsafe {
-        idt_ptr.add(crate::apic::TLB_SHOOTDOWN_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tlb_ipi_stub as u64));
-        idt_ptr.add(crate::apic::HAL_IPI_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_hal_ipi_stub as u64));
-        idt_ptr.add(crate::apic::KE_BROADCAST_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_ke_broadcast_ipi_stub as u64));
-        idt_ptr.add(crate::apic::TSC_SYNC_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tsc_sync_stub as u64));
+        idt_ptr.add(crate::hal::TLB_SHOOTDOWN_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tlb_ipi_stub as u64));
+        idt_ptr.add(crate::hal::HAL_IPI_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_hal_ipi_stub as u64));
+        idt_ptr.add(crate::hal::KE_BROADCAST_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_ke_broadcast_ipi_stub as u64));
+        idt_ptr.add(crate::hal::TSC_SYNC_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tsc_sync_stub as u64));
         idt_ptr.add(0xFF).write(IdtEntry::interrupt_gate(rdotos_spurious_stub as u64));
-        idt_ptr.add(crate::apic::LOCAL_TIMER_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_timer_stub as u64));
+        idt_ptr.add(crate::hal::LOCAL_TIMER_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_timer_stub as u64));
     }
     let pointer = DescriptorTablePointer {
         limit: (IDT_ENTRIES * size_of::<IdtEntry>() - 1) as u16,
@@ -1406,8 +1406,8 @@ pub extern "C" fn rdotos_hal_ipi_handler() {
         let id = cpu.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize;
         let _ = crate::hal::mark_ipi_pending(id);
     }
-    if let Some(base) = crate::apic::local_apic_base() {
-        unsafe { crate::apic::local_apic_eoi(base); }
+    if let Some(base) = crate::hal::local_interrupt_controller_base() {
+        unsafe { crate::hal::end_local_interrupt(); }
     }
     // A reschedule IPI is also the remote DPC kick. Run the target CPU's
     // queued DPCs before returning so KeFlushQueuedDpcs can wait for a real
@@ -1420,8 +1420,8 @@ pub extern "C" fn rdotos_hal_ipi_handler() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_ke_broadcast_ipi_handler() {
     crate::ntoskrnl::ke::runtime::handle_broadcast_ipi();
-    if let Some(base)=crate::apic::local_apic_base(){
-        unsafe{crate::apic::local_apic_eoi(base);}
+    if let Some(base)=crate::hal::local_interrupt_controller_base(){
+        unsafe{crate::hal::end_local_interrupt();}
     }
 }
 
@@ -1429,9 +1429,9 @@ pub extern "C" fn rdotos_ke_broadcast_ipi_handler() {
 /// issues exactly one EOI; it does not reuse the TLB-shootdown vector.
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_tsc_sync_handler() {
-    crate::apic::capture_tsc_sync_sample();
-    if let Some(base) = crate::apic::local_apic_base() {
-        unsafe { crate::apic::local_apic_eoi(base); }
+    crate::hal::capture_clock_synchronization_sample();
+    if let Some(base) = crate::hal::local_interrupt_controller_base() {
+        unsafe { crate::hal::end_local_interrupt(); }
     }
 }
 
@@ -1440,7 +1440,7 @@ pub extern "C" fn rdotos_tsc_sync_handler() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_external_interrupt_dispatch(vector: u64, frame: *const u64) {
     let _ = unsafe {
-        crate::apic::dispatch_external_interrupt(
+        crate::hal::dispatch_platform_interrupt(
             vector as u8,
             frame as *mut core::ffi::c_void,
         )
@@ -1452,6 +1452,6 @@ static TIMER_ISR_DIAGNOSTIC_ONCE: core::sync::atomic::AtomicBool = core::sync::a
 pub extern "C" fn rdotos_timer_interrupt_handler() {
     let first = !TIMER_ISR_DIAGNOSTIC_ONCE.swap(true, core::sync::atomic::Ordering::AcqRel);
     if first { unsafe { crate::serial_write(b"APIC timer ISR entered.\r\n"); } }
-    crate::apic::timer_interrupt();
+    crate::hal::local_clock_event_interrupt();
     if first { unsafe { crate::serial_write(b"APIC timer ISR EOI completed.\r\n"); } }
 }
