@@ -42,6 +42,106 @@ pub unsafe extern "win64" fn ke_test_alert_thread(_alert_mode:i32)->u8{
     crate::thread::take_alert_pending() as u8
 }
 
+
+// ---- APC object metadata and kernel-mode delivery ----------------------------
+// KAPC is opaque driver-owned storage here. Side metadata avoids assuming a
+// private Windows KAPC layout. User-mode normal routines are deliberately left
+// queued until an actual user-return/trap-frame delivery path exists.
+type ApcNormalRoutine = unsafe extern "win64" fn(*mut core::ffi::c_void,*mut core::ffi::c_void,*mut core::ffi::c_void);
+type ApcKernelRoutine = unsafe extern "win64" fn(*mut core::ffi::c_void,*mut usize,*mut *mut core::ffi::c_void,*mut *mut core::ffi::c_void,*mut *mut core::ffi::c_void);
+type ApcRundownRoutine = unsafe extern "win64" fn(*mut core::ffi::c_void);
+#[derive(Clone,Copy)]
+struct ApcRecord {
+ object:usize, thread_id:u64, kernel_routine:usize, rundown_routine:usize,
+ normal_routine:usize, normal_context:usize, arg1:usize, arg2:usize,
+ environment:i32, mode:i8, inserted:bool,
+}
+impl ApcRecord { const EMPTY:Self=Self{object:0,thread_id:0,kernel_routine:0,rundown_routine:0,normal_routine:0,normal_context:0,arg1:0,arg2:0,environment:0,mode:0,inserted:false}; }
+struct ApcTable { records:[ApcRecord;128] }
+impl ApcTable { const fn new()->Self{Self{records:[ApcRecord::EMPTY;128]}} }
+static APC_TABLE:crate::hal::IrqSpinLock<ApcTable>=crate::hal::IrqSpinLock::new(ApcTable::new());
+static APC_DELIVERING:[core::sync::atomic::AtomicBool;64]=[const{core::sync::atomic::AtomicBool::new(false)};64];
+
+/// VOID KeInitializeApc(PKAPC, PKTHREAD, KAPC_ENVIRONMENT, PKKERNEL_ROUTINE,
+/// PKRUNDOWN_ROUTINE, PKNORMAL_ROUTINE, KPROCESSOR_MODE, PVOID).
+pub unsafe extern "win64" fn ke_initialize_apc(
+ apc:*mut core::ffi::c_void, thread:*mut core::ffi::c_void, environment:i32,
+ kernel_routine:Option<ApcKernelRoutine>, rundown_routine:Option<ApcRundownRoutine>,
+ normal_routine:Option<ApcNormalRoutine>, mode:i8, normal_context:*mut core::ffi::c_void,
+){
+ if apc.is_null(){return}
+ let Some(thread_id)=crate::thread::thread_id_from_object(thread) else{return};
+ let mut table=APC_TABLE.lock();
+ let slot=table.records.iter().position(|r|r.object==apc as usize)
+  .or_else(||table.records.iter().position(|r|r.object==0));
+ if let Some(slot)=slot{
+  table.records[slot]=ApcRecord{object:apc as usize,thread_id,
+   kernel_routine:kernel_routine.map(|f|f as usize).unwrap_or(0),
+   rundown_routine:rundown_routine.map(|f|f as usize).unwrap_or(0),
+   normal_routine:normal_routine.map(|f|f as usize).unwrap_or(0),
+   normal_context:normal_context as usize,arg1:0,arg2:0,environment,mode,inserted:false};
+ }
+}
+
+/// BOOLEAN KeInsertQueueApc(PKAPC, PVOID, PVOID, KPRIORITY).
+pub unsafe extern "win64" fn ke_insert_queue_apc(
+ apc:*mut core::ffi::c_void,arg1:*mut core::ffi::c_void,arg2:*mut core::ffi::c_void,increment:i32,
+)->u8{
+ if apc.is_null(){return 0}
+ let thread_id={
+  let mut table=APC_TABLE.lock();
+  let Some(record)=table.records.iter_mut().find(|r|r.object==apc as usize) else{return 0};
+  if record.inserted{return 0}
+  record.arg1=arg1 as usize;record.arg2=arg2 as usize;record.inserted=true;record.thread_id
+ };
+ boost_thread_priority(thread_id,increment);
+ if crate::thread::current_thread_id()==Some(thread_id)
+  && CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire)==PASSIVE_LEVEL
+  && unsafe{ke_are_apcs_disabled()}==0 { ke_deliver_pending_kernel_apcs(); }
+ 1
+}
+
+/// BOOLEAN KeRemoveQueueApc(PKAPC).
+pub unsafe extern "win64" fn ke_remove_queue_apc(apc:*mut core::ffi::c_void)->u8{
+ if apc.is_null(){return 0}
+ let mut table=APC_TABLE.lock();
+ let Some(record)=table.records.iter_mut().find(|r|r.object==apc as usize) else{return 0};
+ let was=record.inserted;record.inserted=false;was as u8
+}
+
+/// Deliver queued kernel APCs only at a PASSIVE_LEVEL safe point with APCs
+/// enabled. User APCs remain queued for a future user-mode trap-return path.
+pub fn ke_deliver_pending_kernel_apcs(){
+ let cpu=cpu_slot();
+ if CURRENT_IRQL[cpu].load(Ordering::Acquire)!=PASSIVE_LEVEL
+  || unsafe{ke_are_apcs_disabled()}!=0
+  || APC_DELIVERING[cpu].swap(true,Ordering::AcqRel){return}
+ let Some(thread_id)=crate::thread::current_thread_id() else{
+  APC_DELIVERING[cpu].store(false,Ordering::Release);return
+ };
+ for _ in 0..128 {
+  let record={
+   let mut table=APC_TABLE.lock();
+   let Some(slot)=table.records.iter().position(|r|r.inserted&&r.thread_id==thread_id&&r.mode==0) else{break};
+   let record=table.records[slot];table.records[slot].inserted=false;record
+  };
+  let mut normal=record.normal_routine;
+  let mut context=record.normal_context as *mut core::ffi::c_void;
+  let mut arg1=record.arg1 as *mut core::ffi::c_void;
+  let mut arg2=record.arg2 as *mut core::ffi::c_void;
+  if record.kernel_routine!=0{
+   let routine:ApcKernelRoutine=unsafe{core::mem::transmute(record.kernel_routine)};
+   unsafe{routine(record.object as *mut _,&mut normal,&mut context,&mut arg1,&mut arg2);}
+  }
+  if normal!=0{
+   let routine:ApcNormalRoutine=unsafe{core::mem::transmute(normal)};
+   unsafe{routine(context,arg1,arg2);}
+  }
+ }
+ APC_DELIVERING[cpu].store(false,Ordering::Release);
+}
+
+
 /// LONG KePulseEvent(PKEVENT, KPRIORITY, BOOLEAN).
 pub unsafe extern "win64" fn ke_pulse_event(
     event: *mut DispatcherHeader, increment: i32, wait: u8,
