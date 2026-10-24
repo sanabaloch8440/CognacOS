@@ -87,8 +87,9 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwOpenKey(out:*mut *mut core::ffi::c_void,_access:u32,oa:*const ObjectAttributes)->i32{
- if out.is_null(){return STATUS_INVALID_PARAMETER;}let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
- let _g=LOCK.lock();let s=state();
+ if out.is_null(){return STATUS_INVALID_PARAMETER;}let _g=LOCK.lock();
+ let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
+ let s=state();
  let found=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n]));
  if let Some(k)=found{unsafe{*out=handle(k.id);}STATUS_SUCCESS}else{STATUS_OBJECT_NAME_NOT_FOUND}
 }
