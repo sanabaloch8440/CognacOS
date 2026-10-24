@@ -327,6 +327,6 @@ jobs:
             build/drivers/acpi.sys
             build/drivers/pci.sys
             build/drivers/processor.sys
-build/drivers/storahci.sys
-build/drivers/stornvme.sys
-build/drivers/disk.sys
+            build/drivers/storahci.sys
+            build/drivers/stornvme.sys
+            build/drivers/disk.sys
