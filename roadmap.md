@@ -14,13 +14,26 @@ This roadmap tracks code and validation currently present in the repository, not
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
 | SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
-| NT executive/syscall compatibility | 165 Ke export names documented in comparison scope; per-thread APC/alert state, legacy and Timer2 timer lifecycle, DPC lifecycle, single-group affinity bitmaps, XSAVE feature query, queued spin locks, mutant/mutex ownership and KQUEUE implemented | Full kernel/user APC delivery, systemwide DPC drain, complete Windows opaque object layouts, remaining device queue/APC APIs, exact wait-all reservation/priority boosts, APC/processor-change/process-attach and other unresolved Ke exports |
+| NT executive/syscall compatibility | 169 Ke export names tracked; kernel APC safe points/rundown, alertable user APC IRET injection, processor callback table, referenced CR3 attach/detach, scheduler-backed priority bands, serialized event/semaphore/timer wait-all reservations, device queue lifecycle checks, and public x64 layout assertions have implementation foundations | User APC trap/SEH and WDK tests; systemwide DPC/SMP validation; real processor hot-remove; exception-safe process detach and process/thread integration; mutant/queue wait-all reservations; Windows priority decay/quantum; private opaque object bytes; broader Ke export semantics |
 | I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
 **Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; subsequent Ke/Ki affinity, Timer2, and clock-path changes are pending CI verification. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
+
+### Ke APC / process / scheduling follow-up (2026-10-24)
+
+- [x] Add kernel APC queue metadata, PASSIVE_LEVEL safe-point delivery, and queued APC rundown callbacks during thread exit.
+- [x] Add user APC delivery at the RdotOS ring-3 syscall IRET return path after an alertable wait; the normal routine receives RCX/RDX/R8 arguments and the interrupted RIP is used as its return address.
+- [x] Add processor-change callback registration/deregistration, opaque handles, add-existing replay, in-flight accounting, and HAL online/offline notification hooks.
+- [x] Add nested process attach/detach with referenced process roots, CR3 switching, LIFO restoration, and a teardown guard that refuses to destroy referenced address spaces.
+- [x] Synchronize Ke priority metadata with scheduler priority bands; dispatcher wake boosts now affect runnable-task ordering.
+- [x] Serialize timer-triggered wait-all checks with dispatcher-object state; reuse the locked object-consumption primitive for supported event/semaphore/timer objects and reject duplicate objects.
+- [x] Add x64 layout assertions for PROCESSOR_NUMBER, DISPATCHER_HEADER, semaphore/group affinity, processor-change context, and device queues.
+- [ ] Run current host tests, freestanding build, PE32+ validation, UEFI/QEMU smoke, and 2/4/8-vCPU SMP matrix; the implementation commits are not considered validated until this run passes.
+- [ ] Add dedicated tests for user APC frame injection/rundown, process attach nesting and destroy races, processor callback lifecycle under concurrent unregister, wait-all timeout/signal races, and priority boost/decay behavior.
+- [ ] Do not claim full Windows opaque object compatibility: private KAPC/KAPC_STATE/KTHREAD/EPROCESS bytes are not reproduced; validate public WDK size/layout expectations for each supported kit.
 
 ### Ke / ntoskrnl compatibility pass (2026-10-24)
 
@@ -32,10 +45,10 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Implement public-layout KQUEUE/ExecutiveQueue headers, intrusive entry lists, head/tail insertion, blocking removal, rundown, and waiter handoff.
 - [x] Correct KeSetTimer and KeSetTimerEx LARGE_INTEGER x64 by-value ABI and argument order.
 - [x] Strengthen wait validation: support absolute/relative timer deadlines and reject wait-all for mutant/queue objects until ownership/entry reservation can be atomic.
-- [x] Expand WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md to all 138 mapped Ke export names and refresh the remaining unresolved-export inventory.
-- [ ] Complete actual kernel/user APC object delivery, rundown, and delivery points.
-- [ ] Add systemwide DPC dispatch/drain guarantees, timer cancellation-versus-callback rundown, and broader periodic-timer race tests.
-- [ ] Complete wait-all reservation for mutants/queues, alert-versus-signal ordering, priority boosts, and timeout/cancellation race tests.
+- [x] Expand WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md to 169 tracked Ke export names and refresh the unresolved-export inventory.
+- [ ] Validate and complete APC delivery semantics. Current code has side-table APC metadata, kernel APC safe-point delivery and thread-exit rundown; user APCs are delivered by rewriting the RdotOS ring-3 syscall IRET frame only after an alertable wait. Add user-stack/trap-frame tests, callback suppression/requeue cases, APC disable/migration tests and Windows WDK conformance.
+- [ ] Validate systemwide DPC drain and timer rundown. DPC flush tracks in-flight callbacks and kicks remote CPUs through reschedule IPIs, but multi-vCPU drain, offline-target handling, timer cancellation-versus-callback rundown, and periodic-timer races still need tests.
+- [ ] Complete exact wait-all and scheduler behavior. Event/semaphore/timer reservations are serialized under the dispatcher-object lock and duplicate objects are rejected; mutant ownership/abandonment and queue-entry reservations, alert-versus-signal ordering, timeout/cancellation races, priority decay and Windows quantum policy remain open.
 - [ ] Validate queued-spin-lock handle layout and lock-number mapping against Windows WDK ABI; implement true cross-processor queue semantics and stress tests.
 - [x] Latest Ke-runtime workflow passed host-side tests, freestanding build, PE32+ validation, UEFI loader build, image packaging, OVMF/QEMU smoke, 2/4/8-vCPU SMP stress, and artifact upload: [run #997](https://github.com/umarfarooq7869/RdotOS/actions/runs/40092050955).
 - [ ] Continue expanding DDI conformance tests; a passing build and SMP run do not establish general Windows driver compatibility.
@@ -47,9 +60,9 @@ This roadmap tracks code and validation currently present in the repository, not
 - [x] Add KeDynamicPartitioningSupported fixed-topology result.
 - [x] Add distinct KeInitializeTimer2, KeSetTimer2, and KeCancelTimer2 side-table operations with APIC-driven one-shot/periodic callbacks; timer2 is not aliased to legacy KTIMER.
 - [x] Add an internal ntoskrnl/ki runtime layer and route APIC clock interrupts through Ki before completing dispatcher timeouts.
-- [x] Expand the Ke comparison to 165 callable names and recalculate the project-defined scoped score to 65.5% (100% ABI declaration coverage, 51/165 strict behavior matches).
+- [x] Expand the Ke comparison to 169 tracked names and recalculate the project-defined scoped score to 65.1% (100% declaration/resolver coverage, 51/169 strict behavior matches).
 - [ ] Verify the latest affinity/Timer2/Ki changes with the freestanding build, PE32+ conversion, OVMF/QEMU smoke, and 2/4/8-vCPU stress matrix. A score update is not a substitute for CI or Windows-driver tests.
-- [ ] Continue with APC object delivery/rundown, processor-change callbacks, NMI callback lifecycle, logical-processor relationship buffers, process attach/address-space switching, and XSAVE save/restore ownership.
+- [ ] Validate processor-change callbacks and process attach/detach. Registration/deregistration, in-flight callback accounting, HAL lifecycle hooks, referenced CR3 switching and LIFO restoration are implemented, but full hot-remove orchestration, exception-safe detach, current-process/thread integration and SMP/process-exit stress remain open. NMI callback lifecycle, logical-processor relationship buffers and XSAVE save/restore ownership are also unresolved.
 
 ### Status legend
 
