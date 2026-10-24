@@ -165,9 +165,9 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
     }
 }
 
-pub fn yield_current()->Result<(),ThreadError>{crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();reschedule(false)}
+pub fn yield_current()->Result<(),ThreadError>{crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();crate::ntoskrnl::ke::runtime::ke_deliver_pending_kernel_apcs();reschedule(false)}
 /// Block the current thread. A wake racing before this call is remembered and cancels the block.
-pub fn block_current()->Result<(),ThreadError>{reschedule(true)}
+pub fn block_current()->Result<(),ThreadError>{reschedule(true)?;crate::ntoskrnl::ke::runtime::ke_deliver_pending_kernel_apcs();Ok(())}
 /// Wake a blocked thread. If it is still running, remember the wake to close enqueue/block races.
 pub fn wake(id:u64)->Result<(),ThreadError>{
     let mut table=THREADS.lock();
