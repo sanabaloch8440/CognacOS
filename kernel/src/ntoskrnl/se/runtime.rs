@@ -934,3 +934,62 @@ mod se_access_check_tests {
         assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
     }
 }
+
+
+/// Windows SePrivilegeCheck ABI, using the registered RdotOS token privilege bitmap.
+/// LUIDs outside the bounded 0..64 privilege namespace fail closed. RequiredPrivileges
+/// is limited to 64 entries because the Windows ABI does not carry an array length.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn SePrivilegeCheck(
+    required_privileges: *const c_void,
+    subject_context: *mut SeSecuritySubjectContext,
+    access_mode: u8,
+) -> u8 {
+    if access_mode > 1 || required_privileges.is_null() || subject_context.is_null() { return 0; }
+    if access_mode == 0 { return 1; }
+    let context = unsafe { core::ptr::read_unaligned(subject_context) };
+    let token = if !context.client_token.is_null() {
+        if context.impersonation_level < 2 { return 0; }
+        context.client_token
+    } else { context.primary_token };
+    let Some(meta) = token_meta(token) else { return 0; };
+    let set = required_privileges.cast::<u8>();
+    let count = unsafe { core::ptr::read_unaligned(set.cast::<u32>()) } as usize;
+    let control = unsafe { core::ptr::read_unaligned(set.add(4).cast::<u32>()) };
+    if count > 64 { return 0; }
+    if count == 0 { return 1; }
+    let mut found = 0usize;
+    for i in 0..count {
+        let Some(offset) = 8usize.checked_add(i.checked_mul(12).unwrap_or(usize::MAX)) else { return 0; };
+        if offset == usize::MAX { return 0; }
+        let low = unsafe { core::ptr::read_unaligned(set.add(offset).cast::<u32>()) };
+        let high = unsafe { core::ptr::read_unaligned(set.add(offset + 4).cast::<u32>()) };
+        if high == 0 && low < 64 && meta.privileges & (1u64 << low) != 0 { found += 1; }
+        else if control & 1 != 0 { return 0; }
+    }
+    if control & 1 != 0 { (found == count) as u8 } else { (found != 0) as u8 }
+}
+
+#[cfg(test)]
+mod se_privilege_check_tests {
+    use super::*;
+    #[test]
+    fn privilege_check_obeys_all_necessary_and_token_bitmap() {
+        let mut token_storage = 0u64;
+        let token = (&mut token_storage as *mut u64).cast::<c_void>();
+        assert_eq!(unsafe { se_internal_RegisterTokenMetadata(token, 1, 0, 0, (1 << 3) | (1 << 7), 0, 1) }, STATUS_SUCCESS);
+        let context = SeSecuritySubjectContext { client_token: core::ptr::null_mut(),
+            impersonation_level: 0, primary_token: token, process_audit_id: core::ptr::null_mut() };
+        let mut set = [0u8; 32];
+        set[0..4].copy_from_slice(&2u32.to_le_bytes());
+        set[4..8].copy_from_slice(&1u32.to_le_bytes());
+        set[8..12].copy_from_slice(&3u32.to_le_bytes());
+        set[20..24].copy_from_slice(&7u32.to_le_bytes());
+        assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const _).cast_mut(), 1) }, 1);
+        set[20..24].copy_from_slice(&8u32.to_le_bytes());
+        assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const _).cast_mut(), 1) }, 0);
+        set[4..8].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(unsafe { SePrivilegeCheck(set.as_ptr().cast(), (&context as *const _).cast_mut(), 1) }, 1);
+        assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
+    }
+}
