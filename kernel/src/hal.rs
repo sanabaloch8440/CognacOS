@@ -370,5 +370,46 @@ pub unsafe fn set_interrupt_priority(irql: u8) -> Result<(), ()> {
     unsafe { crate::apic::set_task_priority(irql).map_err(|_| ()) }
 }
 
+/// Platform interrupt-controller services. These are the only intended
+/// consumers of the xAPIC/I/O-APIC implementation outside the HAL.
+pub const LOCAL_TIMER_VECTOR: u8 = 0xE0;
+pub const KE_BROADCAST_VECTOR: u8 = 0xEF;
+pub const HAL_IPI_VECTOR: u8 = 0xF0;
+pub const TLB_SHOOTDOWN_VECTOR: u8 = 0xF1;
+pub const TSC_SYNC_VECTOR: u8 = 0xF2;
+
+#[inline]
+pub unsafe fn initialize_local_interrupt_controller(base: u64) -> Result<u32, crate::apic::ApicError> {
+    unsafe { crate::apic::initialize_local_apic(base) }
+}
+#[inline]
+pub unsafe fn mask_interrupt_controller_routes(base: u64) -> Result<(), crate::apic::ApicError> {
+    unsafe { crate::apic::mask_all_ioapic(base) }
+}
+#[inline]
+pub unsafe fn calibrate_local_clock_event() -> Result<u32, crate::apic::ApicError> {
+    unsafe { crate::apic::calibrate_local_timer() }
+}
+#[inline]
+pub unsafe fn start_local_clock_event() -> Result<(), crate::apic::ApicError> {
+    unsafe { crate::apic::start_calibrated_local_timer() }
+}
+#[inline]
+pub fn local_interrupt_controller_base() -> Option<u64> { crate::apic::local_apic_base() }
+#[inline]
+pub unsafe fn end_local_interrupt() {
+    if let Some(base) = local_interrupt_controller_base() {
+        unsafe { crate::apic::local_apic_eoi(base); }
+    }
+}
+#[inline]
+pub fn capture_clock_synchronization_sample() { crate::apic::capture_tsc_sync_sample(); }
+#[inline]
+pub unsafe fn dispatch_platform_interrupt(vector: u8, frame: *mut core::ffi::c_void) -> bool {
+    unsafe { crate::apic::dispatch_external_interrupt(vector, frame) }
+}
+#[inline]
+pub fn local_clock_event_interrupt() { crate::apic::timer_interrupt(); }
+
 /// Windows HAL export compatibility inventory and fail-closed stub metadata.
 pub mod exports;
