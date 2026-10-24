@@ -359,7 +359,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  let dispatch=unsafe{(*driver).major_function[major]};
  let Some(dispatch)=dispatch else{return STATUS_INVALID_DEVICE_REQUEST};
  let prepare=unsafe{crate::ntoskrnl::po::runtime::po_prepare_irp_dispatch(device,irp,major as u8,(*stack).minor_function,(*stack).parameters)};
- if prepare!=STATUS_SUCCESS{return prepare}
+ if prepare!=STATUS_SUCCESS{unsafe{write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());(*irp).bytes[0x43]=location;}return prepare}
  let status=unsafe{dispatch(device,irp)};
  crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
  status
