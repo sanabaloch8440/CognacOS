@@ -95,13 +95,16 @@ pub unsafe extern "win64" fn ke_query_maximum_processor_count_ex(group: u16) -> 
 pub unsafe extern "win64" fn ke_query_maximum_processor_count() -> u32 {
     crate::hal::MAX_CPUS as u32
 }
-pub unsafe extern "win64" fn ke_get_current_processor_number_ex(out: *mut ProcessorNumber) {
-    if out.is_null() { return; }
-    let Some(cpu) = crate::hal::current_cpu_local() else { return; };
-    let logical = cpu.logical_id.load(Ordering::Acquire);
-    if logical < 64 {
+/// ULONG KeGetCurrentProcessorNumberEx(PPROCESSOR_NUMBER ProcNumber).
+/// The output pointer is optional; the return is always the systemwide index.
+pub unsafe extern "win64" fn ke_get_current_processor_number_ex(out: *mut ProcessorNumber) -> u32 {
+    let logical = crate::hal::current_cpu_local()
+        .map(|cpu| cpu.logical_id.load(Ordering::Acquire))
+        .unwrap_or(0);
+    if !out.is_null() && logical < 64 {
         unsafe { out.write(ProcessorNumber { group: 0, number: logical as u8, reserved: 0 }); }
     }
+    logical
 }
 pub unsafe extern "win64" fn ke_get_current_processor_index() -> u32 {
     crate::hal::current_cpu_local()
@@ -506,23 +509,96 @@ pub unsafe extern "win64" fn ke_get_processor_number_from_index(
     STATUS_SUCCESS
 }
 
-/// BOOLEAN KeAreApcsDisabled(void). APC disable counters are not yet tracked;
-/// the implementation reliably reports the IRQL-based disabled case.
-pub unsafe extern "win64" fn ke_are_apcs_disabled() -> u8 {
-    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) > 1) as u8
-}
+// APC-disable nesting is currently attached to the executing CPU slot because
+// RdotOS does not yet expose per-thread APC bookkeeping. Migration while inside
+// a region remains a known limitation, not full Windows thread semantics.
+static CRITICAL_REGION_DEPTH: [core::sync::atomic::AtomicU32; 64] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 64];
+static GUARDED_REGION_DEPTH: [core::sync::atomic::AtomicU32; 64] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; 64];
 
-/// BOOLEAN KeAreAllApcsDisabled(void). Guarded-region nesting is not yet tracked.
+/// VOID KeEnterCriticalRegion(void): disable normal kernel APC delivery.
+pub unsafe extern "win64" fn ke_enter_critical_region() {
+    let depth = &CRITICAL_REGION_DEPTH[cpu_slot()];
+    let mut current = depth.load(Ordering::Acquire);
+    while current != u32::MAX {
+        match depth.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break, Err(actual) => current = actual,
+        }
+    }
+}
+/// VOID KeLeaveCriticalRegion(void): balance a prior KeEnterCriticalRegion.
+pub unsafe extern "win64" fn ke_leave_critical_region() {
+    let depth = &CRITICAL_REGION_DEPTH[cpu_slot()];
+    let mut current = depth.load(Ordering::Acquire);
+    while current != 0 {
+        match depth.compare_exchange_weak(current, current - 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break, Err(actual) => current = actual,
+        }
+    }
+}
+/// VOID KeEnterGuardedRegion(void): disable normal and special kernel APCs.
+pub unsafe extern "win64" fn ke_enter_guarded_region() {
+    let depth = &GUARDED_REGION_DEPTH[cpu_slot()];
+    let mut current = depth.load(Ordering::Acquire);
+    while current != u32::MAX {
+        match depth.compare_exchange_weak(current, current + 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break, Err(actual) => current = actual,
+        }
+    }
+}
+/// VOID KeLeaveGuardedRegion(void): balance a prior KeEnterGuardedRegion.
+pub unsafe extern "win64" fn ke_leave_guarded_region() {
+    let depth = &GUARDED_REGION_DEPTH[cpu_slot()];
+    let mut current = depth.load(Ordering::Acquire);
+    while current != 0 {
+        match depth.compare_exchange_weak(current, current - 1, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break, Err(actual) => current = actual,
+        }
+    }
+}
+/// BOOLEAN KeAreApcsDisabled(void). Critical regions or APC_LEVEL disable normal APCs.
+pub unsafe extern "win64" fn ke_are_apcs_disabled() -> u8 {
+    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) >= 1
+        || CRITICAL_REGION_DEPTH[cpu_slot()].load(Ordering::Acquire) != 0) as u8
+}
+/// BOOLEAN KeAreAllApcsDisabled(void). Guarded regions or APC_LEVEL disable all APCs.
 pub unsafe extern "win64" fn ke_are_all_apcs_disabled() -> u8 {
-    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) > 1) as u8
+    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) >= 1
+        || GUARDED_REGION_DEPTH[cpu_slot()].load(Ordering::Acquire) != 0) as u8
 }
 
 /// LONG KePulseEvent(PKEVENT, KPRIORITY, BOOLEAN).
 pub unsafe extern "win64" fn ke_pulse_event(
     event: *mut DispatcherHeader, increment: i32, wait: u8,
 ) -> i32 {
-    let previous = unsafe { ke_set_event(event, increment, wait) };
-    let _ = unsafe { ke_reset_event(event) };
+    if event.is_null() { return 0; }
+    // Serialize the entire pulse against concurrent state changes.
+    let _object_guard = DISPATCHER_OBJECT_LOCK.lock();
+    let state = unsafe { &*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>() };
+    let previous = state.swap(1, Ordering::AcqRel);
+    complete_ready_wait_all_groups();
+    match unsafe { (*event).kind } {
+        EVENT_NOTIFICATION => {
+            let mut waiters = [crate::dispatcher::WokenWaiter { thread: 0, timed_out: false }; crate::dispatcher::MAX_WAITERS];
+            let count = crate::dispatcher::wake_all_timed(event as u64, &mut waiters);
+            for waiter in waiters[..count].iter().copied() {
+                let signal_status = if waiter.timed_out { STATUS_TIMEOUT } else { STATUS_SUCCESS };
+                let status = crate::dispatcher::complete_wait_group(waiter.thread, event as u64, signal_status, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(signal_status);
+                let _ = crate::thread::complete_wait(waiter.thread, status);
+            }
+        }
+        EVENT_SYNCHRONIZATION => {
+            if let Some(waiter) = crate::dispatcher::wake_one_timed(event as u64) {
+                let signal_status = if waiter.timed_out { STATUS_TIMEOUT } else { STATUS_SUCCESS };
+                let status = crate::dispatcher::complete_wait_group(waiter.thread, event as u64, signal_status, STATUS_SUCCESS, STATUS_TIMEOUT).unwrap_or(signal_status);
+                let _ = crate::thread::complete_wait(waiter.thread, status);
+            }
+        }
+        _ => {}
+    }
+    state.store(0, Ordering::Release);
+    let _ = (increment, wait); // Priority boosts and atomic Wait handoff remain unsupported.
     previous
 }
 
