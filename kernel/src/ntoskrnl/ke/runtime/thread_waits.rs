@@ -392,11 +392,6 @@ unsafe fn try_take_queue_entry_locked(object:*mut DispatcherHeader,thread_id:u64
     let _=crate::thread::set_queue_entry(thread_id,entry as u64);
     true
 }
-fn mutant_available_to_thread(object:*mut DispatcherHeader,thread_id:u64)->bool{
-    let table=MUTANTS.lock();
-    table.records.iter().find(|r|r.object==object as usize)
-        .is_some_and(|r|r.owner==0||r.owner==thread_id)
-}
 
 fn wait_all_object_signalled(object_id:u64)->bool{
     let object=object_id as *mut DispatcherHeader;
@@ -532,20 +527,28 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
         // thread. Queue objects are excluded above because entry transfer is
         // consumptive and cannot participate in wait-all reservation.
         let has_mutant=object_list.iter().any(|object|unsafe{(**object).kind}==MUTANT_OBJECT);
+        let mut mutants=MUTANTS.lock();
         let all_signalled = current_id.is_some_and(|id|object_list.iter().copied().all(|object|{
-            if unsafe{(*object).kind}==MUTANT_OBJECT{mutant_available_to_thread(object,id)}
-            else{unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)>0}}
+            if unsafe{(*object).kind}==MUTANT_OBJECT{
+                mutants.records.iter().find(|r|r.object==object as usize).is_some_and(|r|r.owner==0||r.owner==id)
+            }else{unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)>0}}
         }));
         if all_signalled {
+            let id=current_id.unwrap_or(0);
             let mut abandoned=false;
-            for (index,object) in object_list.iter().copied().enumerate(){
+            for object in object_list.iter().copied(){
                 if unsafe{(*object).kind}==MUTANT_OBJECT{
-                    if try_acquire_mutant_status(object)==Some(STATUS_ABANDONED_WAIT_0){abandoned=true;}
+                    if let Some(record)=mutants.records.iter_mut().find(|r|r.object==object as usize){
+                        if record.owner==id{record.recursion=record.recursion.saturating_add(1);}
+                        else{record.owner=id;record.recursion=1;}
+                        if record.abandoned{abandoned=true;record.abandoned=false;}
+                        unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-record.recursion as i32,Ordering::Release);}
+                    }
                 }else{consume_wait_all_object(object as u64);}
-                let _=index;
             }
             return if abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS};
         }
+        drop(mutants);
         if has_mutant{return STATUS_NOT_IMPLEMENTED;}
     }
     if !timeout.is_null() && unsafe { timeout.read_unaligned() } == 0 { return STATUS_TIMEOUT; }
