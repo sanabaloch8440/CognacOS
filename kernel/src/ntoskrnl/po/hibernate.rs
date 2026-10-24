@@ -80,7 +80,7 @@ fn g64(b:&[u8],o:usize)->u64{u64::from_le_bytes(b[o..o+8].try_into().unwrap_or([
 fn crc_update(c:&mut u32,b:&[u8]){for x in b{*c^=*x as u32;for _ in 0..8{*c=(*c>>1)^(0xEDB8_8320u32&(0u32.wrapping_sub(*c&1)));}}}
 fn crc(b:&[u8])->u32{let mut c=!0u32;crc_update(&mut c,b);!c}
 fn rle_encode(input:&[u8],out:&mut [u8])->usize{let(mut i,mut o)=(0,0);while i<input.len(){let v=input[i];let mut n=1;while i+n<input.len()&&input[i+n]==v&&n<255{n+=1}if o+2>out.len(){return usize::MAX}out[o]=n as u8;out[o+1]=v;o+=2;i+=n;}o}
-fn rle_decode(input:&[u8],out:&mut [u8],expected:usize)->Result<(),i32>{if input.len()%2!=0||expected>out.len(){return Err(DATA_ERROR)}let mut n=0;for p in input.chunks_exact(2){let k=p[0] as usize;if k==0||n.checked_add(k).is_none_or(|x|x>expected){return Err(DATA_ERROR)}out[n..n+k].fill(p[1]);n+=k;}if n!=expected{return Err(DATA_ERROR)}Ok(())}
+fn rle_decode(input:&[u8],out:&mut [u8],expected:usize)->Result<(),i32>{if input.len()%2!=0||expected>out.len(){return Err(DATA_ERROR)}let mut n=0usize;for p in input.chunks_exact(2){let k=p[0] as usize;if k==0||n.checked_add(k).is_none_or(|x|x>expected){return Err(DATA_ERROR)}out[n..n+k].fill(p[1]);n+=k;}if n!=expected{return Err(DATA_ERROR)}Ok(())}
 fn platform()->Result<&'static HiberPlatformOps,i32>{let p=PLATFORM.load(Ordering::Acquire);if p.is_null(){return Err(NOT_IMPLEMENTED)}let o=unsafe{&*p};if o.size<core::mem::size_of::<HiberPlatformOps>() as u32||o.quiesce_devices.is_none()||o.resume_devices.is_none()||o.enumerate_memory.is_none()||o.capture_cpu_state.is_none()||o.restore_cpu_state.is_none()||o.write_slot.is_none()||o.read_slot.is_none()||o.flush_slot.is_none()||o.restore_memory.is_none()||o.enter_s4.is_none(){return Err(NOT_IMPLEMENTED)}Ok(o)}
 /// Register a static platform backend. The structure must remain alive permanently.
 pub unsafe fn register_platform(p:*mut HiberPlatformOps)->i32{if p.is_null(){return INVALID}let o=unsafe{&*p};if o.size<core::mem::size_of::<HiberPlatformOps>() as u32||o.quiesce_devices.is_none()||o.resume_devices.is_none()||o.enumerate_memory.is_none()||o.capture_cpu_state.is_none()||o.restore_cpu_state.is_none()||o.write_slot.is_none()||o.read_slot.is_none()||o.flush_slot.is_none()||o.restore_memory.is_none()||o.enter_s4.is_none(){return INVALID}if PLATFORM.compare_exchange(ptr::null_mut(),p,Ordering::AcqRel,Ordering::Acquire).is_err(){return 0xC000_0022u32 as i32}OK}
@@ -137,7 +137,7 @@ pub fn resume_from_hibernation()->i32{
  let ds=match read_table(o,s,h){Ok(v)=>v,Err(e)=>return e};let mut input=[0u8;SCRATCH];let mut output=[0u8;CHUNK];
  for d in ds.iter().take(h.count as usize){if let Err(e)=process_region(o,s,*d,true,&mut input,&mut output){return e}}
  let mut cpu=[0u8;CPU_MAX];if h.cpu_len>0{let x=rd(o,s,h.cpu_offset,&mut cpu[..h.cpu_len as usize]);if x!=OK{return x}}
- unsafe{(o.restore_cpu_state.unwrap())(o.context,&cpu[..h.cpu_len as usize],h.cpu_len as usize)}
+ unsafe{(o.restore_cpu_state.unwrap())(o.context,cpu.as_ptr(),h.cpu_len as usize)}
 }
 pub fn validate_hibernation_images()->i32{let o=match platform(){Ok(v)=>v,Err(e)=>return e};if validate_slot(o,0).is_ok()||validate_slot(o,1).is_ok(){OK}else{NOT_READY}}
 
