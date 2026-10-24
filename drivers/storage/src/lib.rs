@@ -93,6 +93,31 @@ pub mod ahci {
     }
 }
 
+/// AHCI Register Host-to-Device FIS for LBA48 DMA reads/writes.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AhciRegisterFis {
+    pub fis_type: u8, pub flags: u8, pub command: u8, pub feature_low: u8,
+    pub lba0: u8, pub lba1: u8, pub lba2: u8, pub device: u8,
+    pub lba3: u8, pub lba4: u8, pub lba5: u8, pub feature_high: u8,
+    pub count_low: u8, pub count_high: u8, pub icc: u8, pub control: u8,
+    pub reserved: [u8; 4],
+}
+pub fn build_ahci_rw_fis(req: BlockRequest, geometry: Geometry) -> Result<AhciRegisterFis, StorageError> {
+    req.validate(geometry)?;
+    if req.operation != BlockOperation::Read && req.operation != BlockOperation::Write { return Err(StorageError::Unsupported); }
+    if req.lba >= (1u64 << 48) || req.sectors > u16::MAX as u32 { return Err(StorageError::OutOfRange); }
+    Ok(AhciRegisterFis {
+        fis_type: 0x27, flags: 0x80,
+        command: if req.operation == BlockOperation::Read { 0x25 } else { 0x35 },
+        device: 1 << 6,
+        lba0: req.lba as u8, lba1: (req.lba >> 8) as u8, lba2: (req.lba >> 16) as u8,
+        lba3: (req.lba >> 24) as u8, lba4: (req.lba >> 32) as u8, lba5: (req.lba >> 40) as u8,
+        count_low: req.sectors as u8, count_high: (req.sectors >> 8) as u8,
+        ..AhciRegisterFis::default()
+    })
+}
+
 /// NVMe 1.x controller register map, queue entry layout and bounded queue bookkeeping.
 pub mod nvme {
     use super::StorageError;
@@ -113,6 +138,22 @@ pub mod nvme {
         pub fn new(depth:u16)->Result<Self,StorageError>{ if depth<2 || !depth.is_power_of_two() || depth>MAX_IO_QUEUE_ENTRIES { return Err(StorageError::InvalidArgument); } Ok(Self{depth,tail:0,head:0,phase:1,outstanding:0}) }
         pub fn submit(&mut self)->Result<u16,StorageError>{ if self.outstanding>=self.depth-1{return Err(StorageError::QueueFull)} let id=self.tail; self.tail=(self.tail+1)&(self.depth-1); self.outstanding+=1; Ok(id) }
         pub fn complete(&mut self, status:u16)->Result<bool,StorageError>{ if self.outstanding==0{return Err(StorageError::InvalidState)} self.outstanding-=1; self.head=(self.head+1)&(self.depth-1); if status & 1 != 0 { return Err(StorageError::DeviceError); } Ok(true) }
+    }
+    /// Build an NVMe NVM Read/Write command. PRP list setup and DMA mapping remain caller-owned.
+    pub fn build_rw_command(req: super::BlockRequest, geometry: super::Geometry, namespace_id: u32, command_id: u16) -> Result<SubmissionEntry, StorageError> {
+        req.validate(geometry)?;
+        if namespace_id == 0 || (req.operation != super::BlockOperation::Read && req.operation != super::BlockOperation::Write) {
+            return Err(StorageError::InvalidArgument);
+        }
+        if req.buffer_physical & 0x3 != 0 { return Err(StorageError::InvalidArgument); }
+        Ok(SubmissionEntry {
+            opcode: if req.operation == super::BlockOperation::Read { 0x02 } else { 0x01 },
+            command_id, nsid: namespace_id,
+            data_ptr: [req.buffer_physical, 0],
+            cdw10: req.lba as u32, cdw11: (req.lba >> 32) as u32,
+            cdw12: req.sectors - 1,
+            ..SubmissionEntry::default()
+        })
     }
     pub fn doorbell_offset(queue_id:u16, completion:bool, dstrd:u8)->Result<usize,StorageError>{
         if queue_id>2047 || dstrd>7{return Err(StorageError::InvalidArgument)}
@@ -164,6 +205,14 @@ mod tests {
         let mut p=ahci::PortLifecycle::new(); assert!(p.started().is_err());
         p.begin_start().unwrap(); p.started().unwrap(); p.begin_stop().unwrap(); p.stopped().unwrap();
         assert_eq!(p.state,ahci::PortState::Stopped);
+    }
+    #[test] fn ahci_and_nvme_encode_lba48_requests() {
+        let g=Geometry{sector_count:0x1_0000_0000,logical_sector_size:512,physical_sector_size:512};
+        let req=BlockRequest{operation:BlockOperation::Read,lba:0x1234_5678_9abc,sectors:2,buffer_physical:0x2000,byte_length:1024,request_id:1};
+        let fis=build_ahci_rw_fis(req,g).unwrap();
+        assert_eq!(fis.command,0x25); assert_eq!([fis.lba0,fis.lba1,fis.lba2,fis.lba3,fis.lba4,fis.lba5],[0xbc,0x9a,0x78,0x56,0x34,0x12]);
+        let cmd=nvme::build_rw_command(req,g,1,7).unwrap();
+        assert_eq!(cmd.opcode,0x02); assert_eq!(cmd.command_id,7); assert_eq!(cmd.cdw10,0x5678_9abc); assert_eq!(cmd.cdw11,0x1234); assert_eq!(cmd.cdw12,1);
     }
     #[test] fn nvme_queue_tracks_outstanding_and_phase(){
         let mut q=nvme::Queue::new(4).unwrap(); assert_eq!(q.submit(),Ok(0)); assert_eq!(q.submit(),Ok(1));
