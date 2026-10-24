@@ -1,4 +1,4 @@
-//! APC state, event pulse, waits, and thread affinity.
+// APC state, event pulse, waits, and thread affinity.
 // This file is included by the Ke runtime facade so existing shared private
 // state and cross-routine helpers retain their original module scope.
 
