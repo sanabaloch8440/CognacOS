@@ -14,6 +14,12 @@ fn timer_snapshot_is_current(
         && snapshot_generation == current_generation
 }
 
+/// Advance a timer generation without ever producing the reserved zero value.
+#[inline]
+fn next_timer_generation(current: u64) -> u64 {
+    current.wrapping_add(1).max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::timer_snapshot_is_current;
@@ -31,5 +37,12 @@ mod tests {
         assert!(!timer_snapshot_is_current(0x1000, 0, 0x1000, 0));
         // A cancel/rearm advances the live generation beyond the snapshot.
         assert!(!timer_snapshot_is_current(0x1000, 41, 0x1000, 42));
+    }
+
+    #[test]
+    fn generation_increment_skips_reserved_zero_after_wraparound() {
+        assert_eq!(next_timer_generation(0), 1);
+        assert_eq!(next_timer_generation(41), 42);
+        assert_eq!(next_timer_generation(u64::MAX), 1);
     }
 }
