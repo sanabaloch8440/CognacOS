@@ -240,7 +240,7 @@ mod dispatch_tests {
     use super::*;
     use core::ptr;
     use core::sync::atomic::{AtomicU32, Ordering};
-    use crate::io::{io_allocate_irp,io_call_driver,io_complete_request,io_create_device,io_delete_device,io_free_irp,io_get_next_irp_stack_location,io_pnp_state,device_power_state,DriverObject,STATUS_PENDING};
+    use crate::io::{io_allocate_irp,io_call_driver,io_complete_request,io_create_device,io_delete_device,io_free_irp,io_get_next_irp_stack_location,io_pnp_state,device_power_state,DriverObject};
 
     unsafe extern "system" fn success_dispatch(_device:*mut DeviceObject,_irp:*mut WdmIrp)->i32 { 0 }
     unsafe extern "system" fn pending_dispatch(_device:*mut DeviceObject,_irp:*mut WdmIrp)->i32 { STATUS_PENDING }
