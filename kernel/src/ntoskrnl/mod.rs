@@ -67,6 +67,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   let object_manager = if requested.eq_ignore_ascii_case(b"ObReferenceObjectByPointer") { Some(ob::runtime::ObReferenceObjectByPointer as usize) }
   else if requested.eq_ignore_ascii_case(b"ObDereferenceObject") { Some(ob::runtime::ObDereferenceObject as usize) }
   else if requested.eq_ignore_ascii_case(b"ObfDereferenceObject") { Some(ob::runtime::ObfDereferenceObject as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObReferenceObjectByHandle") { Some(ob::runtime::ObReferenceObjectByHandle as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObGetObjectType") { Some(ob::runtime::ObGetObjectType as usize) }
   else if requested.eq_ignore_ascii_case(b"ObfReferenceObject") { Some(ob::runtime::ObfReferenceObject as usize) }
   else if requested.eq_ignore_ascii_case(b"ObCloseHandle") { Some(ob::runtime::ObCloseHandle as usize) }
   else if requested.eq_ignore_ascii_case(b"ObIsKernelHandle") { Some(ob::runtime::ObIsKernelHandle as usize) }
