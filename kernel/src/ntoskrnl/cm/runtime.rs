@@ -73,7 +73,7 @@ unsafe fn object_path(oa:*const ObjectAttributes)->Result<([u16;MAX_NAME],usize,
  Ok((name,n,parent))
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired_access:u32,oa:*const ObjectAttributes,_title:*mut core::ffi::c_void,_class:*const UnicodeString,options:u32,disposition:*mut u32)->i32{
+pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired_access:u32,oa:*const ObjectAttributes,_title_index:u32,_class:*const UnicodeString,options:u32,disposition:*mut u32)->i32{
  if out.is_null(){return STATUS_INVALID_PARAMETER;}if options&!0x0000_0002!=0{return STATUS_INVALID_PARAMETER;}
  let _g=LOCK.lock();
  let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
@@ -83,7 +83,7 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
  let id=s.next_id;s.next_id=s.next_id.wrapping_add(1).max(1);
  s.keys[index]=Key{used:true,id,parent,name,name_len:n as u16,deleted:false};
  unsafe{*out=handle(id);if !disposition.is_null(){*disposition=1;}}
- let _=desired_access; STATUS_SUCCESS
+ let _=(desired_access,_title_index); STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwOpenKey(out:*mut *mut core::ffi::c_void,_access:u32,oa:*const ObjectAttributes)->i32{
@@ -144,7 +144,7 @@ mod tests {
   let key_us=UnicodeString{length:(key_name.len()*2) as u16,maximum_length:(key_name.len()*2) as u16,buffer:key_name.as_ptr()};
   let oa=ObjectAttributes{length:core::mem::size_of::<ObjectAttributes>() as u32,root_directory:core::ptr::null_mut(),object_name:&key_us,attributes:0,security_descriptor:core::ptr::null_mut(),security_qos:core::ptr::null_mut()};
   let mut key=core::ptr::null_mut();let mut disposition=0;
-  assert_eq!(unsafe{ZwCreateKey(&mut key,0,&oa,core::ptr::null_mut(),core::ptr::null(),0,&mut disposition)},STATUS_SUCCESS);
+  assert_eq!(unsafe{ZwCreateKey(&mut key,0,&oa,0,core::ptr::null(),0,&mut disposition)},STATUS_SUCCESS);
   assert_eq!(disposition,1);
   let value_name:[u16;4]=[68,119,111,114];let value_us=UnicodeString{length:8,maximum_length:8,buffer:value_name.as_ptr()};
   let value:u32=0x1234_abcd;
