@@ -277,7 +277,10 @@ pub extern "system" fn io_release_cancel_spin_lock(old_irql: u8) {
 #[path = "wdm.rs"] mod wdm;
 pub use wdm::{
     io_allocate_irp, io_call_driver, io_complete_request, io_create_device,
-    io_delete_device, io_free_irp, io_get_current_irp_stack_location,
+    io_delete_device, io_detach_device, io_attach_device_to_device_stack,
+    io_get_attached_device, io_get_device_attachment_base_ref, io_get_lower_device_object,
+    io_initialize_irp, io_copy_current_irp_stack_location_to_next,
+    io_skip_current_irp_stack_location, io_reuse_irp, io_free_irp, io_get_current_irp_stack_location,
     io_get_next_irp_stack_location, io_mark_irp_pending, io_set_completion_routine,
     DeviceObject, DriverObject, IoCompletionRoutine, IoStackLocation, IoStatusBlock,
     UnicodeString,
