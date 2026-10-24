@@ -16,7 +16,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
 | NT executive/syscall compatibility | 169 Ke export names tracked; kernel APC safe points/rundown, alertable user APC IRET injection, processor callback table, referenced CR3 attach/detach, scheduler-backed priority bands, serialized event/semaphore/timer wait-all reservations, device queue lifecycle checks, public x64 layout assertions, and cross-CPU generic-DPC Synchronize/Done barriers validated by 2/4/8-vCPU QEMU CI; synchronous global DPC flush and timer-generation rundown hardening implemented but latest validation pending | Failed/offline-target and flush-versus-insert stress proof; timer cancellation/rearm/rundown stress; user APC trap/SEH and WDK tests; real processor hot-remove; exception-safe process detach and process/thread integration; mutant/queue wait-all reservations; Windows priority decay/quantum; exact private Windows object layouts are intentionally not mirrored; broader Ke export semantics |
 | Registry / Configuration Manager | Volatile `Nt/Zw` APIs; native `regf`/`hbin` read-only parser, base-block/HBIN/cell validation, common subkey indexes, seven hive identities, empty native hive creator, SYSTEM service lookup, raw BCD element access | Dirty-hive log replay, persistent mutation/writeback, complete NT handles/access checks, full query/enumeration classes, callbacks/notifications, transactions, security, WDK tests |
-| I/O manager | Runtime moved to `ntoskrnl/io/runtime.rs`; bounded FIFO completion ports, deadline-aware IRPs, pre-dispatch timeout expiry, WDM 1.0 version gate, configuration-information and cancel-spin-lock exports, 16-bit port I/O and ordered volatile MMIO accessors | Dispatcher-integrated completion waits, live device counters/enumeration, safe in-flight cancellation, ABI-correct IRP/device-object APIs, real device dispatch/interrupt/DMA paths, and hardware tests |
+| I/O manager | Runtime under `ntoskrnl/io/runtime.rs`; initial x64 WDM object layouts, device create/delete, fixed-pool IRP/stack allocation, IofCallDriver dispatch, completion-routine unwinding, deadline-aware internal IRPs and cancel-lock exports | Verify exact ABI layouts against WDK, robust stack-copy/attachment semantics, asynchronous completion and APCs, cancellation ownership, remove rundown, MDL paths, storage dispatch, integration tests and real hardware |
 | NLS / globalization | Native-name catalogue and byte-preserving reader/copy API for `c_037.nls`, `c_437.nls`, `c_1252.nls`, `locale.nls`, `sortkey.nls`, `sorttbls.nls`, `ctype.nls`, `unicode.nls`; optional boot-asset staging | Parse NLS internal tables, code-page conversion, globalization APIs, filesystem writeback, locate files on a separate Windows/NTFS partition |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
 | ext filesystem | Separate `drivers/ext4` Rust crate; bounded read-only mount and guarded writes to existing extents | Remove any remaining gitlink entry; block-device/partition layer; NT I/O manager device/IRP dispatch integration; VFS/file objects; allocation and metadata updates; journal/checksum handling; crash consistency and image/fuzz tests |
@@ -279,7 +279,6 @@ Discovery and startup primitives do not by themselves establish a production-rea
 
 ## 8. ext2/ext3/ext4 filesystem
 
-- [x] Pin upstream Ext3Fsd sources as a separate reference submodule.
 - [x] Add a no_std Rust parser for superblock geometry, inode metadata, legacy group descriptors, and bounded directory records.
 - [x] Add checked filesystem/device bounds and legacy direct/indirect block mapping.
 - [x] Add bounded ext4 extent-tree mapping and a CRC32C/superblock-checksum foundation.
@@ -291,7 +290,7 @@ Discovery and startup primitives do not by themselves establish a production-rea
 - [ ] Defer journal replay and write support until read-only behavior and metadata validation are robust.
 - [ ] Review licensing before redistributing any Rust translation derived from upstream code.
 
-The ext-family parser now lives in a standalone source/build crate and has a constrained write path for already allocated initialized data extents. This is not yet a complete writable filesystem: allocation, metadata updates, journal handling, crash consistency, and VFS/block-device registration remain outstanding. The original Ext3Fsd Windows driver cannot be loaded by RdotOS.
+The ext-family parser now lives in a standalone source/build crate and has a constrained write path for already allocated initialized data extents. This is not yet a complete writable filesystem: allocation, metadata updates, journal handling, crash consistency, and VFS/block-device registration remain outstanding. The removed third-party Ext3Fsd Windows driver is not used by RdotOS.
 
 ## 9. Isolation and security
 
