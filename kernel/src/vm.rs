@@ -17,7 +17,7 @@ const USER_END: u64 = 0x0000_8000_0000_0000;
 pub static ADDRESS_SPACE_LIFETIME_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 
 #[derive(Clone, Copy, Debug)]
-pub enum VmError { InvalidAddress, Unaligned, OutOfMemory, AlreadyMapped, NotMapped, PermissionDenied, ExecutableUserPageUnsupported }
+pub enum VmError { InvalidAddress, Unaligned, OutOfMemory, AlreadyMapped, NotMapped, PermissionDenied, AddressSpaceBusy, ExecutableUserPageUnsupported }
 
 pub struct AddressSpace { root: u64 }
 impl AddressSpace {
@@ -200,6 +200,7 @@ impl AddressSpace {
     /// are never traversed or reclaimed.
     pub unsafe fn destroy(&mut self) -> Result<(), VmError> {
         let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        if crate::process::address_space_has_references(self.root) { return Err(VmError::AddressSpaceBusy); }
         let root = self.root as *mut u64;
         // Preflight all user leaves before freeing any frame. An MDL-pinned
         // page must keep its address space intact until MmUnlockPages runs.
