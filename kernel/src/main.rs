@@ -162,7 +162,13 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // kernel, its current stack, BootInfo, final UEFI map, page-table root,
         // reserved stack allocation, and ACPI/AP handoff storage.
         let mut current_rsp: u64;
+        let active_cr3: u64;
         asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack, preserves_flags));
+        asm!("mov {}, cr3", out(reg) active_cr3, options(nomem, nostack, preserves_flags));
+        if active_cr3 & !0xfff != info.pml4_physical {
+            serial_write(b"FATAL: active CR3 does not match the validated bootstrap root.\\r\\n");
+            halt();
+        }
         let map_bytes = match (info.memory_map_entries as u64)
             .checked_mul(info.memory_descriptor_size as u64) {
             Some(bytes) => bytes,
