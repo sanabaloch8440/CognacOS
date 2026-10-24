@@ -253,8 +253,8 @@ struct ScatterGatherListStorage {
     elements: [ScatterGatherElement; MAX_SG_SEGMENTS],
 }
 #[derive(Clone, Copy)]
-struct SgOwnership { active: bool, device: usize, list: usize, token:usize, count:u32 }
-impl SgOwnership { const EMPTY: Self = Self { active: false, device: 0, list: 0, token:0, count:0 }; }
+struct SgOwnership { active: bool, busy:bool, device: usize, list: usize, token:usize, count:u32 }
+impl SgOwnership { const EMPTY: Self = Self { active: false, busy:false, device: 0, list: 0, token:0, count:0 }; }
 struct SgRegistry {
     ownership: core::cell::UnsafeCell<[SgOwnership; MAX_OWNED_SG_LISTS]>,
     lists: core::cell::UnsafeCell<[ScatterGatherListStorage; MAX_OWNED_SG_LISTS]>,
@@ -297,21 +297,24 @@ pub unsafe extern "win64" fn get_scatter_gather_list(
  }
  list.number_of_elements=pages as u32;list.reserved=0;
  let list_ptr=(core::ptr::addr_of_mut!(*list)).cast::<ScatterGatherListAbi>();
- owners[index]=SgOwnership{active:true,device:device_object as usize,list:list_ptr as usize,token:token as usize,count:pages as u32};
+ owners[index]=SgOwnership{active:true,busy:false,device:device_object as usize,list:list_ptr as usize,token:token as usize,count:pages as u32};
  drop(_guard);fence(Ordering::SeqCst);
  unsafe{execution_routine.unwrap()(device_object,core::ptr::null_mut(),list_ptr,context)};0
 }
 pub unsafe extern "win64" fn put_scatter_gather_list(adapter:*mut core::ffi::c_void,scatter_gather:*mut ScatterGatherListAbi,write_to_device:u8){
  if !is_dma_adapter(adapter)||scatter_gather.is_null(){return}
- let owner={let _guard=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};let Some(i)=owners.iter().position(|e|e.active&&e.list==scatter_gather as usize)else{return};let x=owners[i];owners[i]=SgOwnership::EMPTY;x};
+ let owner={let _guard=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};let Some(i)=owners.iter().position(|e|e.active&&e.list==scatter_gather as usize&&!e.busy)else{return};owners[i].busy=true;owners[i]};
  let domain=adapter_device(adapter).unwrap_or(owner.device);
  let count=unsafe{(*scatter_gather).number_of_elements as usize};
- if count>MAX_SG_SEGMENTS{return}
- let elems=unsafe{core::ptr::addr_of!((*scatter_gather).elements).cast::<ScatterGatherElement>()};
- for i in 0..count{let e=unsafe{elems.add(i).read()};let _=iommu::unmap_logical(domain,e.address);}
+ if count>MAX_SG_SEGMENTS{let _g=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};if let Some(o)=owners.iter_mut().find(|e|e.active&&e.list==scatter_gather as usize){o.busy=false;}return}
+ let elems=unsafe{core::ptr::addr_of_mut!((*scatter_gather).elements).cast::<ScatterGatherElement>()};let mut all_released=true;
+ for i in 0..count{let e=unsafe{elems.add(i).read()};if e.address==0{continue}if iommu::unmap_logical(domain,e.address){unsafe{elems.add(i).write(ScatterGatherElement{address:0,length:0,reserved:0});}}else{all_released=false;}}
+ if all_released{
+  let _g=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};if let Some(o)=owners.iter_mut().find(|e|e.active&&e.list==scatter_gather as usize){*o=SgOwnership::EMPTY;}
+  if owner.token!=0{unsafe{free_map_registers(adapter,owner.token as *mut core::ffi::c_void,owner.count)}}
+ }else{let _g=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};if let Some(o)=owners.iter_mut().find(|e|e.active&&e.list==scatter_gather as usize){o.busy=false;}}
  let _=write_to_device;fence(Ordering::SeqCst)
 }
-
 /// Validate an MDL transfer range using checked arithmetic.
 fn validate_mdl_range(mdl: &MdlAbi, current_va: u64, length: u32) -> Option<u64> {
     if mdl.start_va.is_null() || mdl.byte_count == 0 || length == 0
@@ -383,7 +386,7 @@ pub unsafe extern "win64" fn build_scatter_gather_list(
  }
  let owner_index={let _g=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};owners.iter().position(|o|!o.active)};
  let Some(owner_index)=owner_index else{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}unsafe{free_map_registers(adapter,token,pages as u32)}return 0xC000_009Au32 as i32};
- {let _g=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};if owners[owner_index].active{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}unsafe{free_map_registers(adapter,token,pages as u32)}return 0xC000_009Au32 as i32}owners[owner_index]=SgOwnership{active:true,device:device_object as usize,list:list as usize,token:token as usize,count:pages as u32};}
+ {let _g=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};if owners[owner_index].active{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}unsafe{free_map_registers(adapter,token,pages as u32)}return 0xC000_009Au32 as i32}owners[owner_index]=SgOwnership{active:true,busy:false,device:device_object as usize,list:list as usize,token:token as usize,count:pages as u32};}
  fence(Ordering::SeqCst);unsafe{execution_routine.unwrap()(device_object,core::ptr::null_mut(),list,context)};0
 }
 
@@ -849,7 +852,7 @@ mod dma_lifecycle_tests {
         {
             let _guard = SG_LOCK.lock();
             let owners = unsafe { &mut *SG_REGISTRY.ownership.get() };
-            owners[0] = SgOwnership { active: true, device: 0x55, list: ptr as usize, token:0, count:0 };
+            owners[0] = SgOwnership { active: true, busy:false, device: 0x55, list: ptr as usize, token:0, count:0 };
         }
         let adapter = core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast();
         unsafe { put_scatter_gather_list(adapter, ptr, 0); }
