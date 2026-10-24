@@ -66,6 +66,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "MmIsNonPagedSystemAddressValid" => mm::runtime::mm_is_non_paged_system_address_valid as usize,
   "MmCopyMemory" => mm::runtime::mm_copy_memory as usize,
   "MmBuildMdlForNonPagedPool" => mm::runtime::mm_build_mdl_for_non_paged_pool as usize,
+  "MmAdvanceMdl" => mm::runtime::mm_advance_mdl as usize,
   "MmCreateMdl" => mm::runtime::mm_create_mdl as usize,
   "MmProbeAndLockPages" => mm::runtime::mm_probe_and_lock_pages as usize,
   "MmUnlockPages" => mm::runtime::mm_unlock_pages as usize,
