@@ -366,8 +366,8 @@ pub fn query_cross_core_clock_status() -> (bool, u64) { crate::apic::tsc_cross_c
 
 /// Apply an NT logical IRQL to the platform interrupt-priority mechanism.
 #[inline]
-pub unsafe fn set_interrupt_priority(irql: u8) -> Result<(), crate::apic::ApicError> {
-    unsafe { crate::apic::set_task_priority(irql) }
+pub unsafe fn set_interrupt_priority(irql: u8) -> Result<(), ()> {
+    unsafe { crate::apic::set_task_priority(irql).map_err(|_| ()) }
 }
 
 /// Windows HAL export compatibility inventory and fail-closed stub metadata.
