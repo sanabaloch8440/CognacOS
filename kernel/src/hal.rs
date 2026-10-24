@@ -37,6 +37,33 @@ impl CpuLocal {
         }
     }
 }
+/// NT executive lifecycle observer. HAL publishes hardware topology transitions
+/// through this narrow callback without importing or depending on ntoskrnl.
+pub type ProcessorChangeNotifier = fn(usize, u32);
+static PROCESSOR_CHANGE_NOTIFIER: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+
+/// Install the NT executive's processor-change observer. Registration is
+/// idempotent for the same callback and rejects attempts to replace an observer.
+pub fn register_processor_change_notifier(notifier: ProcessorChangeNotifier) -> Result<(), HalError> {
+    let raw = notifier as usize;
+    match PROCESSOR_CHANGE_NOTIFIER.compare_exchange(0, raw, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => Ok(()),
+        Err(existing) if existing == raw => Ok(()),
+        Err(_) => Err(HalError::InvalidTransition),
+    }
+}
+
+fn notify_processor_change(index: usize, change_type: u32) {
+    let raw = PROCESSOR_CHANGE_NOTIFIER.load(Ordering::Acquire);
+    if raw != 0 {
+        // Function pointers are only written by register_processor_change_notifier
+        // and never removed while processors can transition.
+        let notifier: ProcessorChangeNotifier = unsafe { core::mem::transmute(raw) };
+        notifier(index, change_type);
+    }
+}
+
 static CPU_LOCALS: [CpuLocal; MAX_CPUS] = [
     CpuLocal::new(0), CpuLocal::new(1), CpuLocal::new(2), CpuLocal::new(3),
     CpuLocal::new(4), CpuLocal::new(5), CpuLocal::new(6), CpuLocal::new(7),
@@ -121,7 +148,7 @@ pub fn mark_cpu_online(index: usize) -> Result<(), HalError> {
     let cpu = CPU_LOCALS.get(index).ok_or(HalError::InvalidCpu)?;
     cpu.state.compare_exchange(CPU_STARTING, CPU_ONLINE, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| HalError::InvalidTransition)?;
-    crate::ntoskrnl::ke::runtime::notify_processor_change(index, crate::ntoskrnl::ke::runtime::KE_PROCESSOR_CHANGE_ADD_COMPLETE);
+    notify_processor_change(index, 1);
     Ok(())
 }
 /// Publish processor removal after the caller has quiesced that CPU and migrated
@@ -131,7 +158,7 @@ pub fn mark_cpu_offline(index: usize) -> Result<(), HalError> {
     let cpu=CPU_LOCALS.get(index).ok_or(HalError::InvalidCpu)?;
     cpu.state.compare_exchange(CPU_ONLINE,CPU_OFFLINE,Ordering::AcqRel,Ordering::Acquire)
         .map_err(|_|HalError::InvalidTransition)?;
-    crate::ntoskrnl::ke::runtime::notify_processor_change(index,crate::ntoskrnl::ke::runtime::KE_PROCESSOR_CHANGE_REMOVE_COMPLETE);
+    notify_processor_change(index, 2);
     Ok(())
 }
 pub fn mark_cpu_failed(index: usize) -> Result<(), HalError> {
