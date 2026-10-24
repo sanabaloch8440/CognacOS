@@ -78,6 +78,10 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   else if requested.eq_ignore_ascii_case(b"ObfReferenceObject") { Some(ob::runtime::ObfReferenceObject as usize) }
   else if requested.eq_ignore_ascii_case(b"ObCloseHandle") { Some(ob::runtime::ObCloseHandle as usize) }
   else if requested.eq_ignore_ascii_case(b"ObIsKernelHandle") { Some(ob::runtime::ObIsKernelHandle as usize) }
+  else if requested.eq_ignore_ascii_case(b"ZwCreateDirectoryObject") { Some(ob::runtime::ZwCreateDirectoryObject as usize) }
+  else if requested.eq_ignore_ascii_case(b"ZwOpenDirectoryObject") { Some(ob::runtime::ZwOpenDirectoryObject as usize) }
+  else if requested.eq_ignore_ascii_case(b"ZwClose") { Some(ob::runtime::ZwClose as usize) }
+  else if requested.eq_ignore_ascii_case(b"ObQueryObjectAuditLog") { Some(ob::runtime::ObQueryObjectAuditLog as usize) }
   else { None };
   if object_manager.is_some() { return object_manager.map(|p|p as u64); }
   let direct = if requested.eq_ignore_ascii_case(b"IoAllocateMdl") {
