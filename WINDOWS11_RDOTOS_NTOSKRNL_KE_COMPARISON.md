@@ -8,6 +8,8 @@
 - Microsoft kernel DDI index: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/_kernel/
 - Microsoft WDM DDI index: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/wdm/
 - Microsoft-maintained public DDI sources: https://github.com/MicrosoftDocs/windows-driver-docs-ddi
+- Microsoft WDK downloads and version guidance (including the Windows 11 24H2 / 26100 kit line): https://learn.microsoft.com/en-us/windows-hardware/drivers/download-the-wdk and https://learn.microsoft.com/en-us/windows-hardware/drivers/other-wdk-downloads
+- Microsoft-maintained WDK header documentation for Ntddk.h: https://github.com/MicrosoftDocs/windows-driver-docs-ddi/blob/staging/wdk-ddi-src/content/ntddk/index.md
 
 ## Summary and calculated compatibility
 
