@@ -20,6 +20,11 @@ jobs:
         run: |
           rustup update stable
           rustup target add x86_64-unknown-uefi x86_64-unknown-none
+      - name: Run host-side physical allocator map tests
+        run: |
+          mkdir -p build
+          rustc --edition=2021 --test kernel/src/memory.rs -o build/memory-tests
+          build/memory-tests
       - name: Run host-side ext filesystem parser tests
         run: |
           mkdir -p build
