@@ -130,7 +130,7 @@ This milestone is **not** full Windows MM/process compatibility. User mappings r
 
 ## Third-party filesystem reference
 
-The third-party Ext3Fsd source reference has been removed from project documentation and the submodule declaration. The RdotOS Rust ext4 implementation is independent and does not import or translate Ext3Fsd source.
+The third-party third-party filesystem driver source reference has been removed from project documentation and the submodule declaration. The RdotOS Rust ext4 implementation is independent and does not import or translate third-party filesystem driver source.
 
 ## Contributing
 
