@@ -55,8 +55,12 @@ pub unsafe extern "system" fn PoSetPowerState(
 
 const IRP_MJ_POWER:u8=0x16;
 const IRP_MJ_PNP:u8=0x1b;
+const IRP_MN_WAIT_WAKE:u8=0x00;
 const IRP_MN_SET_POWER:u8=0x02;
 const IRP_MN_QUERY_POWER:u8=0x03;
+const STATUS_CANCELLED:i32=0xC000_0120u32 as i32;
+const MAX_IDLE_DEVICES:usize=32;
+const TICKS_PER_SECOND:u64=1_000_000_000;
 const STATUS_SUCCESS:i32=0;
 const STATUS_PENDING:i32=0x0000_0103;
 const STATUS_DEVICE_BUSY:i32=0x8000_0011u32 as i32;
@@ -67,6 +71,16 @@ const MAX_POWER_TRANSITIONS:usize=64;
 
 #[derive(Clone,Copy)]
 struct Transition { used:bool, irp:*mut WdmIrp, device:*mut DeviceObject, kind:u8, target:u8, minor:u8 }
+#[derive(Clone,Copy)]
+struct IdleDevice {
+ used:bool, device:*mut DeviceObject, token:u32, conservation_seconds:u32,
+ performance_seconds:u32, target_state:u8, busy_count:u32, last_busy:u64,
+}
+unsafe impl Send for IdleDevice {}
+impl IdleDevice { const EMPTY:Self=Self{used:false,device:core::ptr::null_mut(),token:0,conservation_seconds:0,performance_seconds:0,target_state:0,busy_count:0,last_busy:0}; }
+struct IdleState { slots:[IdleDevice;MAX_IDLE_DEVICES], next_token:u32, conserve_policy:bool }
+impl IdleState { const fn new()->Self{Self{slots:[IdleDevice::EMPTY;MAX_IDLE_DEVICES],next_token:1,conserve_policy:false}} }
+static IDLE_DEVICES:crate::hal::IrqSpinLock<IdleState>=crate::hal::IrqSpinLock::new(IdleState::new());
 unsafe impl Send for Transition {}
 impl Transition { const EMPTY:Self=Self{used:false,irp:core::ptr::null_mut(),device:core::ptr::null_mut(),kind:0,target:0,minor:0}; }
 struct TransitionState { slots:[Transition;MAX_POWER_TRANSITIONS] }
@@ -85,6 +99,20 @@ fn add_transition(t:Transition)->Result<(),i32>{
 /// transition reservations survive STATUS_PENDING until IoCompleteRequest.
 pub(crate) unsafe fn po_prepare_irp_dispatch(device:*mut DeviceObject,irp:*mut WdmIrp,major:u8,minor:u8,parameters:[u64;4])->i32{
  if major!=IRP_MJ_POWER&&major!=IRP_MJ_PNP{return STATUS_SUCCESS}
+ if major==IRP_MJ_POWER {
+  if minor==IRP_MN_WAIT_WAKE {
+   let system_wake=(parameters[0] as u32) as u8;
+   if !(1..=6).contains(&system_wake){return STATUS_INVALID_DEVICE_REQUEST}
+   let refd=unsafe{io::io_reference_device_object(device)};
+   if refd.is_null(){return STATUS_DELETE_PENDING}
+   let duplicate={let s=TRANSITIONS.lock();s.slots.iter().any(|t|t.used&&t.kind==4&&t.device==device)};
+   if duplicate {unsafe{io::io_dereference_device_object(device)};return STATUS_DEVICE_BUSY}
+   if let Err(status)=add_transition(Transition{used:true,irp,device,kind:4,target:system_wake,minor}) {
+    unsafe{io::io_dereference_device_object(device)};return status
+   }
+   return STATUS_SUCCESS
+  }
+ }
  let (kind,target)=if major==IRP_MJ_POWER {
   if minor==IRP_MN_QUERY_POWER{return STATUS_SUCCESS}
   if minor!=IRP_MN_SET_POWER{return STATUS_SUCCESS}
@@ -151,6 +179,7 @@ fn finish_matching(irp:*mut WdmIrp,device:Option<*mut DeviceObject>,status:i32){
    1=>unsafe{let _=io::io_complete_device_power_transition(t.device,t.target,status);io::io_dereference_device_object(t.device)},
    2=>unsafe{let _=io::io_complete_pnp_transition(t.device,t.minor,status);io::io_dereference_device_object(t.device)},
    3=>{if status==STATUS_SUCCESS{SYSTEM_POWER_STATE.store(t.target as u32,Ordering::Release)}release_system_power_irp(irp);},
+   4=>unsafe{io::io_dereference_device_object(t.device)},
    _=>{}
   }
  }
@@ -171,21 +200,22 @@ static POWER_REQUESTS:crate::hal::IrqSpinLock<RequestState>=crate::hal::IrqSpinL
 /// The manager owns the IRP and invokes the optional completion callback once.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn PoRequestPowerIrp(device:*mut DeviceObject,minor:u8,state:PowerState,callback:Option<PowerRequestComplete>,context:*mut core::ffi::c_void,output_irp:*mut *mut WdmIrp)->i32{
- if device.is_null()||minor!=IRP_MN_SET_POWER{return STATUS_INVALID_DEVICE_REQUEST}
+ if device.is_null()||!matches!(minor,IRP_MN_WAIT_WAKE|IRP_MN_SET_POWER){return STATUS_INVALID_DEVICE_REQUEST}
  if !output_irp.is_null(){unsafe{output_irp.write(core::ptr::null_mut())}}
  let stack_size=unsafe{(*device).stack_size.max(1) as i16};
  let irp=unsafe{io::io_allocate_irp(stack_size,0)};
  if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
- let target=unsafe{state.device_state};
- if !(1..=4).contains(&target){unsafe{io::io_free_irp(irp)};return STATUS_INVALID_DEVICE_REQUEST}
+ let target=unsafe{if minor==IRP_MN_WAIT_WAKE{state.system_state}else{state.device_state}};
+ if (minor==IRP_MN_WAIT_WAKE&&!(1..=6).contains(&target))||(minor==IRP_MN_SET_POWER&&!(1..=4).contains(&target)){unsafe{io::io_free_irp(irp)};return STATUS_INVALID_DEVICE_REQUEST}
  let stack=unsafe{io::io_get_next_irp_stack_location(irp)};
  if stack.is_null(){unsafe{io::io_free_irp(irp)};return STATUS_INSUFFICIENT_RESOURCES}
- unsafe{(*stack).major_function=IRP_MJ_POWER;(*stack).minor_function=minor;(*stack).parameters[0]=1u64|((target as u64)<<32);}
+ unsafe{(*stack).major_function=IRP_MJ_POWER;(*stack).minor_function=minor;(*stack).parameters[0]=if minor==IRP_MN_WAIT_WAKE{target as u64}else{1u64|((target as u64)<<32)};}
  {
   let mut requests=POWER_REQUESTS.lock();
   let Some(slot)=requests.slots.iter_mut().find(|r|!r.used) else{drop(requests);unsafe{io::io_free_irp(irp)};return STATUS_INSUFFICIENT_RESOURCES};
   *slot=PowerRequest{used:true,irp,device,minor,state:target,context,callback,returned:false,completed:false};
  }
+ unsafe{let _=io::io_set_cancel_routine(irp,Some(power_request_cancel));}
  if !output_irp.is_null(){unsafe{output_irp.write(irp)}}
  let status=unsafe{io::io_call_driver(device,irp)};
  let synth={
@@ -207,12 +237,114 @@ fn finish_power_request(irp:*mut WdmIrp,_status:i32){
   if r.completed{return}
   r.completed=true;let snap=*r;if r.returned{*r=PowerRequest::EMPTY;}snap
  };
- if let Some(callback)=snapshot.callback{unsafe{callback(snapshot.device,snapshot.minor,PowerState{device_state:snapshot.state},snapshot.context,irp)}}
+ let _=unsafe{io::io_set_cancel_routine(irp,None)};
+ if let Some(callback)=snapshot.callback{
+  let state=if snapshot.minor==IRP_MN_WAIT_WAKE{PowerState{system_state:snapshot.state}}else{PowerState{device_state:snapshot.state}};
+  unsafe{callback(snapshot.device,snapshot.minor,state,snapshot.context,irp)}
+ }
  if snapshot.returned{unsafe{io::io_free_irp(irp)}}
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn PoCallDriver(device:*mut DeviceObject,irp:*mut WdmIrp)->i32 { unsafe{io::io_call_driver(device,irp)} }
+
+
+unsafe extern "system" fn power_request_cancel(device:*mut DeviceObject,irp:*mut WdmIrp) {
+ if irp.is_null(){return}
+ unsafe{(&mut (*irp).bytes)[0x30..0x34].copy_from_slice(&STATUS_CANCELLED.to_le_bytes());}
+ let _=device;
+ unsafe{io::io_complete_request(irp,0);}
+}
+
+/// Register or update per-device idle detection. The returned ULONG pointer is
+/// a stable token, not a writable timer; idle countdowns use the monotonic clock.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn PoRegisterDeviceForIdleDetection(
+ device:*mut DeviceObject, conservation_idle_time:u32, performance_idle_time:u32, state:u32
+)->*mut u32 {
+ if device.is_null()||!(1..=4).contains(&state){return core::ptr::null_mut()}
+ if conservation_idle_time==0&&performance_idle_time==0 {
+  let removed={
+   let mut idle=IDLE_DEVICES.lock();
+   if let Some(i)=idle.slots.iter().position(|s|s.used&&s.device==device){let old=idle.slots[i];idle.slots[i]=IdleDevice::EMPTY;Some(old)}else{None}
+  };
+  if let Some(old)=removed{unsafe{io::io_dereference_device_object(old.device)}}
+  return core::ptr::null_mut()
+ }
+ if conservation_idle_time==u32::MAX||performance_idle_time==u32::MAX {
+  let kind=unsafe{(*device).device_type};
+  if kind!=7&&kind!=0x2d{return core::ptr::null_mut()}
+ }
+ let existing={let idle=IDLE_DEVICES.lock();idle.slots.iter().position(|s|s.used&&s.device==device)};
+ if existing.is_none()&&unsafe{io::io_reference_device_object(device)}.is_null(){return core::ptr::null_mut()}
+ let now=crate::hal::query_performance_counter();
+ let mut idle=IDLE_DEVICES.lock();
+ let index=if let Some(i)=existing{i}else if let Some(i)=idle.slots.iter().position(|s|!s.used){i}else{
+  drop(idle);unsafe{io::io_dereference_device_object(device)};return core::ptr::null_mut()
+ };
+ let token=if idle.slots[index].used{idle.slots[index].token}else{let t=idle.next_token;idle.next_token=idle.next_token.wrapping_add(1).max(1);t};
+ idle.slots[index]=IdleDevice{used:true,device,token,conservation_seconds:conservation_idle_time,performance_seconds:performance_idle_time,target_state:(state-1) as u8,busy_count:0,last_busy:now};
+ core::ptr::addr_of_mut!(idle.slots[index].token)
+}
+
+fn find_idle_token(token:*mut u32)->Option<usize>{
+ if token.is_null(){return None}
+ let idle=IDLE_DEVICES.lock();
+ idle.slots.iter().position(|s|s.used&&core::ptr::addr_of!(s.token) as *mut u32==token)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn PoSetDeviceBusyEx(token:*mut u32) {
+ let Some(index)=find_idle_token(token) else{return};
+ let now=crate::hal::query_performance_counter();
+ let mut idle=IDLE_DEVICES.lock();
+ if let Some(s)=idle.slots.get_mut(index).filter(|s|s.used&&core::ptr::addr_of!(s.token) as *mut u32==token){s.last_busy=now;}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn PoStartDeviceBusy(token:*mut u32) {
+ let Some(index)=find_idle_token(token) else{return};
+ let now=crate::hal::query_performance_counter();
+ let mut idle=IDLE_DEVICES.lock();
+ if let Some(s)=idle.slots.get_mut(index).filter(|s|s.used&&core::ptr::addr_of!(s.token) as *mut u32==token){s.busy_count=s.busy_count.saturating_add(1);s.last_busy=now;}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn PoEndDeviceBusy(token:*mut u32) {
+ let Some(index)=find_idle_token(token) else{return};
+ let now=crate::hal::query_performance_counter();
+ let mut idle=IDLE_DEVICES.lock();
+ if let Some(s)=idle.slots.get_mut(index).filter(|s|s.used&&core::ptr::addr_of!(s.token) as *mut u32==token){if s.busy_count>0{s.busy_count-=1;if s.busy_count==0{s.last_busy=now;}}}
+}
+
+/// Set which timeout policy applies; a passive-level worker can call
+/// PoPollIdleDevices to issue the resulting power IRPs outside the idle lock.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn PoSetIdlePowerPolicy(conservation: u8) {
+ IDLE_DEVICES.lock().conserve_policy=conservation!=0;
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn PoPollIdleDevices()->u32 {
+ let now=crate::hal::query_performance_counter();
+ let mut requests=[(core::ptr::null_mut::<DeviceObject>(),0u32);MAX_IDLE_DEVICES];
+ let mut count=0usize;
+ {
+  let mut idle=IDLE_DEVICES.lock();
+  let conserve=idle.conserve_policy;
+  for s in idle.slots.iter_mut(){
+   if !s.used||s.busy_count!=0{continue}
+   let seconds=if conserve{s.conservation_seconds}else{s.performance_seconds};
+   if seconds==0||seconds==u32::MAX{continue}
+   let ticks=(seconds as u64).saturating_mul(TICKS_PER_SECOND);
+   if now.saturating_sub(s.last_busy)>=ticks{
+    requests[count]=(s.device,s.target_state as u32+1);count+=1;s.last_busy=now;
+   }
+  }
+ }
+ let mut issued=0u32;
+ for (device,state) in requests.iter().take(count){
+  let _=unsafe{PoRequestPowerIrp(*device,IRP_MN_SET_POWER,PowerState{device_state:*state},None,core::ptr::null_mut(),core::ptr::null_mut())};
+  issued=issued.saturating_add(1);
+ }
+ issued
+}
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn PoStartNextPowerIrp(_irp:*mut WdmIrp){}
