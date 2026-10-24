@@ -99,7 +99,7 @@ pub fn dispatch(number:u64,args:[u64;6])->u64 {
         _=>ERR_INVALID,
     }
 }
-#/// Prepare a user-mode APC by turning the interrupted return context into
+/// Prepare a user-mode APC by turning the interrupted return context into
 /// a normal x64 call frame. The interrupted RIP is placed at user RSP-8 as the
 /// routine's return address; RDX/R8 carry the two APC arguments.
 pub fn prepare_user_apc_return(frame:*mut u64)->bool {
