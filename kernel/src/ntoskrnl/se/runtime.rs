@@ -278,11 +278,20 @@ pub unsafe extern "win64" fn SeTokenImpersonationLevel(token: *mut c_void) -> u3
     token_meta(token).filter(|m| m.token_type == 2).map_or(0, |m| m.impersonation_level)
 }
 
-/// Without a current-thread token binding, user-mode privilege checks deny by
-/// default. Kernel-mode checks retain the NT privilege-check bypass behavior.
+/// Check the current thread's effective token for a single LUID privilege.
+/// Kernel-mode requests retain NT's bypass behavior; unknown tokens/LUIDs fail closed.
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn SeSinglePrivilegeCheck(_privilege: u64, previous_mode: i8) -> u8 {
-    if previous_mode == 0 { 1 } else { 0 }
+pub unsafe extern "win64" fn SeSinglePrivilegeCheck(privilege: u64, previous_mode: i8) -> u8 {
+    if previous_mode == 0 { return 1; }
+    if previous_mode != 1 || privilege >> 32 != 0 || privilege as u32 >= 64 { return 0; }
+    let mut token = crate::thread::reference_current_impersonation_token();
+    if token.is_null() {
+        token = crate::process::reference_primary_token(crate::thread::current_process_id());
+    }
+    if token.is_null() { return 0; }
+    let enabled = token_meta(token).is_some_and(|m| m.privileges & (1u64 << (privilege as u32)) != 0);
+    let _ = unsafe { se_internal_DereferenceToken(token) };
+    enabled as u8
 }
 
 /// RdotOS extension for checking a privilege bit on an explicitly registered token.
