@@ -1480,7 +1480,7 @@ pub fn thread_exit_cleanup(thread:u64){
             }
             owner_waiter=Some(waiter.thread);break
         }
-        for id in timed_out[..timed_count].iter().copied(){let _=crate::thread::complete_wait(id,STATUS_TIMEOUT);}
+        for id in timed_out[..timed_count].iter().copied(){let status=crate::dispatcher::complete_wait_group(id,object as u64,STATUS_TIMEOUT,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_TIMEOUT);let _=crate::thread::complete_wait(id,status);}
         if let Some(id)=owner_waiter{
             let mut table=MUTANTS.lock();
             if let Some(record)=table.records.iter_mut().find(|r|r.object==object){record.owner=id;record.recursion=1;record.abandoned=false;}
