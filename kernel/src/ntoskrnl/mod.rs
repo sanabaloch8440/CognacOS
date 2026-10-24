@@ -65,6 +65,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "MmIsAddressValid" => mm::runtime::mm_is_address_valid as usize,
   "MmIsNonPagedSystemAddressValid" => mm::runtime::mm_is_non_paged_system_address_valid as usize,
   "MmCopyMemory" => mm::runtime::mm_copy_memory as usize,
+  "MmBuildMdlForNonPagedPool" => mm::runtime::mm_build_mdl_for_non_paged_pool as usize,
   "KeGetCurrentIrql" => ke::runtime::ke_get_current_irql as usize,
   "KeGetEffectiveIrql" => ke::runtime::ke_get_current_irql as usize,
   "KeRaiseIrqlToDpcLevel" => ke::runtime::ke_raise_irql_to_dpc_level as usize,
