@@ -6,8 +6,8 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 
 ## Current validation
 
-- Latest recorded workflow for the user-VM-copy/mapping changes: [run #1809](https://github.com/umarfarooq7869/RdotOS/actions/runs/40129424049) — passed on commit `afdc0329f2b1718d3caccb8c2f565eeb40594aa0`.
-- This verifies the workflow's host tests, kernel/PE32+ validation, UEFI packaging, QEMU boot, and configured SMP checks for that revision; it does not validate later commits automatically.
+- Latest full passing kernel/UEFI/QEMU/SMP run: [run 40131903040](https://github.com/umarfarooq7869/RdotOS/actions/runs/40131903040), commit `b584631ca5fa46f4f95b85bd77d44d95ddccae65`.
+- The timer-preemption stress assertion also passed in [run 40131869378](https://github.com/umarfarooq7869/RdotOS/actions/runs/40131869378). A newer run, [40132231240](https://github.com/umarfarooq7869/RdotOS/actions/runs/40132231240), is validating the additional real-kernel queue/mutant wait test; do not count that test as verified until the run passes.
 - Keep CI status current by checking the latest run on `main` before marking a milestone validated.
 
 ## Milestone 1 — Boot and platform foundations
@@ -27,7 +27,7 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [x] Run host regression tests for range boundaries, zero-length pointers, and integer overflow.
 - [ ] Add integration tests for cross-page failures, read-only destinations, rollback, and map/unmap races.
 - [ ] Deliver user-mode exceptions through a defined trap-frame path and terminate only the faulting process.
-- [ ] Integrate timer-driven preemption and prove a non-yielding thread cannot monopolize a CPU.
+- [x] Integrate timer-driven preemption and verify a non-yielding kernel thread is preempted for a runnable peer in QEMU.
 - [ ] Add user demand-zero/page-in handling, per-process VM areas, and working-set accounting.
 - [ ] Add exception-safe probe/copy recovery and test concurrent address-space teardown.
 - [ ] Harden I/O completion, cancellation, driver unload, and device/IRP rundown with race and fault-injection tests.
@@ -38,9 +38,13 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [x] Cooperative thread dispatch, scheduler wake IPIs, dispatcher object foundations, and deadline-based timer infrastructure.
 - [x] Cross-processor Ke rendezvous and DPC Synchronize/Done barriers have passed a previous 2/4/8-vCPU workflow.
 - [x] Consolidate classic KTIMER and KTIMER2 into one timer metadata table and expiry scan; add generation-based stale-expiry checks.
-- [ ] Complete timer/DPC cancellation and in-flight callback rundown semantics under stress.
-- [ ] Integrate timer interrupt preemption, rescheduling, per-CPU run queues, and load balancing.
-- [ ] Complete user APC delivery/SEH interaction, threaded DPC execution at PASSIVE_LEVEL, and broader wait-all/queue/mutant semantics.
+- [x] Exercise 64 queued-DPC cancellation/reinsertion cycles, in-flight callback reinitialization protection, timer cancellation, and Timer2 callback-rundown behavior in the boot self-test.
+- [x] Integrate local timer interrupts, rescheduling, per-CPU ready queues, affinity-aware stealing, and delayed ready-queue publication until the outgoing RSP is saved.
+- [x] Run threaded DPC callbacks only at PASSIVE_LEVEL using per-CPU workers; track queued and in-flight callbacks for flush/rundown.
+- [x] Track APCs while delivering, avoid rerunning the kernel routine when a user-return frame must be retried, and reclaim completed APC records.
+- [x] Add wait-any queue-entry transfer, mutant abandoned-status propagation, and atomic immediate wait-all mutant acquisition.
+- [ ] Implement full Windows user APC dispatcher ABI (including safe shadow space/return trampoline) and user-mode exception/SEH delivery; unhandled user exceptions are not yet fully isolated.
+- [ ] Complete blocking wait-all reservations for mutants and queue objects, plus broader WDK race/conformance stress tests.
 - [ ] Add recovery diagnostics for an online but unresponsive processor.
 
 ## Milestone 4 — Object Manager, security, and process identity
