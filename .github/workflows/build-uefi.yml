@@ -44,6 +44,41 @@ jobs:
         run: |
           rustup update stable
           rustup target add x86_64-unknown-uefi x86_64-unknown-none
+      - name: Build separate native PE32+ HAL and driver images
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/drivers
+          build_driver() {
+            local name="$1" package="$2" bin="$3" base="$4"
+            RUSTFLAGS="-C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/$package/driver.ld" \\
+              cargo build --manifest-path "$package/Cargo.toml" --target x86_64-unknown-none \\
+                --target-dir "target/driver-$name" --release --bin "$bin"
+            python3 tools/elf_to_pe32plus.py "target/driver-$name/x86_64-unknown-none/release/$bin" \\
+              "build/drivers/$name" --image-base "$base" --dll
+          }
+          build_driver hal drivers/hal hal 0xfffff80010000000
+          build_driver acpi drivers/acpi acpi 0xfffff80020000000
+          build_driver pci drivers/pci pci 0xfffff80030000000
+          build_driver processor drivers/processor processor 0xfffff80040000000
+          python3 - <<'PY'
+          import struct
+          from pathlib import Path
+          for path in sorted(Path("build/drivers").iterdir()):
+              p = path.read_bytes()
+              assert p[:2] == b"MZ", f"{path}: missing MZ"
+              pe = struct.unpack_from("<I", p, 0x3c)[0]
+              assert p[pe:pe+4] == b"PE\\0\\0", f"{path}: missing PE"
+              assert struct.unpack_from("<H", p, pe+4)[0] == 0x8664, f"{path}: wrong machine"
+              assert struct.unpack_from("<H", p, pe+22)[0] & 0x2000, f"{path}: not a DLL image"
+              opt = pe + 24
+              assert struct.unpack_from("<H", p, opt)[0] == 0x20b, f"{path}: not PE32+"
+              assert struct.unpack_from("<H", p, opt+68)[0] == 1, f"{path}: not native subsystem"
+              assert struct.unpack_from("<I", p, opt+16)[0] != 0, f"{path}: no entry point"
+              assert struct.unpack_from("<II", p, opt+112+8) == (0, 0), f"{path}: imports unsupported by stage-1 loader"
+              assert struct.unpack_from("<II", p, opt+112+5*8) == (0, 0), f"{path}: relocations unsupported by stage-1 loader"
+              print(f"validated native PE32+ driver: {path} ({len(p)} bytes)")
+          PY
       - name: Run host-side physical allocator map tests
         run: |
           mkdir -p build
