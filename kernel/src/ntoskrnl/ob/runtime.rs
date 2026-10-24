@@ -66,8 +66,10 @@ impl TokenEntry { const EMPTY:Self=Self{used:false,owner:0,count:0,lengths:[0;MA
 impl AuditEvent { const EMPTY:Self=Self{sequence:0,object:0,owner:0,operation:0,desired:0,granted:0,status:0}; }
 #[derive(Clone,Copy)] struct DirectoryBody { magic:u64 }
 impl DirectoryBody { const EMPTY:Self=Self{magic:0}; }
-struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],type_objects:[ObjectType;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],tokens:[TokenEntry;MAX_TOKENS],audit:[AuditEvent;MAX_AUDIT_EVENTS],body_storage:[[u8;512];MAX_OBJECTS],audit_next:u64,next_type:u16 }
-impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],type_objects:[const { ObjectType{name:UnicodeString{length:0,maximum_length:0,buffer:core::ptr::null()},type_index:0,reserved:0,generic_read:0,generic_write:0,generic_execute:0,generic_all:0,valid_access:0} };MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],tokens:[TokenEntry::EMPTY;MAX_TOKENS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],body_storage:[[0;512];MAX_OBJECTS],audit_next:1,next_type:1}} }
+#[derive(Clone,Copy)] struct SymbolicLinkBody { magic:u64,target_len:u16,target:[u16;MAX_NAME] }
+impl SymbolicLinkBody { const EMPTY:Self=Self{magic:0,target_len:0,target:[0;MAX_NAME]}; }
+struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],type_objects:[ObjectType;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],symbolic_links:[SymbolicLinkBody;MAX_OBJECTS],tokens:[TokenEntry;MAX_TOKENS],audit:[AuditEvent;MAX_AUDIT_EVENTS],body_storage:[[u8;512];MAX_OBJECTS],audit_next:u64,next_type:u16 }
+impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],type_objects:[const { ObjectType{name:UnicodeString{length:0,maximum_length:0,buffer:core::ptr::null()},type_index:0,reserved:0,generic_read:0,generic_write:0,generic_execute:0,generic_all:0,valid_access:0} };MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],symbolic_links:[SymbolicLinkBody::EMPTY;MAX_OBJECTS],tokens:[TokenEntry::EMPTY;MAX_TOKENS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],body_storage:[[0;512];MAX_OBJECTS],audit_next:1,next_type:1}} }
 static LOCK:Lock=Lock::new();
 static mut STATE:State=State::new();
 fn state()->&'static mut State{unsafe{&mut *core::ptr::addr_of_mut!(STATE)}}
@@ -98,6 +100,15 @@ pub unsafe fn register_object(body:*mut c_void,type_id:u16,name:&[u16],permanent
  let mut o=Object{used:true,body:body as usize,type_id,name_len:name.len() as u16,refs:1,permanent,inserted:true,..Object::EMPTY};o.name[..name.len()].copy_from_slice(name);
  if sd_len!=0{unsafe{core::ptr::copy_nonoverlapping(sd,o.sd.as_mut_ptr(),sd_len)}o.sd_len=sd_len as u16;}
  s.objects[i]=o;Ok(())
+}
+pub fn create_symbolic_link(name:&[u16],target:&[u16],permanent:bool)->Result<*mut c_void,i32>{
+ if name.is_empty()||name.len()>MAX_NAME||target.len()>MAX_NAME{return Err(STATUS_INVALID_PARAMETER)}
+ let ty=ensure_type(&[b'S' as u16,b'y' as u16,b'm' as u16,b'b' as u16,b'o' as u16,b'l' as u16,b'i' as u16,b'c' as u16,b'L' as u16,b'i' as u16,b'n' as u16,b'k' as u16],1,2,4,7,u32::MAX)?;
+ let _g=LOCK.lock();let s=state();if find_name(s,name).is_some(){return Err(STATUS_OBJECT_NAME_COLLISION)}
+ let i=s.objects.iter().position(|o|!o.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+ s.symbolic_links[i]=SymbolicLinkBody{magic:0x52444f5453594d4c,target_len:target.len() as u16,target:[0;MAX_NAME]};s.symbolic_links[i].target[..target.len()].copy_from_slice(target);
+ let body=core::ptr::addr_of_mut!(s.symbolic_links[i]).cast::<c_void>();
+ let mut o=Object{used:true,body:body as usize,type_id:ty,name_len:name.len() as u16,refs:1,permanent,inserted:true,..Object::EMPTY};o.name[..name.len()].copy_from_slice(name);s.objects[i]=o;Ok(body)
 }
 pub fn set_token_sids(owner:usize,sids:&[&[u8]])->Result<(),i32>{
  if sids.len()>MAX_TOKEN_SIDS{return Err(STATUS_INVALID_PARAMETER)}
@@ -394,6 +405,34 @@ unsafe fn resolve_attributes_name(oa:*const ObjectAttributes,out:&mut [u16;MAX_N
  out[..pn].copy_from_slice(&parent[..pn]);let mut pos=pn;
  if pos==0||out[pos-1]!=b'\\' as u16{out[pos]=b'\\' as u16;pos+=1}
  out[pos..pos+n].copy_from_slice(&leaf[..n]);Ok(pos+n)
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ZwCreateSymbolicLinkObject(out:*mut *mut c_void,desired_access:u32,oa:*const ObjectAttributes,target:*const UnicodeString)->i32{
+ if out.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out.write(core::ptr::null_mut())}
+ let mut name=[0u16;MAX_NAME];let n=match unsafe{resolve_attributes_name(oa,&mut name)}{Ok(n)=>n,Err(e)=>return e};
+ let mut target_buf=[0u16;MAX_NAME];let tn=match unsafe{read_unicode(target,&mut target_buf)}{Ok(n)=>n,Err(e)=>return e};
+ if oa.is_null()||unsafe{(*oa).security_descriptor}.is_null()==false{return STATUS_NOT_SUPPORTED}
+ let permanent=unsafe{(*oa).attributes&0x10!=0};
+ let body=match create_symbolic_link(&name[..n],&target_buf[..tn],permanent){Ok(v)=>v,Err(e)=>return e};
+ match open_by_pointer(body,desired_access,0,true,0){Ok(h)=>{if !permanent{let _=dereference_body(body);}unsafe{out.write(h)}STATUS_SUCCESS},Err(e)=>{if !permanent{let _=dereference_body(body);}e}}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ZwOpenSymbolicLinkObject(out:*mut *mut c_void,desired_access:u32,oa:*const ObjectAttributes)->i32{
+ if out.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out.write(core::ptr::null_mut())}
+ let mut name=[0u16;MAX_NAME];let n=match unsafe{resolve_attributes_name(oa,&mut name)}{Ok(n)=>n,Err(e)=>return e};
+ match open_by_name(&name[..n],desired_access,0,true,0){Ok(h)=>{
+  let ty=match ensure_type(&[b'S' as u16,b'y' as u16,b'm' as u16,b'b' as u16,b'o' as u16,b'l' as u16,b'i' as u16,b'c' as u16,b'L' as u16,b'i' as u16,b'n' as u16,b'k' as u16],1,2,4,7,u32::MAX){Ok(v)=>v,Err(e)=>{let _=close_handle(h,usize::MAX);return e}};
+  match reference_by_handle(h,0,ty,usize::MAX,true){Ok(body)=>{let _=dereference_body(body);unsafe{out.write(h)}STATUS_SUCCESS},Err(e)=>{let _=close_handle(h,usize::MAX);e}}
+ },Err(e)=>e}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ZwQuerySymbolicLinkObject(handle:*mut c_void,target:*mut UnicodeString,returned_length:*mut u32)->i32{
+ if target.is_null(){return STATUS_INVALID_PARAMETER}
+ let ty=match ensure_type(&[b'S' as u16,b'y' as u16,b'm' as u16,b'b' as u16,b'o' as u16,b'l' as u16,b'i' as u16,b'c' as u16,b'L' as u16,b'i' as u16,b'n' as u16,b'k' as u16],1,2,4,7,u32::MAX){Ok(v)=>v,Err(e)=>return e};
+ let body=match reference_by_handle(handle,0,ty,usize::MAX,true){Ok(v)=>v,Err(e)=>return e};
+ let link=unsafe{&*(body.cast::<SymbolicLinkBody>())};if link.magic!=0x52444f5453594d4c{let _=dereference_body(body);return STATUS_OBJECT_TYPE_MISMATCH}
+ let bytes=link.target_len as usize*2;let u=unsafe{&mut *target};if !u.buffer.is_null()&&u.maximum_length as usize>=bytes{unsafe{core::ptr::copy_nonoverlapping(link.target.as_ptr(),u.buffer as *mut u16,link.target_len as usize)}u.length=bytes as u16;if !returned_length.is_null(){unsafe{returned_length.write(bytes as u32)}}let _=dereference_body(body);return STATUS_SUCCESS}
+ if !returned_length.is_null(){unsafe{returned_length.write(bytes as u32)}}let _=dereference_body(body);STATUS_BUFFER_TOO_SMALL
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwCreateDirectoryObject(out:*mut *mut c_void,desired_access:u32,oa:*const ObjectAttributes)->i32{
