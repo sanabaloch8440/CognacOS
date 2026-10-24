@@ -434,10 +434,21 @@ pub unsafe extern "win64" fn ke_insert_queue_dpc(dpc:*mut core::ffi::c_void,arg1
     if record.queued{return 0}
     record.arg1=arg1 as usize;record.arg2=arg2 as usize;record.queued=true;
     let target=record.target_cpu;
+    let threaded=record.threaded;
     drop(table);
     let current=cpu_slot();
-    if target!=current{let _=crate::smp::request_reschedule(target);}
-    else if CURRENT_IRQL[current].load(Ordering::Acquire)<DISPATCH_LEVEL { dispatch_queued_dpcs(); }
+    if threaded {
+        let woken=crate::thread::wake_threaded_dpc_worker(target);
+        if !woken && target==current && CURRENT_IRQL[current].load(Ordering::Acquire)==PASSIVE_LEVEL {
+            dispatch_threaded_dpcs();
+        } else if target!=current && !woken {
+            let _=crate::smp::request_reschedule(target);
+        }
+    } else if target!=current {
+        let _=crate::smp::request_reschedule(target);
+    } else if CURRENT_IRQL[current].load(Ordering::Acquire)<DISPATCH_LEVEL {
+        dispatch_queued_dpcs();
+    }
     1
 }
 /// Queue a DPC without dispatching it immediately. Timer expiry uses this
