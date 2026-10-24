@@ -53,6 +53,46 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(mm::runtime::mm_prepare_mdl_for_reuse as usize)
   } else if requested.eq_ignore_ascii_case(b"MmBuildPartialMdl") {
    Some(mm::runtime::mm_build_partial_mdl as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeRaiseIrql") {
+   Some(ke::runtime::ke_raise_irql as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryInterruptTime") {
+   Some(ke::runtime::ke_query_interrupt_time as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryInterruptTimePrecise") {
+   Some(ke::runtime::ke_query_interrupt_time_precise as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryUnbiasedInterruptTime") {
+   Some(ke::runtime::ke_query_unbiased_interrupt_time as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryTickCount") {
+   Some(ke::runtime::ke_query_tick_count as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQuerySystemTime") {
+   Some(ke::runtime::ke_query_system_time as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQuerySystemTimePrecise") {
+   Some(ke::runtime::ke_query_system_time_precise as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeGetCurrentThread") {
+   Some(ke::runtime::ke_get_current_thread as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryHighestNodeNumber") {
+   Some(ke::runtime::ke_query_highest_node_number as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryMaximumGroupCount") {
+   Some(ke::runtime::ke_query_maximum_group_count as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryGroupAffinity") {
+   Some(ke::runtime::ke_query_group_affinity as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryNodeActiveProcessorCount") {
+   Some(ke::runtime::ke_query_node_active_processor_count as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryNodeMaximumProcessorCount") {
+   Some(ke::runtime::ke_query_node_maximum_processor_count as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryNodeActiveAffinity") {
+   Some(ke::runtime::ke_query_node_active_affinity as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeGetProcessorIndexFromNumber") {
+   Some(ke::runtime::ke_get_processor_index_from_number as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeGetProcessorNumberFromIndex") {
+   Some(ke::runtime::ke_get_processor_number_from_index as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryNodeActiveAffinity2") {
+   Some(ke::runtime::ke_query_node_active_affinity2 as usize)
+  } else if requested.eq_ignore_ascii_case(b"KePulseEvent") {
+   Some(ke::runtime::ke_pulse_event as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeAreApcsDisabled") {
+   Some(ke::runtime::ke_are_apcs_disabled as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeAreAllApcsDisabled") {
+   Some(ke::runtime::ke_are_all_apcs_disabled as usize)
   } else { None };
   if direct.is_some() { return direct.map(|address| address as u64); }
  }
