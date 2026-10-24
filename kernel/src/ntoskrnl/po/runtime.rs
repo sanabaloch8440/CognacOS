@@ -180,7 +180,7 @@ pub unsafe extern "system" fn PoRequestPowerIrp(device:*mut DeviceObject,minor:u
   let requests=POWER_REQUESTS.lock();
   requests.slots.iter().find(|r|r.used&&r.irp==irp).is_some_and(|r|!r.completed&&status!=STATUS_PENDING)
  };
- if synth{unsafe{(*irp).bytes[0x30..0x34].copy_from_slice(&status.to_le_bytes());io::io_complete_request(irp,0);}}
+ if synth{unsafe{(&mut (*irp).bytes)[0x30..0x34].copy_from_slice(&status.to_le_bytes());io::io_complete_request(irp,0);}}
  let free={
   let mut requests=POWER_REQUESTS.lock();
   if let Some(r)=requests.slots.iter_mut().find(|r|r.used&&r.irp==irp){r.returned=true;if r.completed{*r=PowerRequest::EMPTY;true}else{false}}else{false}
@@ -277,7 +277,7 @@ mod dispatch_tests {
         unsafe{(*stack).major_function=IRP_MJ_POWER;(*stack).minor_function=IRP_MN_SET_POWER;(*stack).parameters[0]=1u64|(4u64<<32);}
         assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
         assert_eq!(device_power_state(device),0);
-        unsafe{(*irp).bytes[0x30..0x34].copy_from_slice(&0i32.to_le_bytes());io_complete_request(irp,0);}
+        unsafe{(&mut (*irp).bytes)[0x30..0x34].copy_from_slice(&0i32.to_le_bytes());io_complete_request(irp,0);}
         assert_eq!(device_power_state(device),3);
         unsafe{io_free_irp(irp);io_delete_device(device);}
     }
