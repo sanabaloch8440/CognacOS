@@ -1,187 +1,199 @@
-# RdotOS implementation roadmap
+# RdotOS Development Roadmap
 
-Status reflects code currently present in the repository, not intended architecture. A checkbox is marked complete only when implementation and meaningful tests exist.
+This roadmap tracks code and validation currently present in the repository, not just intended architecture. A feature is marked complete only when implementation and a meaningful test or validation path exist. Completed foundations may still be experimental; they do not imply production readiness or Windows driver compatibility.
 
-## Implemented in source, pending build/boot verification
+**Project target:** a Rust-first x86-64 operating system with NT-inspired kernel interfaces and a long-term path toward hosting Windows x64 drivers.
 
-- Rust UEFI bootloader allocates a low-memory PML4, PDPT, and four page directories before ExitBootServices; the bootstrap map identity-maps 0..4 GiB with 2 MiB writable pages.
-- Kernel stack, boot-info structure, and a bounded copy of the final UEFI memory map are allocated below 4 GiB so they remain reachable after CR3 changes.
-- Kernel validates the PML4 address, loads it into CR3, and then initializes a single-core first-fit physical-page allocator from EfiConventionalMemory descriptors using the firmware-provided descriptor stride.
-- These paths are not considered complete until CI compiles them and OVMF/QEMU tests prove the handoff, CR3 switch, allocator behavior, and failure paths.
+## Status at a glance
 
-## Rust-first foundation
+| Subsystem | Status | Main gaps |
+| --- | --- | --- |
+| UEFI boot and kernel handoff | Implemented; CI/QEMU validated | Signature-based verified boot and stronger ELF tests |
+| Memory management/protection | Foundation implemented; boot-tested | Complete mappings, high memory, fault-negative tests |
+| PE32+ loader and ring-3 test path | Foundation implemented; boot-tested | Full NT loader, unwind/exception handling, Windows user-mode DLLs |
+| ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
+| SMP/AP startup | Experimental | Reliable multi-vCPU boot, per-CPU interrupt setup, stress tests |
+| Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
+| NT executive/syscall compatibility | Partial foundations | NT syscall ABI and complete executive semantics |
+| I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
+| DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
+| ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
+| VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
-- [x] Add Apache-2.0 license text.
-- [x] Add MIT license text and document dual licensing as Apache-2.0 OR MIT.
-- [x] Replace the C UEFI bootstrap with a Rust UEFI application in bootloader/.
-- [x] Add a separate freestanding no_std Rust kernel crate in kernel/.
-- [x] Add a kernel linker layout, COM1 diagnostic routine, and panic halt handler.
-- [x] Add CI steps to build both Rust targets and package the EFI app plus kernel ELF.
-- [x] Compile and validate artifacts in CI; resolve toolchain/API issues exposed by the first runs.
-- [x] Boot and smoke-test the complete kernel handoff in OVMF/QEMU in CI (serial markers confirm kernel entry, CR3 activation, and allocator initialization).
-- [x] Load the kernel ELF from the EFI filesystem with a bounded read and validate ELF64 little-endian x86-64 ET_EXEC headers and PT_LOAD ranges.
-- [x] Define a versioned boot-information structure carrying the final UEFI memory-map pointer, entry count, descriptor size, and version.
-- [x] Exit boot services through the uefi-rs retrying helper and transfer control to the kernel entry using the x86-64 System V ABI.
-- [x] Link the first-stage kernel at a low identity-mapped address, allocate a dedicated aligned kernel stack, and report the handoff details over COM1.
-- [x] Install a kernel-owned flat GDT and an IDT with fatal exception gates for CPU vectors 0-31.
-- [x] Keep external interrupts disabled until interrupt-controller and timer setup is implemented.
-- [x] Add exception-specific assembly stubs for CPU vectors 0–31, normalize error-code frames, and report vector/error/RIP/CS/RFLAGS plus CR2 for page faults.
-- [ ] Add a dedicated IST stack for double-fault/NMI handling before claiming recoverable stack-overflow diagnostics.
-- [ ] Add ELF parser unit/fuzz tests and verify segment overlap/permission policy before treating the loader as hardened.
-- [ ] Add framebuffer and ACPI RSDP to the boot-information structure.
-- [x] Add bounded ACPI RSDP checksum validation and ACPI MADT parsing for xAPIC/x2APIC CPU entries and I/O APIC GSI bases; synthetic MADT parser self-test passes.
-- [x] Add guarded xAPIC and I/O APIC register primitives, local EOI, masked GSI routing, and timer-mask support.
-- [ ] Wire firmware RSDP discovery into BootInfo, map APIC MMIO as uncacheable, install IRQ vectors, calibrate a timer, and enable interrupts only after routing is validated.
-- [ ] Implement APIC/PIC routing, timer interrupts, and interrupt-safe diagnostics.
-- [ ] Verify the Rust UEFI bootloader's low-memory bootstrap PML4 and 0..4 GiB identity map under OVMF/QEMU.
-- [ ] Add tests for the physical-page allocator's descriptor-stride handling, conventional-memory filtering, alignment, exhaustion, and region-capacity limits.
-- [ ] Harden the early physical allocator (currently single-core, first-fit, and capped below 4 GiB) before enabling concurrency.
-- [x] Convert the kernel-section and stack-guard 2 MiB regions into 4 KiB PTEs; enforce NX by default and RX/RO/RW-NX section permissions, with CR0.WP active.
-- [ ] Replace the remaining general-purpose 2 MiB identity map with complete per-region mappings and add a direct map for RAM above 4 GiB.
-- [ ] Add boot-time checks that kernel, stack, boot-info, memory-map copy, and page-table allocations are covered by active mappings.
-- [x] Reserve an unmapped page below the bootstrap kernel stack and enforce section-level NX/W^X permissions.
-- [ ] Add double-fault IST handling and a controlled high-half mapping.
-- [x] Add early CPU feature detection and enable CR0.WP; enable EFER.NXE and SMEP only when advertised by CPUID.
-- [ ] Enable SMAP only after guarded user-memory accessors implement the required STAC/CLAC protocol; NXE alone is not page-level NX enforcement.
+**Latest checked verification:** GitHub Actions run [40072557930](https://github.com/umarfarooq7869/RdotOS/actions/runs/40072557930) succeeded for commit 9956d639, including the workflow's QEMU boot smoke test and serial assertions. This validates only the paths covered by CI; it does not establish support for all hardware, all SMP conditions, or Windows drivers.
 
-## Boot validation and memory hardening
+### Status legend
 
-- [x] Confirm GitHub Actions Rust build succeeds; resolve compiler/linker errors exposed by CI.
-- [x] Confirm OVMF/QEMU reaches the Rust kernel and emits serial markers for CR3 activation and physical allocator initialization.
-- [x] Confirm CR0.WP, NXE, strict kernel-section permissions, a stack guard page, and the address-space/user-copy self-test through CI/QEMU serial assertions.
-- [ ] Add a reproducible regression test for malformed/truncated ELF images and overlapping PT_LOAD segments.
-- [ ] Add deterministic allocator tests for descriptor stride, conventional-memory filtering, page alignment, exhaustion, and region limits.
-- [ ] Replace the permissive 2 MiB identity map with 4 KiB mappings and explicit per-segment permissions. Do not enable NX until NX support is checked and all executing code, IDT/GDT, stack, boot-info, and page-table memory remain mapped.
-- [ ] Introduce a higher-half mapping only with a trampoline that keeps the current identity mapping until execution, stack, IDT, and all live pointers have safely switched to the higher-half addresses.
-- [ ] Test the new mappings under OVMF/QEMU, including deliberate write-to-read-only and execute-from-NX-page fault tests.
-- [ ] Preserve the current low identity-map fallback until the stricter mapping path has passed automated boot tests.
+- [x] Implemented with a meaningful validation path
+- [ ] Not implemented, incomplete, or awaiting required validation
+- **Experimental** means code exists but is not yet reliable production support
 
-## UEFI and verified boot
+## 1. Boot chain and kernel foundation
 
-- [ ] Read/report firmware Secure Boot state for diagnostics (informational only).
-- [x] Verify the kernel ELF SHA-256 against a build-time digest embedded in the bootloader; reject missing or mismatched digests. This is tamper detection only when the bootloader itself is trusted.
-- [ ] Add asymmetric signature verification (for example Ed25519) against an externally protected public-key trust anchor and verify every next-stage component.
-- [x] Reject an unpinned or hash-mismatched kernel ELF before parsing/loading it.
-- [ ] Reject unsigned/revoked components using a signed trust policy and add signature/revocation negative tests.
-- [ ] Add key enrollment/update and revocation policy.
-- [ ] Establish measured-boot event log and TPM 2.0 measurements.
-- [ ] Define signed release artifacts and reproducible build provenance.
+- [x] Rust UEFI application and separate freestanding no_std Rust kernel.
+- [x] Bounded ELF64 little-endian x86-64 kernel loading with core header and PT_LOAD range validation.
+- [x] Versioned boot information, UEFI boot-services exit, and kernel handoff.
+- [x] Build-time kernel SHA-256 pin; reject missing or mismatched digests.
+- [x] Kernel-owned GDT/IDT and exception diagnostics for CPU vectors 0–31.
+- [x] COM1 diagnostics and OVMF/QEMU boot validation in CI.
+- [ ] Dedicated IST stacks for double-fault and NMI handling.
+- [ ] ELF unit/fuzz tests for malformed inputs, overlapping segments, overflow, and permission policy.
+- [ ] Validate final permissions for every loaded segment and reject unexpected layouts.
+- [ ] Add framebuffer handoff and document the boot-information ABI.
+- [ ] Add asymmetric signature verification, signed trust policy, key enrollment/update, and revocation.
+- [ ] Add measured-boot event logging, TPM 2.0 measurements, and reproducible signed releases.
 
-## Virtualization-based security / HVCI
+**Security boundary:** the kernel digest pin is tamper detection only when the bootloader is trusted. It is not a signature scheme or a complete verified-boot chain.
 
-- [ ] Detect CPU virtualization, SLAT/EPT, IOMMU, and firmware prerequisites.
-- [ ] Implement a minimal hypervisor or a clearly specified supported hypervisor interface.
-- [ ] Do not treat Windows Hypervisor Platform (WHVP) as a kernel facility: WHVP is a Windows host API and is not available as a native hypervisor inside an independent OS.
-- [ ] Create a secure-kernel boundary with isolated page tables and strict memory permissions.
-- [ ] Enforce code integrity for kernel and driver pages, including W^X and executable-page transition checks.
-- [ ] Add isolation tests and attack-oriented negative tests; credential protection remains future work.
+## 2. Physical and virtual memory
 
-## x86-64 kernel and memory
+- [x] Initialize a physical-page allocator from UEFI conventional-memory descriptors.
+- [x] Validate boot information and activate a kernel-owned CR3/page-table root.
+- [x] Apply 4 KiB kernel-section permissions, CR0.WP, and NXE when supported.
+- [x] Leave a kernel stack guard page unmapped.
+- [x] Add private user address spaces, supervisor-only shared kernel mappings, checked user-copy helpers, and W^X validation in implemented paths.
+- [x] Add kernel virtual mapping/reclamation and pagefile-backed eviction/page-in test paths.
+- [x] Add NT memory-manager physical translation, address-validity, and checked-copy self-tests.
+- [ ] Replace the remaining broad 2 MiB identity map with explicit per-region mappings.
+- [ ] Add a safe direct map for RAM above 4 GiB.
+- [ ] Test allocator descriptor stride, filtering, alignment, exhaustion, invalid maps, and region capacity; harden concurrency.
+- [ ] Add deliberate write-to-read-only and execute-from-NX fault tests.
+- [ ] Add a tested higher-half transition and validate all live pointers, stacks, and descriptor state.
+- [ ] Enable SMAP only after all guarded user access paths use the required STAC/CLAC protocol.
+- [ ] Complete pageable memory semantics, working-set policy, and robust page-fault recovery.
 
-- [ ] Establish long-mode kernel entry, GDT/IDT, exception handlers, APIC, and timer.
-- [x] Add independent PML4 address spaces, supervisor-only shared kernel mappings, checked user-copy helpers, and final per-page RX/RO/RW-NX user permissions; reject writable-executable mappings and keep user mappings in private PML4 slots.
-- [x] Add ring-3 user code/data descriptors, TSS RSP0, IRETQ entry, DPL3 process-exit gate, and DPL3 syscall gate; QEMU executes a loaded PE entry in ring 3 and returns to the kernel.
-- [x] Add a bounded PE32+ AMD64 loader for headers/sections, DIR64 relocations, normal and delay imports, registered DLL exports, API-set contract aliases, and final W^X section permissions; QEMU loads a synthetic DLL and binds/calls its export from a PE entry.
-- [x] Add an RdotOS x64 syscall dispatcher (GETPID, WRITE, EXIT, cooperative YIELD), a process-state table (Created/Running/Exited/Reaped), exit validation, and address-space teardown with physical-page reclamation; QEMU executes GETPID, calls an imported DLL export, exits, and reaps the process.
-- [x] Initialize a minimal Windows x64 PEB/TEB, TEB GS base, TLS vector, process parameters, and circular PEB loader lists for the executable and preloaded DLLs.
-- [x] Parse PE TLS directories, assign per-image TLS indexes, initialize static TLS templates and zero-fill blocks, and execute DLL/executable TLS callbacks in ring 3 before entrypoints.
-- [x] Register bounded AMD64 RUNTIME_FUNCTION entries from .pdata and support lookup by image/control PC.
-- [x] Resolve PE delay imports and common API-set contract families through exports parsed from mapped user-mode DLL images; invoke registered DLL process-attach entrypoints in ring 3.
-- [ ] Implement the Windows NT syscall ABI and service table; the current syscall ABI is RdotOS-native and not binary-compatible with Windows ntdll syscall numbers.
-- [ ] Implement a full UNWIND_INFO interpreter, language-specific exception handlers, vectored exception dispatch, and process/thread exception recovery.
-- [ ] Add complete process parameters, per-process DLL loader namespaces, forwarder chains, API-set schema parsing, DllMain failure/detach handling, demand paging, and concurrent process/thread lifecycle support.
-- [ ] Provide actual user-mode implementations of the Windows API DLLs; imports bind to registered exports, but a full kernel32/ntdll/advapi32 implementation is not claimed.
-- [ ] Support large physical memory subject to architecture/platform limits; validate memory-map handling.
-- [x] Keep 32-bit execution and WOW64-like compatibility out of scope.
+## 3. ACPI, architecture, HAL, and SMP
 
-## ACPI, APIC, and SMP
+- [x] Validate ACPI RSDP and RSDT/XSDT bounds and checksums.
+- [x] Parse MADT xAPIC/x2APIC processor entries and I/O APIC GSI information.
+- [x] Pass firmware ACPI information through versioned boot information.
+- [x] Provide xAPIC access, EOI, masked I/O APIC routing primitives, bounded ICR waits, and fixed/INIT/SIPI helpers.
+- [x] Register the bootstrap processor in the HAL CPU-local registry.
+- [x] Add per-CPU records, APIC-ID lookup, lifecycle states, GS-based access, typed port I/O, MMIO range checks, and IRQ-save spin locks.
+- [x] Add an experimental low-memory AP startup trampoline, temporary page-table setup, AP stack preparation, and bounded acknowledgement logic.
+- [ ] Validate AP startup on supported QEMU configurations and real hardware.
+- [ ] Initialize per-AP GDT/TSS/IDT and CPU-local state before marking APs online.
+- [ ] Implement interrupt vectors, complete IRQ routing, MSI/MSI-X, and interrupt remapping.
+- [ ] Calibrate and enable a reliable APIC timer and monotonic clock.
+- [ ] Add multi-vCPU race/stress tests for locks, interrupts, startup, and TLB invalidation.
+- [ ] Keep external interrupts disabled until interrupt entry, routing, and per-CPU state are proven safe.
 
-- [x] Parse MADT Local APIC/x2APIC processor entries and I/O APIC GSI bases with table bounds/checksum validation.
-- [x] Provide xAPIC MMIO initialization, masked I/O APIC routing, bounded ICR waits, and fixed/INIT/Startup IPI primitives (not yet invoked by a boot-time AP-startup coordinator).
-- [x] Discover the ACPI 2.0 RSDP (falling back to ACPI 1.0) through UEFI configuration tables and pass it in boot-info v3.
-- [x] Pass boot-info v4 with an optional UEFI-reserved SIPI-vector page below 1 MiB; validate AP startup-target address/alignment/APIC-ID constraints in the kernel and assert the self-test in QEMU CI (page reserved only, not yet executable).
-- [x] Add xAPIC INIT deassert and a serialized INIT/deassert/two-SIPI startup coordinator with bounded AP-online timeout; requires a calibrated delay callback and is not invoked until a working trampoline/stack mailbox exists.
-- [x] Validate firmware RSDP and RSDT/XSDT checksums/bounds, locate the MADT, and register enabled processors in the HAL CPU registry (discovery only; no AP startup).
-- [x] Add a separate x86-64 HAL with fixed per-CPU records, APIC-ID registry, ACPI MADT CPU-registration API, CPU lifecycle states, GS-based CPU-local access, typed port I/O, MMIO range validation, and IRQ-save spin locks. The bootstrap CPU is registered at kernel entry.
-- [ ] Bring up application processors using a low-memory SIPI trampoline, per-CPU stacks/GDT/TSS/IDT, calibrated startup timeouts, and APIC startup IPIs.
-- [ ] Enable timer interrupts, IRQ routing, MSI/MSI-X, interrupt remapping, and multi-vCPU regression tests.
+Discovery and startup primitives do not by themselves establish a production-ready SMP kernel.
 
-## NT executive foundations
+## 4. Scheduler, threads, and dispatcher
 
-- [x] Add bounded typed handles, basic named objects, explicit access masks, and device IRP dispatch primitives.
-- [ ] Implement NT-compatible object namespace/security reference monitor, process/thread objects, events/semaphores, and reference counting.
-- [ ] Implement the Windows NT syscall ABI/service table, ALPC/LPC, registry hives, and executive services.
-- [ ] Implement actual context switching, preemption, and process/thread lifecycle beyond the current fixture.
+- [x] Add scheduler metadata for task states, priorities, affinity masks, selection policy, and cooperative-yield metadata.
+- [x] Add kernel-thread block/wake/resume test paths and dispatcher self-tests for FIFO, cancellation, wait-any/wait-all, and timeout cases.
+- [ ] Establish a complete thread control block, saved register context, initial stack frame, and tested x86-64 context-switch routine.
+- [ ] Connect blocking waits to scheduler queues so blocked threads are switched out and woken threads can run.
+- [ ] Add per-CPU run queues, priority handling, affinity migration, load balancing, and scheduler locking.
+- [ ] Implement timer-driven preemption and race-safe timeout-versus-signal completion.
+- [ ] Implement alertable waits and NT-compatible single-object/multiple-object wait semantics.
+- [ ] Add multi-threaded stress tests for cancellation, wakeup, and timeout races.
 
-## Scheduling and heterogeneous CPUs
+## 5. NT executive and Windows compatibility
 
-- [x] Add a bounded scheduler metadata core with task states, priority selection, CPU-affinity masks, and cooperative yield metadata; CI smoke-tests policy selection.
-- [ ] Implement actual context switching, timer-driven preemption, per-CPU run queues, affinity migration, load balancing, AP startup, and scheduler locking validated on multiple vCPUs.
-- [ ] Discover topology using ACPI/CPUID and identify core types where supported.
-- [ ] Add optional Intel Thread Director telemetry integration on supported processors.
-- [ ] Add generic ARM big.LITTLE capacity-aware scheduling only if/when an ARM64 port is planned.
-- [ ] Benchmark latency, throughput, fairness, and power; gracefully fall back without vendor telemetry.
+- [x] Add typed kernel handles, basic named-object lookup, access-mask checks, and object-manager self-tests.
+- [x] Add initial device/IRP dispatch interfaces and bounded request handling.
+- [x] Add initial process address spaces, checked user-copy, ring-3 entry/exit, and a small RdotOS-native syscall path.
+- [x] Add a bounded PE32+ AMD64 loader with relocations, normal/delay imports, registered exports, API-set aliases, TLS setup/callbacks, and basic runtime-function registration.
+- [x] Create minimal PEB/TEB structures, GS-based TEB access, TLS blocks, and loader lists for the current test path.
+- [ ] Implement the Windows NT x64 syscall numbers, service table, calling semantics, and validation.
+- [ ] Implement NT-compatible process/thread objects, reference counting, namespaces, security descriptors, events, semaphores, and executive services.
+- [ ] Complete loader namespaces, forwarder chains, API-set schema parsing, DllMain failure/detach handling, and concurrent lifecycle operations.
+- [ ] Implement full AMD64 UNWIND_INFO interpretation, language-specific handlers, vectored exception dispatch, and recovery.
+- [ ] Provide actual Windows user-mode API implementations; export fixtures are not ntdll/kernel32/advapi32 compatibility.
+- [ ] Implement registry hives, ALPC/LPC, and additional executive interfaces.
+- [ ] Test documented Windows x64 ABI behavior and real driver expectations.
 
-## Storage, DirectStorage-style I/O, and graphics
+**Compatibility rule:** export names or NT-style structures alone do not make a Windows driver loadable. ABI, object lifetime, IRQL, synchronization, memory, I/O, and device semantics must also match.
 
-- [x] Add bounded IRP allocation, dispatch, query, completion, and release primitives.
-- [x] Add exclusive in-flight IRP ownership, pre-dispatch cancellation, asynchronous completion, and IRQ-safe SMP locks; QEMU boot tests exercise the request state transitions.
-- [ ] Implement completion queues/DPCs, race-safe cancellation after dispatch begins, request timeouts, DMA-safe buffer pinning, and end-to-end asynchronous device I/O.
-- [ ] Add PCIe enumeration, NVMe/AHCI, DMA mapping, IOMMU, and storage-driver support.
-- [ ] Add safe compressed-asset streaming and decompression pipelines.
-- [ ] Add a GOP framebuffer handoff, display/device abstraction, GPU drivers, VRAM mapping, and GPU-side decompression only where hardware/driver APIs support it.
-- [ ] Measure CPU overhead and end-to-end latency against a baseline; do not claim DirectStorage compatibility until implemented.
+## 6. HAL exports and runtime library
 
-## Power management
+- [x] Maintain a named/ordinal HAL export inventory and resolution checks.
+- [x] Implement a subset of functional HAL services and fail closed when prerequisites are absent.
+- [ ] Audit every export's exact Windows x64 ABI, arguments, return behavior, IRQL constraints, and ownership rules.
+- [ ] Replace placeholders only when meaningful implementation and tests are available.
+- [ ] Add ABI-focused export-resolution and calling-convention tests.
+- [ ] Expand RTL/NT runtime functions in tested batches: memory, strings, lists, bitmaps, and synchronization.
+- [ ] Count a routine as implemented only after behavior, edge cases, ABI, and tests are verified.
 
-- [ ] Parse ACPI tables and implement platform power-state transitions.
-- [ ] Add per-device runtime power management, wake sources, and timer coalescing.
-- [ ] Implement sleep/resume paths and recovery from failed device transitions.
-- [ ] Connected/Modern Standby-like behavior requires platform firmware, networking, and device support; test on real supported hardware.
+## 7. I/O manager, storage, DMA, and IOMMU
 
-## Isolation, containers, and sandboxing
+- [x] Add bounded IRP allocation, dispatch, completion, query, and release primitives.
+- [x] Track in-flight IRPs, restrict cancellation to safe pre-dispatch state, and support explicit asynchronous completion.
+- [x] Add IRQ-safe locks for request state, PCI configuration helpers, and basic bus-data operations.
+- [x] Discover Intel VT-d/DMAR information from firmware tables.
+- [ ] Add completion queues/DPCs, request timeouts, safe in-flight cancellation, and end-to-end asynchronous I/O.
+- [ ] Implement DMA buffer pinning, scatter/gather lists, real map-register resources, cache coherency, and device-visible mappings.
+- [ ] Initialize Intel VT-d hardware, domains, translation, and fault handling.
+- [ ] Implement AMD IOMMU discovery and hardware initialization.
+- [ ] Ensure DMA fails safely when required translation is unavailable.
+- [ ] Implement PCIe enumeration, AHCI/NVMe drivers, storage queues, reset/recovery, and block-device interfaces.
+- [ ] Add end-to-end I/O tests on emulated and supported physical hardware.
+- [ ] Add compressed-asset streaming only after storage and memory lifetime guarantees are in place.
 
-- [x] Add a bounded typed kernel handle table, named-object lookup, and per-handle access-mask checks with boot self-tests.
-- [ ] Add per-process handle tables, object reference counting, namespace security descriptors, capabilities, and access-control policy.
-- [ ] Add namespaces/resource limits and filesystem/network isolation primitives.
-- [ ] Build disposable sandbox environments on top of tested isolation primitives.
-- [ ] Add adversarial boundary tests and verify teardown releases all resources.
+**Known limitations:** DMA channel scheduling and ownership handling have foundations, but map-register tokens are bookkeeping, not real hardware mappings. Intel VT-d discovery is not full initialization. AMD IOMMU is not implemented. Unsupported extended DMA operations must remain unavailable rather than pretending to work.
 
-## Driver isolation / user-mode drivers
+## 8. ext2/ext3/ext4 filesystem
 
-- [x] Add an initial device/IRP dispatch contract with bounded request buffers, dispatch callbacks, completion status, and a synthetic device self-test.
-- [ ] Define stable user-mode driver IPC and a production device-object model.
-- [ ] Implement driver host processes, request timeouts, crash detection, and restart.
-- [ ] Add permission-checked DMA through IOMMU and safe device reset/recovery.
-- [ ] Port eligible device classes to user mode; kernel-mode drivers remain necessary for selected low-level paths.
+- [x] Pin upstream Ext3Fsd sources as a separate reference submodule.
+- [x] Add a no_std Rust parser for superblock geometry, inode metadata, legacy group descriptors, and bounded directory records.
+- [x] Add checked filesystem/device bounds and legacy direct/indirect block mapping.
+- [x] Add bounded ext4 extent-tree mapping and a CRC32C/superblock-checksum foundation.
+- [x] Reject unsupported features rather than interpret metadata without required validation.
+- [ ] Add host-side property/fuzz tests and real ext2/ext3/ext4 disk-image tests.
+- [ ] Verify all consumed group-descriptor, inode, extent, directory, bitmap, and journal checksums.
+- [ ] Add safe directory traversal, inode-table reads, and indexed-directory support.
+- [ ] Implement a read-only backend against RdotOS block-device/filesystem interfaces and register it after image tests pass.
+- [ ] Defer journal replay and write support until read-only behavior and metadata validation are robust.
+- [ ] Review licensing before redistributing any Rust translation derived from upstream code.
 
-## Exploit mitigations
+The parser is read-only and not a production filesystem driver. The original Ext3Fsd Windows driver cannot be loaded by RdotOS.
 
-- [ ] Add stack canaries and compiler hardening to supported toolchains.
-- [ ] Enforce W^X, NX, kernel ASLR, and read-only-after-init memory.
-- [ ] Implement kernel control-flow integrity/CFG-like indirect-call validation.
-- [ ] Implement ACG-like dynamic-code restrictions for untrusted processes.
-- [ ] Add syscall validation, guarded user copies, safe integer/length handling, and fuzz tests.
-- [ ] Add mitigation status reporting and regression tests for each enforcement point.
+## 9. Isolation and security
 
-## Release quality
+- [x] Enforce kernel write protection and NX where supported.
+- [x] Add W^X checks in implemented mapping paths, a kernel stack guard page, private user address spaces, and checked user-copy primitives.
+- [ ] Add per-process handle tables, reference counting, namespace security, capabilities, and access-control policy.
+- [ ] Add stack canaries, compiler hardening, kernel ASLR, and read-only-after-init data.
+- [ ] Add indirect-call control-flow validation and dynamic-code restrictions.
+- [ ] Add systematic syscall validation, parser fuzzing, adversarial boundary tests, and resource-leak tests.
+- [ ] Implement a secure-kernel/hypervisor boundary and code-integrity policy before claiming VBS/HVCI support.
+- [ ] Detect virtualization, SLAT/EPT, IOMMU, and firmware prerequisites before enabling virtualization-based protection.
+- [ ] Define measured boot and document the threat model.
 
-- [ ] Unit tests for allocators, parsers, crypto, scheduler, and I/O queues.
-- [ ] QEMU/OVMF boot tests with Secure Boot on and off.
-- [ ] Fuzz EFI/ACPI/PE/ELF and storage parsers.
-- [ ] Document supported hardware, threat model, recovery path, and known limitations.
+## 10. Driver isolation, graphics, and power
 
+- [x] Add an initial device/IRP dispatch contract and synthetic device test.
+- [ ] Define stable user-mode driver IPC and production device objects.
+- [ ] Implement driver host processes, timeouts, crash detection, and restart policy.
+- [ ] Add permission-checked DMA through an initialized IOMMU.
+- [ ] Add GOP framebuffer handoff and a display/device abstraction.
+- [ ] Implement selected graphics/GPU drivers, safe VRAM mappings, and reset/recovery.
+- [ ] Add ACPI power transitions, device runtime power management, wake sources, and resume recovery.
+- [ ] Evaluate connected/Modern Standby-like behavior only on validated platforms.
 
-## Third-party filesystem driver port
+## 11. Testing and release engineering
 
-- [x] Pin upstream Ext3Fsd sources as a separate submodule at `third_party/Ext3Fsd` for reference and staged Rust translation.
-- [ ] Audit the upstream GPLv2 notices and determine distribution/licensing treatment for any Rust translation before redistribution.
-- [x] Start a safe `no_std` Rust translation with checked ext superblock, geometry, inode-location, group-descriptor, inode-metadata, and directory-entry parsers; add synthetic boot self-tests.
-- [ ] Add property/fuzz tests and validate against real ext2/ext3/ext4 disk images, including current Ubuntu-created 64-bit ext4 images.
-- [x] Add bounds-checked ext2/ext3 legacy direct, single-, double-, and triple-indirect block mapping with synthetic fixtures; wire it into the parser self-test.
-- [x] Add the ext4 CRC32C primitive and superblock metadata-checksum verifier, with host-side corruption tests. This is a foundation only: metadata_csum remains rejected by the mount parser until all consumed metadata types are verified.
-- [x] Parse ext4 64-bit block counts and 64-byte group-descriptor block pointers/counts with overflow/range checks; host and boot self-tests cover high block-count parsing.
-- [ ] Verify feature-correct group-descriptor, inode, extent, directory, bitmap, and journal checksums before consuming metadata; modern metadata_csum filesystems remain rejected until these checks are complete.
-- [ ] Implement a read-only ext filesystem backend against RdotOS block-device and filesystem interfaces, including htree-indexed directories and validated inode-table reads.
-- [ ] Add ext2/ext3/ext4 image tests before considering journal replay or write support.
-- [ ] Add an NT-style filesystem-driver adapter only after the filesystem backend passes image-based tests. This is a native RdotOS implementation, not a Windows 11 .sys binary; the original Windows kernel driver cannot load directly in RdotOS.
+- [x] Build the UEFI application and freestanding kernel in GitHub Actions.
+- [x] Validate the kernel ELF and package a GPT/FAT EFI image.
+- [x] Run host-side ext parser tests.
+- [x] Boot with OVMF/QEMU and assert selected serial markers for kernel entry and subsystem self-tests.
+- [ ] Add focused tests for allocator, scheduler, dispatcher, HAL exports, DMA, and parser boundaries.
+- [ ] Add repeatable multi-vCPU, timeout, cancellation, and concurrency stress tests.
+- [ ] Fuzz ELF, PE, ACPI, and filesystem parsers.
+- [ ] Test Secure Boot on/off after signed boot support exists.
+- [ ] Document tested hardware, threat model, recovery/debug procedure, and known limitations.
+- [ ] Establish tagged releases and publish test artifacts with build provenance.
+
+## Recommended implementation order
+
+1. Keep CI green and verify the full build plus QEMU workflow after each change.
+2. Complete real context switching, scheduler queue integration, timer interrupts, and multi-vCPU stress tests.
+3. Tighten memory mappings, allocator edge cases, page faults, and ELF/PE parser tests.
+4. Implement real DMA mappings, IOMMU initialization, PCI enumeration, and one end-to-end storage driver.
+5. Expand Windows compatibility through small, tested batches of ABI-correct RTL/NT/HAL routines and executive semantics.
+6. Add signed boot, stronger isolation, power management, graphics, and release-grade hardware validation.
+
+Update these checkboxes alongside code changes, and only mark work complete after its relevant tests pass.
