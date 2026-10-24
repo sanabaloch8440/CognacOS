@@ -400,11 +400,11 @@ pub unsafe fn stop_local_timer() {
     LOCAL_TIMER_ACTIVE.store(false, Ordering::Release);
 }
 
-/// Interrupt-gate callback: update the clock domain, expire due dispatcher
-/// waits, ready their threads, then acknowledge the local APIC interrupt.
+/// Publish the monotonic clock event through the HAL callback contract, then
+/// acknowledge the local APIC interrupt. No compile-time NT dependency remains.
 pub fn timer_interrupt() {
     let now = monotonic_ticks();
-    crate::ntoskrnl::ki::runtime::ki_clock_interrupt(now);
+    let _ = crate::hal::publish_clock_interrupt(now);
     if let Some(base) = local_apic_base() {
         unsafe { local_apic_eoi(base); }
     }
