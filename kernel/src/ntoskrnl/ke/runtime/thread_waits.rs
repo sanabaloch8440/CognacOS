@@ -95,7 +95,16 @@ pub unsafe extern "win64" fn ke_insert_queue_apc(
   record.arg1=arg1 as usize;record.arg2=arg2 as usize;record.inserted=true;record.thread_id
  };
  boost_thread_priority(thread_id,increment);
- if crate::thread::current_thread_id()==Some(thread_id)
+ let is_user_apc={
+  let table=APC_TABLE.lock();
+  table.records.iter().find(|r|r.object==apc as usize).map(|r|r.mode!=0&&r.normal_routine!=0).unwrap_or(false)
+ };
+ if is_user_apc && crate::thread::is_alertable_wait(thread_id) {
+  let _=crate::thread::set_user_apc_delivery_pending(thread_id,true);
+  let _=crate::dispatcher::cancel_thread_waits(thread_id);
+  crate::dispatcher::clear_wait_group(thread_id);
+  let _=crate::thread::complete_wait(thread_id,STATUS_USER_APC);
+ } else if crate::thread::current_thread_id()==Some(thread_id)
   && CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire)==PASSIVE_LEVEL
   && unsafe{ke_are_apcs_disabled()}==0 { ke_deliver_pending_kernel_apcs(); }
  1
@@ -109,6 +118,11 @@ pub unsafe extern "win64" fn ke_remove_queue_apc(apc:*mut core::ffi::c_void)->u8
  let was=record.inserted;record.inserted=false;was as u8
 }
 
+const STATUS_USER_APC:i32=0x0000_00C0;
+fn has_pending_user_apc(thread_id:u64)->bool{
+ let table=APC_TABLE.lock();
+ table.records.iter().any(|r|r.inserted&&r.thread_id==thread_id&&r.mode!=0&&r.normal_routine!=0)
+}
 /// Take one user APC for the current thread. Its kernel routine runs on the
 /// kernel stack immediately before the syscall's user-return frame is rewritten.
 pub fn take_pending_user_apc()->Option<(usize,usize,usize,usize,usize)>{
@@ -403,6 +417,7 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     }
     let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
     if alertable != 0 && crate::thread::take_alert_pending() { return STATUS_ALERTED; }
+    if alertable != 0 && has_pending_user_apc(thread_id) { let _=crate::thread::set_user_apc_delivery_pending(thread_id,true); return STATUS_USER_APC; }
     if unsafe{(*object).kind}==MUTANT_OBJECT{
         if let Some(status)=try_acquire_mutant_status(object){return status}
     }else if unsafe { try_consume_dispatcher_object(object) } { return STATUS_SUCCESS; }
@@ -459,6 +474,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     }
     let _ = (wait_reason, wait_mode);
     if alertable != 0 && crate::thread::take_alert_pending() { return STATUS_ALERTED; }
+    if alertable != 0 { if let Some(id)=crate::thread::current_thread_id() { if has_pending_user_apc(id) { let _=crate::thread::set_user_apc_delivery_pending(id,true); return STATUS_USER_APC; } } }
     let object_list = unsafe { core::slice::from_raw_parts(objects, count as usize) };
     if object_list.iter().any(|object| object.is_null()) { return STATUS_INVALID_PARAMETER; }
     for i in 0..object_list.len() {
