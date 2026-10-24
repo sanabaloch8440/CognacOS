@@ -522,10 +522,28 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [x] Add a bounded `SeAccessCheck` export and exact-name resolver path for self-relative descriptors, generic mapping, owner `READ_CONTROL`/`WRITE_DAC`, and basic allow/deny ACE evaluation against explicitly registered token SIDs and Everyone.
 - [x] Add `SePrivilegeCheck` with exact-name resolution, bounded `PRIVILEGE_SET` parsing, all-necessary/any-necessary semantics, and registered-token privilege bitmap evaluation.
 - [x] Add an internal copied-SID token identity registry with validation, unregister/rundown hook, and a focused access-granted unit test.
-- [ ] Integrate SID/privilege registration and unregistration into Ps token creation, duplication, impersonation, and rundown; current identity registry is not automatically populated by process/token lifecycle.
-- [ ] Add object/callback ACEs, restricted-token second evaluation, privilege grants, AppContainer/capability checks, audit/SACL policy, and fault-safe user-buffer capture before claiming Windows 11 access-check parity.
+- [ ] Complete automatic SID/privilege registration in a real Ps token allocator and creation/duplication pipeline; current process primary-token assignment, thread impersonation assignment, and token metadata duplication hooks are wired, but no full Windows TOKEN allocator exists.
+- [x] Add restricted-token second DACL evaluation, bounded privilege-assisted grants, supported SACL audit ACE evaluation, and an internal copied-SID/AppContainer capability registry.
+- [x] Add subject-context capture/release and serialized lock/unlock exports, token reference accounting, and primary/impersonation token rundown.
+- [x] Add page-table-validated user-memory copy primitives and bounded self-relative security descriptor capture into kernel storage.
+- [ ] Complete conditional callback ACE expression evaluation, GUID-qualified object-type-list semantics, full privilege-set output allocation, comprehensive audit policy, and Windows AppContainer package SID restrictions.
 
 - [x] Extend bounded inspection with SID authority fields, ACL metadata/ACE-type counting, basic SID-in-ACL search, descriptor component presence, and access/privilege mask utilities.
 
 
 **SeAccessCheck status (2026-10-25):** a real, name-resolved Windows-named entry point now exists, with a deliberately bounded basic-ACE evaluator and an internal token-SID registration hook. It is not full Security Reference Monitor compatibility: token lifecycle is not wired automatically, the routine requires a caller-locked subject context, descriptor access assumes a readable 4-KiB window, unsupported ACE families fail closed, and WDK conformance has not been established.
+
+
+## Security Reference Monitor integration pass (2026-10-25)
+
+- [x] Correct SeAccessCheck ABI to use a BOOLEAN pointer for SubjectContextLocked and signed-byte KPROCESSOR_MODE arguments; add compile-time function-pointer ABI assertions for implemented Se/Ps security exports.
+- [x] Bind referenced primary-token ownership to EPROCESS records and impersonation-token ownership to thread records. Add PsAssignImpersonationToken and PsReferencePrimaryToken/PsDereferencePrimaryToken resolution; release references on thread exit and process reaping.
+- [x] Add SeCaptureSubjectContext/SeReleaseSubjectContext, global serialized SeLockSubjectContext/SeUnlockSubjectContext, and internal token-security metadata duplication for newly allocated token objects.
+- [x] Add restricted-token double evaluation, unqualified object ACE support, conditionless callback ACE support, fail-closed handling for GUID-qualified/conditional ACEs, privilege-assisted ACCESS_SYSTEM_SECURITY and WRITE_OWNER, and bounded SACL audit events.
+- [x] Add user page-table copy helpers and an internal security-descriptor capture routine that validates mapped user pages and copies only referenced descriptor components.
+- [x] Add host-side tests for the Se runtime, including restricted-token denial and SACL audit event emission.
+- [x] Generate the kernel PE .edata table from defined function symbols filtered by the pinned Windows 11 manifest; add a CI validator that rejects names outside the manifest and wrong ordinals.
+- [ ] Verify the current end-to-end CI run passes, including host security tests, PE export validation, and QEMU/SMP boot tests.
+- [ ] Finish the real Ps token object allocator and wire token creation, duplication, primary-token installation, and teardown automatically; the current hooks are groundwork rather than full token-object parity.
+
+**Compatibility boundary:** the PE export table only includes implemented, defined function symbols that exist in the pinned Windows 11 manifest. Unsupported Windows exports remain absent from the PE export table; internal RdotOS helpers are not exported. The current implementation is not yet full Windows 11 SRM parity.
