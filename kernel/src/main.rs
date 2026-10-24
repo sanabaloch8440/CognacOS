@@ -831,6 +831,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
         if local_timer_ready {
+            if !thread::initialize_threaded_dpc_workers() {
+                serial_write(b"WARNING: threaded DPC worker initialization incomplete.\r\n");
+            }
             if crate::ntoskrnl::ki::runtime::register_clock_interrupt_handler().is_err() {
                 serial_write(b"WARNING: NT clock callback registration failed; local timer remains disabled.\r\n");
             } else {
