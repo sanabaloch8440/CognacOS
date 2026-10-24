@@ -38,6 +38,10 @@ The repository contains working foundations in several areas. “Implemented” 
 | DMA and IOMMU | DMA request/channel foundations and Intel VT-d ACPI discovery exist. Real DMA mapping, full VT-d initialization, and AMD IOMMU support are incomplete. |
 | ext filesystem | A conservative read-only ext2/ext3/ext4 metadata parser with bounds checks and selected block mapping. It rejects unsupported features and is not a production filesystem driver. |
 
+## NT executive / Ke compatibility status
+
+The Ke runtime now exposes 25 documented routines in the comparison scope, including spin-lock/event/semaphore foundations, processor-group and node queries, corrected KeGetCurrentProcessorNumberEx return semantics, and critical/guarded-region nesting. Event pulse signal/wake/reset is serialized under the dispatcher lock. Important limits remain: APC nesting is per CPU slot rather than per thread, APC delivery and priority boosts are incomplete, precise system time and suspend bias are not implemented, and numerous manifest-listed Ke exports remain intentionally unresolved. See the [Windows 11 vs RdotOS Ke routine comparison](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md) for signatures, return values, current call paths, score methodology, and the unresolved-stub inventory.
+
 ## Build and test
 
 The CI workflow builds the freestanding Rust kernel, converts its linked ELF64 image to a fixed-base PE32+ AMD64 native image, validates PE headers/sections and the pinned digest, builds the Rust UEFI loader, and boots it under OVMF/QEMU. The main smoke test uses 5 GiB RAM and four virtual CPUs. An additional 2/4/8-vCPU SMP matrix asserts expected AP counts, BSP TSS/IST wiring, per-AP directed IPI acknowledgements, cross-CPU scheduler wakeups, contended IRQ-save locks, thread/IRP/object lifecycle and teardown, and VM/TLB self-tests. Host-side tests exercise the physical allocator map parser and ext filesystem parser. The expanded matrix is committed but its first CI result is not yet confirmed.
