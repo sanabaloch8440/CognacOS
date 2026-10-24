@@ -79,7 +79,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     let owner_affinity=1u64<<owner_cpu;
     table.next_id=table.next_id.wrapping_add(1).max(1);
     let scheduler_id=crate::scheduler::create_task(
-        4, owner_affinity, top as u64, thread_trampoline as usize as u64,
+        2, owner_affinity, top as u64, thread_trampoline as usize as u64,
     ).map_err(|_|ThreadError::Full)?;
     table.records[slot]=ThreadRecord{id,scheduler_id,state:ThreadState::Ready,affinity:owner_affinity,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0};
     drop(table);
