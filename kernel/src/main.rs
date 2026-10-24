@@ -157,6 +157,51 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         arch::enable_kernel_paging(info.pml4_physical);
         serial_write(b"Kernel-owned CR3 activated successfully.\r\n");
 
+        // Inspect the live page tables before allocator setup or permission
+        // changes. These ranges are active bootstrap dependencies: the running
+        // kernel, its current stack, BootInfo, final UEFI map, page-table root,
+        // reserved stack allocation, and ACPI/AP handoff storage.
+        let mut current_rsp: u64;
+        asm!("mov {}, rsp", out(reg) current_rsp, options(nomem, nostack, preserves_flags));
+        let map_bytes = match (info.memory_map_entries as u64)
+            .checked_mul(info.memory_descriptor_size as u64) {
+            Some(bytes) => bytes,
+            None => { serial_write(b"FATAL: memory-map byte length overflow.\\r\\n"); halt(); }
+        };
+        let bootstrap_ranges = [
+            (info.pml4_physical, 4096u64),
+            (boot_info as u64, core::mem::size_of::<BootInfo>() as u64),
+            (info.memory_map as u64, map_bytes),
+            (info.kernel_stack_guard_page, 17 * 4096u64),
+            (current_rsp, 8u64),
+            (_start as usize as u64, 1u64),
+            (serial_write as usize as u64, 1u64),
+        ];
+        let mut mapping_ok = true;
+        for (start, length) in bootstrap_ranges {
+            if start != 0 && unsafe {
+                memory::validate_identity_range(info.pml4_physical, start, length)
+            }.is_err() {
+                mapping_ok = false;
+                break;
+            }
+        }
+        if info.rsdp_address != 0 && unsafe {
+            memory::validate_identity_range(info.pml4_physical, info.rsdp_address, 36)
+        }.is_err() {
+            mapping_ok = false;
+        }
+        if info.ap_trampoline_physical != 0 && unsafe {
+            memory::validate_identity_range(info.pml4_physical, info.ap_trampoline_physical, 4096)
+        }.is_err() {
+            mapping_ok = false;
+        }
+        if !mapping_ok {
+            serial_write(b"FATAL: bootstrap page-table inspection found an unmapped or non-identity live dependency.\\r\\n");
+            halt();
+        }
+        serial_write(b"Page-table inspection passed: kernel, stack, boot info, UEFI map, root, and handoff pages are identity mapped.\\r\\n");
+
         // Only after the new identity map is active may physical pages be touched
         // through their physical addresses. The allocator uses conventional RAM.
         let region_count = match memory::initialize(
