@@ -909,17 +909,24 @@ pub(crate) unsafe fn se_internal_DuplicateTokenSecurity(
         let entries = unsafe { &*core::ptr::addr_of!(SECURITY_TOKEN_IDENTITIES) };
         entries.iter().find(|e| e.used && e.token == source as usize).copied()
     };
-    if let Some(mut identity) = copied {
-        identity.token = destination as usize;
+    let install_result = {
         let _guard = SECURITY_TOKEN_LOCK.lock();
         let entries = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
-        let slot = entries.iter().position(|e| e.used && e.token == destination as usize)
-            .or_else(|| entries.iter().position(|e| !e.used));
-        let Some(i) = slot else {
-            let _ = unsafe { se_internal_UnregisterTokenMetadata(destination) };
-            return 0xC000_009Au32 as i32;
-        };
-        entries[i] = identity;
+        if let Some(mut identity) = copied {
+            identity.token = destination as usize;
+            let slot = entries.iter().position(|e| e.used && e.token == destination as usize)
+                .or_else(|| entries.iter().position(|e| !e.used));
+            if let Some(i) = slot { entries[i] = identity; true } else { false }
+        } else {
+            if let Some(existing) = entries.iter_mut().find(|e| e.used && e.token == destination as usize) {
+                *existing = SecurityTokenIdentity::EMPTY;
+            }
+            true
+        }
+    };
+    if !install_result {
+        let _ = unsafe { se_internal_UnregisterTokenMetadata(destination) };
+        return 0xC000_009Au32 as i32;
     }
     STATUS_SUCCESS
 }
