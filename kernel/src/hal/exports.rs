@@ -447,70 +447,30 @@ pub extern "win64" fn hal_all_processors_started() -> u8 {
 
 
 /// Return the bootstrap DMA_ADAPTER for legacy drivers that request a
-/// DEVICE_DESCRIPTION. Only common-buffer operations are exposed today;
-/// transfer/map-register and scatter-gather callbacks remain null in the
-/// operations table, and the returned map-register count is therefore zero.
-pub unsafe extern "win64" fn hal_get_adapter(
-    device_description: *const core::ffi::c_void,
-    number_of_map_registers: *mut u32,
-) -> *mut core::ffi::c_void {
-    if device_description.is_null() || number_of_map_registers.is_null() {
-        return core::ptr::null_mut();
-    }
-    // DEVICE_DESCRIPTION begins with USHORT Version, USHORT Size on x64.
-    let header = unsafe { core::slice::from_raw_parts(device_description.cast::<u8>(), 4) };
-    let version = u16::from_le_bytes([header[0], header[1]]);
-    let size = u16::from_le_bytes([header[2], header[3]]);
-    if version > 1 || size < 32 {
-        return core::ptr::null_mut();
-    }
-    unsafe { number_of_map_registers.write(0); }
-    core::ptr::addr_of!(crate::dma::DMA_ADAPTER).cast_mut().cast()
+/// Legacy HalGetAdapter has no DEVICE_OBJECT argument in this ABI, so it cannot
+/// select a device isolation domain. Fail closed; drivers must use IoGetDmaAdapter.
+pub unsafe extern "win64" fn hal_get_adapter(_device_description:*const core::ffi::c_void,number_of_map_registers:*mut u32)->*mut core::ffi::c_void{
+ if !number_of_map_registers.is_null(){unsafe{number_of_map_registers.write(0)}}
+ core::ptr::null_mut()
 }
-
-/// Legacy HAL common-buffer entry point. The early x64 DMA path is limited to
-/// physically contiguous, identity-mapped memory below 4 GiB without an IOMMU.
-pub unsafe extern "win64" fn hal_allocate_common_buffer(
-    _adapter: *mut core::ffi::c_void,
-    length: u32,
-    logical_address: *mut i64,
-    _cache_enabled: u8,
-) -> *mut core::ffi::c_void {
-    if logical_address.is_null() || length == 0 { return core::ptr::null_mut(); }
-    match unsafe { crate::dma::allocate_common_buffer(length as usize, 0xffff_ffff) } {
-        Ok((virtual_address, physical_address)) => {
-            unsafe { logical_address.write(physical_address as i64); }
-            virtual_address.cast()
-        }
-        Err(_) => core::ptr::null_mut(),
-    }
+/// Allocate common memory mapped through the adapter's registered IOMMU domain.
+pub unsafe extern "win64" fn hal_allocate_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:*mut i64,_cache_enabled:u8)->*mut core::ffi::c_void{
+ if adapter.is_null()||logical_address.is_null()||length==0{return core::ptr::null_mut()}
+ match unsafe{crate::dma::iommu_allocate_common(adapter,length as usize,0xffff_ffff)}{
+  Ok((cpu,logical))=>{unsafe{logical_address.write(logical as i64)}cpu.cast()},
+  Err(_)=>core::ptr::null_mut()
+ }
 }
-
-/// Flush CPU memory ordering for a common buffer. x86-64 PCI DMA is cache
-/// coherent; MFENCE supplies the required CPU-side ordering on this platform.
-pub unsafe extern "win64" fn hal_flush_common_buffer(
-    _adapter: *mut core::ffi::c_void,
-    length: u32,
-    _logical_address: i64,
-    virtual_address: *mut core::ffi::c_void,
-    _write_to_device: u8,
-) {
-    let _ = unsafe { crate::dma::flush_common_buffer(virtual_address.cast(), length as usize) };
+/// Flush CPU/device visibility through the IOMMU backend; missing sync services fail closed.
+pub unsafe extern "win64" fn hal_flush_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:i64,virtual_address:*mut core::ffi::c_void,write_to_device:u8){
+ if adapter.is_null()||virtual_address.is_null()||length==0||logical_address<0{return}
+ let _=write_to_device;
+ let _=unsafe{crate::dma::flush_common_buffer_for_adapter(adapter,virtual_address.cast(),length as usize)};
 }
-
-/// Release a buffer allocated by hal_allocate_common_buffer. Adapter and cache
-/// policy are ignored on the current x86 coherent-memory, no-IOMMU path.
-pub unsafe extern "win64" fn hal_free_common_buffer(
-    _adapter: *mut core::ffi::c_void,
-    length: u32,
-    logical_address: i64,
-    virtual_address: *mut core::ffi::c_void,
-    _cache_enabled: u8,
-) {
-    if logical_address < 0 { return; }
-    let _ = unsafe {
-        crate::dma::free_common_buffer(virtual_address.cast(), logical_address as u64, length as usize)
-    };
+/// Unmap the logical aperture before releasing backing pages.
+pub unsafe extern "win64" fn hal_free_common_buffer(adapter:*mut core::ffi::c_void,length:u32,logical_address:i64,virtual_address:*mut core::ffi::c_void,_cache_enabled:u8){
+ if adapter.is_null()||virtual_address.is_null()||length==0||logical_address<0{return}
+ let _=unsafe{crate::dma::free_common_buffer_for_adapter(adapter,virtual_address.cast(),logical_address as u64,length as usize)};
 }
 
 /// The Windows x64 HAL forwards Ke routines to ntoskrnl. Keep the forwarding
