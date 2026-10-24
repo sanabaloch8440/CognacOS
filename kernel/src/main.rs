@@ -147,7 +147,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"UEFI boot services exited successfully.\r\n");
-        serial_write(b"Boot information version: 5\r\n");
+        serial_write(b"Boot information version: 6\r\n");
         if info.ap_trampoline_physical != 0
             && (info.ap_trampoline_physical >= 0x10_0000 || info.ap_trampoline_physical & 0xfff != 0)
         {
@@ -250,14 +250,22 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             let data_end = core::ptr::addr_of!(__data_end) as u64;
             let bss_start = core::ptr::addr_of!(__bss_start) as u64;
             let bss_end = core::ptr::addr_of!(__bss_end) as u64;
-            memory::validate_translation_range(info.pml4_physical, text_start,
-                core::ptr::addr_of!(__text_phys_start) as u64, text_end - text_start).is_ok()
-            && memory::validate_translation_range(info.pml4_physical, ro_start,
-                core::ptr::addr_of!(__rodata_phys_start) as u64, ro_end - ro_start).is_ok()
-            && memory::validate_translation_range(info.pml4_physical, data_start,
-                core::ptr::addr_of!(__data_phys_start) as u64, data_end - data_start).is_ok()
-            && memory::validate_translation_range(info.pml4_physical, bss_start,
-                core::ptr::addr_of!(__bss_phys_start) as u64, bss_end - bss_start).is_ok()
+            let sections = &info.kernel_physical_sections;
+            let count_ok = info.kernel_physical_section_count >= 3
+                && info.kernel_physical_section_count <= sections.len();
+            count_ok
+                && sections[0].0 < sections[0].1
+                && sections[1].0 < sections[1].1
+                && sections[2].0 < sections[2].1
+                && memory::validate_translation_range(info.pml4_physical, text_start,
+                    sections[0].0, text_end - text_start).is_ok()
+                && memory::validate_translation_range(info.pml4_physical, ro_start,
+                    sections[1].0, ro_end - ro_start).is_ok()
+                && memory::validate_translation_range(info.pml4_physical, data_start,
+                    sections[2].0, data_end - data_start).is_ok()
+                && memory::validate_translation_range(info.pml4_physical, bss_start,
+                    sections[2].0.checked_add(bss_start - data_start).unwrap_or(u64::MAX),
+                    bss_end - bss_start).is_ok()
         };
         let high_guard_unmapped = unsafe {
             memory::inspect_mapping(info.pml4_physical, info.kernel_stack_virtual_guard).is_err()
