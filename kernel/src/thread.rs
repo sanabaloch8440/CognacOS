@@ -268,6 +268,8 @@ pub fn timer_preemption_self_test()->bool{
         && (!PREEMPTION_TEST_BUSY_DONE.load(core::sync::atomic::Ordering::Acquire)
             ||!PREEMPTION_TEST_OBSERVED.load(core::sync::atomic::Ordering::Acquire)){
         let _=yield_current();
+        if PREEMPTION_TEST_BUSY_DONE.load(core::sync::atomic::Ordering::Acquire)
+            && !PREEMPTION_TEST_OBSERVED.load(core::sync::atomic::Ordering::Acquire){break}
         core::hint::spin_loop();spins+=1;
     }
     let ok=PREEMPTION_TEST_BUSY_DONE.load(core::sync::atomic::Ordering::Acquire)
