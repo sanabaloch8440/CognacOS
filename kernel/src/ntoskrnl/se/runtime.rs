@@ -1493,3 +1493,31 @@ mod se_sacl_audit_tests {
         assert_eq!(unsafe { se_internal_UnregisterTokenSids(token) }, STATUS_SUCCESS);
     }
 }
+
+
+#[cfg(test)]
+mod se_token_duplication_tests {
+    use super::*;
+    #[test]
+    fn duplicate_copies_sid_restriction_and_privilege_metadata() {
+        let mut source_storage = 0u64;
+        let mut destination_storage = 0u64;
+        let source = (&mut source_storage as *mut u64).cast::<c_void>();
+        let destination = (&mut destination_storage as *mut u64).cast::<c_void>();
+        let sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0];
+        let ptrs = [sid.as_ptr()];
+        let lengths = [12u8];
+        assert_eq!(unsafe { se_internal_RegisterTokenMetadata(source, 1, 0, 3, 1 << 9, 4, 0x55) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_RegisterTokenSids(source, ptrs.as_ptr(), lengths.as_ptr(), 1) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_DuplicateTokenSecurity(source, destination, 2, 2) }, STATUS_SUCCESS);
+        assert!(token_contains_sid(destination, &sid));
+        assert_eq!(unsafe { SeTokenType(destination) }, 2);
+        assert_eq!(unsafe { SeTokenImpersonationLevel(destination) }, 2);
+        assert_eq!(unsafe { se_internal_TokenHasPrivilege(destination, 9) }, 1);
+        assert_eq!(unsafe { SeQuerySessionIdToken(destination, &mut { let mut value = 0u32; value }) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_UnregisterTokenSids(source) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_UnregisterTokenSids(destination) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(source) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(destination) }, STATUS_SUCCESS);
+    }
+}
