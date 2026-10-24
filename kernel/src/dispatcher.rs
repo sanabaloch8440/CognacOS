@@ -59,6 +59,31 @@ pub fn wake_all(object:u64,out:&mut[u64])->usize{
 /// Expire waits whose finite absolute deadline is <= now; caller readies threads.
 pub fn expire(now:u64,out:&mut[u64])->usize{if out.is_empty(){return 0}let mut s=QUEUES.lock();let mut n=0;for r in s.records.iter_mut(){if n==out.len(){break}if r.state==WaitState::Queued&&r.deadline!=0&&r.deadline<=now{out[n]=r.thread;n+=1;*r=Record::EMPTY}}n}
 pub fn pending_count()->usize{QUEUES.lock().records.iter().filter(|r|r.state==WaitState::Queued).count()}
+/// Cancel every dispatcher registration belonging to an alert-interrupted thread.
+/// Generations make late timer/signal attempts harmless after these slots are reused.
+pub fn cancel_thread_waits(thread:u64)->usize{
+    if thread==0{return 0}
+    let mut count=0usize;
+    {
+        let mut queues=QUEUES.lock();
+        for record in queues.records.iter_mut(){
+            if record.state==WaitState::Queued&&record.thread==thread{
+                *record=Record::EMPTY;count+=1;
+            }
+        }
+    }
+    let mut tokens=[0u64;MAX_GROUP_OBJECTS];
+    let token_count={
+        let mut groups=GROUPS.lock();
+        let Some(group)=groups.groups.iter_mut().find(|g|g.active&&g.thread==thread) else{return count};
+        let n=group.token_count.min(tokens.len());
+        tokens[..n].copy_from_slice(&group.tokens[..n]);
+        *group=WaitGroup::EMPTY;n
+    };
+    for token in tokens[..token_count].iter().copied(){let _=cancel(token);}
+    count
+}
+
 #[cfg(test)] mod tests { use super::*; #[test] fn fifo_and_cancel(){let a=enqueue(0x100,0x11,0).unwrap();let b=enqueue(0x100,0x22,0).unwrap();assert_eq!(wake_one(0x100),Some(0x11));assert_eq!(cancel(b),Ok(0x22));assert_eq!(cancel(a),Err(WaitError::StaleToken));} #[test] fn deadline(){let _=enqueue(0x200,0x31,100).unwrap();let _=enqueue(0x200,0x32,0).unwrap();let mut out=[0;4];assert_eq!(expire(99,&mut out),0);assert_eq!(expire(100,&mut out),1);assert_eq!(out[0],0x31);assert_eq!(wake_one(0x200),Some(0x32));} }
 
 /// Expire waits while preserving the object key so delay timers can distinguish
