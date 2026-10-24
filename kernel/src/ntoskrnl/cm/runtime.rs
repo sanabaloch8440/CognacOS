@@ -78,9 +78,9 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
  let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
  let _g=LOCK.lock();let s=state();
  if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n])){unsafe{*out=handle(k.id);if !disposition.is_null(){*disposition=2;}}return STATUS_SUCCESS;}
- let Some(slot)=s.keys.iter_mut().find(|k|!k.used||k.deleted)else{return STATUS_INSUFFICIENT_RESOURCES;};
+ let Some(index)=s.keys.iter().position(|k|!k.used||k.deleted)else{return STATUS_INSUFFICIENT_RESOURCES;};
  let id=s.next_id;s.next_id=s.next_id.wrapping_add(1).max(1);
- *slot=Key{used:true,id,parent,name,name_len:n as u16,deleted:false};
+ s.keys[index]=Key{used:true,id,parent,name,name_len:n as u16,deleted:false};
  unsafe{*out=handle(id);if !disposition.is_null(){*disposition=1;}}
  let _=desired_access; STATUS_SUCCESS
 }
