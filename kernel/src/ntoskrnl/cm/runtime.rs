@@ -81,7 +81,7 @@ fn key_from_handle(s:&State,h:*mut core::ffi::c_void)->Option<u32>{
  #[cfg(not(test))] {
   let ty=crate::ntoskrnl::ob::runtime::ensure_type(&[b'R' as u16,b'e' as u16,b'g' as u16,b'i' as u16,b's' as u16,b't' as u16,b'r' as u16,b'y' as u16,b'K' as u16,b'e' as u16,b'y' as u16],1,2,4,7,u32::MAX).ok()?;
   let body=crate::ntoskrnl::ob::runtime::reference_by_handle(h,0,ty,crate::ntoskrnl::ob::runtime::current_owner(),true).ok()?;
-  let result=s.keys.iter().find(|k|k.used&&!k.deleted&&core::ptr::addr_of!(**k) as *mut Key as *mut core::ffi::c_void==body).map(|k|k.id);
+  let result=s.keys.iter().find(|k|k.used&&!k.deleted&&core::ptr::addr_of!(*k) as *mut Key as *mut core::ffi::c_void==body).map(|k|k.id);
   let _=crate::ntoskrnl::ob::runtime::dereference_body(body);result
  }
 }
