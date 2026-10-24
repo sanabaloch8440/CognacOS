@@ -273,7 +273,7 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [ ] Replace fixed-capacity timer/DPC/mutant/queue side tables with lifetime-safe executive objects or dynamic bounded allocation.
 - [ ] Add concurrent tests for wait-any cancellation, wait-all reservation, queue handoff, DPC cancellation/flush, and timer cancel-vs-expire races.
 
-**Scope note:** The comparison now lists 129 Ke export names. Its current project-defined score is 53.9% (100% source-level declaration coverage and 7.8% strict behavior matches in the currently advertised topology); this is a scoped progress metric, not a Microsoft metric or a Windows driver-compatibility claim.
+**Scope note:** The comparison now lists 132 Ke export names. Its current project-defined score is 53.9% (100% source-level declaration coverage and 7.8% strict behavior matches in the currently advertised topology); this is a scoped progress metric, not a Microsoft metric or a Windows driver-compatibility claim.
 
 
 ## Additional Ke export implementation batch (2026-10-24)
@@ -284,6 +284,6 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Implement KDEVICE_QUEUE initialization, FIFO insertion, keyed insertion, busy-state transitions, and removal.
 - [x] Add per-thread KeSetPriorityThread, KeQueryPriorityThread, and KeSetBasePriorityThread metadata with Windows priority-range validation; scheduler priority ordering/boosts remain incomplete.
 - [x] Implement terminal KeBugCheck/KeBugCheckEx paths that record code/parameters and halt with interrupts disabled; crash dump/diagnostic reporting remains incomplete.
-- [x] Wire these 13 names through ntoskrnl import resolution and update the Ke comparison to 129 callable names.
+- [x] Wire these 13 names through ntoskrnl import resolution and update the Ke comparison to 132 callable names.
 - [ ] Verify the latest Rust build, UEFI image validation, OVMF/QEMU boot, and 2/4/8-vCPU matrix before marking this implementation batch validated.
 - [ ] Implement remaining Ke interrupt-spin-lock, timer2, APC, cross-CPU generic DPC/IPI, NMI callback, processor-change callback, interrupt synchronization, logical-topology, affinity, process-attach, and extended-state APIs.
