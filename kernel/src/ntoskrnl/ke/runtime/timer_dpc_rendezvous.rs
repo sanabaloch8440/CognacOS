@@ -602,7 +602,7 @@ pub(crate) fn timer_dpc_rundown_self_test()->bool{
     DPC_RUNDOWN_TEST_COUNT.store(0,Ordering::Release);
     unsafe{ke_initialize_dpc(dpc,Some(dpc_rundown_test_routine),core::ptr::null_mut());}
     let cpu=cpu_slot();let prior=CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL,Ordering::AcqRel);
-    for _ in 0..64{
+    for iteration in 0..64{
         if unsafe{ke_insert_queue_dpc(dpc,core::ptr::null_mut(),core::ptr::null_mut())}==0
             ||unsafe{ke_remove_queue_dpc(dpc)}==0{
             CURRENT_IRQL[cpu].store(prior,Ordering::Release);return false;
@@ -612,9 +612,9 @@ pub(crate) fn timer_dpc_rundown_self_test()->bool{
         }
         CURRENT_IRQL[cpu].store(prior,Ordering::Release);
         dispatch_queued_dpcs();
-        if DPC_RUNDOWN_TEST_COUNT.load(Ordering::Acquire)!=(_+1)
+        if DPC_RUNDOWN_TEST_COUNT.load(Ordering::Acquire)!=(iteration+1)
             ||DPC_IN_FLIGHT.load(Ordering::Acquire)!=0{return false}
-        if _!=63{CURRENT_IRQL[cpu].store(DISPATCH_LEVEL,Ordering::Release);}
+        if iteration!=63{CURRENT_IRQL[cpu].store(DISPATCH_LEVEL,Ordering::Release);}
     }
     let timer=core::ptr::addr_of_mut!(TIMER_DPC_CANCEL_TEST_TIMER);
     unsafe{ke_initialize_timer_ex(timer,0);}
