@@ -281,7 +281,7 @@ pub fn allocate_pages_at(address:u64,pages:usize)->Result<*mut u8,Error>{
   mapped+=1;
  }
  if mapped!=pages{
-  for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,address+n as u64*PAGE)}{let _=unsafe{crate::memory::free_page(pa)};}}
+  for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,address+n as u64*PAGE)}{synchronize_kernel_tlb();let _=unsafe{crate::memory::free_page(pa)};}}
   for n in start..start+pages{bits[n/64]&=!(1u64<<(n%64));}
   return Err(Error::NoPhysicalMemory)
  }
