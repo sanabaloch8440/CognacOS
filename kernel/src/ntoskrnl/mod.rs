@@ -88,6 +88,10 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(ke::runtime::ke_get_processor_number_from_index as usize)
   } else if requested.eq_ignore_ascii_case(b"KeQueryNodeActiveAffinity2") {
    Some(ke::runtime::ke_query_node_active_affinity2 as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeRegisterNmiCallback") {
+   Some(ke::runtime::ke_register_nmi_callback as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeDeregisterNmiCallback") {
+   Some(ke::runtime::ke_deregister_nmi_callback as usize)
   } else if requested.eq_ignore_ascii_case(b"KeStackAttachProcess") {
    Some(ke::runtime::ke_stack_attach_process as usize)
   } else if requested.eq_ignore_ascii_case(b"KeUnstackDetachProcess") {
