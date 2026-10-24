@@ -1011,6 +1011,37 @@ pub unsafe extern "win64" fn ke_bug_check_ex(code:u32,p1:usize,p2:usize,p3:usize
  loop{unsafe{core::arch::asm!("cli","hlt",options(nomem,nostack));}}
 }
 
+
+/// Limited scheduler priority metadata, keyed by opaque RdotOS thread tokens.
+/// Valid Windows priorities are 0..31; quantum boosts and scheduler reordering
+/// are not yet represented by the cooperative scheduler.
+const MAX_THREAD_PRIORITIES:usize=128;
+#[derive(Clone,Copy)] struct ThreadPriorityRecord{id:u64,base:i8,current:i8}
+impl ThreadPriorityRecord{const EMPTY:Self=Self{id:0,base:8,current:8};}
+struct ThreadPriorityTable{records:[ThreadPriorityRecord;MAX_THREAD_PRIORITIES]}
+impl ThreadPriorityTable{const fn new()->Self{Self{records:[ThreadPriorityRecord::EMPTY;MAX_THREAD_PRIORITIES]}}}
+static THREAD_PRIORITIES:crate::hal::IrqSpinLock<ThreadPriorityTable>=crate::hal::IrqSpinLock::new(ThreadPriorityTable::new());
+fn priority_id(thread:*mut core::ffi::c_void)->Option<u64>{if thread.is_null(){crate::thread::current_thread_id()}else{crate::thread::thread_id_from_object(thread)}}
+pub unsafe extern "win64" fn ke_query_priority_thread(thread:*mut core::ffi::c_void)->i8{
+ let Some(id)=priority_id(thread) else{return 8};let table=THREAD_PRIORITIES.lock();
+ table.records.iter().find(|r|r.id==id).map(|r|r.current).unwrap_or(8)
+}
+pub unsafe extern "win64" fn ke_set_priority_thread(thread:*mut core::ffi::c_void,priority:i8)->i8{
+ let Some(id)=priority_id(thread) else{return 8};if !(0..=31).contains(&priority){return unsafe{ke_query_priority_thread(thread)}}
+ let mut table=THREAD_PRIORITIES.lock();
+ let Some(slot)=table.records.iter().position(|r|r.id==id).or_else(||table.records.iter().position(|r|r.id==0)) else{return 8};
+ let old=if table.records[slot].id==id{table.records[slot].current}else{8};
+ let base=if table.records[slot].id==id{table.records[slot].base}else{priority};
+ table.records[slot]=ThreadPriorityRecord{id,base,current:priority};old
+}
+pub unsafe extern "win64" fn ke_set_base_priority_thread(thread:*mut core::ffi::c_void,increment:i32)->i8{
+ let current=unsafe{ke_query_priority_thread(thread)};
+ let base=(current as i32+increment).clamp(0,31) as i8;
+ let _=unsafe{ke_set_priority_thread(thread,base)};
+ if let Some(id)=priority_id(thread){let mut table=THREAD_PRIORITIES.lock();if let Some(r)=table.records.iter_mut().find(|r|r.id==id){r.base=base;}}
+ base
+}
+
 /// Never busy-loops when the thread runtime or calibrated delay source is absent.
 pub unsafe extern "win64" fn ke_delay_execution_thread(
     wait_mode: i32,
