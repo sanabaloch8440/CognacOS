@@ -1249,8 +1249,8 @@ struct TimerTable { records: [TimerRecord; MAX_TIMER_OBJECTS] }
 impl TimerTable { const fn new()->Self { Self { records:[TimerRecord::EMPTY;MAX_TIMER_OBJECTS] } } }
 static TIMERS: crate::hal::IrqSpinLock<TimerTable> = crate::hal::IrqSpinLock::new(TimerTable::new());
 #[derive(Clone, Copy)]
-struct DpcRecord { object: usize, routine: usize, context: usize, arg1: usize, arg2: usize, active: bool, queued: bool }
-impl DpcRecord { const EMPTY: Self = Self { object:0,routine:0,context:0,arg1:0,arg2:0,active:false,queued:false }; }
+struct DpcRecord { object: usize, routine: usize, context: usize, arg1: usize, arg2: usize, target_cpu: usize, threaded: bool, active: bool, queued: bool }
+impl DpcRecord { const EMPTY: Self = Self { object:0,routine:0,context:0,arg1:0,arg2:0,target_cpu:0,threaded:false,active:false,queued:false }; }
 struct DpcTable { records:[DpcRecord;MAX_DPC_OBJECTS] }
 impl DpcTable { const fn new()->Self { Self { records:[DpcRecord::EMPTY;MAX_DPC_OBJECTS] } } }
 static DPCS: crate::hal::IrqSpinLock<DpcTable> = crate::hal::IrqSpinLock::new(DpcTable::new());
@@ -1323,7 +1323,27 @@ pub unsafe extern "win64" fn ke_initialize_dpc(dpc:*mut core::ffi::c_void,routin
     let mut table=DPCS.lock();
     let slot=table.records.iter().position(|r|r.object==dpc as usize)
         .or_else(||table.records.iter().position(|r|!r.active));
-    if let Some(i)=slot{table.records[i]=DpcRecord{object:dpc as usize,routine:routine.map(|f|f as usize).unwrap_or(0),context:context as usize,arg1:0,arg2:0,active:true,queued:false};}
+    if let Some(i)=slot{table.records[i]=DpcRecord{object:dpc as usize,routine:routine.map(|f|f as usize).unwrap_or(0),context:context as usize,arg1:0,arg2:0,target_cpu:cpu_slot(),threaded:false,active:true,queued:false};}
+}
+/// Threaded DPCs share the public callback ABI; execution remains at DISPATCH_LEVEL
+/// until the scheduler grows a dedicated PASSIVE_LEVEL worker queue.
+pub unsafe extern "win64" fn ke_initialize_threaded_dpc(dpc:*mut core::ffi::c_void,routine:Option<DpcRoutine>,context:*mut core::ffi::c_void){
+    unsafe{ke_initialize_dpc(dpc,routine,context);}
+    if let Some(index)=dpc_slot(dpc as usize){DPCS.lock().records[index].threaded=true;}
+}
+pub unsafe extern "win64" fn ke_set_target_processor_dpc(dpc:*mut core::ffi::c_void,processor:u8){
+    if dpc.is_null()||processor as usize>=crate::hal::MAX_CPUS||crate::hal::cpu_state(processor as usize).ok()!=Some(crate::hal::CPU_ONLINE){return}
+    let mut table=DPCS.lock();
+    if let Some(record)=table.records.iter_mut().find(|r|r.active&&r.object==dpc as usize){record.target_cpu=processor as usize;}
+}
+pub unsafe extern "win64" fn ke_set_target_processor_dpc_ex(dpc:*mut core::ffi::c_void,processor:*const ProcessorNumber){
+    if processor.is_null(){return}
+    let number=unsafe{&*processor};
+    if number.group!=0{return}
+    unsafe{ke_set_target_processor_dpc(dpc,number.number);}
+}
+pub unsafe extern "win64" fn ke_is_executing_dpc()->u8{
+    DPC_DISPATCHING[cpu_slot()].load(Ordering::Acquire) as u8
 }
 pub unsafe extern "win64" fn ke_insert_queue_dpc(dpc:*mut core::ffi::c_void,arg1:*mut core::ffi::c_void,arg2:*mut core::ffi::c_void)->u8{
     if dpc.is_null(){return 0}
@@ -1348,7 +1368,7 @@ fn dispatch_queued_dpcs(){
     for _ in 0..MAX_DPC_OBJECTS {
         let callback={
             let mut table=DPCS.lock();
-            let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued) else{break};
+            let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued&&r.target_cpu==cpu) else{break};
             record.queued=false;
             if record.routine==0{None}else{Some((record.routine,record.object,record.context,record.arg1,record.arg2))}
         };
