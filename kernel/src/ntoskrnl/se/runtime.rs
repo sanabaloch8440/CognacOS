@@ -826,28 +826,24 @@ static mut SECURITY_TOKEN_IDENTITIES: [SecurityTokenIdentity; SECURITY_TOKEN_SLO
 pub(crate) unsafe fn se_internal_RegisterTokenSids(
     token: *mut c_void, sid_ptrs: *const *const u8, lengths: *const u8, count: u32,
 ) -> i32 {
-    if token.is_null() || count == 0 || count as usize > SECURITY_TOKEN_SIDS
-        || sid_ptrs.is_null() || lengths.is_null() { return STATUS_INVALID_PARAMETER; }
-    let mut entry = SecurityTokenIdentity { used: true, token: token as usize, ..SecurityTokenIdentity::EMPTY };
-    for i in 0..count as usize {
-        let ptr = unsafe { core::ptr::read_unaligned(sid_ptrs.add(i)) };
-        let len = unsafe { core::ptr::read_unaligned(lengths.add(i)) } as usize;
-        if ptr.is_null() || len < 8 || len > SECURITY_SID_BYTES { return STATUS_INVALID_PARAMETER; }
-        let sid = unsafe { core::slice::from_raw_parts(ptr, len) };
-        if bounded_sid_size(sid) != Some(len) { return STATUS_INVALID_PARAMETER; }
-        entry.lengths[i] = len as u8;
-        entry.sids[i][..len].copy_from_slice(sid);
-    }
-    entry.count = count as u8;
+    if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some((sids, sizes)) = (unsafe { copy_sid_set(sid_ptrs, lengths, count) }) else {
+        return STATUS_INVALID_PARAMETER;
+    };
     let _guard = SECURITY_TOKEN_LOCK.lock();
     let entries = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
     let slot = entries.iter().position(|e| e.used && e.token == token as usize)
         .or_else(|| entries.iter().position(|e| !e.used));
     let Some(i) = slot else { return 0xC000_009Au32 as i32; };
+    let mut entry = if entries[i].used { entries[i] } else { SecurityTokenIdentity::EMPTY };
+    entry.used = true;
+    entry.token = token as usize;
+    entry.count = count as u8;
+    entry.lengths = sizes;
+    entry.sids = sids;
     entries[i] = entry;
     STATUS_SUCCESS
 }
-
 
 unsafe fn copy_sid_set(
     sid_ptrs: *const *const u8, lengths: *const u8, count: u32,
