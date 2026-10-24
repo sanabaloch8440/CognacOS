@@ -36,7 +36,7 @@ def u64(data, off):
     return struct.unpack_from("<Q", data, off)[0]
 
 
-def convert(blob):
+def convert(blob, image_base=BASE, dll=False):
     if len(blob) < 64 or blob[:4] != b"\x7fELF":
         raise ValueError("input is not ELF")
     if blob[4:7] != b"\x02\x01\x01" or u16(blob, 16) != 2 or u16(blob, 18) != 62:
@@ -59,9 +59,9 @@ def convert(blob):
             continue
         if not memsz or filesz > memsz or p_offset + filesz > len(blob):
             raise ValueError("invalid PT_LOAD range")
-        if vaddr < BASE or vaddr + memsz > 0xFFFFFFFFFFFFFFFF:
+        if vaddr < image_base or vaddr + memsz > 0xFFFFFFFFFFFFFFFF:
             raise ValueError("PT_LOAD outside fixed high-half image")
-        if (vaddr - BASE) & (PAGE - 1):
+        if (vaddr - image_base) & (PAGE - 1):
             raise ValueError("PT_LOAD RVA must be page aligned")
         if filesz and (p_offset & (FILE_ALIGN - 1)) != ((vaddr - BASE) & (FILE_ALIGN - 1)):
             # This is not required for PE raw layout, but ELF segment congruence
@@ -78,8 +78,8 @@ def convert(blob):
     if not segments or not entry_ok:
         raise ValueError("no loadable executable segment contains entry point")
     segments.sort(key=lambda s: s["vaddr"])
-    first_rva = min(s["vaddr"] - BASE for s in segments)
-    if BASE & 0xFFFF or first_rva < PAGE or first_rva & (PAGE - 1):
+    first_rva = min(s["vaddr"] - image_base for s in segments)
+    if image_base & 0xFFFF or first_rva < PAGE or first_rva & (PAGE - 1):
         raise ValueError("image base must be 64 KiB aligned with a nonzero section RVA")
 
     # PE headers use fixed offsets and section raw data is laid out contiguously.
@@ -89,7 +89,7 @@ def convert(blob):
     raw_cursor = headers_size
     section_headers = []
     for i, s in enumerate(segments):
-        s["rva"] = s["vaddr"] - BASE
+        s["rva"] = s["vaddr"] - image_base
         s["raw_size"] = align(s["filesz"], FILE_ALIGN) if s["filesz"] else 0
         s["raw_offset"] = raw_cursor if s["raw_size"] else 0
         raw_cursor += s["raw_size"]
@@ -112,14 +112,14 @@ def convert(blob):
     out[0:2] = b"MZ"
     struct.pack_into("<I", out, 0x3C, peoff)
     out[peoff:peoff + 4] = b"PE\0\0"
-    struct.pack_into("<HHIIIHH", out, peoff + 4, 0x8664, len(segments), 0, 0, 0, optional_size, 0x0022)
+    struct.pack_into("<HHIIIHH", out, peoff + 4, 0x8664, len(segments), 0, 0, 0, optional_size, 0x0022 | (0x2000 if dll else 0))
     o = peoff + 24
     struct.pack_into("<HBBIIIII", out, o, 0x20B, 0, 0,
                      sum(s["raw_size"] for s in segments if s["flags"] & PF_X),
                      sum(s["raw_size"] for s in segments if not s["flags"] & PF_X),
                      sum(max(0, s["memsz"] - s["filesz"]) for s in segments),
                      entry - BASE, min(s["rva"] for s in segments if s["flags"] & PF_X))
-    struct.pack_into("<QII", out, o + 24, BASE, SECT_ALIGN, FILE_ALIGN)
+    struct.pack_into("<QII", out, o + 24, image_base, SECT_ALIGN, FILE_ALIGN)
     struct.pack_into("<HHHHHH", out, o + 40, 6, 0, 0, 0, 6, 0)
     struct.pack_into("<IIII", out, o + 52, 0, size_image, headers_size, 0)
     struct.pack_into("<HH", out, o + 68, 1, 0x0100)  # IMAGE_SUBSYSTEM_NATIVE, NX_COMPAT
@@ -140,11 +140,13 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("input")
     parser.add_argument("output")
+    parser.add_argument("--image-base", type=lambda v: int(v, 0), default=BASE)
+    parser.add_argument("--dll", action="store_true", help="mark the PE image as a native driver DLL")
     args = parser.parse_args()
     try:
         with open(args.input, "rb") as f:
             source = f.read()
-        result = convert(source)
+        result = convert(source, image_base=args.image_base, dll=args.dll)
         with open(args.output, "wb") as f:
             f.write(result)
         print(f"PE32+ kernel image written: {len(result)} bytes")
