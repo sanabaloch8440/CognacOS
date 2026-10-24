@@ -18,6 +18,11 @@ const STATUS_ACCESS_VIOLATION: i32 = 0xC000_0005u32 as i32;
 const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
 const STATUS_PARTIAL_COPY: i32 = 0x8000_000Du32 as i32;
 
+#[inline]
+fn entry_allowed(entry: u64, require_write: bool) -> bool {
+    entry & PRESENT != 0 && entry & USER == 0 && (!require_write || entry & WRITE != 0)
+}
+
 /// Translate a canonical virtual address through the active x86-64 page tables.
 /// The bootstrap maps the physical pages used by page tables into the low 4 GiB.
 fn translate(va: u64, require_write: bool) -> Option<u64> {
@@ -34,10 +39,10 @@ fn translate(va: u64, require_write: bool) -> Option<u64> {
     let i2 = ((va >> 21) & 0x1ff) as usize;
     let i1 = ((va >> 12) & 0x1ff) as usize;
     let e4 = unsafe { root.add(i4).read_volatile() };
-    if e4 & PRESENT == 0 || e4 & USER != 0 || (require_write && e4 & WRITE == 0) { return None; }
+    if !entry_allowed(e4, require_write) { return None; }
     let pdpt = (e4 & ADDRESS_MASK) as *const u64;
     let e3 = unsafe { pdpt.add(i3).read_volatile() };
-    if e3 & PRESENT == 0 || e3 & USER != 0 || (require_write && e3 & WRITE == 0) { return None; }
+    if !entry_allowed(e3, require_write) { return None; }
     if e3 & LARGE != 0 {
         // Bits 13..29 are reserved in a 1 GiB leaf (bit 12 is PAT).
         if e3 & 0x0000_0000_3fff_e000 != 0 { return None; }
@@ -45,7 +50,7 @@ fn translate(va: u64, require_write: bool) -> Option<u64> {
     }
     let pd = (e3 & ADDRESS_MASK) as *const u64;
     let e2 = unsafe { pd.add(i2).read_volatile() };
-    if e2 & PRESENT == 0 || e2 & USER != 0 || (require_write && e2 & WRITE == 0) { return None; }
+    if !entry_allowed(e2, require_write) { return None; }
     if e2 & LARGE != 0 {
         // Bits 13..20 are reserved in a 2 MiB leaf (bit 12 is PAT).
         if e2 & 0x0000_0000_001f_e000 != 0 { return None; }
@@ -53,7 +58,7 @@ fn translate(va: u64, require_write: bool) -> Option<u64> {
     }
     let pt = (e2 & ADDRESS_MASK) as *const u64;
     let e1 = unsafe { pt.add(i1).read_volatile() };
-    if e1 & PRESENT == 0 || e1 & USER != 0 || (require_write && e1 & WRITE == 0) { return None; }
+    if !entry_allowed(e1, require_write) { return None; }
     Some((e1 & ADDRESS_MASK) | (va & (PAGE - 1)))
 }
 
@@ -291,8 +296,11 @@ mod tests {
     fn descriptor_permissions_are_supervisor_only() {
         // Every paging level must reject user-accessible entries for kernel
         // translation, even when the leaf itself is supervisor-only.
-        assert_ne!(USER & PRESENT, 0);
-        assert_eq!(USER & PRESENT, 0);
+        assert!(entry_allowed(PRESENT, false));
+        assert!(!entry_allowed(PRESENT | USER, false));
+        assert!(!entry_allowed(PRESENT | USER | WRITE, true));
+        assert!(!entry_allowed(PRESENT, true));
+        assert!(entry_allowed(PRESENT | WRITE, true));
     }
 
     #[test]
