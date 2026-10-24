@@ -128,3 +128,5 @@ mod abi_layout_tests {
         assert_eq!(core::mem::offset_of!(ProcessorChangeNotifyContext, reserved), 12);
     }
 }
+
+include!("runtime/nmi_callbacks.rs");
