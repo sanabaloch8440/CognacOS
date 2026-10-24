@@ -438,9 +438,9 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 
 ### Ext filesystem and NT I/O integration (2026-10-24)
 
-- [x] Remove the third-party Ext3Fsd submodule declaration and stop depending on its Windows driver sources.
+- [x] Remove the third-party third-party filesystem driver submodule declaration and stop depending on its Windows driver sources.
 - [x] Move the native Rust ext-family parser into `drivers/ext4` and configure CI to test that crate instead of the deleted `kernel/src/extfs.rs` path.
-- [ ] Remove the orphaned `third_party/Ext3Fsd` gitlink entry from the repository tree if it remains after submodule metadata removal.
+- [x] Remove the third-party filesystem-driver submodule declaration, gitlink, and source-inventory document from the repository tree.
 - [ ] Replace the bounded internal IRP test harness with ABI-correct WDM `DEVICE_OBJECT`, `DRIVER_OBJECT`, `IRP`, `IO_STACK_LOCATION`, `IoCreateDevice`, `IoCallDriver`, `IoCompleteRequest`, and cancel/rundown semantics; current routines are not yet safe for arbitrary WDK binaries.
 - [ ] Add a real block-device/partition contract and route filesystem read/write/flush requests through IRPs, with bounded buffers, alignment checks, completion status propagation, and device removal rundown.
 - [ ] Add ext4 VFS mount/file objects, pathname lookup, inode/directory operations, allocation, metadata checksums, journal recovery/commit, and power-loss tests before enabling general writable mounts.
