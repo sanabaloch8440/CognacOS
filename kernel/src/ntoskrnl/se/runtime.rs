@@ -1514,7 +1514,9 @@ mod se_token_duplication_tests {
         assert_eq!(unsafe { SeTokenType(destination) }, 2);
         assert_eq!(unsafe { SeTokenImpersonationLevel(destination) }, 2);
         assert_eq!(unsafe { se_internal_TokenHasPrivilege(destination, 9) }, 1);
-        assert_eq!(unsafe { SeQuerySessionIdToken(destination, &mut { let mut value = 0u32; value }) }, STATUS_SUCCESS);
+        let mut session = 0u32;
+        assert_eq!(unsafe { SeQuerySessionIdToken(destination, &mut session) }, STATUS_SUCCESS);
+        assert_eq!(session, 4);
         assert_eq!(unsafe { se_internal_UnregisterTokenSids(source) }, STATUS_SUCCESS);
         assert_eq!(unsafe { se_internal_UnregisterTokenSids(destination) }, STATUS_SUCCESS);
         assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(source) }, STATUS_SUCCESS);
