@@ -61,9 +61,15 @@ pub unsafe extern "win64" fn mm_get_physical_address(address: *const c_void) -> 
 
 #[inline]
 pub unsafe extern "win64" fn mm_get_virtual_for_physical(address: u64) -> *mut c_void {
-    // The current kernel bootstrap provides a low-4-GiB identity map only.
-    if address >= 0x1_0000_0000 { return core::ptr::null_mut(); }
-    if translate(address, false).is_some() { address as *mut c_void } else { core::ptr::null_mut() }
+    // Prefer the existing low identity alias; high RAM is represented only
+    // through the validated, demand-mapped RAM direct-map window.
+    if address < 0x1_0000_0000 && translate(address, false).is_some() {
+        return address as *mut c_void;
+    }
+    if let Some(alias) = crate::memory::direct_map_address(address) {
+        return alias as *mut c_void;
+    }
+    core::ptr::null_mut()
 }
 
 #[inline]
@@ -96,33 +102,37 @@ pub unsafe extern "win64" fn mm_copy_memory(
         } else { STATUS_INVALID_PARAMETER };
     }
     let Some(end) = source_address.checked_add(length) else { return STATUS_INVALID_PARAMETER; };
-    if flags == 1 && end > 0x1_0000_0000 { return STATUS_INVALID_PARAMETER; }
-    let Some(dest_end) = (destination as u64).checked_add(length) else { return STATUS_INVALID_PARAMETER; };
+    if flags == 1 && end > crate::memory::DIRECT_MAP_PHYSICAL_LIMIT {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let Some(_dest_end) = (destination as u64).checked_add(length) else { return STATUS_INVALID_PARAMETER; };
     let mut done = 0u64;
     while done < length {
-        let src_va = match source_address.checked_add(done) { Some(v) => v, None => break };
+        let source = match source_address.checked_add(done) { Some(v) => v, None => break };
         let dst_va = match (destination as u64).checked_add(done) { Some(v) => v, None => break };
-        let src_pa = if flags == 1 {
-            // Physical source accesses use the kernel's identity map.
-            if src_va >= 0x1_0000_0000 { break; }
-            src_va
+        let (src_ptr, source_page_offset) = if flags == 1 {
+            // Never dereference a physical frame number as a virtual pointer.
+            // Low pages may use their verified identity alias; high RAM must
+            // use the RAM-only direct map and is rejected for MMIO/reserved ranges.
+            let pointer = if source < 0x1_0000_0000 {
+                if translate(source, false).is_none() { break; }
+                source
+            } else {
+                match crate::memory::direct_map_address(source) { Some(v) => v, None => break }
+            };
+            (pointer as *const u8, source & (PAGE - 1))
         } else {
-            if src_va < 0xffff_8000_0000_0000 || crate::kernel_vm::is_pageable_address(src_va) { break; }
-            match translate(src_va, false) { Some(p) => p, None => break }
+            if source < 0xffff_8000_0000_0000 || crate::kernel_vm::is_pageable_address(source) { break; }
+            if translate(source, false).is_none() { break; }
+            (source as *const u8, source & (PAGE - 1))
         };
-        let dst_pa = match translate(dst_va, true) { Some(p) => p, None => break };
+        if translate(dst_va, true).is_none() { break; }
         let count = core::cmp::min(
             length - done,
-            core::cmp::min(PAGE - (src_va & (PAGE - 1)), PAGE - (dst_va & (PAGE - 1))),
+            core::cmp::min(PAGE - source_page_offset, PAGE - (dst_va & (PAGE - 1))),
         ) as usize;
         if count == 0 { break; }
-        unsafe {
-            core::ptr::copy(
-                src_pa as *const u8,
-                dst_pa as *mut u8,
-                count,
-            );
-        }
+        unsafe { core::ptr::copy(src_ptr, dst_va as *mut u8, count); }
         done += count as u64;
     }
     if !bytes_transferred.is_null() { unsafe { bytes_transferred.write(done); } }
@@ -235,7 +245,10 @@ pub fn self_test() -> bool {
     let valid = physical != 0
         && unsafe { mm_is_address_valid(source.cast()) } != 0
         && unsafe { mm_is_non_paged_system_address_valid(source.cast()) } != 0
-        && unsafe { mm_get_virtual_for_physical(physical) } as u64 == physical
+        && {
+            let alias = unsafe { mm_get_virtual_for_physical(physical) } as u64;
+            alias != 0 && translate(alias, false) == Some(physical)
+        }
         && status == STATUS_SUCCESS && copied == 128
         && unsafe { destination.read() } == 0x39
         && unsafe { destination.add(127).read() } == 0xA6;
