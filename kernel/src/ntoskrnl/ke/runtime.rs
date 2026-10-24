@@ -710,6 +710,7 @@ unsafe fn try_consume_dispatcher_object_locked(object: *mut DispatcherHeader) ->
             state.store(old - 1, Ordering::Release);
             true
         }
+        QUEUE_OBJECT => state.load(Ordering::Acquire) > 0,
         _ => false,
     }
 }
