@@ -313,7 +313,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Kernel virtual-address arena and mapping self-test passed.\r\n");
         if memory::first_high_conventional_page().is_some() {
-            serial_write(b"High RAM direct-map fault-in mapping self-test passed.\r\n");
+            serial_write(b"High-RAM allocator and direct-map self-test passed.\r\n");
         } else {
             serial_write(b"High RAM direct-map test skipped: firmware exposes no conventional RAM above 4 GiB.\r\n");
         }
