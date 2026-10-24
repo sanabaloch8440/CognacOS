@@ -899,6 +899,170 @@ pub unsafe extern "win64" fn ke_delay_execution_thread(
 }
 
 
+
+// ---- Timer and DPC executive ------------------------------------------------
+// Driver-owned timer/DPC object storage is opaque to this implementation. The
+// side tables track only lifecycle metadata, avoiding assumptions about private
+// Windows LIST_ENTRY/KDPC internals while preserving the public DDI signatures.
+const MAX_TIMER_OBJECTS: usize = 128;
+const MAX_DPC_OBJECTS: usize = 128;
+const TIMER_NOTIFICATION: u8 = 8;
+const TIMER_SYNCHRONIZATION: u8 = 9;
+type DpcRoutine = unsafe extern "win64" fn(*mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void);
+#[derive(Clone, Copy)]
+struct TimerRecord { object: usize, active: bool, due: u64, period: u64, dpc: usize }
+impl TimerRecord { const EMPTY: Self = Self { object:0, active:false, due:0, period:0, dpc:0 }; }
+struct TimerTable { records: [TimerRecord; MAX_TIMER_OBJECTS] }
+impl TimerTable { const fn new()->Self { Self { records:[TimerRecord::EMPTY;MAX_TIMER_OBJECTS] } } }
+static TIMERS: crate::hal::IrqSpinLock<TimerTable> = crate::hal::IrqSpinLock::new(TimerTable::new());
+#[derive(Clone, Copy)]
+struct DpcRecord { object: usize, routine: usize, context: usize, arg1: usize, arg2: usize, active: bool, queued: bool }
+impl DpcRecord { const EMPTY: Self = Self { object:0,routine:0,context:0,arg1:0,arg2:0,active:false,queued:false }; }
+struct DpcTable { records:[DpcRecord;MAX_DPC_OBJECTS] }
+impl DpcTable { const fn new()->Self { Self { records:[DpcRecord::EMPTY;MAX_DPC_OBJECTS] } } }
+static DPCS: crate::hal::IrqSpinLock<DpcTable> = crate::hal::IrqSpinLock::new(DpcTable::new());
+static DPC_DISPATCHING: [core::sync::atomic::AtomicBool; 64] =
+    [const { core::sync::atomic::AtomicBool::new(false) };64];
+
+fn timer_slot(object:usize)->Option<usize>{
+    let table=TIMERS.lock();
+    table.records.iter().position(|r|r.object==object)
+}
+fn dpc_slot(object:usize)->Option<usize>{
+    let table=DPCS.lock();
+    table.records.iter().position(|r|r.active&&r.object==object)
+}
+fn timer_deadline(due:i64)->Option<u64>{
+    if due==0{return Some(crate::apic::monotonic_ticks())}
+    if due<0{return crate::apic::relative_timeout_deadline(due)}
+    let now=precise_system_time_100ns()? as i64;
+    let delta=(due-now).max(0) as u64;
+    let hz=crate::apic::tsc_frequency_hz()?;
+    let ticks=((delta as u128).checked_mul(hz as u128)?/10_000_000u128).min(u64::MAX as u128) as u64;
+    crate::apic::monotonic_ticks().checked_add(ticks)
+}
+unsafe fn initialize_timer(timer:*mut DispatcherHeader, timer_type:i32){
+    if timer.is_null()||!(timer_type==0||timer_type==1){return}
+    let kind=if timer_type==0{TIMER_NOTIFICATION}else{TIMER_SYNCHRONIZATION};
+    unsafe{timer.write(DispatcherHeader{kind,absolute:0,size:10,inserted:0,signal_state:0,wait_list_flink:timer as u64+8,wait_list_blink:timer as u64+8});}
+    let mut table=TIMERS.lock();
+    let slot=table.records.iter().position(|r|r.object==timer as usize)
+        .or_else(||table.records.iter().position(|r|r.object==0));
+    if let Some(i)=slot{table.records[i]=TimerRecord{object:timer as usize,..TimerRecord::EMPTY};}
+}
+pub unsafe extern "win64" fn ke_initialize_timer(timer:*mut DispatcherHeader){
+    unsafe{initialize_timer(timer,0)}
+}
+pub unsafe extern "win64" fn ke_initialize_timer_ex(timer:*mut DispatcherHeader,timer_type:i32){
+    unsafe{initialize_timer(timer,timer_type)}
+}
+pub unsafe extern "win64" fn ke_read_state_timer(timer:*const DispatcherHeader)->i32{
+    if timer.is_null(){return 0}
+    unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)}
+}
+pub unsafe extern "win64" fn ke_set_timer(timer:*mut DispatcherHeader,due_time:*const i64,dpc:*mut core::ffi::c_void)->u8{
+    unsafe{ke_set_timer_ex(timer,due_time,dpc,0)}
+}
+pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_time:*const i64,dpc:*mut core::ffi::c_void,period_ms:u32)->u8{
+    if timer.is_null()||due_time.is_null()||!matches!(unsafe{(*timer).kind},TIMER_NOTIFICATION|TIMER_SYNCHRONIZATION){return 0}
+    let value=unsafe{due_time.read_unaligned()};
+    let Some(deadline)=timer_deadline(value) else{return 0};
+    let hz=crate::apic::tsc_frequency_hz().unwrap_or(0);
+    let period=if period_ms==0||hz==0{0}else{((hz as u128)*(period_ms as u128)/1000).min(u64::MAX as u128) as u64};
+    let mut table=TIMERS.lock();
+    let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
+    let was_active=record.active;
+    record.active=true;record.due=deadline;record.period=period;record.dpc=dpc as usize;
+    unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
+    was_active as u8
+}
+pub unsafe extern "win64" fn ke_cancel_timer(timer:*mut DispatcherHeader)->u8{
+    if timer.is_null(){return 0}
+    let mut table=TIMERS.lock();
+    let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
+    let was_active=record.active;record.active=false;record.dpc=0;was_active as u8
+}
+pub unsafe extern "win64" fn ke_initialize_dpc(dpc:*mut core::ffi::c_void,routine:Option<DpcRoutine>,context:*mut core::ffi::c_void){
+    if dpc.is_null(){return}
+    let mut table=DPCS.lock();
+    let slot=table.records.iter().position(|r|r.object==dpc as usize)
+        .or_else(||table.records.iter().position(|r|!r.active));
+    if let Some(i)=slot{table.records[i]=DpcRecord{object:dpc as usize,routine:routine.map(|f|f as usize).unwrap_or(0),context:context as usize,arg1:0,arg2:0,active:true,queued:false};}
+}
+pub unsafe extern "win64" fn ke_insert_queue_dpc(dpc:*mut core::ffi::c_void,arg1:*mut core::ffi::c_void,arg2:*mut core::ffi::c_void)->u8{
+    if dpc.is_null(){return 0}
+    let mut table=DPCS.lock();
+    let Some(record)=table.records.iter_mut().find(|r|r.active&&r.object==dpc as usize) else{return 0};
+    if record.queued{return 0}
+    record.arg1=arg1 as usize;record.arg2=arg2 as usize;record.queued=true;1
+}
+pub unsafe extern "win64" fn ke_remove_queue_dpc(dpc:*mut core::ffi::c_void)->u8{
+    if dpc.is_null(){return 0}
+    let mut table=DPCS.lock();
+    let Some(record)=table.records.iter_mut().find(|r|r.active&&r.object==dpc as usize) else{return 0};
+    let was=record.queued;record.queued=false;was as u8
+}
+fn dispatch_queued_dpcs(){
+    let cpu=cpu_slot();
+    if DPC_DISPATCHING[cpu].swap(true,Ordering::AcqRel){return}
+    let prior=CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL,Ordering::AcqRel);
+    for _ in 0..MAX_DPC_OBJECTS {
+        let callback={
+            let mut table=DPCS.lock();
+            let Some(record)=table.records.iter_mut().find(|r|r.active&&r.queued) else{break};
+            record.queued=false;
+            if record.routine==0{None}else{Some((record.routine,record.object,record.context,record.arg1,record.arg2))}
+        };
+        if let Some((routine,object,context,arg1,arg2))=callback{
+            let function:DpcRoutine=unsafe{core::mem::transmute(routine)};
+            unsafe{function(object as *mut _,context as *mut _,arg1 as *mut _,arg2 as *mut _);}
+        }
+    }
+    CURRENT_IRQL[cpu].store(prior,Ordering::Release);
+    DPC_DISPATCHING[cpu].store(false,Ordering::Release);
+}
+pub unsafe extern "win64" fn ke_flush_queued_dpcs(){
+    dispatch_queued_dpcs();
+}
+/// Called by the APIC clock interrupt after dispatcher timeout processing.
+/// Expiration is serialized with timer cancellation; callbacks run outside the
+/// timer-table lock and at logical DISPATCH_LEVEL.
+pub fn timer_tick(now:u64){
+    let mut expired=[TimerRecord::EMPTY;MAX_TIMER_OBJECTS];
+    let mut count=0usize;
+    {
+        let mut table=TIMERS.lock();
+        for record in table.records.iter_mut(){
+            if !record.active||record.due>now{continue}
+            if count<expired.len(){expired[count]=*record;count+=1}
+            if record.period!=0{
+                record.due=record.due.saturating_add(record.period);
+                if record.due<=now{record.due=now.saturating_add(record.period);}
+            }else{record.active=false;}
+        }
+    }
+    for record in expired[..count].iter().copied(){
+        let timer=record.object as *mut DispatcherHeader;
+        if timer.is_null(){continue}
+        unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1,Ordering::Release);}
+        let _guard=DISPATCHER_OBJECT_LOCK.lock();
+        complete_ready_wait_all_groups();
+        let mut waiters=[crate::dispatcher::WokenWaiter{thread:0,timed_out:false};crate::dispatcher::MAX_WAITERS];
+        let woke=if unsafe{(*timer).kind}==TIMER_NOTIFICATION{
+            crate::dispatcher::wake_all_timed(timer as u64,&mut waiters)
+        }else{
+            crate::dispatcher::wake_one_timed(timer as u64,&mut waiters[..1])
+        };
+        for waiter in waiters[..woke].iter().copied(){
+            let status=crate::dispatcher::complete_wait_group(waiter.thread,timer as u64,STATUS_SUCCESS,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
+            let _=crate::thread::complete_wait(waiter.thread,status);
+        }
+        drop(_guard);
+        if record.dpc!=0{let _=unsafe{ke_insert_queue_dpc(record.dpc as *mut _,core::ptr::null_mut(),core::ptr::null_mut())};}
+    }
+    dispatch_queued_dpcs();
+}
+
 /// Result of the Ki processor-start phase. A successful AP count means APs
 /// reached the online state; it does not imply Windows binary compatibility.
 pub(crate) struct ProcessorStartupReport {
