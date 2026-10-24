@@ -52,11 +52,14 @@ pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut Driver
  if table.checked_add(count*40).is_none_or(|e|e>file.len()){return Err(DriverLoadError::Truncated);}
  mapped[..image_size].fill(0);mapped[..headers].copy_from_slice(file.get(..headers).ok_or(DriverLoadError::Truncated)?);
  let mut entry_executable=false;
+ let mut section_ranges=[(0usize,0usize);MAX_SECTIONS];let mut section_range_count=0usize;
  for i in 0..count{
   let o=table+i*40;let virtual_size=u32at(file,o+8)?;let rva=u32at(file,o+12)?;let raw_size=u32at(file,o+16)?;let raw_off=u32at(file,o+20)?;let flags=u32at(file,o+36)?;
   let span=core::cmp::max(virtual_size,raw_size);
   let end=(rva as usize).checked_add(span as usize).ok_or(DriverLoadError::InvalidSection)?;
   if (rva as usize)%section_align!=0||end>image_size||(rva as usize)<headers||(raw_size>0&&raw_off<headers as u32){return Err(DriverLoadError::InvalidSection);}
+  if span!=0&&section_ranges[..section_range_count].iter().any(|(a,b)|(rva as usize)<*b&&*a<end){return Err(DriverLoadError::InvalidSection);}
+  if span!=0{section_ranges[section_range_count]= (rva as usize,end);section_range_count+=1;}
   if flags&IMAGE_SCN_MEM_EXECUTE!=0&&flags&IMAGE_SCN_MEM_WRITE!=0{return Err(DriverLoadError::WxSection);}
   if flags&IMAGE_SCN_MEM_EXECUTE!=0&&entry_rva>=rva&&entry_rva<rva.saturating_add(span){entry_executable=true;}
   if raw_size!=0{let src=range(file.len(),raw_off,raw_size)?;let dst=(rva as usize)..(rva as usize+raw_size as usize);mapped[dst].copy_from_slice(&file[src]);}
@@ -89,6 +92,7 @@ pub unsafe fn load_allocated(file:&[u8],driver_object:*mut DriverObject,context:
  let opt=nt.checked_add(4+20).ok_or(DriverLoadError::InvalidHeader)?;
  if u16at(file,nt+4)?!=0x8664||u16at(file,opt)?!=0x20b{return Err(DriverLoadError::WrongMachine);}
  let base=u64at(file,opt+24)?;let size=u32at(file,opt+56)? as usize;
+ if !crate::kernel_vm::is_driver_image_base(base){return Err(DriverLoadError::WrongBase);}
  if size==0||size>MAX_IMAGE_SIZE{return Err(DriverLoadError::ImageTooLarge);}
  let pages=size.checked_add(4095).ok_or(DriverLoadError::InvalidHeader)?/4096;
  let mapped=crate::kernel_vm::allocate_pages_at(base,pages).map_err(|_|DriverLoadError::NoMemory)?;
