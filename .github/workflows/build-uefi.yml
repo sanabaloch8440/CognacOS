@@ -65,6 +65,10 @@ jobs:
         run: cargo check --manifest-path drivers/processor/Cargo.toml --lib
       - name: Check ext4 driver library
         run: cargo check --manifest-path drivers/ext4/Cargo.toml --lib
+      - name: Check storage stack library
+        run: cargo check --manifest-path drivers/storage/Cargo.toml --lib
+      - name: Test storage protocol and disk-class primitives
+        run: cargo test --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Test ext4 parser and extent mapping
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib parser_mapping_and_crc_smoke_tests_pass
       - name: Test ext4 metadata checksum validation
@@ -88,6 +92,12 @@ jobs:
           build_driver acpi drivers/acpi acpi 0xffff8000d0000000 acpi.sys
           build_driver pci drivers/pci pci 0xffff8000e0000000 pci.sys
           build_driver processor drivers/processor processor 0xffff8000f0000000 processor.sys
+          RUSTFLAGS="-C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/storahci.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-storahci --release --bin storahci
+          python3 tools/elf_to_pe32plus.py target/driver-storahci/x86_64-unknown-none/release/storahci build/drivers/storahci.sys --image-base 0xffff800110000000 --dll
+          RUSTFLAGS="-C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/stornvme.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-stornvme --release --bin stornvme
+          python3 tools/elf_to_pe32plus.py target/driver-stornvme/x86_64-unknown-none/release/stornvme build/drivers/stornvme.sys --image-base 0xffff800120000000 --dll
+          RUSTFLAGS="-C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/disk.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-disk --release --bin disk
+          python3 tools/elf_to_pe32plus.py target/driver-disk/x86_64-unknown-none/release/disk build/drivers/disk.sys --image-base 0xffff800130000000 --dll
           python3 - <<'PY'
           import struct
           from pathlib import Path
