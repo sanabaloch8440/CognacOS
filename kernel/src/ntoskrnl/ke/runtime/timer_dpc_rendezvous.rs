@@ -301,10 +301,6 @@ pub unsafe extern "win64" fn ke_signal_call_dpc_done(argument:*mut core::ffi::c_
 }
 
 
-fn timer_slot(object:usize)->Option<usize>{
-    let table=TIMERS.lock();
-    table.records.iter().position(|r|r.object==object)
-}
 fn dpc_slot(object:usize)->Option<usize>{
     let table=DPCS.lock();
     table.records.iter().position(|r|r.active&&r.object==object)
@@ -627,10 +623,13 @@ pub fn timer_tick(now: u64) {
         if record.timer2 {
             if record.callback == 0 { continue; }
             let callback: Timer2Routine = unsafe { core::mem::transmute(record.callback) };
+            let cpu = cpu_slot();
+            let prior_irql = CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL, Ordering::AcqRel);
             unsafe {
                 callback(record.object as *mut core::ffi::c_void,
                          record.context as *mut core::ffi::c_void);
             }
+            CURRENT_IRQL[cpu].store(prior_irql, Ordering::Release);
             continue;
         }
 
