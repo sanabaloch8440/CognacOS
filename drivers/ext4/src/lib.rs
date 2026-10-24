@@ -620,5 +620,27 @@ mod host_tests {
         assert_eq!(read_gpt_partition(&mut disk,0,512),Err(Error::InvalidChecksum));
     }
 
+
+    #[test]
+    fn ext_filesystem_mounts_from_partition_relative_superblock() {
+        let mut disk=MemDisk{bytes:[0;32768]};
+        let start=4*512+SUPERBLOCK_DISK_OFFSET as usize;
+        let sb=&mut disk.bytes[start..start+SUPERBLOCK_BYTES];
+        sb[0..4].copy_from_slice(&4u32.to_le_bytes());
+        sb[4..8].copy_from_slice(&4u32.to_le_bytes());
+        sb[20..24].copy_from_slice(&1u32.to_le_bytes());
+        sb[24..28].copy_from_slice(&0u32.to_le_bytes());
+        sb[32..36].copy_from_slice(&3u32.to_le_bytes());
+        sb[40..44].copy_from_slice(&4u32.to_le_bytes());
+        sb[56..58].copy_from_slice(&EXT_MAGIC.to_le_bytes());
+        sb[76..80].copy_from_slice(&0u32.to_le_bytes());
+        let partition=DiskPartition{first_lba:4,sector_count:16,sector_size:512};
+        let fs=ExtFilesystem::mount_partition_read_only(disk,partition).unwrap();
+        assert!(fs.superblock().read_only);
+        assert_eq!(fs.superblock().blocks_count,4);
+        let disk=fs.into_device();
+        assert_eq!(&disk.bytes[start+56..start+58],&EXT_MAGIC.to_le_bytes());
+    }
+
 }
 const CHECKSUM_TYPE_OFFSET_FOR_TEST: usize = 373;
