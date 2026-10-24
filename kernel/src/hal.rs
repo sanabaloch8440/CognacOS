@@ -372,6 +372,7 @@ pub unsafe fn set_interrupt_priority(irql: u8) -> Result<(), ()> {
 
 /// Platform interrupt-controller services. These are the only intended
 /// consumers of the xAPIC/I/O-APIC implementation outside the HAL.
+pub type PlatformInterruptError = crate::apic::ApicError;
 pub const LOCAL_TIMER_VECTOR: u8 = 0xE0;
 pub const KE_BROADCAST_VECTOR: u8 = 0xEF;
 pub const HAL_IPI_VECTOR: u8 = 0xF0;
