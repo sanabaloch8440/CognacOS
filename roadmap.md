@@ -14,13 +14,26 @@ This roadmap tracks code and validation currently present in the repository, not
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
 | SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
-| NT executive/syscall compatibility | Partial foundations | NT syscall ABI and complete executive semantics |
+| NT executive/syscall compatibility | 25 Ke routines in comparison scope; APC region counters and serialized event pulse improved | Thread-local APC bookkeeping/delivery, full timer/DPC/mutex/queue semantics, precise time, many unresolved Ke exports, NT syscall ABI and complete executive semantics |
 | I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
 **Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; these newer changes remain unverified until the resulting Actions run passes. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
+
+### Ke / ntoskrnl compatibility pass (2026-10-24)
+
+- [x] Add ABI-shaped runtime implementations for 20 Ke routines and name-based resolution, with public WDK/DDI comparison.
+- [x] Add KeEnterCriticalRegion, KeLeaveCriticalRegion, KeEnterGuardedRegion, and KeLeaveGuardedRegion with bounded nesting counters.
+- [x] Correct KeGetCurrentProcessorNumberEx to return the systemwide processor index while optionally writing PROCESSOR_NUMBER.
+- [x] Serialize KePulseEvent's state transition, waiter wakeup, and reset under the dispatcher-object lock.
+- [x] Expand WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md to 25 routines and list additional manifest exports that remain unsupported.
+- [ ] Move critical/guarded-region state from CPU slots to per-thread state and implement actual APC delivery.
+- [ ] Complete pulse/wait atomicity with scheduler wait-block ownership and priority boosts.
+- [ ] Implement and test dispatcher timers, DPCs, mutex/mutant ownership, executive queues, and queued spin locks.
+- [ ] Replace the nominal interrupt-time origin and RTC-only wall clock with a boot-anchored clock and counter interpolation; implement suspend/resume bias.
+- [ ] Run CI build, unit tests, OVMF/QEMU smoke, and the 2/4/8-vCPU matrix after this pass; do not treat ABI matching or the project score as driver-compatibility proof.
 
 ### Status legend
 
