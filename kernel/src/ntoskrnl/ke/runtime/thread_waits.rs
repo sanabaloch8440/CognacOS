@@ -165,7 +165,7 @@ pub fn ke_rundown_apcs_for_thread(thread_id:u64){
 }
 
 /// Deliver queued kernel APCs only at a PASSIVE_LEVEL safe point with APCs
-/// enabled. User APCs remain queued for a future user-mode trap-return path.
+/// enabled. User APC normal routines are deferred until an alertable wait marks delivery pending.
 pub fn ke_deliver_pending_kernel_apcs(){
  let cpu=cpu_slot();
  if CURRENT_IRQL[cpu].load(Ordering::Acquire)!=PASSIVE_LEVEL
