@@ -1406,9 +1406,7 @@ pub extern "C" fn rdotos_hal_ipi_handler() {
         let id = cpu.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize;
         let _ = crate::hal::mark_ipi_pending(id);
     }
-    if let Some(base) = crate::hal::local_interrupt_controller_base() {
-        unsafe { crate::hal::end_local_interrupt(); }
-    }
+    unsafe { crate::hal::end_local_interrupt(); }
     // A reschedule IPI is also the remote DPC kick. Run the target CPU's
     // queued DPCs before returning so KeFlushQueuedDpcs can wait for a real
     // systemwide drain rather than merely observing a cleared queue bit.
@@ -1420,9 +1418,7 @@ pub extern "C" fn rdotos_hal_ipi_handler() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_ke_broadcast_ipi_handler() {
     crate::ntoskrnl::ke::runtime::handle_broadcast_ipi();
-    if let Some(base)=crate::hal::local_interrupt_controller_base(){
-        unsafe{crate::hal::end_local_interrupt();}
-    }
+    unsafe { crate::hal::end_local_interrupt(); }
 }
 
 /// Dedicated AP TSC synchronization IPI handler. It samples the raw TSC and
