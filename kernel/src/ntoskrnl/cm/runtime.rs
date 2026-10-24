@@ -99,7 +99,11 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
  let _g=LOCK.lock();
  let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
  let s=state();
- if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n])){unsafe{*out=handle(k.id);if !disposition.is_null(){*disposition=2;}}return STATUS_SUCCESS;}
+ if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n])){
+  #[cfg(test)] unsafe{*out=handle(k.id);}
+  #[cfg(not(test))] {let body=core::ptr::addr_of!(**k) as *mut Key as *mut core::ffi::c_void;match crate::ntoskrnl::ob::runtime::open_by_pointer(body,desired_access,crate::ntoskrnl::ob::runtime::current_owner(),true,0){Ok(h)=>unsafe{*out=h},Err(e)=>return e}}
+  if !disposition.is_null(){unsafe{*disposition=2;}}return STATUS_SUCCESS;
+ }
  let Some(index)=s.keys.iter().position(|k|!k.used||k.deleted)else{return STATUS_INSUFFICIENT_RESOURCES;};
  let id=s.next_id;s.next_id=s.next_id.wrapping_add(1).max(1);
  s.keys[index]=Key{used:true,id,parent,name,name_len:n as u16,deleted:false};
