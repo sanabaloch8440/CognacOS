@@ -525,10 +525,20 @@ pub unsafe extern "win64" fn ke_pulse_event(
     previous
 }
 
-/// LONG KeSetEventBoostPriority(PKEVENT). Event signaling is supported;
-/// Windows-compatible scheduler priority boosting is not yet modeled.
-pub unsafe extern "win64" fn ke_set_event_boost_priority(event: *mut DispatcherHeader) -> i32 {
-    unsafe { ke_set_event(event, 0, 0) }
+/// NTSTATUS KeQueryNodeActiveAffinity2(USHORT, PGROUP_AFFINITY, USHORT, PUSHORT).
+/// The current topology is one node represented by one affinity group.
+pub unsafe extern "win64" fn ke_query_node_active_affinity2(
+    node: u16, affinities: *mut GroupAffinity, capacity: u16, required: *mut u16,
+) -> i32 {
+    if !required.is_null() { unsafe { required.write(if node == 0 { 1 } else { 0 }); } }
+    if node != 0 { return STATUS_INVALID_PARAMETER; }
+    if capacity < 1 || affinities.is_null() { return 0xC000_0023u32 as i32; }
+    unsafe {
+        affinities.write(GroupAffinity {
+            mask: ke_query_group_affinity(0), group: 0, reserved: [0; 3],
+        });
+    }
+    STATUS_SUCCESS
 }
 
 #[cfg(test)]
