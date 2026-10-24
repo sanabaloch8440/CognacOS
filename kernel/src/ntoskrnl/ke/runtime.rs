@@ -1740,10 +1740,9 @@ static DPC_DISPATCHING: [core::sync::atomic::AtomicBool; 64] =
     [const { core::sync::atomic::AtomicBool::new(false) };64];
 
 // ---- Cross-processor call rendezvous -----------------------------------------
-// The HAL IPI vector is shared with scheduler reschedule notifications. A
-// broadcast request is armed only after every target IPI has been sent, so an
-// early-arriving AP waits in its interrupt handler rather than observing a
-// partially published callback descriptor.
+// A dedicated IPI vector isolates Ke broadcasts from scheduler notifications.
+// The request is armed only after every target IPI has been sent, so early
+// recipients wait in the interrupt handler rather than seeing partial state.
 const BROADCAST_IDLE:u8=0;
 const BROADCAST_PREPARING:u8=1;
 const BROADCAST_ARMED:u8=2;
@@ -1757,6 +1756,9 @@ static BROADCAST_MODE:core::sync::atomic::AtomicU8=core::sync::atomic::AtomicU8:
 static BROADCAST_EPOCH:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BROADCAST_LAST_EPOCH:[core::sync::atomic::AtomicU64;64]=[const{core::sync::atomic::AtomicU64::new(0)};64];
 static BROADCAST_TARGETS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BROADCAST_SENT_MASK:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BROADCAST_ABORT_ACK_MASK:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BROADCAST_DISABLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static BROADCAST_EXPECTED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static BROADCAST_COMPLETED:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static BROADCAST_CALLBACK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
@@ -1790,9 +1792,10 @@ fn online_broadcast_mask()->Option<u64>{
 }
 
 /// Send one rendezvous IPI to each online processor other than the caller.
-/// Early recipients wait in rdotos_hal_ipi_handler until BROADCAST_ARMED.
+/// Early recipients wait in rdotos_ke_broadcast_ipi_handler until armed.
 fn begin_broadcast(mode:u8,callback:usize,context:usize)->Option<(u64,u64)>{
     acquire_broadcast_lock();
+    if BROADCAST_DISABLED.load(Ordering::Acquire){release_broadcast_lock();return None;}
     if crate::hal::online_cpu_count()>1&&!crate::smp::ipi_shootdowns_enabled(){
         release_broadcast_lock();return None;
     }
@@ -1805,28 +1808,31 @@ fn begin_broadcast(mode:u8,callback:usize,context:usize)->Option<(u64,u64)>{
     BROADCAST_TARGETS.store(mask,Ordering::Relaxed);
     BROADCAST_EXPECTED.store(mask.count_ones() as usize,Ordering::Relaxed);
     BROADCAST_COMPLETED.store(0,Ordering::Relaxed);
+    BROADCAST_SENT_MASK.store(0,Ordering::Relaxed);
+    BROADCAST_ABORT_ACK_MASK.store(0,Ordering::Relaxed);
+    for cpu in 0..crate::hal::MAX_CPUS.min(64){if mask&(1u64<<cpu)!=0{BROADCAST_LAST_EPOCH[cpu].store(epoch.wrapping_sub(1),Ordering::Release);}}
     DPC_SYNC_ARRIVED.store(0,Ordering::Relaxed);
     DPC_DONE_ARRIVED.store(0,Ordering::Relaxed);
     BROADCAST_STATE.store(BROADCAST_PREPARING,Ordering::Release);
     for cpu in 0..crate::hal::MAX_CPUS.min(64){
         if cpu==current||mask&(1u64<<cpu)==0{continue}
-        if !crate::smp::request_reschedule(cpu){
+        BROADCAST_SENT_MASK.fetch_or(1u64<<cpu,Ordering::AcqRel);
+        if !crate::smp::request_ke_broadcast(cpu){
             BROADCAST_STATE.store(BROADCAST_ABORTED,Ordering::Release);
-            while (0..crate::hal::MAX_CPUS.min(64)).any(|id|
-                mask&(1u64<<id)!=0 && id!=current
-                    && BROADCAST_LAST_EPOCH[id].load(Ordering::Acquire)==epoch
-                    && BROADCAST_COMPLETED.load(Ordering::Acquire)<BROADCAST_EXPECTED.load(Ordering::Acquire)){
-                core::hint::spin_loop();
+            let sent=BROADCAST_SENT_MASK.load(Ordering::Acquire);
+            let mut spins=0usize;
+            while BROADCAST_ABORT_ACK_MASK.load(Ordering::Acquire)&sent!=sent && spins<10_000_000{
+                spins+=1;core::hint::spin_loop();
+            }
+            if BROADCAST_ABORT_ACK_MASK.load(Ordering::Acquire)&sent!=sent{
+                // A late IPI must never be allowed to run a later broadcast.
+                BROADCAST_DISABLED.store(true,Ordering::Release);
             }
             BROADCAST_STATE.store(BROADCAST_IDLE,Ordering::Release);
             release_broadcast_lock();return None;
         }
     }
-    // Publish the epoch before arming. The per-CPU epoch check suppresses
-    // duplicate delivery without holding a global lock inside interrupt code.
-    for cpu in 0..crate::hal::MAX_CPUS.min(64){
-        if mask&(1u64<<cpu)!=0{BROADCAST_LAST_EPOCH[cpu].store(epoch.wrapping_sub(1),Ordering::Release);}
-    }
+    // The dedicated vector cannot be consumed by ordinary reschedule IPIs.
     BROADCAST_STATE.store(BROADCAST_ARMED,Ordering::Release);
     Some((mask,epoch))
 }
@@ -1863,21 +1869,25 @@ fn execute_broadcast_callback(cpu:usize)->usize{
     }else{0}
 }
 
-/// Called by the HAL-vector handler on the receiving processor. It deliberately
+/// Called by the dedicated Ke broadcast-vector handler on the receiving processor. It deliberately
 /// runs without a Rust lock held: callbacks may enter ordinary Ke routines.
 pub fn handle_broadcast_ipi(){
     let cpu=cpu_slot();
     if cpu>=64{return}
-    let state=BROADCAST_STATE.load(Ordering::Acquire);
-    if state==BROADCAST_IDLE||state==BROADCAST_ABORTED{return}
+    let mut state=BROADCAST_STATE.load(Ordering::Acquire);
+    if state==BROADCAST_IDLE{return}
     if BROADCAST_TARGETS.load(Ordering::Acquire)&(1u64<<cpu)==0{return}
     if state==BROADCAST_PREPARING{
-        let mut spins=0usize;
-        while BROADCAST_STATE.load(Ordering::Acquire)==BROADCAST_PREPARING && spins<100_000_000{
-            spins+=1;core::hint::spin_loop();
-        }
+        while BROADCAST_STATE.load(Ordering::Acquire)==BROADCAST_PREPARING{core::hint::spin_loop();}
+        state=BROADCAST_STATE.load(Ordering::Acquire);
     }
-    if BROADCAST_STATE.load(Ordering::Acquire)!=BROADCAST_ARMED{return}
+    if state==BROADCAST_ABORTED{
+        if BROADCAST_SENT_MASK.load(Ordering::Acquire)&(1u64<<cpu)!=0{
+            BROADCAST_ABORT_ACK_MASK.fetch_or(1u64<<cpu,Ordering::AcqRel);
+        }
+        return
+    }
+    if state!=BROADCAST_ARMED{return}
     let epoch=BROADCAST_EPOCH.load(Ordering::Acquire);
     if BROADCAST_LAST_EPOCH[cpu].compare_exchange(epoch.wrapping_sub(1),epoch,Ordering::AcqRel,Ordering::Acquire).is_err(){return}
     let _=execute_broadcast_callback(cpu);
@@ -1891,6 +1901,7 @@ pub unsafe extern "win64" fn ke_ipi_generic_call(function:Option<IpiGenericRouti
     let Some(function)=function else{return 0};
     let Some((mask,_epoch))=begin_broadcast(BROADCAST_IPI_CALL,function as usize,context) else{return 0};
     let current=cpu_slot();
+    BROADCAST_LAST_EPOCH[current].store(_epoch,Ordering::Release);
     let local_result=execute_broadcast_callback(current);
     BROADCAST_COMPLETED.fetch_add(1,Ordering::AcqRel);
     let expected=mask.count_ones() as usize;
@@ -1907,6 +1918,7 @@ pub unsafe extern "win64" fn ke_generic_call_dpc(routine:Option<DpcRoutine>,cont
     let Some(routine)=routine else{return};
     let Some((mask,_epoch))=begin_broadcast(BROADCAST_DPC_CALL,routine as usize,context as usize) else{return};
     let current=cpu_slot();
+    BROADCAST_LAST_EPOCH[current].store(_epoch,Ordering::Release);
     let _=execute_broadcast_callback(current);
     BROADCAST_COMPLETED.fetch_add(1,Ordering::AcqRel);
     let expected=mask.count_ones() as usize;
