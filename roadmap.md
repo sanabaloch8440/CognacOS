@@ -14,13 +14,13 @@ This roadmap tracks code and validation currently present in the repository, not
 | ACPI and HAL | Foundations implemented; boot-tested | Complete interrupt routing and timer support |
 | SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
-| NT executive/syscall compatibility | 138 Ke export names documented and mapped in comparison scope; per-thread APC/alert state, timer/DPC lifecycle, queued spin locks, mutant/mutex ownership and KQUEUE implemented | Full kernel/user APC delivery, systemwide DPC drain, complete Windows opaque object layouts, remaining device queue/APC APIs, exact wait-all reservation/priority boosts, timer2 and other unresolved Ke exports |
+| NT executive/syscall compatibility | 165 Ke export names documented in comparison scope; per-thread APC/alert state, legacy and Timer2 timer lifecycle, DPC lifecycle, single-group affinity bitmaps, XSAVE feature query, queued spin locks, mutant/mutex ownership and KQUEUE implemented | Full kernel/user APC delivery, systemwide DPC drain, complete Windows opaque object layouts, remaining device queue/APC APIs, exact wait-all reservation/priority boosts, APC/processor-change/process-attach and other unresolved Ke exports |
 | I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
-**Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; these newer changes remain unverified until the resulting Actions run passes. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
+**Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; subsequent Ke/Ki affinity, Timer2, and clock-path changes are pending CI verification. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
 
 ### Ke / ntoskrnl compatibility pass (2026-10-24)
 
@@ -39,6 +39,17 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Validate queued-spin-lock handle layout and lock-number mapping against Windows WDK ABI; implement true cross-processor queue semantics and stress tests.
 - [x] Latest Ke-runtime workflow passed host-side tests, freestanding build, PE32+ validation, UEFI loader build, image packaging, OVMF/QEMU smoke, 2/4/8-vCPU SMP stress, and artifact upload: [run #997](https://github.com/umarfarooq7869/RdotOS/actions/runs/40092050955).
 - [ ] Continue expanding DDI conformance tests; a passing build and SMP run do not establish general Windows driver compatibility.
+
+### Ke/Ki extension pass (2026-10-24)
+
+- [x] Add 22 name-resolved single-group affinity bitmap routines: initialize, processor/group add/remove, boolean operations, count/find/test, equality/subset/empty, and atomic set/clear.
+- [x] Add KeGetXSaveFeatureFlags using CPUID XSAVE/OSXSAVE checks and XGETBV; return zero when the feature is not enabled.
+- [x] Add KeDynamicPartitioningSupported fixed-topology result.
+- [x] Add distinct KeInitializeTimer2, KeSetTimer2, and KeCancelTimer2 side-table operations with APIC-driven one-shot/periodic callbacks; timer2 is not aliased to legacy KTIMER.
+- [x] Add an internal ntoskrnl/ki runtime layer and route APIC clock interrupts through Ki before completing dispatcher timeouts.
+- [x] Expand the Ke comparison to 165 callable names and recalculate the project-defined scoped score to 65.5% (100% ABI declaration coverage, 51/165 strict behavior matches).
+- [ ] Verify the latest affinity/Timer2/Ki changes with the freestanding build, PE32+ conversion, OVMF/QEMU smoke, and 2/4/8-vCPU stress matrix. A score update is not a substitute for CI or Windows-driver tests.
+- [ ] Continue with APC object delivery/rundown, processor-change callbacks, NMI callback lifecycle, logical-processor relationship buffers, process attach/address-space switching, and XSAVE save/restore ownership.
 
 ### Status legend
 
