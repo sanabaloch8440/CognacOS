@@ -63,7 +63,7 @@ pub struct Irp { pub bytes: [u8; IRP_SIZE_X64] }
 #[repr(C)]
 pub struct IoStackLocation {
     pub major_function: u8, pub minor_function: u8, pub flags: u8, pub control: u8,
-    pub parameters: [u64; 2], pub device_object: *mut DeviceObject,
+    pub parameters: [u64; 4], pub device_object: *mut DeviceObject,
     pub file_object: *mut c_void, pub completion_routine: Option<IoCompletionRoutine>,
     pub context: *mut c_void,
 }
