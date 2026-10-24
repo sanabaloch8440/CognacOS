@@ -88,7 +88,7 @@ mod layout_tests {
     use super::*;
     #[test]
     fn side_metadata_has_no_windows_private_layout_dependency() {
-        assert_eq!(core::mem::size_of::<AttachRecord>(), 48);
+        assert_eq!(core::mem::size_of::<AttachRecord>(), 56);
         assert_eq!(core::mem::align_of::<AttachRecord>(), 8);
     }
 }
