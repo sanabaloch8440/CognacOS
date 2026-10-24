@@ -15,7 +15,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
 | NT executive/syscall compatibility | 169 Ke export names tracked; kernel APC safe points/rundown, alertable user APC IRET injection, processor callback table, referenced CR3 attach/detach, scheduler-backed priority bands, serialized event/semaphore/timer wait-all reservations, device queue lifecycle checks, and public x64 layout assertions have implementation foundations | User APC trap/SEH and WDK tests; systemwide DPC/SMP validation; real processor hot-remove; exception-safe process detach and process/thread integration; mutant/queue wait-all reservations; Windows priority decay/quantum; private opaque object bytes; broader Ke export semantics |
-| I/O manager | IRP lifecycle foundations | DPC/completion queues, timeouts, hardware I/O |
+| I/O manager | Bounded FIFO completion ports, deadline-aware IRPs, pre-dispatch timeout expiry, 16-bit port I/O and ordered volatile MMIO accessors | Dispatcher-integrated completion waits, safe in-flight cancellation, real device dispatch/interrupt/DMA paths, and hardware tests |
 | DMA and IOMMU | Partial; hardware gaps remain | Real mappings, Intel VT-d initialization, AMD IOMMU |
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
@@ -194,16 +194,19 @@ Discovery and startup primitives do not by themselves establish a production-rea
 ## 7. I/O manager, storage, DMA, and IOMMU
 
 - [x] Add bounded IRP allocation, dispatch, completion, query, and release primitives.
+- [x] Add optional monotonic deadlines to IRPs, expire queued requests before dispatch, and complete late in-flight requests as timed out. In-flight hardware cancellation remains driver-specific.
+- [x] Add bounded FIFO I/O completion ports with completion packet posting/dequeue and a completion-to-port helper. The dequeue API is nonblocking and still needs integration with dispatcher wait objects.
+- [x] Add 16-bit port I/O and typed volatile MMIO accessors with ordering fences for MMIO writes.
 - [x] Track in-flight IRPs, restrict cancellation to safe pre-dispatch state, and support explicit asynchronous completion.
 - [x] Add IRQ-safe locks for request state, PCI configuration helpers, and basic bus-data operations.
 - [x] Discover Intel VT-d/DMAR information from firmware tables.
-- [ ] Add completion queues/DPCs, request timeouts, safe in-flight cancellation, and end-to-end asynchronous I/O.
+- [ ] Integrate completion-port waits with dispatcher objects and DPC-driven completion; add safe driver-specific in-flight cancellation and end-to-end asynchronous I/O.
 - [ ] Implement DMA buffer pinning, scatter/gather lists, real map-register resources, cache coherency, and device-visible mappings.
 - [ ] Initialize Intel VT-d hardware, domains, translation, and fault handling.
 - [ ] Implement AMD IOMMU discovery and hardware initialization.
 - [ ] Ensure DMA fails safely when required translation is unavailable.
 - [ ] Implement PCIe enumeration, AHCI/NVMe drivers, storage queues, reset/recovery, and block-device interfaces.
-- [ ] Add end-to-end I/O tests on emulated and supported physical hardware.
+- [ ] Add end-to-end I/O tests on emulated and supported physical hardware, including timeout-vs-completion races, completion-port saturation/FIFO, and device MMIO/port-I/O access.
 - [ ] Add compressed-asset streaming only after storage and memory lifetime guarantees are in place.
 
 **Known limitations:** DMA channel scheduling and ownership handling have foundations, but map-register tokens are bookkeeping, not real hardware mappings. Intel VT-d discovery is not full initialization. AMD IOMMU is not implemented. Unsupported extended DMA operations must remain unavailable rather than pretending to work.
