@@ -140,7 +140,15 @@ impl<'a> Value<'a>{
  pub fn data(&self,out:&mut[u8])->Result<usize,Error>{
   let n=self.data_len as usize;if out.len()<n{return Err(Error::BufferTooSmall)}if n==0{return Ok(0)}
   if self.inline{if n>4{return Err(Error::InvalidValue)}out[..n].copy_from_slice(&self.data_offset.to_le_bytes()[..n]);return Ok(n)}
-  let c=self.hive.cell(self.data_offset)?;if c.len()<n{return Err(Error::InvalidValue)}out[..n].copy_from_slice(&c[..n]);Ok(n)
+  let c=self.hive.cell(self.data_offset)?;
+  if c.len()>=n{out[..n].copy_from_slice(&c[..n]);return Ok(n)}
+  // Windows uses a "db" big-data cell and a segment-list cell for large values.
+  if c.get(0..2)!=Some(&b"db"[..])||c.len()<8{return Err(Error::InvalidValue)}
+  let segments=u16at(c,2)? as usize;let list_index=u32at(c,4)?;let list=self.hive.cell(list_index)?;
+  if segments==0||list.len()<segments.checked_mul(4).ok_or(Error::InvalidValue)?{return Err(Error::InvalidValue)}
+  let mut copied=0usize;
+  for i in 0..segments{if copied==n{break;}let segment_index=u32at(list,i*4)?;let segment=self.hive.cell(segment_index)?;let take=core::cmp::min(segment.len(),n-copied);out[copied..copied+take].copy_from_slice(&segment[..take]);copied+=take;}
+  if copied!=n{return Err(Error::InvalidValue)}Ok(n)
  }
 }
 
