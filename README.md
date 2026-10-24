@@ -40,7 +40,7 @@ The repository contains working foundations in several areas. “Implemented” 
 | DMA and IOMMU | DMA request/channel foundations and Intel VT-d ACPI discovery exist. Real DMA mapping, full VT-d initialization, and AMD IOMMU support are incomplete. |
 | ext filesystem driver (`drivers/ext4`) | Independent `no_std` crate linked into the kernel, checked ext2/ext3/ext4 metadata parser, block-device read/write/flush contract, read-only mount, and restricted writes into already allocated initialized extents with partial-block read-modify-write. Writable mount refuses journaled/recovery/metadata-checksummed volumes rather than risking corruption. | No block-device adapter/VFS registration yet; no block/inode allocation, directory/inode/bitmap mutation, journal replay/commit, checksum updates, ext4 htree directories, or crash consistency. Not yet a complete general-purpose writable ext4 driver. |
 
-The Ext3Fsd submodule declaration and its third-party reference README have been removed. RdotOS uses its own Rust ext-family driver. Initial WDM object/dispatch APIs now exist, but completion/APC behavior, cancellation and remove rundown, MDLs, device-stack attachment, storage requests, and filesystem/VFS integration remain incomplete.
+All third-party ext-family driver source references and gitlinks have been removed. RdotOS uses its own Rust ext-family driver. Initial WDM object/dispatch APIs exist, but full completion/APC behavior, cancellation and remove rundown, MDLs, device-stack attachment, storage requests, and filesystem/VFS integration remain incomplete.
 
 ## Split platform and driver crates
 
