@@ -819,6 +819,13 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
         if !matches!(kind, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 | TIMER_NOTIFICATION | TIMER_SYNCHRONIZATION | QUEUE_OBJECT | MUTANT_OBJECT) {
             return STATUS_NOT_IMPLEMENTED;
         }
+        // Wait-all must reserve every object atomically. Mutants require owner-thread
+        // assignment and queues require entry removal, neither of which the generic
+        // wait-all consumer can safely perform yet. Fail closed instead of consuming
+        // their signal states without transferring ownership/entries.
+        if wait_type == 0 && matches!(kind, MUTANT_OBJECT | QUEUE_OBJECT) {
+            return STATUS_NOT_IMPLEMENTED;
+        }
         if object_list[..i].iter().any(|previous| *previous == object_list[i]) {
             return STATUS_INVALID_PARAMETER;
         }
