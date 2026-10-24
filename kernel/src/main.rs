@@ -647,6 +647,15 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         serial_write(b"; AP entry functions reached: ");
                         serial_write_decimal(smp::ap_entry_reached_count());
                         serial_write(b"\r\n");
+                        if ipi_enabled {
+                            if !smp::interrupt_setup_stress_test(64) {
+                                serial_write(b"FATAL: per-CPU IDT/LAPIC IPI stress test failed.\\r\\n");
+                                halt();
+                            }
+                            serial_write(b"Per-CPU interrupt setup stress passed: 64 acknowledged IPIs per online AP.\\r\\n");
+                        } else {
+                            serial_write(b"WARNING: per-CPU IPI stress skipped because interrupt-driven IPIs are unavailable.\\r\\n");
+                        }
                         let (tsc_synced, worst_offset) = apic::tsc_cross_core_status();
                         serial_write(if tsc_synced {
                             b"TSC cross-core synchronization passed; max offset magnitude="
