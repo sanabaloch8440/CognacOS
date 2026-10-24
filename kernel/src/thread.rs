@@ -11,8 +11,8 @@ pub enum ThreadState { Empty, Ready, Running, Blocked, Exited }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadError { InvalidStack, InvalidAffinity, Full, NoCurrentThread, InvalidState, InvalidCpu }
 #[derive(Clone, Copy)]
-struct ThreadRecord { id:u64, scheduler_id:u64, process_id:u64, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32, critical_region_depth:u16, guarded_region_depth:u16, alert_pending:bool, alertable_wait:bool, user_apc_delivery_pending:bool, queue_entry:u64 }
-impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,process_id:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0}; }
+struct ThreadRecord { id:u64, scheduler_id:u64, process_id:u64, impersonation_token:usize, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32, critical_region_depth:u16, guarded_region_depth:u16, alert_pending:bool, alertable_wait:bool, user_apc_delivery_pending:bool, queue_entry:u64 }
+impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,process_id:0,impersonation_token:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0}; }
 unsafe impl Send for ThreadRecord {}
 struct ThreadTable { records:[ThreadRecord;MAX_THREADS], next_id:u64 }
 impl ThreadTable { const fn new()->Self { Self{records:[ThreadRecord::EMPTY;MAX_THREADS],next_id:1} } }
@@ -81,7 +81,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     let scheduler_id=crate::scheduler::create_task(
         2, owner_affinity, top as u64, thread_trampoline as usize as u64,
     ).map_err(|_|ThreadError::Full)?;
-    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,state:ThreadState::Ready,affinity:owner_affinity,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0};
+    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Ready,affinity:owner_affinity,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0};
     drop(table);
     notify_affinity(owner_affinity);
     Ok(id)
