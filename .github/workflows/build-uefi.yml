@@ -40,6 +40,7 @@ jobs:
           cargo test --manifest-path drivers/acpi/Cargo.toml
           cargo test --manifest-path drivers/pci/Cargo.toml
           cargo test --manifest-path drivers/processor/Cargo.toml
+          cargo test --manifest-path drivers/ext4/Cargo.toml
       - name: Install Rust targets
         run: |
           rustup update stable
