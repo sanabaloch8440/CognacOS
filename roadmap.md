@@ -4,6 +4,20 @@ This roadmap tracks code and validation currently present in the repository, not
 
 **Project target:** a Rust-first x86-64 operating system with NT-inspired kernel interfaces and a long-term path toward hosting Windows x64 drivers.
 
+## Fault-isolation hardening milestone — in progress
+
+The current pass hardens user-buffer transfers and records the remaining isolation work explicitly. It is **not** a claim that Windows-grade process or driver fault containment is complete.
+
+- [x] Validate user-copy ranges against the user address interval before walking page tables.
+- [x] Preflight every page in a multi-page copy before transferring bytes, so an unmapped or read-only later page does not cause a partial transfer. The address-space lifetime lock is held across preflight and copy to prevent concurrent unmap/destruction from invalidating checked translations.
+- [ ] Add host-side tests for cross-page copy failure, overflow, read-only destination pages, and mapping teardown races.
+- [ ] Deliver user-mode exceptions through a defined trap-frame/exception path and terminate only the faulting process; current unhandled CPU exceptions still take the fatal kernel path.
+- [ ] Integrate timer-driven preemption into context switching and prove that a non-yielding thread cannot monopolize the CPU.
+- [ ] Complete demand-zero/page-in handling for user mappings and process working-set accounting.
+- [ ] Harden driver-facing I/O completion, cancellation, and rundown with injected failure/race tests. Kernel-mode driver faults still require stronger containment and can compromise the system.
+- [ ] Run QEMU multi-vCPU and stress/fault-injection suites before marking this milestone complete.
+
+
 ## Status at a glance
 
 | Subsystem | Status | Main gaps |
