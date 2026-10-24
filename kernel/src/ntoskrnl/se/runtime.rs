@@ -84,7 +84,7 @@ mod tests {
     use super::*;
     #[test]
     fn validates_minimal_self_relative_descriptor() {
-        let mut sd = [0u8; 20]; sd[0] = 1;
+        let mut sd = [0u8; 4096]; sd[0] = 1;
         sd[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
         assert_eq!(unsafe { SeValidSecurityDescriptor(sd.as_ptr().cast()) }, 1);
         sd[2..4].copy_from_slice(&0u16.to_le_bytes());
@@ -92,7 +92,7 @@ mod tests {
     }
     #[test]
     fn rejects_bad_owner_offset_and_sid_revision() {
-        let mut sd = [0u8; 64]; sd[0] = 1;
+        let mut sd = [0u8; 4096]; sd[0] = 1;
         sd[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
         sd[4..8].copy_from_slice(&20u32.to_le_bytes());
         sd[20] = 2; sd[21] = 1;
