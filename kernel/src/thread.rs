@@ -294,6 +294,13 @@ pub fn assign_thread_impersonation_token(thread_object: *mut c_void, token: *mut
     STATUS_SUCCESS
 }
 
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn PsAssignImpersonationToken(
+    thread: *mut c_void, token: *mut c_void,
+) -> i32 {
+    assign_thread_impersonation_token(thread, token)
+}
+
 pub fn reference_current_impersonation_token() -> *mut c_void {
     let Some(id) = current_thread_id() else { return core::ptr::null_mut(); };
     let token = {
