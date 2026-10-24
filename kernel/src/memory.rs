@@ -464,6 +464,29 @@ pub unsafe fn validate_identity_range(
     Ok(())
 }
 
+/// Validate a virtual range against its expected physical backing, page by page.
+/// Supports high-half aliases as well as identity mappings.
+pub unsafe fn validate_translation_range(
+    pml4_physical: u64, virtual_start: u64, physical_start: u64, length: u64,
+) -> Result<(), AllocError> {
+    if length == 0 { return Ok(()); }
+    let virtual_end = virtual_start.checked_add(length).ok_or(AllocError::InvalidMap)?;
+    let physical_end = physical_start.checked_add(length).ok_or(AllocError::InvalidMap)?;
+    if physical_end > PHYSICAL_LIMIT || virtual_end <= virtual_start {
+        return Err(AllocError::InvalidMap);
+    }
+    let mut va = virtual_start & !(PAGE_SIZE - 1);
+    let mut pa = physical_start & !(PAGE_SIZE - 1);
+    let end = align_up(virtual_end, PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+    while va < end {
+        let mapping = unsafe { inspect_mapping(pml4_physical, va)? };
+        if mapping.physical_address != pa { return Err(AllocError::InvalidMap); }
+        va = va.checked_add(PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+        pa = pa.checked_add(PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+    }
+    Ok(())
+}
+
 /// Split the bootstrap's 2 MiB identity mapping into 4 KiB pages where
 /// fine-grained permissions or a stack guard are required. All other bootstrap
 /// large pages become writable, supervisor-only, and non-executable.
@@ -478,6 +501,8 @@ pub unsafe fn harden_page_tables(
     data: (u64, u64),
     bss: (u64, u64),
     guard_page: u64,
+    stack: (u64, u64),
+    virtual_guard_page: u64,
 ) -> Result<(), AllocError> {
     if pml4_physical == 0 || pml4_physical >= PHYSICAL_LIMIT || pml4_physical & 0xfff != 0 {
         return Err(AllocError::InvalidMap);
@@ -544,6 +569,7 @@ pub unsafe fn harden_page_tables(
         split_range(pml4_physical, rodata)?;
         split_range(pml4_physical, data)?;
         split_range(pml4_physical, bss)?;
+        split_range(pml4_physical, stack)?;
         split(pml4_physical, guard_page)?;
     }
 
@@ -589,6 +615,10 @@ pub unsafe fn harden_page_tables(
         set_range(pml4_physical, rodata, false, false)?;
         set_range(pml4_physical, data, true, false)?;
         set_range(pml4_physical, bss, true, false)?;
+        set_range(pml4_physical, stack, true, false)?;
+        if inspect_mapping(pml4_physical, virtual_guard_page).is_ok() {
+            return Err(AllocError::InvalidMap);
+        }
         let guard_table = split(pml4_physical, guard_page)?;
         let guard_pte = guard_table.add(((guard_page >> 12) & 0x1ff) as usize);
         guard_pte.write(0);
