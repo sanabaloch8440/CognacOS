@@ -1344,10 +1344,36 @@ rdotos_context_switch:
     pop rbx
     pop rbp
     ret
+
+    .global rdotos_context_switch_publish
+    .type rdotos_context_switch_publish, @function
+rdotos_context_switch_publish:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi], rsp
+    mov r12, rdi
+    mov r13, rsi
+    mov r14, rdx
+    mov rdi, rcx
+    and rsp, -16
+    call r14
+    mov rsp, r13
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
 "#);
 
 unsafe extern "C" {
     fn rdotos_context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64);
+    fn rdotos_context_switch_publish(old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize);
 }
 unsafe extern "C" {
     fn rdotos_fault_probe_write_ro(address: *mut u8) -> u64;
@@ -1396,6 +1422,14 @@ pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
 pub unsafe fn context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64) {
     if old_rsp.is_null() || new_rsp.is_null() { return; }
     unsafe { rdotos_context_switch(old_rsp, new_rsp); }
+}
+/// Switch stacks after saving the outgoing context, invoking a tiny publication
+/// callback before another CPU can claim the outgoing thread.
+pub unsafe fn context_switch_publish(
+    old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize,
+){
+    if old_rsp.is_null()||new_rsp.is_null(){return}
+    unsafe{rdotos_context_switch_publish(old_rsp,new_rsp,publish,context);}
 }
 
 /// Generic HAL IPI handler. Publish pending work for the local scheduler/DPC
