@@ -40,7 +40,7 @@ The repository contains working foundations in several areas. “Implemented” 
 
 ## Build and test
 
-The CI workflow builds the freestanding Rust kernel, converts its linked ELF64 image to a fixed-base PE32+ AMD64 native image, validates PE headers/sections and the pinned digest, builds the Rust UEFI loader, and boots it under OVMF/QEMU. The main smoke test uses 5 GiB RAM and four virtual CPUs. An additional 2/4/8-vCPU SMP matrix asserts expected AP counts, BSP TSS/IST wiring, per-AP directed IPI acknowledgements, cross-CPU scheduler wakeups, contended IRQ-save locks, thread exit/teardown, and VM/TLB self-tests. Host-side tests exercise the physical allocator map parser and ext filesystem parser. The expanded matrix is committed but its first CI result is not yet confirmed.
+The CI workflow builds the freestanding Rust kernel, converts its linked ELF64 image to a fixed-base PE32+ AMD64 native image, validates PE headers/sections and the pinned digest, builds the Rust UEFI loader, and boots it under OVMF/QEMU. The main smoke test uses 5 GiB RAM and four virtual CPUs. An additional 2/4/8-vCPU SMP matrix asserts expected AP counts, BSP TSS/IST wiring, per-AP directed IPI acknowledgements, cross-CPU scheduler wakeups, contended IRQ-save locks, thread, IRP, and object exit/teardown, and VM/TLB self-tests. Host-side tests exercise the physical allocator map parser and ext filesystem parser. The expanded matrix is committed but its first CI result is not yet confirmed.
 
 For the canonical build and boot-test result, see [GitHub Actions](https://github.com/umarfarooq7869/RdotOS/actions/workflows/build-uefi.yml). A successful CI run verifies only the paths covered by that run; it is not evidence of support for all hardware or Windows drivers.
 
