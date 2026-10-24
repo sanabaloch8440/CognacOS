@@ -124,9 +124,9 @@ pub(crate) unsafe fn iommu_allocate_common(adapter:*mut core::ffi::c_void,length
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ScatterGatherElement { pub address: u64, pub length: u32, pub reserved: u32 }
 
-/// Build a simple bus-master SG list from physical page fragments. This helper
-/// merges adjacent fragments while respecting maximum segment size and an
-/// optional power-of-two boundary. It does not accept virtual addresses or MDLs.
+/// Pure SG shape helper for tests/planning only. Its output addresses remain
+/// physical inputs and MUST NOT be submitted to hardware; hardware-facing WDM
+/// SG APIs below use IOMMU logical mappings exclusively.
 pub fn build_scatter_gather(
     fragments: &[(u64, u32)], maximum_segment: u32, boundary: u64,
     out: &mut [ScatterGatherElement],
@@ -633,8 +633,8 @@ pub unsafe extern "win64" fn free_adapter_channel(adapter: *mut core::ffi::c_voi
     dispatch_channel_callbacks(next);
 }
 
-/// Extended variants currently accept only flags that preserve the legacy
-/// direct-DMA contract; unsupported remapping/flush semantics fail closed.
+/// Extended map-transfer ABI is not advertised in the operation table until its
+/// complete WDK context and scatter/gather output semantics are implemented.
 pub unsafe extern "win64" fn map_transfer_ex(
     adapter: *mut core::ffi::c_void, _context: *mut core::ffi::c_void,
     mdl: *mut MdlAbi, map_register_base: *mut core::ffi::c_void,
@@ -646,9 +646,8 @@ pub unsafe extern "win64" fn map_transfer_ex(
     if address == 0 { 0xC000000D_u32 as i32 } else { 0 }
 }
 
-/// The legacy x64 DMA adapter currently provides real common-buffer allocation
-/// only. Mapping, channel ownership and SG callbacks stay null until MDL and
-/// device-object lifetimes are implemented; advertising fake callbacks is unsafe.
+/// Windows x64 DMA operation table. Hardware-facing callbacks require a registered
+/// IOMMU backend and return failure rather than exposing physical addresses.
 pub static DMA_OPERATIONS: DmaOperations = DmaOperations {
     size: DmaOperations::ABI_SIZE as u32,
     put_dma_adapter: crate::dma::put_dma_adapter as *const (),
