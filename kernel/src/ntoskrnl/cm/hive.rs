@@ -72,6 +72,7 @@ impl<'a> Hive<'a>{
   Ok(Key{hive:self,index,cell:c,flags,name:&c[0x4c..0x4c+name_len]})
  }
  pub fn root(&self)->Result<Key<'a>,Error>{self.key(self.info.root_cell)}
+ pub fn key_at(&self,index:u32)->Result<Key<'a>,Error>{self.key(index)}
  pub fn find_path(&self,path:&[u16])->Result<Key<'a>,Error>{
   let mut current=self.root()?;let mut start=0;
   while start<path.len(){while start<path.len()&&path[start]==b'\\' as u16{start+=1}if start==path.len(){break}
@@ -93,6 +94,13 @@ impl<'a> Key<'a>{
   if self.is_compressed_name(){for(i,b)in self.name.iter().enumerate(){out[i]=*b as u16;}}
   else{for i in 0..n{out[i]=u16::from_le_bytes([self.name[i*2],self.name[i*2+1]]);}}
   Ok(n)
+ }
+ pub fn find_path(&self,path:&[u16])->Result<Key<'a>,Error>{
+  let mut current=*self;let mut start=0;
+  while start<path.len(){while start<path.len()&&path[start]==b'\\' as u16{start+=1}if start==path.len(){break}
+   let mut end=start;while end<path.len()&&path[end]!=b'\\' as u16{end+=1}
+   current=current.find_subkey(&path[start..end])?;start=end;
+  }Ok(current)
  }
  pub fn subkey_count(&self)->Result<u32,Error>{u32at(self.cell,0x14)}
  pub fn find_subkey(&self,name:&[u16])->Result<Key<'a>,Error>{
