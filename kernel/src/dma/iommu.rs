@@ -39,8 +39,8 @@ fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:
  if status!=OK||logical_out==0||cookie_out==0||logical_out.checked_add(length as u64).is_none(){return Err(DmaError::AddressMask)}
  let mut s=STATE.lock();
  let logical_end=logical_out.checked_add(length as u64).ok_or(DmaError::AddressMask)?;
- let overlaps_map=s.maps.iter().any(|m|m.used&&logical_out<m.logical.saturating_add(m.length as u64)&&m.logical<logical_end);
- let overlaps_common=s.common.iter().any(|x|x.used&&logical_out<x.logical.saturating_add((x.pages as u64)*PAGE_SIZE)&&x.logical<logical_end);
+ let overlaps_map=s.maps.iter().any(|m|m.used&&m.device==device&&logical_out<m.logical.saturating_add(m.length as u64)&&m.logical<logical_end);
+ let overlaps_common=s.common.iter().any(|x|x.used&&x.device==device&&logical_out<x.logical.saturating_add((x.pages as u64)*PAGE_SIZE)&&x.logical<logical_end);
  if overlaps_map||overlaps_common{drop(s);unsafe{(b.unmap.unwrap())(b.context,device,logical_out,cookie_out)};return Err(DmaError::AddressMask)}
  let Some(slot)=s.maps.iter_mut().find(|m|!m.used)else{drop(s);unsafe{(b.unmap.unwrap())(b.context,device,logical_out,cookie_out)};return Err(DmaError::RegistryFull)};
  *slot=Mapping{used:true,busy:false,device,token,irp,physical,logical:logical_out,length,cookie:cookie_out,direction};fence(Ordering::SeqCst);Ok(logical_out)
@@ -101,8 +101,8 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
  let st=unsafe{(b.map.unwrap())(b.context,device,physical,bytes as u32,2,&mut logical,&mut cookie)};
  if st!=OK||logical==0||cookie==0||logical.checked_add(bytes).is_none_or(|e|e-1>maximum){if st==OK&&cookie!=0{let _=unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)};}for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
  let mut s=STATE.lock();let logical_end=logical.checked_add(bytes).ok_or(DmaError::AddressMask)?;
- let overlap_maps=s.maps.iter().any(|m|m.used&&logical<m.logical.saturating_add(m.length as u64)&&m.logical<logical_end);
- let overlap_common=s.common.iter().any(|x|x.used&&logical<x.logical.saturating_add((x.pages as u64)*PAGE_SIZE)&&x.logical<logical_end);
+ let overlap_maps=s.maps.iter().any(|m|m.used&&m.device==device&&logical<m.logical.saturating_add(m.length as u64)&&m.logical<logical_end);
+ let overlap_common=s.common.iter().any(|x|x.used&&x.device==device&&logical<x.logical.saturating_add((x.pages as u64)*PAGE_SIZE)&&x.logical<logical_end);
  if overlap_maps||overlap_common{drop(s);let _=unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)};for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
  let Some(slot)=s.common.iter_mut().find(|c|!c.used)else{drop(s);let _=unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)};for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::RegistryFull)};
  *slot=Common{used:true,device,cpu:cpu as usize,physical,logical,length,pages,cookie};fence(Ordering::SeqCst);Ok((cpu as *mut u8,logical))
