@@ -86,6 +86,25 @@ fn map_access(t:&TypeEntry,mask:u32)->u32{let mut m=mask;if m&GENERIC_READ!=0{m=
 fn type_idx(s:&State,id:u16)->Option<usize>{s.types.iter().position(|t|t.used&&t.id==id)}
 fn object_idx(s:&State,body:usize)->Option<usize>{s.objects.iter().position(|o|o.used&&o.body==body&&!o.deleting)}
 fn find_name(s:&State,name:&[u16])->Option<usize>{s.objects.iter().position(|o|o.used&&!o.deleting&&o.inserted&&o.name_len as usize==name.len()&&eq(&o.name[..o.name_len as usize],name))}
+fn resolve_symbolic_prefixes(s:&State,input:&[u16],out:&mut [u16;MAX_NAME])->Result<usize,i32>{
+ if input.len()>MAX_NAME{return Err(STATUS_OBJECT_PATH_SYNTAX_BAD)}
+ out[..input.len()].copy_from_slice(input);let mut n=input.len();
+ for _ in 0..8{
+  let mut best:Option<(usize,usize)>=None;
+  for (i,o) in s.objects.iter().enumerate(){if !o.used||o.deleting||o.name_len==0{continue}
+   let pn=o.name_len as usize;if n<=pn||out[pn]!=b'\\' as u16||!eq(&out[..pn],&o.name[..pn]){continue}
+   let is_link=s.symbolic_links.iter().any(|l|l.magic==0x52444f5453594d4c&&core::ptr::eq(l as *const SymbolicLinkBody as *mut c_void,o.body as *mut c_void));
+   if is_link&&best.is_none_or(|(best_len,_)|pn>best_len){best=Some((pn,i));}
+  }
+  let Some((prefix,i))=best else{return Ok(n)};
+  let body=s.objects[i].body as *const SymbolicLinkBody;let link=unsafe{&*body};let target=link.target_len as usize;let suffix=n-prefix;
+  if target+suffix>MAX_NAME{return Err(STATUS_OBJECT_PATH_SYNTAX_BAD)}
+  let mut tmp=[0u16;MAX_NAME];tmp[..target].copy_from_slice(&link.target[..target]);tmp[target..target+suffix].copy_from_slice(&out[prefix..n]);out[..target+suffix].copy_from_slice(&tmp[..target+suffix]);n=target+suffix;
+ }
+ // More than eight rewrites is treated as a symbolic-link loop.
+ for o in s.objects.iter(){let pn=o.name_len as usize;if o.used&&pn<n&&out[pn]==b'\\' as u16&&eq(&out[..pn],&o.name[..pn])&&s.symbolic_links.iter().any(|l|l.magic==0x52444f5453594d4c&&l.target_len!=0&&core::ptr::eq(l as *const SymbolicLinkBody as *mut c_void,o.body as *mut c_void)){return Err(STATUS_OBJECT_PATH_SYNTAX_BAD)}}
+ Ok(n)
+}
 fn encode_handle(i:usize,g:u16)->*mut c_void{(HANDLE_TAG|((g as usize)<<HANDLE_SLOT_BITS)|i) as *mut c_void}
 fn decode_handle(h:*mut c_void)->Option<(usize,u16)>{let v=h as usize;if v&HANDLE_TAG_MASK!=HANDLE_TAG{return None}Some((v&HANDLE_SLOT_MASK,(v>>HANDLE_SLOT_BITS) as u16))}
 fn handle_idx(s:&State,h:*mut c_void,owner:usize)->Option<usize>{let(i,g)=decode_handle(h)?;let e=s.handles.get(i)?;let owner_ok=if owner==usize::MAX{e.owner==usize::MAX}else{e.owner==owner||e.owner==usize::MAX};if e.used&&e.generation==g&&owner_ok{Some(i)}else{None}}
@@ -238,7 +257,7 @@ pub fn dereference_body(body:*mut c_void)->bool{
  unsafe{invoke_finalizer(reclaimed)}true
 }
 pub fn open_by_name(name:&[u16],desired:u32,owner:usize,kernel_mode:bool,attrs:u32)->Result<*mut c_void,i32>{
- let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
+ let _g=LOCK.lock();let s=state();let mut resolved=[0u16;MAX_NAME];let n=resolve_symbolic_prefixes(s,name,&mut resolved)?;let name=&resolved[..n];let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
  let ti=type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?;let t=s.types[ti];let requested=map_access(&t,desired&!MAXIMUM_ALLOWED);let allowed=if kernel_mode{t.valid}else{dacl_allowed(s,&s.objects[i],owner)&t.valid};let granted=if desired&MAXIMUM_ALLOWED!=0{allowed}else{requested};
  if granted&!t.valid!=0||requested&!allowed!=0{return Err(STATUS_ACCESS_DENIED)}
  let hi=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -262,7 +281,7 @@ pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
  unsafe{invoke_finalizer(reclaimed)}Ok(())
 }
 pub fn reference_by_name(name:&[u16],expected_type:u16,desired:u32,kernel_mode:bool)->Result<*mut c_void,i32>{
- let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
+ let _g=LOCK.lock();let s=state();let mut resolved=[0u16;MAX_NAME];let n=resolve_symbolic_prefixes(s,name,&mut resolved)?;let name=&resolved[..n];let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
  if expected_type!=0&&s.objects[i].type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
  let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let granted=map_access(&t,desired);
  if granted&!t.valid!=0||(!kernel_mode&&!access_check(s,&s.objects[i],granted,0)){return Err(STATUS_ACCESS_DENIED)}
@@ -508,6 +527,19 @@ mod tests{
   let h=open_by_pointer(body,1,42,true,0).unwrap();assert_eq!(reference_by_handle(h,1,0,7,false).unwrap_err(),STATUS_INVALID_HANDLE);
   assert_eq!(reference_by_handle(h,1,0,42,false).unwrap(),body);assert!(dereference_body(body));close_handle(h,42).unwrap();assert!(dereference_body(body));
  }
+ static FINALIZER_CALLS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+ unsafe extern "win64" fn count_finalizer(_object:*mut c_void){FINALIZER_CALLS.fetch_add(1,Ordering::SeqCst);}
+ #[test]fn object_finalizer_waits_for_handle_rundown(){
+  FINALIZER_CALLS.store(0,Ordering::SeqCst);let body=0x9234usize as *mut c_void;
+  unsafe{register_external_object_with_finalizer(body,&[94],&[95],false,core::ptr::null(),0,count_finalizer).unwrap();}
+  let h=open_by_pointer(body,1,876,true,0).unwrap();assert!(unregister_object(body));assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst),0);
+  close_handle(h,876).unwrap();assert_eq!(FINALIZER_CALLS.load(Ordering::SeqCst),1);assert!(object_rundown_complete(body));
+ }
+ #[test]fn symbolic_link_prefixes_resolve_within_namespace(){
+  let ty=register_type(&[96],1,2,4,7,7).unwrap();let body=0x9238usize as *mut c_void;
+  unsafe{register_object(body,ty,&[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16,b'\\' as u16,b'O' as u16,b'b' as u16,junk: 0],false,core::ptr::null(),0).unwrap();}
+ }
+
  #[test]fn named_reference_is_case_insensitive_and_name_copy_is_stable(){
   let ty=register_type(&[93],1,2,4,7,7).unwrap();let body=0x4234usize as *mut c_void;
   unsafe{register_object(body,ty,&[92,93],false,core::ptr::null(),0).unwrap();}
