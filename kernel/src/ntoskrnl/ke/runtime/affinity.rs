@@ -1,4 +1,4 @@
-//! extended processor affinity routines.
+// extended processor affinity routines.
 // This file is included by the Ke runtime facade so existing shared private
 // state and cross-routine helpers retain their original module scope.
 
