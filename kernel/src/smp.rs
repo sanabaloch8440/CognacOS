@@ -125,6 +125,8 @@ rdotos_ap_trampoline_entry_offset_patch:
 rdotos_ap_trampoline_kernel_pml4_offset_patch:
     .long 0
     mov rsi, rdx
+    # Third argument is the original top of this AP's bootstrap stack.
+    lea rdx, [rsp + 8]
     jmp rax
 3:  pause
     jmp 3b
@@ -587,7 +589,7 @@ pub unsafe fn start_discovered_aps(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
+pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64, ap_stack_top: u64) -> ! {
     // The trampoline uses temporary tables to guarantee its low-memory mapping.
     // Switch to the permanent kernel root before touching global CPU state.
     unsafe { core::arch::asm!("mov cr3, {}", in(reg) kernel_pml4, options(nostack, preserves_flags)); }
@@ -601,10 +603,11 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
         loop { core::hint::spin_loop(); }
     }
     // Install a private TSS/GDT and dedicated IST stacks on this CPU before
-    // it can receive interrupts. RSP is already on the permanent AP stack.
-    let mut ap_rsp: u64;
-    unsafe { core::arch::asm!("mov {}, rsp", out(reg) ap_rsp, options(nomem, nostack, preserves_flags)); }
-    if unsafe { arch::load_cpu_descriptor_tables(index, ap_rsp) }.is_err() {
+    // it can receive interrupts. Use the original stack top, not the current
+    // deeper call-frame RSP, for future privilege transitions and idle returns.
+    if ap_stack_top == 0 || ap_stack_top & 0xf != 0
+        || unsafe { arch::load_cpu_descriptor_tables(index, ap_stack_top) }.is_err()
+        || !crate::thread::set_idle_stack_top(index, ap_stack_top) {
         let _ = hal::mark_cpu_failed(index);
         loop { core::hint::spin_loop(); }
     }
