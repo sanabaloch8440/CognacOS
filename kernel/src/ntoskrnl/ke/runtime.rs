@@ -631,7 +631,7 @@ pub(crate) fn ki_start_all_processors(
         vm_stress_passed: false,
     };
     if rsdp_address != 0 && trampoline_physical != 0 {
-        if let Ok(madt) = crate::acpi::discover_madt(rsdp_address) {
+        if let Ok(madt) = unsafe { crate::acpi::discover_madt(rsdp_address) } {
             if let Ok((online, ipi_enabled)) = unsafe {
                 crate::smp::start_discovered_aps_with_ipi(
                     pml4_physical, trampoline_physical, &madt, bsp_apic_id,
