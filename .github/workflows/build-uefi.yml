@@ -66,11 +66,11 @@ jobs:
       - name: Check ext4 driver library
         run: cargo check --manifest-path drivers/ext4/Cargo.toml --lib
       - name: Test ext4 parser and extent mapping
-        run: cargo test --manifest-path drivers/ext4/Cargo.toml --lib parser_mapping_and_crc_smoke_tests_pass
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib parser_mapping_and_crc_smoke_tests_pass
       - name: Test ext4 metadata checksum validation
-        run: cargo test --manifest-path drivers/ext4/Cargo.toml --lib metadata_csum_superblock_is_checked_and_corruption_rejected
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib metadata_csum_superblock_is_checked_and_corruption_rejected
       - name: Test ext4 writes reject requests beyond EOF
-        run: cargo test --manifest-path drivers/ext4/Cargo.toml --lib writes_past_inode_eof_are_rejected_before_device_io
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib writes_past_inode_eof_are_rejected_before_device_io
       - name: Build separate native PE32+ HAL and driver images
         shell: bash
         run: |
