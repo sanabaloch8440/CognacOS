@@ -979,6 +979,37 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
 
 
 
+
+/// Processor-group affinity is limited to group 0 until multi-group topology
+/// exists. The cooperative scheduler refuses masks that would migrate a live
+/// context away from its owning CPU.
+pub unsafe extern "win64" fn ke_set_affinity_thread(thread:*mut core::ffi::c_void,affinity:u64)->u64{
+ let Some(id)=priority_id(thread) else{return 0};
+ crate::thread::set_thread_affinity(id,affinity).unwrap_or_else(||crate::thread::thread_affinity(id).unwrap_or(0))
+}
+const MAX_AFFINITY_RESTORE:usize=128;
+#[derive(Clone,Copy)]struct AffinityRestore{id:u64,mask:u64}
+impl AffinityRestore{const EMPTY:Self=Self{id:0,mask:0};}
+struct AffinityRestoreTable{records:[AffinityRestore;MAX_AFFINITY_RESTORE]}
+impl AffinityRestoreTable{const fn new()->Self{Self{records:[AffinityRestore::EMPTY;MAX_AFFINITY_RESTORE]}}}
+static AFFINITY_RESTORE:crate::hal::IrqSpinLock<AffinityRestoreTable>=crate::hal::IrqSpinLock::new(AffinityRestoreTable::new());
+pub unsafe extern "win64" fn ke_set_system_group_affinity_thread(thread:*mut core::ffi::c_void,new_affinity:*const GroupAffinity,previous_affinity:*mut GroupAffinity){
+ if new_affinity.is_null(){return}
+ let Some(id)=priority_id(thread) else{return};
+ let requested=unsafe{new_affinity.read_unaligned()};
+ if requested.group!=0||requested.mask==0{return}
+ let Some(old)=crate::thread::set_thread_affinity(id,requested.mask) else{return};
+ if !previous_affinity.is_null(){unsafe{previous_affinity.write_unaligned(GroupAffinity{mask:old,group:0,reserved:[0;3]});}}
+ let mut table=AFFINITY_RESTORE.lock();
+ let slot=table.records.iter().position(|r|r.id==id).or_else(||table.records.iter().position(|r|r.id==0));
+ if let Some(slot)=slot{table.records[slot]=AffinityRestore{id,mask:old};}
+}
+pub unsafe extern "win64" fn ke_revert_to_user_group_affinity_thread(thread:*mut core::ffi::c_void){
+ let Some(id)=priority_id(thread) else{return};
+ let old={let mut table=AFFINITY_RESTORE.lock();let Some(slot)=table.records.iter().position(|r|r.id==id) else{return};let mask=table.records[slot].mask;table.records[slot]=AffinityRestore::EMPTY;mask};
+ if old!=0{let _=crate::thread::set_thread_affinity(id,old);}
+}
+
 /// Interrupt-object synchronization side table. Until HAL interrupt objects expose
 /// their real SynchronizeIrql and ISR lock, this uses a conservative DPC-level
 /// critical section; it serializes RdotOS callers but is not a Windows DIRQL clone.
