@@ -76,31 +76,45 @@ fn align_up(value: u64, align: u64) -> Option<u64> {
 
 /// Initialize from the final UEFI map. Descriptor stride is supplied by firmware
 /// and is not assumed to equal Rust's descriptor struct size.
-pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Result<usize, AllocError> {
-    let _guard = MemoryGuard::acquire();
-
-    if (entries != 0 && map.is_null()) || stride < core::mem::size_of::<MemoryDescriptor>() {
+/// Parse descriptors into a temporary array before publishing any allocator state.
+/// This makes malformed maps and capacity failures transactional.
+fn collect_regions(map: *const u8, entries: usize, stride: usize,
+                   out: &mut [Region; MAX_REGIONS]) -> Result<usize, AllocError> {
+    if (entries != 0 && map.is_null())
+        || stride < core::mem::size_of::<MemoryDescriptor>()
+        || (entries > 1 && entries.checked_mul(stride).is_none()) {
         return Err(AllocError::InvalidMap);
     }
-    let regions = unsafe { &mut *REGIONS.0.get() };
-    for r in regions.iter_mut() { *r = Region::EMPTY; }
     let mut count = 0usize;
     for i in 0..entries {
-        let address = (map as usize).checked_add(i.checked_mul(stride).ok_or(AllocError::InvalidMap)?)
-            .ok_or(AllocError::InvalidMap)? as *const MemoryDescriptor;
-        let d = unsafe { ptr::read_unaligned(address) };
+        let offset = i.checked_mul(stride).ok_or(AllocError::InvalidMap)?;
+        let address = (map as usize).checked_add(offset).ok_or(AllocError::InvalidMap)?;
+        let d = unsafe { ptr::read_unaligned(address as *const MemoryDescriptor) };
+        // Ignore non-conventional ranges before interpreting their size. Only
+        // conventional RAM is allocator-owned; MMIO/reserved/loader ranges stay out.
         if d.kind != EFI_CONVENTIONAL_MEMORY || d.number_of_pages == 0 { continue; }
-        let start = d.physical_start.max(LOW_RESERVED_END);
-        let raw_end = d.physical_start.checked_add(d.number_of_pages.checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidMap)?)
+        let bytes = d.number_of_pages.checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidMap)?;
+        let raw_end = d.physical_start.checked_add(bytes).ok_or(AllocError::InvalidMap)?;
+        let start = align_up(d.physical_start.max(LOW_RESERVED_END), PAGE_SIZE)
             .ok_or(AllocError::InvalidMap)?;
-        let end = raw_end.min(PHYSICAL_LIMIT);
-        let Some(start) = align_up(start, PAGE_SIZE) else { continue };
-        let end = end & !(PAGE_SIZE - 1);
+        let end = raw_end.min(PHYSICAL_LIMIT) & !(PAGE_SIZE - 1);
         if start >= end { continue; }
         if count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
-        regions[count] = Region { next: start, end };
+        out[count] = Region { next: start, end };
         count += 1;
     }
+    Ok(count)
+}
+
+pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Result<usize, AllocError> {
+    let _guard = MemoryGuard::acquire();
+    let mut staged = [Region::EMPTY; MAX_REGIONS];
+    let count = collect_regions(map, entries, stride, &mut staged)?;
+    let regions = unsafe { &mut *REGIONS.0.get() };
+    regions.copy_from_slice(&staged);
+    // Reinitialization must not retain frames returned by a previous map.
+    let free = unsafe { &mut *FREE_PAGES.0.get() };
+    free.1 = 0;
     REGION_COUNT.store(count, core::sync::atomic::Ordering::Release);
     Ok(count)
 }
@@ -494,4 +508,58 @@ pub unsafe fn configure_identity_page(
     // entire local TLB rather than invalidating only this single page.
     unsafe { core::arch::asm!("mov cr3, {}", in(reg) pml4_physical, options(nostack, preserves_flags)); }
     Ok(())
+}
+
+
+#[cfg(test)]
+mod allocator_map_tests {
+    use super::*;
+
+    fn descriptor(kind: u32, start: u64, pages: u64) -> MemoryDescriptor {
+        MemoryDescriptor { kind, _padding: 0, physical_start: start,
+            virtual_start: 0, number_of_pages: pages, attributes: 0 }
+    }
+
+    #[test]
+    fn descriptor_stride_filtering_and_page_alignment() {
+        let stride = core::mem::size_of::<MemoryDescriptor>() + 16;
+        let mut bytes = vec![0xa5u8; stride * 3];
+        let descriptors = [
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0x100003, 4),
+            descriptor(6, 0x200000, 8),
+            descriptor(EFI_CONVENTIONAL_MEMORY, 0x300000, 0),
+        ];
+        for (i, d) in descriptors.iter().enumerate() {
+            unsafe { ptr::write_unaligned(bytes.as_mut_ptr().add(i * stride).cast::<MemoryDescriptor>(), *d); }
+        }
+        let mut regions = [Region::EMPTY; MAX_REGIONS];
+        let count = collect_regions(bytes.as_ptr(), 3, stride, &mut regions).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(regions[0].next, 0x101000);
+        assert_eq!(regions[0].end, 0x104000);
+    }
+
+    #[test]
+    fn invalid_maps_are_rejected_without_publishing_regions() {
+        let mut regions = [Region::EMPTY; MAX_REGIONS];
+        assert_eq!(collect_regions(core::ptr::null(), 1, core::mem::size_of::<MemoryDescriptor>(), &mut regions), Err(AllocError::InvalidMap));
+        assert_eq!(collect_regions(core::ptr::NonNull::<u8>::dangling().as_ptr(), 1, 8, &mut regions), Err(AllocError::InvalidMap));
+        let d = descriptor(EFI_CONVENTIONAL_MEMORY, u64::MAX - 0xfff, 4);
+        assert_eq!(collect_regions((&d as *const MemoryDescriptor).cast(), 1, core::mem::size_of::<MemoryDescriptor>(), &mut regions), Err(AllocError::InvalidMap));
+    }
+
+    #[test]
+    fn region_capacity_is_checked_before_state_commit() {
+        let stride = core::mem::size_of::<MemoryDescriptor>();
+        let mut descriptors = vec![descriptor(EFI_CONVENTIONAL_MEMORY, 0x100000 + (i as u64) * 0x2000, 1) for i in 0..=MAX_REGIONS];
+        let mut regions = [Region::EMPTY; MAX_REGIONS];
+        assert_eq!(collect_regions(descriptors.as_mut_ptr().cast(), descriptors.len(), stride, &mut regions), Err(AllocError::TooManyRegions));
+    }
+
+    #[test]
+    fn alignment_helper_rejects_overflow_and_rounds_up() {
+        assert_eq!(align_up(0x1001, PAGE_SIZE), Some(0x2000));
+        assert_eq!(align_up(0x2000, PAGE_SIZE), Some(0x2000));
+        assert_eq!(align_up(u64::MAX, PAGE_SIZE), None);
+    }
 }
