@@ -1679,9 +1679,6 @@ pub unsafe extern "win64" fn ke_and_group_affinity_ex(a:*mut AffinityEx,group:u1
 pub unsafe extern "win64" fn ke_query_group_affinity_ex(a:*const AffinityEx,group:u16)->u64{
     if group!=0{0}else{unsafe{affinity_mask(a)}}
 }
-pub unsafe extern "win64" fn ke_xor_affinity_ex(a:*mut AffinityEx,b:*const AffinityEx){
-    if a.is_null()||b.is_null(){return} if let Some(w)=unsafe{affinity_word(a)}{w.fetch_xor(unsafe{affinity_mask(b)},Ordering::AcqRel);}
-}
 pub unsafe extern "win64" fn ke_get_xsave_feature_flags()->u64{
     let max=unsafe{core::arch::x86_64::__cpuid(0).eax};
     if max<0xD{return 0}
