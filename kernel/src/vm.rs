@@ -133,7 +133,16 @@ impl AddressSpace {
     /// Copy through validated page-table translations using the kernel's
     /// supervisor identity map. Each page is permission-checked before access.
     pub unsafe fn copy_from_user(&self, source: u64, destination: &mut [u8]) -> Result<(), VmError> {
+        if destination.is_empty() { return Ok(()); }
+        if !is_user_range(source, destination.len() as u64) { return Err(VmError::InvalidAddress); }
         let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        // Preflight the entire source before touching the kernel destination.
+        let mut probe = 0usize;
+        while probe < destination.len() {
+            let va = source.checked_add(probe as u64).ok_or(VmError::InvalidAddress)?;
+            self.translate_user(va, false)?;
+            probe += core::cmp::min(destination.len() - probe, PAGE_SIZE as usize - (va as usize & 4095));
+        }
         let mut done = 0usize;
         while done < destination.len() {
             let va = source.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
@@ -146,7 +155,17 @@ impl AddressSpace {
     }
 
     pub unsafe fn copy_to_user(&self, destination: u64, source: &[u8]) -> Result<(), VmError> {
+        if source.is_empty() { return Ok(()); }
+        if !is_user_range(destination, source.len() as u64) { return Err(VmError::InvalidAddress); }
         let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        // Probe every destination page first so an invalid later page cannot
+        // leave a partially updated user buffer.
+        let mut probe = 0usize;
+        while probe < source.len() {
+            let va = destination.checked_add(probe as u64).ok_or(VmError::InvalidAddress)?;
+            self.translate_user(va, true)?;
+            probe += core::cmp::min(source.len() - probe, PAGE_SIZE as usize - (va as usize & 4095));
+        }
         let mut done = 0usize;
         while done < source.len() {
             let va = destination.checked_add(done as u64).ok_or(VmError::InvalidAddress)?;
