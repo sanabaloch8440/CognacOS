@@ -511,3 +511,13 @@ The new routines are marked partial until the multi-vCPU workflow passes. The cu
 - [ ] Add malformed descriptor fuzz/property tests and fault-safe user-buffer capture before resolving routines that dereference caller-provided descriptors.
 
 **Scope limitation:** the current validator assumes the supplied pointer references a readable 4-KiB window because the NT ABI does not provide an input length. It checks descriptor-relative offsets within that bounded window, but it cannot safely probe arbitrary user memory. It must not be treated as a substitute for `SeCaptureSecurityDescriptor` or full access-check semantics.
+
+
+### Additional Se bounded validation primitives (2026-10-25)
+
+- [x] Add length-aware RdotOS extension helpers for SID validation/equality and ACL structural validation.
+- [x] Add explicit-length self-relative descriptor control/component queries with bounds checks and output-pointer validation.
+- [x] Add pure privilege-bitmap and allow/deny mask predicates, plus focused tests for truncation and malformed ranges.
+- [ ] Run the current workflow and verify the new Se host tests compile and execute.
+- [ ] Implement and test a real ACE evaluator with generic mapping, deny/allow ordering, object ACE handling, restricted-token second pass, and privilege grants before exposing SeAccessCheck.
+- [ ] Integrate these primitives with real Ps token ownership and safe user-memory capture; extension helpers are not Windows export ABI replacements.
