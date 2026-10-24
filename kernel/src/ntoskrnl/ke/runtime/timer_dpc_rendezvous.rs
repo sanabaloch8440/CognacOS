@@ -26,13 +26,14 @@ struct TimerRecord {
     context: usize,
     tolerable_delay: u32,
     timer2: bool,
+    callback_running: bool,
     generation: u64,
 }
 impl TimerRecord {
     const EMPTY: Self = Self {
         object: 0, active: false, due: 0, period: 0, dpc: 0,
         callback: 0, context: 0, tolerable_delay: 0, timer2: false,
-        generation: 0,
+        callback_running: false, generation: 0,
     };
 }
 struct TimerTable { records: [TimerRecord; MAX_TIMER_OBJECTS] }
@@ -322,6 +323,9 @@ unsafe fn initialize_timer(timer:*mut DispatcherHeader, timer_type:i32){
     let slot=table.records.iter().position(|r|r.object==timer as usize)
         .or_else(||table.records.iter().position(|r|r.object==0));
     if let Some(i)=slot {
+        // The void initializer cannot report failure. Do not replace metadata
+        // while a KTIMER2 callback using the same opaque address is in flight.
+        if table.records[i].object == timer as usize && table.records[i].callback_running { return; }
         // Preserve monotonic identity across reinitialization so an old expiry
         // snapshot cannot become valid again after the same address is reused.
         let generation=next_timer_generation(table.records[i].generation);
@@ -546,6 +550,9 @@ pub unsafe extern "win64" fn ke_initialize_timer2(
     let slot = table.records.iter().position(|r| r.object == timer as usize)
         .or_else(|| table.records.iter().position(|r| r.object == 0));
     if let Some(i) = slot {
+        // A callback may be using this opaque object/context. The initializer
+        // has no status return, so leave the live record intact until rundown.
+        if table.records[i].object == timer as usize && table.records[i].callback_running { return; }
         let generation = next_timer_generation(table.records[i].generation);
         table.records[i] = TimerRecord {
             object: timer as usize,
@@ -622,6 +629,21 @@ pub fn timer_tick(now: u64) {
 
         if record.timer2 {
             if record.callback == 0 { continue; }
+            // Claim callback rundown under the same lock used by cancellation
+            // and reinitialization. Once claimed, cancellation invalidates future
+            // snapshots but treats this callback as already in flight.
+            let claimed = {
+                let mut table = TIMERS.lock();
+                if let Some(live) = table.records.iter_mut().find(|r|
+                    r.object == record.object && r.timer2
+                        && r.generation == record.generation
+                        && !r.callback_running
+                ) {
+                    live.callback_running = true;
+                    true
+                } else { false }
+            };
+            if !claimed { continue; }
             let callback: Timer2Routine = unsafe { core::mem::transmute(record.callback) };
             let cpu = cpu_slot();
             let prior_irql = CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL, Ordering::AcqRel);
@@ -630,6 +652,14 @@ pub fn timer_tick(now: u64) {
                          record.context as *mut core::ffi::c_void);
             }
             CURRENT_IRQL[cpu].store(prior_irql, Ordering::Release);
+            // Clear rundown by object identity even if the callback cancelled
+            // itself and advanced the generation while it was running.
+            let mut table = TIMERS.lock();
+            if let Some(live) = table.records.iter_mut().find(|r|
+                r.object == record.object && r.timer2
+            ) {
+                live.callback_running = false;
+            }
             continue;
         }
 
