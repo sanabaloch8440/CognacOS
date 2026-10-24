@@ -114,6 +114,7 @@ pub fn prepare_user_apc_return(frame:*mut u64)->bool {
         let space_ptr=*ACTIVE_SPACE.0.get();
         if space_ptr.is_null(){return false}
         let space=&*space_ptr;
+        if !crate::thread::take_user_apc_delivery_pending(){return false;}
         let Some((object,normal,context,arg1,arg2))=crate::ntoskrnl::ke::runtime::take_pending_user_apc() else{return false};
         let _=object;
         if normal==0 || !space.is_user_executable(normal as u64) { return false; }
