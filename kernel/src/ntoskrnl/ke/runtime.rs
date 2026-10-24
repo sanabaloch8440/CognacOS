@@ -785,7 +785,7 @@ fn wait_all_object_signalled(object_id:u64)->bool{
     let object=object_id as *mut DispatcherHeader;
     if object.is_null(){return false}
     let kind=unsafe{(*object).kind};
-    if !matches!(kind,EVENT_NOTIFICATION|EVENT_SYNCHRONIZATION|5|TIMER_NOTIFICATION|TIMER_SYNCHRONIZATION|QUEUE_OBJECT){return false}
+    if !matches!(kind,EVENT_NOTIFICATION|EVENT_SYNCHRONIZATION|5|TIMER_NOTIFICATION|TIMER_SYNCHRONIZATION){return false}
     unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)>0}
 }
 fn consume_wait_all_object(object_id:u64){
@@ -816,7 +816,9 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     }
     let Some(thread_id) = crate::thread::current_thread_id() else { return STATUS_NOT_IMPLEMENTED; };
     if alertable != 0 && crate::thread::take_alert_pending() { return STATUS_ALERTED; }
-    if unsafe { try_consume_dispatcher_object(object) } { return STATUS_SUCCESS; }
+    if unsafe{(*object).kind}==MUTANT_OBJECT{
+        if let Some(status)=try_acquire_mutant_status(object){return status}
+    }else if unsafe { try_consume_dispatcher_object(object) } { return STATUS_SUCCESS; }
     let deadline = if timeout.is_null() { 0 } else {
         let interval = unsafe { timeout.read_unaligned() };
         if interval == 0 { return STATUS_TIMEOUT; }
@@ -834,11 +836,14 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     if alertable != 0 && crate::thread::take_alert_pending() {
         let _=crate::dispatcher::cancel(token);let _=crate::thread::set_wait_alertable(false);return STATUS_ALERTED;
     }
-    if unsafe { try_consume_dispatcher_object(object) } {
+    let acquired=if unsafe{(*object).kind}==MUTANT_OBJECT{
+        try_acquire_mutant_status(object)
+    }else if unsafe{try_consume_dispatcher_object(object)}{Some(STATUS_SUCCESS)}else{None};
+    if let Some(status)=acquired{
         let _ = crate::dispatcher::cancel(token);
         let _ = crate::thread::clear_wake_pending();
         let _=crate::thread::set_wait_alertable(false);
-        return STATUS_SUCCESS;
+        return status;
     }
     if crate::thread::block_current().is_err() {
         let _ = crate::dispatcher::cancel(token);
@@ -871,14 +876,13 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     if object_list.iter().any(|object| object.is_null()) { return STATUS_INVALID_PARAMETER; }
     for i in 0..object_list.len() {
         let kind = unsafe { (*object_list[i]).kind };
-        if !matches!(kind, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 | TIMER_NOTIFICATION | TIMER_SYNCHRONIZATION | QUEUE_OBJECT | MUTANT_OBJECT) {
+        if !matches!(kind, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 | TIMER_NOTIFICATION | TIMER_SYNCHRONIZATION) {
             return STATUS_NOT_IMPLEMENTED;
         }
-        // Wait-all must reserve every object atomically. Mutants require owner-thread
-        // assignment and queues require entry removal, neither of which the generic
-        // wait-all consumer can safely perform yet. Fail closed instead of consuming
-        // their signal states without transferring ownership/entries.
-        if wait_type == 0 && matches!(kind, MUTANT_OBJECT | QUEUE_OBJECT) {
+        // Mutants need an abandoned-status result and queues need entry transfer.
+        // Keep both out of the generic multi-wait path until their per-object
+        // reservations can be committed atomically for wait-any and wait-all.
+        if matches!(kind, MUTANT_OBJECT | QUEUE_OBJECT) {
             return STATUS_NOT_IMPLEMENTED;
         }
         if object_list[..i].iter().any(|previous| *previous == object_list[i]) {
@@ -1233,22 +1237,23 @@ unsafe fn initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){
 }
 pub unsafe extern "win64" fn ke_initialize_mutant(object:*mut DispatcherHeader,initial_owner:u8){unsafe{initialize_mutant(object,initial_owner)}}
 pub unsafe extern "win64" fn ke_initialize_mutex(object:*mut DispatcherHeader,_level:u32){unsafe{initialize_mutant(object,0)}}
-fn try_acquire_mutant(object:*mut DispatcherHeader)->bool{
-    if object.is_null(){return false}
-    let Some(thread)=crate::thread::current_thread_id() else{return false};
+fn try_acquire_mutant_status(object:*mut DispatcherHeader)->Option<i32>{
+    if object.is_null(){return None}
+    let thread=crate::thread::current_thread_id()?;
     let mut table=MUTANTS.lock();
-    let Some(record)=table.records.iter_mut().find(|r|r.object==object as usize) else{return false};
+    let record=table.records.iter_mut().find(|r|r.object==object as usize)?;
     if record.owner==thread{
         record.recursion=record.recursion.saturating_add(1);
         unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-(record.recursion as i32),Ordering::Release);}
-        return true
+        return Some(STATUS_SUCCESS)
     }
-    if record.owner!=0{return false}
+    if record.owner!=0{return None}
     record.owner=thread;record.recursion=1;
     let abandoned=record.abandoned;record.abandoned=false;
-    unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(if abandoned{0}else{0},Ordering::Release);}
-    true
+    unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
+    Some(if abandoned{STATUS_ABANDONED_WAIT_0}else{STATUS_SUCCESS})
 }
+fn try_acquire_mutant(object:*mut DispatcherHeader)->bool{try_acquire_mutant_status(object).is_some()}
 fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
     if object.is_null(){return 0}
     let Some(current)=crate::thread::current_thread_id() else{return 0};
