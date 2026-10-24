@@ -206,6 +206,12 @@ pub(crate) unsafe fn se_internal_RegisterTokenMetadata(
     entries[i] = TokenMeta { used:true, token:token as usize, token_type,
         impersonation_level, admin:flags & 1 != 0, restricted:flags & 2 != 0,
         write_restricted:flags & 4 != 0, app_container:flags & 8 != 0, privileges, session_id, authentication_id, references:0 };
+    drop(_guard);
+    let _sid_guard = SECURITY_TOKEN_LOCK.lock();
+    let identities = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
+    if let Some(identity) = identities.iter_mut().find(|e| e.used && e.token == token as usize) {
+        *identity = SecurityTokenIdentity::EMPTY;
+    }
     STATUS_SUCCESS
 }
 
