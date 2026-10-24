@@ -30,13 +30,14 @@ pub struct EProcess {
     state: ProcessState,
     used: bool,
     pub address_space_root: u64,
+    pub(crate) primary_token: usize,
     references: u32,
     _reserved: u32,
     exit_code: u64,
 }
 impl EProcess {
     const EMPTY: Self = Self { magic: 0, process_id: 0, state: ProcessState::Reaped,
-        used: false, address_space_root: 0, references: 0, _reserved: 0, exit_code: 0 };
+        used: false, address_space_root: 0, primary_token: 0, references: 0, _reserved: 0, exit_code: 0 };
 }
 struct ProcessRegistry([EProcess; MAX_PROCESSES]);
 static TABLE: crate::hal::IrqSpinLock<ProcessRegistry> =
@@ -48,7 +49,7 @@ fn register_process(pid: u64, address_space_root: u64) -> Result<(), ProcessErro
         let mut registry = TABLE.lock();
         let Some(index) = registry.0.iter().position(|p| !p.used) else { return Err(ProcessError::TooManyProcesses); };
         registry.0[index] = EProcess { magic: EPROCESS_MAGIC, process_id: pid, state: ProcessState::Created,
-            used: true, address_space_root, references: 0, _reserved: 0, exit_code: 0 };
+            used: true, address_space_root, primary_token: 0, references: 0, _reserved: 0, exit_code: 0 };
         core::ptr::addr_of_mut!(registry.0[index])
     };
     // Every registered process is also an Object Manager object. The object body
@@ -89,6 +90,43 @@ pub fn eprocess_for_pid(pid: u64) -> Option<*mut EProcess> {
     let next = registry.0[index].references.checked_add(1)?;
     registry.0[index].references = next;
     Some(core::ptr::addr_of!(registry.0[index]) as *mut EProcess)
+}
+
+/// Install a referenced primary token on a live process. Token SID and privilege
+/// metadata must be registered by the internal Se token-construction path first.
+pub fn install_primary_token(pid: u64, token: *mut core::ffi::c_void) -> bool {
+    if !token.is_null() && unsafe { crate::ntoskrnl::se::runtime::se_internal_ReferenceToken(token) } != crate::ntoskrnl::se::runtime::STATUS_SUCCESS {
+        return false;
+    }
+    let old = {
+        let mut registry = TABLE.lock();
+        let Some(process) = registry.0.iter_mut().find(|p| p.used && p.magic == EPROCESS_MAGIC
+            && p.process_id == pid && p.state != ProcessState::Reaped) else {
+            if !token.is_null() { let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) }; }
+            return false;
+        };
+        let old = process.primary_token;
+        process.primary_token = token as usize;
+        old
+    };
+    if old != 0 { let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(old as *mut core::ffi::c_void) }; }
+    true
+}
+
+/// Return a referenced process primary token. The caller must dereference it.
+pub fn reference_primary_token(pid: u64) -> *mut core::ffi::c_void {
+    let token = {
+        let registry = TABLE.lock();
+        registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC
+            && p.process_id == pid && p.state != ProcessState::Reaped)
+            .map(|p| p.primary_token).unwrap_or(0)
+    };
+    if token == 0 { return core::ptr::null_mut(); }
+    let pointer = token as *mut core::ffi::c_void;
+    if unsafe { crate::ntoskrnl::se::runtime::se_internal_ReferenceToken(pointer) } != crate::ntoskrnl::se::runtime::STATUS_SUCCESS {
+        return core::ptr::null_mut();
+    }
+    pointer
 }
 
 /// Copy from/to the currently bound process's user address space. The process
