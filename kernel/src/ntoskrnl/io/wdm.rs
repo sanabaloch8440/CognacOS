@@ -572,8 +572,19 @@ pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
  unsafe{super::io_release_cancel_spin_lock(old_irql);}
  if callback.is_null(){return 0}
  let routine:DriverCancelRoutine=unsafe{core::mem::transmute(callback)};
- let stack=unsafe{io_get_current_irp_stack_location(irp)};
- let device=if stack.is_null(){ptr::null_mut()}else{unsafe{(*stack).device_object}};
+ let device={
+  let state=WDM.lock();
+  if let Some(slot)=state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)) {
+   let count=slot.object.bytes[0x42] as usize;
+   let stack=unsafe{io_get_current_irp_stack_location(irp)};
+   let base=slot.stack.as_ptr() as usize;
+   let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
+   let cur=stack as usize;
+   if count>0&&count<=slot.stack.len()&&cur>=base&&cur<end&&(cur-base)%IO_STACK_LOCATION_SIZE_X64==0 {
+    unsafe{(*stack).device_object}
+   } else {ptr::null_mut()}
+  } else {ptr::null_mut()}
+ };
  unsafe{routine(device,irp);}
  1
 }
