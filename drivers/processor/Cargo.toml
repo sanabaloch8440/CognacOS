@@ -1,0 +1,12 @@
+[package]
+name = "rdotos-processor"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+publish = false
+
+[dependencies]
+rdotos-hal-contract = { path = "../hal" }
+
+[lib]
+path = "src/lib.rs"
