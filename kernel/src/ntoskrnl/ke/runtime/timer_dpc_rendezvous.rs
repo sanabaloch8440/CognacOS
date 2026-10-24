@@ -356,7 +356,7 @@ pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_tim
     let period=if period_ms<=0||hz==0{0}else{((hz as u128)*(period_ms as u32 as u128)/1000).min(u64::MAX as u128) as u64};
     let (was_active,_old_dpc)={
         let mut table=TIMERS.lock();
-        let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
+        let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize && !r.timer2) else{return 0};
         let old=(record.active,record.dpc);
         record.active=true;record.due=deadline;record.period=period;record.dpc=dpc as usize;record.generation=next_timer_generation(record.generation);
         // Keep timer mutation and removal serialized with timer_tick's
@@ -372,7 +372,7 @@ pub unsafe extern "win64" fn ke_cancel_timer(timer:*mut DispatcherHeader)->u8{
     if timer.is_null(){return 0}
     let was_active={
         let mut table=TIMERS.lock();
-        let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize) else{return 0};
+        let Some(record)=table.records.iter_mut().find(|r|r.object==timer as usize && !r.timer2) else{return 0};
         let old=(record.active,record.dpc);record.active=false;record.dpc=0;
         // Invalidate an expiry snapshot even if the one-shot timer has already
         // transitioned inactive but its DPC has not yet been enqueued.
