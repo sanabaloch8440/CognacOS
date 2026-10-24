@@ -679,10 +679,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"WARNING: executive processor startup unavailable; retaining BSP-only operation.\r\n");
         }
         if !processor_startup.scheduler_stress_passed {
-            serial_write(b"FATAL: SMP scheduler, lock contention, or thread teardown stress failed.\r\n");
+            serial_write(b"FATAL: SMP scheduler, lock contention, or thread, IRP, and object teardown stress failed.\r\n");
             halt();
         }
-        serial_write(b"SMP scheduler, cross-CPU wakeup, contended-lock, and thread teardown stress passed.\r\n");
+        serial_write(b"SMP scheduler, cross-CPU wakeup, contended-lock, IRP/object teardown stress passed.\r\n");
         if !processor_startup.vm_stress_passed {
             serial_write(b"FATAL: SMP kernel VM/TLB shootdown self-test failed.\r\n");
             halt();
