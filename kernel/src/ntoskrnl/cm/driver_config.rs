@@ -30,3 +30,18 @@ pub fn query_service<'h,'b>(hive:&'h Hive<'h>,service_name:&[u16],path_buf:&'b m
  if path_buf[units-1]!=0||path_buf[..units-1].iter().any(|c|*c==0){return Err(Error::InvalidImagePath)}
  Ok(ServiceConfig{start,service_type,image_path:&path_buf[..units-1],error_control})
 }
+
+/// Read the raw BCD element payload from an object key. Object and element
+/// identifiers are supplied by the BCD consumer; this routine does not hard-code
+/// a particular loader or HAL path.
+pub fn query_bcd_element_raw<'a>(hive:&'a Hive<'a>,object_id:&[u16],element_id:&[u16],out:&mut[u8])->Result<usize,Error>{
+ if object_id.is_empty()||element_id.is_empty()||object_id.iter().chain(element_id).any(|c|*c==0||*c==b'\\' as u16){return Err(Error::InvalidImagePath)}
+ let mut path=[0u16;512];let mut n=0usize;
+ for c in "Objects\\".encode_utf16().chain(object_id.iter().copied()).chain("\\Elements\\".encode_utf16()).chain(element_id.iter().copied()){
+  if n==path.len(){return Err(Error::InvalidImagePath)}path[n]=c;n+=1;
+ }
+ let key=hive.find_path(&path[..n])?;
+ let value=key.find_value(&[69,108,101,109,101,110,116])?;
+ if value.kind!=3{return Err(Error::InvalidImagePath)}
+ value.data(out).map_err(Error::Hive)
+}
