@@ -71,7 +71,7 @@ pub struct IoStackLocation {
     pub context: *mut c_void,
 }
 #[repr(C)]
-struct DeviceSlot { used: bool, deleting: bool, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
+struct DeviceSlot { used: bool, deleting: bool, attached_to: *mut DeviceObject, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
 struct IrpSlot { used: bool, object: Irp, stack: [IoStackLocation;16] }
@@ -80,7 +80,7 @@ struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WD
 impl WdmState {
  const fn new() -> Self {
   Self {
-   devices: [const { DeviceSlot { used:false, deleting:false, object: DeviceObject {
+   devices: [const { DeviceSlot { used:false, deleting:false, attached_to:ptr::null_mut(), object: DeviceObject {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
@@ -257,6 +257,103 @@ pub unsafe extern "system" fn io_set_completion_routine(
   (*stack).completion_routine=routine;(*stack).context=context;
   (*stack).control=(if invoke_success!=0{0x40}else{0})|(if invoke_error!=0{0x80}else{0})|(if invoke_cancel!=0{0x20}else{0});
  }
+}
+
+
+/// Attach a filter/filesystem device above the current top of a device stack.
+/// The returned object is the lower device that receives forwarded IRPs.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_attach_device_to_device_stack(
+    source:*mut DeviceObject, target:*mut DeviceObject
+)->*mut DeviceObject {
+    if source.is_null() || target.is_null() || source==target { return ptr::null_mut(); }
+    let mut state=WDM.lock();
+    let Some(source_index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,source)) else { return ptr::null_mut(); };
+    let Some(target_index)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,target)) else { return ptr::null_mut(); };
+    if !state.devices[source_index].attached_to.is_null() { return ptr::null_mut(); }
+    let mut top=target;
+    for _ in 0..MAX_WDM_DEVICES {
+        let next=unsafe{(*top).attached_device};
+        if next.is_null() { break; }
+        if next==source { return ptr::null_mut(); }
+        if !state.devices.iter().any(|s|s.used&&ptr::eq(&s.object,next)) { return ptr::null_mut(); }
+        top=next;
+    }
+    if !unsafe{(*top).attached_device.is_null()} { return ptr::null_mut(); }
+    let stack_size=unsafe{(*top).stack_size};
+    if stack_size==u8::MAX { return ptr::null_mut(); }
+    unsafe {
+        (*top).attached_device=source;
+        (*source).attached_device=ptr::null_mut();
+        (*source).stack_size=stack_size+1;
+    }
+    state.devices[source_index].attached_to=top;
+    let _=target_index;
+    top
+}
+
+/// Detach the device attached above the supplied lower device, as returned by
+/// IoAttachDeviceToDeviceStack. Existing unrelated stack links are preserved.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_detach_device(target:*mut DeviceObject) {
+    if target.is_null(){return}
+    let mut state=WDM.lock();
+    let Some(index)=state.devices.iter().position(|s|s.used&&s.attached_to==target) else{return};
+    let source=&mut state.devices[index].object as *mut DeviceObject;
+    if unsafe{(*target).attached_device}!=source{return}
+    unsafe{(*target).attached_device=ptr::null_mut();(*source).attached_device=ptr::null_mut();(*source).stack_size=1;}
+    state.devices[index].attached_to=ptr::null_mut();
+}
+
+/// Initialize a caller-allocated WDM IRP and its trailing stack locations.
+/// PacketSize must cover the fixed x64 IRP plus StackSize full stack locations.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_initialize_irp(
+    irp:*mut Irp, packet_size:u16, stack_size:u8
+) {
+    if irp.is_null() || stack_size==0 || stack_size>16 {return}
+    let required=IRP_SIZE_X64.checked_add(stack_size as usize*IO_STACK_LOCATION_SIZE_X64);
+    if required.is_none_or(|n|n>packet_size as usize){return}
+    unsafe {
+        ptr::write_bytes(irp.cast::<u8>(),0,packet_size as usize);
+        ptr::write_unaligned((*irp).bytes.as_mut_ptr().cast::<i16>(),6);
+        ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(2).cast::<u16>(),packet_size);
+        (*irp).bytes[0x42]=stack_size;
+        (*irp).bytes[0x43]=stack_size.saturating_add(1);
+        let stack_base=irp.cast::<u8>().add(IRP_SIZE_X64);
+        let current=stack_base.add(stack_size as usize*IO_STACK_LOCATION_SIZE_X64);
+        write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,current.cast());
+    }
+}
+
+/// Copy the current stack parameters into the next lower driver's stack slot.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mut Irp) {
+    if irp.is_null(){return}
+    let current=unsafe{io_get_current_irp_stack_location(irp)};
+    let next=unsafe{io_get_next_irp_stack_location(irp)};
+    if current.is_null()||next.is_null()||current==next{return}
+    let state=WDM.lock();
+    if !state.irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp)){return}
+    unsafe{ptr::copy_nonoverlapping(current,next,1);}
+}
+
+/// Reuse the current location rather than copying it for a lower driver.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
+    if irp.is_null(){return}
+    let state=WDM.lock();
+    let Some(slot)=state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+    let count=slot.object.bytes[0x42] as usize;
+    let current=unsafe{io_get_current_irp_stack_location(irp)};
+    let base=slot.stack.as_ptr() as usize;
+    let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
+    let cur=current as usize;
+    if count==0||count>slot.stack.len()||cur<=base||cur>end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return}
+    unsafe{
+        write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,current.cast());
+        (*irp).bytes[0x43]=(*irp).bytes[0x43].saturating_sub(1);
+    }
 }
 
 
