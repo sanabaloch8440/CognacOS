@@ -1,5 +1,6 @@
 //! ext2/ext3/ext4 filesystem driver core for RdotOS.
 //! Writes are limited to existing allocated data blocks; journaled metadata mutation is not implemented.
+#![no_std]
 #![allow(dead_code)]
 #[cfg(test)] extern crate std;
 pub const SUPERBLOCK_BYTES:usize=1024;
