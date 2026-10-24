@@ -704,7 +704,7 @@ unsafe fn try_consume_dispatcher_object_locked(object: *mut DispatcherHeader) ->
     match unsafe { (*object).kind } {
         EVENT_NOTIFICATION | TIMER_NOTIFICATION => state.load(Ordering::Acquire) > 0,
         MUTANT_OBJECT => try_acquire_mutant(object),
-        EVENT_SYNCHRONIZATION | 5 | TIMER_SYNCHRONIZATION => {
+        EVENT_SYNCHRONIZATION | 5 | TIMER_SYNCHRONIZATION | QUEUE_OBJECT => {
             let old = state.load(Ordering::Acquire);
             if old <= 0 { return false; }
             state.store(old - 1, Ordering::Release);
@@ -937,6 +937,93 @@ pub unsafe extern "win64" fn ke_delay_execution_thread(
 
 
 
+
+
+// ---- Executive KQUEUE --------------------------------------------------------
+#[repr(C)]
+pub struct ListEntry{pub flink:*mut ListEntry,pub blink:*mut ListEntry}
+#[repr(C)]
+pub struct ExecutiveQueue{
+    pub header:DispatcherHeader,
+    pub entry_list_head:ListEntry,
+    pub current_count:u32,
+    pub maximum_count:u32,
+    pub thread_list_head:ListEntry,
+}
+unsafe fn list_initialize(head:*mut ListEntry){unsafe{(*head).flink=head;(*head).blink=head;}}
+unsafe fn list_insert_tail(head:*mut ListEntry,entry:*mut ListEntry){
+    unsafe{let tail=(*head).blink;(*entry).flink=head;(*entry).blink=tail;(*tail).flink=entry;(*head).blink=entry;}
+}
+unsafe fn list_insert_head(head:*mut ListEntry,entry:*mut ListEntry){
+    unsafe{let first=(*head).flink;(*entry).flink=first;(*entry).blink=head;(*first).blink=entry;(*head).flink=entry;}
+}
+unsafe fn list_remove_head(head:*mut ListEntry)->*mut ListEntry{
+    unsafe{let first=(*head).flink;if first==head{return core::ptr::null_mut()}let next=(*first).flink;(*head).flink=next;(*next).blink=head;(*first).flink=first;(*first).blink=first;first}
+}
+pub unsafe extern "win64" fn ke_initialize_queue(queue:*mut ExecutiveQueue,count:u32){
+    if queue.is_null(){return}
+    let max=if count==0{crate::hal::online_cpu_count().max(1) as u32}else{count};
+    unsafe{
+        core::ptr::addr_of_mut!((*queue).header).write(DispatcherHeader{kind:QUEUE_OBJECT,absolute:0,size:(core::mem::size_of::<ExecutiveQueue>()/4) as u8,inserted:0,signal_state:0,wait_list_flink:queue as u64+8,wait_list_blink:queue as u64+8});
+        list_initialize(core::ptr::addr_of_mut!((*queue).entry_list_head));
+        (*queue).current_count=0;(*queue).maximum_count=max;
+        list_initialize(core::ptr::addr_of_mut!((*queue).thread_list_head));
+    }
+}
+unsafe fn queue_insert(queue:*mut ExecutiveQueue,entry:*mut ListEntry,at_head:bool)->i32{
+    if queue.is_null()||entry.is_null(){return 0}
+    let _guard=DISPATCHER_OBJECT_LOCK.lock();
+    let state=unsafe{&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()};
+    let previous=state.load(Ordering::Acquire);
+    loop{
+        let Some(waiter)=crate::dispatcher::wake_one_timed(queue as u64) else{break};
+        if waiter.timed_out{
+            let status=crate::dispatcher::complete_wait_group(waiter.thread,queue as u64,STATUS_TIMEOUT,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_TIMEOUT);
+            let _=crate::thread::complete_wait(waiter.thread,status);continue
+        }
+        let _=crate::thread::set_queue_entry(waiter.thread,entry as u64);
+        let status=crate::dispatcher::complete_wait_group(waiter.thread,queue as u64,STATUS_SUCCESS,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_SUCCESS);
+        let _=crate::thread::complete_wait(waiter.thread,status);
+        return previous
+    }
+    unsafe{if at_head{list_insert_head(core::ptr::addr_of_mut!((*queue).entry_list_head),entry)}else{list_insert_tail(core::ptr::addr_of_mut!((*queue).entry_list_head),entry)}}
+    state.fetch_add(1,Ordering::AcqRel);previous
+}
+pub unsafe extern "win64" fn ke_insert_queue(queue:*mut ExecutiveQueue,entry:*mut ListEntry)->i32{unsafe{queue_insert(queue,entry,false)}}
+pub unsafe extern "win64" fn ke_insert_head_queue(queue:*mut ExecutiveQueue,entry:*mut ListEntry)->i32{unsafe{queue_insert(queue,entry,true)}}
+pub unsafe extern "win64" fn ke_remove_queue(queue:*mut ExecutiveQueue,wait_mode:i32,timeout:*const i64)->*mut ListEntry{
+    if queue.is_null(){return STATUS_INVALID_PARAMETER as isize as *mut ListEntry}
+    let popped={
+        let _guard=DISPATCHER_OBJECT_LOCK.lock();
+        let state=unsafe{&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()};
+        let entry=unsafe{list_remove_head(core::ptr::addr_of_mut!((*queue).entry_list_head))};
+        if !entry.is_null(){state.fetch_sub(1,Ordering::AcqRel);}entry
+    };
+    if !popped.is_null(){return popped}
+    if !timeout.is_null()&&unsafe{timeout.read_unaligned()}==0{return STATUS_TIMEOUT as isize as *mut ListEntry}
+    let status=unsafe{ke_wait_for_single_object(core::ptr::addr_of_mut!((*queue).header),0,wait_mode,0,timeout)};
+    if status!=STATUS_SUCCESS{return status as isize as *mut ListEntry}
+    if let Some(entry)=crate::thread::take_queue_entry(){return entry as *mut ListEntry}
+    let _guard=DISPATCHER_OBJECT_LOCK.lock();
+    let state=unsafe{&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()};
+    let entry=unsafe{list_remove_head(core::ptr::addr_of_mut!((*queue).entry_list_head))};
+    if !entry.is_null(){state.fetch_sub(1,Ordering::AcqRel);}
+    if entry.is_null(){STATUS_TIMEOUT as isize as *mut ListEntry}else{entry}
+}
+pub unsafe extern "win64" fn ke_rundown_queue(queue:*mut ExecutiveQueue)->*mut ListEntry{
+    if queue.is_null(){return core::ptr::null_mut()}
+    let _guard=DISPATCHER_OBJECT_LOCK.lock();
+    let head=unsafe{core::ptr::addr_of_mut!((*queue).entry_list_head)};
+    let first=unsafe{(*head).flink};
+    unsafe{list_initialize(head);(&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
+    let mut waiters=[crate::dispatcher::WokenWaiter{thread:0,timed_out:false};crate::dispatcher::MAX_WAITERS];
+    let count=crate::dispatcher::wake_all_timed(queue as u64,&mut waiters);
+    for waiter in waiters[..count].iter().copied(){
+        let status=crate::dispatcher::complete_wait_group(waiter.thread,queue as u64,STATUS_ABANDONED_WAIT_0,STATUS_SUCCESS,STATUS_TIMEOUT).unwrap_or(STATUS_ABANDONED_WAIT_0);
+        let _=crate::thread::complete_wait(waiter.thread,status);
+    }
+    if first==head{core::ptr::null_mut()}else{first}
+}
 
 // ---- Queued spin locks -------------------------------------------------------
 const MAX_QUEUED_LOCKS:usize=128;
