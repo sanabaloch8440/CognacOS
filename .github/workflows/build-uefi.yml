@@ -48,7 +48,7 @@ jobs:
           assert struct.unpack_from("<H", p, off+24)[0] == 0x20b, "not PE32+"
           sections = struct.unpack_from("<H", p, off+6)[0]
           opt = off + 24
-          assert struct.unpack_from("<Q", p, opt+24)[0] == 0xffffffff7ff00000, "unexpected kernel image base"
+          assert struct.unpack_from("<Q", p, opt+24)[0] == 0xffffffff7fe00000, "unexpected kernel image base"
           assert struct.unpack_from("<H", p, opt+68)[0] == 1, "kernel must use native subsystem"
           assert struct.unpack_from("<II", p, opt+112+8) == (0, 0), "kernel imports are unsupported"
           assert struct.unpack_from("<II", p, opt+112+5*8) == (0, 0), "kernel relocations are unsupported"
