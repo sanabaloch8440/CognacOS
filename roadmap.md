@@ -238,7 +238,8 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Add [WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md), documenting public WDK signatures, return values, call paths, limitations, sources, and a reproducible compatibility calculation.
 - [x] Link the comparison document from README.
 - [x] Verify freestanding Rust kernel build, PE32+ conversion, UEFI bootloader build, and image validation (workflow #903; these steps passed).
-- [ ] Verify QEMU/OVMF smoke test and the 2/4/8-vCPU SMP matrix (workflow #903 still running at last check).
+- [x] Verify the OVMF/QEMU boot smoke test (workflow #903 passed the smoke-test step).
+- [ ] Verify the 2/4/8-vCPU SMP boot and interrupt stress matrix (workflow #903 was still running this step at last check).
 - [ ] Close documented semantic gaps: boot-epoch interrupt time, precise wall-clock interpolation, per-thread APC nesting, atomic event pulse semantics, stable NT-compatible thread-object abstraction, and multi-group/multi-node NUMA discovery.
 
 **Current scoped score:** 20/20 (100%) source-level ABI shapes and name resolver paths; 9/20 (45%) behavior matches within the currently advertised single-group/single-node topology; combined project metric 72.5%. This is a progress estimate only and is not a statement of overall Windows 11 compatibility.
