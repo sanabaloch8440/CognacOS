@@ -78,7 +78,7 @@ def read_elf_function_exports(blob, manifest_path):
                 continue
             if name_off >= len(strings):
                 continue
-            end = strings.find(b"\\0", name_off)
+            end = strings.find(b"\0", name_off)
             if end < 0:
                 continue
             try:
@@ -106,13 +106,13 @@ def build_export_directory(exports, image_base):
     ords_off = names_off + len(names) * 4
     strings_off = ords_off + len(names) * 2
     strings = bytearray()
-    dll_name = b"ntoskrnl.exe\\0"
+    dll_name = b"ntoskrnl.exe\0"
     dll_name_off = strings_off
     strings.extend(dll_name)
     name_string_offsets = []
     for name, _ordinal, _value in names:
         name_string_offsets.append(strings_off + len(strings))
-        strings.extend(name.encode("ascii") + b"\\0")
+        strings.extend(name.encode("ascii") + b"\0")
     data = bytearray(strings_off + len(strings))
     # PE RVA is based on the section RVA; the caller patches this directory using
     # the known .edata RVA after the final section layout has been selected.
