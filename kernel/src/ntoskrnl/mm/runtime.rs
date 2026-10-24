@@ -490,10 +490,16 @@ pub unsafe extern "win64" fn mm_build_partial_mdl(
     if src_addr < 0xffff_8000_0000_0000 || dst_addr < 0xffff_8000_0000_0000
         || !mdl_header_is_writable(src_addr) || !mdl_header_is_writable(dst_addr) { return; }
     let src = unsafe { &*source_mdl.cast::<MdlHeader>() };
-    if src.flags & (MDL_LOCKED | MDL_NONPAGED_POOL) == 0 { return; }
+    if src.flags & (MDL_LOCKED | MDL_NONPAGED_POOL) == 0 || src.size < 0 { return; }
     let src_start = src.start_va as u64;
     let src_offset = src.byte_offset as u64;
     let src_len = src.byte_count as u64;
+    let Some(src_pages) = mdl_page_count(src_offset, src_len) else { return; };
+    let src_required = match MDL_HEADER_SIZE.checked_add(src_pages.saturating_mul(8)) {
+        Some(value) => value,
+        None => return,
+    };
+    if (src.size as u64) < src_required { return; }
     let request = virtual_address as u64;
     let Some(src_begin) = src_start.checked_add(src_offset) else { return; };
     let Some(src_end) = src_begin.checked_add(src_len) else { return; };
@@ -504,6 +510,7 @@ pub unsafe extern "win64" fn mm_build_partial_mdl(
     let first_page = absolute / PAGE_SIZE;
     let new_offset = request & (PAGE_SIZE - 1);
     let Some(pages) = mdl_page_count(new_offset, length as u64) else { return; };
+    if first_page.checked_add(pages).map_or(true, |end| end > src_pages) { return; }
     let required = match MDL_HEADER_SIZE.checked_add(pages.saturating_mul(8)) { Some(v) => v, None => return };
     let dst = unsafe { &mut *target_mdl.cast::<MdlHeader>() };
     if dst_addr == src_addr || dst.size < 0 || (dst.size as u64) < required { return; }
