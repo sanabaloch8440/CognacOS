@@ -37,6 +37,12 @@ pub type MmGetVirtualForPhysicalFn = unsafe extern "win64" fn(u64) -> Pvoid;
 pub type MmIsAddressValidFn = unsafe extern "win64" fn(Pvoid) -> Boolean;
 pub type MmIsNonPagedSystemAddressValidFn = unsafe extern "win64" fn(Pvoid) -> Boolean;
 pub type MmCopyMemoryFn = unsafe extern "win64" fn(Pvoid, u64, SizeT, Ulong, *mut SizeT) -> NtStatus;
+pub type MmCreateMdlFn = unsafe extern "win64" fn(Pvoid, Pvoid, SizeT) -> Pvoid;
+pub type MmProbeAndLockPagesFn = unsafe extern "win64" fn(Pvoid, i8, Ulong);
+pub type MmUnlockPagesFn = unsafe extern "win64" fn(Pvoid);
+pub type MmMapLockedPagesSpecifyCacheFn = unsafe extern "win64" fn(Pvoid, i8, i32, Pvoid, Boolean, Ulong) -> Pvoid;
+pub type MmUnmapLockedPagesFn = unsafe extern "win64" fn(Pvoid, Pvoid);
+pub type MmCopyVirtualMemoryFn = unsafe extern "win64" fn(Pvoid, Pvoid, Pvoid, Pvoid, SizeT, i8, *mut SizeT) -> NtStatus;
 pub type ObfReferenceObjectFn = unsafe extern "win64" fn(Pvoid);
 pub type ObfDereferenceObjectFn = unsafe extern "win64" fn(Pvoid);
 pub type PsGetCurrentProcessIdFn = unsafe extern "win64" fn() -> Handle;
@@ -45,7 +51,7 @@ pub type ZwCloseFn = unsafe extern "win64" fn(Handle) -> NtStatus;
 pub type ZwWaitForSingleObjectFn = unsafe extern "win64" fn(Handle, Boolean, *const LargeInteger) -> NtStatus;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject }
+pub enum AbiSignature { MmAllocateContiguousMemory, MmAllocateContiguousMemorySpecifyCache, MmFreeContiguousMemory, MmFreeContiguousMemorySpecifyCache, MmSizeOfMdl, MmGetPhysicalAddress, MmGetVirtualForPhysical, MmIsAddressValid, MmIsNonPagedSystemAddressValid, MmCopyMemory, MmCreateMdl, MmProbeAndLockPages, MmUnlockPages, MmMapLockedPagesSpecifyCache, MmUnmapLockedPages, MmCopyVirtualMemory, KeGetCurrentIrql, KeQueryActiveProcessorCountEx, KeQueryActiveProcessorCount, KeQueryActiveGroupCount, KeGetCurrentProcessorNumberEx, KeGetCurrentProcessorIndex, KeStallExecutionProcessor, ExAllocatePool2, ExAllocatePool3, ExAllocatePoolWithTag, ExAllocatePoolWithTagPriority, ExFreePool2, ExFreePoolWithTag, ObfReferenceObject, ObfDereferenceObject, PsGetCurrentProcessId, PsGetCurrentThreadId, ZwClose, ZwWaitForSingleObject }
 
 pub fn documented_signature(name: &str) -> Option<AbiSignature> {
     Some(match name {
@@ -72,6 +78,12 @@ pub fn documented_signature(name: &str) -> Option<AbiSignature> {
         "MmIsAddressValid" => AbiSignature::MmIsAddressValid,
         "MmIsNonPagedSystemAddressValid" => AbiSignature::MmIsNonPagedSystemAddressValid,
         "MmCopyMemory" => AbiSignature::MmCopyMemory,
+        "MmCreateMdl" => AbiSignature::MmCreateMdl,
+        "MmProbeAndLockPages" => AbiSignature::MmProbeAndLockPages,
+        "MmUnlockPages" => AbiSignature::MmUnlockPages,
+        "MmMapLockedPagesSpecifyCache" => AbiSignature::MmMapLockedPagesSpecifyCache,
+        "MmUnmapLockedPages" => AbiSignature::MmUnmapLockedPages,
+        "MmCopyVirtualMemory" => AbiSignature::MmCopyVirtualMemory,
         "ObfReferenceObject" => AbiSignature::ObfReferenceObject,
         "ObfDereferenceObject" => AbiSignature::ObfDereferenceObject,
         "PsGetCurrentProcessId" => AbiSignature::PsGetCurrentProcessId,
