@@ -631,6 +631,38 @@ mod tests {
         assert_eq!(EVENT_NOTIFICATION, 0);
         assert_eq!(EVENT_SYNCHRONIZATION, 1);
     }
+    #[test]
+    fn critical_and_guarded_region_nesting_is_balanced() {
+        let cpu = cpu_slot();
+        let prior_irql = CURRENT_IRQL[cpu].load(Ordering::Acquire);
+        unsafe {
+            ke_enter_critical_region();
+            assert_eq!(ke_are_apcs_disabled(), 1);
+            ke_enter_critical_region();
+            ke_leave_critical_region();
+            assert_eq!(ke_are_apcs_disabled(), 1);
+            ke_leave_critical_region();
+            assert_eq!(ke_are_apcs_disabled(), (prior_irql >= 1) as u8);
+
+            ke_enter_guarded_region();
+            assert_eq!(ke_are_all_apcs_disabled(), 1);
+            ke_enter_guarded_region();
+            ke_leave_guarded_region();
+            assert_eq!(ke_are_all_apcs_disabled(), 1);
+            ke_leave_guarded_region();
+            assert_eq!(ke_are_all_apcs_disabled(), (prior_irql >= 1) as u8);
+        }
+    }
+
+    #[test]
+    fn current_processor_number_return_matches_output() {
+        let mut number = ProcessorNumber { group: u16::MAX, number: u8::MAX, reserved: u8::MAX };
+        let index = unsafe { ke_get_current_processor_number_ex(&mut number) };
+        assert_eq!(number.group, 0);
+        assert_eq!(number.number as u32, index);
+        assert_eq!(number.reserved, 0);
+        assert_eq!(unsafe { ke_get_current_processor_number_ex(core::ptr::null_mut()) }, index);
+    }
 }
 
 
