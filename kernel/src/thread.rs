@@ -60,13 +60,29 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     unsafe { for i in 0..6 { frame.add(i).write(0); } frame.add(6).write(thread_trampoline as usize as u64); }
     let mut table=THREADS.lock();
     let slot=table.records.iter().position(|t|t.state==ThreadState::Empty).ok_or(ThreadError::Full)?;
-    let id=table.next_id;table.next_id=table.next_id.wrapping_add(1).max(1);
+    let id=table.next_id;
+    let mut eligible=[0usize;crate::hal::MAX_CPUS];
+    let mut eligible_count=0usize;
+    for cpu in 0..crate::hal::MAX_CPUS {
+        if affinity&(1u64<<cpu)!=0
+            && crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE) {
+            eligible[eligible_count]=cpu;
+            eligible_count+=1;
+        }
+    }
+    if eligible_count==0{return Err(ThreadError::InvalidAffinity);}
+    // Until migration-safe context publication/per-CPU run queues exist, bind
+    // each context to one allowed online CPU. Round-robin placement distributes
+    // all-CPU-affinity tasks without allowing another CPU to resume an unsaved RSP.
+    let owner_cpu=eligible[(id.wrapping_sub(1) as usize)%eligible_count];
+    let owner_affinity=1u64<<owner_cpu;
+    table.next_id=table.next_id.wrapping_add(1).max(1);
     let scheduler_id=crate::scheduler::create_task(
-        4, affinity, top as u64, thread_trampoline as usize as u64,
+        4, owner_affinity, top as u64, thread_trampoline as usize as u64,
     ).map_err(|_|ThreadError::Full)?;
-    table.records[slot]=ThreadRecord{id,scheduler_id,state:ThreadState::Ready,affinity,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0};
+    table.records[slot]=ThreadRecord{id,scheduler_id,state:ThreadState::Ready,affinity:owner_affinity,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0};
     drop(table);
-    notify_affinity(affinity);
+    notify_affinity(owner_affinity);
     Ok(id)
 }
 
