@@ -50,6 +50,8 @@ static DPCS: crate::hal::IrqSpinLock<DpcTable> = crate::hal::IrqSpinLock::new(Dp
 static DPC_IN_FLIGHT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 static DPC_DISPATCHING: [core::sync::atomic::AtomicBool; 64] =
     [const { core::sync::atomic::AtomicBool::new(false) };64];
+static THREADED_DPC_DISPATCHING: [core::sync::atomic::AtomicBool; 64] =
+    [const { core::sync::atomic::AtomicBool::new(false) };64];
 
 // ---- Cross-processor call rendezvous -----------------------------------------
 // A dedicated IPI vector isolates Ke broadcasts from scheduler notifications.
