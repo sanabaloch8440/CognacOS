@@ -8,6 +8,7 @@ license = "GPL-2.0-or-later"
 rdotos-acpi = { path = "../drivers/acpi" }
 rdotos-pci = { path = "../drivers/pci" }
 rdotos-hal-contract = { path = "../drivers/hal" }
+rdotos-ext4 = { path = "../drivers/ext4" }
 
 [profile.dev]
 panic = "abort"
