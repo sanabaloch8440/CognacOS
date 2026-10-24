@@ -304,8 +304,13 @@ pub(crate) fn dispatcher_extended_self_test()->bool{
     let status=unsafe{ke_wait_for_multiple_objects(1,one.as_ptr(),1,0,0,0,core::ptr::null(),core::ptr::null_mut())};
     if status!=STATUS_ABANDONED_WAIT_0{return false}
     let _=unsafe{ke_release_mutant(a,0,0,0)};
+    {
+        let mut table=MUTANTS.lock();
+        let Some(record)=table.records.iter_mut().find(|r|r.object==c as usize) else{return false};
+        record.abandoned=true;
+    }
     let both=[b,c];
-    if unsafe{ke_wait_for_multiple_objects(2,both.as_ptr(),0,0,0,0,core::ptr::null(),core::ptr::null_mut())}!=STATUS_SUCCESS{return false}
+    if unsafe{ke_wait_for_multiple_objects(2,both.as_ptr(),0,0,0,0,core::ptr::null(),core::ptr::null_mut())}!=STATUS_ABANDONED_WAIT_0+1{return false}
     let _=unsafe{ke_release_mutant(b,0,0,0)};
     let _=unsafe{ke_release_mutant(c,0,0,0)};
     if unsafe{ke_read_state_mutant(b)}!=1||unsafe{ke_read_state_mutant(c)}!=1{return false}
