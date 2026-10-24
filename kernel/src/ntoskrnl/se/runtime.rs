@@ -575,3 +575,158 @@ mod bounded_security_tests {
         assert_eq!(unsafe { RdotSeAccessMaskAllowed(0b011, 0b111, 0b001) }, 0);
     }
 }
+
+
+// Further bounded inspection helpers used by the future Se access-check path.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeSidRevision(sid: *const u8, length: usize) -> u32 {
+    if sid.is_null() || length < 8 { return u32::MAX; }
+    let b = unsafe { core::slice::from_raw_parts(sid, length) };
+    if bounded_sid_size(b).is_some() { b[0] as u32 } else { u32::MAX }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeSidSubAuthorityCount(sid: *const u8, length: usize) -> u32 {
+    if sid.is_null() || length < 8 { return u32::MAX; }
+    let b = unsafe { core::slice::from_raw_parts(sid, length) };
+    if bounded_sid_size(b).is_some() { b[1] as u32 } else { u32::MAX }
+}
+/// Outputs the six-byte SID identifier authority as a numeric value.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeSidIdentifierAuthority(
+    sid: *const u8, length: usize, authority_out: *mut u64,
+) -> i32 {
+    if sid.is_null() || authority_out.is_null() { return STATUS_INVALID_PARAMETER; }
+    if length < 8 { return STATUS_BUFFER_TOO_SMALL; }
+    let b = unsafe { core::slice::from_raw_parts(sid, length) };
+    if bounded_sid_size(b).is_none() { return STATUS_DATA_ERROR; }
+    let mut value = 0u64;
+    for byte in &b[2..8] { value = (value << 8) | (*byte as u64); }
+    unsafe { core::ptr::write_unaligned(authority_out, value); }
+    STATUS_SUCCESS
+}
+/// Query ACL revision, ACE count and ACL byte size. All outputs are optional.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeQueryAclInfo(
+    acl: *const u8, length: usize, revision_out: *mut u32,
+    ace_count_out: *mut u32, size_out: *mut u32,
+) -> i32 {
+    if acl.is_null() { return STATUS_INVALID_PARAMETER; }
+    if length < 8 { return STATUS_BUFFER_TOO_SMALL; }
+    let b = unsafe { core::slice::from_raw_parts(acl, length) };
+    let Some(size) = bounded_acl_size(b) else { return STATUS_DATA_ERROR; };
+    if size > u32::MAX as usize { return STATUS_DATA_ERROR; }
+    unsafe {
+        if !revision_out.is_null() { core::ptr::write_unaligned(revision_out, b[0] as u32); }
+        if !ace_count_out.is_null() { core::ptr::write_unaligned(ace_count_out, u16le(b, 4).unwrap_or(0) as u32); }
+        if !size_out.is_null() { core::ptr::write_unaligned(size_out, size as u32); }
+    }
+    STATUS_SUCCESS
+}
+/// Count ACEs of a given type in a bounded, structurally valid ACL; u32::MAX means invalid.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeCountAceType(acl: *const u8, length: usize, ace_type: u32) -> u32 {
+    if acl.is_null() || ace_type > u8::MAX as u32 || length < 8 { return u32::MAX; }
+    let b = unsafe { core::slice::from_raw_parts(acl, length) };
+    let Some(size) = bounded_acl_size(b) else { return u32::MAX; };
+    let count = u16le(b, 4).unwrap_or(0) as usize;
+    let mut cursor = 8usize;
+    let mut found = 0u32;
+    for _ in 0..count {
+        let Some(head) = b.get(cursor..cursor + 4) else { return u32::MAX; };
+        let ace_size = u16le(head, 2).unwrap_or(0) as usize;
+        if head[0] as u32 == ace_type { found = found.saturating_add(1); }
+        cursor = match cursor.checked_add(ace_size) { Some(v) if v <= size => v, _ => return u32::MAX };
+    }
+    found
+}
+/// True if a valid basic SID-bearing ACE in the ACL names the supplied valid SID.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeAclContainsSid(
+    acl: *const u8, acl_len: usize, sid: *const u8, sid_len: usize,
+) -> u8 {
+    if acl.is_null() || sid.is_null() || acl_len < 8 || sid_len < 8 { return 0; }
+    let a = unsafe { core::slice::from_raw_parts(acl, acl_len) };
+    let s = unsafe { core::slice::from_raw_parts(sid, sid_len) };
+    let Some(sid_size) = bounded_sid_size(s) else { return 0; };
+    let Some(acl_size) = bounded_acl_size(a) else { return 0; };
+    let count = u16le(a, 4).unwrap_or(0) as usize;
+    let mut cursor = 8usize;
+    for _ in 0..count {
+        let Some(head) = a.get(cursor..cursor + 4) else { return 0; };
+        let ace_size = u16le(head, 2).unwrap_or(0) as usize;
+        if matches!(head[0], 0 | 1 | 2 | 3) && ace_size >= 16 {
+            let start = cursor + 8;
+            let end = cursor + ace_size;
+            if let Some(candidate) = a.get(start..end) {
+                if let Some(n) = bounded_sid_size(candidate) {
+                    if n == sid_size && candidate[..n] == s[..sid_size] { return 1; }
+                }
+            }
+        }
+        cursor = match cursor.checked_add(ace_size) { Some(v) if v <= acl_size => v, _ => return 0 };
+    }
+    0
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeDescriptorIsSelfRelative(descriptor: *const u8, length: usize) -> u8 {
+    if descriptor.is_null() || length < 20 { return 0; }
+    let b = unsafe { core::slice::from_raw_parts(descriptor, length) };
+    (b[0] == 1 && u16le(b, 2).is_some_and(|c| c & 0x8000 != 0)) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeDescriptorComponentPresent(
+    descriptor: *const u8, length: usize, component: u32,
+) -> u8 {
+    if descriptor.is_null() || length < 20 || component > 3 { return 0; }
+    let b = unsafe { core::slice::from_raw_parts(descriptor, length) };
+    if b[0] != 1 || !u16le(b, 2).is_some_and(|c| c & 0x8000 != 0) { return 0; }
+    u32le(b, [4usize, 8, 12, 16][component as usize]).is_some_and(|v| v != 0) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeAccessMaskIsSubset(requested: u32, containing: u32) -> u8 {
+    (requested & containing == requested) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSePrivilegeMaskCount(mask: u64) -> u32 {
+    mask.count_ones()
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSePrivilegeMaskFirst(mask: u64) -> u32 {
+    if mask == 0 { u32::MAX } else { mask.trailing_zeros() }
+}
+
+#[cfg(test)]
+mod bounded_security_inspection_tests {
+    use super::*;
+    #[test]
+    fn sid_authority_and_acl_queries_are_bounded() {
+        let sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0];
+        assert_eq!(unsafe { RdotSeSidRevision(sid.as_ptr(), sid.len()) }, 1);
+        assert_eq!(unsafe { RdotSeSidSubAuthorityCount(sid.as_ptr(), sid.len()) }, 1);
+        let mut authority = 0u64;
+        assert_eq!(unsafe { RdotSeSidIdentifierAuthority(sid.as_ptr(), sid.len(), &mut authority) }, STATUS_SUCCESS);
+        assert_eq!(authority, 5);
+        let acl = [2u8, 0, 8, 0, 0, 0, 0, 0];
+        let mut revision = 0;
+        let mut count = 9;
+        let mut size = 0;
+        assert_eq!(unsafe { RdotSeQueryAclInfo(acl.as_ptr(), acl.len(), &mut revision, &mut count, &mut size) }, STATUS_SUCCESS);
+        assert_eq!((revision, count, size), (2, 0, 8));
+        assert_eq!(unsafe { RdotSeCountAceType(acl.as_ptr(), acl.len(), 0) }, 0);
+        assert_eq!(unsafe { RdotSeCountAceType(acl.as_ptr(), 7, 0) }, u32::MAX);
+    }
+    #[test]
+    fn descriptor_and_mask_inspection_handles_invalid_inputs() {
+        let mut sd = [0u8; 20];
+        sd[0] = 1;
+        sd[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        assert_eq!(unsafe { RdotSeDescriptorIsSelfRelative(sd.as_ptr(), sd.len()) }, 1);
+        assert_eq!(unsafe { RdotSeDescriptorComponentPresent(sd.as_ptr(), sd.len(), 0) }, 0);
+        assert_eq!(unsafe { RdotSeDescriptorComponentPresent(sd.as_ptr(), sd.len(), 4) }, 0);
+        assert_eq!(unsafe { RdotSeAccessMaskIsSubset(0b011, 0b111) }, 1);
+        assert_eq!(unsafe { RdotSeAccessMaskIsSubset(0b101, 0b011) }, 0);
+        assert_eq!(unsafe { RdotSePrivilegeMaskCount(0b10110) }, 3);
+        assert_eq!(unsafe { RdotSePrivilegeMaskFirst(0b10110) }, 1);
+        assert_eq!(unsafe { RdotSePrivilegeMaskFirst(0) }, u32::MAX);
+    }
+}
