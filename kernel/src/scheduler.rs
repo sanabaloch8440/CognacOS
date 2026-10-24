@@ -86,6 +86,15 @@ pub fn set_affinity(id:u64,mask:u64)->Result<(),SchedulerError>{
  }
  s.tasks[index].affinity=mask;Ok(())
 }
+/// Change a live task's scheduling priority and return its previous level.
+pub fn set_task_priority(id:u64,priority:u8)->Result<u8,SchedulerError>{
+ if priority as usize>=PRIORITY_LEVELS{return Err(SchedulerError::InvalidPriority)}
+ let mut s=SCHED.lock();
+ let index=s.tasks.iter().position(|t|t.id==id&&t.state!=TaskState::Empty).ok_or(SchedulerError::UnknownTask)?;
+ let old=s.tasks[index].priority;
+ s.tasks[index].priority=priority;
+ Ok(old)
+}
 pub fn task_snapshot(id:u64)->Result<Task,SchedulerError>{
  let s=SCHED.lock();
  s.tasks.iter().find(|t|t.id==id&&t.state!=TaskState::Empty).copied().ok_or(SchedulerError::UnknownTask)
