@@ -46,8 +46,14 @@ jobs:
           assert p[off:off+4] == b"PE\\0\\0", "missing PE signature"
           assert struct.unpack_from("<H", p, off+4)[0] == 0x8664, "not AMD64"
           assert struct.unpack_from("<H", p, off+24)[0] == 0x20b, "not PE32+"
-          assert struct.unpack_from("<Q", p, off+24+24)[0] == 0xffffffff80000000, "unexpected kernel image base"
-          print("PE32+ kernel header validation passed")
+          opt = off + 24
+          assert struct.unpack_from("<Q", p, opt+24)[0] == 0xffffffff7ff00000, "unexpected kernel image base"
+          assert struct.unpack_from("<H", p, opt+68)[0] == 1, "kernel must use native subsystem"
+          assert struct.unpack_from("<II", p, opt+112+8) == (0, 0), "kernel imports are unsupported"
+          assert struct.unpack_from("<II", p, opt+112+5*8) == (0, 0), "kernel relocations are unsupported"
+          table = opt + struct.unpack_from("<H", p, off+20)[0]
+          assert all(struct.unpack_from("<I", p, table+i*40+12)[0] >= 0x1000 for i in range(sections)), "invalid section RVA"
+          print(f"PE32+ native kernel header validation passed: {sections} sections")
           PY
       - name: Pin PE32+ kernel digest into Rust bootloader trust anchor
         id: kernel-digest
