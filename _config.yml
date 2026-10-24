@@ -5,6 +5,6 @@ baseurl: /RdotOS
 theme: minima
 markdown: kramdown
 header_pages:
-  - project.md
-  - roadmap.md
-  - compatibility/index.md
+  - docs/project.md
+  - docs/roadmap.md
+  - docs/compatibility/index.md
