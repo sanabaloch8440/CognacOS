@@ -308,6 +308,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "HalAllProcessorsStarted" => crate::hal::exports::hal_all_processors_started as usize,
   "HalDisplayString" => crate::hal::exports::hal_display_string as usize,
   "IoGetDmaAdapter" => crate::dma::io_get_dma_adapter as usize,
+  "IoIsWdmVersionAvailable" => crate::io::io_is_wdm_version_available as usize,
+  "IoGetConfigurationInformation" => crate::io::io_get_configuration_information as usize,
   "HalGetAdapter" => crate::hal::exports::hal_get_adapter as usize,
   "HalAllocateCommonBuffer" => crate::hal::exports::hal_allocate_common_buffer as usize,
   "HalFlushCommonBuffer" => crate::hal::exports::hal_flush_common_buffer as usize,
@@ -699,6 +701,8 @@ pub fn self_test() -> bool {
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalSetBusDataByOffset")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalGetProcessorIdByNtNumber")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"HalIsHyperThreadingEnabled")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoIsWdmVersionAvailable")).is_some()
+ && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"IoGetConfigurationInformation")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool2")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExAllocatePool3")).is_some()
  && resolve(b"ntoskrnl.exe",ImportSymbol::Name(b"ExFreePool2")).is_some()
