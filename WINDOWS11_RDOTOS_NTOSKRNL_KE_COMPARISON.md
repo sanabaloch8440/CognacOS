@@ -18,12 +18,12 @@ This expanded pass documents **129 callable Ke export names**: the original comp
 | Metric | Calculation | Result |
 |---|---|---:|
 | Source-level signature / x64 ABI declaration coverage | 129 documented declarations/call paths ÷ 129 | **129/129 = 100%** |
-| Name-based import resolution | 129 scoped routine names resolving to callable implementations ÷ 129 | **116/116 = 100%** |
+| Name-based import resolution | 129 scoped routine names resolving to callable implementations ÷ 129 | **129/129 = 100%** |
 | Strict behavior matches within the currently advertised topology | 10 topology routines matching RdotOS's group-0/node-0 model ÷ 129 | **10/129 = 7.8%** |
 | Partial or limited behavior | Remaining scoped routines with documented gaps ÷ 129 | **119/129 = 92.2%** |
 | Combined project score | (100% ABI declarations + 7.8% strict behavior) ÷ 2 | **53.9%** |
 
-**Important:** 54.3% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
+**Important:** 53.9% is a project-defined progress metric, not a Microsoft metric, binary similarity score, or proof that Windows 11 drivers will run. The earlier 70% and 57.8% values applied to smaller 25- and 64-routine subsets respectively; the denominator changed as more callable exports were documented. ABI declaration coverage does not imply that private object layouts, synchronization corner cases, timeout races, or APC delivery match Windows. The strict behavior numerator counts only ten topology queries within RdotOS's single-group, single-node model.
 
 ### Scoring rules
 
