@@ -977,6 +977,40 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     status
 }
 
+
+/// Precise monotonic time; suspend/resume bias is not modelled yet.
+pub unsafe extern "win64" fn ke_query_unbiased_interrupt_time_precise(qpc_timestamp:*mut u64)->u64{
+ if !qpc_timestamp.is_null(){unsafe{qpc_timestamp.write(crate::apic::monotonic_ticks());}}
+ interrupt_time_100ns()
+}
+/// Clock resolution in 100-ns units. Until dynamic clock programming is wired,
+/// all three values report the configured 1-ms quantum.
+pub unsafe extern "win64" fn ke_get_clock_timer_resolution(maximum:*mut u32,minimum:*mut u32,current:*mut u32){
+ for p in [maximum,minimum,current]{if !p.is_null(){unsafe{p.write(10_000);}}}
+}
+pub unsafe extern "win64" fn ke_get_next_clock_tick_duration()->u32{
+ let hz=crate::apic::tsc_frequency_hz().unwrap_or(0);if hz==0{return 0}
+ let now=crate::apic::monotonic_ticks();
+ let earliest={let table=TIMERS.lock();table.records.iter().filter(|r|r.active).map(|r|r.due).min()};
+ let Some(deadline)=earliest else{return 10_000};
+ ((deadline.saturating_sub(now) as u128*10_000_000u128/hz as u128).min(u32::MAX as u128)) as u32
+}
+/// x86-64 coherent-DMA fallback: enforce ordering; non-coherent cache maintenance
+/// requires a platform DMA coherency operation and is not claimed here.
+pub unsafe extern "win64" fn ke_flush_io_buffers(_mdl:*mut core::ffi::c_void,read_operation:u8,_dma_operation:u8){
+ if read_operation!=0{core::sync::atomic::fence(Ordering::SeqCst);}
+ unsafe{core::arch::asm!("mfence",options(nostack,preserves_flags));}
+}
+static BUGCHECK_CODE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
+static BUGCHECK_PARAMETERS:[core::sync::atomic::AtomicU64;4]=[const{core::sync::atomic::AtomicU64::new(0)};4];
+pub unsafe extern "win64" fn ke_bug_check(code:u32)->!{unsafe{ke_bug_check_ex(code,0,0,0,0)}}
+pub unsafe extern "win64" fn ke_bug_check_ex(code:u32,p1:usize,p2:usize,p3:usize,p4:usize)->!{
+ BUGCHECK_PARAMETERS[0].store(p1 as u64,Ordering::Release);BUGCHECK_PARAMETERS[1].store(p2 as u64,Ordering::Release);
+ BUGCHECK_PARAMETERS[2].store(p3 as u64,Ordering::Release);BUGCHECK_PARAMETERS[3].store(p4 as u64,Ordering::Release);
+ BUGCHECK_CODE.store(code,Ordering::Release);
+ loop{unsafe{core::arch::asm!("cli","hlt",options(nomem,nostack));}}
+}
+
 /// Never busy-loops when the thread runtime or calibrated delay source is absent.
 pub unsafe extern "win64" fn ke_delay_execution_thread(
     wait_mode: i32,
