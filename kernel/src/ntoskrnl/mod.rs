@@ -101,6 +101,33 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(ke::runtime::ke_enter_guarded_region as usize)
   } else if requested.eq_ignore_ascii_case(b"KeLeaveGuardedRegion") {
    Some(ke::runtime::ke_leave_guarded_region as usize)
+
+  } else if requested.eq_ignore_ascii_case(b"KeInitializeAffinityEx") { Some(ke::runtime::ke_initialize_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeAddProcessorAffinityEx") { Some(ke::runtime::ke_add_processor_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeRemoveProcessorAffinityEx") { Some(ke::runtime::ke_remove_processor_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeAndAffinityEx") { Some(ke::runtime::ke_and_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeOrAffinityEx") { Some(ke::runtime::ke_or_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeSubtractAffinityEx") { Some(ke::runtime::ke_subtract_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeComplementAffinityEx") { Some(ke::runtime::ke_complement_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeCopyAffinityEx") { Some(ke::runtime::ke_copy_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeCountSetBitsAffinityEx") { Some(ke::runtime::ke_count_set_bits_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeFindFirstSetLeftAffinityEx") { Some(ke::runtime::ke_find_first_set_left_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeFindFirstSetRightAffinityEx") { Some(ke::runtime::ke_find_first_set_right_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeCheckProcessorAffinityEx") { Some(ke::runtime::ke_check_processor_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeIsEmptyAffinityEx") { Some(ke::runtime::ke_is_empty_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeIsEqualAffinityEx") { Some(ke::runtime::ke_is_equal_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeIsSingleGroupAffinityEx") { Some(ke::runtime::ke_is_single_group_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeIsSubsetAffinityEx") { Some(ke::runtime::ke_is_subset_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeInterlockedSetProcessorAffinityEx") { Some(ke::runtime::ke_interlocked_set_processor_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeInterlockedClearProcessorAffinityEx") { Some(ke::runtime::ke_interlocked_clear_processor_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeAddGroupAffinityEx") { Some(ke::runtime::ke_add_group_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeRemoveGroupAffinityEx") { Some(ke::runtime::ke_remove_group_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeAndGroupAffinityEx") { Some(ke::runtime::ke_and_group_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeQueryGroupAffinityEx") { Some(ke::runtime::ke_query_group_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeXorAffinityEx") { Some(ke::runtime::ke_xor_affinity_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeGetXSaveFeatureFlags") { Some(ke::runtime::ke_get_xsave_feature_flags as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeDynamicPartitioningSupported") { Some(ke::runtime::ke_dynamic_partitioning_supported as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeShouldYieldProcessor") { Some(ke::runtime::ke_should_yield_processor as usize)
   } else { None };
   if direct.is_some() { return direct.map(|address| address as u64); }
  }
