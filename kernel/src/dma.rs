@@ -358,9 +358,9 @@ pub unsafe extern "win64" fn calculate_scatter_gather_list_size(
     0
 }
 
-/// Build an SG list in caller-owned nonpaged storage and invoke the driver's
-/// execution callback synchronously. Each entry covers one physically contiguous
-/// page fragment; this early implementation does not create IOMMU mappings.
+/// Build an SG list in caller-owned nonpaged storage, with each page fragment
+/// mapped through the adapter domain. The callback is synchronous; the mapping
+/// stays owned until PutScatterGatherList completes IOMMU sync/unmap.
 pub unsafe extern "win64" fn build_scatter_gather_list(
  adapter:*mut core::ffi::c_void,device_object:*mut core::ffi::c_void,mdl:*mut MdlAbi,current_va:*mut core::ffi::c_void,length:u32,
  execution_routine:Option<ScatterGatherExecuteRoutine>,context:*mut core::ffi::c_void,write_to_device:u8,
@@ -394,8 +394,8 @@ pub unsafe extern "win64" fn build_scatter_gather_list(
 
 
 
-/// Bounded legacy map-register tokens. Direct-DMA mode uses tokens to enforce
-/// adapter ownership/lifetime; these tokens do not create IOMMU mappings.
+/// Bounded map-register reservations. Each reservation accounts for the maximum
+/// number of simultaneous logical mappings and is not released while mappings live.
 const MAX_MAP_REGISTER_ALLOCS: usize = 64;
 const MAX_MAP_REGISTERS_PER_ALLOCATION: u32 = 256;
 #[derive(Clone, Copy)]
@@ -517,9 +517,9 @@ fn dispatch_channel_callbacks(mut current: Option<(ChannelRequest, u64)>) {
     }
 }
 
-/// Queue requests fairly and reserve all bookkeeping resources before returning
-/// STATUS_PENDING. This is bookkeeping only, not hardware IOMMU/map-register
-/// programming; the adapter remains unavailable when remapping is required.
+/// Queue requests fairly and reserve map-register capacity before returning
+/// STATUS_PENDING. Actual address translation is programmed by the registered
+/// IOMMU backend when MapTransfer/SG mapping is requested.
 pub unsafe extern "win64" fn allocate_adapter_channel(
     adapter: *mut core::ffi::c_void,
     device: *mut core::ffi::c_void,
