@@ -300,7 +300,7 @@ pub unsafe extern "win64" fn ObCreateObject(previous_mode:u8,object_type:*mut Ob
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObInsertObject(object:*mut c_void,access_state:*mut c_void,desired_access:u32,pointer_bias:u32,new_object:*mut *mut c_void,out_handle:*mut *mut c_void)->i32{
- if object.is_null()||out_handle.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out_handle.write(core::ptr::null_mut())}
+ if object.is_null()||out_handle.is_null()||pointer_bias>16{return STATUS_INVALID_PARAMETER}unsafe{out_handle.write(core::ptr::null_mut())}
  if !access_state.is_null(){return STATUS_NOT_SUPPORTED}
  {
   let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,object as usize)else{return STATUS_INVALID_PARAMETER};
@@ -310,7 +310,7 @@ pub unsafe extern "win64" fn ObInsertObject(object:*mut c_void,access_state:*mut
  }
  match open_by_pointer(object,desired_access,0,true,0){
   Ok(h)=>{if !new_object.is_null(){unsafe{new_object.write(object)}}unsafe{out_handle.write(h)}
-   if pointer_bias>0{let _=reference_body(object,0,0,true);}STATUS_SUCCESS},
+   for _ in 0..pointer_bias{if reference_body(object,0,0,true).is_err(){let _=close_handle(h,usize::MAX);return STATUS_INSUFFICIENT_RESOURCES;}}STATUS_SUCCESS},
   Err(e)=>{let _g=LOCK.lock();let s=state();if let Some(i)=raw_object_idx(s,object as usize){s.objects[i].inserted=false;}e}
  }
 }
@@ -339,7 +339,7 @@ pub unsafe extern "win64" fn ObReferenceObjectByPointer(object:*mut c_void,desir
  match reference_body(object,expected,desired_access,access_mode==0){Ok(_)=>STATUS_SUCCESS,Err(e)=>e}
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn ObDereferenceObject(object:*mut c_void)->*mut c_void{let _=dereference_body(object);object}
+pub unsafe extern "win64" fn ObDereferenceObject(object:*mut c_void){let _=dereference_body(object);}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObfReferenceObject(object:*mut c_void){let _=reference_body(object,0,0,true);}
 #[unsafe(no_mangle)]
