@@ -88,6 +88,18 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(ke::runtime::ke_get_processor_number_from_index as usize)
   } else if requested.eq_ignore_ascii_case(b"KeQueryNodeActiveAffinity2") {
    Some(ke::runtime::ke_query_node_active_affinity2 as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeStackAttachProcess") {
+   Some(ke::runtime::ke_stack_attach_process as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeUnstackDetachProcess") {
+   Some(ke::runtime::ke_unstack_detach_process as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeAttachProcess") {
+   Some(ke::runtime::ke_attach_process as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeDetachProcess") {
+   Some(ke::runtime::ke_detach_process as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeRegisterProcessorChangeCallback") {
+   Some(ke::runtime::ke_register_processor_change_callback as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeDeregisterProcessorChangeCallback") {
+   Some(ke::runtime::ke_deregister_processor_change_callback as usize)
   } else if requested.eq_ignore_ascii_case(b"KeInitializeApc") {
     Some(ke::runtime::ke_initialize_apc as usize)
    } else if requested.eq_ignore_ascii_case(b"KeInsertQueueApc") {
