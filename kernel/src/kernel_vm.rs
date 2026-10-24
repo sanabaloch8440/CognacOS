@@ -380,13 +380,30 @@ pub fn self_test() -> bool {
  // If firmware reports conventional RAM above 4 GiB, touch one byte through
  // the direct map and verify the resulting leaf is supervisor, writable, NX,
  // and translates back to the expected physical page.
- if let Some(physical)=crate::memory::first_high_conventional_page() {
+ if crate::memory::first_high_conventional_page().is_some() {
+  let Some(physical)=crate::memory::first_high_conventional_page() else{return false};
   let Some(virtual_address)=crate::memory::direct_map_address(physical) else{return false};
   let _sample=unsafe{(virtual_address as *const u8).read_volatile()};
   let root=ROOT.load(Ordering::Acquire);
   let Ok(mapping)=(unsafe{crate::memory::inspect_mapping(root,virtual_address)}) else{return false};
   if mapping.physical_address!=physical || mapping.page_size!=PAGE
       || !mapping.writable || mapping.executable || mapping.user_accessible {return false}
+
+  // Confirm the allocator itself can return, zero, access, and recycle a frame
+  // above 4 GiB instead of merely exposing a direct-map address for one.
+  let Ok(high_page)= (unsafe{crate::memory::allocate_data_page()}) else{return false};
+  if high_page<0x1_0000_0000 {let _=unsafe{crate::memory::free_page(high_page)};return false}
+  let Some(alias)=crate::memory::direct_map_address(high_page) else {
+   let _=unsafe{crate::memory::free_page(high_page)};return false
+  };
+  let word=alias as *mut u64;
+  if unsafe{word.read_volatile()}!=0 {let _=unsafe{crate::memory::free_page(high_page)};return false}
+  unsafe{word.write_volatile(0x5244_4f54_4f53_484d);}
+  if unsafe{word.read_volatile()}!=0x5244_4f54_4f53_484d {
+   unsafe{word.write_volatile(0)};let _=unsafe{crate::memory::free_page(high_page)};return false
+  }
+  unsafe{word.write_volatile(0);}
+  if unsafe{crate::memory::free_page(high_page)}.is_err(){return false}
  }
  // Exercise distinct extent sizes and every page boundary, then verify exact
  // reclamation and arena reuse. This runs once during boot and again after AP startup.
