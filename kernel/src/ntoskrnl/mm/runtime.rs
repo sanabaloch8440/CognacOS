@@ -105,7 +105,7 @@ pub unsafe extern "win64" fn mm_copy_memory(
     if flags == 1 && end > crate::memory::DIRECT_MAP_PHYSICAL_LIMIT {
         return STATUS_INVALID_PARAMETER;
     }
-    let Some(_dest_end) = (destination as u64).checked_add(length) else { return STATUS_INVALID_PARAMETER; };
+    let Some(dest_end) = (destination as u64).checked_add(length) else { return STATUS_INVALID_PARAMETER; };
     let mut done = 0u64;
     while done < length {
         let source = match source_address.checked_add(done) { Some(v) => v, None => break };
