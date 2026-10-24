@@ -530,6 +530,29 @@ pub fn dispatch_threaded_dpcs(){
     }
     THREADED_DPC_DISPATCHING[cpu].store(false,Ordering::Release);
 }
+
+#[repr(C,align(16))]
+struct ThreadedDpcTestStorage([u64;8]);
+static THREADED_DPC_TEST_OBJECT:ThreadedDpcTestStorage=ThreadedDpcTestStorage([0;8]);
+static THREADED_DPC_TEST_COUNT:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+unsafe extern "win64" fn threaded_dpc_test_routine(
+    _dpc:*mut core::ffi::c_void,_context:*mut core::ffi::c_void,
+    _arg1:*mut core::ffi::c_void,_arg2:*mut core::ffi::c_void,
+){THREADED_DPC_TEST_COUNT.fetch_add(1,Ordering::AcqRel);}
+
+/// Boot-time contract check: ordinary DPC draining must not execute a threaded
+/// callback, while a PASSIVE_LEVEL drain must execute it exactly once.
+pub(crate) fn threaded_dpc_self_test()->bool{
+    let object=core::ptr::addr_of!(THREADED_DPC_TEST_OBJECT).cast_mut().cast::<core::ffi::c_void>();
+    THREADED_DPC_TEST_COUNT.store(0,Ordering::Release);
+    unsafe{ke_initialize_threaded_dpc(object,Some(threaded_dpc_test_routine),core::ptr::null_mut());}
+    if unsafe{ke_insert_queue_dpc(object,core::ptr::null_mut(),core::ptr::null_mut())}==0{return false}
+    dispatch_queued_dpcs();
+    if THREADED_DPC_TEST_COUNT.load(Ordering::Acquire)!=0{return false}
+    dispatch_threaded_dpcs();
+    THREADED_DPC_TEST_COUNT.load(Ordering::Acquire)==1
+        && DPC_IN_FLIGHT.load(Ordering::Acquire)==0
+}
 unsafe extern "win64" fn flush_dpc_rendezvous(
     _dpc:*mut core::ffi::c_void,_context:*mut core::ffi::c_void,
     done:*mut core::ffi::c_void,sync:*mut core::ffi::c_void,
