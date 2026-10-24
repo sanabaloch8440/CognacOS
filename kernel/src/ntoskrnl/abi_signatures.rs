@@ -67,6 +67,18 @@ pub type SeSubjectContextFn = unsafe extern "win64" fn(*mut SeSecuritySubjectCon
 pub type PsAssignImpersonationTokenFn = unsafe extern "win64" fn(Handle, Handle) -> NtStatus;
 pub type PsReferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid) -> Pvoid;
 pub type PsDereferencePrimaryTokenFn = unsafe extern "win64" fn(Pvoid);
+const _: SeAccessCheckFn = crate::ntoskrnl::se::runtime::SeAccessCheck;
+const _: SePrivilegeCheckFn = crate::ntoskrnl::se::runtime::SePrivilegeCheck;
+const _: SeSinglePrivilegeCheckFn = crate::ntoskrnl::se::runtime::SeSinglePrivilegeCheck;
+const _: SeValidSecurityDescriptorFn = crate::ntoskrnl::se::runtime::SeValidSecurityDescriptor;
+const _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeCaptureSubjectContext;
+const _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeReleaseSubjectContext;
+const _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeLockSubjectContext;
+const _: SeSubjectContextFn = crate::ntoskrnl::se::runtime::SeUnlockSubjectContext;
+const _: PsAssignImpersonationTokenFn = crate::thread::PsAssignImpersonationToken;
+const _: PsReferencePrimaryTokenFn = crate::process::PsReferencePrimaryToken;
+const _: PsDereferencePrimaryTokenFn = crate::process::PsDereferencePrimaryToken;
+
 
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
