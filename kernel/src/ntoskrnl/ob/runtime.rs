@@ -41,6 +41,7 @@ pub struct UnicodeString { pub length:u16,pub maximum_length:u16,pub buffer:*con
 #[repr(C)]
 pub struct ObjectAttributes { pub length:u32,pub root_directory:*mut c_void,pub object_name:*const UnicodeString,pub attributes:u32,pub security_descriptor:*mut c_void,pub security_qos:*mut c_void }
 #[repr(C)]
+#[derive(Clone,Copy)]
 pub struct ObjectType { pub name:UnicodeString,pub type_index:u16,pub reserved:u16,pub generic_read:u32,pub generic_write:u32,pub generic_execute:u32,pub generic_all:u32,pub valid_access:u32 }
 
 #[derive(Clone,Copy)]
@@ -60,8 +61,8 @@ impl Drop for Guard<'_>{fn drop(&mut self){self.0.store(false,Ordering::Release)
 impl AuditEvent { const EMPTY:Self=Self{sequence:0,object:0,owner:0,operation:0,desired:0,granted:0,status:0}; }
 #[derive(Clone,Copy)] struct DirectoryBody { magic:u64 }
 impl DirectoryBody { const EMPTY:Self=Self{magic:0}; }
-struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],audit:[AuditEvent;MAX_AUDIT_EVENTS],audit_next:u64,next_type:u16 }
-impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],audit_next:1,next_type:1}} }
+struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],type_objects:[ObjectType;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],audit:[AuditEvent;MAX_AUDIT_EVENTS],audit_next:u64,next_type:u16 }
+impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],type_objects:[const { ObjectType{name:UnicodeString{length:0,maximum_length:0,buffer:core::ptr::null()},type_index:0,reserved:0,generic_read:0,generic_write:0,generic_execute:0,generic_all:0,valid_access:0} };MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],audit_next:1,next_type:1}} }
 static LOCK:Lock=Lock::new();
 static mut STATE:State=State::new();
 fn state()->&'static mut State{unsafe{&mut *core::ptr::addr_of_mut!(STATE)}}
@@ -128,7 +129,7 @@ pub fn register_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<
  if name.is_empty()||name.len()>32{return Err(STATUS_INVALID_PARAMETER)}let _g=LOCK.lock();let s=state();
  if s.types.iter().any(|t|t.used&&eq(&t.name[..t.len as usize],name)){return Err(STATUS_OBJECT_NAME_COLLISION)}
  let Some(i)=s.types.iter().position(|t|!t.used)else{return Err(STATUS_INSUFFICIENT_RESOURCES)};
- let id=s.next_type;s.next_type=s.next_type.wrapping_add(1).max(1);let mut t=TypeEntry{used:true,id,len:name.len() as u8,gr,gw,gx,ga,valid,..TypeEntry::EMPTY};t.name[..name.len()].copy_from_slice(name);s.types[i]=t;Ok(id)
+ let id=s.next_type;s.next_type=s.next_type.wrapping_add(1).max(1);let mut t=TypeEntry{used:true,id,len:name.len() as u8,gr,gw,gx,ga,valid,..TypeEntry::EMPTY};t.name[..name.len()].copy_from_slice(name);s.types[i]=t;s.type_objects[i]=ObjectType{name:UnicodeString{length:(name.len()*2) as u16,maximum_length:((name.len()+1)*2) as u16,buffer:s.types[i].name.as_ptr()},type_index:id,reserved:0,generic_read:gr,generic_write:gw,generic_execute:gx,generic_all:ga,valid_access:valid};Ok(id)
 }
 pub fn reference_body(body:*mut c_void,expected_type:u16,desired:u32,kernel_mode:bool)->Result<*mut c_void,i32>{
  if body.is_null(){return Err(STATUS_INVALID_PARAMETER)}let _g=LOCK.lock();let s=state();let i=object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;
@@ -180,8 +181,8 @@ pub fn object_name(body:*mut c_void,out:&mut [u16;MAX_NAME])->Result<usize,i32>{
 pub fn make_temporary(body:*mut c_void){let _g=LOCK.lock();let s=state();if let Some(i)=object_idx(s,body as usize){s.objects[i].permanent=false;}}
 pub fn type_id_from_pointer(ptr:*mut ObjectType)->Result<u16,i32>{expected_type_id(ptr).filter(|id|*id!=0).ok_or(STATUS_OBJECT_TYPE_MISMATCH)}
 
-pub fn object_type(body:*mut c_void)->*mut ObjectType{let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,body as usize)else{return core::ptr::null_mut()};let Some(ti)=type_idx(s,s.objects[i].type_id)else{return core::ptr::null_mut()};core::ptr::addr_of_mut!(s.types[ti]).cast::<ObjectType>()}
-fn expected_type_id(ptr:*mut ObjectType)->Option<u16>{if ptr.is_null(){return Some(0)}let _g=LOCK.lock();let s=state();s.types.iter().find(|t|t.used&&core::ptr::eq((*t as *const TypeEntry).cast::<ObjectType>(),ptr)).map(|t|t.id)}
+pub fn object_type(body:*mut c_void)->*mut ObjectType{let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,body as usize)else{return core::ptr::null_mut()};let Some(ti)=type_idx(s,s.objects[i].type_id)else{return core::ptr::null_mut()};core::ptr::addr_of_mut!(s.type_objects[ti])}
+fn expected_type_id(ptr:*mut ObjectType)->Option<u16>{if ptr.is_null(){return Some(0)}let _g=LOCK.lock();let s=state();s.type_objects.iter().enumerate().find(|(i,t)|s.types[*i].used&&core::ptr::eq(*t as *const ObjectType,ptr as *const ObjectType)).map(|(i,_)|s.types[i].id)}
 
 pub fn set_permanent(body:*mut c_void,permanent:bool)->Result<(),i32>{let _g=LOCK.lock();let s=state();let i=object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;s.objects[i].permanent=permanent;Ok(())}
 fn read_u16(b:&[u8],o:usize)->Option<u16>{Some(u16::from_le_bytes([*b.get(o)?,*b.get(o+1)?]))}
@@ -206,6 +207,23 @@ fn dacl_allowed(o:&Object)->u32{
 fn access_check(o:&Object,desired:u32)->bool{dacl_allowed(o)&desired==desired}
 
 /// Windows x64 export: ObReferenceObjectByPointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObCreateObjectType(name:*const UnicodeString,initializer:*const u8,default_sd:*mut c_void,out_type:*mut *mut ObjectType)->i32{
+ if out_type.is_null()||initializer.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out_type.write(core::ptr::null_mut())}
+ if !default_sd.is_null(){return STATUS_NOT_SUPPORTED}
+ let mut units=[0u16;MAX_NAME];let n=match unsafe{read_unicode(name,&mut units)}{Ok(n)=>n,Err(e)=>return e};
+ if n==0||n>32{return STATUS_INVALID_PARAMETER}
+ let len=unsafe{core::ptr::read_unaligned(initializer.cast::<u16>())} as usize;
+ if len<28||len>0x100{return STATUS_INVALID_PARAMETER}
+ let gr=unsafe{core::ptr::read_unaligned(initializer.add(8).cast::<u32>())};
+ let gw=unsafe{core::ptr::read_unaligned(initializer.add(12).cast::<u32>())};
+ let gx=unsafe{core::ptr::read_unaligned(initializer.add(16).cast::<u32>())};
+ let ga=unsafe{core::ptr::read_unaligned(initializer.add(20).cast::<u32>())};
+ let valid=unsafe{core::ptr::read_unaligned(initializer.add(24).cast::<u32>())};
+ let id=match register_type(&units[..n],gr,gw,gx,ga,valid){Ok(id)=>id,Err(e)=>return e};
+ let _=id;let _g=LOCK.lock();let s=state();let Some(i)=s.types.iter().position(|t|t.used&&t.id==id)else{return STATUS_OBJECT_TYPE_MISMATCH};
+ unsafe{out_type.write(core::ptr::addr_of_mut!(s.type_objects[i]))}STATUS_SUCCESS
+}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObReferenceObjectByPointer(object:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8)->i32{
  let expected=match expected_type_id(object_type){Some(v)=>v,None=>return STATUS_OBJECT_TYPE_MISMATCH};
@@ -293,10 +311,10 @@ pub unsafe extern "win64" fn ZwCreateDirectoryObject(out:*mut *mut c_void,desire
 pub unsafe extern "win64" fn ZwOpenDirectoryObject(out:*mut *mut c_void,desired_access:u32,oa:*const ObjectAttributes)->i32{
  if out.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out.write(core::ptr::null_mut())}
  let mut name=[0u16;MAX_NAME];let n=match unsafe{resolve_attributes_name(oa,&mut name)}{Ok(n)=>n,Err(e)=>return e};
- match open_by_name(&name[..n],desired_access,0,true,0){Ok(h)=>{let dir=ensure_type(&[b'D' as u16,b'i' as u16,b'r' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'o' as u16,b'r' as u16,b'y' as u16],1,2,4,7,u32::MAX);if let Ok(ty)=dir{if reference_by_handle(h,0,ty,usize::MAX,true).is_ok(){unsafe{out.write(h)}return STATUS_SUCCESS}}let _=close_handle(h,0);STATUS_OBJECT_TYPE_MISMATCH},Err(e)=>e}
+ match open_by_name(&name[..n],desired_access,0,true,0){Ok(h)=>{let dir=ensure_type(&[b'D' as u16,b'i' as u16,b'r' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'o' as u16,b'r' as u16,b'y' as u16],1,2,4,7,u32::MAX);if let Ok(ty)=dir{if let Ok(body)=reference_by_handle(h,0,ty,usize::MAX,true){let _=dereference_body(body);unsafe{out.write(h)}return STATUS_SUCCESS}}let _=close_handle(h,0);STATUS_OBJECT_TYPE_MISMATCH},Err(e)=>e}
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn ZwClose(handle:*mut c_void)->i32{close_handle(handle,0).map_or_else(|e|e,|_|STATUS_SUCCESS)}
+pub unsafe extern "win64" fn ZwClose(handle:*mut c_void)->i32{close_handle(handle,usize::MAX).map_or_else(|e|e,|_|STATUS_SUCCESS)}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObQueryObjectAuditLog(out:*mut AuditEvent,capacity:u32,returned:*mut u32)->i32{
  if returned.is_null()||(capacity!=0&&out.is_null()){return STATUS_INVALID_PARAMETER}
