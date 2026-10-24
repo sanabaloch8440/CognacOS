@@ -953,6 +953,8 @@ pub fn set_kernel_stack(cpu: usize, stack_top: u64) -> bool {
 }
 
 pub unsafe fn initialize() {
+    // Keep the BSP quiescent while replacing its GDT/TSS and building the IDT.
+    unsafe { asm!("cli", options(nomem, nostack)); }
     let mut rsp0: u64;
     unsafe { asm!("mov {}, rsp", out(reg) rsp0, options(nomem, nostack, preserves_flags)); }
     unsafe {
