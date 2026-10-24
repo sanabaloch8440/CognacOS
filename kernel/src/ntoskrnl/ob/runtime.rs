@@ -151,7 +151,7 @@ unsafe fn security_descriptor_length(sd:*const u8)->Result<usize,i32>{
  if b[0]!=1||read_u16(b,2).unwrap_or(0)&0x8000==0{return Err(STATUS_NOT_SUPPORTED)}
  let mut need=20usize;
  for off_at in [4usize,8usize]{let off=read_u32(b,off_at).unwrap_or(0) as usize;if off!=0{if off+8>256{return Err(STATUS_INVALID_PARAMETER)}let count=unsafe{*sd.add(off+1)} as usize;let len=8usize.checked_add(count.checked_mul(4).ok_or(STATUS_INVALID_PARAMETER)?).ok_or(STATUS_INVALID_PARAMETER)?;if off+len>256{return Err(STATUS_INVALID_PARAMETER)}need=need.max(off+len);}}
- for off_at in [12usize,16usize]{let off=read_u32(b,off_at).unwrap_or(0) as usize;if off!=0{if off+8>256{return Err(STATUS_INVALID_PARAMETER)}let len=read_u16(unsafe{core::slice::from_raw_parts(sd,256)},off+2).unwrap_or(0) as usize;if len<8||off.checked_add(len).is_none_or(|e|e>256){return Err(STATUS_INVALID_PARAMETER)}need=need.max(off+len);}}
+ for off_at in [12usize,16usize]{let off=read_u32(b,off_at).unwrap_or(0) as usize;if off!=0{if off+8>256{return Err(STATUS_INVALID_PARAMETER)}let len=unsafe{core::ptr::read_unaligned(sd.add(off+2).cast::<u16>())} as usize;if len<8||off.checked_add(len).is_none_or(|e|e>256){return Err(STATUS_INVALID_PARAMETER)}need=need.max(off+len);}}
  if need>256{return Err(STATUS_INVALID_PARAMETER)}Ok(need)
 }
 #[unsafe(no_mangle)]
@@ -223,7 +223,7 @@ pub fn open_by_pointer(body:*mut c_void,desired:u32,owner:usize,kernel_mode:bool
 }
 pub fn reference_by_handle(h:*mut c_void,desired:u32,expected_type:u16,owner:usize,kernel_mode:bool)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,if kernel_mode{usize::MAX}else{owner}).ok_or(STATUS_INVALID_HANDLE)?;let e=s.handles[hi];let o=s.objects.get(e.object).ok_or(STATUS_INVALID_HANDLE)?;if !o.used||o.deleting{return Err(STATUS_INVALID_HANDLE)}if expected_type!=0&&o.type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
- let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let mapped=map_access(&t,desired);if mapped&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}if !kernel_mode&&!access_check(s,o,mapped,owner){return Err(STATUS_ACCESS_DENIED)}let body=o.body as *mut c_void;
+ let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let mapped=if desired&MAXIMUM_ALLOWED!=0{e.access}else{map_access(&t,desired)};if mapped&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}if !kernel_mode&&!access_check(s,o,mapped,owner){return Err(STATUS_ACCESS_DENIED)}let body=o.body as *mut c_void;
  let s=state();s.objects[e.object].refs=s.objects[e.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,owner,3,desired,desired,STATUS_SUCCESS);let _=t;Ok(body)
 }
 pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
