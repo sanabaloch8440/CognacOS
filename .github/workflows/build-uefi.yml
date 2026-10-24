@@ -24,7 +24,7 @@ jobs:
             echo "HAL implementation must not depend on ntoskrnl or ACPI parsing types." >&2
             exit 1
           fi
-          if grep -RInE 'crate::apic|use crate::\\{[^}]*\\bapic\\b' kernel/src --include='*.rs'; then
+          if grep -RIn 'crate::apic' kernel/src --include='*.rs' || grep -RIn 'use crate::{[^}]*apic' kernel/src --include='*.rs'; then
             echo "APIC implementation must only be reached through HAL service contracts." >&2
             exit 1
           fi
