@@ -1115,6 +1115,10 @@ pub unsafe extern "win64" fn ke_acquire_queued_spin_lock_raise_to_synch(queue:u3
     if acquire_ticket(queue_number_key(queue)).is_none(){unsafe{ke_lower_irql(old)};}
     old
 }
+pub unsafe extern "win64" fn ke_release_queued_spin_lock_from_synch_level(queue:u32,old_irql:u8){
+    if let Some(index)=ticket_slot(queue_number_key(queue)){release_ticket(index);}
+    unsafe{ke_lower_irql(old_irql);}
+}
 
 // ---- Mutant/mutex dispatcher ownership --------------------------------------
 const STATUS_ABANDONED_WAIT_0: i32 = 0x0000_0080;
@@ -1376,9 +1380,9 @@ pub fn timer_tick(now:u64){
         let mut waiters=[crate::dispatcher::WokenWaiter{thread:0,timed_out:false};crate::dispatcher::MAX_WAITERS];
         let woke=if unsafe{(*timer).kind}==TIMER_NOTIFICATION{
             crate::dispatcher::wake_all_timed(timer as u64,&mut waiters)
-        }else{
-            crate::dispatcher::wake_one_timed(timer as u64,&mut waiters[..1])
-        };
+        }else if let Some(waiter)=crate::dispatcher::wake_one_timed(timer as u64){
+            waiters[0]=waiter;1
+        }else{0};
         if woke!=0 && unsafe{(*timer).kind}==TIMER_SYNCHRONIZATION{
             unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
         }
