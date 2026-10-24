@@ -129,6 +129,19 @@ pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
  if s.objects[oi].handles>0{s.objects[oi].handles-=1}if s.objects[oi].refs>0{s.objects[oi].refs-=1}
  if s.objects[oi].refs==0&&s.objects[oi].handles==0&&!s.objects[oi].permanent{s.objects[oi]=Object::EMPTY;}Ok(())
 }
+pub fn reference_by_name(name:&[u16],expected_type:u16,desired:u32,kernel_mode:bool)->Result<*mut c_void,i32>{
+ let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
+ if expected_type!=0&&s.objects[i].type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
+ let t=s.types[type_idx(s,s.objects[i].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let granted=map_access(&t,desired);
+ if granted&!t.valid!=0||(!kernel_mode&&!access_check(&s.objects[i],granted)){return Err(STATUS_ACCESS_DENIED)}
+ s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;Ok(s.objects[i].body as *mut c_void)
+}
+pub fn object_name(body:*mut c_void,out:&mut [u16;MAX_NAME])->Result<usize,i32>{
+ let _g=LOCK.lock();let s=state();let i=object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;let n=s.objects[i].name_len as usize;out[..n].copy_from_slice(&s.objects[i].name[..n]);Ok(n)
+}
+pub fn make_temporary(body:*mut c_void){let _g=LOCK.lock();let s=state();if let Some(i)=object_idx(s,body as usize){s.objects[i].permanent=false;}}
+pub fn type_id_from_pointer(ptr:*mut ObjectType)->Result<u16,i32>{expected_type_id(ptr).filter(|id|*id!=0).ok_or(STATUS_OBJECT_TYPE_MISMATCH)}
+
 pub fn object_type(body:*mut c_void)->*mut ObjectType{let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,body as usize)else{return core::ptr::null_mut()};let Some(ti)=type_idx(s,s.objects[i].type_id)else{return core::ptr::null_mut()};core::ptr::addr_of_mut!(s.types[ti]).cast::<ObjectType>()}
 fn expected_type_id(ptr:*mut ObjectType)->Option<u16>{if ptr.is_null(){return Some(0)}let _g=LOCK.lock();let s=state();s.types.iter().find(|t|t.used&&core::ptr::eq((*t as *const TypeEntry).cast::<ObjectType>(),ptr)).map(|t|t.id)}
 
@@ -174,6 +187,47 @@ pub unsafe extern "win64" fn ObReferenceObjectByHandle(handle:*mut c_void,desire
 pub unsafe extern "win64" fn ObCloseHandle(handle:*mut c_void,previous_mode:u8)->i32{close_handle(handle,if previous_mode==0{usize::MAX}else{0}).map_or_else(|e|e,|_|STATUS_SUCCESS)}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObGetObjectType(object:*mut c_void)->*mut ObjectType{object_type(object)}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObReferenceObjectByPointerWithTag(object:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8,_tag:u32)->i32{
+ let expected=match expected_type_id(object_type){Some(v)=>v,None=>return STATUS_OBJECT_TYPE_MISMATCH};
+ match reference_body(object,expected,desired_access,access_mode==0){Ok(_)=>STATUS_SUCCESS,Err(e)=>e}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObReferenceObjectByHandleWithTag(handle:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8,out_object:*mut *mut c_void,handle_information:*mut u32,tag:u32)->i32{
+ let _=tag;unsafe{ObReferenceObjectByHandle(handle,desired_access,object_type,access_mode,out_object,handle_information)}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObOpenObjectByPointer(object:*mut c_void,handle_attributes:u32,passed_access_state:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8,out_handle:*mut *mut c_void)->i32{
+ if out_handle.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out_handle.write(core::ptr::null_mut())}
+ if !passed_access_state.is_null(){return STATUS_NOT_SUPPORTED}
+ let expected=match expected_type_id(object_type){Some(v)=>v,None=>return STATUS_OBJECT_TYPE_MISMATCH};
+ let actual={let _g=LOCK.lock();let s=state();object_idx(s,object as usize).map(|i|s.objects[i].type_id)};
+ if actual!=Some(expected)||object.is_null(){return STATUS_OBJECT_TYPE_MISMATCH}
+ match open_by_pointer(object,desired_access,0,access_mode==0,handle_attributes){Ok(h)=>{unsafe{out_handle.write(h)}STATUS_SUCCESS},Err(e)=>e}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObReferenceObjectByName(name:*const UnicodeString,attributes:u32,passed_access_state:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8,parse_context:*mut c_void,out_object:*mut *mut c_void)->i32{
+ if out_object.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out_object.write(core::ptr::null_mut())}
+ if !passed_access_state.is_null()||!parse_context.is_null(){return STATUS_NOT_SUPPORTED}
+ let mut units=[0u16;MAX_NAME];let n=match unsafe{read_unicode(name,&mut units)}{Ok(n)=>n,Err(e)=>return e};
+ let expected=match expected_type_id(object_type){Some(v)=>v,None=>return STATUS_OBJECT_TYPE_MISMATCH};
+ let _=attributes;
+ match reference_by_name(&units[..n],expected,desired_access,access_mode==0){Ok(o)=>{unsafe{out_object.write(o)}STATUS_SUCCESS},Err(e)=>e}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObQueryNameString(object:*mut c_void,buffer:*mut c_void,length:u32,return_length:*mut u32)->i32{
+ if object.is_null()||buffer.is_null(){return STATUS_INVALID_PARAMETER}
+ let mut name=[0u16;MAX_NAME];let n=match object_name(object,&mut name){Ok(n)=>n,Err(e)=>return e};
+ let need=core::mem::size_of::<UnicodeString>()+(n+1)*2;
+ if !return_length.is_null(){unsafe{return_length.write(need as u32)}}
+ if length as usize<need{return STATUS_INFO_LENGTH_MISMATCH}
+ let text=unsafe{buffer.cast::<u8>().add(core::mem::size_of::<UnicodeString>()).cast::<u16>()};
+ unsafe{core::ptr::copy_nonoverlapping(name.as_ptr(),text,n);text.add(n).write(0);}
+ let u=UnicodeString{length:(n*2) as u16,maximum_length:((n+1)*2) as u16,buffer:text};
+ unsafe{core::ptr::write_unaligned(buffer.cast::<UnicodeString>(),u)}STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObMakeTemporaryObject(object:*mut c_void){make_temporary(object)}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObIsKernelHandle(handle:*mut c_void)->u8{let _g=LOCK.lock();let s=state();let Some((i,g))=decode_handle(handle)else{return 0};s.handles.get(i).is_some_and(|e|e.used&&e.generation==g&&e.owner==usize::MAX) as u8}
 
