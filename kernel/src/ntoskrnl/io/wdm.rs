@@ -189,6 +189,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  let location=unsafe{(*irp).bytes[0x43]};
  if location<=1{return STATUS_INVALID_DEVICE_REQUEST}
  unsafe { (*irp).bytes[0x43]=location-1; }
+ unsafe { (*stack).device_object=device; }
  let major=unsafe{(*stack).major_function as usize};
  if major>=28{return STATUS_INVALID_DEVICE_REQUEST}
  let dispatch=unsafe{(*driver).major_function[major]};
@@ -198,10 +199,27 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:i8) {
  if irp.is_null(){return}
- // A driver writes IO_STATUS_BLOCK through the documented IoStatus overlay.
- // Completion unwinding/APCs are not yet implemented; this publishes terminal
- // status for synchronous kernel callers only.
- let _=unsafe{read_ptr((*irp).bytes.as_ptr(),IRP_STATUS_OFFSET)};
+ // Run registered completion routines while unwinding toward the original caller.
+ // APC delivery, event signaling, MDL cleanup and thread-owned IRP teardown remain TODO.
+ for _ in 0..16 {
+  let stack=unsafe{io_get_current_irp_stack_location(irp)};
+  if stack.is_null(){return}
+  let control=unsafe{(*stack).control};
+  let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
+  let cancelled=unsafe{(*irp).bytes[0x44]!=0};
+  let invoke=(status>=0&&(control&0x40)!=0)||(status<0&&(control&0x80)!=0)||(cancelled&&(control&0x20)!=0);
+  if invoke {
+   if let Some(routine)=unsafe{(*stack).completion_routine} {
+    let result=unsafe{routine((*stack).device_object,irp,(*stack).context)};
+    if result==0xC0000016u32 as i32{return}
+   }
+  }
+  let current=unsafe{(*irp).bytes[0x43]};
+  if current==0xff{return}
+  let next=unsafe{stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
+  unsafe { (*irp).bytes[0x43]=current.saturating_add(1); write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast()); }
+  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {return}
+ }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_set_completion_routine(
