@@ -186,7 +186,7 @@ pub fn unregister_object(body:*mut c_void)->bool{
  unsafe{invoke_finalizer(reclaimed)}found
 }
 pub fn duplicate_handle(source:*mut c_void,source_owner:usize,target_owner:usize,desired:u32,same_access:bool,kernel_target:bool)->Result<*mut c_void,i32>{
- let _g=LOCK.lock();let s=state();let hi=handle_idx(s,source,source_owner).ok_or(STATUS_INVALID_HANDLE)?;let src=s.handles[hi];let granted=if same_access{src.access}else{if desired&!src.access!=0{return Err(STATUS_ACCESS_DENIED)}desired};
+ let _g=LOCK.lock();let s=state();let hi=handle_idx(s,source,source_owner).ok_or(STATUS_INVALID_HANDLE)?;let src=s.handles[hi];let ty=s.types[type_idx(s,s.objects[src.object].type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let mapped=map_access(&ty,desired);let granted=if same_access{src.access}else{if mapped&!src.access!=0{return Err(STATUS_ACCESS_DENIED)}mapped};
  let new_owner=if kernel_target{usize::MAX}else{target_owner};let ni=s.handles.iter().position(|h|!h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
  if !s.objects[src.object].used||s.objects[src.object].deleting{return Err(STATUS_INVALID_HANDLE)}
  s.objects[src.object].refs=s.objects[src.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;s.objects[src.object].handles=s.objects[src.object].handles.saturating_add(1);
