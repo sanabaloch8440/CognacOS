@@ -306,11 +306,9 @@ pub unsafe extern "win64" fn PsAssignImpersonationToken(
 
 pub fn reference_current_impersonation_token() -> *mut c_void {
     let Some(id) = current_thread_id() else { return core::ptr::null_mut(); };
-    let token = {
-        let table = THREADS.lock();
-        table.records.iter().find(|t| t.id == id && t.state != ThreadState::Empty)
-            .map(|t| t.impersonation_token).unwrap_or(0)
-    };
+    let table = THREADS.lock();
+    let token = table.records.iter().find(|t| t.id == id && t.state != ThreadState::Empty)
+        .map(|t| t.impersonation_token).unwrap_or(0);
     if token == 0 { return core::ptr::null_mut(); }
     let pointer = token as *mut c_void;
     if unsafe { crate::ntoskrnl::se::runtime::se_internal_ReferenceToken(pointer) } != 0 {
