@@ -292,8 +292,15 @@ pub fn map_external_pages(pfns: &[u64]) -> Result<*mut u8, Error> {
   mapped += 1;
  }
  if mapped != pages {
-  for n in 0..mapped { let _ = unsafe { unmap(root, va+n as u64*PAGE) }; }
+  let mut table_count = 0usize;
+  for n in 0..mapped {
+   let page_va = va+n as u64*PAGE;
+   let _ = unsafe { unmap(root, page_va) };
+   unsafe { prune_empty_tables(root, page_va, &mut table_count); }
+  }
   if mapped != 0 { synchronize_kernel_tlb(); }
+  let tables = unsafe { &*RECLAIM_TABLES.0.get() };
+  for pa in tables.iter().take(table_count).copied() { let _ = unsafe { crate::memory::free_page(pa) }; }
   for n in 0..pages { bits[(start+n)/64] &= !(1u64 << ((start+n)%64)); }
   return Err(Error::NoPhysicalMemory);
  }
@@ -322,8 +329,15 @@ pub fn unmap_external_pages(ptr: *mut u8, pages: usize) -> Result<(), Error> {
   let pte = unsafe { walk.add(indexes[3]).read() };
   if pte&P == 0 { return Err(Error::NotMapped); }
  }
- for n in 0..pages { let _ = unsafe { unmap(root, va+n as u64*PAGE) }?; }
+ let mut table_count = 0usize;
+ for n in 0..pages {
+  let page_va = va+n as u64*PAGE;
+  let _ = unsafe { unmap(root, page_va) }?;
+  unsafe { prune_empty_tables(root, page_va, &mut table_count); }
+ }
  synchronize_kernel_tlb();
+ let tables = unsafe { &*RECLAIM_TABLES.0.get() };
+ for pa in tables.iter().take(table_count).copied() { let _ = unsafe { crate::memory::free_page(pa) }; }
  let bits = unsafe { &mut *BITS.0.get() }; let mapped = unsafe { &mut *MAPPED_BITS.0.get() };
  for n in 0..pages { let word=(start+n)/64; let mask=1u64<<((start+n)%64); bits[word]&=!mask; mapped[word]&=!mask; }
  table[index] = Extent::EMPTY;
