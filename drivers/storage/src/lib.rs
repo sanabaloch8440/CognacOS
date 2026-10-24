@@ -174,6 +174,6 @@ mod tests {
         let g=Geometry{sector_count:0x10000,logical_sector_size:512,physical_sector_size:512};
         let c=[0x28,0,0,0,0,10,0,0,2,0];
         let p=disk::parse_rw_cdb(&c,g).unwrap(); assert_eq!(p.lba,10); assert_eq!(p.sectors,2); assert_eq!(p.operation,BlockOperation::Read);
-        let mut bad=c; bad[5]=0xff; assert!(disk::parse_rw_cdb(&bad,g).is_err());
+        let mut bad=c; bad[4]=0xff; bad[5]=0xff; assert!(disk::parse_rw_cdb(&bad,g).is_err());
     }
 }
