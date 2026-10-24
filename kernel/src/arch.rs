@@ -9,7 +9,7 @@ const EXCEPTION_VECTORS: usize = 32;
 /// Read the current IF bit without changing interrupt state.
 pub fn interrupts_enabled()->bool{
     let flags:u64;
-    unsafe{asm!("pushfq","pop {}",out(reg) flags,options(nomem,preserves_flags));}
+    unsafe{asm!("pushfq","pop {}",out(reg) flags,options(preserves_flags));}
     flags&(1<<9)!=0
 }
 /// Restore the caller's saved interrupt-enable state after a context switch.
