@@ -358,7 +358,7 @@ pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_tim
         // Keep timer mutation and removal serialized with timer_tick's
         // timer-lock -> DPC-lock enqueue path, so an old cancellation cannot
         // accidentally remove a newly queued expiry for the rearmed timer.
-        if old.0 && old.1!=0 { let _=unsafe{ke_remove_queue_dpc(old.1 as *mut core::ffi::c_void)}; }
+        if old.1!=0 { let _=unsafe{ke_remove_queue_dpc(old.1 as *mut core::ffi::c_void)}; }
         old
     };
     unsafe{(&*core::ptr::addr_of!((*timer).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(0,Ordering::Release);}
@@ -375,7 +375,7 @@ pub unsafe extern "win64" fn ke_cancel_timer(timer:*mut DispatcherHeader)->u8{
         record.generation=next_timer_generation(record.generation);
         // Serialize removal with rearm and expiry enqueue; no DPC callback is
         // dispatched by KeRemoveQueueDpc itself.
-        if old.0 && old.1!=0 { let _=unsafe{ke_remove_queue_dpc(old.1 as *mut core::ffi::c_void)}; }
+        if old.1!=0 { let _=unsafe{ke_remove_queue_dpc(old.1 as *mut core::ffi::c_void)}; }
         old.0
     };
     was_active as u8
