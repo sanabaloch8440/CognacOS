@@ -616,7 +616,7 @@ pub(crate) fn timer_dpc_rundown_self_test()->bool{
             ||DPC_IN_FLIGHT.load(Ordering::Acquire)!=0{return false}
         if iteration!=63{CURRENT_IRQL[cpu].store(DISPATCH_LEVEL,Ordering::Release);}
     }
-    let timer=core::ptr::addr_of_mut!(TIMER_DPC_CANCEL_TEST_TIMER);
+    let timer=unsafe{core::ptr::addr_of_mut!(TIMER_DPC_CANCEL_TEST_TIMER)};
     unsafe{ke_initialize_timer_ex(timer,0);}
     let _=unsafe{ke_set_timer(timer,0,core::ptr::null_mut())};
     if unsafe{ke_cancel_timer(timer)}==0{return false}
