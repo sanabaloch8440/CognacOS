@@ -121,6 +121,7 @@ Discovery and startup primitives do not by themselves establish a production-rea
 
 ## 5. NT executive and Windows compatibility
 
+- [x] Add an `ntoskrnl/ex` executive processor-start phase that sequences MADT discovery, AP startup, per-CPU interrupt checks, scheduler/lock/thread teardown stress, and VM/TLB validation; the boot entry now delegates this phase to the executive.
 - [x] Add typed kernel handles, basic named-object lookup, access-mask checks, and object-manager self-tests.
 - [x] Add initial device/IRP dispatch interfaces and bounded request handling.
 - [x] Add initial process address spaces, checked user-copy, ring-3 entry/exit, and a small RdotOS-native syscall path.
