@@ -281,8 +281,8 @@ pub unsafe extern "win64" fn mm_create_mdl(mdl: *mut c_void, base: *mut c_void, 
     address.cast()
 }
 /// Probe and pin the current process's user pages or resident supervisor pages.
-pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, _access_mode: i8, operation: u32) {
-    if mdl.is_null() || operation > 2 { return; }
+pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mode: i8, operation: u32) {
+    if mdl.is_null() || operation > 2 || (access_mode != 0 && access_mode != 1) { return; }
     let address = mdl as u64;
     if address < 0xffff_8000_0000_0000 || !mdl_header_is_writable(address) { return; }
     let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
@@ -307,6 +307,7 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, _access_m
     let destination = pfn_address as *mut u64;
     for index in 0..pages as usize {
         let Some(va) = start.checked_add(index as u64 * PAGE_SIZE) else { return; };
+        if access_mode == 1 && !crate::vm::is_user_range(va, 1) { return; }
         let pa = if crate::vm::is_user_range(va, 1) {
             translate_current_user(va, write_access)
         } else if va >= 0xffff_8000_0000_0000 && !crate::kernel_vm::is_pageable_address(va) {
