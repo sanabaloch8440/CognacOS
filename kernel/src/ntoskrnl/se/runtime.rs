@@ -259,3 +259,148 @@ pub unsafe extern "win64" fn SeQueryAuthenticationIdToken(token: *mut c_void, au
     unsafe { core::ptr::write_unaligned(authentication_id, meta.authentication_id); }
     STATUS_SUCCESS
 }
+
+
+// --- Additional bounded RdotOS security primitives ---
+// These are internal extension APIs, not Windows-export ABI replacements.
+// All operations fail closed for unknown tokens and avoid dereferencing token pointers.
+fn token_flags(token: *mut c_void) -> Option<u32> {
+    token_meta(token).map(|m| (m.admin as u32) | ((m.restricted as u32) << 1) |
+        ((m.write_restricted as u32) << 2) | ((m.token_type == 2) as u32 << 3))
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenIsPrimary(token: *mut c_void) -> u8 {
+    token_meta(token).is_some_and(|m| m.token_type == 1) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenIsImpersonation(token: *mut c_void) -> u8 {
+    token_meta(token).is_some_and(|m| m.token_type == 2) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenIsKnown(token: *mut c_void) -> u8 {
+    token_meta(token).is_some() as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenQueryFlags(token: *mut c_void, out: *mut u32) -> i32 {
+    if out.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(flags) = token_flags(token) else { return 0xC000_0008u32 as i32; };
+    unsafe { core::ptr::write_unaligned(out, flags); }
+    STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenQueryPrivilegeBitmap(token: *mut c_void, out: *mut u64) -> i32 {
+    if out.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
+    unsafe { core::ptr::write_unaligned(out, meta.privileges); }
+    STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenHasAnyPrivilege(token: *mut c_void, mask: u64) -> u8 {
+    token_meta(token).is_some_and(|m| (m.privileges & mask) != 0) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenHasAllPrivileges(token: *mut c_void, mask: u64) -> u8 {
+    token_meta(token).is_some_and(|m| (m.privileges & mask) == mask) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenPrivilegeCount(token: *mut c_void) -> u32 {
+    token_meta(token).map_or(0, |m| m.privileges.count_ones())
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenQuerySessionId(token: *mut c_void, out: *mut u32) -> i32 {
+    unsafe { SeQuerySessionIdToken(token, out) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenQueryAuthenticationId(token: *mut c_void, out: *mut u64) -> i32 {
+    unsafe { SeQueryAuthenticationIdToken(token, out) }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenQueryImpersonationLevel(token: *mut c_void, out: *mut u32) -> i32 {
+    if out.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
+    unsafe { core::ptr::write_unaligned(out, if meta.token_type == 2 { meta.impersonation_level } else { 0 }); }
+    STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenQueryType(token: *mut c_void, out: *mut u32) -> i32 {
+    if out.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
+    unsafe { core::ptr::write_unaligned(out, meta.token_type); }
+    STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenHasPrivilegeRange(token: *mut c_void, first: u32, count: u32) -> u8 {
+    if count == 0 || first >= 64 || count > 64 || first.saturating_add(count) > 64 { return 0; }
+    let mask = if count == 64 { u64::MAX } else { ((1u64 << count) - 1) << first };
+    token_meta(token).is_some_and(|m| (m.privileges & mask) == mask) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenHasNoPrivileges(token: *mut c_void) -> u8 {
+    token_meta(token).is_some_and(|m| m.privileges == 0) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenIsSession(token: *mut c_void, session: u32) -> u8 {
+    token_meta(token).is_some_and(|m| m.session_id == session) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenIsLogonSession(token: *mut c_void, luid: u64) -> u8 {
+    token_meta(token).is_some_and(|m| m.authentication_id == luid) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenCanImpersonate(token: *mut c_void, required_level: u32) -> u8 {
+    if required_level > 3 { return 0; }
+    token_meta(token).is_some_and(|m| m.token_type == 2 && m.impersonation_level >= required_level) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenPrivilegeMaskContains(token: *mut c_void, mask: u64) -> u8 {
+    token_meta(token).is_some_and(|m| (m.privileges & mask) == mask) as u8
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenQueryPrivilegeCount(token: *mut c_void, out: *mut u32) -> i32 {
+    if out.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
+    unsafe { core::ptr::write_unaligned(out, meta.privileges.count_ones()); }
+    STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenQueryRestrictions(token: *mut c_void, out: *mut u32) -> i32 {
+    if out.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
+    let flags = ((meta.restricted as u32) | ((meta.write_restricted as u32) << 1));
+    unsafe { core::ptr::write_unaligned(out, flags); }
+    STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn RdotSeTokenIsAdminAndUnrestricted(token: *mut c_void) -> u8 {
+    token_meta(token).is_some_and(|m| m.admin && !m.restricted && !m.write_restricted) as u8
+}
+
+
+#[cfg(test)]
+mod extended_token_tests {
+    use super::*;
+    #[test]
+    fn extended_token_queries_validate_and_round_trip() {
+        let mut storage = 0u64;
+        let token = (&mut storage as *mut u64).cast::<c_void>();
+        assert_eq!(unsafe { RdotSeTokenIsKnown(token) }, 0);
+        assert_eq!(unsafe { RdotSeTokenQueryFlags(token, core::ptr::null_mut()) }, STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe { RdotSeRegisterTokenMetadata(token, 2, 2, 0b001, 0b10110, 12, 0x5678) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { RdotSeTokenIsPrimary(token) }, 0);
+        assert_eq!(unsafe { RdotSeTokenIsImpersonation(token) }, 1);
+        assert_eq!(unsafe { RdotSeTokenIsKnown(token) }, 1);
+        assert_eq!(unsafe { RdotSeTokenHasAnyPrivilege(token, 0b00010) }, 1);
+        assert_eq!(unsafe { RdotSeTokenHasAllPrivileges(token, 0b10100) }, 1);
+        assert_eq!(unsafe { RdotSeTokenHasAllPrivileges(token, 0b11100) }, 0);
+        assert_eq!(unsafe { RdotSeTokenPrivilegeCount(token) }, 3);
+        assert_eq!(unsafe { RdotSeTokenHasPrivilegeRange(token, 1, 2) }, 1);
+        assert_eq!(unsafe { RdotSeTokenHasPrivilegeRange(token, 63, 2) }, 0);
+        assert_eq!(unsafe { RdotSeTokenIsSession(token, 12) }, 1);
+        assert_eq!(unsafe { RdotSeTokenIsLogonSession(token, 0x5678) }, 1);
+        assert_eq!(unsafe { RdotSeTokenCanImpersonate(token, 2) }, 1);
+        assert_eq!(unsafe { RdotSeTokenCanImpersonate(token, 3) }, 0);
+        assert_eq!(unsafe { RdotSeTokenIsAdminAndUnrestricted(token) }, 1);
+        assert_eq!(unsafe { RdotSeUnregisterTokenMetadata(token) }, STATUS_SUCCESS);
+    }
+}
