@@ -344,6 +344,103 @@ pub unsafe extern "win64" fn ke_release_semaphore(semaphore: *mut SemaphoreObjec
     old
 }
 
+
+static INTERRUPT_TIME_ORIGIN: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
+
+#[repr(C)]
+pub struct GroupAffinity {
+    pub mask: u64,
+    pub group: u16,
+    pub reserved: [u16; 3],
+}
+
+fn interrupt_time_100ns() -> u64 {
+    let Some(hz) = crate::apic::tsc_frequency_hz().filter(|hz| *hz != 0) else { return 0; };
+    let now = crate::apic::monotonic_ticks();
+    let origin = match INTERRUPT_TIME_ORIGIN.compare_exchange(0, now.max(1), Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => now.max(1),
+        Err(existing) => existing,
+    };
+    ((now.saturating_sub(origin) as u128) * 10_000_000u128 / hz as u128)
+        .min(u64::MAX as u128) as u64
+}
+
+/// VOID KeRaiseIrql(KIRQL NewIrql, PKIRQL OldIrql).
+pub unsafe extern "win64" fn ke_raise_irql(new_irql: u8, old_irql: *mut u8) {
+    if old_irql.is_null() || new_irql > 31 { return; }
+    let cpu = cpu_slot();
+    let current = CURRENT_IRQL[cpu].load(Ordering::Acquire);
+    unsafe { old_irql.write(current); }
+    if new_irql < current { return; }
+    let flags = unsafe { read_rflags() };
+    unsafe { irq_disable(); }
+    push_irq_state(flags);
+    CURRENT_IRQL[cpu].store(new_irql, Ordering::Release);
+    let _ = unsafe { crate::apic::set_task_priority(new_irql) };
+}
+
+/// ULONGLONG KeQueryInterruptTime(void), in 100-nanosecond units.
+pub unsafe extern "win64" fn ke_query_interrupt_time() -> u64 { interrupt_time_100ns() }
+
+/// ULONGLONG KeQueryInterruptTimePrecise(PULONG64 QpcTimeStamp).
+pub unsafe extern "win64" fn ke_query_interrupt_time_precise(qpc_timestamp: *mut u64) -> u64 {
+    let qpc = crate::apic::monotonic_ticks();
+    if !qpc_timestamp.is_null() { unsafe { qpc_timestamp.write(qpc); } }
+    interrupt_time_100ns()
+}
+
+/// ULONGLONG KeQueryUnbiasedInterruptTime(void). Sleep-state bias is not yet modeled.
+pub unsafe extern "win64" fn ke_query_unbiased_interrupt_time() -> u64 { interrupt_time_100ns() }
+
+/// VOID KeQueryTickCount(PLARGE_INTEGER TickCount), nominal 1-ms ticks.
+pub unsafe extern "win64" fn ke_query_tick_count(tick_count: *mut i64) {
+    if !tick_count.is_null() { unsafe { tick_count.write((interrupt_time_100ns() / 10_000) as i64); } }
+}
+
+fn rtc_system_time_100ns() -> Option<u64> {
+    let mut fields = crate::hal::exports::HalTimeFields::default();
+    if unsafe { crate::hal::exports::hal_query_real_time_clock(&mut fields) } == 0 { return None; }
+    let year = fields.year as i64;
+    let month = fields.month as i64;
+    let day = fields.day as i64;
+    let hour = fields.hour as i64;
+    let minute = fields.minute as i64;
+    let second = fields.second as i64;
+    let millis = fields.milliseconds as i64;
+    if !(1601..=9999).contains(&year) || !(1..=12).contains(&month)
+        || !(1..=31).contains(&day) || !(0..=23).contains(&hour)
+        || !(0..=59).contains(&minute) || !(0..=60).contains(&second)
+        || !(0..=999).contains(&millis) { return None; }
+    let y = year - i64::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = month + if month > 2 { -3 } else { 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days_since_unix = era * 146097 + doe - 719468;
+    let unix_seconds = days_since_unix.checked_mul(86_400)?
+        .checked_add(hour * 3600 + minute * 60 + second)?;
+    let windows_seconds = unix_seconds.checked_add(11_644_473_600)?;
+    u64::try_from(windows_seconds as i128 * 10_000_000 + millis as i128 * 10_000).ok()
+}
+
+/// VOID KeQuerySystemTime(PLARGE_INTEGER CurrentTime), RTC-derived.
+pub unsafe extern "win64" fn ke_query_system_time(current_time: *mut i64) {
+    if !current_time.is_null() { unsafe { current_time.write(rtc_system_time_100ns().unwrap_or(0) as i64); } }
+}
+
+/// VOID KeQuerySystemTimePrecise(PLARGE_INTEGER CurrentTime).
+/// Current RTC source is only second-resolution; this does not yet meet Windows' microsecond accuracy bound.
+pub unsafe extern "win64" fn ke_query_system_time_precise(current_time: *mut i64) {
+    unsafe { ke_query_system_time(current_time); }
+}
+
+/// PKTHREAD KeGetCurrentThread(void); the pointer is an opaque thread-record token.
+pub unsafe extern "win64" fn ke_get_current_thread() -> *mut core::ffi::c_void {
+    crate::thread::current_thread_object()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
