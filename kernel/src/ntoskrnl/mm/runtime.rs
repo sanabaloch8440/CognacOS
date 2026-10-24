@@ -181,7 +181,6 @@ const MDL_LOCKED: i16 = 0x0002;
 const MDL_NONPAGED_POOL: i16 = 0x0004;
 const MDL_MAPPED_SYSTEM_VA: i16 = 0x0001;
 const MDL_PARTIAL: i16 = 0x0010;
-const MDL_PARTIAL_HAS_BEEN_MAPPED: i16 = 0x0020;
 const MAX_LOCKED_PAGES: usize = 8192;
 const MAX_OWNED_MDLS: usize = 256;
 #[derive(Clone, Copy)]
@@ -443,7 +442,7 @@ pub unsafe extern "win64" fn mm_prepare_mdl_for_reuse(mdl: *mut c_void) {
         Some(value) => value,
         None => return,
     };
-    if header.size as u64 < required { return; }
+    if (header.size as u64) < required { return; }
     let pfn_address = match address.checked_add(MDL_HEADER_SIZE) { Some(value) => value, None => return };
     for index in 0..pages {
         let Some(at) = pfn_address.checked_add(index * 8) else { return; };
@@ -514,10 +513,6 @@ pub unsafe extern "win64" fn mm_build_partial_mdl(
         if translate(dst_pfns + index * 8, true).is_none() { return; }
         if translate(src_addr + MDL_HEADER_SIZE + (first_page + index) * 8, false).is_none() { return; }
     }
-    let mut copied = [0u64; 2];
-    // A small stack staging buffer covers only the most common tiny partial MDLs;
-    // larger ones are copied directly after all bounds are preflighted.
-    let _ = &mut copied;
     for index in 0..pages {
         let source_pfn = unsafe { ((src_addr + MDL_HEADER_SIZE + (first_page + index) * 8) as *const u64).read() };
         unsafe { ((dst_pfns + index * 8) as *mut u64).write(source_pfn); }
