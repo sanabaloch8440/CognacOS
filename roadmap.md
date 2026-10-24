@@ -22,6 +22,18 @@ This roadmap tracks code and validation currently present in the repository, not
 
 **Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; subsequent Ke/Ki affinity, Timer2, and clock-path changes are pending CI verification. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
 
+### Independent platform/driver crates (2026-10-24)
+
+- [x] Extract the bounded ACPI parser into the `rdotos-acpi` crate and consume it as a kernel dependency.
+- [x] Extract checked PCI ECAM/resource-window primitives into the `rdotos-pci` crate and consume it as a kernel dependency.
+- [x] Define a versioned C-ABI HAL service table in `rdotos-hal-contract` without ACPI, PCI, or ntoskrnl dependencies.
+- [x] Add a generic processor-class driver crate that validates the HAL contract and reports capabilities without vendor-specific MSR writes.
+- [x] Add CI host-test steps for all four independent crates.
+- [ ] Produce separate PE32+ HAL/ACPI/PCI/processor driver images with a defined entry/unload contract and loader; connect the versioned service table to the running HAL implementation.
+- [ ] Move ACPI runtime discovery/power and PCI bus enumeration/resource allocation into their driver packages; add PnP, interrupt-resource, power, and hot-plug integration tests.
+
+**Status:** source/build boundaries have begun; these crates are not yet separate loadable binaries. No Windows `.sys` compatibility is claimed.
+
 ### HAL / ntoskrnl dependency boundary (2026-10-24)
 
 - [x] Replace HAL's direct calls into `ntoskrnl::ke::runtime` with a registered processor-lifecycle notifier contract.
