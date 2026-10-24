@@ -771,6 +771,7 @@ pub struct SeGenericMapping {
     pub generic_all: u32,
 }
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct SeSecuritySubjectContext {
     pub client_token: *mut c_void,
     pub impersonation_level: u32,
@@ -914,7 +915,7 @@ mod se_access_check_tests {
         sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
         sd[16..20].copy_from_slice(&20u32.to_le_bytes());
         sd[20..22].copy_from_slice(&2u16.to_le_bytes());
-        sd[22..24].copy_from_slice(&24u16.to_le_bytes());
+        sd[22..24].copy_from_slice(&28u16.to_le_bytes());
         sd[24..26].copy_from_slice(&1u16.to_le_bytes());
         sd[28] = 0; sd[30..32].copy_from_slice(&20u16.to_le_bytes());
         sd[32..36].copy_from_slice(&1u32.to_le_bytes());
