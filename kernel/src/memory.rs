@@ -425,7 +425,7 @@ pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
             return Err(AllocError::InvalidPage);
         }
         let _guard = MemoryGuard::acquire();
-        if crate::ntoskrnl::mm::runtime::is_page_locked(page) { return Err(AllocError::InvalidPage); }
+        if page_is_locked(page) { return Err(AllocError::InvalidPage); }
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 < FREE_CAPACITY {
             free.0[free.1] = page;
@@ -449,7 +449,7 @@ pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
     if page < LOW_RESERVED_END || page & (PAGE_SIZE - 1) != 0 {
         return Err(AllocError::InvalidPage);
     }
-    if crate::ntoskrnl::mm::runtime::is_page_locked(page) { return Err(AllocError::InvalidPage); }
+    if page_is_locked(page) { return Err(AllocError::InvalidPage); }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if free.1 < FREE_CAPACITY {
         free.0[free.1] = page;
