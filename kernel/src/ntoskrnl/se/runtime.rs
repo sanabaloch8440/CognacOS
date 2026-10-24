@@ -221,6 +221,13 @@ mod token_metadata_tests {
         assert_eq!(unsafe { SeTokenImpersonationLevel(token) }, 2);
         assert_eq!(unsafe { RdotSeTokenHasPrivilege(token, 9) }, 1);
         assert_eq!(unsafe { RdotSeTokenHasPrivilege(token, 10) }, 0);
+        let mut session = 0u32;
+        let mut auth = 0u64;
+        assert_eq!(unsafe { SeQuerySessionIdToken(token, &mut session) }, STATUS_SUCCESS);
+        assert_eq!(session, 7);
+        assert_eq!(unsafe { SeQuerySessionIdTokenEx(token, &mut session) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { SeQueryAuthenticationIdToken(token, &mut auth) }, STATUS_SUCCESS);
+        assert_eq!(auth, 0x1234);
         assert_eq!(unsafe { RdotSeUnregisterTokenMetadata(token) }, STATUS_SUCCESS);
         assert_eq!(unsafe { SeTokenType(token) }, 0);
     }
