@@ -238,7 +238,13 @@ pub fn reap(pid: u64) -> Option<u64> {
     if !crate::ntoskrnl::ob::runtime::object_rundown_complete(pointer.cast()) { return None; }
     let mut registry = TABLE.lock();
     let p = registry.0.iter_mut().find(|p| core::ptr::eq(&**p, pointer) && p.used && p.process_id == pid && p.state == ProcessState::Exited)?;
+    let primary_token = p.primary_token;
+    p.primary_token = 0;
     p.state = ProcessState::Reaped; p.used = false; p.address_space_root = 0; p.magic = 0;
+    drop(registry);
+    if primary_token != 0 {
+        let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(primary_token as *mut core::ffi::c_void) };
+    }
     Some(code)
 }
 
