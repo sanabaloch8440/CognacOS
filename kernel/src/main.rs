@@ -75,6 +75,10 @@ unsafe extern "C" {
     static __data_end: u8;
     static __bss_start: u8;
     static __bss_end: u8;
+    static __text_phys_start: u8;
+    static __rodata_phys_start: u8;
+    static __data_phys_start: u8;
+    static __bss_phys_start: u8;
 }
 
 #[repr(C)]
@@ -88,6 +92,8 @@ struct BootInfo {
     memory_descriptor_size: usize,
     memory_descriptor_version: u32,
     kernel_stack_guard_page: u64,
+    kernel_stack_pages: u64,
+    kernel_stack_virtual_guard: u64,
     rsdp_address: u64,
     ap_trampoline_physical: u64,
 }
@@ -102,7 +108,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic != BOOT_INFO_MAGIC || info.version != 4
+        if info.magic != BOOT_INFO_MAGIC || info.version != 5
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
@@ -116,13 +122,26 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: unsupported UEFI memory descriptor size.\r\n");
             halt();
         }
+        if info.kernel_stack_pages == 0 || info.kernel_stack_pages > 1024
+            || info.kernel_stack_guard_page & 0xfff != 0
+            || info.kernel_stack_virtual_guard < 0xffff_8000_0000_0000
+            || info.kernel_stack_virtual_guard & 0xfff != 0
+        {
+            serial_write(b"FATAL: invalid high-half kernel stack description.\r\n");
+            halt();
+        }
+        let stack_allocation_bytes = match info.kernel_stack_pages.checked_add(1)
+            .and_then(|pages| pages.checked_mul(4096)) {
+            Some(bytes) => bytes,
+            None => { serial_write(b"FATAL: kernel stack size overflow.\r\n"); halt(); }
+        };
 
         if info.pml4_physical == 0 || (info.pml4_physical & 0xfff) != 0 || info.pml4_physical >= 0x1_0000_0000 {
             serial_write(b"FATAL: invalid bootstrap PML4 address.\r\n");
             halt();
         }
         serial_write(b"UEFI boot services exited successfully.\r\n");
-        serial_write(b"Boot information version: 4\r\n");
+        serial_write(b"Boot information version: 5\r\n");
         if info.ap_trampoline_physical != 0
             && (info.ap_trampoline_physical >= 0x10_0000 || info.ap_trampoline_physical & 0xfff != 0)
         {
@@ -178,18 +197,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             (info.pml4_physical, 4096u64),
             (boot_info as u64, core::mem::size_of::<BootInfo>() as u64),
             (info.memory_map as u64, map_bytes),
-            (info.kernel_stack_guard_page, 17 * 4096u64),
-            (current_rsp, 8u64),
-            (_start as usize as u64, 1u64),
-            (serial_write as usize as u64, 1u64),
-            (core::ptr::addr_of!(__text_start) as u64,
-                (core::ptr::addr_of!(__text_end) as u64) - (core::ptr::addr_of!(__text_start) as u64)),
-            (core::ptr::addr_of!(__rodata_start) as u64,
-                (core::ptr::addr_of!(__rodata_end) as u64) - (core::ptr::addr_of!(__rodata_start) as u64)),
-            (core::ptr::addr_of!(__data_start) as u64,
-                (core::ptr::addr_of!(__data_end) as u64) - (core::ptr::addr_of!(__data_start) as u64)),
-            (core::ptr::addr_of!(__bss_start) as u64,
-                (core::ptr::addr_of!(__bss_end) as u64) - (core::ptr::addr_of!(__bss_start) as u64)),
+            (info.kernel_stack_guard_page, stack_allocation_bytes),
             (0xfec0_0000, 4096u64),
             (0xfee0_0000, 4096u64),
         ];
@@ -218,6 +226,42 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Page-table inspection passed: kernel, stack, boot info, UEFI map, root, and handoff pages are identity mapped.\\r\\n");
 
+        let stack_end_virtual = info.kernel_stack_virtual_guard.checked_add(stack_allocation_bytes);
+        let expected_stack_physical = current_rsp.checked_sub(info.kernel_stack_virtual_guard)
+            .and_then(|offset| info.kernel_stack_guard_page.checked_add(offset));
+        let stack_mapping_ok = stack_end_virtual.is_some_and(|end|
+            current_rsp >= info.kernel_stack_virtual_guard + 4096 && current_rsp < end)
+            && expected_stack_physical.is_some_and(|expected| unsafe {
+                memory::inspect_mapping(info.pml4_physical, current_rsp)
+                    .is_ok_and(|mapping| mapping.physical_address == expected)
+            });
+        let section_mappings_ok = unsafe {
+            let text_start = core::ptr::addr_of!(__text_start) as u64;
+            let text_end = core::ptr::addr_of!(__text_end) as u64;
+            let ro_start = core::ptr::addr_of!(__rodata_start) as u64;
+            let ro_end = core::ptr::addr_of!(__rodata_end) as u64;
+            let data_start = core::ptr::addr_of!(__data_start) as u64;
+            let data_end = core::ptr::addr_of!(__data_end) as u64;
+            let bss_start = core::ptr::addr_of!(__bss_start) as u64;
+            let bss_end = core::ptr::addr_of!(__bss_end) as u64;
+            memory::validate_translation_range(info.pml4_physical, text_start,
+                core::ptr::addr_of!(__text_phys_start) as u64, text_end - text_start).is_ok()
+            && memory::validate_translation_range(info.pml4_physical, ro_start,
+                core::ptr::addr_of!(__rodata_phys_start) as u64, ro_end - ro_start).is_ok()
+            && memory::validate_translation_range(info.pml4_physical, data_start,
+                core::ptr::addr_of!(__data_phys_start) as u64, data_end - data_start).is_ok()
+            && memory::validate_translation_range(info.pml4_physical, bss_start,
+                core::ptr::addr_of!(__bss_phys_start) as u64, bss_end - bss_start).is_ok()
+        };
+        let high_guard_unmapped = unsafe {
+            memory::inspect_mapping(info.pml4_physical, info.kernel_stack_virtual_guard).is_err()
+        };
+        if !stack_mapping_ok || !section_mappings_ok || !high_guard_unmapped {
+            serial_write(b"FATAL: high-half kernel/stack translations or guard validation failed.\r\n");
+            halt();
+        }
+        serial_write(b"Page-table inspection passed: high-half kernel sections, stack alias, low boot data, and guard pages validated.\r\n");
+
         // Only after the new identity map is active may physical pages be touched
         // through their physical addresses. The allocator uses conventional RAM.
         let region_count = match memory::initialize(
@@ -238,7 +282,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         if unsafe {
             memory::reserve_range(
                 info.kernel_stack_guard_page,
-                info.kernel_stack_guard_page + 17 * 4096,
+                info.kernel_stack_guard_page + stack_allocation_bytes,
             )
         }.is_err() {
             serial_write(b"FATAL: cannot reserve bootstrap stack from physical allocator.\r\n");
@@ -533,7 +577,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         let rodata = (core::ptr::addr_of!(__rodata_start) as u64, core::ptr::addr_of!(__rodata_end) as u64);
         let data = (core::ptr::addr_of!(__data_start) as u64, core::ptr::addr_of!(__data_end) as u64);
         let bss = (core::ptr::addr_of!(__bss_start) as u64, core::ptr::addr_of!(__bss_end) as u64);
-        if unsafe { memory::harden_page_tables(info.pml4_physical, text, rodata, data, bss, info.kernel_stack_guard_page) }.is_err() {
+        let stack_virtual = (
+            info.kernel_stack_virtual_guard + 4096,
+            info.kernel_stack_virtual_guard + stack_allocation_bytes,
+        );
+        if unsafe { memory::harden_page_tables(
+            info.pml4_physical, text, rodata, data, bss,
+            info.kernel_stack_guard_page, stack_virtual, info.kernel_stack_virtual_guard,
+        ) }.is_err() {
             serial_write(b"FATAL: kernel page-permission hardening failed.\r\n");
             halt();
         }
