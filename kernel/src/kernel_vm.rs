@@ -59,6 +59,11 @@ static LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 #[cfg(not(target_os = "none"))]
 static LOCK: AtomicBool = AtomicBool::new(false);
 struct Guard { #[cfg(target_os = "none")] _g: crate::hal::IrqSpinLockGuard<'static, ()> }
+/// Holds pageable-pool mappings stable while MM captures and pins PFNs.
+pub struct PageableMappingGuard { _guard: Guard }
+pub fn lock_pageable_mappings() -> PageableMappingGuard {
+ PageableMappingGuard { _guard: Guard::lock() }
+}
 impl Guard {
  fn lock() -> Self {
   #[cfg(target_os = "none")] { Self { _g: LOCK.lock() } }
@@ -205,6 +210,8 @@ fn reclaim_one_locked(root:u64)->bool {
    let Some(leaf)=(unsafe{leaf_ptr(root,va)}) else{continue};
    let pte=unsafe{leaf.read_volatile()};
    if pte&P==0{continue}
+   // An MDL-pinned frame must remain resident even under pagefile pressure.
+   if crate::ntoskrnl::mm::runtime::is_page_locked(pte&ADDR) { continue; }
    if pte&ACCESSED!=0 {
     unsafe{leaf.write_volatile(pte&!ACCESSED);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
     synchronize_kernel_tlb();continue
