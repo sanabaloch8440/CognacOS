@@ -266,7 +266,7 @@ pub unsafe extern "win64" fn SeQueryAuthenticationIdToken(token: *mut c_void, au
 // All operations fail closed for unknown tokens and avoid dereferencing token pointers.
 fn token_flags(token: *mut c_void) -> Option<u32> {
     token_meta(token).map(|m| (m.admin as u32) | ((m.restricted as u32) << 1) |
-        ((m.write_restricted as u32) << 2) | ((m.token_type == 2) as u32 << 3))
+        ((m.write_restricted as u32) << 2) | (((m.token_type == 2) as u32) << 3))
 }
 
 #[unsafe(no_mangle)]
