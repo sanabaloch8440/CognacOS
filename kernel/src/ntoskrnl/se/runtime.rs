@@ -133,8 +133,7 @@ static mut TOKEN_META: [TokenMeta; TOKEN_META_SLOTS] = [TokenMeta::EMPTY; TOKEN_
 
 /// Register RdotOS-owned token facts. token_type: 1=primary, 2=impersonation.
 /// The token must remain alive until explicitly unregistered.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeRegisterTokenMetadata(
+pub(crate) unsafe fn se_internal_RegisterTokenMetadata(
     token: *mut c_void, token_type: u32, impersonation_level: u32,
     flags: u32, privileges: u64, session_id: u32, authentication_id: u64,
 ) -> i32 {
@@ -154,8 +153,7 @@ pub unsafe extern "win64" fn RdotSeRegisterTokenMetadata(
     STATUS_SUCCESS
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeUnregisterTokenMetadata(token: *mut c_void) -> i32 {
+pub(crate) unsafe fn se_internal_UnregisterTokenMetadata(token: *mut c_void) -> i32 {
     if token.is_null() { return STATUS_INVALID_PARAMETER; }
     let _guard = TOKEN_META_LOCK.lock();
     let entries = unsafe { &mut *core::ptr::addr_of_mut!(TOKEN_META) };
@@ -199,8 +197,7 @@ pub unsafe extern "win64" fn SeSinglePrivilegeCheck(_privilege: u64, previous_mo
 }
 
 /// RdotOS extension for checking a privilege bit on an explicitly registered token.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenHasPrivilege(token: *mut c_void, privilege: u32) -> u8 {
+pub(crate) unsafe fn se_internal_TokenHasPrivilege(token: *mut c_void, privilege: u32) -> u8 {
     if privilege >= 64 { return 0; }
     token_meta(token).is_some_and(|m| (m.privileges & (1u64 << privilege)) != 0) as u8
 }
@@ -213,14 +210,14 @@ mod token_metadata_tests {
         let mut storage = 0u64;
         let token = (&mut storage as *mut u64).cast::<c_void>();
         assert_eq!(unsafe { SeTokenIsAdmin(token) }, 0);
-        assert_eq!(unsafe { RdotSeRegisterTokenMetadata(token, 2, 2, 0b011, 1 << 9, 7, 0x1234) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_RegisterTokenMetadata(token, 2, 2, 0b011, 1 << 9, 7, 0x1234) }, STATUS_SUCCESS);
         assert_eq!(unsafe { SeTokenIsAdmin(token) }, 1);
         assert_eq!(unsafe { SeTokenIsRestricted(token) }, 1);
         assert_eq!(unsafe { SeTokenIsWriteRestricted(token) }, 0);
         assert_eq!(unsafe { SeTokenType(token) }, 2);
         assert_eq!(unsafe { SeTokenImpersonationLevel(token) }, 2);
-        assert_eq!(unsafe { RdotSeTokenHasPrivilege(token, 9) }, 1);
-        assert_eq!(unsafe { RdotSeTokenHasPrivilege(token, 10) }, 0);
+        assert_eq!(unsafe { se_internal_TokenHasPrivilege(token, 9) }, 1);
+        assert_eq!(unsafe { se_internal_TokenHasPrivilege(token, 10) }, 0);
         let mut session = 0u32;
         let mut auth = 0u64;
         assert_eq!(unsafe { SeQuerySessionIdToken(token, &mut session) }, STATUS_SUCCESS);
@@ -228,7 +225,7 @@ mod token_metadata_tests {
         assert_eq!(unsafe { SeQuerySessionIdTokenEx(token, &mut session) }, STATUS_SUCCESS);
         assert_eq!(unsafe { SeQueryAuthenticationIdToken(token, &mut auth) }, STATUS_SUCCESS);
         assert_eq!(auth, 0x1234);
-        assert_eq!(unsafe { RdotSeUnregisterTokenMetadata(token) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
         assert_eq!(unsafe { SeTokenType(token) }, 0);
     }
     #[test]
@@ -269,110 +266,89 @@ fn token_flags(token: *mut c_void) -> Option<u32> {
         ((m.write_restricted as u32) << 2) | (((m.token_type == 2) as u32) << 3))
 }
 
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenIsPrimary(token: *mut c_void) -> u8 {
+pub(crate) unsafe fn se_internal_TokenIsPrimary(token: *mut c_void) -> u8 {
     token_meta(token).is_some_and(|m| m.token_type == 1) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenIsImpersonation(token: *mut c_void) -> u8 {
+pub(crate) unsafe fn se_internal_TokenIsImpersonation(token: *mut c_void) -> u8 {
     token_meta(token).is_some_and(|m| m.token_type == 2) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenIsKnown(token: *mut c_void) -> u8 {
+pub(crate) unsafe fn se_internal_TokenIsKnown(token: *mut c_void) -> u8 {
     token_meta(token).is_some() as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenQueryFlags(token: *mut c_void, out: *mut u32) -> i32 {
+pub(crate) unsafe fn se_internal_TokenQueryFlags(token: *mut c_void, out: *mut u32) -> i32 {
     if out.is_null() { return STATUS_INVALID_PARAMETER; }
     let Some(flags) = token_flags(token) else { return 0xC000_0008u32 as i32; };
     unsafe { core::ptr::write_unaligned(out, flags); }
     STATUS_SUCCESS
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenQueryPrivilegeBitmap(token: *mut c_void, out: *mut u64) -> i32 {
+pub(crate) unsafe fn se_internal_TokenQueryPrivilegeBitmap(token: *mut c_void, out: *mut u64) -> i32 {
     if out.is_null() { return STATUS_INVALID_PARAMETER; }
     let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
     unsafe { core::ptr::write_unaligned(out, meta.privileges); }
     STATUS_SUCCESS
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenHasAnyPrivilege(token: *mut c_void, mask: u64) -> u8 {
+pub(crate) unsafe fn se_internal_TokenHasAnyPrivilege(token: *mut c_void, mask: u64) -> u8 {
     token_meta(token).is_some_and(|m| (m.privileges & mask) != 0) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenHasAllPrivileges(token: *mut c_void, mask: u64) -> u8 {
+pub(crate) unsafe fn se_internal_TokenHasAllPrivileges(token: *mut c_void, mask: u64) -> u8 {
     token_meta(token).is_some_and(|m| (m.privileges & mask) == mask) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenPrivilegeCount(token: *mut c_void) -> u32 {
+pub(crate) unsafe fn se_internal_TokenPrivilegeCount(token: *mut c_void) -> u32 {
     token_meta(token).map_or(0, |m| m.privileges.count_ones())
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenQuerySessionId(token: *mut c_void, out: *mut u32) -> i32 {
+pub(crate) unsafe fn se_internal_TokenQuerySessionId(token: *mut c_void, out: *mut u32) -> i32 {
     unsafe { SeQuerySessionIdToken(token, out) }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenQueryAuthenticationId(token: *mut c_void, out: *mut u64) -> i32 {
+pub(crate) unsafe fn se_internal_TokenQueryAuthenticationId(token: *mut c_void, out: *mut u64) -> i32 {
     unsafe { SeQueryAuthenticationIdToken(token, out) }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenQueryImpersonationLevel(token: *mut c_void, out: *mut u32) -> i32 {
+pub(crate) unsafe fn se_internal_TokenQueryImpersonationLevel(token: *mut c_void, out: *mut u32) -> i32 {
     if out.is_null() { return STATUS_INVALID_PARAMETER; }
     let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
     unsafe { core::ptr::write_unaligned(out, if meta.token_type == 2 { meta.impersonation_level } else { 0 }); }
     STATUS_SUCCESS
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenQueryType(token: *mut c_void, out: *mut u32) -> i32 {
+pub(crate) unsafe fn se_internal_TokenQueryType(token: *mut c_void, out: *mut u32) -> i32 {
     if out.is_null() { return STATUS_INVALID_PARAMETER; }
     let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
     unsafe { core::ptr::write_unaligned(out, meta.token_type); }
     STATUS_SUCCESS
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenHasPrivilegeRange(token: *mut c_void, first: u32, count: u32) -> u8 {
+pub(crate) unsafe fn se_internal_TokenHasPrivilegeRange(token: *mut c_void, first: u32, count: u32) -> u8 {
     if count == 0 || first >= 64 || count > 64 || first.saturating_add(count) > 64 { return 0; }
     let mask = if count == 64 { u64::MAX } else { ((1u64 << count) - 1) << first };
     token_meta(token).is_some_and(|m| (m.privileges & mask) == mask) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenHasNoPrivileges(token: *mut c_void) -> u8 {
+pub(crate) unsafe fn se_internal_TokenHasNoPrivileges(token: *mut c_void) -> u8 {
     token_meta(token).is_some_and(|m| m.privileges == 0) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenIsSession(token: *mut c_void, session: u32) -> u8 {
+pub(crate) unsafe fn se_internal_TokenIsSession(token: *mut c_void, session: u32) -> u8 {
     token_meta(token).is_some_and(|m| m.session_id == session) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenIsLogonSession(token: *mut c_void, luid: u64) -> u8 {
+pub(crate) unsafe fn se_internal_TokenIsLogonSession(token: *mut c_void, luid: u64) -> u8 {
     token_meta(token).is_some_and(|m| m.authentication_id == luid) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenCanImpersonate(token: *mut c_void, required_level: u32) -> u8 {
+pub(crate) unsafe fn se_internal_TokenCanImpersonate(token: *mut c_void, required_level: u32) -> u8 {
     if required_level > 3 { return 0; }
     token_meta(token).is_some_and(|m| m.token_type == 2 && m.impersonation_level >= required_level) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenPrivilegeMaskContains(token: *mut c_void, mask: u64) -> u8 {
+pub(crate) unsafe fn se_internal_TokenPrivilegeMaskContains(token: *mut c_void, mask: u64) -> u8 {
     token_meta(token).is_some_and(|m| (m.privileges & mask) == mask) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenQueryPrivilegeCount(token: *mut c_void, out: *mut u32) -> i32 {
+pub(crate) unsafe fn se_internal_TokenQueryPrivilegeCount(token: *mut c_void, out: *mut u32) -> i32 {
     if out.is_null() { return STATUS_INVALID_PARAMETER; }
     let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
     unsafe { core::ptr::write_unaligned(out, meta.privileges.count_ones()); }
     STATUS_SUCCESS
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenQueryRestrictions(token: *mut c_void, out: *mut u32) -> i32 {
+pub(crate) unsafe fn se_internal_TokenQueryRestrictions(token: *mut c_void, out: *mut u32) -> i32 {
     if out.is_null() { return STATUS_INVALID_PARAMETER; }
     let Some(meta) = token_meta(token) else { return 0xC000_0008u32 as i32; };
     let flags = ((meta.restricted as u32) | ((meta.write_restricted as u32) << 1));
     unsafe { core::ptr::write_unaligned(out, flags); }
     STATUS_SUCCESS
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeTokenIsAdminAndUnrestricted(token: *mut c_void) -> u8 {
+pub(crate) unsafe fn se_internal_TokenIsAdminAndUnrestricted(token: *mut c_void) -> u8 {
     token_meta(token).is_some_and(|m| m.admin && !m.restricted && !m.write_restricted) as u8
 }
 
@@ -384,24 +360,24 @@ mod extended_token_tests {
     fn extended_token_queries_validate_and_round_trip() {
         let mut storage = 0u64;
         let token = (&mut storage as *mut u64).cast::<c_void>();
-        assert_eq!(unsafe { RdotSeTokenIsKnown(token) }, 0);
-        assert_eq!(unsafe { RdotSeTokenQueryFlags(token, core::ptr::null_mut()) }, STATUS_INVALID_PARAMETER);
-        assert_eq!(unsafe { RdotSeRegisterTokenMetadata(token, 2, 2, 0b001, 0b10110, 12, 0x5678) }, STATUS_SUCCESS);
-        assert_eq!(unsafe { RdotSeTokenIsPrimary(token) }, 0);
-        assert_eq!(unsafe { RdotSeTokenIsImpersonation(token) }, 1);
-        assert_eq!(unsafe { RdotSeTokenIsKnown(token) }, 1);
-        assert_eq!(unsafe { RdotSeTokenHasAnyPrivilege(token, 0b00010) }, 1);
-        assert_eq!(unsafe { RdotSeTokenHasAllPrivileges(token, 0b10100) }, 1);
-        assert_eq!(unsafe { RdotSeTokenHasAllPrivileges(token, 0b11100) }, 0);
-        assert_eq!(unsafe { RdotSeTokenPrivilegeCount(token) }, 3);
-        assert_eq!(unsafe { RdotSeTokenHasPrivilegeRange(token, 1, 2) }, 1);
-        assert_eq!(unsafe { RdotSeTokenHasPrivilegeRange(token, 63, 2) }, 0);
-        assert_eq!(unsafe { RdotSeTokenIsSession(token, 12) }, 1);
-        assert_eq!(unsafe { RdotSeTokenIsLogonSession(token, 0x5678) }, 1);
-        assert_eq!(unsafe { RdotSeTokenCanImpersonate(token, 2) }, 1);
-        assert_eq!(unsafe { RdotSeTokenCanImpersonate(token, 3) }, 0);
-        assert_eq!(unsafe { RdotSeTokenIsAdminAndUnrestricted(token) }, 1);
-        assert_eq!(unsafe { RdotSeUnregisterTokenMetadata(token) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_TokenIsKnown(token) }, 0);
+        assert_eq!(unsafe { se_internal_TokenQueryFlags(token, core::ptr::null_mut()) }, STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe { se_internal_RegisterTokenMetadata(token, 2, 2, 0b001, 0b10110, 12, 0x5678) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_TokenIsPrimary(token) }, 0);
+        assert_eq!(unsafe { se_internal_TokenIsImpersonation(token) }, 1);
+        assert_eq!(unsafe { se_internal_TokenIsKnown(token) }, 1);
+        assert_eq!(unsafe { se_internal_TokenHasAnyPrivilege(token, 0b00010) }, 1);
+        assert_eq!(unsafe { se_internal_TokenHasAllPrivileges(token, 0b10100) }, 1);
+        assert_eq!(unsafe { se_internal_TokenHasAllPrivileges(token, 0b11100) }, 0);
+        assert_eq!(unsafe { se_internal_TokenPrivilegeCount(token) }, 3);
+        assert_eq!(unsafe { se_internal_TokenHasPrivilegeRange(token, 1, 2) }, 1);
+        assert_eq!(unsafe { se_internal_TokenHasPrivilegeRange(token, 63, 2) }, 0);
+        assert_eq!(unsafe { se_internal_TokenIsSession(token, 12) }, 1);
+        assert_eq!(unsafe { se_internal_TokenIsLogonSession(token, 0x5678) }, 1);
+        assert_eq!(unsafe { se_internal_TokenCanImpersonate(token, 2) }, 1);
+        assert_eq!(unsafe { se_internal_TokenCanImpersonate(token, 3) }, 0);
+        assert_eq!(unsafe { se_internal_TokenIsAdminAndUnrestricted(token) }, 1);
+        assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
     }
 }
 
@@ -442,16 +418,14 @@ fn bounded_acl_size(bytes: &[u8]) -> Option<usize> {
 }
 
 /// Validate one SID in an explicitly bounded readable buffer. Returns its byte length, or 0.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeValidateSid(sid: *const u8, length: usize) -> usize {
+pub(crate) unsafe fn se_internal_ValidateSid(sid: *const u8, length: usize) -> usize {
     if sid.is_null() || length < 8 { return 0; }
     let bytes = unsafe { core::slice::from_raw_parts(sid, length) };
     bounded_sid_size(bytes).unwrap_or(0)
 }
 
 /// Compare two explicitly bounded SID buffers; only exact valid SID encodings compare equal.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeSidEqual(
+pub(crate) unsafe fn se_internal_SidEqual(
     left: *const u8, left_len: usize, right: *const u8, right_len: usize,
 ) -> u8 {
     if left.is_null() || right.is_null() || left_len < 8 || right_len < 8 { return 0; }
@@ -464,16 +438,14 @@ pub unsafe extern "win64" fn RdotSeSidEqual(
 }
 
 /// Validate an ACL from a caller-provided bounded buffer; returns ACL size or 0.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeValidateAcl(acl: *const u8, length: usize) -> usize {
+pub(crate) unsafe fn se_internal_ValidateAcl(acl: *const u8, length: usize) -> usize {
     if acl.is_null() || length < 8 { return 0; }
     let bytes = unsafe { core::slice::from_raw_parts(acl, length) };
     bounded_acl_size(bytes).unwrap_or(0)
 }
 
 /// Read a self-relative descriptor's control word from an explicit bounded span.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeQueryDescriptorControl(
+pub(crate) unsafe fn se_internal_QueryDescriptorControl(
     descriptor: *const u8, length: usize, control_out: *mut u16,
 ) -> i32 {
     if descriptor.is_null() || control_out.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -488,8 +460,7 @@ pub unsafe extern "win64" fn RdotSeQueryDescriptorControl(
 
 /// Return a component's offset and validated length. component: 0 owner, 1 group,
 /// 2 SACL, 3 DACL. Zero offset means absent and yields STATUS_SUCCESS with length 0.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeQueryDescriptorComponent(
+pub(crate) unsafe fn se_internal_QueryDescriptorComponent(
     descriptor: *const u8, descriptor_len: usize, component: u32,
     offset_out: *mut u32, length_out: *mut u32,
 ) -> i32 {
@@ -526,14 +497,12 @@ pub unsafe extern "win64" fn RdotSeQueryDescriptorComponent(
 }
 
 /// Check that an explicit privilege bitmap contains every requested privilege bit.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSePrivilegeBitmapSatisfies(available: u64, required: u64) -> u8 {
+pub(crate) unsafe fn se_internal_PrivilegeBitmapSatisfies(available: u64, required: u64) -> u8 {
     ((available & required) == required) as u8
 }
 
 /// Check a bounded access mask using explicit allowed/denied masks. Deny always wins.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeAccessMaskAllowed(
+pub(crate) unsafe fn se_internal_AccessMaskAllowed(
     requested: u32, allowed: u32, denied: u32,
 ) -> u8 {
     (requested & denied == 0 && requested & allowed == requested) as u8
@@ -545,13 +514,13 @@ mod bounded_security_tests {
     #[test]
     fn bounded_sid_and_acl_validation_reject_truncation() {
         let sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0];
-        assert_eq!(unsafe { RdotSeValidateSid(sid.as_ptr(), sid.len()) }, 12);
-        assert_eq!(unsafe { RdotSeValidateSid(sid.as_ptr(), 8) }, 0);
-        assert_eq!(unsafe { RdotSeSidEqual(sid.as_ptr(), 12, sid.as_ptr(), 12) }, 1);
-        assert_eq!(unsafe { RdotSeSidEqual(sid.as_ptr(), 8, sid.as_ptr(), 12) }, 0);
+        assert_eq!(unsafe { se_internal_ValidateSid(sid.as_ptr(), sid.len()) }, 12);
+        assert_eq!(unsafe { se_internal_ValidateSid(sid.as_ptr(), 8) }, 0);
+        assert_eq!(unsafe { se_internal_SidEqual(sid.as_ptr(), 12, sid.as_ptr(), 12) }, 1);
+        assert_eq!(unsafe { se_internal_SidEqual(sid.as_ptr(), 8, sid.as_ptr(), 12) }, 0);
         let acl = [2u8, 0, 8, 0, 0, 0, 0, 0];
-        assert_eq!(unsafe { RdotSeValidateAcl(acl.as_ptr(), acl.len()) }, 8);
-        assert_eq!(unsafe { RdotSeValidateAcl(acl.as_ptr(), 7) }, 0);
+        assert_eq!(unsafe { se_internal_ValidateAcl(acl.as_ptr(), acl.len()) }, 8);
+        assert_eq!(unsafe { se_internal_ValidateAcl(acl.as_ptr(), 7) }, 0);
     }
     #[test]
     fn descriptor_component_query_is_length_aware() {
@@ -562,37 +531,34 @@ mod bounded_security_tests {
         sd[20..32].copy_from_slice(&[1, 1, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0]);
         let mut off = 99u32;
         let mut len = 99u32;
-        assert_eq!(unsafe { RdotSeQueryDescriptorComponent(sd.as_ptr(), sd.len(), 0, &mut off, &mut len) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_QueryDescriptorComponent(sd.as_ptr(), sd.len(), 0, &mut off, &mut len) }, STATUS_SUCCESS);
         assert_eq!((off, len), (20, 12));
-        assert_eq!(unsafe { RdotSeQueryDescriptorComponent(sd.as_ptr(), 24, 0, &mut off, &mut len) }, STATUS_DATA_ERROR);
-        assert_eq!(unsafe { RdotSeQueryDescriptorControl(sd.as_ptr(), 19, &mut 0u16) }, STATUS_BUFFER_TOO_SMALL);
+        assert_eq!(unsafe { se_internal_QueryDescriptorComponent(sd.as_ptr(), 24, 0, &mut off, &mut len) }, STATUS_DATA_ERROR);
+        assert_eq!(unsafe { se_internal_QueryDescriptorControl(sd.as_ptr(), 19, &mut 0u16) }, STATUS_BUFFER_TOO_SMALL);
     }
     #[test]
     fn privilege_and_access_mask_helpers_are_conservative() {
-        assert_eq!(unsafe { RdotSePrivilegeBitmapSatisfies(0b1110, 0b0110) }, 1);
-        assert_eq!(unsafe { RdotSePrivilegeBitmapSatisfies(0b0010, 0b0110) }, 0);
-        assert_eq!(unsafe { RdotSeAccessMaskAllowed(0b011, 0b111, 0) }, 1);
-        assert_eq!(unsafe { RdotSeAccessMaskAllowed(0b011, 0b111, 0b001) }, 0);
+        assert_eq!(unsafe { se_internal_PrivilegeBitmapSatisfies(0b1110, 0b0110) }, 1);
+        assert_eq!(unsafe { se_internal_PrivilegeBitmapSatisfies(0b0010, 0b0110) }, 0);
+        assert_eq!(unsafe { se_internal_AccessMaskAllowed(0b011, 0b111, 0) }, 1);
+        assert_eq!(unsafe { se_internal_AccessMaskAllowed(0b011, 0b111, 0b001) }, 0);
     }
 }
 
 
 // Further bounded inspection helpers used by the future Se access-check path.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeSidRevision(sid: *const u8, length: usize) -> u32 {
+pub(crate) unsafe fn se_internal_SidRevision(sid: *const u8, length: usize) -> u32 {
     if sid.is_null() || length < 8 { return u32::MAX; }
     let b = unsafe { core::slice::from_raw_parts(sid, length) };
     if bounded_sid_size(b).is_some() { b[0] as u32 } else { u32::MAX }
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeSidSubAuthorityCount(sid: *const u8, length: usize) -> u32 {
+pub(crate) unsafe fn se_internal_SidSubAuthorityCount(sid: *const u8, length: usize) -> u32 {
     if sid.is_null() || length < 8 { return u32::MAX; }
     let b = unsafe { core::slice::from_raw_parts(sid, length) };
     if bounded_sid_size(b).is_some() { b[1] as u32 } else { u32::MAX }
 }
 /// Outputs the six-byte SID identifier authority as a numeric value.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeSidIdentifierAuthority(
+pub(crate) unsafe fn se_internal_SidIdentifierAuthority(
     sid: *const u8, length: usize, authority_out: *mut u64,
 ) -> i32 {
     if sid.is_null() || authority_out.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -605,8 +571,7 @@ pub unsafe extern "win64" fn RdotSeSidIdentifierAuthority(
     STATUS_SUCCESS
 }
 /// Query ACL revision, ACE count and ACL byte size. All outputs are optional.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeQueryAclInfo(
+pub(crate) unsafe fn se_internal_QueryAclInfo(
     acl: *const u8, length: usize, revision_out: *mut u32,
     ace_count_out: *mut u32, size_out: *mut u32,
 ) -> i32 {
@@ -623,8 +588,7 @@ pub unsafe extern "win64" fn RdotSeQueryAclInfo(
     STATUS_SUCCESS
 }
 /// Count ACEs of a given type in a bounded, structurally valid ACL; u32::MAX means invalid.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeCountAceType(acl: *const u8, length: usize, ace_type: u32) -> u32 {
+pub(crate) unsafe fn se_internal_CountAceType(acl: *const u8, length: usize, ace_type: u32) -> u32 {
     if acl.is_null() || ace_type > u8::MAX as u32 || length < 8 { return u32::MAX; }
     let b = unsafe { core::slice::from_raw_parts(acl, length) };
     let Some(size) = bounded_acl_size(b) else { return u32::MAX; };
@@ -640,8 +604,7 @@ pub unsafe extern "win64" fn RdotSeCountAceType(acl: *const u8, length: usize, a
     found
 }
 /// True if a valid basic SID-bearing ACE in the ACL names the supplied valid SID.
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeAclContainsSid(
+pub(crate) unsafe fn se_internal_AclContainsSid(
     acl: *const u8, acl_len: usize, sid: *const u8, sid_len: usize,
 ) -> u8 {
     if acl.is_null() || sid.is_null() || acl_len < 8 || sid_len < 8 { return 0; }
@@ -667,14 +630,12 @@ pub unsafe extern "win64" fn RdotSeAclContainsSid(
     }
     0
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeDescriptorIsSelfRelative(descriptor: *const u8, length: usize) -> u8 {
+pub(crate) unsafe fn se_internal_DescriptorIsSelfRelative(descriptor: *const u8, length: usize) -> u8 {
     if descriptor.is_null() || length < 20 { return 0; }
     let b = unsafe { core::slice::from_raw_parts(descriptor, length) };
     (b[0] == 1 && u16le(b, 2).is_some_and(|c| c & 0x8000 != 0)) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeDescriptorComponentPresent(
+pub(crate) unsafe fn se_internal_DescriptorComponentPresent(
     descriptor: *const u8, length: usize, component: u32,
 ) -> u8 {
     if descriptor.is_null() || length < 20 || component > 3 { return 0; }
@@ -682,16 +643,13 @@ pub unsafe extern "win64" fn RdotSeDescriptorComponentPresent(
     if b[0] != 1 || !u16le(b, 2).is_some_and(|c| c & 0x8000 != 0) { return 0; }
     u32le(b, [4usize, 8, 12, 16][component as usize]).is_some_and(|v| v != 0) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSeAccessMaskIsSubset(requested: u32, containing: u32) -> u8 {
+pub(crate) unsafe fn se_internal_AccessMaskIsSubset(requested: u32, containing: u32) -> u8 {
     (requested & containing == requested) as u8
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSePrivilegeMaskCount(mask: u64) -> u32 {
+pub(crate) unsafe fn se_internal_PrivilegeMaskCount(mask: u64) -> u32 {
     mask.count_ones()
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "win64" fn RdotSePrivilegeMaskFirst(mask: u64) -> u32 {
+pub(crate) unsafe fn se_internal_PrivilegeMaskFirst(mask: u64) -> u32 {
     if mask == 0 { u32::MAX } else { mask.trailing_zeros() }
 }
 
@@ -701,32 +659,32 @@ mod bounded_security_inspection_tests {
     #[test]
     fn sid_authority_and_acl_queries_are_bounded() {
         let sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0];
-        assert_eq!(unsafe { RdotSeSidRevision(sid.as_ptr(), sid.len()) }, 1);
-        assert_eq!(unsafe { RdotSeSidSubAuthorityCount(sid.as_ptr(), sid.len()) }, 1);
+        assert_eq!(unsafe { se_internal_SidRevision(sid.as_ptr(), sid.len()) }, 1);
+        assert_eq!(unsafe { se_internal_SidSubAuthorityCount(sid.as_ptr(), sid.len()) }, 1);
         let mut authority = 0u64;
-        assert_eq!(unsafe { RdotSeSidIdentifierAuthority(sid.as_ptr(), sid.len(), &mut authority) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_SidIdentifierAuthority(sid.as_ptr(), sid.len(), &mut authority) }, STATUS_SUCCESS);
         assert_eq!(authority, 5);
         let acl = [2u8, 0, 8, 0, 0, 0, 0, 0];
         let mut revision = 0;
         let mut count = 9;
         let mut size = 0;
-        assert_eq!(unsafe { RdotSeQueryAclInfo(acl.as_ptr(), acl.len(), &mut revision, &mut count, &mut size) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_QueryAclInfo(acl.as_ptr(), acl.len(), &mut revision, &mut count, &mut size) }, STATUS_SUCCESS);
         assert_eq!((revision, count, size), (2, 0, 8));
-        assert_eq!(unsafe { RdotSeCountAceType(acl.as_ptr(), acl.len(), 0) }, 0);
-        assert_eq!(unsafe { RdotSeCountAceType(acl.as_ptr(), 7, 0) }, u32::MAX);
+        assert_eq!(unsafe { se_internal_CountAceType(acl.as_ptr(), acl.len(), 0) }, 0);
+        assert_eq!(unsafe { se_internal_CountAceType(acl.as_ptr(), 7, 0) }, u32::MAX);
     }
     #[test]
     fn descriptor_and_mask_inspection_handles_invalid_inputs() {
         let mut sd = [0u8; 20];
         sd[0] = 1;
         sd[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
-        assert_eq!(unsafe { RdotSeDescriptorIsSelfRelative(sd.as_ptr(), sd.len()) }, 1);
-        assert_eq!(unsafe { RdotSeDescriptorComponentPresent(sd.as_ptr(), sd.len(), 0) }, 0);
-        assert_eq!(unsafe { RdotSeDescriptorComponentPresent(sd.as_ptr(), sd.len(), 4) }, 0);
-        assert_eq!(unsafe { RdotSeAccessMaskIsSubset(0b011, 0b111) }, 1);
-        assert_eq!(unsafe { RdotSeAccessMaskIsSubset(0b101, 0b011) }, 0);
-        assert_eq!(unsafe { RdotSePrivilegeMaskCount(0b10110) }, 3);
-        assert_eq!(unsafe { RdotSePrivilegeMaskFirst(0b10110) }, 1);
-        assert_eq!(unsafe { RdotSePrivilegeMaskFirst(0) }, u32::MAX);
+        assert_eq!(unsafe { se_internal_DescriptorIsSelfRelative(sd.as_ptr(), sd.len()) }, 1);
+        assert_eq!(unsafe { se_internal_DescriptorComponentPresent(sd.as_ptr(), sd.len(), 0) }, 0);
+        assert_eq!(unsafe { se_internal_DescriptorComponentPresent(sd.as_ptr(), sd.len(), 4) }, 0);
+        assert_eq!(unsafe { se_internal_AccessMaskIsSubset(0b011, 0b111) }, 1);
+        assert_eq!(unsafe { se_internal_AccessMaskIsSubset(0b101, 0b011) }, 0);
+        assert_eq!(unsafe { se_internal_PrivilegeMaskCount(0b10110) }, 3);
+        assert_eq!(unsafe { se_internal_PrivilegeMaskFirst(0b10110) }, 1);
+        assert_eq!(unsafe { se_internal_PrivilegeMaskFirst(0) }, u32::MAX);
     }
 }
