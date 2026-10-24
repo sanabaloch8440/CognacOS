@@ -1162,6 +1162,16 @@ fn acquire_ticket(key:usize)->Option<usize>{
     while slot.owner.load(Ordering::Acquire)!=ticket{core::hint::spin_loop();}
     Some(index)
 }
+fn try_acquire_ticket(key:usize)->Option<usize>{
+    let index=ticket_slot(key)?;
+    let slot=&QUEUED_LOCKS[index];
+    loop{
+        let owner=slot.owner.load(Ordering::Acquire);
+        let next=slot.next.load(Ordering::Acquire);
+        if next!=owner{return None}
+        if slot.next.compare_exchange_weak(next,next.wrapping_add(1),Ordering::AcqRel,Ordering::Acquire).is_ok(){return Some(index)}
+    }
+}
 fn release_ticket(index:usize){
     if index<MAX_QUEUED_LOCKS{QUEUED_LOCKS[index].owner.fetch_add(1,Ordering::Release);}
 }
@@ -1197,8 +1207,29 @@ pub unsafe extern "win64" fn ke_acquire_in_stack_queued_spin_lock(lock:*mut u64,
 pub unsafe extern "win64" fn ke_release_in_stack_queued_spin_lock(handle:*mut LockQueueHandle){unsafe{release_in_stack(handle,true)}}
 pub unsafe extern "win64" fn ke_acquire_in_stack_queued_spin_lock_at_dpc_level(lock:*mut u64,handle:*mut LockQueueHandle){unsafe{acquire_in_stack(lock,handle,false)}}
 pub unsafe extern "win64" fn ke_release_in_stack_queued_spin_lock_from_dpc_level(handle:*mut LockQueueHandle){unsafe{release_in_stack(handle,false)}}
-pub unsafe extern "win64" fn ke_acquire_in_stack_queued_spin_lock_for_dpc(lock:*mut u64,handle:*mut LockQueueHandle){unsafe{acquire_in_stack(lock,handle,false)}}
-pub unsafe extern "win64" fn ke_release_in_stack_queued_spin_lock_for_dpc(handle:*mut LockQueueHandle){unsafe{release_in_stack(handle,false)}}
+pub unsafe extern "win64" fn ke_acquire_in_stack_queued_spin_lock_for_dpc(lock:*mut u64,handle:*mut LockQueueHandle){unsafe{acquire_in_stack(lock,handle,true)}}
+pub unsafe extern "win64" fn ke_release_in_stack_queued_spin_lock_for_dpc(handle:*mut LockQueueHandle){unsafe{release_in_stack(handle,true)}}
+/// Threaded-DPC spin lock: raise only when the callback entered below DISPATCH_LEVEL.
+pub unsafe extern "win64" fn ke_acquire_spin_lock_for_dpc(lock:*mut u64)->u8{
+    unsafe{ke_acquire_spin_lock_raise_to_dpc(lock)}
+}
+pub unsafe extern "win64" fn ke_release_spin_lock_for_dpc(lock:*mut u64,old_irql:u8){
+    unsafe{ke_release_spin_lock(lock,old_irql)}
+}
+pub unsafe extern "win64" fn ke_try_to_acquire_queued_spin_lock(queue:u32,old_irql:*mut u8)->u8{
+    if old_irql.is_null(){return 0}
+    let old=unsafe{ke_raise_irql_to_dpc_level()};
+    if try_acquire_ticket(queue_number_key(queue)).is_some(){
+        unsafe{old_irql.write(old)};1
+    }else{unsafe{ke_lower_irql(old)};0}
+}
+pub unsafe extern "win64" fn ke_try_to_acquire_queued_spin_lock_raise_to_synch(queue:u32,old_irql:*mut u8)->u8{
+    if old_irql.is_null(){return 0}
+    let old=unsafe{ke_raise_irql_to_synch_level()};
+    if try_acquire_ticket(queue_number_key(queue)).is_some(){
+        unsafe{old_irql.write(old)};1
+    }else{unsafe{ke_lower_irql(old)};0}
+}
 fn queue_number_key(queue:u32)->usize{0x8000_0000usize.wrapping_add(queue as usize+1)}
 pub unsafe extern "win64" fn ke_acquire_queued_spin_lock(queue:u32)->u8{
     let old=unsafe{ke_raise_irql_to_dpc_level()};
@@ -1217,6 +1248,12 @@ pub unsafe extern "win64" fn ke_acquire_queued_spin_lock_raise_to_synch(queue:u3
 pub unsafe extern "win64" fn ke_release_queued_spin_lock_from_synch_level(queue:u32,old_irql:u8){
     if let Some(index)=ticket_slot(queue_number_key(queue)){release_ticket(index);}
     unsafe{ke_lower_irql(old_irql);}
+}
+
+/// LONG KeReadStateQueue(PRKQUEUE Queue).
+pub unsafe extern "win64" fn ke_read_state_queue(queue:*const ExecutiveQueue)->i32{
+    if queue.is_null(){return 0}
+    unsafe{(&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire)}
 }
 
 // ---- Mutant/mutex dispatcher ownership --------------------------------------
