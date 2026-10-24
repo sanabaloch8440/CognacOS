@@ -412,7 +412,7 @@ fn rtc_system_time_100ns() -> Option<u64> {
         || !(1..=31).contains(&day) || !(0..=23).contains(&hour)
         || !(0..=59).contains(&minute) || !(0..=60).contains(&second)
         || !(0..=999).contains(&millis) { return None; }
-    let y = year - i64::from(month <= 2);
+    let y = year - if month <= 2 { 1 } else { 0 };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
     let mp = month + if month > 2 { -3 } else { 9 };
@@ -506,14 +506,15 @@ pub unsafe extern "win64" fn ke_get_processor_number_from_index(
     STATUS_SUCCESS
 }
 
-/// VOID KeInitializeNotificationEvent(PKEVENT).
-pub unsafe extern "win64" fn ke_initialize_notification_event(event: *mut DispatcherHeader) {
-    unsafe { ke_initialize_event(event, EVENT_NOTIFICATION as i32, 0); }
+/// BOOLEAN KeAreApcsDisabled(void). APC disable counters are not yet tracked;
+/// the implementation reliably reports the IRQL-based disabled case.
+pub unsafe extern "win64" fn ke_are_apcs_disabled() -> u8 {
+    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) > 1) as u8
 }
 
-/// VOID KeInitializeSynchronizationEvent(PKEVENT).
-pub unsafe extern "win64" fn ke_initialize_synchronization_event(event: *mut DispatcherHeader) {
-    unsafe { ke_initialize_event(event, EVENT_SYNCHRONIZATION as i32, 0); }
+/// BOOLEAN KeAreAllApcsDisabled(void). Guarded-region nesting is not yet tracked.
+pub unsafe extern "win64" fn ke_are_all_apcs_disabled() -> u8 {
+    (CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire) > 1) as u8
 }
 
 /// LONG KePulseEvent(PKEVENT, KPRIORITY, BOOLEAN).
