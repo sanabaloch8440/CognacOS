@@ -285,7 +285,7 @@ pub fn assign_thread_impersonation_token(thread_object: *mut c_void, token: *mut
         let mut table = THREADS.lock();
         let Some(record) = table.records.iter_mut().find(|t|
             t.state != ThreadState::Empty &&
-            core::ptr::addr_of_mut!(**t).cast::<c_void>() == thread_object) else {
+            core::ptr::addr_of!(**t).cast_mut().cast::<c_void>() == thread_object) else {
             if !token.is_null() { let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) }; }
             return STATUS_INVALID_PARAMETER;
         };
