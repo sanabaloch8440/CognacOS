@@ -1627,20 +1627,20 @@ pub unsafe extern "win64" fn ke_remove_processor_affinity_ex(a:*mut AffinityEx,p
 pub unsafe extern "win64" fn ke_and_affinity_ex(a:*const AffinityEx,b:*const AffinityEx,result:*mut AffinityEx)->u8{
     if a.is_null()||b.is_null(){return 0}
     let value=unsafe{affinity_mask(a)}&unsafe{affinity_mask(b)};
-    let target=if result.is_null(){a as *mut AffinityEx}else{result};
-    if let Some(w)=unsafe{affinity_word(target)}{w.store(value,Ordering::Release);1}else{0}
+    if !result.is_null(){let Some(w)=unsafe{affinity_word(result)} else{return 0};w.store(value,Ordering::Release);}
+    (value!=0) as u8
 }
 pub unsafe extern "win64" fn ke_or_affinity_ex(a:*const AffinityEx,b:*const AffinityEx,result:*mut AffinityEx)->u8{
     if a.is_null()||b.is_null(){return 0}
     let value=unsafe{affinity_mask(a)}|unsafe{affinity_mask(b)};
-    let target=if result.is_null(){a as *mut AffinityEx}else{result};
-    if let Some(w)=unsafe{affinity_word(target)}{w.store(value,Ordering::Release);1}else{0}
+    if !result.is_null(){let Some(w)=unsafe{affinity_word(result)} else{return 0};w.store(value,Ordering::Release);}
+    (value!=0) as u8
 }
 pub unsafe extern "win64" fn ke_subtract_affinity_ex(a:*const AffinityEx,b:*const AffinityEx,result:*mut AffinityEx)->u8{
     if a.is_null()||b.is_null(){return 0}
     let value=unsafe{affinity_mask(a)}&!unsafe{affinity_mask(b)};
-    let target=if result.is_null(){a as *mut AffinityEx}else{result};
-    if let Some(w)=unsafe{affinity_word(target)}{w.store(value,Ordering::Release);1}else{0}
+    if !result.is_null(){let Some(w)=unsafe{affinity_word(result)} else{return 0};w.store(value,Ordering::Release);}
+    (value!=0) as u8
 }
 pub unsafe extern "win64" fn ke_complement_affinity_ex(result:*mut AffinityEx,input:*const AffinityEx){
     if result.is_null()||input.is_null(){return}
