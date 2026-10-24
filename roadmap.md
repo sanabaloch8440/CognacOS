@@ -20,7 +20,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | ext filesystem | Conservative read-only parser | Image tests, complete metadata validation, registration |
 | VBS/HVCI, storage, graphics, power | Not implemented or early planning | Hardware drivers and platform support |
 
-**Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread-teardown, and VM/TLB tests; these newer changes remain unverified until the resulting Actions run passes. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
+**Latest previously verified build:** GitHub Actions run [40083235192](https://github.com/umarfarooq7869/RdotOS/actions/runs/40083235192) passed for commit `925e6f06`. Since then, the code has added private per-CPU GDT/TSS descriptors, dedicated IST stacks for NMI/double fault/machine check, scheduler-backed cooperative thread dispatch, cross-CPU wake IPIs, and an executive-owned processor startup/self-test path. The expanded 2/4/8-vCPU matrix now asserts TSS/IST, directed-IPI, lock-contention, thread/IRP/object teardown, and VM/TLB tests; these newer changes remain unverified until the resulting Actions run passes. No QEMU result proves real-hardware reliability, timer-driven preemption, Windows SEH parity, full NT process semantics, or general Windows-driver compatibility.
 
 ### Status legend
 
@@ -100,7 +100,7 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Add guard pages and fault-injection tests for each IST stack.
 - [ ] Implement interrupt vectors, complete IRQ routing, MSI/MSI-X, and interrupt remapping.
 - [ ] Calibrate and enable a reliable APIC timer and monotonic clock.
-- [x] Add repeatable multi-vCPU QEMU boots for 2, 4, and 8 vCPUs, asserting per-CPU TSS/IST setup, 64 directed IPIs per online AP, scheduler wakeups, contended IRQ-save locking, thread exit/teardown, and the VM/TLB self-test. CI results are pending.
+- [x] Add repeatable multi-vCPU QEMU boots for 2, 4, and 8 vCPUs, asserting per-CPU TSS/IST setup, 64 directed IPIs per online AP, scheduler wakeups, contended IRQ-save locking, thread, IRP, and object exit/teardown, and the VM/TLB self-test. CI results are pending.
 - [ ] Add concurrent user-MDL map/unmap, process-exit, and MDL unlock-ordering stress. Mapping/probe/unlock entry points share an IRQ-safe MDL lifecycle lock, but these MDL teardown races are not yet exercised.
 - [ ] Keep external interrupts disabled until interrupt entry, routing, and per-CPU state are proven safe.
 
@@ -111,7 +111,7 @@ Discovery and startup primitives do not by themselves establish a production-rea
 - [x] Connect the kernel-thread runtime to scheduler task-state/affinity metadata for create, select, yield, block, wake, resume, and exit transitions.
 - [x] Add cross-CPU HAL IPI notifications when runnable work is created or woken; AP idle loops dispatch eligible threads after wakeup.
 - [x] Pin each cooperative saved context to one allowed online CPU until migration-safe context publication is implemented; round-robin initial placement avoids stale-RSP migration races.
-- [x] Maintain each CPU's TSS RSP0 as cooperative kernel threads switch stacks; verify context switching, lock contention, and thread teardown in the SMP stress test.
+- [x] Maintain each CPU's TSS RSP0 as cooperative kernel threads switch stacks; verify context switching, lock contention, and thread, IRP, and object teardown in the SMP stress test.
 - [x] Add kernel-thread block/wake/resume paths and dispatcher self-tests for FIFO, cancellation, wait-any/wait-all, and timeout cases.
 - [ ] Add per-CPU run queues, priority-aware preemption, affinity migration, load balancing, and timer-driven preemption.
 - [ ] Implement timer-driven preemption and race-safe timeout-versus-signal completion.
@@ -121,7 +121,7 @@ Discovery and startup primitives do not by themselves establish a production-rea
 
 ## 5. NT executive and Windows compatibility
 
-- [x] Add an `ntoskrnl/ex` executive processor-start phase that sequences MADT discovery, AP startup, per-CPU interrupt checks, scheduler/lock/thread teardown stress, and VM/TLB validation; the boot entry now delegates this phase to the executive.
+- [x] Add an `ntoskrnl/ex` executive processor-start phase that sequences MADT discovery, AP startup, per-CPU interrupt checks, scheduler/lock/thread, IRP, and object teardown stress, and VM/TLB validation; the boot entry now delegates this phase to the executive.
 - [x] Add typed kernel handles, basic named-object lookup, access-mask checks, and object-manager self-tests.
 - [x] Add initial device/IRP dispatch interfaces and bounded request handling.
 - [x] Add initial process address spaces, checked user-copy, ring-3 entry/exit, and a small RdotOS-native syscall path.
