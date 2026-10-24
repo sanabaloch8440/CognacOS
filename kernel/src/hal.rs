@@ -427,13 +427,11 @@ pub fn local_clock_event_interrupt() { apic::timer_interrupt(); }
 pub fn publish_clock_interrupt(now: u64) -> bool { notify_clock_interrupt(now) }
 
 #[inline]
-pub unsafe fn send_fixed_ipi(destination_apic_id: u8, vector: u8) -> Result<(), HalError> {
-    let base = apic::local_apic_base().ok_or(HalError::PlatformFailure)?;
+pub unsafe fn send_fixed_ipi(base: u64, destination_apic_id: u8, vector: u8) -> Result<(), HalError> {
     unsafe { apic::send_fixed_ipi(base, destination_apic_id, vector) }.map_err(|_| HalError::PlatformFailure)
 }
 #[inline]
-pub unsafe fn send_processor_init(destination_apic_id: u8) -> Result<(), HalError> {
-    let base = apic::local_apic_base().ok_or(HalError::PlatformFailure)?;
+pub unsafe fn send_processor_init(base: u64, destination_apic_id: u8) -> Result<(), HalError> {
     unsafe { apic::send_init_ipi(base, destination_apic_id) }.map_err(|_| HalError::PlatformFailure)
 }
 #[inline]
@@ -442,11 +440,16 @@ pub unsafe fn send_processor_init_deassert(destination_apic_id: u8) -> Result<()
     unsafe { apic::send_init_deassert_ipi(base, destination_apic_id) }.map_err(|_| HalError::PlatformFailure)
 }
 #[inline]
-pub unsafe fn send_processor_startup(destination_apic_id: u8, trampoline_physical: u64) -> Result<(), HalError> {
-    let base = apic::local_apic_base().ok_or(HalError::PlatformFailure)?;
+pub unsafe fn send_processor_startup(base: u64, destination_apic_id: u8, trampoline_physical: u64) -> Result<(), HalError> {
     unsafe { apic::send_startup_ipi(base, destination_apic_id, trampoline_physical) }.map_err(|_| HalError::PlatformFailure)
 }
 #[inline]
+pub unsafe fn initialize_processor_interrupt_controller(base: u64) -> Result<u32, HalError> {
+    unsafe { apic::initialize_local_apic(base) }.map_err(|_| HalError::PlatformFailure)
+}
+pub unsafe fn synchronize_processor_clock(logical_cpu: usize, destination_apic_id: u8) -> Result<i64, HalError> {
+    unsafe { apic::synchronize_tsc_with_cpu(logical_cpu, destination_apic_id) }.map_err(|_| HalError::PlatformFailure)
+}
 pub unsafe fn request_processor_ipi(destination_apic_id: u8, vector: u8) -> Result<(), HalError> {
     unsafe { apic::request_ipi(destination_apic_id, vector) }.map_err(|_| HalError::PlatformFailure)
 }
