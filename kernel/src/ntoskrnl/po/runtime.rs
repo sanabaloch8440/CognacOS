@@ -427,6 +427,34 @@ mod dispatch_tests {
     }
 
     #[test]
+    fn wait_wake_irp_can_be_cancelled_and_completes_once() {
+        CALLBACK_COUNT.store(0,Ordering::SeqCst);
+        let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+        let mut device:*mut DeviceObject=ptr::null_mut();
+        assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},0);
+        driver.major_function[IRP_MJ_POWER as usize]=Some(pending_dispatch);
+        let mut irp:*mut WdmIrp=ptr::null_mut();
+        let status=unsafe{PoRequestPowerIrp(device,IRP_MN_WAIT_WAKE,PowerState{system_state:3},Some(request_callback),ptr::null_mut(),&mut irp)};
+        assert_eq!(status,STATUS_PENDING);
+        assert!(!irp.is_null());
+        assert_eq!(unsafe{io::io_cancel_irp(irp)},1);
+        assert_eq!(CALLBACK_COUNT.load(Ordering::SeqCst),1);
+        unsafe{io_delete_device(device);}
+    }
+
+    #[test]
+    fn idle_detection_register_busy_and_unregister_are_bounded() {
+        let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+        let mut device:*mut DeviceObject=ptr::null_mut();
+        assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},0);
+        let token=unsafe{PoRegisterDeviceForIdleDetection(device,10,20,4)};
+        assert!(!token.is_null());
+        unsafe{PoStartDeviceBusy(token);PoSetDeviceBusyEx(token);PoEndDeviceBusy(token);}
+        assert!(unsafe{PoRegisterDeviceForIdleDetection(device,0,0,4)}.is_null());
+        unsafe{io_delete_device(device);}
+    }
+
+    #[test]
     fn po_request_power_irp_dispatches_and_calls_completion_once() {
         CALLBACK_COUNT.store(0,Ordering::SeqCst);
         let mut driver:DriverObject=unsafe{core::mem::zeroed()};
