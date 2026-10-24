@@ -28,6 +28,7 @@ const MAX_OBJECTS:usize=128;
 const MAX_HANDLES:usize=256;
 const MAX_NAME:usize=128;
 const MAX_TYPES:usize=32;
+const MAX_AUDIT_EVENTS:usize=64;
 const HANDLE_TAG:usize=0x5244_4f54_0000_0000;
 const HANDLE_TAG_MASK:usize=0xffff_ffff_0000_0000;
 const HANDLE_SLOT_BITS:usize=8;
@@ -55,8 +56,12 @@ struct Lock(AtomicBool);
 impl Lock { const fn new()->Self{Self(AtomicBool::new(false))} fn lock(&self)->Guard<'_>{while self.0.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop()} Guard(&self.0)} }
 struct Guard<'a>(&'a AtomicBool);
 impl Drop for Guard<'_>{fn drop(&mut self){self.0.store(false,Ordering::Release)}}
-struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],next_type:u16 }
-impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],next_type:1}} }
+#[derive(Clone,Copy)] struct AuditEvent { sequence:u64, object:usize, owner:usize, operation:u8, desired:u32, granted:u32, status:i32 }
+impl AuditEvent { const EMPTY:Self=Self{sequence:0,object:0,owner:0,operation:0,desired:0,granted:0,status:0}; }
+#[derive(Clone,Copy)] struct DirectoryBody { magic:u64 }
+impl DirectoryBody { const EMPTY:Self=Self{magic:0}; }
+struct State { objects:[Object;MAX_OBJECTS],handles:[HandleEntry;MAX_HANDLES],types:[TypeEntry;MAX_TYPES],directories:[DirectoryBody;MAX_OBJECTS],audit:[AuditEvent;MAX_AUDIT_EVENTS],audit_next:u64,next_type:u16 }
+impl State { const fn new()->Self{Self{objects:[Object::EMPTY;MAX_OBJECTS],handles:[HandleEntry::EMPTY;MAX_HANDLES],types:[TypeEntry::EMPTY;MAX_TYPES],directories:[DirectoryBody::EMPTY;MAX_OBJECTS],audit:[AuditEvent::EMPTY;MAX_AUDIT_EVENTS],audit_next:1,next_type:1}} }
 static LOCK:Lock=Lock::new();
 static mut STATE:State=State::new();
 fn state()->&'static mut State{unsafe{&mut *core::ptr::addr_of_mut!(STATE)}}
@@ -88,6 +93,37 @@ pub unsafe fn register_object(body:*mut c_void,type_id:u16,name:&[u16],permanent
  if sd_len!=0{unsafe{core::ptr::copy_nonoverlapping(sd,o.sd.as_mut_ptr(),sd_len)}o.sd_len=sd_len as u16;}
  s.objects[i]=o;Ok(())
 }
+pub fn ensure_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u16,i32>{
+ {let _g=LOCK.lock();let s=state();if let Some(t)=s.types.iter().find(|t|t.used&&eq(&t.name[..t.len as usize],name)){return Ok(t.id)}}
+ register_type(name,gr,gw,gx,ga,valid)
+}
+pub unsafe fn register_external_object(body:*mut c_void,type_name:&[u16],name:&[u16],permanent:bool,sd:*const u8,sd_len:usize)->Result<u16,i32>{
+ let ty=ensure_type(type_name,1,2,4,7,u32::MAX)?;unsafe{register_object(body,ty,name,permanent,sd,sd_len)?;}Ok(ty)
+}
+fn raw_object_idx(s:&State,body:usize)->Option<usize>{s.objects.iter().position(|o|o.used&&o.body==body)}
+fn audit_locked(s:&mut State,object:usize,owner:usize,operation:u8,desired:u32,granted:u32,status:i32){
+ let i=(s.audit_next as usize)%MAX_AUDIT_EVENTS;s.audit[i]=AuditEvent{sequence:s.audit_next,object,owner,operation,desired,granted,status};s.audit_next=s.audit_next.wrapping_add(1).max(1);
+}
+pub fn unregister_object(body:*mut c_void)->bool{
+ if body.is_null(){return false}let _g=LOCK.lock();let s=state();let Some(i)=raw_object_idx(s,body as usize)else{return false};
+ s.objects[i].deleting=true;s.objects[i].permanent=false;s.objects[i].refs=s.objects[i].refs.saturating_sub(1);
+ if s.objects[i].refs==0&&s.objects[i].handles==0{s.objects[i]=Object::EMPTY;}true
+}
+pub fn read_audit_events(out:&mut [AuditEvent])->usize{
+ let _g=LOCK.lock();let s=state();let available=(s.audit_next.saturating_sub(1) as usize).min(MAX_AUDIT_EVENTS).min(out.len());
+ let first=s.audit_next.saturating_sub(available as u64);
+ for n in 0..available{let seq=first+n as u64;let i=(seq as usize)%MAX_AUDIT_EVENTS;out[n]=s.audit[i];}
+ available
+}
+pub fn create_directory(name:&[u16],sd:*const u8,sd_len:usize)->Result<*mut c_void,i32>{
+ if name.is_empty()||name.len()>MAX_NAME||sd_len>256||(sd_len!=0&&sd.is_null()){return Err(STATUS_INVALID_PARAMETER)}
+ let ty=ensure_type(&[b'D' as u16,b'i' as u16,b'r' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'o' as u16,b'r' as u16,b'y' as u16],1,2,4,7,u32::MAX)?;
+ let _g=LOCK.lock();let s=state();if find_name(s,name).is_some(){return Err(STATUS_OBJECT_NAME_COLLISION)}
+ let i=s.objects.iter().position(|o|!o.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+ s.directories[i].magic=0x52444f5444495231;let body=core::ptr::addr_of_mut!(s.directories[i]).cast::<c_void>();
+ let mut o=Object{used:true,body:body as usize,type_id:ty,name_len:name.len() as u16,refs:1,permanent:true,..Object::EMPTY};o.name[..name.len()].copy_from_slice(name);
+ if sd_len!=0{unsafe{core::ptr::copy_nonoverlapping(sd,o.sd.as_mut_ptr(),sd_len)}o.sd_len=sd_len as u16;}s.objects[i]=o;Ok(body)
+}
 pub fn register_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u16,i32>{
  if name.is_empty()||name.len()>32{return Err(STATUS_INVALID_PARAMETER)}let _g=LOCK.lock();let s=state();
  if s.types.iter().any(|t|t.used&&eq(&t.name[..t.len as usize],name)){return Err(STATUS_OBJECT_NAME_COLLISION)}
@@ -103,9 +139,9 @@ pub fn reference_body(body:*mut c_void,expected_type:u16,desired:u32,kernel_mode
  s.objects[i].refs=s.objects[i].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;Ok(body)
 }
 pub fn dereference_body(body:*mut c_void)->bool{
- if body.is_null(){return false}let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,body as usize)else{return false};
+ if body.is_null(){return false}let _g=LOCK.lock();let s=state();let Some(i)=raw_object_idx(s,body as usize)else{return false};
  if s.objects[i].refs==0{return false}s.objects[i].refs-=1;
- if s.objects[i].refs==0&&s.objects[i].handles==0&&!s.objects[i].permanent{s.objects[i]=Object::EMPTY;}true
+ if s.objects[i].refs==0&&s.objects[i].handles==0&&(!s.objects[i].permanent||s.objects[i].deleting){s.objects[i]=Object::EMPTY;}true
 }
 pub fn open_by_name(name:&[u16],desired:u32,owner:usize,kernel_mode:bool,attrs:u32)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
@@ -129,7 +165,7 @@ pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
  let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,owner).ok_or(STATUS_INVALID_HANDLE)?;let oi=s.handles[hi].object;
  s.handles[hi].used=false;s.handles[hi].object=0;s.handles[hi].generation=s.handles[hi].generation.wrapping_add(1).max(1);
  if s.objects[oi].handles>0{s.objects[oi].handles-=1}if s.objects[oi].refs>0{s.objects[oi].refs-=1}
- if s.objects[oi].refs==0&&s.objects[oi].handles==0&&!s.objects[oi].permanent{s.objects[oi]=Object::EMPTY;}Ok(())
+ if s.objects[oi].refs==0&&s.objects[oi].handles==0&&!s.objects[oi].permanent{s.objects[oi]=Object::EMPTY;}else if s.objects[oi].refs==0&&s.objects[oi].handles==0&&s.objects[oi].deleting{s.objects[oi]=Object::EMPTY;}Ok(())
 }
 pub fn reference_by_name(name:&[u16],expected_type:u16,desired:u32,kernel_mode:bool)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let i=find_name(s,name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
