@@ -85,8 +85,10 @@ pub unsafe extern "win64" fn ke_query_active_processor_count_ex(group: u16) -> u
     let count = crate::hal::online_cpu_count() as u32;
     if group == 0 || group == ALL_PROCESSOR_GROUPS { count } else { 0 }
 }
-pub unsafe extern "win64" fn ke_query_active_processor_count() -> u32 {
-    unsafe { ke_query_active_processor_count_ex(0) }
+pub unsafe extern "win64" fn ke_query_active_processor_count(active_processors:*mut u64) -> u32 {
+    let mask=unsafe{ke_query_group_affinity(0)};
+    if !active_processors.is_null(){unsafe{active_processors.write(mask);}}
+    mask.count_ones()
 }
 pub unsafe extern "win64" fn ke_query_active_group_count() -> u16 {
     if crate::hal::online_cpu_count() == 0 { 0 } else { 1 }
@@ -1622,20 +1624,29 @@ pub unsafe extern "win64" fn ke_add_processor_affinity_ex(a:*mut AffinityEx,proc
 pub unsafe extern "win64" fn ke_remove_processor_affinity_ex(a:*mut AffinityEx,processor:u32){
     if processor>=64{return} if let Some(w)=unsafe{affinity_word(a)}{w.fetch_and(!(1u64<<processor),Ordering::AcqRel);}
 }
-pub unsafe extern "win64" fn ke_and_affinity_ex(a:*mut AffinityEx,b:*const AffinityEx){
-    if a.is_null()||b.is_null(){return} if let Some(w)=unsafe{affinity_word(a)}{w.fetch_and(unsafe{affinity_mask(b)},Ordering::AcqRel);}
+pub unsafe extern "win64" fn ke_and_affinity_ex(a:*const AffinityEx,b:*const AffinityEx,result:*mut AffinityEx)->u8{
+    if a.is_null()||b.is_null(){return 0}
+    let value=unsafe{affinity_mask(a)}&unsafe{affinity_mask(b)};
+    let target=if result.is_null(){a as *mut AffinityEx}else{result};
+    if let Some(w)=unsafe{affinity_word(target)}{w.store(value,Ordering::Release);1}else{0}
 }
-pub unsafe extern "win64" fn ke_or_affinity_ex(a:*mut AffinityEx,b:*const AffinityEx){
-    if a.is_null()||b.is_null(){return} if let Some(w)=unsafe{affinity_word(a)}{w.fetch_or(unsafe{affinity_mask(b)},Ordering::AcqRel);}
+pub unsafe extern "win64" fn ke_or_affinity_ex(a:*const AffinityEx,b:*const AffinityEx,result:*mut AffinityEx)->u8{
+    if a.is_null()||b.is_null(){return 0}
+    let value=unsafe{affinity_mask(a)}|unsafe{affinity_mask(b)};
+    let target=if result.is_null(){a as *mut AffinityEx}else{result};
+    if let Some(w)=unsafe{affinity_word(target)}{w.store(value,Ordering::Release);1}else{0}
 }
-pub unsafe extern "win64" fn ke_subtract_affinity_ex(a:*mut AffinityEx,b:*const AffinityEx){
-    if a.is_null()||b.is_null(){return} if let Some(w)=unsafe{affinity_word(a)}{w.fetch_and(!unsafe{affinity_mask(b)},Ordering::AcqRel);}
+pub unsafe extern "win64" fn ke_subtract_affinity_ex(a:*const AffinityEx,b:*const AffinityEx,result:*mut AffinityEx)->u8{
+    if a.is_null()||b.is_null(){return 0}
+    let value=unsafe{affinity_mask(a)}&!unsafe{affinity_mask(b)};
+    let target=if result.is_null(){a as *mut AffinityEx}else{result};
+    if let Some(w)=unsafe{affinity_word(target)}{w.store(value,Ordering::Release);1}else{0}
 }
-pub unsafe extern "win64" fn ke_complement_affinity_ex(a:*mut AffinityEx){
-    if a.is_null(){return} if let Some(w)=unsafe{affinity_word(a)}{
-        let valid=if crate::hal::online_cpu_count()>=64{u64::MAX}else{(1u64<<crate::hal::online_cpu_count().max(1))-1};
-        w.fetch_xor(valid,Ordering::AcqRel);
-    }
+pub unsafe extern "win64" fn ke_complement_affinity_ex(result:*mut AffinityEx,input:*const AffinityEx){
+    if result.is_null()||input.is_null(){return}
+    let valid=if crate::hal::online_cpu_count()>=64{u64::MAX}else{(1u64<<crate::hal::online_cpu_count().max(1))-1};
+    let value=valid&!unsafe{affinity_mask(input)};
+    if let Some(w)=unsafe{affinity_word(result)}{w.store(value,Ordering::Release);}
 }
 pub unsafe extern "win64" fn ke_copy_affinity_ex(dst:*mut AffinityEx,src:*const AffinityEx){
     if dst.is_null()||src.is_null()||dst==src as *mut AffinityEx{return}
@@ -1661,11 +1672,15 @@ pub unsafe extern "win64" fn ke_is_single_group_affinity_ex(_a:*const AffinityEx
 pub unsafe extern "win64" fn ke_is_subset_affinity_ex(a:*const AffinityEx,b:*const AffinityEx)->u8{
     let av=unsafe{affinity_mask(a)};let bv=unsafe{affinity_mask(b)};(av&!bv==0) as u8
 }
-pub unsafe extern "win64" fn ke_interlocked_set_processor_affinity_ex(a:*mut AffinityEx,processor:u32){
-    unsafe{ke_add_processor_affinity_ex(a,processor)}
+pub unsafe extern "win64" fn ke_interlocked_set_processor_affinity_ex(a:*mut AffinityEx,processor:u32)->u8{
+    if processor>=64{return 0}
+    let Some(w)=unsafe{affinity_word(a)} else{return 0};
+    ((w.fetch_or(1u64<<processor,Ordering::AcqRel)&(1u64<<processor))!=0) as u8
 }
-pub unsafe extern "win64" fn ke_interlocked_clear_processor_affinity_ex(a:*mut AffinityEx,processor:u32){
-    unsafe{ke_remove_processor_affinity_ex(a,processor)}
+pub unsafe extern "win64" fn ke_interlocked_clear_processor_affinity_ex(a:*mut AffinityEx,processor:u32)->u8{
+    if processor>=64{return 0}
+    let Some(w)=unsafe{affinity_word(a)} else{return 0};
+    ((w.fetch_and(!(1u64<<processor),Ordering::AcqRel)&(1u64<<processor))!=0) as u8
 }
 pub unsafe extern "win64" fn ke_add_group_affinity_ex(a:*mut AffinityEx,group:u16,mask:u64){
     if group!=0||a.is_null(){return} if let Some(w)=unsafe{affinity_word(a)}{w.fetch_or(mask,Ordering::AcqRel);}
