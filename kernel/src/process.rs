@@ -57,6 +57,64 @@ pub fn eprocess_for_pid(pid: u64) -> Option<*mut EProcess> {
     registry.0.iter().position(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid)
         .map(|index| core::ptr::addr_of!(registry.0[index]) as *mut EProcess)
 }
+
+/// Add an object reference for a registered process. Used by NT process lookup
+/// and generic object reference entry points.
+pub fn reference_eprocess(pointer: *mut core::ffi::c_void) -> bool {
+    let mut registry = TABLE.lock();
+    let Some(p) = registry.0.iter_mut().find(|p|
+        p as *mut EProcess as *mut core::ffi::c_void == pointer
+            && p.used && p.magic == EPROCESS_MAGIC) else { return false; };
+    let Some(next) = p.references.checked_add(1) else { return false; };
+    p.references = next;
+    true
+}
+pub fn dereference_eprocess(pointer: *mut core::ffi::c_void) -> bool {
+    let mut registry = TABLE.lock();
+    let Some(p) = registry.0.iter_mut().find(|p|
+        p as *mut EProcess as *mut core::ffi::c_void == pointer
+            && p.used && p.magic == EPROCESS_MAGIC) else { return false; };
+    if p.references == 0 { return false; }
+    p.references -= 1;
+    true
+}
+
+/// Windows x64 PsLookupProcessByProcessId subset. Returned objects carry a
+/// reference that must be released with ObfDereferenceObject.
+pub unsafe extern "win64" fn ps_lookup_process_by_process_id(
+    process_id: *mut core::ffi::c_void,
+    process_out: *mut *mut core::ffi::c_void,
+) -> i32 {
+    const STATUS_SUCCESS: i32 = 0;
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    const STATUS_NOT_FOUND: i32 = 0xC000_0225u32 as i32;
+    if process_out.is_null() || (process_out as u64) < 0xffff_8000_0000_0000
+        || crate::kernel_vm::is_pageable_address(process_out as u64)
+        || unsafe { crate::ntoskrnl::mm::runtime::mm_is_non_paged_system_address_valid(process_out.cast()) } == 0
+        || unsafe { crate::ntoskrnl::mm::runtime::mm_is_non_paged_system_address_valid((process_out as u64 + 7) as *const core::ffi::c_void) } == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { process_out.write(core::ptr::null_mut()); }
+    let pid = process_id as u64;
+    let mut registry = TABLE.lock();
+    let Some(p) = registry.0.iter_mut().find(|p|
+        p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid
+            && p.state != ProcessState::Reaped) else { return STATUS_NOT_FOUND; };
+    let Some(next) = p.references.checked_add(1) else { return STATUS_INVALID_PARAMETER; };
+    p.references = next;
+    let object = p as *mut EProcess as *mut core::ffi::c_void;
+    unsafe { process_out.write(object); }
+    STATUS_SUCCESS
+}
+
+/// The current object-manager subset can reference/dereference registered
+/// EPROCESS anchors. Other object types remain owned by their own subsystems.
+pub unsafe extern "win64" fn obf_reference_process_object(object: *mut core::ffi::c_void) {
+    let _ = reference_eprocess(object);
+}
+pub unsafe extern "win64" fn obf_dereference_process_object(object: *mut core::ffi::c_void) {
+    let _ = dereference_eprocess(object);
+}
 pub fn mark_running(pid: u64) -> bool {
     let mut registry = TABLE.lock();
     if let Some(p) = registry.0.iter_mut().find(|p| p.used && p.process_id == pid && p.state == ProcessState::Created) {
