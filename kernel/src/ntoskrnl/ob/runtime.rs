@@ -128,7 +128,9 @@ pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
  if s.objects[oi].handles>0{s.objects[oi].handles-=1}if s.objects[oi].refs>0{s.objects[oi].refs-=1}
  if s.objects[oi].refs==0&&s.objects[oi].handles==0&&!s.objects[oi].permanent{s.objects[oi]=Object::EMPTY;}Ok(())
 }
-pub fn object_type(body:*mut c_void)->*const ObjectType{let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,body as usize)else{return core::ptr::null()};let Some(ti)=type_idx(s,s.objects[i].type_id)else{return core::ptr::null()};let _=ti;core::ptr::null() /* public WDK OBJECT_TYPE layout is not emulated */ }
+pub fn object_type(body:*mut c_void)->*mut ObjectType{let _g=LOCK.lock();let s=state();let Some(i)=object_idx(s,body as usize)else{return core::ptr::null_mut()};let Some(ti)=type_idx(s,s.objects[i].type_id)else{return core::ptr::null_mut()};core::ptr::addr_of_mut!(s.types[ti]).cast::<ObjectType>()}
+fn expected_type_id(ptr:*mut ObjectType)->Option<u16>{if ptr.is_null(){return Some(0)}let _g=LOCK.lock();let s=state();s.types.iter().find(|t|t.used&&core::ptr::eq((t as *const TypeEntry).cast::<ObjectType>(),ptr)).map(|t|t.id)}
+
 pub fn set_permanent(body:*mut c_void,permanent:bool)->Result<(),i32>{let _g=LOCK.lock();let s=state();let i=object_idx(s,body as usize).ok_or(STATUS_INVALID_PARAMETER)?;s.objects[i].permanent=permanent;Ok(())}
 fn read_u16(b:&[u8],o:usize)->Option<u16>{Some(u16::from_le_bytes([*b.get(o)?,*b.get(o+1)?]))}
 fn read_u32(b:&[u8],o:usize)->Option<u32>{Some(u32::from_le_bytes([*b.get(o)?,*b.get(o+1)?,*b.get(o+2)?,*b.get(o+3)?]))}
@@ -152,8 +154,8 @@ fn access_check(o:&Object,desired:u32)->bool{
 /// Windows x64 export: ObReferenceObjectByPointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObReferenceObjectByPointer(object:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8)->i32{
- let expected=if object_type.is_null(){0}else{0};let _=expected;
- match reference_body(object,0,desired_access,access_mode==0){Ok(_)=>STATUS_SUCCESS,Err(e)=>e}
+ let expected=match expected_type_id(object_type){Some(v)=>v,None=>return STATUS_OBJECT_TYPE_MISMATCH};
+ match reference_body(object,expected,desired_access,access_mode==0){Ok(_)=>STATUS_SUCCESS,Err(e)=>e}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObDereferenceObject(object:*mut c_void)->*mut c_void{let _=dereference_body(object);object}
@@ -164,10 +166,13 @@ pub unsafe extern "win64" fn ObfDereferenceObject(object:*mut c_void)->*mut c_vo
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObReferenceObjectByHandle(handle:*mut c_void,desired_access:u32,object_type:*mut ObjectType,access_mode:u8,out_object:*mut *mut c_void,_handle_information:*mut u32)->i32{
  if out_object.is_null(){return STATUS_INVALID_PARAMETER}unsafe{out_object.write(core::ptr::null_mut())}
- match reference_by_handle(handle,desired_access,0,0,access_mode==0){Ok(o)=>{unsafe{out_object.write(o)}STATUS_SUCCESS},Err(e)=>e}
+ let expected=match expected_type_id(object_type){Some(v)=>v,None=>return STATUS_OBJECT_TYPE_MISMATCH};
+ match reference_by_handle(handle,desired_access,expected,0,access_mode==0){Ok(o)=>{unsafe{out_object.write(o)}STATUS_SUCCESS},Err(e)=>e}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObCloseHandle(handle:*mut c_void,previous_mode:u8)->i32{close_handle(handle,if previous_mode==0{usize::MAX}else{0}).map_or_else(|e|e,|_|STATUS_SUCCESS)}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ObGetObjectType(object:*mut c_void)->*mut ObjectType{object_type(object)}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ObIsKernelHandle(handle:*mut c_void)->u8{let _g=LOCK.lock();let s=state();handle_idx(s,handle,usize::MAX).is_some() as u8}
 
@@ -178,7 +183,7 @@ mod tests{
   let ty=register_type(&[b'T' as u16,b'e' as u16,b's' as u16,b't' as u16],1,2,4,7,0xff).unwrap();
   let body=0x1234usize as *mut c_void;register_object(body,ty,&[b'\\' as u16,b'D' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16],false,core::ptr::null(),0).unwrap();
   let h=open_by_name(&[b'\\' as u16,b'd' as u16,b'e' as u16,b'v' as u16,b'i' as u16,b'c' as u16,b'e' as u16],GENERIC_READ,0,true,0).unwrap();
-  assert_eq!(reference_by_handle(h,1,ty,0,true).unwrap(),body);assert!(dereference_body(body));close_handle(h,0).unwrap();assert!(reference_body(body,ty,0,true).is_err());
+  assert_eq!(reference_by_handle(h,1,ty,0,true).unwrap(),body);assert!(dereference_body(body));close_handle(h,0).unwrap();assert!(dereference_body(body));assert!(reference_body(body,ty,0,true).is_err());
  }
  #[test]fn access_masks_and_deny_by_default(){let t=TypeEntry{used:true,id:1,gr:1,gw:2,gx:4,ga:7,valid:7,..TypeEntry::EMPTY};assert_eq!(map_access(&t,GENERIC_READ|GENERIC_WRITE),3);assert!(!access_check(&Object::EMPTY,1));}
  #[test]fn stale_handle_cannot_alias_reused_slot(){let ty=register_type(&[88],1,2,4,7,7).unwrap();let body=0x2234usize as *mut c_void;register_object(body,ty,&[89],false,core::ptr::null(),0).unwrap();let h=open_by_pointer(body,1,0,true,0).unwrap();close_handle(h,0).unwrap();let h2=open_by_pointer(body,1,0,true,0).unwrap();assert_ne!(h,h2);assert_eq!(reference_by_handle(h,1,0,0,true).unwrap_err(),STATUS_INVALID_HANDLE);}
