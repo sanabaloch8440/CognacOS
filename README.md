@@ -26,9 +26,9 @@ The repository contains working foundations in several areas. “Implemented” 
 
 | Area | Current state |
 | --- | --- |
-| UEFI boot | Rust EFI application loads a bounded ELF64 x86-64 kernel image, checks a build-pinned SHA-256 digest, exits boot services, and transfers control through versioned boot information. |
+| UEFI boot | Rust EFI application verifies a build-pinned SHA-256 digest for the generated PE32+ AMD64 native kernel, validates its fixed-base section layout, maps its sections at the high-half image base, exits boot services, and transfers control through versioned boot information. The kernel is currently linked as ELF64 for Rust/toolchain convenience, then converted and validated as PE32+ for the bootloader handoff. |
 | Kernel bootstrap | Freestanding Rust kernel, kernel-owned GDT/IDT, exception diagnostics, COM1 logging, CR3 activation, and physical-page allocation. |
-| Memory protection | 4 KiB kernel-section permissions, CR0.WP, NX where supported, stack guard page, isolated user address spaces, checked user-copy helpers, and W^X checks in implemented mapping paths. |
+| Memory protection | High-half PE32+ kernel section mappings with checked virtual-to-physical backing, 4 KiB kernel-section permissions, CR0.WP, NX where supported, kernel stack guard page, isolated user address spaces, checked user-copy helpers, a demand-mapped RAM direct-map window extending above 4 GiB, and W^X checks in implemented mapping paths. |
 | ACPI and HAL | RSDP/RSDT/XSDT validation, MADT parsing, CPU-local records, APIC-ID registry, port-I/O primitives, MMIO bounds checks, and IRQ-save locks. |
 | SMP | AP startup trampoline and bounded startup coordination exist; multi-CPU startup and scheduling remain experimental and require broader validation. |
 | Executable loading | Bounded PE32+ AMD64 loading, relocations, normal/delay imports, registered exports, API-set aliases, TLS setup/callbacks, and basic unwind metadata registration. |
@@ -39,7 +39,7 @@ The repository contains working foundations in several areas. “Implemented” 
 
 ## Build and test
 
-The CI workflow builds the Rust UEFI application and freestanding kernel, validates the kernel ELF, packages a GPT/FAT EFI image, and boots it under OVMF/QEMU. Serial-log assertions check kernel entry and selected subsystem self-tests. Host-side tests also exercise the ext filesystem parser.
+The CI workflow builds the freestanding Rust kernel, converts its linked ELF64 image to a fixed-base PE32+ AMD64 native image, validates PE headers/sections and the pinned digest, builds the Rust UEFI loader, packages a GPT/FAT EFI image, and boots it under OVMF/QEMU with 5 GiB RAM and four virtual CPUs. Serial-log assertions cover kernel handoff, high-half/page-table checks, direct-map and memory-manager paths, and selected HAL/SMP/PE/user-mode/filesystem tests. Host-side tests exercise the physical allocator map parser and ext filesystem parser.
 
 For the canonical build and boot-test result, see [GitHub Actions](https://github.com/umarfarooq7869/RdotOS/actions/workflows/build-uefi.yml). A successful CI run verifies only the paths covered by that run; it is not evidence of support for all hardware or Windows drivers.
 
@@ -47,9 +47,21 @@ For the canonical build and boot-test result, see [GitHub Actions](https://githu
 
 The CI workflow is the authoritative build recipe. Development generally requires a recent Rust toolchain with the x86_64-unknown-uefi and x86_64-unknown-none targets, the repository's linker script, and (for the runtime smoke test) OVMF and QEMU.
 
+## Recent milestone: PE32+ kernel handoff
+
+- The bootloader now consumes `EFI/BOOT/rdotos-kernel.exe`, a fixed-base AMD64 PE32+ image using the native subsystem. The UEFI bootloader itself remains a normal EFI application.
+- The build converts the Rust-linked ELF64 kernel into PE32+ and checks the DOS/PE signatures, AMD64 machine type, PE32+ optional-header magic, fixed image base, native subsystem, section RVAs, and absence of imports/base relocations.
+- The bootloader validates the supported static PE layout, allocates physical backing for each section, checks the build-pinned SHA-256 digest, builds the kernel mappings, and enters the high-half kernel through a low identity-mapped CR3 transition trampoline.
+- The kernel checks the active CR3, inspects required bootstrap mappings, verifies high-half section backing and stack translation, and checks the virtual stack guard before applying section protections.
+- The memory manager has a demand-mapped direct-map window for UEFI-described RAM above 4 GiB; physical-to-virtual conversion rejects addresses outside the eligible RAM ranges.
+
+This is a project-specific, fixed-base PE32+ kernel format—not a general Windows kernel loader. The image deliberately has no imports or base relocations, and it is not yet loaded by the Windows boot manager. Windows x64 driver compatibility remains a long-term goal, not an achieved compatibility claim.
+
 ## Security and compatibility notes
 
-- The embedded kernel SHA-256 digest detects a changed kernel only when the bootloader is trusted. It is **not** public-key signature verification or a complete verified-boot chain.
+- The embedded PE32+ kernel SHA-256 digest detects a changed kernel only when the bootloader is trusted. It is **not** public-key signature verification or a complete verified-boot chain.
+- Bootstrap identity mappings use 2 MiB leaves for UEFI-described ranges; descriptor edges are not yet mapped with fully granular 4 KiB permissions, and this is not a complete per-region isolation policy.
+- SMAP remains disabled until all guarded user-memory access paths are audited and consistently use STAC/CLAC.
 - The EFI application is not necessarily signed for Secure Boot enforcement.
 - AP startup, interrupt routing, timer-driven preemption, full process/thread semantics, hardware storage drivers, graphics, and power management remain incomplete.
 - Windows-style names and export metadata do not by themselves provide Windows ABI or semantic compatibility. The current syscall ABI is RdotOS-native.
