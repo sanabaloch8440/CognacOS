@@ -13,42 +13,127 @@ pub const PROCESS_PARAMS_ADDRESS: u64 = 0x0000_0080_7000_0000;
 static NEXT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(4);
 const MAX_PROCESSES: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessState { Created, Running, Exited, Reaped }
 #[derive(Clone, Copy, Debug)]
 pub struct ProcessSnapshot { pub process_id: u64, pub state: ProcessState, pub exit_code: u64 }
+
+/// Stable kernel-resident process object used by NT process-pointer APIs.
+/// This is RdotOS's internal EPROCESS-compatible anchor, not the private
+/// binary layout of a particular Windows build.
+const EPROCESS_MAGIC: u64 = 0x5250_4f43_4553_5331;
+#[repr(C, align(16))]
 #[derive(Clone, Copy)]
-struct ProcessRecord { process_id: u64, state: ProcessState, exit_code: u64, used: bool }
-impl ProcessRecord { const EMPTY: Self = Self { process_id: 0, state: ProcessState::Created, exit_code: 0, used: false }; }
-struct ProcessTable(core::cell::UnsafeCell<[ProcessRecord; MAX_PROCESSES]>);
-unsafe impl Sync for ProcessTable {}
-static TABLE: ProcessTable = ProcessTable(core::cell::UnsafeCell::new([ProcessRecord::EMPTY; MAX_PROCESSES]));
-fn register_process(pid: u64) -> Result<(), ProcessError> {
-    let table = unsafe { &mut *TABLE.0.get() };
-    let Some(slot) = table.iter_mut().find(|r| !r.used) else { return Err(ProcessError::TooManyProcesses); };
-    *slot = ProcessRecord { process_id: pid, state: ProcessState::Created, exit_code: 0, used: true };
+pub struct EProcess {
+    magic: u64,
+    pub process_id: u64,
+    state: ProcessState,
+    used: bool,
+    pub address_space_root: u64,
+    references: u32,
+    _reserved: u32,
+    exit_code: u64,
+}
+impl EProcess {
+    const EMPTY: Self = Self { magic: 0, process_id: 0, state: ProcessState::Reaped,
+        used: false, address_space_root: 0, references: 0, _reserved: 0, exit_code: 0 };
+}
+struct ProcessRegistry([EProcess; MAX_PROCESSES]);
+static TABLE: crate::hal::IrqSpinLock<ProcessRegistry> =
+    crate::hal::IrqSpinLock::new(ProcessRegistry([EProcess::EMPTY; MAX_PROCESSES]));
+
+fn register_process(pid: u64, address_space_root: u64) -> Result<(), ProcessError> {
+    if address_space_root == 0 { return Err(ProcessError::InvalidLayout); }
+    let mut registry = TABLE.lock();
+    let Some(slot) = registry.0.iter_mut().find(|p| !p.used) else { return Err(ProcessError::TooManyProcesses); };
+    *slot = EProcess { magic: EPROCESS_MAGIC, process_id: pid, state: ProcessState::Created,
+        used: true, address_space_root, references: 0, _reserved: 0, exit_code: 0 };
     Ok(())
 }
+
+/// Return the stable process-object address registered for a process ID.
+pub fn eprocess_for_pid(pid: u64) -> Option<*mut EProcess> {
+    let registry = TABLE.lock();
+    registry.0.iter().position(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid)
+        .map(|index| core::ptr::addr_of!(registry.0[index]) as *mut EProcess)
+}
 pub fn mark_running(pid: u64) -> bool {
-    let table = unsafe { &mut *TABLE.0.get() };
-    if let Some(r) = table.iter_mut().find(|r| r.used && r.process_id == pid && r.state == ProcessState::Created) {
-        r.state = ProcessState::Running; true
+    let mut registry = TABLE.lock();
+    if let Some(p) = registry.0.iter_mut().find(|p| p.used && p.process_id == pid && p.state == ProcessState::Created) {
+        p.state = ProcessState::Running; true
     } else { false }
 }
 pub fn mark_exited(pid: u64, code: u64) -> bool {
-    let table = unsafe { &mut *TABLE.0.get() };
-    if let Some(r) = table.iter_mut().find(|r| r.used && r.process_id == pid && r.state == ProcessState::Running) {
-        r.state = ProcessState::Exited; r.exit_code = code; true
+    let mut registry = TABLE.lock();
+    if let Some(p) = registry.0.iter_mut().find(|p| p.used && p.process_id == pid && p.state == ProcessState::Running) {
+        p.state = ProcessState::Exited; p.exit_code = code; true
     } else { false }
 }
 pub fn query(pid: u64) -> Option<ProcessSnapshot> {
-    let table = unsafe { &*TABLE.0.get() };
-    table.iter().find(|r| r.used && r.process_id == pid)
-        .map(|r| ProcessSnapshot { process_id: r.process_id, state: r.state, exit_code: r.exit_code })
+    let registry = TABLE.lock();
+    registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid)
+        .map(|p| ProcessSnapshot { process_id: p.process_id, state: p.state, exit_code: p.exit_code })
 }
 pub fn reap(pid: u64) -> Option<u64> {
-    let table = unsafe { &mut *TABLE.0.get() };
-    let r = table.iter_mut().find(|r| r.used && r.process_id == pid && r.state == ProcessState::Exited)?;
-    let code = r.exit_code; r.state = ProcessState::Reaped; r.used = false; Some(code)
+    let mut registry = TABLE.lock();
+    let p = registry.0.iter_mut().find(|p| p.used && p.process_id == pid && p.state == ProcessState::Exited)?;
+    if p.references != 0 { return None; }
+    let code = p.exit_code;
+    p.state = ProcessState::Reaped;
+    p.used = false;
+    p.address_space_root = 0;
+    p.magic = 0;
+    Some(code)
+}
+
+/// Called by AddressSpace::destroy while the global address-space lifetime lock
+/// is held. Invalidates the root before its page tables can be reclaimed.
+pub(crate) fn detach_address_space(root: u64) {
+    let mut registry = TABLE.lock();
+    for p in registry.0.iter_mut().filter(|p| p.used && p.address_space_root == root) {
+        p.address_space_root = 0;
+    }
+}
+
+/// Execute a cross-process operation with both registered process objects
+/// referenced and both address spaces protected against concurrent mutation or
+/// destruction. Lock order is always address-space lifetime lock, then registry.
+pub fn with_registered_process_roots<R>(
+    source: *mut core::ffi::c_void,
+    target: *mut core::ffi::c_void,
+    operation: impl FnOnce(u64, u64) -> R,
+) -> Option<R> {
+    let _address_spaces = crate::vm::ADDRESS_SPACE_LIFETIME_LOCK.lock();
+    let (source_index, target_index, source_root, target_root) = {
+        let mut registry = TABLE.lock();
+        let base = registry.0.as_mut_ptr();
+        let find = |pointer: *mut core::ffi::c_void, entries: &[EProcess]| -> Option<usize> {
+            entries.iter().position(|p| {
+                (p as *const EProcess as *mut core::ffi::c_void) == pointer
+                    && p.used && p.magic == EPROCESS_MAGIC
+                    && p.state != ProcessState::Exited && p.state != ProcessState::Reaped
+                    && p.address_space_root != 0
+            })
+        };
+        let source_index = find(source, &registry.0)?;
+        let target_index = find(target, &registry.0)?;
+        if registry.0[source_index].references == u32::MAX
+            || registry.0[target_index].references == u32::MAX { return None; }
+        registry.0[source_index].references += 1;
+        registry.0[target_index].references += 1;
+        let roots = (source_index, target_index,
+            registry.0[source_index].address_space_root, registry.0[target_index].address_space_root);
+        let _ = base;
+        roots
+    };
+    let result = operation(source_root, target_root);
+    {
+        let mut registry = TABLE.lock();
+        if registry.0[source_index].references != 0 { registry.0[source_index].references -= 1; }
+        if registry.0[target_index].references != 0 { registry.0[target_index].references -= 1; }
+    }
+    Some(result)
 }
 #[derive(Clone, Copy, Debug)]
 pub enum ProcessError { Vm(VmError), OutOfMemory, InvalidLayout, TooManyProcesses }
@@ -159,6 +244,6 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     put_u64(space, TEB_ADDRESS + 0x60, PEB_ADDRESS)?;
     // The x64 TLS slots begin at offset 0x1480, so TEB occupies two pages.
     put_u64(space, TEB_ADDRESS + 0x1480, 0)?;
-    register_process(pid)?;
+    register_process(pid, space.root_physical())?;
     Ok(ProcessEnvironment { process_id: pid, peb: PEB_ADDRESS, teb: TEB_ADDRESS, tls_vector: TLS_VECTOR_ADDRESS })
 }
