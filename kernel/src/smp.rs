@@ -597,7 +597,7 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64) -> ! {
     // Reject corrupt trampoline metadata before indexing CPU-local state. The
     // AP has already switched to the permanent CR3, but is not yet published.
     if index == 0 || index >= hal::MAX_CPUS {
-        unsafe { crate::serial_write(b"SMP AP rejected invalid logical CPU index.\\r\\n"); }
+        unsafe { crate::serial_write(b"SMP AP rejected invalid logical CPU index.\r\n"); }
         loop { core::hint::spin_loop(); }
     }
     // Install a private TSS/GDT and dedicated IST stacks on this CPU before
