@@ -271,66 +271,42 @@ static SG_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 /// released; the list remains valid until PutScatterGatherList releases it.
 /// This bootstrap path invokes the callback synchronously (no channel queue yet).
 pub unsafe extern "win64" fn get_scatter_gather_list(
-    adapter: *mut core::ffi::c_void,
-    device_object: *mut core::ffi::c_void,
-    mdl: *mut MdlAbi,
-    current_va: *mut core::ffi::c_void,
-    length: u32,
-    execution_routine: Option<ScatterGatherExecuteRoutine>,
-    context: *mut core::ffi::c_void,
-    _write_to_device: u8,
-) -> i32 {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
-        || device_object.is_null() || mdl.is_null() || current_va.is_null()
-        || length == 0 || execution_routine.is_none() {
-        return 0xC000_000D_u32 as i32;
-    }
-    let m = unsafe { &*mdl };
-    if validate_mdl_range(m, current_va as u64, length).is_none() {
-        return 0xC000_000D_u32 as i32;
-    }
-    let page_count = (((current_va as u64 & (PAGE_SIZE - 1)) + length as u64 + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
-    if page_count == 0 || page_count > MAX_SG_SEGMENTS { return 0xC000_009A_u32 as i32; }
-    let _guard = SG_LOCK.lock();
-    let owners = unsafe { &mut *SG_REGISTRY.ownership.get() };
-    let Some(index) = owners.iter().position(|entry| !entry.active) else {
-        return 0xC000_009A_u32 as i32;
-    };
-    let lists = unsafe { &mut *SG_REGISTRY.lists.get() };
-    let list = &mut lists[index];
-    let mut va = current_va as u64;
-    let mut remaining = length as u64;
-    for i in 0..page_count {
-        let chunk = remaining.min(PAGE_SIZE - (va & (PAGE_SIZE - 1)));
-        let physical = unsafe { crate::ntoskrnl::mm::mm_get_physical_address(va as *mut core::ffi::c_void) };
-        if physical == 0 || physical >= 0x1_0000_0000 { return 0xC000_000D_u32 as i32; }
-        list.elements[i] = ScatterGatherElement { address: physical, length: chunk as u32, reserved: 0 };
-        va += chunk;
-        remaining -= chunk;
-    }
-    list.number_of_elements = page_count as u32;
-    list.reserved = 0;
-    let list_ptr = (core::ptr::addr_of_mut!(*list)).cast::<ScatterGatherListAbi>();
-    owners[index] = SgOwnership { active: true, device: device_object as usize, list: list_ptr as usize };
-    drop(_guard);
-    fence(Ordering::SeqCst);
-    unsafe { execution_routine.unwrap()(device_object, core::ptr::null_mut(), list_ptr, context); }
-    0
+ adapter:*mut core::ffi::c_void,device_object:*mut core::ffi::c_void,mdl:*mut MdlAbi,current_va:*mut core::ffi::c_void,length:u32,
+ execution_routine:Option<ScatterGatherExecuteRoutine>,context:*mut core::ffi::c_void,write_to_device:u8
+)->i32{
+ if !is_dma_adapter(adapter)||device_object.is_null()||mdl.is_null()||current_va.is_null()||length==0||execution_routine.is_none(){return 0xC000_000Du32 as i32}
+ let m=unsafe{&*mdl};if validate_mdl_range(m,current_va as u64,length).is_none(){return 0xC000_000Du32 as i32}
+ let pages=(((current_va as u64&(PAGE_SIZE-1))+length as u64+PAGE_SIZE-1)/PAGE_SIZE) as usize;
+ if pages==0||pages>MAX_SG_SEGMENTS{return 0xC000_009Au32 as i32}
+ let _guard=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};
+ let Some(index)=owners.iter().position(|e|!e.active)else{return 0xC000_009Au32 as i32};
+ let lists=unsafe{&mut *SG_REGISTRY.lists.get()};let list=&mut lists[index];let device=match adapter_device(adapter){Some(v)=>v,None=>return 0xC000_000Du32 as i32};
+ let mut va=current_va as u64;let mut remaining=length as u64;let mut mapped=0usize;
+ for i in 0..pages{
+  let chunk=remaining.min(PAGE_SIZE-(va&(PAGE_SIZE-1))) as u32;
+  let physical=unsafe{crate::ntoskrnl::mm::mm_get_physical_address(va as *mut core::ffi::c_void)};
+  if physical==0{for j in 0..mapped{let _=iommu::unmap_logical(device,list.elements[j].address);}return 0xC000_000Du32 as i32}
+  match iommu::map_fragment(device,adapter as usize,physical,chunk,write_to_device){
+   Ok(logical)=>{list.elements[i]=ScatterGatherElement{address:logical,length:chunk,reserved:0};mapped+=1;}
+   Err(_)=>{for j in 0..mapped{let _=iommu::unmap_logical(device,list.elements[j].address);}return 0xC000_009Au32 as i32}
+  }
+  va+=chunk as u64;remaining-=chunk as u64;
+ }
+ list.number_of_elements=pages as u32;list.reserved=0;
+ let list_ptr=(core::ptr::addr_of_mut!(*list)).cast::<ScatterGatherListAbi>();
+ owners[index]=SgOwnership{active:true,device:device_object as usize,list:list_ptr as usize};
+ drop(_guard);fence(Ordering::SeqCst);
+ unsafe{execution_routine.unwrap()(device_object,core::ptr::null_mut(),list_ptr,context)};0
 }
-
-/// Release only an SG list previously issued by GetScatterGatherList.
-pub unsafe extern "win64" fn put_scatter_gather_list(
-    adapter: *mut core::ffi::c_void,
-    scatter_gather: *mut ScatterGatherListAbi,
-    _write_to_device: u8,
-) {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast() || scatter_gather.is_null() { return; }
-    let _guard = SG_LOCK.lock();
-    let owners = unsafe { &mut *SG_REGISTRY.ownership.get() };
-    if let Some(slot) = owners.iter_mut().find(|e| e.active && e.list == scatter_gather as usize) {
-        *slot = SgOwnership::EMPTY;
-        fence(Ordering::SeqCst);
-    }
+pub unsafe extern "win64" fn put_scatter_gather_list(adapter:*mut core::ffi::c_void,scatter_gather:*mut ScatterGatherListAbi,write_to_device:u8){
+ if !is_dma_adapter(adapter)||scatter_gather.is_null(){return}
+ let owner={let _guard=SG_LOCK.lock();let owners=unsafe{&mut *SG_REGISTRY.ownership.get()};let Some(i)=owners.iter().position(|e|e.active&&e.list==scatter_gather as usize)else{return};let x=owners[i];owners[i]=SgOwnership::EMPTY;x};
+ let domain=adapter_device(adapter).unwrap_or(owner.device);
+ let count=unsafe{(*scatter_gather).number_of_elements as usize};
+ if count>MAX_SG_SEGMENTS{return}
+ let elems=unsafe{core::ptr::addr_of!((*scatter_gather).elements).cast::<ScatterGatherElement>()};
+ for i in 0..count{let e=unsafe{elems.add(i).read()};let _=iommu::unmap_logical(domain,e.address);}
+ let _=write_to_device;fence(Ordering::SeqCst)
 }
 
 /// Validate an MDL transfer range using checked arithmetic.
@@ -354,7 +330,7 @@ pub unsafe extern "win64" fn calculate_scatter_gather_list_size(
     list_size: *mut u32,
     flags: u32,
 ) -> i32 {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
+    if !is_dma_adapter(adapter)
         || mdl.is_null() || current_va.is_null() || list_size.is_null() || flags != 0 {
         return 0xC000_000D_u32 as i32; // STATUS_INVALID_PARAMETER
     }
@@ -378,54 +354,30 @@ pub unsafe extern "win64" fn calculate_scatter_gather_list_size(
 /// execution callback synchronously. Each entry covers one physically contiguous
 /// page fragment; this early implementation does not create IOMMU mappings.
 pub unsafe extern "win64" fn build_scatter_gather_list(
-    adapter: *mut core::ffi::c_void,
-    device_object: *mut core::ffi::c_void,
-    mdl: *mut MdlAbi,
-    current_va: *mut core::ffi::c_void,
-    length: u32,
-    execution_routine: Option<ScatterGatherExecuteRoutine>,
-    context: *mut core::ffi::c_void,
-    _write_to_device: u8,
-    scatter_gather_buffer: *mut core::ffi::c_void,
-    scatter_gather_buffer_length: u32,
-) -> i32 {
-    if adapter != core::ptr::addr_of!(DMA_ADAPTER).cast_mut().cast()
-        || device_object.is_null() || mdl.is_null() || current_va.is_null()
-        || scatter_gather_buffer.is_null() || execution_routine.is_none() {
-        return 0xC000_000D_u32 as i32;
-    }
-    let m = unsafe { &*mdl };
-    if validate_mdl_range(m, current_va as u64, length).is_none() {
-        return 0xC000_000D_u32 as i32;
-    }
-    let first_offset = (current_va as u64) & (PAGE_SIZE - 1);
-    let pages = (first_offset + length as u64 + PAGE_SIZE - 1) / PAGE_SIZE;
-    if pages == 0 || pages > MAX_SG_SEGMENTS as u64 { return 0xC000_009A_u32 as i32; }
-    let needed = core::mem::size_of::<ScatterGatherListAbi>()
-        + pages as usize * core::mem::size_of::<ScatterGatherElement>();
-    if needed > scatter_gather_buffer_length as usize { return 0xC000_0023_u32 as i32; }
-    let list = scatter_gather_buffer.cast::<ScatterGatherListAbi>();
-    unsafe {
-        core::ptr::addr_of_mut!((*list).number_of_elements).write(pages as u32);
-        core::ptr::addr_of_mut!((*list).reserved).write(0);
-    }
-    let mut va = current_va as u64;
-    let mut remaining = length as u64;
-    for index in 0..pages as usize {
-        let chunk = remaining.min(PAGE_SIZE - (va & (PAGE_SIZE - 1)));
-        let physical = unsafe { crate::ntoskrnl::mm::mm_get_physical_address(va as *mut core::ffi::c_void) };
-        if physical == 0 || physical >= 0x1_0000_0000 {
-            return 0xC000_000D_u32 as i32;
-        }
-        let element = ScatterGatherElement { address: physical, length: chunk as u32, reserved: 0 };
-        unsafe { core::ptr::addr_of_mut!((*list).elements).cast::<ScatterGatherElement>().add(index).write(element); }
-        va += chunk;
-        remaining -= chunk;
-    }
-    core::sync::atomic::fence(Ordering::SeqCst);
-    unsafe { execution_routine.unwrap()(device_object, core::ptr::null_mut(), list, context); }
-    0
+ adapter:*mut core::ffi::c_void,device_object:*mut core::ffi::c_void,mdl:*mut MdlAbi,current_va:*mut core::ffi::c_void,length:u32,
+ execution_routine:Option<ScatterGatherExecuteRoutine>,context:*mut core::ffi::c_void,write_to_device:u8,
+ scatter_gather_buffer:*mut core::ffi::c_void,scatter_gather_buffer_length:u32
+)->i32{
+ if !is_dma_adapter(adapter)||device_object.is_null()||mdl.is_null()||current_va.is_null()||scatter_gather_buffer.is_null()||execution_routine.is_none(){return 0xC000_000Du32 as i32}
+ let m=unsafe{&*mdl};if validate_mdl_range(m,current_va as u64,length).is_none(){return 0xC000_000Du32 as i32}
+ let first=(current_va as u64)&(PAGE_SIZE-1);let pages=(first+length as u64+PAGE_SIZE-1)/PAGE_SIZE;
+ if pages==0||pages>MAX_SG_SEGMENTS as u64{return 0xC000_009Au32 as i32}
+ let needed=core::mem::size_of::<ScatterGatherListAbi>()+pages as usize*core::mem::size_of::<ScatterGatherElement>();
+ if needed>scatter_gather_buffer_length as usize{return 0xC000_0023u32 as i32}
+ let list=scatter_gather_buffer.cast::<ScatterGatherListAbi>();unsafe{core::ptr::addr_of_mut!((*list).number_of_elements).write(pages as u32);core::ptr::addr_of_mut!((*list).reserved).write(0);}
+ let domain=match adapter_device(adapter){Some(v)=>v,None=>return 0xC000_000Du32 as i32};let mut va=current_va as u64;let mut remaining=length as u64;let mut mapped=0usize;
+ for i in 0..pages as usize{
+  let chunk=remaining.min(PAGE_SIZE-(va&(PAGE_SIZE-1))) as u32;let physical=unsafe{crate::ntoskrnl::mm::mm_get_physical_address(va as *mut core::ffi::c_void)};
+  if physical==0{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}return 0xC000_000Du32 as i32}
+  match iommu::map_fragment(domain,adapter as usize,physical,chunk,write_to_device){
+   Ok(logical)=>{unsafe{core::ptr::addr_of_mut!((*list).elements).cast::<ScatterGatherElement>().add(i).write(ScatterGatherElement{address:logical,length:chunk,reserved:0});}mapped+=1;}
+   Err(_)=>{for j in 0..mapped{let e=unsafe{core::ptr::addr_of!((*list).elements).cast::<ScatterGatherElement>().add(j).read()};let _=iommu::unmap_logical(domain,e.address);}return 0xC000_009Au32 as i32}
+  }
+  va+=chunk as u64;remaining-=chunk as u64;
+ }
+ let _=write_to_device;fence(Ordering::SeqCst);unsafe{execution_routine.unwrap()(device_object,core::ptr::null_mut(),list,context)};0
 }
+
 
 
 /// Bounded legacy map-register tokens. Direct-DMA mode uses tokens to enforce
