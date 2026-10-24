@@ -16,8 +16,8 @@ pub type SyncFn=unsafe extern "system" fn(*mut c_void,usize,u64,u32,u8)->i32;
 pub struct IommuBackend { pub size:u32,pub context:*mut c_void,pub map:Option<MapFn>,pub unmap:Option<UnmapFn>,pub sync:Option<SyncFn> }
 unsafe impl Send for IommuBackend{} unsafe impl Sync for IommuBackend{}
 static BACKEND:core::sync::atomic::AtomicPtr<IommuBackend>=core::sync::atomic::AtomicPtr::new(ptr::null_mut());
-#[derive(Clone,Copy)]struct Mapping{used:bool,device:usize,token:usize,irp:usize,physical:u64,logical:u64,length:u32,cookie:u64}
-impl Mapping{const EMPTY:Self=Self{used:false,device:0,token:0,irp:0,physical:0,logical:0,length:0,cookie:0};}
+#[derive(Clone,Copy)]struct Mapping{used:bool,device:usize,token:usize,irp:usize,physical:u64,logical:u64,length:u32,cookie:u64,direction:u8}
+impl Mapping{const EMPTY:Self=Self{used:false,device:0,token:0,irp:0,physical:0,logical:0,length:0,cookie:0,direction:0};}
 #[derive(Clone,Copy)]struct Common{used:bool,device:usize,cpu:usize,physical:u64,logical:u64,length:usize,pages:usize,cookie:u64}
 impl Common{const EMPTY:Self=Self{used:false,device:0,cpu:0,physical:0,logical:0,length:0,pages:0,cookie:0};}
 struct State{maps:[Mapping;MAX_MAPPINGS],common:[Common;MAX_COMMON]}
@@ -29,6 +29,7 @@ pub unsafe extern "system" fn RdotDmaRegisterIommuBackend(ops:*mut IommuBackend)
  if BACKEND.compare_exchange(ptr::null_mut(),ops,Ordering::AcqRel,Ordering::Acquire).is_err(){return 0xC000_0022u32 as i32}OK
 }
 pub fn available()->bool{backend().is_ok()}
+pub fn device_busy(device:usize)->bool{let s=STATE.lock();s.maps.iter().any(|m|m.used&&m.device==device)||s.common.iter().any(|b|b.used&&b.device==device)}
 fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{
  if device==0||token==0||length==0||physical.checked_add(length as u64).is_none(){return Err(DmaError::InvalidLength)}
  let b=backend().map_err(|_|DmaError::AddressMask)?;
@@ -37,11 +38,13 @@ fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:
  let status=unsafe{(b.map.unwrap())(b.context,device,physical,length,direction,&mut logical_out,&mut cookie_out)};
  if status!=OK||logical_out==0||cookie_out==0||logical_out.checked_add(length as u64).is_none(){return Err(DmaError::AddressMask)}
  let mut s=STATE.lock();let Some(slot)=s.maps.iter_mut().find(|m|!m.used)else{drop(s);unsafe{(b.unmap.unwrap())(b.context,device,logical_out,cookie_out)};return Err(DmaError::RegistryFull)};
- *slot=Mapping{used:true,device,token,irp,physical,logical:logical_out,length,cookie:cookie_out};fence(Ordering::SeqCst);Ok(logical_out)
+ *slot=Mapping{used:true,device,token,irp,physical,logical:logical_out,length,cookie:cookie_out,direction};fence(Ordering::SeqCst);Ok(logical_out)
 }
 fn unmap_index(index:usize)->bool{
  let mapping={let mut s=STATE.lock();if index>=s.maps.len()||!s.maps[index].used{return false}let m=s.maps[index];s.maps[index]=Mapping::EMPTY;m};
- let Ok(b)=backend()else{return false};let status=unsafe{(b.unmap.unwrap())(b.context,mapping.device,mapping.logical,mapping.cookie)};
+ let Ok(b)=backend()else{return false};
+ if unsafe{(b.sync.unwrap())(b.context,mapping.device,mapping.logical,mapping.length,mapping.direction)}!=OK{let mut s=STATE.lock();if let Some(slot)=s.maps.iter_mut().find(|x|!x.used){*slot=mapping;}return false}
+ let status=unsafe{(b.unmap.unwrap())(b.context,mapping.device,mapping.logical,mapping.cookie)};
  if status!=OK{let mut s=STATE.lock();if let Some(slot)=s.maps.iter_mut().find(|x|!x.used){*slot=mapping;}return false}
  super::return_map_register(mapping.token as *mut c_void,mapping.device);fence(Ordering::SeqCst);true
 }
@@ -50,11 +53,10 @@ pub fn map_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u3
  if !super::consume_map_register(token,device){return Err(DmaError::OutOfMemory)}
  match map_one(device,token as usize,0,physical,length,direction){Ok(v)=>Ok(v),Err(e)=>{super::return_map_register(token,device);Err(e)}}
 }
-pub fn sync_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u32,direction:u8)->bool{
- let Some(device)=super::adapter_device(adapter)else{return false};let Ok(b)=backend()else{return false};
+pub fn sync_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u32,_direction:u8)->bool{
+ let Some(device)=super::adapter_device(adapter)else{return false};
  let found={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token as usize&&m.physical==physical&&m.length==length)};
- let Some(index)=found else{return false};let m={let s=STATE.lock();s.maps[index]};
- if unsafe{(b.sync.unwrap())(b.context,device,m.logical,length,direction)}!=OK{return false}
+ let Some(index)=found else{return false};
  if !unmap_index(index){return false}fence(Ordering::SeqCst);true
 }
 #[unsafe(no_mangle)]
