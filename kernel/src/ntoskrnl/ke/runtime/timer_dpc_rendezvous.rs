@@ -307,13 +307,13 @@ fn dpc_slot(object:usize)->Option<usize>{
     table.records.iter().position(|r|r.active&&r.object==object)
 }
 fn timer_deadline(due:i64)->Option<u64>{
-    if due==0{return Some(crate::apic::monotonic_ticks())}
-    if due<0{return crate::apic::relative_timeout_deadline(due)}
+    if due==0{return Some(crate::hal::query_performance_counter())}
+    if due<0{return crate::hal::relative_timeout_deadline(due)}
     let now=precise_system_time_100ns()? as i64;
     let delta=(due-now).max(0) as u64;
-    let hz=crate::apic::tsc_frequency_hz()?;
+    let hz=crate::hal::query_performance_frequency_hz()?;
     let ticks=((delta as u128).checked_mul(hz as u128)?/10_000_000u128).min(u64::MAX as u128) as u64;
-    crate::apic::monotonic_ticks().checked_add(ticks)
+    crate::hal::query_performance_counter().checked_add(ticks)
 }
 unsafe fn initialize_timer(timer:*mut DispatcherHeader, timer_type:i32){
     if timer.is_null()||!(timer_type==0||timer_type==1){return}
@@ -352,7 +352,7 @@ pub unsafe extern "win64" fn ke_set_timer_ex(timer:*mut DispatcherHeader,due_tim
     if timer.is_null()||!matches!(unsafe{(*timer).kind},TIMER_NOTIFICATION|TIMER_SYNCHRONIZATION){return 0}
     let value=due_time;
     let Some(deadline)=timer_deadline(value) else{return 0};
-    let hz=crate::apic::tsc_frequency_hz().unwrap_or(0);
+    let hz=crate::hal::query_performance_frequency_hz().unwrap_or(0);
     let period=if period_ms<=0||hz==0{0}else{((hz as u128)*(period_ms as u32 as u128)/1000).min(u64::MAX as u128) as u64};
     let (was_active,_old_dpc)={
         let mut table=TIMERS.lock();
@@ -572,7 +572,7 @@ pub unsafe extern "win64" fn ke_set_timer2(
 ) -> u8 {
     if timer.is_null() { return 0; }
     let Some(deadline) = timer_deadline(due_time) else { return 0; };
-    let hz = crate::apic::tsc_frequency_hz().unwrap_or(0);
+    let hz = crate::hal::query_performance_frequency_hz().unwrap_or(0);
     let period = if period_ms == 0 || hz == 0 { 0 }
         else { ((hz as u128) * (period_ms as u128) / 1000).min(u64::MAX as u128) as u64 };
     let mut table = TIMERS.lock();
@@ -773,7 +773,7 @@ pub(crate) fn ki_start_all_processors(
                 report.ipi_enabled = ipi_enabled;
                 report.interrupt_stress_passed = ipi_enabled
                     && crate::smp::interrupt_setup_stress_test(64);
-                let (synced, offset) = crate::apic::tsc_cross_core_status();
+                let (synced, offset) = crate::hal::query_cross_core_clock_status();
                 report.tsc_synced = synced;
                 report.worst_tsc_offset = offset;
             }
@@ -807,7 +807,7 @@ pub unsafe extern "win64" fn ke_query_active_processors() -> u64 {
 pub unsafe extern "win64" fn ke_query_time_increment() -> u32 {
     // NT's default 100-ns time increment is not exposed until the timer source
     // is calibrated; return zero rather than advertise a fabricated tick rate.
-    if crate::apic::local_timer_active() { 156_250 } else { 0 }
+    if crate::hal::local_clock_event_active() { 156_250 } else { 0 }
 }
 pub unsafe extern "win64" fn ke_should_yield_processor() -> u8 {
     crate::thread::has_ready_threads() as u8
