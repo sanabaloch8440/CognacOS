@@ -145,6 +145,19 @@ fn main() -> Status {
         }
         Err(error) => { uefi::println!("High-half page-table pool allocation failed: {:?}", error); return error.status(); }
     };
+    let transition_page_physical = match allocate_boot_page() {
+        Ok(page) => page,
+        Err(error) => { uefi::println!("Low transition trampoline allocation failed: {:?}", error); return error; }
+    };
+    // Position-independent trampoline bytes: mov cr3,rcx; mov rsp,rsi;
+    // xor rbp,rbp; jmp rax. It executes from a low identity-mapped page after
+    // the firmware-loaded bootloader image (which may reside above 4 GiB)
+    // jumps to it, so no instruction fetch depends on the old CR3 after switch.
+    unsafe {
+        let trampoline = transition_page_physical as *mut u8;
+        let bytes = [0x0f, 0x22, 0xd9, 0x48, 0x89, 0xf4, 0x48, 0x31, 0xed, 0xff, 0xe0];
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), trampoline, bytes.len());
+    }
     // Reserve low identity-mapped storage for the final map and boot-info.
     // The UEFI memory-map helper may return a buffer outside the bootstrap map.
     let map_copy = match boot::allocate_pages(
@@ -246,6 +259,7 @@ fn main() -> Status {
         pml4_physical,
         pt_pool_physical,
         high_pt_pool,
+        transition_page_physical,
         map_copy.as_ptr() as u64,
         boot_info_storage.as_ptr() as u64,
         kernel_stack_guard_page,
@@ -277,14 +291,12 @@ fn main() -> Status {
         core::arch::asm!(
             "cli",
             "cld",
-            "mov cr3, rcx",
-            "mov rsp, rsi",
-            "xor rbp, rbp",
-            "jmp rax",
+            "jmp rdx",
             in("rax") entry,
             in("rdi") boot_info_ptr,
             in("rsi") kernel_stack,
             in("rcx") pml4_physical,
+            in("rdx") transition_page_physical,
             options(noreturn)
         );
     }
