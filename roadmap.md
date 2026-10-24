@@ -11,7 +11,7 @@ This roadmap tracks code and validation currently present in the repository, not
 | UEFI boot and kernel handoff | PE32+ native kernel handoff; CI/QEMU validated | Signature-based verified boot, relocatable images, broader malformed-image tests |
 | Memory management/protection | 4 KiB descriptor-driven bootstrap mappings, RAM direct-map, MDL validation/pinning/lifecycle helpers, pageable kernel-pool page-in, non-contiguous kernel and tracked active-process user MDL aliases, registered process-root cross-process copy | Demand-zero/pagefile-backed user faults, Windows-style exception recovery, scheduler-integrated current-process semantics, complete object/handle manager, stress and WDK conformance |
 | PE32+ loader and ring-3 test path | Foundation implemented; boot-tested | Full NT loader, unwind/exception handling, Windows user-mode DLLs |
-| ACPI / HAL / bus drivers | Private APIC backend, HAL service wrappers, separate ACPI and PCI source crates, versioned HAL contract, processor policy scaffold | Standalone PE32+ driver images/loader, runtime ACPI power/PnP, PCI enumeration/resource allocation, HAL backend extraction, CI and QEMU validation |
+| ACPI / HAL / bus drivers | Separate ACPI, PCI, HAL-contract, and processor crates; CI image build configured for `Hal.dll`, `acpi.sys`, `pci.sys`, `processor.sys`; restricted pre-mapped native PE32+ loader entry | Runtime auto-loading, memory allocation/protection and dependency binding, relocations/imports/unload, real HAL entry initialization, ACPI PnP/power, PCI enumeration/resources, processor power policy, CI validation pending |
 | SMP/AP startup | Per-CPU GDT/TSS and dedicated NMI/double-fault/machine-check IST stacks; cooperative thread dispatch and cross-CPU wake IPIs; Ke/Ki-owned AP startup and stress sequencing | 2/4/8-vCPU CI validation pending; timer preemption, per-CPU run queues/load balancing, MDL teardown races, and real-hardware validation remain open |
 | Scheduler and threads | Policy/test foundations | Production context switching, preemption, run queues |
 | NT executive/syscall compatibility | 169 Ke export names tracked; kernel APC safe points/rundown, alertable user APC IRET injection, processor callback table, referenced CR3 attach/detach, scheduler-backed priority bands, serialized event/semaphore/timer wait-all reservations, device queue lifecycle checks, public x64 layout assertions, and cross-CPU generic-DPC Synchronize/Done barriers validated by 2/4/8-vCPU QEMU CI; synchronous global DPC flush and timer-generation rundown hardening implemented but latest validation pending | Failed/offline-target and flush-versus-insert stress proof; timer cancellation/rearm/rundown stress; user APC trap/SEH and WDK tests; real processor hot-remove; exception-safe process detach and process/thread integration; mutant/queue wait-all reservations; Windows priority decay/quantum; exact private Windows object layouts are intentionally not mirrored; broader Ke export semantics |
@@ -33,6 +33,19 @@ This roadmap tracks code and validation currently present in the repository, not
 - [ ] Move ACPI runtime discovery/power and PCI bus enumeration/resource allocation into their driver packages; add PnP, interrupt-resource, power, and hot-plug integration tests.
 
 **Status:** source/build boundaries have begun; these crates are not yet separate loadable binaries. No Windows `.sys` compatibility is claimed.
+
+
+### Native driver images and initial registry runtime (2026-10-24)
+
+- [x] Add freestanding AMD64 `DriverEntry` entry-point binaries for the HAL, ACPI, PCI, and processor package targets.
+- [x] Extend the ELF-to-PE32+ converter to emit DLL-characteristic native images at per-driver preferred bases; workflow validates AMD64, PE32+, native subsystem, entry RVA, and the currently required no-import/no-relocation profile.
+- [x] Add a restricted `ntoskrnl::driver_loader` routine that validates PE headers/sections, rejects W+X sections and unsupported imports/relocations, copies sections into a caller-provided pre-mapped image, and invokes its entry point.
+- [x] Implement an initial bounded volatile registry core and resolve `Nt/ZwCreateKey`, `OpenKey`, `SetValueKey`, `QueryValueKey` (partial-information class), `DeleteValueKey`, `DeleteKey`, and `FlushKey` by exact symbol name.
+- [ ] Connect boot/driver services to allocate and protect driver image mappings, load artifacts from a trusted filesystem/boot manifest, bind HAL/ntoskrnl imports, support relocation and unload/rundown, and exercise real driver initialization.
+- [ ] Replace the current minimal success-returning driver entry points with actual HAL initialization and ACPI/PCI/processor runtime behavior; the current images are scaffolds, not Windows-compatible drivers.
+- [ ] Extend registry semantics with persistent hive storage, canonical full paths, access/handle checks, enumeration and full information classes, callbacks/notifications, transactions, security, and WDK tests.
+
+**Validation status:** workflow build and artifact generation have been configured but not yet observed passing for this revision. A PE image build is not evidence of a working runtime load path or Windows 11 driver compatibility.
 
 ### HAL / ntoskrnl dependency boundary (2026-10-24)
 
