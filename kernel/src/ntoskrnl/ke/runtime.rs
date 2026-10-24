@@ -1166,7 +1166,7 @@ fn release_mutant(object:*mut DispatcherHeader,abandoned:bool)->i32{
         let old=-(record.recursion as i32-1);
         if record.recursion>1{
             record.recursion-=1;
-            unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(-(record.recursion as i32),Ordering::Release);}
+            unsafe{(&*core::ptr::addr_of!((*object).signal_state).cast::<core::sync::atomic::AtomicI32>()).store(1-(record.recursion as i32),Ordering::Release);}
             return old;
         }
         record.owner=0;record.recursion=0;record.abandoned=abandoned;
