@@ -54,9 +54,9 @@ type ApcRundownRoutine = unsafe extern "win64" fn(*mut core::ffi::c_void);
 struct ApcRecord {
  object:usize, thread_id:u64, kernel_routine:usize, rundown_routine:usize,
  normal_routine:usize, normal_context:usize, arg1:usize, arg2:usize,
- environment:i32, mode:i8, inserted:bool,
+ environment:i32, mode:i8, inserted:bool, delivering:bool, kernel_routine_done:bool,
 }
-impl ApcRecord { const EMPTY:Self=Self{object:0,thread_id:0,kernel_routine:0,rundown_routine:0,normal_routine:0,normal_context:0,arg1:0,arg2:0,environment:0,mode:0,inserted:false}; }
+impl ApcRecord { const EMPTY:Self=Self{object:0,thread_id:0,kernel_routine:0,rundown_routine:0,normal_routine:0,normal_context:0,arg1:0,arg2:0,environment:0,mode:0,inserted:false,delivering:false,kernel_routine_done:false}; }
 struct ApcTable { records:[ApcRecord;128] }
 impl ApcTable { const fn new()->Self{Self{records:[ApcRecord::EMPTY;128]}} }
 static APC_TABLE:crate::hal::IrqSpinLock<ApcTable>=crate::hal::IrqSpinLock::new(ApcTable::new());
@@ -91,7 +91,7 @@ pub unsafe extern "win64" fn ke_insert_queue_apc(
  let thread_id={
   let mut table=APC_TABLE.lock();
   let Some(record)=table.records.iter_mut().find(|r|r.object==apc as usize) else{return 0};
-  if record.inserted{return 0}
+  if record.inserted||record.delivering{return 0}
   record.arg1=arg1 as usize;record.arg2=arg2 as usize;record.inserted=true;record.thread_id
  };
  boost_thread_priority(thread_id,increment);
@@ -129,18 +129,32 @@ pub fn take_pending_user_apc()->Option<(usize,usize,usize,usize,usize)>{
  let thread_id=crate::thread::current_thread_id()?;
  let record={
   let mut table=APC_TABLE.lock();
-  let slot=table.records.iter().position(|r|r.inserted&&r.thread_id==thread_id&&r.mode!=0)?;
-  let record=table.records[slot];table.records[slot].inserted=false;record
+  let slot=table.records.iter().position(|r|r.inserted&&r.thread_id==thread_id&&r.mode!=0&&r.normal_routine!=0)?;
+  let record=table.records[slot];table.records[slot].inserted=false;
+  table.records[slot].delivering=true;table.records[slot].kernel_routine_done=true;record
  };
  let mut normal=record.normal_routine;
  let mut context=record.normal_context as *mut core::ffi::c_void;
  let mut arg1=record.arg1 as *mut core::ffi::c_void;
  let mut arg2=record.arg2 as *mut core::ffi::c_void;
- if record.kernel_routine!=0{
+ if !record.kernel_routine_done&&record.kernel_routine!=0{
   let routine:ApcKernelRoutine=unsafe{core::mem::transmute(record.kernel_routine)};
   unsafe{routine(record.object as *mut _,&mut normal,&mut context,&mut arg1,&mut arg2);}
  }
  Some((record.object,normal,context as usize,arg1 as usize,arg2 as usize))
+}
+/// Requeue an APC whose user-return frame could not be built. The kernel
+/// routine is marked complete so retrying the user return does not invoke it twice.
+pub fn requeue_pending_user_apc(object:usize,normal:usize,context:usize,arg1:usize,arg2:usize)->bool{
+ let thread_id=crate::thread::current_thread_id().unwrap_or(0);
+ let mut table=APC_TABLE.lock();
+ let Some(record)=table.records.iter_mut().find(|r|r.object==object&&r.delivering&&!r.inserted) else{return false};
+ record.normal_routine=normal;record.normal_context=context;record.arg1=arg1;record.arg2=arg2;
+ record.thread_id=thread_id;record.inserted=true;record.delivering=false;true
+}
+pub fn complete_user_apc_delivery(object:usize){
+ let mut table=APC_TABLE.lock();
+ if let Some(record)=table.records.iter_mut().find(|r|r.object==object&&r.delivering&&!r.inserted){*record=ApcRecord::EMPTY;}
 }
 
 /// Invoke queued APC rundown routines when a thread exits; never call drivers
@@ -178,7 +192,8 @@ pub fn ke_deliver_pending_kernel_apcs(){
   let record={
    let mut table=APC_TABLE.lock();
    let Some(slot)=table.records.iter().position(|r|r.inserted&&r.thread_id==thread_id&&r.mode==0) else{break};
-   let record=table.records[slot];table.records[slot].inserted=false;record
+   let record=table.records[slot];table.records[slot].inserted=false;
+   table.records[slot].delivering=true;table.records[slot].kernel_routine_done=true;record
   };
   let mut normal=record.normal_routine;
   let mut context=record.normal_context as *mut core::ffi::c_void;
@@ -192,6 +207,8 @@ pub fn ke_deliver_pending_kernel_apcs(){
    let routine:ApcNormalRoutine=unsafe{core::mem::transmute(normal)};
    unsafe{routine(context,arg1,arg2);}
   }
+  let mut table=APC_TABLE.lock();
+  if let Some(slot)=table.records.iter().position(|r|r.object==record.object&&r.delivering&&!r.inserted){table.records[slot]=ApcRecord::EMPTY;}
  }
  APC_DELIVERING[cpu].store(false,Ordering::Release);
 }
