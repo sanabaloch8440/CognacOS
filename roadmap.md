@@ -314,7 +314,7 @@ Update these checkboxes alongside code changes, and only mark work complete afte
 - [x] Implement `KeIpiGenericCall` with one broadcast callback invocation per online processor and synchronous completion on the caller.
 - [x] Implement `KeGenericCallDpc` with per-CPU callback execution at logical DISPATCH_LEVEL.
 - [x] Implement `KeSignalCallDpcSynchronize` and `KeSignalCallDpcDone` using shared synchronization and completion barriers.
-- [x] Route HAL IPI notifications through the active rendezvous descriptor and execute callbacks on the target CPU before local-APIC EOI.
+- [x] Route a dedicated Ke broadcast IPI vector through the active rendezvous descriptor and execute callbacks on the target CPU before local-APIC EOI.
 - [x] Add import-resolver mappings and self-test assertions for all four exports.
 - [x] Update `WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md` with public signatures, call paths, limitations, and the recalculated project score.
 - [ ] Validate callback counts, barriers, callback IRQL, and return values in QEMU with 2, 4, and 8 vCPUs.
