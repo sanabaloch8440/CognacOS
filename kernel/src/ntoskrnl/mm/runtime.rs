@@ -687,6 +687,19 @@ mod tests {
     }
 
     #[test]
+    fn mdl_page_pin_registry_is_reference_counted() {
+        let pfn = 0x5a17_0001u64;
+        assert!(!is_page_locked(pfn * PAGE_SIZE));
+        assert!(lock_pfns(&[pfn, pfn]));
+        assert!(is_page_locked(pfn * PAGE_SIZE));
+        assert!(lock_pfns(&[pfn]));
+        unlock_pfns(&[pfn, pfn]);
+        assert!(is_page_locked(pfn * PAGE_SIZE));
+        unlock_pfns(&[pfn]);
+        assert!(!is_page_locked(pfn * PAGE_SIZE));
+    }
+
+    #[test]
     fn copy_memory_accepts_empty_copy_only_with_valid_flag_and_destination() {
         let mut transferred = 7u64;
         let invalid = unsafe {
