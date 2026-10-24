@@ -63,7 +63,7 @@ fn register_process(pid: u64, address_space_root: u64) -> Result<(), ProcessErro
     let ty = [b'P' as u16,b'r' as u16,b'o' as u16,b'c' as u16,b'e' as u16,b's' as u16,b's' as u16];
     if unsafe { crate::ntoskrnl::ob::runtime::register_external_object(pointer.cast(), &ty, &name[..full_len], false, core::ptr::null(), 0) }.is_err() {
         let mut registry = TABLE.lock();
-        if let Some(p) = registry.0.iter_mut().find(|p| core::ptr::eq(p, pointer)) { *p = EProcess::EMPTY; }
+        if let Some(p) = registry.0.iter_mut().find(|p| core::ptr::eq(&**p, pointer)) { *p = EProcess::EMPTY; }
         return Err(ProcessError::TooManyProcesses);
     }
     Ok(())
