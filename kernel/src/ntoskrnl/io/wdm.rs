@@ -74,7 +74,7 @@ pub struct IoStackLocation {
     pub context: *mut c_void,
 }
 #[repr(C)]
-struct DeviceSlot { used: bool, deleting: bool, attached_to: *mut DeviceObject, object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
+struct DeviceSlot { used: bool, deleting: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
 struct IrpSlot { used: bool, object: Irp, stack: [IoStackLocation;16] }
@@ -83,7 +83,7 @@ struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WD
 impl WdmState {
  const fn new() -> Self {
   Self {
-   devices: [const { DeviceSlot { used:false, deleting:false, attached_to:ptr::null_mut(), object: DeviceObject {
+   devices: [const { DeviceSlot { used:false, deleting:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
@@ -112,13 +112,20 @@ pub unsafe extern "system" fn io_create_device(
 )->i32 {
  if driver.is_null() || output.is_null() || extension_size as usize>MAX_DEVICE_EXTENSION || exclusive>1 { return STATUS_INVALID_PARAMETER; }
  unsafe { output.write(ptr::null_mut()); }
- if !device_name.is_null() {
+ let mut counted_name=[0u16;260];
+ let name_len=if !device_name.is_null() {
   let name=unsafe{&*device_name};
-  if name.length>name.maximum_length || name.length%2!=0 || (name.length!=0&&name.buffer.is_null()) {return STATUS_INVALID_PARAMETER;}
- }
+  let bytes=name.length as usize;
+  if name.length>name.maximum_length || name.length%2!=0 || bytes>counted_name.len()*2 || (bytes!=0&&name.buffer.is_null()) {return STATUS_INVALID_PARAMETER;}
+  let units=bytes/2;
+  if units!=0 {unsafe{ptr::copy_nonoverlapping(name.buffer,counted_name.as_mut_ptr(),units);}}
+  units
+ } else {0};
  let mut state=WDM.lock();
+ if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.deleting=false;
+ slot.used=true;slot.deleting=false;slot.attached_to=ptr::null_mut();
+ slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
  slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
  slot.object.device_extension=if extension_size==0 {ptr::null_mut()} else {slot.extension.as_mut_ptr().cast()};
@@ -161,6 +168,7 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  slot.object.next_device=ptr::null_mut();
  slot.object.attached_device=ptr::null_mut();
  slot.attached_to=ptr::null_mut();
+ slot.name_len=0;slot.name.fill(0);
  slot.used=false;slot.deleting=false;
  drop(state);
  unsafe{io_unregister_file_system(device);}
@@ -587,6 +595,18 @@ pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
  };
  unsafe{routine(device,irp);}
  1
+}
+
+
+/// Resolve a counted device name to a registered device object. This is the
+/// bounded name lookup primitive used by future IoGetDeviceObjectPointer and
+/// mount-manager integration; it does not create a FILE_OBJECT.
+pub unsafe fn lookup_device_object(name:*mut UnicodeString)->*mut DeviceObject {
+    let Some((len,buffer))=valid_unicode_name(name) else{return ptr::null_mut()};
+    let mut copy=[0u16;MAX_SYMBOLIC_LINK_CHARS];
+    unsafe{ptr::copy_nonoverlapping(buffer,copy.as_mut_ptr(),len);}
+    let state=WDM.lock();
+    state.devices.iter().find(|s|s.used&&!s.deleting&&s.name_len==len&&unicode_equal_folded(&s.name[..s.name_len],&copy[..len])).map_or(ptr::null_mut(),|s|ptr::addr_of!(s.object) as *mut DeviceObject)
 }
 
 
