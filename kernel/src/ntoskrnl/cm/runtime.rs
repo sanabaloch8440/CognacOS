@@ -86,6 +86,11 @@ fn key_from_handle(s:&State,h:*mut core::ffi::c_void)->Option<u32>{
  }
 }
 fn handle(id:u32)->*mut core::ffi::c_void{(HANDLE_BASE+id as usize) as *mut core::ffi::c_void}
+fn key_slot_reusable(k:&Key)->bool{
+ if !k.used{return true}if !k.deleted{return false}
+ #[cfg(test)] {true}
+ #[cfg(not(test))] {crate::ntoskrnl::ob::runtime::object_rundown_complete((k as *const Key as *mut Key).cast())}
+}
 unsafe fn object_path(oa:*const ObjectAttributes)->Result<([u16;MAX_NAME],usize,u32),i32>{
  if oa.is_null(){return Err(STATUS_INVALID_PARAMETER);}
  let o=unsafe{&*oa};if (o.length as usize)<core::mem::size_of::<ObjectAttributes>()||o.object_name.is_null(){return Err(STATUS_INVALID_PARAMETER);}
@@ -104,7 +109,7 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
   #[cfg(not(test))] {let body=core::ptr::addr_of!(**k) as *mut Key as *mut core::ffi::c_void;match crate::ntoskrnl::ob::runtime::open_by_pointer(body,desired_access,crate::ntoskrnl::ob::runtime::current_owner(),true,0){Ok(h)=>unsafe{*out=h},Err(e)=>return e}}
   if !disposition.is_null(){unsafe{*disposition=2;}}return STATUS_SUCCESS;
  }
- let Some(index)=s.keys.iter().position(|k|!k.used||k.deleted)else{return STATUS_INSUFFICIENT_RESOURCES;};
+ let Some(index)=s.keys.iter().position(key_slot_reusable)else{return STATUS_INSUFFICIENT_RESOURCES;};
  let id=s.next_id;s.next_id=s.next_id.wrapping_add(1).max(1);
  s.keys[index]=Key{used:true,id,parent,name,name_len:n as u16,deleted:false};
  let mut object_name=[0u16;MAX_NAME];let object_name_len=match key_path(s,id,&mut object_name){Some(v)=>v,None=>{s.keys[index]=Key::EMPTY;return STATUS_INVALID_PARAMETER;}};
