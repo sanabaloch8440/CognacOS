@@ -200,6 +200,9 @@ fn finish_power_request(irp:*mut WdmIrp,_status:i32){
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "system" fn PoCallDriver(device:*mut DeviceObject,irp:*mut WdmIrp)->i32 { unsafe{io::io_call_driver(device,irp)} }
+
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn PoStartNextPowerIrp(_irp:*mut WdmIrp){}
 
 
