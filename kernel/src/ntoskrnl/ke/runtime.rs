@@ -993,9 +993,24 @@ unsafe fn list_insert_head(head:*mut ListEntry,entry:*mut ListEntry){
 unsafe fn list_remove_head(head:*mut ListEntry)->*mut ListEntry{
     unsafe{let first=(*head).flink;if first==head{return core::ptr::null_mut()}let next=(*first).flink;(*head).flink=next;(*next).blink=head;(*first).flink=first;(*first).blink=first;first}
 }
+#[derive(Clone,Copy)]
+struct QueueFlag{object:usize,rundown:bool}
+impl QueueFlag{const EMPTY:Self=Self{object:0,rundown:false};}
+struct QueueFlagTable{records:[QueueFlag;128]}
+impl QueueFlagTable{const fn new()->Self{Self{records:[QueueFlag::EMPTY;128]}}}
+static QUEUE_FLAGS:crate::hal::IrqSpinLock<QueueFlagTable>=crate::hal::IrqSpinLock::new(QueueFlagTable::new());
+fn queue_rundown_state(object:usize,set:Option<bool>)->bool{
+    let mut table=QUEUE_FLAGS.lock();
+    let index=table.records.iter().position(|r|r.object==object).or_else(||table.records.iter().position(|r|r.object==0));
+    let Some(i)=index else{return false};
+    if table.records[i].object==0{table.records[i].object=object;}
+    if let Some(value)=set{table.records[i].rundown=value;}
+    table.records[i].rundown
+}
 pub unsafe extern "win64" fn ke_initialize_queue(queue:*mut ExecutiveQueue,count:u32){
     if queue.is_null(){return}
     let max=if count==0{crate::hal::online_cpu_count().max(1) as u32}else{count};
+    let _=queue_rundown_state(queue as usize,Some(false));
     unsafe{
         core::ptr::addr_of_mut!((*queue).header).write(DispatcherHeader{kind:QUEUE_OBJECT,absolute:0,size:(core::mem::size_of::<ExecutiveQueue>()/4) as u8,inserted:0,signal_state:0,wait_list_flink:queue as u64+8,wait_list_blink:queue as u64+8});
         list_initialize(core::ptr::addr_of_mut!((*queue).entry_list_head));
@@ -1005,6 +1020,7 @@ pub unsafe extern "win64" fn ke_initialize_queue(queue:*mut ExecutiveQueue,count
 }
 unsafe fn queue_insert(queue:*mut ExecutiveQueue,entry:*mut ListEntry,at_head:bool)->i32{
     if queue.is_null()||entry.is_null(){return 0}
+    if queue_rundown_state(queue as usize,None){return STATUS_ABANDONED_WAIT_0}
     let _guard=DISPATCHER_OBJECT_LOCK.lock();
     let state=unsafe{&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()};
     let previous=state.load(Ordering::Acquire);
@@ -1026,6 +1042,7 @@ pub unsafe extern "win64" fn ke_insert_queue(queue:*mut ExecutiveQueue,entry:*mu
 pub unsafe extern "win64" fn ke_insert_head_queue(queue:*mut ExecutiveQueue,entry:*mut ListEntry)->i32{unsafe{queue_insert(queue,entry,true)}}
 pub unsafe extern "win64" fn ke_remove_queue(queue:*mut ExecutiveQueue,wait_mode:i32,timeout:*const i64)->*mut ListEntry{
     if queue.is_null(){return STATUS_INVALID_PARAMETER as isize as *mut ListEntry}
+    if queue_rundown_state(queue as usize,None){return STATUS_ABANDONED_WAIT_0 as isize as *mut ListEntry}
     let popped={
         let _guard=DISPATCHER_OBJECT_LOCK.lock();
         let state=unsafe{&*core::ptr::addr_of!((*queue).header.signal_state).cast::<core::sync::atomic::AtomicI32>()};
@@ -1044,6 +1061,7 @@ pub unsafe extern "win64" fn ke_remove_queue(queue:*mut ExecutiveQueue,wait_mode
 pub unsafe extern "win64" fn ke_rundown_queue(queue:*mut ExecutiveQueue)->*mut ListEntry{
     if queue.is_null(){return core::ptr::null_mut()}
     let _guard=DISPATCHER_OBJECT_LOCK.lock();
+    let _=queue_rundown_state(queue as usize,Some(true));
     let head=unsafe{core::ptr::addr_of_mut!((*queue).entry_list_head)};
     let first=unsafe{(*head).flink};
     unsafe{
@@ -1376,6 +1394,7 @@ pub unsafe extern "win64" fn ke_remove_queue_dpc(dpc:*mut core::ffi::c_void)->u8
 }
 pub fn dispatch_queued_dpcs(){
     let cpu=cpu_slot();
+    if CURRENT_IRQL[cpu].load(Ordering::Acquire)>DISPATCH_LEVEL{return}
     if DPC_DISPATCHING[cpu].swap(true,Ordering::AcqRel){return}
     let prior=CURRENT_IRQL[cpu].swap(DISPATCH_LEVEL,Ordering::AcqRel);
     for _ in 0..MAX_DPC_OBJECTS {
