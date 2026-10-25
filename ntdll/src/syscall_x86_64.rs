@@ -83,7 +83,7 @@ NtQueryValueKey:
     movl $0x17, %eax
     syscall
     ret
-"#
+"#,
     options(att_syntax)
 );
 
