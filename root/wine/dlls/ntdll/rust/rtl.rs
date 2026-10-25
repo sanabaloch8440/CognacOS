@@ -330,6 +330,275 @@ pub fn RtlUlongByteSwap(value: u32) -> u32 { value.swap_bytes() }
 #[inline]
 pub fn RtlUlonglongByteSwap(value: u64) -> u64 { value.swap_bytes() }
 
+
+// ---------------------------------------------------------------------------
+// RTL_GENERIC_TABLE: splay-tree index plus insertion-order list.
+// Source-first Rust helpers; exports are deferred until build integration.
+// ---------------------------------------------------------------------------
+pub type CLONG = i32;
+pub type ULONG = u32;
+pub type PULONG = *mut ULONG;
+pub type PBOOLEAN = *mut BOOLEAN;
+pub type PRTL_GENERIC_COMPARE_ROUTINE = Option<unsafe extern "system" fn(*mut RTL_GENERIC_TABLE, PVOID, PVOID) -> i32>;
+pub type PRTL_GENERIC_ALLOCATE_ROUTINE = Option<unsafe extern "system" fn(*mut RTL_GENERIC_TABLE, usize) -> PVOID>;
+pub type PRTL_GENERIC_FREE_ROUTINE = Option<unsafe extern "system" fn(*mut RTL_GENERIC_TABLE, PVOID)>;
+
+pub const GENERIC_LESS_THAN: i32 = 0;
+pub const GENERIC_EQUAL: i32 = 1;
+pub const GENERIC_GREATER_THAN: i32 = 2;
+const GENERIC_TABLE_DATA_OFFSET: usize = 40;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct LIST_ENTRY {
+    pub Flink: *mut LIST_ENTRY,
+    pub Blink: *mut LIST_ENTRY,
+}
+
+#[repr(C)]
+pub struct RTL_GENERIC_TABLE {
+    pub TableRoot: PRTL_SPLAY_LINKS,
+    pub InsertOrderList: LIST_ENTRY,
+    pub OrderedPointer: *mut LIST_ENTRY,
+    pub NumberGenericTableElements: ULONG,
+    pub WhichOrderedElement: ULONG,
+    pub CompareRoutine: PRTL_GENERIC_COMPARE_ROUTINE,
+    pub AllocateRoutine: PRTL_GENERIC_ALLOCATE_ROUTINE,
+    pub FreeRoutine: PRTL_GENERIC_FREE_ROUTINE,
+    pub TableContext: PVOID,
+}
+
+#[inline]
+unsafe fn generic_data(links: PRTL_SPLAY_LINKS) -> PVOID {
+    // SAFETY: Generic table allocations reserve the ABI header before element bytes.
+    unsafe { (links as *mut u8).add(GENERIC_TABLE_DATA_OFFSET).cast() }
+}
+#[inline]
+unsafe fn generic_list_entry(links: PRTL_SPLAY_LINKS) -> *mut LIST_ENTRY {
+    // SAFETY: LIST_ENTRY immediately follows RTL_SPLAY_LINKS in each allocation.
+    unsafe { (links as *mut u8).add(core::mem::size_of::<RTL_SPLAY_LINKS>()).cast() }
+}
+#[inline]
+unsafe fn generic_data_from_list(entry: *mut LIST_ENTRY) -> PVOID {
+    // SAFETY: entry is the list member of a valid generic table node.
+    unsafe { (entry as *mut u8).sub(16).add(GENERIC_TABLE_DATA_OFFSET).cast() }
+}
+#[inline]
+unsafe fn list_insert_tail(head: *mut LIST_ENTRY, entry: *mut LIST_ENTRY) {
+    // SAFETY: head is a circular list head and entry is writable detached storage.
+    unsafe {
+        let tail = (*head).Blink;
+        (*entry).Flink = head;
+        (*entry).Blink = tail;
+        (*tail).Flink = entry;
+        (*head).Blink = entry;
+    }
+}
+#[inline]
+unsafe fn list_remove(entry: *mut LIST_ENTRY) {
+    // SAFETY: entry is linked into a valid circular list.
+    unsafe {
+        (*(*entry).Blink).Flink = (*entry).Flink;
+        (*(*entry).Flink).Blink = (*entry).Blink;
+        (*entry).Flink = entry;
+        (*entry).Blink = entry;
+    }
+}
+#[inline]
+unsafe fn generic_find(table: *mut RTL_GENERIC_TABLE, value: PVOID) -> PRTL_SPLAY_LINKS {
+    if table.is_null() || value.is_null() { return core::ptr::null_mut(); }
+    // SAFETY: callback and tree nodes belong to an initialized table.
+    unsafe {
+        let Some(compare) = (*table).CompareRoutine else { return core::ptr::null_mut(); };
+        let mut node = (*table).TableRoot;
+        while !node.is_null() {
+            match compare(table, generic_data(node), value) {
+                GENERIC_LESS_THAN => node = (*node).RightChild,
+                GENERIC_GREATER_THAN => node = (*node).LeftChild,
+                _ => return node,
+            }
+        }
+        core::ptr::null_mut()
+    }
+}
+
+pub unsafe fn RtlInitializeGenericTable(
+    table: *mut RTL_GENERIC_TABLE,
+    compare: PRTL_GENERIC_COMPARE_ROUTINE,
+    allocate: PRTL_GENERIC_ALLOCATE_ROUTINE,
+    free: PRTL_GENERIC_FREE_ROUTINE,
+    context: PVOID,
+) {
+    if table.is_null() { return; }
+    // SAFETY: caller supplies writable RTL_GENERIC_TABLE storage.
+    unsafe {
+        (*table).TableRoot = core::ptr::null_mut();
+        let head = &mut (*table).InsertOrderList as *mut LIST_ENTRY;
+        (*head).Flink = head;
+        (*head).Blink = head;
+        (*table).OrderedPointer = head;
+        (*table).NumberGenericTableElements = 0;
+        (*table).WhichOrderedElement = 0;
+        (*table).CompareRoutine = compare;
+        (*table).AllocateRoutine = allocate;
+        (*table).FreeRoutine = free;
+        (*table).TableContext = context;
+    }
+}
+
+pub unsafe fn RtlIsGenericTableEmpty(table: *const RTL_GENERIC_TABLE) -> BOOLEAN {
+    if table.is_null() { return 1; }
+    // SAFETY: table points to an initialized RTL_GENERIC_TABLE.
+    unsafe { ((*table).TableRoot.is_null()) as BOOLEAN }
+}
+pub unsafe fn RtlNumberGenericTableElements(table: *const RTL_GENERIC_TABLE) -> ULONG {
+    if table.is_null() { return 0; }
+    // SAFETY: table points to an initialized RTL_GENERIC_TABLE.
+    unsafe { (*table).NumberGenericTableElements }
+}
+
+/// Inserts a copy of size bytes, or returns an existing equal element.
+///
+/// # Safety
+/// The table callbacks must follow the Windows callback contract. value must
+/// point to size readable bytes and new_element, when non-null, must be writable.
+pub unsafe fn RtlInsertElementGenericTable(
+    table: *mut RTL_GENERIC_TABLE, value: PVOID, size: CLONG, new_element: PBOOLEAN,
+) -> PVOID {
+    if !new_element.is_null() { unsafe { *new_element = 0; } }
+    if table.is_null() || value.is_null() || size < 0 { return core::ptr::null_mut(); }
+    // SAFETY: initialized table and valid callback contracts are caller preconditions.
+    unsafe {
+        let (Some(compare), Some(allocate)) = ((*table).CompareRoutine, (*table).AllocateRoutine) else {
+            return core::ptr::null_mut();
+        };
+        let mut node = (*table).TableRoot;
+        let mut parent: PRTL_SPLAY_LINKS = core::ptr::null_mut();
+        let mut relation;
+        while !node.is_null() {
+            relation = compare(table, generic_data(node), value);
+            if relation == GENERIC_EQUAL { return generic_data(node); }
+            parent = node;
+            node = if relation == GENERIC_LESS_THAN { (*node).RightChild } else { (*node).LeftChild };
+        }
+        let total = match GENERIC_TABLE_DATA_OFFSET.checked_add(size as usize) {
+            Some(n) => n, None => return core::ptr::null_mut(),
+        };
+        let node = allocate(table, total).cast::<RTL_SPLAY_LINKS>();
+        if node.is_null() { return core::ptr::null_mut(); }
+        RtlInitializeSplayLinks(node);
+        let list = generic_list_entry(node);
+        (*list).Flink = list;
+        (*list).Blink = list;
+        let data = generic_data(node);
+        core::ptr::copy_nonoverlapping(value.cast::<u8>(), data.cast::<u8>(), size as usize);
+        list_insert_tail(&mut (*table).InsertOrderList, list);
+        if !parent.is_null() {
+            relation = compare(table, generic_data(parent), value);
+            if relation == GENERIC_LESS_THAN { RtlInsertAsRightChild(parent, node); }
+            else { RtlInsertAsLeftChild(parent, node); }
+        }
+        (*table).TableRoot = RtlSplay(node);
+        (*table).NumberGenericTableElements = (*table).NumberGenericTableElements.saturating_add(1);
+        (*table).OrderedPointer = &mut (*table).InsertOrderList;
+        (*table).WhichOrderedElement = 0;
+        if !new_element.is_null() { *new_element = 1; }
+        data
+    }
+}
+
+pub unsafe fn RtlLookupElementGenericTable(table: *mut RTL_GENERIC_TABLE, value: PVOID) -> PVOID {
+    // SAFETY: generic_find validates null pointers and uses the initialized table callback.
+    unsafe {
+        let node = generic_find(table, value);
+        if node.is_null() { return core::ptr::null_mut(); }
+        (*table).TableRoot = RtlSplay(node);
+        generic_data(node)
+    }
+}
+
+pub unsafe fn RtlDeleteElementGenericTable(table: *mut RTL_GENERIC_TABLE, value: PVOID) -> BOOLEAN {
+    if table.is_null() { return 0; }
+    // SAFETY: table callbacks and allocation lifetime follow the initialized-table contract.
+    unsafe {
+        let Some(free) = (*table).FreeRoutine else { return 0; };
+        let node = generic_find(table, value);
+        if node.is_null() { return 0; }
+        let list = generic_list_entry(node);
+        (*table).TableRoot = RtlDelete(node);
+        list_remove(list);
+        (*table).NumberGenericTableElements = (*table).NumberGenericTableElements.saturating_sub(1);
+        (*table).OrderedPointer = &mut (*table).InsertOrderList;
+        (*table).WhichOrderedElement = 0;
+        free(table, node.cast());
+        1
+    }
+}
+
+/// Enumerates sorted elements without splaying. previous stores an internal node pointer.
+pub unsafe fn RtlEnumerateGenericTableWithoutSplaying(table: *mut RTL_GENERIC_TABLE, previous: *mut PVOID) -> PVOID {
+    if table.is_null() || previous.is_null() { return core::ptr::null_mut(); }
+    // SAFETY: previous is writable; its value is null or a node from this table.
+    unsafe {
+        let mut node = if (*previous).is_null() {
+            let mut n = (*table).TableRoot;
+            while !n.is_null() && !(*n).LeftChild.is_null() { n = (*n).LeftChild; }
+            n
+        } else {
+            RtlRealSuccessor((*previous).cast())
+        };
+        if node.is_null() { *previous = core::ptr::null_mut(); return core::ptr::null_mut(); }
+        *previous = node.cast();
+        generic_data(node)
+    }
+}
+
+/// Enumerates sorted elements while splaying each returned node to the root.
+pub unsafe fn RtlEnumerateGenericTable(table: *mut RTL_GENERIC_TABLE, restart: BOOLEAN) -> PVOID {
+    if table.is_null() { return core::ptr::null_mut(); }
+    // SAFETY: table is initialized and owns its tree.
+    unsafe {
+        let mut node = (*table).TableRoot;
+        if node.is_null() { return core::ptr::null_mut(); }
+        if restart != 0 {
+            while !(*node).LeftChild.is_null() { node = (*node).LeftChild; }
+        } else {
+            node = RtlRealSuccessor(node);
+            if node.is_null() { return core::ptr::null_mut(); }
+        }
+        (*table).TableRoot = RtlSplay(node);
+        generic_data(node)
+    }
+}
+
+/// Returns an element by insertion-order index.
+pub unsafe fn RtlGetElementGenericTable(table: *mut RTL_GENERIC_TABLE, index: ULONG) -> PVOID {
+    if table.is_null() { return core::ptr::null_mut(); }
+    // SAFETY: table is initialized and its insertion-order list is valid.
+    unsafe {
+        let count = (*table).NumberGenericTableElements;
+        if index >= count { return core::ptr::null_mut(); }
+        let head = &mut (*table).InsertOrderList as *mut LIST_ENTRY;
+        let mut entry: *mut LIST_ENTRY;
+        if (*table).WhichOrderedElement != 0 && index >= (*table).WhichOrderedElement {
+            entry = (*table).OrderedPointer;
+            for _ in (*table).WhichOrderedElement..index { entry = (*entry).Flink; }
+        } else if (*table).WhichOrderedElement != 0 && index < (*table).WhichOrderedElement {
+            entry = (*table).OrderedPointer;
+            for _ in index..(*table).WhichOrderedElement { entry = (*entry).Blink; }
+        } else if index < count / 2 {
+            entry = (*head).Flink;
+            for _ in 0..index { entry = (*entry).Flink; }
+        } else {
+            entry = (*head).Blink;
+            for _ in 0..(count - index - 1) { entry = (*entry).Blink; }
+        }
+        (*table).OrderedPointer = entry;
+        (*table).WhichOrderedElement = index + 1;
+        generic_data_from_list(entry)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
