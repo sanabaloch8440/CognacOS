@@ -1381,7 +1381,6 @@ cognacos_context_switch_publish:
     mov r13, rsi
     mov r14, rdx
     mov rdi, rcx
-    mov rsp, r13
     and rsp, -16
     call r14
     mov rsp, r13
