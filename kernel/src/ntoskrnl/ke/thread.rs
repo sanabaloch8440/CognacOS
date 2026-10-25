@@ -279,15 +279,61 @@ pub fn timer_preemption_self_test()->bool{
     crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior);
     ok
 }
+/// Terminate the process whose user-mode exception could not be resolved.
+/// Ready/blocked siblings are removed from scheduling; running siblings observe
+/// the exited process state at their next timer interrupt and exit on their own CPU.
+pub fn terminate_current_process_from_fault(pid:u64,exit_code:u64)->! {
+    if pid==0 { crate::halt(); }
+    let _=crate::process::mark_exited(pid,exit_code);
+    let current=current_thread_id().unwrap_or(0);
+    let mut retire=[0u64;MAX_THREADS];
+    let mut count=0usize;
+    let mut notify=0u64;
+    {
+        let mut table=THREADS.lock();
+        for thread in table.records.iter_mut().filter(|t|t.process_id==pid&&t.id!=current&&t.state!=ThreadState::Empty&&t.state!=ThreadState::Exited) {
+            notify|=thread.affinity;
+            match thread.state {
+                ThreadState::Ready if thread.context_saved => {
+                    thread.state=ThreadState::Exited;thread.entry=None;thread.argument=core::ptr::null_mut();
+                    if count<retire.len(){retire[count]=thread.scheduler_id;count+=1;}
+                }
+                ThreadState::Blocked if thread.context_saved => {
+                    thread.state=ThreadState::Exited;thread.entry=None;thread.argument=core::ptr::null_mut();
+                    if count<retire.len(){retire[count]=thread.scheduler_id;count+=1;}
+                }
+                ThreadState::Blocked => {
+                    // Close the switch-out/wake race: the publication callback
+                    // will enqueue this thread, and timer preemption will retire it.
+                    thread.wake_pending=true;
+                }
+                ThreadState::Running => {}
+                ThreadState::Ready|ThreadState::Empty|ThreadState::Exited => {}
+            }
+        }
+    }
+    for scheduler_id in retire[..count].iter().copied(){let _=crate::scheduler::exit_task(scheduler_id);}
+    for cpu in 0..crate::hal::MAX_CPUS {
+        if notify&(1u64<<cpu)!=0&&crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){
+            let _=crate::smp::request_reschedule(cpu);
+        }
+    }
+    exit_current()
+}
+
 /// Timer-ISR entry: preempt only when this CPU has a runnable peer. The
 /// interrupt frame remains on the interrupted thread's stack while switched out.
 pub fn set_preemption_enabled(enabled:bool){
     PREEMPTION_ENABLED.store(enabled,core::sync::atomic::Ordering::Release);
 }
 pub fn preempt_from_timer_interrupt(){
+    let Some(id)=current_thread_id() else{return};
+    let pid=current_process_id();
+    if pid!=0 && crate::process::query(pid).is_some_and(|p|p.state==crate::process::ProcessState::Exited) {
+        exit_current();
+    }
     if !PREEMPTION_ENABLED.load(core::sync::atomic::Ordering::Acquire){return}
     let Ok(cpu)=cpu_index() else{return};
-    let Some(id)=current_thread_id() else{return};
     if crate::scheduler::has_runnable_for_cpu(cpu,id){let _=reschedule(false);}
 }
 /// Wake a blocked thread. If it is still running, remember the wake to close enqueue/block races.
