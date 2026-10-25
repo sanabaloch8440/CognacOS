@@ -458,7 +458,7 @@ pub fn query_version_tuple() -> Option<(u32, u32, u32)> {
                 for c in digits { if !(b'0' as u16..=b'9' as u16).contains(c) { return None; } n=n.checked_mul(10)?.checked_add((*c-b'0' as u16) as u32)?; }
                 Some(n)
             };
-            let end = units[dot+1..].iter().position(|c| *c == b'.').map(|i| dot+1+i).unwrap_or(units.len());
+            let end = units[dot+1..].iter().position(|c| *c == b'.' as u16).map(|i| dot+1+i).unwrap_or(units.len());
             (parse(&units[..dot])?, parse(&units[dot+1..end])?)
         }
     };
