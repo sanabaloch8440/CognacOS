@@ -163,10 +163,7 @@ pub fn unregister_trap_frame_fixup(fault_rip: u64) -> bool {
             core::sync::atomic::Ordering::AcqRel,
             core::sync::atomic::Ordering::Acquire,
         ).is_ok() {
-            slot.recovery_rip.store(0, core::sync::atomic::Ordering::Relaxed);
-            slot.address.store(0, core::sync::atomic::Ordering::Relaxed);
-            slot.error_mask.store(0, core::sync::atomic::Ordering::Relaxed);
-            slot.error_value.store(0, core::sync::atomic::Ordering::Relaxed);
+            // Hide the record first, then let any lookup already pinned to it finish.
             while slot.readers.load(core::sync::atomic::Ordering::Acquire) != 0 {
                 core::hint::spin_loop();
             }
