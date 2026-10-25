@@ -179,7 +179,7 @@ fn nt_protection(value: u64) -> Result<(bool, bool, u32), u64> {
         PAGE_EXECUTE_READ => (false, true),
         _ => return Err(STATUS_INVALID_PAGE_PROTECTION),
     };
-    Ok((write, execute, if execute { PAGE_EXECUTE_READ } else if write { PAGE_READWRITE } else { PAGE_READONLY }))
+    Ok((write, execute, value))
 }
 /// NT_FREE_VIRTUAL_MEMORY: only the current process is supported. MEM_RELEASE
 /// releases a complete reservation and requires RegionSize=0; MEM_DECOMMIT
