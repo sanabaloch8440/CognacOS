@@ -227,3 +227,24 @@ The QEMU ring-3 smoke now issues raw SYSCALL instructions for system, process,
 and thread queries, including fifth arguments on the Windows user stack. Stock
 Windows NTDLL is not executed wholesale: only the focused ABI probe runs, while
 its own runtime initialization and unrelated service calls remain unsupported.
+
+### NTDLL-LOAD-018 — native NTDLL ring-3 smoke path was disabled
+
+**Observed during compatibility review:** the boot path recognized the in-tree
+CognacOS NTDLL, then unregistered and destroyed it without executing its
+exports. The existing `run_native_ntdll_smoke` harness exercises the DLL's
+table-configuration export, five-argument process/thread queries, system query,
+yield wrapper, and process exit through the CognacOS INT 0x82 ABI. It also
+contained a separate raw Windows `SYSCALL` probe after an earlier write call,
+mixing two distinct ABIs in one test.
+
+**Fix committed:** the native DLL path now runs its ring-3 smoke harness and
+fails the boot test if it cannot run or validate. The stock Windows NTDLL
+`SYSCALL` probe remains a separate test path. The native harness no longer
+executes the unrelated raw Windows service-number sequence. The UEFI workflow
+now requires the explicit log marker
+`CognacOS native NTDLL ring-3 syscall wrappers passed.`
+
+**Validation status:** pending the new GitHub Actions/QEMU run. This restores
+execution of the native bootstrap subset; it does not imply that the full
+Windows NTDLL export surface or complete Windows process runtime is implemented.
