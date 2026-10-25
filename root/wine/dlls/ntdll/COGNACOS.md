@@ -107,8 +107,12 @@ Windows heap ABI. The heap lifecycle passed in [Actions run 40184178016](https:/
 
 ## PEB access
 
-The native DLL now exports `RtlGetCurrentPeb` using the x64 GS-relative PEB pointer, plus `RtlGetLastWin32Error`, `RtlSetLastWin32Error`, `RtlGetLastNtStatus`, and `RtlSetLastWin32ErrorAndNtStatusFromNtStatus` using the documented TEB offsets. The process launcher installs the TEB as the user GS base, and the ring-3 smoke checks that `RtlGetCurrentPeb` returns the active PEB and that its `ProcessHeap` field points at the native heap object. The accessor and PEB.ProcessHeap checks passed in the boot-smoke phase of [Actions run 40184395068](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184395068).
+The native DLL now exports `LdrGetProcedureAddress` for names/ordinals in already-mapped PE32+ images and `LdrGetDllHandle` for modules already present in `PEB.Ldr`; forwarded exports and dynamic DLL loading are not implemented. It also exports `RtlGetCurrentPeb` using the x64 GS-relative PEB pointer, plus `RtlGetLastWin32Error`, `RtlSetLastWin32Error`, `RtlGetLastNtStatus`, and `RtlSetLastWin32ErrorAndNtStatusFromNtStatus` using the documented TEB offsets. The process launcher installs the TEB as the user GS base, and the ring-3 smoke checks that `RtlGetCurrentPeb` returns the active PEB and that its `ProcessHeap` field points at the native heap object. The accessor and PEB.ProcessHeap checks passed in the boot-smoke phase of [Actions run 40184395068](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184395068).
 
 The TEB error/status routines are now exercised in ring 3: setting and reading
 LastErrorValue, then mapping `STATUS_INVALID_PARAMETER` into LastErrorValue while recording
 LastStatusValue. These tests passed in the boot-smoke phase of [Actions run 40184485240](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184485240).
+
+## Loader API subset
+
+`LdrGetProcedureAddress` validates the in-memory PE32+ export directory, resolves exact case-sensitive ANSI names or ordinals, and rejects forwarded exports rather than treating forwarder strings as executable addresses. `LdrGetDllHandle` traverses the PEB load-order list and compares the loaded module's BaseDllName using ASCII case folding. Both are intentionally limited to already-mapped modules; `LdrLoadDll`, dependency resolution, forwarder resolution, activation contexts, and loader-lock/rundown semantics are not yet implemented. The QEMU smoke tests for the two loader APIs are pending.
