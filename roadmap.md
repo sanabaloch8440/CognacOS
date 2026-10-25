@@ -13,17 +13,22 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 
 ## Extended processor state (XSAVE/XSTATE)
 
-- [x] Add x86-64 CPUID leaf 0xD discovery and a kernel XSTATE configuration snapshot, including feature masks, standard-area sizes, offsets, and component sizes.
-- [x] Add guarded XSAVE/XRSTOR helpers that validate initialization, component masks, buffer length, and 64-byte alignment.
-- [x] Initialize XSAVE on the bootstrap processor and expose kernel query/save/restore helper entry points.
-- [x] Add NTDLL-side XSTATE configuration publication, `RtlGetEnabledExtendedFeatures`, and XSTATE-aware `RtlGetExtendedContextLength[2]`.
-- [ ] Initialize the same policy on every AP before it can schedule threads.
-- [ ] Publish the kernel configuration through the real shared-user-data/native-process initialization path; the NTDLL publication helper is not wired into process startup yet.
-- [ ] Implement Windows ABI-compatible `KeSaveExtendedProcessorState`/`KeRestoreExtendedProcessorState` with the opaque WDK `XSTATE_SAVE` layout and nesting/IRQL rules.
-- [ ] Add per-thread XSAVE-area allocation and save/restore on every context switch, then enable AVX/YMM and additional state only when that preservation path is active.
-- [ ] Complete `CONTEXT_EX` initialization, feature location/copying, compaction-format support, and deterministic CPU-feature/QEMU tests.
+- [x] Add x86-64 CPUID leaf 0xD discovery, CR0/CR4/XCR0 setup, a frozen system-wide enabled mask, standard-area sizing, and per-feature metadata.
+- [x] Add guarded XSAVE/XRSTOR helpers with initialization, mask, buffer-length, and 64-byte-alignment validation.
+- [x] Add an aligned x87/SSE state area to each kernel thread and save/restore it in the low-level kernel-thread context-switch path; idle contexts have per-CPU state areas.
+- [x] Add `KeSaveExtendedProcessorState` / `KeRestoreExtendedProcessorState` entry points with feature-mask checks, bounded nested save scopes, same-thread/same-IRQL validation, stale-handle protection, and restore after releasing bookkeeping locks.
+- [x] Run the processor XSTATE setup hook from `KiInitializeProcessor`, and reject a processor that cannot honor an already-enabled system-wide XSTATE policy.
+- [x] Publish a read-only per-process XSTATE configuration page at `0x0000008400000000`; NTDLL lazily imports that feature table rather than guessing from local CPUID.
+- [x] Add NTDLL `RtlGetEnabledExtendedFeatures`, `RtlGetExtendedContextLength[2]`, `RtlInitializeExtendedContext[2]`, `RtlLocateLegacyContext`, `RtlLocateExtendedFeature[2]`, `RtlSet/GetExtendedFeaturesMask`, and `RtlCopyExtendedContext`.
+- [x] Add NTDLL standard and compacted `CONTEXT_EX` sizing/feature-offset logic. The kernel currently advertises compacted format as disabled, so the compacted path is dormant.
+- [ ] Replace the private CognacOS configuration page with the exact Windows `KUSER_SHARED_DATA.XState` ABI and wire it through the native process/NTDLL startup path.
+- [ ] Verify the opaque caller-facing `XSTATE_SAVE` storage against the exact WDK ABI and add kernel exception-safe handling for invalid pointers.
+- [ ] Preserve the interrupted user context before Rust interrupt/syscall handlers can touch floating-point/SIMD state; integrate XSTATE into user trap frames and user-return paths.
+- [ ] Enable AVX/YMM only after user/kernel trap handling, per-thread state size, and context-copy/restore paths all support the expanded feature mask. Supervisor XSS, AVX-512, AMX, and PKRU remain disabled.
+- [ ] Complete exact Windows semantics for partial `RtlCopyContext` field groups and arbitrary `RtlLocateExtendedFeature2` configuration pointers.
+- [ ] Add deterministic CPU-feature, nested save/restore, migration, context-buffer, and QEMU tests; build/ABI/QEMU validation has not yet been run for these changes.
 
-The current kernel policy intentionally enables only x87/SSE XCR0 components: AVX remains disabled until scheduler context switching preserves each thread's extended state. These changes are source-level implementation only; build, ABI, and QEMU validation remain outstanding.
+The implementation is source-level only. It establishes a real x87/SSE kernel-thread switching path and XSTATE API groundwork, but it is not yet a complete Windows 11 XSTATE implementation: AVX is deliberately disabled, user-mode trap-state preservation is outstanding, and the current shared configuration page is a CognacOS bridge rather than the Windows shared-data ABI.
 
 ## Current validation
 
