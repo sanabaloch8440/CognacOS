@@ -499,3 +499,24 @@ pub fn fill_nonvolatile_memory(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -
     if flags & (1 | 4) != 0 { crate::ntoskrnl::mm::persistent::flush(args[0],offset,length,no_drain) as u32 as u64 } else { STATUS_SUCCESS }
 }
 
+
+/// Check membership against the effective thread/process token. This private
+/// bridge intentionally rejects non-null token handles until the object manager
+/// provides a real user-handle-to-token reference path.
+pub fn check_token_membership(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] != 0 { return STATUS_INVALID_HANDLE; }
+    if args[1] == 0 || args[2] == 0 || args[3] != 0 { return STATUS_INVALID_PARAMETER; }
+    let root = match current_root() { Ok(r)=>r, Err(s)=>return s };
+    let mut sid = [0u8;68];
+    if unsafe { address_space::copy_from_user_root(root,args[1],&mut sid[..8]) }.is_err() { return STATUS_ACCESS_VIOLATION; }
+    if sid[0] != 1 || sid[1] > 15 { return STATUS_INVALID_PARAMETER; }
+    let sid_length = 8 + sid[1] as usize * 4;
+    if unsafe { address_space::copy_from_user_root(root,args[1],&mut sid[..sid_length]) }.is_err() { return STATUS_ACCESS_VIOLATION; }
+    let mut token = crate::thread::reference_current_impersonation_token();
+    if token.is_null() { token = crate::process::reference_primary_token(crate::thread::current_process_id()); }
+    if token.is_null() { return 0xC000_007Cu32 as u64; } // STATUS_NO_TOKEN
+    let member = crate::ntoskrnl::se::runtime::se_internal_TokenContainsSid(token,&sid[..sid_length]);
+    let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) };
+    if unsafe { address_space::copy_to_user_root(root,args[2],&(member as u8).to_ne_bytes()) }.is_err() { return STATUS_ACCESS_VIOLATION; }
+    STATUS_SUCCESS
+}
