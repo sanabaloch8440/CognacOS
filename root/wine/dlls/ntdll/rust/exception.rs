@@ -492,7 +492,9 @@ pub unsafe extern "system" fn RtlLocateExtendedFeature2(ex: *mut CONTEXT_EX, fea
     let cfg = unsafe { (config as *const WindowsXStateConfiguration).read_unaligned() };
     let feature_bit = 1u64 << feature;
     let component = cfg.features[feature as usize];
-    if component.size == 0 { return core::ptr::null_mut(); }
+    if cfg.enabled_features & feature_bit == 0 || component.size == 0 {
+        return core::ptr::null_mut();
+    }
     if !length.is_null() { unsafe { length.write_unaligned(component.size); } }
     let chunk = unsafe { core::ptr::addr_of!((*ex).XState).read_unaligned() };
     if chunk.Offset < 0 || chunk.Length < 64 { return core::ptr::null_mut(); }
