@@ -87,7 +87,8 @@ pub struct CognacHeap {
     segments: *mut Segment,
     next_heap: *mut CognacHeap,
     lock: AtomicU8,
-    _padding: [u8; 7],
+    protected: AtomicU8,
+    _padding: [u8; 6],
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -211,7 +212,7 @@ unsafe fn create_heap(flags: ULONG, reserve: SIZE_T, commit: SIZE_T) -> *mut Cog
     let reserve_size = if reserve == 0 { DEFAULT_RESERVE } else { reserve };
     let commit_size = if commit == 0 { PAGE_SIZE } else { commit.min(reserve_size) };
     unsafe {
-        ptr::write(heap, CognacHeap { magic: HEAP_MAGIC, flags, reserve_size, commit_size, segments: ptr::null_mut(), next_heap: ptr::null_mut(), lock: AtomicU8::new(0), _padding: [0; 7] });
+        ptr::write(heap, CognacHeap { magic: HEAP_MAGIC, flags, reserve_size, commit_size, segments: ptr::null_mut(), next_heap: ptr::null_mut(), lock: AtomicU8::new(0), protected: AtomicU8::new(0), _padding: [0; 6] });
         if segment_create(heap, 1).is_null() {
             (*heap).magic = 0;
             vm_free(object_mem);
@@ -275,7 +276,7 @@ pub unsafe extern "system" fn RtlDestroyHeap(handle: HANDLE) -> HANDLE {
 #[no_mangle]
 pub unsafe extern "system" fn RtlAllocateHeap(handle: HANDLE, flags: ULONG, requested: SIZE_T) -> PVOID {
     let heap = unsafe { heap_valid(handle) };
-    if heap.is_null() || requested > isize::MAX as usize { return ptr::null_mut(); }
+    if heap.is_null() || requested > isize::MAX as usize || unsafe { (*heap).protected.load(Ordering::Acquire) != 0 } { return ptr::null_mut(); }
     let size = match align_up(requested.max(1), ALIGN) { Some(v) => v, None => return ptr::null_mut() };
     unsafe {
         lock(&(*heap).lock);
@@ -316,7 +317,7 @@ pub unsafe extern "system" fn RtlAllocateHeap(handle: HANDLE, flags: ULONG, requ
 pub unsafe extern "system" fn RtlFreeHeap(handle: HANDLE, flags: ULONG, address: PVOID) -> BOOLEAN {
     if address.is_null() { return 1; }
     let heap = unsafe { heap_valid(handle) };
-    if heap.is_null() { return 0; }
+    if heap.is_null() || unsafe { (*heap).protected.load(Ordering::Acquire) != 0 } { return 0; }
     unsafe {
         lock(&(*heap).lock);
         let mut b = block_from_payload(heap, address);
@@ -356,7 +357,7 @@ pub unsafe extern "system" fn RtlReAllocateHeap(handle: HANDLE, flags: ULONG, ad
     let old_size = unsafe { RtlSizeHeap(handle, 0, address) };
     if old_size == SIZE_T::MAX { return ptr::null_mut(); }
     let heap = unsafe { heap_valid(handle) };
-    if heap.is_null() { return ptr::null_mut(); }
+    if heap.is_null() || unsafe { (*heap).protected.load(Ordering::Acquire) != 0 } { return ptr::null_mut(); }
     let wanted = match align_up(size, ALIGN) { Some(v) => v, None => return ptr::null_mut() };
     unsafe {
         lock(&(*heap).lock);
@@ -533,6 +534,15 @@ pub unsafe extern "system" fn RtlSetUserFlagsHeap(handle: HANDLE, _flags: ULONG,
         unlock(&(*heap).lock);
         ok as BOOLEAN
     }
+}
+
+/// Internal bridge used by the Windows-compatible RtlProtectHeap export.
+#[no_mangle]
+pub unsafe extern "system" fn RtlSetHeapProtected(handle: HANDLE, protect: BOOLEAN) -> BOOLEAN {
+    let heap = unsafe { heap_valid(handle) };
+    if heap.is_null() { return 0; }
+    unsafe { (*heap).protected.store((protect != 0) as u8, Ordering::Release); }
+    1
 }
 
 #[no_mangle]
