@@ -231,38 +231,52 @@ static NTDLL_XSTATE_OFFSETS: [AtomicU32; 64] =
     [const { AtomicU32::new(0) }; 64];
 static NTDLL_XSTATE_SIZES: [AtomicU32; 64] =
     [const { AtomicU32::new(0) }; 64];
-const COGNAC_XSTATE_SHARED_ADDRESS: usize = 0x0000_0084_0000_0000;
+const KUSER_SHARED_DATA_X64: usize = 0x0000_0000_7ffe_0000;
+const KUSER_XSTATE_OFFSET: usize = 0x3d8;
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct CognacXStateSharedConfiguration {
-    supported_features: u64,
+struct WindowsXStateFeature { offset: u32, size: u32 }
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WindowsXStateConfiguration {
     enabled_features: u64,
-    area_size: u32,
-    standard_area_size: u32,
-    xsaveopt: u32,
-    xsavec: u32,
-    xsaves: u32,
-    compaction_enabled: u32,
-    feature_offsets: [u32; 64],
-    feature_sizes: [u32; 64],
+    enabled_volatile_features: u64,
+    size: u32,
+    control_flags: u32,
+    features: [WindowsXStateFeature; 64],
+    enabled_supervisor_features: u64,
+    aligned_features: u64,
+    all_feature_size: u32,
+    all_features: [u32; 64],
+    enabled_user_visible_supervisor_features: u64,
+    extended_feature_disable_features: u64,
+    all_non_large_feature_size: u32,
+    spare: u32,
 }
-
 /// Lazy NTDLL bootstrap from the read-only page installed by
 /// process::initialize. This keeps feature reporting tied to the kernel's
 /// actual boot policy instead of trusting local CPUID alone.
 fn ensure_ntdll_xstate_config() -> bool {
     if NTDLL_XSTATE_READY.load(Ordering::Acquire) { return true; }
-    let shared = COGNAC_XSTATE_SHARED_ADDRESS as *const CognacXStateSharedConfiguration;
+    // KUSER_SHARED_DATA is mapped read-only at 0x7ffe0000. XState uses the
+    // Windows 11 24H2 x64 offset 0x3d8 and its exact 0x348-byte layout.
+    let shared = (KUSER_SHARED_DATA_X64 + KUSER_XSTATE_OFFSET) as *const WindowsXStateConfiguration;
     let config = unsafe { shared.read_unaligned() };
-    if config.enabled_features & 3 != 3 || config.area_size < 576 { return false; }
+    let enabled = config.enabled_features;
+    if enabled & 3 != 3 || config.size < 576 { return false; }
+    let mut offsets = [0u32; 64];
+    let mut sizes = [0u32; 64];
+    for i in 0..64 {
+        offsets[i] = config.features[i].offset;
+        sizes[i] = config.features[i].size;
+    }
     unsafe {
         CognacNtdllPublishXStateConfiguration(
-            config.supported_features,
-            config.enabled_features,
-            config.area_size,
-            config.compaction_enabled,
-            config.feature_offsets.as_ptr(),
-            config.feature_sizes.as_ptr(),
+            enabled,
+            enabled,
+            config.size,
+            offsets.as_ptr(),
+            sizes.as_ptr(),
         ) == STATUS_SUCCESS
     }
 }
