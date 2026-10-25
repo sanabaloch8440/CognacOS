@@ -42,8 +42,8 @@ unsafe fn is_valid_heap(handle: HANDLE) -> bool {
     !handle.is_null() && unsafe { RtlValidateHeap(handle, 0, ptr::null_mut()) != 0 }
 }
 
-/// Wine heap.c: RtlGetProcessHeaps. Returns the total heap count. As with the
-/// source routine, the destination is written only when it can hold all handles.
+/// RtlGetProcessHeaps returns the total number of process heaps. The destination
+/// is written only when the supplied capacity can hold the full list.
 /// RtlQueryHeapInformation: supports HeapCompatibilityInformation (class zero)
 /// with NTSTATUS size reporting and buffer validation.
 #[no_mangle]
