@@ -174,20 +174,18 @@ pub fn lock(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     if records.iter().filter(|p| !p.live).count() < pages { return STATUS_NO_MEMORY; }
     if !crate::ntoskrnl::mm::runtime::lock_pfns(&physical_pages[..pages]) { return STATUS_NO_MEMORY; }
     va = start;
-    for pfn in physical_pages.iter().take(pages).copied() {
-        let slot = records.iter_mut().find(|p| !p.live).expect("preflighted native VM lock slots");
-        *slot = NativeVmLockedPage { root, va, physical_page: pfn * PAGE, live: true };
+    let mut added_indices = [usize::MAX; MAX_VM_LOCK_RANGE_PAGES];
+    for (n, pfn) in physical_pages.iter().take(pages).copied().enumerate() {
+        let index = records.iter().position(|p| !p.live).expect("preflighted native VM lock slots");
+        records[index] = NativeVmLockedPage { root, va, physical_page: pfn * PAGE, live: true };
+        added_indices[n] = index;
         va += PAGE;
     }
     if write_u64(root, args[1], start).is_err() || write_u64(root, args[2], end - start).is_err() {
-        // These pointers were prevalidated above; failure indicates a concurrent
-        // unmap race. Roll back the pins and records rather than leaking locks.
-        let mut rollback_pfns = [0u64; MAX_VM_LOCK_RANGE_PAGES];
-        let mut n = 0usize;
-        for record in records.iter_mut().filter(|p| p.live && p.root == root && p.va >= start && p.va < end) {
-            rollback_pfns[n] = record.physical_page / PAGE; n += 1; *record = NativeVmLockedPage::EMPTY;
-        }
-        crate::ntoskrnl::mm::runtime::unlock_pfns(&rollback_pfns[..n]);
+        // These pointers were prevalidated above; a concurrent unmap race must
+        // roll back only this call's records, not earlier locks on the same VA.
+        for index in added_indices.iter().take(pages).copied() { records[index] = NativeVmLockedPage::EMPTY; }
+        crate::ntoskrnl::mm::runtime::unlock_pfns(&physical_pages[..pages]);
         return STATUS_ACCESS_VIOLATION;
     }
     STATUS_SUCCESS
