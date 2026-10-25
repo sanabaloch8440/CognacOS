@@ -5,6 +5,8 @@ title: Roadmap
 
 # CognacOS roadmap
 
+Implementation ownership is being organized under `kernel/src/ntoskrnl/`: address-space and user virtual-memory code now lives in `mm/address_space.rs`, with `vm.rs` retained as a compatibility facade. Low-level CPU/IDT entry remains in `arch.rs`; moving exception policy into `ki` is tracked in the canonical roadmap.
+
 The roadmap is maintained in one canonical file in the repository root to avoid two copies drifting apart. Open the complete milestone tracker below.
 
 [**Open the canonical roadmap on GitHub →**](https://github.com/umarfarooq7869/CognacOS/blob/main/roadmap.md)

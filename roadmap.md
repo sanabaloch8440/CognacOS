@@ -1,5 +1,10 @@
 # CognacOS Roadmap
 
+## Kernel source organization
+
+- [x] Move address-space and user virtual-memory implementation into `ntoskrnl/mm/address_space.rs`; keep `vm.rs` as a compatibility re-export while call sites migrate.
+- [ ] Keep `arch.rs` limited to CPU/IDT entry and register-frame mechanics; continue moving NT exception/interrupt policy into `ntoskrnl/ki` and processor services into `ntoskrnl/ke` in separately validated steps.
+
 This is the canonical progress tracker. Checkboxes describe code and validation in the repository; they do not imply production readiness or Windows driver compatibility. Detailed per-routine status belongs in the [Ke comparison](WINDOWS11_COGNACOS_NTOSKRNL_KE_COMPARISON.md) and [Se comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md).
 
 **Target:** a maintainable Rust-first x86-64 OS with NT-inspired interfaces and a long-term path toward Windows x64 driver compatibility.
