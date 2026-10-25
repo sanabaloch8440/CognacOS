@@ -404,7 +404,7 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     map_zeroed(space, PROCESS_PARAMS_ADDRESS, 1)?;
     map_zeroed(space, COGNAC_XSTATE_SHARED_ADDRESS, 1)?;
     // Publish a stable per-process snapshot for native NTDLL's early XSTATE
-    // initialization. The page is read-only to user mode after population.
+    // initialization, then downgrade the page to read-only for user mode.
     let xstate = crate::ntoskrnl::ke::runtime::ki_query_xstate_configuration();
     let xstate_bytes = unsafe {
         core::slice::from_raw_parts(
@@ -413,9 +413,7 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
         )
     };
     unsafe { space.copy_to_user(COGNAC_XSTATE_SHARED_ADDRESS, xstate_bytes)?; }
-    // Leave this data non-writable to user mode once the snapshot is installed.
-    // The current VM API does not yet expose an in-place permission downgrade;
-    // the page remains user-readable/writable until that API is added.
+    unsafe { space.protect_user_page(COGNAC_XSTATE_SHARED_ADDRESS, false, false)?; }
     let pid = NEXT_PID.fetch_add(4, core::sync::atomic::Ordering::Relaxed);
     // PEB x64: BeingDebugged, ImageBaseAddress, Ldr, ProcessParameters.
     put_u8(space, PEB_ADDRESS + 2, 0)?;
