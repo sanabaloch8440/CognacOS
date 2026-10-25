@@ -37,6 +37,9 @@ pub struct CognacXStateConfiguration {
     pub xsavec: u32,
     pub xsaves: u32,
     pub reserved: u32,
+    /// Standard-format offsets/sizes indexed by architectural XSTATE feature ID.
+    pub feature_offsets: [u32; 64],
+    pub feature_sizes: [u32; 64],
 }
 
 #[inline]
@@ -85,8 +88,20 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
 pub fn ki_query_xstate_configuration() -> CognacXStateConfiguration {
     let flags = XSTATE_INITIALIZED.load(Ordering::Acquire);
     let size = XSTATE_AREA_SIZE.load(Ordering::Acquire);
+    let supported = XSTATE_SUPPORTED_MASK.load(Ordering::Acquire);
+    let mut offsets = [0u32; 64];
+    let mut sizes = [0u32; 64];
+    sizes[0] = 160;
+    offsets[1] = 160;
+    sizes[1] = 352;
+    for feature in 2..64 {
+        if supported & (1u64 << feature) == 0 { continue; }
+        let leaf = cpuid(0x0d, feature as u32);
+        offsets[feature] = leaf.ebx;
+        sizes[feature] = leaf.eax;
+    }
     CognacXStateConfiguration {
-        supported_features: XSTATE_SUPPORTED_MASK.load(Ordering::Acquire),
+        supported_features: supported,
         enabled_features: XSTATE_ENABLED_MASK.load(Ordering::Acquire),
         area_size: size,
         standard_area_size: size,
@@ -94,6 +109,8 @@ pub fn ki_query_xstate_configuration() -> CognacXStateConfiguration {
         xsavec: (flags >> 2) & 1,
         xsaves: (flags >> 4) & 1,
         reserved: 0,
+        feature_offsets: offsets,
+        feature_sizes: sizes,
     }
 }
 
