@@ -178,6 +178,15 @@ NTSTATUS NTAPI RtlGetVersion(COGNAC_RTL_OSVERSIONINFOW *version)
     return STATUS_SUCCESS;
 }
 
+/* Native x64 PEB accessor; the process launcher installs the TEB in GS. */
+__declspec(dllexport)
+PVOID NTAPI RtlGetCurrentPeb(void)
+{
+    PVOID peb;
+    __asm__ volatile ("movq %%gs:0x60, %0" : "=r"(peb));
+    return peb;
+}
+
 /* Native version helper used by applications that query the NT build tuple. */
 __declspec(dllexport)
 void NTAPI RtlGetNtVersionNumbers(PULONG major, PULONG minor, PULONG build)
