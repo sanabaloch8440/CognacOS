@@ -67,7 +67,7 @@ impl TaskStateSegment {
     }
 }
 const IST_STACK_BYTES: usize = 16 * 1024;
-static mut CPU_GDT: [[u64; 5]; crate::hal::MAX_CPUS] = [[0; 5]; crate::hal::MAX_CPUS];
+static mut CPU_GDT: [[u64; 7]; crate::hal::MAX_CPUS] = [[0; 7]; crate::hal::MAX_CPUS];
 static mut CPU_TSS: [TaskStateSegment; crate::hal::MAX_CPUS] =
     [const { TaskStateSegment::new() }; crate::hal::MAX_CPUS];
 static mut CPU_IST_STACKS: [[[u8; IST_STACK_BYTES]; 3]; crate::hal::MAX_CPUS] =
@@ -1083,10 +1083,12 @@ unsafe fn initialize_cpu_tss(cpu: usize, rsp0: u64) -> Result<(), ()> {
     unsafe {
         let gdt = core::ptr::addr_of_mut!(CPU_GDT[cpu][0]);
         gdt.write(0);
-        gdt.add(1).write(0x00af_9a00_0000_ffff);
-        gdt.add(2).write(0x00cf_9200_0000_ffff);
-        gdt.add(3).write(low);
-        gdt.add(4).write(tss_base >> 32);
+        gdt.add(1).write(0x00af_9a00_0000_ffff); // ring-0 64-bit code, selector 0x08
+        gdt.add(2).write(0x00cf_9200_0000_ffff); // ring-0 data, selector 0x10
+        gdt.add(3).write(0x00af_fa00_0000_ffff); // ring-3 64-bit code, selector 0x1b
+        gdt.add(4).write(0x00cf_f200_0000_ffff); // ring-3 data, selector 0x23
+        gdt.add(5).write(low);                    // 64-bit TSS, selector 0x28
+        gdt.add(6).write(tss_base >> 32);
     }
     Ok(())
 }
@@ -1094,7 +1096,7 @@ unsafe fn initialize_cpu_tss(cpu: usize, rsp0: u64) -> Result<(), ()> {
 unsafe fn load_cpu_gdt(cpu: usize) -> Result<(), ()> {
     if cpu >= crate::hal::MAX_CPUS { return Err(()); }
     let gdt = unsafe { core::ptr::addr_of!(CPU_GDT[cpu][0]) };
-    let pointer = DescriptorTablePointer { limit: (5 * size_of::<u64>() - 1) as u16, base: gdt as u64 };
+    let pointer = DescriptorTablePointer { limit: (7 * size_of::<u64>() - 1) as u16, base: gdt as u64 };
     unsafe {
         asm!("lgdt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags));
         asm!(
@@ -1110,7 +1112,7 @@ unsafe fn load_cpu_gdt(cpu: usize) -> Result<(), ()> {
             "xor eax, eax",
             "mov fs, ax",
             "mov gs, ax",
-            "mov ax, 0x18",
+            "mov ax, 0x28",
             "ltr ax",
             out("rax") _,
             options(preserves_flags)
@@ -1130,6 +1132,7 @@ pub unsafe fn load_cpu_descriptor_tables(logical_id: usize, rsp0: u64) -> Result
     };
     unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)); }
     if !per_cpu_tss_self_test(logical_id) { return Err(()); }
+    unsafe { crate::syscall::initialize_windows_syscall_abi(logical_id)?; }
     Ok(())
 }
 
@@ -1174,6 +1177,11 @@ pub unsafe fn initialize() {
         if initialize_cpu_tss(0, rsp0).is_err() || load_cpu_gdt(0).is_err() {
             loop { core::hint::spin_loop(); }
         }
+    }
+    // Install the privileged SYSCALL entry and per-CPU kernel stack before
+    // any ring-3 process can execute a Windows-style syscall instruction.
+    if unsafe { crate::syscall::initialize_windows_syscall_abi(0) }.is_err() {
+        loop { core::hint::spin_loop(); }
     }
     let handlers: [usize; EXCEPTION_VECTORS] = [
         cognacos_isr_0 as usize, cognacos_isr_1 as usize, cognacos_isr_2 as usize, cognacos_isr_3 as usize,
