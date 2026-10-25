@@ -242,6 +242,23 @@ cognacos_windows_syscall_entry:
     out dx, al
     mov rax, qword ptr gs:[16]
     mov rdx, qword ptr gs:[24]
+    # Check that the saved kernel stack top is a high-half canonical pointer.
+    mov qword ptr gs:[16], rax
+    mov qword ptr gs:[24], rdx
+    mov rax, qword ptr gs:[8]
+    mov rdx, rax
+    shr rdx, 32
+    cmp edx, 0xffffffff
+    jne .Lwindows_stack_bad
+    mov al, 'T'
+    jmp .Lwindows_stack_marker
+.Lwindows_stack_bad:
+    mov al, 'X'
+.Lwindows_stack_marker:
+    mov dx, 0x3f8
+    out dx, al
+    mov rax, qword ptr gs:[16]
+    mov rdx, qword ptr gs:[24]
     mov rsp, qword ptr gs:[8]
     # Temporary marker 'k' proves the per-CPU GS stack switch succeeded.
     push rax
