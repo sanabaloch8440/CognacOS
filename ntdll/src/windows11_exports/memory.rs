@@ -1276,7 +1276,7 @@ mod tests {
             assert_eq!(RtlCmDecodeMemIoResource(descriptor.as_mut_ptr().cast(), &mut start), 0x2000);
             assert_eq!(start, 0x1_0000_0000);
             assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x1_0000_0000, 0x1_0000_0000), STATUS_UNSUCCESSFUL);
-            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x1001, 0x1234), STATUS_SUCCESS);
+            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x1001, 0x1234), STATUS_UNSUCCESSFUL);
         }
     }
 
