@@ -46,6 +46,115 @@ PVOID NTAPI RtlGetCurrentPeb(void)
     return peb;
 }
 
+
+/*
+ * Windows x64 TEB/PEB access and RTL_CRITICAL_SECTION primitives.
+ * The launcher must install a valid Windows-layout TEB in user GS.
+ *
+ * This ABI-compatible critical section uses recursive ownership and an
+ * atomic LockCount. Contenders yield after bounded spinning. It does not yet
+ * implement Windows' event-backed waiter wake-up policy, so heavy contention
+ * may consume CPU; the native wait/wake backend remains a separate task.
+ */
+#define STATUS_NOT_OWNER ((LONG)0xC000005AL)
+typedef struct _COGNAC_RTL_CRITICAL_SECTION {
+    void *DebugInfo;
+    volatile LONG LockCount;
+    volatile LONG RecursionCount;
+    HANDLE OwningThread;
+    HANDLE LockSemaphore;
+    ULONG_PTR SpinCount;
+} COGNAC_RTL_CRITICAL_SECTION;
+
+__declspec(dllexport)
+PVOID NTAPI RtlGetCurrentTeb(void)
+{
+    PVOID teb;
+    __asm__ volatile ("movq %%gs:0x30, %0" : "=r"(teb));
+    return teb;
+}
+
+static HANDLE cognac_current_thread_id(void)
+{
+    HANDLE id;
+    /* CLIENT_ID.UniqueThread is at TEB offset 0x48 on x64. */
+    __asm__ volatile ("movq %%gs:0x48, %0" : "=r"(id));
+    return id;
+}
+
+__declspec(dllexport)
+LONG NTAPI RtlEnterCriticalSection(COGNAC_RTL_CRITICAL_SECTION *cs)
+{
+    HANDLE tid;
+    ULONG spins = 0;
+    if (!cs) return STATUS_INVALID_PARAMETER;
+    tid = cognac_current_thread_id();
+    if (!tid) return STATUS_INVALID_PARAMETER;
+
+    if (__atomic_load_n((void * volatile *)&cs->OwningThread, __ATOMIC_ACQUIRE) == tid) {
+        __atomic_add_fetch(&cs->RecursionCount, 1, __ATOMIC_RELAXED);
+        return STATUS_SUCCESS;
+    }
+
+    for (;;) {
+        LONG expected = -1;
+        if (__atomic_compare_exchange_n(&cs->LockCount, &expected, 0, 0,
+                                        __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+            __atomic_store_n(&cs->RecursionCount, 1, __ATOMIC_RELAXED);
+            __atomic_store_n((void * volatile *)&cs->OwningThread, tid, __ATOMIC_RELEASE);
+            return STATUS_SUCCESS;
+        }
+        __asm__ volatile ("pause");
+        if (++spins >= 4096) {
+            spins = 0;
+            (void)NtYieldExecution();
+        }
+    }
+}
+
+__declspec(dllexport)
+LONG NTAPI RtlLeaveCriticalSection(COGNAC_RTL_CRITICAL_SECTION *cs)
+{
+    HANDLE tid;
+    LONG recursion;
+    if (!cs) return STATUS_INVALID_PARAMETER;
+    tid = cognac_current_thread_id();
+    if (__atomic_load_n((void * volatile *)&cs->OwningThread, __ATOMIC_ACQUIRE) != tid)
+        return STATUS_NOT_OWNER;
+
+    recursion = __atomic_sub_fetch(&cs->RecursionCount, 1, __ATOMIC_RELAXED);
+    if (recursion > 0) return STATUS_SUCCESS;
+    if (recursion < 0) {
+        __atomic_store_n(&cs->RecursionCount, 0, __ATOMIC_RELAXED);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    __atomic_store_n((void * volatile *)&cs->OwningThread, (void *)0, __ATOMIC_RELEASE);
+    __atomic_store_n(&cs->LockCount, -1, __ATOMIC_RELEASE);
+    return STATUS_SUCCESS;
+}
+
+__declspec(dllexport)
+void NTAPI RtlAcquirePebLock(void)
+{
+    unsigned char *peb = (unsigned char *)RtlGetCurrentPeb();
+    COGNAC_RTL_CRITICAL_SECTION *lock;
+    if (!peb) return;
+    /* PEB.FastPebLock is a pointer at x64 offset 0x38. */
+    lock = *(COGNAC_RTL_CRITICAL_SECTION **)(peb + 0x38);
+    if (lock) (void)RtlEnterCriticalSection(lock);
+}
+
+__declspec(dllexport)
+void NTAPI RtlReleasePebLock(void)
+{
+    unsigned char *peb = (unsigned char *)RtlGetCurrentPeb();
+    COGNAC_RTL_CRITICAL_SECTION *lock;
+    if (!peb) return;
+    lock = *(COGNAC_RTL_CRITICAL_SECTION **)(peb + 0x38);
+    if (lock) (void)RtlLeaveCriticalSection(lock);
+}
+
 /* Native version helper used by applications that query the NT build tuple. */
 __declspec(dllexport)
 void NTAPI RtlGetNtVersionNumbers(PULONG major, PULONG minor, PULONG build)
