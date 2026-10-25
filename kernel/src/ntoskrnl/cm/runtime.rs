@@ -228,8 +228,15 @@ pub fn query_version_tuple() -> Option<(u32, u32, u32)> {
         _ => {
             let v = value(s, PATH, current_name)?;
             if v.kind != 1 && v.kind != 2 || v.len < 4 || v.len % 2 != 0 { return None; }
-            let units: Vec<u16> = v.data[..v.len as usize].chunks_exact(2)
-                .map(|b| u16::from_le_bytes([b[0], b[1]])).take_while(|c| *c != 0).collect();
+            let mut units = [0u16; MAX_DATA / 2];
+            let mut count = 0usize;
+            for bytes in v.data[..v.len as usize].chunks_exact(2) {
+                let ch = u16::from_le_bytes([bytes[0], bytes[1]]);
+                if ch == 0 { break; }
+                units[count] = ch;
+                count += 1;
+            }
+            let units = &units[..count];
             let dot = units.iter().position(|c| *c == b'.' as u16)?;
             let parse = |digits: &[u16]| -> Option<u32> {
                 if digits.is_empty() { return None; }
