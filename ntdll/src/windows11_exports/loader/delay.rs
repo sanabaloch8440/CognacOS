@@ -1,5 +1,8 @@
 use super::*;
 
+/// Resolve one delay-import thunk in an already mapped PE32+ image. Dependency
+/// mapping is delegated to LdrLoadDll; until that service can map new files, this
+/// correctly resolves only dependencies already present in the process loader list.
 #[no_mangle]
 pub unsafe extern "system" fn LdrResolveDelayLoadedAPI(
     parent_module_base: PVOID,
