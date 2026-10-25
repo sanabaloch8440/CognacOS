@@ -35,6 +35,8 @@
 | Boot security | Fail-closed kernel signature check; optional UEFI Secure Boot state detection and TPM 2.0 TCG2 PCR 4 measurement | Secure Boot remains optional; firmware-signed loader/release keys and TPM hardware testing needed; custom kernel signature is not Authenticode |
 | NT security | Bounded descriptor validation, basic access/privilege evaluation, token metadata hooks, audit-event groundwork | Full token lifecycle, impersonation, audit policy, callback ACEs, WDK parity |
 
+Boot integrity is fail-closed: the loader rejects a kernel unless both its pinned SHA-256 digest and Ed25519 signature verify. UEFI Secure Boot remains optional and requires a firmware-trusted bootloader signing certificate; TPM 2.0 measurement is best-effort and absence of a TPM never blocks boot. The current successful QEMU matrix validates the no-TPM path; TPM-present runtime measurement still needs a dedicated passing test.
+
 These are implementation foundations, not production-readiness claims. Details and acceptance criteria live in the roadmap. The CI workflow tests host-side components, builds the freestanding kernel and UEFI loader, validates the PE32+ image, and runs OVMF/QEMU boot and SMP checks. A passing emulator run does not prove real-hardware reliability or Windows driver compatibility.
 
 ## Repository layout
