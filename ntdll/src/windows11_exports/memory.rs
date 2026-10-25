@@ -660,6 +660,7 @@ const STREAM_SEEK_SET: ULONG = 0;
 const STREAM_SEEK_CUR: ULONG = 1;
 const STREAM_SEEK_END: ULONG = 2;
 const STGTY_STREAM: ULONG = 2;
+const RTL_STREAM_SECTION_BACKED: u32 = 1;
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -763,6 +764,35 @@ pub unsafe extern "system" fn RtlInitMemoryStream(stream: *mut RTL_MEMORY_STREAM
         });
     }
 }
+/// Initialize an IStream-compatible object backed by a kernel section object.
+/// The stream storage remains caller-owned; the section reference is released
+/// when its final COM-style reference is dropped.
+#[no_mangle]
+pub unsafe extern "system" fn RtlInitSectionMemoryStream(stream: *mut RTL_MEMORY_STREAM, size: SIZE_T) -> NTSTATUS {
+    if stream.is_null() || size == 0 { return STATUS_INVALID_PARAMETER; }
+    let mut handle: PVOID = ptr::null_mut();
+    let status = unsafe { cognacos_rtl_create_section(size, &mut handle) };
+    if status < 0 { return status; }
+    unsafe {
+        ptr::write(stream, RTL_MEMORY_STREAM {
+            vtbl: &MEMORY_STREAM_VTABLE, ref_count: 1, unknown: RTL_STREAM_SECTION_BACKED,
+            current: ptr::null_mut(), start: ptr::null_mut(), end: size as PVOID,
+            final_release: Some(RtlFinalReleaseSectionMemoryStream), process_handle: handle,
+        });
+    }
+    STATUS_SUCCESS
+}
+#[no_mangle]
+pub unsafe extern "system" fn RtlFinalReleaseSectionMemoryStream(stream: *mut RTL_MEMORY_STREAM) {
+    if stream.is_null() { return; }
+    let handle = unsafe { (*stream).process_handle };
+    if !handle.is_null() { let _ = unsafe { cognacos_rtl_dereference_section(handle) }; }
+    unsafe { (*stream).process_handle = ptr::null_mut(); (*stream).vtbl = ptr::null(); }
+}
+unsafe extern "system" fn release_owned_section_memory_stream(stream: *mut RTL_MEMORY_STREAM) {
+    if stream.is_null() { return; }
+    unsafe { RtlFinalReleaseSectionMemoryStream(stream); native_vm_release(stream.cast()); }
+}
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitOutOfProcessMemoryStream(stream: *mut RTL_MEMORY_STREAM) {
     if stream.is_null() { return; }
@@ -820,7 +850,13 @@ pub unsafe extern "system" fn RtlReadMemoryStream(this: PVOID, buffer: PVOID, le
     let end = stream.end as usize;
     if start > current || current > end { return STG_E_INVALIDPOINTER; }
     let amount = (end - current).min(length as usize);
-    if amount != 0 {
+    if stream.unknown == RTL_STREAM_SECTION_BACKED {
+        if amount != 0 {
+            let status = unsafe { cognacos_rtl_section_copy(stream.process_handle, current as u64, buffer, amount, 0) };
+            if status < 0 { return status; }
+            stream.current = (current + amount) as PVOID;
+        }
+    } else if amount != 0 {
         unsafe { ptr::copy(current as *const u8, buffer.cast::<u8>(), amount); }
         stream.current = (current + amount) as PVOID;
     }
@@ -832,6 +868,7 @@ pub unsafe extern "system" fn RtlReadOutOfProcessMemoryStream(this: PVOID, buffe
     if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, 0); } }
     if this.is_null() || (length != 0 && buffer.is_null()) { return STG_E_INVALIDPOINTER; }
     let stream = unsafe { &mut *this.cast::<RTL_MEMORY_STREAM>() };
+    if stream.unknown == RTL_STREAM_SECTION_BACKED { return unsafe { RtlReadMemoryStream(this, buffer, length, bytes_read) }; }
     let current = stream.current as usize;
     let end = stream.end as usize;
     if current > end { return STG_E_INVALIDPOINTER; }
@@ -902,13 +939,21 @@ pub unsafe extern "system" fn RtlCloneMemoryStream(this: PVOID, result: *mut PVO
     if this.is_null() || result.is_null() { return STG_E_INVALIDPOINTER; }
     unsafe { ptr::write(result, ptr::null_mut()); }
     let source = unsafe { &*this.cast::<RTL_MEMORY_STREAM>() };
-    let Some((base, _)) = (unsafe { native_vm_allocate(core::mem::size_of::<RTL_MEMORY_STREAM>()) }) else { return STATUS_NO_MEMORY; };
+    if source.unknown == RTL_STREAM_SECTION_BACKED {
+        let status = unsafe { cognacos_rtl_reference_section(source.process_handle) };
+        if status < 0 { return status; }
+    }
+    let Some((base, _)) = (unsafe { native_vm_allocate(core::mem::size_of::<RTL_MEMORY_STREAM>()) }) else {
+        if source.unknown == RTL_STREAM_SECTION_BACKED { let _ = unsafe { cognacos_rtl_dereference_section(source.process_handle) }; }
+        return STATUS_NO_MEMORY;
+    };
     let clone = base.cast::<RTL_MEMORY_STREAM>();
     unsafe {
         ptr::write(clone, RTL_MEMORY_STREAM {
             vtbl: source.vtbl, ref_count: 1, unknown: source.unknown,
             current: source.current, start: source.start, end: source.end,
-            final_release: Some(release_owned_memory_stream), process_handle: source.process_handle,
+            final_release: Some(if source.unknown == RTL_STREAM_SECTION_BACKED { release_owned_section_memory_stream } else { release_owned_memory_stream }),
+            process_handle: source.process_handle,
         });
         ptr::write(result, clone.cast());
     }
@@ -934,6 +979,7 @@ pub unsafe extern "system" fn RtlUnlockMemoryStreamRegion(this: PVOID, offset: u
 pub unsafe extern "system" fn RtlSetMemoryStreamSize(this: PVOID, new_size: u64) -> NTSTATUS {
     if this.is_null() { return STG_E_INVALIDPOINTER; }
     let stream = unsafe { &mut *this.cast::<RTL_MEMORY_STREAM>() };
+    if stream.unknown == RTL_STREAM_SECTION_BACKED { return E_NOTIMPL; }
     let start = stream.start as usize;
     let end = stream.end as usize;
     let current = stream.current as usize;
@@ -959,7 +1005,13 @@ pub unsafe extern "system" fn RtlWriteMemoryStream(this: PVOID, buffer: *const c
     let end = stream.end as usize;
     if start > current || current > end { return STG_E_INVALIDPOINTER; }
     let amount = (end - current).min(length as usize);
-    if amount != 0 {
+    if stream.unknown == RTL_STREAM_SECTION_BACKED {
+        if amount != 0 {
+            let status = unsafe { cognacos_rtl_section_copy(stream.process_handle, current as u64, buffer.cast_mut(), amount, 1) };
+            if status < 0 { return status; }
+            stream.current = (current + amount) as PVOID;
+        }
+    } else if amount != 0 {
         unsafe { ptr::copy(buffer.cast::<u8>(), current as *mut u8, amount); }
         stream.current = (current + amount) as PVOID;
     }
