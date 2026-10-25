@@ -109,9 +109,12 @@ unsafe fn object_path(oa:*const ObjectAttributes)->Result<([u16;MAX_NAME],usize,
 /// Mounted REGF bytes remain in their original Windows hive representation.
 /// The loader must place hive bytes in permanent kernel-owned memory first.
 #[derive(Clone, Copy)]
-struct MountedHive { bytes: *const u8, len: usize }
+struct MountedHive { bytes: *const u8, len: usize, info: hive_backend::BaseInfo }
 unsafe impl Sync for MountedHive {}
-static mut MOUNTED_HIVES: [MountedHive; 7] = [MountedHive { bytes: core::ptr::null(), len: 0 }; 7];
+static mut MOUNTED_HIVES: [MountedHive; 7] = [MountedHive {
+    bytes: core::ptr::null(), len: 0,
+    info: hive_backend::BaseInfo { root_cell:0, bins_size:0, major:0, minor:0, sequence_primary:0, sequence_secondary:0 }
+}; 7];
 
 fn hive_slot_for_name(name: &str) -> Option<usize> {
     if name.eq_ignore_ascii_case("SYSTEM") { Some(0) }
@@ -139,7 +142,7 @@ fn mounted_hive(slot: usize) -> Option<hive_backend::Hive<'static>> {
     let mounted = unsafe { core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot])) };
     if mounted.bytes.is_null() || mounted.len == 0 { return None; }
     let bytes = unsafe { core::slice::from_raw_parts(mounted.bytes, mounted.len) };
-    hive_backend::Hive::open(bytes).ok()
+    Some(unsafe { hive_backend::Hive::from_validated(bytes, mounted.info) })
 }
 
 fn starts_ascii(path: &[u16], prefix: &[u8]) -> bool {
