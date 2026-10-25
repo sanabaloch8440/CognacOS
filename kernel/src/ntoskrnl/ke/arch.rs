@@ -89,6 +89,7 @@ const STATUS_ACCESS_VIOLATION: u64 = 0xC000_0005;
 /// Fixed-size exception-table entry. The handler only scans this bounded table
 /// and never allocates or acquires a lock. RAX is the documented recovery result.
 struct TrapFixup {
+    vector: core::sync::atomic::AtomicU64,
     fault_rip: core::sync::atomic::AtomicU64,
     recovery_rip: core::sync::atomic::AtomicU64,
     address: core::sync::atomic::AtomicU64,
@@ -100,6 +101,7 @@ struct TrapFixup {
 impl TrapFixup {
     const fn new() -> Self {
         Self {
+            vector: core::sync::atomic::AtomicU64::new(0),
             fault_rip: core::sync::atomic::AtomicU64::new(0),
             recovery_rip: core::sync::atomic::AtomicU64::new(0),
             address: core::sync::atomic::AtomicU64::new(0),
@@ -117,12 +119,14 @@ static TRAP_FIXUPS: [TrapFixup; MAX_TRAP_FIXUPS] =
 /// error_mask/value constrain the page-fault error code. On recovery, RAX is
 /// set to recovery_result and RIP is redirected to recovery_rip. The recovery
 /// stub must resume/return from the original probe without re-executing it.
-pub fn register_trap_frame_fixup_with_result(
-    fault_rip: u64, recovery_rip: u64, address: u64,
+pub fn register_trap_frame_exception_fixup(
+    vector: u64, fault_rip: u64, recovery_rip: u64, address: u64,
     error_mask: u64, error_value: u64, recovery_result: u64,
 ) -> bool {
     const KERNEL_BASE: u64 = 0xffff_8000_0000_0000;
-    if fault_rip < KERNEL_BASE || fault_rip == FIXUP_RESERVED
+    // NMI, double fault, and machine check cannot be safely recovered as probes.
+    if vector >= EXCEPTION_VECTORS as u64 || matches!(vector, 2 | 8 | 18)
+        || fault_rip < KERNEL_BASE || fault_rip == FIXUP_RESERVED
         || recovery_rip < KERNEL_BASE || recovery_rip == FIXUP_RESERVED
         || error_value & !error_mask != 0 {
         return false;
@@ -133,6 +137,7 @@ pub fn register_trap_frame_fixup_with_result(
             core::sync::atomic::Ordering::AcqRel,
             core::sync::atomic::Ordering::Acquire,
         ).is_ok() {
+            slot.vector.store(vector, core::sync::atomic::Ordering::Relaxed);
             slot.recovery_rip.store(recovery_rip, core::sync::atomic::Ordering::Relaxed);
             slot.address.store(address, core::sync::atomic::Ordering::Relaxed);
             slot.error_mask.store(error_mask, core::sync::atomic::Ordering::Relaxed);
@@ -143,6 +148,15 @@ pub fn register_trap_frame_fixup_with_result(
         }
     }
     false
+}
+
+pub fn register_trap_frame_fixup_with_result(
+    fault_rip: u64, recovery_rip: u64, address: u64,
+    error_mask: u64, error_value: u64, recovery_result: u64,
+) -> bool {
+    register_trap_frame_exception_fixup(
+        14, fault_rip, recovery_rip, address, error_mask, error_value, recovery_result,
+    )
 }
 
 /// Compatibility helper for callers whose recovery convention returns zero in RAX.
@@ -167,6 +181,7 @@ pub fn unregister_trap_frame_fixup(fault_rip: u64) -> bool {
             while slot.readers.load(core::sync::atomic::Ordering::Acquire) != 0 {
                 core::hint::spin_loop();
             }
+            slot.vector.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.recovery_rip.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.address.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.error_mask.store(0, core::sync::atomic::Ordering::Relaxed);
@@ -179,13 +194,17 @@ pub fn unregister_trap_frame_fixup(fault_rip: u64) -> bool {
     false
 }
 
-fn apply_trap_frame_fixup(rip: u64, cr2: u64, error: u64, frame: *const u64) -> bool {
+fn apply_trap_frame_fixup(vector: u64, rip: u64, cr2: u64, error: u64, frame: *const u64) -> bool {
     // MAX_TRAP_FIXUPS is deliberately small and fixed: exception dispatch cannot
     // allocate, sleep, or acquire locks which might already be held by the faulting CPU.
     for slot in TRAP_FIXUPS.iter() {
         if slot.fault_rip.load(core::sync::atomic::Ordering::Acquire) != rip { continue; }
         slot.readers.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
         if slot.fault_rip.load(core::sync::atomic::Ordering::Acquire) != rip {
+            slot.readers.fetch_sub(1, core::sync::atomic::Ordering::Release);
+            continue;
+        }
+        if slot.vector.load(core::sync::atomic::Ordering::Relaxed) != vector {
             slot.readers.fetch_sub(1, core::sync::atomic::Ordering::Release);
             continue;
         }
@@ -1581,7 +1600,7 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
         unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
         if crate::kernel_vm::handle_page_fault(cr2, error) { return 1; }
         let saved_rip = unsafe { frame.add(17).read() };
-        if apply_trap_frame_fixup(saved_rip, cr2, error, frame) { return 1; }
+        if apply_trap_frame_fixup(vector, saved_rip, cr2, error, frame) { return 1; }
 
         // Legacy boot permission probes retain their exact-address guard.
         let expected = EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire);
@@ -1598,6 +1617,10 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
             unsafe { (frame as *mut u64).add(17).write(recovery); }
             return 1;
         }
+    } else if vector < EXCEPTION_VECTORS as u64 {
+        // Non-page-fault probes match vector/error/RIP only; CR2 is not meaningful.
+        let saved_rip = unsafe { frame.add(17).read() };
+        if apply_trap_frame_fixup(vector, saved_rip, 0, error, frame) { return 1; }
     }
     cognacos_exception_fatal(vector, error, frame)
 }
