@@ -249,9 +249,16 @@ cognacos_windows_syscall_entry:
     mov rdx, rax
     shr rdx, 32
     test edx, edx
+    jz .Lwindows_stack_low
+    cmp edx, 1
     jne .Lwindows_stack_bad
+    test eax, eax
+    jne .Lwindows_stack_bad
+    jmp .Lwindows_stack_valid
+.Lwindows_stack_low:
     test eax, 0xfff
     jne .Lwindows_stack_bad
+.Lwindows_stack_valid:
     mov al, 'T'
     jmp .Lwindows_stack_marker
 .Lwindows_stack_bad:
@@ -337,7 +344,7 @@ pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
             // in every address space as supervisor-only memory. Keep syscall
             // stacks out of the image BSS, whose tail is not guaranteed mapped.
             let page = crate::memory::allocate_page().map_err(|_| ())?;
-            if page == 0 || page >= 0xffff_f000 { return Err(()); }
+            if page == 0 || page >= 0x1_0000_0000 { return Err(()); }
             (*local).stack_page = page;
         }
         (*local).kernel_rsp = (*local).stack_page + 4096;
