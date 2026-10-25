@@ -672,7 +672,7 @@ fn nt_open_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
 }
 
 fn nt_query_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
-    if args[0] == 0 || args[1] == 0 || args[3] == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    if args[0] == 0 || args[1] == 0 || (args[3] == 0 && args[4] != 0) { return NT_STATUS_INVALID_PARAMETER; }
     let mut us = [0u8; 16];
     if let Err(status) = copy_nt_input(args[1], &mut us) { return status; }
     let length = u16::from_le_bytes([us[0], us[1]]) as usize;
