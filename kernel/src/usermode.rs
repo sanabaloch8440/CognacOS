@@ -285,6 +285,8 @@ pub unsafe fn run_windows_syscall_abi_smoke(
     ntdll: LoadedImage,
 ) -> Result<(), VmError> {
     let mut data = [0u8; 4096];
+    data[0x3f0] = 66;
+    data[0x3f1] = 65;
     let data_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
     unsafe { space.map_user_page(NTDLL_TEST_DATA, data_page, true, false)?; }
     unsafe { space.copy_to_user(NTDLL_TEST_DATA, &data)?; }
@@ -328,6 +330,9 @@ pub unsafe fn run_windows_syscall_abi_smoke(
     }
 
     emit!(&[0x48, 0x83, 0xec, 0x30]); // Windows shadow space + fifth argument.
+    emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
+    imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f0);
+    emit!(&[0xba, 1, 0, 0, 0, 0xcd, 0x81]);
     // NtQuerySystemInformation(0, output, 64, &returnLength), service 0x36.
     imm64!(&[0x48, 0xb9], 0);
     imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0x100);
@@ -335,6 +340,9 @@ pub unsafe fn run_windows_syscall_abi_smoke(
     imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x180);
     emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x36, 0, 0, 0, 0x0f, 0x05, 0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
+    emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
+    imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f1);
+    emit!(&[0xba, 1, 0, 0, 0, 0xcd, 0x81]);
     check_dword!(NTDLL_TEST_DATA + 0x180, 64);
     check_dword!(NTDLL_TEST_DATA + 0x108, 4096);
 
@@ -410,6 +418,8 @@ pub unsafe fn run_native_ntdll_smoke(
         .ok_or(VmError::InvalidAddress)?;
 
     let mut data = [0u8; 4096];
+    data[0x3f0] = 66;
+    data[0x3f1] = 65;
     let numbers = [0x100u64, 0x101, 0x102, 0x103, 0x104];
     for (index, number) in numbers.iter().enumerate() {
         data[0x300 + index * 8..0x308 + index * 8].copy_from_slice(&number.to_le_bytes());
@@ -462,6 +472,9 @@ pub unsafe fn run_native_ntdll_smoke(
         }};
     }
     emit!(&[0x48, 0x83, 0xec, 0x30]); // Shadow space plus fifth-argument slot; keeps RSP 16-byte aligned.
+    emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
+    imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f0);
+    emit!(&[0xba, 1, 0, 0, 0, 0xcd, 0x81]);
 
     // Exercise the actual Windows x64 SYSCALL ABI before invoking the custom
     // CognacOS NTDLL wrappers. These service IDs match the inspected reference
@@ -473,6 +486,9 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x36, 0, 0, 0, 0x0f, 0x05]);
     emit!(&[0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
+    emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
+    imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f1);
+    emit!(&[0xba, 1, 0, 0, 0, 0xcd, 0x81]);
     check_dword!(NTDLL_TEST_DATA + 0x680, 64);
     check_dword!(NTDLL_TEST_DATA + 0x608, 4096);
 
