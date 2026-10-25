@@ -192,3 +192,13 @@ The current first phase is intentionally fail-closed: if any discovered dependen
 - [ ] Add synthetic multi-DLL graph tests covering post-order mapping, missing files, cycles, and rollback after map/link failure; run them in CI.
 
 The concrete entry point is `kernel/src/pe_loader.rs::load_dll_transaction_from_vfs`. It resolves dependencies under the staged `\\SystemRoot\\System32` and `\\Windows\\System32` paths. The legacy `load_dll_from_vfs` entry point remains fail-closed and has not been switched over. The VFS only serves explicitly registered immutable files; disk-backed lookup, forwarded exports, and native NTDLL syscall wiring remain separate work. This code is not validated until the current kernel/host/QEMU workflows pass.
+
+
+### NTDLL memory exports
+
+- [x] Replace zero-argument declarations for the core `Nt/Zw*VirtualMemory` family with typed x64 parameter lists based on Windows documentation.
+- [x] Add functional `RtlCopyMemoryNonTemporal` and `RtlFillMemoryNonTemporal` fallbacks plus regression tests.
+- [ ] Implement kernel-backed allocation, release, protection, query, read/write, lock/unlock and flush operations through CognacOS native memory services.
+- [ ] Validate undocumented memory-stream, memory-zone/lookaside, secure-cache and nonvolatile-memory export ABIs against the pinned Windows 11 x64 reference.
+
+The syscall entry points intentionally fail closed until matching CognacOS service IDs and kernel handlers are available. These declarations are ABI groundwork, not a claim that virtual-memory system calls are functional.
