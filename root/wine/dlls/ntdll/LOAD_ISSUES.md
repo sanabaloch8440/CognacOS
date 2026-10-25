@@ -154,13 +154,15 @@ space plus the fifth argument slot), preserving 16-byte alignment before calls.
 The next QEMU run must get past the process query and verify the complete
 wrapper sequence.
 
-### NTDLL-LOAD-014 — wrapper smoke returned a failing status after entering ring 3
+### NTDLL-LOAD-014 — smoke accounting ignored native NT syscalls
 
-**Observed in QEMU:** the DLL now maps, registers exports, and returns from its
-entry callback, but the end-to-end smoke still fails after the user entrypoint.
-The next test revision assigns distinct exit codes to each assertion and logs
-the final syscall delta/exit status, so the failing wrapper or output check can
-be identified without guessing.
+**Observed in QEMU:** after the fifth-argument stack fix, the smoke process
+exited with status zero and the expected `Exited` state, but validation still
+reported failure because the shared dispatch counter increased only once for
+the legacy process-exit call. Native NT dispatches were not incrementing that
+counter, so the validation condition could not see them.
 
-**Status:** diagnostic instrumentation committed; the precise failing assertion
-and its fix remain pending the next QEMU run.
+**Fix committed:** `cognacos_nt_syscall_dispatch` now increments the shared
+dispatch counter for each native NT interrupt. The detailed failure exit codes
+and final status log are retained to catch any actual wrapper failure in the
+next QEMU run.
