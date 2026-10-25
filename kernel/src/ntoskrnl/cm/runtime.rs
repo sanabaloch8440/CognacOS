@@ -239,18 +239,24 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
 pub unsafe extern "win64" fn ZwOpenKey(out:*mut *mut core::ffi::c_void,access:u32,oa:*const ObjectAttributes)->i32{
  if out.is_null(){return STATUS_INVALID_PARAMETER;}let _g=LOCK.lock();
  let (mut name,mut n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
- let s=state();
- if parent!=0 {
-  if let Some(base)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==parent&&k.hive_slot!=0) {
+ if parent==0 {
+  if let Some(status)=open_hive_key(out,access,&name[..n]) { return status; }
+ } else {
+  let base = {
+   let s=state();
+   s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==parent&&k.hive_slot!=0).copied()
+  };
+  if let Some(base)=base {
    let base_len=base.name_len as usize;
    if base_len+1+n>MAX_NAME{return STATUS_INVALID_PARAMETER;}
    name.copy_within(0..n,base_len+1);
    name[base_len]=b'\\' as u16;
    name[..base_len].copy_from_slice(&base.name[..base_len]);
    n=base_len+1+n;
-   if let Some(status)=open_hive_key(out,access,&name[..n]){return status;}
+   if let Some(status)=open_hive_key(out,access,&name[..n]) { return status; }
   }
- } else if let Some(status)=open_hive_key(out,access,&name[..n]) { return status; }
+ }
+ let s=state();
  let found=s.keys.iter().find(|k|k.used&&!k.deleted&&k.hive_slot==0&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n]));
  if let Some(k)=found{
   #[cfg(test)] unsafe{*out=handle(k.id);}
