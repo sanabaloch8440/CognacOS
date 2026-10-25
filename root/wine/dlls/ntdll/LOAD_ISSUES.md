@@ -176,11 +176,12 @@ launcher has a scheduler-owned current thread; the kernel unconditionally
 called `yield_current`, which can switch the bootstrap stack into unrelated
 scheduler state.
 
-**Fix committed:** the native service now invokes the scheduler only when
-`current_thread_id()` identifies a scheduler-owned thread. The bootstrap
-smoke still verifies the wrapper returns success, but does not attempt an
-invalid context switch. The next QEMU run must confirm the timer/DPC startup
-path continues after the NTDLL test.
+**Fix committed and boot-smoke validated:** the native service now invokes
+the scheduler only when `current_thread_id()` identifies a scheduler-owned
+thread. The bootstrap smoke verifies the wrapper returns success without an
+invalid context switch. The boot-smoke step passed in
+[Actions run 40176341592](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176341592);
+the run's 2/4/8-vCPU stress matrix was still running at the time of this update.
 
 ### NTDLL-LOAD-016 — smoke-process cleanup attempted reap before address-space detach
 
