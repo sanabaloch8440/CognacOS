@@ -287,10 +287,15 @@ free, reallocation, size, and validation exports. The loader now sets
 The implementation uses aligned first-fit blocks, splitting/coalescing, and a
 lock; `HEAP_ZERO_MEMORY` is supported.
 
-**Validation pending:** the new ring-3 smoke covers heap handle identity,
-allocation/size, realloc data preservation, free/double-free rejection, and
-zeroed reuse. The next QEMU run will determine whether the heap path is stable.
+**QEMU-verified:** [Actions run 40184178016](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184178016) passed the native ring-3 smoke and the 2/4/8-vCPU stress matrix, including heap handle identity, allocation/size, realloc data preservation, free/double-free rejection, and zeroed reuse.
 
 **Limitations:** this is a fixed 256 KiB process heap, not the Windows heap
 manager. Custom heaps, LFH, heap instrumentation/callbacks, exception flags,
 and exact compatibility for all heap flags are not implemented.
+
+
+### NTDLL-LOAD-022 — GS-based current PEB accessor
+
+**Implemented:** exported `RtlGetCurrentPeb`, reading the Windows x64 TEB/PEB pointer through `GS:[0x60]`. The process launcher already installs the TEB at the user GS base and now exposes the default process heap in `PEB.ProcessHeap`. The ring-3 smoke verifies the returned PEB address and its heap pointer against the mapped DLL export.
+
+**Validation pending:** the next QEMU run will verify the new accessor after the native DLL build and boot test. This is still a narrow PEB access primitive; complete TEB fields, loader state, TLS, and process startup remain unfinished.
