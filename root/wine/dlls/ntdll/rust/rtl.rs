@@ -351,7 +351,6 @@ mod tests {
             assert_eq!((*right).Parent, left);
         }
     }
-}
     #[test]
     fn crc32_matches_standard_vector_and_supports_chaining() {
         let bytes = b"123456789";
@@ -378,3 +377,5 @@ mod tests {
         assert_eq!(RtlUlonglongByteSwap(0x0123_4567_89ab_cdef), 0xefcd_ab89_6745_2301);
     }
 
+
+}
