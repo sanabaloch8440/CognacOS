@@ -237,6 +237,198 @@ pub unsafe fn load_dll_from_vfs(
     Ok(LoadResult { slot, generation, image, already_loaded: false })
 }
 
+
+/// Read a registered VFS image into a bounded caller-owned buffer. The handle is
+/// always closed, including short reads and provider errors.
+fn read_vfs_image(process_id: u64, path: &[u8], output: &mut [u8]) -> Result<usize, i32> {
+    if path.is_empty() || output.is_empty() { return Err(STATUS_INVALID_PARAMETER); }
+    let handle = crate::file_services::open_for_process(process_id, path)?;
+    let mut total = 0usize;
+    let result = loop {
+        if total == output.len() {
+            let mut probe = [0u8; 1];
+            match crate::file_services::read_at_for_process(process_id, handle, total, &mut probe) {
+                Ok(0) => break Ok(total),
+                Ok(_) => break Err(STATUS_BUFFER_TOO_SMALL),
+                Err(status) => break Err(status),
+            }
+        }
+        let amount = core::cmp::min(FILE_CHUNK, output.len() - total);
+        match crate::file_services::read_at_for_process(process_id, handle, total, &mut output[total..total + amount]) {
+            Ok(0) => break if total == 0 { Err(STATUS_INVALID_IMAGE_FORMAT) } else { Ok(total) },
+            Ok(n) if n <= amount => total += n,
+            Ok(_) => break Err(STATUS_INVALID_PARAMETER),
+            Err(status) => break Err(status),
+        }
+    };
+    let close = crate::file_services::close_for_process(process_id, handle);
+    match (result, close) {
+        (Ok(n), Ok(())) => Ok(n),
+        (Err(e), _) => Err(e),
+        (Ok(_), Err(e)) => Err(e),
+    }
+}
+
+fn transaction_handle(slot: usize, generation: u32) -> u64 {
+    ((generation as u64) << 32) | ((slot as u64) + 1)
+}
+fn decode_transaction_handle(handle: u64) -> Result<(usize, u32), i32> {
+    let low = (handle & 0xffff_ffff) as usize;
+    let generation = (handle >> 32) as u32;
+    if low == 0 || low > crate::pe_modules::MAX_MODULES || generation == 0 {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    Ok((low - 1, generation))
+}
+
+/// Concrete adapter from the bounded dependency transaction engine to the
+/// process VFS, PE32+ mapper, and generation-tagged module registry.
+///
+/// Child DLL names are resolved under \SystemRoot\System32 first and
+/// \Windows\System32 second. The VFS remains an explicitly registered,
+/// read-only provider: arbitrary disk paths are not available here.
+struct VfsTransactionBackend<'a> {
+    space: &'a mut AddressSpace,
+    process_id: u64,
+    resolver: Option<ImportResolver>,
+}
+impl VfsTransactionBackend<'_> {
+    fn module_path(name: &[u8], prefix: &[u8], output: &mut [u8; crate::file_services::MAX_PATH_BYTES]) -> Result<usize, i32> {
+        let needed = prefix.len().checked_add(name.len()).ok_or(STATUS_INVALID_PARAMETER)?;
+        if needed > output.len() { return Err(STATUS_INVALID_PARAMETER); }
+        output[..prefix.len()].copy_from_slice(prefix);
+        output[prefix.len()..needed].copy_from_slice(name);
+        Ok(needed)
+    }
+}
+impl crate::pe_dependencies::transaction::Backend for VfsTransactionBackend<'_> {
+    fn lookup(&mut self, name: &[u8]) -> Result<Option<u64>, i32> {
+        let normalized = crate::winabi::api_set_host(name).unwrap_or(name);
+        let Some((slot, entry)) = crate::pe_modules::find_for_process(self.process_id, normalized) else {
+            return Ok(None);
+        };
+        if !matches!(entry.state, crate::pe_modules::ModuleState::Mapped
+            | crate::pe_modules::ModuleState::Initializing
+            | crate::pe_modules::ModuleState::Initialized) {
+            return Err(STATUS_RESOURCE_IN_USE);
+        }
+        Ok(Some(transaction_handle(slot, entry.generation)))
+    }
+
+    fn read_file(&mut self, name: &[u8], output: &mut [u8]) -> Result<usize, i32> {
+        let normalized = crate::winabi::api_set_host(name).unwrap_or(name);
+        let mut path = [0u8; crate::file_services::MAX_PATH_BYTES];
+        let first = Self::module_path(normalized, b"\SystemRoot\System32\", &mut path)?;
+        match read_vfs_image(self.process_id, &path[..first], output) {
+            Ok(n) => return Ok(n),
+            Err(status) if status == crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND => {}
+            Err(status) => return Err(status),
+        }
+        let second = Self::module_path(normalized, b"\Windows\System32\", &mut path)?;
+        read_vfs_image(self.process_id, &path[..second], output)
+    }
+
+    fn map(&mut self, name: &[u8], file: &[u8]) -> Result<u64, i32> {
+        let normalized = crate::winabi::api_set_host(name).unwrap_or(name);
+        if let Some(handle) = self.lookup(normalized)? { return Ok(handle); }
+        let (slot, generation) = crate::pe_modules::reserve_for_process(self.process_id, normalized)?;
+        *IMPORT_CONTEXT.lock() = ImportContext {
+            active: true, process_id: self.process_id, parent_slot: slot,
+            parent_generation: generation, resolver: self.resolver,
+        };
+        let mapped = unsafe {
+            crate::pe::load_dll(self.space, file, normalized, Some(transaction_import_resolver))
+        };
+        *IMPORT_CONTEXT.lock() = ImportContext::EMPTY;
+        let image = match mapped {
+            Ok(image) => image,
+            Err(error) => {
+                let _ = crate::pe_modules::rollback(slot, generation);
+                return Err(pe_status(error));
+            }
+        };
+        if let Err(status) = crate::pe_modules::publish_mapping(slot, generation, image.base, image.image_size) {
+            if unsafe { crate::pe::unload_dll(self.space, image, normalized) }.is_ok() {
+                let _ = crate::pe_modules::rollback(slot, generation);
+            }
+            return Err(status);
+        }
+        Ok(transaction_handle(slot, generation))
+    }
+
+    fn link(&mut self, parent: u64, dependency: u64) -> Result<(), i32> {
+        let (parent_slot, parent_generation) = decode_transaction_handle(parent)?;
+        let (dependency_slot, dependency_generation) = decode_transaction_handle(dependency)?;
+        crate::pe_modules::add_dependency(parent_slot, parent_generation, dependency_slot, dependency_generation)
+    }
+
+    fn rollback(&mut self, name: &[u8], handle: u64) {
+        let Ok((slot, generation)) = decode_transaction_handle(handle) else { return; };
+        let Some((_, snapshot)) = crate::pe_modules::find_for_process(self.process_id, name) else { return; };
+        if snapshot.generation != generation
+            || !matches!(snapshot.state, crate::pe_modules::ModuleState::Mapped | crate::pe_modules::ModuleState::Reserved) {
+            return;
+        }
+        if snapshot.state == crate::pe_modules::ModuleState::Reserved {
+            let _ = crate::pe_modules::rollback(slot, generation);
+            return;
+        }
+        let module_name = &snapshot.name[..snapshot.name_len as usize];
+        let image = LoadedImage { base: snapshot.base, entry: 0, image_size: snapshot.size, is_dll: true };
+        // Keep the registry ticket if complete unmapping fails.
+        if unsafe { crate::pe::unload_dll(self.space, image, module_name) }.is_ok() {
+            let _ = crate::pe_modules::rollback(slot, generation);
+        }
+    }
+}
+
+/// Load a DLL and its normal/delay-import dependency graph as one bounded
+/// transaction. root_scratch stores the root file; depth_buffers supplies one
+/// independent file buffer for each dependency depth. Newly mapped modules are
+/// generation-checked and unwound if any later dependency/map/link step fails.
+///
+/// The caller must hold the process address-space mutation/rundown contract.
+/// The current VFS provider only resolves explicitly registered immutable files.
+pub unsafe fn load_dll_transaction_from_vfs(
+    space: &mut AddressSpace,
+    process_id: u64,
+    root_path: &[u8],
+    module_name: &[u8],
+    root_scratch: &mut [u8],
+    depth_buffers: &mut [&mut [u8]],
+    resolver: Option<ImportResolver>,
+) -> Result<LoadResult, i32> {
+    let _transaction = LOAD_UNLOAD_LOCK.lock();
+    if process_id == 0 || root_path.is_empty() || module_name.is_empty()
+        || root_scratch.is_empty() || depth_buffers.is_empty() {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    if let Some((slot, existing)) = crate::pe_modules::find_for_process(process_id, module_name) {
+        if matches!(existing.state, crate::pe_modules::ModuleState::Mapped
+            | crate::pe_modules::ModuleState::Initializing | crate::pe_modules::ModuleState::Initialized) {
+            crate::pe_modules::add_reference(slot, existing.generation)?;
+            return Ok(LoadResult { slot, generation: existing.generation,
+                image: LoadedImage { base: existing.base, entry: 0, image_size: existing.size, is_dll: true },
+                already_loaded: true });
+        }
+        return Err(STATUS_RESOURCE_IN_USE);
+    }
+    let root_len = read_vfs_image(process_id, root_path, root_scratch)?;
+    let mut backend = VfsTransactionBackend { space, process_id, resolver };
+    let handle = crate::pe_dependencies::transaction::load_transaction(
+        &mut backend, module_name, &root_scratch[..root_len], depth_buffers,
+    )?;
+    let (slot, generation) = decode_transaction_handle(handle)?;
+    let (_, snapshot) = crate::pe_modules::find_for_process(process_id, module_name)
+        .ok_or(STATUS_DLL_NOT_FOUND)?;
+    if snapshot.generation != generation || snapshot.state != crate::pe_modules::ModuleState::Mapped {
+        return Err(STATUS_RESOURCE_IN_USE);
+    }
+    Ok(LoadResult { slot, generation,
+        image: LoadedImage { base: snapshot.base, entry: 0, image_size: snapshot.size, is_dll: true },
+        already_loaded: false })
+}
+
 /// Drop one caller reference and unmap the image only when the module registry
 /// issues the final unload ticket. Dependencies orphaned by this unload are then
 /// drained using their own generation-checked tickets. This never invokes user
