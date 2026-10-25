@@ -75,7 +75,6 @@ def parse_pe(data: bytes):
     if not export_rva or not export_size:
         raise PEError("PE image has no export directory")
     exp = rva_offset(export_rva)
-    ordinal_base = u32(data, exp + 16)
     nfunc = u32(data, exp + 20)
     nname = u32(data, exp + 24)
     funcs_rva = u32(data, exp + 28)
@@ -118,7 +117,7 @@ def main() -> int:
             # Windows 11 may insert a shared-user-data test between the
             # service ID and syscall. Accept the canonical prefix and require
             # a syscall instruction in the short stub window.
-            if data[off:off + 3] != bytes.fromhex("4c 8b d1") or data[off + 3:off + 4] != b"\\xb8":
+            if data[off:off + 3] != bytes.fromhex("4c 8b d1") or data[off + 3:off + 4] != b"\xb8":
                 continue
             stub_window = data[off + 8:off + 32]
             if bytes.fromhex("0f 05") not in stub_window:
@@ -126,6 +125,10 @@ def main() -> int:
             service = u32(data, off + 4)
             macro = "".join(ch.upper() if ch.isalnum() else "_" for ch in name)
             rows.append((name, macro, service))
+        stubbed_names = {name for name, _, _ in rows}
+        missing_stubs = [name for name in args.require if name not in stubbed_names]
+        if missing_stubs:
+            raise PEError("required exports are not recognized syscall stubs: " + ", ".join(missing_stubs))
         if not rows:
             raise PEError("no canonical x64 Nt/Zw syscall stubs found; refusing to guess")
         lines = [
