@@ -182,6 +182,14 @@ cognacos_rtl_section_copy:
     mov eax, 0x119
     int 0x83
     ret
+
+    .p2align 4
+    .global cognacos_rtl_reference_section
+cognacos_rtl_reference_section:
+    mov r10, rcx
+    mov eax, 0x11a
+    int 0x83
+    ret
 "#);
 
 unsafe extern "system" {
@@ -202,6 +210,7 @@ unsafe extern "system" {
     fn cognacos_rtl_create_section(size: SIZE_T, handle_out: *mut PVOID) -> NTSTATUS;
     fn cognacos_rtl_dereference_section(handle: PVOID) -> NTSTATUS;
     fn cognacos_rtl_section_copy(handle: PVOID, offset: u64, buffer: PVOID, length: SIZE_T, write: ULONG) -> NTSTATUS;
+    fn cognacos_rtl_reference_section(handle: PVOID) -> NTSTATUS;
 }
 
 #[no_mangle]
