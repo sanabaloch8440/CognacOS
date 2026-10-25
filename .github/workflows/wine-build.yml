@@ -1,0 +1,17 @@
+# Disabled placeholder for a future Wine source build.
+# No push/pull_request triggers. Manual dispatch is also blocked by the job condition.
+name: Wine project build (DISABLED)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  disabled:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explicitly disabled
+        run: echo "Wine build is intentionally disabled. Remove the job-level if:false only when ready."

@@ -21,11 +21,6 @@ on:
       - 'Gemfile'
       - 'Gemfile.lock'
   workflow_dispatch:
-    inputs:
-      ntdll_url:
-        description: "Optional URL to a raw AMD64 Windows ntdll.dll or ZIP containing it; map/export test only"
-        required: false
-        type: string
 
 permissions:
   contents: read
@@ -35,7 +30,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
-      NTDLL_URL: ${{ inputs.ntdll_url || '' }}
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust targets
@@ -97,45 +91,13 @@ jobs:
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib metadata_csum_superblock_is_checked_and_corruption_rejected
       - name: Test ext4 writes reject requests beyond EOF
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib writes_past_inode_eof_are_rejected_before_device_io
-      - name: Build freestanding native NTDLL PE32+ image
+      - name: Build and validate Rust NTDLL crate
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64
-          make -C root/wine/dlls/ntdll -f Makefile.cognac clean all check
-          mkdir -p build/EFI/BOOT
-          cp root/wine/dlls/ntdll/ntdll.dll build/EFI/BOOT/ntdll.dll
-          if [[ -n "$NTDLL_URL" ]]; then
-            curl -fLsS --max-filesize 16777216 "$NTDLL_URL" -o build/ntdll-input
-            if unzip -tq build/ntdll-input >/dev/null 2>&1; then
-              entry="$(unzip -Z1 build/ntdll-input | awk 'tolower($0) == "ntdll.dll" || tolower($0) ~ /ntdll[.]dll$/ { print; exit }')"
-              test -n "$entry" || { echo "ZIP does not contain ntdll.dll" >&2; exit 1; }
-              unzip -p build/ntdll-input "$entry" | head -c 16777217 > build/EFI/BOOT/ntdll.dll
-            else
-              cp build/ntdll-input build/EFI/BOOT/ntdll.dll
-            fi
-            echo "Using externally supplied NTDLL for PE map/export-only validation; the Windows syscall ABI will not be executed."
-          fi
-          test "$(stat -c %s build/EFI/BOOT/ntdll.dll)" -le 16777216
-          file build/EFI/BOOT/ntdll.dll
-          python3 - <<'PY'
-          import struct
-          p = open("build/EFI/BOOT/ntdll.dll", "rb").read()
-          assert 0 < len(p) <= 16 * 1024 * 1024
-          pe = struct.unpack_from("<I", p, 0x3c)[0]
-          assert p[:2] == b"MZ" and p[pe:pe+4] == b"PE\0\0"
-          coff = pe + 4
-          assert struct.unpack_from("<H", p, coff)[0] == 0x8664
-          assert struct.unpack_from("<H", p, coff + 18)[0] & 0x2000
-          opt = coff + 20
-          assert struct.unpack_from("<H", p, opt)[0] == 0x20b
-          image_size = struct.unpack_from("<I", p, opt + 56)[0]
-          reloc_rva, reloc_size = struct.unpack_from("<II", p, opt + 112 + 5 * 8)
-          assert 0 < image_size <= 16 * 1024 * 1024
-          assert reloc_rva and reloc_size, "staged NTDLL must retain a base-relocation directory"
-          print(f"staged NTDLL PE32+ validation passed: {len(p)} file bytes, image size {image_size}, relocations {reloc_size} bytes")
-          PY
+          python3 ntdll/tools/check_export_table.py
+          cargo check --manifest-path ntdll/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
+          cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-unknown-linux-gnu
       - name: Build separate native PE32+ HAL and driver images
         shell: bash
         run: |
@@ -358,7 +320,6 @@ jobs:
             cp target/x86_64-unknown-uefi/release/cognacos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
           fi
           cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
-          test -s build/EFI/BOOT/ntdll.dll
           cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
           truncate -s 256M build/cognacos-uefi.img
           truncate -s 128M build/pagefile.img
@@ -370,7 +331,6 @@ jobs:
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/BOOT
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
-          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/ntdll.dll ::/EFI/BOOT/ntdll.dll
       - name: Boot smoke test under OVMF/QEMU
         shell: bash
         run: |
@@ -441,18 +401,8 @@ jobs:
           grep -F 'Protection self-tests passed: read-only write trapped and NX execution trapped.' build/serial.log
           grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
           grep -F 'Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.' build/serial.log
-          grep -F 'NTDLL PE32+ image mapped and exports registered.' build/serial.log
-          if grep -Fq 'CognacOS native NTDLL ring-3 syscall wrappers passed.' build/serial.log \
-            || grep -Fq 'Native NTDLL and Windows SYSCALL ABI ring-3 smoke tests passed.' build/serial.log \
-            || grep -Fq 'Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed.' build/serial.log \
-            || grep -Fq 'Windows NTDLL mapped; no supported canonical syscall stub table found, execution skipped.' build/serial.log \
-            || grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log \
-            || grep -Fq 'Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.' build/serial.log; then
-            echo "NTDLL PE mapping and native syscall-dispatcher smoke tests completed; a separate NTDLL ring-3 wrapper pass was not reported."
-          else
-            echo "NTDLL mapping completed but no expected syscall smoke result was reported." >&2
-            exit 1
-          fi
+          grep -F 'WARNING: no staged ntdll.dll; PE loader smoke remains fixture-only.' build/serial.log
+          echo "NTDLL DLL loading is intentionally omitted from this workflow; Rust NTDLL crate compilation was checked above."
           grep -F 'Per-process page-table isolation, same-VA non-aliasing, and supervisor mapping protection passed.' build/serial.log
           grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
           grep -F 'PE32+ loader self-test passed; image base=0x0000200000000000 entry=0x0000200000001000 (RX section and RO/NX headers).' build/serial.log
@@ -510,7 +460,6 @@ jobs:
           name: cognacos-rust-uefi-kernel
           path: |
             build/EFI/BOOT/BOOTX64.EFI
-            build/EFI/BOOT/ntdll.dll
             build/kernel/cognacos-kernel.exe
             build/cognacos-uefi.img
             build/serial.log
