@@ -14,13 +14,13 @@ The roadmap is maintained in one canonical file in the repository root to avoid 
 ## Current focus
 
 - **Boot security:** validate signature tamper rejection in CI; configure stable release keys and exercise enrolled-key Secure Boot plus TPM 2.0 measurement on real firmware.
-- **Memory isolation and fault containment:** generalize trap-frame fixups for recoverable kernel probes; deliver user faults through a process-scoped exception path; stress concurrent address-space teardown; add user-page eviction/pagefile-backed page-in; trim working sets only after SMP TLB-shootdown acknowledgements, then reclaim pages safely.
+- **Memory isolation and fault containment:** bounded vector/RIP trap-frame fixups now set an explicit recovery RIP and RAX result, with an invalid-probe boot self-test; unresolved CPL3 exceptions use the saved trap frame and terminate only the owning process. New CI/QEMU validation and adversarial isolation tests remain open, along with concurrent teardown stress, user-mode SEH resume/unwind, user-page eviction/pagefile-backed page-in, and SMP-safe working-set trimming/reclamation.
 - **Scheduling and dispatch:** user APC return/SEH delivery, queue wait-all reservations, and wider race/conformance stress.
 - **Object Manager and security:** process-bound handle tables, token lifecycle, impersonation, callbacks, and audit policy.
 - **I/O and storage:** prove exactly-once IRP completion across cancellation races; drain outstanding IRPs and callbacks before device deletion/driver unload; add race/fault-injection tests, PCI resource assignment, AHCI/NVMe paths, and crash-safe writable filesystems.
 - **Windows x64 ABI:** routine-by-routine evidence, automated ABI/export checks, and WDK conformance testing.
 
-The fault-containment, working-set reclamation, and I/O rundown items are open acceptance criteria, not completed features. The canonical tracker records the detailed tests and ordering guarantees in [Milestone 2](../roadmap.md).
+The new trap-fixup and process-scoped CPL3 termination paths are implemented, but their new boot regression test still needs a passing current workflow run. Concurrent teardown, user-mode SEH resume/unwind, working-set reclamation, and I/O rundown remain open acceptance criteria. The canonical tracker records the detailed tests and ordering guarantees in [Milestone 2](../roadmap.md).
 
 ## Validation policy
 
