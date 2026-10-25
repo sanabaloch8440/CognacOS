@@ -1,3 +1,4 @@
+use core::sync::atomic::AtomicU64;
 // Ke executive clock/interrupt dispatch and scheduler notification glue.
 
 
