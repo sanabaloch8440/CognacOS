@@ -73,10 +73,6 @@ static mut CPU_TSS: [TaskStateSegment; crate::hal::MAX_CPUS] =
 static mut CPU_IST_STACKS: [[[u8; IST_STACK_BYTES]; 3]; crate::hal::MAX_CPUS] =
     [[[0; IST_STACK_BYTES]; 3]; crate::hal::MAX_CPUS];
 static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::MISSING; IDT_ENTRIES];
-static EXPECTED_PROTECTION_FAULT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static EXPECTED_PROTECTION_ADDRESS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static EXPECTED_PROTECTION_RECOVERY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-static OBSERVED_PROTECTION_FAULT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // Lock-free trap-frame fixup registry. Entries are published by storing RIP
 // last with Release ordering; the exception path never takes a potentially
@@ -1602,21 +1598,6 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
         let saved_rip = unsafe { frame.add(17).read() };
         if apply_trap_frame_fixup(vector, saved_rip, cr2, error, frame) { return 1; }
 
-        // Legacy boot permission probes retain their exact-address guard.
-        let expected = EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire);
-        let expected_address = EXPECTED_PROTECTION_ADDRESS.load(core::sync::atomic::Ordering::Relaxed);
-        let expected_error = match expected {
-            1 => error & 0x1f == 0x3,
-            2 => error & 0x1f == 0x11,
-            _ => false,
-        };
-        if expected != 0 && cr2 == expected_address && expected_error {
-            let recovery = EXPECTED_PROTECTION_RECOVERY.load(core::sync::atomic::Ordering::Relaxed);
-            EXPECTED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
-            OBSERVED_PROTECTION_FAULT.store(expected, core::sync::atomic::Ordering::Release);
-            unsafe { (frame as *mut u64).add(17).write(recovery); }
-            return 1;
-        }
     } else if vector < EXCEPTION_VECTORS as u64 {
         // Non-page-fault probes match vector/error/RIP only; CR2 is not meaningful.
         let saved_rip = unsafe { frame.add(17).read() };
@@ -1720,36 +1701,52 @@ pub fn trap_frame_fixup_self_test() -> bool {
 /// Deliberately verify CR0.WP and NX enforcement without hiding unrelated faults.
 /// The recovery labels are armed for one exact CR2 address and one expected error code.
 pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
-    OBSERVED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
-    EXPECTED_PROTECTION_ADDRESS.store(read_only_executable_address, core::sync::atomic::Ordering::Relaxed);
-    EXPECTED_PROTECTION_RECOVERY.store(cognacos_fault_probe_write_ro_recovery as *const () as u64,
-        core::sync::atomic::Ordering::Relaxed);
-    EXPECTED_PROTECTION_FAULT.store(1, core::sync::atomic::Ordering::Release);
+    let write_rip = cognacos_fault_probe_write_ro as *const () as u64;
+    let write_recovery = cognacos_fault_probe_write_ro_recovery as *const () as u64;
     let original_byte = unsafe { core::ptr::read_volatile(read_only_executable_address as *const u8) };
+    if !register_trap_frame_fixup_with_result(
+        write_rip, write_recovery, read_only_executable_address, 0x1f, 0x3, 0,
+    ) {
+        return false;
+    }
     let write_result = unsafe { cognacos_fault_probe_write_ro(read_only_executable_address as *mut u8) };
+    let write_removed = unregister_trap_frame_fixup(write_rip);
     if write_result != 0 {
         // If protection is broken, restore the byte before reporting failure.
         unsafe { core::ptr::write_volatile(read_only_executable_address as *mut u8, original_byte); }
     }
-    let write_ok = write_result == 0
-        && OBSERVED_PROTECTION_FAULT.swap(0, core::sync::atomic::Ordering::AcqRel) == 1
-        && EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire) == 0;
-    EXPECTED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
-    if !write_ok { return false; }
+    if write_result != 0 || !write_removed { return false; }
 
     let mut nx_code = [0u8; 16];
     unsafe { core::ptr::write_volatile(nx_code.as_mut_ptr(), 0xc3); }
     let target = nx_code.as_mut_ptr();
-    EXPECTED_PROTECTION_ADDRESS.store(target as u64, core::sync::atomic::Ordering::Relaxed);
-    EXPECTED_PROTECTION_RECOVERY.store(cognacos_fault_probe_execute_nx_recovery as *const () as u64,
-        core::sync::atomic::Ordering::Relaxed);
-    EXPECTED_PROTECTION_FAULT.store(2, core::sync::atomic::Ordering::Release);
+    let execute_rip = cognacos_fault_probe_execute_nx as *const () as u64;
+    let execute_recovery = cognacos_fault_probe_execute_nx_recovery as *const () as u64;
+    if !register_trap_frame_fixup_with_result(
+        execute_rip, execute_recovery, target as u64, 0x1f, 0x11, 0,
+    ) {
+        return false;
+    }
     let execute_result = unsafe { cognacos_fault_probe_execute_nx(target) };
-    let execute_ok = execute_result == 0
-        && OBSERVED_PROTECTION_FAULT.swap(0, core::sync::atomic::Ordering::AcqRel) == 2
-        && EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire) == 0;
-    EXPECTED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
-    execute_ok
+    let execute_removed = unregister_trap_frame_fixup(execute_rip);
+    execute_result == 0 && execute_removed
+}
+
+/// Verify that an invalid kernel probe returns a defined status through the same
+/// general fixup registry used by the write-protect and NX tests.
+pub fn trap_frame_fixup_self_test() -> bool {
+    const INVALID_ADDRESS: u64 = 0x0000_7fff_dead_0000;
+    let fault_rip = cognacos_fault_probe_read_invalid as *const () as u64;
+    let recovery_rip = cognacos_fault_probe_read_invalid_recovery as *const () as u64;
+    if !register_trap_frame_fixup_with_result(
+        fault_rip, recovery_rip, INVALID_ADDRESS,
+        PF_ERROR_MATCH_MASK, 0, STATUS_ACCESS_VIOLATION,
+    ) {
+        return false;
+    }
+    let result = unsafe { cognacos_fault_probe_read_invalid(INVALID_ADDRESS as *const u64) };
+    let removed = unregister_trap_frame_fixup(fault_rip);
+    removed && result == STATUS_ACCESS_VIOLATION
 }
 
 /// Switch between saved kernel-mode contexts built for this routine.
