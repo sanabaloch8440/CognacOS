@@ -262,15 +262,17 @@ impl XStateSaveSlot {
 }
 struct XStateSaveTable {
     slots: [XStateSaveSlot; XSTATE_SAVE_SLOTS],
-    stack: [[usize; XSTATE_SAVE_NESTING]; crate::hal::MAX_CPUS],
-    depth: [u8; crate::hal::MAX_CPUS],
+    owners: [u64; XSTATE_SAVE_SLOTS],
+    stack: [[usize; XSTATE_SAVE_NESTING]; XSTATE_SAVE_SLOTS],
+    depth: [u8; XSTATE_SAVE_SLOTS],
     generation: u64,
 }
 impl XStateSaveTable {
     const fn new() -> Self {
         Self { slots: [XStateSaveSlot::EMPTY; XSTATE_SAVE_SLOTS],
-            stack: [[0; XSTATE_SAVE_NESTING]; crate::hal::MAX_CPUS],
-            depth: [0; crate::hal::MAX_CPUS], generation: 1 }
+            owners: [0; XSTATE_SAVE_SLOTS],
+            stack: [[0; XSTATE_SAVE_NESTING]; XSTATE_SAVE_SLOTS],
+            depth: [0; XSTATE_SAVE_SLOTS], generation: 1 }
     }
 }
 static XSTATE_SAVE_TABLE: crate::hal::IrqSpinLock<XStateSaveTable> =
@@ -280,6 +282,7 @@ fn current_xstate_execution_context() -> Option<(usize, u64, u8)> {
     let cpu = crate::hal::current_cpu_local()?.logical_id.load(Ordering::Acquire) as usize;
     if cpu >= crate::hal::MAX_CPUS { return None; }
     let thread = crate::thread::current_thread_id()?;
+    if thread == 0 { return None; }
     let irql = unsafe { ke_get_current_irql() };
     Some((cpu, thread, irql))
 }
@@ -302,7 +305,12 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
     if irql > 2 { return STATUS_INVALID_DEVICE_STATE; }
 
     let mut table = XSTATE_SAVE_TABLE.lock();
-    let depth = table.depth[cpu] as usize;
+    let Some(owner_index) = table.owners.iter().position(|owner| *owner == owner_thread)
+        .or_else(|| table.owners.iter().position(|owner| *owner == 0)) else {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    };
+    table.owners[owner_index] = owner_thread;
+    let depth = table.depth[owner_index] as usize;
     if depth >= XSTATE_SAVE_NESTING { return STATUS_INSUFFICIENT_RESOURCES; }
     if table.slots.iter().any(|s| s.active && s.key == save as usize) {
         return STATUS_INVALID_DEVICE_STATE;
@@ -324,8 +332,8 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
         *slot = XStateSaveSlot::EMPTY;
         return STATUS_NOT_SUPPORTED;
     }
-    table.stack[cpu][depth] = save as usize;
-    table.depth[cpu] = (depth + 1) as u8;
+    table.stack[owner_index][depth] = save as usize;
+    table.depth[owner_index] = (depth + 1) as u8;
     // The public structure is opaque; do not expose internal kernel pointers.
     unsafe {
         (save as *mut u64).write_unaligned(XSTATE_SAVE_MAGIC);
@@ -344,15 +352,16 @@ pub unsafe extern "win64" fn KeRestoreExtendedProcessorState(save: *mut u8) {
     if magic != XSTATE_SAVE_MAGIC { return; }
     let Some((cpu, owner_thread, irql)) = current_xstate_execution_context() else { return; };
     let mut table = XSTATE_SAVE_TABLE.lock();
-    let depth = table.depth[cpu] as usize;
-    if depth == 0 || table.stack[cpu][depth - 1] != save as usize { return; }
+    let Some(owner_index) = table.owners.iter().position(|owner| *owner == owner_thread) else { return; };
+    let depth = table.depth[owner_index] as usize;
+    if depth == 0 || table.stack[owner_index][depth - 1] != save as usize { return; }
     let Some(index) = table.slots.iter().position(|s| s.active && s.key == save as usize
-        && s.generation == generation && s.cpu == cpu && s.owner_thread == owner_thread
-        && s.irql == irql) else { return; };
+        && s.generation == generation && s.owner_thread == owner_thread && s.irql == irql) else { return; };
     let saved_mask = table.slots[index].mask;
     if unsafe { !ki_xstate_restore_thread_mask(&table.slots[index].area, saved_mask) } { return; }
-    table.depth[cpu] = (depth - 1) as u8;
-    table.stack[cpu][depth - 1] = 0;
+    table.depth[owner_index] = (depth - 1) as u8;
+    table.stack[owner_index][depth - 1] = 0;
+    if table.depth[owner_index] == 0 { table.owners[owner_index] = 0; }
     table.slots[index] = XStateSaveSlot::EMPTY;
     unsafe { (save as *mut u64).write_unaligned(0); }
 }
