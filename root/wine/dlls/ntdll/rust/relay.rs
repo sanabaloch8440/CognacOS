@@ -1,8 +1,9 @@
 //! Partial portable Rust port of Wine's ntdll/relay.c.
 //!
 //! Implements relay descriptor layouts and include/exclude matching helpers.
-//! Architecture-specific assembly thunks, i386 snoop machinery, and live PE
-//! export-table patching are deliberately not emulated by this source-only port.
+//! This is diagnostic compatibility code, not part of the Windows 11 NTDLL ABI.
+//! Architecture-specific assembly thunks and executable export-table patching are
+//! intentionally kept out of the native runtime until a diagnostic relay is needed.
 //! The enclosing Wine tree carries the LGPL-2.1-or-later license.
 
 #![allow(non_camel_case_types, non_snake_case, dead_code)]
@@ -158,25 +159,126 @@ pub const fn is_ret_val(value: u8) -> bool {
 }
 
 /// Without validated relay metadata, preserve the original procedure address.
-#[no_mangle]
 pub unsafe extern "system" fn RELAY_GetProcAddress(
     _module: HMODULE, _exports: *const c_void, _export_size: DWORD,
     proc: FARPROC, _ordinal: DWORD, _user: PCWSTR,
 ) -> FARPROC { proc }
 
 /// Architecture-specific relay thunk installation is not implemented here.
-#[no_mangle]
 pub unsafe extern "system" fn RELAY_SetupDLL(_module: HMODULE) {}
 
 /// Conservative fallback used on platforms without the i386 snoop thunks.
-#[no_mangle]
 pub unsafe extern "system" fn SNOOP_GetProcAddress(
     _module: HMODULE, _exports: *const c_void, _export_size: DWORD,
     original: FARPROC, _ordinal: DWORD, _user: PCWSTR,
 ) -> FARPROC { original }
 
-#[no_mangle]
 pub unsafe extern "system" fn SNOOP_SetupDLL(_module: HMODULE) {}
+
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayArgKind { Integer, Int64, Int128, AnsiString, WideString, Float, Double, ThisCall, FastCall }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayReturnKind { Integer, Int64, Float, Double, Pointer, Unknown(u8) }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RelaySignature {
+    pub args: Vec<RelayArgKind>,
+    pub return_kind: RelayReturnKind,
+    pub uses_thiscall: bool,
+    pub uses_fastcall: bool,
+}
+
+/// Decode Wine's compact signature format without invoking the target function.
+pub fn decode_signature(signature: &[u8]) -> Option<RelaySignature> {
+    let mut args = Vec::new();
+    let mut uses_thiscall = false;
+    let mut uses_fastcall = false;
+    let mut return_kind = None;
+    for &kind in signature {
+        if is_ret_val(kind) {
+            return_kind = Some(match kind {
+                b'J' => RelayReturnKind::Int64,
+                b'F' => RelayReturnKind::Float,
+                b'D' => RelayReturnKind::Double,
+                b'P' | b'S' | b'W' => RelayReturnKind::Pointer,
+                b'I' | b'L' | b'H' | b'V' => RelayReturnKind::Integer,
+                other => RelayReturnKind::Unknown(other),
+            });
+            break;
+        }
+        let decoded = match kind {
+            b'j' => RelayArgKind::Int64,
+            b'k' => RelayArgKind::Int128,
+            b's' => RelayArgKind::AnsiString,
+            b'w' => RelayArgKind::WideString,
+            b'f' => RelayArgKind::Float,
+            b'd' => RelayArgKind::Double,
+            b't' => {
+                if args.is_empty() { uses_thiscall = true; }
+                else if uses_thiscall && args.len() == 1 { uses_fastcall = true; }
+                RelayArgKind::ThisCall
+            }
+            _ => RelayArgKind::Integer,
+        };
+        args.push(decoded);
+    }
+    Some(RelaySignature { args, return_kind: return_kind?, uses_thiscall, uses_fastcall })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RelayDescriptorLocation { pub descriptor_rva: u32, pub descriptor_size: usize }
+
+/// Bounds-checked lookup for the descriptor marker used by Wine relay-enabled
+/// PE images. Input must be a mapped image and export metadata must be validated.
+pub fn find_relay_descriptor(
+    image: &[u8], export_rva: u32, export_size: u32,
+    export_name_rva: u32, descriptor_size: usize,
+) -> Option<RelayDescriptorLocation> {
+    let name = export_name_rva as usize;
+    let export_start = export_rva as usize;
+    let export_end = export_start.checked_add(export_size as usize)?;
+    if name < 8 || name > image.len() || export_end > image.len() { return None; }
+    if name <= export_start || name >= export_end || name % core::mem::size_of::<u32>() != 0 {
+        return None;
+    }
+    let marker = name.checked_sub(8)?;
+    let magic = u32::from_le_bytes(image.get(marker..marker + 4)?.try_into().ok()?);
+    if magic != RELAY_DESCR_MAGIC as u32 { return None; }
+    let descr_rva = u32::from_le_bytes(image.get(marker + 4..marker + 8)?.try_into().ok()?);
+    let target = if descr_rva != 0 { descr_rva as usize } else { export_end };
+    let end = target.checked_add(descriptor_size)?;
+    if descriptor_size < 4 || end > image.len() { return None; }
+    let descr_magic = u32::from_le_bytes(image.get(target..target + 4)?.try_into().ok()?);
+    if descr_magic != RELAY_DESCR_MAGIC as u32 { return None; }
+    Some(RelayDescriptorLocation { descriptor_rva: target as u32, descriptor_size })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum RelayValue { Integer(u64), Int64(u64), Int128([u32; 4]), Pointer(usize), FloatBits(u32), DoubleBits(u64) }
+
+/// Decode common 64-bit word values for diagnostic display. Does not dereference
+/// string pointers; ABI-specific register and stack reconstruction is separate.
+pub fn decode_word_values(signature: &RelaySignature, words: &[u64]) -> Option<Vec<RelayValue>> {
+    if words.len() < signature.args.len() { return None; }
+    let mut out = Vec::with_capacity(signature.args.len());
+    for (i, kind) in signature.args.iter().enumerate() {
+        let word = words[i];
+        out.push(match kind {
+            RelayArgKind::AnsiString | RelayArgKind::WideString | RelayArgKind::ThisCall | RelayArgKind::FastCall => RelayValue::Pointer(word as usize),
+            RelayArgKind::Int64 => RelayValue::Int64(word),
+            RelayArgKind::Int128 => {
+                let next = *words.get(i + 1)?;
+                RelayValue::Int128([word as u32, (word >> 32) as u32, next as u32, (next >> 32) as u32])
+            }
+            RelayArgKind::Float => RelayValue::FloatBits(word as u32),
+            RelayArgKind::Double => RelayValue::DoubleBits(word),
+            RelayArgKind::Integer => RelayValue::Integer(word),
+        });
+    }
+    Some(out)
+}
 
 #[cfg(test)]
 mod tests {
@@ -207,6 +309,30 @@ mod tests {
         let exclude = vec![w("kernel32")];
         assert!(!check_from_module(Some(&include), Some(&exclude), Some(&w("kernel32"))));
         assert!(check_from_module(Some(&include), Some(&exclude), Some(&w("app.exe"))));
+    }
+
+    #[test]
+    fn decodes_signature_arguments_and_return_marker() {
+        let sig = decode_signature(b"isdJ").unwrap();
+        assert_eq!(sig.args, vec![RelayArgKind::Integer, RelayArgKind::AnsiString, RelayArgKind::Double]);
+        assert_eq!(sig.return_kind, RelayReturnKind::Int64);
+    }
+
+    #[test]
+    fn malformed_signature_without_return_marker_is_rejected() {
+        assert!(decode_signature(b"isd").is_none());
+    }
+
+    #[test]
+    fn descriptor_locator_rejects_bad_magic_and_out_of_bounds() {
+        let mut image = vec![0u8; 128];
+        image[24..28].copy_from_slice(&(RELAY_DESCR_MAGIC as u32).to_le_bytes());
+        image[28..32].copy_from_slice(&64u32.to_le_bytes());
+        image[64..68].copy_from_slice(&(RELAY_DESCR_MAGIC as u32).to_le_bytes());
+        assert_eq!(find_relay_descriptor(&image, 8, 48, 32, 16), Some(RelayDescriptorLocation { descriptor_rva: 64, descriptor_size: 16 }));
+        assert!(find_relay_descriptor(&image, 8, 48, 32, 80).is_none());
+        image[24] = 0;
+        assert!(find_relay_descriptor(&image, 8, 48, 32, 16).is_none());
     }
 
     #[test]
