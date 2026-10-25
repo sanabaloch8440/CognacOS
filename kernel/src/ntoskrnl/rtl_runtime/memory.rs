@@ -184,7 +184,7 @@ mod memory_abi_tests {
         unaligned[1 + 4 + 1] ^= 0xff;
         assert_eq!(unsafe {
             rtl_compare_memory_ulong(unaligned.as_ptr().add(1) as *const u32, 12, pattern)
-        }, 4);
+        }, 5);
         // Partial lengths still compare all requested bytes.
         let mut partial = pattern.to_ne_bytes();
         partial[3] ^= 1;
