@@ -479,7 +479,7 @@ pub unsafe extern "system" fn LdrGetDllHandleEx(
             dll_path as PVOID, dll_characteristics, dll_name.cast(), dll_handle,
         )
     };
-    if status != STATUS_SUCCESS || flags & 1 != 0 { return status; }
+    if status != STATUS_SUCCESS || (flags & 1 != 0 && flags & 2 == 0) { return status; }
     unsafe { track_module_reference(*dll_handle as usize, flags & 2 != 0) }
 }
 
