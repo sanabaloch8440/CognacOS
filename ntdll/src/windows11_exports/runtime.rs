@@ -892,11 +892,6 @@ pub unsafe extern "system" fn RtlFreeActivationContextStack() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlFreeNonVolatileToken() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn RtlFreeSid() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -1068,11 +1063,6 @@ pub unsafe extern "system" fn RtlGetNativeSystemInformation() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetNextUmsListItem() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetNonVolatileToken() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
