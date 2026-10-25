@@ -135,7 +135,9 @@ pub extern "system" fn RtlNtStatusToDosErrorNoTeb(status: NTSTATUS) -> ULONG {
 }
 
 /// Reads TEB.LastErrorValue from GS:[0x68].
-// Internal implementation retained for module callers; the canonical C ABI\n// export is defined in rtl_error.rs until the Rust exports are consolidated.\npub unsafe extern "system" fn RtlGetLastWin32Error() -> ULONG {
+// Internal implementation retained for module callers; the canonical C ABI
+// export is defined in rtl_error.rs until the Rust exports are consolidated.
+pub unsafe extern "system" fn RtlGetLastWin32Error() -> ULONG {
     let value: ULONG;
     // SAFETY: Requires the CognacOS launcher to install the expected x64 TEB.
     unsafe {
@@ -149,7 +151,9 @@ pub extern "system" fn RtlNtStatusToDosErrorNoTeb(status: NTSTATUS) -> ULONG {
 }
 
 /// Writes TEB.LastErrorValue at GS:[0x68].
-// Internal implementation retained for module callers; the canonical C ABI\n// export is defined in rtl_error.rs until the Rust exports are consolidated.\npub unsafe extern "system" fn RtlSetLastWin32Error(error: ULONG) {
+// Internal implementation retained for module callers; the canonical C ABI
+// export is defined in rtl_error.rs until the Rust exports are consolidated.
+pub unsafe extern "system" fn RtlSetLastWin32Error(error: ULONG) {
     // SAFETY: Requires a writable TEB at the current GS base.
     unsafe {
         core::arch::asm!(
@@ -161,7 +165,9 @@ pub extern "system" fn RtlNtStatusToDosErrorNoTeb(status: NTSTATUS) -> ULONG {
 }
 
 /// Reads the bootstrap's configured LastStatusValue location, GS:[0x1250].
-// Internal implementation retained for module callers; the canonical C ABI\n// export is defined in rtl_error.rs until the Rust exports are consolidated.\npub unsafe extern "system" fn RtlGetLastNtStatus() -> NTSTATUS {
+// Internal implementation retained for module callers; the canonical C ABI
+// export is defined in rtl_error.rs until the Rust exports are consolidated.
+pub unsafe extern "system" fn RtlGetLastNtStatus() -> NTSTATUS {
     let status: NTSTATUS;
     // SAFETY: Requires the CognacOS launcher to provide this TEB layout.
     unsafe {
