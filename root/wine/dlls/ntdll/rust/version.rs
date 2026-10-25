@@ -205,3 +205,93 @@ mod condition_mask_tests {
         assert_eq!((mask >> SHIFT_BUILD) & 7, 7);
     }
 }
+
+
+/// Wine configuration aliases accepted by version.c's `Version` value.
+/// These are compatibility profiles, not a statement about CognacOS's own
+/// running version. Alias matching is ASCII case-insensitive, like the source
+/// configuration parser's registry value handling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum WindowsVersionAlias {
+    Win20, Win30, Win31, Win95, Win98, WinMe, Nt351, Nt40, Win2000,
+    WinXp, WinXp64, Win2003, Vista, Win2008, Win2008R2, Win7, Win8,
+    Win81, Win10, Win11,
+}
+const VERSION_ALIASES: &[(&str, WindowsVersionAlias)] = &[
+    ("win20", WindowsVersionAlias::Win20), ("win30", WindowsVersionAlias::Win30),
+    ("win31", WindowsVersionAlias::Win31), ("win95", WindowsVersionAlias::Win95),
+    ("win98", WindowsVersionAlias::Win98), ("winme", WindowsVersionAlias::WinMe),
+    ("nt351", WindowsVersionAlias::Nt351), ("nt40", WindowsVersionAlias::Nt40),
+    ("win2000", WindowsVersionAlias::Win2000), ("win2k", WindowsVersionAlias::Win2000),
+    ("nt2k", WindowsVersionAlias::Win2000), ("nt2000", WindowsVersionAlias::Win2000),
+    ("winxp", WindowsVersionAlias::WinXp), ("winxp64", WindowsVersionAlias::WinXp64),
+    ("win2003", WindowsVersionAlias::Win2003), ("win2k3", WindowsVersionAlias::Win2003),
+    ("vista", WindowsVersionAlias::Vista), ("winvista", WindowsVersionAlias::Vista),
+    ("win2008", WindowsVersionAlias::Win2008), ("win2k8", WindowsVersionAlias::Win2008),
+    ("win2008r2", WindowsVersionAlias::Win2008R2), ("win2k8r2", WindowsVersionAlias::Win2008R2),
+    ("win7", WindowsVersionAlias::Win7), ("win8", WindowsVersionAlias::Win8),
+    ("win81", WindowsVersionAlias::Win81), ("win10", WindowsVersionAlias::Win10),
+    ("win11", WindowsVersionAlias::Win11),
+];
+
+/// Resolve a Wine `Software\\Wine\\Version` profile name. Unknown names
+/// return None; callers can then fall back to registry-derived version data.
+pub fn parse_version_alias(name: &str) -> Option<WindowsVersionAlias> {
+    VERSION_ALIASES.iter().find_map(|(candidate, alias)|
+        if candidate.eq_ignore_ascii_case(name) { Some(*alias) } else { None })
+}
+
+fn decimal_component(text: &str) -> Option<u32> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) { return None; }
+    text.parse::<u32>().ok()
+}
+
+/// Parse an NT-style CurrentVersion string such as `10.0`. This mirrors the
+/// source fallback used when CurrentMajorVersionNumber/CurrentMinorVersionNumber
+/// are not present. Extra components are ignored, as in Wine's wcstoul path.
+pub fn parse_nt_current_version(text: &str) -> Option<(u32, u32)> {
+    let (major, rest) = text.split_once('.')?;
+    let minor = rest.split('.').next()?;
+    Some((decimal_component(major)?, decimal_component(minor)?))
+}
+
+/// Parse Win9x's VersionNumber (for example `4.10.2222`) and preserve its
+/// packed major/minor bits in dwBuildNumber. The third component is optional.
+pub fn parse_win9x_version_number(text: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = text.split('.');
+    let major = decimal_component(parts.next()?)?;
+    let minor = decimal_component(parts.next()?)?;
+    let build = match parts.next() {
+        Some(v) => decimal_component(v)?,
+        None => 0,
+    };
+    if parts.next().is_some() || major > 255 || minor > 255 { return None; }
+    let packed = build | (((minor & 0xff) | ((major & 0xff) << 8)) << 16);
+    Some((major, minor, packed))
+}
+
+#[cfg(test)]
+mod registry_version_parser_tests {
+    use super::*;
+    #[test]
+    fn aliases_cover_wine_names_and_ignore_ascii_case() {
+        assert_eq!(parse_version_alias("WINXP"), Some(WindowsVersionAlias::WinXp));
+        assert_eq!(parse_version_alias("win2k8r2"), Some(WindowsVersionAlias::Win2008R2));
+        assert_eq!(parse_version_alias("not-a-profile"), None);
+    }
+    #[test]
+    fn nt_version_string_parser() {
+        assert_eq!(parse_nt_current_version("10.0"), Some((10, 0)));
+        assert_eq!(parse_nt_current_version("6.3.9600"), Some((6, 3)));
+        assert_eq!(parse_nt_current_version("x.0"), None);
+        assert_eq!(parse_nt_current_version("10"), None);
+    }
+    #[test]
+    fn win9x_version_string_preserves_packed_build() {
+        assert_eq!(parse_win9x_version_number("4.10.2222"), Some((4, 10, 0x040a08ae)));
+        assert_eq!(parse_win9x_version_number("4.0.950"), Some((4, 0, 0x040003b6)));
+        assert_eq!(parse_win9x_version_number("4.999.1"), None);
+        assert_eq!(parse_win9x_version_number("4.10.x"), None);
+    }
+}
