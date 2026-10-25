@@ -216,12 +216,6 @@ unsafe fn write_ptr(base:*mut u8, offset:usize, value:*mut c_void) { unsafe { pt
 unsafe fn write_usize(base:*mut u8, offset:usize, value:usize) { unsafe { ptr::write_unaligned(base.add(offset).cast::<usize>(),value); } }
 unsafe fn write_isize(base:*mut u8, offset:usize, value:isize) { unsafe { ptr::write_unaligned(base.add(offset).cast::<isize>(),value); } }
 
-#[inline]
-fn driver_is_unloading(driver:*mut DriverObject)->bool {
- if driver.is_null(){return true}
- unsafe{(*driver).flags&(DRIVER_UNLOADING_FLAG|DRIVER_UNLOADED_FLAG)!=0}
-}
-
 /// Implements the common IoCreateDevice form. Device names are validated as
 /// counted UTF-16 strings; the kernel owns the returned device object and its
 /// zeroed extension for its lifetime.
@@ -231,7 +225,6 @@ pub unsafe extern "system" fn io_create_device(
  device_type:u32, characteristics:u32, exclusive:u8, output:*mut *mut DeviceObject
 )->i32 {
  if driver.is_null() || output.is_null() || extension_size as usize>MAX_DEVICE_EXTENSION || exclusive>1 { return STATUS_INVALID_PARAMETER; }
- if driver_is_unloading(driver){return STATUS_DELETE_PENDING}
  unsafe { output.write(ptr::null_mut()); }
  let mut counted_name=[0u16;260];
  let name_len=if !device_name.is_null() {
