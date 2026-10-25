@@ -27,7 +27,7 @@ helper-help:
 # Example: make -f Makefile.cognac syscall-header WINDOWS_NTDLL=/path/to/ntdll.dll
 syscall-header:
 	@test -n "$(WINDOWS_NTDLL)" || (echo "set WINDOWS_NTDLL=/path/to/x64/ntdll.dll" >&2; exit 2)
-	python3 tools/ntdll_link_helper.py --input "$(WINDOWS_NTDLL)" --output "$(SYSCALL_HEADER)" --require NtClose --require NtYieldExecution
+	python3 tools/ntdll_link_helper.py --input "$(WINDOWS_NTDLL)" --output "$(SYSCALL_HEADER)" --require NtClose --require NtYieldExecution --require NtQueryInformationProcess --require NtQueryInformationThread --require NtQuerySystemInformation
 
 check: $(OUTPUT)
 	$(OBJDUMP) -f $(OUTPUT) | grep -q 'pei-x86-64'
@@ -35,6 +35,10 @@ check: $(OUTPUT)
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'AddressOfEntryPoint'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtClose'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtYieldExecution'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtQueryInformationProcess'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtQueryInformationThread'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtQuerySystemInformation'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'CognacNtdllConfigureSyscallTable'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlCompareMemory'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlCompareMemoryUlong'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlComputeCrc32'
