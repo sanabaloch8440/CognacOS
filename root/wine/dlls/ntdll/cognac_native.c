@@ -1,7 +1,7 @@
 /*
  * Native NTDLL bootstrap for CognacOS, x86-64.
  * No Wine headers, Wine server calls, POSIX APIs, or kernel32 import.
- * This is an incremental implementation, not a complete Windows NTDLL.
+ * Incremental implementation; not a complete Windows NTDLL replacement.
  */
 #include <windows.h>
 
@@ -15,23 +15,41 @@
 
 typedef LONG NTSTATUS;
 typedef ULONG_PTR NTSYSCALL_NUMBER;
-extern NTSTATUS CognacNtSyscall4(NTSYSCALL_NUMBER number,
-                                 ULONG_PTR a1, ULONG_PTR a2,
-                                 ULONG_PTR a3, ULONG_PTR a4);
+#define COGNAC_NT_MAX_ARGUMENTS 17u
 
-enum { SYSCALL_CLOSE = 0, SYSCALL_YIELD_EXECUTION = 1, SYSCALL_COUNT = 2 };
+extern NTSTATUS CognacNtSyscallN(NTSYSCALL_NUMBER number,
+                                 ULONG argument_count,
+                                 const ULONG_PTR *arguments);
+
+enum {
+    SYSCALL_CLOSE = 0,
+    SYSCALL_YIELD_EXECUTION,
+    SYSCALL_QUERY_INFORMATION_PROCESS,
+    SYSCALL_QUERY_INFORMATION_THREAD,
+    SYSCALL_QUERY_SYSTEM_INFORMATION,
+    SYSCALL_COUNT
+};
+
 #ifdef COGNAC_USE_WINDOWS_SYSCALL_IDS
 /* Generated from the exact Windows ntdll.dll used to build this image. */
 static volatile LONG_PTR syscall_numbers[SYSCALL_COUNT] = {
     (LONG_PTR)COGNAC_SYSCALL_NTCLOSE,
-    (LONG_PTR)COGNAC_SYSCALL_NTYIELDEXECUTION
+    (LONG_PTR)COGNAC_SYSCALL_NTYIELDEXECUTION,
+    (LONG_PTR)COGNAC_SYSCALL_NTQUERYINFORMATIONPROCESS,
+    (LONG_PTR)COGNAC_SYSCALL_NTQUERYINFORMATIONTHREAD,
+    (LONG_PTR)COGNAC_SYSCALL_NTQUERYSYSTEMINFORMATION
 };
+static volatile LONG configured_mask = (1L << SYSCALL_COUNT) - 1;
 #else
-/* CognacOS supplies its syscall ABI numbers during native initialization. */
+/* CognacOS loader supplies service numbers through an explicit ABI. */
 static volatile LONG_PTR syscall_numbers[SYSCALL_COUNT];
+static volatile LONG configured_mask;
 #endif
 
-/* Compiler intrinsics avoid importing KernelBase/Kernel32 during NTDLL init. */
+/*
+ * Compatibility initializer retained for existing loaders. It configures the
+ * two original services without disturbing any additional table entries.
+ */
 __declspec(dllexport)
 NTSTATUS WINAPI CognacNtdllConfigureSyscalls(NTSYSCALL_NUMBER nt_close,
                                               NTSYSCALL_NUMBER nt_yield_execution)
@@ -40,27 +58,93 @@ NTSTATUS WINAPI CognacNtdllConfigureSyscalls(NTSYSCALL_NUMBER nt_close,
     __atomic_store_n(&syscall_numbers[SYSCALL_CLOSE], (LONG_PTR)nt_close, __ATOMIC_RELEASE);
     __atomic_store_n(&syscall_numbers[SYSCALL_YIELD_EXECUTION],
                      (LONG_PTR)nt_yield_execution, __ATOMIC_RELEASE);
+    __atomic_fetch_or(&configured_mask, (1L << SYSCALL_CLOSE) |
+                                         (1L << SYSCALL_YIELD_EXECUTION),
+                      __ATOMIC_RELEASE);
     return STATUS_SUCCESS;
+}
+
+/* Configure all five services as one explicit, versioned-by-count ABI table. */
+__declspec(dllexport)
+NTSTATUS WINAPI CognacNtdllConfigureSyscallTable(const NTSYSCALL_NUMBER *numbers,
+                                                  ULONG count)
+{
+    ULONG i;
+
+    if (!numbers || count != SYSCALL_COUNT) return STATUS_INVALID_PARAMETER;
+    __atomic_store_n(&configured_mask, 0, __ATOMIC_RELEASE);
+    for (i = 0; i < SYSCALL_COUNT; ++i)
+        __atomic_store_n(&syscall_numbers[i], (LONG_PTR)numbers[i], __ATOMIC_RELAXED);
+    __atomic_store_n(&configured_mask, (1L << SYSCALL_COUNT) - 1, __ATOMIC_RELEASE);
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS CognacInvokeSyscall(ULONG index, ULONG argument_count,
+                                    const ULONG_PTR *arguments)
+{
+    LONG mask;
+    NTSYSCALL_NUMBER number;
+
+    if (index >= SYSCALL_COUNT || argument_count > COGNAC_NT_MAX_ARGUMENTS ||
+        (argument_count && !arguments))
+        return STATUS_INVALID_PARAMETER;
+
+    mask = __atomic_load_n(&configured_mask, __ATOMIC_ACQUIRE);
+    if (!(mask & (1L << index))) return STATUS_NOT_IMPLEMENTED;
+    number = (NTSYSCALL_NUMBER)__atomic_load_n(&syscall_numbers[index], __ATOMIC_ACQUIRE);
+    return CognacNtSyscallN(number, argument_count, arguments);
 }
 
 __declspec(dllexport)
 NTSTATUS NTAPI NtClose(HANDLE handle)
 {
-    NTSYSCALL_NUMBER number = (NTSYSCALL_NUMBER)
-        __atomic_load_n(&syscall_numbers[SYSCALL_CLOSE], __ATOMIC_ACQUIRE);
-    if (!number) return STATUS_NOT_IMPLEMENTED;
-    return CognacNtSyscall4(number, (ULONG_PTR)handle, 0, 0, 0);
+    ULONG_PTR arguments[1] = { (ULONG_PTR)handle };
+    return CognacInvokeSyscall(SYSCALL_CLOSE, 1, arguments);
 }
 
 __declspec(dllexport)
 NTSTATUS NTAPI NtYieldExecution(void)
 {
-    NTSYSCALL_NUMBER number = (NTSYSCALL_NUMBER)
-        __atomic_load_n(&syscall_numbers[SYSCALL_YIELD_EXECUTION], __ATOMIC_ACQUIRE);
-    if (!number) return STATUS_NOT_IMPLEMENTED;
-    return CognacNtSyscall4(number, 0, 0, 0, 0);
+    return CognacInvokeSyscall(SYSCALL_YIELD_EXECUTION, 0, NULL);
 }
 
+/* These wrappers exercise and expose the complete five-argument NT ABI. */
+__declspec(dllexport)
+NTSTATUS NTAPI NtQueryInformationProcess(HANDLE process, ULONG information_class,
+                                         PVOID information, ULONG information_length,
+                                         PULONG return_length)
+{
+    ULONG_PTR arguments[5] = {
+        (ULONG_PTR)process, (ULONG_PTR)information_class,
+        (ULONG_PTR)information, (ULONG_PTR)information_length,
+        (ULONG_PTR)return_length
+    };
+    return CognacInvokeSyscall(SYSCALL_QUERY_INFORMATION_PROCESS, 5, arguments);
+}
+
+__declspec(dllexport)
+NTSTATUS NTAPI NtQueryInformationThread(HANDLE thread, ULONG information_class,
+                                        PVOID information, ULONG information_length,
+                                        PULONG return_length)
+{
+    ULONG_PTR arguments[5] = {
+        (ULONG_PTR)thread, (ULONG_PTR)information_class,
+        (ULONG_PTR)information, (ULONG_PTR)information_length,
+        (ULONG_PTR)return_length
+    };
+    return CognacInvokeSyscall(SYSCALL_QUERY_INFORMATION_THREAD, 5, arguments);
+}
+
+__declspec(dllexport)
+NTSTATUS NTAPI NtQuerySystemInformation(ULONG information_class, PVOID information,
+                                        ULONG information_length, PULONG return_length)
+{
+    ULONG_PTR arguments[4] = {
+        (ULONG_PTR)information_class, (ULONG_PTR)information,
+        (ULONG_PTR)information_length, (ULONG_PTR)return_length
+    };
+    return CognacInvokeSyscall(SYSCALL_QUERY_SYSTEM_INFORMATION, 4, arguments);
+}
 
 /* ABI-compatible prefix/layout of RTL_OSVERSIONINFOW from winternl.h. */
 typedef struct _COGNAC_RTL_OSVERSIONINFOW {
