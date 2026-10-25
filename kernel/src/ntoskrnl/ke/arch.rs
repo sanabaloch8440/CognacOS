@@ -1613,10 +1613,71 @@ cognacos_context_switch_publish:
     mov r12, rdi
     mov r13, rsi
     mov r14, rdx
+    mov r15, 0
     mov rdi, rcx
     and rsp, -16
     call r14
     mov rsp, r13
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+    # xstate-aware context switch: callback runs first, then XRSTOR is the last
+    # operation touching floating-point state before the new stack is resumed.
+    .global cognacos_context_switch_xstate
+    .type cognacos_context_switch_xstate, @function
+cognacos_context_switch_xstate:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi], rsp
+    mov r15, rdx
+    test r15, r15
+    jz .Lctx_xstate_no_restore
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r15]
+.Lctx_xstate_no_restore:
+    mov rsp, rsi
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+    .global cognacos_context_switch_publish_xstate
+    .type cognacos_context_switch_publish_xstate, @function
+cognacos_context_switch_publish_xstate:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi], rsp
+    mov r12, rdi
+    mov r13, rsi
+    mov r14, rdx
+    mov r15, r8
+    mov rdi, rcx
+    and rsp, -16
+    call r14
+    mov rsp, r13
+    test r15, r15
+    jz .Lctx_publish_no_restore
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r15]
+.Lctx_publish_no_restore:
     pop r15
     pop r14
     pop r13
@@ -1629,6 +1690,8 @@ cognacos_context_switch_publish:
 unsafe extern "C" {
     fn cognacos_context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64);
     fn cognacos_context_switch_publish(old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize);
+    fn cognacos_context_switch_xstate(old_rsp:*mut *mut u64,new_rsp:*mut u64,xstate:*const crate::ntoskrnl::ke::runtime::KiThreadXStateArea);
+    fn cognacos_context_switch_publish_xstate(old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize,xstate:*const crate::ntoskrnl::ke::runtime::KiThreadXStateArea);
 }
 unsafe extern "C" {
     fn cognacos_fault_probe_write_ro(address: *mut u8) -> u64;
@@ -1705,6 +1768,19 @@ pub unsafe fn context_switch_publish(
 ){
     if old_rsp.is_null()||new_rsp.is_null(){return}
     unsafe{cognacos_context_switch_publish(old_rsp,new_rsp,publish,context);}
+}
+/// Switch stacks and restore the incoming thread's x87/SSE state after any
+/// outgoing-context publication callback has completed.
+pub unsafe fn context_switch_xstate(old_rsp:*mut *mut u64,new_rsp:*mut u64,xstate:*const crate::ntoskrnl::ke::runtime::KiThreadXStateArea){
+    if old_rsp.is_null()||new_rsp.is_null(){return}
+    unsafe{cognacos_context_switch_xstate(old_rsp,new_rsp,xstate);}
+}
+pub unsafe fn context_switch_publish_xstate(
+    old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize,
+    xstate:*const crate::ntoskrnl::ke::runtime::KiThreadXStateArea,
+){
+    if old_rsp.is_null()||new_rsp.is_null(){return}
+    unsafe{cognacos_context_switch_publish_xstate(old_rsp,new_rsp,publish,context,xstate);}
 }
 
 /// Generic HAL IPI handler. Publish pending work for the local scheduler/DPC
