@@ -3,8 +3,17 @@ use core::ffi::c_void;
     if n==0{return 0;}if a.is_null()||b.is_null(){return 0;}let mut i=0;while i<n&&unsafe{*a.add(i as usize)==*b.add(i as usize)}{i+=1;}i
 }
 
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_compare_memory_ulong(a:*const u32,n:u64,value:u32)->u64 {
-    if n==0{return 0;}if a.is_null(){return 0;}let mut i=0;while i<n/4&&unsafe{*a.add(i as usize)==value}{i+=1;}i*4
+/// Compare ULONG-sized words and return the number of matching bytes.
+/// Windows declares the result as ULONG, even on AMD64.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn rtl_compare_memory_ulong(a: *const u32, n: u64, value: u32) -> u32 {
+    if n < core::mem::size_of::<u32>() as u64 || a.is_null() { return 0; }
+    let words = n / core::mem::size_of::<u32>() as u64;
+    let mut matched = 0u64;
+    while matched < words && unsafe { core::ptr::read_unaligned(a.add(matched as usize)) == value } {
+        matched += 1;
+    }
+    (matched.saturating_mul(4).min(u32::MAX as u64)) as u32
 }
 
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_compute_crc32(initial:u32,buffer:*const u8,length:i32)->u32 {
@@ -138,5 +147,51 @@ mod volatile_tests {
         let mut wide = [0u64; 2];
         unsafe { rtl_fill_memory_ulonglong(wide.as_mut_ptr() as *mut c_void, 16, 0x0123_4567_89AB_CDEF); }
         assert_eq!(wide, [0x0123_4567_89AB_CDEF; 2]);
+    }
+}
+
+
+#[cfg(test)]
+mod memory_abi_tests {
+    use super::*;
+
+    #[test]
+    fn memory_primitives_handle_overlap_and_unaligned_words() {
+        let mut bytes = [0u8, 1, 2, 3, 4, 5, 6, 7];
+        unsafe {
+            rtl_move_memory(bytes.as_mut_ptr().add(1) as *mut c_void,
+                            bytes.as_ptr() as *const c_void, 7);
+        }
+        assert_eq!(bytes, [0, 0, 1, 2, 3, 4, 5, 6]);
+
+        let pattern = 0xA1B2_C3D4u32;
+        let mut unaligned = [0u8; 13];
+        unsafe {
+            rtl_fill_memory_ulong(unaligned.as_mut_ptr().add(1) as *mut c_void, 12, pattern);
+        }
+        let expected = pattern.to_ne_bytes();
+        for chunk in unaligned[1..13].chunks_exact(4) {
+            assert_eq!(chunk, expected);
+        }
+        assert_eq!(unsafe {
+            rtl_compare_memory_ulong(unaligned.as_ptr().add(1) as *const u32, 12, pattern)
+        }, 12);
+        unaligned[1 + 4 + 1] ^= 0xff;
+        assert_eq!(unsafe {
+            rtl_compare_memory_ulong(unaligned.as_ptr().add(1) as *const u32, 12, pattern)
+        }, 4);
+    }
+
+    #[test]
+    fn zero_length_and_null_inputs_are_bounded() {
+        assert_eq!(unsafe { rtl_compare_memory(core::ptr::null(), core::ptr::null(), 0) }, 0);
+        assert_eq!(unsafe { rtl_compare_memory(core::ptr::null(), core::ptr::null(), 1) }, 0);
+        assert_eq!(unsafe { rtl_compare_memory_ulong(core::ptr::null(), 4, 0) }, 0);
+        unsafe {
+            rtl_copy_memory(core::ptr::null_mut(), core::ptr::null(), 0);
+            rtl_move_memory(core::ptr::null_mut(), core::ptr::null(), 0);
+            rtl_fill_memory(core::ptr::null_mut(), 0, 0xff);
+            rtl_zero_memory(core::ptr::null_mut(), 0);
+        }
     }
 }
