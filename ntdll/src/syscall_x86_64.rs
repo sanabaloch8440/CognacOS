@@ -84,6 +84,7 @@ NtQueryValueKey:
     syscall
     ret
 "#
+    options(att_syntax)
 );
 
 /// NTSTATUS-compatible return value used by these syscall entry points.
