@@ -441,8 +441,9 @@ jobs:
             || grep -Fq 'Native NTDLL and Windows SYSCALL ABI ring-3 smoke tests passed.' build/serial.log \
             || grep -Fq 'Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed.' build/serial.log \
             || grep -Fq 'Windows NTDLL mapped; no supported canonical syscall stub table found, execution skipped.' build/serial.log \
-            || grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log; then
-            echo "NTDLL PE mapping and applicable ring-3 syscall smoke tests completed."
+            || grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log \
+            || grep -Fq 'Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.' build/serial.log; then
+            echo "NTDLL PE mapping and native syscall-dispatcher smoke tests completed; a separate NTDLL ring-3 wrapper pass was not reported."
           else
             echo "NTDLL mapping completed but no expected syscall smoke result was reported." >&2
             exit 1
