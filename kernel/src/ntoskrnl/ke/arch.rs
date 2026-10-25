@@ -1703,7 +1703,7 @@ unsafe extern "C" {
 /// Verify that a non-present kernel probe is converted into an explicit error
 /// result and returns through its fixup instead of escalating to the fatal handler.
 pub fn trap_frame_fixup_self_test() -> bool {
-    const INVALID_ADDRESS: u64 = 0x0000_0000_dead_0000;
+    const INVALID_ADDRESS: u64 = 0x0000_7fff_dead_0000;
     let fault_rip = cognacos_fault_probe_read_invalid as *const () as u64;
     let recovery_rip = cognacos_fault_probe_read_invalid_recovery as *const () as u64;
     if !register_trap_frame_fixup_with_result(
