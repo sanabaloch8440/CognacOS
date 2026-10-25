@@ -30,6 +30,7 @@ CognacNtSyscallN:
     addq    $15, %r9
     andq    $-16, %r9
     subq    %r9, %rsp
+    movq    %rsi, 24(%rsp)       /* Save nonvolatile RSI in home space. */
     movq    %r12, 32(%rsp)       /* Save nonvolatile R12 in home space. */
     movq    %r9, %r12             /* Frame size survives SYSCALL (nonvolatile). */
     movl    %ecx, 0(%rsp)         /* Service number. */
@@ -76,6 +77,7 @@ CognacNtSyscallN:
     syscall
 
     /* Preserve RAX (NTSTATUS), restore the caller's stack and nonvolatile R12. */
+    movq    24(%rsp), %rsi
     movq    32(%rsp), %rdx
     addq    %r12, %rsp
     movq    %rdx, %r12
