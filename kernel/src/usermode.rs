@@ -259,3 +259,154 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     if !valid{return Err(VmError::PermissionDenied);}
     Ok(())
 }
+
+const NTDLL_TEST_CODE: u64 = 0x0000_0084_0000_0000;
+const NTDLL_TEST_DATA: u64 = 0x0000_0085_0000_0000;
+
+/// Load-and-execute smoke test for the freestanding CognacOS NTDLL. The DLL is
+/// mapped and its real export table registered by pe::load_dll before this is
+/// called. A stock Windows NTDLL lacks CognacNtdllConfigureSyscallTable and is
+/// intentionally mapped/export-checked but never executed against our custom ABI.
+pub unsafe fn run_native_ntdll_smoke(
+    space: &mut AddressSpace,
+    ntdll: LoadedImage,
+) -> Result<bool, VmError> {
+    use crate::pe::ImportSymbol;
+    let configure = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"CognacNtdllConfigureSyscallTable"));
+    let Some(configure) = configure else { return Ok(false); };
+    let query_process = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"NtQueryInformationProcess"))
+        .ok_or(VmError::InvalidAddress)?;
+    let query_thread = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"NtQueryInformationThread"))
+        .ok_or(VmError::InvalidAddress)?;
+    let query_system = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"NtQuerySystemInformation"))
+        .ok_or(VmError::InvalidAddress)?;
+    let yield_execution = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"NtYieldExecution"))
+        .ok_or(VmError::InvalidAddress)?;
+
+    let mut data = [0u8; 4096];
+    let numbers = [0x100u64, 0x101, 0x102, 0x103, 0x104];
+    for (index, number) in numbers.iter().enumerate() {
+        data[0x300 + index * 8..0x308 + index * 8].copy_from_slice(&number.to_le_bytes());
+    }
+    let data_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+    unsafe { space.map_user_page(NTDLL_TEST_DATA, data_page, true, false)?; }
+    unsafe { space.copy_to_user(NTDLL_TEST_DATA, &data)?; }
+
+    let mut code = [0u8; 512];
+    let mut length = 0usize;
+    let mut failures = [0usize; 16];
+    let mut failure_count = 0usize;
+    macro_rules! emit {
+        ($bytes:expr) => {{
+            let bytes: &[u8] = $bytes;
+            let end = length.checked_add(bytes.len()).ok_or(VmError::InvalidAddress)?;
+            if end > code.len() { return Err(VmError::InvalidAddress); }
+            code[length..end].copy_from_slice(bytes);
+            length = end;
+        }};
+    }
+    macro_rules! imm64 {
+        ($prefix:expr, $value:expr) => {{
+            emit!($prefix);
+            emit!(&($value as u64).to_le_bytes());
+        }};
+    }
+    macro_rules! call_ptr {
+        ($value:expr) => {{
+            imm64!(&[0x48, 0xb8], $value);
+            emit!(&[0xff, 0xd0]);
+        }};
+    }
+    macro_rules! fail_if {
+        ($opcode:expr) => {{
+            emit!($opcode);
+            let at = length;
+            emit!(&[0, 0, 0, 0]);
+            if failure_count >= failures.len() { return Err(VmError::InvalidAddress); }
+            failures[failure_count] = at;
+            failure_count += 1;
+        }};
+    }
+    macro_rules! check_dword {
+        ($address:expr, $expected:expr) => {{
+            imm64!(&[0x48, 0xb8], $address);
+            emit!(&[0x8b, 0x00, 0x3d]);
+            emit!(&($expected as u32).to_le_bytes());
+            fail_if!(&[0x0f, 0x85]);
+        }};
+    }
+    emit!(&[0x48, 0x83, 0xec, 0x20]); // Windows x64 shadow space; aligned before CALL.
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0x300);
+    emit!(&[0xba, 5, 0, 0, 0]);
+    call_ptr!(configure);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+
+    // NtQueryInformationProcess(-1, ProcessBasicInformation, info, 48, &returnLength).
+    imm64!(&[0x48, 0xb9], u64::MAX);
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA);
+    emit!(&[0x41, 0xb9, 48, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0x80);
+    emit!(&[0x48, 0x89, 0x44, 0x24, 0x20]);
+    call_ptr!(query_process);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    check_dword!(NTDLL_TEST_DATA + 0x80, 48);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0x20);
+    emit!(&[0x48, 0x8b, 0x00, 0x48, 0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x84]); // ProcessId must be nonzero.
+
+    // NtQueryInformationThread(-2, ThreadBasicInformation, info, 48, &returnLength).
+    imm64!(&[0x48, 0xb9], u64::MAX - 1);
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA + 0x100);
+    emit!(&[0x41, 0xb9, 48, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0x180);
+    emit!(&[0x48, 0x89, 0x44, 0x24, 0x20]);
+    call_ptr!(query_thread);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    check_dword!(NTDLL_TEST_DATA + 0x180, 48);
+
+    // NtQuerySystemInformation(SystemBasicInformation, info, 64, &returnLength).
+    emit!(&[0x48, 0xb9, 0, 0, 0, 0, 0, 0, 0, 0]);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0x200);
+    emit!(&[0x41, 0xb8, 64, 0, 0, 0]);
+    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x280);
+    call_ptr!(query_system);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    check_dword!(NTDLL_TEST_DATA + 0x280, 64);
+    check_dword!(NTDLL_TEST_DATA + 0x208, 4096);
+
+    call_ptr!(yield_execution);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    emit!(&[0x31, 0xff, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(0)
+    let failure_label = length;
+    emit!(&[0xbf, 1, 0, 0, 0, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(1)
+    for at in failures[..failure_count].iter().copied() {
+        let displacement = i32::try_from(failure_label as isize - (at + 4) as isize)
+            .map_err(|_| VmError::InvalidAddress)?;
+        code[at..at + 4].copy_from_slice(&displacement.to_le_bytes());
+    }
+
+    let code_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+    unsafe { space.map_user_page(NTDLL_TEST_CODE, code_page, true, false)?; }
+    unsafe { space.copy_to_user(NTDLL_TEST_CODE, &code[..length])?; }
+    unsafe { space.protect_user_page(NTDLL_TEST_CODE, false, true)?; }
+    let test_image = LoadedImage {
+        base: ntdll.base,
+        entry: NTDLL_TEST_CODE,
+        image_size: ntdll.image_size,
+        is_dll: false,
+    };
+    unsafe { run_loaded_image(space, test_image)?; }
+    Ok(true)
+}
