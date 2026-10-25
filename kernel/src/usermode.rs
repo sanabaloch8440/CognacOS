@@ -516,6 +516,9 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_get_current_peb = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlGetCurrentPeb"))
         .ok_or(VmError::InvalidAddress)?;
+    let ldr_get_procedure_address = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"LdrGetProcedureAddress"))
+        .ok_or(VmError::InvalidAddress)?;
     let rtl_get_last_error = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlGetLastWin32Error"))
         .ok_or(VmError::InvalidAddress)?;
@@ -569,6 +572,9 @@ pub unsafe fn run_native_ntdll_smoke(
     data[0xBA0] = 1;
     data[0xBD0..0xBD6].copy_from_slice(b"abcdef");
     data[0xC00..0xC04].copy_from_slice(&276u32.to_le_bytes()); // RTL_OSVERSIONINFOW size
+    data[0xE00..0xE10].copy_from_slice(b"RtlGetCurrentPeb");
+    data[0xE22..0xE24].copy_from_slice(&17u16.to_le_bytes());
+    data[0xE28..0xE30].copy_from_slice(&(NTDLL_TEST_DATA + 0xE00).to_le_bytes());
     let numbers = [0x100u64, 0x101, 0x102, 0x103, 0x104];
     for (index, number) in numbers.iter().enumerate() {
         data[0x300 + index * 8..0x308 + index * 8].copy_from_slice(&number.to_le_bytes());
@@ -804,6 +810,20 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0x41, 0xb8, 4, 0, 0, 0]);
     call_ptr!(rtl_copy_memory);
     check_dword!(NTDLL_TEST_DATA + 0xBE0, 0x656d6173); // "same"
+
+    // LdrGetProcedureAddress must resolve a real export by its ANSI name.
+    imm64!(&[0x48, 0xb9], ntdll.base);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xE20);
+    emit!(&[0x45, 0x31, 0xc0]); // ordinal argument unused for name lookup
+    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0xE40);
+    call_ptr!(ldr_get_procedure_address);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xE40);
+    emit!(&[0x48, 0x8b, 0x00]); // RAX = resolved procedure pointer
+    imm64!(&[0x48, 0xba], rtl_get_current_peb);
+    emit!(&[0x48, 0x39, 0xd0]);
+    fail_if!(&[0x0f, 0x85]);
 
     // GS:[0x60] must expose the active process PEB and its ProcessHeap field.
     call_ptr!(rtl_get_current_peb);
