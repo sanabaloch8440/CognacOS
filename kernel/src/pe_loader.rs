@@ -364,9 +364,8 @@ impl crate::pe_dependencies::transaction::Backend for VfsTransactionBackend<'_> 
 
     fn rollback(&mut self, name: &[u8], handle: u64) {
         let Ok((slot, generation)) = decode_transaction_handle(handle) else { return; };
-        let Some((_, snapshot)) = crate::pe_modules::find_for_process(self.process_id, name) else { return; };
-        if snapshot.generation != generation
-            || !matches!(snapshot.state, crate::pe_modules::ModuleState::Mapped | crate::pe_modules::ModuleState::Reserved) {
+        let Some(snapshot) = crate::pe_modules::snapshot_for_ticket(self.process_id, slot, generation) else { return; };
+        if !matches!(snapshot.state, crate::pe_modules::ModuleState::Mapped | crate::pe_modules::ModuleState::Reserved) {
             return;
         }
         if snapshot.state == crate::pe_modules::ModuleState::Reserved {
