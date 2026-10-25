@@ -568,6 +568,57 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Remove one user mapping and reclaim empty intermediate page tables.
+    /// The returned physical frame remains owned by the caller, which may free it
+    /// only after any required image/module lifetime rundown has completed.
+    pub unsafe fn unmap_user_page(&mut self, virtual_address: u64) -> Result<u64, VmError> {
+        let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        if !is_user_range(virtual_address, PAGE_SIZE) || virtual_address & (PAGE_SIZE - 1) != 0 {
+            return Err(VmError::InvalidAddress);
+        }
+        // KUSER_SHARED_DATA has shared ownership and must never be reclaimed as
+        // an ordinary image page.
+        if virtual_address == KUSER_SHARED_DATA_ADDRESS { return Err(VmError::PermissionDenied); }
+        let indexes = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        let mut tables = [0u64; 4];
+        tables[0] = self.root;
+        for level in 0..3 {
+            let slot = unsafe { (tables[level] as *mut u64).add(indexes[level]) };
+            let entry = unsafe { slot.read() };
+            if entry & PRESENT == 0 || entry & USER == 0 || entry & LARGE != 0 {
+                return Err(VmError::NotMapped);
+            }
+            tables[level + 1] = entry & ADDR;
+        }
+        let leaf = unsafe { (tables[3] as *mut u64).add(indexes[3]) };
+        let entry = unsafe { leaf.read() };
+        if entry & PRESENT == 0 || entry & USER == 0 { return Err(VmError::NotMapped); }
+        let physical = entry & ADDR;
+        unsafe {
+            leaf.write(0);
+            asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
+        }
+        crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+
+        // Reclaim empty PT/PD/PDPT tables bottom-up. A non-empty table is never
+        // freed, and the PML4 root remains owned by AddressSpace.
+        for level in (1..=3).rev() {
+            let child = tables[level];
+            let empty = unsafe { core::slice::from_raw_parts(child as *const u64, 512) }
+                .iter().all(|entry| *entry & PRESENT == 0);
+            if !empty { break; }
+            let parent_slot = unsafe { (tables[level - 1] as *mut u64).add(indexes[level - 1]) };
+            unsafe { parent_slot.write(0); }
+            let _ = unsafe { crate::memory::free_page(child) };
+        }
+        Ok(physical)
+    }
+
     /// Destroy this address space after switching CR3 away from it. Frees user
     /// leaves, user page-table pages, and the PML4 root; shared supervisor mappings
     /// are never traversed or reclaimed.
