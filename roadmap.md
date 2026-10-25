@@ -1,13 +1,13 @@
-# RdotOS Roadmap
+# CognacOS Roadmap
 
-This is the canonical progress tracker. Checkboxes describe code and validation in the repository; they do not imply production readiness or Windows driver compatibility. Detailed per-routine status belongs in the [Ke comparison](WINDOWS11_RDOTOS_NTOSKRNL_KE_COMPARISON.md) and [Se comparison](WINDOWS11_RDOTOS_NTOSKRNL_SE_COMPARISON.md).
+This is the canonical progress tracker. Checkboxes describe code and validation in the repository; they do not imply production readiness or Windows driver compatibility. Detailed per-routine status belongs in the [Ke comparison](WINDOWS11_COGNACOS_NTOSKRNL_KE_COMPARISON.md) and [Se comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md).
 
 **Target:** a maintainable Rust-first x86-64 OS with NT-inspired interfaces and a long-term path toward Windows x64 driver compatibility.
 
 ## Current validation
 
-- Latest full passing kernel/UEFI/QEMU/SMP run: [run 40131903040](https://github.com/umarfarooq7869/RdotOS/actions/runs/40131903040), commit `b584631ca5fa46f4f95b85bd77d44d95ddccae65`.
-- The timer-preemption stress assertion also passed in [run 40131869378](https://github.com/umarfarooq7869/RdotOS/actions/runs/40131869378). A newer run, [40132231240](https://github.com/umarfarooq7869/RdotOS/actions/runs/40132231240), is validating the additional real-kernel queue/mutant wait test; do not count that test as verified until the run passes.
+- Latest full passing kernel/UEFI/QEMU/SMP run: [run 40131903040](https://github.com/umarfarooq7869/CognacOS/actions/runs/40131903040), commit `b584631ca5fa46f4f95b85bd77d44d95ddccae65`.
+- The timer-preemption stress assertion also passed in [run 40131869378](https://github.com/umarfarooq7869/CognacOS/actions/runs/40131869378). A newer run, [40132231240](https://github.com/umarfarooq7869/CognacOS/actions/runs/40132231240), is validating the additional real-kernel queue/mutant wait test; do not count that test as verified until the run passes.
 - Keep CI status current by checking the latest run on `main` before marking a milestone validated.
 
 ## Milestone 1 — Boot and platform foundations
@@ -78,7 +78,7 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 ## Milestone 7 — Windows 11 x64 routine compatibility
 
 - [x] Maintain a pinned Windows 11 x64 reference manifest and compare defined implementations/resolver paths against it.
-- [x] Keep internal RdotOS helpers out of the Windows export table; export only defined routines present in the pinned manifest.
+- [x] Keep internal CognacOS helpers out of the Windows export table; export only defined routines present in the pinned manifest.
 - [x] Maintain routine-level Ke and Se comparison documents with scoped evidence and explicit limitations.
 - [ ] Add automated ABI/signature/layout and export-table checks for every implemented subsystem.
 - [ ] Expand WDK conformance tests and run representative Windows x64 drivers only after dependencies and safety prerequisites are met.

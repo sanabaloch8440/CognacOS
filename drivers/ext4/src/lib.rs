@@ -1,4 +1,4 @@
-//! ext2/ext3/ext4 filesystem driver core for RdotOS.
+//! ext2/ext3/ext4 filesystem driver core for CognacOS.
 //! Writes are limited to existing allocated data blocks; journaled metadata mutation is not implemented.
 #![no_std]
 #![allow(dead_code)]

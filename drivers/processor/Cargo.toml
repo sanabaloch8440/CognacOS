@@ -1,12 +1,12 @@
 [package]
-name = "rdotos-processor"
+name = "cognacos-processor"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
 publish = false
 
 [dependencies]
-rdotos-hal-contract = { path = "../hal" }
+cognacos-hal-contract = { path = "../hal" }
 
 [lib]
 path = "src/lib.rs"

@@ -1,4 +1,4 @@
-name: Build and boot-test RdotOS Rust UEFI kernel
+name: Build and boot-test CognacOS Rust UEFI kernel
 
 on:
   push:
@@ -119,8 +119,8 @@ jobs:
       - name: Test user virtual-range validation
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test tools/vm_range_host_tests.rs -o /tmp/rdotos-vm-range-tests
-          /tmp/rdotos-vm-range-tests
+          rustc --edition=2024 --test tools/vm_range_host_tests.rs -o /tmp/cognacos-vm-range-tests
+          /tmp/cognacos-vm-range-tests
       - name: Run host-side physical allocator map tests
         run: |
           mkdir -p build
@@ -169,12 +169,12 @@ jobs:
         run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
       - name: Convert fixed-base kernel ELF to PE32+
         run: |
-          python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/release/rdotos-kernel build/rdotos-kernel.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
-          file build/rdotos-kernel.exe
-          python3 tools/validate_pe_exports.py build/rdotos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json --require SeAccessCheck --require SePrivilegeCheck --require SeSinglePrivilegeCheck --require SeValidSecurityDescriptor --require SeCaptureSubjectContext --require SeReleaseSubjectContext --require SeLockSubjectContext --require SeUnlockSubjectContext --require PsAssignImpersonationToken --require PsReferencePrimaryToken --require PsDereferencePrimaryToken
+          python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
+          file build/cognacos-kernel.exe
+          python3 tools/validate_pe_exports.py build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json --require SeAccessCheck --require SePrivilegeCheck --require SeSinglePrivilegeCheck --require SeValidSecurityDescriptor --require SeCaptureSubjectContext --require SeReleaseSubjectContext --require SeLockSubjectContext --require SeUnlockSubjectContext --require PsAssignImpersonationToken --require PsReferencePrimaryToken --require PsDereferencePrimaryToken
           python3 - <<'PY'
           import struct
-          p = open("build/rdotos-kernel.exe", "rb").read()
+          p = open("build/cognacos-kernel.exe", "rb").read()
           assert p[:2] == b"MZ", "missing DOS MZ signature"
           off = struct.unpack_from("<I", p, 0x3c)[0]
           assert p[off:off+4] == b"PE\0\0", "missing PE signature"
@@ -194,37 +194,37 @@ jobs:
         id: kernel-digest
         shell: bash
         run: |
-          digest="$(sha256sum build/rdotos-kernel.exe | cut -d' ' -f1)"
+          digest="$(sha256sum build/cognacos-kernel.exe | cut -d' ' -f1)"
           echo "sha256=$digest" >> "$GITHUB_OUTPUT"
       - name: Build Rust UEFI bootloader with pinned kernel digest
         env:
-          RDOTOS_KERNEL_SHA256: ${{ steps.kernel-digest.outputs.sha256 }}
+          COGNACOS_KERNEL_SHA256: ${{ steps.kernel-digest.outputs.sha256 }}
         run: cargo build --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi --release
       - name: Validate source ELF and PE32+ kernel image
         run: |
-          file target/x86_64-unknown-none/release/rdotos-kernel build/rdotos-kernel.exe
-          readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -qE 'Class:.*ELF64'
-          readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -qE 'Machine:.*X86-64'
-          readelf -h target/x86_64-unknown-none/release/rdotos-kernel | grep -qE 'Type:.*EXEC'
-          file build/rdotos-kernel.exe | grep -q 'PE32+'
+          file target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe
+          readelf -h target/x86_64-unknown-none/release/cognacos-kernel | grep -qE 'Class:.*ELF64'
+          readelf -h target/x86_64-unknown-none/release/cognacos-kernel | grep -qE 'Machine:.*X86-64'
+          readelf -h target/x86_64-unknown-none/release/cognacos-kernel | grep -qE 'Type:.*EXEC'
+          file build/cognacos-kernel.exe | grep -q 'PE32+'
       - name: Package a GPT EFI System Partition image
         run: |
           sudo apt-get update
           sudo apt-get install -y dosfstools mtools parted qemu-system-x86 ovmf
           mkdir -p build/EFI/BOOT build/kernel
-          cp target/x86_64-unknown-uefi/release/rdotos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
-          cp build/rdotos-kernel.exe build/EFI/BOOT/rdotos-kernel.exe
-          cp build/rdotos-kernel.exe build/kernel/rdotos-kernel.exe
-          truncate -s 256M build/rdotos-uefi.img
+          cp target/x86_64-unknown-uefi/release/cognacos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
+          cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
+          cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
+          truncate -s 256M build/cognacos-uefi.img
           truncate -s 128M build/pagefile.img
-          parted -s build/rdotos-uefi.img mklabel gpt
-          parted -s build/rdotos-uefi.img mkpart ESP fat32 1MiB 100%
-          parted -s build/rdotos-uefi.img set 1 esp on
-          mformat -i build/rdotos-uefi.img@@1048576 -F ::
-          mmd -i build/rdotos-uefi.img@@1048576 ::/EFI
-          mmd -i build/rdotos-uefi.img@@1048576 ::/EFI/BOOT
-          mcopy -i build/rdotos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
-          mcopy -i build/rdotos-uefi.img@@1048576 build/EFI/BOOT/rdotos-kernel.exe ::/EFI/BOOT/rdotos-kernel.exe
+          parted -s build/cognacos-uefi.img mklabel gpt
+          parted -s build/cognacos-uefi.img mkpart ESP fat32 1MiB 100%
+          parted -s build/cognacos-uefi.img set 1 esp on
+          mformat -i build/cognacos-uefi.img@@1048576 -F ::
+          mmd -i build/cognacos-uefi.img@@1048576 ::/EFI
+          mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/BOOT
+          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
+          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
       - name: Boot smoke test under OVMF/QEMU
         shell: bash
         run: |
@@ -249,7 +249,7 @@ jobs:
             -machine pc -m 5G -cpu qemu64 -smp 4 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
-            -drive if=ide,format=raw,file=build/rdotos-uefi.img \
+            -drive if=ide,format=raw,file=build/cognacos-uefi.img \
             -drive if=ide,format=raw,index=1,file=build/pagefile.img \
             -boot order=c -display none -monitor none \
             -serial file:build/serial.log -no-reboot -no-shutdown
@@ -268,7 +268,7 @@ jobs:
           fi
           cat build/serial.log
           grep -F 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.' build/serial.log
-          grep -F 'RdotOS Rust kernel entered.' build/serial.log
+          grep -F 'CognacOS Rust kernel entered.' build/serial.log
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
           grep -F 'Page-table inspection passed: high-half kernel sections, stack alias, low boot data, and guard pages validated.' build/serial.log
           grep -F 'High-RAM allocator and direct-map self-test passed.' build/serial.log
@@ -318,7 +318,7 @@ jobs:
               -machine pc -m 5G -cpu qemu64 -smp "$cpus" \
               -drive if=pflash,format=raw,readonly=on,file="$code" \
               -drive if=pflash,format=raw,file="build/OVMF_VARS_smp_$cpus.fd" \
-              -drive if=ide,format=raw,file=build/rdotos-uefi.img \
+              -drive if=ide,format=raw,file=build/cognacos-uefi.img \
               -drive if=ide,format=raw,index=1,file=build/pagefile.img \
               -boot order=c -display none -monitor none \
               -serial "file:$log" -no-reboot -no-shutdown
@@ -341,11 +341,11 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rdotos-rust-uefi-kernel
+          name: cognacos-rust-uefi-kernel
           path: |
             build/EFI/BOOT/BOOTX64.EFI
-            build/kernel/rdotos-kernel.exe
-            build/rdotos-uefi.img
+            build/kernel/cognacos-kernel.exe
+            build/cognacos-uefi.img
             build/serial.log
             build/serial-smp-*.log
             build/drivers/Hal.dll

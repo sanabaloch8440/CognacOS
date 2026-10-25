@@ -5,7 +5,7 @@ title: Project status
 
 # Project status
 
-RdotOS is an experimental, Rust-first x86-64 kernel using a Rust UEFI loader and a native AMD64 PE32+ kernel handoff. Its design separates architecture, HAL, virtual memory, the NT-inspired executive, and driver-facing services.
+CognacOS is an experimental, Rust-first x86-64 kernel using a Rust UEFI loader and a native AMD64 PE32+ kernel handoff. Its design separates architecture, HAL, virtual memory, the NT-inspired executive, and driver-facing services.
 
 ## Implemented foundations
 

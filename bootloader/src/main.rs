@@ -15,25 +15,25 @@ use uefi::mem::memory_map::MemoryMap;
 use uefi::proto::media::file::{Directory, File, FileAttribute, FileMode};
 use uefi::{boot, cstr16};
 
-const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\rdotos-kernel.exe");
+const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\cognacos-kernel.exe");
 const HIVE_PATHS: [(&uefi::CStr16,&uefi::CStr16,usize);7] = [
- (cstr16!("\\Windows\\System32\\config\\SYSTEM"),cstr16!("\\EFI\\RdotOS\\Hives\\SYSTEM"),128*1024*1024),
- (cstr16!("\\Windows\\System32\\config\\SOFTWARE"),cstr16!("\\EFI\\RdotOS\\Hives\\SOFTWARE"),256*1024*1024),
- (cstr16!("\\Windows\\System32\\config\\SECURITY"),cstr16!("\\EFI\\RdotOS\\Hives\\SECURITY"),64*1024*1024),
- (cstr16!("\\Windows\\System32\\config\\SAM"),cstr16!("\\EFI\\RdotOS\\Hives\\SAM"),64*1024*1024),
- (cstr16!("\\Windows\\System32\\config\\DEFAULT"),cstr16!("\\EFI\\RdotOS\\Hives\\DEFAULT"),64*1024*1024),
- (cstr16!("\\Windows\\System32\\config\\COMPONENTS"),cstr16!("\\EFI\\RdotOS\\Hives\\COMPONENTS"),256*1024*1024),
- (cstr16!("\\EFI\\Microsoft\\Boot\\BCD"),cstr16!("\\EFI\\RdotOS\\Hives\\BCD00000000"),64*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\SYSTEM"),cstr16!("\\EFI\\CognacOS\\Hives\\SYSTEM"),128*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\SOFTWARE"),cstr16!("\\EFI\\CognacOS\\Hives\\SOFTWARE"),256*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\SECURITY"),cstr16!("\\EFI\\CognacOS\\Hives\\SECURITY"),64*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\SAM"),cstr16!("\\EFI\\CognacOS\\Hives\\SAM"),64*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\DEFAULT"),cstr16!("\\EFI\\CognacOS\\Hives\\DEFAULT"),64*1024*1024),
+ (cstr16!("\\Windows\\System32\\config\\COMPONENTS"),cstr16!("\\EFI\\CognacOS\\Hives\\COMPONENTS"),256*1024*1024),
+ (cstr16!("\\EFI\\Microsoft\\Boot\\BCD"),cstr16!("\\EFI\\CognacOS\\Hives\\BCD00000000"),64*1024*1024),
 ];
 const NLS_PATHS: [(&uefi::CStr16,&uefi::CStr16,usize);8] = [
- (cstr16!("\\Windows\\System32\\c_037.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\c_037.nls"),16*1024*1024),
- (cstr16!("\\Windows\\System32\\c_437.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\c_437.nls"),16*1024*1024),
- (cstr16!("\\Windows\\System32\\c_1252.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\c_1252.nls"),16*1024*1024),
- (cstr16!("\\Windows\\System32\\locale.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\locale.nls"),16*1024*1024),
- (cstr16!("\\Windows\\System32\\sortkey.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\sortkey.nls"),16*1024*1024),
- (cstr16!("\\Windows\\System32\\sorttbls.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\sorttbls.nls"),16*1024*1024),
- (cstr16!("\\Windows\\System32\\ctype.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\ctype.nls"),16*1024*1024),
- (cstr16!("\\Windows\\System32\\unicode.nls"),cstr16!("\\EFI\\RdotOS\\NLS\\unicode.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\c_037.nls"),cstr16!("\\EFI\\CognacOS\\NLS\\c_037.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\c_437.nls"),cstr16!("\\EFI\\CognacOS\\NLS\\c_437.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\c_1252.nls"),cstr16!("\\EFI\\CognacOS\\NLS\\c_1252.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\locale.nls"),cstr16!("\\EFI\\CognacOS\\NLS\\locale.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\sortkey.nls"),cstr16!("\\EFI\\CognacOS\\NLS\\sortkey.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\sorttbls.nls"),cstr16!("\\EFI\\CognacOS\\NLS\\sorttbls.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\ctype.nls"),cstr16!("\\EFI\\CognacOS\\NLS\\ctype.nls"),16*1024*1024),
+ (cstr16!("\\Windows\\System32\\unicode.nls"),cstr16!("\\EFI\\CognacOS\\NLS\\unicode.nls"),16*1024*1024),
 ];
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -43,7 +43,7 @@ const MAX_KERNEL_FILE: usize = 32 * 1024 * 1024;
 const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
-const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "RDOTOSBI"
+const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // "COGNACOSBI"
 const BOOT_INFO_VERSION: u32 = 7;
 const HIGH_HALF_PT_PAGES: usize = 64;
 const KERNEL_STACK_VIRTUAL_GUARD: u64 = 0xffff_ff00_0000_0000;
@@ -89,8 +89,8 @@ fn stage_optional_file(root:&mut Directory,primary:&uefi::CStr16,fallback:&uefi:
 fn main() -> Status {
     if let Err(error) = uefi::helpers::init() { return error.status(); }
     let image_handle = boot::image_handle();
-    uefi::println!("RdotOS Rust UEFI bootloader");
-    uefi::println!("Opening PE32+ kernel image: \\EFI\\BOOT\\rdotos-kernel.exe");
+    uefi::println!("CognacOS Rust UEFI bootloader");
+    uefi::println!("Opening PE32+ kernel image: \\EFI\\BOOT\\cognacos-kernel.exe");
 
     let mut fs = match boot::get_image_file_system(image_handle) {
         Ok(fs) => fs,

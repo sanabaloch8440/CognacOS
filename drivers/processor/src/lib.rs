@@ -2,7 +2,7 @@
 #![no_std]
 #[cfg(test)]
 extern crate std;
-use rdotos_hal_contract::{HalServiceTable, HAL_CONTRACT_VERSION};
+use cognacos_hal_contract::{HalServiceTable, HAL_CONTRACT_VERSION};
 
 pub const PROCESSOR_DRIVER_VERSION: u32 = 1;
 #[repr(C)]
@@ -45,7 +45,7 @@ impl Default for ProcessorDriver { fn default() -> Self { Self::new() } }
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdotos_hal_contract::{HalServiceTable, HAL_CONTRACT_VERSION};
+    use cognacos_hal_contract::{HalServiceTable, HAL_CONTRACT_VERSION};
     fn hal() -> HalServiceTable {
         HalServiceTable { size: core::mem::size_of::<HalServiceTable>() as u32,
             version: HAL_CONTRACT_VERSION, read_port_u8: None, write_port_u8: None,

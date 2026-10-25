@@ -15,8 +15,8 @@ mod syscall;
 mod winabi;
 mod pe_runtime;
 mod usermode;
-use rdotos_acpi as acpi;
-use rdotos_pci as pci;
+use cognacos_acpi as acpi;
+use cognacos_pci as pci;
 mod dma;
 mod hal;
 mod smp;
@@ -26,7 +26,7 @@ mod thread;
 mod object;
 #[path = "ntoskrnl/io/runtime.rs"]
 pub(crate) mod io;
-use rdotos_ext4 as extfs;
+use cognacos_ext4 as extfs;
 mod nls;
 mod ntoskrnl;
 
@@ -156,7 +156,7 @@ unsafe fn install_boot_assets(info:&BootInfo){
 pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     unsafe {
         serial_init();
-        serial_write(b"RdotOS Rust kernel entered.\r\n");
+        serial_write(b"CognacOS Rust kernel entered.\r\n");
         if boot_info.is_null() {
             serial_write(b"FATAL: null boot information pointer.\r\n");
             halt();
@@ -784,7 +784,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: user mapping setup failed.\r\n");
             halt();
         }
-        let sample = *b"RdotOS user-copy check";
+        let sample = *b"CognacOS user-copy check";
         if unsafe { address_space.copy_to_user(TEST_USER_ADDRESS, &sample) }.is_err() {
             serial_write(b"FATAL: checked copy-to-user failed.\r\n");
             halt();
@@ -924,7 +924,7 @@ pub unsafe fn halt() -> ! {
 #[panic_handler]
 fn panic(_info: &PanicInfo<'_>) -> ! {
     unsafe {
-        serial_write(b"\r\nRdotOS FATAL: Rust panic; system halted.\r\n");
+        serial_write(b"\r\nCognacOS FATAL: Rust panic; system halted.\r\n");
         halt()
     }
 }

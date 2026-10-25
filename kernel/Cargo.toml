@@ -1,14 +1,14 @@
 [package]
-name = "rdotos-kernel"
+name = "cognacos-kernel"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
 
 [dependencies]
-rdotos-acpi = { path = "../drivers/acpi" }
-rdotos-pci = { path = "../drivers/pci" }
-rdotos-hal-contract = { path = "../drivers/hal" }
-rdotos-ext4 = { path = "../drivers/ext4" }
+cognacos-acpi = { path = "../drivers/acpi" }
+cognacos-pci = { path = "../drivers/pci" }
+cognacos-hal-contract = { path = "../drivers/hal" }
+cognacos-ext4 = { path = "../drivers/ext4" }
 
 [profile.dev]
 panic = "abort"

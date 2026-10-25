@@ -1,5 +1,5 @@
 [package]
-name = "rdotos-hal-contract"
+name = "cognacos-hal-contract"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-2.0-or-later"

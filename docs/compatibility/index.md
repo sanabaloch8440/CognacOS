@@ -5,7 +5,7 @@ title: Windows 11 x64 compatibility
 
 # Windows 11 x64 compatibility
 
-RdotOS compares public Windows 11 x64 contracts with the code currently implemented. The reference target is Windows 11 x64 build 10.0.26100.8036 (AMD64) where stated in the source comparisons.
+CognacOS compares public Windows 11 x64 contracts with the code currently implemented. The reference target is Windows 11 x64 build 10.0.26100.8036 (AMD64) where stated in the source comparisons.
 
 - [Ke routine comparison](ke.md): exported routine inventory, scoped behavior status, resolver coverage, and scoring methodology.
 - [Se security comparison](se.md): security routines, implementation scope, and unresolved semantics.

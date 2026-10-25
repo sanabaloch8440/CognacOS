@@ -1,4 +1,4 @@
-//! Platform Hardware Abstraction Layer (HAL) for RdotOS.
+//! Platform Hardware Abstraction Layer (HAL) for CognacOS.
 //!
 //! This layer isolates x86-64 CPU/interrupt/port primitives from executive,
 //! scheduler, and driver code. It is Windows-NT-inspired, not a binary-compatible

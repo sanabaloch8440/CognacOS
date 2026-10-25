@@ -1,4 +1,4 @@
-//! RdotOS storage-stack primitives following the documented Windows class/port/miniport split.
+//! CognacOS storage-stack primitives following the documented Windows class/port/miniport split.
 //! This is an independent implementation, not Microsoft's proprietary driver source.
 #![no_std]
 #[cfg(test)] extern crate std;
