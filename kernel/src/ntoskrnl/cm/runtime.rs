@@ -238,11 +238,19 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwOpenKey(out:*mut *mut core::ffi::c_void,access:u32,oa:*const ObjectAttributes)->i32{
  if out.is_null(){return STATUS_INVALID_PARAMETER;}let _g=LOCK.lock();
- let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
+ let (mut name,mut n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
  let s=state();
- if parent==0 {
-  if let Some(status)=open_hive_key(out,access,&name[..n]) { return status; }
- }
+ if parent!=0 {
+  if let Some(base)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==parent&&k.hive_slot!=0) {
+   let base_len=base.name_len as usize;
+   if base_len+1+n>MAX_NAME{return STATUS_INVALID_PARAMETER;}
+   name.copy_within(0..n,base_len+1);
+   name[base_len]=b'\\' as u16;
+   name[..base_len].copy_from_slice(&base.name[..base_len]);
+   n=base_len+1+n;
+   if let Some(status)=open_hive_key(out,access,&name[..n]){return status;}
+  }
+ } else if let Some(status)=open_hive_key(out,access,&name[..n]) { return status; }
  let found=s.keys.iter().find(|k|k.used&&!k.deleted&&k.hive_slot==0&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n]));
  if let Some(k)=found{
   #[cfg(test)] unsafe{*out=handle(k.id);}
@@ -265,7 +273,7 @@ pub unsafe extern "win64" fn ZwSetValueKey(h:*mut core::ffi::c_void,name:*const 
 pub struct KeyValuePartialInformation { pub title_index:u32,pub kind:u32,pub data_length:u32,pub data:[u8;1] }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwQueryValueKey(h:*mut core::ffi::c_void,name:*const UnicodeString,class:u32,out:*mut core::ffi::c_void,out_len:u32,result_len:*mut u32)->i32{
- if class!=2||out.is_null(){return STATUS_NOT_SUPPORTED;}let mut nbuf=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nbuf)}{Ok(n)=>n,Err(e)=>return e};
+ if class!=2 || (out.is_null() && out_len != 0) { return STATUS_NOT_SUPPORTED; }let mut nbuf=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nbuf)}{Ok(n)=>n,Err(e)=>return e};
  let _g=LOCK.lock();let s=state();let Some(id)=key_from_handle(s,h)else{return STATUS_INVALID_PARAMETER;};
  if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==id) {
   if k.hive_slot!=0 {
