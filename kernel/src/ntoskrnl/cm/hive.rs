@@ -21,6 +21,13 @@ pub struct BaseInfo { pub root_cell:u32,pub bins_size:u32,pub major:u32,pub mino
 
 pub struct Hive<'a>{bytes:&'a [u8],pub info:BaseInfo}
 impl<'a> Hive<'a>{
+ /// Reuse immutable hive bytes after the caller has validated this exact image
+ /// with `open`; the supplied metadata must come from that validation.
+ ///
+ /// # Safety
+ /// `bytes` must be unchanged from the validated image for the lifetime of
+ /// the returned view, and `info` must be the BaseInfo parsed from those bytes.
+ pub unsafe fn from_validated(bytes:&'a [u8], info:BaseInfo)->Self { Self { bytes, info } }
  pub fn open(bytes:&'a[u8])->Result<Self,Error>{
   if bytes.len()<BASE_BLOCK_SIZE||bytes.get(0..4)!=Some(&b"regf"[..]){return Err(Error::BadSignature)}
   let sequence_primary=u32at(bytes,4)?;let sequence_secondary=u32at(bytes,8)?;
