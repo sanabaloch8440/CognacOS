@@ -39,10 +39,10 @@ PVOID NTAPI RtlMoveMemory(PVOID destination, const VOID *source, SIZE_T length)
 {
     unsigned char *d = (unsigned char *)destination;
     const unsigned char *s = (const unsigned char *)source;
-    if (d < s) {
+    if ((ULONG_PTR)d < (ULONG_PTR)s) {
         SIZE_T i;
         for (i = 0; i < length; ++i) d[i] = s[i];
-    } else if (d > s) {
+    } else if ((ULONG_PTR)d > (ULONG_PTR)s) {
         while (length) { --length; d[length] = s[length]; }
     }
     return destination;
