@@ -143,7 +143,7 @@ mod tests {
     fn finds_device_names_and_offsets_in_bytes() {
         for (s, expected) in [
             ("CON", 0x0000_0006),
-            ("c:\\temp\\nul.txt", 0x0016_0006),
+            ("c:\\temp\\nul.txt", 0x0010_0006),
             ("COM1.log", 0x0000_0008),
             ("LPT9:", 0x0000_0008),
             ("CONIN$", 0x0000_000c),
