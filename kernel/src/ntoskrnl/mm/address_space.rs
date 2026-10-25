@@ -513,7 +513,10 @@ impl AddressSpace {
                 return Err(VmError::AddressSpaceBusy);
             }
             for page in pages.iter().filter(|p| p.live && p.root == self.root && p.va >= start && p.va < end && !p.paged_out) {
-                if user_leaf(self.root, page.va).is_none() { return Err(VmError::NotMapped); }
+                let Some((_, entry)) = user_leaf(self.root, page.va) else { return Err(VmError::NotMapped); };
+                if crate::ntoskrnl::mm::runtime::is_page_locked(entry & ADDR) {
+                    return Err(VmError::AddressSpaceBusy);
+                }
             }
             for page in pages.iter_mut().filter(|p| p.live && p.root == self.root && p.va >= start && p.va < end) { page.busy = true; }
         }
