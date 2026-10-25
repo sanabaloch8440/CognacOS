@@ -593,7 +593,7 @@ pub unsafe fn run_native_ntdll_smoke(
     unsafe { space.map_user_page(NTDLL_TEST_DATA, data_page, true, false)?; }
     unsafe { space.copy_to_user(NTDLL_TEST_DATA, &data)?; }
 
-    let mut code = [0u8; 3072];
+    let mut code = [0u8; 4096];
     let mut length = 0usize;
     let mut failures = [0usize; 64];
     let mut failure_count = 0usize;
