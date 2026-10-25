@@ -275,6 +275,7 @@ fn ensure_ntdll_xstate_config() -> bool {
             enabled,
             enabled,
             config.size,
+            (config.control_flags >> 1) & 1,
             offsets.as_ptr(),
             sizes.as_ptr(),
         ) == STATUS_SUCCESS
@@ -342,6 +343,7 @@ const CONTEXT_AMD64: ULONG = 0x0010_0000;
 const CONTEXT_I386: ULONG = 0x0001_0000;
 const CONTEXT_XSTATE: ULONG = 0x40;
 const CONTEXT_EX_SIZE: usize = 24;
+const CONTEXT_EX_ALIGNED_SIZE: usize = 32;
 const AMD64_CONTEXT_SIZE: usize = 0x4d0;
 const I386_CONTEXT_SIZE: usize = 0x2cc;
 const STATUS_NOT_SUPPORTED: NTSTATUS = 0xC000_00BBu32 as i32;
@@ -406,7 +408,7 @@ pub unsafe extern "system" fn RtlGetExtendedContextLength2(flags: ULONG, length:
     } else {
         if !ensure_ntdll_xstate_config() { return STATUS_NOT_SUPPORTED; }
         let Some(payload) = ntdll_xstate_payload_size(mask) else { return STATUS_INVALID_PARAMETER; };
-        CONTEXT_EX_SIZE + 63 + payload
+        CONTEXT_EX_ALIGNED_SIZE + 63 + payload
     };
     match context_size.checked_add(extra) {
         Some(n) if n <= ULONG::MAX as usize => { *length = n as ULONG; STATUS_SUCCESS }
@@ -435,7 +437,7 @@ pub unsafe extern "system" fn RtlInitializeExtendedContext2(context: PVOID, flag
     }
     let Some(payload) = ntdll_xstate_payload_size(mask) else { return STATUS_INVALID_PARAMETER; };
     let ex_addr = ex_ptr as usize;
-    let xstate_addr = match ex_addr.checked_add(CONTEXT_EX_SIZE + 63) { Some(v) => v & !63, None => return STATUS_INVALID_PARAMETER };
+    let xstate_addr = match ex_addr.checked_add(CONTEXT_EX_ALIGNED_SIZE + 63) { Some(v) => v & !63, None => return STATUS_INVALID_PARAMETER };
     let offset = xstate_addr - ex_addr;
     let all_len = match size.checked_add(offset).and_then(|v| v.checked_add(payload)) {
         Some(v) if v <= ULONG::MAX as usize => v, _ => return STATUS_INVALID_PARAMETER,
@@ -494,8 +496,48 @@ pub unsafe extern "system" fn RtlLocateExtendedFeature(ex: *mut CONTEXT_EX, feat
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlLocateExtendedFeature2(ex: *mut CONTEXT_EX, feature: ULONG, config: PVOID, length: *mut ULONG) -> PVOID {
-    if config.is_null() { return core::ptr::null_mut(); }
-    RtlLocateExtendedFeature(ex, feature, length)
+    if !length.is_null() { unsafe { length.write_unaligned(0); } }
+    if ex.is_null() || config.is_null() || !(2..64).contains(&feature) { return core::ptr::null_mut(); }
+    // The WDK API accepts a caller-supplied XSTATE_CONFIGURATION. Do not
+    // require pointer identity with KUSER_SHARED_DATA; use the provided layout.
+    let cfg = unsafe { (config as *const WindowsXStateConfiguration).read_unaligned() };
+    let feature_bit = 1u64 << feature;
+    let component = cfg.features[feature as usize];
+    if component.size == 0 { return core::ptr::null_mut(); }
+    if !length.is_null() { unsafe { length.write_unaligned(component.size); } }
+    let chunk = unsafe { core::ptr::addr_of!((*ex).XState).read_unaligned() };
+    if chunk.Length < 64 { return core::ptr::null_mut(); }
+    let xstate = unsafe { ex.cast::<u8>().offset(chunk.Offset as isize) };
+    let (offset, required_mask) = if cfg.control_flags & 2 != 0 {
+        let compacted = unsafe { xstate.add(8).cast::<ULONG64>().read_unaligned() };
+        if compacted & (1u64 << 63) == 0 || compacted & feature_bit == 0 {
+            return core::ptr::null_mut();
+        }
+        let compacted_features = compacted & !(1u64 << 63);
+        let mut off = 64usize;
+        for id in 2..feature {
+            let bit = 1u64 << id;
+            if compacted_features & bit == 0 { continue; }
+            let size = cfg.features[id as usize].size as usize;
+            if size == 0 { return core::ptr::null_mut(); }
+            off = match off.checked_add(size) { Some(v) => v, None => return core::ptr::null_mut() };
+            if cfg.aligned_features & (1u64 << (id + 1)) != 0 {
+                off = match off.checked_add(63) { Some(v) => v & !63, None => return core::ptr::null_mut() };
+            }
+        }
+        (off, compacted_features)
+    } else {
+        if cfg.enabled_features & feature_bit == 0 || component.offset < 512 {
+            return core::ptr::null_mut();
+        }
+        ((component.offset - 512) as usize, cfg.enabled_features)
+    };
+    let _ = required_mask;
+    let size = component.size as usize;
+    if offset.checked_add(size).map_or(true, |end| end > chunk.Length as usize) {
+        return core::ptr::null_mut();
+    }
+    unsafe { xstate.add(offset).cast() }
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetExtendedFeaturesMask(ex: *mut CONTEXT_EX, mask: ULONG64) {
@@ -535,31 +577,124 @@ fn copy_amd64_context_ranges(dst: *mut u8, src: *const u8, flags: ULONG) {
     }
 }
 
+fn copy_context_ranges(dst: *mut u8, src: *const u8, flags: ULONG, arch: ULONG) {
+    const AMD64: [(usize, ULONG); 12] = [
+        (0x38, 0x1), (0x3a, 0x4), (0x42, 0x1), (0x48, 0x10),
+        (0x78, 0x2), (0x98, 0x1), (0xa0, 0x2), (0xf8, 0x1),
+        (0x100, 0x8), (0x2a0, 0), (0x4b0, 0x10), (0x4d0, 0),
+    ];
+    const I386: [(usize, ULONG); 8] = [
+        (0x04, 0x10), (0x1c, 0x08), (0x8c, 0x04), (0x9c, 0x02),
+        (0xb4, 0x01), (0xcc, 0x20), (0x1ec, 0), (0x2cc, 0),
+    ];
+    let flags_offset = if arch == CONTEXT_AMD64 { 0x30 } else { 0 };
+    unsafe {
+        let field = dst.add(flags_offset).cast::<ULONG>();
+        field.write_unaligned(field.read_unaligned() | flags);
+    }
+    let mut start = 0usize;
+    if arch == CONTEXT_AMD64 {
+        for (boundary, group) in AMD64 {
+            if group & flags != 0 {
+                if start == 0 { start = boundary; }
+            } else if start != 0 {
+                unsafe { core::ptr::copy(src.add(start), dst.add(start), boundary - start); }
+                start = 0;
+            }
+        }
+    } else {
+        for (boundary, group) in I386 {
+            if group & flags != 0 {
+                if start == 0 { start = boundary; }
+            } else if start != 0 {
+                unsafe { core::ptr::copy(src.add(start), dst.add(start), boundary - start); }
+                start = 0;
+            }
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn RtlCopyExtendedContext(dst: *mut CONTEXT_EX, flags: ULONG, src: *const CONTEXT_EX) -> NTSTATUS {
+    let Some((_, _)) = context_parameters(flags) else { return STATUS_INVALID_PARAMETER; };
     if dst.is_null() || src.is_null() { return STATUS_INVALID_PARAMETER; }
     if flags & CONTEXT_XSTATE != 0 && !ensure_ntdll_xstate_config() { return STATUS_NOT_SUPPORTED; }
     let s = unsafe { src.read_unaligned() };
     let d = unsafe { dst.read_unaligned() };
     if s.Legacy.Length > d.Legacy.Length { return STATUS_BUFFER_OVERFLOW; }
-    if flags & CONTEXT_XSTATE != 0 && d.XState.Length < s.XState.Length { return STATUS_BUFFER_OVERFLOW; }
-    // CONTEXT_EX objects can have different alignment padding, so copy the
-    // legacy context and XSTATE payload separately instead of copying All as
-    // one block and accidentally shifting the destination's aligned area.
     let source_legacy = unsafe { src.cast::<u8>().offset(s.Legacy.Offset as isize) };
     let dest_legacy = unsafe { dst.cast::<u8>().offset(d.Legacy.Offset as isize) };
-    if flags & 0x0011_0000 == CONTEXT_AMD64 {
-        copy_amd64_context_ranges(dest_legacy, source_legacy, flags);
-    } else {
-        // The x86 compatibility layout is retained as a conservative full
-        // legacy-block copy until its per-field range map is ported.
-        unsafe { core::ptr::copy(source_legacy, dest_legacy, s.Legacy.Length as usize); }
+    copy_context_ranges(dest_legacy, source_legacy, flags, flags & 0x0011_0000);
+    if flags & CONTEXT_XSTATE == 0 { return STATUS_SUCCESS; }
+    if d.XState.Length < 64 { return STATUS_BUFFER_OVERFLOW; }
+    let source_xstate = unsafe { src.cast::<u8>().offset(s.XState.Offset as isize) };
+    let dest_xstate = unsafe { dst.cast::<u8>().offset(d.XState.Offset as isize) };
+    let source_mask = unsafe { source_xstate.cast::<ULONG64>().read_unaligned() };
+    let source_compaction = unsafe { source_xstate.add(8).cast::<ULONG64>().read_unaligned() };
+    let enabled = NTDLL_XSTATE_ENABLED.load(Ordering::Acquire);
+    let selected = source_mask & enabled & !3u64;
+    unsafe {
+        core::ptr::write_bytes(dest_xstate, 0, 64);
+        dest_xstate.cast::<ULONG64>().write_unaligned(selected);
+        let compacted = NTDLL_XSTATE_COMPACTION_ENABLED.load(Ordering::Acquire);
+        dest_xstate.add(8).cast::<ULONG64>().write_unaligned(
+            if compacted { (1u64 << 63) | (source_compaction & enabled & !3u64) } else { 0 }
+        );
     }
-    if flags & CONTEXT_XSTATE != 0 && s.XState.Length != 0 {
-        let source_xstate = unsafe { src.cast::<u8>().add(s.XState.Offset as usize) };
-        let dest_xstate = unsafe { dst.cast::<u8>().add(d.XState.Offset as usize) };
-        unsafe { core::ptr::copy(source_xstate, dest_xstate, s.XState.Length as usize); }
+    let mut offset = 64usize;
+    for feature in 2..64 {
+        let bit = 1u64 << feature;
+        if selected & bit == 0 { continue; }
+        let size = NTDLL_XSTATE_SIZES[feature].load(Ordering::Acquire) as usize;
+        if size == 0 { continue; }
+        if NTDLL_XSTATE_COMPACTION_ENABLED.load(Ordering::Acquire) {
+            if source_compaction & (1u64 << 63) == 0 || source_compaction & bit == 0 { continue; }
+            for previous in 2..feature {
+                if source_compaction & (1u64 << previous) != 0 {
+                    let previous_size = NTDLL_XSTATE_SIZES[previous].load(Ordering::Acquire) as usize;
+                    offset = match offset.checked_add(previous_size) { Some(v) => v, None => return STATUS_BUFFER_OVERFLOW };
+                    if NTDLL_XSTATE_ALIGNED_MASK.load(Ordering::Acquire) & (1u64 << (previous + 1)) != 0 {
+                        offset = (offset + 63) & !63;
+                    }
+                }
+            }
+        } else {
+            let standard = NTDLL_XSTATE_OFFSETS[feature].load(Ordering::Acquire) as usize;
+            if standard < 512 { continue; }
+            offset = standard - 512;
+        }
+        if offset.checked_add(size).map_or(true, |end| end > s.XState.Length as usize || end > d.XState.Length as usize) {
+            return STATUS_BUFFER_OVERFLOW;
+        }
+        unsafe { core::ptr::copy(source_xstate.add(offset), dest_xstate.add(offset), size); }
+        offset = offset.saturating_add(size);
     }
+    STATUS_SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlCopyContext(dst: PVOID, flags: ULONG, src: PVOID) -> NTSTATUS {
+    if dst.is_null() || src.is_null() { return STATUS_INVALID_PARAMETER; }
+    let arch = flags & (CONTEXT_AMD64 | CONTEXT_I386);
+    let (size, flags_offset) = match context_parameters(flags) {
+        Some(v) => v,
+        None => return STATUS_INVALID_PARAMETER,
+    };
+    let dflags = unsafe { dst.cast::<u8>().add(flags_offset).cast::<ULONG>().read_unaligned() };
+    let sflags = unsafe { src.cast::<u8>().add(flags_offset).cast::<ULONG>().read_unaligned() };
+    if dflags & (CONTEXT_AMD64 | CONTEXT_I386) != arch || sflags & (CONTEXT_AMD64 | CONTEXT_I386) != arch {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let copy_flags = flags & sflags;
+    if copy_flags & !dflags & CONTEXT_XSTATE != 0 { return STATUS_BUFFER_OVERFLOW; }
+    if copy_flags & CONTEXT_XSTATE != 0 {
+        return RtlCopyExtendedContext(
+            unsafe { dst.cast::<u8>().add(size).cast::<CONTEXT_EX>() },
+            copy_flags,
+            unsafe { src.cast::<u8>().add(size).cast::<CONTEXT_EX>() },
+        );
+    }
+    copy_context_ranges(dst.cast(), src.cast(), copy_flags, arch);
     STATUS_SUCCESS
 }
 
@@ -599,6 +734,7 @@ mod xstate_context_layout_tests {
     }
     #[test]
     fn published_configuration_fits_one_user_page() {
-        assert!(core::mem::size_of::<CognacXStateSharedConfiguration>() <= 4096);
+        assert_eq!(core::mem::size_of::<WindowsXStateConfiguration>(), 0x348);
+        assert!(KUSER_XSTATE_OFFSET + core::mem::size_of::<WindowsXStateConfiguration>() <= 4096);
     }
 }
