@@ -1489,14 +1489,70 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> !
     )
 }
 
+/// The exception entry's saved-register layout. CPL3 frames also contain RSP and SS.
+#[repr(C)]
+struct UserExceptionTrapFrame {
+    saved_registers: [u64; 15],
+    vector: u64,
+    error_code: u64,
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
+fn user_exception_status(vector: u64) -> u64 {
+    match vector {
+        0 => 0xC000_0094, // STATUS_INTEGER_DIVIDE_BY_ZERO
+        1 => 0x8000_0004, // STATUS_SINGLE_STEP
+        3 => 0x8000_0003, // STATUS_BREAKPOINT
+        6 => 0xC000_001D, // STATUS_ILLEGAL_INSTRUCTION
+        13 => 0xC000_0096, // STATUS_PRIVILEGED_INSTRUCTION
+        _ => 0xC000_0005, // STATUS_ACCESS_VIOLATION
+    }
+}
+
+/// Unresolved CPL3 exceptions are process-scoped. This is the termination fallback
+/// until a user-mode exception/SEH dispatcher can resume or unwind user execution.
+fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> ! {
+    let trap = unsafe { &*frame.cast::<UserExceptionTrapFrame>() };
+    if trap.cs & 3 != 3
+        || trap.rip < 0x1000
+        || trap.rip >= crate::ntoskrnl::mm::address_space::USER_END
+        || trap.rsp < 0x1000
+        || trap.rsp >= crate::ntoskrnl::mm::address_space::USER_END {
+        cognacos_exception_fatal(vector, error, frame);
+    }
+    let pid = crate::thread::current_process_id();
+    if pid == 0 {
+        cognacos_exception_fatal(vector, error, frame);
+    }
+    crate::serial_write(b"CPL3 exception: vector=");
+    crate::serial_write_hex(vector);
+    crate::serial_write(b" error=");
+    crate::serial_write_hex(error);
+    crate::serial_write(b" RIP=");
+    crate::serial_write_hex(trap.rip);
+    if vector == 14 {
+        let cr2: u64;
+        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+        crate::serial_write(b" CR2=");
+        crate::serial_write_hex(cr2);
+    }
+    crate::serial_write(b" process=");
+    crate::serial_write_hex(pid);
+    crate::serial_write(b"\r\n");
+    crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, user_exception_status(vector))
+}
+
 /// Dispatch recoverable faults. A return value of one asks the assembly stub to
-/// restore the original frame and IRETQ; fatal/unrecognized supervisor exceptions halt.
+/// restore the original frame and IRETQ; unhandled supervisor exceptions halt.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
     if vector == 2 && crate::ntoskrnl::ke::runtime::dispatch_nmi_callbacks() { return 1; }
-    // CPL is taken from the saved CS selector, not CR2 or the exception vector.
-    // User page faults first try the process address-space resolver. Every
-    // unresolved CPL3 exception follows the process-scoped delivery path.
+    // Determine privilege from the saved CS. A user fault must never consume a
+    // kernel probe fixup, even if its RIP happens to match a registered record.
     if vector < EXCEPTION_VECTORS as u64 {
         let saved_cs = unsafe { frame.add(18).read() };
         if saved_cs & 3 == 3 {
@@ -1512,19 +1568,15 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
         let cr2: u64;
         unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
         if crate::kernel_vm::handle_page_fault(cr2, error) { return 1; }
-
-        // General exception-table recovery for explicitly registered kernel
-        // probes. User faults never consume kernel fixups.
         let saved_rip = unsafe { frame.add(17).read() };
         if apply_trap_frame_fixup(saved_rip, cr2, error, frame) { return 1; }
 
-        // Permit only the two explicitly armed, exact-address permission probes
-        // used by the boot self-test. Every other protection fault remains fatal.
+        // Legacy boot permission probes retain their exact-address guard.
         let expected = EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire);
         let expected_address = EXPECTED_PROTECTION_ADDRESS.load(core::sync::atomic::Ordering::Relaxed);
         let expected_error = match expected {
-            1 => error & 0x1f == 0x3,  // present-page supervisor write protection fault
-            2 => error & 0x1f == 0x11, // present-page supervisor instruction-fetch NX fault
+            1 => error & 0x1f == 0x3,
+            2 => error & 0x1f == 0x11,
             _ => false,
         };
         if expected != 0 && cr2 == expected_address && expected_error {
