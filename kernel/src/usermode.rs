@@ -420,7 +420,7 @@ pub unsafe fn run_native_ntdll_smoke(
 
     let mut code = [0u8; 1024];
     let mut length = 0usize;
-    let mut failures = [0usize; 16];
+    let mut failures = [0usize; 24];
     let mut failure_count = 0usize;
     macro_rules! emit {
         ($bytes:expr) => {{
@@ -546,7 +546,7 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
     emit!(&[0x31, 0xff, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(0)
-    let mut failure_labels = [0usize; 16];
+    let mut failure_labels = [0usize; 24];
     for index in 0..failure_count {
         failure_labels[index] = length;
         emit!(&[0xbf]);
