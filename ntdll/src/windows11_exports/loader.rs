@@ -701,3 +701,51 @@ pub unsafe extern "system" fn RtlIsThreadWithinLoaderCallout() -> i32 { STATUS_N
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlWnfDllUnloadCallback() -> i32 { STATUS_NOT_IMPLEMENTED }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dll_directory_round_trip_uses_native_unicode_string_abi() {
+        let mut path: Vec<u16> = "C:\\System32".encode_utf16().collect();
+        let input = UNICODE_STRING {
+            Length: (path.len() * 2) as u16,
+            MaximumLength: (path.len() * 2) as u16,
+            Buffer: path.as_mut_ptr(),
+        };
+        assert_eq!(unsafe { LdrSetDllDirectory(&input) }, STATUS_SUCCESS);
+        let mut output_buffer = [0u16; 32];
+        let mut output = UNICODE_STRING {
+            Length: 0,
+            MaximumLength: (output_buffer.len() * 2) as u16,
+            Buffer: output_buffer.as_mut_ptr(),
+        };
+        assert_eq!(unsafe { LdrGetDllDirectory(&mut output) }, STATUS_SUCCESS);
+        assert_eq!(output.Length, input.Length);
+        assert_eq!(&output_buffer[..path.len()], path.as_slice());
+        assert_eq!(unsafe { LdrSetDllDirectory(ptr::null()) }, STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn dll_directory_cookie_rejects_stale_handles() {
+        let mut path: Vec<u16> = "C:\\Plugins".encode_utf16().collect();
+        let input = UNICODE_STRING {
+            Length: (path.len() * 2) as u16,
+            MaximumLength: (path.len() * 2) as u16,
+            Buffer: path.as_mut_ptr(),
+        };
+        let mut cookie: PVOID = ptr::null_mut();
+        assert_eq!(unsafe { LdrAddDllDirectory(&input, &mut cookie) }, STATUS_SUCCESS);
+        assert!(!cookie.is_null());
+        assert_eq!(unsafe { LdrRemoveDllDirectory(cookie) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { LdrRemoveDllDirectory(cookie) }, STATUS_INVALID_HANDLE);
+    }
+
+    #[test]
+    fn default_search_flags_are_validated() {
+        assert_eq!(unsafe { LdrSetDefaultDllDirectories(0) }, STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe { LdrSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) }, STATUS_SUCCESS);
+    }
+}
