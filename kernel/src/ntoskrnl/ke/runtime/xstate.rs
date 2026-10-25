@@ -308,11 +308,11 @@ pub fn ki_xstate_enabled() -> bool {
 
 const XSTATE_SAVE_MAGIC: u64 = 0x434f_474e_5853_4156; // opaque private signature, not a Windows ABI field
 /// Windows x64 WDK declares XSTATE_SAVE opaque. The observed x64 ABI record
-/// is 0x20 bytes with 8-byte alignment; no kernel pointers are exposed here.
+/// is 0x38 bytes with 8-byte alignment; no kernel pointers are exposed here.
 #[repr(C, align(8))]
 #[derive(Clone, Copy)]
-struct XStateSaveRecord { signature: u64, generation: u64, reserved: [u64; 2] }
-const _: [(); 0x20] = [(); core::mem::size_of::<XStateSaveRecord>()];
+struct XStateSaveRecord { signature: u64, generation: u64, reserved: [u64; 5] }
+const _: [(); 0x38] = [(); core::mem::size_of::<XStateSaveRecord>()];
 const _: [(); 8] = [(); core::mem::align_of::<XStateSaveRecord>()];
 
 fn valid_xstate_save_record(pointer: *const u8) -> bool {
@@ -431,7 +431,7 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
     table.depth[owner_index] = (depth + 1) as u8;
     // The public structure is opaque; do not expose internal kernel pointers.
     unsafe { (save as *mut XStateSaveRecord).write(XStateSaveRecord {
-        signature: XSTATE_SAVE_MAGIC, generation, reserved: [0; 2],
+        signature: XSTATE_SAVE_MAGIC, generation, reserved: [0; 5],
     }); }
     STATUS_SUCCESS
 }
@@ -478,7 +478,7 @@ mod xstate_layout_tests {
     }
     #[test]
     fn wdk_xstate_save_record_has_x64_opaque_size_and_alignment() {
-        assert_eq!(core::mem::size_of::<XStateSaveRecord>(), 0x20);
+        assert_eq!(core::mem::size_of::<XStateSaveRecord>(), 0x38);
         assert_eq!(core::mem::align_of::<XStateSaveRecord>(), 8);
     }
     #[test]
