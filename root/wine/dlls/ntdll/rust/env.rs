@@ -247,8 +247,7 @@ pub unsafe extern "system" fn RtlSetCurrentEnvironment(
 
 /// RtlQueryEnvironmentVariable_U. For now, callers must pass an explicit
 /// environment block; null (the current process environment) needs PEB support.
-#[no_mangle]
-pub unsafe extern "system" fn RtlQueryEnvironmentVariable_U(
+unsafe fn query_environment_variable_u_explicit(
     environment: *mut WCHAR,
     name: *const UNICODE_STRING,
     value: *mut UNICODE_STRING,
@@ -283,10 +282,32 @@ pub unsafe extern "system" fn RtlQueryEnvironmentVariable_U(
     STATUS_SUCCESS
 }
 
+
+/// Query a named variable from an explicit environment block or the current PEB environment.
+#[no_mangle]
+pub unsafe extern "system" fn RtlQueryEnvironmentVariable_U(
+    environment: *mut WCHAR,
+    name: *const UNICODE_STRING,
+    value: *mut UNICODE_STRING,
+) -> NTSTATUS {
+    if !environment.is_null() {
+        return query_environment_variable_u_explicit(environment, name, value);
+    }
+    RtlAcquirePebLock();
+    let slot = current_environment_slot();
+    let current = if slot.is_null() { null_mut() } else { *slot };
+    let status = if current.is_null() {
+        STATUS_INVALID_PARAMETER
+    } else {
+        query_environment_variable_u_explicit(current, name, value)
+    };
+    RtlReleasePebLock();
+    status
+}
+
 /// RtlQueryEnvironmentVariable. Return length is measured in WCHAR units,
 /// matching the native API. Null environment/current-process lookup is deferred.
-#[no_mangle]
-pub unsafe extern "system" fn RtlQueryEnvironmentVariable(
+unsafe fn query_environment_variable_explicit(
     environment: *mut WCHAR,
     name: *const WCHAR,
     name_len: SIZE_T,
@@ -311,6 +332,32 @@ pub unsafe extern "system" fn RtlQueryEnvironmentVariable(
     let copy_units = core::cmp::min(len + 1, value_length);
     if copy_units != 0 { core::ptr::copy(found, value, copy_units); }
     STATUS_SUCCESS
+}
+
+
+/// Query a variable from an explicit environment block or the current process environment.
+#[no_mangle]
+pub unsafe extern "system" fn RtlQueryEnvironmentVariable(
+    environment: *mut WCHAR,
+    name: *const WCHAR,
+    name_len: SIZE_T,
+    value: *mut WCHAR,
+    value_length: SIZE_T,
+    return_length: *mut SIZE_T,
+) -> NTSTATUS {
+    if !environment.is_null() {
+        return query_environment_variable_explicit(environment, name, name_len, value, value_length, return_length);
+    }
+    RtlAcquirePebLock();
+    let slot = current_environment_slot();
+    let current = if slot.is_null() { null_mut() } else { *slot };
+    let status = if current.is_null() {
+        STATUS_INVALID_PARAMETER
+    } else {
+        query_environment_variable_explicit(current, name, name_len, value, value_length, return_length)
+    };
+    RtlReleasePebLock();
+    status
 }
 
 #[inline]
@@ -382,8 +429,7 @@ pub unsafe extern "system" fn RtlDestroyProcessParameters(
 /// Set or remove a variable in an explicit environment block. Passing a null
 /// value removes the matching entry. Null environment (current PEB environment)
 /// is deliberately rejected until CognacOS exposes a stable native PEB accessor.
-#[no_mangle]
-pub unsafe extern "system" fn RtlSetEnvironmentVariable(
+unsafe fn set_environment_variable_impl(
     environment: *mut *mut WCHAR,
     name: *const UNICODE_STRING,
     value: *const UNICODE_STRING,
@@ -455,10 +501,31 @@ pub unsafe extern "system" fn RtlSetEnvironmentVariable(
     STATUS_SUCCESS
 }
 
+
+/// Set or remove a variable in an explicit environment block, or in the current process environment when environment is null.
+#[no_mangle]
+pub unsafe extern "system" fn RtlSetEnvironmentVariable(
+    environment: *mut *mut WCHAR,
+    name: *const UNICODE_STRING,
+    value: *const UNICODE_STRING,
+) -> NTSTATUS {
+    if !environment.is_null() {
+        return set_environment_variable_impl(environment, name, value);
+    }
+    RtlAcquirePebLock();
+    let slot = current_environment_slot();
+    let status = if slot.is_null() {
+        STATUS_INVALID_PARAMETER
+    } else {
+        set_environment_variable_impl(slot, name, value)
+    };
+    RtlReleasePebLock();
+    status
+}
+
 /// Expand %NAME% references. The return length includes the trailing NUL and
 /// is measured in UTF-16 code units, as in Wine's ntdll implementation.
-#[no_mangle]
-pub unsafe extern "system" fn RtlExpandEnvironmentStrings(
+unsafe fn expand_environment_strings_explicit(
     environment: *const WCHAR,
     source: *const WCHAR,
     source_len: SIZE_T,
@@ -513,6 +580,32 @@ pub unsafe extern "system" fn RtlExpandEnvironmentStrings(
     if !required_length.is_null() { *required_length = required; }
     if destination_count != 0 && dst_pos < destination_count { *destination.add(dst_pos) = 0; }
     if destination_count >= required { STATUS_SUCCESS } else { STATUS_BUFFER_TOO_SMALL }
+}
+
+
+/// Expand environment references using an explicit block or the current PEB environment.
+#[no_mangle]
+pub unsafe extern "system" fn RtlExpandEnvironmentStrings(
+    environment: *const WCHAR,
+    source: *const WCHAR,
+    source_len: SIZE_T,
+    destination: *mut WCHAR,
+    destination_count: SIZE_T,
+    required_length: *mut SIZE_T,
+) -> NTSTATUS {
+    if !environment.is_null() {
+        return expand_environment_strings_explicit(environment, source, source_len, destination, destination_count, required_length);
+    }
+    RtlAcquirePebLock();
+    let slot = current_environment_slot();
+    let current = if slot.is_null() { null_mut() } else { *slot };
+    let status = if current.is_null() {
+        STATUS_INVALID_PARAMETER
+    } else {
+        expand_environment_strings_explicit(current, source, source_len, destination, destination_count, required_length)
+    };
+    RtlReleasePebLock();
+    status
 }
 
 #[no_mangle]
