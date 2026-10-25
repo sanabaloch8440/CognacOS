@@ -465,6 +465,12 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_equal_ansi = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlEqualString"))
         .ok_or(VmError::InvalidAddress)?;
+    let rtl_get_nt_version = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlGetNtVersionNumbers"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_status_to_dos = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlNtStatusToDosError"))
+        .ok_or(VmError::InvalidAddress)?;
 
     let mut data = [0u8; 4096];
     data[0x3f0] = 66;
@@ -630,6 +636,24 @@ pub unsafe fn run_native_ntdll_smoke(
     imm64!(&[0x49, 0xb8], 1);
     call_ptr!(rtl_equal_ansi);
     emit!(&[0x3c, 1]); // BOOLEAN return is defined in AL, not all of EAX.
+    fail_if!(&[0x0f, 0x85]);
+
+    // Version tuple and NTSTATUS-to-Win32 error mapping.
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xB40);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xB44);
+    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA + 0xB48);
+    call_ptr!(rtl_get_nt_version);
+    check_dword!(NTDLL_TEST_DATA + 0xB40, 10);
+    check_dword!(NTDLL_TEST_DATA + 0xB44, 0);
+    check_dword!(NTDLL_TEST_DATA + 0xB48, 26100);
+
+    emit!(&[0xb9, 0x0d, 0, 0, 0xc0]); // STATUS_INVALID_PARAMETER
+    call_ptr!(rtl_status_to_dos);
+    emit!(&[0x3d, 87, 0, 0, 0]); // ERROR_INVALID_PARAMETER
+    fail_if!(&[0x0f, 0x85]);
+    emit!(&[0xb9, 0xef, 0xbe, 0xad, 0xde]); // Unknown status
+    call_ptr!(rtl_status_to_dos);
+    emit!(&[0x3d, 0x3d, 1, 0, 0]); // ERROR_MR_MID_NOT_FOUND
     fail_if!(&[0x0f, 0x85]);
 
     emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
