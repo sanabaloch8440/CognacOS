@@ -696,6 +696,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: asynchronous IRP ownership/completion self-test failed.\r\n"); halt();
         }
         serial_write(b"I/O manager cancellation, in-flight ownership, and asynchronous completion tests passed.\r\n");
+        if !io::rundown_self_test() {
+            serial_write(b"FATAL: WDM exactly-once completion or outstanding-IRP unload rundown self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"WDM exactly-once completion and outstanding-IRP unload rundown self-test passed.\r\n");
         // Read-only native Rust ext filesystem parser self-test.
         if !extfs::self_test() {
             serial_write(b"FATAL: ext filesystem parser self-test failed.\r\n");
