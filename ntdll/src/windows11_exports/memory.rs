@@ -428,3 +428,47 @@ pub unsafe extern "system" fn ZwUnlockVirtualMemory() -> i32 {
 pub unsafe extern "system" fn ZwWriteVirtualMemory() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_temporal_copy_copies_exact_range() {
+        let source = [0x10u8, 0x20, 0x30, 0x40, 0x50];
+        let mut destination = [0u8; 7];
+        unsafe {
+            RtlCopyMemoryNonTemporal(destination.as_mut_ptr().cast(), source.as_ptr().cast(), source.len());
+        }
+        assert_eq!(&destination[..5], &source);
+        assert_eq!(&destination[5..], &[0, 0]);
+    }
+
+    #[test]
+    fn non_temporal_fill_fills_exact_range() {
+        let mut destination = [0u8; 6];
+        unsafe { RtlFillMemoryNonTemporal(destination.as_mut_ptr().cast(), 4, 0xA5); }
+        assert_eq!(destination, [0xA5, 0xA5, 0xA5, 0, 0, 0]);
+    }
+
+    #[test]
+    fn non_temporal_helpers_accept_zero_length_null_ranges() {
+        unsafe {
+            RtlCopyMemoryNonTemporal(core::ptr::null_mut(), core::ptr::null(), 0);
+            RtlFillMemoryNonTemporal(core::ptr::null_mut(), 0, 0xFF);
+        }
+    }
+
+    #[test]
+    fn zw_memory_aliases_fail_closed_until_kernel_bridge_exists() {
+        assert_eq!(
+            unsafe { ZwAllocateVirtualMemory(core::ptr::null_mut(), core::ptr::null_mut(), 0, core::ptr::null_mut(), 0, 0) },
+            STATUS_NOT_IMPLEMENTED
+        );
+        assert_eq!(
+            unsafe { ZwQueryVirtualMemory(core::ptr::null_mut(), core::ptr::null_mut(), 0, core::ptr::null_mut(), 0, core::ptr::null_mut()) },
+            STATUS_NOT_IMPLEMENTED
+        );
+    }
+}
