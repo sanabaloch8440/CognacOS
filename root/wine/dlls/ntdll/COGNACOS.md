@@ -79,3 +79,13 @@ SYSCALL probe remains separate because it uses a different entry convention and
 build-specific service numbers. A successful smoke test is still only a narrow
 bootstrap milestone: loader initialization, a complete PEB/TEB/LDR runtime,
 full exception/unwind semantics, and most of NTDLL's exports remain unfinished.
+
+## Current QEMU test coverage
+
+The native ring-3 smoke resolves exports from the mapped DLL and calls the actual
+function pointers. It covers syscall-table configuration; process, thread, and
+system information wrappers; yield; ANSI/Unicode initialization and comparison;
+Unicode copy; hexadecimal Unicode-string parsing; integer-to-Unicode conversion;
+and the NT version/status helpers. The table is deliberately limited to the
+services CognacOS implements today. Unsupported NT information classes and
+status mappings remain explicit gaps, not successful Windows compatibility.
