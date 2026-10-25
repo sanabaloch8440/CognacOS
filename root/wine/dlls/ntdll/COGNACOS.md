@@ -1,26 +1,45 @@
 # CognacOS NTDLL
 
-NTDLL development lives directly in this directory. The module manifest
-(`Makefile.in`) no longer lists Wine's Unix companion library, server, syscall
-dispatcher, POSIX libraries, or `unix/*.c` sources. The native PE32+ source
-set is freestanding and is built with:
+NTDLL development lives directly in this directory. The native build excludes
+Wine's Unix companion library, server, syscall dispatcher, POSIX support
+libraries, and `unix/*.c` sources. Build the freestanding x64 PE32+ DLL with:
 
 ```sh
 make -C root/wine/dlls/ntdll -f Makefile.cognac clean all check
 ```
 
-GitHub Actions runs this build when any NTDLL source or the workflow changes
-and publishes the resulting `ntdll.dll` artifact.
+## Compile-time syscall link helper
 
-The dependency removal is a build-graph change, not proof that the whole
-Windows 11 runtime is implemented. The native target currently has a small
-bootstrap surface (`NtClose`, `NtYieldExecution`, and RTL memory routines).
-Syscall IDs must be supplied by a trusted, version-aware CognacOS kernel
-integration; they are not hard-coded because service numbers vary across NT
-builds. The current assembly bridge supports no more than four arguments.
+`tools/ntdll_link_helper.py` parses an x64 PE32+ `ntdll.dll` without executing
+it, extracts canonical `Nt*`/`Zw*` syscall stubs, and emits a header containing
+service IDs for that exact Windows build. To generate the header from a known
+Windows 11 installation:
 
-Remaining work is to port existing loader, process/thread, exception/unwind,
-heap, synchronization, file, registry, security, and ALPC functionality to
-CognacOS kernel interfaces, then expand and verify the export table and ABI
-against Windows 11. Wine-only implementation files remain in the source
-checkout for reference, but are no longer part of the native NTDLL build.
+```sh
+make -C root/wine/dlls/ntdll -f Makefile.cognac syscall-header \
+  WINDOWS_NTDLL=/path/to/Windows/System32/ntdll.dll
+make -C root/wine/dlls/ntdll -f Makefile.cognac clean all check \
+  WINDOWS_SYSCALL_IDS=1
+```
+
+The IDs are build-specific. Rebuild the header from the exact target OS image;
+never treat them as stable constants or copy them to another Windows build.
+This optional mode is for side-by-side ABI experiments, not a supported
+replacement for the protected system `ntdll.dll`. Windows expects a much
+larger export surface and strict loader/runtime semantics that this bootstrap
+does not yet implement.
+
+## CognacOS kernel binding
+
+For CognacOS, leave `WINDOWS_SYSCALL_IDS=0`. The trusted CognacOS loader/kernel
+integration must provide the syscall numbers using
+`CognacNtdllConfigureSyscalls` before invoking `NtClose` or
+`NtYieldExecution`. This keeps OS service numbers out of universal constants.
+The current assembly bridge supports four register arguments only; it is not
+yet suitable for syscalls requiring stack arguments.
+
+GitHub Actions builds and checks the PE32+ artifact and validates the helper's
+CLI. This does not claim full Windows 11 compatibility. The remaining work is
+to port loader, process/thread, exception/unwind, heap, synchronization, file,
+registry, security, and ALPC semantics to CognacOS kernel interfaces, then
+expand and verify NTDLL exports and ABI behavior.
