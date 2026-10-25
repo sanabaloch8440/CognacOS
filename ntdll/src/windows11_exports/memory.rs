@@ -937,13 +937,13 @@ mod tests {
     #[test]
     fn memory_stream_initializes_reads_seeks_and_reports_size() {
         let mut stream = core::mem::MaybeUninit::<RTL_MEMORY_STREAM>::uninit();
-        let source = *b"cognacos";
+        let mut source = *b"cognacos";
         unsafe {
             RtlInitMemoryStream(stream.as_mut_ptr());
             let stream = &mut *stream.as_mut_ptr();
-            stream.start = source.as_ptr() as PVOID;
-            stream.current = source.as_ptr() as PVOID;
-            stream.end = source.as_ptr().add(source.len()) as PVOID;
+            stream.start = source.as_mut_ptr().cast();
+            stream.current = source.as_mut_ptr().cast();
+            stream.end = source.as_mut_ptr().add(source.len()).cast();
             assert_eq!(RtlAddRefMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast()), 1);
             let mut out = [0u8; 3];
             let mut read = 0;
@@ -953,6 +953,11 @@ mod tests {
             let mut position = 0u64;
             assert_eq!(RtlSeekMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast(), 2, STREAM_SEEK_SET, &mut position), S_OK);
             assert_eq!(position, 2);
+            let input = *b"XYZ";
+            let mut written = 0;
+            assert_eq!(RtlWriteMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast(), input.as_ptr() as PVOID, input.len() as ULONG, &mut written), S_OK);
+            assert_eq!(written, 3);
+            assert_eq!(&source[2..5], b"XYZ");
             let mut stat = core::mem::MaybeUninit::<StatStg>::zeroed();
             assert_eq!(RtlStatMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast(), stat.as_mut_ptr().cast(), 1), S_OK);
             assert_eq!((*stat.as_ptr()).size, source.len() as u64);
