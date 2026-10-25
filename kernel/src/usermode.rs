@@ -516,6 +516,18 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_get_current_peb = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlGetCurrentPeb"))
         .ok_or(VmError::InvalidAddress)?;
+    let rtl_get_last_error = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlGetLastWin32Error"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_set_last_error = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlSetLastWin32Error"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_get_last_status = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlGetLastNtStatus"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_set_error_from_status = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlSetLastWin32ErrorAndNtStatusFromNtStatus"))
+        .ok_or(VmError::InvalidAddress)?;
     let rtl_allocate_heap = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlAllocateHeap"))
         .ok_or(VmError::InvalidAddress)?;
@@ -705,6 +717,21 @@ pub unsafe fn run_native_ntdll_smoke(
     imm64!(&[0x49, 0xb8], 1);
     call_ptr!(rtl_equal_ansi);
     emit!(&[0x3c, 1]); // BOOLEAN return is defined in AL, not all of EAX.
+    fail_if!(&[0x0f, 0x85]);
+
+    // TEB last-error/status fields must be accessed through the user GS base.
+    emit!(&[0xb9, 123, 0, 0, 0]);
+    call_ptr!(rtl_set_last_error);
+    call_ptr!(rtl_get_last_error);
+    emit!(&[0x3d, 123, 0, 0, 0]);
+    fail_if!(&[0x0f, 0x85]);
+    emit!(&[0xb9, 0x0d, 0, 0, 0xc0]); // STATUS_INVALID_PARAMETER
+    call_ptr!(rtl_set_error_from_status);
+    call_ptr!(rtl_get_last_error);
+    emit!(&[0x3d, 87, 0, 0, 0]); // ERROR_INVALID_PARAMETER
+    fail_if!(&[0x0f, 0x85]);
+    call_ptr!(rtl_get_last_status);
+    emit!(&[0x3d, 0x0d, 0, 0, 0xc0]); // TEB.LastStatusValue
     fail_if!(&[0x0f, 0x85]);
 
     // Version tuple and NTSTATUS-to-Win32 error mapping.
