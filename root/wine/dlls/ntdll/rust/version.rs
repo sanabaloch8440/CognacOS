@@ -295,3 +295,108 @@ mod registry_version_parser_tests {
         assert_eq!(parse_win9x_version_number("4.10.x"), None);
     }
 }
+
+
+// Source-defined Wine compatibility profiles from version.c. These records
+// describe an explicitly selected compatibility profile, not the host OS.
+pub const VER_PLATFORM_WIN32S: ULONG = 0;
+pub const VER_PLATFORM_WIN32_WINDOWS: ULONG = 1;
+pub const VER_PLATFORM_WIN32_NT: ULONG = 2;
+pub const VER_SUITE_SINGLEUSERTS: USHORT = 0x0100;
+
+fn profile(major: ULONG, minor: ULONG, build: ULONG, platform: ULONG,
+    csd: &[u16], sp_major: USHORT, sp_minor: USHORT, suite: USHORT,
+    product: UCHAR, reserved: UCHAR) -> RTL_OSVERSIONINFOEXW {
+    let mut value = RTL_OSVERSIONINFOEXW {
+        dwMajorVersion: major, dwMinorVersion: minor, dwBuildNumber: build,
+        dwPlatformId: platform, wServicePackMajor: sp_major,
+        wServicePackMinor: sp_minor, wSuiteMask: suite,
+        wProductType: product, wReserved: reserved, ..Default::default()
+    };
+    let count = core::cmp::min(csd.len(), value.szCSDVersion.len() - 1);
+    value.szCSDVersion[..count].copy_from_slice(&csd[..count]);
+    value
+}
+
+const fn wide_ascii<const N: usize>(s: &[u8; N]) -> [u16; N] {
+    let mut out = [0u16; N];
+    let mut i = 0;
+    while i < N { out[i] = s[i] as u16; i += 1; }
+    out
+}
+const CSD_SP5: [u16; 14] = wide_ascii(b"Service Pack 5");
+const CSD_SP6A: [u16; 15] = wide_ascii(b"Service Pack 6a");
+const CSD_SP4: [u16; 14] = wide_ascii(b"Service Pack 4");
+const CSD_SP3: [u16; 14] = wide_ascii(b"Service Pack 3");
+const CSD_SP2: [u16; 14] = wide_ascii(b"Service Pack 2");
+const CSD_SP1: [u16; 14] = wide_ascii(b"Service Pack 1");
+const CSD_WIN98: [u16; 3] = wide_ascii(b" A ");
+const CSD_WINME: [u16; 1] = wide_ascii(b" ");
+
+/// Get the source-defined record for a Wine compatibility alias.
+pub fn version_profile(alias: WindowsVersionAlias) -> RTL_OSVERSIONINFOEXW {
+    use WindowsVersionAlias::*;
+    match alias {
+        Win20 => profile(2, 0, 0, VER_PLATFORM_WIN32S, &[], 0, 0, 0, 0, 0),
+        Win30 => profile(3, 0, 0, VER_PLATFORM_WIN32S, &[], 0, 0, 0, 0, 0),
+        Win31 => profile(3, 10, 0, VER_PLATFORM_WIN32S, &[], 0, 0, 0, 0, 0),
+        Win95 => profile(4, 0, 0x040003b6, VER_PLATFORM_WIN32_WINDOWS, &[], 0, 0, 0, 0, 0),
+        Win98 => profile(4, 10, 0x040a08ae, VER_PLATFORM_WIN32_WINDOWS, &CSD_WIN98, 0, 0, 0, 0, 0),
+        WinMe => profile(4, 90, 0x045a0bb8, VER_PLATFORM_WIN32_WINDOWS, &CSD_WINME, 0, 0, 0, 0, 0),
+        Nt351 => profile(3, 51, 1057, VER_PLATFORM_WIN32_NT, &CSD_SP5, 5, 0, 0, VER_NT_WORKSTATION, 0),
+        Nt40 => profile(4, 0, 1381, VER_PLATFORM_WIN32_NT, &CSD_SP6A, 6, 0, 0, VER_NT_WORKSTATION, 0),
+        Win2000 => profile(5, 0, 2195, VER_PLATFORM_WIN32_NT, &CSD_SP4, 4, 0, 0, VER_NT_WORKSTATION, 30),
+        WinXp => profile(5, 1, 2600, VER_PLATFORM_WIN32_NT, &CSD_SP3, 3, 0, VER_SUITE_SINGLEUSERTS, VER_NT_WORKSTATION, 30),
+        WinXp64 => profile(5, 2, 3790, VER_PLATFORM_WIN32_NT, &CSD_SP2, 2, 0, VER_SUITE_SINGLEUSERTS, VER_NT_WORKSTATION, 0),
+        Win2003 => profile(5, 2, 3790, VER_PLATFORM_WIN32_NT, &CSD_SP2, 2, 0, VER_SUITE_SINGLEUSERTS, VER_NT_SERVER, 0),
+        Vista => profile(6, 0, 6002, VER_PLATFORM_WIN32_NT, &CSD_SP2, 2, 0, VER_SUITE_SINGLEUSERTS, VER_NT_WORKSTATION, 0),
+        Win2008 => profile(6, 0, 6002, VER_PLATFORM_WIN32_NT, &CSD_SP2, 2, 0, VER_SUITE_SINGLEUSERTS, VER_NT_SERVER, 0),
+        Win2008R2 => profile(6, 1, 7601, VER_PLATFORM_WIN32_NT, &CSD_SP1, 1, 0, VER_SUITE_SINGLEUSERTS, VER_NT_SERVER, 0),
+        Win7 => profile(6, 1, 7601, VER_PLATFORM_WIN32_NT, &CSD_SP1, 1, 0, VER_SUITE_SINGLEUSERTS, VER_NT_WORKSTATION, 0),
+        Win8 => profile(6, 2, 9200, VER_PLATFORM_WIN32_NT, &[], 0, 0, VER_SUITE_SINGLEUSERTS, VER_NT_WORKSTATION, 0),
+        Win81 => profile(6, 3, 9600, VER_PLATFORM_WIN32_NT, &[], 0, 0, VER_SUITE_SINGLEUSERTS, VER_NT_WORKSTATION, 0),
+        Win10 => profile(10, 0, 19045, VER_PLATFORM_WIN32_NT, &[], 0, 0, VER_SUITE_SINGLEUSERTS, VER_NT_WORKSTATION, 0),
+        Win11 => profile(10, 0, 22000, VER_PLATFORM_WIN32_NT, &[], 0, 0, VER_SUITE_SINGLEUSERTS, VER_NT_WORKSTATION, 0),
+    }
+}
+
+/// Resolve version_init precedence: application profile, default profile,
+/// then a caller-supplied authoritative registry/OS record.
+pub fn select_version_profile(app_alias: Option<&str>, default_alias: Option<&str>,
+    registry_version: &RTL_OSVERSIONINFOEXW) -> RTL_OSVERSIONINFOEXW {
+    app_alias.and_then(parse_version_alias)
+        .or_else(|| default_alias.and_then(parse_version_alias))
+        .map(version_profile)
+        .unwrap_or(*registry_version)
+}
+
+#[cfg(test)]
+mod version_profile_tests {
+    use super::*;
+    #[test]
+    fn source_profile_values() {
+        let xp = version_profile(WindowsVersionAlias::WinXp);
+        assert_eq!((xp.dwMajorVersion, xp.dwMinorVersion, xp.dwBuildNumber), (5, 1, 2600));
+        assert_eq!(xp.wServicePackMajor, 3);
+        assert_eq!(xp.wSuiteMask, VER_SUITE_SINGLEUSERTS);
+        assert_eq!(xp.wProductType, VER_NT_WORKSTATION);
+        let server = version_profile(WindowsVersionAlias::Win2008R2);
+        assert_eq!((server.dwMajorVersion, server.dwMinorVersion, server.dwBuildNumber), (6, 1, 7601));
+        assert_eq!(server.wProductType, VER_NT_SERVER);
+        assert_eq!(version_profile(WindowsVersionAlias::Win11).dwBuildNumber, 22000);
+    }
+    #[test]
+    fn app_profile_precedes_default_and_registry_fallback() {
+        let registry = RTL_OSVERSIONINFOEXW { dwMajorVersion: 10, dwMinorVersion: 0,
+            dwBuildNumber: 26100, dwPlatformId: VER_PLATFORM_WIN32_NT, ..Default::default() };
+        assert_eq!(select_version_profile(Some("win7"), Some("win11"), &registry).dwBuildNumber, 7601);
+        assert_eq!(select_version_profile(Some("unknown"), Some("win11"), &registry).dwBuildNumber, 22000);
+        assert_eq!(select_version_profile(Some("unknown"), Some("invalid"), &registry).dwBuildNumber, 26100);
+    }
+    #[test]
+    fn csd_strings_are_utf16_and_terminated() {
+        let xp = version_profile(WindowsVersionAlias::WinXp);
+        assert_eq!(&xp.szCSDVersion[..14], &CSD_SP3);
+        assert_eq!(xp.szCSDVersion[14], 0);
+    }
+}
