@@ -103,7 +103,14 @@ pub fn load_transaction<B: Backend>(
             let dep = frame.plan.get(frame.next).ok_or(STATUS_INVALID_PARAMETER)?;
             let child = ModuleName::new(dep.as_bytes())?;
             frames[depth].next += 1;
-            if backend.lookup(child.as_bytes())?.is_some() { continue; }
+            match backend.lookup(child.as_bytes()) {
+                Ok(Some(_)) => continue,
+                Ok(None) => {}
+                Err(e) => {
+                    rollback(backend, &journal, journal_len);
+                    return Err(e);
+                }
+            }
 
             // An import that names an ancestor is a cycle, not a request to
             // recursively map another copy of the same DLL.
