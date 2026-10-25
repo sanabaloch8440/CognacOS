@@ -140,6 +140,21 @@ LastStatusValue. These tests passed in the boot-smoke phase of [Actions run 4018
 
 `LdrGetProcedureAddress` validates the in-memory PE32+ export directory, resolves exact case-sensitive ANSI names or ordinals, and rejects forwarded exports rather than treating forwarder strings as executable addresses. `LdrGetDllHandle` traverses the PEB load-order list and compares the loaded module's BaseDllName using ASCII case folding. Both are intentionally limited to already-mapped modules; `LdrLoadDll`, dependency resolution, forwarder resolution, activation contexts, and loader-lock/rundown semantics are not yet implemented. Both loader APIs passed in the boot-smoke phase of [Actions run 40185018220](https://github.com/umarfarooq7869/CognacOS/actions/runs/40185018220). The generated test stub now fits the single executable page.
 
+## Large-integer string conversion Rust port
+
+The x64-active conversion routines from Wine's `large_int.c` now have a
+source-first Rust counterpart at `rust/rtl_large_int.rs`:
+`RtlLargeIntegerToChar` and `RtlInt64ToUnicodeString`. The port preserves
+base 0 as decimal, the supported bases (2, 8, 10, 16), ANSI exact-fit behavior
+(no NUL when the digit count exactly equals the supplied length), UTF-16 byte
+length reporting, and overflow status behavior. Unit tests cover base
+conversion, exact-fit ANSI output, invalid bases, and UTF-16 overflow/termination.
+
+The other arithmetic routines in `large_int.c` are under a `!WIN64` guard
+and are not part of this x64 port. As with the other Rust RTL modules, this file
+is not yet linked into the freestanding PE32+ NTDLL build, so these tests have
+not been claimed as executed by the native NTDLL workflow.
+
 ## PEB/TEB access and environment synchronization
 
 The native x64 bootstrap now exposes `RtlGetCurrentTeb` and uses the Windows
