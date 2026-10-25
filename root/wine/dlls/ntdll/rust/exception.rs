@@ -478,30 +478,11 @@ pub unsafe extern "system" fn RtlLocateLegacyContext(ex: *mut CONTEXT_EX, length
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlLocateExtendedFeature(ex: *mut CONTEXT_EX, feature: ULONG, length: *mut ULONG) -> PVOID {
-    if ex.is_null() || !(2..64).contains(&feature) || !ensure_ntdll_xstate_config() { return core::ptr::null_mut(); }
-    let chunk = unsafe { core::ptr::addr_of!((*ex).XState).read_unaligned() };
-    if NTDLL_XSTATE_ENABLED.load(Ordering::Acquire) & (1u64 << feature) == 0 { return core::ptr::null_mut(); }
-    let size = NTDLL_XSTATE_SIZES[feature as usize].load(Ordering::Acquire) as usize;
-    if size == 0 { return core::ptr::null_mut(); }
-    let xstate = unsafe { ex.cast::<u8>().add(chunk.Offset as usize) };
-    let offset = if NTDLL_XSTATE_COMPACTION_ENABLED.load(Ordering::Acquire) {
-        let compaction_mask = unsafe { xstate.add(8).cast::<ULONG64>().read_unaligned() };
-        if compaction_mask & (1u64 << 63) == 0 || compaction_mask & (1u64 << feature) == 0 {
-            return core::ptr::null_mut();
-        }
-        let Some(offset) = compacted_feature_offset(compaction_mask & !(1u64 << 63), feature) else {
-            return core::ptr::null_mut();
-        };
-        offset
-    } else {
-        let standard_offset = NTDLL_XSTATE_OFFSETS[feature as usize].load(Ordering::Acquire) as usize;
-        if standard_offset < 512 { return core::ptr::null_mut(); }
-        standard_offset - 512
-    };
-    if offset.checked_add(size).map_or(true, |n| n > chunk.Length as usize) { return core::ptr::null_mut(); }
-    if !length.is_null() { unsafe { length.write_unaligned(size as ULONG); } }
-    unsafe { xstate.add(offset).cast() }
+    if !ensure_ntdll_xstate_config() { return core::ptr::null_mut(); }
+    let config = (KUSER_SHARED_DATA_X64 + KUSER_XSTATE_OFFSET) as PVOID;
+    RtlLocateExtendedFeature2(ex, feature, config, length)
 }
+
 #[no_mangle]
 pub unsafe extern "system" fn RtlLocateExtendedFeature2(ex: *mut CONTEXT_EX, feature: ULONG, config: PVOID, length: *mut ULONG) -> PVOID {
     if !length.is_null() { unsafe { length.write_unaligned(0); } }
@@ -550,7 +531,7 @@ pub unsafe extern "system" fn RtlLocateExtendedFeature2(ex: *mut CONTEXT_EX, fea
 pub unsafe extern "system" fn RtlSetExtendedFeaturesMask(ex: *mut CONTEXT_EX, mask: ULONG64) {
     if ex.is_null() { return; }
     let chunk = unsafe { core::ptr::addr_of!((*ex).XState).read_unaligned() };
-    if chunk.Length < 8 { return; }
+    if chunk.Offset < 0 || chunk.Length < 8 { return; }
     let mut enabled = RtlGetEnabledExtendedFeatures(mask) & !3u64;
     let xstate = unsafe { ex.cast::<u8>().add(chunk.Offset as usize) };
     if NTDLL_XSTATE_COMPACTION_ENABLED.load(Ordering::Acquire) {
@@ -563,7 +544,7 @@ pub unsafe extern "system" fn RtlSetExtendedFeaturesMask(ex: *mut CONTEXT_EX, ma
 pub unsafe extern "system" fn RtlGetExtendedFeaturesMask(ex: *mut CONTEXT_EX) -> ULONG64 {
     if ex.is_null() { return 0; }
     let chunk = unsafe { core::ptr::addr_of!((*ex).XState).read_unaligned() };
-    if chunk.Length < 8 { return 0; }
+    if chunk.Offset < 0 || chunk.Length < 8 { return 0; }
     unsafe { ex.cast::<u8>().add(chunk.Offset as usize).cast::<ULONG64>().read_unaligned() & !3u64 }
 }
 fn copy_amd64_context_ranges(dst: *mut u8, src: *const u8, flags: ULONG) {
