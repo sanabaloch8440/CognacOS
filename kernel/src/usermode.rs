@@ -444,10 +444,44 @@ pub unsafe fn run_native_ntdll_smoke(
     let yield_execution = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"NtYieldExecution"))
         .ok_or(VmError::InvalidAddress)?;
+    let rtl_init_unicode = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlInitUnicodeString"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_compare_unicode = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlCompareUnicodeString"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_copy_unicode = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlCopyUnicodeString"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_unicode_to_integer = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlUnicodeStringToInteger"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_integer_to_unicode = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlIntegerToUnicodeString"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_init_ansi = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlInitAnsiString"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_equal_ansi = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlEqualString"))
+        .ok_or(VmError::InvalidAddress)?;
 
     let mut data = [0u8; 4096];
     data[0x3f0] = 66;
     data[0x3f1] = 65;
+    for (index, byte) in b"Cognac".iter().copied().enumerate() {
+        data[0xA00 + index * 2] = byte;
+        data[0xA20 + index * 2] = byte.to_ascii_lowercase();
+    }
+    for (index, byte) in b"0x2A".iter().copied().enumerate() {
+        data[0xA90 + index * 2] = byte;
+    }
+    data[0xA62..0xA64].copy_from_slice(&16u16.to_le_bytes());
+    data[0xA68..0xA70].copy_from_slice(&(NTDLL_TEST_DATA + 0xA80).to_le_bytes());
+    data[0xAC2..0xAC4].copy_from_slice(&16u16.to_le_bytes());
+    data[0xAC8..0xAD0].copy_from_slice(&(NTDLL_TEST_DATA + 0xAE0).to_le_bytes());
+    data[0xB00..0xB06].copy_from_slice(b"Cognac");
+    data[0xB10..0xB16].copy_from_slice(b"cognac");
     let numbers = [0x100u64, 0x101, 0x102, 0x103, 0x104];
     for (index, number) in numbers.iter().enumerate() {
         data[0x300 + index * 8..0x308 + index * 8].copy_from_slice(&number.to_le_bytes());
@@ -456,9 +490,9 @@ pub unsafe fn run_native_ntdll_smoke(
     unsafe { space.map_user_page(NTDLL_TEST_DATA, data_page, true, false)?; }
     unsafe { space.copy_to_user(NTDLL_TEST_DATA, &data)?; }
 
-    let mut code = [0u8; 1024];
+    let mut code = [0u8; 2048];
     let mut length = 0usize;
-    let mut failures = [0usize; 24];
+    let mut failures = [0usize; 40];
     let mut failure_count = 0usize;
     macro_rules! emit {
         ($bytes:expr) => {{
@@ -547,12 +581,63 @@ pub unsafe fn run_native_ntdll_smoke(
     call_ptr!(yield_execution);
     emit!(&[0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
+    // Exercise native RTL Unicode/ANSI string routines from ring 3.
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xA40);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xA00);
+    call_ptr!(rtl_init_unicode);
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xA50);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xA20);
+    call_ptr!(rtl_init_unicode);
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xA40);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xA50);
+    imm64!(&[0x49, 0xb8], 1);
+    call_ptr!(rtl_compare_unicode);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]); // case-insensitive comparison must report equality
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xA60);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xA40);
+    call_ptr!(rtl_copy_unicode);
+    check_dword!(NTDLL_TEST_DATA + 0xA60, 12);
+    check_dword!(NTDLL_TEST_DATA + 0xA80, 0x006f0043); // UTF-16 "Co"
+
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xAA0);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xA90);
+    call_ptr!(rtl_init_unicode);
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xAA0);
+    emit!(&[0xba, 16, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA + 0xAB0);
+    call_ptr!(rtl_unicode_to_integer);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    check_dword!(NTDLL_TEST_DATA + 0xAB0, 42);
+
+    emit!(&[0xb9, 42, 0, 0, 0, 0xba, 10, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA + 0xAC0);
+    call_ptr!(rtl_integer_to_unicode);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    check_dword!(NTDLL_TEST_DATA + 0xAC0, 4);
+    check_dword!(NTDLL_TEST_DATA + 0xAE0, 0x00320034); // UTF-16 "42"
+
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xB20);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xB00);
+    call_ptr!(rtl_init_ansi);
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xB30);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xB10);
+    call_ptr!(rtl_init_ansi);
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xB20);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xB30);
+    imm64!(&[0x49, 0xb8], 1);
+    call_ptr!(rtl_equal_ansi);
+    emit!(&[0x3d, 1, 0, 0, 0]);
+    fail_if!(&[0x0f, 0x85]);
+
     emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
     imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f0);
     emit!(&[0xba, 1, 0, 0, 0, 0xcd, 0x81]);
 
     emit!(&[0x31, 0xff, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(0)
-    let mut failure_labels = [0usize; 24];
+    let mut failure_labels = [0usize; 40];
     for index in 0..failure_count {
         failure_labels[index] = length;
         emit!(&[0xbf]);
