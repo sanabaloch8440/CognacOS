@@ -45,3 +45,28 @@ CLI. This does not claim full Windows 11 compatibility. The remaining work is
 to port loader, process/thread, exception/unwind, heap, synchronization, file,
 registry, security, and ALPC semantics to CognacOS kernel interfaces, then
 expand and verify NTDLL exports and ABI behavior.
+
+## RTL routines shared with the kernel
+
+The supplied Windows x64 NTDLL image is used as an ABI/export reference, not
+as code to copy into CognacOS. Its export directory contains 2,429 named
+exports; inspection found no literal PE forwarded-export entries. Therefore,
+a function that also exists in ntoskrnl should not automatically be treated as
+a PE forwarder: user-mode NTDLL and kernel-mode RTL implementations have
+different execution contexts and must be bound across the OS boundary only
+through an explicit supported ABI.
+
+As an interim implementation, `root/wine/dlls/ntoskrnl.exe/rtl_memory.c`
+now provides kernel-side `RtlCopyMemory`, `RtlMoveMemory`,
+`RtlFillMemory`, `RtlZeroMemory`, `RtlCompareMemory`,
+`RtlFillMemoryUlong`, and `RtlCompareMemoryUlong`. The Wine ntoskrnl
+compatibility module builds this file from its Makefile. These implementations
+avoid heap/server calls and use bytewise operations, including overlap-safe
+move and unaligned buffers.
+
+This is a staging point, not the final native kernel implementation: the
+Wine `ntoskrnl.exe` module still has Wine/Win32 runtime dependencies. The
+same ABI and tests must be carried into CognacOS's native `ntoskrnl` before
+these routines can be considered production kernel exports. NTDLL retains its
+own user-mode copies where appropriate; user-mode exports cannot directly
+jump into privileged kernel code.
