@@ -67,6 +67,22 @@ SIZE_T WINAPI RtlCompareMemory(const void *left, const void *right, SIZE_T lengt
     return matched;
 }
 
+ULONG WINAPI RtlCompareMemoryUlong(const void *source, SIZE_T length, ULONG pattern)
+{
+    const unsigned char *s = source;
+    const unsigned char *p = (const unsigned char *)&pattern;
+    SIZE_T offset;
+
+    /* Return the matching byte count, stopping at the first mismatching ULONG. */
+    for (offset = 0; offset + sizeof(ULONG) <= length; offset += sizeof(ULONG))
+    {
+        SIZE_T j;
+        for (j = 0; j < sizeof(ULONG); ++j)
+            if (s[offset + j] != p[j]) return (ULONG)offset;
+    }
+    return (ULONG)length;
+}
+
 void WINAPI RtlFillMemoryUlong(void *dest, SIZE_T length, ULONG pattern)
 {
     unsigned char *d = dest;
