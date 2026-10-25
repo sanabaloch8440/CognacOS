@@ -111,6 +111,16 @@ mod tests {
     }
 
     #[test]
+    fn optional_delay_import_query_validates_outputs_before_peb_access() {
+        let mut address = 1usize as PVOID;
+        assert_eq!(
+            unsafe { LdrQueryOptionalDelayLoadedAPI(ptr::null_mut(), ptr::null(), ptr::null(), &mut address) },
+            STATUS_INVALID_PARAMETER
+        );
+        assert!(address.is_null());
+    }
+
+    #[test]
     fn amd64_relocation_block_applies_dir64_and_rejects_unknown_types() {
         let mut image = [0u8; 64];
         image[0x20..0x28].copy_from_slice(&0x1234u64.to_le_bytes());
