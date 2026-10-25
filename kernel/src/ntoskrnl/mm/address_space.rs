@@ -112,6 +112,8 @@ impl AddressSpace {
             leaf.write(physical_address | flags);
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
+        // Another CPU may have cached a non-present translation for this VA.
+        crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
         Ok(())
     }
 
@@ -127,29 +129,117 @@ impl AddressSpace {
         *slot=DemandArea{root:self.root,start,end,writable,executable,live:true}; Ok(())
     }
 
-    /// Resolve a user-mode, not-present fault only when it falls in a registered
-    /// demand-zero region. Protection, reserved-bit and supervisor faults fail closed.
+    /// Resolve a demand-zero or pagefile-backed user fault. A busy working-set
+    /// entry serializes simultaneous faults and trim/teardown for the same page.
     pub fn handle_page_fault(&mut self,address:u64,error_code:u64)->bool {
         const PF_PRESENT:u64=1; const PF_WRITE:u64=2; const PF_USER:u64=4; const PF_RESERVED:u64=8; const PF_INSTRUCTION:u64=16;
         if error_code&(PF_PRESENT|PF_USER)!=PF_USER || error_code&PF_RESERVED!=0 || !is_user_range(address,1) {return false}
         let page_va=address&!(PAGE_SIZE-1);
-        let area={let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&*DEMAND_AREAS.0.get()}.iter().copied().find(|a|a.live&&a.root==self.root&&page_va>=a.start&&page_va<a.end)};
-        let Some(area)=area else{return false};
-        if error_code&PF_WRITE!=0&&!area.writable || error_code&PF_INSTRUCTION!=0&&!area.executable {return false}
-        if self.translate_user(address,error_code&PF_WRITE!=0).is_ok(){return false}
-        let physical=match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>return false};
-        unsafe{core::ptr::write_bytes(physical as *mut u8,0,PAGE_SIZE as usize);}
-        if unsafe{self.map_user_page(page_va,physical,area.writable,area.executable)}.is_err(){let _=unsafe{crate::memory::free_page(physical)};return false}
-        let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        let pages=unsafe{&mut *WORKING_SET.0.get()};
-        if let Some(entry)=pages.iter_mut().find(|p|p.live&&p.root==self.root&&p.va==page_va) {
-            entry.age=WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed); return true
+        let (area, restore_slot, ws_index)={
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
+            let area=unsafe{&*DEMAND_AREAS.0.get()}.iter().copied().find(|a|a.live&&a.root==self.root&&page_va>=a.start&&page_va<a.end);
+            let Some(area)=area else{return false};
+            let pages=unsafe{&mut *WORKING_SET.0.get()};
+            let index=if let Some(i)=pages.iter().position(|p|p.live&&p.root==self.root&&p.va==page_va){
+                if pages[i].busy || !pages[i].paged_out{return false}
+                pages[i].busy=true;i
+            }else{
+                let Some(i)=pages.iter().position(|p|!p.live) else{return false};
+                pages[i]=WorkingSetPage{root:self.root,va:page_va,age:WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed),live:true,paged_out:false,busy:true,pagefile_slot:0};
+                i
+            };
+            let slot=if pages[index].paged_out{Some(pages[index].pagefile_slot)}else{None};
+            (area,slot,index)
+        };
+        if error_code&PF_WRITE!=0&&!area.writable || error_code&PF_INSTRUCTION!=0&&!area.executable {
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[ws_index].busy=false;return false
         }
-        if let Some(entry)=pages.iter_mut().find(|p|!p.live) {
-            *entry=WorkingSetPage{root:self.root,va:page_va,age:WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed),live:true}; return true
+        if self.translate_user(address,error_code&PF_WRITE!=0).is_ok(){
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[ws_index].busy=false;return false
         }
-        // Do not report a successful fault if working-set accounting is exhausted.
-        false
+        let physical=match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>{
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[ws_index].busy=false;return false
+        }};
+        let loaded=if let Some(slot)=restore_slot {
+            unsafe{crate::ntoskrnl::mm::pagefile::read_page(slot,physical as *mut u8)}.is_ok()
+        }else{
+            unsafe{core::ptr::write_bytes(physical as *mut u8,0,PAGE_SIZE as usize);}true
+        };
+        if !loaded || unsafe{self.map_user_page(page_va,physical,area.writable,area.executable)}.is_err(){
+            let _=unsafe{crate::memory::free_page(physical)};
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[ws_index].busy=false;return false
+        }
+        {
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
+            let pages=unsafe{&mut *WORKING_SET.0.get()};
+            let entry=&mut pages[ws_index];
+            entry.paged_out=false;entry.busy=false;entry.pagefile_slot=0;
+            entry.age=WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(slot)=restore_slot { let _=crate::ntoskrnl::mm::pagefile::free_slot(slot); }
+        true
+    }
+
+    /// Trim least-recently-used resident demand-zero pages to the dedicated
+    /// pagefile. A page is reclaimed only after synchronous all-CPU TLB flush.
+    pub fn trim_working_set(&mut self,target:usize)->usize {
+        if target==0 || !crate::ntoskrnl::mm::pagefile::is_active() {return 0}
+        let mut trimmed=0usize;
+        while trimmed<target {
+            let candidate={
+                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                let pages=unsafe{&mut *WORKING_SET.0.get()};
+                let Some((index,_))=pages.iter().enumerate()
+                    .filter(|(_,p)|p.live&&p.root==self.root&&!p.paged_out&&!p.busy)
+                    .min_by_key(|(_,p)|p.age) else {break};
+                pages[index].busy=true;
+                (index,pages[index].va)
+            };
+            let (index,va)=candidate;
+            let physical={
+                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                match user_leaf(self.root,va) {
+                    Some((leaf,entry)) if entry&(PRESENT|USER|EXTERNAL_USER)==(PRESENT|USER)
+                        && !crate::ntoskrnl::mm::runtime::is_page_locked(entry&ADDR) =>
+                        (leaf as usize,entry&ADDR),
+                    _=>{
+                        unsafe{&mut *WORKING_SET.0.get()}[index].busy=false;
+                        continue
+                    }
+                }
+            };
+            let slot=match crate::ntoskrnl::mm::pagefile::allocate_slot(){
+                Ok(s)=>s,Err(_)=>{let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[index].busy=false;break}
+            };
+            if unsafe{crate::ntoskrnl::mm::pagefile::write_page(slot,physical.1 as *const u8)}.is_err(){
+                let _=crate::ntoskrnl::mm::pagefile::free_slot(slot);
+                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[index].busy=false;break
+            }
+            let removed={
+                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                let pages=unsafe{&mut *WORKING_SET.0.get()};
+                if !pages[index].live||!pages[index].busy||pages[index].root!=self.root||pages[index].va!=va {
+                    false
+                } else if let Some((leaf,entry))=user_leaf(self.root,va) {
+                    if leaf as usize!=physical.0||entry&(PRESENT|USER|EXTERNAL_USER)!=(PRESENT|USER)||entry&ADDR!=physical.1 {
+                        false
+                    } else {
+                        unsafe{leaf.write(0);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
+                        crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+                        if unsafe{crate::memory::free_page(physical.1)}.is_err(){false}else{
+                            pages[index].paged_out=true;pages[index].pagefile_slot=slot;pages[index].busy=false;
+                            pages[index].age=WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed);
+                            true
+                        }
+                    }
+                } else {false}
+            };
+            if removed {trimmed+=1;} else {
+                let _=crate::ntoskrnl::mm::pagefile::free_slot(slot);
+                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[index].busy=false;
+            }
+        }
+        trimmed
     }
 
     /// Number of tracked resident demand-zero pages in this address space.
@@ -312,7 +402,10 @@ impl AddressSpace {
     /// are never traversed or reclaimed.
     pub unsafe fn destroy(&mut self) -> Result<(), VmError> {
         let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        if crate::process::address_space_has_references(self.root) { return Err(VmError::AddressSpaceBusy); }
+        if crate::process::address_space_has_references(self.root)
+            || unsafe{&*WORKING_SET.0.get()}.iter().any(|p|p.live&&p.root==self.root&&p.busy) {
+            return Err(VmError::AddressSpaceBusy);
+        }
         let root = self.root as *mut u64;
         // Preflight all user leaves before freeing any frame. An MDL-pinned
         // page must keep its address space intact until MmUnlockPages runs.
@@ -402,12 +495,28 @@ struct DemandAreas(core::cell::UnsafeCell<[DemandArea; MAX_DEMAND_AREAS]>);
 unsafe impl Sync for DemandAreas {}
 static DEMAND_AREAS: DemandAreas = DemandAreas(core::cell::UnsafeCell::new([DemandArea::EMPTY; MAX_DEMAND_AREAS]));
 #[derive(Clone, Copy)]
-struct WorkingSetPage { root:u64, va:u64, age:u64, live:bool }
-impl WorkingSetPage { const EMPTY: Self = Self { root:0,va:0,age:0,live:false }; }
+struct WorkingSetPage { root:u64, va:u64, age:u64, live:bool, paged_out:bool, busy:bool, pagefile_slot:u32 }
+impl WorkingSetPage { const EMPTY: Self = Self { root:0,va:0,age:0,live:false,paged_out:false,busy:false,pagefile_slot:0 }; }
 struct WorkingSet(core::cell::UnsafeCell<[WorkingSetPage; MAX_WORKING_SET_PAGES]>);
 unsafe impl Sync for WorkingSet {}
 static WORKING_SET: WorkingSet = WorkingSet(core::cell::UnsafeCell::new([WorkingSetPage::EMPTY; MAX_WORKING_SET_PAGES]));
 static WORKING_SET_CLOCK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+/// Locate a present user leaf without changing it. The address-space lifetime
+/// lock must be held by the caller.
+fn user_leaf(root_physical:u64,va:u64)->Option<(*mut u64,u64)> {
+    if root_physical==0||!is_user_range(va,1){return None}
+    let indexes=[((va>>39)&511)as usize,((va>>30)&511)as usize,((va>>21)&511)as usize,((va>>12)&511)as usize];
+    let mut table=root_physical as *mut u64;
+    for index in indexes[..3].iter().copied(){
+        let entry=unsafe{table.add(index).read()};
+        if entry&(PRESENT|USER)!=(PRESENT|USER)||entry&LARGE!=0{return None}
+        table=(entry&ADDR)as *mut u64;
+    }
+    let leaf=unsafe{table.add(indexes[3])};
+    let entry=unsafe{leaf.read()};
+    (entry&(PRESENT|USER)==(PRESENT|USER)).then_some((leaf,entry))
+}
 
 const EXTERNAL_USER: u64 = 1 << 9;
 const MDL_USER_BASE: u64 = 0x0000_7000_0000_0000;
