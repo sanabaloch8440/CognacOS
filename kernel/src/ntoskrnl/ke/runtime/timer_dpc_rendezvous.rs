@@ -885,9 +885,8 @@ pub(crate) fn ki_initialize_processor(logical_id: usize) -> bool {
     }
     // This routine is called on the target logical processor during CPU
     // bring-up. Program that CPU's XCR0 before it is allowed to run threads.
-    let xstate_policy_enabled = ki_xstate_enabled();
     let local_xstate_ready = unsafe { ki_initialize_xstate_current_cpu() };
-    if xstate_policy_enabled && (!local_xstate_ready
+    if ki_xstate_enabled() && (!local_xstate_ready
         || !unsafe { ki_xstate_self_test_current_cpu() }
         || !unsafe { ki_xstate_nested_save_restore_self_test() }) {
         // A CPU that cannot preserve the system-wide enabled state mask must
