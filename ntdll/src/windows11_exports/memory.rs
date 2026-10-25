@@ -256,10 +256,12 @@ pub unsafe extern "system" fn NtLockVirtualMemory(process_handle: HANDLE, base_a
 pub unsafe extern "system" fn NtProtectVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, new_protect: ULONG, old_protect: PULONG) -> NTSTATUS {
     if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
     if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
-    let changed_base = unsafe { ptr::read_unaligned(base_address) };
-    let changed_size = unsafe { ptr::read_unaligned(region_size) };
     let status = unsafe { cognacos_nt_protect_virtual_memory(process_handle, base_address, region_size, new_protect, old_protect) };
-    if status >= 0 { notify_secure_cache_callbacks(changed_base, changed_size); }
+    if status >= 0 {
+        let changed_base = unsafe { ptr::read_unaligned(base_address) };
+        let changed_size = unsafe { ptr::read_unaligned(region_size) };
+        notify_secure_cache_callbacks(changed_base, changed_size);
+    }
     status
 }
 #[no_mangle]
@@ -1014,7 +1016,7 @@ pub unsafe extern "system" fn RtlWriteMemoryStream(this: PVOID, buffer: *const c
         stream.current = (current + amount) as PVOID;
     }
     if !written.is_null() { unsafe { ptr::write(written, amount as ULONG); } }
-    S_OK
+    if amount < length as usize { S_FALSE } else { S_OK }
 }
 
 #[no_mangle]
