@@ -129,6 +129,8 @@ pub const NT_SYSCALL_QUERY_INFORMATION_THREAD: u64 = 0x103;
 pub const NT_SYSCALL_QUERY_SYSTEM_INFORMATION: u64 = 0x104;
 pub const NT_SYSCALL_OPEN_KEY: u64 = 0x105;
 pub const NT_SYSCALL_QUERY_VALUE_KEY: u64 = 0x106;
+pub const NT_SYSCALL_OPEN_FILE: u64 = 0x107;
+pub const NT_SYSCALL_READ_FILE: u64 = 0x108;
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
 const NT_STATUS_NOT_IMPLEMENTED: u64 = 0xC000_0002;
@@ -149,8 +151,8 @@ pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 // Service IDs are discovered from the staged PE's own exported syscall stubs.
 const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
-static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 7] =
-    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 7];
+static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 9] =
+    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 9];
 const SERVICE_NT_CLOSE: usize = 0;
 const SERVICE_NT_YIELD_EXECUTION: usize = 1;
 const SERVICE_NT_QUERY_INFORMATION_PROCESS: usize = 2;
@@ -158,6 +160,8 @@ const SERVICE_NT_QUERY_INFORMATION_THREAD: usize = 3;
 const SERVICE_NT_QUERY_SYSTEM_INFORMATION: usize = 4;
 const SERVICE_NT_OPEN_KEY: usize = 5;
 const SERVICE_NT_QUERY_VALUE_KEY: usize = 6;
+const SERVICE_NT_OPEN_FILE: usize = 7;
+const SERVICE_NT_READ_FILE: usize = 8;
 
 fn image_u16(image: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
@@ -212,8 +216,8 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 7]> {
     let functions = image_rva_offset(image, section_table, section_count, headers_size, functions_rva, function_count.checked_mul(4)?)?;
     let names = image_rva_offset(image, section_table, section_count, headers_size, names_rva, name_count.checked_mul(4)?)?;
     let ordinals = image_rva_offset(image, section_table, section_count, headers_size, ordinals_rva, name_count.checked_mul(2)?)?;
-    let required_names: [&[u8]; 7] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey"];
-    let mut discovered = [SERVICE_UNAVAILABLE; 7];
+    let required_names: [&[u8]; 9] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile"];
+    let mut discovered = [SERVICE_UNAVAILABLE; 9];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
         let name_at = image_rva_offset(image, section_table, section_count, headers_size, name_rva, 1)?;
@@ -254,6 +258,8 @@ pub fn windows_service_number(name: &[u8]) -> Option<u32> {
         b"NtQuerySystemInformation" => SERVICE_NT_QUERY_SYSTEM_INFORMATION,
         b"NtOpenKey" => SERVICE_NT_OPEN_KEY,
         b"NtQueryValueKey" => SERVICE_NT_QUERY_VALUE_KEY,
+        b"NtOpenFile" => SERVICE_NT_OPEN_FILE,
+        b"NtReadFile" => SERVICE_NT_READ_FILE,
         _ => return None,
     };
     let value = WINDOWS_SERVICE_NUMBERS[slot].load(Ordering::Acquire);
@@ -671,6 +677,74 @@ fn nt_open_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     NT_STATUS_SUCCESS
 }
 
+
+fn nt_open_file(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] == 0 || args[2] == 0 || args[3] == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let mut oa = [0u8; 48];
+    if let Err(status) = copy_nt_input(args[2], &mut oa) { return status; }
+    let oa_len = u32::from_le_bytes(oa[0..4].try_into().unwrap());
+    if oa_len < 48 || u64::from_le_bytes(oa[8..16].try_into().unwrap()) != 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let us_address = u64::from_le_bytes(oa[16..24].try_into().unwrap());
+    if us_address == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let mut us = [0u8; 16];
+    if let Err(status) = copy_nt_input(us_address, &mut us) { return status; }
+    let length = u16::from_le_bytes([us[0], us[1]]) as usize;
+    let maximum = u16::from_le_bytes([us[2], us[3]]) as usize;
+    let buffer = u64::from_le_bytes(us[8..16].try_into().unwrap());
+    if length == 0 || length & 1 != 0 || length > maximum || length / 2 > 260 || buffer == 0 {
+        return NT_STATUS_INVALID_PARAMETER;
+    }
+    let mut raw = [0u8; 520];
+    if let Err(status) = copy_nt_input(buffer, &mut raw[..length]) { return status; }
+    let mut path = [0u8; 260];
+    for i in 0..length / 2 {
+        let unit = u16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
+        if unit > 0x7f { return NT_STATUS_OBJECT_NAME_NOT_FOUND; }
+        path[i] = unit as u8;
+    }
+    let handle = match crate::file_services::open(&path[..length / 2]) {
+        Ok(handle) => handle, Err(status) => return status as u32 as u64,
+    };
+    let mut iosb = [0u8; 16];
+    iosb[0..4].copy_from_slice(&0i32.to_le_bytes());
+    if let Err(status) = copy_nt_output(args[3], &iosb) {
+        let _ = crate::file_services::close(handle); return status;
+    }
+    if let Err(status) = copy_nt_output(args[0], &(handle as u64).to_le_bytes()) {
+        let _ = crate::file_services::close(handle); return status;
+    }
+    NT_STATUS_SUCCESS
+}
+
+fn nt_read_file(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] == 0 || args[5] == 0 || args[6] > 4096 || args[4] == 0 {
+        return NT_STATUS_INVALID_PARAMETER;
+    }
+    if args[1] != 0 || args[2] != 0 || args[3] != 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let length = args[6] as usize;
+    let mut buffer = [0u8; 4096];
+    let handle = args[0] as usize;
+    let count = if args[7] == 0 {
+        match crate::file_services::read_current(handle, &mut buffer[..length]) {
+            Ok(n) => n, Err(status) => return status as u32 as u64,
+        }
+    } else {
+        let mut offset_bytes = [0u8; 8];
+        if let Err(status) = copy_nt_input(args[7], &mut offset_bytes) { return status; }
+        let offset = i64::from_le_bytes(offset_bytes);
+        if offset < 0 { return NT_STATUS_INVALID_PARAMETER; }
+        match crate::file_services::read_at(handle, offset as usize, &mut buffer[..length]) {
+            Ok(n) => n, Err(status) => return status as u32 as u64,
+        }
+    };
+    if let Err(status) = copy_nt_output(args[5], &buffer[..count]) { return status; }
+    let mut iosb = [0u8; 16];
+    iosb[0..4].copy_from_slice(&(if count == 0 { 0xC000_0011u32 as i32 } else { 0 }).to_le_bytes());
+    iosb[8..16].copy_from_slice(&(count as u64).to_le_bytes());
+    if let Err(status) = copy_nt_output(args[4], &iosb) { return status; }
+    if count == 0 { 0xC000_0011u32 as u64 } else { NT_STATUS_SUCCESS }
+}
+
 fn nt_query_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     if args[0] == 0 || args[1] == 0 || (args[3] == 0 && args[4] != 0) { return NT_STATUS_INVALID_PARAMETER; }
     let mut us = [0u8; 16];
@@ -728,6 +802,8 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_QUERY_SYSTEM_INFORMATION => nt_query_system(args),
         NT_SYSCALL_OPEN_KEY => nt_open_key(args),
         NT_SYSCALL_QUERY_VALUE_KEY => nt_query_value_key(args),
+        NT_SYSCALL_OPEN_FILE => nt_open_file(args),
+        NT_SYSCALL_READ_FILE => nt_read_file(args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
     }
 }
@@ -772,6 +848,8 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         Some(SERVICE_NT_QUERY_SYSTEM_INFORMATION) => NT_SYSCALL_QUERY_SYSTEM_INFORMATION,
         Some(SERVICE_NT_OPEN_KEY) => NT_SYSCALL_OPEN_KEY,
         Some(SERVICE_NT_QUERY_VALUE_KEY) => NT_SYSCALL_QUERY_VALUE_KEY,
+        Some(SERVICE_NT_OPEN_FILE) => NT_SYSCALL_OPEN_FILE,
+        Some(SERVICE_NT_READ_FILE) => NT_SYSCALL_READ_FILE,
         _ => {
             CALL_COUNT.fetch_add(1, Ordering::AcqRel);
             return NT_STATUS_NOT_IMPLEMENTED;
@@ -810,6 +888,8 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_QUERY_SYSTEM_INFORMATION => 4,
             NT_SYSCALL_OPEN_KEY => 3,
             NT_SYSCALL_QUERY_VALUE_KEY => 6,
+            NT_SYSCALL_OPEN_FILE => 6,
+            NT_SYSCALL_READ_FILE => 9,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
