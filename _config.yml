@@ -1,9 +1,14 @@
-title: CognacOS Documentation
-description: Project status, development roadmap, and Windows 11 x64 compatibility tracking for CognacOS.
+title: CognacOS
+description: CognacOS project progress, roadmap, and Windows 11 x64 ABI compatibility.
 url: https://umarfarooq7869.github.io
 baseurl: /CognacOS
 theme: minima
 markdown: kramdown
+plugins:
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: true
 header_pages:
   - docs/project.md
   - docs/roadmap.md

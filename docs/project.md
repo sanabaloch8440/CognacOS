@@ -1,26 +1,40 @@
 ---
 layout: default
-title: Project status
+title: Project details
 ---
+# Project details
 
-# Project status
+CognacOS is an experimental Rust-first x86-64 operating system using a Rust UEFI loader and a native AMD64 PE32+ kernel handoff. Its architecture separates platform support, virtual memory, the NT-inspired executive and driver-facing services.
 
-CognacOS is an experimental, Rust-first x86-64 kernel using a Rust UEFI loader and a native AMD64 PE32+ kernel handoff. Its design separates architecture, HAL, virtual memory, the NT-inspired executive, and driver-facing services.
+## Goals
+- Keep kernel and platform code modular and maintainable.
+- Build a reliable UEFI boot and initialization path.
+- Implement scoped NT-inspired interfaces with explicit tests and documented limits.
+- Measure public ABI declarations separately from behavior-level compatibility.
+- Make progress reproducible through CI, QEMU/OVMF and milestone acceptance criteria.
 
-## Implemented foundations
+## Implementation foundations and gaps
 
-| Area | Current foundation | Open work |
+| Subsystem | Foundations | Major gaps |
 | --- | --- | --- |
-| Boot | Digest-pinned PE32+ kernel handoff, UEFI boot, kernel diagnostics | Secure-boot signature chain, hardware coverage |
-| Memory | User address-space roots, checked user copies, MDL/pinning groundwork, direct map above 4 GiB | Demand paging, working sets, safe exception recovery |
-| SMP | AP startup, per-CPU GDT/TSS/IST, directed IPI acknowledgements, cooperative dispatch | Timer preemption, run queues, real hardware |
-| Executive | Ke/Ki routines, dispatcher and APC/DPC foundations, bounded Object Manager | Full NT semantics and WDK conformance |
-| I/O | Initial WDM object/IRP lifecycle, restricted PE driver loader | Full cancellation/rundown, PnP, storage integration |
-| Security | Bounded descriptor validation, basic access/privilege checks, token metadata hooks | Complete token lifecycle, impersonation and audit policy |
-| Storage | Protocol and filesystem foundations | Real hardware paths, IOMMU, VFS, crash-safe writes |
+| Boot | UEFI loader, PE32+ handoff, GDT/IDT, diagnostics | Secure-boot signature chain, broader hardware validation |
+| Memory | User address-space roots, checked user copies, MDL/pinning, high-memory direct map | Demand paging, working sets, exception-safe probes, complete isolation |
+| SMP/scheduler | AP startup, per-CPU state, timer preemption, per-CPU queues, affinity-aware stealing | Full Windows quantum/priority policy, hardware hot-remove |
+| Executive | Ke/Ki runtime, dispatcher, timer/DPC/APC foundations, bounded Object Manager | Full NT semantics, private object ABI, WDK conformance |
+| I/O/drivers | Initial WDM object/IRP lifecycle and restricted PE driver loader | Complete cancellation/rundown, PnP, storage integration |
+| Security | Descriptor validation, access/privilege checks, token metadata, audit groundwork | Full token lifecycle, impersonation, SACL/audit policy |
+| Storage | Protocol and native Rust ext-family filesystem foundations | Hardware paths, DMA/IOMMU, full VFS, writable crash-safe filesystem |
 
-See the [roadmap](roadmap.md) for acceptance criteria. Detailed Ke and Se status is maintained in the [compatibility section](compatibility/index.md).
+These are implementation foundations, not production-readiness claims. See the [roadmap]({{ '/docs/roadmap/' | relative_url }}) for the canonical milestone checklist.
 
-## Validation
+## Validation strategy
+1. Run host-side unit/regression tests.
+2. Build the freestanding kernel and UEFI loader.
+3. Validate image format and imports/exports.
+4. Boot with OVMF/QEMU, including multi-vCPU scenarios.
+5. Track race/stress testing separately from ordinary boot success.
+6. Treat physical hardware and Windows WDK conformance as separate acceptance stages.
 
-The main GitHub Actions workflow runs host-side regression tests, builds the freestanding kernel and UEFI loader, validates the PE32+ image, and runs OVMF/QEMU boot tests including SMP configurations. Emulator success is not a substitute for real hardware or WDK driver tests.
+- [Repository](https://github.com/umarfarooq7869/CognacOS)
+- [CI workflow](https://github.com/umarfarooq7869/CognacOS/actions/workflows/build-uefi.yml)
+- [ABI dashboard]({{ '/docs/compatibility/' | relative_url }})
