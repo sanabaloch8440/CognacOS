@@ -114,7 +114,7 @@ pub fn complete_irp(id:u64,status:IoStatus,information:usize)->Result<(),IoError
  if irp.completed{return Err(IoError::AlreadyCompleted);}
  if !irp.in_flight{return Err(IoError::NotCancellable);}
  if irp.deadline_tick!=0&&crate::hal::query_performance_counter()>=irp.deadline_tick{
-  irp.information=0;irp.status=IoStatus::TimedOut;irp.completed=true;irp.in_flight=false;return Ok(())
+  irp.information=0;irp.status=IoStatus::TimedOut;irp.completed=true;if !irp.dispatching{irp.in_flight=false;}return Ok(())
  }
  if information>irp.length{return Err(IoError::BufferTooLarge);}
  irp.information=information;irp.status=status;irp.completed=true;
@@ -224,6 +224,84 @@ mod completion_tests {
         assert!(irp.completed);
         assert_eq!(dispatch_one(id),Err(IoError::AlreadyCompleted));
         release_irp(id).expect("release terminal IRP");
+    }
+
+    static CANCEL_RACE_RESULT:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+    static UNLOAD_RACE_RESULT:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+
+    fn complete_inside_dispatch(irp:&mut Irp)->IoStatus{
+        assert_eq!(complete_irp(irp.id,IoStatus::Success,irp.length),Ok(()));
+        IoStatus::Pending
+    }
+    fn cancel_inside_dispatch(irp:&mut Irp)->IoStatus{
+        let result=cancel_irp(irp.id);
+        CANCEL_RACE_RESULT.store(usize::from(result==Err(IoError::NotCancellable)),core::sync::atomic::Ordering::Release);
+        IoStatus::Success
+    }
+    fn unload_inside_dispatch(irp:&mut Irp)->IoStatus{
+        let result=unregister_device(irp.device_id);
+        UNLOAD_RACE_RESULT.store(usize::from(result==Err(IoError::DeviceBusy)),core::sync::atomic::Ordering::Release);
+        IoStatus::Success
+    }
+    fn corrupt_information(irp:&mut Irp)->IoStatus{
+        irp.information=irp.length.saturating_add(1);
+        IoStatus::Success
+    }
+
+    #[test]
+    fn async_completion_winning_during_dispatch_is_not_overwritten(){
+        let mut dispatch:[Option<DispatchFn>;16]=[None;16];
+        dispatch[IRP_MJ_READ as usize]=Some(complete_inside_dispatch);
+        let device=register_device(b"complete-dispatch-race",dispatch).unwrap();
+        let id=submit(device,IRP_MJ_READ,0,64).unwrap();
+        assert_eq!(dispatch_one(id),Ok(IoStatus::Success));
+        let irp=query_irp(id).unwrap();
+        assert_eq!(irp.status,IoStatus::Success);
+        assert!(irp.completed);
+        assert!(!irp.dispatching&&!irp.in_flight);
+        release_irp(id).unwrap();
+        unregister_device(device).unwrap();
+    }
+
+    #[test]
+    fn cancellation_cannot_steal_dispatch_owned_irp(){
+        CANCEL_RACE_RESULT.store(0,core::sync::atomic::Ordering::Release);
+        let mut dispatch:[Option<DispatchFn>;16]=[None;16];
+        dispatch[IRP_MJ_READ as usize]=Some(cancel_inside_dispatch);
+        let device=register_device(b"cancel-dispatch-race",dispatch).unwrap();
+        let id=submit(device,IRP_MJ_READ,0,8).unwrap();
+        assert_eq!(dispatch_one(id),Ok(IoStatus::Success));
+        assert_eq!(CANCEL_RACE_RESULT.load(core::sync::atomic::Ordering::Acquire),1);
+        release_irp(id).unwrap();
+        unregister_device(device).unwrap();
+    }
+
+    #[test]
+    fn device_rundown_waits_for_active_dispatch_and_rejects_new_work(){
+        UNLOAD_RACE_RESULT.store(0,core::sync::atomic::Ordering::Release);
+        let mut dispatch:[Option<DispatchFn>;16]=[None;16];
+        dispatch[IRP_MJ_READ as usize]=Some(unload_inside_dispatch);
+        let device=register_device(b"device-rundown-race",dispatch).unwrap();
+        let id=submit(device,IRP_MJ_READ,0,8).unwrap();
+        assert_eq!(dispatch_one(id),Ok(IoStatus::Success));
+        assert_eq!(UNLOAD_RACE_RESULT.load(core::sync::atomic::Ordering::Acquire),1);
+        assert_eq!(submit(device,IRP_MJ_READ,0,8),Err(IoError::UnknownDevice));
+        assert_eq!(unregister_device(device),Ok(()));
+        release_irp(id).unwrap();
+    }
+
+    #[test]
+    fn invalid_driver_completion_length_is_contained(){
+        let mut dispatch:[Option<DispatchFn>;16]=[None;16];
+        dispatch[IRP_MJ_READ as usize]=Some(corrupt_information);
+        let device=register_device(b"fault-injection-length",dispatch).unwrap();
+        let id=submit(device,IRP_MJ_READ,0,16).unwrap();
+        assert_eq!(dispatch_one(id),Ok(IoStatus::DeviceError));
+        let irp=query_irp(id).unwrap();
+        assert_eq!(irp.information,0);
+        assert_eq!(irp.status,IoStatus::DeviceError);
+        release_irp(id).unwrap();
+        unregister_device(device).unwrap();
     }
 }
 
