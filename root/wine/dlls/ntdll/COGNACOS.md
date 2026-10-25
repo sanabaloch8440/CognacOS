@@ -256,3 +256,21 @@ The Rust module is not linked into the freestanding PE32+ build, and its unit
 tests have not yet been confirmed as executed in CI. Callback ABI, invalid
 raw-pointer behavior, and Windows runtime compatibility still require native
 integration and testing.
+
+
+## Printf format parser Rust port
+
+The source-first module `rust/printf.rs` ports the format-specifier grammar
+used by Wine's `printf.c` / `printf.h`: flags, static and dynamic width,
+precision, integer length modifiers, wide-string markers, escaped percent
+sequences, and conversion characters. It also provides overflow-safe signed
+decimal digit extraction (including `i64::MIN`) and unsigned digit conversion
+for bases 2 through 16. Tests cover common flags/modifiers, dynamic fields,
+multiple conversions, malformed/positional formats, and integer edge cases.
+
+This is deliberately **not** a complete port of the exported formatting APIs.
+C `va_list` argument decoding, string encoding conversions, buffer/truncation
+semantics, floating-point conversions, and the `_snprintf`/`_swprintf` ABI
+wrappers remain unimplemented in Rust. The module is not linked into the
+freestanding PE32+ build, and its tests have not yet been confirmed as executed
+in CI.
