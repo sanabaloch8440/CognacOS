@@ -4,6 +4,7 @@ EXPORTS
     NtClose
     NtYieldExecution
     RtlCompareMemory
+    RtlGetVersion
     RtlCopyMemory
     RtlFillMemory
     RtlMoveMemory
