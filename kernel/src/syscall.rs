@@ -417,11 +417,27 @@ cognacos_windows_syscall_entry:
     mov al, 'S'
     out dx, al
     mov rbx, rsp
+    # Save the interrupted user XSTATE before entering Rust or any scheduler path.
+    and rsp, -16
+    call cognacos_save_current_user_xstate_asm
+    mov rsp, rbx
     mov rdi, rsp
     and rsp, -16
     call cognacos_windows_syscall_dispatch
     mov rsp, rbx
     mov qword ptr [rsp + 112], rax
+    # Dispatch may have switched threads; restore the current thread's XSTATE
+    # immediately before restoring its registers and returning to ring 3.
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lwindows_syscall_no_xstate_restore
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lwindows_syscall_no_xstate_restore:
     mov dx, 0x3f8
     mov al, 'D'
     out dx, al
