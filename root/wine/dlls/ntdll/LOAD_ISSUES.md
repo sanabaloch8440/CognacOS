@@ -272,7 +272,7 @@ comparison, Unicode copying, Unicode-string/integer conversion, NT version
 numbers, and NTSTATUS-to-Win32-error conversion. QEMU smoke calls the actual
 mapped export addresses and validates outputs. The initial string API test set
 passed in [Actions run 40183506729](https://github.com/umarfarooq7869/CognacOS/actions/runs/40183506729).
-The additional version/status tests are awaiting the latest workflow result.
+The version/status smoke passed in the boot-smoke phase of [Actions run 40183695385](https://github.com/umarfarooq7869/CognacOS/actions/runs/40183695385). Additional CRC32 and memory-operation tests are now added and await their workflow result.
 
 **Known limitations:** case-insensitive string comparison folds ASCII only;
 the status mapping covers only a small explicit set; these exports are not a
