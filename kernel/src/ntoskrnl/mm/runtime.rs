@@ -250,7 +250,7 @@ pub fn is_page_locked(physical_page: u64) -> bool {
     let pfn = physical_page / PAGE_SIZE;
     LOCKED_PAGES.lock().iter().any(|p| p.live && p.pfn == pfn && p.references != 0)
 }
-fn lock_pfns(pfns: &[u64]) -> bool {
+pub fn lock_pfns(pfns: &[u64]) -> bool {
     let mut table = LOCKED_PAGES.lock();
     let mut new_entries = 0usize;
     for (i, pfn) in pfns.iter().copied().enumerate() {
@@ -270,7 +270,7 @@ fn lock_pfns(pfns: &[u64]) -> bool {
     }
     true
 }
-fn unlock_pfns(pfns: &[u64]) {
+pub fn unlock_pfns(pfns: &[u64]) {
     let mut table = LOCKED_PAGES.lock();
     for pfn in pfns.iter().copied() {
         if let Some(entry) = table.iter_mut().find(|entry| entry.live && entry.pfn == pfn) {
