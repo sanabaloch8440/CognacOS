@@ -618,4 +618,11 @@ mod tests {
         assert_eq!(STATUS_NO_MEMORY as u32, 0xC000_0017);
         assert_eq!(STATUS_INVALID_HANDLE as u32, 0xC000_0008);
     }
+    #[test] fn arbitrary_handles_are_rejected_before_dereference() {
+        unsafe {
+            assert!(heap_valid(ptr::null_mut()).is_null());
+            assert!(heap_valid(1usize as HANDLE).is_null());
+            assert!(heap_valid(usize::MAX as HANDLE).is_null());
+        }
+    }
 }
