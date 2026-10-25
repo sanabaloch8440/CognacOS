@@ -15,6 +15,8 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 
 - [x] Add current-process-only `NtAllocateVirtualMemory` reserve+commit path with checked user pointers, page rounding, W^X policy, and demand-zero region registration.
 - [x] Add checked current-process `NtReadVirtualMemory` / `NtWriteVirtualMemory` copies and byte-count reporting.
+- [x] Export the supported Rust NTDLL VM entry points through the dedicated CognacOS native-service gate (`int 0x83`) and wire it to the kernel's native NT dispatcher.
+- [x] Match the Windows x64 `MEMORY_BASIC_INFORMATION` 48-byte layout and `SIZE_T` return-length ABI; add layout regression tests.
 - [x] Add current-process `NtFreeVirtualMemory` for whole-region `MEM_DECOMMIT` and `MEM_RELEASE`, including working-set/pagefile cleanup and TLB invalidation before resident frame reclamation.
 - [x] Add page-table protection updates with cross-CPU TLB synchronization and rollback of already changed resident pages on a later protection failure.
 - [x] Add `MemoryBasicInformation` queries reporting tracked region bounds, allocation protection, current protection, and `MEM_COMMIT` / `MEM_RESERVE` / `MEM_FREE` states.
@@ -215,4 +217,4 @@ The concrete entry point is `kernel/src/pe_loader.rs::load_dll_transaction_from_
 - [ ] Implement kernel-backed allocation, release, protection, query, read/write, lock/unlock and flush operations through CognacOS native memory services.
 - [ ] Validate undocumented memory-stream, memory-zone/lookaside, secure-cache and nonvolatile-memory export ABIs against the pinned Windows 11 x64 reference.
 
-The syscall entry points intentionally fail closed until matching CognacOS service IDs and kernel handlers are available. These declarations are ABI groundwork, not a claim that virtual-memory system calls are functional.
+The supported VM exports now invoke CognacOS kernel services through the private `int 0x83` bridge. This is a CognacOS-specific transition, not the Windows-build-specific SYSCALL ordinal ABI; unsupported VM operations return `STATUS_NOT_IMPLEMENTED`, and current-process-only limitations remain.
