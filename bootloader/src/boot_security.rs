@@ -15,7 +15,7 @@ const EV_EFI_BOOT_SERVICES_APPLICATION: u32 = 0x8000_0003;
 const PCR_BOOT_MANAGER_CODE: u32 = 4;
 const TCG2_EVENT_HEADER_SIZE: usize = 14;
 
-#[repr(C, packed)]
+#[repr(C)]
 struct Tcg2BootServiceCapability {
     size: u8,
     structure_version_major: u8,
