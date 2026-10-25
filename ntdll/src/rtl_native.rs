@@ -112,7 +112,7 @@ pub unsafe extern "system" fn RtlGetNtVersionNumbers(
 }
 
 /// Maps the small set of NTSTATUS values handled by the native C bootstrap.
-#[no_mangle]
+// Canonical C ABI export is implemented in rtl_error.rs.
 pub extern "system" fn RtlNtStatusToDosError(status: NTSTATUS) -> ULONG {
     match status as ULONG {
         0x0000_0000 => ERROR_SUCCESS,
@@ -129,7 +129,7 @@ pub extern "system" fn RtlNtStatusToDosError(status: NTSTATUS) -> ULONG {
 }
 
 /// Converts NTSTATUS without relying on TEB state.
-#[no_mangle]
+// Canonical C ABI export is implemented in rtl_error.rs.
 pub extern "system" fn RtlNtStatusToDosErrorNoTeb(status: NTSTATUS) -> ULONG {
     RtlNtStatusToDosError(status)
 }

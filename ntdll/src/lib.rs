@@ -40,3 +40,6 @@ pub mod version;
 
 #[cfg(feature = "relay-port")]
 pub mod relay;
+
+// Generate ABI placeholders for exports not yet implemented by the Rust ports.
+include!(concat!(env!("OUT_DIR"), "/ntdll_export_stubs.rs"));
