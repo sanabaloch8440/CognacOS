@@ -12,14 +12,15 @@ pub enum ThreadState { Empty, Ready, Running, Blocked, Exited }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadError { InvalidStack, InvalidAffinity, Full, NoCurrentThread, InvalidState, InvalidCpu }
 #[derive(Clone, Copy)]
-struct ThreadRecord { id:u64, scheduler_id:u64, process_id:u64, impersonation_token:usize, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32, critical_region_depth:u16, guarded_region_depth:u16, alert_pending:bool, alertable_wait:bool, user_apc_delivery_pending:bool, queue_entry:u64, context_saved:bool, xstate:KiThreadXStateArea }
-impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,process_id:0,impersonation_token:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:false,xstate:KiThreadXStateArea::zeroed()}; }
+struct ThreadRecord { id:u64, scheduler_id:u64, process_id:u64, impersonation_token:usize, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32, critical_region_depth:u16, guarded_region_depth:u16, alert_pending:bool, alertable_wait:bool, user_apc_delivery_pending:bool, queue_entry:u64, context_saved:bool, xstate:KiThreadXStateArea, user_xstate:KiThreadXStateArea }
+impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,process_id:0,impersonation_token:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:false,xstate:KiThreadXStateArea::zeroed(),user_xstate:KiThreadXStateArea::zeroed()}; }
 unsafe impl Send for ThreadRecord {}
 struct ThreadTable { records:[ThreadRecord;MAX_THREADS], next_id:u64 }
 impl ThreadTable { const fn new()->Self { Self{records:[ThreadRecord::EMPTY;MAX_THREADS],next_id:1} } }
 unsafe impl Send for ThreadTable {}
 static THREADS:IrqSpinLock<ThreadTable>=IrqSpinLock::new(ThreadTable::new());
 static mut IDLE_XSTATE: [KiThreadXStateArea; crate::hal::MAX_CPUS] = [const { KiThreadXStateArea::zeroed() }; crate::hal::MAX_CPUS];
+static mut USERMODE_XSTATE_FALLBACK: [KiThreadXStateArea; crate::hal::MAX_CPUS] = [const { KiThreadXStateArea::zeroed() }; crate::hal::MAX_CPUS];
 struct IdleContext(UnsafeCell<*mut u64>);
 unsafe impl Sync for IdleContext {}
 static IDLE_CONTEXTS:[IdleContext;crate::hal::MAX_CPUS]=[const { IdleContext(UnsafeCell::new(core::ptr::null_mut())) };crate::hal::MAX_CPUS];
@@ -90,10 +91,46 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     let scheduler_id=crate::scheduler::create_task(
         2, eligible_mask, top as u64, thread_trampoline as usize as u64,
     ).map_err(|_|ThreadError::Full)?;
-    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Ready,affinity:eligible_mask,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:true,xstate:KiThreadXStateArea::zeroed()};
+    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Ready,affinity:eligible_mask,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:true,xstate:KiThreadXStateArea::zeroed(),user_xstate:KiThreadXStateArea::zeroed()};
     drop(table);
     notify_affinity(eligible_mask);
     Ok(id)
+}
+
+/// Save the interrupted user-mode extended state before Rust syscall/interrupt
+/// handlers run. The fallback is for the current bootstrap process path, which
+/// does not yet always have a scheduler ThreadRecord.
+#[no_mangle]
+pub extern "C" fn cognacos_save_current_user_xstate() {
+    if !crate::ntoskrnl::ke::runtime::ki_xstate_enabled() { return; }
+    let cpu = cpu_index().unwrap_or(0);
+    if cpu >= crate::hal::MAX_CPUS { return; }
+    let id = crate::thread::current_thread_id().unwrap_or(0);
+    if id != 0 {
+        let mut table = THREADS.lock();
+        if let Some(thread) = table.records.iter_mut().find(|t| t.id == id && t.state == ThreadState::Running) {
+            unsafe { let _ = crate::ntoskrnl::ke::runtime::ki_xstate_save_thread(&mut thread.user_xstate); }
+            return;
+        }
+    }
+    unsafe { let _ = crate::ntoskrnl::ke::runtime::ki_xstate_save_thread(core::ptr::addr_of_mut!(USERMODE_XSTATE_FALLBACK[cpu])); }
+}
+
+/// Return the state area that the low-level user-return stub must XRSTOR after
+/// all Rust dispatch and scheduler bookkeeping have completed.
+#[no_mangle]
+pub extern "C" fn cognacos_current_user_xstate_ptr() -> *const u8 {
+    if !crate::ntoskrnl::ke::runtime::ki_xstate_enabled() { return core::ptr::null(); }
+    let cpu = cpu_index().unwrap_or(0);
+    if cpu >= crate::hal::MAX_CPUS { return core::ptr::null(); }
+    let id = crate::thread::current_thread_id().unwrap_or(0);
+    if id != 0 {
+        let table = THREADS.lock();
+        if let Some(thread) = table.records.iter().find(|t| t.id == id && t.state == ThreadState::Running) {
+            return thread.user_xstate.as_ptr();
+        }
+    }
+    unsafe { core::ptr::addr_of!(USERMODE_XSTATE_FALLBACK[cpu]).cast::<u8>() }
 }
 
 /// Select the highest-ID-independent first runnable thread and switch stacks.
