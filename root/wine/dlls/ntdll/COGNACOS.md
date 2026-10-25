@@ -357,3 +357,16 @@ parsers. Product SKU selection follows Wine's simplified behavior, not the full
 Windows SKU catalogue. The Rust module is not yet wired into the freestanding
 PE32+ export bridge, and its unit tests require execution in CI before this
 work should be treated as validated.
+
+
+### Additional `version.c` parser coverage
+
+The Rust module now includes the Wine `Version` configuration alias table
+(including the documented aliases such as `win2k`, `nt2000`, `winvista`,
+and `win2k8r2`), an NT `CurrentVersion` string parser, and a Win9x
+`VersionNumber` parser that preserves the packed major/minor bits in the
+build field. These are pure parsing helpers with unit tests; they do not yet
+open registry keys or select a version profile at process startup. Registry
+access, application-specific `AppDefaults\\app.exe` precedence, version
+profile data records, and PEB version-field initialization remain to be wired
+to CognacOS's real registry and process initialization services.
