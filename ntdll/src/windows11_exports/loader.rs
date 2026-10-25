@@ -741,9 +741,9 @@ pub unsafe extern "system" fn LdrAccessResource(
         return STATUS_INVALID_PARAMETER;
     }
     let rva = unsafe { ptr::read_unaligned(ptr::addr_of!((*resource_data_entry).OffsetToData)) } as usize;
-    let size = unsafe { ptr::read_unaligned(ptr::addr_of!((*resource_data_entry).Size)) } as usize;
-    if rva.checked_add(size).filter(|end| *end <= image_size).is_none() { return 0xC000_007Bu32 as i32; }
-    unsafe { resource_address.write((base + rva) as *mut c_void); resource_size.write(size as ULONG); }
+    let resource_bytes = unsafe { ptr::read_unaligned(ptr::addr_of!((*resource_data_entry).Size)) } as usize;
+    if rva.checked_add(resource_bytes).filter(|end| *end <= image_size).is_none() { return 0xC000_007Bu32 as i32; }
+    unsafe { resource_address.write((base + rva) as *mut c_void); resource_size.write(resource_bytes as ULONG); }
     STATUS_SUCCESS
 }
 
