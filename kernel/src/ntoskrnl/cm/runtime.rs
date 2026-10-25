@@ -1,6 +1,11 @@
 //! Bounded in-memory Configuration Manager registry core.
 //! This is an initial volatile registry, not a hive/file-backed implementation.
 use core::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+#[path = "hive.rs"]
+mod hive_backend;
+#[cfg(not(test))]
+use crate::ntoskrnl::cm::hive as hive_backend;
 
 pub const STATUS_SUCCESS: i32 = 0;
 pub const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
@@ -123,18 +128,18 @@ fn hive_slot_for_name(name: &str) -> Option<usize> {
 /// The supplied bytes must have static lifetime and remain immutable while mounted.
 pub unsafe fn mount_hive_bytes(name: &str, bytes: &'static [u8]) -> Result<(), i32> {
     let slot = hive_slot_for_name(name).ok_or(STATUS_INVALID_PARAMETER)?;
-    crate::ntoskrnl::cm::hive::Hive::open(bytes).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    hive_backend::Hive::open(bytes).map_err(|_| STATUS_INVALID_PARAMETER)?;
     let _guard = LOCK.lock();
     unsafe { MOUNTED_HIVES[slot] = MountedHive { bytes: bytes.as_ptr(), len: bytes.len() }; }
     Ok(())
 }
 
-fn mounted_hive(slot: usize) -> Option<crate::ntoskrnl::cm::hive::Hive<'static>> {
+fn mounted_hive(slot: usize) -> Option<hive_backend::Hive<'static>> {
     if slot >= 7 { return None; }
     let mounted = unsafe { core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot])) };
     if mounted.bytes.is_null() || mounted.len == 0 { return None; }
     let bytes = unsafe { core::slice::from_raw_parts(mounted.bytes, mounted.len) };
-    crate::ntoskrnl::cm::hive::Hive::open(bytes).ok()
+    hive_backend::Hive::open(bytes).ok()
 }
 
 fn starts_ascii(path: &[u16], prefix: &[u8]) -> bool {
@@ -167,7 +172,7 @@ fn open_hive_key(out: *mut *mut core::ffi::c_void, access: u32, path: &[u16]) ->
     let hive = mounted_hive(slot)?;
     let key = match hive.find_path(relative) {
         Ok(k) => k,
-        Err(crate::ntoskrnl::cm::hive::Error::NotFound) => return Some(STATUS_OBJECT_NAME_NOT_FOUND),
+        Err(hive_backend::Error::NotFound) => return Some(STATUS_OBJECT_NAME_NOT_FOUND),
         Err(_) => return Some(STATUS_INVALID_PARAMETER),
     };
     if path.len() > MAX_NAME { return Some(STATUS_INVALID_PARAMETER); }
@@ -266,7 +271,7 @@ pub unsafe extern "win64" fn ZwQueryValueKey(h:*mut core::ffi::c_void,name:*cons
   if k.hive_slot!=0 {
    let Some(hive)=mounted_hive((k.hive_slot-1) as usize) else{return STATUS_OBJECT_NAME_NOT_FOUND;};
    let key=match hive.key_at(k.hive_cell){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
-   let value=match key.find_value(&nbuf[..n]){Ok(v)=>v,Err(crate::ntoskrnl::cm::hive::Error::NotFound)=>return STATUS_OBJECT_NAME_NOT_FOUND,Err(_)=>return STATUS_INVALID_PARAMETER};
+   let value=match key.find_value(&nbuf[..n]){Ok(v)=>v,Err(hive_backend::Error::NotFound)=>return STATUS_OBJECT_NAME_NOT_FOUND,Err(_)=>return STATUS_INVALID_PARAMETER};
    let need=core::mem::offset_of!(KeyValuePartialInformation,data)+value.data_len as usize;
    if !result_len.is_null(){unsafe{*result_len=need as u32;}}
    if (out_len as usize)<need{return STATUS_BUFFER_TOO_SMALL;}
@@ -311,7 +316,7 @@ fn ascii_utf16(src: &[u8], out: &mut [u16]) -> Option<usize> {
     Some(src.len())
 }
 
-fn hive_value_bytes(key: &crate::ntoskrnl::cm::hive::Key<'_, '_>, name: &[u8], out: &mut [u8]) -> Option<(u32, usize)> {
+fn hive_value_bytes(key: &hive_backend::Key<'_, '_>, name: &[u8], out: &mut [u8]) -> Option<(u32, usize)> {
     let mut wide = [0u16; MAX_NAME];
     let n = ascii_utf16(name, &mut wide)?;
     let value = key.find_value(&wide[..n]).ok()?;
