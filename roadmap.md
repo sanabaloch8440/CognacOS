@@ -11,6 +11,20 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 
 **Target:** a maintainable Rust-first x86-64 OS with NT-inspired interfaces and a long-term path toward Windows x64 driver compatibility.
 
+## Extended processor state (XSAVE/XSTATE)
+
+- [x] Add x86-64 CPUID leaf 0xD discovery and a kernel XSTATE configuration snapshot, including feature masks, standard-area sizes, offsets, and component sizes.
+- [x] Add guarded XSAVE/XRSTOR helpers that validate initialization, component masks, buffer length, and 64-byte alignment.
+- [x] Initialize XSAVE on the bootstrap processor and expose kernel query/save/restore helper entry points.
+- [x] Add NTDLL-side XSTATE configuration publication, `RtlGetEnabledExtendedFeatures`, and XSTATE-aware `RtlGetExtendedContextLength[2]`.
+- [ ] Initialize the same policy on every AP before it can schedule threads.
+- [ ] Publish the kernel configuration through the real shared-user-data/native-process initialization path; the NTDLL publication helper is not wired into process startup yet.
+- [ ] Implement Windows ABI-compatible `KeSaveExtendedProcessorState`/`KeRestoreExtendedProcessorState` with the opaque WDK `XSTATE_SAVE` layout and nesting/IRQL rules.
+- [ ] Add per-thread XSAVE-area allocation and save/restore on every context switch, then enable AVX/YMM and additional state only when that preservation path is active.
+- [ ] Complete `CONTEXT_EX` initialization, feature location/copying, compaction-format support, and deterministic CPU-feature/QEMU tests.
+
+The current kernel policy intentionally enables only x87/SSE XCR0 components: AVX remains disabled until scheduler context switching preserves each thread's extended state. These changes are source-level implementation only; build, ABI, and QEMU validation remain outstanding.
+
 ## Current validation
 
 - Last recorded full passing kernel/UEFI/QEMU/SMP run: [run 40159978518](https://github.com/umarfarooq7869/CognacOS/actions/runs/40159978518), commit `ed2198d2a5dbaf5820cc863297396098abcfaa58`.
