@@ -54,12 +54,121 @@ static mut DEFAULT_SEARCH_FLAGS: ULONG = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
 static LOADER_LOCK: AtomicBool = AtomicBool::new(false);
 static ACTIVE_LOADER_COOKIE: AtomicUsize = AtomicUsize::new(0);
 static NEXT_COOKIE: AtomicUsize = AtomicUsize::new(1);
+static DLL_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 const STATUS_NOT_FOUND: NTSTATUS = 0xC000_0225u32 as i32;
 const STATUS_PROCEDURE_NOT_FOUND: NTSTATUS = 0xC000_007Au32 as i32;
 const STATUS_DLL_INIT_FAILED: NTSTATUS = 0xC000_0142u32 as i32;
 const MAX_LOADER_ENTRIES: usize = 128;
 const MAX_REF_RECORDS: usize = 128;
+
+const IMAGE_DIRECTORY_ENTRY_RESOURCE: usize = 2;
+const MAX_RESOURCE_DEPTH: usize = 3;
+const MAX_RESOURCE_ENTRIES: usize = 4096;
+
+#[repr(C)]
+pub struct LDR_RESOURCE_INFO { pub Type: ULONG_PTR, pub Name: ULONG_PTR, pub Language: u32 }
+
+#[repr(C)]
+pub struct IMAGE_RESOURCE_DATA_ENTRY { pub OffsetToData: u32, pub Size: u32, pub CodePage: u32, pub Reserved: u32 }
+
+#[repr(C)]
+pub struct LDR_RESOURCE_DIRECTORY_ENTRY { pub Data: [u32; 2] }
+
+unsafe fn mapped_image_info(module: PVOID) -> Result<(usize, usize, usize), NTSTATUS> {
+    if module.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+    let base = module as *const u8;
+    if unsafe { ptr::read_unaligned(base.cast::<u16>()) } != 0x5a4d { return Err(0xC000_007Bu32 as i32); }
+    let nt = unsafe { ptr::read_unaligned(base.add(0x3c).cast::<u32>()) } as usize;
+    if nt > 0x100000 || unsafe { ptr::read_unaligned(base.add(nt).cast::<u32>()) } != 0x0000_4550 {
+        return Err(0xC000_007Bu32 as i32);
+    }
+    let coff = nt + 4;
+    if unsafe { ptr::read_unaligned(base.add(coff).cast::<u16>()) } != 0x8664 { return Err(0xC000_007Bu32 as i32); }
+    let optional_size = unsafe { ptr::read_unaligned(base.add(coff + 16).cast::<u16>()) } as usize;
+    let opt = coff + 20;
+    if optional_size < 112 || unsafe { ptr::read_unaligned(base.add(opt).cast::<u16>()) } != 0x20b {
+        return Err(0xC000_007Bu32 as i32);
+    }
+    let image_size = unsafe { ptr::read_unaligned(base.add(opt + 56).cast::<u32>()) } as usize;
+    let dirs = unsafe { ptr::read_unaligned(base.add(opt + 108).cast::<u32>()) } as usize;
+    if image_size < 0x1000 || image_size > 0x4000_0000 { return Err(0xC000_007Bu32 as i32); }
+    if dirs <= IMAGE_DIRECTORY_ENTRY_RESOURCE { return Ok((base as usize, image_size, 0)); }
+    let rva = unsafe { ptr::read_unaligned(base.add(opt + 112 + IMAGE_DIRECTORY_ENTRY_RESOURCE * 8).cast::<u32>()) } as usize;
+    let size = unsafe { ptr::read_unaligned(base.add(opt + 112 + IMAGE_DIRECTORY_ENTRY_RESOURCE * 8 + 4).cast::<u32>()) } as usize;
+    if rva == 0 || size < 16 || rva.checked_add(size).filter(|end| *end <= image_size).is_none() {
+        return Ok((base as usize, image_size, 0));
+    }
+    Ok((base as usize, image_size, (size << 32) | rva))
+}
+
+unsafe fn resource_key_matches(base: usize, image_size: usize, resource_rva: usize, resource_size: usize, encoded: u32, wanted: ULONG_PTR) -> bool {
+    if encoded & 0x8000_0000 != 0 {
+        if wanted <= 0xffff { return false; }
+        let name_off = (encoded & 0x7fff_ffff) as usize;
+        if name_off.checked_add(2).filter(|x| *x <= resource_size).is_none() { return false; }
+        let name_ptr = (base + resource_rva + name_off) as *const u16;
+        let count = unsafe { ptr::read_unaligned(name_ptr) } as usize;
+        if count > 512 || name_off.checked_add(2 + count * 2).filter(|x| *x <= resource_size).is_none() { return false; }
+        let wanted_ptr = wanted as *const u16;
+        for i in 0..count {
+            let a = unsafe { ptr::read_unaligned((name_ptr.add(1)).add(i)) };
+            let b = unsafe { ptr::read_unaligned(wanted_ptr.add(i)) };
+            if a != b { return false; }
+        }
+        unsafe { ptr::read_unaligned(wanted_ptr.add(count)) == 0 }
+    } else {
+        wanted <= 0xffff && (encoded as u16) == wanted as u16
+    }
+}
+
+unsafe fn find_resource_entry(module: PVOID, info: *const LDR_RESOURCE_INFO, level: ULONG, directory_only: bool) -> Result<*mut IMAGE_RESOURCE_DATA_ENTRY, NTSTATUS> {
+    if info.is_null() || !(1..=3).contains(&level) { return Err(STATUS_INVALID_PARAMETER); }
+    let (base, image_size, packed) = unsafe { mapped_image_info(module)? };
+    let resource_rva = packed as u32 as usize;
+    let resource_size = (packed >> 32) as usize;
+    if resource_rva == 0 { return Err(0xC000_008Au32 as i32); }
+    let info = unsafe { &*info };
+    let keys = [info.Type, info.Name, info.Language as ULONG_PTR];
+    let mut directory_off = 0usize;
+    for depth in 0..level as usize {
+        if directory_off.checked_add(16).filter(|end| *end <= resource_size).is_none() { return Err(0xC000_007Bu32 as i32); }
+        let dir = (base + resource_rva + directory_off) as *const u8;
+        let named = unsafe { ptr::read_unaligned(dir.add(12).cast::<u16>()) } as usize;
+        let ids = unsafe { ptr::read_unaligned(dir.add(14).cast::<u16>()) } as usize;
+        let count = named.checked_add(ids).filter(|n| *n <= MAX_RESOURCE_ENTRIES).ok_or(0xC000_007Bu32 as i32)?;
+        if directory_off.checked_add(16 + count * 8).filter(|end| *end <= resource_size).is_none() { return Err(0xC000_007Bu32 as i32); }
+        let mut found = None;
+        for i in 0..count {
+            let ent = dir.add(16 + i * 8);
+            let name = unsafe { ptr::read_unaligned(ent.cast::<u32>()) };
+            let child = unsafe { ptr::read_unaligned(ent.add(4).cast::<u32>()) };
+            if unsafe { resource_key_matches(base, image_size, resource_rva, resource_size, name, keys[depth]) } {
+                found = Some(child); break;
+            }
+        }
+        let child = found.ok_or(match depth { 0 => 0xC000_008Au32 as i32, 1 => 0xC000_008Bu32 as i32, _ => 0xC000_008Cu32 as i32 })?;
+        if depth + 1 < level as usize {
+            if child & 0x8000_0000 == 0 { return Err(0xC000_007Bu32 as i32); }
+            directory_off = (child & 0x7fff_ffff) as usize;
+        } else {
+            if directory_only {
+                if child & 0x8000_0000 == 0 { return Err(0xC000_007Bu32 as i32); }
+                return Ok((base + resource_rva + (child & 0x7fff_ffff) as usize) as *mut IMAGE_RESOURCE_DATA_ENTRY);
+            }
+            if child & 0x8000_0000 != 0 { return Err(0xC000_007Bu32 as i32); }
+            let data_off = (child & 0x7fff_ffff) as usize;
+            if data_off.checked_add(16).filter(|end| *end <= resource_size).is_none() { return Err(0xC000_007Bu32 as i32); }
+            let entry = (base + resource_rva + data_off) as *mut IMAGE_RESOURCE_DATA_ENTRY;
+            let data_rva = unsafe { ptr::read_unaligned(ptr::addr_of!((*entry).OffsetToData)) } as usize;
+            let size = unsafe { ptr::read_unaligned(ptr::addr_of!((*entry).Size)) } as usize;
+            if data_rva.checked_add(size).filter(|end| *end <= image_size).is_none() { return Err(0xC000_007Bu32 as i32); }
+            return Ok(entry);
+        }
+    }
+    Err(0xC000_007Bu32 as i32)
+}
+
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -327,8 +436,7 @@ pub unsafe extern "system" fn LdrGetDllPath(
     STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn LdrAccessResource() -> i32 { STATUS_NOT_IMPLEMENTED }
+
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrAddLoadAsDataTable() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -409,14 +517,11 @@ pub unsafe extern "system" fn LdrFindEntryForAddress(address: PVOID, entry_out: 
     STATUS_NOT_FOUND
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn LdrFindResource_U() -> i32 { STATUS_NOT_IMPLEMENTED }
 
-#[no_mangle]
-pub unsafe extern "system" fn LdrFindResourceDirectory_U() -> i32 { STATUS_NOT_IMPLEMENTED }
 
-#[no_mangle]
-pub unsafe extern "system" fn LdrFindResourceEx_U() -> i32 { STATUS_NOT_IMPLEMENTED }
+
+
+
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrFlushAlternateResourceModules() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -574,6 +679,105 @@ pub unsafe extern "system" fn LdrpResGetResourceDirectory() -> i32 { STATUS_NOT_
 #[no_mangle]
 pub unsafe extern "system" fn LdrProcessInitializationComplete() -> i32 { STATUS_NOT_IMPLEMENTED }
 
+
+#[no_mangle]
+pub unsafe extern "system" fn LdrFindResource_U(
+    module: PVOID, resource_info: *const LDR_RESOURCE_INFO, level: ULONG,
+    resource_data_entry: *mut *mut IMAGE_RESOURCE_DATA_ENTRY,
+) -> NTSTATUS {
+    if resource_data_entry.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { resource_data_entry.write(ptr::null_mut()); }
+    match unsafe { find_resource_entry(module, resource_info, level, false) } {
+        Ok(entry) => { unsafe { resource_data_entry.write(entry); } STATUS_SUCCESS },
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn LdrFindResourceDirectory_U(
+    module: PVOID, resource_info: *const LDR_RESOURCE_INFO, level: ULONG,
+    resource_directory: *mut *mut c_void,
+) -> NTSTATUS {
+    if resource_directory.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { resource_directory.write(ptr::null_mut()); }
+    match unsafe { find_resource_entry(module, resource_info, level, true) } {
+        Ok(entry) => { unsafe { resource_directory.write(entry.cast()); } STATUS_SUCCESS },
+        Err(status) => status,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn LdrFindResourceEx_U(
+    flags: ULONG, module: PVOID, resource_info: *const LDR_RESOURCE_INFO, level: ULONG,
+    resource_data_entry: *mut *mut IMAGE_RESOURCE_DATA_ENTRY,
+) -> NTSTATUS {
+    if flags != 0 { return STATUS_INVALID_PARAMETER; }
+    unsafe { LdrFindResource_U(module, resource_info, level, resource_data_entry) }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn LdrAccessResource(
+    module: PVOID, resource_data_entry: *const IMAGE_RESOURCE_DATA_ENTRY,
+    resource_address: *mut *mut c_void, resource_size: *mut ULONG,
+) -> NTSTATUS {
+    if module.is_null() || resource_data_entry.is_null() || resource_address.is_null() || resource_size.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { resource_address.write(ptr::null_mut()); resource_size.write(0); }
+    let (base, image_size, _) = match unsafe { mapped_image_info(module) } { Ok(v) => v, Err(e) => return e };
+    let rva = unsafe { ptr::read_unaligned(ptr::addr_of!((*resource_data_entry).OffsetToData)) } as usize;
+    let size = unsafe { ptr::read_unaligned(ptr::addr_of!((*resource_data_entry).Size)) } as usize;
+    if rva.checked_add(size).filter(|end| *end <= image_size).is_none() { return 0xC000_007Bu32 as i32; }
+    unsafe { resource_address.write((base + rva) as *mut c_void); resource_size.write(size as ULONG); }
+    STATUS_SUCCESS
+}
+
+const MAX_DLL_NOTIFICATIONS: usize = 32;
+#[derive(Clone, Copy)]
+struct Notification { cookie: usize, callback: usize, context: usize }
+impl Notification { const EMPTY: Self = Self { cookie: 0, callback: 0, context: 0 }; }
+static mut DLL_NOTIFICATIONS: [Notification; MAX_DLL_NOTIFICATIONS] = [Notification::EMPTY; MAX_DLL_NOTIFICATIONS];
+
+#[no_mangle]
+pub unsafe extern "system" fn LdrRegisterDllNotification(
+    flags: ULONG, callback: Option<unsafe extern "system" fn(ULONG, *const c_void, PVOID)>,
+    context: PVOID, cookie_out: *mut PVOID,
+) -> NTSTATUS {
+    if flags != 0 || callback.is_none() || cookie_out.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { cookie_out.write(ptr::null_mut()); }
+    let _guard = StateGuard::acquire();
+    let entries = core::ptr::addr_of_mut!(DLL_NOTIFICATIONS).cast::<Notification>();
+    for i in 0..MAX_DLL_NOTIFICATIONS {
+        let entry = unsafe { &mut *entries.add(i) };
+        if entry.cookie == 0 {
+            let cookie = NEXT_COOKIE.fetch_add(1, Ordering::Relaxed).max(1);
+            *entry = Notification { cookie, callback: callback.unwrap() as usize, context: context as usize };
+            unsafe { cookie_out.write(cookie as PVOID); }
+            return STATUS_SUCCESS;
+        }
+    }
+    STATUS_RESOURCE_IN_USE
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn LdrUnregisterDllNotification(cookie: PVOID) -> NTSTATUS {
+    let value = cookie as usize;
+    if value == 0 { return STATUS_INVALID_PARAMETER; }
+    let _guard = StateGuard::acquire();
+    let entries = core::ptr::addr_of_mut!(DLL_NOTIFICATIONS).cast::<Notification>();
+    for i in 0..MAX_DLL_NOTIFICATIONS {
+        let entry = unsafe { &mut *entries.add(i) };
+        if entry.cookie == value { *entry = Notification::EMPTY; return STATUS_SUCCESS; }
+    }
+    STATUS_INVALID_HANDLE
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlDllShutdownInProgress() -> BOOLEAN {
+    DLL_SHUTDOWN.load(Ordering::Acquire) as BOOLEAN
+}
+
+
 /// Apply the AMD64 base-relocation entries for one image page.
 #[no_mangle]
 pub unsafe extern "system" fn LdrProcessRelocationBlock(
@@ -626,8 +830,7 @@ pub unsafe extern "system" fn LdrQueryOptionalDelayLoadedAPI() -> i32 { STATUS_N
 #[no_mangle]
 pub unsafe extern "system" fn LdrQueryProcessModuleInformation() -> i32 { STATUS_NOT_IMPLEMENTED }
 
-#[no_mangle]
-pub unsafe extern "system" fn LdrRegisterDllNotification() -> i32 { STATUS_NOT_IMPLEMENTED }
+
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrRemoveLoadAsDataTable() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -705,8 +908,7 @@ pub unsafe extern "system" fn LdrUnloadDll(dll_handle: PVOID) -> NTSTATUS {
     STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn LdrUnregisterDllNotification() -> i32 { STATUS_NOT_IMPLEMENTED }
+
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrUpdatePackageSearchPath() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -726,8 +928,7 @@ pub unsafe extern "system" fn NtUnloadDriver() -> i32 { STATUS_NOT_IMPLEMENTED }
 #[no_mangle]
 pub unsafe extern "system" fn RtlComputePrivatizedDllName_U() -> i32 { STATUS_NOT_IMPLEMENTED }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDllShutdownInProgress() -> i32 { STATUS_NOT_IMPLEMENTED }
+
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlIsThreadWithinLoaderCallout() -> i32 { STATUS_NOT_IMPLEMENTED }
