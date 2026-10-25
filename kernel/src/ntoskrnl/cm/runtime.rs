@@ -237,7 +237,7 @@ pub fn query_version_tuple() -> Option<(u32, u32, u32)> {
                 count += 1;
             }
             let units = &units[..count];
-            let dot = units.iter().position(|c| *c == b'.' as u16)?;
+            let dot = units.iter().position(|c| *c == b'.' as u16 as u16)?;
             let parse = |digits: &[u16]| -> Option<u32> {
                 if digits.is_empty() { return None; }
                 let mut n = 0u32;
