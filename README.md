@@ -44,11 +44,13 @@ Fault containment has bounded supervisor exception fixups with an explicit recov
 
 ## Repository layout
 
-- `kernel/src/arch.rs`, `kernel/src/smp.rs` — architecture and processor startup
-- `kernel/src/vm.rs`, `kernel/src/memory.rs` — virtual memory and physical allocation
-- `kernel/src/ntoskrnl/` — NT-inspired executive and subsystem implementations
-- `kernel/src/hal/` — HAL and APIC implementation
-- `drivers/ext4/` — native Rust ext-family filesystem crate
+- `kernel/src/ntoskrnl/ke/` — processor startup, scheduling, traps and context switching
+- `kernel/src/ntoskrnl/mm/address_space.rs` — process address spaces and checked user-memory access
+- `kernel/src/ntoskrnl/io/file_services.rs` — initial read-only provider for explicitly staged boot files
+- `kernel/src/pe.rs`, `kernel/src/pe_modules.rs` — bounded PE32+ mapping and module-lifetime scaffolding
+- `ntdll/src/windows11_exports/` — Rust NTDLL exports, including typed loaded-module lookup APIs
+- `kernel/src/ntoskrnl/` and `kernel/src/hal/` — NT-inspired executive and HAL implementations
+- `drivers/ext4/` — native Rust ext-family filesystem crate; general VFS mounting remains incomplete
 - `.github/workflows/` — build, host-test, and boot validation workflows
 - `docs/` — public project documentation source
 
