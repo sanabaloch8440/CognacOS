@@ -393,9 +393,16 @@ pub unsafe fn load_dll(
     resolver: Option<ImportResolver>,
 ) -> Result<LoadedImage, PeError> {
     let loaded = unsafe { load(space, file, resolver)? };
-    if !loaded.is_dll { return Err(PeError::InvalidHeader); }
-    unsafe { crate::winabi::register_mapped_exports(space, module_name, loaded) }
-        .map_err(|_| PeError::InvalidImports)?;
+    if !loaded.is_dll {
+        let _ = unsafe { unload_dll(space, loaded, module_name) };
+        return Err(PeError::InvalidHeader);
+    }
+    if unsafe { crate::winabi::register_mapped_exports(space, module_name, loaded) }.is_err() {
+        // Mapping and runtime metadata must be rolled back together when export
+        // registration fails; never leave a hidden image occupying user VA.
+        let _ = unsafe { unload_dll(space, loaded, module_name) };
+        return Err(PeError::InvalidImports);
+    }
     Ok(loaded)
 }
 
