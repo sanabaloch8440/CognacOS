@@ -73,6 +73,23 @@ rdotos_process_enter_user:
     xor edx, edx
     xrstor64 [r10]
 .Lrdotos_process_no_xstate:
+    # Do not leak kernel stack pointers or callee-saved register contents to
+    # the initial user context. The IRET frame already holds user RIP/RSP.
+    xor eax, eax
+    xor ebx, ebx
+    xor ecx, ecx
+    xor edx, edx
+    xor esi, esi
+    xor edi, edi
+    xor ebp, ebp
+    xor r8d, r8d
+    xor r9d, r9d
+    xor r10d, r10d
+    xor r11d, r11d
+    xor r12d, r12d
+    xor r13d, r13d
+    xor r14d, r14d
+    xor r15d, r15d
     iretq
 .Lrdotos_process_return:
     pop r15
