@@ -854,6 +854,14 @@ pub fn native_nt_dispatch_self_test(space: &AddressSpace, user_base: u64) -> boo
     let invalid_buffer_ok = unsafe { cognacos_nt_syscall_dispatch(frame.as_mut_ptr()) } == NT_STATUS_ACCESS_VIOLATION;
     frame[14] = 0xdead;
     let unsupported_ok = unsafe { cognacos_nt_syscall_dispatch(frame.as_mut_ptr()) } == NT_STATUS_NOT_IMPLEMENTED;
+    // Registry syscalls must reject invalid user pointers through checked copies,
+    // before attempting to interpret caller-controlled OBJECT_ATTRIBUTES or names.
+    let invalid_registry_open = nt_open_key(&[
+        user_base + 0x200, 0, 0x0000_7fff_ffff_f000, 0, 0, 0
+    ]) == NT_STATUS_ACCESS_VIOLATION;
+    let invalid_registry_query = nt_query_value_key(&[
+        1, 0x0000_7fff_ffff_f000, 2, user_base + 0x200, 64, 0
+    ]) == NT_STATUS_ACCESS_VIOLATION;
     // Decode all 13 stack arguments (arguments 5..17) from user memory.
     let mut stack = [0u8; (NT_MAX_ARGUMENTS - 4) * 8];
     for (i, chunk) in stack.chunks_exact_mut(8).enumerate() {
@@ -863,7 +871,8 @@ pub fn native_nt_dispatch_self_test(space: &AddressSpace, user_base: u64) -> boo
         && decode_nt_stack_arguments(space, user_base + 0x2d8, 0xdead, [1,2,3,4], NT_MAX_ARGUMENTS) == NT_STATUS_NOT_IMPLEMENTED;
     unsafe { *ACTIVE_SPACE.0.get() = previous_space; }
     CURRENT_PID.store(previous_pid, Ordering::Release);
-    five_arg_ok && return_len_ok && invalid_buffer_ok && unsupported_ok && stack_ok
+    five_arg_ok && return_len_ok && invalid_buffer_ok && unsupported_ok
+        && invalid_registry_open && invalid_registry_query && stack_ok
 }
 
 fn decode_nt_stack_arguments(space: &AddressSpace, user_rsp: u64, number: u64, first: [u64; 4], count: usize) -> u64 {
