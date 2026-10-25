@@ -123,6 +123,13 @@ pub fn handle_tlb_ipi() {
 /// Invalidate shared kernel translations on every online AP before any backing
 /// physical frame can be recycled. Prefer fixed-vector IPIs; AP polling remains
 /// a fallback for early boot and failed IPI delivery.
+/// Flush translations on every online CPU after a user address-space PTE
+/// change. The shared generation/acknowledgement protocol makes this a
+/// synchronous shootdown; callers may reclaim backing frames only afterwards.
+pub(crate) fn synchronize_all_cpu_tlbs() {
+ synchronize_kernel_tlb();
+}
+
 fn synchronize_kernel_tlb() {
  if crate::hal::online_cpu_count() <= 1 { return; }
  let current = crate::hal::current_cpu_local()
