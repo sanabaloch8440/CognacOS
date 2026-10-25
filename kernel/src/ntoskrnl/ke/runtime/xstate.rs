@@ -372,3 +372,25 @@ pub unsafe extern "win64" fn KeRestoreExtendedProcessorState(save: *mut u8) {
     // code runs between XRSTOR and the return to the caller.
     unsafe { let _ = ki_xstate_restore_thread_mask(&restored_area, saved_mask); }
 }
+
+
+#[cfg(test)]
+mod xstate_layout_tests {
+    use super::*;
+    #[test]
+    fn thread_xstate_storage_has_architectural_alignment_and_capacity() {
+        assert_eq!(core::mem::align_of::<KiThreadXStateArea>(), 64);
+        assert_eq!(core::mem::size_of::<KiThreadXStateArea>(), 576);
+    }
+    #[test]
+    fn public_configuration_feature_arrays_have_stable_capacity() {
+        let config = CognacXStateConfiguration::default();
+        assert_eq!(config.feature_offsets.len(), 64);
+        assert_eq!(config.feature_sizes.len(), 64);
+    }
+    #[test]
+    fn save_table_capacity_supports_nested_driver_state_scopes() {
+        assert_eq!(XSTATE_SAVE_NESTING, 16);
+        assert!(XSTATE_SAVE_SLOTS >= XSTATE_SAVE_NESTING);
+    }
+}
