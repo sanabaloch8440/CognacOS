@@ -14,9 +14,10 @@ ntdll = (ROOT / "root/wine/dlls/ntdll/rust/exception.rs").read_text()
 assert "const _: [(); 0x348] = [(); core::mem::size_of::<WindowsXStateConfiguration>()]" in xstate
 assert "const _: [(); 0x348] = [(); core::mem::size_of::<WindowsXStateConfiguration>()]" in ntdll
 assert "KUSER_XSTATE_OFFSET: u64 = 0x3d8" in process
-assert "KUSER_SHARED_DATA_ADDRESS: u64 = 0x0000_0000_7ffe_0000" in process
+assert "KUSER_SHARED_DATA_ADDRESS: u64 = crate::ntoskrnl::mm::address_space::KUSER_SHARED_DATA_ADDRESS" in process
 assert "KUSER_SHARED_DATA_ADDRESS: u64 = 0x0000_0000_7ffe_0000" in user_range
 assert "pub fn map_kuser_shared_page" in address_space
+assert "map_kuser_shared_page(space)?" in process
 assert "record_kuser_tables(self.root, self.kuser_tables)" in address_space
 assert "self.kuser_tables = [0; 3]" in address_space
 assert "let enabled = XSTATE_X87 | XSTATE_SSE" in xstate
