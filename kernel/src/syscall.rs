@@ -269,6 +269,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
     if frame.is_null() { return NT_STATUS_ACCESS_VIOLATION; }
+    CALL_COUNT.fetch_add(1, Ordering::AcqRel);
     unsafe {
         // Saved register frame: r15,r14,r13,r12,r11,r10,r9,r8,rbp,rdi,rsi,rdx,rcx,rbx,rax.
         let f = core::slice::from_raw_parts(frame, 20);
