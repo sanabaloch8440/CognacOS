@@ -1,6 +1,11 @@
 //! Runtime metadata for loaded PE32+ images: TLS callbacks and x64 .pdata.
 //! Callbacks are recorded for user-mode startup; they are never called in ring 0.
 use crate::{pe::LoadedImage, ntoskrnl::mm::address_space::AddressSpace};
+use core::sync::atomic::{AtomicBool, Ordering};
+static RUNTIME_LOCK: AtomicBool = AtomicBool::new(false);
+struct RuntimeGuard;
+impl RuntimeGuard { fn acquire() -> Self { while RUNTIME_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); } Self } }
+impl Drop for RuntimeGuard { fn drop(&mut self) { RUNTIME_LOCK.store(false, Ordering::Release); } }
 const MAX_IMAGES: usize = 32;
 const MAX_TLS_CALLBACKS: usize = 64;
 const MAX_RUNTIME_FUNCTIONS: usize = 8192;
@@ -54,29 +59,51 @@ pub unsafe fn register(space:&AddressSpace,image:LoadedImage,tls_rva:u32,tls_siz
             }
         }
     }
-    if pdata_rva!=0||pdata_size!=0{
+    let function_count = if pdata_rva!=0||pdata_size!=0 {
         if pdata_rva==0||pdata_size==0||pdata_rva.checked_add(pdata_size).is_none_or(|e|e>image.image_size)||pdata_size%12!=0{return Err(RuntimeError::InvalidDirectory);}
         let count=pdata_size as usize/12;if count>MAX_RUNTIME_FUNCTIONS{return Err(RuntimeError::TooManyFunctions);}
-        let state=unsafe{&mut *STORE.0.get()};
-        if state.2.checked_add(count).is_none_or(|n|n>MAX_RUNTIME_FUNCTIONS){return Err(RuntimeError::TooManyFunctions);}
+        // Validate the complete directory before mutating global state. A malformed
+        // late entry must not leave a partially registered table behind.
+        let mut previous_end=0u32;
         for i in 0..count{
             let r=pdata_rva+(i*12) as u32;
             let f=RuntimeFunction{image_base:image.base,begin:u32_at(space,image.base,r)?,end:u32_at(space,image.base,r+4)?,unwind_info:u32_at(space,image.base,r+8)?};
-            if f.begin>=f.end||f.end>image.image_size||f.unwind_info>=image.image_size{return Err(RuntimeError::InvalidDirectory);}
-            state.1[state.2]=f;state.2+=1;
+            if f.begin>=f.end||f.begin<previous_end||f.end>image.image_size
+                ||f.unwind_info>=image.image_size||f.unwind_info&3!=0{return Err(RuntimeError::InvalidDirectory);}
+            previous_end=f.end;
         }
-    }
+        count
+    } else { 0 };
+    let _guard=RuntimeGuard::acquire();
     let state=unsafe{&mut *STORE.0.get()};
+    if state.2.checked_add(function_count).is_none_or(|n|n>MAX_RUNTIME_FUNCTIONS){return Err(RuntimeError::TooManyFunctions);}
     let Some(slot)=state.0.iter_mut().find(|r|!r.used||r.base==image.base)else{return Err(RuntimeError::TooManyImages);};
+    // Append only after all entries and destination capacity are validated.
+    for i in 0..function_count {
+        let r=pdata_rva+(i*12) as u32;
+        state.1[state.2]=RuntimeFunction{image_base:image.base,begin:u32_at(space,image.base,r)?,end:u32_at(space,image.base,r+4)?,unwind_info:u32_at(space,image.base,r+8)?};
+        state.2+=1;
+    }
     *slot=ImageRecord{used:true,..rec};
     Ok(ImageRuntime{base:image.base,tls_callbacks:rec.callbacks,tls_count:rec.callback_count,tls_template_start:rec.tls_template_start,tls_template_size:rec.tls_template_size,tls_index_address:rec.tls_index_address,tls_zero_fill:rec.tls_zero_fill,pdata_rva:rec.pdata_rva,pdata_size:rec.pdata_size})
 }
 /// Find a function table entry for a control PC. UNWIND_INFO interpretation is separate.
 pub fn lookup_function(image_base:u64,control_pc:u64)->Option<RuntimeFunction>{
+    let _guard=RuntimeGuard::acquire();
     let state=unsafe{&*STORE.0.get()};let rva=u32::try_from(control_pc.checked_sub(image_base)?).ok()?;
     state.1[..state.2].iter().copied().find(|f|f.image_base==image_base&&rva>=f.begin&&rva<f.end)
 }
+/// Resolve a PC against all loaded images' validated .pdata registrations.
+pub fn lookup_any_function(control_pc:u64)->Option<RuntimeFunction>{
+    let _guard=RuntimeGuard::acquire();
+    let state=unsafe{&*STORE.0.get()};
+    state.1[..state.2].iter().copied().find(|f|{
+        control_pc.checked_sub(f.image_base).and_then(|r|u32::try_from(r).ok())
+            .is_some_and(|rva|rva>=f.begin&&rva<f.end)
+    })
+}
 pub fn tls_callbacks(image_base:u64,out:&mut[u64])->Result<usize,RuntimeError>{
+    let _guard=RuntimeGuard::acquire();
     let state=unsafe{&*STORE.0.get()};let rec=state.0.iter().find(|r|r.used&&r.base==image_base).ok_or(RuntimeError::InvalidImage)?;
     if out.len()<rec.callback_count{return Err(RuntimeError::TooManyCallbacks);}
     out[..rec.callback_count].copy_from_slice(&rec.callbacks[..rec.callback_count]);Ok(rec.callback_count)
@@ -84,6 +111,7 @@ pub fn tls_callbacks(image_base:u64,out:&mut[u64])->Result<usize,RuntimeError>{
 
 /// Remove an image's runtime registration before its address space is reclaimed.
 pub fn unregister_image(image_base:u64) {
+    let _guard=RuntimeGuard::acquire();
     let state=unsafe{&mut *STORE.0.get()};
     for rec in state.0.iter_mut() {
         if rec.used && rec.base==image_base { *rec=ImageRecord::EMPTY; }
@@ -102,6 +130,7 @@ pub fn unregister_image(image_base:u64) {
 #[derive(Clone, Copy, Debug)]
 pub struct TlsLayout { pub present: bool, pub template_start: u64, pub template_size: u32, pub index_address: u64, pub zero_fill: u32 }
 pub fn tls_layout(image_base:u64)->Result<TlsLayout,RuntimeError>{
+    let _guard=RuntimeGuard::acquire();
     let state=unsafe{&*STORE.0.get()};
     let r=state.0.iter().find(|r|r.used&&r.base==image_base).ok_or(RuntimeError::InvalidImage)?;
     Ok(TlsLayout{present:r.tls_template_start!=0||r.tls_template_size!=0||r.tls_index_address!=0||r.tls_zero_fill!=0||r.callback_count!=0,
