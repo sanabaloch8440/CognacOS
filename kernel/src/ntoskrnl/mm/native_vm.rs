@@ -520,3 +520,39 @@ pub fn check_token_membership(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) ->
     if unsafe { address_space::copy_to_user_root(root,args[2],&(member as u8).to_ne_bytes()) }.is_err() { return STATUS_ACCESS_VIOLATION; }
     STATUS_SUCCESS
 }
+
+/// Create a bounded pagefile-backed section object for in-kernel and RTL stream use.
+pub fn create_section(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    let root = match current_root() { Ok(r)=>r, Err(s)=>return s };
+    let mut handle = 0u64;
+    let result = crate::ntoskrnl::mm::section::create(args[0],&mut handle);
+    if result < 0 { return result as u32 as u64; }
+    if let Err(s) = write_u64(root,args[1],handle) {
+        let _ = crate::ntoskrnl::mm::section::dereference(handle);
+        return s;
+    }
+    STATUS_SUCCESS
+}
+pub fn dereference_section(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    crate::ntoskrnl::mm::section::dereference(args[0]) as u32 as u64
+}
+pub fn section_copy(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    let root = match current_root() { Ok(r)=>r, Err(s)=>return s };
+    let length = args[3] as usize;
+    if length > 16*1024*1024 || args[4] > 1 { return STATUS_INVALID_PARAMETER; }
+    let Some(end) = args[1].checked_add(length as u64) else { return STATUS_INVALID_PARAMETER; };
+    let _ = end;
+    let mut done = 0usize;
+    let mut scratch = [0u8;4096];
+    while done < length {
+        let count = (length-done).min(scratch.len());
+        let offset = match args[1].checked_add(done as u64) { Some(v)=>v, None=>return STATUS_INVALID_PARAMETER };
+        let user = match args[2].checked_add(done as u64) { Some(v)=>v, None=>return STATUS_ACCESS_VIOLATION };
+        if args[4] == 1 && unsafe { address_space::copy_from_user_root(root,user,&mut scratch[..count]) }.is_err() { return STATUS_ACCESS_VIOLATION; }
+        let result = crate::ntoskrnl::mm::section::copy(args[0],offset,&mut scratch[..count],args[4] == 1);
+        if result < 0 { return result as u32 as u64; }
+        if args[4] == 0 && unsafe { address_space::copy_to_user_root(root,user,&scratch[..count]) }.is_err() { return STATUS_ACCESS_VIOLATION; }
+        done += count;
+    }
+    STATUS_SUCCESS
+}
