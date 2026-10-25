@@ -4,6 +4,10 @@ EXPORTS
     NtClose
     NtYieldExecution
     RtlCompareMemory
+    RtlCompareMemoryUlong
+    RtlComputeCrc32
+    RtlCrc32
+    RtlIsZeroMemory
     RtlGetVersion
     RtlCopyMemory
     RtlFillMemory
