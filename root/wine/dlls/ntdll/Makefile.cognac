@@ -27,13 +27,15 @@ helper-help:
 # Example: make -f Makefile.cognac syscall-header WINDOWS_NTDLL=/path/to/ntdll.dll
 syscall-header:
 	@test -n "$(WINDOWS_NTDLL)" || (echo "set WINDOWS_NTDLL=/path/to/x64/ntdll.dll" >&2; exit 2)
-	python3 tools/ntdll_link_helper.py --input "$(WINDOWS_NTDLL)" --output "$(SYSCALL_HEADER)" --require NtClose --require NtYieldExecution --require NtQueryInformationProcess --require NtQueryInformationThread --require NtQuerySystemInformation
+	python3 tools/ntdll_link_helper.py --input "$(WINDOWS_NTDLL)" --output "$(SYSCALL_HEADER)" --require NtClose --require NtOpenKey --require NtQueryValueKey --require NtYieldExecution --require NtQueryInformationProcess --require NtQueryInformationThread --require NtQuerySystemInformation
 
 check: $(OUTPUT)
 	$(OBJDUMP) -f $(OUTPUT) | grep -q 'pei-x86-64'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'DLL'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'AddressOfEntryPoint'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtClose'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtOpenKey'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtQueryValueKey'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtYieldExecution'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtQueryInformationProcess'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtQueryInformationThread'
