@@ -1,26 +1,26 @@
 # CognacOS NTDLL
 
-The NTDLL work lives directly in this directory alongside Wine's existing NTDLL
-sources. There is no nested second NTDLL source tree.
-
-Build the current native x86-64 PE32+ target with:
+NTDLL development lives directly in this directory. The module manifest
+(`Makefile.in`) no longer lists Wine's Unix companion library, server, syscall
+dispatcher, POSIX libraries, or `unix/*.c` sources. The native PE32+ source
+set is freestanding and is built with:
 
 ```sh
-make -C root/wine/dlls/ntdll -f Makefile.cognac check
+make -C root/wine/dlls/ntdll -f Makefile.cognac clean all check
 ```
 
-The GitHub Actions workflow builds this target and publishes the resulting
-`ntdll.dll` artifact. This target is an incremental bootstrap, not yet a
-Windows 11 drop-in replacement. The existing Wine Makefile.in source set still
-contains Wine/Unix integration and must be progressively ported to CognacOS;
-this target does not yet compile all of that source set.
+GitHub Actions runs this build when any NTDLL source or the workflow changes
+and publishes the resulting `ntdll.dll` artifact.
 
-The syscall IDs are deliberately not hard-coded because NT service numbers vary
-by OS build. `CognacNtdllConfigureSyscalls` must be called by a trusted,
-version-aware kernel integration before NtClose or NtYieldExecution can work.
-The current syscall bridge supports at most four arguments and must not be used
-for services with more arguments.
+The dependency removal is a build-graph change, not proof that the whole
+Windows 11 runtime is implemented. The native target currently has a small
+bootstrap surface (`NtClose`, `NtYieldExecution`, and RTL memory routines).
+Syscall IDs must be supplied by a trusted, version-aware CognacOS kernel
+integration; they are not hard-coded because service numbers vary across NT
+builds. The current assembly bridge supports no more than four arguments.
 
-Next work should fold implementations into the existing `rtl.c`, `loader.c`,
-`process.c`, and other established source files and progressively replace the
-Unix server/syscall layer with CognacOS kernel interfaces.
+Remaining work is to port existing loader, process/thread, exception/unwind,
+heap, synchronization, file, registry, security, and ALPC functionality to
+CognacOS kernel interfaces, then expand and verify the export table and ABI
+against Windows 11. Wine-only implementation files remain in the source
+checkout for reference, but are no longer part of the native NTDLL build.
