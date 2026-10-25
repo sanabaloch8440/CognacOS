@@ -1145,8 +1145,8 @@ pub fn per_cpu_tss_self_test(cpu: usize) -> bool {
         let ist1 = core::ptr::addr_of!((*tss).ist[0]).read_unaligned();
         let ist2 = core::ptr::addr_of!((*tss).ist[1]).read_unaligned();
         let ist3 = core::ptr::addr_of!((*tss).ist[2]).read_unaligned();
-        let descriptor = core::ptr::addr_of!(CPU_GDT[cpu][3]).read();
-        let high = core::ptr::addr_of!(CPU_GDT[cpu][4]).read();
+        let descriptor = core::ptr::addr_of!(CPU_GDT[cpu][5]).read();
+        let high = core::ptr::addr_of!(CPU_GDT[cpu][6]).read();
         let idt = core::ptr::addr_of!(IDT).cast::<IdtEntry>();
         let nmi_ist = core::ptr::addr_of!((*idt.add(2)).ist).read_unaligned() & 7;
         let df_ist = core::ptr::addr_of!((*idt.add(8)).ist).read_unaligned() & 7;
