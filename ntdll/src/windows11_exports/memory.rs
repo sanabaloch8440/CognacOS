@@ -585,7 +585,7 @@ struct IStreamVtable {
     add_ref: unsafe extern "system" fn(PVOID) -> ULONG,
     release: unsafe extern "system" fn(PVOID) -> ULONG,
     read: unsafe extern "system" fn(PVOID, PVOID, ULONG, *mut ULONG) -> NTSTATUS,
-    write: unsafe extern "system" fn(PVOID, PVOID, ULONG, *mut ULONG) -> NTSTATUS,
+    write: unsafe extern "system" fn(PVOID, *const c_void, ULONG, *mut ULONG) -> NTSTATUS,
     seek: unsafe extern "system" fn(PVOID, i64, ULONG, *mut u64) -> NTSTATUS,
     set_size: unsafe extern "system" fn(PVOID, u64) -> NTSTATUS,
     copy_to: unsafe extern "system" fn(PVOID, PVOID, u64, *mut u64, *mut u64) -> NTSTATUS,
@@ -777,7 +777,7 @@ pub unsafe extern "system" fn RtlCopyMemoryStreamTo(this: PVOID, target: PVOID, 
         let vtbl = unsafe { (*target.cast::<RTL_MEMORY_STREAM>()).vtbl };
         if vtbl.is_null() { return STG_E_INVALIDPOINTER; }
         let mut put = 0u32;
-        let status = unsafe { ((*vtbl).write)(target, scratch.as_mut_ptr().cast(), got, &mut put) };
+        let status = unsafe { ((*vtbl).write)(target, scratch.as_ptr().cast(), got, &mut put) };
         total += got as u64;
         if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, total); } }
         if !bytes_written.is_null() { unsafe { ptr::write(bytes_written, (*bytes_written).saturating_add(put as u64)); } }
@@ -849,7 +849,7 @@ pub unsafe extern "system" fn RtlSetMemoryStreamSize(this: PVOID, new_size: u64)
     S_OK
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlWriteMemoryStream(this: PVOID, buffer: PVOID, length: ULONG, written: *mut ULONG) -> NTSTATUS {
+pub unsafe extern "system" fn RtlWriteMemoryStream(this: PVOID, buffer: *const c_void, length: ULONG, written: *mut ULONG) -> NTSTATUS {
     if !written.is_null() { unsafe { ptr::write(written, 0); } }
     if this.is_null() || (length != 0 && buffer.is_null()) { return STG_E_INVALIDPOINTER; }
     if length == 0 { return S_OK; }
@@ -976,7 +976,7 @@ mod tests {
             assert_eq!(position, 2);
             let input = *b"XYZ";
             let mut written = 0;
-            assert_eq!(RtlWriteMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast(), input.as_ptr() as PVOID, input.len() as ULONG, &mut written), S_OK);
+            assert_eq!(RtlWriteMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast(), input.as_ptr().cast(), input.len() as ULONG, &mut written), S_OK);
             assert_eq!(written, 3);
             assert_eq!(&source[2..5], b"XYZ");
             let mut stat = core::mem::MaybeUninit::<StatStg>::zeroed();
