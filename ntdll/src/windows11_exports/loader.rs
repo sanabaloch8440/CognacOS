@@ -55,6 +55,113 @@ static LOADER_LOCK: AtomicBool = AtomicBool::new(false);
 static ACTIVE_LOADER_COOKIE: AtomicUsize = AtomicUsize::new(0);
 static NEXT_COOKIE: AtomicUsize = AtomicUsize::new(1);
 
+const STATUS_NOT_FOUND: NTSTATUS = 0xC000_0225u32 as i32;
+const STATUS_PROCEDURE_NOT_FOUND: NTSTATUS = 0xC000_007Au32 as i32;
+const STATUS_DLL_INIT_FAILED: NTSTATUS = 0xC000_0142u32 as i32;
+const MAX_LOADER_ENTRIES: usize = 128;
+const MAX_REF_RECORDS: usize = 128;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LdrUnicodeString { Length: u16, MaximumLength: u16, Buffer: *mut u16 }
+
+#[derive(Clone, Copy)]
+struct ModuleRef { base: usize, references: u32, pinned: bool }
+impl ModuleRef { const EMPTY: Self = Self { base: 0, references: 0, pinned: false }; }
+static MODULE_REF_LOCK: AtomicBool = AtomicBool::new(false);
+static mut MODULE_REFS: [ModuleRef; MAX_REF_RECORDS] = [ModuleRef::EMPTY; MAX_REF_RECORDS];
+
+struct ModuleRefGuard;
+impl ModuleRefGuard {
+    fn acquire() -> Self {
+        while MODULE_REF_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        Self
+    }
+}
+impl Drop for ModuleRefGuard { fn drop(&mut self) { MODULE_REF_LOCK.store(false, Ordering::Release); } }
+
+unsafe fn current_peb_ldr_head() -> Option<*const u8> {
+    let peb: *const u8;
+    unsafe { core::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, preserves_flags, readonly)); }
+    if peb.is_null() { return None; }
+    let ldr = unsafe { ptr::read_unaligned(peb.add(0x18).cast::<usize>()) } as *const u8;
+    if ldr.is_null() { return None; }
+    Some(unsafe { ldr.add(0x10) })
+}
+
+unsafe fn find_entry_by_base(base: usize) -> Option<*mut u8> {
+    let head = unsafe { current_peb_ldr_head()? };
+    let head_addr = head as usize;
+    let mut link = unsafe { ptr::read_unaligned(head.cast::<usize>()) };
+    let mut count = 0usize;
+    while link != 0 && link != head_addr && count < MAX_LOADER_ENTRIES {
+        let entry = link as *mut u8;
+        if unsafe { ptr::read_unaligned(entry.add(0x30).cast::<usize>()) } == base { return Some(entry); }
+        link = unsafe { ptr::read_unaligned(entry.cast::<usize>()) };
+        count += 1;
+    }
+    None
+}
+
+unsafe fn entry_name_matches(entry: *const u8, name: *const UNICODE_STRING, full: bool) -> bool {
+    if name.is_null() { return false; }
+    let wanted = unsafe { &*name };
+    if wanted.Length & 1 != 0 || wanted.Length > wanted.MaximumLength
+        || (wanted.Length != 0 && wanted.Buffer.is_null()) { return false; }
+    let offset = if full { 0x48 } else { 0x58 };
+    let length = unsafe { ptr::read_unaligned(entry.add(offset).cast::<u16>()) };
+    let buffer = unsafe { ptr::read_unaligned(entry.add(offset + 8).cast::<usize>()) } as *const u16;
+    if length != wanted.Length || length & 1 != 0 || (length != 0 && (buffer.is_null() || wanted.Buffer.is_null())) { return false; }
+    for i in 0..(length as usize / 2) {
+        let a = unsafe { ptr::read_unaligned(buffer.add(i)) };
+        let b = unsafe { ptr::read_unaligned(wanted.Buffer.add(i)) };
+        let fold = |v: u16| if (b'A' as u16..=b'Z' as u16).contains(&v) { v + 32 } else { v };
+        if fold(a) != fold(b) { return false; }
+    }
+    true
+}
+
+unsafe fn find_entry_by_name(base_name: *const UNICODE_STRING, full_name: *const UNICODE_STRING) -> Option<*mut u8> {
+    let head = unsafe { current_peb_ldr_head()? };
+    let head_addr = head as usize;
+    let mut link = unsafe { ptr::read_unaligned(head.cast::<usize>()) };
+    let mut count = 0usize;
+    while link != 0 && link != head_addr && count < MAX_LOADER_ENTRIES {
+        let entry = link as *mut u8;
+        let base_match = base_name.is_null() || unsafe { entry_name_matches(entry, base_name, false) };
+        let full_match = full_name.is_null() || unsafe { entry_name_matches(entry, full_name, true) };
+        if base_match && full_match { return Some(entry); }
+        link = unsafe { ptr::read_unaligned(entry.cast::<usize>()) };
+        count += 1;
+    }
+    None
+}
+
+unsafe fn track_module_reference(base: usize, pin: bool) -> NTSTATUS {
+    if base == 0 || unsafe { find_entry_by_base(base) }.is_none() { return STATUS_DLL_NOT_FOUND; }
+    let _guard = ModuleRefGuard::acquire();
+    let records = core::ptr::addr_of_mut!(MODULE_REFS).cast::<ModuleRef>();
+    let mut empty: Option<usize> = None;
+    for i in 0..MAX_REF_RECORDS {
+        let record = unsafe { &mut *records.add(i) };
+        if record.base == base {
+            if pin { record.pinned = true; }
+            if !record.pinned {
+                let Some(next) = record.references.checked_add(1) else { return STATUS_RESOURCE_IN_USE; };
+                record.references = next;
+            }
+            return STATUS_SUCCESS;
+        }
+        if record.base == 0 && empty.is_none() { empty = Some(i); }
+    }
+    let Some(i) = empty else { return STATUS_RESOURCE_IN_USE; };
+    unsafe { *records.add(i) = ModuleRef { base, references: 2, pinned: pin }; }
+    STATUS_SUCCESS
+}
+
+
 struct StateGuard;
 impl StateGuard {
     fn acquire() -> Self {
@@ -221,7 +328,10 @@ pub unsafe extern "system" fn LdrAccessResource() -> i32 { STATUS_NOT_IMPLEMENTE
 pub unsafe extern "system" fn LdrAddLoadAsDataTable() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrAddRefDll() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrAddRefDll(flags: ULONG, dll_handle: PVOID) -> NTSTATUS {
+    if flags & !1 != 0 || dll_handle.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { track_module_reference(dll_handle as usize, flags & 1 != 0) }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrAppxHandleIntegrityFailure() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -238,8 +348,31 @@ pub unsafe extern "system" fn LdrCreateEnclave() -> i32 { STATUS_NOT_IMPLEMENTED
 #[no_mangle]
 pub unsafe extern "system" fn LdrDeleteEnclave() -> i32 { STATUS_NOT_IMPLEMENTED }
 
+#[repr(C)]
+pub struct LDR_DATA_TABLE_ENTRY_PREFIX {
+    pub InLoadOrderLinks: [usize; 2], pub InMemoryOrderLinks: [usize; 2],
+    pub InInitializationOrderLinks: [usize; 2], pub DllBase: PVOID, pub EntryPoint: PVOID,
+    pub SizeOfImage: ULONG, pub _padding: ULONG,
+}
+pub type PLDR_ENUM_CALLBACK = Option<unsafe extern "system" fn(*const LDR_DATA_TABLE_ENTRY_PREFIX, PVOID, *mut BOOLEAN)>;
 #[no_mangle]
-pub unsafe extern "system" fn LdrEnumerateLoadedModules() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrEnumerateLoadedModules(flags: ULONG, callback: PLDR_ENUM_CALLBACK, context: PVOID) -> NTSTATUS {
+    if flags != 0 || callback.is_none() { return STATUS_INVALID_PARAMETER; }
+    let Some(head) = (unsafe { current_peb_ldr_head() }) else { return STATUS_DLL_NOT_FOUND; };
+    let head_addr = head as usize;
+    let mut link = unsafe { ptr::read_unaligned(head.cast::<usize>()) };
+    let mut count = 0usize;
+    let callback = callback.unwrap();
+    while link != 0 && link != head_addr && count < MAX_LOADER_ENTRIES {
+        let entry = link as *const LDR_DATA_TABLE_ENTRY_PREFIX;
+        let mut stop: BOOLEAN = 0;
+        unsafe { callback(entry, context, &mut stop); }
+        if stop != 0 { return STATUS_SUCCESS; }
+        link = unsafe { ptr::read_unaligned(link as *const usize) };
+        count += 1;
+    }
+    if count == MAX_LOADER_ENTRIES { STATUS_INVALID_PARAMETER } else { STATUS_SUCCESS }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrEnumResources() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -248,7 +381,27 @@ pub unsafe extern "system" fn LdrEnumResources() -> i32 { STATUS_NOT_IMPLEMENTED
 pub unsafe extern "system" fn LdrFastFailInLoaderCallout() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrFindEntryForAddress() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrFindEntryForAddress(address: PVOID, entry_out: *mut PVOID) -> NTSTATUS {
+    if address.is_null() || entry_out.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { entry_out.write(ptr::null_mut()); }
+    let Some(head) = (unsafe { current_peb_ldr_head() }) else { return STATUS_DLL_NOT_FOUND; };
+    let head_addr = head as usize;
+    let mut link = unsafe { ptr::read_unaligned(head.cast::<usize>()) };
+    let target = address as usize;
+    let mut count = 0usize;
+    while link != 0 && link != head_addr && count < MAX_LOADER_ENTRIES {
+        let entry = link as *mut u8;
+        let base = unsafe { ptr::read_unaligned(entry.add(0x30).cast::<usize>()) };
+        let size = unsafe { ptr::read_unaligned(entry.add(0x40).cast::<u32>()) } as usize;
+        if size != 0 && target >= base && target.checked_sub(base).is_some_and(|offset| offset < size) {
+            unsafe { entry_out.write(entry.cast()); }
+            return STATUS_SUCCESS;
+        }
+        link = unsafe { ptr::read_unaligned(entry.cast::<usize>()) };
+        count += 1;
+    }
+    STATUS_NOT_FOUND
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrFindResource_U() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -266,10 +419,26 @@ pub unsafe extern "system" fn LdrFlushAlternateResourceModules() -> i32 { STATUS
 pub unsafe extern "system" fn LdrGetDllFullName() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrGetDllHandleByMapping() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrGetDllHandleByMapping(mapping_base: PVOID, entry_out: *mut PVOID) -> NTSTATUS {
+    if mapping_base.is_null() || entry_out.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { entry_out.write(ptr::null_mut()); }
+    match unsafe { find_entry_by_base(mapping_base as usize) } {
+        Some(entry) => { unsafe { entry_out.write(entry.cast()); } STATUS_SUCCESS },
+        None => STATUS_DLL_NOT_FOUND,
+    }
+}
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrGetDllHandleByName() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrGetDllHandleByName(
+    base_name: *const UNICODE_STRING, full_name: *const UNICODE_STRING, entry_out: *mut PVOID,
+) -> NTSTATUS {
+    if (base_name.is_null() && full_name.is_null()) || entry_out.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { entry_out.write(ptr::null_mut()); }
+    match unsafe { find_entry_by_name(base_name, full_name) } {
+        Some(entry) => { unsafe { entry_out.write(entry.cast()); } STATUS_SUCCESS },
+        None => STATUS_DLL_NOT_FOUND,
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrGetDllHandleEx(
@@ -339,7 +508,19 @@ pub unsafe extern "system" fn LdrLoadAlternateResourceModule() -> i32 { STATUS_N
 pub unsafe extern "system" fn LdrLoadAlternateResourceModuleEx() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrLoadDll() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrLoadDll(
+    dll_path: *const u16, dll_characteristics: *mut ULONG,
+    dll_name: *const UNICODE_STRING, dll_handle: *mut PVOID,
+) -> NTSTATUS {
+    if dll_name.is_null() || dll_handle.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { dll_handle.write(ptr::null_mut()); }
+    // Reuse an existing mapping without pretending that a missing module was
+    // loaded. New-image mapping requires the not-yet-implemented native section
+    // mapping/loader transaction bridge; fail closed until that exists.
+    let status = unsafe { crate::rtl_loader::LdrGetDllHandle(dll_path as PVOID, dll_characteristics, dll_name.cast(), dll_handle) };
+    if status == STATUS_SUCCESS { return unsafe { track_module_reference(*dll_handle as usize, false) }; }
+    STATUS_NOT_IMPLEMENTED
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrLoadEnclaveModule() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -441,7 +622,23 @@ pub unsafe extern "system" fn LdrUnloadAlternateResourceModule() -> i32 { STATUS
 pub unsafe extern "system" fn LdrUnloadAlternateResourceModuleEx() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrUnloadDll() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrUnloadDll(dll_handle: PVOID) -> NTSTATUS {
+    if dll_handle.is_null() { return STATUS_INVALID_PARAMETER; }
+    if unsafe { find_entry_by_base(dll_handle as usize) }.is_none() { return STATUS_DLL_NOT_FOUND; }
+    let _guard = ModuleRefGuard::acquire();
+    let records = core::ptr::addr_of_mut!(MODULE_REFS).cast::<ModuleRef>();
+    for i in 0..MAX_REF_RECORDS {
+        let record = unsafe { &mut *records.add(i) };
+        if record.base == dll_handle as usize {
+            if record.pinned { return STATUS_SUCCESS; }
+            if record.references > 1 { record.references -= 1; return STATUS_SUCCESS; }
+            // Do not unlink the PEB entry or free memory without kernel-backed
+            // unmap and dependency rundown services.
+            return STATUS_NOT_IMPLEMENTED;
+        }
+    }
+    STATUS_NOT_IMPLEMENTED
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrUnregisterDllNotification() -> i32 { STATUS_NOT_IMPLEMENTED }
