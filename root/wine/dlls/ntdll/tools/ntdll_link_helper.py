@@ -115,10 +115,13 @@ def main() -> int:
             if not (name.startswith("Nt") or name.startswith("Zw")):
                 continue
             off = exports[name]
-            # Canonical syscall stub. Do not guess if Windows changes its stub.
-            if data[off:off + 3] != bytes.fromhex("4c 8b d1") or data[off + 3:off + 4] != b"\xb8":
+            # Windows 11 may insert a shared-user-data test between the
+            # service ID and syscall. Accept the canonical prefix and require
+            # a syscall instruction in the short stub window.
+            if data[off:off + 3] != bytes.fromhex("4c 8b d1") or data[off + 3:off + 4] != b"\\xb8":
                 continue
-            if data[off + 8:off + 11] != bytes.fromhex("0f 05 c3"):
+            stub_window = data[off + 8:off + 32]
+            if bytes.fromhex("0f 05") not in stub_window:
                 continue
             service = u32(data, off + 4)
             macro = "".join(ch.upper() if ch.isalnum() else "_" for ch in name)
