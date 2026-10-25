@@ -64,6 +64,9 @@ rdotos_process_enter_user:
     # area immediately before entering ring 3.
     mov rbx, rsp
     and rsp, -16
+    call cognacos_reset_current_user_xstate
+    mov rsp, rbx
+    and rsp, -16
     call cognacos_current_user_xstate_ptr
     mov rsp, rbx
     test rax, rax
