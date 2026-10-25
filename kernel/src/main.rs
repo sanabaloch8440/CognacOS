@@ -428,6 +428,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             info.kernel_physical_sections[0],
             info.kernel_physical_sections.get(1).copied().unwrap_or((0, 0)),
         ]);
+        if unsafe { syscall::prepare_windows_syscall_stack(0) }.is_err() {
+            serial_write(b"FATAL: could not allocate BSP Windows SYSCALL stack.\r\n");
+            halt();
+        }
+        serial_write(b"Windows SYSCALL per-CPU stack prepared.\r\n");
         serial_write(b"Kernel GDT and exception IDT installed (vectors 0-31).\r\n");
         // Keep the entire physical stack allocation out of the allocator even
         // if firmware's final map incorrectly reports any page as conventional.
