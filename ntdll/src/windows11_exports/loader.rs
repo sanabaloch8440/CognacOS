@@ -516,7 +516,7 @@ pub unsafe extern "system" fn LdrGetProcedureAddressForCaller(
     procedure_number: ULONG,
     procedure_address: *mut PVOID,
     flags: ULONG,
-    _callback: *mut PVOID,
+    _caller_address: PVOID,
 ) -> NTSTATUS {
     if flags & !1 != 0 { return STATUS_INVALID_PARAMETER; }
     unsafe { crate::rtl_loader::LdrGetProcedureAddress(dll_handle, procedure_name, procedure_number, procedure_address) }
