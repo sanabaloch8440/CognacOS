@@ -497,6 +497,17 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     put_u64(space,init_head,LDR_ENTRY_ADDRESS+0x20)?; put_u64(space,init_head+8,last+0x20)?;
 
     // RTL_USER_PROCESS_PARAMETERS prefix and Unicode image/command-line strings.
+    // RTL_USER_PROCESS_PARAMETERS.CurrentDirectory.DosPath (x64 offset 0x38).
+    // Keep this a valid, NUL-terminated DOS path so native NTDLL path APIs
+    // have a real process-parameter source instead of an unrelated global.
+    put_u16(space, PROCESS_PARAMS_ADDRESS + 0x38, 6)?;
+    put_u16(space, PROCESS_PARAMS_ADDRESS + 0x3a, 8)?;
+    put_u64(space, PROCESS_PARAMS_ADDRESS + 0x40, PROCESS_PARAMS_ADDRESS + 0x300)?;
+    put_u64(space, PROCESS_PARAMS_ADDRESS + 0x48, 0)?; // CurrentDirectory.Handle (not opened yet)
+    put_u16(space, PROCESS_PARAMS_ADDRESS + 0x300, b'C' as u16)?;
+    put_u16(space, PROCESS_PARAMS_ADDRESS + 0x302, b':' as u16)?;
+    put_u16(space, PROCESS_PARAMS_ADDRESS + 0x304, b'\\\\' as u16)?;
+    put_u16(space, PROCESS_PARAMS_ADDRESS + 0x306, 0)?;
     put_u32(space, PROCESS_PARAMS_ADDRESS, 0x448)?;
     put_u32(space, PROCESS_PARAMS_ADDRESS+4, 0x448)?;
     put_u32(space, PROCESS_PARAMS_ADDRESS+8, 1)?;
