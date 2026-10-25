@@ -149,6 +149,7 @@ pub const NT_SYSCALL_CHECK_TOKEN_MEMBERSHIP: u64 = 0x116;
 pub const NT_SYSCALL_CREATE_SECTION: u64 = 0x117;
 pub const NT_SYSCALL_DEREFERENCE_SECTION: u64 = 0x118;
 pub const NT_SYSCALL_SECTION_COPY: u64 = 0x119;
+pub const NT_SYSCALL_REFERENCE_SECTION: u64 = 0x11a;
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
 const NT_STATUS_NOT_IMPLEMENTED: u64 = 0xC000_0002;
@@ -918,6 +919,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_CREATE_SECTION => crate::ntoskrnl::mm::native_vm::create_section(args),
         NT_SYSCALL_DEREFERENCE_SECTION => crate::ntoskrnl::mm::native_vm::dereference_section(args),
         NT_SYSCALL_SECTION_COPY => crate::ntoskrnl::mm::native_vm::section_copy(args),
+        NT_SYSCALL_REFERENCE_SECTION => crate::ntoskrnl::mm::native_vm::reference_section(args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
     }
 }
@@ -1024,6 +1026,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_CREATE_SECTION => 2,
             NT_SYSCALL_DEREFERENCE_SECTION => 1,
             NT_SYSCALL_SECTION_COPY => 5,
+            NT_SYSCALL_REFERENCE_SECTION => 1,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
