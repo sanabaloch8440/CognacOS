@@ -218,6 +218,21 @@ jobs:
           test "${#public_key}" -eq 64
           test "${#signature}" -eq 128
           openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey build/cognacos-kernel-public.der -in build/cognacos-kernel.exe -sigfile build/cognacos-kernel.sig
+          cp build/cognacos-kernel.exe build/cognacos-kernel-tampered.exe
+          python3 - <<'PY'
+          p = "build/cognacos-kernel-tampered.exe"
+          with open(p, "r+b") as f:
+              b = f.read(1)
+              assert b
+              f.seek(0)
+              f.write(bytes([b[0] ^ 1]))
+          PY
+          if openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey build/cognacos-kernel-public.der -in build/cognacos-kernel-tampered.exe -sigfile build/cognacos-kernel.sig >/dev/null 2>&1; then
+            echo "Tampered kernel incorrectly passed signature verification." >&2
+            exit 1
+          fi
+          rm -f build/cognacos-kernel-tampered.exe
+          echo "Valid signature accepted and tampered kernel rejected."
           echo "public_key=$public_key" >> "$GITHUB_OUTPUT"
           echo "signature=$signature" >> "$GITHUB_OUTPUT"
           rm -f build/cognacos-kernel-signing.pem
