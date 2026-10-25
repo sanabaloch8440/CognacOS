@@ -1,69 +1,163 @@
-//! Windows 11 x64 NTDLL memory export placeholders.
-//! Replace generic signatures with ABI-correct declarations as each routine is implemented.
+//! Windows x64 NTDLL virtual-memory exports.
+//!
+//! The implemented Nt* calls enter CognacOS through its private vector 0x83
+//! native-service ABI. This is an in-tree OS bridge, not a Windows syscall
+//! ordinal table; the kernel validates pointers and currently supports only
+//! NT_CURRENT_PROCESS for these operations.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 use core::ffi::c_void;
 use core::ptr;
+use core::arch::global_asm;
+
 pub type NTSTATUS = i32;
 pub type HANDLE = *mut c_void;
 pub type PVOID = *mut c_void;
 pub type PSIZE_T = *mut usize;
+pub type PULONG = *mut ULONG;
 pub type ULONG = u32;
 pub type ULONG_PTR = usize;
 pub type SIZE_T = usize;
+
 const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC000_0002u32 as i32;
+const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
+const STATUS_SUCCESS: NTSTATUS = 0;
+const COGNAC_NT_CURRENT_PROCESS: HANDLE = usize::MAX as HANDLE;
+const MEM_DECOMMIT: ULONG = 0x4000;
+const MEM_RELEASE: ULONG = 0x8000;
+const MEMORY_BASIC_INFORMATION_CLASS: ULONG = 0;
+
+#[repr(C)]
+pub struct IO_STATUS_BLOCK { pub status_or_pointer: usize, pub information: usize }
+
+/// Windows x64 MEMORY_BASIC_INFORMATION (48-byte layout).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MEMORY_BASIC_INFORMATION {
+    pub base_address: PVOID,
+    pub allocation_base: PVOID,
+    pub allocation_protect: ULONG,
+    pub partition_id: u16,
+    pub _alignment: u16,
+    pub region_size: SIZE_T,
+    pub state: ULONG,
+    pub protect: ULONG,
+    pub kind: ULONG,
+}
+
+global_asm!(r#"
+    .text
+    .p2align 4
+    .global cognacos_nt_allocate_virtual_memory
+cognacos_nt_allocate_virtual_memory:
+    mov r10, rcx
+    mov eax, 0x109
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_nt_free_virtual_memory
+cognacos_nt_free_virtual_memory:
+    mov r10, rcx
+    mov eax, 0x10a
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_nt_protect_virtual_memory
+cognacos_nt_protect_virtual_memory:
+    mov r10, rcx
+    mov eax, 0x10b
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_nt_query_virtual_memory
+cognacos_nt_query_virtual_memory:
+    mov r10, rcx
+    mov eax, 0x10c
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_nt_read_virtual_memory
+cognacos_nt_read_virtual_memory:
+    mov r10, rcx
+    mov eax, 0x10d
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_nt_write_virtual_memory
+cognacos_nt_write_virtual_memory:
+    mov r10, rcx
+    mov eax, 0x10e
+    int 0x83
+    ret
+"#);
+
+unsafe extern "system" {
+    fn cognacos_nt_allocate_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, zero_bits: ULONG_PTR, region_size: PSIZE_T, allocation_type: ULONG, protect: ULONG) -> NTSTATUS;
+    fn cognacos_nt_free_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, free_type: ULONG) -> NTSTATUS;
+    fn cognacos_nt_protect_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, new_protect: ULONG, old_protect: PULONG) -> NTSTATUS;
+    fn cognacos_nt_query_virtual_memory(process_handle: HANDLE, base_address: PVOID, memory_information_class: ULONG, memory_information: PVOID, memory_information_length: SIZE_T, return_length: PSIZE_T) -> NTSTATUS;
+    fn cognacos_nt_read_virtual_memory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: PSIZE_T) -> NTSTATUS;
+    fn cognacos_nt_write_virtual_memory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_written: PSIZE_T) -> NTSTATUS;
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtAllocateVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, zero_bits: ULONG_PTR, region_size: PSIZE_T, allocation_type: ULONG, protect: ULONG) -> NTSTATUS {
-    let _ = (process_handle, base_address, zero_bits, region_size, allocation_type, protect);
-    STATUS_NOT_IMPLEMENTED
+    if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
+    if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
+    unsafe { cognacos_nt_allocate_virtual_memory(process_handle, base_address, zero_bits, region_size, allocation_type, protect) }
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtAllocateVirtualMemoryEx(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, allocation_type: ULONG, protect: ULONG, extended_parameters: PVOID, parameter_count: ULONG) -> NTSTATUS {
     let _ = (process_handle, base_address, region_size, allocation_type, protect, extended_parameters, parameter_count);
     STATUS_NOT_IMPLEMENTED
 }
-#[repr(C)]
-pub struct IO_STATUS_BLOCK { pub status_or_pointer: usize, pub information: usize }
 #[no_mangle]
 pub unsafe extern "system" fn NtFlushVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, io_status_block: *mut IO_STATUS_BLOCK) -> NTSTATUS {
     let _ = (process_handle, base_address, region_size, io_status_block);
+    // This VM currently has no section/file-backed dirty-page flush contract.
     STATUS_NOT_IMPLEMENTED
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtFreeVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, free_type: ULONG) -> NTSTATUS {
-    let _ = (process_handle, base_address, region_size, free_type);
-    STATUS_NOT_IMPLEMENTED
+    if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
+    if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
+    if free_type != MEM_DECOMMIT && free_type != MEM_RELEASE { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_nt_free_virtual_memory(process_handle, base_address, region_size, free_type) }
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtLockVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS {
     let _ = (process_handle, base_address, region_size, map_type);
+    // Pinning/lock accounting and locked-page lifetime are not implemented in MM.
     STATUS_NOT_IMPLEMENTED
 }
 #[no_mangle]
-pub unsafe extern "system" fn NtProtectVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, new_protect: ULONG, old_protect: *mut ULONG) -> NTSTATUS {
-    let _ = (process_handle, base_address, region_size, new_protect, old_protect);
-    STATUS_NOT_IMPLEMENTED
-}
-#[repr(C)]
-pub struct MEMORY_BASIC_INFORMATION {
-    pub base_address: PVOID, pub allocation_base: PVOID, pub allocation_protect: ULONG,
-    pub partition_id: u16, pub region_size: usize, pub state: ULONG, pub protect: ULONG, pub kind: ULONG,
+pub unsafe extern "system" fn NtProtectVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, new_protect: ULONG, old_protect: PULONG) -> NTSTATUS {
+    if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
+    if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
+    unsafe { cognacos_nt_protect_virtual_memory(process_handle, base_address, region_size, new_protect, old_protect) }
 }
 #[no_mangle]
-pub unsafe extern "system" fn NtQueryVirtualMemory(process_handle: HANDLE, base_address: PVOID, memory_information_class: ULONG, memory_information: PVOID, memory_information_length: SIZE_T, return_length: *mut SIZE_T) -> NTSTATUS {
-    let _ = (process_handle, base_address, memory_information_class, memory_information, memory_information_length, return_length);
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtQueryVirtualMemory(process_handle: HANDLE, base_address: PVOID, memory_information_class: ULONG, memory_information: PVOID, memory_information_length: SIZE_T, return_length: PSIZE_T) -> NTSTATUS {
+    if memory_information.is_null() { return STATUS_INVALID_PARAMETER; }
+    if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
+    if memory_information_class != MEMORY_BASIC_INFORMATION_CLASS { return 0xC000_0003u32 as i32; }
+    unsafe { cognacos_nt_query_virtual_memory(process_handle, base_address, memory_information_class, memory_information, memory_information_length, return_length) }
 }
 #[no_mangle]
-pub unsafe extern "system" fn NtReadVirtualMemory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: *mut SIZE_T) -> NTSTATUS {
-    let _ = (process_handle, base_address, buffer, buffer_size, number_of_bytes_read);
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtReadVirtualMemory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: PSIZE_T) -> NTSTATUS {
+    if buffer_size != 0 && (base_address.is_null() || buffer.is_null()) { return STATUS_INVALID_PARAMETER; }
+    if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
+    unsafe { cognacos_nt_read_virtual_memory(process_handle, base_address, buffer, buffer_size, number_of_bytes_read) }
 }
 #[no_mangle]
-pub unsafe extern "system" fn NtReadVirtualMemoryEx(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: *mut SIZE_T, flags: ULONG) -> NTSTATUS {
-    let _ = (process_handle, base_address, buffer, buffer_size, number_of_bytes_read, flags);
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtReadVirtualMemoryEx(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: PSIZE_T, flags: ULONG) -> NTSTATUS {
+    if flags != 0 { return STATUS_INVALID_PARAMETER; }
+    unsafe { NtReadVirtualMemory(process_handle, base_address, buffer, buffer_size, number_of_bytes_read) }
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtUnlockVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS {
@@ -71,55 +165,11 @@ pub unsafe extern "system" fn NtUnlockVirtualMemory(process_handle: HANDLE, base
     STATUS_NOT_IMPLEMENTED
 }
 #[no_mangle]
-pub unsafe extern "system" fn NtWriteVirtualMemory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_written: *mut SIZE_T) -> NTSTATUS {
-    let _ = (process_handle, base_address, buffer, buffer_size, number_of_bytes_written);
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtWriteVirtualMemory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_written: PSIZE_T) -> NTSTATUS {
+    if buffer_size != 0 && (base_address.is_null() || buffer.is_null()) { return STATUS_INVALID_PARAMETER; }
+    if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
+    unsafe { cognacos_nt_write_virtual_memory(process_handle, base_address, buffer, buffer_size, number_of_bytes_written) }
 }
-#[no_mangle]
-pub unsafe extern "system" fn ZwAllocateVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, zero_bits: ULONG_PTR, region_size: PSIZE_T, allocation_type: ULONG, protect: ULONG) -> NTSTATUS {
-    unsafe { NtAllocateVirtualMemory(process_handle, base_address, zero_bits, region_size, allocation_type, protect) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwAllocateVirtualMemoryEx(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, allocation_type: ULONG, protect: ULONG, extended_parameters: PVOID, parameter_count: ULONG) -> NTSTATUS {
-    unsafe { NtAllocateVirtualMemoryEx(process_handle, base_address, region_size, allocation_type, protect, extended_parameters, parameter_count) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwFlushVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, io_status_block: *mut IO_STATUS_BLOCK) -> NTSTATUS {
-    unsafe { NtFlushVirtualMemory(process_handle, base_address, region_size, io_status_block) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwFreeVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, free_type: ULONG) -> NTSTATUS {
-    unsafe { NtFreeVirtualMemory(process_handle, base_address, region_size, free_type) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwLockVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS {
-    unsafe { NtLockVirtualMemory(process_handle, base_address, region_size, map_type) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwProtectVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, new_protect: ULONG, old_protect: *mut ULONG) -> NTSTATUS {
-    unsafe { NtProtectVirtualMemory(process_handle, base_address, region_size, new_protect, old_protect) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwQueryVirtualMemory(process_handle: HANDLE, base_address: PVOID, memory_information_class: ULONG, memory_information: PVOID, memory_information_length: SIZE_T, return_length: *mut SIZE_T) -> NTSTATUS {
-    unsafe { NtQueryVirtualMemory(process_handle, base_address, memory_information_class, memory_information, memory_information_length, return_length) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwReadVirtualMemory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: *mut SIZE_T) -> NTSTATUS {
-    unsafe { NtReadVirtualMemory(process_handle, base_address, buffer, buffer_size, number_of_bytes_read) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwReadVirtualMemoryEx(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: *mut SIZE_T, flags: ULONG) -> NTSTATUS {
-    unsafe { NtReadVirtualMemoryEx(process_handle, base_address, buffer, buffer_size, number_of_bytes_read, flags) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwUnlockVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS {
-    unsafe { NtUnlockVirtualMemory(process_handle, base_address, region_size, map_type) }
-}
-#[no_mangle]
-pub unsafe extern "system" fn ZwWriteVirtualMemory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_written: *mut SIZE_T) -> NTSTATUS {
-    unsafe { NtWriteVirtualMemory(process_handle, base_address, buffer, buffer_size, number_of_bytes_written) }
-}
-
 #[no_mangle]
 pub unsafe extern "system" fn RtlAddRefMemoryStream() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
