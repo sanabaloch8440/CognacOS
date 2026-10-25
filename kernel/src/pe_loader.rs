@@ -37,8 +37,13 @@ fn transaction_import_resolver(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u
     if !matches!(dependency.state, crate::pe_modules::ModuleState::Mapped
         | crate::pe_modules::ModuleState::Initializing
         | crate::pe_modules::ModuleState::Initialized) { return None; }
+    // Resolve against the exact module identity selected above (including
+    // API-set host normalization), not the original contract string. Otherwise
+    // an API-set import could accidentally bind an export from a different
+    // module with a matching symbol name.
     let resolve = context.resolver.unwrap_or(crate::winabi::resolve_import);
-    let address = resolve(dll, symbol)?;
+    let loaded_name = &dependency.name[..dependency.name_len as usize];
+    let address = resolve(loaded_name, symbol)?;
     crate::pe_modules::add_dependency(
         context.parent_slot, context.parent_generation, dependency_slot, dependency.generation,
     ).ok()?;
