@@ -1,0 +1,13 @@
+//! Windows 11 x64 NTDLL env export placeholders.
+//! Replace generic signatures with ABI-correct declarations as each routine is implemented.
+#![allow(non_snake_case, clippy::missing_safety_doc)]
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlCreateEnvironmentEx() -> i32 {
+    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlSetEnvironmentVar() -> i32 {
+    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+}

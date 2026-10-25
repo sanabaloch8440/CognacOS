@@ -7,6 +7,12 @@
 //! replacements for the real Windows function signatures.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
+mod printf;
+mod alpc;
+mod atom;
+mod env;
+mod version;
+
 mod exception;
 mod time;
 mod strings;
@@ -114,17 +120,9 @@ pub unsafe extern "system" fn _setjmpex() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn _snscanf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn _snwscanf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn _splitpath() -> i32 {
@@ -154,15 +152,7 @@ pub unsafe extern "system" fn _splitpath_s() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn _vscprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _vscwprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -209,65 +199,17 @@ pub unsafe extern "system" fn abs() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcAdjustCompletionListConcurrencyCount() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcFreeCompletionListMessage() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcGetCompletionListLastMessageInformation() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcGetCompletionListMessageAttributes() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcGetMessageFromCompletionList() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcGetOutstandingCompletionListMessageCount() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcMaxAllowedMessageLength() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcRegisterCompletionList() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcRegisterCompletionListWorkerThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcRundownCompletionList() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcUnregisterCompletionList() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn AlpcUnregisterCompletionListWorkerThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ApiSetGetImplementationHost() -> i32 {
@@ -1008,15 +950,7 @@ pub unsafe extern "system" fn NtAcquireCrossVmMutant() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtAddAtom() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtAddAtomEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtAddBootEntry() -> i32 {
@@ -1064,71 +998,27 @@ pub unsafe extern "system" fn NtAllocateUuids() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcCancelMessage() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-
-
-
-
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcCreateResourceReserve() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcCreateSectionView() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcCreateSecurityContext() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcDeleteResourceReserve() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcDeleteSectionView() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcDeleteSecurityContext() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcQueryInformation() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcQueryInformationMessage() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcRevokeSecurityContext() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtAlpcSetInformation() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[no_mangle]
 pub unsafe extern "system" fn NtApphelpCacheControl() -> i32 {
@@ -1417,10 +1307,6 @@ pub unsafe extern "system" fn NtDelayExecution() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtDeleteAtom() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtDeleteBootEntry() -> i32 {
@@ -1545,10 +1431,6 @@ pub unsafe extern "system" fn NtFilterBootOption() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtFindAtom() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtFlushBuffersFile() -> i32 {
@@ -1992,10 +1874,6 @@ pub unsafe extern "system" fn NtQueryFullAttributesFile() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQueryInformationAtom() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtQueryInformationByName() -> i32 {
@@ -3289,10 +3167,6 @@ pub unsafe extern "system" fn RtlCreateBoundaryDescriptor() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCreateEnvironmentEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -3804,15 +3678,7 @@ pub unsafe extern "system" fn RtlFlsSetValue() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFormatMessage() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFormatMessageEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlFreeActivationContextStack() -> i32 {
@@ -3993,10 +3859,6 @@ pub unsafe extern "system" fn RtlGetImageFileMachines() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetIntegerAtom() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -4246,10 +4108,6 @@ pub unsafe extern "system" fn RtlInitCodePageTable() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitializeAtomPackage() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitializeBitMapEx() -> i32 {
@@ -5500,10 +5358,6 @@ pub unsafe extern "system" fn RtlSetDaclSecurityDescriptor() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlSetEnvironmentVar() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetFeatureConfigurations() -> i32 {
@@ -5995,10 +5849,6 @@ pub unsafe extern "system" fn RtlValidSid() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlVerifyVersionInfo() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -6192,15 +6042,7 @@ pub unsafe extern "system" fn sin() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn sprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn sprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn sqrt() -> i32 {
@@ -6322,15 +6164,7 @@ pub unsafe extern "system" fn strtoul() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn swprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn swprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn swscanf_s() -> i32 {
@@ -6697,10 +6531,6 @@ pub unsafe extern "system" fn vDbgPrintExWithPrefix() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn VerSetConditionMask() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn vsprintf() -> i32 {
@@ -7081,71 +6911,27 @@ pub unsafe extern "system" fn ZwAllocateUuids() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcCancelMessage() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-
-
-
-
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcCreateResourceReserve() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcCreateSectionView() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcCreateSecurityContext() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcDeleteResourceReserve() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcDeleteSectionView() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcDeleteSecurityContext() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcQueryInformation() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcQueryInformationMessage() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcRevokeSecurityContext() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwAlpcSetInformation() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwApphelpCacheControl() -> i32 {
