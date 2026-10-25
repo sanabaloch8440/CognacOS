@@ -574,11 +574,38 @@ pub unsafe extern "system" fn LdrpResGetResourceDirectory() -> i32 { STATUS_NOT_
 #[no_mangle]
 pub unsafe extern "system" fn LdrProcessInitializationComplete() -> i32 { STATUS_NOT_IMPLEMENTED }
 
+/// Apply the AMD64 base-relocation entries for one image page.
 #[no_mangle]
-pub unsafe extern "system" fn LdrProcessRelocationBlock() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrProcessRelocationBlock(
+    va: ULONG_PTR, size_of_block: ULONG, next_offset: *mut u16, diff: isize,
+) -> *mut u16 {
+    if va == 0 || size_of_block & 1 != 0 || (size_of_block != 0 && next_offset.is_null()) {
+        return ptr::null_mut();
+    }
+    let count = (size_of_block / 2) as usize;
+    for index in 0..count {
+        let item = unsafe { ptr::read_unaligned(next_offset.add(index)) };
+        let kind = item >> 12;
+        let offset = (item & 0x0fff) as usize;
+        if kind == 0 { continue; } // IMAGE_REL_BASED_ABSOLUTE padding
+        if kind != 10 { return ptr::null_mut(); } // IMAGE_REL_BASED_DIR64 only on AMD64
+        let Some(address) = va.checked_add(offset) else { return ptr::null_mut(); };
+        let location = address as *mut u64;
+        let value = unsafe { ptr::read_unaligned(location) };
+        unsafe { ptr::write_unaligned(location, value.wrapping_add(diff as u64)); }
+    }
+    unsafe { next_offset.add(count) }
+}
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrProcessRelocationBlockEx() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrProcessRelocationBlockEx(
+    machine: ULONG, va: ULONG_PTR, size_of_block: ULONG, next_offset: *mut u16, diff: isize,
+) -> *mut u16 {
+    if machine != 0x8664 { return ptr::null_mut(); } // IMAGE_FILE_MACHINE_AMD64
+    unsafe { LdrProcessRelocationBlock(va, size_of_block, next_offset, diff) }
+}
+
+
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrQueryImageFileExecutionOptions() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -750,3 +777,17 @@ mod tests {
         assert_eq!(unsafe { LdrSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) }, STATUS_SUCCESS);
     }
 }
+
+    #[test]
+    fn amd64_relocation_block_applies_dir64_and_rejects_unknown_types() {
+        let mut image = [0u8; 64];
+        image[0x20..0x28].copy_from_slice(&0x1234u64.to_le_bytes());
+        let mut entries = [0xA020u16, 0x0000u16];
+        let end = unsafe { LdrProcessRelocationBlock(image.as_mut_ptr() as usize, 4, entries.as_mut_ptr(), 0x1000) };
+        assert_eq!(end, unsafe { entries.as_mut_ptr().add(2) });
+        assert_eq!(u64::from_le_bytes(image[0x20..0x28].try_into().unwrap()), 0x2234);
+        let mut unsupported = [0x3020u16];
+        assert!(unsafe { LdrProcessRelocationBlock(image.as_mut_ptr() as usize, 2, unsupported.as_mut_ptr(), 1) }.is_null());
+        assert!(unsafe { LdrProcessRelocationBlockEx(0x14c, image.as_mut_ptr() as usize, 2, unsupported.as_mut_ptr(), 1) }.is_null());
+    }
+
