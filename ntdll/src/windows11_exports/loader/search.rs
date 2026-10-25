@@ -121,10 +121,10 @@ pub unsafe extern "system" fn LdrDisableThreadCalloutsForDll(module_base: PVOID)
     } else { STATUS_RESOURCE_IN_USE }
 }
 
-const LOAD_WITH_ALTERED_SEARCH_PATH: ULONG = 0x0000_0008;
-const MAX_BUILT_SEARCH_PATH_UNITS: usize = 2048;
+pub(super) const LOAD_WITH_ALTERED_SEARCH_PATH: ULONG = 0x0000_0008;
+pub(super) const MAX_BUILT_SEARCH_PATH_UNITS: usize = 2048;
 
-fn append_search_component(out: &mut [u16; MAX_BUILT_SEARCH_PATH_UNITS], used: &mut usize, component: &[u16]) -> bool {
+pub(super) fn append_search_component(out: &mut [u16; MAX_BUILT_SEARCH_PATH_UNITS], used: &mut usize, component: &[u16]) -> bool {
     if component.is_empty() { return true; }
     let separator = usize::from(*used != 0);
     let Some(end) = used.checked_add(separator).and_then(|n| n.checked_add(component.len())) else { return false; };
@@ -135,7 +135,7 @@ fn append_search_component(out: &mut [u16; MAX_BUILT_SEARCH_PATH_UNITS], used: &
     true
 }
 
-unsafe fn process_image_directory() -> Option<([u16; MAX_PATH_UNITS], usize)> {
+pub(super) unsafe fn process_image_directory() -> Option<([u16; MAX_PATH_UNITS], usize)> {
     let peb: *const u8;
     unsafe { core::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, preserves_flags, readonly)); }
     if peb.is_null() { return None; }
@@ -156,7 +156,7 @@ unsafe fn process_image_directory() -> Option<([u16; MAX_PATH_UNITS], usize)> {
     Some((path, end))
 }
 
-unsafe fn dll_load_directory(dll_name: *const u16) -> Option<([u16; MAX_PATH_UNITS], usize)> {
+pub(super) unsafe fn dll_load_directory(dll_name: *const u16) -> Option<([u16; MAX_PATH_UNITS], usize)> {
     if dll_name.is_null() { return None; }
     let mut path = [0u16; MAX_PATH_UNITS];
     let mut count = 0usize;
