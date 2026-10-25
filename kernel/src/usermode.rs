@@ -354,6 +354,42 @@ pub unsafe fn run_native_ntdll_smoke(
         }};
     }
     emit!(&[0x48, 0x83, 0xec, 0x30]); // Shadow space plus fifth-argument slot; keeps RSP 16-byte aligned.
+
+    // Exercise the actual Windows x64 SYSCALL ABI before invoking the custom
+    // CognacOS NTDLL wrappers. These service IDs match the inspected reference
+    // NTDLL build; RCX is copied to R10 and argument five is on the user stack.
+    imm64!(&[0x48, 0xb9], 0); // SystemBasicInformation
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0x300);
+    emit!(&[0x41, 0xb8, 64, 0, 0, 0]);
+    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x380);
+    emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x36, 0, 0, 0, 0x0f, 0x05]);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    check_dword!(NTDLL_TEST_DATA + 0x380, 64);
+    check_dword!(NTDLL_TEST_DATA + 0x308, 4096);
+
+    imm64!(&[0x48, 0xb9], u64::MAX); // NtQueryInformationProcess
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA + 0x400);
+    emit!(&[0x41, 0xb9, 48, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0x480);
+    emit!(&[0x48, 0x89, 0x44, 0x24, 0x20]);
+    emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x19, 0, 0, 0, 0x0f, 0x05]);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    check_dword!(NTDLL_TEST_DATA + 0x480, 48);
+
+    imm64!(&[0x48, 0xb9], u64::MAX - 1); // NtQueryInformationThread
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA + 0x500);
+    emit!(&[0x41, 0xb9, 48, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0x580);
+    emit!(&[0x48, 0x89, 0x44, 0x24, 0x20]);
+    emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x25, 0, 0, 0, 0x0f, 0x05]);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    check_dword!(NTDLL_TEST_DATA + 0x580, 48);
+
     imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0x300);
     emit!(&[0xba, 5, 0, 0, 0]);
     call_ptr!(configure);
