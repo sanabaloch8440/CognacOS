@@ -194,6 +194,27 @@ pub unsafe fn load_dll_from_vfs(
     close_result?;
     if total == 0 { return Err(STATUS_INVALID_IMAGE_FORMAT); }
 
+    // Phase one: discover every normal and delay-import dependency directly
+    // from the file image before allocating the parent's image pages. This is
+    // deliberately bounded and validates malformed descriptors early.
+    let plan = crate::pe_dependencies::discover(&scratch[..total])?;
+    for index in 0..plan.len() {
+        let dependency = plan.get(index).ok_or(STATUS_INVALID_IMAGE_FORMAT)?;
+        let name = dependency.as_bytes();
+        let normalized = crate::winabi::api_set_host(name).unwrap_or(name);
+        let Some((_, loaded)) = crate::pe_modules::find_for_process(process_id, normalized) else {
+            // Never map a parent whose import graph is incomplete. Recursive
+            // VFS discovery is layered on this preflight plan; until the native
+            // section bridge supplies per-depth file storage, fail closed.
+            return Err(STATUS_DLL_NOT_FOUND);
+        };
+        if !matches!(loaded.state, crate::pe_modules::ModuleState::Mapped
+            | crate::pe_modules::ModuleState::Initializing
+            | crate::pe_modules::ModuleState::Initialized) {
+            return Err(STATUS_RESOURCE_IN_USE);
+        }
+    }
+
     let (slot, generation) = crate::pe_modules::reserve_for_process(process_id, module_name)?;
     *IMPORT_CONTEXT.lock() = ImportContext {
         active: true, process_id, parent_slot: slot, parent_generation: generation, resolver,
