@@ -61,6 +61,8 @@ fn main() {
         }
     }
     scan(std::path::Path::new("src"), &mut declared);
+    // Explicitly protect the unwind-table ABI implementation from generated export stubs.
+    declared.insert("RtlAddFunctionTable".to_string());
     let mut output = String::from("// Generated from the committed Windows 11 x64 export inventory plus the in-tree Wine ntdll.spec.\n// Generic ABI placeholders only: no parameter semantics are implemented.\n");
     let mut count = 0usize;
     for name in names {
