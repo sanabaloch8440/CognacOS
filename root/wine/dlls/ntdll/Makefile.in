@@ -36,6 +36,7 @@ SOURCES = \
 	relay.c \
 	resource.c \
 	rtl.c \
+	rtl_memory.c \
 	rtlbitmap.c \
 	rtlstr.c \
 	sec.c \
