@@ -184,3 +184,11 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
     (void)instance; (void)reason; (void)reserved;
     return TRUE;
 }
+
+/*
+ * Keep one explicit image-relative relocation in the PE. x64 code is otherwise
+ * RIP-relative, so ld may omit .reloc entirely; CognacOS must be able to map
+ * this DLL away from 0x180000000 in its isolated user address space.
+ */
+__declspec(dllexport)
+BOOL (WINAPI *CognacNtdllImageAnchor)(HINSTANCE, DWORD, LPVOID) = DllMain;
