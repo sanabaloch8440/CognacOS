@@ -453,6 +453,14 @@ mod tests {
         let name: Vec<WCHAR> = "\\\\logs".encode_utf16().collect();
         let (len, _) = full_path_into(&name, &current, &mut out).unwrap();
         assert_eq!(String::from_utf16(&out[..len]).unwrap(), "C:\\\\logs");
+
+        let name: Vec<WCHAR> = "C:temp.txt".encode_utf16().collect();
+        let (len, _) = full_path_into(&name, &current, &mut out).unwrap();
+        assert_eq!(String::from_utf16(&out[..len]).unwrap(), "C:\\\\work\\\\app\\\\temp.txt");
+
+        let name: Vec<WCHAR> = "D:temp.txt".encode_utf16().collect();
+        let (len, _) = full_path_into(&name, &current, &mut out).unwrap();
+        assert_eq!(String::from_utf16(&out[..len]).unwrap(), "D:\\\\temp.txt");
     }
 
     #[test]
