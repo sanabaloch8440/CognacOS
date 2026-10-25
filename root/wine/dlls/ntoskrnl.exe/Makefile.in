@@ -8,6 +8,7 @@ VER_PRODUCTVERSION = 6,1,7601,21863
 SOURCES = \
 	instr.c \
 	ntoskrnl.c \
+	rtl_memory.c \
 	plugplay.idl \
 	pnp.c \
 	sync.c
