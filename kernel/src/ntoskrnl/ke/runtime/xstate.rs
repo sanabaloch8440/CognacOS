@@ -8,6 +8,10 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 const CPUID_XSAVE: u32 = 1 << 26;
+const CR0_MP: u64 = 1 << 1;
+const CR0_EM: u64 = 1 << 2;
+const CR0_TS: u64 = 1 << 3;
+const CR0_NE: u64 = 1 << 5;
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
 const CR4_OSXSAVE: u64 = 1 << 18;
@@ -68,6 +72,12 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
         return false;
     }
 
+    // Enable native x87/SSE execution before enabling OSXSAVE. This is done
+    // during CPU bring-up before the processor can run a user thread.
+    let mut cr0: u64;
+    unsafe { core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags)); }
+    cr0 = (cr0 & !(CR0_EM | CR0_TS)) | CR0_MP | CR0_NE;
+    unsafe { core::arch::asm!("mov cr0, {}", in(reg) cr0, options(nomem, nostack, preserves_flags)); }
     // The OS owns CR4.OSXSAVE. Set the legacy SSE control bits as well, then
     // set XCR0 only to the dependency-closed state components we will save.
     let mut cr4: u64;
@@ -269,7 +279,7 @@ static XSTATE_SAVE_TABLE: crate::hal::IrqSpinLock<XStateSaveTable> =
 fn current_xstate_execution_context() -> Option<(usize, u64, u8)> {
     let cpu = crate::hal::current_cpu_local()?.logical_id.load(Ordering::Acquire) as usize;
     if cpu >= crate::hal::MAX_CPUS { return None; }
-    let thread = crate::thread::current_thread_id().unwrap_or(0);
+    let thread = crate::thread::current_thread_id()?;
     let irql = ke_get_current_irql();
     Some((cpu, thread, irql))
 }
