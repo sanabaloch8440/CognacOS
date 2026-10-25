@@ -1820,4 +1820,307 @@ pub extern "C" fn cognacos_timer_interrupt_handler() {
     // thread's kernel stack; IRETQ resumes that thread when it is scheduled again.
     crate::thread::preempt_from_timer_interrupt();
     if first { unsafe { crate::serial_write(b"APIC timer ISR EOI completed.\r\n"); } }
+}/// The exception entry's saved-register layout. CPL3 frames also contain RSP and SS.
+#[repr(C)]
+struct UserExceptionTrapFrame {
+    saved_registers: [u64; 15],
+    vector: u64,
+    error_code: u64,
+    rip: u64,
+    cs: u64,
+    rflags: u64,
+    rsp: u64,
+    ss: u64,
+}
+
+fn user_exception_status(vector: u64) -> u64 {
+    match vector {
+        0 => 0xC000_0094, // STATUS_INTEGER_DIVIDE_BY_ZERO
+        1 => 0x8000_0004, // STATUS_SINGLE_STEP
+        3 => 0x8000_0003, // STATUS_BREAKPOINT
+        6 => 0xC000_001D, // STATUS_ILLEGAL_INSTRUCTION
+        13 => 0xC000_0096, // STATUS_PRIVILEGED_INSTRUCTION
+        _ => 0xC000_0005, // STATUS_ACCESS_VIOLATION
+    }
+}
+
+/// Unresolved CPL3 exceptions are process-scoped. This is the termination fallback
+/// until a user-mode exception/SEH dispatcher can resume or unwind user execution.
+fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> ! {
+    let trap = unsafe { &*frame.cast::<UserExceptionTrapFrame>() };
+    if trap.vector != vector || trap.error_code != error || trap.cs & 3 != 3
+        || trap.ss & 3 != 3
+        || trap.rip < 0x1000
+        || trap.rip >= crate::ntoskrnl::mm::address_space::USER_END
+        || trap.rsp < 0x1000
+        || trap.rsp >= crate::ntoskrnl::mm::address_space::USER_END {
+        cognacos_exception_fatal(vector, error, frame);
+    }
+    let pid = crate::thread::current_process_id();
+    if pid == 0 {
+        cognacos_exception_fatal(vector, error, frame);
+    }
+    crate::serial_write(b"CPL3 exception: vector=");
+    crate::serial_write_hex(vector);
+    crate::serial_write(b" error=");
+    crate::serial_write_hex(error);
+    crate::serial_write(b" RIP=");
+    crate::serial_write_hex(trap.rip);
+    if vector == 14 {
+        let cr2: u64;
+        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+        crate::serial_write(b" CR2=");
+        crate::serial_write_hex(cr2);
+    }
+    crate::serial_write(b" process=");
+    crate::serial_write_hex(pid);
+    crate::serial_write(b"\r\n");
+    crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, user_exception_status(vector))
+}
+
+/// Dispatch recoverable faults. A return value of one asks the assembly stub to
+/// restore the original frame and IRETQ; unhandled supervisor exceptions halt.
+#[unsafe(no_mangle)]
+pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
+    if vector == 2 && crate::ntoskrnl::ke::runtime::dispatch_nmi_callbacks() { return 1; }
+    // Determine privilege from the saved CS. A user fault must never consume a
+    // kernel probe fixup, even if its RIP happens to match a registered record.
+    if vector < EXCEPTION_VECTORS as u64 {
+        let saved_cs = unsafe { frame.add(18).read() };
+        if saved_cs & 3 == 3 {
+            if vector == 14 {
+                let cr2: u64;
+                unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+                if crate::ntoskrnl::mm::address_space::handle_current_user_page_fault(cr2, error) { return 1; }
+            }
+            dispatch_user_mode_exception(vector, error, frame);
+        }
+    }
+    if vector == 14 {
+        let cr2: u64;
+        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+        if crate::kernel_vm::handle_page_fault(cr2, error) { return 1; }
+        let saved_rip = unsafe { frame.add(17).read() };
+        if apply_trap_frame_fixup(vector, saved_rip, cr2, error, frame) { return 1; }
+
+    } else if vector < EXCEPTION_VECTORS as u64 {
+        // Non-page-fault probes match vector/error/RIP only; CR2 is not meaningful.
+        let saved_rip = unsafe { frame.add(17).read() };
+        if apply_trap_frame_fixup(vector, saved_rip, 0, error, frame) { return 1; }
+    }
+    cognacos_exception_fatal(vector, error, frame)
+}
+
+/// Install a DPL3 interrupt gate for a controlled user-to-kernel entry point.
+/// External interrupts remain disabled; this is intended for software interrupts/syscalls.
+pub unsafe fn install_user_gate(vector: usize, handler: u64) {
+    if vector < EXCEPTION_VECTORS || vector >= IDT_ENTRIES { return; }
+    let idt_ptr = core::ptr::addr_of_mut!(IDT).cast::<IdtEntry>();
+    unsafe { idt_ptr.add(vector).write(IdtEntry::user_interrupt_gate(handler)); }
+}
+
+/// Switch CR3 to the kernel-owned PML4 after its identity mappings are validated.
+pub unsafe fn enable_kernel_paging(pml4_physical: u64) {
+    unsafe { asm!("mov cr3, {}", in(reg) pml4_physical, options(nostack, preserves_flags)); }
+}
+
+
+global_asm!(r#"
+    .section .text
+    .global cognacos_context_switch
+    .type cognacos_context_switch, @function
+cognacos_context_switch:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi], rsp
+    mov rsp, rsi
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+    .global cognacos_context_switch_publish
+    .type cognacos_context_switch_publish, @function
+cognacos_context_switch_publish:
+    push rbp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    mov [rdi], rsp
+    mov r12, rdi
+    mov r13, rsi
+    mov r14, rdx
+    mov rdi, rcx
+    and rsp, -16
+    call r14
+    mov rsp, r13
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+"#);
+
+unsafe extern "C" {
+    fn cognacos_context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64);
+    fn cognacos_context_switch_publish(old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize);
+}
+unsafe extern "C" {
+    fn cognacos_fault_probe_write_ro(address: *mut u8) -> u64;
+    fn cognacos_fault_probe_write_ro_recovery();
+    fn cognacos_fault_probe_execute_nx(address: *mut u8) -> u64;
+    fn cognacos_fault_probe_execute_nx_recovery();
+    fn cognacos_fault_probe_read_invalid(address: *const u64) -> u64;
+    fn cognacos_fault_probe_read_invalid_recovery();
+}
+
+
+/// Verify that a non-present kernel probe is converted into an explicit error
+/// result and returns through its fixup instead of escalating to the fatal handler.
+pub fn trap_frame_fixup_self_test() -> bool {
+    const INVALID_ADDRESS: u64 = 0x0000_7fff_dead_0000;
+    let fault_rip = cognacos_fault_probe_read_invalid as *const () as u64;
+    let recovery_rip = cognacos_fault_probe_read_invalid_recovery as *const () as u64;
+    if !register_trap_frame_fixup_with_result(
+        fault_rip, recovery_rip, INVALID_ADDRESS,
+        PF_ERROR_MATCH_MASK, 0, STATUS_ACCESS_VIOLATION,
+    ) {
+        return false;
+    }
+    let result = unsafe { cognacos_fault_probe_read_invalid(INVALID_ADDRESS as *const u64) };
+    let removed = unregister_trap_frame_fixup(fault_rip);
+    removed && result == STATUS_ACCESS_VIOLATION
+}
+
+/// Deliberately verify CR0.WP and NX enforcement without hiding unrelated faults.
+/// The recovery labels are armed for one exact CR2 address and one expected error code.
+pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
+    let write_rip = cognacos_fault_probe_write_ro as *const () as u64;
+    let write_recovery = cognacos_fault_probe_write_ro_recovery as *const () as u64;
+    let original_byte = unsafe { core::ptr::read_volatile(read_only_executable_address as *const u8) };
+    if !register_trap_frame_fixup_with_result(
+        write_rip, write_recovery, read_only_executable_address, 0x1f, 0x3, 0,
+    ) {
+        return false;
+    }
+    let write_result = unsafe { cognacos_fault_probe_write_ro(read_only_executable_address as *mut u8) };
+    let write_removed = unregister_trap_frame_fixup(write_rip);
+    if write_result != 0 {
+        // If protection is broken, restore the byte before reporting failure.
+        unsafe { core::ptr::write_volatile(read_only_executable_address as *mut u8, original_byte); }
+    }
+    if write_result != 0 || !write_removed { return false; }
+
+    let mut nx_code = [0u8; 16];
+    unsafe { core::ptr::write_volatile(nx_code.as_mut_ptr(), 0xc3); }
+    let target = nx_code.as_mut_ptr();
+    let execute_rip = cognacos_fault_probe_execute_nx as *const () as u64;
+    let execute_recovery = cognacos_fault_probe_execute_nx_recovery as *const () as u64;
+    if !register_trap_frame_fixup_with_result(
+        execute_rip, execute_recovery, target as u64, 0x1f, 0x11, 0,
+    ) {
+        return false;
+    }
+    let execute_result = unsafe { cognacos_fault_probe_execute_nx(target) };
+    let execute_removed = unregister_trap_frame_fixup(execute_rip);
+    execute_result == 0 && execute_removed
+}
+
+/// Verify that an invalid kernel probe returns a defined status through the same
+/// general fixup registry used by the write-protect and NX tests.
+pub fn trap_frame_fixup_self_test() -> bool {
+    const INVALID_ADDRESS: u64 = 0x0000_7fff_dead_0000;
+    let fault_rip = cognacos_fault_probe_read_invalid as *const () as u64;
+    let recovery_rip = cognacos_fault_probe_read_invalid_recovery as *const () as u64;
+    if !register_trap_frame_fixup_with_result(
+        fault_rip, recovery_rip, INVALID_ADDRESS,
+        PF_ERROR_MATCH_MASK, 0, STATUS_ACCESS_VIOLATION,
+    ) {
+        return false;
+    }
+    let result = unsafe { cognacos_fault_probe_read_invalid(INVALID_ADDRESS as *const u64) };
+    let removed = unregister_trap_frame_fixup(fault_rip);
+    removed && result == STATUS_ACCESS_VIOLATION
+}
+
+/// Switch between saved kernel-mode contexts built for this routine.
+pub unsafe fn context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64) {
+    if old_rsp.is_null() || new_rsp.is_null() { return; }
+    unsafe { cognacos_context_switch(old_rsp, new_rsp); }
+}
+/// Switch stacks after saving the outgoing context, invoking a tiny publication
+/// callback before another CPU can claim the outgoing thread.
+pub unsafe fn context_switch_publish(
+    old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize,
+){
+    if old_rsp.is_null()||new_rsp.is_null(){return}
+    unsafe{cognacos_context_switch_publish(old_rsp,new_rsp,publish,context);}
+}
+
+/// Generic HAL IPI handler. Publish pending work for the local scheduler/DPC
+/// path before acknowledging the local APIC.
+#[unsafe(no_mangle)]
+pub extern "C" fn cognacos_hal_ipi_handler() {
+    if let Some(cpu) = crate::hal::current_cpu_local() {
+        let id = cpu.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize;
+        let _ = crate::hal::mark_ipi_pending(id);
+    }
+    unsafe { crate::hal::end_local_interrupt(); }
+    // A reschedule IPI is also the remote DPC kick. Run the target CPU's
+    // queued DPCs before returning so KeFlushQueuedDpcs can wait for a real
+    // systemwide drain rather than merely observing a cleared queue bit.
+    crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();
+}
+
+/// Dedicated cross-processor Ke broadcast handler. The callback rendezvous
+/// owns the logical IRQL transition and all callback/completion bookkeeping.
+#[unsafe(no_mangle)]
+pub extern "C" fn cognacos_ke_broadcast_ipi_handler() {
+    crate::ntoskrnl::ke::runtime::handle_broadcast_ipi();
+    unsafe { crate::hal::end_local_interrupt(); }
+}
+
+/// Dedicated AP TSC synchronization IPI handler. It samples the raw TSC and
+/// issues exactly one EOI; it does not reuse the TLB-shootdown vector.
+#[unsafe(no_mangle)]
+pub extern "C" fn cognacos_tsc_sync_handler() {
+    crate::hal::capture_clock_synchronization_sample();
+    if let Some(base) = crate::hal::local_interrupt_controller_base() {
+        unsafe { crate::hal::end_local_interrupt(); }
+    }
+}
+
+/// Rust dispatch target for the common external-interrupt entry stub.
+/// The APIC dispatcher performs exactly one EOI after the registered callback.
+#[unsafe(no_mangle)]
+pub extern "C" fn cognacos_external_interrupt_dispatch(vector: u64, frame: *const u64) {
+    let _ = unsafe {
+        crate::hal::dispatch_platform_interrupt(
+            vector as u8,
+            frame as *mut core::ffi::c_void,
+        )
+    };
+}
+
+static TIMER_ISR_DIAGNOSTIC_ONCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+#[unsafe(no_mangle)]
+pub extern "C" fn cognacos_timer_interrupt_handler() {
+    let first = !TIMER_ISR_DIAGNOSTIC_ONCE.swap(true, core::sync::atomic::Ordering::AcqRel);
+    if first { unsafe { crate::serial_write(b"APIC timer ISR entered.\r\n"); } }
+    crate::hal::local_clock_event_interrupt();
+    // Switching here saves the complete interrupt path on the interrupted
+    // thread's kernel stack; IRETQ resumes that thread when it is scheduled again.
+    crate::thread::preempt_from_timer_interrupt();
+    if first { unsafe { crate::serial_write(b"APIC timer ISR EOI completed.\r\n"); } }
 }
