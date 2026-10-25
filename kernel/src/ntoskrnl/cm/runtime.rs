@@ -180,6 +180,71 @@ pub unsafe extern "win64" fn ZwDeleteKey(h:*mut core::ffi::c_void)->i32{
 pub unsafe extern "win64" fn ZwFlushKey(h:*mut core::ffi::c_void)->i32{
  let _g=LOCK.lock();let s=state();if key_from_handle(s,h).is_some(){STATUS_SUCCESS}else{STATUS_INVALID_PARAMETER}
 }
+
+/// Version tuple read from CognacOS's volatile Configuration Manager registry.
+/// The registry runtime currently stores a complete key path as one root key;
+/// this query intentionally uses that existing representation and does not
+/// pretend to read hive files or synthesize a Windows version.
+pub fn query_version_tuple() -> Option<(u32, u32, u32)> {
+    const PATH: &[u16] = &[
+        92,82,101,103,105,115,116,114,121,92,77,97,99,104,105,110,101,92,
+        83,111,102,116,119,97,114,101,92,77,105,99,114,111,115,111,102,116,
+        92,87,105,110,100,111,119,115,32,78,84,92,67,117,114,114,101,110,116,
+        86,101,114,115,105,111,110
+    ];
+    fn value<'a>(s: &'a State, path: &[u16], name: &[u16]) -> Option<&'a Value> {
+        let key = s.keys.iter().find(|k| k.used && !k.deleted && k.parent == 0
+            && eq(&k.name[..k.name_len as usize], path))?;
+        s.values.iter().find(|v| v.used && v.key_id == key.id
+            && eq(&v.name[..v.name_len as usize], name))
+    }
+    fn dword(v: Option<&Value>) -> Option<u32> {
+        let v = v?;
+        if v.kind != 4 || v.len != 4 { return None; }
+        Some(u32::from_le_bytes(v.data[..4].try_into().ok()?))
+    }
+    fn decimal_string(v: Option<&Value>) -> Option<u32> {
+        let v = v?;
+        if (v.kind != 1 && v.kind != 2) || v.len < 2 || v.len % 2 != 0 { return None; }
+        let mut number = 0u32;
+        let mut saw_digit = false;
+        for bytes in v.data[..v.len as usize].chunks_exact(2) {
+            let ch = u16::from_le_bytes([bytes[0], bytes[1]]);
+            if ch == 0 { break; }
+            if !(b'0' as u16..=b'9' as u16).contains(&ch) { break; }
+            saw_digit = true;
+            number = number.checked_mul(10)?.checked_add((ch - b'0' as u16) as u32)?;
+        }
+        saw_digit.then_some(number)
+    }
+    let _guard = LOCK.lock();
+    let s = state();
+    let major_name: &[u16] = &[67,117,114,114,101,110,116,77,97,106,111,114,86,101,114,115,105,111,110,78,117,109,98,101,114];
+    let minor_name: &[u16] = &[67,117,114,114,101,110,116,77,105,110,111,114,86,101,114,115,105,111,110,78,117,109,98,101,114];
+    let current_name: &[u16] = &[67,117,114,114,101,110,116,86,101,114,115,105,111,110];
+    let build_name: &[u16] = &[67,117,114,114,101,110,116,66,117,105,108,100,78,117,109,98,101,114];
+    let (major, minor) = match (dword(value(s, PATH, major_name)), dword(value(s, PATH, minor_name))) {
+        (Some(major), Some(minor)) if major != 0 => (major, minor),
+        _ => {
+            let v = value(s, PATH, current_name)?;
+            if v.kind != 1 && v.kind != 2 || v.len < 4 || v.len % 2 != 0 { return None; }
+            let units: Vec<u16> = v.data[..v.len as usize].chunks_exact(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]])).take_while(|c| *c != 0).collect();
+            let dot = units.iter().position(|c| *c == b'.' as u16)?;
+            let parse = |digits: &[u16]| -> Option<u32> {
+                if digits.is_empty() { return None; }
+                let mut n = 0u32;
+                for c in digits { if !(b'0' as u16..=b'9' as u16).contains(c) { return None; } n=n.checked_mul(10)?.checked_add((*c-b'0' as u16) as u32)?; }
+                Some(n)
+            };
+            let end = units[dot+1..].iter().position(|c| *c == b'.').map(|i| dot+1+i).unwrap_or(units.len());
+            (parse(&units[..dot])?, parse(&units[dot+1..end])?)
+        }
+    };
+    let build = decimal_string(value(s, PATH, build_name)).unwrap_or(0);
+    Some((major, minor, build))
+}
+
 #[cfg(test)]
 mod tests {
  use super::*;
