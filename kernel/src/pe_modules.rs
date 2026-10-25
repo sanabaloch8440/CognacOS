@@ -19,11 +19,11 @@ pub const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009Au32 as i32;
 pub enum ModuleState { Empty, Reserved, Mapped, Initializing, Initialized, Unloading }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModuleSnapshot {
-    pub base: u64, pub size: u32, pub name: [u8; MAX_NAME_BYTES], pub name_len: u8,
+    pub process_id: u64, pub base: u64, pub size: u32, pub name: [u8; MAX_NAME_BYTES], pub name_len: u8,
     pub references: u32, pub dependencies: u32, pub state: ModuleState, pub generation: u32,
 }
 impl ModuleSnapshot {
-    const EMPTY: Self = Self { base: 0, size: 0, name: [0; MAX_NAME_BYTES], name_len: 0,
+    const EMPTY: Self = Self { process_id: 0, base: 0, size: 0, name: [0; MAX_NAME_BYTES], name_len: 0,
         references: 0, dependencies: 0, state: ModuleState::Empty, generation: 0 };
 }
 struct State { entries: [ModuleSnapshot; MAX_MODULES], next_generation: u32 }
@@ -42,16 +42,17 @@ fn valid_name(name: &[u8]) -> bool {
 
 /// Reserve a module identity before mapping. Duplicate loads return the existing
 /// slot with STATUS_OBJECT_NAME_COLLISION so callers can add a reference instead.
-pub fn reserve(name: &[u8]) -> Result<(usize, u32), i32> {
+pub fn reserve(name: &[u8]) -> Result<(usize, u32), i32> { reserve_for_process(0, name) }
+pub fn reserve_for_process(process_id: u64, name: &[u8]) -> Result<(usize, u32), i32> {
     if !valid_name(name) { return Err(STATUS_INVALID_PARAMETER); }
     let mut s = STATE.lock();
-    if s.entries.iter().any(|e| same_name(e, name)) { return Err(STATUS_OBJECT_NAME_COLLISION); }
+    if s.entries.iter().any(|e| e.process_id == process_id && same_name(e, name)) { return Err(STATUS_OBJECT_NAME_COLLISION); }
     let slot = s.entries.iter().position(|e| e.state == ModuleState::Empty)
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     let generation = s.next_generation;
     s.next_generation = s.next_generation.wrapping_add(1).max(1);
     let mut e = ModuleSnapshot::EMPTY;
-    e.name[..name.len()].copy_from_slice(name); e.name_len = name.len() as u8;
+    e.process_id = process_id; e.name[..name.len()].copy_from_slice(name); e.name_len = name.len() as u8;
     e.references = 1; e.state = ModuleState::Reserved; e.generation = generation;
     s.entries[slot] = e;
     Ok((slot, generation))
@@ -121,9 +122,16 @@ pub fn begin_unload(slot: usize, generation: u32) -> Result<Option<(u64, u32)>, 
 
 /// Complete unmapping after the address-space manager has removed the image.
 pub fn finish_unload(slot: usize, generation: u32) -> Result<(), i32> {
-    let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
+    let mut s = STATE.lock();
+    let e = s.entries.get(slot).copied().ok_or(STATUS_INVALID_PARAMETER)?;
     if e.generation != generation || e.state != ModuleState::Unloading { return Err(STATUS_INVALID_PARAMETER); }
-    *e = ModuleSnapshot::EMPTY; Ok(())
+    let dependencies = e.dependencies;
+    for dependency in 0..MAX_MODULES {
+        if dependencies & (1u32 << dependency) != 0 && s.entries[dependency].state != ModuleState::Empty {
+            s.entries[dependency].references = s.entries[dependency].references.saturating_sub(1);
+        }
+    }
+    s.entries[slot] = ModuleSnapshot::EMPTY; Ok(())
 }
 
 /// Roll back a reservation or failed mapping before it is visible to callers.
@@ -134,9 +142,15 @@ pub fn rollback(slot: usize, generation: u32) -> Result<(), i32> {
     }
     *e = ModuleSnapshot::EMPTY; Ok(())
 }
-pub fn find(name: &[u8]) -> Option<(usize, ModuleSnapshot)> {
+pub fn find(name: &[u8]) -> Option<(usize, ModuleSnapshot)> { find_for_process(0, name) }
+pub fn find_for_process(process_id: u64, name: &[u8]) -> Option<(usize, ModuleSnapshot)> {
     let s = STATE.lock();
-    s.entries.iter().enumerate().find(|(_,e)| same_name(e,name)).map(|(i,e)|(i,*e))
+    s.entries.iter().enumerate().find(|(_,e)| e.process_id == process_id && same_name(e,name)).map(|(i,e)|(i,*e))
+}
+pub fn release_reference(slot: usize, generation: u32) -> Result<u32, i32> {
+    let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
+    if e.generation != generation || e.state == ModuleState::Empty || e.references <= 1 { return Err(STATUS_RESOURCE_IN_USE); }
+    e.references -= 1; Ok(e.references)
 }
 
 #[cfg(test)]
@@ -153,7 +167,7 @@ mod tests {
         assert_eq!(add_reference(slot, gen), Ok(2));
         assert_eq!(begin_unload(slot, gen), Err(STATUS_RESOURCE_IN_USE));
         // Release the extra reference via the same ownership accounting path.
-        let mut s = STATE.lock(); s.entries[slot].references = 1; drop(s);
+        release_reference(slot, gen).unwrap();
         assert_eq!(begin_unload(slot, gen), Ok(Some((0x4000_0000, 0x3000))));
         finish_unload(slot, gen).unwrap();
         assert!(find(name).is_none());
