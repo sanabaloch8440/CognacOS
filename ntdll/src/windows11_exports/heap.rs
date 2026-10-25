@@ -110,7 +110,7 @@ pub unsafe extern "system" fn RtlZeroHeap(heap: HANDLE, _flags: ULONG) -> NTSTAT
     let mut entry = crate::rtl_heap::RTL_HEAP_WALK_ENTRY {
         lpData: ptr::null_mut(), cbData: 0, cbOverhead: 0, iRegionIndex: 0, wFlags: 0, reserved: [0; 3],
     };
-    let mut status = unsafe { crate::rtl_heap::RtlWalkHeap(heap, (&mut entry as *mut _).cast()) };
+    let mut status = unsafe { crate::rtl_heap::RtlWalkHeap(heap, (&mut entry as *mut crate::rtl_heap::RTL_HEAP_WALK_ENTRY).cast()) };
     while status == STATUS_SUCCESS {
         if entry.wFlags & 1 != 0 && !entry.lpData.is_null() && entry.cbData != 0 {
             unsafe { ptr::write_bytes(entry.lpData.cast::<u8>(), 0, entry.cbData); }
