@@ -405,32 +405,51 @@ pub unsafe extern "system" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut
  unsafe{current.cast::<u8>().sub(IO_STACK_LOCATION_SIZE_X64).cast()}
 }
 #[unsafe(no_mangle)]
+fn release_device_dispatch_rundown(device:*mut DeviceObject){
+ let finalize={
+  let mut state=WDM.lock();
+  let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return};
+  if slot.active_dispatches!=0{slot.active_dispatches-=1;}
+  slot.deleting&&slot.active_dispatches==0&&slot.object.reference_count<=1&&slot.remove_lock_count==0&&!slot.power_transition
+ };
+ if finalize{unsafe{io_delete_device(device)}}
+}
+
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut Irp)->i32 {
  if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
  let (driver, deleting)={
-  let state=WDM.lock();
-  match state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)) {
-   Some(slot)=>(slot.object.driver_object,slot.deleting||slot.pnp_state==PNP_STATE_REMOVED),None=>(unsafe{(*device).driver_object},true)
+  let mut state=WDM.lock();
+  match state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) {
+   Some(slot) if !slot.deleting&&slot.pnp_state!=PNP_STATE_REMOVED&&slot.object.driver_object!=ptr::null_mut() => {
+    if slot.active_dispatches==u32::MAX{return STATUS_DEVICE_BUSY}
+    slot.active_dispatches+=1;(slot.object.driver_object,false)
+   },
+   Some(_)=>(ptr::null_mut(),true),None=>(ptr::null_mut(),true)
   }
  };
  if deleting||driver.is_null(){return STATUS_DELETE_PENDING}
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
- if stack.is_null(){return STATUS_INVALID_PARAMETER}
+ if stack.is_null(){release_device_dispatch_rundown(device);return STATUS_INVALID_PARAMETER}
  let location=unsafe{(*irp).bytes[0x43]};
- if location<=1{return STATUS_INVALID_DEVICE_REQUEST}
+ if location<=1{release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
  unsafe {
   write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast());
   (*irp).bytes[0x43]=location-1;
   (*stack).device_object=device;
  }
  let major=unsafe{(*stack).major_function as usize};
- if major>=28{return STATUS_INVALID_DEVICE_REQUEST}
+ if major>=28{release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
  let dispatch=unsafe{(*driver).major_function[major]};
- let Some(dispatch)=dispatch else{return STATUS_INVALID_DEVICE_REQUEST};
+ let Some(dispatch)=dispatch else{release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST};
  let prepare=unsafe{crate::ntoskrnl::po::runtime::po_prepare_irp_dispatch(device,irp,major as u8,(*stack).minor_function,(*stack).parameters)};
- if prepare!=STATUS_SUCCESS{unsafe{write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());(*irp).bytes[0x43]=location;}return prepare}
+ if prepare!=STATUS_SUCCESS{
+  unsafe{write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());(*irp).bytes[0x43]=location;}
+  release_device_dispatch_rundown(device);return prepare
+ }
  let status=unsafe{dispatch(device,irp)};
  crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
+ release_device_dispatch_rundown(device);
  status
 }
 fn finalize_irp_status(irp:*mut Irp) {
