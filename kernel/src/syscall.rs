@@ -128,11 +128,113 @@ pub const WIN_NT_QUERY_INFORMATION_PROCESS: u64 = 0x19;
 pub const WIN_NT_QUERY_INFORMATION_THREAD: u64 = 0x25;
 pub const WIN_NT_QUERY_SYSTEM_INFORMATION: u64 = 0x36;
 pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
-// PE COFF timestamp and optional-header checksum of the inspected reference
-// NTDLL. Refuse to use these build-specific IDs for an unrelated Windows build.
-const WINDOWS_NTDLL_REFERENCE_TIMESTAMP: u32 = 0x0670_1e03;
-const WINDOWS_NTDLL_REFERENCE_CHECKSUM: u32 = 0x001f_3afa;
+// Service IDs are discovered from the staged PE's own exported syscall stubs.
+const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
+static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 5] =
+    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 5];
+const SERVICE_NT_CLOSE: usize = 0;
+const SERVICE_NT_YIELD_EXECUTION: usize = 1;
+const SERVICE_NT_QUERY_INFORMATION_PROCESS: usize = 2;
+const SERVICE_NT_QUERY_INFORMATION_THREAD: usize = 3;
+const SERVICE_NT_QUERY_SYSTEM_INFORMATION: usize = 4;
+
+fn image_u16(image: &[u8], at: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
+}
+fn image_u32(image: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(image.get(at..at.checked_add(4)?)?.try_into().ok()?))
+}
+fn image_rva_offset(image: &[u8], section_table: usize, section_count: usize,
+                    headers_size: usize, rva: u32, required: usize) -> Option<usize> {
+    let rva = rva as usize;
+    if rva < headers_size && rva.checked_add(required)? <= image.len() { return Some(rva); }
+    for index in 0..section_count {
+        let at = section_table.checked_add(index.checked_mul(40)?)?;
+        let virtual_size = image_u32(image, at.checked_add(8)?)? as usize;
+        let virtual_address = image_u32(image, at.checked_add(12)?)? as usize;
+        let raw_size = image_u32(image, at.checked_add(16)?)? as usize;
+        let raw_offset = image_u32(image, at.checked_add(20)?)? as usize;
+        let span = core::cmp::max(virtual_size, raw_size);
+        if rva >= virtual_address && rva.checked_add(required)? <= virtual_address.checked_add(span)? {
+            let delta = rva.checked_sub(virtual_address)?;
+            if delta.checked_add(required)? > raw_size { return None; }
+            let offset = raw_offset.checked_add(delta)?;
+            if offset.checked_add(required)? <= image.len() { return Some(offset); }
+            return None;
+        }
+    }
+    None
+}
+fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 5]> {
+    if image.get(0..2)? != b"MZ" { return None; }
+    let pe = image_u32(image, 0x3c)? as usize;
+    if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" { return None; }
+    let coff = pe.checked_add(4)?;
+    let section_count = image_u16(image, coff.checked_add(2)?)? as usize;
+    let optional_size = image_u16(image, coff.checked_add(16)?)? as usize;
+    let optional = pe.checked_add(24)?;
+    if image_u16(image, coff)? != 0x8664 || image_u16(image, optional)? != 0x20b
+        || section_count == 0 || section_count > 96 { return None; }
+    let headers_size = image_u32(image, optional.checked_add(60)?)? as usize;
+    let section_table = optional.checked_add(optional_size)?;
+    if section_table.checked_add(section_count.checked_mul(40)?)? > image.len() { return None; }
+    let export_rva = image_u32(image, optional.checked_add(112)?)?;
+    let export_size = image_u32(image, optional.checked_add(116)?)?;
+    if export_rva == 0 || export_size < 40 { return None; }
+    let export = image_rva_offset(image, section_table, section_count, headers_size, export_rva, 40)?;
+    let function_count = image_u32(image, export.checked_add(20)?)? as usize;
+    let name_count = image_u32(image, export.checked_add(24)?)? as usize;
+    let functions_rva = image_u32(image, export.checked_add(28)?)?;
+    let names_rva = image_u32(image, export.checked_add(32)?)?;
+    let ordinals_rva = image_u32(image, export.checked_add(36)?)?;
+    if function_count == 0 || function_count > 100_000 || name_count > 100_000 { return None; }
+    let functions = image_rva_offset(image, section_table, section_count, headers_size, functions_rva, function_count.checked_mul(4)?)?;
+    let names = image_rva_offset(image, section_table, section_count, headers_size, names_rva, name_count.checked_mul(4)?)?;
+    let ordinals = image_rva_offset(image, section_table, section_count, headers_size, ordinals_rva, name_count.checked_mul(2)?)?;
+    let required_names: [&[u8]; 5] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation"];
+    let mut discovered = [SERVICE_UNAVAILABLE; 5];
+    for index in 0..name_count {
+        let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
+        let name_at = image_rva_offset(image, section_table, section_count, headers_size, name_rva, 1)?;
+        let name_end_rel = image.get(name_at..)?.iter().position(|byte| *byte == 0)?;
+        let name = &image[name_at..name_at.checked_add(name_end_rel)?];
+        let Some(slot) = required_names.iter().position(|required| *required == name) else { continue; };
+        let ordinal = image_u16(image, ordinals.checked_add(index.checked_mul(2)?)?)? as usize;
+        if ordinal >= function_count { return None; }
+        let function_rva = image_u32(image, functions.checked_add(ordinal.checked_mul(4)?)?)?;
+        if function_rva >= export_rva && function_rva < export_rva.saturating_add(export_size) { continue; }
+        let Some(stub) = image_rva_offset(image, section_table, section_count, headers_size, function_rva, 16) else { continue; };
+        if image.get(stub..stub.checked_add(3)?)? != [0x4c, 0x8b, 0xd1]
+            || image.get(stub.checked_add(3)?)? != &0xb8 { continue; }
+        let service = image_u32(image, stub.checked_add(4)?)?;
+        let window_end = core::cmp::min(image.len(), stub.saturating_add(32));
+        if !image.get(stub.checked_add(8)?..window_end)?.windows(2).any(|op| op == [0x0f, 0x05]) { continue; }
+        discovered[slot] = service as u64;
+    }
+    if discovered.iter().any(|service| *service == SERVICE_UNAVAILABLE) { return None; }
+    Some(discovered)
+}
+pub fn configure_windows_service_table_from_image(image: &[u8]) -> bool {
+    let Some(discovered) = extract_windows_service_numbers(image) else { return false; };
+    for (slot, service) in discovered.iter().enumerate() {
+        WINDOWS_SERVICE_NUMBERS[slot].store(*service, Ordering::Release);
+    }
+    WINDOWS_SERVICE_TABLE_ENABLED.store(true, Ordering::Release);
+    true
+}
+pub fn windows_service_number(name: &[u8]) -> Option<u32> {
+    let slot = match name {
+        b"NtClose" => SERVICE_NT_CLOSE,
+        b"NtYieldExecution" => SERVICE_NT_YIELD_EXECUTION,
+        b"NtQueryInformationProcess" => SERVICE_NT_QUERY_INFORMATION_PROCESS,
+        b"NtQueryInformationThread" => SERVICE_NT_QUERY_INFORMATION_THREAD,
+        b"NtQuerySystemInformation" => SERVICE_NT_QUERY_SYSTEM_INFORMATION,
+        _ => return None,
+    };
+    let value = WINDOWS_SERVICE_NUMBERS[slot].load(Ordering::Acquire);
+    (value != SERVICE_UNAVAILABLE && value <= u32::MAX as u64).then_some(value as u32)
+}
 const PROCESS_BASIC_INFORMATION_CLASS: u64 = 0;
 const THREAD_BASIC_INFORMATION_CLASS: u64 = 0;
 const SYSTEM_BASIC_INFORMATION_CLASS: u64 = 0;
@@ -510,24 +612,10 @@ pub fn set_windows_service_table_enabled(enabled: bool) {
     WINDOWS_SERVICE_TABLE_ENABLED.store(enabled, Ordering::Release);
 }
 
-/// Verify that a PE image's COFF timestamp and checksum match the exact
-/// Windows NTDLL build from which these service IDs were extracted.
+/// Compatibility wrapper retained for boot diagnostics. It now parses the
+/// current image's syscall stubs instead of checking a fixed build fingerprint.
 pub fn windows_service_table_matches(image: &[u8]) -> bool {
-    if image.len() < 0x40 || &image[0..2] != b"MZ" { return false; }
-    let pe = u32::from_le_bytes([image[0x3c], image[0x3d], image[0x3e], image[0x3f]]) as usize;
-    let Some(coff) = pe.checked_add(4) else { return false; };
-    let Some(opt) = pe.checked_add(24) else { return false; };
-    if coff.checked_add(20).is_none_or(|end| end > image.len())
-        || opt.checked_add(68).is_none_or(|end| end > image.len())
-        || image.get(pe..pe.saturating_add(4)) != Some(b"PE\0\0".as_slice())
-    { return false; }
-    let machine = u16::from_le_bytes([image[coff], image[coff + 1]]);
-    let timestamp = u32::from_le_bytes(image[coff + 4..coff + 8].try_into().unwrap());
-    let magic = u16::from_le_bytes([image[opt], image[opt + 1]]);
-    let checksum = u32::from_le_bytes(image[opt + 64..opt + 68].try_into().unwrap());
-    machine == 0x8664 && magic == 0x20b
-        && timestamp == WINDOWS_NTDLL_REFERENCE_TIMESTAMP
-        && checksum == WINDOWS_NTDLL_REFERENCE_CHECKSUM
+    configure_windows_service_table_from_image(image)
 }
 
 /// Windows x64 service-number entry. Numbers are build-specific; unknown or
@@ -541,12 +629,14 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         return NT_STATUS_NOT_IMPLEMENTED;
     }
     let service = unsafe { *frame.add(14) };
-    let native = match service {
-        WIN_NT_CLOSE => NT_SYSCALL_CLOSE,
-        WIN_NT_YIELD_EXECUTION => NT_SYSCALL_YIELD_EXECUTION,
-        WIN_NT_QUERY_INFORMATION_PROCESS => NT_SYSCALL_QUERY_INFORMATION_PROCESS,
-        WIN_NT_QUERY_INFORMATION_THREAD => NT_SYSCALL_QUERY_INFORMATION_THREAD,
-        WIN_NT_QUERY_SYSTEM_INFORMATION => NT_SYSCALL_QUERY_SYSTEM_INFORMATION,
+    let slot = (0..WINDOWS_SERVICE_NUMBERS.len())
+        .find(|slot| WINDOWS_SERVICE_NUMBERS[*slot].load(Ordering::Acquire) == service);
+    let native = match slot {
+        Some(SERVICE_NT_CLOSE) => NT_SYSCALL_CLOSE,
+        Some(SERVICE_NT_YIELD_EXECUTION) => NT_SYSCALL_YIELD_EXECUTION,
+        Some(SERVICE_NT_QUERY_INFORMATION_PROCESS) => NT_SYSCALL_QUERY_INFORMATION_PROCESS,
+        Some(SERVICE_NT_QUERY_INFORMATION_THREAD) => NT_SYSCALL_QUERY_INFORMATION_THREAD,
+        Some(SERVICE_NT_QUERY_SYSTEM_INFORMATION) => NT_SYSCALL_QUERY_SYSTEM_INFORMATION,
         _ => {
             CALL_COUNT.fetch_add(1, Ordering::AcqRel);
             return NT_STATUS_NOT_IMPLEMENTED;
