@@ -1058,6 +1058,15 @@ fn sid_matches_subject(token: *mut c_void, sid: &[u8], restricting_pass: bool) -
     if restricting_pass { token_contains_restricting_sid(token, sid) }
     else { is_everyone_sid(sid) || token_contains_sid(token, sid) }
 }
+
+/// Token membership primitive shared by section security and native token-query
+/// paths. SID bytes are length-checked before comparing against registered token
+/// identities; unknown token pointers and malformed SIDs are denied.
+pub(crate) fn se_internal_TokenContainsSid(token: *mut c_void, sid: &[u8]) -> bool {
+    if token.is_null() || bounded_sid_size(sid) != Some(sid.len()) { return false; }
+    sid_matches_subject(token, sid, false)
+}
+
 fn descriptor_component<'a>(bytes: &'a [u8], field: usize, acl: bool) -> Option<&'a [u8]> {
     let off = u32le(bytes, field)? as usize;
     if off == 0 { return None; }
