@@ -467,14 +467,14 @@ pub unsafe fn run_native_ntdll_smoke(
     // CognacOS NTDLL wrappers. These service IDs match the inspected reference
     // NTDLL build; RCX is copied to R10 and argument five is on the user stack.
     imm64!(&[0x48, 0xb9], 0); // SystemBasicInformation
-    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0x300);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0x600);
     emit!(&[0x41, 0xb8, 64, 0, 0, 0]);
-    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x380);
+    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x680);
     emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x36, 0, 0, 0, 0x0f, 0x05]);
     emit!(&[0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
-    check_dword!(NTDLL_TEST_DATA + 0x380, 64);
-    check_dword!(NTDLL_TEST_DATA + 0x308, 4096);
+    check_dword!(NTDLL_TEST_DATA + 0x680, 64);
+    check_dword!(NTDLL_TEST_DATA + 0x608, 4096);
 
     imm64!(&[0x48, 0xb9], u64::MAX); // NtQueryInformationProcess
     emit!(&[0xba, 0, 0, 0, 0]);
