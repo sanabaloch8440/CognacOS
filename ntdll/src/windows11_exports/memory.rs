@@ -150,6 +150,14 @@ cognacos_rtl_fill_nonvolatile_memory:
     mov eax, 0x115
     int 0x83
     ret
+
+    .p2align 4
+    .global cognacos_rtl_check_token_membership
+cognacos_rtl_check_token_membership:
+    mov r10, rcx
+    mov eax, 0x116
+    int 0x83
+    ret
 "#);
 
 unsafe extern "system" {
@@ -166,6 +174,7 @@ unsafe extern "system" {
     fn cognacos_rtl_flush_nonvolatile_memory(token: PVOID, buffer: PVOID, size: SIZE_T, flags: ULONG) -> NTSTATUS;
     fn cognacos_rtl_write_nonvolatile_memory(token: PVOID, destination: PVOID, source: *const c_void, size: SIZE_T, flags: ULONG) -> NTSTATUS;
     fn cognacos_rtl_fill_nonvolatile_memory(token: PVOID, destination: PVOID, size: SIZE_T, value: u8, flags: ULONG) -> NTSTATUS;
+    fn cognacos_rtl_check_token_membership(token: HANDLE, sid: PVOID, member: *mut u8, flags: ULONG) -> NTSTATUS;
 }
 
 #[no_mangle]
@@ -1083,9 +1092,15 @@ pub unsafe extern "system" fn RtlIoEncodeMemIoResource(resource: PVOID, type_: u
     unsafe { encode_mem_io_resource(resource.cast(), type_, length, start) }
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlCheckTokenMembership(token: HANDLE, sid: PVOID, member: *mut u8) -> NTSTATUS { let _ = (token, sid, member); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlCheckTokenMembership(token: HANDLE, sid: PVOID, member: *mut u8) -> NTSTATUS {
+    if sid.is_null() || member.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_rtl_check_token_membership(token, sid, member, 0) }
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlCheckTokenMembershipEx(token: HANDLE, sid: PVOID, flags: ULONG, member: *mut u8) -> NTSTATUS { let _ = (token, sid, flags, member); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlCheckTokenMembershipEx(token: HANDLE, sid: PVOID, flags: ULONG, member: *mut u8) -> NTSTATUS {
+    if sid.is_null() || member.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_rtl_check_token_membership(token, sid, member, flags) }
+}
 
 #[cfg(test)]
 mod tests {
