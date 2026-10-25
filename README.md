@@ -1,6 +1,6 @@
 # CognacOS
 
-**CognacOS is an experimental Rust-first x86-64 operating system with a UEFI boot path and NT-inspired kernel interfaces.** Its long-term goal is Windows x64 driver compatibility; that goal is not yet achieved. RdotOS is not a Windows 11 replacement and does not claim general WDK or third-party driver compatibility.
+**CognacOS is an experimental Rust-first x86-64 operating system with a UEFI boot path and NT-inspired kernel interfaces.** Its long-term goal is Windows x64 driver compatibility; that goal is not yet achieved. CognacOS is not a Windows 11 replacement and does not claim general WDK or third-party driver compatibility.
 
 [![Build and QEMU boot test](https://github.com/umarfarooq7869/CognacOS/actions/workflows/build-uefi.yml/badge.svg)](https://github.com/umarfarooq7869/CognacOS/actions/workflows/build-uefi.yml)
 
@@ -11,8 +11,8 @@
 
 ## Project documentation
 
-- **[RdotOS documentation website](https://umarfarooq7869.github.io/CognacOS/)** — project overview, roadmap, and compatibility index (available after GitHub Pages deployment is enabled).
-- [Development roadmap](roadmap.md) — current status, open milestones, and next priorities.
+- **[CognacOS documentation website](https://umarfarooq7869.github.io/CognacOS/)** — project overview, roadmap, and compatibility index.
+- [Development roadmap](docs/roadmap.md) — current status, open milestones, and next priorities.
 - [Windows 11 x64 function-level compatibility comparison](WINDOWS11_COGNACOS_NTOSKRNL_KE_COMPARISON.md) — Ke routine inventory, implementation scope, and scoring method.
 - [Security Reference Monitor comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md) — Se coverage and known semantic gaps.
 
