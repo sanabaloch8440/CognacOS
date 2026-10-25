@@ -509,8 +509,8 @@ pub unsafe extern "system" fn RtlLocateExtendedFeature2(ex: *mut CONTEXT_EX, fea
     if component.size == 0 { return core::ptr::null_mut(); }
     if !length.is_null() { unsafe { length.write_unaligned(component.size); } }
     let chunk = unsafe { core::ptr::addr_of!((*ex).XState).read_unaligned() };
-    if chunk.Length < 64 { return core::ptr::null_mut(); }
-    let xstate = unsafe { ex.cast::<u8>().offset(chunk.Offset as isize) };
+    if chunk.Offset < 0 || chunk.Length < 64 { return core::ptr::null_mut(); }
+    let xstate = unsafe { ex.cast::<u8>().add(chunk.Offset as usize) };
     let offset = if cfg.control_flags & 2 != 0 {
         let compacted = unsafe { xstate.add(8).cast::<ULONG64>().read_unaligned() };
         if compacted & (1u64 << 63) == 0 || compacted & feature_bit == 0 {
@@ -628,9 +628,11 @@ pub unsafe extern "system" fn RtlCopyExtendedContext(dst: *mut CONTEXT_EX, flags
     let dest_legacy = unsafe { dst.cast::<u8>().offset(d.Legacy.Offset as isize) };
     copy_context_ranges(dest_legacy, source_legacy, flags, flags & 0x0011_0000);
     if flags & CONTEXT_XSTATE == 0 { return STATUS_SUCCESS; }
-    if d.XState.Length < 64 { return STATUS_BUFFER_OVERFLOW; }
-    let source_xstate = unsafe { src.cast::<u8>().offset(s.XState.Offset as isize) };
-    let dest_xstate = unsafe { dst.cast::<u8>().offset(d.XState.Offset as isize) };
+    if s.XState.Offset < 0 || d.XState.Offset < 0 || s.XState.Length < 64 || d.XState.Length < 64 {
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    let source_xstate = unsafe { src.cast::<u8>().add(s.XState.Offset as usize) };
+    let dest_xstate = unsafe { dst.cast::<u8>().add(d.XState.Offset as usize) };
     let source_mask = unsafe { source_xstate.cast::<ULONG64>().read_unaligned() };
     let source_compaction = unsafe { source_xstate.add(8).cast::<ULONG64>().read_unaligned() };
     let enabled = NTDLL_XSTATE_ENABLED.load(Ordering::Acquire);
