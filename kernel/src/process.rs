@@ -10,9 +10,10 @@ pub const LDR_ADDRESS: u64 = 0x0000_0080_4000_0000;
 pub const LDR_ENTRY_ADDRESS: u64 = 0x0000_0080_5000_0000;
 pub const IMAGE_NAME_ADDRESS: u64 = 0x0000_0080_6000_0000;
 pub const PROCESS_PARAMS_ADDRESS: u64 = 0x0000_0080_7000_0000;
-/// CognacOS native bootstrap page carrying the kernel's XSTATE feature table.
-/// This private high user VA is a transitional bridge until KUSER_SHARED_DATA is implemented.
-pub const COGNAC_XSTATE_SHARED_ADDRESS: u64 = 0x0000_0084_0000_0000;
+/// Windows x64 KUSER_SHARED_DATA user mapping. Windows 11 24H2 places
+/// XState at offset 0x3d8 within the read-only 0x7ffe0000 shared page.
+pub const KUSER_SHARED_DATA_ADDRESS: u64 = 0x0000_0000_7ffe_0000;
+pub const KUSER_XSTATE_OFFSET: u64 = 0x3d8;
 static NEXT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(4);
 const MAX_PROCESSES: usize = 64;
 #[repr(u32)]
@@ -402,18 +403,18 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     map_zeroed(space, LDR_ENTRY_ADDRESS, 2)?;
     map_zeroed(space, IMAGE_NAME_ADDRESS, 2)?;
     map_zeroed(space, PROCESS_PARAMS_ADDRESS, 1)?;
-    map_zeroed(space, COGNAC_XSTATE_SHARED_ADDRESS, 1)?;
-    // Publish a stable per-process snapshot for native NTDLL's early XSTATE
-    // initialization, then downgrade the page to read-only for user mode.
-    let xstate = crate::ntoskrnl::ke::runtime::ki_query_xstate_configuration();
+    map_zeroed(space, KUSER_SHARED_DATA_ADDRESS, 1)?;
+    // Publish the exact Windows 11 24H2 XState field at its KUSER_SHARED_DATA
+    // ABI offset. The page is read-only to user mode after initialization.
+    let xstate = crate::ntoskrnl::ke::runtime::ki_query_windows_xstate_configuration();
     let xstate_bytes = unsafe {
         core::slice::from_raw_parts(
-            (&xstate as *const crate::ntoskrnl::ke::runtime::CognacXStateConfiguration).cast::<u8>(),
-            core::mem::size_of::<crate::ntoskrnl::ke::runtime::CognacXStateConfiguration>(),
+            (&xstate as *const crate::ntoskrnl::ke::runtime::WindowsXStateConfiguration).cast::<u8>(),
+            core::mem::size_of::<crate::ntoskrnl::ke::runtime::WindowsXStateConfiguration>(),
         )
     };
-    unsafe { space.copy_to_user(COGNAC_XSTATE_SHARED_ADDRESS, xstate_bytes)?; }
-    unsafe { space.protect_user_page(COGNAC_XSTATE_SHARED_ADDRESS, false, false)?; }
+    unsafe { space.copy_to_user(KUSER_SHARED_DATA_ADDRESS + KUSER_XSTATE_OFFSET, xstate_bytes)?; }
+    unsafe { space.protect_user_page(KUSER_SHARED_DATA_ADDRESS, false, false)?; }
     let pid = NEXT_PID.fetch_add(4, core::sync::atomic::Ordering::Relaxed);
     // PEB x64: BeingDebugged, ImageBaseAddress, Ldr, ProcessParameters.
     put_u8(space, PEB_ADDRESS + 2, 0)?;
