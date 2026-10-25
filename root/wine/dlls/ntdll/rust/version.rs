@@ -35,7 +35,7 @@ pub unsafe fn copy_version_info(output:*mut RTL_OSVERSIONINFOEXW,current:&RTL_OS
  if output.is_null(){return STATUS_INVALID_PARAMETER}
  // SAFETY: caller supplies writable version-info storage; read its advertised size first.
  let size=unsafe{core::ptr::addr_of!((*output).dwOSVersionInfoSize).read()};
- if size<20{return STATUS_INVALID_PARAMETER}
+ if size<276{return STATUS_INVALID_PARAMETER}
  // SAFETY: output points to the ABI structure; only write the extended tail when its size is advertised.
  unsafe{core::ptr::addr_of_mut!((*output).dwMajorVersion).write(current.dwMajorVersion);core::ptr::addr_of_mut!((*output).dwMinorVersion).write(current.dwMinorVersion);core::ptr::addr_of_mut!((*output).dwBuildNumber).write(current.dwBuildNumber);core::ptr::addr_of_mut!((*output).dwPlatformId).write(current.dwPlatformId);core::ptr::addr_of_mut!((*output).szCSDVersion).write(current.szCSDVersion);if size>=core::mem::size_of::<RTL_OSVERSIONINFOEXW>() as ULONG{core::ptr::addr_of_mut!((*output).wServicePackMajor).write(current.wServicePackMajor);core::ptr::addr_of_mut!((*output).wServicePackMinor).write(current.wServicePackMinor);core::ptr::addr_of_mut!((*output).wSuiteMask).write(current.wSuiteMask);core::ptr::addr_of_mut!((*output).wProductType).write(current.wProductType);core::ptr::addr_of_mut!((*output).wReserved).write(current.wReserved)}}STATUS_SUCCESS
 }
