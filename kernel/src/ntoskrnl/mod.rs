@@ -249,6 +249,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   } else if requested.eq_ignore_ascii_case(b"CognacQueryXStateConfiguration") { Some(ke::runtime::CognacQueryXStateConfiguration as usize)
   } else if requested.eq_ignore_ascii_case(b"CognacSaveXState") { Some(ke::runtime::CognacSaveXState as usize)
   } else if requested.eq_ignore_ascii_case(b"CognacRestoreXState") { Some(ke::runtime::CognacRestoreXState as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeSaveExtendedProcessorState") { Some(ke::runtime::KeSaveExtendedProcessorState as usize)
+  } else if requested.eq_ignore_ascii_case(b"KeRestoreExtendedProcessorState") { Some(ke::runtime::KeRestoreExtendedProcessorState as usize)
   } else if requested.eq_ignore_ascii_case(b"KeGetXSaveFeatureFlags") { Some(ke::runtime::ke_get_xsave_feature_flags as usize)
   } else if requested.eq_ignore_ascii_case(b"KeInitializeTimer2") { Some(ke::runtime::ke_initialize_timer2 as usize)
   } else if requested.eq_ignore_ascii_case(b"KeSetTimer2") { Some(ke::runtime::ke_set_timer2 as usize)
