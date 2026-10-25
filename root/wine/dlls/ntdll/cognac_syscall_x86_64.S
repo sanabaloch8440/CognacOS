@@ -5,7 +5,8 @@
  *   NTSTATUS CognacNtSyscallN(ULONG_PTR number, ULONG argument_count,
  *                             const ULONG_PTR *arguments);
  *
- * Stack arguments are copied into the syscall-visible user stack at
+ * CognacOS enters through its DPL3 interrupt gate (vector 0x82), not the Windows SYSCALL MSR ABI.
+ * Stack arguments are copied into the user stack at
  * [RSP+0x28] and onward, following the Windows x64 syscall convention.
  * The C entry points bound argument_count to COGNAC_NT_MAX_ARGUMENTS.
  */
@@ -74,7 +75,7 @@ CognacNtSyscallN:
 
 .Largs_loaded:
     movl    0(%rsp), %eax
-    syscall
+    int     $0x82
 
     /* Preserve RAX (NTSTATUS), restore the caller's stack and nonvolatile R12. */
     movq    24(%rsp), %rsi
