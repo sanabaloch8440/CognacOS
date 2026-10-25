@@ -86,6 +86,11 @@ The native ring-3 smoke resolves exports from the mapped DLL and calls the actua
 function pointers. It covers syscall-table configuration; process, thread, and
 system information wrappers; yield; ANSI/Unicode initialization and comparison;
 Unicode copy; hexadecimal Unicode-string parsing; integer-to-Unicode conversion;
-and the NT version/status helpers. The table is deliberately limited to the
+and the NT version/status helpers, plus the CRC32 and core RTL memory routines. The table is deliberately limited to the
 services CognacOS implements today. Unsupported NT information classes and
 status mappings remain explicit gaps, not successful Windows compatibility.
+
+The expanded version/status smoke passed in the boot-smoke phase of
+[Actions run 40183695385](https://github.com/umarfarooq7869/CognacOS/actions/runs/40183695385).
+The subsequent run adds explicit CRC32, compare-memory, zero-memory, fill, move,
+and copy tests; that expanded test run is still in progress.
