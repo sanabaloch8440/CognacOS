@@ -14,11 +14,13 @@ The roadmap is maintained in one canonical file in the repository root to avoid 
 ## Current focus
 
 - **Boot security:** validate signature tamper rejection in CI; configure stable release keys and exercise enrolled-key Secure Boot plus TPM 2.0 measurement on real firmware.
-- **Memory isolation:** validate CPL=3 demand-zero fault routing; implement user working-set eviction/pagefile-backed page-in, recover kernel probes through generalized trap fixups, deliver user access violations without halting the kernel, and prove isolation with multi-process fault/race tests.
+- **Memory isolation and fault containment:** generalize trap-frame fixups for recoverable kernel probes; deliver user faults through a process-scoped exception path; stress concurrent address-space teardown; add user-page eviction/pagefile-backed page-in; trim working sets only after SMP TLB-shootdown acknowledgements, then reclaim pages safely.
 - **Scheduling and dispatch:** user APC return/SEH delivery, queue wait-all reservations, and wider race/conformance stress.
 - **Object Manager and security:** process-bound handle tables, token lifecycle, impersonation, callbacks, and audit policy.
-- **I/O and storage:** cancellation/completion races, device rundown, PCI resource assignment, AHCI/NVMe paths, and crash-safe writable filesystems.
+- **I/O and storage:** prove exactly-once IRP completion across cancellation races; drain outstanding IRPs and callbacks before device deletion/driver unload; add race/fault-injection tests, PCI resource assignment, AHCI/NVMe paths, and crash-safe writable filesystems.
 - **Windows x64 ABI:** routine-by-routine evidence, automated ABI/export checks, and WDK conformance testing.
+
+The fault-containment, working-set reclamation, and I/O rundown items are open acceptance criteria, not completed features. The canonical tracker records the detailed tests and ordering guarantees in [Milestone 2](../roadmap.md).
 
 ## Validation policy
 
