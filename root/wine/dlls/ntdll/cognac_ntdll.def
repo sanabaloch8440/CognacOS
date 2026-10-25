@@ -17,3 +17,12 @@ EXPORTS
     RtlFillMemory
     RtlMoveMemory
     RtlZeroMemory
+    RtlInitAnsiString
+    RtlInitUnicodeString
+    RtlCompareString
+    RtlEqualString
+    RtlCompareUnicodeString
+    RtlEqualUnicodeString
+    RtlCopyUnicodeString
+    RtlUnicodeStringToInteger
+    RtlIntegerToUnicodeString
