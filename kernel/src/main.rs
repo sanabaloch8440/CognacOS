@@ -161,6 +161,10 @@ unsafe fn install_boot_assets(info:&BootInfo){
   if file.address==0||file.length==0||file.length>256*1024*1024||file.address.checked_add(file.length).is_none_or(|e|e>0x1_0000_0000){unsafe{serial_write(b"Rejected malformed boot registry asset descriptor.\r\n");}continue;}
   let bytes=unsafe{core::slice::from_raw_parts(file.address as *const u8,file.length as usize)};
   if ntoskrnl::cm::hive::Hive::open(bytes).is_err(){unsafe{serial_write(b"Rejected invalid or dirty native registry hive.\r\n");}continue;}
+  if ntoskrnl::cm::runtime::mount_hive_bytes(ntoskrnl::cm::hive::HIVE_NAMES[i],bytes).is_err(){
+   unsafe{serial_write(b"Configuration Manager rejected registry hive mount.\r\n");}
+   continue;
+  }
   BOOT_HIVE_ADDRESS[i].store(file.address,core::sync::atomic::Ordering::Release);
   BOOT_HIVE_LENGTH[i].store(file.length,core::sync::atomic::Ordering::Release);hive_count+=1;
  }
