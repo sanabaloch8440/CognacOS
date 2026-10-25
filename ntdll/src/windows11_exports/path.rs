@@ -118,8 +118,12 @@ pub unsafe extern "system" fn RtlNtPathNameToDosPathName() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlReleasePath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn RtlReleasePath(path: *mut u16) {
+    if path.is_null() { return; }
+    let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
+    if !heap.is_null() {
+        let _ = unsafe { crate::rtl_heap::RtlFreeHeap(heap, 0, path.cast()) };
+    }
 }
 
 #[no_mangle]
