@@ -84,6 +84,15 @@ pub struct CognacXStateConfiguration {
     pub feature_sizes: [u32; 64],
 }
 
+/// Check whether a logical processor can honor the already-published
+/// system-wide XSTATE policy before the scheduler migrates threads to it.
+fn xstate_policy_compatible(global_enabled: u64, local_supported: u64, local_enabled: u64,
+                            local_area_size: u32, global_area_size: u32) -> bool {
+    global_enabled != 0 && local_enabled == global_enabled
+        && local_supported & global_enabled == global_enabled
+        && local_area_size >= global_area_size
+}
+
 #[inline]
 fn cpuid(leaf: u32, subleaf: u32) -> core::arch::x86_64::CpuidResult {
     // SAFETY: CPUID is available on all x86-64 processors.
@@ -144,9 +153,8 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
     }
     if XSTATE_POLICY_FINALIZED.load(Ordering::Acquire) {
         let global_enabled = XSTATE_ENABLED_MASK.load(Ordering::Acquire);
-        return global_enabled != 0 && enabled == global_enabled
-            && hardware_mask & global_enabled == global_enabled
-            && size >= XSTATE_AREA_SIZE.load(Ordering::Acquire);
+        return xstate_policy_compatible(global_enabled, hardware_mask, enabled,
+            size, XSTATE_AREA_SIZE.load(Ordering::Acquire));
     }
     XSTATE_SUPPORTED_MASK.store(hardware_mask, Ordering::Release);
     XSTATE_ENABLED_MASK.store(enabled, Ordering::Release);
@@ -300,6 +308,23 @@ pub unsafe fn ki_xstate_self_test_current_cpu() -> bool {
     let mut area = KiThreadXStateArea::zeroed();
     if !unsafe { ki_xstate_save_thread(&mut area) } { return false; }
     unsafe { ki_xstate_restore_thread(&area) }
+}
+
+/// Exercise nested XSAVE/XRSTOR scopes with separate aligned images on each CPU.
+pub unsafe fn ki_xstate_nested_save_restore_self_test() -> bool {
+    if !ki_xstate_enabled() { return true; }
+    let mut outer = KiThreadXStateArea::zeroed();
+    let mut inner = KiThreadXStateArea::zeroed();
+    if !unsafe { ki_xstate_save_thread(&mut outer) } { return false; }
+    if !unsafe { ki_xstate_save_thread(&mut inner) } {
+        let _ = unsafe { ki_xstate_restore_thread(&outer) };
+        return false;
+    }
+    if !unsafe { ki_xstate_restore_thread(&inner) } {
+        let _ = unsafe { ki_xstate_restore_thread(&outer) };
+        return false;
+    }
+    unsafe { ki_xstate_restore_thread(&outer) }
 }
 
 pub fn ki_xstate_enabled() -> bool {
@@ -461,7 +486,7 @@ pub unsafe extern "win64" fn KeRestoreExtendedProcessorState(save: *mut u8) {
         table.stack[owner_index][depth - 1] = 0;
         if table.depth[owner_index] == 0 { table.owners[owner_index] = 0; }
         table.slots[index] = XStateSaveSlot::EMPTY;
-        unsafe { (save as *mut XStateSaveRecord).write(XStateSaveRecord { signature: 0, generation: 0, reserved: [0; 2] }); }
+        unsafe { (save as *mut XStateSaveRecord).write(XStateSaveRecord { signature: 0, generation: 0, reserved: [0; 5] }); }
     }
     // Restore after releasing the global bookkeeping lock so no lock-release
     // code runs between XRSTOR and the return to the caller.
@@ -476,6 +501,14 @@ mod xstate_layout_tests {
     fn thread_xstate_storage_has_architectural_alignment_and_capacity() {
         assert_eq!(core::mem::align_of::<KiThreadXStateArea>(), 64);
         assert_eq!(core::mem::size_of::<KiThreadXStateArea>(), 576);
+    }
+    #[test]
+    fn processor_feature_masks_must_match_before_migration() {
+        assert!(xstate_policy_compatible(3, 3, 3, 576, 576));
+        assert!(!xstate_policy_compatible(3, 1, 3, 576, 576));
+        assert!(!xstate_policy_compatible(3, 7, 7, 832, 576));
+        assert!(!xstate_policy_compatible(3, 3, 3, 512, 576));
+        assert!(!xstate_policy_compatible(0, 3, 3, 576, 576));
     }
     #[test]
     fn wdk_xstate_save_record_has_x64_opaque_size_and_alignment() {
