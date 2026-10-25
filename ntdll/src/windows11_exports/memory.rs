@@ -1142,8 +1142,8 @@ unsafe fn decode_mem_io_resource(resource: *const CM_PARTIAL_RESOURCE_DESCRIPTOR
     let address = u64::from_le_bytes(descriptor.data[0..8].try_into().unwrap_or([0; 8]));
     let raw_length = u32::from_le_bytes(descriptor.data[8..12].try_into().unwrap_or([0; 4])) as u64;
     let length = if descriptor.type_ == CM_RESOURCE_TYPE_MEMORY_LARGE {
-        let shift = match descriptor.flags & 0x0e00 { CM_RESOURCE_MEMORY_LARGE_40 => 8, CM_RESOURCE_MEMORY_LARGE_48 => 16, CM_RESOURCE_MEMORY_LARGE_64 => 32, _ => return 0 };
-        match raw_length.checked_mul(1u64 << shift) { Some(v) => v, None => return 0 }
+        if !matches!(descriptor.flags & 0x0e00, CM_RESOURCE_MEMORY_LARGE_40 | CM_RESOURCE_MEMORY_LARGE_48 | CM_RESOURCE_MEMORY_LARGE_64) { return 0; }
+        raw_length
     } else { raw_length };
     if length == 0 || address.checked_add(length).is_none() { return 0; }
     if !start.is_null() { unsafe { ptr::write_unaligned(start, address); } }
@@ -1151,17 +1151,17 @@ unsafe fn decode_mem_io_resource(resource: *const CM_PARTIAL_RESOURCE_DESCRIPTOR
 }
 unsafe fn encode_mem_io_resource(resource: *mut CM_PARTIAL_RESOURCE_DESCRIPTOR, type_: u8, length: u64, start: u64) -> NTSTATUS {
     if resource.is_null() || length == 0 || start.checked_add(length).is_none() { return STATUS_INVALID_PARAMETER; }
-    let (flags, shift) = match type_ {
-        CM_RESOURCE_TYPE_PORT | CM_RESOURCE_TYPE_MEMORY => (0u16, 0u32),
-        CM_RESOURCE_TYPE_MEMORY_LARGE if start & 0xff == 0 && length & 0xff == 0 && (length >> 8) <= u32::MAX as u64 && start < (1u64 << 40) => (CM_RESOURCE_MEMORY_LARGE_40, 8),
-        CM_RESOURCE_TYPE_MEMORY_LARGE if start & 0xffff == 0 && length & 0xffff == 0 && (length >> 16) <= u32::MAX as u64 && start < (1u64 << 48) => (CM_RESOURCE_MEMORY_LARGE_48, 16),
-        CM_RESOURCE_TYPE_MEMORY_LARGE if start & 0xffff_ffff == 0 && length & 0xffff_ffff == 0 && (length >> 32) <= u32::MAX as u64 => (CM_RESOURCE_MEMORY_LARGE_64, 32),
+    let flags = match type_ {
+        CM_RESOURCE_TYPE_PORT | CM_RESOURCE_TYPE_MEMORY => 0u16,
+        CM_RESOURCE_TYPE_MEMORY_LARGE if start & 0xff == 0 && start < (1u64 << 40) => CM_RESOURCE_MEMORY_LARGE_40,
+        CM_RESOURCE_TYPE_MEMORY_LARGE if start & 0xffff == 0 && start < (1u64 << 48) => CM_RESOURCE_MEMORY_LARGE_48,
+        CM_RESOURCE_TYPE_MEMORY_LARGE if start & 0xffff_ffff == 0 => CM_RESOURCE_MEMORY_LARGE_64,
         CM_RESOURCE_TYPE_MEMORY_LARGE => return STATUS_UNSUCCESSFUL,
         _ => return STATUS_INVALID_PARAMETER,
     };
-    if shift == 0 && length > u32::MAX as u64 { return STATUS_UNSUCCESSFUL; }
+    if length > u32::MAX as u64 { return STATUS_UNSUCCESSFUL; }
     if type_ == CM_RESOURCE_TYPE_PORT && start > u32::MAX as u64 { return STATUS_UNSUCCESSFUL; }
-    let encoded_length = (length >> shift) as u32;
+    let encoded_length = length as u32;
     let mut descriptor = CM_PARTIAL_RESOURCE_DESCRIPTOR { type_: type_, share_disposition: 0, flags, data: [0; 12] };
     descriptor.data[..8].copy_from_slice(&start.to_le_bytes());
     descriptor.data[8..12].copy_from_slice(&encoded_length.to_le_bytes());
@@ -1272,10 +1272,11 @@ mod tests {
             assert_eq!(RtlCmDecodeMemIoResource(descriptor.as_mut_ptr().cast(), &mut start), 0x2000);
             assert_eq!(start, 0x1234_0000);
             assert_eq!(RtlIoDecodeMemIoResource(descriptor.as_mut_ptr().cast(), &mut start), 0x2000);
-            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x1_0000_0000, 0x1_0000_0000), STATUS_SUCCESS);
-            assert_eq!(RtlCmDecodeMemIoResource(descriptor.as_mut_ptr().cast(), &mut start), 0x1_0000_0000);
+            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x2000, 0x1_0000_0000), STATUS_SUCCESS);
+            assert_eq!(RtlCmDecodeMemIoResource(descriptor.as_mut_ptr().cast(), &mut start), 0x2000);
             assert_eq!(start, 0x1_0000_0000);
-            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x1001, 0x1234), STATUS_UNSUCCESSFUL);
+            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x1_0000_0000, 0x1_0000_0000), STATUS_UNSUCCESSFUL);
+            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x1001, 0x1234), STATUS_SUCCESS);
         }
     }
 
