@@ -76,7 +76,7 @@ pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         return 0xC000_0045; // STATUS_INVALID_PAGE_PROTECTION
     }
     let space = match attached(root) { Ok(s)=>s, Err(s)=>return s };
-    if let Err(e)=space.register_demand_zero_region(start,end-start,writable,executable) { return status(e); }
+    if let Err(e)=space.register_demand_zero_region(start,end-start,writable,executable,args[5] as u32) { return status(e); }
     let out_base=start.to_ne_bytes(); let out_size=(end-start).to_ne_bytes();
     if unsafe { address_space::copy_to_user_root(root,args[1],&out_base) }.is_err()
         || unsafe { address_space::copy_to_user_root(root,args[3],&out_size) }.is_err() {
@@ -196,12 +196,12 @@ pub fn free(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let mut space = match attached(root) { Ok(s) => s, Err(s) => return s };
     let (start, length) = if args[3] == MEM_RELEASE {
         if size != 0 { return STATUS_INVALID_PARAMETER; }
-        let Some((region_start, region_end, allocation_base, _, _, reserved, _committed)) = space.query_region(base) else { return STATUS_INVALID_PARAMETER };
+        let Some((region_start, region_end, allocation_base, _allocation_protect, _, _, reserved, _committed)) = space.query_region(base) else { return STATUS_INVALID_PARAMETER };
         if !reserved || base != allocation_base { return STATUS_INVALID_PARAMETER; }
         (region_start, region_end - region_start)
     } else {
         let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
-        let Some((region_start, region_end, _, _, _, reserved, committed)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
+        let Some((region_start, region_end, _, _, _, _, reserved, committed)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
         if !reserved || !committed || start < region_start || end > region_end { return STATUS_INVALID_PARAMETER; }
         (start, end - start)
     };
@@ -223,7 +223,7 @@ pub fn protect(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let size = match read_u64(root, args[2]) { Ok(v) => v, Err(s) => return s };
     let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
     let mut space = match attached(root) { Ok(s) => s, Err(s) => return s };
-    let Some((region_start, region_end, _, old_write, old_exec, reserved, committed)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
+    let Some((region_start, region_end, _, _allocation_protect, old_write, old_exec, reserved, committed)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
     if !reserved || !committed || start != region_start || end != region_end { return STATUS_INVALID_PARAMETER; }
     let old = current_protection(old_write, old_exec);
     let mut changed = [0u64; 4096];
@@ -293,12 +293,12 @@ pub fn query(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let root = match current_root() { Ok(r) => r, Err(s) => return s };
     if args[1] < USER_START || args[1] >= USER_END { return STATUS_INVALID_PARAMETER; }
     let space = match attached(root) { Ok(s) => s, Err(s) => return s };
-    let Some((start, end, allocation_base, writable, executable, reserved, committed)) = space.query_region(args[1]) else { return STATUS_INVALID_PARAMETER };
+    let Some((start, end, allocation_base, allocation_protect, writable, executable, reserved, committed)) = space.query_region(args[1]) else { return STATUS_INVALID_PARAMETER };
     let protection = current_protection(writable, executable);
     let info = MemoryBasicInformation {
         base_address: start,
         allocation_base,
-        allocation_protect: if reserved { protection } else { 0 },
+        allocation_protect: if reserved { allocation_protect } else { 0 },
         alignment: 0,
         region_size: end - start,
         state: if committed { MEM_COMMIT } else if reserved { 0x2000 } else { MEM_FREE },
