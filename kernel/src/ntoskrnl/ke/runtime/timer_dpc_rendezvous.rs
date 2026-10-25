@@ -883,6 +883,12 @@ pub(crate) fn ki_initialize_processor(logical_id: usize) -> bool {
     {
         return false;
     }
+    // This routine is called on the target logical processor during CPU
+    // bring-up. Program that CPU's XCR0 before it is allowed to run threads.
+    if !unsafe { ki_initialize_xstate_current_cpu() } {
+        // Legacy x87/SSE remains available through the existing FXSAVE path;
+        // do not advertise XSTATE APIs on a CPU that failed XSAVE setup.
+    }
     crate::ntoskrnl::ke::arch::per_cpu_tss_self_test(logical_id)
 }
 
