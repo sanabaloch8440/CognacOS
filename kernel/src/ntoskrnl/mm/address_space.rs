@@ -294,7 +294,7 @@ impl AddressSpace {
         let areas=unsafe{&mut *DEMAND_AREAS.0.get()};
         if areas.iter().any(|a|a.live&&a.root==self.root&&start<a.end&&a.start<end){return Err(VmError::AlreadyMapped)}
         let slot=areas.iter_mut().find(|a|!a.live).ok_or(VmError::OutOfMemory)?;
-        *slot=DemandArea{root:self.root,start,end,allocation_protect,writable,executable,committed:true,live:true}; Ok(())
+        *slot=DemandArea{root:self.root,start,end,allocation_protect,current_protect:allocation_protect,writable,executable,committed:true,live:true}; Ok(())
     }
 
     /// Resolve a demand-zero or pagefile-backed user fault. A busy working-set
@@ -446,12 +446,12 @@ impl AddressSpace {
 
     /// Return the virtual-memory region containing an address. Untracked gaps
     /// are reported as free regions bounded by adjacent reservations.
-    pub fn query_region(&self, address: u64) -> Option<(u64, u64, u64, u32, bool, bool, bool, bool)> {
+    pub fn query_region(&self, address: u64) -> Option<(u64, u64, u64, u32, u32, bool, bool, bool, bool)> {
         if !is_user_range(address, 1) { return None; }
         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
         let areas = unsafe { &*DEMAND_AREAS.0.get() };
         if let Some(a) = areas.iter().find(|a| a.live && a.root == self.root && address >= a.start && address < a.end) {
-            return Some((a.start, a.end, a.start, a.allocation_protect, a.writable, a.executable, true, a.committed));
+            return Some((a.start, a.end, a.start, a.allocation_protect, a.current_protect, a.writable, a.executable, true, a.committed));
         }
         let mut previous_end = USER_START;
         let mut next_start = USER_END;
@@ -462,7 +462,7 @@ impl AddressSpace {
         let start = core::cmp::max(previous_end, USER_START);
         let end = core::cmp::min(next_start, USER_END);
         if start >= end || address < start || address >= end { return None; }
-        Some((start, end, 0, 0, false, false, false, false))
+        Some((start, end, 0, 0, 0, false, false, false, false))
     }
 
     /// Snapshot the tracked demand-zero reservation containing `address`.
@@ -478,7 +478,7 @@ impl AddressSpace {
     /// Update protection metadata for a whole tracked reservation subrange.
     /// Caller must have validated all resident leaves and must roll back PTEs if
     /// any subsequent update fails. W+X is rejected consistently with fault-time checks.
-    pub fn set_demand_region_protection(&self, start: u64, length: u64, writable: bool, executable: bool) -> Result<(), VmError> {
+    pub fn set_demand_region_protection(&self, start: u64, length: u64, writable: bool, executable: bool, protection: u32) -> Result<(), VmError> {
         if length == 0 || start & (PAGE_SIZE - 1) != 0 || length & (PAGE_SIZE - 1) != 0
             || writable && executable || !is_user_range(start, length) {
             return Err(VmError::InvalidAddress);
@@ -490,6 +490,7 @@ impl AddressSpace {
             .ok_or(VmError::NotMapped)?;
         area.writable = writable;
         area.executable = executable;
+        area.current_protect = protection;
         Ok(())
     }
 
@@ -868,8 +869,8 @@ impl AddressSpace {
 const MAX_DEMAND_AREAS: usize = 256;
 const MAX_WORKING_SET_PAGES: usize = 8192;
 #[derive(Clone, Copy)]
-struct DemandArea { root:u64, start:u64, end:u64, allocation_protect:u32, writable:bool, executable:bool, committed:bool, live:bool }
-impl DemandArea { const EMPTY: Self = Self { root:0,start:0,end:0,allocation_protect:0,writable:false,executable:false,committed:false,live:false }; }
+struct DemandArea { root:u64, start:u64, end:u64, allocation_protect:u32, current_protect:u32, writable:bool, executable:bool, committed:bool, live:bool }
+impl DemandArea { const EMPTY: Self = Self { root:0,start:0,end:0,allocation_protect:0,current_protect:0,writable:false,executable:false,committed:false,live:false }; }
 struct DemandAreas(core::cell::UnsafeCell<[DemandArea; MAX_DEMAND_AREAS]>);
 unsafe impl Sync for DemandAreas {}
 static DEMAND_AREAS: DemandAreas = DemandAreas(core::cell::UnsafeCell::new([DemandArea::EMPTY; MAX_DEMAND_AREAS]));
