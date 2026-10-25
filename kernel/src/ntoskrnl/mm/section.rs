@@ -21,6 +21,7 @@ const STATUS_ACCESS_DENIED: i32 = 0xC000_0022u32 as i32;
 struct Section {
     live: bool,
     generation: u32,
+    owner_root: u64,
     size: u64,
     references: u32,
     page_count: usize,
@@ -190,7 +191,7 @@ pub fn copy(handle: u64, owner_root: u64, offset: u64, buffer: &mut [u8], write:
     let Some(end) = offset.checked_add(buffer.len() as u64) else { return STATUS_INVALID_PARAMETER; };
     let _guard = LOCK.lock();
     let sections = unsafe { &*core::ptr::addr_of!(SECTIONS) };
-    let Some(section) = sections.get(slot).filter(|s| s.live && s.generation == generation) else { return STATUS_INVALID_HANDLE; };
+    let Some(section) = sections.get(slot).filter(|s| s.live && s.generation == generation && s.owner_root == owner_root) else { return STATUS_INVALID_HANDLE; };
     if end > section.size { return STATUS_INVALID_PARAMETER; }
     let mut done = 0usize;
     while done < buffer.len() {
