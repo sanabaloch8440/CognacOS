@@ -213,13 +213,16 @@ The concrete entry point is `kernel/src/pe_loader.rs::load_dll_transaction_from_
 ### NTDLL memory exports
 
 - [x] Replace zero-argument declarations for the core `Nt/Zw*VirtualMemory` family with typed x64 parameter lists and wire supported calls through the private `int 0x83` native-service gate.
-- [x] Implement current-process allocation, whole-reservation decommit/release, whole-region protection, region query, and checked read/write paths in `kernel/src/ntoskrnl/mm/native_vm.rs`.
-- [x] Implement process-local RTL memory-zone and memory-block-lookaside allocators backed by the native VM interface.
-- [x] Implement the RTL memory-stream structure and basic query-interface, reference-count, read, seek, stat, and clone behavior.
-- [x] Add non-temporal copy/fill fallbacks and keep the x64 `MEMORY_BASIC_INFORMATION` ABI size/offset tests.
-- [x] Add bounded current-process resident-page lock/unlock services with physical-frame pin references; decommit rejects pinned pages.
-- [ ] Complete transactional partial-region decommit/protect, nonresident-page fault-in for locking, process-teardown lock rundown, and the kernel-backed flush contract for section/file-backed memory.
-- [ ] Complete `NtAllocateVirtualMemoryEx` extended parameters and Windows allocation/protection modifiers.
-- [ ] Finish memory-stream growth/revert/region-lock behavior (writes and safe shrink are implemented), secure-memory-cache callbacks, resource-descriptor codecs, token membership, and hardware-token-backed nonvolatile-memory operations; validate each against a pinned Windows 11 x64 ABI reference.
+- [x] Implement current-process allocation/read/write and bounded resident-page lock/unlock services; decommit refuses pinned pages.
+- [x] Add bounded kernel section objects with physical-page backing, reference tracking, checked section copy, and a section-backed RTL stream path.
+- [x] Implement CM/IO memory-resource descriptor encode/decode for port, memory, and large-memory descriptors with length/alignment validation.
+- [x] Add secure-memory-cache callback registration/deregistration and notifications after successful VM free/protect calls.
+- [x] Wire effective-token SID membership checks through the kernel security reference monitor; non-null user token handles remain unsupported.
+- [x] Add firmware-validated persistent-memory token/range checks and x86 cache-line flush plus SFENCE persistence operations.
+- [x] Keep the x64 `MEMORY_BASIC_INFORMATION` ABI/layout checks and RTL resource/callback regression tests.
+- [ ] Add section view mapping and file-backed section objects; connect section object lifetime to the full Object Manager handle table.
+- [ ] Complete user-handle token resolution, full token access checks, impersonation/AppContainer semantics, and security-descriptor inheritance for sections.
+- [ ] Complete nonresident-page fault-in for locking, process-teardown lock rundown, and file-backed VM flush.
+- [ ] Complete `NtAllocateVirtualMemoryEx` extended parameters, stream growth/revert/region-lock semantics, and hardware validation of persistent-memory durability on real EFI_MEMORY_NV hardware.
 
-The private `int 0x83` gate is CognacOS-specific and is not Windows' build-specific SYSCALL ordinal ABI. The current kernel VM implementation remains current-process-only and does not claim full Windows 11 compatibility. Unsupported operations return a failure status rather than silently succeeding.
+The private `int 0x83` gate is CognacOS-specific and is not Windows' build-specific SYSCALL ordinal ABI. VM and section facilities remain bounded and current-process-oriented; these are incremental kernel services, not a claim of full Windows 11 compatibility. Unsupported combinations fail closed.
