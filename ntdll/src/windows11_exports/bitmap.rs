@@ -5,13 +5,7 @@
 //! descriptor and a buffer large enough for SizeOfBitMap bits.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
-use core::ffi::c_void;
-
-type ULONG = u32;
 type ULONG_PTR = usize;
-type PVOID = *mut c_void;
-type PULONG = *mut ULONG;
-type BOOLEAN = u8;
 
 /// x64 RTL_BITMAP_EX layout: pointer-sized bit count followed by a pointer to
 /// the backing 64-bit words.
