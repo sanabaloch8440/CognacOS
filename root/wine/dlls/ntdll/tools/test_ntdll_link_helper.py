@@ -20,9 +20,9 @@ class PEParserTests(unittest.TestCase):
 
     def test_bounds_checked_integer_reads(self):
         with self.assertRaises(helper.PEError):
-            helper.u16(b"\\x00", 0)
+            helper.u16(b"\x00", 0)
         with self.assertRaises(helper.PEError):
-            helper.u32(b"\\x00\\x00", 0)
+            helper.u32(b"\x00\x00", 0)
 
 
 class SyscallStubTests(unittest.TestCase):
