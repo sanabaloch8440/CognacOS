@@ -1,3 +1,5 @@
+use super::*;
+
 #[no_mangle]
 pub unsafe extern "system" fn LdrResolveDelayLoadedAPI(
     parent_module_base: PVOID,
