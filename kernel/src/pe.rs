@@ -399,6 +399,42 @@ pub unsafe fn load_dll(
     Ok(loaded)
 }
 
+/// Unmap a previously loaded DLL and retire its export/runtime metadata.
+///
+/// The caller must first transition the module manager entry to Unloading so no
+/// dependency or external reference can execute the image while its pages are
+/// reclaimed. This routine does not run DllMain; user-mode detach callouts must
+/// have completed before it is called.
+pub unsafe fn unload_dll(
+    space: &mut AddressSpace,
+    image: LoadedImage,
+    module_name: &[u8],
+) -> Result<(), PeError> {
+    if !image.is_dll || image.base == 0 || image.image_size == 0
+        || image.base & (PAGE_SIZE - 1) != 0 {
+        return Err(PeError::InvalidHeader);
+    }
+    let rounded = align_up(image.image_size as u64, PAGE_SIZE).ok_or(PeError::InvalidHeader)?;
+    let pages = usize::try_from(rounded / PAGE_SIZE).map_err(|_| PeError::ImageTooLarge)?;
+    if pages == 0 || pages > MAX_IMAGE_PAGES { return Err(PeError::ImageTooLarge); }
+
+    // Preflight the complete image before changing any PTE, so a stale or
+    // partial mapping is rejected without partially unloading the module.
+    for index in 0..pages {
+        let address = image.base.checked_add(index as u64 * PAGE_SIZE).ok_or(PeError::InvalidHeader)?;
+        space.physical_for_user(address)?;
+    }
+
+    crate::pe_runtime::unregister_image(image.base);
+    crate::winabi::unregister_module(module_name);
+    for index in 0..pages {
+        let address = image.base + index as u64 * PAGE_SIZE;
+        let physical = unsafe { space.unmap_user_page(address)? };
+        unsafe { crate::memory::free_page(physical)?; }
+    }
+    Ok(())
+}
+
 /// Build and load a tiny synthetic AMD64 PE32+ image to exercise header parsing,
 /// section mapping, entry validation and final RX/RO-NX permissions during boot.
 pub unsafe fn self_test(space: &mut AddressSpace) -> Result<LoadedImage, PeError> {
