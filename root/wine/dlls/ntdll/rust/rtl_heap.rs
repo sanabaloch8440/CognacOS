@@ -129,15 +129,21 @@ unsafe fn vm_free(base: PVOID) {
     let _ = unsafe { NtFreeVirtualMemory(current_process(), &mut address, &mut bytes, MEM_RELEASE) };
 }
 unsafe fn segment_create(heap: *mut CognacHeap, minimum_payload: usize) -> *mut Segment {
-    let overhead = mem::size_of::<Segment>() + mem::size_of::<Block>() + ALIGN;
-    let want = match page_up(minimum_payload.saturating_add(overhead).max((*heap).commit_size.max(PAGE_SIZE))) {
+    let block_offset = match align_up(mem::size_of::<Segment>(), ALIGN) { Some(v) => v, None => return ptr::null_mut() };
+    let overhead = block_offset + mem::size_of::<Block>();
+    let configured = if unsafe { (*heap).segments.is_null() } {
+        unsafe { (*heap).reserve_size }
+    } else {
+        unsafe { (*heap).commit_size.max(PAGE_SIZE) }
+    };
+    let want = match page_up(minimum_payload.saturating_add(overhead).max(configured.max(PAGE_SIZE))) {
         Some(v) => v, None => return ptr::null_mut(),
     };
     let region = unsafe { vm_alloc(want) };
     if region.is_null() { return ptr::null_mut(); }
     let seg = region.cast::<Segment>();
-    let block = unsafe { region.cast::<u8>().add(mem::size_of::<Segment>()).cast::<Block>() };
-    let available = want - mem::size_of::<Segment>() - mem::size_of::<Block>();
+    let block = unsafe { region.cast::<u8>().add(block_offset).cast::<Block>() };
+    let available = want - block_offset - mem::size_of::<Block>();
     unsafe {
         ptr::write(seg, Segment { magic: SEGMENT_MAGIC, base: region, size: want, next: (*heap).segments, first: block });
         ptr::write(block, Block { magic: BLOCK_MAGIC, size: available & !(ALIGN - 1), previous: ptr::null_mut(), next: ptr::null_mut(), user_value: ptr::null_mut(), user_flags: 0, free: 1 });
@@ -167,7 +173,7 @@ unsafe fn block_from_payload(heap: *mut CognacHeap, payload: PVOID) -> *mut Bloc
         {
             let b = (p - mem::size_of::<Block>()) as *mut Block;
             if unsafe { (*b).magic } == BLOCK_MAGIC
-                && (b as usize) >= base + mem::size_of::<Segment>()
+                && (b as usize) >= base + align_up(mem::size_of::<Segment>(), ALIGN).unwrap_or(mem::size_of::<Segment>())
                 && unsafe { (*b).size } <= end.saturating_sub(b as usize + mem::size_of::<Block>())
                 && unsafe { block_payload(b) } == payload
             { return b; }
@@ -211,7 +217,7 @@ unsafe fn create_heap(flags: ULONG, reserve: SIZE_T, commit: SIZE_T) -> *mut Cog
 #[no_mangle]
 pub unsafe extern "system" fn RtlCreateHeap(flags: ULONG, base: PVOID, reserve: SIZE_T, commit: SIZE_T, _lock_ptr: PVOID, _parameters: PVOID) -> HANDLE {
     // Caller-provided HeapBase and external resource locks are not supported yet.
-    if !base.is_null() || (!base.is_null() && flags & HEAP_GROWABLE != 0) || (commit != 0 && reserve != 0 && commit > reserve) {
+    if !base.is_null() || flags & HEAP_GROWABLE == 0 || (commit != 0 && reserve != 0 && commit > reserve) {
         return ptr::null_mut();
     }
     if reserve > isize::MAX as usize || commit > isize::MAX as usize { return ptr::null_mut(); }
@@ -388,7 +394,7 @@ pub unsafe extern "system" fn RtlValidateHeap(handle: HANDLE, _flags: ULONG, add
         let mut found = address.is_null();
         while !seg.is_null() {
             if (*seg).magic != SEGMENT_MAGIC { valid = false; break; }
-            let mut expected = (*seg).base as usize + mem::size_of::<Segment>();
+            let mut expected = (*seg).base as usize + align_up(mem::size_of::<Segment>(), ALIGN).unwrap_or(mem::size_of::<Segment>());
             let end = (*seg).base as usize + (*seg).size;
             let mut b = (*seg).first;
             let mut count = 0usize;
