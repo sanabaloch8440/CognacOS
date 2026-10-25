@@ -712,7 +712,7 @@ fn nt_open_file(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         let _ = crate::file_services::close_for_process(current_process_id(), handle); return status;
     }
     if let Err(status) = copy_nt_output(args[0], &(handle as u64).to_le_bytes()) {
-        let _ = crate::file_services::close(handle); return status;
+        let _ = crate::file_services::close_for_process(current_process_id(), handle); return status;
     }
     NT_STATUS_SUCCESS
 }
