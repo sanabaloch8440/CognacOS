@@ -274,6 +274,169 @@ pub unsafe extern "system" fn _stricmp(a: *const i8, b: *const i8) -> i32 {
     unsafe { _strnicmp(a, b, usize::MAX) }
 }
 
+
+/// Secure concatenation matching the error/clearing behavior used by Wine's string.c.
+pub unsafe extern "system" fn strcat_s(dst: *mut i8, len: SIZE_T, src: *const i8) -> errno_t {
+    if dst.is_null() || len == 0 { return EINVAL; }
+    if src.is_null() {
+        unsafe { dst.write(0); }
+        return EINVAL;
+    }
+    let mut dlen = 0;
+    while dlen < len && unsafe { byte(dst.cast(), dlen) } != 0 { dlen += 1; }
+    let mut i = 0;
+    while dlen + i < len {
+        let v = unsafe { byte(src.cast(), i) };
+        unsafe { dst.add(dlen + i).write(v as i8); }
+        if v == 0 { return 0; }
+        i += 1;
+    }
+    unsafe { dst.write(0); }
+    ERANGE
+}
+
+/// Secure copy: destination is always terminated/cleared on a range failure.
+pub unsafe extern "system" fn strcpy_s(dst: *mut i8, len: SIZE_T, src: *const i8) -> errno_t {
+    if dst.is_null() || len == 0 { return EINVAL; }
+    if src.is_null() {
+        unsafe { dst.write(0); }
+        return EINVAL;
+    }
+    for i in 0..len {
+        let v = unsafe { byte(src.cast(), i) };
+        unsafe { dst.add(i).write(v as i8); }
+        if v == 0 { return 0; }
+    }
+    unsafe { dst.write(0); }
+    ERANGE
+}
+
+pub unsafe extern "system" fn strncpy_s(dst: *mut i8, len: SIZE_T, src: *const i8, count: SIZE_T) -> errno_t {
+    if dst.is_null() || len == 0 { return EINVAL; }
+    if count == 0 {
+        unsafe { dst.write(0); }
+        return 0;
+    }
+    if src.is_null() {
+        unsafe { dst.write(0); }
+        return EINVAL;
+    }
+    let limit = if count == TRUNCATE { len } else { core::cmp::min(count, len) };
+    let mut i = 0;
+    while i < limit {
+        let v = unsafe { byte(src.cast(), i) };
+        if v == 0 {
+            unsafe { dst.add(i).write(0); }
+            return 0;
+        }
+        unsafe { dst.add(i).write(v as i8); }
+        i += 1;
+    }
+    if count == TRUNCATE {
+        unsafe { dst.add(len - 1).write(0); }
+        STRUNCATE
+    } else if count >= len {
+        unsafe { dst.write(0); }
+        ERANGE
+    } else {
+        unsafe { dst.add(i).write(0); }
+        0
+    }
+}
+
+pub unsafe extern "system" fn strncat_s(dst: *mut i8, len: SIZE_T, src: *const i8, count: SIZE_T) -> errno_t {
+    if dst.is_null() || len == 0 { return EINVAL; }
+    if count == 0 { return 0; }
+    if src.is_null() {
+        unsafe { dst.write(0); }
+        return EINVAL;
+    }
+    let mut dlen = 0;
+    while dlen < len && unsafe { byte(dst.cast(), dlen) } != 0 { dlen += 1; }
+    if dlen == len {
+        unsafe { dst.write(0); }
+        return ERANGE;
+    }
+    let limit = if count == TRUNCATE { len - dlen - 1 } else { count };
+    let mut i = 0;
+    while i < limit && dlen + i + 1 < len {
+        let v = unsafe { byte(src.cast(), i) };
+        if v == 0 {
+            unsafe { dst.add(dlen + i).write(0); }
+            return 0;
+        }
+        unsafe { dst.add(dlen + i).write(v as i8); }
+        i += 1;
+    }
+    unsafe { dst.add(dlen + i).write(0); }
+    if count == TRUNCATE {
+        if unsafe { byte(src.cast(), i) } != 0 { STRUNCATE } else { 0 }
+    } else if i < count && unsafe { byte(src.cast(), i) } != 0 {
+        unsafe { dst.write(0); }
+        ERANGE
+    } else { 0 }
+}
+
+pub unsafe extern "system" fn strcspn(s: *const i8, reject: *const i8) -> SIZE_T {
+    if s.is_null() || reject.is_null() { return 0; }
+    let mut i = 0;
+    while unsafe { byte(s.cast(), i) } != 0 {
+        if !unsafe { strchr(reject, byte(s.cast(), i) as i32) }.is_null() { break; }
+        i += 1;
+    }
+    i
+}
+
+pub unsafe extern "system" fn strspn(s: *const i8, accept: *const i8) -> SIZE_T {
+    if s.is_null() || accept.is_null() { return 0; }
+    let mut i = 0;
+    while unsafe { byte(s.cast(), i) } != 0 {
+        if unsafe { strchr(accept, byte(s.cast(), i) as i32) }.is_null() { break; }
+        i += 1;
+    }
+    i
+}
+
+pub unsafe extern "system" fn strpbrk(s: *const i8, accept: *const i8) -> *mut i8 {
+    if s.is_null() || accept.is_null() { return core::ptr::null_mut(); }
+    let mut i = 0;
+    while unsafe { byte(s.cast(), i) } != 0 {
+        if !unsafe { strchr(accept, byte(s.cast(), i) as i32) }.is_null() {
+            return unsafe { s.add(i) as *mut i8 };
+        }
+        i += 1;
+    }
+    core::ptr::null_mut()
+}
+
+pub unsafe extern "system" fn toupper(c: i32) -> i32 {
+    if (b'a' as i32..=b'z' as i32).contains(&c) { c - 32 } else { c }
+}
+
+pub unsafe extern "system" fn _strlwr(s: *mut i8) -> *mut i8 {
+    if s.is_null() { return s; }
+    let mut i = 0;
+    loop {
+        let v = unsafe { byte(s.cast(), i) };
+        if v == 0 { break; }
+        unsafe { s.add(i).write(tolower(v as i32) as i8); }
+        i += 1;
+    }
+    s
+}
+
+pub unsafe extern "system" fn _strupr(s: *mut i8) -> *mut i8 {
+    if s.is_null() { return s; }
+    let mut i = 0;
+    loop {
+        let v = unsafe { byte(s.cast(), i) };
+        if v == 0 { break; }
+        unsafe { s.add(i).write(toupper(v as i32) as i8); }
+        i += 1;
+    }
+    s
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,4 +484,33 @@ mod tests {
             assert_eq!(words, [0x1234, 0x1234, 7, 7]);
         }
     }
+
+    #[test]
+    fn secure_string_and_span_helpers() {
+        let mut dst = [0i8; 8];
+        unsafe {
+            assert_eq!(strcpy_s(dst.as_mut_ptr(), dst.len(), b"ab\0".as_ptr().cast()), 0);
+            assert_eq!(strcat_s(dst.as_mut_ptr(), dst.len(), b"cd\0".as_ptr().cast()), 0);
+            assert_eq!(strcspn(dst.as_ptr(), b"dx\0".as_ptr().cast()), 3);
+            assert_eq!(strspn(dst.as_ptr(), b"abcd\0".as_ptr().cast()), 4);
+            assert_eq!(strpbrk(dst.as_ptr(), b"dx\0".as_ptr().cast()), dst.as_mut_ptr().add(3));
+            assert_eq!(strncpy_s(dst.as_mut_ptr(), dst.len(), b"123456789\0".as_ptr().cast(), TRUNCATE), STRUNCATE);
+            assert_eq!(dst[7], 0);
+            _strlwr(dst.as_mut_ptr());
+            assert_eq!(dst[0], b'1' as i8);
+            _strupr(dst.as_mut_ptr());
+            assert_eq!(dst[0], b'1' as i8);
+        }
+    }
+
+    #[test]
+    fn secure_concatenation_clears_on_range_error() {
+        let mut dst = [0i8; 4];
+        unsafe {
+            strcpy(dst.as_mut_ptr(), b"ab\0".as_ptr().cast());
+            assert_eq!(strcat_s(dst.as_mut_ptr(), dst.len(), b"cdef\0".as_ptr().cast()), ERANGE);
+            assert_eq!(dst[0], 0);
+        }
+    }
+
 }
