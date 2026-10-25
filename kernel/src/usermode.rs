@@ -284,6 +284,12 @@ pub unsafe fn run_windows_syscall_abi_smoke(
     space: &mut AddressSpace,
     ntdll: LoadedImage,
 ) -> Result<(), VmError> {
+    let service_query_system = crate::syscall::windows_service_number(b"NtQuerySystemInformation")
+        .ok_or(VmError::InvalidAddress)?;
+    let service_query_process = crate::syscall::windows_service_number(b"NtQueryInformationProcess")
+        .ok_or(VmError::InvalidAddress)?;
+    let service_query_thread = crate::syscall::windows_service_number(b"NtQueryInformationThread")
+        .ok_or(VmError::InvalidAddress)?;
     let mut data = [0u8; 4096];
     data[0x3f0] = 66;
     data[0x3f1] = 65;
@@ -338,7 +344,9 @@ pub unsafe fn run_windows_syscall_abi_smoke(
     imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0x100);
     emit!(&[0x41, 0xb8, 64, 0, 0, 0]);
     imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x180);
-    emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x36, 0, 0, 0, 0x0f, 0x05, 0x85, 0xc0]);
+    emit!(&[0x4c, 0x8b, 0xd1, 0xb8]);
+    emit!(&service_query_system.to_le_bytes());
+    emit!(&[0x0f, 0x05, 0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
     emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
     imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f1);
@@ -353,7 +361,9 @@ pub unsafe fn run_windows_syscall_abi_smoke(
     emit!(&[0x41, 0xb9, 48, 0, 0, 0]);
     imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0x280);
     emit!(&[0x48, 0x89, 0x44, 0x24, 0x28]);
-    emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x19, 0, 0, 0, 0x0f, 0x05, 0x85, 0xc0]);
+    emit!(&[0x4c, 0x8b, 0xd1, 0xb8]);
+    emit!(&service_query_process.to_le_bytes());
+    emit!(&[0x0f, 0x05, 0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
     check_dword!(NTDLL_TEST_DATA + 0x280, 48);
 
@@ -364,7 +374,9 @@ pub unsafe fn run_windows_syscall_abi_smoke(
     emit!(&[0x41, 0xb9, 48, 0, 0, 0]);
     imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0x380);
     emit!(&[0x48, 0x89, 0x44, 0x24, 0x28]);
-    emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x25, 0, 0, 0, 0x0f, 0x05, 0x85, 0xc0]);
+    emit!(&[0x4c, 0x8b, 0xd1, 0xb8]);
+    emit!(&service_query_thread.to_le_bytes());
+    emit!(&[0x0f, 0x05, 0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
     check_dword!(NTDLL_TEST_DATA + 0x380, 48);
 
@@ -374,7 +386,9 @@ pub unsafe fn run_windows_syscall_abi_smoke(
     emit!(&[0xba, 1, 0, 0, 0]);
     emit!(&[0x41, 0xb8, 64, 0, 0, 0]);
     imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x900);
-    emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x36, 0, 0, 0, 0x0f, 0x05]);
+    emit!(&[0x4c, 0x8b, 0xd1, 0xb8]);
+    emit!(&service_query_system.to_le_bytes());
+    emit!(&[0x0f, 0x05]);
     emit!(&[0x3d, 0x05, 0, 0, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
 
