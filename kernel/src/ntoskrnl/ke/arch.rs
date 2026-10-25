@@ -443,7 +443,7 @@ cognacos_tlb_ipi_stub:
     jne .Lcognacos_tlb_skip_user_save
     mov rbx, rsp
     and rsp, -16
-    call cognacos_save_current_user_xstate
+    call cognacos_save_current_user_xstate_asm
     mov rsp, rbx
 .Lcognacos_tlb_skip_user_save:
     mov rax, rsp
@@ -715,7 +715,7 @@ cognacos_interrupt_common:
     jne .Lcognacos_irq_skip_user_save
     mov rbx, rsp
     and rsp, -16
-    call cognacos_save_current_user_xstate
+    call cognacos_save_current_user_xstate_asm
     mov rsp, rbx
 .Lcognacos_irq_skip_user_save:
     mov rdi, [rsp + 120]
@@ -782,7 +782,7 @@ cognacos_hal_ipi_stub:
     jne .Lcognacos_hal_skip_user_save
     mov rbx, rsp
     and rsp, -16
-    call cognacos_save_current_user_xstate
+    call cognacos_save_current_user_xstate_asm
     mov rsp, rbx
 .Lcognacos_hal_skip_user_save:
     mov rax, rsp
@@ -848,7 +848,7 @@ cognacos_ke_broadcast_ipi_stub:
     jne .Lcognacos_broadcast_skip_user_save
     mov rbx, rsp
     and rsp, -16
-    call cognacos_save_current_user_xstate
+    call cognacos_save_current_user_xstate_asm
     mov rsp, rbx
 .Lcognacos_broadcast_skip_user_save:
     mov rax, rsp
@@ -914,7 +914,7 @@ cognacos_tsc_sync_stub:
     jne .Lcognacos_tsc_skip_user_save
     mov rbx, rsp
     and rsp, -16
-    call cognacos_save_current_user_xstate
+    call cognacos_save_current_user_xstate_asm
     mov rsp, rbx
 .Lcognacos_tsc_skip_user_save:
     mov rax, rsp
@@ -986,7 +986,7 @@ cognacos_timer_stub:
     jne .Lcognacos_timer_skip_user_save
     mov rbx, rsp
     and rsp, -16
-    call cognacos_save_current_user_xstate
+    call cognacos_save_current_user_xstate_asm
     mov rsp, rbx
 .Lcognacos_timer_skip_user_save:
     mov rax, rsp
