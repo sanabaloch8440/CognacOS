@@ -27,6 +27,76 @@ static int rva_range_ok(ULONG rva, ULONG length, ULONG image_size)
     return rva <= image_size && length <= image_size - rva;
 }
 
+static ULONG_PTR pe_u64(const UCHAR *p)
+{
+    return (ULONG_PTR)pe_u32(p) | ((ULONG_PTR)pe_u32(p + 4) << 32);
+}
+
+static WCHAR loader_fold_char(WCHAR value)
+{
+    if (value >= (WCHAR)'A' && value <= (WCHAR)'Z')
+        return (WCHAR)(value + ('a' - 'A'));
+    return value;
+}
+
+static PVOID loader_current_peb(void)
+{
+    PVOID peb;
+    __asm__ volatile ("movq %%gs:0x60, %0" : "=r"(peb));
+    return peb;
+}
+
+/* Find a DLL that is already present in the PEB load-order list. This does
+ * not load images or resolve search paths; LdrLoadDll requires kernel file and
+ * address-space services that are not yet exposed to native user mode. */
+__declspec(dllexport)
+NTSTATUS NTAPI LdrGetDllHandle(PVOID dll_path, PULONG dll_characteristics,
+                               PCCOGNAC_UNICODE_STRING dll_name, PVOID *dll_handle)
+{
+    const UCHAR *peb, *ldr, *head;
+    ULONG_PTR link, head_address;
+    ULONG entries;
+    USHORT i;
+    (void)dll_path;
+    (void)dll_characteristics;
+    if (!dll_name || !dll_handle || (dll_name->Length & 1) ||
+        (dll_name->Length && !dll_name->Buffer) || dll_name->Length > 512)
+        return STATUS_INVALID_PARAMETER;
+    *dll_handle = NULL;
+    peb = (const UCHAR *)loader_current_peb();
+    if (!peb) return STATUS_DLL_NOT_FOUND;
+    ldr = (const UCHAR *)pe_u64(peb + 0x18);
+    if (!ldr) return STATUS_DLL_NOT_FOUND;
+    head = ldr + 0x10;
+    head_address = (ULONG_PTR)head;
+    link = pe_u64(head);
+    for (entries = 0; link && link != head_address && entries < 64; ++entries) {
+        const UCHAR *entry = (const UCHAR *)link;
+        USHORT name_length = pe_u16(entry + 0x58);
+        ULONG_PTR name_buffer = pe_u64(entry + 0x60);
+        int equal = 1;
+        if (!(name_length & 1) && name_length == dll_name->Length &&
+            (!name_length || name_buffer)) {
+            for (i = 0; i < name_length / sizeof(WCHAR); ++i) {
+                WCHAR left = pe_u16((const UCHAR *)name_buffer + i * sizeof(WCHAR));
+                WCHAR right = dll_name->Buffer[i];
+                if (loader_fold_char(left) != loader_fold_char(right)) {
+                    equal = 0;
+                    break;
+                }
+            }
+            if (equal) {
+                ULONG_PTR base = pe_u64(entry + 0x30);
+                if (!base) return STATUS_DLL_NOT_FOUND;
+                *dll_handle = (PVOID)base;
+                return STATUS_SUCCESS;
+            }
+        }
+        link = pe_u64(entry);
+    }
+    return STATUS_DLL_NOT_FOUND;
+}
+
 __declspec(dllexport)
 NTSTATUS NTAPI LdrGetProcedureAddress(PVOID dll_handle,
                                       PCCOGNAC_ANSI_STRING procedure_name,
