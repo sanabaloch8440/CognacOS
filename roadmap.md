@@ -160,3 +160,18 @@ The implementation remains partial. It now publishes the Windows-layout XState f
 - Record workflow links and commit IDs in the **Current validation** section, not scattered throughout historical notes.
 - Keep dated implementation history in Git commits; keep this file focused on present state and next acceptance criteria.
 - Update the README only for stable high-level facts; detailed status belongs here and in the subsystem comparisons.
+
+
+## PE dependency loading transaction
+
+- [x] Add bounded PE32+ import discovery before parent-image mapping, including normal and RVA-based delay imports.
+- [x] Deduplicate import names case-insensitively and cap the discovered plan at 32 module names.
+- [x] Reject malformed descriptors and missing dependencies before mapping the parent image.
+- [x] Reject dependency graph cycles and prevent unload while a module is initializing.
+- [ ] Recursively locate and map missing dependency files with bounded per-depth file buffers.
+- [ ] Roll back every dependency newly mapped by a failed parent transaction.
+- [ ] Resolve forwarded exports and ordinals through the selected loaded module.
+- [ ] Connect NTDLL mapping/unmapping to process-owned kernel section services.
+- [ ] Queue attach/detach callouts on a process thread and wait for rundown before unmapping.
+
+The current first phase is intentionally fail-closed: if any discovered dependency is not already mapped, the parent is not mapped and the load returns STATUS_DLL_NOT_FOUND. This avoids partial parent images, but it is not yet recursive dependency loading.
