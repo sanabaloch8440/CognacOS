@@ -178,6 +178,39 @@ NTSTATUS NTAPI RtlGetVersion(COGNAC_RTL_OSVERSIONINFOW *version)
     return STATUS_SUCCESS;
 }
 
+/* Native version helper used by applications that query the NT build tuple. */
+__declspec(dllexport)
+void NTAPI RtlGetNtVersionNumbers(PULONG major, PULONG minor, PULONG build)
+{
+    if (major) *major = 10;
+    if (minor) *minor = 0;
+    if (build) *build = 26100;
+}
+
+/* Small deterministic mapping for statuses implemented by this bootstrap. */
+__declspec(dllexport)
+ULONG NTAPI RtlNtStatusToDosError(NTSTATUS status)
+{
+    switch ((ULONG)status) {
+    case 0x00000000u: return 0;   /* ERROR_SUCCESS */
+    case 0xC0000002u: return 120; /* ERROR_CALL_NOT_IMPLEMENTED */
+    case 0xC0000005u: return 998; /* ERROR_NOACCESS */
+    case 0xC0000008u: return 6;   /* ERROR_INVALID_HANDLE */
+    case 0xC000000Du: return 87;  /* ERROR_INVALID_PARAMETER */
+    case 0xC0000017u: return 8;   /* ERROR_NOT_ENOUGH_MEMORY */
+    case 0xC0000022u: return 5;   /* ERROR_ACCESS_DENIED */
+    case 0xC0000023u: return 122; /* ERROR_INSUFFICIENT_BUFFER */
+    case 0xC0000034u: return 2;   /* ERROR_FILE_NOT_FOUND */
+    default: return 317;          /* ERROR_MR_MID_NOT_FOUND */
+    }
+}
+
+__declspec(dllexport)
+ULONG NTAPI RtlNtStatusToDosErrorNoTeb(NTSTATUS status)
+{
+    return RtlNtStatusToDosError(status);
+}
+
 /* The loader entry point must not initialize Wine or call another DLL. */
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
