@@ -4,6 +4,7 @@ pub(crate) mod kernel_space;
 pub(crate) mod pagefile;
 pub(crate) mod physical;
 pub(crate) mod runtime;
+pub(crate) mod native_vm;
 pub use runtime::mm_get_physical_address;
 
 
