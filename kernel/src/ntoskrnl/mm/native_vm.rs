@@ -556,3 +556,7 @@ pub fn section_copy(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     }
     STATUS_SUCCESS
 }
+
+pub fn reference_section(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    crate::ntoskrnl::mm::section::reference(args[0]) as u32 as u64
+}
