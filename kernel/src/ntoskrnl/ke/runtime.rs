@@ -98,6 +98,7 @@ include!("runtime/affinity.rs");
 include!("runtime/timer_dpc_rendezvous.rs");
 
 include!("runtime/process_attach.rs");
+include!("runtime/xstate.rs");
 
 
 #[cfg(test)]
