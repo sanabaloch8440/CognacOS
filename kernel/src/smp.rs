@@ -612,7 +612,7 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64, ap_stack_to
         let _ = hal::mark_cpu_failed(index);
         loop { core::hint::spin_loop(); }
     }
-    let mitigations = unsafe { crate::security::initialize() };
+    let mitigations = unsafe { crate::ntoskrnl::ke::mitigations::initialize() };
     if !mitigations.write_protect || !mitigations.nx_enabled {
         let _ = hal::mark_cpu_failed(index);
         loop { core::hint::spin_loop(); }
