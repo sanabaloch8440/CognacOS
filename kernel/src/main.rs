@@ -222,6 +222,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: bootloader did not attest kernel code signature verification.\r\n");
             halt();
         }
+        serial_write(b"Bootloader verified kernel SHA-256 and Ed25519 code signature.\r\n");
         if info.security_flags & (1 << 1) != 0 {
             serial_write(b"UEFI Secure Boot enabled.\r\n");
         } else if info.security_flags & (1 << 0) != 0 {
