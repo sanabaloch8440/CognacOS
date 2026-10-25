@@ -36,3 +36,4 @@ EXPORTS
     RtlSizeHeap
     RtlValidateHeap
     CognacNtdllProcessHeapObject DATA
+    RtlGetCurrentPeb
