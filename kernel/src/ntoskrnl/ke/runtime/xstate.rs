@@ -84,7 +84,9 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
     unsafe { core::arch::asm!("xsetbv", in("ecx") 0u32, in("eax") lo, in("edx") hi, options(nostack)); }
 
     let leafd1 = cpuid(0x0d, 1);
-    let size = leafd0.ebx;
+    // EBX is the area size for the XCR0 value currently enabled; query it
+    // again after XSETBV rather than using the pre-configuration size.
+    let size = cpuid(0x0d, 0).ebx;
     if size < 576 {
         if !XSTATE_POLICY_FINALIZED.swap(true, Ordering::AcqRel) {
             XSTATE_INITIALIZED.store(0, Ordering::Release);
