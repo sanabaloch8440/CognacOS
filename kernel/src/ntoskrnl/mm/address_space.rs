@@ -152,13 +152,13 @@ impl AddressSpace {
             (area,slot,index)
         };
         if error_code&PF_WRITE!=0&&!area.writable || error_code&PF_INSTRUCTION!=0&&!area.executable {
-            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[ws_index].busy=false;return false
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[ws_index].busy=false;return false
         }
         if self.translate_user(address,error_code&PF_WRITE!=0).is_ok(){
-            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[ws_index].busy=false;return false
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[ws_index].busy=false;return false
         }
         let physical=match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>{
-            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[ws_index].busy=false;return false
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[ws_index].busy=false;return false
         }};
         let loaded=if let Some(slot)=restore_slot {
             unsafe{crate::ntoskrnl::mm::pagefile::read_page(slot,physical as *mut u8)}.is_ok()
@@ -167,7 +167,7 @@ impl AddressSpace {
         };
         if !loaded || unsafe{self.map_user_page(page_va,physical,area.writable,area.executable)}.is_err(){
             let _=unsafe{crate::memory::free_page(physical)};
-            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[ws_index].busy=false;return false
+            let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[ws_index].busy=false;return false
         }
         {
             let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
@@ -203,17 +203,17 @@ impl AddressSpace {
                         && !crate::ntoskrnl::mm::runtime::is_page_locked(entry&ADDR) =>
                         (leaf as usize,entry&ADDR),
                     _=>{
-                        unsafe{&mut *WORKING_SET.0.get()}[index].busy=false;
+                        (unsafe{&mut *WORKING_SET.0.get()})[index].busy=false;
                         continue
                     }
                 }
             };
             let slot=match crate::ntoskrnl::mm::pagefile::allocate_slot(){
-                Ok(s)=>s,Err(_)=>{let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[index].busy=false;break}
+                Ok(s)=>s,Err(_)=>{let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[index].busy=false;break}
             };
             if unsafe{crate::ntoskrnl::mm::pagefile::write_page(slot,physical.1 as *const u8)}.is_err(){
                 let _=crate::ntoskrnl::mm::pagefile::free_slot(slot);
-                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[index].busy=false;break
+                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[index].busy=false;break
             }
             let removed={
                 let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
@@ -236,7 +236,7 @@ impl AddressSpace {
             };
             if removed {trimmed+=1;} else {
                 let _=crate::ntoskrnl::mm::pagefile::free_slot(slot);
-                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&mut *WORKING_SET.0.get()}[index].busy=false;
+                let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();(unsafe{&mut *WORKING_SET.0.get()})[index].busy=false;
             }
         }
         trimmed
