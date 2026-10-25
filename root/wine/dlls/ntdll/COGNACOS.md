@@ -31,18 +31,41 @@ does not yet implement.
 
 ## CognacOS kernel binding
 
-For CognacOS, leave `WINDOWS_SYSCALL_IDS=0`. The native build defaults to CognacOS service IDs `0x100` through `0x104` for Close, YieldExecution, QueryInformationProcess, QueryInformationThread, and QuerySystemInformation. A trusted loader may override these using `CognacNtdllConfigureSyscalls` for the original close/yield pair or `CognacNtdllConfigureSyscallTable` for all five services. `WINDOWS_SYSCALL_IDS=1` remains an ABI experiment only and must not be used against the CognacOS dispatcher.
-The native bootstrap also exports a bounded 256 KiB per-process default heap through `RtlGetProcessHeap`, `RtlAllocateHeap`, `RtlFreeHeap`, `RtlReAllocateHeap`, `RtlSizeHeap`, and `RtlValidateHeap`; the loader points `PEB.ProcessHeap` at that image-local heap object. Custom heaps, LFH, heap callbacks/instrumentation, and the complete Windows heap contract remain unsupported. The native bootstrap currently exports `NtClose`, `NtYieldExecution`, `NtQueryInformationProcess`, `NtQueryInformationThread`, `NtQuerySystemInformation`, core RTL
-memory routines (`RtlCompareMemory`, `RtlCompareMemoryUlong`, `RtlCopyMemory`,
-`RtlFillMemory`, `RtlMoveMemory`, `RtlZeroMemory`), CRC32 helpers,
-`RtlIsZeroMemory`, and `RtlGetVersion` (reports Windows 11 build 26100), plus ANSI/Unicode string initialization, comparison, copy, and integer-conversion routines. Case-insensitive string comparison currently folds ASCII only; full Windows Unicode upcase-table semantics remain outstanding. The
-x64 bridge now marshals up to 17 arguments: the first four use the Windows syscall register convention and arguments five onward are copied into syscall-visible stack slots. `NtQueryInformationProcess` and `NtQueryInformationThread` exercise five-argument calls; `NtQuerySystemInformation` exercises four. The loader can configure the original two service numbers or provide the five-entry `CognacNtdllConfigureSyscallTable` table. The kernel implements `NtClose` through the native Object Manager close path, `NtYieldExecution` through the scheduler, and limited basic information classes for process, thread, and system queries. Unsupported information classes/handles are rejected. This is an initial supported subset, not full Windows semantics.
+The five implemented native NT exports use canonical Windows x64 syscall stubs:
+`mov r10, rcx; mov eax, service_number; syscall; ret`. At boot, CognacOS
+parses the actual PE export directory and extracts service numbers from the
+staged NTDLL stubs; it does not depend on a private syscall-table configuration
+export. The current default IDs match the inspected Windows 11 reference build:
+`NtClose=0x0f`, `NtQueryInformationProcess=0x19`,
+`NtQueryInformationThread=0x25`, `NtYieldExecution=0x46`, and
+`NtQuerySystemInformation=0x36`. These IDs are not stable across Windows
+builds. To target another exact Windows NTDLL, use the compile-time helper above
+to generate the header and build with `WINDOWS_SYSCALL_IDS=1`; the kernel
+still discovers the resulting values from the exported stubs at boot.
+
+The native wrappers use the Windows x64 syscall argument convention: RCX is
+copied to R10, arguments two through four remain in RDX/R8/R9, and later
+arguments remain on the caller's stack at the Windows-defined offsets. The
+kernel maps the five discovered service numbers to the implemented native
+Object Manager, scheduler, and limited process/thread/system information paths.
+Unsupported information classes and invalid handles are rejected. This is an
+initial supported subset, not full Windows semantics.
+
+The native bootstrap also exports a bounded 256 KiB per-process default heap
+through `RtlGetProcessHeap`, `RtlAllocateHeap`, `RtlFreeHeap`,
+`RtlReAllocateHeap`, `RtlSizeHeap`, and `RtlValidateHeap`; the loader points
+`PEB.ProcessHeap` at that image-local heap object. Custom heaps, LFH, heap
+callbacks/instrumentation, and the complete Windows heap contract remain
+unsupported. Other implemented exports include core RTL memory/CRC routines,
+NT version and status conversion helpers, ANSI/Unicode string operations,
+PEB/TEB accessors, and basic loader lookup APIs. Case-insensitive string
+comparison currently folds ASCII only; full Windows Unicode upcase-table
+semantics remain outstanding.
 
 GitHub Actions builds and checks the PE32+ artifact and validates the helper's
-CLI. This does not claim full Windows 11 compatibility. The remaining work is
-to port loader, process/thread, exception/unwind, heap, synchronization, file,
-registry, security, and ALPC semantics to CognacOS kernel interfaces, then
-expand and verify NTDLL exports and ABI behavior.
+CLI. This does not claim full Windows 11 compatibility. Loader initialization,
+dependency loading, forwarded exports, process/thread startup, exception/unwind,
+TLS, file, registry, security, and ALPC semantics remain incomplete.
 
 ## RTL routines shared with the kernel
 
@@ -71,29 +94,29 @@ jump into privileged kernel code.
 
 ## Native execution regression gate
 
-The UEFI/QEMU boot workflow now executes the in-tree DLL's focused ring-3
-smoke test instead of treating successful mapping/export registration as enough.
-The test configures the CognacOS-native service table and exercises the five
-implemented NT wrappers through the custom INT 0x82 ABI. The Windows x64
-SYSCALL probe remains separate because it uses a different entry convention and
-build-specific service numbers. A successful smoke test is still only a narrow
-bootstrap milestone: loader initialization, a complete PEB/TEB/LDR runtime,
-full exception/unwind semantics, and most of NTDLL's exports remain unfinished.
+The UEFI/QEMU boot workflow executes the in-tree native NTDLL in ring 3. The
+five `Nt*` exports are now canonical Windows x64 `SYSCALL` stubs; the kernel
+discovers their service numbers from the staged PE export directory and enables
+the matching dispatcher before the smoke test. The smoke calls the actual
+export function pointers, then exits through the test harness's separate
+`INT 0x81` write/exit service. Native NT service calls no longer use the
+private `INT 0x82` bridge or a Cognac-specific service-table configuration
+export.
+
+This remains a narrow compatibility milestone: only five native NT services
+are implemented, and the DLL still lacks `LdrLoadDll`, forwarded-export
+resolution, a full loader lock/dependency graph, comprehensive PEB/TEB state,
+exception/unwind support, TLS semantics, and most NTDLL exports.
 
 ## Current QEMU test coverage
 
-The native ring-3 smoke resolves exports from the mapped DLL and calls the actual
-function pointers. It covers syscall-table configuration; process, thread, and
-system information wrappers; yield; ANSI/Unicode initialization and comparison;
-Unicode copy; hexadecimal Unicode-string parsing; integer-to-Unicode conversion;
-and the NT version/status helpers, plus the CRC32 and core RTL memory routines. The table is deliberately limited to the
-services CognacOS implements today. Unsupported NT information classes and
-status mappings remain explicit gaps, not successful Windows compatibility.
-
-The expanded version/status smoke passed in the boot-smoke phase of
-[Actions run 40183695385](https://github.com/umarfarooq7869/CognacOS/actions/runs/40183695385).
-The subsequent run adds explicit CRC32, compare-memory, zero-memory, fill, move,
-and copy tests; that expanded test run is still in progress.
+The native ring-3 smoke resolves and calls mapped export pointers. It covers
+the five native NT syscall stubs; ANSI/Unicode initialization, comparison, and
+copy; integer/string conversion; NT version and status conversion; CRC32 and
+core RTL memory routines; the bounded default heap; PEB/TEB last-error fields;
+`LdrGetProcedureAddress`; and `LdrGetDllHandle`. Unsupported NT information
+classes and status mappings remain explicit gaps, not successful Windows
+compatibility.
 
 ## Default process heap scope
 
