@@ -161,15 +161,15 @@ pub unsafe extern "system" fn RtlIsCurrentProcess(handle: HANDLE) -> BOOLEAN {
 #[no_mangle]
 pub extern "system" fn RtlWow64GetCurrentMachine() -> USHORT {
     #[cfg(target_arch = "x86_64")]
-    { IMAGE_FILE_MACHINE_AMD64 }
+    { return IMAGE_FILE_MACHINE_AMD64; }
     #[cfg(target_arch = "x86")]
-    { IMAGE_FILE_MACHINE_I386 }
+    { return IMAGE_FILE_MACHINE_I386; }
     #[cfg(target_arch = "aarch64")]
-    { IMAGE_FILE_MACHINE_ARM64 }
+    { return IMAGE_FILE_MACHINE_ARM64; }
     #[cfg(target_arch = "arm")]
-    { IMAGE_FILE_MACHINE_ARMNT }
+    { return IMAGE_FILE_MACHINE_ARMNT; }
     #[allow(unreachable_code)]
-    { PROCESSOR_ARCHITECTURE_UNKNOWN }
+    PROCESSOR_ARCHITECTURE_UNKNOWN
 }
 
 /// Queries the kernel's supported-processor list and returns process/native machines.
@@ -270,23 +270,24 @@ pub unsafe extern "system" fn RtlWow64GetSharedInfoProcess(
 /// Native wrappers intentionally pass the Windows information class and buffer through.
 #[no_mangle]
 pub unsafe extern "system" fn RtlWow64GetThreadContext(
-    thread: HANDLE, context: PVOID, context_size: ULONG,
+    thread: HANDLE, context: PVOID,
 ) -> NTSTATUS {
     if context.is_null() { return STATUS_INVALID_PARAMETER; }
+    // WOW64_CONTEXT is the fixed 32-bit CONTEXT ABI (716 bytes on Windows).
     unsafe {
         NtQueryInformationThread(
-            thread, THREAD_WOW64_CONTEXT_INFORMATION_CLASS, context, context_size, null_mut(),
+            thread, THREAD_WOW64_CONTEXT_INFORMATION_CLASS, context, 716, null_mut(),
         )
     }
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlWow64SetThreadContext(
-    thread: HANDLE, context: PVOID, context_size: ULONG,
+    thread: HANDLE, context: PVOID,
 ) -> NTSTATUS {
     if context.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe {
-        NtSetInformationThread(thread, THREAD_WOW64_CONTEXT_INFORMATION_CLASS, context, context_size)
+        NtSetInformationThread(thread, THREAD_WOW64_CONTEXT_INFORMATION_CLASS, context, 716)
     }
 }
 
