@@ -14,12 +14,16 @@
 #define COGNAC_NT_QUERY_INFORMATION_PROCESS_ID COGNAC_SYSCALL_NTQUERYINFORMATIONPROCESS
 #define COGNAC_NT_QUERY_INFORMATION_THREAD_ID COGNAC_SYSCALL_NTQUERYINFORMATIONTHREAD
 #define COGNAC_NT_QUERY_SYSTEM_INFORMATION_ID COGNAC_SYSCALL_NTQUERYSYSTEMINFORMATION
+#define COGNAC_NT_OPEN_KEY_ID COGNAC_SYSCALL_NTOPENKEY
+#define COGNAC_NT_QUERY_VALUE_KEY_ID COGNAC_SYSCALL_NTQUERYVALUEKEY
 #else
 #define COGNAC_NT_CLOSE_ID 0x0f
 #define COGNAC_NT_YIELD_EXECUTION_ID 0x46
 #define COGNAC_NT_QUERY_INFORMATION_PROCESS_ID 0x19
 #define COGNAC_NT_QUERY_INFORMATION_THREAD_ID 0x25
 #define COGNAC_NT_QUERY_SYSTEM_INFORMATION_ID 0x36
+#define COGNAC_NT_OPEN_KEY_ID 0x12
+#define COGNAC_NT_QUERY_VALUE_KEY_ID 0x17
 #endif
 
     .text
@@ -65,6 +69,24 @@ NtQueryInformationThread:
 NtQuerySystemInformation:
     .byte 0x4c, 0x8b, 0xd1
     movl $COGNAC_NT_QUERY_SYSTEM_INFORMATION_ID, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtOpenKey
+    .def NtOpenKey; .scl 2; .type 32; .endef
+NtOpenKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $COGNAC_NT_OPEN_KEY_ID, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtQueryValueKey
+    .def NtQueryValueKey; .scl 2; .type 32; .endef
+NtQueryValueKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $COGNAC_NT_QUERY_VALUE_KEY_ID, %eax
     syscall
     ret
 #endif
