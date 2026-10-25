@@ -24,7 +24,7 @@ fn attach(process:*mut core::ffi::c_void, state_key:usize)->bool {
     if process.is_null() || CURRENT_IRQL[cpu_slot()].load(Ordering::Acquire)!=PASSIVE_LEVEL { return false; }
     let Some(thread)=crate::thread::current_thread_id() else { return false; };
     let Some(target_root)=crate::process::reference_process_root(process) else { return false; };
-    let previous_root=crate::vm::active_root_physical();
+    let previous_root=crate::ntoskrnl::mm::address_space::active_root_physical();
     let previous_process=crate::process::reference_process_for_root(previous_root).unwrap_or(core::ptr::null_mut());
     if previous_root==0 || target_root==0 {
         unsafe { crate::process::obf_dereference_process_object(process); }
