@@ -94,6 +94,22 @@ cognacos_nt_write_virtual_memory:
     mov eax, 0x10e
     int 0x83
     ret
+
+    .p2align 4
+    .global cognacos_nt_lock_virtual_memory
+cognacos_nt_lock_virtual_memory:
+    mov r10, rcx
+    mov eax, 0x10f
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_nt_unlock_virtual_memory
+cognacos_nt_unlock_virtual_memory:
+    mov r10, rcx
+    mov eax, 0x110
+    int 0x83
+    ret
 "#);
 
 unsafe extern "system" {
@@ -103,6 +119,8 @@ unsafe extern "system" {
     fn cognacos_nt_query_virtual_memory(process_handle: HANDLE, base_address: PVOID, memory_information_class: ULONG, memory_information: PVOID, memory_information_length: SIZE_T, return_length: PSIZE_T) -> NTSTATUS;
     fn cognacos_nt_read_virtual_memory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: PSIZE_T) -> NTSTATUS;
     fn cognacos_nt_write_virtual_memory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_written: PSIZE_T) -> NTSTATUS;
+    fn cognacos_nt_lock_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS;
+    fn cognacos_nt_unlock_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS;
 }
 
 #[no_mangle]
@@ -135,9 +153,10 @@ pub unsafe extern "system" fn NtFreeVirtualMemory(process_handle: HANDLE, base_a
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtLockVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS {
-    let _ = (process_handle, base_address, region_size, map_type);
-    // Pinning/lock accounting and locked-page lifetime are not implemented in MM.
-    STATUS_NOT_IMPLEMENTED
+    if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
+    if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
+    if map_type != 1 { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_nt_lock_virtual_memory(process_handle, base_address, region_size, map_type) }
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtProtectVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, new_protect: ULONG, old_protect: PULONG) -> NTSTATUS {
@@ -165,8 +184,10 @@ pub unsafe extern "system" fn NtReadVirtualMemoryEx(process_handle: HANDLE, base
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtUnlockVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS {
-    let _ = (process_handle, base_address, region_size, map_type);
-    STATUS_NOT_IMPLEMENTED
+    if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
+    if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
+    if map_type != 1 { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_nt_unlock_virtual_memory(process_handle, base_address, region_size, map_type) }
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtWriteVirtualMemory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_written: PSIZE_T) -> NTSTATUS {
