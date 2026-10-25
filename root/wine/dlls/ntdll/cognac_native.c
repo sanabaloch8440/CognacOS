@@ -3,7 +3,7 @@
  * No Wine headers, Wine server calls, POSIX APIs, or kernel32 import.
  * Incremental implementation; not a complete Windows NTDLL replacement.
  */
-#include <windows.h>
+#include "cognac_ntdll.h"
 
 #ifdef COGNAC_USE_WINDOWS_SYSCALL_IDS
 #include "generated/ntdll_syscalls.h"
