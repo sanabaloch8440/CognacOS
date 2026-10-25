@@ -1,6 +1,6 @@
 //! Runtime metadata for loaded PE32+ images: TLS callbacks and x64 .pdata.
 //! Callbacks are recorded for user-mode startup; they are never called in ring 0.
-use crate::{pe::LoadedImage, vm::AddressSpace};
+use crate::{pe::LoadedImage, ntoskrnl::mm::address_space::AddressSpace};
 const MAX_IMAGES: usize = 32;
 const MAX_TLS_CALLBACKS: usize = 64;
 const MAX_RUNTIME_FUNCTIONS: usize = 2048;
