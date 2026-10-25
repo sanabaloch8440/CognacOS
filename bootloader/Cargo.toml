@@ -6,3 +6,4 @@ license = "GPL-2.0-or-later"
 
 [dependencies]
 uefi = { version = "0.35", features = ["global_allocator", "panic_handler"] }
+ed25519-dalek = { version = "2.1.1", default-features = false, features = ["alloc"] }
