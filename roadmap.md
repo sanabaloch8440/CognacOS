@@ -217,7 +217,8 @@ The concrete entry point is `kernel/src/pe_loader.rs::load_dll_transaction_from_
 - [x] Implement process-local RTL memory-zone and memory-block-lookaside allocators backed by the native VM interface.
 - [x] Implement the RTL memory-stream structure and basic query-interface, reference-count, read, seek, stat, and clone behavior.
 - [x] Add non-temporal copy/fill fallbacks and keep the x64 `MEMORY_BASIC_INFORMATION` ABI size/offset tests.
-- [ ] Complete transactional partial-region decommit/protect, page locking and unlock accounting, and the kernel-backed flush contract for section/file-backed memory.
+- [x] Add bounded current-process resident-page lock/unlock services with physical-frame pin references; decommit rejects pinned pages.
+- [ ] Complete transactional partial-region decommit/protect, nonresident-page fault-in for locking, process-teardown lock rundown, and the kernel-backed flush contract for section/file-backed memory.
 - [ ] Complete `NtAllocateVirtualMemoryEx` extended parameters and Windows allocation/protection modifiers.
 - [ ] Finish memory-stream write/resize/commit/revert/region-lock behavior, secure-memory-cache callbacks, resource-descriptor codecs, token membership, and hardware-token-backed nonvolatile-memory operations; validate each against a pinned Windows 11 x64 ABI reference.
 
