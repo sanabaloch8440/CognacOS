@@ -7,6 +7,11 @@
 //! replacements for the real Windows function signatures.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
+mod debug;
+mod resource;
+mod bitmap;
+mod peb;
+
 mod printf;
 mod alpc;
 mod atom;
@@ -336,75 +341,19 @@ pub unsafe extern "system" fn CsrVerifyRegion() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgBreakPoint() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgPrint() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgPrintEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgPrintReturnControlC() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgPrompt() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgQueryDebugFilterState() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgSetDebugFilterState() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgUiConvertStateChangeStructure() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgUiConvertStateChangeStructureEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgUiGetThreadDebugObject() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgUiIssueRemoteBreakin() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgUiRemoteBreakin() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgUiSetThreadDebugObject() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn DbgUserBreakPoint() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn EtwCheckCoverage() -> i32 {
@@ -1241,10 +1190,6 @@ pub unsafe extern "system" fn NtCreateProfileEx() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtCreateResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtCreateSection() -> i32 {
@@ -1503,10 +1448,6 @@ pub unsafe extern "system" fn NtGetNlsSectionPtr() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtGetNotificationResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtGetWriteWatch() -> i32 {
@@ -1699,10 +1640,6 @@ pub unsafe extern "system" fn NtOpenPrivateNamespace() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtOpenResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtOpenSection() -> i32 {
@@ -1898,10 +1835,6 @@ pub unsafe extern "system" fn NtQueryInformationFile() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQueryInformationResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -2068,10 +2001,6 @@ pub unsafe extern "system" fn NtRecoverEnlistment() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtRecoverResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtRecoverTransactionManager() -> i32 {
@@ -2282,10 +2211,6 @@ pub unsafe extern "system" fn NtSetInformationObject() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtSetInformationResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtSetInformationSymbolicLink() -> i32 {
@@ -2668,15 +2593,7 @@ pub unsafe extern "system" fn RtlAcquireReleaseSRWLockExclusive() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlAcquireResourceExclusive() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlAcquireResourceShared() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlAcquireSRWLockExclusive() -> i32 {
@@ -2804,10 +2721,6 @@ pub unsafe extern "system" fn RtlAddRefActivationContext() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlAddResourceAttributeAce() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlAddressInSectionTable() -> i32 {
@@ -3010,10 +2923,6 @@ pub unsafe extern "system" fn RtlClearBitEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlClearBitsEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlClearThreadWorkOnBehalfTicket() -> i32 {
@@ -3358,10 +3267,6 @@ pub unsafe extern "system" fn RtlDeleteNoSplay() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDeleteResource() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeleteSecurityObject() -> i32 {
@@ -3447,10 +3352,6 @@ pub unsafe extern "system" fn RtlDrainNonVolatileFlush() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDumpResource() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -3593,15 +3494,7 @@ pub unsafe extern "system" fn RtlFindActivationContextSectionGuid() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFindClearBitsAndSetEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFindClearBitsEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlFindClosestEncodableLength() -> i32 {
@@ -3618,15 +3511,7 @@ pub unsafe extern "system" fn RtlFindMessage() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFindSetBitsAndClearEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFindSetBitsEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlFindUnicodeSubstring() -> i32 {
@@ -3886,10 +3771,6 @@ pub unsafe extern "system" fn RtlGetNonVolatileToken() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetNtGlobalFlags() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetNtProductType() -> i32 {
@@ -4159,10 +4040,6 @@ pub unsafe extern "system" fn RtlInitializeNtUserPfn() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitializeResource() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitializeRXact() -> i32 {
@@ -5026,10 +4903,6 @@ pub unsafe extern "system" fn RtlQueryProtectedPolicy() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlQueryResourcePolicy() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlQuerySecurityObject() -> i32 {
@@ -5184,10 +5057,6 @@ pub unsafe extern "system" fn RtlReleasePrivilege() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlReleaseResource() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlReleaseSRWLockExclusive() -> i32 {
@@ -5330,10 +5199,6 @@ pub unsafe extern "system" fn RtlSetBitEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlSetBitsEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetControlSecurityDescriptor() -> i32 {
@@ -5658,10 +5523,6 @@ pub unsafe extern "system" fn RtlTraceDatabaseValidate() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlTryAcquirePebLock() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlTryAcquireSRWLockExclusive() -> i32 {
@@ -7154,10 +7015,6 @@ pub unsafe extern "system" fn ZwCreateProfileEx() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwCreateResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwCreateSection() -> i32 {
@@ -7404,10 +7261,6 @@ pub unsafe extern "system" fn ZwGetNlsSectionPtr() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwGetNotificationResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwGetWriteWatch() -> i32 {
@@ -7604,10 +7457,6 @@ pub unsafe extern "system" fn ZwOpenPrivateNamespace() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwOpenResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwOpenSection() -> i32 {
@@ -7807,10 +7656,6 @@ pub unsafe extern "system" fn ZwQueryInformationFile() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwQueryInformationResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -7977,10 +7822,6 @@ pub unsafe extern "system" fn ZwRecoverEnlistment() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwRecoverResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwRecoverTransactionManager() -> i32 {
@@ -8191,10 +8032,6 @@ pub unsafe extern "system" fn ZwSetInformationObject() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwSetInformationResourceManager() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwSetInformationSymbolicLink() -> i32 {
