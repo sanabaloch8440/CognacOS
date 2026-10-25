@@ -25,6 +25,8 @@ assert "enabled_supervisor_features: 0" in xstate
 assert "struct XStateSaveRecord" in xstate and "core::mem::size_of::<XStateSaveRecord>()" in xstate
 assert "const _: [(); 0x38] = [(); core::mem::size_of::<XStateSaveRecord>()]" in xstate
 assert "valid_xstate_save_record(save)" in xstate
+assert "mm_is_non_paged_system_address_writable" in xstate
+assert "Do not clear this buffer with Rust before XSAVE" in xstate
 assert "xstate_policy_compatible" in xstate
 assert "ki_xstate_nested_save_restore_self_test" in xstate
 assert "RtlCopyContext" in ntdll and "RtlCopyExtendedContext" in ntdll
