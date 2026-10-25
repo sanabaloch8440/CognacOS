@@ -40,8 +40,7 @@ pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         || unsafe { address_space::copy_from_user_root(root,args[3],&mut size_bytes) }.is_err() { return STATUS_ACCESS_VIOLATION; }
     let requested = u64::from_ne_bytes(base_bytes);
     let size = u64::from_ne_bytes(size_bytes);
-    if size == 0 || size > (256 * 1024 * 1024) || args[4] & !0x3000 != 0
-        || args[4] & 0x3000 == 0 || args[4] & 0x8000_0000 != 0 { return STATUS_INVALID_PARAMETER; }
+    if size == 0 || size > (256 * 1024 * 1024) || args[4] != 0x3000 { return STATUS_INVALID_PARAMETER; }
     let rounded = match size.checked_add(PAGE-1) { Some(v) => v & !(PAGE-1), None => return STATUS_INVALID_PARAMETER };
     let (start, end) = if requested != 0 {
         let start = requested & !(PAGE-1);
@@ -63,7 +62,7 @@ pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     };
     let writable = matches!(args[5] as u32, 0x04 | 0x40 | 0x08 | 0x80);
     let executable = matches!(args[5] as u32, 0x10 | 0x20 | 0x40 | 0x80);
-    if args[5] & !0xFF != 0 || !matches!(args[5] as u32,0x01|0x02|0x04|0x08|0x10|0x20|0x40|0x80) || writable && executable {
+    if args[5] & !0xFF != 0 || !matches!(args[5] as u32,0x02|0x04|0x08|0x10|0x20|0x40|0x80) || writable && executable {
         return 0xC000_0045; // STATUS_INVALID_PAGE_PROTECTION
     }
     let space = match attached(root) { Ok(s)=>s, Err(s)=>return s };
