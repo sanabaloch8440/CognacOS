@@ -202,11 +202,26 @@ global_asm!(r#"
     .type cognacos_windows_syscall_entry, @function
 cognacos_windows_syscall_entry:
     # SYSCALL does not switch RSP. FMASK has already disabled interrupts.
-    # swapgs exposes this CPU's private local area; GS:[0] saves user RSP.
+    # Temporary marker 's' tests that the LSTAR entry and SWAPGS were reached.
     swapgs
+    push rax
+    push rdx
+    mov dx, 0x3f8
+    mov al, 's'
+    out dx, al
+    pop rdx
+    pop rax
     cld
+    # GS:[0] saves user RSP; GS:[8] is this CPU's private kernel stack top.
     mov qword ptr gs:[0], rsp
     mov rsp, qword ptr gs:[8]
+    push rax
+    push rdx
+    mov dx, 0x3f8
+    mov al, 'k'
+    out dx, al
+    pop rdx
+    pop rax
     # Synthesize the privilege-return frame consumed by IRETQ.
     push 0x23
     push qword ptr gs:[0]
