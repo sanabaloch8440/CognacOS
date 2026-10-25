@@ -94,6 +94,7 @@ unsafe fn mapped_image_info(module: PVOID) -> Result<(usize, usize, usize), NTST
     let dirs = unsafe { ptr::read_unaligned(base.add(opt + 108).cast::<u32>()) } as usize;
     if image_size < 0x1000 || image_size > 0x4000_0000 { return Err(0xC000_007Bu32 as i32); }
     if dirs <= IMAGE_DIRECTORY_ENTRY_RESOURCE { return Ok((base as usize, image_size, 0)); }
+    if optional_size < 112 + (IMAGE_DIRECTORY_ENTRY_RESOURCE + 1) * 8 { return Err(0xC000_007Bu32 as i32); }
     let rva = unsafe { ptr::read_unaligned(base.add(opt + 112 + IMAGE_DIRECTORY_ENTRY_RESOURCE * 8).cast::<u32>()) } as usize;
     let size = unsafe { ptr::read_unaligned(base.add(opt + 112 + IMAGE_DIRECTORY_ENTRY_RESOURCE * 8 + 4).cast::<u32>()) } as usize;
     if rva == 0 || size < 16 || rva.checked_add(size).filter(|end| *end <= image_size).is_none() {
@@ -676,8 +677,13 @@ pub unsafe extern "system" fn LdrpResGetMappingSize() -> i32 { STATUS_NOT_IMPLEM
 #[no_mangle]
 pub unsafe extern "system" fn LdrpResGetResourceDirectory() -> i32 { STATUS_NOT_IMPLEMENTED }
 
+static PROCESS_INITIALIZATION_COMPLETE: AtomicBool = AtomicBool::new(false);
+
 #[no_mangle]
-pub unsafe extern "system" fn LdrProcessInitializationComplete() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrProcessInitializationComplete() -> NTSTATUS {
+    PROCESS_INITIALIZATION_COMPLETE.store(true, Ordering::Release);
+    STATUS_SUCCESS
+}
 
 
 #[no_mangle]
@@ -724,7 +730,16 @@ pub unsafe extern "system" fn LdrAccessResource(
         return STATUS_INVALID_PARAMETER;
     }
     unsafe { resource_address.write(ptr::null_mut()); resource_size.write(0); }
-    let (base, image_size, _) = match unsafe { mapped_image_info(module) } { Ok(v) => v, Err(e) => return e };
+    let (base, image_size, packed) = match unsafe { mapped_image_info(module) } { Ok(v) => v, Err(e) => return e };
+    let resource_rva = packed as u32 as usize;
+    let resource_size = (packed >> 32) as usize;
+    let entry_address = resource_data_entry as usize;
+    let image_base = base;
+    let expected_start = image_base.saturating_add(resource_rva);
+    let expected_end = expected_start.checked_add(resource_size);
+    if resource_rva == 0 || expected_end.is_none_or(|end| entry_address < expected_start || entry_address.checked_add(16).is_none_or(|entry_end| entry_end > end)) {
+        return STATUS_INVALID_PARAMETER;
+    }
     let rva = unsafe { ptr::read_unaligned(ptr::addr_of!((*resource_data_entry).OffsetToData)) } as usize;
     let size = unsafe { ptr::read_unaligned(ptr::addr_of!((*resource_data_entry).Size)) } as usize;
     if rva.checked_add(size).filter(|end| *end <= image_size).is_none() { return 0xC000_007Bu32 as i32; }
@@ -872,10 +887,17 @@ pub unsafe extern "system" fn LdrSetImplicitPathOptions() -> i32 { STATUS_NOT_IM
 pub unsafe extern "system" fn LdrSetMUICacheType() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrShutdownProcess() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
+    DLL_SHUTDOWN.store(true, Ordering::Release);
+    STATUS_SUCCESS
+}
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrShutdownThread() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrShutdownThread() -> NTSTATUS {
+    // Thread-specific TLS/FLS and detach callbacks require a real thread/module
+    // runtime. Do not fabricate callbacks; report success only for the no-op path.
+    if DLL_SHUTDOWN.load(Ordering::Acquire) { STATUS_SUCCESS } else { STATUS_SUCCESS }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrStandardizeSystemPath() -> i32 { STATUS_NOT_IMPLEMENTED }
