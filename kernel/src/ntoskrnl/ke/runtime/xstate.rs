@@ -52,7 +52,8 @@ pub struct WindowsXStateConfiguration {
     pub enabled_user_visible_supervisor_features: u64,
     pub extended_feature_disable_features: u64,
     pub all_non_large_feature_size: u32,
-    pub spare: u32,
+    pub max_sve_vector_length: u16,
+    pub spare1: u16,
 }
 const _: [(); 0x348] = [(); core::mem::size_of::<WindowsXStateConfiguration>()];
 const _: [(); 0x18] = [(); core::mem::offset_of!(WindowsXStateConfiguration, features)];
@@ -64,7 +65,7 @@ impl WindowsXStateConfiguration {
             features: [WindowsXStateFeature { offset: 0, size: 0 }; 64],
             enabled_supervisor_features: 0, aligned_features: 0, all_feature_size: 0,
             all_features: [0; 64], enabled_user_visible_supervisor_features: 0,
-            extended_feature_disable_features: 0, all_non_large_feature_size: 0, spare: 0 }
+            extended_feature_disable_features: 0, all_non_large_feature_size: 0, max_sve_vector_length: 0, spare1: 0 }
     }
 }
 #[derive(Clone, Copy, Debug, Default)]
