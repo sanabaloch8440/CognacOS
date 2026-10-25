@@ -70,6 +70,7 @@ pub fn publish_mapping(slot: usize, generation: u32, base: u64, size: u32) -> Re
 
 /// Register the result of the existing PE32+ mapper in the lifetime table.
 pub fn register_loaded_image(process_id: u64, name: &[u8], image: crate::pe::LoadedImage) -> Result<(usize, u32), i32> {
+    if !image.is_dll { return Err(STATUS_INVALID_PARAMETER); }
     let (slot, generation) = reserve_for_process(process_id, name)?;
     if let Err(status) = publish_mapping(slot, generation, image.base, image.image_size) {
         let _ = rollback(slot, generation);
@@ -104,7 +105,7 @@ pub fn add_dependency(parent: usize, parent_generation: u32, dependency: usize, 
     let parent_entry = s.entries[parent];
     let dep_entry = s.entries[dependency];
     if parent_entry.generation != parent_generation || parent_entry.state == ModuleState::Empty
-        || dep_entry.generation != dependency_generation
+        || dep_entry.generation != dependency_generation || parent_entry.process_id != dep_entry.process_id
         || !matches!(dep_entry.state, ModuleState::Mapped | ModuleState::Initializing | ModuleState::Initialized) {
         return Err(STATUS_DLL_NOT_FOUND);
     }
