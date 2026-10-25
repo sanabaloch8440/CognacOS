@@ -3,8 +3,7 @@
  * Keep the behavior here common to both build modes.
  */
 #ifdef COGNAC_NATIVE_NTDLL
-#include <windows.h>
-#include <stddef.h>
+#include "cognac_ntdll.h"
 #else
 #include <string.h>
 #include "windef.h"
