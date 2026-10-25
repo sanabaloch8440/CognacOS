@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="300" viewBox="0 0 760 300" role="img" aria-labelledby="title desc">
+  <title id="title">CognacOS</title>
+  <desc id="desc">CognacOS logo with a warm orange ribbon C and a clean wordmark.</desc>
+  <defs>
+    <linearGradient id="cognac" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFB15C"/>
+      <stop offset=".48" stop-color="#F47A20"/>
+      <stop offset="1" stop-color="#C94B12"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(38 18)">
+    <path d="M180 26 A104 104 0 1 0 180 234 L151 204 A65 65 0 1 1 151 56 Z" fill="url(#cognac)"/>
+    <path d="M180 26 L151 56 A65 65 0 0 0 151 204 L180 234 A104 104 0 0 1 180 26Z" fill="url(#cognac)" opacity=".22"/>
+  </g>
+  <text x="292" y="166" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="82" font-weight="650" letter-spacing="-3" fill="#20242B">Cognac</text>
+  <text x="573" y="166" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="82" font-weight="750" letter-spacing="-3" fill="#F47A20">OS</text>
+</svg>
