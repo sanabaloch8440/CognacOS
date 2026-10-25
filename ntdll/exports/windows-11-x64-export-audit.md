@@ -9,9 +9,9 @@
 
 ## Rust export wiring
 
-`ntdll/exports/windows-11-x64-exports.txt` is a committed inventory. The corresponding Rust symbols are checked in under `ntdll/src/windows11_exports.rs` and wired through `ntdll/src/lib.rs`. Windows export names already implemented in other Rust modules are not duplicated; the remaining names have `#[no_mangle]` Rust placeholder functions returning `STATUS_NOT_IMPLEMENTED`.
+`ntdll/exports/windows-11-x64-exports.txt` is the committed inventory. `ntdll/src/windows11_exports.rs` is now only the module index; placeholder functions are split into focused files under `ntdll/src/windows11_exports/`. The files are grouped by loader, heap, memory, registry, process, exception, time, strings, crypto, path, printf, ALPC, atom, environment, version, debug, resource, bitmap, PEB, syscall, runtime, CRT and miscellaneous responsibilities. Each group can be implemented and tested independently, while already-implemented names in the established NTDLL modules remain excluded from these placeholders.
 
-The crate declares both `rlib` and `cdylib` outputs so symbols can be linked as a shared library for the selected target. A Windows PE32+ `ntdll.dll` still requires building for a Windows x64 target and integrating the resulting exports into the native PE packaging/link step.
+The crate declares both `rlib` and `cdylib` outputs so symbols can be linked as a shared library for the selected target. This change is source organization only: it does not yet reduce the number of unimplemented exports, and the generic placeholders still need to be replaced subsystem by subsystem. A Windows PE32+ `ntdll.dll` still requires building for a Windows x64 target and integrating the resulting exports into the native PE packaging/link step.
 
 The optional `ntdll/tools/update_windows11_exports.py` script refreshes the committed inventory from the WinExports data source. It is a manual maintenance tool only; ordinary builds do not need network access.
 
