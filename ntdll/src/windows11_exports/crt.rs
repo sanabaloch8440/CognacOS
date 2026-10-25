@@ -226,16 +226,16 @@ pub unsafe extern "system" fn _makepath_s(
     drive: *const u8, directory: *const u8, filename: *const u8, extension: *const u8,
 ) -> i32 {
     if path.is_null() || path_size == 0 { return EINVAL; }
-    let get = |p: *const u8| -> Option<&[u8]> {
+    unsafe fn get<'a>(p: *const u8) -> Option<&'a [u8]> {
         if p.is_null() { return None; }
         let mut n = 0usize;
         while n < 32768 && unsafe { *p.add(n) } != 0 { n += 1; }
         if n == 32768 { None } else { Some(unsafe { core::slice::from_raw_parts(p, n) }) }
-    };
-    let d = get(drive).unwrap_or(&[]);
-    let dir = get(directory).unwrap_or(&[]);
-    let name = get(filename).unwrap_or(&[]);
-    let ext = get(extension).unwrap_or(&[]);
+    }
+    let d = unsafe { get(drive) }.unwrap_or(&[]);
+    let dir = unsafe { get(directory) }.unwrap_or(&[]);
+    let name = unsafe { get(filename) }.unwrap_or(&[]);
+    let ext = unsafe { get(extension) }.unwrap_or(&[]);
     let mut out = [0u8; 4096];
     let mut n = 0usize;
     let append = |out: &mut [u8], n: &mut usize, part: &[u8]| -> bool {
@@ -358,16 +358,16 @@ pub unsafe extern "system" fn _wmakepath_s(
     drive: *const u16, directory: *const u16, filename: *const u16, extension: *const u16,
 ) -> i32 {
     if path.is_null() || path_size == 0 { return EINVAL; }
-    let get = |p: *const u16| -> Option<&[u16]> {
+    unsafe fn get<'a>(p: *const u16) -> Option<&'a [u16]> {
         if p.is_null() { return None; }
         let mut n = 0usize;
         while n < 32768 && unsafe { *p.add(n) } != 0 { n += 1; }
         if n == 32768 { None } else { Some(unsafe { core::slice::from_raw_parts(p, n) }) }
-    };
-    let d = get(drive).unwrap_or(&[]);
-    let dir = get(directory).unwrap_or(&[]);
-    let name = get(filename).unwrap_or(&[]);
-    let ext = get(extension).unwrap_or(&[]);
+    }
+    let d = unsafe { get(drive) }.unwrap_or(&[]);
+    let dir = unsafe { get(directory) }.unwrap_or(&[]);
+    let name = unsafe { get(filename) }.unwrap_or(&[]);
+    let ext = unsafe { get(extension) }.unwrap_or(&[]);
     let mut out = [0u16; 4096];
     let mut n = 0usize;
     let append = |out: &mut [u16], n: &mut usize, part: &[u16]| -> bool {
