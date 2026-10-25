@@ -119,7 +119,6 @@ const NT_STATUS_INFO_LENGTH_MISMATCH: u64 = 0xC000_0004;
 const NT_STATUS_INVALID_HANDLE: u64 = 0xC000_0008;
 const NT_STATUS_INVALID_PARAMETER: u64 = 0xC000_000D;
 const NT_STATUS_ACCESS_VIOLATION: u64 = 0xC000_0005;
-const NT_STATUS_BUFFER_TOO_SMALL: u64 = 0xC000_0023;
 const NT_CURRENT_PROCESS: u64 = u64::MAX;
 const NT_CURRENT_THREAD: u64 = u64::MAX - 1;
 const PROCESS_BASIC_INFORMATION_CLASS: u64 = 0;
@@ -231,14 +230,17 @@ fn nt_query_system(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     const SIZE: usize = 64;
     if args[2] < SIZE as u64 { let _ = write_return_length(args[3], SIZE as u32); return NT_STATUS_INFO_LENGTH_MISMATCH; }
     let mut info = [0u8; SIZE];
-    info[0..4].copy_from_slice(&4096u32.to_le_bytes()); // page size
-    info[4..8].copy_from_slice(&0x1000u32.to_le_bytes()); // minimum user address (compatibility placeholder)
-    info[8..16].copy_from_slice(&0x0000_8000_0000_0000u64.to_le_bytes()); // exclusive user ceiling
-    info[16..24].copy_from_slice(&0xffff_8000_0000_0000u64.to_le_bytes()); // kernel range start
-    info[24..28].copy_from_slice(&1u32.to_le_bytes()); // active processor count currently reported by this API
-    info[28..32].copy_from_slice(&4096u32.to_le_bytes());
-    info[32..36].copy_from_slice(&65536u32.to_le_bytes());
-    info[36..40].copy_from_slice(&4096u32.to_le_bytes());
+    info[0..4].copy_from_slice(&0u32.to_le_bytes()); // Reserved
+    info[4..8].copy_from_slice(&10000u32.to_le_bytes()); // TimerResolution (100 ns units)
+    info[8..12].copy_from_slice(&4096u32.to_le_bytes()); // PageSize
+    info[12..16].copy_from_slice(&0u32.to_le_bytes()); // physical page count not yet exported
+    info[16..20].copy_from_slice(&0u32.to_le_bytes()); // LowestPhysicalPageNumber
+    info[20..24].copy_from_slice(&0u32.to_le_bytes()); // HighestPhysicalPageNumber not yet exported
+    info[24..28].copy_from_slice(&65536u32.to_le_bytes()); // AllocationGranularity
+    info[32..40].copy_from_slice(&0x0000_0000_0001_0000u64.to_le_bytes()); // MinimumUserModeAddress
+    info[40..48].copy_from_slice(&0x0000_8000_0000_0000u64.to_le_bytes()); // MaximumUserModeAddress
+    info[48..56].copy_from_slice(&1u64.to_le_bytes()); // minimal single-processor affinity
+    info[56] = 1; // NumberOfProcessors
     if let Err(status) = write_return_length(args[3], SIZE as u32) { return status; }
     if let Err(status) = copy_nt_output(args[1], &info) { return status; }
     NT_STATUS_SUCCESS
@@ -282,7 +284,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_YIELD_EXECUTION => 0,
             NT_SYSCALL_QUERY_INFORMATION_PROCESS | NT_SYSCALL_QUERY_INFORMATION_THREAD => 5,
             NT_SYSCALL_QUERY_SYSTEM_INFORMATION => 4,
-            _ => NT_MAX_ARGUMENTS, // unknown numbers still exercise bounded stack decoding
+            _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
             let extra = count - 4;
