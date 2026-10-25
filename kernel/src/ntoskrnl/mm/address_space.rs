@@ -63,6 +63,21 @@ impl AddressSpace {
         Ok(Self { root, kuser_tables: [0; 3] })
     }
 
+    /// Attach a temporary mutation/copy view to a process address-space root
+    /// already owned by the Process Manager. The returned wrapper does not own
+    /// the root and must never be passed to destroy(); the caller must hold a
+    /// referenced process object for the wrapper's entire lifetime.
+    ///
+    /// # Safety
+    /// root must be a live, page-aligned physical PML4 root whose lifetime is
+    /// protected against process teardown until the wrapper is no longer used.
+    pub unsafe fn attach_existing(root: u64) -> Result<Self, VmError> {
+        if root == 0 || root & (PAGE_SIZE - 1) != 0 { return Err(VmError::InvalidAddress); }
+        let tables = KUSER_PAGE_TABLE_TRACKING.lock().iter()
+            .find(|entry| entry.root == root).map(|entry| entry.tables).unwrap_or([0; 3]);
+        Ok(Self { root, kuser_tables: tables })
+    }
+
     pub fn root_physical(&self) -> u64 { self.root }
 
     /// Map the fixed Windows KUSER_SHARED_DATA page without exposing other
