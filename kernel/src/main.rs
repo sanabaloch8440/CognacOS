@@ -277,6 +277,19 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // Install a private descriptor table while the bootloader-established
         // high-half CR3 is active. The explicit reload below verifies ownership.
         ntoskrnl::ke::arch::initialize();
+        // Enable the XSAVE state components managed by this kernel before
+        // user threads or SIMD-using drivers can execute. Unsupported hardware
+        // remains on the legacy path; APs must repeat this during AP startup.
+        if ntoskrnl::ke::runtime::ki_initialize_xstate_current_cpu() {
+            let cfg = ntoskrnl::ke::runtime::ki_query_xstate_configuration();
+            serial_write(b"XSAVE enabled; XCR0 mask: ");
+            serial_write_hex(cfg.enabled_features);
+            serial_write(b", area bytes: ");
+            serial_write_decimal(cfg.area_size as usize);
+            serial_write(b"\\r\\n");
+        } else {
+            serial_write(b"XSAVE unavailable; extended processor state remains disabled.\\r\\n");
+        }
         if !ntoskrnl::ke::arch::per_cpu_tss_self_test(0) {
             serial_write(b"FATAL: BSP TSS/IST descriptor self-test failed.\r\n");
             halt();
