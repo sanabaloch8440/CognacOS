@@ -100,6 +100,8 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [ ] Complete Windows loader, user-mode DLL/syscall compatibility, unwind/SEH, and process lifecycle integration.
 
 ## Milestone 7 — Windows 11 x64 routine compatibility
+- [x] Expand the freestanding native NTDLL x64 syscall bridge to marshal up to 17 arguments, preserve nonvolatile registers, and expose `NtQueryInformationProcess`, `NtQueryInformationThread`, and `NtQuerySystemInformation` plus a five-entry syscall configuration API. Native NTDLL CI builds the bridge and checks the export table; kernel service mapping and end-to-end stack-argument/user-pointer tests remain unvalidated.
+- [ ] Validate the syscall bridge against the native kernel dispatcher in QEMU, including arguments five through seventeen, invalid user buffers, unknown service IDs, and concurrent initialization/configuration.
 
 - [x] Implement and resolve native NTOSKRNL RTL memory exports present in the pinned Windows 11 manifest: copy/move/fill/zero, prefix and ULONG comparisons, CRC32, zero-memory testing, and unsigned multiply-high. Correct the `RtlCompareMemoryUlong` return width to Windows `ULONG` and CRC length parameters to unsigned `ULONG`. Internal helpers for ULONG-pattern fill and volatile memory operations remain callable only by kernel code until their export status is confirmed in the pinned manifest. Regression tests are now part of CI; a new CI run is still required before treating them as passing.
 
