@@ -13,8 +13,8 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 
 ## Current validation
 
-- Latest full passing kernel/UEFI/QEMU/SMP run: [run 40131903040](https://github.com/umarfarooq7869/CognacOS/actions/runs/40131903040), commit `b584631ca5fa46f4f95b85bd77d44d95ddccae65`.
-- The timer-preemption stress assertion also passed in [run 40131869378](https://github.com/umarfarooq7869/CognacOS/actions/runs/40131869378). A newer run, [40132231240](https://github.com/umarfarooq7869/CognacOS/actions/runs/40132231240), is validating the additional real-kernel queue/mutant wait test; do not count that test as verified until the run passes.
+- Latest full passing kernel/UEFI/QEMU/SMP run: [run 40159978518](https://github.com/umarfarooq7869/CognacOS/actions/runs/40159978518), commit `ed2198d2a5dbaf5820cc863297396098abcfaa58`.
+- The latest passing run includes the QEMU boot smoke test and the 2/4/8-vCPU SMP startup, interrupt, scheduler, and TLB-shootdown matrix. TPM-present measurement and firmware-enrolled Secure Boot remain separate validation tasks.
 - Keep CI status current by checking the latest run on `main` before marking a milestone validated.
 
 ## Milestone 1 — Boot and platform foundations
