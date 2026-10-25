@@ -437,6 +437,20 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_function_table_register_lookup_delete_round_trip() {
+        let table = [RUNTIME_FUNCTION { BeginAddress: 0x1000, EndAddress: 0x1100, UnwindData: 0x2000 }];
+        let base = 0x0000_0000_0001_0000u64;
+        assert_eq!(unsafe { RtlAddFunctionTable(table.as_ptr(), table.len() as u32, base) }, 1);
+        let mut image_base = 0;
+        let found = unsafe { RtlLookupFunctionEntry(base + 0x1080, &mut image_base, ptr::null_mut()) };
+        assert_eq!(image_base, base);
+        assert_eq!(found, table.as_ptr());
+        assert!(unsafe { RtlLookupFunctionEntry(base + 0x1100, &mut image_base, ptr::null_mut()) }.is_null());
+        assert_eq!(unsafe { RtlDeleteFunctionTable(table.as_ptr()) }, 1);
+        assert!(unsafe { RtlLookupFunctionEntry(base + 0x1080, &mut image_base, ptr::null_mut()) }.is_null());
+    }
+
+    #[test]
     fn leaf_unwind_advances_stack_and_recovers_return_address() {
         let mut stack = [0x1234_5678u64, 0x9999u64];
         let mut context: CONTEXT = unsafe { core::mem::zeroed() };
