@@ -98,24 +98,9 @@ impl WdmState {
  }
 }
 static WDM: IrqSpinLock<WdmState> = IrqSpinLock::new(WdmState::new());
-static UNLOADING_DRIVERS:[core::sync::atomic::AtomicPtr<DriverObject>;MAX_WDM_DEVICES]=
- [const{core::sync::atomic::AtomicPtr::new(ptr::null_mut())};MAX_WDM_DEVICES];
-static DRIVER_UNLOAD_STATE:[core::sync::atomic::AtomicU8;MAX_WDM_DEVICES]=
- [const{core::sync::atomic::AtomicU8::new(0)};MAX_WDM_DEVICES];
-
-fn driver_is_unloading(driver:*mut DriverObject)->bool{
- !driver.is_null()&&UNLOADING_DRIVERS.iter().any(|p|p.load(core::sync::atomic::Ordering::Acquire)==driver)
-}
-fn claim_driver_unload_slot(driver:*mut DriverObject)->Option<usize>{
- for (index,slot) in UNLOADING_DRIVERS.iter().enumerate(){
-  let current=slot.load(core::sync::atomic::Ordering::Acquire);
-  if current==driver{return Some(index)}
-  if current.is_null()&&slot.compare_exchange(ptr::null_mut(),driver,core::sync::atomic::Ordering::AcqRel,core::sync::atomic::Ordering::Acquire).is_ok(){
-   DRIVER_UNLOAD_STATE[index].store(1,core::sync::atomic::Ordering::Release);return Some(index)
-  }
- }
- None
-}
+// Private high bits prevent new device creation after unload begins.
+const DRIVER_UNLOADING_FLAG:u32=1<<31;
+const DRIVER_UNLOADED_FLAG:u32=1<<30;
 
 pub const DEVICE_POWER_D0:u8=0; pub const DEVICE_POWER_D1:u8=1; pub const DEVICE_POWER_D2:u8=2; pub const DEVICE_POWER_D3:u8=3;
 
@@ -252,6 +237,7 @@ pub unsafe extern "system" fn io_create_device(
   units
  } else {0};
  let mut state=WDM.lock();
+ if unsafe{(*driver).flags}&(DRIVER_UNLOADING_FLAG|DRIVER_UNLOADED_FLAG)!=0{return STATUS_DELETE_PENDING}
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
  slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
@@ -282,11 +268,12 @@ unsafe extern "win64" fn io_object_manager_finalizer(object:*mut c_void){unsafe{
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_unload_driver(driver:*mut DriverObject)->i32 {
  if driver.is_null(){return STATUS_INVALID_PARAMETER}
- let Some(unload_slot)=claim_driver_unload_slot(driver) else{return STATUS_INSUFFICIENT_RESOURCES};
- if DRIVER_UNLOAD_STATE[unload_slot].load(core::sync::atomic::Ordering::Acquire)==2{return STATUS_SUCCESS}
  let mut devices=[ptr::null_mut::<DeviceObject>();MAX_WDM_DEVICES];
  let count={
   let mut state=WDM.lock();
+  let flags=unsafe{(*driver).flags};
+  if flags&DRIVER_UNLOADED_FLAG!=0{return STATUS_SUCCESS}
+  unsafe{(*driver).flags=flags|DRIVER_UNLOADING_FLAG;}
   let mut n=0usize;
   for slot in state.devices.iter_mut().filter(|s|s.used&&s.object.driver_object==driver){
    slot.deleting=true;
@@ -295,20 +282,19 @@ pub unsafe extern "system" fn io_unload_driver(driver:*mut DriverObject)->i32 {
   n
  };
  for device in devices[..count].iter().copied(){unsafe{io_delete_device(device);}}
- {
+ let callback={
   let state=WDM.lock();
   if state.devices.iter().any(|s|s.used&&s.object.driver_object==driver){return STATUS_PENDING}
- }
- let unload={
+  drop(state);
   let _state=WDM.lock();
   unsafe{
    let callback=(*driver).driver_unload;
    (*driver).driver_unload=None;
+   (*driver).flags|=DRIVER_UNLOADED_FLAG|DRIVER_UNLOADING_FLAG;
    callback
   }
  };
- if let Some(callback)=unload{unsafe{callback(driver)}}
- DRIVER_UNLOAD_STATE[unload_slot].store(2,core::sync::atomic::Ordering::Release);
+ if let Some(callback)=callback{unsafe{callback(driver)}}
  STATUS_SUCCESS
 }
 
