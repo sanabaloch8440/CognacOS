@@ -307,7 +307,7 @@ and exact compatibility for all heap flags are not implemented.
 `0x68` and `LastStatusValue` at GS offset `0x1250`. The combined status helper
 maps NTSTATUS through the bootstrap status table and updates both TEB fields.
 
-**QEMU-verified:** ring-3 smoke tests passed in [Actions run 40184485240](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184485240), covering direct last-error set/get and `STATUS_INVALID_PARAMETER` conversion to `ERROR_INVALID_PARAMETER`, including preservation of the original NTSTATUS across native INT 0x82 calls.
+**QEMU-verified:** ring-3 smoke tests passed in [Actions run 40184485240](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184485240), covering direct last-error set/get and `STATUS_INVALID_PARAMETER` conversion to `ERROR_INVALID_PARAMETER`, including preservation of the original NTSTATUS across native Windows SYSCALL calls.
 
 
 ### NTDLL-LOAD-024 — LdrGetProcedureAddress bootstrap
@@ -319,3 +319,23 @@ maps NTSTATUS through the bootstrap status table and updates both TEB fields.
 **Implemented:** a freestanding lookup traverses the active PEB's load-order list, compares `BaseDllName` values case-insensitively for ASCII, and returns the mapped base for an already-loaded module. It does not load DLLs or resolve search paths.
 
 **QEMU-verified:** [Actions run 40185018220](https://github.com/umarfarooq7869/CognacOS/actions/runs/40185018220) resolved `ntdll.dll` through the PEB load-order list and verified the returned handle equals the actual mapped base. Full `LdrLoadDll`, forwarded exports, loader lock, activation contexts, and dependency graph/rundown remain future work.
+
+
+### NTDLL-LOAD-026 — replace private NT bridge with canonical Windows SYSCALL stubs
+
+**Implemented:** the five exported `Nt*` functions are now assembly stubs using
+`mov r10, rcx; mov eax, service_number; syscall; ret`. The private
+`CognacNtdllConfigureSyscalls` and `CognacNtdllConfigureSyscallTable` exports
+and the custom INT 0x82 wrapper were removed from native NTDLL. The boot path
+identifies the in-tree DLL by its exported process-heap object, discovers the
+five service numbers from its actual PE export stubs, and keeps the kernel's
+Windows x64 SYSCALL dispatcher enabled for the ring-3 smoke test.
+
+**Validation pending:** the next QEMU run must pass all native RTL/heap/loader
+checks while exercising the five `Nt*` wrappers through the Windows SYSCALL
+entry. The smoke harness still uses INT 0x81 only for its test write/exit path.
+
+**Scope:** the DLL implements only five NT services, with service IDs discovered
+from its own stubs. A build using a different Windows NTDLL can generate its
+exact IDs with `WINDOWS_SYSCALL_IDS=1`; that does not imply the rest of that
+Windows build's NTDLL ABI is implemented.
