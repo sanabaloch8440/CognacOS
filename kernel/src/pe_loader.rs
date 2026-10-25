@@ -127,7 +127,7 @@ pub unsafe fn complete_module_initialization(
     }
     let image = LoadedImage { base: snapshot.base, entry: 0, image_size: snapshot.size, is_dll: true };
     unsafe { crate::pe::unload_dll(space, image, module_name) }.map_err(pe_status)?;
-    crate::pe_modules::finish_initialization(slot, generation, false)?;
+    let _ = crate::pe_modules::finish_initialization(slot, generation, false);
     Err(STATUS_DLL_INIT_FAILED)
 }
 
