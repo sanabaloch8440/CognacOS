@@ -168,8 +168,9 @@ The implementation remains partial. It now publishes the Windows-layout XState f
 - [x] Deduplicate import names case-insensitively and cap the discovered plan at 32 module names.
 - [x] Reject malformed descriptors and missing dependencies before mapping the parent image.
 - [x] Reject dependency graph cycles and prevent unload while a module is initializing.
-- [ ] Recursively locate and map missing dependency files with bounded per-depth file buffers.
-- [ ] Roll back every dependency newly mapped by a failed parent transaction.
+- [x] Add a concrete VFS-backed recursive loader API that locates staged System32 dependency files and maps dependencies before parents using bounded per-depth buffers.
+- [x] Roll back newly mapped dependencies in reverse order using process/slot/generation-checked registry tickets and PE unmapping.
+- [ ] Route the existing single-image loader and NTDLL native syscall bridge through this transaction API.
 - [ ] Resolve forwarded exports and ordinals through the selected loaded module.
 - [ ] Connect NTDLL mapping/unmapping to process-owned kernel section services.
 - [ ] Queue attach/detach callouts on a process thread and wait for rundown before unmapping.
@@ -177,14 +178,15 @@ The implementation remains partial. It now publishes the Windows-layout XState f
 The current first phase is intentionally fail-closed: if any discovered dependency is not already mapped, the parent is not mapped and the load returns STATUS_DLL_NOT_FOUND. This avoids partial parent images, but it is not yet recursive dependency loading.
 
 
-### Recursive dependency transaction engine (backend integration pending)
+### Recursive dependency transaction engine (concrete backend added; integration validation pending)
 
 - [x] Add an iterative DFS transaction API with a fixed maximum depth and fixed-size rollback journal.
 - [x] Use a distinct caller-owned file buffer for each active dependency depth.
 - [x] Map each image only after its dependencies are loaded, then publish dependency edges.
 - [x] Roll back newly mapped images in reverse order on map, link, file-read, parse, or dependency-lookup failure.
 - [x] Detect active-path cycles and reject graphs exceeding configured bounds.
-- [ ] Implement a kernel backend that connects this transaction API to process VFS reads, module registry operations, PE mapping, and generation-checked rollback.
-- [ ] Replace the existing single-image loader path with the transaction backend and validate with synthetic PE dependency graphs in CI.
+- [x] Implement a concrete backend connecting process VFS reads, module-registry lookup/edge publication, PE32+ mapping, and generation-checked rollback.
+- [ ] Route the existing single-image loader and NTDLL native syscall bridge through `load_dll_transaction_from_vfs`.
+- [ ] Add synthetic multi-DLL graph tests covering post-order mapping, missing files, cycles, and rollback after map/link failure; run them in CI.
 
-The generic transaction engine is present at `kernel/src/pe_dependencies/transaction.rs`, but the existing `load_dll_from_vfs` entry point still uses its fail-closed preflight path. Do not treat recursive dependency loading as enabled until the backend is wired and CI tests exercise it.
+The concrete entry point is `kernel/src/pe_loader.rs::load_dll_transaction_from_vfs`. It resolves dependencies under the staged `\\SystemRoot\\System32` and `\\Windows\\System32` paths. The legacy `load_dll_from_vfs` entry point remains fail-closed and has not been switched over. The VFS only serves explicitly registered immutable files; disk-backed lookup, forwarded exports, and native NTDLL syscall wiring remain separate work. This code is not validated until the current kernel/host/QEMU workflows pass.
