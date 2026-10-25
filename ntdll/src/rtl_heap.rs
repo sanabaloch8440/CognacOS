@@ -152,11 +152,22 @@ unsafe fn segment_create(heap: *mut CognacHeap, minimum_payload: usize) -> *mut 
     seg
 }
 unsafe fn heap_valid(handle: HANDLE) -> *mut CognacHeap {
-    let heap = handle.cast::<CognacHeap>();
-    if heap.is_null() { return ptr::null_mut(); }
-    // Handles are returned by RtlCreateHeap and reside in VM-owned memory. This
-    // signature check is a guard, not a safe way to probe arbitrary unmapped input.
-    if unsafe { (*heap).magic } != HEAP_MAGIC { ptr::null_mut() } else { heap }
+    // Do not dereference a caller-supplied handle until it matches an entry in
+    // the process-owned registry. Random and stale unmapped handles fail closed.
+    if handle.is_null() { return ptr::null_mut(); }
+    let wanted = handle.cast::<CognacHeap>();
+    unsafe { lock(&HEAP_LIST_LOCK); }
+    let mut current = unsafe { HEAP_LIST };
+    let mut found = ptr::null_mut();
+    let mut seen = 0usize;
+    while !current.is_null() && seen < 1_000_000 {
+        if current == wanted { found = current; break; }
+        current = unsafe { (*current).next_heap };
+        seen += 1;
+    }
+    if !found.is_null() && unsafe { (*found).magic } != HEAP_MAGIC { found = ptr::null_mut(); }
+    unsafe { unlock(&HEAP_LIST_LOCK); }
+    found
 }
 unsafe fn block_payload(block: *mut Block) -> PVOID {
     unsafe { block.cast::<u8>().add(mem::size_of::<Block>()).cast() }
@@ -167,7 +178,7 @@ unsafe fn block_from_payload(heap: *mut CognacHeap, payload: PVOID) -> *mut Bloc
     let mut seg = unsafe { (*heap).segments };
     while !seg.is_null() {
         let base = unsafe { (*seg).base as usize };
-        let end = base.saturating_add(unsafe { (*seg).size });
+        let Some(end) = base.checked_add(unsafe { (*seg).size }) else { return ptr::null_mut(); };
         if p >= base.saturating_add(mem::size_of::<Segment>() + mem::size_of::<Block>())
             && p < end && unsafe { (*seg).magic } == SEGMENT_MAGIC
         {
@@ -352,7 +363,7 @@ pub unsafe extern "system" fn RtlReAllocateHeap(handle: HANDLE, flags: ULONG, ad
         let b = block_from_payload(heap, address);
         if b.is_null() || (*b).free != 0 { unlock(&(*heap).lock); return ptr::null_mut(); }
         if (*b).size >= wanted {
-            if (*b).size >= wanted + mem::size_of::<Block>() + ALIGN {
+            if wanted.checked_add(mem::size_of::<Block>() + ALIGN).map_or(false, |minimum| (*b).size >= minimum) {
                 let split = b.cast::<u8>().add(mem::size_of::<Block>() + wanted).cast::<Block>();
                 ptr::write(split, Block { magic: BLOCK_MAGIC, size: (*b).size - wanted - mem::size_of::<Block>(), previous: b, next: (*b).next, user_value: ptr::null_mut(), user_flags: 0, free: 1 });
                 if !(*split).next.is_null() { (*(*split).next).previous = split; }
@@ -436,19 +447,25 @@ pub unsafe extern "system" fn RtlGetProcessHeaps(count: ULONG, out: *mut HANDLE)
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlValidateProcessHeaps() -> ULONG {
-    unsafe {
-        lock(&HEAP_LIST_LOCK);
-        let mut heap = HEAP_LIST;
-        let mut total = 0u32;
-        let mut valid = true;
-        while !heap.is_null() {
-            total = total.saturating_add(1);
-            if RtlValidateHeap(heap.cast(), 0, ptr::null_mut()) == 0 { valid = false; break; }
-            heap = (*heap).next_heap;
+    // Do not hold the registry lock while RtlValidateHeap rechecks membership.
+    let mut total = 0u32;
+    let mut index = 0usize;
+    loop {
+        unsafe { lock(&HEAP_LIST_LOCK); }
+        let mut heap = unsafe { HEAP_LIST };
+        let mut i = 0usize;
+        while !heap.is_null() && i < index {
+            heap = unsafe { (*heap).next_heap };
+            i += 1;
         }
-        unlock(&HEAP_LIST_LOCK);
-        if valid { total } else { 0 }
+        unsafe { unlock(&HEAP_LIST_LOCK); }
+        if heap.is_null() { break; }
+        if unsafe { RtlValidateHeap(heap.cast(), 0, ptr::null_mut()) } == 0 { return 0; }
+        total = total.saturating_add(1);
+        index += 1;
+        if index > 1_000_000 { return 0; }
     }
+    total
 }
 
 #[no_mangle]
