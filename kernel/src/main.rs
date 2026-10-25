@@ -949,7 +949,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     };
                     serial_write(b"FATAL: NTDLL load failed: ");
                     serial_write(label);
-                    serial_write(b"\\r\\n");
+                    serial_write(b"\r\n");
                     halt();
                 }
             };
