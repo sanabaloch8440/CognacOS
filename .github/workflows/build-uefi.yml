@@ -124,7 +124,7 @@ jobs:
       - name: Run host-side physical allocator map tests
         run: |
           mkdir -p build
-          rustc --edition=2021 --test kernel/src/memory.rs -o build/memory-tests
+          rustc --edition=2021 --test kernel/src/ntoskrnl/mm/physical.rs -o build/memory-tests
           build/memory-tests
       - name: Run host-side Ke timer-generation regression tests
         run: |
