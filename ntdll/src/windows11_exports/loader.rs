@@ -932,11 +932,193 @@ pub unsafe extern "system" fn LdrResFindResourceDirectory() -> i32 { STATUS_NOT_
 #[no_mangle]
 pub unsafe extern "system" fn LdrResGetRCConfig() -> i32 { STATUS_NOT_IMPLEMENTED }
 
+
+const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT: usize = 13;
+const IMAGE_ORDINAL_FLAG64: u64 = 1u64 << 63;
+const MAX_DELAY_IMPORTS: usize = 4096;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct IMAGE_DELAYLOAD_DESCRIPTOR {
+    pub Attributes: u32,
+    pub DllNameRVA: u32,
+    pub ModuleHandleRVA: u32,
+    pub ImportAddressTableRVA: u32,
+    pub ImportNameTableRVA: u32,
+    pub BoundImportAddressTableRVA: u32,
+    pub UnloadInformationTableRVA: u32,
+    pub TimeDateStamp: u32,
+}
+
+unsafe fn delay_directory(module: PVOID) -> Result<(usize, usize, usize), NTSTATUS> {
+    let (base, image_size, _) = unsafe { mapped_image_info(module) }?;
+    let raw = base as *const u8;
+    let nt = unsafe { ptr::read_unaligned(raw.add(0x3c).cast::<u32>()) } as usize;
+    let optional_size = unsafe { ptr::read_unaligned(raw.add(nt + 4 + 16).cast::<u16>()) } as usize;
+    let optional = nt.checked_add(24).ok_or(STATUS_INVALID_PARAMETER)?;
+    if optional_size < 112 + (IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT + 1) * 8 {
+        return Err(STATUS_NOT_FOUND);
+    }
+    let directory_count = unsafe { ptr::read_unaligned(raw.add(optional + 108).cast::<u32>()) } as usize;
+    if directory_count <= IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT { return Err(STATUS_NOT_FOUND); }
+    let directory = optional + 112 + IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT * 8;
+    let rva = unsafe { ptr::read_unaligned(raw.add(directory).cast::<u32>()) } as usize;
+    let size = unsafe { ptr::read_unaligned(raw.add(directory + 4).cast::<u32>()) } as usize;
+    if rva == 0 || size < core::mem::size_of::<IMAGE_DELAYLOAD_DESCRIPTOR>()
+        || rva.checked_add(size).is_none_or(|end| end > image_size) {
+        return Err(STATUS_NOT_FOUND);
+    }
+    Ok((base, image_size, rva))
+}
+
+unsafe fn image_ascii_string(base: usize, image_size: usize, rva: usize, out: &mut [u8]) -> Result<usize, NTSTATUS> {
+    if rva >= image_size || out.is_empty() { return Err(STATUS_INVALID_PARAMETER); }
+    for i in 0..core::cmp::min(out.len(), image_size - rva) {
+        let ch = unsafe { ptr::read_unaligned((base + rva + i) as *const u8) };
+        if ch == 0 { return Ok(i); }
+        if !ch.is_ascii() { return Err(STATUS_INVALID_PARAMETER); }
+        out[i] = ch;
+    }
+    Err(STATUS_INVALID_PARAMETER)
+}
+
+/// Resolve one delay-import thunk in an already mapped PE32+ image. Dependency
+/// mapping is delegated to LdrLoadDll; until that service can map new files, this
+/// correctly resolves only dependencies already present in the process loader list.
 #[no_mangle]
-pub unsafe extern "system" fn LdrResolveDelayLoadedAPI() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrResolveDelayLoadedAPI(
+    parent_module_base: PVOID,
+    descriptor: *const IMAGE_DELAYLOAD_DESCRIPTOR,
+    _dll_failure_hook: PVOID,
+    _system_failure_hook: PVOID,
+    thunk_address: *mut u64,
+    flags: ULONG,
+) -> PVOID {
+    if parent_module_base.is_null() || descriptor.is_null() || thunk_address.is_null() || flags != 0 {
+        return ptr::null_mut();
+    }
+    let (base, image_size, _) = match unsafe { mapped_image_info(parent_module_base) } {
+        Ok(v) => v, Err(_) => return ptr::null_mut(),
+    };
+    let descriptor_address = descriptor as usize;
+    if descriptor_address < base || descriptor_address.checked_add(32).is_none_or(|end| end > base + image_size) {
+        return ptr::null_mut();
+    }
+    let d = unsafe { &*descriptor };
+    if d.Attributes & 1 == 0 || d.DllNameRVA == 0 || d.ModuleHandleRVA == 0
+        || d.ImportAddressTableRVA == 0 || d.ImportNameTableRVA == 0 {
+        return ptr::null_mut();
+    }
+    let rva_ok = |rva: u32, size: usize| (rva as usize).checked_add(size).is_some_and(|end| end <= image_size);
+    if !rva_ok(d.DllNameRVA, 1) || !rva_ok(d.ModuleHandleRVA, 8)
+        || !rva_ok(d.ImportAddressTableRVA, 8) || !rva_ok(d.ImportNameTableRVA, 8) {
+        return ptr::null_mut();
+    }
+    let iat = base + d.ImportAddressTableRVA as usize;
+    let int = base + d.ImportNameTableRVA as usize;
+    let target = thunk_address as usize;
+    if target < iat || (target - iat) % 8 != 0 || target.checked_add(8).is_none_or(|end| end > base + image_size) {
+        return ptr::null_mut();
+    }
+    let index = (target - iat) / 8;
+    let lookup_rva = (d.ImportNameTableRVA as usize).checked_add(index.checked_mul(8)?)?;
+    if lookup_rva.checked_add(8).is_none_or(|end| end > image_size) { return ptr::null_mut(); }
+    let thunk = unsafe { ptr::read_unaligned((int + index * 8) as *const u64) };
+    if thunk == 0 { return ptr::null_mut(); }
+
+    let module_slot = (base + d.ModuleHandleRVA as usize) as *mut PVOID;
+    let mut dll_handle = unsafe { ptr::read_unaligned(module_slot) };
+    if dll_handle.is_null() {
+        let mut dll_ascii = [0u8; 260];
+        let dll_len = match unsafe { image_ascii_string(base, image_size, d.DllNameRVA as usize, &mut dll_ascii) } {
+            Ok(n) if n > 0 => n, _ => return ptr::null_mut(),
+        };
+        let mut dll_utf16 = [0u16; 260];
+        for i in 0..dll_len { dll_utf16[i] = dll_ascii[i] as u16; }
+        let name = UNICODE_STRING { Length: (dll_len * 2) as u16, MaximumLength: (dll_len * 2) as u16, Buffer: dll_utf16.as_mut_ptr() };
+        if unsafe { LdrLoadDll(ptr::null(), ptr::null_mut(), &name, &mut dll_handle) } != STATUS_SUCCESS {
+            return ptr::null_mut();
+        }
+        unsafe { ptr::write_unaligned(module_slot, dll_handle); }
+    }
+
+    let mut procedure = ptr::null_mut();
+    let status = if thunk & IMAGE_ORDINAL_FLAG64 != 0 {
+        unsafe { crate::rtl_loader::LdrGetProcedureAddress(dll_handle, ptr::null(), (thunk & 0xffff) as ULONG, &mut procedure) }
+    } else {
+        let name_rva = match usize::try_from(thunk) { Ok(v) => v, Err(_) => return ptr::null_mut() };
+        if name_rva.checked_add(3).is_none_or(|end| end > image_size) { return ptr::null_mut(); }
+        let mut function_ascii = [0u8; 512];
+        let function_len = match unsafe { image_ascii_string(base, image_size, name_rva + 2, &mut function_ascii) } {
+            Ok(n) if n > 0 => n, _ => return ptr::null_mut(),
+        };
+        let ansi = crate::rtl_loader::COGNAC_ANSI_STRING {
+            Length: function_len as u16, MaximumLength: function_len as u16,
+            Buffer: function_ascii.as_mut_ptr(),
+        };
+        unsafe { crate::rtl_loader::LdrGetProcedureAddress(dll_handle, &ansi, 0, &mut procedure) }
+    };
+    if status != STATUS_SUCCESS || procedure.is_null() { return ptr::null_mut(); }
+    unsafe { ptr::write_unaligned(thunk_address, procedure as u64); }
+    procedure
+}
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrResolveDelayLoadsFromDll() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrResolveDelayLoadsFromDll(
+    parent_module_base: PVOID, dll_name: *const u16,
+) -> NTSTATUS {
+    if parent_module_base.is_null() || dll_name.is_null() { return STATUS_INVALID_PARAMETER; }
+    let (base, image_size, directory_rva) = match unsafe { delay_directory(parent_module_base) } {
+        Ok(v) => v, Err(status) => return status,
+    };
+    let mut wanted = [0u16; 260];
+    let mut wanted_len = 0usize;
+    while wanted_len < wanted.len() {
+        let ch = unsafe { ptr::read_unaligned(dll_name.add(wanted_len)) };
+        if ch == 0 { break; }
+        wanted[wanted_len] = ch;
+        wanted_len += 1;
+    }
+    if wanted_len == 0 || wanted_len == wanted.len() { return STATUS_INVALID_PARAMETER; }
+    let directory_size = unsafe {
+        let nt = ptr::read_unaligned((base + 0x3c) as *const u32) as usize;
+        let opt = base + nt + 24;
+        let dir = opt + 112 + IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT * 8;
+        ptr::read_unaligned((dir + 4) as *const u32) as usize
+    };
+    let count = core::cmp::min(directory_size / 32, MAX_DELAY_IMPORTS);
+    let mut matched = false;
+    for i in 0..count {
+        let descriptor = (base + directory_rva + i * 32) as *const IMAGE_DELAYLOAD_DESCRIPTOR;
+        let d = unsafe { &*descriptor };
+        if d.Attributes == 0 && d.DllNameRVA == 0 && d.ImportAddressTableRVA == 0 { break; }
+        if d.Attributes & 1 == 0 { continue; }
+        let mut name = [0u8; 260];
+        let len = match unsafe { image_ascii_string(base, image_size, d.DllNameRVA as usize, &mut name) } {
+            Ok(n) => n, Err(_) => return STATUS_INVALID_PARAMETER,
+        };
+        if len != wanted_len || (0..len).any(|j| (name[j] as u16) != wanted[j]) { continue; }
+        matched = true;
+        if d.ImportAddressTableRVA == 0 || d.ImportNameTableRVA == 0
+            || d.ImportAddressTableRVA as usize >= image_size || d.ImportNameTableRVA as usize >= image_size {
+            return STATUS_INVALID_PARAMETER;
+        }
+        let mut resolved = 0usize;
+        for thunk_index in 0..MAX_DELAY_IMPORTS {
+            let iat_rva = d.ImportAddressTableRVA as usize + thunk_index * 8;
+            let int_rva = d.ImportNameTableRVA as usize + thunk_index * 8;
+            if iat_rva.checked_add(8).is_none_or(|end| end > image_size)
+                || int_rva.checked_add(8).is_none_or(|end| end > image_size) { return STATUS_INVALID_PARAMETER; }
+            let lookup = unsafe { ptr::read_unaligned((base + int_rva) as *const u64) };
+            if lookup == 0 { break; }
+            let address = unsafe { LdrResolveDelayLoadedAPI(parent_module_base, descriptor, ptr::null_mut(), ptr::null_mut(), (base + iat_rva) as *mut u64, 0) };
+            if address.is_null() { return STATUS_PROCEDURE_NOT_FOUND; }
+            resolved += 1;
+        }
+        if resolved == MAX_DELAY_IMPORTS { return STATUS_INVALID_PARAMETER; }
+    }
+    if matched { STATUS_SUCCESS } else { STATUS_RESOURCE_NOT_FOUND }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrResRelease() -> i32 { STATUS_NOT_IMPLEMENTED }
