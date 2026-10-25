@@ -1386,19 +1386,27 @@ pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *cons
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
     if vector == 2 && crate::ntoskrnl::ke::runtime::dispatch_nmi_callbacks() { return 1; }
+    // Any synchronous exception raised at CPL3 belongs to the current process.
+    // Page faults first get a chance to resolve registered demand-zero/pagefile
+    // mappings; otherwise terminate that process instead of halting the kernel.
+    if vector < EXCEPTION_VECTORS as u64 {
+        let saved_cs = unsafe { frame.add(18).read() };
+        if saved_cs & 3 == 3 {
+            if vector == 14 {
+                let cr2: u64;
+                unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+                if crate::ntoskrnl::mm::address_space::handle_current_user_page_fault(cr2, error) { return 1; }
+            }
+            let pid=crate::thread::current_process_id();
+            if pid!=0 {
+                crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid,0xC000_0005);
+            }
+            return cognacos_exception_fatal(vector, error, frame);
+        }
+    }
     if vector == 14 {
         let cr2: u64;
         unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
-        // CPL is read from the saved hardware frame (RIP, CS follow the
-        // 15 saved GPRs, vector and error code). User faults are resolved only
-        // against the current process's registered address-space root.
-        let saved_cs = unsafe { frame.add(18).read() };
-        if saved_cs & 3 == 3 {
-            if crate::ntoskrnl::mm::address_space::handle_current_user_page_fault(cr2, error) { return 1; }
-            // Until user exception delivery is wired to a process-exit path, do
-            // not reinterpret a user fault as a supervisor demand-paging fault.
-            return cognacos_exception_fatal(vector, error, frame);
-        }
         if crate::kernel_vm::handle_page_fault(cr2, error) { return 1; }
 
         // General exception-table recovery for explicitly registered kernel
