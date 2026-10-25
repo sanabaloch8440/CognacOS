@@ -189,7 +189,7 @@ pub unsafe extern "system" fn RtlInsertEntryHashTable(
     signature: ULONG_PTR, context: *mut RTL_DYNAMIC_HASH_TABLE_CONTEXT,
 ) -> BOOLEAN {
     if table.is_null() || entry.is_null() || unsafe { (*table).Directory.is_null() || (*table).TableSize == 0 } { return 0; }
-    if unsafe { (*entry).Linkage.Flink != entry.cast() || (*entry).Linkage.Blink != entry.cast() } { return 0; }
+    // Caller supplies an unlinked entry; initialize its links as part of insertion.
     let index = unsafe { bucket_index(table, signature) };
     let head = unsafe { bucket_heads(table).add(index) };
     let was_empty = unsafe { (*head).Flink == head };
@@ -294,13 +294,16 @@ unsafe fn enumerate_next(table: *mut RTL_DYNAMIC_HASH_TABLE, en: *mut RTL_DYNAMI
     if table.is_null() || en.is_null() || unsafe { (*table).Directory.is_null() } { return ptr::null_mut(); }
     let size = unsafe { (*table).TableSize };
     let mut index = unsafe { (*en).BucketIndex };
-    let mut next = if unsafe { (*en).ChainHead.is_null() } { ptr::null_mut() } else { unsafe { (*(*en).ChainHead).Flink } };
-    if !next.is_null() && next != unsafe { (*en).ChainHead } {
-        let entry = unsafe { entry_from_link(next) };
-        unsafe { (*en).HashEntry.Signature = (*entry).Signature; (*en).ChainHead = (*en).ChainHead; (*en).BucketIndex = index; }
-        // The embedded linkage is a private cursor; remember the returned link in Blink.
-        unsafe { (*en).HashEntry.Linkage.Blink = next; }
-        return entry;
+    if !unsafe { (*en).ChainHead.is_null() } {
+        let head = unsafe { (*en).ChainHead };
+        let current = unsafe { (*en).HashEntry.Linkage.Blink };
+        let next = if current.is_null() { unsafe { (*head).Flink } } else { unsafe { (*current).Flink } };
+        if next != head {
+            let entry = unsafe { entry_from_link(next) };
+            unsafe { (*en).HashEntry.Linkage.Blink = next; (*en).HashEntry.Signature = (*entry).Signature; }
+            return entry;
+        }
+        index = unsafe { (*en).BucketIndex.saturating_add(1) };
     }
     while index < size {
         let head = unsafe { bucket_heads(table).add(index as usize) };
@@ -312,6 +315,7 @@ unsafe fn enumerate_next(table: *mut RTL_DYNAMIC_HASH_TABLE, en: *mut RTL_DYNAMI
         }
         index += 1;
     }
+    unsafe { (*en).ChainHead = ptr::null_mut(); (*en).HashEntry.Linkage.Blink = ptr::null_mut(); }
     ptr::null_mut()
 }
 
@@ -375,9 +379,35 @@ pub unsafe extern "system" fn RtlExpandHashTable(table: *mut RTL_DYNAMIC_HASH_TA
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlContractHashTable(_table: *mut RTL_DYNAMIC_HASH_TABLE) -> BOOLEAN {
-    // Contracting requires Windows' pivot/divisor-mask split-bucket algorithm.
-    0
+pub unsafe extern "system" fn RtlContractHashTable(table: *mut RTL_DYNAMIC_HASH_TABLE) -> BOOLEAN {
+    if table.is_null() || unsafe { (*table).Directory.is_null() || (*table).Shift <= 1 } { return 0; }
+    let old_size = unsafe { (*table).TableSize as usize };
+    let new_size = old_size / 2;
+    let Some(new_dir) = (unsafe { alloc_directory(new_size) }) else { return 0; };
+    unsafe {
+        let old_dir = bucket_heads(table);
+        for i in 0..old_size {
+            let head = old_dir.add(i);
+            let mut link = (*head).Flink;
+            while link != head {
+                let next = (*link).Flink;
+                let entry = entry_from_link(link);
+                let index = ((*entry).Signature as usize) & (new_size - 1);
+                insert_tail(new_dir.add(index), link);
+                link = next;
+            }
+        }
+        free_directory(old_dir, old_size);
+        (*table).Directory = new_dir.cast();
+        (*table).Shift -= 1;
+        (*table).TableSize = new_size as ULONG;
+        (*table).DivisorMask = (*table).TableSize - 1;
+        (*table).NonEmptyBuckets = 0;
+        for i in 0..new_size {
+            if (*new_dir.add(i)).Flink != new_dir.add(i) { (*table).NonEmptyBuckets += 1; }
+        }
+    }
+    1
 }
 
 #[no_mangle]
@@ -398,7 +428,7 @@ pub unsafe extern "system" fn RtlRandom(seed: *mut ULONG) -> ULONG {
 pub unsafe extern "system" fn RtlComputeImportTableHash(
     _base_address: PVOID, _hash: *mut u8, _hash_size: ULONG,
 ) -> ULONG {
-    0
+    STATUS_NOT_IMPLEMENTED as ULONG
 }
 
 #[repr(C)]
@@ -413,15 +443,62 @@ pub struct SID_AND_ATTRIBUTES_HASH {
     pub Hash: [ULONG; 32],
 }
 
+#[inline]
+unsafe fn sid_length(sid: PVOID) -> Option<usize> {
+    if sid.is_null() { return None; }
+    let bytes = sid.cast::<u8>();
+    let revision = unsafe { *bytes };
+    let count = unsafe { *bytes.add(1) } as usize;
+    if revision != 1 || count > 15 { return None; }
+    Some(8 + count * 4)
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn RtlSidHashInitialize(
-    _sid_attr: *mut SID_AND_ATTRIBUTES, _sid_count: ULONG, _sid_attr_hash: *mut SID_AND_ATTRIBUTES_HASH,
-) -> NTSTATUS { STATUS_NOT_IMPLEMENTED }
+    sid_attr: *mut SID_AND_ATTRIBUTES, sid_count: ULONG, sid_attr_hash: *mut SID_AND_ATTRIBUTES_HASH,
+) -> NTSTATUS {
+    if sid_attr_hash.is_null() || (sid_count != 0 && sid_attr.is_null()) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe {
+        (*sid_attr_hash).SidCount = sid_count;
+        (*sid_attr_hash).SidAttr = sid_attr;
+        (*sid_attr_hash).Hash = [0; 32];
+    }
+    for i in 0..sid_count as usize {
+        let sid = unsafe { (*sid_attr.add(i)).Sid };
+        let Some(length) = (unsafe { sid_length(sid) }) else {
+            unsafe { (*sid_attr_hash).SidCount = 0; (*sid_attr_hash).SidAttr = ptr::null_mut(); }
+            return STATUS_INVALID_PARAMETER;
+        };
+        let bytes = unsafe { core::slice::from_raw_parts(sid.cast::<u8>(), length) };
+        let mut hash = 2166136261u32;
+        for byte in bytes { hash = (hash ^ (*byte as u32)).wrapping_mul(16777619); }
+        unsafe { (*sid_attr_hash).Hash[(hash as usize) & 31] |= 1u32 << ((hash >> 5) & 31); }
+    }
+    STATUS_SUCCESS
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSidHashLookup(
-    _sid_attr_hash: *mut SID_AND_ATTRIBUTES_HASH, _sid: PVOID,
-) -> *mut SID_AND_ATTRIBUTES { ptr::null_mut() }
+    sid_attr_hash: *mut SID_AND_ATTRIBUTES_HASH, sid: PVOID,
+) -> *mut SID_AND_ATTRIBUTES {
+    if sid_attr_hash.is_null() || sid.is_null() { return ptr::null_mut(); }
+    let Some(wanted_len) = (unsafe { sid_length(sid) }) else { return ptr::null_mut(); };
+    let wanted = unsafe { core::slice::from_raw_parts(sid.cast::<u8>(), wanted_len) };
+    let count = unsafe { (*sid_attr_hash).SidCount as usize };
+    let items = unsafe { (*sid_attr_hash).SidAttr };
+    if count != 0 && items.is_null() { return ptr::null_mut(); }
+    for i in 0..count {
+        let item = unsafe { items.add(i) };
+        let candidate = unsafe { (*item).Sid };
+        let Some(length) = (unsafe { sid_length(candidate) }) else { continue; };
+        if length == wanted_len && unsafe { core::slice::from_raw_parts(candidate.cast::<u8>(), length) } == wanted {
+            return item;
+        }
+    }
+    ptr::null_mut()
+}
 
 #[cfg(test)]
 mod tests {
