@@ -6,13 +6,20 @@ OBJDUMP := $(CROSS)objdump
 OUTPUT ?= ntdll.dll
 WINDOWS_NTDLL ?=
 SYSCALL_HEADER ?= generated/ntdll_syscalls.h
+WINDOWS_SYSCALL_IDS ?= 0
 CFLAGS := -O2 -Wall -Wextra -Werror -ffreestanding -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables -fno-unwind-tables
+ifeq ($(WINDOWS_SYSCALL_IDS),1)
+CFLAGS += -DCOGNAC_USE_WINDOWS_SYSCALL_IDS
+endif
 LDFLAGS := -shared -nostdlib -Wl,--subsystem,windows -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va -Wl,--image-base,0x180000000 -Wl,--entry,DllMain -Wl,--no-insert-timestamp
 
 .PHONY: all check clean helper-help syscall-header
 all: $(OUTPUT)
 
 $(OUTPUT): cognac_native.c rtl_memory.c cognac_ntdll.def cognac_syscall_x86_64.S
+ifeq ($(WINDOWS_SYSCALL_IDS),1)
+$(OUTPUT): generated/ntdll_syscalls.h
+endif
 	$(CC) $(CFLAGS) -DCOGNAC_NATIVE_NTDLL $(LDFLAGS) -o $@ cognac_native.c rtl_memory.c cognac_syscall_x86_64.S cognac_ntdll.def
 
 helper-help:\n\tpython3 tools/ntdll_link_helper.py --help\n\ncheck: $(OUTPUT)
