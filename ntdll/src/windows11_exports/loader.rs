@@ -1118,7 +1118,7 @@ pub unsafe extern "system" fn LdrResolveDelayLoadsFromDll(
         }
         if resolved == MAX_DELAY_IMPORTS { return STATUS_INVALID_PARAMETER; }
     }
-    if matched { STATUS_SUCCESS } else { STATUS_RESOURCE_NOT_FOUND }
+    if matched { STATUS_SUCCESS } else { STATUS_NOT_FOUND }
 }
 
 #[no_mangle]
