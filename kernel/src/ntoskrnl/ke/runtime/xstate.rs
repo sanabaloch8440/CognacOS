@@ -167,7 +167,7 @@ pub fn ki_query_windows_xstate_configuration() -> WindowsXStateConfiguration {
     out.enabled_features = internal.enabled_features;
     out.enabled_volatile_features = internal.enabled_features;
     out.size = internal.area_size;
-    out.control_flags = (internal.xsaveopt & 1) | ((internal.xsavec & 1) << 1);
+    out.control_flags = (internal.xsaveopt & 1) | ((internal.compaction_enabled & 1) << 1);
     for i in 0..64 {
         out.features[i] = WindowsXStateFeature { offset: internal.feature_offsets[i], size: internal.feature_sizes[i] };
         out.all_features[i] = internal.feature_sizes[i];
