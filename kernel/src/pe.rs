@@ -2,7 +2,7 @@
 //! Supports mapped headers/sections, DIR64 base relocations and import binding
 //! through a kernel-provided resolver. TLS callbacks, delay imports, bound imports,
 //! load-config/CFG, unwind registration and API-set resolution are not yet supported.
-use crate::vm::{AddressSpace, VmError, is_user_range};
+use crate::ntoskrnl::mm::address_space::{AddressSpace, VmError, is_user_range};
 
 const PAGE_SIZE: u64 = 4096;
 const MAX_IMAGE_SIZE: usize = 8 * 1024 * 1024;
