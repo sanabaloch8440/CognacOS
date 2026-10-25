@@ -1181,7 +1181,7 @@ pub unsafe fn initialize() {
     // Install the privileged SYSCALL entry and per-CPU kernel stack before
     // any ring-3 process can execute a Windows-style syscall instruction.
     if unsafe { crate::syscall::initialize_windows_syscall_abi(0) }.is_err() {
-        unsafe { crate::serial_write(b"FATAL: Windows SYSCALL MSR/GS initialization self-test failed.\\r\\n"); }
+        unsafe { crate::serial_write(b"FATAL: Windows SYSCALL MSR/GS initialization self-test failed.\r\n"); }
         loop { core::hint::spin_loop(); }
     }
     let handlers: [usize; EXCEPTION_VECTORS] = [
