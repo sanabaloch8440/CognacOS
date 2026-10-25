@@ -1011,7 +1011,7 @@ mod tests {
         image[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
         let opt = 0x98;
         image[opt..opt+2].copy_from_slice(&0x20bu16.to_le_bytes());
-        image[opt+56..opt+60].copy_from_slice(&(image.len() as u32).to_le_bytes());
+        image[opt+56..opt+60].copy_from_slice(&0x3000u32.to_le_bytes());
         image[opt+108..opt+112].copy_from_slice(&16u32.to_le_bytes());
         image[opt+112+16..opt+112+20].copy_from_slice(&0x2000u32.to_le_bytes());
         image[opt+112+20..opt+112+24].copy_from_slice(&0x1000u32.to_le_bytes());
