@@ -332,26 +332,8 @@ pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
     if cpu >= crate::hal::MAX_CPUS { return Err(()); }
     let local = unsafe { core::ptr::addr_of_mut!(WINDOWS_SYSCALL_CPUS[cpu]) };
     unsafe {
-        if (*local).stack_page == 0 {
-            // The page allocator's identity-mapped physical pages are present
-            // in every address space as supervisor-only memory. Keep syscall
-            // stacks out of the image BSS, whose tail is not guaranteed mapped.
-            let page = match crate::ntoskrnl::mm::physical::allocate_data_page() {
-                Ok(page) => page,
-                Err(_) => {
-                    crate::serial_write(b"FATAL: no physical page for Windows syscall stack.\r\n");
-                    return Err(());
-                }
-            };
-            let stack_base = match crate::ntoskrnl::mm::physical::direct_map_address(page) {
-                Some(address) => address,
-                None => {
-                    crate::serial_write(b"FATAL: Windows syscall stack has no direct-map address.\r\n");
-                    return Err(());
-                }
-            };
-            (*local).stack_page = page;
-            (*local).kernel_rsp = stack_base + 4096;
+        if (*local).stack_page != 0 {
+            (*local).kernel_rsp = (*local).stack_page + 4096;
         }
     }
     unsafe {
@@ -390,6 +372,23 @@ pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
     }
     Ok(())
 }
+/// Allocate a per-CPU syscall stack after the physical allocator is initialized.
+/// The early identity map is shared as supervisor-only memory by every process CR3.
+pub unsafe fn prepare_windows_syscall_stack(cpu: usize) -> Result<(), ()> {
+    if cpu >= crate::hal::MAX_CPUS { return Err(()); }
+    let local = unsafe { core::ptr::addr_of_mut!(WINDOWS_SYSCALL_CPUS[cpu]) };
+    unsafe {
+        if (*local).stack_page == 0 {
+            let page = crate::memory::allocate_page().map_err(|_| ())?;
+            if page == 0 || page >= 0x1_0000_0000 { return Err(()); }
+            (*local).stack_page = page;
+        }
+        (*local).kernel_rsp = (*local).stack_page + 4096;
+        if (*local).kernel_rsp == 0 { return Err(()); }
+    }
+    Ok(())
+}
+
 unsafe fn read_msr(index: u32) -> u64 {
     let low: u32;
     let high: u32;
