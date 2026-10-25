@@ -128,6 +128,188 @@ pub fn write(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     if args[4]!=0 && unsafe{address_space::copy_to_user_root(root,args[4],&copied.to_ne_bytes())}.is_err(){return STATUS_ACCESS_VIOLATION}
     STATUS_SUCCESS
 }
-pub fn free(_args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 { STATUS_NOT_IMPLEMENTED }
-pub fn protect(_args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 { STATUS_NOT_IMPLEMENTED }
-pub fn query(_args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 { STATUS_NOT_IMPLEMENTED }
+
+const STATUS_CONFLICTING_ADDRESSES: u64 = 0xC000_0018;
+const STATUS_INVALID_PAGE_PROTECTION: u64 = 0xC000_0045;
+const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xC000_0004;
+const MEM_DECOMMIT: u64 = 0x4000;
+const MEM_RELEASE: u64 = 0x8000;
+const PAGE_READONLY: u32 = 0x02;
+const PAGE_READWRITE: u32 = 0x04;
+const PAGE_EXECUTE: u32 = 0x10;
+const PAGE_EXECUTE_READ: u32 = 0x20;
+const PAGE_GUARD: u32 = 0x100;
+const PAGE_NOCACHE: u32 = 0x200;
+const PAGE_WRITECOMBINE: u32 = 0x400;
+
+fn read_u64(root: u64, address: u64) -> Result<u64, u64> {
+    let mut bytes = [0u8; 8];
+    unsafe { address_space::copy_from_user_root(root, address, &mut bytes) }
+        .map_err(|_| STATUS_ACCESS_VIOLATION)?;
+    Ok(u64::from_ne_bytes(bytes))
+}
+fn write_u64(root: u64, address: u64, value: u64) -> Result<(), u64> {
+    unsafe { address_space::copy_to_user_root(root, address, &value.to_ne_bytes()) }
+        .map_err(|_| STATUS_ACCESS_VIOLATION)
+}
+fn round_range(base: u64, size: u64) -> Result<(u64, u64), u64> {
+    if size == 0 { return Err(STATUS_INVALID_PARAMETER); }
+    let start = base & !(PAGE - 1);
+    let offset = base.checked_sub(start).ok_or(STATUS_INVALID_PARAMETER)?;
+    let covered = offset.checked_add(size).ok_or(STATUS_INVALID_PARAMETER)?;
+    let rounded = covered.checked_add(PAGE - 1).ok_or(STATUS_INVALID_PARAMETER)? & !(PAGE - 1);
+    let end = start.checked_add(rounded).ok_or(STATUS_INVALID_PARAMETER)?;
+    if start < USER_START || end > USER_END { return Err(STATUS_INVALID_PARAMETER); }
+    Ok((start, end))
+}
+fn nt_protection(value: u64) -> Result<(bool, bool, u32), u64> {
+    if value > u32::MAX as u64 { return Err(STATUS_INVALID_PAGE_PROTECTION); }
+    let value = value as u32;
+    if value & (PAGE_GUARD | PAGE_NOCACHE | PAGE_WRITECOMBINE) != 0 {
+        return Err(STATUS_INVALID_PAGE_PROTECTION);
+    }
+    let (write, execute) = match value {
+        PAGE_READONLY => (false, false),
+        PAGE_READWRITE => (true, false),
+        PAGE_EXECUTE => (false, true),
+        PAGE_EXECUTE_READ => (false, true),
+        _ => return Err(STATUS_INVALID_PAGE_PROTECTION),
+    };
+    Ok((write, execute, if execute { PAGE_EXECUTE_READ } else if write { PAGE_READWRITE } else { PAGE_READONLY }))
+}
+fn current_protection(writable: bool, executable: bool) -> u32 {
+    if executable { PAGE_EXECUTE_READ } else if writable { PAGE_READWRITE } else { PAGE_READONLY }
+}
+
+/// NT_FREE_VIRTUAL_MEMORY: only the current process is supported. MEM_RELEASE
+/// releases a complete reservation and requires RegionSize=0; MEM_DECOMMIT
+/// decommits a page-rounded subrange while preserving the reservation.
+pub fn free(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] != CURRENT_PROCESS { return STATUS_INVALID_HANDLE; }
+    if args[1] == 0 || args[2] == 0 { return STATUS_INVALID_PARAMETER; }
+    if args[3] != MEM_RELEASE && args[3] != MEM_DECOMMIT { return STATUS_INVALID_PARAMETER; }
+    let root = match current_root() { Ok(r) => r, Err(s) => return s };
+    let base = match read_u64(root, args[1]) { Ok(v) => v, Err(s) => return s };
+    let size = match read_u64(root, args[2]) { Ok(v) => v, Err(s) => return s };
+    let mut space = match attached(root) { Ok(s) => s, Err(s) => return s };
+    let (start, length) = if args[3] == MEM_RELEASE {
+        if size != 0 { return STATUS_INVALID_PARAMETER; }
+        let Some((region_start, region_end, allocation_base, _, _, allocated)) = space.query_region(base) else { return STATUS_INVALID_PARAMETER };
+        if !allocated || base != allocation_base { return STATUS_INVALID_PARAMETER; }
+        (region_start, region_end - region_start)
+    } else {
+        let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
+        let Some((region_start, region_end, _, _, _, allocated)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
+        if !allocated || start < region_start || end > region_end { return STATUS_INVALID_PARAMETER; }
+        (start, end - start)
+    };
+    if let Err(e) = space.decommit_demand_region(start, length, args[3] == MEM_RELEASE) { return status(e); }
+    if let Err(s) = write_u64(root, args[1], start) { return s; }
+    if let Err(s) = write_u64(root, args[2], if args[3] == MEM_RELEASE { 0 } else { length }) { return s; }
+    STATUS_SUCCESS
+}
+
+/// NT_PROTECT_VIRTUAL_MEMORY currently changes protection for a complete
+/// tracked reservation; partial-reservation metadata splitting is not yet supported.
+pub fn protect(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] != CURRENT_PROCESS { return STATUS_INVALID_HANDLE; }
+    if args[1] == 0 || args[2] == 0 { return STATUS_INVALID_PARAMETER; }
+    let (writable, executable, normalized) = match nt_protection(args[3]) { Ok(v) => v, Err(s) => return s };
+    if writable && executable { return STATUS_INVALID_PAGE_PROTECTION; }
+    let root = match current_root() { Ok(r) => r, Err(s) => return s };
+    let base = match read_u64(root, args[1]) { Ok(v) => v, Err(s) => return s };
+    let size = match read_u64(root, args[2]) { Ok(v) => v, Err(s) => return s };
+    let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
+    let mut space = match attached(root) { Ok(s) => s, Err(s) => return s };
+    let Some((region_start, region_end, _, old_write, old_exec, allocated)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
+    if !allocated || start != region_start || end != region_end { return STATUS_INVALID_PARAMETER; }
+    let old = current_protection(old_write, old_exec);
+    let mut changed = [0u64; 4096];
+    let mut changed_count = 0usize;
+    let mut va = start;
+    while va < end {
+        match space.translate_user(va, false) {
+            Ok(_) => {
+                if changed_count == changed.len() { return STATUS_INVALID_PARAMETER; }
+                if let Err(e) = unsafe { space.protect_user_page(va, writable, executable) } {
+                    for old_va in changed[..changed_count].iter().copied() {
+                        let _ = unsafe { space.protect_user_page(old_va, old_write, old_exec) };
+                    }
+                    return status(e);
+                }
+                changed[changed_count] = va;
+                changed_count += 1;
+            }
+            Err(VmError::NotMapped) => {},
+            Err(e) => return status(e),
+        }
+        va += PAGE;
+    }
+    if let Err(e) = space.set_demand_region_protection(start, end - start, writable, executable) {
+        for old_va in changed[..changed_count].iter().copied() {
+            let _ = unsafe { space.protect_user_page(old_va, old_write, old_exec) };
+        }
+        return status(e);
+    }
+    if let Err(s) = write_u64(root, args[1], start) { return s; }
+    if let Err(s) = write_u64(root, args[2], end - start) { return s; }
+    if args[4] != 0 {
+        let old_bytes = old.to_ne_bytes();
+        if unsafe { address_space::copy_to_user_root(root, args[4], &old_bytes) }.is_err() { return STATUS_ACCESS_VIOLATION; }
+    }
+    let _ = normalized;
+    STATUS_SUCCESS
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MemoryBasicInformation {
+    base_address: u64,
+    allocation_base: u64,
+    allocation_protect: u32,
+    alignment: u32,
+    region_size: u64,
+    state: u32,
+    protect: u32,
+    kind: u32,
+    padding: u32,
+}
+const MEM_COMMIT: u32 = 0x1000;
+const MEM_FREE: u32 = 0x10000;
+const MEM_PRIVATE: u32 = 0x20000;
+
+/// NT_QUERY_VIRTUAL_MEMORY (MemoryBasicInformation class). Returns the region
+/// containing the requested address, including the surrounding free range.
+pub fn query(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] != CURRENT_PROCESS { return STATUS_INVALID_HANDLE; }
+    if args[2] != 0 { return 0xC000_0003; } // STATUS_INVALID_INFO_CLASS
+    if args[3] == 0 { return STATUS_ACCESS_VIOLATION; }
+    if args[4] < core::mem::size_of::<MemoryBasicInformation>() as u64 {
+        if args[5] != 0 { let _ = write_u64(root_or_zero(), args[5], core::mem::size_of::<MemoryBasicInformation>() as u64); }
+        return STATUS_INFO_LENGTH_MISMATCH;
+    }
+    let root = match current_root() { Ok(r) => r, Err(s) => return s };
+    if args[1] < USER_START || args[1] >= USER_END { return STATUS_INVALID_PARAMETER; }
+    let space = match attached(root) { Ok(s) => s, Err(s) => return s };
+    let Some((start, end, allocation_base, writable, executable, allocated)) = space.query_region(args[1]) else { return STATUS_INVALID_PARAMETER };
+    let protection = current_protection(writable, executable);
+    let info = MemoryBasicInformation {
+        base_address: start,
+        allocation_base,
+        allocation_protect: if allocated { protection } else { 0 },
+        alignment: 0,
+        region_size: end - start,
+        state: if allocated { MEM_COMMIT } else { MEM_FREE },
+        protect: if allocated { protection } else { 0 },
+        kind: if allocated { MEM_PRIVATE } else { 0 },
+        padding: 0,
+    };
+    let bytes = unsafe { core::slice::from_raw_parts((&info as *const MemoryBasicInformation).cast::<u8>(), core::mem::size_of::<MemoryBasicInformation>()) };
+    if unsafe { address_space::copy_to_user_root(root, args[3], bytes) }.is_err() { return STATUS_ACCESS_VIOLATION; }
+    if args[5] != 0 {
+        if let Err(s) = write_u64(root, args[5], core::mem::size_of::<MemoryBasicInformation>() as u64) { return s; }
+    }
+    STATUS_SUCCESS
+}
+fn root_or_zero() -> u64 { current_root().unwrap_or(0) }
+
