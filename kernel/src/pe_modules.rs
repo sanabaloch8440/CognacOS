@@ -140,10 +140,10 @@ pub fn begin_unload(slot: usize, generation: u32) -> Result<Option<(u64, u32)>, 
         return Ok(None);
     }
     if s.entries.iter().any(|other| other.state != ModuleState::Empty && other.dependencies & (1u32 << slot) != 0) {
-        // The module's own reference is released, but dependency ownership keeps
-        // the mapping alive. A later unload after dependents detach can retry.
-        s.entries[slot].references = 0;
-        return Ok(None);
+        // Dependency edges each own a reference. Seeing a live dependency with
+        // only one total reference means metadata is inconsistent; do not lose
+        // the last unloadable reference or strand a zero-ref mapped image.
+        return Err(STATUS_RESOURCE_IN_USE);
     }
     s.entries[slot].references = 0;
     s.entries[slot].state = ModuleState::Unloading;
