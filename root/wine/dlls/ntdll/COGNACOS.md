@@ -111,4 +111,4 @@ The native DLL now exports `RtlGetCurrentPeb` using the x64 GS-relative PEB poin
 
 The TEB error/status routines are now exercised in ring 3: setting and reading
 LastErrorValue, then mapping `STATUS_INVALID_PARAMETER` into LastErrorValue while recording
-LastStatusValue. These tests are awaiting the current QEMU run.
+LastStatusValue. These tests passed in the boot-smoke phase of [Actions run 40184485240](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184485240).
