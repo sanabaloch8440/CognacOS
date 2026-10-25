@@ -187,7 +187,7 @@ unsafe fn make_registry_name(
         if path_len == 32760 { return Err(STATUS_INVALID_PARAMETER); }
     }
     let total = prefix.len().checked_add(path_len).ok_or(STATUS_INVALID_PARAMETER)?;
-    if total > storage.len() || total.checked_mul(2).unwrap_or(usize::MAX) > u16::MAX as usize {
+    if total >= storage.len() || total.checked_add(1).and_then(|n| n.checked_mul(2)).unwrap_or(usize::MAX) > u16::MAX as usize {
         return Err(STATUS_INVALID_PARAMETER);
     }
     storage[..prefix.len()].copy_from_slice(prefix);
