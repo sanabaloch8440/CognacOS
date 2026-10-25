@@ -18,6 +18,8 @@ pub const COGNAC_NT_YIELD_EXECUTION_ID: u32 = 0x46;
 pub const COGNAC_NT_QUERY_INFORMATION_PROCESS_ID: u32 = 0x19;
 pub const COGNAC_NT_QUERY_INFORMATION_THREAD_ID: u32 = 0x25;
 pub const COGNAC_NT_QUERY_SYSTEM_INFORMATION_ID: u32 = 0x36;
+pub const COGNAC_NT_OPEN_KEY_ID: u32 = 0x12;
+pub const COGNAC_NT_QUERY_VALUE_KEY_ID: u32 = 0x17;
 
 // Keep these as assembly entry points rather than Rust functions: the syscall
 // ABI requires the exact mov-r10-rcx, mov-eax-immediate, syscall, ret sequence.
@@ -65,6 +67,22 @@ NtQuerySystemInformation:
     movl $0x36, %eax
     syscall
     ret
+
+    .p2align 4
+    .globl NtOpenKey
+NtOpenKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x12, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtQueryValueKey
+NtQueryValueKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x17, %eax
+    syscall
+    ret
 "#
 );
 
@@ -95,5 +113,14 @@ unsafe extern "system" {
         system_information: *mut core::ffi::c_void,
         system_information_length: u32,
         return_length: *mut u32,
+    ) -> NTSTATUS;
+    pub fn NtOpenKey(key: *mut *mut core::ffi::c_void, access: u32, attributes: *const core::ffi::c_void) -> NTSTATUS;
+    pub fn NtQueryValueKey(
+        key: *mut core::ffi::c_void,
+        value_name: *const core::ffi::c_void,
+        information_class: u32,
+        information: *mut core::ffi::c_void,
+        information_length: u32,
+        result_length: *mut u32,
     ) -> NTSTATUS;
 }
