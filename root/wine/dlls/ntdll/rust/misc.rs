@@ -69,7 +69,7 @@ pub unsafe fn qsort_s(
     // and bounded stack use even for adversarial input.
     let bytes = base.cast::<u8>();
     unsafe {
-        let less = |i: usize, j: usize| cmp(context, bytes.add(i * size).cast(), bytes.add(j * size).cast()) < 0;
+        let less = |i: usize, j: usize| unsafe { cmp(context, bytes.add(i * size).cast(), bytes.add(j * size).cast()) < 0 };
         let sift_down = |mut root: usize, end: usize| {
             loop {
                 let child = root.saturating_mul(2).saturating_add(1);
@@ -77,13 +77,13 @@ pub unsafe fn qsort_s(
                 let mut larger = child;
                 if child + 1 < end && less(child, child + 1) { larger = child + 1; }
                 if !less(root, larger) { break; }
-                swap_bytes(bytes.add(root * size), bytes.add(larger * size), size);
+                unsafe { swap_bytes(bytes.add(root * size), bytes.add(larger * size), size); }
                 root = larger;
             }
         };
         for start in (0..(nmemb / 2)).rev() { sift_down(start, nmemb); }
         for end in (1..nmemb).rev() {
-            swap_bytes(bytes, bytes.add(end * size), size);
+            unsafe { swap_bytes(bytes, bytes.add(end * size), size); }
             sift_down(0, end);
         }
     }
