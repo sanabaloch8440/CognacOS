@@ -437,12 +437,36 @@ cognacos_tlb_ipi_stub:
     push r13
     push r14
     push r15
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_tlb_skip_user_save
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_save_current_user_xstate
+    mov rsp, rbx
+.Lcognacos_tlb_skip_user_save:
     mov rax, rsp
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
     call cognacos_tlb_ipi_handler
     mov rsp, [rsp + 8]
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_tlb_skip_user_restore
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lcognacos_tlb_skip_user_restore
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lcognacos_tlb_skip_user_restore:
     pop r15
     pop r14
     pop r13
@@ -752,12 +776,36 @@ cognacos_hal_ipi_stub:
     push r13
     push r14
     push r15
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_hal_skip_user_save
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_save_current_user_xstate
+    mov rsp, rbx
+.Lcognacos_hal_skip_user_save:
     mov rax, rsp
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
     call cognacos_hal_ipi_handler
     mov rsp, [rsp + 8]
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_hal_skip_user_restore
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lcognacos_hal_skip_user_restore
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lcognacos_hal_skip_user_restore:
     pop r15
     pop r14
     pop r13
@@ -794,12 +842,36 @@ cognacos_ke_broadcast_ipi_stub:
     push r13
     push r14
     push r15
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_broadcast_skip_user_save
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_save_current_user_xstate
+    mov rsp, rbx
+.Lcognacos_broadcast_skip_user_save:
     mov rax, rsp
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
     call cognacos_ke_broadcast_ipi_handler
     mov rsp, [rsp + 8]
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_broadcast_skip_user_restore
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lcognacos_broadcast_skip_user_restore
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lcognacos_broadcast_skip_user_restore:
     pop r15
     pop r14
     pop r13
@@ -836,12 +908,36 @@ cognacos_tsc_sync_stub:
     push r13
     push r14
     push r15
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_tsc_skip_user_save
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_save_current_user_xstate
+    mov rsp, rbx
+.Lcognacos_tsc_skip_user_save:
     mov rax, rsp
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
     call cognacos_tsc_sync_handler
     mov rsp, [rsp + 8]
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_tsc_skip_user_restore
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lcognacos_tsc_skip_user_restore
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lcognacos_tsc_skip_user_restore:
     pop r15
     pop r14
     pop r13
