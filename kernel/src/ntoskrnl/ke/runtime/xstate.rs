@@ -6,6 +6,7 @@
 //! architectural x87/SSE components; AVX/YMM, supervisor XSS state and dynamic
 //! permissioning (AMX/PKRU) remain disabled until the user-mode trap path and
 //! full feature-specific context formats are integrated.
+use super::*;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 const CPUID_XSAVE: u32 = 1 << 26;
@@ -26,7 +27,7 @@ const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
 
 static XSTATE_SUPPORTED_MASK: AtomicU64 = AtomicU64::new(0);
 static XSTATE_ENABLED_MASK: AtomicU64 = AtomicU64::new(0);
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub static COGNAC_XSTATE_ENABLED_MASK_ASM: AtomicU64 = AtomicU64::new(0);
 static XSTATE_AREA_SIZE: AtomicU32 = AtomicU32::new(0);
 static XSTATE_INITIALIZED: AtomicU32 = AtomicU32::new(0);
@@ -68,7 +69,7 @@ impl WindowsXStateConfiguration {
             extended_feature_disable_features: 0, all_non_large_feature_size: 0, max_sve_vector_length: 0, spare1: 0 }
     }
 }
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 #[repr(C)]
 pub struct CognacXStateConfiguration {
     pub supported_features: u64,
@@ -82,6 +83,15 @@ pub struct CognacXStateConfiguration {
     /// Standard-format offsets/sizes indexed by architectural XSTATE feature ID.
     pub feature_offsets: [u32; 64],
     pub feature_sizes: [u32; 64],
+}
+impl Default for CognacXStateConfiguration {
+    fn default() -> Self {
+        Self {
+            supported_features: 0, enabled_features: 0, area_size: 0,
+            standard_area_size: 0, xsaveopt: 0, xsavec: 0, xsaves: 0,
+            compaction_enabled: 0, feature_offsets: [0; 64], feature_sizes: [0; 64],
+        }
+    }
 }
 
 /// Check whether a logical processor can honor the already-published
@@ -246,7 +256,7 @@ pub unsafe fn ki_xstate_restore(area: *const u8, length: usize, mask: u64) -> i3
     STATUS_SUCCESS
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "win64" fn CognacQueryXStateConfiguration(out: *mut CognacXStateConfiguration) -> i32 {
     if out.is_null() { return STATUS_INVALID_PARAMETER; }
     if XSTATE_INITIALIZED.load(Ordering::Acquire) & 1 == 0 { return STATUS_NOT_SUPPORTED; }
@@ -254,12 +264,12 @@ pub extern "win64" fn CognacQueryXStateConfiguration(out: *mut CognacXStateConfi
     STATUS_SUCCESS
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn CognacSaveXState(area: *mut u8, length: usize, mask: u64) -> i32 {
     unsafe { ki_xstate_save(area, length, mask) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn CognacRestoreXState(area: *const u8, length: usize, mask: u64) -> i32 {
     unsafe { ki_xstate_restore(area, length, mask) }
 }
@@ -411,7 +421,7 @@ fn current_xstate_execution_context() -> Option<(usize, u64, u8)> {
 /// is opaque to drivers; this implementation stores a small signature in its
 /// caller-owned record and keeps the aligned XSAVE image in a kernel side table.
 /// Calls are bounded and must be properly nested on the same thread and IRQL.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut u8) -> i32 {
     if save.is_null() || (save as usize) & 7 != 0 || mask == 0 || !valid_xstate_save_record(save) {
         return STATUS_INVALID_PARAMETER;
@@ -466,7 +476,7 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
 
 /// Restore the most recent matching XSTATE_SAVE. Invalid, stale, cross-thread,
 /// wrong-IRQL, or out-of-order restores are rejected as no-ops.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn KeRestoreExtendedProcessorState(save: *mut u8) {
     if save.is_null() || (save as usize) & 7 != 0 || !valid_xstate_save_record(save) || !ki_xstate_enabled() { return; }
     let record = unsafe { (save as *const XStateSaveRecord).read() };
