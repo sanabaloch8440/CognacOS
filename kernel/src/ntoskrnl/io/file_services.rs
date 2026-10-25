@@ -55,12 +55,19 @@ pub fn register_static(path: &[u8], bytes: &'static [u8]) -> Result<(), i32> {
 
 /// Mount the boot-staged NTDLL as a read-only VFS file. Safe to call repeatedly.
 pub fn mount_boot_system_files() {
-    if INIT.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
-    if let Some(bytes) = crate::boot_ntdll_bytes() {
-        let _ = register_static(b"\\SystemRoot\\System32\\ntdll.dll", bytes);
-        let _ = register_static(b"\\Windows\\System32\\ntdll.dll", bytes);
+    match INIT.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => {
+            if let Some(bytes) = crate::boot_ntdll_bytes() {
+                let _ = register_static(b"\\SystemRoot\\System32\\ntdll.dll", bytes);
+                let _ = register_static(b"\\Windows\\System32\\ntdll.dll", bytes);
+            }
+            INIT.store(2, Ordering::Release);
+        }
+        Err(1) => {
+            while INIT.load(Ordering::Acquire) == 1 { core::hint::spin_loop(); }
+        }
+        Err(_) => {}
     }
-    INIT.store(2, Ordering::Release);
 }
 
 /// Open a registered file and return an opaque, generation-checked handle.
