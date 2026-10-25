@@ -1,5 +1,5 @@
 //! Ed25519 verification of the exact PE32+ kernel file before it is loaded.
-use ed25519_dalek::{Signature, VerifyingKey, Verifier};
+use ed25519_dalek::{Signature, VerifyingKey};
 
 pub fn verify_kernel_signature(image: &[u8]) -> bool {
     let (Some(public_key), Some(signature)) = (
