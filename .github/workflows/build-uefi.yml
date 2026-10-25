@@ -196,10 +196,56 @@ jobs:
         run: |
           digest="$(sha256sum build/cognacos-kernel.exe | cut -d' ' -f1)"
           echo "sha256=$digest" >> "$GITHUB_OUTPUT"
-      - name: Build Rust UEFI bootloader with pinned kernel digest
+      - name: Sign PE32+ kernel and prepare verification key
+        id: kernel-sign
+        shell: bash
+        env:
+          COGNACOS_SIGNING_PRIVATE_KEY: ${{ secrets.COGNACOS_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          if [[ -n "${COGNACOS_SIGNING_PRIVATE_KEY:-}" ]]; then
+            printf '%s' "$COGNACOS_SIGNING_PRIVATE_KEY" > build/cognacos-kernel-signing.pem
+            echo "Using repository-configured CognacOS signing key."
+          else
+            openssl genpkey -algorithm ED25519 -out build/cognacos-kernel-signing.pem
+            echo "No release signing secret configured; using an ephemeral CI-only key."
+          fi
+          openssl pkey -in build/cognacos-kernel-signing.pem -pubout -outform DER -out build/cognacos-kernel-public.der
+          openssl pkeyutl -sign -rawin -inkey build/cognacos-kernel-signing.pem -in build/cognacos-kernel.exe -out build/cognacos-kernel.sig
+          public_key="$(tail -c 32 build/cognacos-kernel-public.der | xxd -p -c 64)"
+          signature="$(xxd -p -c 128 build/cognacos-kernel.sig)"
+          test "${#public_key}" -eq 64
+          test "${#signature}" -eq 128
+          openssl pkeyutl -verify -rawin -pubin -inkey build/cognacos-kernel-public.der -in build/cognacos-kernel.exe -sigfile build/cognacos-kernel.sig
+          echo "public_key=$public_key" >> "$GITHUB_OUTPUT"
+          echo "signature=$signature" >> "$GITHUB_OUTPUT"
+          rm -f build/cognacos-kernel-signing.pem
+      - name: Build Rust UEFI bootloader with pinned kernel trust anchors
         env:
           COGNACOS_KERNEL_SHA256: ${{ steps.kernel-digest.outputs.sha256 }}
+          COGNACOS_KERNEL_SIGNATURE: ${{ steps.kernel-sign.outputs.signature }}
+          COGNACOS_SIGNING_PUBLIC_KEY: ${{ steps.kernel-sign.outputs.public_key }}
         run: cargo build --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi --release
+      - name: Optionally sign the UEFI bootloader for firmware Secure Boot
+        shell: bash
+        env:
+          COGNACOS_SECURE_BOOT_CERT: ${{ secrets.COGNACOS_SECURE_BOOT_CERT }}
+          COGNACOS_SECURE_BOOT_KEY: ${{ secrets.COGNACOS_SECURE_BOOT_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${COGNACOS_SECURE_BOOT_CERT:-}" && -n "${COGNACOS_SECURE_BOOT_KEY:-}" ]]; then
+            sudo apt-get update
+            sudo apt-get install -y sbsigntool
+            printf '%s' "$COGNACOS_SECURE_BOOT_CERT" > build/cognacos-secure-boot.crt
+            printf '%s' "$COGNACOS_SECURE_BOOT_KEY" > build/cognacos-secure-boot.key
+            sbsign --key build/cognacos-secure-boot.key --cert build/cognacos-secure-boot.crt --output build/cognacos-bootloader.signed.efi target/x86_64-unknown-uefi/release/cognacos-bootloader.efi
+            sbverify --cert build/cognacos-secure-boot.crt build/cognacos-bootloader.signed.efi
+            rm -f build/cognacos-secure-boot.key
+            echo "UEFI bootloader signed with configured Secure Boot certificate."
+          else
+            echo "WARNING: no firmware Secure Boot signing certificate configured; bootloader is unsigned and Secure Boot firmware will reject it."
+          fi
       - name: Validate source ELF and PE32+ kernel image
         run: |
           file target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe
@@ -212,7 +258,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y dosfstools mtools parted qemu-system-x86 ovmf
           mkdir -p build/EFI/BOOT build/kernel
-          cp target/x86_64-unknown-uefi/release/cognacos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
+          if [[ -f build/cognacos-bootloader.signed.efi ]]; then
+            cp build/cognacos-bootloader.signed.efi build/EFI/BOOT/BOOTX64.EFI
+          else
+            cp target/x86_64-unknown-uefi/release/cognacos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
+          fi
           cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
           cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
           truncate -s 256M build/cognacos-uefi.img
