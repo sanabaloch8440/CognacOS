@@ -121,6 +121,13 @@ const NT_STATUS_INVALID_PARAMETER: u64 = 0xC000_000D;
 const NT_STATUS_ACCESS_VIOLATION: u64 = 0xC000_0005;
 const NT_CURRENT_PROCESS: u64 = u64::MAX;
 const NT_CURRENT_THREAD: u64 = u64::MAX - 1;
+// Service IDs extracted from the exact AMD64 NTDLL reference image recorded in
+// root/wine/dlls/ntdll/LOAD_ISSUES.md. These ordinals are build-specific.
+pub const WIN_NT_CLOSE: u64 = 0x0f;
+pub const WIN_NT_QUERY_INFORMATION_PROCESS: u64 = 0x19;
+pub const WIN_NT_QUERY_INFORMATION_THREAD: u64 = 0x25;
+pub const WIN_NT_QUERY_SYSTEM_INFORMATION: u64 = 0x36;
+pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 const PROCESS_BASIC_INFORMATION_CLASS: u64 = 0;
 const THREAD_BASIC_INFORMATION_CLASS: u64 = 0;
 const SYSTEM_BASIC_INFORMATION_CLASS: u64 = 0;
@@ -171,6 +178,105 @@ cognacos_nt_syscall_entry:
     iretq
 "#);
 unsafe extern "C" { fn cognacos_nt_syscall_entry(); }
+
+#[repr(C, align(16))]
+struct WindowsSyscallCpuLocal {
+    user_rsp: u64,
+    kernel_rsp: u64,
+    stack: [u8; 16 * 1024],
+}
+impl WindowsSyscallCpuLocal {
+    const fn new() -> Self { Self { user_rsp: 0, kernel_rsp: 0, stack: [0; 16 * 1024] } }
+}
+static mut WINDOWS_SYSCALL_CPUS: [WindowsSyscallCpuLocal; crate::hal::MAX_CPUS] =
+    [const { WindowsSyscallCpuLocal::new() }; crate::hal::MAX_CPUS];
+
+global_asm!(r#"
+    .section .text
+    .global cognacos_windows_syscall_entry
+    .type cognacos_windows_syscall_entry, @function
+cognacos_windows_syscall_entry:
+    # SYSCALL does not switch RSP. FMASK has already disabled interrupts.
+    # swapgs exposes this CPU's private local area; GS:[0] saves user RSP.
+    swapgs
+    cld
+    mov qword ptr gs:[0], rsp
+    mov rsp, qword ptr gs:[8]
+    # Synthesize the privilege-return frame consumed by IRETQ.
+    push 0x23
+    push qword ptr gs:[0]
+    push r11
+    push 0x1b
+    push rcx
+    # Match the 15-register frame consumed by cognacos_nt_syscall_dispatch.
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rsp
+    mov rdi, rsp
+    and rsp, -16
+    call cognacos_windows_syscall_dispatch
+    mov rsp, rbx
+    mov qword ptr [rsp + 112], rax
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    swapgs
+    iretq
+"#);
+unsafe extern "C" { fn cognacos_windows_syscall_entry(); }
+
+/// Install the architectural Windows x64 SYSCALL entry on the current CPU.
+/// Uses a private stack per CPU, preserves the user TEB's GS base via SWAPGS,
+/// and returns through IRETQ rather than trusting SYSRET on unvalidated state.
+pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
+    if cpu >= crate::hal::MAX_CPUS { return Err(()); }
+    let local = unsafe { core::ptr::addr_of_mut!(WINDOWS_SYSCALL_CPUS[cpu]) };
+    unsafe { (*local).kernel_rsp = local as u64 + core::mem::size_of::<WindowsSyscallCpuLocal>() as u64; }
+    unsafe {
+        write_msr(0xC000_0101, 0); // IA32_GS_BASE: kernel has no active GS segment base
+        write_msr(0xC000_0102, local as u64); // IA32_KERNEL_GS_BASE: swapgs target
+        let efer = read_msr(0xC000_0080);
+        write_msr(0xC000_0080, efer | 1); // IA32_EFER.SCE
+        write_msr(0xC000_0081, (0x08u64) << 32); // IA32_STAR: ring-0 CS/SS selectors
+        write_msr(0xC000_0082, cognacos_windows_syscall_entry as usize as u64); // IA32_LSTAR
+        write_msr(0xC000_0084, 0x0000_0000_0004_7700); // IF, TF, DF, AC, NT, IOPL masked
+    }
+    Ok(())
+}
+unsafe fn read_msr(index: u32) -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe { core::arch::asm!("rdmsr", in("ecx") index, out("eax") low, out("edx") high, options(nostack, preserves_flags)); }
+    ((high as u64) << 32) | low as u64
+}
+unsafe fn write_msr(index: u32, value: u64) {
+    unsafe { core::arch::asm!("wrmsr", in("ecx") index, in("eax") value as u32, in("edx") (value >> 32) as u32, options(nostack, preserves_flags)); }
+}
 
 pub unsafe fn initialize_native_nt_syscalls() {
     unsafe { crate::ntoskrnl::ke::arch::install_user_gate(0x82, cognacos_nt_syscall_entry as usize as u64); }
@@ -266,6 +372,29 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_QUERY_SYSTEM_INFORMATION => nt_query_system(args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
     }
+}
+
+/// Windows x64 service-number entry. Numbers are from the exact reference
+/// NTDLL build noted above; every other number fails closed as NOT_IMPLEMENTED.
+#[unsafe(no_mangle)]
+pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
+    if frame.is_null() { return NT_STATUS_ACCESS_VIOLATION; }
+    let service = unsafe { *frame.add(14) };
+    let native = match service {
+        WIN_NT_CLOSE => NT_SYSCALL_CLOSE,
+        WIN_NT_YIELD_EXECUTION => NT_SYSCALL_YIELD_EXECUTION,
+        WIN_NT_QUERY_INFORMATION_PROCESS => NT_SYSCALL_QUERY_INFORMATION_PROCESS,
+        WIN_NT_QUERY_INFORMATION_THREAD => NT_SYSCALL_QUERY_INFORMATION_THREAD,
+        WIN_NT_QUERY_SYSTEM_INFORMATION => NT_SYSCALL_QUERY_SYSTEM_INFORMATION,
+        _ => {
+            CALL_COUNT.fetch_add(1, Ordering::AcqRel);
+            return NT_STATUS_NOT_IMPLEMENTED;
+        }
+    };
+    unsafe { *frame.add(14) = native; }
+    let status = cognacos_nt_syscall_dispatch(frame);
+    unsafe { *frame.add(14) = service; }
+    status
 }
 
 /// Decode the actual x64 syscall frame and copy stack arguments from the caller's
