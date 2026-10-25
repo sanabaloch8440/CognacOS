@@ -70,6 +70,27 @@ pub fn is_ram_physical_address(address: u64) -> bool {
     false
 }
 
+/// Return true only when the retained UEFI memory map explicitly marks this
+/// physical address as non-volatile (EFI_MEMORY_NV). Ordinary RAM and MMIO do
+/// not qualify, even if their addresses happen to be mapped.
+pub fn is_nonvolatile_physical_address(address: u64) -> bool {
+    const EFI_MEMORY_NV: u64 = 0x8000;
+    let base = FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire);
+    let entries = FIRMWARE_MAP_ENTRIES.load(core::sync::atomic::Ordering::Acquire);
+    let stride = FIRMWARE_MAP_STRIDE.load(core::sync::atomic::Ordering::Acquire);
+    if base == 0 || stride < core::mem::size_of::<MemoryDescriptor>() { return false; }
+    for i in 0..entries {
+        let Some(offset) = i.checked_mul(stride) else { return false; };
+        let Some(pointer) = (base as usize).checked_add(offset) else { return false; };
+        let d = unsafe { ptr::read_unaligned(pointer as *const MemoryDescriptor) };
+        if d.number_of_pages == 0 || d.attributes & EFI_MEMORY_NV == 0 { continue; }
+        let Some(bytes) = d.number_of_pages.checked_mul(PAGE_SIZE) else { continue; };
+        let Some(end) = d.physical_start.checked_add(bytes) else { continue; };
+        if address >= d.physical_start && address < end { return true; }
+    }
+    false
+}
+
 /// Convert a high physical address to its canonical direct-map virtual address.
 /// Mapping is demand-created on first access; only UEFI-described RAM is eligible.
 pub fn direct_map_address(physical_address: u64) -> Option<u64> {
