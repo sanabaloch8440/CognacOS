@@ -41,9 +41,15 @@ static volatile LONG_PTR syscall_numbers[SYSCALL_COUNT] = {
 };
 static volatile LONG configured_mask = (1L << SYSCALL_COUNT) - 1;
 #else
-/* CognacOS loader supplies service numbers through an explicit ABI. */
-static volatile LONG_PTR syscall_numbers[SYSCALL_COUNT];
-static volatile LONG configured_mask;
+/* Stable CognacOS-native service IDs; the loader may replace the complete table. */
+static volatile LONG_PTR syscall_numbers[SYSCALL_COUNT] = {
+    0x100, /* NtClose */
+    0x101, /* NtYieldExecution */
+    0x102, /* NtQueryInformationProcess */
+    0x103, /* NtQueryInformationThread */
+    0x104  /* NtQuerySystemInformation */
+};
+static volatile LONG configured_mask = (1L << SYSCALL_COUNT) - 1;
 #endif
 
 /*
