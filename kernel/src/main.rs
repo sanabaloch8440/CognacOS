@@ -2,7 +2,7 @@
 #![no_main]
 
 pub(crate) use ntoskrnl::mm::{kernel_space as kernel_vm, pagefile, physical as memory};
-pub(crate) use ntoskrnl::se::security;
+pub(crate) use ntoskrnl::se::runtime as security;
 mod user;
 mod pe;
 mod process;
