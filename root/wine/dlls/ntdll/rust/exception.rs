@@ -252,7 +252,8 @@ struct WindowsXStateConfiguration {
     enabled_user_visible_supervisor_features: u64,
     extended_feature_disable_features: u64,
     all_non_large_feature_size: u32,
-    spare: u32,
+    max_sve_vector_length: u16,
+    spare1: u16,
 }
 /// Lazy NTDLL bootstrap from the read-only page installed by
 /// process::initialize. This keeps feature reporting tied to the kernel's
@@ -745,7 +746,7 @@ mod xstate_context_layout_tests {
             features: [WindowsXStateFeature { offset: 0, size: 0 }; 64],
             enabled_supervisor_features: 0, aligned_features: 0, all_feature_size: 832,
             all_features: [0; 64], enabled_user_visible_supervisor_features: 0,
-            extended_feature_disable_features: 0, all_non_large_feature_size: 832, spare: 0,
+            extended_feature_disable_features: 0, all_non_large_feature_size: 832, max_sve_vector_length: 0, spare1: 0,
         };
         cfg.features[2] = WindowsXStateFeature { offset: 576, size: 256 };
         let mut length = 0;
@@ -767,7 +768,7 @@ mod xstate_context_layout_tests {
             features: [WindowsXStateFeature { offset: 0, size: 0 }; 64],
             enabled_supervisor_features: 0, aligned_features: 0, all_feature_size: 832,
             all_features: [0; 64], enabled_user_visible_supervisor_features: 0,
-            extended_feature_disable_features: 0, all_non_large_feature_size: 832, spare: 0,
+            extended_feature_disable_features: 0, all_non_large_feature_size: 832, max_sve_vector_length: 0, spare1: 0,
         };
         cfg.features[2] = WindowsXStateFeature { offset: 576, size: 256 };
         let mut length = 0;
