@@ -136,11 +136,10 @@ independent, so the linker omitted `.reloc`; the image base is outside the
 CognacOS user range and the loader correctly refused to move an image that
 advertised no relocation records.
 
-**Fix committed:** `cognac_native.c` now exports an image-anchor function pointer
-initialized to `DllMain`. That creates a real DIR64 base relocation, allowing
-the loader to relocate the native DLL without weakening the loader's
-`RelocationsRequired` rule. The next QEMU run must confirm the relocation
-directory is present and that mapping advances beyond this failure.
+**Fix committed and QEMU-verified:** `cognac_native.c` exports an image-anchor
+function pointer initialized to `DllMain`, producing a DIR64 relocation. The
+native DLL subsequently mapped and registered its exports in QEMU without
+weakening the loader's `RelocationsRequired` rule.
 
 ### NTDLL-LOAD-013 — smoke caller wrote its fifth argument above the stack
 
@@ -149,10 +148,9 @@ and DllMain returned. The smoke trampoline then faulted writing the fifth
 argument at `[RSP+0x20]`: it reserved only the 32-byte shadow space, placing
 that slot at the unmapped top of the user stack.
 
-**Fix committed:** the test trampoline reserves 0x30 bytes (32-byte shadow
-space plus the fifth argument slot), preserving 16-byte alignment before calls.
-The next QEMU run must get past the process query and verify the complete
-wrapper sequence.
+**Fix committed and QEMU-verified:** the test trampoline reserves 0x30 bytes
+(32-byte shadow space plus the fifth argument slot), preserving 16-byte
+alignment before calls. The native wrapper sequence now passes in QEMU.
 
 ### NTDLL-LOAD-014 — smoke accounting ignored native NT syscalls
 
@@ -162,10 +160,11 @@ reported failure because the shared dispatch counter increased only once for
 the legacy process-exit call. Native NT dispatches were not incrementing that
 counter, so the validation condition could not see them.
 
-**Fix committed:** `cognacos_nt_syscall_dispatch` now increments the shared
-dispatch counter for each native NT interrupt. The detailed failure exit codes
-and final status log are retained to catch any actual wrapper failure in the
-next QEMU run.
+**Fix committed and QEMU-verified:** `cognacos_nt_syscall_dispatch` increments
+the shared dispatch counter for each native NT interrupt. The ring-3 smoke
+validated table configuration, both five-argument queries, the system query,
+yield, and a zero process exit in QEMU run
+[40176341592](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176341592).
 
 ### NTDLL-LOAD-015 — yield switched from a bootstrap process with no ETHREAD
 
