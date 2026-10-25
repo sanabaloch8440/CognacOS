@@ -46,6 +46,7 @@ check: $(OUTPUT)
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlIsZeroMemory'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlGetCurrentPeb'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'LdrGetProcedureAddress'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'LdrGetDllHandle'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlGetLastWin32Error'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlSetLastWin32Error'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlGetLastNtStatus'
