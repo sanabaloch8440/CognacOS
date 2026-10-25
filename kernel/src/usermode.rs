@@ -165,7 +165,6 @@ fn cleanup_process(space:&mut AddressSpace,image_base:u64,pid:u64)->Result<(),Vm
         if snapshot.state==crate::process::ProcessState::Running {
             let _=crate::process::mark_exited(pid,u64::MAX-1);
         }
-        let _=crate::process::reap(pid);
     }
     let mut modules=[crate::winabi::ModuleInfo::EMPTY;32];
     let count=crate::winabi::module_infos(&mut modules);
@@ -174,7 +173,10 @@ fn cleanup_process(space:&mut AddressSpace,image_base:u64,pid:u64)->Result<(),Vm
         crate::winabi::unregister_module(&module.name[..module.len]);
     }
     crate::pe_runtime::unregister_image(image_base);
+    // Reap only after destroy detaches the process address-space root. Calling
+    // reap first always fails its root==0 precondition and leaked the EPROCESS.
     unsafe{space.destroy()?;}
+    let _=crate::process::reap(pid);
     Ok(())
 }
 
