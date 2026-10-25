@@ -181,3 +181,15 @@ scheduler state.
 smoke still verifies the wrapper returns success, but does not attempt an
 invalid context switch. The next QEMU run must confirm the timer/DPC startup
 path continues after the NTDLL test.
+
+### NTDLL-LOAD-016 — smoke-process cleanup attempted reap before address-space detach
+
+**Observed during lifecycle review:** `cleanup_process` called `process::reap`
+before `AddressSpace::destroy`. The process reaper deliberately refuses to
+recycle an EPROCESS while its address-space root is nonzero, so the call always
+failed and each ring-3 loader smoke leaked a process-table slot.
+
+**Fix committed:** cleanup now destroys/detaches the address space first, then
+retries process reaping. This applies to the NTDLL test and the existing PE
+fixture tests. QEMU should verify subsequent process startup and timer setup
+continue after repeated load/exit cycles.
