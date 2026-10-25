@@ -697,7 +697,7 @@ pub unsafe extern "system" fn RtlCreateProcessParametersEx(
     let align = core::mem::size_of::<usize>();
     let header = core::mem::size_of::<RTL_USER_PROCESS_PARAMETERS>();
     let mut size = header;
-    for item in strings { size = size.saturating_add(rounded(item.MaximumLength as usize, align)); }
+    for item in strings { size = size.saturating_add(rounded(unsafe { (*item).MaximumLength } as usize, align)); }
     let env_units = if environment.is_null() { 0 } else { env_length(environment) };
     size = size.saturating_add(rounded(env_units * 2, align));
     let params = alloc(size, true).cast::<RTL_USER_PROCESS_PARAMETERS>();

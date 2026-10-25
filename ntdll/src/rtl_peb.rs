@@ -39,6 +39,13 @@ extern "system" {
     fn NtYieldExecution() -> NTSTATUS;
 }
 
+#[inline]
+unsafe fn current_thread_id() -> HANDLE {
+    let tid: HANDLE;
+    unsafe { core::arch::asm!("mov {}, gs:[0x48]", out(reg) tid, options(nostack, preserves_flags, readonly)) };
+    tid
+}
+
 /// Read the current thread's TEB from the Windows x64 GS segment.
 ///
 /// # Safety

@@ -109,7 +109,7 @@ pub unsafe extern "system" fn RtlInt64ToUnicodeString(
     let descriptor = unsafe { &mut *destination };
     descriptor.Length = required_bytes as USHORT;
 
-    if required_bytes + 2 > descriptor.MaximumLength { return STATUS_BUFFER_OVERFLOW; }
+    if required_bytes + 2 > descriptor.MaximumLength as usize { return STATUS_BUFFER_OVERFLOW; }
     if descriptor.Buffer.is_null() { return STATUS_ACCESS_VIOLATION; }
 
     // SAFETY: MaximumLength has room for the digits plus a UTF-16 NUL.

@@ -310,8 +310,8 @@ mod tests {
             RtlRbInsertNodeEx(&mut tree, tree.Root, 0, &mut n[1]);
             let root = tree.Root;
             RtlRbInsertNodeEx(&mut tree, root, 1, &mut n[2]);
-            RtlRbInsertNodeEx(&mut tree, n[1].as_mut_ptr(), 0, &mut n[3]);
-            RtlRbInsertNodeEx(&mut tree, n[2].as_mut_ptr(), 1, &mut n[4]);
+            RtlRbInsertNodeEx(&mut tree, &mut n[1], 0, &mut n[3]);
+            RtlRbInsertNodeEx(&mut tree, &mut n[2], 1, &mut n[4]);
             assert!(!is_red(tree.Root));
             assert_eq!(tree.Min, &mut n[3] as PRTL_BALANCED_NODE);
         }

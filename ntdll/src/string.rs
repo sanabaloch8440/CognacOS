@@ -447,7 +447,7 @@ mod tests {
         unsafe { memcpy(bytes.as_mut_ptr().add(1).cast(), bytes.as_ptr().cast(), 5); }
         assert_eq!(&bytes, b"aabcde");
         assert_eq!(unsafe { memcmp(b"\xff\0".as_ptr().cast(), b"\x01\0".as_ptr().cast(), 1) }, 1);
-        assert_eq!(unsafe { memchr(bytes.as_ptr().cast(), b'c' as i32, bytes.len()) }, bytes.as_mut_ptr().add(3).cast());
+        assert_eq!(unsafe { memchr(bytes.as_ptr().cast(), b'c' as i32, bytes.len()) }, unsafe { bytes.as_mut_ptr().add(3).cast() });
     }
 
     #[test]

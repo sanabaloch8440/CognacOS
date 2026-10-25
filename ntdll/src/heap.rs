@@ -96,7 +96,7 @@ pub unsafe extern "system" fn RtlSetHeapInformation(
     if size < core::mem::size_of::<ULONG>() {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    if !unsafe { is_bootstrap_heap(handle) } {
+    if !unsafe { is_valid_heap(handle) } {
         return STATUS_INVALID_HANDLE;
     }
     if info.is_null() {

@@ -131,7 +131,7 @@ pub unsafe fn bsearch_s(
         let Some(off) = offset(mid, size) else { return ptr::null_mut() };
         let element = unsafe { bytes.add(off).cast::<c_void>() };
         let result = unsafe { cmp(ctx, key, element) };
-        if result == 0 { return element; }
+        if result == 0 { return element.cast_mut(); }
         if result < 0 { high = mid; } else { low = mid + 1; }
     }
     ptr::null_mut()
@@ -175,7 +175,7 @@ pub unsafe fn _lfind(
     for i in 0..count {
         let Some(off) = offset(i, size) else { return ptr::null_mut() };
         let item = unsafe { bytes.add(off).cast::<c_void>() };
-        if unsafe { cmp(key, item) } == 0 { return item; }
+        if unsafe { cmp(key, item) } == 0 { return item.cast_mut(); }
     }
     ptr::null_mut()
 }
@@ -283,7 +283,7 @@ mod tests {
         let values = [-8i32, -1, 3, 9, 20];
         let key = 9i32;
         let found = unsafe { bsearch((&key as *const i32).cast(), values.as_ptr().cast(), values.len(), 4, Some(cmp_i32)) };
-        assert_eq!(found.cast::<i32>().read(), 9);
+        assert_eq!(unsafe { found.cast::<i32>().read() }, 9);
         let absent = 10i32;
         assert!(unsafe { bsearch((&absent as *const i32).cast(), values.as_ptr().cast(), values.len(), 4, Some(cmp_i32)) }.is_null());
         assert!(unsafe { bsearch((&key as *const i32).cast(), values.as_ptr().cast(), 0, 4, Some(cmp_i32)) }.is_null());
@@ -296,7 +296,7 @@ mod tests {
         let key = 5i32;
         let count = values.len() as u32;
         let found = unsafe { _lfind((&key as *const i32).cast(), values.as_ptr().cast(), &count, 4, Some(cmp_i32)) };
-        assert_eq!(found.cast::<i32>().read(), 5);
+        assert_eq!(unsafe { found.cast::<i32>().read() }, 5);
         let missing = 99i32;
         assert!(unsafe { _lfind((&missing as *const i32).cast(), values.as_ptr().cast(), &count, 4, Some(cmp_i32)) }.is_null());
     }
