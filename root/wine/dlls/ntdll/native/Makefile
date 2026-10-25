@@ -10,13 +10,14 @@ LDFLAGS := -shared -nostdlib -Wl,--subsystem,windows -Wl,--dynamicbase -Wl,--nxc
 .PHONY: all check clean
 all: $(OUTPUT)
 
-$(OUTPUT): ntdll_native.c ntdll_native.def syscall_x86_64.S
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ntdll_native.c syscall_x86_64.S ntdll_native.def -lkernel32
+$(OUTPUT): ntdll_native.c rtl_native.c ntdll_native.def syscall_x86_64.S
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ ntdll_native.c rtl_native.c syscall_x86_64.S ntdll_native.def
 
 check: $(OUTPUT)
 	$(OBJDUMP) -f $(OUTPUT) | grep -q 'pei-x86-64'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'DLL'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtClose'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlCompareMemory'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'CognacNtdllConfigureSyscalls'
 
 clean:
