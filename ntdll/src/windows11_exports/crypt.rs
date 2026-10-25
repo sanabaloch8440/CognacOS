@@ -21,13 +21,14 @@ const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC000_0002u32 as i32;
 const RTL_HASH_ALLOCATED_HEADER: ULONG = 1;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct LIST_ENTRY {
     pub Flink: *mut LIST_ENTRY,
     pub Blink: *mut LIST_ENTRY,
 }
 
 #[repr(C)]
+#[derive(Debug)]
 pub struct RTL_DYNAMIC_HASH_TABLE_ENTRY {
     pub Linkage: LIST_ENTRY,
     pub Signature: ULONG_PTR,
