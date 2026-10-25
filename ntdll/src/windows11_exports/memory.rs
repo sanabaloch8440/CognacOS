@@ -455,13 +455,21 @@ mod tests {
     }
 
     #[test]
-    fn zw_memory_aliases_fail_closed_until_kernel_bridge_exists() {
+    fn memory_basic_information_matches_windows_x64_layout() {
+        assert_eq!(core::mem::size_of::<MEMORY_BASIC_INFORMATION>(), 48);
+        assert_eq!(core::mem::offset_of!(MEMORY_BASIC_INFORMATION, region_size), 24);
+        assert_eq!(core::mem::offset_of!(MEMORY_BASIC_INFORMATION, state), 32);
+        assert_eq!(core::mem::offset_of!(MEMORY_BASIC_INFORMATION, kind), 40);
+    }
+
+    #[test]
+    fn unsupported_vm_operations_fail_explicitly() {
         assert_eq!(
-            unsafe { ZwAllocateVirtualMemory(core::ptr::null_mut(), core::ptr::null_mut(), 0, core::ptr::null_mut(), 0, 0) },
+            unsafe { NtFlushVirtualMemory(core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut()) },
             STATUS_NOT_IMPLEMENTED
         );
         assert_eq!(
-            unsafe { ZwQueryVirtualMemory(core::ptr::null_mut(), core::ptr::null_mut(), 0, core::ptr::null_mut(), 0, core::ptr::null_mut()) },
+            unsafe { NtLockVirtualMemory(core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut(), 0) },
             STATUS_NOT_IMPLEMENTED
         );
     }
