@@ -21,6 +21,10 @@
 - [Security Reference Monitor comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md) — Se coverage and known semantic gaps.
 - [Boot security guide](docs/boot-security.md) — kernel signature verification, optional UEFI Secure Boot, TPM 2.0 measurement, and release-key setup.
 
+## Native virtual-memory syscall status
+
+The kernel now has a first current-process-only native VM bridge: `NtAllocateVirtualMemory` accepts the supported reserve+commit path and registers a demand-zero region, while `NtReadVirtualMemory` and `NtWriteVirtualMemory` use checked address-space copies. The native dispatcher recognizes these routines and learns their service numbers from the staged AMD64 NTDLL export stubs. Cross-process handles are rejected until process-object references and `PROCESS_VM_*` access checks are implemented. `NtFreeVirtualMemory`, `NtProtectVirtualMemory`, and `NtQueryVirtualMemory` are wired but still return `STATUS_NOT_IMPLEMENTED`; allocation is deliberately restricted to supported protection modes and a bounded region size. This is an incremental kernel integration, not complete Windows 11 VM compatibility.
+
 ## Current foundations
 
 | Area | Implemented foundation | Important gaps |
