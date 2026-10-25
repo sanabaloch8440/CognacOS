@@ -292,6 +292,14 @@ pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
         write_msr(0xC000_0081, (0x08u64) << 32); // IA32_STAR: ring-0 CS/SS selectors
         write_msr(0xC000_0082, cognacos_windows_syscall_entry as usize as u64); // IA32_LSTAR
         write_msr(0xC000_0084, 0x0000_0000_0004_7700); // IF, TF, DF, AC, NT, IOPL masked
+        // Fail during boot instead of letting a CPL3 SYSCALL fault silently.
+        if read_msr(0xC000_0080) & 1 == 0
+            || read_msr(0xC000_0081) != 0x0000_0008_0000_0000
+            || read_msr(0xC000_0082) != cognacos_windows_syscall_entry as usize as u64
+            || read_msr(0xC000_0084) != 0x0000_0000_0004_7700
+            || read_msr(0xC000_0101) != 0
+            || read_msr(0xC000_0102) != local as u64
+        { return Err(()); }
     }
     Ok(())
 }
