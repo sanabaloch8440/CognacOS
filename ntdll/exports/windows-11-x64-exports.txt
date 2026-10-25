@@ -1,8 +1,8 @@
-# Windows 11 x64 ntdll.dll named export inventory
-# Reference: WinExports data/exports/nt100_x64_26200/ntdll.dll.json
-# File version: 10.0.26100.7920 (AMD64); Windows 11 x64 build family 26100/26200 export snapshot
-# Generated from the checked-in reference data; this file is committed source input, not a workflow artifact.
-# One export name per line. Ordinal-only exports are intentionally omitted from this name-resolution list.
+# Windows 11 x64 ntdll.dll named exports
+# Reference: https://github.com/learn-more/winexports/tree/master/data/exports/nt100_x64_26200/ntdll.dll.json
+# Reference dataset: Windows 11 x64 build family 26200; PE metadata file version 10.0.26100.7920 (AMD64).
+# Named exports only: 2516 entries. Ordinal-only slots are not represented.
+# Inventory only; this is not an ABI-signature database.
 __C_specific_handler
 __chkstk
 __isascii
