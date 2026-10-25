@@ -85,6 +85,9 @@ pub struct RTL_USER_PROCESS_PARAMETERS {
 }
 
 extern "system" {
+    fn RtlGetCurrentPeb() -> *mut c_void;
+    fn RtlAcquirePebLock();
+    fn RtlReleasePebLock();
     fn GetProcessHeap() -> HANDLE;
     fn RtlAllocateHeap(heap: HANDLE, flags: ULONG, size: SIZE_T) -> *mut c_void;
     fn RtlFreeHeap(heap: HANDLE, flags: ULONG, memory: *mut c_void) -> BOOLEAN;
@@ -92,6 +95,19 @@ extern "system" {
         first: *const WCHAR, first_len: SIZE_T,
         second: *const WCHAR, second_len: SIZE_T, case_insensitive: BOOLEAN,
     ) -> i32;
+}
+
+
+
+/// Locate PEB.ProcessParameters.Environment using documented x64 ABI offsets.
+/// Concurrent access to the returned slot requires PEB.FastPebLock.
+#[inline]
+unsafe fn current_environment_slot() -> *mut *mut WCHAR {
+    let peb = RtlGetCurrentPeb().cast::<u8>();
+    if peb.is_null() { return null_mut(); }
+    let params = core::ptr::read_unaligned(peb.add(0x20).cast::<*mut u8>());
+    if params.is_null() { return null_mut(); }
+    params.add(0x80).cast::<*mut WCHAR>()
 }
 
 #[inline]
@@ -163,9 +179,23 @@ pub unsafe extern "system" fn RtlCreateEnvironment(
     if environment.is_null() { return STATUS_INVALID_PARAMETER; }
     *environment = null_mut();
     if inherit != 0 {
-        // Do not silently fabricate an inherited environment without a native
-        // current-process environment accessor.
-        return STATUS_INVALID_PARAMETER;
+        RtlAcquirePebLock();
+        let slot = current_environment_slot();
+        if slot.is_null() || (*slot).is_null() {
+            RtlReleasePebLock();
+            return STATUS_INVALID_PARAMETER;
+        }
+        let source = *slot;
+        let units = env_length(source);
+        let copy = alloc(units.saturating_mul(core::mem::size_of::<WCHAR>()), false).cast::<WCHAR>();
+        if copy.is_null() {
+            RtlReleasePebLock();
+            return STATUS_NO_MEMORY;
+        }
+        core::ptr::copy_nonoverlapping(source, copy, units);
+        RtlReleasePebLock();
+        *environment = copy;
+        return STATUS_SUCCESS;
     }
     let p = alloc(core::mem::size_of::<WCHAR>(), true).cast::<WCHAR>();
     if p.is_null() { return STATUS_NO_MEMORY; }
@@ -177,6 +207,42 @@ pub unsafe extern "system" fn RtlCreateEnvironment(
 pub unsafe extern "system" fn RtlDestroyEnvironment(environment: *mut WCHAR) -> NTSTATUS {
     free(environment.cast::<c_void>());
     STATUS_SUCCESS
+}
+
+
+
+/// Replace the current process environment while holding PEB.FastPebLock.
+/// When old_environment is null, the previous block is destroyed after swap.
+#[no_mangle]
+pub unsafe extern "system" fn RtlSetCurrentEnvironment(
+    new_environment: *mut WCHAR,
+    old_environment: *mut *mut WCHAR,
+) {
+    RtlAcquirePebLock();
+    let slot = current_environment_slot();
+    if slot.is_null() {
+        RtlReleasePebLock();
+        return;
+    }
+    let previous = *slot;
+    *slot = new_environment;
+    let peb = RtlGetCurrentPeb().cast::<u8>();
+    let params = core::ptr::read_unaligned(peb.add(0x20).cast::<*mut u8>());
+    if !params.is_null() {
+        // RTL_USER_PROCESS_PARAMETERS.EnvironmentSize is at x64 offset 0x3f0.
+        let size_slot = params.add(0x3f0).cast::<*mut usize>();
+        if new_environment.is_null() {
+            *size_slot = 0;
+        } else {
+            *size_slot = env_length(new_environment).saturating_mul(core::mem::size_of::<WCHAR>());
+        }
+    }
+    RtlReleasePebLock();
+    if !old_environment.is_null() {
+        *old_environment = previous;
+    } else if !previous.is_null() {
+        let _ = RtlDestroyEnvironment(previous);
+    }
 }
 
 /// RtlQueryEnvironmentVariable_U. For now, callers must pass an explicit
