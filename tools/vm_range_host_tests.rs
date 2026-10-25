@@ -6,12 +6,17 @@ mod vm_range;
 fn rejects_kernel_and_lower_non_user_addresses() {
     assert!(!vm_range::is_user_range(0, 1));
     assert!(!vm_range::is_user_range(vm_range::USER_START - 1, 1));
+    assert!(!vm_range::is_user_range(vm_range::KUSER_SHARED_DATA_ADDRESS - 1, 1));
+    assert!(!vm_range::is_user_range(vm_range::KUSER_SHARED_DATA_ADDRESS + vm_range::KUSER_SHARED_DATA_SIZE, 1));
     assert!(!vm_range::is_user_range(vm_range::USER_END, 1));
     assert!(!vm_range::is_user_range(u64::MAX, 1));
 }
 
 #[test]
 fn accepts_valid_ranges_and_exact_upper_boundary() {
+    assert!(vm_range::is_user_range(vm_range::KUSER_SHARED_DATA_ADDRESS, 1));
+    assert!(vm_range::is_user_range(vm_range::KUSER_SHARED_DATA_ADDRESS, vm_range::KUSER_SHARED_DATA_SIZE));
+    assert!(!vm_range::is_user_range(vm_range::KUSER_SHARED_DATA_ADDRESS, vm_range::KUSER_SHARED_DATA_SIZE + 1));
     assert!(vm_range::is_user_range(vm_range::USER_START, 1));
     assert!(vm_range::is_user_range(vm_range::USER_START, 0));
     assert!(vm_range::is_user_range(vm_range::USER_END - 1, 1));
@@ -28,5 +33,6 @@ fn rejects_overflow_and_ranges_crossing_user_limit() {
 #[test]
 fn zero_length_still_requires_an_in_range_pointer() {
     assert!(!vm_range::is_user_range(vm_range::USER_START - 1, 0));
+    assert!(vm_range::is_user_range(vm_range::KUSER_SHARED_DATA_ADDRESS, 0));
     assert!(!vm_range::is_user_range(vm_range::USER_END, 0));
 }
