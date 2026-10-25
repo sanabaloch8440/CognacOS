@@ -343,8 +343,17 @@ pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
             // The page allocator's identity-mapped physical pages are present
             // in every address space as supervisor-only memory. Keep syscall
             // stacks out of the image BSS, whose tail is not guaranteed mapped.
-            let page = crate::memory::allocate_page().map_err(|_| ())?;
-            if page == 0 || page >= 0x1_0000_0000 { return Err(()); }
+            let page = match crate::memory::allocate_page() {
+                Ok(page) => page,
+                Err(_) => {
+                    crate::serial_write(b"FATAL: no low identity-mapped page for Windows syscall stack.\r\n");
+                    return Err(());
+                }
+            };
+            if page == 0 || page >= 0x1_0000_0000 {
+                crate::serial_write(b"FATAL: Windows syscall stack page outside low identity map.\r\n");
+                return Err(());
+            }
             (*local).stack_page = page;
         }
         (*local).kernel_rsp = (*local).stack_page + 4096;
@@ -358,13 +367,30 @@ pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
         write_msr(0xC000_0082, cognacos_windows_syscall_entry as usize as u64); // IA32_LSTAR
         write_msr(0xC000_0084, 0x0000_0000_0004_7700); // IF, TF, DF, AC, NT, IOPL masked
         // Fail during boot instead of letting a CPL3 SYSCALL fault silently.
-        if read_msr(0xC000_0080) & 1 == 0
-            || read_msr(0xC000_0081) != 0x0000_0008_0000_0000
-            || read_msr(0xC000_0082) != cognacos_windows_syscall_entry as usize as u64
-            || read_msr(0xC000_0084) != 0x0000_0000_0004_7700
-            || read_msr(0xC000_0101) != 0
-            || read_msr(0xC000_0102) != local as u64
-        { return Err(()); }
+        if read_msr(0xC000_0080) & 1 == 0 {
+            crate::serial_write(b"FATAL: IA32_EFER.SCE did not latch.\r\n");
+            return Err(());
+        }
+        if read_msr(0xC000_0081) != 0x0000_0008_0000_0000 {
+            crate::serial_write(b"FATAL: IA32_STAR selector setup did not latch.\r\n");
+            return Err(());
+        }
+        if read_msr(0xC000_0082) != cognacos_windows_syscall_entry as usize as u64 {
+            crate::serial_write(b"FATAL: IA32_LSTAR entry address did not latch.\r\n");
+            return Err(());
+        }
+        if read_msr(0xC000_0084) != 0x0000_0000_0004_7700 {
+            crate::serial_write(b"FATAL: IA32_FMASK setup did not latch.\r\n");
+            return Err(());
+        }
+        if read_msr(0xC000_0101) != 0 {
+            crate::serial_write(b"FATAL: IA32_GS_BASE was not reset.\r\n");
+            return Err(());
+        }
+        if read_msr(0xC000_0102) != local as u64 {
+            crate::serial_write(b"FATAL: IA32_KERNEL_GS_BASE did not latch.\r\n");
+            return Err(());
+        }
     }
     Ok(())
 }
