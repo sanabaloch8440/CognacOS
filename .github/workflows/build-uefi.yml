@@ -217,7 +217,7 @@ jobs:
           signature="$(xxd -p -c 128 build/cognacos-kernel.sig)"
           test "${#public_key}" -eq 64
           test "${#signature}" -eq 128
-          openssl pkeyutl -verify -rawin -pubin -inkey build/cognacos-kernel-public.der -in build/cognacos-kernel.exe -sigfile build/cognacos-kernel.sig
+          openssl pkeyutl -verify -rawin -pubin -keyform DER -inkey build/cognacos-kernel-public.der -in build/cognacos-kernel.exe -sigfile build/cognacos-kernel.sig
           echo "public_key=$public_key" >> "$GITHUB_OUTPUT"
           echo "signature=$signature" >> "$GITHUB_OUTPUT"
           rm -f build/cognacos-kernel-signing.pem
