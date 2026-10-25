@@ -965,16 +965,25 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 b"ntdll.dll", pe::ImportSymbol::Name(b"CognacNtdllConfigureSyscallTable")
             ).is_some();
             if native_ntdll {
-                // The current freestanding DLL's INT 0x82 user-mode return path is
-                // not yet proven safe in QEMU. Map/register its real PE exports, but
-                // do not enter that image until the interrupt-return regression is fixed.
+                // Execute our own native DLL through its CognacOS INT 0x82 ABI.
+                // Stock Windows NTDLL is tested separately through SYSCALL.
                 syscall::set_windows_service_table_enabled(false);
+                match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
+                    Ok(true) => serial_write(b"CognacOS native NTDLL ring-3 syscall wrappers passed.\\r\\n"),
+                    Ok(false) => {
+                        serial_write(b"FATAL: native NTDLL exports were present but its smoke harness was not configured.\\r\\n");
+                        halt();
+                    }
+                    Err(_) => {
+                        serial_write(b"FATAL: CognacOS native NTDLL ring-3 smoke failed.\\r\\n");
+                        halt();
+                    }
+                }
                 winabi::unregister_module(b"ntdll.dll");
                 pe_runtime::unregister_image(ntdll_image.base);
                 if unsafe { ntdll_space.destroy() }.is_err() {
-                    serial_write(b"FATAL: native NTDLL cleanup failed.\r\n"); halt();
+                    serial_write(b"FATAL: native NTDLL cleanup failed.\\r\\n"); halt();
                 }
-                serial_write(b"CognacOS NTDLL mapped; PE exports validated; user-mode execution deferred pending INT 0x82 return regression.\r\n");
             } else if reference_windows_table {
                 match unsafe { usermode::run_windows_syscall_abi_smoke(&mut ntdll_space, ntdll_image) } {
                     Ok(()) => serial_write(b"Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed.\r\n"),
