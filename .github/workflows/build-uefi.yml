@@ -338,7 +338,7 @@ jobs:
             sleep 0.1
           done
           test -S build/swtpm.sock
-          rm -f build/serial.log
+          : > build/serial.log
           set +e
           timeout 30s qemu-system-x86_64 \
             -machine pc -m 5G -cpu qemu64 -smp 4 \
@@ -350,7 +350,7 @@ jobs:
             -drive if=ide,format=raw,file=build/cognacos-uefi.img \
             -drive if=ide,format=raw,index=1,file=build/pagefile.img \
             -boot order=c -display none -monitor none \
-            -serial file:build/serial.log -no-reboot -no-shutdown
+            -serial stdio -no-reboot -no-shutdown > build/serial.log 2>&1
           qemu_status=$?
           set -e
           # The kernel intentionally halts with interrupts disabled, so timeout
