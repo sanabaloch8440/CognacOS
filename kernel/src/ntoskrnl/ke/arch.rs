@@ -2012,3 +2012,43 @@ pub extern "C" fn cognacos_timer_interrupt_handler() {
     crate::thread::preempt_from_timer_interrupt();
     if first { unsafe { crate::serial_write(b"APIC timer ISR EOI completed.\r\n"); } }
 }
+
+ 
+global_asm!(r#"
+    .section .text
+    .global cognacos_save_current_user_xstate_asm
+    .type cognacos_save_current_user_xstate_asm, @function
+cognacos_save_current_user_xstate_asm:
+    # Save before entering Rust. The scratch XSAVE area is stack-local and
+    # 64-byte aligned; only after XSAVE do we call Rust to find the owning
+    # thread's destination area.
+    cmp qword ptr [rip + COGNAC_XSTATE_ENABLED_MASK_ASM], 0
+    je .Lcognacos_save_user_xstate_done
+    push rbx
+    push r12
+    mov rbx, rsp
+    and rsp, -64
+    sub rsp, 576
+    mov r12, rsp
+    mov rdi, r12
+    xor eax, eax
+    mov ecx, 72
+    rep stosq
+    mov eax, 3
+    xor edx, edx
+    xsave64 [r12]
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lcognacos_save_user_xstate_restore_regs
+    mov rdi, rax
+    mov rsi, r12
+    mov ecx, 72
+    rep movsq
+.Lcognacos_save_user_xstate_restore_regs:
+    pop r12
+    pop rbx
+.Lcognacos_save_user_xstate_done:
+    ret
+"#);
