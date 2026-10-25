@@ -27,7 +27,7 @@ struct Section {
     pages: [u64; MAX_SECTION_PAGES],
 }
 impl Section {
-    const EMPTY: Self = Self { live:false, generation:1, size:0, references:0, page_count:0, pages:[0; MAX_SECTION_PAGES] };
+    const EMPTY: Self = Self { live:false, generation:1, owner_root:0, size:0, references:0, page_count:0, pages:[0; MAX_SECTION_PAGES] };
 }
 #[derive(Clone, Copy)]
 struct View {
@@ -78,8 +78,8 @@ fn maybe_destroy_locked(sections: &mut [Section; MAX_SECTIONS], views: &[View; M
 }
 
 /// Create a zero-initialized section object. Returns an opaque generation-tagged handle.
-pub fn create(size: u64, handle_out: &mut u64) -> i32 {
-    if size == 0 { return STATUS_INVALID_PARAMETER; }
+pub fn create(size: u64, owner_root: u64, handle_out: &mut u64) -> i32 {
+    if size == 0 || owner_root == 0 { return STATUS_INVALID_PARAMETER; }
     let Some(rounded) = size.checked_add(PAGE - 1).map(|v| v & !(PAGE - 1)) else { return STATUS_INVALID_PARAMETER; };
     let pages = (rounded / PAGE) as usize;
     if pages == 0 || pages > MAX_SECTION_PAGES { return STATUS_INVALID_PARAMETER; }
@@ -97,30 +97,30 @@ pub fn create(size: u64, handle_out: &mut u64) -> i32 {
         drop(_guard); unsafe { release_pages(&backing[..pages]); } return STATUS_NO_MEMORY;
     };
     let generation = sections[slot].generation.max(1);
-    sections[slot] = Section { live:true, generation, size:rounded, references:1, page_count:pages, pages:backing };
+    sections[slot] = Section { live:true, generation, owner_root, size:rounded, references:1, page_count:pages, pages:backing };
     *handle_out = ((generation as u64) << 8) | (slot as u64 + 1);
     let _ = views;
     STATUS_SUCCESS
 }
 
 /// Add one object reference. Invalid/stale handles fail closed.
-pub fn reference(handle: u64) -> i32 {
+pub fn reference(handle: u64, owner_root: u64) -> i32 {
     let Some((slot, generation)) = decode_handle(handle) else { return STATUS_INVALID_HANDLE; };
     let _guard = LOCK.lock();
     let sections = unsafe { &mut *core::ptr::addr_of_mut!(SECTIONS) };
-    let Some(section) = sections.get_mut(slot).filter(|s| s.live && s.generation == generation) else { return STATUS_INVALID_HANDLE; };
+    let Some(section) = sections.get_mut(slot).filter(|s| s.live && s.generation == generation && s.owner_root == owner_root) else { return STATUS_INVALID_HANDLE; };
     let Some(next) = section.references.checked_add(1) else { return STATUS_NO_MEMORY; };
     section.references = next;
     STATUS_SUCCESS
 }
 
 /// Drop one object reference; mapped views keep the backing pages alive.
-pub fn dereference(handle: u64) -> i32 {
+pub fn dereference(handle: u64, owner_root: u64) -> i32 {
     let Some((slot, generation)) = decode_handle(handle) else { return STATUS_INVALID_HANDLE; };
     let _guard = LOCK.lock();
     let sections = unsafe { &mut *core::ptr::addr_of_mut!(SECTIONS) };
     let views = unsafe { &mut *core::ptr::addr_of_mut!(VIEWS) };
-    let Some(section) = sections.get_mut(slot).filter(|s| s.live && s.generation == generation) else { return STATUS_INVALID_HANDLE; };
+    let Some(section) = sections.get_mut(slot).filter(|s| s.live && s.generation == generation && s.owner_root == owner_root) else { return STATUS_INVALID_HANDLE; };
     if section.references == 0 { return STATUS_INVALID_PARAMETER; }
     section.references -= 1;
     let pages = maybe_destroy_locked(sections, views, slot);
@@ -141,7 +141,7 @@ pub fn map_view(handle: u64, root: u64, base: u64, offset: u64, length: u64, wri
     let _guard = LOCK.lock();
     let sections = unsafe { &mut *core::ptr::addr_of_mut!(SECTIONS) };
     let views = unsafe { &mut *core::ptr::addr_of_mut!(VIEWS) };
-    let section = sections.get(slot).filter(|s| s.live && s.generation == generation).ok_or(STATUS_INVALID_HANDLE)?;
+    let section = sections.get(slot).filter(|s| s.live && s.generation == generation && s.owner_root == root).ok_or(STATUS_INVALID_HANDLE)?;
     if end_offset > section.size || end_offset / PAGE > section.page_count as u64 { return Err(STATUS_INVALID_PARAMETER); }
     let view_slot = views.iter().position(|v| !v.live).ok_or(STATUS_NO_MEMORY)?;
     let new_refs = section.references.checked_add(1).ok_or(STATUS_NO_MEMORY)?;
@@ -185,7 +185,7 @@ pub fn unmap_view(root: u64, base: u64) -> i32 {
 }
 
 /// Copy bytes to/from section backing with bounds and overflow checks.
-pub fn copy(handle: u64, offset: u64, buffer: &mut [u8], write: bool) -> i32 {
+pub fn copy(handle: u64, owner_root: u64, offset: u64, buffer: &mut [u8], write: bool) -> i32 {
     let Some((slot, generation)) = decode_handle(handle) else { return STATUS_INVALID_HANDLE; };
     let Some(end) = offset.checked_add(buffer.len() as u64) else { return STATUS_INVALID_PARAMETER; };
     let _guard = LOCK.lock();
@@ -215,7 +215,7 @@ mod tests {
     fn rejects_invalid_section_ranges_and_handles() {
         let mut handle = 0;
         assert_eq!(create(0, &mut handle), STATUS_INVALID_PARAMETER);
-        assert_eq!(reference(0), STATUS_INVALID_HANDLE);
-        assert_eq!(dereference(0), STATUS_INVALID_HANDLE);
+        assert_eq!(reference(0,1), STATUS_INVALID_HANDLE);
+        assert_eq!(dereference(0,1), STATUS_INVALID_HANDLE);
     }
 }
