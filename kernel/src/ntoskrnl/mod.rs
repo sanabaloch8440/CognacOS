@@ -12,7 +12,7 @@ pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: Kernel
 pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
 pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] pub(crate) mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
-pub(crate) mod driver_loader;
+pub(crate) mod driver_loader;\npub(crate) mod dbg;
 pub mod abi_signatures;
 
 
@@ -47,6 +47,17 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   };
  }
  if !(dll.eq_ignore_ascii_case(b"ntoskrnl.exe") || dll.eq_ignore_ascii_case(b"ntkrnlmp.exe") || dll.eq_ignore_ascii_case(b"ntkrnlpa.exe") || dll.eq_ignore_ascii_case(b"ntkrpamp.exe")) { return None; }
+ // Debug routines are shared kernel services, not NTDLL-only behavior.
+ if let ImportSymbol::Name(requested) = symbol {
+  let debug = if requested.eq_ignore_ascii_case(b"DbgPrint") { Some(dbg::DbgPrint as usize) }
+  else if requested.eq_ignore_ascii_case(b"DbgPrintEx") { Some(dbg::DbgPrintEx as usize) }
+  else if requested.eq_ignore_ascii_case(b"DbgQueryDebugFilterState") { Some(dbg::DbgQueryDebugFilterState as usize) }
+  else if requested.eq_ignore_ascii_case(b"DbgSetDebugFilterState") { Some(dbg::DbgSetDebugFilterState as usize) }
+  else if requested.eq_ignore_ascii_case(b"DbgPrompt") { Some(dbg::DbgPrompt as usize) }
+  else if requested.eq_ignore_ascii_case(b"DbgBreakPoint") { Some(dbg::DbgBreakPoint as usize) }
+  else { None };
+  if debug.is_some() { return debug.map(|p| p as u64); }
+ }
  // Initial volatile Configuration Manager registry operations. These exact
  // callable implementations are resolved by name rather than treating export
  // catalogue entries as implemented routines.
