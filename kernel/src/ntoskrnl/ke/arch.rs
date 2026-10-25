@@ -370,7 +370,7 @@ cognacos_exception_common:
     jne .Lcognacos_exception_skip_user_save
     mov rbx, rsp
     and rsp, -16
-    call cognacos_save_current_user_xstate
+    call cognacos_save_current_user_xstate_asm
     mov rsp, rbx
 .Lcognacos_exception_skip_user_save:
     mov rdx, rsp
