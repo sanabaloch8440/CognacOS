@@ -38,6 +38,9 @@ pub mod syscall_x86_64;
 pub mod time;
 pub mod version;
 
+// Committed Windows 11 x64 export surface: real Rust symbols, not build-generated names.
+pub mod windows11_exports;
+
 #[cfg(feature = "relay-port")]
 pub mod relay;
 
