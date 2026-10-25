@@ -393,7 +393,7 @@ fn map_kuser_shared_page(space: &mut AddressSpace) -> Result<(), ProcessError> {
     }
     let physical = state.physical;
     if !state.initialized {
-        unsafe { space.map_user_page(KUSER_SHARED_DATA_ADDRESS, physical, true, false)?; }
+        unsafe { space.map_kuser_shared_page(KUSER_SHARED_DATA_ADDRESS, physical, true)?; }
         let config = crate::ntoskrnl::ke::runtime::ki_query_windows_xstate_configuration();
         let bytes = unsafe {
             core::slice::from_raw_parts(
@@ -405,7 +405,7 @@ fn map_kuser_shared_page(space: &mut AddressSpace) -> Result<(), ProcessError> {
         unsafe { space.protect_user_page(KUSER_SHARED_DATA_ADDRESS, false, false)?; }
         state.initialized = true;
     } else {
-        unsafe { space.map_user_page(KUSER_SHARED_DATA_ADDRESS, physical, false, false)?; }
+        unsafe { space.map_kuser_shared_page(KUSER_SHARED_DATA_ADDRESS, physical, false)?; }
     }
     Ok(())
 }
