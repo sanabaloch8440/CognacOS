@@ -632,10 +632,6 @@ pub unsafe extern "system" fn NtOpenEventPair() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtOpenFile() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtOpenIoCompletion() -> i32 {
@@ -967,10 +963,6 @@ pub unsafe extern "system" fn NtRaiseHardError() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtReadFile() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtReadFileScatter() -> i32 {
