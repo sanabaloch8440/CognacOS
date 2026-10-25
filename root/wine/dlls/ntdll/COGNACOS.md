@@ -35,7 +35,7 @@ For CognacOS, leave `WINDOWS_SYSCALL_IDS=0`. The native build defaults to Cognac
 The native bootstrap currently exports `NtClose`, `NtYieldExecution`, `NtQueryInformationProcess`, `NtQueryInformationThread`, `NtQuerySystemInformation`, core RTL
 memory routines (`RtlCompareMemory`, `RtlCompareMemoryUlong`, `RtlCopyMemory`,
 `RtlFillMemory`, `RtlMoveMemory`, `RtlZeroMemory`), CRC32 helpers,
-`RtlIsZeroMemory`, and `RtlGetVersion` (reports Windows 11 build 26100). The
+`RtlIsZeroMemory`, and `RtlGetVersion` (reports Windows 11 build 26100), plus ANSI/Unicode string initialization, comparison, copy, and integer-conversion routines. Case-insensitive string comparison currently folds ASCII only; full Windows Unicode upcase-table semantics remain outstanding. The
 x64 bridge now marshals up to 17 arguments: the first four use the Windows syscall register convention and arguments five onward are copied into syscall-visible stack slots. `NtQueryInformationProcess` and `NtQueryInformationThread` exercise five-argument calls; `NtQuerySystemInformation` exercises four. The loader can configure the original two service numbers or provide the five-entry `CognacNtdllConfigureSyscallTable` table. The kernel implements `NtClose` through the native Object Manager close path, `NtYieldExecution` through the scheduler, and limited basic information classes for process, thread, and system queries. Unsupported information classes/handles are rejected. This is an initial supported subset, not full Windows semantics.
 
 GitHub Actions builds and checks the PE32+ artifact and validates the helper's
