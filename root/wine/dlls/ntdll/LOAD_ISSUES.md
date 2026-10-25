@@ -141,3 +141,15 @@ initialized to `DllMain`. That creates a real DIR64 base relocation, allowing
 the loader to relocate the native DLL without weakening the loader's
 `RelocationsRequired` rule. The next QEMU run must confirm the relocation
 directory is present and that mapping advances beyond this failure.
+
+### NTDLL-LOAD-013 — smoke caller wrote its fifth argument above the stack
+
+**Observed in QEMU:** NTDLL mapped successfully, its export table registered,
+and DllMain returned. The smoke trampoline then faulted writing the fifth
+argument at `[RSP+0x20]`: it reserved only the 32-byte shadow space, placing
+that slot at the unmapped top of the user stack.
+
+**Fix committed:** the test trampoline reserves 0x30 bytes (32-byte shadow
+space plus the fifth argument slot), preserving 16-byte alignment before calls.
+The next QEMU run must get past the process query and verify the complete
+wrapper sequence.
