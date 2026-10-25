@@ -191,7 +191,7 @@ fn image_rva_offset(image: &[u8], section_table: usize, section_count: usize,
     }
     None
 }
-fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 7]> {
+fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 9]> {
     if image.get(0..2)? != b"MZ" { return None; }
     let pe = image_u32(image, 0x3c)? as usize;
     if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" { return None; }
