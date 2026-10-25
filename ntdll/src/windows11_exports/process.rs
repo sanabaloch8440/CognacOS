@@ -332,15 +332,9 @@ pub unsafe extern "system" fn NtQueryInformationPort() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQueryInformationProcess() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+// NtQueryInformationProcess is provided by the typed x64 syscall stub in syscall_x86_64.rs.
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQueryInformationThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+// NtQueryInformationThread is provided by the typed x64 syscall stub in syscall_x86_64.rs.
 
 #[no_mangle]
 pub unsafe extern "system" fn NtQueryInformationToken() -> i32 {
