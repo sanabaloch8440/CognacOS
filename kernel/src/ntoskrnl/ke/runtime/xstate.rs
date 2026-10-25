@@ -198,3 +198,121 @@ pub unsafe fn ki_xstate_restore_thread(area: *const KiThreadXStateArea) -> bool 
 pub fn ki_xstate_enabled() -> bool {
     XSTATE_INITIALIZED.load(Ordering::Acquire) & 1 != 0
 }
+
+
+const XSTATE_SAVE_MAGIC: u64 = 0x434f_474e_5853_4156; // "COGNXSAV"
+const XSTATE_SAVE_SLOTS: usize = 128;
+const XSTATE_SAVE_NESTING: usize = 16;
+const STATUS_INVALID_DEVICE_STATE: i32 = 0xC000_0184u32 as i32;
+const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009Au32 as i32;
+
+#[derive(Clone, Copy)]
+struct XStateSaveSlot {
+    key: usize,
+    owner_thread: u64,
+    cpu: usize,
+    irql: u8,
+    mask: u64,
+    generation: u64,
+    active: bool,
+    area: KiThreadXStateArea,
+}
+impl XStateSaveSlot {
+    const EMPTY: Self = Self { key: 0, owner_thread: 0, cpu: 0, irql: 0, mask: 0,
+        generation: 0, active: false, area: KiThreadXStateArea::zeroed() };
+}
+struct XStateSaveTable {
+    slots: [XStateSaveSlot; XSTATE_SAVE_SLOTS],
+    stack: [[usize; XSTATE_SAVE_NESTING]; crate::hal::MAX_CPUS],
+    depth: [u8; crate::hal::MAX_CPUS],
+    generation: u64,
+}
+impl XStateSaveTable {
+    const fn new() -> Self {
+        Self { slots: [XStateSaveSlot::EMPTY; XSTATE_SAVE_SLOTS],
+            stack: [[0; XSTATE_SAVE_NESTING]; crate::hal::MAX_CPUS],
+            depth: [0; crate::hal::MAX_CPUS], generation: 1 }
+    }
+}
+static XSTATE_SAVE_TABLE: crate::hal::IrqSpinLock<XStateSaveTable> =
+    crate::hal::IrqSpinLock::new(XStateSaveTable::new());
+
+fn current_xstate_execution_context() -> Option<(usize, u64, u8)> {
+    let cpu = crate::hal::current_cpu_local()?.logical_id.load(Ordering::Acquire) as usize;
+    if cpu >= crate::hal::MAX_CPUS { return None; }
+    let thread = crate::thread::current_thread_id().unwrap_or(0);
+    let irql = ke_get_current_irql();
+    Some((cpu, thread, irql))
+}
+
+/// WDK-compatible entry point for saving processor extended state. XSTATE_SAVE
+/// is opaque to drivers; this implementation stores a small signature in its
+/// caller-owned record and keeps the aligned XSAVE image in a kernel side table.
+/// Calls are bounded and must be properly nested on the same thread/CPU/IRQL.
+#[no_mangle]
+pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut u8) -> i32 {
+    if save.is_null() || (save as usize) & 7 != 0 || mask == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if !ki_xstate_enabled() { return STATUS_NOT_SUPPORTED; }
+    let enabled = XSTATE_ENABLED_MASK.load(Ordering::Acquire);
+    if mask & !enabled != 0 { return STATUS_INVALID_PARAMETER; }
+    let Some((cpu, owner_thread, irql)) = current_xstate_execution_context() else {
+        return STATUS_INVALID_DEVICE_STATE;
+    };
+    if irql > 2 { return STATUS_INVALID_DEVICE_STATE; }
+
+    let mut table = XSTATE_SAVE_TABLE.lock();
+    let depth = table.depth[cpu] as usize;
+    if depth >= XSTATE_SAVE_NESTING { return STATUS_INSUFFICIENT_RESOURCES; }
+    if table.slots.iter().any(|s| s.active && s.key == save as usize) {
+        return STATUS_INVALID_DEVICE_STATE;
+    }
+    let Some(slot_index) = table.slots.iter().position(|s| !s.active) else {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    };
+    let generation = table.generation;
+    table.generation = table.generation.wrapping_add(1).max(1);
+    let slot = &mut table.slots[slot_index];
+    slot.key = save as usize;
+    slot.owner_thread = owner_thread;
+    slot.cpu = cpu;
+    slot.irql = irql;
+    slot.mask = mask;
+    slot.generation = generation;
+    slot.active = true;
+    if unsafe { !ki_xstate_save_thread(&mut slot.area) } {
+        *slot = XStateSaveSlot::EMPTY;
+        return STATUS_NOT_SUPPORTED;
+    }
+    table.stack[cpu][depth] = save as usize;
+    table.depth[cpu] = (depth + 1) as u8;
+    // The public structure is opaque; do not expose internal kernel pointers.
+    unsafe {
+        (save as *mut u64).write_unaligned(XSTATE_SAVE_MAGIC);
+        (save.add(8) as *mut u64).write_unaligned(generation);
+    }
+    STATUS_SUCCESS
+}
+
+/// Restore the most recent matching XSTATE_SAVE. Invalid, stale, cross-thread,
+/// cross-CPU, wrong-IRQL, or out-of-order restores are rejected as no-ops.
+#[no_mangle]
+pub unsafe extern "win64" fn KeRestoreExtendedProcessorState(save: *mut u8) {
+    if save.is_null() || (save as usize) & 7 != 0 || !ki_xstate_enabled() { return; }
+    let magic = unsafe { (save as *const u64).read_unaligned() };
+    let generation = unsafe { (save.add(8) as *const u64).read_unaligned() };
+    if magic != XSTATE_SAVE_MAGIC { return; }
+    let Some((cpu, owner_thread, irql)) = current_xstate_execution_context() else { return; };
+    let mut table = XSTATE_SAVE_TABLE.lock();
+    let depth = table.depth[cpu] as usize;
+    if depth == 0 || table.stack[cpu][depth - 1] != save as usize { return; }
+    let Some(index) = table.slots.iter().position(|s| s.active && s.key == save as usize
+        && s.generation == generation && s.cpu == cpu && s.owner_thread == owner_thread
+        && s.irql == irql) else { return; };
+    if unsafe { !ki_xstate_restore_thread(&table.slots[index].area) } { return; }
+    table.depth[cpu] = (depth - 1) as u8;
+    table.stack[cpu][depth - 1] = 0;
+    table.slots[index] = XStateSaveSlot::EMPTY;
+    unsafe { (save as *mut u64).write_unaligned(0); }
+}
