@@ -165,3 +165,43 @@ mod added_version_api_tests {
         assert_eq!(out.wServicePackMajor, 2);
     }
 }
+
+
+/// Port of Wine's VerSetConditionMask. When several type bits are present,
+/// the source's priority order selects exactly one condition slot per call.
+pub fn set_condition_mask(mut mask: DWORDLONG, type_mask: ULONG, condition_value: UCHAR) -> DWORDLONG {
+    let condition_value = condition_value & 0x07;
+    let selected = if type_mask & VER_PRODUCT_TYPE != 0 { Some(SHIFT_PRODUCT) }
+        else if type_mask & VER_SUITENAME != 0 { Some(SHIFT_SUITE) }
+        else if type_mask & VER_SERVICEPACKMAJOR != 0 { Some(SHIFT_SP_MAJOR) }
+        else if type_mask & VER_SERVICEPACKMINOR != 0 { Some(SHIFT_SP_MINOR) }
+        else if type_mask & VER_PLATFORMID != 0 { Some(SHIFT_PLATFORM) }
+        else if type_mask & VER_BUILDNUMBER != 0 { Some(SHIFT_BUILD) }
+        else if type_mask & VER_MAJORVERSION != 0 { Some(SHIFT_MAJOR) }
+        else if type_mask & VER_MINORVERSION != 0 { Some(SHIFT_MINOR) }
+        else { None };
+    if let Some(shift) = selected {
+        mask |= (condition_value as DWORDLONG) << shift;
+    }
+    mask
+}
+
+#[cfg(test)]
+mod condition_mask_tests {
+    use super::*;
+    #[test]
+    fn set_condition_mask_uses_windows_slots_and_priority() {
+        let mask = set_condition_mask(0, VER_MAJORVERSION, VER_GREATER_EQUAL);
+        assert_eq!((mask >> SHIFT_MAJOR) & 7, VER_GREATER_EQUAL as u64);
+        let mask = set_condition_mask(mask, VER_MINORVERSION, VER_LESS);
+        assert_eq!((mask >> SHIFT_MINOR) & 7, VER_LESS as u64);
+        let both = set_condition_mask(0, VER_PRODUCT_TYPE | VER_BUILDNUMBER, VER_EQUAL);
+        assert_eq!((both >> SHIFT_PRODUCT) & 7, VER_EQUAL as u64);
+        assert_eq!((both >> SHIFT_BUILD) & 7, 0);
+    }
+    #[test]
+    fn set_condition_mask_truncates_condition_to_three_bits() {
+        let mask = set_condition_mask(0, VER_BUILDNUMBER, 0xff);
+        assert_eq!((mask >> SHIFT_BUILD) & 7, 7);
+    }
+}
