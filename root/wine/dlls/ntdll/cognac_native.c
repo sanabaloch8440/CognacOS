@@ -10,6 +10,7 @@
 #define STATUS_SUCCESS ((LONG)0x00000000L)
 
 typedef LONG NTSTATUS;
+extern LONG NTAPI NtYieldExecution(void);
 
 /* ABI-compatible prefix/layout of RTL_OSVERSIONINFOW from winternl.h. */
 typedef struct _COGNAC_RTL_OSVERSIONINFOW {
@@ -119,6 +120,7 @@ LONG NTAPI RtlLeaveCriticalSection(COGNAC_RTL_CRITICAL_SECTION *cs)
     LONG recursion;
     if (!cs) return STATUS_INVALID_PARAMETER;
     tid = cognac_current_thread_id();
+    if (!tid) return STATUS_INVALID_PARAMETER;
     if (__atomic_load_n((void * volatile *)&cs->OwningThread, __ATOMIC_ACQUIRE) != tid)
         return STATUS_NOT_OWNER;
 
