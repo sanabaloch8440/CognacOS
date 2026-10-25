@@ -113,7 +113,11 @@ pub unsafe extern "system" fn NtAllocateVirtualMemory(process_handle: HANDLE, ba
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtAllocateVirtualMemoryEx(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, allocation_type: ULONG, protect: ULONG, extended_parameters: PVOID, parameter_count: ULONG) -> NTSTATUS {
-    let _ = (process_handle, base_address, region_size, allocation_type, protect, extended_parameters, parameter_count);
+    if parameter_count == 0 && extended_parameters.is_null() {
+        return unsafe { NtAllocateVirtualMemory(process_handle, base_address, 0, region_size, allocation_type, protect) };
+    }
+    // Unknown/unsupported extended parameter types must not be silently ignored.
+    if parameter_count != 0 && extended_parameters.is_null() { return STATUS_INVALID_PARAMETER; }
     STATUS_NOT_IMPLEMENTED
 }
 #[no_mangle]
