@@ -444,6 +444,34 @@ impl AddressSpace {
         areas[index]=DemandArea::EMPTY; Ok(())
     }
 
+    /// Snapshot the tracked demand-zero reservation containing `address`.
+    /// Returned bounds are page-aligned and valid only for this address-space root.
+    pub fn demand_region_info(&self, address: u64) -> Option<(u64, u64, bool, bool)> {
+        if !is_user_range(address, 1) { return None; }
+        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        unsafe { &*DEMAND_AREAS.0.get() }.iter()
+            .find(|a| a.live && a.root == self.root && address >= a.start && address < a.end)
+            .map(|a| (a.start, a.end, a.writable, a.executable))
+    }
+
+    /// Update protection metadata for a whole tracked reservation subrange.
+    /// Caller must have validated all resident leaves and must roll back PTEs if
+    /// any subsequent update fails. W+X is rejected consistently with fault-time checks.
+    pub fn set_demand_region_protection(&self, start: u64, length: u64, writable: bool, executable: bool) -> Result<(), VmError> {
+        if length == 0 || start & (PAGE_SIZE - 1) != 0 || length & (PAGE_SIZE - 1) != 0
+            || writable && executable || !is_user_range(start, length) {
+            return Err(VmError::InvalidAddress);
+        }
+        let end = start.checked_add(length).ok_or(VmError::InvalidAddress)?;
+        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        let areas = unsafe { &mut *DEMAND_AREAS.0.get() };
+        let area = areas.iter_mut().find(|a| a.live && a.root == self.root && start >= a.start && end <= a.end)
+            .ok_or(VmError::NotMapped)?;
+        area.writable = writable;
+        area.executable = executable;
+        Ok(())
+    }
+
     /// Probe a range without dereferencing user-controlled pointers. Use copy_from_user
     /// or copy_to_user for actual access so translations and permissions are checked.
     pub fn probe_user_range(&self,address:u64,length:u64,write:bool,execute:bool)->Result<(),VmError>{
