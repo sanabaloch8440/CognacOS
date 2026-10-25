@@ -336,6 +336,13 @@ mod tests {
     }
 
     #[test]
+    fn selects_relay_thunk_only_when_available_and_requested() {
+        assert_eq!(select_proc_address(0x1000, 0x2000, true, true), 0x2000);
+        assert_eq!(select_proc_address(0x1000, 0x2000, false, true), 0x1000);
+        assert_eq!(select_proc_address(0x1000, 0x2000, true, false), 0x1000);
+    }
+
+    #[test]
     fn no_filter_means_relay_is_allowed() {
         assert!(check_from_module(None, None, Some(&w("any.dll"))));
         assert!(check_from_module(None, None, None));
