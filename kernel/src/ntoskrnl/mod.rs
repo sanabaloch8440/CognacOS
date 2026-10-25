@@ -411,6 +411,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "IoGetDmaAdapter" => crate::dma::io_get_dma_adapter as usize,
   "IoCreateDevice" => crate::io::io_create_device as usize,
   "IoDeleteDevice" => crate::io::io_delete_device as usize,
+  "IoUnloadDriver" => crate::io::io_unload_driver as usize,
   "PoSetPowerState" => po::runtime::PoSetPowerState as usize,
   "PoCallDriver" => po::runtime::PoCallDriver as usize,
   "PoRequestPowerIrp" => po::runtime::PoRequestPowerIrp as usize,
