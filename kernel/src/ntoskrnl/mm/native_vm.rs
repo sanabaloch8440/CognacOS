@@ -152,6 +152,10 @@ fn write_u64(root: u64, address: u64, value: u64) -> Result<(), u64> {
     unsafe { address_space::copy_to_user_root(root, address, &value.to_ne_bytes()) }
         .map_err(|_| STATUS_ACCESS_VIOLATION)
 }
+fn write_u32(root: u64, address: u64, value: u32) -> Result<(), u64> {
+    unsafe { address_space::copy_to_user_root(root, address, &value.to_ne_bytes()) }
+        .map_err(|_| STATUS_ACCESS_VIOLATION)
+}
 fn round_range(base: u64, size: u64) -> Result<(u64, u64), u64> {
     if size == 0 { return Err(STATUS_INVALID_PARAMETER); }
     let start = base & !(PAGE - 1);
@@ -295,7 +299,7 @@ pub fn query(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     if args[2] != 0 { return 0xC000_0003; } // STATUS_INVALID_INFO_CLASS
     if args[3] == 0 { return STATUS_ACCESS_VIOLATION; }
     if args[4] < core::mem::size_of::<MemoryBasicInformation>() as u64 {
-        if args[5] != 0 { let _ = write_u64(root_or_zero(), args[5], core::mem::size_of::<MemoryBasicInformation>() as u64); }
+        if args[5] != 0 { if let Ok(root) = current_root() { let _ = write_u32(root, args[5], core::mem::size_of::<MemoryBasicInformation>() as u32); } }
         return STATUS_INFO_LENGTH_MISMATCH;
     }
     let root = match current_root() { Ok(r) => r, Err(s) => return s };
@@ -316,9 +320,8 @@ pub fn query(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let bytes = unsafe { core::slice::from_raw_parts((&info as *const MemoryBasicInformation).cast::<u8>(), core::mem::size_of::<MemoryBasicInformation>()) };
     if unsafe { address_space::copy_to_user_root(root, args[3], bytes) }.is_err() { return STATUS_ACCESS_VIOLATION; }
     if args[5] != 0 {
-        if let Err(s) = write_u64(root, args[5], core::mem::size_of::<MemoryBasicInformation>() as u64) { return s; }
+        if let Err(s) = write_u32(root, args[5], core::mem::size_of::<MemoryBasicInformation>() as u32) { return s; }
     }
     STATUS_SUCCESS
 }
-fn root_or_zero() -> u64 { current_root().unwrap_or(0) }
 
