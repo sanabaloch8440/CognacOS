@@ -448,38 +448,38 @@ pub fn get_nonvolatile_token(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> 
     if base & (PAGE-1) != 0 || length == 0 { return STATUS_INVALID_PARAMETER; }
     let physical = match physical_user_range(root,base,length,true) { Ok(p)=>p, Err(s)=>return s };
     let mut token = 0u64;
-    let result = crate::ntoskrnl::mm::persistent::get_token(physical,length,&mut token);
+    let result = crate::ntoskrnl::mm::persistent::get_token(physical,length,root,&mut token);
     if result < 0 { return result as u32 as u64; }
     if let Err(s) = write_u64(root,args[2],token) {
-        let _ = crate::ntoskrnl::mm::persistent::free_token(token);
+        let _ = crate::ntoskrnl::mm::persistent::free_token(token,root);
         return s;
     }
     STATUS_SUCCESS
 }
 pub fn free_nonvolatile_token(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
-    crate::ntoskrnl::mm::persistent::free_token(args[0]) as u32 as u64
+    crate::ntoskrnl::mm::persistent::free_token(args[0],current_root().unwrap_or(0)) as u32 as u64
 }
 pub fn flush_nonvolatile_memory(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let root = match current_root() { Ok(r)=>r, Err(s)=>return s };
     let length = args[2];
     if args[3] & !1 != 0 { return STATUS_INVALID_PARAMETER; }
     let physical = match physical_user_range(root,args[1],length,false) { Ok(p)=>p, Err(s)=>return s };
-    let offset = match crate::ntoskrnl::mm::persistent::offset_for_physical(args[0],physical,length) { Ok(v)=>v, Err(s)=>return s as u32 as u64 };
-    crate::ntoskrnl::mm::persistent::flush(args[0],offset,length,args[3] & 1 != 0) as u32 as u64
+    let offset = match crate::ntoskrnl::mm::persistent::offset_for_physical(args[0],physical,length,root) { Ok(v)=>v, Err(s)=>return s as u32 as u64 };
+    crate::ntoskrnl::mm::persistent::flush(args[0],root,offset,length,args[3] & 1 != 0) as u32 as u64
 }
 pub fn write_nonvolatile_memory(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let root = match current_root() { Ok(r)=>r, Err(s)=>return s };
     let length = args[3] as usize;
     if length == 0 || length > 16*1024*1024 || args[4] != 0 { return STATUS_INVALID_PARAMETER; }
     let physical = match physical_user_range(root,args[1],length as u64,true) { Ok(p)=>p, Err(s)=>return s };
-    let offset = match crate::ntoskrnl::mm::persistent::offset_for_physical(args[0],physical,length as u64) { Ok(v)=>v, Err(s)=>return s as u32 as u64 };
+    let offset = match crate::ntoskrnl::mm::persistent::offset_for_physical(args[0],physical,length as u64,root) { Ok(v)=>v, Err(s)=>return s as u32 as u64 };
     let mut copied = 0usize;
     let mut scratch = [0u8;4096];
     while copied < length {
         let count = (length-copied).min(scratch.len());
         let src = match args[2].checked_add(copied as u64) { Some(v)=>v, None=>return STATUS_ACCESS_VIOLATION };
         if unsafe { address_space::copy_from_user_root(root,src,&mut scratch[..count]) }.is_err() { return STATUS_ACCESS_VIOLATION; }
-        let result = crate::ntoskrnl::mm::persistent::write(args[0],offset+copied as u64,&scratch[..count],false);
+        let result = crate::ntoskrnl::mm::persistent::write(args[0],root,offset+copied as u64,&scratch[..count],false);
         if result < 0 { return result as u32 as u64; }
         copied += count;
     }
@@ -494,7 +494,7 @@ pub fn fill_nonvolatile_memory(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -
     if no_drain && (flags & 1 == 0 || flags & (2 | 4) != 0) { return STATUS_INVALID_PARAMETER; }
     let physical = match physical_user_range(root,args[1],length,true) { Ok(p)=>p, Err(s)=>return s };
     let offset = match crate::ntoskrnl::mm::persistent::offset_for_physical(args[0],physical,length) { Ok(v)=>v, Err(s)=>return s as u32 as u64 };
-    let result = crate::ntoskrnl::mm::persistent::fill(args[0],offset,length,args[3] as u8,false);
+    let result = crate::ntoskrnl::mm::persistent::fill(args[0],root,offset,length,args[3] as u8,false);
     if result < 0 { return result as u32 as u64; }
     if flags & (1 | 4) != 0 { crate::ntoskrnl::mm::persistent::flush(args[0],offset,length,no_drain) as u32 as u64 } else { STATUS_SUCCESS }
 }
