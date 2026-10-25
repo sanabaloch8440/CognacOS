@@ -283,7 +283,7 @@ pub fn timer_preemption_self_test()->bool{
 /// Ready/blocked siblings are removed from scheduling; running siblings observe
 /// the exited process state at their next timer interrupt and exit on their own CPU.
 pub fn terminate_current_process_from_fault(pid:u64,exit_code:u64)->! {
-    if pid==0 { crate::halt(); }
+    if pid==0 { unsafe{crate::halt()} }
     let _=crate::process::mark_exited(pid,exit_code);
     let current=current_thread_id().unwrap_or(0);
     let mut retire=[0u64;MAX_THREADS];
