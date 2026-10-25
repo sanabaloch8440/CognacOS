@@ -230,6 +230,41 @@ static NTDLL_XSTATE_OFFSETS: [AtomicU32; 64] =
     [const { AtomicU32::new(0) }; 64];
 static NTDLL_XSTATE_SIZES: [AtomicU32; 64] =
     [const { AtomicU32::new(0) }; 64];
+const COGNAC_XSTATE_SHARED_ADDRESS: usize = 0x0000_0084_0000_0000;
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CognacXStateSharedConfiguration {
+    supported_features: u64,
+    enabled_features: u64,
+    area_size: u32,
+    standard_area_size: u32,
+    xsaveopt: u32,
+    xsavec: u32,
+    xsaves: u32,
+    reserved: u32,
+    feature_offsets: [u32; 64],
+    feature_sizes: [u32; 64],
+}
+
+/// Lazy NTDLL bootstrap from the read-only page installed by
+/// process::initialize. This keeps feature reporting tied to the kernel's
+/// actual boot policy instead of trusting local CPUID alone.
+fn ensure_ntdll_xstate_config() -> bool {
+    if NTDLL_XSTATE_READY.load(Ordering::Acquire) { return true; }
+    let shared = COGNAC_XSTATE_SHARED_ADDRESS as *const CognacXStateSharedConfiguration;
+    let config = unsafe { shared.read_unaligned() };
+    if config.enabled_features & 3 != 3 || config.area_size < 576 { return false; }
+    unsafe {
+        CognacNtdllPublishXStateConfiguration(
+            config.supported_features,
+            config.enabled_features,
+            config.area_size,
+            config.feature_offsets.as_ptr(),
+            config.feature_sizes.as_ptr(),
+        ) == STATUS_SUCCESS
+    }
+}
+
 
 /// Publish the configuration computed by ntoskrnl to NTDLL during native
 /// process initialization. Offsets are CPUID.(0xD, feature).EBX values in the
@@ -264,7 +299,7 @@ pub unsafe extern "system" fn CognacNtdllPublishXStateConfiguration(
 /// Return enabled extended processor feature bits, limited to the caller's mask.
 #[no_mangle]
 pub extern "system" fn RtlGetEnabledExtendedFeatures(mask: ULONG64) -> ULONG64 {
-    if !NTDLL_XSTATE_READY.load(Ordering::Acquire) { return 0; }
+    if !ensure_ntdll_xstate_config() { return 0; }
     NTDLL_XSTATE_ENABLED.load(Ordering::Acquire) & mask
 }
 
@@ -340,7 +375,7 @@ pub unsafe extern "system" fn RtlGetExtendedContextLength2(flags: ULONG, length:
 pub unsafe extern "system" fn RtlInitializeExtendedContext2(context: PVOID, flags: ULONG, out: *mut *mut CONTEXT_EX, mask: ULONG64) -> NTSTATUS {
     if context.is_null() || out.is_null() { return STATUS_INVALID_PARAMETER; }
     let Some((size, flags_offset)) = context_parameters(flags) else { return STATUS_INVALID_PARAMETER; };
-    if flags & CONTEXT_XSTATE != 0 && !NTDLL_XSTATE_READY.load(Ordering::Acquire) { return STATUS_NOT_SUPPORTED; }
+    if flags & CONTEXT_XSTATE != 0 && !ensure_ntdll_xstate_config() { return STATUS_NOT_SUPPORTED; }
     let aligned = match (context as usize).checked_add(15) { Some(v) => v & !15, None => return STATUS_INVALID_PARAMETER };
     let base = aligned as *mut u8;
     unsafe { base.add(flags_offset).cast::<ULONG>().write_unaligned(flags); }
@@ -381,7 +416,7 @@ pub unsafe extern "system" fn RtlLocateLegacyContext(ex: *mut CONTEXT_EX, length
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlLocateExtendedFeature(ex: *mut CONTEXT_EX, feature: ULONG, length: *mut ULONG) -> PVOID {
-    if ex.is_null() || !(2..64).contains(&feature) || !NTDLL_XSTATE_READY.load(Ordering::Acquire) { return core::ptr::null_mut(); }
+    if ex.is_null() || !(2..64).contains(&feature) || !ensure_ntdll_xstate_config() { return core::ptr::null_mut(); }
     let chunk = unsafe { core::ptr::addr_of!((*ex).XState).read_unaligned() };
     if NTDLL_XSTATE_ENABLED.load(Ordering::Acquire) & (1u64 << feature) == 0 { return core::ptr::null_mut(); }
     let size = NTDLL_XSTATE_SIZES[feature as usize].load(Ordering::Acquire) as usize;
