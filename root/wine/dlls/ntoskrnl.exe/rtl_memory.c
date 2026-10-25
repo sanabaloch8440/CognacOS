@@ -71,15 +71,11 @@ ULONG WINAPI RtlCompareMemoryUlong(const void *source, SIZE_T length, ULONG patt
 {
     const unsigned char *s = source;
     const unsigned char *p = (const unsigned char *)&pattern;
-    SIZE_T offset;
+    SIZE_T matched;
 
-    /* Return the matching byte count, stopping at the first mismatching ULONG. */
-    for (offset = 0; offset + sizeof(ULONG) <= length; offset += sizeof(ULONG))
-    {
-        SIZE_T j;
-        for (j = 0; j < sizeof(ULONG); ++j)
-            if (s[offset + j] != p[j]) return (ULONG)offset;
-    }
+    /* Compare every byte, including a partial final ULONG, without alignment assumptions. */
+    for (matched = 0; matched < length; ++matched)
+        if (s[matched] != p[matched & 3]) return (ULONG)matched;
     return (ULONG)length;
 }
 
