@@ -3,7 +3,8 @@
 //! NTDLL loader; native section/map syscalls must call these APIs while holding
 //! the owning process's address-space mutation/rundown contract.
 use crate::ntoskrnl::mm::address_space::AddressSpace;
-use crate::pe::{ImportResolver, LoadedImage, PeError};
+use crate::hal::IrqSpinLock;
+use crate::pe::{ImportResolver, ImportSymbol, LoadedImage, PeError};
 
 pub const STATUS_SUCCESS: i32 = 0;
 pub const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
@@ -11,7 +12,37 @@ pub const STATUS_INVALID_IMAGE_FORMAT: i32 = 0xC000_007Bu32 as i32;
 pub const STATUS_DLL_NOT_FOUND: i32 = 0xC000_0135u32 as i32;
 pub const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
 pub const STATUS_RESOURCE_IN_USE: i32 = 0xC000_0708u32 as i32;
+
 const FILE_CHUNK: usize = 4096;
+static LOAD_UNLOAD_LOCK: IrqSpinLock<()> = IrqSpinLock::new(());
+#[derive(Clone, Copy)]
+struct ImportContext {
+    active: bool,
+    process_id: u64,
+    parent_slot: usize,
+    parent_generation: u32,
+    resolver: Option<ImportResolver>,
+}
+impl ImportContext {
+    const EMPTY: Self = Self { active: false, process_id: 0, parent_slot: 0, parent_generation: 0, resolver: None };
+}
+static IMPORT_CONTEXT: IrqSpinLock<ImportContext> = IrqSpinLock::new(ImportContext::EMPTY);
+
+fn transaction_import_resolver(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
+    let context = *IMPORT_CONTEXT.lock();
+    if !context.active { return None; }
+    let dependency_name = crate::winabi::api_set_host(dll).unwrap_or(dll);
+    let (dependency_slot, dependency) = crate::pe_modules::find_for_process(context.process_id, dependency_name)?;
+    if !matches!(dependency.state, crate::pe_modules::ModuleState::Mapped
+        | crate::pe_modules::ModuleState::Initializing
+        | crate::pe_modules::ModuleState::Initialized) { return None; }
+    let resolve = context.resolver.unwrap_or(crate::winabi::resolve_import);
+    let address = resolve(dll, symbol)?;
+    crate::pe_modules::add_dependency(
+        context.parent_slot, context.parent_generation, dependency_slot, dependency.generation,
+    ).ok()?;
+    Some(address)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct LoadResult {
@@ -35,6 +66,7 @@ pub unsafe fn load_dll_from_vfs(
     scratch: &mut [u8],
     resolver: Option<ImportResolver>,
 ) -> Result<LoadResult, i32> {
+    let _transaction = LOAD_UNLOAD_LOCK.lock();
     if process_id == 0 || path.is_empty() || module_name.is_empty() || scratch.is_empty() {
         return Err(STATUS_INVALID_PARAMETER);
     }
@@ -79,7 +111,12 @@ pub unsafe fn load_dll_from_vfs(
     if total == 0 { return Err(STATUS_INVALID_IMAGE_FORMAT); }
 
     let (slot, generation) = crate::pe_modules::reserve_for_process(process_id, module_name)?;
-    let image = match unsafe { crate::pe::load_dll(space, &scratch[..total], module_name, resolver) } {
+    *IMPORT_CONTEXT.lock() = ImportContext {
+        active: true, process_id, parent_slot: slot, parent_generation: generation, resolver,
+    };
+    let mapped = unsafe { crate::pe::load_dll(space, &scratch[..total], module_name, Some(transaction_import_resolver)) };
+    *IMPORT_CONTEXT.lock() = ImportContext::EMPTY;
+    let image = match mapped {
         Ok(image) => image,
         Err(error) => {
             let _ = crate::pe_modules::rollback(slot, generation);
@@ -104,6 +141,7 @@ pub unsafe fn unload_dll(
     process_id: u64,
     module_name: &[u8],
 ) -> Result<bool, i32> {
+    let _transaction = LOAD_UNLOAD_LOCK.lock();
     let (slot, snapshot) = crate::pe_modules::find_for_process(process_id, module_name)
         .ok_or(STATUS_DLL_NOT_FOUND)?;
     let Some((base, size)) = crate::pe_modules::begin_unload(slot, snapshot.generation)? else {
