@@ -368,8 +368,9 @@ fn compacted_feature_offset(mask: ULONG64, feature: ULONG) -> Option<usize> {
         if mask & (1u64 << id) == 0 { continue; }
         let size = NTDLL_XSTATE_SIZES[id as usize].load(Ordering::Acquire) as usize;
         if size == 0 { return None; }
-        let leaf = unsafe { core::arch::x86_64::__cpuid_count(0x0d, id) };
-        if leaf.ecx & 2 != 0 { offset = offset.checked_add(63)? & !63; }
+        if NTDLL_XSTATE_ALIGNED_MASK.load(Ordering::Acquire) & (1u64 << id) != 0 {
+            offset = offset.checked_add(63)? & !63;
+        }
         if id == feature { return Some(offset); }
         offset = offset.checked_add(size)?;
     }
@@ -384,8 +385,9 @@ fn ntdll_xstate_payload_size(mask: ULONG64) -> Option<usize> {
             if selected & (1u64 << feature) == 0 { continue; }
             let size = NTDLL_XSTATE_SIZES[feature].load(Ordering::Acquire) as usize;
             if size == 0 { return None; }
-            let leaf = unsafe { core::arch::x86_64::__cpuid_count(0x0d, feature as u32) };
-            if leaf.ecx & 2 != 0 { end = end.checked_add(63)? & !63; }
+            if NTDLL_XSTATE_ALIGNED_MASK.load(Ordering::Acquire) & (1u64 << feature) != 0 {
+                end = end.checked_add(63)? & !63;
+            }
             end = end.checked_add(size)?;
         }
         return Some(end);
