@@ -253,7 +253,12 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
             status as u32 as u64
         }
         NT_SYSCALL_YIELD_EXECUTION => {
-            let _ = crate::ntoskrnl::ke::thread::yield_current();
+            // The bootstrap ring-3 smoke runner is not yet represented by a
+            // scheduler-owned ETHREAD. Only reschedule when a real current
+            // thread exists; otherwise a yield could switch out the boot stack.
+            if crate::ntoskrnl::ke::thread::current_thread_id().is_some() {
+                let _ = crate::ntoskrnl::ke::thread::yield_current();
+            }
             NT_STATUS_SUCCESS
         }
         NT_SYSCALL_QUERY_INFORMATION_PROCESS => nt_query_process(args),
