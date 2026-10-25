@@ -132,6 +132,12 @@ pub const NT_SYSCALL_OPEN_KEY: u64 = 0x105;
 pub const NT_SYSCALL_QUERY_VALUE_KEY: u64 = 0x106;
 pub const NT_SYSCALL_OPEN_FILE: u64 = 0x107;
 pub const NT_SYSCALL_READ_FILE: u64 = 0x108;
+pub const NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY: u64 = 0x109;
+pub const NT_SYSCALL_FREE_VIRTUAL_MEMORY: u64 = 0x10a;
+pub const NT_SYSCALL_PROTECT_VIRTUAL_MEMORY: u64 = 0x10b;
+pub const NT_SYSCALL_QUERY_VIRTUAL_MEMORY: u64 = 0x10c;
+pub const NT_SYSCALL_READ_VIRTUAL_MEMORY: u64 = 0x10d;
+pub const NT_SYSCALL_WRITE_VIRTUAL_MEMORY: u64 = 0x10e;
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
 const NT_STATUS_NOT_IMPLEMENTED: u64 = 0xC000_0002;
@@ -152,7 +158,7 @@ pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 // Service IDs are discovered from the staged PE's own exported syscall stubs.
 const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
-static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 9] =
+static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 15] =
     [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 9];
 const SERVICE_NT_CLOSE: usize = 0;
 const SERVICE_NT_YIELD_EXECUTION: usize = 1;
@@ -163,6 +169,12 @@ const SERVICE_NT_OPEN_KEY: usize = 5;
 const SERVICE_NT_QUERY_VALUE_KEY: usize = 6;
 const SERVICE_NT_OPEN_FILE: usize = 7;
 const SERVICE_NT_READ_FILE: usize = 8;
+const SERVICE_NT_ALLOCATE_VIRTUAL_MEMORY: usize = 9;
+const SERVICE_NT_FREE_VIRTUAL_MEMORY: usize = 10;
+const SERVICE_NT_PROTECT_VIRTUAL_MEMORY: usize = 11;
+const SERVICE_NT_QUERY_VIRTUAL_MEMORY: usize = 12;
+const SERVICE_NT_READ_VIRTUAL_MEMORY: usize = 13;
+const SERVICE_NT_WRITE_VIRTUAL_MEMORY: usize = 14;
 
 fn image_u16(image: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
@@ -191,7 +203,7 @@ fn image_rva_offset(image: &[u8], section_table: usize, section_count: usize,
     }
     None
 }
-fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 9]> {
+fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 15]> {
     if image.get(0..2)? != b"MZ" { return None; }
     let pe = image_u32(image, 0x3c)? as usize;
     if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" { return None; }
@@ -217,8 +229,8 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 9]> {
     let functions = image_rva_offset(image, section_table, section_count, headers_size, functions_rva, function_count.checked_mul(4)?)?;
     let names = image_rva_offset(image, section_table, section_count, headers_size, names_rva, name_count.checked_mul(4)?)?;
     let ordinals = image_rva_offset(image, section_table, section_count, headers_size, ordinals_rva, name_count.checked_mul(2)?)?;
-    let required_names: [&[u8]; 9] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile"];
-    let mut discovered = [SERVICE_UNAVAILABLE; 9];
+    let required_names: [&[u8]; 15] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile", b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory", b"NtReadVirtualMemory", b"NtWriteVirtualMemory"];
+    let mut discovered = [SERVICE_UNAVAILABLE; 15];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
         let name_at = image_rva_offset(image, section_table, section_count, headers_size, name_rva, 1)?;
@@ -261,6 +273,12 @@ pub fn windows_service_number(name: &[u8]) -> Option<u32> {
         b"NtQueryValueKey" => SERVICE_NT_QUERY_VALUE_KEY,
         b"NtOpenFile" => SERVICE_NT_OPEN_FILE,
         b"NtReadFile" => SERVICE_NT_READ_FILE,
+        b"NtAllocateVirtualMemory" => SERVICE_NT_ALLOCATE_VIRTUAL_MEMORY,
+        b"NtFreeVirtualMemory" => SERVICE_NT_FREE_VIRTUAL_MEMORY,
+        b"NtProtectVirtualMemory" => SERVICE_NT_PROTECT_VIRTUAL_MEMORY,
+        b"NtQueryVirtualMemory" => SERVICE_NT_QUERY_VIRTUAL_MEMORY,
+        b"NtReadVirtualMemory" => SERVICE_NT_READ_VIRTUAL_MEMORY,
+        b"NtWriteVirtualMemory" => SERVICE_NT_WRITE_VIRTUAL_MEMORY,
         _ => return None,
     };
     let value = WINDOWS_SERVICE_NUMBERS[slot].load(Ordering::Acquire);
@@ -818,6 +836,12 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_QUERY_VALUE_KEY => nt_query_value_key(args),
         NT_SYSCALL_OPEN_FILE => nt_open_file(args),
         NT_SYSCALL_READ_FILE => nt_read_file(args),
+        NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::allocate(args),
+        NT_SYSCALL_FREE_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::free(args),
+        NT_SYSCALL_PROTECT_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::protect(args),
+        NT_SYSCALL_QUERY_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::query(args),
+        NT_SYSCALL_READ_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::read(args),
+        NT_SYSCALL_WRITE_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::write(args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
     }
 }
@@ -864,6 +888,12 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         Some(SERVICE_NT_QUERY_VALUE_KEY) => NT_SYSCALL_QUERY_VALUE_KEY,
         Some(SERVICE_NT_OPEN_FILE) => NT_SYSCALL_OPEN_FILE,
         Some(SERVICE_NT_READ_FILE) => NT_SYSCALL_READ_FILE,
+        Some(SERVICE_NT_ALLOCATE_VIRTUAL_MEMORY) => NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY,
+        Some(SERVICE_NT_FREE_VIRTUAL_MEMORY) => NT_SYSCALL_FREE_VIRTUAL_MEMORY,
+        Some(SERVICE_NT_PROTECT_VIRTUAL_MEMORY) => NT_SYSCALL_PROTECT_VIRTUAL_MEMORY,
+        Some(SERVICE_NT_QUERY_VIRTUAL_MEMORY) => NT_SYSCALL_QUERY_VIRTUAL_MEMORY,
+        Some(SERVICE_NT_READ_VIRTUAL_MEMORY) => NT_SYSCALL_READ_VIRTUAL_MEMORY,
+        Some(SERVICE_NT_WRITE_VIRTUAL_MEMORY) => NT_SYSCALL_WRITE_VIRTUAL_MEMORY,
         _ => {
             CALL_COUNT.fetch_add(1, Ordering::AcqRel);
             return NT_STATUS_NOT_IMPLEMENTED;
@@ -904,6 +934,11 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_QUERY_VALUE_KEY => 6,
             NT_SYSCALL_OPEN_FILE => 6,
             NT_SYSCALL_READ_FILE => 9,
+            NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY => 6,
+            NT_SYSCALL_FREE_VIRTUAL_MEMORY => 4,
+            NT_SYSCALL_PROTECT_VIRTUAL_MEMORY => 5,
+            NT_SYSCALL_QUERY_VIRTUAL_MEMORY => 6,
+            NT_SYSCALL_READ_VIRTUAL_MEMORY | NT_SYSCALL_WRITE_VIRTUAL_MEMORY => 5,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
