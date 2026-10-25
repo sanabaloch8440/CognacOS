@@ -1,4 +1,5 @@
 pub(crate) mod address_space;
+pub(crate) mod user_range;
 pub(crate) mod kernel_space;
 pub(crate) mod pagefile;
 pub(crate) mod physical;
