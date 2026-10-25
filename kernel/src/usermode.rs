@@ -629,7 +629,7 @@ pub unsafe fn run_native_ntdll_smoke(
     imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xB30);
     imm64!(&[0x49, 0xb8], 1);
     call_ptr!(rtl_equal_ansi);
-    emit!(&[0x3d, 1, 0, 0, 0]);
+    emit!(&[0x3c, 1]); // BOOLEAN return is defined in AL, not all of EAX.
     fail_if!(&[0x0f, 0x85]);
 
     emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
