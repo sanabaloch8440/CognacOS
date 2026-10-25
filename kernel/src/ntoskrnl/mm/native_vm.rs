@@ -132,6 +132,86 @@ pub fn write(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
 const STATUS_CONFLICTING_ADDRESSES: u64 = 0xC000_0018;
 const STATUS_INVALID_PAGE_PROTECTION: u64 = 0xC000_0045;
 const STATUS_INFO_LENGTH_MISMATCH: u64 = 0xC000_0004;
+
+const STATUS_NO_MEMORY: u64 = 0xC000_0017;
+const STATUS_LOCK_NOT_GRANTED: u64 = 0xC000_0055;
+const MAP_PROCESS: u64 = 1;
+const MAX_LOCKED_VM_PAGES: usize = 4096;
+const MAX_VM_LOCK_RANGE_PAGES: usize = 256;
+#[derive(Clone, Copy)]
+struct NativeVmLockedPage { root: u64, va: u64, physical_page: u64, live: bool }
+impl NativeVmLockedPage { const EMPTY: Self = Self { root: 0, va: 0, physical_page: 0, live: false }; }
+static NATIVE_VM_LOCKED_PAGES: crate::hal::IrqSpinLock<[NativeVmLockedPage; MAX_LOCKED_VM_PAGES]> =
+    crate::hal::IrqSpinLock::new([NativeVmLockedPage::EMPTY; MAX_LOCKED_VM_PAGES]);
+
+/// Pin resident pages in the current process. The kernel currently rejects
+/// nonresident pages instead of faulting them in; successful locks prevent
+/// physical-frame reclamation/page-out until the matching unlock call.
+pub fn lock(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] != CURRENT_PROCESS { return STATUS_INVALID_HANDLE; }
+    if args[1] == 0 || args[2] == 0 || args[3] != MAP_PROCESS { return STATUS_INVALID_PARAMETER; }
+    let root = match current_root() { Ok(r) => r, Err(s) => return s };
+    let base = match read_u64(root, args[1]) { Ok(v) => v, Err(s) => return s };
+    let size = match read_u64(root, args[2]) { Ok(v) => v, Err(s) => return s };
+    let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
+    let pages = ((end - start) / PAGE) as usize;
+    if pages == 0 || pages > MAX_VM_LOCK_RANGE_PAGES { return STATUS_INVALID_PARAMETER; }
+    if unsafe { address_space::copy_to_user_root(root, args[1], &start.to_ne_bytes()) }.is_err()
+        || unsafe { address_space::copy_to_user_root(root, args[2], &(end - start).to_ne_bytes()) }.is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    let space = match attached(root) { Ok(s) => s, Err(s) => return s };
+    let Some((region_start, region_end, _, _, _, _, _, reserved, committed)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
+    if !reserved || !committed || start < region_start || end > region_end { return STATUS_INVALID_PARAMETER; }
+    let mut physical_pages = [0u64; MAX_VM_LOCK_RANGE_PAGES];
+    let mut va = start;
+    for slot in physical_pages.iter_mut().take(pages) {
+        let physical = match space.translate_user(va, false) { Ok(p) => p, Err(_) => return STATUS_LOCK_NOT_GRANTED };
+        *slot = (physical & !(PAGE - 1)) / PAGE;
+        va += PAGE;
+    }
+    let mut records = NATIVE_VM_LOCKED_PAGES.lock();
+    if records.iter().filter(|p| !p.live).count() < pages { return STATUS_NO_MEMORY; }
+    if !crate::ntoskrnl::mm::runtime::lock_pfns(&physical_pages[..pages]) { return STATUS_NO_MEMORY; }
+    va = start;
+    for pfn in physical_pages.iter().take(pages).copied() {
+        let slot = records.iter_mut().find(|p| !p.live).expect("preflighted native VM lock slots");
+        *slot = NativeVmLockedPage { root, va, physical_page: pfn * PAGE, live: true };
+        va += PAGE;
+    }
+    STATUS_SUCCESS
+}
+
+/// Release one matching lock reference for every page in the requested range.
+pub fn unlock(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] != CURRENT_PROCESS { return STATUS_INVALID_HANDLE; }
+    if args[1] == 0 || args[2] == 0 || args[3] != MAP_PROCESS { return STATUS_INVALID_PARAMETER; }
+    let root = match current_root() { Ok(r) => r, Err(s) => return s };
+    let base = match read_u64(root, args[1]) { Ok(v) => v, Err(s) => return s };
+    let size = match read_u64(root, args[2]) { Ok(v) => v, Err(s) => return s };
+    let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
+    let pages = ((end - start) / PAGE) as usize;
+    if pages == 0 || pages > MAX_VM_LOCK_RANGE_PAGES { return STATUS_INVALID_PARAMETER; }
+    if unsafe { address_space::copy_to_user_root(root, args[1], &start.to_ne_bytes()) }.is_err()
+        || unsafe { address_space::copy_to_user_root(root, args[2], &(end - start).to_ne_bytes()) }.is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    let mut records = NATIVE_VM_LOCKED_PAGES.lock();
+    let mut indices = [usize::MAX; MAX_VM_LOCK_RANGE_PAGES];
+    let mut pfns = [0u64; MAX_VM_LOCK_RANGE_PAGES];
+    for i in 0..pages {
+        let va = start + i as u64 * PAGE;
+        let Some((index, record)) = records.iter().enumerate().find(|(_, p)| p.live && p.root == root && p.va == va) else {
+            return STATUS_INVALID_PARAMETER;
+        };
+        indices[i] = index;
+        pfns[i] = record.physical_page / PAGE;
+    }
+    crate::ntoskrnl::mm::runtime::unlock_pfns(&pfns[..pages]);
+    for index in indices.iter().take(pages).copied() { records[index] = NativeVmLockedPage::EMPTY; }
+    STATUS_SUCCESS
+}
+
 const MEM_DECOMMIT: u64 = 0x4000;
 const MEM_RELEASE: u64 = 0x8000;
 const PAGE_READONLY: u32 = 0x02;
