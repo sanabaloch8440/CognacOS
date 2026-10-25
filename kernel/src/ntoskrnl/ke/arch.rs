@@ -833,12 +833,39 @@ cognacos_timer_stub:
     push r13
     push r14
     push r15
+    # Only a ring-3 interrupt needs the per-thread user XSTATE snapshot.
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_timer_skip_user_save
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_save_current_user_xstate
+    mov rsp, rbx
+.Lcognacos_timer_skip_user_save:
     mov rax, rsp
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
     call cognacos_timer_interrupt_handler
     mov rsp, [rsp + 8]
+    # The timer handler may have scheduled away and resumed this thread. Read
+    # its current XSTATE area and restore it as the final operation before IRETQ.
+    mov eax, dword ptr [rsp + 128]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_timer_skip_user_restore
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lcognacos_timer_skip_user_restore
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lcognacos_timer_skip_user_restore:
     pop r15
     pop r14
     pop r13
