@@ -383,7 +383,7 @@ This is still a source-first Rust implementation: it does not query HKCU\\Softwa
 
 Added pure Rust decoders for the value payloads consumed by Wine version.c's NT-style registry reader: complete CurrentMajorVersionNumber/CurrentMinorVersionNumber DWORD pairs, CurrentVersion string fallback, CurrentBuildNumber, UTF-16 CSDVersion, the packed Control\\Windows CSDVersion service-pack value, and ProductOptions ProductType (WinNT, LanmanNT, ServerNT). Added a Win9x VersionNumber/SubVersionNumber decoder and the source's NT-first, Win9x-second fallback selection helper. Unit tests cover type/value fallback, product type mapping, service-pack decoding, UTF-16 termination, malformed values, and packed Win9x build fields.
 
-These helpers consume already-decoded values; they do not call NtOpenKey/NtQueryValueKey, validate registry value types themselves, or initialize PEB fields. The native registry bridge and startup wiring remain outstanding, and CI must execute the Rust tests before this slice is considered validated.
+These parser helpers consume already-decoded values and do not issue syscalls themselves. The subsequent integration described below now provides a separate kernel-backed registry path and PEB startup wiring; this Rust parser module is still not directly linked into the native PE32+ build.
 
 
 ### Registry-backed version initialization and PEB wiring
