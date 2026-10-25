@@ -413,6 +413,8 @@ jobs:
           cat build/serial.log
           grep -F 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.' build/serial.log
           grep -F 'CognacOS Rust kernel entered.' build/serial.log
+          grep -F 'XSTATE KUSER_SHARED_DATA ABI initialized; enabled mask=' build/serial.log
+          grep -F 'XSTATE XSAVE/XRSTOR processor self-test passed.' build/serial.log
           grep -F 'Bootloader verified kernel SHA-256 and Ed25519 code signature.' build/serial.log
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
           grep -F 'No TPM 2.0 measured-boot device; optional feature skipped.' build/serial.log
