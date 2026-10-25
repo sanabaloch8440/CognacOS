@@ -11,6 +11,7 @@ mod winabi;
 mod pe_runtime;
 mod pe_modules;
 mod pe_loader;
+mod pe_dependencies;
 mod usermode;
 use cognacos_acpi as acpi;
 use cognacos_pci as pci;
