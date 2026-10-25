@@ -1,3 +1,5 @@
+use super::*;
+
 #[no_mangle]
 pub unsafe extern "system" fn LdrAddLoadAsDataTable() -> i32 { STATUS_NOT_IMPLEMENTED }
 
