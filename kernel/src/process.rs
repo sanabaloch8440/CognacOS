@@ -448,7 +448,6 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
         put_u32(space, PEB_ADDRESS + 0x118, major)?;
         put_u32(space, PEB_ADDRESS + 0x11c, minor)?;
         put_u16(space, PEB_ADDRESS + 0x120, (build & 0xffff) as u16)?;
-        put_u32(space, PEB_ADDRESS + 0x120, build)?;
         put_u32(space, PEB_ADDRESS + 0x124, 2)?; // VER_PLATFORM_WIN32_NT
     }
 
