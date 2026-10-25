@@ -72,3 +72,50 @@ SIZE_T WINAPI RtlCompareMemory(const void *src1, const void *src2, SIZE_T len)
     while (i < len && a[i] == b[i]) ++i;
     return i;
 }
+
+
+/* Windows NTDLL exports use ULONG return/length types for these helpers. */
+ULONG WINAPI RtlCompareMemoryUlong(const void *src, SIZE_T len, ULONG pattern)
+{
+    const unsigned char *bytes = (const unsigned char *)src;
+    const unsigned char *pat = (const unsigned char *)&pattern;
+    SIZE_T i;
+
+    for (i = 0; i < len; ++i)
+        if (bytes[i] != pat[i & 3]) break;
+    return (ULONG)i;
+}
+
+ULONG WINAPI RtlComputeCrc32(ULONG initial, const void *buffer, ULONG length)
+{
+    const unsigned char *bytes = (const unsigned char *)buffer;
+    ULONG crc = ~initial;
+    ULONG i;
+    unsigned int bit;
+
+    if (!buffer && length) return initial;
+    for (i = 0; i < length; ++i)
+    {
+        crc ^= bytes[i];
+        for (bit = 0; bit < 8; ++bit)
+            crc = (crc & 1) ? ((crc >> 1) ^ 0xedb88320UL) : (crc >> 1);
+    }
+    return ~crc;
+}
+
+ULONG WINAPI RtlCrc32(ULONG initial, const void *buffer, ULONG length)
+{
+    return RtlComputeCrc32(initial, buffer, length);
+}
+
+BOOLEAN WINAPI RtlIsZeroMemory(const void *buffer, SIZE_T length)
+{
+    const volatile unsigned char *bytes = (const volatile unsigned char *)buffer;
+    SIZE_T i;
+
+    if (!length) return TRUE;
+    if (!buffer) return FALSE;
+    for (i = 0; i < length; ++i)
+        if (bytes[i]) return FALSE;
+    return TRUE;
+}
