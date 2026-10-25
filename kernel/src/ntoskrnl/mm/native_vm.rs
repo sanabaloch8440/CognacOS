@@ -32,7 +32,7 @@ fn attached(root: u64) -> Result<AddressSpace, u64> {
 fn region_is_free(space: &AddressSpace, start: u64, length: u64) -> bool {
     let mut offset = 0;
     while offset < length {
-        if space.probe_user_range(start + offset, 1, false, false).is_ok() { return false; }
+        if space.query_region(start + offset).is_some_and(|region| region.6) { return false; }
         offset += PAGE;
     }
     true
