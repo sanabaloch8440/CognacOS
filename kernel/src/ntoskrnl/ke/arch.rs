@@ -95,6 +95,7 @@ struct TrapFixup {
     error_mask: core::sync::atomic::AtomicU64,
     error_value: core::sync::atomic::AtomicU64,
     recovery_result: core::sync::atomic::AtomicU64,
+    readers: core::sync::atomic::AtomicU32,
 }
 impl TrapFixup {
     const fn new() -> Self {
@@ -105,6 +106,7 @@ impl TrapFixup {
             error_mask: core::sync::atomic::AtomicU64::new(0),
             error_value: core::sync::atomic::AtomicU64::new(0),
             recovery_result: core::sync::atomic::AtomicU64::new(0),
+            readers: core::sync::atomic::AtomicU32::new(0),
         }
     }
 }
@@ -165,6 +167,13 @@ pub fn unregister_trap_frame_fixup(fault_rip: u64) -> bool {
             slot.address.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.error_mask.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.error_value.store(0, core::sync::atomic::Ordering::Relaxed);
+            while slot.readers.load(core::sync::atomic::Ordering::Acquire) != 0 {
+                core::hint::spin_loop();
+            }
+            slot.recovery_rip.store(0, core::sync::atomic::Ordering::Relaxed);
+            slot.address.store(0, core::sync::atomic::Ordering::Relaxed);
+            slot.error_mask.store(0, core::sync::atomic::Ordering::Relaxed);
+            slot.error_value.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.recovery_result.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.fault_rip.store(0, core::sync::atomic::Ordering::Release);
             return true;
@@ -178,20 +187,26 @@ fn apply_trap_frame_fixup(rip: u64, cr2: u64, error: u64, frame: *const u64) -> 
     // allocate, sleep, or acquire locks which might already be held by the faulting CPU.
     for slot in TRAP_FIXUPS.iter() {
         if slot.fault_rip.load(core::sync::atomic::Ordering::Acquire) != rip { continue; }
+        slot.readers.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        if slot.fault_rip.load(core::sync::atomic::Ordering::Acquire) != rip {
+            slot.readers.fetch_sub(1, core::sync::atomic::Ordering::Release);
+            continue;
+        }
         let address = slot.address.load(core::sync::atomic::Ordering::Relaxed);
         let mask = slot.error_mask.load(core::sync::atomic::Ordering::Relaxed);
         let value = slot.error_value.load(core::sync::atomic::Ordering::Relaxed);
-        if (address == 0 || address == cr2) && error & mask == value {
-            let recovery = slot.recovery_rip.load(core::sync::atomic::Ordering::Relaxed);
-            let result = slot.recovery_result.load(core::sync::atomic::Ordering::Relaxed);
-            if recovery >= 0xffff_8000_0000_0000 && recovery != FIXUP_RESERVED {
-                unsafe {
-                    let saved = frame as *mut u64;
-                    saved.add(14).write(result); // RAX: explicit probe result
-                    saved.add(17).write(recovery); // RIP: resume at the recovery stub
-                }
-                return true;
+        let recovery = slot.recovery_rip.load(core::sync::atomic::Ordering::Relaxed);
+        let result = slot.recovery_result.load(core::sync::atomic::Ordering::Relaxed);
+        let matches = (address == 0 || address == cr2) && error & mask == value
+            && recovery >= 0xffff_8000_0000_0000 && recovery != FIXUP_RESERVED;
+        slot.readers.fetch_sub(1, core::sync::atomic::Ordering::Release);
+        if matches {
+            unsafe {
+                let saved = frame as *mut u64;
+                saved.add(14).write(result); // RAX: explicit probe result
+                saved.add(17).write(recovery); // RIP: resume at the recovery stub
             }
+            return true;
         }
     }
     false
