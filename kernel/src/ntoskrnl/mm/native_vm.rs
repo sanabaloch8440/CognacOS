@@ -218,6 +218,18 @@ pub fn protect(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let base = match read_u64(root, args[1]) { Ok(v) => v, Err(s) => return s };
     let size = match read_u64(root, args[2]) { Ok(v) => v, Err(s) => return s };
     let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
+    // Validate all output pointers before changing PTEs or region metadata.
+    if unsafe { address_space::copy_to_user_root(root, args[1], &base.to_ne_bytes()) }.is_err()
+        || unsafe { address_space::copy_to_user_root(root, args[2], &size.to_ne_bytes()) }.is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
+    if args[4] != 0 {
+        let mut old_bytes = [0u8; 4];
+        if unsafe { address_space::copy_from_user_root(root, args[4], &mut old_bytes) }.is_err()
+            || unsafe { address_space::copy_to_user_root(root, args[4], &old_bytes) }.is_err() {
+            return STATUS_ACCESS_VIOLATION;
+        }
+    }
     let mut space = match attached(root) { Ok(s) => s, Err(s) => return s };
     let Some((region_start, region_end, _, _allocation_protect, old_current, old_write, old_exec, reserved, committed)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
     if !reserved || !committed || start != region_start || end != region_end { return STATUS_INVALID_PARAMETER; }
