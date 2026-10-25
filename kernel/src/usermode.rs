@@ -340,7 +340,7 @@ pub unsafe fn run_native_ntdll_smoke(
             fail_if!(&[0x0f, 0x85]);
         }};
     }
-    emit!(&[0x48, 0x83, 0xec, 0x20]); // Windows x64 shadow space; aligned before CALL.
+    emit!(&[0x48, 0x83, 0xec, 0x30]); // Shadow space plus fifth-argument slot; keeps RSP 16-byte aligned.
     imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0x300);
     emit!(&[0xba, 5, 0, 0, 0]);
     call_ptr!(configure);
