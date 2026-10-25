@@ -4,11 +4,11 @@ on:
   push:
     branches: [main]
     paths:
-      - "root/wine/dlls/ntdll/native/**"
+      - "root/wine/dlls/ntdll/cognac_*"
       - ".github/workflows/ntdll-native.yml"
   pull_request:
     paths:
-      - "root/wine/dlls/ntdll/native/**"
+      - "root/wine/dlls/ntdll/cognac_*"
       - ".github/workflows/ntdll-native.yml"
   workflow_dispatch:
 
@@ -29,17 +29,17 @@ jobs:
           sudo apt-get install --yes make gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
 
       - name: Build freestanding PE32+ DLL
-        run: make -C root/wine/dlls/ntdll/native clean all check
+        run: make -C root/wine/dlls/ntdll clean all check
 
       - name: Report PE headers and exports
         run: |
-          x86_64-w64-mingw32-objdump -f root/wine/dlls/ntdll/native/ntdll.dll
-          x86_64-w64-mingw32-objdump -p root/wine/dlls/ntdll/native/ntdll.dll
+          x86_64-w64-mingw32-objdump -f root/wine/dlls/ntdll/ntdll.dll
+          x86_64-w64-mingw32-objdump -p root/wine/dlls/ntdll/ntdll.dll
 
       - name: Publish ntdll.dll build artifact
         uses: actions/upload-artifact@v4
         with:
           name: cognacos-native-ntdll-x86_64
-          path: root/wine/dlls/ntdll/native/ntdll.dll
+          path: root/wine/dlls/ntdll/ntdll.dll
           if-no-files-found: error
           retention-days: 14
