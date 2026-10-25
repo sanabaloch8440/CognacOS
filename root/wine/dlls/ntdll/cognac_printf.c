@@ -96,7 +96,25 @@ static int format_core(OUT *o,const void *fmt,va_list input,int wide)
         ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p];
         if(ch=='.'){p++;prec=0;ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p];if(ch=='*'){prec=va_arg(ap,int);p++;if(prec<0)prec=-1;}else while((ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p])>='0'&&ch<='9'){if(prec<INT_MAX/10)prec=prec*10+(int)(ch-'0');p++;}}
         ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p];
-        while(ch=='h'||ch=='l'||ch=='w'||ch=='I'||ch=='z'||ch=='t'||ch=='j'||ch=='L'){if(ch=='h')lh=1;else if(ch=='l'||ch=='w')source_wide=1;else if(ch=='I'||ch=='z'||ch=='t'||ch=='j')lh=2;p++;ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p];}
+        for(;;) {
+            ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p];
+            if(ch=='h') { lh=1; p++; }
+            else if(ch=='l') {
+                if((wide?((const WCHAR *)fmt)[p+1]:((const unsigned char *)fmt)[p+1])=='l') { lh=2; p+=2; }
+                else { lh=1; source_wide=1; p++; }
+            }
+            else if(ch=='w') { source_wide=1; p++; }
+            else if(ch=='I') {
+                uint32_t c1=wide?((const WCHAR *)fmt)[p+1]:((const unsigned char *)fmt)[p+1];
+                uint32_t c2=wide?((const WCHAR *)fmt)[p+2]:((const unsigned char *)fmt)[p+2];
+                if(c1=='6'&&c2=='4') { lh=2; p+=3; }
+                else if(c1=='3'&&c2=='2') { lh=1; p+=3; }
+                else { lh=2; p++; }
+            }
+            else if(ch=='z'||ch=='t'||ch=='j') { lh=2; p++; }
+            else if(ch=='L') { p++; }
+            else break;
+        }
         if(ch==0) break;
         p++;
         if(ch=='s'||ch=='S'||ch=='c'||ch=='C'){
