@@ -856,12 +856,17 @@ pub fn native_nt_dispatch_self_test(space: &AddressSpace, user_base: u64) -> boo
     let unsupported_ok = unsafe { cognacos_nt_syscall_dispatch(frame.as_mut_ptr()) } == NT_STATUS_NOT_IMPLEMENTED;
     // Registry syscalls must reject invalid user pointers through checked copies,
     // before attempting to interpret caller-controlled OBJECT_ATTRIBUTES or names.
-    let invalid_registry_open = nt_open_key(&[
-        user_base + 0x200, 0, 0x0000_7fff_ffff_f000, 0, 0, 0
-    ]) == NT_STATUS_ACCESS_VIOLATION;
-    let invalid_registry_query = nt_query_value_key(&[
-        1, 0x0000_7fff_ffff_f000, 2, user_base + 0x200, 64, 0
-    ]) == NT_STATUS_ACCESS_VIOLATION;
+    let mut registry_args = [0u64; NT_MAX_ARGUMENTS];
+    registry_args[0] = user_base + 0x200;
+    registry_args[2] = 0x0000_7fff_ffff_f000;
+    let invalid_registry_open = nt_open_key(&registry_args) == NT_STATUS_ACCESS_VIOLATION;
+    registry_args = [0u64; NT_MAX_ARGUMENTS];
+    registry_args[0] = 1;
+    registry_args[1] = 0x0000_7fff_ffff_f000;
+    registry_args[2] = 2;
+    registry_args[3] = user_base + 0x200;
+    registry_args[4] = 64;
+    let invalid_registry_query = nt_query_value_key(&registry_args) == NT_STATUS_ACCESS_VIOLATION;
     // Decode all 13 stack arguments (arguments 5..17) from user memory.
     let mut stack = [0u8; (NT_MAX_ARGUMENTS - 4) * 8];
     for (i, chunk) in stack.chunks_exact_mut(8).enumerate() {
