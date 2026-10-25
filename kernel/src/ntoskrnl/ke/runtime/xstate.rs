@@ -280,7 +280,7 @@ fn current_xstate_execution_context() -> Option<(usize, u64, u8)> {
     let cpu = crate::hal::current_cpu_local()?.logical_id.load(Ordering::Acquire) as usize;
     if cpu >= crate::hal::MAX_CPUS { return None; }
     let thread = crate::thread::current_thread_id()?;
-    let irql = ke_get_current_irql();
+    let irql = unsafe { ke_get_current_irql() };
     Some((cpu, thread, irql))
 }
 
