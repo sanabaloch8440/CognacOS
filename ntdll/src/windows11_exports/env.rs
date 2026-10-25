@@ -13,7 +13,6 @@ use std::alloc::{alloc, dealloc};
 type NTSTATUS = i32;
 type ULONG = u32;
 type SIZE_T = usize;
-type BOOLEAN = u8;
 type PWSTR = *mut u16;
 type PCWSTR = *const u16;
 type PVOID = *mut c_void;
@@ -21,7 +20,6 @@ type PVOID = *mut c_void;
 const STATUS_SUCCESS: NTSTATUS = 0;
 const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
 const STATUS_NO_MEMORY: NTSTATUS = 0xC000_0017u32 as i32;
-const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC000_0002u32 as i32;
 const RTL_CREATE_ENVIRONMENT_TRANSLATE: ULONG = 0x1;
 const ENV_MAGIC: u64 = 0x434F_474E_454E_5631;
 const MAX_ENV_UNITS: usize = 1 << 20;
@@ -79,10 +77,12 @@ unsafe fn free_owned(environment: PWSTR) -> NTSTATUS {
 unsafe fn environment_length(environment: PCWSTR) -> Result<usize, NTSTATUS> {
     if environment.is_null() { return Err(STATUS_INVALID_PARAMETER); }
     for i in 0..MAX_ENV_UNITS {
-        if unsafe { *environment.add(i) } == 0
-            && (i == 0 || unsafe { *environment.add(i - 1) } == 0)
-        {
-            return Ok(i + 1);
+        if unsafe { *environment.add(i) } == 0 {
+            if i == 0 {
+                if unsafe { *environment.add(1) } == 0 { return Ok(2); }
+            } else if unsafe { *environment.add(i - 1) } == 0 {
+                return Ok(i + 1);
+            }
         }
     }
     Err(STATUS_INVALID_PARAMETER)
@@ -161,7 +161,7 @@ pub unsafe extern "system" fn RtlSetEnvironmentVar(
     value_length: SIZE_T,
 ) -> NTSTATUS {
     if environment.is_null() || name.is_null() || name_length == 0 || name_length % 2 != 0
-        || value_length % 2 != 0 || (!value.is_null() && value_length != 0 && value.is_null())
+        || value_length % 2 != 0 || (value.is_null() && value_length != 0)
     {
         return STATUS_INVALID_PARAMETER;
     }
