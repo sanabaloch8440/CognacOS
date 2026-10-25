@@ -526,12 +526,12 @@ impl AddressSpace {
             if let Some(index) = ws {
                 let paged_out = {
                     let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                    unsafe { &*WORKING_SET.0.get() }[index].paged_out
+                    (unsafe { &*WORKING_SET.0.get() })[index].paged_out
                 };
                 if paged_out {
                     let slot = {
                         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                        unsafe { &*WORKING_SET.0.get() }[index].pagefile_slot
+                        (unsafe { &*WORKING_SET.0.get() })[index].pagefile_slot
                     };
                     if crate::ntoskrnl::mm::pagefile::free_slot(slot).is_err() {
                         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
@@ -554,7 +554,7 @@ impl AddressSpace {
                     }
                 }
                 let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-                unsafe { &mut *WORKING_SET.0.get() }[index] = WorkingSetPage::EMPTY;
+                (unsafe { &mut *WORKING_SET.0.get() })[index] = WorkingSetPage::EMPTY;
             }
             va += PAGE_SIZE;
         }
