@@ -7,4 +7,3 @@ EXPORTS
     RtlCopyMemory
     RtlFillMemory
     RtlMoveMemory
-    RtlSecureZeroMemory
