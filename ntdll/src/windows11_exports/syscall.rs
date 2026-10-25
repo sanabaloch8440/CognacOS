@@ -127,10 +127,7 @@ pub unsafe extern "system" fn NtClearEvent() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtClose() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+
 
 #[no_mangle]
 pub unsafe extern "system" fn NtCloseObjectAuditAlarm() -> i32 {
@@ -933,10 +930,7 @@ pub unsafe extern "system" fn NtQuerySystemEnvironmentValueEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQuerySystemInformation() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+
 
 #[no_mangle]
 pub unsafe extern "system" fn NtQuerySystemInformationEx() -> i32 {
@@ -1424,10 +1418,7 @@ pub unsafe extern "system" fn NtWriteRequestData() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtYieldExecution() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwAccessCheck() -> i32 {
