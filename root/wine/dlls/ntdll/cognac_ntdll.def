@@ -26,3 +26,6 @@ EXPORTS
     RtlCopyUnicodeString
     RtlUnicodeStringToInteger
     RtlIntegerToUnicodeString
+    RtlGetNtVersionNumbers
+    RtlNtStatusToDosError
+    RtlNtStatusToDosErrorNoTeb
