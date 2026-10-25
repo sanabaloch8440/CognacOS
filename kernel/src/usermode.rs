@@ -264,7 +264,7 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
             crate::serial_write_hex(crate::syscall::last_exit_code());
             crate::serial_write(b" state=");
             crate::serial_write_hex(snapshot.state as u32 as u64);
-            crate::serial_write(b"\\r\\n");
+            crate::serial_write(b"\r\n");
         }
         return Err(VmError::PermissionDenied);
     }
