@@ -16,6 +16,8 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - Last recorded full passing kernel/UEFI/QEMU/SMP run: [run 40159978518](https://github.com/umarfarooq7869/CognacOS/actions/runs/40159978518), commit `ed2198d2a5dbaf5820cc863297396098abcfaa58`.
 - That run passed the QEMU boot smoke test and 2/4/8-vCPU SMP startup, interrupt, scheduler, and TLB-shootdown matrix. It does not validate the fault-containment and I/O-rundown items below unless the relevant tests were included.
 - Later changes must be checked against the latest [Actions runs](https://github.com/umarfarooq7869/CognacOS/actions) before any milestone is marked validated. TPM-present measurement and firmware-enrolled Secure Boot remain separate validation tasks.
+- Native NTDLL freestanding PE32+ build, export checks, and no-import check passed: [run 40172132060](https://github.com/umarfarooq7869/CognacOS/actions/runs/40172132060), commit `d0cea1d7ae8d84c3bca784ecbd122bb8963cfc9d`.
+- QEMU boot smoke passed, including the native NT dispatcher self-test for five arguments, invalid output buffers, unsupported IDs, and 17-argument stack decoding: [run 40172070835](https://github.com/umarfarooq7869/CognacOS/actions/runs/40172070835), commit `f2fcf55bab1b49dac75bb0f1df323a39d4e97abb`. The 2/4/8-vCPU SMP stress matrix was still running at the last check, so the full workflow is not yet recorded as passing.
 
 ## Milestone 1 — Boot and platform foundations
 
