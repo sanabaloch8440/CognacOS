@@ -68,6 +68,16 @@ pub fn publish_mapping(slot: usize, generation: u32, base: u64, size: u32) -> Re
     e.base = base; e.size = size; e.state = ModuleState::Mapped; Ok(())
 }
 
+/// Register the result of the existing PE32+ mapper in the lifetime table.
+pub fn register_loaded_image(process_id: u64, name: &[u8], image: crate::pe::LoadedImage) -> Result<(usize, u32), i32> {
+    let (slot, generation) = reserve_for_process(process_id, name)?;
+    if let Err(status) = publish_mapping(slot, generation, image.base, image.image_size) {
+        let _ = rollback(slot, generation);
+        return Err(status);
+    }
+    Ok((slot, generation))
+}
+
 pub fn begin_initialization(slot: usize, generation: u32) -> Result<(), i32> {
     let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
     if e.generation != generation || e.state != ModuleState::Mapped { return Err(STATUS_INVALID_PARAMETER); }
