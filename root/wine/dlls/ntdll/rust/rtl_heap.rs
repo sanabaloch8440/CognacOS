@@ -518,3 +518,18 @@ pub unsafe extern "system" fn RtlWalkHeap(
     }
     STATUS_SUCCESS
 }
+
+
+#[cfg(test)]
+mod heap_api_coverage_tests {
+    use super::*;
+
+    #[test]
+    fn rtl_heap_walk_entry_has_x64_layout() {
+        assert_eq!(core::mem::size_of::<RTL_HEAP_WALK_ENTRY>(), 48);
+        assert_eq!(core::mem::offset_of!(RTL_HEAP_WALK_ENTRY, lpData), 0);
+        assert_eq!(core::mem::offset_of!(RTL_HEAP_WALK_ENTRY, cbData), 8);
+        assert_eq!(core::mem::offset_of!(RTL_HEAP_WALK_ENTRY, wFlags), 18);
+        assert_eq!(core::mem::offset_of!(RTL_HEAP_WALK_ENTRY, reserved), 24);
+    }
+}
