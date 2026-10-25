@@ -35,8 +35,10 @@ For CognacOS, leave `WINDOWS_SYSCALL_IDS=0`. The trusted CognacOS loader/kernel
 integration must provide the syscall numbers using
 `CognacNtdllConfigureSyscalls` before invoking `NtClose` or
 `NtYieldExecution`. This keeps OS service numbers out of universal constants.
-The current assembly bridge supports four register arguments only; it is not
-yet suitable for syscalls requiring stack arguments.
+The native bootstrap currently exports `NtClose`, `NtYieldExecution`, the RTL
+memory routines, and `RtlGetVersion` (reports Windows 11 build 26100). The
+assembly bridge currently supports four syscall arguments only; it is not yet
+suitable for syscalls requiring stack arguments.
 
 GitHub Actions builds and checks the PE32+ artifact and validates the helper's
 CLI. This does not claim full Windows 11 compatibility. The remaining work is
