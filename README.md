@@ -26,10 +26,10 @@
 | Area | Implemented foundation | Important gaps |
 | --- | --- | --- |
 | Boot and architecture | Rust UEFI loader, SHA-256 plus Ed25519 kernel verification, security-state handoff, GDT/IDT, CR3 activation | Stable release-key management, Secure Boot enrolled-key testing, broader hardware validation |
-| Memory management | Kernel mappings and permissions, user address-space roots, checked user copies, MDL/pinning foundations, RAM direct map above 4 GiB | User demand paging/working sets, exception-safe probes, complete process isolation |
+| Memory management | Kernel mappings and permissions, user address-space roots, checked user copies, demand-zero region metadata, resident working-set accounting, MDL/pinning foundations, RAM direct map above 4 GiB | General trap-frame fixups for recoverable kernel probes, process-scoped user-fault termination, concurrent teardown/fault stress, working-set trimming, pagefile-backed user paging, SMP-safe TLB invalidation plus page reclamation |
 | SMP and scheduling | Per-CPU ready queues, affinity-aware stealing, saved-context publication, timer preemption, wake IPIs, threaded DPC workers | Full Windows quantum/priority decay and scheduler semantics |
 | NT executive | Ke/Ki runtime, timer/DPC rundown checks, PASSIVE-level threaded DPCs, APC lifecycle, queue/mutant wait foundations | Full user-mode SEH/APC dispatcher, blocking wait-all for every object type, WDK conformance |
-| I/O and drivers | Initial WDM object/IRP layouts, dispatch/completion, device rundown, restricted PE driver loader | General driver compatibility, complete cancellation/rundown, PnP and storage integration |
+| I/O and drivers | Initial WDM object/IRP layouts, dispatch/completion, cancel-routine foundations, device rundown, restricted PE driver loader | Race-safe cancellation-versus-completion, IRP/device rundown across driver unload, fault-injection and concurrency stress, PnP and storage integration |
 | Registry and NLS | Bounded native hive parser, empty hive image creator, service lookup, raw NLS staging | Log replay, persistent registry writes, NLS interpretation, NTFS discovery |
 | Platform and storage | Separate ACPI/PCI/HAL-contract/processor crates; storage protocol foundations; native Rust ext-family driver | Hardware drivers, DMA/IOMMU backend, full VFS and writable filesystem |
 | Boot security | Fail-closed kernel signature check; optional UEFI Secure Boot state detection and TPM 2.0 TCG2 PCR 4 measurement | Secure Boot remains optional; firmware-signed loader/release keys and TPM hardware testing needed; custom kernel signature is not Authenticode |
@@ -37,7 +37,7 @@
 
 Boot integrity is fail-closed: the loader rejects a kernel unless both its pinned SHA-256 digest and Ed25519 signature verify. UEFI Secure Boot remains optional and requires a firmware-trusted bootloader signing certificate; TPM 2.0 measurement is best-effort and absence of a TPM never blocks boot. The current successful QEMU matrix validates the no-TPM path; TPM-present runtime measurement still needs a dedicated passing test.
 
-These are implementation foundations, not production-readiness claims. Details and acceptance criteria live in the roadmap. The CI workflow tests host-side components, builds the freestanding kernel and UEFI loader, validates the PE32+ image, and runs OVMF/QEMU boot and SMP checks. A passing emulator run does not prove real-hardware reliability or Windows driver compatibility.
+Fault containment and lifetime safety remain active work: generalized trap-frame recovery, process-only termination for user faults, concurrent address-space teardown, SMP-safe working-set trimming/reclamation, and I/O cancellation/unload race testing are not yet declared complete. These are implementation foundations, not production-readiness claims. Details and acceptance criteria live in the roadmap. The CI workflow tests host-side components, builds the freestanding kernel and UEFI loader, validates the PE32+ image, and runs OVMF/QEMU boot and SMP checks. A passing emulator run does not prove real-hardware reliability or Windows driver compatibility.
 
 ## Repository layout
 
