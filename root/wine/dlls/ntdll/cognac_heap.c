@@ -72,7 +72,7 @@ static void heap_initialize_locked(COGNAC_HEAP *heap)
     heap->magic = HEAP_MAGIC;
 }
 
-static COGNAC_HEAP_BLOCK *find_block_locked(COGNAC_HEAP *heap, PVOID address)
+static COGNAC_HEAP_BLOCK *find_block_locked(PVOID address)
 {
     ULONG_PTR pointer = (ULONG_PTR)address;
     COGNAC_HEAP_BLOCK *block;
@@ -161,7 +161,7 @@ SIZE_T WINAPI RtlSizeHeap(HANDLE handle, ULONG flags, PVOID address)
     if (handle != (HANDLE)heap || !address) return result;
     heap_lock(heap);
     heap_initialize_locked(heap);
-    block = find_block_locked(heap, address);
+    block = find_block_locked(address);
     if (block && !block->free) result = block->size;
     heap_unlock(heap);
     return result;
@@ -176,7 +176,7 @@ BOOLEAN WINAPI RtlFreeHeap(HANDLE handle, ULONG flags, PVOID address)
     if (handle != (HANDLE)heap || !address) return FALSE;
     heap_lock(heap);
     heap_initialize_locked(heap);
-    block = find_block_locked(heap, address);
+    block = find_block_locked(address);
     if (!block || block->free) {
         heap_unlock(heap);
         return FALSE;
@@ -233,7 +233,7 @@ BOOLEAN WINAPI RtlValidateHeap(HANDLE handle, ULONG flags, PVOID address)
     heap_lock(heap);
     heap_initialize_locked(heap);
     if (address) {
-        block = find_block_locked(heap, address);
+        block = find_block_locked(address);
         valid = (BOOLEAN)(block && !block->free);
     } else {
         expected = arena_start();
