@@ -111,8 +111,9 @@ impl TrapFixup {
 static TRAP_FIXUPS: [TrapFixup; MAX_TRAP_FIXUPS] =
     [const { TrapFixup::new() }; MAX_TRAP_FIXUPS];
 
-/// Register an exact-RIP kernel page-fault recovery. address=0 matches any CR2;
-/// error_mask/value constrain the page-fault error code. On recovery, RAX is
+/// Register an exact-RIP supervisor exception recovery. For vector 14, address=0
+/// matches any CR2 and error_mask/value constrain the page-fault error code; for
+/// other vectors use address=0 and match the architectural error code. On recovery, RAX is
 /// set to recovery_result and RIP is redirected to recovery_rip. The recovery
 /// stub must resume/return from the original probe without re-executing it.
 pub fn register_trap_frame_exception_fixup(
