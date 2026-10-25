@@ -28,10 +28,12 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [ ] Add integration tests for cross-page failures, read-only destinations, rollback, and map/unmap races.
 - [ ] Deliver user-mode exceptions through a defined trap-frame path and terminate only the faulting process.
 - [x] Integrate timer-driven preemption and verify a non-yielding kernel thread is preempted for a runnable peer in QEMU.
-- [x] Add per-address-space demand-zero region metadata, an explicit user not-present fault resolver, and resident working-set accounting APIs (automatic vector-14 trap dispatch, eviction, and pagefile-backed user page-in remain open).
+- [x] Add per-address-space demand-zero region metadata and resident working-set accounting APIs.
+- [x] Route CPL=3 vector-14 faults to the current process's address-space demand-zero resolver; supervisor faults continue through kernel VM handling.
+- [ ] Add user-process eviction/pagefile backing and process-scoped access-violation delivery (currently only the kernel pageable pool has pagefile eviction/page-in).
 - [ ] Add demand-zero resolver integration tests and safe concurrent unmap/fault stress.
 - [x] Add non-dereferencing user-range probes and page-by-page permission validation; copy helpers preflight full ranges before transfer.
-- [ ] Add trap-frame fault fixups for recoverable kernel probes, concurrent teardown stress, and user-fault delivery that terminates only the faulting process.
+- [ ] Add generalized trap-frame fault fixups for recoverable kernel probes, concurrent teardown stress, and user-fault delivery that terminates only the faulting process.
 - [ ] Harden I/O completion, cancellation, driver unload, and device/IRP rundown with race and fault-injection tests.
 - [ ] Implement working-set trimming with SMP-safe TLB shootdowns and page reclamation.
 - [ ] Prove per-process kernel/user page-table isolation, syscall/trap transitions, and protection against cross-process mappings with adversarial tests.

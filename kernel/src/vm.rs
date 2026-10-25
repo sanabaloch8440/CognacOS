@@ -412,6 +412,21 @@ static WORKING_SET_CLOCK: core::sync::atomic::AtomicU64 = core::sync::atomic::At
 const EXTERNAL_USER: u64 = 1 << 9;
 const MDL_USER_BASE: u64 = 0x0000_7000_0000_0000;
 const MDL_USER_LIMIT: u64 = 0x0000_7000_1000_0000;
+/// Resolve a page fault for the currently executing user process. The caller
+/// must have established CPL=3 from the saved interrupt frame; this function
+/// intentionally never guesses a process from CR3 alone.
+pub fn handle_current_user_page_fault(address:u64,error_code:u64)->bool {
+    const PF_USER:u64=1<<2;
+    if error_code&PF_USER==0 { return false; }
+    let pid=crate::thread::current_process_id();
+    let process=crate::process::eprocess_pointer_for_pid(pid);
+    if process.is_null(){return false}
+    let root=unsafe{(*process).address_space_root};
+    if root==0 || root!=active_root_physical(){return false}
+    let mut space=AddressSpace{root};
+    space.handle_page_fault(address,error_code)
+}
+
 pub fn active_root_physical() -> u64 {
     let cr3: u64;
     unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); }

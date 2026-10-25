@@ -1300,6 +1300,16 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
     if vector == 14 {
         let cr2: u64;
         unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+        // CPL is read from the saved hardware frame (RIP, CS follow the
+        // 15 saved GPRs, vector and error code). User faults are resolved only
+        // against the current process's registered address-space root.
+        let saved_cs = unsafe { frame.add(18).read() };
+        if saved_cs & 3 == 3 {
+            if crate::vm::handle_current_user_page_fault(cr2, error) { return 1; }
+            // Until user exception delivery is wired to a process-exit path, do
+            // not reinterpret a user fault as a supervisor demand-paging fault.
+            return cognacos_exception_fatal(vector, error, frame);
+        }
         if crate::kernel_vm::handle_page_fault(cr2, error) { return 1; }
 
         // Permit only the two explicitly armed, exact-address permission probes
