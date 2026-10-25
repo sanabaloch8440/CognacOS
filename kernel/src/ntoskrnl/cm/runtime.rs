@@ -305,11 +305,82 @@ pub unsafe extern "win64" fn ZwFlushKey(h:*mut core::ffi::c_void)->i32{
  let _g=LOCK.lock();let s=state();if key_from_handle(s,h).is_some(){STATUS_SUCCESS}else{STATUS_INVALID_PARAMETER}
 }
 
+fn ascii_utf16(src: &[u8], out: &mut [u16]) -> Option<usize> {
+    if src.len() > out.len() { return None; }
+    for (dst, byte) in out.iter_mut().zip(src) { *dst = *byte as u16; }
+    Some(src.len())
+}
+
+fn hive_value_bytes(key: &crate::ntoskrnl::cm::hive::Key<'_, '_>, name: &[u8], out: &mut [u8]) -> Option<(u32, usize)> {
+    let mut wide = [0u16; MAX_NAME];
+    let n = ascii_utf16(name, &mut wide)?;
+    let value = key.find_value(&wide[..n]).ok()?;
+    if value.data_len as usize > out.len() { return None; }
+    let written = value.data(out).ok()?;
+    Some((value.kind, written))
+}
+
+fn query_hive_version_tuple() -> Option<(u32, u32, u32)> {
+    let _guard = LOCK.lock();
+    let hive = mounted_hive(1)?; // SOFTWARE
+    let mut path = [0u16; 96];
+    let n = ascii_utf16(b"Microsoft\\Windows NT\\CurrentVersion", &mut path)?;
+    let key = hive.find_path(&path[..n]).ok()?;
+    let mut bytes = [0u8; MAX_DATA];
+    let major = match hive_value_bytes(&key, b"CurrentMajorVersionNumber", &mut bytes) {
+        Some((4, 4)) => Some(u32::from_le_bytes(bytes[..4].try_into().ok()?)),
+        _ => None,
+    };
+    let minor = match hive_value_bytes(&key, b"CurrentMinorVersionNumber", &mut bytes) {
+        Some((4, 4)) => Some(u32::from_le_bytes(bytes[..4].try_into().ok()?)),
+        _ => None,
+    };
+    let (major, minor) = match (major, minor) {
+        (Some(a), Some(b)) if a != 0 => (a, b),
+        _ => {
+            let (kind, len) = hive_value_bytes(&key, b"CurrentVersion", &mut bytes)?;
+            if (kind != 1 && kind != 2) || len < 4 || len % 2 != 0 { return None; }
+            let units: [u16; MAX_DATA / 2] = core::array::from_fn(|i| {
+                if i * 2 + 1 < len { u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]) } else { 0 }
+            });
+            let used = units.iter().position(|c| *c == 0).unwrap_or(len / 2);
+            let dot = units[..used].iter().position(|c| *c == b'.' as u16)?;
+            let parse = |digits: &[u16]| -> Option<u32> {
+                if digits.is_empty() { return None; }
+                let mut value = 0u32;
+                for c in digits {
+                    if !(b'0' as u16..=b'9' as u16).contains(c) { return None; }
+                    value = value.checked_mul(10)?.checked_add((*c - b'0' as u16) as u32)?;
+                }
+                Some(value)
+            };
+            (parse(&units[..dot])?, parse(&units[dot + 1..used])?)
+        }
+    };
+    let build = match hive_value_bytes(&key, b"CurrentBuildNumber", &mut bytes) {
+        Some((1 | 2, len)) if len % 2 == 0 => {
+            let mut value = 0u32;
+            let mut digits = 0usize;
+            for pair in bytes[..len].chunks_exact(2) {
+                let ch = u16::from_le_bytes([pair[0], pair[1]]);
+                if ch == 0 { break; }
+                if !(b'0' as u16..=b'9' as u16).contains(&ch) { break; }
+                value = value.checked_mul(10)?.checked_add((ch - b'0' as u16) as u32)?;
+                digits += 1;
+            }
+            if digits == 0 { 0 } else { value }
+        }
+        _ => 0,
+    };
+    Some((major, minor, build))
+}
+
 /// Version tuple read from CognacOS's volatile Configuration Manager registry.
 /// The registry runtime currently stores a complete key path as one root key;
 /// this query intentionally uses that existing representation and does not
 /// pretend to read hive files or synthesize a Windows version.
 pub fn query_version_tuple() -> Option<(u32, u32, u32)> {
+    if let Some(version) = query_hive_version_tuple() { return Some(version); }
     const PATH: &[u16] = &[
         92,82,101,103,105,115,116,114,121,92,77,97,99,104,105,110,101,92,
         83,111,102,116,119,97,114,101,92,77,105,99,114,111,115,111,102,116,
