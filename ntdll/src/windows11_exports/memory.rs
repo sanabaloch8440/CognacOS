@@ -898,6 +898,39 @@ mod tests {
     }
 
     #[test]
+    fn memory_stream_initializes_reads_seeks_and_reports_size() {
+        let mut stream = core::mem::MaybeUninit::<RTL_MEMORY_STREAM>::uninit();
+        let source = *b"cognacos";
+        unsafe {
+            RtlInitMemoryStream(stream.as_mut_ptr());
+            let stream = &mut *stream.as_mut_ptr();
+            stream.start = source.as_ptr() as PVOID;
+            stream.current = source.as_ptr() as PVOID;
+            stream.end = source.as_ptr().add(source.len()) as PVOID;
+            assert_eq!(RtlAddRefMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast()), 1);
+            let mut out = [0u8; 3];
+            let mut read = 0;
+            assert_eq!(RtlReadMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast(), out.as_mut_ptr().cast(), 3, &mut read), S_OK);
+            assert_eq!(read, 3);
+            assert_eq!(&out, b"cog");
+            let mut position = 0u64;
+            assert_eq!(RtlSeekMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast(), 2, STREAM_SEEK_SET, &mut position), S_OK);
+            assert_eq!(position, 2);
+            let mut stat = core::mem::MaybeUninit::<StatStg>::zeroed();
+            assert_eq!(RtlStatMemoryStream((stream as *mut RTL_MEMORY_STREAM).cast(), stat.as_mut_ptr().cast(), 1), S_OK);
+            assert_eq!((*stat.as_ptr()).size, source.len() as u64);
+        }
+    }
+
+    #[test]
+    fn memory_zone_and_lookaside_abi_layouts_are_stable() {
+        assert_eq!(core::mem::offset_of!(RTL_MEMORY_STREAM, current), 16);
+        assert_eq!(core::mem::offset_of!(RTL_MEMORY_STREAM, start), 24);
+        assert_eq!(core::mem::offset_of!(RTL_MEMORY_STREAM, end), 32);
+        assert_eq!(core::mem::size_of::<RTL_MEMORY_STREAM>(), 56);
+    }
+
+    #[test]
     fn memory_basic_information_matches_windows_x64_layout() {
         assert_eq!(core::mem::size_of::<MEMORY_BASIC_INFORMATION>(), 48);
         assert_eq!(core::mem::offset_of!(MEMORY_BASIC_INFORMATION, region_size), 24);
