@@ -141,7 +141,25 @@ impl AddressSpace {
             let Some(area)=area else{return false};
             let pages=unsafe{&mut *WORKING_SET.0.get()};
             let index=if let Some(i)=pages.iter().position(|p|p.live&&p.root==self.root&&p.va==page_va){
-                if pages[i].busy || !pages[i].paged_out{return false}
+                if pages[i].busy {
+                    drop(_g);
+                    // Another CPU may be paging this VA in or out. Wait for its
+                    // transaction to publish a stable state, then retry instead
+                    // of misclassifying contention as an access violation.
+                    for _ in 0..1_000_000usize {
+                        let busy={
+                            let guard=ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                            let still=unsafe{&*WORKING_SET.0.get()}.iter()
+                                .find(|p|p.live&&p.root==self.root&&p.va==page_va)
+                                .is_some_and(|p|p.busy);
+                            drop(guard);still
+                        };
+                        if !busy { return self.handle_page_fault(address,error_code); }
+                        core::hint::spin_loop();
+                    }
+                    return false;
+                }
+                if !pages[i].paged_out{return false}
                 pages[i].busy=true;i
             }else{
                 let Some(i)=pages.iter().position(|p|!p.live) else{return false};
