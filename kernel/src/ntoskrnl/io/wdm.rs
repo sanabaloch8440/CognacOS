@@ -404,6 +404,14 @@ pub unsafe extern "system" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut
 /// Pin a device for the lifetime of an IRP, not merely for IoCallDriver.
 /// This bounded list prevents unload from reclaiming devices with callbacks
 /// still in flight or an asynchronous request still outstanding.
+fn acquire_irp_active_op(irp:*mut Irp)->bool {
+ let mut state=WDM.lock();
+ let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return false};
+ if slot.completion_state==2 || slot.active_ops==u32::MAX {return false}
+ slot.active_ops+=1;true
+}
+
+/// Pin a device for the lifetime of an IRP, not merely for IoCallDriver.
 fn track_irp_device(irp:*mut Irp, device:*mut DeviceObject)->bool {
  let mut state=WDM.lock();
  let Some(ir)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return false};
@@ -420,6 +428,14 @@ fn track_irp_device(irp:*mut Irp, device:*mut DeviceObject)->bool {
 
 /// Release the IRP's device references once. The caller must keep the IRP
 /// allocated until this function returns.
+fn release_irp_active_op(irp:*mut Irp) {
+ let mut state=WDM.lock();
+ if let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) {
+  if slot.active_ops!=0 {slot.active_ops-=1;}
+ }
+}
+
+/// Drop every device rundown reference attached to an IRP exactly once.
 fn release_irp_device_rundown(irp:*mut Irp) {
  let devices={
   let mut state=WDM.lock();
@@ -481,8 +497,10 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
   unsafe{write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());(*irp).bytes[0x43]=location;}
   release_device_dispatch_rundown(device);return prepare
  }
+ if !acquire_irp_active_op(irp) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  let status=unsafe{dispatch(device,irp)};
  crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
+ release_irp_active_op(irp);
  release_device_dispatch_rundown(device);
  status
 }
@@ -727,7 +745,8 @@ pub unsafe extern "system" fn io_reuse_irp(irp:*mut Irp, status:i32) {
     let mut state=WDM.lock();
     let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
     let count=slot.object.bytes[0x42] as usize;
-    if count==0||count>slot.stack.len(){return}
+    if count==0||count>slot.stack.len()||slot.completion_state==1||slot.active_ops!=0||slot.outstanding_count!=0{return}
+    slot.completion_state=0;
     slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
     slot.object.bytes[0x30..0x34].copy_from_slice(&status.to_le_bytes());
     slot.object.bytes[0x38..0x40].fill(0);
@@ -841,12 +860,11 @@ const IRP_CANCEL_ROUTINE_OFFSET:usize=0x68;
 pub unsafe extern "system" fn io_set_cancel_routine(
  irp:*mut Irp, routine:Option<DriverCancelRoutine>
 )->Option<DriverCancelRoutine> {
- if irp.is_null(){return None}
- let valid={let state=WDM.lock();state.irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp))};
- if !valid{return None}
+ if irp.is_null()||!acquire_irp_active_op(irp){return None}
  let slot=unsafe{(*irp).bytes.as_mut_ptr().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
  let replacement=routine.map_or(ptr::null_mut(),|r|r as *const () as *mut c_void);
  let previous=unsafe{&*slot}.swap(replacement,core::sync::atomic::Ordering::AcqRel);
+ release_irp_active_op(irp);
  if previous.is_null(){None}else{Some(unsafe{core::mem::transmute::<*mut c_void,DriverCancelRoutine>(previous)})}
 }
 
@@ -855,15 +873,14 @@ pub unsafe extern "system" fn io_set_cancel_routine(
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
  if irp.is_null(){return 0}
- let valid={let state=WDM.lock();state.irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp))};
- if !valid{return 0}
+ if !acquire_irp_active_op(irp){return 0}
  let mut old_irql=0u8;
  unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
  unsafe{(*irp).bytes[0x44]=1;}
  let cancel_slot=unsafe{(*irp).bytes.as_mut_ptr().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
  let callback=unsafe{&*cancel_slot}.swap(ptr::null_mut(),core::sync::atomic::Ordering::AcqRel);
  unsafe{super::io_release_cancel_spin_lock(old_irql);}
- if callback.is_null(){return 0}
+ if callback.is_null(){release_irp_active_op(irp);return 0}
  let routine:DriverCancelRoutine=unsafe{core::mem::transmute(callback)};
  let device={
   let state=WDM.lock();
@@ -882,6 +899,7 @@ pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
  // The cancel routine owns stopping the device; once it returns, drop any
  // remaining IRP-bound IOMMU mappings. Completion performs the same idempotent rundown.
  crate::dma::release_irp_mappings(irp.cast());
+ release_irp_active_op(irp);
  1
 }
 
