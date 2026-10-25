@@ -35,7 +35,7 @@ void WINAPI RtlInitAnsiString(PCOGNAC_ANSI_STRING destination, const char *sourc
         destination->Buffer = NULL;
         return;
     }
-    while (source[length] && length < 0xfffeu) ++length;
+    while (length < 0xfffeu && source[length]) ++length;
     destination->Length = (USHORT)length;
     destination->MaximumLength = (USHORT)(length + 1);
     destination->Buffer = (char *)source;
@@ -52,7 +52,7 @@ void WINAPI RtlInitUnicodeString(PCOGNAC_UNICODE_STRING destination, const WCHAR
         return;
     }
     /* Keep room for a terminating WCHAR in the 16-bit byte-count fields. */
-    while (source[length] && length < 0x7ffeu) ++length;
+    while (length < 0x7ffeu && source[length]) ++length;
     destination->Length = (USHORT)(length * sizeof(WCHAR));
     destination->MaximumLength = (USHORT)(destination->Length + sizeof(WCHAR));
     destination->Buffer = (WCHAR *)source;
@@ -167,7 +167,12 @@ LONG WINAPI RtlUnicodeStringToInteger(PCCOGNAC_UNICODE_STRING string,
         digit = unicode_digit(string->Buffer[index]);
         if (digit < 0) {
             if (string->Buffer[index] == ' ' || string->Buffer[index] == '\t' ||
-                string->Buffer[index] == '\r' || string->Buffer[index] == '\n') break;
+                string->Buffer[index] == '\r' || string->Buffer[index] == '\n') {
+                do { ++index; } while (index < count &&
+                    (string->Buffer[index] == ' ' || string->Buffer[index] == '\t' ||
+                     string->Buffer[index] == '\r' || string->Buffer[index] == '\n'));
+                if (index == count) break;
+            }
             return STATUS_INVALID_PARAMETER;
         }
         if ((ULONG)digit >= base || value > (0xffffffffu - (ULONG)digit) / base)
