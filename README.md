@@ -68,3 +68,6 @@ Fault containment has bounded supervisor exception fixups with an explicit recov
 ## License
 
 CognacOS is licensed under **GNU GPL v2.0 or (at your option) any later version**. See [LICENSE](LICENSE). Third-party components retain their applicable licenses and notices.
+
+
+**PE loader progress:** a bounded iterative dependency transaction engine now exists in `kernel/src/pe_dependencies/transaction.rs`. It provides per-depth caller-owned buffers, bounded DFS/cycle detection, post-order mapping, dependency-edge publication, and reverse-order rollback through a backend contract. The existing VFS loader is not yet connected to this engine, so recursive DLL loading is not enabled yet.
