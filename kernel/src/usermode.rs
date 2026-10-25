@@ -60,6 +60,19 @@ rdotos_process_enter_user:
     push 0x2
     push 0x23
     push rdi
+    # Initialize the user FP/SSE state from its per-thread (or bootstrap)
+    # area immediately before entering ring 3.
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lrdotos_process_no_xstate
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lrdotos_process_no_xstate:
     iretq
 .Lrdotos_process_return:
     pop r15
