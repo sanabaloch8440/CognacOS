@@ -230,7 +230,7 @@ pub unsafe extern "system" fn RtlSetCurrentEnvironment(
     let params = core::ptr::read_unaligned(peb.add(0x20).cast::<*mut u8>());
     if !params.is_null() {
         // RTL_USER_PROCESS_PARAMETERS.EnvironmentSize is at x64 offset 0x3f0.
-        let size_slot = params.add(0x3f0).cast::<*mut usize>();
+        let size_slot = params.add(0x3f0).cast::<usize>();
         if new_environment.is_null() {
             *size_slot = 0;
         } else {
