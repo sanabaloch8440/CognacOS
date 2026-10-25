@@ -57,14 +57,12 @@ impl Device {
         s.active_callbacks -= 1;
         if s.active_callbacks == 0 && s.outstanding == 0 { self.drained.notify_all(); }
     }
-    fn cancel(&self, irp: &Irp) {
+    fn cancel_pinned(&self, irp: &Irp) {
         irp.cancel_requested.store(true, Ordering::Release);
-        if irp.cancel_callback.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_err() { return; }
-        self.enter_callback();
-        irp.cancel_callbacks.fetch_add(1, Ordering::AcqRel);
-        // Cancellation can lose the completion race; it must never complete
-        // the packet a second time or retain a device reference indefinitely.
-        self.leave_callback();
+        if irp.cancel_callback.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            irp.cancel_callbacks.fetch_add(1, Ordering::AcqRel);
+        }
+        // The caller owns an active callback pin even when completion wins.
     }
     fn unload_and_drain(&self) {
         let mut s = self.counts.lock().unwrap();
@@ -108,7 +106,12 @@ fn cancel_completion_and_unload_race_matrix() {
         let cdev = device.clone();
         let cirp = irp.clone();
         let cg = gate.clone();
-        let cancel = thread::spawn(move || { cg.wait(); cdev.cancel(&cirp); });
+        let cancel = thread::spawn(move || {
+            cdev.enter_callback(); // pin before racing completion/unload
+            cg.wait();
+            cdev.cancel_pinned(&cirp);
+            cdev.leave_callback();
+        });
         let ddev = device.clone();
         let dirp = irp.clone();
         let dg = gate.clone();
@@ -198,7 +201,7 @@ fn completion_claim_is_single_winner_under_contention() {
             }));
         }
         gate.wait();
-        let winners = threads.into_iter().filter(|t| t.join().unwrap()).count();
+        let winners = threads.into_iter().map(|t| t.join().unwrap()).filter(|won| *won).count();
         assert_eq!(winners, 1);
         irp.completion.store(2, Ordering::Release);
         assert_eq!(irp.completion.load(Ordering::Acquire), 2);
