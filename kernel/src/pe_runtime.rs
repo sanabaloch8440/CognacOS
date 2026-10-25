@@ -3,7 +3,7 @@
 use crate::{pe::LoadedImage, ntoskrnl::mm::address_space::AddressSpace};
 const MAX_IMAGES: usize = 32;
 const MAX_TLS_CALLBACKS: usize = 64;
-const MAX_RUNTIME_FUNCTIONS: usize = 2048;
+const MAX_RUNTIME_FUNCTIONS: usize = 8192;
 #[derive(Clone, Copy, Debug)]
 pub enum RuntimeError { InvalidImage, TooManyImages, TooManyCallbacks, TooManyFunctions, InvalidDirectory, Vm }
 #[derive(Clone, Copy, Debug)]
