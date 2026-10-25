@@ -61,9 +61,9 @@ pub unsafe extern "system" fn LdrAccessResource(
     STATUS_SUCCESS
 }
 
-const MAX_DLL_NOTIFICATIONS: usize = 32;
+pub(super) const MAX_DLL_NOTIFICATIONS: usize = 32;
 #[derive(Clone, Copy)]
-struct Notification { cookie: usize, callback: usize, context: usize }
+pub(super) struct Notification { cookie: usize, callback: usize, context: usize }
 impl Notification { const EMPTY: Self = Self { cookie: 0, callback: 0, context: 0 }; }
-static mut DLL_NOTIFICATIONS: [Notification; MAX_DLL_NOTIFICATIONS] = [Notification::EMPTY; MAX_DLL_NOTIFICATIONS];
+pub(super) static mut DLL_NOTIFICATIONS: [Notification; MAX_DLL_NOTIFICATIONS] = [Notification::EMPTY; MAX_DLL_NOTIFICATIONS];
 
