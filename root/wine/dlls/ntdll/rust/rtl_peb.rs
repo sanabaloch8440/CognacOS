@@ -50,23 +50,7 @@ pub unsafe extern "system" fn RtlGetCurrentTeb() -> PVOID {
     teb
 }
 
-/// Read the current process's PEB from the Windows x64 GS segment.
-///
-/// # Safety
-/// The process must have installed a valid Windows-layout TEB in user GS.
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetCurrentPeb() -> PVOID {
-    let peb: PVOID;
-    unsafe { core::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, preserves_flags, readonly)) };
-    peb
-}
-
-#[inline]
-unsafe fn current_thread_id() -> HANDLE {
-    let id: HANDLE;
-    unsafe { core::arch::asm!("mov {}, gs:[0x48]", out(reg) id, options(nostack, preserves_flags, readonly)) };
-    id
-}
+extern "system" { fn RtlGetCurrentPeb() -> PVOID; }
 
 /// Acquire a Windows-layout recursive critical section.
 ///
