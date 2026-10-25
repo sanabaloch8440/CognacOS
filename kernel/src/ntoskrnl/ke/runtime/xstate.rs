@@ -72,13 +72,13 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
     unsafe { core::arch::asm!("xsetbv", in("ecx") 0u32, in("eax") lo, in("edx") hi, options(nostack)); }
 
     let leafd1 = cpuid(0x0d, 1);
-    let size = cpuid(0x0d, 0).ecx.max(leafd0.ebx);
+    let size = leafd0.ebx;
     if size < 576 { return false; }
     XSTATE_SUPPORTED_MASK.store(hardware_mask, Ordering::Release);
     XSTATE_ENABLED_MASK.store(enabled, Ordering::Release);
     XSTATE_AREA_SIZE.store(size, Ordering::Release);
     let subfeatures = leafd1.eax;
-    XSTATE_INITIALIZED.store(1 | ((subfeatures & 1) << 1) | ((subfeatures & 2) << 2) | ((subfeatures & 8) << 3), Ordering::Release);
+    XSTATE_INITIALIZED.store(1 | ((subfeatures & 1) << 1) | ((subfeatures & 2) << 1) | ((subfeatures & 8) << 1), Ordering::Release);
     true
 }
 
