@@ -181,7 +181,7 @@ pub unsafe extern "system" fn RtlGetLastNtStatus() -> NTSTATUS {
 }
 
 /// Updates LastErrorValue and LastStatusValue from one NTSTATUS.
-#[no_mangle]
+// Canonical C ABI export is implemented in rtl_error.rs.
 pub unsafe extern "system" fn RtlSetLastWin32ErrorAndNtStatusFromNtStatus(status: NTSTATUS) {
     let error = RtlNtStatusToDosError(status);
     // SAFETY: Preserves the C bootstrap's two GS-relative writes. The second
