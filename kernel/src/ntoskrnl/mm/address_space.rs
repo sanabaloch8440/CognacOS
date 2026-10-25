@@ -15,6 +15,30 @@ const ADDR: u64 = 0x000f_ffff_ffff_f000;
 /// Serializes address-space mutations/destruction with cross-process virtual copies.
 pub static ADDRESS_SPACE_LIFETIME_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 
+#[derive(Clone, Copy)]
+struct KuserPageTableTracking { root: u64, tables: [u64; 3] }
+impl KuserPageTableTracking { const EMPTY: Self = Self { root: 0, tables: [0; 3] }; }
+static KUSER_PAGE_TABLE_TRACKING: crate::hal::IrqSpinLock<[KuserPageTableTracking; 256]> =
+    crate::hal::IrqSpinLock::new([KuserPageTableTracking::EMPTY; 256]);
+fn record_kuser_tables(root: u64, tables: [u64; 3]) -> Result<(), VmError> {
+    let mut entries = KUSER_PAGE_TABLE_TRACKING.lock();
+    if let Some(entry) = entries.iter_mut().find(|entry| entry.root == root) {
+        entry.tables = tables;
+        return Ok(());
+    }
+    let Some(entry) = entries.iter_mut().find(|entry| entry.root == 0) else { return Err(VmError::OutOfMemory); };
+    *entry = KuserPageTableTracking { root, tables };
+    Ok(())
+}
+fn take_kuser_tables(root: u64) -> [u64; 3] {
+    let mut entries = KUSER_PAGE_TABLE_TRACKING.lock();
+    let Some(entry) = entries.iter_mut().find(|entry| entry.root == root) else { return [0; 3]; };
+    let tables = entry.tables;
+    *entry = KuserPageTableTracking::EMPTY;
+    tables
+}
+
+
 #[derive(Clone, Copy, Debug)]
 pub enum VmError { InvalidAddress, Unaligned, OutOfMemory, AlreadyMapped, NotMapped, PermissionDenied, AddressSpaceBusy, ExecutableUserPageUnsupported }
 
@@ -161,6 +185,7 @@ impl AddressSpace {
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+        record_kuser_tables(self.root, self.kuser_tables)?;
         Ok(())
     }
 
@@ -622,7 +647,15 @@ impl AddressSpace {
         crate::process::detach_address_space(self.root);
         // The KUSER mapping owns a private low page-table path so that setting
         // USER on its ancestors cannot expose or mutate kernel identity leaves.
-        for table in self.kuser_tables.iter().copied() {
+        // The process may have discarded its temporary AddressSpace wrapper;
+        // recover tracking by root so teardown still releases those page tables.
+        let tracked = if self.kuser_tables[0] != 0 {
+            let _ = take_kuser_tables(self.root);
+            self.kuser_tables
+        } else {
+            take_kuser_tables(self.root)
+        };
+        for table in tracked {
             if table != 0 { unsafe { crate::memory::free_page(table) }.map_err(|_| VmError::OutOfMemory)?; }
         }
         self.kuser_tables = [0; 3];
