@@ -315,7 +315,9 @@ cognacos_nt_syscall_entry:
     mov rbx, rsp
     mov rdi, rsp
     and rsp, -16
-    call cognacos_windows_syscall_dispatch
+    # INT 0x83 is CognacOS's private native-service ABI: EAX carries
+    # NT_SYSCALL_* IDs. Windows build-specific service ordinals use SYSCALL.
+    call cognacos_nt_syscall_dispatch
     mov rsp, rbx
     mov qword ptr [rsp + 112], rax
     pop r15
