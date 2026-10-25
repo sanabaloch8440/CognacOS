@@ -979,22 +979,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         halt();
                     }
                 }
-                winabi::unregister_module(b"ntdll.dll");
-                pe_runtime::unregister_image(ntdll_image.base);
-                if unsafe { ntdll_space.destroy() }.is_err() {
-                    serial_write(b"FATAL: native NTDLL cleanup failed.\\r\\n"); halt();
-                }
+                // run_loaded_image's cleanup path already destroyed this address space.
             } else if reference_windows_table {
                 match unsafe { usermode::run_windows_syscall_abi_smoke(&mut ntdll_space, ntdll_image) } {
                     Ok(()) => serial_write(b"Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed.\r\n"),
                     Err(_) => { serial_write(b"FATAL: Windows SYSCALL ABI ring-3 smoke test failed.\r\n"); halt(); }
                 }
                 syscall::set_windows_service_table_enabled(false);
-                winabi::unregister_module(b"ntdll.dll");
-                pe_runtime::unregister_image(ntdll_image.base);
-                if unsafe { ntdll_space.destroy() }.is_err() {
-                    serial_write(b"FATAL: Windows NTDLL cleanup failed.\r\n"); halt();
-                }
+                // run_loaded_image's cleanup path already destroyed this address space.
             } else {
                 syscall::set_windows_service_table_enabled(false);
                 winabi::unregister_module(b"ntdll.dll");
