@@ -1,39 +1,42 @@
-# Native NT syscall bridge (x86-64)
+# Native NTDLL PE32+ bootstrap (x86-64)
 
-This directory begins a native Windows execution backend that is separate from
-Wine's Unix syscall path. The first primitive is
-`CognacNtSyscall4`, a Microsoft x64 ABI thunk for NT system calls with up to
-four arguments.
+A standalone MinGW-w64 target is provided. It produces an AMD64 PE32+ DLL
+without compiling Wine's Unix implementation, ntdll.so, or linking to the Wine
+server.
 
-## Critical rules
+Build and check it with:
 
-- **Never hard-code syscall numbers for Windows 11.** Service numbers vary by
-  Windows build. A future native NTDLL loader must resolve the relevant stub
-  from the exact target build and validate it before dispatch.
-- The bridge only handles four arguments. Calls with additional stack
-  arguments require a separate, ABI-correct stack-marshalling thunk.
-- This does not make Wine's current `ntdll.dll` independent of Wine server or
-  Unix code. The existing `Makefile.in` still builds `ntdll.so` and includes
-  Unix implementations. Do not disable those sources until native replacements
-  exist for every referenced service.
-- The native backend must be built and tested as a distinct target; it must
-  not alter the existing Wine-on-Unix build.
+```sh
+make -C root/wine/dlls/ntdll/native CROSS=x86_64-w64-mingw32- check
+```
 
-## ABI
+The output is a minimal bootstrap DLL exporting NtClose, NtYieldExecution, and
+a syscall-configuration entry point. It is **not yet a drop-in replacement**
+for Microsoft's NTDLL: the full export surface, loader initialization, runtime
+contracts, unwind support, and extensive NT runtime behavior remain unimplemented.
 
-Microsoft x64 entry registers are transformed to the NT syscall convention:
-`EAX = service number`, `R10 = argument 1`, `RDX = argument 2`,
-`R8 = argument 3`, and `R9 = argument 4`. The `SYSCALL` instruction
-transfers control to the operating system kernel. The kernel's syscall ABI,
-not the ordinary user-mode calling convention, governs this boundary.
+## Syscall safety
 
-## Required follow-up
+Windows syscall numbers vary by OS build. None are hard-coded. The
+CognacNtdllConfigureSyscalls entry point requires nonzero service numbers from
+a trusted component that knows the exact running kernel's syscall table.
+Until configured, wrappers return STATUS_NOT_IMPLEMENTED. Incorrect numbers
+can invoke unrelated kernel services. The four-argument assembly bridge is
+used only for these one-argument/zero-argument examples; it is not a general
+syscall marshaller.
 
-1. Add a separately configured native NTDLL target that excludes Unix objects
-   and Wine server imports.
-2. Resolve native service numbers safely for the running Windows build.
-3. Implement and test the complete argument marshalling path, including
-   stack-passed arguments and return/status handling.
-4. Port every required NTDLL service away from Wine server/POSIX dependencies.
-5. Run ABI tests and end-to-end tests on supported Windows 11 builds before
-   claiming native compatibility.
+## Build separation
+
+The existing Wine Makefile.in still builds ntdll.dll and ntdll.so for Wine's
+normal environment. This standalone target does not alter that build. It
+emits ntdll.dll only as a local build artifact; do not install or use this
+incomplete DLL as a Windows system NTDLL.
+
+## Next milestones
+
+1. Implement the complete, versioned syscall ABI and argument marshalling for
+   CognacOS, including arguments beyond the first four.
+2. Port required Rtl*, Ldr*, heap, exception/unwind, TLS, PEB/TEB, and process
+   startup routines without Wine server/POSIX dependencies.
+3. Validate the required export table and ordinals against Windows 11 images.
+4. Add Windows VM loader tests and ABI tests before calling this a drop-in NTDLL.
