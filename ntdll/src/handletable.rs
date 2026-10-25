@@ -43,8 +43,9 @@ pub struct RTL_HANDLE_TABLE {
     pub MaxHandle: PVOID,
 }
 
+#[cfg(windows)]
 #[link(name = "ntdll")]
-extern "system" {
+unsafe extern "system" {
     fn NtAllocateVirtualMemory(
         ProcessHandle: HANDLE,
         BaseAddress: *mut PVOID,
@@ -60,6 +61,17 @@ extern "system" {
         FreeType: ULONG,
     ) -> NTSTATUS;
 }
+
+#[cfg(not(windows))]
+unsafe fn NtAllocateVirtualMemory(
+    _process_handle: HANDLE, _base_address: *mut PVOID, _zero_bits: usize,
+    _region_size: *mut SIZE_T, _allocation_type: ULONG, _protect: ULONG,
+) -> NTSTATUS { STATUS_NOT_IMPLEMENTED }
+#[cfg(not(windows))]
+unsafe fn NtFreeVirtualMemory(
+    _process_handle: HANDLE, _base_address: *mut PVOID, _region_size: *mut SIZE_T,
+    _free_type: ULONG,
+) -> NTSTATUS { STATUS_NOT_IMPLEMENTED }
 
 #[inline]
 fn current_process() -> HANDLE { (-1isize) as HANDLE }
