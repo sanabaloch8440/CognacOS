@@ -768,6 +768,7 @@ pub fn send_tlb_shootdown(logical_id: usize) -> Result<(), hal::HalError> {
 }
 
 #[unsafe(no_mangle)]
+#[export_name = "cognacos_tlb_ipi_handler"]
 pub extern "C" fn rdotos_tlb_ipi_handler() {
     TLB_IPI_COUNT.fetch_add(1, Ordering::Relaxed);
     crate::kernel_vm::handle_tlb_ipi();
