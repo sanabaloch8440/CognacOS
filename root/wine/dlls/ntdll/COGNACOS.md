@@ -35,7 +35,7 @@ For CognacOS, leave `WINDOWS_SYSCALL_IDS=0`. The trusted CognacOS loader/kernel
 integration must provide the syscall numbers using
 `CognacNtdllConfigureSyscalls` before invoking `NtClose` or
 `NtYieldExecution`. This keeps OS service numbers out of universal constants.
-The native bootstrap currently exports `NtClose`, `NtYieldExecution`, core RTL
+The native bootstrap currently exports `NtClose`, `NtYieldExecution`, `NtQueryInformationProcess`, `NtQueryInformationThread`, `NtQuerySystemInformation`, core RTL
 memory routines (`RtlCompareMemory`, `RtlCompareMemoryUlong`, `RtlCopyMemory`,
 `RtlFillMemory`, `RtlMoveMemory`, `RtlZeroMemory`), CRC32 helpers,
 `RtlIsZeroMemory`, and `RtlGetVersion` (reports Windows 11 build 26100). The
