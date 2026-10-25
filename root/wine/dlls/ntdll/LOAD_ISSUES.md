@@ -190,7 +190,9 @@ before `AddressSpace::destroy`. The process reaper deliberately refuses to
 recycle an EPROCESS while its address-space root is nonzero, so the call always
 failed and each ring-3 loader smoke leaked a process-table slot.
 
-**Fix committed:** cleanup now destroys/detaches the address space first, then
-retries process reaping. This applies to the NTDLL test and the existing PE
-fixture tests. QEMU should verify subsequent process startup and timer setup
-continue after repeated load/exit cycles.
+**Fix committed; boot smoke passed:** cleanup now destroys/detaches the
+address space first, then retries process reaping. This applies to the NTDLL
+test and the existing PE fixture tests. The boot-smoke step passed in
+[Actions run 40176419581](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176419581)
+and advanced into the 2/4/8-vCPU stress matrix; the full workflow had not yet
+completed at this update.
