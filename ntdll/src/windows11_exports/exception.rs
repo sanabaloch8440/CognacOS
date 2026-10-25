@@ -168,7 +168,7 @@ pub unsafe extern "system" fn RtlAddFunctionTable(
     for entry in entries {
         if entry.BeginAddress >= entry.EndAddress || entry.BeginAddress < previous_end
             || base.checked_add(entry.EndAddress as u64).is_none()
-            || entry.UnwindData & 1 != 0 && entry.UnwindData >= 0x7fff_ffff {
+            || entry.UnwindData & 3 != 0 {
             return 0;
         }
         previous_end = entry.EndAddress;
@@ -287,7 +287,7 @@ unsafe fn unwind_function(
     let f = &*entry;
     if f.BeginAddress >= f.EndAddress || f.UnwindData & 1 != 0 { return STATUS_NOT_IMPLEMENTED; }
     let rva = match u32::try_from(control_pc.saturating_sub(image_base)) { Ok(v) if v >= f.BeginAddress && v < f.EndAddress => v, _ => return STATUS_INVALID_PARAMETER };
-    let info = image_base.checked_add(f.UnwindData as u64).ok_or(STATUS_INVALID_PARAMETER)?;
+    let Some(info) = image_base.checked_add(f.UnwindData as u64) else { return STATUS_INVALID_PARAMETER; };
     let header = *(info as *const u8);
     let version = header & 7;
     let flags = header >> 3;
@@ -383,14 +383,17 @@ pub unsafe extern "system" fn RtlVirtualUnwind2(
     if !handler_data.is_null() { *handler_data = ptr::null_mut(); }
     if !handler_routine.is_null() { *handler_routine = None; }
     if handler_type & !0x7 != 0 || unwind_flags & !1 != 0 { return STATUS_INVALID_PARAMETER; }
-    if !function_entry.is_null() {
-        let _ = (image_base, control_pc, context_pointers, low_limit, high_limit);
-        return STATUS_NOT_IMPLEMENTED;
-    }
-    let status = unwind_leaf(context, establisher_frame);
+    let status = if function_entry.is_null() {
+        unwind_leaf(context, establisher_frame)
+    } else {
+        let _ = context_pointers;
+        unwind_function(handler_type, image_base, control_pc, function_entry, context, handler_data, establisher_frame)
+    };
     if status != 0 { return status; }
-    if !low_limit.is_null() && (*context).Rsp < *low_limit { return STATUS_BAD_STACK; }
-    if !high_limit.is_null() && (*context).Rsp > *high_limit { return STATUS_BAD_STACK; }
+    if !context.is_null() {
+        if !low_limit.is_null() && (*context).Rsp < *low_limit { return STATUS_BAD_STACK; }
+        if !high_limit.is_null() && (*context).Rsp >= *high_limit { return STATUS_BAD_STACK; }
+    }
     0
 }
 #[no_mangle]
