@@ -156,8 +156,8 @@ pub fn lock(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
     let pages = ((end - start) / PAGE) as usize;
     if pages == 0 || pages > MAX_VM_LOCK_RANGE_PAGES { return STATUS_INVALID_PARAMETER; }
-    if unsafe { address_space::copy_to_user_root(root, args[1], &start.to_ne_bytes()) }.is_err()
-        || unsafe { address_space::copy_to_user_root(root, args[2], &(end - start).to_ne_bytes()) }.is_err() {
+    if unsafe { address_space::copy_to_user_root(root, args[1], &base.to_ne_bytes()) }.is_err()
+        || unsafe { address_space::copy_to_user_root(root, args[2], &size.to_ne_bytes()) }.is_err() {
         return STATUS_ACCESS_VIOLATION;
     }
     let space = match attached(root) { Ok(s) => s, Err(s) => return s };
@@ -178,6 +178,17 @@ pub fn lock(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         let slot = records.iter_mut().find(|p| !p.live).expect("preflighted native VM lock slots");
         *slot = NativeVmLockedPage { root, va, physical_page: pfn * PAGE, live: true };
         va += PAGE;
+    }
+    if write_u64(root, args[1], start).is_err() || write_u64(root, args[2], end - start).is_err() {
+        // These pointers were prevalidated above; failure indicates a concurrent
+        // unmap race. Roll back the pins and records rather than leaking locks.
+        let mut rollback_pfns = [0u64; MAX_VM_LOCK_RANGE_PAGES];
+        let mut n = 0usize;
+        for record in records.iter_mut().filter(|p| p.live && p.root == root && p.va >= start && p.va < end) {
+            rollback_pfns[n] = record.physical_page / PAGE; n += 1; *record = NativeVmLockedPage::EMPTY;
+        }
+        crate::ntoskrnl::mm::runtime::unlock_pfns(&rollback_pfns[..n]);
+        return STATUS_ACCESS_VIOLATION;
     }
     STATUS_SUCCESS
 }
@@ -209,6 +220,9 @@ pub fn unlock(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     }
     crate::ntoskrnl::mm::runtime::unlock_pfns(&pfns[..pages]);
     for index in indices.iter().take(pages).copied() { records[index] = NativeVmLockedPage::EMPTY; }
+    if write_u64(root, args[1], start).is_err() || write_u64(root, args[2], end - start).is_err() {
+        return STATUS_ACCESS_VIOLATION;
+    }
     STATUS_SUCCESS
 }
 
