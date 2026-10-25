@@ -252,15 +252,19 @@ pub unsafe extern "system" fn LdrSetDllDirectory(directory: *const UNICODE_STRIN
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrGetDllDirectory(buffer_bytes: ULONG, buffer: *mut u16, required_bytes: *mut ULONG) -> NTSTATUS {
-    if required_bytes.is_null() { return STATUS_INVALID_PARAMETER; }
+pub unsafe extern "system" fn LdrGetDllDirectory(path_name: *mut UNICODE_STRING) -> NTSTATUS {
+    if path_name.is_null() { return STATUS_INVALID_PARAMETER; }
     let _guard = StateGuard::acquire();
     let path = unsafe { &DLL_DIRECTORY };
     let bytes = path.len.saturating_mul(2);
-    unsafe { required_bytes.write(bytes as ULONG); }
-    if bytes == 0 { return STATUS_SUCCESS; }
-    if buffer.is_null() || buffer_bytes < bytes as ULONG { return STATUS_BUFFER_TOO_SMALL; }
-    unsafe { ptr::copy_nonoverlapping(path.data.as_ptr(), buffer, path.len); }
+    if bytes > u16::MAX as usize { return STATUS_BUFFER_TOO_SMALL; }
+    let descriptor = unsafe { &mut *path_name };
+    if bytes != 0 && (descriptor.Buffer.is_null() || (descriptor.MaximumLength as usize) < bytes) {
+        descriptor.Length = bytes as u16;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    if bytes != 0 { unsafe { ptr::copy_nonoverlapping(path.data.as_ptr(), descriptor.Buffer, path.len); } }
+    descriptor.Length = bytes as u16;
     STATUS_SUCCESS
 }
 
@@ -315,9 +319,11 @@ pub unsafe extern "system" fn LdrDisableThreadCalloutsForDll(module_base: PVOID)
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrGetDllPath(_name: *const UNICODE_STRING, _flags: ULONG, _path: *mut UNICODE_STRING, _path_flags: *mut ULONG) -> NTSTATUS {
-    // Correct path construction needs process parameters, application/system
-    // directories, API-set and package graph integration. Never return a fake path.
+pub unsafe extern "system" fn LdrGetDllPath(
+    _dll_name: *const u16, _flags: ULONG, _dll_path: *mut *mut u16, _search_paths: *mut *mut u16,
+) -> NTSTATUS {
+    // The documented ABI returns allocated search-path strings. Until the process
+    // heap and package/application path providers are connected, fail closed.
     STATUS_NOT_IMPLEMENTED
 }
 
@@ -423,9 +429,26 @@ pub unsafe extern "system" fn LdrGetDllHandleByMapping(mapping_base: PVOID, entr
     if mapping_base.is_null() || entry_out.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { entry_out.write(ptr::null_mut()); }
     match unsafe { find_entry_by_base(mapping_base as usize) } {
-        Some(entry) => { unsafe { entry_out.write(entry.cast()); } STATUS_SUCCESS },
+        Some(entry) => { let base = unsafe { ptr::read_unaligned(entry.add(0x30).cast::<usize>()) }; unsafe { entry_out.write(base as PVOID); } STATUS_SUCCESS },
         None => STATUS_DLL_NOT_FOUND,
     }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn LdrGetDllFullName(dll_handle: PVOID, full_dll_name: *mut UNICODE_STRING) -> NTSTATUS {
+    if dll_handle.is_null() || full_dll_name.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(entry) = (unsafe { find_entry_by_base(dll_handle as usize) }) else { return STATUS_DLL_NOT_FOUND; };
+    let source_length = unsafe { ptr::read_unaligned(entry.add(0x48).cast::<u16>()) };
+    let source_buffer = unsafe { ptr::read_unaligned(entry.add(0x50).cast::<usize>()) } as *const u16;
+    if source_length & 1 != 0 || (source_length != 0 && source_buffer.is_null()) { return STATUS_INVALID_PARAMETER; }
+    let output = unsafe { &mut *full_dll_name };
+    if output.Buffer.is_null() || output.MaximumLength < source_length {
+        output.Length = source_length;
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    unsafe { ptr::copy_nonoverlapping(source_buffer, output.Buffer, source_length as usize / 2); }
+    output.Length = source_length;
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
@@ -451,11 +474,13 @@ pub unsafe extern "system" fn LdrGetDllHandleEx(
     if flags & !0x3 != 0 || dll_name.is_null() || dll_handle.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
-    unsafe {
+    let status = unsafe {
         crate::rtl_loader::LdrGetDllHandle(
             dll_path as PVOID, dll_characteristics, dll_name.cast(), dll_handle,
         )
-    }
+    };
+    if status != STATUS_SUCCESS || flags & 1 != 0 { return status; }
+    unsafe { track_module_reference(*dll_handle as usize, flags & 2 != 0) }
 }
 
 #[no_mangle]
@@ -484,7 +509,17 @@ pub unsafe extern "system" fn LdrGetProcedureAddressEx(
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrGetProcedureAddressForCaller() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrGetProcedureAddressForCaller(
+    dll_handle: PVOID,
+    procedure_name: *const crate::rtl_loader::COGNAC_ANSI_STRING,
+    procedure_number: ULONG,
+    procedure_address: *mut PVOID,
+    flags: ULONG,
+    _callback: *mut PVOID,
+) -> NTSTATUS {
+    if flags & !1 != 0 { return STATUS_INVALID_PARAMETER; }
+    unsafe { crate::rtl_loader::LdrGetProcedureAddress(dll_handle, procedure_name, procedure_number, procedure_address) }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrHotPatchNotify() -> i32 { STATUS_NOT_IMPLEMENTED }
