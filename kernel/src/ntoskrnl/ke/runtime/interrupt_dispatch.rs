@@ -1,8 +1,8 @@
 //! Ke executive clock/interrupt dispatch and scheduler notification glue.
-use core::sync::atomic::{AtomicU64, Ordering};
 
-static CLOCK_INTERRUPTS: AtomicU64 = AtomicU64::new(0);
-static LAST_CLOCK_TICK: AtomicU64 = AtomicU64::new(0);
+
+static CLOCK_INTERRUPTS: core::sync::atomic::AtomicU64 = AtomicU64::new(0);
+static LAST_CLOCK_TICK: core::sync::atomic::AtomicU64 = AtomicU64::new(0);
 
 /// Register the executive clock consumer before enabling the HAL clock event.
 pub(crate) fn register_clock_interrupt_handler() -> Result<(), crate::hal::HalError> {
