@@ -1,3 +1,5 @@
+use super::*;
+
 #[no_mangle]
 pub unsafe extern "system" fn LdrFindResource_U(
     module: PVOID, resource_info: *const LDR_RESOURCE_INFO, level: ULONG,
