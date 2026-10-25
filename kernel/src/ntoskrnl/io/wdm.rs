@@ -492,7 +492,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  };
  if deleting||driver.is_null(){return STATUS_DELETE_PENDING}
  if !track_irp_device(irp,device) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
- if !acquire_irp_active_op(irp) { release_irp_device_rundown(irp); release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
+ if !acquire_irp_active_op(irp) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
  if stack.is_null(){release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_PARAMETER}
  let location=unsafe{(*irp).bytes[0x43]};
