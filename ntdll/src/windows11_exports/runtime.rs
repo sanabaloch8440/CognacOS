@@ -629,10 +629,7 @@ pub unsafe extern "system" fn RtlDeleteElementGenericTableAvlEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDeleteFunctionTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+// RtlDeleteFunctionTable is implemented with the typed AMD64 ABI in exception.rs.
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeleteGrowableFunctionTable() -> i32 {
