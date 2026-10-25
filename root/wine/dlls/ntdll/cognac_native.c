@@ -22,18 +22,43 @@ typedef struct _COGNAC_RTL_OSVERSIONINFOW {
     WCHAR szCSDVersion[128];
 } COGNAC_RTL_OSVERSIONINFOW;
 
+/* PEB.OSMajorVersion/OSMinorVersion/OSBuildNumber/OSPlatformId.
+ * The kernel process initializer fills these from the Configuration Manager
+ * version key. A missing registry tuple is reported as unavailable rather
+ * than silently impersonating a hard-coded Windows build.
+ */
+static BOOL cognac_read_peb_version(ULONG *major, ULONG *minor, ULONG *build, ULONG *platform)
+{
+    unsigned char *peb;
+    ULONG a, b, c, p;
+    __asm__ volatile ("movq %%gs:0x60, %0" : "=r"(peb));
+    if (!peb) return FALSE;
+    a = *(volatile ULONG *)(peb + 0x118);
+    b = *(volatile ULONG *)(peb + 0x11c);
+    c = *(volatile USHORT *)(peb + 0x120);
+    p = *(volatile ULONG *)(peb + 0x124);
+    if (!a || !p) return FALSE;
+    if (major) *major = a;
+    if (minor) *minor = b;
+    if (build) *build = c;
+    if (platform) *platform = p;
+    return TRUE;
+}
+
 __declspec(dllexport)
 NTSTATUS NTAPI RtlGetVersion(COGNAC_RTL_OSVERSIONINFOW *version)
 {
-    ULONG i;
+    ULONG major, minor, build, platform, i;
 
     if (!version || version->dwOSVersionInfoSize < sizeof(*version))
         return STATUS_INVALID_PARAMETER;
+    if (!cognac_read_peb_version(&major, &minor, &build, &platform))
+        return STATUS_NOT_IMPLEMENTED;
 
-    version->dwMajorVersion = 10;
-    version->dwMinorVersion = 0;
-    version->dwBuildNumber = 26100;
-    version->dwPlatformId = 2; /* VER_PLATFORM_WIN32_NT */
+    version->dwMajorVersion = major;
+    version->dwMinorVersion = minor;
+    version->dwBuildNumber = build;
+    version->dwPlatformId = platform;
     for (i = 0; i < 128; ++i) version->szCSDVersion[i] = 0;
     return STATUS_SUCCESS;
 }
@@ -161,9 +186,16 @@ void NTAPI RtlReleasePebLock(void)
 __declspec(dllexport)
 void NTAPI RtlGetNtVersionNumbers(PULONG major, PULONG minor, PULONG build)
 {
-    if (major) *major = 10;
-    if (minor) *minor = 0;
-    if (build) *build = 26100;
+    ULONG a, b, c;
+    if (!cognac_read_peb_version(&a, &b, &c, NULL)) {
+        if (major) *major = 0;
+        if (minor) *minor = 0;
+        if (build) *build = 0;
+        return;
+    }
+    if (major) *major = a;
+    if (minor) *minor = b;
+    if (build) *build = 0xF0000000u | c;
 }
 
 /* Small deterministic mapping for statuses implemented by this bootstrap. */
