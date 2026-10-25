@@ -28,13 +28,15 @@ unsafe fn at(path: *const WCHAR, index: usize) -> WCHAR {
     unsafe { path.add(index).read() }
 }
 
-unsafe fn equals_ascii_ci(path: *const WCHAR, text: &[u8]) -> bool {
+unsafe fn equals_ascii_prefix_ci(path: *const WCHAR, text: &[u8]) -> bool {
     for (i, ch) in text.iter().enumerate() {
-        if fold(unsafe { at(path, i) }) != fold(*ch as WCHAR) {
-            return false;
-        }
+        if fold(unsafe { at(path, i) }) != fold(*ch as WCHAR) { return false; }
     }
-    unsafe { at(path, text.len()) == 0 }
+    true
+}
+
+unsafe fn equals_ascii_ci(path: *const WCHAR, text: &[u8]) -> bool {
+    unsafe { equals_ascii_prefix_ci(path, text) && at(path, text.len()) == 0 }
 }
 
 #[no_mangle]
@@ -90,10 +92,10 @@ pub unsafe extern "system" fn RtlIsDosDeviceName_U(path: *const WCHAR) -> ULONG 
 
     let matched = match length {
         3 => unsafe {
-            equals_ascii_ci(path.add(start), b"AUX")
-                || equals_ascii_ci(path.add(start), b"CON")
-                || equals_ascii_ci(path.add(start), b"NUL")
-                || equals_ascii_ci(path.add(start), b"PRN")
+            equals_ascii_prefix_ci(path.add(start), b"AUX")
+                || equals_ascii_prefix_ci(path.add(start), b"CON")
+                || equals_ascii_prefix_ci(path.add(start), b"NUL")
+                || equals_ascii_prefix_ci(path.add(start), b"PRN")
         },
         4 => {
             let a = fold(unsafe { at(path, start) });
@@ -103,8 +105,8 @@ pub unsafe extern "system" fn RtlIsDosDeviceName_U(path: *const WCHAR) -> ULONG 
             ((a == 67 && b == 79 && c == 77) || (a == 76 && b == 80 && c == 84))
                 && digit > 48 && digit <= 57
         },
-        6 => unsafe { equals_ascii_ci(path.add(start), b"CONIN$") },
-        7 => unsafe { equals_ascii_ci(path.add(start), b"CONOUT$") },
+        6 => unsafe { equals_ascii_prefix_ci(path.add(start), b"CONIN$") },
+        7 => unsafe { equals_ascii_prefix_ci(path.add(start), b"CONOUT$") },
         _ => false,
     };
     if !matched { return 0; }
