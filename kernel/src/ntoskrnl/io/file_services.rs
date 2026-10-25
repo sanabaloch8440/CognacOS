@@ -149,4 +149,15 @@ mod tests {
     fn missing_file_fails_closed() {
         assert_eq!(open(b"\\SystemRoot\\missing.dll"), Err(STATUS_OBJECT_NAME_NOT_FOUND));
     }
+    #[test]
+    fn handles_are_process_scoped() {
+        let path = b"\\SystemRoot\\Tests\\owner-scope.dll";
+        let _ = register_static(path, TEST_BYTES);
+        let handle = open_for_process(41, path).unwrap();
+        let mut out = [0u8; 4];
+        assert_eq!(read_at_for_process(42, handle, 0, &mut out), Err(STATUS_INVALID_HANDLE));
+        assert_eq!(read_at_for_process(41, handle, 0, &mut out), Ok(4));
+        assert_eq!(close_for_process(42, handle), Err(STATUS_INVALID_HANDLE));
+        close_for_process(41, handle).unwrap();
+    }
 }
