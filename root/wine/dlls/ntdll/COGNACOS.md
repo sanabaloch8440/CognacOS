@@ -139,3 +139,26 @@ LastStatusValue. These tests passed in the boot-smoke phase of [Actions run 4018
 ## Loader API subset
 
 `LdrGetProcedureAddress` validates the in-memory PE32+ export directory, resolves exact case-sensitive ANSI names or ordinals, and rejects forwarded exports rather than treating forwarder strings as executable addresses. `LdrGetDllHandle` traverses the PEB load-order list and compares the loaded module's BaseDllName using ASCII case folding. Both are intentionally limited to already-mapped modules; `LdrLoadDll`, dependency resolution, forwarder resolution, activation contexts, and loader-lock/rundown semantics are not yet implemented. Both loader APIs passed in the boot-smoke phase of [Actions run 40185018220](https://github.com/umarfarooq7869/CognacOS/actions/runs/40185018220). The generated test stub now fits the single executable page.
+
+## PEB/TEB access and environment synchronization
+
+The native x64 bootstrap now exposes `RtlGetCurrentTeb` and uses the Windows
+GS-relative TEB fields (`GS:0x30` for TEB self, `GS:0x48` for the current
+thread ID, and `GS:0x60` for the PEB). PEB.FastPebLock is read at PEB offset
+`0x38`; ProcessParameters is at PEB offset `0x20`, and its Environment
+pointer is at process-parameters offset `0x80`. The launcher must initialize a
+valid Windows-layout TEB/PEB before these APIs can be called.
+
+The first native `RTL_CRITICAL_SECTION` implementation uses the standard
+x64 structure layout, atomic acquisition, recursive ownership, and periodic
+`NtYieldExecution` while contended. It deliberately does not claim full
+Windows behavior: the event-backed waiter/wake path, contention fairness,
+critical-section initialization/deletion, and concurrency stress testing remain
+open. PEB lock operations are therefore suitable as bootstrap synchronization,
+not yet a production-complete Windows critical-section implementation.
+
+The Rust `env.rs` source now uses this PEB accessor and lock for inherited
+environment creation, current-environment replacement, and null-environment
+query/set/expansion. Rust modules remain source-first and are not yet part of
+the freestanding PE build; the native C exports are what the current PE workflow
+compiles and checks.
