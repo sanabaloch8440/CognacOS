@@ -86,8 +86,74 @@ pub unsafe extern "system" fn LdrQueryImageFileKeyOption() -> i32 { STATUS_NOT_I
 #[no_mangle]
 pub unsafe extern "system" fn LdrQueryModuleServiceTags() -> i32 { STATUS_NOT_IMPLEMENTED }
 
+/// Probe whether an optional delay-loaded export is already available.
+/// This query deliberately does not load a DLL: optional imports must not turn a
+/// presence check into a loader-lock-sensitive recursive load.
 #[no_mangle]
-pub unsafe extern "system" fn LdrQueryOptionalDelayLoadedAPI() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrQueryOptionalDelayLoadedAPI(
+    _parent_module_base: PVOID,
+    dll_name: *const u8,
+    procedure_name: *const u8,
+    procedure_address: *mut PVOID,
+) -> NTSTATUS {
+    if dll_name.is_null() || procedure_name.is_null() || procedure_address.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe { procedure_address.write(ptr::null_mut()); }
+
+    let mut dll_utf16 = [0u16; 260];
+    let mut dll_len = 0usize;
+    while dll_len < dll_utf16.len() - 1 {
+        let ch = unsafe { ptr::read_unaligned(dll_name.add(dll_len)) };
+        if ch == 0 { break; }
+        if !ch.is_ascii() { return STATUS_INVALID_PARAMETER; }
+        dll_utf16[dll_len] = ch as u16;
+        dll_len += 1;
+    }
+    if dll_len == 0 || dll_len == dll_utf16.len() - 1 {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    let mut procedure_ascii = [0u8; 512];
+    let mut procedure_len = 0usize;
+    while procedure_len < procedure_ascii.len() - 1 {
+        let ch = unsafe { ptr::read_unaligned(procedure_name.add(procedure_len)) };
+        if ch == 0 { break; }
+        procedure_ascii[procedure_len] = ch;
+        procedure_len += 1;
+    }
+    if procedure_len == 0 || procedure_len == procedure_ascii.len() - 1 {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    let dll_descriptor = UNICODE_STRING {
+        Length: (dll_len * 2) as u16,
+        MaximumLength: (dll_len * 2) as u16,
+        Buffer: dll_utf16.as_mut_ptr(),
+    };
+    let mut module = ptr::null_mut();
+    let status = unsafe {
+        LdrGetDllHandleByName(&dll_descriptor, ptr::null(), &mut module)
+    };
+    if status != STATUS_SUCCESS { return STATUS_NOT_FOUND; }
+
+    let procedure_descriptor = crate::rtl_loader::COGNAC_ANSI_STRING {
+        Length: procedure_len as u16,
+        MaximumLength: procedure_len as u16,
+        Buffer: procedure_ascii.as_mut_ptr(),
+    };
+    let status = unsafe {
+        crate::rtl_loader::LdrGetProcedureAddress(
+            module, &procedure_descriptor, 0, procedure_address,
+        )
+    };
+    if status == STATUS_SUCCESS && !unsafe { *procedure_address }.is_null() {
+        STATUS_SUCCESS
+    } else {
+        unsafe { procedure_address.write(ptr::null_mut()); }
+        STATUS_PROCEDURE_NOT_FOUND
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy)]
