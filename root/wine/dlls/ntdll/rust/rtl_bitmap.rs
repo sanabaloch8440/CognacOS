@@ -231,20 +231,38 @@ pub unsafe extern "system" fn RtlFindLastBackwardRunClear(bitmap: *const RTL_BIT
 }
 
 unsafe fn find_runs(bitmap: *const RTL_BITMAP, runs: *mut RTL_BITMAP_RUN, capacity: ULONG, longest: BOOLEAN, wanted: bool) -> ULONG {
-    if !unsafe { valid(bitmap) } || capacity == 0 || runs.is_null() { return INVALID_BIT; }
+    if !unsafe { valid(bitmap) } || capacity == 0 { return INVALID_BIT; }
+    if runs.is_null() { return 0; }
     let size = unsafe { (*bitmap).SizeOfBitMap };
-    let mut found: alloc::vec::Vec<RTL_BITMAP_RUN> = alloc::vec::Vec::new();
+    let mut stored = 0u32;
     let mut i = 0u32;
     while i < size {
         if unsafe { get(bitmap, i) } != wanted { i += 1; continue; }
         let start = i;
         while i < size && unsafe { get(bitmap, i) } == wanted { i += 1; }
-        found.push(RTL_BITMAP_RUN { StartingIndex: start, NumberOfBits: i - start });
+        let candidate = RTL_BITMAP_RUN { StartingIndex: start, NumberOfBits: i - start };
+        if longest == 0 {
+            unsafe { runs.add(stored as usize).write(candidate); }
+            stored += 1;
+            if stored == capacity { break; }
+        } else if stored < capacity {
+            let mut at = stored;
+            while at > 0 && unsafe { (*runs.add((at - 1) as usize)).NumberOfBits < candidate.NumberOfBits } {
+                unsafe { runs.add(at as usize).write(*runs.add((at - 1) as usize)); }
+                at -= 1;
+            }
+            unsafe { runs.add(at as usize).write(candidate); }
+            stored += 1;
+        } else if unsafe { (*runs.add((stored - 1) as usize)).NumberOfBits < candidate.NumberOfBits } {
+            let mut at = stored - 1;
+            while at > 0 && unsafe { (*runs.add((at - 1) as usize)).NumberOfBits < candidate.NumberOfBits } {
+                unsafe { runs.add(at as usize).write(*runs.add((at - 1) as usize)); }
+                at -= 1;
+            }
+            unsafe { runs.add(at as usize).write(candidate); }
+        }
     }
-    if longest != 0 { found.sort_by(|a,b| b.NumberOfBits.cmp(&a.NumberOfBits)); }
-    let take = core::cmp::min(capacity as usize, found.len());
-    for idx in 0..take { unsafe { runs.add(idx).write(found[idx]); } }
-    take as ULONG
+    stored
 }
 
 #[no_mangle]
