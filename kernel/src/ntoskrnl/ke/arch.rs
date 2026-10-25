@@ -83,12 +83,18 @@ static OBSERVED_PROTECTION_FAULT: core::sync::atomic::AtomicU64 = core::sync::at
 // already-held lock.
 const MAX_TRAP_FIXUPS: usize = 64;
 const FIXUP_RESERVED: u64 = u64::MAX;
+const PF_ERROR_MATCH_MASK: u64 = 0x1f;
+const STATUS_ACCESS_VIOLATION: u64 = 0xC000_0005;
+
+/// Fixed-size exception-table entry. The handler only scans this bounded table
+/// and never allocates or acquires a lock. RAX is the documented recovery result.
 struct TrapFixup {
     fault_rip: core::sync::atomic::AtomicU64,
     recovery_rip: core::sync::atomic::AtomicU64,
     address: core::sync::atomic::AtomicU64,
     error_mask: core::sync::atomic::AtomicU64,
     error_value: core::sync::atomic::AtomicU64,
+    recovery_result: core::sync::atomic::AtomicU64,
 }
 impl TrapFixup {
     const fn new() -> Self {
@@ -98,20 +104,25 @@ impl TrapFixup {
             address: core::sync::atomic::AtomicU64::new(0),
             error_mask: core::sync::atomic::AtomicU64::new(0),
             error_value: core::sync::atomic::AtomicU64::new(0),
+            recovery_result: core::sync::atomic::AtomicU64::new(0),
         }
     }
 }
 static TRAP_FIXUPS: [TrapFixup; MAX_TRAP_FIXUPS] =
     [const { TrapFixup::new() }; MAX_TRAP_FIXUPS];
 
-/// Register an exact-RIP kernel fault recovery. address=0 matches any CR2;
-/// error_mask/value constrain the page-fault error code.
-pub fn register_trap_frame_fixup(
+/// Register an exact-RIP kernel page-fault recovery. address=0 matches any CR2;
+/// error_mask/value constrain the page-fault error code. On recovery, RAX is
+/// set to recovery_result and RIP is redirected to recovery_rip. The recovery
+/// stub must resume/return from the original probe without re-executing it.
+pub fn register_trap_frame_fixup_with_result(
     fault_rip: u64, recovery_rip: u64, address: u64,
-    error_mask: u64, error_value: u64,
+    error_mask: u64, error_value: u64, recovery_result: u64,
 ) -> bool {
-    if fault_rip == 0 || fault_rip == FIXUP_RESERVED || recovery_rip == 0
-        || recovery_rip == FIXUP_RESERVED || error_value & !error_mask != 0 {
+    const KERNEL_BASE: u64 = 0xffff_8000_0000_0000;
+    if fault_rip < KERNEL_BASE || fault_rip == FIXUP_RESERVED
+        || recovery_rip < KERNEL_BASE || recovery_rip == FIXUP_RESERVED
+        || error_value & !error_mask != 0 {
         return false;
     }
     for slot in TRAP_FIXUPS.iter() {
@@ -124,6 +135,7 @@ pub fn register_trap_frame_fixup(
             slot.address.store(address, core::sync::atomic::Ordering::Relaxed);
             slot.error_mask.store(error_mask, core::sync::atomic::Ordering::Relaxed);
             slot.error_value.store(error_value, core::sync::atomic::Ordering::Relaxed);
+            slot.recovery_result.store(recovery_result, core::sync::atomic::Ordering::Relaxed);
             slot.fault_rip.store(fault_rip, core::sync::atomic::Ordering::Release);
             return true;
         }
@@ -131,7 +143,17 @@ pub fn register_trap_frame_fixup(
     false
 }
 
-/// Remove one fixup. Returns false if no published entry matches.
+/// Compatibility helper for callers whose recovery convention returns zero in RAX.
+pub fn register_trap_frame_fixup(
+    fault_rip: u64, recovery_rip: u64, address: u64,
+    error_mask: u64, error_value: u64,
+) -> bool {
+    register_trap_frame_fixup_with_result(
+        fault_rip, recovery_rip, address, error_mask, error_value, 0,
+    )
+}
+
+/// Remove one published fixup. Returns false when no entry matches.
 pub fn unregister_trap_frame_fixup(fault_rip: u64) -> bool {
     for slot in TRAP_FIXUPS.iter() {
         if slot.fault_rip.compare_exchange(
@@ -143,6 +165,7 @@ pub fn unregister_trap_frame_fixup(fault_rip: u64) -> bool {
             slot.address.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.error_mask.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.error_value.store(0, core::sync::atomic::Ordering::Relaxed);
+            slot.recovery_result.store(0, core::sync::atomic::Ordering::Relaxed);
             slot.fault_rip.store(0, core::sync::atomic::Ordering::Release);
             return true;
         }
@@ -151,6 +174,8 @@ pub fn unregister_trap_frame_fixup(fault_rip: u64) -> bool {
 }
 
 fn apply_trap_frame_fixup(rip: u64, cr2: u64, error: u64, frame: *const u64) -> bool {
+    // MAX_TRAP_FIXUPS is deliberately small and fixed: exception dispatch cannot
+    // allocate, sleep, or acquire locks which might already be held by the faulting CPU.
     for slot in TRAP_FIXUPS.iter() {
         if slot.fault_rip.load(core::sync::atomic::Ordering::Acquire) != rip { continue; }
         let address = slot.address.load(core::sync::atomic::Ordering::Relaxed);
@@ -158,8 +183,13 @@ fn apply_trap_frame_fixup(rip: u64, cr2: u64, error: u64, frame: *const u64) -> 
         let value = slot.error_value.load(core::sync::atomic::Ordering::Relaxed);
         if (address == 0 || address == cr2) && error & mask == value {
             let recovery = slot.recovery_rip.load(core::sync::atomic::Ordering::Relaxed);
-            if recovery != 0 && recovery != FIXUP_RESERVED {
-                unsafe { (frame as *mut u64).add(17).write(recovery); }
+            let result = slot.recovery_result.load(core::sync::atomic::Ordering::Relaxed);
+            if recovery >= 0xffff_8000_0000_0000 && recovery != FIXUP_RESERVED {
+                unsafe {
+                    let saved = frame as *mut u64;
+                    saved.add(14).write(result); // RAX: explicit probe result
+                    saved.add(17).write(recovery); // RIP: resume at the recovery stub
+                }
                 return true;
             }
         }
@@ -189,6 +219,18 @@ cognacos_fault_probe_execute_nx:
     .type cognacos_fault_probe_execute_nx_recovery, @function
 cognacos_fault_probe_execute_nx_recovery:
     xor eax, eax
+    ret
+
+    # Faulting instruction address is the function entry; the dispatcher writes
+    # STATUS_ACCESS_VIOLATION to saved RAX and redirects RIP to the ret-only stub.
+    .global cognacos_fault_probe_read_invalid
+    .type cognacos_fault_probe_read_invalid, @function
+cognacos_fault_probe_read_invalid:
+    mov rax, qword ptr [rdi]
+    ret
+    .global cognacos_fault_probe_read_invalid_recovery
+    .type cognacos_fault_probe_read_invalid_recovery, @function
+cognacos_fault_probe_read_invalid_recovery:
     ret
 "#);
 
@@ -1504,8 +1546,27 @@ unsafe extern "C" {
     fn cognacos_fault_probe_write_ro_recovery();
     fn cognacos_fault_probe_execute_nx(address: *mut u8) -> u64;
     fn cognacos_fault_probe_execute_nx_recovery();
+    fn cognacos_fault_probe_read_invalid(address: *const u64) -> u64;
+    fn cognacos_fault_probe_read_invalid_recovery();
 }
 
+
+/// Verify that a non-present kernel probe is converted into an explicit error
+/// result and returns through its fixup instead of escalating to the fatal handler.
+pub fn trap_frame_fixup_self_test() -> bool {
+    const INVALID_ADDRESS: u64 = 0x0000_0000_dead_0000;
+    let fault_rip = cognacos_fault_probe_read_invalid as *const () as u64;
+    let recovery_rip = cognacos_fault_probe_read_invalid_recovery as *const () as u64;
+    if !register_trap_frame_fixup_with_result(
+        fault_rip, recovery_rip, INVALID_ADDRESS,
+        PF_ERROR_MATCH_MASK, 0, STATUS_ACCESS_VIOLATION,
+    ) {
+        return false;
+    }
+    let result = unsafe { cognacos_fault_probe_read_invalid(INVALID_ADDRESS as *const u64) };
+    let removed = unregister_trap_frame_fixup(fault_rip);
+    removed && result == STATUS_ACCESS_VIOLATION
+}
 
 /// Deliberately verify CR0.WP and NX enforcement without hiding unrelated faults.
 /// The recovery labels are armed for one exact CR2 address and one expected error code.
