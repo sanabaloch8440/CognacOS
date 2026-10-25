@@ -25,7 +25,7 @@ CognacOS is an experimental Rust-first x86-64 operating system using a Rust UEFI
 | Security | Descriptor validation, access/privilege checks, token metadata, audit groundwork | Full token lifecycle, impersonation, SACL/audit policy |
 | Storage | Protocol and native Rust ext-family filesystem foundations | Hardware paths, DMA/IOMMU, full VFS, writable crash-safe filesystem |
 
-These are implementation foundations, not production-readiness claims. See the [roadmap]({{ '/docs/roadmap/' | relative_url }}) for the canonical milestone checklist.
+These are implementation foundations, not production-readiness claims. See the [roadmap]({{ '/docs/roadmap.html' | relative_url }}) for the canonical milestone checklist.
 
 ## Validation strategy
 1. Run host-side unit/regression tests.
@@ -37,4 +37,4 @@ These are implementation foundations, not production-readiness claims. See the [
 
 - [Repository](https://github.com/umarfarooq7869/CognacOS)
 - [CI workflow](https://github.com/umarfarooq7869/CognacOS/actions/workflows/build-uefi.yml)
-- [ABI dashboard]({{ '/docs/compatibility/' | relative_url }})
+- [ABI dashboard]({{ '/docs/compatibility/index.html' | relative_url }})

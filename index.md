@@ -9,7 +9,7 @@ title: CognacOS — Project Overview
 <img src="{{ '/assets/cognacos-logo.svg' | relative_url }}" alt="CognacOS bottle logo">
 <h1>Build an open, Rust-first operating system.</h1>
 <p>CognacOS is an experimental x86-64 operating system with a UEFI boot path and NT-inspired kernel interfaces. Track engineering progress, validation, and the gaps between CognacOS and public Windows x64 ABI contracts.</p>
-<div class="cognac-actions"><a href="{{ '/docs/project/' | relative_url }}">Project details</a><a href="{{ '/docs/roadmap/' | relative_url }}">Roadmap & milestones</a><a href="{{ '/docs/compatibility/' | relative_url }}">Windows ABI status</a></div>
+<div class="cognac-actions"><a href="{{ '/docs/project.html' | relative_url }}">Project details</a><a href="{{ '/docs/roadmap.html' | relative_url }}">Roadmap & milestones</a><a href="{{ '/docs/compatibility/index.html' | relative_url }}">Windows ABI status</a></div>
 </div>
 
 ## Project at a glance
@@ -23,9 +23,9 @@ title: CognacOS — Project Overview
 The canonical Ke comparison tracks **169 routine names**: declaration/call-path coverage **100%**, import-name resolution **100%**, strict scoped behavior matches **30.2%** (51/169), and a project-defined combined score of **65.1%**. These are not Microsoft metrics and do not predict third-party driver compatibility.
 
 <div class="cognac-grid">
-<div class="cognac-card"><h3>Ke — Kernel Executive</h3><p>Routine inventory, ABI declarations, resolver coverage, behavior scope and missing semantics.</p><a href="{{ '/docs/compatibility/ke/' | relative_url }}">Read Ke status →</a></div>
-<div class="cognac-card"><h3>Se — Security Reference Monitor</h3><p>Implemented security entry points, token metadata, descriptor validation and open security work.</p><a href="{{ '/docs/compatibility/se/' | relative_url }}">Read Se status →</a></div>
-<div class="cognac-card"><h3>Roadmap</h3><p>Milestones for memory, scheduling, object management, I/O, security and storage.</p><a href="{{ '/docs/roadmap/' | relative_url }}">Track milestones →</a></div>
+<div class="cognac-card"><h3>Ke — Kernel Executive</h3><p>Routine inventory, ABI declarations, resolver coverage, behavior scope and missing semantics.</p><a href="{{ '/docs/compatibility/ke.html' | relative_url }}">Read Ke status →</a></div>
+<div class="cognac-card"><h3>Se — Security Reference Monitor</h3><p>Implemented security entry points, token metadata, descriptor validation and open security work.</p><a href="{{ '/docs/compatibility/se.html' | relative_url }}">Read Se status →</a></div>
+<div class="cognac-card"><h3>Roadmap</h3><p>Milestones for memory, scheduling, object management, I/O, security and storage.</p><a href="{{ '/docs/roadmap.html' | relative_url }}">Track milestones →</a></div>
 </div>
 
 ## Development links

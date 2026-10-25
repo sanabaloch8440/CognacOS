@@ -17,8 +17,8 @@ This dashboard compares CognacOS with public Windows 11 x64 WDK/DDI contracts, u
 | Project-defined combined score | 65.1% | Average of declaration coverage and strict behavior; not a Microsoft metric |
 
 ## Component reports
-- [Ke — Kernel Executive]({{ '/docs/compatibility/ke/' | relative_url }}) — routines, ABI declaration coverage, behavior and missing semantics.
-- [Se — Security Reference Monitor]({{ '/docs/compatibility/se/' | relative_url }}) — implemented security entry points, current limitations and remaining work.
+- [Ke — Kernel Executive]({{ '/docs/compatibility/ke.html' | relative_url }}) — routines, ABI declaration coverage, behavior and missing semantics.
+- [Se — Security Reference Monitor]({{ '/docs/compatibility/se.html' | relative_url }}) — implemented security entry points, current limitations and remaining work.
 
 ## Status definitions
 - **Scoped match:** behavior matches the documented contract within the explicitly stated project constraints and has supporting tests.
