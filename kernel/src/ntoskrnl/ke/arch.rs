@@ -1483,17 +1483,20 @@ fn user_exception_status(vector: u64, _error: u64) -> u64 {
 fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> ! {
     let trap = unsafe { &*frame.cast::<UserExceptionTrapFrame>() };
     if trap.vector != vector || trap.error_code != error || trap.cs & 3 != 3
-        || trap.ss & 3 != 3
-        || trap.rip < 0x1000
-        || trap.rip >= crate::ntoskrnl::mm::address_space::USER_END
-        || trap.rsp < 0x1000
-        || trap.rsp >= crate::ntoskrnl::mm::address_space::USER_END {
+        || trap.ss & 3 != 3 {
+        // A structurally inconsistent hardware frame is a supervisor integrity fault.
         cognacos_exception_fatal(vector, error, frame);
     }
     let pid = crate::thread::current_process_id();
     if pid == 0 {
         cognacos_exception_fatal(vector, error, frame);
     }
+    // Invalid/noncanonical user RIP or RSP is a fault in the process context,
+    // not a reason to bugcheck the kernel.
+    let valid_user_context = trap.rip >= 0x1000
+        && trap.rip < crate::ntoskrnl::mm::address_space::USER_END
+        && trap.rsp >= 0x1000
+        && trap.rsp < crate::ntoskrnl::mm::address_space::USER_END;
     crate::serial_write(b"CPL3 exception: vector=");
     crate::serial_write_hex(vector);
     crate::serial_write(b" error=");
@@ -1509,9 +1512,12 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> !
     crate::serial_write(b" process=");
     crate::serial_write_hex(pid);
     crate::serial_write(b"\r\n");
-    crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(
-        pid, user_exception_status(vector, error),
-    )
+    let status = if valid_user_context {
+        user_exception_status(vector, error)
+    } else {
+        STATUS_ACCESS_VIOLATION
+    };
+    crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, status)
 }
 
 /// Dispatch recoverable faults. A return value of one asks the assembly stub to
