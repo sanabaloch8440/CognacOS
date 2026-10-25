@@ -415,7 +415,7 @@ pub unsafe extern "system" fn RtlRandomEx(seed: *mut ULONG) -> ULONG {
     if seed.is_null() { return 0; }
     let next = unsafe { (*seed).wrapping_mul(0x7fff_ffed).wrapping_add(0x7fff_ffc3) };
     unsafe { *seed = next; }
-    next & 0x7fff_ffff
+    next % 0x7fff_ffff
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlRandom(seed: *mut ULONG) -> ULONG {
