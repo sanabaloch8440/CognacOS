@@ -153,3 +153,14 @@ that slot at the unmapped top of the user stack.
 space plus the fifth argument slot), preserving 16-byte alignment before calls.
 The next QEMU run must get past the process query and verify the complete
 wrapper sequence.
+
+### NTDLL-LOAD-014 — wrapper smoke returned a failing status after entering ring 3
+
+**Observed in QEMU:** the DLL now maps, registers exports, and returns from its
+entry callback, but the end-to-end smoke still fails after the user entrypoint.
+The next test revision assigns distinct exit codes to each assertion and logs
+the final syscall delta/exit status, so the failing wrapper or output check can
+be identified without guessing.
+
+**Status:** diagnostic instrumentation committed; the precise failing assertion
+and its fix remain pending the next QEMU run.
