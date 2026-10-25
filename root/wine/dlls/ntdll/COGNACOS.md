@@ -32,7 +32,7 @@ does not yet implement.
 ## CognacOS kernel binding
 
 For CognacOS, leave `WINDOWS_SYSCALL_IDS=0`. The native build defaults to CognacOS service IDs `0x100` through `0x104` for Close, YieldExecution, QueryInformationProcess, QueryInformationThread, and QuerySystemInformation. A trusted loader may override these using `CognacNtdllConfigureSyscalls` for the original close/yield pair or `CognacNtdllConfigureSyscallTable` for all five services. `WINDOWS_SYSCALL_IDS=1` remains an ABI experiment only and must not be used against the CognacOS dispatcher.
-The native bootstrap currently exports `NtClose`, `NtYieldExecution`, `NtQueryInformationProcess`, `NtQueryInformationThread`, `NtQuerySystemInformation`, core RTL
+The native bootstrap also exports a bounded 256 KiB per-process default heap through `RtlGetProcessHeap`, `RtlAllocateHeap`, `RtlFreeHeap`, `RtlReAllocateHeap`, `RtlSizeHeap`, and `RtlValidateHeap`; the loader points `PEB.ProcessHeap` at that image-local heap object. Custom heaps, LFH, heap callbacks/instrumentation, and the complete Windows heap contract remain unsupported. The native bootstrap currently exports `NtClose`, `NtYieldExecution`, `NtQueryInformationProcess`, `NtQueryInformationThread`, `NtQuerySystemInformation`, core RTL
 memory routines (`RtlCompareMemory`, `RtlCompareMemoryUlong`, `RtlCopyMemory`,
 `RtlFillMemory`, `RtlMoveMemory`, `RtlZeroMemory`), CRC32 helpers,
 `RtlIsZeroMemory`, and `RtlGetVersion` (reports Windows 11 build 26100), plus ANSI/Unicode string initialization, comparison, copy, and integer-conversion routines. Case-insensitive string comparison currently folds ASCII only; full Windows Unicode upcase-table semantics remain outstanding. The
@@ -94,3 +94,14 @@ The expanded version/status smoke passed in the boot-smoke phase of
 [Actions run 40183695385](https://github.com/umarfarooq7869/CognacOS/actions/runs/40183695385).
 The subsequent run adds explicit CRC32, compare-memory, zero-memory, fill, move,
 and copy tests; that expanded test run is still in progress.
+
+## Default process heap scope
+
+The in-tree heap is intentionally a bounded bootstrap implementation backed by
+writable NTDLL image data. It supports first-fit allocation, aligned blocks,
+splitting/coalescing, free, realloc, size, validation, and zero-memory
+allocation. Its exported heap object is installed into the PEB before ring-3
+entry. It does not yet implement custom heap creation/destruction, low-fragmentation
+heap behavior, debug/instrumentation flags, exception generation, or the full
+Windows heap ABI. The heap lifecycle is being added to the native ring-3 QEMU
+smoke test before expanding further.
