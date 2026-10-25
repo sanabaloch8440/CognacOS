@@ -37,3 +37,7 @@ EXPORTS
     RtlValidateHeap
     CognacNtdllProcessHeapObject DATA
     RtlGetCurrentPeb
+    RtlGetLastWin32Error
+    RtlSetLastWin32Error
+    RtlGetLastNtStatus
+    RtlSetLastWin32ErrorAndNtStatusFromNtStatus
