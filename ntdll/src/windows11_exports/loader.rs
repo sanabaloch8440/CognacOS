@@ -450,12 +450,16 @@ pub unsafe extern "system" fn LdrGetDllFullName(dll_handle: PVOID, full_dll_name
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrGetDllHandleByName(
-    base_name: *const UNICODE_STRING, full_name: *const UNICODE_STRING, entry_out: *mut PVOID,
+    base_name: *const UNICODE_STRING, full_name: *const UNICODE_STRING, dll_handle: *mut PVOID,
 ) -> NTSTATUS {
-    if (base_name.is_null() && full_name.is_null()) || entry_out.is_null() { return STATUS_INVALID_PARAMETER; }
-    unsafe { entry_out.write(ptr::null_mut()); }
+    if (base_name.is_null() && full_name.is_null()) || dll_handle.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { dll_handle.write(ptr::null_mut()); }
     match unsafe { find_entry_by_name(base_name, full_name) } {
-        Some(entry) => { unsafe { entry_out.write(entry.cast()); } STATUS_SUCCESS },
+        Some(entry) => {
+            let base = unsafe { ptr::read_unaligned(entry.add(0x30).cast::<usize>()) };
+            unsafe { dll_handle.write(base as PVOID); }
+            STATUS_SUCCESS
+        },
         None => STATUS_DLL_NOT_FOUND,
     }
 }
