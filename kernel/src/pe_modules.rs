@@ -88,7 +88,16 @@ pub fn finish_initialization(slot: usize, generation: u32, success: bool) -> Res
     let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
     if e.generation != generation || e.state != ModuleState::Initializing { return Err(STATUS_INVALID_PARAMETER); }
     if success { e.state = ModuleState::Initialized; Ok(()) }
-    else { *e = ModuleSnapshot::EMPTY; Err(STATUS_DLL_NOT_FOUND) }
+    else {
+        let dependencies = e.dependencies;
+        for dependency in 0..MAX_MODULES {
+            if dependencies & (1u32 << dependency) != 0 && s.entries[dependency].state != ModuleState::Empty {
+                s.entries[dependency].references = s.entries[dependency].references.saturating_sub(1);
+            }
+        }
+        s.entries[slot] = ModuleSnapshot::EMPTY;
+        Err(STATUS_DLL_NOT_FOUND)
+    }
 }
 pub fn add_reference(slot: usize, generation: u32) -> Result<u32, i32> {
     let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
@@ -151,7 +160,14 @@ pub fn rollback(slot: usize, generation: u32) -> Result<(), i32> {
     if e.generation != generation || !matches!(e.state, ModuleState::Reserved | ModuleState::Mapped) {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    *e = ModuleSnapshot::EMPTY; Ok(())
+    let dependencies = e.dependencies;
+    for dependency in 0..MAX_MODULES {
+        if dependencies & (1u32 << dependency) != 0 && s.entries[dependency].state != ModuleState::Empty {
+            s.entries[dependency].references = s.entries[dependency].references.saturating_sub(1);
+        }
+    }
+    s.entries[slot] = ModuleSnapshot::EMPTY;
+    Ok(())
 }
 pub fn find(name: &[u8]) -> Option<(usize, ModuleSnapshot)> { find_for_process(0, name) }
 pub fn find_for_process(process_id: u64, name: &[u8]) -> Option<(usize, ModuleSnapshot)> {
