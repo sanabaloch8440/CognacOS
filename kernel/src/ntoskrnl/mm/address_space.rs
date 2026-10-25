@@ -18,7 +18,7 @@ pub static ADDRESS_SPACE_LIFETIME_LOCK: crate::hal::IrqSpinLock<()> = crate::hal
 #[derive(Clone, Copy, Debug)]
 pub enum VmError { InvalidAddress, Unaligned, OutOfMemory, AlreadyMapped, NotMapped, PermissionDenied, AddressSpaceBusy, ExecutableUserPageUnsupported }
 
-pub struct AddressSpace { root: u64 }
+pub struct AddressSpace { root: u64, kuser_tables: [u64; 3] }
 impl AddressSpace {
     /// Allocate an independent PML4 while sharing supervisor-only kernel mappings.
     ///
@@ -35,7 +35,7 @@ impl AddressSpace {
             entry &= !USER;
             unsafe { target.add(i).write(entry); }
         }
-        Ok(Self { root })
+        Ok(Self { root, kuser_tables: [0; 3] })
     }
 
     pub fn root_physical(&self) -> u64 { self.root }
@@ -53,6 +53,7 @@ impl AddressSpace {
         const TWO_MIB: u64 = 0x20_0000;
         const ONE_GIB: u64 = 0x4000_0000;
         const PAT_LARGE: u64 = 1 << 12;
+        if self.kuser_tables[0] != 0 { return Err(VmError::AlreadyMapped); }
         if virtual_address != super::user_range::KUSER_SHARED_DATA_ADDRESS
             || physical_address & (PAGE_SIZE - 1) != 0
             || physical_address >= 0x1_0000_0000
@@ -139,6 +140,7 @@ impl AddressSpace {
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+        self.kuser_tables = [pdpt, pd, pt];
         Ok(())
     }
 
@@ -596,6 +598,12 @@ impl AddressSpace {
             *page=WorkingSetPage::EMPTY;
         }
         crate::process::detach_address_space(self.root);
+        // The KUSER mapping owns a private low page-table path so that setting
+        // USER on its ancestors cannot expose or mutate kernel identity leaves.
+        for table in self.kuser_tables.iter().copied() {
+            if table != 0 { unsafe { crate::memory::free_page(table) }.map_err(|_| VmError::OutOfMemory)?; }
+        }
+        self.kuser_tables = [0; 3];
         unsafe { crate::memory::free_page(self.root) }.map_err(|_| VmError::OutOfMemory)?;
         self.root = 0;
         Ok(())
