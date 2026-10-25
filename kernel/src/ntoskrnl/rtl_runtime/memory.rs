@@ -18,7 +18,7 @@ pub unsafe extern "win64" fn rtl_compare_memory_ulong(a: *const u32, n: u64, val
         }
         matched += 1;
     }
-    matched.min(u32::MAX as u64) as u32
+    matched as u32
 }
 
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_compute_crc32(initial:u32,buffer:*const u8,length:u32)->u32 {
