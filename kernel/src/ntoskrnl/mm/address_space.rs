@@ -2,7 +2,7 @@
 //! User mappings occupy PML4 slots 1..255 (512 GiB..128 TiB) so they do not
 //! collide with the bootstrap's supervisor-only identity map at slot 0.
 use core::arch::asm;
-pub use super::user_range::{is_user_range, USER_END, USER_START};
+pub use super::user_range::{is_user_range, USER_END, USER_START, KUSER_SHARED_DATA_ADDRESS};
 
 const PAGE_SIZE: u64 = 4096;
 const PRESENT: u64 = 1;
