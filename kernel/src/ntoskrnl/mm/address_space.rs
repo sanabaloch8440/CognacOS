@@ -294,7 +294,7 @@ impl AddressSpace {
         let areas=unsafe{&mut *DEMAND_AREAS.0.get()};
         if areas.iter().any(|a|a.live&&a.root==self.root&&start<a.end&&a.start<end){return Err(VmError::AlreadyMapped)}
         let slot=areas.iter_mut().find(|a|!a.live).ok_or(VmError::OutOfMemory)?;
-        *slot=DemandArea{root:self.root,start,end,writable,executable,live:true}; Ok(())
+        *slot=DemandArea{root:self.root,start,end,writable,executable,committed:true,live:true}; Ok(())
     }
 
     /// Resolve a demand-zero or pagefile-backed user fault. A busy working-set
@@ -305,7 +305,7 @@ impl AddressSpace {
         let page_va=address&!(PAGE_SIZE-1);
         let (area, restore_slot, ws_index)={
             let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-            let area=unsafe{&*DEMAND_AREAS.0.get()}.iter().copied().find(|a|a.live&&a.root==self.root&&page_va>=a.start&&page_va<a.end);
+            let area=unsafe{&*DEMAND_AREAS.0.get()}.iter().copied().find(|a|a.live&&a.committed&&a.root==self.root&&page_va>=a.start&&page_va<a.end);
             let Some(area)=area else{return false};
             let pages=unsafe{&mut *WORKING_SET.0.get()};
             let index=if let Some(i)=pages.iter().position(|p|p.live&&p.root==self.root&&p.va==page_va){
@@ -446,12 +446,12 @@ impl AddressSpace {
 
     /// Return the virtual-memory region containing an address. Untracked gaps
     /// are reported as free regions bounded by adjacent reservations.
-    pub fn query_region(&self, address: u64) -> Option<(u64, u64, u64, bool, bool, bool)> {
+    pub fn query_region(&self, address: u64) -> Option<(u64, u64, u64, bool, bool, bool, bool)> {
         if !is_user_range(address, 1) { return None; }
         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
         let areas = unsafe { &*DEMAND_AREAS.0.get() };
         if let Some(a) = areas.iter().find(|a| a.live && a.root == self.root && address >= a.start && address < a.end) {
-            return Some((a.start, a.end, a.start, a.writable, a.executable, true));
+            return Some((a.start, a.end, a.start, a.writable, a.executable, true, a.committed));
         }
         let mut previous_end = USER_START;
         let mut next_start = USER_END;
@@ -464,7 +464,7 @@ impl AddressSpace {
         let end = core::cmp::min(next_start, USER_END);
         let base = core::cmp::max(start, page);
         if base >= end { return None; }
-        Some((base, end, 0, false, false, false))
+        Some((base, end, 0, false, false, false, false))
     }
 
     /// Snapshot the tracked demand-zero reservation containing `address`.
@@ -507,7 +507,8 @@ impl AddressSpace {
             let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
             let areas = unsafe { &*DEMAND_AREAS.0.get() };
             let area = areas.iter().find(|a| a.live && a.root == self.root && start >= a.start && end <= a.end).ok_or(VmError::NotMapped)?;
-            if release && (start != area.start || end != area.end) { return Err(VmError::InvalidAddress); }
+            if start != area.start || end != area.end { return Err(VmError::InvalidAddress); }
+            if !area.committed { return Err(VmError::NotMapped); }
             let pages = unsafe { &mut *WORKING_SET.0.get() };
             if pages.iter().any(|p| p.live && p.root == self.root && p.va >= start && p.va < end && p.busy) {
                 return Err(VmError::AddressSpaceBusy);
@@ -559,11 +560,9 @@ impl AddressSpace {
             va += PAGE_SIZE;
         }
         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        if release {
-            let areas = unsafe { &mut *DEMAND_AREAS.0.get() };
-            let index = areas.iter().position(|a| a.live && a.root == self.root && a.start == start && a.end == end).ok_or(VmError::NotMapped)?;
-            areas[index] = DemandArea::EMPTY;
-        }
+        let areas = unsafe { &mut *DEMAND_AREAS.0.get() };
+        let index = areas.iter().position(|a| a.live && a.root == self.root && a.start == start && a.end == end).ok_or(VmError::NotMapped)?;
+        if release { areas[index] = DemandArea::EMPTY; } else { areas[index].committed = false; }
         Ok(())
     }
 
@@ -871,8 +870,8 @@ impl AddressSpace {
 const MAX_DEMAND_AREAS: usize = 256;
 const MAX_WORKING_SET_PAGES: usize = 8192;
 #[derive(Clone, Copy)]
-struct DemandArea { root:u64, start:u64, end:u64, writable:bool, executable:bool, live:bool }
-impl DemandArea { const EMPTY: Self = Self { root:0,start:0,end:0,writable:false,executable:false,live:false }; }
+struct DemandArea { root:u64, start:u64, end:u64, writable:bool, executable:bool, committed:bool, live:bool }
+impl DemandArea { const EMPTY: Self = Self { root:0,start:0,end:0,writable:false,executable:false,committed:false,live:false }; }
 struct DemandAreas(core::cell::UnsafeCell<[DemandArea; MAX_DEMAND_AREAS]>);
 unsafe impl Sync for DemandAreas {}
 static DEMAND_AREAS: DemandAreas = DemandAreas(core::cell::UnsafeCell::new([DemandArea::EMPTY; MAX_DEMAND_AREAS]));
