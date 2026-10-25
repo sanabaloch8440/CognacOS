@@ -1,6 +1,6 @@
 //! Initial RdotOS x64 ring-3 syscall ABI; intentionally distinct from NT syscalls.
 use core::arch::global_asm;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::ntoskrnl::mm::address_space::AddressSpace;
 pub const SYS_EXIT:u64=0;
 pub const SYS_GETPID:u64=1;
@@ -128,6 +128,11 @@ pub const WIN_NT_QUERY_INFORMATION_PROCESS: u64 = 0x19;
 pub const WIN_NT_QUERY_INFORMATION_THREAD: u64 = 0x25;
 pub const WIN_NT_QUERY_SYSTEM_INFORMATION: u64 = 0x36;
 pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
+// PE COFF timestamp and optional-header checksum of the inspected reference
+// NTDLL. Refuse to use these build-specific IDs for an unrelated Windows build.
+const WINDOWS_NTDLL_REFERENCE_TIMESTAMP: u32 = 0x0670_1e03;
+const WINDOWS_NTDLL_REFERENCE_CHECKSUM: u32 = 0x001f_3afa;
+static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
 const PROCESS_BASIC_INFORMATION_CLASS: u64 = 0;
 const THREAD_BASIC_INFORMATION_CLASS: u64 = 0;
 const SYSTEM_BASIC_INFORMATION_CLASS: u64 = 0;
@@ -374,11 +379,41 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     }
 }
 
-/// Windows x64 service-number entry. Numbers are from the exact reference
-/// NTDLL build noted above; every other number fails closed as NOT_IMPLEMENTED.
+/// Enable the reference service table only after verifying the staged NTDLL,
+/// or temporarily while running the kernel's built-in ABI smoke fixture.
+pub fn set_windows_service_table_enabled(enabled: bool) {
+    WINDOWS_SERVICE_TABLE_ENABLED.store(enabled, Ordering::Release);
+}
+
+/// Verify that a PE image's COFF timestamp and checksum match the exact
+/// Windows NTDLL build from which these service IDs were extracted.
+pub fn windows_service_table_matches(image: &[u8]) -> bool {
+    if image.len() < 0x40 || &image[0..2] != b"MZ" { return false; }
+    let pe = u32::from_le_bytes([image[0x3c], image[0x3d], image[0x3e], image[0x3f]]) as usize;
+    let Some(coff) = pe.checked_add(4) else { return false; };
+    let Some(opt) = pe.checked_add(24) else { return false; };
+    if coff.checked_add(20).is_none_or(|end| end > image.len())
+        || opt.checked_add(68).is_none_or(|end| end > image.len())
+        || image.get(pe..pe.saturating_add(4)) != Some(b"PE\\0\\0".as_slice())
+    { return false; }
+    let machine = u16::from_le_bytes([image[coff], image[coff + 1]]);
+    let timestamp = u32::from_le_bytes(image[coff + 4..coff + 8].try_into().unwrap());
+    let magic = u16::from_le_bytes([image[opt], image[opt + 1]]);
+    let checksum = u32::from_le_bytes(image[opt + 64..opt + 68].try_into().unwrap());
+    machine == 0x8664 && magic == 0x20b
+        && timestamp == WINDOWS_NTDLL_REFERENCE_TIMESTAMP
+        && checksum == WINDOWS_NTDLL_REFERENCE_CHECKSUM
+}
+
+/// Windows x64 service-number entry. Numbers are build-specific; unknown or
+/// unverified tables fail closed instead of dispatching a possibly wrong API.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
     if frame.is_null() { return NT_STATUS_ACCESS_VIOLATION; }
+    if !WINDOWS_SERVICE_TABLE_ENABLED.load(Ordering::Acquire) {
+        CALL_COUNT.fetch_add(1, Ordering::AcqRel);
+        return NT_STATUS_NOT_IMPLEMENTED;
+    }
     let service = unsafe { *frame.add(14) };
     let native = match service {
         WIN_NT_CLOSE => NT_SYSCALL_CLOSE,
