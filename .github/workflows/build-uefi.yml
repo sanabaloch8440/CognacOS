@@ -137,6 +137,12 @@ jobs:
           set -euo pipefail
           rustc --edition=2024 --test tools/vm_range_host_tests.rs -o /tmp/cognacos-vm-range-tests
           /tmp/cognacos-vm-range-tests
+      - name: Run deterministic I/O rundown race and fault-injection tests
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          rustc --edition=2021 --test tools/io_rundown_host_tests.rs -o build/io-rundown-host-tests
+          build/io-rundown-host-tests --test-threads=1
       - name: Run host-side physical allocator map tests
         run: |
           mkdir -p build
