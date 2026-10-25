@@ -445,6 +445,24 @@ pub unsafe extern "system" fn RtlGetExtendedFeaturesMask(ex: *mut CONTEXT_EX) ->
     if chunk.Length < 8 { return 0; }
     unsafe { ex.cast::<u8>().add(chunk.Offset as usize).cast::<ULONG64>().read_unaligned() & !3u64 }
 }
+fn copy_amd64_context_ranges(dst: *mut u8, src: *const u8, flags: ULONG) {
+    // Windows x64 CONTEXT field boundaries from the native context copy map.
+    const RANGES: [(usize, ULONG); 12] = [
+        (0x38, 0x1), (0x3a, 0x4), (0x42, 0x1), (0x48, 0x10),
+        (0x78, 0x2), (0x98, 0x1), (0xa0, 0x2), (0xf8, 0x1),
+        (0x100, 0x8), (0x2a0, 0), (0x4b0, 0x10), (0x4d0, 0),
+    ];
+    let mut start = 0usize;
+    for (boundary, group) in RANGES {
+        if group & flags != 0 {
+            if start == 0 { start = boundary; }
+        } else if start != 0 {
+            unsafe { core::ptr::copy(src.add(start), dst.add(start), boundary - start); }
+            start = 0;
+        }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn RtlCopyExtendedContext(dst: *mut CONTEXT_EX, flags: ULONG, src: *const CONTEXT_EX) -> NTSTATUS {
     if dst.is_null() || src.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -458,7 +476,13 @@ pub unsafe extern "system" fn RtlCopyExtendedContext(dst: *mut CONTEXT_EX, flags
     // one block and accidentally shifting the destination's aligned area.
     let source_legacy = unsafe { src.cast::<u8>().offset(s.Legacy.Offset as isize) };
     let dest_legacy = unsafe { dst.cast::<u8>().offset(d.Legacy.Offset as isize) };
-    unsafe { core::ptr::copy(source_legacy, dest_legacy, s.Legacy.Length as usize); }
+    if flags & 0x0011_0000 == CONTEXT_AMD64 {
+        copy_amd64_context_ranges(dest_legacy, source_legacy, flags);
+    } else {
+        // The x86 compatibility layout is retained as a conservative full
+        // legacy-block copy until its per-field range map is ported.
+        unsafe { core::ptr::copy(source_legacy, dest_legacy, s.Legacy.Length as usize); }
+    }
     if flags & CONTEXT_XSTATE != 0 && s.XState.Length != 0 {
         let source_xstate = unsafe { src.cast::<u8>().add(s.XState.Offset as usize) };
         let dest_xstate = unsafe { dst.cast::<u8>().add(d.XState.Offset as usize) };
