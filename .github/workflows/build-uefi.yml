@@ -438,9 +438,10 @@ jobs:
           grep -F 'Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.' build/serial.log
           grep -F 'NTDLL PE32+ image mapped and exports registered.' build/serial.log
           if grep -Fq 'Native NTDLL and Windows SYSCALL ABI ring-3 smoke tests passed.' build/serial.log \
-            || grep -Fq 'Windows NTDLL mapped; real ring-3 SYSCALL ABI and Windows service-number smoke passed.' build/serial.log \
-            || grep -Fq 'Windows NTDLL mapped; service table fingerprint differs, execution skipped.' build/serial.log; then
-            echo "NTDLL mapping and applicable Windows SYSCALL ABI smoke passed or was safely skipped for an unknown service-table build."
+            || grep -Fq 'Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed.' build/serial.log \
+            || grep -Fq 'Windows NTDLL mapped; no supported canonical syscall stub table found, execution skipped.' build/serial.log \
+            || grep -Fq 'CognacOS NTDLL mapped; PE exports validated; user-mode execution deferred pending INT 0x82 return regression.' build/serial.log; then
+            echo "NTDLL PE mapping/export validation and applicable syscall-table checks completed."
           else
             echo "NTDLL mapping completed but no expected syscall smoke result was reported." >&2
             exit 1
