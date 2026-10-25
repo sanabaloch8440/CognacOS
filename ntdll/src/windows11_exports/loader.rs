@@ -1,9 +1,11 @@
 //! Windows 11 x64 NTDLL loader exports.
 //!
-//! This module implements the process-local DLL search-directory controls and
-//! loader-lock contract using explicit x64 ABI types. Mapping images, resolving
-//! dependencies, activation contexts, and loader notifications still require
-//! integration with the native image manager and are not emulated here.
+//! Shared ABI/state façade for the Windows 11 x64 loader exports. Focused
+//! implementations live under `loader/`. Search-directory controls, loaded-module
+//! queries, resource access, relocation blocks, notification registration, and
+//! delay-import lookup are implemented to their supported boundary. Mapping new
+//! DLLs, activation contexts, enclave loading, and callback delivery still require
+//! native image-manager and process-thread integration.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 use core::{ffi::c_void, ptr, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
