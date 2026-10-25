@@ -107,7 +107,7 @@ Windows heap ABI. The heap lifecycle passed in [Actions run 40184178016](https:/
 
 ## PEB access
 
-The native DLL now exports `RtlGetCurrentPeb` using the x64 GS-relative PEB pointer, plus `RtlGetLastWin32Error`, `RtlSetLastWin32Error`, `RtlGetLastNtStatus`, and `RtlSetLastWin32ErrorAndNtStatusFromNtStatus` using the documented TEB offsets. The process launcher installs the TEB as the user GS base, and the ring-3 smoke checks that `RtlGetCurrentPeb` returns the active PEB and that its `ProcessHeap` field points at the native heap object. The first QEMU result for this accessor is pending.
+The native DLL now exports `RtlGetCurrentPeb` using the x64 GS-relative PEB pointer, plus `RtlGetLastWin32Error`, `RtlSetLastWin32Error`, `RtlGetLastNtStatus`, and `RtlSetLastWin32ErrorAndNtStatusFromNtStatus` using the documented TEB offsets. The process launcher installs the TEB as the user GS base, and the ring-3 smoke checks that `RtlGetCurrentPeb` returns the active PEB and that its `ProcessHeap` field points at the native heap object. The accessor and PEB.ProcessHeap checks passed in the boot-smoke phase of [Actions run 40184395068](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184395068).
 
 The TEB error/status routines are now exercised in ring 3: setting and reading
 LastErrorValue, then mapping `STATUS_INVALID_PARAMETER` into LastErrorValue while recording
