@@ -5,7 +5,7 @@ CC := $(CROSS)gcc
 OBJDUMP := $(CROSS)objdump
 OUTPUT ?= ntdll.dll
 CFLAGS := -O2 -Wall -Wextra -Werror -ffreestanding -fno-stack-protector
-LDFLAGS := -shared -nostdlib -Wl,--subsystem,windows -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va -Wl,--image-base,0x180000000
+LDFLAGS := -shared -nostdlib -Wl,--subsystem,windows -Wl,--dynamicbase -Wl,--nxcompat -Wl,--high-entropy-va -Wl,--image-base,0x180000000 -Wl,--entry,DllMain
 
 .PHONY: all check clean
 all: $(OUTPUT)
