@@ -257,6 +257,9 @@ jobs:
           COGNACOS_KERNEL_SHA256: ${{ steps.kernel-digest.outputs.sha256 }}
           COGNACOS_KERNEL_SIGNATURE: ${{ steps.kernel-sign.outputs.signature }}
           COGNACOS_SIGNING_PUBLIC_KEY: ${{ steps.kernel-sign.outputs.public_key }}
+          # Avoid a known LLVM SelectionDAG SIGILL while optimizing curve25519-dalek
+          # at opt-level 3 on the current hosted runner toolchain.
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: 2
         run: cargo build --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi --release
       - name: Optionally sign the UEFI bootloader for firmware Secure Boot
         shell: bash
