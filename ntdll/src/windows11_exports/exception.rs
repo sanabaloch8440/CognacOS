@@ -134,13 +134,90 @@ pub unsafe extern "system" fn RtlKnownExceptionFilter(_record: *mut EXCEPTION_RE
     0
 }
 
-/// The loader must register image and dynamic function tables before lookup
-/// can be meaningful. Until that registry exists, return NULL and clear base.
+// NTDLL-local function-table registry. Each loaded process has its own NTDLL
+// instance; the registry stores caller-owned .pdata tables until image unload.
+use core::sync::atomic::{AtomicBool, Ordering};
+const MAX_FUNCTION_TABLES: usize = 64;
+#[derive(Clone, Copy)]
+struct FunctionTable { table: *const RUNTIME_FUNCTION, count: u32, base: u64, used: bool }
+unsafe impl Send for FunctionTable {}
+impl FunctionTable { const EMPTY: Self = Self { table: ptr::null(), count: 0, base: 0, used: false }; }
+struct FunctionTableStore(core::cell::UnsafeCell<[FunctionTable; MAX_FUNCTION_TABLES]>);
+unsafe impl Sync for FunctionTableStore {}
+static FUNCTION_TABLES: FunctionTableStore = FunctionTableStore(core::cell::UnsafeCell::new([FunctionTable::EMPTY; MAX_FUNCTION_TABLES]));
+static FUNCTION_TABLE_LOCK: AtomicBool = AtomicBool::new(false);
+struct TableGuard;
+impl TableGuard {
+    fn acquire() -> Self {
+        while FUNCTION_TABLE_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        Self
+    }
+}
+impl Drop for TableGuard { fn drop(&mut self) { FUNCTION_TABLE_LOCK.store(false, Ordering::Release); } }
+
+/// Register a sorted AMD64 RUNTIME_FUNCTION array (RtlAddFunctionTable ABI).
+#[no_mangle]
+pub unsafe extern "system" fn RtlAddFunctionTable(
+    table: *const RUNTIME_FUNCTION, count: u32, base: u64
+) -> u8 {
+    if table.is_null() || count == 0 || count > 8192 || base == 0 { return 0; }
+    let entries = core::slice::from_raw_parts(table, count as usize);
+    let mut previous_end = 0u32;
+    for entry in entries {
+        if entry.BeginAddress >= entry.EndAddress || entry.BeginAddress < previous_end
+            || base.checked_add(entry.EndAddress as u64).is_none()
+            || entry.UnwindData & 1 != 0 && entry.UnwindData >= 0x7fff_ffff {
+            return 0;
+        }
+        previous_end = entry.EndAddress;
+    }
+    let _guard = TableGuard::acquire();
+    let tables = &mut *FUNCTION_TABLES.0.get();
+    if tables.iter().any(|t| t.used && t.table == table && t.base == base) { return 0; }
+    let Some(slot) = tables.iter_mut().find(|t| !t.used) else { return 0; };
+    *slot = FunctionTable { table, count, base, used: true };
+    1
+}
+
+/// Remove a previously registered dynamic function table.
+#[no_mangle]
+pub unsafe extern "system" fn RtlDeleteFunctionTable(table: *const RUNTIME_FUNCTION) -> u8 {
+    if table.is_null() { return 0; }
+    let _guard = TableGuard::acquire();
+    let tables = &mut *FUNCTION_TABLES.0.get();
+    if let Some(slot) = tables.iter_mut().find(|t| t.used && t.table == table) {
+        *slot = FunctionTable::EMPTY;
+        1
+    } else { 0 }
+}
+
+/// Search registered AMD64 function tables for ControlPc.
 #[no_mangle]
 pub unsafe extern "system" fn RtlLookupFunctionEntry(
-    _control_pc: u64, image_base: *mut u64, _history_table: *mut c_void
+    control_pc: u64, image_base: *mut u64, _history_table: *mut c_void
 ) -> *const RUNTIME_FUNCTION {
     if !image_base.is_null() { *image_base = 0; }
+    if control_pc == 0 { return ptr::null(); }
+    let _guard = TableGuard::acquire();
+    let tables = &*FUNCTION_TABLES.0.get();
+    for t in tables.iter().filter(|t| t.used) {
+        let Some(rva) = control_pc.checked_sub(t.base).and_then(|v| u32::try_from(v).ok()) else { continue; };
+        let entries = core::slice::from_raw_parts(t.table, t.count as usize);
+        let mut lo = 0usize;
+        let mut hi = entries.len();
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let e = &entries[mid];
+            if rva < e.BeginAddress { hi = mid; }
+            else if rva >= e.EndAddress { lo = mid + 1; }
+            else {
+                if !image_base.is_null() { *image_base = t.base; }
+                return e as *const RUNTIME_FUNCTION;
+            }
+        }
+    }
     ptr::null()
 }
 
@@ -189,9 +266,6 @@ pub unsafe extern "system" fn RtlUnwindEx(
     _context: *mut CONTEXT, _history_table: *mut c_void
 ) { }
 
-/// x64 leaf-frame unwind: restore RIP from [RSP], then advance RSP by 8.
-/// Non-leaf unwind metadata is intentionally rejected until the PE loader's
-/// .pdata/.xdata registry and full UNWIND_INFO interpreter are connected.
 unsafe fn unwind_leaf(context: *mut CONTEXT, establisher: *mut u64) -> i32 {
     if context.is_null() { return STATUS_INVALID_PARAMETER; }
     let c = &mut *context;
@@ -199,22 +273,102 @@ unsafe fn unwind_leaf(context: *mut CONTEXT, establisher: *mut u64) -> i32 {
     let ret = *(c.Rsp as *const u64);
     if ret == 0 { return STATUS_BAD_STACK; }
     c.Rip = ret;
-    c.Rsp = c.Rsp.saturating_add(8);
+    c.Rsp = match c.Rsp.checked_add(8) { Some(v) => v, None => return STATUS_BAD_STACK };
     if !establisher.is_null() { *establisher = c.Rsp; }
+    0
+}
+unsafe fn unwind_function(
+    handler_type: u32, image_base: u64, control_pc: u64,
+    entry: *const RUNTIME_FUNCTION, context: *mut CONTEXT,
+    handler_data: *mut *mut c_void, establisher_frame: *mut u64
+) -> i32 {
+    if context.is_null() || entry.is_null() || handler_type & !0x7 != 0 { return STATUS_INVALID_PARAMETER; }
+    let c = &mut *context;
+    let f = &*entry;
+    if f.BeginAddress >= f.EndAddress || f.UnwindData & 1 != 0 { return STATUS_NOT_IMPLEMENTED; }
+    let rva = match u32::try_from(control_pc.saturating_sub(image_base)) { Ok(v) if v >= f.BeginAddress && v < f.EndAddress => v, _ => return STATUS_INVALID_PARAMETER };
+    let info = image_base.checked_add(f.UnwindData as u64).ok_or(STATUS_INVALID_PARAMETER)?;
+    let header = *(info as *const u8);
+    let version = header & 7;
+    let flags = header >> 3;
+    if version != 1 || flags & !7 != 0 || flags & 4 != 0 { return STATUS_NOT_IMPLEMENTED; }
+    let prolog_size = *((info + 1) as *const u8) as u32;
+    let code_count = *((info + 2) as *const u8) as usize;
+    let frame = *((info + 3) as *const u8);
+    if code_count > 256 { return STATUS_INVALID_PARAMETER; }
+    let control_offset = rva - f.BeginAddress;
+    let in_prolog = control_offset < prolog_size;
+    let mut index = 0usize;
+    while index < code_count {
+        let slot = *((info + 4 + (index * 2) as u64) as *const u8);
+        let op = *((info + 5 + (index * 2) as u64) as *const u8);
+        let code_offset = slot as u32;
+        let opcode = op & 0x0f;
+        let opinfo = op >> 4;
+        if in_prolog && code_offset > control_offset { index += 1 + match opcode { 1 => if opinfo == 0 { 1 } else { 2 }, 4 | 8 => 1, 5 | 9 => 2, _ => 0 }; continue; }
+        match opcode {
+            0 => { // UWOP_PUSH_NONVOL
+                if c.Rsp == 0 || c.Rsp & 7 != 0 { return STATUS_BAD_STACK; }
+                let value = *(c.Rsp as *const u64);
+                match opinfo {
+                    3 => c.Rbx=value, 5 => c.Rbp=value, 6 => c.Rsi=value, 7 => c.Rdi=value,
+                    12 => c.R12=value, 13 => c.R13=value, 14 => c.R14=value, 15 => c.R15=value,
+                    _ => return STATUS_NOT_IMPLEMENTED,
+                }
+                c.Rsp += 8;
+            }
+            1 => { // UWOP_ALLOC_LARGE
+                let amount = if opinfo == 0 {
+                    index += 1; (*((info + 4 + (index * 2) as u64) as *const u16) as u64) * 8
+                } else if opinfo == 1 {
+                    index += 2; *((info + 4 + (index * 2) as u64 - 2) as *const u32) as u64
+                } else { return STATUS_INVALID_PARAMETER };
+                c.Rsp = match c.Rsp.checked_add(amount) { Some(v) => v, None => return STATUS_BAD_STACK };
+            }
+            2 => { // UWOP_ALLOC_SMALL
+                c.Rsp = match c.Rsp.checked_add((opinfo as u64) * 8 + 8) { Some(v) => v, None => return STATUS_BAD_STACK };
+            }
+            3 => { // UWOP_SET_FPREG
+                let reg = frame & 0x0f;
+                let offset = ((frame >> 4) as u64) * 16;
+                let fp = match reg { 5 => c.Rbp, _ => return STATUS_NOT_IMPLEMENTED };
+                c.Rsp = match fp.checked_sub(offset) { Some(v) => v, None => return STATUS_BAD_STACK };
+            }
+            4 | 5 | 8 | 9 => return STATUS_NOT_IMPLEMENTED, // save slots require full context-pointer ABI
+            10 => { // UWOP_PUSH_MACHFRAME
+                let error_code = opinfo != 0;
+                let rip_slot = c.Rsp + if error_code { 8 } else { 0 };
+                c.Rip = *(rip_slot as *const u64);
+                c.Rsp = *( (rip_slot + 24) as *const u64 );
+                if !establisher_frame.is_null() { *establisher_frame = c.Rsp; }
+                return 0;
+            }
+            _ => return STATUS_NOT_IMPLEMENTED,
+        }
+        index += 1;
+    }
+    if !establisher_frame.is_null() { *establisher_frame = c.Rsp; }
+    if !handler_data.is_null() { *handler_data = ptr::null_mut(); }
+    let ret = *(c.Rsp as *const u64);
+    if ret == 0 { return STATUS_BAD_STACK; }
+    c.Rip = ret;
+    c.Rsp = match c.Rsp.checked_add(8) { Some(v) => v, None => return STATUS_BAD_STACK };
     0
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlVirtualUnwind(
-    handler_type: u32, _image_base: u64, _control_pc: u64,
+    handler_type: u32, image_base: u64, control_pc: u64,
     function_entry: *const RUNTIME_FUNCTION, context: *mut CONTEXT,
     handler_data: *mut *mut c_void, establisher_frame: *mut u64,
     _context_pointers: *mut c_void
 ) -> EXCEPTION_ROUTINE {
     if !handler_data.is_null() { *handler_data = ptr::null_mut(); }
-    if !function_entry.is_null() || handler_type & !0x7 != 0 {
+    if function_entry.is_null() {
+        let _ = unwind_leaf(context, establisher_frame);
         return None;
     }
-    if unwind_leaf(context, establisher_frame) == 0 { None } else { None }
+    let _ = unwind_function(handler_type, image_base, control_pc, function_entry, context, handler_data, establisher_frame);
+    None
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlVirtualUnwind2(
