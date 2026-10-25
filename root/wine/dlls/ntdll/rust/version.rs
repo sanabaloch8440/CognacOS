@@ -46,3 +46,122 @@ pub unsafe fn copy_version_info(output:*mut RTL_OSVERSIONINFOEXW,current:&RTL_OS
 #[test]fn rejects_bad_masks(){let x=v(10,0,1);assert_eq!(verify_version_info(&x,&x,0,1),STATUS_INVALID_PARAMETER);assert_eq!(verify_version_info(&x,&x,VER_SUITENAME,cond(VER_EQUAL,SHIFT_SUITE)),STATUS_INVALID_PARAMETER)}
 #[test]fn x64_layout(){assert_eq!(core::mem::size_of::<RTL_OSVERSIONINFOEXW>(),284)}
 }
+
+// Product constants used by Wine's RtlGetProductInfo compatibility routine.
+pub const VER_NT_WORKSTATION: UCHAR = 1;
+pub const VER_NT_DOMAIN_CONTROLLER: UCHAR = 2;
+pub const VER_NT_SERVER: UCHAR = 3;
+pub const PRODUCT_UNDEFINED: ULONG = 0x0000_0000;
+pub const PRODUCT_ULTIMATE_N: ULONG = 0x0000_0027;
+pub const PRODUCT_STANDARD_SERVER: ULONG = 0x0000_0007;
+
+/// Port of Wine's RtlGetNtVersionNumbers output convention. The high nibble
+/// of the build value is set; nullable output pointers are intentionally valid.
+pub unsafe fn get_nt_version_numbers(current: &RTL_OSVERSIONINFOEXW,
+    major: *mut ULONG, minor: *mut ULONG, build: *mut ULONG) {
+    // SAFETY: each non-null pointer is caller-provided writable ULONG storage.
+    unsafe {
+        if !major.is_null() { major.write(current.dwMajorVersion); }
+        if !minor.is_null() { minor.write(current.dwMinorVersion); }
+        if !build.is_null() { build.write(0xF000_0000 | current.dwBuildNumber); }
+    }
+}
+
+/// Port of Wine's RtlGetNtProductType: report the provider's product type.
+/// A null pointer is tolerated, matching the source routine's behavior.
+pub unsafe fn get_nt_product_type(current: &RTL_OSVERSIONINFOEXW, out: *mut ULONG) -> bool {
+    // SAFETY: out is only written when non-null.
+    unsafe { if !out.is_null() { out.write(current.wProductType as ULONG); } }
+    true
+}
+
+/// Port of Wine's current RtlGetProductInfo policy, not a complete catalogue
+/// of Windows SKU mappings. Wine reports Ultimate N for workstations and
+/// Standard Server for other product types when major version >= 6.
+pub unsafe fn get_product_info(current: &RTL_OSVERSIONINFOEXW, major: ULONG,
+    _minor: ULONG, _sp_major: ULONG, _sp_minor: ULONG, out: *mut ULONG) -> bool {
+    if out.is_null() { return false; }
+    // SAFETY: out is checked non-null and points to writable ULONG storage.
+    unsafe {
+        if major < 6 {
+            out.write(PRODUCT_UNDEFINED);
+            return false;
+        }
+        out.write(if current.wProductType == VER_NT_WORKSTATION {
+            PRODUCT_ULTIMATE_N
+        } else {
+            PRODUCT_STANDARD_SERVER
+        });
+    }
+    true
+}
+
+/// A source-level equivalent of the C RtlGetVersion field-copy behavior.
+/// It writes the base OSVERSIONINFOW fields, and the extended tail only when
+/// the caller's size exactly equals RTL_OSVERSIONINFOEXW. The caller must
+/// provide writable memory for the advertised structure size.
+pub unsafe fn get_version_fields(output: *mut RTL_OSVERSIONINFOEXW,
+    current: &RTL_OSVERSIONINFOEXW) -> NTSTATUS {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    // SAFETY: caller guarantees output has at least the base structure and is writable.
+    let advertised = unsafe { core::ptr::addr_of!((*output).dwOSVersionInfoSize).read() };
+    if advertised < 276 { return STATUS_INVALID_PARAMETER; }
+    // SAFETY: fields written are within the base OSVERSIONINFOW layout.
+    unsafe {
+        core::ptr::addr_of_mut!((*output).dwMajorVersion).write(current.dwMajorVersion);
+        core::ptr::addr_of_mut!((*output).dwMinorVersion).write(current.dwMinorVersion);
+        core::ptr::addr_of_mut!((*output).dwBuildNumber).write(current.dwBuildNumber);
+        core::ptr::addr_of_mut!((*output).dwPlatformId).write(current.dwPlatformId);
+        core::ptr::addr_of_mut!((*output).szCSDVersion).write(current.szCSDVersion);
+        if advertised == core::mem::size_of::<RTL_OSVERSIONINFOEXW>() as ULONG {
+            core::ptr::addr_of_mut!((*output).wServicePackMajor).write(current.wServicePackMajor);
+            core::ptr::addr_of_mut!((*output).wServicePackMinor).write(current.wServicePackMinor);
+            core::ptr::addr_of_mut!((*output).wSuiteMask).write(current.wSuiteMask);
+            core::ptr::addr_of_mut!((*output).wProductType).write(current.wProductType);
+            core::ptr::addr_of_mut!((*output).wReserved).write(current.wReserved);
+        }
+    }
+    STATUS_SUCCESS
+}
+
+#[cfg(test)]
+mod added_version_api_tests {
+    use super::*;
+    #[test]
+    fn version_numbers_sets_build_flag_and_allows_null_outputs() {
+        let current = RTL_OSVERSIONINFOEXW { dwMajorVersion: 10, dwMinorVersion: 0,
+            dwBuildNumber: 26100, ..Default::default() };
+        let mut major = 0; let mut minor = 99; let mut build = 0;
+        unsafe { get_nt_version_numbers(&current, &mut major, &mut minor, &mut build); }
+        assert_eq!((major, minor, build), (10, 0, 0xF000_65F4));
+        unsafe { get_nt_version_numbers(&current, core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut()); }
+    }
+    #[test]
+    fn product_type_and_product_info() {
+        let mut current = RTL_OSVERSIONINFOEXW { dwMajorVersion: 10,
+            wProductType: VER_NT_WORKSTATION, ..Default::default() };
+        let mut out = 0;
+        unsafe { assert!(get_nt_product_type(&current, &mut out)); }
+        assert_eq!(out, VER_NT_WORKSTATION as ULONG);
+        unsafe { assert!(get_product_info(&current, 10, 0, 0, 0, &mut out)); }
+        assert_eq!(out, PRODUCT_ULTIMATE_N);
+        current.wProductType = VER_NT_SERVER;
+        unsafe { assert!(get_product_info(&current, 10, 0, 0, 0, &mut out)); }
+        assert_eq!(out, PRODUCT_STANDARD_SERVER);
+        unsafe { assert!(!get_product_info(&current, 5, 0, 0, 0, &mut out)); }
+        assert_eq!(out, PRODUCT_UNDEFINED);
+    }
+    #[test]
+    fn version_copy_only_populates_extended_tail_for_exact_size() {
+        let current = RTL_OSVERSIONINFOEXW { dwMajorVersion: 10, dwBuildNumber: 26100,
+            wServicePackMajor: 2, ..Default::default() };
+        let mut out = RTL_OSVERSIONINFOEXW { dwOSVersionInfoSize: 276,
+            wServicePackMajor: 77, ..Default::default() };
+        unsafe { assert_eq!(get_version_fields(&mut out, &current), STATUS_SUCCESS); }
+        assert_eq!(out.dwBuildNumber, 26100);
+        assert_eq!(out.wServicePackMajor, 77);
+        out.dwOSVersionInfoSize = 284;
+        unsafe { assert_eq!(get_version_fields(&mut out, &current), STATUS_SUCCESS); }
+        assert_eq!(out.wServicePackMajor, 2);
+    }
+}
