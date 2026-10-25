@@ -520,7 +520,7 @@ mod tests {
             assert_eq!(RtlLookupEntryHashTable(table, 0x1234, &mut context), &mut entry as *mut _);
             assert_eq!((*table).NumEntries, 1);
             assert_eq!(RtlExpandHashTable(table), 1);
-            assert_eq!(RtlLookupEntryHashTable(table, 0x1234, &mut context), &mut entry);
+            assert_eq!(RtlLookupEntryHashTable(table, 0x1234, &mut context), &mut entry as *mut _);
             assert_eq!(RtlRemoveEntryHashTable(table, &mut entry, &mut context), 1);
             assert_eq!((*table).NumEntries, 0);
             RtlDeleteHashTable(table);
