@@ -1497,21 +1497,23 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> !
         && trap.rip < crate::ntoskrnl::mm::address_space::USER_END
         && trap.rsp >= 0x1000
         && trap.rsp < crate::ntoskrnl::mm::address_space::USER_END;
-    crate::serial_write(b"CPL3 exception: vector=");
-    crate::serial_write_hex(vector);
-    crate::serial_write(b" error=");
-    crate::serial_write_hex(error);
-    crate::serial_write(b" RIP=");
-    crate::serial_write_hex(trap.rip);
-    if vector == 14 {
-        let cr2: u64;
-        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
-        crate::serial_write(b" CR2=");
-        crate::serial_write_hex(cr2);
+    unsafe {
+        crate::serial_write(b"CPL3 exception: vector=");
+        crate::serial_write_hex(vector);
+        crate::serial_write(b" error=");
+        crate::serial_write_hex(error);
+        crate::serial_write(b" RIP=");
+        crate::serial_write_hex(trap.rip);
+        if vector == 14 {
+            let cr2: u64;
+            core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+            crate::serial_write(b" CR2=");
+            crate::serial_write_hex(cr2);
+        }
+        crate::serial_write(b" process=");
+        crate::serial_write_hex(pid);
+        crate::serial_write(b"\r\n");
     }
-    crate::serial_write(b" process=");
-    crate::serial_write_hex(pid);
-    crate::serial_write(b"\r\n");
     let status = if valid_user_context {
         user_exception_status(vector, error)
     } else {
