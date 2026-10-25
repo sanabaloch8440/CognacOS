@@ -27,7 +27,7 @@
     .globl NtClose
     .def NtClose; .scl 2; .type 32; .endef
 NtClose:
-    movq %rcx, %r10
+    .byte 0x4c, 0x8b, 0xd1
     movl $COGNAC_NT_CLOSE_ID, %eax
     syscall
     ret
@@ -36,7 +36,7 @@ NtClose:
     .globl NtYieldExecution
     .def NtYieldExecution; .scl 2; .type 32; .endef
 NtYieldExecution:
-    movq %rcx, %r10
+    .byte 0x4c, 0x8b, 0xd1
     movl $COGNAC_NT_YIELD_EXECUTION_ID, %eax
     syscall
     ret
@@ -45,7 +45,7 @@ NtYieldExecution:
     .globl NtQueryInformationProcess
     .def NtQueryInformationProcess; .scl 2; .type 32; .endef
 NtQueryInformationProcess:
-    movq %rcx, %r10
+    .byte 0x4c, 0x8b, 0xd1
     movl $COGNAC_NT_QUERY_INFORMATION_PROCESS_ID, %eax
     syscall
     ret
@@ -54,7 +54,7 @@ NtQueryInformationProcess:
     .globl NtQueryInformationThread
     .def NtQueryInformationThread; .scl 2; .type 32; .endef
 NtQueryInformationThread:
-    movq %rcx, %r10
+    .byte 0x4c, 0x8b, 0xd1
     movl $COGNAC_NT_QUERY_INFORMATION_THREAD_ID, %eax
     syscall
     ret
@@ -63,7 +63,7 @@ NtQueryInformationThread:
     .globl NtQuerySystemInformation
     .def NtQuerySystemInformation; .scl 2; .type 32; .endef
 NtQuerySystemInformation:
-    movq %rcx, %r10
+    .byte 0x4c, 0x8b, 0xd1
     movl $COGNAC_NT_QUERY_SYSTEM_INFORMATION_ID, %eax
     syscall
     ret
