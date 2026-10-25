@@ -40,8 +40,6 @@ impl AddressSpace {
 
     pub fn root_physical(&self) -> u64 { self.root }
 
-    /// Map one user page. Writable+executable mappings are forbidden; loaders
-    /// populate pages RW/NX and then transition them to final RX/RO/RW-NX permissions.
     /// Map the fixed Windows KUSER_SHARED_DATA page without exposing other
     /// low identity mappings. The low page-table path is privately cloned and
     /// any large identity pages are split before only this leaf is made user.
@@ -51,7 +49,6 @@ impl AddressSpace {
     /// address space mapping this shared page.
     pub unsafe fn map_kuser_shared_page(&mut self, virtual_address: u64, physical_address: u64, writable: bool) -> Result<(), VmError> {
         const TWO_MIB: u64 = 0x20_0000;
-        const ONE_GIB: u64 = 0x4000_0000;
         const PAT_LARGE: u64 = 1 << 12;
         if self.kuser_tables[0] != 0 { return Err(VmError::AlreadyMapped); }
         if virtual_address != super::user_range::KUSER_SHARED_DATA_ADDRESS
@@ -83,9 +80,17 @@ impl AddressSpace {
             if pml4_entry & LARGE != 0 { return Err(VmError::PermissionDenied); }
             let old_pdpt = pml4_entry & ADDR;
             let page = unsafe { clone_table(old_pdpt)? };
+            let entries = page as *const u64;
+            for i in 0..512usize {
+                if unsafe { entries.add(i).read() } & USER != 0 {
+                    unsafe { crate::memory::free_page(page) }.map_err(|_| VmError::OutOfMemory)?;
+                    return Err(VmError::PermissionDenied);
+                }
+            }
             unsafe { pml4_slot.write(page | (pml4_entry & !ADDR) | USER); }
             page
         };
+        self.kuser_tables[0] = pdpt;
         let pdpt_slot = unsafe { (pdpt as *mut u64).add(indexes[1]) };
         let pdpt_entry = unsafe { pdpt_slot.read() };
         let pd = if pdpt_entry & PRESENT == 0 {
@@ -105,9 +110,17 @@ impl AddressSpace {
             page
         } else {
             let page = unsafe { clone_table(pdpt_entry & ADDR)? };
+            let entries = page as *const u64;
+            for i in 0..512usize {
+                if unsafe { entries.add(i).read() } & USER != 0 {
+                    unsafe { crate::memory::free_page(page) }.map_err(|_| VmError::OutOfMemory)?;
+                    return Err(VmError::PermissionDenied);
+                }
+            }
             unsafe { pdpt_slot.write(page | (pdpt_entry & !ADDR) | USER); }
             page
         };
+        self.kuser_tables[1] = pd;
         let pd_slot = unsafe { (pd as *mut u64).add(indexes[2]) };
         let pd_entry = unsafe { pd_slot.read() };
         let pt = if pd_entry & PRESENT == 0 {
@@ -129,9 +142,17 @@ impl AddressSpace {
             page
         } else {
             let page = unsafe { clone_table(pd_entry & ADDR)? };
+            let entries = page as *const u64;
+            for i in 0..512usize {
+                if unsafe { entries.add(i).read() } & USER != 0 {
+                    unsafe { crate::memory::free_page(page) }.map_err(|_| VmError::OutOfMemory)?;
+                    return Err(VmError::PermissionDenied);
+                }
+            }
             unsafe { pd_slot.write(page | (pd_entry & !ADDR) | USER); }
             page
         };
+        self.kuser_tables[2] = pt;
         let leaf = unsafe { (pt as *mut u64).add(indexes[3]) };
         let mut flags = PRESENT | USER | NX;
         if writable { flags |= WRITE; }
@@ -140,10 +161,11 @@ impl AddressSpace {
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
         crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
-        self.kuser_tables = [pdpt, pd, pt];
         Ok(())
     }
 
+    /// Map one user page. Writable+executable mappings are forbidden; loaders
+    /// populate pages RW/NX and then transition them to final RX/RO/RW-NX permissions.
     pub unsafe fn map_user_page(&mut self, virtual_address: u64, physical_address: u64,
                                 writable: bool, executable: bool) -> Result<(), VmError> {
         let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
@@ -666,7 +688,7 @@ pub fn trim_current_working_set(target:usize)->usize {
     if process.is_null(){return 0}
     let root=unsafe{(*process).address_space_root};
     if root==0||root!=active_root_physical(){return 0}
-    let mut space=AddressSpace{root};
+    let mut space=AddressSpace{root, kuser_tables:[0;3]};
     space.trim_working_set(target)
 }
 
