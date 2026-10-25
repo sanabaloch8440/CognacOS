@@ -532,7 +532,7 @@ pub unsafe extern "system" fn LdrGetDllPath(
             b'\\' as u16,b'S' as u16,b'y' as u16,b's' as u16,b't' as u16,b'e' as u16,b'm' as u16,b'R' as u16,b'o' as u16,b'o' as u16,b't' as u16,
             b'\\' as u16,b'S' as u16,b'y' as u16,b's' as u16,b't' as u16,b'e' as u16,b'm' as u16,b'3' as u16,b'2' as u16,0,0
         ];
-        if !append_search_component(&mut result, &mut used, &SYSTEM32[..21]) { return STATUS_BUFFER_TOO_SMALL; }
+        if !append_search_component(&mut result, &mut used, &SYSTEM32[..20]) { return STATUS_BUFFER_TOO_SMALL; }
     }
     let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
     if heap.is_null() { return 0xC000_0017u32 as i32; }
