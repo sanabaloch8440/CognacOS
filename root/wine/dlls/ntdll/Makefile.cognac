@@ -17,8 +17,8 @@ endif
 .PHONY: all check clean helper-help syscall-header
 all: $(OUTPUT)
 
-$(OUTPUT): cognac_native.c cognac_rtl_string.c rtl_memory.c cognac_ntdll.def cognac_syscall_x86_64.S
-	$(CC) $(CFLAGS) -DCOGNAC_NATIVE_NTDLL $(LDFLAGS) -o $@ cognac_native.c cognac_rtl_string.c rtl_memory.c cognac_syscall_x86_64.S cognac_ntdll.def
+$(OUTPUT): cognac_native.c cognac_rtl_string.c cognac_heap.c rtl_memory.c cognac_ntdll.def cognac_syscall_x86_64.S
+	$(CC) $(CFLAGS) -DCOGNAC_NATIVE_NTDLL $(LDFLAGS) -o $@ cognac_native.c cognac_rtl_string.c cognac_heap.c rtl_memory.c cognac_syscall_x86_64.S cognac_ntdll.def
 
 helper-help:
 	python3 tools/ntdll_link_helper.py --help
@@ -57,6 +57,13 @@ check: $(OUTPUT)
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlCopyUnicodeString'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlUnicodeStringToInteger'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlIntegerToUnicodeString'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlGetProcessHeap'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlAllocateHeap'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlFreeHeap'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlReAllocateHeap'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlSizeHeap'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlValidateHeap'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'CognacNtdllProcessHeapObject'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'CognacNtdllConfigureSyscalls'
 	! $(OBJDUMP) -p $(OUTPUT) | grep -q 'DLL Name:'
 
