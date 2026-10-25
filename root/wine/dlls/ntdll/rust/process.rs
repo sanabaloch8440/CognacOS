@@ -183,7 +183,7 @@ pub unsafe extern "system" fn RtlWow64GetProcessMachines(
     let mut return_length = 0u32;
     let status = unsafe {
         NtQuerySystemInformationEx(
-            90, // SystemSupportedProcessorArchitectures; verify against target WDK enum.
+            181, // SystemSupportedProcessorArchitectures (Wine winternl.h).
             (&process as *const HANDLE).cast_mut().cast(),
             core::mem::size_of::<HANDLE>() as ULONG,
             machines.as_mut_ptr().cast(),
@@ -220,7 +220,7 @@ pub unsafe extern "system" fn RtlWow64IsWowGuestMachineSupported(
     let mut machines = [SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION::default(); 8];
     let status = unsafe {
         NtQuerySystemInformationEx(
-            90,
+            181,
             (&process as *const HANDLE).cast_mut().cast(),
             core::mem::size_of::<HANDLE>() as ULONG,
             machines.as_mut_ptr().cast(),
