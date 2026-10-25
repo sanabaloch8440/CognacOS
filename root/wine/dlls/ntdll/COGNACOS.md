@@ -274,3 +274,25 @@ semantics, floating-point conversions, and the `_snprintf`/`_swprintf` ABI
 wrappers remain unimplemented in Rust. The module is not linked into the
 freestanding PE32+ build, and its tests have not yet been confirmed as executed
 in CI.
+
+
+## Expanded printf formatter Rust port
+
+The source-first module `rust/printf.rs` now goes beyond parsing: it formats
+signed and unsigned integers (decimal/octal/hex), pointer values, byte and
+UTF-16 strings, characters, floating-point values, escaped percent signs, and
+dynamic width/precision from a typed argument list. It applies sign, alternate,
+precision, alignment, and padding rules, reports the full required output
+length, and safely truncates to a caller-supplied byte capacity. Tests cover
+integer edge cases, pointer formatting, dynamic width/precision, floats, and
+truncation.
+
+This is a formatter engine, **not yet a complete replacement for Wine's
+exported printf API**. Stable Rust cannot transparently forward the Windows C
+variadic `va_list` ABI through ordinary Rust functions, so `_vsnprintf`,
+`_vsnwprintf`, `_snprintf_s`, `_snwprintf_s`, `sprintf`/ `swprintf` and
+related exports still need a target-specific ABI bridge. The current engine
+also does not implement the `%n` pointer write, exact Wine ANSI/Unicode
+conversion semantics, or UTF-16 output buffers; byte output converts wide
+strings lossily. Rust sources remain unlinked from the native PE32+ build, and
+the new unit tests have not yet been confirmed by CI.
