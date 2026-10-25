@@ -897,6 +897,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Per-process page-table isolation, same-VA non-aliasing, and supervisor mapping protection passed.\r\n");
         serial_write(b"Process address-space and checked user-copy self-test passed.\r\n");
+        if !syscall::native_nt_dispatch_self_test(&address_space, TEST_USER_ADDRESS) {
+            serial_write(b"FATAL: native NT syscall dispatcher self-test failed.\r\n"); halt();
+        }
+        serial_write(b"Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.\r\n");
         serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\r\n");
         serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\r\n");
         let loaded_pe = match unsafe { pe::self_test(&mut address_space) } {
