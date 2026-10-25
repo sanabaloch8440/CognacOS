@@ -163,6 +163,25 @@ pub fn release_reference(slot: usize, generation: u32) -> Result<u32, i32> {
     e.references -= 1; Ok(e.references)
 }
 
+/// Deterministic boot-time exercise of the metadata lifecycle (no PE code is executed).
+pub fn self_test() -> bool {
+    let name = b"cognacos-kernel-lifetime-smoke.dll";
+    let Ok((slot, generation)) = reserve_for_process(0xffff_fffe, name) else { return false; };
+    if reserve_for_process(0xffff_fffe, name).is_ok() { let _ = rollback(slot, generation); return false; }
+    if publish_mapping(slot, generation, 0x0000_4000_0000, 0x3000).is_err()
+        || begin_initialization(slot, generation).is_err()
+        || finish_initialization(slot, generation, true).is_err()
+        || add_reference(slot, generation) != Ok(2)
+        || release_reference(slot, generation) != Ok(1) {
+        let _ = rollback(slot, generation);
+        return false;
+    }
+    match begin_unload(slot, generation) {
+        Ok(Some((0x0000_4000_0000, 0x3000))) => finish_unload(slot, generation).is_ok(),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
