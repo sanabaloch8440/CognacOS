@@ -734,6 +734,65 @@ mod xstate_context_layout_tests {
         assert_eq!(context_parameters(CONTEXT_I386 | 0x7f).unwrap().0, I386_CONTEXT_SIZE);
     }
     #[test]
+    fn locate_feature2_honors_custom_standard_configuration() {
+        let mut raw = [0u64; 96];
+        let ex = raw.as_mut_ptr().cast::<CONTEXT_EX>();
+        unsafe {
+            core::ptr::addr_of_mut!((*ex).XState).write_unaligned(RTL_CONTEXT_CHUNK { Offset: 24, Length: 320 });
+        }
+        let mut cfg = WindowsXStateConfiguration {
+            enabled_features: 1 << 2, enabled_volatile_features: 0, size: 832, control_flags: 0,
+            features: [WindowsXStateFeature { offset: 0, size: 0 }; 64],
+            enabled_supervisor_features: 0, aligned_features: 0, all_feature_size: 832,
+            all_features: [0; 64], enabled_user_visible_supervisor_features: 0,
+            extended_feature_disable_features: 0, all_non_large_feature_size: 832, spare: 0,
+        };
+        cfg.features[2] = WindowsXStateFeature { offset: 576, size: 256 };
+        let mut length = 0;
+        let found = unsafe { RtlLocateExtendedFeature2(ex, 2, (&mut cfg as *mut WindowsXStateConfiguration).cast(), &mut length) };
+        assert_eq!(length, 256);
+        assert_eq!(found as usize, ex as usize + 24 + 64);
+    }
+    #[test]
+    fn locate_feature2_honors_custom_compacted_configuration() {
+        let mut raw = [0u64; 96];
+        let ex = raw.as_mut_ptr().cast::<CONTEXT_EX>();
+        unsafe {
+            core::ptr::addr_of_mut!((*ex).XState).write_unaligned(RTL_CONTEXT_CHUNK { Offset: 24, Length: 320 });
+            let xstate = ex.cast::<u8>().add(24);
+            xstate.add(8).cast::<ULONG64>().write_unaligned((1u64 << 63) | (1 << 2));
+        }
+        let mut cfg = WindowsXStateConfiguration {
+            enabled_features: 1 << 2, enabled_volatile_features: 0, size: 832, control_flags: 2,
+            features: [WindowsXStateFeature { offset: 0, size: 0 }; 64],
+            enabled_supervisor_features: 0, aligned_features: 0, all_feature_size: 832,
+            all_features: [0; 64], enabled_user_visible_supervisor_features: 0,
+            extended_feature_disable_features: 0, all_non_large_feature_size: 832, spare: 0,
+        };
+        cfg.features[2] = WindowsXStateFeature { offset: 576, size: 256 };
+        let mut length = 0;
+        let found = unsafe { RtlLocateExtendedFeature2(ex, 2, (&mut cfg as *mut WindowsXStateConfiguration).cast(), &mut length) };
+        assert_eq!(length, 256);
+        assert_eq!(found as usize, ex as usize + 24 + 64);
+    }
+    #[test]
+    fn partial_context_copy_updates_only_requested_control_group() {
+        let mut source = [0u8; AMD64_CONTEXT_SIZE];
+        let mut destination = [0xA5u8; AMD64_CONTEXT_SIZE];
+        unsafe {
+            source.as_mut_ptr().add(0x30).cast::<ULONG>().write_unaligned(CONTEXT_AMD64 | 1);
+            destination.as_mut_ptr().add(0x30).cast::<ULONG>().write_unaligned(CONTEXT_AMD64);
+            source.as_mut_ptr().add(0x38).write(0x11);
+            source.as_mut_ptr().add(0x42).write(0x22);
+            destination.as_mut_ptr().add(0x38).write(0x33);
+            destination.as_mut_ptr().add(0x42).write(0x44);
+        }
+        copy_context_ranges(destination.as_mut_ptr(), source.as_ptr(), CONTEXT_AMD64 | 1, CONTEXT_AMD64);
+        assert_eq!(destination[0x38], 0x11);
+        assert_eq!(destination[0x42], 0x22);
+        assert_eq!(destination[0x100], 0xA5);
+    }
+    #[test]
     fn published_configuration_fits_one_user_page() {
         assert_eq!(core::mem::size_of::<WindowsXStateConfiguration>(), 0x348);
         assert!(KUSER_XSTATE_OFFSET + core::mem::size_of::<WindowsXStateConfiguration>() <= 4096);
