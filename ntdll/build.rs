@@ -63,11 +63,14 @@ fn main() {
     scan(std::path::Path::new("src"), &mut declared);
     // Explicitly protect the unwind-table ABI implementation from generated export stubs.
     declared.insert("RtlAddFunctionTable".to_string());
+    // These APIs are implemented in windows11_exports/memory.rs and must not be shadowed.
+    declared.insert("RtlGetNonVolatileToken".to_string());
+    declared.insert("RtlFreeNonVolatileToken".to_string());
     let mut output = String::from("// Generated from the committed Windows 11 x64 export inventory plus the in-tree Wine ntdll.spec.\n// Generic ABI placeholders only: no parameter semantics are implemented.\n");
     let mut count = 0usize;
     for name in names {
         // This ABI implementation must never be shadowed by a generated stub.
-        if name == "RtlAddFunctionTable" { continue; }
+        if matches!(name.as_str(), "RtlAddFunctionTable" | "RtlGetNonVolatileToken" | "RtlFreeNonVolatileToken") { continue; }
         if declared.contains(&name) { continue; }
         output.push_str(&format!("#[no_mangle]\npub unsafe extern \"system\" fn {name}() -> i32 {{ 0xC0000002u32 as i32 }}\n"));
         count += 1;
