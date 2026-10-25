@@ -308,22 +308,27 @@ pub fn native_nt_dispatch_self_test(space: &AddressSpace, user_base: u64) -> boo
     let previous_pid = CURRENT_PID.swap(4, Ordering::AcqRel);
     let previous_space = unsafe { *ACTIVE_SPACE.0.get() };
     unsafe { *ACTIVE_SPACE.0.get() = space as *const AddressSpace; }
-    let mut args = [0u64; NT_MAX_ARGUMENTS];
-    args[0] = NT_CURRENT_PROCESS;
-    args[1] = PROCESS_BASIC_INFORMATION_CLASS;
-    args[2] = user_base + 0x200;
-    args[3] = 48;
-    args[4] = user_base + 0x280;
-    let five_arg_ok = dispatch_native_nt(NT_SYSCALL_QUERY_INFORMATION_PROCESS, &args) == NT_STATUS_SUCCESS;
+    let mut stack5 = [0u8; 8];
+    stack5.copy_from_slice(&(user_base + 0x280).to_le_bytes());
+    let five_stack_written = unsafe { space.copy_to_user(user_base + 0x300, &stack5) }.is_ok();
+    // Construct the same saved-register/IRET frame the real vector-0x82 entry passes.
+    let mut frame = [0u64; 20];
+    frame[14] = NT_SYSCALL_QUERY_INFORMATION_PROCESS;
+    frame[18] = user_base + 0x2d8;
+    frame[5] = NT_CURRENT_PROCESS;
+    frame[11] = PROCESS_BASIC_INFORMATION_CLASS;
+    frame[7] = user_base + 0x200;
+    frame[6] = 48;
+    let five_arg_ok = five_stack_written
+        && unsafe { cognacos_nt_syscall_dispatch(frame.as_mut_ptr()) } == NT_STATUS_SUCCESS;
     let mut output = [0u8; 4];
     let return_len_ok = unsafe { space.copy_from_user(user_base + 0x280, &mut output) }.is_ok()
         && u32::from_le_bytes(output) == 48;
-    args[2] = 0x0000_7fff_ffff_f000;
-    args[3] = 48;
-    let invalid_buffer_ok = dispatch_native_nt(NT_SYSCALL_QUERY_INFORMATION_PROCESS, &args) == NT_STATUS_ACCESS_VIOLATION;
-    let unsupported_ok = dispatch_native_nt(0xdead, &[0; NT_MAX_ARGUMENTS]) == NT_STATUS_NOT_IMPLEMENTED;
-    // An unknown service with all 17 arguments validates the maximum bounded
-    // stack-copy path without adding a privileged test-only service number.
+    frame[7] = 0x0000_7fff_ffff_f000;
+    let invalid_buffer_ok = unsafe { cognacos_nt_syscall_dispatch(frame.as_mut_ptr()) } == NT_STATUS_ACCESS_VIOLATION;
+    frame[14] = 0xdead;
+    let unsupported_ok = unsafe { cognacos_nt_syscall_dispatch(frame.as_mut_ptr()) } == NT_STATUS_NOT_IMPLEMENTED;
+    // Decode all 13 stack arguments (arguments 5..17) from user memory.
     let mut stack = [0u8; (NT_MAX_ARGUMENTS - 4) * 8];
     for (i, chunk) in stack.chunks_exact_mut(8).enumerate() {
         chunk.copy_from_slice(&((i as u64) + 5).to_le_bytes());
