@@ -1,7 +1,7 @@
-//! Ke executive clock/interrupt dispatch and scheduler notification glue.
+// Ke executive clock/interrupt dispatch and scheduler notification glue.
 
 
-static CLOCK_INTERRUPTS: core::sync::atomic::AtomicU64 = AtomicU64::new(0);
+static CLOCK_INTERRUPTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static LAST_CLOCK_TICK: core::sync::atomic::AtomicU64 = AtomicU64::new(0);
 
 /// Register the executive clock consumer before enabling the HAL clock event.
