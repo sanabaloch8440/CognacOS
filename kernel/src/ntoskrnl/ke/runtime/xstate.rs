@@ -26,6 +26,8 @@ const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
 
 static XSTATE_SUPPORTED_MASK: AtomicU64 = AtomicU64::new(0);
 static XSTATE_ENABLED_MASK: AtomicU64 = AtomicU64::new(0);
+#[no_mangle]
+pub static COGNAC_XSTATE_ENABLED_MASK_ASM: AtomicU64 = AtomicU64::new(0);
 static XSTATE_AREA_SIZE: AtomicU32 = AtomicU32::new(0);
 static XSTATE_INITIALIZED: AtomicU32 = AtomicU32::new(0);
 static XSTATE_POLICY_FINALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -112,6 +114,7 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
     }
     XSTATE_SUPPORTED_MASK.store(hardware_mask, Ordering::Release);
     XSTATE_ENABLED_MASK.store(enabled, Ordering::Release);
+    COGNAC_XSTATE_ENABLED_MASK_ASM.store(enabled, Ordering::Release);
     XSTATE_AREA_SIZE.store(size, Ordering::Release);
     let subfeatures = leafd1.eax;
     XSTATE_INITIALIZED.store(1 | ((subfeatures & 1) << 1) | ((subfeatures & 2) << 1) | ((subfeatures & 8) << 1), Ordering::Release);
