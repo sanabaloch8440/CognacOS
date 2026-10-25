@@ -80,25 +80,25 @@ static OBSERVED_PROTECTION_FAULT: core::sync::atomic::AtomicU64 = core::sync::at
 
 global_asm!(r#"
     .section .text
-    .global rdotos_fault_probe_write_ro
-    .type rdotos_fault_probe_write_ro, @function
-rdotos_fault_probe_write_ro:
+    .global cognacos_fault_probe_write_ro
+    .type cognacos_fault_probe_write_ro, @function
+cognacos_fault_probe_write_ro:
     mov byte ptr [rdi], 0x90
     mov eax, 1
     ret
-    .global rdotos_fault_probe_write_ro_recovery
-    .type rdotos_fault_probe_write_ro_recovery, @function
-rdotos_fault_probe_write_ro_recovery:
+    .global cognacos_fault_probe_write_ro_recovery
+    .type cognacos_fault_probe_write_ro_recovery, @function
+cognacos_fault_probe_write_ro_recovery:
     xor eax, eax
     ret
 
-    .global rdotos_fault_probe_execute_nx
-    .type rdotos_fault_probe_execute_nx, @function
-rdotos_fault_probe_execute_nx:
+    .global cognacos_fault_probe_execute_nx
+    .type cognacos_fault_probe_execute_nx, @function
+cognacos_fault_probe_execute_nx:
     jmp rdi
-    .global rdotos_fault_probe_execute_nx_recovery
-    .type rdotos_fault_probe_execute_nx_recovery, @function
-rdotos_fault_probe_execute_nx_recovery:
+    .global cognacos_fault_probe_execute_nx_recovery
+    .type cognacos_fault_probe_execute_nx_recovery, @function
+cognacos_fault_probe_execute_nx_recovery:
     xor eax, eax
     ret
 "#);
@@ -107,24 +107,24 @@ rdotos_fault_probe_execute_nx_recovery:
 global_asm!(r#"
     .section .rodata
     .align 8
-.Lrdotos_gdt:
+.Lcognacos_gdt:
     .quad 0
     .quad 0x00af9a000000ffff
     .quad 0x00cf92000000ffff
-.Lrdotos_gdt_pointer:
+.Lcognacos_gdt_pointer:
     .word 23
-    .quad .Lrdotos_gdt
+    .quad .Lcognacos_gdt
 
     .section .text
-    .global rdotos_load_gdt
-    .type rdotos_load_gdt, @function
-rdotos_load_gdt:
-    lgdt [rip + .Lrdotos_gdt_pointer]
+    .global cognacos_load_gdt
+    .type cognacos_load_gdt, @function
+cognacos_load_gdt:
+    lgdt [rip + .Lcognacos_gdt_pointer]
     push 0x08
-    lea rax, [rip + .Lrdotos_reload_cs]
+    lea rax, [rip + .Lcognacos_reload_cs]
     push rax
     retfq
-.Lrdotos_reload_cs:
+.Lcognacos_reload_cs:
     mov ax, 0x10
     mov ds, ax
     mov es, ax
@@ -135,20 +135,20 @@ rdotos_load_gdt:
     ret
 
     .macro ISR_NOERR n
-    .global rdotos_isr_\n
-    .type rdotos_isr_\n, @function
-rdotos_isr_\n:
+    .global cognacos_isr_\n
+    .type cognacos_isr_\n, @function
+cognacos_isr_\n:
     push 0
     push \n
-    jmp rdotos_exception_common
+    jmp cognacos_exception_common
     .endm
 
     .macro ISR_ERR n
-    .global rdotos_isr_\n
-    .type rdotos_isr_\n, @function
-rdotos_isr_\n:
+    .global cognacos_isr_\n
+    .type cognacos_isr_\n, @function
+cognacos_isr_\n:
     push \n
-    jmp rdotos_exception_common
+    jmp cognacos_exception_common
     .endm
 
     ISR_NOERR 0
@@ -184,9 +184,9 @@ rdotos_isr_\n:
     ISR_ERR   30
     ISR_NOERR 31
 
-    .global rdotos_exception_common
-    .type rdotos_exception_common, @function
-rdotos_exception_common:
+    .global cognacos_exception_common
+    .type cognacos_exception_common, @function
+cognacos_exception_common:
     cli
     cld
     push rax
@@ -209,10 +209,10 @@ rdotos_exception_common:
     mov rsi, [rsp + 128]
     mov r12, rsp
     and rsp, -16
-    call rdotos_exception_dispatch
+    call cognacos_exception_dispatch
     mov rsp, r12
     test rax, rax
-    jz .Lrdotos_unhandled_exception
+    jz .Lcognacos_unhandled_exception
     pop r15
     pop r14
     pop r13
@@ -230,13 +230,13 @@ rdotos_exception_common:
     pop rax
     add rsp, 16
     iretq
-.Lrdotos_unhandled_exception:
+.Lcognacos_unhandled_exception:
     ud2
 
     # Dedicated interrupt-gate entry: preserve all registers and return with IRETQ.
-    .global rdotos_tlb_ipi_stub
-    .type rdotos_tlb_ipi_stub, @function
-rdotos_tlb_ipi_stub:
+    .global cognacos_tlb_ipi_stub
+    .type cognacos_tlb_ipi_stub, @function
+cognacos_tlb_ipi_stub:
     cld
     push rax
     push rbx
@@ -257,7 +257,7 @@ rdotos_tlb_ipi_stub:
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
-    call rdotos_tlb_ipi_handler
+    call cognacos_tlb_ipi_handler
     mov rsp, [rsp + 8]
     pop r15
     pop r14
@@ -280,12 +280,12 @@ rdotos_tlb_ipi_stub:
     # Common external interrupt entry. Hardware does not push a vector or
     # error code for IRQs, so each stub normalizes the stack before dispatch.
     .macro ISR_IRQ n
-    .global rdotos_irq_\n
-    .type rdotos_irq_\n, @function
-rdotos_irq_\n:
+    .global cognacos_irq_\n
+    .type cognacos_irq_\n, @function
+cognacos_irq_\n:
     push 0
     push \n
-    jmp rdotos_interrupt_common
+    jmp cognacos_interrupt_common
     .endm
 
     ISR_IRQ 32
@@ -481,9 +481,9 @@ rdotos_irq_\n:
     ISR_IRQ 222
     ISR_IRQ 223
 
-    .global rdotos_interrupt_common
-    .type rdotos_interrupt_common, @function
-rdotos_interrupt_common:
+    .global cognacos_interrupt_common
+    .type cognacos_interrupt_common, @function
+cognacos_interrupt_common:
     cld
     push rax
     push rbx
@@ -504,7 +504,7 @@ rdotos_interrupt_common:
     mov rsi, rsp
     mov r12, rsp
     and rsp, -16
-    call rdotos_external_interrupt_dispatch
+    call cognacos_external_interrupt_dispatch
     mov rsp, r12
     pop r15
     pop r14
@@ -524,9 +524,9 @@ rdotos_interrupt_common:
     add rsp, 16
     iretq
 
-    .global rdotos_hal_ipi_stub
-    .type rdotos_hal_ipi_stub, @function
-rdotos_hal_ipi_stub:
+    .global cognacos_hal_ipi_stub
+    .type cognacos_hal_ipi_stub, @function
+cognacos_hal_ipi_stub:
     cld
     push rax
     push rbx
@@ -547,7 +547,7 @@ rdotos_hal_ipi_stub:
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
-    call rdotos_hal_ipi_handler
+    call cognacos_hal_ipi_handler
     mov rsp, [rsp + 8]
     pop r15
     pop r14
@@ -566,9 +566,9 @@ rdotos_hal_ipi_stub:
     pop rax
     iretq
 
-    .global rdotos_ke_broadcast_ipi_stub
-    .type rdotos_ke_broadcast_ipi_stub, @function
-rdotos_ke_broadcast_ipi_stub:
+    .global cognacos_ke_broadcast_ipi_stub
+    .type cognacos_ke_broadcast_ipi_stub, @function
+cognacos_ke_broadcast_ipi_stub:
     cld
     push rax
     push rbx
@@ -589,7 +589,7 @@ rdotos_ke_broadcast_ipi_stub:
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
-    call rdotos_ke_broadcast_ipi_handler
+    call cognacos_ke_broadcast_ipi_handler
     mov rsp, [rsp + 8]
     pop r15
     pop r14
@@ -608,9 +608,9 @@ rdotos_ke_broadcast_ipi_stub:
     pop rax
     iretq
 
-    .global rdotos_tsc_sync_stub
-    .type rdotos_tsc_sync_stub, @function
-rdotos_tsc_sync_stub:
+    .global cognacos_tsc_sync_stub
+    .type cognacos_tsc_sync_stub, @function
+cognacos_tsc_sync_stub:
     cld
     push rax
     push rbx
@@ -631,7 +631,7 @@ rdotos_tsc_sync_stub:
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
-    call rdotos_tsc_sync_handler
+    call cognacos_tsc_sync_handler
     mov rsp, [rsp + 8]
     pop r15
     pop r14
@@ -650,14 +650,14 @@ rdotos_tsc_sync_stub:
     pop rax
     iretq
 
-    .global rdotos_spurious_stub
-    .type rdotos_spurious_stub, @function
-rdotos_spurious_stub:
+    .global cognacos_spurious_stub
+    .type cognacos_spurious_stub, @function
+cognacos_spurious_stub:
     iretq
 
-    .global rdotos_timer_stub
-    .type rdotos_timer_stub, @function
-rdotos_timer_stub:
+    .global cognacos_timer_stub
+    .type cognacos_timer_stub, @function
+cognacos_timer_stub:
     cld
     push rax
     push rbx
@@ -678,7 +678,7 @@ rdotos_timer_stub:
     and rsp, -16
     sub rsp, 16
     mov [rsp + 8], rax
-    call rdotos_timer_interrupt_handler
+    call cognacos_timer_interrupt_handler
     mov rsp, [rsp + 8]
     pop r15
     pop r14
@@ -699,208 +699,208 @@ rdotos_timer_stub:
 "#);
 
 unsafe extern "C" {
-    fn rdotos_load_gdt();
-    fn rdotos_isr_0(); fn rdotos_isr_1(); fn rdotos_isr_2(); fn rdotos_isr_3();
-    fn rdotos_isr_4(); fn rdotos_isr_5(); fn rdotos_isr_6(); fn rdotos_isr_7();
-    fn rdotos_isr_8(); fn rdotos_isr_9(); fn rdotos_isr_10(); fn rdotos_isr_11();
-    fn rdotos_isr_12(); fn rdotos_isr_13(); fn rdotos_isr_14(); fn rdotos_isr_15();
-    fn rdotos_isr_16(); fn rdotos_isr_17(); fn rdotos_isr_18(); fn rdotos_isr_19();
-    fn rdotos_isr_20(); fn rdotos_isr_21(); fn rdotos_isr_22(); fn rdotos_isr_23();
-    fn rdotos_isr_24(); fn rdotos_isr_25(); fn rdotos_isr_26(); fn rdotos_isr_27();
-    fn rdotos_isr_28(); fn rdotos_isr_29(); fn rdotos_isr_30(); fn rdotos_isr_31();
-    fn rdotos_tlb_ipi_stub(); fn rdotos_hal_ipi_stub(); fn rdotos_ke_broadcast_ipi_stub(); fn rdotos_tsc_sync_stub(); fn rdotos_spurious_stub(); fn rdotos_timer_stub();
-    fn rdotos_irq_32();
-    fn rdotos_irq_33();
-    fn rdotos_irq_34();
-    fn rdotos_irq_35();
-    fn rdotos_irq_36();
-    fn rdotos_irq_37();
-    fn rdotos_irq_38();
-    fn rdotos_irq_39();
-    fn rdotos_irq_40();
-    fn rdotos_irq_41();
-    fn rdotos_irq_42();
-    fn rdotos_irq_43();
-    fn rdotos_irq_44();
-    fn rdotos_irq_45();
-    fn rdotos_irq_46();
-    fn rdotos_irq_47();
-    fn rdotos_irq_48();
-    fn rdotos_irq_49();
-    fn rdotos_irq_50();
-    fn rdotos_irq_51();
-    fn rdotos_irq_52();
-    fn rdotos_irq_53();
-    fn rdotos_irq_54();
-    fn rdotos_irq_55();
-    fn rdotos_irq_56();
-    fn rdotos_irq_57();
-    fn rdotos_irq_58();
-    fn rdotos_irq_59();
-    fn rdotos_irq_60();
-    fn rdotos_irq_61();
-    fn rdotos_irq_62();
-    fn rdotos_irq_63();
-    fn rdotos_irq_64();
-    fn rdotos_irq_65();
-    fn rdotos_irq_66();
-    fn rdotos_irq_67();
-    fn rdotos_irq_68();
-    fn rdotos_irq_69();
-    fn rdotos_irq_70();
-    fn rdotos_irq_71();
-    fn rdotos_irq_72();
-    fn rdotos_irq_73();
-    fn rdotos_irq_74();
-    fn rdotos_irq_75();
-    fn rdotos_irq_76();
-    fn rdotos_irq_77();
-    fn rdotos_irq_78();
-    fn rdotos_irq_79();
-    fn rdotos_irq_80();
-    fn rdotos_irq_81();
-    fn rdotos_irq_82();
-    fn rdotos_irq_83();
-    fn rdotos_irq_84();
-    fn rdotos_irq_85();
-    fn rdotos_irq_86();
-    fn rdotos_irq_87();
-    fn rdotos_irq_88();
-    fn rdotos_irq_89();
-    fn rdotos_irq_90();
-    fn rdotos_irq_91();
-    fn rdotos_irq_92();
-    fn rdotos_irq_93();
-    fn rdotos_irq_94();
-    fn rdotos_irq_95();
-    fn rdotos_irq_96();
-    fn rdotos_irq_97();
-    fn rdotos_irq_98();
-    fn rdotos_irq_99();
-    fn rdotos_irq_100();
-    fn rdotos_irq_101();
-    fn rdotos_irq_102();
-    fn rdotos_irq_103();
-    fn rdotos_irq_104();
-    fn rdotos_irq_105();
-    fn rdotos_irq_106();
-    fn rdotos_irq_107();
-    fn rdotos_irq_108();
-    fn rdotos_irq_109();
-    fn rdotos_irq_110();
-    fn rdotos_irq_111();
-    fn rdotos_irq_112();
-    fn rdotos_irq_113();
-    fn rdotos_irq_114();
-    fn rdotos_irq_115();
-    fn rdotos_irq_116();
-    fn rdotos_irq_117();
-    fn rdotos_irq_118();
-    fn rdotos_irq_119();
-    fn rdotos_irq_120();
-    fn rdotos_irq_121();
-    fn rdotos_irq_122();
-    fn rdotos_irq_123();
-    fn rdotos_irq_124();
-    fn rdotos_irq_125();
-    fn rdotos_irq_126();
-    fn rdotos_irq_127();
-    fn rdotos_irq_128();
-    fn rdotos_irq_129();
-    fn rdotos_irq_130();
-    fn rdotos_irq_131();
-    fn rdotos_irq_132();
-    fn rdotos_irq_133();
-    fn rdotos_irq_134();
-    fn rdotos_irq_135();
-    fn rdotos_irq_136();
-    fn rdotos_irq_137();
-    fn rdotos_irq_138();
-    fn rdotos_irq_139();
-    fn rdotos_irq_140();
-    fn rdotos_irq_141();
-    fn rdotos_irq_142();
-    fn rdotos_irq_143();
-    fn rdotos_irq_144();
-    fn rdotos_irq_145();
-    fn rdotos_irq_146();
-    fn rdotos_irq_147();
-    fn rdotos_irq_148();
-    fn rdotos_irq_149();
-    fn rdotos_irq_150();
-    fn rdotos_irq_151();
-    fn rdotos_irq_152();
-    fn rdotos_irq_153();
-    fn rdotos_irq_154();
-    fn rdotos_irq_155();
-    fn rdotos_irq_156();
-    fn rdotos_irq_157();
-    fn rdotos_irq_158();
-    fn rdotos_irq_159();
-    fn rdotos_irq_160();
-    fn rdotos_irq_161();
-    fn rdotos_irq_162();
-    fn rdotos_irq_163();
-    fn rdotos_irq_164();
-    fn rdotos_irq_165();
-    fn rdotos_irq_166();
-    fn rdotos_irq_167();
-    fn rdotos_irq_168();
-    fn rdotos_irq_169();
-    fn rdotos_irq_170();
-    fn rdotos_irq_171();
-    fn rdotos_irq_172();
-    fn rdotos_irq_173();
-    fn rdotos_irq_174();
-    fn rdotos_irq_175();
-    fn rdotos_irq_176();
-    fn rdotos_irq_177();
-    fn rdotos_irq_178();
-    fn rdotos_irq_179();
-    fn rdotos_irq_180();
-    fn rdotos_irq_181();
-    fn rdotos_irq_182();
-    fn rdotos_irq_183();
-    fn rdotos_irq_184();
-    fn rdotos_irq_185();
-    fn rdotos_irq_186();
-    fn rdotos_irq_187();
-    fn rdotos_irq_188();
-    fn rdotos_irq_189();
-    fn rdotos_irq_190();
-    fn rdotos_irq_191();
-    fn rdotos_irq_192();
-    fn rdotos_irq_193();
-    fn rdotos_irq_194();
-    fn rdotos_irq_195();
-    fn rdotos_irq_196();
-    fn rdotos_irq_197();
-    fn rdotos_irq_198();
-    fn rdotos_irq_199();
-    fn rdotos_irq_200();
-    fn rdotos_irq_201();
-    fn rdotos_irq_202();
-    fn rdotos_irq_203();
-    fn rdotos_irq_204();
-    fn rdotos_irq_205();
-    fn rdotos_irq_206();
-    fn rdotos_irq_207();
-    fn rdotos_irq_208();
-    fn rdotos_irq_209();
-    fn rdotos_irq_210();
-    fn rdotos_irq_211();
-    fn rdotos_irq_212();
-    fn rdotos_irq_213();
-    fn rdotos_irq_214();
-    fn rdotos_irq_215();
-    fn rdotos_irq_216();
-    fn rdotos_irq_217();
-    fn rdotos_irq_218();
-    fn rdotos_irq_219();
-    fn rdotos_irq_220();
-    fn rdotos_irq_221();
-    fn rdotos_irq_222();
-    fn rdotos_irq_223();
+    fn cognacos_load_gdt();
+    fn cognacos_isr_0(); fn cognacos_isr_1(); fn cognacos_isr_2(); fn cognacos_isr_3();
+    fn cognacos_isr_4(); fn cognacos_isr_5(); fn cognacos_isr_6(); fn cognacos_isr_7();
+    fn cognacos_isr_8(); fn cognacos_isr_9(); fn cognacos_isr_10(); fn cognacos_isr_11();
+    fn cognacos_isr_12(); fn cognacos_isr_13(); fn cognacos_isr_14(); fn cognacos_isr_15();
+    fn cognacos_isr_16(); fn cognacos_isr_17(); fn cognacos_isr_18(); fn cognacos_isr_19();
+    fn cognacos_isr_20(); fn cognacos_isr_21(); fn cognacos_isr_22(); fn cognacos_isr_23();
+    fn cognacos_isr_24(); fn cognacos_isr_25(); fn cognacos_isr_26(); fn cognacos_isr_27();
+    fn cognacos_isr_28(); fn cognacos_isr_29(); fn cognacos_isr_30(); fn cognacos_isr_31();
+    fn cognacos_tlb_ipi_stub(); fn cognacos_hal_ipi_stub(); fn cognacos_ke_broadcast_ipi_stub(); fn cognacos_tsc_sync_stub(); fn cognacos_spurious_stub(); fn cognacos_timer_stub();
+    fn cognacos_irq_32();
+    fn cognacos_irq_33();
+    fn cognacos_irq_34();
+    fn cognacos_irq_35();
+    fn cognacos_irq_36();
+    fn cognacos_irq_37();
+    fn cognacos_irq_38();
+    fn cognacos_irq_39();
+    fn cognacos_irq_40();
+    fn cognacos_irq_41();
+    fn cognacos_irq_42();
+    fn cognacos_irq_43();
+    fn cognacos_irq_44();
+    fn cognacos_irq_45();
+    fn cognacos_irq_46();
+    fn cognacos_irq_47();
+    fn cognacos_irq_48();
+    fn cognacos_irq_49();
+    fn cognacos_irq_50();
+    fn cognacos_irq_51();
+    fn cognacos_irq_52();
+    fn cognacos_irq_53();
+    fn cognacos_irq_54();
+    fn cognacos_irq_55();
+    fn cognacos_irq_56();
+    fn cognacos_irq_57();
+    fn cognacos_irq_58();
+    fn cognacos_irq_59();
+    fn cognacos_irq_60();
+    fn cognacos_irq_61();
+    fn cognacos_irq_62();
+    fn cognacos_irq_63();
+    fn cognacos_irq_64();
+    fn cognacos_irq_65();
+    fn cognacos_irq_66();
+    fn cognacos_irq_67();
+    fn cognacos_irq_68();
+    fn cognacos_irq_69();
+    fn cognacos_irq_70();
+    fn cognacos_irq_71();
+    fn cognacos_irq_72();
+    fn cognacos_irq_73();
+    fn cognacos_irq_74();
+    fn cognacos_irq_75();
+    fn cognacos_irq_76();
+    fn cognacos_irq_77();
+    fn cognacos_irq_78();
+    fn cognacos_irq_79();
+    fn cognacos_irq_80();
+    fn cognacos_irq_81();
+    fn cognacos_irq_82();
+    fn cognacos_irq_83();
+    fn cognacos_irq_84();
+    fn cognacos_irq_85();
+    fn cognacos_irq_86();
+    fn cognacos_irq_87();
+    fn cognacos_irq_88();
+    fn cognacos_irq_89();
+    fn cognacos_irq_90();
+    fn cognacos_irq_91();
+    fn cognacos_irq_92();
+    fn cognacos_irq_93();
+    fn cognacos_irq_94();
+    fn cognacos_irq_95();
+    fn cognacos_irq_96();
+    fn cognacos_irq_97();
+    fn cognacos_irq_98();
+    fn cognacos_irq_99();
+    fn cognacos_irq_100();
+    fn cognacos_irq_101();
+    fn cognacos_irq_102();
+    fn cognacos_irq_103();
+    fn cognacos_irq_104();
+    fn cognacos_irq_105();
+    fn cognacos_irq_106();
+    fn cognacos_irq_107();
+    fn cognacos_irq_108();
+    fn cognacos_irq_109();
+    fn cognacos_irq_110();
+    fn cognacos_irq_111();
+    fn cognacos_irq_112();
+    fn cognacos_irq_113();
+    fn cognacos_irq_114();
+    fn cognacos_irq_115();
+    fn cognacos_irq_116();
+    fn cognacos_irq_117();
+    fn cognacos_irq_118();
+    fn cognacos_irq_119();
+    fn cognacos_irq_120();
+    fn cognacos_irq_121();
+    fn cognacos_irq_122();
+    fn cognacos_irq_123();
+    fn cognacos_irq_124();
+    fn cognacos_irq_125();
+    fn cognacos_irq_126();
+    fn cognacos_irq_127();
+    fn cognacos_irq_128();
+    fn cognacos_irq_129();
+    fn cognacos_irq_130();
+    fn cognacos_irq_131();
+    fn cognacos_irq_132();
+    fn cognacos_irq_133();
+    fn cognacos_irq_134();
+    fn cognacos_irq_135();
+    fn cognacos_irq_136();
+    fn cognacos_irq_137();
+    fn cognacos_irq_138();
+    fn cognacos_irq_139();
+    fn cognacos_irq_140();
+    fn cognacos_irq_141();
+    fn cognacos_irq_142();
+    fn cognacos_irq_143();
+    fn cognacos_irq_144();
+    fn cognacos_irq_145();
+    fn cognacos_irq_146();
+    fn cognacos_irq_147();
+    fn cognacos_irq_148();
+    fn cognacos_irq_149();
+    fn cognacos_irq_150();
+    fn cognacos_irq_151();
+    fn cognacos_irq_152();
+    fn cognacos_irq_153();
+    fn cognacos_irq_154();
+    fn cognacos_irq_155();
+    fn cognacos_irq_156();
+    fn cognacos_irq_157();
+    fn cognacos_irq_158();
+    fn cognacos_irq_159();
+    fn cognacos_irq_160();
+    fn cognacos_irq_161();
+    fn cognacos_irq_162();
+    fn cognacos_irq_163();
+    fn cognacos_irq_164();
+    fn cognacos_irq_165();
+    fn cognacos_irq_166();
+    fn cognacos_irq_167();
+    fn cognacos_irq_168();
+    fn cognacos_irq_169();
+    fn cognacos_irq_170();
+    fn cognacos_irq_171();
+    fn cognacos_irq_172();
+    fn cognacos_irq_173();
+    fn cognacos_irq_174();
+    fn cognacos_irq_175();
+    fn cognacos_irq_176();
+    fn cognacos_irq_177();
+    fn cognacos_irq_178();
+    fn cognacos_irq_179();
+    fn cognacos_irq_180();
+    fn cognacos_irq_181();
+    fn cognacos_irq_182();
+    fn cognacos_irq_183();
+    fn cognacos_irq_184();
+    fn cognacos_irq_185();
+    fn cognacos_irq_186();
+    fn cognacos_irq_187();
+    fn cognacos_irq_188();
+    fn cognacos_irq_189();
+    fn cognacos_irq_190();
+    fn cognacos_irq_191();
+    fn cognacos_irq_192();
+    fn cognacos_irq_193();
+    fn cognacos_irq_194();
+    fn cognacos_irq_195();
+    fn cognacos_irq_196();
+    fn cognacos_irq_197();
+    fn cognacos_irq_198();
+    fn cognacos_irq_199();
+    fn cognacos_irq_200();
+    fn cognacos_irq_201();
+    fn cognacos_irq_202();
+    fn cognacos_irq_203();
+    fn cognacos_irq_204();
+    fn cognacos_irq_205();
+    fn cognacos_irq_206();
+    fn cognacos_irq_207();
+    fn cognacos_irq_208();
+    fn cognacos_irq_209();
+    fn cognacos_irq_210();
+    fn cognacos_irq_211();
+    fn cognacos_irq_212();
+    fn cognacos_irq_213();
+    fn cognacos_irq_214();
+    fn cognacos_irq_215();
+    fn cognacos_irq_216();
+    fn cognacos_irq_217();
+    fn cognacos_irq_218();
+    fn cognacos_irq_219();
+    fn cognacos_irq_220();
+    fn cognacos_irq_221();
+    fn cognacos_irq_222();
+    fn cognacos_irq_223();
 }
 
 /// Build and load a private GDT/TSS for one logical processor. IST1 is the
@@ -1017,14 +1017,14 @@ pub unsafe fn initialize() {
         }
     }
     let handlers: [usize; EXCEPTION_VECTORS] = [
-        rdotos_isr_0 as usize, rdotos_isr_1 as usize, rdotos_isr_2 as usize, rdotos_isr_3 as usize,
-        rdotos_isr_4 as usize, rdotos_isr_5 as usize, rdotos_isr_6 as usize, rdotos_isr_7 as usize,
-        rdotos_isr_8 as usize, rdotos_isr_9 as usize, rdotos_isr_10 as usize, rdotos_isr_11 as usize,
-        rdotos_isr_12 as usize, rdotos_isr_13 as usize, rdotos_isr_14 as usize, rdotos_isr_15 as usize,
-        rdotos_isr_16 as usize, rdotos_isr_17 as usize, rdotos_isr_18 as usize, rdotos_isr_19 as usize,
-        rdotos_isr_20 as usize, rdotos_isr_21 as usize, rdotos_isr_22 as usize, rdotos_isr_23 as usize,
-        rdotos_isr_24 as usize, rdotos_isr_25 as usize, rdotos_isr_26 as usize, rdotos_isr_27 as usize,
-        rdotos_isr_28 as usize, rdotos_isr_29 as usize, rdotos_isr_30 as usize, rdotos_isr_31 as usize,
+        cognacos_isr_0 as usize, cognacos_isr_1 as usize, cognacos_isr_2 as usize, cognacos_isr_3 as usize,
+        cognacos_isr_4 as usize, cognacos_isr_5 as usize, cognacos_isr_6 as usize, cognacos_isr_7 as usize,
+        cognacos_isr_8 as usize, cognacos_isr_9 as usize, cognacos_isr_10 as usize, cognacos_isr_11 as usize,
+        cognacos_isr_12 as usize, cognacos_isr_13 as usize, cognacos_isr_14 as usize, cognacos_isr_15 as usize,
+        cognacos_isr_16 as usize, cognacos_isr_17 as usize, cognacos_isr_18 as usize, cognacos_isr_19 as usize,
+        cognacos_isr_20 as usize, cognacos_isr_21 as usize, cognacos_isr_22 as usize, cognacos_isr_23 as usize,
+        cognacos_isr_24 as usize, cognacos_isr_25 as usize, cognacos_isr_26 as usize, cognacos_isr_27 as usize,
+        cognacos_isr_28 as usize, cognacos_isr_29 as usize, cognacos_isr_30 as usize, cognacos_isr_31 as usize,
     ];
     let idt_ptr = core::ptr::addr_of_mut!(IDT).cast::<IdtEntry>();
     for vector in 0..EXCEPTION_VECTORS {
@@ -1037,198 +1037,198 @@ pub unsafe fn initialize() {
         idt_ptr.add(18).write(IdtEntry::interrupt_gate_ist(handlers[18] as u64, 3));
     }
     let irq_handlers: [usize; 192] = [
-        rdotos_irq_32 as usize,
-        rdotos_irq_33 as usize,
-        rdotos_irq_34 as usize,
-        rdotos_irq_35 as usize,
-        rdotos_irq_36 as usize,
-        rdotos_irq_37 as usize,
-        rdotos_irq_38 as usize,
-        rdotos_irq_39 as usize,
-        rdotos_irq_40 as usize,
-        rdotos_irq_41 as usize,
-        rdotos_irq_42 as usize,
-        rdotos_irq_43 as usize,
-        rdotos_irq_44 as usize,
-        rdotos_irq_45 as usize,
-        rdotos_irq_46 as usize,
-        rdotos_irq_47 as usize,
-        rdotos_irq_48 as usize,
-        rdotos_irq_49 as usize,
-        rdotos_irq_50 as usize,
-        rdotos_irq_51 as usize,
-        rdotos_irq_52 as usize,
-        rdotos_irq_53 as usize,
-        rdotos_irq_54 as usize,
-        rdotos_irq_55 as usize,
-        rdotos_irq_56 as usize,
-        rdotos_irq_57 as usize,
-        rdotos_irq_58 as usize,
-        rdotos_irq_59 as usize,
-        rdotos_irq_60 as usize,
-        rdotos_irq_61 as usize,
-        rdotos_irq_62 as usize,
-        rdotos_irq_63 as usize,
-        rdotos_irq_64 as usize,
-        rdotos_irq_65 as usize,
-        rdotos_irq_66 as usize,
-        rdotos_irq_67 as usize,
-        rdotos_irq_68 as usize,
-        rdotos_irq_69 as usize,
-        rdotos_irq_70 as usize,
-        rdotos_irq_71 as usize,
-        rdotos_irq_72 as usize,
-        rdotos_irq_73 as usize,
-        rdotos_irq_74 as usize,
-        rdotos_irq_75 as usize,
-        rdotos_irq_76 as usize,
-        rdotos_irq_77 as usize,
-        rdotos_irq_78 as usize,
-        rdotos_irq_79 as usize,
-        rdotos_irq_80 as usize,
-        rdotos_irq_81 as usize,
-        rdotos_irq_82 as usize,
-        rdotos_irq_83 as usize,
-        rdotos_irq_84 as usize,
-        rdotos_irq_85 as usize,
-        rdotos_irq_86 as usize,
-        rdotos_irq_87 as usize,
-        rdotos_irq_88 as usize,
-        rdotos_irq_89 as usize,
-        rdotos_irq_90 as usize,
-        rdotos_irq_91 as usize,
-        rdotos_irq_92 as usize,
-        rdotos_irq_93 as usize,
-        rdotos_irq_94 as usize,
-        rdotos_irq_95 as usize,
-        rdotos_irq_96 as usize,
-        rdotos_irq_97 as usize,
-        rdotos_irq_98 as usize,
-        rdotos_irq_99 as usize,
-        rdotos_irq_100 as usize,
-        rdotos_irq_101 as usize,
-        rdotos_irq_102 as usize,
-        rdotos_irq_103 as usize,
-        rdotos_irq_104 as usize,
-        rdotos_irq_105 as usize,
-        rdotos_irq_106 as usize,
-        rdotos_irq_107 as usize,
-        rdotos_irq_108 as usize,
-        rdotos_irq_109 as usize,
-        rdotos_irq_110 as usize,
-        rdotos_irq_111 as usize,
-        rdotos_irq_112 as usize,
-        rdotos_irq_113 as usize,
-        rdotos_irq_114 as usize,
-        rdotos_irq_115 as usize,
-        rdotos_irq_116 as usize,
-        rdotos_irq_117 as usize,
-        rdotos_irq_118 as usize,
-        rdotos_irq_119 as usize,
-        rdotos_irq_120 as usize,
-        rdotos_irq_121 as usize,
-        rdotos_irq_122 as usize,
-        rdotos_irq_123 as usize,
-        rdotos_irq_124 as usize,
-        rdotos_irq_125 as usize,
-        rdotos_irq_126 as usize,
-        rdotos_irq_127 as usize,
-        rdotos_irq_128 as usize,
-        rdotos_irq_129 as usize,
-        rdotos_irq_130 as usize,
-        rdotos_irq_131 as usize,
-        rdotos_irq_132 as usize,
-        rdotos_irq_133 as usize,
-        rdotos_irq_134 as usize,
-        rdotos_irq_135 as usize,
-        rdotos_irq_136 as usize,
-        rdotos_irq_137 as usize,
-        rdotos_irq_138 as usize,
-        rdotos_irq_139 as usize,
-        rdotos_irq_140 as usize,
-        rdotos_irq_141 as usize,
-        rdotos_irq_142 as usize,
-        rdotos_irq_143 as usize,
-        rdotos_irq_144 as usize,
-        rdotos_irq_145 as usize,
-        rdotos_irq_146 as usize,
-        rdotos_irq_147 as usize,
-        rdotos_irq_148 as usize,
-        rdotos_irq_149 as usize,
-        rdotos_irq_150 as usize,
-        rdotos_irq_151 as usize,
-        rdotos_irq_152 as usize,
-        rdotos_irq_153 as usize,
-        rdotos_irq_154 as usize,
-        rdotos_irq_155 as usize,
-        rdotos_irq_156 as usize,
-        rdotos_irq_157 as usize,
-        rdotos_irq_158 as usize,
-        rdotos_irq_159 as usize,
-        rdotos_irq_160 as usize,
-        rdotos_irq_161 as usize,
-        rdotos_irq_162 as usize,
-        rdotos_irq_163 as usize,
-        rdotos_irq_164 as usize,
-        rdotos_irq_165 as usize,
-        rdotos_irq_166 as usize,
-        rdotos_irq_167 as usize,
-        rdotos_irq_168 as usize,
-        rdotos_irq_169 as usize,
-        rdotos_irq_170 as usize,
-        rdotos_irq_171 as usize,
-        rdotos_irq_172 as usize,
-        rdotos_irq_173 as usize,
-        rdotos_irq_174 as usize,
-        rdotos_irq_175 as usize,
-        rdotos_irq_176 as usize,
-        rdotos_irq_177 as usize,
-        rdotos_irq_178 as usize,
-        rdotos_irq_179 as usize,
-        rdotos_irq_180 as usize,
-        rdotos_irq_181 as usize,
-        rdotos_irq_182 as usize,
-        rdotos_irq_183 as usize,
-        rdotos_irq_184 as usize,
-        rdotos_irq_185 as usize,
-        rdotos_irq_186 as usize,
-        rdotos_irq_187 as usize,
-        rdotos_irq_188 as usize,
-        rdotos_irq_189 as usize,
-        rdotos_irq_190 as usize,
-        rdotos_irq_191 as usize,
-        rdotos_irq_192 as usize,
-        rdotos_irq_193 as usize,
-        rdotos_irq_194 as usize,
-        rdotos_irq_195 as usize,
-        rdotos_irq_196 as usize,
-        rdotos_irq_197 as usize,
-        rdotos_irq_198 as usize,
-        rdotos_irq_199 as usize,
-        rdotos_irq_200 as usize,
-        rdotos_irq_201 as usize,
-        rdotos_irq_202 as usize,
-        rdotos_irq_203 as usize,
-        rdotos_irq_204 as usize,
-        rdotos_irq_205 as usize,
-        rdotos_irq_206 as usize,
-        rdotos_irq_207 as usize,
-        rdotos_irq_208 as usize,
-        rdotos_irq_209 as usize,
-        rdotos_irq_210 as usize,
-        rdotos_irq_211 as usize,
-        rdotos_irq_212 as usize,
-        rdotos_irq_213 as usize,
-        rdotos_irq_214 as usize,
-        rdotos_irq_215 as usize,
-        rdotos_irq_216 as usize,
-        rdotos_irq_217 as usize,
-        rdotos_irq_218 as usize,
-        rdotos_irq_219 as usize,
-        rdotos_irq_220 as usize,
-        rdotos_irq_221 as usize,
-        rdotos_irq_222 as usize,
-        rdotos_irq_223 as usize,
+        cognacos_irq_32 as usize,
+        cognacos_irq_33 as usize,
+        cognacos_irq_34 as usize,
+        cognacos_irq_35 as usize,
+        cognacos_irq_36 as usize,
+        cognacos_irq_37 as usize,
+        cognacos_irq_38 as usize,
+        cognacos_irq_39 as usize,
+        cognacos_irq_40 as usize,
+        cognacos_irq_41 as usize,
+        cognacos_irq_42 as usize,
+        cognacos_irq_43 as usize,
+        cognacos_irq_44 as usize,
+        cognacos_irq_45 as usize,
+        cognacos_irq_46 as usize,
+        cognacos_irq_47 as usize,
+        cognacos_irq_48 as usize,
+        cognacos_irq_49 as usize,
+        cognacos_irq_50 as usize,
+        cognacos_irq_51 as usize,
+        cognacos_irq_52 as usize,
+        cognacos_irq_53 as usize,
+        cognacos_irq_54 as usize,
+        cognacos_irq_55 as usize,
+        cognacos_irq_56 as usize,
+        cognacos_irq_57 as usize,
+        cognacos_irq_58 as usize,
+        cognacos_irq_59 as usize,
+        cognacos_irq_60 as usize,
+        cognacos_irq_61 as usize,
+        cognacos_irq_62 as usize,
+        cognacos_irq_63 as usize,
+        cognacos_irq_64 as usize,
+        cognacos_irq_65 as usize,
+        cognacos_irq_66 as usize,
+        cognacos_irq_67 as usize,
+        cognacos_irq_68 as usize,
+        cognacos_irq_69 as usize,
+        cognacos_irq_70 as usize,
+        cognacos_irq_71 as usize,
+        cognacos_irq_72 as usize,
+        cognacos_irq_73 as usize,
+        cognacos_irq_74 as usize,
+        cognacos_irq_75 as usize,
+        cognacos_irq_76 as usize,
+        cognacos_irq_77 as usize,
+        cognacos_irq_78 as usize,
+        cognacos_irq_79 as usize,
+        cognacos_irq_80 as usize,
+        cognacos_irq_81 as usize,
+        cognacos_irq_82 as usize,
+        cognacos_irq_83 as usize,
+        cognacos_irq_84 as usize,
+        cognacos_irq_85 as usize,
+        cognacos_irq_86 as usize,
+        cognacos_irq_87 as usize,
+        cognacos_irq_88 as usize,
+        cognacos_irq_89 as usize,
+        cognacos_irq_90 as usize,
+        cognacos_irq_91 as usize,
+        cognacos_irq_92 as usize,
+        cognacos_irq_93 as usize,
+        cognacos_irq_94 as usize,
+        cognacos_irq_95 as usize,
+        cognacos_irq_96 as usize,
+        cognacos_irq_97 as usize,
+        cognacos_irq_98 as usize,
+        cognacos_irq_99 as usize,
+        cognacos_irq_100 as usize,
+        cognacos_irq_101 as usize,
+        cognacos_irq_102 as usize,
+        cognacos_irq_103 as usize,
+        cognacos_irq_104 as usize,
+        cognacos_irq_105 as usize,
+        cognacos_irq_106 as usize,
+        cognacos_irq_107 as usize,
+        cognacos_irq_108 as usize,
+        cognacos_irq_109 as usize,
+        cognacos_irq_110 as usize,
+        cognacos_irq_111 as usize,
+        cognacos_irq_112 as usize,
+        cognacos_irq_113 as usize,
+        cognacos_irq_114 as usize,
+        cognacos_irq_115 as usize,
+        cognacos_irq_116 as usize,
+        cognacos_irq_117 as usize,
+        cognacos_irq_118 as usize,
+        cognacos_irq_119 as usize,
+        cognacos_irq_120 as usize,
+        cognacos_irq_121 as usize,
+        cognacos_irq_122 as usize,
+        cognacos_irq_123 as usize,
+        cognacos_irq_124 as usize,
+        cognacos_irq_125 as usize,
+        cognacos_irq_126 as usize,
+        cognacos_irq_127 as usize,
+        cognacos_irq_128 as usize,
+        cognacos_irq_129 as usize,
+        cognacos_irq_130 as usize,
+        cognacos_irq_131 as usize,
+        cognacos_irq_132 as usize,
+        cognacos_irq_133 as usize,
+        cognacos_irq_134 as usize,
+        cognacos_irq_135 as usize,
+        cognacos_irq_136 as usize,
+        cognacos_irq_137 as usize,
+        cognacos_irq_138 as usize,
+        cognacos_irq_139 as usize,
+        cognacos_irq_140 as usize,
+        cognacos_irq_141 as usize,
+        cognacos_irq_142 as usize,
+        cognacos_irq_143 as usize,
+        cognacos_irq_144 as usize,
+        cognacos_irq_145 as usize,
+        cognacos_irq_146 as usize,
+        cognacos_irq_147 as usize,
+        cognacos_irq_148 as usize,
+        cognacos_irq_149 as usize,
+        cognacos_irq_150 as usize,
+        cognacos_irq_151 as usize,
+        cognacos_irq_152 as usize,
+        cognacos_irq_153 as usize,
+        cognacos_irq_154 as usize,
+        cognacos_irq_155 as usize,
+        cognacos_irq_156 as usize,
+        cognacos_irq_157 as usize,
+        cognacos_irq_158 as usize,
+        cognacos_irq_159 as usize,
+        cognacos_irq_160 as usize,
+        cognacos_irq_161 as usize,
+        cognacos_irq_162 as usize,
+        cognacos_irq_163 as usize,
+        cognacos_irq_164 as usize,
+        cognacos_irq_165 as usize,
+        cognacos_irq_166 as usize,
+        cognacos_irq_167 as usize,
+        cognacos_irq_168 as usize,
+        cognacos_irq_169 as usize,
+        cognacos_irq_170 as usize,
+        cognacos_irq_171 as usize,
+        cognacos_irq_172 as usize,
+        cognacos_irq_173 as usize,
+        cognacos_irq_174 as usize,
+        cognacos_irq_175 as usize,
+        cognacos_irq_176 as usize,
+        cognacos_irq_177 as usize,
+        cognacos_irq_178 as usize,
+        cognacos_irq_179 as usize,
+        cognacos_irq_180 as usize,
+        cognacos_irq_181 as usize,
+        cognacos_irq_182 as usize,
+        cognacos_irq_183 as usize,
+        cognacos_irq_184 as usize,
+        cognacos_irq_185 as usize,
+        cognacos_irq_186 as usize,
+        cognacos_irq_187 as usize,
+        cognacos_irq_188 as usize,
+        cognacos_irq_189 as usize,
+        cognacos_irq_190 as usize,
+        cognacos_irq_191 as usize,
+        cognacos_irq_192 as usize,
+        cognacos_irq_193 as usize,
+        cognacos_irq_194 as usize,
+        cognacos_irq_195 as usize,
+        cognacos_irq_196 as usize,
+        cognacos_irq_197 as usize,
+        cognacos_irq_198 as usize,
+        cognacos_irq_199 as usize,
+        cognacos_irq_200 as usize,
+        cognacos_irq_201 as usize,
+        cognacos_irq_202 as usize,
+        cognacos_irq_203 as usize,
+        cognacos_irq_204 as usize,
+        cognacos_irq_205 as usize,
+        cognacos_irq_206 as usize,
+        cognacos_irq_207 as usize,
+        cognacos_irq_208 as usize,
+        cognacos_irq_209 as usize,
+        cognacos_irq_210 as usize,
+        cognacos_irq_211 as usize,
+        cognacos_irq_212 as usize,
+        cognacos_irq_213 as usize,
+        cognacos_irq_214 as usize,
+        cognacos_irq_215 as usize,
+        cognacos_irq_216 as usize,
+        cognacos_irq_217 as usize,
+        cognacos_irq_218 as usize,
+        cognacos_irq_219 as usize,
+        cognacos_irq_220 as usize,
+        cognacos_irq_221 as usize,
+        cognacos_irq_222 as usize,
+        cognacos_irq_223 as usize,
     ];
     for (index, handler) in irq_handlers.iter().enumerate() {
         unsafe { idt_ptr.add(0x20 + index).write(IdtEntry::interrupt_gate(*handler as u64)); }
@@ -1236,12 +1236,12 @@ pub unsafe fn initialize() {
     // 0xF1 is reserved for synchronous TLB shootdowns; 0xFF is the LAPIC
     // spurious vector and intentionally does not send an EOI.
     unsafe {
-        idt_ptr.add(crate::hal::TLB_SHOOTDOWN_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tlb_ipi_stub as u64));
-        idt_ptr.add(crate::hal::HAL_IPI_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_hal_ipi_stub as u64));
-        idt_ptr.add(crate::hal::KE_BROADCAST_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_ke_broadcast_ipi_stub as u64));
-        idt_ptr.add(crate::hal::TSC_SYNC_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_tsc_sync_stub as u64));
-        idt_ptr.add(0xFF).write(IdtEntry::interrupt_gate(rdotos_spurious_stub as u64));
-        idt_ptr.add(crate::hal::LOCAL_TIMER_VECTOR as usize).write(IdtEntry::interrupt_gate(rdotos_timer_stub as u64));
+        idt_ptr.add(crate::hal::TLB_SHOOTDOWN_VECTOR as usize).write(IdtEntry::interrupt_gate(cognacos_tlb_ipi_stub as u64));
+        idt_ptr.add(crate::hal::HAL_IPI_VECTOR as usize).write(IdtEntry::interrupt_gate(cognacos_hal_ipi_stub as u64));
+        idt_ptr.add(crate::hal::KE_BROADCAST_VECTOR as usize).write(IdtEntry::interrupt_gate(cognacos_ke_broadcast_ipi_stub as u64));
+        idt_ptr.add(crate::hal::TSC_SYNC_VECTOR as usize).write(IdtEntry::interrupt_gate(cognacos_tsc_sync_stub as u64));
+        idt_ptr.add(0xFF).write(IdtEntry::interrupt_gate(cognacos_spurious_stub as u64));
+        idt_ptr.add(crate::hal::LOCAL_TIMER_VECTOR as usize).write(IdtEntry::interrupt_gate(cognacos_timer_stub as u64));
     }
     let pointer = DescriptorTablePointer {
         limit: (IDT_ENTRIES * size_of::<IdtEntry>() - 1) as u16,
@@ -1254,7 +1254,7 @@ pub unsafe fn initialize() {
 /// frame. This is fatal by design: returning to an untrusted exception frame
 /// is not supported until recovery and interrupt-stack switching are implemented.
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_exception_fatal(vector: u64, error: u64, frame: *const u64) -> ! {
+pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *const u64) -> ! {
     unsafe {
         crate::serial_write(b"\r\nCognacOS FATAL CPU exception vector=");
         crate::serial_write_hex(vector);
@@ -1295,7 +1295,7 @@ pub extern "C" fn rdotos_exception_fatal(vector: u64, error: u64, frame: *const 
 /// Dispatch recoverable faults. A return value of one asks the assembly stub to
 /// restore the original frame and IRETQ; fatal/unrecognized exceptions halt.
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
+pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
     if vector == 2 && crate::ntoskrnl::ke::runtime::dispatch_nmi_callbacks() { return 1; }
     if vector == 14 {
         let cr2: u64;
@@ -1319,7 +1319,7 @@ pub extern "C" fn rdotos_exception_dispatch(vector: u64, error: u64, frame: *con
             return 1;
         }
     }
-    rdotos_exception_fatal(vector, error, frame)
+    cognacos_exception_fatal(vector, error, frame)
 }
 
 /// Install a DPL3 interrupt gate for a controlled user-to-kernel entry point.
@@ -1338,9 +1338,9 @@ pub unsafe fn enable_kernel_paging(pml4_physical: u64) {
 
 global_asm!(r#"
     .section .text
-    .global rdotos_context_switch
-    .type rdotos_context_switch, @function
-rdotos_context_switch:
+    .global cognacos_context_switch
+    .type cognacos_context_switch, @function
+cognacos_context_switch:
     push rbp
     push rbx
     push r12
@@ -1357,9 +1357,9 @@ rdotos_context_switch:
     pop rbp
     ret
 
-    .global rdotos_context_switch_publish
-    .type rdotos_context_switch_publish, @function
-rdotos_context_switch_publish:
+    .global cognacos_context_switch_publish
+    .type cognacos_context_switch_publish, @function
+cognacos_context_switch_publish:
     push rbp
     push rbx
     push r12
@@ -1385,14 +1385,14 @@ rdotos_context_switch_publish:
 "#);
 
 unsafe extern "C" {
-    fn rdotos_context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64);
-    fn rdotos_context_switch_publish(old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize);
+    fn cognacos_context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64);
+    fn cognacos_context_switch_publish(old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize);
 }
 unsafe extern "C" {
-    fn rdotos_fault_probe_write_ro(address: *mut u8) -> u64;
-    fn rdotos_fault_probe_write_ro_recovery();
-    fn rdotos_fault_probe_execute_nx(address: *mut u8) -> u64;
-    fn rdotos_fault_probe_execute_nx_recovery();
+    fn cognacos_fault_probe_write_ro(address: *mut u8) -> u64;
+    fn cognacos_fault_probe_write_ro_recovery();
+    fn cognacos_fault_probe_execute_nx(address: *mut u8) -> u64;
+    fn cognacos_fault_probe_execute_nx_recovery();
 }
 
 
@@ -1401,11 +1401,11 @@ unsafe extern "C" {
 pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
     OBSERVED_PROTECTION_FAULT.store(0, core::sync::atomic::Ordering::Release);
     EXPECTED_PROTECTION_ADDRESS.store(read_only_executable_address, core::sync::atomic::Ordering::Relaxed);
-    EXPECTED_PROTECTION_RECOVERY.store(rdotos_fault_probe_write_ro_recovery as *const () as u64,
+    EXPECTED_PROTECTION_RECOVERY.store(cognacos_fault_probe_write_ro_recovery as *const () as u64,
         core::sync::atomic::Ordering::Relaxed);
     EXPECTED_PROTECTION_FAULT.store(1, core::sync::atomic::Ordering::Release);
     let original_byte = unsafe { core::ptr::read_volatile(read_only_executable_address as *const u8) };
-    let write_result = unsafe { rdotos_fault_probe_write_ro(read_only_executable_address as *mut u8) };
+    let write_result = unsafe { cognacos_fault_probe_write_ro(read_only_executable_address as *mut u8) };
     if write_result != 0 {
         // If protection is broken, restore the byte before reporting failure.
         unsafe { core::ptr::write_volatile(read_only_executable_address as *mut u8, original_byte); }
@@ -1420,10 +1420,10 @@ pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
     unsafe { core::ptr::write_volatile(nx_code.as_mut_ptr(), 0xc3); }
     let target = nx_code.as_mut_ptr();
     EXPECTED_PROTECTION_ADDRESS.store(target as u64, core::sync::atomic::Ordering::Relaxed);
-    EXPECTED_PROTECTION_RECOVERY.store(rdotos_fault_probe_execute_nx_recovery as *const () as u64,
+    EXPECTED_PROTECTION_RECOVERY.store(cognacos_fault_probe_execute_nx_recovery as *const () as u64,
         core::sync::atomic::Ordering::Relaxed);
     EXPECTED_PROTECTION_FAULT.store(2, core::sync::atomic::Ordering::Release);
-    let execute_result = unsafe { rdotos_fault_probe_execute_nx(target) };
+    let execute_result = unsafe { cognacos_fault_probe_execute_nx(target) };
     let execute_ok = execute_result == 0
         && OBSERVED_PROTECTION_FAULT.swap(0, core::sync::atomic::Ordering::AcqRel) == 2
         && EXPECTED_PROTECTION_FAULT.load(core::sync::atomic::Ordering::Acquire) == 0;
@@ -1434,7 +1434,7 @@ pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
 /// Switch between saved kernel-mode contexts built for this routine.
 pub unsafe fn context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64) {
     if old_rsp.is_null() || new_rsp.is_null() { return; }
-    unsafe { rdotos_context_switch(old_rsp, new_rsp); }
+    unsafe { cognacos_context_switch(old_rsp, new_rsp); }
 }
 /// Switch stacks after saving the outgoing context, invoking a tiny publication
 /// callback before another CPU can claim the outgoing thread.
@@ -1442,13 +1442,13 @@ pub unsafe fn context_switch_publish(
     old_rsp:*mut *mut u64,new_rsp:*mut u64,publish:extern "C" fn(usize),context:usize,
 ){
     if old_rsp.is_null()||new_rsp.is_null(){return}
-    unsafe{rdotos_context_switch_publish(old_rsp,new_rsp,publish,context);}
+    unsafe{cognacos_context_switch_publish(old_rsp,new_rsp,publish,context);}
 }
 
 /// Generic HAL IPI handler. Publish pending work for the local scheduler/DPC
 /// path before acknowledging the local APIC.
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_hal_ipi_handler() {
+pub extern "C" fn cognacos_hal_ipi_handler() {
     if let Some(cpu) = crate::hal::current_cpu_local() {
         let id = cpu.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize;
         let _ = crate::hal::mark_ipi_pending(id);
@@ -1463,7 +1463,7 @@ pub extern "C" fn rdotos_hal_ipi_handler() {
 /// Dedicated cross-processor Ke broadcast handler. The callback rendezvous
 /// owns the logical IRQL transition and all callback/completion bookkeeping.
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_ke_broadcast_ipi_handler() {
+pub extern "C" fn cognacos_ke_broadcast_ipi_handler() {
     crate::ntoskrnl::ke::runtime::handle_broadcast_ipi();
     unsafe { crate::hal::end_local_interrupt(); }
 }
@@ -1471,7 +1471,7 @@ pub extern "C" fn rdotos_ke_broadcast_ipi_handler() {
 /// Dedicated AP TSC synchronization IPI handler. It samples the raw TSC and
 /// issues exactly one EOI; it does not reuse the TLB-shootdown vector.
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_tsc_sync_handler() {
+pub extern "C" fn cognacos_tsc_sync_handler() {
     crate::hal::capture_clock_synchronization_sample();
     if let Some(base) = crate::hal::local_interrupt_controller_base() {
         unsafe { crate::hal::end_local_interrupt(); }
@@ -1481,7 +1481,7 @@ pub extern "C" fn rdotos_tsc_sync_handler() {
 /// Rust dispatch target for the common external-interrupt entry stub.
 /// The APIC dispatcher performs exactly one EOI after the registered callback.
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_external_interrupt_dispatch(vector: u64, frame: *const u64) {
+pub extern "C" fn cognacos_external_interrupt_dispatch(vector: u64, frame: *const u64) {
     let _ = unsafe {
         crate::hal::dispatch_platform_interrupt(
             vector as u8,
@@ -1492,7 +1492,7 @@ pub extern "C" fn rdotos_external_interrupt_dispatch(vector: u64, frame: *const 
 
 static TIMER_ISR_DIAGNOSTIC_ONCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 #[unsafe(no_mangle)]
-pub extern "C" fn rdotos_timer_interrupt_handler() {
+pub extern "C" fn cognacos_timer_interrupt_handler() {
     let first = !TIMER_ISR_DIAGNOSTIC_ONCE.swap(true, core::sync::atomic::Ordering::AcqRel);
     if first { unsafe { crate::serial_write(b"APIC timer ISR entered.\r\n"); } }
     crate::hal::local_clock_event_interrupt();
