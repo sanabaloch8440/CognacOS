@@ -525,16 +525,16 @@ pub fn check_token_membership(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) ->
 pub fn create_section(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let root = match current_root() { Ok(r)=>r, Err(s)=>return s };
     let mut handle = 0u64;
-    let result = crate::ntoskrnl::mm::section::create(args[0],&mut handle);
+    let result = crate::ntoskrnl::mm::section::create(args[0],root,&mut handle);
     if result < 0 { return result as u32 as u64; }
     if let Err(s) = write_u64(root,args[1],handle) {
-        let _ = crate::ntoskrnl::mm::section::dereference(handle);
+        let _ = crate::ntoskrnl::mm::section::dereference(handle,root);
         return s;
     }
     STATUS_SUCCESS
 }
 pub fn dereference_section(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
-    crate::ntoskrnl::mm::section::dereference(args[0]) as u32 as u64
+    crate::ntoskrnl::mm::section::dereference(args[0],current_root().unwrap_or(0)) as u32 as u64
 }
 pub fn section_copy(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let root = match current_root() { Ok(r)=>r, Err(s)=>return s };
@@ -549,7 +549,7 @@ pub fn section_copy(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         let offset = match args[1].checked_add(done as u64) { Some(v)=>v, None=>return STATUS_INVALID_PARAMETER };
         let user = match args[2].checked_add(done as u64) { Some(v)=>v, None=>return STATUS_ACCESS_VIOLATION };
         if args[4] == 1 && unsafe { address_space::copy_from_user_root(root,user,&mut scratch[..count]) }.is_err() { return STATUS_ACCESS_VIOLATION; }
-        let result = crate::ntoskrnl::mm::section::copy(args[0],offset,&mut scratch[..count],args[4] == 1);
+        let result = crate::ntoskrnl::mm::section::copy(args[0],root,offset,&mut scratch[..count],args[4] == 1);
         if result < 0 { return result as u32 as u64; }
         if args[4] == 0 && unsafe { address_space::copy_to_user_root(root,user,&scratch[..count]) }.is_err() { return STATUS_ACCESS_VIOLATION; }
         done += count;
@@ -558,5 +558,5 @@ pub fn section_copy(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
 }
 
 pub fn reference_section(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
-    crate::ntoskrnl::mm::section::reference(args[0]) as u32 as u64
+    crate::ntoskrnl::mm::section::reference(args[0],current_root().unwrap_or(0)) as u32 as u64
 }
