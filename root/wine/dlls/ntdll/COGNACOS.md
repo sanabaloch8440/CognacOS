@@ -68,3 +68,14 @@ same ABI and tests must be carried into CognacOS's native `ntoskrnl` before
 these routines can be considered production kernel exports. NTDLL retains its
 own user-mode copies where appropriate; user-mode exports cannot directly
 jump into privileged kernel code.
+
+## Native execution regression gate
+
+The UEFI/QEMU boot workflow now executes the in-tree DLL's focused ring-3
+smoke test instead of treating successful mapping/export registration as enough.
+The test configures the CognacOS-native service table and exercises the five
+implemented NT wrappers through the custom INT 0x82 ABI. The Windows x64
+SYSCALL probe remains separate because it uses a different entry convention and
+build-specific service numbers. A successful smoke test is still only a narrow
+bootstrap milestone: loader initialization, a complete PEB/TEB/LDR runtime,
+full exception/unwind semantics, and most of NTDLL's exports remain unfinished.
