@@ -451,11 +451,19 @@ pub unsafe extern "system" fn RtlCopyExtendedContext(dst: *mut CONTEXT_EX, flags
     if flags & CONTEXT_XSTATE != 0 && !ensure_ntdll_xstate_config() { return STATUS_NOT_SUPPORTED; }
     let s = unsafe { src.read_unaligned() };
     let d = unsafe { dst.read_unaligned() };
+    if s.Legacy.Length > d.Legacy.Length { return STATUS_BUFFER_OVERFLOW; }
     if flags & CONTEXT_XSTATE != 0 && d.XState.Length < s.XState.Length { return STATUS_BUFFER_OVERFLOW; }
-    let source_start = unsafe { src.cast::<u8>().offset(s.All.Offset as isize) };
-    let dest_start = unsafe { dst.cast::<u8>().offset(d.All.Offset as isize) };
-    if s.All.Length > d.All.Length { return STATUS_BUFFER_OVERFLOW; }
-    unsafe { core::ptr::copy(source_start, dest_start, s.All.Length as usize); }
+    // CONTEXT_EX objects can have different alignment padding, so copy the
+    // legacy context and XSTATE payload separately instead of copying All as
+    // one block and accidentally shifting the destination's aligned area.
+    let source_legacy = unsafe { src.cast::<u8>().offset(s.Legacy.Offset as isize) };
+    let dest_legacy = unsafe { dst.cast::<u8>().offset(d.Legacy.Offset as isize) };
+    unsafe { core::ptr::copy(source_legacy, dest_legacy, s.Legacy.Length as usize); }
+    if flags & CONTEXT_XSTATE != 0 && s.XState.Length != 0 {
+        let source_xstate = unsafe { src.cast::<u8>().add(s.XState.Offset as usize) };
+        let dest_xstate = unsafe { dst.cast::<u8>().add(d.XState.Offset as usize) };
+        unsafe { core::ptr::copy(source_xstate, dest_xstate, s.XState.Length as usize); }
+    }
     STATUS_SUCCESS
 }
 
