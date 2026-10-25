@@ -297,6 +297,103 @@ pub unsafe extern "system" fn _setjmpex(_environment: *mut c_void, _frame: *mut 
 #[no_mangle]
 pub unsafe extern "system" fn _local_unwind(_frame: *mut c_void, _registration: *mut c_void, _stop: i32) {}
 
+
+fn split_path_wide(path: &[u16]) -> (usize, usize, usize, usize) {
+    let len = path.iter().position(|&c| c == 0).unwrap_or(path.len());
+    let path = &path[..len];
+    let drive_end = if path.len() >= 2 && path[1] == b':' as u16 { 2 } else { 0 };
+    let sep = path.iter().rposition(|&c| c == b'/' as u16 || c == b'\\' as u16);
+    let dir_end = sep.map(|i| i + 1).unwrap_or(drive_end).max(drive_end);
+    let dot = path[dir_end..].iter().rposition(|&c| c == b'.' as u16)
+        .filter(|&i| i > 0).map(|i| dir_end + i);
+    (drive_end, dir_end, dot.unwrap_or(path.len()), path.len())
+}
+
+unsafe fn copy_part_u16(dst: *mut u16, capacity: usize, src: &[u16]) -> i32 {
+    if capacity == 0 { return if src.is_empty() { 0 } else { ERANGE }; }
+    if dst.is_null() { return EINVAL; }
+    if src.len() >= capacity {
+        unsafe { *dst = 0; }
+        return ERANGE;
+    }
+    unsafe {
+        ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+        *dst.add(src.len()) = 0;
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn _wsplitpath_s(
+    path: *const u16,
+    drive: *mut u16, drive_size: usize,
+    directory: *mut u16, directory_size: usize,
+    filename: *mut u16, filename_size: usize,
+    extension: *mut u16, extension_size: usize,
+) -> i32 {
+    if path.is_null() { return EINVAL; }
+    let mut len = 0usize;
+    while len < 32768 && unsafe { *path.add(len) } != 0 { len += 1; }
+    if len == 32768 { return EINVAL; }
+    let units = unsafe { core::slice::from_raw_parts(path, len) };
+    let (drive_end, dir_end, name_end, total) = split_path_wide(units);
+    let parts = [&units[..drive_end], &units[drive_end..dir_end],
+                 &units[dir_end..name_end], &units[name_end..total]];
+    let targets = [(drive, drive_size), (directory, directory_size),
+                   (filename, filename_size), (extension, extension_size)];
+    for (dst, cap) in targets {
+        if !dst.is_null() && cap > 0 { unsafe { *dst = 0; } }
+    }
+    let mut result = 0;
+    for ((dst, cap), part) in targets.into_iter().zip(parts) {
+        let status = unsafe { copy_part_u16(dst, cap, part) };
+        if status != 0 && result == 0 { result = status; }
+    }
+    result
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn _wmakepath_s(
+    path: *mut u16, path_size: usize,
+    drive: *const u16, directory: *const u16, filename: *const u16, extension: *const u16,
+) -> i32 {
+    if path.is_null() || path_size == 0 { return EINVAL; }
+    let get = |p: *const u16| -> Option<&[u16]> {
+        if p.is_null() { return None; }
+        let mut n = 0usize;
+        while n < 32768 && unsafe { *p.add(n) } != 0 { n += 1; }
+        if n == 32768 { None } else { Some(unsafe { core::slice::from_raw_parts(p, n) }) }
+    };
+    let d = get(drive).unwrap_or(&[]);
+    let dir = get(directory).unwrap_or(&[]);
+    let name = get(filename).unwrap_or(&[]);
+    let ext = get(extension).unwrap_or(&[]);
+    let mut out = [0u16; 4096];
+    let mut n = 0usize;
+    let append = |out: &mut [u16], n: &mut usize, part: &[u16]| -> bool {
+        if n.checked_add(part.len()).map_or(true, |v| v >= out.len()) { return false; }
+        out[*n..*n + part.len()].copy_from_slice(part);
+        *n += part.len();
+        true
+    };
+    if !append(&mut out, &mut n, d) || !append(&mut out, &mut n, dir) {
+        unsafe { *path = 0; } return ERANGE;
+    }
+    if !dir.is_empty() && !dir.last().is_some_and(|&c| c == b'/' as u16 || c == b'\\' as u16) {
+        if !append(&mut out, &mut n, &[b'\\' as u16]) { unsafe { *path = 0; } return ERANGE; }
+    }
+    if !append(&mut out, &mut n, name) { unsafe { *path = 0; } return ERANGE; }
+    if !ext.is_empty() {
+        if ext[0] != b'.' as u16 && !append(&mut out, &mut n, &[b'.' as u16]) {
+            unsafe { *path = 0; } return ERANGE;
+        }
+        if !append(&mut out, &mut n, ext) { unsafe { *path = 0; } return ERANGE; }
+    }
+    if n >= path_size { unsafe { *path = 0; } return ERANGE; }
+    unsafe { ptr::copy_nonoverlapping(out.as_ptr(), path, n); *path.add(n) = 0; }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -350,7 +447,7 @@ mod tests {
         let ext = b"txt\0";
         let mut output = [0u8; 32];
         assert_eq!(unsafe { _makepath_s(output.as_mut_ptr(), output.len(), drive.as_ptr(), dir.as_ptr(), name.as_ptr(), ext.as_ptr()) }, 0);
-        assert_eq!(&output[..13], b"C:dir\\file.txt");
+        assert_eq!(&output[..14], b"C:dir\\file.txt");
         let mut small = [0u8; 3];
         assert_eq!(unsafe { _makepath_s(small.as_mut_ptr(), small.len(), drive.as_ptr(), dir.as_ptr(), name.as_ptr(), ext.as_ptr()) }, ERANGE);
         assert_eq!(small[0], 0);
