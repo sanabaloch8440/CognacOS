@@ -122,11 +122,16 @@ but its service stubs are deliberately **not executed**.
 ## Reproducing the tests
 
 The regular UEFI workflow builds the freestanding CognacOS NTDLL and stages it
-as `EFI/BOOT/ntdll.dll`. The kernel's optional asset lookup also accepts a
-stock Windows NTDLL at that path. A stock Windows image can therefore be used
-for mapping/export-table testing by replacing the staged file in a local EFI
-image; the ring-3 native-wrapper test is expected to skip for that binary.
-The Windows binary itself is intentionally excluded from this repository.
+as `EFI/BOOT/ntdll.dll`. To test a stock Windows binary without committing the
+Microsoft file, manually dispatch [the UEFI workflow](https://github.com/umarfarooq7869/CognacOS/actions/workflows/build-uefi.yml)
+and set the optional `ntdll_url` input to a URL for either a raw AMD64
+`ntdll.dll` or a ZIP containing it. The workflow downloads and validates the
+PE32+ image, stages it in the EFI volume, and QEMU attempts real kernel mapping
+and export registration. It deliberately skips execution when the
+CognacOS-specific syscall configuration export is absent. The current CI
+push-triggered path leaves `ntdll_url` empty and tests the freestanding
+CognacOS NTDLL. The Windows binary itself is intentionally excluded from this
+repository.
 
 ### NTDLL-LOAD-012 — native DLL had no relocation directory
 
