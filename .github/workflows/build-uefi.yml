@@ -111,7 +111,7 @@ jobs:
             if unzip -tq build/ntdll-input >/dev/null 2>&1; then
               entry="$(unzip -Z1 build/ntdll-input | awk 'tolower($0) == "ntdll.dll" || tolower($0) ~ /ntdll[.]dll$/ { print; exit }')"
               test -n "$entry" || { echo "ZIP does not contain ntdll.dll" >&2; exit 1; }
-              unzip -p build/ntdll-input "$entry" > build/EFI/BOOT/ntdll.dll
+              unzip -p build/ntdll-input "$entry" | head -c 16777217 > build/EFI/BOOT/ntdll.dll
             else
               cp build/ntdll-input build/EFI/BOOT/ntdll.dll
             fi
