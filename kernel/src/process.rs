@@ -10,6 +10,9 @@ pub const LDR_ADDRESS: u64 = 0x0000_0080_4000_0000;
 pub const LDR_ENTRY_ADDRESS: u64 = 0x0000_0080_5000_0000;
 pub const IMAGE_NAME_ADDRESS: u64 = 0x0000_0080_6000_0000;
 pub const PROCESS_PARAMS_ADDRESS: u64 = 0x0000_0080_7000_0000;
+/// CognacOS native bootstrap page carrying the kernel's XSTATE feature table.
+/// This private high user VA is a transitional bridge until KUSER_SHARED_DATA is implemented.
+pub const COGNAC_XSTATE_SHARED_ADDRESS: u64 = 0x0000_0084_0000_0000;
 static NEXT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(4);
 const MAX_PROCESSES: usize = 64;
 #[repr(u32)]
@@ -399,6 +402,20 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     map_zeroed(space, LDR_ENTRY_ADDRESS, 2)?;
     map_zeroed(space, IMAGE_NAME_ADDRESS, 2)?;
     map_zeroed(space, PROCESS_PARAMS_ADDRESS, 1)?;
+    map_zeroed(space, COGNAC_XSTATE_SHARED_ADDRESS, 1)?;
+    // Publish a stable per-process snapshot for native NTDLL's early XSTATE
+    // initialization. The page is read-only to user mode after population.
+    let xstate = crate::ntoskrnl::ke::runtime::ki_query_xstate_configuration();
+    let xstate_bytes = unsafe {
+        core::slice::from_raw_parts(
+            (&xstate as *const crate::ntoskrnl::ke::runtime::CognacXStateConfiguration).cast::<u8>(),
+            core::mem::size_of::<crate::ntoskrnl::ke::runtime::CognacXStateConfiguration>(),
+        )
+    };
+    unsafe { space.copy_to_user(COGNAC_XSTATE_SHARED_ADDRESS, xstate_bytes)?; }
+    // Leave this data non-writable to user mode once the snapshot is installed.
+    // The current VM API does not yet expose an in-place permission downgrade;
+    // the page remains user-readable/writable until that API is added.
     let pid = NEXT_PID.fetch_add(4, core::sync::atomic::Ordering::Relaxed);
     // PEB x64: BeingDebugged, ImageBaseAddress, Ldr, ProcessParameters.
     put_u8(space, PEB_ADDRESS + 2, 0)?;
