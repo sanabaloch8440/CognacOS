@@ -194,3 +194,7 @@ pub unsafe fn ki_xstate_restore_thread(area: *const KiThreadXStateArea) -> bool 
     if mask == 0 { return false; }
     unsafe { ki_xstate_restore((*area).as_ptr(), core::mem::size_of::<KiThreadXStateArea>(), mask) == STATUS_SUCCESS }
 }
+
+pub fn ki_xstate_enabled() -> bool {
+    XSTATE_INITIALIZED.load(Ordering::Acquire) & 1 != 0
+}
