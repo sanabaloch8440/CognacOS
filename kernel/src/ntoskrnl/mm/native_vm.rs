@@ -293,6 +293,7 @@ struct MemoryBasicInformation {
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_FREE: u32 = 0x10000;
 const MEM_PRIVATE: u32 = 0x20000;
+const _: [(); 48] = [(); core::mem::size_of::<MemoryBasicInformation>()];
 
 /// NT_QUERY_VIRTUAL_MEMORY (MemoryBasicInformation class). Returns the region
 /// containing the requested address, including the surrounding free range.
