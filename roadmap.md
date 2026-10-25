@@ -101,7 +101,7 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 
 ## Milestone 7 — Windows 11 x64 routine compatibility
 
-- [x] Implement and resolve native NTOSKRNL RTL memory exports for copy/move/fill/zero, prefix and ULONG comparisons, CRC32, volatile memory operations, zero-memory testing, and unsigned multiply-high. Correct the `RtlCompareMemoryUlong` return width to Windows `ULONG` and CRC length parameters to unsigned `ULONG`; regression tests are now part of CI. A new CI run is still required before treating the tests as passing.
+- [x] Implement and resolve native NTOSKRNL RTL memory exports present in the pinned Windows 11 manifest: copy/move/fill/zero, prefix and ULONG comparisons, CRC32, zero-memory testing, and unsigned multiply-high. Correct the `RtlCompareMemoryUlong` return width to Windows `ULONG` and CRC length parameters to unsigned `ULONG`. Internal helpers for ULONG-pattern fill and volatile memory operations remain callable only by kernel code until their export status is confirmed in the pinned manifest. Regression tests are now part of CI; a new CI run is still required before treating them as passing.
 
 - [x] Maintain a pinned Windows 11 x64 reference manifest and compare defined implementations/resolver paths against it.
 - [x] Keep internal CognacOS helpers out of the Windows export table; export only defined routines present in the pinned manifest.
