@@ -1,55 +1,21 @@
-# CognacOS NTDLL module configuration. Native builds use Makefile.cognac.
-# Do not generate a Wine Unix companion library or compile Wine server/syscall sources.
-EXTRADEFS = -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI=
+# CognacOS native NTDLL module manifest.
+# Wine's Unix companion/server path is intentionally disabled. The native
+# PE32+ target is built and validated by Makefile.cognac and the CI workflow.
+EXTRADEFS = -D_NTSYSTEM_ -D_ACRTIMP= -DWINBASEAPI= -DCOGNAC_NATIVE_NTDLL
 MODULE    = ntdll.dll
 IMPORTLIB = ntdll
-IMPORTS   = $(SYMCRYPT_PE_LIBS) $(ZLIB_PE_LIBS) $(MUSL_PE_LIBS)
-EXTRAINCL = $(SYMCRYPT_PE_CFLAGS) $(ZLIB_PE_CFLAGS)
+IMPORTS   =
+EXTRAINCL =
 
 EXTRADLLFLAGS = -nodefaultlibs
 i386_EXTRADLLFLAGS = -Wl,--image-base,0x7bc00000
-x86_64_EXTRADLLFLAGS = -Wl,--image-base,0x170000000
+x86_64_EXTRADLLFLAGS = -Wl,--image-base,0x180000000
 
-VER_PRODUCTVERSION = 6,1,7601,24059
+VER_PRODUCTVERSION = 10,0,26100,1
 
+# Keep the native target deliberately freestanding: no unix/*.c, ntdll.so,
+# Wine server, POSIX support libraries, or Wine runtime modules.
 SOURCES = \
-	actctx.c \
-	alpc.c \
-	atom.c \
-	crypt.c \
-	debugbuffer.c \
-	env.c \
-	error.c \
-	exception.c \
-	handletable.c \
-	heap.c \
-	large_int.c \
-	loader.c \
-	locale.c \
-	math.c \
-	misc.c \
-	path.c \
-	printf.c \
-	process.c \
-	reg.c \
-	relay.c \
-	resource.c \
-	rtl.c \
+	cognac_native.c \
 	rtl_memory.c \
-	rtlbitmap.c \
-	rtlstr.c \
-	sec.c \
-	signal_arm.c \
-	signal_arm64.c \
-	signal_arm64ec.c \
-	signal_i386.c \
-	signal_x86_64.c \
-	string.c \
-	sync.c \
-	thread.c \
-	threadpool.c \
-	time.c \
-	unwind.c \
-	version.c \
-	wcstring.c
-
+	cognac_syscall_x86_64.S
