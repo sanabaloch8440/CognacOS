@@ -28,9 +28,13 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [ ] Add integration tests for cross-page failures, read-only destinations, rollback, and map/unmap races.
 - [ ] Deliver user-mode exceptions through a defined trap-frame path and terminate only the faulting process.
 - [x] Integrate timer-driven preemption and verify a non-yielding kernel thread is preempted for a runnable peer in QEMU.
-- [ ] Add user demand-zero/page-in handling, per-process VM areas, and working-set accounting.
-- [ ] Add exception-safe probe/copy recovery and test concurrent address-space teardown.
+- [x] Add per-address-space demand-zero region metadata, an explicit user not-present fault resolver, and resident working-set accounting APIs (automatic vector-14 trap dispatch, eviction, and pagefile-backed user page-in remain open).
+- [ ] Add demand-zero resolver integration tests and safe concurrent unmap/fault stress.
+- [x] Add non-dereferencing user-range probes and page-by-page permission validation; copy helpers preflight full ranges before transfer.
+- [ ] Add trap-frame fault fixups for recoverable kernel probes, concurrent teardown stress, and user-fault delivery that terminates only the faulting process.
 - [ ] Harden I/O completion, cancellation, driver unload, and device/IRP rundown with race and fault-injection tests.
+- [ ] Implement working-set trimming with SMP-safe TLB shootdowns and page reclamation.
+- [ ] Prove per-process kernel/user page-table isolation, syscall/trap transitions, and protection against cross-process mappings with adversarial tests.
 - [ ] Pass current QEMU multi-vCPU and stress/fault-injection validation before closing the milestone.
 
 ## Milestone 3 — Scheduler, waits, APCs, timers, and DPCs

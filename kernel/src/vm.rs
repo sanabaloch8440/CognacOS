@@ -115,6 +115,70 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Register a demand-zero virtual region; pages are committed on an explicit
+    /// call to handle_page_fault. Region metadata is isolated by address-space root.
+    pub fn register_demand_zero_region(&self, start:u64, length:u64, writable:bool, executable:bool) -> Result<(),VmError> {
+        if start & (PAGE_SIZE-1)!=0 || length==0 || length & (PAGE_SIZE-1)!=0 || !is_user_range(start,length) || writable&&executable { return Err(VmError::InvalidAddress); }
+        let end=start.checked_add(length).ok_or(VmError::InvalidAddress)?;
+        let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        let areas=unsafe{&mut *DEMAND_AREAS.0.get()};
+        if areas.iter().any(|a|a.live&&a.root==self.root&&start<a.end&&a.start<end){return Err(VmError::AlreadyMapped)}
+        let slot=areas.iter_mut().find(|a|!a.live).ok_or(VmError::OutOfMemory)?;
+        *slot=DemandArea{root:self.root,start,end,writable,executable,live:true}; Ok(())
+    }
+
+    /// Resolve a user-mode, not-present fault only when it falls in a registered
+    /// demand-zero region. Protection, reserved-bit and supervisor faults fail closed.
+    pub fn handle_page_fault(&mut self,address:u64,error_code:u64)->bool {
+        const PF_PRESENT:u64=1; const PF_WRITE:u64=2; const PF_USER:u64=4; const PF_RESERVED:u64=8; const PF_INSTRUCTION:u64=16;
+        if error_code&(PF_PRESENT|PF_USER)!=PF_USER || error_code&PF_RESERVED!=0 || !is_user_range(address,1) {return false}
+        let page_va=address&!(PAGE_SIZE-1);
+        let area={let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();unsafe{&*DEMAND_AREAS.0.get()}.iter().copied().find(|a|a.live&&a.root==self.root&&page_va>=a.start&&page_va<a.end)};
+        let Some(area)=area else{return false};
+        if error_code&PF_WRITE!=0&&!area.writable || error_code&PF_INSTRUCTION!=0&&!area.executable {return false}
+        if self.translate_user(address,error_code&PF_WRITE!=0).is_ok(){return false}
+        let physical=match unsafe{crate::memory::allocate_page()}{Ok(p)=>p,Err(_)=>return false};
+        unsafe{core::ptr::write_bytes(physical as *mut u8,0,PAGE_SIZE as usize);}
+        if unsafe{self.map_user_page(page_va,physical,area.writable,area.executable)}.is_err(){let _=unsafe{crate::memory::free_page(physical)};return false}
+        let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        let pages=unsafe{&mut *WORKING_SET.0.get()};
+        if let Some(entry)=pages.iter_mut().find(|p|p.live&&p.root==self.root&&p.va==page_va) {
+            entry.age=WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed); return true
+        }
+        if let Some(entry)=pages.iter_mut().find(|p|!p.live) {
+            *entry=WorkingSetPage{root:self.root,va:page_va,age:WORKING_SET_CLOCK.fetch_add(1,core::sync::atomic::Ordering::Relaxed),live:true}; return true
+        }
+        // Do not report a successful fault if working-set accounting is exhausted.
+        false
+    }
+
+    /// Number of tracked resident demand-zero pages in this address space.
+    pub fn working_set_size(&self)->usize {
+        let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        unsafe{(&*WORKING_SET.0.get()).iter().filter(|p|p.live&&p.root==self.root).count()}
+    }
+
+    /// Remove a region's metadata only after its resident pages have been unmapped.
+    pub fn unregister_demand_zero_region(&self,start:u64,length:u64)->Result<(),VmError>{
+        let end=start.checked_add(length).ok_or(VmError::InvalidAddress)?;
+        if start&(PAGE_SIZE-1)!=0||length==0||length&(PAGE_SIZE-1)!=0||!is_user_range(start,length){return Err(VmError::InvalidAddress)}
+        let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock(); let areas=unsafe{&mut *DEMAND_AREAS.0.get()};
+        let index=areas.iter().position(|a|a.live&&a.root==self.root&&a.start==start&&a.end==end).ok_or(VmError::NotMapped)?;
+        if unsafe{&*WORKING_SET.0.get()}.iter().any(|p|p.live&&p.root==self.root&&p.va>=start&&p.va<end){return Err(VmError::AddressSpaceBusy)}
+        areas[index]=DemandArea::EMPTY; Ok(())
+    }
+
+    /// Probe a range without dereferencing user-controlled pointers. Use copy_from_user
+    /// or copy_to_user for actual access so translations and permissions are checked.
+    pub fn probe_user_range(&self,address:u64,length:u64,write:bool,execute:bool)->Result<(),VmError>{
+        if !is_user_range(address,length){return Err(VmError::InvalidAddress)} if length==0{return Ok(())}
+        let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock(); let mut offset=0u64;
+        while offset<length {let va=address.checked_add(offset).ok_or(VmError::InvalidAddress)?;let _=self.translate_user(va,write)?;
+            if execute&&!self.is_user_executable(va){return Err(VmError::PermissionDenied)}
+            offset=offset.checked_add(core::cmp::min(length-offset,PAGE_SIZE-(va&(PAGE_SIZE-1)))).ok_or(VmError::InvalidAddress)?;
+        } Ok(())
+    }
+
     pub fn translate_user(&self, virtual_address: u64, write: bool) -> Result<u64, VmError> {
         if !is_user_range(virtual_address, 1) { return Err(VmError::InvalidAddress); }
         let indexes = [
@@ -311,6 +375,8 @@ impl AddressSpace {
             unsafe { crate::memory::free_page(pdpt as u64) }.map_err(|_| VmError::OutOfMemory)?;
             unsafe { top.write(0); }
         }
+        let areas=unsafe{&mut *DEMAND_AREAS.0.get()}; for area in areas.iter_mut().filter(|a|a.live&&a.root==self.root){*area=DemandArea::EMPTY;}
+        let ws=unsafe{&mut *WORKING_SET.0.get()}; for page in ws.iter_mut().filter(|p|p.live&&p.root==self.root){*page=WorkingSetPage::EMPTY;}
         crate::process::detach_address_space(self.root);
         unsafe { crate::memory::free_page(self.root) }.map_err(|_| VmError::OutOfMemory)?;
         self.root = 0;
@@ -325,6 +391,23 @@ impl AddressSpace {
 }
 
 
+
+
+const MAX_DEMAND_AREAS: usize = 256;
+const MAX_WORKING_SET_PAGES: usize = 8192;
+#[derive(Clone, Copy)]
+struct DemandArea { root:u64, start:u64, end:u64, writable:bool, executable:bool, live:bool }
+impl DemandArea { const EMPTY: Self = Self { root:0,start:0,end:0,writable:false,executable:false,live:false }; }
+struct DemandAreas(core::cell::UnsafeCell<[DemandArea; MAX_DEMAND_AREAS]>);
+unsafe impl Sync for DemandAreas {}
+static DEMAND_AREAS: DemandAreas = DemandAreas(core::cell::UnsafeCell::new([DemandArea::EMPTY; MAX_DEMAND_AREAS]));
+#[derive(Clone, Copy)]
+struct WorkingSetPage { root:u64, va:u64, age:u64, live:bool }
+impl WorkingSetPage { const EMPTY: Self = Self { root:0,va:0,age:0,live:false }; }
+struct WorkingSet(core::cell::UnsafeCell<[WorkingSetPage; MAX_WORKING_SET_PAGES]>);
+unsafe impl Sync for WorkingSet {}
+static WORKING_SET: WorkingSet = WorkingSet(core::cell::UnsafeCell::new([WorkingSetPage::EMPTY; MAX_WORKING_SET_PAGES]));
+static WORKING_SET_CLOCK: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
 
 const EXTERNAL_USER: u64 = 1 << 9;
 const MDL_USER_BASE: u64 = 0x0000_7000_0000_0000;

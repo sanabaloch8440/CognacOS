@@ -11,7 +11,7 @@ The roadmap is maintained in one canonical file in the repository root to avoid 
 
 ## Current focus
 
-- **Memory isolation:** cross-page copy failures, rollback, map/unmap races, and exception-safe fault recovery.
+- **Memory isolation:** wire demand-zero resolution into vector-14 trap dispatch, implement working-set eviction/pagefile-backed user page-in, recover kernel probes through trap fixups, and prove isolation with multi-process fault/race tests.
 - **Scheduling and dispatch:** user APC return/SEH delivery, queue wait-all reservations, and wider race/conformance stress.
 - **Object Manager and security:** process-bound handle tables, token lifecycle, impersonation, callbacks, and audit policy.
 - **I/O and storage:** cancellation/completion races, device rundown, PCI resource assignment, AHCI/NVMe paths, and crash-safe writable filesystems.
