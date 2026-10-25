@@ -273,6 +273,7 @@ struct MemoryZone {
 #[repr(C)]
 struct LookasideBlock {
     magic: u64,
+    owner: *mut MemoryBlockLookaside,
     next: *mut LookasideBlock,
     base: PVOID,
     allocation_size: usize,
@@ -471,7 +472,7 @@ pub unsafe extern "system" fn RtlAllocateMemoryBlockLookaside(lookaside_ptr: PVO
     let Some(total) = core::mem::size_of::<LookasideBlock>().checked_add(size).and_then(|v| align_memory(v, RTL_ALIGNMENT)) else { return STATUS_INVALID_PARAMETER; };
     let Some((base, allocated)) = (unsafe { native_vm_allocate(total) }) else { return STATUS_NO_MEMORY; };
     let header = base.cast::<LookasideBlock>();
-    unsafe { ptr::write(header, LookasideBlock { magic: RTL_BLOCK_MAGIC, next: ptr::null_mut(), base, allocation_size: allocated, payload_size: allocated.saturating_sub(core::mem::size_of::<LookasideBlock>()) }); ptr::write(block_out, base.cast::<u8>().add(core::mem::size_of::<LookasideBlock>()).cast()); }
+    unsafe { ptr::write(header, LookasideBlock { magic: RTL_BLOCK_MAGIC, owner: lookaside, next: ptr::null_mut(), base, allocation_size: allocated, payload_size: allocated.saturating_sub(core::mem::size_of::<LookasideBlock>()) }); ptr::write(block_out, base.cast::<u8>().add(core::mem::size_of::<LookasideBlock>()).cast()); }
     STATUS_SUCCESS
 }
 #[no_mangle]
@@ -480,7 +481,7 @@ pub unsafe extern "system" fn RtlFreeMemoryBlockLookaside(lookaside_ptr: PVOID, 
     let lookaside = lookaside_ptr.cast::<MemoryBlockLookaside>();
     if unsafe { (*lookaside).magic } != RTL_LOOKASIDE_MAGIC { return STATUS_INVALID_HANDLE; }
     let header = unsafe { block.cast::<u8>().sub(core::mem::size_of::<LookasideBlock>()).cast::<LookasideBlock>() };
-    if unsafe { (*header).magic } != RTL_BLOCK_MAGIC { return STATUS_INVALID_PARAMETER; }
+    if unsafe { (*header).magic } != RTL_BLOCK_MAGIC || unsafe { (*header).owner } != lookaside { return STATUS_INVALID_PARAMETER; }
     unsafe { spin_lock(&(*lookaside).lock); }
     if unsafe { (*lookaside).cached < (*lookaside).cache_limit } {
         unsafe { (*header).next = (*lookaside).free_list; (*lookaside).free_list = header; (*lookaside).cached += 1; spin_unlock(&(*lookaside).lock); }
