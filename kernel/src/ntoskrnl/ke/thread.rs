@@ -3,6 +3,7 @@
 use core::cell::UnsafeCell;
 use core::ffi::c_void;
 use crate::hal::IrqSpinLock;
+use crate::ntoskrnl::ke::runtime::KiThreadXStateArea;
 
 pub const MAX_THREADS: usize = 128;
 pub type ThreadEntry = extern "C" fn(*mut c_void);
@@ -11,13 +12,14 @@ pub enum ThreadState { Empty, Ready, Running, Blocked, Exited }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThreadError { InvalidStack, InvalidAffinity, Full, NoCurrentThread, InvalidState, InvalidCpu }
 #[derive(Clone, Copy)]
-struct ThreadRecord { id:u64, scheduler_id:u64, process_id:u64, impersonation_token:usize, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32, critical_region_depth:u16, guarded_region_depth:u16, alert_pending:bool, alertable_wait:bool, user_apc_delivery_pending:bool, queue_entry:u64, context_saved:bool }
-impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,process_id:0,impersonation_token:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:false}; }
+struct ThreadRecord { id:u64, scheduler_id:u64, process_id:u64, impersonation_token:usize, state:ThreadState, affinity:u64, context_rsp:*mut u64, stack_top:u64, entry:Option<ThreadEntry>, argument:*mut c_void, wake_pending:bool, wait_status:i32, critical_region_depth:u16, guarded_region_depth:u16, alert_pending:bool, alertable_wait:bool, user_apc_delivery_pending:bool, queue_entry:u64, context_saved:bool, xstate:KiThreadXStateArea }
+impl ThreadRecord { const EMPTY:Self=Self{id:0,scheduler_id:0,process_id:0,impersonation_token:0,state:ThreadState::Empty,affinity:1,context_rsp:core::ptr::null_mut(),stack_top:0,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:false,xstate:KiThreadXStateArea::zeroed()}; }
 unsafe impl Send for ThreadRecord {}
 struct ThreadTable { records:[ThreadRecord;MAX_THREADS], next_id:u64 }
 impl ThreadTable { const fn new()->Self { Self{records:[ThreadRecord::EMPTY;MAX_THREADS],next_id:1} } }
 unsafe impl Send for ThreadTable {}
 static THREADS:IrqSpinLock<ThreadTable>=IrqSpinLock::new(ThreadTable::new());
+static mut IDLE_XSTATE: [KiThreadXStateArea; crate::hal::MAX_CPUS] = [const { KiThreadXStateArea::zeroed() }; crate::hal::MAX_CPUS];
 struct IdleContext(UnsafeCell<*mut u64>);
 unsafe impl Sync for IdleContext {}
 static IDLE_CONTEXTS:[IdleContext;crate::hal::MAX_CPUS]=[const { IdleContext(UnsafeCell::new(core::ptr::null_mut())) };crate::hal::MAX_CPUS];
@@ -88,7 +90,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     let scheduler_id=crate::scheduler::create_task(
         2, eligible_mask, top as u64, thread_trampoline as usize as u64,
     ).map_err(|_|ThreadError::Full)?;
-    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Ready,affinity:eligible_mask,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:true};
+    table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Ready,affinity:eligible_mask,context_rsp:frame,stack_top:top as u64,entry:Some(entry),argument,wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:true,xstate:KiThreadXStateArea::zeroed()};
     drop(table);
     notify_affinity(eligible_mask);
     Ok(id)
@@ -105,6 +107,18 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
     let _=IDLE_STACK_TOPS[cpu].compare_exchange(0,observed_rsp,core::sync::atomic::Ordering::AcqRel,core::sync::atomic::Ordering::Acquire);
     let mut current_id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
     let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
+    // Save the outgoing thread (or the CPU's idle context) before scheduler
+    // bookkeeping can change which record is considered current.
+    if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
+        if current_id == 0 {
+            unsafe { let _ = crate::ntoskrnl::ke::runtime::ki_xstate_save_thread(core::ptr::addr_of_mut!(IDLE_XSTATE[cpu])); }
+        } else {
+            let mut table = THREADS.lock();
+            if let Some(current) = table.records.iter_mut().find(|t| t.id == current_id && t.state == ThreadState::Running) {
+                unsafe { let _ = crate::ntoskrnl::ke::runtime::ki_xstate_save_thread(&mut current.xstate); }
+            }
+        }
+    }
     let (old_rsp_ptr,current_scheduler_id)={
         let mut table=THREADS.lock();
         if current_id!=0&&!table.records.iter().any(|t|t.id==current_id&&t.state==ThreadState::Running){
@@ -138,18 +152,20 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
             t.scheduler_id==task.id&&t.state==ThreadState::Ready&&t.affinity&(1u64<<cpu)!=0))
     };
     if let Some(index)=next_index {
-        let next_rsp={
+        let (next_rsp, next_xstate) = {
             let mut table=THREADS.lock();
             let next=&mut table.records[index];
             next.state=ThreadState::Running;
             local.current_thread.store(next.id,core::sync::atomic::Ordering::Release);
             let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,next.stack_top);
-            next.context_rsp
+            (next.context_rsp, if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
+                &next.xstate as *const KiThreadXStateArea
+            } else { core::ptr::null() })
         };
         if current_id!=0 {
-            unsafe{crate::ntoskrnl::ke::arch::context_switch_publish(old_rsp_ptr,next_rsp,publish_switched_out,current_scheduler_id as usize)};
+            unsafe{crate::ntoskrnl::ke::arch::context_switch_publish_xstate(old_rsp_ptr,next_rsp,publish_switched_out,current_scheduler_id as usize,next_xstate)};
         } else {
-            unsafe{crate::ntoskrnl::ke::arch::context_switch(old_rsp_ptr,next_rsp)};
+            unsafe{crate::ntoskrnl::ke::arch::context_switch_xstate(old_rsp_ptr,next_rsp,next_xstate)};
         }
         crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior_interrupts_enabled);
         Ok(())
@@ -173,7 +189,10 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
         local.current_thread.store(0,core::sync::atomic::Ordering::Release);
         let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
         if idle_top!=0{let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,idle_top);}
-        unsafe{crate::ntoskrnl::ke::arch::context_switch_publish(old_rsp_ptr,idle,publish_switched_out,current_scheduler_id as usize)};
+        let idle_xstate = if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
+            unsafe { core::ptr::addr_of!(IDLE_XSTATE[cpu]) }
+        } else { core::ptr::null() };
+        unsafe{crate::ntoskrnl::ke::arch::context_switch_publish_xstate(old_rsp_ptr,idle,publish_switched_out,current_scheduler_id as usize,idle_xstate)};
         crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior_interrupts_enabled);
         Ok(())
     }else{
