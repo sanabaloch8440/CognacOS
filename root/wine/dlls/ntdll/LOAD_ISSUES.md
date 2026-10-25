@@ -197,3 +197,33 @@ failed and each ring-3 loader smoke leaked a process-table slot.
 address space first, then retries process reaping. This applies to the NTDLL
 test and the existing PE fixture tests. The full UEFI workflow, including boot smoke and the 2/4/8-vCPU stress matrix,
 passed in [Actions run 40176419581](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176419581).
+
+### NTDLL-LOAD-017 — Windows x64 SYSCALL entry and service-number dispatch
+
+**Implemented; QEMU validation pending for this revision.** The x64 kernel now
+programs IA32_EFER.SCE, IA32_STAR, IA32_LSTAR and IA32_FMASK on the BSP and each
+initialized AP. A per-CPU kernel stack is selected through IA32_KERNEL_GS_BASE
+and SWAPGS, because SYSCALL itself does not change RSP. The entry synthesizes
+an IRETQ frame, saves all general-purpose registers, and dispatches the Windows
+service number separately from CognacOS's private interrupt-0x82 service IDs.
+The return path uses IRETQ and restores the user GS base; it does not use SYSRET
+on unchecked user state.
+
+The GDT was expanded to include ring-3 code/data descriptors at selectors
+0x1b/0x23, moving the TSS descriptor to selector 0x28. This also corrects the
+descriptor layout required for the existing IRETQ user-mode transition.
+
+The following service IDs were extracted from the exact inspected reference
+image (SHA-256 recorded above): NtClose=0x0f,
+NtQueryInformationProcess=0x19, NtQueryInformationThread=0x25,
+NtQuerySystemInformation=0x36, and NtYieldExecution=0x46. These IDs are
+**specific to that NTDLL build**, not stable Windows ABI constants. Only these
+five services are currently mapped to native handlers; all other numbers fail
+closed with STATUS_NOT_IMPLEMENTED. Full Windows SSDT coverage, per-build
+service-table generation, native handle semantics, and complete NTSTATUS/API
+semantics remain outstanding.
+
+The QEMU ring-3 smoke now issues raw SYSCALL instructions for system, process,
+and thread queries, including fifth arguments on the Windows user stack. Stock
+Windows NTDLL is not executed wholesale: only the focused ABI probe runs, while
+its own runtime initialization and unrelated service calls remain unsupported.
