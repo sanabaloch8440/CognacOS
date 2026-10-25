@@ -1,5 +1,5 @@
 //! Host-side regression tests for the exact user-range validator used by the kernel.
-#[path = "../kernel/src/vm_range.rs"]
+#path = "../kernel/src/ntoskrnl/mm/address_space.rs"]
 mod vm_range;
 
 #[test]
