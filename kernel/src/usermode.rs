@@ -471,6 +471,27 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_status_to_dos = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlNtStatusToDosError"))
         .ok_or(VmError::InvalidAddress)?;
+    let rtl_compare_memory = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlCompareMemory"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_compute_crc32 = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlComputeCrc32"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_is_zero_memory = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlIsZeroMemory"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_fill_memory = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlFillMemory"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_zero_memory = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlZeroMemory"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_move_memory = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlMoveMemory"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_copy_memory = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlCopyMemory"))
+        .ok_or(VmError::InvalidAddress)?;
 
     let mut data = [0u8; 4096];
     data[0x3f0] = 66;
@@ -488,6 +509,11 @@ pub unsafe fn run_native_ntdll_smoke(
     data[0xAC8..0xAD0].copy_from_slice(&(NTDLL_TEST_DATA + 0xAE0).to_le_bytes());
     data[0xB00..0xB06].copy_from_slice(b"Cognac");
     data[0xB10..0xB16].copy_from_slice(b"cognac");
+    data[0xB60..0xB69].copy_from_slice(b"123456789");
+    data[0xB70..0xB74].copy_from_slice(b"same");
+    data[0xB80..0xB84].copy_from_slice(b"same");
+    data[0xBA0] = 1;
+    data[0xBD0..0xBD6].copy_from_slice(b"abcdef");
     let numbers = [0x100u64, 0x101, 0x102, 0x103, 0x104];
     for (index, number) in numbers.iter().enumerate() {
         data[0x300 + index * 8..0x308 + index * 8].copy_from_slice(&number.to_le_bytes());
@@ -655,6 +681,53 @@ pub unsafe fn run_native_ntdll_smoke(
     call_ptr!(rtl_status_to_dos);
     emit!(&[0x3d, 0x3d, 1, 0, 0]); // ERROR_MR_MID_NOT_FOUND
     fail_if!(&[0x0f, 0x85]);
+
+    // Core RTL memory and CRC helpers.
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xB70);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xB80);
+    imm64!(&[0x49, 0xb8], 4);
+    call_ptr!(rtl_compare_memory);
+    emit!(&[0x3d, 4, 0, 0, 0]);
+    fail_if!(&[0x0f, 0x85]);
+
+    emit!(&[0xb9, 0, 0, 0, 0]);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xB60);
+    imm64!(&[0x49, 0xb8], 9);
+    call_ptr!(rtl_compute_crc32);
+    emit!(&[0x3d, 0x26, 0x39, 0xf4, 0xcb]); // CRC32("123456789")
+    fail_if!(&[0x0f, 0x85]);
+
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xB90);
+    emit!(&[0xba, 16, 0, 0, 0]);
+    call_ptr!(rtl_is_zero_memory);
+    emit!(&[0x3c, 1]);
+    fail_if!(&[0x0f, 0x85]);
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xBA0);
+    emit!(&[0xba, 16, 0, 0, 0]);
+    call_ptr!(rtl_is_zero_memory);
+    emit!(&[0x3c, 0]);
+    fail_if!(&[0x0f, 0x85]);
+
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xBC0);
+    emit!(&[0xba, 4, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], 0x41);
+    call_ptr!(rtl_fill_memory);
+    check_dword!(NTDLL_TEST_DATA + 0xBC0, 0x41414141);
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xBC0);
+    emit!(&[0xba, 4, 0, 0, 0]);
+    call_ptr!(rtl_zero_memory);
+    check_dword!(NTDLL_TEST_DATA + 0xBC0, 0);
+
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xBD1);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xBD0);
+    emit!(&[0x41, 0xb8, 6, 0, 0, 0]);
+    call_ptr!(rtl_move_memory);
+    check_dword!(NTDLL_TEST_DATA + 0xBD1, 0x64636261);
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xBE0);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xB70);
+    emit!(&[0x41, 0xb8, 4, 0, 0, 0]);
+    call_ptr!(rtl_copy_memory);
+    check_dword!(NTDLL_TEST_DATA + 0xBE0, 0x656d6173); // "same"
 
     emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
     imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f0);
