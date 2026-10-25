@@ -12,7 +12,8 @@ pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: Kernel
 pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
 pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] pub(crate) mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
-pub(crate) mod driver_loader;\npub(crate) mod dbg;
+pub(crate) mod driver_loader;
+pub(crate) mod dbg;
 pub mod abi_signatures;
 
 
