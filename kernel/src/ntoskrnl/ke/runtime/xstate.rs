@@ -3,8 +3,9 @@
 //! This module deliberately enables only state components enumerated by CPUID.
 //! Boot code must call `ki_initialize_xstate_current_cpu` on every logical CPU
 //! before using AVX or the XSAVE helpers. The first implementation manages the
-//! architectural x87/SSE/AVX components; supervisor XSS state and dynamic
-//! permissioning (AMX/PKRU) are not enabled by this policy.
+//! architectural x87/SSE components; AVX/YMM, supervisor XSS state and dynamic
+//! permissioning (AMX/PKRU) remain disabled until the user-mode trap path and
+//! full feature-specific context formats are integrated.
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 const CPUID_XSAVE: u32 = 1 << 26;
@@ -85,9 +86,9 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
     cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_OSXSAVE;
     unsafe { core::arch::asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags)); }
 
-    // Until the scheduler owns a per-thread XSAVE area and saves/restores it
-    // on every context switch, expose only the legacy x87/SSE components.
-    // Enabling AVX here would allow user code to corrupt another thread's YMM state.
+    // The scheduler now preserves a fixed legacy x87/SSE area per thread, but
+    // user-mode trap frames and extended CONTEXT layouts are not yet complete.
+    // Keep AVX disabled until those paths can preserve YMM state end-to-end.
     let enabled = XSTATE_X87 | XSTATE_SSE;
     let lo = enabled as u32;
     let hi = (enabled >> 32) as u32;
@@ -290,7 +291,7 @@ fn current_xstate_execution_context() -> Option<(usize, u64, u8)> {
 /// WDK-compatible entry point for saving processor extended state. XSTATE_SAVE
 /// is opaque to drivers; this implementation stores a small signature in its
 /// caller-owned record and keeps the aligned XSAVE image in a kernel side table.
-/// Calls are bounded and must be properly nested on the same thread/CPU/IRQL.
+/// Calls are bounded and must be properly nested on the same thread and IRQL.
 #[no_mangle]
 pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut u8) -> i32 {
     if save.is_null() || (save as usize) & 7 != 0 || mask == 0 {
@@ -316,6 +317,7 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
         return STATUS_INVALID_DEVICE_STATE;
     }
     let Some(slot_index) = table.slots.iter().position(|s| !s.active) else {
+        if depth == 0 { table.owners[owner_index] = 0; }
         return STATUS_INSUFFICIENT_RESOURCES;
     };
     let generation = table.generation;
@@ -330,6 +332,7 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
     slot.active = true;
     if unsafe { !ki_xstate_save_thread_mask(&mut slot.area, mask) } {
         *slot = XStateSaveSlot::EMPTY;
+        if depth == 0 { table.owners[owner_index] = 0; }
         return STATUS_NOT_SUPPORTED;
     }
     table.stack[owner_index][depth] = save as usize;
