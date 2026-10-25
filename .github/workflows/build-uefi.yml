@@ -105,7 +105,7 @@ jobs:
           import struct
           p = open("build/EFI/BOOT/ntdll.dll", "rb").read()
           pe = struct.unpack_from("<I", p, 0x3c)[0]
-          assert p[:2] == b"MZ" and p[pe:pe+4] == b"PE\\0\\0"
+          assert p[:2] == b"MZ" and p[pe:pe+4] == b"PE\0\0"
           coff = pe + 4
           assert struct.unpack_from("<H", p, coff)[0] == 0x8664
           assert struct.unpack_from("<H", p, coff + 18)[0] & 0x2000
