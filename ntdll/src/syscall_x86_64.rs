@@ -132,7 +132,7 @@ unsafe extern "system" {
         system_information_length: u32,
         return_length: *mut u32,
     ) -> NTSTATUS;
-    pub fn NtOpenKey(key: *mut *mut core::ffi::c_void, access: u32, attributes: *const core::ffi::c_void) -> NTSTATUS;
+    pub fn NtOpenKey(key: *mut *mut core::ffi::c_void, access: u32, attributes: *const crate::reg::OBJECT_ATTRIBUTES) -> NTSTATUS;
     pub fn NtQueryValueKey(
         key: *mut core::ffi::c_void,
         value_name: *const core::ffi::c_void,
