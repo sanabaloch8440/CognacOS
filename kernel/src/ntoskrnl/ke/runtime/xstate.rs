@@ -54,6 +54,10 @@ pub struct WindowsXStateConfiguration {
     pub all_non_large_feature_size: u32,
     pub spare: u32,
 }
+const _: [(); 0x348] = [(); core::mem::size_of::<WindowsXStateConfiguration>()];
+const _: [(); 0x18] = [(); core::mem::offset_of!(WindowsXStateConfiguration, features)];
+const _: [(); 0x330] = [(); core::mem::offset_of!(WindowsXStateConfiguration, enabled_user_visible_supervisor_features)];
+
 impl WindowsXStateConfiguration {
     pub const fn zeroed() -> Self {
         Self { enabled_features: 0, enabled_volatile_features: 0, size: 0, control_flags: 0,
@@ -288,6 +292,15 @@ pub unsafe fn ki_xstate_restore_thread(area: *const KiThreadXStateArea) -> bool 
     unsafe { ki_xstate_restore_thread_mask(area, mask) }
 }
 
+/// Deterministic per-CPU XSAVE/XRSTOR smoke check used during processor bring-up.
+/// The 64-byte-aligned temporary image is local to the current kernel stack.
+pub unsafe fn ki_xstate_self_test_current_cpu() -> bool {
+    if !ki_xstate_enabled() { return true; }
+    let mut area = KiThreadXStateArea::zeroed();
+    if !unsafe { ki_xstate_save_thread(&mut area) } { return false; }
+    unsafe { ki_xstate_restore_thread(&area) }
+}
+
 pub fn ki_xstate_enabled() -> bool {
     XSTATE_INITIALIZED.load(Ordering::Acquire) & 1 != 0
 }
@@ -467,6 +480,18 @@ mod xstate_layout_tests {
     fn wdk_xstate_save_record_has_x64_opaque_size_and_alignment() {
         assert_eq!(core::mem::size_of::<XStateSaveRecord>(), 0x20);
         assert_eq!(core::mem::align_of::<XStateSaveRecord>(), 8);
+    }
+    #[test]
+    fn windows_shared_xstate_configuration_matches_24h2_abi_layout() {
+        assert_eq!(core::mem::size_of::<WindowsXStateConfiguration>(), 0x348);
+        assert_eq!(core::mem::offset_of!(WindowsXStateConfiguration, features), 0x18);
+        assert_eq!(core::mem::offset_of!(WindowsXStateConfiguration, enabled_user_visible_supervisor_features), 0x330);
+    }
+    #[test]
+    fn invalid_save_record_addresses_are_rejected_before_dereference() {
+        assert!(!valid_xstate_save_record(core::ptr::null()));
+        assert!(!valid_xstate_save_record(0x7ffe_0000usize as *const u8));
+        assert!(!valid_xstate_save_record(0xffff_ffff_ffff_f000usize as *const u8));
     }
     #[test]
     fn public_configuration_feature_arrays_have_stable_capacity() {
