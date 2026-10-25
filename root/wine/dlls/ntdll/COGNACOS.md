@@ -140,6 +140,25 @@ LastStatusValue. These tests passed in the boot-smoke phase of [Actions run 4018
 
 `LdrGetProcedureAddress` validates the in-memory PE32+ export directory, resolves exact case-sensitive ANSI names or ordinals, and rejects forwarded exports rather than treating forwarder strings as executable addresses. `LdrGetDllHandle` traverses the PEB load-order list and compares the loaded module's BaseDllName using ASCII case folding. Both are intentionally limited to already-mapped modules; `LdrLoadDll`, dependency resolution, forwarder resolution, activation contexts, and loader-lock/rundown semantics are not yet implemented. Both loader APIs passed in the boot-smoke phase of [Actions run 40185018220](https://github.com/umarfarooq7869/CognacOS/actions/runs/40185018220). The generated test stub now fits the single executable page.
 
+## RTL bitmap Rust port
+
+The Rust source-first module `rust/rtl_bitmap.rs` ports the principal
+`rtlbitmap.c` APIs: bitmap initialization and bulk/range updates, range
+predicates, set/clear run search and mutation, set/clear counts, most/least
+significant-bit scans, forward/backward run lookup, run enumeration, and
+longest-run helpers. It uses the Windows x64 `RTL_BITMAP` and
+`RTL_BITMAP_RUN` layouts, LSB-first bit numbering, tail-bit masking for
+counts, and allocation-free run enumeration. Unit tests cover range updates,
+counts, search/mutate, bit scans, forward/backward runs, and non-word-aligned
+bitmap sizes.
+
+The Rust file is not yet connected to the freestanding PE32+ build; these
+unit tests have not been reported as executed in CI. Invalid pointers cannot
+be made generally safe by a raw-pointer ABI, and this bootstrap implementation
+is not yet a verified replacement for every Windows RTL bitmap edge case.
+The original C file's backward-run functions are stubs; this port implements
+those routines rather than copying the stubs.
+
 ## Large-integer string conversion Rust port
 
 The x64-active conversion routines from Wine's `large_int.c` now have a
