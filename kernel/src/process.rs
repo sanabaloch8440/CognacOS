@@ -506,7 +506,7 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     put_u64(space, PROCESS_PARAMS_ADDRESS + 0x48, 0)?; // CurrentDirectory.Handle (not opened yet)
     put_u16(space, PROCESS_PARAMS_ADDRESS + 0x300, b'C' as u16)?;
     put_u16(space, PROCESS_PARAMS_ADDRESS + 0x302, b':' as u16)?;
-    put_u16(space, PROCESS_PARAMS_ADDRESS + 0x304, b'\\\\' as u16)?;
+    put_u16(space, PROCESS_PARAMS_ADDRESS + 0x304, b'\\' as u16)?;
     put_u16(space, PROCESS_PARAMS_ADDRESS + 0x306, 0)?;
     put_u32(space, PROCESS_PARAMS_ADDRESS, 0x448)?;
     put_u32(space, PROCESS_PARAMS_ADDRESS+4, 0x448)?;
