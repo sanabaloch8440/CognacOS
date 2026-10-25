@@ -251,7 +251,7 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 15]> {
         if !image.get(stub.checked_add(8)?..window_end)?.windows(2).any(|op| op == [0x0f, 0x05]) { continue; }
         discovered[slot] = service as u64;
     }
-    if discovered[..7].iter().any(|service| *service == SERVICE_UNAVAILABLE) { return None; }
+    if discovered.iter().any(|service| *service == SERVICE_UNAVAILABLE) { return None; }
     Some(discovered)
 }
 pub fn configure_windows_service_table_from_image(image: &[u8]) -> bool {
@@ -313,7 +313,7 @@ cognacos_nt_syscall_entry:
     mov rbx, rsp
     mov rdi, rsp
     and rsp, -16
-    call cognacos_nt_syscall_dispatch
+    call cognacos_windows_syscall_dispatch
     mov rsp, rbx
     mov qword ptr [rsp + 112], rax
     pop r15
