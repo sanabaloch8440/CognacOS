@@ -962,23 +962,21 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"NTDLL PE32+ image mapped and exports registered.\r\n");
             let reference_windows_table = syscall::configure_windows_service_table_from_image(ntdll_bytes);
             let native_ntdll = winabi::resolve_import(
-                b"ntdll.dll", pe::ImportSymbol::Name(b"CognacNtdllConfigureSyscallTable")
+                b"ntdll.dll", pe::ImportSymbol::Name(b"CognacNtdllProcessHeapObject")
             ).is_some();
             if native_ntdll {
-                // Execute our own native DLL through its CognacOS INT 0x82 ABI.
-                // Stock Windows NTDLL is tested separately through SYSCALL.
-                syscall::set_windows_service_table_enabled(false);
+                if !reference_windows_table {
+                    serial_write(b"FATAL: native NTDLL is missing canonical Windows SYSCALL stubs.\r\n");
+                    halt();
+                }
                 match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
-                    Ok(true) => serial_write(b"CognacOS native NTDLL ring-3 syscall wrappers passed.\r\n"),
-                    Ok(false) => {
-                        serial_write(b"FATAL: native NTDLL exports were present but its smoke harness was not configured.\r\n");
-                        halt();
-                    }
+                    Ok(()) => serial_write(b"CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.\r\n"),
                     Err(_) => {
                         serial_write(b"FATAL: CognacOS native NTDLL ring-3 smoke failed.\r\n");
                         halt();
                     }
                 }
+                syscall::set_windows_service_table_enabled(false);
                 // run_loaded_image's cleanup path already destroyed this address space.
             } else if reference_windows_table {
                 match unsafe { usermode::run_windows_syscall_abi_smoke(&mut ntdll_space, ntdll_image) } {
