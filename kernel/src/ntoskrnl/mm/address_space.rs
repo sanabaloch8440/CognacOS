@@ -444,6 +444,29 @@ impl AddressSpace {
         areas[index]=DemandArea::EMPTY; Ok(())
     }
 
+    /// Return the virtual-memory region containing an address. Untracked gaps
+    /// are reported as free regions bounded by adjacent reservations.
+    pub fn query_region(&self, address: u64) -> Option<(u64, u64, u64, bool, bool, bool)> {
+        if !is_user_range(address, 1) { return None; }
+        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        let areas = unsafe { &*DEMAND_AREAS.0.get() };
+        if let Some(a) = areas.iter().find(|a| a.live && a.root == self.root && address >= a.start && address < a.end) {
+            return Some((a.start, a.end, a.start, a.writable, a.executable, true));
+        }
+        let mut previous_end = USER_START;
+        let mut next_start = USER_END;
+        for a in areas.iter().filter(|a| a.live && a.root == self.root) {
+            if a.end <= address && a.end > previous_end { previous_end = a.end; }
+            if a.start > address && a.start < next_start { next_start = a.start; }
+        }
+        let page = address & !(PAGE_SIZE - 1);
+        let start = core::cmp::max(previous_end, USER_START);
+        let end = core::cmp::min(next_start, USER_END);
+        let base = core::cmp::max(start, page);
+        if base >= end { return None; }
+        Some((base, end, 0, false, false, false))
+    }
+
     /// Snapshot the tracked demand-zero reservation containing `address`.
     /// Returned bounds are page-aligned and valid only for this address-space root.
     pub fn demand_region_info(&self, address: u64) -> Option<(u64, u64, bool, bool)> {
@@ -680,6 +703,7 @@ impl AddressSpace {
             leaf.write(entry);
             asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
         }
+        crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
         Ok(())
     }
 
