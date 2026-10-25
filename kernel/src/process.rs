@@ -238,8 +238,11 @@ pub fn mark_running(pid: u64) -> bool {
 }
 pub fn mark_exited(pid: u64, code: u64) -> bool {
     let mut registry = TABLE.lock();
-    if let Some(p) = registry.0.iter_mut().find(|p| p.used && p.process_id == pid && p.state == ProcessState::Running) {
-        p.state = ProcessState::Exited; p.exit_code = code; true
+    if let Some(p) = registry.0.iter_mut().find(|p| p.used && p.process_id == pid
+        && matches!(p.state, ProcessState::Created | ProcessState::Running)) {
+        p.state = ProcessState::Exited;
+        p.exit_code = code;
+        true
     } else { false }
 }
 pub fn query(pid: u64) -> Option<ProcessSnapshot> {
