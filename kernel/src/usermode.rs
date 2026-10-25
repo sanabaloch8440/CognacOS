@@ -389,10 +389,15 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
     emit!(&[0x31, 0xff, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(0)
-    let failure_label = length;
-    emit!(&[0xbf, 1, 0, 0, 0, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(1)
-    for at in failures[..failure_count].iter().copied() {
-        let displacement = i32::try_from(failure_label as isize - (at + 4) as isize)
+    let mut failure_labels = [0usize; 16];
+    for index in 0..failure_count {
+        failure_labels[index] = length;
+        emit!(&[0xbf]);
+        emit!(&((index as u32 + 1).to_le_bytes()));
+        emit!(&[0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(index + 1)
+    }
+    for (index, at) in failures[..failure_count].iter().copied().enumerate() {
+        let displacement = i32::try_from(failure_labels[index] as isize - (at + 4) as isize)
             .map_err(|_| VmError::InvalidAddress)?;
         code[at..at + 4].copy_from_slice(&displacement.to_le_bytes());
     }
