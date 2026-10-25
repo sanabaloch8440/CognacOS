@@ -107,6 +107,8 @@ struct BootInfo {
     kernel_physical_section_count: usize,
     registry_hives: [BootFile;7],
     nls_files: [BootFile;8],
+    security_flags: u64,
+    kernel_digest: [u8; 32],
 }
 
 
@@ -155,8 +157,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic == BOOT_INFO_MAGIC && info.version == 7 && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() { install_boot_assets(info); }
-        if info.magic != BOOT_INFO_MAGIC || info.version != 7
+        if info.magic == BOOT_INFO_MAGIC && info.version == 8 && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() { install_boot_assets(info); }
+        if info.magic != BOOT_INFO_MAGIC || info.version != 8
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
@@ -189,7 +191,27 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"UEFI boot services exited successfully.\r\n");
-        serial_write(b"Boot information version: 6\r\n");
+        serial_write(b"Boot information version: 8\r\n");
+        if info.security_flags & (1 << 6) == 0 {
+            serial_write(b"FATAL: bootloader did not attest kernel code signature verification.\r\n");
+            halt();
+        }
+        if info.security_flags & (1 << 1) != 0 {
+            serial_write(b"UEFI Secure Boot enabled.\r\n");
+        } else if info.security_flags & (1 << 0) != 0 {
+            serial_write(b"UEFI Secure Boot disabled; optional mode.\r\n");
+        } else {
+            serial_write(b"UEFI Secure Boot state unknown.\r\n");
+        }
+        if info.security_flags & (1 << 4) != 0 {
+            if info.security_flags & (1 << 5) != 0 {
+                serial_write(b"TPM 2.0 kernel measurement recorded.\r\n");
+            } else {
+                serial_write(b"TPM 2.0 present; measurement unavailable.\r\n");
+            }
+        } else {
+            serial_write(b"No TPM 2.0 measured-boot device; optional feature skipped.\r\n");
+        }
         if info.ap_trampoline_physical != 0
             && (info.ap_trampoline_physical >= 0x10_0000 || info.ap_trampoline_physical & 0xfff != 0)
         {
