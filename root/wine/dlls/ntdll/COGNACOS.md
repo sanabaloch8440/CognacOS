@@ -384,3 +384,28 @@ This is still a source-first Rust implementation: it does not query HKCU\\Softwa
 Added pure Rust decoders for the value payloads consumed by Wine version.c's NT-style registry reader: complete CurrentMajorVersionNumber/CurrentMinorVersionNumber DWORD pairs, CurrentVersion string fallback, CurrentBuildNumber, UTF-16 CSDVersion, the packed Control\\Windows CSDVersion service-pack value, and ProductOptions ProductType (WinNT, LanmanNT, ServerNT). Added a Win9x VersionNumber/SubVersionNumber decoder and the source's NT-first, Win9x-second fallback selection helper. Unit tests cover type/value fallback, product type mapping, service-pack decoding, UTF-16 termination, malformed values, and packed Win9x build fields.
 
 These helpers consume already-decoded values; they do not call NtOpenKey/NtQueryValueKey, validate registry value types themselves, or initialize PEB fields. The native registry bridge and startup wiring remain outstanding, and CI must execute the Rust tests before this slice is considered validated.
+
+
+### Registry-backed version initialization and PEB wiring
+
+The kernel process initializer now asks the existing Configuration Manager runtime
+for the tuple stored at
+\`\\Registry\\Machine\\Software\\Microsoft\\Windows NT\\CurrentVersion\`
+and initializes the x64 PEB's \`OSMajorVersion\`, \`OSMinorVersion\`,
+\`OSBuildNumber\`, and \`OSPlatformId\` fields when that tuple is present.
+The registry reader accepts a complete DWORD major/minor pair, falls back to
+\`CurrentVersion\` text when the pair is unavailable, and reads
+\`CurrentBuildNumber\` as a decimal string. The native PE32+ NTDLL's
+\`RtlGetVersion\` and \`RtlGetNtVersionNumbers\` now read those PEB fields
+instead of returning a hard-coded Windows 10/build 26100 tuple. If the PEB has
+no initialized version tuple, \`RtlGetVersion\` returns
+\`STATUS_NOT_IMPLEMENTED\` rather than fabricating a version.
+
+This is an initial live connection to CognacOS's current **volatile** registry
+runtime, not complete registry/hive integration. The current runtime stores a
+full path as a single root key and has bounded in-memory values; SYSTEM/SOFTWARE
+hive loading and the normal native \`NtOpenKey\`/\`NtQueryValueKey\` user-mode
+syscall path are not yet connected. Unless the matching key and values have
+been provisioned in that runtime, the PEB version fields remain zero and the
+NTDLL API reports the version as unavailable. The build workflow must verify
+the changes; no CI result is implied by this source update.
