@@ -220,6 +220,6 @@ The concrete entry point is `kernel/src/pe_loader.rs::load_dll_transaction_from_
 - [x] Add bounded current-process resident-page lock/unlock services with physical-frame pin references; decommit rejects pinned pages.
 - [ ] Complete transactional partial-region decommit/protect, nonresident-page fault-in for locking, process-teardown lock rundown, and the kernel-backed flush contract for section/file-backed memory.
 - [ ] Complete `NtAllocateVirtualMemoryEx` extended parameters and Windows allocation/protection modifiers.
-- [ ] Finish memory-stream write/resize/commit/revert/region-lock behavior, secure-memory-cache callbacks, resource-descriptor codecs, token membership, and hardware-token-backed nonvolatile-memory operations; validate each against a pinned Windows 11 x64 ABI reference.
+- [ ] Finish memory-stream growth/revert/region-lock behavior (writes and safe shrink are implemented), secure-memory-cache callbacks, resource-descriptor codecs, token membership, and hardware-token-backed nonvolatile-memory operations; validate each against a pinned Windows 11 x64 ABI reference.
 
 The private `int 0x83` gate is CognacOS-specific and is not Windows' build-specific SYSCALL ordinal ABI. The current kernel VM implementation remains current-process-only and does not claim full Windows 11 compatibility. Unsupported operations return a failure status rather than silently succeeding.
