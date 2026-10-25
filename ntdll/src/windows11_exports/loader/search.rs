@@ -1,3 +1,5 @@
+use super::*;
+
 #[no_mangle]
 pub unsafe extern "system" fn LdrAddDllDirectory(directory: *const UNICODE_STRING, cookie_out: *mut PVOID) -> NTSTATUS {
     if cookie_out.is_null() { return STATUS_INVALID_PARAMETER; }
