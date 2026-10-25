@@ -29,3 +29,10 @@ EXPORTS
     RtlGetNtVersionNumbers
     RtlNtStatusToDosError
     RtlNtStatusToDosErrorNoTeb
+    RtlGetProcessHeap
+    RtlAllocateHeap
+    RtlFreeHeap
+    RtlReAllocateHeap
+    RtlSizeHeap
+    RtlValidateHeap
+    CognacNtdllProcessHeapObject DATA
