@@ -441,6 +441,16 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     put_u64(space, PEB_ADDRESS + 0x10, image_base)?;
     put_u64(space, PEB_ADDRESS + 0x18, LDR_ADDRESS)?;
     put_u64(space, PEB_ADDRESS + 0x20, PROCESS_PARAMS_ADDRESS)?;
+    // PEB version fields are populated from CognacOS Configuration Manager,
+    // not a Windows build constant. If no version values have been provisioned
+    // in the volatile registry yet, the zeroed fields remain explicitly unknown.
+    if let Some((major, minor, build)) = crate::ntoskrnl::cm::runtime::query_version_tuple() {
+        put_u32(space, PEB_ADDRESS + 0x118, major)?;
+        put_u32(space, PEB_ADDRESS + 0x11c, minor)?;
+        put_u16(space, PEB_ADDRESS + 0x120, (build & 0xffff) as u16)?;
+        put_u32(space, PEB_ADDRESS + 0x120, build)?;
+        put_u32(space, PEB_ADDRESS + 0x124, 2)?; // VER_PLATFORM_WIN32_NT
+    }
 
     // Build PEB_LDR_DATA circular lists for the main image and every DLL
     // already loaded into this process address space.
