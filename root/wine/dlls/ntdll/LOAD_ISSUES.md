@@ -166,3 +166,18 @@ counter, so the validation condition could not see them.
 dispatch counter for each native NT interrupt. The detailed failure exit codes
 and final status log are retained to catch any actual wrapper failure in the
 next QEMU run.
+
+### NTDLL-LOAD-015 — yield switched from a bootstrap process with no ETHREAD
+
+**Observed in QEMU:** the native NTDLL wrapper sequence and the existing PE
+ring-3 fixture both passed, but the boot log stopped after the final loader
+smoke. The NTDLL smoke calls `NtYieldExecution` before the bootstrap user-mode
+launcher has a scheduler-owned current thread; the kernel unconditionally
+called `yield_current`, which can switch the bootstrap stack into unrelated
+scheduler state.
+
+**Fix committed:** the native service now invokes the scheduler only when
+`current_thread_id()` identifies a scheduler-owned thread. The bootstrap
+smoke still verifies the wrapper returns success, but does not attempt an
+invalid context switch. The next QEMU run must confirm the timer/DPC startup
+path continues after the NTDLL test.
