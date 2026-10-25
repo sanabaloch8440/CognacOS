@@ -16,8 +16,8 @@ static NEXT_TAG: AtomicU32 = AtomicU32::new(1);
 
 #[repr(C)]
 pub struct RTL_HEAP_TAG_INFO {
-    pub NumberOfAllocations: u16,
-    pub NumberOfFrees: u16,
+    pub NumberOfAllocations: u32,
+    pub NumberOfFrees: u32,
     pub BytesAllocated: usize,
     pub TagIndex: u16,
     pub CreatorBackTraceIndex: u16,
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn tag_info_x64_layout() {
         assert_eq!(core::mem::offset_of!(RTL_HEAP_TAG_INFO, BytesAllocated), 8);
-        assert_eq!(core::mem::offset_of!(RTL_HEAP_TAG_INFO, TagName), 16);
-        assert_eq!(core::mem::size_of::<RTL_HEAP_TAG_INFO>(), 64);
+        assert_eq!(core::mem::offset_of!(RTL_HEAP_TAG_INFO, TagName), 20);
+        assert_eq!(core::mem::size_of::<RTL_HEAP_TAG_INFO>(), 72);
     }
 }
