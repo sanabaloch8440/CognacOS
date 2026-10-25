@@ -582,6 +582,7 @@ pub unsafe extern "system" fn LdrProcessRelocationBlock(
     if va == 0 || size_of_block & 1 != 0 || (size_of_block != 0 && next_offset.is_null()) {
         return ptr::null_mut();
     }
+    if size_of_block == 0 { return next_offset; }
     let count = (size_of_block / 2) as usize;
     for index in 0..count {
         let item = unsafe { ptr::read_unaligned(next_offset.add(index)) };
