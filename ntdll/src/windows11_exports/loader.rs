@@ -1368,6 +1368,26 @@ mod tests {
     }
 
     #[test]
+    fn dll_path_rejects_unknown_and_conflicting_flags_before_peb_access() {
+        let name = [b'x' as u16, 0];
+        let mut path = ptr::null_mut();
+        let mut unknown = ptr::null_mut();
+        assert_eq!(unsafe { LdrGetDllPath(name.as_ptr(), 0x8000_0000, &mut path, &mut unknown) }, STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe { LdrGetDllPath(name.as_ptr(), LOAD_WITH_ALTERED_SEARCH_PATH | LOAD_LIBRARY_SEARCH_SYSTEM32, &mut path, &mut unknown) }, STATUS_INVALID_PARAMETER);
+        assert!(path.is_null());
+        assert!(unknown.is_null());
+    }
+
+    #[test]
+    fn search_path_builder_is_bounded_and_separates_components() {
+        let mut path = [0u16; MAX_BUILT_SEARCH_PATH_UNITS];
+        let mut used = 0usize;
+        assert!(append_search_component(&mut path, &mut used, &[b'X' as u16, b':' as u16, b'\\' as u16]));
+        assert!(append_search_component(&mut path, &mut used, &[b'Y' as u16, b':' as u16, b'\\' as u16]));
+        assert_eq!(&path[..used], &[b'X' as u16, b':' as u16, b'\\' as u16, b';' as u16, b'Y' as u16, b':' as u16, b'\\' as u16]);
+    }
+
+    #[test]
     fn mapped_pe_resource_lookup_and_access_are_bounded() {
         let mut image = [0u8; 0x3000];
         image[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
