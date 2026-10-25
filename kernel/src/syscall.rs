@@ -188,10 +188,12 @@ unsafe extern "C" { fn cognacos_nt_syscall_entry(); }
 struct WindowsSyscallCpuLocal {
     user_rsp: u64,
     kernel_rsp: u64,
+    scratch_rax: u64,
+    scratch_rdx: u64,
     stack: [u8; 16 * 1024],
 }
 impl WindowsSyscallCpuLocal {
-    const fn new() -> Self { Self { user_rsp: 0, kernel_rsp: 0, stack: [0; 16 * 1024] } }
+    const fn new() -> Self { Self { user_rsp: 0, kernel_rsp: 0, scratch_rax: 0, scratch_rdx: 0, stack: [0; 16 * 1024] } }
 }
 static mut WINDOWS_SYSCALL_CPUS: [WindowsSyscallCpuLocal; crate::hal::MAX_CPUS] =
     [const { WindowsSyscallCpuLocal::new() }; crate::hal::MAX_CPUS];
@@ -206,14 +208,14 @@ cognacos_windows_syscall_entry:
     cld
     # GS:[0] saves user RSP; GS:[8] is this CPU's private kernel stack top.
     mov qword ptr gs:[0], rsp
-    # Temporary marker 'g' proves GS:[0] was writable after SWAPGS.
-    push rax
-    push rdx
+    # Save volatile values in the per-CPU local area to trace GS access safely.
+    mov qword ptr gs:[16], rax
+    mov qword ptr gs:[24], rdx
     mov dx, 0x3f8
     mov al, 'g'
     out dx, al
-    pop rdx
-    pop rax
+    mov rax, qword ptr gs:[16]
+    mov rdx, qword ptr gs:[24]
     mov rsp, qword ptr gs:[8]
     # Temporary marker 'k' proves the per-CPU GS stack switch succeeded.
     push rax
