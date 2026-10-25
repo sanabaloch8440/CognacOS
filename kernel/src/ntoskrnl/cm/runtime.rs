@@ -1,5 +1,5 @@
-//! Bounded in-memory Configuration Manager registry core.
-//! This is an initial volatile registry, not a hive/file-backed implementation.
+//! Configuration Manager registry core with volatile writes and read-only native REGF hive backing.
+//! Mounted hives remain in their original Windows format; hive writes/log replay are not implemented.
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 #[path = "hive.rs"]
