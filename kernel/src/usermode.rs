@@ -221,6 +221,23 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     unsafe { space.map_user_page(USER_STACK, stack_page, true, false)?; }
     let env = unsafe { crate::process::initialize(space, image.base, image.entry, image.image_size, USER_STACK + PAGE, USER_STACK) }
         .map_err(|_| VmError::OutOfMemory)?;
+    // Verify the exact Windows 11 24H2 XState ABI through the same checked
+    // user-copy path native NTDLL uses, and verify the shared page is read-only.
+    let mut xstate_header = [0u8; 24];
+    unsafe {
+        space.copy_from_user(crate::process::KUSER_SHARED_DATA_ADDRESS + crate::process::KUSER_XSTATE_OFFSET,
+            &mut xstate_header)?;
+    }
+    let enabled_xstate = u64::from_le_bytes(xstate_header[0..8].try_into().unwrap());
+    let xstate_size = u32::from_le_bytes(xstate_header[16..20].try_into().unwrap());
+    if enabled_xstate & 3 != 3 || enabled_xstate & !3 != 0 || xstate_size < 576 {
+        return Err(VmError::PermissionDenied);
+    }
+    if unsafe { space.copy_to_user(crate::process::KUSER_SHARED_DATA_ADDRESS + crate::process::KUSER_XSTATE_OFFSET,
+        &[0u8; 1]) }.is_ok() {
+        return Err(VmError::PermissionDenied);
+    }
+    unsafe { crate::serial_write(b"KUSER_SHARED_DATA XState mapping and read-only ABI test passed.\\r\\n"); }
     // The native NTDLL exports its per-process heap object as data. Point
     // PEB.ProcessHeap at that mapped object before user code begins.
     if let Some(process_heap) = crate::winabi::resolve_import(
