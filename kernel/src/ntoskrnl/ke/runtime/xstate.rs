@@ -32,6 +32,37 @@ static XSTATE_AREA_SIZE: AtomicU32 = AtomicU32::new(0);
 static XSTATE_INITIALIZED: AtomicU32 = AtomicU32::new(0);
 static XSTATE_POLICY_FINALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
+/// Windows 11 24H2 x64 XSTATE_CONFIGURATION as embedded in
+/// KUSER_SHARED_DATA at offset 0x3d8. The layout is fixed at 0x348 bytes.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WindowsXStateFeature { pub offset: u32, pub size: u32 }
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WindowsXStateConfiguration {
+    pub enabled_features: u64,
+    pub enabled_volatile_features: u64,
+    pub size: u32,
+    pub control_flags: u32,
+    pub features: [WindowsXStateFeature; 64],
+    pub enabled_supervisor_features: u64,
+    pub aligned_features: u64,
+    pub all_feature_size: u32,
+    pub all_features: [u32; 64],
+    pub enabled_user_visible_supervisor_features: u64,
+    pub extended_feature_disable_features: u64,
+    pub all_non_large_feature_size: u32,
+    pub spare: u32,
+}
+impl WindowsXStateConfiguration {
+    pub const fn zeroed() -> Self {
+        Self { enabled_features: 0, enabled_volatile_features: 0, size: 0, control_flags: 0,
+            features: [WindowsXStateFeature { offset: 0, size: 0 }; 64],
+            enabled_supervisor_features: 0, aligned_features: 0, all_feature_size: 0,
+            all_features: [0; 64], enabled_user_visible_supervisor_features: 0,
+            extended_feature_disable_features: 0, all_non_large_feature_size: 0, spare: 0 }
+    }
+}
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
 pub struct CognacXStateConfiguration {
@@ -120,6 +151,25 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
     XSTATE_INITIALIZED.store(1 | ((subfeatures & 1) << 1) | ((subfeatures & 2) << 1) | ((subfeatures & 8) << 1), Ordering::Release);
     XSTATE_POLICY_FINALIZED.store(true, Ordering::Release);
     true
+}
+
+/// Produce the Windows 11 24H2 shared-page ABI. Only x87/SSE are enabled
+/// in the current kernel policy; unsupported, supervisor, AVX-512, AMX and
+/// PKRU state are intentionally not exposed as enabled.
+pub fn ki_query_windows_xstate_configuration() -> WindowsXStateConfiguration {
+    let internal = ki_query_xstate_configuration();
+    let mut out = WindowsXStateConfiguration::zeroed();
+    out.enabled_features = internal.enabled_features;
+    out.enabled_volatile_features = internal.enabled_features;
+    out.size = internal.area_size;
+    out.control_flags = (internal.xsaveopt & 1) | ((internal.xsavec & 1) << 1);
+    for i in 0..64 {
+        out.features[i] = WindowsXStateFeature { offset: internal.feature_offsets[i], size: internal.feature_sizes[i] };
+        out.all_features[i] = internal.feature_sizes[i];
+    }
+    out.all_feature_size = internal.area_size;
+    out.all_non_large_feature_size = internal.area_size;
+    out
 }
 
 pub fn ki_query_xstate_configuration() -> CognacXStateConfiguration {
