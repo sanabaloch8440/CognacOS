@@ -182,17 +182,21 @@ impl Default for KiThreadXStateArea {
 /// Scheduler-only save/restore helpers. They are no-ops before per-CPU XSAVE
 /// initialization; callers must not enable AVX until all CPUs and threads use
 /// the same fully integrated state policy.
-pub unsafe fn ki_xstate_save_thread(area: *mut KiThreadXStateArea) -> bool {
-    if area.is_null() { return false; }
-    let mask = XSTATE_ENABLED_MASK.load(Ordering::Acquire);
-    if mask == 0 { return false; }
+pub unsafe fn ki_xstate_save_thread_mask(area: *mut KiThreadXStateArea, mask: u64) -> bool {
+    if area.is_null() || mask == 0 || mask & !XSTATE_ENABLED_MASK.load(Ordering::Acquire) != 0 { return false; }
     unsafe { ki_xstate_save((*area).as_mut_ptr(), core::mem::size_of::<KiThreadXStateArea>(), mask) == STATUS_SUCCESS }
 }
-pub unsafe fn ki_xstate_restore_thread(area: *const KiThreadXStateArea) -> bool {
-    if area.is_null() { return false; }
-    let mask = XSTATE_ENABLED_MASK.load(Ordering::Acquire);
-    if mask == 0 { return false; }
+pub unsafe fn ki_xstate_restore_thread_mask(area: *const KiThreadXStateArea, mask: u64) -> bool {
+    if area.is_null() || mask == 0 || mask & !XSTATE_ENABLED_MASK.load(Ordering::Acquire) != 0 { return false; }
     unsafe { ki_xstate_restore((*area).as_ptr(), core::mem::size_of::<KiThreadXStateArea>(), mask) == STATUS_SUCCESS }
+}
+pub unsafe fn ki_xstate_save_thread(area: *mut KiThreadXStateArea) -> bool {
+    let mask = XSTATE_ENABLED_MASK.load(Ordering::Acquire);
+    unsafe { ki_xstate_save_thread_mask(area, mask) }
+}
+pub unsafe fn ki_xstate_restore_thread(area: *const KiThreadXStateArea) -> bool {
+    let mask = XSTATE_ENABLED_MASK.load(Ordering::Acquire);
+    unsafe { ki_xstate_restore_thread_mask(area, mask) }
 }
 
 pub fn ki_xstate_enabled() -> bool {
@@ -281,7 +285,7 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
     slot.mask = mask;
     slot.generation = generation;
     slot.active = true;
-    if unsafe { !ki_xstate_save_thread(&mut slot.area) } {
+    if unsafe { !ki_xstate_save_thread_mask(&mut slot.area, mask) } {
         *slot = XStateSaveSlot::EMPTY;
         return STATUS_NOT_SUPPORTED;
     }
@@ -310,7 +314,8 @@ pub unsafe extern "win64" fn KeRestoreExtendedProcessorState(save: *mut u8) {
     let Some(index) = table.slots.iter().position(|s| s.active && s.key == save as usize
         && s.generation == generation && s.cpu == cpu && s.owner_thread == owner_thread
         && s.irql == irql) else { return; };
-    if unsafe { !ki_xstate_restore_thread(&table.slots[index].area) } { return; }
+    let saved_mask = table.slots[index].mask;
+    if unsafe { !ki_xstate_restore_thread_mask(&table.slots[index].area, saved_mask) } { return; }
     table.depth[cpu] = (depth - 1) as u8;
     table.stack[cpu][depth - 1] = 0;
     table.slots[index] = XStateSaveSlot::EMPTY;
