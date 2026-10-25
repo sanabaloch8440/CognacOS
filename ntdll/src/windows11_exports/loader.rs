@@ -732,11 +732,11 @@ pub unsafe extern "system" fn LdrAccessResource(
     unsafe { resource_address.write(ptr::null_mut()); resource_size.write(0); }
     let (base, image_size, packed) = match unsafe { mapped_image_info(module) } { Ok(v) => v, Err(e) => return e };
     let resource_rva = packed as u32 as usize;
-    let resource_size = (packed >> 32) as usize;
+    let resource_directory_size = (packed >> 32) as usize;
     let entry_address = resource_data_entry as usize;
     let image_base = base;
     let expected_start = image_base.saturating_add(resource_rva);
-    let expected_end = expected_start.checked_add(resource_size);
+    let expected_end = expected_start.checked_add(resource_directory_size);
     if resource_rva == 0 || expected_end.map_or(true, |end| entry_address < expected_start || entry_address.checked_add(16).map_or(true, |entry_end| entry_end > end)) {
         return STATUS_INVALID_PARAMETER;
     }
