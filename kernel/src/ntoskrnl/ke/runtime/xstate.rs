@@ -293,7 +293,33 @@ pub fn ki_xstate_enabled() -> bool {
 }
 
 
-const XSTATE_SAVE_MAGIC: u64 = 0x434f_474e_5853_4156; // "COGNXSAV"
+const XSTATE_SAVE_MAGIC: u64 = 0x434f_474e_5853_4156; // opaque private signature, not a Windows ABI field
+/// Windows x64 WDK declares XSTATE_SAVE opaque. The observed x64 ABI record
+/// is 0x20 bytes with 8-byte alignment; no kernel pointers are exposed here.
+#[repr(C, align(8))]
+#[derive(Clone, Copy)]
+struct XStateSaveRecord { signature: u64, generation: u64, reserved: [u64; 2] }
+const _: [(); 0x20] = [(); core::mem::size_of::<XStateSaveRecord>()];
+const _: [(); 8] = [(); core::mem::align_of::<XStateSaveRecord>()];
+
+fn valid_xstate_save_record(pointer: *const u8) -> bool {
+    let start = pointer as u64;
+    let Some(end) = start.checked_add(core::mem::size_of::<XStateSaveRecord>() as u64 - 1) else { return false; };
+    if start < 0xffff_8000_0000_0000 || end < start
+        || crate::kernel_vm::is_pageable_address(start)
+        || crate::kernel_vm::is_pageable_address(end) { return false; }
+    let valid = |address: u64| unsafe {
+        crate::ntoskrnl::mm::runtime::mm_is_non_paged_system_address_valid(address as *const core::ffi::c_void) != 0
+    };
+    // Check each page boundary as well as both endpoints before touching the
+    // caller-owned opaque record. This safely rejects null, user, pageable,
+    // unmapped, wrapping, and cross-gap ranges without speculative dereferences.
+    if !valid(start) || !valid(end) { return false; }
+    let first_page = start & !0xfff;
+    let last_page = end & !0xfff;
+    if first_page != last_page && !valid(last_page) { return false; }
+    true
+}
 const XSTATE_SAVE_SLOTS: usize = 128;
 const XSTATE_SAVE_NESTING: usize = 16;
 const STATUS_INVALID_DEVICE_STATE: i32 = 0xC000_0184u32 as i32;
@@ -347,7 +373,7 @@ fn current_xstate_execution_context() -> Option<(usize, u64, u8)> {
 /// Calls are bounded and must be properly nested on the same thread and IRQL.
 #[no_mangle]
 pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut u8) -> i32 {
-    if save.is_null() || (save as usize) & 7 != 0 || mask == 0 {
+    if save.is_null() || (save as usize) & 7 != 0 || mask == 0 || !valid_xstate_save_record(save) {
         return STATUS_INVALID_PARAMETER;
     }
     if !ki_xstate_enabled() { return STATUS_NOT_SUPPORTED; }
@@ -391,10 +417,9 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
     table.stack[owner_index][depth] = save as usize;
     table.depth[owner_index] = (depth + 1) as u8;
     // The public structure is opaque; do not expose internal kernel pointers.
-    unsafe {
-        (save as *mut u64).write_unaligned(XSTATE_SAVE_MAGIC);
-        (save.add(8) as *mut u64).write_unaligned(generation);
-    }
+    unsafe { (save as *mut XStateSaveRecord).write(XStateSaveRecord {
+        signature: XSTATE_SAVE_MAGIC, generation, reserved: [0; 2],
+    }); }
     STATUS_SUCCESS
 }
 
@@ -402,10 +427,10 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
 /// wrong-IRQL, or out-of-order restores are rejected as no-ops.
 #[no_mangle]
 pub unsafe extern "win64" fn KeRestoreExtendedProcessorState(save: *mut u8) {
-    if save.is_null() || (save as usize) & 7 != 0 || !ki_xstate_enabled() { return; }
-    let magic = unsafe { (save as *const u64).read_unaligned() };
-    let generation = unsafe { (save.add(8) as *const u64).read_unaligned() };
-    if magic != XSTATE_SAVE_MAGIC { return; }
+    if save.is_null() || (save as usize) & 7 != 0 || !valid_xstate_save_record(save) || !ki_xstate_enabled() { return; }
+    let record = unsafe { (save as *const XStateSaveRecord).read() };
+    let generation = record.generation;
+    if record.signature != XSTATE_SAVE_MAGIC { return; }
     let Some((_cpu, owner_thread, irql)) = current_xstate_execution_context() else { return; };
     let mut restored_area = KiThreadXStateArea::zeroed();
     let saved_mask;
@@ -422,7 +447,7 @@ pub unsafe extern "win64" fn KeRestoreExtendedProcessorState(save: *mut u8) {
         table.stack[owner_index][depth - 1] = 0;
         if table.depth[owner_index] == 0 { table.owners[owner_index] = 0; }
         table.slots[index] = XStateSaveSlot::EMPTY;
-        unsafe { (save as *mut u64).write_unaligned(0); }
+        unsafe { (save as *mut XStateSaveRecord).write(XStateSaveRecord { signature: 0, generation: 0, reserved: [0; 2] }); }
     }
     // Restore after releasing the global bookkeeping lock so no lock-release
     // code runs between XRSTOR and the return to the caller.
@@ -437,6 +462,11 @@ mod xstate_layout_tests {
     fn thread_xstate_storage_has_architectural_alignment_and_capacity() {
         assert_eq!(core::mem::align_of::<KiThreadXStateArea>(), 64);
         assert_eq!(core::mem::size_of::<KiThreadXStateArea>(), 576);
+    }
+    #[test]
+    fn wdk_xstate_save_record_has_x64_opaque_size_and_alignment() {
+        assert_eq!(core::mem::size_of::<XStateSaveRecord>(), 0x20);
+        assert_eq!(core::mem::align_of::<XStateSaveRecord>(), 8);
     }
     #[test]
     fn public_configuration_feature_arrays_have_stable_capacity() {
