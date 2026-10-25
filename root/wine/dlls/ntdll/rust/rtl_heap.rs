@@ -402,7 +402,7 @@ pub struct RTL_HEAP_WALK_ENTRY {
     pub cbOverhead: u8,
     pub iRegionIndex: u8,
     pub wFlags: u16,
-    pub reserved: [usize; 4],
+    pub reserved: [usize; 3],
 }
 
 /// Compact the bootstrap arena by coalescing adjacent free blocks and return the
