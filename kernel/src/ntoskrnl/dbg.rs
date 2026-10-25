@@ -51,23 +51,23 @@ unsafe fn write_c_string(value: *const c_char) -> ULONG {
 
 /// Windows exports this routine from ntoskrnl; callers may supply varargs,
 /// which are ignored by this initial transport implementation.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DbgPrint(format: *const c_char) -> ULONG {
     unsafe { write_c_string(format) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DbgPrintEx(component: ULONG, level: ULONG, format: *const c_char) -> ULONG {
     if !enabled(component, level) { return 0; }
     unsafe { write_c_string(format) }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DbgQueryDebugFilterState(component: ULONG, level: ULONG) -> NTSTATUS {
     if enabled(component, level) { 1 } else { 0 }
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DbgSetDebugFilterState(component: ULONG, level: ULONG, state: BOOLEAN) -> NTSTATUS {
     let mask = &FILTERS[slot(component)];
     let bits = if level < 32 { 1u32 << level } else { level };
@@ -76,14 +76,14 @@ pub unsafe extern "system" fn DbgSetDebugFilterState(component: ULONG, level: UL
     STATUS_SUCCESS
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DbgPrompt(_prompt: *const c_char, _response: *mut c_char, _length: ULONG) -> ULONG {
     // A UART output-only console cannot safely claim to have collected a
     // debugger response. A real KD input channel must supply this operation.
     0
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "system" fn DbgBreakPoint() {
     #[cfg(target_arch = "x86_64")]
     core::arch::asm!("int3", options(nomem, nostack));
