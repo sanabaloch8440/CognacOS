@@ -466,6 +466,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Windows SYSCALL per-CPU stack prepared.\r\n");
+        if unsafe { syscall::initialize_windows_syscall_abi(0) }.is_err() {
+            serial_write(b"FATAL: could not initialize the BSP Windows x64 SYSCALL ABI.\r\n");
+            halt();
+        }
+        serial_write(b"Windows x64 SYSCALL ABI initialized on BSP.\r\n");
 
         if memory::first_high_conventional_page().is_some() {
             serial_write(b"High-RAM allocator and direct-map self-test passed.\r\n");
