@@ -39,6 +39,10 @@ rdotos_syscall_entry:
     push r14
     push r15
     mov rbx, rsp
+    # Save user XSTATE before any Rust syscall dispatch can touch SIMD state.
+    and rsp, -16
+    call cognacos_save_current_user_xstate
+    mov rsp, rbx
     mov rdi, rsp
     and rsp, -16
     call rdotos_syscall_dispatch
@@ -46,6 +50,18 @@ rdotos_syscall_entry:
     cmp rax, -1
     je rdotos_process_exit_stub
     mov qword ptr [rsp + 112], rax
+    # Restore the current thread's user state after dispatch/scheduling and
+    # immediately before restoring registers and returning with IRETQ.
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lrdotos_syscall_no_xstate_restore
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lrdotos_syscall_no_xstate_restore:
     pop r15
     pop r14
     pop r13
