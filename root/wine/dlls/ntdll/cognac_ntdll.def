@@ -1,7 +1,5 @@
 LIBRARY ntdll
 EXPORTS
-    CognacNtdllConfigureSyscalls
-    CognacNtdllConfigureSyscallTable
     NtClose
     NtYieldExecution
     NtQueryInformationProcess
