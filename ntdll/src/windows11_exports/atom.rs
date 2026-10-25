@@ -123,9 +123,14 @@ unsafe fn read_name(name: PWSTR, length: ULONG) -> Result<[u16; MAX_NAME_UNITS],
     Ok(copy)
 }
 
+#[inline]
+fn fold_ascii_case(ch: u16) -> u16 {
+    if (b'A' as u16..=b'Z' as u16).contains(&ch) { ch + 32 } else { ch }
+}
+
 fn equal_name(entry: &AtomEntry, name: &[u16; MAX_NAME_UNITS], len: usize) -> bool {
     entry.used && entry.length as usize == len && entry.name[..len].iter().zip(&name[..len])
-        .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        .all(|(a, b)| fold_ascii_case(*a) == fold_ascii_case(*b))
 }
 
 fn find_entry(s: &AtomState, name: &[u16; MAX_NAME_UNITS], len: usize) -> Option<usize> {
