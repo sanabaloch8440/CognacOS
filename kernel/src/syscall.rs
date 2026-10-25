@@ -127,6 +127,8 @@ pub const NT_SYSCALL_YIELD_EXECUTION: u64 = 0x101;
 pub const NT_SYSCALL_QUERY_INFORMATION_PROCESS: u64 = 0x102;
 pub const NT_SYSCALL_QUERY_INFORMATION_THREAD: u64 = 0x103;
 pub const NT_SYSCALL_QUERY_SYSTEM_INFORMATION: u64 = 0x104;
+pub const NT_SYSCALL_OPEN_KEY: u64 = 0x105;
+pub const NT_SYSCALL_QUERY_VALUE_KEY: u64 = 0x106;
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
 const NT_STATUS_NOT_IMPLEMENTED: u64 = 0xC000_0002;
@@ -147,13 +149,15 @@ pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 // Service IDs are discovered from the staged PE's own exported syscall stubs.
 const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
-static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 5] =
-    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 5];
+static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 7] =
+    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 7];
 const SERVICE_NT_CLOSE: usize = 0;
 const SERVICE_NT_YIELD_EXECUTION: usize = 1;
 const SERVICE_NT_QUERY_INFORMATION_PROCESS: usize = 2;
 const SERVICE_NT_QUERY_INFORMATION_THREAD: usize = 3;
 const SERVICE_NT_QUERY_SYSTEM_INFORMATION: usize = 4;
+const SERVICE_NT_OPEN_KEY: usize = 5;
+const SERVICE_NT_QUERY_VALUE_KEY: usize = 6;
 
 fn image_u16(image: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
@@ -182,7 +186,7 @@ fn image_rva_offset(image: &[u8], section_table: usize, section_count: usize,
     }
     None
 }
-fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 5]> {
+fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 7]> {
     if image.get(0..2)? != b"MZ" { return None; }
     let pe = image_u32(image, 0x3c)? as usize;
     if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" { return None; }
@@ -208,8 +212,8 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 5]> {
     let functions = image_rva_offset(image, section_table, section_count, headers_size, functions_rva, function_count.checked_mul(4)?)?;
     let names = image_rva_offset(image, section_table, section_count, headers_size, names_rva, name_count.checked_mul(4)?)?;
     let ordinals = image_rva_offset(image, section_table, section_count, headers_size, ordinals_rva, name_count.checked_mul(2)?)?;
-    let required_names: [&[u8]; 5] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation"];
-    let mut discovered = [SERVICE_UNAVAILABLE; 5];
+    let required_names: [&[u8]; 7] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey"];
+    let mut discovered = [SERVICE_UNAVAILABLE; 7];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
         let name_at = image_rva_offset(image, section_table, section_count, headers_size, name_rva, 1)?;
@@ -248,6 +252,8 @@ pub fn windows_service_number(name: &[u8]) -> Option<u32> {
         b"NtQueryInformationProcess" => SERVICE_NT_QUERY_INFORMATION_PROCESS,
         b"NtQueryInformationThread" => SERVICE_NT_QUERY_INFORMATION_THREAD,
         b"NtQuerySystemInformation" => SERVICE_NT_QUERY_SYSTEM_INFORMATION,
+        b"NtOpenKey" => SERVICE_NT_OPEN_KEY,
+        b"NtQueryValueKey" => SERVICE_NT_QUERY_VALUE_KEY,
         _ => return None,
     };
     let value = WINDOWS_SERVICE_NUMBERS[slot].load(Ordering::Acquire);
@@ -611,6 +617,97 @@ fn nt_query_system(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     NT_STATUS_SUCCESS
 }
 
+const NT_STATUS_OBJECT_NAME_NOT_FOUND: u64 = 0xC000_0034;
+const NT_REGISTRY_NAME_UNITS: usize = 96;
+const NT_REGISTRY_QUERY_MAX: usize = 1024;
+
+fn copy_nt_input(address: u64, bytes: &mut [u8]) -> Result<(), u64> {
+    if bytes.is_empty() { return Ok(()); }
+    let pointer = unsafe { *ACTIVE_SPACE.0.get() };
+    if pointer.is_null() { return Err(NT_STATUS_ACCESS_VIOLATION); }
+    unsafe { (&*pointer).copy_from_user(address, bytes) }.map_err(|_| NT_STATUS_ACCESS_VIOLATION)
+}
+
+fn nt_open_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    // x64 OBJECT_ATTRIBUTES is 48 bytes; UNICODE_STRING is 16 bytes.
+    let mut oa = [0u8; 48];
+    if args[2] == 0 || args[0] == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    if let Err(status) = copy_nt_input(args[2], &mut oa) { return status; }
+    let oa_len = u32::from_le_bytes(oa[0..4].try_into().unwrap());
+    if oa_len < 48 { return NT_STATUS_INVALID_PARAMETER; }
+    let root = u64::from_le_bytes(oa[8..16].try_into().unwrap());
+    let us_address = u64::from_le_bytes(oa[16..24].try_into().unwrap());
+    if us_address == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let mut us = [0u8; 16];
+    if let Err(status) = copy_nt_input(us_address, &mut us) { return status; }
+    let length = u16::from_le_bytes([us[0], us[1]]) as usize;
+    let maximum = u16::from_le_bytes([us[2], us[3]]) as usize;
+    let buffer_address = u64::from_le_bytes(us[8..16].try_into().unwrap());
+    if length % 2 != 0 || length > maximum || length / 2 > NT_REGISTRY_NAME_UNITS
+        || (length != 0 && buffer_address == 0) { return NT_STATUS_INVALID_PARAMETER; }
+    let mut raw = [0u8; NT_REGISTRY_NAME_UNITS * 2];
+    if length != 0 {
+        if let Err(status) = copy_nt_input(buffer_address, &mut raw[..length]) { return status; }
+    }
+    let mut path = [0u16; NT_REGISTRY_NAME_UNITS];
+    for i in 0..length / 2 { path[i] = u16::from_le_bytes([raw[i*2], raw[i*2+1]]); }
+    let name = crate::ntoskrnl::cm::runtime::UnicodeString {
+        length: length as u16, maximum_length: maximum as u16, buffer: path.as_ptr()
+    };
+    let attributes = crate::ntoskrnl::cm::runtime::ObjectAttributes {
+        length: oa_len, root_directory: root as *mut core::ffi::c_void,
+        object_name: &name, attributes: u32::from_le_bytes(oa[24..28].try_into().unwrap()),
+        security_descriptor: u64::from_le_bytes(oa[32..40].try_into().unwrap()) as *mut core::ffi::c_void,
+        security_qos: u64::from_le_bytes(oa[40..48].try_into().unwrap()) as *mut core::ffi::c_void,
+    };
+    let mut handle = core::ptr::null_mut();
+    let status = unsafe { crate::ntoskrnl::cm::runtime::ZwOpenKey(&mut handle, args[1] as u32, &attributes) };
+    if status != 0 { return status as u32 as u64; }
+    let bytes = (handle as usize as u64).to_le_bytes();
+    if let Err(status) = copy_nt_output(args[0], &bytes) {
+        let _ = unsafe { crate::ntoskrnl::ob::runtime::ObCloseHandle(handle, 1) };
+        return status;
+    }
+    NT_STATUS_SUCCESS
+}
+
+fn nt_query_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] == 0 || args[1] == 0 || args[3] == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let mut us = [0u8; 16];
+    if let Err(status) = copy_nt_input(args[1], &mut us) { return status; }
+    let length = u16::from_le_bytes([us[0], us[1]]) as usize;
+    let maximum = u16::from_le_bytes([us[2], us[3]]) as usize;
+    let buffer_address = u64::from_le_bytes(us[8..16].try_into().unwrap());
+    if length % 2 != 0 || length > maximum || length / 2 > NT_REGISTRY_NAME_UNITS
+        || (length != 0 && buffer_address == 0) { return NT_STATUS_INVALID_PARAMETER; }
+    let mut raw = [0u8; NT_REGISTRY_NAME_UNITS * 2];
+    if length != 0 {
+        if let Err(status) = copy_nt_input(buffer_address, &mut raw[..length]) { return status; }
+    }
+    let mut name_buffer = [0u16; NT_REGISTRY_NAME_UNITS];
+    for i in 0..length / 2 { name_buffer[i] = u16::from_le_bytes([raw[i*2], raw[i*2+1]]); }
+    let name = crate::ntoskrnl::cm::runtime::UnicodeString {
+        length: length as u16, maximum_length: maximum as u16, buffer: name_buffer.as_ptr()
+    };
+    let mut result = [0u8; NT_REGISTRY_QUERY_MAX];
+    let mut required = 0u32;
+    let capacity = core::cmp::min(args[4] as usize, result.len());
+    let status = unsafe {
+        crate::ntoskrnl::cm::runtime::ZwQueryValueKey(
+            args[0] as *mut core::ffi::c_void, &name, args[2] as u32,
+            result.as_mut_ptr().cast(), capacity as u32, &mut required
+        )
+    };
+    if args[5] != 0 {
+        if let Err(fault) = write_return_length(args[5], required) { return fault; }
+    }
+    if status == 0 {
+        let copy_len = core::cmp::min(required as usize, capacity);
+        if let Err(fault) = copy_nt_output(args[3], &result[..copy_len]) { return fault; }
+    }
+    status as u32 as u64
+}
+
 fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     match number {
         NT_SYSCALL_CLOSE => {
@@ -629,6 +726,8 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_QUERY_INFORMATION_PROCESS => nt_query_process(args),
         NT_SYSCALL_QUERY_INFORMATION_THREAD => nt_query_thread(args),
         NT_SYSCALL_QUERY_SYSTEM_INFORMATION => nt_query_system(args),
+        NT_SYSCALL_OPEN_KEY => nt_open_key(args),
+        NT_SYSCALL_QUERY_VALUE_KEY => nt_query_value_key(args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
     }
 }
@@ -671,6 +770,8 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         Some(SERVICE_NT_QUERY_INFORMATION_PROCESS) => NT_SYSCALL_QUERY_INFORMATION_PROCESS,
         Some(SERVICE_NT_QUERY_INFORMATION_THREAD) => NT_SYSCALL_QUERY_INFORMATION_THREAD,
         Some(SERVICE_NT_QUERY_SYSTEM_INFORMATION) => NT_SYSCALL_QUERY_SYSTEM_INFORMATION,
+        Some(SERVICE_NT_OPEN_KEY) => NT_SYSCALL_OPEN_KEY,
+        Some(SERVICE_NT_QUERY_VALUE_KEY) => NT_SYSCALL_QUERY_VALUE_KEY,
         _ => {
             CALL_COUNT.fetch_add(1, Ordering::AcqRel);
             return NT_STATUS_NOT_IMPLEMENTED;
@@ -707,6 +808,8 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_YIELD_EXECUTION => 0,
             NT_SYSCALL_QUERY_INFORMATION_PROCESS | NT_SYSCALL_QUERY_INFORMATION_THREAD => 5,
             NT_SYSCALL_QUERY_SYSTEM_INFORMATION => 4,
+            NT_SYSCALL_OPEN_KEY => 3,
+            NT_SYSCALL_QUERY_VALUE_KEY => 6,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
