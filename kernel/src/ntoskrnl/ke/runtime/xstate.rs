@@ -432,6 +432,7 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
     let depth = table.depth[owner_index] as usize;
     if depth >= XSTATE_SAVE_NESTING { return STATUS_INSUFFICIENT_RESOURCES; }
     if table.slots.iter().any(|s| s.active && s.key == save as usize) {
+        if depth == 0 { table.owners[owner_index] = 0; }
         return STATUS_INVALID_DEVICE_STATE;
     }
     let Some(slot_index) = table.slots.iter().position(|s| !s.active) else {
