@@ -308,3 +308,6 @@ pub(crate) mod runtime;
 pub(crate) mod dispatcher;
 pub(crate) mod scheduler;
 pub(crate) mod thread;
+
+// Early x86-64 architectural protection setup.
+pub(crate) mod mitigations;
