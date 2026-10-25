@@ -400,3 +400,138 @@ mod version_profile_tests {
         assert_eq!(xp.szCSDVersion[14], 0);
     }
 }
+
+
+/// Inputs observed by version.c's NT-style registry reader. The caller is
+/// responsible for querying the named registry values and checking REG types.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NtRegistryVersionValues<'a> {
+    pub major_dword: Option<u32>,
+    pub minor_dword: Option<u32>,
+    pub current_version: Option<&'a str>,
+    pub build_number: Option<&'a str>,
+    pub csd_version_utf16: Option<&'a [u16]>,
+    pub control_csd_version: Option<u32>,
+    pub product_type: Option<&'a str>,
+}
+
+fn parse_decimal_prefix(text: &str) -> Option<u32> {
+    let text = text.trim_start();
+    let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() { None } else { digits.parse().ok() }
+}
+
+fn copy_utf16_csd(dst: &mut [u16; 128], source: &[u16]) {
+    let count = core::cmp::min(source.iter().position(|c| *c == 0).unwrap_or(source.len()), dst.len() - 1);
+    dst[..count].copy_from_slice(&source[..count]);
+    dst[count] = 0;
+}
+
+/// Decode the value payloads returned by the NT registry queries in
+/// get_nt_registry_version(). This does no registry I/O and accepts only
+/// already type-checked values from the caller.
+pub fn parse_nt_registry_version(values: NtRegistryVersionValues<'_>) -> Option<RTL_OSVERSIONINFOEXW> {
+    let pair = match (values.major_dword, values.minor_dword) {
+        (Some(major), Some(minor)) => Some((major, minor)),
+        _ => values.current_version.and_then(parse_nt_current_version),
+    }?;
+    if pair.0 == 0 { return None; }
+
+    let mut version = RTL_OSVERSIONINFOEXW {
+        dwMajorVersion: pair.0,
+        dwMinorVersion: pair.1,
+        dwBuildNumber: values.build_number.and_then(parse_decimal_prefix).unwrap_or(0),
+        dwPlatformId: VER_PLATFORM_WIN32_NT,
+        ..Default::default()
+    };
+    if let Some(csd) = values.csd_version_utf16 {
+        copy_utf16_csd(&mut version.szCSDVersion, csd);
+    }
+    if let Some(packed) = values.control_csd_version {
+        let low = packed as u16;
+        version.wServicePackMajor = ((low >> 8) & 0xff) as u16;
+        version.wServicePackMinor = (low & 0xff) as u16;
+    }
+    version.wProductType = match values.product_type {
+        Some(s) if s.eq_ignore_ascii_case("WinNT") => VER_NT_WORKSTATION,
+        Some(s) if s.eq_ignore_ascii_case("LanmanNT") => VER_NT_DOMAIN_CONTROLLER,
+        Some(s) if s.eq_ignore_ascii_case("ServerNT") => VER_NT_SERVER,
+        _ => 0,
+    };
+    Some(version)
+}
+
+/// Decode Win9x VersionNumber and SubVersionNumber registry values. The
+/// packed build field contains (major, minor) in its high word, as in Wine.
+pub fn parse_win9x_registry_version(version_number: &str,
+    sub_version_utf16: Option<&[u16]>) -> Option<RTL_OSVERSIONINFOEXW> {
+    let (major, minor, build) = parse_win9x_version_number(version_number)?;
+    if major == 0 { return None; }
+    let mut version = RTL_OSVERSIONINFOEXW {
+        dwMajorVersion: major,
+        dwMinorVersion: minor,
+        dwBuildNumber: build,
+        dwPlatformId: VER_PLATFORM_WIN32_WINDOWS,
+        ..Default::default()
+    };
+    if let Some(csd) = sub_version_utf16 {
+        copy_utf16_csd(&mut version.szCSDVersion, csd);
+    }
+    Some(version)
+}
+
+#[cfg(test)]
+mod registry_payload_tests {
+    use super::*;
+    #[test]
+    fn nt_registry_prefers_complete_dword_pair_then_falls_back_to_string() {
+        let v = parse_nt_registry_version(NtRegistryVersionValues {
+            major_dword: Some(10), minor_dword: Some(0),
+            current_version: Some("6.3.9600"), build_number: Some("26100"),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!((v.dwMajorVersion, v.dwMinorVersion, v.dwBuildNumber), (10, 0, 26100));
+        let fallback = parse_nt_registry_version(NtRegistryVersionValues {
+            major_dword: Some(10), minor_dword: None,
+            current_version: Some("6.3.9600"), ..Default::default()
+        }).unwrap();
+        assert_eq!((fallback.dwMajorVersion, fallback.dwMinorVersion), (6, 3));
+    }
+
+    #[test]
+    fn nt_registry_decodes_service_pack_and_product_type() {
+        let csd: Vec<u16> = "Service Pack 2".encode_utf16().collect();
+        let v = parse_nt_registry_version(NtRegistryVersionValues {
+            major_dword: Some(10), minor_dword: Some(0),
+            control_csd_version: Some(0x0000_0201),
+            csd_version_utf16: Some(&csd), product_type: Some("lanmannt"),
+            ..Default::default()
+        }).unwrap();
+        assert_eq!((v.wServicePackMajor, v.wServicePackMinor), (2, 1));
+        assert_eq!(v.wProductType, VER_NT_DOMAIN_CONTROLLER);
+        assert_eq!(&v.szCSDVersion[..14], &"Service Pack 2".encode_utf16().collect::<Vec<_>>()[..]);
+        assert_eq!(v.szCSDVersion[14], 0);
+        assert_eq!(parse_nt_registry_version(NtRegistryVersionValues {
+            current_version: Some("0.0"), ..Default::default()
+        }), None);
+    }
+
+    #[test]
+    fn win9x_registry_keeps_packed_build_and_subversion() {
+        let sub: Vec<u16> = " C ".encode_utf16().collect();
+        let v = parse_win9x_registry_version("4.3.1212", Some(&sub)).unwrap();
+        assert_eq!((v.dwMajorVersion, v.dwMinorVersion), (4, 3));
+        assert_eq!(v.dwBuildNumber, 0x0403_04bc);
+        assert_eq!(v.dwPlatformId, VER_PLATFORM_WIN32_WINDOWS);
+        assert_eq!(&v.szCSDVersion[..3], &[32, 67, 32]);
+        assert_eq!(v.szCSDVersion[3], 0);
+    }
+
+    #[test]
+    fn malformed_registry_payloads_do_not_create_versions() {
+        assert!(parse_win9x_registry_version("4.x.1", None).is_none());
+        assert!(parse_nt_registry_version(NtRegistryVersionValues {
+            current_version: Some("bad"), ..Default::default()
+        }).is_none());
+    }
+}
