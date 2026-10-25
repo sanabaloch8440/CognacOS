@@ -13,6 +13,7 @@ The roadmap is maintained in one canonical file in the repository root to avoid 
 
 ## Current focus
 
+- **Boot security:** validate signature tamper rejection in CI; configure stable release keys and exercise enrolled-key Secure Boot plus TPM 2.0 measurement on real firmware.
 - **Memory isolation:** validate CPL=3 demand-zero fault routing; implement user working-set eviction/pagefile-backed page-in, recover kernel probes through generalized trap fixups, deliver user access violations without halting the kernel, and prove isolation with multi-process fault/race tests.
 - **Scheduling and dispatch:** user APC return/SEH delivery, queue wait-all reservations, and wider race/conformance stress.
 - **Object Manager and security:** process-bound handle tables, token lifecycle, impersonation, callbacks, and audit policy.
