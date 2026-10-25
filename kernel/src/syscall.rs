@@ -335,6 +335,55 @@ cognacos_nt_syscall_entry:
 "#);
 unsafe extern "C" { fn cognacos_nt_syscall_entry(); }
 
+/// Direct CognacOS native-service gate; EAX carries NT_SYSCALL_* rather than a
+/// Windows-build-specific service ordinal.
+global_asm!(r#"
+    .section .text
+    .global cognacos_native_nt_syscall_entry
+    .type cognacos_native_nt_syscall_entry, @function
+cognacos_native_nt_syscall_entry:
+    cli
+    cld
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+    mov rbx, rsp
+    mov rdi, rsp
+    and rsp, -16
+    call cognacos_nt_syscall_dispatch
+    mov rsp, rbx
+    mov qword ptr [rsp + 112], rax
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+    iretq
+"#);
+unsafe extern "C" { fn cognacos_native_nt_syscall_entry(); }
+
 #[repr(C, align(16))]
 struct WindowsSyscallCpuLocal {
     user_rsp: u64,
@@ -569,7 +618,10 @@ unsafe fn write_msr(index: u32, value: u64) {
 }
 
 pub unsafe fn initialize_native_nt_syscalls() {
-    unsafe { crate::ntoskrnl::ke::arch::install_user_gate(0x82, cognacos_nt_syscall_entry as usize as u64); }
+    unsafe {
+        crate::ntoskrnl::ke::arch::install_user_gate(0x82, cognacos_nt_syscall_entry as usize as u64);
+        crate::ntoskrnl::ke::arch::install_user_gate(0x83, cognacos_native_nt_syscall_entry as usize as u64);
+    }
 }
 
 fn copy_nt_output(address: u64, bytes: &[u8]) -> Result<(), u64> {
