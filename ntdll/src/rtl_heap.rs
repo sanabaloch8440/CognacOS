@@ -229,10 +229,12 @@ unsafe fn create_heap(flags: ULONG, reserve: SIZE_T, commit: SIZE_T) -> *mut Cog
 #[no_mangle]
 pub unsafe extern "system" fn RtlCreateHeap(flags: ULONG, base: PVOID, reserve: SIZE_T, commit: SIZE_T, _lock_ptr: PVOID, _parameters: PVOID) -> HANDLE {
     // Caller-provided HeapBase and external resource locks are not supported yet.
-    if !base.is_null() || flags & HEAP_GROWABLE == 0 || (commit != 0 && reserve != 0 && commit > reserve) {
+    // A zero Flags value is a valid non-growable heap. Caller-provided bases
+    // and custom lock/parameter structures remain unsupported by this manager.
+    let effective_reserve = if reserve == 0 { DEFAULT_RESERVE } else { reserve };
+    if !base.is_null() || commit > effective_reserve || effective_reserve > isize::MAX as usize || commit > isize::MAX as usize {
         return ptr::null_mut();
     }
-    if reserve > isize::MAX as usize || commit > isize::MAX as usize { return ptr::null_mut(); }
     unsafe { create_heap(flags, reserve, commit).cast() }
 }
 
