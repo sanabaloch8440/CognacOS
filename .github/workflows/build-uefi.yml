@@ -388,6 +388,7 @@ jobs:
           grep -F 'Security: kernel stack guard page unmapped.' build/serial.log
           grep -F 'Protection self-tests passed: read-only write trapped and NX execution trapped.' build/serial.log
           grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
+          grep -F 'Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.' build/serial.log
           grep -F 'Per-process page-table isolation, same-VA non-aliasing, and supervisor mapping protection passed.' build/serial.log
           grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
           grep -F 'PE32+ loader self-test passed; image base=0x0000200000000000 entry=0x0000200000001000 (RX section and RO/NX headers).' build/serial.log
