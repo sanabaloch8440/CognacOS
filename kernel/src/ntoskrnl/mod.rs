@@ -264,6 +264,17 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   return None;
  }
  let address = match name {
+  "RtlCompareMemory" => rtl_runtime::rtl_compare_memory as usize,
+  "RtlCompareMemoryUlong" => rtl_runtime::rtl_compare_memory_ulong as usize,
+  "RtlCopyMemory" => rtl_runtime::rtl_copy_memory as usize,
+  "RtlCopyMemoryNonTemporal" => rtl_runtime::rtl_copy_memory_non_temporal as usize,
+  "RtlFillMemory" => rtl_runtime::rtl_fill_memory as usize,
+  "RtlFillMemoryUlong" => rtl_runtime::rtl_fill_memory_ulong as usize,
+  "RtlFillMemoryUlonglong" => rtl_runtime::rtl_fill_memory_ulonglong as usize,
+  "RtlFillMemoryNonTemporal" => rtl_runtime::rtl_fill_memory_non_temporal as usize,
+  "RtlMoveMemory" => rtl_runtime::rtl_move_memory as usize,
+  "RtlZeroMemory" => rtl_runtime::rtl_zero_memory as usize,
+  "RtlIsZeroMemory" => rtl_runtime::rtl_is_zero_memory as usize,
   "KeQueryPerformanceCounter" => ke::runtime::ke_query_performance_counter as usize,
   "KeStallExecutionProcessor" => ke::runtime::ke_stall_execution_processor as usize,
   "MmAllocateContiguousMemory" => mm::runtime::mm_allocate_contiguous_memory as usize,
