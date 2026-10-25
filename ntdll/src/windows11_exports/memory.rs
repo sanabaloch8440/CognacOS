@@ -149,7 +149,11 @@ pub unsafe extern "system" fn NtFreeVirtualMemory(process_handle: HANDLE, base_a
     if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
     if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
     if free_type != MEM_DECOMMIT && free_type != MEM_RELEASE { return STATUS_INVALID_PARAMETER; }
-    unsafe { cognacos_nt_free_virtual_memory(process_handle, base_address, region_size, free_type) }
+    let old_base = unsafe { ptr::read_unaligned(base_address) };
+    let old_size = unsafe { ptr::read_unaligned(region_size) };
+    let status = unsafe { cognacos_nt_free_virtual_memory(process_handle, base_address, region_size, free_type) };
+    if status >= 0 { notify_secure_cache_callbacks(old_base, old_size); }
+    status
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtLockVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS {
@@ -162,7 +166,11 @@ pub unsafe extern "system" fn NtLockVirtualMemory(process_handle: HANDLE, base_a
 pub unsafe extern "system" fn NtProtectVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, new_protect: ULONG, old_protect: PULONG) -> NTSTATUS {
     if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
     if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
-    unsafe { cognacos_nt_protect_virtual_memory(process_handle, base_address, region_size, new_protect, old_protect) }
+    let changed_base = unsafe { ptr::read_unaligned(base_address) };
+    let changed_size = unsafe { ptr::read_unaligned(region_size) };
+    let status = unsafe { cognacos_nt_protect_virtual_memory(process_handle, base_address, region_size, new_protect, old_protect) };
+    if status >= 0 { notify_secure_cache_callbacks(changed_base, changed_size); }
+    status
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtQueryVirtualMemory(process_handle: HANDLE, base_address: PVOID, memory_information_class: ULONG, memory_information: PVOID, memory_information_length: SIZE_T, return_length: PSIZE_T) -> NTSTATUS {
@@ -251,7 +259,6 @@ const STATUS_INVALID_PARAMETER_2: NTSTATUS = 0xC000_00F0u32 as i32;
 const STATUS_BUFFER_TOO_SMALL: NTSTATUS = 0xC000_0023u32 as i32;
 const STATUS_NOT_SUPPORTED: NTSTATUS = 0xC000_00BBu32 as i32;
 const STATUS_UNSUCCESSFUL: NTSTATUS = 0xC000_0001u32 as i32;
-const STATUS_INVALID_HANDLE: NTSTATUS = 0xC000_0008u32 as i32;
 const RTL_ZONE_MAGIC: u64 = 0x434F_474E_5A4F_4E45;
 const RTL_LOOKASIDE_MAGIC: u64 = 0x434F_474E_4C4F_4F4B;
 const RTL_BLOCK_MAGIC: u64 = 0x434F_474E_424C_4F43;
@@ -972,7 +979,7 @@ unsafe fn decode_mem_io_resource(resource: *const CM_PARTIAL_RESOURCE_DESCRIPTOR
     let raw_length = u32::from_le_bytes(descriptor.data[8..12].try_into().unwrap_or([0; 4])) as u64;
     let length = if descriptor.type_ == CM_RESOURCE_TYPE_MEMORY_LARGE {
         let shift = match descriptor.flags & 0x0e00 { CM_RESOURCE_MEMORY_LARGE_40 => 8, CM_RESOURCE_MEMORY_LARGE_48 => 16, CM_RESOURCE_MEMORY_LARGE_64 => 32, _ => return 0 };
-        match raw_length.checked_shl(shift) { Some(v) => v, None => return 0 }
+        match raw_length.checked_mul(1u64 << shift) { Some(v) => v, None => return 0 }
     } else { raw_length };
     if length == 0 || address.checked_add(length).is_none() { return 0; }
     if !start.is_null() { unsafe { ptr::write_unaligned(start, address); } }
@@ -1084,6 +1091,39 @@ mod tests {
         assert_eq!(core::mem::offset_of!(RTL_MEMORY_STREAM, start), 24);
         assert_eq!(core::mem::offset_of!(RTL_MEMORY_STREAM, end), 32);
         assert_eq!(core::mem::size_of::<RTL_MEMORY_STREAM>(), 56);
+    }
+
+    #[test]
+    fn cm_memory_resource_descriptor_encodes_and_decodes() {
+        let mut descriptor = core::mem::MaybeUninit::<CM_PARTIAL_RESOURCE_DESCRIPTOR>::zeroed();
+        let mut start = 0u64;
+        unsafe {
+            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 4, 0x2000, 0x1234_0000), STATUS_SUCCESS);
+            assert_eq!(RtlCmDecodeMemIoResource(descriptor.as_mut_ptr().cast(), &mut start), 0x2000);
+            assert_eq!(start, 0x1234_0000);
+            assert_eq!(RtlIoDecodeMemIoResource(descriptor.as_mut_ptr().cast(), &mut start), 0x2000);
+            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x1_0000_0000, 0x1_0000_0000), STATUS_SUCCESS);
+            assert_eq!(RtlCmDecodeMemIoResource(descriptor.as_mut_ptr().cast(), &mut start), 0x1_0000_0000);
+            assert_eq!(start, 0x1_0000_0000);
+            assert_eq!(RtlCmEncodeMemIoResource(descriptor.as_mut_ptr().cast(), 7, 0x1001, 0x1234), STATUS_UNSUCCESSFUL);
+        }
+    }
+
+    #[test]
+    fn secure_cache_callbacks_register_deregister_and_notify() {
+        static CALLS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+        unsafe extern "system" fn callback(_base: PVOID, length: SIZE_T) {
+            if length == 17 { CALLS.fetch_add(1, Ordering::SeqCst); }
+        }
+        let callback_ptr = callback as *const () as PVOID;
+        unsafe {
+            assert_eq!(RtlRegisterSecureMemoryCacheCallback(callback_ptr), STATUS_SUCCESS);
+            assert_eq!(RtlRegisterSecureMemoryCacheCallback(callback_ptr), STATUS_SUCCESS);
+            assert_eq!(RtlFlushSecureMemoryCache(1usize as PVOID, 17), 1);
+            assert_eq!(RtlDeregisterSecureMemoryCacheCallback(callback_ptr), STATUS_SUCCESS);
+            assert_eq!(RtlDeregisterSecureMemoryCacheCallback(callback_ptr), STATUS_INVALID_PARAMETER);
+        }
+        assert!(CALLS.load(Ordering::SeqCst) >= 1);
     }
 
     #[test]
