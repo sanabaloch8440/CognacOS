@@ -969,13 +969,13 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 // Stock Windows NTDLL is tested separately through SYSCALL.
                 syscall::set_windows_service_table_enabled(false);
                 match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
-                    Ok(true) => serial_write(b"CognacOS native NTDLL ring-3 syscall wrappers passed.\r\n,
+                    Ok(true) => serial_write(b"CognacOS native NTDLL ring-3 syscall wrappers passed.\r\n"),
                     Ok(false) => {
-                        serial_write(b"FATAL: native NTDLL exports were present but its smoke harness was not configured.\r\n;
+                        serial_write(b"FATAL: native NTDLL exports were present but its smoke harness was not configured.\r\n");
                         halt();
                     }
                     Err(_) => {
-                        serial_write(b"FATAL: CognacOS native NTDLL ring-3 smoke failed.\r\n;
+                        serial_write(b"FATAL: CognacOS native NTDLL ring-3 smoke failed.\r\n");
                         halt();
                     }
                 }
