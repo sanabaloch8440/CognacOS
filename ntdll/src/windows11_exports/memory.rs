@@ -110,6 +110,46 @@ cognacos_nt_unlock_virtual_memory:
     mov eax, 0x110
     int 0x83
     ret
+
+    .p2align 4
+    .global cognacos_rtl_get_nonvolatile_token
+cognacos_rtl_get_nonvolatile_token:
+    mov r10, rcx
+    mov eax, 0x111
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_rtl_free_nonvolatile_token
+cognacos_rtl_free_nonvolatile_token:
+    mov r10, rcx
+    mov eax, 0x112
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_rtl_flush_nonvolatile_memory
+cognacos_rtl_flush_nonvolatile_memory:
+    mov r10, rcx
+    mov eax, 0x113
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_rtl_write_nonvolatile_memory
+cognacos_rtl_write_nonvolatile_memory:
+    mov r10, rcx
+    mov eax, 0x114
+    int 0x83
+    ret
+
+    .p2align 4
+    .global cognacos_rtl_fill_nonvolatile_memory
+cognacos_rtl_fill_nonvolatile_memory:
+    mov r10, rcx
+    mov eax, 0x115
+    int 0x83
+    ret
 "#);
 
 unsafe extern "system" {
@@ -121,6 +161,11 @@ unsafe extern "system" {
     fn cognacos_nt_write_virtual_memory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_written: PSIZE_T) -> NTSTATUS;
     fn cognacos_nt_lock_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS;
     fn cognacos_nt_unlock_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS;
+    fn cognacos_rtl_get_nonvolatile_token(base: PVOID, size: SIZE_T, token_out: *mut PVOID) -> NTSTATUS;
+    fn cognacos_rtl_free_nonvolatile_token(token: PVOID) -> NTSTATUS;
+    fn cognacos_rtl_flush_nonvolatile_memory(token: PVOID, buffer: PVOID, size: SIZE_T, flags: ULONG) -> NTSTATUS;
+    fn cognacos_rtl_write_nonvolatile_memory(token: PVOID, destination: PVOID, source: *const c_void, size: SIZE_T, flags: ULONG) -> NTSTATUS;
+    fn cognacos_rtl_fill_nonvolatile_memory(token: PVOID, destination: PVOID, size: SIZE_T, value: u8, flags: ULONG) -> NTSTATUS;
 }
 
 #[no_mangle]
@@ -889,24 +934,41 @@ pub unsafe extern "system" fn RtlFillMemoryNonTemporal(destination: PVOID, lengt
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlFillNonVolatileMemory(token: PVOID, destination: PVOID, value: u8, length: SIZE_T, flags: ULONG) -> NTSTATUS {
-    let _ = (token, destination, value, length, flags);
-    STATUS_NOT_SUPPORTED
+pub unsafe extern "system" fn RtlGetNonVolatileToken(base: PVOID, length: SIZE_T, token_out: *mut PVOID) -> NTSTATUS {
+    if base.is_null() || length == 0 || token_out.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_rtl_get_nonvolatile_token(base, length, token_out) }
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlWriteNonVolatileMemory(token: PVOID, destination: PVOID, source: PVOID, length: SIZE_T, flags: ULONG) -> NTSTATUS {
-    let _ = (token, destination, source, length, flags);
-    STATUS_NOT_SUPPORTED
+pub unsafe extern "system" fn RtlFreeNonVolatileToken(token: PVOID) -> NTSTATUS {
+    if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_rtl_free_nonvolatile_token(token) }
+}
+#[no_mangle]
+pub unsafe extern "system" fn RtlFillNonVolatileMemory(token: PVOID, destination: PVOID, value: u8, length: SIZE_T, flags: ULONG) -> NTSTATUS {
+    if token.is_null() || destination.is_null() || length == 0 { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_rtl_fill_nonvolatile_memory(token, destination, length, value, flags) }
+}
+#[no_mangle]
+pub unsafe extern "system" fn RtlWriteNonVolatileMemory(token: PVOID, destination: PVOID, source: *const c_void, length: SIZE_T, flags: ULONG) -> NTSTATUS {
+    if token.is_null() || destination.is_null() || source.is_null() || length == 0 || flags != 0 { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_rtl_write_nonvolatile_memory(token, destination, source, length, flags) }
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlFlushNonVolatileMemory(token: PVOID, buffer: PVOID, length: SIZE_T, flags: ULONG) -> NTSTATUS {
-    let _ = (token, buffer, length, flags); STATUS_NOT_SUPPORTED
+    if token.is_null() || buffer.is_null() || length == 0 || flags & !1 != 0 { return STATUS_INVALID_PARAMETER; }
+    unsafe { cognacos_rtl_flush_nonvolatile_memory(token, buffer, length, flags) }
 }
 #[repr(C)]
 pub struct RTL_NV_MEMORY_RANGE { pub base_address: PVOID, pub length: SIZE_T }
 #[no_mangle]
 pub unsafe extern "system" fn RtlFlushNonVolatileMemoryRanges(token: PVOID, count: ULONG, ranges: *const RTL_NV_MEMORY_RANGE, flags: ULONG) -> NTSTATUS {
-    let _ = (token, count, ranges, flags); STATUS_NOT_SUPPORTED
+    if token.is_null() || (count != 0 && ranges.is_null()) || flags & !1 != 0 || count > 1024 { return STATUS_INVALID_PARAMETER; }
+    for index in 0..count as usize {
+        let range = unsafe { ptr::read_unaligned(ranges.add(index)) };
+        let status = unsafe { RtlFlushNonVolatileMemory(token, range.base_address, range.length, flags) };
+        if status < 0 { return status; }
+    }
+    STATUS_SUCCESS
 }
 const SECURE_CACHE_CALLBACKS: usize = 16;
 static SECURE_CACHE_CALLBACK_LOCK: AtomicBool = AtomicBool::new(false);
