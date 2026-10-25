@@ -40,7 +40,7 @@ static unsigned unicode_to_cp1252(uint32_t c)
 static void emit_string(OUT *o, const void *s, int source_wide, int dest_wide, int precision, int width, int left)
 {
     size_t n=0,i; int nulls=!s;
-    if (nulls) { static const char nulltxt[]="(null)"; n=6; }
+    if (nulls) n=6;
     else if(source_wide) n=slen_w((const WCHAR *)s, precision<0?(size_t)-1:(size_t)precision);
     else n=slen_a((const char *)s, precision<0?(size_t)-1:(size_t)precision);
     if(precision>=0 && n>(size_t)precision)n=(size_t)precision;
@@ -63,7 +63,7 @@ static size_t utoa_rev(U64 v,unsigned base,int upper,char *b)
 static void emit_number(OUT *o,U64 value,int negative,unsigned base,int upper,int pointer,
                         int sign,int alt,int zero,int left,int width,int precision)
 {
-    char tmp[66];size_t n=utoa_rev(value,base,upper),digits=n,i;char prefix[3];size_t pn=0;
+    char tmp[66];size_t n=utoa_rev(value,base,upper,tmp),digits=n,i;char prefix[3];size_t pn=0;
     if(value==0 && precision==0 && !pointer)digits=0;
     if(negative)prefix[pn++]='-';else if(sign)prefix[pn++]=(char)sign;
     if(pointer){prefix[pn++]='0';prefix[pn++]=upper?'X':'x';}
@@ -97,7 +97,8 @@ static int format_core(OUT *o,const void *fmt,va_list input,int wide)
         if(ch=='.'){p++;prec=0;ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p];if(ch=='*'){prec=va_arg(ap,int);p++;if(prec<0)prec=-1;}else while((ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p])>='0'&&ch<='9'){if(prec<INT_MAX/10)prec=prec*10+(int)(ch-'0');p++;}}
         ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p];
         while(ch=='h'||ch=='l'||ch=='w'||ch=='I'||ch=='z'||ch=='t'||ch=='j'||ch=='L'){if(ch=='h')lh=1;else if(ch=='l'||ch=='w')source_wide=1;else if(ch=='I'||ch=='z'||ch=='t'||ch=='j')lh=2;p++;ch=wide?((const WCHAR *)fmt)[p]:((const unsigned char *)fmt)[p];}
-        if(ch==0)break;p++;
+        if(ch==0) break;
+        p++;
         if(ch=='s'||ch=='S'||ch=='c'||ch=='C'){
             int wantwide;
             if(ch=='s')wantwide=source_wide>=0?source_wide:wide;
@@ -117,7 +118,8 @@ static int format_core(OUT *o,const void *fmt,va_list input,int wide)
              * conversions are deliberately not approximated as ABI-correct. */
             double d=va_arg(ap,double);if(ch=='f'||ch=='F'){
                 U64 scale=1,whole,frac;int n=prec<0?6:prec;int k;
-                if(n>9)n=9;for(k=0;k<n;k++)scale*=10;
+                if(n>9) n=9;
+                for(k=0;k<n;k++) scale*=10;
                 if(d<0){put_unit(o,'-');d=-d;}else if(sign)put_unit(o,sign);
                 whole=(U64)d;frac=(U64)((d-(double)whole)*(double)scale+0.5);
                 if(frac>=scale){whole++;frac-=scale;}
