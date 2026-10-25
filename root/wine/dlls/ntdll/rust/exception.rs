@@ -340,7 +340,7 @@ fn context_parameters(flags: ULONG) -> Option<(usize, usize)> {
     Some(if arch == CONTEXT_AMD64 { (AMD64_CONTEXT_SIZE, 0x30) } else { (I386_CONTEXT_SIZE, 0) })
 }
 fn ntdll_xstate_payload_size(mask: ULONG64) -> Option<usize> {
-    if !NTDLL_XSTATE_READY.load(Ordering::Acquire) { return None; }
+    if !ensure_ntdll_xstate_config() { return None; }
     let selected = mask & NTDLL_XSTATE_ENABLED.load(Ordering::Acquire) & !3u64;
     let mut end = 64usize;
     for feature in 2..64 {
@@ -361,7 +361,7 @@ pub unsafe extern "system" fn RtlGetExtendedContextLength2(flags: ULONG, length:
     let extra = if flags & CONTEXT_XSTATE == 0 {
         CONTEXT_EX_SIZE + 15
     } else {
-        if !NTDLL_XSTATE_READY.load(Ordering::Acquire) { return STATUS_NOT_SUPPORTED; }
+        if !ensure_ntdll_xstate_config() { return STATUS_NOT_SUPPORTED; }
         let Some(payload) = ntdll_xstate_payload_size(mask) else { return STATUS_INVALID_PARAMETER; };
         CONTEXT_EX_SIZE + 63 + payload
     };
@@ -448,7 +448,7 @@ pub unsafe extern "system" fn RtlGetExtendedFeaturesMask(ex: *mut CONTEXT_EX) ->
 #[no_mangle]
 pub unsafe extern "system" fn RtlCopyExtendedContext(dst: *mut CONTEXT_EX, flags: ULONG, src: *const CONTEXT_EX) -> NTSTATUS {
     if dst.is_null() || src.is_null() { return STATUS_INVALID_PARAMETER; }
-    if flags & CONTEXT_XSTATE != 0 && !NTDLL_XSTATE_READY.load(Ordering::Acquire) { return STATUS_NOT_SUPPORTED; }
+    if flags & CONTEXT_XSTATE != 0 && !ensure_ntdll_xstate_config() { return STATUS_NOT_SUPPORTED; }
     let s = unsafe { src.read_unaligned() };
     let d = unsafe { dst.read_unaligned() };
     if flags & CONTEXT_XSTATE != 0 && d.XState.Length < s.XState.Length { return STATUS_BUFFER_OVERFLOW; }
@@ -468,7 +468,7 @@ pub unsafe extern "system" fn CognacRtlQueryExtendedFeature(
     if offset.is_null() || size.is_null() || feature_id >= 64 {
         return STATUS_INVALID_PARAMETER;
     }
-    if !NTDLL_XSTATE_READY.load(Ordering::Acquire) {
+    if !ensure_ntdll_xstate_config() {
         return 0xC000_00BBu32 as i32;
     }
     let bit = 1u64 << feature_id;
