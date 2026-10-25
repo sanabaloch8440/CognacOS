@@ -348,7 +348,7 @@ fn valid_xstate_save_record(pointer: *const u8) -> bool {
         || crate::kernel_vm::is_pageable_address(start)
         || crate::kernel_vm::is_pageable_address(end) { return false; }
     let valid = |address: u64| unsafe {
-        crate::ntoskrnl::mm::runtime::mm_is_non_paged_system_address_valid(address as *const core::ffi::c_void) != 0
+        crate::ntoskrnl::mm::runtime::mm_is_non_paged_system_address_writable(address as *mut core::ffi::c_void) != 0
     };
     // Check each page boundary as well as both endpoints before touching the
     // caller-owned opaque record. This safely rejects null, user, pageable,
