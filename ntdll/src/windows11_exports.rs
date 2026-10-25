@@ -7,6 +7,12 @@
 //! replacements for the real Windows function signatures.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
+mod exception;
+mod time;
+mod strings;
+mod crypt;
+mod path;
+
 mod loader;
 mod heap;
 mod memory;
@@ -48,10 +54,6 @@ pub unsafe extern "system" fn __toascii() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn _atoi64() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn _errno() -> i32 {
@@ -63,45 +65,13 @@ pub unsafe extern "system" fn _fltused() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn _i64toa() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _i64toa_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _i64tow() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _i64tow_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _itoa() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _itoa_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _itow() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _itow_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn _lfind() -> i32 {
@@ -113,25 +83,9 @@ pub unsafe extern "system" fn _local_unwind() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn _ltoa() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ltoa_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ltow() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ltow_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn _makepath_s() -> i32 {
@@ -158,30 +112,14 @@ pub unsafe extern "system" fn _setjmpex() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn _snprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _snprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn _snscanf_s() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn _snwprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _snwprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn _snwscanf_s() -> i32 {
@@ -198,95 +136,23 @@ pub unsafe extern "system" fn _splitpath_s() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn _strcmpi() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _stricmp() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _strlwr() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _strlwr_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _strnicmp() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _strnset_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _strset_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _strupr() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _strupr_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _swprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ui64toa() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ui64toa_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ui64tow() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ui64tow_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ultoa() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ultoa_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ultow() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _ultow_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn _vscprintf() -> i32 {
@@ -298,80 +164,20 @@ pub unsafe extern "system" fn _vscwprintf() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn _vsnprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _vsnprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _vsnwprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _vsnwprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _vswprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcsicmp() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcslwr() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcslwr_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcsnicmp() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcsnset_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcsset_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcstoi64() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcstoui64() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcsupr() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn _wcsupr_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn _wmakepath_s() -> i32 {
@@ -988,10 +794,6 @@ pub unsafe extern "system" fn isxdigit() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn KiRaiseUserExceptionDispatcher() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn KiUserApcDispatcher() -> i32 {
@@ -1003,10 +805,6 @@ pub unsafe extern "system" fn KiUserCallbackDispatcher() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn KiUserExceptionDispatcher() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn KiUserInvertedFunctionTable() -> i32 {
@@ -1373,15 +1171,7 @@ pub unsafe extern "system" fn NtCancelSynchronousIoFile() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtCancelTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtCancelTimer2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtCancelWaitCompletionPacket() -> i32 {
@@ -1436,20 +1226,8 @@ pub unsafe extern "system" fn NtCompareSigningLevels() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtContinue() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtContinueEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtConvertBetweenAuxiliaryCounterAndPerformanceCounter() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtCopyFileChunk() -> i32 {
@@ -1521,10 +1299,6 @@ pub unsafe extern "system" fn NtCreateIoRing() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtCreateIRTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -1605,15 +1379,7 @@ pub unsafe extern "system" fn NtCreateSymbolicLinkObject() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtCreateTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtCreateTimer2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -1645,10 +1411,6 @@ pub unsafe extern "system" fn NtCreateWorkerFactory() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtDebugContinue() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtDelayExecution() -> i32 {
@@ -1712,10 +1474,6 @@ pub unsafe extern "system" fn NtDisableLastKnownGood() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtDisplayString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtdllDefWindowProc_A() -> i32 {
@@ -2087,10 +1845,6 @@ pub unsafe extern "system" fn NtOpenSymbolicLinkObject() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtOpenTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtOpenTransaction() -> i32 {
@@ -2327,10 +2081,6 @@ pub unsafe extern "system" fn NtQueryObject() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQueryPerformanceCounter() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -2384,20 +2134,8 @@ pub unsafe extern "system" fn NtQuerySystemInformationEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQuerySystemTime() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQueryTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQueryTimerResolution() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -2419,10 +2157,6 @@ pub unsafe extern "system" fn NtQueryWnfStateNameInformation() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtRaiseException() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtRaiseHardError() -> i32 {
@@ -2717,10 +2451,6 @@ pub unsafe extern "system" fn NtSetIoCompletionEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtSetIRTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtSetLdtEntries() -> i32 {
@@ -2767,31 +2497,11 @@ pub unsafe extern "system" fn NtSetSystemPowerState() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtSetSystemTime() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
-#[no_mangle]
-pub unsafe extern "system" fn NtSetTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtSetTimer2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtSetTimerEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn NtSetTimerResolution() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtSetUuidSeed() -> i32 {
@@ -3268,20 +2978,8 @@ pub unsafe extern "system" fn RtlAnsiCharToUnicodeChar() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlAnsiStringToUnicodeSize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlAnsiStringToUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlAppendPathElement() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlApplicationVerifierStop() -> i32 {
@@ -3318,10 +3016,6 @@ pub unsafe extern "system" fn RtlAreBitsClearEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlAreLongPathsEnabled() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlAssert() -> i32 {
@@ -3358,10 +3052,6 @@ pub unsafe extern "system" fn RtlCallEnclaveReturn() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCancelTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlCanonicalizeDomainName() -> i32 {
@@ -3378,15 +3068,7 @@ pub unsafe extern "system" fn RtlCapabilityCheckForSingleSessionSku() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCaptureContext() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCaptureContext2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlCaptureStackBackTrace() -> i32 {
@@ -3489,10 +3171,6 @@ pub unsafe extern "system" fn RtlCompareExchangePropertyStore() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCompareUnicodeStrings() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlCompleteProcessCloning() -> i32 {
@@ -3504,10 +3182,6 @@ pub unsafe extern "system" fn RtlCompressBuffer() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlComputeImportTableHash() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -3520,25 +3194,9 @@ pub unsafe extern "system" fn RtlConsoleMultiByteToUnicodeN() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlConstructCrossVmEventPath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlConstructCrossVmMutexPath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlContractHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlConvertDeviceFamilyInfoToString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlConvertExclusiveToShared() -> i32 {
@@ -3550,20 +3208,12 @@ pub unsafe extern "system" fn RtlConvertHostPerfCounterToPerfCounter() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlConvertLCIDToString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlConvertSharedToExclusive() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlConvertSidToUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlConvertSRWLockExclusiveToShared() -> i32 {
@@ -3644,15 +3294,7 @@ pub unsafe extern "system" fn RtlCreateEnvironmentEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCreateHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCreateHashTableEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -3678,15 +3320,7 @@ pub unsafe extern "system" fn RtlCreateSystemVolumeInformationFolder() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCreateTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCreateTimerQueue() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlCreateUmsCompletionList() -> i32 {
@@ -3698,15 +3332,7 @@ pub unsafe extern "system" fn RtlCreateUmsThreadContext() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCreateUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCreateUnicodeStringFromAsciiz() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlCreateUserFiberShadowStack() -> i32 {
@@ -3745,10 +3371,6 @@ pub unsafe extern "system" fn RtlCustomCPToUnicodeN() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlCutoverTimeToSystemTime() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeactivateActivationContext() -> i32 {
@@ -3760,10 +3382,6 @@ pub unsafe extern "system" fn RtlDeactivateActivationContextUnsafeFast() -> i32 
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDebugPrintTimes() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDecodePointer() -> i32 {
@@ -3860,10 +3478,6 @@ pub unsafe extern "system" fn RtlDeleteGrowableFunctionTable() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDeleteHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeleteNoSplay() -> i32 {
@@ -3880,20 +3494,8 @@ pub unsafe extern "system" fn RtlDeleteSecurityObject() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDeleteTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDeleteTimerQueue() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDeleteTimerQueueEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeleteUmsCompletionList() -> i32 {
@@ -3956,55 +3558,15 @@ pub unsafe extern "system" fn RtlDosApplyFileIsolationRedirection_Ustr() -> i32 
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDosLongPathNameToNtPathName_U_WithStatus() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDosLongPathNameToRelativeNtPathName_U_WithStatus() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDosPathNameToNtPathName_U() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDosPathNameToNtPathName_U_WithStatus() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDosPathNameToRelativeNtPathName_U() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDosPathNameToRelativeNtPathName_U_WithStatus() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDosSearchPath_U() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDosSearchPath_Ustr() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDowncaseUnicodeChar() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDowncaseUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDrainNonVolatileFlush() -> i32 {
@@ -4016,10 +3578,6 @@ pub unsafe extern "system" fn RtlDumpResource() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlDuplicateUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlEnableEarlyCriticalSectionEventCreation() -> i32 {
@@ -4056,30 +3614,14 @@ pub unsafe extern "system" fn RtlEncodeSystemPointer() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlEndEnumerationHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlEndStrongEnumerationHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlEndWeakEnumerationHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlEnterUmsSchedulingMode() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlEnumerateEntryHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlEnumerateGenericTable() -> i32 {
@@ -4137,30 +3679,10 @@ pub unsafe extern "system" fn RtlEqualWnfChangeStamps() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlEraseUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlEthernetAddressToStringA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlEthernetAddressToStringW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlEthernetStringToAddressA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlEthernetStringToAddressW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlExecuteUmsThread() -> i32 {
@@ -4169,10 +3691,6 @@ pub unsafe extern "system" fn RtlExecuteUmsThread() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlExpandHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlExtendCorrelationVector() -> i32 {
@@ -4199,15 +3717,7 @@ pub unsafe extern "system" fn RtlFindActivationContextSectionGuid() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFindActivationContextSectionString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFindCharInUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlFindClearBitsAndSetEx() -> i32 {
@@ -4293,10 +3803,6 @@ pub unsafe extern "system" fn RtlFlsSetValue() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFormatCurrentUserKeyPath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlFormatMessage() -> i32 {
@@ -4313,10 +3819,6 @@ pub unsafe extern "system" fn RtlFreeActivationContextStack() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFreeAnsiString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -4324,10 +3826,6 @@ pub unsafe extern "system" fn RtlFreeNonVolatileToken() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFreeOemString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlFreeSid() -> i32 {
@@ -4339,10 +3837,6 @@ pub unsafe extern "system" fn RtlFreeThreadActivationContextStack() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFreeUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlFreeUserFiberShadowStack() -> i32 {
@@ -4354,10 +3848,6 @@ pub unsafe extern "system" fn RtlFreeUserStack() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlFreeUTF8String() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGenerate8dot3Name() -> i32 {
@@ -4384,10 +3874,6 @@ pub unsafe extern "system" fn RtlGetActiveConsoleId() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetAppContainerNamedObjectPath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetAppContainerParent() -> i32 {
@@ -4474,10 +3960,6 @@ pub unsafe extern "system" fn RtlGetElementGenericTableAvl() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetExePath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetFeatureToggleConfiguration() -> i32 {
@@ -4489,20 +3971,12 @@ pub unsafe extern "system" fn RtlGetFeatureTogglesChangeToken() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetFileMUIPath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetFrame() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetFullPathName_UstrEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetFunctionTableListHead() -> i32 {
@@ -4524,45 +3998,21 @@ pub unsafe extern "system" fn RtlGetIntegerAtom() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetInterruptTimePrecise() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetLengthWithoutLastFullDosOrNtPathElement() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetLengthWithoutTrailingPathSeperators() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetLocaleFileMappingAddress() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetLongestNtPathLength() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetMultiTimePrecise() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetNativeSystemInformation() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetNextEntryHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetNextUmsListItem() -> i32 {
@@ -4624,10 +4074,6 @@ pub unsafe extern "system" fn RtlGetSaclSecurityDescriptor() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetSearchPath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetSecurityDescriptorRMControl() -> i32 {
@@ -4669,10 +4115,6 @@ pub unsafe extern "system" fn RtlGetSystemPreferredUILanguages() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetSystemTimeAndBias() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetThreadErrorMode() -> i32 {
@@ -4694,10 +4136,6 @@ pub unsafe extern "system" fn RtlGetThreadWorkOnBehalfTicket() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetTokenNamedObjectPath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetUILanguageInfo() -> i32 {
@@ -4734,15 +4172,7 @@ pub unsafe extern "system" fn RtlGuardCheckLongJumpTarget() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlGUIDFromString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlHashUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -4815,10 +4245,6 @@ pub unsafe extern "system" fn RtlInitCodePageTable() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitEnumerationHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitializeAtomPackage() -> i32 {
@@ -4912,35 +4338,11 @@ pub unsafe extern "system" fn RtlInitNlsTables() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitStringEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitStrongEnumerationHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitUTF8String() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitUTF8StringEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitWeakEnumerationHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInsertElementGenericTable() -> i32 {
@@ -4962,10 +4364,6 @@ pub unsafe extern "system" fn RtlInsertElementGenericTableFullAvl() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlInsertEntryHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInstallFunctionTableCallback() -> i32 {
@@ -5019,85 +4417,21 @@ pub unsafe extern "system" fn RtlInterlockedSetBitRun() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv4AddressToStringA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv4AddressToStringExA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv4AddressToStringExW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv4AddressToStringW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv4StringToAddressA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv4StringToAddressExA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv4StringToAddressExW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv4StringToAddressW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv6AddressToStringA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv6AddressToStringExA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv6AddressToStringExW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv6AddressToStringW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv6StringToAddressA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv6StringToAddressExA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv6StringToAddressExW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIpv6StringToAddressW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlIsActivationContextActive() -> i32 {
@@ -5199,10 +4533,6 @@ pub unsafe extern "system" fn RtlIsNonEmptyDirectoryReparsePointAllowed() -> i32
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlIsNormalizedString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlIsPackageSid() -> i32 {
@@ -5260,10 +4590,6 @@ pub unsafe extern "system" fn RtlIsValidProcessTrustLabelSid() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlKnownExceptionFilter() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlLCIDToCultureName() -> i32 {
@@ -5300,15 +4626,7 @@ pub unsafe extern "system" fn RtlLengthSid() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlLengthSidAsUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlLoadString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlLocaleNameToLcid() -> i32 {
@@ -5363,20 +4681,12 @@ pub unsafe extern "system" fn RtlLookupElementGenericTableFullAvl() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlLookupEntryHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlLookupFirstMatchingElementGenericTableAvl() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlLookupFunctionEntry() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlLookupFunctionTable() -> i32 {
@@ -5398,10 +4708,6 @@ pub unsafe extern "system" fn RtlMapSecurityErrorToNtStatus() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlMultiAppendUnicodeStringBuffer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlMultiByteToUnicodeN() -> i32 {
@@ -5445,10 +4751,6 @@ pub unsafe extern "system" fn RtlNormalizeSecurityDescriptor() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlNormalizeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlNotifyFeatureToggleUsage() -> i32 {
@@ -5465,10 +4767,6 @@ pub unsafe extern "system" fn RtlNtdllName() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlNtPathNameToDosPathName() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlNumberGenericTableElements() -> i32 {
@@ -5505,15 +4803,7 @@ pub unsafe extern "system" fn RtlNumberOfSetBitsUlongPtr() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlOemStringToUnicodeSize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlOemStringToUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlOemToUnicodeN() -> i32 {
@@ -5550,10 +4840,6 @@ pub unsafe extern "system" fn RtlpApplyLengthFunction() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlpCheckDynamicTimeZoneInformation() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -5587,10 +4873,6 @@ pub unsafe extern "system" fn RtlpEnsureBufferSize() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlpFreezeTimeBias() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlpGetDeviceFamilyInfoEnum() -> i32 {
@@ -5677,10 +4959,6 @@ pub unsafe extern "system" fn RtlpQueryProcessDebugInformationRemote() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlPrefixUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlpRefreshCachedUILanguage() -> i32 {
@@ -5718,15 +4996,7 @@ pub unsafe extern "system" fn RtlpSetUserPreferredUILanguages() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlpTimeFieldsToTime() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlpTimeToTimeFields() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlPublishWnfStateData() -> i32 {
@@ -5964,35 +5234,11 @@ pub unsafe extern "system" fn RtlRaiseCustomSystemEventTrigger() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRaiseException() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRaiseExceptionForReturnAddressHijack() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRaiseNoncontinuableException() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRaiseStatus() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRandom() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRandomEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlRbInsertNodeEx() -> i32 {
@@ -6073,20 +5319,12 @@ pub unsafe extern "system" fn RtlReleaseActivationContext() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlReleasePath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlReleasePrivilege() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlReleaseRelativeName() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlReleaseResource() -> i32 {
@@ -6108,10 +5346,6 @@ pub unsafe extern "system" fn RtlRemoteCall() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRemoveEntryHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlRemovePointerMapping() -> i32 {
@@ -6133,20 +5367,8 @@ pub unsafe extern "system" fn RtlReplaceSidInSd() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlReplaceSystemDirectoryInPath() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlReportException() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlReportExceptionEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlReportSilentProcessExit() -> i32 {
@@ -6175,10 +5397,6 @@ pub unsafe extern "system" fn RtlRestoreBootStatusDefaults() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRestoreContext() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlRestoreSystemBootStatusDefaults() -> i32 {
@@ -6196,15 +5414,7 @@ pub unsafe extern "system" fn RtlRetrieveNtUserPfn() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRunDecodeUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlRunEncodeUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlRunOnceBeginInitialize() -> i32 {
@@ -6277,10 +5487,6 @@ pub unsafe extern "system" fn RtlSetCriticalSectionSpinCount() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlSetCurrentDirectory_U() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetCurrentTransaction() -> i32 {
@@ -6292,15 +5498,7 @@ pub unsafe extern "system" fn RtlSetDaclSecurityDescriptor() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlSetDynamicTimeZoneInformation() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlSetEnvironmentStrings() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetEnvironmentVar() -> i32 {
@@ -6378,10 +5576,6 @@ pub unsafe extern "system" fn RtlSetSaclSecurityDescriptor() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlSetSearchPathMode() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetSecurityDescriptorRMControl() -> i32 {
@@ -6448,10 +5642,6 @@ pub unsafe extern "system" fn RtlSetThreadWorkOnBehalfTicket() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlSetTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetUmsThreadInformation() -> i32 {
@@ -6473,15 +5663,7 @@ pub unsafe extern "system" fn RtlSidEqualLevel() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlSidHashInitialize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlSidHashLookup() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSidIsHigherLevel() -> i32 {
@@ -6509,20 +5691,8 @@ pub unsafe extern "system" fn RtlStartRXact() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlStringFromGUID() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlStringFromGUIDEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlStronglyEnumerateEntryHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSubAuthorityCountSid() -> i32 {
@@ -6669,45 +5839,13 @@ pub unsafe extern "system" fn RtlUmsThreadYield() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnhandledExceptionFilter() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnhandledExceptionFilter2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnicodeStringToAnsiSize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnicodeStringToAnsiString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnicodeStringToCountedOemString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnicodeStringToOemSize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnicodeStringToOemString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnicodeStringToUTF8String() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlUnicodeToCustomCPN() -> i32 {
@@ -6782,55 +5920,15 @@ pub unsafe extern "system" fn RtlUnsubscribeWnfStateChangeNotification() -> i32 
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnwind() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUnwindEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpcaseUnicodeChar() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpcaseUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpcaseUnicodeStringToAnsiString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpcaseUnicodeStringToCountedOemString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpcaseUnicodeStringToOemString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpcaseUnicodeToCustomCPN() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpcaseUnicodeToMultiByteN() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpcaseUnicodeToOemN() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlUpdateClonedCriticalSection() -> i32 {
@@ -6842,20 +5940,12 @@ pub unsafe extern "system" fn RtlUpdateClonedSRWLock() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpdateTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlUpperChar() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUpperString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlUserFiberStart() -> i32 {
@@ -6863,10 +5953,6 @@ pub unsafe extern "system" fn RtlUserFiberStart() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlUTF8StringToUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlUTF8ToUnicodeN() -> i32 {
@@ -6883,10 +5969,6 @@ pub unsafe extern "system" fn RtlValidateCorrelationVector() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlValidateUnicodeString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlValidateUserCallTarget() -> i32 {
@@ -6918,15 +6000,7 @@ pub unsafe extern "system" fn RtlVerifyVersionInfo() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlVirtualUnwind() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlVirtualUnwind2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlWaitForWnfMetaNotification() -> i32 {
@@ -6973,15 +6047,7 @@ pub unsafe extern "system" fn RtlWalkFrameChain() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlWeaklyEnumerateEntryHashTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlWerpReportException() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -7071,15 +6137,7 @@ pub unsafe extern "system" fn RtlWow64SuspendProcess() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlxAnsiStringToUnicodeSize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlxOemStringToUnicodeSize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlXRestore() -> i32 {
@@ -7091,15 +6149,7 @@ pub unsafe extern "system" fn RtlXSave() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlxUnicodeStringToAnsiSize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlxUnicodeStringToOemSize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -7777,10 +6827,6 @@ pub unsafe extern "system" fn wcstoul() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn WerReportExceptionWorker() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn WerReportSQMEvent() -> i32 {
@@ -8142,15 +7188,7 @@ pub unsafe extern "system" fn ZwCancelSynchronousIoFile() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwCancelTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwCancelTimer2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwCancelWaitCompletionPacket() -> i32 {
@@ -8205,20 +7243,8 @@ pub unsafe extern "system" fn ZwCompareSigningLevels() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwContinue() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwContinueEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwConvertBetweenAuxiliaryCounterAndPerformanceCounter() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwCopyFileChunk() -> i32 {
@@ -8290,10 +7316,6 @@ pub unsafe extern "system" fn ZwCreateIoRing() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwCreateIRTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -8374,15 +7396,7 @@ pub unsafe extern "system" fn ZwCreateSymbolicLinkObject() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwCreateTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwCreateTimer2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -8414,10 +7428,6 @@ pub unsafe extern "system" fn ZwCreateWorkerFactory() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwDebugContinue() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwDelayExecution() -> i32 {
@@ -8481,10 +7491,6 @@ pub unsafe extern "system" fn ZwDisableLastKnownGood() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwDisplayString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwDrawText() -> i32 {
@@ -8840,10 +7846,6 @@ pub unsafe extern "system" fn ZwOpenSymbolicLinkObject() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwOpenTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwOpenTransaction() -> i32 {
@@ -9080,10 +8082,6 @@ pub unsafe extern "system" fn ZwQueryObject() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwQueryPerformanceCounter() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -9137,20 +8135,8 @@ pub unsafe extern "system" fn ZwQuerySystemInformationEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwQuerySystemTime() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwQueryTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwQueryTimerResolution() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -9172,10 +8158,6 @@ pub unsafe extern "system" fn ZwQueryWnfStateNameInformation() -> i32 {
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwRaiseException() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwRaiseHardError() -> i32 {
@@ -9470,10 +8452,6 @@ pub unsafe extern "system" fn ZwSetIoCompletionEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwSetIRTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwSetLdtEntries() -> i32 {
@@ -9520,31 +8498,11 @@ pub unsafe extern "system" fn ZwSetSystemPowerState() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwSetSystemTime() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwSetTimer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwSetTimer2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwSetTimerEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ZwSetTimerResolution() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ZwSetUuidSeed() -> i32 {
