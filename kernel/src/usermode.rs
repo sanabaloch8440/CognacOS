@@ -256,7 +256,18 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
         && snapshot.exit_code==0;
     let cleanup=cleanup_process(space,image.base,env.process_id);
     cleanup?;
-    if !valid{return Err(VmError::PermissionDenied);}
+    if !valid {
+        unsafe {
+            crate::serial_write(b"Ring-3 smoke validation failed; syscall delta=");
+            crate::serial_write_hex(crate::syscall::dispatch_count().saturating_sub(calls_before));
+            crate::serial_write(b" exit=");
+            crate::serial_write_hex(crate::syscall::last_exit_code());
+            crate::serial_write(b" state=");
+            crate::serial_write_hex(snapshot.state as u32 as u64);
+            crate::serial_write(b"\\r\\n");
+        }
+        return Err(VmError::PermissionDenied);
+    }
     Ok(())
 }
 
