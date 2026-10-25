@@ -5,6 +5,8 @@ extern crate alloc;
 
 mod pe_kernel;
 mod sha256;
+mod boot_security;
+mod kernel_signature;
 
 include!(concat!(env!("OUT_DIR"), "/kernel_digest.rs"));
 
@@ -44,7 +46,7 @@ const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // Stable boot-info ABI magic; preserve the existing value.
-const BOOT_INFO_VERSION: u32 = 7;
+const BOOT_INFO_VERSION: u32 = 8;
 const HIGH_HALF_PT_PAGES: usize = 64;
 const KERNEL_STACK_VIRTUAL_GUARD: u64 = 0xffff_ff00_0000_0000;
 
@@ -67,6 +69,8 @@ struct BootInfo {
     kernel_physical_section_count: usize,
     registry_hives: [BootFile;7],
     nls_files: [BootFile;8],
+    security_flags: u64,
+    kernel_digest: [u8; 32],
 }
 
 
@@ -134,7 +138,34 @@ fn main() -> Status {
         uefi::println!("FATAL: kernel SHA-256 mismatch; component rejected");
         return Status::SECURITY_VIOLATION;
     }
-    uefi::println!("Kernel SHA-256 matches the bootloader's build-time trust anchor");
+    if !kernel_signature::verify_kernel_signature(&image) {
+        uefi::println!("FATAL: kernel Ed25519 signature invalid or unavailable; refusing to load");
+        return Status::SECURITY_VIOLATION;
+    }
+    uefi::println!("Kernel SHA-256 and Ed25519 code signature verified");
+    let mut security_flags = boot_security::firmware_security_status()
+        | boot_security::KERNEL_SIGNATURE_VERIFIED;
+    if security_flags & boot_security::SECURE_BOOT_KNOWN != 0 {
+        if security_flags & boot_security::SECURE_BOOT_ENABLED != 0 {
+            uefi::println!("UEFI Secure Boot: enabled (firmware state detected)");
+        } else {
+            uefi::println!("UEFI Secure Boot: disabled (optional)");
+        }
+    } else {
+        uefi::println!("UEFI Secure Boot state unavailable; continuing with kernel signature enforcement");
+    }
+    let (tpm_present, kernel_measured) = boot_security::measure_kernel(&image);
+    if tpm_present {
+        security_flags |= boot_security::TPM2_PRESENT;
+        if kernel_measured {
+            security_flags |= boot_security::KERNEL_MEASURED;
+            uefi::println!("TPM 2.0 measured boot: kernel extended into PCR 4");
+        } else {
+            uefi::println!("TPM 2.0 present, but kernel measurement unavailable; continuing (optional feature)");
+        }
+    } else {
+        uefi::println!("TPM 2.0 unavailable; continuing without measured boot");
+    }
     drop(kernel_file);
     uefi::println!("Staging optional native Windows registry hives and NLS tables");
     let mut registry_hives=[BootFile::EMPTY;7];
@@ -317,6 +348,8 @@ fn main() -> Status {
         kernel_physical_section_count,
         registry_hives,
         nls_files,
+        security_flags,
+        kernel_digest: actual_digest,
     };
     let boot_info_ptr = boot_info_storage.as_ptr().cast::<BootInfo>();
     unsafe { boot_info_ptr.write(boot_info); }
