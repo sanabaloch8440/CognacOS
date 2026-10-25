@@ -1,9 +1,9 @@
 //! Source-first Rust port of the portable parts of Wine ntdll/exception.c.
 //!
 //! This file implements vectored exception/continue handler registration and
-//! the unhandled-exception filter. Machine-context manipulation, SEH dispatch,
-//! signal integration, and XSAVE/XSTATE routines remain architecture/kernel
-//! integration work and are not falsely emulated here.
+//! the unhandled-exception filter plus CONTEXT_EX/XSTATE sizing, initialization,
+//! feature lookup, masks, and context copying. Full SEH dispatch and hardware
+//! exception/unwind integration remain separate kernel work.
 
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]
@@ -486,4 +486,24 @@ pub unsafe extern "system" fn CognacRtlQueryExtendedFeature(
     *offset = NTDLL_XSTATE_OFFSETS[feature_id as usize].load(Ordering::Acquire);
     *size = NTDLL_XSTATE_SIZES[feature_id as usize].load(Ordering::Acquire);
     STATUS_SUCCESS
+}
+
+
+#[cfg(test)]
+mod xstate_context_layout_tests {
+    use super::*;
+    #[test]
+    fn context_extension_layout_matches_x64_chunk_contract() {
+        assert_eq!(core::mem::size_of::<RTL_CONTEXT_CHUNK>(), 8);
+        assert_eq!(core::mem::size_of::<CONTEXT_EX>(), 24);
+    }
+    #[test]
+    fn native_context_sizes_are_x64_and_x86_sized() {
+        assert_eq!(context_parameters(CONTEXT_AMD64 | 0x1f).unwrap().0, AMD64_CONTEXT_SIZE);
+        assert_eq!(context_parameters(CONTEXT_I386 | 0x7f).unwrap().0, I386_CONTEXT_SIZE);
+    }
+    #[test]
+    fn published_configuration_fits_one_user_page() {
+        assert!(core::mem::size_of::<CognacXStateSharedConfiguration>() <= 4096);
+    }
 }
