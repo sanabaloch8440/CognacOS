@@ -1197,11 +1197,42 @@ mod wdm_tests {
   assert_eq!(unsafe{io_delete_symbolic_link(&mut lower_name)},STATUS_OBJECT_NAME_NOT_FOUND);
  }
 
+ static COMPLETION_CALLBACKS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+ unsafe extern "system" fn counted_completion(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
+  COMPLETION_CALLBACKS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);STATUS_SUCCESS
+ }
+ unsafe extern "system" fn pending_dispatch(_device:*mut DeviceObject,_irp:*mut Irp)->i32 { STATUS_PENDING }
  static CANCEL_CALLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
  unsafe extern "system" fn test_cancel(device:*mut DeviceObject,irp:*mut Irp) {
   if !irp.is_null() { CANCEL_CALLED.store(true,core::sync::atomic::Ordering::Release); }
   let _=device;
  }
+ #[test]
+ fn completion_claim_and_driver_unload_wait_for_outstanding_irp() {
+  COMPLETION_CALLBACKS.store(0,core::sync::atomic::Ordering::Release);
+  UNLOAD_CALLS.store(0,core::sync::atomic::Ordering::Release);
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.driver_unload=Some(counted_driver_unload);
+  driver.major_function[0]=Some(pending_dispatch);
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  unsafe {
+   (*io_get_next_irp_stack_location(irp)).major_function=0;
+   io_set_completion_routine(irp,Some(counted_completion),ptr::null_mut(),1,1,1);
+  }
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
+  // A pending IRP pins its device beyond the return from the dispatch routine.
+  assert_eq!(unsafe{io_unload_driver(&mut driver)},STATUS_PENDING);
+  assert_eq!(UNLOAD_CALLS.load(core::sync::atomic::Ordering::Acquire),0);
+  unsafe{io_complete_request(irp,0);io_complete_request(irp,0);}
+  assert_eq!(COMPLETION_CALLBACKS.load(core::sync::atomic::Ordering::Acquire),1);
+  assert_eq!(unsafe{io_unload_driver(&mut driver)},STATUS_SUCCESS);
+  assert_eq!(UNLOAD_CALLS.load(core::sync::atomic::Ordering::Acquire),1);
+  unsafe{io_free_irp(irp);}
+ }
+
  #[test]
  fn cancel_routine_is_atomically_claimed_and_called_once() {
   CANCEL_CALLED.store(false,core::sync::atomic::Ordering::Release);
