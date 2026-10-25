@@ -1,0 +1,5 @@
+LIBRARY ntdll
+EXPORTS
+    CognacNtdllConfigureSyscalls
+    NtClose
+    NtYieldExecution
