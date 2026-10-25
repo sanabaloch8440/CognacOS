@@ -39,8 +39,7 @@ The native bootstrap currently exports `NtClose`, `NtYieldExecution`, `NtQueryIn
 memory routines (`RtlCompareMemory`, `RtlCompareMemoryUlong`, `RtlCopyMemory`,
 `RtlFillMemory`, `RtlMoveMemory`, `RtlZeroMemory`), CRC32 helpers,
 `RtlIsZeroMemory`, and `RtlGetVersion` (reports Windows 11 build 26100). The
-assembly bridge currently supports four syscall arguments only; it is not yet
-suitable for syscalls requiring stack arguments.
+x64 bridge now marshals up to 17 arguments: the first four use the Windows syscall register convention and arguments five onward are copied into syscall-visible stack slots. `NtQueryInformationProcess` and `NtQueryInformationThread` exercise five-argument calls; `NtQuerySystemInformation` exercises four. The loader can configure the original two service numbers or provide the five-entry `CognacNtdllConfigureSyscallTable` table. This is ABI plumbing only: the kernel must implement the matching service numbers, and stack layout and user-pointer validation still require end-to-end kernel testing.
 
 GitHub Actions builds and checks the PE32+ artifact and validates the helper's
 CLI. This does not claim full Windows 11 compatibility. The remaining work is
