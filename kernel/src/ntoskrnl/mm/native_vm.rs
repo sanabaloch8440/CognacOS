@@ -19,7 +19,7 @@ fn status(e: VmError) -> u64 {
     }
 }
 fn current_root() -> Result<u64, u64> {
-    let pid = crate::thread::current_process_id();
+    let pid = crate::syscall::current_process_id();
     let process = crate::process::eprocess_pointer_for_pid(pid);
     if process.is_null() { return Err(STATUS_INVALID_HANDLE); }
     let root = unsafe { (*process).address_space_root };
@@ -28,6 +28,14 @@ fn current_root() -> Result<u64, u64> {
 }
 fn attached(root: u64) -> Result<AddressSpace, u64> {
     unsafe { AddressSpace::attach_existing(root) }.map_err(status)
+}
+fn region_is_free(space: &AddressSpace, start: u64, length: u64) -> bool {
+    let mut offset = 0;
+    while offset < length {
+        if space.probe_user_range(start + offset, 1, false, false).is_ok() { return false; }
+        offset += PAGE;
+    }
+    true
 }
 /// Args follow the x64 NT ABI: process, base*, zeroBits, size*, type, protect.
 pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
@@ -46,13 +54,15 @@ pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         let start = requested & !(PAGE-1);
         let Some(end) = start.checked_add(rounded) else { return STATUS_INVALID_PARAMETER };
         if start < USER_START || end > USER_END { return STATUS_INVALID_PARAMETER; }
+        let space = match attached(root) { Ok(s)=>s, Err(s)=>return s };
+        if !region_is_free(&space,start,rounded) { return 0xC000_0018; } // STATUS_CONFLICTING_ADDRESSES
         (start,end)
     } else {
         let mut candidate = 0x0000_0001_0000_0000u64;
         let mut found = None;
         while candidate.checked_add(rounded).is_some_and(|e| e < USER_END) {
             let space = match attached(root) { Ok(s)=>s, Err(s)=>return s };
-            if space.probe_user_range(candidate, rounded, false, false).is_err() {
+            if region_is_free(&space,candidate,rounded) {
                 found = Some((candidate,candidate+rounded)); break;
             }
             candidate = match candidate.checked_add(rounded.max(0x10000)) { Some(v)=>v, None=>break };
