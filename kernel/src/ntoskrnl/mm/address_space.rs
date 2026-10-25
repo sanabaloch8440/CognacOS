@@ -42,6 +42,106 @@ impl AddressSpace {
 
     /// Map one user page. Writable+executable mappings are forbidden; loaders
     /// populate pages RW/NX and then transition them to final RX/RO/RW-NX permissions.
+    /// Map the fixed Windows KUSER_SHARED_DATA page without exposing other
+    /// low identity mappings. The low page-table path is privately cloned and
+    /// any large identity pages are split before only this leaf is made user.
+    ///
+    /// # Safety
+    /// physical_address must be an allocated page that remains alive for every
+    /// address space mapping this shared page.
+    pub unsafe fn map_kuser_shared_page(&mut self, virtual_address: u64, physical_address: u64, writable: bool) -> Result<(), VmError> {
+        const TWO_MIB: u64 = 0x20_0000;
+        const ONE_GIB: u64 = 0x4000_0000;
+        const PAT_LARGE: u64 = 1 << 12;
+        if virtual_address != super::user_range::KUSER_SHARED_DATA_ADDRESS
+            || physical_address & (PAGE_SIZE - 1) != 0
+            || physical_address >= 0x1_0000_0000
+        { return Err(VmError::InvalidAddress); }
+        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        let indexes = [
+            ((virtual_address >> 39) & 0x1ff) as usize,
+            ((virtual_address >> 30) & 0x1ff) as usize,
+            ((virtual_address >> 21) & 0x1ff) as usize,
+            ((virtual_address >> 12) & 0x1ff) as usize,
+        ];
+        unsafe fn clone_table(source: u64) -> Result<u64, VmError> {
+            let target = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+            unsafe {
+                core::ptr::copy_nonoverlapping(source as *const u64, target as *mut u64, 512);
+            }
+            Ok(target)
+        }
+        let root = self.root as *mut u64;
+        let pml4_slot = unsafe { root.add(indexes[0]) };
+        let pml4_entry = unsafe { pml4_slot.read() };
+        let pdpt = if pml4_entry & PRESENT == 0 {
+            let page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+            unsafe { pml4_slot.write(page | PRESENT | WRITE | USER); }
+            page
+        } else {
+            if pml4_entry & LARGE != 0 { return Err(VmError::PermissionDenied); }
+            let old_pdpt = pml4_entry & ADDR;
+            let page = unsafe { clone_table(old_pdpt)? };
+            unsafe { pml4_slot.write(page | (pml4_entry & !ADDR) | USER); }
+            page
+        };
+        let pdpt_slot = unsafe { (pdpt as *mut u64).add(indexes[1]) };
+        let pdpt_entry = unsafe { pdpt_slot.read() };
+        let pd = if pdpt_entry & PRESENT == 0 {
+            let page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+            unsafe { pdpt_slot.write(page | PRESENT | WRITE | USER); }
+            page
+        } else if pdpt_entry & LARGE != 0 {
+            let page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+            let base = pdpt_entry & 0x000f_ffff_c000_0000;
+            let pat = pdpt_entry & PAT_LARGE;
+            let flags = pdpt_entry & !(0x000f_ffff_c000_0000 | LARGE | PAT_LARGE);
+            let entries = page as *mut u64;
+            for i in 0..512usize {
+                unsafe { entries.add(i).write(base + i as u64 * TWO_MIB | flags | pat | LARGE); }
+            }
+            unsafe { pdpt_slot.write(page | (pdpt_entry & !(ADDR | LARGE | PAT_LARGE)) | USER); }
+            page
+        } else {
+            let page = unsafe { clone_table(pdpt_entry & ADDR)? };
+            unsafe { pdpt_slot.write(page | (pdpt_entry & !ADDR) | USER); }
+            page
+        };
+        let pd_slot = unsafe { (pd as *mut u64).add(indexes[2]) };
+        let pd_entry = unsafe { pd_slot.read() };
+        let pt = if pd_entry & PRESENT == 0 {
+            let page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+            unsafe { pd_slot.write(page | PRESENT | WRITE | USER); }
+            page
+        } else if pd_entry & LARGE != 0 {
+            let page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+            let base = pd_entry & 0x000f_ffff_ffe0_0000;
+            let pat = pd_entry & PAT_LARGE != 0;
+            let flags = pd_entry & !(0x000f_ffff_ffe0_0000 | LARGE | PAT_LARGE);
+            let entries = page as *mut u64;
+            for i in 0..512usize {
+                let mut entry = base + i as u64 * PAGE_SIZE | flags;
+                if pat { entry |= 1 << 7; }
+                unsafe { entries.add(i).write(entry); }
+            }
+            unsafe { pd_slot.write(page | (pd_entry & !(ADDR | LARGE | PAT_LARGE)) | USER); }
+            page
+        } else {
+            let page = unsafe { clone_table(pd_entry & ADDR)? };
+            unsafe { pd_slot.write(page | (pd_entry & !ADDR) | USER); }
+            page
+        };
+        let leaf = unsafe { (pt as *mut u64).add(indexes[3]) };
+        let mut flags = PRESENT | USER | NX;
+        if writable { flags |= WRITE; }
+        unsafe {
+            leaf.write(physical_address | flags);
+            asm!("invlpg [{}]", in(reg) virtual_address, options(nostack, preserves_flags));
+        }
+        crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
+        Ok(())
+    }
+
     pub unsafe fn map_user_page(&mut self, virtual_address: u64, physical_address: u64,
                                 writable: bool, executable: bool) -> Result<(), VmError> {
         let _address_space_guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
