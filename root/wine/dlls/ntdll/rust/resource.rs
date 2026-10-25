@@ -226,13 +226,6 @@ impl<'a> ResourceImage<'a> {
         }
         let (_, type_child) = self.find_entry(directory, &info.resource_type)?
             .ok_or(STATUS_RESOURCE_TYPE_NOT_FOUND)?;
-        if level == 2 {
-            if want_directory {
-                let offset = self.child_directory(type_child)?;
-                return Ok(ResourceLocation { directory_offset: offset, directory_size: self.resource_size - offset });
-            }
-            return Err(STATUS_INVALID_PARAMETER);
-        }
         directory = self.child_directory(type_child)?;
         let (_, name_child) = self.find_entry(directory, &info.name)?
             .ok_or(STATUS_RESOURCE_NAME_NOT_FOUND)?;
@@ -335,10 +328,10 @@ mod tests {
         // Name directory at root+48, language 0x0409 -> data entry at root+64.
         put16(&mut image, root + 48 + 14, 1);
         put32(&mut image, root + 48 + 16, 0x0409);
-        put32(&mut image, root + 48 + 20, 64);
-        put32(&mut image, root + 64, 200); // payload RVA
-        put32(&mut image, root + 68, 4);
-        put32(&mut image, root + 72, 1200);
+        put32(&mut image, root + 48 + 20, 80);
+        put32(&mut image, root + 80, 200); // payload RVA
+        put32(&mut image, root + 84, 4);
+        put32(&mut image, root + 88, 1200);
         image[200..204].copy_from_slice(b"test");
         image
     }
