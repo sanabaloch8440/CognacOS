@@ -98,7 +98,8 @@ include!("runtime/affinity.rs");
 include!("runtime/timer_dpc_rendezvous.rs");
 
 include!("runtime/process_attach.rs");
-include!("runtime/xstate.rs");
+#[path = "runtime/xstate.rs"] mod xstate;
+pub use xstate::*;
 
 
 #[cfg(test)]
