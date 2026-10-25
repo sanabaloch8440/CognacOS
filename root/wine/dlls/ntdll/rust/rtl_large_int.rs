@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn unicode_conversion_sets_required_length_on_overflow() {
-        let mut storage = [0xaaaa_u16; 4];
+        let mut storage = [0xaaaa_u16; 5];
         let mut descriptor = UNICODE_STRING { Length: 0, MaximumLength: 6, Buffer: storage.as_mut_ptr() };
         let status = unsafe { RtlInt64ToUnicodeString(1234, 10, &mut descriptor) };
         assert_eq!(status, STATUS_BUFFER_OVERFLOW);
@@ -165,7 +165,7 @@ mod tests {
         let status = unsafe { RtlInt64ToUnicodeString(1234, 10, &mut descriptor) };
         assert_eq!(status, STATUS_SUCCESS);
         assert_eq!(descriptor.Length, 8);
-        assert_eq!(&storage, &[b'1' as u16, b'2' as u16, b'3' as u16, b'4' as u16]);
+        assert_eq!(&storage, &[b'1' as u16, b'2' as u16, b'3' as u16, b'4' as u16, 0]);
     }
 
     #[test]
