@@ -124,13 +124,13 @@ fn collapse_dos_path(path: &mut [WCHAR], mark: usize) {
     if capacity == 0 { return; }
     let mut len = path.iter().position(|&c| c == 0).unwrap_or(capacity);
     for ch in &mut path[..len] {
-        if *ch == b'/' as WCHAR { *ch = b'\\\\' as WCHAR; }
+        if *ch == b'/' as WCHAR { *ch = b'\\' as WCHAR; }
     }
 
     // Compact duplicate separators without disturbing the protected prefix.
     let mut write = core::cmp::max(1, mark).min(len);
     for read in write..len {
-        if path[read] != b'\\\\' as WCHAR || write == 0 || path[write - 1] != b'\\\\' as WCHAR {
+        if path[read] != b'\\' as WCHAR || write == 0 || path[write - 1] != b'\\' as WCHAR {
             path[write] = path[read];
             write += 1;
         }
@@ -142,22 +142,22 @@ fn collapse_dos_path(path: &mut [WCHAR], mark: usize) {
     while p < len {
         if path[p] == b'.' as WCHAR {
             let next = path.get(p + 1).copied().unwrap_or(0);
-            if next == b'\\\\' as WCHAR || next == 0 {
+            if next == b'\\' as WCHAR || next == 0 {
                 let is_parent = next != 0 && path.get(p + 2).copied() == Some(b'.' as WCHAR)
-                    && (path.get(p + 3).copied() == Some(b'\\\\' as WCHAR)
+                    && (path.get(p + 3).copied() == Some(b'\\' as WCHAR)
                         || path.get(p + 3).copied().unwrap_or(0) == 0);
-                let is_current = next == b'\\\\' as WCHAR;
+                let is_current = next == b'\\' as WCHAR;
                 if is_current || next == 0 || is_parent {
                     let mut start = p;
                     if is_parent {
                         if start > mark {
                             start -= 1;
-                            while start > mark && path[start - 1] != b'\\\\' as WCHAR { start -= 1; }
+                            while start > mark && path[start - 1] != b'\\' as WCHAR { start -= 1; }
                         }
                         let mut end = p + 3;
-                        if path.get(end).copied() == Some(b'\\\\' as WCHAR) { end += 1; }
+                        if path.get(end).copied() == Some(b'\\' as WCHAR) { end += 1; }
                         if path.get(p + 3).copied().unwrap_or(0) == 0 {
-                            if start > mark && path[start - 1] == b'\\\\' as WCHAR { start -= 1; }
+                            if start > mark && path[start - 1] == b'\\' as WCHAR { start -= 1; }
                             path[start] = 0;
                             len = start;
                             break;
@@ -172,7 +172,7 @@ fn collapse_dos_path(path: &mut [WCHAR], mark: usize) {
                         break;
                     } else {
                         let mut end = p + 2;
-                        while end < len && path[end] == b'\\\\' as WCHAR { end += 1; }
+                        while end < len && path[end] == b'\\' as WCHAR { end += 1; }
                         let tail = len - end;
                         path.copy_within(end..end + tail, p);
                         len -= end - p;
@@ -183,7 +183,7 @@ fn collapse_dos_path(path: &mut [WCHAR], mark: usize) {
                 }
             }
         }
-        while p < len && path[p] != b'\\\\' as WCHAR { p += 1; }
+        while p < len && path[p] != b'\\' as WCHAR { p += 1; }
         if p < len {
             if p > mark && path[p - 1] == b'.' as WCHAR {
                 path.copy_within(p..len, p - 1);

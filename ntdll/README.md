@@ -5,7 +5,7 @@ This directory is the canonical home for the in-progress Rust NTDLL port.
 ## Compile
 
 ```sh
-cargo check --manifest-path ntdll/Cargo.toml --all-targets
+cargo check --manifest-path ntdll/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
 ```
 
 The CI workflow runs this check on pushes and pull requests that touch `ntdll/**`.
@@ -22,6 +22,5 @@ The existing freestanding PE32+ bootstrap and QEMU smoke test remain under
   does not prove that the modules can be linked together without export-symbol
   collisions, that the resulting PE exports match Windows 11, or that NTDLL
   passes QEMU/Windows runtime tests.
-- The production integration phase must define a stable module ABI, resolve
-  duplicate exported symbols, and link the Rust object code into the native
-  PE32+ build before claiming runtime coverage.
+- The active PE export definition is `ntdll/exports/ntdll-x64.def`; it is passed to the native linker by `root/wine/dlls/ntdll/Makefile.cognac`. The table exports named Windows-style APIs currently implemented by the native C/assembly bootstrap. Rust modules are not linked into that PE yet, so their `#[no_mangle]` symbols must not be advertised as DLL exports until Rust objects are linked and ABI-tested.
+- Windows NTDLL export ordinals vary by Windows build; this project deliberately avoids assigning guessed ordinals. The export-table checker validates unique names and required core exports.

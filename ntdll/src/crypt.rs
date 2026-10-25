@@ -124,7 +124,7 @@ pub unsafe extern "system" fn A_SHAUpdate(
     if ctx.Count[1] < old_low { ctx.Count[0] = ctx.Count[0].wrapping_add(1); }
     ctx.Count[0] = ctx.Count[0].wrapping_add(buffer_size >> 29);
 
-    if buffered + buffer_size as usize < 64 {
+    if buffered + (buffer_size as usize) < 64 {
         unsafe { copy_bytes(ctx.Buffer.as_mut_ptr().add(buffered), buffer, buffer_size as usize); }
         return;
     }

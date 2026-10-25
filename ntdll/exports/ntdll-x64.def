@@ -1,0 +1,72 @@
+; CognacOS native x86-64 NTDLL named-export table.
+; This is the export definition linked into ntdll.dll by Makefile.cognac.
+; Keep entries limited to APIs implemented by the native C/assembly objects.
+; Do not guess Windows ordinals: those can vary between Windows builds.
+LIBRARY ntdll
+EXPORTS
+    NtClose
+    NtOpenKey
+    NtQueryValueKey
+    NtYieldExecution
+    NtQueryInformationProcess
+    NtQueryInformationThread
+    NtQuerySystemInformation
+    RtlCompareMemory
+    RtlCompareMemoryUlong
+    RtlComputeCrc32
+    RtlCrc32
+    RtlIsZeroMemory
+    RtlGetVersion
+    RtlCopyMemory
+    RtlFillMemory
+    RtlMoveMemory
+    RtlZeroMemory
+    RtlInitAnsiString
+    RtlInitUnicodeString
+    RtlCompareString
+    RtlEqualString
+    RtlCompareUnicodeString
+    RtlEqualUnicodeString
+    RtlCopyUnicodeString
+    RtlUnicodeStringToInteger
+    RtlIntegerToUnicodeString
+    RtlGetNtVersionNumbers
+    RtlNtStatusToDosError
+    RtlNtStatusToDosErrorNoTeb
+    RtlGetProcessHeap
+    RtlAllocateHeap
+    RtlFreeHeap
+    RtlReAllocateHeap
+    RtlSizeHeap
+    RtlValidateHeap
+    CognacNtdllProcessHeapObject DATA
+    RtlGetCurrentPeb
+    RtlReleasePebLock
+    RtlAcquirePebLock
+    RtlLeaveCriticalSection
+    RtlEnterCriticalSection
+    RtlGetCurrentTeb
+    RtlGetLastWin32Error
+    RtlSetLastWin32Error
+    RtlGetLastNtStatus
+    RtlSetLastWin32ErrorAndNtStatusFromNtStatus
+    LdrGetProcedureAddress
+    LdrGetDllHandle
+    _vsnprintf
+    _vsnwprintf
+    _vscprintf
+    _vscwprintf
+    _snprintf
+    _snwprintf
+    _vsnprintf_s
+    _vsnwprintf_s
+    _snprintf_s
+    _snwprintf_s
+    vsprintf
+    vsprintf_s
+    _vswprintf
+    vswprintf_s
+    sprintf
+    sprintf_s
+    swprintf
+    swprintf_s
