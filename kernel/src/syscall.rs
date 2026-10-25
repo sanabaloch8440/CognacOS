@@ -247,18 +247,11 @@ cognacos_windows_syscall_entry:
     mov qword ptr gs:[24], rdx
     mov rax, qword ptr gs:[8]
     mov rdx, rax
-    shr rdx, 32
-    test edx, edx
-    jz .Lwindows_stack_low
-    cmp edx, 1
+    shr rdx, 48
+    cmp dx, 0xffff
     jne .Lwindows_stack_bad
-    test eax, eax
-    jne .Lwindows_stack_bad
-    jmp .Lwindows_stack_valid
-.Lwindows_stack_low:
     test eax, 0xfff
     jne .Lwindows_stack_bad
-.Lwindows_stack_valid:
     mov al, 'T'
     jmp .Lwindows_stack_marker
 .Lwindows_stack_bad:
@@ -340,7 +333,8 @@ pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
     let local = unsafe { core::ptr::addr_of_mut!(WINDOWS_SYSCALL_CPUS[cpu]) };
     unsafe {
         if (*local).stack_page != 0 {
-            (*local).kernel_rsp = (*local).stack_page + 4096;
+            let stack_base = crate::ntoskrnl::mm::physical::direct_map_address((*local).stack_page).ok_or(())?;
+            (*local).kernel_rsp = stack_base + 4096;
         }
     }
     unsafe {
@@ -386,11 +380,12 @@ pub unsafe fn prepare_windows_syscall_stack(cpu: usize) -> Result<(), ()> {
     let local = unsafe { core::ptr::addr_of_mut!(WINDOWS_SYSCALL_CPUS[cpu]) };
     unsafe {
         if (*local).stack_page == 0 {
-            let page = crate::memory::allocate_page().map_err(|_| ())?;
-            if page == 0 || page >= 0x1_0000_0000 { return Err(()); }
+            let page = crate::ntoskrnl::mm::physical::allocate_data_page().map_err(|_| ())?;
+            if page == 0 { return Err(()); }
             (*local).stack_page = page;
         }
-        (*local).kernel_rsp = (*local).stack_page + 4096;
+        let stack_base = crate::ntoskrnl::mm::physical::direct_map_address((*local).stack_page).ok_or(())?;
+        (*local).kernel_rsp = stack_base + 4096;
         if (*local).kernel_rsp == 0 { return Err(()); }
     }
     Ok(())
