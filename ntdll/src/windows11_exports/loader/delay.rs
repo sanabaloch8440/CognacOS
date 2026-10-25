@@ -1,4 +1,6 @@
 use super::*;
+use super::search::{append_search_component, LOAD_WITH_ALTERED_SEARCH_PATH, MAX_BUILT_SEARCH_PATH_UNITS};
+use super::notifications::{delay_directory, image_ascii_string, IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT, IMAGE_ORDINAL_FLAG64, MAX_DELAY_IMPORTS};
 
 /// Resolve one delay-import thunk in an already mapped PE32+ image. Dependency
 /// mapping is delegated to LdrLoadDll; until that service can map new files, this
