@@ -303,3 +303,8 @@ pub const EXPORTS: &[(&str, u16)] = &[
 pub(crate) mod arch;
 // Runtime implementations are kept under ntoskrnl/ke/runtime.rs.
 pub(crate) mod runtime;
+
+// Core executive runtime subsystems, kept under the NT kernel's Ke component.
+pub(crate) mod dispatcher;
+pub(crate) mod scheduler;
+pub(crate) mod thread;

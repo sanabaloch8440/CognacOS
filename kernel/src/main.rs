@@ -17,9 +17,7 @@ use cognacos_pci as pci;
 mod dma;
 mod hal;
 mod smp;
-mod scheduler;
-mod dispatcher;
-mod thread;
+pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 mod object;
 #[path = "ntoskrnl/io/runtime.rs"]
 pub(crate) mod io;
