@@ -36,6 +36,7 @@ check: $(OUTPUT)
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtClose'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtYieldExecution'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlCompareMemory'
+	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlGetVersion'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'CognacNtdllConfigureSyscalls'
 	! $(OBJDUMP) -p $(OUTPUT) | grep -q 'DLL Name:'
 
