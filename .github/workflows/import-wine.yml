@@ -1,0 +1,58 @@
+name: Import Wine source
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/import-wine.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: import-wine-source
+  cancel-in-progress: false
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out CognacOS
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download pinned Wine source archive (without Git history)
+        env:
+          WINE_COMMIT: e3c3d348676128bc745c40aa6397b51951ef1cd6
+        run: |
+          set -euo pipefail
+          test ! -e root/wine || {
+            echo "::error::root/wine already exists; refusing to merge over existing files."
+            exit 1
+          }
+          mkdir -p root/wine
+          curl --fail --location --retry 3 \
+            "https://codeload.github.com/wine-mirror/wine/tar.gz/${WINE_COMMIT}" \
+            --output /tmp/wine-source.tar.gz
+          tar -xzf /tmp/wine-source.tar.gz --strip-components=1 -C root/wine
+          test -f root/wine/LICENSE
+          test ! -e root/wine/.git
+          printf '%s\n' \
+            "Upstream: https://github.com/wine-mirror/wine" \
+            "Imported commit: ${WINE_COMMIT}" \
+            "Import method: source archive; upstream Git history intentionally omitted." \
+            > root/wine/COGNACOS_IMPORT_INFO.txt
+
+      - name: Commit imported source to main
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add root/wine
+          if git diff --cached --quiet; then
+            echo "No Wine source changes to commit."
+            exit 0
+          fi
+          git commit -m "vendor: import Wine source under root/wine"
+          git push origin HEAD:main
