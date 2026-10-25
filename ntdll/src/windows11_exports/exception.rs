@@ -224,26 +224,45 @@ pub unsafe extern "system" fn RtlLookupFunctionEntry(
 #[no_mangle]
 pub unsafe extern "system" fn RtlRaiseException(record: *mut EXCEPTION_RECORD) {
     if record.is_null() { return; }
-    // Dispatching software exceptions requires the native thread exception path.
-    let _ = record;
+    let mut context: CONTEXT = core::mem::zeroed();
+    RtlCaptureContext(&mut context);
+    if (*record).ExceptionAddress.is_null() {
+        (*record).ExceptionAddress = context.Rip as *mut c_void;
+    }
+    let _ = NtRaiseException(record, &context, 1);
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlRaiseExceptionForReturnAddressHijack() { }
+pub unsafe extern "system" fn RtlRaiseExceptionForReturnAddressHijack() {
+    RtlRaiseStatus(STATUS_BAD_STACK);
+}
 #[no_mangle]
 pub unsafe extern "system" fn RtlRaiseNoncontinuableException(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT) {
     if record.is_null() { return; }
     (*record).ExceptionFlags |= EXCEPTION_NONCONTINUABLE;
-    let _ = context;
+    if context.is_null() {
+        let mut captured: CONTEXT = core::mem::zeroed();
+        RtlCaptureContext(&mut captured);
+        let _ = NtRaiseException(record, &captured, 1);
+    } else {
+        let _ = NtRaiseException(record, context, 1);
+    }
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlRaiseStatus(_status: i32) { }
-#[no_mangle]
-pub unsafe extern "system" fn RtlReportException(_record: *mut EXCEPTION_RECORD, _context: *mut CONTEXT, _flags: u32) -> i32 {
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn RtlRaiseStatus(status: i32) {
+    let mut record: EXCEPTION_RECORD = core::mem::zeroed();
+    record.ExceptionCode = status as u32;
+    let mut context: CONTEXT = core::mem::zeroed();
+    RtlCaptureContext(&mut context);
+    record.ExceptionAddress = context.Rip as *mut c_void;
+    let _ = NtRaiseException(&record, &context, 1);
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlReportExceptionEx(_record: *mut EXCEPTION_RECORD, _context: *mut CONTEXT, _flags: u32, _nested: u8) -> i32 {
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn RtlReportException(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT, _flags: u32) -> i32 {
+    if record.is_null() || context.is_null() { STATUS_INVALID_PARAMETER } else { STATUS_NOT_IMPLEMENTED }
+}
+#[no_mangle]
+pub unsafe extern "system" fn RtlReportExceptionEx(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT, _flags: u32, _nested: u8) -> i32 {
+    if record.is_null() || context.is_null() { STATUS_INVALID_PARAMETER } else { STATUS_NOT_IMPLEMENTED }
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlRestoreContext(_context: *const CONTEXT, _record: *const EXCEPTION_RECORD) {
