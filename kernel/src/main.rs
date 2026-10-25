@@ -710,7 +710,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // Activate processor-enforced baseline mitigations only after the
         // kernel-owned page tables are live. NXE prepares the CPU to honor NX
         // PTE bits; strict per-page NX/W^X mappings are a subsequent step.
-        let mitigations = security::initialize();
+        let mitigations = ntoskrnl::ke::mitigations::initialize();
         serial_write(b"Security: CR0.WP ");
         serial_write(if mitigations.write_protect { b"enabled\r\n" } else { b"FAILED\r\n" });
         serial_write(b"Security: NX ");
