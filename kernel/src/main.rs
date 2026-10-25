@@ -235,7 +235,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"UEFI boot services exited successfully.\r\n");
-        serial_write(b"Boot information version: 8\r\n");
+        serial_write(b"Boot information version: 9\r\n");
         if info.security_flags & (1 << 6) == 0 {
             serial_write(b"FATAL: bootloader did not attest kernel code signature verification.\r\n");
             halt();
