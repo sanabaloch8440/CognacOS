@@ -240,9 +240,14 @@ pub unsafe extern "system" fn NtFreeVirtualMemory(process_handle: HANDLE, base_a
     if process_handle != COGNAC_NT_CURRENT_PROCESS { return 0xC000_0008u32 as i32; }
     if free_type != MEM_DECOMMIT && free_type != MEM_RELEASE { return STATUS_INVALID_PARAMETER; }
     let old_base = unsafe { ptr::read_unaligned(base_address) };
-    let old_size = unsafe { ptr::read_unaligned(region_size) };
+    let mut callback_size = unsafe { ptr::read_unaligned(region_size) };
+    if free_type == MEM_RELEASE && callback_size == 0 && !old_base.is_null() {
+        let mut info = core::mem::MaybeUninit::<MEMORY_BASIC_INFORMATION>::zeroed();
+        let query_status = unsafe { NtQueryVirtualMemory(process_handle, old_base, MEMORY_BASIC_INFORMATION_CLASS, info.as_mut_ptr().cast(), core::mem::size_of::<MEMORY_BASIC_INFORMATION>(), ptr::null_mut()) };
+        if query_status >= 0 { callback_size = unsafe { (*info.as_ptr()).region_size }; }
+    }
     let status = unsafe { cognacos_nt_free_virtual_memory(process_handle, base_address, region_size, free_type) };
-    if status >= 0 { notify_secure_cache_callbacks(old_base, old_size); }
+    if status >= 0 { notify_secure_cache_callbacks(old_base, callback_size); }
     status
 }
 #[no_mangle]
