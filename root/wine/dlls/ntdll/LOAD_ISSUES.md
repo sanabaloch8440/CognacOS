@@ -248,3 +248,32 @@ now requires the explicit log marker
 **Validation status:** pending the new GitHub Actions/QEMU run. This restores
 execution of the native bootstrap subset; it does not imply that the full
 Windows NTDLL export surface or complete Windows process runtime is implemented.
+
+
+### NTDLL-LOAD-019 — smoke cleanup double-destroyed the address space
+
+**Observed in QEMU:** the native NTDLL ring-3 wrapper smoke completed, but the
+boot then failed with `native NTDLL cleanup failed`. The user-mode runner's
+`cleanup_process` already unregisters the loaded modules, destroys the process
+address space, and reaps the process. The boot path attempted to destroy that
+same address space a second time.
+
+**Fix committed:** the native and stock-Windows smoke branches now leave
+address-space cleanup to `run_loaded_image`; the map-only unsupported-image
+branch retains its own cleanup. This was reproduced in
+[Actions run 40183393568](https://github.com/umarfarooq7869/CognacOS/actions/runs/40183393568)
+and corrected in commit `28f075e`. The next run passed the native ring-3 smoke
+and proceeded to the SMP stress matrix.
+
+### NTDLL-LOAD-020 — native RTL string and status helper expansion
+
+**Implemented:** added native exports for ANSI/Unicode string initialization,
+comparison, Unicode copying, Unicode-string/integer conversion, NT version
+numbers, and NTSTATUS-to-Win32-error conversion. QEMU smoke calls the actual
+mapped export addresses and validates outputs. The initial string API test set
+passed in [Actions run 40183506729](https://github.com/umarfarooq7869/CognacOS/actions/runs/40183506729).
+The additional version/status tests are awaiting the latest workflow result.
+
+**Known limitations:** case-insensitive string comparison folds ASCII only;
+the status mapping covers only a small explicit set; these exports are not a
+substitute for Wine's full NTDLL runtime or Microsoft's complete export ABI.
