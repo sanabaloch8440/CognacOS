@@ -517,7 +517,7 @@ mod tests {
             entry.Linkage.Blink = ptr::addr_of_mut!(entry.Linkage);
             let mut context = RTL_DYNAMIC_HASH_TABLE_CONTEXT { ChainHead: ptr::null_mut(), PrevLinkage: ptr::null_mut(), Signature: 0 };
             assert_eq!(RtlInsertEntryHashTable(table, &mut entry, 0x1234, &mut context), 1);
-            assert_eq!(RtlLookupEntryHashTable(table, 0x1234, &mut context), &mut entry);
+            assert_eq!(RtlLookupEntryHashTable(table, 0x1234, &mut context), &mut entry as *mut _);
             assert_eq!((*table).NumEntries, 1);
             assert_eq!(RtlExpandHashTable(table), 1);
             assert_eq!(RtlLookupEntryHashTable(table, 0x1234, &mut context), &mut entry);
