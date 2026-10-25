@@ -77,14 +77,20 @@ pub unsafe fn register(space:&AddressSpace,image:LoadedImage,tls_rva:u32,tls_siz
     let _guard=RuntimeGuard::acquire();
     let state=unsafe{&mut *STORE.0.get()};
     if state.2.checked_add(function_count).is_none_or(|n|n>MAX_RUNTIME_FUNCTIONS){return Err(RuntimeError::TooManyFunctions);}
-    let Some(slot)=state.0.iter_mut().find(|r|!r.used||r.base==image.base)else{return Err(RuntimeError::TooManyImages);};
-    // Append only after all entries and destination capacity are validated.
+    let Some(slot_index)=state.0.iter().position(|r|!r.used||r.base==image.base)else{return Err(RuntimeError::TooManyImages);};
+    // Append only after all entries and destination capacity are validated. Roll
+    // back the visible count if the mapped user image changes during the copy.
+    let old_count=state.2;
     for i in 0..function_count {
         let r=pdata_rva+(i*12) as u32;
-        state.1[state.2]=RuntimeFunction{image_base:image.base,begin:u32_at(space,image.base,r)?,end:u32_at(space,image.base,r+4)?,unwind_info:u32_at(space,image.base,r+8)?};
-        state.2+=1;
+        let entry=RuntimeFunction{image_base:image.base,begin:u32_at(space,image.base,r)?,end:u32_at(space,image.base,r+4)?,unwind_info:u32_at(space,image.base,r+8)?};
+        if entry.begin>=entry.end||entry.end>image.image_size||entry.unwind_info>=image.image_size||entry.unwind_info&3!=0 {
+            state.2=old_count;
+            return Err(RuntimeError::InvalidDirectory);
+        }
+        state.1[state.2]=entry;state.2+=1;
     }
-    *slot=ImageRecord{used:true,..rec};
+    state.0[slot_index]=ImageRecord{used:true,..rec};
     Ok(ImageRuntime{base:image.base,tls_callbacks:rec.callbacks,tls_count:rec.callback_count,tls_template_start:rec.tls_template_start,tls_template_size:rec.tls_template_size,tls_index_address:rec.tls_index_address,tls_zero_fill:rec.tls_zero_fill,pdata_rva:rec.pdata_rva,pdata_size:rec.pdata_size})
 }
 /// Find a function table entry for a control PC. UNWIND_INFO interpretation is separate.
