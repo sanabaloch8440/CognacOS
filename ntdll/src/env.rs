@@ -203,7 +203,7 @@ pub unsafe extern "system" fn RtlCreateEnvironment(
     STATUS_SUCCESS
 }
 
-#[no_mangle]
+// Internal legacy helper; the ABI export is owned by windows11_exports::env.
 pub unsafe extern "system" fn RtlDestroyEnvironment(environment: *mut WCHAR) -> NTSTATUS {
     free(environment.cast::<c_void>());
     STATUS_SUCCESS
