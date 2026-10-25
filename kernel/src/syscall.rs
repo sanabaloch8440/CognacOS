@@ -394,7 +394,7 @@ pub fn windows_service_table_matches(image: &[u8]) -> bool {
     let Some(opt) = pe.checked_add(24) else { return false; };
     if coff.checked_add(20).is_none_or(|end| end > image.len())
         || opt.checked_add(68).is_none_or(|end| end > image.len())
-        || image.get(pe..pe.saturating_add(4)) != Some(b"PE\\0\\0".as_slice())
+        || image.get(pe..pe.saturating_add(4)) != Some(b"PE\0\0".as_slice())
     { return false; }
     let machine = u16::from_le_bytes([image[coff], image[coff + 1]]);
     let timestamp = u32::from_le_bytes(image[coff + 4..coff + 8].try_into().unwrap());
