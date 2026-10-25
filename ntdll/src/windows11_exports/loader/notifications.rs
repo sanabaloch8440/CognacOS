@@ -1,4 +1,5 @@
 use super::*;
+use super::resources::{DLL_NOTIFICATIONS, MAX_DLL_NOTIFICATIONS, Notification};
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrRegisterDllNotification(
@@ -174,7 +175,7 @@ pub struct RTL_PROCESS_MODULES {
     pub NumberOfModules: ULONG,
     pub Modules: [RTL_PROCESS_MODULE_INFORMATION; 1],
 }
-const RTL_PROCESS_MODULE_INFORMATION_SIZE: usize = core::mem::size_of::<RTL_PROCESS_MODULE_INFORMATION>();
+pub(super) const RTL_PROCESS_MODULE_INFORMATION_SIZE: usize = core::mem::size_of::<RTL_PROCESS_MODULE_INFORMATION>();
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrQueryProcessModuleInformation(
@@ -280,9 +281,9 @@ pub unsafe extern "system" fn LdrResGetRCConfig(module: PVOID, directory_out: *m
 }
 
 
-const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT: usize = 13;
-const IMAGE_ORDINAL_FLAG64: u64 = 1u64 << 63;
-const MAX_DELAY_IMPORTS: usize = 4096;
+pub(super) const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT: usize = 13;
+pub(super) const IMAGE_ORDINAL_FLAG64: u64 = 1u64 << 63;
+pub(super) const MAX_DELAY_IMPORTS: usize = 4096;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -297,7 +298,7 @@ pub struct IMAGE_DELAYLOAD_DESCRIPTOR {
     pub TimeDateStamp: u32,
 }
 
-unsafe fn delay_directory(module: PVOID) -> Result<(usize, usize, usize), NTSTATUS> {
+pub(super) unsafe fn delay_directory(module: PVOID) -> Result<(usize, usize, usize), NTSTATUS> {
     let (base, image_size, _) = unsafe { mapped_image_info(module) }?;
     let raw = base as *const u8;
     let nt = unsafe { ptr::read_unaligned(raw.add(0x3c).cast::<u32>()) } as usize;
@@ -318,7 +319,7 @@ unsafe fn delay_directory(module: PVOID) -> Result<(usize, usize, usize), NTSTAT
     Ok((base, image_size, rva))
 }
 
-unsafe fn image_ascii_string(base: usize, image_size: usize, rva: usize, out: &mut [u8]) -> Result<usize, NTSTATUS> {
+pub(super) unsafe fn image_ascii_string(base: usize, image_size: usize, rva: usize, out: &mut [u8]) -> Result<usize, NTSTATUS> {
     if rva >= image_size || out.is_empty() { return Err(STATUS_INVALID_PARAMETER); }
     for i in 0..core::cmp::min(out.len(), image_size - rva) {
         let ch = unsafe { ptr::read_unaligned((base + rva + i) as *const u8) };
