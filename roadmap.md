@@ -100,8 +100,9 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [ ] Complete Windows loader, user-mode DLL/syscall compatibility, unwind/SEH, and process lifecycle integration.
 
 ## Milestone 7 — Windows 11 x64 routine compatibility
-- [x] Expand the freestanding native NTDLL x64 syscall bridge to marshal up to 17 arguments, preserve nonvolatile registers, and expose `NtQueryInformationProcess`, `NtQueryInformationThread`, and `NtQuerySystemInformation` plus a five-entry syscall configuration API. Native NTDLL CI builds the bridge and checks the export table; kernel service mapping and end-to-end stack-argument/user-pointer tests remain unvalidated.
-- [ ] Validate the syscall bridge against the native kernel dispatcher in QEMU, including arguments five through seventeen, invalid user buffers, unknown service IDs, and concurrent initialization/configuration.
+- [x] Connect native NTDLL wrappers to NTOSKRNL through CognacOS DPL3 interrupt vector `0x82`; dispatch `NtClose`, `NtYieldExecution`, and basic process/thread/system information classes to real kernel subsystems using internal service IDs `0x100`–`0x104`.
+- [x] Add a boot/QEMU dispatcher self-test for five-argument process queries, invalid user output buffers, unsupported service IDs, and the bounded 17-argument stack-copy path.
+- [ ] Run and inspect the latest QEMU workflow on the committed revision; test the loaded native NTDLL PE end-to-end from CPL3, and stress concurrent configuration and user-buffer mapping races. The current boot test calls the same dispatcher/copy helpers directly and does not yet prove the NTDLL DLL itself was loaded and invoked.
 
 - [x] Implement and resolve native NTOSKRNL RTL memory exports present in the pinned Windows 11 manifest: copy/move/fill/zero, prefix and ULONG comparisons, CRC32, zero-memory testing, and unsigned multiply-high. Correct the `RtlCompareMemoryUlong` return width to Windows `ULONG` and CRC length parameters to unsigned `ULONG`. Internal helpers for ULONG-pattern fill and volatile memory operations remain callable only by kernel code until their export status is confirmed in the pinned manifest. Regression tests are now part of CI; a new CI run is still required before treating them as passing.
 
