@@ -61,6 +61,33 @@ NTSTATUS NTAPI NtYieldExecution(void)
     return CognacNtSyscall4(number, 0, 0, 0, 0);
 }
 
+
+/* ABI-compatible prefix/layout of RTL_OSVERSIONINFOW from winternl.h. */
+typedef struct _COGNAC_RTL_OSVERSIONINFOW {
+    ULONG dwOSVersionInfoSize;
+    ULONG dwMajorVersion;
+    ULONG dwMinorVersion;
+    ULONG dwBuildNumber;
+    ULONG dwPlatformId;
+    WCHAR szCSDVersion[128];
+} COGNAC_RTL_OSVERSIONINFOW;
+
+__declspec(dllexport)
+NTSTATUS NTAPI RtlGetVersion(COGNAC_RTL_OSVERSIONINFOW *version)
+{
+    ULONG i;
+
+    if (!version || version->dwOSVersionInfoSize < sizeof(*version))
+        return STATUS_INVALID_PARAMETER;
+
+    version->dwMajorVersion = 10;
+    version->dwMinorVersion = 0;
+    version->dwBuildNumber = 26100;
+    version->dwPlatformId = 2; /* VER_PLATFORM_WIN32_NT */
+    for (i = 0; i < 128; ++i) version->szCSDVersion[i] = 0;
+    return STATUS_SUCCESS;
+}
+
 /* The loader entry point must not initialize Wine or call another DLL. */
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
