@@ -19,6 +19,21 @@ typedef uint8_t BYTE;
 typedef uint8_t UCHAR;
 typedef uint8_t BOOLEAN;
 typedef uint16_t WCHAR;
+typedef uint16_t USHORT;
+
+typedef struct _COGNAC_ANSI_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    char *Buffer;
+} COGNAC_ANSI_STRING, *PCOGNAC_ANSI_STRING;
+typedef const COGNAC_ANSI_STRING *PCCOGNAC_ANSI_STRING;
+
+typedef struct _COGNAC_UNICODE_STRING {
+    USHORT Length;
+    USHORT MaximumLength;
+    WCHAR *Buffer;
+} COGNAC_UNICODE_STRING, *PCOGNAC_UNICODE_STRING;
+typedef const COGNAC_UNICODE_STRING *PCCOGNAC_UNICODE_STRING;
 typedef void *HANDLE;
 typedef void *HINSTANCE;
 typedef void *LPVOID;
