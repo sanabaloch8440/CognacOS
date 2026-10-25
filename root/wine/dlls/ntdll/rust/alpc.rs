@@ -109,7 +109,7 @@ pub extern "system" fn AlpcGetHeaderSize(attribute_flags: ULONG) -> SIZE_T {
     ATTRIBUTE_SIZES.iter().fold(
         size_of::<ALPC_MESSAGE_ATTRIBUTES>(),
         |total, (flag, size)| {
-            if attribute_flags & flag != 0 { total + size } else { total }
+            if attribute_flags & *flag != 0 { total + *size } else { total }
         },
     )
 }
@@ -195,7 +195,7 @@ mod tests {
         );
         assert_eq!(
             AlpcGetHeaderSize(ALPC_MESSAGE_ATTRIBUTE_ALL | 1),
-            ATTRIBUTE_SIZES.iter().map(|(_, size)| size).sum::<usize>()
+            ATTRIBUTE_SIZES.iter().map(|(_, size)| *size).sum::<usize>()
                 + size_of::<ALPC_MESSAGE_ATTRIBUTES>()
         );
     }
