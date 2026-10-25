@@ -88,7 +88,7 @@ unsafe extern "C" {
 }
 
 pub unsafe fn initialize() {
-    unsafe { crate::ntoskrnl::ke::arch::install_user_gate(0x82, rdotos_process_exit_stub as usize as u64); }
+    unsafe { crate::ntoskrnl::ke::arch::install_user_gate(0x83, rdotos_process_exit_stub as usize as u64); }
 }
 
 fn initialize_tls_block(
@@ -156,7 +156,7 @@ fn callback_trampoline(callback: u64, image_base: u64) -> [u8; 40] {
     b[24..32].copy_from_slice(&callback.to_le_bytes());
     b[32..34].copy_from_slice(&[0xff,0xd0]);
     b[34..37].copy_from_slice(&[0x48,0x83,0xc4]);
-    b[37]=0x20; b[38]=0xcd; b[39]=0x82;
+    b[37]=0x20; b[38]=0xcd; b[39]=0x83;
     b
 }
 
