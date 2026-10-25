@@ -737,7 +737,7 @@ pub unsafe extern "system" fn LdrAccessResource(
     let image_base = base;
     let expected_start = image_base.saturating_add(resource_rva);
     let expected_end = expected_start.checked_add(resource_size);
-    if resource_rva == 0 || expected_end.is_none_or(|end| entry_address < expected_start || entry_address.checked_add(16).is_none_or(|entry_end| entry_end > end)) {
+    if resource_rva == 0 || expected_end.map_or(true, |end| entry_address < expected_start || entry_address.checked_add(16).map_or(true, |entry_end| entry_end > end)) {
         return STATUS_INVALID_PARAMETER;
     }
     let rva = unsafe { ptr::read_unaligned(ptr::addr_of!((*resource_data_entry).OffsetToData)) } as usize;
@@ -999,6 +999,56 @@ mod tests {
     fn default_search_flags_are_validated() {
         assert_eq!(unsafe { LdrSetDefaultDllDirectories(0) }, STATUS_INVALID_PARAMETER);
         assert_eq!(unsafe { LdrSetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_DEFAULT_DIRS) }, STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn mapped_pe_resource_lookup_and_access_are_bounded() {
+        let mut image = [0u8; 0x3000];
+        image[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
+        image[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        image[0x80..0x84].copy_from_slice(b"PE\\0\\0");
+        image[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+        image[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+        let opt = 0x98;
+        image[opt..opt+2].copy_from_slice(&0x20bu16.to_le_bytes());
+        image[opt+56..opt+60].copy_from_slice(&(image.len() as u32).to_le_bytes());
+        image[opt+108..opt+112].copy_from_slice(&16u32.to_le_bytes());
+        image[opt+112+16..opt+112+20].copy_from_slice(&0x2000u32.to_le_bytes());
+        image[opt+112+20..opt+112+24].copy_from_slice(&0x1000u32.to_le_bytes());
+        // Three resource-directory levels: type 10, name 1, language 0x409.
+        image[0x2000+14..0x2000+16].copy_from_slice(&1u16.to_le_bytes());
+        image[0x2010..0x2014].copy_from_slice(&10u32.to_le_bytes());
+        image[0x2014..0x2018].copy_from_slice(&0x8000_0020u32.to_le_bytes());
+        image[0x2020+14..0x2020+16].copy_from_slice(&1u16.to_le_bytes());
+        image[0x2030..0x2034].copy_from_slice(&1u32.to_le_bytes());
+        image[0x2034..0x2038].copy_from_slice(&0x8000_0040u32.to_le_bytes());
+        image[0x2040+14..0x2040+16].copy_from_slice(&1u16.to_le_bytes());
+        image[0x2050..0x2054].copy_from_slice(&0x409u32.to_le_bytes());
+        image[0x2054..0x2058].copy_from_slice(&0x60u32.to_le_bytes());
+        image[0x2060..0x2064].copy_from_slice(&0x2100u32.to_le_bytes());
+        image[0x2064..0x2068].copy_from_slice(&4u32.to_le_bytes());
+        image[0x2100..0x2104].copy_from_slice(b"TEST");
+        let info = LDR_RESOURCE_INFO { Type: 10, Name: 1, Language: 0x409 };
+        let mut entry = ptr::null_mut();
+        assert_eq!(unsafe { LdrFindResource_U(image.as_mut_ptr().cast(), &info, 3, &mut entry) }, STATUS_SUCCESS);
+        assert!(!entry.is_null());
+        let mut address = ptr::null_mut();
+        let mut size = 0;
+        assert_eq!(unsafe { LdrAccessResource(image.as_mut_ptr().cast(), entry, &mut address, &mut size) }, STATUS_SUCCESS);
+        assert_eq!(size, 4);
+        assert_eq!(unsafe { core::slice::from_raw_parts(address.cast::<u8>(), size as usize) }, b"TEST");
+        assert_eq!(unsafe { LdrFindResource_U(image.as_mut_ptr().cast(), &info, 4, &mut entry) }, STATUS_INVALID_PARAMETER);
+    }
+
+    unsafe extern "system" fn notification_callback(_reason: ULONG, _data: *const c_void, _context: PVOID) {}
+
+    #[test]
+    fn dll_notification_cookie_lifetime_is_checked() {
+        let mut cookie = ptr::null_mut();
+        assert_eq!(unsafe { LdrRegisterDllNotification(0, Some(notification_callback), ptr::null_mut(), &mut cookie) }, STATUS_SUCCESS);
+        assert!(!cookie.is_null());
+        assert_eq!(unsafe { LdrUnregisterDllNotification(cookie) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { LdrUnregisterDllNotification(cookie) }, STATUS_INVALID_HANDLE);
     }
 }
 
