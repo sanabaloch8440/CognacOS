@@ -196,3 +196,21 @@ environment creation, current-environment replacement, and null-environment
 query/set/expansion. Rust modules remain source-first and are not yet part of
 the freestanding PE build; the native C exports are what the current PE workflow
 compiles and checks.
+
+
+## ALPC message-attribute Rust port
+
+The source-first module `rust/alpc.rs` ports the three attribute helpers from
+Wine's `alpc.c`: `AlpcGetHeaderSize`, `AlpcGetMessageAttribute`, and
+`AlpcInitializeMessageAttribute`. It models the x64 attribute structures
+declared in the vendored `include/winternl.h`, computes storage from the
+recognized ALPC attribute flags, preserves the descending-bit attribute
+layout, reports required buffer sizes, and initializes the allocated/valid
+attribute masks.
+
+Unit tests cover the recognized-flag size calculation, insufficient and
+sufficient buffer sizes, attribute pointer ordering, invalid/multiple flags,
+and x64 structure sizes. These tests are present in source but have not been
+reported as executed. The Rust module remains unlinked from the freestanding
+PE32+ build; full ALPC port/communication syscalls and Windows runtime ABI
+validation are not part of this change.
