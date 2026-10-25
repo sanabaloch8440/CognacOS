@@ -32,8 +32,8 @@ pub struct ObjectAttributes {
 pub struct IoStatusBlock { pub status_or_pointer: usize, pub information: usize }
 
 #[derive(Clone, Copy)]
-struct Key { used: bool, id: u32, parent: u32, name: [u16; MAX_NAME], name_len: u16, deleted: bool }
-impl Key { const EMPTY: Self = Self { used:false,id:0,parent:0,name:[0;MAX_NAME],name_len:0,deleted:false }; }
+struct Key { used: bool, id: u32, parent: u32, name: [u16; MAX_NAME], name_len: u16, deleted: bool, hive_slot: u8, hive_cell: u32 }
+impl Key { const EMPTY: Self = Self { used:false,id:0,parent:0,name:[0;MAX_NAME],name_len:0,deleted:false,hive_slot:0,hive_cell:0 }; }
 #[derive(Clone, Copy)]
 struct Value { used: bool, key_id: u32, name: [u16;MAX_NAME], name_len:u16, kind:u32, len:u16, data:[u8;MAX_DATA] }
 impl Value { const EMPTY: Self = Self { used:false,key_id:0,name:[0;MAX_NAME],name_len:0,kind:0,len:0,data:[0;MAX_DATA] }; }
@@ -61,6 +61,8 @@ unsafe fn read_name(s:*const UnicodeString,out:&mut [u16;MAX_NAME])->Result<usiz
 fn eq(a:&[u16],b:&[u16])->bool{a.len()==b.len()&&a.iter().zip(b).all(|(x,y)|fold(*x)==fold(*y))}
 fn fold(c:u16)->u16{if (b'A' as u16..=b'Z' as u16).contains(&c){c+32}else{c}}
 fn key_path(s:&State,id:u32,out:&mut [u16;MAX_NAME])->Option<usize>{
+ let first=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==id)?;
+ if first.hive_slot!=0 { let n=first.name_len as usize; if n>MAX_NAME{return None;} out[..n].copy_from_slice(&first.name[..n]); return Some(n); }
  let mut chain=[0u32;MAX_KEYS];let mut count=0usize;let mut current=id;
  while current!=0 {
   let k=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==current)?;
@@ -98,6 +100,109 @@ unsafe fn object_path(oa:*const ObjectAttributes)->Result<([u16;MAX_NAME],usize,
  let s=state();let parent=if o.root_directory.is_null(){0}else{key_from_handle(s,o.root_directory).ok_or(STATUS_INVALID_PARAMETER)?};
  Ok((name,n,parent))
 }
+
+/// Mounted REGF bytes remain in their original Windows hive representation.
+/// The loader must place hive bytes in permanent kernel-owned memory first.
+#[derive(Clone, Copy)]
+struct MountedHive { bytes: *const u8, len: usize }
+unsafe impl Sync for MountedHive {}
+static mut MOUNTED_HIVES: [MountedHive; 7] = [MountedHive { bytes: core::ptr::null(), len: 0 }; 7];
+
+fn hive_slot_for_name(name: &str) -> Option<usize> {
+    if name.eq_ignore_ascii_case("SYSTEM") { Some(0) }
+    else if name.eq_ignore_ascii_case("SOFTWARE") { Some(1) }
+    else if name.eq_ignore_ascii_case("SECURITY") { Some(2) }
+    else if name.eq_ignore_ascii_case("SAM") { Some(3) }
+    else if name.eq_ignore_ascii_case("DEFAULT") { Some(4) }
+    else if name.eq_ignore_ascii_case("COMPONENTS") { Some(5) }
+    else if name.eq_ignore_ascii_case("BCD00000000") { Some(6) }
+    else { None }
+}
+
+/// Mount a validated Windows hive without converting its on-disk representation.
+/// The supplied bytes must have static lifetime and remain immutable while mounted.
+pub unsafe fn mount_hive_bytes(name: &str, bytes: &'static [u8]) -> Result<(), i32> {
+    let slot = hive_slot_for_name(name).ok_or(STATUS_INVALID_PARAMETER)?;
+    crate::ntoskrnl::cm::hive::Hive::open(bytes).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let _guard = LOCK.lock();
+    unsafe { MOUNTED_HIVES[slot] = MountedHive { bytes: bytes.as_ptr(), len: bytes.len() }; }
+    Ok(())
+}
+
+fn mounted_hive(slot: usize) -> Option<crate::ntoskrnl::cm::hive::Hive<'static>> {
+    if slot >= 7 { return None; }
+    let mounted = unsafe { core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot])) };
+    if mounted.bytes.is_null() || mounted.len == 0 { return None; }
+    let bytes = unsafe { core::slice::from_raw_parts(mounted.bytes, mounted.len) };
+    crate::ntoskrnl::cm::hive::Hive::open(bytes).ok()
+}
+
+fn starts_ascii(path: &[u16], prefix: &[u8]) -> bool {
+    path.len() >= prefix.len() && path.iter().zip(prefix).all(|(a,b)| fold(*a) == fold(*b as u16))
+}
+
+/// Map a native registry path to a backing hive and path relative to its root.
+fn hive_path(path: &[u16]) -> Option<(usize, &[u16])> {
+    const PREFIXES: [(&[u8], usize); 7] = [
+        (b"\\Registry\\Machine\\System", 0),
+        (b"\\Registry\\Machine\\Software", 1),
+        (b"\\Registry\\Machine\\Security", 2),
+        (b"\\Registry\\Machine\\SAM", 3),
+        (b"\\Registry\\User\\.DEFAULT", 4),
+        (b"\\Registry\\Machine\\Components", 5),
+        (b"\\Registry\\Machine\\BCD00000000", 6),
+    ];
+    for (prefix, slot) in PREFIXES {
+        if starts_ascii(path, prefix) && (path.len() == prefix.len() || path[prefix.len()] == b'\\' as u16) {
+            let mut rest = &path[prefix.len()..];
+            if rest.first() == Some(&(b'\\' as u16)) { rest = &rest[1..]; }
+            return Some((slot, rest));
+        }
+    }
+    None
+}
+
+fn open_hive_key(out: *mut *mut core::ffi::c_void, access: u32, path: &[u16]) -> Option<i32> {
+    let (slot, relative) = hive_path(path)?;
+    let hive = mounted_hive(slot)?;
+    let key = match hive.find_path(relative) {
+        Ok(k) => k,
+        Err(crate::ntoskrnl::cm::hive::Error::NotFound) => return Some(STATUS_OBJECT_NAME_NOT_FOUND),
+        Err(_) => return Some(STATUS_INVALID_PARAMETER),
+    };
+    if path.len() > MAX_NAME { return Some(STATUS_INVALID_PARAMETER); }
+    let mut name = [0u16; MAX_NAME];
+    name[..path.len()].copy_from_slice(path);
+    let s = state();
+    if let Some(existing) = s.keys.iter().find(|k| k.used && !k.deleted && k.hive_slot == (slot + 1) as u8 && k.hive_cell == key.cell_index()) {
+        let body = core::ptr::addr_of!(*existing) as *mut Key as *mut core::ffi::c_void;
+        #[cfg(test)] { unsafe { *out = handle(existing.id); } return Some(STATUS_SUCCESS); }
+        #[cfg(not(test))] {
+            return Some(match crate::ntoskrnl::ob::runtime::open_by_pointer(body, access, crate::ntoskrnl::ob::runtime::current_owner(), true, 0) {
+                Ok(h) => { unsafe { *out = h; } STATUS_SUCCESS }, Err(e) => e
+            });
+        }
+    }
+    let index = match s.keys.iter().position(key_slot_reusable) {
+        Some(i) => i, None => return Some(STATUS_INSUFFICIENT_RESOURCES)
+    };
+    let id = s.next_id; s.next_id = s.next_id.wrapping_add(1).max(1);
+    s.keys[index] = Key { used:true, id, parent:0, name, name_len:path.len() as u16, deleted:false, hive_slot:(slot+1) as u8, hive_cell:key.cell_index() };
+    let body = core::ptr::addr_of_mut!(s.keys[index]).cast::<core::ffi::c_void>();
+    #[cfg(test)] { unsafe { *out = handle(id); } }
+    #[cfg(not(test))] {
+        let object_type = [82u16,101,103,105,115,116,114,121,75,101,121];
+        if let Err(e) = unsafe { crate::ntoskrnl::ob::runtime::register_external_object(body, &object_type, path, false, core::ptr::null(), 0) } {
+            s.keys[index] = Key::EMPTY; return Some(e);
+        }
+        match crate::ntoskrnl::ob::runtime::open_by_pointer(body, access, crate::ntoskrnl::ob::runtime::current_owner(), true, 0) {
+            Ok(h) => unsafe { *out = h; },
+            Err(e) => { let _ = crate::ntoskrnl::ob::runtime::unregister_object(body); s.keys[index] = Key::EMPTY; return Some(e); }
+        }
+    }
+    Some(STATUS_SUCCESS)
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired_access:u32,oa:*const ObjectAttributes,_title_index:u32,_class:*const UnicodeString,options:u32,disposition:*mut u32)->i32{
  if out.is_null(){return STATUS_INVALID_PARAMETER;}if options&!0x0000_0002!=0{return STATUS_INVALID_PARAMETER;}
@@ -111,7 +216,7 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
  }
  let Some(index)=s.keys.iter().position(key_slot_reusable)else{return STATUS_INSUFFICIENT_RESOURCES;};
  let id=s.next_id;s.next_id=s.next_id.wrapping_add(1).max(1);
- s.keys[index]=Key{used:true,id,parent,name,name_len:n as u16,deleted:false};
+ s.keys[index]=Key{used:true,id,parent,name,name_len:n as u16,deleted:false,hive_slot:0,hive_cell:0};
  let mut object_name=[0u16;MAX_NAME];let object_name_len=match key_path(s,id,&mut object_name){Some(v)=>v,None=>{s.keys[index]=Key::EMPTY;return STATUS_INVALID_PARAMETER;}};
  let object_type=[b'R' as u16,b'e' as u16,b'g' as u16,b'i' as u16,b's' as u16,b't' as u16,b'r' as u16,b'y' as u16,b'K' as u16,b'e' as u16,b'y' as u16];
  let body=core::ptr::addr_of_mut!(s.keys[index]).cast::<core::ffi::c_void>();
@@ -130,7 +235,10 @@ pub unsafe extern "win64" fn ZwOpenKey(out:*mut *mut core::ffi::c_void,access:u3
  if out.is_null(){return STATUS_INVALID_PARAMETER;}let _g=LOCK.lock();
  let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
  let s=state();
- let found=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n]));
+ if parent==0 {
+  if let Some(status)=open_hive_key(out,access,&name[..n]) { return status; }
+ }
+ let found=s.keys.iter().find(|k|k.used&&!k.deleted&&k.hive_slot==0&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n]));
  if let Some(k)=found{
   #[cfg(test)] unsafe{*out=handle(k.id);}
   #[cfg(not(test))] {let body=core::ptr::addr_of!(*k) as *mut Key as *mut core::ffi::c_void;match crate::ntoskrnl::ob::runtime::open_by_pointer(body,access,crate::ntoskrnl::ob::runtime::current_owner(),true,0){Ok(h)=>unsafe{*out=h},Err(e)=>return e}}
@@ -154,6 +262,22 @@ pub struct KeyValuePartialInformation { pub title_index:u32,pub kind:u32,pub dat
 pub unsafe extern "win64" fn ZwQueryValueKey(h:*mut core::ffi::c_void,name:*const UnicodeString,class:u32,out:*mut core::ffi::c_void,out_len:u32,result_len:*mut u32)->i32{
  if class!=2||out.is_null(){return STATUS_NOT_SUPPORTED;}let mut nbuf=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nbuf)}{Ok(n)=>n,Err(e)=>return e};
  let _g=LOCK.lock();let s=state();let Some(id)=key_from_handle(s,h)else{return STATUS_INVALID_PARAMETER;};
+ if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==id) {
+  if k.hive_slot!=0 {
+   let Some(hive)=mounted_hive((k.hive_slot-1) as usize) else{return STATUS_OBJECT_NAME_NOT_FOUND;};
+   let key=match hive.key_at(k.hive_cell){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
+   let value=match key.find_value(&nbuf[..n]){Ok(v)=>v,Err(crate::ntoskrnl::cm::hive::Error::NotFound)=>return STATUS_OBJECT_NAME_NOT_FOUND,Err(_)=>return STATUS_INVALID_PARAMETER};
+   let need=core::mem::offset_of!(KeyValuePartialInformation,data)+value.data_len as usize;
+   if !result_len.is_null(){unsafe{*result_len=need as u32;}}
+   if (out_len as usize)<need{return STATUS_BUFFER_TOO_SMALL;}
+   unsafe{
+    let p=out.cast::<KeyValuePartialInformation>();(*p).title_index=0;(*p).kind=value.kind;(*p).data_length=value.data_len;
+    let data=core::slice::from_raw_parts_mut((*p).data.as_mut_ptr(),out_len as usize-core::mem::offset_of!(KeyValuePartialInformation,data));
+    if value.data(data).is_err(){return STATUS_INVALID_PARAMETER;}
+   }
+   return STATUS_SUCCESS;
+  }
+ }
  let Some(v)=s.values.iter().find(|v|v.used&&v.key_id==id&&eq(&v.name[..v.name_len as usize],&nbuf[..n]))else{return STATUS_OBJECT_NAME_NOT_FOUND;};
  let need=core::mem::offset_of!(KeyValuePartialInformation,data)+v.len as usize;
  if !result_len.is_null(){unsafe{*result_len=need as u32;}}
