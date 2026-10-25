@@ -1,6 +1,8 @@
 LIBRARY ntdll
 EXPORTS
     NtClose
+    NtOpenKey
+    NtQueryValueKey
     NtYieldExecution
     NtQueryInformationProcess
     NtQueryInformationThread
