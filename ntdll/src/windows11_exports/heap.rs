@@ -116,7 +116,7 @@ pub unsafe extern "system" fn RtlZeroHeap(heap: HANDLE, _flags: ULONG) -> NTSTAT
             unsafe { ptr::write_bytes(entry.lpData.cast::<u8>(), 0, entry.cbData); }
         }
         if entry.lpData.is_null() { break; }
-        status = unsafe { crate::rtl_heap::RtlWalkHeap(heap, (&mut entry as *mut _).cast()) };
+        status = unsafe { crate::rtl_heap::RtlWalkHeap(heap, (&mut entry as *mut crate::rtl_heap::RTL_HEAP_WALK_ENTRY).cast()) };
     }
     if status == 0 || status as u32 == 0x8000_001A { STATUS_SUCCESS } else { status }
 }
