@@ -307,9 +307,15 @@ unsafe fn copy_absolute_path(source: *const UNICODE_STRING, output: &mut PathSlo
     STATUS_SUCCESS
 }
 
-include!("loader/search.rs");
-include!("loader/modules.rs");
-include!("loader/resources.rs");
-include!("loader/notifications.rs");
-include!("loader/delay.rs");
+mod search;
+pub use search::*;
+mod modules;
+pub use modules::*;
+mod resources;
+pub use resources::*;
+mod notifications;
+pub use notifications::*;
+mod delay;
+pub use delay::*;
+#[cfg(test)]
 include!("loader/tests.rs");
