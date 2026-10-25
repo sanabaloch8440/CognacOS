@@ -117,10 +117,7 @@ pub unsafe extern "system" fn NtNotifyChangeMultipleKeys() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtOpenKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+// NtOpenKey is provided by the typed x64 syscall stub in syscall_x86_64.rs.
 
 #[no_mangle]
 pub unsafe extern "system" fn NtOpenKeyedEvent() -> i32 {
@@ -167,10 +164,7 @@ pub unsafe extern "system" fn NtQueryOpenSubKeysEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn NtQueryValueKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+// NtQueryValueKey is provided by the typed x64 syscall stub in syscall_x86_64.rs.
 
 #[no_mangle]
 pub unsafe extern "system" fn NtReleaseKeyedEvent() -> i32 {
