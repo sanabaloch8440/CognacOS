@@ -307,7 +307,4 @@ and exact compatibility for all heap flags are not implemented.
 `0x68` and `LastStatusValue` at GS offset `0x1250`. The combined status helper
 maps NTSTATUS through the bootstrap status table and updates both TEB fields.
 
-**Validation pending:** ring-3 smoke tests cover direct last-error set/get and
-`STATUS_INVALID_PARAMETER` conversion to `ERROR_INVALID_PARAMETER`, including
-preservation of the original NTSTATUS. This depends on the TEB GS base remaining
-valid across the native INT 0x82 syscall path.
+**QEMU-verified:** ring-3 smoke tests passed in [Actions run 40184485240](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184485240), covering direct last-error set/get and `STATUS_INVALID_PARAMETER` conversion to `ERROR_INVALID_PARAMETER`, including preservation of the original NTSTATUS across native INT 0x82 calls.
