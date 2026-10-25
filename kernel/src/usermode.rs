@@ -519,6 +519,9 @@ pub unsafe fn run_native_ntdll_smoke(
     let ldr_get_procedure_address = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"LdrGetProcedureAddress"))
         .ok_or(VmError::InvalidAddress)?;
+    let ldr_get_dll_handle = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"LdrGetDllHandle"))
+        .ok_or(VmError::InvalidAddress)?;
     let rtl_get_last_error = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlGetLastWin32Error"))
         .ok_or(VmError::InvalidAddress)?;
@@ -576,6 +579,12 @@ pub unsafe fn run_native_ntdll_smoke(
     data[0xE20..0xE22].copy_from_slice(&16u16.to_le_bytes());
     data[0xE22..0xE24].copy_from_slice(&17u16.to_le_bytes());
     data[0xE28..0xE30].copy_from_slice(&(NTDLL_TEST_DATA + 0xE00).to_le_bytes());
+    for (index, byte) in b"ntdll.dll".iter().copied().enumerate() {
+        data[0xE60 + index * 2] = byte;
+    }
+    data[0xE80..0xE82].copy_from_slice(&18u16.to_le_bytes());
+    data[0xE82..0xE84].copy_from_slice(&20u16.to_le_bytes());
+    data[0xE88..0xE90].copy_from_slice(&(NTDLL_TEST_DATA + 0xE60).to_le_bytes());
     let numbers = [0x100u64, 0x101, 0x102, 0x103, 0x104];
     for (index, number) in numbers.iter().enumerate() {
         data[0x300 + index * 8..0x308 + index * 8].copy_from_slice(&number.to_le_bytes());
@@ -823,6 +832,19 @@ pub unsafe fn run_native_ntdll_smoke(
     imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xE40);
     emit!(&[0x48, 0x8b, 0x00]); // RAX = resolved procedure pointer
     imm64!(&[0x48, 0xba], rtl_get_current_peb);
+    emit!(&[0x48, 0x39, 0xd0]);
+    fail_if!(&[0x0f, 0x85]);
+
+    // LdrGetDllHandle finds the already-loaded native DLL through PEB.Ldr.
+    emit!(&[0x48, 0x31, 0xc9, 0x48, 0x31, 0xd2]);
+    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA + 0xE80);
+    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0xE98);
+    call_ptr!(ldr_get_dll_handle);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xE98);
+    emit!(&[0x48, 0x8b, 0x00]);
+    imm64!(&[0x48, 0xba], ntdll.base);
     emit!(&[0x48, 0x39, 0xd0]);
     fail_if!(&[0x0f, 0x85]);
 
