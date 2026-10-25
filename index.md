@@ -3,6 +3,8 @@ layout: default
 title: CognacOS Documentation
 ---
 
+<p align="center"><img src="assets/cognacos-logo.svg" alt="CognacOS logo" width="420"></p>
+
 # CognacOS
 
 CognacOS is an experimental Rust-first x86-64 operating system with a UEFI boot path and NT-inspired kernel interfaces. Windows 11 x64 driver compatibility is a long-term goal, not a current guarantee.

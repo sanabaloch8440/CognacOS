@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/cognacos-logo.svg" alt="CognacOS" width="380">
+  <img src="assets/cognacos-logo.svg" alt="CognacOS" width="420">
 </p>
 
 # CognacOS
