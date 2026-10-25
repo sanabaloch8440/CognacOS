@@ -525,38 +525,286 @@ pub unsafe extern "system" fn RtlUnlockMemoryBlockLookaside(lookaside_ptr: PVOID
 // stream objects, token security, resource descriptors, persistent memory, or
 // secure-cache callbacks). Fail closed with the correct status type rather than
 // pretending to perform the operation.
+// In-memory IStream-compatible layout used by the RTL memory-stream helpers.
+// Start/Current/End are caller-owned bounds; these APIs never free the backing
+// buffer. Only clones allocated internally by this implementation own metadata.
+const S_OK: NTSTATUS = 0;
+const E_NOTIMPL: NTSTATUS = 0x8000_4001u32 as i32;
+const E_NOINTERFACE: NTSTATUS = 0x8000_4002u32 as i32;
+const E_INVALIDARG: NTSTATUS = 0x8007_0057u32 as i32;
+const STG_E_INVALIDPOINTER: NTSTATUS = 0x8003_0009u32 as i32;
+const STREAM_SEEK_SET: ULONG = 0;
+const STREAM_SEEK_CUR: ULONG = 1;
+const STREAM_SEEK_END: ULONG = 2;
+const STGTY_STREAM: ULONG = 2;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Guid { data1: u32, data2: u16, data3: u16, data4: [u8; 8] }
+const IID_IUNKNOWN: Guid = Guid { data1: 0, data2: 0, data3: 0, data4: [0xC0,0,0,0,0,0,0,0x46] };
+const IID_ISEQUENTIALSTREAM: Guid = Guid { data1: 0x0C733A30, data2: 0x2A1C, data3: 0x11CE, data4: [0xAD,0xE5,0,0xAA,0x00,0x44,0x77,0x3D] };
+const IID_ISTREAM: Guid = Guid { data1: 0x0000000C, data2: 0, data3: 0, data4: [0xC0,0,0,0,0,0,0,0x46] };
+
+#[repr(C)]
+pub struct RTL_MEMORY_STREAM {
+    vtbl: *const IStreamVtable,
+    ref_count: i32,
+    unknown: u32,
+    current: PVOID,
+    start: PVOID,
+    end: PVOID,
+    final_release: Option<unsafe extern "system" fn(*mut RTL_MEMORY_STREAM)>,
+    process_handle: HANDLE,
+}
+#[repr(C)]
+struct IStreamVtable {
+    query_interface: unsafe extern "system" fn(PVOID, PVOID, *mut PVOID) -> NTSTATUS,
+    add_ref: unsafe extern "system" fn(PVOID) -> ULONG,
+    release: unsafe extern "system" fn(PVOID) -> ULONG,
+    read: unsafe extern "system" fn(PVOID, PVOID, ULONG, *mut ULONG) -> NTSTATUS,
+    write: unsafe extern "system" fn(PVOID, PVOID, ULONG, *mut ULONG) -> NTSTATUS,
+    seek: unsafe extern "system" fn(PVOID, i64, ULONG, *mut u64) -> NTSTATUS,
+    set_size: unsafe extern "system" fn(PVOID, u64) -> NTSTATUS,
+    copy_to: unsafe extern "system" fn(PVOID, PVOID, u64, *mut u64, *mut u64) -> NTSTATUS,
+    commit: unsafe extern "system" fn(PVOID, ULONG) -> NTSTATUS,
+    revert: unsafe extern "system" fn(PVOID) -> NTSTATUS,
+    lock_region: unsafe extern "system" fn(PVOID, u64, u64, ULONG) -> NTSTATUS,
+    unlock_region: unsafe extern "system" fn(PVOID, u64, u64, ULONG) -> NTSTATUS,
+    stat: unsafe extern "system" fn(PVOID, PVOID, ULONG) -> NTSTATUS,
+    clone_stream: unsafe extern "system" fn(PVOID, *mut PVOID) -> NTSTATUS,
+}
+#[repr(C)]
+struct StatStg {
+    name: PVOID,
+    kind: ULONG,
+    _pad: ULONG,
+    size: u64,
+    modified: [u64; 2],
+    accessed: u64,
+    mode: ULONG,
+    locks_supported: ULONG,
+    class_id: Guid,
+    state_bits: ULONG,
+    reserved: ULONG,
+}
+unsafe extern "system" fn stream_write(this: PVOID, buffer: PVOID, length: ULONG, written: *mut ULONG) -> NTSTATUS {
+    let _ = (this, buffer, length);
+    if !written.is_null() { unsafe { ptr::write(written, 0); } }
+    E_NOTIMPL
+}
+unsafe extern "system" fn stream_set_size(this: PVOID, size: u64) -> NTSTATUS { let _ = (this, size); E_NOTIMPL }
+unsafe extern "system" fn stream_commit(this: PVOID, flags: ULONG) -> NTSTATUS { let _ = (this, flags); E_NOTIMPL }
+unsafe extern "system" fn stream_revert(this: PVOID) -> NTSTATUS { let _ = this; E_NOTIMPL }
+unsafe extern "system" fn stream_lock_region(this: PVOID, offset: u64, length: u64, kind: ULONG) -> NTSTATUS { let _ = (this, offset, length, kind); E_NOTIMPL }
+unsafe extern "system" fn stream_unlock_region(this: PVOID, offset: u64, length: u64, kind: ULONG) -> NTSTATUS { let _ = (this, offset, length, kind); E_NOTIMPL }
+static MEMORY_STREAM_VTABLE: IStreamVtable = IStreamVtable {
+    query_interface: RtlQueryInterfaceMemoryStream,
+    add_ref: RtlAddRefMemoryStream,
+    release: RtlReleaseMemoryStream,
+    read: RtlReadMemoryStream,
+    write: stream_write,
+    seek: RtlSeekMemoryStream,
+    set_size: stream_set_size,
+    copy_to: RtlCopyMemoryStreamTo,
+    commit: stream_commit,
+    revert: stream_revert,
+    lock_region: stream_lock_region,
+    unlock_region: stream_unlock_region,
+    stat: RtlStatMemoryStream,
+    clone_stream: RtlCloneMemoryStream,
+};
+static OUT_OF_PROCESS_MEMORY_STREAM_VTABLE: IStreamVtable = IStreamVtable {
+    query_interface: RtlQueryInterfaceMemoryStream,
+    add_ref: RtlAddRefMemoryStream,
+    release: RtlReleaseMemoryStream,
+    read: RtlReadOutOfProcessMemoryStream,
+    write: stream_write,
+    seek: RtlSeekMemoryStream,
+    set_size: stream_set_size,
+    copy_to: RtlCopyMemoryStreamTo,
+    commit: stream_commit,
+    revert: stream_revert,
+    lock_region: stream_lock_region,
+    unlock_region: stream_unlock_region,
+    stat: RtlStatMemoryStream,
+    clone_stream: RtlCloneMemoryStream,
+};
 #[no_mangle]
-pub unsafe extern "system" fn RtlAddRefMemoryStream(stream: PVOID) -> NTSTATUS { let _ = stream; STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlInitMemoryStream(stream: *mut RTL_MEMORY_STREAM) {
+    if stream.is_null() { return; }
+    unsafe {
+        ptr::write(stream, RTL_MEMORY_STREAM {
+            vtbl: &MEMORY_STREAM_VTABLE, ref_count: 0, unknown: 0,
+            current: ptr::null_mut(), start: ptr::null_mut(), end: ptr::null_mut(),
+            final_release: None, process_handle: ptr::null_mut(),
+        });
+    }
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlCloneMemoryStream(stream: PVOID, clone: *mut PVOID) -> NTSTATUS { let _ = (stream, clone); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlInitOutOfProcessMemoryStream(stream: *mut RTL_MEMORY_STREAM) {
+    if stream.is_null() { return; }
+    unsafe {
+        ptr::write(stream, RTL_MEMORY_STREAM {
+            vtbl: &OUT_OF_PROCESS_MEMORY_STREAM_VTABLE, ref_count: 0, unknown: 0,
+            current: ptr::null_mut(), start: ptr::null_mut(), end: ptr::null_mut(),
+            final_release: Some(RtlFinalReleaseOutOfProcessMemoryStream), process_handle: ptr::null_mut(),
+        });
+    }
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlCommitMemoryStream(stream: PVOID) -> NTSTATUS { let _ = stream; STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlFinalReleaseOutOfProcessMemoryStream(stream: *mut RTL_MEMORY_STREAM) {
+    // The process handle is borrowed, not owned. The caller controls the stream
+    // storage and process-handle lifetime.
+    let _ = stream;
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlCopyMemoryStreamTo(source: PVOID, destination: PVOID, length: i64, bytes_read: *mut i64, bytes_written: *mut i64) -> NTSTATUS { let _ = (source, destination, length, bytes_read, bytes_written); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlQueryInterfaceMemoryStream(this: PVOID, iid: PVOID, result: *mut PVOID) -> NTSTATUS {
+    if this.is_null() || iid.is_null() || result.is_null() { return STG_E_INVALIDPOINTER; }
+    let requested = unsafe { &*iid.cast::<Guid>() };
+    if *requested == IID_IUNKNOWN || *requested == IID_ISEQUENTIALSTREAM || *requested == IID_ISTREAM {
+        unsafe { RtlAddRefMemoryStream(this); ptr::write(result, this); }
+        S_OK
+    } else {
+        unsafe { ptr::write(result, ptr::null_mut()); }
+        E_NOINTERFACE
+    }
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlCopyOutOfProcessMemoryStreamTo(source: PVOID, destination: PVOID, length: i64, bytes_read: *mut i64, bytes_written: *mut i64) -> NTSTATUS { unsafe { RtlCopyMemoryStreamTo(source, destination, length, bytes_read, bytes_written) } }
+pub unsafe extern "system" fn RtlAddRefMemoryStream(this: PVOID) -> ULONG {
+    if this.is_null() { return 0; }
+    let stream = this.cast::<RTL_MEMORY_STREAM>();
+    unsafe { (*stream).ref_count = (*stream).ref_count.saturating_add(1); (*stream).ref_count.max(0) as ULONG }
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlFinalReleaseOutOfProcessMemoryStream(stream: PVOID) -> NTSTATUS { let _ = stream; STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlReleaseMemoryStream(this: PVOID) -> ULONG {
+    if this.is_null() { return 0; }
+    let stream = this.cast::<RTL_MEMORY_STREAM>();
+    let (count, final_release) = unsafe {
+        (*stream).ref_count = (*stream).ref_count.saturating_sub(1);
+        ((*stream).ref_count.max(0) as ULONG, if (*stream).ref_count <= 0 { (*stream).final_release } else { None })
+    };
+    if let Some(callback) = final_release { unsafe { callback(stream); } }
+    count
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitMemoryStream(buffer: PVOID, length: SIZE_T, stream: *mut PVOID) -> NTSTATUS { let _ = (buffer, length, stream); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlReadMemoryStream(this: PVOID, buffer: PVOID, length: ULONG, bytes_read: *mut ULONG) -> NTSTATUS {
+    if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, 0); } }
+    if this.is_null() || (length != 0 && buffer.is_null()) { return STG_E_INVALIDPOINTER; }
+    if length == 0 { return S_OK; }
+    let stream = unsafe { &mut *this.cast::<RTL_MEMORY_STREAM>() };
+    let current = stream.current as usize;
+    let start = stream.start as usize;
+    let end = stream.end as usize;
+    if start > current || current > end { return STG_E_INVALIDPOINTER; }
+    let amount = (end - current).min(length as usize);
+    if amount != 0 {
+        unsafe { ptr::copy(current as *const u8, buffer.cast::<u8>(), amount); }
+        stream.current = (current + amount) as PVOID;
+    }
+    if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, amount as ULONG); } }
+    S_OK
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitOutOfProcessMemoryStream(process: HANDLE, base: PVOID, length: SIZE_T, stream: *mut PVOID) -> NTSTATUS { let _ = (process, base, length, stream); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlReadOutOfProcessMemoryStream(this: PVOID, buffer: PVOID, length: ULONG, bytes_read: *mut ULONG) -> NTSTATUS {
+    if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, 0); } }
+    if this.is_null() || (length != 0 && buffer.is_null()) { return STG_E_INVALIDPOINTER; }
+    let stream = unsafe { &mut *this.cast::<RTL_MEMORY_STREAM>() };
+    let current = stream.current as usize;
+    let end = stream.end as usize;
+    if current > end { return STG_E_INVALIDPOINTER; }
+    let amount = (end - current).min(length as usize);
+    if amount == 0 { return S_OK; }
+    let mut copied = 0usize;
+    let status = unsafe { NtReadVirtualMemory(stream.process_handle, stream.current, buffer, amount, &mut copied) };
+    if status < 0 { return status; }
+    stream.current = (current + copied) as PVOID;
+    if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, copied as ULONG); } }
+    S_OK
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlQueryInterfaceMemoryStream(stream: PVOID, iid: PVOID, object: *mut PVOID) -> NTSTATUS { let _ = (stream, iid, object); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlSeekMemoryStream(this: PVOID, offset: i64, origin: ULONG, new_position: *mut u64) -> NTSTATUS {
+    if this.is_null() { return STG_E_INVALIDPOINTER; }
+    let stream = unsafe { &mut *this.cast::<RTL_MEMORY_STREAM>() };
+    let start = stream.start as usize;
+    let current = stream.current as usize;
+    let end = stream.end as usize;
+    if start > current || current > end { return STG_E_INVALIDPOINTER; }
+    let base = match origin { STREAM_SEEK_SET => start, STREAM_SEEK_CUR => current, STREAM_SEEK_END => end, _ => return E_INVALIDARG };
+    let candidate = if offset >= 0 { base.checked_add(offset as usize) } else { base.checked_sub(offset.unsigned_abs() as usize) };
+    let Some(candidate) = candidate else { return STG_E_INVALIDARG; };
+    if candidate < start || candidate > end { return STG_E_INVALIDARG; }
+    stream.current = candidate as PVOID;
+    if !new_position.is_null() { unsafe { ptr::write(new_position, (candidate - start) as u64); } }
+    S_OK
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlReadMemoryStream(stream: PVOID, buffer: PVOID, length: ULONG, read: *mut ULONG) -> NTSTATUS { let _ = (stream, buffer, length, read); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlCopyMemoryStreamTo(this: PVOID, target: PVOID, length: u64, bytes_read: *mut u64, bytes_written: *mut u64) -> NTSTATUS {
+    if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, 0); } }
+    if !bytes_written.is_null() { unsafe { ptr::write(bytes_written, 0); } }
+    if this.is_null() { return STG_E_INVALIDPOINTER; }
+    if target.is_null() || length == 0 { return S_OK; }
+    let mut total = 0u64;
+    let mut scratch = [0u8; 1024];
+    while total < length {
+        let chunk = (length - total).min(scratch.len() as u64) as ULONG;
+        let mut got = 0u32;
+        let status = unsafe { RtlReadMemoryStream(this, scratch.as_mut_ptr().cast(), chunk, &mut got) };
+        if status < 0 || got == 0 { if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, total); } } return status; }
+        let vtbl = unsafe { (*target.cast::<RTL_MEMORY_STREAM>()).vtbl };
+        if vtbl.is_null() { return STG_E_INVALIDPOINTER; }
+        let mut put = 0u32;
+        let status = unsafe { ((*vtbl).write)(target, scratch.as_mut_ptr().cast(), got, &mut put) };
+        total += got as u64;
+        if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, total); } }
+        if !bytes_written.is_null() { unsafe { ptr::write(bytes_written, (*bytes_written).saturating_add(put as u64)); } }
+        if status < 0 || put != got { return if status < 0 { status } else { E_NOTIMPL }; }
+    }
+    S_OK
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlReadOutOfProcessMemoryStream(stream: PVOID, buffer: PVOID, length: ULONG, read: *mut ULONG) -> NTSTATUS { let _ = (stream, buffer, length, read); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlStatMemoryStream(this: PVOID, stat: PVOID, flags: ULONG) -> NTSTATUS {
+    let _ = flags;
+    if this.is_null() || stat.is_null() { return STG_E_INVALIDPOINTER; }
+    let stream = unsafe { &*this.cast::<RTL_MEMORY_STREAM>() };
+    let start = stream.start as usize;
+    let end = stream.end as usize;
+    if end < start { return STG_E_INVALIDPOINTER; }
+    let out = stat.cast::<StatStg>();
+    unsafe { ptr::write_bytes(out.cast::<u8>(), 0, core::mem::size_of::<StatStg>()); (*out).kind = STGTY_STREAM; (*out).size = (end - start) as u64; }
+    S_OK
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlReleaseMemoryStream(stream: PVOID) -> NTSTATUS { let _ = stream; STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlCloneMemoryStream(this: PVOID, result: *mut PVOID) -> NTSTATUS {
+    if this.is_null() || result.is_null() { return STG_E_INVALIDPOINTER; }
+    unsafe { ptr::write(result, ptr::null_mut()); }
+    let source = unsafe { &*this.cast::<RTL_MEMORY_STREAM>() };
+    let Some((base, _)) = (unsafe { native_vm_allocate(core::mem::size_of::<RTL_MEMORY_STREAM>()) }) else { return STATUS_NO_MEMORY; };
+    let clone = base.cast::<RTL_MEMORY_STREAM>();
+    unsafe {
+        ptr::write(clone, RTL_MEMORY_STREAM {
+            vtbl: source.vtbl, ref_count: 1, unknown: source.unknown,
+            current: source.current, start: source.start, end: source.end,
+            final_release: Some(release_owned_memory_stream), process_handle: source.process_handle,
+        });
+        ptr::write(result, clone.cast());
+    }
+    S_OK
+}
+unsafe extern "system" fn release_owned_memory_stream(stream: *mut RTL_MEMORY_STREAM) {
+    if !stream.is_null() {
+        unsafe { (*stream).ref_count = 0; (*stream).vtbl = ptr::null(); native_vm_release(stream.cast()); }
+    }
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlRevertMemoryStream(stream: PVOID) -> NTSTATUS { let _ = stream; STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlCommitMemoryStream(this: PVOID, flags: ULONG) -> NTSTATUS { let _ = (this, flags); E_NOTIMPL }
 #[no_mangle]
-pub unsafe extern "system" fn RtlSeekMemoryStream(stream: PVOID, offset: i64, origin: ULONG, new_position: *mut i64) -> NTSTATUS { let _ = (stream, offset, origin, new_position); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlRevertMemoryStream(this: PVOID) -> NTSTATUS { let _ = this; E_NOTIMPL }
 #[no_mangle]
-pub unsafe extern "system" fn RtlSetMemoryStreamSize(stream: PVOID, size: i64) -> NTSTATUS { let _ = (stream, size); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlLockMemoryStreamRegion(this: PVOID, offset: u64, length: u64, lock_type: ULONG) -> NTSTATUS { let _ = (this, offset, length, lock_type); E_NOTIMPL }
 #[no_mangle]
-pub unsafe extern "system" fn RtlStatMemoryStream(stream: PVOID, stat: PVOID) -> NTSTATUS { let _ = (stream, stat); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlUnlockMemoryStreamRegion(this: PVOID, offset: u64, length: u64, lock_type: ULONG) -> NTSTATUS { let _ = (this, offset, length, lock_type); E_NOTIMPL }
+#[no_mangle]
+pub unsafe extern "system" fn RtlSetMemoryStreamSize(this: PVOID, new_size: u64) -> NTSTATUS { let _ = (this, new_size); E_NOTIMPL }
 #[no_mangle]
 pub unsafe extern "system" fn RtlWriteMemoryStream(stream: PVOID, buffer: PVOID, length: ULONG, written: *mut ULONG) -> NTSTATUS { let _ = (stream, buffer, length, written); STATUS_NOT_SUPPORTED }
 
