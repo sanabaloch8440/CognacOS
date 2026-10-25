@@ -10,7 +10,7 @@ pub enum KernelModule { Ex, Ke, Mm, Ob, Ps, Io, Po, Cm, Se, Rtl, Zw, Other }
 pub struct Export { pub name: &'static str, pub ordinal: u16, pub module: KernelModule }
 
 pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
-pub(crate) mod ki; pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
+pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
 pub(crate) mod driver_loader;
 pub mod abi_signatures;
