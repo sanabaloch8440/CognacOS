@@ -272,7 +272,22 @@ pub unsafe extern "system" fn LdrGetDllHandleByMapping() -> i32 { STATUS_NOT_IMP
 pub unsafe extern "system" fn LdrGetDllHandleByName() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrGetDllHandleEx() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrGetDllHandleEx(
+    flags: ULONG,
+    dll_path: *const u16,
+    dll_characteristics: *mut ULONG,
+    dll_name: *const UNICODE_STRING,
+    dll_handle: *mut PVOID,
+) -> NTSTATUS {
+    if flags & !0x3 != 0 || dll_name.is_null() || dll_handle.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    unsafe {
+        crate::rtl_loader::LdrGetDllHandle(
+            dll_path as PVOID, dll_characteristics, dll_name.cast(), dll_handle,
+        )
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrGetFailureData() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -284,7 +299,20 @@ pub unsafe extern "system" fn LdrGetFileNameFromLoadAsDataTable() -> i32 { STATU
 pub unsafe extern "system" fn LdrGetKnownDllSectionHandle() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrGetProcedureAddressEx() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrGetProcedureAddressEx(
+    dll_handle: PVOID,
+    procedure_name: *const crate::rtl_loader::COGNAC_ANSI_STRING,
+    procedure_number: ULONG,
+    procedure_address: *mut PVOID,
+    flags: ULONG,
+) -> NTSTATUS {
+    if flags != 0 { return STATUS_INVALID_PARAMETER; }
+    unsafe {
+        crate::rtl_loader::LdrGetProcedureAddress(
+            dll_handle, procedure_name, procedure_number, procedure_address,
+        )
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrGetProcedureAddressForCaller() -> i32 { STATUS_NOT_IMPLEMENTED }
