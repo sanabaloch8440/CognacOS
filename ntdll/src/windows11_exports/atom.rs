@@ -94,7 +94,7 @@ impl Drop for AtomGuard<'_> {
 static ATOM_STATE: LockedAtomState = LockedAtomState::new();
 
 #[inline]
-fn state(guard: &AtomGuard<'_>) -> &mut AtomState {
+fn state<'a>(guard: &'a AtomGuard<'_>) -> &'a mut AtomState {
     // The guard exclusively owns the spin lock for the lifetime of this borrow.
     unsafe { &mut *guard.lock.state.get() }
 }
