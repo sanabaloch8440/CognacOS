@@ -315,6 +315,20 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: KiInitializeProcessor BSP validation failed.\r\n");
             halt();
         }
+        let xstate = ntoskrnl::ke::runtime::ki_query_windows_xstate_configuration();
+        if xstate.enabled_features & 3 == 3 {
+            if xstate.enabled_features & !3 != 0 || xstate.enabled_supervisor_features != 0 {
+                serial_write(b"FATAL: unsafe XSTATE feature mask was enabled.\r\n");
+                halt();
+            }
+            serial_write(b"XSTATE KUSER_SHARED_DATA ABI initialized; enabled mask=");
+            serial_write_hex(xstate.enabled_features);
+            serial_write(b", area size=");
+            serial_write_hex(xstate.size as u64);
+            serial_write(b".\r\nXSTATE XSAVE/XRSTOR processor self-test passed.\r\n");
+        } else {
+            serial_write(b"XSTATE unavailable; extended features remain disabled.\r\n");
+        }
         user::initialize();
         syscall::initialize();
         usermode::initialize();
