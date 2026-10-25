@@ -39,13 +39,14 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [x] Make user-page mapping roll back newly allocated intermediate page tables on supported failure paths.
 - [x] Run host regression tests for range boundaries, zero-length pointers, and integer overflow.
 - [ ] Add integration tests for cross-page failures, read-only destinations, mapping rollback, and map/unmap races.
-- [ ] Implement generalized trap-frame fixup records for recoverable kernel probes: bounded fixup lookup, explicit recovery PC/result semantics, and tests proving an invalid probe returns an error instead of escalating to a fatal kernel fault.
-- [ ] Deliver user-mode exceptions through a defined trap-frame path; distinguish CPL=3 faults from supervisor faults and terminate only the faulting process without taking down other processes or the kernel.
+- [x] Implement bounded vector/RIP trap-frame fixup records for recoverable supervisor probes, including exact CR2/error matching for page faults, explicit recovery RIP and saved-RAX result, reader-pinned unregister, and a boot self-test requiring an invalid probe to return `STATUS_ACCESS_VIOLATION`.
+- [x] Route CPL=3 exceptions using the saved CS and a defined trap-frame layout; try user page-fault resolution first, then terminate only the owning process with an exception-specific exit status. Supervisor faults continue through kernel VM/fixup handling or the fatal kernel path.
+- [ ] Add a passing current CI/QEMU run for the new probe regression test and adversarial CPL3 fault-isolation tests; the boot self-test is implemented but not yet confirmed by a new workflow result.
 - [ ] Stress concurrent process/address-space teardown against faults, user copies, pin/unpin, and unmap; verify reference/rundown ownership and absence of use-after-free.
 - [x] Integrate timer-driven preemption and verify a non-yielding kernel thread is preempted for a runnable peer in QEMU.
 - [x] Add per-address-space demand-zero region metadata and resident working-set accounting APIs.
 - [x] Route CPL=3 vector-14 faults to the current process's address-space demand-zero resolver; supervisor faults continue through kernel VM handling.
-- [ ] Add user-process eviction/pagefile backing and process-scoped access-violation delivery (currently only the kernel pageable pool has pagefile eviction/page-in).
+- [ ] Add user-process eviction/pagefile backing (currently only the kernel pageable pool has pagefile eviction/page-in).
 - [ ] Add demand-zero resolver integration tests and safe concurrent unmap/fault stress.
 - [x] Add non-dereferencing user-range probes and page-by-page permission validation; copy helpers preflight full ranges before transfer.
 - [ ] Implement a bounded working-set trim path: select reclaimable resident pages, prevent concurrent pin/lock/remap, invalidate translations on every affected CPU, wait for TLB-shootdown acknowledgements, then reclaim physical pages only after invalidation completes.
@@ -65,7 +66,7 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [x] Run threaded DPC callbacks only at PASSIVE_LEVEL using per-CPU workers; track queued and in-flight callbacks for flush/rundown.
 - [x] Track APCs while delivering, avoid rerunning the kernel routine when a user-return frame must be retried, and reclaim completed APC records.
 - [x] Add wait-any queue-entry transfer, mutant abandoned-status propagation, atomic immediate wait-all mutant acquisition, and blocking wait-all mutant reservations keyed to the waiting thread.
-- [ ] Implement full Windows user APC dispatcher ABI (including safe shadow space/return trampoline) and user-mode exception/SEH delivery; unhandled user exceptions are not yet fully isolated.
+- [ ] Implement full Windows user APC dispatcher ABI (including safe shadow space/return trampoline) and user-mode exception/SEH resume/unwind delivery; unresolved CPL3 exceptions currently terminate only the owning process.
 - [ ] Add wait-all queue-entry reservation (queue wait-any is supported) and broader WDK race/conformance stress tests.
 - [ ] Add recovery diagnostics for an online but unresponsive processor.
 
