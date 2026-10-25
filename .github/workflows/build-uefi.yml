@@ -137,7 +137,7 @@ jobs:
           mkdir -p build
           rustc --edition=2024 --test kernel/src/ntoskrnl/cm/hive.rs -o build/registry-hive-tests
           build/registry-hive-tests
-          rustc --edition=2024 --test kernel/src/nls.rs -o build/nls-tests
+          rustc --edition=2024 --test kernel/src/ntoskrnl/rtl_runtime/nls.rs -o build/nls-tests
           build/nls-tests
       - name: Run host-side registry runtime tests
         run: |
