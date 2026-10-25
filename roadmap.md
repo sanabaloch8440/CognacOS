@@ -114,6 +114,18 @@ The implementation remains partial. It now publishes the Windows-layout XState f
 - [ ] Complete device-tree/power ordering, wake handling, and end-to-end S4 persistence/resume.
 - [ ] Implement crash-safe ext filesystem metadata/journal operations before enabling general writable mounts.
 
+## Native file and DLL loader progress (in progress)
+
+- [ ] Extend the initial read-only file-object provider into a mounted, disk-backed VFS with directory traversal, path normalization, share/access checks, file-object lifetime and file-position synchronization. Current provider exposes only explicitly registered immutable boot assets; it is not a general filesystem.
+- [ ] Complete native `NtOpenFile` and `NtReadFile` ABI handling: all documented flags, asynchronous I/O, events/APCs, cancellation, `IO_STATUS_BLOCK` ordering, complete user-buffer probing, and general file handles. The current synchronous path is deliberately bounded and does not implement the full Windows file contract.
+- [ ] Add file-backed section objects and native `NtCreateSection` / `NtMapViewOfSection` / `NtUnmapViewOfSection` / `NtClose` lifetime integration with `AddressSpace`; retain PE32+ relocation/import checks and enforce W^X on final pages.
+- [ ] Make the PE module registry per-process and authoritative: image base/size, normalized full/base names, load state, dependency edges, references/pins, initializer status, rollback tickets, and safe unmap/rundown. The current registry is bounded scaffolding and is not yet wired to the active process address-space manager.
+- [ ] Implement `LdrLoadDll` with VFS-backed lookup, section mapping, recursive import/dependency loading, forwarder/API-set handling, initializer callbacks and transactional rollback. It currently returns an already-loaded module when found; absent modules fail closed because the map/unmap bridge is not ready.
+- [ ] Implement `LdrUnloadDll` and `LdrAddRefDll` against kernel-owned module lifetime and dependency references. The current NTDLL bookkeeping is conservative; it does not unlink PEB entries or unmap memory.
+- [x] Add typed PEB loader-list lookup by base name/full name/mapping base/address and bounded loaded-module enumeration in `ntdll/src/windows11_exports/loader.rs`.
+- [ ] Add loader regression tests for missing/staged files, malformed PE headers/sections/relocations, unresolved imports, duplicate loads, reference/pin behavior, initializer failure, dependency rollback, stale handles and unload while references remain.
+- [ ] Pass the current `build-uefi.yml` compile, NTDLL export checks, and QEMU boot/SMP workflow for the loader/file-service revision before marking this milestone validated.
+
 ## Milestone 6 — Registry, NLS, executable loading, and Windows user mode
 
 - [x] Bounded native `regf`/hbin parsing, common subkey indexes, seven hive identities, empty hive-image creation, SYSTEM service lookup, and raw BCD/NLS access.
