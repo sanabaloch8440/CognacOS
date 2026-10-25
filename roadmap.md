@@ -102,7 +102,8 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [ ] Complete Windows loader, user-mode DLL/syscall compatibility, unwind/SEH, and process lifecycle integration.
 - [x] Add a documented NTDLL loading issue ledger with the real Windows x64 image's measured PE/export/`.pdata` dimensions; fix runtime-function/export capacity limits, separate callback-return vector `0x83` from NT syscall vector `0x82`, stage optional NTDLL through boot-info v9, and probe distinct fallback image bases. See [NTDLL loading issues and fixes](root/wine/dlls/ntdll/LOAD_ISSUES.md).
 - [ ] Validate mapping and export registration of the supplied stock Windows NTDLL in QEMU; the user-provided Microsoft binary is deliberately not committed. The CI boot image currently contains the freestanding CognacOS NTDLL.
-- [ ] Validate the ring-3 native NTDLL wrapper smoke test (syscall-table configuration, five-argument process/thread queries, system query, and yield) on the latest complete QEMU workflow.
+- [x] QEMU boot-smoke validated the native NTDLL ring-3 wrapper sequence: syscall-table configuration, five-argument process/thread queries, system query, and yield. [Run 40176341592](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176341592) passed the boot-smoke step; its 2/4/8-vCPU stress matrix was still running at the last check.
+- [ ] Validate mapping/export registration of the supplied stock Windows NTDLL in QEMU; the user-provided Microsoft binary is deliberately not committed. The CI boot image currently contains the freestanding CognacOS NTDLL.
 
 ## Milestone 7 — Windows 11 x64 routine compatibility
 - [x] Connect native NTDLL wrappers to NTOSKRNL through CognacOS DPL3 interrupt vector `0x82`; dispatch `NtClose`, `NtYieldExecution`, and basic process/thread/system information classes to real kernel subsystems using internal service IDs `0x100`–`0x104`.
