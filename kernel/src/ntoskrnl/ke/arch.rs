@@ -1451,8 +1451,8 @@ pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *cons
     }
 }
 
-/// Register layout shared by the exception entry stub and the CPL3 delivery path.
-/// For CPL3 traps, hardware also appends the interrupted RSP and SS after RFLAGS.
+/// Register layout shared by the exception entry stub and CPL3 delivery path.
+/// Hardware appends RSP and SS when an exception crosses from CPL3 to CPL0.
 #[repr(C)]
 struct UserExceptionTrapFrame {
     saved_registers: [u64; 15],
@@ -1465,78 +1465,14 @@ struct UserExceptionTrapFrame {
     ss: u64,
 }
 
-fn user_exception_status(vector: u64, error: u64) -> u64 {
-    // NTSTATUS values for the common architectural exceptions. The original
-    // vector/error/RIP remain available in the trap frame for later SEH support.
+fn user_exception_status(vector: u64, _error: u64) -> u64 {
     match vector {
         0 => 0xC000_0094, // STATUS_INTEGER_DIVIDE_BY_ZERO
         1 => 0x8000_0004, // STATUS_SINGLE_STEP
         3 => 0x8000_0003, // STATUS_BREAKPOINT
         6 => 0xC000_001D, // STATUS_ILLEGAL_INSTRUCTION
         13 => 0xC000_0096, // STATUS_PRIVILEGED_INSTRUCTION
-        14 => 0xC000_0005, // STATUS_ACCESS_VIOLATION
-        17 if error & 1 != 0 => 0xC000_009C, // STATUS_DEVICE_DATA_ERROR (alignment check)
-        _ => 0xC000_0005,
-    }
-}
-
-/// CPL3 exception delivery boundary. Unresolved user exceptions retire only the
-/// current process; the scheduler removes its sibling threads and leaves the
-/// supervisor exception/fatal path untouched. This is the process-termination
-/// fallback until a user-mode exception/SEH dispatcher is implemented.
-fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> ! {
-    let trap = unsafe { &*frame.cast::<UserExceptionTrapFrame>() };
-    if trap.cs & 3 != 3 || trap.rip < 0x0000_0000_0000_1000
-        || trap.rip >= crate::ntoskrnl::mm::address_space::USER_END
-        || trap.rsp < 0x0000_0000_0000_1000
-        || trap.rsp >= crate::ntoskrnl::mm::address_space::USER_END {
-        return cognacos_exception_fatal(vector, error, frame);
-    }
-    let pid = crate::thread::current_process_id();
-    if pid == 0 {
-        return cognacos_exception_fatal(vector, error, frame);
-    }
-    // Retain a stable diagnostic of the fault before exiting the owning process.
-    crate::serial_write(b"CPL3 exception: vector=");
-    crate::serial_write_hex(vector);
-    crate::serial_write(b" error=");
-    crate::serial_write_hex(error);
-    crate::serial_write(b" RIP=");
-    crate::serial_write_hex(trap.rip);
-    if vector == 14 {
-        crate::serial_write(b" CR2=");
-        let cr2: u64;
-        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
-        crate::serial_write_hex(cr2);
-    }
-    crate::serial_write(b" process=");
-    crate::serial_write_hex(pid);
-    crate::serial_write(b"\r\n");
-    crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(
-        pid, user_exception_status(vector, error),
-    )
-}
-
-/// The exception entry's saved-register layout. CPL3 frames also contain RSP and SS.
-#[repr(C)]
-struct UserExceptionTrapFrame {
-    saved_registers: [u64; 15],
-    vector: u64,
-    error_code: u64,
-    rip: u64,
-    cs: u64,
-    rflags: u64,
-    rsp: u64,
-    ss: u64,
-}
-
-fn user_exception_status(vector: u64) -> u64 {
-    match vector {
-        0 => 0xC000_0094, // STATUS_INTEGER_DIVIDE_BY_ZERO
-        1 => 0x8000_0004, // STATUS_SINGLE_STEP
-        3 => 0x8000_0003, // STATUS_BREAKPOINT
-        6 => 0xC000_001D, // STATUS_ILLEGAL_INSTRUCTION
-        13 => 0xC000_0096, // STATUS_PRIVILEGED_INSTRUCTION
+        17 => 0x8000_0002, // STATUS_DATATYPE_MISALIGNMENT
         _ => 0xC000_0005, // STATUS_ACCESS_VIOLATION
     }
 }
@@ -1572,7 +1508,9 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> !
     crate::serial_write(b" process=");
     crate::serial_write_hex(pid);
     crate::serial_write(b"\r\n");
-    crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, user_exception_status(vector))
+    crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(
+        pid, user_exception_status(vector, error),
+    )
 }
 
 /// Dispatch recoverable faults. A return value of one asks the assembly stub to
