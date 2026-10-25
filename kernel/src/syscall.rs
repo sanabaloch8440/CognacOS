@@ -41,7 +41,7 @@ rdotos_syscall_entry:
     mov rbx, rsp
     # Save user XSTATE before any Rust syscall dispatch can touch SIMD state.
     and rsp, -16
-    call cognacos_save_current_user_xstate
+    call cognacos_save_current_user_xstate_asm
     mov rsp, rbx
     mov rdi, rsp
     and rsp, -16
