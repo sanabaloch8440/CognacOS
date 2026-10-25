@@ -19,6 +19,8 @@ pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
 #[path = "ntoskrnl/io/runtime.rs"]
 pub(crate) mod io;
+#[path = "ntoskrnl/io/file_services.rs"]
+pub(crate) mod file_services;
 use cognacos_ext4 as extfs;
 pub(crate) use ntoskrnl::rtl_runtime::nls;
 mod ntoskrnl;
