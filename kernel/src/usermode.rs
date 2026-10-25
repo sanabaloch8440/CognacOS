@@ -597,7 +597,7 @@ pub unsafe fn run_native_ntdll_smoke(
     imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xA60);
     imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xA40);
     call_ptr!(rtl_copy_unicode);
-    check_dword!(NTDLL_TEST_DATA + 0xA60, 12);
+    check_dword!(NTDLL_TEST_DATA + 0xA60, 0x0010_000c);
     check_dword!(NTDLL_TEST_DATA + 0xA80, 0x006f0043); // UTF-16 "Co"
 
     imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xAA0);
@@ -616,7 +616,7 @@ pub unsafe fn run_native_ntdll_smoke(
     call_ptr!(rtl_integer_to_unicode);
     emit!(&[0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
-    check_dword!(NTDLL_TEST_DATA + 0xAC0, 4);
+    check_dword!(NTDLL_TEST_DATA + 0xAC0, 0x0010_0004);
     check_dword!(NTDLL_TEST_DATA + 0xAE0, 0x00320034); // UTF-16 "42"
 
     imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xB20);
