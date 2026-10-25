@@ -13,6 +13,8 @@ The roadmap is maintained in one canonical file in the repository root to avoid 
 
 ## Current focus
 
+- **Native file and DLL loader:** read-only registered boot-file objects and bounded native open/read dispatch are present; NTDLL has typed PEB loader-list lookup/enumeration. General disk-backed VFS, native section/map/unmap services, dependency-aware image loading, and safe final unload remain incomplete. See the [canonical loader milestones](https://github.com/umarfarooq7869/CognacOS/blob/main/roadmap.md#native-file-and-dll-loader-progress-in-progress).
+
 - **Boot security:** validate signature tamper rejection in CI; configure stable release keys and exercise enrolled-key Secure Boot plus TPM 2.0 measurement on real firmware.
 - **Memory isolation and fault containment:** bounded vector/RIP trap-frame fixups now set an explicit recovery RIP and RAX result, with an invalid-probe boot self-test; unresolved CPL3 exceptions use the saved trap frame and terminate only the owning process. A new boot test checks same-VA mappings across two address spaces and supervisor-only kernel mappings; ring-3 IRETQ/syscall/process-exit checks remain in the QEMU path. Current CI/QEMU validation and adversarial CPL3 access-fault tests remain open, along with concurrent teardown stress, user-mode SEH resume/unwind, user-page eviction/pagefile-backed page-in, and SMP-safe working-set trimming/reclamation.
 - **Scheduling and dispatch:** user APC return/SEH delivery, queue wait-all reservations, and wider race/conformance stress.
