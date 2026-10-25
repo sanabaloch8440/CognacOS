@@ -293,7 +293,7 @@ pub unsafe fn run_windows_syscall_abi_smoke(
 
     let mut code = [0u8; 1024];
     let mut length = 0usize;
-    let mut failures = [0usize; 8];
+    let mut failures = [0usize; 16];
     let mut failure_count = 0usize;
     macro_rules! emit {
         ($bytes:expr) => {{
@@ -368,8 +368,22 @@ pub unsafe fn run_windows_syscall_abi_smoke(
     fail_if!(&[0x0f, 0x85]);
     check_dword!(NTDLL_TEST_DATA + 0x380, 48);
 
+    // A bad output pointer must return STATUS_ACCESS_VIOLATION, not fault in
+    // ring 0. Then an unknown Windows ordinal must fail closed as NOT_IMPLEMENTED.
+    imm64!(&[0x48, 0xb9], 0);
+    emit!(&[0xba, 1, 0, 0, 0]);
+    emit!(&[0x41, 0xb8, 64, 0, 0, 0]);
+    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x900);
+    emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x36, 0, 0, 0, 0x0f, 0x05]);
+    emit!(&[0x3d, 0x05, 0, 0, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+
+    emit!(&[0xb8, 0xad, 0xde, 0, 0, 0x0f, 0x05]);
+    emit!(&[0x3d, 0x02, 0, 0, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+
     emit!(&[0x31, 0xff, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(0)
-    let mut failure_labels = [0usize; 8];
+    let mut failure_labels = [0usize; 16];
     for index in 0..failure_count {
         failure_labels[index] = length;
         emit!(&[0xbf]);
@@ -560,6 +574,18 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0x85, 0xc0]);
     fail_if!(&[0x0f, 0x85]);
     check_dword!(NTDLL_TEST_DATA + 0x580, 48);
+
+    imm64!(&[0x48, 0xb9], 0);
+    emit!(&[0xba, 1, 0, 0, 0]);
+    emit!(&[0x41, 0xb8, 64, 0, 0, 0]);
+    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x900);
+    emit!(&[0x4c, 0x8b, 0xd1, 0xb8, 0x36, 0, 0, 0, 0x0f, 0x05]);
+    emit!(&[0x3d, 0x05, 0, 0, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+
+    emit!(&[0xb8, 0xad, 0xde, 0, 0, 0x0f, 0x05]);
+    emit!(&[0x3d, 0x02, 0, 0, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
 
     emit!(&[0x31, 0xff, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(0)
     let mut failure_labels = [0usize; 24];
