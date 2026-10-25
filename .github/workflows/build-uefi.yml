@@ -117,10 +117,12 @@ jobs:
             fi
             echo "Using externally supplied NTDLL for PE map/export-only validation; the Windows syscall ABI will not be executed."
           fi
+          test "$(stat -c %s build/EFI/BOOT/ntdll.dll)" -le 16777216
           file build/EFI/BOOT/ntdll.dll
           python3 - <<'PY'
           import struct
           p = open("build/EFI/BOOT/ntdll.dll", "rb").read()
+          assert 0 < len(p) <= 16 * 1024 * 1024
           pe = struct.unpack_from("<I", p, 0x3c)[0]
           assert p[:2] == b"MZ" and p[pe:pe+4] == b"PE\0\0"
           coff = pe + 4
