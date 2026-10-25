@@ -1,6 +1,7 @@
 //! First per-address-space VM primitives for user-mode isolation.
-//! User mappings occupy PML4 slots 1..255 (512 GiB..128 TiB) so they do not
-//! collide with the bootstrap's supervisor-only identity map at slot 0.
+//! Normal user mappings occupy PML4 slots 1..255. The Windows KUSER_SHARED_DATA
+//! page is the sole low-address exception; its page-table path is privately cloned
+//! so the bootstrap's other slot-0 identity mappings remain supervisor-only.
 use core::arch::asm;
 pub use super::user_range::{is_user_range, USER_END, USER_START, KUSER_SHARED_DATA_ADDRESS};
 
@@ -114,7 +115,7 @@ impl AddressSpace {
                     return Err(VmError::PermissionDenied);
                 }
             }
-            unsafe { pml4_slot.write(page | (pml4_entry & !ADDR) | USER); }
+            unsafe { pml4_slot.write(page | (pml4_entry & !ADDR) | USER | WRITE); }
             page
         };
         self.kuser_tables[0] = pdpt;
@@ -133,7 +134,7 @@ impl AddressSpace {
             for i in 0..512usize {
                 unsafe { entries.add(i).write(base + i as u64 * TWO_MIB | flags | pat | LARGE); }
             }
-            unsafe { pdpt_slot.write(page | (pdpt_entry & !(ADDR | LARGE | PAT_LARGE)) | USER); }
+            unsafe { pdpt_slot.write(page | (pdpt_entry & !(ADDR | LARGE | PAT_LARGE)) | USER | WRITE); }
             page
         } else {
             let page = unsafe { clone_table(pdpt_entry & ADDR)? };
@@ -144,7 +145,7 @@ impl AddressSpace {
                     return Err(VmError::PermissionDenied);
                 }
             }
-            unsafe { pdpt_slot.write(page | (pdpt_entry & !ADDR) | USER); }
+            unsafe { pdpt_slot.write(page | (pdpt_entry & !ADDR) | USER | WRITE); }
             page
         };
         self.kuser_tables[1] = pd;
@@ -165,7 +166,7 @@ impl AddressSpace {
                 if pat { entry |= 1 << 7; }
                 unsafe { entries.add(i).write(entry); }
             }
-            unsafe { pd_slot.write(page | (pd_entry & !(ADDR | LARGE | PAT_LARGE)) | USER); }
+            unsafe { pd_slot.write(page | (pd_entry & !(ADDR | LARGE | PAT_LARGE)) | USER | WRITE); }
             page
         } else {
             let page = unsafe { clone_table(pd_entry & ADDR)? };
@@ -176,7 +177,7 @@ impl AddressSpace {
                     return Err(VmError::PermissionDenied);
                 }
             }
-            unsafe { pd_slot.write(page | (pd_entry & !ADDR) | USER); }
+            unsafe { pd_slot.write(page | (pd_entry & !ADDR) | USER | WRITE); }
             page
         };
         self.kuser_tables[2] = pt;
