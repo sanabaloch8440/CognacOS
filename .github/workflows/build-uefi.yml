@@ -3,7 +3,23 @@ name: Build and boot-test CognacOS Rust UEFI kernel
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'assets/**'
+      - '_config.yml'
+      - 'index.html'
+      - 'Gemfile'
+      - 'Gemfile.lock'
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'assets/**'
+      - '_config.yml'
+      - 'index.html'
+      - 'Gemfile'
+      - 'Gemfile.lock'
   workflow_dispatch:
 
 permissions:
