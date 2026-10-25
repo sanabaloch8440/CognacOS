@@ -223,8 +223,9 @@ pub unsafe fn ki_xstate_save(area: *mut u8, length: usize, mask: u64) -> i32 {
     if area.is_null() || (area as usize) & 63 != 0 || length < size || mask == 0 || mask & !enabled != 0 {
         return if !area.is_null() && length < size { STATUS_BUFFER_TOO_SMALL } else { STATUS_INVALID_PARAMETER };
     }
-    // Initialize reserved/header bytes before XSAVE so absent state is deterministic.
-    unsafe { core::ptr::write_bytes(area, 0, size); }
+    // Do not clear this buffer with Rust before XSAVE: an optimized memset
+    // could use SIMD and corrupt the interrupted state before it is captured.
+    // XSAVE writes the header; XSTATE_BV makes stale absent-component bytes inert.
     let lo = mask as u32;
     let hi = (mask >> 32) as u32;
     unsafe { core::arch::asm!("xsave64 [{}]", in(reg) area, in("eax") lo, in("edx") hi, options(nostack)); }
