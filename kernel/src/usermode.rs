@@ -513,6 +513,9 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_get_process_heap = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlGetProcessHeap"))
         .ok_or(VmError::InvalidAddress)?;
+    let rtl_get_current_peb = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlGetCurrentPeb"))
+        .ok_or(VmError::InvalidAddress)?;
     let rtl_allocate_heap = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlAllocateHeap"))
         .ok_or(VmError::InvalidAddress)?;
@@ -774,6 +777,17 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0x41, 0xb8, 4, 0, 0, 0]);
     call_ptr!(rtl_copy_memory);
     check_dword!(NTDLL_TEST_DATA + 0xBE0, 0x656d6173); // "same"
+
+    // GS:[0x60] must expose the active process PEB and its ProcessHeap field.
+    call_ptr!(rtl_get_current_peb);
+    imm64!(&[0x48, 0xba], crate::process::PEB_ADDRESS);
+    emit!(&[0x48, 0x39, 0xd0]);
+    fail_if!(&[0x0f, 0x85]);
+    imm64!(&[0x48, 0xb8], crate::process::PEB_ADDRESS);
+    emit!(&[0x48, 0x8b, 0x40, 0x30]); // PEB.ProcessHeap
+    imm64!(&[0x48, 0xba], process_heap_object);
+    emit!(&[0x48, 0x39, 0xd0]);
+    fail_if!(&[0x0f, 0x85]);
 
     // Default process heap: PEB handle, allocation, size, realloc, free and validation.
     call_ptr!(rtl_get_process_heap);
