@@ -5,6 +5,10 @@
  */
 #include <windows.h>
 
+#ifdef COGNAC_USE_WINDOWS_SYSCALL_IDS
+#include "generated/ntdll_syscalls.h"
+#endif
+
 #define STATUS_NOT_IMPLEMENTED ((LONG)0xC0000002L)
 #define STATUS_INVALID_PARAMETER ((LONG)0xC000000DL)
 #define STATUS_SUCCESS ((LONG)0x00000000L)
@@ -16,7 +20,16 @@ extern NTSTATUS CognacNtSyscall4(NTSYSCALL_NUMBER number,
                                  ULONG_PTR a3, ULONG_PTR a4);
 
 enum { SYSCALL_CLOSE = 0, SYSCALL_YIELD_EXECUTION = 1, SYSCALL_COUNT = 2 };
+#ifdef COGNAC_USE_WINDOWS_SYSCALL_IDS
+/* Generated from the exact Windows ntdll.dll used to build this image. */
+static volatile LONG_PTR syscall_numbers[SYSCALL_COUNT] = {
+    (LONG_PTR)COGNAC_SYSCALL_NTCLOSE,
+    (LONG_PTR)COGNAC_SYSCALL_NTYIELDEXECUTION
+};
+#else
+/* CognacOS supplies its syscall ABI numbers during native initialization. */
 static volatile LONG_PTR syscall_numbers[SYSCALL_COUNT];
+#endif
 
 /* Compiler intrinsics avoid importing KernelBase/Kernel32 during NTDLL init. */
 __declspec(dllexport)
