@@ -430,7 +430,7 @@ pub unsafe fn unload_dll(
     for index in 0..pages {
         let address = image.base + index as u64 * PAGE_SIZE;
         let physical = unsafe { space.unmap_user_page(address)? };
-        unsafe { crate::memory::free_page(physical)?; }
+        unsafe { crate::memory::free_page(physical).map_err(|_| PeError::OutOfMemory)?; }
     }
     Ok(())
 }
