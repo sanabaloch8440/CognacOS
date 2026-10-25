@@ -842,8 +842,81 @@ pub unsafe extern "system" fn LdrQueryModuleServiceTags() -> i32 { STATUS_NOT_IM
 #[no_mangle]
 pub unsafe extern "system" fn LdrQueryOptionalDelayLoadedAPI() -> i32 { STATUS_NOT_IMPLEMENTED }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RTL_PROCESS_MODULE_INFORMATION {
+    pub Section: PVOID,
+    pub MappedBase: PVOID,
+    pub ImageBase: PVOID,
+    pub ImageSize: ULONG,
+    pub Flags: ULONG,
+    pub LoadOrderIndex: u16,
+    pub InitOrderIndex: u16,
+    pub LoadCount: u16,
+    pub OffsetToFileName: u16,
+    pub FullPathName: [u8; 256],
+}
+#[repr(C)]
+pub struct RTL_PROCESS_MODULES {
+    pub NumberOfModules: ULONG,
+    pub Modules: [RTL_PROCESS_MODULE_INFORMATION; 1],
+}
+const RTL_PROCESS_MODULE_INFORMATION_SIZE: usize = core::mem::size_of::<RTL_PROCESS_MODULE_INFORMATION>();
+
 #[no_mangle]
-pub unsafe extern "system" fn LdrQueryProcessModuleInformation() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrQueryProcessModuleInformation(
+    module_information: *mut RTL_PROCESS_MODULES,
+    size: ULONG,
+    returned_size: *mut ULONG,
+) -> NTSTATUS {
+    if returned_size.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Some(head) = (unsafe { current_peb_ldr_head() }) else {
+        unsafe { returned_size.write(0); }
+        return STATUS_DLL_NOT_FOUND;
+    };
+    let head_addr = head as usize;
+    let mut link = unsafe { ptr::read_unaligned(head.cast::<usize>()) };
+    let mut count = 0usize;
+    while link != 0 && link != head_addr && count < MAX_LOADER_ENTRIES {
+        count += 1;
+        link = unsafe { ptr::read_unaligned((link as *const u8).cast::<usize>()) };
+    }
+    if count == MAX_LOADER_ENTRIES { return STATUS_INVALID_PARAMETER; }
+    let required = core::mem::size_of::<ULONG>()
+        .checked_add(count.checked_mul(RTL_PROCESS_MODULE_INFORMATION_SIZE).unwrap_or(usize::MAX))
+        .filter(|n| *n <= u32::MAX as usize).ok_or(STATUS_INVALID_PARAMETER);
+    let required = match required { Ok(n) => n, Err(e) => return e };
+    unsafe { returned_size.write(required as ULONG); }
+    if module_information.is_null() || size as usize < required { return STATUS_BUFFER_TOO_SMALL; }
+    unsafe { ptr::write_unaligned(ptr::addr_of_mut!((*module_information).NumberOfModules), count as ULONG); }
+    link = unsafe { ptr::read_unaligned(head.cast::<usize>()) };
+    let output = unsafe { (module_information.cast::<u8>().add(core::mem::size_of::<ULONG>())).cast::<RTL_PROCESS_MODULE_INFORMATION>() };
+    let mut index = 0usize;
+    while link != 0 && link != head_addr && index < count {
+        let entry = link as *const u8;
+        let base = unsafe { ptr::read_unaligned(entry.add(0x30).cast::<usize>()) };
+        let image_size = unsafe { ptr::read_unaligned(entry.add(0x40).cast::<ULONG>()) };
+        let name_length = unsafe { ptr::read_unaligned(entry.add(0x48).cast::<u16>()) } as usize;
+        let name_buffer = unsafe { ptr::read_unaligned(entry.add(0x50).cast::<usize>()) } as *const u16;
+        let mut info = RTL_PROCESS_MODULE_INFORMATION {
+            Section: ptr::null_mut(), MappedBase: base as PVOID, ImageBase: base as PVOID,
+            ImageSize: image_size, Flags: 0, LoadOrderIndex: index as u16, InitOrderIndex: 0,
+            LoadCount: 1, OffsetToFileName: 0, FullPathName: [0; 256],
+        };
+        if name_length & 1 == 0 && name_length != 0 && !name_buffer.is_null() {
+            let units = core::cmp::min(name_length / 2, 255);
+            for i in 0..units {
+                let ch = unsafe { ptr::read_unaligned(name_buffer.add(i)) };
+                info.FullPathName[i] = if ch <= 0x7f { ch as u8 } else { b'?' };
+                if ch == b'\\' as u16 || ch == b'/' as u16 { info.OffsetToFileName = (i + 1) as u16; }
+            }
+        }
+        unsafe { ptr::write_unaligned(output.add(index), info); }
+        link = unsafe { ptr::read_unaligned(entry.cast::<usize>()) };
+        index += 1;
+    }
+    STATUS_SUCCESS
+}
 
 
 
