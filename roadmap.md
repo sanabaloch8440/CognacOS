@@ -13,9 +13,9 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 
 ## Current validation
 
-- Latest full passing kernel/UEFI/QEMU/SMP run: [run 40159978518](https://github.com/umarfarooq7869/CognacOS/actions/runs/40159978518), commit `ed2198d2a5dbaf5820cc863297396098abcfaa58`.
-- The latest passing run includes the QEMU boot smoke test and the 2/4/8-vCPU SMP startup, interrupt, scheduler, and TLB-shootdown matrix. TPM-present measurement and firmware-enrolled Secure Boot remain separate validation tasks.
-- Keep CI status current by checking the latest run on `main` before marking a milestone validated.
+- Last recorded full passing kernel/UEFI/QEMU/SMP run: [run 40159978518](https://github.com/umarfarooq7869/CognacOS/actions/runs/40159978518), commit `ed2198d2a5dbaf5820cc863297396098abcfaa58`.
+- That run passed the QEMU boot smoke test and 2/4/8-vCPU SMP startup, interrupt, scheduler, and TLB-shootdown matrix. It does not validate the fault-containment and I/O-rundown items below unless the relevant tests were included.
+- Later changes must be checked against the latest [Actions runs](https://github.com/umarfarooq7869/CognacOS/actions) before any milestone is marked validated. TPM-present measurement and firmware-enrolled Secure Boot remain separate validation tasks.
 
 ## Milestone 1 — Boot and platform foundations
 
@@ -38,17 +38,20 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [x] Preflight all pages before multi-page user copies; hold address-space lifetime protection across validation and transfer.
 - [x] Make user-page mapping roll back newly allocated intermediate page tables on supported failure paths.
 - [x] Run host regression tests for range boundaries, zero-length pointers, and integer overflow.
-- [ ] Add integration tests for cross-page failures, read-only destinations, rollback, and map/unmap races.
-- [ ] Deliver user-mode exceptions through a defined trap-frame path and terminate only the faulting process.
+- [ ] Add integration tests for cross-page failures, read-only destinations, mapping rollback, and map/unmap races.
+- [ ] Implement generalized trap-frame fixup records for recoverable kernel probes: bounded fixup lookup, explicit recovery PC/result semantics, and tests proving an invalid probe returns an error instead of escalating to a fatal kernel fault.
+- [ ] Deliver user-mode exceptions through a defined trap-frame path; distinguish CPL=3 faults from supervisor faults and terminate only the faulting process without taking down other processes or the kernel.
+- [ ] Stress concurrent process/address-space teardown against faults, user copies, pin/unpin, and unmap; verify reference/rundown ownership and absence of use-after-free.
 - [x] Integrate timer-driven preemption and verify a non-yielding kernel thread is preempted for a runnable peer in QEMU.
 - [x] Add per-address-space demand-zero region metadata and resident working-set accounting APIs.
 - [x] Route CPL=3 vector-14 faults to the current process's address-space demand-zero resolver; supervisor faults continue through kernel VM handling.
 - [ ] Add user-process eviction/pagefile backing and process-scoped access-violation delivery (currently only the kernel pageable pool has pagefile eviction/page-in).
 - [ ] Add demand-zero resolver integration tests and safe concurrent unmap/fault stress.
 - [x] Add non-dereferencing user-range probes and page-by-page permission validation; copy helpers preflight full ranges before transfer.
-- [ ] Add generalized trap-frame fault fixups for recoverable kernel probes, concurrent teardown stress, and user-fault delivery that terminates only the faulting process.
-- [ ] Harden I/O completion, cancellation, driver unload, and device/IRP rundown with race and fault-injection tests.
-- [ ] Implement working-set trimming with SMP-safe TLB shootdowns and page reclamation.
+- [ ] Implement a bounded working-set trim path: select reclaimable resident pages, prevent concurrent pin/lock/remap, invalidate translations on every affected CPU, wait for TLB-shootdown acknowledgements, then reclaim physical pages only after invalidation completes.
+- [ ] Test working-set trimming under multi-vCPU load, including stale-TLB access, concurrent pin/unpin, unmap, address-space destruction, allocation pressure, and rollback on incomplete shootdown.
+- [ ] Harden I/O completion, cancellation, driver unload, and device/IRP rundown with race and fault-injection tests: exactly-once completion, cancel/completion interleavings, outstanding-IRP drain, remove/unload barriers, and callbacks racing teardown.
+- [ ] Add deterministic host-side or kernel stress tests for the I/O race matrix, and run them with QEMU SMP/fault-injection before claiming rundown semantics complete.
 - [ ] Prove per-process kernel/user page-table isolation, syscall/trap transitions, and protection against cross-process mappings with adversarial tests.
 - [ ] Pass current QEMU multi-vCPU and stress/fault-injection validation before closing the milestone.
 
@@ -80,7 +83,7 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [x] Initial x64 WDM layouts, device creation/deletion, IRP allocation/dispatch/completion, cancel routine foundations, and device rundown.
 - [x] Initial PnP/power state transitions, bounded power-IRP handling, and S4 image codec/recovery primitives.
 - [x] Separate ACPI, PCI, HAL-contract, processor, and storage protocol foundations; native Rust ext-family parser.
-- [ ] Complete cancellation-vs-completion, remove-lock, unload, device-stack, and file-object lifetime semantics.
+- [ ] Complete cancellation-vs-completion, remove-lock, unload, device-stack, and file-object lifetime semantics; validate exactly-once completion, outstanding-IRP drain, callback rundown, and device deletion under injected races.
 - [ ] Implement PCI enumeration/resource assignment, real AHCI/NVMe hardware paths, and partition/VFS integration.
 - [ ] Register and validate a real VT-d/AMD IOMMU backend; keep DMA unavailable when safe translation is absent.
 - [ ] Complete device-tree/power ordering, wake handling, and end-to-end S4 persistence/resume.
