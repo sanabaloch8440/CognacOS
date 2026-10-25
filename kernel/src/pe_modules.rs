@@ -234,6 +234,18 @@ pub fn rollback(slot: usize, generation: u32) -> Result<(), i32> {
     s.entries[slot] = ModuleSnapshot::EMPTY;
     Ok(())
 }
+/// Read a module only when both its process owner and generation ticket match.
+/// Used by transaction rollback so a recycled registry slot can never target a
+/// newer image, even when an API-set contract name was normalized to its host.
+pub fn snapshot_for_ticket(process_id: u64, slot: usize, generation: u32) -> Option<ModuleSnapshot> {
+    let s = STATE.lock();
+    let entry = s.entries.get(slot)?;
+    if entry.state == ModuleState::Empty || entry.process_id != process_id || entry.generation != generation {
+        return None;
+    }
+    Some(*entry)
+}
+
 pub fn find(name: &[u8]) -> Option<(usize, ModuleSnapshot)> { find_for_process(0, name) }
 pub fn find_for_process(process_id: u64, name: &[u8]) -> Option<(usize, ModuleSnapshot)> {
     let s = STATE.lock();
