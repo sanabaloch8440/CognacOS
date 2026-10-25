@@ -296,10 +296,113 @@ pub unsafe extern "system" fn RtlQueryPerformanceFrequency(frequency: *mut LARGE
     1
 }
 
+// Cached wall-clock/QPC calibration for RtlGetSystemTimePrecise. The sequence
+// counter makes the (system-time, QPC, frequency) tuple coherent for readers.
+// Calibration is refreshed at least once per second to bound oscillator drift
+// and follow wall-clock adjustments.
+use core::sync::atomic::{AtomicI64, AtomicU32, Ordering};
+static PRECISE_SEQ: AtomicU32 = AtomicU32::new(0);
+static PRECISE_SYSTEM_TIME: AtomicI64 = AtomicI64::new(0);
+static PRECISE_QPC: AtomicI64 = AtomicI64::new(0);
+static PRECISE_QPC_FREQUENCY: AtomicI64 = AtomicI64::new(0);
+static PRECISE_REFRESH_QPC: AtomicI64 = AtomicI64::new(0);
+static PRECISE_LAST_RETURNED: AtomicI64 = AtomicI64::new(0);
+static PRECISE_REFRESH_LOCK: AtomicU32 = AtomicU32::new(0);
+const PRECISE_REFRESH_INTERVAL_100NS: i64 = 10_000_000;
+
+fn precise_snapshot() -> Option<(i64, i64, i64, i64)> {
+    loop {
+        let before = PRECISE_SEQ.load(Ordering::Acquire);
+        if before & 1 != 0 { core::hint::spin_loop(); continue; }
+        let system = PRECISE_SYSTEM_TIME.load(Ordering::Relaxed);
+        let qpc = PRECISE_QPC.load(Ordering::Relaxed);
+        let frequency = PRECISE_QPC_FREQUENCY.load(Ordering::Relaxed);
+        let refreshed = PRECISE_REFRESH_QPC.load(Ordering::Relaxed);
+        let after = PRECISE_SEQ.load(Ordering::Acquire);
+        if before == after {
+            if frequency > 0 && system > 0 { return Some((system, qpc, frequency, refreshed)); }
+            return None;
+        }
+    }
+}
+
+unsafe fn refresh_precise_clock() -> bool {
+    // Read QPC on both sides of system time and anchor to the midpoint, reducing
+    // skew between the two clocks. NT failures leave the previous calibration intact.
+    let mut qpc_before = LARGE_INTEGER::default();
+    let mut qpc_after = LARGE_INTEGER::default();
+    let mut frequency = LARGE_INTEGER::default();
+    let mut system = LARGE_INTEGER::default();
+    if unsafe { NtQueryPerformanceCounter(&mut qpc_before, &mut frequency) } < 0
+        || frequency.QuadPart <= 0
+        || unsafe { NtQuerySystemTime(&mut system) } < 0
+        || unsafe { NtQueryPerformanceCounter(&mut qpc_after, core::ptr::null_mut()) } < 0
+    { return false; }
+
+    let midpoint = qpc_before.QuadPart.saturating_add(
+        qpc_after.QuadPart.saturating_sub(qpc_before.QuadPart) / 2);
+    PRECISE_SEQ.fetch_add(1, Ordering::AcqRel); // odd: writer active
+    PRECISE_SYSTEM_TIME.store(system.QuadPart, Ordering::Relaxed);
+    PRECISE_QPC.store(midpoint, Ordering::Relaxed);
+    PRECISE_QPC_FREQUENCY.store(frequency.QuadPart, Ordering::Relaxed);
+    PRECISE_REFRESH_QPC.store(qpc_after.QuadPart, Ordering::Relaxed);
+    PRECISE_SEQ.fetch_add(1, Ordering::Release); // even: publish tuple
+    true
+}
+
+/// Return system time in 100-ns units since 1601, interpolating between native
+/// system-time samples with the monotonic performance counter. The calibration
+/// is refreshed once per second so clock changes and counter drift are bounded.
+/// If calibration or QPC is unavailable, fall back to NtQuerySystemTime.
+///
+/// This is a user-mode implementation: precision is limited by the kernel's
+/// QPC and system-time services, and it does not claim nanosecond accuracy.
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetSystemTimePrecise() -> i64 {
-    let mut time = LARGE_INTEGER::default();
-    if unsafe { NtQuerySystemTime(&mut time) } >= 0 { time.QuadPart } else { 0 }
+    let mut qpc = LARGE_INTEGER::default();
+    if unsafe { NtQueryPerformanceCounter(&mut qpc, core::ptr::null_mut()) } < 0 {
+        let mut fallback = LARGE_INTEGER::default();
+        return if unsafe { NtQuerySystemTime(&mut fallback) } >= 0 { fallback.QuadPart } else { 0 };
+    }
+
+    let mut snapshot = precise_snapshot();
+    let stale = snapshot.map(|(system, anchor, _freq, refreshed)| {
+        system == 0 || qpc.QuadPart < refreshed
+            || qpc.QuadPart.saturating_sub(refreshed) >= PRECISE_REFRESH_INTERVAL_100NS
+                .saturating_mul(PRECISE_QPC_FREQUENCY.load(Ordering::Relaxed)) / TICKS_PER_SECOND
+            || qpc.QuadPart < anchor
+    }).unwrap_or(true);
+
+    if stale && PRECISE_REFRESH_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+        let _ = unsafe { refresh_precise_clock() };
+        PRECISE_REFRESH_LOCK.store(0, Ordering::Release);
+        snapshot = precise_snapshot();
+    }
+    let Some((system_base, qpc_base, frequency, _)) = snapshot else {
+        let mut fallback = LARGE_INTEGER::default();
+        return if unsafe { NtQuerySystemTime(&mut fallback) } >= 0 { fallback.QuadPart } else { 0 };
+    };
+    if qpc.QuadPart < qpc_base || frequency <= 0 {
+        let mut fallback = LARGE_INTEGER::default();
+        return if unsafe { NtQuerySystemTime(&mut fallback) } >= 0 { fallback.QuadPart } else { 0 };
+    }
+
+    let delta_qpc = qpc.QuadPart - qpc_base;
+    let delta_100ns = ((delta_qpc as i128) * (TICKS_PER_SECOND as i128)
+        / (frequency as i128)).clamp(0, i64::MAX as i128) as i64;
+    let candidate = system_base.saturating_add(delta_100ns);
+    // System wall time can be adjusted backwards. Avoid returning a value lower
+    // than the previous result, while still allowing the next calibration to
+    // correct the wall-clock anchor.
+    let mut last = PRECISE_LAST_RETURNED.load(Ordering::Relaxed);
+    loop {
+        let monotonic = candidate.max(last);
+        match PRECISE_LAST_RETURNED.compare_exchange_weak(last, monotonic,
+            Ordering::AcqRel, Ordering::Relaxed) {
+            Ok(_) => return monotonic,
+            Err(actual) => last = actual,
+        }
+    }
 }
 
 #[no_mangle]
