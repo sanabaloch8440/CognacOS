@@ -44,6 +44,25 @@ static BOOT_HIVE_ADDRESS:[core::sync::atomic::AtomicU64;7]=[const{core::sync::at
 static BOOT_HIVE_LENGTH:[core::sync::atomic::AtomicU64;7]=[const{core::sync::atomic::AtomicU64::new(0)};7];
 static BOOT_NLS_ADDRESS:[core::sync::atomic::AtomicU64;8]=[const{core::sync::atomic::AtomicU64::new(0)};8];
 static BOOT_NLS_LENGTH:[core::sync::atomic::AtomicU64;8]=[const{core::sync::atomic::AtomicU64::new(0)};8];
+static BOOT_SECURITY_FLAGS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BOOT_KERNEL_DIGEST:[core::sync::atomic::AtomicU8;32]=[const{core::sync::atomic::AtomicU8::new(0)};32];
+
+/// Security properties attested by the bootloader before transferring control.
+pub fn boot_security_flags()->u64{BOOT_SECURITY_FLAGS.load(core::sync::atomic::Ordering::Acquire)}
+/// SHA-256 of the exact kernel PE32+ file verified by the bootloader.
+pub fn boot_kernel_digest()->[u8;32]{
+    let mut digest=[0u8;32];
+    for (index,byte) in digest.iter_mut().enumerate(){
+        *byte=BOOT_KERNEL_DIGEST[index].load(core::sync::atomic::Ordering::Acquire);
+    }
+    digest
+}
+pub fn boot_kernel_signature_verified()->bool{boot_security_flags()&(1<<6)!=0}
+pub fn boot_secure_boot_enabled()->Option<bool>{
+    let flags=boot_security_flags();
+    if flags&(1<<0)==0{None}else{Some(flags&(1<<1)!=0)}
+}
+pub fn boot_tpm_kernel_measurement_recorded()->bool{boot_security_flags()&(1<<5)!=0}
 static mut THREAD_SMOKE_STACK: [u8; 4096] = [0; 4096];
 static mut THREAD_BLOCK_STACK: [u8; 4096] = [0; 4096];
 static mut THREAD_WAKE_STACK: [u8; 4096] = [0; 4096];
@@ -157,7 +176,15 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic == BOOT_INFO_MAGIC && info.version == 8 && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() { install_boot_assets(info); }
+        if info.magic == BOOT_INFO_MAGIC && info.version == 8
+            && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() {
+            BOOT_SECURITY_FLAGS.store(info.security_flags,core::sync::atomic::Ordering::Release);
+            for (index,byte) in info.kernel_digest.iter().copied().enumerate(){
+                BOOT_KERNEL_DIGEST[index].store(byte,core::sync::atomic::Ordering::Release);
+            }
+            install_boot_assets(info);
+        }
+        if false && info.version == 8 && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() { install_boot_assets(info); }
         if info.magic != BOOT_INFO_MAGIC || info.version != 8
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
