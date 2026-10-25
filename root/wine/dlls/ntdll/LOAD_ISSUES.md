@@ -12,7 +12,7 @@ native NTDLL uses the CognacOS DPL3 interrupt ABI.
 The user-provided Windows x64 `ntdll.dll` was inspected locally (the Microsoft
 binary is not copied into this repository):
 
-- File size: 2,023,688 bytes.
+- File size: 2,023,688 bytes; SHA-256: `eee317568e7901913399dd8fc3c804a35a5466f167aed279c652e1797f0a8bf6`.
 - AMD64 PE32+, DLL characteristic set; `SizeOfImage = 2,052,096` bytes.
 - 10 sections; preferred image base `0x180000000`; entry-point RVA is zero.
 - Import directory is empty; TLS directory is empty.
