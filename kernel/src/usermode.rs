@@ -237,7 +237,7 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
         &[0u8; 1]) }.is_ok() {
         return Err(VmError::PermissionDenied);
     }
-    unsafe { crate::serial_write(b"KUSER_SHARED_DATA XState mapping and read-only ABI test passed.\\r\\n"); }
+    unsafe { crate::serial_write(b"KUSER_SHARED_DATA XState mapping and read-only ABI test passed.\r\n"); }
     // The native NTDLL exports its per-process heap object as data. Point
     // PEB.ProcessHeap at that mapped object before user code begins.
     if let Some(process_heap) = crate::winabi::resolve_import(
