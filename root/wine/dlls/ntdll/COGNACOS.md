@@ -345,7 +345,7 @@ validated.
 
 The Rust source `rust/version.rs` now also includes source-derived helpers for
 `RtlGetNtVersionNumbers`, `RtlGetNtProductType`, and Wine's current
-`RtlGetProductInfo` policy, alongside the version-comparison core. The
+`RtlGetProductInfo` policy, alongside the version-comparison core and `VerSetConditionMask` condition-slot builder. The
 version-number helper preserves Wine's documented-in-source high build nibble
 (`0xF0000000 | build`) and accepts null output pointers. Version-info copying
 handles the base 276-byte `OSVERSIONINFOW` layout and the 284-byte extended
