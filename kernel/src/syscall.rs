@@ -205,8 +205,10 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 5]> {
         let function_rva = image_u32(image, functions.checked_add(ordinal.checked_mul(4)?)?)?;
         if function_rva >= export_rva && function_rva < export_rva.saturating_add(export_size) { continue; }
         let Some(stub) = image_rva_offset(image, section_table, section_count, headers_size, function_rva, 16) else { continue; };
-        if image.get(stub..stub.checked_add(3)?)? != [0x4c, 0x8b, 0xd1]
-            || image.get(stub.checked_add(3)?)? != &0xb8 { continue; }
+        let register_move = image.get(stub..stub.checked_add(3)?)?;
+        let has_r10_rcx = register_move == [0x4c, 0x8b, 0xd1]
+            || register_move == [0x49, 0x89, 0xca];
+        if !has_r10_rcx || image.get(stub.checked_add(3)?)? != &0xb8 { continue; }
         let service = image_u32(image, stub.checked_add(4)?)?;
         let window_end = core::cmp::min(image.len(), stub.saturating_add(32));
         if !image.get(stub.checked_add(8)?..window_end)?.windows(2).any(|op| op == [0x0f, 0x05]) { continue; }
