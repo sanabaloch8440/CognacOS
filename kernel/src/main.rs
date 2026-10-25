@@ -749,6 +749,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Protection self-tests passed: read-only write trapped and NX execution trapped.\r\n");
+        if !ntoskrnl::ke::arch::trap_frame_fixup_self_test() {
+            serial_write(b"FATAL: invalid kernel probe was not recovered through its trap-frame fixup.\r\n");
+            halt();
+        }
+        serial_write(b"Trap-frame fixup self-test passed: invalid kernel probe returned STATUS_ACCESS_VIOLATION.\r\n");
         // The NT executive owns processor-start sequencing; the platform layer
         // supplies firmware handoff data and reports the resulting status.
         let processor_startup = ntoskrnl::ke::runtime::ki_start_all_processors(
