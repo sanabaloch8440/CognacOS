@@ -277,3 +277,20 @@ The version/status smoke passed in the boot-smoke phase of [Actions run 40183695
 **Known limitations:** case-insensitive string comparison folds ASCII only;
 the status mapping covers only a small explicit set; these exports are not a
 substitute for Wine's full NTDLL runtime or Microsoft's complete export ABI.
+
+
+### NTDLL-LOAD-021 — default process heap bootstrap
+
+**Implemented:** added a bounded in-image heap to native NTDLL with allocation,
+free, reallocation, size, and validation exports. The loader now sets
+`PEB.ProcessHeap` to the exported per-process heap object before user entry.
+The implementation uses aligned first-fit blocks, splitting/coalescing, and a
+lock; `HEAP_ZERO_MEMORY` is supported.
+
+**Validation pending:** the new ring-3 smoke covers heap handle identity,
+allocation/size, realloc data preservation, free/double-free rejection, and
+zeroed reuse. The next QEMU run will determine whether the heap path is stable.
+
+**Limitations:** this is a fixed 256 KiB process heap, not the Windows heap
+manager. Custom heaps, LFH, heap instrumentation/callbacks, exception flags,
+and exact compatibility for all heap flags are not implemented.
