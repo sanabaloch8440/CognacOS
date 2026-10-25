@@ -356,7 +356,7 @@ jobs:
           grep -F 'CognacOS Rust kernel entered.' build/serial.log
           grep -F 'Bootloader verified kernel SHA-256 and Ed25519 code signature.' build/serial.log
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
-          grep -F 'TPM 2.0 unavailable; continuing without measured boot' build/serial.log
+          grep -F 'No TPM 2.0 measured-boot device; optional feature skipped.' build/serial.log
           grep -F 'Page-table inspection passed: high-half kernel sections, stack alias, low boot data, and guard pages validated.' build/serial.log
           grep -F 'High-RAM allocator and direct-map self-test passed.' build/serial.log
           grep -F 'NT memory manager: physical translation, validity, and checked-copy self-test passed.' build/serial.log
