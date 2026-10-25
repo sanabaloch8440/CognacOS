@@ -459,12 +459,10 @@ impl AddressSpace {
             if a.end <= address && a.end > previous_end { previous_end = a.end; }
             if a.start > address && a.start < next_start { next_start = a.start; }
         }
-        let page = address & !(PAGE_SIZE - 1);
         let start = core::cmp::max(previous_end, USER_START);
         let end = core::cmp::min(next_start, USER_END);
-        let base = core::cmp::max(start, page);
-        if base >= end { return None; }
-        Some((base, end, 0, 0, false, false, false, false))
+        if start >= end || address < start || address >= end { return None; }
+        Some((start, end, 0, 0, false, false, false, false))
     }
 
     /// Snapshot the tracked demand-zero reservation containing `address`.
