@@ -71,9 +71,9 @@ NTSTATUS WINAPI CognacNtdllConfigureSyscallTable(const NTSYSCALL_NUMBER *numbers
 {
     ULONG i;
 
-    if (!numbers || count != SYSCALL_COUNT) return STATUS_INVALID_PARAMETER;
+    if (!numbers || count != (ULONG)SYSCALL_COUNT) return STATUS_INVALID_PARAMETER;
     __atomic_store_n(&configured_mask, 0, __ATOMIC_RELEASE);
-    for (i = 0; i < SYSCALL_COUNT; ++i)
+    for (i = 0; i < (ULONG)SYSCALL_COUNT; ++i)
         __atomic_store_n(&syscall_numbers[i], (LONG_PTR)numbers[i], __ATOMIC_RELAXED);
     __atomic_store_n(&configured_mask, (1L << SYSCALL_COUNT) - 1, __ATOMIC_RELEASE);
     return STATUS_SUCCESS;
@@ -85,7 +85,7 @@ static NTSTATUS CognacInvokeSyscall(ULONG index, ULONG argument_count,
     LONG mask;
     NTSYSCALL_NUMBER number;
 
-    if (index >= SYSCALL_COUNT || argument_count > COGNAC_NT_MAX_ARGUMENTS ||
+    if (index >= (ULONG)SYSCALL_COUNT || argument_count > COGNAC_NT_MAX_ARGUMENTS ||
         (argument_count && !arguments))
         return STATUS_INVALID_PARAMETER;
 
