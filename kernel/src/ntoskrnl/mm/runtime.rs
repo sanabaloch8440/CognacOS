@@ -96,6 +96,14 @@ pub unsafe extern "win64" fn mm_is_non_paged_system_address_valid(address: *cons
     (translate(va, false).is_some()) as u8
 }
 
+/// Internal write-access probe used before kernel APIs modify opaque caller records.
+#[inline]
+pub unsafe extern "win64" fn mm_is_non_paged_system_address_writable(address: *mut c_void) -> u8 {
+    let va = address as u64;
+    if va < 0xffff_8000_0000_0000 || crate::kernel_vm::is_pageable_address(va) { return 0; }
+    (translate(va, true).is_some()) as u8
+}
+
 /// MmCopyMemory(MM_COPY_ADDRESS is an 8-byte union): flags 1 = physical source,
 /// flags 2 = virtual source (the documented MM_COPY_MEMORY_* flag values). Destination must be a currently writable mapping.
 /// Copies stop at the first invalid translation and report the completed prefix.
