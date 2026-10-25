@@ -191,16 +191,18 @@ pub fn free(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let root = match current_root() { Ok(r) => r, Err(s) => return s };
     let base = match read_u64(root, args[1]) { Ok(v) => v, Err(s) => return s };
     let size = match read_u64(root, args[2]) { Ok(v) => v, Err(s) => return s };
+    if unsafe { address_space::copy_to_user_root(root, args[1], &base.to_ne_bytes()) }.is_err()
+        || unsafe { address_space::copy_to_user_root(root, args[2], &size.to_ne_bytes()) }.is_err() { return STATUS_ACCESS_VIOLATION; }
     let mut space = match attached(root) { Ok(s) => s, Err(s) => return s };
     let (start, length) = if args[3] == MEM_RELEASE {
         if size != 0 { return STATUS_INVALID_PARAMETER; }
-        let Some((region_start, region_end, allocation_base, _, _, allocated)) = space.query_region(base) else { return STATUS_INVALID_PARAMETER };
-        if !allocated || base != allocation_base { return STATUS_INVALID_PARAMETER; }
+        let Some((region_start, region_end, allocation_base, _, _, reserved, _committed)) = space.query_region(base) else { return STATUS_INVALID_PARAMETER };
+        if !reserved || base != allocation_base { return STATUS_INVALID_PARAMETER; }
         (region_start, region_end - region_start)
     } else {
         let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
-        let Some((region_start, region_end, _, _, _, allocated)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
-        if !allocated || start < region_start || end > region_end { return STATUS_INVALID_PARAMETER; }
+        let Some((region_start, region_end, _, _, _, reserved, committed)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
+        if !reserved || !committed || start < region_start || end > region_end { return STATUS_INVALID_PARAMETER; }
         (start, end - start)
     };
     if let Err(e) = space.decommit_demand_region(start, length, args[3] == MEM_RELEASE) { return status(e); }
@@ -221,8 +223,8 @@ pub fn protect(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let size = match read_u64(root, args[2]) { Ok(v) => v, Err(s) => return s };
     let (start, end) = match round_range(base, size) { Ok(v) => v, Err(s) => return s };
     let mut space = match attached(root) { Ok(s) => s, Err(s) => return s };
-    let Some((region_start, region_end, _, old_write, old_exec, allocated)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
-    if !allocated || start != region_start || end != region_end { return STATUS_INVALID_PARAMETER; }
+    let Some((region_start, region_end, _, old_write, old_exec, reserved, committed)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
+    if !reserved || !committed || start != region_start || end != region_end { return STATUS_INVALID_PARAMETER; }
     let old = current_protection(old_write, old_exec);
     let mut changed = [0u64; 4096];
     let mut changed_count = 0usize;
@@ -291,17 +293,17 @@ pub fn query(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let root = match current_root() { Ok(r) => r, Err(s) => return s };
     if args[1] < USER_START || args[1] >= USER_END { return STATUS_INVALID_PARAMETER; }
     let space = match attached(root) { Ok(s) => s, Err(s) => return s };
-    let Some((start, end, allocation_base, writable, executable, allocated)) = space.query_region(args[1]) else { return STATUS_INVALID_PARAMETER };
+    let Some((start, end, allocation_base, writable, executable, reserved, committed)) = space.query_region(args[1]) else { return STATUS_INVALID_PARAMETER };
     let protection = current_protection(writable, executable);
     let info = MemoryBasicInformation {
         base_address: start,
         allocation_base,
-        allocation_protect: if allocated { protection } else { 0 },
+        allocation_protect: if reserved { protection } else { 0 },
         alignment: 0,
         region_size: end - start,
-        state: if allocated { MEM_COMMIT } else { MEM_FREE },
-        protect: if allocated { protection } else { 0 },
-        kind: if allocated { MEM_PRIVATE } else { 0 },
+        state: if committed { MEM_COMMIT } else if reserved { 0x2000 } else { MEM_FREE },
+        protect: if committed { protection } else { 0 },
+        kind: if reserved { MEM_PRIVATE } else { 0 },
         padding: 0,
     };
     let bytes = unsafe { core::slice::from_raw_parts((&info as *const MemoryBasicInformation).cast::<u8>(), core::mem::size_of::<MemoryBasicInformation>()) };
