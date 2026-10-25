@@ -238,9 +238,9 @@ pub fn protect(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let Some((region_start, region_end, _, _allocation_protect, old_current, old_write, old_exec, reserved, committed)) = space.query_region(start) else { return STATUS_INVALID_PARAMETER };
     if !reserved || !committed || start != region_start || end != region_end { return STATUS_INVALID_PARAMETER; }
     let old = old_current;
-    // Keep the rollback journal bounded and reject oversized ranges before any PTE changes.
-    if (end - start) / PAGE > 4096 { return STATUS_INVALID_PARAMETER; }
-    let mut changed = [0u64; 4096];
+    // Keep the rollback journal small enough for a kernel stack and reject oversized ranges before any PTE changes.
+    if (end - start) / PAGE > 512 { return STATUS_INVALID_PARAMETER; }
+    let mut changed = [0u64; 512];
     let mut changed_count = 0usize;
     let mut va = start;
     while va < end {
