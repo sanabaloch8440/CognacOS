@@ -363,6 +363,16 @@ cognacos_exception_common:
     push r13
     push r14
     push r15
+    # Normalized exception frame: saved CS is 144 bytes above the GPR frame.
+    mov eax, dword ptr [rsp + 144]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_exception_skip_user_save
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_save_current_user_xstate
+    mov rsp, rbx
+.Lcognacos_exception_skip_user_save:
     mov rdx, rsp
     mov rdi, [rsp + 120]
     mov rsi, [rsp + 128]
@@ -372,6 +382,21 @@ cognacos_exception_common:
     mov rsp, r12
     test rax, rax
     jz .Lcognacos_unhandled_exception
+    mov eax, dword ptr [rsp + 144]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_exception_skip_user_restore
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lcognacos_exception_skip_user_restore
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lcognacos_exception_skip_user_restore:
     pop r15
     pop r14
     pop r13
@@ -659,12 +684,37 @@ cognacos_interrupt_common:
     push r13
     push r14
     push r15
+    # Normalized IRQ frame uses the same hardware-CS offset as exceptions.
+    mov eax, dword ptr [rsp + 144]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_irq_skip_user_save
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_save_current_user_xstate
+    mov rsp, rbx
+.Lcognacos_irq_skip_user_save:
     mov rdi, [rsp + 120]
     mov rsi, rsp
     mov r12, rsp
     and rsp, -16
     call cognacos_external_interrupt_dispatch
     mov rsp, r12
+    mov eax, dword ptr [rsp + 144]
+    and eax, 3
+    cmp eax, 3
+    jne .Lcognacos_irq_skip_user_restore
+    mov rbx, rsp
+    and rsp, -16
+    call cognacos_current_user_xstate_ptr
+    mov rsp, rbx
+    test rax, rax
+    jz .Lcognacos_irq_skip_user_restore
+    mov r10, rax
+    mov eax, 3
+    xor edx, edx
+    xrstor64 [r10]
+.Lcognacos_irq_skip_user_restore:
     pop r15
     pop r14
     pop r13
