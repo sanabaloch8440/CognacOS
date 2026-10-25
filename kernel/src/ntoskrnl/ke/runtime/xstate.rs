@@ -40,7 +40,7 @@ pub struct CognacXStateConfiguration {
     pub xsaveopt: u32,
     pub xsavec: u32,
     pub xsaves: u32,
-    pub reserved: u32,
+    pub compaction_enabled: u32,
     /// Standard-format offsets/sizes indexed by architectural XSTATE feature ID.
     pub feature_offsets: [u32; 64],
     pub feature_sizes: [u32; 64],
@@ -142,7 +142,7 @@ pub fn ki_query_xstate_configuration() -> CognacXStateConfiguration {
         xsaveopt: (flags >> 1) & 1,
         xsavec: (flags >> 2) & 1,
         xsaves: (flags >> 4) & 1,
-        reserved: 0,
+        compaction_enabled: 0,
         feature_offsets: offsets,
         feature_sizes: sizes,
     }
