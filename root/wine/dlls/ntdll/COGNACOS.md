@@ -296,3 +296,26 @@ also does not implement the `%n` pointer write, exact Wine ANSI/Unicode
 conversion semantics, or UTF-16 output buffers; byte output converts wide
 strings lossily. Rust sources remain unlinked from the native PE32+ build, and
 the new unit tests have not yet been confirmed by CI.
+
+
+## Native ANSI/UTF-16 printf ABI bridge
+
+The freestanding PE32+ build now compiles `cognac_printf.c` and exports the
+variadic and `va_list` entry points `_vsnprintf`, `_vsnwprintf`,
+`_vscprintf`, `_vscwprintf`, `_snprintf`, `_snwprintf`, their
+`_s` variants, and the `sprintf`/`swprintf` family. The wrappers use the
+target compiler's Windows x64 variadic ABI and forward into one formatter;
+the PE check now requires these names in the export table. ANSI output is
+byte-oriented, wide output is UTF-16 code-unit-oriented, and cross-width
+string conversion uses a deterministic Windows-1252 mapping instead of
+lossily converting UTF-16 to UTF-8 bytes.
+
+This is a native ABI bridge and an initial compatibility implementation, not
+yet an exact Wine/Windows CRT clone. It currently implements integer/pointer
+formatting, basic string/character formatting, `%n`, and fixed-point
+`f/F` output. Scientific/general floating formats (`e/E/g/G`) return an
+error; locale-sensitive ACP/NLS behavior, surrogate-pair handling, exact
+secure-CRT invalid-parameter behavior, and exhaustive width/precision edge
+cases remain. The wrappers are now in the native build, unlike the source-first
+Rust formatter, but compilation and export checks must pass in GitHub Actions
+before this bridge is considered validated.
