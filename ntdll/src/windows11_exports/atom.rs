@@ -30,14 +30,14 @@ pub unsafe extern "system" fn RtlGetIntegerAtom(string: PWSTR, atom: *mut USHORT
     let mut digits = 0usize;
     let mut index = 1usize;
     loop {
-        if index > 5 {
+        if index > 6 {
             return 0;
         }
         let ch = unsafe { *string.add(index) };
         if ch == 0 {
             break;
         }
-        if !(b'0' as u16..=b'9' as u16).contains(&ch) {
+        if index == 6 || !(b'0' as u16..=b'9' as u16).contains(&ch) {
             return 0;
         }
         value = match value.checked_mul(10).and_then(|v| v.checked_add((ch - b'0' as u16) as u32)) {
