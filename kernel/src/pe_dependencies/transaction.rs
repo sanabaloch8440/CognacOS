@@ -60,7 +60,7 @@ const EMPTY_JOURNAL: JournalEntry = JournalEntry {
 /// release its outgoing dependency references. Existing modules are never
 /// journaled and therefore are never rolled back by this transaction.
 pub trait Backend {
-    fn is_loaded(&mut self, name: &[u8]) -> Result<bool, i32>;
+    fn lookup(&mut self, name: &[u8]) -> Result<Option<u64>, i32>;
     fn read_file(&mut self, name: &[u8], output: &mut [u8]) -> Result<usize, i32>;
     fn map(&mut self, name: &[u8], file: &[u8]) -> Result<u64, i32>;
     fn link(&mut self, parent: u64, dependency: u64) -> Result<(), i32>;
@@ -103,7 +103,7 @@ pub fn load_transaction<B: Backend>(
             let dep = frame.plan.get(frame.next).ok_or(STATUS_INVALID_PARAMETER)?;
             let child = ModuleName::new(dep.as_bytes())?;
             frames[depth].next += 1;
-            if backend.is_loaded(child.as_bytes())? { continue; }
+            if backend.lookup(child.as_bytes())?.is_some() { continue; }
 
             // An import that names an ancestor is a cycle, not a request to
             // recursively map another copy of the same DLL.
@@ -146,28 +146,30 @@ pub fn load_transaction<B: Backend>(
         }
         journal[journal_len] = JournalEntry { name, handle };
         journal_len += 1;
-        frames[depth].loaded_handle = Some(handle);
+
+        // All imports of this image are now mapped. Publish dependency edges
+        // only after mapping succeeds, so a failed edge publication triggers
+        // rollback of the whole newly-created graph.
+        for i in 0..frames[depth].plan.len() {
+            let dep = frames[depth].plan.get(i).ok_or(STATUS_INVALID_PARAMETER)?;
+            let dependency_handle = match backend.lookup(dep.as_bytes())? {
+                Some(h) => h,
+                None => {
+                    rollback(backend, &journal, journal_len);
+                    return Err(STATUS_DLL_NOT_FOUND);
+                }
+            };
+            if let Err(e) = backend.link(handle, dependency_handle) {
+                rollback(backend, &journal, journal_len);
+                return Err(e);
+            }
+        }
 
         if depth == 0 {
             result = Some(handle);
             break;
         }
-        let parent_depth = depth - 1;
-        let parent_handle = frames[parent_depth].loaded_handle;
-        // Parent is not mapped until its dependencies are processed, so this
-        // edge is committed when the parent subsequently maps. Store the
-        // completed child's handle on the parent frame as a pending link list
-        // is not possible with a single slot; therefore backends must derive
-        // edges from the import table during map() and may treat link as an
-        // explicit post-map operation only for direct dependencies.
-        if let Some(parent) = parent_handle {
-            if let Err(e) = backend.link(parent, handle) {
-                rollback(backend, &journal, journal_len);
-                return Err(e);
-            }
-        }
         depth -= 1;
-        frames[depth].waiting_child = None;
     }
     result.ok_or(STATUS_DLL_NOT_FOUND)
 }
