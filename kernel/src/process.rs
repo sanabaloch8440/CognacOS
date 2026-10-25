@@ -378,6 +378,37 @@ fn map_zeroed(space: &mut AddressSpace, base: u64, pages: usize) -> Result<(), P
     }
     Ok(())
 }
+
+#[derive(Clone, Copy)]
+struct KuserPageState { physical: u64, initialized: bool }
+static KUSER_PAGE_STATE: crate::hal::IrqSpinLock<KuserPageState> =
+    crate::hal::IrqSpinLock::new(KuserPageState { physical: 0, initialized: false });
+
+/// Map one shared physical KUSER page into every process. It is populated once
+/// by the kernel and mapped read-only/non-executable in all user address spaces.
+fn map_kuser_shared_page(space: &mut AddressSpace) -> Result<(), ProcessError> {
+    let mut state = KUSER_PAGE_STATE.lock();
+    if state.physical == 0 {
+        state.physical = unsafe { crate::memory::allocate_page() }.map_err(|_| ProcessError::OutOfMemory)?;
+    }
+    let physical = state.physical;
+    if !state.initialized {
+        unsafe { space.map_user_page(KUSER_SHARED_DATA_ADDRESS, physical, true, false)?; }
+        let config = crate::ntoskrnl::ke::runtime::ki_query_windows_xstate_configuration();
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                (&config as *const crate::ntoskrnl::ke::runtime::WindowsXStateConfiguration).cast::<u8>(),
+                core::mem::size_of::<crate::ntoskrnl::ke::runtime::WindowsXStateConfiguration>(),
+            )
+        };
+        unsafe { space.copy_to_user(KUSER_SHARED_DATA_ADDRESS + KUSER_XSTATE_OFFSET, bytes)?; }
+        unsafe { space.protect_user_page(KUSER_SHARED_DATA_ADDRESS, false, false)?; }
+        state.initialized = true;
+    } else {
+        unsafe { space.map_user_page(KUSER_SHARED_DATA_ADDRESS, physical, false, false)?; }
+    }
+    Ok(())
+}
 fn put_u64(space: &AddressSpace, address: u64, value: u64) -> Result<(), ProcessError> {
     unsafe { space.copy_to_user(address, &value.to_le_bytes())?; } Ok(())
 }
@@ -404,17 +435,6 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     map_zeroed(space, IMAGE_NAME_ADDRESS, 2)?;
     map_zeroed(space, PROCESS_PARAMS_ADDRESS, 1)?;
     map_zeroed(space, KUSER_SHARED_DATA_ADDRESS, 1)?;
-    // Publish the exact Windows 11 24H2 XState field at its KUSER_SHARED_DATA
-    // ABI offset. The page is read-only to user mode after initialization.
-    let xstate = crate::ntoskrnl::ke::runtime::ki_query_windows_xstate_configuration();
-    let xstate_bytes = unsafe {
-        core::slice::from_raw_parts(
-            (&xstate as *const crate::ntoskrnl::ke::runtime::WindowsXStateConfiguration).cast::<u8>(),
-            core::mem::size_of::<crate::ntoskrnl::ke::runtime::WindowsXStateConfiguration>(),
-        )
-    };
-    unsafe { space.copy_to_user(KUSER_SHARED_DATA_ADDRESS + KUSER_XSTATE_OFFSET, xstate_bytes)?; }
-    unsafe { space.protect_user_page(KUSER_SHARED_DATA_ADDRESS, false, false)?; }
     let pid = NEXT_PID.fetch_add(4, core::sync::atomic::Ordering::Relaxed);
     // PEB x64: BeingDebugged, ImageBaseAddress, Ldr, ProcessParameters.
     put_u8(space, PEB_ADDRESS + 2, 0)?;
