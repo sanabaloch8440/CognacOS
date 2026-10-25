@@ -247,18 +247,11 @@ cognacos_windows_syscall_entry:
     mov qword ptr gs:[24], rdx
     mov rax, qword ptr gs:[8]
     mov rdx, rax
-    shr rdx, 32
-    test edx, edx
-    jz .Lwindows_stack_low
-    cmp edx, 1
+    shr rdx, 48
+    cmp dx, 0xffff
     jne .Lwindows_stack_bad
-    test eax, eax
-    jne .Lwindows_stack_bad
-    jmp .Lwindows_stack_valid
-.Lwindows_stack_low:
     test eax, 0xfff
     jne .Lwindows_stack_bad
-.Lwindows_stack_valid:
     mov al, 'T'
     jmp .Lwindows_stack_marker
 .Lwindows_stack_bad:
@@ -343,20 +336,23 @@ pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
             // The page allocator's identity-mapped physical pages are present
             // in every address space as supervisor-only memory. Keep syscall
             // stacks out of the image BSS, whose tail is not guaranteed mapped.
-            let page = match crate::memory::allocate_page() {
+            let page = match crate::ntoskrnl::mm::physical::allocate_data_page() {
                 Ok(page) => page,
                 Err(_) => {
-                    crate::serial_write(b"FATAL: no low identity-mapped page for Windows syscall stack.\r\n");
+                    crate::serial_write(b"FATAL: no physical page for Windows syscall stack.\r\n");
                     return Err(());
                 }
             };
-            if page == 0 || page >= 0x1_0000_0000 {
-                crate::serial_write(b"FATAL: Windows syscall stack page outside low identity map.\r\n");
-                return Err(());
-            }
+            let stack_base = match crate::ntoskrnl::mm::physical::direct_map_address(page) {
+                Some(address) => address,
+                None => {
+                    crate::serial_write(b"FATAL: Windows syscall stack has no direct-map address.\r\n");
+                    return Err(());
+                }
+            };
             (*local).stack_page = page;
+            (*local).kernel_rsp = stack_base + 4096;
         }
-        (*local).kernel_rsp = (*local).stack_page + 4096;
     }
     unsafe {
         write_msr(0xC000_0101, 0); // IA32_GS_BASE: kernel has no active GS segment base
