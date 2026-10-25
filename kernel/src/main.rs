@@ -1,9 +1,7 @@
 #![no_std]
 #![no_main]
 
-mod memory;
-mod pagefile;
-mod kernel_vm;
+pub(crate) use ntoskrnl::mm::{kernel_space as kernel_vm, pagefile, physical as memory};
 mod security;
 mod user;
 mod pe;
@@ -22,7 +20,7 @@ mod object;
 #[path = "ntoskrnl/io/runtime.rs"]
 pub(crate) mod io;
 use cognacos_ext4 as extfs;
-mod nls;
+pub(crate) use ntoskrnl::rtl_runtime::nls;
 mod ntoskrnl;
 
 use core::arch::asm;

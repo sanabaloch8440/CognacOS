@@ -1,3 +1,4 @@
+pub(crate) mod nls;
 //! Modular NTOSKRNL RTL runtime; submodules are grouped by functionality.
 mod bitmap;
 mod memory;
