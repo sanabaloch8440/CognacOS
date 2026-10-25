@@ -1453,6 +1453,7 @@ pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *cons
 
 /// Register layout shared by the exception entry stub and CPL3 delivery path.
 /// Hardware appends RSP and SS when an exception crosses from CPL3 to CPL0.
+#[allow(dead_code)]
 #[repr(C)]
 struct UserExceptionTrapFrame {
     saved_registers: [u64; 15],
