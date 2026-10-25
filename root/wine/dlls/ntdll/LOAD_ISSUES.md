@@ -183,9 +183,8 @@ scheduler state.
 **Fix committed and boot-smoke validated:** the native service now invokes
 the scheduler only when `current_thread_id()` identifies a scheduler-owned
 thread. The bootstrap smoke verifies the wrapper returns success without an
-invalid context switch. The boot-smoke step passed in
-[Actions run 40176341592](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176341592);
-the run's 2/4/8-vCPU stress matrix was still running at the time of this update.
+invalid context switch. The full UEFI workflow, including boot smoke and the 2/4/8-vCPU stress matrix,
+passed in [Actions run 40176419581](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176419581).
 
 ### NTDLL-LOAD-016 — smoke-process cleanup attempted reap before address-space detach
 
@@ -196,7 +195,5 @@ failed and each ring-3 loader smoke leaked a process-table slot.
 
 **Fix committed; boot smoke passed:** cleanup now destroys/detaches the
 address space first, then retries process reaping. This applies to the NTDLL
-test and the existing PE fixture tests. The boot-smoke step passed in
-[Actions run 40176419581](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176419581)
-and advanced into the 2/4/8-vCPU stress matrix; the full workflow had not yet
-completed at this update.
+test and the existing PE fixture tests. The full UEFI workflow, including boot smoke and the 2/4/8-vCPU stress matrix,
+passed in [Actions run 40176419581](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176419581).
