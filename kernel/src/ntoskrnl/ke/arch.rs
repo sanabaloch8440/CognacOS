@@ -1670,15 +1670,16 @@ pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
     let mut nx_code = [0u8; 16];
     unsafe { core::ptr::write_volatile(nx_code.as_mut_ptr(), 0xc3); }
     let target = nx_code.as_mut_ptr();
-    let execute_rip = cognacos_fault_probe_execute_nx as *const () as u64;
     let execute_recovery = cognacos_fault_probe_execute_nx_recovery as *const () as u64;
+    // The faulting RIP is the NX target reached by JMP RDI, not the probe's
+    // entry instruction. Match the exact instruction-fetch address.
     if !register_trap_frame_fixup_with_result(
-        execute_rip, execute_recovery, target as u64, 0x1f, 0x11, 0,
+        target as u64, execute_recovery, target as u64, 0x1f, 0x11, 0,
     ) {
         return false;
     }
     let execute_result = unsafe { cognacos_fault_probe_execute_nx(target) };
-    let execute_removed = unregister_trap_frame_fixup(execute_rip);
+    let execute_removed = unregister_trap_frame_fixup(target as u64);
     execute_result == 0 && execute_removed
 }
 
