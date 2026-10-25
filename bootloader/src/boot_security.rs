@@ -58,7 +58,7 @@ struct Tcg2Protocol {
 
 fn read_boolean_variable(name: &'static uefi::CStr16) -> Option<bool> {
     let mut value = [0u8; 1];
-    let (bytes, _) = uefi::runtime::get_variable(name, &VariableVendor::GLOBAL, &mut value).ok()?;
+    let (bytes, _) = uefi::runtime::get_variable(name, &VariableVendor::GLOBAL_VARIABLE, &mut value).ok()?;
     (bytes.len() == 1).then_some(bytes[0] != 0)
 }
 
