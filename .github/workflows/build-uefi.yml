@@ -153,6 +153,12 @@ jobs:
           mkdir -p build
           rustc --edition=2021 --test kernel/src/ntoskrnl/ke/timer_generation.rs -o build/ke-timer-generation-tests
           build/ke-timer-generation-tests
+      - name: Test native NT RTL memory ABI primitives
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          rustc --edition=2024 --test kernel/src/ntoskrnl/rtl_runtime/memory.rs -o build/rtl-memory-tests
+          build/rtl-memory-tests
       - name: Run native Windows hive and NLS parser tests
         run: |
           set -euo pipefail
