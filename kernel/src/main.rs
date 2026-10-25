@@ -167,7 +167,7 @@ unsafe fn install_boot_assets(info:&BootInfo){
  let ntdll=info.ntdll_file;
  if ntdll.address!=0||ntdll.length!=0 {
   if ntdll.address==0||ntdll.length==0||ntdll.length>16*1024*1024||ntdll.address.checked_add(ntdll.length).is_none_or(|e|e>0x1_0000_0000){
-   unsafe{serial_write(b"Rejected malformed boot ntdll.dll descriptor.\\r\\n");}
+   unsafe{serial_write(b"Rejected malformed boot ntdll.dll descriptor.\r\n");}
   }else{
    BOOT_NTDLL_ADDRESS.store(ntdll.address,core::sync::atomic::Ordering::Release);
    BOOT_NTDLL_LENGTH.store(ntdll.length,core::sync::atomic::Ordering::Release);
@@ -920,18 +920,18 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.\r\n");
         if let Some(ntdll_bytes) = boot_ntdll_bytes() {
-            serial_write(b"Attempting to map staged ntdll.dll in an isolated user address space.\\r\\n");
+            serial_write(b"Attempting to map staged ntdll.dll in an isolated user address space.\r\n");
             let mut ntdll_space = match unsafe { ntoskrnl::mm::address_space::AddressSpace::new(info.pml4_physical) } {
                 Ok(space) => space,
-                Err(_) => { serial_write(b"FATAL: NTDLL test address-space allocation failed.\\r\\n"); halt(); }
+                Err(_) => { serial_write(b"FATAL: NTDLL test address-space allocation failed.\r\n"); halt(); }
             };
             let ntdll_image = match unsafe { pe::load_dll(&mut ntdll_space, ntdll_bytes, b"ntdll.dll", None) } {
                 Ok(image) => image,
-                Err(_) => { serial_write(b"FATAL: NTDLL PE32+ mapping/export registration failed.\\r\\n"); halt(); }
+                Err(_) => { serial_write(b"FATAL: NTDLL PE32+ mapping/export registration failed.\r\n"); halt(); }
             };
-            serial_write(b"NTDLL PE32+ image mapped and exports registered.\\r\\n");
+            serial_write(b"NTDLL PE32+ image mapped and exports registered.\r\n");
             match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
-                Ok(true) => serial_write(b"Native NTDLL ring-3 syscall smoke test passed: configure, process/thread/system queries, and yield.\\r\\n"),
+                Ok(true) => serial_write(b"Native NTDLL ring-3 syscall smoke test passed: configure, process/thread/system queries, and yield.\r\n"),
                 Ok(false) => {
                     // Stock Windows NTDLL uses the privileged SYSCALL ABI and
                     // Windows service IDs. Mapping/export inspection is valid;
@@ -939,14 +939,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     winabi::unregister_module(b"ntdll.dll");
                     pe_runtime::unregister_image(ntdll_image.base);
                     if unsafe { ntdll_space.destroy() }.is_err() {
-                        serial_write(b"FATAL: Windows NTDLL mapping cleanup failed.\\r\\n"); halt();
+                        serial_write(b"FATAL: Windows NTDLL mapping cleanup failed.\r\n"); halt();
                     }
-                    serial_write(b"Windows NTDLL mapped and exports registered; execution skipped because its syscall ABI is not CognacOS-native.\\r\\n");
+                    serial_write(b"Windows NTDLL mapped and exports registered; execution skipped because its syscall ABI is not CognacOS-native.\r\n");
                 }
-                Err(_) => { serial_write(b"FATAL: native NTDLL ring-3 wrapper smoke test failed.\\r\\n"); halt(); }
+                Err(_) => { serial_write(b"FATAL: native NTDLL ring-3 wrapper smoke test failed.\r\n"); halt(); }
             }
         } else {
-            serial_write(b"WARNING: no staged ntdll.dll; PE loader smoke remains fixture-only.\\r\\n");
+            serial_write(b"WARNING: no staged ntdll.dll; PE loader smoke remains fixture-only.\r\n");
         }
         serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\r\n");
         serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\r\n");
