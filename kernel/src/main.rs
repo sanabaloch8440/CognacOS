@@ -184,7 +184,6 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             }
             install_boot_assets(info);
         }
-        if false && info.version == 8 && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() { install_boot_assets(info); }
         if info.magic != BOOT_INFO_MAGIC || info.version != 8
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
