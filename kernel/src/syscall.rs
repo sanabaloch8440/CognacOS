@@ -202,19 +202,12 @@ global_asm!(r#"
     .type cognacos_windows_syscall_entry, @function
 cognacos_windows_syscall_entry:
     # SYSCALL does not switch RSP. FMASK has already disabled interrupts.
-    # Temporary marker 's' tests that the LSTAR entry and SWAPGS were reached.
     swapgs
-    push rax
-    push rdx
-    mov dx, 0x3f8
-    mov al, 's'
-    out dx, al
-    pop rdx
-    pop rax
     cld
     # GS:[0] saves user RSP; GS:[8] is this CPU's private kernel stack top.
     mov qword ptr gs:[0], rsp
     mov rsp, qword ptr gs:[8]
+    # Temporary marker 'k' proves the per-CPU GS stack switch succeeded.
     push rax
     push rdx
     mov dx, 0x3f8
