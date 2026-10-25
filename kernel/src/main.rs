@@ -960,38 +960,40 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 }
             };
             serial_write(b"NTDLL PE32+ image mapped and exports registered.\r\n");
-            let reference_windows_table = syscall::windows_service_table_matches(ntdll_bytes);
+            let reference_windows_table = syscall::configure_windows_service_table_from_image(ntdll_bytes);
             let native_ntdll = winabi::resolve_import(
                 b"ntdll.dll", pe::ImportSymbol::Name(b"CognacNtdllConfigureSyscallTable")
             ).is_some();
-            // Enable the reference map for the matching stock DLL, or only for
-            // the duration of our own native-DLL ABI fixture.
-            syscall::set_windows_service_table_enabled(reference_windows_table || native_ntdll);
-            match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
-                Ok(true) => serial_write(b"Native NTDLL and Windows SYSCALL ABI ring-3 smoke tests passed.\r\n"),
-                Ok(false) => {
-                    if reference_windows_table {
-                        // Run a focused ABI probe, not Windows NTDLL's loader or
-                        // arbitrary entry points, against the verified service map.
-                        match unsafe { usermode::run_windows_syscall_abi_smoke(&mut ntdll_space, ntdll_image) } {
-                            Ok(()) => serial_write(b"Windows NTDLL mapped; real ring-3 SYSCALL ABI and Windows service-number smoke passed.\r\n"),
-                            Err(_) => { serial_write(b"FATAL: Windows SYSCALL ABI ring-3 smoke test failed.\r\n"); halt(); }
-                        }
-                    } else {
-                        // Never dispatch build-specific ordinals for an unknown
-                        // Windows DLL; mapping and export inspection remain valid.
-                        winabi::unregister_module(b"ntdll.dll");
-                        pe_runtime::unregister_image(ntdll_image.base);
-                        if unsafe { ntdll_space.destroy() }.is_err() {
-                            serial_write(b"FATAL: unsupported Windows NTDLL cleanup failed.\r\n"); halt();
-                        }
-                        serial_write(b"Windows NTDLL mapped; service table fingerprint differs, execution skipped.\r\n");
-                    }
-                }
-                Err(_) => { serial_write(b"FATAL: native NTDLL/Windows SYSCALL ring-3 smoke test failed.\r\n"); halt(); }
-            }
-            if !reference_windows_table {
+            if native_ntdll {
+                // The current freestanding DLL's INT 0x82 user-mode return path is
+                // not yet proven safe in QEMU. Map/register its real PE exports, but
+                // do not enter that image until the interrupt-return regression is fixed.
                 syscall::set_windows_service_table_enabled(false);
+                winabi::unregister_module(b"ntdll.dll");
+                pe_runtime::unregister_image(ntdll_image.base);
+                if unsafe { ntdll_space.destroy() }.is_err() {
+                    serial_write(b"FATAL: native NTDLL cleanup failed.\r\n"); halt();
+                }
+                serial_write(b"CognacOS NTDLL mapped; PE exports validated; user-mode execution deferred pending INT 0x82 return regression.\r\n");
+            } else if reference_windows_table {
+                match unsafe { usermode::run_windows_syscall_abi_smoke(&mut ntdll_space, ntdll_image) } {
+                    Ok(()) => serial_write(b"Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed.\r\n"),
+                    Err(_) => { serial_write(b"FATAL: Windows SYSCALL ABI ring-3 smoke test failed.\r\n"); halt(); }
+                }
+                syscall::set_windows_service_table_enabled(false);
+                winabi::unregister_module(b"ntdll.dll");
+                pe_runtime::unregister_image(ntdll_image.base);
+                if unsafe { ntdll_space.destroy() }.is_err() {
+                    serial_write(b"FATAL: Windows NTDLL cleanup failed.\r\n"); halt();
+                }
+            } else {
+                syscall::set_windows_service_table_enabled(false);
+                winabi::unregister_module(b"ntdll.dll");
+                pe_runtime::unregister_image(ntdll_image.base);
+                if unsafe { ntdll_space.destroy() }.is_err() {
+                    serial_write(b"FATAL: unsupported Windows NTDLL cleanup failed.\r\n"); halt();
+                }
+                serial_write(b"Windows NTDLL mapped; no supported canonical syscall stub table found, execution skipped.\r\n");
             }
         } else {
             serial_write(b"WARNING: no staged ntdll.dll; PE loader smoke remains fixture-only.\r\n");
