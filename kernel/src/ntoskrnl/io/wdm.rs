@@ -75,16 +75,16 @@ pub struct IoStackLocation {
     pub context: *mut c_void,
 }
 #[repr(C)]
-struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
+struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
-struct IrpSlot { used: bool, owned_mdl: *mut c_void, object: Irp, stack: [IoStackLocation;16] }
+struct IrpSlot { used: bool, owned_mdl: *mut c_void, completion_state:u8, active_ops:u32, outstanding_count:usize, outstanding_devices:[*mut DeviceObject;16], object: Irp, stack: [IoStackLocation;16] }
 unsafe impl Send for IrpSlot {}
 struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WDM_IRPS] }
 impl WdmState {
  const fn new() -> Self {
   Self {
-   devices: [const { DeviceSlot { used:false, deleting:false, active_dispatches:0, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
+   devices: [const { DeviceSlot { used:false, deleting:false, active_dispatches:0, outstanding_irps:0, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
@@ -93,7 +93,7 @@ impl WdmState {
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16] } }; MAX_WDM_IRPS],
+   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16] } }; MAX_WDM_IRPS],
   }
  }
 }
@@ -240,7 +240,7 @@ pub unsafe extern "system" fn io_create_device(
  if unsafe{(*driver).flags}&(DRIVER_UNLOADING_FLAG|DRIVER_UNLOADED_FLAG)!=0{return STATUS_DELETE_PENDING}
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
+ slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
  slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
@@ -306,7 +306,7 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  let Some(index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return};
  state.devices[index].deleting=true;
  // Defer reclamation while external references, remove-lock owners, or power transitions remain.
- if state.devices[index].object.reference_count > 1 || state.devices[index].remove_lock_count != 0 || state.devices[index].active_dispatches != 0 || state.devices[index].power_transition { return; }
+ if state.devices[index].object.reference_count > 1 || state.devices[index].remove_lock_count != 0 || state.devices[index].active_dispatches != 0 || state.devices[index].outstanding_irps != 0 || state.devices[index].power_transition { return; }
  // Ob references and handles may outlive Io callers; only reclaim the backing slot after Ob has removed its header record.
  if !crate::ntoskrnl::ob::runtime::object_rundown_complete(device.cast()) { return; }
  let lower=state.devices[index].attached_to;
@@ -345,7 +345,7 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
  if stack_size<=0||stack_size>16||charge_quota>1{return ptr::null_mut()}
  let mut state=WDM.lock();
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
- slot.used=true;slot.object.bytes.fill(0);
+ slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  let allocation_size=IRP_SIZE_X64+stack_size as usize*IO_STACK_LOCATION_SIZE_X64;
  slot.object.bytes[2..4].copy_from_slice(&(allocation_size as u16).to_le_bytes());
@@ -359,6 +359,15 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
  if irp.is_null(){return}
+ {
+  let mut state=WDM.lock();
+  let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+  if slot.completion_state==1 || slot.active_ops!=0 { return; }
+  // Close the packet before dropping its device references so a racing
+  // completion cannot begin against storage being released.
+  slot.completion_state=2;
+ }
+ release_irp_device_rundown(irp);
  let owned_mdl={
   let mut state=WDM.lock();
   let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
@@ -391,6 +400,44 @@ pub unsafe extern "system" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut
  unsafe{current.cast::<u8>().sub(IO_STACK_LOCATION_SIZE_X64).cast()}
 }
 #[unsafe(no_mangle)]
+
+/// Pin a device for the lifetime of an IRP, not merely for IoCallDriver.
+/// This bounded list prevents unload from reclaiming devices with callbacks
+/// still in flight or an asynchronous request still outstanding.
+fn track_irp_device(irp:*mut Irp, device:*mut DeviceObject)->bool {
+ let mut state=WDM.lock();
+ let Some(ir)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return false};
+ if state.irps[ir].completion_state!=0 || state.irps[ir].outstanding_count>=state.irps[ir].outstanding_devices.len(){return false}
+ if state.irps[ir].outstanding_devices[..state.irps[ir].outstanding_count].contains(&device){return true}
+ let Some(di)=state.devices.iter().position(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return false};
+ if state.devices[di].outstanding_irps==u32::MAX{return false}
+ state.devices[di].outstanding_irps+=1;
+ let n=state.irps[ir].outstanding_count;
+ state.irps[ir].outstanding_devices[n]=device;
+ state.irps[ir].outstanding_count=n+1;
+ true
+}
+
+/// Release the IRP's device references once. The caller must keep the IRP
+/// allocated until this function returns.
+fn release_irp_device_rundown(irp:*mut Irp) {
+ let devices={
+  let mut state=WDM.lock();
+  let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+  let count=state.irps[i].outstanding_count.min(state.irps[i].outstanding_devices.len());
+  let devices=state.irps[i].outstanding_devices;
+  state.irps[i].outstanding_count=0;
+  state.irps[i].outstanding_devices.fill(ptr::null_mut());
+  for device in devices[..count].iter().copied() {
+   if let Some(d)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) {
+    if d.outstanding_irps!=0 {d.outstanding_irps-=1;}
+   }
+  }
+  devices
+ };
+ for device in devices.into_iter().filter(|d|!d.is_null()) {unsafe{io_delete_device(device)};}
+}
+
 fn release_device_dispatch_rundown(device:*mut DeviceObject){
  let finalize={
   let mut state=WDM.lock();
@@ -415,6 +462,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
   }
  };
  if deleting||driver.is_null(){return STATUS_DELETE_PENDING}
+ if !track_irp_device(irp,device) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
  if stack.is_null(){release_device_dispatch_rundown(device);return STATUS_INVALID_PARAMETER}
  let location=unsafe{(*irp).bytes[0x43]};
@@ -454,13 +502,20 @@ fn finalize_irp_status(irp:*mut Irp) {
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:i8) {
  if irp.is_null(){return}
- // Run registered completion routines while unwinding toward the original caller.
- // APC delivery, event signaling, MDL cleanup and thread-owned IRP teardown remain TODO.
+ // Claim completion under WDM's lock. A competing completion cannot execute
+ // the same completion routine twice or publish the IOSB twice.
+ {
+  let mut state=WDM.lock();
+  let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+  if state.irps[i].completion_state!=0{return}
+  state.irps[i].completion_state=1;
+ }
+ let mut finished=false;
  for _ in 0..16 {
   let (location,stack_count)=unsafe{((*irp).bytes[0x43] as usize,(*irp).bytes[0x42] as usize)};
-  if location==0 || location>stack_count || stack_count==0 || stack_count>16 {return}
+  if location==0 || location>stack_count || stack_count==0 || stack_count>16 {break}
   let stack=unsafe{io_get_current_irp_stack_location(irp)};
-  if stack.is_null(){return}
+  if stack.is_null(){break}
   let control=unsafe{(*stack).control};
   let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
   let cancelled=unsafe{(*irp).bytes[0x44]!=0};
@@ -468,15 +523,34 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   if invoke {
    if let Some(routine)=unsafe{(*stack).completion_routine} {
     let result=unsafe{routine((*stack).device_object,irp,(*stack).context)};
-    if result==0xC0000016u32 as i32{return}
+    if result==0xC0000016u32 as i32 {
+     let mut state=WDM.lock();
+     if let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {state.irps[i].completion_state=0;}
+     return
+    }
    }
   }
   let current=unsafe{(*irp).bytes[0x43]};
-  if current==0xff{return}
+  if current==0xff{break}
   let next=unsafe{stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
   unsafe { (*irp).bytes[0x43]=current.saturating_add(1); write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast()); }
-  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {finalize_irp_status(irp);let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};crate::dma::release_irp_mappings(irp.cast());crate::ntoskrnl::po::runtime::po_complete_irp(irp,status);return}
+  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {
+   finalize_irp_status(irp);
+   let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
+   crate::dma::release_irp_mappings(irp.cast());
+   crate::ntoskrnl::po::runtime::po_complete_irp(irp,status);
+   finished=true;
+   break
+  }
  }
+ {
+  let mut state=WDM.lock();
+  if let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {
+   // A malformed stack is retryable; a terminal unwind permanently closes it.
+   state.irps[i].completion_state=if finished {2}else{0};
+  }
+ }
+ if finished {release_irp_device_rundown(irp);}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
