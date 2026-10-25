@@ -1022,7 +1022,7 @@ pub unsafe extern "system" fn LdrResolveDelayLoadedAPI(
         return ptr::null_mut();
     }
     let index = (target - iat) / 8;
-    let lookup_rva = (d.ImportNameTableRVA as usize).checked_add(index.checked_mul(8)?)?;
+    let Some(lookup_rva) = (d.ImportNameTableRVA as usize).checked_add(index.saturating_mul(8)) else { return ptr::null_mut(); };
     if lookup_rva.checked_add(8).is_none_or(|end| end > image_size) { return ptr::null_mut(); }
     let thunk = unsafe { ptr::read_unaligned((int + index * 8) as *const u64) };
     if thunk == 0 { return ptr::null_mut(); }
