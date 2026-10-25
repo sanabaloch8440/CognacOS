@@ -765,6 +765,34 @@ mod xstate_context_layout_tests {
         assert_eq!(found as usize, ex as usize + 24 + 64);
     }
     #[test]
+    fn locate_feature2_rejects_a_truncated_xstate_chunk() {
+        let mut raw = [0u64; 16];
+        let ex = raw.as_mut_ptr().cast::<CONTEXT_EX>();
+        unsafe {
+            core::ptr::addr_of_mut!((*ex).XState).write_unaligned(RTL_CONTEXT_CHUNK { Offset: 24, Length: 64 });
+        }
+        let mut cfg = WindowsXStateConfiguration {
+            enabled_features: 1 << 2, enabled_volatile_features: 0, size: 832, control_flags: 0,
+            features: [WindowsXStateFeature { offset: 0, size: 0 }; 64],
+            enabled_supervisor_features: 0, aligned_features: 0, all_feature_size: 832,
+            all_features: [0; 64], enabled_user_visible_supervisor_features: 0,
+            extended_feature_disable_features: 0, all_non_large_feature_size: 832,
+            max_sve_vector_length: 0, spare1: 0,
+        };
+        cfg.features[2] = WindowsXStateFeature { offset: 576, size: 256 };
+        let mut length = 0;
+        let found = unsafe { RtlLocateExtendedFeature2(ex, 2, (&mut cfg as *mut WindowsXStateConfiguration).cast(), &mut length) };
+        assert!(found.is_null());
+        assert_eq!(length, 256);
+    }
+    #[test]
+    fn locate_feature2_null_inputs_clear_output_length() {
+        let mut length = 99;
+        let found = unsafe { RtlLocateExtendedFeature2(core::ptr::null_mut(), 2, core::ptr::null_mut(), &mut length) };
+        assert!(found.is_null());
+        assert_eq!(length, 0);
+    }
+    #[test]
     fn partial_context_copy_updates_only_requested_control_group() {
         let mut source = [0u8; AMD64_CONTEXT_SIZE];
         let mut destination = [0xA5u8; AMD64_CONTEXT_SIZE];
@@ -776,7 +804,8 @@ mod xstate_context_layout_tests {
             destination.as_mut_ptr().add(0x38).write(0x33);
             destination.as_mut_ptr().add(0x42).write(0x44);
         }
-        copy_context_ranges(destination.as_mut_ptr(), source.as_ptr(), CONTEXT_AMD64 | 1, CONTEXT_AMD64);
+        let status = unsafe { RtlCopyContext(destination.as_mut_ptr().cast(), CONTEXT_AMD64 | 1, source.as_mut_ptr().cast()) };
+        assert_eq!(status, STATUS_SUCCESS);
         assert_eq!(destination[0x38], 0x11);
         assert_eq!(destination[0x42], 0x22);
         assert_eq!(destination[0x100], 0xA5);
