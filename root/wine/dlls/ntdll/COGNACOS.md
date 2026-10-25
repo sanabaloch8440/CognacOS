@@ -103,5 +103,8 @@ splitting/coalescing, free, realloc, size, validation, and zero-memory
 allocation. Its exported heap object is installed into the PEB before ring-3
 entry. It does not yet implement custom heap creation/destruction, low-fragmentation
 heap behavior, debug/instrumentation flags, exception generation, or the full
-Windows heap ABI. The heap lifecycle is being added to the native ring-3 QEMU
-smoke test before expanding further.
+Windows heap ABI. The heap lifecycle passed in [Actions run 40184178016](https://github.com/umarfarooq7869/CognacOS/actions/runs/40184178016), including allocation, size, realloc preservation, free/double-free rejection, and zeroed reuse.
+
+## PEB access
+
+The native DLL now exports `RtlGetCurrentPeb` using the x64 GS-relative PEB pointer. The process launcher installs the TEB as the user GS base, and the ring-3 smoke checks that `RtlGetCurrentPeb` returns the active PEB and that its `ProcessHeap` field points at the native heap object. The first QEMU result for this accessor is pending.
