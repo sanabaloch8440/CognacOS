@@ -120,6 +120,28 @@ pub fn add_dependency(parent: usize, parent_generation: u32, dependency: usize, 
     }
     let bit = 1u32 << dependency;
     if s.entries[parent].dependencies & bit != 0 { return Ok(()); }
+
+    // Bounded DFS over the fixed-size dependency bitsets. An edge parent ->
+    // dependency is rejected when dependency already reaches parent. This
+    // catches cycles before publishing an edge, without allocation or recursion.
+    let mut pending = [0usize; MAX_MODULES];
+    let mut seen = [false; MAX_MODULES];
+    let mut pending_len = 1usize;
+    pending[0] = dependency;
+    while pending_len != 0 {
+        pending_len -= 1;
+        let current = pending[pending_len];
+        if current == parent { return Err(STATUS_RESOURCE_IN_USE); }
+        if seen[current] { continue; }
+        seen[current] = true;
+        let edges = s.entries[current].dependencies;
+        for next in 0..MAX_MODULES {
+            if edges & (1u32 << next) != 0 && !seen[next] && pending_len < MAX_MODULES {
+                pending[pending_len] = next;
+                pending_len += 1;
+            }
+        }
+    }
     // Check overflow before publishing the edge so failure is transactional.
     let references = s.entries[dependency].references.checked_add(1).ok_or(STATUS_RESOURCE_IN_USE)?;
     s.entries[dependency].references = references;
@@ -133,8 +155,13 @@ pub fn add_dependency(parent: usize, parent_generation: u32, dependency: usize, 
 pub fn begin_unload(slot: usize, generation: u32) -> Result<Option<(u64, u32)>, i32> {
     let mut s = STATE.lock();
     let e = s.entries.get(slot).copied().ok_or(STATUS_INVALID_PARAMETER)?;
-    if e.generation != generation || e.state == ModuleState::Empty || e.state == ModuleState::Reserved
-        || e.state == ModuleState::Unloading || e.references == 0 { return Err(STATUS_INVALID_PARAMETER); }
+    if e.generation != generation
+        || !matches!(e.state, ModuleState::Mapped | ModuleState::Initialized)
+        || e.references == 0 {
+        // In particular, Initializing modules cannot be detached while their
+        // user-mode attach callout may still be running.
+        return Err(STATUS_RESOURCE_IN_USE);
+    }
     if e.references > 1 {
         s.entries[slot].references -= 1;
         return Ok(None);
@@ -283,6 +310,28 @@ mod tests {
         assert_eq!(snapshot.references, 0);
         assert_eq!(begin_unreferenced_unload(dependency, dg), Ok((0x6200_0000, 0x2000)));
         finish_unload(dependency, dg).unwrap();
+    }
+
+    #[test]
+    fn dependency_cycle_is_rejected_transactionally() {
+        let pid = 0xffff_fffc;
+        let (a, ag) = reserve_for_process(pid, b"cycle-a.dll").unwrap();
+        let (b, bg) = reserve_for_process(pid, b"cycle-b.dll").unwrap();
+        let (c, cg) = reserve_for_process(pid, b"cycle-c.dll").unwrap();
+        for (slot, generation, base) in [(a, ag, 0x7100_0000), (b, bg, 0x7200_0000), (c, cg, 0x7300_0000)] {
+            publish_mapping(slot, generation, base, 0x2000).unwrap();
+        }
+        add_dependency(a, ag, b, bg).unwrap();
+        add_dependency(b, bg, c, cg).unwrap();
+        assert_eq!(add_dependency(c, cg, a, ag), Err(STATUS_RESOURCE_IN_USE));
+        assert_eq!(find_for_process(pid, b"cycle-c.dll").unwrap().1.dependencies, 0);
+        // Roll back test metadata without leaving dependency references behind.
+        for (slot, generation) in [(a, ag), (b, bg), (c, cg)] {
+            let snapshot = STATE.lock().entries[slot];
+            if snapshot.state == ModuleState::Mapped {
+                let _ = rollback(slot, generation);
+            }
+        }
     }
 
     #[test]
