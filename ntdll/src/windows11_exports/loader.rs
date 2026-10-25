@@ -428,13 +428,123 @@ pub unsafe extern "system" fn LdrDisableThreadCalloutsForDll(module_base: PVOID)
     } else { STATUS_RESOURCE_IN_USE }
 }
 
+const LOAD_WITH_ALTERED_SEARCH_PATH: ULONG = 0x0000_0008;
+const MAX_BUILT_SEARCH_PATH_UNITS: usize = 2048;
+
+fn append_search_component(out: &mut [u16; MAX_BUILT_SEARCH_PATH_UNITS], used: &mut usize, component: &[u16]) -> bool {
+    if component.is_empty() { return true; }
+    let separator = usize::from(*used != 0);
+    let Some(end) = used.checked_add(separator).and_then(|n| n.checked_add(component.len())) else { return false; };
+    if end >= out.len() { return false; }
+    if separator != 0 { out[*used] = b';' as u16; *used += 1; }
+    out[*used..*used + component.len()].copy_from_slice(component);
+    *used += component.len();
+    true
+}
+
+unsafe fn process_image_directory() -> Option<([u16; MAX_PATH_UNITS], usize)> {
+    let peb: *const u8;
+    unsafe { core::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, preserves_flags, readonly)); }
+    if peb.is_null() { return None; }
+    let params = unsafe { ptr::read_unaligned(peb.add(0x20).cast::<usize>()) } as *const u8;
+    if params.is_null() { return None; }
+    // RTL_USER_PROCESS_PARAMETERS.ImagePathName on x64 is at +0x60.
+    let descriptor = unsafe { params.add(0x60) };
+    let bytes = unsafe { ptr::read_unaligned(descriptor.cast::<u16>()) } as usize;
+    let maximum = unsafe { ptr::read_unaligned(descriptor.add(2).cast::<u16>()) } as usize;
+    let buffer = unsafe { ptr::read_unaligned(descriptor.add(8).cast::<usize>()) } as *const u16;
+    if bytes == 0 || bytes & 1 != 0 || bytes > maximum || bytes / 2 >= MAX_PATH_UNITS || buffer.is_null() { return None; }
+    let count = bytes / 2;
+    let mut path = [0u16; MAX_PATH_UNITS];
+    for i in 0..count { path[i] = unsafe { ptr::read_unaligned(buffer.add(i)) }; }
+    let mut end = count;
+    while end > 0 && path[end - 1] != b'\\' as u16 && path[end - 1] != b'/' as u16 { end -= 1; }
+    if end == 0 { return None; }
+    Some((path, end))
+}
+
+unsafe fn dll_load_directory(dll_name: *const u16) -> Option<([u16; MAX_PATH_UNITS], usize)> {
+    if dll_name.is_null() { return None; }
+    let mut path = [0u16; MAX_PATH_UNITS];
+    let mut count = 0usize;
+    while count < MAX_PATH_UNITS {
+        let ch = unsafe { ptr::read_unaligned(dll_name.add(count)) };
+        if ch == 0 { break; }
+        path[count] = ch;
+        count += 1;
+    }
+    if count == 0 || count == MAX_PATH_UNITS { return None; }
+    let mut end = count;
+    while end > 0 && path[end - 1] != b'\\' as u16 && path[end - 1] != b'/' as u16 { end -= 1; }
+    if end == 0 { return None; }
+    Some((path, end))
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn LdrGetDllPath(
-    _dll_name: *const u16, _flags: ULONG, _dll_path: *mut *mut u16, _search_paths: *mut *mut u16,
+    dll_name: *const u16, flags: ULONG, dll_path: *mut *mut u16, unknown: *mut *mut u16,
 ) -> NTSTATUS {
-    // The documented ABI returns allocated search-path strings. Until the process
-    // heap and package/application path providers are connected, fail closed.
-    STATUS_NOT_IMPLEMENTED
+    if dll_name.is_null() || dll_path.is_null() || unknown.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { dll_path.write(ptr::null_mut()); unknown.write(ptr::null_mut()); }
+    let search_mask = VALID_SEARCH_FLAGS | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR;
+    if flags & !(search_mask | LOAD_WITH_ALTERED_SEARCH_PATH) != 0
+        || (flags & LOAD_WITH_ALTERED_SEARCH_PATH != 0 && flags & search_mask != 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut effective = flags;
+    if effective & LOAD_WITH_ALTERED_SEARCH_PATH != 0 {
+        let _guard = StateGuard::acquire();
+        effective |= unsafe { DEFAULT_SEARCH_FLAGS } | LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR;
+    } else if effective & search_mask == 0 {
+        let _guard = StateGuard::acquire();
+        effective |= unsafe { DEFAULT_SEARCH_FLAGS };
+    }
+    let default_dirs = effective & LOAD_LIBRARY_SEARCH_DEFAULT_DIRS != 0;
+    let mut result = [0u16; MAX_BUILT_SEARCH_PATH_UNITS];
+    let mut used = 0usize;
+
+    if effective & LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR != 0 {
+        if let Some((path, len)) = unsafe { dll_load_directory(dll_name) } {
+            if !append_search_component(&mut result, &mut used, &path[..len]) { return STATUS_BUFFER_TOO_SMALL; }
+        }
+    }
+    if effective & LOAD_LIBRARY_SEARCH_APPLICATION_DIR != 0 || default_dirs {
+        if let Some((path, len)) = unsafe { process_image_directory() } {
+            if !append_search_component(&mut result, &mut used, &path[..len]) { return STATUS_BUFFER_TOO_SMALL; }
+        }
+    }
+    if effective & LOAD_LIBRARY_SEARCH_USER_DIRS != 0 || default_dirs {
+        let (dll_dir, user_dirs) = {
+            let _guard = StateGuard::acquire();
+            (unsafe { DLL_DIRECTORY }, unsafe { USER_DIRECTORIES })
+        };
+        if dll_dir.active && !append_search_component(&mut result, &mut used, &dll_dir.data[..dll_dir.len]) {
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+        for directory in user_dirs.iter().filter(|entry| entry.active) {
+            if !append_search_component(&mut result, &mut used, &directory.data[..directory.len]) {
+                return STATUS_BUFFER_TOO_SMALL;
+            }
+        }
+    }
+    if effective & LOAD_LIBRARY_SEARCH_SYSTEM32 != 0 || default_dirs {
+        const SYSTEM32: [u16; 22] = [
+            b'\\' as u16,b'S' as u16,b'y' as u16,b's' as u16,b't' as u16,b'e' as u16,b'm' as u16,b'R' as u16,b'o' as u16,b'o' as u16,b't' as u16,
+            b'\\' as u16,b'S' as u16,b'y' as u16,b's' as u16,b't' as u16,b'e' as u16,b'm' as u16,b'3' as u16,b'2' as u16,0,0
+        ];
+        if !append_search_component(&mut result, &mut used, &SYSTEM32[..21]) { return STATUS_BUFFER_TOO_SMALL; }
+    }
+    let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
+    if heap.is_null() { return 0xC000_0017u32 as i32; }
+    let bytes = match used.checked_add(1).and_then(|n| n.checked_mul(2)) { Some(n) => n, None => return STATUS_BUFFER_TOO_SMALL };
+    let allocation = unsafe { crate::rtl_heap::RtlAllocateHeap(heap, 0, bytes) } as *mut u16;
+    if allocation.is_null() { return 0xC000_0017u32 as i32; }
+    unsafe {
+        ptr::copy_nonoverlapping(result.as_ptr(), allocation, used);
+        allocation.add(used).write(0);
+        dll_path.write(allocation);
+    }
+    STATUS_SUCCESS
 }
 
 
