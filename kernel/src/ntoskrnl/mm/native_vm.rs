@@ -302,7 +302,7 @@ pub fn query(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     if args[2] != 0 { return 0xC000_0003; } // STATUS_INVALID_INFO_CLASS
     if args[3] == 0 { return STATUS_ACCESS_VIOLATION; }
     if args[4] < core::mem::size_of::<MemoryBasicInformation>() as u64 {
-        if args[5] != 0 { if let Ok(root) = current_root() { let _ = write_u32(root, args[5], core::mem::size_of::<MemoryBasicInformation>() as u32); } }
+        if args[5] != 0 { if let Ok(root) = current_root() { let _ = write_u64(root, args[5], core::mem::size_of::<MemoryBasicInformation>() as u64); } }
         return STATUS_INFO_LENGTH_MISMATCH;
     }
     let root = match current_root() { Ok(r) => r, Err(s) => return s };
@@ -323,7 +323,7 @@ pub fn query(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let bytes = unsafe { core::slice::from_raw_parts((&info as *const MemoryBasicInformation).cast::<u8>(), core::mem::size_of::<MemoryBasicInformation>()) };
     if unsafe { address_space::copy_to_user_root(root, args[3], bytes) }.is_err() { return STATUS_ACCESS_VIOLATION; }
     if args[5] != 0 {
-        if let Err(s) = write_u32(root, args[5], core::mem::size_of::<MemoryBasicInformation>() as u32) { return s; }
+        if let Err(s) = write_u64(root, args[5], core::mem::size_of::<MemoryBasicInformation>() as u64) { return s; }
     }
     STATUS_SUCCESS
 }
