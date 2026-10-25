@@ -91,6 +91,16 @@ jobs:
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib metadata_csum_superblock_is_checked_and_corruption_rejected
       - name: Test ext4 writes reject requests beyond EOF
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib writes_past_inode_eof_are_rejected_before_device_io
+      - name: Build freestanding native NTDLL PE32+ image
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+          make -C root/wine/dlls/ntdll -f Makefile.cognac clean all check
+          mkdir -p build/EFI/BOOT
+          cp root/wine/dlls/ntdll/ntdll.dll build/EFI/BOOT/ntdll.dll
+          file build/EFI/BOOT/ntdll.dll
       - name: Build separate native PE32+ HAL and driver images
         shell: bash
         run: |
@@ -311,6 +321,7 @@ jobs:
             cp target/x86_64-unknown-uefi/release/cognacos-bootloader.efi build/EFI/BOOT/BOOTX64.EFI
           fi
           cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
+          test -s build/EFI/BOOT/ntdll.dll
           cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
           truncate -s 256M build/cognacos-uefi.img
           truncate -s 128M build/pagefile.img
@@ -322,6 +333,7 @@ jobs:
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/BOOT
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
+          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/ntdll.dll ::/EFI/BOOT/ntdll.dll
       - name: Boot smoke test under OVMF/QEMU
         shell: bash
         run: |
@@ -389,6 +401,8 @@ jobs:
           grep -F 'Protection self-tests passed: read-only write trapped and NX execution trapped.' build/serial.log
           grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
           grep -F 'Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.' build/serial.log
+          grep -F 'NTDLL PE32+ image mapped and exports registered.' build/serial.log
+          grep -F 'Native NTDLL ring-3 syscall smoke test passed: configure, process/thread/system queries, and yield.' build/serial.log
           grep -F 'Per-process page-table isolation, same-VA non-aliasing, and supervisor mapping protection passed.' build/serial.log
           grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
           grep -F 'PE32+ loader self-test passed; image base=0x0000200000000000 entry=0x0000200000001000 (RX section and RO/NX headers).' build/serial.log
@@ -446,6 +460,7 @@ jobs:
           name: cognacos-rust-uefi-kernel
           path: |
             build/EFI/BOOT/BOOTX64.EFI
+            build/EFI/BOOT/ntdll.dll
             build/kernel/cognacos-kernel.exe
             build/cognacos-uefi.img
             build/serial.log
