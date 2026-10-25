@@ -150,6 +150,34 @@ pub fn begin_unload(slot: usize, generation: u32) -> Result<Option<(u64, u32)>, 
     Ok(Some((e.base, e.size)))
 }
 
+/// Find a module whose last caller/dependency reference was released.
+/// The loader should repeatedly drain this queue after finishing a parent unload.
+pub fn find_unreferenced_for_process(process_id: u64) -> Option<(usize, ModuleSnapshot)> {
+    let s = STATE.lock();
+    s.entries.iter().enumerate().find(|(slot, e)| {
+        e.process_id == process_id
+            && matches!(e.state, ModuleState::Mapped | ModuleState::Initialized)
+            && e.references == 0
+            && !s.entries.iter().any(|parent| parent.state != ModuleState::Empty
+                && parent.dependencies & (1u32 << *slot) != 0)
+    }).map(|(slot, entry)| (slot, *entry))
+}
+
+/// Begin unloading a module made unreferenced when a parent dependency edge was
+/// removed. This is separate from begin_unload because it consumes no caller ref.
+pub fn begin_unreferenced_unload(slot: usize, generation: u32) -> Result<(u64, u32), i32> {
+    let mut s = STATE.lock();
+    let e = s.entries.get(slot).copied().ok_or(STATUS_INVALID_PARAMETER)?;
+    if e.generation != generation || !matches!(e.state, ModuleState::Mapped | ModuleState::Initialized)
+        || e.references != 0
+        || s.entries.iter().any(|parent| parent.state != ModuleState::Empty
+            && parent.dependencies & (1u32 << slot) != 0) {
+        return Err(STATUS_RESOURCE_IN_USE);
+    }
+    s.entries[slot].state = ModuleState::Unloading;
+    Ok((e.base, e.size))
+}
+
 /// Complete unmapping after the address-space manager has removed the image.
 pub fn finish_unload(slot: usize, generation: u32) -> Result<(), i32> {
     let mut s = STATE.lock();
@@ -236,6 +264,27 @@ mod tests {
         assert_eq!(finish_initialization(slot, generation, false), Err(STATUS_DLL_NOT_FOUND));
         assert!(find(name).is_none());
     }
+    #[test]
+    fn dependency_reference_releases_after_parent_unload() {
+        let (parent, pg) = reserve_for_process(0xffff_fffd, b"cognac-test-parent-lifetime.dll").unwrap();
+        let (dependency, dg) = reserve_for_process(0xffff_fffd, b"cognac-test-dependency-lifetime.dll").unwrap();
+        publish_mapping(parent, pg, 0x6100_0000, 0x2000).unwrap();
+        publish_mapping(dependency, dg, 0x6200_0000, 0x2000).unwrap();
+        begin_initialization(parent, pg).unwrap();
+        finish_initialization(parent, pg, true).unwrap();
+        begin_initialization(dependency, dg).unwrap();
+        finish_initialization(dependency, dg, true).unwrap();
+        add_dependency(parent, pg, dependency, dg).unwrap();
+        assert_eq!(find_for_process(0xffff_fffd, b"cognac-test-dependency-lifetime.dll").unwrap().1.references, 2);
+        assert_eq!(begin_unload(parent, pg), Ok(Some((0x6100_0000, 0x2000))));
+        finish_unload(parent, pg).unwrap();
+        let (candidate, snapshot) = find_unreferenced_for_process(0xffff_fffd).unwrap();
+        assert_eq!(candidate, dependency);
+        assert_eq!(snapshot.references, 0);
+        assert_eq!(begin_unreferenced_unload(dependency, dg), Ok((0x6200_0000, 0x2000)));
+        finish_unload(dependency, dg).unwrap();
+    }
+
     #[test]
     fn unresolved_dependency_is_rejected() {
         let (parent, pg) = reserve(b"cognac-test-parent.dll").unwrap();
