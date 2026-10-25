@@ -226,6 +226,7 @@ static NTDLL_XSTATE_ENABLED: AtomicU64 = AtomicU64::new(0);
 static NTDLL_XSTATE_SUPPORTED: AtomicU64 = AtomicU64::new(0);
 static NTDLL_XSTATE_AREA_SIZE: AtomicU32 = AtomicU32::new(0);
 static NTDLL_XSTATE_COMPACTION_ENABLED: AtomicBool = AtomicBool::new(false);
+static NTDLL_XSTATE_ALIGNED_MASK: AtomicU64 = AtomicU64::new(0);
 static NTDLL_XSTATE_READY: AtomicBool = AtomicBool::new(false);
 static NTDLL_XSTATE_OFFSETS: [AtomicU32; 64] =
     [const { AtomicU32::new(0) }; 64];
@@ -264,6 +265,7 @@ fn ensure_ntdll_xstate_config() -> bool {
     let config = unsafe { shared.read_unaligned() };
     let enabled = config.enabled_features;
     if enabled & 3 != 3 || config.size < 576 { return false; }
+    NTDLL_XSTATE_ALIGNED_MASK.store(config.aligned_features, Ordering::Release);
     let mut offsets = [0u32; 64];
     let mut sizes = [0u32; 64];
     for i in 0..64 {
@@ -508,7 +510,7 @@ pub unsafe extern "system" fn RtlLocateExtendedFeature2(ex: *mut CONTEXT_EX, fea
     let chunk = unsafe { core::ptr::addr_of!((*ex).XState).read_unaligned() };
     if chunk.Length < 64 { return core::ptr::null_mut(); }
     let xstate = unsafe { ex.cast::<u8>().offset(chunk.Offset as isize) };
-    let (offset, required_mask) = if cfg.control_flags & 2 != 0 {
+    let offset = if cfg.control_flags & 2 != 0 {
         let compacted = unsafe { xstate.add(8).cast::<ULONG64>().read_unaligned() };
         if compacted & (1u64 << 63) == 0 || compacted & feature_bit == 0 {
             return core::ptr::null_mut();
@@ -525,14 +527,13 @@ pub unsafe extern "system" fn RtlLocateExtendedFeature2(ex: *mut CONTEXT_EX, fea
                 off = match off.checked_add(63) { Some(v) => v & !63, None => return core::ptr::null_mut() };
             }
         }
-        (off, compacted_features)
+        off
     } else {
         if cfg.enabled_features & feature_bit == 0 || component.offset < 512 {
             return core::ptr::null_mut();
         }
-        ((component.offset - 512) as usize, cfg.enabled_features)
+        (component.offset - 512) as usize
     };
-    let _ = required_mask;
     let size = component.size as usize;
     if offset.checked_add(size).map_or(true, |end| end > chunk.Length as usize) {
         return core::ptr::null_mut();
@@ -641,33 +642,33 @@ pub unsafe extern "system" fn RtlCopyExtendedContext(dst: *mut CONTEXT_EX, flags
             if compacted { (1u64 << 63) | (source_compaction & enabled & !3u64) } else { 0 }
         );
     }
-    let mut offset = 64usize;
     for feature in 2..64 {
         let bit = 1u64 << feature;
         if selected & bit == 0 { continue; }
         let size = NTDLL_XSTATE_SIZES[feature].load(Ordering::Acquire) as usize;
         if size == 0 { continue; }
-        if NTDLL_XSTATE_COMPACTION_ENABLED.load(Ordering::Acquire) {
+        let offset = if NTDLL_XSTATE_COMPACTION_ENABLED.load(Ordering::Acquire) {
             if source_compaction & (1u64 << 63) == 0 || source_compaction & bit == 0 { continue; }
+            let mut off = 64usize;
             for previous in 2..feature {
-                if source_compaction & (1u64 << previous) != 0 {
-                    let previous_size = NTDLL_XSTATE_SIZES[previous].load(Ordering::Acquire) as usize;
-                    offset = match offset.checked_add(previous_size) { Some(v) => v, None => return STATUS_BUFFER_OVERFLOW };
-                    if NTDLL_XSTATE_ALIGNED_MASK.load(Ordering::Acquire) & (1u64 << (previous + 1)) != 0 {
-                        offset = (offset + 63) & !63;
-                    }
+                if source_compaction & (1u64 << previous) == 0 { continue; }
+                let previous_size = NTDLL_XSTATE_SIZES[previous].load(Ordering::Acquire) as usize;
+                if previous_size == 0 { return STATUS_INVALID_PARAMETER; }
+                off = match off.checked_add(previous_size) { Some(v) => v, None => return STATUS_BUFFER_OVERFLOW };
+                if NTDLL_XSTATE_ALIGNED_MASK.load(Ordering::Acquire) & (1u64 << (previous + 1)) != 0 {
+                    off = match off.checked_add(63) { Some(v) => v & !63, None => return STATUS_BUFFER_OVERFLOW };
                 }
             }
+            off
         } else {
             let standard = NTDLL_XSTATE_OFFSETS[feature].load(Ordering::Acquire) as usize;
             if standard < 512 { continue; }
-            offset = standard - 512;
-        }
+            standard - 512
+        };
         if offset.checked_add(size).map_or(true, |end| end > s.XState.Length as usize || end > d.XState.Length as usize) {
             return STATUS_BUFFER_OVERFLOW;
         }
         unsafe { core::ptr::copy(source_xstate.add(offset), dest_xstate.add(offset), size); }
-        offset = offset.saturating_add(size);
     }
     STATUS_SUCCESS
 }
