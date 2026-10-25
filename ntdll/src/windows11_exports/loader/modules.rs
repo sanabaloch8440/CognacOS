@@ -1,4 +1,5 @@
 use super::*;
+use super::notifications::{image_ascii_string, IMAGE_ORDINAL_FLAG64};
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrAddLoadAsDataTable() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -238,7 +239,7 @@ pub unsafe extern "system" fn LdrpResGetMappingSize() -> i32 { STATUS_NOT_IMPLEM
 #[no_mangle]
 pub unsafe extern "system" fn LdrpResGetResourceDirectory() -> i32 { STATUS_NOT_IMPLEMENTED }
 
-static PROCESS_INITIALIZATION_COMPLETE: AtomicBool = AtomicBool::new(false);
+pub(super) static PROCESS_INITIALIZATION_COMPLETE: AtomicBool = AtomicBool::new(false);
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrProcessInitializationComplete() -> NTSTATUS {
