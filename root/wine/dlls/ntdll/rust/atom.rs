@@ -131,7 +131,6 @@ extern "system" {
         second_length: usize,
         case_insensitive: BOOLEAN,
     ) -> i32;
-    fn RtlEmptyAtomTable(table: RTL_ATOM_TABLE_PTR, delete_pinned: BOOLEAN) -> NTSTATUS;
 }
 
 #[inline]
@@ -513,7 +512,7 @@ pub unsafe extern "system" fn RtlEmptyAtomTable(
     table: RTL_ATOM_TABLE_PTR,
     delete_pinned: BOOLEAN,
 ) -> NTSTATUS {
-    let mut status = unsafe { lock_atom_table(table) };
+    let status = unsafe { lock_atom_table(table) };
     if status != STATUS_SUCCESS { return status; }
 
     let buckets = unsafe { (*table).number_of_buckets };
@@ -523,7 +522,7 @@ pub unsafe extern "system" fn RtlEmptyAtomTable(
             let entry = unsafe { *link };
             if entry.is_null() { break; }
             let pinned = unsafe { (*entry).flags != 0 };
-            if !delete_pinned != pinned {
+            if delete_pinned == 0 && pinned {
                 link = unsafe { ptr::addr_of_mut!((*entry).hash_link) };
             } else {
                 unsafe {
@@ -538,8 +537,7 @@ pub unsafe extern "system" fn RtlEmptyAtomTable(
         }
     }
     unsafe { unlock_atom_table(table); }
-    status = STATUS_SUCCESS;
-    status
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
