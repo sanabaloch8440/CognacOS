@@ -220,6 +220,38 @@ ULONG NTAPI RtlNtStatusToDosErrorNoTeb(NTSTATUS status)
     return RtlNtStatusToDosError(status);
 }
 
+/* TEB LastErrorValue and LastStatusValue on Windows x64. The launcher maps
+ * the TEB at the user GS base before entering native code. */
+__declspec(dllexport)
+ULONG NTAPI RtlGetLastWin32Error(void)
+{
+    ULONG value;
+    __asm__ volatile ("movl %%gs:0x68, %0" : "=r"(value));
+    return value;
+}
+
+__declspec(dllexport)
+void NTAPI RtlSetLastWin32Error(ULONG error)
+{
+    __asm__ volatile ("movl %0, %%gs:0x68" :: "r"(error) : "memory");
+}
+
+__declspec(dllexport)
+NTSTATUS NTAPI RtlGetLastNtStatus(void)
+{
+    NTSTATUS status;
+    __asm__ volatile ("movl %%gs:0x1250, %0" : "=r"(status));
+    return status;
+}
+
+__declspec(dllexport)
+void NTAPI RtlSetLastWin32ErrorAndNtStatusFromNtStatus(NTSTATUS status)
+{
+    ULONG error = RtlNtStatusToDosError(status);
+    __asm__ volatile ("movl %0, %%gs:0x68\n\tmovl %1, %%gs:0x1250"
+                      :: "r"(error), "r"(status) : "memory");
+}
+
 /* The loader entry point must not initialize Wine or call another DLL. */
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
