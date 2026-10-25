@@ -474,7 +474,7 @@ pub unsafe fn RtlInsertElementGenericTable(
         };
         let mut node = (*table).TableRoot;
         let mut parent: PRTL_SPLAY_LINKS = core::ptr::null_mut();
-        let mut relation;
+        let mut relation = GENERIC_EQUAL;
         while !node.is_null() {
             relation = compare(table, generic_data(node), value);
             if relation == GENERIC_EQUAL { return generic_data(node); }
