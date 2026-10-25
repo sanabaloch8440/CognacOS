@@ -240,13 +240,12 @@ pub unsafe extern "system" fn RtlSetCurrentEnvironment(
     RtlReleasePebLock();
     if !old_environment.is_null() {
         *old_environment = previous;
-    } else if !previous.is_null() {
+    } else if !previous.is_null() && previous != new_environment {
         let _ = RtlDestroyEnvironment(previous);
     }
 }
 
-/// RtlQueryEnvironmentVariable_U. For now, callers must pass an explicit
-/// environment block; null (the current process environment) needs PEB support.
+/// RtlQueryEnvironmentVariable_U. A null environment selects the current PEB environment under FastPebLock.
 unsafe fn query_environment_variable_u_explicit(
     environment: *mut WCHAR,
     name: *const UNICODE_STRING,
@@ -426,9 +425,7 @@ pub unsafe extern "system" fn RtlDestroyProcessParameters(
 }
 
 
-/// Set or remove a variable in an explicit environment block. Passing a null
-/// value removes the matching entry. Null environment (current PEB environment)
-/// is deliberately rejected until CognacOS exposes a stable native PEB accessor.
+/// Set or remove a variable in an explicit block, or the current PEB environment when environment is null.
 unsafe fn set_environment_variable_impl(
     environment: *mut *mut WCHAR,
     name: *const UNICODE_STRING,
