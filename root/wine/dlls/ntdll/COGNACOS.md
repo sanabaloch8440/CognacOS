@@ -409,3 +409,34 @@ syscall path are not yet connected. Unless the matching key and values have
 been provisioned in that runtime, the PEB version fields remain zero and the
 NTDLL API reports the version as unavailable. The build workflow must verify
 the changes; no CI result is implied by this source update.
+
+
+### Hive-backed Configuration Manager and native registry syscalls
+
+The UEFI bootloader already stages the seven native hive assets (SYSTEM, SOFTWARE,
+SECURITY, SAM, DEFAULT, COMPONENTS, and BCD00000000) in the boot-information
+structure. Kernel boot initialization now validates each REGF image and mounts it
+into the Configuration Manager without converting its bytes. The registry runtime
+can resolve absolute paths into the corresponding hive and exposes read-only
+hive-backed key/value queries. `query_version_tuple()` now checks the
+mounted SOFTWARE hive for `Microsoft\\Windows NT\\CurrentVersion` before
+falling back to explicitly provisioned volatile values, so PEB version startup
+can consume actual staged registry data.
+
+The native PE32+ NTDLL now exports assembly syscall stubs for `NtOpenKey` and
+`NtQueryValueKey`. The kernel extracts their service numbers from the staged
+NTDLL PE, dispatches them through the Windows x64 syscall entry, copies
+`OBJECT_ATTRIBUTES`, `UNICODE_STRING`, and value buffers through the active
+process address-space copy helpers, then calls the Configuration Manager routines.
+Relative opens under a hive-backed key and size-only `NtQueryValueKey` probes are
+supported. The native query bridge currently stages at most 1024 bytes per value
+call; larger values report the required length and need a larger-buffer strategy.
+
+This is an initial **read-only hive-backed registry path**, not a complete Windows
+Configuration Manager. The bootloader stages optional hives from the Windows
+config paths or `\\EFI\\CognacOS\\Hives\\`; absent files are not synthesized.
+Hive log replay/dirty-hive recovery, persistent writes, transactions, complete
+registry object namespace semantics, all `KEY_VALUE_INFORMATION_CLASS` values,
+and access-mask enforcement still need implementation. Volatile create/set
+operations remain separate from hive-backed read-only values. CI status must be
+checked on the newest commit before treating the integration as validated.
