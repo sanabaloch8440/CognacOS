@@ -955,19 +955,17 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             };
             serial_write(b"NTDLL PE32+ image mapped and exports registered.\r\n");
             match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
-                Ok(true) => serial_write(b"Native NTDLL ring-3 syscall smoke test passed: configure, process/thread/system queries, and yield.\r\n"),
+                Ok(true) => serial_write(b"Native NTDLL and Windows SYSCALL ABI ring-3 smoke tests passed.\\r\\n"),
                 Ok(false) => {
-                    // Stock Windows NTDLL uses the privileged SYSCALL ABI and
-                    // Windows service IDs. Mapping/export inspection is valid;
-                    // executing those entry points against CognacOS is not.
-                    winabi::unregister_module(b"ntdll.dll");
-                    pe_runtime::unregister_image(ntdll_image.base);
-                    if unsafe { ntdll_space.destroy() }.is_err() {
-                        serial_write(b"FATAL: Windows NTDLL mapping cleanup failed.\r\n"); halt();
+                    // Stock Windows NTDLL is not executed wholesale. Exercise
+                    // supported Windows service numbers through controlled ring-3
+                    // SYSCALL instructions instead.
+                    match unsafe { usermode::run_windows_syscall_abi_smoke(&mut ntdll_space, ntdll_image) } {
+                        Ok(()) => serial_write(b"Windows NTDLL mapped; real ring-3 SYSCALL ABI and Windows service-number smoke passed.\\r\\n"),
+                        Err(_) => { serial_write(b"FATAL: Windows SYSCALL ABI ring-3 smoke test failed.\\r\\n"); halt(); }
                     }
-                    serial_write(b"Windows NTDLL mapped and exports registered; execution skipped because its syscall ABI is not CognacOS-native.\r\n");
                 }
-                Err(_) => { serial_write(b"FATAL: native NTDLL ring-3 wrapper smoke test failed.\r\n"); halt(); }
+                Err(_) => { serial_write(b"FATAL: native NTDLL/Windows SYSCALL ring-3 smoke test failed.\\r\\n"); halt(); }
             }
         } else {
             serial_write(b"WARNING: no staged ntdll.dll; PE loader smoke remains fixture-only.\r\n");
