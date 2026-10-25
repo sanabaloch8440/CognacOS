@@ -318,13 +318,13 @@ impl crate::pe_dependencies::transaction::Backend for VfsTransactionBackend<'_> 
     fn read_file(&mut self, name: &[u8], output: &mut [u8]) -> Result<usize, i32> {
         let normalized = crate::winabi::api_set_host(name).unwrap_or(name);
         let mut path = [0u8; crate::file_services::MAX_PATH_BYTES];
-        let first = Self::module_path(normalized, b"\SystemRoot\System32\", &mut path)?;
+        let first = Self::module_path(normalized, br"\SystemRoot\System32\", &mut path)?;
         match read_vfs_image(self.process_id, &path[..first], output) {
             Ok(n) => return Ok(n),
             Err(status) if status == crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND => {}
             Err(status) => return Err(status),
         }
-        let second = Self::module_path(normalized, b"\Windows\System32\", &mut path)?;
+        let second = Self::module_path(normalized, br"\Windows\System32\", &mut path)?;
         read_vfs_image(self.process_id, &path[..second], output)
     }
 
