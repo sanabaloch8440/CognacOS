@@ -6,7 +6,7 @@
 //! architectural x87/SSE components; AVX/YMM, supervisor XSS state and dynamic
 //! permissioning (AMX/PKRU) remain disabled until the user-mode trap path and
 //! full feature-specific context formats are integrated.
-use super::*;
+use super::ke_get_current_irql;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 const CPUID_XSAVE: u32 = 1 << 26;
