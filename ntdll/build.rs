@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, env, fs, path::PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=../root/wine/dlls/ntdll/ntdll.spec");
+    println!("cargo:rerun-if-changed=exports/windows-11-x64-exports.txt");
     println!("cargo:rerun-if-changed=src");
     let spec = PathBuf::from("../root/wine/dlls/ntdll/ntdll.spec");
     let mut names = BTreeSet::new();
@@ -22,6 +23,18 @@ fn main() {
                 if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
                     names.insert(name.to_string());
                 }
+            }
+        }
+    }
+    // Prefer the pinned Windows 11 x64 inventory when present. Keep Wine spec names
+    // as a compatibility superset so local builds still resolve its additional imports.
+    let windows_inventory = PathBuf::from("exports/windows-11-x64-exports.txt");
+    if let Ok(source) = fs::read_to_string(&windows_inventory) {
+        for line in source.lines() {
+            let name = line.trim();
+            if name.is_empty() || name.starts_with('#') { continue; }
+            if name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                names.insert(name.to_string());
             }
         }
     }
