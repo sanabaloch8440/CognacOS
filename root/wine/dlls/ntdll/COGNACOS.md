@@ -214,3 +214,24 @@ and x64 structure sizes. These tests are present in source but have not been
 reported as executed. The Rust module remains unlinked from the freestanding
 PE32+ build; full ALPC port/communication syscalls and Windows runtime ABI
 validation are not part of this change.
+
+
+## Math helpers Rust port
+
+The source-first module `rust/math.rs` ports the architecture-independent
+helpers in Wine's `math.c`: `abs` and `math_error`. `math_error` preserves
+Wine's current behavior of returning the supplied result without processing
+the error metadata. The C source's `_CIcos`, `_CIlog`, `_CIpow`, `_CIsin`,
+`_CIsqrt`, and `_ftol` implementations are i386-only x87 stack helpers and
+are not emitted for the x86-64 target.
+
+Tests cover ordinary positive/negative values, the INT_MIN wrapping edge case,
+and return-value preservation including NaN and infinity. The tests are added
+but not yet confirmed as executed. This module is not linked into the native
+PE32+ build.
+
+**ALPC scope note:** `rust/alpc.rs` covers every function present in the
+vendored `alpc.c` (the three message-attribute helpers). That does not mean
+the complete Windows ALPC subsystem is implemented: port creation/connect,
+message send/receive, handle/view transfer, and kernel-side ALPC object and
+syscall support remain separate work.
