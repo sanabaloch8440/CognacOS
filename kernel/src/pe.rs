@@ -417,8 +417,7 @@ pub unsafe fn unload_dll(
     image: LoadedImage,
     module_name: &[u8],
 ) -> Result<(), PeError> {
-    if !image.is_dll || image.base == 0 || image.image_size == 0
-        || image.base & (PAGE_SIZE - 1) != 0 {
+    if image.base == 0 || image.image_size == 0 || image.base & (PAGE_SIZE - 1) != 0 {
         return Err(PeError::InvalidHeader);
     }
     let rounded = align_up(image.image_size as u64, PAGE_SIZE).ok_or(PeError::InvalidHeader)?;
