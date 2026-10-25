@@ -573,6 +573,7 @@ pub unsafe fn run_native_ntdll_smoke(
     data[0xBD0..0xBD6].copy_from_slice(b"abcdef");
     data[0xC00..0xC04].copy_from_slice(&276u32.to_le_bytes()); // RTL_OSVERSIONINFOW size
     data[0xE00..0xE10].copy_from_slice(b"RtlGetCurrentPeb");
+    data[0xE20..0xE22].copy_from_slice(&16u16.to_le_bytes());
     data[0xE22..0xE24].copy_from_slice(&17u16.to_le_bytes());
     data[0xE28..0xE30].copy_from_slice(&(NTDLL_TEST_DATA + 0xE00).to_le_bytes());
     let numbers = [0x100u64, 0x101, 0x102, 0x103, 0x104];
