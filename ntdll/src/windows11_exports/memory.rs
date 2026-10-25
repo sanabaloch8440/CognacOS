@@ -967,7 +967,7 @@ mod tests {
         );
         assert_eq!(
             unsafe { NtLockVirtualMemory(core::ptr::null_mut(), core::ptr::null_mut(), core::ptr::null_mut(), 0) },
-            STATUS_NOT_IMPLEMENTED
+            STATUS_INVALID_PARAMETER
         );
     }
 }
