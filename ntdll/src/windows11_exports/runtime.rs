@@ -117,10 +117,7 @@ pub unsafe extern "system" fn RtlAddCompoundAce() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn RtlAddFunctionTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+// RtlAddFunctionTable is implemented with the typed AMD64 ABI in exception.rs.
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlAddGrowableFunctionTable() -> i32 {
