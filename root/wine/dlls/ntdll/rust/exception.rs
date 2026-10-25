@@ -255,6 +255,9 @@ struct WindowsXStateConfiguration {
     max_sve_vector_length: u16,
     spare1: u16,
 }
+const _: [(); 0x348] = [(); core::mem::size_of::<WindowsXStateConfiguration>()];
+const _: [(); 0x18] = [(); core::mem::offset_of!(WindowsXStateConfiguration, features)];
+const _: [(); 0x330] = [(); core::mem::offset_of!(WindowsXStateConfiguration, enabled_user_visible_supervisor_features)];
 /// Lazy NTDLL bootstrap from the read-only page installed by
 /// process::initialize. This keeps feature reporting tied to the kernel's
 /// actual boot policy instead of trusting local CPUID alone.
