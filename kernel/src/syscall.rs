@@ -229,12 +229,19 @@ cognacos_windows_syscall_entry:
     push r13
     push r14
     push r15
+    # Temporary serial markers isolate SYSCALL entry, dispatch, and return.
+    mov dx, 0x3f8
+    mov al, 'S'
+    out dx, al
     mov rbx, rsp
     mov rdi, rsp
     and rsp, -16
     call cognacos_windows_syscall_dispatch
     mov rsp, rbx
     mov qword ptr [rsp + 112], rax
+    mov dx, 0x3f8
+    mov al, 'D'
+    out dx, al
     pop r15
     pop r14
     pop r13
