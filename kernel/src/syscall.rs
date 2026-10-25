@@ -725,20 +725,32 @@ fn nt_read_file(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     let length = args[6] as usize;
     let mut buffer = [0u8; 4096];
     let handle = args[0] as usize;
-    let count = if args[7] == 0 {
-        match crate::file_services::read_current_for_process(current_process_id(), handle, &mut buffer[..length]) {
-            Ok(n) => n, Err(status) => return status as u32 as u64,
+    let owner = current_process_id();
+    let current_offset = if args[7] == 0 {
+        match crate::file_services::current_offset_for_process(owner, handle) {
+            Ok(offset) => Some(offset), Err(status) => return status as u32 as u64,
         }
+    } else {
+        None
+    };
+    let offset = if let Some(offset) = current_offset {
+        offset
     } else {
         let mut offset_bytes = [0u8; 8];
         if let Err(status) = copy_nt_input(args[7], &mut offset_bytes) { return status; }
         let offset = i64::from_le_bytes(offset_bytes);
         if offset < 0 { return NT_STATUS_INVALID_PARAMETER; }
-        match crate::file_services::read_at_for_process(current_process_id(), handle, offset as usize, &mut buffer[..length]) {
-            Ok(n) => n, Err(status) => return status as u32 as u64,
-        }
+        offset as usize
+    };
+    let count = match crate::file_services::read_at_for_process(owner, handle, offset, &mut buffer[..length]) {
+        Ok(n) => n, Err(status) => return status as u32 as u64,
     };
     if let Err(status) = copy_nt_output(args[5], &buffer[..count]) { return status; }
+    if let Some(expected) = current_offset {
+        if let Err(status) = crate::file_services::advance_current_for_process(owner, handle, expected, count) {
+            return status as u32 as u64;
+        }
+    }
     let mut iosb = [0u8; 16];
     iosb[0..4].copy_from_slice(&(if count == 0 { 0xC000_0011u32 as i32 } else { 0 }).to_le_bytes());
     iosb[8..16].copy_from_slice(&(count as u64).to_le_bytes());
