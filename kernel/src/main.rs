@@ -321,7 +321,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 serial_write(b"FATAL: unsafe XSTATE feature mask was enabled.\r\n");
                 halt();
             }
-            serial_write(b"XSTATE KUSER_SHARED_DATA ABI initialized; enabled mask=");
+            serial_write(b"XSTATE processor policy initialized; enabled mask=");
             serial_write_hex(xstate.enabled_features);
             serial_write(b", area size=");
             serial_write_hex(xstate.size as u64);
