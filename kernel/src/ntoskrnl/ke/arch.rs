@@ -1305,7 +1305,7 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
         // against the current process's registered address-space root.
         let saved_cs = unsafe { frame.add(18).read() };
         if saved_cs & 3 == 3 {
-            if crate::vm::handle_current_user_page_fault(cr2, error) { return 1; }
+            if crate::ntoskrnl::mm::address_space::handle_current_user_page_fault(cr2, error) { return 1; }
             // Until user exception delivery is wired to a process-exit path, do
             // not reinterpret a user fault as a supervisor demand-paging fault.
             return cognacos_exception_fatal(vector, error, frame);

@@ -1,7 +1,7 @@
 //! Initial RdotOS x64 ring-3 syscall ABI; intentionally distinct from NT syscalls.
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::vm::AddressSpace;
+use crate::ntoskrnl::mm::address_space::AddressSpace;
 pub const SYS_EXIT:u64=0;
 pub const SYS_GETPID:u64=1;
 pub const SYS_WRITE:u64=2;
@@ -65,7 +65,7 @@ rdotos_syscall_entry:
 "#);
 unsafe extern "C" { fn rdotos_syscall_entry(); }
 pub unsafe fn initialize() {
-    unsafe { crate::arch::install_user_gate(0x81, rdotos_syscall_entry as usize as u64); }
+    unsafe { crate::ntoskrnl::ke::arch::install_user_gate(0x81, rdotos_syscall_entry as usize as u64); }
 }
 pub fn set_current_process(pid:u64,space:*const AddressSpace) {
     LAST_EXIT.store(u64::MAX,Ordering::Release);

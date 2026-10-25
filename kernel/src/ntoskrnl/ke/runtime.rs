@@ -133,3 +133,6 @@ mod abi_layout_tests {
 }
 
 include!("runtime/nmi_callbacks.rs");
+
+// Ke-owned clock/interrupt dispatch formerly split out as Ki.
+include!("runtime/interrupt_dispatch.rs");

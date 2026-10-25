@@ -88,7 +88,7 @@ unsafe extern "C" {
 }
 
 pub unsafe fn initialize() {
-    unsafe { crate::arch::install_user_gate(0x82, rdotos_process_exit_stub as usize as u64); }
+    unsafe { crate::ntoskrnl::ke::arch::install_user_gate(0x82, rdotos_process_exit_stub as usize as u64); }
 }
 
 fn initialize_tls_block(

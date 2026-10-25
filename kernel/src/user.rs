@@ -107,7 +107,7 @@ pub unsafe fn initialize() {
             tss = const TSS_SELECTOR,
             out("rax") _,
         );
-        crate::arch::install_user_gate(0x80, rdotos_user_exit_stub as usize as u64);
+        crate::ntoskrnl::ke::arch::install_user_gate(0x80, rdotos_user_exit_stub as usize as u64);
     }
 }
 
@@ -206,10 +206,10 @@ unsafe extern "C" {
 
 /// Actually enter ring 3, execute an INT 0x80, and return through the controlled
 /// DPL3 gate. This is a single-core bootstrap test, not a general syscall ABI.
-pub unsafe fn ring3_self_test(space: &mut crate::vm::AddressSpace, entry: u64) -> Result<(), crate::vm::VmError> {
+pub unsafe fn ring3_self_test(space: &mut crate::ntoskrnl::mm::address_space::AddressSpace, entry: u64) -> Result<(), crate::ntoskrnl::mm::address_space::VmError> {
     const STACK: u64 = 0x0000_0082_0000_0000;
-    if !space.is_user_executable(entry) { return Err(crate::vm::VmError::PermissionDenied); }
-    let stack_page = unsafe { crate::memory::allocate_page() }.map_err(|_| crate::vm::VmError::OutOfMemory)?;
+    if !space.is_user_executable(entry) { return Err(crate::ntoskrnl::mm::address_space::VmError::PermissionDenied); }
+    let stack_page = unsafe { crate::memory::allocate_page() }.map_err(|_| crate::ntoskrnl::mm::address_space::VmError::OutOfMemory)?;
     unsafe { space.map_user_page(STACK, stack_page, true, false)?; }
     let kernel_cr3: u64;
     unsafe { asm!("mov {}, cr3", out(reg) kernel_cr3, options(nomem, nostack, preserves_flags)); }

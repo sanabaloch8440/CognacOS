@@ -883,7 +883,7 @@ pub(crate) fn ki_initialize_processor(logical_id: usize) -> bool {
     {
         return false;
     }
-    crate::arch::per_cpu_tss_self_test(logical_id)
+    crate::ntoskrnl::ke::arch::per_cpu_tss_self_test(logical_id)
 }
 
 /// KiStartAllProcessors coordinates ACPI topology discovery, AP startup,

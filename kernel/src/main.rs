@@ -1,13 +1,10 @@
 #![no_std]
 #![no_main]
 
-mod arch;
 mod memory;
 mod pagefile;
 mod kernel_vm;
 mod security;
-mod vm_range;
-mod vm;
 mod user;
 mod pe;
 mod process;
@@ -216,8 +213,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
         // Install a private descriptor table while the bootloader-established
         // high-half CR3 is active. The explicit reload below verifies ownership.
-        arch::initialize();
-        if !arch::per_cpu_tss_self_test(0) {
+        ntoskrnl::ke::arch::initialize();
+        if !ntoskrnl::ke::arch::per_cpu_tss_self_test(0) {
             serial_write(b"FATAL: BSP TSS/IST descriptor self-test failed.\r\n");
             halt();
         }
@@ -245,7 +242,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         user::initialize();
         syscall::initialize();
         usermode::initialize();
-        arch::enable_kernel_paging(info.pml4_physical);
+        ntoskrnl::ke::arch::enable_kernel_paging(info.pml4_physical);
         serial_write(b"Kernel-owned CR3 activated successfully.\r\n");
 
         // Inspect the live page tables before allocator setup or permission
@@ -702,7 +699,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         serial_write(b"Security: 4 KiB page policy active; W^X enforced for kernel sections.\r\n");
         serial_write(b"Security: kernel stack guard page unmapped.\r\n");
-        if !arch::permission_fault_self_test(_start as usize as u64) {
+        if !ntoskrnl::ke::arch::permission_fault_self_test(_start as usize as u64) {
             serial_write(b"FATAL: write-protect or NX permission-fault self-test failed.\r\n");
             halt();
         }
@@ -771,7 +768,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"KiInitializeKernel startup gate passed.\r\n");
 
         // Exercise an independent user address space without activating ring 3.
-        let mut address_space = match unsafe { vm::AddressSpace::new(info.pml4_physical) } {
+        let mut address_space = match unsafe { ntoskrnl::mm::address_space::AddressSpace::new(info.pml4_physical) } {
             Ok(space) => space,
             Err(_) => { serial_write(b"FATAL: address-space root allocation failed.\r\n"); halt(); }
         };
@@ -834,7 +831,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             if !thread::initialize_threaded_dpc_workers() {
                 serial_write(b"WARNING: threaded DPC worker initialization incomplete.\r\n");
             }
-            if crate::ntoskrnl::ki::runtime::register_clock_interrupt_handler().is_err() {
+            if crate::ntoskrnl::ke::runtime::register_clock_interrupt_handler().is_err() {
                 serial_write(b"WARNING: NT clock callback registration failed; local timer remains disabled.\r\n");
             } else {
             match unsafe { hal::start_local_clock_event() } {

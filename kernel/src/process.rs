@@ -1,6 +1,6 @@
 //! Minimal per-process Windows x64 PEB/TEB and TLS storage.
 //! Loader lists, process parameters, and full NT object semantics remain future work.
-use crate::vm::{AddressSpace, VmError};
+use crate::ntoskrnl::mm::address_space::{AddressSpace, VmError};
 const PAGE: u64 = 4096;
 const USER_START: u64 = 0x0000_0080_0000_0000;
 pub const PEB_ADDRESS: u64 = 0x0000_0080_1000_0000;
@@ -153,19 +153,19 @@ pub fn reference_primary_token(pid: u64) -> *mut core::ffi::c_void {
 /// Copy from/to the currently bound process's user address space. The process
 /// reference pins the address-space root against process reaping while VM's lifetime
 /// lock serializes page-table walking against unmap/destroy operations.
-pub unsafe fn copy_from_current_user(source: u64, destination: &mut [u8]) -> Result<(), crate::vm::VmError> {
+pub unsafe fn copy_from_current_user(source: u64, destination: &mut [u8]) -> Result<(), crate::ntoskrnl::mm::address_space::VmError> {
     let pid = crate::thread::current_process_id();
-    let process = eprocess_for_pid(pid).ok_or(crate::vm::VmError::InvalidAddress)?;
+    let process = eprocess_for_pid(pid).ok_or(crate::ntoskrnl::mm::address_space::VmError::InvalidAddress)?;
     let root = unsafe { (*process).address_space_root };
-    let result = unsafe { crate::vm::copy_from_user_root(root, source, destination) };
+    let result = unsafe { crate::ntoskrnl::mm::address_space::copy_from_user_root(root, source, destination) };
     let _ = dereference_eprocess(process.cast());
     result
 }
-pub unsafe fn copy_to_current_user(destination: u64, source: &[u8]) -> Result<(), crate::vm::VmError> {
+pub unsafe fn copy_to_current_user(destination: u64, source: &[u8]) -> Result<(), crate::ntoskrnl::mm::address_space::VmError> {
     let pid = crate::thread::current_process_id();
-    let process = eprocess_for_pid(pid).ok_or(crate::vm::VmError::InvalidAddress)?;
+    let process = eprocess_for_pid(pid).ok_or(crate::ntoskrnl::mm::address_space::VmError::InvalidAddress)?;
     let root = unsafe { (*process).address_space_root };
-    let result = unsafe { crate::vm::copy_to_user_root(root, destination, source) };
+    let result = unsafe { crate::ntoskrnl::mm::address_space::copy_to_user_root(root, destination, source) };
     let _ = dereference_eprocess(process.cast());
     result
 }
@@ -281,7 +281,7 @@ pub(crate) fn detach_address_space(root: u64) {
 
 pub fn reference_process_for_root(root: u64) -> Option<*mut core::ffi::c_void> {
     if root == 0 { return None; }
-    let _address_space_guard=crate::vm::ADDRESS_SPACE_LIFETIME_LOCK.lock();
+    let _address_space_guard=crate::ntoskrnl::mm::address_space::ADDRESS_SPACE_LIFETIME_LOCK.lock();
     let mut registry = TABLE.lock();
     let p = registry.0.iter_mut().find(|p| p.used && p.magic == EPROCESS_MAGIC
         && p.address_space_root == root
@@ -296,7 +296,7 @@ pub fn reference_process_for_root(root: u64) -> Option<*mut core::ffi::c_void> {
 /// The returned reference must be released with ObfDereferenceObject.
 pub fn reference_process_root(pointer:*mut core::ffi::c_void)->Option<u64>{
     if pointer.is_null(){return None}
-    let _address_space_guard=crate::vm::ADDRESS_SPACE_LIFETIME_LOCK.lock();
+    let _address_space_guard=crate::ntoskrnl::mm::address_space::ADDRESS_SPACE_LIFETIME_LOCK.lock();
     let mut registry=TABLE.lock();
     let process=registry.0.iter_mut().find(|p|
         core::ptr::addr_of!(**p) as *mut EProcess as *mut core::ffi::c_void==pointer
@@ -328,7 +328,7 @@ pub fn with_registered_process_roots<R>(
     target: *mut core::ffi::c_void,
     operation: impl FnOnce(u64, u64) -> R,
 ) -> Option<R> {
-    let _address_spaces = crate::vm::ADDRESS_SPACE_LIFETIME_LOCK.lock();
+    let _address_spaces = crate::ntoskrnl::mm::address_space::ADDRESS_SPACE_LIFETIME_LOCK.lock();
     let (source_index, target_index, source_root, target_root) = {
         let mut registry = TABLE.lock();
         let find = |pointer: *mut core::ffi::c_void, entries: &[EProcess]| -> Option<usize> {

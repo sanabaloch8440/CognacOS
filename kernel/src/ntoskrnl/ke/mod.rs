@@ -299,5 +299,7 @@ pub const EXPORTS: &[(&str, u16)] = &[
 ];
 
 
+// CPU entry/descriptor mechanics are owned by the Ke processor layer.
+pub(crate) mod arch;
 // Runtime implementations are kept under ntoskrnl/ke/runtime.rs.
 pub(crate) mod runtime;

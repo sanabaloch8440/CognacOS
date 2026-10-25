@@ -1,4 +1,4 @@
-//! Internal Ki interrupt glue shared by the APIC and Ke executive layers.
+//! Ke executive clock/interrupt dispatch and scheduler notification glue.
 use core::sync::atomic::{AtomicU64, Ordering};
 
 static CLOCK_INTERRUPTS: AtomicU64 = AtomicU64::new(0);

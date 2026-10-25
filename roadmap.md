@@ -3,7 +3,9 @@
 ## Kernel source organization
 
 - [x] Move address-space and user virtual-memory implementation into `ntoskrnl/mm/address_space.rs`; keep `vm.rs` as a compatibility re-export while call sites migrate.
-- [ ] Keep `arch.rs` limited to CPU/IDT entry and register-frame mechanics; continue moving NT exception/interrupt policy into `ntoskrnl/ki` and processor services into `ntoskrnl/ke` in separately validated steps.
+- [x] Move x86-64 descriptor setup, interrupt entry, exception dispatch and context-switch primitives into `ntoskrnl/ke/arch.rs`; remove the root `arch.rs` module.
+- [x] Merge the former `ntoskrnl/ki` clock/interrupt dispatch runtime into `ntoskrnl/ke/runtime.rs` and remove the separate Ki module.
+- [x] Remove root `vm.rs` and `vm_range.rs`; route address-space and user-range consumers through `ntoskrnl/mm/address_space`.
 
 This is the canonical progress tracker. Checkboxes describe code and validation in the repository; they do not imply production readiness or Windows driver compatibility. Detailed per-routine status belongs in the [Ke comparison](WINDOWS11_COGNACOS_NTOSKRNL_KE_COMPARISON.md) and [Se comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md).
 

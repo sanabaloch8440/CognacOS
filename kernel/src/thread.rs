@@ -54,7 +54,7 @@ fn cpu_index()->Result<usize,ThreadError>{
 extern "C" fn thread_trampoline()->! {
     // A fresh thread selected from an interrupt-gate context inherits IF=0
     // until its first Rust instruction explicitly enables interrupts.
-    crate::arch::set_interrupts_enabled(true);
+    crate::ntoskrnl::ke::arch::set_interrupts_enabled(true);
     let entry_and_arg={let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};let id=crate::hal::cpu_local(cpu).map(|c|c.current_thread.load(core::sync::atomic::Ordering::Acquire)).unwrap_or(0);let table=THREADS.lock();table.records.iter().find(|t|t.id==id&&t.state==ThreadState::Running).and_then(|t|t.entry.map(|entry|(entry,t.argument)))};
     if let Some((entry,arg))=entry_and_arg { entry(arg); }
     exit_current()
@@ -97,7 +97,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
 /// Select the highest-ID-independent first runnable thread and switch stacks.
 /// If the ready queue is empty, a blocked/yielding thread switches back to its saved idle context.
 fn reschedule(block:bool)->Result<(),ThreadError>{
-    let prior_interrupts_enabled=crate::arch::interrupts_enabled();
+    let prior_interrupts_enabled=crate::ntoskrnl::ke::arch::interrupts_enabled();
     let cpu=cpu_index()?;
     let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
     let mut observed_rsp:u64;
@@ -143,15 +143,15 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
             let next=&mut table.records[index];
             next.state=ThreadState::Running;
             local.current_thread.store(next.id,core::sync::atomic::Ordering::Release);
-            let _=crate::arch::set_kernel_stack(cpu,next.stack_top);
+            let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,next.stack_top);
             next.context_rsp
         };
         if current_id!=0 {
-            unsafe{crate::arch::context_switch_publish(old_rsp_ptr,next_rsp,publish_switched_out,current_scheduler_id as usize)};
+            unsafe{crate::ntoskrnl::ke::arch::context_switch_publish(old_rsp_ptr,next_rsp,publish_switched_out,current_scheduler_id as usize)};
         } else {
-            unsafe{crate::arch::context_switch(old_rsp_ptr,next_rsp)};
+            unsafe{crate::ntoskrnl::ke::arch::context_switch(old_rsp_ptr,next_rsp)};
         }
-        crate::arch::set_interrupts_enabled(prior_interrupts_enabled);
+        crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior_interrupts_enabled);
         Ok(())
     }else if current_id!=0&&!block {
         crate::scheduler::resume_task(cpu,current_scheduler_id).map_err(|_|ThreadError::InvalidState)?;
@@ -172,9 +172,9 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
         }
         local.current_thread.store(0,core::sync::atomic::Ordering::Release);
         let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
-        if idle_top!=0{let _=crate::arch::set_kernel_stack(cpu,idle_top);}
-        unsafe{crate::arch::context_switch_publish(old_rsp_ptr,idle,publish_switched_out,current_scheduler_id as usize)};
-        crate::arch::set_interrupts_enabled(prior_interrupts_enabled);
+        if idle_top!=0{let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,idle_top);}
+        unsafe{crate::ntoskrnl::ke::arch::context_switch_publish(old_rsp_ptr,idle,publish_switched_out,current_scheduler_id as usize)};
+        crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior_interrupts_enabled);
         Ok(())
     }else{
         Ok(())
@@ -253,7 +253,7 @@ extern "C" fn preemption_observer_worker(_argument:*mut c_void){
 pub fn timer_preemption_self_test()->bool{
     let cpu=match cpu_index(){Ok(cpu)=>cpu,Err(_)=>return false};
     if cpu!=0||!crate::hal::local_clock_event_active(){return false}
-    let prior=crate::arch::interrupts_enabled();
+    let prior=crate::ntoskrnl::ke::arch::interrupts_enabled();
     PREEMPTION_TEST_BUSY_DONE.store(false,core::sync::atomic::Ordering::Release);
     PREEMPTION_TEST_OBSERVED.store(false,core::sync::atomic::Ordering::Release);
     PREEMPTION_TEST_PROGRESS.store(0,core::sync::atomic::Ordering::Release);
@@ -261,9 +261,9 @@ pub fn timer_preemption_self_test()->bool{
     let observer_stack=unsafe{core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(PREEMPTION_TEST_STACKS[1]).cast::<u8>(),8192)};
     if spawn(busy_stack,1,preemption_busy_worker,core::ptr::null_mut()).is_err()
         ||spawn(observer_stack,1,preemption_observer_worker,core::ptr::null_mut()).is_err(){
-        crate::arch::set_interrupts_enabled(prior);return false
+        crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior);return false
     }
-    crate::arch::set_interrupts_enabled(true);
+    crate::ntoskrnl::ke::arch::set_interrupts_enabled(true);
     let mut spins=0usize;
     while spins<100_000
         && (!PREEMPTION_TEST_BUSY_DONE.load(core::sync::atomic::Ordering::Acquire)
@@ -276,7 +276,7 @@ pub fn timer_preemption_self_test()->bool{
     let ok=PREEMPTION_TEST_BUSY_DONE.load(core::sync::atomic::Ordering::Acquire)
         && PREEMPTION_TEST_OBSERVED.load(core::sync::atomic::Ordering::Acquire)
         && PREEMPTION_TEST_PROGRESS.load(core::sync::atomic::Ordering::Acquire)==5_000_000;
-    crate::arch::set_interrupts_enabled(prior);
+    crate::ntoskrnl::ke::arch::set_interrupts_enabled(prior);
     ok
 }
 /// Timer-ISR entry: preempt only when this CPU has a runnable peer. The
@@ -347,19 +347,19 @@ fn exit_current()->! {
             local.current_thread.store(next.id,core::sync::atomic::Ordering::Release);
             let next_rsp=next.context_rsp;
             let next_stack_top=next.stack_top;
-            let _=crate::arch::set_kernel_stack(cpu,next_stack_top);
+            let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,next_stack_top);
             (old_rsp_ptr,next_rsp,old_token)
         }else{
             local.current_thread.store(0,core::sync::atomic::Ordering::Release);
             let idle=unsafe{*idle_rsp_ptr};
             if idle.is_null(){loop{core::hint::spin_loop()}}
             let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
-            if idle_top!=0{let _=crate::arch::set_kernel_stack(cpu,idle_top);}
+            if idle_top!=0{let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,idle_top);}
             (old_rsp_ptr,idle,old_token)
         }
     };
     if old_token != 0 { let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(old_token as *mut c_void) }; }
-    unsafe{crate::arch::context_switch(old_rsp_ptr,new_rsp)};
+    unsafe{crate::ntoskrnl::ke::arch::context_switch(old_rsp_ptr,new_rsp)};
     loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}
 }
 /// Return the address of the current live thread record as an opaque KTHREAD token.
@@ -584,7 +584,7 @@ pub fn clear_wake_pending()->Result<(),ThreadError>{
 pub fn set_idle_stack_top(cpu:usize,stack_top:u64)->bool{
     if cpu>=crate::hal::MAX_CPUS||stack_top==0||stack_top&0xf!=0{return false;}
     IDLE_STACK_TOPS[cpu].store(stack_top,core::sync::atomic::Ordering::Release);
-    crate::arch::set_kernel_stack(cpu,stack_top)
+    crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,stack_top)
 }
 
 /// Initialize the runtime's per-CPU current-thread slots. The bootstrap context

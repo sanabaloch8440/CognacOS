@@ -8,7 +8,8 @@
 //! licensed GPL-2.0-or-later.
 //! Copyright (C) RustOS-Dev contributors; RdotOS-specific modifications
 //! Copyright (C) 2026 RdotOS contributors. Modified for RdotOS on 2026-10-23.
-use crate::{arch, hal, memory};
+use crate::{hal, memory};
+use crate::ntoskrnl::ke::arch;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::arch::global_asm;
 

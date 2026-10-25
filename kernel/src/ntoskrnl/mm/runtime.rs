@@ -273,7 +273,7 @@ fn unlock_pfns(pfns: &[u64]) {
 }
 /// Translate a user-mode VA in the currently active process. Only the active CR3 is known.
 fn translate_current_user(va: u64, require_write: bool) -> Option<u64> {
-    if !crate::vm::is_user_range(va, 1) { return None; }
+    if !crate::ntoskrnl::mm::address_space::is_user_range(va, 1) { return None; }
     let cr3: u64;
     unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); }
     let root = (cr3 & ADDRESS_MASK) as *const u64;
@@ -370,8 +370,8 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
     let destination = pfn_address as *mut u64;
     for index in 0..pages as usize {
         let Some(va) = start.checked_add(index as u64 * PAGE_SIZE) else { return; };
-        if access_mode == 1 && !crate::vm::is_user_range(va, 1) { return; }
-        let pa = if crate::vm::is_user_range(va, 1) {
+        if access_mode == 1 && !crate::ntoskrnl::mm::address_space::is_user_range(va, 1) { return; }
+        let pa = if crate::ntoskrnl::mm::address_space::is_user_range(va, 1) {
             // No user demand-paging metadata exists yet; only present user
             // mappings can be probed safely.
             translate_current_user(va, write_access)
@@ -390,7 +390,7 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
     // writing even the first PFN into the caller's descriptor.
     for index in 0..pages as usize {
         let va = start + index as u64 * PAGE_SIZE;
-        let pa = if crate::vm::is_user_range(va, 1) {
+        let pa = if crate::ntoskrnl::mm::address_space::is_user_range(va, 1) {
             translate_current_user(va, write_access)
         } else { translate(va, write_access) };
         let Some(pa) = pa else { return; };
@@ -398,7 +398,7 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
     }
     for index in 0..pages as usize {
         let va = start + index as u64 * PAGE_SIZE;
-        let pa = if crate::vm::is_user_range(va, 1) {
+        let pa = if crate::ntoskrnl::mm::address_space::is_user_range(va, 1) {
             translate_current_user(va, write_access)
         } else { translate(va, write_access) };
         let Some(pa) = pa else { return; };
@@ -409,8 +409,8 @@ pub unsafe extern "win64" fn mm_probe_and_lock_pages(mdl: *mut c_void, access_mo
         for index in 0..pages as usize { unsafe { destination.add(index).write(0); } }
         return;
     }
-    if crate::vm::is_user_range(start, 1) {
-        let root = crate::vm::active_root_physical();
+    if crate::ntoskrnl::mm::address_space::is_user_range(start, 1) {
+        let root = crate::ntoskrnl::mm::address_space::active_root_physical();
         let Some(process) = crate::process::reference_process_for_root(root) else {
             unlock_pfns(pfns);
             for index in 0..pages as usize { unsafe { destination.add(index).write(0); } }
@@ -666,7 +666,7 @@ pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
         if !crate::memory::is_ram_physical_address(pa) { return core::ptr::null_mut(); }
     }
     if access_mode == 1 {
-        let root = crate::vm::active_root_physical();
+        let root = crate::ntoskrnl::mm::address_space::active_root_physical();
         let process = header.process;
         if process.is_null() || !crate::process::process_matches_root(process, root) {
             return core::ptr::null_mut();
@@ -674,17 +674,17 @@ pub unsafe extern "win64" fn mm_map_locked_pages_specify_cache(
         if USER_MDL_MAPPINGS.lock().iter().any(|m| m.live && m.mdl == address) {
             return core::ptr::null_mut();
         }
-        let mapping = match unsafe { crate::vm::map_external_user_pages_active(pfns, true) } {
+        let mapping = match unsafe { crate::ntoskrnl::mm::address_space::map_external_user_pages_active(pfns, true) } {
             Ok(value) => value, Err(_) => return core::ptr::null_mut(),
         };
         let Some(mapped) = mapping.checked_add(header.byte_offset as u64) else {
-            let _ = unsafe { crate::vm::unmap_external_user_pages_active(mapping, pfns) };
+            let _ = unsafe { crate::ntoskrnl::mm::address_space::unmap_external_user_pages_active(mapping, pfns) };
             return core::ptr::null_mut();
         };
         let mut mappings = USER_MDL_MAPPINGS.lock();
         let Some(slot) = mappings.iter_mut().find(|m| !m.live) else {
             drop(mappings);
-            let _ = unsafe { crate::vm::unmap_external_user_pages_active(mapping, pfns) };
+            let _ = unsafe { crate::ntoskrnl::mm::address_space::unmap_external_user_pages_active(mapping, pfns) };
             return core::ptr::null_mut();
         };
         *slot = UserMdlMapping { mdl: address, process: process as u64, root, base: mapping, pages: pages as usize, live: true };
@@ -718,7 +718,7 @@ pub unsafe extern "win64" fn mm_unmap_locked_pages(base: *mut c_void, mdl: *mut 
     if base_va < 0x0000_8000_0000_0000 {
         let offset = header.byte_offset as u64;
         let aligned = match base_va.checked_sub(offset) { Some(v) => v, None => return };
-        let root = crate::vm::active_root_physical();
+        let root = crate::ntoskrnl::mm::address_space::active_root_physical();
         let mut mappings = USER_MDL_MAPPINGS.lock();
         let Some(index) = mappings.iter().position(|m| m.live && m.mdl == address
             && m.process == header.process as u64 && m.root == root
@@ -737,7 +737,7 @@ pub unsafe extern "win64" fn mm_unmap_locked_pages(base: *mut c_void, mdl: *mut 
             cursor = core::cmp::min(pfn_end, (cursor & !(PAGE_SIZE-1)).saturating_add(PAGE_SIZE));
         }
         let pfns = unsafe { core::slice::from_raw_parts(pfn_address as *const u64, record.pages) };
-        if unsafe { crate::vm::unmap_external_user_pages_active(record.base, pfns) }.is_err() { return; }
+        if unsafe { crate::ntoskrnl::mm::address_space::unmap_external_user_pages_active(record.base, pfns) }.is_err() { return; }
         mappings[index] = UserMdlMapping::EMPTY;
         drop(mappings);
         header.flags &= !MDL_MAPPED_SYSTEM_VA;
@@ -792,8 +792,8 @@ pub unsafe extern "win64" fn mm_copy_virtual_memory(
             while done < length {
                 let Some(sva) = src.checked_add(done) else { break; };
                 let Some(dva) = dst.checked_add(done) else { break; };
-                let Some(spa) = crate::vm::translate_in_root_locked(source_root, sva, false, user_only) else { break; };
-                let Some(dpa) = crate::vm::translate_in_root_locked(target_root, dva, true, user_only) else { break; };
+                let Some(spa) = crate::ntoskrnl::mm::address_space::translate_in_root_locked(source_root, sva, false, user_only) else { break; };
+                let Some(dpa) = crate::ntoskrnl::mm::address_space::translate_in_root_locked(target_root, dva, true, user_only) else { break; };
                 let Some(source_ptr) = crate::memory::physical_access_pointer(spa & !(PAGE_SIZE-1)) else { break; };
                 let Some(target_ptr) = crate::memory::physical_access_pointer(dpa & !(PAGE_SIZE-1)) else { break; };
                 let source_ptr = unsafe { source_ptr.add((spa & (PAGE_SIZE-1)) as usize) };
