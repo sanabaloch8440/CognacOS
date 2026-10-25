@@ -235,3 +235,24 @@ vendored `alpc.c` (the three message-attribute helpers). That does not mean
 the complete Windows ALPC subsystem is implemented: port creation/connect,
 message send/receive, handle/view transfer, and kernel-side ALPC object and
 syscall support remain separate work.
+
+
+## Miscellaneous NTDLL helpers Rust port
+
+The source-first module `rust/misc.rs` ports the sorting and searching
+helpers from Wine's `misc.c`: `qsort_s`, `qsort`, `bsearch_s`,
+`bsearch`, and `_lfind`. Sorting uses an in-place heapsort implementation
+with bounded stack use and (O(n log n)) worst-case time; search helpers
+preserve comparator ordering and return matching element pointers. Argument
+validation and checked element-offset arithmetic prevent size overflow from
+turning into an invalid calculated offset.
+
+The module also mirrors the current Wine stub return behavior for the SQM and
+ETW entry points represented in `misc.c`. Those functions are placeholders,
+not a functioning telemetry/event-tracing service. The Wine debug-only
+`debugstr_us` helper and C-variadic `EtwTraceMessage` wrapper are not ported:
+they depend on Wine's debug runtime and C variadic forwarding respectively.
+The Rust module is not linked into the freestanding PE32+ build, and its unit
+tests have not yet been confirmed as executed in CI. Callback ABI, invalid
+raw-pointer behavior, and Windows runtime compatibility still require native
+integration and testing.
