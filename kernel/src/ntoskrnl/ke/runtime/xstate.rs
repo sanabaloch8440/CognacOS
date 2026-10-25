@@ -91,7 +91,7 @@ pub fn ki_query_xstate_configuration() -> CognacXStateConfiguration {
     let mut sizes = [0u32; 64];
     sizes[0] = 160;
     offsets[1] = 160;
-    sizes[1] = 352;
+    sizes[1] = 256;
     for feature in 2..64 {
         if supported & (1u64 << feature) == 0 { continue; }
         let leaf = cpuid(0x0d, feature as u32);
