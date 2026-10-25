@@ -312,10 +312,10 @@ maps NTSTATUS through the bootstrap status table and updates both TEB fields.
 
 ### NTDLL-LOAD-024 — LdrGetProcedureAddress bootstrap
 
-**Implemented:** a freestanding export resolver validates the loaded PE32+ headers and export-directory bounds, supports exact ANSI name and ordinal lookup, initializes the output pointer to null, and rejects forwarded exports. The QEMU smoke resolves `RtlGetCurrentPeb` through the mapped NTDLL base. Initial validation failed before ring-3 execution because the generated test stub exceeded its 3072-byte code buffer; the buffer was increased to one page (4096 bytes). The latest QEMU run is pending.
+**Implemented:** a freestanding export resolver validates the loaded PE32+ headers and export-directory bounds, supports exact ANSI name and ordinal lookup, initializes the output pointer to null, and rejects forwarded exports. The QEMU smoke resolves `RtlGetCurrentPeb` through the mapped NTDLL base. Initial validation failed before ring-3 execution because the generated test stub exceeded its 3072-byte code buffer; the buffer was increased to one page (4096 bytes). The expanded 4096-byte stub passed in the boot-smoke phase of [Actions run 40185018220](https://github.com/umarfarooq7869/CognacOS/actions/runs/40185018220), including the `RtlGetCurrentPeb` name lookup.
 
 ### NTDLL-LOAD-025 — LdrGetDllHandle bootstrap
 
 **Implemented:** a freestanding lookup traverses the active PEB's load-order list, compares `BaseDllName` values case-insensitively for ASCII, and returns the mapped base for an already-loaded module. It does not load DLLs or resolve search paths.
 
-**Validation pending:** the ring-3 smoke resolves `ntdll.dll` through the PEB list and checks that the returned handle equals the actual mapped base. Full `LdrLoadDll`, forwarded exports, loader lock, activation contexts, and dependency graph/rundown remain future work.
+**QEMU-verified:** [Actions run 40185018220](https://github.com/umarfarooq7869/CognacOS/actions/runs/40185018220) resolved `ntdll.dll` through the PEB load-order list and verified the returned handle equals the actual mapped base. Full `LdrLoadDll`, forwarded exports, loader lock, activation contexts, and dependency graph/rundown remain future work.
