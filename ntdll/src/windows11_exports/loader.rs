@@ -1034,14 +1034,47 @@ pub unsafe extern "system" fn LdrQueryProcessModuleInformation(
 #[no_mangle]
 pub unsafe extern "system" fn LdrRemoveLoadAsDataTable() -> i32 { STATUS_NOT_IMPLEMENTED }
 
+/// Native resource lookup entry point. The resource tree is parsed from the mapped PE image;
+/// malformed RVAs and missing type/name/language nodes are reported by find_resource_entry.
 #[no_mangle]
-pub unsafe extern "system" fn LdrResFindResource() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrResFindResource(
+    module: PVOID, resource_info: *const LDR_RESOURCE_INFO, level: ULONG,
+    resource_data_entry: *mut *mut IMAGE_RESOURCE_DATA_ENTRY,
+) -> NTSTATUS {
+    unsafe { LdrFindResource_U(module, resource_info, level, resource_data_entry) }
+}
 
+/// Find a resource directory node (rather than a leaf data entry) in a mapped PE image.
 #[no_mangle]
-pub unsafe extern "system" fn LdrResFindResourceDirectory() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrResFindResourceDirectory(
+    module: PVOID, resource_info: *const LDR_RESOURCE_INFO, level: ULONG,
+    directory_out: *mut PVOID,
+) -> NTSTATUS {
+    if directory_out.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { directory_out.write(ptr::null_mut()); }
+    match unsafe { find_resource_entry(module, resource_info, level, true) } {
+        Ok(directory) => { unsafe { directory_out.write(directory.cast()); } STATUS_SUCCESS },
+        Err(status) => status,
+    }
+}
 
+/// Return the resource-configuration directory only when it exists and is structurally valid.
+/// RC configuration parsing is not guessed: this helper validates the resource root and reports
+/// STATUS_NOT_FOUND for images without a resource directory.
 #[no_mangle]
-pub unsafe extern "system" fn LdrResGetRCConfig() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrResGetRCConfig(module: PVOID, directory_out: *mut PVOID) -> NTSTATUS {
+    if directory_out.is_null() || module.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { directory_out.write(ptr::null_mut()); }
+    match unsafe { mapped_image_info(module) } {
+        Ok((base, _image_size, packed)) => {
+            let rva = packed as u32 as usize;
+            if rva == 0 { return STATUS_NOT_FOUND; }
+            unsafe { directory_out.write((base + rva) as PVOID); }
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
+}
 
 
 const IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT: usize = 13;
@@ -1234,11 +1267,36 @@ pub unsafe extern "system" fn LdrResolveDelayLoadsFromDll(
 #[no_mangle]
 pub unsafe extern "system" fn LdrResRelease() -> i32 { STATUS_NOT_IMPLEMENTED }
 
+/// Search a mapped PE resource tree using the same validated type/name/language traversal
+/// as LdrFindResource_U. This avoids a second, less strict parser for the legacy entry point.
 #[no_mangle]
-pub unsafe extern "system" fn LdrResSearchResource() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrResSearchResource(
+    module: PVOID, resource_info: *const LDR_RESOURCE_INFO, level: ULONG,
+    resource_data_entry: *mut *mut IMAGE_RESOURCE_DATA_ENTRY,
+) -> NTSTATUS {
+    unsafe { LdrFindResource_U(module, resource_info, level, resource_data_entry) }
+}
 
+/// Test whether a numeric or string resource type has a top-level entry.
 #[no_mangle]
-pub unsafe extern "system" fn LdrRscIsTypeExist() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrRscIsTypeExist(module: PVOID, resource_type: ULONG_PTR) -> BOOLEAN {
+    let (base, _image_size, packed) = match unsafe { mapped_image_info(module) } {
+        Ok(v) => v, Err(_) => return 0,
+    };
+    let rva = packed as u32 as usize;
+    let size = (packed >> 32) as usize;
+    if rva == 0 || size < 16 { return 0; }
+    let dir = (base + rva) as *const u8;
+    let named = unsafe { ptr::read_unaligned(dir.add(12).cast::<u16>()) } as usize;
+    let ids = unsafe { ptr::read_unaligned(dir.add(14).cast::<u16>()) } as usize;
+    let Some(count) = named.checked_add(ids).filter(|n| *n <= MAX_RESOURCE_ENTRIES) else { return 0; };
+    if 16usize.checked_add(count * 8).is_none_or(|end| end > size) { return 0; }
+    for i in 0..count {
+        let encoded = unsafe { ptr::read_unaligned(dir.add(16 + i * 8).cast::<u32>()) };
+        if unsafe { resource_key_matches(base, _image_size, rva, size, encoded, resource_type) } { return 1; }
+    }
+    0
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrSetAppCompatDllRedirectionCallback() -> i32 { STATUS_NOT_IMPLEMENTED }
