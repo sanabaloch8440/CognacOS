@@ -752,8 +752,8 @@ pub unsafe extern "system" fn RtlSeekMemoryStream(this: PVOID, offset: i64, orig
     if start > current || current > end { return STG_E_INVALIDPOINTER; }
     let base = match origin { STREAM_SEEK_SET => start, STREAM_SEEK_CUR => current, STREAM_SEEK_END => end, _ => return E_INVALIDARG };
     let candidate = if offset >= 0 { base.checked_add(offset as usize) } else { base.checked_sub(offset.unsigned_abs() as usize) };
-    let Some(candidate) = candidate else { return STG_E_INVALIDARG; };
-    if candidate < start || candidate > end { return STG_E_INVALIDARG; }
+    let Some(candidate) = candidate else { return E_INVALIDARG; };
+    if candidate < start || candidate > end { return E_INVALIDARG; }
     stream.current = candidate as PVOID;
     if !new_position.is_null() { unsafe { ptr::write(new_position, (candidate - start) as u64); } }
     S_OK
