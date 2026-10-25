@@ -94,6 +94,24 @@ pub fn read_at(handle: usize, offset: usize, out: &mut [u8]) -> Result<usize, i3
     Ok(count)
 }
 
+
+/// Read from and advance the current file position, serialized with close.
+pub fn read_current(handle: usize, out: &mut [u8]) -> Result<usize, i32> {
+    let slot = handle & 0xff;
+    if slot == 0 || slot > MAX_HANDLES { return Err(STATUS_INVALID_HANDLE); }
+    let mut state = STATE.lock();
+    let h = &mut state.handles[slot - 1];
+    if !h.used || h.token != handle >> 8 { return Err(STATUS_INVALID_HANDLE); }
+    let f = &state.files[h.file_index];
+    if !f.used { return Err(STATUS_INVALID_HANDLE); }
+    if h.offset >= f.length { return Ok(0); }
+    let count = core::cmp::min(out.len(), f.length - h.offset);
+    // SAFETY: the provider keeps registered file bytes valid and immutable.
+    unsafe { core::ptr::copy_nonoverlapping((f.address + h.offset) as *const u8, out.as_mut_ptr(), count); }
+    h.offset += count;
+    Ok(count)
+}
+
 pub fn close(handle: usize) -> Result<(), i32> {
     let slot = handle & 0xff;
     if slot == 0 || slot > MAX_HANDLES { return Err(STATUS_INVALID_HANDLE); }
