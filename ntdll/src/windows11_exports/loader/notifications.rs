@@ -1,3 +1,5 @@
+use super::*;
+
 #[no_mangle]
 pub unsafe extern "system" fn LdrRegisterDllNotification(
     flags: ULONG, callback: Option<unsafe extern "system" fn(ULONG, *const c_void, PVOID)>,
