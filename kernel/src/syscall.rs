@@ -206,6 +206,14 @@ cognacos_windows_syscall_entry:
     cld
     # GS:[0] saves user RSP; GS:[8] is this CPU's private kernel stack top.
     mov qword ptr gs:[0], rsp
+    # Temporary marker 'g' proves GS:[0] was writable after SWAPGS.
+    push rax
+    push rdx
+    mov dx, 0x3f8
+    mov al, 'g'
+    out dx, al
+    pop rdx
+    pop rax
     mov rsp, qword ptr gs:[8]
     # Temporary marker 'k' proves the per-CPU GS stack switch succeeded.
     push rax
