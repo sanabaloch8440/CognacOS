@@ -216,9 +216,61 @@ pub unsafe extern "system" fn CognacCallUnhandledExceptionFilter(
     }
 }
 
-/// Conservative placeholder for context APIs until CognacOS publishes its
-/// user-shared XSTATE configuration. It rejects unknown architecture flags
-/// instead of reporting fabricated support.
+/// XSTATE configuration copied from the kernel's boot-time CPU policy.
+/// NTDLL must receive this from the native process bootstrap/shared-data
+/// initializer before exposing CONTEXT_XSTATE to applications.
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::AtomicU32;
+
+static NTDLL_XSTATE_ENABLED: AtomicU64 = AtomicU64::new(0);
+static NTDLL_XSTATE_SUPPORTED: AtomicU64 = AtomicU64::new(0);
+static NTDLL_XSTATE_AREA_SIZE: AtomicU32 = AtomicU32::new(0);
+static NTDLL_XSTATE_READY: AtomicBool = AtomicBool::new(false);
+static NTDLL_XSTATE_OFFSETS: [AtomicU32; 64] =
+    [const { AtomicU32::new(0) }; 64];
+static NTDLL_XSTATE_SIZES: [AtomicU32; 64] =
+    [const { AtomicU32::new(0) }; 64];
+
+/// Publish the configuration computed by ntoskrnl to NTDLL during native
+/// process initialization. Offsets are CPUID.(0xD, feature).EBX values in the
+/// standard (non-compacted) XSAVE layout; sizes are CPUID leaf 0xD subleaf EAX.
+#[no_mangle]
+pub unsafe extern "system" fn CognacNtdllPublishXStateConfiguration(
+    supported: ULONG64,
+    enabled: ULONG64,
+    area_size: ULONG,
+    offsets: *const ULONG,
+    sizes: *const ULONG,
+) -> NTSTATUS {
+    if enabled == 0 || enabled & !supported != 0 || area_size < 576
+        || offsets.is_null() || sizes.is_null()
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    // The legacy x87/SSE components are mandatory in the standard format.
+    if enabled & 0x3 != 0x3 { return STATUS_INVALID_PARAMETER; }
+    NTDLL_XSTATE_READY.store(false, Ordering::Release);
+    for i in 0..64 {
+        NTDLL_XSTATE_OFFSETS[i].store(*offsets.add(i), Ordering::Relaxed);
+        NTDLL_XSTATE_SIZES[i].store(*sizes.add(i), Ordering::Relaxed);
+    }
+    NTDLL_XSTATE_SUPPORTED.store(supported, Ordering::Relaxed);
+    NTDLL_XSTATE_ENABLED.store(enabled, Ordering::Relaxed);
+    NTDLL_XSTATE_AREA_SIZE.store(area_size, Ordering::Relaxed);
+    NTDLL_XSTATE_READY.store(true, Ordering::Release);
+    STATUS_SUCCESS
+}
+
+/// Return enabled extended processor feature bits, limited to the caller's mask.
+#[no_mangle]
+pub extern "system" fn RtlGetEnabledExtendedFeatures(mask: ULONG64) -> ULONG64 {
+    if !NTDLL_XSTATE_READY.load(Ordering::Acquire) { return 0; }
+    NTDLL_XSTATE_ENABLED.load(Ordering::Acquire) & mask
+}
+
+/// Return the size of the requested CONTEXT allocation. XSTATE is reported only
+/// after the kernel configuration has been published; this prevents NTDLL from
+/// advertising AVX/other state that the scheduler cannot preserve.
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetExtendedContextLength(
     context_flags: ULONG, length: *mut ULONG,
@@ -228,20 +280,58 @@ pub unsafe extern "system" fn RtlGetExtendedContextLength(
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetExtendedContextLength2(
-    context_flags: ULONG, length: *mut ULONG, _compaction_mask: ULONG64,
+    context_flags: ULONG, length: *mut ULONG, compaction_mask: ULONG64,
 ) -> NTSTATUS {
     if length.is_null() { return STATUS_INVALID_PARAMETER; }
+    *length = 0;
     let architecture = context_flags & 0x0011_0000;
     let supported = match architecture {
-        0x0010_0000 => (0xd800_0000 | 0x0010_005f, 0x4d0u32, 0x20u32, 7u32),
-        0x0001_0000 => (0xd800_0000 | 0x0001_007f, 0x2ccu32, 0x18u32, 3u32),
+        0x0010_0000 => (0xd800_0000 | 0x0010_005f, 0x4d0u32),
+        0x0001_0000 => (0xd800_0000 | 0x0001_007f, 0x2ccu32),
         _ => return STATUS_INVALID_PARAMETER,
     };
     if context_flags & !supported.0 != 0 { return STATUS_INVALID_PARAMETER; }
-    if context_flags & 0x40 != 0 {
-        // Extended XSTATE size depends on the CPU/kernel shared-data contract.
+    if context_flags & 0x40 == 0 {
+        *length = supported.1;
+        return STATUS_SUCCESS;
+    }
+    if !NTDLL_XSTATE_READY.load(Ordering::Acquire) {
         return 0xC000_00BBu32 as i32; // STATUS_NOT_SUPPORTED
     }
-    *length = supported.1 + supported.2 + supported.3;
+    let enabled = NTDLL_XSTATE_ENABLED.load(Ordering::Acquire);
+    if enabled == 0 || (compaction_mask != ULONG64::MAX && compaction_mask & !enabled != 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    // CONTEXT_EX is three RTL_CONTEXT_CHUNK records (24 bytes). The XSAVE
+    // area size already includes the 512-byte legacy region and 64-byte header.
+    let extended = (supported.1 as usize)
+        .checked_add(24)
+        .and_then(|n| n.checked_add(NTDLL_XSTATE_AREA_SIZE.load(Ordering::Acquire) as usize))
+        .and_then(|n| n.checked_add(63))
+        .map(|n| n & !63);
+    match extended {
+        Some(n) if n <= ULONG::MAX as usize => { *length = n as ULONG; STATUS_SUCCESS }
+        _ => STATUS_INVALID_PARAMETER,
+    }
+}
+
+/// Query one component's standard XSAVE-area offset and size. This CognacOS
+/// helper is used by the CONTEXT_EX implementation as it is completed.
+#[no_mangle]
+pub unsafe extern "system" fn CognacRtlQueryExtendedFeature(
+    feature_id: ULONG, offset: *mut ULONG, size: *mut ULONG,
+) -> NTSTATUS {
+    if offset.is_null() || size.is_null() || feature_id >= 64 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if !NTDLL_XSTATE_READY.load(Ordering::Acquire) {
+        return 0xC000_00BBu32 as i32;
+    }
+    let bit = 1u64 << feature_id;
+    if NTDLL_XSTATE_ENABLED.load(Ordering::Acquire) & bit == 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *offset = NTDLL_XSTATE_OFFSETS[feature_id as usize].load(Ordering::Acquire);
+    *size = NTDLL_XSTATE_SIZES[feature_id as usize].load(Ordering::Acquire);
     STATUS_SUCCESS
 }
