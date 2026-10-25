@@ -319,3 +319,23 @@ secure-CRT invalid-parameter behavior, and exhaustive width/precision edge
 cases remain. The wrappers are now in the native build, unlike the source-first
 Rust formatter, but compilation and export checks must pass in GitHub Actions
 before this bridge is considered validated.
+
+
+## Rust port: Wine NTDLL version.c
+
+Added `rust/version.rs` as a source-first Rust port of the deterministic
+version-comparison logic from Wine's `version.c`. It defines the x64
+`RTL_OSVERSIONINFOEXW` ABI layout, Windows `VER_*` masks and comparison
+conditions, comparison-condition merging, build/platform/product-type
+comparisons, suite-mask AND/OR behavior, and the version-checking core used by
+`RtlVerifyVersionInfo`. It also includes a field-copy helper that validates
+the caller's advertised base-structure size before writing the version data.
+
+The module deliberately accepts the authoritative current OS version as input.
+It does not hard-code a Windows build or export a misleading `RtlGetVersion`
+implementation. The native export wrapper still needs to obtain version data
+from CognacOS's actual shared-data/version provider and the Rust module is not
+yet linked into the freestanding PE32+ build. Tests cover ordering conditions,
+major/minor comparison, suite/product checks, invalid masks, and x64 structure
+size; CI has to confirm compilation and execution before the port is considered
+validated.
