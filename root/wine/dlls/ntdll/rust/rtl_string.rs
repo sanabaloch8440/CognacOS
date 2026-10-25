@@ -445,3 +445,250 @@ pub unsafe extern "system" fn RtlIntegerToUnicodeString(
     destination.Length = (count * 2) as USHORT;
     STATUS_SUCCESS
 }
+
+
+pub const STATUS_NAME_TOO_LONG: LONG = 0xC000_0106_u32 as LONG;
+pub const STATUS_BUFFER_OVERFLOW: LONG = 0x8000_0005_u32 as LONG;
+
+/// Checked ANSI descriptor initialization; leaves the descriptor untouched on overflow.
+#[no_mangle]
+pub unsafe extern "system" fn RtlInitAnsiStringEx(
+    destination: PCOGNAC_ANSI_STRING,
+    source: *const u8,
+) -> LONG {
+    if destination.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if source.is_null() {
+        unsafe {
+            (*destination).Length = 0;
+            (*destination).MaximumLength = 0;
+            (*destination).Buffer = core::ptr::null_mut();
+        }
+        return STATUS_SUCCESS;
+    }
+    let mut length = 0usize;
+    while length < 0xffff && unsafe { source.add(length).read() } != 0 {
+        length += 1;
+    }
+    if length + 1 > USHORT::MAX as usize {
+        return STATUS_NAME_TOO_LONG;
+    }
+    unsafe {
+        (*destination).Length = length as USHORT;
+        (*destination).MaximumLength = (length + 1) as USHORT;
+        (*destination).Buffer = source.cast_mut();
+    }
+    STATUS_SUCCESS
+}
+
+/// Checked UTF-16 descriptor initialization, returning STATUS_NAME_TOO_LONG rather than truncating.
+#[no_mangle]
+pub unsafe extern "system" fn RtlInitUnicodeStringEx(
+    destination: PCOGNAC_UNICODE_STRING,
+    source: *const WCHAR,
+) -> LONG {
+    if destination.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if source.is_null() {
+        unsafe {
+            (*destination).Length = 0;
+            (*destination).MaximumLength = 0;
+            (*destination).Buffer = core::ptr::null_mut();
+        }
+        return STATUS_SUCCESS;
+    }
+    let mut count = 0usize;
+    while count <= 0x7fff && unsafe { source.add(count).read() } != 0 {
+        count += 1;
+    }
+    let length = count * 2;
+    if length > 0xfffc {
+        return STATUS_NAME_TOO_LONG;
+    }
+    unsafe {
+        (*destination).Length = length as USHORT;
+        (*destination).MaximumLength = (length + 2) as USHORT;
+        (*destination).Buffer = source.cast_mut();
+    }
+    STATUS_SUCCESS
+}
+
+/// Copies the source byte string into the destination up to MaximumLength bytes.
+#[no_mangle]
+pub unsafe extern "system" fn RtlCopyString(
+    destination: PCOGNAC_ANSI_STRING,
+    source: PCCOGNAC_ANSI_STRING,
+) {
+    if destination.is_null() {
+        return;
+    }
+    let dst = unsafe { &mut *destination };
+    let Some(src) = (if source.is_null() { None } else { Some(unsafe { &*source }) }) else {
+        dst.Length = 0;
+        return;
+    };
+    if dst.Buffer.is_null() || src.Buffer.is_null() {
+        dst.Length = 0;
+        return;
+    }
+    let count = core::cmp::min(src.Length, dst.MaximumLength) as usize;
+    unsafe { core::ptr::copy(src.Buffer, dst.Buffer, count) };
+    dst.Length = count as USHORT;
+}
+
+/// Tests whether the first ANSI string is a prefix of the second.
+#[no_mangle]
+pub unsafe extern "system" fn RtlPrefixString(
+    prefix: PCCOGNAC_ANSI_STRING,
+    value: PCCOGNAC_ANSI_STRING,
+    ignore_case: BOOLEAN,
+) -> BOOLEAN {
+    if prefix.is_null() || value.is_null() {
+        return 0;
+    }
+    let (prefix, value) = unsafe { (&*prefix, &*value) };
+    if prefix.Length > value.Length {
+        return 0;
+    }
+    if prefix.Length == 0 {
+        return 1;
+    }
+    if prefix.Buffer.is_null() || value.Buffer.is_null() {
+        return 0;
+    }
+    for i in 0..prefix.Length as usize {
+        let (a, b) = unsafe { (prefix.Buffer.add(i).read(), value.Buffer.add(i).read()) };
+        if fold_ansi(a, ignore_case) != fold_ansi(b, ignore_case) {
+            return 0;
+        }
+    }
+    1
+}
+
+/// Appends a NUL-terminated ASCII string to an ANSI_STRING without exceeding its capacity.
+#[no_mangle]
+pub unsafe extern "system" fn RtlAppendAsciizToString(
+    destination: PCOGNAC_ANSI_STRING,
+    source: *const u8,
+) -> LONG {
+    if destination.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if source.is_null() {
+        return STATUS_SUCCESS;
+    }
+    let dst = unsafe { &mut *destination };
+    if dst.Length > dst.MaximumLength || (dst.Length != 0 && dst.Buffer.is_null()) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut count = 0usize;
+    while unsafe { source.add(count).read() } != 0 {
+        count += 1;
+    }
+    if count > (dst.MaximumLength - dst.Length) as usize {
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    if count != 0 {
+        if dst.Buffer.is_null() { return STATUS_INVALID_PARAMETER; }
+        unsafe { core::ptr::copy(source, dst.Buffer.add(dst.Length as usize), count) };
+    }
+    dst.Length += count as USHORT;
+    STATUS_SUCCESS
+}
+
+/// Appends an ANSI_STRING to another ANSI_STRING.
+#[no_mangle]
+pub unsafe extern "system" fn RtlAppendStringToString(
+    destination: PCOGNAC_ANSI_STRING,
+    source: PCCOGNAC_ANSI_STRING,
+) -> LONG {
+    if destination.is_null() || source.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let dst = unsafe { &mut *destination };
+    let src = unsafe { &*source };
+    if dst.Length > dst.MaximumLength || src.Length > 0 && src.Buffer.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if src.Length > dst.MaximumLength - dst.Length {
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    if src.Length != 0 {
+        if dst.Buffer.is_null() { return STATUS_INVALID_PARAMETER; }
+        unsafe {
+            core::ptr::copy(src.Buffer, dst.Buffer.add(dst.Length as usize), src.Length as usize);
+        }
+    }
+    dst.Length += src.Length;
+    STATUS_SUCCESS
+}
+
+/// Appends a counted UTF-16 string to another UNICODE_STRING.
+#[no_mangle]
+pub unsafe extern "system" fn RtlAppendUnicodeStringToString(
+    destination: PCOGNAC_UNICODE_STRING,
+    source: PCCOGNAC_UNICODE_STRING,
+) -> LONG {
+    if destination.is_null() || source.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let dst = unsafe { &mut *destination };
+    let src = unsafe { &*source };
+    if (dst.Length | src.Length) & 1 != 0
+        || dst.Length > dst.MaximumLength
+        || (src.Length != 0 && src.Buffer.is_null())
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if src.Length > dst.MaximumLength - dst.Length {
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    if src.Length != 0 {
+        if dst.Buffer.is_null() { return STATUS_INVALID_PARAMETER; }
+        unsafe {
+            core::ptr::copy(
+                src.Buffer,
+                dst.Buffer.add((dst.Length / 2) as usize),
+                (src.Length / 2) as usize,
+            );
+        }
+    }
+    dst.Length += src.Length;
+    STATUS_SUCCESS
+}
+
+/// Appends a NUL-terminated UTF-16 string to a UNICODE_STRING.
+#[no_mangle]
+pub unsafe extern "system" fn RtlAppendUnicodeToString(
+    destination: PCOGNAC_UNICODE_STRING,
+    source: *const WCHAR,
+) -> LONG {
+    if destination.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if source.is_null() {
+        return STATUS_SUCCESS;
+    }
+    let dst = unsafe { &mut *destination };
+    if dst.Length & 1 != 0 || dst.Length > dst.MaximumLength {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut count = 0usize;
+    while unsafe { source.add(count).read() } != 0 {
+        count += 1;
+    }
+    let bytes = count.saturating_mul(2);
+    if bytes > (dst.MaximumLength - dst.Length) as usize {
+        return STATUS_BUFFER_OVERFLOW;
+    }
+    if count != 0 {
+        if dst.Buffer.is_null() { return STATUS_INVALID_PARAMETER; }
+        unsafe {
+            core::ptr::copy(source, dst.Buffer.add((dst.Length / 2) as usize), count);
+        }
+    }
+    dst.Length += bytes as USHORT;
+    STATUS_SUCCESS
+}
