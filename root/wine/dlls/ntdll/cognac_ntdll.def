@@ -41,3 +41,4 @@ EXPORTS
     RtlSetLastWin32Error
     RtlGetLastNtStatus
     RtlSetLastWin32ErrorAndNtStatusFromNtStatus
+    LdrGetProcedureAddress
