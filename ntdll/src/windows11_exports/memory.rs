@@ -250,6 +250,8 @@ const STATUS_INVALID_HANDLE: NTSTATUS = 0xC000_0008u32 as i32;
 const STATUS_INVALID_PARAMETER_2: NTSTATUS = 0xC000_00F0u32 as i32;
 const STATUS_BUFFER_TOO_SMALL: NTSTATUS = 0xC000_0023u32 as i32;
 const STATUS_NOT_SUPPORTED: NTSTATUS = 0xC000_00BBu32 as i32;
+const STATUS_UNSUCCESSFUL: NTSTATUS = 0xC000_0001u32 as i32;
+const STATUS_INVALID_HANDLE: NTSTATUS = 0xC000_0008u32 as i32;
 const RTL_ZONE_MAGIC: u64 = 0x434F_474E_5A4F_4E45;
 const RTL_LOOKASIDE_MAGIC: u64 = 0x434F_474E_4C4F_4F4B;
 const RTL_BLOCK_MAGIC: u64 = 0x434F_474E_424C_4F43;
@@ -899,28 +901,118 @@ pub struct RTL_NV_MEMORY_RANGE { pub base_address: PVOID, pub length: SIZE_T }
 pub unsafe extern "system" fn RtlFlushNonVolatileMemoryRanges(token: PVOID, count: ULONG, ranges: *const RTL_NV_MEMORY_RANGE, flags: ULONG) -> NTSTATUS {
     let _ = (token, count, ranges, flags); STATUS_NOT_SUPPORTED
 }
-#[no_mangle]
-pub unsafe extern "system" fn RtlFlushSecureMemoryCache(base: PVOID, length: SIZE_T) -> u8 {
-    let _ = (base, length); 0
+const SECURE_CACHE_CALLBACKS: usize = 16;
+static SECURE_CACHE_CALLBACK_LOCK: AtomicBool = AtomicBool::new(false);
+static mut SECURE_CACHE_CALLBACK_TABLE: [usize; SECURE_CACHE_CALLBACKS] = [0; SECURE_CACHE_CALLBACKS];
+fn secure_cache_lock() { while SECURE_CACHE_CALLBACK_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); } }
+fn secure_cache_unlock() { SECURE_CACHE_CALLBACK_LOCK.store(false, Ordering::Release); }
+fn notify_secure_cache_callbacks(base: PVOID, length: SIZE_T) {
+    let mut callbacks = [0usize; SECURE_CACHE_CALLBACKS];
+    secure_cache_lock();
+    unsafe { callbacks.copy_from_slice(&*core::ptr::addr_of!(SECURE_CACHE_CALLBACK_TABLE)); }
+    secure_cache_unlock();
+    for address in callbacks.into_iter().filter(|p| *p != 0) {
+        let callback: unsafe extern "system" fn(PVOID, SIZE_T) = unsafe { core::mem::transmute(address) };
+        unsafe { callback(base, length); }
+    }
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlRegisterSecureMemoryCacheCallback(callback: PVOID) -> NTSTATUS { let _ = callback; STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlFlushSecureMemoryCache(base: PVOID, length: SIZE_T) -> u8 {
+    if length == 0 { return 1; }
+    if base.is_null() || (base as usize).checked_add(length).is_none() { return 0; }
+    // This operation is the cache-invalidation notification hook; it does not
+    // claim to pin pages itself. The MM secure-range contract is enforced by Nt VM.
+    notify_secure_cache_callbacks(base, length);
+    1
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlDeregisterSecureMemoryCacheCallback(callback: PVOID) -> NTSTATUS { let _ = callback; STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlRegisterSecureMemoryCacheCallback(callback: PVOID) -> NTSTATUS {
+    if callback.is_null() { return STATUS_INVALID_PARAMETER; }
+    let address = callback as usize;
+    secure_cache_lock();
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(SECURE_CACHE_CALLBACK_TABLE) };
+    if table.contains(&address) { secure_cache_unlock(); return STATUS_SUCCESS; }
+    let Some(slot) = table.iter_mut().find(|p| **p == 0) else { secure_cache_unlock(); return STATUS_NO_MEMORY; };
+    *slot = address;
+    secure_cache_unlock();
+    STATUS_SUCCESS
+}
+#[no_mangle]
+pub unsafe extern "system" fn RtlDeregisterSecureMemoryCacheCallback(callback: PVOID) -> NTSTATUS {
+    if callback.is_null() { return STATUS_INVALID_PARAMETER; }
+    let address = callback as usize;
+    secure_cache_lock();
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(SECURE_CACHE_CALLBACK_TABLE) };
+    let Some(slot) = table.iter_mut().find(|p| **p == address) else { secure_cache_unlock(); return STATUS_INVALID_PARAMETER; };
+    *slot = 0;
+    secure_cache_unlock();
+    STATUS_SUCCESS
+}
 #[no_mangle]
 pub unsafe extern "system" fn RtlCopyMappedMemory(destination: PVOID, source: PVOID, length: SIZE_T) -> NTSTATUS {
     if length != 0 && (destination.is_null() || source.is_null()) { return STATUS_INVALID_PARAMETER; }
     if length != 0 { unsafe { ptr::copy(source.cast::<u8>(), destination.cast::<u8>(), length); } }
     STATUS_SUCCESS
 }
+/// Windows CM_PARTIAL_RESOURCE_DESCRIPTOR: 4-byte header and 12-byte union.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CM_PARTIAL_RESOURCE_DESCRIPTOR { pub type_: u8, pub share_disposition: u8, pub flags: u16, pub data: [u8; 12] }
+const CM_RESOURCE_TYPE_PORT: u8 = 3;
+const CM_RESOURCE_TYPE_MEMORY: u8 = 4;
+const CM_RESOURCE_TYPE_MEMORY_LARGE: u8 = 7;
+const CM_RESOURCE_MEMORY_LARGE_40: u16 = 0x0200;
+const CM_RESOURCE_MEMORY_LARGE_48: u16 = 0x0400;
+const CM_RESOURCE_MEMORY_LARGE_64: u16 = 0x0800;
+unsafe fn decode_mem_io_resource(resource: *const CM_PARTIAL_RESOURCE_DESCRIPTOR, start: *mut u64) -> u64 {
+    if resource.is_null() { return 0; }
+    let descriptor = unsafe { ptr::read_unaligned(resource) };
+    if !matches!(descriptor.type_, CM_RESOURCE_TYPE_PORT | CM_RESOURCE_TYPE_MEMORY | CM_RESOURCE_TYPE_MEMORY_LARGE) { return 0; }
+    let address = u64::from_le_bytes(descriptor.data[0..8].try_into().unwrap_or([0; 8]));
+    let raw_length = u32::from_le_bytes(descriptor.data[8..12].try_into().unwrap_or([0; 4])) as u64;
+    let length = if descriptor.type_ == CM_RESOURCE_TYPE_MEMORY_LARGE {
+        let shift = match descriptor.flags & 0x0e00 { CM_RESOURCE_MEMORY_LARGE_40 => 8, CM_RESOURCE_MEMORY_LARGE_48 => 16, CM_RESOURCE_MEMORY_LARGE_64 => 32, _ => return 0 };
+        match raw_length.checked_shl(shift) { Some(v) => v, None => return 0 }
+    } else { raw_length };
+    if length == 0 || address.checked_add(length).is_none() { return 0; }
+    if !start.is_null() { unsafe { ptr::write_unaligned(start, address); } }
+    length
+}
+unsafe fn encode_mem_io_resource(resource: *mut CM_PARTIAL_RESOURCE_DESCRIPTOR, type_: u8, length: u64, start: u64) -> NTSTATUS {
+    if resource.is_null() || length == 0 || start.checked_add(length).is_none() { return STATUS_INVALID_PARAMETER; }
+    let (flags, shift) = match type_ {
+        CM_RESOURCE_TYPE_PORT | CM_RESOURCE_TYPE_MEMORY => (0u16, 0u32),
+        CM_RESOURCE_TYPE_MEMORY_LARGE if start & 0xff == 0 && length & 0xff == 0 && (length >> 8) <= u32::MAX as u64 && start < (1u64 << 40) => (CM_RESOURCE_MEMORY_LARGE_40, 8),
+        CM_RESOURCE_TYPE_MEMORY_LARGE if start & 0xffff == 0 && length & 0xffff == 0 && (length >> 16) <= u32::MAX as u64 && start < (1u64 << 48) => (CM_RESOURCE_MEMORY_LARGE_48, 16),
+        CM_RESOURCE_TYPE_MEMORY_LARGE if start & 0xffff_ffff == 0 && length & 0xffff_ffff == 0 && (length >> 32) <= u32::MAX as u64 => (CM_RESOURCE_MEMORY_LARGE_64, 32),
+        CM_RESOURCE_TYPE_MEMORY_LARGE => return STATUS_UNSUCCESSFUL,
+        _ => return STATUS_INVALID_PARAMETER,
+    };
+    if shift == 0 && length > u32::MAX as u64 { return STATUS_UNSUCCESSFUL; }
+    if type_ == CM_RESOURCE_TYPE_PORT && start > u32::MAX as u64 { return STATUS_UNSUCCESSFUL; }
+    let encoded_length = (length >> shift) as u32;
+    let mut descriptor = CM_PARTIAL_RESOURCE_DESCRIPTOR { type_: type_, share_disposition: 0, flags, data: [0; 12] };
+    descriptor.data[..8].copy_from_slice(&start.to_le_bytes());
+    descriptor.data[8..12].copy_from_slice(&encoded_length.to_le_bytes());
+    unsafe { ptr::write_unaligned(resource, descriptor); }
+    STATUS_SUCCESS
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlCmDecodeMemIoResource(resource: PVOID, decoded: PVOID) -> NTSTATUS { let _ = (resource, decoded); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlCmDecodeMemIoResource(resource: PVOID, start: *mut u64) -> u64 {
+    unsafe { decode_mem_io_resource(resource.cast(), start) }
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlCmEncodeMemIoResource(resource: PVOID, encoded: PVOID) -> NTSTATUS { let _ = (resource, encoded); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlCmEncodeMemIoResource(resource: PVOID, type_: u8, length: u64, start: u64) -> NTSTATUS {
+    unsafe { encode_mem_io_resource(resource.cast(), type_, length, start) }
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlIoDecodeMemIoResource(resource: PVOID, decoded: PVOID) -> NTSTATUS { let _ = (resource, decoded); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlIoDecodeMemIoResource(resource: PVOID, start: *mut u64) -> u64 {
+    unsafe { decode_mem_io_resource(resource.cast(), start) }
+}
 #[no_mangle]
-pub unsafe extern "system" fn RtlIoEncodeMemIoResource(resource: PVOID, encoded: PVOID) -> NTSTATUS { let _ = (resource, encoded); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlIoEncodeMemIoResource(resource: PVOID, type_: u8, length: u64, start: u64) -> NTSTATUS {
+    unsafe { encode_mem_io_resource(resource.cast(), type_, length, start) }
+}
 #[no_mangle]
 pub unsafe extern "system" fn RtlCheckTokenMembership(token: HANDLE, sid: PVOID, member: *mut u8) -> NTSTATUS { let _ = (token, sid, member); STATUS_NOT_SUPPORTED }
 #[no_mangle]
