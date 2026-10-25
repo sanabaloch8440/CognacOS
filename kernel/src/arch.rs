@@ -1256,7 +1256,7 @@ pub unsafe fn initialize() {
 #[unsafe(no_mangle)]
 pub extern "C" fn rdotos_exception_fatal(vector: u64, error: u64, frame: *const u64) -> ! {
     unsafe {
-        crate::serial_write(b"\r\nRdotOS FATAL CPU exception vector=");
+        crate::serial_write(b"\r\nCognacOS FATAL CPU exception vector=");
         crate::serial_write_hex(vector);
         crate::serial_write(b" error=");
         crate::serial_write_hex(error);

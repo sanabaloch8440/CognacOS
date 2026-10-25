@@ -19,7 +19,7 @@ pub enum ProcessState { Created, Running, Exited, Reaped }
 pub struct ProcessSnapshot { pub process_id: u64, pub state: ProcessState, pub exit_code: u64 }
 
 /// Stable kernel-resident process object used by NT process-pointer APIs.
-/// This is RdotOS's internal EPROCESS-compatible anchor, not the private
+/// This is CognacOS's internal EPROCESS-compatible anchor, not the private
 /// binary layout of a particular Windows build.
 const EPROCESS_MAGIC: u64 = 0x5250_4f43_4553_5331;
 #[repr(C, align(16))]

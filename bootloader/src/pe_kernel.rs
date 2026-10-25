@@ -1,4 +1,4 @@
-//! Strict loader for RdotOS's fixed-base PE32+ native kernel image.
+//! Strict loader for CognacOS's fixed-base PE32+ native kernel image.
 //! The image is not an EFI application: it is a static AMD64 native-subsystem
 //! PE image with no imports or base relocations. The loader allocates physical
 //! section backing below 4 GiB and maps each section at ImageBase + RVA.
