@@ -42,8 +42,7 @@ pub unsafe extern "system" fn RtlEnumProcessHeaps(callback: HEAP_ENUMERATION_ROU
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlProtectHeap(heap: HANDLE, protect: u8) -> u8 {
-    let _ = protect;
-    (unsafe { crate::rtl_heap::RtlValidateHeap(heap, 0, ptr::null_mut()) } != 0) as u8
+    unsafe { crate::rtl_heap::RtlSetHeapProtected(heap, protect) }
 }
 
 #[no_mangle]
