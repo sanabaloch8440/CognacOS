@@ -492,25 +492,25 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  };
  if deleting||driver.is_null(){return STATUS_DELETE_PENDING}
  if !track_irp_device(irp,device) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
+ if !acquire_irp_active_op(irp) { release_irp_device_rundown(irp); release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
- if stack.is_null(){release_device_dispatch_rundown(device);return STATUS_INVALID_PARAMETER}
+ if stack.is_null(){release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_PARAMETER}
  let location=unsafe{(*irp).bytes[0x43]};
- if location<=1{release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
+ if location<=1{release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
  unsafe {
   write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast());
   (*irp).bytes[0x43]=location-1;
   (*stack).device_object=device;
  }
  let major=unsafe{(*stack).major_function as usize};
- if major>=28{release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
+ if major>=28{release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
  let dispatch=unsafe{(*driver).major_function[major]};
- let Some(dispatch)=dispatch else{release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST};
+ let Some(dispatch)=dispatch else{release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST};
  let prepare=unsafe{crate::ntoskrnl::po::runtime::po_prepare_irp_dispatch(device,irp,major as u8,(*stack).minor_function,(*stack).parameters)};
  if prepare!=STATUS_SUCCESS{
   unsafe{write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());(*irp).bytes[0x43]=location;}
-  release_device_dispatch_rundown(device);return prepare
+  release_irp_active_op(irp);release_device_dispatch_rundown(device);return prepare
  }
- if !acquire_irp_active_op(irp) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  let status=unsafe{dispatch(device,irp)};
  crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
  release_irp_active_op(irp);
