@@ -927,7 +927,31 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             };
             let ntdll_image = match unsafe { pe::load_dll(&mut ntdll_space, ntdll_bytes, b"ntdll.dll", None) } {
                 Ok(image) => image,
-                Err(_) => { serial_write(b"FATAL: NTDLL PE32+ mapping/export registration failed.\r\n"); halt(); }
+                Err(error) => {
+                    let label: &[u8] = match error {
+                        pe::PeError::Truncated => b"Truncated",
+                        pe::PeError::BadDosHeader => b"BadDosHeader",
+                        pe::PeError::BadSignature => b"BadSignature",
+                        pe::PeError::UnsupportedMachine => b"UnsupportedMachine",
+                        pe::PeError::UnsupportedOptionalHeader => b"UnsupportedOptionalHeader",
+                        pe::PeError::InvalidHeader => b"InvalidHeader",
+                        pe::PeError::InvalidSection => b"InvalidSection",
+                        pe::PeError::ImageTooLarge => b"ImageTooLarge",
+                        pe::PeError::AddressUnavailable => b"AddressUnavailable",
+                        pe::PeError::OutOfMemory => b"OutOfMemory",
+                        pe::PeError::InvalidRelocations => b"InvalidRelocations",
+                        pe::PeError::RelocationsRequired => b"RelocationsRequired",
+                        pe::PeError::InvalidImports => b"InvalidImports",
+                        pe::PeError::ImportResolverMissing => b"ImportResolverMissing",
+                        pe::PeError::UnresolvedImport => b"UnresolvedImport",
+                        pe::PeError::WxPageRejected => b"WxPageRejected",
+                        pe::PeError::Vm(_) => b"VmError",
+                    };
+                    serial_write(b"FATAL: NTDLL load failed: ");
+                    serial_write(label);
+                    serial_write(b"\\r\\n");
+                    halt();
+                }
             };
             serial_write(b"NTDLL PE32+ image mapped and exports registered.\r\n");
             match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
