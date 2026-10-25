@@ -12,6 +12,7 @@ pub const STATUS_INVALID_IMAGE_FORMAT: i32 = 0xC000_007Bu32 as i32;
 pub const STATUS_DLL_NOT_FOUND: i32 = 0xC000_0135u32 as i32;
 pub const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
 pub const STATUS_RESOURCE_IN_USE: i32 = 0xC000_0708u32 as i32;
+pub const STATUS_DLL_INIT_FAILED: i32 = 0xC000_0142u32 as i32;
 
 const FILE_CHUNK: usize = 4096;
 static LOAD_UNLOAD_LOCK: IrqSpinLock<()> = IrqSpinLock::new(());
@@ -50,6 +51,84 @@ pub struct LoadResult {
     pub generation: u32,
     pub image: LoadedImage,
     pub already_loaded: bool,
+}
+
+/// Read and validate the entry-point RVA from a mapped AMD64 PE image. The
+/// image header is copied through the owning address space rather than directly
+/// dereferenced from a user virtual address.
+fn mapped_entrypoint(space: &AddressSpace, base: u64, image_size: u32) -> Result<u64, i32> {
+    const HEADER_BYTES: usize = 0x1000;
+    if base == 0 || image_size < 0x1000 { return Err(STATUS_INVALID_IMAGE_FORMAT); }
+    let mut header = [0u8; HEADER_BYTES];
+    unsafe { space.copy_from_user(base, &mut header) }.map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+    let u16_at = |offset: usize| -> Option<u16> {
+        Some(u16::from_le_bytes(header.get(offset..offset.checked_add(2)?)?.try_into().ok()?))
+    };
+    let u32_at = |offset: usize| -> Option<u32> {
+        Some(u32::from_le_bytes(header.get(offset..offset.checked_add(4)?)?.try_into().ok()?))
+    };
+    if u16_at(0) != Some(0x5a4d) { return Err(STATUS_INVALID_IMAGE_FORMAT); }
+    let nt = u32_at(0x3c).ok_or(STATUS_INVALID_IMAGE_FORMAT)? as usize;
+    if nt.checked_add(24 + 112).is_none_or(|end| end > header.len())
+        || u32_at(nt) != Some(0x0000_4550)
+        || u16_at(nt + 4) != Some(0x8664)
+        || u16_at(nt + 24) != Some(0x20b) {
+        return Err(STATUS_INVALID_IMAGE_FORMAT);
+    }
+    let optional_size = u16_at(nt + 4 + 16).ok_or(STATUS_INVALID_IMAGE_FORMAT)? as usize;
+    if optional_size < 112 || nt.checked_add(24 + optional_size).is_none_or(|end| end > header.len()) {
+        return Err(STATUS_INVALID_IMAGE_FORMAT);
+    }
+    let entry_rva = u32_at(nt + 24 + 16).ok_or(STATUS_INVALID_IMAGE_FORMAT)?;
+    if entry_rva == 0 { return Ok(0); }
+    if entry_rva >= image_size { return Err(STATUS_INVALID_IMAGE_FORMAT); }
+    base.checked_add(entry_rva as u64).ok_or(STATUS_INVALID_IMAGE_FORMAT)
+}
+
+/// Transition a mapped DLL to Initializing and return its validated entry point.
+/// The caller must arrange a user-mode callout (DLL_PROCESS_ATTACH) on a thread
+/// in this process; kernel code must never invoke the user entry point directly.
+pub fn prepare_module_initialization(
+    space: &AddressSpace,
+    process_id: u64,
+    module_name: &[u8],
+) -> Result<(usize, u32, u64), i32> {
+    if process_id == 0 || module_name.is_empty() { return Err(STATUS_INVALID_PARAMETER); }
+    let (slot, snapshot) = crate::pe_modules::find_for_process(process_id, module_name)
+        .ok_or(STATUS_DLL_NOT_FOUND)?;
+    if snapshot.state != crate::pe_modules::ModuleState::Mapped {
+        return Err(STATUS_RESOURCE_IN_USE);
+    }
+    let entry = mapped_entrypoint(space, snapshot.base, snapshot.size)?;
+    crate::pe_modules::begin_initialization(slot, snapshot.generation)?;
+    Ok((slot, snapshot.generation, entry))
+}
+
+/// Complete the user-mode DLL initialization callout. On failure, the mapped
+/// image and its export/runtime registration are removed before the module
+/// registry releases dependency references. On success, the module becomes
+/// eligible for normal import resolution and unload rundown.
+pub unsafe fn complete_module_initialization(
+    space: &mut AddressSpace,
+    process_id: u64,
+    module_name: &[u8],
+    slot: usize,
+    generation: u32,
+    success: bool,
+) -> Result<(), i32> {
+    let _transaction = LOAD_UNLOAD_LOCK.lock();
+    let snapshot = crate::pe_modules::find_for_process(process_id, module_name)
+        .map(|(_, entry)| entry).ok_or(STATUS_DLL_NOT_FOUND)?;
+    if snapshot.generation != generation || snapshot.state != crate::pe_modules::ModuleState::Initializing {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    if success {
+        return crate::pe_modules::finish_initialization(slot, generation, true);
+    }
+    let image = LoadedImage { base: snapshot.base, entry: 0, image_size: snapshot.size, is_dll: true };
+    unsafe { crate::pe::unload_dll(space, image, module_name) }.map_err(pe_status)?;
+    crate::pe_modules::finish_initialization(slot, generation, false)?;
+    Err(STATUS_DLL_INIT_FAILED)
 }
 
 fn pe_status(_error: PeError) -> i32 { STATUS_INVALID_IMAGE_FORMAT }
