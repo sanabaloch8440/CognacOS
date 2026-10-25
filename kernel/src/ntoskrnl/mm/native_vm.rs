@@ -493,7 +493,7 @@ pub fn fill_nonvolatile_memory(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -
     let no_drain = flags & 8 != 0;
     if no_drain && (flags & 1 == 0 || flags & (2 | 4) != 0) { return STATUS_INVALID_PARAMETER; }
     let physical = match physical_user_range(root,args[1],length,true) { Ok(p)=>p, Err(s)=>return s };
-    let offset = match crate::ntoskrnl::mm::persistent::offset_for_physical(args[0],physical,length) { Ok(v)=>v, Err(s)=>return s as u32 as u64 };
+    let offset = match crate::ntoskrnl::mm::persistent::offset_for_physical(args[0],physical,length,root) { Ok(v)=>v, Err(s)=>return s as u32 as u64 };
     let result = crate::ntoskrnl::mm::persistent::fill(args[0],root,offset,length,args[3] as u8,false);
     if result < 0 { return result as u32 as u64; }
     if flags & (1 | 4) != 0 { crate::ntoskrnl::mm::persistent::flush(args[0],root,offset,length,no_drain) as u32 as u64 } else { STATUS_SUCCESS }
