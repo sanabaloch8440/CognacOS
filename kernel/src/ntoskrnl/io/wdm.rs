@@ -75,7 +75,7 @@ pub struct IoStackLocation {
     pub context: *mut c_void,
 }
 #[repr(C)]
-struct DeviceSlot { used: bool, deleting: bool, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
+struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
 struct IrpSlot { used: bool, owned_mdl: *mut c_void, object: Irp, stack: [IoStackLocation;16] }
@@ -84,7 +84,7 @@ struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WD
 impl WdmState {
  const fn new() -> Self {
   Self {
-   devices: [const { DeviceSlot { used:false, deleting:false, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
+   devices: [const { DeviceSlot { used:false, deleting:false, active_dispatches:0, remove_lock_count:0, power_state:0, power_target:0, power_transition:false, pnp_state:0, pnp_pending:0, pnp_transition_minor:0, pnp_transition:false, attached_to:ptr::null_mut(), name_len:0, name:[0;260], object: DeviceObject {
     object_type:3,size:core::mem::size_of::<DeviceObject>() as u16,reference_count:1,
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
@@ -98,6 +98,24 @@ impl WdmState {
  }
 }
 static WDM: IrqSpinLock<WdmState> = IrqSpinLock::new(WdmState::new());
+static UNLOADING_DRIVERS:[core::sync::atomic::AtomicPtr<DriverObject>;MAX_WDM_DEVICES]=
+ [const{core::sync::atomic::AtomicPtr::new(ptr::null_mut())};MAX_WDM_DEVICES];
+static DRIVER_UNLOAD_STATE:[core::sync::atomic::AtomicU8;MAX_WDM_DEVICES]=
+ [const{core::sync::atomic::AtomicU8::new(0)};MAX_WDM_DEVICES];
+
+fn driver_is_unloading(driver:*mut DriverObject)->bool{
+ !driver.is_null()&&UNLOADING_DRIVERS.iter().any(|p|p.load(core::sync::atomic::Ordering::Acquire)==driver)
+}
+fn claim_driver_unload_slot(driver:*mut DriverObject)->Option<usize>{
+ for (index,slot) in UNLOADING_DRIVERS.iter().enumerate(){
+  let current=slot.load(core::sync::atomic::Ordering::Acquire);
+  if current==driver{return Some(index)}
+  if current.is_null()&&slot.compare_exchange(ptr::null_mut(),driver,core::sync::atomic::Ordering::AcqRel,core::sync::atomic::Ordering::Acquire).is_ok(){
+   DRIVER_UNLOAD_STATE[index].store(1,core::sync::atomic::Ordering::Release);return Some(index)
+  }
+ }
+ None
+}
 
 pub const DEVICE_POWER_D0:u8=0; pub const DEVICE_POWER_D1:u8=1; pub const DEVICE_POWER_D2:u8=2; pub const DEVICE_POWER_D3:u8=3;
 
@@ -119,7 +137,7 @@ pub unsafe extern "system" fn io_dereference_device_object(device:*mut DeviceObj
   let mut state=WDM.lock();
   let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return};
   if s.object.reference_count>1{s.object.reference_count-=1;}
-  s.deleting&&s.object.reference_count<=1&&s.remove_lock_count==0&&!s.power_transition
+  s.deleting&&s.object.reference_count<=1&&s.remove_lock_count==0&&s.active_dispatches==0&&!s.power_transition
  };
  if finalize{unsafe{io_delete_device(device)}}
 }
@@ -139,7 +157,7 @@ pub unsafe extern "system" fn io_release_device_remove_lock(device:*mut DeviceOb
   let mut state=WDM.lock();
   let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return};
   if s.remove_lock_count==0{return}
-  s.remove_lock_count-=1;s.deleting&&s.remove_lock_count==0&&s.object.reference_count<=1&&!s.power_transition
+  s.remove_lock_count-=1;s.deleting&&s.remove_lock_count==0&&s.active_dispatches==0&&s.object.reference_count<=1&&!s.power_transition
  };
  if finalize{unsafe{io_delete_device(device)}}
 }
@@ -160,7 +178,7 @@ pub unsafe extern "system" fn io_complete_device_power_transition(device:*mut De
   let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
   if !s.power_transition||s.power_target!=target{return STATUS_INVALID_DEVICE_REQUEST}
   if status==STATUS_SUCCESS{s.power_state=target}
-  s.power_transition=false;s.deleting&&s.remove_lock_count==0&&s.object.reference_count<=1
+  s.power_transition=false;s.deleting&&s.remove_lock_count==0&&s.active_dispatches==0&&s.object.reference_count<=1
  };
  if finalize{unsafe{io_delete_device(device)}}status
 }
@@ -222,6 +240,7 @@ pub unsafe extern "system" fn io_create_device(
  device_type:u32, characteristics:u32, exclusive:u8, output:*mut *mut DeviceObject
 )->i32 {
  if driver.is_null() || output.is_null() || extension_size as usize>MAX_DEVICE_EXTENSION || exclusive>1 { return STATUS_INVALID_PARAMETER; }
+ if driver_is_unloading(driver){return STATUS_DELETE_PENDING}
  unsafe { output.write(ptr::null_mut()); }
  let mut counted_name=[0u16;260];
  let name_len=if !device_name.is_null() {
@@ -235,7 +254,7 @@ pub unsafe extern "system" fn io_create_device(
  let mut state=WDM.lock();
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.deleting=false;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
+ slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
  slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
@@ -257,6 +276,42 @@ pub unsafe extern "system" fn io_create_device(
 
 unsafe extern "win64" fn io_object_manager_finalizer(object:*mut c_void){unsafe{io_delete_device(object.cast::<DeviceObject>());}}
 
+/// Begin driver unload only after all owned devices have completed active
+/// dispatch, remove-lock, reference and power-transition rundown. Repeated calls
+/// are safe: the unload callback is atomically claimed by clearing its pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_unload_driver(driver:*mut DriverObject)->i32 {
+ if driver.is_null(){return STATUS_INVALID_PARAMETER}
+ let Some(unload_slot)=claim_driver_unload_slot(driver) else{return STATUS_INSUFFICIENT_RESOURCES};
+ if DRIVER_UNLOAD_STATE[unload_slot].load(core::sync::atomic::Ordering::Acquire)==2{return STATUS_SUCCESS}
+ let mut devices=[ptr::null_mut::<DeviceObject>();MAX_WDM_DEVICES];
+ let count={
+  let mut state=WDM.lock();
+  let mut n=0usize;
+  for slot in state.devices.iter_mut().filter(|s|s.used&&s.object.driver_object==driver){
+   slot.deleting=true;
+   if n<devices.len(){devices[n]=ptr::addr_of_mut!(slot.object);n+=1;}
+  }
+  n
+ };
+ for device in devices[..count].iter().copied(){unsafe{io_delete_device(device);}}
+ {
+  let state=WDM.lock();
+  if state.devices.iter().any(|s|s.used&&s.object.driver_object==driver){return STATUS_PENDING}
+ }
+ let unload={
+  let _state=WDM.lock();
+  unsafe{
+   let callback=(*driver).driver_unload;
+   (*driver).driver_unload=None;
+   callback
+  }
+ };
+ if let Some(callback)=unload{unsafe{callback(driver)}}
+ DRIVER_UNLOAD_STATE[unload_slot].store(2,core::sync::atomic::Ordering::Release);
+ STATUS_SUCCESS
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  if device.is_null(){return}
@@ -265,7 +320,7 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  let Some(index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return};
  state.devices[index].deleting=true;
  // Defer reclamation while external references, remove-lock owners, or power transitions remain.
- if state.devices[index].object.reference_count > 1 || state.devices[index].remove_lock_count != 0 || state.devices[index].power_transition { return; }
+ if state.devices[index].object.reference_count > 1 || state.devices[index].remove_lock_count != 0 || state.devices[index].active_dispatches != 0 || state.devices[index].power_transition { return; }
  // Ob references and handles may outlive Io callers; only reclaim the backing slot after Ob has removed its header record.
  if !crate::ntoskrnl::ob::runtime::object_rundown_complete(device.cast()) { return; }
  let lower=state.devices[index].attached_to;
