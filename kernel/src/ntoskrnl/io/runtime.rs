@@ -409,4 +409,5 @@ pub use wdm::{
     UnicodeString,
 };
 pub(crate) use wdm::{io_set_device_power_state, io_begin_pnp_transition, io_complete_pnp_transition, io_pnp_state};
+pub(crate) use wdm::rundown_self_test;
 pub use wdm::Irp as WdmIrp;
