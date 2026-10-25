@@ -2,7 +2,7 @@
 //! The bootstrap uses a dedicated DPL3 software interrupt for process exit;
 //! normal syscalls return through IRETQ. IST-based exception stacks remain separate.
 use core::arch::{asm, global_asm};
-use crate::{pe::LoadedImage, vm::{AddressSpace, VmError}};
+use crate::{pe::LoadedImage, ntoskrnl::mm::address_space::{AddressSpace, VmError}};
 const PAGE: u64 = 4096;
 const USER_STACK: u64 = 0x0000_0082_0000_0000;
 const CALLBACK_BASE: u64 = 0x0000_0083_0000_0000;
