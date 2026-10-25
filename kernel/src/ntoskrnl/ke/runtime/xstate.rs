@@ -160,3 +160,37 @@ pub unsafe extern "win64" fn CognacSaveXState(area: *mut u8, length: usize, mask
 pub unsafe extern "win64" fn CognacRestoreXState(area: *const u8, length: usize, mask: u64) -> i32 {
     unsafe { ki_xstate_restore(area, length, mask) }
 }
+
+
+/// The currently enabled x87/SSE state occupies the architectural 512-byte
+/// legacy region plus the 64-byte XSAVE header. Keep this object 64-byte
+/// aligned because XSAVE/XRSTOR require that alignment for standard format.
+#[repr(C, align(64))]
+#[derive(Clone, Copy)]
+pub struct KiThreadXStateArea {
+    bytes: [u8; 576],
+}
+impl KiThreadXStateArea {
+    pub const fn zeroed() -> Self { Self { bytes: [0; 576] } }
+    pub fn as_mut_ptr(&mut self) -> *mut u8 { self.bytes.as_mut_ptr() }
+    pub fn as_ptr(&self) -> *const u8 { self.bytes.as_ptr() }
+}
+impl Default for KiThreadXStateArea {
+    fn default() -> Self { Self::zeroed() }
+}
+
+/// Scheduler-only save/restore helpers. They are no-ops before per-CPU XSAVE
+/// initialization; callers must not enable AVX until all CPUs and threads use
+/// the same fully integrated state policy.
+pub unsafe fn ki_xstate_save_thread(area: *mut KiThreadXStateArea) -> bool {
+    if area.is_null() { return false; }
+    let mask = XSTATE_ENABLED_MASK.load(Ordering::Acquire);
+    if mask == 0 { return false; }
+    unsafe { ki_xstate_save((*area).as_mut_ptr(), core::mem::size_of::<KiThreadXStateArea>(), mask) == STATUS_SUCCESS }
+}
+pub unsafe fn ki_xstate_restore_thread(area: *const KiThreadXStateArea) -> bool {
+    if area.is_null() { return false; }
+    let mask = XSTATE_ENABLED_MASK.load(Ordering::Acquire);
+    if mask == 0 { return false; }
+    unsafe { ki_xstate_restore((*area).as_ptr(), core::mem::size_of::<KiThreadXStateArea>(), mask) == STATUS_SUCCESS }
+}
