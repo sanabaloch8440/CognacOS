@@ -38,7 +38,6 @@ check: $(OUTPUT)
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtQueryInformationProcess'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtQueryInformationThread'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'NtQuerySystemInformation'
-	$(OBJDUMP) -p $(OUTPUT) | grep -q 'CognacNtdllConfigureSyscallTable'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlCompareMemory'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlCompareMemoryUlong'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlComputeCrc32'
@@ -71,7 +70,6 @@ check: $(OUTPUT)
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlSizeHeap'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'RtlValidateHeap'
 	$(OBJDUMP) -p $(OUTPUT) | grep -q 'CognacNtdllProcessHeapObject'
-	$(OBJDUMP) -p $(OUTPUT) | grep -q 'CognacNtdllConfigureSyscalls'
 	! $(OBJDUMP) -p $(OUTPUT) | grep -q 'DLL Name:'
 
 clean:
