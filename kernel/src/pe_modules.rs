@@ -1,0 +1,176 @@
+//! Bounded per-process PE module lifetime registry.
+//!
+//! This tracks module identity, dependency edges, reference ownership and
+//! initialization transitions. Mapping/unmapping remains the responsibility of
+//! the owning process address-space manager; callers must not free an image until
+//! begin_unload returns its unique unload ticket.
+use crate::hal::IrqSpinLock;
+
+pub const MAX_MODULES: usize = 32;
+pub const MAX_NAME_BYTES: usize = 96;
+pub const STATUS_SUCCESS: i32 = 0;
+pub const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+pub const STATUS_OBJECT_NAME_COLLISION: i32 = 0xC000_0035u32 as i32;
+pub const STATUS_DLL_NOT_FOUND: i32 = 0xC000_0135u32 as i32;
+pub const STATUS_RESOURCE_IN_USE: i32 = 0xC000_0708u32 as i32;
+pub const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009Au32 as i32;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ModuleState { Empty, Reserved, Mapped, Initializing, Initialized, Unloading }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ModuleSnapshot {
+    pub base: u64, pub size: u32, pub name: [u8; MAX_NAME_BYTES], pub name_len: u8,
+    pub references: u32, pub dependencies: u32, pub state: ModuleState, pub generation: u32,
+}
+impl ModuleSnapshot {
+    const EMPTY: Self = Self { base: 0, size: 0, name: [0; MAX_NAME_BYTES], name_len: 0,
+        references: 0, dependencies: 0, state: ModuleState::Empty, generation: 0 };
+}
+struct State { entries: [ModuleSnapshot; MAX_MODULES], next_generation: u32 }
+impl State { const fn new() -> Self { Self { entries: [ModuleSnapshot::EMPTY; MAX_MODULES], next_generation: 1 } } }
+static STATE: IrqSpinLock<State> = IrqSpinLock::new(State::new());
+
+fn fold(b: u8) -> u8 { if (b'A'..=b'Z').contains(&b) { b + 32 } else { b } }
+fn same_name(a: &ModuleSnapshot, name: &[u8]) -> bool {
+    a.state != ModuleState::Empty && a.name_len as usize == name.len()
+        && a.name[..name.len()].iter().zip(name).all(|(x,y)| fold(*x)==fold(*y))
+}
+fn valid_name(name: &[u8]) -> bool {
+    !name.is_empty() && name.len() < MAX_NAME_BYTES
+        && name.iter().all(|b| *b != 0 && *b != b'/' && *b != b'\\')
+}
+
+/// Reserve a module identity before mapping. Duplicate loads return the existing
+/// slot with STATUS_OBJECT_NAME_COLLISION so callers can add a reference instead.
+pub fn reserve(name: &[u8]) -> Result<(usize, u32), i32> {
+    if !valid_name(name) { return Err(STATUS_INVALID_PARAMETER); }
+    let mut s = STATE.lock();
+    if s.entries.iter().any(|e| same_name(e, name)) { return Err(STATUS_OBJECT_NAME_COLLISION); }
+    let slot = s.entries.iter().position(|e| e.state == ModuleState::Empty)
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    let generation = s.next_generation;
+    s.next_generation = s.next_generation.wrapping_add(1).max(1);
+    let mut e = ModuleSnapshot::EMPTY;
+    e.name[..name.len()].copy_from_slice(name); e.name_len = name.len() as u8;
+    e.references = 1; e.state = ModuleState::Reserved; e.generation = generation;
+    s.entries[slot] = e;
+    Ok((slot, generation))
+}
+
+/// Publish an already mapped PE image. Invalid sizes or stale reservation tokens
+/// fail without altering another module's metadata.
+pub fn publish_mapping(slot: usize, generation: u32, base: u64, size: u32) -> Result<(), i32> {
+    if base == 0 || size == 0 || base.checked_add(size as u64).is_none() { return Err(STATUS_INVALID_PARAMETER); }
+    let mut s = STATE.lock();
+    let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
+    if e.state != ModuleState::Reserved || e.generation != generation { return Err(STATUS_INVALID_PARAMETER); }
+    e.base = base; e.size = size; e.state = ModuleState::Mapped; Ok(())
+}
+
+pub fn begin_initialization(slot: usize, generation: u32) -> Result<(), i32> {
+    let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
+    if e.generation != generation || e.state != ModuleState::Mapped { return Err(STATUS_INVALID_PARAMETER); }
+    e.state = ModuleState::Initializing; Ok(())
+}
+pub fn finish_initialization(slot: usize, generation: u32, success: bool) -> Result<(), i32> {
+    let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
+    if e.generation != generation || e.state != ModuleState::Initializing { return Err(STATUS_INVALID_PARAMETER); }
+    if success { e.state = ModuleState::Initialized; Ok(()) }
+    else { *e = ModuleSnapshot::EMPTY; Err(STATUS_DLL_NOT_FOUND) }
+}
+pub fn add_reference(slot: usize, generation: u32) -> Result<u32, i32> {
+    let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
+    if e.generation != generation || !matches!(e.state, ModuleState::Mapped | ModuleState::Initializing | ModuleState::Initialized) {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    e.references = e.references.checked_add(1).ok_or(STATUS_RESOURCE_IN_USE)?; Ok(e.references)
+}
+
+/// Record a dependency edge and take exactly one reference on the dependency.
+pub fn add_dependency(parent: usize, parent_generation: u32, dependency: usize, dependency_generation: u32) -> Result<(), i32> {
+    if parent == dependency || parent >= MAX_MODULES || dependency >= MAX_MODULES { return Err(STATUS_INVALID_PARAMETER); }
+    let mut s = STATE.lock();
+    let parent_entry = s.entries[parent];
+    let dep_entry = s.entries[dependency];
+    if parent_entry.generation != parent_generation || parent_entry.state == ModuleState::Empty
+        || dep_entry.generation != dependency_generation
+        || !matches!(dep_entry.state, ModuleState::Mapped | ModuleState::Initializing | ModuleState::Initialized) {
+        return Err(STATUS_DLL_NOT_FOUND);
+    }
+    let bit = 1u32 << dependency;
+    if s.entries[parent].dependencies & bit != 0 { return Ok(()); }
+    s.entries[parent].dependencies |= bit;
+    s.entries[dependency].references = s.entries[dependency].references.checked_add(1).ok_or(STATUS_RESOURCE_IN_USE)?;
+    Ok(())
+}
+
+/// Drop a caller reference. An image is eligible for unmapping only when this
+/// returns Some(base,size); any dependency or outstanding reference prevents it.
+pub fn begin_unload(slot: usize, generation: u32) -> Result<Option<(u64, u32)>, i32> {
+    let mut s = STATE.lock();
+    let e = s.entries.get(slot).copied().ok_or(STATUS_INVALID_PARAMETER)?;
+    if e.generation != generation || e.state == ModuleState::Empty || e.state == ModuleState::Reserved
+        || e.state == ModuleState::Unloading || e.references == 0 { return Err(STATUS_INVALID_PARAMETER); }
+    if e.references > 1 || s.entries.iter().any(|other| other.state != ModuleState::Empty && other.dependencies & (1u32 << slot) != 0) {
+        return Err(STATUS_RESOURCE_IN_USE);
+    }
+    s.entries[slot].references = 0;
+    s.entries[slot].state = ModuleState::Unloading;
+    Ok(Some((e.base, e.size)))
+}
+
+/// Complete unmapping after the address-space manager has removed the image.
+pub fn finish_unload(slot: usize, generation: u32) -> Result<(), i32> {
+    let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
+    if e.generation != generation || e.state != ModuleState::Unloading { return Err(STATUS_INVALID_PARAMETER); }
+    *e = ModuleSnapshot::EMPTY; Ok(())
+}
+
+/// Roll back a reservation or failed mapping before it is visible to callers.
+pub fn rollback(slot: usize, generation: u32) -> Result<(), i32> {
+    let mut s = STATE.lock(); let e = s.entries.get_mut(slot).ok_or(STATUS_INVALID_PARAMETER)?;
+    if e.generation != generation || !matches!(e.state, ModuleState::Reserved | ModuleState::Mapped) {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    *e = ModuleSnapshot::EMPTY; Ok(())
+}
+pub fn find(name: &[u8]) -> Option<(usize, ModuleSnapshot)> {
+    let s = STATE.lock();
+    s.entries.iter().enumerate().find(|(_,e)| same_name(e,name)).map(|(i,e)|(i,*e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn duplicate_load_and_reference_lifetime() {
+        let name = b"cognac-test-duplicate.dll";
+        let (slot, gen) = reserve(name).unwrap();
+        assert_eq!(reserve(name), Err(STATUS_OBJECT_NAME_COLLISION));
+        publish_mapping(slot, gen, 0x4000_0000, 0x3000).unwrap();
+        begin_initialization(slot, gen).unwrap();
+        finish_initialization(slot, gen, true).unwrap();
+        assert_eq!(add_reference(slot, gen), Ok(2));
+        assert_eq!(begin_unload(slot, gen), Err(STATUS_RESOURCE_IN_USE));
+        // Release the extra reference via the same ownership accounting path.
+        let mut s = STATE.lock(); s.entries[slot].references = 1; drop(s);
+        assert_eq!(begin_unload(slot, gen), Ok(Some((0x4000_0000, 0x3000))));
+        finish_unload(slot, gen).unwrap();
+        assert!(find(name).is_none());
+    }
+    #[test]
+    fn failed_initialization_rolls_back_module() {
+        let name = b"cognac-test-init-failure.dll";
+        let (slot, gen) = reserve(name).unwrap();
+        publish_mapping(slot, gen, 0x5000_0000, 0x2000).unwrap();
+        begin_initialization(slot, gen).unwrap();
+        assert_eq!(finish_initialization(slot, gen, false), Err(STATUS_DLL_NOT_FOUND));
+        assert!(find(name).is_none());
+    }
+    #[test]
+    fn unresolved_dependency_is_rejected() {
+        let (parent, pg) = reserve(b"cognac-test-parent.dll").unwrap();
+        publish_mapping(parent, pg, 0x6000_0000, 0x1000).unwrap();
+        assert_eq!(add_dependency(parent, pg, 31, 99), Err(STATUS_DLL_NOT_FOUND));
+    }
+}
