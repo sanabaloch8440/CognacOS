@@ -138,6 +138,8 @@ pub const NT_SYSCALL_PROTECT_VIRTUAL_MEMORY: u64 = 0x10b;
 pub const NT_SYSCALL_QUERY_VIRTUAL_MEMORY: u64 = 0x10c;
 pub const NT_SYSCALL_READ_VIRTUAL_MEMORY: u64 = 0x10d;
 pub const NT_SYSCALL_WRITE_VIRTUAL_MEMORY: u64 = 0x10e;
+pub const NT_SYSCALL_LOCK_VIRTUAL_MEMORY: u64 = 0x10f;
+pub const NT_SYSCALL_UNLOCK_VIRTUAL_MEMORY: u64 = 0x110;
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
 const NT_STATUS_NOT_IMPLEMENTED: u64 = 0xC000_0002;
@@ -894,6 +896,8 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_QUERY_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::query(args),
         NT_SYSCALL_READ_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::read(args),
         NT_SYSCALL_WRITE_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::write(args),
+        NT_SYSCALL_LOCK_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::lock(args),
+        NT_SYSCALL_UNLOCK_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::unlock(args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
     }
 }
@@ -991,6 +995,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_PROTECT_VIRTUAL_MEMORY => 5,
             NT_SYSCALL_QUERY_VIRTUAL_MEMORY => 6,
             NT_SYSCALL_READ_VIRTUAL_MEMORY | NT_SYSCALL_WRITE_VIRTUAL_MEMORY => 5,
+            NT_SYSCALL_LOCK_VIRTUAL_MEMORY | NT_SYSCALL_UNLOCK_VIRTUAL_MEMORY => 4,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
