@@ -60,7 +60,7 @@ fn main() {
         }
     }
     scan(std::path::Path::new("src"), &mut declared);
-    let mut output = String::from("// Generated from the in-tree Wine ntdll.spec export-name inventory.\n// Generic ABI placeholders only: no parameter semantics are implemented.\n");
+    let mut output = String::from("// Generated from the committed Windows 11 x64 export inventory plus the in-tree Wine ntdll.spec.\n// Generic ABI placeholders only: no parameter semantics are implemented.\n");
     let mut count = 0usize;
     for name in names {
         if declared.contains(&name) { continue; }
@@ -69,5 +69,5 @@ fn main() {
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     fs::write(out.join("ntdll_export_stubs.rs"), output).expect("write generated NTDLL stubs");
-    println!("cargo:warning=generated {count} missing NTDLL ABI placeholder exports from Wine ntdll.spec");
+    println!("cargo:warning=generated {count} missing NTDLL ABI placeholder exports from committed Windows 11 inventory + Wine spec");
 }
