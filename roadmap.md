@@ -13,13 +13,17 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 
 ## Native NT virtual memory
 
-- [x] Add current-process-only `NtAllocateVirtualMemory` reserve+commit service with checked user pointers, page rounding, W^X policy, demand-zero region registration, and bounded allocation size.
+- [x] Add current-process-only `NtAllocateVirtualMemory` reserve+commit path with checked user pointers, page rounding, W^X policy, and demand-zero region registration.
 - [x] Add checked current-process `NtReadVirtualMemory` / `NtWriteVirtualMemory` copies and byte-count reporting.
-- [x] Add native syscall IDs, argument decoding, and staged NTDLL service-number discovery for allocate/free/protect/query/read/write virtual-memory entry points.
-- [ ] Implement transactional decommit/release and page-table reclamation for `NtFreeVirtualMemory`.
-- [ ] Implement page permission changes, old-protection reporting, and TLB shootdown for `NtProtectVirtualMemory`.
-- [ ] Implement `MEMORY_BASIC_INFORMATION` region state/protection reporting for `NtQueryVirtualMemory`.
-- [ ] Add QEMU tests for allocation, demand-zero faults, invalid pointers, W^X rejection, free/protect/query, and cross-process handle rejection.
+- [x] Add current-process `NtFreeVirtualMemory` for whole-region `MEM_DECOMMIT` and `MEM_RELEASE`, including working-set/pagefile cleanup and TLB invalidation before resident frame reclamation.
+- [x] Add page-table protection updates with cross-CPU TLB synchronization and rollback of already changed resident pages on a later protection failure.
+- [x] Add `MemoryBasicInformation` queries reporting tracked region bounds, allocation protection, current protection, and `MEM_COMMIT` / `MEM_RESERVE` / `MEM_FREE` states.
+- [x] Track decommitted reservations so they no longer demand-fault back into committed pages and remain unavailable to the allocator.
+- [ ] Extend decommit/protect to arbitrary partial ranges by splitting region metadata; current operations intentionally require a complete tracked region.
+- [ ] Make decommit/release rollback fully atomic if an unexpected pagefile or physical allocator failure occurs after preflight.
+- [ ] Add QEMU tests for allocate/decommit/release, permission changes, MBI boundary cases, invalid pointers, and cross-process handle rejection.
+
+These are current-process-only primitives. Cross-process process handles and full Windows allocation semantics remain unsupported; a successful source build does not establish full Windows 11 VM compatibility.
 
 ## Extended processor state (XSAVE/XSTATE)
 
