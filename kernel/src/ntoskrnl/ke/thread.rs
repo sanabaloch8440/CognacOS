@@ -116,6 +116,24 @@ pub extern "C" fn cognacos_save_current_user_xstate() {
     unsafe { let _ = crate::ntoskrnl::ke::runtime::ki_xstate_save_thread(core::ptr::addr_of_mut!(USERMODE_XSTATE_FALLBACK[cpu])); }
 }
 
+/// Reset a newly launched process/thread's user FP/SSE state to architectural
+/// initialization state before its first ring-3 instruction.
+#[no_mangle]
+pub extern "C" fn cognacos_reset_current_user_xstate() {
+    if !crate::ntoskrnl::ke::runtime::ki_xstate_enabled() { return; }
+    let cpu = cpu_index().unwrap_or(0);
+    if cpu >= crate::hal::MAX_CPUS { return; }
+    let id = crate::thread::current_thread_id().unwrap_or(0);
+    if id != 0 {
+        let mut table = THREADS.lock();
+        if let Some(thread) = table.records.iter_mut().find(|t| t.id == id && t.state == ThreadState::Running) {
+            thread.user_xstate = KiThreadXStateArea::zeroed();
+            return;
+        }
+    }
+    unsafe { core::ptr::addr_of_mut!(USERMODE_XSTATE_FALLBACK[cpu]).write(KiThreadXStateArea::zeroed()); }
+}
+
 /// Return the state area that the low-level user-return stub must XRSTOR after
 /// all Rust dispatch and scheduler bookkeeping have completed.
 #[no_mangle]
