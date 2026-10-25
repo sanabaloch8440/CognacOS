@@ -422,9 +422,6 @@ pub unsafe extern "system" fn LdrFindResourceEx_U() -> i32 { STATUS_NOT_IMPLEMEN
 pub unsafe extern "system" fn LdrFlushAlternateResourceModules() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrGetDllFullName() -> i32 { STATUS_NOT_IMPLEMENTED }
-
-#[no_mangle]
 pub unsafe extern "system" fn LdrGetDllHandleByMapping(mapping_base: PVOID, entry_out: *mut PVOID) -> NTSTATUS {
     if mapping_base.is_null() || entry_out.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { entry_out.write(ptr::null_mut()); }
