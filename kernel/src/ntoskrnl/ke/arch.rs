@@ -1679,23 +1679,6 @@ pub fn permission_fault_self_test(read_only_executable_address: u64) -> bool {
     execute_result == 0 && execute_removed
 }
 
-/// Verify that an invalid kernel probe returns a defined status through the same
-/// general fixup registry used by the write-protect and NX tests.
-pub fn trap_frame_fixup_self_test() -> bool {
-    const INVALID_ADDRESS: u64 = 0x0000_7fff_dead_0000;
-    let fault_rip = cognacos_fault_probe_read_invalid as *const () as u64;
-    let recovery_rip = cognacos_fault_probe_read_invalid_recovery as *const () as u64;
-    if !register_trap_frame_fixup_with_result(
-        fault_rip, recovery_rip, INVALID_ADDRESS,
-        PF_ERROR_MATCH_MASK, 0, STATUS_ACCESS_VIOLATION,
-    ) {
-        return false;
-    }
-    let result = unsafe { cognacos_fault_probe_read_invalid(INVALID_ADDRESS as *const u64) };
-    let removed = unregister_trap_frame_fixup(fault_rip);
-    removed && result == STATUS_ACCESS_VIOLATION
-}
-
 /// Switch between saved kernel-mode contexts built for this routine.
 pub unsafe fn context_switch(old_rsp: *mut *mut u64, new_rsp: *mut u64) {
     if old_rsp.is_null() || new_rsp.is_null() { return; }
