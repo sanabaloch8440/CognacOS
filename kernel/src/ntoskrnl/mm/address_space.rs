@@ -245,7 +245,7 @@ impl AddressSpace {
     /// Number of tracked resident demand-zero pages in this address space.
     pub fn working_set_size(&self)->usize {
         let _g=ADDRESS_SPACE_LIFETIME_LOCK.lock();
-        unsafe{(&*WORKING_SET.0.get()).iter().filter(|p|p.live&&p.root==self.root).count()}
+        unsafe{(&*WORKING_SET.0.get()).iter().filter(|p|p.live&&!p.paged_out&&p.root==self.root).count()}
     }
 
     /// Remove a region's metadata only after its resident pages have been unmapped.
@@ -406,6 +406,9 @@ impl AddressSpace {
             || unsafe{&*WORKING_SET.0.get()}.iter().any(|p|p.live&&p.root==self.root&&p.busy) {
             return Err(VmError::AddressSpaceBusy);
         }
+        // The caller has switched away locally; flush every online CPU before
+        // freeing any user page-table or backing frame from this root.
+        crate::ntoskrnl::mm::kernel_space::synchronize_all_cpu_tlbs();
         let root = self.root as *mut u64;
         // Preflight all user leaves before freeing any frame. An MDL-pinned
         // page must keep its address space intact until MmUnlockPages runs.
@@ -469,7 +472,11 @@ impl AddressSpace {
             unsafe { top.write(0); }
         }
         let areas=unsafe{&mut *DEMAND_AREAS.0.get()}; for area in areas.iter_mut().filter(|a|a.live&&a.root==self.root){*area=DemandArea::EMPTY;}
-        let ws=unsafe{&mut *WORKING_SET.0.get()}; for page in ws.iter_mut().filter(|p|p.live&&p.root==self.root){*page=WorkingSetPage::EMPTY;}
+        let ws=unsafe{&mut *WORKING_SET.0.get()};
+        for page in ws.iter_mut().filter(|p|p.live&&p.root==self.root){
+            if page.paged_out { let _=crate::ntoskrnl::mm::pagefile::free_slot(page.pagefile_slot); }
+            *page=WorkingSetPage::EMPTY;
+        }
         crate::process::detach_address_space(self.root);
         unsafe { crate::memory::free_page(self.root) }.map_err(|_| VmError::OutOfMemory)?;
         self.root = 0;
@@ -524,6 +531,19 @@ const MDL_USER_LIMIT: u64 = 0x0000_7000_1000_0000;
 /// Resolve a page fault for the currently executing user process. The caller
 /// must have established CPL=3 from the saved interrupt frame; this function
 /// intentionally never guesses a process from CR3 alone.
+/// Trim the current process working set. The active CR3 must belong to the
+/// current process; pages are written to the configured dedicated pagefile and
+/// reclaimed only after a synchronous all-CPU TLB shootdown.
+pub fn trim_current_working_set(target:usize)->usize {
+    let pid=crate::thread::current_process_id();
+    let process=crate::process::eprocess_pointer_for_pid(pid);
+    if process.is_null(){return 0}
+    let root=unsafe{(*process).address_space_root};
+    if root==0||root!=active_root_physical(){return 0}
+    let mut space=AddressSpace{root};
+    space.trim_working_set(target)
+}
+
 pub fn handle_current_user_page_fault(address:u64,error_code:u64)->bool {
     const PF_USER:u64=1<<2;
     if error_code&PF_USER==0 { return false; }
