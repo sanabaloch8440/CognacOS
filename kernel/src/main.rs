@@ -44,6 +44,8 @@ static BOOT_HIVE_ADDRESS:[core::sync::atomic::AtomicU64;7]=[const{core::sync::at
 static BOOT_HIVE_LENGTH:[core::sync::atomic::AtomicU64;7]=[const{core::sync::atomic::AtomicU64::new(0)};7];
 static BOOT_NLS_ADDRESS:[core::sync::atomic::AtomicU64;8]=[const{core::sync::atomic::AtomicU64::new(0)};8];
 static BOOT_NLS_LENGTH:[core::sync::atomic::AtomicU64;8]=[const{core::sync::atomic::AtomicU64::new(0)};8];
+static BOOT_NTDLL_ADDRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BOOT_NTDLL_LENGTH:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BOOT_SECURITY_FLAGS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BOOT_KERNEL_DIGEST:[core::sync::atomic::AtomicU8;32]=[const{core::sync::atomic::AtomicU8::new(0)};32];
 
@@ -126,6 +128,7 @@ struct BootInfo {
     kernel_physical_section_count: usize,
     registry_hives: [BootFile;7],
     nls_files: [BootFile;8],
+    ntdll_file: BootFile,
     security_flags: u64,
     kernel_digest: [u8; 32],
 }
@@ -136,6 +139,12 @@ pub fn boot_hive_bytes(name:&str)->Option<&'static [u8]>{
  let address=BOOT_HIVE_ADDRESS.get(kind)?.load(core::sync::atomic::Ordering::Acquire);
  let length=BOOT_HIVE_LENGTH.get(kind)?.load(core::sync::atomic::Ordering::Acquire) as usize;
  if address==0||length==0||length>256*1024*1024{return None;}
+ Some(unsafe{core::slice::from_raw_parts(address as *const u8,length)})
+}
+pub fn boot_ntdll_bytes()->Option<&'static [u8]>{
+ let address=BOOT_NTDLL_ADDRESS.load(core::sync::atomic::Ordering::Acquire);
+ let length=BOOT_NTDLL_LENGTH.load(core::sync::atomic::Ordering::Acquire) as usize;
+ if address==0||length==0||length>16*1024*1024{return None;}
  Some(unsafe{core::slice::from_raw_parts(address as *const u8,length)})
 }
 pub fn boot_nls_bytes(name:&str)->Option<&'static [u8]>{
@@ -154,6 +163,15 @@ unsafe fn install_boot_assets(info:&BootInfo){
   if ntoskrnl::cm::hive::Hive::open(bytes).is_err(){unsafe{serial_write(b"Rejected invalid or dirty native registry hive.\r\n");}continue;}
   BOOT_HIVE_ADDRESS[i].store(file.address,core::sync::atomic::Ordering::Release);
   BOOT_HIVE_LENGTH[i].store(file.length,core::sync::atomic::Ordering::Release);hive_count+=1;
+ }
+ let ntdll=info.ntdll_file;
+ if ntdll.address!=0||ntdll.length!=0 {
+  if ntdll.address==0||ntdll.length==0||ntdll.length>16*1024*1024||ntdll.address.checked_add(ntdll.length).is_none_or(|e|e>0x1_0000_0000){
+   unsafe{serial_write(b"Rejected malformed boot ntdll.dll descriptor.\\r\\n");}
+  }else{
+   BOOT_NTDLL_ADDRESS.store(ntdll.address,core::sync::atomic::Ordering::Release);
+   BOOT_NTDLL_LENGTH.store(ntdll.length,core::sync::atomic::Ordering::Release);
+  }
  }
  for i in 0..info.nls_files.len(){
   let file=info.nls_files[i];if file.address==0&&file.length==0{continue;}
@@ -176,7 +194,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic == BOOT_INFO_MAGIC && info.version == 8
+        if info.magic == BOOT_INFO_MAGIC && info.version == 9
             && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() {
             BOOT_SECURITY_FLAGS.store(info.security_flags,core::sync::atomic::Ordering::Release);
             for (index,byte) in info.kernel_digest.iter().copied().enumerate(){
@@ -184,7 +202,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             }
             install_boot_assets(info);
         }
-        if info.magic != BOOT_INFO_MAGIC || info.version != 8
+        if info.magic != BOOT_INFO_MAGIC || info.version != 9
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
