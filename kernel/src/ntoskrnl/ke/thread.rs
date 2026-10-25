@@ -100,7 +100,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
 /// Save the interrupted user-mode extended state before Rust syscall/interrupt
 /// handlers run. The fallback is for the current bootstrap process path, which
 /// does not yet always have a scheduler ThreadRecord.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn cognacos_save_current_user_xstate() {
     if !crate::ntoskrnl::ke::runtime::ki_xstate_enabled() { return; }
     let cpu = cpu_index().unwrap_or(0);
@@ -118,7 +118,7 @@ pub extern "C" fn cognacos_save_current_user_xstate() {
 
 /// Reset a newly launched process/thread's user FP/SSE state to architectural
 /// initialization state before its first ring-3 instruction.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn cognacos_reset_current_user_xstate() {
     if !crate::ntoskrnl::ke::runtime::ki_xstate_enabled() { return; }
     let cpu = cpu_index().unwrap_or(0);
@@ -136,7 +136,7 @@ pub extern "C" fn cognacos_reset_current_user_xstate() {
 
 /// Return the state area that the low-level user-return stub must XRSTOR after
 /// all Rust dispatch and scheduler bookkeeping have completed.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn cognacos_current_user_xstate_ptr() -> *const u8 {
     if !crate::ntoskrnl::ke::runtime::ki_xstate_enabled() { return core::ptr::null(); }
     let cpu = cpu_index().unwrap_or(0);
