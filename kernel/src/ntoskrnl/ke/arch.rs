@@ -1545,7 +1545,8 @@ fn user_exception_status(vector: u64) -> u64 {
 /// until a user-mode exception/SEH dispatcher can resume or unwind user execution.
 fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> ! {
     let trap = unsafe { &*frame.cast::<UserExceptionTrapFrame>() };
-    if trap.cs & 3 != 3
+    if trap.vector != vector || trap.error_code != error || trap.cs & 3 != 3
+        || trap.ss & 3 != 3
         || trap.rip < 0x1000
         || trap.rip >= crate::ntoskrnl::mm::address_space::USER_END
         || trap.rsp < 0x1000
