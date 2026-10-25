@@ -131,9 +131,9 @@ fn hive_slot_for_name(name: &str) -> Option<usize> {
 /// The supplied bytes must have static lifetime and remain immutable while mounted.
 pub unsafe fn mount_hive_bytes(name: &str, bytes: &'static [u8]) -> Result<(), i32> {
     let slot = hive_slot_for_name(name).ok_or(STATUS_INVALID_PARAMETER)?;
-    hive_backend::Hive::open(bytes).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let parsed = hive_backend::Hive::open(bytes).map_err(|_| STATUS_INVALID_PARAMETER)?;
     let _guard = LOCK.lock();
-    unsafe { MOUNTED_HIVES[slot] = MountedHive { bytes: bytes.as_ptr(), len: bytes.len() }; }
+    unsafe { MOUNTED_HIVES[slot] = MountedHive { bytes: bytes.as_ptr(), len: bytes.len(), info: parsed.info }; }
     Ok(())
 }
 
