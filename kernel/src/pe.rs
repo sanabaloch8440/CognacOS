@@ -188,13 +188,29 @@ pub unsafe fn load(
     }
     if (!is_dll && !entry_is_executable) || (is_dll && entry_rva != 0 && !entry_is_executable) { return Err(PeError::InvalidHeader); }
 
-    let image_base = if preferred_base >= 0x0000_0080_0000_0000
-        && preferred_base.checked_add(page_count as u64 * PAGE_SIZE).is_some_and(|e| e <= USER_END)
-        && available_base(space, preferred_base, page_count) {
+    let image_span = page_count as u64 * PAGE_SIZE;
+    let preferred_available = preferred_base >= 0x0000_0080_0000_0000
+        && preferred_base.checked_add(image_span).is_some_and(|e| e <= USER_END)
+        && available_base(space, preferred_base, page_count);
+    let image_base = if preferred_available {
         preferred_base
-    } else if available_base(space, USER_IMAGE_FALLBACK, page_count) {
-        USER_IMAGE_FALLBACK
-    } else { return Err(PeError::AddressUnavailable); };
+    } else {
+        // Multiple DLLs/executables must not all compete for one fixed fallback
+        // address. Probe a bounded sequence of 64 KiB-aligned candidates, checking
+        // every page before mapping. The process loader still owns dependency order.
+        let stride = align_up(image_span, 0x1_0000).ok_or(PeError::AddressUnavailable)?;
+        let mut candidate = USER_IMAGE_FALLBACK;
+        let mut found = None;
+        for _ in 0..1024 {
+            if candidate.checked_add(image_span).is_none_or(|end| end > USER_END) { break; }
+            if available_base(space, candidate, page_count) {
+                found = Some(candidate);
+                break;
+            }
+            candidate = candidate.checked_add(stride).ok_or(PeError::AddressUnavailable)?;
+        }
+        found.ok_or(PeError::AddressUnavailable)?
+    };
     if !is_user_range(image_base, page_count as u64 * PAGE_SIZE) { return Err(PeError::AddressUnavailable); }
 
     for i in 0..page_count {
