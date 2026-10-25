@@ -259,12 +259,12 @@ pub unsafe extern "system" fn LdrGetDllDirectory(path_name: *mut UNICODE_STRING)
     let bytes = path.len.saturating_mul(2);
     if bytes > u16::MAX as usize { return STATUS_BUFFER_TOO_SMALL; }
     let descriptor = unsafe { &mut *path_name };
-    if bytes != 0 && (descriptor.Buffer.is_null() || (descriptor.MaximumLength as usize) < bytes) {
-        descriptor.Length = bytes as u16;
-        return STATUS_BUFFER_TOO_SMALL;
-    }
-    if bytes != 0 { unsafe { ptr::copy_nonoverlapping(path.data.as_ptr(), descriptor.Buffer, path.len); } }
+    // This native API accepts a UNICODE_STRING descriptor, not a separate
+    // caller buffer/length pair. Return a borrowed pointer to process-local
+    // loader storage, matching the one-argument ABI.
     descriptor.Length = bytes as u16;
+    descriptor.MaximumLength = bytes as u16;
+    descriptor.Buffer = if path.len == 0 { ptr::null_mut() } else { path.data.as_ptr() as *mut u16 };
     STATUS_SUCCESS
 }
 
@@ -436,15 +436,16 @@ pub unsafe extern "system" fn LdrGetDllFullName(dll_handle: PVOID, full_dll_name
     if dll_handle.is_null() || full_dll_name.is_null() { return STATUS_INVALID_PARAMETER; }
     let Some(entry) = (unsafe { find_entry_by_base(dll_handle as usize) }) else { return STATUS_DLL_NOT_FOUND; };
     let source_length = unsafe { ptr::read_unaligned(entry.add(0x48).cast::<u16>()) };
-    let source_buffer = unsafe { ptr::read_unaligned(entry.add(0x50).cast::<usize>()) } as *const u16;
-    if source_length & 1 != 0 || (source_length != 0 && source_buffer.is_null()) { return STATUS_INVALID_PARAMETER; }
+    let source_maximum = unsafe { ptr::read_unaligned(entry.add(0x4a).cast::<u16>()) };
+    let source_buffer = unsafe { ptr::read_unaligned(entry.add(0x50).cast::<usize>()) } as *mut u16;
+    if source_length & 1 != 0 || source_length > source_maximum
+        || (source_length != 0 && source_buffer.is_null()) { return STATUS_INVALID_PARAMETER; }
     let output = unsafe { &mut *full_dll_name };
-    if output.Buffer.is_null() || output.MaximumLength < source_length {
-        output.Length = source_length;
-        return STATUS_BUFFER_TOO_SMALL;
-    }
-    unsafe { ptr::copy_nonoverlapping(source_buffer, output.Buffer, source_length as usize / 2); }
+    // The returned descriptor borrows the loader-owned name; it does not copy
+    // into a caller-owned buffer or transfer ownership of the string.
     output.Length = source_length;
+    output.MaximumLength = source_maximum;
+    output.Buffer = source_buffer;
     STATUS_SUCCESS
 }
 
@@ -720,15 +721,11 @@ mod tests {
             Buffer: path.as_mut_ptr(),
         };
         assert_eq!(unsafe { LdrSetDllDirectory(&input) }, STATUS_SUCCESS);
-        let mut output_buffer = [0u16; 32];
-        let mut output = UNICODE_STRING {
-            Length: 0,
-            MaximumLength: (output_buffer.len() * 2) as u16,
-            Buffer: output_buffer.as_mut_ptr(),
-        };
+        let mut output = UNICODE_STRING { Length: 0, MaximumLength: 0, Buffer: ptr::null_mut() };
         assert_eq!(unsafe { LdrGetDllDirectory(&mut output) }, STATUS_SUCCESS);
         assert_eq!(output.Length, input.Length);
-        assert_eq!(&output_buffer[..path.len()], path.as_slice());
+        assert!(!output.Buffer.is_null());
+        assert_eq!(unsafe { core::slice::from_raw_parts(output.Buffer, path.len()) }, path.as_slice());
         assert_eq!(unsafe { LdrSetDllDirectory(ptr::null()) }, STATUS_SUCCESS);
     }
 
