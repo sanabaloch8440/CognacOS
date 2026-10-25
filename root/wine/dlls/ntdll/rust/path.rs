@@ -199,6 +199,226 @@ fn collapse_dos_path(path: &mut [WCHAR], mark: usize) {
     path[len] = 0;
 }
 
+
+
+const MAX_DOS_PATH: usize = 32768;
+const PROCESS_PARAMETERS_OFFSET: usize = 0x20;
+const CURRENT_DIRECTORY_OFFSET: usize = 0x38;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UnicodeString64 {
+    length: u16,
+    maximum_length: u16,
+    padding: u32,
+    buffer: *const WCHAR,
+}
+
+extern "system" {
+    fn RtlGetCurrentPeb() -> *mut core::ffi::c_void;
+}
+
+/// Read RTL_USER_PROCESS_PARAMETERS.CurrentDirectory.DosPath from the current
+/// process PEB. This is the same user-visible structure initialized by
+/// CognacOS in kernel/src/process.rs.
+unsafe fn current_directory(dst: &mut [WCHAR; MAX_DOS_PATH]) -> usize {
+    let peb = unsafe { RtlGetCurrentPeb() } as *const u8;
+    if peb.is_null() { return 0; }
+    let params = unsafe {
+        core::ptr::read_unaligned(peb.add(PROCESS_PARAMETERS_OFFSET).cast::<*const u8>())
+    };
+    if params.is_null() { return 0; }
+    let us = unsafe {
+        core::ptr::read_unaligned(params.add(CURRENT_DIRECTORY_OFFSET).cast::<UnicodeString64>())
+    };
+    if us.buffer.is_null() || us.length == 0 || us.length as usize % 2 != 0 {
+        return 0;
+    }
+    let count = core::cmp::min((us.length as usize) / 2, MAX_DOS_PATH - 1);
+    for i in 0..count {
+        dst[i] = unsafe { us.buffer.add(i).read() };
+    }
+    dst[count] = 0;
+    count
+}
+
+fn append_slice(dst: &mut [WCHAR; MAX_DOS_PATH], len: &mut usize, src: &[WCHAR]) -> bool {
+    if *len + src.len() >= MAX_DOS_PATH { return false; }
+    dst[*len..*len + src.len()].copy_from_slice(src);
+    *len += src.len();
+    dst[*len] = 0;
+    true
+}
+
+fn full_path_into(name: &[WCHAR], current: &[WCHAR], out: &mut [WCHAR; MAX_DOS_PATH]) -> Option<(usize, usize)> {
+    if name.is_empty() || name.iter().all(|&c| c == 32) { return None; }
+    let kind = {
+        let mut tmp = [0u16; MAX_DOS_PATH];
+        if name.len() >= MAX_DOS_PATH { return None; }
+        tmp[..name.len()].copy_from_slice(name);
+        unsafe { RtlDetermineDosPathNameType_U(tmp.as_ptr()) }
+    };
+    let mut len = 0usize;
+    let mut mark = 0usize;
+    match kind {
+        RtlPathTypeUncAbsolute | RtlPathTypeLocalDevice => {
+            if !append_slice(out, &mut len, name) { return None; }
+            if kind == RtlPathTypeUncAbsolute {
+                let mut i = 2;
+                while i < len && !separator(out[i]) { i += 1; }
+                while i < len && separator(out[i]) { i += 1; }
+                while i < len && !separator(out[i]) { i += 1; }
+                while i < len && separator(out[i]) { i += 1; }
+                mark = i;
+            } else { mark = 4.min(len); }
+        }
+        RtlPathTypeDriveAbsolute => {
+            if !append_slice(out, &mut len, name) { return None; }
+            mark = 3.min(len);
+        }
+        RtlPathTypeDriveRelative => {
+            let same_drive = current.len() >= 2 && name.len() >= 2
+                && fold(current[0]) == fold(name[0]) && current[1] == 58;
+            if same_drive {
+                if !append_slice(out, &mut len, current) { return None; }
+                if len > 0 && !separator(out[len - 1]) && name.len() > 2 {
+                    if !append_slice(out, &mut len, &[92]) { return None; }
+                }
+                if !append_slice(out, &mut len, &name[2..]) { return None; }
+            } else {
+                if !append_slice(out, &mut len, &name[..2]) || !append_slice(out, &mut len, &[92]) { return None; }
+                if !append_slice(out, &mut len, &name[2..]) { return None; }
+            }
+            mark = 3.min(len);
+        }
+        RtlPathTypeRooted => {
+            if current.len() >= 2 && current[1] == 58 {
+                if !append_slice(out, &mut len, &current[..2]) { return None; }
+                mark = 3;
+            } else if current.len() >= 2 && separator(current[0]) && separator(current[1]) {
+                if !append_slice(out, &mut len, current) { return None; }
+                let mut i = 2;
+                while i < len && !separator(out[i]) { i += 1; }
+                while i < len && separator(out[i]) { i += 1; }
+                while i < len && !separator(out[i]) { i += 1; }
+                while i < len && separator(out[i]) { i += 1; }
+                len = i;
+                out[len] = 0;
+                mark = len;
+            } else { return None; }
+            if !append_slice(out, &mut len, name) { return None; }
+        }
+        RtlPathTypeRelative => {
+            if !append_slice(out, &mut len, current) { return None; }
+            if len > 0 && !separator(out[len - 1]) {
+                if !append_slice(out, &mut len, &[92]) { return None; }
+            }
+            if !append_slice(out, &mut len, name) { return None; }
+            if current.len() >= 2 && current[1] == 58 {
+                mark = 3.min(len);
+            } else {
+                let mut i = 2;
+                while i < len && !separator(out[i]) { i += 1; }
+                while i < len && separator(out[i]) { i += 1; }
+                while i < len && !separator(out[i]) { i += 1; }
+                while i < len && separator(out[i]) { i += 1; }
+                mark = i;
+            }
+        }
+        RtlPathTypeRootLocalDevice => {
+            if !append_slice(out, &mut len, &[92, 92, 46, 92]) { return None; }
+            if name.len() > 3 && !append_slice(out, &mut len, &name[3..]) { return None; }
+            mark = 4;
+        }
+        _ => return None,
+    }
+    out[len] = 0;
+    collapse_dos_path(&mut out[..len + 1], mark);
+    let final_len = out.iter().position(|&c| c == 0).unwrap_or(MAX_DOS_PATH);
+    let mut file_part = 0usize;
+    let mut i = 0usize;
+    while i < final_len {
+        if out[i] == 92 { file_part = i + 1; }
+        i += 1;
+    }
+    Some((final_len, file_part))
+}
+
+/// Returns the current DOS directory length in bytes, excluding the NUL.
+/// On an insufficient buffer, returns the required size including the NUL.
+#[no_mangle]
+pub unsafe extern "system" fn RtlGetCurrentDirectory_U(buffer_length: ULONG, buffer: *mut WCHAR) -> ULONG {
+    let mut current = [0u16; MAX_DOS_PATH];
+    let len = unsafe { current_directory(&mut current) };
+    if len == 0 { return 0; }
+    let required = (len + 1) * 2;
+    if buffer.is_null() || (buffer_length as usize) < required { return required as ULONG; }
+    unsafe { core::ptr::copy_nonoverlapping(current.as_ptr(), buffer, len + 1); }
+    (len * 2) as ULONG
+}
+
+/// Windows x64 ABI implementation of RtlGetFullPathName_UEx using the current
+/// process parameters. This implementation does not perform filesystem checks
+/// or per-drive environment-variable lookup.
+#[no_mangle]
+pub unsafe extern "system" fn RtlGetFullPathName_UEx(
+    name: *const WCHAR, size: ULONG, buffer: *mut WCHAR,
+    file_part: *mut *mut WCHAR, path_type: *mut RTL_PATH_TYPE,
+) -> ULONG {
+    if name.is_null() || unsafe { name.read() } == 0 { return 0; }
+    if !file_part.is_null() { unsafe { file_part.write(core::ptr::null_mut()); } }
+    let kind = unsafe { RtlDetermineDosPathNameType_U(name) };
+    if !path_type.is_null() { unsafe { path_type.write(kind); } }
+
+    let dosdev = unsafe { RtlIsDosDeviceName_U(name) };
+    if dosdev != 0 {
+        let offset = (dosdev >> 16) as usize / 2;
+        let chars = (dosdev & 0xffff) as usize / 2;
+        let required = 4 + chars + 1;
+        if buffer.is_null() || (size as usize) < required * 2 { return ((required - 1) * 2 + 2) as ULONG; }
+        let prefix = [92u16, 92, 46, 92];
+        unsafe {
+            core::ptr::copy_nonoverlapping(prefix.as_ptr(), buffer, 4);
+            core::ptr::copy_nonoverlapping(name.add(offset), buffer.add(4), chars);
+            buffer.add(4 + chars).write(0);
+        }
+        return ((required - 1) * 2) as ULONG;
+    }
+
+    let mut input = [0u16; MAX_DOS_PATH];
+    let mut name_len = 0usize;
+    while name_len < MAX_DOS_PATH - 1 {
+        let ch = unsafe { name.add(name_len).read() };
+        if ch == 0 { break; }
+        input[name_len] = ch;
+        name_len += 1;
+    }
+    if name_len == 0 || name_len == MAX_DOS_PATH - 1 { return 0; }
+    let mut current = [0u16; MAX_DOS_PATH];
+    let current_len = unsafe { current_directory(&mut current) };
+    if current_len == 0 { return 0; }
+    let mut output = [0u16; MAX_DOS_PATH];
+    let Some((len, part)) = full_path_into(&input[..name_len], &current[..current_len], &mut output) else { return 0; };
+    let required_bytes = ((len + 1) * 2) as ULONG;
+    if buffer.is_null() || size < required_bytes { return required_bytes; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(output.as_ptr(), buffer, len + 1);
+        if !file_part.is_null() && part < len && output[part..len].iter().all(|&c| c != 0) {
+            let mut last_sep = None;
+            for i in 0..len { if output[i] == 92 { last_sep = Some(i); } }
+            if let Some(i) = last_sep { if i + 1 < len { file_part.write(buffer.add(i + 1)); } }
+        }
+    }
+    (len * 2) as ULONG
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlGetFullPathName_U(
+    name: *const WCHAR, size: ULONG, buffer: *mut WCHAR, file_part: *mut *mut WCHAR,
+) -> ULONG {
+    unsafe { RtlGetFullPathName_UEx(name, size, buffer, file_part, core::ptr::null_mut()) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +439,20 @@ mod tests {
         assert_eq!(run("C:/one/./two", 3), "C:\\\\one\\\\two");
         assert_eq!(run("C:\\\\one\\\\two\\\\..\\\\three", 3), "C:\\\\one\\\\three");
         assert_eq!(run("C:\\\\folder.\\\\file... ", 3), "C:\\\\folder\\\\file");
+    }
+
+
+    #[test]
+    fn full_path_uses_current_directory_base_and_normalizes() {
+        let name: Vec<WCHAR> = "one\\\\..\\\\two.txt".encode_utf16().collect();
+        let current: Vec<WCHAR> = "C:\\\\work\\\\app".encode_utf16().collect();
+        let mut out = [0u16; MAX_DOS_PATH];
+        let (len, _) = full_path_into(&name, &current, &mut out).unwrap();
+        assert_eq!(String::from_utf16(&out[..len]).unwrap(), "C:\\\\work\\\\two.txt");
+
+        let name: Vec<WCHAR> = "\\\\logs".encode_utf16().collect();
+        let (len, _) = full_path_into(&name, &current, &mut out).unwrap();
+        assert_eq!(String::from_utf16(&out[..len]).unwrap(), "C:\\\\logs");
     }
 
     #[test]
