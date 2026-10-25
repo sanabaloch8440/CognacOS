@@ -381,7 +381,7 @@ unsafe fn generic_list_entry(links: PRTL_SPLAY_LINKS) -> *mut LIST_ENTRY {
 #[inline]
 unsafe fn generic_data_from_list(entry: *mut LIST_ENTRY) -> PVOID {
     // SAFETY: entry is the list member of a valid generic table node.
-    unsafe { (entry as *mut u8).sub(16).add(GENERIC_TABLE_DATA_OFFSET).cast() }
+    unsafe { (entry as *mut u8).add(16).cast() }
 }
 #[inline]
 unsafe fn list_insert_tail(head: *mut LIST_ENTRY, entry: *mut LIST_ENTRY) {
@@ -582,10 +582,10 @@ pub unsafe fn RtlGetElementGenericTable(table: *mut RTL_GENERIC_TABLE, index: UL
         let mut entry: *mut LIST_ENTRY;
         if (*table).WhichOrderedElement != 0 && index >= (*table).WhichOrderedElement {
             entry = (*table).OrderedPointer;
-            for _ in (*table).WhichOrderedElement..index { entry = (*entry).Flink; }
+            for _ in 0..(index + 1 - (*table).WhichOrderedElement) { entry = (*entry).Flink; }
         } else if (*table).WhichOrderedElement != 0 && index < (*table).WhichOrderedElement {
             entry = (*table).OrderedPointer;
-            for _ in index..(*table).WhichOrderedElement { entry = (*entry).Blink; }
+            for _ in 0..((*table).WhichOrderedElement - index - 1) { entry = (*entry).Blink; }
         } else if index < count / 2 {
             entry = (*head).Flink;
             for _ in 0..index { entry = (*entry).Flink; }
