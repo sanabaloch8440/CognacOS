@@ -10,6 +10,8 @@ Build and check it with:
 make -C root/wine/dlls/ntdll/native CROSS=x86_64-w64-mingw32- check
 ```
 
+GitHub Actions workflow `.github/workflows/ntdll-native.yml` builds and checks this target on changes to this directory, then publishes `ntdll.dll` as the `cognacos-native-ntdll-x86_64` workflow artifact (14-day retention). It can also be started manually with `workflow_dispatch`.
+
 The output is a minimal bootstrap DLL exporting NtClose, NtYieldExecution, and
 a syscall-configuration entry point. It is **not yet a drop-in replacement**
 for Microsoft's NTDLL: the full export surface, loader initialization, runtime
