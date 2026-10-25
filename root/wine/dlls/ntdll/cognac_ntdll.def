@@ -1,8 +1,12 @@
 LIBRARY ntdll
 EXPORTS
     CognacNtdllConfigureSyscalls
+    CognacNtdllConfigureSyscallTable
     NtClose
     NtYieldExecution
+    NtQueryInformationProcess
+    NtQueryInformationThread
+    NtQuerySystemInformation
     RtlCompareMemory
     RtlCompareMemoryUlong
     RtlComputeCrc32
