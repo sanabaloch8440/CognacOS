@@ -3,3 +3,8 @@ EXPORTS
     CognacNtdllConfigureSyscalls
     NtClose
     NtYieldExecution
+    RtlCompareMemory
+    RtlCopyMemory
+    RtlFillMemory
+    RtlMoveMemory
+    RtlSecureZeroMemory
