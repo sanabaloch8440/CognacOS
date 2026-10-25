@@ -26,8 +26,9 @@ fn main() {
             }
         }
     }
-    // Prefer the pinned Windows 11 x64 inventory when present. Keep Wine spec names
-    // as a compatibility superset so local builds still resolve its additional imports.
+    // Keep Wine spec names as a compatibility superset for exports not in the committed
+    // Windows 11 source surface. The Windows inventory is already implemented in
+    // src/windows11_exports.rs and is used here to suppress duplicate build stubs.
     let windows_inventory = PathBuf::from("exports/windows-11-x64-exports.txt");
     if let Ok(source) = fs::read_to_string(&windows_inventory) {
         for line in source.lines() {
