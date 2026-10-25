@@ -299,3 +299,15 @@ and exact compatibility for all heap flags are not implemented.
 **Implemented:** exported `RtlGetCurrentPeb`, reading the Windows x64 TEB/PEB pointer through `GS:[0x60]`. The process launcher already installs the TEB at the user GS base and now exposes the default process heap in `PEB.ProcessHeap`. The ring-3 smoke verifies the returned PEB address and its heap pointer against the mapped DLL export.
 
 **Validation pending:** the next QEMU run will verify the new accessor after the native DLL build and boot test. This is still a narrow PEB access primitive; complete TEB fields, loader state, TLS, and process startup remain unfinished.
+
+
+### NTDLL-LOAD-023 — TEB last-error and last-status helpers
+
+**Implemented:** native exports read/write x64 TEB `LastErrorValue` at GS offset
+`0x68` and `LastStatusValue` at GS offset `0x1250`. The combined status helper
+maps NTSTATUS through the bootstrap status table and updates both TEB fields.
+
+**Validation pending:** ring-3 smoke tests cover direct last-error set/get and
+`STATUS_INVALID_PARAMETER` conversion to `ERROR_INVALID_PARAMETER`, including
+preservation of the original NTSTATUS. This depends on the TEB GS base remaining
+valid across the native INT 0x82 syscall path.
