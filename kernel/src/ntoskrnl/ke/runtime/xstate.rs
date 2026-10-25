@@ -8,8 +8,6 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 const CPUID_XSAVE: u32 = 1 << 26;
-const CPUID_OSXSAVE: u32 = 1 << 27;
-const CPUID_AVX: u32 = 1 << 28;
 const CR4_OSFXSR: u64 = 1 << 9;
 const CR4_OSXMMEXCPT: u64 = 1 << 10;
 const CR4_OSXSAVE: u64 = 1 << 18;
@@ -66,10 +64,10 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
     cr4 |= CR4_OSFXSR | CR4_OSXMMEXCPT | CR4_OSXSAVE;
     unsafe { core::arch::asm!("mov cr4, {}", in(reg) cr4, options(nomem, nostack, preserves_flags)); }
 
-    let mut enabled = XSTATE_X87 | XSTATE_SSE;
-    if leaf1.ecx & CPUID_AVX != 0 && hardware_mask & (XSTATE_SSE | XSTATE_AVX) == (XSTATE_SSE | XSTATE_AVX) {
-        enabled |= XSTATE_AVX;
-    }
+    // Until the scheduler owns a per-thread XSAVE area and saves/restores it
+    // on every context switch, expose only the legacy x87/SSE components.
+    // Enabling AVX here would allow user code to corrupt another thread's YMM state.
+    let enabled = XSTATE_X87 | XSTATE_SSE;
     let lo = enabled as u32;
     let hi = (enabled >> 32) as u32;
     unsafe { core::arch::asm!("xsetbv", in("ecx") 0u32, in("eax") lo, in("edx") hi, options(nostack)); }
