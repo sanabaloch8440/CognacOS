@@ -440,11 +440,6 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: cannot reserve bootstrap stack from physical allocator.\r\n");
             halt();
         }
-        if unsafe { syscall::prepare_windows_syscall_stack(0) }.is_err() {
-            serial_write(b"FATAL: could not allocate BSP Windows SYSCALL stack.\r\n");
-            halt();
-        }
-        serial_write(b"Windows SYSCALL per-CPU stack prepared.\r\n");
         if pagefile::initialize() {
             serial_write(b"Pagefile storage initialized on dedicated ATA primary-slave disk; slots: ");
             serial_write_decimal(pagefile::capacity_slots() as usize);
@@ -466,6 +461,12 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Kernel virtual-address arena and mapping self-test passed.\r\n");
+        if unsafe { syscall::prepare_windows_syscall_stack(0) }.is_err() {
+            serial_write(b"FATAL: could not allocate BSP Windows SYSCALL stack.\r\n");
+            halt();
+        }
+        serial_write(b"Windows SYSCALL per-CPU stack prepared.\r\n");
+
         if memory::first_high_conventional_page().is_some() {
             serial_write(b"High-RAM allocator and direct-map self-test passed.\r\n");
         } else {
