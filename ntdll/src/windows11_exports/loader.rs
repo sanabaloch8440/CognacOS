@@ -882,15 +882,16 @@ pub unsafe extern "system" fn LdrQueryProcessModuleInformation(
         link = unsafe { ptr::read_unaligned((link as *const u8).cast::<usize>()) };
     }
     if count == MAX_LOADER_ENTRIES { return STATUS_INVALID_PARAMETER; }
-    let required = core::mem::size_of::<ULONG>()
+    let module_array_offset = core::mem::offset_of!(RTL_PROCESS_MODULES, Modules);
+    let required = module_array_offset
         .checked_add(count.checked_mul(RTL_PROCESS_MODULE_INFORMATION_SIZE).unwrap_or(usize::MAX))
         .filter(|n| *n <= u32::MAX as usize).ok_or(STATUS_INVALID_PARAMETER);
     let required = match required { Ok(n) => n, Err(e) => return e };
     unsafe { returned_size.write(required as ULONG); }
-    if module_information.is_null() || size as usize < required { return STATUS_BUFFER_TOO_SMALL; }
+    if module_information.is_null() || (size as usize) < required { return STATUS_BUFFER_TOO_SMALL; }
     unsafe { ptr::write_unaligned(ptr::addr_of_mut!((*module_information).NumberOfModules), count as ULONG); }
     link = unsafe { ptr::read_unaligned(head.cast::<usize>()) };
-    let output = unsafe { (module_information.cast::<u8>().add(core::mem::size_of::<ULONG>())).cast::<RTL_PROCESS_MODULE_INFORMATION>() };
+    let output = unsafe { (module_information.cast::<u8>().add(module_array_offset)).cast::<RTL_PROCESS_MODULE_INFORMATION>() };
     let mut index = 0usize;
     while link != 0 && link != head_addr && index < count {
         let entry = link as *const u8;
