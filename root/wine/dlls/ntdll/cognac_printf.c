@@ -44,7 +44,7 @@ static void emit_string(OUT *o, const void *s, int source_wide, int dest_wide, i
     else if(source_wide) n=slen_w((const WCHAR *)s, precision<0?(size_t)-1:(size_t)precision);
     else n=slen_a((const char *)s, precision<0?(size_t)-1:(size_t)precision);
     if(precision>=0 && n>(size_t)precision)n=(size_t)precision;
-    repeat(o,' ',width>(int)n?(size_t)width-n:0);
+    if(!left) repeat(o,' ',width>(int)n?(size_t)width-n:0);
     for(i=0;i<n;i++) {
         uint32_t c;
         if(nulls)c="(null)"[i];
