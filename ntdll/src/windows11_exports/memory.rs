@@ -550,6 +550,8 @@ pub unsafe extern "system" fn RtlUnlockMemoryBlockLookaside(lookaside_ptr: PVOID
 // Start/Current/End are caller-owned bounds; these APIs never free the backing
 // buffer. Only clones allocated internally by this implementation own metadata.
 const S_OK: NTSTATUS = 0;
+const S_FALSE: NTSTATUS = 1;
+const STG_E_MEDIUMFULL: NTSTATUS = 0x8003_0070u32 as i32;
 const E_NOTIMPL: NTSTATUS = 0x8000_4001u32 as i32;
 const E_NOINTERFACE: NTSTATUS = 0x8000_4002u32 as i32;
 const E_INVALIDARG: NTSTATUS = 0x8007_0057u32 as i32;
@@ -694,15 +696,15 @@ pub unsafe extern "system" fn RtlQueryInterfaceMemoryStream(this: PVOID, iid: PV
 pub unsafe extern "system" fn RtlAddRefMemoryStream(this: PVOID) -> ULONG {
     if this.is_null() { return 0; }
     let stream = this.cast::<RTL_MEMORY_STREAM>();
-    unsafe { (*stream).ref_count = (*stream).ref_count.saturating_add(1); (*stream).ref_count.max(0) as ULONG }
+    unsafe { (*stream).ref_count = (*stream).ref_count.wrapping_add(1); (*stream).ref_count.max(0) as ULONG }
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlReleaseMemoryStream(this: PVOID) -> ULONG {
     if this.is_null() { return 0; }
     let stream = this.cast::<RTL_MEMORY_STREAM>();
     let (count, final_release) = unsafe {
-        (*stream).ref_count = (*stream).ref_count.saturating_sub(1);
-        ((*stream).ref_count.max(0) as ULONG, if (*stream).ref_count <= 0 { (*stream).final_release } else { None })
+        (*stream).ref_count = (*stream).ref_count.wrapping_sub(1);
+        ((*stream).ref_count.max(0) as ULONG, if (*stream).ref_count == 0 { (*stream).final_release } else { None })
     };
     if let Some(callback) = final_release { unsafe { callback(stream); } }
     count
@@ -723,7 +725,7 @@ pub unsafe extern "system" fn RtlReadMemoryStream(this: PVOID, buffer: PVOID, le
         stream.current = (current + amount) as PVOID;
     }
     if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, amount as ULONG); } }
-    S_OK
+    if amount < length as usize { S_FALSE } else { S_OK }
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlReadOutOfProcessMemoryStream(this: PVOID, buffer: PVOID, length: ULONG, bytes_read: *mut ULONG) -> NTSTATUS {
@@ -740,7 +742,7 @@ pub unsafe extern "system" fn RtlReadOutOfProcessMemoryStream(this: PVOID, buffe
     if status < 0 { return status; }
     stream.current = (current + copied) as PVOID;
     if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, copied as ULONG); } }
-    S_OK
+    if copied < length as usize { S_FALSE } else { S_OK }
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlSeekMemoryStream(this: PVOID, offset: i64, origin: ULONG, new_position: *mut u64) -> NTSTATUS {
@@ -753,7 +755,7 @@ pub unsafe extern "system" fn RtlSeekMemoryStream(this: PVOID, offset: i64, orig
     let base = match origin { STREAM_SEEK_SET => start, STREAM_SEEK_CUR => current, STREAM_SEEK_END => end, _ => return E_INVALIDARG };
     let candidate = if offset >= 0 { base.checked_add(offset as usize) } else { base.checked_sub(offset.unsigned_abs() as usize) };
     let Some(candidate) = candidate else { return E_INVALIDARG; };
-    if candidate < start || candidate > end { return E_INVALIDARG; }
+    if candidate < start || candidate > end { return STG_E_INVALIDPOINTER; }
     stream.current = candidate as PVOID;
     if !new_position.is_null() { unsafe { ptr::write(new_position, (candidate - start) as u64); } }
     S_OK
@@ -779,7 +781,7 @@ pub unsafe extern "system" fn RtlCopyMemoryStreamTo(this: PVOID, target: PVOID, 
         total += got as u64;
         if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, total); } }
         if !bytes_written.is_null() { unsafe { ptr::write(bytes_written, (*bytes_written).saturating_add(put as u64)); } }
-        if status < 0 || put != got { return if status < 0 { status } else { E_NOTIMPL }; }
+        if status < 0 || put != got { return if status < 0 { status } else { STG_E_MEDIUMFULL }; }
     }
     S_OK
 }
@@ -818,7 +820,10 @@ unsafe extern "system" fn release_owned_memory_stream(stream: *mut RTL_MEMORY_ST
     }
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlCommitMemoryStream(this: PVOID, flags: ULONG) -> NTSTATUS { let _ = (this, flags); E_NOTIMPL }
+pub unsafe extern "system" fn RtlCommitMemoryStream(this: PVOID, flags: ULONG) -> NTSTATUS {
+    let _ = flags;
+    if this.is_null() { STG_E_INVALIDPOINTER } else { S_OK }
+}
 #[no_mangle]
 pub unsafe extern "system" fn RtlRevertMemoryStream(this: PVOID) -> NTSTATUS { let _ = this; E_NOTIMPL }
 #[no_mangle]
@@ -826,7 +831,23 @@ pub unsafe extern "system" fn RtlLockMemoryStreamRegion(this: PVOID, offset: u64
 #[no_mangle]
 pub unsafe extern "system" fn RtlUnlockMemoryStreamRegion(this: PVOID, offset: u64, length: u64, lock_type: ULONG) -> NTSTATUS { let _ = (this, offset, length, lock_type); E_NOTIMPL }
 #[no_mangle]
-pub unsafe extern "system" fn RtlSetMemoryStreamSize(this: PVOID, new_size: u64) -> NTSTATUS { let _ = (this, new_size); E_NOTIMPL }
+pub unsafe extern "system" fn RtlSetMemoryStreamSize(this: PVOID, new_size: u64) -> NTSTATUS {
+    if this.is_null() { return STG_E_INVALIDPOINTER; }
+    let stream = unsafe { &mut *this.cast::<RTL_MEMORY_STREAM>() };
+    let start = stream.start as usize;
+    let end = stream.end as usize;
+    let current = stream.current as usize;
+    if end < start || current < start || current > end { return STG_E_INVALIDPOINTER; }
+    let old_size = end - start;
+    let Ok(requested) = usize::try_from(new_size) else { return E_INVALIDARG; };
+    // The caller-owned stream ABI exposes no capacity field. Shrinking is safe;
+    // growing would write beyond the known buffer and is rejected.
+    if requested > old_size { return E_NOTIMPL; }
+    let new_end = match start.checked_add(requested) { Some(v) => v, None => return E_INVALIDARG };
+    stream.end = new_end as PVOID;
+    if current > new_end { stream.current = new_end as PVOID; }
+    S_OK
+}
 #[no_mangle]
 pub unsafe extern "system" fn RtlWriteMemoryStream(this: PVOID, buffer: PVOID, length: ULONG, written: *mut ULONG) -> NTSTATUS {
     if !written.is_null() { unsafe { ptr::write(written, 0); } }
