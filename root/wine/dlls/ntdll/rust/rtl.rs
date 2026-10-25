@@ -286,6 +286,50 @@ pub unsafe fn RtlDelete(links: PRTL_SPLAY_LINKS) -> PRTL_SPLAY_LINKS {
     }
 }
 
+
+/// Computes cumulative reflected CRC-32 using polynomial 0xedb88320.
+///
+/// # Safety
+/// For positive `length`, `data` must point to at least `length` readable bytes.
+pub unsafe fn RtlComputeCrc32(initial: u32, data: *const u8, length: i32) -> u32 {
+    if length <= 0 { return initial; }
+    if data.is_null() { return initial; }
+    // SAFETY: The caller guarantees a readable buffer of the requested length.
+    let bytes = unsafe { core::slice::from_raw_parts(data, length as usize) };
+    let mut crc = !initial;
+    for &byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
+}
+
+/// Windows RTL uniform linear-congruential generator.
+///
+/// # Safety
+/// `seed` must be null or point to a writable u32.
+pub unsafe fn RtlUniform(seed: *mut u32) -> u32 {
+    if seed.is_null() { return 0; }
+    // SAFETY: The caller guarantees that a non-null seed is writable.
+    unsafe {
+        let next = (((*seed as u64) * 0x7fff_ffed_u64 + 0x7fff_ffc3_u64)
+            % 0x7fff_ffff_u64) as u32;
+        *seed = next;
+        next
+    }
+}
+
+#[inline]
+pub fn RtlUshortByteSwap(value: u16) -> u16 { value.swap_bytes() }
+
+#[inline]
+pub fn RtlUlongByteSwap(value: u32) -> u32 { value.swap_bytes() }
+
+#[inline]
+pub fn RtlUlonglongByteSwap(value: u64) -> u64 { value.swap_bytes() }
+
 #[cfg(test)]
 mod tests {
     use super::*;
