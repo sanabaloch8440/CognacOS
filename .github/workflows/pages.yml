@@ -1,23 +1,19 @@
-name: Deploy CognacOS Pages
+# Manual-only fallback. Automatic production deployment is handled by
+# jekyll-gh-pages.yml so two workflows do not race to publish the same site.
+name: Deploy CognacOS Pages (manual fallback)
+
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'index.md'
-      - '_config.yml'
-      - 'assets/**'
-      - 'docs/**'
-      - 'roadmap.md'
-      - 'WINDOWS11_COGNACOS_NTOSKRNL_*_COMPARISON.md'
-      - '.github/workflows/pages.yml'
   workflow_dispatch:
+
 permissions:
   contents: read
   pages: write
   id-token: write
+
 concurrency:
   group: pages
-  cancel-in-progress: true
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,7 +23,7 @@ jobs:
       - uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.2'
-      - name: Install Jekyll
+      - name: Install Jekyll and theme
         run: gem install jekyll minima jekyll-relative-links
       - name: Build site
         run: jekyll build --baseurl "/CognacOS" --destination "_site"

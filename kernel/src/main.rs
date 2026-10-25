@@ -789,7 +789,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: checked copy-to-user failed.\r\n");
             halt();
         }
-        let mut roundtrip = [0u8; 22];
+        let mut roundtrip = [0u8; 24];
         if unsafe { address_space.copy_from_user(TEST_USER_ADDRESS, &mut roundtrip) }.is_err()
             || roundtrip != sample
         {
