@@ -95,6 +95,7 @@ pub fn clear_current_process() {
     unsafe { *ACTIVE_SPACE.0.get()=core::ptr::null(); }
 }
 pub fn dispatch_count()->u64 { CALL_COUNT.load(Ordering::Acquire) }
+pub fn current_process_id() -> u64 { CURRENT_PID.load(Ordering::Acquire) }
 pub fn last_exit_code()->u64 { LAST_EXIT.load(Ordering::Acquire) }
 pub fn dispatch(number:u64,args:[u64;6])->u64 {
     CALL_COUNT.fetch_add(1,Ordering::AcqRel);
@@ -702,13 +703,13 @@ fn nt_open_file(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         if unit > 0x7f { return NT_STATUS_OBJECT_NAME_NOT_FOUND; }
         path[i] = unit as u8;
     }
-    let handle = match crate::file_services::open(&path[..length / 2]) {
+    let handle = match crate::file_services::open_for_process(current_process_id(), &path[..length / 2]) {
         Ok(handle) => handle, Err(status) => return status as u32 as u64,
     };
     let mut iosb = [0u8; 16];
     iosb[0..4].copy_from_slice(&0i32.to_le_bytes());
     if let Err(status) = copy_nt_output(args[3], &iosb) {
-        let _ = crate::file_services::close(handle); return status;
+        let _ = crate::file_services::close_for_process(current_process_id(), handle); return status;
     }
     if let Err(status) = copy_nt_output(args[0], &(handle as u64).to_le_bytes()) {
         let _ = crate::file_services::close(handle); return status;
@@ -725,7 +726,7 @@ fn nt_read_file(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     let mut buffer = [0u8; 4096];
     let handle = args[0] as usize;
     let count = if args[7] == 0 {
-        match crate::file_services::read_current(handle, &mut buffer[..length]) {
+        match crate::file_services::read_current_for_process(current_process_id(), handle, &mut buffer[..length]) {
             Ok(n) => n, Err(status) => return status as u32 as u64,
         }
     } else {
@@ -733,7 +734,7 @@ fn nt_read_file(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         if let Err(status) = copy_nt_input(args[7], &mut offset_bytes) { return status; }
         let offset = i64::from_le_bytes(offset_bytes);
         if offset < 0 { return NT_STATUS_INVALID_PARAMETER; }
-        match crate::file_services::read_at(handle, offset as usize, &mut buffer[..length]) {
+        match crate::file_services::read_at_for_process(current_process_id(), handle, offset as usize, &mut buffer[..length]) {
             Ok(n) => n, Err(status) => return status as u32 as u64,
         }
     };
@@ -785,7 +786,7 @@ fn nt_query_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
 fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     match number {
         NT_SYSCALL_CLOSE => {
-            if crate::file_services::close(args[0] as usize).is_ok() { return NT_STATUS_SUCCESS; }
+            if crate::file_services::close_for_process(current_process_id(), args[0] as usize).is_ok() { return NT_STATUS_SUCCESS; }
             let status = unsafe { crate::ntoskrnl::ob::runtime::ObCloseHandle(args[0] as *mut core::ffi::c_void, 1) };
             status as u32 as u64
         }
