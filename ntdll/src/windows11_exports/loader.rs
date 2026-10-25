@@ -1392,7 +1392,7 @@ mod tests {
         let mut image = [0u8; 0x3000];
         image[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
         image[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
-        image[0x80..0x84].copy_from_slice(b"PE\\0\\0");
+        image[0x80..0x84].copy_from_slice(b"PE\0\0");
         image[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
         image[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
         let opt = 0x98;
