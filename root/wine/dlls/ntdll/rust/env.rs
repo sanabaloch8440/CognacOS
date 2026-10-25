@@ -2,10 +2,9 @@
  * Rust source port of Wine dlls/ntdll/env.c (environment and process-parameter
  * routines). Based on Wine's LGPL-2.1-or-later source.
  *
- * This is a staged source-only port. The functions below implement the
- * environment-block primitives whose ABI can be expressed without assuming a
- * CognacOS-specific TEB/PEB layout. PEB-backed operations and full process
- * parameter allocation remain to be ported before this file is complete.
+ * This is a source-first port of Wine's environment and process-parameter routines.
+ * Operations needing the live CognacOS TEB/PEB are kept explicit/deferred rather
+ * than guessing its layout. Build integration and ABI verification remain pending.
  */
 
 #![allow(non_camel_case_types)]
@@ -64,8 +63,25 @@ pub struct RTL_USER_PROCESS_PARAMETERS {
     pub ImagePathName: UNICODE_STRING,
     pub CommandLine: UNICODE_STRING,
     pub Environment: *mut WCHAR,
-    // The full Windows structure has more fields. These members are not used
-    // by the normalize/denormalize helpers below.
+    pub StartingX: ULONG,
+    pub StartingY: ULONG,
+    pub CountX: ULONG,
+    pub CountY: ULONG,
+    pub CountCharsX: ULONG,
+    pub CountCharsY: ULONG,
+    pub FillAttribute: ULONG,
+    pub WindowFlags: ULONG,
+    pub ShowWindowFlags: ULONG,
+    pub WindowTitle: UNICODE_STRING,
+    pub Desktop: UNICODE_STRING,
+    pub ShellInfo: UNICODE_STRING,
+    pub RuntimeInfo: UNICODE_STRING,
+    pub CurrentDirectories: [RTL_DRIVE_LETTER_CURDIR; 32],
+    pub EnvironmentSize: SIZE_T,
+    pub EnvironmentVersion: SIZE_T,
+    pub PackageDependencyData: *mut c_void,
+    pub ProcessGroupId: ULONG,
+    pub LoaderThreads: ULONG,
 }
 
 extern "system" {
@@ -261,6 +277,10 @@ pub unsafe extern "system" fn RtlNormalizeProcessParams(
     normalize_pointer(base, &mut (*params).DllPath.Buffer);
     normalize_pointer(base, &mut (*params).ImagePathName.Buffer);
     normalize_pointer(base, &mut (*params).CommandLine.Buffer);
+    normalize_pointer(base, &mut (*params).WindowTitle.Buffer);
+    normalize_pointer(base, &mut (*params).Desktop.Buffer);
+    normalize_pointer(base, &mut (*params).ShellInfo.Buffer);
+    normalize_pointer(base, &mut (*params).RuntimeInfo.Buffer);
     (*params).Flags |= PROCESS_PARAMS_FLAG_NORMALIZED;
     params
 }
@@ -277,6 +297,10 @@ pub unsafe extern "system" fn RtlDeNormalizeProcessParams(
     denormalize_pointer(base, &mut (*params).DllPath.Buffer);
     denormalize_pointer(base, &mut (*params).ImagePathName.Buffer);
     denormalize_pointer(base, &mut (*params).CommandLine.Buffer);
+    denormalize_pointer(base, &mut (*params).WindowTitle.Buffer);
+    denormalize_pointer(base, &mut (*params).Desktop.Buffer);
+    denormalize_pointer(base, &mut (*params).ShellInfo.Buffer);
+    denormalize_pointer(base, &mut (*params).RuntimeInfo.Buffer);
     (*params).Flags &= !PROCESS_PARAMS_FLAG_NORMALIZED;
     params
 }
@@ -286,4 +310,277 @@ pub unsafe extern "system" fn RtlDestroyProcessParameters(
     params: *mut RTL_USER_PROCESS_PARAMETERS,
 ) {
     free(params.cast::<c_void>());
+}
+
+
+/// Set or remove a variable in an explicit environment block. Passing a null
+/// value removes the matching entry. Null environment (current PEB environment)
+/// is deliberately rejected until CognacOS exposes a stable native PEB accessor.
+#[no_mangle]
+pub unsafe extern "system" fn RtlSetEnvironmentVariable(
+    environment: *mut *mut WCHAR,
+    name: *const UNICODE_STRING,
+    value: *const UNICODE_STRING,
+) -> NTSTATUS {
+    if name.is_null() || (*name).Buffer.is_null() || (*name).Length == 0
+        || ((*name).Length as usize) % 2 != 0
+    {
+        return STATUS_INVALID_PARAMETER_1;
+    }
+    if environment.is_null() || (*environment).is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let name_len = (*name).Length as usize / 2;
+    let name_ptr = (*name).Buffer;
+    let mut i = 1usize;
+    while i < name_len {
+        if *name_ptr.add(i) == b'=' as WCHAR { return STATUS_INVALID_PARAMETER; }
+        i += 1;
+    }
+    if !value.is_null() && ((*value).Length > 0 && (*value).Buffer.is_null()) {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    let env = *environment;
+    let old_units = env_length(env);
+    let mut cursor = env;
+    let mut found = null_mut::<WCHAR>();
+    while !cursor.is_null() && *cursor != 0 {
+        let entry_len = wcslen16(cursor);
+        if entry_len > name_len && *cursor.add(name_len) == b'=' as WCHAR
+            && RtlCompareUnicodeStrings(cursor, name_len, name_ptr, name_len, 1) == 0
+        {
+            found = cursor;
+            break;
+        }
+        cursor = cursor.add(entry_len + 1);
+    }
+
+    if value.is_null() && found.is_null() { return STATUS_SUCCESS; }
+    let prefix_units = if found.is_null() { old_units - 1 } else { found.offset_from(env) as usize };
+    let removed_units = if found.is_null() { 0 } else { wcslen16(found) + 1 };
+    let suffix_start = if found.is_null() { env.add(old_units - 1) } else { found.add(removed_units) };
+    let suffix_units = old_units.saturating_sub(suffix_start.offset_from(env) as usize);
+    let new_entry_units = if value.is_null() { 0 } else { name_len + 1 + ((*value).Length as usize / 2) + 1 };
+    let new_units = prefix_units + new_entry_units + suffix_units;
+    let old_bytes = old_units.saturating_mul(2);
+    let new_bytes = new_units.saturating_mul(2);
+    let heap = GetProcessHeap();
+    let replacement = alloc(new_bytes.max(2), false).cast::<WCHAR>();
+    if replacement.is_null() { return STATUS_NO_MEMORY; }
+
+    core::ptr::copy_nonoverlapping(env, replacement, prefix_units);
+    let mut out = replacement.add(prefix_units);
+    if !value.is_null() {
+        core::ptr::copy_nonoverlapping(name_ptr, out, name_len);
+        out = out.add(name_len);
+        *out = b'=' as WCHAR;
+        out = out.add(1);
+        let value_len = (*value).Length as usize / 2;
+        if value_len != 0 { core::ptr::copy_nonoverlapping((*value).Buffer, out, value_len); }
+        out = out.add(value_len);
+        *out = 0;
+    }
+    core::ptr::copy_nonoverlapping(suffix_start, replacement.add(prefix_units + new_entry_units), suffix_units);
+    let _ = old_bytes;
+    free(env.cast::<c_void>());
+    *environment = replacement;
+    let _ = heap;
+    STATUS_SUCCESS
+}
+
+/// Expand %NAME% references. The return length includes the trailing NUL and
+/// is measured in UTF-16 code units, as in Wine's ntdll implementation.
+#[no_mangle]
+pub unsafe extern "system" fn RtlExpandEnvironmentStrings(
+    environment: *const WCHAR,
+    source: *const WCHAR,
+    source_len: SIZE_T,
+    destination: *mut WCHAR,
+    destination_count: SIZE_T,
+    required_length: *mut SIZE_T,
+) -> NTSTATUS {
+    if source.is_null() || (destination_count != 0 && destination.is_null()) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if environment.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut src = source;
+    let mut remaining = source_len;
+    let mut dst_pos = 0usize;
+    let mut required = 1usize;
+    while remaining != 0 {
+        let token: *const WCHAR;
+        let token_len: usize;
+        let copy_len: usize;
+        if *src != b'%' as WCHAR {
+            let mut n = 0;
+            while n < remaining && *src.add(n) != b'%' as WCHAR { n += 1; }
+            token = src; token_len = n; copy_len = n;
+            src = src.add(n); remaining -= n;
+        } else {
+            let mut end = 1usize;
+            while end < remaining && *src.add(end) != b'%' as WCHAR { end += 1; }
+            if end < remaining {
+                let found = find_variable(environment, src.add(1), end - 1);
+                if !found.is_null() {
+                    token = found; token_len = wcslen16(found);
+                    src = src.add(end + 1); remaining -= end + 1;
+                    if token_len < destination_count.saturating_sub(dst_pos) { copy_len = token_len; }
+                    else { copy_len = 0; }
+                } else {
+                    token = src; token_len = end + 1; copy_len = end + 1;
+                    src = src.add(end + 1); remaining -= end + 1;
+                }
+            } else {
+                token = src; token_len = remaining; copy_len = remaining;
+                src = src.add(remaining); remaining = 0;
+            }
+        }
+        required = required.saturating_add(token_len);
+        if destination_count > dst_pos {
+            let available = destination_count - dst_pos;
+            let n = core::cmp::min(copy_len, available.saturating_sub(1));
+            if n != 0 { core::ptr::copy(token, destination.add(dst_pos), n); }
+            dst_pos += n;
+        }
+    }
+    if !required_length.is_null() { *required_length = required; }
+    if destination_count != 0 && dst_pos < destination_count { *destination.add(dst_pos) = 0; }
+    if destination_count >= required { STATUS_SUCCESS } else { STATUS_BUFFER_TOO_SMALL }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlExpandEnvironmentStrings_U(
+    environment: *const WCHAR,
+    source: *const UNICODE_STRING,
+    destination: *mut UNICODE_STRING,
+    required_bytes: *mut ULONG,
+) -> NTSTATUS {
+    if source.is_null() || destination.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut required_units = 0usize;
+    let status = RtlExpandEnvironmentStrings(
+        environment, (*source).Buffer, (*source).Length as usize / 2,
+        (*destination).Buffer, (*destination).MaximumLength as usize / 2,
+        &mut required_units,
+    );
+    if !required_bytes.is_null() {
+        *required_bytes = required_units.saturating_mul(2).min(ULONG::MAX as usize) as ULONG;
+    }
+    if required_units.saturating_mul(2) > USHORT::MAX as usize { return STATUS_BUFFER_TOO_SMALL; }
+    if status == STATUS_SUCCESS {
+        (*destination).Length = required_units.saturating_sub(1).saturating_mul(2) as USHORT;
+    }
+    status
+}
+
+/// Set the process-parameter environment pointer and optionally return the old
+/// block. This helper operates on an explicitly supplied parameter structure.
+#[no_mangle]
+pub unsafe extern "system" fn CognacRtlSetProcessParametersEnvironment(
+    params: *mut RTL_USER_PROCESS_PARAMETERS,
+    new_environment: *mut WCHAR,
+    old_environment: *mut *mut WCHAR,
+) -> NTSTATUS {
+    if params.is_null() { return STATUS_INVALID_PARAMETER; }
+    let previous = (*params).Environment;
+    (*params).Environment = new_environment;
+    (*params).EnvironmentSize = if new_environment.is_null() { 0 } else { env_length(new_environment) * 2 };
+    if !old_environment.is_null() { *old_environment = previous; }
+    else { let _ = RtlDestroyEnvironment(previous); }
+    STATUS_SUCCESS
+}
+
+#[inline]
+unsafe fn rounded(size: usize, align: usize) -> usize {
+    size.saturating_add(align - 1) & !(align - 1)
+}
+
+unsafe fn append_us(data: &mut *mut u8, source: *const UNICODE_STRING, target: *mut UNICODE_STRING, align: usize) {
+    if source.is_null() {
+        (*target).Length = 0; (*target).MaximumLength = 0; (*target).Buffer = null_mut(); return;
+    }
+    (*target).Length = (*source).Length;
+    (*target).MaximumLength = (*source).MaximumLength;
+    if (*source).MaximumLength == 0 { (*target).Buffer = null_mut(); return; }
+    (*target).Buffer = *data as *mut WCHAR;
+    if (*source).Length != 0 && !(*source).Buffer.is_null() {
+        core::ptr::copy_nonoverlapping((*source).Buffer, (*target).Buffer, (*source).Length as usize / 2);
+    }
+    *data = (*data).add(rounded((*source).MaximumLength as usize, align));
+}
+
+/// Build an in-allocation, self-contained process-parameter block from the
+/// supplied strings. This variant intentionally requires explicit inputs;
+/// inheriting current PEB values is left for CognacOS PEB integration.
+#[no_mangle]
+pub unsafe extern "system" fn RtlCreateProcessParametersEx(
+    result: *mut *mut RTL_USER_PROCESS_PARAMETERS,
+    image: *const UNICODE_STRING,
+    dll_path: *const UNICODE_STRING,
+    current_directory: *const UNICODE_STRING,
+    command_line: *const UNICODE_STRING,
+    environment: *mut WCHAR,
+    window_title: *const UNICODE_STRING,
+    desktop: *const UNICODE_STRING,
+    shell_info: *const UNICODE_STRING,
+    runtime_info: *const UNICODE_STRING,
+    flags: ULONG,
+) -> NTSTATUS {
+    if result.is_null() || image.is_null() || (*image).Buffer.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    *result = null_mut();
+    let empty = UNICODE_STRING { Length: 0, MaximumLength: 0, Buffer: null_mut() };
+    let strings = [image, if dll_path.is_null() { &empty } else { &*dll_path },
+        if current_directory.is_null() { &empty } else { &*current_directory },
+        if command_line.is_null() { image } else { &*command_line },
+        if window_title.is_null() { &empty } else { &*window_title },
+        if desktop.is_null() { &empty } else { &*desktop },
+        if shell_info.is_null() { &empty } else { &*shell_info },
+        if runtime_info.is_null() { &empty } else { &*runtime_info }];
+    let align = core::mem::size_of::<usize>();
+    let header = core::mem::size_of::<RTL_USER_PROCESS_PARAMETERS>();
+    let mut size = header;
+    for item in strings { size = size.saturating_add(rounded(item.MaximumLength as usize, align)); }
+    let env_units = if environment.is_null() { 0 } else { env_length(environment) };
+    size = size.saturating_add(rounded(env_units * 2, align));
+    let params = alloc(size, true).cast::<RTL_USER_PROCESS_PARAMETERS>();
+    if params.is_null() { return STATUS_NO_MEMORY; }
+    (*params).MaximumLength = size.min(ULONG::MAX as usize) as ULONG;
+    (*params).Length = header.min(ULONG::MAX as usize) as ULONG;
+    (*params).Flags = PROCESS_PARAMS_FLAG_NORMALIZED;
+    (*params).EnvironmentSize = env_units * 2;
+    let mut data = params.add(1).cast::<u8>();
+    append_us(&mut data, strings[2], &mut (*params).CurrentDirectory.DosPath, align);
+    append_us(&mut data, strings[1], &mut (*params).DllPath, align);
+    append_us(&mut data, strings[0], &mut (*params).ImagePathName, align);
+    append_us(&mut data, strings[3], &mut (*params).CommandLine, align);
+    append_us(&mut data, strings[4], &mut (*params).WindowTitle, align);
+    append_us(&mut data, strings[5], &mut (*params).Desktop, align);
+    append_us(&mut data, strings[6], &mut (*params).ShellInfo, align);
+    append_us(&mut data, strings[7], &mut (*params).RuntimeInfo, align);
+    if env_units != 0 {
+        (*params).Environment = data.cast::<WCHAR>();
+        core::ptr::copy_nonoverlapping(environment, (*params).Environment, env_units);
+    }
+    if flags & PROCESS_PARAMS_FLAG_NORMALIZED == 0 { let _ = RtlDeNormalizeProcessParams(params); }
+    *result = params;
+    STATUS_SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlCreateProcessParameters(
+    result: *mut *mut RTL_USER_PROCESS_PARAMETERS,
+    image: *const UNICODE_STRING,
+    dll_path: *const UNICODE_STRING,
+    current_directory: *const UNICODE_STRING,
+    command_line: *const UNICODE_STRING,
+    environment: *mut WCHAR,
+    window_title: *const UNICODE_STRING,
+    desktop: *const UNICODE_STRING,
+    shell_info: *const UNICODE_STRING,
+    runtime_info: *const UNICODE_STRING,
+) -> NTSTATUS {
+    RtlCreateProcessParametersEx(result, image, dll_path, current_directory, command_line,
+        environment, window_title, desktop, shell_info, runtime_info, 0)
 }
