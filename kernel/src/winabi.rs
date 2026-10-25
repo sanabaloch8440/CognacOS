@@ -96,16 +96,16 @@ pub unsafe fn register_export(module_name: &[u8], name: &[u8], ordinal: u16, add
     } else { false }
 }
 
-fn read_user(space:&crate::vm::AddressSpace,address:u64,out:&mut[u8])->Result<(),()> {
+fn read_user(space:&crate::ntoskrnl::mm::address_space::AddressSpace,address:u64,out:&mut[u8])->Result<(),()> {
     unsafe { space.copy_from_user(address,out).map_err(|_|()) }
 }
-fn read_u16(space:&crate::vm::AddressSpace,address:u64)->Result<u16,()> {
+fn read_u16(space:&crate::ntoskrnl::mm::address_space::AddressSpace,address:u64)->Result<u16,()> {
     let mut b=[0;2];read_user(space,address,&mut b)?;Ok(u16::from_le_bytes(b))
 }
-fn read_u32(space:&crate::vm::AddressSpace,address:u64)->Result<u32,()> {
+fn read_u32(space:&crate::ntoskrnl::mm::address_space::AddressSpace,address:u64)->Result<u32,()> {
     let mut b=[0;4];read_user(space,address,&mut b)?;Ok(u32::from_le_bytes(b))
 }
-fn read_export_name(space:&crate::vm::AddressSpace,base:u64,rva:u32,image_size:u32)->Result<([u8;NAME],usize),()> {
+fn read_export_name(space:&crate::ntoskrnl::mm::address_space::AddressSpace,base:u64,rva:u32,image_size:u32)->Result<([u8;NAME],usize),()> {
     let mut out=[0u8;NAME];
     for i in 0..NAME {
         if rva.checked_add(i as u32).is_none_or(|end|end>=image_size){return Err(());}
@@ -115,13 +115,13 @@ fn read_export_name(space:&crate::vm::AddressSpace,base:u64,rva:u32,image_size:u
     }
     Err(())
 }
-fn read_u32_byte(space:&crate::vm::AddressSpace,address:u64)->Result<u8,()> {
+fn read_u32_byte(space:&crate::ntoskrnl::mm::address_space::AddressSpace,address:u64)->Result<u8,()> {
     let mut b=[0];read_user(space,address,&mut b)?;Ok(b[0])
 }
 /// Parse a loaded PE32+ DLL export directory and publish named and ordinal
 /// exports into the bounded binding registry. Forwarded exports are rejected
 /// until their target module has been resolved explicitly.
-pub unsafe fn register_mapped_exports(space:&crate::vm::AddressSpace,module_name:&[u8],image:crate::pe::LoadedImage)->Result<usize,()> {
+pub unsafe fn register_mapped_exports(space:&crate::ntoskrnl::mm::address_space::AddressSpace,module_name:&[u8],image:crate::pe::LoadedImage)->Result<usize,()> {
     let base=image.base;
     let mut dos=[0u8;0x40];read_user(space,base,&mut dos)?;
     if dos[0]!=b'M'||dos[1]!=b'Z'{return Err(());}
