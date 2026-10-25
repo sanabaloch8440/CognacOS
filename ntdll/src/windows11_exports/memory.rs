@@ -623,7 +623,7 @@ static MEMORY_STREAM_VTABLE: IStreamVtable = IStreamVtable {
     add_ref: RtlAddRefMemoryStream,
     release: RtlReleaseMemoryStream,
     read: RtlReadMemoryStream,
-    write: stream_write,
+    write: RtlWriteMemoryStream,
     seek: RtlSeekMemoryStream,
     set_size: stream_set_size,
     copy_to: RtlCopyMemoryStreamTo,
@@ -828,7 +828,23 @@ pub unsafe extern "system" fn RtlUnlockMemoryStreamRegion(this: PVOID, offset: u
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetMemoryStreamSize(this: PVOID, new_size: u64) -> NTSTATUS { let _ = (this, new_size); E_NOTIMPL }
 #[no_mangle]
-pub unsafe extern "system" fn RtlWriteMemoryStream(stream: PVOID, buffer: PVOID, length: ULONG, written: *mut ULONG) -> NTSTATUS { let _ = (stream, buffer, length); if !written.is_null() { unsafe { ptr::write(written, 0); } } E_NOTIMPL }
+pub unsafe extern "system" fn RtlWriteMemoryStream(this: PVOID, buffer: PVOID, length: ULONG, written: *mut ULONG) -> NTSTATUS {
+    if !written.is_null() { unsafe { ptr::write(written, 0); } }
+    if this.is_null() || (length != 0 && buffer.is_null()) { return STG_E_INVALIDPOINTER; }
+    if length == 0 { return S_OK; }
+    let stream = unsafe { &mut *this.cast::<RTL_MEMORY_STREAM>() };
+    let current = stream.current as usize;
+    let start = stream.start as usize;
+    let end = stream.end as usize;
+    if start > current || current > end { return STG_E_INVALIDPOINTER; }
+    let amount = (end - current).min(length as usize);
+    if amount != 0 {
+        unsafe { ptr::copy(buffer.cast::<u8>(), current as *mut u8, amount); }
+        stream.current = (current + amount) as PVOID;
+    }
+    if !written.is_null() { unsafe { ptr::write(written, amount as ULONG); } }
+    S_OK
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlCopyMemoryNonTemporal(destination: PVOID, source: *const c_void, length: SIZE_T) {
