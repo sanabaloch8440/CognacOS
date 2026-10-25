@@ -417,8 +417,9 @@ pub struct NtRegistryVersionValues<'a> {
 
 fn parse_decimal_prefix(text: &str) -> Option<u32> {
     let text = text.trim_start();
-    let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if digits.is_empty() { None } else { digits.parse().ok() }
+    let bytes = text.as_bytes();
+    let end = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    if end == 0 { None } else { text[..end].parse().ok() }
 }
 
 fn copy_utf16_csd(dst: &mut [u16; 128], source: &[u16]) {
@@ -533,5 +534,28 @@ mod registry_payload_tests {
         assert!(parse_nt_registry_version(NtRegistryVersionValues {
             current_version: Some("bad"), ..Default::default()
         }).is_none());
+    }
+}
+
+
+/// Mirrors version_init's registry fallback order: NT-style data is preferred,
+/// and Win9x-style data is consulted only when the NT parser yields no record.
+pub fn select_registry_version(nt: Option<RTL_OSVERSIONINFOEXW>,
+    win9x: Option<RTL_OSVERSIONINFOEXW>) -> Option<RTL_OSVERSIONINFOEXW> {
+    nt.or(win9x)
+}
+
+#[cfg(test)]
+mod registry_selection_tests {
+    use super::*;
+    #[test]
+    fn nt_registry_record_precedes_win9x_fallback() {
+        let nt = RTL_OSVERSIONINFOEXW { dwMajorVersion: 10, dwMinorVersion: 0,
+            dwBuildNumber: 26100, dwPlatformId: VER_PLATFORM_WIN32_NT, ..Default::default() };
+        let win9x = RTL_OSVERSIONINFOEXW { dwMajorVersion: 4, dwMinorVersion: 10,
+            dwBuildNumber: 0x040a08ae, dwPlatformId: VER_PLATFORM_WIN32_WINDOWS, ..Default::default() };
+        assert_eq!(select_registry_version(Some(nt), Some(win9x)), Some(nt));
+        assert_eq!(select_registry_version(None, Some(win9x)), Some(win9x));
+        assert_eq!(select_registry_version(None, None), None);
     }
 }
