@@ -1,13 +1,9 @@
-//! Source-first Rust port of the non-allocation portions of Wine's ntdll/heap.c.
+//! Supplemental native heap information APIs for CognacOS's NT RTL heap manager.
 //!
-//! The allocator core already lives in rtl_heap.rs as CognacOS's bounded bootstrap
-//! heap. This file ports process-heap enumeration and heap-compatibility queries
-//! without pretending that the current fixed arena implements Wine's full
-//! region/subheap/LFH allocator. Integrate only after reconciling duplicate exports
-//! and sharing a single heap metadata definition.
-//!
-//! Source reference: root/wine/dlls/ntdll/heap.c (Wine LGPL-2.1-or-later).
-//! This is not a complete Windows heap implementation.
+//! Heap allocation, process-heap enumeration, and heap lifetime are implemented
+//! in rtl_heap.rs. This file contains the information-class APIs only; it does not
+//! import Wine implementation code. Private Windows 11 LFH/segment-heap internals
+//! remain out of scope until their documented compatibility surface is implemented.
 
 #![allow(non_camel_case_types, non_snake_case)]
 
@@ -32,34 +28,24 @@ const HEAP_COMPATIBILITY_INFORMATION: ULONG = 0;
 
 extern "system" {
     fn RtlGetProcessHeap() -> HANDLE;
+    fn RtlValidateHeap(heap: HANDLE, flags: ULONG, address: PVOID) -> u8;
 }
 
-/// The current CognacOS bootstrap has one process heap. Once additional heaps are
-/// implemented, this registry must be replaced by the real process heap list.
+/// Compatibility mode is currently process-wide until the heap object exposes a
+/// versioned public information state. The allocator itself supports private heaps.
 static HEAP_COMPATIBILITY: AtomicU32 = AtomicU32::new(HEAP_STD);
 
 #[inline]
-unsafe fn is_bootstrap_heap(handle: HANDLE) -> bool {
-    // SAFETY: RtlGetProcessHeap is the existing bootstrap export. This comparison
-    // does not dereference the caller-provided handle.
-    !handle.is_null() && handle == unsafe { RtlGetProcessHeap() }
+unsafe fn is_valid_heap(handle: HANDLE) -> bool {
+    // SAFETY: RtlValidateHeap is the manager's handle/metadata validator. A non-null
+    // heap handle must still point to readable memory, as required by NT ABI callers.
+    !handle.is_null() && unsafe { RtlValidateHeap(handle, 0, ptr::null_mut()) != 0 }
 }
 
 /// Wine heap.c: RtlGetProcessHeaps. Returns the total heap count. As with the
 /// source routine, the destination is written only when it can hold all handles.
-#[no_mangle]
-pub unsafe extern "system" fn RtlGetProcessHeaps(count: ULONG, heaps: *mut HANDLE) -> ULONG {
-    // The current bootstrap heap registry contains only the process heap.
-    if count >= 1 && !heaps.is_null() {
-        // SAFETY: Caller promises an output array of count HANDLE entries.
-        unsafe { ptr::write(heaps, RtlGetProcessHeap()) };
-    }
-    1
-}
-
-/// Wine heap.c: RtlQueryHeapInformation, supporting only
-/// HeapCompatibilityInformation (class zero), matching the source's information
-/// size reporting and STATUS_BUFFER_TOO_SMALL behavior.
+/// RtlQueryHeapInformation: supports HeapCompatibilityInformation (class zero)
+/// with NTSTATUS size reporting and buffer validation.
 #[no_mangle]
 pub unsafe extern "system" fn RtlQueryHeapInformation(
     handle: HANDLE,
@@ -71,10 +57,7 @@ pub unsafe extern "system" fn RtlQueryHeapInformation(
     if info_class != HEAP_COMPATIBILITY_INFORMATION {
         return STATUS_INVALID_INFO_CLASS;
     }
-    // Wine reports invalid heap handles here as STATUS_ACCESS_VIOLATION; the
-    // bootstrap implementation uses INVALID_HANDLE rather than dereferencing an
-    // untrusted pointer. This is a deliberate safety adaptation.
-    if !unsafe { is_bootstrap_heap(handle) } {
+    if !unsafe { is_valid_heap(handle) } {
         return STATUS_INVALID_HANDLE;
     }
     if !size_out.is_null() {
@@ -97,8 +80,8 @@ pub unsafe extern "system" fn RtlQueryHeapInformation(
     STATUS_SUCCESS
 }
 
-/// Wine heap.c: RtlSetHeapInformation, supporting the standard and low-fragmentation
-/// heap compatibility values. The transition is one-way from HEAP_STD, as in Wine.
+/// RtlSetHeapInformation: accepts standard and LFH compatibility mode requests.
+/// Selecting LFH records the request; an LFH allocator is not yet implemented.
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetHeapInformation(
     handle: HANDLE,
@@ -107,7 +90,7 @@ pub unsafe extern "system" fn RtlSetHeapInformation(
     size: SIZE_T,
 ) -> NTSTATUS {
     if info_class != HEAP_COMPATIBILITY_INFORMATION {
-        // Wine's current implementation returns success for unknown set classes.
+        // Unknown set classes are ignored for forward compatibility.
         return STATUS_SUCCESS;
     }
     if size < core::mem::size_of::<ULONG>() {
@@ -119,8 +102,6 @@ pub unsafe extern "system" fn RtlSetHeapInformation(
     if info.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
-    // Current bootstrap allocator is serialized by its internal spin lock; it does
-    // not implement HEAP_NO_SERIALIZE flags, so that flag cannot be inspected here.
     // SAFETY: Caller supplies at least one readable ULONG.
     let requested = unsafe { ptr::read(info.cast::<ULONG>()) };
     if requested != HEAP_STD && requested != HEAP_LFH {
