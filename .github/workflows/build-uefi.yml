@@ -347,6 +347,7 @@ jobs:
           cat build/serial.log
           grep -F 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.' build/serial.log
           grep -F 'CognacOS Rust kernel entered.' build/serial.log
+          grep -F 'Bootloader verified kernel SHA-256 and Ed25519 code signature.' build/serial.log
           grep -F 'Kernel-owned CR3 activated successfully.' build/serial.log
           grep -F 'TPM 2.0 kernel measurement recorded.' build/serial.log
           grep -F 'Page-table inspection passed: high-half kernel sections, stack alias, low boot data, and guard pages validated.' build/serial.log
