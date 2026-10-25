@@ -81,7 +81,7 @@ pub unsafe extern "system" fn RtlTimeFieldsToTime(fields: *const TIME_FIELDS, ti
     if f.Milliseconds < 0 || f.Milliseconds > 999 || f.Second < 0 || f.Second > 59
         || f.Minute < 0 || f.Minute > 59 || f.Hour < 0 || f.Hour > 23
         || !(1..=12).contains(&m) || f.Day < 1 || y < 1601
-        || f.Day > MONTH_LENGTHS[usize::from(m == 2 && leap(y))][(m - 1) as usize] { return 0; }
+        || f.Day > MONTH_LENGTHS[usize::from(m == 2 || leap(y))][(m - 1) as usize] { return 0; }
     let (month, year) = if m < 3 { (m + 13, y - 1) } else { (m + 1, y) };
     let century_leaps = (3 * (year / 100) + 3) / 4;
     let days = (36_525 * year) / 100 - century_leaps + (1959 * month) / 64
