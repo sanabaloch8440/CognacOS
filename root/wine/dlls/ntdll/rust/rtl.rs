@@ -352,3 +352,29 @@ mod tests {
         }
     }
 }
+    #[test]
+    fn crc32_matches_standard_vector_and_supports_chaining() {
+        let bytes = b"123456789";
+        unsafe {
+            assert_eq!(RtlComputeCrc32(0, bytes.as_ptr(), bytes.len() as i32), 0xcbf4_3926);
+            let first = RtlComputeCrc32(0, b"1234".as_ptr(), 4);
+            assert_eq!(RtlComputeCrc32(first, b"56789".as_ptr(), 5), 0xcbf4_3926);
+            assert_eq!(RtlComputeCrc32(0x1234, core::ptr::null(), 0), 0x1234);
+        }
+    }
+
+    #[test]
+    fn uniform_updates_seed_using_windows_constants() {
+        let mut seed = 1u32;
+        let expected = (((1u64 * 0x7fff_ffed + 0x7fff_ffc3) % 0x7fff_ffff) as u32);
+        unsafe { assert_eq!(RtlUniform(&mut seed), expected); }
+        assert_eq!(seed, expected);
+    }
+
+    #[test]
+    fn byte_swap_helpers_reverse_endianness() {
+        assert_eq!(RtlUshortByteSwap(0x1234), 0x3412);
+        assert_eq!(RtlUlongByteSwap(0x1234_5678), 0x7856_3412);
+        assert_eq!(RtlUlonglongByteSwap(0x0123_4567_89ab_cdef), 0xefcd_ab89_6745_2301);
+    }
+
