@@ -510,6 +510,27 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_get_version = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlGetVersion"))
         .ok_or(VmError::InvalidAddress)?;
+    let rtl_get_process_heap = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlGetProcessHeap"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_allocate_heap = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlAllocateHeap"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_free_heap = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlFreeHeap"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_reallocate_heap = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlReAllocateHeap"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_size_heap = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlSizeHeap"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_validate_heap = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlValidateHeap"))
+        .ok_or(VmError::InvalidAddress)?;
+    let process_heap_object = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"CognacNtdllProcessHeapObject"))
+        .ok_or(VmError::InvalidAddress)?;
 
     let mut data = [0u8; 4096];
     data[0x3f0] = 66;
@@ -541,9 +562,9 @@ pub unsafe fn run_native_ntdll_smoke(
     unsafe { space.map_user_page(NTDLL_TEST_DATA, data_page, true, false)?; }
     unsafe { space.copy_to_user(NTDLL_TEST_DATA, &data)?; }
 
-    let mut code = [0u8; 2048];
+    let mut code = [0u8; 3072];
     let mut length = 0usize;
-    let mut failures = [0usize; 40];
+    let mut failures = [0usize; 64];
     let mut failure_count = 0usize;
     macro_rules! emit {
         ($bytes:expr) => {{
@@ -754,6 +775,113 @@ pub unsafe fn run_native_ntdll_smoke(
     call_ptr!(rtl_copy_memory);
     check_dword!(NTDLL_TEST_DATA + 0xBE0, 0x656d6173); // "same"
 
+    // Default process heap: PEB handle, allocation, size, realloc, free and validation.
+    call_ptr!(rtl_get_process_heap);
+    imm64!(&[0x48, 0xba], process_heap_object);
+    emit!(&[0x48, 0x39, 0xd0]); // returned heap handle must equal the exported PEB heap object
+    fail_if!(&[0x0f, 0x85]);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x89, 0x02]); // save heap handle
+
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x8b, 0x08]); // RCX = heap
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], 32);
+    call_ptr!(rtl_allocate_heap);
+    emit!(&[0x48, 0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x84]);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x48, 0x89, 0x02]); // save allocation pointer
+
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x48, 0x8b, 0x08]);
+    emit!(&[0xba, 4, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], 0x41);
+    call_ptr!(rtl_fill_memory);
+
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x8b, 0x08]);
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x4c, 0x8b, 0x00]); // R8 = allocation
+    call_ptr!(rtl_size_heap);
+    emit!(&[0x3d, 32, 0, 0, 0]);
+    fail_if!(&[0x0f, 0x85]);
+
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x8b, 0x08]);
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x4c, 0x8b, 0x00]);
+    call_ptr!(rtl_validate_heap);
+    emit!(&[0x3c, 1]);
+    fail_if!(&[0x0f, 0x85]);
+
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x8b, 0x08]);
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x4c, 0x8b, 0x00]);
+    emit!(&[0x41, 0xb9, 64, 0, 0, 0]); // R9D = new size
+    call_ptr!(rtl_reallocate_heap);
+    emit!(&[0x48, 0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x84]);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x48, 0x89, 0x02]);
+
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x8b, 0x08]);
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x4c, 0x8b, 0x00]);
+    call_ptr!(rtl_size_heap);
+    emit!(&[0x3d, 64, 0, 0, 0]);
+    fail_if!(&[0x0f, 0x85]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x48, 0x8b, 0x00, 0x8b, 0x00]);
+    emit!(&[0x3d, 0x41, 0x41, 0x41, 0x41]); // realloc preserves existing bytes
+    fail_if!(&[0x0f, 0x85]);
+
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x8b, 0x08]);
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x4c, 0x8b, 0x00]);
+    call_ptr!(rtl_free_heap);
+    emit!(&[0x3c, 1]);
+    fail_if!(&[0x0f, 0x85]);
+
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x8b, 0x08]);
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x4c, 0x8b, 0x00]);
+    call_ptr!(rtl_free_heap);
+    emit!(&[0x3c, 0]);
+    fail_if!(&[0x0f, 0x85]); // double free must be rejected
+
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x8b, 0x08]);
+    emit!(&[0xba, 8, 0, 0, 0]); // HEAP_ZERO_MEMORY
+    imm64!(&[0x49, 0xb8], 32);
+    call_ptr!(rtl_allocate_heap);
+    emit!(&[0x48, 0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x84]);
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x48, 0x89, 0x02]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x48, 0x8b, 0x00, 0x8b, 0x00]);
+    emit!(&[0x3d, 0, 0, 0, 0]);
+    fail_if!(&[0x0f, 0x85]); // zero-memory allocation must clear reused bytes
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x8b, 0x08]);
+    emit!(&[0xba, 0, 0, 0, 0]);
+    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0xD08);
+    emit!(&[0x4c, 0x8b, 0x00]);
+    call_ptr!(rtl_free_heap);
+    emit!(&[0x3c, 1]);
+    fail_if!(&[0x0f, 0x85]);
+
     // RtlGetVersion validates the caller's structure and reports the NT tuple.
     imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xC00);
     call_ptr!(rtl_get_version);
@@ -769,7 +897,7 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0xba, 1, 0, 0, 0, 0xcd, 0x81]);
 
     emit!(&[0x31, 0xff, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(0)
-    let mut failure_labels = [0usize; 40];
+    let mut failure_labels = [0usize; 64];
     for index in 0..failure_count {
         failure_labels[index] = length;
         emit!(&[0xbf]);
