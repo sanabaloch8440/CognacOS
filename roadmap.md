@@ -11,6 +11,16 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 
 **Target:** a maintainable Rust-first x86-64 OS with NT-inspired interfaces and a long-term path toward Windows x64 driver compatibility.
 
+## Native NT virtual memory
+
+- [x] Add current-process-only `NtAllocateVirtualMemory` reserve+commit service with checked user pointers, page rounding, W^X policy, demand-zero region registration, and bounded allocation size.
+- [x] Add checked current-process `NtReadVirtualMemory` / `NtWriteVirtualMemory` copies and byte-count reporting.
+- [x] Add native syscall IDs, argument decoding, and staged NTDLL service-number discovery for allocate/free/protect/query/read/write virtual-memory entry points.
+- [ ] Implement transactional decommit/release and page-table reclamation for `NtFreeVirtualMemory`.
+- [ ] Implement page permission changes, old-protection reporting, and TLB shootdown for `NtProtectVirtualMemory`.
+- [ ] Implement `MEMORY_BASIC_INFORMATION` region state/protection reporting for `NtQueryVirtualMemory`.
+- [ ] Add QEMU tests for allocation, demand-zero faults, invalid pointers, W^X rejection, free/protect/query, and cross-process handle rejection.
+
 ## Extended processor state (XSAVE/XSTATE)
 
 - [x] Add x86-64 CPUID leaf 0xD discovery, CR0/CR4/XCR0 setup, a frozen system-wide enabled mask, standard-area sizing, and per-feature metadata.
