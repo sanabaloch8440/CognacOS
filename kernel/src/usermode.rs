@@ -439,11 +439,8 @@ pub unsafe fn run_windows_syscall_abi_smoke(
 pub unsafe fn run_native_ntdll_smoke(
     space: &mut AddressSpace,
     ntdll: LoadedImage,
-) -> Result<bool, VmError> {
+) -> Result<(), VmError> {
     use crate::pe::ImportSymbol;
-    let configure = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"CognacNtdllConfigureSyscallTable"));
-    let Some(configure) = configure else { return Ok(false); };
     let query_process = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"NtQueryInformationProcess"))
         .ok_or(VmError::InvalidAddress)?;
@@ -585,10 +582,6 @@ pub unsafe fn run_native_ntdll_smoke(
     data[0xE80..0xE82].copy_from_slice(&18u16.to_le_bytes());
     data[0xE82..0xE84].copy_from_slice(&20u16.to_le_bytes());
     data[0xE88..0xE90].copy_from_slice(&(NTDLL_TEST_DATA + 0xE60).to_le_bytes());
-    let numbers = [0x100u64, 0x101, 0x102, 0x103, 0x104];
-    for (index, number) in numbers.iter().enumerate() {
-        data[0x300 + index * 8..0x308 + index * 8].copy_from_slice(&number.to_le_bytes());
-    }
     let data_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
     unsafe { space.map_user_page(NTDLL_TEST_DATA, data_page, true, false)?; }
     unsafe { space.copy_to_user(NTDLL_TEST_DATA, &data)?; }
@@ -637,12 +630,6 @@ pub unsafe fn run_native_ntdll_smoke(
         }};
     }
     emit!(&[0x48, 0x83, 0xec, 0x30]); // Shadow space plus fifth-argument slot; keeps RSP 16-byte aligned.
-    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0x300);
-    emit!(&[0xba, 5, 0, 0, 0]);
-    call_ptr!(configure);
-    emit!(&[0x85, 0xc0]);
-    fail_if!(&[0x0f, 0x85]);
-
     // NtQueryInformationProcess(-1, ProcessBasicInformation, info, 48, &returnLength).
     imm64!(&[0x48, 0xb9], u64::MAX);
     emit!(&[0xba, 0, 0, 0, 0]);
@@ -1005,5 +992,5 @@ pub unsafe fn run_native_ntdll_smoke(
         is_dll: false,
     };
     unsafe { run_loaded_image(space, test_image)?; }
-    Ok(true)
+    Ok(())
 }
