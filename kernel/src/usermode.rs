@@ -492,6 +492,12 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_copy_memory = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlCopyMemory"))
         .ok_or(VmError::InvalidAddress)?;
+    let rtl_compare_memory_ulong = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlCompareMemoryUlong"))
+        .ok_or(VmError::InvalidAddress)?;
+    let rtl_get_version = crate::winabi::resolve_import(
+        b"ntdll.dll", ImportSymbol::Name(b"RtlGetVersion"))
+        .ok_or(VmError::InvalidAddress)?;
 
     let mut data = [0u8; 4096];
     data[0x3f0] = 66;
@@ -514,6 +520,7 @@ pub unsafe fn run_native_ntdll_smoke(
     data[0xB80..0xB84].copy_from_slice(b"same");
     data[0xBA0] = 1;
     data[0xBD0..0xBD6].copy_from_slice(b"abcdef");
+    data[0xC00..0xC04].copy_from_slice(&276u32.to_le_bytes()); // RTL_OSVERSIONINFOW size
     let numbers = [0x100u64, 0x101, 0x102, 0x103, 0x104];
     for (index, number) in numbers.iter().enumerate() {
         data[0x300 + index * 8..0x308 + index * 8].copy_from_slice(&number.to_le_bytes());
@@ -715,6 +722,12 @@ pub unsafe fn run_native_ntdll_smoke(
     check_dword!(NTDLL_TEST_DATA + 0xBC0, 0x41414141);
     imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xBC0);
     emit!(&[0xba, 4, 0, 0, 0]);
+    imm64!(&[0x49, 0xb8], 0x41414141);
+    call_ptr!(rtl_compare_memory_ulong);
+    emit!(&[0x3d, 4, 0, 0, 0]);
+    fail_if!(&[0x0f, 0x85]);
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xBC0);
+    emit!(&[0xba, 4, 0, 0, 0]);
     call_ptr!(rtl_zero_memory);
     check_dword!(NTDLL_TEST_DATA + 0xBC0, 0);
 
@@ -728,6 +741,16 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0x41, 0xb8, 4, 0, 0, 0]);
     call_ptr!(rtl_copy_memory);
     check_dword!(NTDLL_TEST_DATA + 0xBE0, 0x656d6173); // "same"
+
+    // RtlGetVersion validates the caller's structure and reports the NT tuple.
+    imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xC00);
+    call_ptr!(rtl_get_version);
+    emit!(&[0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x85]);
+    check_dword!(NTDLL_TEST_DATA + 0xC04, 10);
+    check_dword!(NTDLL_TEST_DATA + 0xC08, 0);
+    check_dword!(NTDLL_TEST_DATA + 0xC0C, 26100);
+    check_dword!(NTDLL_TEST_DATA + 0xC10, 2);
 
     emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
     imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f0);
