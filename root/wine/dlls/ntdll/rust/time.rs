@@ -165,3 +165,209 @@ mod tests {
         assert_eq!(unsafe { RtlTimeToSecondsSince1970(&t, &mut s) }, 0);
     }
 }
+
+
+// Native service dependencies used by the remaining time APIs. These imports
+// must be resolved by the NTDLL native-service link/export layer.
+pub type NTSTATUS = i32;
+const STATUS_SUCCESS: NTSTATUS = 0;
+const STATUS_PRIVILEGE_NOT_HELD: NTSTATUS = 0xC000_0061u32 as i32;
+const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
+const SYSTEM_TIME_OF_DAY_INFORMATION: ULONG = 3;
+const SYSTEM_CURRENT_TIME_ZONE_INFORMATION: ULONG = 44;
+const SYSTEM_DYNAMIC_TIME_ZONE_INFORMATION: ULONG = 104;
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct SYSTEM_TIME {
+    pub Year: u16, pub Month: u16, pub DayOfWeek: u16, pub Day: u16,
+    pub Hour: u16, pub Minute: u16, pub Second: u16, pub Milliseconds: u16,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct RTL_TIME_ZONE_INFORMATION {
+    pub Bias: i32,
+    pub StandardName: [u16; 32],
+    pub StandardDate: SYSTEM_TIME,
+    pub StandardBias: i32,
+    pub DaylightName: [u16; 32],
+    pub DaylightDate: SYSTEM_TIME,
+    pub DaylightBias: i32,
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RTL_DYNAMIC_TIME_ZONE_INFORMATION {
+    pub Bias: i32,
+    pub StandardName: [u16; 32],
+    pub StandardDate: SYSTEM_TIME,
+    pub StandardBias: i32,
+    pub DaylightName: [u16; 32],
+    pub DaylightDate: SYSTEM_TIME,
+    pub DaylightBias: i32,
+    pub TimeZoneKeyName: [u16; 128],
+    pub DynamicDaylightTimeDisabled: u8,
+    pub _padding: [u8; 3],
+}
+impl Default for RTL_DYNAMIC_TIME_ZONE_INFORMATION {
+    fn default() -> Self {
+        Self { Bias: 0, StandardName: [0;32], StandardDate: SYSTEM_TIME::default(),
+            StandardBias: 0, DaylightName: [0;32], DaylightDate: SYSTEM_TIME::default(),
+            DaylightBias: 0, TimeZoneKeyName: [0;128], DynamicDaylightTimeDisabled: 0,
+            _padding: [0;3] }
+    }
+}
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct SYSTEM_TIMEOFDAY_INFORMATION {
+    BootTime: LARGE_INTEGER,
+    CurrentTime: LARGE_INTEGER,
+    TimeZoneBias: LARGE_INTEGER,
+    CurrentTimeZoneId: ULONG,
+    Reserved: ULONG,
+}
+
+unsafe extern "system" {
+    fn NtQuerySystemInformation(class: ULONG, info: *mut core::ffi::c_void,
+        length: ULONG, return_length: *mut ULONG) -> NTSTATUS;
+    fn NtQueryPerformanceCounter(counter: *mut LARGE_INTEGER,
+        frequency: *mut LARGE_INTEGER) -> NTSTATUS;
+    fn NtQuerySystemTime(time: *mut LARGE_INTEGER) -> NTSTATUS;
+    fn RtlSetLastWin32ErrorAndNtStatusFromNtStatus(status: NTSTATUS);
+}
+
+/// Convert local time to system time using the current system time-zone bias.
+#[no_mangle]
+pub unsafe extern "system" fn RtlLocalTimeToSystemTime(local: *const LARGE_INTEGER,
+    system: *mut LARGE_INTEGER) -> NTSTATUS {
+    if local.is_null() || system.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut info = SYSTEM_TIMEOFDAY_INFORMATION::default();
+    let status = unsafe { NtQuerySystemInformation(SYSTEM_TIME_OF_DAY_INFORMATION,
+        (&mut info as *mut SYSTEM_TIMEOFDAY_INFORMATION).cast(),
+        core::mem::size_of::<SYSTEM_TIMEOFDAY_INFORMATION>() as ULONG, core::ptr::null_mut()) };
+    if status < 0 { return status; }
+    unsafe { (*system).QuadPart = (*local).QuadPart.wrapping_add(info.TimeZoneBias.QuadPart); }
+    STATUS_SUCCESS
+}
+
+/// Convert system time to local time using the current system time-zone bias.
+#[no_mangle]
+pub unsafe extern "system" fn RtlSystemTimeToLocalTime(system: *const LARGE_INTEGER,
+    local: *mut LARGE_INTEGER) -> NTSTATUS {
+    if system.is_null() || local.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut info = SYSTEM_TIMEOFDAY_INFORMATION::default();
+    let status = unsafe { NtQuerySystemInformation(SYSTEM_TIME_OF_DAY_INFORMATION,
+        (&mut info as *mut SYSTEM_TIMEOFDAY_INFORMATION).cast(),
+        core::mem::size_of::<SYSTEM_TIMEOFDAY_INFORMATION>() as ULONG, core::ptr::null_mut()) };
+    if status < 0 { return status; }
+    unsafe { (*local).QuadPart = (*system).QuadPart.wrapping_sub(info.TimeZoneBias.QuadPart); }
+    STATUS_SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlTimeToElapsedTimeFields(time: *const LARGE_INTEGER,
+    fields: *mut TIME_FIELDS) {
+    if time.is_null() || fields.is_null() { return; }
+    let ticks = unsafe { (*time).QuadPart };
+    let seconds = ticks / TICKS_PER_SECOND;
+    let out = unsafe { &mut *fields };
+    out.Milliseconds = ((ticks % TICKS_PER_SECOND) / TICKS_PER_MILLISECOND) as i16;
+    out.Year = 0;
+    out.Month = 0;
+    out.Day = (seconds / SECONDS_PER_DAY) as i16;
+    let mut rem = (seconds % SECONDS_PER_DAY) as i32;
+    out.Second = (rem % 60) as i16;
+    rem /= 60;
+    out.Minute = (rem % 60) as i16;
+    out.Hour = (rem / 60) as i16;
+}
+
+/// Query the native performance counter; failures are reflected as FALSE.
+#[no_mangle]
+pub unsafe extern "system" fn RtlQueryPerformanceCounter(counter: *mut LARGE_INTEGER) -> BOOLEAN {
+    if counter.is_null() { return 0; }
+    (unsafe { NtQueryPerformanceCounter(counter, core::ptr::null_mut()) } >= 0) as BOOLEAN
+}
+
+/// Windows NTDLL exposes the counter frequency in 100-ns units.
+#[no_mangle]
+pub unsafe extern "system" fn RtlQueryPerformanceFrequency(frequency: *mut LARGE_INTEGER) -> BOOLEAN {
+    if frequency.is_null() { return 0; }
+    unsafe { (*frequency).QuadPart = TICKS_PER_SECOND; }
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlGetSystemTimePrecise() -> i64 {
+    let mut time = LARGE_INTEGER::default();
+    if unsafe { NtQuerySystemTime(&mut time) } >= 0 { time.QuadPart } else { 0 }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlQueryTimeZoneInformation(out: *mut RTL_TIME_ZONE_INFORMATION) -> NTSTATUS {
+    if out.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { NtQuerySystemInformation(SYSTEM_CURRENT_TIME_ZONE_INFORMATION, out.cast(),
+        core::mem::size_of::<RTL_TIME_ZONE_INFORMATION>() as ULONG, core::ptr::null_mut()) }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlQueryDynamicTimeZoneInformation(out: *mut RTL_DYNAMIC_TIME_ZONE_INFORMATION) -> NTSTATUS {
+    if out.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { NtQuerySystemInformation(SYSTEM_DYNAMIC_TIME_ZONE_INFORMATION, out.cast(),
+        core::mem::size_of::<RTL_DYNAMIC_TIME_ZONE_INFORMATION>() as ULONG, core::ptr::null_mut()) }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlSetTimeZoneInformation(_info: *const RTL_TIME_ZONE_INFORMATION) -> NTSTATUS {
+    // Matches the imported Wine implementation: changing the system time zone
+    // is not permitted by this user-mode entry point.
+    STATUS_PRIVILEGE_NOT_HELD
+}
+
+/// Read the shared-data interrupt clock with the Windows seqlock pattern.
+/// KUSER_SHARED_DATA is mapped at 0x7ffe0000 in the Windows x86/x64 user ABI.
+#[no_mangle]
+pub unsafe extern "system" fn RtlQueryUnbiasedInterruptTime(out: *mut u64) -> BOOLEAN {
+    if out.is_null() {
+        unsafe { RtlSetLastWin32ErrorAndNtStatusFromNtStatus(STATUS_INVALID_PARAMETER); }
+        return 0;
+    }
+    // KSYSTEM_TIME InterruptTime is at offset 0x08: High1Time, LowPart,
+    // High2Time. Use volatile reads so the compiler preserves the seqlock.
+    let base = 0x7ffe_0000usize as *const u8;
+    let high1 = base.wrapping_add(0x08).cast::<u32>();
+    let low = base.wrapping_add(0x0c).cast::<u32>();
+    let high2 = base.wrapping_add(0x10).cast::<u32>();
+    loop {
+        let h1 = unsafe { core::ptr::read_volatile(high1) };
+        let lo = unsafe { core::ptr::read_volatile(low) };
+        let h2 = unsafe { core::ptr::read_volatile(high2) };
+        if h1 == h2 {
+            unsafe { out.write((u64::from(h1) << 32) | u64::from(lo)); }
+            return 1;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Read TickCount from KUSER_SHARED_DATA. The low 32 bits intentionally wrap.
+#[no_mangle]
+pub extern "system" fn NtGetTickCount() -> ULONG {
+    let base = 0x7ffe_0000usize as *const u8;
+    // TickCount KSYSTEM_TIME is at offset 0x320 in the x86/x64 shared-data ABI.
+    let high1 = base.wrapping_add(0x320).cast::<u32>();
+    let low = base.wrapping_add(0x324).cast::<u32>();
+    let high2 = base.wrapping_add(0x328).cast::<u32>();
+    loop {
+        let h1 = unsafe { core::ptr::read_volatile(high1) };
+        let lo = unsafe { core::ptr::read_volatile(low) };
+        let h2 = unsafe { core::ptr::read_volatile(high2) };
+        if h1 == h2 {
+            // TickCountMultiplier is at offset 0x04 and converts 100-ns
+            // ticks to milliseconds via a 24-bit fixed-point multiplier.
+            let multiplier = unsafe { core::ptr::read_volatile(base.wrapping_add(0x04).cast::<u32>()) };
+            let ticks = (u64::from(h1) << 32) | u64::from(lo);
+            return ((ticks.wrapping_mul(u64::from(multiplier))) >> 24) as ULONG;
+        }
+        core::hint::spin_loop();
+    }
+}
