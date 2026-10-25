@@ -236,7 +236,7 @@ cognacos_fault_probe_write_ro:
     .global cognacos_fault_probe_write_ro_recovery
     .type cognacos_fault_probe_write_ro_recovery, @function
 cognacos_fault_probe_write_ro_recovery:
-    xor eax, eax
+    # The dispatcher already publishes the configured recovery result in RAX.
     ret
 
     .global cognacos_fault_probe_execute_nx
@@ -1635,7 +1635,8 @@ unsafe extern "C" {
 pub fn trap_frame_fixup_self_test() -> bool {
     const INVALID_ADDRESS: u64 = 0x0000_7fff_dead_0000;
     let fault_rip = cognacos_fault_probe_read_invalid as *const () as u64;
-    let recovery_rip = cognacos_fault_probe_read_invalid_recovery as *const () as u64;
+    // Reuse the already exercised ret-only recovery stub; the configured RAX result survives it.
+    let recovery_rip = cognacos_fault_probe_write_ro_recovery as *const () as u64;
     if !register_trap_frame_fixup_with_result(
         fault_rip, recovery_rip, INVALID_ADDRESS,
         PF_ERROR_MATCH_MASK, 0, STATUS_ACCESS_VIOLATION,
