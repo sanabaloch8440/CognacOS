@@ -472,6 +472,78 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Decommit a page-aligned subrange, or release an entire reservation.
+    /// Preflights all tracked pages before mutation and invalidates translations
+    /// before returning any resident frame to the physical allocator.
+    pub fn decommit_demand_region(&mut self, start: u64, length: u64, release: bool) -> Result<(), VmError> {
+        if start & (PAGE_SIZE - 1) != 0 || length == 0 || length & (PAGE_SIZE - 1) != 0 || !is_user_range(start, length) {
+            return Err(VmError::InvalidAddress);
+        }
+        let end = start.checked_add(length).ok_or(VmError::InvalidAddress)?;
+        {
+            let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+            let areas = unsafe { &*DEMAND_AREAS.0.get() };
+            let area = areas.iter().find(|a| a.live && a.root == self.root && start >= a.start && end <= a.end).ok_or(VmError::NotMapped)?;
+            if release && (start != area.start || end != area.end) { return Err(VmError::InvalidAddress); }
+            let pages = unsafe { &mut *WORKING_SET.0.get() };
+            if pages.iter().any(|p| p.live && p.root == self.root && p.va >= start && p.va < end && p.busy) {
+                return Err(VmError::AddressSpaceBusy);
+            }
+            for page in pages.iter().filter(|p| p.live && p.root == self.root && p.va >= start && p.va < end && !p.paged_out) {
+                if user_leaf(self.root, page.va).is_none() { return Err(VmError::NotMapped); }
+            }
+            for page in pages.iter_mut().filter(|p| p.live && p.root == self.root && p.va >= start && p.va < end) { page.busy = true; }
+        }
+        let mut va = start;
+        while va < end {
+            let ws = {
+                let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                unsafe { &*WORKING_SET.0.get() }.iter().position(|p| p.live && p.root == self.root && p.va == va)
+            };
+            if let Some(index) = ws {
+                let paged_out = {
+                    let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                    unsafe { &*WORKING_SET.0.get() }[index].paged_out
+                };
+                if paged_out {
+                    let slot = {
+                        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                        unsafe { &*WORKING_SET.0.get() }[index].pagefile_slot
+                    };
+                    if crate::ntoskrnl::mm::pagefile::free_slot(slot).is_err() {
+                        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                        for p in unsafe { &mut *WORKING_SET.0.get() }.iter_mut().filter(|p| p.live && p.root == self.root && p.va >= va && p.va < end) { p.busy = false; }
+                        return Err(VmError::OutOfMemory);
+                    }
+                } else {
+                    let physical = match unsafe { self.unmap_user_page(va) } {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                            for p in unsafe { &mut *WORKING_SET.0.get() }.iter_mut().filter(|p| p.live && p.root == self.root && p.va >= va && p.va < end) { p.busy = false; }
+                            return Err(e);
+                        }
+                    };
+                    if unsafe { crate::memory::free_page(physical) }.is_err() {
+                        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                        for p in unsafe { &mut *WORKING_SET.0.get() }.iter_mut().filter(|p| p.live && p.root == self.root && p.va >= va && p.va < end) { p.busy = false; }
+                        return Err(VmError::OutOfMemory);
+                    }
+                }
+                let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+                unsafe { &mut *WORKING_SET.0.get() }[index] = WorkingSetPage::EMPTY;
+            }
+            va += PAGE_SIZE;
+        }
+        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        if release {
+            let areas = unsafe { &mut *DEMAND_AREAS.0.get() };
+            let index = areas.iter().position(|a| a.live && a.root == self.root && a.start == start && a.end == end).ok_or(VmError::NotMapped)?;
+            areas[index] = DemandArea::EMPTY;
+        }
+        Ok(())
+    }
+
     /// Probe a range without dereferencing user-controlled pointers. Use copy_from_user
     /// or copy_to_user for actual access so translations and permissions are checked.
     pub fn probe_user_range(&self,address:u64,length:u64,write:bool,execute:bool)->Result<(),VmError>{
