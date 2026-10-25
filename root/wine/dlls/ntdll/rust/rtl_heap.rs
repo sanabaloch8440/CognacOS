@@ -386,3 +386,135 @@ pub unsafe extern "system" fn RtlValidateHeap(
         valid as BOOLEAN
     }
 }
+
+
+const STATUS_INVALID_HANDLE: i32 = 0xC000_0008u32 as i32;
+const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+const STATUS_NO_MORE_ENTRIES: i32 = 0x8000_001Au32 as i32;
+
+/// Matches the caller-facing x64 layout used by Wine's undocumented RtlWalkHeap
+/// entry. The union is represented as its largest member to preserve its ABI size.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RTL_HEAP_WALK_ENTRY {
+    pub lpData: PVOID,
+    pub cbData: SIZE_T,
+    pub cbOverhead: u8,
+    pub iRegionIndex: u8,
+    pub wFlags: u16,
+    pub reserved: [usize; 4],
+}
+
+/// Compact the bootstrap arena by coalescing adjacent free blocks and return the
+/// largest free payload size. The fixed arena cannot release pages back to the OS.
+#[no_mangle]
+pub unsafe extern "system" fn RtlCompactHeap(handle: HANDLE, _flags: ULONG) -> SIZE_T {
+    let heap = heap_ptr();
+    if handle != heap.cast() {
+        return 0;
+    }
+    unsafe {
+        lock_heap(heap);
+        initialize_locked(heap);
+        let mut block = (*heap).first;
+        let mut largest = 0usize;
+        while !block.is_null() {
+            if !block_address_valid(block) || (*block).magic != BLOCK_MAGIC {
+                unlock_heap(heap);
+                return 0;
+            }
+            if (*block).free != 0 {
+                merge_next(block);
+                largest = largest.max((*block).size);
+            }
+            block = (*block).next;
+        }
+        unlock_heap(heap);
+        largest
+    }
+}
+
+/// The allocator already serializes every operation internally. These entry points
+/// validate the handle but intentionally do not hold the non-recursive spinlock
+/// across calls, which would deadlock allocations made by the caller while locked.
+#[no_mangle]
+pub unsafe extern "system" fn RtlLockHeap(handle: HANDLE) -> BOOLEAN {
+    (handle == heap_ptr().cast()) as BOOLEAN
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlUnlockHeap(handle: HANDLE) -> BOOLEAN {
+    (handle == heap_ptr().cast()) as BOOLEAN
+}
+
+/// Validate the sole process heap. A process with additional heaps requires the
+/// process heap registry and per-heap validation to be expanded together.
+#[no_mangle]
+pub unsafe extern "system" fn RtlValidateProcessHeaps() -> ULONG {
+    unsafe { RtlValidateHeap(heap_ptr().cast(), 0, ptr::null_mut()) as ULONG }
+}
+
+/// Enumerate the fixed arena's blocks using the undocumented RtlWalkHeap entry
+/// contract. The caller initializes lpData to null and passes the returned lpData
+/// back to continue. Region metadata and large-allocation records are not present
+/// in this bootstrap allocator.
+#[no_mangle]
+pub unsafe extern "system" fn RtlWalkHeap(
+    handle: HANDLE,
+    entry_ptr: PVOID,
+) -> NTSTATUS {
+    if handle != heap_ptr().cast() {
+        return STATUS_INVALID_HANDLE;
+    }
+    if entry_ptr.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let entry = entry_ptr.cast::<RTL_HEAP_WALK_ENTRY>();
+    unsafe {
+        lock_heap(heap_ptr());
+        initialize_locked(heap_ptr());
+        let requested = (*entry).lpData as ULONG_PTR;
+        let mut block = (*heap_ptr()).first;
+        if requested != 0 {
+            let mut found = false;
+            while !block.is_null() {
+                if !block_address_valid(block) || (*block).magic != BLOCK_MAGIC {
+                    unlock_heap(heap_ptr());
+                    return STATUS_INVALID_PARAMETER;
+                }
+                let payload = block.cast::<u8>().add(core::mem::size_of::<CognacHeapBlock>());
+                if payload as ULONG_PTR == requested {
+                    block = (*block).next;
+                    found = true;
+                    break;
+                }
+                block = (*block).next;
+            }
+            if !found {
+                unlock_heap(heap_ptr());
+                return STATUS_INVALID_PARAMETER;
+            }
+        }
+        if block.is_null() {
+            (*entry).lpData = ptr::null_mut();
+            (*entry).cbData = 0;
+            (*entry).cbOverhead = 0;
+            (*entry).iRegionIndex = 0;
+            (*entry).wFlags = 0;
+            unlock_heap(heap_ptr());
+            return STATUS_NO_MORE_ENTRIES;
+        }
+        if !block_address_valid(block) || (*block).magic != BLOCK_MAGIC {
+            unlock_heap(heap_ptr());
+            return STATUS_INVALID_PARAMETER;
+        }
+        (*entry).lpData = block.cast::<u8>()
+            .add(core::mem::size_of::<CognacHeapBlock>()).cast();
+        (*entry).cbData = (*block).size;
+        (*entry).cbOverhead = core::mem::size_of::<CognacHeapBlock>() as u8;
+        (*entry).iRegionIndex = 0;
+        (*entry).wFlags = if (*block).free == 0 { 0x4000 | 0x0010 | 0x0001 } else { 0 };
+        unlock_heap(heap_ptr());
+    }
+    STATUS_SUCCESS
+}
