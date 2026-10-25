@@ -19,17 +19,18 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [x] Add `KeSaveExtendedProcessorState` / `KeRestoreExtendedProcessorState` entry points with feature-mask checks, bounded nested save scopes, same-thread/same-IRQL validation, stale-handle protection, and restore after releasing bookkeeping locks.
 - [x] Run the processor XSTATE setup hook from `KiInitializeProcessor`, and reject a processor that cannot honor an already-enabled system-wide XSTATE policy.
 - [x] Save interrupted user XSTATE in assembly before Rust syscall, exception, timer, external IRQ, and dedicated IPI handlers; restore it immediately before `IRETQ`. Reset user state before initial ring-3 entry.
-- [x] Publish a read-only per-process XSTATE configuration page at `0x0000008400000000`; NTDLL lazily imports that feature table rather than guessing from local CPUID.
+- [x] Publish the Windows 11 24H2 x64 `KUSER_SHARED_DATA.XState` field at `0x7FFE0000 + 0x3D8`, using the exact 0x348-byte `XSTATE_CONFIGURATION` layout. The same physical page is shared read-only by process address spaces; the low mapping uses a privately cloned page-table path so unrelated identity mappings remain supervisor-only.
+- [x] Wire native process startup to initialize the shared page and NTDLL's lazy XSTATE bootstrap to read the Windows-layout field.
 - [x] Add NTDLL `RtlGetEnabledExtendedFeatures`, `RtlGetExtendedContextLength[2]`, `RtlInitializeExtendedContext[2]`, `RtlLocateLegacyContext`, `RtlLocateExtendedFeature[2]`, `RtlSet/GetExtendedFeaturesMask`, and `RtlCopyExtendedContext`.
 - [x] Add standard and compacted `CONTEXT_EX` sizing/feature-offset logic. The kernel currently advertises compacted format as disabled, so the compacted path is dormant.
-- [ ] Replace the private CognacOS configuration page with the exact Windows `KUSER_SHARED_DATA.XState` ABI and validate the NTDLL startup path against native Windows layouts.
-- [ ] Verify the opaque caller-facing `XSTATE_SAVE` storage against the exact WDK ABI and add kernel exception-safe handling for invalid pointers.
+- [x] Replace the private configuration page with the Windows 11 24H2 x64 `KUSER_SHARED_DATA.XState` field layout and assert its size/field offsets at compile time.
+- [x] Match the opaque x64 `XSTATE_SAVE` caller storage to 0x38 bytes / 8-byte alignment and preflight null, user, pageable, unmapped, and read-only kernel buffers before touching them. The record's internal bytes remain private; fault-injection validation is pending.
 - [ ] Ensure every user process/thread is associated with a scheduler `ThreadRecord`; the bootstrap path still has a per-CPU user-state fallback rather than a universal per-thread record.
 - [ ] Enable AVX/YMM only after expanded per-thread state sizing and all kernel/user trap, context-copy, and restore paths support the expanded mask. Supervisor XSS, AVX-512, AMX, and PKRU remain disabled.
-- [ ] Complete exact Windows semantics for arbitrary `RtlLocateExtendedFeature2` configuration pointers and all architecture-specific partial-context copy maps.
-- [ ] Add deterministic CPU-feature, nested save/restore, migration, context-buffer, and QEMU tests; build/ABI/QEMU validation has not yet been run for these changes.
+- [x] Support caller-supplied `XSTATE_CONFIGURATION` pointers in `RtlLocateExtendedFeature2`; implement group-aware `RtlCopyContext` and partial legacy/XSTATE copying in `RtlCopyExtendedContext`.
+- [x] Add deterministic CPU-mask/migration checks, nested XSAVE/XRSTOR self-tests on processor bring-up, context-buffer tests in the Rust NTDLL source, user-range host tests, source-contract checks, and QEMU log assertions. The Rust NTDLL tests are still source-only and have not been executed.
 
-The implementation is source-level only. It now saves/restores legacy x87/SSE state around kernel-thread switches and user-origin trap paths, but it is not yet a complete Windows 11 XSTATE implementation: AVX is deliberately disabled, the shared configuration page is a CognacOS bridge rather than the Windows shared-data ABI, and build/ABI/QEMU validation remains outstanding.
+The implementation remains partial. It now publishes the Windows-layout XState field and saves/restores legacy x87/SSE state around thread switches and user-origin trap/syscall paths. AVX/YMM, supervisor XSS, AVX-512, AMX, and PKRU remain disabled until per-thread area sizing and all save/restore/context paths are expanded. The new kernel/QEMU checks are committed but the latest workflow run is still queued; Rust NTDLL context tests are not yet build-integrated.
 
 ## Current validation
 
