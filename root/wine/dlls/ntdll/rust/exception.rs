@@ -723,6 +723,20 @@ mod xstate_context_layout_tests {
         assert_eq!(context_parameters(CONTEXT_I386 | 0x7f).unwrap().0, I386_CONTEXT_SIZE);
     }
     #[test]
+    fn extended_context_length_matches_amd64_non_xstate_layout() {
+        let mut length = 0;
+        let status = unsafe { RtlGetExtendedContextLength2(CONTEXT_AMD64 | 0x1f, &mut length, 0) };
+        assert_eq!(status, STATUS_SUCCESS);
+        assert_eq!(length as usize, AMD64_CONTEXT_SIZE + CONTEXT_EX_SIZE + 15);
+    }
+    #[test]
+    fn extended_context_length_rejects_invalid_architecture_and_null_output() {
+        let mut length = 99;
+        assert_eq!(unsafe { RtlGetExtendedContextLength2(0, &mut length, 0) }, STATUS_INVALID_PARAMETER);
+        assert_eq!(length, 0);
+        assert_eq!(unsafe { RtlGetExtendedContextLength2(CONTEXT_AMD64, core::ptr::null_mut(), 0) }, STATUS_INVALID_PARAMETER);
+    }
+    #[test]
     fn locate_feature2_honors_custom_standard_configuration() {
         let mut raw = [0u64; 96];
         let ex = raw.as_mut_ptr().cast::<CONTEXT_EX>();
