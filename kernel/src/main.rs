@@ -843,6 +843,54 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: checked user-copy validation failed.\r\n");
             halt();
         }
+
+        // Adversarial isolation test: two independently rooted process page
+        // tables map the same user VA to different frames. Neither mapping may
+        // overwrite or alias the other process, and user translation must never
+        // expose the shared supervisor-only kernel image.
+        let mut second_address_space = match unsafe { ntoskrnl::mm::address_space::AddressSpace::new(info.pml4_physical) } {
+            Ok(space) => space,
+            Err(_) => { serial_write(b"FATAL: second isolated address-space allocation failed.\r\n"); halt(); }
+        };
+        let second_user_page = match unsafe { memory::allocate_page() } {
+            Ok(page) => page,
+            Err(_) => { serial_write(b"FATAL: second process user page allocation failed.\r\n"); halt(); }
+        };
+        if unsafe { second_address_space.map_user_page(TEST_USER_ADDRESS, second_user_page, true, false) }.is_err() {
+            serial_write(b"FATAL: second process same-VA mapping failed.\r\n"); halt();
+        }
+        let other_sample = *b"Separate process memory!";
+        unsafe { core::ptr::copy_nonoverlapping(other_sample.as_ptr(), second_user_page as *mut u8, other_sample.len()); }
+        let first_pa = match address_space.translate_user(TEST_USER_ADDRESS, false) {
+            Ok(pa) => pa, Err(_) => { serial_write(b"FATAL: first process user translation failed.\r\n"); halt(); }
+        };
+        let second_pa = match second_address_space.translate_user(TEST_USER_ADDRESS, false) {
+            Ok(pa) => pa, Err(_) => { serial_write(b"FATAL: second process user translation failed.\r\n"); halt(); }
+        };
+        if first_pa == second_pa {
+            serial_write(b"FATAL: cross-process user VA unexpectedly aliases the same physical frame.\r\n"); halt();
+        }
+        let kernel_probe = ntoskrnl::ke::arch::initialize as usize as u64;
+        {
+            let _guard = ntoskrnl::mm::address_space::ADDRESS_SPACE_LIFETIME_LOCK.lock();
+            if ntoskrnl::mm::address_space::translate_in_root_locked(second_address_space.root_physical(), kernel_probe, false, false).is_none()
+                || ntoskrnl::mm::address_space::translate_in_root_locked(second_address_space.root_physical(), kernel_probe, false, true).is_some()
+            {
+                serial_write(b"FATAL: supervisor kernel mapping is not isolated from CPL3 translation.\r\n"); halt();
+            }
+        }
+        let mut second_roundtrip = [0u8; 24];
+        if unsafe { second_address_space.copy_from_user(TEST_USER_ADDRESS, &mut second_roundtrip) }.is_err()
+            || second_roundtrip != other_sample
+            || unsafe { address_space.copy_from_user(TEST_USER_ADDRESS, &mut roundtrip) }.is_err()
+            || roundtrip != sample
+        {
+            serial_write(b"FATAL: cross-process mapping isolation regression.\r\n"); halt();
+        }
+        if unsafe { second_address_space.destroy() }.is_err() {
+            serial_write(b"FATAL: second process address-space teardown failed.\r\n"); halt();
+        }
+        serial_write(b"Per-process page-table isolation, same-VA non-aliasing, and supervisor mapping protection passed.\r\n");
         serial_write(b"Process address-space and checked user-copy self-test passed.\r\n");
         serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\r\n");
         serial_write(b"Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.\r\n");
