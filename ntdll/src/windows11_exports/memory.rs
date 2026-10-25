@@ -539,7 +539,7 @@ const STREAM_SEEK_END: ULONG = 2;
 const STGTY_STREAM: ULONG = 2;
 
 #[repr(C)]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct Guid { data1: u32, data2: u16, data3: u16, data4: [u8; 8] }
 const IID_IUNKNOWN: Guid = Guid { data1: 0, data2: 0, data3: 0, data4: [0xC0,0,0,0,0,0,0,0x46] };
 const IID_ISEQUENTIALSTREAM: Guid = Guid { data1: 0x0C733A30, data2: 0x2A1C, data3: 0x11CE, data4: [0xAD,0xE5,0,0xAA,0x00,0x44,0x77,0x3D] };
@@ -748,7 +748,8 @@ pub unsafe extern "system" fn RtlCopyMemoryStreamTo(this: PVOID, target: PVOID, 
     while total < length {
         let chunk = (length - total).min(scratch.len() as u64) as ULONG;
         let mut got = 0u32;
-        let status = unsafe { RtlReadMemoryStream(this, scratch.as_mut_ptr().cast(), chunk, &mut got) };
+        let read_fn = unsafe { (*(*this.cast::<RTL_MEMORY_STREAM>()).vtbl).read };
+        let status = unsafe { read_fn(this, scratch.as_mut_ptr().cast(), chunk, &mut got) };
         if status < 0 || got == 0 { if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, total); } } return status; }
         let vtbl = unsafe { (*target.cast::<RTL_MEMORY_STREAM>()).vtbl };
         if vtbl.is_null() { return STG_E_INVALIDPOINTER; }
@@ -820,27 +821,28 @@ pub unsafe extern "system" fn RtlFillMemoryNonTemporal(destination: PVOID, lengt
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlFillNonVolatileMemory(destination: PVOID, source: PVOID, length: SIZE_T, written: *mut SIZE_T) -> NTSTATUS {
-    if length != 0 && (destination.is_null() || source.is_null()) { return STATUS_INVALID_PARAMETER; }
-    if length != 0 { unsafe { ptr::copy_nonoverlapping(source.cast::<u8>(), destination.cast::<u8>(), length); } }
-    if !written.is_null() { unsafe { ptr::write(written, length); } }
+pub unsafe extern "system" fn RtlFillNonVolatileMemory(token: PVOID, destination: PVOID, value: u8, length: SIZE_T, flags: ULONG) -> NTSTATUS {
+    let _ = (token, destination, value, length, flags);
     STATUS_NOT_SUPPORTED
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlWriteNonVolatileMemory(destination: PVOID, source: PVOID, length: SIZE_T, written: *mut SIZE_T) -> NTSTATUS {
-    unsafe { RtlFillNonVolatileMemory(destination, source, length, written) }
+pub unsafe extern "system" fn RtlWriteNonVolatileMemory(token: PVOID, destination: PVOID, source: PVOID, length: SIZE_T, flags: ULONG) -> NTSTATUS {
+    let _ = (token, destination, source, length, flags);
+    STATUS_NOT_SUPPORTED
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlFlushNonVolatileMemory(base: PVOID, length: SIZE_T, flags: ULONG, processed: *mut SIZE_T) -> NTSTATUS {
-    let _ = (base, length, flags, processed); STATUS_NOT_SUPPORTED
+pub unsafe extern "system" fn RtlFlushNonVolatileMemory(token: PVOID, buffer: PVOID, length: SIZE_T, flags: ULONG) -> NTSTATUS {
+    let _ = (token, buffer, length, flags); STATUS_NOT_SUPPORTED
+}
+#[repr(C)]
+pub struct RTL_NV_MEMORY_RANGE { pub base_address: PVOID, pub length: SIZE_T }
+#[no_mangle]
+pub unsafe extern "system" fn RtlFlushNonVolatileMemoryRanges(token: PVOID, count: ULONG, ranges: *const RTL_NV_MEMORY_RANGE, flags: ULONG) -> NTSTATUS {
+    let _ = (token, count, ranges, flags); STATUS_NOT_SUPPORTED
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlFlushNonVolatileMemoryRanges(ranges: PVOID, count: ULONG, flags: ULONG) -> NTSTATUS {
-    let _ = (ranges, count, flags); STATUS_NOT_SUPPORTED
-}
-#[no_mangle]
-pub unsafe extern "system" fn RtlFlushSecureMemoryCache(base: PVOID, length: SIZE_T) -> NTSTATUS {
-    let _ = (base, length); STATUS_NOT_SUPPORTED
+pub unsafe extern "system" fn RtlFlushSecureMemoryCache(base: PVOID, length: SIZE_T) -> u8 {
+    let _ = (base, length); 0
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlRegisterSecureMemoryCacheCallback(callback: PVOID) -> NTSTATUS { let _ = callback; STATUS_NOT_SUPPORTED }
