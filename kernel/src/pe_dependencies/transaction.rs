@@ -5,7 +5,7 @@
 //! publication, and rollback to kernel services. Each DFS depth has a separate
 //! caller-provided file buffer. Newly mapped modules are journaled and rolled
 //! back in reverse order if any later step fails.
-use super::{discover, DependencyPlan, MAX_DEPENDENCIES, MAX_MODULE_NAME};
+use super::{discover, DependencyPlan, MAX_MODULE_NAME};
 
 pub const MAX_LOAD_DEPTH: usize = 16;
 pub const MAX_TRANSACTION_MODULES: usize = 32;
@@ -152,11 +152,15 @@ pub fn load_transaction<B: Backend>(
         // rollback of the whole newly-created graph.
         for i in 0..frames[depth].plan.len() {
             let dep = frames[depth].plan.get(i).ok_or(STATUS_INVALID_PARAMETER)?;
-            let dependency_handle = match backend.lookup(dep.as_bytes())? {
-                Some(h) => h,
-                None => {
+            let dependency_handle = match backend.lookup(dep.as_bytes()) {
+                Ok(Some(h)) => h,
+                Ok(None) => {
                     rollback(backend, &journal, journal_len);
                     return Err(STATUS_DLL_NOT_FOUND);
+                }
+                Err(e) => {
+                    rollback(backend, &journal, journal_len);
+                    return Err(e);
                 }
             };
             if let Err(e) = backend.link(handle, dependency_handle) {
