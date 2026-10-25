@@ -263,6 +263,3 @@ unsafe fn image_ascii_string(base: usize, image_size: usize, rva: usize, out: &m
     Err(STATUS_INVALID_PARAMETER)
 }
 
-/// Resolve one delay-import thunk in an already mapped PE32+ image. Dependency
-/// mapping is delegated to LdrLoadDll; until that service can map new files, this
-/// correctly resolves only dependencies already present in the process loader list.
