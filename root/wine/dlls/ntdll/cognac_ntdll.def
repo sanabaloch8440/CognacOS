@@ -7,3 +7,4 @@ EXPORTS
     RtlCopyMemory
     RtlFillMemory
     RtlMoveMemory
+    RtlZeroMemory
