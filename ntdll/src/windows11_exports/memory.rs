@@ -642,11 +642,9 @@ pub unsafe extern "system" fn RtlUnlockMemoryBlockLookaside(lookaside_ptr: PVOID
     STATUS_SUCCESS
 }
 
-// These APIs require facilities absent from the current kernel (section-backed
-// stream objects, token security, resource descriptors, persistent memory, or
-// secure-cache callbacks). Fail closed with the correct status type rather than
-// pretending to perform the operation.
-// In-memory IStream-compatible layout used by the RTL memory-stream helpers.
+// In-memory and section-backed IStream-compatible layouts. Section streams use
+// CognacOS's private section-object bridge; they are bounded and pagefile-backed
+// until file-backed sections and section-view mapping are implemented.
 // Start/Current/End are caller-owned bounds; these APIs never free the backing
 // buffer. Only clones allocated internally by this implementation own metadata.
 const S_OK: NTSTATUS = 0;
