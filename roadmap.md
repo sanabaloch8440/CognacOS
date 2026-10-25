@@ -175,3 +175,16 @@ The implementation remains partial. It now publishes the Windows-layout XState f
 - [ ] Queue attach/detach callouts on a process thread and wait for rundown before unmapping.
 
 The current first phase is intentionally fail-closed: if any discovered dependency is not already mapped, the parent is not mapped and the load returns STATUS_DLL_NOT_FOUND. This avoids partial parent images, but it is not yet recursive dependency loading.
+
+
+### Recursive dependency transaction engine (backend integration pending)
+
+- [x] Add an iterative DFS transaction API with a fixed maximum depth and fixed-size rollback journal.
+- [x] Use a distinct caller-owned file buffer for each active dependency depth.
+- [x] Map each image only after its dependencies are loaded, then publish dependency edges.
+- [x] Roll back newly mapped images in reverse order on map, link, file-read, parse, or dependency-lookup failure.
+- [x] Detect active-path cycles and reject graphs exceeding configured bounds.
+- [ ] Implement a kernel backend that connects this transaction API to process VFS reads, module registry operations, PE mapping, and generation-checked rollback.
+- [ ] Replace the existing single-image loader path with the transaction backend and validate with synthetic PE dependency graphs in CI.
+
+The generic transaction engine is present at `kernel/src/pe_dependencies/transaction.rs`, but the existing `load_dll_from_vfs` entry point still uses its fail-closed preflight path. Do not treat recursive dependency loading as enabled until the backend is wired and CI tests exercise it.
