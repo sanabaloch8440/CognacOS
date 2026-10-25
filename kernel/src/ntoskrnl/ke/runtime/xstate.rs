@@ -23,6 +23,7 @@ static XSTATE_SUPPORTED_MASK: AtomicU64 = AtomicU64::new(0);
 static XSTATE_ENABLED_MASK: AtomicU64 = AtomicU64::new(0);
 static XSTATE_AREA_SIZE: AtomicU32 = AtomicU32::new(0);
 static XSTATE_INITIALIZED: AtomicU32 = AtomicU32::new(0);
+static XSTATE_POLICY_FINALIZED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, Default)]
 #[repr(C)]
@@ -49,13 +50,23 @@ fn cpuid(leaf: u32, subleaf: u32) -> core::arch::x86_64::CpuidResult {
 /// Configure XSAVE on the current logical processor. Call during early CPU
 /// bring-up, with interrupts disabled and before scheduling user threads.
 pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
+    if XSTATE_POLICY_FINALIZED.load(Ordering::Acquire) && !ki_xstate_enabled() { return false; }
     let basic = cpuid(0, 0);
-    if basic.eax < 0x0d { return false; }
     let leaf1 = cpuid(1, 0);
-    if leaf1.ecx & CPUID_XSAVE == 0 { return false; }
+    if basic.eax < 0x0d || leaf1.ecx & CPUID_XSAVE == 0 {
+        if !XSTATE_POLICY_FINALIZED.swap(true, Ordering::AcqRel) {
+            XSTATE_INITIALIZED.store(0, Ordering::Release);
+        }
+        return false;
+    }
     let leafd0 = cpuid(0x0d, 0);
     let hardware_mask = ((leafd0.edx as u64) << 32) | leafd0.eax as u64;
-    if hardware_mask & XSTATE_X87 == 0 || hardware_mask & XSTATE_SSE == 0 { return false; }
+    if hardware_mask & XSTATE_X87 == 0 || hardware_mask & XSTATE_SSE == 0 {
+        if !XSTATE_POLICY_FINALIZED.swap(true, Ordering::AcqRel) {
+            XSTATE_INITIALIZED.store(0, Ordering::Release);
+        }
+        return false;
+    }
 
     // The OS owns CR4.OSXSAVE. Set the legacy SSE control bits as well, then
     // set XCR0 only to the dependency-closed state components we will save.
@@ -74,12 +85,24 @@ pub unsafe fn ki_initialize_xstate_current_cpu() -> bool {
 
     let leafd1 = cpuid(0x0d, 1);
     let size = leafd0.ebx;
-    if size < 576 { return false; }
+    if size < 576 {
+        if !XSTATE_POLICY_FINALIZED.swap(true, Ordering::AcqRel) {
+            XSTATE_INITIALIZED.store(0, Ordering::Release);
+        }
+        return false;
+    }
+    if XSTATE_POLICY_FINALIZED.load(Ordering::Acquire) {
+        let global_enabled = XSTATE_ENABLED_MASK.load(Ordering::Acquire);
+        return global_enabled != 0 && enabled == global_enabled
+            && hardware_mask & global_enabled == global_enabled
+            && size >= XSTATE_AREA_SIZE.load(Ordering::Acquire);
+    }
     XSTATE_SUPPORTED_MASK.store(hardware_mask, Ordering::Release);
     XSTATE_ENABLED_MASK.store(enabled, Ordering::Release);
     XSTATE_AREA_SIZE.store(size, Ordering::Release);
     let subfeatures = leafd1.eax;
     XSTATE_INITIALIZED.store(1 | ((subfeatures & 1) << 1) | ((subfeatures & 2) << 1) | ((subfeatures & 8) << 1), Ordering::Release);
+    XSTATE_POLICY_FINALIZED.store(true, Ordering::Release);
     true
 }
 
