@@ -105,7 +105,7 @@ def extract_syscalls(data: bytes, exports: dict[str, int], required=()):
         # Windows 11 may insert a shared-user-data test between the
         # service ID and syscall. Accept the canonical prefix and require
         # a syscall instruction in the short stub window.
-        if data[off:off + 3] != bytes.fromhex("4c 8b d1") or data[off + 3:off + 4] != b"\\xb8":
+        if data[off:off + 3] != bytes.fromhex("4c 8b d1") or data[off + 3:off + 4] != b"\xb8":
             continue
         stub_window = data[off + 8:off + 32]
         if bytes.fromhex("0f 05") not in stub_window:
