@@ -75,6 +75,19 @@ pub fn free_token(handle: u64) -> i32 {
     }
     STATUS_SUCCESS
 }
+/// Resolve a physical subrange to a token-relative offset without exposing
+/// the token's internal registry representation to callers.
+pub fn offset_for_physical(handle: u64, physical: u64, length: u64) -> Result<u64,i32> {
+    let Some((slot,generation)) = decode(handle) else { return Err(STATUS_INVALID_HANDLE); };
+    let _guard = LOCK.lock();
+    let entries = unsafe { &*core::ptr::addr_of!(TOKENS) };
+    let token = entries.get(slot).filter(|t| t.live && t.generation == generation).ok_or(STATUS_INVALID_HANDLE)?;
+    let end = physical.checked_add(length).ok_or(STATUS_INVALID_PARAMETER)?;
+    let token_end = token.base.checked_add(token.length).ok_or(STATUS_INVALID_PARAMETER)?;
+    if length == 0 || physical < token.base || end > token_end { return Err(STATUS_INVALID_PARAMETER); }
+    Ok(physical - token.base)
+}
+
 fn token_range(handle: u64, offset: u64, length: u64) -> Result<u64,i32> {
     let Some((slot,generation)) = decode(handle) else { return Err(STATUS_INVALID_HANDLE); };
     let _guard = LOCK.lock();
