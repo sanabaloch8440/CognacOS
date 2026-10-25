@@ -12,7 +12,7 @@ pub const IMAGE_NAME_ADDRESS: u64 = 0x0000_0080_6000_0000;
 pub const PROCESS_PARAMS_ADDRESS: u64 = 0x0000_0080_7000_0000;
 /// Windows x64 KUSER_SHARED_DATA user mapping. Windows 11 24H2 places
 /// XState at offset 0x3d8 within the read-only 0x7ffe0000 shared page.
-pub const KUSER_SHARED_DATA_ADDRESS: u64 = 0x0000_0000_7ffe_0000;
+pub const KUSER_SHARED_DATA_ADDRESS: u64 = crate::ntoskrnl::mm::address_space::KUSER_SHARED_DATA_ADDRESS;
 pub const KUSER_XSTATE_OFFSET: u64 = 0x3d8;
 static NEXT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(4);
 const MAX_PROCESSES: usize = 64;
@@ -434,7 +434,7 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     map_zeroed(space, LDR_ENTRY_ADDRESS, 2)?;
     map_zeroed(space, IMAGE_NAME_ADDRESS, 2)?;
     map_zeroed(space, PROCESS_PARAMS_ADDRESS, 1)?;
-    map_zeroed(space, KUSER_SHARED_DATA_ADDRESS, 1)?;
+    map_kuser_shared_page(space)?;
     let pid = NEXT_PID.fetch_add(4, core::sync::atomic::Ordering::Relaxed);
     // PEB x64: BeingDebugged, ImageBaseAddress, Ldr, ProcessParameters.
     put_u8(space, PEB_ADDRESS + 2, 0)?;
