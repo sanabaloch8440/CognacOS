@@ -565,7 +565,7 @@ pub unsafe extern "system" fn LdrAppxHandleIntegrityFailure() -> i32 { STATUS_NO
 pub unsafe extern "system" fn LdrCallEnclave() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrControlFlowGuardEnforced() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrControlFlowGuardEnforced() -> BOOLEAN { 0 }
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrCreateEnclave() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -752,7 +752,7 @@ pub unsafe extern "system" fn LdrInitializeThunk() -> i32 { STATUS_NOT_IMPLEMENT
 pub unsafe extern "system" fn LdrInitShimEngineDynamic() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrIsModuleSxsRedirected() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn LdrIsModuleSxsRedirected(_module_name: *const UNICODE_STRING) -> BOOLEAN { 0 }
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrLoadAlternateResourceModule() -> i32 { STATUS_NOT_IMPLEMENTED }
@@ -1319,7 +1319,7 @@ pub unsafe extern "system" fn RtlComputePrivatizedDllName_U() -> i32 { STATUS_NO
 
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlIsThreadWithinLoaderCallout() -> i32 { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn RtlIsThreadWithinLoaderCallout() -> BOOLEAN { 0 }
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlWnfDllUnloadCallback() -> i32 { STATUS_NOT_IMPLEMENTED }
