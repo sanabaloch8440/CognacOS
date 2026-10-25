@@ -205,26 +205,26 @@ mod tests {
     #[test]
     fn duplicate_load_and_reference_lifetime() {
         let name = b"cognac-test-duplicate.dll";
-        let (slot, gen) = reserve(name).unwrap();
+        let (slot, generation) = reserve(name).unwrap();
         assert_eq!(reserve(name), Err(STATUS_OBJECT_NAME_COLLISION));
-        publish_mapping(slot, gen, 0x4000_0000, 0x3000).unwrap();
-        begin_initialization(slot, gen).unwrap();
-        finish_initialization(slot, gen, true).unwrap();
-        assert_eq!(add_reference(slot, gen), Ok(2));
-        assert_eq!(begin_unload(slot, gen), Err(STATUS_RESOURCE_IN_USE));
+        publish_mapping(slot, generation, 0x4000_0000, 0x3000).unwrap();
+        begin_initialization(slot, generation).unwrap();
+        finish_initialization(slot, generation, true).unwrap();
+        assert_eq!(add_reference(slot, generation), Ok(2));
+        assert_eq!(begin_unload(slot, generation), Err(STATUS_RESOURCE_IN_USE));
         // Release the extra reference via the same ownership accounting path.
-        release_reference(slot, gen).unwrap();
-        assert_eq!(begin_unload(slot, gen), Ok(Some((0x4000_0000, 0x3000))));
-        finish_unload(slot, gen).unwrap();
+        release_reference(slot, generation).unwrap();
+        assert_eq!(begin_unload(slot, generation), Ok(Some((0x4000_0000, 0x3000))));
+        finish_unload(slot, generation).unwrap();
         assert!(find(name).is_none());
     }
     #[test]
     fn failed_initialization_rolls_back_module() {
         let name = b"cognac-test-init-failure.dll";
-        let (slot, gen) = reserve(name).unwrap();
-        publish_mapping(slot, gen, 0x5000_0000, 0x2000).unwrap();
-        begin_initialization(slot, gen).unwrap();
-        assert_eq!(finish_initialization(slot, gen, false), Err(STATUS_DLL_NOT_FOUND));
+        let (slot, generation) = reserve(name).unwrap();
+        publish_mapping(slot, generation, 0x5000_0000, 0x2000).unwrap();
+        begin_initialization(slot, generation).unwrap();
+        assert_eq!(finish_initialization(slot, generation, false), Err(STATUS_DLL_NOT_FOUND));
         assert!(find(name).is_none());
     }
     #[test]
