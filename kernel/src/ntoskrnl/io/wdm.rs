@@ -435,10 +435,17 @@ fn track_irp_device(irp:*mut Irp, device:*mut DeviceObject)->bool {
 /// Release the IRP's device references once. The caller must keep the IRP
 /// allocated until this function returns.
 fn release_irp_active_op(irp:*mut Irp) {
- let mut state=WDM.lock();
- if let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) {
-  if slot.active_ops!=0 {slot.active_ops-=1;}
- }
+ let should_release={
+  let mut state=WDM.lock();
+  let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+  if state.irps[index].active_ops!=0 {state.irps[index].active_ops-=1;}
+  state.irps[index].active_ops==0
+   && state.irps[index].completion_state==2
+   && state.irps[index].outstanding_count!=0
+ };
+ // Completion may finish while a cancel/dispatch callback is still pinned.
+ // Keep device rundown until the final callback pin is dropped.
+ if should_release {release_irp_device_rundown(irp);}
 }
 
 /// Drop every device rundown reference attached to an IRP exactly once.
@@ -574,7 +581,14 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
    state.irps[i].completion_state=if finished {2}else{0};
   }
  }
- if finished {release_irp_device_rundown(irp);}
+ if finished {
+  let callbacks_drained={
+   let state=WDM.lock();
+   state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp))
+    .is_some_and(|s|s.active_ops==0)
+  };
+  if callbacks_drained {release_irp_device_rundown(irp);}
+}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
