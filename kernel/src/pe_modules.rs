@@ -120,20 +120,30 @@ pub fn add_dependency(parent: usize, parent_generation: u32, dependency: usize, 
     }
     let bit = 1u32 << dependency;
     if s.entries[parent].dependencies & bit != 0 { return Ok(()); }
+    // Check overflow before publishing the edge so failure is transactional.
+    let references = s.entries[dependency].references.checked_add(1).ok_or(STATUS_RESOURCE_IN_USE)?;
+    s.entries[dependency].references = references;
     s.entries[parent].dependencies |= bit;
-    s.entries[dependency].references = s.entries[dependency].references.checked_add(1).ok_or(STATUS_RESOURCE_IN_USE)?;
     Ok(())
 }
 
-/// Drop a caller reference. An image is eligible for unmapping only when this
-/// returns Some(base,size); any dependency or outstanding reference prevents it.
+/// Drop one caller reference. Returns Some(base,size) only when this was the
+/// final reference and no other module depends on it; Ok(None) means the
+/// reference was released but the mapping must remain alive.
 pub fn begin_unload(slot: usize, generation: u32) -> Result<Option<(u64, u32)>, i32> {
     let mut s = STATE.lock();
     let e = s.entries.get(slot).copied().ok_or(STATUS_INVALID_PARAMETER)?;
     if e.generation != generation || e.state == ModuleState::Empty || e.state == ModuleState::Reserved
         || e.state == ModuleState::Unloading || e.references == 0 { return Err(STATUS_INVALID_PARAMETER); }
-    if e.references > 1 || s.entries.iter().any(|other| other.state != ModuleState::Empty && other.dependencies & (1u32 << slot) != 0) {
-        return Err(STATUS_RESOURCE_IN_USE);
+    if e.references > 1 {
+        s.entries[slot].references -= 1;
+        return Ok(None);
+    }
+    if s.entries.iter().any(|other| other.state != ModuleState::Empty && other.dependencies & (1u32 << slot) != 0) {
+        // The module's own reference is released, but dependency ownership keeps
+        // the mapping alive. A later unload after dependents detach can retry.
+        s.entries[slot].references = 0;
+        return Ok(None);
     }
     s.entries[slot].references = 0;
     s.entries[slot].state = ModuleState::Unloading;
@@ -211,9 +221,8 @@ mod tests {
         begin_initialization(slot, generation).unwrap();
         finish_initialization(slot, generation, true).unwrap();
         assert_eq!(add_reference(slot, generation), Ok(2));
-        assert_eq!(begin_unload(slot, generation), Err(STATUS_RESOURCE_IN_USE));
-        // Release the extra reference via the same ownership accounting path.
-        release_reference(slot, generation).unwrap();
+        assert_eq!(begin_unload(slot, generation), Ok(None));
+        assert_eq!(find(name).unwrap().1.references, 1);
         assert_eq!(begin_unload(slot, generation), Ok(Some((0x4000_0000, 0x3000))));
         finish_unload(slot, generation).unwrap();
         assert!(find(name).is_none());
