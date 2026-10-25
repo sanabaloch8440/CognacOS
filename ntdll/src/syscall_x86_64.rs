@@ -83,6 +83,23 @@ NtQueryValueKey:
     movl $0x17, %eax
     syscall
     ret
+
+    # CognacOS extension service IDs are discovered from these in-image stubs.
+    .p2align 4
+    .globl NtOpenFile
+NtOpenFile:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x107, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtReadFile
+NtReadFile:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x108, %eax
+    syscall
+    ret
 "#,
     options(att_syntax)
 );
@@ -123,5 +140,24 @@ unsafe extern "system" {
         information: *mut core::ffi::c_void,
         information_length: u32,
         result_length: *mut u32,
+    ) -> NTSTATUS;
+    pub fn NtOpenFile(
+        file_handle: *mut *mut core::ffi::c_void,
+        desired_access: u32,
+        object_attributes: *const core::ffi::c_void,
+        io_status_block: *mut core::ffi::c_void,
+        share_access: u32,
+        open_options: u32,
+    ) -> NTSTATUS;
+    pub fn NtReadFile(
+        file_handle: *mut core::ffi::c_void,
+        event: *mut core::ffi::c_void,
+        apc_routine: Option<unsafe extern "system" fn(*mut core::ffi::c_void, *mut core::ffi::c_void, *mut core::ffi::c_void)>,
+        apc_context: *mut core::ffi::c_void,
+        io_status_block: *mut core::ffi::c_void,
+        buffer: *mut core::ffi::c_void,
+        length: u32,
+        byte_offset: *const i64,
+        key: *mut u32,
     ) -> NTSTATUS;
 }
