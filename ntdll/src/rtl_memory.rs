@@ -210,3 +210,43 @@ pub unsafe extern "system" fn RtlIsZeroMemory(
     }
     1
 }
+
+
+// C runtime memory entry points used by the Windows x64 NTDLL export surface.
+// These are real byte-wise primitives, not STATUS_NOT_IMPLEMENTED placeholders.
+#[no_mangle]
+pub unsafe extern "C" fn memcmp(left: *const core::ffi::c_void, right: *const core::ffi::c_void, count: usize) -> i32 {
+    let left = left.cast::<u8>();
+    let right = right.cast::<u8>();
+    for index in 0..count {
+        let a = unsafe { core::ptr::read(left.add(index)) };
+        let b = unsafe { core::ptr::read(right.add(index)) };
+        if a != b { return a as i32 - b as i32; }
+    }
+    0
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memcpy(destination: *mut core::ffi::c_void, source: *const core::ffi::c_void, count: usize) -> *mut core::ffi::c_void {
+    unsafe { core::ptr::copy_nonoverlapping(source.cast::<u8>(), destination.cast::<u8>(), count); }
+    destination
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memmove(destination: *mut core::ffi::c_void, source: *const core::ffi::c_void, count: usize) -> *mut core::ffi::c_void {
+    unsafe { core::ptr::copy(source.cast::<u8>(), destination.cast::<u8>(), count); }
+    destination
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memset(destination: *mut core::ffi::c_void, value: i32, count: usize) -> *mut core::ffi::c_void {
+    unsafe { core::ptr::write_bytes(destination.cast::<u8>(), value as u8, count); }
+    destination
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn strlen(string: *const core::ffi::c_char) -> usize {
+    let mut length = 0usize;
+    while unsafe { core::ptr::read(string.add(length)) } != 0 { length += 1; }
+    length
+}

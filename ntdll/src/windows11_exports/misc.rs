@@ -503,32 +503,12 @@ pub unsafe extern "system" fn memchr() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn memcmp() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn memcpy() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn memcpy_s() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn memmove() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn memmove_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn memset() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
@@ -709,11 +689,6 @@ pub unsafe extern "system" fn strcpy_s() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn strcspn() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strlen() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
