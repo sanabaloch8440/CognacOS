@@ -1181,4 +1181,28 @@ mod wdm_tests {
   unsafe{io_free_irp(irp);io_delete_device(device);}
  }
 
+
+ static UNLOAD_CALLS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+ unsafe extern "system" fn counted_driver_unload(_driver:*mut DriverObject){
+  UNLOAD_CALLS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
+ }
+ #[test]
+ fn driver_unload_waits_for_remove_lock_and_calls_callback_once(){
+  UNLOAD_CALLS.store(0,core::sync::atomic::Ordering::Release);
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.driver_unload=Some(counted_driver_unload);
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_acquire_device_remove_lock(device)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_unload_driver(&mut driver)},STATUS_PENDING);
+  assert_eq!(UNLOAD_CALLS.load(core::sync::atomic::Ordering::Acquire),0);
+  unsafe{io_release_device_remove_lock(device);}
+  assert_eq!(unsafe{io_unload_driver(&mut driver)},STATUS_SUCCESS);
+  assert_eq!(UNLOAD_CALLS.load(core::sync::atomic::Ordering::Acquire),1);
+  assert_eq!(unsafe{io_unload_driver(&mut driver)},STATUS_SUCCESS);
+  assert_eq!(UNLOAD_CALLS.load(core::sync::atomic::Ordering::Acquire),1);
+  let mut rejected:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut rejected)},STATUS_DELETE_PENDING);
+  assert!(rejected.is_null());
+ }
 }
