@@ -28,7 +28,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes make gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
 
-      - name: Build freestanding PE32+ DLL
+      - name: Validate compile-only NTDLL link helper\n        run: python3 root/wine/dlls/ntdll/tools/ntdll_link_helper.py --help\n\n      - name: Build freestanding PE32+ DLL
         run: make -C root/wine/dlls/ntdll -f Makefile.cognac clean all check
 
       - name: Report PE headers and exports
