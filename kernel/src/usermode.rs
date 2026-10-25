@@ -433,9 +433,9 @@ pub unsafe fn run_windows_syscall_abi_smoke(
 
 /// Load-and-execute smoke test for the freestanding CognacOS NTDLL. The DLL is
 /// mapped and its real export table registered by pe::load_dll before this is
-/// called. A stock Windows NTDLL lacks CognacNtdllConfigureSyscallTable and is
-/// intentionally not executed as a whole image; the focused Windows ABI smoke
-/// above exercises supported Windows service numbers in genuine ring-3 code.
+/// called. The native image is identified by its exported per-process heap
+/// object, and its Nt* exports must be canonical Windows SYSCALL stubs. A stock
+/// Windows NTDLL is tested separately by the focused ABI smoke above.
 pub unsafe fn run_native_ntdll_smoke(
     space: &mut AddressSpace,
     ntdll: LoadedImage,
