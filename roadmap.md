@@ -24,7 +24,13 @@ This is the canonical progress tracker. Checkboxes describe code and validation 
 - [x] ACPI table parsing, AP startup, per-CPU GDT/TSS and IST stacks, directed IPI acknowledgements.
 - [x] Build, PE validation, OVMF/QEMU boot, and multi-vCPU workflow coverage.
 - [ ] Validate on physical hardware and broaden malformed-image/firmware testing.
-- [ ] Complete secure-boot signature verification and relocatable-image support.
+- [x] Enforce SHA-256 and Ed25519 signature verification of the kernel PE32+ image before loading; reject missing or invalid signatures.
+- [x] Detect optional UEFI Secure Boot/SetupMode state and pass the verified-kernel digest plus security flags through BootInfo v8.
+- [x] Add optional TPM 2.0 TCG2 PCR 4 measurement of the verified kernel; TPM absence or measurement failure does not block boot.
+- [x] Add CI signature generation, valid-signature verification, and tampered-image rejection; allow optional UEFI loader signing when a firmware-trusted certificate is configured.
+- [ ] Configure and protect stable release signing keys; validate Secure Boot with an enrolled certificate and TPM 2.0 on QEMU/physical firmware.
+- [ ] Implement Windows Authenticode/CI policy semantics and signed driver/module enforcement; current Ed25519 kernel signature is CognacOS-specific.
+- [ ] Add relocatable-image support.
 
 ## Milestone 2 — Memory isolation and fault containment (in progress)
 
