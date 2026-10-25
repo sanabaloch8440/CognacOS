@@ -4,7 +4,7 @@ use crate::pe::ImportSymbol;
 const USER_START: u64 = 0x0000_0080_0000_0000;
 const USER_END: u64 = 0x0000_8000_0000_0000;
 const MODULES: usize = 32;
-const EXPORTS: usize = 512;
+const EXPORTS: usize = 4096;
 const NAME: usize = 64;
 #[derive(Clone, Copy)]
 pub struct ModuleInfo { pub name: [u8; NAME], pub len: usize, pub base: u64, pub size: u32, pub entrypoint: u64 }
