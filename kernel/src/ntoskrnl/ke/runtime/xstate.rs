@@ -343,25 +343,32 @@ pub unsafe extern "win64" fn KeSaveExtendedProcessorState(mask: u64, save: *mut 
 }
 
 /// Restore the most recent matching XSTATE_SAVE. Invalid, stale, cross-thread,
-/// cross-CPU, wrong-IRQL, or out-of-order restores are rejected as no-ops.
+/// wrong-IRQL, or out-of-order restores are rejected as no-ops.
 #[no_mangle]
 pub unsafe extern "win64" fn KeRestoreExtendedProcessorState(save: *mut u8) {
     if save.is_null() || (save as usize) & 7 != 0 || !ki_xstate_enabled() { return; }
     let magic = unsafe { (save as *const u64).read_unaligned() };
     let generation = unsafe { (save.add(8) as *const u64).read_unaligned() };
     if magic != XSTATE_SAVE_MAGIC { return; }
-    let Some((cpu, owner_thread, irql)) = current_xstate_execution_context() else { return; };
-    let mut table = XSTATE_SAVE_TABLE.lock();
-    let Some(owner_index) = table.owners.iter().position(|owner| *owner == owner_thread) else { return; };
-    let depth = table.depth[owner_index] as usize;
-    if depth == 0 || table.stack[owner_index][depth - 1] != save as usize { return; }
-    let Some(index) = table.slots.iter().position(|s| s.active && s.key == save as usize
-        && s.generation == generation && s.owner_thread == owner_thread && s.irql == irql) else { return; };
-    let saved_mask = table.slots[index].mask;
-    if unsafe { !ki_xstate_restore_thread_mask(&table.slots[index].area, saved_mask) } { return; }
-    table.depth[owner_index] = (depth - 1) as u8;
-    table.stack[owner_index][depth - 1] = 0;
-    if table.depth[owner_index] == 0 { table.owners[owner_index] = 0; }
-    table.slots[index] = XStateSaveSlot::EMPTY;
-    unsafe { (save as *mut u64).write_unaligned(0); }
+    let Some((_cpu, owner_thread, irql)) = current_xstate_execution_context() else { return; };
+    let mut restored_area = KiThreadXStateArea::zeroed();
+    let saved_mask;
+    {
+        let mut table = XSTATE_SAVE_TABLE.lock();
+        let Some(owner_index) = table.owners.iter().position(|owner| *owner == owner_thread) else { return; };
+        let depth = table.depth[owner_index] as usize;
+        if depth == 0 || table.stack[owner_index][depth - 1] != save as usize { return; }
+        let Some(index) = table.slots.iter().position(|s| s.active && s.key == save as usize
+            && s.generation == generation && s.owner_thread == owner_thread && s.irql == irql) else { return; };
+        saved_mask = table.slots[index].mask;
+        restored_area = table.slots[index].area;
+        table.depth[owner_index] = (depth - 1) as u8;
+        table.stack[owner_index][depth - 1] = 0;
+        if table.depth[owner_index] == 0 { table.owners[owner_index] = 0; }
+        table.slots[index] = XStateSaveSlot::EMPTY;
+        unsafe { (save as *mut u64).write_unaligned(0); }
+    }
+    // Restore after releasing the global bookkeeping lock so no lock-release
+    // code runs between XRSTOR and the return to the caller.
+    unsafe { let _ = ki_xstate_restore_thread_mask(&restored_area, saved_mask); }
 }
