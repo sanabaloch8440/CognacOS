@@ -377,3 +377,10 @@ to CognacOS's real registry and process initialization services.
 The Rust version port now contains source-derived RTL_OSVERSIONINFOEXW records for each Wine Version alias in version.c, including legacy Win32s and Win9x records, NT workstation/server distinctions, service-pack strings, suite masks, and the source's existing legacy/reserved values. The pure select_version_profile helper models the selection order: a recognized application-specific alias wins, then a recognized global alias, then the caller-supplied registry/OS record. Tests cover representative workstation and server records, UTF-16 service-pack strings, and selection/fallback precedence.
 
 This is still a source-first Rust implementation: it does not query HKCU\\Software\\Wine\\AppDefaults, HKCU\\Software\\Wine, or the NT/Win9x registry itself; it does not yet initialize the process PEB version fields or supply the native RtlGetVersion export. Unknown profile names fall back to the supplied version record rather than inventing a host version. The Rust module is not wired into the freestanding PE32+ NTDLL build, and these new unit tests have not yet been confirmed as executed in CI.
+
+
+### NT and Win9x registry version payload parsers
+
+Added pure Rust decoders for the value payloads consumed by Wine version.c's NT-style registry reader: complete CurrentMajorVersionNumber/CurrentMinorVersionNumber DWORD pairs, CurrentVersion string fallback, CurrentBuildNumber, UTF-16 CSDVersion, the packed Control\\Windows CSDVersion service-pack value, and ProductOptions ProductType (WinNT, LanmanNT, ServerNT). Added a Win9x VersionNumber/SubVersionNumber decoder and the source's NT-first, Win9x-second fallback selection helper. Unit tests cover type/value fallback, product type mapping, service-pack decoding, UTF-16 termination, malformed values, and packed Win9x build fields.
+
+These helpers consume already-decoded values; they do not call NtOpenKey/NtQueryValueKey, validate registry value types themselves, or initialize PEB fields. The native registry bridge and startup wiring remain outstanding, and CI must execute the Rust tests before this slice is considered validated.
