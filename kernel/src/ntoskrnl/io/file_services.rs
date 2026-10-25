@@ -125,6 +125,31 @@ pub fn read_current_for_process(owner: u64, handle: usize, out: &mut [u8]) -> Re
     Ok(count)
 }
 
+pub fn current_offset_for_process(owner: u64, handle: usize) -> Result<usize, i32> {
+    let slot = handle & 0xff;
+    if slot == 0 || slot > MAX_HANDLES { return Err(STATUS_INVALID_HANDLE); }
+    let state = STATE.lock();
+    let h = &state.handles[slot - 1];
+    if !h.used || h.token != handle >> 8 || h.owner != owner { return Err(STATUS_INVALID_HANDLE); }
+    Ok(h.offset)
+}
+pub fn advance_current_for_process(owner: u64, handle: usize, expected: usize, amount: usize) -> Result<(), i32> {
+    let slot = handle & 0xff;
+    if slot == 0 || slot > MAX_HANDLES { return Err(STATUS_INVALID_HANDLE); }
+    let mut state = STATE.lock();
+    let file_index = {
+        let h = &state.handles[slot - 1];
+        if !h.used || h.token != handle >> 8 || h.owner != owner || h.offset != expected {
+            return Err(STATUS_INVALID_HANDLE);
+        }
+        h.file_index
+    };
+    let end = expected.checked_add(amount).ok_or(STATUS_INVALID_PARAMETER)?;
+    if end > state.files[file_index].length { return Err(STATUS_INVALID_PARAMETER); }
+    state.handles[slot - 1].offset = end;
+    Ok(())
+}
+
 pub fn close(handle: usize) -> Result<(), i32> { close_for_process(0, handle) }
 pub fn close_for_process(owner: u64, handle: usize) -> Result<(), i32> {
     let slot = handle & 0xff;
