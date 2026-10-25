@@ -289,8 +289,8 @@ pub unsafe extern "system" fn CognacNtdllPublishXStateConfiguration(
     if enabled & 0x3 != 0x3 { return STATUS_INVALID_PARAMETER; }
     NTDLL_XSTATE_READY.store(false, Ordering::Release);
     for i in 0..64 {
-        NTDLL_XSTATE_OFFSETS[i].store(*offsets.add(i), Ordering::Relaxed);
-        NTDLL_XSTATE_SIZES[i].store(*sizes.add(i), Ordering::Relaxed);
+        NTDLL_XSTATE_OFFSETS[i].store(unsafe { *offsets.add(i) }, Ordering::Relaxed);
+        NTDLL_XSTATE_SIZES[i].store(unsafe { *sizes.add(i) }, Ordering::Relaxed);
     }
     NTDLL_XSTATE_SUPPORTED.store(supported, Ordering::Relaxed);
     NTDLL_XSTATE_ENABLED.store(enabled, Ordering::Relaxed);
@@ -433,8 +433,8 @@ pub unsafe extern "system" fn RtlInitializeExtendedContext2(context: PVOID, flag
         core::ptr::write_bytes(xstate_addr as *mut u8, 0, payload);
         if NTDLL_XSTATE_COMPACTION_ENABLED.load(Ordering::Acquire) {
             let selected = mask & NTDLL_XSTATE_ENABLED.load(Ordering::Acquire) & !3u64;
-            ((1u64 << 63) | selected).to_ne_bytes().iter().enumerate()
-                .for_each(|(i, b)| (xstate_addr as *mut u8).add(8 + i).write(*b));
+            let compaction_mask = (1u64 << 63) | selected;
+            (xstate_addr as *mut u8).add(8).cast::<ULONG64>().write_unaligned(compaction_mask);
         }
         ex_ptr.write_unaligned(ex);
         *out = ex_ptr;
@@ -549,8 +549,7 @@ pub unsafe extern "system" fn RtlCopyExtendedContext(dst: *mut CONTEXT_EX, flags
     STATUS_SUCCESS
 }
 
-/// Query one component's standard XSAVE-area offset and size. This CognacOS
-/// helper is used by the CONTEXT_EX implementation as it is completed.
+/// Query one enabled component's standard XSAVE-area offset and size.
 #[no_mangle]
 pub unsafe extern "system" fn CognacRtlQueryExtendedFeature(
     feature_id: ULONG, offset: *mut ULONG, size: *mut ULONG,
