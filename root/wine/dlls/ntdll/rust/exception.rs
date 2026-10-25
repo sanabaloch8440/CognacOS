@@ -438,7 +438,7 @@ pub unsafe extern "system" fn RtlInitializeExtendedContext2(context: PVOID, flag
     ex.Legacy.Offset = -(size as i32);
     ex.Legacy.Length = size as ULONG;
     if flags & CONTEXT_XSTATE == 0 {
-        ex.XState.Offset = 25;
+        ex.XState.Offset = CONTEXT_EX_ALIGNED_SIZE as i32;
         ex.All.Length = (size + CONTEXT_EX_SIZE) as ULONG;
         unsafe { ex_ptr.write_unaligned(ex); *out = ex_ptr; }
         return STATUS_SUCCESS;
