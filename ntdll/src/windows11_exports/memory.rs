@@ -828,7 +828,7 @@ pub unsafe extern "system" fn RtlUnlockMemoryStreamRegion(this: PVOID, offset: u
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetMemoryStreamSize(this: PVOID, new_size: u64) -> NTSTATUS { let _ = (this, new_size); E_NOTIMPL }
 #[no_mangle]
-pub unsafe extern "system" fn RtlWriteMemoryStream(stream: PVOID, buffer: PVOID, length: ULONG, written: *mut ULONG) -> NTSTATUS { let _ = (stream, buffer, length, written); STATUS_NOT_SUPPORTED }
+pub unsafe extern "system" fn RtlWriteMemoryStream(stream: PVOID, buffer: PVOID, length: ULONG, written: *mut ULONG) -> NTSTATUS { let _ = (stream, buffer, length); if !written.is_null() { unsafe { ptr::write(written, 0); } } E_NOTIMPL }
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlCopyMemoryNonTemporal(destination: PVOID, source: *const c_void, length: SIZE_T) {
