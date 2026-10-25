@@ -80,6 +80,9 @@ impl AddressSpace {
             || physical_address >= 0x1_0000_0000
         { return Err(VmError::InvalidAddress); }
         let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        if KUSER_PAGE_TABLE_TRACKING.lock().iter().any(|entry| entry.root == self.root) {
+            return Err(VmError::AlreadyMapped);
+        }
         let indexes = [
             ((virtual_address >> 39) & 0x1ff) as usize,
             ((virtual_address >> 30) & 0x1ff) as usize,
