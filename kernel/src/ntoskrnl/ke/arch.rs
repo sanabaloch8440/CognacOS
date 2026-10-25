@@ -1133,6 +1133,7 @@ pub unsafe fn load_cpu_descriptor_tables(logical_id: usize, rsp0: u64) -> Result
     unsafe { asm!("lidt [{}]", in(reg) &pointer, options(readonly, nostack, preserves_flags)); }
     if !per_cpu_tss_self_test(logical_id) { return Err(()); }
     unsafe { crate::syscall::initialize_windows_syscall_abi(logical_id)?; }
+    unsafe { crate::syscall::prepare_windows_syscall_stack(logical_id)?; }
     Ok(())
 }
 
