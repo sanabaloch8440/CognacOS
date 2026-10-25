@@ -2,9 +2,18 @@
 name: Deploy Jekyll with GitHub Pages dependencies preinstalled
 
 on:
-  # Runs on pushes targeting the default branch
+  # Publish only when site content, project documentation, or this workflow changes.
   push:
     branches: ["main"]
+    paths:
+      - '**/*.md'
+      - 'docs/**'
+      - 'assets/**'
+      - '_config.yml'
+      - 'index.html'
+      - 'Gemfile'
+      - 'Gemfile.lock'
+      - '.github/workflows/jekyll-gh-pages.yml'
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
