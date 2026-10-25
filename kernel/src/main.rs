@@ -196,6 +196,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     unsafe {
         serial_init();
         serial_write(b"CognacOS Rust kernel entered.\r\n");
+        if !pe_modules::self_test() {
+            serial_write(b"FATAL: PE module lifetime metadata self-test failed.\r\n");
+            halt();
+        }
+        serial_write(b"PE module lifetime metadata self-test passed.\r\n");
         if boot_info.is_null() {
             serial_write(b"FATAL: null boot information pointer.\r\n");
             halt();
