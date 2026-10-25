@@ -508,7 +508,7 @@ impl AddressSpace {
             let areas = unsafe { &*DEMAND_AREAS.0.get() };
             let area = areas.iter().find(|a| a.live && a.root == self.root && start >= a.start && end <= a.end).ok_or(VmError::NotMapped)?;
             if start != area.start || end != area.end { return Err(VmError::InvalidAddress); }
-            if !area.committed { return Err(VmError::NotMapped); }
+            if !release && !area.committed { return Err(VmError::NotMapped); }
             let pages = unsafe { &mut *WORKING_SET.0.get() };
             if pages.iter().any(|p| p.live && p.root == self.root && p.va >= start && p.va < end && p.busy) {
                 return Err(VmError::AddressSpaceBusy);
