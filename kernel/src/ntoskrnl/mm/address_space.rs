@@ -700,7 +700,7 @@ pub fn handle_current_user_page_fault(address:u64,error_code:u64)->bool {
     if process.is_null(){return false}
     let root=unsafe{(*process).address_space_root};
     if root==0 || root!=active_root_physical(){return false}
-    let mut space=AddressSpace{root};
+    let mut space=AddressSpace{root, kuser_tables:[0;3]};
     space.handle_page_fault(address,error_code)
 }
 
