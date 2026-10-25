@@ -339,3 +339,21 @@ yet linked into the freestanding PE32+ build. Tests cover ordering conditions,
 major/minor comparison, suite/product checks, invalid masks, and x64 structure
 size; CI has to confirm compilation and execution before the port is considered
 validated.
+
+
+## Rust port status: `version.c` (continued)
+
+The Rust source `rust/version.rs` now also includes source-derived helpers for
+`RtlGetNtVersionNumbers`, `RtlGetNtProductType`, and Wine's current
+`RtlGetProductInfo` policy, alongside the version-comparison core. The
+version-number helper preserves Wine's documented-in-source high build nibble
+(`0xF0000000 | build`) and accepts null output pointers. Version-info copying
+handles the base 276-byte `OSVERSIONINFOW` layout and the 284-byte extended
+layout separately.
+
+Scope remains deliberately partial: this does not port registry-backed
+`version_init`, Wine's configuration/version aliases, or the NT/Win9x registry
+parsers. Product SKU selection follows Wine's simplified behavior, not the full
+Windows SKU catalogue. The Rust module is not yet wired into the freestanding
+PE32+ export bridge, and its unit tests require execution in CI before this
+work should be treated as validated.
