@@ -190,10 +190,10 @@ struct WindowsSyscallCpuLocal {
     kernel_rsp: u64,
     scratch_rax: u64,
     scratch_rdx: u64,
-    stack: [u8; 16 * 1024],
+    stack_page: u64,
 }
 impl WindowsSyscallCpuLocal {
-    const fn new() -> Self { Self { user_rsp: 0, kernel_rsp: 0, scratch_rax: 0, scratch_rdx: 0, stack: [0; 16 * 1024] } }
+    const fn new() -> Self { Self { user_rsp: 0, kernel_rsp: 0, scratch_rax: 0, scratch_rdx: 0, stack_page: 0 } }
 }
 static mut WINDOWS_SYSCALL_CPUS: [WindowsSyscallCpuLocal; crate::hal::MAX_CPUS] =
     [const { WindowsSyscallCpuLocal::new() }; crate::hal::MAX_CPUS];
@@ -248,8 +248,12 @@ cognacos_windows_syscall_entry:
     mov rax, qword ptr gs:[8]
     mov rdx, rax
     shr rdx, 32
-    cmp edx, 0xffffffff
+    test edx, edx
     jne .Lwindows_stack_bad
+    test eax, 0xfff
+    jne .Lwindows_stack_bad
+    cmp eax, 0x10000000
+    jae .Lwindows_stack_bad
     mov al, 'T'
     jmp .Lwindows_stack_marker
 .Lwindows_stack_bad:
@@ -329,7 +333,17 @@ unsafe extern "C" { fn cognacos_windows_syscall_entry(); }
 pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
     if cpu >= crate::hal::MAX_CPUS { return Err(()); }
     let local = unsafe { core::ptr::addr_of_mut!(WINDOWS_SYSCALL_CPUS[cpu]) };
-    unsafe { (*local).kernel_rsp = local as u64 + core::mem::size_of::<WindowsSyscallCpuLocal>() as u64; }
+    unsafe {
+        if (*local).stack_page == 0 {
+            // The page allocator's identity-mapped physical pages are present
+            // in every address space as supervisor-only memory. Keep syscall
+            // stacks out of the image BSS, whose tail is not guaranteed mapped.
+            let page = crate::memory::allocate_page().map_err(|_| ())?;
+            if page == 0 || page >= 0x1_0000_0000 { return Err(()); }
+            (*local).stack_page = page;
+        }
+        (*local).kernel_rsp = (*local).stack_page + 4096;
+    }
     unsafe {
         write_msr(0xC000_0101, 0); // IA32_GS_BASE: kernel has no active GS segment base
         write_msr(0xC000_0102, local as u64); // IA32_KERNEL_GS_BASE: swapgs target
