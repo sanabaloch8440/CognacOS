@@ -52,3 +52,6 @@ pub const EXPORTS: &[(&str, u16)] = &[
     ("ObfReferenceObject", 1827),
     ("ObfReferenceObjectWithTag", 1828),
 ];
+
+// Internal object and handle-table implementation.
+#[path = "ob/object_table.rs"] pub(crate) mod object_table;

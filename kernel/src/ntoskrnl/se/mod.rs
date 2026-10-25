@@ -118,3 +118,6 @@ pub const EXPORTS: &[(&str, u16)] = &[
     ("SeUnregisterLogonSessionTerminatedRoutineEx", 2801),
     ("SeValidSecurityDescriptor", 2802),
 ];
+
+// Security reference monitor and token primitives.
+#[path = "se/security.rs"] pub(crate) mod security;

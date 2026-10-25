@@ -2,7 +2,7 @@
 #![no_main]
 
 pub(crate) use ntoskrnl::mm::{kernel_space as kernel_vm, pagefile, physical as memory};
-mod security;
+pub(crate) use ntoskrnl::se::security;
 mod user;
 mod pe;
 mod process;
@@ -16,7 +16,7 @@ mod dma;
 mod hal;
 mod smp;
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
-mod object;
+pub(crate) use ntoskrnl::ob::object_table as object;
 #[path = "ntoskrnl/io/runtime.rs"]
 pub(crate) mod io;
 use cognacos_ext4 as extfs;
