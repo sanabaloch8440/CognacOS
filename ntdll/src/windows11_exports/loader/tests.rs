@@ -122,4 +122,4 @@ mod tests {
         assert!(unsafe { LdrProcessRelocationBlock(image.as_mut_ptr() as usize, 2, unsupported.as_mut_ptr(), 1) }.is_null());
         assert!(unsafe { LdrProcessRelocationBlockEx(0x14c, image.as_mut_ptr() as usize, 2, unsupported.as_mut_ptr(), 1) }.is_null());
     }
-
+}
