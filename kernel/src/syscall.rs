@@ -247,11 +247,18 @@ cognacos_windows_syscall_entry:
     mov qword ptr gs:[24], rdx
     mov rax, qword ptr gs:[8]
     mov rdx, rax
-    shr rdx, 48
-    cmp dx, 0xffff
+    shr rdx, 32
+    test edx, edx
+    jz .Lwindows_stack_low
+    cmp edx, 1
     jne .Lwindows_stack_bad
+    test eax, eax
+    jne .Lwindows_stack_bad
+    jmp .Lwindows_stack_valid
+.Lwindows_stack_low:
     test eax, 0xfff
     jne .Lwindows_stack_bad
+.Lwindows_stack_valid:
     mov al, 'T'
     jmp .Lwindows_stack_marker
 .Lwindows_stack_bad:
