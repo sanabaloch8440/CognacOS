@@ -79,7 +79,8 @@ pub fn open_for_process(owner: u64, path: &[u8]) -> Result<usize, i32> {
     let file_index = state.files.iter().position(|f| f.used && path_equal(&f.path[..f.path_len], path))
         .ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
     let slot = state.handles.iter().position(|h| !h.used).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    let token = state.next_handle.wrapping_add(1).max(1);
+    let token = state.next_handle.wrapping_add(1).max(1) & (usize::MAX >> 8);
+    let token = token.max(1);
     state.next_handle = token;
     state.handles[slot] = HandleRecord { token, owner, file_index, offset: 0, used: true };
     Ok((token << 8) | (slot + 1))
