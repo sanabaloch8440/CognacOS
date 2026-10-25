@@ -386,6 +386,13 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     }
 }
 
+#[inline(always)]
+fn windows_syscall_debug_marker(byte: u8) {
+    unsafe {
+        core::arch::asm!("out dx, al", in("dx") 0x3f8u16, in("al") byte, options(nomem, nostack, preserves_flags));
+    }
+}
+
 /// Enable the reference service table only after verifying the staged NTDLL,
 /// or temporarily while running the kernel's built-in ABI smoke fixture.
 pub fn set_windows_service_table_enabled(enabled: bool) {
@@ -416,6 +423,7 @@ pub fn windows_service_table_matches(image: &[u8]) -> bool {
 /// unverified tables fail closed instead of dispatching a possibly wrong API.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
+    windows_syscall_debug_marker(b'W');
     if frame.is_null() { return NT_STATUS_ACCESS_VIOLATION; }
     if !WINDOWS_SERVICE_TABLE_ENABLED.load(Ordering::Acquire) {
         CALL_COUNT.fetch_add(1, Ordering::AcqRel);
@@ -434,7 +442,9 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         }
     };
     unsafe { *frame.add(14) = native; }
+    windows_syscall_debug_marker(b'M');
     let status = cognacos_nt_syscall_dispatch(frame);
+    windows_syscall_debug_marker(b'R');
     unsafe { *frame.add(14) = service; }
     status
 }
@@ -444,6 +454,7 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
 /// dereferenced by the service handlers.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
+    windows_syscall_debug_marker(b'N');
     if frame.is_null() { return NT_STATUS_ACCESS_VIOLATION; }
     CALL_COUNT.fetch_add(1, Ordering::AcqRel);
     unsafe {
