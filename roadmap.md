@@ -212,9 +212,13 @@ The concrete entry point is `kernel/src/pe_loader.rs::load_dll_transaction_from_
 
 ### NTDLL memory exports
 
-- [x] Replace zero-argument declarations for the core `Nt/Zw*VirtualMemory` family with typed x64 parameter lists based on Windows documentation.
-- [x] Add functional `RtlCopyMemoryNonTemporal` and `RtlFillMemoryNonTemporal` fallbacks plus regression tests.
-- [ ] Implement kernel-backed allocation, release, protection, query, read/write, lock/unlock and flush operations through CognacOS native memory services.
-- [ ] Validate undocumented memory-stream, memory-zone/lookaside, secure-cache and nonvolatile-memory export ABIs against the pinned Windows 11 x64 reference.
+- [x] Replace zero-argument declarations for the core `Nt/Zw*VirtualMemory` family with typed x64 parameter lists and wire supported calls through the private `int 0x83` native-service gate.
+- [x] Implement current-process allocation, whole-reservation decommit/release, whole-region protection, region query, and checked read/write paths in `kernel/src/ntoskrnl/mm/native_vm.rs`.
+- [x] Implement process-local RTL memory-zone and memory-block-lookaside allocators backed by the native VM interface.
+- [x] Implement the RTL memory-stream structure and basic query-interface, reference-count, read, seek, stat, and clone behavior.
+- [x] Add non-temporal copy/fill fallbacks and keep the x64 `MEMORY_BASIC_INFORMATION` ABI size/offset tests.
+- [ ] Complete transactional partial-region decommit/protect, page locking and unlock accounting, and the kernel-backed flush contract for section/file-backed memory.
+- [ ] Complete `NtAllocateVirtualMemoryEx` extended parameters and Windows allocation/protection modifiers.
+- [ ] Finish memory-stream write/resize/commit/revert/region-lock behavior, secure-memory-cache callbacks, resource-descriptor codecs, token membership, and hardware-token-backed nonvolatile-memory operations; validate each against a pinned Windows 11 x64 ABI reference.
 
-The supported VM exports now invoke CognacOS kernel services through the private `int 0x83` bridge. This is a CognacOS-specific transition, not the Windows-build-specific SYSCALL ordinal ABI; unsupported VM operations return `STATUS_NOT_IMPLEMENTED`, and current-process-only limitations remain.
+The private `int 0x83` gate is CognacOS-specific and is not Windows' build-specific SYSCALL ordinal ABI. The current kernel VM implementation remains current-process-only and does not claim full Windows 11 compatibility. Unsupported operations return a failure status rather than silently succeeding.
