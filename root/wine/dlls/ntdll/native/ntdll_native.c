@@ -1,7 +1,7 @@
 /*
- * Minimal native NTDLL bootstrap for x86-64 Windows.
- * No Wine headers, Wine server calls, POSIX APIs, or Unix-library dependency.
- * This is a buildable starting point, not a complete NTDLL replacement.
+ * Native NTDLL bootstrap for CognacOS, x86-64.
+ * No Wine headers, Wine server calls, POSIX APIs, or kernel32 import.
+ * This is an incremental implementation, not a complete Windows NTDLL.
  */
 #include <windows.h>
 
@@ -18,22 +18,23 @@ extern NTSTATUS CognacNtSyscall4(NTSYSCALL_NUMBER number,
 enum { SYSCALL_CLOSE = 0, SYSCALL_YIELD_EXECUTION = 1, SYSCALL_COUNT = 2 };
 static volatile LONG_PTR syscall_numbers[SYSCALL_COUNT];
 
+/* Compiler intrinsics avoid importing KernelBase/Kernel32 during NTDLL init. */
 __declspec(dllexport)
 NTSTATUS WINAPI CognacNtdllConfigureSyscalls(NTSYSCALL_NUMBER nt_close,
                                               NTSYSCALL_NUMBER nt_yield_execution)
 {
     if (!nt_close || !nt_yield_execution) return STATUS_INVALID_PARAMETER;
-    InterlockedExchangePointer((PVOID volatile *)&syscall_numbers[SYSCALL_CLOSE], (PVOID)nt_close);
-    InterlockedExchangePointer((PVOID volatile *)&syscall_numbers[SYSCALL_YIELD_EXECUTION],
-                               (PVOID)nt_yield_execution);
+    __atomic_store_n(&syscall_numbers[SYSCALL_CLOSE], (LONG_PTR)nt_close, __ATOMIC_RELEASE);
+    __atomic_store_n(&syscall_numbers[SYSCALL_YIELD_EXECUTION],
+                     (LONG_PTR)nt_yield_execution, __ATOMIC_RELEASE);
     return STATUS_SUCCESS;
 }
 
 __declspec(dllexport)
 NTSTATUS NTAPI NtClose(HANDLE handle)
 {
-    NTSYSCALL_NUMBER number = (NTSYSCALL_NUMBER)InterlockedCompareExchangePointer(
-        (PVOID volatile *)&syscall_numbers[SYSCALL_CLOSE], NULL, NULL);
+    NTSYSCALL_NUMBER number = (NTSYSCALL_NUMBER)
+        __atomic_load_n(&syscall_numbers[SYSCALL_CLOSE], __ATOMIC_ACQUIRE);
     if (!number) return STATUS_NOT_IMPLEMENTED;
     return CognacNtSyscall4(number, (ULONG_PTR)handle, 0, 0, 0);
 }
@@ -41,12 +42,13 @@ NTSTATUS NTAPI NtClose(HANDLE handle)
 __declspec(dllexport)
 NTSTATUS NTAPI NtYieldExecution(void)
 {
-    NTSYSCALL_NUMBER number = (NTSYSCALL_NUMBER)InterlockedCompareExchangePointer(
-        (PVOID volatile *)&syscall_numbers[SYSCALL_YIELD_EXECUTION], NULL, NULL);
+    NTSYSCALL_NUMBER number = (NTSYSCALL_NUMBER)
+        __atomic_load_n(&syscall_numbers[SYSCALL_YIELD_EXECUTION], __ATOMIC_ACQUIRE);
     if (!number) return STATUS_NOT_IMPLEMENTED;
     return CognacNtSyscall4(number, 0, 0, 0, 0);
 }
 
+/* The loader entry point must not initialize Wine or call another DLL. */
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
 {
     (void)instance; (void)reason; (void)reserved;
