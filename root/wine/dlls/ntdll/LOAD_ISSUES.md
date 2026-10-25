@@ -127,3 +127,17 @@ stock Windows NTDLL at that path. A stock Windows image can therefore be used
 for mapping/export-table testing by replacing the staged file in a local EFI
 image; the ring-3 native-wrapper test is expected to skip for that binary.
 The Windows binary itself is intentionally excluded from this repository.
+
+### NTDLL-LOAD-012 — native DLL had no relocation directory
+
+**Observed in QEMU:** the first actual boot attempt reached the staged native
+DLL and failed with `RelocationsRequired`. Its x64 code was otherwise position
+independent, so the linker omitted `.reloc`; the image base is outside the
+CognacOS user range and the loader correctly refused to move an image that
+advertised no relocation records.
+
+**Fix committed:** `cognac_native.c` now exports an image-anchor function pointer
+initialized to `DllMain`. That creates a real DIR64 base relocation, allowing
+the loader to relocate the native DLL without weakening the loader's
+`RelocationsRequired` rule. The next QEMU run must confirm the relocation
+directory is present and that mapping advances beyond this failure.
