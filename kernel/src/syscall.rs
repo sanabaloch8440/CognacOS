@@ -238,7 +238,7 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 7]> {
         if !image.get(stub.checked_add(8)?..window_end)?.windows(2).any(|op| op == [0x0f, 0x05]) { continue; }
         discovered[slot] = service as u64;
     }
-    if discovered.iter().any(|service| *service == SERVICE_UNAVAILABLE) { return None; }
+    if discovered[..7].iter().any(|service| *service == SERVICE_UNAVAILABLE) { return None; }
     Some(discovered)
 }
 pub fn configure_windows_service_table_from_image(image: &[u8]) -> bool {
@@ -785,6 +785,7 @@ fn nt_query_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
 fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     match number {
         NT_SYSCALL_CLOSE => {
+            if crate::file_services::close(args[0] as usize).is_ok() { return NT_STATUS_SUCCESS; }
             let status = unsafe { crate::ntoskrnl::ob::runtime::ObCloseHandle(args[0] as *mut core::ffi::c_void, 1) };
             status as u32 as u64
         }
