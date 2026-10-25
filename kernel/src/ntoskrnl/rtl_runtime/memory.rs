@@ -3,17 +3,22 @@ use core::ffi::c_void;
     if n==0{return 0;}if a.is_null()||b.is_null(){return 0;}let mut i=0;while i<n&&unsafe{*a.add(i as usize)==*b.add(i as usize)}{i+=1;}i
 }
 
-/// Compare ULONG-sized words and return the number of matching bytes.
-/// Windows declares the result as ULONG, even on AMD64.
+/// Compare the source against a repeating ULONG pattern and return the
+/// matching prefix length in bytes. Windows declares the result as ULONG.
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn rtl_compare_memory_ulong(a: *const u32, n: u64, value: u32) -> u32 {
-    if n < core::mem::size_of::<u32>() as u64 || a.is_null() { return 0; }
-    let words = n / core::mem::size_of::<u32>() as u64;
+    if n == 0 { return 0; }
+    if a.is_null() { return 0; }
+    let bytes = a as *const u8;
+    let pattern = value.to_ne_bytes();
     let mut matched = 0u64;
-    while matched < words && unsafe { core::ptr::read_unaligned(a.add(matched as usize)) == value } {
+    while matched < n {
+        if unsafe { *bytes.add(matched as usize) } != pattern[(matched as usize) & 3] {
+            break;
+        }
         matched += 1;
     }
-    (matched.saturating_mul(4).min(u32::MAX as u64)) as u32
+    matched.min(u32::MAX as u64) as u32
 }
 
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_compute_crc32(initial:u32,buffer:*const u8,length:u32)->u32 {
@@ -180,6 +185,11 @@ mod memory_abi_tests {
         assert_eq!(unsafe {
             rtl_compare_memory_ulong(unaligned.as_ptr().add(1) as *const u32, 12, pattern)
         }, 4);
+        // Partial lengths still compare all requested bytes.
+        let mut partial = pattern.to_ne_bytes();
+        partial[3] ^= 1;
+        assert_eq!(unsafe { rtl_compare_memory_ulong(partial.as_ptr() as *const u32, 3, pattern) }, 3);
+        assert_eq!(unsafe { rtl_compare_memory_ulong(partial.as_ptr() as *const u32, 4, pattern) }, 3);
     }
 
     #[test]
