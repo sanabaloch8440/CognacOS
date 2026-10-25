@@ -44,14 +44,15 @@ const MAX_DLL_DIRECTORIES: usize = 32;
 const MAX_DISABLED_CALLOUT_MODULES: usize = 64;
 
 #[derive(Clone, Copy)]
-struct PathSlot { len: usize, data: [u16; MAX_PATH_UNITS], active: bool }
-impl PathSlot { const EMPTY: Self = Self { len: 0, data: [0; MAX_PATH_UNITS], active: false }; }
+struct PathSlot { len: usize, data: [u16; MAX_PATH_UNITS], active: bool, generation: usize }
+impl PathSlot { const EMPTY: Self = Self { len: 0, data: [0; MAX_PATH_UNITS], active: false, generation: 0 }; }
 static STATE_LOCK: AtomicBool = AtomicBool::new(false);
 static mut DLL_DIRECTORY: PathSlot = PathSlot::EMPTY;
 static mut USER_DIRECTORIES: [PathSlot; MAX_DLL_DIRECTORIES] = [PathSlot::EMPTY; MAX_DLL_DIRECTORIES];
 static mut DISABLED_CALLOUT_MODULES: [usize; MAX_DISABLED_CALLOUT_MODULES] = [0; MAX_DISABLED_CALLOUT_MODULES];
 static mut DEFAULT_SEARCH_FLAGS: ULONG = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
 static LOADER_LOCK: AtomicBool = AtomicBool::new(false);
+static ACTIVE_LOADER_COOKIE: AtomicUsize = AtomicUsize::new(0);
 static NEXT_COOKIE: AtomicUsize = AtomicUsize::new(1);
 
 struct StateGuard;
@@ -68,11 +69,13 @@ impl Drop for StateGuard { fn drop(&mut self) { STATE_LOCK.store(false, Ordering
 unsafe fn copy_absolute_path(source: *const UNICODE_STRING, output: &mut PathSlot) -> NTSTATUS {
     if source.is_null() { return STATUS_INVALID_PARAMETER; }
     let descriptor = unsafe { &*source };
-    if descriptor.Length == 0 || (descriptor.Length & 1) != 0 || descriptor.Buffer.is_null()
-        || descriptor.Length > descriptor.MaximumLength || descriptor.Length as usize / 2 >= MAX_PATH_UNITS {
+    if (descriptor.Length & 1) != 0 || descriptor.Length > descriptor.MaximumLength
+        || descriptor.Length as usize / 2 >= MAX_PATH_UNITS
+        || (descriptor.Length != 0 && descriptor.Buffer.is_null()) {
         return STATUS_INVALID_PARAMETER;
     }
     let count = descriptor.Length as usize / 2;
+    if count == 0 { *output = PathSlot::EMPTY; output.active = true; return STATUS_SUCCESS; }
     let path = unsafe { core::slice::from_raw_parts(descriptor.Buffer, count) };
     // Windows AddDllDirectory requires an absolute path. Accept drive-rooted and
     // NT/UNC rooted forms; relative paths are rejected.
@@ -98,10 +101,10 @@ pub unsafe extern "system" fn LdrAddDllDirectory(directory: *const UNICODE_STRIN
     let mut i = 0;
     while i < MAX_DLL_DIRECTORIES {
         if !unsafe { USER_DIRECTORIES[i].active } {
-            let id = NEXT_COOKIE.fetch_add(1, Ordering::Relaxed).max(1);
+            let id = NEXT_COOKIE.fetch_add(1, Ordering::Relaxed).max(1) & (usize::MAX >> 8);
+            candidate.generation = id;
             unsafe { USER_DIRECTORIES[i] = candidate; }
             unsafe { cookie_out.write((id << 8 | (i + 1)) as PVOID); }
-            // Cookie encodes the slot; the generation bits are reserved for stale-cookie hardening.
             return STATUS_SUCCESS;
         }
         i += 1;
@@ -115,7 +118,8 @@ pub unsafe extern "system" fn LdrRemoveDllDirectory(cookie: PVOID) -> NTSTATUS {
     let slot = raw & 0xff;
     if slot == 0 || slot > MAX_DLL_DIRECTORIES { return STATUS_INVALID_HANDLE; }
     let _guard = StateGuard::acquire();
-    if !unsafe { USER_DIRECTORIES[slot - 1].active } { return STATUS_INVALID_HANDLE; }
+    let entry = unsafe { &USER_DIRECTORIES[slot - 1] };
+    if !entry.active || entry.generation != (raw >> 8) { return STATUS_INVALID_HANDLE; }
     unsafe { USER_DIRECTORIES[slot - 1] = PathSlot::EMPTY; }
     STATUS_SUCCESS
 }
@@ -155,27 +159,32 @@ pub unsafe extern "system" fn LdrGetDllDirectory(buffer_bytes: ULONG, buffer: *m
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrLockLoaderLock(flags: ULONG, disposition: *mut ULONG, cookie: *mut ULONG_PTR) -> NTSTATUS {
-    if flags & !0x2 != 0 || disposition.is_null() || cookie.is_null() { return STATUS_INVALID_PARAMETER; }
+    if flags & !0x3 != 0 || disposition.is_null() || cookie.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { disposition.write(0); cookie.write(0); }
     if flags & 0x2 != 0 {
         if LOADER_LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-            unsafe { disposition.write(1); cookie.write(NEXT_COOKIE.fetch_add(1, Ordering::Relaxed)); }
+            let token = NEXT_COOKIE.fetch_add(1, Ordering::Relaxed).max(1);
+            ACTIVE_LOADER_COOKIE.store(token, Ordering::Release);
+            unsafe { disposition.write(1); cookie.write(token); }
         } else { unsafe { disposition.write(2); } }
         return STATUS_SUCCESS;
     }
     while LOADER_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
         core::hint::spin_loop();
     }
-    unsafe { disposition.write(1); cookie.write(NEXT_COOKIE.fetch_add(1, Ordering::Relaxed)); }
+    let token = NEXT_COOKIE.fetch_add(1, Ordering::Relaxed).max(1);
+    ACTIVE_LOADER_COOKIE.store(token, Ordering::Release);
+    unsafe { disposition.write(1); cookie.write(token); }
     STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrUnlockLoaderLock(flags: ULONG, cookie: ULONG_PTR) -> NTSTATUS {
-    if flags != 0 || cookie == 0 { return STATUS_INVALID_PARAMETER; }
+    if flags != 0 || cookie == 0 || ACTIVE_LOADER_COOKIE.load(Ordering::Acquire) != cookie { return STATUS_INVALID_PARAMETER; }
     if LOADER_LOCK.compare_exchange(true, false, Ordering::Release, Ordering::Relaxed).is_err() {
         return STATUS_INVALID_PARAMETER;
     }
+    ACTIVE_LOADER_COOKIE.store(0, Ordering::Release);
     STATUS_SUCCESS
 }
 
