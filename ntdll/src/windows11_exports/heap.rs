@@ -64,8 +64,7 @@ pub unsafe extern "system" fn RtlMultipleFreeHeap(
     while done < count {
         let slot = unsafe { array.add(done as usize) };
         let block = unsafe { core::ptr::read(slot) };
-        if unsafe { crate::rtl_heap::RtlFreeHeap(heap, flags, block) } == 0 { break; }
-        done += 1;
+        if unsafe { crate::rtl_heap::RtlFreeHeap(heap, flags, block) } != 0 { done += 1; }
     }
     done
 }
