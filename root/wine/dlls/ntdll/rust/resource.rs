@@ -214,34 +214,55 @@ impl<'a> ResourceImage<'a> {
         Ok(None)
     }
 
-    /// Resolve a resource path. Levels are 1 (type), 2 (type/name), or 3
-    /// (type/name/language), matching the shape accepted by LdrFindResource*.
+    /// Resolve a resource path. Levels 0..=3 mean root, type, type/name,
+    /// and type/name/language respectively, matching Wine's find_entry helper.
     pub fn find(&self, info: &ResourceInfo, level: ULONG, want_directory: bool) -> Result<ResourceLocation, NTSTATUS> {
-        if !(1..=3).contains(&level) { return Err(STATUS_INVALID_PARAMETER); }
-        let mut directory = 0usize;
-        self.directory_counts(directory)?;
-
-        if level == 1 {
-            return Ok(ResourceLocation { directory_offset: 0, directory_size: self.resource_size });
+        if level > 3 { return Err(STATUS_INVALID_PARAMETER); }
+        let root = 0usize;
+        self.directory_counts(root)?;
+        if level == 0 {
+            return Ok(ResourceLocation { directory_offset: root, directory_size: self.resource_size });
         }
-        let (_, type_child) = self.find_entry(directory, &info.resource_type)?
+
+        let (_, type_child) = self.find_entry(root, &info.resource_type)?
             .ok_or(STATUS_RESOURCE_TYPE_NOT_FOUND)?;
-        directory = self.child_directory(type_child)?;
+        if level == 1 {
+            if (type_child & IMAGE_RESOURCE_DATA_IS_DIRECTORY != 0) != want_directory {
+                return Err(STATUS_RESOURCE_TYPE_NOT_FOUND);
+            }
+            let offset = (type_child & IMAGE_RESOURCE_OFFSET_MASK) as usize;
+            if want_directory { self.directory_counts(offset)?; }
+            else { self.range(offset, IMAGE_RESOURCE_DATA_ENTRY_SIZE)?; }
+            return Ok(ResourceLocation {
+                directory_offset: offset,
+                directory_size: if want_directory { self.resource_size - offset } else { IMAGE_RESOURCE_DATA_ENTRY_SIZE },
+            });
+        }
+
+        let directory = self.child_directory(type_child)?;
         let (_, name_child) = self.find_entry(directory, &info.name)?
             .ok_or(STATUS_RESOURCE_NAME_NOT_FOUND)?;
         if level == 2 {
-            let offset = self.child_directory(name_child)?;
+            if (name_child & IMAGE_RESOURCE_DATA_IS_DIRECTORY != 0) != want_directory {
+                return Err(STATUS_RESOURCE_NAME_NOT_FOUND);
+            }
+            let offset = (name_child & IMAGE_RESOURCE_OFFSET_MASK) as usize;
+            if want_directory { self.directory_counts(offset)?; }
+            else { self.range(offset, IMAGE_RESOURCE_DATA_ENTRY_SIZE)?; }
+            return Ok(ResourceLocation {
+                directory_offset: offset,
+                directory_size: if want_directory { self.resource_size - offset } else { IMAGE_RESOURCE_DATA_ENTRY_SIZE },
+            });
+        }
+
+        let language_directory = self.child_directory(name_child)?;
+        if want_directory {
+            let offset = self.find_language(language_directory, info.language)?
+                .ok_or(STATUS_RESOURCE_LANG_NOT_FOUND)?;
+            self.directory_counts(offset)?;
             return Ok(ResourceLocation { directory_offset: offset, directory_size: self.resource_size - offset });
         }
-        directory = self.child_directory(name_child)?;
-        if want_directory {
-            if let Some(offset) = self.find_language(directory, info.language)? {
-                self.directory_counts(offset)?;
-                return Ok(ResourceLocation { directory_offset: offset, directory_size: self.resource_size - offset });
-            }
-            return Err(STATUS_RESOURCE_LANG_NOT_FOUND);
-        }
-        let offset = self.find_language(directory, info.language)?
+        let offset = self.find_language(language_directory, info.language)?
             .ok_or(STATUS_RESOURCE_LANG_NOT_FOUND)?;
         self.range(offset, IMAGE_RESOURCE_DATA_ENTRY_SIZE)?;
         Ok(ResourceLocation { directory_offset: offset, directory_size: IMAGE_RESOURCE_DATA_ENTRY_SIZE })
