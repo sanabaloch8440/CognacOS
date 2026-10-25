@@ -32,7 +32,7 @@ fn attached(root: u64) -> Result<AddressSpace, u64> {
 fn region_is_free(space: &AddressSpace, start: u64, length: u64) -> bool {
     let mut offset = 0;
     while offset < length {
-        if space.query_region(start + offset).is_some_and(|region| region.6) { return false; }
+        if space.query_region(start + offset).is_some_and(|region| region.7) { return false; }
         offset += PAGE;
     }
     true
@@ -177,10 +177,6 @@ fn nt_protection(value: u64) -> Result<(bool, bool, u32), u64> {
     };
     Ok((write, execute, if execute { PAGE_EXECUTE_READ } else if write { PAGE_READWRITE } else { PAGE_READONLY }))
 }
-fn current_protection(writable: bool, executable: bool) -> u32 {
-    if executable { PAGE_EXECUTE_READ } else if writable { PAGE_READWRITE } else { PAGE_READONLY }
-}
-
 /// NT_FREE_VIRTUAL_MEMORY: only the current process is supported. MEM_RELEASE
 /// releases a complete reservation and requires RegionSize=0; MEM_DECOMMIT
 /// decommits a page-rounded subrange while preserving the reservation.
@@ -293,7 +289,7 @@ pub fn query(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let root = match current_root() { Ok(r) => r, Err(s) => return s };
     if args[1] < USER_START || args[1] >= USER_END { return STATUS_INVALID_PARAMETER; }
     let space = match attached(root) { Ok(s) => s, Err(s) => return s };
-    let Some((start, end, allocation_base, allocation_protect, protection, writable, executable, reserved, committed)) = space.query_region(args[1]) else { return STATUS_INVALID_PARAMETER };
+    let Some((start, end, allocation_base, allocation_protect, protection, _writable, _executable, reserved, committed)) = space.query_region(args[1]) else { return STATUS_INVALID_PARAMETER };
     let info = MemoryBasicInformation {
         base_address: start,
         allocation_base,
