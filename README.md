@@ -25,6 +25,12 @@
 
 The Rust NTDLL exports for `NtAllocateVirtualMemory`, `NtFreeVirtualMemory`, `NtProtectVirtualMemory`, `NtQueryVirtualMemory`, `NtReadVirtualMemory`, and `NtWriteVirtualMemory` now call the kernel through CognacOS's private native-service interrupt gate (`0x83`), which dispatches the matching `ntoskrnl/mm/native_vm.rs` handlers. `NtQueryVirtualMemory` uses the Windows x64 48-byte `MEMORY_BASIC_INFORMATION` layout and a `SIZE_T` return-length output. `NtReadVirtualMemoryEx` delegates to the read path only for zero flags. `NtAllocateVirtualMemoryEx`, `NtFlushVirtualMemory`, `NtLockVirtualMemory`, and `NtUnlockVirtualMemory` remain explicitly unsupported because extended allocation parameters, file-backed flush, and locked-page accounting are not implemented. The kernel path currently supports only the current-process pseudo-handle, reserve+commit allocation, and whole tracked-region decommit/release/protect; partial-region splitting, full Windows protection modifiers, cross-process access checks, and complete transactional rollback remain open. This is an incremental CognacOS-native bridge, not complete Windows 11 VM compatibility.
 
+## Native ETW/session status
+
+CognacOS now has a bounded kernel-owned ETW provider table and event ring behind private native-service calls. Provider registration and writes use checked user-buffer copies; privileged session creation requires an unrestricted administrator token with SystemProfile privilege, and session handles control provider enable/disable/stop state. Consumer reads are session-authorized or limited to the caller's own providers. EtwEventWriteTransfer carries activity and related-activity IDs through the kernel event record. Enable callbacks are delivered by NTDLL after it observes kernel state changes, never by calling user pointers from kernel mode.
+
+RtlExitUserProcess now enters the kernel SYS_EXIT path after LdrShutdownProcess; the loader validates PE image bounds and calls DLL process-detach entry points in reverse load order. This remains an incremental implementation: session naming/fan-out, Windows-compatible exception handling during detach, and comprehensive x64/QEMU validation remain open. See the ETW section of the roadmap for details.
+
 ## Current foundations
 
 | Area | Implemented foundation | Important gaps |
