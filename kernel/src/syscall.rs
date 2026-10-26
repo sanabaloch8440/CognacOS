@@ -332,8 +332,31 @@ fn etw_create_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
   let table=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
   let Some(i)=(0..16).find(|&i|!(*table.add(i)).active)else{return 0xC000009A;};
   let handle=ETW_KERNEL_NEXT.fetch_add(1,Ordering::Relaxed).max(1);
-  *table.add(i)=KernelEtwSession{active:true,handle,owner:pid,_pad:0};
+  *table.add(i)=KernelEtwSession{active:true,handle,owner:pid,name_len:0,_pad:[0;7],name:[0;64]};
   if let Err(s)=copy_nt_output(args[1],&handle.to_le_bytes()){*table.add(i)=KernelEtwSession::EMPTY;return s;}
+ }
+ NT_STATUS_SUCCESS
+}
+fn etw_create_named_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
+ let name_ptr=args[0];let name_len=args[1] as usize;let out=args[2];
+ if out==0||name_len==0||name_len>63||name_ptr==0{return NT_STATUS_INVALID_PARAMETER;}
+ let mut name=[0u16;64];let mut bytes=[0u8;126];
+ if let Err(status)=copy_nt_input(name_ptr,&mut bytes[..name_len*2]){return status;}
+ for i in 0..name_len{name[i]=u16::from_le_bytes([bytes[i*2],bytes[i*2+1]]);if name[i]==0{return NT_STATUS_INVALID_PARAMETER;}}
+ let pid=current_process_id();let token=crate::process::reference_primary_token(pid);
+ if token.is_null(){return 0xC0000022;}
+ let privileged=unsafe{crate::ntoskrnl::se::runtime::se_internal_TokenIsAdminAndUnrestricted(token)}!=0
+  && unsafe{crate::ntoskrnl::se::runtime::se_internal_TokenHasPrivilege(token,11)}!=0;
+ let _=unsafe{crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token)};
+ if !privileged{return 0xC0000022;}
+ let _g=KernelEtwGuard::lock();
+ unsafe {
+  let table=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
+  if (0..16).any(|i|{let s=&*table.add(i);s.active&&s.name_len as usize==name_len&&s.name[..name_len]==name[..name_len]}){return 0xC0000035;}
+  let Some(i)=(0..16).find(|&i|!(*table.add(i)).active)else{return 0xC000009A;};
+  let handle=ETW_KERNEL_NEXT.fetch_add(1,Ordering::Relaxed).max(1);
+  *table.add(i)=KernelEtwSession{active:true,handle,owner:pid,name_len:name_len as u8,_pad:[0;7],name};
+  if let Err(status)=copy_nt_output(out,&handle.to_le_bytes()){*table.add(i)=KernelEtwSession::EMPTY;return status;}
  }
  NT_STATUS_SUCCESS
 }
