@@ -205,6 +205,7 @@ The current ETW implementation is a CognacOS process-local diagnostic buffer, no
 ## ETW provider runtime
 
 - [x] Add kernel-owned provider records, a bounded kernel event ring, owner-checked registration and checked user-buffer copies.
+- [x] Add owner-checked provider unregister and remove its queued kernel events; session teardown disables providers associated with that session.
 - [x] Add privileged session create/enable/stop syscalls. Session creation requires an unrestricted administrator token with SystemProfile privilege; session handles are owner-scoped and provider ownership prevents competing sessions from silently replacing one another.
 - [x] Add session-aware consumer reads with provider-owner isolation, plus bounded record/payload copies.
 - [x] Carry activity ID and related activity ID through the kernel ring and consumer record; implement NTDLL EtwEventWriteTransfer in addition to EtwEventWrite.
