@@ -71,10 +71,10 @@ core::arch::global_asm!(r#"
     .text
     .p2align 4
     .macro ALPC_STUB name, id
-    .global \\name
-\\name:
+    .global \name
+\name:
     mov r10, rcx
-    mov eax, \\id
+    mov eax, \id
     int 0x83
     ret
     .endm
