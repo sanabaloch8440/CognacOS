@@ -68,8 +68,8 @@ static ENDPOINT_OBJECTS:[EndpointObject;MAX_PORT_OBJECTS]=[const { EndpointObjec
 struct PortMessage { data_length:u16, total_length:u16, message_type:u16, data_info_offset:u16, client_id:[usize;2], message_id:u32, client_view_size:usize }
 
 #[repr(C)]
-struct PortSectionObject { section_id:AtomicU64, owner_root:AtomicU64, section_size:AtomicU64, owner_pid:AtomicU64, port_id:AtomicU32, active:AtomicBool, allocated:AtomicBool }
-impl PortSectionObject { const fn new()->Self { Self { section_id:AtomicU64::new(0), owner_root:AtomicU64::new(0), section_size:AtomicU64::new(0), owner_pid:AtomicU64::new(0), port_id:AtomicU32::new(0), active:AtomicBool::new(false), allocated:AtomicBool::new(false) } } }
+struct PortSectionObject { section_id:AtomicU64, owner_root:AtomicU64, section_size:AtomicU64, protection:AtomicU32, owner_pid:AtomicU64, port_id:AtomicU32, active:AtomicBool, allocated:AtomicBool }
+impl PortSectionObject { const fn new()->Self { Self { section_id:AtomicU64::new(0), owner_root:AtomicU64::new(0), section_size:AtomicU64::new(0), protection:AtomicU32::new(4), owner_pid:AtomicU64::new(0), port_id:AtomicU32::new(0), active:AtomicBool::new(false), allocated:AtomicBool::new(false) } } }
 static PORT_SECTIONS:[PortSectionObject;MAX_PORT_OBJECTS]=[const { PortSectionObject::new() };MAX_PORT_OBJECTS];
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -483,15 +483,15 @@ fn create_port_section(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     }
     if let Err(s)=section_type(){let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}
     let requested=match args[3].checked_add(4095){Some(n)=>n&!4095,None=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}};
-    let (section_id,section_root,actual_size)=if args[2]!=0 {
+    let (section_id,section_root,actual_size,protection)=if args[2]!=0 {
         match crate::ntoskrnl::mm::section_handles::reference_for_alpc(args[2]) {
-            Ok((id,owner_root,size))=>{
+            Ok((id,owner_root,size,protection))=>{
                 if requested>size {
                     let _=crate::ntoskrnl::mm::section::dereference(id,owner_root);
                     let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);
                     return STATUS_INVALID_PARAMETER;
                 }
-                (id,owner_root,requested)
+                (id,owner_root,requested,protection)
             }
             Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}
         }
@@ -500,7 +500,7 @@ fn create_port_section(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
         let mut id=0u64;
         let status=crate::ntoskrnl::mm::section::create(requested,root,&mut id);
         if status<0{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return status as u32 as u64}
-        (id,root,requested)
+        (id,root,requested,4)
     };
     let Some(slot)=PORT_SECTIONS.iter().position(|s|!s.allocated.load(Ordering::Acquire)) else {
         let _=crate::ntoskrnl::mm::section::dereference(section_id,section_root);
@@ -514,6 +514,7 @@ fn create_port_section(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     section.section_id.store(section_id,Ordering::Release);
     section.owner_root.store(section_root,Ordering::Release);
     section.section_size.store(actual_size,Ordering::Release);
+    section.protection.store(protection,Ordering::Release);
     section.active.store(true,Ordering::Release);
     section.owner_pid.store(current_pid(),Ordering::Release);
     section.port_id.store(port.port_id.load(Ordering::Acquire),Ordering::Release);
@@ -549,7 +550,10 @@ fn create_section_view(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let length=match (view.view_size as u64).checked_add(4095){Some(n) if (n&!4095)<=section.section_size.load(Ordering::Acquire)=>n&!4095,Some(_)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER},None=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}};
     let base=match find_free_view_base(root,length){Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
     let section_id=section.section_id.load(Ordering::Acquire);
-    if let Err(e)=crate::ntoskrnl::mm::section::map_view(section_id,root,base,0,length,true,false){let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return e as u32 as u64;}
+    let protection=section.protection.load(Ordering::Acquire);
+    let writable=protection==0x04;
+    let executable=protection==0x20;
+    if let Err(e)=crate::ntoskrnl::mm::section::map_view(section_id,root,base,0,length,writable,executable){let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return e as u32 as u64;}
     let view_id=match crate::ntoskrnl::alpc_resources::register_section_view(pid,port.port_id.load(Ordering::Acquire),section_id,base,length){Ok(id)=>id,Err(s)=>{let _=crate::ntoskrnl::mm::section::unmap_view(root,base);let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s as u64}};
     view.view_base=base as usize;view.view_size=length as usize;
     let result=if write_user(args[2],&view).is_err(){let _=crate::ntoskrnl::mm::section::unmap_view(root,base);let _=crate::ntoskrnl::alpc_resources::unregister_section_view(view_id,pid);STATUS_ACCESS_VIOLATION}else{STATUS_SUCCESS};
