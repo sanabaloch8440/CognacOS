@@ -1,6 +1,6 @@
 //! Event Tracing for Windows (ETW) provider runtime for CognacOS NTDLL.
-//! The current backend is a bounded process-local diagnostic session. It is not
-//! yet connected to the Windows ETW controller/session ABI or a kernel logger.
+//! Bounded provider runtime with enable callbacks, activity IDs, pull-based consumer
+//! transport and teardown hooks. Kernel-wide session control still needs syscall wiring.
 #![allow(non_snake_case, clippy::missing_safety_doc, dead_code)]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -12,6 +12,12 @@ const PROVIDER_CAPACITY: usize = 64;
 const EVENT_CAPACITY: usize = 64;
 const MAX_EVENT_PAYLOAD: usize = 256;
 const MAX_DATA_DESCRIPTORS: usize = 8;
+const ACTIVITY_CAPACITY: usize = 128;
+const EVENT_ACTIVITY_CTRL_GET_ID: u32 = 1;
+const EVENT_ACTIVITY_CTRL_SET_ID: u32 = 2;
+const EVENT_ACTIVITY_CTRL_CREATE_ID: u32 = 3;
+const EVENT_ACTIVITY_CTRL_GET_SET_ID: u32 = 4;
+const EVENT_ACTIVITY_CTRL_CREATE_SET_ID: u32 = 5;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -22,9 +28,20 @@ struct EventDescriptor { id: u16, version: u8, channel: u8, level: u8, opcode: u
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct EventDataDescriptor { ptr: u64, size: u32, reserved: u32 }
+type EnableCallback = unsafe extern "system" fn(*const Guid, u32, u8, u64, u64, *const core::ffi::c_void, *mut core::ffi::c_void);
 #[derive(Clone, Copy)]
-struct EtwProvider { handle: u64, guid: Guid, active: bool }
-impl EtwProvider { const EMPTY: Self = Self { handle: 0, guid: Guid::default(), active: false }; }
+struct EtwProvider {
+    handle: u64, guid: Guid, active: bool, owner_pid: u64,
+    callback: usize, context: usize, enabled: bool, level: u8,
+    match_any: u64, match_all: u64,
+}
+impl EtwProvider {
+    const EMPTY: Self = Self { handle: 0, guid: Guid::default(), active: false, owner_pid: 0,
+        callback: 0, context: 0, enabled: false, level: 0, match_any: 0, match_all: 0 };
+}
+#[derive(Clone, Copy)]
+struct ActivitySlot { pid: u64, tid: u64, id: Guid, active: bool }
+impl ActivitySlot { const EMPTY: Self = Self { pid: 0, tid: 0, id: Guid::default(), active: false }; }
 
 #[derive(Clone, Copy)]
 struct EventRecord {
@@ -32,10 +49,11 @@ struct EventRecord {
     provider: Guid,
     descriptor: EventDescriptor,
     payload_len: u16,
+    activity: Guid, related_activity: Guid, process_id: u64, thread_id: u64,
     payload: [u8; MAX_EVENT_PAYLOAD],
 }
 impl EventRecord {
-    const EMPTY: Self = Self { active: false, provider: Guid::default(), descriptor: EventDescriptor::default(), payload_len: 0, payload: [0; MAX_EVENT_PAYLOAD] };
+    const EMPTY: Self = Self { active: false, provider: Guid::default(), descriptor: EventDescriptor::default(), payload_len: 0, activity: Guid::default(), related_activity: Guid::default(), process_id: 0, thread_id: 0, payload: [0; MAX_EVENT_PAYLOAD] };
 }
 static ETW_LOCK: AtomicBool = AtomicBool::new(false);
 static ETW_NEXT: AtomicU64 = AtomicU64::new(1);
@@ -43,6 +61,7 @@ static mut ETW_PROVIDERS: [EtwProvider; PROVIDER_CAPACITY] = [EtwProvider::EMPTY
 static mut ETW_EVENTS: [EventRecord; EVENT_CAPACITY] = [EventRecord::EMPTY; EVENT_CAPACITY];
 static mut ETW_EVENT_HEAD: usize = 0;
 static mut ETW_EVENT_LEN: usize = 0;
+static mut ETW_ACTIVITIES: [ActivitySlot; ACTIVITY_CAPACITY] = [ActivitySlot::EMPTY; ACTIVITY_CAPACITY];
 
 struct EtwGuard;
 impl EtwGuard {
@@ -54,6 +73,37 @@ impl EtwGuard {
     }
 }
 impl Drop for EtwGuard { fn drop(&mut self) { ETW_LOCK.store(false, Ordering::Release); } }
+
+
+fn provider_matches(p: &EtwProvider, level: u8, keyword: u64) -> bool {
+    if !p.active || !p.enabled { return false; }
+    if p.level != 0 && level != 0 && level > p.level { return false; }
+    if keyword != 0 && p.match_any != 0 && p.match_any & keyword == 0 { return false; }
+    keyword == 0 || p.match_all == 0 || p.match_all & keyword == p.match_all
+}
+fn current_process_thread() -> (u64, u64) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let teb: *const u8;
+        core::arch::asm!("mov {}, gs:[0x30]", out(reg) teb, options(nostack, preserves_flags, readonly));
+        if teb.is_null() { return (0, 0); }
+        return (core::ptr::read_unaligned(teb.add(0x40).cast::<u64>()),
+                core::ptr::read_unaligned(teb.add(0x48).cast::<u64>()));
+    }
+    #[allow(unreachable_code)] (0, 0)
+}
+fn current_activity(pid: u64, tid: u64) -> Guid {
+    let slots = core::ptr::addr_of!(ETW_ACTIVITIES).cast::<ActivitySlot>();
+    for i in 0..ACTIVITY_CAPACITY {
+        let slot = unsafe { &*slots.add(i) };
+        if slot.active && slot.pid == pid && slot.tid == tid { return slot.id; }
+    }
+    Guid::default()
+}
+fn new_activity_id() -> Guid {
+    let n = ETW_NEXT.fetch_add(1, Ordering::Relaxed);
+    Guid { data1: n as u32, data2: (n >> 32) as u16, data3: 0xC06A, data4: [0xC0,0x6A,0x4E,0x54,0x52,0x41,0x43,0x45] }
+}
 
 fn provider_index(entries: *const EtwProvider, handle: u64) -> Option<usize> {
     (0..PROVIDER_CAPACITY).find(|&i| unsafe { let p = &*entries.add(i); p.active && p.handle == handle })
@@ -83,9 +133,10 @@ pub(crate) fn take_event(out_provider: &mut [u8; 16], out_descriptor: &mut [u8; 
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn EtwEventRegister(provider: *const Guid, _callback: *const core::ffi::c_void, _context: *mut core::ffi::c_void, handle: *mut u64) -> u32 {
+pub unsafe extern "system" fn EtwEventRegister(provider: *const Guid, callback: *const core::ffi::c_void, context: *mut core::ffi::c_void, handle: *mut u64) -> u32 {
     if provider.is_null() || handle.is_null() { return ERROR_INVALID_PARAMETER; }
     let guid = unsafe { core::ptr::read_unaligned(provider) };
+    let (owner_pid, _) = current_process_thread();
     let _guard = EtwGuard::lock();
     let entries = core::ptr::addr_of_mut!(ETW_PROVIDERS).cast::<EtwProvider>();
     // Registering an already registered GUID is permitted and creates an
@@ -94,7 +145,7 @@ pub unsafe extern "system" fn EtwEventRegister(provider: *const Guid, _callback:
         let e = unsafe { &mut *entries.add(i) };
         if !e.active {
             let id = ETW_NEXT.fetch_add(1, Ordering::Relaxed).max(1);
-            *e = EtwProvider { handle: id, guid, active: true };
+            *e = EtwProvider { handle: id, guid, active: true, owner_pid, callback: callback as usize, context: context as usize, enabled: false, level: 0, match_any: 0, match_all: 0 };
             unsafe { handle.write(id); }
             return ERROR_SUCCESS;
         }
@@ -118,14 +169,16 @@ pub unsafe extern "system" fn EtwEventEnabled(handle: u64, descriptor: *const Ev
     if descriptor.is_null() { return 0; }
     let _guard = EtwGuard::lock();
     let entries = core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
-    provider_index(entries, handle).is_some() as u8
+    provider_index(entries, handle).map(|i| {
+        let p = unsafe { &*entries.add(i) }; p.enabled && provider_matches(p, unsafe { &*descriptor }.level, unsafe { &*descriptor }.keyword)
+    }).unwrap_or(false) as u8
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn EtwEventProviderEnabled(handle: u64, _level: u8, _keyword: u64) -> u8 {
+pub unsafe extern "system" fn EtwEventProviderEnabled(handle: u64, level: u8, keyword: u64) -> u8 {
     let _guard = EtwGuard::lock();
     let entries = core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
-    provider_index(entries, handle).is_some() as u8
+    provider_index(entries, handle).map(|i| provider_matches(unsafe { &*entries.add(i) }, level, keyword)).unwrap_or(false) as u8
 }
 
 #[no_mangle]
@@ -151,7 +204,11 @@ pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const Even
     let _guard = EtwGuard::lock();
     let providers = core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
     let Some(provider_slot) = provider_index(providers, handle) else { return ERROR_INVALID_PARAMETER; };
-    let guid = unsafe { (*providers.add(provider_slot)).guid };
+    let p = unsafe { &*providers.add(provider_slot) };
+    if !provider_matches(p, descriptor_value.level, descriptor_value.keyword) { return ERROR_SUCCESS; }
+    let guid = p.guid;
+    let (process_id, thread_id) = current_process_thread();
+    let activity = current_activity(process_id, thread_id);
     unsafe {
         let events = core::ptr::addr_of_mut!(ETW_EVENTS).cast::<EventRecord>();
         if ETW_EVENT_LEN == EVENT_CAPACITY {
@@ -167,19 +224,105 @@ pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const Even
         record.provider = guid;
         record.descriptor = descriptor_value;
         record.payload_len = payload_len as u16;
+        record.activity = activity; record.related_activity = Guid::default();
+        record.process_id = process_id; record.thread_id = thread_id;
         record.payload[..payload_len].copy_from_slice(&payload[..payload_len]);
         ETW_EVENT_LEN += 1;
     }
     ERROR_SUCCESS
 }
 
-// These internal/private ETW routines deliberately remain unsupported until a
-// controller, activity-ID state, notification lifecycle, and kernel logger exist.
+
+/// Apply a controller's enable state and filters. Callback execution is outside the lock.
+pub(crate) fn controller_set_provider(guid: &Guid, enabled: bool, level: u8, match_any: u64, match_all: u64) -> usize {
+    let mut callbacks: [(usize, usize, Guid); PROVIDER_CAPACITY] = [(0, 0, Guid::default()); PROVIDER_CAPACITY];
+    let mut count = 0usize;
+    {
+        let _guard = EtwGuard::lock();
+        let entries = core::ptr::addr_of_mut!(ETW_PROVIDERS).cast::<EtwProvider>();
+        for i in 0..PROVIDER_CAPACITY {
+            let p = unsafe { &mut *entries.add(i) };
+            if p.active && p.guid == *guid {
+                p.enabled = enabled; p.level = level; p.match_any = match_any; p.match_all = match_all;
+                if p.callback != 0 { callbacks[count] = (p.callback, p.context, p.guid); count += 1; }
+            }
+        }
+    }
+    for (callback, context, source) in callbacks.into_iter().take(count) {
+        let f: EnableCallback = unsafe { core::mem::transmute(callback) };
+        unsafe { f(&source, enabled as u32, level, match_any, match_all, core::ptr::null(), context as *mut core::ffi::c_void); }
+    }
+    count
+}
+
+/// Pull one owned event for a consumer; no pointer into the ring escapes this function.
+pub(crate) fn consumer_read_event(provider: &mut Guid, descriptor: &mut EventDescriptor, activity: &mut Guid,
+    related: &mut Guid, process_id: &mut u64, thread_id: &mut u64,
+    payload: &mut [u8; MAX_EVENT_PAYLOAD], payload_len: &mut usize) -> bool {
+    let _guard = EtwGuard::lock();
+    unsafe {
+        if ETW_EVENT_LEN == 0 { return false; }
+        let events = core::ptr::addr_of_mut!(ETW_EVENTS).cast::<EventRecord>();
+        let r = &mut *events.add(ETW_EVENT_HEAD);
+        if !r.active { ETW_EVENT_HEAD = (ETW_EVENT_HEAD + 1) % EVENT_CAPACITY; ETW_EVENT_LEN -= 1; return false; }
+        *provider = r.provider; *descriptor = r.descriptor; *activity = r.activity; *related = r.related_activity;
+        *process_id = r.process_id; *thread_id = r.thread_id;
+        let n = (r.payload_len as usize).min(payload.len()); payload[..n].copy_from_slice(&r.payload[..n]); *payload_len = n;
+        r.active = false; ETW_EVENT_HEAD = (ETW_EVENT_HEAD + 1) % EVENT_CAPACITY; ETW_EVENT_LEN -= 1; true
+    }
+}
+
+/// Process-exit rundown hook. Call before releasing the process's TEB/address space.
+pub(crate) fn process_exit_rundown(process_id: u64) {
+    let _guard = EtwGuard::lock();
+    unsafe {
+        let providers = core::ptr::addr_of_mut!(ETW_PROVIDERS).cast::<EtwProvider>();
+        for i in 0..PROVIDER_CAPACITY { let p = &mut *providers.add(i); if p.active && p.owner_pid == process_id { *p = EtwProvider::EMPTY; } }
+        let activities = core::ptr::addr_of_mut!(ETW_ACTIVITIES).cast::<ActivitySlot>();
+        for i in 0..ACTIVITY_CAPACITY { let a = &mut *activities.add(i); if a.active && a.pid == process_id { *a = ActivitySlot::EMPTY; } }
+        let events = core::ptr::addr_of_mut!(ETW_EVENTS).cast::<EventRecord>();
+        for i in 0..EVENT_CAPACITY { let e = &mut *events.add(i); if e.active && e.process_id == process_id { *e = EventRecord::EMPTY; } }
+        let mut retained = 0usize;
+        for offset in 0..ETW_EVENT_LEN { let idx = (ETW_EVENT_HEAD + offset) % EVENT_CAPACITY; if (*events.add(idx)).active { retained += 1; } }
+        ETW_EVENT_LEN = retained; if retained == 0 { ETW_EVENT_HEAD = 0; }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn EtwEventActivityIdControl(control_code: u32, activity_id: *mut Guid) -> i32 {
+    if activity_id.is_null() { return 0xC000000Du32 as i32; }
+    let (pid, tid) = current_process_thread(); if tid == 0 { return 0xC0000225u32 as i32; }
+    let mut value = unsafe { core::ptr::read_unaligned(activity_id) };
+    let _guard = EtwGuard::lock();
+    let slots = core::ptr::addr_of_mut!(ETW_ACTIVITIES).cast::<ActivitySlot>();
+    let mut found = None; let mut empty = None;
+    for i in 0..ACTIVITY_CAPACITY {
+        let a = unsafe { &*slots.add(i) };
+        if a.active && a.pid == pid && a.tid == tid { found = Some(i); break; }
+        if !a.active && empty.is_none() { empty = Some(i); }
+    }
+    let idx = match found.or(empty) { Some(i) => i, None => return ERROR_NOT_ENOUGH_MEMORY as i32 };
+    let old = if let Some(i) = found { unsafe { (*slots.add(i)).id } } else { Guid::default() };
+    let mut next = old;
+    match control_code {
+        EVENT_ACTIVITY_CTRL_GET_ID => value = old,
+        EVENT_ACTIVITY_CTRL_SET_ID => next = value,
+        EVENT_ACTIVITY_CTRL_CREATE_ID => value = new_activity_id(),
+        EVENT_ACTIVITY_CTRL_GET_SET_ID => { next = value; value = old; }
+        EVENT_ACTIVITY_CTRL_CREATE_SET_ID => { value = old; next = new_activity_id(); }
+        _ => return 0xC000000Du32 as i32,
+    }
+    if matches!(control_code, EVENT_ACTIVITY_CTRL_SET_ID | EVENT_ACTIVITY_CTRL_GET_SET_ID | EVENT_ACTIVITY_CTRL_CREATE_SET_ID) || found.is_none() {
+        unsafe { *slots.add(idx) = ActivitySlot { pid, tid, id: next, active: true }; }
+    }
+    unsafe { activity_id.write_unaligned(value); } 0
+}
+
+// Session-management internals still require the native kernel syscall bridge.
 fn EtwCheckCoverage() -> i32 { 0xC0000002u32 as i32 }
 fn EtwCreateTraceInstanceId() -> i32 { 0xC0000002u32 as i32 }
 fn EtwDeliverDataBlock() -> i32 { 0xC0000002u32 as i32 }
 fn EtwEnumerateProcessRegGuids() -> i32 { 0xC0000002u32 as i32 }
-fn EtwEventActivityIdControl() -> i32 { 0xC0000002u32 as i32 }
 fn EtwEventSetInformation() -> i32 { 0xC0000002u32 as i32 }
 fn EtwEventWriteEndScenario() -> i32 { 0xC0000002u32 as i32 }
 fn EtwEventWriteEx() -> i32 { 0xC0000002u32 as i32 }
@@ -224,6 +367,8 @@ mod tests {
         let descriptor = EventDescriptor { id: 7, version: 1, channel: 0, level: 4, opcode: 0, task: 2, keyword: 1 };
         let payload = [0x10u8, 0x20, 0x30, 0x40];
         let data = EventDataDescriptor { ptr: payload.as_ptr() as u64, size: payload.len() as u32, reserved: 0 };
+        assert_eq!(unsafe { EtwEventEnabled(handle, &descriptor) }, 0);
+        assert_eq!(controller_set_provider(&guid, true, 5, 1, 0), 0);
         assert_eq!(unsafe { EtwEventEnabled(handle, &descriptor) }, 1);
         assert_eq!(unsafe { EtwEventWrite(handle, &descriptor, 1, &data) }, ERROR_SUCCESS);
 
