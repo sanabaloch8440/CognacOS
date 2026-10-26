@@ -7,7 +7,25 @@ const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
 const ERROR_SUCCESS: u32 = 0;
 const ERROR_INVALID_PARAMETER: u32 = 87;
 #[repr(C)] #[derive(Clone, Copy)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *const u16 }
-unsafe 
+#[repr(C)] #[derive(Clone, Copy)] struct Guid { data1: u32, data2: u16, data3: u16, data4: [u8; 8] }
+#[repr(C)] #[derive(Clone, Copy)] struct EventDescriptor { id: u16, version: u8, channel: u8, level: u8, opcode: u8, task: u16, keyword: u64 }
+#[repr(C)] struct EventDataDescriptor { ptr: u64, size: u32, reserved: u32 }
+#[derive(Clone, Copy)] struct EtwProvider { handle: u64, guid: Guid, active: bool }
+impl EtwProvider { const EMPTY: Self = Self { handle: 0, guid: Guid { data1: 0, data2: 0, data3: 0, data4: [0; 8] }, active: false }; }
+static ETW_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static ETW_NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+static mut ETW_PROVIDERS: [EtwProvider; 64] = [EtwProvider::EMPTY; 64];
+struct EtwGuard;
+impl EtwGuard { fn lock() -> Self { while ETW_LOCK.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() { core::hint::spin_loop(); } Self } }
+impl Drop for EtwGuard { fn drop(&mut self) { ETW_LOCK.store(false, core::sync::atomic::Ordering::Release); } }
+unsafe fn etw_register(provider: *const Guid, handle: *mut u64) -> u32 {
+ if provider.is_null() || handle.is_null() { return ERROR_INVALID_PARAMETER; }
+ let guid = unsafe { core::ptr::read_unaligned(provider) }; let _guard = EtwGuard::lock();
+ let entries = core::ptr::addr_of_mut!(ETW_PROVIDERS).cast::<EtwProvider>();
+ for i in 0..64 { let e = unsafe { &mut *entries.add(i) }; if !e.active { let id = ETW_NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed).max(1); *e = EtwProvider { handle: id, guid, active: true }; unsafe { handle.write(id); } return ERROR_SUCCESS; } }
+ 8
+}
+fn etw_is_registered(handle: u64) -> bool { let _guard = EtwGuard::lock(); let entries = core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>(); (0..64).any(|i| unsafe { let e = &*entries.add(i); e.active && e.handle == handle }) }
 unsafe fn apiset_schema_has(name: *const UnicodeString) -> Result<bool, i32> {
  if name.is_null() { return Err(STATUS_INVALID_PARAMETER); } let n = unsafe { &*name };
  if n.length == 0 || n.length & 1 != 0 || n.length > n.maximum_length || n.buffer.is_null() || n.length > 520 { return Err(STATUS_INVALID_PARAMETER); }
@@ -40,125 +58,111 @@ pub unsafe extern "system" fn ApiSetQuerySchema() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
 
-#[no_mangle]
-pub unsafe extern "system" 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[no_mangle]
 pub unsafe extern "system" fn ExpInterlockedPopEntrySListEnd() -> i32 {
@@ -370,6 +374,136 @@ pub unsafe extern "system" fn towlower(c: u32) -> u32 { if (65..=90).contains(&c
 
 #[no_mangle]
 pub unsafe extern "system" fn towupper(c: u32) -> u32 { if (97..=122).contains(&c) {c-32} else {c} }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #[no_mangle]
 pub unsafe extern "system" fn vDbgPrintEx() -> i32 {
