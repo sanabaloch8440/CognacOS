@@ -17,6 +17,8 @@ pub type PULONG = *mut ULONG;
 pub type SIZE_T = usize;
 pub type PSIZE_T = *mut SIZE_T;
 pub type ACCESS_MASK = u32;
+pub type ALPC_HANDLE = HANDLE;
+pub type PALPC_HANDLE = *mut ALPC_HANDLE;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -54,12 +56,12 @@ pub struct ALPC_MESSAGE_ATTRIBUTES { pub AllocatedAttributes: ULONG, pub ValidAt
 #[derive(Clone, Copy)]
 pub struct ALPC_DATA_VIEW_ATTR {
     pub Flags: ULONG, pub _padding: ULONG,
-    pub SectionHandle: HANDLE, pub ViewBase: PVOID, pub ViewSize: SIZE_T,
+    pub SectionHandle: ALPC_HANDLE, pub ViewBase: PVOID, pub ViewSize: SIZE_T,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct ALPC_SECURITY_ATTR {
-    pub Flags: ULONG, pub QoS: PVOID, pub ContextHandle: ULONG,
+    pub Flags: ULONG, pub QoS: PVOID, pub ContextHandle: ALPC_HANDLE,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -108,15 +110,15 @@ unsafe extern "system" {
     pub fn NtAlpcConnectPort(PortHandle: PHANDLE, PortName: *const UNICODE_STRING, ObjectAttributes: *const OBJECT_ATTRIBUTES, PortAttributes: *const ALPC_PORT_ATTRIBUTES, Flags: ULONG, RequiredServerSid: PVOID, ConnectionMessage: PVOID, BufferLength: PSIZE_T, OutMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, InMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, Timeout: PVOID) -> NTSTATUS;
     pub fn NtAlpcAcceptConnectPort(PortHandle: PHANDLE, ConnectionPortHandle: HANDLE, Flags: ULONG, ObjectAttributes: *const OBJECT_ATTRIBUTES, PortAttributes: *const ALPC_PORT_ATTRIBUTES, PortContext: PVOID, ConnectionRequest: *const PORT_MESSAGE, ConnectionMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, AcceptConnection: u8) -> NTSTATUS;
     pub fn NtAlpcSendWaitReceivePort(PortHandle: HANDLE, Flags: ULONG, SendMessage: *const PORT_MESSAGE, SendMessageAttributes: *const ALPC_MESSAGE_ATTRIBUTES, ReceiveMessage: *mut PORT_MESSAGE, BufferLength: PSIZE_T, ReceiveMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, Timeout: PVOID) -> NTSTATUS;
-    pub fn NtAlpcCreatePortSection(PortHandle: HANDLE, Flags: ULONG, SectionHandle: HANDLE, SectionSize: SIZE_T, AlpcSectionHandle: *mut ULONG, ActualSectionSize: PSIZE_T) -> NTSTATUS;
-    pub fn NtAlpcDeletePortSection(PortHandle: HANDLE, Flags: ULONG, SectionHandle: ULONG) -> NTSTATUS;
+    pub fn NtAlpcCreatePortSection(PortHandle: HANDLE, Flags: ULONG, SectionHandle: HANDLE, SectionSize: SIZE_T, AlpcSectionHandle: PALPC_HANDLE, ActualSectionSize: PSIZE_T) -> NTSTATUS;
+    pub fn NtAlpcDeletePortSection(PortHandle: HANDLE, Flags: ULONG, SectionHandle: ALPC_HANDLE) -> NTSTATUS;
     pub fn NtAlpcCreateSectionView(PortHandle: HANDLE, Flags: ULONG, ViewAttributes: *mut ALPC_DATA_VIEW_ATTR) -> NTSTATUS;
     pub fn NtAlpcDeleteSectionView(PortHandle: HANDLE, Flags: ULONG, ViewBase: PVOID) -> NTSTATUS;
     pub fn NtAlpcCreateSecurityContext(PortHandle: HANDLE, Flags: ULONG, SecurityAttribute: *mut ALPC_SECURITY_ATTR) -> NTSTATUS;
-    pub fn NtAlpcDeleteSecurityContext(PortHandle: HANDLE, Flags: ULONG, ContextHandle: ULONG) -> NTSTATUS;
+    pub fn NtAlpcDeleteSecurityContext(PortHandle: HANDLE, Flags: ULONG, ContextHandle: ALPC_HANDLE) -> NTSTATUS;
     pub fn NtAlpcRevokeSecurityContext(PortHandle: HANDLE, Flags: ULONG, ContextHandle: ULONG) -> NTSTATUS;
-    pub fn NtAlpcCreateResourceReserve(PortHandle: HANDLE, Flags: ULONG, MessageSize: SIZE_T, ResourceId: *mut ULONG) -> NTSTATUS;
-    pub fn NtAlpcDeleteResourceReserve(PortHandle: HANDLE, Flags: ULONG, ResourceId: ULONG) -> NTSTATUS;
+    pub fn NtAlpcCreateResourceReserve(PortHandle: HANDLE, Flags: ULONG, MessageSize: SIZE_T, ResourceId: PALPC_HANDLE) -> NTSTATUS;
+    pub fn NtAlpcDeleteResourceReserve(PortHandle: HANDLE, Flags: ULONG, ResourceId: ALPC_HANDLE) -> NTSTATUS;
     pub fn NtAlpcQueryInformation(PortHandle: HANDLE, PortInformationClass: ULONG, PortInformation: PVOID, Length: ULONG, ReturnLength: PULONG) -> NTSTATUS;
     pub fn NtAlpcSetInformation(PortHandle: HANDLE, PortInformationClass: ULONG, PortInformation: PVOID, Length: ULONG) -> NTSTATUS;
     pub fn NtAlpcQueryInformationMessage(PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, MessageInformationClass: ULONG, MessageInformation: PVOID, Length: ULONG, ReturnLength: PULONG) -> NTSTATUS;
