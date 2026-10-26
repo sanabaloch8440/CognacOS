@@ -78,6 +78,7 @@ pub struct IMAGE_RESOURCE_DATA_ENTRY { pub OffsetToData: u32, pub Size: u32, pub
 pub struct LDR_RESOURCE_DIRECTORY_ENTRY { pub Data: [u32; 2] }
 
 unsafe fn mapped_image_info(module: PVOID) -> Result<(usize, usize, usize), NTSTATUS> {
+    crate::trace::trace(crate::trace::TRACE_LOADER_ENTER, module as usize as u64, 0);
     if module.is_null() { return Err(STATUS_INVALID_PARAMETER); }
     let base = module as *const u8;
     if unsafe { ptr::read_unaligned(base.cast::<u16>()) } != 0x5a4d { return Err(0xC000_007Bu32 as i32); }
@@ -102,6 +103,7 @@ unsafe fn mapped_image_info(module: PVOID) -> Result<(usize, usize, usize), NTST
     if rva == 0 || size < 16 || rva.checked_add(size).filter(|end| *end <= image_size).is_none() {
         return Ok((base as usize, image_size, 0));
     }
+    crate::trace::trace(crate::trace::TRACE_LOADER_IMAGE, base as usize as u64, image_size as u64);
     Ok((base as usize, image_size, (size << 32) | rva))
 }
 
