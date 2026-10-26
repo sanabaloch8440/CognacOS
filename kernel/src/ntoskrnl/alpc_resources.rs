@@ -128,6 +128,14 @@ pub fn unregister_section_view(id: u32, owner_pid: u64) -> Result<SectionView, u
     if s.views[i].owner_pid != owner_pid { return Err(STATUS_ACCESS_DENIED); }
     let old = s.views[i]; s.views[i] = SectionView::EMPTY; Ok(old)
 }
+/// Remove one view owned by a terminating process so the MM rundown path
+/// can unmap it before its address space is destroyed.
+pub fn take_section_view_for_rundown(owner_pid: u64) -> Option<SectionView> {
+    let mut g=Guard::acquire();
+    let s=g.state();
+    let i=s.views.iter().position(|v|v.active&&v.owner_pid==owner_pid)?;
+    let old=s.views[i];s.views[i]=SectionView::EMPTY;Some(old)
+}
 pub fn create_security_context(owner_pid: u64, peer_pid: u64, desired_access: u32, impersonation_level: u8) -> Result<u32, u32> {
     // SecurityImpersonation (2) is the highest level accepted by this core;
     // identification/anonymous are permitted, delegation is not.
