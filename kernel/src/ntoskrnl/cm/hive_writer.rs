@@ -224,6 +224,13 @@ fn marvin32(data:&[u8])->u64{
  p0=p0.wrapping_add(tail);marvin_block(&mut p0,&mut p1);marvin_block(&mut p0,&mut p1);
  ((p1 as u64)<<32)|(p0 as u64)
 }
+/// Recalculate the two hashes in a HvLE entry after the caller has
+/// populated its reference table, page data, and padding.
+pub fn finalize_hvle_entry_hashes(entry:&mut[u8])->Result<(),Error>{
+ if entry.len()<40||entry.get(0..4)!=Some(&b"HvLE"[..]){return Err(Error::InvalidLog)}
+ let h1=marvin32(&entry[40..]);entry[24..32].copy_from_slice(&h1.to_le_bytes());
+ let h2=marvin32(&entry[..32]);entry[32..40].copy_from_slice(&h2.to_le_bytes());Ok(())
+}
 fn valid_base_checksum(bytes:&[u8])->bool{
  if bytes.len()<512{return false}
  let mut c=0u32;for o in (0..0x1fc).step_by(4){let Some(x)=bytes.get(o..o+4)else{return false};c^=u32::from_le_bytes([x[0],x[1],x[2],x[3]]);}
