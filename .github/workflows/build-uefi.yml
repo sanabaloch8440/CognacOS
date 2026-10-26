@@ -102,6 +102,11 @@ jobs:
         run: cargo check --manifest-path csrss/Cargo.toml --lib --target x86_64-unknown-linux-gnu
       - name: Test native CSR dispatch and client lifecycle
         run: cargo test --manifest-path csrss/Cargo.toml --lib --target x86_64-unknown-linux-gnu
+      - name: Test bounded ALPC transport core
+        run: |
+          set -euo pipefail
+          rustc --edition=2024 --test kernel/src/ntoskrnl/alpc.rs -o /tmp/cognacos-alpc-tests
+          /tmp/cognacos-alpc-tests
       - name: Build separate native PE32+ HAL and driver images
         shell: bash
         run: |
