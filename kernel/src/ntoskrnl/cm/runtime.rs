@@ -947,6 +947,18 @@ mod tests {
   assert_eq!(unsafe{ZwEnumerateValueKey(key,1,0,value_info.as_mut_ptr().cast(),value_info.len() as u32,&mut needed)},0x8000_001Au32 as i32);
  }
 
+ #[test] fn regf_allocator_grows_into_reserved_hbin_capacity() {
+  let mut bytes=[0u8;12288];
+  hive_backend::create_minimal_hive(&mut bytes).unwrap();
+  let mut writer=hive_writer_backend::HiveWriter::open(&mut bytes).unwrap();
+  let _large=writer.allocate_cell(0x0f80).unwrap();
+  let next=writer.allocate_cell(32).unwrap();
+  writer.update_base_block(2).unwrap();
+  drop(writer);
+  let hive=hive_backend::Hive::open(&bytes).unwrap();
+  assert_eq!(hive.info.bins_size,0x2000);
+  assert!(hive.key_at(next).is_err()); // allocated generic cell is not an NK
+ }
  #[test] fn writable_regf_cells_indexes_and_redo_recovery() {
   let mut bytes=[0u8;8192];
   hive_backend::create_minimal_hive(&mut bytes).unwrap();
