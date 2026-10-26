@@ -150,14 +150,12 @@ unsafe fn call_handlers(pointers: *mut EXCEPTION_POINTERS, kind: u8) -> LONG {
     EXCEPTION_CONTINUE_SEARCH
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn RtlAddVectoredExceptionHandler(
     first: ULONG, function: PVECTORED_EXCEPTION_HANDLER,
 ) -> PVOID {
     add_handler(first, function, 1)
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn RtlRemoveVectoredExceptionHandler(handle: PVOID) -> ULONG {
     remove_handler(handle, 1)
 }
