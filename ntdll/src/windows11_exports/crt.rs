@@ -658,3 +658,176 @@ pub unsafe extern "system" fn iswctype(c:u32,mask:u16)->i32 {
  if c>0x7f{return 0;}let ch=c as u8;let mut flags=0u16;
  if ch.is_ascii_uppercase(){flags|=0x01|0x100;} if ch.is_ascii_lowercase(){flags|=0x02|0x100;}if ch.is_ascii_digit(){flags|=0x04;}if ch.is_ascii_whitespace(){flags|=0x08;}if ch.is_ascii_punctuation(){flags|=0x10;}if ch.is_ascii_control(){flags|=0x20;}if ch==b' '||ch==b'\t'{flags|=0x40;}if ch.is_ascii_hexdigit(){flags|=0x80;}((flags&mask)!=0) as i32
 }
+
+#[no_mangle]
+pub unsafe extern "system" fn iswalnum(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_alphanumeric()).unwrap_or(false) as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn iswalpha(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_alphabetic()).unwrap_or(false) as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn iswascii(c: u32) -> i32 { (c <= 0x7f) as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn iswdigit(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_digit()) as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn iswgraph(c: u32) -> i32 { char::from_u32(c).map(|v| !v.is_control() && !v.is_whitespace()).unwrap_or(false) as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn iswlower(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_lowercase()).unwrap_or(false) as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn iswprint(c: u32) -> i32 { char::from_u32(c).map(|v| !v.is_control()).unwrap_or(false) as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn iswspace(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_whitespace()).unwrap_or(false) as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn iswxdigit(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_hexdigit()) as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn KiUserApcDispatcher() -> i32 {
+    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn towlower(c: u32) -> u32 { char::from_u32(c).and_then(|v| { let mut it = v.to_lowercase(); let first = it.next()?; if it.next().is_none() { Some(first as u32) } else { Some(c) } }).unwrap_or(c) }
+
+#[no_mangle]
+pub unsafe extern "system" fn towupper(c: u32) -> u32 { char::from_u32(c).and_then(|v| { let mut it = v.to_uppercase(); let first = it.next()?; if it.next().is_none() { Some(first as u32) } else { Some(c) } }).unwrap_or(c) }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#[no_mangle]
+pub unsafe extern "system" fn vDbgPrintEx() -> i32 {
+    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+}
