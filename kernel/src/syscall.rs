@@ -1409,12 +1409,12 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
             status as u32 as u64
         }
         NT_SYSCALL_YIELD_EXECUTION => {
-            // The bootstrap ring-3 smoke runner is not yet represented by a
-            // scheduler-owned ETHREAD. Only reschedule when a real current
-            // thread exists; otherwise a yield could switch out the boot stack.
-            if crate::ntoskrnl::ke::thread::current_thread_id().is_some() {
-                let _ = crate::ntoskrnl::ke::thread::yield_current();
-            }
+            // The current ring-3 loader/NTDLL smoke runner enters user mode from
+            // the boot stack; it is not a scheduler-owned ETHREAD. A stale
+            // per-CPU current-thread ID from earlier scheduler self-tests is
+            // not proof that this caller can safely context-switch. Until the
+            // process bootstrap is attached to a scheduler thread, yield is a
+            // successful no-op rather than rescheduling an unrelated thread.
             NT_STATUS_SUCCESS
         }
         NT_SYSCALL_QUERY_INFORMATION_PROCESS => nt_query_process(args),
