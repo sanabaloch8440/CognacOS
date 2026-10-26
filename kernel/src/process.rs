@@ -258,6 +258,27 @@ pub fn mark_exited(pid: u64, code: u64) -> bool {
     }
     marked
 }
+
+/// Return the next live process after a PID, with a reference held.
+pub fn next_live_process(after_pid: u64) -> Option<*mut EProcess> {
+    let mut registry = TABLE.lock();
+    let index = registry.0.iter().enumerate()
+        .filter(|(_, p)| p.used && p.magic == EPROCESS_MAGIC && p.process_id > after_pid
+            && matches!(p.state, ProcessState::Created | ProcessState::Running))
+        .map(|(i, p)| (i, p.process_id)).min_by_key(|(_, pid)| *pid)?.0;
+    registry.0[index].references = registry.0[index].references.checked_add(1)?;
+    Some(core::ptr::addr_of_mut!(registry.0[index]))
+}
+/// Snapshot a registered process object while the caller holds a reference.
+pub fn snapshot_referenced(pointer: *mut core::ffi::c_void) -> Option<ProcessSnapshot> {
+    if pointer.is_null() { return None; }
+    let registry = TABLE.lock();
+    registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC
+        && core::ptr::addr_of!(**p) as *mut EProcess as *mut core::ffi::c_void == pointer
+        && p.references != 0)
+        .map(|p| ProcessSnapshot { process_id: p.process_id, state: p.state, exit_code: p.exit_code })
+}
+
 pub fn query(pid: u64) -> Option<ProcessSnapshot> {
     let registry = TABLE.lock();
     registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid)
