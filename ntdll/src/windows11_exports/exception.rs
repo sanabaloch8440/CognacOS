@@ -8,6 +8,7 @@
 
 use core::ffi::c_void;
 use core::ptr;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[cfg(target_os = "none")]
 core::arch::global_asm!(r#"
@@ -174,6 +175,61 @@ pub unsafe extern "system" fn NtRaiseException(record: *const EXCEPTION_RECORD, 
     { let _ = first_chance; STATUS_NOT_IMPLEMENTED }
 }
 
+#[repr(C)]
+pub struct EXCEPTION_POINTERS {
+    pub ExceptionRecord: *mut EXCEPTION_RECORD,
+    pub ContextRecord: *mut CONTEXT,
+}
+pub type PVECTORED_EXCEPTION_HANDLER = Option<unsafe extern "system" fn(*mut EXCEPTION_POINTERS) -> i32>;
+const MAX_VECTORED_EXCEPTION_HANDLERS: usize = 64;
+#[derive(Clone, Copy)]
+struct VectoredExceptionEntry { cookie: usize, handler: usize }
+impl VectoredExceptionEntry { const EMPTY: Self = Self { cookie: 0, handler: 0 }; }
+static VECTORED_EXCEPTION_LOCK: AtomicBool = AtomicBool::new(false);
+static NEXT_VECTORED_EXCEPTION_COOKIE: AtomicUsize = AtomicUsize::new(1);
+static mut VECTORED_EXCEPTION_HANDLERS: [VectoredExceptionEntry; MAX_VECTORED_EXCEPTION_HANDLERS] =
+    [VectoredExceptionEntry::EMPTY; MAX_VECTORED_EXCEPTION_HANDLERS];
+struct VectoredExceptionGuard;
+impl VectoredExceptionGuard {
+    fn acquire() -> Self {
+        while VECTORED_EXCEPTION_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        Self
+    }
+}
+impl Drop for VectoredExceptionGuard {
+    fn drop(&mut self) { VECTORED_EXCEPTION_LOCK.store(false, Ordering::Release); }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlAddVectoredExceptionHandler(first: u32, handler: PVECTORED_EXCEPTION_HANDLER) -> *mut c_void {
+    let Some(handler) = handler else { return ptr::null_mut(); };
+    let _guard = VectoredExceptionGuard::acquire();
+    let entries = unsafe { &mut *ptr::addr_of_mut!(VECTORED_EXCEPTION_HANDLERS) };
+    let count = entries.iter().take_while(|entry| entry.cookie != 0).count();
+    if count == MAX_VECTORED_EXCEPTION_HANDLERS { return ptr::null_mut(); }
+    let cookie = NEXT_VECTORED_EXCEPTION_COOKIE.fetch_add(1, Ordering::Relaxed).max(1);
+    let new_entry = VectoredExceptionEntry { cookie, handler: handler as usize };
+    let index = if first != 0 { 0 } else { count };
+    if first != 0 {
+        for i in (0..count).rev() { entries[i + 1] = entries[i]; }
+    }
+    entries[index] = new_entry;
+    cookie as *mut c_void
+}
+#[no_mangle]
+pub unsafe extern "system" fn RtlRemoveVectoredExceptionHandler(cookie: *mut c_void) -> u32 {
+    let cookie = cookie as usize;
+    if cookie == 0 { return 0; }
+    let _guard = VectoredExceptionGuard::acquire();
+    let entries = unsafe { &mut *ptr::addr_of_mut!(VECTORED_EXCEPTION_HANDLERS) };
+    let Some(index) = entries.iter().position(|entry| entry.cookie == cookie) else { return 0; };
+    for i in index..MAX_VECTORED_EXCEPTION_HANDLERS - 1 { entries[i] = entries[i + 1]; }
+    entries[MAX_VECTORED_EXCEPTION_HANDLERS - 1] = VectoredExceptionEntry::EMPTY;
+    1
+}
+
 /// Windows x64 DISPATCHER_CONTEXT supplied to language-specific handlers.
 #[repr(C)]
 struct RTL_DISPATCHER_CONTEXT {
@@ -195,6 +251,18 @@ struct RTL_DISPATCHER_CONTEXT {
 #[no_mangle]
 pub unsafe extern "system" fn RtlDispatchException(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT) -> u8 {
     if record.is_null() || context.is_null() { return 0; }
+    // VEH callbacks run before frame-based language handlers. Copy the
+    // bounded registry under lock, then invoke callbacks without holding it.
+    let handlers = {
+        let _guard = VectoredExceptionGuard::acquire();
+        unsafe { *ptr::addr_of!(VECTORED_EXCEPTION_HANDLERS) }
+    };
+    let mut exception_pointers = EXCEPTION_POINTERS { ExceptionRecord: record, ContextRecord: context };
+    for entry in handlers.iter().take_while(|entry| entry.cookie != 0) {
+        let callback: unsafe extern "system" fn(*mut EXCEPTION_POINTERS) -> i32 =
+            core::mem::transmute(entry.handler);
+        if unsafe { callback(&mut exception_pointers) } == -1 { return 1; }
+    }
     let mut walk_context = ptr::read_unaligned(context);
     let mut control_pc = walk_context.Rip;
     let mut previous_rsp = 0u64;
