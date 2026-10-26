@@ -541,6 +541,12 @@ jobs:
           if result.returncode:
               print(f"llvm-symbolizer exit status: {result.returncode}")
           PY
+            python3 tools/resolve_qemu_trace.py \
+              --trace build/qemu-debug.log \
+              --serial build/serial.log \
+              --kernel target/x86_64-unknown-none/release/cognacos-kernel \
+              --hal target/driver-hal/x86_64-unknown-none/release/hal \
+              --ntdll target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll || true
             exit 1
           fi
 
