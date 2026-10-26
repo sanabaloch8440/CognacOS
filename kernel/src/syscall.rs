@@ -422,9 +422,28 @@ fn etw_process_exit_rundown(pid:u64) {
  let _g=KernelEtwGuard::lock();
  unsafe {
   let providers=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
-  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.owner==pid{*p=KernelEtwProvider::EMPTY;}} let sessions=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>(); for i in 0..16 {let s=&mut *sessions.add(i);if s.active&&s.owner==pid{for j in 0..ETW_PROVIDER_CAPACITY{let p=&mut *providers.add(j);if p.active{p.subscriptions[i]=KernelEtwSubscription::EMPTY;}}*s=KernelEtwSession::EMPTY;}}
-  let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();let old_head=ETW_KERNEL_HEAD;let old_len=ETW_KERNEL_LEN;let mut kept=0usize;
-  for off in 0..old_len {let src=(old_head+off)%ETW_EVENT_CAPACITY;let e=*events.add(src);if !e.active||e.pid==pid{*events.add(src)=KernelEtwEvent::EMPTY;continue;}let dst=(old_head+kept)%ETW_EVENT_CAPACITY;if dst!=src{*events.add(dst)=e;*events.add(src)=KernelEtwEvent::EMPTY;}kept+=1;}
+  let sessions=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
+  let mut removed_session_mask=0u16;
+  for i in 0..16 {
+   let session=&mut *sessions.add(i);
+   if session.active&&session.owner==pid {
+    removed_session_mask|=1u16<<i;
+    for j in 0..ETW_PROVIDER_CAPACITY {let provider=&mut *providers.add(j);if provider.active{provider.subscriptions[i]=KernelEtwSubscription::EMPTY;}}
+    *session=KernelEtwSession::EMPTY;
+   }
+  }
+  for i in 0..ETW_PROVIDER_CAPACITY {let provider=&mut *providers.add(i);if provider.active&&provider.owner==pid{*provider=KernelEtwProvider::EMPTY;}}
+  let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();
+  let old_head=ETW_KERNEL_HEAD;let old_len=ETW_KERNEL_LEN;let mut kept=0usize;
+  for off in 0..old_len {
+   let src=(old_head+off)%ETW_EVENT_CAPACITY;let mut event=*events.add(src);
+   if !event.active||event.pid==pid { *events.add(src)=KernelEtwEvent::EMPTY; continue; }
+   event.session_mask&=!removed_session_mask;
+   if event.session_mask==0 { *events.add(src)=KernelEtwEvent::EMPTY; continue; }
+   let dst=(old_head+kept)%ETW_EVENT_CAPACITY;
+   if dst!=src {*events.add(dst)=event;*events.add(src)=KernelEtwEvent::EMPTY;}else{*events.add(dst)=event;}
+   kept+=1;
+  }
   ETW_KERNEL_LEN=kept;if kept==0{ETW_KERNEL_HEAD=0;}
  }
 }
