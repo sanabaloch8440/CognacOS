@@ -188,6 +188,7 @@ pub const NT_SYSCALL_ETW_REGISTER:u64=0x133;
 pub const NT_SYSCALL_ETW_ENABLE_STATE:u64=0x134;
 pub const NT_SYSCALL_ETW_WRITE_EVENT:u64=0x135;
 pub const NT_SYSCALL_ETW_READ_EVENT:u64=0x136;
+pub const NT_SYSCALL_ETW_SET_ENABLE:u64=0x137;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -280,6 +281,18 @@ fn etw_read_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  if let Err(s)=copy_nt_output(args[0],&record){return s;}
  if n>0 {if let Err(s)=copy_nt_output(args[1],&payload[..core::cmp::min(n,args[2] as usize)]){return s;}}
  if args[3]!=0 {if let Err(s)=copy_nt_output(args[3],&(n as u32).to_le_bytes()){return s;}}
+ NT_STATUS_SUCCESS
+}
+
+fn etw_set_enable(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
+ let handle=args[0];let enabled=args[1]!=0;let level=args[2] as u8;let any=args[3];let all=args[4];
+ if args[2]>u8::MAX as u64{return NT_STATUS_INVALID_PARAMETER;}
+ let _g=KernelEtwGuard::lock();
+ unsafe {
+  let table=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
+  let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|{let p=&*table.add(i);p.active&&p.handle==handle&&p.owner==current_process_id()}) else{return NT_STATUS_INVALID_HANDLE;};
+  let p=&mut *table.add(i);p.enabled=enabled;p.level=level;p.any=any;p.all=all;
+ }
  NT_STATUS_SUCCESS
 }
 pub fn etw_process_exit_rundown(pid:u64) {
@@ -1037,6 +1050,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_ETW_ENABLE_STATE => etw_enable_state(args),
         NT_SYSCALL_ETW_WRITE_EVENT => etw_write_event(args),
         NT_SYSCALL_ETW_READ_EVENT => etw_read_event(args),
+        NT_SYSCALL_ETW_SET_ENABLE => etw_set_enable(args),
         NT_SYSCALL_OPEN_KEY => nt_open_key(args),
         NT_SYSCALL_QUERY_VALUE_KEY => nt_query_value_key(args),
         NT_SYSCALL_OPEN_FILE => nt_open_file(args),
@@ -1153,6 +1167,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_ETW_ENABLE_STATE => 2,
             NT_SYSCALL_ETW_WRITE_EVENT => 4,
             NT_SYSCALL_ETW_READ_EVENT => 4,
+            NT_SYSCALL_ETW_SET_ENABLE => 5,
             NT_SYSCALL_OPEN_KEY => 3,
             NT_SYSCALL_QUERY_VALUE_KEY => 6,
             NT_SYSCALL_OPEN_FILE => 6,
