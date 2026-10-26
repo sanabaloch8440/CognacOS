@@ -18,10 +18,13 @@ const MAX_PORT_OBJECTS:usize=32;
 const MAX_NAME:usize=48;
 
 #[repr(C)]
+#[derive(Clone,Copy)]
 struct UnicodeString { length:u16, maximum_length:u16, buffer:*const u16 }
 #[repr(C)]
+#[derive(Clone,Copy)]
 struct ObjectAttributes { length:u32, root_directory:usize, object_name:*const UnicodeString, attributes:u32, security_descriptor:usize, security_qos:usize }
 #[repr(C)]
+#[derive(Clone,Copy)]
 struct PortAttributes { flags:u32, qos:[u8;12], max_message_length:usize, _rest:[usize;5], dup_object_types:u32, reserved:u32 }
 
 #[repr(C)]
