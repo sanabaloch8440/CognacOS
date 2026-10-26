@@ -222,6 +222,9 @@ pub unsafe extern "system" fn EtwEventRegister(provider: *const Guid, callback: 
 
 #[no_mangle]
 pub unsafe extern "system" fn EtwEventUnregister(handle: u64) -> u32 {
+    if let Some(status)=kernel_etw_call(NT_SYSCALL_ETW_UNREGISTER,handle,0,0,0) {
+        if status!=0 { return ERROR_INVALID_PARAMETER; }
+    }
     let _guard = EtwGuard::lock();
     let entries = core::ptr::addr_of_mut!(ETW_PROVIDERS).cast::<EtwProvider>();
     if let Some(i) = provider_index(entries, handle) {
