@@ -64,6 +64,25 @@ pub(crate) fn ke_accumulate_ticks(_hal_timestamp: u64) {
     LAST_CLOCK_SEEN[cpu].store(now, Ordering::Release);
     TICK_COUNT[cpu].fetch_add(1, Ordering::Relaxed);
 
+    // The clock interrupt can preempt a stuck DISPATCH_LEVEL callback. Check
+    // the in-flight DPC here as well as on normal callback return, otherwise
+    // an infinite DPC would never reach watchdog_dpc_end().
+    if let Some(hz) = counter_frequency() {
+        let dpc_start = ACTIVE_DPC_START[cpu].load(Ordering::Acquire);
+        if dpc_start != 0 {
+            let elapsed = now.saturating_sub(dpc_start);
+            let limit = seconds_to_ticks(DPC_SINGLE_TIMEOUT_SECONDS, hz);
+            if elapsed > limit {
+                let routine = ACTIVE_DPC_ROUTINE[cpu].load(Ordering::Acquire);
+                unsafe {
+                    crate::ntoskrnl::ke::runtime::ke_bug_check_ex(
+                        DPC_WATCHDOG_VIOLATION, 0, elapsed as usize, limit as usize, routine as usize,
+                    );
+                }
+            }
+        }
+    }
+
     let irql = CURRENT_IRQL[cpu].load(Ordering::Acquire);
     if irql >= 2 {
         let start = HIGH_IRQL_START[cpu].load(Ordering::Acquire);
