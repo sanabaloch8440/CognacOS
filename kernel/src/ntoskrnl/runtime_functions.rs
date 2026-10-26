@@ -60,7 +60,7 @@ pub fn register(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
     let address = args[0];
     let count = args[1];
     let image_base = args[2];
-    if address == 0 || count == 0 || count > MAX_ENTRIES || image_base == 0
+    if address == 0 || count == 0 || count > MAX_ENTRIES as u64 || image_base == 0
         || address.checked_add(count.saturating_mul(ENTRY_SIZE)).is_none()
         || image_base.checked_add(u32::MAX as u64).is_none() {
         return STATUS_INVALID_PARAMETER;
