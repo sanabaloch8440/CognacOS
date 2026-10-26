@@ -464,7 +464,42 @@ jobs:
           grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
           grep -F 'Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.' build/serial.log
           grep -F 'NTDLL PE32+ image mapped and exports registered.' build/serial.log
-          grep -F 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log
+          if ! grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log; then
+            echo "Native NTDLL smoke test did not complete; collecting a QEMU GDB snapshot."
+            command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
+            cp "$vars_template" build/OVMF_VARS_gdb.fd
+            : > build/gdb-serial.log
+            qemu-system-x86_64 \
+              -machine pc -m 5G -cpu max -smp 4 \
+              -drive if=pflash,format=raw,readonly=on,file="$code" \
+              -drive if=pflash,format=raw,file=build/OVMF_VARS_gdb.fd \
+              -drive if=ide,format=raw,file=build/cognacos-uefi.img \
+              -drive if=ide,format=raw,index=1,file=build/pagefile.img \
+              -boot order=c -display none -monitor none \
+              -serial file:build/gdb-serial.log -gdb tcp::12345 \
+              -no-reboot -no-shutdown &
+            qemu_pid=$!
+            sleep 5
+            set +e
+            gdb -q -batch \
+              -ex 'set pagination off' \
+              -ex 'set architecture i386:x86-64' \
+              -ex 'target remote 127.0.0.1:12345' \
+              -ex 'info registers' \
+              -ex 'x/16i $rip' \
+              -ex 'x/16gx $rsp' \
+              -ex 'bt' \
+              -ex 'detach' > build/gdb-state.txt 2>&1
+            gdb_status=$?
+            set -e
+            kill "$qemu_pid" 2>/dev/null || true
+            wait "$qemu_pid" 2>/dev/null || true
+            echo "=== GDB snapshot (status=$gdb_status) ==="
+            cat build/gdb-state.txt || true
+            echo "=== GDB rerun serial log ==="
+            cat build/gdb-serial.log || true
+            exit 1
+          fi
           grep -F 'Rust NTDLL mapped into process before PEB/LDR initialization.' build/serial.log
           grep -F 'Per-process page-table isolation, same-VA non-aliasing, and supervisor mapping protection passed.' build/serial.log
           grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
