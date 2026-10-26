@@ -6,6 +6,30 @@ use core::ffi::c_void;
 core::arch::global_asm!(r#"
     .text
     .p2align 4
+    .globl NtClose
+NtClose:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x0f, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtOpenKey
+NtOpenKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x12, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtQueryValueKey
+NtQueryValueKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x17, %eax
+    syscall
+    ret
+
+    .p2align 4
     .globl NtYieldExecution
 NtYieldExecution:
     .byte 0x4c, 0x8b, 0xd1

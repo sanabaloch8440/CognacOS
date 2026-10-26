@@ -88,8 +88,7 @@ extern "system" {
     fn RtlGetCurrentPeb() -> *mut c_void;
     fn RtlAcquirePebLock();
     fn RtlReleasePebLock();
-    fn GetProcessHeap() -> HANDLE;
-    fn RtlAllocateHeap(heap: HANDLE, flags: ULONG, size: SIZE_T) -> *mut c_void;
+        fn RtlAllocateHeap(heap: HANDLE, flags: ULONG, size: SIZE_T) -> *mut c_void;
     fn RtlFreeHeap(heap: HANDLE, flags: ULONG, memory: *mut c_void) -> BOOLEAN;
     fn RtlCompareUnicodeStrings(
         first: *const WCHAR, first_len: SIZE_T,
@@ -112,13 +111,13 @@ unsafe fn current_environment_slot() -> *mut *mut WCHAR {
 
 #[inline]
 unsafe fn alloc(size: usize, zero: bool) -> *mut c_void {
-    RtlAllocateHeap(GetProcessHeap(), if zero { HEAP_ZERO_MEMORY } else { 0 }, size)
+    RtlAllocateHeap(crate::rtl_heap::RtlGetProcessHeap(), if zero { HEAP_ZERO_MEMORY } else { 0 }, size)
 }
 
 #[inline]
 unsafe fn free(ptr: *mut c_void) {
     if !ptr.is_null() {
-        let _ = RtlFreeHeap(GetProcessHeap(), 0, ptr);
+        let _ = RtlFreeHeap(crate::rtl_heap::RtlGetProcessHeap(), 0, ptr);
     }
 }
 
@@ -474,7 +473,7 @@ unsafe fn set_environment_variable_impl(
     let new_units = prefix_units + new_entry_units + suffix_units;
     let old_bytes = old_units.saturating_mul(2);
     let new_bytes = new_units.saturating_mul(2);
-    let heap = GetProcessHeap();
+    let heap = crate::rtl_heap::RtlGetProcessHeap();
     let replacement = alloc(new_bytes.max(2), false).cast::<WCHAR>();
     if replacement.is_null() { return STATUS_NO_MEMORY; }
 

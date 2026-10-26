@@ -101,6 +101,18 @@ fn cognac_ntdll_panic(_info: &core::panic::PanicInfo<'_>) -> ! {
 #[no_mangle]
 pub extern "C" fn rust_eh_personality() {}
 
+/// Freestanding fallback for the MSVC C++ exception personality referenced by
+/// compiler-generated unwind metadata. Rust panics abort; C++ handlers are not
+/// invoked by the native NTDLL runtime.
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub unsafe extern "system" fn __CxxFrameHandler3(
+    _record: *mut core::ffi::c_void,
+    _frame: u64,
+    _context: *mut core::ffi::c_void,
+    _dispatcher: *mut core::ffi::c_void,
+) -> i32 { 1 }
+
 
 
 #[cfg(feature = "relay-port")]
