@@ -23,26 +23,6 @@ pub unsafe extern "system" fn ApiSetQuerySchema() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn atan() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn atan2() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn ceil() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn cos() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn CsrAllocateCaptureBuffer() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -323,66 +303,6 @@ pub unsafe extern "system" fn ExpInterlockedPopEntrySListResume() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn fabs() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn floor() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn isalnum() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn isalpha() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn iscntrl() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn isdigit() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn isgraph() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn islower() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn isprint() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn ispunct() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn isspace() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn isupper() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn iswalnum() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -433,11 +353,6 @@ pub unsafe extern "system" fn iswxdigit() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn isxdigit() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn KiUserApcDispatcher() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -454,11 +369,6 @@ pub unsafe extern "system" fn KiUserInvertedFunctionTable() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn labs() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn log() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
@@ -509,11 +419,6 @@ pub unsafe extern "system" fn PfxInsertPrefix() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn PfxRemovePrefix() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn pow() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
@@ -588,16 +493,6 @@ pub unsafe extern "system" fn ShipAssertMsgW() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn sin() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn sqrt() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn sscanf() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -614,21 +509,6 @@ pub unsafe extern "system" fn strtok_s() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn swscanf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn tan() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn tolower() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn toupper() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
