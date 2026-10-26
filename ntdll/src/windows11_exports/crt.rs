@@ -153,15 +153,12 @@ pub unsafe extern "system" fn _wtoi64(text: *const u16) -> i64 {
     unsafe { wide_to_i64(text) }
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn _wtoi64_l(text: *const u16, _locale: *mut c_void) -> i64 {
     unsafe { _wtoi64(text) }
 }
-#[no_mangle]
 pub unsafe extern "system" fn _wtoi_l(text: *const u16, _locale: *mut c_void) -> i32 {
     unsafe { _wtoi(text) }
 }
-#[no_mangle]
 pub unsafe extern "system" fn _wtol_l(text: *const u16, _locale: *mut c_void) -> i32 {
     unsafe { _wtol(text) }
 }
