@@ -369,7 +369,7 @@ fn etw_create_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
 fn etw_session_name_equal(left:&[u16],right:&[u16])->bool {
  if left.len()!=right.len(){return false;}
  left.iter().zip(right.iter()).all(|(a,b)|{
-  let fold=|ch:u16|if (b'A' as u16..=b'Z' as u16).contains(&ch){ch+32}else{ch};
+  let fold=|ch:u16|if ch>=65&&ch<=90{ch+32}else{ch};
   fold(*a)==fold(*b)
  })
 }
