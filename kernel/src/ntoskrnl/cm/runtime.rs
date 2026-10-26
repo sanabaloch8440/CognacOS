@@ -667,4 +667,25 @@ mod tests {
   assert_eq!(output[2],4);
   assert_eq!(output[3],value);
  }
+ #[test] fn enumerate_value_and_query_key_use_windows_layouts() {
+  let key_name:[u16;15]=[82,101,103,105,115,116,114,121,69,110,117,109,84,49,49];
+  let key_us=UnicodeString{length:(key_name.len()*2) as u16,maximum_length:(key_name.len()*2) as u16,buffer:key_name.as_ptr()};
+  let oa=ObjectAttributes{length:core::mem::size_of::<ObjectAttributes>() as u32,root_directory:core::ptr::null_mut(),object_name:&key_us,attributes:0,security_descriptor:core::ptr::null_mut(),security_qos:core::ptr::null_mut()};
+  let mut key=core::ptr::null_mut();let mut disposition=0;
+  assert_eq!(unsafe{ZwCreateKey(&mut key,0,&oa,0,core::ptr::null(),0,&mut disposition)},STATUS_SUCCESS);
+  let value_name:[u16;4]=[84,101,115,116];
+  let value_us=UnicodeString{length:8,maximum_length:8,buffer:value_name.as_ptr()};
+  let value:u32=0x55aa;
+  assert_eq!(unsafe{ZwSetValueKey(key,&value_us,0,4,(&value as *const u32).cast(),4)},STATUS_SUCCESS);
+  let mut value_info=[0u8;64];let mut needed=0;
+  assert_eq!(unsafe{ZwEnumerateValueKey(key,0,0,value_info.as_mut_ptr().cast(),value_info.len() as u32,&mut needed)},STATUS_SUCCESS);
+  assert_eq!(u32::from_le_bytes(value_info[4..8].try_into().unwrap()),4);
+  assert_eq!(u32::from_le_bytes(value_info[8..12].try_into().unwrap()),8);
+  assert_eq!(u16::from_le_bytes(value_info[12..14].try_into().unwrap()),84);
+  let mut key_info=[0u8;128];
+  assert_eq!(unsafe{ZwQueryKey(key,3,key_info.as_mut_ptr().cast(),key_info.len() as u32,&mut needed)},STATUS_SUCCESS);
+  assert_eq!(u32::from_le_bytes(key_info[0..4].try_into().unwrap()),(9+1+key_name.len()) as u32*2);
+  assert_eq!(unsafe{ZwEnumerateValueKey(key,1,0,value_info.as_mut_ptr().cast(),value_info.len() as u32,&mut needed)},0x8000_001Au32 as i32);
+ }
+
 }
