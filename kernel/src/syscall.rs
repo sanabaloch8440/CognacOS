@@ -1373,6 +1373,9 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_OF_PORT=>3,
             NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT=>3,
             NT_SYSCALL_ALPC_CONNECT_PORT_EX=>11,
+            NT_SYSCALL_REGISTER_FUNCTION_TABLE => 3,
+            NT_SYSCALL_DELETE_FUNCTION_TABLE => 1,
+            NT_SYSCALL_LOOKUP_FUNCTION_ENTRY => 2,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
