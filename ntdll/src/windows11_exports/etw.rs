@@ -154,7 +154,6 @@ pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const Even
     let guid = unsafe { (*providers.add(provider_slot)).guid };
     unsafe {
         let events = core::ptr::addr_of_mut!(ETW_EVENTS).cast::<EventRecord>();
-        let slot = (ETW_EVENT_HEAD + ETW_EVENT_LEN) % EVENT_CAPACITY;
         if ETW_EVENT_LEN == EVENT_CAPACITY {
             // A full ring drops the oldest event, matching a bounded tracing
             // buffer's drop-on-overrun behavior without allocating in NTDLL.
@@ -211,3 +210,31 @@ fn EtwUnregisterTraceGuids() -> i32 { 0xC0000002u32 as i32 }
 fn EtwWriteUMSecurityEvent() -> i32 { 0xC0000002u32 as i32 }
 fn EvtIntReportAuthzEventAndSourceAsync() -> i32 { 0xC0000002u32 as i32 }
 fn EvtIntReportEventAndSourceAsync() -> i32 { 0xC0000002u32 as i32 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_event_payload_round_trip_and_rundown() {
+        let guid = Guid { data1: 0x12345678, data2: 0x1234, data3: 0x5678, data4: [1,2,3,4,5,6,7,8] };
+        let mut handle = 0u64;
+        assert_eq!(unsafe { EtwEventRegister(&guid, core::ptr::null(), core::ptr::null_mut(), &mut handle) }, ERROR_SUCCESS);
+        assert_ne!(handle, 0);
+        let descriptor = EventDescriptor { id: 7, version: 1, channel: 0, level: 4, opcode: 0, task: 2, keyword: 1 };
+        let payload = [0x10u8, 0x20, 0x30, 0x40];
+        let data = EventDataDescriptor { ptr: payload.as_ptr() as u64, size: payload.len() as u32, reserved: 0 };
+        assert_eq!(unsafe { EtwEventEnabled(handle, &descriptor) }, 1);
+        assert_eq!(unsafe { EtwEventWrite(handle, &descriptor, 1, &data) }, ERROR_SUCCESS);
+
+        let mut provider_bytes = [0u8; 16];
+        let mut descriptor_bytes = [0u8; 16];
+        let mut payload_bytes = [0u8; MAX_EVENT_PAYLOAD];
+        let mut payload_len = 0usize;
+        assert!(take_event(&mut provider_bytes, &mut descriptor_bytes, &mut payload_bytes, &mut payload_len));
+        assert_eq!(payload_len, payload.len());
+        assert_eq!(&payload_bytes[..payload_len], &payload);
+        assert_eq!(unsafe { EtwEventUnregister(handle) }, ERROR_SUCCESS);
+        assert_eq!(unsafe { EtwEventProviderEnabled(handle, 0, 0) }, 0);
+    }
+}
