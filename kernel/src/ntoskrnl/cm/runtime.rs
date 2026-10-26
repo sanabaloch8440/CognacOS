@@ -6,6 +6,11 @@ use core::sync::atomic::{AtomicBool, Ordering};
 mod hive_backend;
 #[cfg(not(test))]
 use crate::ntoskrnl::cm::hive as hive_backend;
+#[cfg(test)]
+#[path = "hive_writer.rs"]
+mod hive_writer_backend;
+#[cfg(not(test))]
+use crate::ntoskrnl::cm::hive_writer as hive_writer_backend;
 
 pub const STATUS_SUCCESS: i32 = 0;
 pub const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023u32 as i32;
@@ -154,7 +159,7 @@ const HIVE_SLOT_NAMES: [&str; 7] = ["SYSTEM", "SOFTWARE", "SECURITY", "SAM", "DE
 struct MountedHive { bytes: *mut u8, len: usize, info: hive_backend::BaseInfo, journal: *mut u8, journal_len: usize, flush: Option<HiveFlush> }
 unsafe impl Sync for MountedHive {}
 static mut MOUNTED_HIVES: [MountedHive; 7] = [MountedHive {
-    bytes: core::ptr::null(), len: 0,
+    bytes: core::ptr::null_mut(), len: 0, journal: core::ptr::null_mut(), journal_len: 0, flush: None,
     info: hive_backend::BaseInfo { root_cell:0, bins_size:0, major:0, minor:0, sequence_primary:0, sequence_secondary:0 }
 }; 7];
 
@@ -188,7 +193,7 @@ pub unsafe fn mount_writable_hive_bytes(
     name: &str, bytes: &'static mut [u8], journal: &'static mut [u8], flush: HiveFlush,
 ) -> Result<(), i32> {
     let slot = hive_slot_for_name(name).ok_or(STATUS_INVALID_PARAMETER)?;
-    if crate::ntoskrnl::cm::hive_writer::RedoJournal::capacity(bytes.len()).filter(|n| *n <= journal.len()).is_none() {
+    if hive_writer_backend::RedoJournal::capacity(bytes.len()).filter(|n| *n <= journal.len()).is_none() {
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
     let recovered = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(bytes, journal)
@@ -508,7 +513,7 @@ pub unsafe extern "win64" fn ZwSetValueKey(h:*mut core::ffi::c_void,name:*const 
   };
   let status = persistent_set_value((key.hive_slot - 1) as usize, key.hive_cell, &nbuf[..n], kind, payload);
   let _ = title;
-  return status.unwrap_or_else(|e| e);
+  return match status { Ok(()) => STATUS_SUCCESS, Err(e) => e };
  }
  let existing=s.values.iter().position(|v|v.used&&v.key_id==id&&eq(&v.name[..v.name_len as usize],&nbuf[..n]));
  let idx=match existing{Some(i)=>i,None=>match s.values.iter().position(|v|!v.used){Some(i)=>i,None=>return STATUS_INSUFFICIENT_RESOURCES}};
