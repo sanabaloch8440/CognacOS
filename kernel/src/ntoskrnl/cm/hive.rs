@@ -437,7 +437,7 @@ pub fn replay_cognacos_redo_log(hive: &mut [u8], log: &[u8]) -> Result<usize, Er
         let end=off.checked_add(len).ok_or(Error::InvalidValue)?;
         if end > hive.len() || off < BASE_BLOCK_SIZE { return Err(Error::InvalidValue); }
         hive[off..end].copy_from_slice(data);
-        cursor=end;
+        cursor=cursor.checked_add(len).ok_or(Error::InvalidValue)?;
         records+=1;
     }
     if cursor != log.len() { return Err(Error::InvalidValue); }
