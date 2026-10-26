@@ -1,5 +1,5 @@
-//! Windows 11 x64 NTDLL misc export placeholders.
-//! Replace generic signatures with ABI-correct declarations as each routine is implemented.
+//! Windows 11 x64 NTDLL miscellaneous exports.
+//! Unsupported routines remain explicit failures until their owning subsystem exists.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 const STATUS_SUCCESS: i32 = 0;
@@ -92,7 +92,6 @@ pub unsafe extern "system" fn ApiSetQueryApiSetPresenceEx(name: *const UnicodeSt
 
 #[no_mangle]
 pub unsafe extern "system" fn ApiSetQuerySchema(schema: *mut *const u8, schema_size: *mut u32) -> i32 {
-    const STATUS_ACCESS_VIOLATION: i32 = 0xC0000005u32 as i32;
     if schema.is_null() || schema_size.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
@@ -133,112 +132,6 @@ pub unsafe extern "system" fn ApiSetQuerySchema(schema: *mut *const u8, schema_s
     STATUS_SUCCESS
 }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 #[no_mangle]
 pub unsafe extern "system" fn ExpInterlockedPopEntrySListEnd() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
@@ -254,39 +147,6 @@ pub unsafe extern "system" fn ExpInterlockedPopEntrySListResume() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn iswalnum(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_alphanumeric()).unwrap_or(false) as i32 }
-
-#[no_mangle]
-pub unsafe extern "system" fn iswalpha(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_alphabetic()).unwrap_or(false) as i32 }
-
-#[no_mangle]
-pub unsafe extern "system" fn iswascii(c: u32) -> i32 { (c <= 0x7f) as i32 }
-
-#[no_mangle]
-
-#[no_mangle]
-pub unsafe extern "system" fn iswdigit(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_digit()) as i32 }
-
-#[no_mangle]
-pub unsafe extern "system" fn iswgraph(c: u32) -> i32 { char::from_u32(c).map(|v| !v.is_control() && !v.is_whitespace()).unwrap_or(false) as i32 }
-
-#[no_mangle]
-pub unsafe extern "system" fn iswlower(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_lowercase()).unwrap_or(false) as i32 }
-
-#[no_mangle]
-pub unsafe extern "system" fn iswprint(c: u32) -> i32 { char::from_u32(c).map(|v| !v.is_control()).unwrap_or(false) as i32 }
-
-#[no_mangle]
-pub unsafe extern "system" fn iswspace(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_whitespace()).unwrap_or(false) as i32 }
-
-#[no_mangle]
-pub unsafe extern "system" fn iswxdigit(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_hexdigit()) as i32 }
-
-#[no_mangle]
-pub unsafe extern "system" fn KiUserApcDispatcher() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn KiUserCallbackDispatcher() -> i32 {
@@ -307,8 +167,6 @@ pub unsafe extern "system" fn longjmp() -> i32 {
 }
 
 #[no_mangle]
-
-#[no_mangle]
 pub unsafe extern "system" fn MicrosoftTelemetryAssertTriggeredUM() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -327,10 +185,6 @@ pub unsafe extern "system" fn NlsMbCodePageTag() -> i32 {
 pub unsafe extern "system" fn NlsMbOemCodePageTag() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
-
-#[no_mangle]
-
-#[no_mangle]
 
 #[no_mangle]
 
@@ -417,152 +271,10 @@ pub unsafe extern "system" fn sscanf_s() -> i32 {
 }
 
 #[no_mangle]
-
-#[no_mangle]
 pub unsafe extern "system" fn swscanf_s() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn towlower(c: u32) -> u32 { char::from_u32(c).and_then(|v| { let mut it = v.to_lowercase(); let first = it.next()?; if it.next().is_none() { Some(first as u32) } else { Some(c) } }).unwrap_or(c) }
-
-#[no_mangle]
-pub unsafe extern "system" fn towupper(c: u32) -> u32 { char::from_u32(c).and_then(|v| { let mut it = v.to_uppercase(); let first = it.next()?; if it.next().is_none() { Some(first as u32) } else { Some(c) } }).unwrap_or(c) }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#[no_mangle]
-pub unsafe extern "system" fn vDbgPrintEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn vDbgPrintExWithPrefix() -> i32 {
@@ -583,8 +295,6 @@ pub unsafe extern "system" fn vsprintf_s() -> i32 {
 pub unsafe extern "system" fn vswprintf_s() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
-
-#[no_mangle]
 
 #[no_mangle]
 
