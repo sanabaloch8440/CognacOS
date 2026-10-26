@@ -492,26 +492,36 @@ pub fn replay_cognacos_redo_log(hive: &mut [u8], log: &[u8]) -> Result<usize, Er
     let mut checksum=0u32;
     for b in &log[16..] { checksum=checksum.rotate_left(5) ^ (*b as u32); }
     if checksum != expected { return Err(Error::BadChecksum); }
+    // Validate the entire journal before changing a single byte: malformed
+    // later records must not leave a partially replayed hive in memory.
     let mut cursor=16usize;
-    let mut records=0usize;
     for _ in 0..count {
-        let off=u32at(log,cursor)? as usize; let len=u32at(log,cursor+4)? as usize; cursor=cursor.checked_add(8).ok_or(Error::InvalidValue)?;
-        let data=log.get(cursor..cursor.checked_add(len).ok_or(Error::InvalidValue)?).ok_or(Error::Truncated)?;
-        let end=off.checked_add(len).ok_or(Error::InvalidValue)?;
-        if end > hive.len() || off < BASE_BLOCK_SIZE { return Err(Error::InvalidValue); }
-        hive[off..end].copy_from_slice(data);
-        cursor=cursor.checked_add(len).ok_or(Error::InvalidValue)?;
-        records+=1;
+        let off=u32at(log,cursor)? as usize;
+        let len=u32at(log,cursor.checked_add(4).ok_or(Error::InvalidValue)?)? as usize;
+        cursor=cursor.checked_add(8).ok_or(Error::InvalidValue)?;
+        let end=cursor.checked_add(len).ok_or(Error::InvalidValue)?;
+        if off < BASE_BLOCK_SIZE || off.checked_add(len).filter(|e|*e<=hive.len()).is_none() { return Err(Error::InvalidValue); }
+        let _=log.get(cursor..end).ok_or(Error::Truncated)?;
+        cursor=end;
     }
     if cursor != log.len() { return Err(Error::InvalidValue); }
     if hive.len() < BASE_BLOCK_SIZE || hive.get(0..4) != Some(&b"regf"[..]) { return Err(Error::BadSignature); }
+    cursor=16usize;
+    for _ in 0..count {
+        let off=u32at(log,cursor)? as usize;
+        let len=u32at(log,cursor+4)? as usize;
+        cursor+=8;
+        let data=log.get(cursor..cursor+len).ok_or(Error::Truncated)?;
+        hive[off..off+len].copy_from_slice(data);
+        cursor+=len;
+    }
     put32(hive,4,sequence);
     put32(hive,8,sequence);
     let mut checksum=0u32;
     for off in (0..0x1fc).step_by(4) { checksum ^= u32at(hive,off)?; }
     let checksum=if checksum==0 {1} else if checksum==u32::MAX {u32::MAX-1} else {checksum};
     put32(hive,0x1fc,checksum);
-    Ok(records)
+    Ok(count)
 }
 
 #[cfg(test)]
