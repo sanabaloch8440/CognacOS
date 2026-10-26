@@ -351,7 +351,7 @@ fn etw_process_exit_rundown(pid:u64) {
  let _g=KernelEtwGuard::lock();
  unsafe {
   let providers=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
-  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.owner==pid{*p=KernelEtwProvider::EMPTY;}} let sessions=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>(); for i in 0..16 {let s=&mut *sessions.add(i);if s.active&&s.owner==pid{*s=KernelEtwSession::EMPTY;}}
+  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.owner==pid{*p=KernelEtwProvider::EMPTY;}} let sessions=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>(); for i in 0..16 {let s=&mut *sessions.add(i);if s.active&&s.owner==pid{let handle=s.handle;for j in 0..ETW_PROVIDER_CAPACITY{let p=&mut *providers.add(j);if p.active&&p.session==handle{p.enabled=false;p.level=0;p.any=0;p.all=0;p.session=0;}}*s=KernelEtwSession::EMPTY;}}
   let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();let old_head=ETW_KERNEL_HEAD;let old_len=ETW_KERNEL_LEN;let mut kept=0usize;
   for off in 0..old_len {let src=(old_head+off)%ETW_EVENT_CAPACITY;let e=*events.add(src);if !e.active||e.pid==pid{*events.add(src)=KernelEtwEvent::EMPTY;continue;}let dst=(old_head+kept)%ETW_EVENT_CAPACITY;if dst!=src{*events.add(dst)=e;*events.add(src)=KernelEtwEvent::EMPTY;}kept+=1;}
   ETW_KERNEL_LEN=kept;if kept==0{ETW_KERNEL_HEAD=0;}
