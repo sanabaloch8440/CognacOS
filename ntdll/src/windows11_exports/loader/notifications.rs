@@ -70,7 +70,7 @@ pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
     for index in (1..count).rev() {
         let (base,entry_point,_size)=entries[index];
         if base==0 || entry_point==0 { continue; }
-        let detach: unsafe extern "system" fn(PVOID,u32,PVOID)->BOOLEAN =
+        let detach: unsafe extern "system" fn(PVOID,u32,PVOID)->i32 =
             unsafe{core::mem::transmute(entry_point)};
         let _=unsafe{detach(base as PVOID,0,ptr::null_mut())};
     }
