@@ -158,8 +158,6 @@ pub unsafe extern "system" fn KiUserInvertedFunctionTable() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn labs(value: i32) -> i32 { value.wrapping_abs() }
 
 #[no_mangle]
 pub unsafe extern "system" fn longjmp() -> i32 {
@@ -172,21 +170,13 @@ pub unsafe extern "system" fn MicrosoftTelemetryAssertTriggeredUM() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NlsAnsiCodePage() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub static mut NlsAnsiCodePage: u16 = 1252; // Default ANSI code page until NLS configuration is loaded.
 
 #[no_mangle]
-pub unsafe extern "system" fn NlsMbCodePageTag() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub static mut NlsMbCodePageTag: u8 = 0; // Single-byte default; updated by NLS initialization.
 
 #[no_mangle]
-pub unsafe extern "system" fn NlsMbOemCodePageTag() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
+pub static mut NlsMbOemCodePageTag: u8 = 0; // Single-byte OEM default; updated by NLS initialization.
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtCaptureSnapshot() -> i32 {
