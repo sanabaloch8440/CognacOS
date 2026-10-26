@@ -1,7 +1,10 @@
 //! Windows SQM/telemetry exports with ABI-typed fallback behavior.
 //!
-//! The public signatures below are based on Wine's ntdll/misc.c declarations.
-//! Telemetry is optional in this runtime; no provider/session is fabricated.
+//! Publicly documented/Wine-declared signatures are retained where available.
+//! Private SQM/ShipAssert exports are typed using the observed x86 stdcall arity
+//! and pointer-sized opaque parameters; their exact Windows 11 parameter types
+//! still require PDB/header verification. Telemetry is optional here; no provider
+//! or session is fabricated.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 use core::ffi::c_void;
