@@ -40,6 +40,7 @@ mod path;
 mod loader;
 mod heap;
 mod memory;
+mod security;
 mod registry;
 mod process;
 
