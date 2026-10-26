@@ -1,5 +1,26 @@
 use super::*;
 use super::resources::{DLL_NOTIFICATIONS, MAX_DLL_NOTIFICATIONS, Notification};
+use core::sync::atomic::{AtomicBool, AtomicUsize};
+
+static DLL_SHUTDOWN_COMPLETE: AtomicBool = AtomicBool::new(false);
+static DLL_SHUTDOWN_OWNER_TID: AtomicUsize = AtomicUsize::new(0);
+
+struct ShutdownCompletion;
+impl Drop for ShutdownCompletion {
+    fn drop(&mut self) { DLL_SHUTDOWN_COMPLETE.store(true, Ordering::Release); }
+}
+
+fn current_loader_thread_id() -> usize {
+    #[cfg(all(target_arch = "x86_64", any(target_os = "windows", target_os = "none")))]
+    unsafe {
+        let teb: *const u8;
+        core::arch::asm!("mov {}, gs:[0x30]", out(reg) teb, options(nostack, preserves_flags, readonly));
+        if teb.is_null() { return 0; }
+        return ptr::read_unaligned(teb.add(0x48).cast::<usize>());
+    }
+    #[allow(unreachable_code)]
+    0
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrRegisterDllNotification(
@@ -37,7 +58,19 @@ pub unsafe extern "system" fn LdrUnregisterDllNotification(cookie: PVOID) -> NTS
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
-    if DLL_SHUTDOWN.swap(true, Ordering::AcqRel) { return STATUS_SUCCESS; }
+    if DLL_SHUTDOWN.swap(true, Ordering::AcqRel) {
+        // Reentrant shutdown from a DllMain callback must not wait on itself.
+        // Other threads wait for the single detach traversal to finish, so
+        // process teardown cannot race a second traversal of the loader list.
+        let tid = current_loader_thread_id();
+        if tid == 0 || DLL_SHUTDOWN_OWNER_TID.load(Ordering::Acquire) == tid {
+            return STATUS_SUCCESS;
+        }
+        while !DLL_SHUTDOWN_COMPLETE.load(Ordering::Acquire) { core::hint::spin_loop(); }
+        return STATUS_SUCCESS;
+    }
+    DLL_SHUTDOWN_OWNER_TID.store(current_loader_thread_id(), Ordering::Release);
+    let _completion = ShutdownCompletion;
     crate::windows11_exports::etw::rundown_current_process();
 
     // LDR_DATA_TABLE_ENTRY_PREFIX is the documented x64 prefix used by the
