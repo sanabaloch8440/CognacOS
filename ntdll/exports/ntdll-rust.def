@@ -1,0 +1,7 @@
+LIBRARY ntdll
+EXPORTS
+    NtYieldExecution
+    NtQueryInformationProcess
+    NtQueryInformationThread
+    NtQuerySystemInformation
+    CognacNtdllProcessHeapObject DATA

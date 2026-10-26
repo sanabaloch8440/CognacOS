@@ -23,22 +23,22 @@ const NT_SYSCALL_ETW_STOP_SESSION: u64 = 0x13a;
 const NT_SYSCALL_ETW_UNREGISTER: u64 = 0x13b;
 const NT_SYSCALL_ETW_CREATE_NAMED_SESSION: u64 = 0x13c;
 const NT_SYSCALL_ETW_QUERY_EVENT_ENABLED: u64 = 0x13d;
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows")))]
 fn kernel_etw_call(number:u64,a0:u64,a1:u64,a2:u64,a3:u64)->Option<u64>{
  let result:u64;
  unsafe { core::arch::asm!("int 0x83", inout("rax") number=>result, in("r10") a0, in("rdx") a1, in("r8") a2, in("r9") a3, lateout("rcx") _, lateout("r11") _); }
  Some(result)
 }
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows")))]
 fn kernel_etw_read_event(session:u64,record:*mut u8,payload:*mut u8,capacity:u64,length:*mut u32)->Option<u64>{
  let result:u64;
  unsafe { core::arch::asm!("sub rsp, 48", "mov qword ptr [rsp + 40], {session}", "int 0x83", "add rsp, 48",
  session=in(reg) session,inout("rax") NT_SYSCALL_ETW_READ_EVENT=>result,in("r10") record as u64,in("rdx") payload as u64,in("r8") capacity,in("r9") length as u64,lateout("rcx") _,lateout("r11") _); }
  Some(result)
 }
-#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+#[cfg(not(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows"))))]
 fn kernel_etw_read_event(_session:u64,_record:*mut u8,_payload:*mut u8,_capacity:u64,_length:*mut u32)->Option<u64>{None}
-#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+#[cfg(not(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows"))))]
 fn kernel_etw_call(_number:u64,_a0:u64,_a1:u64,_a2:u64,_a3:u64)->Option<u64>{None}
 
 fn sync_kernel_enable_state(handle:u64) {
@@ -161,7 +161,7 @@ pub(crate) fn take_event(
     out_process_id: &mut u64, out_thread_id: &mut u64,
     out_payload: &mut [u8; MAX_EVENT_PAYLOAD], out_length: &mut usize
 ) -> bool {
-    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    #[cfg(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows")))]
     {
         let mut record=[0u8;80]; let mut bytes=[0u8;MAX_EVENT_PAYLOAD]; let mut length=0u32;
         if kernel_etw_read_event(session_handle,record.as_mut_ptr(),bytes.as_mut_ptr(),bytes.len() as u64,&mut length)==Some(0) {
@@ -471,13 +471,13 @@ pub(crate) fn controller_create_session(out_handle: &mut u64) -> i32 {
         Some(0)=>0, Some(status)=>status as u32 as i32, None=>0xC0000002u32 as i32
     }
 }
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows")))]
 pub(crate) fn controller_stop_session(session:u64)->i32 {
  let result:u64;
  unsafe { core::arch::asm!("int 0x83",inout("rax") NT_SYSCALL_ETW_STOP_SESSION=>result,in("r10") session,lateout("rcx") _,lateout("r11") _); }
  result as u32 as i32
 }
-#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+#[cfg(not(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows"))))]
 pub(crate) fn controller_stop_session(_session:u64)->i32 { 0xC0000002u32 as i32 }
 
 /// Create a named, privileged kernel ETW session. The UTF-16 name is copied by the
@@ -500,7 +500,7 @@ pub(crate) fn controller_create_named_session(name: &[u16], out_handle: &mut u64
 }
 
 /// Enable/disable a provider through a privileged kernel-owned session.
-#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+#[cfg(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows")))]
 pub(crate) fn controller_enable_provider(session:u64,guid:&Guid,enabled:bool,level:u8,any:u64,all:u64)->i32 {
  let result:u64;
  unsafe { core::arch::asm!("sub rsp, 56", "mov qword ptr [rsp + 40], {any_kw}", "mov qword ptr [rsp + 48], {all_kw}", "int 0x83", "add rsp, 56",
@@ -508,7 +508,7 @@ pub(crate) fn controller_enable_provider(session:u64,guid:&Guid,enabled:bool,lev
  inout("rax") NT_SYSCALL_ETW_ENABLE_SESSION=>result,in("r10") session,in("rdx") guid as *const Guid as u64,in("r8") enabled as u64,in("r9") level as u64,lateout("rcx") _,lateout("r11") _); }
  result as u32 as i32
 }
-#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+#[cfg(not(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows"))))]
 pub(crate) fn controller_enable_provider(_session:u64,_guid:&Guid,_enabled:bool,_level:u8,_any:u64,_all:u64)->i32 { 0xC0000002u32 as i32 }
 fn EtwCheckCoverage() -> i32 { 0xC0000002u32 as i32 }
 fn EtwCreateTraceInstanceId() -> i32 { 0xC0000002u32 as i32 }

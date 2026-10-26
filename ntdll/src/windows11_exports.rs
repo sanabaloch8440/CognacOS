@@ -6,6 +6,8 @@
 //! Their generic zero-argument signatures are not ABI-safe Windows replacements.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
+#[cfg(target_os = "windows")]
+mod syscall_stubs;
 mod syscall;
 mod runtime;
 mod crt;
@@ -37,3 +39,9 @@ mod heap;
 mod memory;
 mod registry;
 mod process;
+
+/// Process-attach initialization invoked by the PE DLL entry point.
+#[cfg(target_os = "windows")]
+pub(crate) unsafe fn initialize_native_process() {
+    let _ = unsafe { exception::RtlRegisterExceptionDispatcher() };
+}

@@ -10,7 +10,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", target_os = "windows"))]
 core::arch::global_asm!(r#"
     .text
     .p2align 4
@@ -57,7 +57,7 @@ cognacos_register_exception_dispatcher:
     ret
 "#);
 
-#[cfg(target_os = "none")]
+#[cfg(any(target_os = "none", target_os = "windows"))]
 extern "system" {
     fn cognacos_register_function_table(table: *const RUNTIME_FUNCTION, count: u32, base: u64) -> u64;
     fn cognacos_delete_function_table(table: *const RUNTIME_FUNCTION) -> u64;
@@ -71,12 +71,12 @@ extern "system" {
 /// Registration is process-scoped and is idempotently refreshed by loader entry points.
 #[no_mangle]
 pub unsafe extern "system" fn RtlRegisterExceptionDispatcher() -> i32 {
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", target_os = "windows"))]
     {
         let status = unsafe { cognacos_register_exception_dispatcher(KiUserExceptionDispatcher as usize) };
         return status as u32 as i32;
     }
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", target_os = "windows")))]
     { STATUS_NOT_IMPLEMENTED }
 }
 
@@ -163,9 +163,9 @@ pub unsafe extern "system" fn KiUserExceptionDispatcher(
 #[no_mangle]
 pub unsafe extern "system" fn NtContinue(context: *const CONTEXT, test_alert: u8) -> i32 {
     if context.is_null() { return STATUS_INVALID_PARAMETER; }
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", target_os = "windows"))]
     { return cognacos_nt_continue(context, test_alert); }
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", target_os = "windows")))]
     { let _ = test_alert; STATUS_NOT_IMPLEMENTED }
 }
 #[no_mangle]
@@ -179,12 +179,12 @@ pub unsafe extern "system" fn NtDebugContinue(_debug_object: usize, _client_id: 
 #[no_mangle]
 pub unsafe extern "system" fn NtRaiseException(record: *const EXCEPTION_RECORD, context: *const CONTEXT, first_chance: u8) -> i32 {
     if record.is_null() || context.is_null() { return STATUS_INVALID_PARAMETER; }
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", target_os = "windows"))]
     {
         let _ = RtlRegisterExceptionDispatcher();
         return cognacos_nt_raise_exception(record, context, first_chance, KiUserExceptionDispatcher as usize);
     }
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", target_os = "windows")))]
     { let _ = first_chance; STATUS_NOT_IMPLEMENTED }
 }
 
@@ -436,7 +436,7 @@ pub unsafe extern "system" fn RtlAddFunctionTable(
         }
         previous_end = entry.EndAddress;
     }
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", target_os = "windows"))]
     {
         // Kernel registration pins this caller-owned .pdata range against
         // concurrent loader teardown and revalidates every lookup in user space.
@@ -447,7 +447,7 @@ pub unsafe extern "system" fn RtlAddFunctionTable(
         let _guard = TableGuard::acquire();
         let tables = &mut *FUNCTION_TABLES.0.get();
         if tables.iter().any(|t| t.used && t.table == table && t.base == base) {
-            #[cfg(target_os = "none")]
+            #[cfg(any(target_os = "none", target_os = "windows"))]
             { let _ = cognacos_delete_function_table(table); }
             return 0;
         }
@@ -457,7 +457,7 @@ pub unsafe extern "system" fn RtlAddFunctionTable(
         }
     }
     if !inserted {
-        #[cfg(target_os = "none")]
+        #[cfg(any(target_os = "none", target_os = "windows"))]
         { let _ = cognacos_delete_function_table(table); }
         return 0;
     }
@@ -468,7 +468,7 @@ pub unsafe extern "system" fn RtlAddFunctionTable(
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeleteFunctionTable(table: *const RUNTIME_FUNCTION) -> u8 {
     if table.is_null() { return 0; }
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", target_os = "windows"))]
     let kernel_removed = cognacos_delete_function_table(table) == 1;
     let removed = {
         let _guard = TableGuard::acquire();
@@ -478,9 +478,9 @@ pub unsafe extern "system" fn RtlDeleteFunctionTable(table: *const RUNTIME_FUNCT
             true
         } else { false }
     };
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", target_os = "windows"))]
     { return (kernel_removed && removed) as u8; }
-    #[cfg(not(target_os = "none"))]
+    #[cfg(not(any(target_os = "none", target_os = "windows")))]
     { removed as u8 }
 }
 
@@ -491,7 +491,7 @@ pub unsafe extern "system" fn RtlLookupFunctionEntry(
 ) -> *const RUNTIME_FUNCTION {
     if !image_base.is_null() { *image_base = 0; }
     if control_pc == 0 { return ptr::null(); }
-    #[cfg(target_os = "none")]
+    #[cfg(any(target_os = "none", target_os = "windows"))]
     {
         let found = cognacos_lookup_function_entry(control_pc, image_base, _history_table);
         if !found.is_null() { return found; }

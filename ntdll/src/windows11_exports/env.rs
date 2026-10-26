@@ -8,7 +8,7 @@
 use core::alloc::Layout;
 use core::ffi::c_void;
 use core::ptr;
-use std::alloc::{alloc, dealloc};
+use alloc::{alloc::{alloc, dealloc}, vec::Vec};
 
 type NTSTATUS = i32;
 type ULONG = u32;

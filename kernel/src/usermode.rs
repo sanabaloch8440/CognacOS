@@ -219,6 +219,18 @@ fn cleanup_process(space:&mut AddressSpace,image_base:u64,pid:u64)->Result<(),Vm
 pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> Result<(), VmError> {
     let stack_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
     unsafe { space.map_user_page(USER_STACK, stack_page, true, false)?; }
+    // Map the staged Rust NTDLL into this process before creating its PEB/LDR
+    // so the loader list, process heap, TLS, and DllMain callout refer to the
+    // image actually mapped in this address space.
+    let _process_ntdll = if let Some(ntdll_bytes) = crate::boot_ntdll_bytes() {
+        let loaded = unsafe { crate::pe::load_dll(space, ntdll_bytes, b"ntdll.dll", None) }
+            .map_err(|_| VmError::InvalidAddress)?;
+        if !loaded.is_dll { return Err(VmError::InvalidAddress); }
+        unsafe { crate::serial_write(b"Rust NTDLL mapped into process before PEB/LDR initialization.\\r\\n"); }
+        Some(loaded)
+    } else {
+        None
+    };
     let env = unsafe { crate::process::initialize(space, image.base, image.entry, image.image_size, USER_STACK + PAGE, USER_STACK) }
         .map_err(|_| VmError::OutOfMemory)?;
     // Verify the exact Windows 11 24H2 XState ABI through the same checked

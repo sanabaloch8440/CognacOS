@@ -102,6 +102,16 @@ pub struct RTL_HEAP_WALK_ENTRY {
 }
 
 static PROCESS_HEAP: AtomicPtr<CognacHeap> = AtomicPtr::new(ptr::null_mut());
+static PROCESS_HEAP_INIT_LOCK: AtomicU8 = AtomicU8::new(0);
+
+/// Exported data object referenced by PEB.ProcessHeap. It is the actual heap
+/// object, not a pointer slot, and is initialized in place on first use.
+#[no_mangle]
+pub static mut CognacNtdllProcessHeapObject: CognacHeap = CognacHeap {
+    magic: 0, flags: HEAP_GROWABLE, reserve_size: DEFAULT_RESERVE, commit_size: PAGE_SIZE,
+    segments: ptr::null_mut(), next_heap: ptr::null_mut(),
+    lock: AtomicU8::new(0), protected: AtomicU8::new(0), _padding: [0; 6],
+};
 static HEAP_LIST_LOCK: AtomicU8 = AtomicU8::new(0);
 static mut HEAP_LIST: *mut CognacHeap = ptr::null_mut();
 
@@ -238,15 +248,40 @@ pub unsafe extern "system" fn RtlCreateHeap(flags: ULONG, base: PVOID, reserve: 
     unsafe { create_heap(flags, reserve, commit).cast() }
 }
 
+unsafe fn initialize_process_heap_object() -> *mut CognacHeap {
+    let heap = ptr::addr_of_mut!(CognacNtdllProcessHeapObject);
+    unsafe { lock(&PROCESS_HEAP_INIT_LOCK); }
+    if unsafe { (*heap).magic != HEAP_MAGIC } {
+        unsafe {
+            ptr::write(heap, CognacHeap {
+                magic: HEAP_MAGIC, flags: HEAP_GROWABLE, reserve_size: DEFAULT_RESERVE,
+                commit_size: PAGE_SIZE, segments: ptr::null_mut(), next_heap: ptr::null_mut(),
+                lock: AtomicU8::new(0), protected: AtomicU8::new(0), _padding: [0; 6],
+            });
+            if segment_create(heap, 1).is_null() {
+                (*heap).magic = 0;
+                unlock(&PROCESS_HEAP_INIT_LOCK);
+                return ptr::null_mut();
+            }
+            lock(&HEAP_LIST_LOCK);
+            (*heap).next_heap = HEAP_LIST;
+            HEAP_LIST = heap;
+            unlock(&HEAP_LIST_LOCK);
+        }
+    }
+    unsafe { unlock(&PROCESS_HEAP_INIT_LOCK); }
+    heap
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetProcessHeap() -> HANDLE {
     let existing = PROCESS_HEAP.load(Ordering::Acquire);
     if !existing.is_null() { return existing.cast(); }
-    let created = unsafe { create_heap(HEAP_GROWABLE, DEFAULT_RESERVE, PAGE_SIZE) };
+    let created = unsafe { initialize_process_heap_object() };
     if created.is_null() { return ptr::null_mut(); }
     match PROCESS_HEAP.compare_exchange(ptr::null_mut(), created, Ordering::AcqRel, Ordering::Acquire) {
         Ok(_) => created.cast(),
-        Err(winner) => { unsafe { RtlDestroyHeap(created.cast()) }; winner.cast() }
+        Err(winner) => winner.cast(),
     }
 }
 
@@ -270,7 +305,11 @@ pub unsafe extern "system" fn RtlDestroyHeap(handle: HANDLE) -> HANDLE {
             seg = next;
         }
         (*heap).magic = 0;
-        vm_free(heap.cast());
+        (*heap).segments = ptr::null_mut();
+        (*heap).next_heap = ptr::null_mut();
+        if heap != ptr::addr_of_mut!(CognacNtdllProcessHeapObject) {
+            vm_free(heap.cast());
+        }
     }
     ptr::null_mut()
 }
