@@ -47,6 +47,13 @@ cognacos_nt_raise_exception:
     mov eax, 0x142
     int 0x83
     ret
+    .p2align 4
+    .global cognacos_register_exception_dispatcher
+cognacos_register_exception_dispatcher:
+    mov r10, rcx
+    mov eax, 0x143
+    int 0x83
+    ret
 "#);
 
 #[cfg(target_os = "none")]
@@ -56,6 +63,7 @@ extern "system" {
     fn cognacos_lookup_function_entry(control_pc: u64, image_base: *mut u64, history_table: *mut c_void) -> *const RUNTIME_FUNCTION;
     fn cognacos_nt_continue(context: *const CONTEXT, test_alert: u8) -> i32;
     fn cognacos_nt_raise_exception(record: *const EXCEPTION_RECORD, context: *const CONTEXT, first_chance: u8, dispatcher: usize) -> i32;
+    fn cognacos_register_exception_dispatcher(dispatcher: usize) -> u64;
 }
 
 const STATUS_NOT_IMPLEMENTED: i32 = 0xC0000002u32 as i32;
@@ -158,7 +166,10 @@ pub unsafe extern "system" fn NtDebugContinue(_debug_object: usize, _client_id: 
 pub unsafe extern "system" fn NtRaiseException(record: *const EXCEPTION_RECORD, context: *const CONTEXT, first_chance: u8) -> i32 {
     if record.is_null() || context.is_null() { return STATUS_INVALID_PARAMETER; }
     #[cfg(target_os = "none")]
-    { return cognacos_nt_raise_exception(record, context, first_chance, KiUserExceptionDispatcher as usize); }
+    {
+        let _ = RtlRegisterExceptionDispatcher();
+        return cognacos_nt_raise_exception(record, context, first_chance, KiUserExceptionDispatcher as usize);
+    }
     #[cfg(not(target_os = "none"))]
     { let _ = first_chance; STATUS_NOT_IMPLEMENTED }
 }
@@ -200,6 +211,20 @@ pub unsafe extern "system" fn RtlDispatchException(record: *mut EXCEPTION_RECORD
     0
 }
 
+/// Register the NTDLL user-mode exception entry with the kernel. The kernel
+/// uses this process-scoped address to deliver CPU faults as Windows x64
+/// EXCEPTION_RECORD/CONTEXT pairs instead of terminating the process immediately.
+#[no_mangle]
+pub unsafe extern "system" fn RtlRegisterExceptionDispatcher() -> i32 {
+    #[cfg(target_os = "none")]
+    {
+        let status = cognacos_register_exception_dispatcher(KiUserExceptionDispatcher as usize);
+        return status as u32 as i32;
+    }
+    #[cfg(not(target_os = "none"))]
+    { STATUS_NOT_IMPLEMENTED }
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn RtlCaptureContext(context: *mut CONTEXT) {
     if context.is_null() { return; }
@@ -234,6 +259,7 @@ pub unsafe extern "system" fn RtlCaptureContext(context: *mut CONTEXT) {
     );
     #[cfg(not(target_arch = "x86_64"))]
     { let _ = c; }
+    let _ = RtlRegisterExceptionDispatcher();
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlCaptureContext2(context: *mut CONTEXT, _flags: u32) {
