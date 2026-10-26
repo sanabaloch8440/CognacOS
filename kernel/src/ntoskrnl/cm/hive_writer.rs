@@ -126,6 +126,12 @@ impl<'a> HiveWriter<'a>{
    let k=self.cell_mut(key_id)?;w32(k,0x24,new_count);w32(k,0x28,new_list);
   }Ok(())
  }
+ /// Mark the hive dirty before a cell mutation. Persist the redo journal's
+ /// PREPARED record first; recovery must run before any REGF parser is opened.
+ pub fn mark_dirty(&mut self,sequence:u32)->Result<(),Error>{
+  if self.bytes.len()<BASE{return Err(Error::Truncated)}
+  w32(self.bytes,4,sequence);w32(self.bytes,8,sequence.wrapping_add(1).max(1));w32(self.bytes,0x1fc,0);Ok(())
+ }
  pub fn update_base_block(&mut self,sequence:u32)->Result<(),Error>{
   if self.bytes.len()<BASE{return Err(Error::Truncated)}w32(self.bytes,4,sequence);w32(self.bytes,8,sequence);
   let mut c=0u32;for o in (0..0x1fc).step_by(4){c^=r32(self.bytes,o)?;}if c==0{c=1}else if c==u32::MAX{c=u32::MAX-1}w32(self.bytes,0x1fc,c);Ok(())
@@ -152,5 +158,39 @@ impl RedoJournal{
   if n!=hive.len()||j.len()<Self::capacity(n).ok_or(Error::Journal)?{return Err(Error::Journal)}
   let (off,sum)=match r32(j,8)?{Self::PREPARED=>(Self::H,r32(j,16)?),Self::COMMITTED=>(Self::H+n,r32(j,20)?),_=>return Err(Error::Journal)};
   let image=j.get(off..off+n).ok_or(Error::Truncated)?;if checksum(image)!=sum{return Err(Error::BadChecksum)}hive.copy_from_slice(image);Ok(true)
+ }
+}
+
+#[cfg(test)]
+mod tests {
+ use super::*;
+ #[test]
+ fn allocate_create_key_and_set_value_roundtrip() {
+  let mut bytes=[0u8;8192];
+  crate::ntoskrnl::cm::hive::create_minimal_hive(&mut bytes).unwrap();
+  let root=0x20u32;
+  let child_name=[b'T' as u16,b'e' as u16,b's' as u16,b't' as u16];
+  let value_name=[b'D' as u16,b'a' as u16,b't' as u16,b'a' as u16];
+  let mut w=HiveWriter::open(&mut bytes).unwrap();
+  let child=w.create_subkey(root,&child_name).unwrap();
+  w.set_value(child,&value_name,4,&[1,2,3,4,5]).unwrap();
+  w.update_base_block(2).unwrap();
+  drop(w);
+  let h=crate::ntoskrnl::cm::hive::Hive::open(&bytes).unwrap();
+  let mut path=[0u16;8];path[..4].copy_from_slice(&child_name);
+  let k=h.find_path(&path[..4]).unwrap();
+  let v=k.find_value(&value_name).unwrap();
+  let mut data=[0u8;8];assert_eq!(v.data(&mut data).unwrap(),5);assert_eq!(&data[..5],&[1,2,3,4,5]);
+ }
+ #[test]
+ fn redo_journal_rolls_back_prepared_and_replays_committed() {
+  let mut original=[0u8;8192];crate::ntoskrnl::cm::hive::create_minimal_hive(&mut original).unwrap();
+  let mut journal=vec![0u8;RedoJournal::capacity(original.len()).unwrap()];
+  RedoJournal::begin(&original,&mut journal).unwrap();
+  let mut dirty=original;dirty[0x100]=0x5a;
+  let mut recovered=dirty;assert!(RedoJournal::recover(&mut recovered,&journal).unwrap());assert_eq!(recovered,original);
+  RedoJournal::begin(&original,&mut journal).unwrap();
+  let mut after=original;after[0x100]=0xa5;RedoJournal::commit(&after,&mut journal).unwrap();
+  let mut recovered=original;assert!(RedoJournal::recover(&mut recovered,&journal).unwrap());assert_eq!(recovered,after);
  }
 }
