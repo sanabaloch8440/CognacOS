@@ -184,8 +184,19 @@ pub extern "system" fn NtFlushProcessWriteBuffers() -> i32 {
     0
 }
 
+/// Thread context retrieval is unavailable until CognacOS implements
+/// scheduler-owned saved register contexts. Keep the Windows ABI signature so
+/// callers receive a defined status instead of entering with the wrong stack
+/// layout.
 #[no_mangle]
-pub unsafe extern "system" fn NtGetContextThread() -> i32 {
+pub unsafe extern "system" fn NtGetContextThread(
+    thread_handle: *mut core::ffi::c_void,
+    context: *mut core::ffi::c_void,
+) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    if thread_handle.is_null() || context.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
@@ -271,9 +282,35 @@ pub unsafe extern "system" fn NtImpersonateThread() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
+/// Checks job membership for the current process.
+///
+/// CognacOS does not yet implement job objects. For the current-process
+/// pseudo handle and a null JobHandle (the query "is this process in any
+/// job?"), the answer is therefore FALSE. Other handles are not guessed at.
 #[no_mangle]
-pub unsafe extern "system" fn NtIsProcessInJob() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtIsProcessInJob(
+    process_handle: *mut core::ffi::c_void,
+    job_handle: *mut core::ffi::c_void,
+    result: *mut u8,
+) -> i32 {
+    const STATUS_SUCCESS: i32 = 0;
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
+    if result.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if process_handle as isize != -1 {
+        return if process_handle.is_null() {
+            0xC000_0008u32 as i32 // STATUS_INVALID_HANDLE
+        } else {
+            STATUS_NOT_IMPLEMENTED
+        };
+    }
+    if !job_handle.is_null() {
+        return STATUS_NOT_IMPLEMENTED;
+    }
+    unsafe { result.write(0) };
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
@@ -415,8 +452,16 @@ pub unsafe extern "system" fn NtSecureConnectPort() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
+/// Setting another thread's register context requires scheduler support.
 #[no_mangle]
-pub unsafe extern "system" fn NtSetContextThread() -> i32 {
+pub unsafe extern "system" fn NtSetContextThread(
+    thread_handle: *mut core::ffi::c_void,
+    context: *const core::ffi::c_void,
+) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    if thread_handle.is_null() || context.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
@@ -797,8 +842,11 @@ pub extern "system" fn ZwFlushProcessWriteBuffers() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwGetContextThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwGetContextThread(
+    thread_handle: *mut core::ffi::c_void,
+    context: *mut core::ffi::c_void,
+) -> i32 {
+    unsafe { NtGetContextThread(thread_handle, context) }
 }
 
 #[no_mangle]
@@ -837,8 +885,12 @@ pub unsafe extern "system" fn ZwImpersonateThread() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwIsProcessInJob() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwIsProcessInJob(
+    process_handle: *mut core::ffi::c_void,
+    job_handle: *mut core::ffi::c_void,
+    result: *mut u8,
+) -> i32 {
+    unsafe { NtIsProcessInJob(process_handle, job_handle, result) }
 }
 
 #[no_mangle]
@@ -1017,8 +1069,11 @@ pub unsafe extern "system" fn ZwSecureConnectPort() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwSetContextThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwSetContextThread(
+    thread_handle: *mut core::ffi::c_void,
+    context: *const core::ffi::c_void,
+) -> i32 {
+    unsafe { NtSetContextThread(thread_handle, context) }
 }
 
 #[no_mangle]
