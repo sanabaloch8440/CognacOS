@@ -419,20 +419,15 @@ impl<'a> WritableHive<'a> {
         if count==0||count as usize>4096{return Err(Error::InvalidKey);}
         let old=self.cell_payload(old_list)?;
         let sig=old.get(0..2).ok_or(Error::InvalidKey)?;
-        let mut entries=[0u32;4096];
         let mut found=false;
         if sig==b"li" {
             if old.len()<4+count as usize*4||u16at(old,2)? as u32!=count{return Err(Error::InvalidKey);}
-            for i in 0..count as usize { let v=u32at(old,4+i*4)?; if v==child_nk {found=true;} else if !found || v!=child_nk {entries[i]=v;} }
+            for i in 0..count as usize { if u32at(old,4+i*4)?==child_nk {found=true;} }
         } else if sig==b"lf"||sig==b"lh" {
             if old.len()<4+count as usize*8||u16at(old,2)? as u32!=count{return Err(Error::InvalidKey);}
-            for i in 0..count as usize {let v=u32at(old,4+i*8)?;if v==child_nk {found=true;}else{entries[i]=v;}}
+            for i in 0..count as usize {if u32at(old,4+i*8)?==child_nk {found=true;}}
         } else { return Err(Error::UnsupportedIndex); }
         if !found{return Err(Error::NotFound);}
-        let mut out_count=0usize;
-        for i in 0..count as usize {if entries[i]!=0|| (sig==b"li" && u32at(old,4+i*4)?==0 && child_nk!=0) {entries[out_count]=entries[i];out_count+=1;}}
-        // Rebuild the index with only valid, non-removed entries. Cell index zero
-        // is valid in some malformed inputs, so derive the list directly instead.
         let mut compact=[0u32;4096];let mut n=0usize;
         for i in 0..count as usize {let v=if sig==b"li" {u32at(old,4+i*4)?} else {u32at(old,4+i*8)?};if v!=child_nk{compact[n]=v;n+=1;}}
         if n==0 {
