@@ -346,8 +346,10 @@ fn etw_enable_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
   let sessions=core::ptr::addr_of!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
   if !(0..16).any(|i|{let s=&*sessions.add(i);s.active&&s.handle==handle&&s.owner==pid}){return 0xC0000022;}
   let providers=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();let mut found=false;
-  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.guid==guid{if p.session!=0&&p.session!=handle{return 0xC0000022;}p.enabled=enabled;p.level=level;p.any=any;p.all=all;p.session=if enabled{handle}else{0};found=true;}}
-  if found{NT_STATUS_SUCCESS}else{0xC0000225}
+  for i in 0..ETW_PROVIDER_CAPACITY {let p=&*providers.add(i);if p.active&&p.guid==guid{if p.session!=0&&p.session!=handle{return 0xC0000022;}found=true;}}
+  if !found{return 0xC0000225;}
+  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.guid==guid{p.enabled=enabled;p.level=level;p.any=any;p.all=all;p.session=if enabled{handle}else{0};}}
+  NT_STATUS_SUCCESS
  }
 }
 fn etw_stop_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
