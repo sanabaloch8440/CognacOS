@@ -571,6 +571,28 @@ unsafe fn unwind_leaf(context: *mut CONTEXT, establisher: *mut u64) -> i32 {
     if !establisher.is_null() { *establisher = c.Rsp; }
     0
 }
+unsafe fn restore_nonvolatile_register(context: &mut CONTEXT, register: u8, value: u64) -> bool {
+    match register {
+        3 => context.Rbx = value, 5 => context.Rbp = value,
+        6 => context.Rsi = value, 7 => context.Rdi = value,
+        12 => context.R12 = value, 13 => context.R13 = value,
+        14 => context.R14 = value, 15 => context.R15 = value,
+        _ => return false,
+    }
+    true
+}
+
+unsafe fn restore_xmm_register(context: &mut CONTEXT, register: u8, address: u64) -> bool {
+    if register > 15 { return false; }
+    let Some(source) = usize::try_from(address).ok() else { return false; };
+    let target = (context as *mut CONTEXT).cast::<u8>().wrapping_add(0x1a0 + register as usize * 16);
+    let lo = ptr::read_unaligned(source as *const u64);
+    let hi = ptr::read_unaligned((source + 8) as *const u64);
+    ptr::write_unaligned(target.cast::<u64>(), lo);
+    ptr::write_unaligned(target.add(8).cast::<u64>(), hi);
+    true
+}
+
 unsafe fn unwind_function(
     handler_type: u32, image_base: u64, control_pc: u64,
     entry: *const RUNTIME_FUNCTION, context: *mut CONTEXT,
@@ -628,7 +650,32 @@ unsafe fn unwind_function(
                 let fp = match reg { 5 => c.Rbp, _ => return STATUS_NOT_IMPLEMENTED };
                 c.Rsp = match fp.checked_sub(offset) { Some(v) => v, None => return STATUS_BAD_STACK };
             }
-            4 | 5 | 8 | 9 => return STATUS_NOT_IMPLEMENTED, // save slots require full context-pointer ABI
+            4 => { // UWOP_SAVE_NONVOL: scaled 16-bit stack offset
+                index += 1;
+                let offset = ptr::read_unaligned((info + 4 + (index * 2) as u64) as *const u16) as u64 * 8;
+                let Some(address) = c.Rsp.checked_add(offset) else { return STATUS_BAD_STACK; };
+                let value = ptr::read_unaligned(address as *const u64);
+                if !restore_nonvolatile_register(c, opinfo, value) { return STATUS_INVALID_PARAMETER; }
+            }
+            5 => { // UWOP_SAVE_NONVOL_FAR: unscaled 32-bit stack offset
+                index += 2;
+                let offset = ptr::read_unaligned((info + 4 + (index * 2) as u64 - 2) as *const u32) as u64;
+                let Some(address) = c.Rsp.checked_add(offset) else { return STATUS_BAD_STACK; };
+                let value = ptr::read_unaligned(address as *const u64);
+                if !restore_nonvolatile_register(c, opinfo, value) { return STATUS_INVALID_PARAMETER; }
+            }
+            8 => { // UWOP_SAVE_XMM128: scaled 16-bit stack offset
+                index += 1;
+                let offset = ptr::read_unaligned((info + 4 + (index * 2) as u64) as *const u16) as u64 * 16;
+                let Some(address) = c.Rsp.checked_add(offset) else { return STATUS_BAD_STACK; };
+                if !restore_xmm_register(c, opinfo, address) { return STATUS_INVALID_PARAMETER; }
+            }
+            9 => { // UWOP_SAVE_XMM128_FAR: unscaled 32-bit stack offset
+                index += 2;
+                let offset = ptr::read_unaligned((info + 4 + (index * 2) as u64 - 2) as *const u32) as u64;
+                let Some(address) = c.Rsp.checked_add(offset) else { return STATUS_BAD_STACK; };
+                if !restore_xmm_register(c, opinfo, address) { return STATUS_INVALID_PARAMETER; }
+            }
             10 => { // UWOP_PUSH_MACHFRAME
                 let error_code = opinfo != 0;
                 let rip_slot = c.Rsp + if error_code { 8 } else { 0 };
