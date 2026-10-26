@@ -187,12 +187,6 @@ pub unsafe extern "system" fn LdrSetImplicitPathOptions() -> i32 { STATUS_NOT_IM
 pub unsafe extern "system" fn LdrSetMUICacheType() -> i32 { STATUS_NOT_IMPLEMENTED }
 
 #[no_mangle]
-pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
-    DLL_SHUTDOWN.store(true, Ordering::Release);
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn LdrShutdownThread() -> NTSTATUS {
     // Thread-specific TLS/FLS and detach callbacks require a real thread/module
     // runtime. Do not fabricate callbacks; report success only for the no-op path.
