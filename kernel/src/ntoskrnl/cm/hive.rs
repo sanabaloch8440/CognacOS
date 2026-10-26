@@ -124,11 +124,19 @@ impl<'h,'a> Key<'h,'a>{
    if c.len()<4+count as usize*8 || u16at(c,2)? as u32 != count {return Err(Error::InvalidKey)}
    for i in 0..count{let k=self.hive.key(u32at(c,4+i as usize*8)?)?;if key_matches(&k,name)?{return Ok(k)}}
   }else if sig==b"ri"{
-   let n=(c.len().saturating_sub(4))/4;
-   if u16at(c,2)? as usize != n {return Err(Error::InvalidKey)}
-   for i in 0..n{let sub=u32at(c,4+i*4)?;let sc=self.hive.cell(sub)?;let ss=sc.get(0..2).ok_or(Error::InvalidKey)?;
-    let entries=if ss==b"li"||ss==b"ri"{sc.len().saturating_sub(4)/4}else if ss==b"lf"||ss==b"lh"{sc.len().saturating_sub(4)/8}else{return Err(Error::UnsupportedIndex)} as u32;
-    if let Ok(k)=self.search_index(sub,entries,name,depth+1){return Ok(k)}
+   // RI cells store the number of child index cells at +2. Cell payloads
+   // include alignment padding, so their length cannot be used as the count.
+   let n=u16at(c,2)? as usize;
+   if c.len()<4+n*4{return Err(Error::InvalidKey)}
+   for i in 0..n{
+    let sub=u32at(c,4+i*4)?;
+    let sc=self.hive.cell(sub)?;
+    let ss=sc.get(0..2).ok_or(Error::InvalidKey)?;
+    let (stride,entries)=if ss==b"li"||ss==b"ri"{(4,u16at(sc,2)? as usize)}
+      else if ss==b"lf"||ss==b"lh"{(8,u16at(sc,2)? as usize)}
+      else{return Err(Error::UnsupportedIndex)};
+    if sc.len()<4+entries*stride{return Err(Error::InvalidKey)}
+    if let Ok(k)=self.search_index(sub,entries as u32,name,depth+1){return Ok(k)}
    }
   }else{return Err(Error::UnsupportedIndex)}
   Err(Error::NotFound)
