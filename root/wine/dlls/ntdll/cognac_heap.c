@@ -27,7 +27,7 @@ typedef struct _COGNAC_HEAP {
     volatile UCHAR lock;
 } COGNAC_HEAP;
 
-__declspec(dllexport) COGNAC_HEAP CognacNtdllProcessHeapObject;
+static COGNAC_HEAP process_heap_object;
 static UCHAR process_heap_arena[PROCESS_HEAP_BYTES] __attribute__((aligned(16)));
 
 static void heap_lock(COGNAC_HEAP *heap)
@@ -98,17 +98,15 @@ static void merge_next(COGNAC_HEAP_BLOCK *block)
     next->next = NULL;
 }
 
-__declspec(dllexport)
 HANDLE WINAPI RtlGetProcessHeap(void)
 {
-    COGNAC_HEAP *heap = &CognacNtdllProcessHeapObject;
+    COGNAC_HEAP *heap = &process_heap_object;
     heap_lock(heap);
     heap_initialize_locked(heap);
     heap_unlock(heap);
     return (HANDLE)heap;
 }
 
-__declspec(dllexport)
 PVOID WINAPI RtlAllocateHeap(HANDLE handle, ULONG flags, SIZE_T requested_size)
 {
     COGNAC_HEAP *heap = &CognacNtdllProcessHeapObject;
@@ -151,7 +149,6 @@ PVOID WINAPI RtlAllocateHeap(HANDLE handle, ULONG flags, SIZE_T requested_size)
     return NULL;
 }
 
-__declspec(dllexport)
 SIZE_T WINAPI RtlSizeHeap(HANDLE handle, ULONG flags, PVOID address)
 {
     COGNAC_HEAP *heap = &CognacNtdllProcessHeapObject;
@@ -167,7 +164,6 @@ SIZE_T WINAPI RtlSizeHeap(HANDLE handle, ULONG flags, PVOID address)
     return result;
 }
 
-__declspec(dllexport)
 BOOLEAN WINAPI RtlFreeHeap(HANDLE handle, ULONG flags, PVOID address)
 {
     COGNAC_HEAP *heap = &CognacNtdllProcessHeapObject;
@@ -192,7 +188,6 @@ BOOLEAN WINAPI RtlFreeHeap(HANDLE handle, ULONG flags, PVOID address)
     return TRUE;
 }
 
-__declspec(dllexport)
 PVOID WINAPI RtlReAllocateHeap(HANDLE handle, ULONG flags, PVOID address, SIZE_T size)
 {
     SIZE_T old_size, copy_size, index;
@@ -220,7 +215,6 @@ PVOID WINAPI RtlReAllocateHeap(HANDLE handle, ULONG flags, PVOID address, SIZE_T
     return replacement;
 }
 
-__declspec(dllexport)
 BOOLEAN WINAPI RtlValidateHeap(HANDLE handle, ULONG flags, PVOID address)
 {
     COGNAC_HEAP *heap = &CognacNtdllProcessHeapObject;
