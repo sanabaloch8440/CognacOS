@@ -477,6 +477,8 @@ jobs:
             echo \\n===== LIVE CPU / SOURCE LOCATION =====\\n
             info registers
             info threads
+            thread apply all info registers rip rsp
+            thread apply all info line *$rip
             info line *$rip
             list *$rip
             info symbol $rip
@@ -551,7 +553,8 @@ jobs:
               --serial build/serial.log \
               --kernel target/x86_64-unknown-none/release/cognacos-kernel \
               --hal target/driver-hal/x86_64-unknown-none/release/hal \
-              --ntdll target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll || true
+              --ntdll target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll \
+              --gdb build/gdb-state.txt || true
             exit 1
           fi
 
