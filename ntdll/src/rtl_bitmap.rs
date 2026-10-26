@@ -195,7 +195,6 @@ unsafe fn find_forward_run(bitmap: *const RTL_BITMAP, start: ULONG, wanted: bool
     i - first
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn RtlFindNextForwardRunSet(bitmap: *const RTL_BITMAP, start: ULONG, position: *mut ULONG) -> ULONG {
     unsafe { find_forward_run(bitmap, start, true, position) }
 }
@@ -220,7 +219,6 @@ unsafe fn find_backward_run(bitmap: *const RTL_BITMAP, start: ULONG, wanted: boo
     i - first + 1
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn RtlFindLastBackwardRunSet(bitmap: *const RTL_BITMAP, start: ULONG, position: *mut ULONG) -> ULONG {
     unsafe { find_backward_run(bitmap, start, true, position) }
 }
@@ -265,7 +263,6 @@ unsafe fn find_runs(bitmap: *const RTL_BITMAP, runs: *mut RTL_BITMAP_RUN, capaci
     stored
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn RtlFindSetRuns(bitmap: *const RTL_BITMAP, runs: *mut RTL_BITMAP_RUN, count: ULONG, longest: BOOLEAN) -> ULONG {
     unsafe { find_runs(bitmap, runs, count, longest, true) }
 }
@@ -275,7 +272,6 @@ pub unsafe extern "system" fn RtlFindClearRuns(bitmap: *const RTL_BITMAP, runs: 
     unsafe { find_runs(bitmap, runs, count, longest, false) }
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn RtlFindLongestRunSet(bitmap: *const RTL_BITMAP, start: *mut ULONG) -> ULONG {
     let mut run = RTL_BITMAP_RUN::default();
     let count = unsafe { RtlFindSetRuns(bitmap, &mut run, 1, 1) };
