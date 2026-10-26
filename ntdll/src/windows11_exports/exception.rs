@@ -277,6 +277,12 @@ pub unsafe extern "system" fn RtlCaptureContext(context: *mut CONTEXT) {
         in(reg) (context.cast::<u8>().add(0x100)),
         options(nostack)
     );
+    #[cfg(target_arch = "x86_64")]
+    core::arch::asm!(
+        "stmxcsr [{}]",
+        in(reg) (context.cast::<u8>().add(0x34)),
+        options(nostack)
+    );
     #[cfg(not(target_arch = "x86_64"))]
     { let _ = c; }
     let _ = RtlRegisterExceptionDispatcher();
