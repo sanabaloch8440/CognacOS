@@ -431,7 +431,7 @@ fn etw_stop_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  }
  NT_STATUS_SUCCESS
 }
-fn etw_process_exit_rundown(pid:u64) {
+pub(crate) fn etw_process_exit_rundown(pid:u64) {
  let _g=KernelEtwGuard::lock();
  unsafe {
   let providers=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
