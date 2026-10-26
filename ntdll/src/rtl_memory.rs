@@ -226,21 +226,64 @@ pub unsafe extern "C" fn memcmp(left: *const core::ffi::c_void, right: *const co
     0
 }
 
+// These three routines are compiler-runtime entry points as well as exported
+// symbols. Do NOT implement them with ptr::copy*, ptr::write_bytes, or slice
+// copies: LLVM lowers those intrinsics back to memcpy/memmove/memset, which
+// recursively calls the same symbol. The previous PE image consequently had
+// memcpy/memmove/memset aliases at RVA 0x23370 containing "jmp $"; RtlFillMemory
+// tail-called memset and hung ring 3. Volatile byte accesses prevent intrinsic
+// recognition and keep these leaf primitives independent of the runtime.
+
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn memcpy(destination: *mut core::ffi::c_void, source: *const core::ffi::c_void, count: usize) -> *mut core::ffi::c_void {
-    unsafe { core::ptr::copy_nonoverlapping(source.cast::<u8>(), destination.cast::<u8>(), count); }
+    let dst = destination.cast::<u8>();
+    let src = source.cast::<u8>();
+    let mut index = 0usize;
+    while index < count {
+        let byte = unsafe { core::ptr::read_volatile(src.add(index)) };
+        unsafe { core::ptr::write_volatile(dst.add(index), byte) };
+        index += 1;
+    }
     destination
 }
 
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn memmove(destination: *mut core::ffi::c_void, source: *const core::ffi::c_void, count: usize) -> *mut core::ffi::c_void {
-    unsafe { core::ptr::copy(source.cast::<u8>(), destination.cast::<u8>(), count); }
+    let dst = destination.cast::<u8>();
+    let src = source.cast::<u8>();
+    if count == 0 || core::ptr::eq(dst.cast_const(), src) {
+        return destination;
+    }
+    if (dst as usize) < (src as usize) {
+        let mut index = 0usize;
+        while index < count {
+            let byte = unsafe { core::ptr::read_volatile(src.add(index)) };
+            unsafe { core::ptr::write_volatile(dst.add(index), byte) };
+            index += 1;
+        }
+    } else {
+        let mut remaining = count;
+        while remaining != 0 {
+            remaining -= 1;
+            let byte = unsafe { core::ptr::read_volatile(src.add(remaining)) };
+            unsafe { core::ptr::write_volatile(dst.add(remaining), byte) };
+        }
+    }
     destination
 }
 
 #[no_mangle]
+#[inline(never)]
 pub unsafe extern "C" fn memset(destination: *mut core::ffi::c_void, value: i32, count: usize) -> *mut core::ffi::c_void {
-    unsafe { core::ptr::write_bytes(destination.cast::<u8>(), value as u8, count); }
+    let dst = destination.cast::<u8>();
+    let byte = value as u8;
+    let mut index = 0usize;
+    while index < count {
+        unsafe { core::ptr::write_volatile(dst.add(index), byte) };
+        index += 1;
+    }
     destination
 }
 
