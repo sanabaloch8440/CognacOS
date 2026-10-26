@@ -83,7 +83,7 @@ pub(crate) fn ke_accumulate_ticks(_hal_timestamp: u64) {
                 let routine = ACTIVE_DPC_ROUTINE[cpu].load(Ordering::Acquire);
                 unsafe {
                     crate::ntoskrnl::ke::runtime::ke_bug_check_ex(
-                        DPC_WATCHDOG_VIOLATION, 0, counter_to_watchdog_ticks(elapsed, hz) as usize, counter_to_watchdog_ticks(limit, hz) as usize, routine as usize,
+                        DPC_WATCHDOG_VIOLATION, 0, counter_to_watchdog_ticks(elapsed, hz) as usize, counter_to_watchdog_ticks(limit, hz) as usize, 0,
                     );
                 }
             }
@@ -103,8 +103,7 @@ pub(crate) fn ke_accumulate_ticks(_hal_timestamp: u64) {
                 // Arg1=1: cumulative time at DISPATCH_LEVEL or above.
                 unsafe {
                     crate::ntoskrnl::ke::runtime::ke_bug_check_ex(
-                        DPC_WATCHDOG_VIOLATION, 1, counter_to_watchdog_ticks(HIGH_IRQL_TOTAL[cpu].load(Ordering::Relaxed).saturating_add(elapsed), hz) as usize,
-                        (HIGH_IRQL_TIMEOUT_SECONDS * 1_000) as usize, 0,
+                        DPC_WATCHDOG_VIOLATION, 1, (HIGH_IRQL_TIMEOUT_SECONDS * 1_000) as usize, 0, 0,
                     );
                 }
             }
@@ -169,7 +168,7 @@ pub(crate) fn watchdog_dpc_end() {
             // Arg1=0: a single DPC exceeded its allotment.
             unsafe {
                 crate::ntoskrnl::ke::runtime::ke_bug_check_ex(
-                    DPC_WATCHDOG_VIOLATION, 0, counter_to_watchdog_ticks(elapsed, hz) as usize, counter_to_watchdog_ticks(limit, hz) as usize, routine as usize,
+                    DPC_WATCHDOG_VIOLATION, 0, counter_to_watchdog_ticks(elapsed, hz) as usize, counter_to_watchdog_ticks(limit, hz) as usize, 0,
                 );
             }
         }
