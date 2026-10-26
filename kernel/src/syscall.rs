@@ -1521,7 +1521,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             crate::serial_write_hex(f[7]);
             crate::serial_write(b" r9=");
             crate::serial_write_hex(f[6]);
-            crate::serial_write(b"\\r\\n");
+            crate::serial_write(b"\r\n");
         }
         let mut args = [0u64; NT_MAX_ARGUMENTS];
         args[0] = f[5];  // R10 = arg1
