@@ -254,6 +254,7 @@ pub fn mark_exited(pid: u64, code: u64) -> bool {
         crate::syscall::etw_process_exit_rundown(pid);
         crate::ntoskrnl::alpc_native::rundown_process(pid);
         crate::ntoskrnl::runtime_functions::remove_owner(pid);
+        crate::syscall::exception_dispatcher_rundown(pid);
     }
     marked
 }
