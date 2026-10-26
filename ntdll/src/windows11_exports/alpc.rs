@@ -165,59 +165,6 @@ fn attribute_size(flag: ULONG) -> Option<usize> {
 pub extern "system" fn AlpcMaxAllowedMessageLength() -> ULONG { 512 }
 
 #[no_mangle]
-pub extern "system" fn AlpcGetHeaderSize(_Flags: ULONG) -> ULONG {
-    core::mem::size_of::<PORT_MESSAGE>() as ULONG
-}
-
-/// Compute the x64 message-attribute storage requirement and initialize the
-/// header. Attribute payloads are laid out in Windows' security/view/context/handle order.
-#[no_mangle]
-pub unsafe extern "system" fn AlpcInitializeMessageAttribute(
-    AttributeFlags: ULONG,
-    Buffer: PALPC_MESSAGE_ATTRIBUTES,
-    BufferSize: ULONG,
-    RequiredBufferSize: PULONG,
-) -> NTSTATUS {
-    let known = ALPC_MESSAGE_SECURITY_ATTRIBUTE | ALPC_MESSAGE_VIEW_ATTRIBUTE |
-        ALPC_MESSAGE_CONTEXT_ATTRIBUTE | ALPC_MESSAGE_HANDLE_ATTRIBUTE;
-    if AttributeFlags & !known != 0 || RequiredBufferSize.is_null() { return STATUS_INVALID_PARAMETER; }
-    let mut required = core::mem::size_of::<ALPC_MESSAGE_ATTRIBUTES>();
-    for flag in [ALPC_MESSAGE_SECURITY_ATTRIBUTE, ALPC_MESSAGE_VIEW_ATTRIBUTE,
-                 ALPC_MESSAGE_CONTEXT_ATTRIBUTE, ALPC_MESSAGE_HANDLE_ATTRIBUTE] {
-        if AttributeFlags & flag != 0 {
-            let Some(size) = attribute_size(flag).and_then(|s| align_up(s, core::mem::align_of::<usize>())) else { return STATUS_INVALID_PARAMETER; };
-            let Some(next) = required.checked_add(size) else { return STATUS_INVALID_PARAMETER; };
-            required = next;
-        }
-    }
-    unsafe { RequiredBufferSize.write(required as ULONG); }
-    if Buffer.is_null() || (BufferSize as usize) < required { return STATUS_BUFFER_TOO_SMALL; }
-    unsafe {
-        (*Buffer).AllocatedAttributes = AttributeFlags;
-        (*Buffer).ValidAttributes = 0;
-    }
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn AlpcGetMessageAttribute(Buffer: PALPC_MESSAGE_ATTRIBUTES, AttributeFlag: ULONG) -> PVOID {
-    if Buffer.is_null() || attribute_size(AttributeFlag).is_none() { return core::ptr::null_mut(); }
-    let allocated = unsafe { (*Buffer).AllocatedAttributes };
-    if allocated & AttributeFlag == 0 { return core::ptr::null_mut(); }
-    let mut offset = core::mem::size_of::<ALPC_MESSAGE_ATTRIBUTES>();
-    for flag in [ALPC_MESSAGE_SECURITY_ATTRIBUTE, ALPC_MESSAGE_VIEW_ATTRIBUTE,
-                 ALPC_MESSAGE_CONTEXT_ATTRIBUTE, ALPC_MESSAGE_HANDLE_ATTRIBUTE] {
-        if allocated & flag != 0 {
-            if flag == AttributeFlag { return unsafe { (Buffer as *mut u8).add(offset).cast() }; }
-            let Some(size) = attribute_size(flag).and_then(|s| align_up(s, core::mem::align_of::<usize>())) else { return core::ptr::null_mut(); };
-            let Some(next) = offset.checked_add(size) else { return core::ptr::null_mut(); };
-            offset = next;
-        }
-    }
-    core::ptr::null_mut()
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn AlpcRegisterCompletionList(
     PortHandle: HANDLE, Buffer: PVOID, Size: ULONG, ConcurrencyCount: ULONG, AttributeFlags: ULONG,
 ) -> NTSTATUS {
