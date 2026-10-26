@@ -148,10 +148,15 @@ fn provider_index(entries: *const EtwProvider, handle: u64) -> Option<usize> {
 
 /// Internal dequeue hook for a future kernel ETW/session bridge. Payloads are
 /// copied into owned storage; no caller pointers are retained.
-pub(crate) fn take_event(out_provider: &mut [u8; 16], out_descriptor: &mut [u8; 16], out_payload: &mut [u8; MAX_EVENT_PAYLOAD], out_length: &mut usize) -> bool {
+pub(crate) fn take_event(
+    out_provider: &mut [u8; 16], out_descriptor: &mut [u8; 16],
+    out_activity: &mut [u8;16], out_related: &mut [u8;16],
+    out_process_id: &mut u64, out_thread_id: &mut u64,
+    out_payload: &mut [u8; MAX_EVENT_PAYLOAD], out_length: &mut usize
+) -> bool {
     #[cfg(all(target_arch = "x86_64", target_os = "none"))]
     {
-        let mut record=[0u8;48]; let mut bytes=[0u8;MAX_EVENT_PAYLOAD]; let mut length=0u32;
+        let mut record=[0u8;80]; let mut bytes=[0u8;MAX_EVENT_PAYLOAD]; let mut length=0u32;
         if kernel_etw_call(NT_SYSCALL_ETW_READ_EVENT,record.as_mut_ptr() as u64,bytes.as_mut_ptr() as u64,bytes.len() as u64,&mut length as *mut u32 as u64)==Some(0) {
             let handle=u64::from_le_bytes(record[0..8].try_into().unwrap());
             let guid={
@@ -159,29 +164,31 @@ pub(crate) fn take_event(out_provider: &mut [u8; 16], out_descriptor: &mut [u8; 
                 let found=(0..PROVIDER_CAPACITY).find(|&i|unsafe{let p=&*entries.add(i);p.active&&p.handle==handle});
                 match found {Some(i)=>unsafe{(*entries.add(i)).guid},None=>return false}
             };
-            *provider=guid;*process_id=u64::from_le_bytes(record[8..16].try_into().unwrap());
-            *thread_id=u64::from_le_bytes(record[16..24].try_into().unwrap());
-            *payload_len=(u16::from_le_bytes(record[24..26].try_into().unwrap()) as usize).min(payload.len());
-            let mut d=[0u8;16];d.copy_from_slice(&record[32..48]);*descriptor=unsafe{core::ptr::read_unaligned(d.as_ptr().cast::<EventDescriptor>())};
-            payload[..*payload_len].copy_from_slice(&bytes[..*payload_len]);*activity=Guid::default();*related=Guid::default();return true;
+            unsafe { core::ptr::copy_nonoverlapping((&guid as *const Guid).cast::<u8>(),out_provider.as_mut_ptr(),16); }
+            *out_process_id=u64::from_le_bytes(record[8..16].try_into().unwrap());
+            *out_thread_id=u64::from_le_bytes(record[16..24].try_into().unwrap());
+            out_descriptor.copy_from_slice(&record[32..48]);
+            out_activity.copy_from_slice(&record[48..64]);
+            out_related.copy_from_slice(&record[64..80]);
+            *out_length=(u16::from_le_bytes(record[24..26].try_into().unwrap()) as usize).min(out_payload.len());
+            out_payload[..*out_length].copy_from_slice(&bytes[..*out_length]);
+            return true;
         }
     }
     let _guard = EtwGuard::lock();
     unsafe {
         if ETW_EVENT_LEN == 0 { return false; }
-        let events = core::ptr::addr_of_mut!(ETW_EVENTS).cast::<EventRecord>();
-        let record = &mut *events.add(ETW_EVENT_HEAD);
-        if !record.active { ETW_EVENT_LEN = 0; return false; }
-        let guid_bytes = core::slice::from_raw_parts((&record.provider as *const Guid).cast::<u8>(), 16);
-        out_provider.copy_from_slice(guid_bytes);
-        let desc_bytes = core::slice::from_raw_parts((&record.descriptor as *const EventDescriptor).cast::<u8>(), 16);
-        out_descriptor.copy_from_slice(desc_bytes);
-        let n = (record.payload_len as usize).min(out_payload.len());
-        out_payload[..n].copy_from_slice(&record.payload[..n]);
-        *out_length = n;
-        record.active = false;
-        ETW_EVENT_HEAD = (ETW_EVENT_HEAD + 1) % EVENT_CAPACITY;
-        ETW_EVENT_LEN -= 1;
+        let events=core::ptr::addr_of_mut!(ETW_EVENTS).cast::<EventRecord>();
+        let record=&mut *events.add(ETW_EVENT_HEAD);
+        if !record.active { ETW_EVENT_LEN=0; return false; }
+        core::ptr::copy_nonoverlapping((&record.provider as *const Guid).cast::<u8>(),out_provider.as_mut_ptr(),16);
+        core::ptr::copy_nonoverlapping((&record.descriptor as *const EventDescriptor).cast::<u8>(),out_descriptor.as_mut_ptr(),16);
+        core::ptr::copy_nonoverlapping((&record.activity as *const Guid).cast::<u8>(),out_activity.as_mut_ptr(),16);
+        core::ptr::copy_nonoverlapping((&record.related_activity as *const Guid).cast::<u8>(),out_related.as_mut_ptr(),16);
+        *out_process_id=record.process_id; *out_thread_id=record.thread_id;
+        *out_length=(record.payload_len as usize).min(out_payload.len());
+        out_payload[..*out_length].copy_from_slice(&record.payload[..*out_length]);
+        *record=EventRecord::EMPTY;ETW_EVENT_HEAD=(ETW_EVENT_HEAD+1)%EVENT_CAPACITY;ETW_EVENT_LEN-=1;
         true
     }
 }
@@ -256,7 +263,16 @@ pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const Even
         if n>0 {unsafe{core::ptr::copy_nonoverlapping(item.ptr as *const u8,kernel_payload.as_mut_ptr().add(kernel_payload_len),n);}}
         kernel_payload_len+=n;
     }
-    let kernel_recorded=match kernel_etw_call(NT_SYSCALL_ETW_WRITE_EVENT,handle,descriptor as u64,kernel_payload.as_ptr() as u64,kernel_payload_len as u64) {
+    let (pid,tid)=current_process_thread();
+    let activity=current_activity(pid,tid);
+    let related=Guid::default();
+    let mut wire=[0u8;48];
+    unsafe {
+        core::ptr::copy_nonoverlapping((&descriptor_value as *const EventDescriptor).cast::<u8>(),wire.as_mut_ptr(),16);
+        core::ptr::copy_nonoverlapping((&activity as *const Guid).cast::<u8>(),wire.as_mut_ptr().add(16),16);
+        core::ptr::copy_nonoverlapping((&related as *const Guid).cast::<u8>(),wire.as_mut_ptr().add(32),16);
+    }
+    let kernel_recorded=match kernel_etw_call(NT_SYSCALL_ETW_WRITE_EVENT,handle,wire.as_ptr() as u64,kernel_payload.as_ptr() as u64,kernel_payload_len as u64) {
         Some(0)=>true,
         Some(_)=>return ERROR_INVALID_PARAMETER,
         None=>false,
@@ -423,7 +439,24 @@ pub unsafe extern "system" fn EtwEventActivityIdControl(control_code: u32, activ
     unsafe { activity_id.write_unaligned(value); } 0
 }
 
-// Session-management internals still require the native kernel syscall bridge.
+/// Create a kernel ETW session. The kernel requires an unrestricted administrator token
+/// with the SystemProfile privilege; the session handle is owner-scoped.
+pub(crate) fn controller_create_session(out_handle: &mut u64) -> i32 {
+    match kernel_etw_call(NT_SYSCALL_ETW_CREATE_SESSION,0,out_handle as *mut u64 as u64,0,0) {
+        Some(0)=>0, Some(status)=>status as u32 as i32, None=>0xC0000002u32 as i32
+    }
+}
+/// Enable/disable a provider through a privileged kernel-owned session.
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub(crate) fn controller_enable_provider(session:u64,guid:&Guid,enabled:bool,level:u8,any:u64,all:u64)->i32 {
+ let result:u64;
+ unsafe { core::arch::asm!("sub rsp, 48", "mov qword ptr [rsp + 32], {any_kw}", "mov qword ptr [rsp + 40], {all_kw}", "int 0x83", "add rsp, 48",
+ any_kw=in(reg) any, all_kw=in(reg) all,
+ inout("rax") NT_SYSCALL_ETW_ENABLE_SESSION=>result,in("r10") session,in("rdx") guid as *const Guid as u64,in("r8") enabled as u64,in("r9") level as u64,lateout("rcx") _,lateout("r11") _); }
+ result as u32 as i32
+}
+#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+pub(crate) fn controller_enable_provider(_session:u64,_guid:&Guid,_enabled:bool,_level:u8,_any:u64,_all:u64)->i32 { 0xC0000002u32 as i32 }
 fn EtwCheckCoverage() -> i32 { 0xC0000002u32 as i32 }
 fn EtwCreateTraceInstanceId() -> i32 { 0xC0000002u32 as i32 }
 fn EtwDeliverDataBlock() -> i32 { 0xC0000002u32 as i32 }
