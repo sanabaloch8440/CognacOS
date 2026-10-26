@@ -209,9 +209,9 @@ static ETW_KERNEL_NEXT: AtomicU64 = AtomicU64::new(1);
 struct KernelEtwProvider { active: bool, handle: u64, owner: u64, guid: [u8;16], enabled: bool, level: u8, _pad: [u8;7], any: u64, all: u64 }
 impl KernelEtwProvider { const EMPTY: Self = Self { active:false, handle:0, owner:0, guid:[0;16], enabled:false, level:0, _pad:[0;7], any:0, all:0 }; }
 #[derive(Clone, Copy)]
-#[derive(Clone, Copy)]
 struct KernelEtwSession { active: bool, handle: u64, owner: u64, _pad: u64 }
 impl KernelEtwSession { const EMPTY: Self = Self { active:false, handle:0, owner:0, _pad:0 }; }
+#[derive(Clone, Copy)]
 struct KernelEtwEvent { active: bool, _pad:[u8;7], provider: u64, pid:u64, tid:u64, descriptor:[u8;16], activity:[u8;16], related_activity:[u8;16], length:u16, _pad2:[u8;6], payload:[u8;ETW_PAYLOAD_CAPACITY] }
 impl KernelEtwEvent { const EMPTY: Self = Self { active:false,_pad:[0;7],provider:0,pid:0,tid:0,descriptor:[0;16],activity:[0;16],related_activity:[0;16],length:0,_pad2:[0;6],payload:[0;ETW_PAYLOAD_CAPACITY] }; }
 static mut ETW_KERNEL_PROVIDERS:[KernelEtwProvider;ETW_PROVIDER_CAPACITY]=[KernelEtwProvider::EMPTY;ETW_PROVIDER_CAPACITY];
@@ -305,7 +305,7 @@ fn etw_set_enable(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
 }
 pub 
 fn etw_create_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
- if args[0]==0||args[1]==0{return NT_STATUS_INVALID_PARAMETER;}
+ if args[1]==0{return NT_STATUS_INVALID_PARAMETER;}
  let pid=current_process_id();
  let token=crate::process::reference_primary_token(pid);
  if token.is_null(){return 0xC0000022;}
