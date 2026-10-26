@@ -204,17 +204,18 @@ The current ETW implementation is a CognacOS process-local diagnostic buffer, no
 
 ## ETW provider runtime
 
-- [x] Add kernel-owned bounded provider state, owner-checked registration/enable-state operations, and a fixed-size kernel event ring with checked user-buffer copies.
-- [x] Add native syscall IDs for provider registration, enable-state query/configuration, event writes, and consumer reads; the kernel never calls user-mode callbacks.
-- [x] Bridge NTDLL registration and event writes to the kernel and pull consumer records through the checked native transport; retain the local bounded ring as a fallback/test path.
-- [x] Deliver enable callbacks from NTDLL user mode when the observed enable/filter state changes; level, match-any and match-all filters are applied before recording.
-- [x] Add kernel process-exit rundown to the process registry mark_exited transition, before address-space reclamation; add an NTDLL rundown hook to the current RtlExitUserProcess entry.
-- [x] Keep thread-keyed activity-ID control and record process/thread IDs in NTDLL's event path.
-- [ ] Finish kernel event activity/related-activity metadata and a privileged cross-process ETW session controller. Current enable configuration is restricted to the registering process; this is not yet a full Windows ETW session/security model.
-- [ ] Replace the RtlExitUserProcess placeholder with the real ABI and termination syscall, and invoke NTDLL rundown from the final process/loader teardown path rather than a placeholder export.
-- [ ] Add ring-overrun, malformed-buffer, provider-owner isolation, enable callback, activity-ID and concurrent rundown tests; validate host and QEMU workflows.
+- [x] Add kernel-owned provider records, a bounded kernel event ring, owner-checked registration and checked user-buffer copies.
+- [x] Add privileged session create/enable/stop syscalls. Session creation requires an unrestricted administrator token with SystemProfile privilege; session handles are owner-scoped and provider ownership prevents competing sessions from silently replacing one another.
+- [x] Add session-aware consumer reads with provider-owner isolation, plus bounded record/payload copies.
+- [x] Carry activity ID and related activity ID through the kernel ring and consumer record; implement NTDLL EtwEventWriteTransfer in addition to EtwEventWrite.
+- [x] Deliver enable callbacks from NTDLL user mode after it observes changed kernel state; kernel code never invokes user-mode callbacks.
+- [x] Connect kernel provider/session rundown to the process registry's mark_exited transition before address-space reclamation.
+- [x] Replace the RtlExitUserProcess not-implemented return with the CognacOS SYS_EXIT gate, and add LdrShutdownProcess to run bounded DLL_PROCESS_DETACH callbacks in reverse load order after validating PE image bounds.
+- [ ] Validate ETW session creation against real configured tokens, session isolation/stop races, ring overrun, invalid user buffers, activity metadata and concurrent process rundown; run the x64 build and QEMU smoke workflow.
+- [ ] Harden loader shutdown for exceptions/reentrancy and verify detach order against dependency/initialization order; current reverse load-order traversal is a bounded approximation, not a complete Windows loader implementation.
+- [ ] Implement ETW session naming, multi-session provider fan-out and full Windows TraceLogging/ETW controller semantics.
 
-Kernel ETW syscalls validate all user buffers through the active address space and never retain caller pointers. Provider enable callbacks run only in NTDLL after it observes kernel state changes. The consumer transport currently exposes a bounded event record and payload; activity IDs are still maintained by NTDLL rather than carried through the kernel ring. The current implementation is an incremental CognacOS tracing backend, not full Windows ETW compatibility.
+The current backend is an incremental CognacOS implementation, not full Windows ETW compatibility. Kernel session control and metadata transport are implemented, but the changes still require compilation and runtime validation. The loader shutdown path validates mapped image bounds before calling entry points, but does not yet provide Windows-compatible exception handling during detach.
 
 ## Tracking rules
 
