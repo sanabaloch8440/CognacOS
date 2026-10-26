@@ -75,11 +75,10 @@ fn object_name(attrs:u64, out:&mut [u16;MAX_NAME], fallback_pid:u64, slot:usize)
     if attrs==0 {
         let prefix=[b'\\' as u16,b'C' as u16,b'o' as u16,b'g' as u16,b'n' as u16,b'a' as u16,b'c' as u16,b'O' as u16,b'S' as u16,b'\\' as u16,b'A' as u16,b'L' as u16,b'P' as u16,b'C' as u16,b'-' as u16];
         out[..prefix.len()].copy_from_slice(&prefix);
-        let mut n=prefix.len(); for b in format_decimal(fallback_pid, out, n) { let _=b; }
-        n=write_decimal(fallback_pid,out,n); out[n]=b'-' as u16;n+=1; n=write_decimal(slot as u64,out,n); return Ok(n);
+        let mut n=prefix.len(); n=write_decimal(fallback_pid,out,n); out[n]=b'-' as u16;n+=1; n=write_decimal(slot as u64,out,n); return Ok(n);
     }
     let oa: ObjectAttributes=read_user(attrs)?;
-    if oa.length as usize < core::mem::size_of::<ObjectAttributes>() || oa.object_name==0 {return Err(STATUS_INVALID_PARAMETER)}
+    if (oa.length as usize) < core::mem::size_of::<ObjectAttributes>() || oa.object_name==0 {return Err(STATUS_INVALID_PARAMETER)}
     let us:UnicodeString=read_user(oa.object_name as u64)?;
     if us.length==0||us.length%2!=0||us.length>us.maximum_length||us.length as usize/2>MAX_NAME||us.buffer.is_null(){return Err(STATUS_INVALID_PARAMETER)}
     let n=us.length as usize/2;
@@ -94,7 +93,6 @@ fn write_decimal(mut value:u64,out:&mut [u16;MAX_NAME],mut at:usize)->usize{
     while value>0 && at<MAX_NAME {out[at]=(b'0'+(value%10) as u8) as u16;at+=1;value/=10;}
     out[start..at].reverse();at
 }
-fn format_decimal(_value:u64,_out:&mut [u16;MAX_NAME],_at:usize)->[u8;0]{[]}
 
 pub fn dispatch(number:u64,args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     match number {
@@ -152,6 +150,7 @@ fn disconnect_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let status=crate::ntoskrnl::alpc::close_port(id,owner).map(|_|STATUS_SUCCESS).unwrap_or(0xC000_0037);
     p.active.store(false,Ordering::Release);
     let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
+    let _=crate::ntoskrnl::ob::runtime::unregister_object(body);
     status
 }
 const fn sizeof_port_message()->usize{40}
