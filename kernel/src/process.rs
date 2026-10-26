@@ -250,7 +250,7 @@ pub fn mark_exited(pid: u64, code: u64) -> bool {
             true
         } else { false }
     };
-    if marked { crate::ntoskrnl::alpc_native::rundown_process(pid); }
+    if marked { crate::syscall::etw_process_exit_rundown(pid); crate::ntoskrnl::alpc_native::rundown_process(pid); }
     marked
 }
 pub fn query(pid: u64) -> Option<ProcessSnapshot> {
