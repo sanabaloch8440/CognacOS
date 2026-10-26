@@ -245,7 +245,7 @@ pub unsafe extern "system" fn RtlCaptureContext(context: *mut CONTEXT) {
     // CONTEXT is zeroed first so all reserved and vector state is deterministic.
     ptr::write_bytes(context.cast::<u8>(), 0, core::mem::size_of::<CONTEXT>());
     let c = &mut *context;
-    c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
+    c.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS | CONTEXT_FLOATING_POINT;
     #[cfg(target_arch = "x86_64")]
     core::arch::asm!(
         "mov [{p} + 120], rax",
@@ -270,6 +270,12 @@ pub unsafe extern "system" fn RtlCaptureContext(context: *mut CONTEXT) {
         p = in(reg) context,
         out("rax") _,
         options(nostack, preserves_flags)
+    );
+    #[cfg(target_arch = "x86_64")]
+    core::arch::asm!(
+        "fxsave64 [{}]",
+        in(reg) (context.cast::<u8>().add(0x100)),
+        options(nostack)
     );
     #[cfg(not(target_arch = "x86_64"))]
     { let _ = c; }
