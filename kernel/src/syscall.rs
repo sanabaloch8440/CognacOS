@@ -1220,7 +1220,8 @@ unsafe fn restore_context_to_syscall_frame(frame: *mut u64, bytes: &[u8]) -> u64
     if cs & 3 != 3 || ss & 3 != 3 { return NT_STATUS_INVALID_PARAMETER; }
     let mut rflags = context_u32(bytes, 0x44) as u64;
     // Never restore IOPL, NT, VM, or reserved bits from a user-provided context.
-    rflags &= 0x0000_0000_0025_4fd7;
+    rflags &= 0x0000_0000_003f_7fd7;
+    rflags &= !((3u64 << 12) | (1u64 << 14) | (1u64 << 17));
     rflags |= 0x202; // reserved bit 1 and interrupt enable
     let f = core::slice::from_raw_parts_mut(frame, 20);
     f[0] = context_u64(bytes, 0xf0); // R15
@@ -1246,6 +1247,11 @@ unsafe fn restore_context_to_syscall_frame(frame: *mut u64, bytes: &[u8]) -> u64
     // Restore the Windows FXSAVE area only after every fallible user-memory
     // operation has completed. The syscall return stub performs no SIMD work.
     if flags & 0x0010_0008 == 0x0010_0008 {
+        // Reject reserved MXCSR bits before FXRSTOR so malformed CONTEXT data
+        // cannot turn a user syscall into a supervisor #GP fault.
+        if context_u32(bytes, 0x118) & !0x0000_ffbf != 0 {
+            return NT_STATUS_INVALID_PARAMETER;
+        }
         let fp_state = unsafe { bytes.as_ptr().add(0x100) };
         unsafe { core::arch::asm!("fxrstor64 [{}]", in(reg) fp_state, options(nostack)); }
     }
