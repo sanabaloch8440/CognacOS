@@ -200,23 +200,27 @@ The implementation remains partial. It now publishes the Windows-layout XState f
 - [ ] Replace remaining zero-argument miscellaneous placeholders only alongside verified Windows 11 x64 signatures and their underlying kernel/service prerequisites.
 - [ ] Add host tests for provider lifecycle, ring wrap/drop behavior, invalid descriptor arrays, and exact payload copying.
 
-The current ETW implementation is a CognacOS process-local diagnostic buffer, not a Windows ETW controller or cross-process tracing implementation. It has a 64-provider table, 64-event ring, and 256-byte per-event payload cap. The internal dequeue hook is a bridge point; until a controller/consumer transport is wired, this is not equivalent to full Windows ETW session delivery. API-set schema helpers currently parse the process PEB's v6 API-set namespace and should be validated against pinned Windows 11 runtime fixtures.
+The ETW path now includes a kernel-owned event ring and session-aware consumer transport; the NTDLL-local ring remains a host/test fallback. Event payloads are bounded to 256 bytes. These are CognacOS-native primitives, not a claim of complete Windows ETW compatibility. API-set schema helpers currently parse the process PEB's v6 API-set namespace and should be validated against pinned Windows 11 runtime fixtures.
 
 ## ETW provider runtime
 
 - [x] Add kernel-owned provider records, a bounded kernel event ring, owner-checked registration and checked user-buffer copies.
 - [x] Add owner-checked provider unregister and remove its queued kernel events; session teardown disables providers associated with that session.
-- [x] Add privileged session create/enable/stop syscalls. Session creation requires an unrestricted administrator token with SystemProfile privilege; session handles are owner-scoped and provider ownership prevents competing sessions from silently replacing one another.
+- [x] Add privileged session create/enable/stop syscalls. Session creation requires an unrestricted administrator token with SystemProfile privilege; session handles are owner-scoped.
+- [x] Add bounded UTF-16 named-session creation (63 code units maximum) with duplicate-name rejection; session names are kernel-owned and never retain caller pointers.
+- [x] Allow each provider to hold independent enable/filter state for every active session; events carry a session bitmask so each consumer sees only events matching its own session filters.
 - [x] Add session-aware consumer reads with provider-owner isolation, plus bounded record/payload copies.
 - [x] Carry activity ID and related activity ID through the kernel ring and consumer record; implement NTDLL EtwEventWriteTransfer in addition to EtwEventWrite.
 - [x] Deliver enable callbacks from NTDLL user mode after it observes changed kernel state; kernel code never invokes user-mode callbacks.
 - [x] Connect kernel provider/session rundown to the process registry's mark_exited transition before address-space reclamation.
 - [x] Replace the RtlExitUserProcess not-implemented return with the CognacOS SYS_EXIT gate, and add LdrShutdownProcess to run bounded DLL_PROCESS_DETACH callbacks in reverse load order after validating PE image bounds.
 - [ ] Validate ETW session creation against real configured tokens, session isolation/stop races, ring overrun, invalid user buffers, activity metadata and concurrent process rundown; run the x64 build and QEMU smoke workflow.
-- [ ] Harden loader shutdown for exceptions/reentrancy and verify detach order against dependency/initialization order; current reverse load-order traversal is a bounded approximation, not a complete Windows loader implementation.
-- [ ] Implement ETW session naming, multi-session provider fan-out and full Windows TraceLogging/ETW controller semantics.
+- [x] Replace the guessed reverse-list detach order with a bounded dependency order derived from resolved PE import-address tables; cycles or malformed graphs use a deterministic bounded fallback.
+- [ ] Add Windows-compatible SEH containment for DLL_PROCESS_DETACH. CognacOS does not yet have a user-mode exception dispatcher that can safely recover from a fault in arbitrary DllMain code, so image-bound validation is not exception isolation.
+- [ ] Expose named sessions through the Windows-compatible StartTraceW/ControlTraceW controller surface and complete EnableTraceEx2/QueryAllTracesW behavior; the kernel named-session syscall and NTDLL bridge are only the internal foundation.
+- [ ] Validate multi-session fan-out, independent filters, duplicate names, session stop/rundown races, ring overrun, invalid buffers, import-graph ordering and detach concurrency in host tests and QEMU.
 
-The current backend is an incremental CognacOS implementation, not full Windows ETW compatibility. Kernel session control and metadata transport are implemented, but the changes still require compilation and runtime validation. The loader shutdown path validates mapped image bounds before calling entry points, but does not yet provide Windows-compatible exception handling during detach.
+The current backend is an incremental CognacOS implementation, not full Windows ETW compatibility. Kernel session control now supports per-session subscriptions, independent filters, named sessions and session-scoped event delivery, but the changes still require compilation and runtime validation. The loader computes detach order from resolved IAT dependencies where available; it still lacks Windows-compatible exception containment and full loader-lock/initialization-order semantics.
 
 ## Tracking rules
 
