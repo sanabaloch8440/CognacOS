@@ -10,7 +10,8 @@ const STATUS_PORT_DISCONNECTED:i32=0xC0000037u32 as i32;
 const STATUS_NOT_IMPLEMENTED:i32=0xC0000002u32 as i32;
 const HEAP_ZERO_MEMORY:u32=8;
 type PVOID=*mut c_void;
-extern "system" { fn RtlGetProcessHeap()->PVOID; fn RtlAllocateHeap(heap:PVOID,flags:u32,size:usize)->PVOID; fn RtlFreeHeap(heap:PVOID,flags:u32,mem:PVOID)->u8; }
+use crate::rtl_heap::RtlGetProcessHeap;
+extern "system" { fn RtlAllocateHeap(heap:PVOID,flags:u32,size:usize)->PVOID; fn RtlFreeHeap(heap:PVOID,flags:u32,mem:PVOID)->u8; }
 #[repr(C)] struct CaptureBuffer { size:u32, pointer_count:u32, buffer_end:*mut u8, pointer_offsets:[usize;1] }
 #[repr(C)] struct UnicodeString { length:u16, maximum_length:u16, buffer:*mut u16 }
 #[repr(C)] struct AnsiString { length:u16, maximum_length:u16, buffer:*mut i8 }
