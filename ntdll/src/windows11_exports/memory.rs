@@ -788,7 +788,6 @@ pub unsafe extern "system" fn RtlInitMemoryStream(stream: *mut RTL_MEMORY_STREAM
 /// Initialize an IStream-compatible object backed by a kernel section object.
 /// The stream storage remains caller-owned; the section reference is released
 /// when its final COM-style reference is dropped.
-#[no_mangle]
 pub unsafe extern "system" fn RtlInitSectionMemoryStream(stream: *mut RTL_MEMORY_STREAM, size: SIZE_T) -> NTSTATUS {
     if stream.is_null() || size == 0 { return STATUS_INVALID_PARAMETER; }
     let mut handle: PVOID = ptr::null_mut();
@@ -803,7 +802,6 @@ pub unsafe extern "system" fn RtlInitSectionMemoryStream(stream: *mut RTL_MEMORY
     }
     STATUS_SUCCESS
 }
-#[no_mangle]
 pub unsafe extern "system" fn RtlFinalReleaseSectionMemoryStream(stream: *mut RTL_MEMORY_STREAM) {
     if stream.is_null() { return; }
     let handle = unsafe { (*stream).process_handle };
