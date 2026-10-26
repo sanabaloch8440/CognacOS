@@ -201,9 +201,11 @@ pub unsafe fn mount_writable_hive_bytes(
         flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, bytes, journal)?;
     }
     let parsed = hive_backend::Hive::open(bytes).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let info = parsed.info;
+    drop(parsed);
     let _guard = LOCK.lock();
     unsafe { MOUNTED_HIVES[slot] = MountedHive {
-        bytes: bytes.as_mut_ptr(), len: bytes.len(), info: parsed.info,
+        bytes: bytes.as_mut_ptr(), len: bytes.len(), info,
         journal: journal.as_mut_ptr(), journal_len: journal.len(), flush: Some(flush),
     }; }
     Ok(())
