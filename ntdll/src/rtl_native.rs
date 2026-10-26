@@ -200,7 +200,7 @@ pub unsafe extern "system" fn RtlSetLastWin32ErrorAndNtStatusFromNtStatus(status
 
 /// Initialize process-scoped native NTDLL state when the loader attaches
 /// the module. This is the DLL entry point used by the freestanding PE image.
-pub unsafe extern "system" fn DllMain(
+unsafe extern "system" fn cognac_ntdll_dll_main(
     _instance: HINSTANCE,
     reason: DWORD,
     _reserved: LPVOID,
@@ -221,5 +221,5 @@ pub unsafe extern "system" fn DllMain(
 /// data relocation to DllMain so the linker can retain a relocation directory
 /// when the image is mapped away from its preferred base.
 #[used]
-pub static mut CognacNtdllImageAnchor:
-    Option<unsafe extern "system" fn(HINSTANCE, DWORD, LPVOID) -> BOOL> = Some(DllMain);
+static mut CognacNtdllImageAnchor:
+    Option<unsafe extern "system" fn(HINSTANCE, DWORD, LPVOID) -> BOOL> = Some(cognac_ntdll_dll_main);
