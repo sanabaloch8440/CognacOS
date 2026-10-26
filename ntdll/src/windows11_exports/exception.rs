@@ -877,6 +877,28 @@ mod tests {
     }
 
     #[test]
+    fn capture_context_contains_restorable_user_segments() {
+        let mut context: CONTEXT = unsafe { core::mem::zeroed() };
+        unsafe { RtlCaptureContext(&mut context); }
+        assert_ne!(context.ContextFlags & CONTEXT_CONTROL, 0);
+        assert_ne!(context.ContextFlags & CONTEXT_FLOATING_POINT, 0);
+        assert_eq!(context.SegCs & 3, 3);
+        assert_eq!(context.SegSs & 3, 3);
+        assert_ne!(context.Rip, 0);
+        assert_ne!(context.Rsp, 0);
+    }
+
+    unsafe extern "system" fn continue_search_handler(_pointers: *mut EXCEPTION_POINTERS) -> i32 { 0 }
+
+    #[test]
+    fn vectored_exception_handler_registration_is_removable() {
+        let cookie = unsafe { RtlAddVectoredExceptionHandler(1, Some(continue_search_handler)) };
+        assert!(!cookie.is_null());
+        assert_eq!(unsafe { RtlRemoveVectoredExceptionHandler(cookie) }, 1);
+        assert_eq!(unsafe { RtlRemoveVectoredExceptionHandler(cookie) }, 0);
+    }
+
+    #[test]
     fn dynamic_function_table_register_lookup_delete_round_trip() {
         let table = [RUNTIME_FUNCTION { BeginAddress: 0x1000, EndAddress: 0x1100, UnwindData: 0x2000 }];
         let base = 0x0000_0000_0001_0000u64;
