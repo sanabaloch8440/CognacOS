@@ -85,7 +85,20 @@ impl<'a> HiveWriter<'a>{
      return u32::try_from(p-BASE).map_err(|_|Error::InvalidCell)
     }p+=n;
    }if p!=be{return Err(Error::InvalidBin)}bin=be;
-  }Err(Error::NoSpace)
+  }
+  // If the caller supplied spare backing capacity, grow the hive by one HBIN.
+  // No allocation occurs outside the caller-owned writable hive buffer.
+  let old_bins=r32(self.bytes,0x28)? as usize;
+  let new_end=BASE.checked_add(old_bins).and_then(|v|v.checked_add(0x1000)).ok_or(Error::InvalidBin)?;
+  if new_end>self.bytes.len(){return Err(Error::NoSpace)}
+  let bin=BASE+old_bins;
+  self.bytes[bin..new_end].fill(0);
+  self.bytes[bin..bin+4].copy_from_slice(b"hbin");
+  w32(self.bytes,bin+4,old_bins as u32);
+  w32(self.bytes,bin+8,0x1000);
+  w32(self.bytes,bin+0x20,0x0fe0);
+  w32(self.bytes,0x28,(old_bins+0x1000) as u32);
+  self.allocate_cell(payload_len)
  }
  fn encode_name(name:&[u16])->Result<([u8;1024],usize,bool),Error>{
   if name.len()>512{return Err(Error::InvalidKey)}let compressed=name.iter().all(|c|*c<=255);let mut b=[0;1024];
