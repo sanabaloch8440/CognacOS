@@ -121,15 +121,15 @@ unsafe extern "system" {
     pub fn NtAlpcCreateSecurityContext(PortHandle: HANDLE, Flags: ULONG, SecurityAttribute: *mut ALPC_SECURITY_ATTR) -> NTSTATUS;
     pub fn NtAlpcDeleteSecurityContext(PortHandle: HANDLE, Flags: ULONG, ContextHandle: ALPC_HANDLE) -> NTSTATUS;
     pub fn NtAlpcRevokeSecurityContext(PortHandle: HANDLE, Flags: ULONG, ContextHandle: ULONG) -> NTSTATUS;
-    pub fn NtAlpcCreateResourceReserve(PortHandle: HANDLE, Flags: ULONG, MessageSize: SIZE_T, ResourceId: PALPC_HANDLE) -> NTSTATUS;
-    pub fn NtAlpcDeleteResourceReserve(PortHandle: HANDLE, Flags: ULONG, ResourceId: ALPC_HANDLE) -> NTSTATUS;
+    pub fn NtAlpcCreateResourceReserve(PortHandle: HANDLE, Flags: ULONG, MessageSize: SIZE_T, ResourceId: PULONG) -> NTSTATUS;
+    pub fn NtAlpcDeleteResourceReserve(PortHandle: HANDLE, Flags: ULONG, ResourceId: ULONG) -> NTSTATUS;
     pub fn NtAlpcQueryInformation(PortHandle: HANDLE, PortInformationClass: ULONG, PortInformation: PVOID, Length: ULONG, ReturnLength: PULONG) -> NTSTATUS;
     pub fn NtAlpcSetInformation(PortHandle: HANDLE, PortInformationClass: ULONG, PortInformation: PVOID, Length: ULONG) -> NTSTATUS;
     pub fn NtAlpcQueryInformationMessage(PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, MessageInformationClass: ULONG, MessageInformation: PVOID, Length: ULONG, ReturnLength: PULONG) -> NTSTATUS;
     pub fn NtAlpcCancelMessage(PortHandle: HANDLE, Flags: ULONG, MessageContext: PVOID) -> NTSTATUS;
     pub fn NtAlpcOpenSenderProcess(ProcessHandle: PHANDLE, PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, Flags: ULONG, DesiredAccess: ACCESS_MASK, ObjectAttributes: *const OBJECT_ATTRIBUTES) -> NTSTATUS;
     pub fn NtAlpcOpenSenderThread(ThreadHandle: PHANDLE, PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, Flags: ULONG, DesiredAccess: ACCESS_MASK, ObjectAttributes: *const OBJECT_ATTRIBUTES) -> NTSTATUS;
-    pub fn NtAlpcImpersonateClientOfPort(PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, Flags: ULONG) -> NTSTATUS;
+    pub fn NtAlpcImpersonateClientOfPort(PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, Flags: PVOID) -> NTSTATUS;
     pub fn NtAlpcImpersonateClientContainerOfPort(PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, Flags: ULONG) -> NTSTATUS;
 }
 
