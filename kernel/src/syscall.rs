@@ -199,6 +199,7 @@ pub const NT_SYSCALL_DELETE_FUNCTION_TABLE:u64=0x13f;
 pub const NT_SYSCALL_LOOKUP_FUNCTION_ENTRY:u64=0x140;
 pub const NT_SYSCALL_NT_CONTINUE:u64=0x141;
 pub const NT_SYSCALL_NT_RAISE_EXCEPTION:u64=0x142;
+pub const NT_SYSCALL_REGISTER_EXCEPTION_DISPATCHER:u64=0x143;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -1303,6 +1304,50 @@ unsafe fn route_user_exception(frame: *mut u64, args: &[u64; NT_MAX_ARGUMENTS]) 
     NT_STATUS_SUCCESS
 }
 
+
+const EXCEPTION_DISPATCHER_CAPACITY: usize = 128;
+#[derive(Clone, Copy)]
+struct ExceptionDispatcherSlot { owner: u64, address: u64 }
+impl ExceptionDispatcherSlot { const EMPTY: Self = Self { owner: 0, address: 0 }; }
+static EXCEPTION_DISPATCHER_LOCK: AtomicBool = AtomicBool::new(false);
+static mut EXCEPTION_DISPATCHERS: [ExceptionDispatcherSlot; EXCEPTION_DISPATCHER_CAPACITY] =
+    [ExceptionDispatcherSlot::EMPTY; EXCEPTION_DISPATCHER_CAPACITY];
+struct ExceptionDispatcherGuard;
+impl ExceptionDispatcherGuard {
+    fn acquire() -> Self {
+        while EXCEPTION_DISPATCHER_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            core::hint::spin_loop();
+        }
+        Self
+    }
+}
+impl Drop for ExceptionDispatcherGuard {
+    fn drop(&mut self) { EXCEPTION_DISPATCHER_LOCK.store(false, Ordering::Release); }
+}
+fn register_exception_dispatcher(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    let owner = current_process_id();
+    let address = args[0];
+    if owner == 0 || !valid_user_code_pointer(address) { return NT_STATUS_INVALID_PARAMETER; }
+    let _guard = ExceptionDispatcherGuard::acquire();
+    let slots = unsafe { &mut *core::ptr::addr_of_mut!(EXCEPTION_DISPATCHERS) };
+    if let Some(slot) = slots.iter_mut().find(|slot| slot.owner == owner) {
+        slot.address = address;
+        return NT_STATUS_SUCCESS;
+    }
+    let Some(slot) = slots.iter_mut().find(|slot| slot.owner == 0) else { return 0xC000_009A; };
+    *slot = ExceptionDispatcherSlot { owner, address };
+    NT_STATUS_SUCCESS
+}
+pub fn exception_dispatcher_for(owner: u64) -> u64 {
+    let _guard = ExceptionDispatcherGuard::acquire();
+    let slots = unsafe { &*core::ptr::addr_of!(EXCEPTION_DISPATCHERS) };
+    slots.iter().find(|slot| slot.owner == owner).map(|slot| slot.address).unwrap_or(0)
+}
+pub fn exception_dispatcher_rundown(owner: u64) {
+    let _guard = ExceptionDispatcherGuard::acquire();
+    let slots = unsafe { &mut *core::ptr::addr_of_mut!(EXCEPTION_DISPATCHERS) };
+    for slot in slots.iter_mut() { if slot.owner == owner { *slot = ExceptionDispatcherSlot::EMPTY; } }
+}
 fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     match number {
         NT_SYSCALL_CLOSE => {
@@ -1357,6 +1402,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_REGISTER_FUNCTION_TABLE => crate::ntoskrnl::runtime_functions::register(args),
         NT_SYSCALL_DELETE_FUNCTION_TABLE => crate::ntoskrnl::runtime_functions::delete(args),
         NT_SYSCALL_LOOKUP_FUNCTION_ENTRY => crate::ntoskrnl::runtime_functions::lookup(args),
+        NT_SYSCALL_REGISTER_EXCEPTION_DISPATCHER => register_exception_dispatcher(args),
         NT_SYSCALL_REFERENCE_SECTION => crate::ntoskrnl::mm::native_vm::reference_section(args),
         NT_SYSCALL_ALPC_CREATE_PORT..=NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT | NT_SYSCALL_ALPC_CONNECT_PORT_EX => crate::ntoskrnl::alpc_native::dispatch(number,args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
@@ -1502,6 +1548,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_LOOKUP_FUNCTION_ENTRY => 2,
             NT_SYSCALL_NT_CONTINUE => 2,
             NT_SYSCALL_NT_RAISE_EXCEPTION => 4,
+            NT_SYSCALL_REGISTER_EXCEPTION_DISPATCHER => 1,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
