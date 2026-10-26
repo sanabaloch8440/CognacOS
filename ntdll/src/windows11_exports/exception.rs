@@ -401,32 +401,91 @@ pub unsafe extern "system" fn RtlRaiseStatus(status: i32) {
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlReportException(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT, _flags: u32) -> i32 {
-    if record.is_null() || context.is_null() { STATUS_INVALID_PARAMETER } else { STATUS_NOT_IMPLEMENTED }
+    if record.is_null() || context.is_null() { return STATUS_INVALID_PARAMETER; }
+    NtRaiseException(record, context, 1)
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlReportExceptionEx(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT, _flags: u32, _nested: u8) -> i32 {
-    if record.is_null() || context.is_null() { STATUS_INVALID_PARAMETER } else { STATUS_NOT_IMPLEMENTED }
+pub unsafe extern "system" fn RtlReportExceptionEx(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT, flags: u32, _nested: u8) -> i32 {
+    RtlReportException(record, context, flags)
 }
 #[no_mangle]
-pub unsafe extern "system" fn RtlRestoreContext(_context: *const CONTEXT, _record: *const EXCEPTION_RECORD) {
-    // A real restore must use a dedicated assembly context-restoration trampoline.
+pub unsafe extern "system" fn RtlRestoreContext(context: *const CONTEXT, record: *const EXCEPTION_RECORD) {
+    if context.is_null() { return; }
+    if !record.is_null() {
+        // The caller requested exception-aware restoration: dispatch against the
+        // supplied context first; if no handler accepts it, restore the context
+        // exactly as requested instead of silently discarding it.
+        let mut local_record = ptr::read_unaligned(record);
+        let mut local_context = ptr::read_unaligned(context);
+        if RtlDispatchException(&mut local_record, &mut local_context) != 0 {
+            let _ = NtContinue(&local_context, 0);
+            return;
+        }
+    }
+    let _ = NtContinue(context, 0);
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlUnhandledExceptionFilter(_record: *mut EXCEPTION_RECORD) -> i32 { 0 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlUnhandledExceptionFilter2(_record: *mut EXCEPTION_RECORD, _context: *mut CONTEXT) -> i32 { 0 }
 
+unsafe fn unwind_to_target(
+    target_frame: *mut c_void, target_ip: *mut c_void,
+    record: *mut EXCEPTION_RECORD, return_value: *mut c_void,
+    supplied_context: *mut CONTEXT
+) {
+    if target_frame.is_null() || target_ip.is_null() { return; }
+    let mut context_storage: CONTEXT = core::mem::zeroed();
+    let context = if supplied_context.is_null() {
+        RtlCaptureContext(&mut context_storage);
+        &mut context_storage
+    } else {
+        supplied_context
+    };
+    let mut local_record: EXCEPTION_RECORD = core::mem::zeroed();
+    let rec = if record.is_null() { &mut local_record } else { record };
+    (*rec).ExceptionFlags |= 0x2; // EXCEPTION_UNWINDING
+    let target = target_frame as u64;
+    let mut previous_rsp = 0u64;
+    for _ in 0..128 {
+        if (*context).Rsp >= target {
+            (*context).Rip = target_ip as u64;
+            (*context).Rsp = target;
+            (*context).Rax = return_value as u64;
+            let _ = NtContinue(context, 0);
+            return;
+        }
+        let control_pc = (*context).Rip;
+        let mut image_base = 0u64;
+        let entry = RtlLookupFunctionEntry(control_pc, &mut image_base, ptr::null_mut());
+        let mut handler_data = ptr::null_mut();
+        let mut establisher = 0u64;
+        if let Some(handler) = RtlVirtualUnwind(
+            2, image_base, control_pc, entry, context, &mut handler_data,
+            &mut establisher, ptr::null_mut()
+        ) {
+            let disposition = handler(rec, establisher as *mut c_void, context, handler_data);
+            if disposition != 1 { return; }
+        }
+        if (*context).Rsp <= previous_rsp || (*context).Rsp & 7 != 0 { return; }
+        previous_rsp = (*context).Rsp;
+    }
+}
 #[no_mangle]
 pub unsafe extern "system" fn RtlUnwind(
-    _target_frame: *mut c_void, _target_ip: *mut c_void,
-    _record: *mut EXCEPTION_RECORD, _return_value: *mut c_void
-) { }
+    target_frame: *mut c_void, target_ip: *mut c_void,
+    record: *mut EXCEPTION_RECORD, return_value: *mut c_void
+) {
+    unwind_to_target(target_frame, target_ip, record, return_value, ptr::null_mut())
+}
 #[no_mangle]
 pub unsafe extern "system" fn RtlUnwindEx(
-    _target_frame: *mut c_void, _target_ip: *mut c_void,
-    _record: *mut EXCEPTION_RECORD, _return_value: *mut c_void,
-    _context: *mut CONTEXT, _history_table: *mut c_void
-) { }
+    target_frame: *mut c_void, target_ip: *mut c_void,
+    record: *mut EXCEPTION_RECORD, return_value: *mut c_void,
+    context: *mut CONTEXT, _history_table: *mut c_void
+) {
+    unwind_to_target(target_frame, target_ip, record, return_value, context)
+}
 
 unsafe fn unwind_leaf(context: *mut CONTEXT, establisher: *mut u64) -> i32 {
     if context.is_null() { return STATUS_INVALID_PARAMETER; }
