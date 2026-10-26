@@ -67,6 +67,19 @@ extern "system" {
     fn cognacos_register_exception_dispatcher(dispatcher: usize) -> u64;
 }
 
+/// Register the native first-chance exception entry with the kernel for this process.
+/// Registration is process-scoped and is idempotently refreshed by loader entry points.
+#[no_mangle]
+pub unsafe extern "system" fn RtlRegisterExceptionDispatcher() -> i32 {
+    #[cfg(target_os = "none")]
+    {
+        let status = unsafe { cognacos_register_exception_dispatcher(KiUserExceptionDispatcher as usize) };
+        return status as u32 as i32;
+    }
+    #[cfg(not(target_os = "none"))]
+    { STATUS_NOT_IMPLEMENTED }
+}
+
 const STATUS_NOT_IMPLEMENTED: i32 = 0xC0000002u32 as i32;
 const STATUS_INVALID_PARAMETER: i32 = 0xC000000Du32 as i32;
 const STATUS_BAD_STACK: i32 = 0xC0000028u32 as i32;
@@ -387,7 +400,6 @@ pub unsafe extern "system" fn RtlKnownExceptionFilter(_record: *mut EXCEPTION_RE
 
 // NTDLL-local function-table registry. Each loaded process has its own NTDLL
 // instance; the registry stores caller-owned .pdata tables until image unload.
-use core::sync::atomic::{AtomicBool, Ordering};
 const MAX_FUNCTION_TABLES: usize = 64;
 #[derive(Clone, Copy)]
 struct FunctionTable { table: *const RUNTIME_FUNCTION, count: u32, base: u64, used: bool }
