@@ -10,7 +10,7 @@
 - [x] Represent ALPC port, endpoint, and ALPC-section handles as typed Object Manager objects with granted-access validation and DACL evaluation. The current default DACL is permissive (Everyone allow) and caller-supplied descriptors are rejected; this is not the Windows security policy.
 - [x] Add a bounded ALPC advanced-resource metadata core for section-view registration, owner-scoped security contexts/revocation, and FIFO completion queues; run unit tests in CI. Section views require a VM mapping to have already been established and do not map memory themselves.
 - [x] Back `NtAlpcCreatePortSection` with the in-tree MM section object and implement same-address-space section-view map/unmap through the section manager.
-- [ ] Support caller-supplied/real NT Section handles, cross-process section views, section/port rundown across process exit, and token/QoS capture for security contexts.
+- [ ] Support caller-supplied/real NT Section handles, cross-process section views, section/port rundown across process exit, and real access-token capture/impersonation. The current `NtAlpcCreateSecurityContext` stores the requested QoS impersonation level in an owner-scoped typed metadata handle only.
 - [ ] Wire ALPC message attributes, token impersonation, and scheduler-backed blocking wait/wakeup; current send/receive is bounded and nonblocking.
 - [ ] Implement ALPC resource reserves and the Windows shared-memory completion-list ABI, atomics, worker-thread registration, rundown, and concurrency accounting. The current FIFO metadata queue is not ABI-equivalent.
 - [ ] Build `csrss.exe` and `csrsrv.dll` as native PE32+ user images, implement the real server-DLL initialization handshake, and launch them through a session-manager path.
