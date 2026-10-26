@@ -66,7 +66,7 @@ fn write_user<T:Copy>(address:u64,value:&T)->Result<(),u64>{
 }
 fn port_from_handle(handle:u64,required:u32)->Result<(&'static PortObject,*mut c_void),u64>{
     let owner=crate::ntoskrnl::ob::runtime::current_owner();
-    let body=crate::ntoskrnl::ob::runtime::reference_by_handle(handle as *mut c_void,required,ALPC_PORT_TYPE.load(Ordering::Acquire) as u16,owner,false).map_err(|e|e as u32 as u64)?;
+    let body=crate::ntoskrnl::ob::runtime::reference_by_handle(handle as *mut c_void,required,ALPC_PORT_TYPE.load(Ordering::Acquire) as u16,owner,true).map_err(|e|e as u32 as u64)?;
     let ptr=body as *const PortObject;
     let found=PORT_OBJECTS.iter().any(|p|core::ptr::eq(p as *const PortObject,ptr));
     if !found { let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return Err(STATUS_OBJECT_TYPE_MISMATCH); }
