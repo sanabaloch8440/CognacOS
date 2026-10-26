@@ -53,7 +53,7 @@ global_asm!(r#"
 cognacos_nt_allocate_virtual_memory:
     mov r10, rcx
     mov eax, 0x109
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -61,7 +61,7 @@ cognacos_nt_allocate_virtual_memory:
 cognacos_nt_free_virtual_memory:
     mov r10, rcx
     mov eax, 0x10a
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -69,7 +69,7 @@ cognacos_nt_free_virtual_memory:
 cognacos_nt_protect_virtual_memory:
     mov r10, rcx
     mov eax, 0x10b
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -77,7 +77,7 @@ cognacos_nt_protect_virtual_memory:
 cognacos_nt_query_virtual_memory:
     mov r10, rcx
     mov eax, 0x10c
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -85,7 +85,7 @@ cognacos_nt_query_virtual_memory:
 cognacos_nt_read_virtual_memory:
     mov r10, rcx
     mov eax, 0x10d
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -93,7 +93,7 @@ cognacos_nt_read_virtual_memory:
 cognacos_nt_write_virtual_memory:
     mov r10, rcx
     mov eax, 0x10e
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -101,7 +101,7 @@ cognacos_nt_write_virtual_memory:
 cognacos_nt_lock_virtual_memory:
     mov r10, rcx
     mov eax, 0x10f
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -109,7 +109,7 @@ cognacos_nt_lock_virtual_memory:
 cognacos_nt_unlock_virtual_memory:
     mov r10, rcx
     mov eax, 0x110
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -117,7 +117,7 @@ cognacos_nt_unlock_virtual_memory:
 cognacos_rtl_get_nonvolatile_token:
     mov r10, rcx
     mov eax, 0x111
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -125,7 +125,7 @@ cognacos_rtl_get_nonvolatile_token:
 cognacos_rtl_free_nonvolatile_token:
     mov r10, rcx
     mov eax, 0x112
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -133,7 +133,7 @@ cognacos_rtl_free_nonvolatile_token:
 cognacos_rtl_flush_nonvolatile_memory:
     mov r10, rcx
     mov eax, 0x113
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -141,7 +141,7 @@ cognacos_rtl_flush_nonvolatile_memory:
 cognacos_rtl_write_nonvolatile_memory:
     mov r10, rcx
     mov eax, 0x114
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -149,7 +149,7 @@ cognacos_rtl_write_nonvolatile_memory:
 cognacos_rtl_fill_nonvolatile_memory:
     mov r10, rcx
     mov eax, 0x115
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -157,7 +157,7 @@ cognacos_rtl_fill_nonvolatile_memory:
 cognacos_rtl_check_token_membership:
     mov r10, rcx
     mov eax, 0x116
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -165,7 +165,7 @@ cognacos_rtl_check_token_membership:
 cognacos_rtl_create_section:
     mov r10, rcx
     mov eax, 0x117
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -173,7 +173,7 @@ cognacos_rtl_create_section:
 cognacos_rtl_dereference_section:
     mov r10, rcx
     mov eax, 0x118
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -181,7 +181,7 @@ cognacos_rtl_dereference_section:
 cognacos_rtl_section_copy:
     mov r10, rcx
     mov eax, 0x119
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -189,7 +189,7 @@ cognacos_rtl_section_copy:
 cognacos_rtl_reference_section:
     mov r10, rcx
     mov eax, 0x11a
-    int 0x83
+    int 0x81
     ret
 
     .p2align 4
@@ -197,7 +197,7 @@ cognacos_rtl_reference_section:
 cognacos_nt_create_section:
     mov r10, rcx
     mov eax, 0x132
-    int 0x83
+    int 0x81
     ret
 "#);
 

@@ -18,42 +18,42 @@ core::arch::global_asm!(r#"
 cognacos_register_function_table:
     mov r10, rcx
     mov eax, 0x13e
-    int 0x83
+    int 0x81
     ret
     .p2align 4
     .global cognacos_delete_function_table
 cognacos_delete_function_table:
     mov r10, rcx
     mov eax, 0x13f
-    int 0x83
+    int 0x81
     ret
     .p2align 4
     .global cognacos_lookup_function_entry
 cognacos_lookup_function_entry:
     mov r10, rcx
     mov eax, 0x140
-    int 0x83
+    int 0x81
     ret
     .p2align 4
     .global cognacos_nt_continue
 cognacos_nt_continue:
     mov r10, rcx
     mov eax, 0x141
-    int 0x83
+    int 0x81
     ret
     .p2align 4
     .global cognacos_nt_raise_exception
 cognacos_nt_raise_exception:
     mov r10, rcx
     mov eax, 0x142
-    int 0x83
+    int 0x81
     ret
     .p2align 4
     .global cognacos_register_exception_dispatcher
 cognacos_register_exception_dispatcher:
     mov r10, rcx
     mov eax, 0x143
-    int 0x83
+    int 0x81
     ret
 "#);
 
