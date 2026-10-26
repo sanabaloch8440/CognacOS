@@ -1379,8 +1379,27 @@ pub fn exception_dispatcher_rundown(owner: u64) {
     let slots = unsafe { &mut *core::ptr::addr_of_mut!(EXCEPTION_DISPATCHERS) };
     for slot in slots.iter_mut() { if slot.owner == owner { *slot = ExceptionDispatcherSlot::EMPTY; } }
 }
+static NTDLL_DEBUG_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
+
 fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     match number {
+        NT_SYSCALL_DEBUG_EVENT => {
+            let sequence = NTDLL_DEBUG_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
+            if sequence < 256 {
+                crate::serial_write(b"[DBG][NTDLL][EVENT] seq=");
+                crate::serial_write_hex(sequence);
+                crate::serial_write(b" event=");
+                crate::serial_write_hex(args[0]);
+                crate::serial_write(b" arg0=");
+                crate::serial_write_hex(args[1]);
+                crate::serial_write(b" arg1=");
+                crate::serial_write_hex(args[2]);
+                crate::serial_write(b" pid=");
+                crate::serial_write_hex(current_process_id());
+                crate::serial_write(b"\\r\\n");
+            }
+            NT_STATUS_SUCCESS
+        }
         NT_SYSCALL_CLOSE => {
             if crate::file_services::close_for_process(current_process_id(), args[0] as usize).is_ok() { return NT_STATUS_SUCCESS; }
             let status = unsafe { crate::ntoskrnl::ob::runtime::ObCloseHandle(args[0] as *mut core::ffi::c_void, 1) };
@@ -1589,6 +1608,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_NT_CONTINUE => 2,
             NT_SYSCALL_NT_RAISE_EXCEPTION => 4,
             NT_SYSCALL_REGISTER_EXCEPTION_DISPATCHER => 1,
+            NT_SYSCALL_DEBUG_EVENT => 3,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
