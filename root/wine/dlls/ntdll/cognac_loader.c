@@ -50,7 +50,6 @@ static PVOID loader_current_peb(void)
 /* Find a DLL that is already present in the PEB load-order list. This does
  * not load images or resolve search paths; LdrLoadDll requires kernel file and
  * address-space services that are not yet exposed to native user mode. */
-__declspec(dllexport)
 NTSTATUS NTAPI LdrGetDllHandle(PVOID dll_path, PULONG dll_characteristics,
                                PCCOGNAC_UNICODE_STRING dll_name, PVOID *dll_handle)
 {
@@ -98,7 +97,6 @@ NTSTATUS NTAPI LdrGetDllHandle(PVOID dll_path, PULONG dll_characteristics,
     return STATUS_DLL_NOT_FOUND;
 }
 
-__declspec(dllexport)
 NTSTATUS NTAPI LdrGetProcedureAddress(PVOID dll_handle,
                                       PCCOGNAC_ANSI_STRING procedure_name,
                                       ULONG procedure_number,
