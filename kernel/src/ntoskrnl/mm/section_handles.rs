@@ -24,13 +24,14 @@ struct SectionObject {
     section_id:AtomicU64,
     owner_root:AtomicU64,
     size:AtomicU64,
+    owner_pid:AtomicU64,
     references:AtomicU32,
     protection:AtomicU32,
     active:AtomicBool,
     allocated:AtomicBool,
 }
 impl SectionObject {
-    const fn new()->Self { Self{section_id:AtomicU64::new(0),owner_root:AtomicU64::new(0),size:AtomicU64::new(0),references:AtomicU32::new(0),protection:AtomicU32::new(4),active:AtomicBool::new(false),allocated:AtomicBool::new(false)} }
+    const fn new()->Self { Self{section_id:AtomicU64::new(0),owner_root:AtomicU64::new(0),size:AtomicU64::new(0),owner_pid:AtomicU64::new(0),references:AtomicU32::new(0),protection:AtomicU32::new(4),active:AtomicBool::new(false),allocated:AtomicBool::new(false)} }
 }
 static OBJECTS:[SectionObject;MAX_SECTION_HANDLES]=[const{SectionObject::new()};MAX_SECTION_HANDLES];
 
@@ -87,7 +88,7 @@ fn create_with_protection_and_access(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS
         let _=crate::ntoskrnl::mm::section::dereference(id,root);return STATUS_INSUFFICIENT_RESOURCES
     }
     let rounded=match args[0].checked_add(4095){Some(v)=>v&!4095,None=>{s.allocated.store(false,Ordering::Release);let _=crate::ntoskrnl::mm::section::dereference(id,root);return STATUS_INVALID_PARAMETER}};
-    s.section_id.store(id,Ordering::Release);s.owner_root.store(root,Ordering::Release);s.size.store(rounded,Ordering::Release);s.references.store(1,Ordering::Release);s.protection.store(protection,Ordering::Release);s.active.store(true,Ordering::Release);
+    s.section_id.store(id,Ordering::Release);s.owner_root.store(root,Ordering::Release);s.size.store(rounded,Ordering::Release);s.owner_pid.store(crate::syscall::current_process_id(),Ordering::Release);s.references.store(1,Ordering::Release);s.protection.store(protection,Ordering::Release);s.active.store(true,Ordering::Release);
     let name=[0u16;0];let type_name=[b'S' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'i' as u16,b'o' as u16,b'n' as u16];
     let body=s as *const SectionObject as *mut c_void;
     if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&type_name,&name,false,DEFAULT_SD.as_ptr(),DEFAULT_SD.len(),finalizer)}.is_err(){
@@ -143,6 +144,20 @@ pub fn copy(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
         done+=n;
     }
     let _=crate::ntoskrnl::ob::runtime::dereference_body(body);STATUS_SUCCESS
+}
+/// Close the backing references of Section objects owned by a terminating process.
+pub fn rundown_process(pid:u64){
+    if pid==0{return}
+    for s in OBJECTS.iter(){
+        if s.allocated.load(Ordering::Acquire)&&s.owner_pid.load(Ordering::Acquire)==pid{
+            if s.active.swap(false,Ordering::AcqRel){
+                let id=s.section_id.load(Ordering::Acquire);let root=s.owner_root.load(Ordering::Acquire);
+                let refs=s.references.swap(0,Ordering::AcqRel);
+                for _ in 0..refs{let _=crate::ntoskrnl::mm::section::dereference(id,root);}
+            }
+            let _=crate::ntoskrnl::ob::runtime::unregister_object(s as *const SectionObject as *mut c_void);
+        }
+    }
 }
 /// Windows NtCreateSection ABI bridge. Supports committed anonymous sections;
 /// file-backed sections and named OBJECT_ATTRIBUTES are rejected explicitly.
