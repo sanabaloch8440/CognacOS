@@ -54,6 +54,7 @@ impl Completion { const EMPTY: Self = Self { sequence: 0, message_id: 0, context
 #[derive(Clone, Copy)]
 struct CompletionList {
     active: bool,
+    id: u32,
     owner_pid: u64,
     port_id: u32,
     concurrency: u32,
@@ -63,7 +64,7 @@ struct CompletionList {
     entries: [Completion; MAX_COMPLETIONS],
 }
 impl CompletionList {
-    const EMPTY: Self = Self { active: false, owner_pid: 0, port_id: 0, concurrency: 1, next_sequence: 1, head: 0, len: 0, entries: [Completion::EMPTY; MAX_COMPLETIONS] };
+    const EMPTY: Self = Self { active: false, id: 0, owner_pid: 0, port_id: 0, concurrency: 1, next_sequence: 1, head: 0, len: 0, entries: [Completion::EMPTY; MAX_COMPLETIONS] };
 }
 struct State {
     views: [SectionView; MAX_VIEWS],
@@ -164,13 +165,14 @@ pub fn register_completion_list(owner_pid: u64, port_id: u32, concurrency: u32) 
     let s = g.state();
     if s.lists.iter().any(|l| l.active && l.owner_pid == owner_pid && l.port_id == port_id) { return Err(STATUS_INVALID_PARAMETER); }
     let i = s.lists.iter().position(|l| !l.active).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    let mut list = CompletionList::EMPTY; list.active = true; list.owner_pid = owner_pid; list.port_id = port_id; list.concurrency = concurrency;
-    let id = alloc_id(s); s.lists[i] = list; Ok(id)
+    let id = alloc_id(s);
+    let mut list = CompletionList::EMPTY; list.active = true; list.id = id; list.owner_pid = owner_pid; list.port_id = port_id; list.concurrency = concurrency;
+    s.lists[i] = list; Ok(id)
 }
 pub fn post_completion(list_id: u32, owner_pid: u64, message_id: u64, context: u64, status: u32, information: u64) -> Result<u64, u32> {
     let mut g = Guard::acquire();
     let s = g.state();
-    let l = s.lists.iter_mut().find(|l| l.active && l.port_id == list_id).ok_or(STATUS_INVALID_HANDLE)?;
+    let l = s.lists.iter_mut().find(|l| l.active && l.id == list_id).ok_or(STATUS_INVALID_HANDLE)?;
     if l.owner_pid != owner_pid { return Err(STATUS_ACCESS_DENIED); }
     if l.len == MAX_COMPLETIONS { return Err(STATUS_BUFFER_TOO_SMALL); }
     let sequence = l.next_sequence; l.next_sequence = l.next_sequence.wrapping_add(1).max(1);
@@ -181,7 +183,7 @@ pub fn post_completion(list_id: u32, owner_pid: u64, message_id: u64, context: u
 pub fn dequeue_completion(list_id: u32, owner_pid: u64) -> Result<Completion, u32> {
     let mut g = Guard::acquire();
     let s = g.state();
-    let l = s.lists.iter_mut().find(|l| l.active && l.port_id == list_id).ok_or(STATUS_INVALID_HANDLE)?;
+    let l = s.lists.iter_mut().find(|l| l.active && l.id == list_id).ok_or(STATUS_INVALID_HANDLE)?;
     if l.owner_pid != owner_pid { return Err(STATUS_ACCESS_DENIED); }
     if l.len == 0 { return Err(STATUS_PORT_DISCONNECTED); }
     let item = l.entries[l.head]; l.entries[l.head] = Completion::EMPTY;
