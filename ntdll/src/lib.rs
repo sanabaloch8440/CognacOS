@@ -10,6 +10,25 @@
 
 extern crate alloc;
 
+// Linker-only compatibility entry points. Assembly definitions satisfy the PE
+// linker without creating Rust #[no_mangle] exports for implementation symbols.
+#[cfg(target_os = "windows")]
+core::arch::global_asm!(r#"
+    .text
+    .p2align 4
+    .globl DllMain
+DllMain:
+    movl $1, %eax
+    ret
+
+    .p2align 4
+    .globl __CxxFrameHandler3
+__CxxFrameHandler3:
+    // ExceptionContinueSearch: link-only fallback, not a C++ EH implementation.
+    movl $1, %eax
+    ret
+"#, options(att_syntax));
+
 pub mod alpc;
 pub mod atom;
 pub mod crypt;
