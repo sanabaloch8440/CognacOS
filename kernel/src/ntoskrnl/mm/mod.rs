@@ -6,6 +6,7 @@ pub(crate) mod physical;
 pub(crate) mod runtime;
 pub(crate) mod native_vm;
 pub(crate) mod section;
+pub(crate) mod section_handles;
 pub(crate) mod persistent;
 pub use runtime::mm_get_physical_address;
 
