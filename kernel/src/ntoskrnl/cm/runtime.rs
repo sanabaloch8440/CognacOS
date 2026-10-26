@@ -931,6 +931,13 @@ mod tests {
   let mut data=[0u8;8];
   assert_eq!(value.data(&mut data).unwrap(),5);
   assert_eq!(&data[..5],&[1,2,3,4,5]);
+  let mut writer=hive_writer_backend::HiveWriter::open(&mut bytes).unwrap();
+  writer.delete_value(key.cell_index(),&value_name).unwrap();
+  writer.delete_key(key.cell_index()).unwrap();
+  writer.update_base_block(3).unwrap();
+  drop(writer);
+  let hive=hive_backend::Hive::open(&bytes).unwrap();
+  assert_eq!(hive.root().unwrap().subkey_count().unwrap(),0);
 
   let mut journal=[0u8;16416];
   hive_writer_backend::RedoJournal::begin(&bytes,&mut journal).unwrap();
