@@ -2,10 +2,13 @@
 
 - [x] Route native `NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, and `NtFlushKey` service IDs discovered from the staged AMD64 NTDLL image into the kernel native dispatcher; decode their x64 arguments and copy caller-controlled names/data through checked user-memory helpers.
 - [x] Enforce per-handle granted-access checks for key query, value mutation, key deletion, and relative namespace traversal through typed Object Manager RegistryKey handles.
-- [x] Fail closed when a mutation targets a mounted Windows REGF hive; immutable hive bytes are not silently shadowed by volatile values. `NtFlushKey` returns `STATUS_NOT_SUPPORTED` until a durable hive writer exists.
+- [x] Fail closed when a mutation targets a mounted Windows REGF hive; immutable mounted bytes are not silently shadowed by volatile values. `NtFlushKey` returns `STATUS_NOT_SUPPORTED` until mutable durable storage and flush ordering are wired.
 - [x] Implement `ZwEnumerateKey` for `KeyBasicInformation` on volatile keys, `ZwEnumerateValueKey` for `KeyValueBasicInformation`, and `ZwQueryKey` for `KeyBasicInformation` / `KeyNameInformation`; unsupported classes and REGF enumeration return explicit errors.
 - [x] Add CognacOS-private native-service dispatch for `NtEnumerateKey`, `NtEnumerateValueKey`, and `NtQueryKey`, using checked user-memory copies and result-length reporting.
-- [ ] Replace bounded volatile key/value tables with a persistent REGF cell allocator, stable key/value index updates, base-block sequence/checksum updates, dirty-hive tracking, and transaction-log replay/recovery.
+- [x] Add a bounded REGF cell allocator that splits free cells, frees allocated cells, rebuilds stable NK subkey indexes and VK value indexes, tracks dirty generations, and updates base-block sequence/checksum fields.
+- [x] Add a checked CognacOS redo-patch replay primitive that repairs base-block sequence/checksum state after replay; it is explicitly not the Windows `HvLE` transaction-log format.
+- [ ] Replace the runtime's bounded volatile `Key`/`Value` tables with mutable mounted-hive storage and connect native create/set/delete calls to REGF NK/VK/data-cell mutations.
+- [ ] Implement Windows-native `HvLE` log parsing, checksum/hash verification, dirty-page replay, recovery selection, and crash-consistent durable flush ordering; the private redo primitive is only a testable staging mechanism.
 - [ ] Wire the Rust NTDLL mutation exports to the native-service bridge; ABI-shaped exports alone are not considered implemented dispatch.
 - [x] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to CognacOS-private native-service IDs; the kernel still returns `STATUS_NOT_SUPPORTED` for flush because durable hive writes are not implemented.
 - [ ] Extend enumeration/query support to REGF-backed keys and remaining Windows information classes; add change notifications and transaction semantics.
