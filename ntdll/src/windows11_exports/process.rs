@@ -323,9 +323,23 @@ pub unsafe extern "system" fn NtOpenJobObject() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
+/// Opens a process by client ID. The ABI is defined, but CognacOS does not
+/// yet provide a process-handle/object-manager service, so valid requests
+/// return STATUS_NOT_IMPLEMENTED without fabricating a handle.
 #[no_mangle]
-pub unsafe extern "system" fn NtOpenProcess() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtOpenProcess(
+    process_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const core::ffi::c_void,
+    client_id: *const core::ffi::c_void,
+) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
+    if process_handle.is_null() || object_attributes.is_null() || client_id.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let _ = desired_access;
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
@@ -338,9 +352,22 @@ pub unsafe extern "system" fn NtOpenProcessTokenEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
+/// Opens a thread by client ID. The ABI is defined, but thread objects and
+/// handle lookup are not implemented by the current kernel.
 #[no_mangle]
-pub unsafe extern "system" fn NtOpenThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtOpenThread(
+    thread_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const core::ffi::c_void,
+    client_id: *const core::ffi::c_void,
+) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
+    if thread_handle.is_null() || object_attributes.is_null() || client_id.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let _ = desired_access;
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
@@ -904,8 +931,13 @@ pub unsafe extern "system" fn ZwOpenJobObject() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwOpenProcess() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwOpenProcess(
+    process_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const core::ffi::c_void,
+    client_id: *const core::ffi::c_void,
+) -> i32 {
+    unsafe { NtOpenProcess(process_handle, desired_access, object_attributes, client_id) }
 }
 
 #[no_mangle]
@@ -919,8 +951,13 @@ pub unsafe extern "system" fn ZwOpenProcessTokenEx() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwOpenThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwOpenThread(
+    thread_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const core::ffi::c_void,
+    client_id: *const core::ffi::c_void,
+) -> i32 {
+    unsafe { NtOpenThread(thread_handle, desired_access, object_attributes, client_id) }
 }
 
 #[no_mangle]
