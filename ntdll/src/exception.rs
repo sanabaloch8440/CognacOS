@@ -174,7 +174,6 @@ pub unsafe extern "system" fn RtlRemoveVectoredContinueHandler(handle: PVOID) ->
 
 /// CognacOS helper for the dispatcher to run registered exception callbacks.
 /// It does not itself resume a saved machine context.
-#[no_mangle]
 pub unsafe extern "system" fn CognacCallVectoredExceptionHandlers(
     record: *mut EXCEPTION_RECORD, context: PVOID,
 ) -> LONG {
@@ -184,7 +183,6 @@ pub unsafe extern "system" fn CognacCallVectoredExceptionHandlers(
 }
 
 /// CognacOS helper for the dispatcher to run registered continuation callbacks.
-#[no_mangle]
 pub unsafe extern "system" fn CognacCallVectoredContinueHandlers(
     record: *mut EXCEPTION_RECORD, context: PVOID,
 ) -> LONG {
@@ -199,7 +197,6 @@ pub unsafe extern "system" fn RtlSetUnhandledExceptionFilter(filter: PRTL_EXCEPT
     UNHANDLED_FILTER = filter;
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn CognacCallUnhandledExceptionFilter(
     pointers: *mut EXCEPTION_POINTERS,
 ) -> LONG {
@@ -290,7 +287,6 @@ fn ensure_ntdll_xstate_config() -> bool {
 /// Publish the configuration computed by ntoskrnl to NTDLL during native
 /// process initialization. Offsets are CPUID.(0xD, feature).EBX values in the
 /// standard (non-compacted) XSAVE layout; sizes are CPUID leaf 0xD subleaf EAX.
-#[no_mangle]
 pub unsafe extern "system" fn CognacNtdllPublishXStateConfiguration(
     supported: ULONG64,
     enabled: ULONG64,
@@ -689,7 +685,6 @@ pub unsafe extern "system" fn RtlCopyContext(dst: PVOID, flags: ULONG, src: PVOI
 }
 
 /// Query one enabled component's standard XSAVE-area offset and size.
-#[no_mangle]
 pub unsafe extern "system" fn CognacRtlQueryExtendedFeature(
     feature_id: ULONG, offset: *mut ULONG, size: *mut ULONG,
 ) -> NTSTATUS {
