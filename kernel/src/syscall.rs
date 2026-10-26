@@ -1253,6 +1253,17 @@ unsafe fn restore_context_to_syscall_frame(frame: *mut u64, bytes: &[u8]) -> u64
             return NT_STATUS_INVALID_PARAMETER;
         }
         let fp_state = unsafe { bytes.as_ptr().add(0x100) };
+        // Keep the scheduler's saved user xstate coherent with the CONTEXT we
+        // are about to IRET into; otherwise the next context switch could undo
+        // NtContinue's restored FP/SSE registers.
+        let saved_xstate = crate::ntoskrnl::ke::thread::cognacos_current_user_xstate_ptr() as *mut u8;
+        if !saved_xstate.is_null() {
+            unsafe {
+                core::ptr::copy_nonoverlapping(fp_state, saved_xstate, 512);
+                core::ptr::write_bytes(saved_xstate.add(512), 0, 64);
+                core::ptr::write_unaligned(saved_xstate.add(512).cast::<u64>(), 3);
+            }
+        }
         unsafe { core::arch::asm!("fxrstor64 [{}]", in(reg) fp_state, options(nostack)); }
     }
     NT_STATUS_SUCCESS
