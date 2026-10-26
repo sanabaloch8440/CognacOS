@@ -13,6 +13,7 @@ mod runtime;
 mod crt;
 mod misc;
 mod process_snapshot;
+mod appcompat;
 mod telemetry;
 mod etw;
 mod csr;
