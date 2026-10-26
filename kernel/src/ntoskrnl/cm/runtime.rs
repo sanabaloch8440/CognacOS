@@ -1053,7 +1053,8 @@ mod tests {
    let list_id=u32::from_le_bytes(bytes[0x1040..0x1044].try_into().unwrap());
    let list_abs=4096+list_id as usize+4;
    assert_eq!(&bytes[list_abs..list_abs+2],b"li");
-   assert_eq!(u32::from_le_bytes(bytes[list_abs+2..list_abs+6].try_into().unwrap()),child_cell);
+   assert_eq!(u16::from_le_bytes(bytes[list_abs+2..list_abs+4].try_into().unwrap()),1);
+   assert_eq!(u32::from_le_bytes(bytes[list_abs+4..list_abs+8].try_into().unwrap()),child_cell);
    assert_eq!(hive.find_path(&child_name).unwrap().cell_index(),child_cell);
    let value=key.find_value(&value_name).unwrap();
    let mut data=[0u8;8];
