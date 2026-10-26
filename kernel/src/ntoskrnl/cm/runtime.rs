@@ -21,6 +21,8 @@ pub const STATUS_ACCESS_DENIED: i32 = 0xC000_0022u32 as i32;
 pub const STATUS_INSUFFICIENT_RESOURCES: i32 = 0xC000_009Au32 as i32;
 pub const STATUS_NOT_SUPPORTED: i32 = 0xC000_00BBu32 as i32;
 
+// The key-slot table also holds Object Manager metadata for opened hive keys; it is not REGF storage.
+// Value records are exclusively the volatile-value store. Hive-backed values are read/written in REGF cells.
 const MAX_KEYS: usize = 64;
 const MAX_VALUES: usize = 128;
 const MAX_NAME: usize = 96;
