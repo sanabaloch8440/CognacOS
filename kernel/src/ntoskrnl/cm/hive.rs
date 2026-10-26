@@ -196,6 +196,262 @@ pub fn create_minimal_hive(out:&mut[u8])->Result<usize,Error>{
  Ok(TOTAL)
 }
 
+
+/// Writable REGF image operations. The caller must exclusively own the backing
+/// bytes and persist the returned image to stable storage in the documented order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirtyHiveState {
+    pub dirty: bool,
+    pub sequence: u32,
+    pub dirty_generation: u64,
+}
+pub struct WritableHive<'a> {
+    bytes: &'a mut [u8],
+    info: BaseInfo,
+    dirty: bool,
+    generation: u64,
+}
+impl<'a> WritableHive<'a> {
+    pub fn open(bytes: &'a mut [u8]) -> Result<Self, Error> {
+        let parsed = Hive::open(bytes)?;
+        let info = parsed.info;
+        Ok(Self { bytes, info, dirty: false, generation: 0 })
+    }
+    pub fn state(&self) -> DirtyHiveState {
+        DirtyHiveState { dirty: self.dirty, sequence: self.info.sequence_primary, dirty_generation: self.generation }
+    }
+    pub fn bytes(&self) -> &[u8] { self.bytes }
+    pub fn bytes_mut_for_persistence(&mut self) -> &mut [u8] { self.bytes }
+
+    /// Mark the hive dirty before modifying any cell. The primary/secondary
+    /// sequence mismatch is the Windows base-block dirty indicator.
+    pub fn begin_update(&mut self) -> Result<u32, Error> {
+        if self.dirty { return Ok(self.info.sequence_primary); }
+        let next = self.info.sequence_primary.wrapping_add(1).max(1);
+        put32(self.bytes, 4, next);
+        put32(self.bytes, 8, self.info.sequence_secondary);
+        self.info.sequence_primary = next;
+        self.dirty = true;
+        self.generation = self.generation.wrapping_add(1);
+        self.recompute_checksum()?;
+        Ok(next)
+    }
+
+    /// Complete a successful transaction. A caller persisting to disk should
+    /// flush cell changes before this base block and flush the base block last.
+    pub fn commit_update(&mut self) -> Result<u32, Error> {
+        if !self.dirty { return Ok(self.info.sequence_primary); }
+        put32(self.bytes, 8, self.info.sequence_primary);
+        self.info.sequence_secondary = self.info.sequence_primary;
+        self.recompute_checksum()?;
+        self.dirty = false;
+        Ok(self.info.sequence_primary)
+    }
+
+    pub fn recompute_checksum(&mut self) -> Result<u32, Error> {
+        if self.bytes.len() < BASE_BLOCK_SIZE { return Err(Error::Truncated); }
+        let mut checksum = 0u32;
+        for off in (0..0x1fc).step_by(4) { checksum ^= u32at(self.bytes, off)?; }
+        let checksum = if checksum == 0 { 1 } else if checksum == u32::MAX { u32::MAX - 1 } else { checksum };
+        put32(self.bytes, 0x1fc, checksum);
+        Ok(checksum)
+    }
+
+    fn cell_absolute(&self, index: u32) -> Result<usize, Error> {
+        let abs = BASE_BLOCK_SIZE.checked_add(index as usize).ok_or(Error::InvalidCell)?;
+        if abs < BASE_BLOCK_SIZE + 0x20 || abs.checked_add(4).filter(|e| *e <= BASE_BLOCK_SIZE + self.info.bins_size as usize).is_none() {
+            return Err(Error::InvalidCell);
+        }
+        Ok(abs)
+    }
+
+    /// Allocate a cell, splitting a free cell where possible. The returned
+    /// index is stable relative to the first HBIN, as in native NK/VK records.
+    pub fn allocate_cell(&mut self, payload_len: usize) -> Result<u32, Error> {
+        if !self.dirty { return Err(Error::DirtyHive); }
+        let needed = payload_len.checked_add(4).and_then(|n| n.checked_add(7)).ok_or(Error::InvalidCell)? & !7;
+        if needed < 8 { return Err(Error::InvalidCell); }
+        let end = BASE_BLOCK_SIZE.checked_add(self.info.bins_size as usize).ok_or(Error::InvalidHiveSize)?;
+        let mut bin = BASE_BLOCK_SIZE;
+        while bin < end {
+            if self.bytes.get(bin..bin+4) != Some(&b"hbin"[..]) { return Err(Error::InvalidBin); }
+            let size = u32at(self.bytes, bin+8)? as usize;
+            let mut pos = bin + 0x20;
+            let bin_end = bin.checked_add(size).ok_or(Error::InvalidBin)?;
+            while pos < bin_end {
+                let raw = i32::from_le_bytes(self.bytes.get(pos..pos+4).ok_or(Error::Truncated)?.try_into().map_err(|_| Error::Truncated)?);
+                if raw == 0 || raw == i32::MIN { return Err(Error::InvalidCell); }
+                let cell_size = raw.unsigned_abs() as usize;
+                if cell_size < 8 || pos.checked_add(cell_size).filter(|e| *e <= bin_end).is_none() { return Err(Error::InvalidCell); }
+                if raw > 0 && cell_size >= needed {
+                    let leftover = cell_size - needed;
+                    let used = if leftover >= 8 { needed } else { cell_size };
+                    put32(self.bytes, pos, (-(used as i32)) as u32);
+                    self.bytes[pos+4..pos+used].fill(0);
+                    if leftover >= 8 { put32(self.bytes, pos+used, leftover as u32); }
+                    return u32::try_from(pos - BASE_BLOCK_SIZE).map_err(|_| Error::InvalidCell);
+                }
+                pos += cell_size;
+            }
+            if pos != bin_end { return Err(Error::InvalidBin); }
+            bin = bin_end;
+        }
+        Err(Error::OutputTooSmall)
+    }
+
+    pub fn free_cell(&mut self, index: u32) -> Result<(), Error> {
+        if !self.dirty { return Err(Error::DirtyHive); }
+        let abs = self.cell_absolute(index)?;
+        let raw = i32::from_le_bytes(self.bytes.get(abs..abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_| Error::Truncated)?);
+        if raw >= 0 || raw == i32::MIN { return Err(Error::InvalidCell); }
+        let size = raw.unsigned_abs() as usize;
+        let end = abs.checked_add(size).ok_or(Error::InvalidCell)?;
+        if end > BASE_BLOCK_SIZE + self.info.bins_size as usize { return Err(Error::InvalidCell); }
+        put32(self.bytes, abs, size as u32);
+        self.bytes[abs+4..end].fill(0);
+        Ok(())
+    }
+
+    fn allocated_cell_mut(&mut self, index: u32) -> Result<&mut [u8], Error> {
+        let abs = self.cell_absolute(index)?;
+        let raw = i32::from_le_bytes(self.bytes.get(abs..abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_| Error::Truncated)?);
+        if raw >= 0 || raw == i32::MIN { return Err(Error::InvalidCell); }
+        let size = raw.unsigned_abs() as usize;
+        if size < 8 { return Err(Error::InvalidCell); }
+        let end = abs.checked_add(size).ok_or(Error::InvalidCell)?;
+        if end > BASE_BLOCK_SIZE + self.info.bins_size as usize { return Err(Error::InvalidCell); }
+        self.bytes.get_mut(abs+4..end).ok_or(Error::Truncated)
+    }
+
+    /// Append a subkey cell index to an NK record. Rebuilds the index as a
+    /// native "li" list and updates the stable NK cell's count/list fields.
+    pub fn append_subkey_index(&mut self, parent_nk: u32, child_nk: u32) -> Result<u32, Error> {
+        if !self.dirty { return Err(Error::DirtyHive); }
+        let parent_abs = self.cell_absolute(parent_nk)?;
+        let parent_cell = {
+            let raw = i32::from_le_bytes(self.bytes.get(parent_abs..parent_abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_| Error::Truncated)?);
+            if raw >= 0 || raw == i32::MIN { return Err(Error::InvalidCell); }
+            let len = raw.unsigned_abs() as usize - 4;
+            self.bytes.get(parent_abs+4..parent_abs+4+len).ok_or(Error::Truncated)?.to_vec()
+        };
+        if parent_cell.get(0..2) != Some(&b"nk"[..]) || parent_cell.len() < 0x4c { return Err(Error::InvalidKey); }
+        let count = u32at(&parent_cell, 0x14)?;
+        if count >= 0xffff { return Err(Error::InvalidKey); }
+        let old_list = u32at(&parent_cell, 0x1c)?;
+        let mut entries = [0u32; 4096];
+        if count as usize >= entries.len() { return Err(Error::InvalidKey); }
+        if count != 0 {
+            let old = self.cell_payload(old_list)?;
+            let sig = old.get(0..2).ok_or(Error::InvalidKey)?;
+            if sig == b"li" {
+                if old.len() < 2 + count as usize * 4 { return Err(Error::InvalidKey); }
+                for i in 0..count as usize { entries[i] = u32at(old, 2+i*4)?; }
+            } else if sig == b"lf" || sig == b"lh" {
+                if old.len() < 2 + count as usize * 8 { return Err(Error::InvalidKey); }
+                for i in 0..count as usize { entries[i] = u32at(old, 2+i*8)?; }
+            } else { return Err(Error::UnsupportedIndex); }
+        }
+        entries[count as usize] = child_nk;
+        let payload_len = 2 + (count as usize + 1) * 4;
+        let list = self.allocate_cell(payload_len)?;
+        {
+            let dst = self.allocated_cell_mut(list)?;
+            dst[0..2].copy_from_slice(b"li");
+            put16(dst, 2, (count+1) as u16);
+            for i in 0..=count as usize { put32(dst, 4+i*4, entries[i]); }
+        }
+        {
+            let dst = self.allocated_cell_mut(parent_nk)?;
+            put32(dst, 0x14, count+1);
+            put32(dst, 0x1c, list);
+        }
+        if count != 0 && old_list != u32::MAX { let _ = self.free_cell(old_list); }
+        Ok(list)
+    }
+
+    /// Append a VK cell index to an NK record's value list.
+    pub fn append_value_index(&mut self, key_nk: u32, value_vk: u32) -> Result<u32, Error> {
+        if !self.dirty { return Err(Error::DirtyHive); }
+        let abs = self.cell_absolute(key_nk)?;
+        let (count, old_list, payload) = {
+            let raw = i32::from_le_bytes(self.bytes.get(abs..abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_| Error::Truncated)?);
+            if raw >= 0 || raw == i32::MIN { return Err(Error::InvalidCell); }
+            let len = raw.unsigned_abs() as usize - 4;
+            let cell = self.bytes.get(abs+4..abs+4+len).ok_or(Error::Truncated)?;
+            if cell.get(0..2) != Some(&b"nk"[..]) || cell.len() < 0x2c { return Err(Error::InvalidKey); }
+            (u32at(cell,0x24)?,u32at(cell,0x28)?,cell.to_vec())
+        };
+        let _ = payload;
+        if count >= 0xffff { return Err(Error::InvalidValue); }
+        let mut entries=[0u32;4096];
+        if count as usize >= entries.len(){return Err(Error::InvalidValue);}
+        if count != 0 {
+            let old=self.cell_payload(old_list)?;
+            if old.len()<count as usize*4{return Err(Error::InvalidValue);}
+            for i in 0..count as usize { entries[i]=u32at(old,i*4)?; }
+        }
+        entries[count as usize]=value_vk;
+        let list=self.allocate_cell((count as usize+1)*4)?;
+        {
+            let dst=self.allocated_cell_mut(list)?;
+            for i in 0..=count as usize {put32(dst,i*4,entries[i]);}
+        }
+        {
+            let dst=self.allocated_cell_mut(key_nk)?;
+            put32(dst,0x24,count+1);put32(dst,0x28,list);
+        }
+        if count!=0&&old_list!=u32::MAX {let _=self.free_cell(old_list);}
+        Ok(list)
+    }
+
+    fn cell_payload(&self, index:u32)->Result<&[u8],Error>{
+        let abs=self.cell_absolute(index)?;
+        let raw=i32::from_le_bytes(self.bytes.get(abs..abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_|Error::Truncated)?);
+        if raw>=0||raw==i32::MIN{return Err(Error::InvalidCell);}
+        let size=raw.unsigned_abs() as usize;
+        if size<8{return Err(Error::InvalidCell);}
+        self.bytes.get(abs+4..abs+size).ok_or(Error::Truncated)
+    }
+
+    /// Update the base-block checksum after cell changes without clearing dirty
+    /// state; used when a durable writer persists the dirty image before commit.
+    pub fn sync_dirty_base_block(&mut self) -> Result<u32, Error> { self.recompute_checksum() }
+}
+
+/// A bounded redo record for recovery. This is CognacOS's staging journal, not
+/// the Windows HvLE transaction-log format; native HvLE replay is intentionally
+/// kept separate until its checksum/hash and dirty-page semantics are validated.
+pub fn replay_cognacos_redo_log(hive: &mut [u8], log: &[u8]) -> Result<usize, Error> {
+    if log.len() < 16 || log.get(0..4) != Some(&b"CNL1"[..]) { return Err(Error::InvalidValue); }
+    let sequence = u32at(log,4)?;
+    let count = u32at(log,8)? as usize;
+    let expected = u32at(log,12)?;
+    if count > 4096 { return Err(Error::InvalidValue); }
+    let mut checksum=0u32;
+    for b in &log[16..] { checksum=checksum.rotate_left(5) ^ (*b as u32); }
+    if checksum != expected { return Err(Error::BadChecksum); }
+    let mut cursor=16usize;
+    let mut records=0usize;
+    for _ in 0..count {
+        let off=u32at(log,cursor)? as usize; let len=u32at(log,cursor+4)? as usize; cursor=cursor.checked_add(8).ok_or(Error::InvalidValue)?;
+        let data=log.get(cursor..cursor.checked_add(len).ok_or(Error::InvalidValue)?).ok_or(Error::Truncated)?;
+        let end=off.checked_add(len).ok_or(Error::InvalidValue)?;
+        if end > hive.len() || off < BASE_BLOCK_SIZE { return Err(Error::InvalidValue); }
+        hive[off..end].copy_from_slice(data);
+        cursor=end;
+        records+=1;
+    }
+    if cursor != log.len() { return Err(Error::InvalidValue); }
+    if hive.len() < BASE_BLOCK_SIZE || hive.get(0..4) != Some(&b"regf"[..]) { return Err(Error::BadSignature); }
+    put32(hive,4,sequence);
+    put32(hive,8,sequence);
+    let mut checksum=0u32;
+    for off in (0..0x1fc).step_by(4) { checksum ^= u32at(hive,off)?; }
+    let checksum=if checksum==0 {1} else if checksum==u32::MAX {u32::MAX-1} else {checksum};
+    put32(hive,0x1fc,checksum);
+    Ok(records)
+}
+
 #[cfg(test)]
 mod tests{
  use super::*;
