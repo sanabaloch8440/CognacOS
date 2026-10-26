@@ -3,7 +3,7 @@
 //! The redo journal here is CognacOS's storage protocol; it is not the Windows HvLE format.
 const BASE: usize = 4096;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Error { Truncated, BadSignature, BadChecksum, Dirty, InvalidCell, InvalidBin, InvalidKey, InvalidValue, NoSpace, Journal, UnsupportedIndex }
+pub enum Error { Truncated, BadSignature, BadChecksum, BadLogHash, Dirty, InvalidLog, SequenceGap, InvalidCell, InvalidBin, InvalidKey, InvalidValue, NoSpace, Journal, UnsupportedIndex }
 fn r16(b:&[u8],o:usize)->Result<u16,Error>{let x=b.get(o..o+2).ok_or(Error::Truncated)?;Ok(u16::from_le_bytes([x[0],x[1]]))}
 fn r32(b:&[u8],o:usize)->Result<u32,Error>{let x=b.get(o..o+4).ok_or(Error::Truncated)?;Ok(u32::from_le_bytes([x[0],x[1],x[2],x[3]]))}
 fn w16(b:&mut[u8],o:usize,v:u16){b[o..o+2].copy_from_slice(&v.to_le_bytes())}
@@ -203,6 +203,100 @@ impl<'a> HiveWriter<'a>{
   if self.bytes.len()<BASE{return Err(Error::Truncated)}w32(self.bytes,4,sequence);w32(self.bytes,8,sequence);
   let mut c=0u32;for o in (0..0x1fc).step_by(4){c^=r32(self.bytes,o)?;}if c==0{c=1}else if c==u32::MAX{c=u32::MAX-1}w32(self.bytes,0x1fc,c);Ok(())
  }
+}
+
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct HvleRecoveryReport { pub entries_applied:u32, pub pages_applied:u32, pub final_sequence:u32 }
+
+fn rotl32(v:u32,n:u32)->u32{v.rotate_left(n)}
+fn marvin_block(p0:&mut u32,p1:&mut u32){
+ *p1^=*p0;*p0=rotl32(*p0,20);*p0=p0.wrapping_add(*p1);
+ *p1=rotl32(*p1,9);*p1^=*p0;*p0=rotl32(*p0,27);
+ *p0=p0.wrapping_add(*p1);*p1=rotl32(*p1,19);
+}
+/// Windows HvLE Marvin32 hash with seed bytes 82 EF 4D 88 7A 4E 55 C5.
+fn marvin32(data:&[u8])->u64{
+ let mut p0=0x884d_ef82u32;let mut p1=0xc555_4e7au32;let mut at=0usize;
+ while at+4<=data.len(){p0=p0.wrapping_add(u32::from_le_bytes([data[at],data[at+1],data[at+2],data[at+3]]));marvin_block(&mut p0,&mut p1);at+=4;}
+ let rem=data.len()-at;let mut tail=0x80u32<<(rem*8);
+ for i in 0..rem{tail|=(data[at+i] as u32)<<(i*8);}
+ p0=p0.wrapping_add(tail);marvin_block(&mut p0,&mut p1);marvin_block(&mut p0,&mut p1);
+ ((p1 as u64)<<32)|(p0 as u64)
+}
+fn valid_base_checksum(bytes:&[u8])->bool{
+ if bytes.len()<512{return false}
+ let mut c=0u32;for o in (0..0x1fc).step_by(4){let Some(x)=bytes.get(o..o+4)else{return false};c^=u32::from_le_bytes([x[0],x[1],x[2],x[3]]);}
+ if c==0{c=1}else if c==u32::MAX{c=u32::MAX-1}
+ r32(bytes,0x1fc).map(|v|v==c).unwrap_or(false)
+}
+
+/// Replay a Windows 8.1+ HvLE transaction log into a writable REGF image.
+/// The caller supplies scratch space at least as large as the hive so malformed
+/// logs never leave a partially modified hive. Legacy DIRT/dirty-page logs and
+/// dual-log selection are intentionally not guessed by this single-log API.
+pub fn replay_hvle(hive:&mut[u8],log:&[u8],scratch:&mut[u8])->Result<HvleRecoveryReport,Error>{
+ if hive.len()<BASE||scratch.len()<hive.len()||log.len()<512{return Err(Error::Truncated)}
+ if hive.get(0..4)!=Some(&b"regf"[..])||log.get(0..4)!=Some(&b"regf"[..]){return Err(Error::BadSignature)}
+ if r32(log,0x1c)?!=6||!valid_base_checksum(log){return Err(Error::InvalidLog)}
+ let log_seq=r32(log,4)?;if log_seq!=r32(log,8)?{return Err(Error::InvalidLog)}
+ let hive_primary=r32(hive,4)?;let hive_secondary=r32(hive,8)?;
+ let hive_clean=hive_primary==hive_secondary&&valid_base_checksum(hive);
+ if hive_clean{return Ok(HvleRecoveryReport{entries_applied:0,pages_applied:0,final_sequence:hive_primary});}
+ scratch[..hive.len()].copy_from_slice(hive);
+ let result=(||{
+  let mut report=HvleRecoveryReport{entries_applied:0,pages_applied:0,final_sequence:hive_primary};
+  let mut expected=log_seq;let mut offset=512usize;let mut bins=r32(hive,0x28)?;
+  while offset+4<=log.len(){
+   if log.get(offset..offset+4)!=Some(&b"HvLE"[..]){
+    if log[offset..].iter().all(|b|*b==0){break}
+    if report.entries_applied==0{return Err(Error::InvalidLog)}else{break}
+   }
+   if offset+40>log.len(){return Err(Error::Truncated)}
+   let size=r32(log,offset+4)? as usize;let flags=r32(log,offset+8)?;let seq=r32(log,offset+12)?;
+   let entry_bins=r32(log,offset+16)? as usize;let pages=r32(log,offset+20)? as usize;
+   if size<40||size%512!=0||offset.checked_add(size).filter(|e|*e<=log.len()).is_none()
+      ||entry_bins<0x1000||entry_bins%0x1000!=0
+      ||pages>(size.saturating_sub(40))/8{return Err(Error::InvalidLog)}
+   let entry=&log[offset..offset+size];let hash1=u64::from_le_bytes(entry[24..32].try_into().map_err(|_|Error::Truncated)?);
+   let hash2=u64::from_le_bytes(entry[32..40].try_into().map_err(|_|Error::Truncated)?);
+   if marvin32(&entry[40..])!=hash1||marvin32(&entry[..32])!=hash2{return Err(Error::BadLogHash)}
+   let refs_end=40usize.checked_add(pages.checked_mul(8).ok_or(Error::InvalidLog)?).ok_or(Error::InvalidLog)?;
+   if refs_end>size{return Err(Error::InvalidLog)}
+   if seq<expected {offset+=size;continue;}
+   if seq!=expected{
+    if report.entries_applied==0{return Err(Error::SequenceGap)}else{break}
+   }
+   expected=expected.wrapping_add(1);
+   // Ignore entries already present in the primary image, but still enforce a
+   // contiguous sequence chain among the log records.
+   if seq<=hive_primary {offset+=size;continue;}
+   let new_end=BASE.checked_add(entry_bins).ok_or(Error::InvalidLog)?;
+   if new_end>hive.len(){return Err(Error::NoSpace)}
+   if entry_bins>bins {hive[BASE+bins..new_end].fill(0);}
+   let mut data_at=refs_end;
+   for i in 0..pages{
+    let r=40+i*8;let page_off=r32(entry,r)? as usize;let page_len=r32(entry,r+4)? as usize;
+    if page_len==0||page_off%512!=0||page_len%512!=0
+      ||page_off.checked_add(page_len).filter(|e|*e<=entry_bins).is_none()
+      ||data_at.checked_add(page_len).filter(|e|*e<=size).is_none(){return Err(Error::InvalidLog)}
+    let dest=BASE.checked_add(page_off).ok_or(Error::InvalidLog)?;
+    let dest_end=dest.checked_add(page_len).ok_or(Error::InvalidLog)?;
+    if dest_end>new_end{return Err(Error::InvalidLog)}
+    hive[dest..dest_end].copy_from_slice(&entry[data_at..data_at+page_len]);
+    data_at+=page_len;report.pages_applied=report.pages_applied.saturating_add(1);
+   }
+   bins=entry_bins;w32(hive,0x28,bins as u32);w32(hive,0x90,flags&1);
+   report.entries_applied=report.entries_applied.saturating_add(1);report.final_sequence=seq;
+   offset+=size;
+  }
+  if report.entries_applied==0{return Err(Error::Dirty)}
+  w32(hive,4,report.final_sequence);w32(hive,8,report.final_sequence);
+  let mut c=0u32;for o in (0..0x1fc).step_by(4){c^=r32(hive,o)?;}if c==0{c=1}else if c==u32::MAX{c=u32::MAX-1}w32(hive,0x1fc,c);
+  crate::ntoskrnl::cm::hive::Hive::open(hive).map_err(|_|Error::InvalidBin)?;
+  Ok(report)
+ })();
+ match result{Ok(r)=>Ok(r),Err(e)=>{hive.copy_from_slice(&scratch[..hive.len()]);Err(e)}}
 }
 
 /// Full before/after image redo journal. Caller must persist PREPARED + before
