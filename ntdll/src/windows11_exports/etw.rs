@@ -256,9 +256,14 @@ pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const Even
         if n>0 {unsafe{core::ptr::copy_nonoverlapping(item.ptr as *const u8,kernel_payload.as_mut_ptr().add(kernel_payload_len),n);}}
         kernel_payload_len+=n;
     }
-    if let Some(status)=kernel_etw_call(NT_SYSCALL_ETW_WRITE_EVENT,handle,descriptor as u64,kernel_payload.as_ptr() as u64,kernel_payload_len as u64) {
-        if status!=0 {return ERROR_INVALID_PARAMETER;}
-    }
+    let kernel_recorded=match kernel_etw_call(NT_SYSCALL_ETW_WRITE_EVENT,handle,descriptor as u64,kernel_payload.as_ptr() as u64,kernel_payload_len as u64) {
+        Some(0)=>true,
+        Some(_)=>return ERROR_INVALID_PARAMETER,
+        None=>false,
+    };
+    // The kernel ring is authoritative on CognacOS. Do not enqueue a duplicate
+    // in the NTDLL fallback ring when the kernel accepted the event.
+    if kernel_recorded { return ERROR_SUCCESS; }
     let mut payload = [0u8; MAX_EVENT_PAYLOAD];
     let mut payload_len = 0usize;
     for i in 0..count as usize {
