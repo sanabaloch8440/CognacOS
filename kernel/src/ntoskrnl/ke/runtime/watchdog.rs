@@ -159,7 +159,7 @@ pub(crate) fn watchdog_dpc_begin(routine: usize) {
 pub(crate) fn watchdog_dpc_end() {
     let cpu = current_cpu();
     let start = ACTIVE_DPC_START[cpu].swap(0, Ordering::AcqRel);
-    let routine = ACTIVE_DPC_ROUTINE[cpu].swap(0, Ordering::AcqRel);
+    ACTIVE_DPC_ROUTINE[cpu].store(0, Ordering::Release);
     if start == 0 { return; }
     if let Some(hz) = counter_frequency() {
         let elapsed = now_counter().saturating_sub(start);
