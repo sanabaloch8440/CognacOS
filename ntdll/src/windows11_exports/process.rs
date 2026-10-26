@@ -763,8 +763,8 @@ pub unsafe extern "system" fn ZwFilterTokenEx() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwFlushProcessWriteBuffers() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub extern "system" fn ZwFlushProcessWriteBuffers() -> i32 {
+    NtFlushProcessWriteBuffers()
 }
 
 #[no_mangle]
@@ -773,13 +773,13 @@ pub unsafe extern "system" fn ZwGetContextThread() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwGetCurrentProcessorNumber() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub extern "system" fn ZwGetCurrentProcessorNumber() -> u32 {
+    NtGetCurrentProcessorNumber()
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwGetCurrentProcessorNumberEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwGetCurrentProcessorNumberEx(processor_number: *mut COGNAC_PROCESSOR_NUMBER) -> i32 {
+    unsafe { NtGetCurrentProcessorNumberEx(processor_number) }
 }
 
 #[no_mangle]
@@ -862,14 +862,44 @@ pub unsafe extern "system" fn ZwQueryInformationPort() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
+/// Native Zw spelling; on Windows this forwards to the matching syscall entry.
 #[no_mangle]
-pub unsafe extern "system" fn ZwQueryInformationProcess() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwQueryInformationProcess(
+    process: *mut core::ffi::c_void,
+    information_class: u32,
+    information: *mut core::ffi::c_void,
+    information_length: u32,
+    return_length: *mut u32,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    {
+        unsafe extern "system" {
+            fn NtQueryInformationProcess(process: *mut core::ffi::c_void, information_class: u32, information: *mut core::ffi::c_void, information_length: u32, return_length: *mut u32) -> i32;
+        }
+        return unsafe { NtQueryInformationProcess(process, information_class, information, information_length, return_length) };
+    }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (process, information_class, information, information_length, return_length); 0xC0000002u32 as i32 }
 }
 
+/// Native Zw spelling; on Windows this forwards to the matching syscall entry.
 #[no_mangle]
-pub unsafe extern "system" fn ZwQueryInformationThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwQueryInformationThread(
+    thread: *mut core::ffi::c_void,
+    information_class: u32,
+    information: *mut core::ffi::c_void,
+    information_length: u32,
+    return_length: *mut u32,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    {
+        unsafe extern "system" {
+            fn NtQueryInformationThread(thread: *mut core::ffi::c_void, information_class: u32, information: *mut core::ffi::c_void, information_length: u32, return_length: *mut u32) -> i32;
+        }
+        return unsafe { NtQueryInformationThread(thread, information_class, information, information_length, return_length) };
+    }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (thread, information_class, information, information_length, return_length); 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
