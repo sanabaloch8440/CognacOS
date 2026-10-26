@@ -542,6 +542,20 @@ fn create_port_section(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     result
 }
 
+fn find_free_view_base(root:u64,length:u64)->Result<u64,u64>{
+    let mut space=unsafe{crate::ntoskrnl::mm::address_space::AddressSpace::attach_existing(root)}.map_err(|_|STATUS_INVALID_PARAMETER)?;
+    let mut candidate=0x0000_0001_0000_0000u64;
+    while candidate.checked_add(length).is_some_and(|end|end<0x0000_8000_0000_0000) {
+        let mut free=true;let mut offset=0;
+        while offset<length {
+            if space.query_region(candidate+offset).is_some_and(|r|r.7){free=false;break}
+            offset+=4096;
+        }
+        if free{return Ok(candidate)}
+        candidate=match candidate.checked_add(length.max(0x10000)){Some(v)=>v,None=>break};
+    }
+    Err(STATUS_INSUFFICIENT_RESOURCES)
+}
 fn create_section_view(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let (port,port_body)=match port_from_handle(args[0],ACCESS_WRITE){Ok(v)=>v,Err(s)=>return s};
     if args[1]!=0 || args[2]==0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}
