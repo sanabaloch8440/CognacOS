@@ -114,6 +114,12 @@ pub fn query_section_view(id: u32, owner_pid: u64) -> Result<SectionView, u32> {
     if v.owner_pid != owner_pid { return Err(STATUS_ACCESS_DENIED); }
     Ok(v)
 }
+pub fn find_section_view(owner_pid: u64, port_id: u32, base: u64) -> Result<SectionView, u32> {
+    let _g = Guard::acquire();
+    let s = unsafe { &*STATE.state.get() };
+    s.views.iter().find(|v| v.active && v.owner_pid == owner_pid && v.port_id == port_id && v.base == base)
+        .copied().ok_or(STATUS_INVALID_HANDLE)
+}
 /// Remove view metadata after the VM adapter has successfully unmapped it.
 pub fn unregister_section_view(id: u32, owner_pid: u64) -> Result<SectionView, u32> {
     let mut g = Guard::acquire();
