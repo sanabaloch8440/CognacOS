@@ -90,7 +90,7 @@ fn main() {
     let mut count = 0usize;
     for name in names {
         // This ABI implementation must never be shadowed by a generated stub.
-        if matches!(name.as_str(), "RtlAddFunctionTable" | "RtlGetNonVolatileToken" | "RtlFreeNonVolatileToken") { continue; }
+        if matches!(name.as_str(), "RtlAddFunctionTable" | "RtlGetNonVolatileToken" | "RtlFreeNonVolatileToken" | "NtCreateSection") { continue; }
         if declared.contains(&name) { continue; }
         output.push_str(&format!("#[no_mangle]\npub unsafe extern \"system\" fn {name}() -> i32 {{ 0xC0000002u32 as i32 }}\n"));
         count += 1;
