@@ -456,5 +456,29 @@ mod tests{
  #[test]fn creates_openable_native_hive(){let mut bytes=[0u8;8192];let n=create_minimal_hive(&mut bytes).unwrap();assert_eq!(n,8192);let h=Hive::open(&bytes[..n]).unwrap();assert_eq!(h.info.root_cell,0x20);assert_eq!(h.root().unwrap().subkey_count().unwrap(),0);}
  #[test]fn mounts_named_hives_without_reencoding(){let mut bytes=[0u8;8192];let n=create_named_hive("SYSTEM",&mut bytes).unwrap();let mut set=HiveSet::new();set.mount("system",&bytes[..n]).unwrap();assert_eq!(set.mount_count(),1);assert_eq!(set.open("SYSTEM").unwrap().info.root_cell,0x20);assert!(create_named_hive("not-a-hive",&mut bytes).is_err());}
  #[test]fn rejects_bad_checksum(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[0x1fc]^=0x10;assert!(matches!(Hive::open(&bytes),Err(Error::BadChecksum)));}
+ #[test]fn writable_allocator_splits_free_cell_and_updates_sequence(){
+  let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();
+  let mut h=WritableHive::open(&mut bytes).unwrap();
+  assert!(!h.state().dirty);
+  h.begin_update().unwrap();
+  let cell=h.allocate_cell(0x4c).unwrap();
+  assert_eq!(cell,0x70);
+  { let nk=h.allocated_cell_mut(cell).unwrap(); nk[0..2].copy_from_slice(b"nk"); put16(nk,0x48,1); nk[0x4c]=b'X'; }
+  h.append_subkey_index(0x20,cell).unwrap();
+  h.commit_update().unwrap();
+  let parsed=Hive::open(h.bytes()).unwrap();
+  assert_eq!(parsed.root().unwrap().subkey_count().unwrap(),1);
+  let mut name=[0u16;4];assert_eq!(parsed.root().unwrap().find_subkey(&[b'X' as u16]).unwrap().name_utf16(&mut name).unwrap(),1);
+ }
+ #[test]fn redo_log_replays_checked_patch_and_repairs_base_block(){
+  let mut hive=[0u8;8192];create_minimal_hive(&mut hive).unwrap();
+  let payload=[0x41u8,0x42,0x43,0x44];
+  let mut log=[0u8;28];log[0..4].copy_from_slice(b"CNL1");put32(&mut log,4,2);put32(&mut log,8,1);put32(&mut log,16,BASE_BLOCK_SIZE as u32+0x80);put32(&mut log,20,4);log[24..28].copy_from_slice(&payload);
+  let mut checksum=0u32;for b in &log[16..]{checksum=checksum.rotate_left(5)^(*b as u32);}put32(&mut log,12,checksum);
+  assert_eq!(replay_cognacos_redo_log(&mut hive,&log).unwrap(),1);
+  assert_eq!(&hive[BASE_BLOCK_SIZE+0x80..BASE_BLOCK_SIZE+0x84],&payload);
+  assert_eq!(u32at(&hive,4).unwrap(),2);assert_eq!(u32at(&hive,8).unwrap(),2);
+  assert!(Hive::open(&hive).is_err()); // the arbitrary patch intentionally does not preserve cell validity
+ }
  #[test]fn rejects_dirty_hive_until_log_replay(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[8..12].copy_from_slice(&2u32.to_le_bytes());assert!(matches!(Hive::open(&bytes),Err(Error::DirtyHive)));}
 }
