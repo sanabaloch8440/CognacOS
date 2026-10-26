@@ -33,26 +33,6 @@ pub unsafe extern "system" fn atan2() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn atoi(s: *const core::ffi::c_char) -> i32 {
-    strtol(s, core::ptr::null_mut(), 10) as i32
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn atol(s: *const core::ffi::c_char) -> isize {
-    strtol(s, core::ptr::null_mut(), 10) as isize
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn bsearch() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn bsearch_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn ceil() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -493,21 +473,6 @@ pub unsafe extern "system" fn mbstowcs() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn memchr() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn memcpy_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn memmove_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn MicrosoftTelemetryAssertTriggeredUM() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -593,16 +558,6 @@ pub unsafe extern "system" fn PssNtWalkSnapshot() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn qsort() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn qsort_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn SbExecuteProcedure() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -653,113 +608,7 @@ pub unsafe extern "system" fn sscanf_s() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn strcat() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strcat_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn strchr(s: *const core::ffi::c_char, ch: i32) -> *mut core::ffi::c_char {
-    if s.is_null() { return core::ptr::null_mut(); } let target = ch as u8; let mut i = 0usize; loop { let v = *s.add(i) as u8; if v == target { return s.add(i) as *mut _; } if v == 0 { return core::ptr::null_mut(); } i += 1; }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn strcmp(a: *const core::ffi::c_char, b: *const core::ffi::c_char) -> i32 {
-    if a.is_null() || b.is_null() { return if a.is_null() { if b.is_null() { 0 } else { -1 } } else { 1 }; }
-    let (mut i, mut x, mut y) = (0usize, 0u8, 0u8);
-    loop { x = *a.add(i) as u8; y = *b.add(i) as u8; if x != y || x == 0 { return x as i32 - y as i32; } i += 1; }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strcpy() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strcpy_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strcspn() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strncat() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strncat_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn strncmp(a: *const core::ffi::c_char, b: *const core::ffi::c_char, n: usize) -> i32 {
-    if n == 0 { return 0; }
-    if a.is_null() || b.is_null() { return if a.is_null() { if b.is_null() { 0 } else { -1 } } else { 1 }; }
-    let mut i = 0usize; while i < n { let x = *a.add(i) as u8; let y = *b.add(i) as u8; if x != y || x == 0 { return x as i32 - y as i32; } i += 1; } 0
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strncpy() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strncpy_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strnlen() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strpbrk() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn strrchr(s: *const core::ffi::c_char, ch: i32) -> *mut core::ffi::c_char {
-    if s.is_null() { return core::ptr::null_mut(); } let target = ch as u8; let mut i = 0usize; let mut found = core::ptr::null_mut(); loop { let v = *s.add(i) as u8; if v == target { found = s.add(i) as *mut _; } if v == 0 { return found; } i += 1; }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strspn() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strstr() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn strtok_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn strtol(s: *const core::ffi::c_char, end: *mut *mut core::ffi::c_char, base: i32) -> i64 {
-    if end.is_null() == false { *end = s as *mut _; }
-    if s.is_null() || !(base == 0 || (2..=36).contains(&base)) { return 0; }
-    let mut p = s; while (*p as u8).is_ascii_whitespace() { p = p.add(1); }
-    let mut neg = false; if *p == b'-' as i8 { neg = true; p = p.add(1); } else if *p == b'+' as i8 { p = p.add(1); }
-    let mut radix = base as u32; if radix == 0 { if *p == b'0' as i8 && (*p.add(1) == b'x' as i8 || *p.add(1) == b'X' as i8) { radix = 16; p = p.add(2); } else if *p == b'0' as i8 { radix = 8; } else { radix = 10; } } else if radix == 16 && *p == b'0' as i8 && (*p.add(1) == b'x' as i8 || *p.add(1) == b'X' as i8) { p = p.add(2); }
-    let start = p; let limit = if neg { (i64::MAX as u64) + 1 } else { i64::MAX as u64 }; let mut value = 0u64; let mut any = false;
-    loop { let ch = *p as u8; let d = if ch >= b'0' && ch <= b'9' { (ch-b'0') as u32 } else if ch >= b'a' && ch <= b'z' { (ch-b'a'+10) as u32 } else if ch >= b'A' && ch <= b'Z' { (ch-b'A'+10) as u32 } else { break; }; if d >= radix { break; } any = true; value = match value.checked_mul(radix as u64).and_then(|v| v.checked_add(d as u64)) { Some(v) if v <= limit => v, _ => limit }; p = p.add(1); }
-    if !any { if !end.is_null() { *end = s as *mut _; } return 0; } if !end.is_null() { *end = p as *mut _; } if neg { (value.wrapping_neg()) as i64 } else { value as i64 }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn strtoul() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
@@ -1144,118 +993,12 @@ pub unsafe extern "system" fn vswprintf_s() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn wcscat() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcscat_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wcschr(s: *const u16, ch: i32) -> *mut u16 {
-    if s.is_null() { return core::ptr::null_mut(); } let target = ch as u16; let mut i = 0usize; loop { let v = *s.add(i); if v == target { return s.add(i) as *mut _; } if v == 0 { return core::ptr::null_mut(); } i += 1; }
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wcscmp(a: *const u16, b: *const u16) -> i32 {
-    if a.is_null() || b.is_null() { return if a.is_null() { if b.is_null() { 0 } else { -1 } } else { 1 }; }
-    let mut i = 0usize; loop { let x = *a.add(i); let y = *b.add(i); if x != y || x == 0 { return x as i32 - y as i32; } i += 1; }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcscpy() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcscpy_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcscspn() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wcslen(s: *const u16) -> usize {
-    if s.is_null() { return 0; }
-    let mut n = 0usize;
-    while *s.add(n) != 0 { n = n.saturating_add(1); }
-    n
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcsncat() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcsncat_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wcsncmp(a: *const u16, b: *const u16, n: usize) -> i32 {
-    if n == 0 { return 0; }
-    if a.is_null() || b.is_null() { return if a.is_null() { if b.is_null() { 0 } else { -1 } } else { 1 }; }
-    let mut i = 0usize; while i < n { let x = *a.add(i); let y = *b.add(i); if x != y || x == 0 { return x as i32 - y as i32; } i += 1; } 0
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcsncpy() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcsncpy_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcsnlen() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcspbrk() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "C" fn wcsrchr(s: *const u16, ch: i32) -> *mut u16 {
-    if s.is_null() { return core::ptr::null_mut(); } let target = ch as u16; let mut i = 0usize; let mut found = core::ptr::null_mut(); loop { let v = *s.add(i); if v == target { found = s.add(i) as *mut _; } if v == 0 { return found; } i += 1; }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcsspn() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcsstr() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn wcstok_s() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn wcstol() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn wcstombs() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn wcstoul() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
