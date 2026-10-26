@@ -269,9 +269,35 @@ pub unsafe extern "system" fn NtCreateProfileEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
+unsafe extern "system" {
+    fn cognacos_nt_create_section(
+        section_handle:*mut *mut core::ffi::c_void,
+        desired_access:u32,
+        object_attributes:*mut core::ffi::c_void,
+        maximum_size:*const i64,
+        page_protection:u32,
+        allocation_attributes:u32,
+        file_handle:*mut core::ffi::c_void,
+    )->i32;
+}
+
+/// Windows x64 NtCreateSection ABI. Supports unnamed, committed, anonymous
+/// sections; named objects and file-backed sections are explicitly unsupported.
 #[no_mangle]
-pub unsafe extern "system" fn NtCreateSection() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtCreateSection(
+    section_handle:*mut *mut core::ffi::c_void,
+    desired_access:u32,
+    object_attributes:*mut core::ffi::c_void,
+    maximum_size:*const i64,
+    page_protection:u32,
+    allocation_attributes:u32,
+    file_handle:*mut core::ffi::c_void,
+)->i32{
+    if section_handle.is_null()||maximum_size.is_null()||desired_access==0{
+        return 0xC000_000Du32 as i32;
+    }
+    if !object_attributes.is_null()||!file_handle.is_null(){return 0xC000_0002u32 as i32;}
+    unsafe{cognacos_nt_create_section(section_handle,desired_access,object_attributes,maximum_size,page_protection,allocation_attributes,file_handle)}
 }
 
 #[no_mangle]
