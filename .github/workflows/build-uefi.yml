@@ -113,7 +113,11 @@ jobs:
           # rustc's Windows target adds ntdll.lib by default. The native DLL
           # must not import itself, so satisfy that target-default input with a
           # tiny COFF archive member; native service entry points link in-tree.
-          printf '#![no_std]\\n#[no_mangle] pub extern "C" fn cognac_ntdll_empty_archive_member() {}\\n' > "$RUNNER_TEMP/ntdll-empty.rs"
+          cat > "$RUNNER_TEMP/ntdll-empty.rs" <<'RS'
+          #![no_std]
+          #[no_mangle]
+          pub extern "C" fn cognac_ntdll_empty_archive_member() {}
+          RS
           rustc --edition=2021 --target x86_64-pc-windows-msvc --crate-type lib --emit=obj -o "$RUNNER_TEMP/ntdll-empty.obj" "$RUNNER_TEMP/ntdll-empty.rs"
           ar rcs ntdll/ntdll.lib "$RUNNER_TEMP/ntdll-empty.obj"
           trap 'rm -f ntdll/ntdll.lib "$RUNNER_TEMP/ntdll-empty.obj" "$RUNNER_TEMP/ntdll-empty.rs"' EXIT
