@@ -10,6 +10,7 @@
 pub mod alpc;
 pub mod atom;
 pub mod crypt;
+pub mod crt;
 pub mod debugbuffer;
 pub mod env;
 pub mod exception;
