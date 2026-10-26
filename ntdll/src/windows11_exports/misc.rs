@@ -78,7 +78,7 @@ pub unsafe extern "system" fn ApiSetGetImplementationHost(name: *const UnicodeSt
     }
     let Some((host_off,host_len))=selected_value else{return STATUS_NOT_FOUND;};
     if host_len>u16::MAX as usize {return STATUS_NOT_FOUND;}
-    if output.maximum_length as usize < host_len { output.length=host_len as u16; return STATUS_BUFFER_TOO_SMALL; }
+    if (output.maximum_length as usize) < host_len { output.length=host_len as u16; return STATUS_BUFFER_TOO_SMALL; }
     unsafe { core::ptr::copy_nonoverlapping(map.add(host_off).cast::<u16>(), output.buffer.cast_mut(), host_len/2); }
     output.length=host_len as u16;
     STATUS_SUCCESS
