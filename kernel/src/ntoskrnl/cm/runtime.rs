@@ -673,6 +673,15 @@ mod tests {
   let oa=ObjectAttributes{length:core::mem::size_of::<ObjectAttributes>() as u32,root_directory:core::ptr::null_mut(),object_name:&key_us,attributes:0,security_descriptor:core::ptr::null_mut(),security_qos:core::ptr::null_mut()};
   let mut key=core::ptr::null_mut();let mut disposition=0;
   assert_eq!(unsafe{ZwCreateKey(&mut key,0,&oa,0,core::ptr::null(),0,&mut disposition)},STATUS_SUCCESS);
+  let child_name:[u16;5]=[67,104,105,108,100];
+  let child_us=UnicodeString{length:10,maximum_length:10,buffer:child_name.as_ptr()};
+  let child_oa=ObjectAttributes{length:core::mem::size_of::<ObjectAttributes>() as u32,root_directory:key,object_name:&child_us,attributes:0,security_descriptor:core::ptr::null_mut(),security_qos:core::ptr::null_mut()};
+  let mut child=core::ptr::null_mut();
+  assert_eq!(unsafe{ZwCreateKey(&mut child,0,&child_oa,0,core::ptr::null(),0,&mut disposition)},STATUS_SUCCESS);
+  let mut child_info=[0u8;64];let mut child_required=0;
+  assert_eq!(unsafe{ZwEnumerateKey(key,0,0,child_info.as_mut_ptr().cast(),child_info.len() as u32,&mut child_required)},STATUS_SUCCESS);
+  assert_eq!(u32::from_le_bytes(child_info[12..16].try_into().unwrap()),10);
+  assert_eq!(u16::from_le_bytes(child_info[16..18].try_into().unwrap()),67);
   let value_name:[u16;4]=[84,101,115,116];
   let value_us=UnicodeString{length:8,maximum_length:8,buffer:value_name.as_ptr()};
   let value:u32=0x55aa;
