@@ -118,7 +118,7 @@ impl<'a> HiveWriter<'a>{
   let vk_id=self.allocate_cell(0x14+n)?;
   {let v=self.cell_mut(vk_id)?;v[..2].copy_from_slice(b"vk");w16(v,2,n as u16);w32(v,4,if inline{data.len() as u32|0x8000_0000}else{data.len() as u32});
    let field=if inline{let mut d=[0u8;4];d[..data.len()].copy_from_slice(data);u32::from_le_bytes(d)}else{data_id};w32(v,8,field);w32(v,0xc,kind);w16(v,0x10,if compressed{1}else{0});w16(v,0x12,0);v[0x14..0x14+n].copy_from_slice(&enc[..n]);}
-  if let Some(i)=slot{let l=self.cell_mut(old_list)?;w32(l,i*4,vk_id);}
+  if let Some(i)=slot{let l=self.cell_mut(old_list)?;w32(l,i as usize*4,vk_id);}
   else{let new_count=count.checked_add(1).ok_or(Error::InvalidValue)?;let new_list=self.allocate_cell(new_count as usize*4)?;
    let mut old=[0u8;4096];let bytes=count as usize*4;if bytes>old.len(){return Err(Error::InvalidValue)}
    if count>0{let l=self.cell(old_list)?;if l.len()<bytes{return Err(Error::InvalidValue)}old[..bytes].copy_from_slice(&l[..bytes]);}
