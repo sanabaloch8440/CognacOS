@@ -350,6 +350,137 @@ pub unsafe extern "win64" fn ZwQueryValueKey(h:*mut core::ffi::c_void,name:*cons
  unsafe{let p=out.cast::<KeyValuePartialInformation>();(*p).title_index=0;(*p).kind=v.kind;(*p).data_length=v.len as u32;core::ptr::copy_nonoverlapping(v.data.as_ptr(),(*p).data.as_mut_ptr(),v.len as usize);}
  STATUS_SUCCESS
 }
+#[repr(C)]
+pub struct KeyBasicInformation {
+    pub last_write_time: i64,
+    pub title_index: u32,
+    pub name_length: u32,
+    pub name: [u16; 1],
+}
+#[repr(C)]
+pub struct KeyValueBasicInformation {
+    pub title_index: u32,
+    pub kind: u32,
+    pub name_length: u32,
+    pub name: [u16; 1],
+}
+
+/// Enumerate volatile subkeys using the Windows KEY_BASIC_INFORMATION layout.
+/// REGF-backed enumeration remains unsupported until the hive exposes indexed traversal.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ZwEnumerateKey(
+    h: *mut core::ffi::c_void, index: u32, class: u32,
+    out: *mut core::ffi::c_void, out_len: u32, result_len: *mut u32,
+) -> i32 {
+    if class != 0 { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() && out_len != 0 { return STATUS_INVALID_PARAMETER; }
+    let _g = LOCK.lock();
+    let s = state();
+    let id = match key_with_access(h, KEY_ENUMERATE_SUB_KEYS) { Ok(v) => v, Err(e) => return e };
+    if s.keys.iter().any(|k| k.used && !k.deleted && k.id == id && k.hive_slot != 0) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    let mut ordinal = 0u32;
+    let mut child: Option<Key> = None;
+    for k in s.keys.iter().filter(|k| k.used && !k.deleted && k.hive_slot == 0 && k.parent == id) {
+        if ordinal == index { child = Some(*k); break; }
+        ordinal = ordinal.saturating_add(1);
+    }
+    let Some(k) = child else { return 0x8000_001Au32 as i32; };
+    let name_len = k.name_len as usize * 2;
+    let need = 16 + name_len;
+    if !result_len.is_null() { unsafe { *result_len = need as u32; } }
+    if (out_len as usize) < need { return STATUS_BUFFER_TOO_SMALL; }
+    unsafe {
+        let p = out.cast::<u8>();
+        core::ptr::write_unaligned(p.cast::<i64>(), 0);
+        core::ptr::write_unaligned(p.add(8).cast::<u32>(), 0);
+        core::ptr::write_unaligned(p.add(12).cast::<u32>(), name_len as u32);
+        core::ptr::copy_nonoverlapping(k.name.as_ptr(), p.add(16).cast::<u16>(), k.name_len as usize);
+    }
+    STATUS_SUCCESS
+}
+
+/// Enumerate value names and types using the 12-byte Windows
+/// KEY_VALUE_BASIC_INFORMATION prefix and a non-terminated UTF-16 name.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ZwEnumerateValueKey(
+    h: *mut core::ffi::c_void, index: u32, class: u32,
+    out: *mut core::ffi::c_void, out_len: u32, result_len: *mut u32,
+) -> i32 {
+    if class != 0 { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() && out_len != 0 { return STATUS_INVALID_PARAMETER; }
+    let _g = LOCK.lock();
+    let s = state();
+    let id = match key_with_access(h, KEY_QUERY_VALUE) { Ok(v) => v, Err(e) => return e };
+    if s.keys.iter().any(|k| k.used && !k.deleted && k.id == id && k.hive_slot != 0) {
+        return STATUS_NOT_SUPPORTED;
+    }
+    let mut ordinal = 0u32;
+    let mut value: Option<Value> = None;
+    for v in s.values.iter().filter(|v| v.used && v.key_id == id) {
+        if ordinal == index { value = Some(*v); break; }
+        ordinal = ordinal.saturating_add(1);
+    }
+    let Some(v) = value else { return 0x8000_001Au32 as i32; };
+    let name_len = v.name_len as usize * 2;
+    let need = 12 + name_len;
+    if !result_len.is_null() { unsafe { *result_len = need as u32; } }
+    if (out_len as usize) < need { return STATUS_BUFFER_TOO_SMALL; }
+    unsafe {
+        let p = out.cast::<u8>();
+        core::ptr::write_unaligned(p.cast::<u32>(), 0);
+        core::ptr::write_unaligned(p.add(4).cast::<u32>(), v.kind);
+        core::ptr::write_unaligned(p.add(8).cast::<u32>(), name_len as u32);
+        core::ptr::copy_nonoverlapping(v.name.as_ptr(), p.add(12).cast::<u16>(), v.name_len as usize);
+    }
+    STATUS_SUCCESS
+}
+
+/// Query supported key metadata: KeyBasicInformation (0) and
+/// KeyNameInformation (3). Other classes fail explicitly rather than returning
+/// fabricated counts, timestamps, or virtualization flags.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ZwQueryKey(
+    h: *mut core::ffi::c_void, class: u32,
+    out: *mut core::ffi::c_void, out_len: u32, result_len: *mut u32,
+) -> i32 {
+    if class != 0 && class != 3 { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() && out_len != 0 { return STATUS_INVALID_PARAMETER; }
+    let _g = LOCK.lock();
+    let s = state();
+    let id = match key_with_access(h, KEY_QUERY_VALUE) { Ok(v) => v, Err(e) => return e };
+    let Some(k) = s.keys.iter().find(|k| k.used && !k.deleted && k.id == id).copied() else {
+        return 0xC000_0008u32 as i32;
+    };
+    let mut name = [0u16; MAX_NAME];
+    let name_units = if class == 3 {
+        match key_path(s, id, &mut name) { Some(n) => n, None => return STATUS_INVALID_PARAMETER }
+    } else {
+        let n = k.name_len as usize;
+        name[..n].copy_from_slice(&k.name[..n]);
+        n
+    };
+    let name_len = name_units * 2;
+    let fixed = if class == 3 { 4 } else { 16 };
+    let need = fixed + name_len;
+    if !result_len.is_null() { unsafe { *result_len = need as u32; } }
+    if (out_len as usize) < need { return STATUS_BUFFER_TOO_SMALL; }
+    unsafe {
+        let p = out.cast::<u8>();
+        if class == 3 {
+            core::ptr::write_unaligned(p.cast::<u32>(), name_len as u32);
+            core::ptr::copy_nonoverlapping(name.as_ptr(), p.add(4).cast::<u16>(), name_units);
+        } else {
+            core::ptr::write_unaligned(p.cast::<i64>(), 0);
+            core::ptr::write_unaligned(p.add(8).cast::<u32>(), 0);
+            core::ptr::write_unaligned(p.add(12).cast::<u32>(), name_len as u32);
+            core::ptr::copy_nonoverlapping(name.as_ptr(), p.add(16).cast::<u16>(), name_units);
+        }
+    }
+    STATUS_SUCCESS
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwDeleteValueKey(h:*mut core::ffi::c_void,name:*const UnicodeString)->i32{
  let mut nb=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nb)}{Ok(n)=>n,Err(e)=>return e};
