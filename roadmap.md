@@ -7,7 +7,9 @@
 - [x] Add a CSR server dispatcher core with bounded API registration, CSR message validation, and client bookkeeping.
 - [x] Add a CSRSRV x64 export inventory and a PE export/ordinal comparison utility.
 - [ ] Wire ALPC operations to Windows-compatible `NtAlpc*` syscall entry points and real user handles/Object Manager access checks.
-- [ ] Add scheduler-backed blocking wait/wakeup, ALPC section views, security contexts, resource reserves, and completion lists.
+- [x] Add a bounded ALPC advanced-resource metadata core for section-view registration, owner-scoped security contexts/revocation, and FIFO completion queues; run unit tests in CI. Section views require a VM mapping to have already been established and do not map memory themselves.
+- [ ] Connect resource records to real section objects, VM map/unmap and rundown, token/QoS capture, ALPC message attributes, and scheduler-backed blocking wait/wakeup.
+- [ ] Add ALPC resource reserves and completion-list shared-memory ABI, atomics, and concurrency accounting.
 - [ ] Build `csrss.exe` and `csrsrv.dll` as native PE32+ user images, implement the real server-DLL initialization handshake, and launch them through a session-manager path.
 - [ ] Compare the CSRSRV export manifest against the exact target Windows 11 x64 `csrsrv.dll` PE. The current committed 32-name/ordinal inventory is based on the public Windows 10 x64 10.0.19041 reference and is **not yet verified as an exact Windows 11 match**.
 - [ ] Add an asynchronous process-creation path for mapped user PE images. The existing `usermode::run_loaded_image` remains a synchronous smoke-test runner and is not a general session-manager launcher.
