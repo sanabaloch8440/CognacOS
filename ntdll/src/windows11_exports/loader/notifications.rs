@@ -36,6 +36,16 @@ pub unsafe extern "system" fn LdrUnregisterDllNotification(cookie: PVOID) -> NTS
 }
 
 #[no_mangle]
+pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
+    // This is the loader's process-shutdown barrier. The current loader port does
+    // not yet retain ABI-validated module entry-point callbacks, so it must not
+    // guess at DllMain pointers. ETW rundown is safe and happens before SYS_EXIT.
+    DLL_SHUTDOWN.store(true, Ordering::Release);
+    crate::windows11_exports::etw::rundown_current_process();
+    STATUS_SUCCESS
+}
+
+#[no_mangle]
 pub unsafe extern "system" fn RtlDllShutdownInProgress() -> BOOLEAN {
     DLL_SHUTDOWN.load(Ordering::Acquire) as BOOLEAN
 }
