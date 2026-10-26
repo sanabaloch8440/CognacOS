@@ -16,6 +16,15 @@ const ACCESS_WRITE:u32=2;
 const ACCESS_CONTROL:u32=4;
 const MAX_PORT_OBJECTS:usize=32;
 const MAX_NAME:usize=48;
+/// Minimal self-relative security descriptor with an Everyone allow ACE for
+/// the ALPC-specific access bits. Handle granted-access masks are still checked
+/// on every reference; caller-supplied security descriptors are not yet captured.
+static ALPC_DEFAULT_SD:[u8;48]=[
+    1,0, 4,128, 0,0,0,0, 0,0,0,0, 0,0,0,0, 20,0,0,0,
+    2,0, 28,0, 1,0, 0,0,
+    0,0, 20,0, 7,0,0,0,
+    1,1,0,0,0,0,0,1, 0,0,0,0
+];
 
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -90,7 +99,7 @@ unsafe extern "win64" fn endpoint_finalizer(body:*mut c_void){
 }
 fn endpoint_from_handle(handle:u64,required:u32)->Result<(&'static EndpointObject,*mut c_void),u64>{
     let owner=crate::ntoskrnl::ob::runtime::current_owner();
-    let body=crate::ntoskrnl::ob::runtime::reference_by_handle(handle as *mut c_void,required,ALPC_ENDPOINT_TYPE.load(Ordering::Acquire) as u16,owner,true).map_err(|e|e as u32 as u64)?;
+    let body=crate::ntoskrnl::ob::runtime::reference_by_handle(handle as *mut c_void,required,ALPC_ENDPOINT_TYPE.load(Ordering::Acquire) as u16,owner,false).map_err(|e|e as u32 as u64)?;
     let ptr=body as *const EndpointObject;
     if !ENDPOINT_OBJECTS.iter().any(|e|core::ptr::eq(e as *const EndpointObject,ptr)){
         let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return Err(STATUS_OBJECT_TYPE_MISMATCH)
@@ -107,10 +116,10 @@ fn make_endpoint_handle(endpoint_id:u32,owner_pid:u64,output:u64)->u64{
     endpoint.endpoint_id.store(endpoint_id,Ordering::Release);endpoint.owner_pid.store(owner_pid,Ordering::Release);endpoint.active.store(true,Ordering::Release);
     let type_name=[b'A' as u16,b'L' as u16,b'P' as u16,b'C' as u16,b' ' as u16,b'E' as u16,b'n' as u16,b'd' as u16,b'p' as u16,b'o' as u16,b'i' as u16,b'n' as u16,b't' as u16];
     let name=[0u16;0];let body=endpoint as *const EndpointObject as *mut c_void;
-    if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&type_name,&name,false,core::ptr::null(),0,endpoint_finalizer)}.is_err(){
+    if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&type_name,&name,false,ALPC_DEFAULT_SD.as_ptr(),ALPC_DEFAULT_SD.len(),endpoint_finalizer)}.is_err(){
         endpoint.active.store(false,Ordering::Release);endpoint.allocated.store(false,Ordering::Release);let _=crate::ntoskrnl::alpc::disconnect(endpoint_id,owner_pid);return 0xC000_0035
     }
-    let handle=match crate::ntoskrnl::ob::runtime::open_by_pointer(body,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL,crate::ntoskrnl::ob::runtime::current_owner(),true,0){
+    let handle=match crate::ntoskrnl::ob::runtime::open_by_pointer(body,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL,crate::ntoskrnl::ob::runtime::current_owner(),false,0){
         Ok(h)=>h as usize,Err(e)=>{let _=crate::ntoskrnl::ob::runtime::unregister_object(body);return e as u32 as u64}
     };
     if let Err(s)=write_user(output,&handle){let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::close_handle(handle as *mut c_void,crate::ntoskrnl::ob::runtime::current_owner());return s}
@@ -206,7 +215,7 @@ unsafe extern "win64" fn section_finalizer(body:*mut c_void) {
 }
 fn section_from_handle(handle:u64)->Result<(&'static PortSectionObject,*mut c_void),u64>{
     let owner=crate::ntoskrnl::ob::runtime::current_owner();
-    let body=crate::ntoskrnl::ob::runtime::reference_by_handle(handle as *mut c_void,ACCESS_READ,ALPC_SECTION_TYPE.load(Ordering::Acquire) as u16,owner,true).map_err(|e|e as u32 as u64)?;
+    let body=crate::ntoskrnl::ob::runtime::reference_by_handle(handle as *mut c_void,ACCESS_READ,ALPC_SECTION_TYPE.load(Ordering::Acquire) as u16,owner,false).map_err(|e|e as u32 as u64)?;
     let ptr=body as *const PortSectionObject;
     if !PORT_SECTIONS.iter().any(|p|core::ptr::eq(p as *const PortSectionObject,ptr)) {
         let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return Err(STATUS_OBJECT_TYPE_MISMATCH);
@@ -246,7 +255,7 @@ fn create_port_section(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let name=[0u16;0];
     let type_name=[b'A' as u16,b'L' as u16,b'P' as u16,b'C' as u16,b' ' as u16,b'S' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'i' as u16,b'o' as u16,b'n' as u16];
     let body=section as *const PortSectionObject as *mut c_void;
-    if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&type_name,&name,false,core::ptr::null(),0,section_finalizer)}.is_err(){
+    if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&type_name,&name,false,ALPC_DEFAULT_SD.as_ptr(),ALPC_DEFAULT_SD.len(),section_finalizer)}.is_err(){
         section.active.store(false,Ordering::Release);section.allocated.store(false,Ordering::Release);let _=crate::ntoskrnl::mm::section::dereference(section_id,root);
         let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return 0xC000_0035;
     }
@@ -332,7 +341,7 @@ fn write_user<T:Copy>(address:u64,value:&T)->Result<(),u64>{
 }
 fn port_from_handle(handle:u64,required:u32)->Result<(&'static PortObject,*mut c_void),u64>{
     let owner=crate::ntoskrnl::ob::runtime::current_owner();
-    let body=crate::ntoskrnl::ob::runtime::reference_by_handle(handle as *mut c_void,required,ALPC_PORT_TYPE.load(Ordering::Acquire) as u16,owner,true).map_err(|e|e as u32 as u64)?;
+    let body=crate::ntoskrnl::ob::runtime::reference_by_handle(handle as *mut c_void,required,ALPC_PORT_TYPE.load(Ordering::Acquire) as u16,owner,false).map_err(|e|e as u32 as u64)?;
     let ptr=body as *const PortObject;
     let found=PORT_OBJECTS.iter().any(|p|core::ptr::eq(p as *const PortObject,ptr));
     if !found { let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return Err(STATUS_OBJECT_TYPE_MISMATCH); }
@@ -412,7 +421,7 @@ fn create_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let p=&PORT_OBJECTS[slot];p.port_id.store(id,Ordering::Release);p.owner_pid.store(pid,Ordering::Release);p.active.store(true,Ordering::Release);
     let body=&PORT_OBJECTS[slot] as *const PortObject as *mut c_void;
     let name_for_ob:&[u16]=&name[..name_len];
-    if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&tyname,name_for_ob,false,core::ptr::null(),0,port_finalizer)}.is_err(){
+    if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&tyname,name_for_ob,false,ALPC_DEFAULT_SD.as_ptr(),ALPC_DEFAULT_SD.len(),port_finalizer)}.is_err(){
         p.active.store(false,Ordering::Release);p.allocated.store(false,Ordering::Release);let _=crate::ntoskrnl::alpc::close_port(id,pid);return 0xC000_0035;
     }
     let handle=match crate::ntoskrnl::ob::runtime::open_by_pointer(body,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL,crate::ntoskrnl::ob::runtime::current_owner(),true,0){
