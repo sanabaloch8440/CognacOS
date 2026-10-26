@@ -470,9 +470,38 @@ pub unsafe extern "system" fn NtTerminateJobObject() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
+/// Terminates the current process through CognacOS's native exit gate.
+///
+/// The bootstrap kernel currently exposes process exit but not a general
+/// process-handle termination service. Consequently, this implementation
+/// intentionally accepts only the current-process pseudo handle and refuses
+/// to pretend that arbitrary process handles are supported.
 #[no_mangle]
-pub unsafe extern "system" fn NtTerminateProcess() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtTerminateProcess(
+    process_handle: *mut core::ffi::c_void,
+    exit_status: i32,
+) -> i32 {
+    const STATUS_SUCCESS: i32 = 0;
+    const STATUS_INVALID_HANDLE: i32 = 0xC000_0008u32 as i32;
+    const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
+    // NT's current-process pseudo handle is (HANDLE)-1.
+    if process_handle as isize != -1 {
+        return if process_handle.is_null() { STATUS_INVALID_HANDLE } else { STATUS_NOT_IMPLEMENTED };
+    }
+    #[cfg(any(target_os = "none", target_os = "windows"))]
+    unsafe {
+        core::arch::asm!(
+            "int 0x81",
+            in("rax") 0u64,
+            in("rdi") exit_status as u64,
+            options(noreturn)
+        );
+    }
+    #[cfg(not(any(target_os = "none", target_os = "windows")))]
+    {
+        let _ = exit_status;
+        STATUS_SUCCESS
+    }
 }
 
 #[no_mangle]
@@ -1043,8 +1072,11 @@ pub unsafe extern "system" fn ZwTerminateJobObject() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwTerminateProcess() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwTerminateProcess(
+    process_handle: *mut core::ffi::c_void,
+    exit_status: i32,
+) -> i32 {
+    unsafe { NtTerminateProcess(process_handle, exit_status) }
 }
 
 #[no_mangle]
