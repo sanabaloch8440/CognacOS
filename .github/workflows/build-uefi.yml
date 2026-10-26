@@ -412,28 +412,66 @@ jobs:
           fi
           cp "$vars_template" build/OVMF_VARS.fd
           : > build/serial.log
-          set +e
-          timeout 30s qemu-system-x86_64 \
+          # Keep the original QEMU instance alive while GDB attaches. The old
+          # timeout-based run killed QEMU before the diagnostic branch could run,
+          # so its "GDB snapshot" silently started a second, unrelated boot.
+          qemu-system-x86_64 \
             -machine pc -m 5G -cpu max -smp 4 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=ide,format=raw,file=build/cognacos-uefi.img \
             -drive if=ide,format=raw,index=1,file=build/pagefile.img \
             -boot order=c -display none -monitor none \
-            -serial stdio -no-reboot -no-shutdown > build/serial.log 2>&1
-          qemu_status=$?
-          set -e
-          # The kernel intentionally halts with interrupts disabled, so timeout
-          # is expected after a successful handoff. Other QEMU failures are fatal.
-          if [ "$qemu_status" -ne 124 ] && [ "$qemu_status" -ne 0 ]; then
-            echo "QEMU exited unexpectedly with status $qemu_status" >&2
+            -serial file:build/serial.log -gdb tcp::12345 \
+            -no-reboot -no-shutdown &
+          qemu_pid=$!
+          cleanup_qemu() {
+            kill "$qemu_pid" 2>/dev/null || true
+            wait "$qemu_pid" 2>/dev/null || true
+          }
+          trap cleanup_qemu EXIT
+
+          # Poll for up to 30 seconds, allowing the VM to remain live at the
+          # exact failing instruction if the ring-3 completion marker is absent.
+          for _ in $(seq 1 120); do
+            if grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log; then
+              break
+            fi
+            if ! kill -0 "$qemu_pid" 2>/dev/null; then
+              echo "QEMU exited before the native NTDLL completion marker." >&2
+              cat build/serial.log || true
+              exit 1
+            fi
+            sleep 0.25
+          done
+
+          if ! grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log; then
+            echo "Native NTDLL smoke test did not complete; attaching GDB to the same live QEMU instance."
+            command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
+            set +e
+            gdb -q -batch \
+              -ex 'set pagination off' \
+              -ex 'set confirm off' \
+              -ex 'set architecture i386:x86-64' \
+              -ex 'target remote 127.0.0.1:12345' \
+              -ex 'info registers' \
+              -ex 'info threads' \
+              -ex 'x/24i $rip-16' \
+              -ex 'x/32gx $rsp' \
+              -ex 'info symbol $rip' \
+              -ex 'thread apply all bt' \
+              -ex 'detach' > build/gdb-state.txt 2>&1
+            gdb_status=$?
+            set -e
+            echo "=== GDB live failure snapshot (status=$gdb_status) ==="
+            cat build/gdb-state.txt || true
+            echo "=== Serial log at GDB attach ==="
             cat build/serial.log || true
-            exit "$qemu_status"
-          fi
-          if [ ! -f build/serial.log ]; then
-            echo "QEMU did not create the serial log" >&2
             exit 1
           fi
+
+          cleanup_qemu
+          trap - EXIT
           cat build/serial.log
           grep -F 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.' build/serial.log
           grep -F 'CognacOS Rust kernel entered.' build/serial.log
