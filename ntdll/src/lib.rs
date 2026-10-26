@@ -95,19 +95,6 @@ fn cognac_ntdll_panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     loop { core::hint::spin_loop(); }
 }
 
-/// Native DLL entry point. Initialize the exported process heap object and
-/// register the user exception dispatcher before application code runs.
-#[cfg(target_os = "windows")]
-#[no_mangle]
-pub unsafe extern "system" fn DllMain(
-    _module: *mut core::ffi::c_void, reason: u32, _reserved: *mut core::ffi::c_void
-) -> i32 {
-    if reason == 1 {
-        if unsafe { crate::rtl_heap::RtlGetProcessHeap() }.is_null() { return 0; }
-        unsafe { crate::windows11_exports::initialize_native_process(); }
-    }
-    1
-}
 
 
 #[cfg(feature = "relay-port")]

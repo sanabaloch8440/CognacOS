@@ -198,13 +198,21 @@ pub unsafe extern "system" fn RtlSetLastWin32ErrorAndNtStatusFromNtStatus(status
     }
 }
 
-/// Minimal DLL entry point: deliberately performs no initialization.
+/// Initialize process-scoped native NTDLL state when the loader attaches
+/// the module. This is the DLL entry point used by the freestanding PE image.
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(
     _instance: HINSTANCE,
-    _reason: DWORD,
+    reason: DWORD,
     _reserved: LPVOID,
 ) -> BOOL {
+    if reason == 1 {
+        if unsafe { crate::rtl_heap::RtlGetProcessHeap() }.is_null() {
+            return 0;
+        }
+        #[cfg(target_os = "windows")]
+        unsafe { crate::windows11_exports::initialize_native_process(); }
+    }
     1 // TRUE
 }
 
