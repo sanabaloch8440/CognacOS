@@ -192,6 +192,7 @@ pub const NT_SYSCALL_ETW_CREATE_SESSION:u64=0x138;
 pub const NT_SYSCALL_ETW_ENABLE_SESSION:u64=0x139;
 pub const NT_SYSCALL_ETW_STOP_SESSION:u64=0x13a;
 pub const NT_SYSCALL_ETW_UNREGISTER:u64=0x13b;
+pub const NT_SYSCALL_ETW_CREATE_NAMED_SESSION:u64=0x13c;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -207,14 +208,17 @@ const ETW_PAYLOAD_CAPACITY: usize = 256;
 static ETW_KERNEL_LOCK: AtomicBool = AtomicBool::new(false);
 static ETW_KERNEL_NEXT: AtomicU64 = AtomicU64::new(1);
 #[derive(Clone, Copy)]
-struct KernelEtwProvider { active: bool, handle: u64, owner: u64, guid: [u8;16], enabled: bool, level: u8, _pad: [u8;7], any: u64, all: u64, session: u64 }
-impl KernelEtwProvider { const EMPTY: Self = Self { active:false, handle:0, owner:0, guid:[0;16], enabled:false, level:0, _pad:[0;7], any:0, all:0, session:0 }; }
+struct KernelEtwSubscription { enabled: bool, level: u8, _pad: [u8;6], any: u64, all: u64 }
+impl KernelEtwSubscription { const EMPTY: Self = Self { enabled:false, level:0, _pad:[0;6], any:0, all:0 }; }
 #[derive(Clone, Copy)]
-struct KernelEtwSession { active: bool, handle: u64, owner: u64, _pad: u64 }
-impl KernelEtwSession { const EMPTY: Self = Self { active:false, handle:0, owner:0, _pad:0 }; }
+struct KernelEtwProvider { active: bool, handle: u64, owner: u64, guid: [u8;16], subscriptions: [KernelEtwSubscription;16] }
+impl KernelEtwProvider { const EMPTY: Self = Self { active:false, handle:0, owner:0, guid:[0;16], subscriptions:[KernelEtwSubscription::EMPTY;16] }; }
 #[derive(Clone, Copy)]
-struct KernelEtwEvent { active: bool, _pad:[u8;7], provider: u64, pid:u64, tid:u64, descriptor:[u8;16], activity:[u8;16], related_activity:[u8;16], length:u16, _pad2:[u8;6], payload:[u8;ETW_PAYLOAD_CAPACITY] }
-impl KernelEtwEvent { const EMPTY: Self = Self { active:false,_pad:[0;7],provider:0,pid:0,tid:0,descriptor:[0;16],activity:[0;16],related_activity:[0;16],length:0,_pad2:[0;6],payload:[0;ETW_PAYLOAD_CAPACITY] }; }
+struct KernelEtwSession { active: bool, handle: u64, owner: u64, name_len: u8, _pad: [u8;7], name: [u16;64] }
+impl KernelEtwSession { const EMPTY: Self = Self { active:false, handle:0, owner:0, name_len:0, _pad:[0;7], name:[0;64] }; }
+#[derive(Clone, Copy)]
+struct KernelEtwEvent { active: bool, _pad:[u8;5], session_mask:u16, provider: u64, pid:u64, tid:u64, descriptor:[u8;16], activity:[u8;16], related_activity:[u8;16], length:u16, _pad2:[u8;6], payload:[u8;ETW_PAYLOAD_CAPACITY] }
+impl KernelEtwEvent { const EMPTY: Self = Self { active:false,_pad:[0;5],session_mask:0,provider:0,pid:0,tid:0,descriptor:[0;16],activity:[0;16],related_activity:[0;16],length:0,_pad2:[0;6],payload:[0;ETW_PAYLOAD_CAPACITY] }; }
 static mut ETW_KERNEL_PROVIDERS:[KernelEtwProvider;ETW_PROVIDER_CAPACITY]=[KernelEtwProvider::EMPTY;ETW_PROVIDER_CAPACITY];
 static mut ETW_KERNEL_SESSIONS:[KernelEtwSession;16]=[KernelEtwSession::EMPTY;16];
 static mut ETW_KERNEL_EVENTS:[KernelEtwEvent;ETW_EVENT_CAPACITY]=[KernelEtwEvent::EMPTY;ETW_EVENT_CAPACITY];
@@ -232,7 +236,7 @@ fn etw_register(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
   let table=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
   if let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|!(*table.add(i)).active) {
    let handle=ETW_KERNEL_NEXT.fetch_add(1,Ordering::Relaxed).max(1);
-   *table.add(i)=KernelEtwProvider{active:true,handle,owner:pid,guid,enabled:false,level:0,_pad:[0;7],any:0,all:0,session:0};
+   *table.add(i)=KernelEtwProvider{active:true,handle,owner:pid,guid,subscriptions:[KernelEtwSubscription::EMPTY;16]};
    if let Err(s)=copy_nt_output(args[1],&handle.to_le_bytes()){*table.add(i)=KernelEtwProvider::EMPTY;return s;}
    return NT_STATUS_SUCCESS;
   }
@@ -259,7 +263,7 @@ fn etw_enable_state(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  unsafe {
   let table=core::ptr::addr_of!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
   let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|{let p=&*table.add(i);p.active&&p.handle==handle&&p.owner==current_process_id()}) else{return NT_STATUS_INVALID_HANDLE;};
-  let p=&*table.add(i);state[0]=p.enabled as u8;state[1]=p.level;state[8..16].copy_from_slice(&p.any.to_le_bytes());state[16..24].copy_from_slice(&p.all.to_le_bytes());
+  let p=&*table.add(i);let mut enabled=false;let mut level=0u8;let mut any=0u64;let mut all=0u64;for sub in p.subscriptions.iter(){if sub.enabled{enabled=true;level=level.max(sub.level);any|=sub.any;all|=sub.all;}}state[0]=enabled as u8;state[1]=level;state[8..16].copy_from_slice(&any.to_le_bytes());state[16..24].copy_from_slice(&all.to_le_bytes());
  }
  copy_nt_output(args[1],&state).map(|_|NT_STATUS_SUCCESS).unwrap_or_else(|s|s)
 }
@@ -274,14 +278,15 @@ fn etw_write_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  unsafe {
   let table=core::ptr::addr_of!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
   let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|{let p=&*table.add(i);p.active&&p.handle==handle&&p.owner==pid}) else{return NT_STATUS_INVALID_HANDLE;};
-  let p=&*table.add(i);let level=descriptor[4];let keyword=u64::from_le_bytes(descriptor[8..16].try_into().unwrap());
-  if !p.enabled || (p.level!=0 && level!=0 && level>p.level) || (keyword!=0 && p.any!=0 && p.any&keyword==0) || (keyword!=0 && p.all!=0 && p.all&keyword!=p.all) {return NT_STATUS_SUCCESS;}
+  let p=&*table.add(i);let event_level=descriptor[4];let keyword=u64::from_le_bytes(descriptor[8..16].try_into().unwrap());let sessions=core::ptr::addr_of!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();let mut session_mask=0u16;
+  for si in 0..16 {let sub=&p.subscriptions[si];let session=&*sessions.add(si);if !sub.enabled||!session.active{continue;}if sub.level!=0&&event_level!=0&&event_level>sub.level{continue;}if keyword!=0&&sub.any!=0&&sub.any&keyword==0{continue;}if keyword!=0&&sub.all!=0&&keyword&sub.all!=sub.all{continue;}session_mask|=1u16<<si;}
+  if session_mask==0{return NT_STATUS_SUCCESS;}
   let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();
   if ETW_KERNEL_LEN==ETW_EVENT_CAPACITY {(*events.add(ETW_KERNEL_HEAD)).active=false;ETW_KERNEL_HEAD=(ETW_KERNEL_HEAD+1)%ETW_EVENT_CAPACITY;ETW_KERNEL_LEN-=1;}
   let slot=(ETW_KERNEL_HEAD+ETW_KERNEL_LEN)%ETW_EVENT_CAPACITY;
   let mut activity=[0u8;16];activity.copy_from_slice(&wire[16..32]);
   let mut related_activity=[0u8;16];related_activity.copy_from_slice(&wire[32..48]);
-  *events.add(slot)=KernelEtwEvent{active:true,_pad:[0;7],provider:handle,pid,tid,descriptor,activity,related_activity,length:n as u16,_pad2:[0;6],payload};
+  *events.add(slot)=KernelEtwEvent{active:true,_pad:[0;5],session_mask,provider:handle,pid,tid,descriptor,activity,related_activity,length:n as u16,_pad2:[0;6],payload};
   ETW_KERNEL_LEN+=1;
  }
  NT_STATUS_SUCCESS
@@ -295,14 +300,14 @@ fn etw_read_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
   unsafe {
    if ETW_KERNEL_LEN==0{return 0x8000001Au64;}
    let sessions=core::ptr::addr_of!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
-   let session_authorized=args[4]!=0&&(0..16).any(|i|{let s=&*sessions.add(i);s.active&&s.handle==args[4]&&s.owner==pid});
+   let session_slot=if args[4]==0{None}else{(0..16).find(|&i|{let s=&*sessions.add(i);s.active&&s.handle==args[4]&&s.owner==pid})};
    let providers=core::ptr::addr_of!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
    let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();
    let mut selected=None;
    for off in 0..ETW_KERNEL_LEN {
     let idx=(ETW_KERNEL_HEAD+off)%ETW_EVENT_CAPACITY;let e=&*events.add(idx);
     let owner=(0..ETW_PROVIDER_CAPACITY).find_map(|i|{let p=&*providers.add(i);if p.active&&p.handle==e.provider{Some(p.owner)}else{None}});
-    if session_authorized||owner==Some(pid){selected=Some(off);break;}
+    if owner==Some(pid)||session_slot.is_some_and(|si|e.session_mask&(1u16<<si)!=0){selected=Some(off);break;}
    }
    let Some(offset)=selected else{return 0x8000001Au64;};
    let idx=(ETW_KERNEL_HEAD+offset)%ETW_EVENT_CAPACITY;let e=*events.add(idx);
@@ -366,12 +371,12 @@ fn etw_enable_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  let pid=current_process_id();let enabled=args[2]!=0;let level=args[3] as u8;let any=args[4];let all=args[5];
  let _g=KernelEtwGuard::lock();
  unsafe {
-  let sessions=core::ptr::addr_of!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
-  if !(0..16).any(|i|{let s=&*sessions.add(i);s.active&&s.handle==handle&&s.owner==pid}){return 0xC0000022;}
+  let sessions=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
+  let Some(si)=(0..16).find(|&i|{let s=&*sessions.add(i);s.active&&s.handle==handle&&s.owner==pid})else{return 0xC0000022;};
   let providers=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();let mut found=false;
-  for i in 0..ETW_PROVIDER_CAPACITY {let p=&*providers.add(i);if p.active&&p.guid==guid{if p.session!=0&&p.session!=handle{return 0xC0000022;}found=true;}}
+  for i in 0..ETW_PROVIDER_CAPACITY {let p=&*providers.add(i);if p.active&&p.guid==guid{found=true;}}
   if !found{return 0xC0000225;}
-  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.guid==guid{p.enabled=enabled;p.level=level;p.any=any;p.all=all;p.session=if enabled{handle}else{0};}}
+  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.guid==guid{p.subscriptions[si]=if enabled{KernelEtwSubscription{enabled:true,level,_pad:[0;6],any,all}}else{KernelEtwSubscription::EMPTY};}}
   NT_STATUS_SUCCESS
  }
 }
@@ -381,7 +386,10 @@ fn etw_stop_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
   let sessions=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
   let Some(si)=(0..16).find(|&i|{let s=&*sessions.add(i);s.active&&s.handle==handle&&s.owner==pid})else{return 0xC0000022;};
   let providers=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
-  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.session==handle{p.enabled=false;p.level=0;p.any=0;p.all=0;p.session=0;}}
+  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active{p.subscriptions[si]=KernelEtwSubscription::EMPTY;}}
+  let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();let old_head=ETW_KERNEL_HEAD;let old_len=ETW_KERNEL_LEN;let mut kept=0usize;
+  for off in 0..old_len {let src=(old_head+off)%ETW_EVENT_CAPACITY;let mut e=*events.add(src);e.session_mask&=!(1u16<<si);if e.session_mask==0{*events.add(src)=KernelEtwEvent::EMPTY;continue;}let dst=(old_head+kept)%ETW_EVENT_CAPACITY;if dst!=src{*events.add(dst)=e;*events.add(src)=KernelEtwEvent::EMPTY;}else{*events.add(dst)=e;}kept+=1;}
+  ETW_KERNEL_LEN=kept;if kept==0{ETW_KERNEL_HEAD=0;}
   *sessions.add(si)=KernelEtwSession::EMPTY;
  }
  NT_STATUS_SUCCESS
@@ -390,7 +398,7 @@ fn etw_process_exit_rundown(pid:u64) {
  let _g=KernelEtwGuard::lock();
  unsafe {
   let providers=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
-  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.owner==pid{*p=KernelEtwProvider::EMPTY;}} let sessions=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>(); for i in 0..16 {let s=&mut *sessions.add(i);if s.active&&s.owner==pid{let handle=s.handle;for j in 0..ETW_PROVIDER_CAPACITY{let p=&mut *providers.add(j);if p.active&&p.session==handle{p.enabled=false;p.level=0;p.any=0;p.all=0;p.session=0;}}*s=KernelEtwSession::EMPTY;}}
+  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.owner==pid{*p=KernelEtwProvider::EMPTY;}} let sessions=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>(); for i in 0..16 {let s=&mut *sessions.add(i);if s.active&&s.owner==pid{for j in 0..ETW_PROVIDER_CAPACITY{let p=&mut *providers.add(j);if p.active{p.subscriptions[i]=KernelEtwSubscription::EMPTY;}}*s=KernelEtwSession::EMPTY;}}
   let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();let old_head=ETW_KERNEL_HEAD;let old_len=ETW_KERNEL_LEN;let mut kept=0usize;
   for off in 0..old_len {let src=(old_head+off)%ETW_EVENT_CAPACITY;let e=*events.add(src);if !e.active||e.pid==pid{*events.add(src)=KernelEtwEvent::EMPTY;continue;}let dst=(old_head+kept)%ETW_EVENT_CAPACITY;if dst!=src{*events.add(dst)=e;*events.add(src)=KernelEtwEvent::EMPTY;}kept+=1;}
   ETW_KERNEL_LEN=kept;if kept==0{ETW_KERNEL_HEAD=0;}
@@ -1145,6 +1153,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_ETW_CREATE_SESSION => etw_create_session(args),
         NT_SYSCALL_ETW_ENABLE_SESSION => etw_enable_session(args),
         NT_SYSCALL_ETW_STOP_SESSION => etw_stop_session(args),
+        NT_SYSCALL_ETW_CREATE_NAMED_SESSION => etw_create_named_session(args),
         NT_SYSCALL_OPEN_KEY => nt_open_key(args),
         NT_SYSCALL_QUERY_VALUE_KEY => nt_query_value_key(args),
         NT_SYSCALL_OPEN_FILE => nt_open_file(args),
