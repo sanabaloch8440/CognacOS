@@ -311,3 +311,30 @@ swprintf_s:
     swprintf_s_impl = sym swprintf_s_impl,
     options(att_syntax)
 );
+
+
+// Windows x64 va_list entry point for the CRT-compatible vsprintf export.
+#[no_mangle]
+pub unsafe extern "system" fn vsprintf(
+    destination: *mut u8,
+    format: *const u8,
+    arguments: *const u8,
+) -> i32 {
+    let Some(output) = (unsafe { format_narrow(format, arguments) }) else { return -1; };
+    unsafe { write_narrow(destination, None, &output, false) }
+}
+
+// Bounded secure CRT variant. Capacity includes the terminating NUL.
+#[no_mangle]
+pub unsafe extern "system" fn vsprintf_s(
+    destination: *mut u8,
+    capacity: usize,
+    format: *const u8,
+    arguments: *const u8,
+) -> i32 {
+    let Some(output) = (unsafe { format_narrow(format, arguments) }) else {
+        if !destination.is_null() && capacity != 0 { unsafe { destination.write(0) }; }
+        return -1;
+    };
+    unsafe { write_narrow(destination, Some(capacity), &output, true) }
+}
