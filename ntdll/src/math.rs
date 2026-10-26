@@ -20,19 +20,6 @@ pub extern "C" fn abs(value: i32) -> i32 {
     if value >= 0 { value } else { value.wrapping_neg() }
 }
 
-/// Wine currently ignores the math error metadata and returns the supplied
-/// result unchanged. Kept ABI-compatible with the C helper.
-#[no_mangle]
-pub extern "C" fn math_error(
-    _error_type: i32,
-    _name: *const i8,
-    _arg1: f64,
-    _arg2: f64,
-    retval: f64,
-) -> f64 {
-    retval
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
