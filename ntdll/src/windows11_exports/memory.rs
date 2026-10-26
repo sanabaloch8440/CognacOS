@@ -222,24 +222,6 @@ unsafe extern "system" {
     fn cognacos_nt_create_section(section_handle: *mut HANDLE, desired_access: ULONG, object_attributes: PVOID, maximum_size: *const i64, page_protection: ULONG, allocation_attributes: ULONG, file_handle: HANDLE) -> NTSTATUS;
 }
 
-/// ABI-shaped Windows x64 NtCreateSection entry point. The kernel currently
-/// supports anonymous committed sections; named and file-backed sections fail closed.
-#[no_mangle]
-pub unsafe extern "system" fn NtCreateSection(
-    section_handle:*mut HANDLE,
-    desired_access:ULONG,
-    object_attributes:PVOID,
-    maximum_size:*const i64,
-    page_protection:ULONG,
-    allocation_attributes:ULONG,
-    file_handle:HANDLE,
-)->NTSTATUS{
-    if section_handle.is_null()||maximum_size.is_null(){return STATUS_INVALID_PARAMETER}
-    if desired_access==0{return STATUS_INVALID_PARAMETER}
-    if !object_attributes.is_null()||!file_handle.is_null(){return STATUS_NOT_IMPLEMENTED}
-    unsafe{cognacos_nt_create_section(section_handle,desired_access,object_attributes,maximum_size,page_protection,allocation_attributes,file_handle)}
-}
-
 #[no_mangle]
 pub unsafe extern "system" fn NtAllocateVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, zero_bits: ULONG_PTR, region_size: PSIZE_T, allocation_type: ULONG, protect: ULONG) -> NTSTATUS {
     if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
