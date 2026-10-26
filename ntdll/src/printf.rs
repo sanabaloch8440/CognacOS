@@ -1,7 +1,7 @@
-use alloc::vec::Vec;
 //! Source-first Wine NTDLL printf formatter over typed arguments.
 //! C variadic ABI shims require a target-specific bridge and are not yet linked
 //! into the freestanding PE32+ build.
+use alloc::vec::Vec;
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)] pub struct FormatFlags{pub left_align:bool,pub alternate:bool,pub zero_pad:bool,pub sign:u8}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)] pub enum Length{Default,Short,Long,LongLong,Native}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)] pub struct FormatSpec{pub flags:FormatFlags,pub width:Option<usize>,pub width_from_arg:bool,pub precision:Option<usize>,pub precision_from_arg:bool,pub length:Length,pub wide_string:bool,pub conversion:u8,pub start:usize,pub end:usize}
