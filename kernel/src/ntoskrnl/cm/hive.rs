@@ -403,6 +403,74 @@ impl<'a> WritableHive<'a> {
         Ok(list)
     }
 
+    /// Remove a child NK reference from a parent index without moving the
+    /// child cell. The caller decides when the now-unreferenced NK can be freed.
+    pub fn remove_subkey_index(&mut self, parent_nk:u32, child_nk:u32) -> Result<(), Error> {
+        if !self.dirty { return Err(Error::DirtyHive); }
+        let abs=self.cell_absolute(parent_nk)?;
+        let (count, old_list) = {
+            let raw=i32::from_le_bytes(self.bytes.get(abs..abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_|Error::Truncated)?);
+            if raw>=0||raw==i32::MIN{return Err(Error::InvalidCell);}
+            let len=raw.unsigned_abs() as usize-4;
+            let cell=self.bytes.get(abs+4..abs+4+len).ok_or(Error::Truncated)?;
+            if cell.get(0..2)!=Some(&b"nk"[..])||cell.len()<0x4c{return Err(Error::InvalidKey);}
+            (u32at(cell,0x14)?,u32at(cell,0x1c)?)
+        };
+        if count==0||count as usize>4096{return Err(Error::InvalidKey);}
+        let old=self.cell_payload(old_list)?;
+        let sig=old.get(0..2).ok_or(Error::InvalidKey)?;
+        let mut entries=[0u32;4096];
+        let mut found=false;
+        if sig==b"li" {
+            if old.len()<4+count as usize*4||u16at(old,2)? as u32!=count{return Err(Error::InvalidKey);}
+            for i in 0..count as usize { let v=u32at(old,4+i*4)?; if v==child_nk {found=true;} else if !found || v!=child_nk {entries[i]=v;} }
+        } else if sig==b"lf"||sig==b"lh" {
+            if old.len()<4+count as usize*8||u16at(old,2)? as u32!=count{return Err(Error::InvalidKey);}
+            for i in 0..count as usize {let v=u32at(old,4+i*8)?;if v==child_nk {found=true;}else{entries[i]=v;}}
+        } else { return Err(Error::UnsupportedIndex); }
+        if !found{return Err(Error::NotFound);}
+        let mut out_count=0usize;
+        for i in 0..count as usize {if entries[i]!=0|| (sig==b"li" && u32at(old,4+i*4)?==0 && child_nk!=0) {entries[out_count]=entries[i];out_count+=1;}}
+        // Rebuild the index with only valid, non-removed entries. Cell index zero
+        // is valid in some malformed inputs, so derive the list directly instead.
+        let mut compact=[0u32;4096];let mut n=0usize;
+        for i in 0..count as usize {let v=if sig==b"li" {u32at(old,4+i*4)?} else {u32at(old,4+i*8)?};if v!=child_nk{compact[n]=v;n+=1;}}
+        if n==0 {
+            let dst=self.allocated_cell_mut(parent_nk)?;put32(dst,0x14,0);put32(dst,0x1c,u32::MAX);
+        } else {
+            let list=self.allocate_cell(4+n*4)?;
+            {let dst=self.allocated_cell_mut(list)?;dst[0..2].copy_from_slice(b"li");put16(dst,2,n as u16);for i in 0..n{put32(dst,4+i*4,compact[i]);}}
+            let dst=self.allocated_cell_mut(parent_nk)?;put32(dst,0x14,n as u32);put32(dst,0x1c,list);
+        }
+        self.free_cell(old_list)?;
+        Ok(())
+    }
+
+    /// Remove a VK reference from an NK value list. The VK/data cells remain
+    /// allocated until the caller explicitly frees them after validation.
+    pub fn remove_value_index(&mut self, key_nk:u32, value_vk:u32) -> Result<(), Error> {
+        if !self.dirty { return Err(Error::DirtyHive); }
+        let abs=self.cell_absolute(key_nk)?;
+        let (count,old_list)={
+            let raw=i32::from_le_bytes(self.bytes.get(abs..abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_|Error::Truncated)?);
+            if raw>=0||raw==i32::MIN{return Err(Error::InvalidCell);}
+            let len=raw.unsigned_abs() as usize-4;
+            let cell=self.bytes.get(abs+4..abs+4+len).ok_or(Error::Truncated)?;
+            if cell.get(0..2)!=Some(&b"nk"[..])||cell.len()<0x2c{return Err(Error::InvalidKey);}
+            (u32at(cell,0x24)?,u32at(cell,0x28)?)
+        };
+        if count==0||count as usize>4096{return Err(Error::InvalidValue);}
+        let old=self.cell_payload(old_list)?;
+        if old.len()<count as usize*4{return Err(Error::InvalidValue);}
+        let mut entries=[0u32;4096];let mut n=0usize;let mut found=false;
+        for i in 0..count as usize {let v=u32at(old,i*4)?;if v==value_vk{found=true;}else{entries[n]=v;n+=1;}}
+        if !found{return Err(Error::NotFound);}
+        if n==0 {let dst=self.allocated_cell_mut(key_nk)?;put32(dst,0x24,0);put32(dst,0x28,u32::MAX);}
+        else {let list=self.allocate_cell(n*4)?;{let dst=self.allocated_cell_mut(list)?;for i in 0..n{put32(dst,i*4,entries[i]);}}let dst=self.allocated_cell_mut(key_nk)?;put32(dst,0x24,n as u32);put32(dst,0x28,list);}
+        self.free_cell(old_list)?;
+        Ok(())
+    }
+
     fn cell_payload(&self, index:u32)->Result<&[u8],Error>{
         let abs=self.cell_absolute(index)?;
         let raw=i32::from_le_bytes(self.bytes.get(abs..abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_|Error::Truncated)?);
