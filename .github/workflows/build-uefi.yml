@@ -488,11 +488,9 @@ jobs:
             maintenance info sections
             detach
             quit
-            GDB
+          GDB
             set +e
             gdb -q -batch -x build/gdb-diagnose.gdb > build/gdb-state.txt 2>&1
-            gdb_status=$?
-            set -e
             gdb_status=$?
             set -e
             echo "=== GDB live failure snapshot (status=$gdb_status) ==="
