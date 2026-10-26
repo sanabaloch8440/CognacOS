@@ -133,6 +133,7 @@ fn connect_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let bytes=unsafe{core::slice::from_raw_parts_mut(name.as_mut_ptr() as *mut u8,n*2)};
     if !crate::syscall::copy_current_user_from(us.buffer as u64,bytes){return STATUS_ACCESS_VIOLATION}
     if name[..n].iter().any(|c|*c==0){return STATUS_INVALID_PARAMETER}
+    for unit in &mut name[..n] { if (b'A' as u16..=b'Z' as u16).contains(unit) { *unit += 32; } }
     let endpoint=match crate::ntoskrnl::alpc::connect(&name[..n],current_pid()){Ok(id)=>id,Err(s)=>return s as u32 as u64};
     make_endpoint_handle(endpoint,current_pid(),args[0])
 }
@@ -356,7 +357,8 @@ fn object_name(attrs:u64, out:&mut [u16;MAX_NAME], fallback_pid:u64, slot:usize)
         let mut n=prefix.len(); n=write_decimal(fallback_pid,out,n); out[n]=b'-' as u16;n+=1; n=write_decimal(slot as u64,out,n); return Ok(n);
     }
     let oa: ObjectAttributes=read_user(attrs)?;
-    if (oa.length as usize) < core::mem::size_of::<ObjectAttributes>() || oa.object_name==0 {return Err(STATUS_INVALID_PARAMETER)}
+    if (oa.length as usize) < core::mem::size_of::<ObjectAttributes>() || oa.object_name.is_null() {return Err(STATUS_INVALID_PARAMETER)}
+    if oa.root_directory!=0 || oa.security_descriptor!=0 || oa.security_qos!=0 {return Err(STATUS_NOT_IMPLEMENTED)}
     let us:UnicodeString=read_user(oa.object_name as u64)?;
     if us.length==0||us.length%2!=0||us.length>us.maximum_length||us.length as usize/2>MAX_NAME||us.buffer.is_null(){return Err(STATUS_INVALID_PARAMETER)}
     let n=us.length as usize/2;
@@ -364,6 +366,7 @@ fn object_name(attrs:u64, out:&mut [u16;MAX_NAME], fallback_pid:u64, slot:usize)
     let bytes=unsafe{core::slice::from_raw_parts_mut(dst.as_mut_ptr() as *mut u8,n*2)};
     if !crate::syscall::copy_current_user_from(us.buffer as u64,bytes){return Err(STATUS_ACCESS_VIOLATION)}
     if out[..n].iter().any(|u|*u==0){return Err(STATUS_INVALID_PARAMETER)}
+    for unit in &mut out[..n] { if (b'A' as u16..=b'Z' as u16).contains(unit) { *unit += 32; } }
     Ok(n)
 }
 fn write_decimal(mut value:u64,out:&mut [u16;MAX_NAME],mut at:usize)->usize{
