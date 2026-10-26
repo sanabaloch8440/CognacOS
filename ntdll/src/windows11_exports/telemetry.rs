@@ -69,19 +69,19 @@ pub unsafe extern "system" fn WinSqmAddToStreamEx(_session: HANDLE, _id: DWORD, 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCheckEscalationAddToStreamEx(_session: HANDLE, _id: DWORD, _data: *const c_void, _size: DWORD, _flags: DWORD) {}
 #[no_mangle]
-pub unsafe extern "system" fn WinSqmCheckEscalationSetDWORD(_session: HANDLE, _id: DWORD, _value: DWORD) {}
+pub unsafe extern "system" fn WinSqmCheckEscalationSetDWORD(_session: HANDLE, _id: DWORD, _value: DWORD, _flags: DWORD) {}
 #[no_mangle]
-pub unsafe extern "system" fn WinSqmCheckEscalationSetDWORD64(_session: HANDLE, _id: DWORD, _value: u64) {}
+pub unsafe extern "system" fn WinSqmCheckEscalationSetDWORD64(_session: HANDLE, _id: DWORD, _value: u64, _flags: DWORD) {}
 #[no_mangle]
-pub unsafe extern "system" fn WinSqmCheckEscalationSetString(_session: HANDLE, _id: DWORD, _value: *const u16) {}
+pub unsafe extern "system" fn WinSqmCheckEscalationSetString(_session: HANDLE, _id: DWORD, _value: *const u16, _flags: DWORD) {}
 #[no_mangle]
-pub unsafe extern "system" fn WinSqmCommonDatapointDelete(_session: HANDLE, _id: DWORD) {}
+pub unsafe extern "system" fn WinSqmCommonDatapointDelete(_id: DWORD) {}
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCommonDatapointSetDWORD(_session: HANDLE, _id: DWORD, _value: DWORD) {}
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCommonDatapointSetDWORD64(_session: HANDLE, _id: DWORD, _value: u64) {}
 #[no_mangle]
-pub unsafe extern "system" fn WinSqmCommonDatapointSetStreamEx(_session: HANDLE, _id: DWORD, _data: *const c_void, _size: DWORD) {}
+pub unsafe extern "system" fn WinSqmCommonDatapointSetStreamEx(_session: HANDLE, _id: DWORD, _data: *const c_void, _size: DWORD, _flags: DWORD) {}
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCommonDatapointSetString(_session: HANDLE, _id: DWORD, _value: *const u16) {}
 #[no_mangle]
@@ -91,7 +91,7 @@ pub unsafe extern "system" fn WinSqmEventWrite(_session: HANDLE, _event_id: DWOR
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmGetEscalationRuleStatus(_session: HANDLE, _rule_id: DWORD) -> NTSTATUS { 0xC000_0002u32 as i32 }
 #[no_mangle]
-pub unsafe extern "system" fn WinSqmGetInstrumentationProperty(_property: DWORD, _buffer: *mut c_void, _buffer_length: *mut DWORD) -> NTSTATUS { 0xC000_0002u32 as i32 }
+pub unsafe extern "system" fn WinSqmGetInstrumentationProperty(_property: DWORD, _buffer: *mut c_void, _buffer_length: *mut DWORD, _property_type: *mut DWORD) -> NTSTATUS { 0xC000_0002u32 as i32 }
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmIsOptedInEx(_flags: DWORD) -> BOOL { 0 }
 #[no_mangle]
@@ -99,7 +99,7 @@ pub unsafe extern "system" fn WinSqmIsSessionDisabled(_session: HANDLE) -> BOOL 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmSetDWORD64(_session: HANDLE, _id: DWORD, _value: u64) {}
 #[no_mangle]
-pub unsafe extern "system" fn WinSqmSetEscalationInfo(_session: HANDLE, _information: *const c_void) {}
+pub unsafe extern "system" fn WinSqmSetEscalationInfo(_session: HANDLE, _information: *const c_void, _size: DWORD, _flags: DWORD) {}
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmSetIfMinDWORD(_id: DWORD, _current: DWORD, _candidate: DWORD) {}
 #[no_mangle]
@@ -107,7 +107,7 @@ pub unsafe extern "system" fn WinSqmSetString(_session: HANDLE, _id: DWORD, _val
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmStartSessionForPartner(_session_guid: *mut GUID, _session_id: DWORD, _unknown: DWORD, _partner_guid: *const GUID) -> HANDLE { INVALID_HANDLE_VALUE }
 #[no_mangle]
-pub unsafe extern "system" fn WinSqmStartSqmOptinListener(_callback: *mut c_void) -> NTSTATUS { 0xC000_0002u32 as i32 }
+pub unsafe extern "system" fn WinSqmStartSqmOptinListener() {}
 
 /// Microsoft telemetry assertion notification; intentionally does not abort the
 /// process when optional telemetry is not configured.
