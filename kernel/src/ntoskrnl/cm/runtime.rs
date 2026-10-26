@@ -925,15 +925,19 @@ mod tests {
   writer.set_value(child,&value_name,4,&[1,2,3,4,5]).unwrap();
   writer.update_base_block(2).unwrap();
   drop(writer);
-  let hive=hive_backend::Hive::open(&bytes).unwrap();
-  let key=hive.find_path(&child_name).unwrap();
-  let value=key.find_value(&value_name).unwrap();
-  let mut data=[0u8;8];
-  assert_eq!(value.data(&mut data).unwrap(),5);
-  assert_eq!(&data[..5],&[1,2,3,4,5]);
+  let child_cell;
+  {
+   let hive=hive_backend::Hive::open(&bytes).unwrap();
+   let key=hive.find_path(&child_name).unwrap();
+   child_cell=key.cell_index();
+   let value=key.find_value(&value_name).unwrap();
+   let mut data=[0u8;8];
+   assert_eq!(value.data(&mut data).unwrap(),5);
+   assert_eq!(&data[..5],&[1,2,3,4,5]);
+  }
   let mut writer=hive_writer_backend::HiveWriter::open(&mut bytes).unwrap();
-  writer.delete_value(key.cell_index(),&value_name).unwrap();
-  writer.delete_key(key.cell_index()).unwrap();
+  writer.delete_value(child_cell,&value_name).unwrap();
+  writer.delete_key(child_cell).unwrap();
   writer.update_base_block(3).unwrap();
   drop(writer);
   let hive=hive_backend::Hive::open(&bytes).unwrap();
