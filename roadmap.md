@@ -8,8 +8,9 @@
 - [x] Add a REGF writer for aligned cell allocation, NK/VK creation, stable index publication/removal, base-block sequence/checksum maintenance, and dirty-state handling.
 - [x] Add a writable-hive mount contract with caller-owned hive/journal buffers and explicit PREPARE/DATA/COMMIT/RECOVER flush callbacks; route mounted-hive create/set/delete and flush operations through the writer and journal.
 - [x] Add bounded before/after-image redo recovery with full journal validation before replay. This is CognacOS's journal protocol, not Windows `HvLE`.
+- [x] Add a single-log Windows 8.1+ `HvLE` replay path with entry-size/sequence checks, Marvin32 hash validation, dirty-page bounds checks, base-block repair, and rollback-on-invalid-image; a caller must select the applicable log and supply scratch space.
+- [ ] Add legacy `DIRT` dirty-vector log replay, dual `LOG1`/`LOG2` selection and sequence-chain policy, and validate hash behavior against Windows-generated corpus fixtures.
 - [ ] Replace bounded tables only for volatile keys/values if needed; persistent hive-backed keys now use REGF cells rather than the volatile value table.
-- [ ] Implement Windows-native `HvLE` log parsing, checksum/hash verification, dirty-page replay, recovery selection, and crash-consistent compatibility with Windows-generated transaction logs.
 - [x] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to CognacOS-private native-service IDs; writable-hive flush uses the configured durability callback, while immutable mounts return `STATUS_NOT_SUPPORTED`.
 - [x] Route absolute-path `NtCreateKey` into writable REGF cells when the target hive is explicitly mounted with a durability provider.
 - [ ] Add REGF-backed enumeration and remaining Windows information classes, change notifications, and Windows transaction semantics.
