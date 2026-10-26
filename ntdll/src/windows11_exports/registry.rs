@@ -6,6 +6,46 @@
 //! Replace generic signatures with ABI-correct declarations as each routine is implemented.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
+use core::arch::global_asm;
+use core::ffi::c_void;
+
+type HANDLE = *mut c_void;
+type PVOID = *mut c_void;
+type ULONG = u32;
+type PULONG = *mut ULONG;
+
+// CognacOS-private native-service IDs; these are deliberately not Windows
+// build-specific syscall ordinals.
+global_asm!(r#"
+    .text
+    .p2align 4
+    .global cognacos_nt_enumerate_key
+cognacos_nt_enumerate_key:
+    mov r10, rcx
+    mov eax, 0x14a
+    int 0x82
+    ret
+    .p2align 4
+    .global cognacos_nt_enumerate_value_key
+cognacos_nt_enumerate_value_key:
+    mov r10, rcx
+    mov eax, 0x14b
+    int 0x82
+    ret
+    .p2align 4
+    .global cognacos_nt_query_key
+cognacos_nt_query_key:
+    mov r10, rcx
+    mov eax, 0x14c
+    int 0x82
+    ret
+"#);
+unsafe extern "system" {
+    fn cognacos_nt_enumerate_key(key: HANDLE, index: ULONG, class: ULONG, info: PVOID, length: ULONG, result_length: PULONG) -> i32;
+    fn cognacos_nt_enumerate_value_key(key: HANDLE, index: ULONG, class: ULONG, info: PVOID, length: ULONG, result_length: PULONG) -> i32;
+    fn cognacos_nt_query_key(key: HANDLE, class: ULONG, info: PVOID, length: ULONG, result_length: PULONG) -> i32;
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn NtCommitRegistryTransaction() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
@@ -68,13 +108,19 @@ pub unsafe extern "system" fn NtDeleteValueKey(
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtEnumerateKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtEnumerateKey(
+    key_handle: HANDLE, index: ULONG, information_class: ULONG,
+    information: PVOID, length: ULONG, result_length: PULONG,
+) -> i32 {
+    unsafe { cognacos_nt_enumerate_key(key_handle, index, information_class, information, length, result_length) }
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtEnumerateValueKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtEnumerateValueKey(
+    key_handle: HANDLE, index: ULONG, information_class: ULONG,
+    information: PVOID, length: ULONG, result_length: PULONG,
+) -> i32 {
+    unsafe { cognacos_nt_enumerate_value_key(key_handle, index, information_class, information, length, result_length) }
 }
 
 #[no_mangle]
@@ -181,8 +227,11 @@ pub unsafe extern "system" fn NtOpenRegistryTransaction() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtQueryKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtQueryKey(
+    key_handle: HANDLE, information_class: ULONG,
+    information: PVOID, length: ULONG, result_length: PULONG,
+) -> i32 {
+    unsafe { cognacos_nt_query_key(key_handle, information_class, information, length, result_length) }
 }
 
 #[no_mangle]
