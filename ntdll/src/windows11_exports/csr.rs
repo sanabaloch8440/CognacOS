@@ -7,6 +7,7 @@ const STATUS_SUCCESS:i32=0;
 const STATUS_INVALID_PARAMETER:i32=0xC000000Du32 as i32;
 const STATUS_NO_MEMORY:i32=0xC0000017u32 as i32;
 const STATUS_PORT_DISCONNECTED:i32=0xC0000037u32 as i32;
+const STATUS_NOT_IMPLEMENTED:i32=0xC0000002u32 as i32;
 const HEAP_ZERO_MEMORY:u32=8;
 type PVOID=*mut c_void;
 extern "system" { fn RtlGetProcessHeap()->PVOID; fn RtlAllocateHeap(heap:PVOID,flags:u32,size:usize)->PVOID; fn RtlFreeHeap(heap:PVOID,flags:u32,mem:PVOID)->u8; }
