@@ -183,6 +183,7 @@ pub const NT_SYSCALL_ALPC_OPEN_SENDER_THREAD:u64=0x12e;
 pub const NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_OF_PORT:u64=0x12f;
 pub const NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT:u64=0x130;
 pub const NT_SYSCALL_ALPC_CONNECT_PORT_EX:u64=0x131;
+pub const NT_SYSCALL_NT_CREATE_SECTION:u64=0x132;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -953,6 +954,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_CREATE_SECTION => crate::ntoskrnl::mm::native_vm::create_section(args),
         NT_SYSCALL_DEREFERENCE_SECTION => crate::ntoskrnl::mm::native_vm::dereference_section(args),
         NT_SYSCALL_SECTION_COPY => crate::ntoskrnl::mm::native_vm::section_copy(args),
+        NT_SYSCALL_NT_CREATE_SECTION => crate::ntoskrnl::mm::section_handles::create_nt(args),
         NT_SYSCALL_REFERENCE_SECTION => crate::ntoskrnl::mm::native_vm::reference_section(args),
         NT_SYSCALL_ALPC_CREATE_PORT..=NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT | NT_SYSCALL_ALPC_CONNECT_PORT_EX => crate::ntoskrnl::alpc_native::dispatch(number,args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
