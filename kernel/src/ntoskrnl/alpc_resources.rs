@@ -192,14 +192,14 @@ pub fn dequeue_completion(list_id: u32, owner_pid: u64) -> Result<Completion, u3
 pub fn completion_count(list_id: u32, owner_pid: u64) -> Result<usize, u32> {
     let g = Guard::acquire();
     let s = unsafe { &*STATE.state.get() };
-    let l = s.lists.iter().find(|l| l.active && l.port_id == list_id).ok_or(STATUS_INVALID_HANDLE)?;
+    let l = s.lists.iter().find(|l| l.active && l.id == list_id).ok_or(STATUS_INVALID_HANDLE)?;
     if l.owner_pid != owner_pid { return Err(STATUS_ACCESS_DENIED); }
     Ok(l.len)
 }
 pub fn unregister_completion_list(list_id: u32, owner_pid: u64) -> Result<(), u32> {
     let mut g = Guard::acquire();
     let s = g.state();
-    let i = s.lists.iter().position(|l| l.active && l.port_id == list_id).ok_or(STATUS_INVALID_HANDLE)?;
+    let i = s.lists.iter().position(|l| l.active && l.id == list_id).ok_or(STATUS_INVALID_HANDLE)?;
     if s.lists[i].owner_pid != owner_pid { return Err(STATUS_ACCESS_DENIED); }
     s.lists[i] = CompletionList::EMPTY; Ok(())
 }
