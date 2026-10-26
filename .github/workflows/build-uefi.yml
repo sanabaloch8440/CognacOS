@@ -30,6 +30,10 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      # Keep DWARF line tables and frame pointers in the ELF symbol companions
+      # used by GDB. PE artifacts remain the actual boot/runtime images.
+      CARGO_PROFILE_RELEASE_DEBUG: "2"
+      CARGO_PROFILE_RELEASE_STRIP: "none"
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust targets
@@ -102,9 +106,10 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: lld-link
-          RUSTFLAGS: "-C link-arg=/DEF:${{ github.workspace }}/ntdll/exports/ntdll-rust.def -C link-arg=/ENTRY:DllMain -C link-arg=/NODEFAULTLIB -C link-arg=/LIBPATH:${{ github.workspace }}/ntdll"
+          RUSTFLAGS: "-C debuginfo=2 -C force-frame-pointers=yes -C link-arg=/DEBUG:FULL -C link-arg=/PDB:${{ github.workspace }}/build/ntdll/cognac_ntdll.pdb -C link-arg=/DEF:${{ github.workspace }}/ntdll/exports/ntdll-rust.def -C link-arg=/ENTRY:DllMain -C link-arg=/NODEFAULTLIB -C link-arg=/LIBPATH:${{ github.workspace }}/ntdll"
         run: |
           set -euo pipefail
+          mkdir -p build/ntdll
           sysroot="$(rustc --print sysroot)"
           mkdir -p "$RUNNER_TEMP/ntdll-linker"
           ln -sf "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld" "$RUNNER_TEMP/ntdll-linker/lld-link"
@@ -165,7 +170,7 @@ jobs:
           mkdir -p build/drivers
           build_driver() {
             local name="$1" package="$2" bin="$3" base="$4" output="$5"
-            RUSTFLAGS="-C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/$package/driver.ld" \
+            RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/$package/driver.ld" \
               cargo build --manifest-path "$package/Cargo.toml" --target x86_64-unknown-none \
                 --target-dir "target/driver-$name" --release --bin "$bin"
             python3 tools/elf_to_pe32plus.py "target/driver-$name/x86_64-unknown-none/release/$bin" \
@@ -175,11 +180,11 @@ jobs:
           build_driver acpi drivers/acpi acpi 0xffff8000d0000000 acpi.sys
           build_driver pci drivers/pci pci 0xffff8000e0000000 pci.sys
           build_driver processor drivers/processor processor 0xffff8000f0000000 processor.sys
-          RUSTFLAGS="-C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/storahci.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-storahci --release --bin storahci
+          RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/storahci.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-storahci --release --bin storahci
           python3 tools/elf_to_pe32plus.py target/driver-storahci/x86_64-unknown-none/release/storahci build/drivers/storahci.sys --image-base 0xffff800110000000 --dll
-          RUSTFLAGS="-C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/stornvme.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-stornvme --release --bin stornvme
+          RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/stornvme.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-stornvme --release --bin stornvme
           python3 tools/elf_to_pe32plus.py target/driver-stornvme/x86_64-unknown-none/release/stornvme build/drivers/stornvme.sys --image-base 0xffff800120000000 --dll
-          RUSTFLAGS="-C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/disk.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-disk --release --bin disk
+          RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/disk.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-disk --release --bin disk
           python3 tools/elf_to_pe32plus.py target/driver-disk/x86_64-unknown-none/release/disk build/drivers/disk.sys --image-base 0xffff800130000000 --dll
           python3 - <<'PY'
           import struct
@@ -262,7 +267,7 @@ jobs:
           build/hibernation-tests
       - name: Build freestanding Rust kernel with project linker script
         env:
-          RUSTFLAGS: -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
+          RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
         run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
       - name: Convert fixed-base kernel ELF to PE32+
         run: |
@@ -423,6 +428,7 @@ jobs:
             -drive if=ide,format=raw,index=1,file=build/pagefile.img \
             -boot order=c -display none -monitor none \
             -serial file:build/serial.log -gdb tcp::12345 \
+            -d int,cpu_reset,guest_errors -D build/qemu-debug.log \
             -no-reboot -no-shutdown &
           qemu_pid=$!
           cleanup_qemu() {
@@ -449,24 +455,52 @@ jobs:
             echo "Native NTDLL smoke test did not complete; attaching GDB to the same live QEMU instance."
             command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
             set +e
-            gdb -q -batch \
-              -ex 'set pagination off' \
-              -ex 'set confirm off' \
-              -ex 'set architecture i386:x86-64' \
-              -ex 'target remote 127.0.0.1:12345' \
-              -ex 'info registers' \
-              -ex 'info threads' \
-              -ex 'x/24i $rip-16' \
-              -ex 'x/32gx $rsp' \
-              -ex 'info symbol $rip' \
-              -ex 'thread apply all bt' \
-              -ex 'detach' > build/gdb-state.txt 2>&1
+            # Load DWARF-bearing ELF companions so GDB can resolve source file:line
+            # for the kernel and HAL, while attaching to the *same* failing QEMU.
+            # The native NTDLL PE/PDB and all debug companions are preserved as artifacts.
+            cat > build/gdb-diagnose.gdb <<'GDB'
+            set pagination off
+            set confirm off
+            set print pretty on
+            set print frame-arguments all
+            set disassemble-next-line on
+            set backtrace limit 80
+            set architecture i386:x86-64
+            set substitute-path /home/runner/work/CognacOS/CognacOS .
+            file target/x86_64-unknown-none/release/cognacos-kernel
+            target remote 127.0.0.1:12345
+            echo \\n===== LIVE CPU / SOURCE LOCATION =====\\n
+            info registers
+            info threads
+            info line *$rip
+            list *$rip
+            info symbol $rip
+            x/32i $rip-32
+            x/32gx $rsp
+            echo \\n===== KERNEL BACKTRACE WITH SOURCE LINES =====\\n
+            thread apply all bt full
+            echo \\n===== HAL SYMBOL COMPANION =====\\n
+            add-symbol-file target/driver-hal/x86_64-unknown-none/release/hal
+            info symbol $rip
+            info line *$rip
+            echo \\n===== NTDLL SYMBOL/EXPORT CHECK =====\\n
+            info sharedlibrary
+            maintenance info sections
+            detach
+            quit
+            GDB
+            set +e
+            gdb -q -batch -x build/gdb-diagnose.gdb > build/gdb-state.txt 2>&1
+            gdb_status=$?
+            set -e
             gdb_status=$?
             set -e
             echo "=== GDB live failure snapshot (status=$gdb_status) ==="
             cat build/gdb-state.txt || true
             echo "=== Serial log at GDB attach ==="
             cat build/serial.log || true
+            echo "=== QEMU CPU exception / reset trace ==="
+            tail -n 500 build/qemu-debug.log || true
             exit 1
           fi
 
@@ -502,42 +536,6 @@ jobs:
           grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
           grep -F 'Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.' build/serial.log
           grep -F 'NTDLL PE32+ image mapped and exports registered.' build/serial.log
-          if ! grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log; then
-            echo "Native NTDLL smoke test did not complete; collecting a QEMU GDB snapshot."
-            command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
-            cp "$vars_template" build/OVMF_VARS_gdb.fd
-            : > build/gdb-serial.log
-            qemu-system-x86_64 \
-              -machine pc -m 5G -cpu max -smp 4 \
-              -drive if=pflash,format=raw,readonly=on,file="$code" \
-              -drive if=pflash,format=raw,file=build/OVMF_VARS_gdb.fd \
-              -drive if=ide,format=raw,file=build/cognacos-uefi.img \
-              -drive if=ide,format=raw,index=1,file=build/pagefile.img \
-              -boot order=c -display none -monitor none \
-              -serial file:build/gdb-serial.log -gdb tcp::12345 \
-              -no-reboot -no-shutdown &
-            qemu_pid=$!
-            sleep 5
-            set +e
-            gdb -q -batch \
-              -ex 'set pagination off' \
-              -ex 'set architecture i386:x86-64' \
-              -ex 'target remote 127.0.0.1:12345' \
-              -ex 'info registers' \
-              -ex 'x/16i $rip' \
-              -ex 'x/16gx $rsp' \
-              -ex 'bt' \
-              -ex 'detach' > build/gdb-state.txt 2>&1
-            gdb_status=$?
-            set -e
-            kill "$qemu_pid" 2>/dev/null || true
-            wait "$qemu_pid" 2>/dev/null || true
-            echo "=== GDB snapshot (status=$gdb_status) ==="
-            cat build/gdb-state.txt || true
-            echo "=== GDB rerun serial log ==="
-            cat build/gdb-serial.log || true
-            exit 1
-          fi
           grep -F 'Rust NTDLL mapped into process before PEB/LDR initialization.' build/serial.log
           grep -F 'Per-process page-table isolation, same-VA non-aliasing, and supervisor mapping protection passed.' build/serial.log
           grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
@@ -601,6 +599,18 @@ jobs:
             build/cognacos-uefi.img
             build/serial.log
             build/serial-smp-*.log
+            build/gdb-state.txt
+            build/gdb-diagnose.gdb
+            build/qemu-debug.log
+            build/ntdll/cognac_ntdll.pdb
+            target/x86_64-unknown-none/release/cognacos-kernel
+            target/driver-hal/x86_64-unknown-none/release/hal
+            target/driver-acpi/x86_64-unknown-none/release/acpi
+            target/driver-pci/x86_64-unknown-none/release/pci
+            target/driver-processor/x86_64-unknown-none/release/processor
+            target/driver-storahci/x86_64-unknown-none/release/storahci
+            target/driver-stornvme/x86_64-unknown-none/release/stornvme
+            target/driver-disk/x86_64-unknown-none/release/disk
             build/drivers/Hal.dll
             build/drivers/acpi.sys
             build/drivers/pci.sys
