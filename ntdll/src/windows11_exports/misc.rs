@@ -217,10 +217,10 @@ pub unsafe extern "system" fn ExpInterlockedPopEntrySListResume() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswalnum(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_alphanumeric()) as i32 }
+pub unsafe extern "system" fn iswalnum(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_alphanumeric()).unwrap_or(false) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswalpha(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_alphabetic()) as i32 }
+pub unsafe extern "system" fn iswalpha(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_alphabetic()).unwrap_or(false) as i32 }
 
 #[no_mangle]
 pub unsafe extern "system" fn iswascii(c: u32) -> i32 { (c <= 0x7f) as i32 }
@@ -231,16 +231,16 @@ pub unsafe extern "system" fn iswascii(c: u32) -> i32 { (c <= 0x7f) as i32 }
 pub unsafe extern "system" fn iswdigit(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_digit()) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswgraph(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_graphic()) as i32 }
+pub unsafe extern "system" fn iswgraph(c: u32) -> i32 { char::from_u32(c).map(|v| !v.is_control() && !v.is_whitespace()).unwrap_or(false) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswlower(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_lowercase()) as i32 }
+pub unsafe extern "system" fn iswlower(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_lowercase()).unwrap_or(false) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswprint(c: u32) -> i32 { (c <= 0x7f && ((c as u8).is_ascii_graphic() || c==32)) as i32 }
+pub unsafe extern "system" fn iswprint(c: u32) -> i32 { char::from_u32(c).map(|v| !v.is_control()).unwrap_or(false) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswspace(c: u32) -> i32 { matches!(c, 9..=13 | 32) as i32 }
+pub unsafe extern "system" fn iswspace(c: u32) -> i32 { char::from_u32(c).map(|v| v.is_whitespace()).unwrap_or(false) as i32 }
 
 #[no_mangle]
 pub unsafe extern "system" fn iswxdigit(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_hexdigit()) as i32 }
@@ -386,10 +386,10 @@ pub unsafe extern "system" fn swscanf_s() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn towlower(c: u32) -> u32 { if (65..=90).contains(&c) {c+32} else {c} }
+pub unsafe extern "system" fn towlower(c: u32) -> u32 { char::from_u32(c).and_then(|v| { let mut it = v.to_lowercase(); let first = it.next()?; if it.next().is_none() { Some(first as u32) } else { Some(c) } }).unwrap_or(c) }
 
 #[no_mangle]
-pub unsafe extern "system" fn towupper(c: u32) -> u32 { if (97..=122).contains(&c) {c-32} else {c} }
+pub unsafe extern "system" fn towupper(c: u32) -> u32 { char::from_u32(c).and_then(|v| { let mut it = v.to_uppercase(); let first = it.next()?; if it.next().is_none() { Some(first as u32) } else { Some(c) } }).unwrap_or(c) }
 
 
 
