@@ -247,6 +247,52 @@ fn persistent_create_subkey(slot: usize, parent_cell: u32, name: &[u16]) -> Resu
     Ok(child)
 }
 
+fn persistent_delete_value(slot: usize, cell: u32, name: &[u16]) -> Result<(), i32> {
+    persistent_mutation(slot, |writer| writer.delete_value(cell, name))
+}
+fn persistent_delete_key(slot: usize, cell: u32) -> Result<(), i32> {
+    persistent_mutation(slot, |writer| writer.delete_key(cell))
+}
+fn persistent_mutation(
+    slot: usize,
+    mutate: impl FnOnce(&mut crate::ntoskrnl::cm::hive_writer::HiveWriter<'_>) -> Result<(), crate::ntoskrnl::cm::hive_writer::Error>,
+) -> Result<(), i32> {
+    if slot >= 7 { return Err(STATUS_INVALID_PARAMETER); }
+    let mounted = unsafe { core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot])) };
+    let flush = mounted.flush.ok_or(STATUS_NOT_SUPPORTED)?;
+    if mounted.bytes.is_null() || mounted.journal.is_null() { return Err(STATUS_NOT_SUPPORTED); }
+    let hive = unsafe { core::slice::from_raw_parts_mut(mounted.bytes, mounted.len) };
+    let journal = unsafe { core::slice::from_raw_parts_mut(mounted.journal, mounted.journal_len) };
+    let seq = crate::ntoskrnl::cm::hive_writer::RedoJournal::begin(hive, journal).map_err(|_| STATUS_INSUFFICIENT_RESOURCES)?;
+    flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_PREPARE, hive, journal)?;
+    let result = (|| {
+        let mut writer = crate::ntoskrnl::cm::hive_writer::HiveWriter::open(hive).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        writer.mark_dirty(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        mutate(&mut writer).map_err(|e| match e {
+            crate::ntoskrnl::cm::hive_writer::Error::NoSpace => STATUS_INSUFFICIENT_RESOURCES,
+            crate::ntoskrnl::cm::hive_writer::Error::InvalidValue => STATUS_OBJECT_NAME_NOT_FOUND,
+            _ => STATUS_INVALID_PARAMETER,
+        })?;
+        writer.update_base_block(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        Ok::<(), i32>(())
+    })();
+    if let Err(status) = result {
+        let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+        let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
+        return Err(status);
+    }
+    if let Err(status) = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_DATA, hive, journal) {
+        let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+        let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
+        return Err(status);
+    }
+    crate::ntoskrnl::cm::hive_writer::RedoJournal::commit(hive, journal).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_COMMIT, hive, journal)?;
+    let parsed = hive_backend::Hive::open(hive).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    unsafe { (*core::ptr::addr_of_mut!(MOUNTED_HIVES[slot])).info = parsed.info; }
+    Ok(())
+}
+
 fn persistent_set_value(slot: usize, cell: u32, name: &[u16], kind: u32, data: &[u8]) -> Result<(), i32> {
     if slot >= 7 { return Err(STATUS_INVALID_PARAMETER); }
     let mounted = unsafe { core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot])) };
@@ -634,14 +680,21 @@ pub unsafe extern "win64" fn ZwQueryKey(
 pub unsafe extern "win64" fn ZwDeleteValueKey(h:*mut core::ffi::c_void,name:*const UnicodeString)->i32{
  let mut nb=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nb)}{Ok(n)=>n,Err(e)=>return e};
  let _g=LOCK.lock();let s=state();let id=match key_with_access(h,KEY_SET_VALUE){Ok(id)=>id,Err(status)=>return status};
- if s.keys.iter().any(|k|k.used && !k.deleted && k.id==id && k.hive_slot!=0) { return STATUS_NOT_SUPPORTED; }
+ if let Some(key)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==id&&k.hive_slot!=0).copied() {
+  return match persistent_delete_value((key.hive_slot-1) as usize,key.hive_cell,&nb[..n]) { Ok(())=>STATUS_SUCCESS,Err(e)=>e };
+ }
  let Some(v)=s.values.iter_mut().find(|v|v.used&&v.key_id==id&&eq(&v.name[..v.name_len as usize],&nb[..n]))else{return STATUS_OBJECT_NAME_NOT_FOUND;};
  *v=Value::EMPTY;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwDeleteKey(h:*mut core::ffi::c_void)->i32{
  let _g=LOCK.lock();let s=state();let id=match key_with_access(h,DELETE){Ok(id)=>id,Err(status)=>return status};
- if s.keys.iter().any(|k|k.used && !k.deleted && k.id==id && k.hive_slot!=0) { return STATUS_NOT_SUPPORTED; }
+ if let Some(key)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==id&&k.hive_slot!=0).copied() {
+  match persistent_delete_key((key.hive_slot-1) as usize,key.hive_cell) { Ok(())=>{},Err(e)=>return e }
+  let Some(index)=s.keys.iter().position(|k|k.used&&k.id==id)else{return STATUS_OBJECT_NAME_NOT_FOUND;};
+  let body=core::ptr::addr_of_mut!(s.keys[index]).cast::<core::ffi::c_void>();s.keys[index].deleted=true;
+  #[cfg(not(test))] { let _=crate::ntoskrnl::ob::runtime::unregister_object(body); } let _=body;return STATUS_SUCCESS;
+ }
  if s.keys.iter().any(|k|k.used&&!k.deleted&&k.parent==id)||s.values.iter().any(|v|v.used&&v.key_id==id){return STATUS_ACCESS_DENIED;}
  let Some(index)=s.keys.iter().position(|k|k.used&&k.id==id)else{return STATUS_OBJECT_NAME_NOT_FOUND;};
  let body=core::ptr::addr_of_mut!(s.keys[index]).cast::<core::ffi::c_void>();s.keys[index].deleted=true;
