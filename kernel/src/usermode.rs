@@ -222,13 +222,19 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     // Map the staged Rust NTDLL into this process before creating its PEB/LDR
     // so the loader list, process heap, TLS, and DllMain callout refer to the
     // image actually mapped in this address space.
-    let _process_ntdll = if let Some(ntdll_bytes) = crate::boot_ntdll_bytes() {
-        let loaded = unsafe { crate::pe::load_dll(space, ntdll_bytes, b"ntdll.dll", None) }
-            .map_err(|_| VmError::InvalidAddress)?;
-        if !loaded.is_dll { return Err(VmError::InvalidAddress); }
-        unsafe { crate::serial_write(b"Rust NTDLL mapped into process before PEB/LDR initialization.\\r\\n"); }
-        Some(loaded)
+    let _process_ntdll = if !image.is_dll {
+        if let Some(ntdll_bytes) = crate::boot_ntdll_bytes() {
+            let loaded = unsafe { crate::pe::load_dll(space, ntdll_bytes, b"ntdll.dll", None) }
+                .map_err(|_| VmError::InvalidAddress)?;
+            if !loaded.is_dll { return Err(VmError::InvalidAddress); }
+            unsafe { crate::serial_write(b"Rust NTDLL mapped into process before PEB/LDR initialization.\\r\\n"); }
+            Some(loaded)
+        } else {
+            None
+        }
     } else {
+        // NTDLL itself is also exercised as a main image by the isolated ABI
+        // smoke test; never recursively map a second NTDLL into that process.
         None
     };
     let env = unsafe { crate::process::initialize(space, image.base, image.entry, image.image_size, USER_STACK + PAGE, USER_STACK) }
