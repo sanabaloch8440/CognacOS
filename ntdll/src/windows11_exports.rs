@@ -12,6 +12,8 @@ mod syscall;
 mod runtime;
 mod crt;
 mod misc;
+mod process_snapshot;
+mod telemetry;
 mod etw;
 mod csr;
 mod threadpool;
