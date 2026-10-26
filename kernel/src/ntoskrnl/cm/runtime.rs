@@ -211,6 +211,35 @@ pub unsafe fn mount_writable_hive_bytes(
     Ok(())
 }
 
+/// Mount a writable hive after replaying one Windows 8.1+ HvLE log file.
+/// The caller chooses the applicable LOG/LOG1/LOG2 according to the boot/storage
+/// policy and supplies scratch space for fail-closed replay.
+pub unsafe fn mount_writable_hive_bytes_with_hvle_log(
+    name: &str, bytes: &'static mut [u8], journal: &'static mut [u8],
+    log: &[u8], scratch: &mut [u8], flush: HiveFlush,
+) -> Result<hive_writer_backend::HvleRecoveryReport, i32> {
+    let slot = hive_slot_for_name(name).ok_or(STATUS_INVALID_PARAMETER)?;
+    if hive_writer_backend::RedoJournal::capacity(bytes.len()).filter(|n| *n <= journal.len()).is_none() {
+        return Err(STATUS_INSUFFICIENT_RESOURCES);
+    }
+    if hive_writer_backend::RedoJournal::recover(bytes, journal).map_err(|_| STATUS_INVALID_PARAMETER)? {
+        flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, bytes, journal)?;
+    }
+    let report = hive_writer_backend::replay_hvle(bytes, log, scratch).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    if report.entries_applied != 0 {
+        flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, bytes, journal)?;
+    }
+    let parsed = hive_backend::Hive::open(bytes).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let info = parsed.info;
+    drop(parsed);
+    let _guard = LOCK.lock();
+    unsafe { MOUNTED_HIVES[slot] = MountedHive {
+        bytes: bytes.as_mut_ptr(), len: bytes.len(), info,
+        journal: journal.as_mut_ptr(), journal_len: journal.len(), flush: Some(flush),
+    }; }
+    Ok(report)
+}
+
 fn persistent_create_subkey(slot: usize, parent_cell: u32, name: &[u16]) -> Result<u32, i32> {
     if slot >= 7 { return Err(STATUS_INVALID_PARAMETER); }
     let mounted = unsafe { core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot])) };
