@@ -193,6 +193,7 @@ pub const NT_SYSCALL_ETW_ENABLE_SESSION:u64=0x139;
 pub const NT_SYSCALL_ETW_STOP_SESSION:u64=0x13a;
 pub const NT_SYSCALL_ETW_UNREGISTER:u64=0x13b;
 pub const NT_SYSCALL_ETW_CREATE_NAMED_SESSION:u64=0x13c;
+pub const NT_SYSCALL_ETW_QUERY_EVENT_ENABLED:u64=0x13d;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -267,6 +268,29 @@ fn etw_enable_state(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  }
  copy_nt_output(args[1],&state).map(|_|NT_STATUS_SUCCESS).unwrap_or_else(|s|s)
 }
+fn etw_query_event_enabled(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
+ if args[1]==0{return NT_STATUS_INVALID_PARAMETER;}
+ let handle=args[0];let mut descriptor=[0u8;16];
+ if let Err(status)=copy_nt_input(args[1],&mut descriptor){return status;}
+ let level=descriptor[4];let keyword=u64::from_le_bytes(descriptor[8..16].try_into().unwrap());
+ let pid=current_process_id();let _g=KernelEtwGuard::lock();
+ unsafe {
+  let providers=core::ptr::addr_of!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
+  let Some(pi)=(0..ETW_PROVIDER_CAPACITY).find(|&i|{let p=&*providers.add(i);p.active&&p.handle==handle&&p.owner==pid})else{return NT_STATUS_INVALID_HANDLE;};
+  let sessions=core::ptr::addr_of!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
+  let p=&*providers.add(pi);
+  for si in 0..16 {
+   let sub=&p.subscriptions[si];let session=&*sessions.add(si);
+   if !sub.enabled||!session.active{continue;}
+   if sub.level!=0&&level!=0&&level>sub.level{continue;}
+   if keyword!=0&&sub.any!=0&&sub.any&keyword==0{continue;}
+   if keyword!=0&&sub.all!=0&&keyword&sub.all!=sub.all{continue;}
+   return 1;
+  }
+ }
+ 0
+}
+
 fn etw_write_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  if args[1]==0 || args[2]==0 || args[3]>ETW_PAYLOAD_CAPACITY as u64{return NT_STATUS_INVALID_PARAMETER;}
  let handle=args[0]; let mut wire=[0u8;48]; let mut descriptor=[0u8;16]; let mut payload=[0u8;ETW_PAYLOAD_CAPACITY];
@@ -1148,6 +1172,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_ETW_REGISTER => etw_register(args),
         NT_SYSCALL_ETW_UNREGISTER => etw_unregister(args),
         NT_SYSCALL_ETW_ENABLE_STATE => etw_enable_state(args),
+        NT_SYSCALL_ETW_QUERY_EVENT_ENABLED => etw_query_event_enabled(args),
         NT_SYSCALL_ETW_WRITE_EVENT => etw_write_event(args),
         NT_SYSCALL_ETW_READ_EVENT => etw_read_event(args),
         NT_SYSCALL_ETW_CREATE_SESSION => etw_create_session(args),
