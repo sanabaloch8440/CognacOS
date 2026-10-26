@@ -19,6 +19,7 @@ pub type NTSTATUS = i32;
 pub type PVOID = *mut c_void;
 
 pub const STATUS_SUCCESS: NTSTATUS = 0;
+pub const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000D_u32 as NTSTATUS;
 pub const STATUS_BUFFER_TOO_SMALL: NTSTATUS = 0xC000_0023_u32 as NTSTATUS;
 
 pub const ALPC_MESSAGE_SECURITY_ATTRIBUTE: ULONG = 0x8000_0000;
@@ -188,15 +189,15 @@ mod tests {
 
     #[test]
     fn header_size_includes_only_recognized_attributes() {
-        assert_eq!(AlpcGetHeaderSize(0), size_of::<ALPC_MESSAGE_ATTRIBUTES>());
+        assert_eq!(AlpcGetHeaderSize(0), size_of::<ALPC_MESSAGE_ATTRIBUTES>() as ULONG);
         assert_eq!(
             AlpcGetHeaderSize(ALPC_MESSAGE_SECURITY_ATTRIBUTE),
-            size_of::<ALPC_MESSAGE_ATTRIBUTES>() + size_of::<ALPC_SECURITY_ATTR>()
+            (size_of::<ALPC_MESSAGE_ATTRIBUTES>() + size_of::<ALPC_SECURITY_ATTR>()) as ULONG
         );
         assert_eq!(
             AlpcGetHeaderSize(ALPC_MESSAGE_ATTRIBUTE_ALL | 1),
-            ATTRIBUTE_SIZES.iter().map(|(_, size)| *size).sum::<usize>()
-                + size_of::<ALPC_MESSAGE_ATTRIBUTES>()
+            (ATTRIBUTE_SIZES.iter().map(|(_, size)| *size).sum::<usize>()
+                + size_of::<ALPC_MESSAGE_ATTRIBUTES>()) as ULONG
         );
     }
 
@@ -204,7 +205,7 @@ mod tests {
     fn initialize_reports_required_size_and_checks_capacity() {
         let flags = ALPC_MESSAGE_VIEW_ATTRIBUTE | ALPC_MESSAGE_TOKEN_ATTRIBUTE;
         let required = AlpcGetHeaderSize(flags);
-        let mut reported = 0usize;
+        let mut reported = 0u32;
         let mut header = ALPC_MESSAGE_ATTRIBUTES {
             AllocatedAttributes: 0,
             ValidAttributes: u32::MAX,
@@ -233,7 +234,7 @@ mod tests {
             | ALPC_MESSAGE_CONTEXT_ATTRIBUTE
             | ALPC_MESSAGE_TOKEN_ATTRIBUTE;
         let total = AlpcGetHeaderSize(flags);
-        let mut storage = vec![0u64; (total + 7) / 8];
+        let mut storage = vec![0u64; (total as usize + 7) / 8];
         let header = storage.as_mut_ptr().cast::<ALPC_MESSAGE_ATTRIBUTES>();
 
         // SAFETY: Storage is sufficiently sized and suitably aligned for the header.
@@ -246,13 +247,13 @@ mod tests {
             assert_eq!(security as usize - header as usize, size_of::<ALPC_MESSAGE_ATTRIBUTES>());
             assert_eq!(
                 context as usize - header as usize,
-                size_of::<ALPC_MESSAGE_ATTRIBUTES>() + size_of::<ALPC_SECURITY_ATTR>()
+                (size_of::<ALPC_MESSAGE_ATTRIBUTES>() + size_of::<ALPC_SECURITY_ATTR>())
             );
             assert_eq!(
                 token as usize - header as usize,
-                size_of::<ALPC_MESSAGE_ATTRIBUTES>()
+                (size_of::<ALPC_MESSAGE_ATTRIBUTES>()
                     + size_of::<ALPC_SECURITY_ATTR>()
-                    + size_of::<ALPC_CONTEXT_ATTR>()
+                    + size_of::<ALPC_CONTEXT_ATTR>())
             );
             assert!(AlpcGetMessageAttribute(header, 0).is_null());
             assert!(AlpcGetMessageAttribute(
