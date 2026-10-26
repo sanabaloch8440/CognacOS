@@ -1693,7 +1693,16 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     }
 
     let mut context = [0u8; AMD64_CONTEXT_SIZE];
-    put_u32(&mut context, 0x30, 0x0010_0007);
+    put_u32(&mut context, 0x30, 0x0010_000f);
+    // The exception entry has already saved the interrupted thread's XSAVE
+    // area before entering Rust. Its legacy 512-byte FXSAVE prefix matches
+    // CONTEXT.FltSave, so preserve x87/SSE registers for handler edits/continue.
+    let user_xstate = crate::ntoskrnl::ke::thread::cognacos_current_user_xstate_ptr();
+    if !user_xstate.is_null() {
+        unsafe { core::ptr::copy_nonoverlapping(user_xstate, context.as_mut_ptr().add(0x100), 512); }
+        let mxcsr = unsafe { core::ptr::read_unaligned(user_xstate.add(24).cast::<u32>()) };
+        put_u32(&mut context, 0x34, mxcsr);
+    }
     put_u16(&mut context, 0x38, trap.cs as u16);
     put_u16(&mut context, 0x42, trap.ss as u16);
     put_u32(&mut context, 0x44, trap.rflags as u32);
