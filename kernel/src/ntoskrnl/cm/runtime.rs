@@ -144,11 +144,11 @@ unsafe fn object_path(oa:*const ObjectAttributes)->Result<([u16;MAX_NAME],usize,
 /// Mounted REGF bytes remain in their original Windows hive representation.
 /// The loader must place hive bytes in permanent kernel-owned memory first.
 #[derive(Clone, Copy)]
-type HiveFlush = fn(name: &'static str, phase: u32, hive: &[u8], journal: &[u8]) -> Result<(), i32>;
-const HIVE_FLUSH_PREPARE: u32 = 1;
-const HIVE_FLUSH_DATA: u32 = 2;
-const HIVE_FLUSH_COMMIT: u32 = 3;
-const HIVE_FLUSH_RECOVER: u32 = 4;
+pub type HiveFlush = fn(name: &'static str, phase: u32, hive: &[u8], journal: &[u8]) -> Result<(), i32>;
+pub const HIVE_FLUSH_PREPARE: u32 = 1;
+pub const HIVE_FLUSH_DATA: u32 = 2;
+pub const HIVE_FLUSH_COMMIT: u32 = 3;
+pub const HIVE_FLUSH_RECOVER: u32 = 4;
 const HIVE_SLOT_NAMES: [&str; 7] = ["SYSTEM", "SOFTWARE", "SECURITY", "SAM", "DEFAULT", "COMPONENTS", "BCD00000000"];
 #[derive(Clone, Copy)]
 struct MountedHive { bytes: *mut u8, len: usize, info: hive_backend::BaseInfo, journal: *mut u8, journal_len: usize, flush: Option<HiveFlush> }
