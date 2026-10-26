@@ -457,7 +457,6 @@ pub unsafe extern "system" fn RtlExitUserProcess(exit_status: i32) -> ! {
     // is the kernel's SYS_EXIT gate, whose EXIT_SENTINEL diverts to the process
     // exit stub rather than returning to a dying address space.
     let _ = unsafe { super::loader::LdrShutdownProcess() };
-    super::etw::rundown_current_process();
     #[cfg(target_os = "none")]
     unsafe {
         core::arch::asm!("int 0x81", in("rax") 0u64, in("rdi") exit_status as u64, options(noreturn));
