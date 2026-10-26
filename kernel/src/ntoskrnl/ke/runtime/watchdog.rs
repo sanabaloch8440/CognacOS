@@ -13,21 +13,21 @@ const HIGH_IRQL_TIMEOUT_SECONDS: u64 = 120;
 const CLOCK_TIMEOUT_SECONDS: u64 = 10;
 
 static LAST_TICK_COUNTER: [core::sync::atomic::AtomicU64; CPU_COUNT] =
-    [const { AtomicU64::new(0) }; CPU_COUNT];
+    [const { core::sync::atomic::AtomicU64::new(0) }; CPU_COUNT];
 static TICK_COUNT: [AtomicU64; CPU_COUNT] =
-    [const { AtomicU64::new(0) }; CPU_COUNT];
+    [const { core::sync::atomic::AtomicU64::new(0) }; CPU_COUNT];
 static LAST_CLOCK_SEEN: [AtomicU64; CPU_COUNT] =
-    [const { AtomicU64::new(0) }; CPU_COUNT];
+    [const { core::sync::atomic::AtomicU64::new(0) }; CPU_COUNT];
 static HIGH_IRQL_START: [AtomicU64; CPU_COUNT] =
-    [const { AtomicU64::new(0) }; CPU_COUNT];
+    [const { core::sync::atomic::AtomicU64::new(0) }; CPU_COUNT];
 static HIGH_IRQL_TOTAL: [AtomicU64; CPU_COUNT] =
-    [const { AtomicU64::new(0) }; CPU_COUNT];
+    [const { core::sync::atomic::AtomicU64::new(0) }; CPU_COUNT];
 static ACTIVE_DPC_START: [AtomicU64; CPU_COUNT] =
-    [const { AtomicU64::new(0) }; CPU_COUNT];
+    [const { core::sync::atomic::AtomicU64::new(0) }; CPU_COUNT];
 static ACTIVE_DPC_ROUTINE: [AtomicU64; CPU_COUNT] =
-    [const { AtomicU64::new(0) }; CPU_COUNT];
+    [const { core::sync::atomic::AtomicU64::new(0) }; CPU_COUNT];
 static WATCHDOG_REPORTED: [core::sync::atomic::AtomicU8; CPU_COUNT] =
-    [const { AtomicU8::new(0) }; CPU_COUNT];
+    [const { core::sync::atomic::AtomicU8::new(0) }; CPU_COUNT];
 
 #[inline]
 fn counter_frequency() -> Option<u64> {
