@@ -287,7 +287,7 @@ pub unsafe extern "system" fn RtlCaptureContext(context: *mut CONTEXT) {
         "mov ax, gs",
         "mov word ptr [{p} + 64], ax",
         "mov ax, ss",
-        "mov word ptr [{p} + 74], ax",
+        "mov word ptr [{p} + 66], ax",
         p = in(reg) context,
         out("rax") _,
         options(preserves_flags)
