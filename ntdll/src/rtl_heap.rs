@@ -272,7 +272,6 @@ unsafe fn initialize_process_heap_object() -> *mut CognacHeap {
     heap
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn RtlGetProcessHeap() -> HANDLE {
     let existing = PROCESS_HEAP.load(Ordering::Acquire);
     if !existing.is_null() { return existing.cast(); }
@@ -577,7 +576,6 @@ pub unsafe extern "system" fn RtlSetUserFlagsHeap(handle: HANDLE, _flags: ULONG,
 }
 
 /// Internal bridge used by the Windows-compatible RtlProtectHeap export.
-#[no_mangle]
 pub unsafe extern "system" fn RtlSetHeapProtected(handle: HANDLE, protect: BOOLEAN) -> BOOLEAN {
     let heap = unsafe { heap_valid(handle) };
     if heap.is_null() { return 0; }
