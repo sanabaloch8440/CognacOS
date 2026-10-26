@@ -1633,7 +1633,20 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
         if number == NT_SYSCALL_NT_RAISE_EXCEPTION {
             return route_user_exception(frame, &args);
         }
-        dispatch_native_nt(number, &args)
+        if trace_index < 32 {
+            crate::serial_write(b"[DBG][NTOSKRNL][SYSCALL] dispatch-native begin service=");
+            crate::serial_write_hex(number);
+            crate::serial_write(b"\\r\\n");
+        }
+        let result = dispatch_native_nt(number, &args);
+        if trace_index < 32 {
+            crate::serial_write(b"[DBG][NTOSKRNL][SYSCALL] dispatch-native end service=");
+            crate::serial_write_hex(number);
+            crate::serial_write(b" status=");
+            crate::serial_write_hex(result);
+            crate::serial_write(b"\\r\\n");
+        }
+        result
     }
 }
 
