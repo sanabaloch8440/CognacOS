@@ -49,13 +49,25 @@ unsafe fn reserve(cb:*mut CaptureBuffer,len:u32,out:*mut PVOID,source:*const u8)
 // Remaining CSR exports require a live CognacOS CSR server or session state.
 
 #[no_mangle]
-pub unsafe extern "system" fn CsrIdentifyAlertableThread() -> i32 { 0xC0000002u32 as i32 }
+pub unsafe extern "system" fn CsrIdentifyAlertableThread() -> i32 {
+    // Windows 6.0+ deprecated the CSR request; current implementations treat
+    // the notification as a successful no-op rather than requiring a port call.
+    STATUS_SUCCESS
+}
 
 #[no_mangle]
-pub unsafe extern "system" fn CsrSetPriorityClass() -> i32 { 0xC0000002u32 as i32 }
+pub unsafe extern "system" fn CsrSetPriorityClass(_process: PVOID, _priority_class: *mut u32) -> i32 {
+    // The legacy CSRSRV API was removed after Windows XP. Preserve the x64
+    // pointer/pointer ABI and report the invalid legacy request on modern NT.
+    STATUS_INVALID_PARAMETER
+}
 
 #[no_mangle]
-pub unsafe extern "system" fn CsrVerifyRegion() -> i32 { 0xC0000002u32 as i32 }
+pub unsafe extern "system" fn CsrVerifyRegion(_base_address: PVOID, _size: u32) -> i32 {
+    // Windows 6.0+ exports this routine, but verification depends on the
+    // server-shared region mapping. CognacOS does not yet map that section.
+    STATUS_NOT_IMPLEMENTED
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn CsrCaptureTimeout(milliseconds:u32, timeout:*mut i64)->*mut i64 {
