@@ -15,4 +15,3 @@ EXPORTS
     NtQueryInformationProcess
     NtQueryInformationThread
     NtQuerySystemInformation
-    CognacNtdllProcessHeapObject DATA
