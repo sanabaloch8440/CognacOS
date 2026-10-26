@@ -453,6 +453,10 @@ pub unsafe extern "system" fn RtlCreateUserProcessEx() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlExitUserProcess() -> i32 {
+    // Run user-mode ETW provider/activity cleanup before handing control to the
+    // eventual native process-termination service. This export still fails closed
+    // until the real process-exit syscall and ABI-correct signature are available.
+    super::etw::rundown_current_process();
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
