@@ -914,4 +914,36 @@ mod tests {
   assert_eq!(unsafe{ZwEnumerateValueKey(key,1,0,value_info.as_mut_ptr().cast(),value_info.len() as u32,&mut needed)},0x8000_001Au32 as i32);
  }
 
+ #[test] fn writable_regf_cells_indexes_and_redo_recovery() {
+  let mut bytes=[0u8;8192];
+  hive_backend::create_minimal_hive(&mut bytes).unwrap();
+  let child_name=[84u16,101,115,116];
+  let value_name=[68u16,97,116,97];
+  let mut writer=hive_writer_backend::HiveWriter::open(&mut bytes).unwrap();
+  let child=writer.create_subkey(0x20,&child_name).unwrap();
+  writer.set_value(child,&value_name,4,&[1,2,3,4,5]).unwrap();
+  writer.update_base_block(2).unwrap();
+  drop(writer);
+  let hive=hive_backend::Hive::open(&bytes).unwrap();
+  let key=hive.find_path(&child_name).unwrap();
+  let value=key.find_value(&value_name).unwrap();
+  let mut data=[0u8;8];
+  assert_eq!(value.data(&mut data).unwrap(),5);
+  assert_eq!(&data[..5],&[1,2,3,4,5]);
+
+  let mut journal=[0u8;16416];
+  hive_writer_backend::RedoJournal::begin(&bytes,&mut journal).unwrap();
+  let mut interrupted=bytes;
+  interrupted[0x100]=0x5a;
+  assert!(hive_writer_backend::RedoJournal::recover(&mut interrupted,&journal).unwrap());
+  assert_eq!(interrupted,bytes);
+  hive_writer_backend::RedoJournal::begin(&bytes,&mut journal).unwrap();
+  let mut committed=bytes;
+  committed[0x100]=0xa5;
+  hive_writer_backend::RedoJournal::commit(&committed,&mut journal).unwrap();
+  let mut recovered=bytes;
+  assert!(hive_writer_backend::RedoJournal::recover(&mut recovered,&journal).unwrap());
+  assert_eq!(recovered,committed);
+ }
+
 }
