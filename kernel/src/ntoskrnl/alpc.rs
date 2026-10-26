@@ -126,6 +126,24 @@ pub fn listen(port_id: u32, owner_pid: u64) -> Result<(), u32> {
     Ok(())
 }
 
+/// Retrieve the oldest unaccepted connection request for a listening port.
+/// A caller may retry after STATUS_PENDING; a scheduler wait queue can replace
+/// polling without changing this request/accept contract.
+pub fn listen_next(port_id: u32, owner_pid: u64) -> Result<u32, u32> {
+    let g = Guard::acquire();
+    let s = unsafe { &*STATE.state.get() };
+    let index = port_id.checked_sub(1).ok_or(STATUS_INVALID_HANDLE)? as usize;
+    let port = s.ports.get(index).ok_or(STATUS_INVALID_HANDLE)?;
+    if !port.active || !port.listening || port.owner_pid != owner_pid {
+        return Err(STATUS_INVALID_HANDLE);
+    }
+    s.connections.iter()
+        .filter(|c| c.active && !c.accepted && c.server_port == port_id)
+        .min_by_key(|c| c.request_id)
+        .map(|c| c.request_id)
+        .ok_or(STATUS_PENDING)
+}
+
 /// Queue a client connection request. The returned request id is consumed by accept().
 pub fn connect(name: &[u16], client_pid: u64) -> Result<u32, u32> {
     if name.is_empty() || name.len() >= MAX_NAME || client_pid == 0 { return Err(STATUS_INVALID_PARAMETER); }
@@ -232,7 +250,9 @@ mod tests {
         let name: Vec<u16> = "Windows\\ApiPort".encode_utf16().collect();
         let port = create_port(&name, 4, 256).unwrap();
         listen(port, 4).unwrap();
-        let request = connect(&name, 12).unwrap();
+        let client_ep = connect(&name, 12).unwrap();
+        let request = listen_next(port, 4).unwrap();
+        assert_eq!(request, client_ep);
         let server_ep = accept(port, 4, request, true).unwrap();
         let client_ep = {
             let g = Guard::acquire();
@@ -255,7 +275,9 @@ mod tests {
         let port = create_port(&name, 8, 512).unwrap();
         assert_eq!(create_port(&name, 9, 512), Err(STATUS_OBJECT_NAME_COLLISION));
         listen(port, 8).unwrap();
-        let request = connect(&name, 10).unwrap();
+        let client_ep = connect(&name, 10).unwrap();
+        let request = listen_next(port, 8).unwrap();
+        assert_eq!(request, client_ep);
         let server_ep = accept(port, 8, request, true).unwrap();
         let client_ep = { let g=Guard::acquire(); let s=unsafe{&*STATE.state.get()}; s.connections.iter().find(|c|c.active&&c.request_id==request).unwrap().client_endpoint };
         assert_eq!(send(client_ep, 99, b"forged"), Err(STATUS_INVALID_HANDLE));
