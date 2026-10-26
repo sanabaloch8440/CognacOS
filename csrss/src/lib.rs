@@ -253,6 +253,7 @@ mod tests {
 
     #[test]
     fn unknown_api_is_rejected_and_bad_lengths_fail_closed() {
+        assert_eq!(CsrServerInitialize(), STATUS_SUCCESS);
         let mut message: CsrApiMessage = unsafe { core::mem::zeroed() };
         message.api_number = 0x7fff_ffff;
         message.port.total_length = (size_of::<PortMessage>() + 8) as u16;
@@ -269,6 +270,7 @@ mod tests {
 
     #[test]
     fn client_lifecycle_is_bounded_and_reference_counted() {
+        assert_eq!(CsrServerInitialize(), STATUS_SUCCESS);
         assert_eq!(unsafe { CsrServerRegisterClient(77, 12) }, STATUS_SUCCESS);
         assert_eq!(unsafe { CsrServerRegisterClient(77, 13) }, STATUS_SUCCESS);
         assert_eq!(unsafe { CsrServerUnregisterClient(77) }, STATUS_SUCCESS);
