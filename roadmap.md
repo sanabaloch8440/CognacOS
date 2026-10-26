@@ -6,10 +6,13 @@
 - [x] Add regression coverage for ALPC connection and bidirectional message flow; run it in GitHub Actions.
 - [x] Add a CSR server dispatcher core with bounded API registration, CSR message validation, and client bookkeeping.
 - [x] Add a CSRSRV x64 export inventory and a PE export/ordinal comparison utility.
-- [ ] Wire ALPC operations to Windows-compatible `NtAlpc*` syscall entry points and real user handles/Object Manager access checks.
+- [x] Add ABI-shaped `NtAlpc*` x64 entry points on CognacOS private service IDs; route create/connect/accept/send-receive/disconnect through the native dispatcher. These IDs are not Windows syscall ordinals.
+- [x] Represent ALPC port, endpoint, and ALPC-section handles as typed Object Manager objects with granted-access validation and DACL evaluation. The current default DACL is permissive (Everyone allow) and caller-supplied descriptors are rejected; this is not the Windows security policy.
 - [x] Add a bounded ALPC advanced-resource metadata core for section-view registration, owner-scoped security contexts/revocation, and FIFO completion queues; run unit tests in CI. Section views require a VM mapping to have already been established and do not map memory themselves.
-- [ ] Connect resource records to real section objects, VM map/unmap and rundown, token/QoS capture, ALPC message attributes, and scheduler-backed blocking wait/wakeup.
-- [ ] Add ALPC resource reserves and completion-list shared-memory ABI, atomics, and concurrency accounting.
+- [x] Back `NtAlpcCreatePortSection` with the in-tree MM section object and implement same-address-space section-view map/unmap through the section manager.
+- [ ] Support caller-supplied/real NT Section handles, cross-process section views, section/port rundown across process exit, and token/QoS capture for security contexts.
+- [ ] Wire ALPC message attributes, token impersonation, and scheduler-backed blocking wait/wakeup; current send/receive is bounded and nonblocking.
+- [ ] Implement ALPC resource reserves and the Windows shared-memory completion-list ABI, atomics, worker-thread registration, rundown, and concurrency accounting. The current FIFO metadata queue is not ABI-equivalent.
 - [ ] Build `csrss.exe` and `csrsrv.dll` as native PE32+ user images, implement the real server-DLL initialization handshake, and launch them through a session-manager path.
 - [ ] Compare the CSRSRV export manifest against the exact target Windows 11 x64 `csrsrv.dll` PE. The current committed 32-name/ordinal inventory is based on the public Windows 10 x64 10.0.19041 reference and is **not yet verified as an exact Windows 11 match**.
 - [ ] Add an asynchronous process-creation path for mapped user PE images. The existing `usermode::run_loaded_image` remains a synchronous smoke-test runner and is not a general session-manager launcher.
