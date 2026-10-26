@@ -520,7 +520,7 @@ jobs:
               print("NTDLL input is not a PE image.")
               raise SystemExit(0)
           pe = struct.unpack_from("<I", blob, 0x3c)[0]
-          if blob[pe:pe+4] != b"PE\\0\\0":
+          if blob[pe:pe+4] != b"PE\0\0":
               print("NTDLL PE signature is invalid.")
               raise SystemExit(0)
           opt = pe + 24
