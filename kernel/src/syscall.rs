@@ -791,10 +791,11 @@ cognacos_windows_syscall_entry:
     pop rdx
     pop rax
     # Synthesize the privilege-return frame consumed by IRETQ.
-    push 0x23
+    # IRETQ frame order from top: RIP, CS, RFLAGS, RSP, SS.
+    push 0x1b
     push qword ptr gs:[0]
     push r11
-    push 0x1b
+    push 0x23
     push rcx
     # Match the 15-register frame consumed by cognacos_nt_syscall_dispatch.
     push rax
