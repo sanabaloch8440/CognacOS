@@ -191,15 +191,7 @@ pub static mut NlsMbOemCodePageTag: u8 = 0; // Single-byte OEM default; updated 
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn SbExecuteProcedure() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn SbSelectProcedure() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn ShipAssert() -> i32 {
