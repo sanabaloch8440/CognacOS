@@ -2,16 +2,16 @@
 
 - [x] Route native `NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, and `NtFlushKey` service IDs discovered from the staged AMD64 NTDLL image into the kernel native dispatcher; decode their x64 arguments and copy caller-controlled names/data through checked user-memory helpers.
 - [x] Enforce per-handle granted-access checks for key query, value mutation, key deletion, and relative namespace traversal through typed Object Manager RegistryKey handles.
-- [x] Fail closed when a mutation targets a mounted Windows REGF hive; immutable mounted bytes are not silently shadowed by volatile values. `NtFlushKey` returns `STATUS_NOT_SUPPORTED` until mutable durable storage and flush ordering are wired.
+- [x] Keep ordinary immutable boot-hive mounts read-only and fail closed rather than shadowing mutations in volatile state. Explicitly writable mounts require caller-owned hive/journal buffers plus a durability callback; `NtFlushKey` reports callback failures.
 - [x] Implement `ZwEnumerateKey` for `KeyBasicInformation` on volatile keys, `ZwEnumerateValueKey` for `KeyValueBasicInformation`, and `ZwQueryKey` for `KeyBasicInformation` / `KeyNameInformation`; unsupported classes and REGF enumeration return explicit errors.
 - [x] Add CognacOS-private native-service dispatch for `NtEnumerateKey`, `NtEnumerateValueKey`, and `NtQueryKey`, using checked user-memory copies and result-length reporting.
-- [x] Add a bounded REGF cell allocator that splits free cells, frees allocated cells, rebuilds stable NK subkey indexes and VK value indexes, tracks dirty generations, and updates base-block sequence/checksum fields.
-- [x] Add a checked CognacOS redo-patch replay primitive that repairs base-block sequence/checksum state after replay; it is explicitly not the Windows `HvLE` transaction-log format.
-- [ ] Replace the runtime's bounded volatile `Key`/`Value` tables with mutable mounted-hive storage and connect native create/set/delete calls to REGF NK/VK/data-cell mutations.
-- [ ] Implement Windows-native `HvLE` log parsing, checksum/hash verification, dirty-page replay, recovery selection, and crash-consistent durable flush ordering; the private redo primitive is only a testable staging mechanism.
-- [ ] Wire the Rust NTDLL mutation exports to the native-service bridge; ABI-shaped exports alone are not considered implemented dispatch.
-- [x] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to CognacOS-private native-service IDs; the kernel still returns `STATUS_NOT_SUPPORTED` for flush because durable hive writes are not implemented.
-- [ ] Extend enumeration/query support to REGF-backed keys and remaining Windows information classes; add change notifications and transaction semantics.
+- [x] Add a REGF writer for aligned cell allocation, NK/VK creation, stable index publication/removal, base-block sequence/checksum maintenance, and dirty-state handling.
+- [x] Add a writable-hive mount contract with caller-owned hive/journal buffers and explicit PREPARE/DATA/COMMIT/RECOVER flush callbacks; route mounted-hive create/set/delete and flush operations through the writer and journal.
+- [x] Add bounded before/after-image redo recovery with full journal validation before replay. This is CognacOS's journal protocol, not Windows `HvLE`.
+- [ ] Replace bounded tables only for volatile keys/values if needed; persistent hive-backed keys now use REGF cells rather than the volatile value table.
+- [ ] Implement Windows-native `HvLE` log parsing, checksum/hash verification, dirty-page replay, recovery selection, and crash-consistent compatibility with Windows-generated transaction logs.
+- [x] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to CognacOS-private native-service IDs; writable-hive flush uses the configured durability callback, while immutable mounts return `STATUS_NOT_SUPPORTED`.
+- [ ] Route absolute-path hive key creation, REGF enumeration, and remaining Windows information classes through the writable backend; add change notifications and Windows transaction semantics.
 - [ ] Add complete `KEY_*` access-mask mapping, registry DACL inheritance, and token-aware security policy.
 - [ ] Add host tests for access-denied handles, relative opens, malformed user pointers, mutation rollback, and persistent hive reopen/recovery; require a passing QEMU boot before claiming runtime validation.
 
