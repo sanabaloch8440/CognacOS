@@ -231,6 +231,36 @@ fn valid_base_checksum(bytes:&[u8])->bool{
  r32(bytes,0x1fc).map(|v|v==c).unwrap_or(false)
 }
 
+fn validate_regf_image(bytes:&[u8])->Result<(),Error>{
+ if bytes.len()<BASE||bytes.get(0..4)!=Some(&b"regf"[..]){return Err(Error::BadSignature)}
+ if r32(bytes,4)?!=r32(bytes,8)?{return Err(Error::Dirty)}
+ if !valid_base_checksum(bytes){return Err(Error::BadChecksum)}
+ let bins=r32(bytes,0x28)? as usize;
+ if bins<0x1000||bins%0x1000!=0||BASE.checked_add(bins).filter(|e|*e<=bytes.len()).is_none(){return Err(Error::InvalidBin)}
+ let mut bin=BASE;let end=BASE+bins;
+ while bin<end{
+  if bytes.get(bin..bin+4)!=Some(&b"hbin"[..]){return Err(Error::InvalidBin)}
+  let size=r32(bytes,bin+8)? as usize;
+  if r32(bytes,bin+4)? as usize!=bin-BASE||size<0x1000||size%0x1000!=0||bin.checked_add(size).filter(|e|*e<=end).is_none(){return Err(Error::InvalidBin)}
+  let mut p=bin+0x20;let be=bin+size;
+  while p<be{
+   let raw=i32::from_le_bytes(bytes.get(p..p+4).ok_or(Error::Truncated)?.try_into().map_err(|_|Error::Truncated)?);
+   if raw==0||raw==i32::MIN{return Err(Error::InvalidCell)}
+   let n=raw.unsigned_abs() as usize;
+   if n<8||n%8!=0||p.checked_add(n).filter(|e|*e<=be).is_none(){return Err(Error::InvalidCell)}
+   p+=n;
+  }
+  if p!=be{return Err(Error::InvalidBin)}bin=be;
+ }
+ let root=r32(bytes,0x24)? as usize;let p=BASE.checked_add(root).ok_or(Error::InvalidCell)?;
+ if p+4>end{return Err(Error::InvalidCell)}
+ let raw=i32::from_le_bytes(bytes[p..p+4].try_into().map_err(|_|Error::Truncated)?);
+ if raw>=0||raw==i32::MIN{return Err(Error::InvalidCell)}
+ let n=raw.unsigned_abs() as usize;
+ if n<4+0x4c||p.checked_add(n).filter(|e|*e<=end).is_none()||bytes.get(p+4..p+6)!=Some(&b"nk"[..]){return Err(Error::InvalidKey)}
+ Ok(())
+}
+
 /// Replay a Windows 8.1+ HvLE transaction log into a writable REGF image.
 /// The caller supplies scratch space at least as large as the hive so malformed
 /// logs never leave a partially modified hive. Legacy DIRT/dirty-page logs and
@@ -293,7 +323,7 @@ pub fn replay_hvle(hive:&mut[u8],log:&[u8],scratch:&mut[u8])->Result<HvleRecover
   if report.entries_applied==0{return Err(Error::Dirty)}
   w32(hive,4,report.final_sequence);w32(hive,8,report.final_sequence);
   let mut c=0u32;for o in (0..0x1fc).step_by(4){c^=r32(hive,o)?;}if c==0{c=1}else if c==u32::MAX{c=u32::MAX-1}w32(hive,0x1fc,c);
-  crate::ntoskrnl::cm::hive::Hive::open(hive).map_err(|_|Error::InvalidBin)?;
+  validate_regf_image(hive)?;
   Ok(report)
  })();
  match result{Ok(r)=>Ok(r),Err(e)=>{hive.copy_from_slice(&scratch[..hive.len()]);Err(e)}}
