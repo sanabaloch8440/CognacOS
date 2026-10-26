@@ -1,14 +1,15 @@
 //! Windows x64 NTDLL virtual-memory exports.
 //!
-//! The implemented Nt* calls enter CognacOS through its private vector 0x83
-//! native-service ABI. This is an in-tree OS bridge, not a Windows syscall
-//! ordinal table; the kernel validates pointers and currently supports only
-//! NT_CURRENT_PROCESS for these operations.
+//! The six canonical virtual-memory Nt* entry points are exact Windows x64 SYSCALL
+//! stubs on native Windows-target builds. Host/test builds retain the vector
+//! 0x83 implementation so the same ABI tests can run without a PE linker.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 use core::ffi::c_void;
 use core::ptr;
 use core::arch::global_asm;
+#[cfg(target_os = "windows")]
+use super::syscall_stubs::{NtAllocateVirtualMemory, NtFreeVirtualMemory, NtProtectVirtualMemory, NtQueryVirtualMemory, NtReadVirtualMemory, NtWriteVirtualMemory};
 
 pub type NTSTATUS = i32;
 pub type HANDLE = *mut c_void;
@@ -222,6 +223,7 @@ unsafe extern "system" {
     fn cognacos_nt_create_section(section_handle: *mut HANDLE, desired_access: ULONG, object_attributes: PVOID, maximum_size: *const i64, page_protection: ULONG, allocation_attributes: ULONG, file_handle: HANDLE) -> NTSTATUS;
 }
 
+#[cfg(not(target_os = "windows"))]
 #[no_mangle]
 pub unsafe extern "system" fn NtAllocateVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, zero_bits: ULONG_PTR, region_size: PSIZE_T, allocation_type: ULONG, protect: ULONG) -> NTSTATUS {
     if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -243,6 +245,7 @@ pub unsafe extern "system" fn NtFlushVirtualMemory(process_handle: HANDLE, base_
     // This VM currently has no section/file-backed dirty-page flush contract.
     STATUS_NOT_IMPLEMENTED
 }
+#[cfg(not(target_os = "windows"))]
 #[no_mangle]
 pub unsafe extern "system" fn NtFreeVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, free_type: ULONG) -> NTSTATUS {
     if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -266,6 +269,7 @@ pub unsafe extern "system" fn NtLockVirtualMemory(process_handle: HANDLE, base_a
     if map_type != 1 { return STATUS_INVALID_PARAMETER; }
     unsafe { cognacos_nt_lock_virtual_memory(process_handle, base_address, region_size, map_type) }
 }
+#[cfg(not(target_os = "windows"))]
 #[no_mangle]
 pub unsafe extern "system" fn NtProtectVirtualMemory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, new_protect: ULONG, old_protect: PULONG) -> NTSTATUS {
     if base_address.is_null() || region_size.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -278,6 +282,7 @@ pub unsafe extern "system" fn NtProtectVirtualMemory(process_handle: HANDLE, bas
     }
     status
 }
+#[cfg(not(target_os = "windows"))]
 #[no_mangle]
 pub unsafe extern "system" fn NtQueryVirtualMemory(process_handle: HANDLE, base_address: PVOID, memory_information_class: ULONG, memory_information: PVOID, memory_information_length: SIZE_T, return_length: PSIZE_T) -> NTSTATUS {
     if memory_information.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -285,6 +290,7 @@ pub unsafe extern "system" fn NtQueryVirtualMemory(process_handle: HANDLE, base_
     if memory_information_class != MEMORY_BASIC_INFORMATION_CLASS { return 0xC000_0003u32 as i32; }
     unsafe { cognacos_nt_query_virtual_memory(process_handle, base_address, memory_information_class, memory_information, memory_information_length, return_length) }
 }
+#[cfg(not(target_os = "windows"))]
 #[no_mangle]
 pub unsafe extern "system" fn NtReadVirtualMemory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: PSIZE_T) -> NTSTATUS {
     if buffer_size != 0 && (base_address.is_null() || buffer.is_null()) { return STATUS_INVALID_PARAMETER; }
@@ -303,6 +309,7 @@ pub unsafe extern "system" fn NtUnlockVirtualMemory(process_handle: HANDLE, base
     if map_type != 1 { return STATUS_INVALID_PARAMETER; }
     unsafe { cognacos_nt_unlock_virtual_memory(process_handle, base_address, region_size, map_type) }
 }
+#[cfg(not(target_os = "windows"))]
 #[no_mangle]
 pub unsafe extern "system" fn NtWriteVirtualMemory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_written: PSIZE_T) -> NTSTATUS {
     if buffer_size != 0 && (base_address.is_null() || buffer.is_null()) { return STATUS_INVALID_PARAMETER; }

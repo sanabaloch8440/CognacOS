@@ -7,7 +7,7 @@
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 #[cfg(target_os = "windows")]
-mod syscall_stubs;
+pub(crate) mod syscall_stubs;
 mod syscall;
 mod runtime;
 mod crt;

@@ -1,5 +1,13 @@
 LIBRARY ntdll
 EXPORTS
+    NtWriteVirtualMemory
+    NtReadVirtualMemory
+    NtQueryVirtualMemory
+    NtProtectVirtualMemory
+    NtFreeVirtualMemory
+    NtAllocateVirtualMemory
+    NtReadFile
+    NtOpenFile
     NtClose
     NtOpenKey
     NtQueryValueKey

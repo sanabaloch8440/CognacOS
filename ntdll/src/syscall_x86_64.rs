@@ -84,12 +84,12 @@ NtQueryValueKey:
     syscall
     ret
 
-    # CognacOS extension service IDs are discovered from these in-image stubs.
+    # Windows x64 service IDs are discovered from these in-image stubs.
     .p2align 4
     .globl NtOpenFile
 NtOpenFile:
     .byte 0x4c, 0x8b, 0xd1
-    movl $0x107, %eax
+    movl $0x33, %eax
     syscall
     ret
 
@@ -97,7 +97,7 @@ NtOpenFile:
     .globl NtReadFile
 NtReadFile:
     .byte 0x4c, 0x8b, 0xd1
-    movl $0x108, %eax
+    movl $0x06, %eax
     syscall
     ret
 "#,
