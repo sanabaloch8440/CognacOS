@@ -26,13 +26,13 @@ const NT_SYSCALL_ETW_QUERY_EVENT_ENABLED: u64 = 0x13d;
 #[cfg(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows")))]
 fn kernel_etw_call(number:u64,a0:u64,a1:u64,a2:u64,a3:u64)->Option<u64>{
  let result:u64;
- unsafe { core::arch::asm!("int 0x81", inout("rax") number=>result, in("r10") a0, in("rdx") a1, in("r8") a2, in("r9") a3, lateout("rcx") _, lateout("r11") _); }
+ unsafe { core::arch::asm!("int 0x82", inout("rax") number=>result, in("r10") a0, in("rdx") a1, in("r8") a2, in("r9") a3, lateout("rcx") _, lateout("r11") _); }
  Some(result)
 }
 #[cfg(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows")))]
 fn kernel_etw_read_event(session:u64,record:*mut u8,payload:*mut u8,capacity:u64,length:*mut u32)->Option<u64>{
  let result:u64;
- unsafe { core::arch::asm!("sub rsp, 48", "mov qword ptr [rsp + 40], {session}", "int 0x81", "add rsp, 48",
+ unsafe { core::arch::asm!("sub rsp, 48", "mov qword ptr [rsp + 40], {session}", "int 0x82", "add rsp, 48",
  session=in(reg) session,inout("rax") NT_SYSCALL_ETW_READ_EVENT=>result,in("r10") record as u64,in("rdx") payload as u64,in("r8") capacity,in("r9") length as u64,lateout("rcx") _,lateout("r11") _); }
  Some(result)
 }
@@ -474,7 +474,7 @@ pub(crate) fn controller_create_session(out_handle: &mut u64) -> i32 {
 #[cfg(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows")))]
 pub(crate) fn controller_stop_session(session:u64)->i32 {
  let result:u64;
- unsafe { core::arch::asm!("int 0x81",inout("rax") NT_SYSCALL_ETW_STOP_SESSION=>result,in("r10") session,lateout("rcx") _,lateout("r11") _); }
+ unsafe { core::arch::asm!("int 0x82",inout("rax") NT_SYSCALL_ETW_STOP_SESSION=>result,in("r10") session,lateout("rcx") _,lateout("r11") _); }
  result as u32 as i32
 }
 #[cfg(not(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows"))))]
@@ -503,7 +503,7 @@ pub(crate) fn controller_create_named_session(name: &[u16], out_handle: &mut u64
 #[cfg(all(target_arch = "x86_64", any(target_os = "none", target_os = "windows")))]
 pub(crate) fn controller_enable_provider(session:u64,guid:&Guid,enabled:bool,level:u8,any:u64,all:u64)->i32 {
  let result:u64;
- unsafe { core::arch::asm!("sub rsp, 56", "mov qword ptr [rsp + 40], {any_kw}", "mov qword ptr [rsp + 48], {all_kw}", "int 0x81", "add rsp, 56",
+ unsafe { core::arch::asm!("sub rsp, 56", "mov qword ptr [rsp + 40], {any_kw}", "mov qword ptr [rsp + 48], {all_kw}", "int 0x82", "add rsp, 56",
  any_kw=in(reg) any, all_kw=in(reg) all,
  inout("rax") NT_SYSCALL_ETW_ENABLE_SESSION=>result,in("r10") session,in("rdx") guid as *const Guid as u64,in("r8") enabled as u64,in("r9") level as u64,lateout("rcx") _,lateout("r11") _); }
  result as u32 as i32
