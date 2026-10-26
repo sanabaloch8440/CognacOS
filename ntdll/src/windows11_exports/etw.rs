@@ -63,7 +63,7 @@ const EVENT_ACTIVITY_CTRL_GET_SET_ID: u32 = 4;
 const EVENT_ACTIVITY_CTRL_CREATE_SET_ID: u32 = 5;
 
 #[repr(C)]
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Guid { data1: u32, data2: u16, data3: u16, data4: [u8; 8] }
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -79,12 +79,12 @@ struct EtwProvider {
     match_any: u64, match_all: u64,
 }
 impl EtwProvider {
-    const EMPTY: Self = Self { handle: 0, guid: Guid::default(), active: false, owner_pid: 0,
+    const EMPTY: Self = Self { handle: 0, guid: Guid { data1: 0, data2: 0, data3: 0, data4: [0; 8] }, active: false, owner_pid: 0,
         callback: 0, context: 0, enabled: false, level: 0, match_any: 0, match_all: 0 };
 }
 #[derive(Clone, Copy)]
 struct ActivitySlot { pid: u64, tid: u64, id: Guid, active: bool }
-impl ActivitySlot { const EMPTY: Self = Self { pid: 0, tid: 0, id: Guid::default(), active: false }; }
+impl ActivitySlot { const EMPTY: Self = Self { pid: 0, tid: 0, id: Guid { data1: 0, data2: 0, data3: 0, data4: [0; 8] }, active: false }; }
 
 #[derive(Clone, Copy)]
 struct EventRecord {
@@ -96,7 +96,7 @@ struct EventRecord {
     payload: [u8; MAX_EVENT_PAYLOAD],
 }
 impl EventRecord {
-    const EMPTY: Self = Self { active: false, provider: Guid::default(), descriptor: EventDescriptor::default(), payload_len: 0, activity: Guid::default(), related_activity: Guid::default(), process_id: 0, thread_id: 0, payload: [0; MAX_EVENT_PAYLOAD] };
+    const EMPTY: Self = Self { active: false, provider: Guid { data1: 0, data2: 0, data3: 0, data4: [0; 8] }, descriptor: EventDescriptor { id: 0, version: 0, channel: 0, level: 0, opcode: 0, task: 0, keyword: 0 }, payload_len: 0, activity: Guid { data1: 0, data2: 0, data3: 0, data4: [0; 8] }, related_activity: Guid { data1: 0, data2: 0, data3: 0, data4: [0; 8] }, process_id: 0, thread_id: 0, payload: [0; MAX_EVENT_PAYLOAD] };
 }
 static ETW_LOCK: AtomicBool = AtomicBool::new(false);
 static ETW_NEXT: AtomicU64 = AtomicU64::new(1);
@@ -521,7 +521,6 @@ fn EtwEventWriteFull() -> i32 { 0xC0000002u32 as i32 }
 fn EtwEventWriteNoRegistration() -> i32 { 0xC0000002u32 as i32 }
 fn EtwEventWriteStartScenario() -> i32 { 0xC0000002u32 as i32 }
 fn EtwEventWriteString() -> i32 { 0xC0000002u32 as i32 }
-fn EtwEventWriteTransfer() -> i32 { 0xC0000002u32 as i32 }
 fn EtwGetTraceEnableFlags() -> i32 { 0xC0000002u32 as i32 }
 fn EtwGetTraceEnableLevel() -> i32 { 0xC0000002u32 as i32 }
 fn EtwGetTraceLoggerHandle() -> i32 { 0xC0000002u32 as i32 }
