@@ -107,7 +107,7 @@ pub fn reference(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let old=s.references.fetch_add(1,Ordering::AcqRel);
     if old==u32::MAX{s.references.fetch_sub(1,Ordering::AcqRel);let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return STATUS_INSUFFICIENT_RESOURCES}
     let status=crate::ntoskrnl::mm::section::reference(s.section_id.load(Ordering::Acquire),s.owner_root.load(Ordering::Acquire)) as u32 as u64;
-    if status!=STATUS_SUCCESS{s.references.fetch_sub(1,Ordering::AcqRel)}
+    if status!=STATUS_SUCCESS{s.references.fetch_sub(1,Ordering::AcqRel);}
     let _=crate::ntoskrnl::ob::runtime::dereference_body(body);status
 }
 pub fn dereference(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
