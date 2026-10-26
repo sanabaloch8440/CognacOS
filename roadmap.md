@@ -9,6 +9,7 @@
 - [x] Add a writable-hive mount contract with caller-owned hive/journal buffers and explicit PREPARE/DATA/COMMIT/RECOVER flush callbacks; route mounted-hive create/set/delete and flush operations through the writer and journal.
 - [x] Add bounded before/after-image redo recovery with full journal validation before replay. This is CognacOS's journal protocol, not Windows `HvLE`.
 - [x] Add a single-log Windows 8.1+ `HvLE` replay path with entry-size/sequence checks, Marvin32 hash validation, dirty-page bounds checks, base-block repair, and rollback-on-invalid-image; a caller must select the applicable log and supply scratch space.
+- [x] Validate writer allocation, create/set/delete, HBIN growth, private redo rollback/replay, and synthetic HvLE replay in host-side registry tests; these tests pass in Actions. The overall QEMU smoke test still fails in the separate `ntoskrnl::mm::kernel_space::self_test` path before this registry backend is exercised.
 - [ ] Add legacy `DIRT` dirty-vector log replay, dual `LOG1`/`LOG2` selection and sequence-chain policy, and validate hash behavior against Windows-generated corpus fixtures.
 - [ ] Replace bounded tables only for volatile keys/values if needed; persistent hive-backed keys now use REGF cells rather than the volatile value table.
 - [x] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to CognacOS-private native-service IDs; writable-hive flush uses the configured durability callback, while immutable mounts return `STATUS_NOT_SUPPORTED`.
