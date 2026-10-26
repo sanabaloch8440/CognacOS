@@ -3,9 +3,13 @@
 - [x] Route native `NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, and `NtFlushKey` service IDs discovered from the staged AMD64 NTDLL image into the kernel native dispatcher; decode their x64 arguments and copy caller-controlled names/data through checked user-memory helpers.
 - [x] Enforce per-handle granted-access checks for key query, value mutation, key deletion, and relative namespace traversal through typed Object Manager RegistryKey handles.
 - [x] Fail closed when a mutation targets a mounted Windows REGF hive; immutable hive bytes are not silently shadowed by volatile values. `NtFlushKey` returns `STATUS_NOT_SUPPORTED` until a durable hive writer exists.
+- [x] Implement `ZwEnumerateKey` for `KeyBasicInformation` on volatile keys, `ZwEnumerateValueKey` for `KeyValueBasicInformation`, and `ZwQueryKey` for `KeyBasicInformation` / `KeyNameInformation`; unsupported classes and REGF enumeration return explicit errors.
+- [x] Add CognacOS-private native-service dispatch for `NtEnumerateKey`, `NtEnumerateValueKey`, and `NtQueryKey`, using checked user-memory copies and result-length reporting.
 - [ ] Replace bounded volatile key/value tables with a persistent REGF cell allocator, stable key/value index updates, base-block sequence/checksum updates, dirty-hive tracking, and transaction-log replay/recovery.
 - [ ] Wire the Rust NTDLL mutation exports to the native-service bridge; ABI-shaped exports alone are not considered implemented dispatch.
-- [ ] Add complete `KEY_*` access-mask mapping, registry DACL inheritance and token-aware security policy, key/value enumeration and query information classes, change notifications, and transaction semantics.
+- [ ] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to the private native-service bridge.
+- [ ] Extend enumeration/query support to REGF-backed keys and remaining Windows information classes; add change notifications and transaction semantics.
+- [ ] Add complete `KEY_*` access-mask mapping, registry DACL inheritance, and token-aware security policy.
 - [ ] Add host tests for access-denied handles, relative opens, malformed user pointers, mutation rollback, and persistent hive reopen/recovery; require a passing QEMU boot before claiming runtime validation.
 
 The registry's mounted SYSTEM/SOFTWARE/etc. hive parser remains read-only. The current volatile Configuration Manager store is bounded and does not survive reboot. Do not describe registry writes as persistent until the native hive writer and crash-recovery tests pass.
