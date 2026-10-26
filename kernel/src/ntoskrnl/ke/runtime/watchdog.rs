@@ -1,11 +1,9 @@
-//! Ke tick accounting and watchdogs for Windows-compatible bug checks.
-//!
-//! This is a defensive implementation of the documented observable contract,
-//! not a byte-for-byte clone of Windows' private PRCB internals. Counters use
-//! the HAL's monotonic performance counter, so thresholds are independent of
-//! the clock-tick frequency. Defaults are intentionally conservative.
-
-use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+// Ke tick accounting and watchdogs for Windows-compatible bug checks.
+//
+// This is a defensive implementation of the documented observable contract,
+// not a byte-for-byte clone of Windows' private PRCB internals. Counters use
+// the HAL's monotonic performance counter, so thresholds are independent of
+// the clock-tick frequency. Defaults are intentionally conservative.
 
 const CPU_COUNT: usize = 64;
 const CLOCK_WATCHDOG_TIMEOUT: u32 = 0x0000_0101;
@@ -14,7 +12,7 @@ const DPC_SINGLE_TIMEOUT_SECONDS: u64 = 20;
 const HIGH_IRQL_TIMEOUT_SECONDS: u64 = 120;
 const CLOCK_TIMEOUT_SECONDS: u64 = 10;
 
-static LAST_TICK_COUNTER: [AtomicU64; CPU_COUNT] =
+static LAST_TICK_COUNTER: [core::sync::atomic::AtomicU64; CPU_COUNT] =
     [const { AtomicU64::new(0) }; CPU_COUNT];
 static TICK_COUNT: [AtomicU64; CPU_COUNT] =
     [const { AtomicU64::new(0) }; CPU_COUNT];
@@ -28,7 +26,7 @@ static ACTIVE_DPC_START: [AtomicU64; CPU_COUNT] =
     [const { AtomicU64::new(0) }; CPU_COUNT];
 static ACTIVE_DPC_ROUTINE: [AtomicU64; CPU_COUNT] =
     [const { AtomicU64::new(0) }; CPU_COUNT];
-static WATCHDOG_REPORTED: [AtomicU8; CPU_COUNT] =
+static WATCHDOG_REPORTED: [core::sync::atomic::AtomicU8; CPU_COUNT] =
     [const { AtomicU8::new(0) }; CPU_COUNT];
 
 #[inline]
