@@ -15,9 +15,9 @@ pub use nonvolatile::*;
 pub use resources::*;
 
 // Internal items used by the module-level ABI tests.
-pub(super) use virtual_memory::{STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED, STATUS_SUCCESS};
-pub(super) use streams::{S_OK, STREAM_SEEK_SET};
-pub(super) use resources::STATUS_UNSUCCESSFUL;
+use virtual_memory::{STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED, STATUS_SUCCESS};
+use streams::{S_OK, STREAM_SEEK_SET};
+use resources::STATUS_UNSUCCESSFUL;
 
 /// Shared native bridge used by the owning security module.
 pub(crate) unsafe fn native_check_token_membership(token: HANDLE, sid: PVOID, member: *mut u8, flags: ULONG) -> NTSTATUS {
