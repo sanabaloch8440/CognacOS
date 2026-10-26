@@ -66,6 +66,25 @@ fn main() {
     // These APIs are implemented in windows11_exports/memory.rs and must not be shadowed.
     declared.insert("RtlGetNonVolatileToken".to_string());
     declared.insert("RtlFreeNonVolatileToken".to_string());
+    // ALPC has explicit x64 ABI declarations and assembly entry points in alpc.rs.
+    // Keep the generated zero-argument fallback exports from shadowing them.
+    for name in [
+        "AlpcAdjustCompletionListConcurrencyCount", "AlpcFreeCompletionListMessage",
+        "AlpcGetCompletionListLastMessageInformation", "AlpcGetCompletionListMessageAttributes",
+        "AlpcGetHeaderSize", "AlpcGetMessageAttribute", "AlpcGetMessageFromCompletionList",
+        "AlpcGetOutstandingCompletionListMessageCount", "AlpcInitializeMessageAttribute",
+        "AlpcMaxAllowedMessageLength", "AlpcRegisterCompletionList",
+        "AlpcRegisterCompletionListWorkerThread", "AlpcRundownCompletionList",
+        "AlpcUnregisterCompletionList", "AlpcUnregisterCompletionListWorkerThread",
+        "NtAlpcCreatePort", "NtAlpcDisconnectPort", "NtAlpcConnectPort",
+        "NtAlpcAcceptConnectPort", "NtAlpcSendWaitReceivePort", "NtAlpcCreatePortSection",
+        "NtAlpcDeletePortSection", "NtAlpcCreateSectionView", "NtAlpcDeleteSectionView",
+        "NtAlpcCreateSecurityContext", "NtAlpcDeleteSecurityContext", "NtAlpcRevokeSecurityContext",
+        "NtAlpcCreateResourceReserve", "NtAlpcDeleteResourceReserve", "NtAlpcQueryInformation",
+        "NtAlpcSetInformation", "NtAlpcQueryInformationMessage", "NtAlpcCancelMessage",
+        "NtAlpcOpenSenderProcess", "NtAlpcOpenSenderThread", "NtAlpcImpersonateClientOfPort",
+        "NtAlpcImpersonateClientContainerOfPort",
+    ] { declared.insert(name.to_string()); }
     let mut output = String::from("// Generated from the committed Windows 11 x64 export inventory plus the in-tree Wine ntdll.spec.\n// Generic ABI placeholders only: no parameter semantics are implemented.\n");
     let mut count = 0usize;
     for name in names {
