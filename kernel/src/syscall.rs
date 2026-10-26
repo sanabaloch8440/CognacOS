@@ -197,6 +197,8 @@ pub const NT_SYSCALL_ETW_QUERY_EVENT_ENABLED:u64=0x13d;
 pub const NT_SYSCALL_REGISTER_FUNCTION_TABLE:u64=0x13e;
 pub const NT_SYSCALL_DELETE_FUNCTION_TABLE:u64=0x13f;
 pub const NT_SYSCALL_LOOKUP_FUNCTION_ENTRY:u64=0x140;
+pub const NT_SYSCALL_NT_CONTINUE:u64=0x141;
+pub const NT_SYSCALL_NT_RAISE_EXCEPTION:u64=0x142;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -1179,6 +1181,123 @@ fn nt_query_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     status as u32 as u64
 }
 
+
+const AMD64_CONTEXT_SIZE: usize = 0x4d0;
+const AMD64_EXCEPTION_RECORD_SIZE: usize = 0x98;
+const NT_STATUS_BAD_STACK: u64 = 0xC000_0028;
+const NT_STATUS_INVALID_DISPOSITION: u64 = 0xC000_0026;
+
+fn valid_user_code_pointer(value: u64) -> bool {
+    value >= 0x1000 && value < crate::ntoskrnl::mm::address_space::USER_END
+}
+
+fn context_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+}
+fn context_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+}
+
+/// Apply a validated Windows AMD64 CONTEXT to the normalized INT 0x83
+/// return frame. Indices are the exact register/IRET layout built by the gate.
+unsafe fn restore_context_to_syscall_frame(frame: *mut u64, bytes: &[u8]) -> u64 {
+    if bytes.len() != AMD64_CONTEXT_SIZE { return NT_STATUS_INVALID_PARAMETER; }
+    let flags = context_u32(bytes, 0x30);
+    if flags & 0x0010_0000 == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let rip = context_u64(bytes, 0xf8);
+    let rsp = context_u64(bytes, 0x98);
+    if !valid_user_code_pointer(rip) || !valid_user_code_pointer(rsp) || rsp & 7 != 0 {
+        return NT_STATUS_BAD_STACK;
+    }
+    let cs = u16::from_le_bytes(bytes[0x38..0x3a].try_into().unwrap()) as u64;
+    let ss = u16::from_le_bytes(bytes[0x4a..0x4c].try_into().unwrap()) as u64;
+    if cs & 3 != 3 || ss & 3 != 3 { return NT_STATUS_INVALID_PARAMETER; }
+    let mut rflags = context_u32(bytes, 0x44) as u64;
+    // Never restore IOPL, NT, VM, or reserved bits from a user-provided context.
+    rflags &= 0x0000_0000_0025_4fd7;
+    rflags |= 0x202; // reserved bit 1 and interrupt enable
+    let f = core::slice::from_raw_parts_mut(frame, 20);
+    f[0] = context_u64(bytes, 0xf0); // R15
+    f[1] = context_u64(bytes, 0xe8); // R14
+    f[2] = context_u64(bytes, 0xe0); // R13
+    f[3] = context_u64(bytes, 0xd8); // R12
+    f[4] = context_u64(bytes, 0xd0); // R11
+    f[5] = context_u64(bytes, 0xc8); // R10
+    f[6] = context_u64(bytes, 0xc0); // R9
+    f[7] = context_u64(bytes, 0xb8); // R8
+    f[8] = context_u64(bytes, 0xa0); // RBP
+    f[9] = context_u64(bytes, 0xb0); // RDI
+    f[10] = context_u64(bytes, 0xa8); // RSI
+    f[11] = context_u64(bytes, 0x88); // RDX
+    f[12] = context_u64(bytes, 0x80); // RCX
+    f[13] = context_u64(bytes, 0x90); // RBX
+    f[14] = context_u64(bytes, 0x78); // RAX
+    f[15] = rip;
+    f[16] = cs;
+    f[17] = rflags;
+    f[18] = rsp;
+    f[19] = ss;
+    NT_STATUS_SUCCESS
+}
+
+/// NtContinue is implemented by replacing the syscall's saved user return
+/// frame. Returning success means IRETQ will resume at CONTEXT.Rip/Rsp.
+unsafe fn nt_continue_from_user(frame: *mut u64, context_address: u64) -> u64 {
+    let mut bytes = [0u8; AMD64_CONTEXT_SIZE];
+    if !copy_current_user_from(context_address, &mut bytes) { return NT_STATUS_ACCESS_VIOLATION; }
+    restore_context_to_syscall_frame(frame, &bytes)
+}
+
+/// Build a first-chance user exception-dispatch entry frame. The record/context
+/// are copied to a bounded region of the current user stack before changing RIP.
+unsafe fn route_user_exception(frame: *mut u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    let record_address = args[0];
+    let context_address = args[1];
+    let first_chance = args[2] != 0;
+    let dispatcher = args[3];
+    if !first_chance { return NT_STATUS_NOT_IMPLEMENTED; }
+    if !valid_user_code_pointer(dispatcher) { return NT_STATUS_INVALID_PARAMETER; }
+    let mut record = [0u8; AMD64_EXCEPTION_RECORD_SIZE];
+    let mut context = [0u8; AMD64_CONTEXT_SIZE];
+    if !copy_current_user_from(record_address, &mut record)
+        || !copy_current_user_from(context_address, &mut context) {
+        return NT_STATUS_ACCESS_VIOLATION;
+    }
+    // The supplied context must describe a plausible user-mode frame.
+    if context_u32(&context, 0x30) & 0x0010_0000 == 0
+        || !valid_user_code_pointer(context_u64(&context, 0xf8))
+        || !valid_user_code_pointer(context_u64(&context, 0x98)) {
+        return NT_STATUS_INVALID_PARAMETER;
+    }
+    let f = core::slice::from_raw_parts(frame, 20);
+    let old_rsp = f[18];
+    let record_offset = 0x20usize;
+    let context_offset = (record_offset + AMD64_EXCEPTION_RECORD_SIZE + 15) & !15;
+    let total = context_offset + AMD64_CONTEXT_SIZE + 16;
+    let Some(raw_start) = old_rsp.checked_sub(total as u64) else { return NT_STATUS_BAD_STACK; };
+    let new_rsp = (raw_start & !15) + 8;
+    if new_rsp < 0x1000 || new_rsp >= old_rsp || !valid_user_code_pointer(new_rsp) {
+        return NT_STATUS_BAD_STACK;
+    }
+    let record_user = new_rsp + record_offset as u64;
+    let context_user = new_rsp + context_offset as u64;
+    let mut return_address = [0u8; 8]; // dispatcher must not return to arbitrary code
+    if !copy_current_user_to(new_rsp, &return_address)
+        || !copy_current_user_to(record_user, &record)
+        || !copy_current_user_to(context_user, &context) {
+        return NT_STATUS_ACCESS_VIOLATION;
+    }
+    let f = core::slice::from_raw_parts_mut(frame, 20);
+    f[0] = 0; f[1] = 0; f[2] = 0; f[3] = 0; f[4] = 0;
+    f[5] = 0; f[6] = 0; f[7] = 0; f[8] = 0; f[9] = 0;
+    f[10] = 0; f[11] = context_user; f[12] = record_user;
+    f[13] = 0; f[14] = 0;
+    f[15] = dispatcher;
+    f[17] = 0x202;
+    f[18] = new_rsp;
+    NT_STATUS_SUCCESS
+}
+
 fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     match number {
         NT_SYSCALL_CLOSE => {
@@ -1376,6 +1495,8 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_REGISTER_FUNCTION_TABLE => 3,
             NT_SYSCALL_DELETE_FUNCTION_TABLE => 1,
             NT_SYSCALL_LOOKUP_FUNCTION_ENTRY => 2,
+            NT_SYSCALL_NT_CONTINUE => 2,
+            NT_SYSCALL_NT_RAISE_EXCEPTION => 4,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
@@ -1389,6 +1510,12 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             for index in 0..extra {
                 args[index + 4] = u64::from_le_bytes(raw[index * 8..index * 8 + 8].try_into().unwrap());
             }
+        }
+        if number == NT_SYSCALL_NT_CONTINUE {
+            return nt_continue_from_user(frame, args[0]);
+        }
+        if number == NT_SYSCALL_NT_RAISE_EXCEPTION {
+            return route_user_exception(frame, &args);
         }
         dispatch_native_nt(number, &args)
     }
