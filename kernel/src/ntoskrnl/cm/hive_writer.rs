@@ -53,15 +53,15 @@ impl<'a> HiveWriter<'a>{
   if depth>8{return Err(Error::InvalidKey)}
   let c=self.cell(list_id)?;let sig=c.get(0..2).ok_or(Error::InvalidCell)?;
   if sig==b"ri"{
-   let n=c.len().saturating_sub(2)/4;
-   if c.len()<2+n*4{return Err(Error::InvalidKey)}
-   for i in 0..n{self.collect_key_index(r32(c,2+i*4)?,None,out,used,depth+1)?;}
+   let n=r16(c,2)? as usize;
+   if c.len()<4+n*4{return Err(Error::InvalidKey)}
+   for i in 0..n{self.collect_key_index(r32(c,4+i*4)?,None,out,used,depth+1)?;}
    return Ok(())
   }
   let stride=if sig==b"li"{4}else if sig==b"lf"||sig==b"lh"{8}else{return Err(Error::UnsupportedIndex)};
-  let n=expected.unwrap_or_else(||c.len().saturating_sub(2)/stride);
-  if c.len()<2+n*stride||*used+n>out.len(){return Err(Error::InvalidKey)}
-  for i in 0..n{out[*used]=r32(c,2+i*stride)?;*used+=1;}
+  let n=expected.unwrap_or(r16(c,2)? as usize);
+  if r16(c,2)? as usize!=n||c.len()<4+n*stride||*used+n>out.len(){return Err(Error::InvalidKey)}
+  for i in 0..n{out[*used]=r32(c,4+i*stride)?;*used+=1;}
   Ok(())
  }
  /// Allocate from a free HBIN cell, splitting it while preserving 8-byte alignment.
