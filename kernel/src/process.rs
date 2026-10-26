@@ -241,13 +241,17 @@ pub fn mark_running(pid: u64) -> bool {
     } else { false }
 }
 pub fn mark_exited(pid: u64, code: u64) -> bool {
-    let mut registry = TABLE.lock();
-    if let Some(p) = registry.0.iter_mut().find(|p| p.used && p.process_id == pid
-        && matches!(p.state, ProcessState::Created | ProcessState::Running)) {
-        p.state = ProcessState::Exited;
-        p.exit_code = code;
-        true
-    } else { false }
+    let marked = {
+        let mut registry = TABLE.lock();
+        if let Some(p) = registry.0.iter_mut().find(|p| p.used && p.process_id == pid
+            && matches!(p.state, ProcessState::Created | ProcessState::Running)) {
+            p.state = ProcessState::Exited;
+            p.exit_code = code;
+            true
+        } else { false }
+    };
+    if marked { crate::ntoskrnl::alpc_native::rundown_process(pid); }
+    marked
 }
 pub fn query(pid: u64) -> Option<ProcessSnapshot> {
     let registry = TABLE.lock();
