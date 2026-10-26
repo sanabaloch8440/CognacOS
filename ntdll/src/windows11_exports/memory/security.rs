@@ -11,6 +11,6 @@ pub unsafe extern "system" fn RtlCheckTokenMembership(token: HANDLE, sid: PVOID,
 #[no_mangle]
 pub unsafe extern "system" fn RtlCheckTokenMembershipEx(token: HANDLE, sid: PVOID, flags: ULONG, member: *mut u8) -> NTSTATUS {
     if sid.is_null() || member.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
-    unsafe { cognacos_rtl_check_token_membership(token, sid, member, flags) }
+    unsafe { virtual_memory::cognacos_rtl_check_token_membership(token, sid, member, flags) }
 }
 
