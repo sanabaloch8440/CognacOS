@@ -246,6 +246,7 @@ pub(crate) fn release_captured_impersonation_token(token:*mut c_void) {
 /// Resources are released once; Object Manager finalizers only release slots.
 pub(crate) fn rundown_process(pid:u64) {
     if pid==0{return}
+    crate::ntoskrnl::mm::section_handles::rundown_process(pid);
     let process=crate::process::eprocess_pointer_for_pid(pid);
     let root=if process.is_null(){0}else{unsafe{(*process).address_space_root}};
     while let Some(view)=crate::ntoskrnl::alpc_resources::take_section_view_for_rundown(pid) {
