@@ -85,6 +85,7 @@ core::arch::global_asm!(r#"
     ALPC_STUB NtAlpcCreatePort,                         0x11b
     ALPC_STUB NtAlpcDisconnectPort,                     0x11c
     ALPC_STUB NtAlpcConnectPort,                        0x11d
+    ALPC_STUB NtAlpcConnectPortEx,                      0x131
     ALPC_STUB NtAlpcAcceptConnectPort,                  0x11e
     ALPC_STUB NtAlpcSendWaitReceivePort,                0x11f
     ALPC_STUB NtAlpcCreatePortSection,                  0x120
@@ -110,6 +111,7 @@ unsafe extern "system" {
     pub fn NtAlpcCreatePort(PortHandle: PHANDLE, ObjectAttributes: *const OBJECT_ATTRIBUTES, PortAttributes: *const ALPC_PORT_ATTRIBUTES) -> NTSTATUS;
     pub fn NtAlpcDisconnectPort(PortHandle: HANDLE, Flags: ULONG) -> NTSTATUS;
     pub fn NtAlpcConnectPort(PortHandle: PHANDLE, PortName: *const UNICODE_STRING, ObjectAttributes: *const OBJECT_ATTRIBUTES, PortAttributes: *const ALPC_PORT_ATTRIBUTES, Flags: ULONG, RequiredServerSid: PVOID, ConnectionMessage: PVOID, BufferLength: PSIZE_T, OutMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, InMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, Timeout: PVOID) -> NTSTATUS;
+    pub fn NtAlpcConnectPortEx(PortHandle: PHANDLE, ConnectionPortObjectAttributes: *const OBJECT_ATTRIBUTES, ClientPortObjectAttributes: *const OBJECT_ATTRIBUTES, PortAttributes: *const ALPC_PORT_ATTRIBUTES, Flags: ULONG, ServerSecurityRequirements: PVOID, ConnectionMessage: PVOID, BufferLength: PSIZE_T, OutMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, InMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, Timeout: PVOID) -> NTSTATUS;
     pub fn NtAlpcAcceptConnectPort(PortHandle: PHANDLE, ConnectionPortHandle: HANDLE, Flags: ULONG, ObjectAttributes: *const OBJECT_ATTRIBUTES, PortAttributes: *const ALPC_PORT_ATTRIBUTES, PortContext: PVOID, ConnectionRequest: *const PORT_MESSAGE, ConnectionMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, AcceptConnection: u8) -> NTSTATUS;
     pub fn NtAlpcSendWaitReceivePort(PortHandle: HANDLE, Flags: ULONG, SendMessage: *const PORT_MESSAGE, SendMessageAttributes: *const ALPC_MESSAGE_ATTRIBUTES, ReceiveMessage: *mut PORT_MESSAGE, BufferLength: PSIZE_T, ReceiveMessageAttributes: *mut ALPC_MESSAGE_ATTRIBUTES, Timeout: PVOID) -> NTSTATUS;
     pub fn NtAlpcCreatePortSection(PortHandle: HANDLE, Flags: ULONG, SectionHandle: HANDLE, SectionSize: SIZE_T, AlpcSectionHandle: PALPC_HANDLE, ActualSectionSize: PSIZE_T) -> NTSTATUS;
