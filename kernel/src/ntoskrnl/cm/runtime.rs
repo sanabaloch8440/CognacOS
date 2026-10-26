@@ -369,6 +369,34 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
  if !unsafe { (*oa).root_directory }.is_null() {
   if let Err(status)=key_with_access(unsafe { (*oa).root_directory },KEY_CREATE_SUB_KEY) { return status; }
  }
+ let mounted_parent = {
+  let st=state();
+  st.keys.iter().find(|k|k.used&&!k.deleted&&k.id==parent&&k.hive_slot!=0).copied()
+ };
+ if let Some(pk)=mounted_parent {
+  let slot=(pk.hive_slot-1) as usize;
+  let base_len=pk.name_len as usize;
+  if base_len+1+n>MAX_NAME { return STATUS_INVALID_PARAMETER; }
+  let mut full=[0u16;MAX_NAME];
+  full[..base_len].copy_from_slice(&pk.name[..base_len]);
+  full[base_len]=b'\\' as u16;
+  full[base_len+1..base_len+1+n].copy_from_slice(&name[..n]);
+  let full_len=base_len+1+n;
+  if let Some(hive)=mounted_hive(slot) {
+   if let Ok(parent_key)=hive.key_at(pk.hive_cell) {
+    if parent_key.find_subkey(&name[..n]).is_ok() {
+     let status=open_hive_key(out,desired_access,&full[..full_len]).unwrap_or(STATUS_NOT_SUPPORTED);
+     if status==STATUS_SUCCESS && !disposition.is_null(){unsafe{*disposition=2;}}
+     return status;
+    }
+   }
+  }
+  let child_cell=match persistent_create_subkey(slot,pk.hive_cell,&name[..n]) { Ok(id)=>id,Err(e)=>return e };
+  let _=child_cell;
+  let status=open_hive_key(out,desired_access,&full[..full_len]).unwrap_or(STATUS_NOT_SUPPORTED);
+  if status==STATUS_SUCCESS && !disposition.is_null(){unsafe{*disposition=1;}}
+  return status;
+ }
  let s=state();
  if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n])){
   #[cfg(test)] unsafe{*out=handle(k.id);}
