@@ -10,6 +10,7 @@ mod syscall;
 mod runtime;
 mod crt;
 mod misc;
+mod etw;
 
 mod debug;
 mod resource;
