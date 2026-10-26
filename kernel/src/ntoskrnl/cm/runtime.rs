@@ -148,7 +148,6 @@ unsafe fn object_path(oa:*const ObjectAttributes)->Result<([u16;MAX_NAME],usize,
 
 /// Mounted REGF bytes remain in their original Windows hive representation.
 /// The loader must place hive bytes in permanent kernel-owned memory first.
-#[derive(Clone, Copy)]
 pub type HiveFlush = fn(name: &'static str, phase: u32, hive: &[u8], journal: &[u8]) -> Result<(), i32>;
 pub const HIVE_FLUSH_PREPARE: u32 = 1;
 pub const HIVE_FLUSH_DATA: u32 = 2;
