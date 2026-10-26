@@ -5,19 +5,9 @@ fn main() {
     println!("cargo:rerun-if-changed=exports/ntdll-x64.def");
     println!("cargo:rerun-if-changed=exports/ntdll-rust.def");
     println!("cargo:rerun-if-changed=src");
-    for source in [
-        "../root/wine/dlls/ntdll/cognac_native.c",
-        "../root/wine/dlls/ntdll/cognac_rtl_string.c",
-        "../root/wine/dlls/ntdll/cognac_heap.c",
-        "../root/wine/dlls/ntdll/cognac_loader.c",
-        "../root/wine/dlls/ntdll/cognac_printf.c",
-        "../root/wine/dlls/ntdll/rtl_memory.c",
-    ] {
-        println!("cargo:rerun-if-changed={}", source);
-    }
     // The public NTDLL export surface comes exclusively from the pinned Windows 11
-    // inventory. The Wine .spec is metadata for the separate Wine tree, not an
-    // authority for CognacOS's native DLL exports.
+    // inventory committed with CognacOS; generated stubs are not sourced from
+    // third-party compatibility-layer metadata.
     let mut names = BTreeSet::new();
     let windows_inventory = PathBuf::from("exports/windows-11-x64-exports.txt");
     let source = fs::read_to_string(&windows_inventory)
@@ -44,22 +34,6 @@ fn main() {
             if !names.contains(name) {
                 panic!("{} exports `{}`, which is absent from the pinned Windows 11 inventory", definition, name);
             }
-        }
-    }
-
-    // The .def files, not per-function annotations, own native C exports.
-    for source in [
-        "../root/wine/dlls/ntdll/cognac_native.c",
-        "../root/wine/dlls/ntdll/cognac_rtl_string.c",
-        "../root/wine/dlls/ntdll/cognac_heap.c",
-        "../root/wine/dlls/ntdll/cognac_loader.c",
-        "../root/wine/dlls/ntdll/cognac_printf.c",
-        "../root/wine/dlls/ntdll/rtl_memory.c",
-    ] {
-        let text = fs::read_to_string(source)
-            .unwrap_or_else(|error| panic!("cannot read {}: {}", source, error));
-        if text.contains("__declspec(dllexport)") {
-            panic!("{} bypasses the NTDLL export allowlist with __declspec(dllexport)", source);
         }
     }
 
