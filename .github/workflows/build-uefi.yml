@@ -398,6 +398,11 @@ jobs:
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/ntdll.dll ::/EFI/BOOT/ntdll.dll
+      - name: Validate source-level QEMU crash resolver
+        run: |
+          set -euo pipefail
+          python3 -m py_compile tools/resolve_qemu_trace.py
+          python3 tools/resolve_qemu_trace.py --help >/dev/null
       - name: Boot smoke test under OVMF/QEMU
         shell: bash
         run: |
