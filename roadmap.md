@@ -11,7 +11,7 @@
 - [x] Add a single-log Windows 8.1+ `HvLE` replay path with entry-size/sequence checks, Marvin32 hash validation, dirty-page bounds checks, base-block repair, and rollback-on-invalid-image; a caller must select the applicable log and supply scratch space.
 - [x] Validate writer allocation, create/set/delete, HBIN growth, private redo rollback/replay, and synthetic HvLE replay in host-side registry tests; these tests pass in Actions. The overall QEMU smoke test still fails in the separate `ntoskrnl::mm::kernel_space::self_test` path before this registry backend is exercised.
 - [ ] Add legacy `DIRT` dirty-vector log replay, dual `LOG1`/`LOG2` selection and sequence-chain policy, and validate hash behavior against Windows-generated corpus fixtures.
-- [ ] Replace bounded tables only for volatile keys/values if needed; persistent hive-backed keys now use REGF cells rather than the volatile value table.
+- [ ] Expand or replace bounded storage only if volatile-key/value capacity requires it. Persistent hive-backed value payloads are stored in REGF cells and bypass the volatile value table; the shared key-slot/Object Manager metadata cache still limits how many key objects can be open at once.
 - [x] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to CognacOS-private native-service IDs; writable-hive flush uses the configured durability callback, while immutable mounts return `STATUS_NOT_SUPPORTED`.
 - [x] Route absolute-path `NtCreateKey` into writable REGF cells when the target hive is explicitly mounted with a durability provider.
 - [ ] Add REGF-backed enumeration and remaining Windows information classes, change notifications, and Windows transaction semantics.
