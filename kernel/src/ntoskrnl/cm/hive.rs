@@ -118,15 +118,16 @@ impl<'h,'a> Key<'h,'a>{
  fn search_index(&self,list:u32,count:u32,name:&[u16],depth:u8)->Result<Key<'h, 'a>,Error>{
   if depth>8{return Err(Error::InvalidKey)}let c=self.hive.cell(list)?;let sig=c.get(0..2).ok_or(Error::InvalidKey)?;
   if sig==b"li"{
-   if c.len()<2+count as usize*4{return Err(Error::InvalidKey)}
-   for i in 0..count{let k=self.hive.key(u32at(c,2+i as usize*4)?)?;if key_matches(&k,name)?{return Ok(k)}}
+   if c.len()<4+count as usize*4 || u16at(c,2)? as u32 != count {return Err(Error::InvalidKey)}
+   for i in 0..count{let k=self.hive.key(u32at(c,4+i as usize*4)?)?;if key_matches(&k,name)?{return Ok(k)}}
   }else if sig==b"lf"||sig==b"lh"{
-   if c.len()<2+count as usize*8{return Err(Error::InvalidKey)}
-   for i in 0..count{let k=self.hive.key(u32at(c,2+i as usize*8)?)?;if key_matches(&k,name)?{return Ok(k)}}
+   if c.len()<4+count as usize*8 || u16at(c,2)? as u32 != count {return Err(Error::InvalidKey)}
+   for i in 0..count{let k=self.hive.key(u32at(c,4+i as usize*8)?)?;if key_matches(&k,name)?{return Ok(k)}}
   }else if sig==b"ri"{
-   let n=(c.len().saturating_sub(2))/4;
-   for i in 0..n{let sub=u32at(c,2+i*4)?;let sc=self.hive.cell(sub)?;let ss=sc.get(0..2).ok_or(Error::InvalidKey)?;
-    let entries=if ss==b"li"||ss==b"ri"{sc.len().saturating_sub(2)/4}else if ss==b"lf"||ss==b"lh"{sc.len().saturating_sub(2)/8}else{return Err(Error::UnsupportedIndex)} as u32;
+   let n=(c.len().saturating_sub(4))/4;
+   if u16at(c,2)? as usize != n {return Err(Error::InvalidKey)}
+   for i in 0..n{let sub=u32at(c,4+i*4)?;let sc=self.hive.cell(sub)?;let ss=sc.get(0..2).ok_or(Error::InvalidKey)?;
+    let entries=if ss==b"li"||ss==b"ri"{sc.len().saturating_sub(4)/4}else if ss==b"lf"||ss==b"lh"{sc.len().saturating_sub(4)/8}else{return Err(Error::UnsupportedIndex)} as u32;
     if let Ok(k)=self.search_index(sub,entries,name,depth+1){return Ok(k)}
    }
   }else{return Err(Error::UnsupportedIndex)}
@@ -343,11 +344,11 @@ impl<'a> WritableHive<'a> {
             let old = self.cell_payload(old_list)?;
             let sig = old.get(0..2).ok_or(Error::InvalidKey)?;
             if sig == b"li" {
-                if old.len() < 2 + count as usize * 4 { return Err(Error::InvalidKey); }
-                for i in 0..count as usize { entries[i] = u32at(old, 2+i*4)?; }
+                if old.len() < 4 + count as usize * 4 || u16at(old, 2)? as u32 != count { return Err(Error::InvalidKey); }
+                for i in 0..count as usize { entries[i] = u32at(old, 4+i*4)?; }
             } else if sig == b"lf" || sig == b"lh" {
-                if old.len() < 2 + count as usize * 8 { return Err(Error::InvalidKey); }
-                for i in 0..count as usize { entries[i] = u32at(old, 2+i*8)?; }
+                if old.len() < 4 + count as usize * 8 || u16at(old, 2)? as u32 != count { return Err(Error::InvalidKey); }
+                for i in 0..count as usize { entries[i] = u32at(old, 4+i*8)?; }
             } else { return Err(Error::UnsupportedIndex); }
         }
         entries[count as usize] = child_nk;
