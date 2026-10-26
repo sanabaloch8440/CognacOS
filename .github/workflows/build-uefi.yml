@@ -98,6 +98,8 @@ jobs:
           python3 ntdll/tools/check_export_table.py
           cargo check --manifest-path ntdll/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-unknown-linux-gnu
+      - name: Check native CSR server dispatcher core
+        run: cargo check --manifest-path csrss/Cargo.toml --lib --target x86_64-unknown-linux-gnu
       - name: Build separate native PE32+ HAL and driver images
         shell: bash
         run: |
