@@ -111,7 +111,7 @@ pub extern "system" fn AlpcGetHeaderSize(attribute_flags: ULONG) -> ULONG {
         |total, (flag, size)| {
             if attribute_flags & *flag != 0 { total + *size } else { total }
         },
-    )
+    ) as ULONG
 }
 
 /// Returns the pointer to one allocated attribute, or null when unavailable.
@@ -140,7 +140,7 @@ pub unsafe extern "system" fn AlpcGetMessageAttribute(
     let higher_attributes = allocated & !(attribute_flag | (attribute_flag - 1));
     // SAFETY: The caller guarantees the allocation covers the declared attributes.
     unsafe {
-        attributes.cast::<u8>().add(AlpcGetHeaderSize(higher_attributes)).cast::<c_void>()
+        attributes.cast::<u8>().add(AlpcGetHeaderSize(higher_attributes) as usize).cast::<c_void>()
     }
 }
 
