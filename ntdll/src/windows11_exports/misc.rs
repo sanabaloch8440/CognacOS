@@ -21,6 +21,7 @@ unsafe fn apiset_schema_has(name: *const UnicodeString) -> Result<bool, i32> {
  } Ok(false)
 }
 
+fn strip_dll_suffix(v: &[u16]) -> &[u16] { if v.len() >= 4 && v[v.len()-4..].iter().zip([46u16,100,108,108]).all(|(a,b)| (*a | 32) == b) { &v[..v.len()-4] } else { v } }
 const STATUS_NOT_FOUND: i32 = 0xC0000225u32 as i32;
 const STATUS_BUFFER_TOO_SMALL: i32 = 0xC0000023u32 as i32;
 #[no_mangle]
@@ -32,8 +33,7 @@ pub unsafe extern "system" fn ApiSetGetImplementationHost(name: *const UnicodeSt
         return STATUS_INVALID_PARAMETER;
     }
     let wanted = unsafe { core::slice::from_raw_parts(requested.buffer, requested.length as usize / 2) };
-    let strip_dll = |v: &[u16]| if v.len() >= 4 && v[v.len()-4..].iter().zip([46u16,100,108,108]).all(|(a,b)| (*a | 32) == b) { &v[..v.len()-4] } else { v };
-    let wanted = strip_dll(wanted);
+    let wanted = strip_dll_suffix(wanted);
     let peb: *const u8;
     unsafe { core::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, preserves_flags, readonly)); }
     if peb.is_null() { return STATUS_NOT_FOUND; }
@@ -57,7 +57,7 @@ pub unsafe extern "system" fn ApiSetGetImplementationHost(name: *const UnicodeSt
         let vo=unsafe{core::ptr::read_unaligned(e.add(16).cast::<u32>())} as usize;
         let vc=unsafe{core::ptr::read_unaligned(e.add(20).cast::<u32>())} as usize;
         if vc==0 || vc>65536 || vc.checked_mul(20).and_then(|n|vo.checked_add(n)).filter(|n|*n<=size).is_none(){return STATUS_NOT_FOUND;}
-        let parent = if parent_name.is_null(){&[][..]}else{let p=unsafe{&*parent_name};if p.buffer.is_null()||p.length&1!=0||p.length>p.maximum_length{return STATUS_INVALID_PARAMETER;}strip_dll(unsafe{core::slice::from_raw_parts(p.buffer,p.length as usize/2)})};
+        let parent = if parent_name.is_null(){&[][..]}else{let p=unsafe{&*parent_name};if p.buffer.is_null()||p.length&1!=0||p.length>p.maximum_length{return STATUS_INVALID_PARAMETER;}strip_dll_suffix(unsafe{core::slice::from_raw_parts(p.buffer,p.length as usize/2)})};
         let mut default:Option<(usize,usize)>=None;
         for j in 0..vc {
             let v=unsafe{map.add(vo+j*20)};
