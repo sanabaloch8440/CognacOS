@@ -226,9 +226,6 @@ pub unsafe extern "system" fn iswalpha(c: u32) -> i32 { (c <= 0x7f && (c as u8).
 pub unsafe extern "system" fn iswascii(c: u32) -> i32 { (c <= 0x7f) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswctype() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn iswdigit(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_digit()) as i32 }
@@ -272,9 +269,6 @@ pub unsafe extern "system" fn longjmp() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn mbstowcs() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn MicrosoftTelemetryAssertTriggeredUM() -> i32 {
@@ -385,9 +379,6 @@ pub unsafe extern "system" fn sscanf_s() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn strtok_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn swscanf_s() -> i32 {
@@ -556,14 +547,8 @@ pub unsafe extern "system" fn vswprintf_s() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn wcstok_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
-pub unsafe extern "system" fn wcstombs() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn WerReportSQMEvent() -> i32 {
