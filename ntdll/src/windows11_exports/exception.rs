@@ -556,6 +556,22 @@ pub unsafe extern "system" fn RtlVirtualUnwind2(
         if !low_limit.is_null() && (*context).Rsp < *low_limit { return STATUS_BAD_STACK; }
         if !high_limit.is_null() && (*context).Rsp >= *high_limit { return STATUS_BAD_STACK; }
     }
+    if !function_entry.is_null() && (handler_type & 3) != 0 {
+        let f = &*function_entry;
+        let info = match image_base.checked_add(f.UnwindData as u64) { Some(v) => v, None => return STATUS_INVALID_PARAMETER };
+        let header = ptr::read_unaligned(info as *const u8);
+        let flags = header >> 3;
+        let count = ptr::read_unaligned((info + 2) as *const u8) as u64;
+        if flags & 4 == 0 && flags & (handler_type as u8 & 3) != 0 {
+            let handler_rva_offset = info + 4 + ((count * 2 + 3) & !3);
+            let handler_rva = ptr::read_unaligned(handler_rva_offset as *const u32) as u64;
+            if handler_rva != 0 {
+                if !handler_data.is_null() { *handler_data = (handler_rva_offset + 4) as *mut c_void; }
+                let address = match image_base.checked_add(handler_rva) { Some(v) => v, None => return STATUS_INVALID_PARAMETER };
+                if !handler_routine.is_null() { *handler_routine = Some(core::mem::transmute::<usize, unsafe extern "system" fn(*mut EXCEPTION_RECORD, *mut c_void, *mut CONTEXT, *mut c_void) -> i32>(address as usize)); }
+            }
+        }
+    }
     0
 }
 #[no_mangle]
