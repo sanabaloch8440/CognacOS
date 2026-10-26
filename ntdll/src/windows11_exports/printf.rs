@@ -302,6 +302,24 @@ swprintf_s:
     callq {swprintf_s_impl}
     addq $40, %rsp
     retq
+
+    # The scanf family is ABI-callable but intentionally reports EOF until a
+    # bounds-checked scanf parser is implemented; do not return NTSTATUS values.
+    .p2align 4
+    .globl sscanf
+sscanf:
+    movl $-1, %eax
+    retq
+    .p2align 4
+    .globl sscanf_s
+sscanf_s:
+    movl $-1, %eax
+    retq
+    .p2align 4
+    .globl swscanf_s
+swscanf_s:
+    movl $-1, %eax
+    retq
 "#,
     vscprintf_impl = sym vscprintf_impl,
     vscwprintf_impl = sym vscwprintf_impl,
@@ -337,4 +355,15 @@ pub unsafe extern "system" fn vsprintf_s(
         return -1;
     };
     unsafe { write_narrow(destination, Some(capacity), &output, true) }
+}
+
+
+// Declarations keep these assembly-defined export names out of the generated
+// zero-argument fallback table. The entrypoints above accept arbitrary x64
+// caller arguments even though they currently return EOF without parsing.
+#[cfg(target_os = "windows")]
+extern "system" {
+    fn sscanf();
+    fn sscanf_s();
+    fn swscanf_s();
 }
