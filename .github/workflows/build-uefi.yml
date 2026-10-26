@@ -35,7 +35,7 @@ jobs:
       - name: Install Rust targets
         run: |
           rustup update stable
-          rustup target add x86_64-unknown-uefi x86_64-unknown-none x86_64-pc-windows-msvc
+          rustup target add x86_64-unknown-uefi x86_64-unknown-none x86_64-pc-windows-gnu
       - name: Ensure third-party filesystem sources are absent
         shell: bash
         run: |
@@ -101,11 +101,13 @@ jobs:
       - name: Build Rust NTDLL as a native PE32+ DLL
         shell: bash
         env:
-          RUSTFLAGS: "-C link-arg=/DEF:${{ github.workspace }}/ntdll/exports/ntdll-rust.def -C link-arg=/ENTRY:DllMain -C link-arg=/NODEFAULTLIB"
+          RUSTFLAGS: "-C linker=x86_64-w64-mingw32-gcc -C link-arg=${{ github.workspace }}/ntdll/exports/ntdll-rust.def -C link-arg=-Wl,--entry,DllMain -C link-arg=-nostdlib"
         run: |
           set -euo pipefail
-          cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
-          dll=target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll
+          sudo apt-get update
+          sudo apt-get install -y gcc-mingw-w64-x86-64
+          cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-pc-windows-gnu --release
+          dll=target/x86_64-pc-windows-gnu/release/cognac_ntdll.dll
           test -s "$dll"
           file "$dll" | grep -q 'PE32+.*DLL'
           python3 - "$dll" <<'PY'
@@ -364,7 +366,7 @@ jobs:
           fi
           cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
           cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
-          cp target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll build/EFI/BOOT/ntdll.dll
+          cp target/x86_64-pc-windows-gnu/release/cognac_ntdll.dll build/EFI/BOOT/ntdll.dll
           truncate -s 256M build/cognacos-uefi.img
           truncate -s 128M build/pagefile.img
           parted -s build/cognacos-uefi.img mklabel gpt
