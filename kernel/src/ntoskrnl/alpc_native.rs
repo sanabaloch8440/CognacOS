@@ -68,8 +68,8 @@ static ENDPOINT_OBJECTS:[EndpointObject;MAX_PORT_OBJECTS]=[const { EndpointObjec
 struct PortMessage { data_length:u16, total_length:u16, message_type:u16, data_info_offset:u16, client_id:[usize;2], message_id:u32, client_view_size:usize }
 
 #[repr(C)]
-struct PortSectionObject { section_id:AtomicU64, owner_root:AtomicU64, owner_pid:AtomicU64, port_id:AtomicU32, active:AtomicBool, allocated:AtomicBool }
-impl PortSectionObject { const fn new()->Self { Self { section_id:AtomicU64::new(0), owner_root:AtomicU64::new(0), owner_pid:AtomicU64::new(0), port_id:AtomicU32::new(0), active:AtomicBool::new(false), allocated:AtomicBool::new(false) } } }
+struct PortSectionObject { section_id:AtomicU64, owner_root:AtomicU64, section_size:AtomicU64, owner_pid:AtomicU64, port_id:AtomicU32, active:AtomicBool, allocated:AtomicBool }
+impl PortSectionObject { const fn new()->Self { Self { section_id:AtomicU64::new(0), owner_root:AtomicU64::new(0), section_size:AtomicU64::new(0), owner_pid:AtomicU64::new(0), port_id:AtomicU32::new(0), active:AtomicBool::new(false), allocated:AtomicBool::new(false) } } }
 static PORT_SECTIONS:[PortSectionObject;MAX_PORT_OBJECTS]=[const { PortSectionObject::new() };MAX_PORT_OBJECTS];
 #[repr(C)]
 #[derive(Clone,Copy)]
@@ -477,54 +477,65 @@ fn root_for_current()->Result<u64,u64>{
 }
 fn create_port_section(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let (port,port_body)=match port_from_handle(args[0],ACCESS_WRITE){Ok(v)=>v,Err(s)=>return s};
-    if args[1]!=0 || args[2]!=0 || args[3]==0 || args[4]==0 || args[5]==0 {
+    if args[1]!=0 || args[3]==0 || args[4]==0 || args[5]==0 {
         let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);
-        return if args[2]!=0 {STATUS_NOT_IMPLEMENTED}else{STATUS_INVALID_PARAMETER};
+        return STATUS_INVALID_PARAMETER;
     }
     if let Err(s)=section_type(){let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}
-    let root=match root_for_current(){Ok(r)=>r,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
-    let mut section_id=0u64;
-    let status=crate::ntoskrnl::mm::section::create(args[3],root,&mut section_id);
-    if status<0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return status as u32 as u64;}
+    let requested=match args[3].checked_add(4095){Some(n)=>n&!4095,None=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}};
+    let (section_id,section_root,actual_size)=if args[2]!=0 {
+        match crate::ntoskrnl::mm::section_handles::reference_for_alpc(args[2]) {
+            Ok((id,owner_root,size))=>{
+                if requested>size {
+                    let _=crate::ntoskrnl::mm::section::dereference(id,owner_root);
+                    let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);
+                    return STATUS_INVALID_PARAMETER;
+                }
+                (id,owner_root,requested)
+            }
+            Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}
+        }
+    } else {
+        let root=match root_for_current(){Ok(r)=>r,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
+        let mut id=0u64;
+        let status=crate::ntoskrnl::mm::section::create(requested,root,&mut id);
+        if status<0{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return status as u32 as u64}
+        (id,root,requested)
+    };
     let Some(slot)=PORT_SECTIONS.iter().position(|s|!s.allocated.load(Ordering::Acquire)) else {
-        let _=crate::ntoskrnl::mm::section::dereference(section_id,root);
+        let _=crate::ntoskrnl::mm::section::dereference(section_id,section_root);
         let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INSUFFICIENT_RESOURCES;
     };
     let section=&PORT_SECTIONS[slot];
-    if section.allocated.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){let _=crate::ntoskrnl::mm::section::dereference(section_id,root);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INSUFFICIENT_RESOURCES;}
-    section.section_id.store(section_id,Ordering::Release);section.active.store(true,Ordering::Release);
-    section.owner_root.store(root,Ordering::Release);
+    if section.allocated.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){
+        let _=crate::ntoskrnl::mm::section::dereference(section_id,section_root);
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    section.section_id.store(section_id,Ordering::Release);
+    section.owner_root.store(section_root,Ordering::Release);
+    section.section_size.store(actual_size,Ordering::Release);
+    section.active.store(true,Ordering::Release);
     section.owner_pid.store(current_pid(),Ordering::Release);
     section.port_id.store(port.port_id.load(Ordering::Acquire),Ordering::Release);
     let name=[0u16;0];
     let type_name=[b'A' as u16,b'L' as u16,b'P' as u16,b'C' as u16,b' ' as u16,b'S' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'i' as u16,b'o' as u16,b'n' as u16];
     let body=section as *const PortSectionObject as *mut c_void;
     if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&type_name,&name,false,ALPC_DEFAULT_SD.as_ptr(),ALPC_DEFAULT_SD.len(),section_finalizer)}.is_err(){
-        section.active.store(false,Ordering::Release);section.allocated.store(false,Ordering::Release);let _=crate::ntoskrnl::mm::section::dereference(section_id,root);
+        section.active.store(false,Ordering::Release);section.allocated.store(false,Ordering::Release);let _=crate::ntoskrnl::mm::section::dereference(section_id,section_root);
         let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return 0xC000_0035;
     }
-    let handle=match crate::ntoskrnl::ob::runtime::open_by_pointer(body,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL,crate::ntoskrnl::ob::runtime::current_owner(),true,0){
+    let handle=match crate::ntoskrnl::ob::runtime::open_by_pointer(body,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL,crate::ntoskrnl::ob::runtime::current_owner(),false,0){
         Ok(h)=>h as usize,Err(e)=>{let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return e as u32 as u64}
     };
-    let actual=match args[3].checked_add(4095){Some(n)=>n&!4095,None=>{let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::close_handle(handle as *mut c_void,crate::ntoskrnl::ob::runtime::current_owner());let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}};
-    let result=if write_user(args[4],&handle).is_err()||write_user(args[5],&actual).is_err(){let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::close_handle(handle as *mut c_void,crate::ntoskrnl::ob::runtime::current_owner());STATUS_ACCESS_VIOLATION}else{STATUS_SUCCESS};
+    let result=if write_user(args[4],&handle).is_err()||write_user(args[5],&actual_size).is_err(){
+        let _=crate::ntoskrnl::ob::runtime::unregister_object(body);
+        let _=crate::ntoskrnl::ob::runtime::close_handle(handle as *mut c_void,crate::ntoskrnl::ob::runtime::current_owner());
+        STATUS_ACCESS_VIOLATION
+    }else{STATUS_SUCCESS};
     let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);
     result
 }
-fn find_free_view_base(root:u64,length:u64)->Result<u64,u64>{
-    let mut space=unsafe{crate::ntoskrnl::mm::address_space::AddressSpace::attach_existing(root)}.map_err(|_|STATUS_INVALID_PARAMETER)?;
-    let mut candidate=0x0000_0001_0000_0000u64;
-    while candidate.checked_add(length).is_some_and(|end|end<0x0000_8000_0000_0000) {
-        let mut free=true;let mut offset=0;
-        while offset<length {
-            if space.query_region(candidate+offset).is_some_and(|r|r.7){free=false;break}
-            offset+=4096;
-        }
-        if free{return Ok(candidate)}
-        candidate=match candidate.checked_add(length.max(0x10000)){Some(v)=>v,None=>break};
-    }
-    Err(STATUS_INSUFFICIENT_RESOURCES)
-}
+
 fn create_section_view(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let (port,port_body)=match port_from_handle(args[0],ACCESS_WRITE){Ok(v)=>v,Err(s)=>return s};
     if args[1]!=0 || args[2]==0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}
@@ -535,7 +546,7 @@ fn create_section_view(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     if section.port_id.load(Ordering::Acquire)!=port.port_id.load(Ordering::Acquire) {
         let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return 0xC000_0022;
     }
-    let length=match (view.view_size as u64).checked_add(4095){Some(n)=>n&!4095,None=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}};
+    let length=match (view.view_size as u64).checked_add(4095){Some(n) if (n&!4095)<=section.section_size.load(Ordering::Acquire)=>n&!4095,Some(_)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER},None=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}};
     let base=match find_free_view_base(root,length){Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
     let section_id=section.section_id.load(Ordering::Acquire);
     if let Err(e)=crate::ntoskrnl::mm::section::map_view(section_id,root,base,0,length,true,false){let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return e as u32 as u64;}
