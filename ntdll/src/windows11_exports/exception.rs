@@ -9,6 +9,39 @@
 use core::ffi::c_void;
 use core::ptr;
 
+#[cfg(target_os = "none")]
+core::arch::global_asm!(r#"
+    .text
+    .p2align 4
+    .global cognacos_register_function_table
+cognacos_register_function_table:
+    mov r10, rcx
+    mov eax, 0x13e
+    int 0x83
+    ret
+    .p2align 4
+    .global cognacos_delete_function_table
+cognacos_delete_function_table:
+    mov r10, rcx
+    mov eax, 0x13f
+    int 0x83
+    ret
+    .p2align 4
+    .global cognacos_lookup_function_entry
+cognacos_lookup_function_entry:
+    mov r10, rcx
+    mov eax, 0x140
+    int 0x83
+    ret
+"#);
+
+#[cfg(target_os = "none")]
+extern "system" {
+    fn cognacos_register_function_table(table: *const RUNTIME_FUNCTION, count: u32, base: u64) -> u64;
+    fn cognacos_delete_function_table(table: *const RUNTIME_FUNCTION) -> u64;
+    fn cognacos_lookup_function_entry(control_pc: u64, image_base: *mut u64, history_table: *mut c_void) -> *const RUNTIME_FUNCTION;
+}
+
 const STATUS_NOT_IMPLEMENTED: i32 = 0xC0000002u32 as i32;
 const STATUS_INVALID_PARAMETER: i32 = 0xC000000Du32 as i32;
 const STATUS_BAD_STACK: i32 = 0xC0000028u32 as i32;
@@ -173,11 +206,31 @@ pub unsafe extern "system" fn RtlAddFunctionTable(
         }
         previous_end = entry.EndAddress;
     }
-    let _guard = TableGuard::acquire();
-    let tables = &mut *FUNCTION_TABLES.0.get();
-    if tables.iter().any(|t| t.used && t.table == table && t.base == base) { return 0; }
-    let Some(slot) = tables.iter_mut().find(|t| !t.used) else { return 0; };
-    *slot = FunctionTable { table, count, base, used: true };
+    #[cfg(target_os = "none")]
+    {
+        // Kernel registration pins this caller-owned .pdata range against
+        // concurrent loader teardown and revalidates every lookup in user space.
+        if cognacos_register_function_table(table, count, base) != 0 { return 0; }
+    }
+    let mut inserted = false;
+    {
+        let _guard = TableGuard::acquire();
+        let tables = &mut *FUNCTION_TABLES.0.get();
+        if tables.iter().any(|t| t.used && t.table == table && t.base == base) {
+            #[cfg(target_os = "none")]
+            { let _ = cognacos_delete_function_table(table); }
+            return 0;
+        }
+        if let Some(slot) = tables.iter_mut().find(|t| !t.used) {
+            *slot = FunctionTable { table, count, base, used: true };
+            inserted = true;
+        }
+    }
+    if !inserted {
+        #[cfg(target_os = "none")]
+        { let _ = cognacos_delete_function_table(table); }
+        return 0;
+    }
     1
 }
 
@@ -185,12 +238,20 @@ pub unsafe extern "system" fn RtlAddFunctionTable(
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeleteFunctionTable(table: *const RUNTIME_FUNCTION) -> u8 {
     if table.is_null() { return 0; }
-    let _guard = TableGuard::acquire();
-    let tables = &mut *FUNCTION_TABLES.0.get();
-    if let Some(slot) = tables.iter_mut().find(|t| t.used && t.table == table) {
-        *slot = FunctionTable::EMPTY;
-        1
-    } else { 0 }
+    #[cfg(target_os = "none")]
+    let kernel_removed = cognacos_delete_function_table(table) == 1;
+    let removed = {
+        let _guard = TableGuard::acquire();
+        let tables = &mut *FUNCTION_TABLES.0.get();
+        if let Some(slot) = tables.iter_mut().find(|t| t.used && t.table == table) {
+            *slot = FunctionTable::EMPTY;
+            true
+        } else { false }
+    };
+    #[cfg(target_os = "none")]
+    { return (kernel_removed && removed) as u8; }
+    #[cfg(not(target_os = "none"))]
+    { removed as u8 }
 }
 
 /// Search registered AMD64 function tables for ControlPc.
@@ -200,6 +261,11 @@ pub unsafe extern "system" fn RtlLookupFunctionEntry(
 ) -> *const RUNTIME_FUNCTION {
     if !image_base.is_null() { *image_base = 0; }
     if control_pc == 0 { return ptr::null(); }
+    #[cfg(target_os = "none")]
+    {
+        let found = cognacos_lookup_function_entry(control_pc, image_base, _history_table);
+        if !found.is_null() { return found; }
+    }
     let _guard = TableGuard::acquire();
     let tables = &*FUNCTION_TABLES.0.get();
     for t in tables.iter().filter(|t| t.used) {
