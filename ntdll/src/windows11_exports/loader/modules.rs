@@ -217,6 +217,7 @@ pub unsafe extern "system" fn LdrLoadDll(
     dll_path: *const u16, dll_characteristics: *mut ULONG,
     dll_name: *const UNICODE_STRING, dll_handle: *mut PVOID,
 ) -> NTSTATUS {
+    let _ = super::super::exception::RtlRegisterExceptionDispatcher();
     if dll_name.is_null() || dll_handle.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { dll_handle.write(ptr::null_mut()); }
     // Reuse an existing mapping without pretending that a missing module was
