@@ -150,21 +150,21 @@ static int format_core(OUT *o,const void *fmt,va_list input,int wide)
 }
 static int run_a(char *b,size_t cap,const char *f,va_list ap){OUT o={b,cap,0,0,0};int r=format_core(&o,f,ap,0);if(b&&cap&&o.used<cap)b[o.used]=0;return r;}
 static int run_w(WCHAR *b,size_t cap,const WCHAR *f,va_list ap){OUT o={b,cap,0,0,1};int r=format_core(&o,f,ap,1);if(b&&cap&&o.used<cap)b[o.used]=0;return r;}
-__declspec(dllexport) int _vsnprintf(char *s,size_t n,const char *f,va_list a){return run_a(s,n,f,a);}
-__declspec(dllexport) int _vsnwprintf(WCHAR *s,size_t n,const WCHAR *f,va_list a){return run_w(s,n,f,a);}
-__declspec(dllexport) int _vscprintf(const char *f,va_list a){return run_a(NULL,(size_t)INT_MAX,f,a);}
-__declspec(dllexport) int _vscwprintf(const WCHAR *f,va_list a){return run_w(NULL,(size_t)INT_MAX,f,a);}
-__declspec(dllexport) int _vsnprintf_s(char *s,size_t size,size_t len,const char *f,va_list a){size_t cap=size<len?size:len;int r=run_a(s,cap,f,a);if(s&&size){if(r<0||((size_t)r>=cap))s[0]=0;else s[r]=0;}return r<0?-1:((size_t)r>=size?-1:r);}
-__declspec(dllexport) int _vsnwprintf_s(WCHAR *s,size_t size,size_t len,const WCHAR *f,va_list a){size_t cap=size<len?size:len;int r=run_w(s,cap,f,a);if(s&&size){if(r<0||((size_t)r>=cap))s[0]=0;else s[r]=0;}return r<0?-1:((size_t)r>=size?-1:r);}
-__declspec(dllexport) int _snprintf(char *s,size_t n,const char *f,...){va_list a;int r;va_start(a,f);r=_vsnprintf(s,n,f,a);va_end(a);return r;}
-__declspec(dllexport) int _snwprintf(WCHAR *s,size_t n,const WCHAR *f,...){va_list a;int r;va_start(a,f);r=_vsnwprintf(s,n,f,a);va_end(a);return r;}
-__declspec(dllexport) int _snprintf_s(char *s,size_t z,size_t n,const char *f,...){va_list a;int r;va_start(a,f);r=_vsnprintf_s(s,z,n,f,a);va_end(a);return r;}
-__declspec(dllexport) int _snwprintf_s(WCHAR *s,size_t z,size_t n,const WCHAR *f,...){va_list a;int r;va_start(a,f);r=_vsnwprintf_s(s,z,n,f,a);va_end(a);return r;}
-__declspec(dllexport) int vsprintf(char *s,const char *f,va_list a){return run_a(s,(size_t)INT_MAX,f,a);}
-__declspec(dllexport) int vsprintf_s(char *s,size_t z,const char *f,va_list a){return _vsnprintf_s(s,z,z,f,a);}
-__declspec(dllexport) int _vswprintf(WCHAR *s,const WCHAR *f,va_list a){return run_w(s,(size_t)INT_MAX,f,a);}
-__declspec(dllexport) int vswprintf_s(WCHAR *s,size_t z,const WCHAR *f,va_list a){return _vsnwprintf_s(s,z,z,f,a);}
-__declspec(dllexport) int sprintf(char *s,const char *f,...){va_list a;int r;va_start(a,f);r=run_a(s,(size_t)INT_MAX,f,a);va_end(a);return r;}
-__declspec(dllexport) int sprintf_s(char *s,size_t z,const char *f,...){va_list a;int r;va_start(a,f);r=vsprintf_s(s,z,f,a);va_end(a);return r;}
-__declspec(dllexport) int swprintf(WCHAR *s,const WCHAR *f,...){va_list a;int r;va_start(a,f);r=run_w(s,(size_t)INT_MAX,f,a);va_end(a);return r;}
-__declspec(dllexport) int swprintf_s(WCHAR *s,size_t z,const WCHAR *f,...){va_list a;int r;va_start(a,f);r=vswprintf_s(s,z,f,a);va_end(a);return r;}
+int _vsnprintf(char *s,size_t n,const char *f,va_list a){return run_a(s,n,f,a);}
+int _vsnwprintf(WCHAR *s,size_t n,const WCHAR *f,va_list a){return run_w(s,n,f,a);}
+int _vscprintf(const char *f,va_list a){return run_a(NULL,(size_t)INT_MAX,f,a);}
+int _vscwprintf(const WCHAR *f,va_list a){return run_w(NULL,(size_t)INT_MAX,f,a);}
+int _vsnprintf_s(char *s,size_t size,size_t len,const char *f,va_list a){size_t cap=size<len?size:len;int r=run_a(s,cap,f,a);if(s&&size){if(r<0||((size_t)r>=cap))s[0]=0;else s[r]=0;}return r<0?-1:((size_t)r>=size?-1:r);}
+int _vsnwprintf_s(WCHAR *s,size_t size,size_t len,const WCHAR *f,va_list a){size_t cap=size<len?size:len;int r=run_w(s,cap,f,a);if(s&&size){if(r<0||((size_t)r>=cap))s[0]=0;else s[r]=0;}return r<0?-1:((size_t)r>=size?-1:r);}
+int _snprintf(char *s,size_t n,const char *f,...){va_list a;int r;va_start(a,f);r=_vsnprintf(s,n,f,a);va_end(a);return r;}
+int _snwprintf(WCHAR *s,size_t n,const WCHAR *f,...){va_list a;int r;va_start(a,f);r=_vsnwprintf(s,n,f,a);va_end(a);return r;}
+int _snprintf_s(char *s,size_t z,size_t n,const char *f,...){va_list a;int r;va_start(a,f);r=_vsnprintf_s(s,z,n,f,a);va_end(a);return r;}
+int _snwprintf_s(WCHAR *s,size_t z,size_t n,const WCHAR *f,...){va_list a;int r;va_start(a,f);r=_vsnwprintf_s(s,z,n,f,a);va_end(a);return r;}
+int vsprintf(char *s,const char *f,va_list a){return run_a(s,(size_t)INT_MAX,f,a);}
+int vsprintf_s(char *s,size_t z,const char *f,va_list a){return _vsnprintf_s(s,z,z,f,a);}
+int _vswprintf(WCHAR *s,const WCHAR *f,va_list a){return run_w(s,(size_t)INT_MAX,f,a);}
+int vswprintf_s(WCHAR *s,size_t z,const WCHAR *f,va_list a){return _vsnwprintf_s(s,z,z,f,a);}
+int sprintf(char *s,const char *f,...){va_list a;int r;va_start(a,f);r=run_a(s,(size_t)INT_MAX,f,a);va_end(a);return r;}
+int sprintf_s(char *s,size_t z,const char *f,...){va_list a;int r;va_start(a,f);r=vsprintf_s(s,z,f,a);va_end(a);return r;}
+int swprintf(WCHAR *s,const WCHAR *f,...){va_list a;int r;va_start(a,f);r=run_w(s,(size_t)INT_MAX,f,a);va_end(a);return r;}
+int swprintf_s(WCHAR *s,size_t z,const WCHAR *f,...){va_list a;int r;va_start(a,f);r=vswprintf_s(s,z,f,a);va_end(a);return r;}
