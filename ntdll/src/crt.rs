@@ -8,20 +8,20 @@ pub unsafe extern "C" fn atoi(s: *const core::ffi::c_char) -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn atol(s: *const core::ffi::c_char) -> isize {
+pub unsafe extern "C" fn atol(s: *const core::ffi::c_char) -> i32 {
     strtol(s, core::ptr::null_mut(), 10) as isize
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn strtol(s: *const core::ffi::c_char, end: *mut *mut core::ffi::c_char, base: i32) -> i64 {
+pub unsafe extern "C" fn strtol(s: *const core::ffi::c_char, end: *mut *mut core::ffi::c_char, base: i32) -> i32 {
     if end.is_null() == false { *end = s as *mut _; }
     if s.is_null() || !(base == 0 || (2..=36).contains(&base)) { return 0; }
     let mut p = s; while (*p as u8).is_ascii_whitespace() { p = p.add(1); }
     let mut neg = false; if *p == b'-' as i8 { neg = true; p = p.add(1); } else if *p == b'+' as i8 { p = p.add(1); }
     let mut radix = base as u32; if radix == 0 { if *p == b'0' as i8 && (*p.add(1) == b'x' as i8 || *p.add(1) == b'X' as i8) { radix = 16; p = p.add(2); } else if *p == b'0' as i8 { radix = 8; } else { radix = 10; } } else if radix == 16 && *p == b'0' as i8 && (*p.add(1) == b'x' as i8 || *p.add(1) == b'X' as i8) { p = p.add(2); }
-    let start = p; let limit = if neg { (i64::MAX as u64) + 1 } else { i64::MAX as u64 }; let mut value = 0u64; let mut any = false;
+    let limit = if neg { (i32::MAX as u64) + 1 } else { i32::MAX as u64 }; let mut value = 0u64; let mut any = false;
     loop { let ch = *p as u8; let d = if ch >= b'0' && ch <= b'9' { (ch-b'0') as u32 } else if ch >= b'a' && ch <= b'z' { (ch-b'a'+10) as u32 } else if ch >= b'A' && ch <= b'Z' { (ch-b'A'+10) as u32 } else { break; }; if d >= radix { break; } any = true; value = match value.checked_mul(radix as u64).and_then(|v| v.checked_add(d as u64)) { Some(v) if v <= limit => v, _ => limit }; p = p.add(1); }
-    if !any { if !end.is_null() { *end = s as *mut _; } return 0; } if !end.is_null() { *end = p as *mut _; } if neg { (value.wrapping_neg()) as i64 } else { value as i64 }
+    if !any { if !end.is_null() { *end = s as *mut _; } return 0; } if !end.is_null() { *end = p as *mut _; } if neg { (value.wrapping_neg()) as i32 } else { value as i32 }
 }
 
 #[no_mangle]
@@ -108,3 +108,34 @@ pub unsafe extern "C" fn wcscat(d:*mut u16,s:*const u16)->*mut u16{if d.is_null(
 #[no_mangle]
 pub unsafe extern "C" fn wcsncat(d:*mut u16,s:*const u16,n:usize)->*mut u16{if d.is_null()||s.is_null(){return d;}let mut i=0;while *d.add(i)!=0{i+=1;}let mut j=0;while j<n&&*s.add(j)!=0{*d.add(i+j)=*s.add(j);j+=1;}*d.add(i+j)=0;d}
 #[cfg(test)] mod tests{use super::*;#[test]fn strtol_radix_and_end(){let s=b"  -42!\\0";let mut e=ptr::null_mut();assert_eq!(unsafe{strtol(s.as_ptr() as _,&mut e,10)},-42);assert_eq!(unsafe{*e},b'!' as i8);}#[test]fn binary_search(){unsafe extern "C" fn cmp(a:*const c_void,b:*const c_void)->i32{unsafe{*(a as *const i32)-*(b as *const i32)}}let a=[1i32,3,5,7];let k=5i32;let p=unsafe{bsearch(&k as *const _ as _,a.as_ptr() as _,4,4,Some(cmp))};assert_eq!(unsafe{*(p as *const i32)},5);}}
+
+
+/// Microsoft CRT secure binary search. The comparator receives context first.
+#[no_mangle]
+pub unsafe extern "C" fn bsearch_s(key:*const c_void,base:*const c_void,count:usize,width:usize,compare:Option<unsafe extern "C" fn(*mut c_void,*const c_void,*const c_void)->i32>,context:*mut c_void)->*mut c_void {
+ if key.is_null()||compare.is_none()||width==0||(base.is_null()&&count!=0){return ptr::null_mut();}
+ let cmp=compare.unwrap();let(mut lo,mut hi)=(0usize,count);
+ while lo<hi {let mid=lo+(hi-lo)/2;let item=(base as *const u8).add(mid*width) as *const c_void;let r=cmp(context,key,item);if r==0{return item as *mut c_void;}if r<0{hi=mid;}else{lo=mid+1;}}
+ ptr::null_mut()
+}
+
+/// Microsoft CRT secure sort. Uses a bounded-stack heapsort and the MSVC
+/// comparator order: (context, element1, element2).
+#[no_mangle]
+pub unsafe extern "C" fn qsort_s(base:*mut c_void,count:usize,width:usize,compare:Option<unsafe extern "C" fn(*mut c_void,*const c_void,*const c_void)->i32>,context:*mut c_void) {
+ if base.is_null()||count<2||width==0||compare.is_none(){return;}let cmp=compare.unwrap();let p=base as *mut u8;
+ let swap=|a:usize,b:usize|unsafe{for j in 0..width{ptr::swap(p.add(a*width+j),p.add(b*width+j));}};
+ let sift=|mut root:usize,end:usize|unsafe{loop{let child=root*2+1;if child>=end{break;}let mut largest=child;if child+1<end&&cmp(context,p.add(child*width) as _,p.add((child+1)*width) as _) <0{largest=child+1;}if cmp(context,p.add(root*width) as _,p.add(largest*width) as _)>=0{break;}swap(root,largest);root=largest;}};
+ let mut start=count/2;while start>0{start-=1;sift(start,count);}let mut end=count;while end>1{end-=1;swap(0,end);sift(0,end);}
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn memcpy_s(dst:*mut c_void,dst_size:usize,src:*const c_void,count:usize)->i32 {
+ if count==0{return 0;}if dst.is_null()||src.is_null()||count>dst_size {if !dst.is_null(){ptr::write_bytes(dst,0,dst_size);}return 22;}
+ ptr::copy(src as *const u8,dst as *mut u8,count);0
+}
+#[no_mangle]
+pub unsafe extern "C" fn memmove_s(dst:*mut c_void,dst_size:usize,src:*const c_void,count:usize)->i32 {
+ if count==0{return 0;}if dst.is_null()||src.is_null()||count>dst_size {if !dst.is_null(){ptr::write_bytes(dst,0,dst_size);}return 22;}
+ ptr::copy(src as *const u8,dst as *mut u8,count);0
+}
