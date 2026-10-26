@@ -45,7 +45,6 @@ static BOOL cognac_read_peb_version(ULONG *major, ULONG *minor, ULONG *build, UL
     return TRUE;
 }
 
-__declspec(dllexport)
 NTSTATUS NTAPI RtlGetVersion(COGNAC_RTL_OSVERSIONINFOW *version)
 {
     ULONG major, minor, build, platform, i;
@@ -64,7 +63,6 @@ NTSTATUS NTAPI RtlGetVersion(COGNAC_RTL_OSVERSIONINFOW *version)
 }
 
 /* Native x64 PEB accessor; the process launcher installs the TEB in GS. */
-__declspec(dllexport)
 PVOID NTAPI RtlGetCurrentPeb(void)
 {
     PVOID peb;
@@ -92,7 +90,6 @@ typedef struct _COGNAC_RTL_CRITICAL_SECTION {
     ULONG_PTR SpinCount;
 } COGNAC_RTL_CRITICAL_SECTION;
 
-__declspec(dllexport)
 PVOID NTAPI RtlGetCurrentTeb(void)
 {
     PVOID teb;
@@ -108,7 +105,6 @@ static HANDLE cognac_current_thread_id(void)
     return id;
 }
 
-__declspec(dllexport)
 LONG NTAPI RtlEnterCriticalSection(COGNAC_RTL_CRITICAL_SECTION *cs)
 {
     HANDLE tid;
@@ -138,7 +134,6 @@ LONG NTAPI RtlEnterCriticalSection(COGNAC_RTL_CRITICAL_SECTION *cs)
     }
 }
 
-__declspec(dllexport)
 LONG NTAPI RtlLeaveCriticalSection(COGNAC_RTL_CRITICAL_SECTION *cs)
 {
     HANDLE tid;
@@ -161,7 +156,6 @@ LONG NTAPI RtlLeaveCriticalSection(COGNAC_RTL_CRITICAL_SECTION *cs)
     return STATUS_SUCCESS;
 }
 
-__declspec(dllexport)
 void NTAPI RtlAcquirePebLock(void)
 {
     unsigned char *peb = (unsigned char *)RtlGetCurrentPeb();
@@ -172,7 +166,6 @@ void NTAPI RtlAcquirePebLock(void)
     if (lock) (void)RtlEnterCriticalSection(lock);
 }
 
-__declspec(dllexport)
 void NTAPI RtlReleasePebLock(void)
 {
     unsigned char *peb = (unsigned char *)RtlGetCurrentPeb();
@@ -183,7 +176,6 @@ void NTAPI RtlReleasePebLock(void)
 }
 
 /* Native version helper used by applications that query the NT build tuple. */
-__declspec(dllexport)
 void NTAPI RtlGetNtVersionNumbers(PULONG major, PULONG minor, PULONG build)
 {
     ULONG a, b, c;
@@ -199,7 +191,6 @@ void NTAPI RtlGetNtVersionNumbers(PULONG major, PULONG minor, PULONG build)
 }
 
 /* Small deterministic mapping for statuses implemented by this bootstrap. */
-__declspec(dllexport)
 ULONG NTAPI RtlNtStatusToDosError(NTSTATUS status)
 {
     switch ((ULONG)status) {
@@ -216,7 +207,6 @@ ULONG NTAPI RtlNtStatusToDosError(NTSTATUS status)
     }
 }
 
-__declspec(dllexport)
 ULONG NTAPI RtlNtStatusToDosErrorNoTeb(NTSTATUS status)
 {
     return RtlNtStatusToDosError(status);
@@ -224,7 +214,6 @@ ULONG NTAPI RtlNtStatusToDosErrorNoTeb(NTSTATUS status)
 
 /* TEB LastErrorValue and LastStatusValue on Windows x64. The launcher maps
  * the TEB at the user GS base before entering native code. */
-__declspec(dllexport)
 ULONG NTAPI RtlGetLastWin32Error(void)
 {
     ULONG value;
@@ -232,13 +221,11 @@ ULONG NTAPI RtlGetLastWin32Error(void)
     return value;
 }
 
-__declspec(dllexport)
 void NTAPI RtlSetLastWin32Error(ULONG error)
 {
     __asm__ volatile ("movl %0, %%gs:0x68" :: "r"(error) : "memory");
 }
 
-__declspec(dllexport)
 NTSTATUS NTAPI RtlGetLastNtStatus(void)
 {
     NTSTATUS status;
@@ -246,7 +233,6 @@ NTSTATUS NTAPI RtlGetLastNtStatus(void)
     return status;
 }
 
-__declspec(dllexport)
 void NTAPI RtlSetLastWin32ErrorAndNtStatusFromNtStatus(NTSTATUS status)
 {
     ULONG error = RtlNtStatusToDosError(status);
@@ -266,5 +252,4 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved)
  * RIP-relative, so ld may omit .reloc entirely; CognacOS must be able to map
  * this DLL away from 0x180000000 in its isolated user address space.
  */
-__declspec(dllexport)
 BOOL (WINAPI *CognacNtdllImageAnchor)(HINSTANCE, DWORD, LPVOID) = DllMain;
