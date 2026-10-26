@@ -202,6 +202,7 @@ pub const NT_SYSCALL_LOOKUP_FUNCTION_ENTRY:u64=0x140;
 pub const NT_SYSCALL_NT_CONTINUE:u64=0x141;
 pub const NT_SYSCALL_NT_RAISE_EXCEPTION:u64=0x142;
 pub const NT_SYSCALL_REGISTER_EXCEPTION_DISPATCHER:u64=0x143;
+pub const NT_SYSCALL_DEBUG_EVENT: u64 = 0x144;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -1386,6 +1387,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_DEBUG_EVENT => {
             let sequence = NTDLL_DEBUG_EVENT_COUNT.fetch_add(1, Ordering::Relaxed);
             if sequence < 256 {
+                unsafe {
                 crate::serial_write(b"[DBG][NTDLL][EVENT] seq=");
                 crate::serial_write_hex(sequence);
                 crate::serial_write(b" event=");
@@ -1396,7 +1398,8 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
                 crate::serial_write_hex(args[2]);
                 crate::serial_write(b" pid=");
                 crate::serial_write_hex(current_process_id());
-                crate::serial_write(b"\\r\\n");
+                crate::serial_write(b"\r\n");
+                }
             }
             NT_STATUS_SUCCESS
         }
