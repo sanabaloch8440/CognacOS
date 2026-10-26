@@ -138,6 +138,8 @@ pub fn dispatch(number:u64,args:[u64;6])->u64 {
 pub const NT_SYSCALL_CLOSE: u64 = 0x100;
 pub const NT_SYSCALL_YIELD_EXECUTION: u64 = 0x101;
 pub const NT_SYSCALL_QUERY_INFORMATION_PROCESS: u64 = 0x102;
+pub const NT_SYSCALL_OPEN_PROCESS: u64 = 0x150;
+pub const NT_SYSCALL_GET_NEXT_PROCESS: u64 = 0x151;
 pub const NT_SYSCALL_QUERY_INFORMATION_THREAD: u64 = 0x103;
 pub const NT_SYSCALL_QUERY_SYSTEM_INFORMATION: u64 = 0x104;
 pub const NT_SYSCALL_OPEN_KEY: u64 = 0x105;
@@ -979,19 +981,93 @@ fn write_return_length(address: u64, length: u32) -> Result<(), u64> {
     copy_nt_output(address, &length.to_le_bytes())
 }
 
+fn nt_open_process(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] == 0 || args[2] == 0 || args[3] == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let mut cid = [0u8; 16];
+    if let Err(status) = copy_nt_input(args[3], &mut cid) { return status; }
+    let pid = u64::from_le_bytes(cid[..8].try_into().unwrap());
+    if pid == 0 || pid == u64::MAX { return 0xC000_000Bu64; }
+    let mut oa = [0u8; 48];
+    if let Err(status) = copy_nt_input(args[2], &mut oa) { return status; }
+    if u32::from_le_bytes(oa[..4].try_into().unwrap()) < 48
+        || u64::from_le_bytes(oa[16..24].try_into().unwrap()) != 0 {
+        return 0xC000_0030u64;
+    }
+    const VALID_PROCESS_ACCESS: u32 = 0x001F_FFFF | 0x0010_0000 | 0x0002_0000 | 0x0001_0000;
+    let mut desired = args[1] as u32;
+    if desired & !VALID_PROCESS_ACCESS != 0 { return NT_STATUS_INVALID_PARAMETER; }
+    if desired & 0x0400 != 0 { desired |= 0x1000; }
+    let Some(process) = crate::process::eprocess_for_pid(pid) else { return 0xC000_000Bu64; };
+    let mut handle = core::ptr::null_mut();
+    let status = unsafe { crate::ntoskrnl::ob::runtime::ObOpenObjectByPointer(
+        process.cast(), u32::from_le_bytes(oa[12..16].try_into().unwrap()),
+        core::ptr::null_mut(), desired, core::ptr::null_mut(), 1, &mut handle) };
+    let _ = crate::process::dereference_eprocess(process.cast());
+    if status != 0 { return status as u32 as u64; }
+    if let Err(status) = copy_nt_output(args[0], &(handle as usize as u64).to_le_bytes()) {
+        let _ = unsafe { crate::ntoskrnl::ob::runtime::ObCloseHandle(handle, 1) };
+        return status;
+    }
+    NT_STATUS_SUCCESS
+}
+
+fn nt_get_next_process(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[4] == 0 || args[3] != 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let mut after_pid = 0u64;
+    if args[0] != 0 {
+        let mut previous = core::ptr::null_mut();
+        let status = unsafe { crate::ntoskrnl::ob::runtime::ObReferenceObjectByHandle(
+            args[0] as *mut core::ffi::c_void, 0, core::ptr::null_mut(), 1,
+            &mut previous, core::ptr::null_mut()) };
+        if status != 0 { return status as u32 as u64; }
+        let snapshot = crate::process::snapshot_referenced(previous);
+        let _ = crate::process::dereference_eprocess(previous);
+        let Some(snapshot) = snapshot else { return NT_STATUS_INVALID_HANDLE; };
+        after_pid = snapshot.process_id;
+    }
+    let Some(process) = crate::process::next_live_process(after_pid) else {
+        let _ = copy_nt_output(args[4], &0u64.to_le_bytes());
+        return 0x8000_001Au64;
+    };
+    let mut handle = core::ptr::null_mut();
+    let status = unsafe { crate::ntoskrnl::ob::runtime::ObOpenObjectByPointer(
+        process.cast(), args[2] as u32, core::ptr::null_mut(), args[1] as u32,
+        core::ptr::null_mut(), 1, &mut handle) };
+    let _ = crate::process::dereference_eprocess(process.cast());
+    if status != 0 { return status as u32 as u64; }
+    if let Err(status) = copy_nt_output(args[4], &(handle as usize as u64).to_le_bytes()) {
+        let _ = unsafe { crate::ntoskrnl::ob::runtime::ObCloseHandle(handle, 1) };
+        return status;
+    }
+    NT_STATUS_SUCCESS
+}
+
 fn nt_query_process(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
-    if args[0] != NT_CURRENT_PROCESS { return NT_STATUS_INVALID_HANDLE; }
     if args[1] != PROCESS_BASIC_INFORMATION_CLASS { return NT_STATUS_INVALID_INFO_CLASS; }
     const SIZE: usize = 48;
     if args[3] < SIZE as u64 { let _ = write_return_length(args[4], SIZE as u32); return NT_STATUS_INFO_LENGTH_MISMATCH; }
-    let pid = CURRENT_PID.load(Ordering::Acquire);
+    let (pid, exit_status, referenced) = if args[0] == NT_CURRENT_PROCESS {
+        (CURRENT_PID.load(Ordering::Acquire), 0u64, core::ptr::null_mut())
+    } else {
+        let mut object = core::ptr::null_mut();
+        let status = unsafe { crate::ntoskrnl::ob::runtime::ObReferenceObjectByHandle(
+            args[0] as *mut core::ffi::c_void, 0x1000, core::ptr::null_mut(), 1,
+            &mut object, core::ptr::null_mut()) };
+        if status != 0 { return status as u32 as u64; }
+        let Some(snapshot) = crate::process::snapshot_referenced(object) else {
+            let _ = crate::process::dereference_eprocess(object);
+            return NT_STATUS_INVALID_HANDLE;
+        };
+        (snapshot.process_id, snapshot.exit_code, object)
+    };
     let mut info = [0u8; SIZE];
-    info[0..4].copy_from_slice(&0i32.to_le_bytes()); // ExitStatus
+    info[0..4].copy_from_slice(&(exit_status as u32).to_le_bytes());
     info[8..16].copy_from_slice(&(crate::process::PEB_ADDRESS).to_le_bytes());
-    info[16..24].copy_from_slice(&1u64.to_le_bytes()); // minimal single-processor affinity
-    info[24..28].copy_from_slice(&8i32.to_le_bytes()); // normal base priority
+    info[16..24].copy_from_slice(&1u64.to_le_bytes());
+    info[24..28].copy_from_slice(&8i32.to_le_bytes());
     info[32..40].copy_from_slice(&pid.to_le_bytes());
-    info[40..48].copy_from_slice(&0u64.to_le_bytes()); // inherited PID not tracked yet
+    info[40..48].copy_from_slice(&0u64.to_le_bytes());
+    if !referenced.is_null() { let _ = crate::process::dereference_eprocess(referenced); }
     if let Err(status) = write_return_length(args[4], SIZE as u32) { return status; }
     if let Err(status) = copy_nt_output(args[2], &info) { return status; }
     NT_STATUS_SUCCESS
@@ -1552,6 +1628,8 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
             NT_STATUS_SUCCESS
         }
         NT_SYSCALL_QUERY_INFORMATION_PROCESS => nt_query_process(args),
+        NT_SYSCALL_OPEN_PROCESS => nt_open_process(args),
+        NT_SYSCALL_GET_NEXT_PROCESS => nt_get_next_process(args),
         NT_SYSCALL_QUERY_INFORMATION_THREAD => nt_query_thread(args),
         NT_SYSCALL_QUERY_SYSTEM_INFORMATION => nt_query_system(args),
         NT_SYSCALL_ETW_REGISTER => etw_register(args),
@@ -1700,7 +1778,8 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
         let count = match number {
             NT_SYSCALL_CLOSE => 1,
             NT_SYSCALL_YIELD_EXECUTION => 0,
-            NT_SYSCALL_QUERY_INFORMATION_PROCESS | NT_SYSCALL_QUERY_INFORMATION_THREAD => 5,
+            NT_SYSCALL_QUERY_INFORMATION_PROCESS | NT_SYSCALL_QUERY_INFORMATION_THREAD | NT_SYSCALL_GET_NEXT_PROCESS => 5,
+            NT_SYSCALL_OPEN_PROCESS => 4,
             NT_SYSCALL_QUERY_SYSTEM_INFORMATION => 4,
             NT_SYSCALL_ETW_REGISTER => 2,
             NT_SYSCALL_ETW_UNREGISTER => 1,
