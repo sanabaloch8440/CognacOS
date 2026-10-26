@@ -451,6 +451,15 @@ pub(crate) fn controller_create_session(out_handle: &mut u64) -> i32 {
         Some(0)=>0, Some(status)=>status as u32 as i32, None=>0xC0000002u32 as i32
     }
 }
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+pub(crate) fn controller_stop_session(session:u64)->i32 {
+ let result:u64;
+ unsafe { core::arch::asm!("int 0x83",inout("rax") NT_SYSCALL_ETW_STOP_SESSION=>result,in("r10") session,lateout("rcx") _,lateout("r11") _); }
+ result as u32 as i32
+}
+#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+pub(crate) fn controller_stop_session(_session:u64)->i32 { 0xC0000002u32 as i32 }
+
 /// Enable/disable a provider through a privileged kernel-owned session.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub(crate) fn controller_enable_provider(session:u64,guid:&Guid,enabled:bool,level:u8,any:u64,all:u64)->i32 {
