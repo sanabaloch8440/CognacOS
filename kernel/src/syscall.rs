@@ -1276,7 +1276,7 @@ unsafe fn route_user_exception(frame: *mut u64, args: &[u64; NT_MAX_ARGUMENTS]) 
     }
     let f = core::slice::from_raw_parts(frame, 20);
     let old_rsp = f[18];
-    let record_offset = 0x20usize;
+    let record_offset = 0x28usize;
     let context_offset = (record_offset + AMD64_EXCEPTION_RECORD_SIZE + 15) & !15;
     let total = context_offset + AMD64_CONTEXT_SIZE + 16;
     let Some(raw_start) = old_rsp.checked_sub(total as u64) else { return NT_STATUS_BAD_STACK; };
