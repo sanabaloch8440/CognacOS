@@ -38,7 +38,7 @@ unsafe fn apiset_schema_has(name: *const UnicodeString) -> Result<bool, i32> {
  let fold = |c: u16| if (65..=90).contains(&c) { c+32 } else { c };
  for i in 0..count { let e = unsafe { map.add(off+i*24) }; let no = unsafe { core::ptr::read_unaligned(e.add(4).cast::<u32>()) } as usize; let nl = unsafe { core::ptr::read_unaligned(e.add(8).cast::<u32>()) } as usize;
   if nl == 0 || nl&1 != 0 || no.checked_add(nl).filter(|v| *v <= size).is_none() || nl/2 != chars { continue; }
-  let mut eq=true; for j in 0..chars { let c=unsafe { core::ptr::read_unaligned(map.add(no+j*2).cast::<u16>()) }; if fold(c)!=fold(wanted[j]) {eq=false;break;} } if eq {return Ok(true);}
+  let mut eq=true; for j in 0..chars { let c=unsafe { core::ptr::read_unaligned(map.add(no+j*2).cast::<u16>()) }; if fold(c)!=fold(wanted[j]) {eq=false;break;} } if eq { let vo=unsafe{core::ptr::read_unaligned(e.add(16).cast::<u32>())} as usize; let vc=unsafe{core::ptr::read_unaligned(e.add(20).cast::<u32>())} as usize; if vc==0 || vc>65536 || vc.checked_mul(20).and_then(|v|vo.checked_add(v)).filter(|v|*v<=size).is_none(){return Ok(false);} return Ok(true); }
  } Ok(false)
 }
 
@@ -149,10 +149,10 @@ pub unsafe extern "system" fn EtwEventActivityIdControl() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn EtwEventEnabled(handle: u64, descriptor: *const EventDescriptor) -> i32 { (!descriptor.is_null() && etw_is_registered(handle)) as i32 }
+pub unsafe extern "system" fn EtwEventEnabled(handle: u64, descriptor: *const EventDescriptor) -> i32 { let _valid = !descriptor.is_null() && etw_is_registered(handle); 0 }
 
 #[no_mangle]
-pub unsafe extern "system" fn EtwEventProviderEnabled(handle: u64, _level: u8, _keyword: u64) -> i32 { etw_is_registered(handle) as i32 }
+pub unsafe extern "system" fn EtwEventProviderEnabled(handle: u64, _level: u8, _keyword: u64) -> i32 { let _registered = etw_is_registered(handle); 0 }
 
 #[no_mangle]
 pub unsafe extern "system" fn EtwEventRegister(provider: *const Guid, _callback: *const core::ffi::c_void, _context: *mut core::ffi::c_void, handle: *mut u64) -> i32 { unsafe { etw_register(provider, handle) as i32 } }
