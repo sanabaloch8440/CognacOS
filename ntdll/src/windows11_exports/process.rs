@@ -53,11 +53,6 @@ pub unsafe extern "system" fn NtAlertThreadByThreadIdEx() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtAlpcConnectPortEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn NtAssignProcessToJobObject() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
