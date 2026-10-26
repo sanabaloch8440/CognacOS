@@ -155,7 +155,7 @@ unsafe fn write_narrow(dst: *mut u8, cap: Option<usize>, text: &[u8], secure: bo
     if dst.is_null() { return -1; }
     if text.len().checked_add(1).is_none() { return -1; }
     if let Some(capacity) = cap {
-        if capacity == 0 || (secure && needed > capacity) {
+        if capacity == 0 || (secure && text.len() >= capacity) {
             if capacity > 0 { unsafe { dst.write(0) }; }
             return -1;
         }
