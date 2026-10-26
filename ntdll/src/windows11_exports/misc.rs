@@ -2,20 +2,56 @@
 //! Replace generic signatures with ABI-correct declarations as each routine is implemented.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
+const STATUS_SUCCESS: i32 = 0;
+const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+const ERROR_SUCCESS: u32 = 0;
+const ERROR_INVALID_PARAMETER: u32 = 87;
+#[repr(C)] #[derive(Clone, Copy)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *const u16 }
+#[repr(C)] #[derive(Clone, Copy)] struct Guid { data1: u32, data2: u16, data3: u16, data4: [u8; 8] }
+#[repr(C)] #[derive(Clone, Copy)] struct EventDescriptor { id: u16, version: u8, channel: u8, level: u8, opcode: u8, task: u16, keyword: u64 }
+#[repr(C)] struct EventDataDescriptor { ptr: u64, size: u32, reserved: u32 }
+#[derive(Clone, Copy)] struct EtwProvider { handle: u64, guid: Guid, active: bool }
+impl EtwProvider { const EMPTY: Self = Self { handle: 0, guid: Guid { data1: 0, data2: 0, data3: 0, data4: [0; 8] }, active: false }; }
+static ETW_LOCK: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static ETW_NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+static mut ETW_PROVIDERS: [EtwProvider; 64] = [EtwProvider::EMPTY; 64];
+struct EtwGuard;
+impl EtwGuard { fn lock() -> Self { while ETW_LOCK.compare_exchange_weak(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).is_err() { core::hint::spin_loop(); } Self } }
+impl Drop for EtwGuard { fn drop(&mut self) { ETW_LOCK.store(false, core::sync::atomic::Ordering::Release); } }
+unsafe fn etw_register(provider: *const Guid, handle: *mut u64) -> u32 {
+ if provider.is_null() || handle.is_null() { return ERROR_INVALID_PARAMETER; }
+ let guid = unsafe { core::ptr::read_unaligned(provider) }; let _guard = EtwGuard::lock();
+ let entries = core::ptr::addr_of_mut!(ETW_PROVIDERS).cast::<EtwProvider>();
+ for i in 0..64 { let e = unsafe { &mut *entries.add(i) }; if !e.active { let id = ETW_NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed).max(1); *e = EtwProvider { handle: id, guid, active: true }; unsafe { handle.write(id); } return ERROR_SUCCESS; } }
+ 8
+}
+fn etw_is_registered(handle: u64) -> bool { let _guard = EtwGuard::lock(); let entries = core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>(); (0..64).any(|i| unsafe { let e = &*entries.add(i); e.active && e.handle == handle }) }
+unsafe fn apiset_schema_has(name: *const UnicodeString) -> Result<bool, i32> {
+ if name.is_null() { return Err(STATUS_INVALID_PARAMETER); } let n = unsafe { &*name };
+ if n.length == 0 || n.length & 1 != 0 || n.length > n.maximum_length || n.buffer.is_null() || n.length > 520 { return Err(STATUS_INVALID_PARAMETER); }
+ let chars = n.length as usize / 2; let wanted = unsafe { core::slice::from_raw_parts(n.buffer, chars) };
+ let peb: *const u8; unsafe { core::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, preserves_flags, readonly)); }
+ if peb.is_null() { return Ok(false); } let map = unsafe { core::ptr::read_unaligned(peb.add(0x68).cast::<usize>()) } as *const u8; if map.is_null() { return Ok(false); }
+ let version = unsafe { core::ptr::read_unaligned(map.cast::<u32>()) }; let size = unsafe { core::ptr::read_unaligned(map.add(4).cast::<u32>()) } as usize;
+ let count = unsafe { core::ptr::read_unaligned(map.add(12).cast::<u32>()) } as usize; let off = unsafe { core::ptr::read_unaligned(map.add(16).cast::<u32>()) } as usize;
+ if version != 6 || size < 28 || size > 16*1024*1024 || count > 65536 || count.checked_mul(24).and_then(|v| off.checked_add(v)).filter(|v| *v <= size).is_none() { return Ok(false); }
+ let fold = |c: u16| if (65..=90).contains(&c) { c+32 } else { c };
+ for i in 0..count { let e = unsafe { map.add(off+i*24) }; let no = unsafe { core::ptr::read_unaligned(e.add(4).cast::<u32>()) } as usize; let nl = unsafe { core::ptr::read_unaligned(e.add(8).cast::<u32>()) } as usize;
+  if nl == 0 || nl&1 != 0 || no.checked_add(nl).filter(|v| *v <= size).is_none() || nl/2 != chars { continue; }
+  let mut eq=true; for j in 0..chars { let c=unsafe { core::ptr::read_unaligned(map.add(no+j*2).cast::<u16>()) }; if fold(c)!=fold(wanted[j]) {eq=false;break;} } if eq {return Ok(true);}
+ } Ok(false)
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn ApiSetGetImplementationHost() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ApiSetQueryApiSetPresence() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn ApiSetQueryApiSetPresence(name: *const UnicodeString, present: *mut u8) -> i32 { if present.is_null() { return STATUS_INVALID_PARAMETER; } match unsafe { apiset_schema_has(name) } { Ok(v) => { unsafe { present.write(v as u8); } STATUS_SUCCESS }, Err(e) => e } }
 
 #[no_mangle]
-pub unsafe extern "system" fn ApiSetQueryApiSetPresenceEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn ApiSetQueryApiSetPresenceEx(name: *const UnicodeString, in_schema: *mut u8, present: *mut u8) -> i32 { if name.is_null() || in_schema.is_null() || present.is_null() { return STATUS_INVALID_PARAMETER; } let n=unsafe{&*name}; if n.length&1!=0 || n.length>n.maximum_length || n.buffer.is_null() {return STATUS_INVALID_PARAMETER;} let u=unsafe{core::slice::from_raw_parts(n.buffer,n.length as usize/2)}; if u.iter().any(|c|*c==46) {return STATUS_INVALID_PARAMETER;} match unsafe{apiset_schema_has(name)} {Ok(v)=>{unsafe{in_schema.write(v as u8);present.write(v as u8);} STATUS_SUCCESS},Err(e)=>e} }
 
 #[no_mangle]
 pub unsafe extern "system" fn ApiSetQuerySchema() -> i32 {
@@ -113,19 +149,13 @@ pub unsafe extern "system" fn EtwEventActivityIdControl() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn EtwEventEnabled() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn EtwEventEnabled(handle: u64, descriptor: *const EventDescriptor) -> i32 { (!descriptor.is_null() && etw_is_registered(handle)) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn EtwEventProviderEnabled() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn EtwEventProviderEnabled(handle: u64, _level: u8, _keyword: u64) -> i32 { etw_is_registered(handle) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn EtwEventRegister() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn EtwEventRegister(provider: *const Guid, _callback: *const core::ffi::c_void, _context: *mut core::ffi::c_void, handle: *mut u64) -> i32 { unsafe { etw_register(provider, handle) as i32 } }
 
 #[no_mangle]
 pub unsafe extern "system" fn EtwEventSetInformation() -> i32 {
@@ -133,14 +163,10 @@ pub unsafe extern "system" fn EtwEventSetInformation() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn EtwEventUnregister() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn EtwEventUnregister(handle: u64) -> i32 { let _guard=EtwGuard::lock(); let entries=core::ptr::addr_of_mut!(ETW_PROVIDERS).cast::<EtwProvider>(); for i in 0..64 {let e=unsafe{&mut *entries.add(i)};if e.active&&e.handle==handle{e.active=false;return 0;}} ERROR_INVALID_PARAMETER as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn EtwEventWrite() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const EventDescriptor, count: u32, data: *const EventDataDescriptor) -> i32 { if descriptor.is_null() || (count!=0 && data.is_null()) || !etw_is_registered(handle) {return ERROR_INVALID_PARAMETER as i32;} 0 }
 
 #[no_mangle]
 pub unsafe extern "system" fn EtwEventWriteEndScenario() -> i32 {
@@ -303,19 +329,13 @@ pub unsafe extern "system" fn ExpInterlockedPopEntrySListResume() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswalnum() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn iswalnum(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_alphanumeric()) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswalpha() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn iswalpha(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_alphabetic()) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswascii() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn iswascii(c: u32) -> i32 { (c <= 0x7f) as i32 }
 
 #[no_mangle]
 pub unsafe extern "system" fn iswctype() -> i32 {
@@ -323,34 +343,22 @@ pub unsafe extern "system" fn iswctype() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswdigit() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn iswdigit(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_digit()) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswgraph() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn iswgraph(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_graphic()) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswlower() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn iswlower(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_lowercase()) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswprint() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn iswprint(c: u32) -> i32 { (c <= 0x7f && ((c as u8).is_ascii_graphic() || c==32)) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswspace() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn iswspace(c: u32) -> i32 { matches!(c, 9..=13 | 32) as i32 }
 
 #[no_mangle]
-pub unsafe extern "system" fn iswxdigit() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn iswxdigit(c: u32) -> i32 { (c <= 0x7f && (c as u8).is_ascii_hexdigit()) as i32 }
 
 #[no_mangle]
 pub unsafe extern "system" fn KiUserApcDispatcher() -> i32 {
@@ -368,9 +376,7 @@ pub unsafe extern "system" fn KiUserInvertedFunctionTable() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn labs() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn labs(value: i32) -> i32 { value.wrapping_abs() }
 
 #[no_mangle]
 pub unsafe extern "system" fn longjmp() -> i32 {
@@ -513,14 +519,10 @@ pub unsafe extern "system" fn swscanf_s() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn towlower() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn towlower(c: u32) -> u32 { if (65..=90).contains(&c) {c+32} else {c} }
 
 #[no_mangle]
-pub unsafe extern "system" fn towupper() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn towupper(c: u32) -> u32 { if (97..=122).contains(&c) {c-32} else {c} }
 
 #[no_mangle]
 pub unsafe extern "system" fn TpAllocAlpcCompletion() -> i32 {
