@@ -67,11 +67,36 @@ pub struct ALPC_CONTEXT_ATTR {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-pub struct ALPC_HANDLE_ATTR {
+pub struct ALPC_HANDLE_ATTR32 {
     pub Flags: ULONG,
-    pub Handle: *mut c_void,
+    pub Reserved0: ULONG,
+    pub SameAccess: ULONG,
+    pub SameAttributes: ULONG,
+    pub Indirect: ULONG,
+    pub Inherit: ULONG,
+    pub Reserved1: ULONG,
+    pub Handle: ULONG,
     pub ObjectType: ULONG,
     pub DesiredAccess: ULONG,
+    pub GrantedAccess: ULONG,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ALPC_HANDLE_ATTR {
+    pub Flags: ULONG,
+    pub Reserved0: ULONG,
+    pub SameAccess: ULONG,
+    pub SameAttributes: ULONG,
+    pub Indirect: ULONG,
+    pub Inherit: ULONG,
+    pub Reserved1: ULONG,
+    pub Handle: *mut c_void,
+    pub HandleAttrArray: *mut ALPC_HANDLE_ATTR32,
+    pub ObjectType: ULONG,
+    pub HandleCount: ULONG,
+    pub DesiredAccess: ULONG,
+    pub GrantedAccess: ULONG,
 }
 
 #[repr(C)]
@@ -270,7 +295,8 @@ mod tests {
         assert_eq!(size_of::<ALPC_SECURITY_ATTR>(), 24);
         assert_eq!(size_of::<ALPC_VIEW_ATTR>(), 32);
         assert_eq!(size_of::<ALPC_CONTEXT_ATTR>(), 32);
-        assert_eq!(size_of::<ALPC_HANDLE_ATTR>(), 24);
+        assert_eq!(size_of::<ALPC_HANDLE_ATTR32>(), 44);
+        assert_eq!(size_of::<ALPC_HANDLE_ATTR>(), 64);
         assert_eq!(size_of::<ALPC_TOKEN_ATTR>(), 24);
         assert_eq!(size_of::<ALPC_DIRECT_ATTR>(), 8);
         assert_eq!(size_of::<ALPC_WORK_ON_BEHALF_ATTR>(), 8);
