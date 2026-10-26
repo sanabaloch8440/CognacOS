@@ -22,8 +22,19 @@ pub unsafe extern "system" fn NtCompressKey() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtCreateKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtCreateKey(
+    key_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const crate::reg::OBJECT_ATTRIBUTES,
+    title_index: u32,
+    class: *const crate::reg::UNICODE_STRING,
+    create_options: u32,
+    disposition: *mut u32,
+) -> i32 {
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (key_handle, desired_access, object_attributes, title_index, class, create_options, disposition); 0xC0000002u32 as i32 }
+    #[cfg(target_os = "windows")]
+    { let _ = (key_handle, desired_access, object_attributes, title_index, class, create_options, disposition); 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
@@ -42,13 +53,18 @@ pub unsafe extern "system" fn NtCreateRegistryTransaction() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtDeleteKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtDeleteKey(key_handle: *mut core::ffi::c_void) -> i32 {
+    let _ = key_handle;
+    0xC0000002u32 as i32 // ABI-correct, syscall bridge not linked in this target yet
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtDeleteValueKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtDeleteValueKey(
+    key_handle: *mut core::ffi::c_void,
+    value_name: *const crate::reg::UNICODE_STRING,
+) -> i32 {
+    let _ = (key_handle, value_name);
+    0xC0000002u32 as i32 // ABI-correct, syscall bridge not linked in this target yet
 }
 
 #[no_mangle]
@@ -62,8 +78,9 @@ pub unsafe extern "system" fn NtEnumerateValueKey() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtFlushKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtFlushKey(key_handle: *mut core::ffi::c_void) -> i32 {
+    let _ = key_handle;
+    0xC00000BBu32 as i32 // STATUS_NOT_SUPPORTED until a persistent hive backend is available
 }
 
 #[no_mangle]
@@ -231,8 +248,16 @@ pub unsafe extern "system" fn NtSetInformationKey() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtSetValueKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtSetValueKey(
+    key_handle: *mut core::ffi::c_void,
+    value_name: *const crate::reg::UNICODE_STRING,
+    title_index: u32,
+    value_type: u32,
+    data: *const core::ffi::c_void,
+    data_size: u32,
+) -> i32 {
+    let _ = (key_handle, value_name, title_index, value_type, data, data_size);
+    0xC0000002u32 as i32 // syscall bridge not linked in this target yet
 }
 
 #[no_mangle]
