@@ -69,7 +69,6 @@ extern "system" {
 
 /// Register the native first-chance exception entry with the kernel for this process.
 /// Registration is process-scoped and is idempotently refreshed by loader entry points.
-#[no_mangle]
 pub unsafe extern "system" fn RtlRegisterExceptionDispatcher() -> i32 {
     #[cfg(any(target_os = "none", target_os = "windows"))]
     {
@@ -261,7 +260,6 @@ struct RTL_DISPATCHER_CONTEXT {
 
 /// Walk AMD64 frames while preserving the original exception context unless a
 /// language handler explicitly modifies it and requests ExceptionContinueExecution.
-#[no_mangle]
 pub unsafe extern "system" fn RtlDispatchException(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT) -> u8 {
     if record.is_null() || context.is_null() { return 0; }
     // VEH callbacks run before frame-based language handlers. Copy the
