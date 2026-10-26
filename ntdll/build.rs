@@ -78,8 +78,13 @@ fn main() {
             let Ok(src) = fs::read_to_string(&p) else { continue };
             let lines: Vec<&str> = src.lines().collect();
             for (index, line) in lines.iter().enumerate() {
-                if line.trim() != "#[no_mangle]" { continue; }
-                for candidate in lines.iter().skip(index + 1).take(12) {
+                let Some(after_attribute) = line.split("#[no_mangle]").nth(1) else { continue };
+                let mut candidates: Vec<&str> = Vec::new();
+                if !after_attribute.trim().is_empty() {
+                    candidates.push(after_attribute.trim());
+                }
+                candidates.extend(lines.iter().skip(index + 1).take(12).copied());
+                for candidate in candidates {
                     let candidate = candidate.trim();
                     let declaration = candidate
                         .find("fn ")
