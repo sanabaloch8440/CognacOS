@@ -191,7 +191,7 @@ pub unsafe extern "system" fn AlpcInitializeMessageAttribute(
         }
     }
     unsafe { RequiredBufferSize.write(required as ULONG); }
-    if Buffer.is_null() || BufferSize as usize < required { return STATUS_BUFFER_TOO_SMALL; }
+    if Buffer.is_null() || (BufferSize as usize) < required { return STATUS_BUFFER_TOO_SMALL; }
     unsafe {
         (*Buffer).AllocatedAttributes = AttributeFlags;
         (*Buffer).ValidAttributes = 0;
