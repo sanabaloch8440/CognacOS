@@ -27,7 +27,7 @@ fn kernel_etw_call(number:u64,a0:u64,a1:u64,a2:u64,a3:u64)->Option<u64>{
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 fn kernel_etw_set_enable(handle:u64,enabled:bool,level:u8,any:u64,all:u64)->Option<u64>{
  let result:u64;
- unsafe { core::arch::asm!("push {mask}", "int 0x83", "add rsp, 8", mask=in(reg) all, inout("rax") NT_SYSCALL_ETW_SET_ENABLE=>result, in("r10") handle, in("rdx") enabled as u64, in("r8") level as u64, in("r9") any, lateout("rcx") _, lateout("r11") _); }
+ unsafe { core::arch::asm!("sub rsp, 48", "mov qword ptr [rsp + 40], {mask}", "int 0x83", "add rsp, 48", mask=in(reg) all, inout("rax") NT_SYSCALL_ETW_SET_ENABLE=>result, in("r10") handle, in("rdx") enabled as u64, in("r8") level as u64, in("r9") any, lateout("rcx") _, lateout("r11") _); }
  Some(result)
 }
 #[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
