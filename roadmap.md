@@ -196,7 +196,7 @@ The implementation remains partial. It now publishes the Windows-layout XState f
 
 - [x] Move wide-character CRT classification and single-code-point case conversion routines into the dedicated NTDLL CRT source module.
 - [x] Add bounded ETW provider registration/unregistration and copy event payloads into an owned, fixed-size ring buffer; event descriptors and payload pointers are validated before recording.
-- [ ] Connect the ETW ring to a kernel/session controller, implement enable callbacks and activity IDs, and add a consumer-facing transport with process-exit rundown.
+- [x] Connect ETW provider registration, event/activity metadata, kernel session control, and session-aware consumer transport with process-exit rundown (Windows controller API parity remains open).
 - [ ] Replace remaining zero-argument miscellaneous placeholders only alongside verified Windows 11 x64 signatures and their underlying kernel/service prerequisites.
 - [ ] Add host tests for provider lifecycle, ring wrap/drop behavior, invalid descriptor arrays, and exact payload copying.
 
