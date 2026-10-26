@@ -169,10 +169,6 @@ pub unsafe extern "system" fn longjmp() -> i32 {
     STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn MicrosoftTelemetryAssertTriggeredUM() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub static mut NlsAnsiCodePage: u16 = 1252; // Default ANSI code page until NLS configuration is loaded.
@@ -193,29 +189,9 @@ pub static mut NlsMbOemCodePageTag: u8 = 0; // Single-byte OEM default; updated 
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn ShipAssert() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ShipAssertGetBufferInfo() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ShipAssertMsgA() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn ShipAssertMsgW() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn sscanf() -> i32 {
@@ -233,10 +209,6 @@ pub unsafe extern "system" fn swscanf_s() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn vDbgPrintExWithPrefix() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
 
 
 
@@ -245,156 +217,33 @@ pub unsafe extern "system" fn vswprintf_s() -> i32 {
     STATUS_NOT_IMPLEMENTED
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn WerReportSQMEvent() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmAddToAverageDWORD() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmAddToStream() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmAddToStreamEx() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmCheckEscalationAddToStreamEx() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmCheckEscalationSetDWORD() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmCheckEscalationSetDWORD64() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmCheckEscalationSetString() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmCommonDatapointDelete() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmCommonDatapointSetDWORD() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmCommonDatapointSetDWORD64() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmCommonDatapointSetStreamEx() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmCommonDatapointSetString() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmEventEnabled() -> i32 {
-    // SQM is disabled until a provider is configured.
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmEventWrite() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmGetEscalationRuleStatus() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmGetInstrumentationProperty() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmIsOptedInEx() -> i32 {
-    // SQM is disabled until a provider is configured.
-    0
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmIsSessionDisabled() -> i32 {
-    // SQM is disabled until a provider is configured.
-    0
-}
 
 
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmSetDWORD64() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmSetEscalationInfo() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
 
 
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmSetIfMinDWORD() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmSetString() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
 
 
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmStartSessionForPartner() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn WinSqmStartSqmOptinListener() -> i32 {
-    // Telemetry is optional; no provider is configured, so this is a safe no-op.
-    STATUS_SUCCESS
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
