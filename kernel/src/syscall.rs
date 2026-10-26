@@ -990,7 +990,9 @@ fn nt_open_process(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     let mut oa = [0u8; 48];
     if let Err(status) = copy_nt_input(args[2], &mut oa) { return status; }
     if u32::from_le_bytes(oa[..4].try_into().unwrap()) < 48
-        || u64::from_le_bytes(oa[16..24].try_into().unwrap()) != 0 {
+        || u64::from_le_bytes(oa[16..24].try_into().unwrap()) != 0
+        || u64::from_le_bytes(oa[32..40].try_into().unwrap()) != 0
+        || u64::from_le_bytes(oa[40..48].try_into().unwrap()) != 0 {
         return 0xC000_0030u64;
     }
     const VALID_PROCESS_ACCESS: u32 = 0x001F_FFFF | 0x0010_0000 | 0x0002_0000 | 0x0001_0000;
@@ -1030,8 +1032,10 @@ fn nt_get_next_process(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         return 0x8000_001Au64;
     };
     let mut handle = core::ptr::null_mut();
+    let mut desired = args[1] as u32;
+    if desired & 0x0400 != 0 { desired |= 0x1000; }
     let status = unsafe { crate::ntoskrnl::ob::runtime::ObOpenObjectByPointer(
-        process.cast(), args[2] as u32, core::ptr::null_mut(), args[1] as u32,
+        process.cast(), args[2] as u32, core::ptr::null_mut(), desired,
         core::ptr::null_mut(), 1, &mut handle) };
     let _ = crate::process::dereference_eprocess(process.cast());
     if status != 0 { return status as u32 as u64; }
