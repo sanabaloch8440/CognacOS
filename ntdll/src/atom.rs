@@ -104,7 +104,6 @@ struct UNICODE_STRING {
 extern "system" {
     fn RtlAllocateHeap(heap: HANDLE, flags: ULONG, size: usize) -> *mut c_void;
     fn RtlFreeHeap(heap: HANDLE, flags: ULONG, ptr: *mut c_void) -> BOOLEAN;
-    fn GetProcessHeap() -> HANDLE;
     fn RtlEnterCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> NTSTATUS;
     fn RtlLeaveCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> NTSTATUS;
     fn RtlInitializeCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> NTSTATUS;
@@ -209,7 +208,7 @@ unsafe fn add_atom(
     // offsetof(RTL_ATOM_TABLE_ENTRY, Name[len]) = offset(Name) + len * sizeof(WCHAR).
     let name_offset = mem::offset_of!(RTL_ATOM_TABLE_ENTRY, name);
     let allocation_size = name_offset.saturating_add(len.saturating_mul(mem::size_of::<WCHAR>()));
-    let entry = unsafe { RtlAllocateHeap(GetProcessHeap(), 0, allocation_size) as *mut RTL_ATOM_TABLE_ENTRY };
+    let entry = unsafe { RtlAllocateHeap(crate::rtl_heap::RtlGetProcessHeap(), 0, allocation_size) as *mut RTL_ATOM_TABLE_ENTRY };
     if entry.is_null() {
         unsafe { RtlFreeHandle(ptr::addr_of_mut!((*table).handle_table), handle); }
         return STATUS_NO_MEMORY;
@@ -337,7 +336,7 @@ pub unsafe extern "system" fn RtlDeleteAtomFromAtomTable(
                             link = ptr::addr_of_mut!((**link).hash_link);
                         }
                         if !(*link).is_null() { *link = (*entry).hash_link; }
-                        RtlFreeHeap(GetProcessHeap(), 0, entry.cast());
+                        RtlFreeHeap(crate::rtl_heap::RtlGetProcessHeap(), 0, entry.cast());
                         RtlFreeHandle(ptr::addr_of_mut!((*table).handle_table), raw_handle);
                     }
                 }
@@ -416,14 +415,14 @@ pub unsafe extern "system" fn RtlCreateAtomTable(
     let bucket_offset = mem::offset_of!(RTL_ATOM_TABLE, buckets);
     let allocation_size = bucket_offset.saturating_add(size as usize * mem::size_of::<*mut RTL_ATOM_TABLE_ENTRY>());
     let table = unsafe {
-        RtlAllocateHeap(GetProcessHeap(), HEAP_ZERO_MEMORY, allocation_size) as RTL_ATOM_TABLE_PTR
+        RtlAllocateHeap(crate::rtl_heap::RtlGetProcessHeap(), HEAP_ZERO_MEMORY, allocation_size) as RTL_ATOM_TABLE_PTR
     };
     if table.is_null() { return STATUS_NO_MEMORY; }
     unsafe {
         (*table).signature = TABLE_SIGNATURE;
         (*table).number_of_buckets = size;
         if RtlInitializeCriticalSection(ptr::addr_of_mut!((*table).critical_section)) < 0 {
-            RtlFreeHeap(GetProcessHeap(), 0, table.cast());
+            RtlFreeHeap(crate::rtl_heap::RtlGetProcessHeap(), 0, table.cast());
             return STATUS_NO_MEMORY;
         }
         RtlInitializeHandleTable(MAX_ATOMS, mem::size_of::<RTL_HANDLE_WRAPPER>() as ULONG,
@@ -443,7 +442,7 @@ pub unsafe extern "system" fn RtlDestroyAtomTable(table: RTL_ATOM_TABLE_PTR) -> 
         RtlDestroyHandleTable(ptr::addr_of_mut!((*table).handle_table));
         RtlDeleteCriticalSection(ptr::addr_of_mut!((*table).critical_section));
         (*table).signature = 0;
-        RtlFreeHeap(GetProcessHeap(), 0, table.cast());
+        RtlFreeHeap(crate::rtl_heap::RtlGetProcessHeap(), 0, table.cast());
     }
     STATUS_SUCCESS
 }
@@ -531,7 +530,7 @@ pub unsafe extern "system" fn RtlEmptyAtomTable(
                     if RtlIsValidIndexHandle(&(*table).handle_table, (*entry).handle_index as ULONG, &mut raw_handle) != 0 {
                         RtlFreeHandle(ptr::addr_of_mut!((*table).handle_table), raw_handle);
                     }
-                    RtlFreeHeap(GetProcessHeap(), 0, entry.cast());
+                    RtlFreeHeap(crate::rtl_heap::RtlGetProcessHeap(), 0, entry.cast());
                 }
             }
         }

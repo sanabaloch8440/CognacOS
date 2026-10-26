@@ -107,7 +107,6 @@ pub struct DEBUG_LOCK_INFORMATION {
 }
 
 extern "system" {
-    fn GetProcessHeap() -> HANDLE;
     fn RtlAllocateHeap(heap: HANDLE, flags: ULONG, size: SIZE_T) -> *mut c_void;
     fn RtlFreeHeap(heap: HANDLE, flags: ULONG, memory: *mut c_void) -> BOOLEAN;
     fn NtOpenProcess(
@@ -121,7 +120,7 @@ extern "system" {
 
 #[inline]
 unsafe fn heap_alloc_zeroed(size: usize) -> *mut c_void {
-    let heap = GetProcessHeap();
+    let heap = crate::rtl_heap::RtlGetProcessHeap();
     let ptr = RtlAllocateHeap(heap, 0, size);
     if !ptr.is_null() {
         write_bytes(ptr.cast::<u8>(), 0, size);
@@ -132,7 +131,7 @@ unsafe fn heap_alloc_zeroed(size: usize) -> *mut c_void {
 #[inline]
 unsafe fn heap_free(ptr: *mut c_void) {
     if !ptr.is_null() {
-        let _ = RtlFreeHeap(GetProcessHeap(), 0, ptr);
+        let _ = RtlFreeHeap(crate::rtl_heap::RtlGetProcessHeap(), 0, ptr);
     }
 }
 
