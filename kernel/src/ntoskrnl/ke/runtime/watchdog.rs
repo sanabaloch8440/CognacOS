@@ -169,7 +169,7 @@ pub(crate) fn watchdog_dpc_end() {
             // Arg1=0: a single DPC exceeded its allotment.
             unsafe {
                 crate::ntoskrnl::ke::runtime::ke_bug_check_ex(
-                    DPC_WATCHDOG_VIOLATION, 0, elapsed as usize, limit as usize, routine as usize,
+                    DPC_WATCHDOG_VIOLATION, 0, counter_to_watchdog_ticks(elapsed, hz) as usize, counter_to_watchdog_ticks(limit, hz) as usize, routine as usize,
                 );
             }
         }
