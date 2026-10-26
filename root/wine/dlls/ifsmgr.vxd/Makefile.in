@@ -1,6 +1,0 @@
-MODULE    = ifsmgr.vxd
-IMPORTS   = kernel
-ENABLE_ARCHS = $(WIN16_ARCH)
-
-SOURCES = \
-	ifsmgr.c

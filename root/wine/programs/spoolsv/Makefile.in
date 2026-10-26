@@ -1,8 +1,0 @@
-MODULE    = spoolsv.exe
-IMPORTS   = advapi32
-ENABLE_ARCHS = $(HOST_ARCH)
-
-EXTRADLLFLAGS = -mwindows
-
-SOURCES = \
-	main.c

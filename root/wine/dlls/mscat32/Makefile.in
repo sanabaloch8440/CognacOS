@@ -1,2 +1,0 @@
-MODULE    = mscat32.dll
-IMPORTS   = wintrust

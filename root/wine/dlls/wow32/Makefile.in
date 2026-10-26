@@ -1,4 +1,0 @@
-MODULE    = wow32.dll
-IMPORTLIB = wow32
-IMPORTS   = kernel
-ENABLE_ARCHS = $(WIN16_ARCH)

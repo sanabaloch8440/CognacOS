@@ -1,5 +1,0 @@
-MODULE    = wpnapps.dll
-IMPORTS   = combase
-
-SOURCES = \
-	main.c

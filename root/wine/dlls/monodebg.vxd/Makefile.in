@@ -1,5 +1,0 @@
-MODULE    = monodebg.vxd
-ENABLE_ARCHS = $(WIN16_ARCH)
-
-SOURCES = \
-	monodebg.c

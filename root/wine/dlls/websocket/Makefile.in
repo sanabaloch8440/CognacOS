@@ -1,4 +1,0 @@
-MODULE    = websocket.dll
-
-SOURCES = \
-	websocket.c

@@ -1,7 +1,0 @@
-MODULE    = netprofm.dll
-IMPORTS   = iphlpapi
-
-SOURCES = \
-	list.c \
-	main.c \
-	netprofm.idl

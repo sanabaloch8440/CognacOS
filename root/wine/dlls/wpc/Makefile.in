@@ -1,5 +1,0 @@
-MODULE = wpc.dll
-
-SOURCES = \
-	wpc.c \
-	wpc_classes.idl

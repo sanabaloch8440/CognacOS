@@ -1,2 +1,0 @@
-MODULE    = msvcrt40.dll
-ENABLE_ARCHS = i386

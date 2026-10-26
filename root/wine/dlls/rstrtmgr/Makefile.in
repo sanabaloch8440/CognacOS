@@ -1,4 +1,0 @@
-MODULE    = rstrtmgr.dll
-
-SOURCES = \
-	main.c

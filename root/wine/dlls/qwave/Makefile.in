@@ -1,5 +1,0 @@
-MODULE    = qwave.dll
-IMPORTLIB = qwave
-
-SOURCES = \
-	main.c

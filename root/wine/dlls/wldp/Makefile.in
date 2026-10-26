@@ -1,4 +1,0 @@
-MODULE    = wldp.dll
-
-SOURCES = \
-	wldp.c

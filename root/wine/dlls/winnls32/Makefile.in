@@ -1,5 +1,0 @@
-MODULE    = winnls32.dll
-IMPORTLIB = winnls32
-
-SOURCES = \
-	winnls.c

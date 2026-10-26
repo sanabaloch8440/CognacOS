@@ -1,5 +1,0 @@
-MODULE    = vtdapi.vxd
-ENABLE_ARCHS = $(WIN16_ARCH)
-
-SOURCES = \
-	vtdapi.c

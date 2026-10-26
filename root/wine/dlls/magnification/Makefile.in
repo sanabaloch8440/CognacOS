@@ -1,4 +1,0 @@
-MODULE    = magnification.dll
-
-SOURCES = \
-	main.c

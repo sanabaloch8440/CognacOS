@@ -1,5 +1,0 @@
-TESTDLL = wpnapps.dll
-IMPORTS = advapi32 combase shell32
-
-SOURCES = \
-	wpnapps.c
