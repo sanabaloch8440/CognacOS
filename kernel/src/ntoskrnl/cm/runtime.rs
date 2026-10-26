@@ -649,7 +649,17 @@ pub unsafe extern "win64" fn ZwDeleteKey(h:*mut core::ffi::c_void)->i32{
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwFlushKey(h:*mut core::ffi::c_void)->i32{
- let _g=LOCK.lock();let _s=state();match key_with_access(h,KEY_QUERY_VALUE){Ok(_)=>STATUS_NOT_SUPPORTED,Err(status)=>status}
+ let _g=LOCK.lock();let s=state();let id=match key_with_access(h,KEY_QUERY_VALUE){Ok(id)=>id,Err(status)=>return status};
+ let Some(key)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==id).copied() else{return 0xC000_0008u32 as i32;};
+ if key.hive_slot==0 { return STATUS_SUCCESS; }
+ let slot=(key.hive_slot-1) as usize;
+ if slot>=7{return STATUS_INVALID_PARAMETER;}
+ let mounted=unsafe{core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot]))};
+ let Some(flush)=mounted.flush else{return STATUS_NOT_SUPPORTED;};
+ if mounted.bytes.is_null()||mounted.journal.is_null(){return STATUS_NOT_SUPPORTED;}
+ let bytes=unsafe{core::slice::from_raw_parts(mounted.bytes as *const u8,mounted.len)};
+ let journal=unsafe{core::slice::from_raw_parts(mounted.journal as *const u8,mounted.journal_len)};
+ match flush(HIVE_SLOT_NAMES[slot],HIVE_FLUSH_DATA,bytes,journal){Ok(())=>STATUS_SUCCESS,Err(e)=>e}
 }
 
 fn ascii_utf16(src: &[u8], out: &mut [u16]) -> Option<usize> {
