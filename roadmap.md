@@ -278,3 +278,28 @@ The concrete entry point is `kernel/src/pe_loader.rs::load_dll_transaction_from_
 - [ ] Complete `NtAllocateVirtualMemoryEx` extended parameters, stream growth/revert/region-lock semantics, and hardware validation of persistent-memory durability on real EFI_MEMORY_NV hardware.
 
 The private `int 0x83` gate is CognacOS-specific and is not Windows' build-specific SYSCALL ordinal ABI. VM and section facilities remain bounded and current-process-oriented; these are incremental kernel services, not a claim of full Windows 11 compatibility. Unsupported combinations fail closed.
+
+
+## Recent NTDLL printf and varargs bridge (implementation present; validation failing)
+
+- [x] Add Windows x64 assembly entry shims for the six inventory-listed functions `_vscprintf`, `_vscwprintf`, `sprintf`, `sprintf_s`, `swprintf`, and `swprintf_s`; the shims home register arguments and pass a native argument cursor to Rust helpers.
+- [x] Route the bridge through the in-tree typed formatter rather than recursively calling CRT/NTDLL formatting exports.
+- [x] Convert valid UTF-16 wide-format strings to UTF-8 for parsing and convert formatted output back to UTF-16, preserving non-ASCII literal text.
+- [x] Keep non-inventory names out of the native export surface and prevent generated placeholder declarations from colliding with the assembly symbols.
+- [ ] Add dedicated tests for Unicode BMP literals, supplementary-plane characters, surrogate pairs, malformed UTF-16, width/precision arguments, narrow/wide strings, and secure-buffer boundaries.
+- [ ] Verify the six symbols in the final PE export/link result and exercise the ABI under the native user-mode test harness.
+- [ ] Pass the latest full GitHub Actions QEMU boot smoke test before marking this work validated.
+
+The bridge is an incremental implementation, not a complete MSVC/UCRT replacement. Supported format conversions are limited by `ntdll/src/printf.rs`; positional arguments and some CRT-specific semantics remain unsupported. Invalid UTF-16 is rejected. Secure variants return an error and clear the destination when possible, but a Microsoft-compatible invalid-parameter handler is not implemented. The latest workflow run for this change built far enough to launch QEMU but failed the boot smoke test; therefore the formatting change and current kernel boot state are not yet validated by a passing end-to-end run.
+
+## Recent ntoskrnl process, loader, and diagnostic integration (validation pending)
+
+- [x] Add process-init debug markers to help locate stalls across native process creation and NTDLL startup.
+- [x] Keep native VM, ETW/session, ALPC/section, loader, and exception paths connected through CognacOS's private native-service gate where implemented; these service IDs are not Windows syscall ordinals.
+- [x] Add bounded supervisor fault-fixup records with explicit recovery RIP/RAX results and route unresolved CPL3 exceptions to the owning process's termination path.
+- [x] Add PE dependency-transaction scaffolding with bounded graph traversal, generation-checked rollback, and dependency-before-parent mapping.
+- [ ] Identify and fix the current QEMU boot-smoke failure; the latest run's diagnostics show the boot CPU at the kernel idle loop and APs parked, but this alone does not identify the original cause.
+- [ ] Complete and validate ring-3 process startup through NTDLL, including real context restoration, exception/unwind delivery, and process-exit behavior.
+- [ ] Run the latest kernel/NTDLL changes through passing host tests, PE export/link checks, QEMU boot, and SMP checks before promoting these foundations to validated milestones.
+
+These checkboxes describe code paths or scaffolding present in source, not a claim that all listed subsystems are complete or Windows 11-compatible. Keep subsystem-specific open items in their existing sections and comparison documents.
