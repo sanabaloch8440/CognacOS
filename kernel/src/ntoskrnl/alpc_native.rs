@@ -131,7 +131,7 @@ fn create_security_context(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     // ALPC_SECFLG_CREATE_HANDLE; other flags require the full token/QoS implementation.
     if attr.flags!=0x0002_0000||attr.qos==0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_NOT_IMPLEMENTED}
     let qos:SecurityQualityOfService=match read_user(attr.qos as u64){Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
-    if qos.length as usize<core::mem::size_of::<SecurityQualityOfService>()||qos.impersonation_level>2 {
+    if (qos.length as usize)<core::mem::size_of::<SecurityQualityOfService>()||qos.impersonation_level>2 {
         let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER
     }
     if let Err(s)=security_context_type(){let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}
