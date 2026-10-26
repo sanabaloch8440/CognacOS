@@ -216,6 +216,7 @@ pub unsafe extern "system" fn EtwEventRegister(provider: *const Guid, callback: 
             return ERROR_SUCCESS;
         }
     }
+    if kernel_handle != 0 { let _=kernel_etw_call(NT_SYSCALL_ETW_UNREGISTER,kernel_handle,0,0,0); }
     unsafe { handle.write(0); }
     ERROR_NOT_ENOUGH_MEMORY
 }
