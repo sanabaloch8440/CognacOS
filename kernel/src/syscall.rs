@@ -184,6 +184,10 @@ pub const NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_OF_PORT:u64=0x12f;
 pub const NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT:u64=0x130;
 pub const NT_SYSCALL_ALPC_CONNECT_PORT_EX:u64=0x131;
 pub const NT_SYSCALL_NT_CREATE_SECTION:u64=0x132;
+pub const NT_SYSCALL_ETW_REGISTER:u64=0x133;
+pub const NT_SYSCALL_ETW_ENABLE_STATE:u64=0x134;
+pub const NT_SYSCALL_ETW_WRITE_EVENT:u64=0x135;
+pub const NT_SYSCALL_ETW_READ_EVENT:u64=0x136;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -193,6 +197,102 @@ const NT_STATUS_INFO_LENGTH_MISMATCH: u64 = 0xC000_0004;
 const NT_STATUS_INVALID_HANDLE: u64 = 0xC000_0008;
 const NT_STATUS_INVALID_PARAMETER: u64 = 0xC000_000D;
 const NT_STATUS_ACCESS_VIOLATION: u64 = 0xC000_0005;
+const ETW_PROVIDER_CAPACITY: usize = 64;
+const ETW_EVENT_CAPACITY: usize = 128;
+const ETW_PAYLOAD_CAPACITY: usize = 256;
+static ETW_KERNEL_LOCK: AtomicBool = AtomicBool::new(false);
+static ETW_KERNEL_NEXT: AtomicU64 = AtomicU64::new(1);
+#[derive(Clone, Copy)]
+struct KernelEtwProvider { active: bool, handle: u64, owner: u64, guid: [u8;16], enabled: bool, level: u8, _pad: [u8;7], any: u64, all: u64 }
+impl KernelEtwProvider { const EMPTY: Self = Self { active:false, handle:0, owner:0, guid:[0;16], enabled:false, level:0, _pad:[0;7], any:0, all:0 }; }
+#[derive(Clone, Copy)]
+struct KernelEtwEvent { active: bool, _pad:[u8;7], provider: u64, pid:u64, tid:u64, descriptor:[u8;16], length:u16, _pad2:[u8;6], payload:[u8;ETW_PAYLOAD_CAPACITY] }
+impl KernelEtwEvent { const EMPTY: Self = Self { active:false,_pad:[0;7],provider:0,pid:0,tid:0,descriptor:[0;16],length:0,_pad2:[0;6],payload:[0;ETW_PAYLOAD_CAPACITY] }; }
+static mut ETW_KERNEL_PROVIDERS:[KernelEtwProvider;ETW_PROVIDER_CAPACITY]=[KernelEtwProvider::EMPTY;ETW_PROVIDER_CAPACITY];
+static mut ETW_KERNEL_EVENTS:[KernelEtwEvent;ETW_EVENT_CAPACITY]=[KernelEtwEvent::EMPTY;ETW_EVENT_CAPACITY];
+static mut ETW_KERNEL_HEAD:usize=0;
+static mut ETW_KERNEL_LEN:usize=0;
+struct KernelEtwGuard;
+impl KernelEtwGuard { fn lock()->Self { while ETW_KERNEL_LOCK.compare_exchange_weak(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){core::hint::spin_loop();} Self } }
+impl Drop for KernelEtwGuard { fn drop(&mut self){ETW_KERNEL_LOCK.store(false,Ordering::Release);} }
+fn etw_register(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
+ if args[0]==0 || args[1]==0 { return NT_STATUS_INVALID_PARAMETER; }
+ let mut guid=[0u8;16]; if let Err(s)=copy_nt_input(args[0],&mut guid){return s;}
+ let pid=current_process_id(); if pid==0{return NT_STATUS_ACCESS_VIOLATION;}
+ let _g=KernelEtwGuard::lock();
+ unsafe {
+  let table=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
+  if let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|!(*table.add(i)).active) {
+   let handle=ETW_KERNEL_NEXT.fetch_add(1,Ordering::Relaxed).max(1);
+   *table.add(i)=KernelEtwProvider{active:true,handle,owner:pid,guid,enabled:false,level:0,_pad:[0;7],any:0,all:0};
+   if let Err(s)=copy_nt_output(args[1],&handle.to_le_bytes()){*table.add(i)=KernelEtwProvider::EMPTY;return s;}
+   return NT_STATUS_SUCCESS;
+  }
+ }
+ 0xC000009Au64
+}
+fn etw_enable_state(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
+ if args[0]==0 || args[1]==0{return NT_STATUS_INVALID_PARAMETER;}
+ let handle=args[0]; let mut state=[0u8;24];
+ let _g=KernelEtwGuard::lock();
+ unsafe {
+  let table=core::ptr::addr_of!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
+  let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|{let p=&*table.add(i);p.active&&p.handle==handle&&p.owner==current_process_id()}) else{return NT_STATUS_INVALID_HANDLE;};
+  let p=&*table.add(i);state[0]=p.enabled as u8;state[1]=p.level;state[8..16].copy_from_slice(&p.any.to_le_bytes());state[16..24].copy_from_slice(&p.all.to_le_bytes());
+ }
+ copy_nt_output(args[1],&state).map(|_|NT_STATUS_SUCCESS).unwrap_or_else(|s|s)
+}
+fn etw_write_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
+ if args[1]==0 || args[2]==0 || args[3]>ETW_PAYLOAD_CAPACITY as u64{return NT_STATUS_INVALID_PARAMETER;}
+ let handle=args[0]; let mut descriptor=[0u8;16]; let mut payload=[0u8;ETW_PAYLOAD_CAPACITY];
+ if let Err(s)=copy_nt_input(args[1],&mut descriptor){return s;}
+ let n=args[3] as usize;if n>0 {if let Err(s)=copy_nt_input(args[2],&mut payload[..n]){return s;}}
+ let pid=current_process_id();let tid=crate::ntoskrnl::ke::thread::current_thread_id().unwrap_or(0);
+ let _g=KernelEtwGuard::lock();
+ unsafe {
+  let table=core::ptr::addr_of!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
+  let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|{let p=&*table.add(i);p.active&&p.handle==handle&&p.owner==pid}) else{return NT_STATUS_INVALID_HANDLE;};
+  let p=&*table.add(i);let level=descriptor[4];let keyword=u64::from_le_bytes(descriptor[8..16].try_into().unwrap());
+  if !p.enabled || (p.level!=0 && level!=0 && level>p.level) || (keyword!=0 && p.any!=0 && p.any&keyword==0) || (keyword!=0 && p.all!=0 && p.all&keyword!=p.all) {return NT_STATUS_SUCCESS;}
+  let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();
+  if ETW_KERNEL_LEN==ETW_EVENT_CAPACITY {(*events.add(ETW_KERNEL_HEAD)).active=false;ETW_KERNEL_HEAD=(ETW_KERNEL_HEAD+1)%ETW_EVENT_CAPACITY;ETW_KERNEL_LEN-=1;}
+  let slot=(ETW_KERNEL_HEAD+ETW_KERNEL_LEN)%ETW_EVENT_CAPACITY;
+  *events.add(slot)=KernelEtwEvent{active:true,_pad:[0;7],provider:handle,pid,tid,descriptor,length:n as u16,_pad2:[0;6],payload};
+  ETW_KERNEL_LEN+=1;
+ }
+ NT_STATUS_SUCCESS
+}
+fn etw_read_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
+ // Output record is 48 bytes: provider handle, PID, TID, payload length,
+ // followed by the 16-byte event descriptor. Payload is copied separately.
+ if args[0]==0 || args[1]==0 || args[2]>ETW_PAYLOAD_CAPACITY as u64{return NT_STATUS_INVALID_PARAMETER;}
+ let mut record=[0u8;48];let mut payload=[0u8;ETW_PAYLOAD_CAPACITY];let mut n=0usize;
+ {
+  let _g=KernelEtwGuard::lock();
+  unsafe {
+   if ETW_KERNEL_LEN==0{return 0x8000001Au64;}
+   let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();let e=&mut *events.add(ETW_KERNEL_HEAD);
+   if !e.active {ETW_KERNEL_HEAD=(ETW_KERNEL_HEAD+1)%ETW_EVENT_CAPACITY;ETW_KERNEL_LEN-=1;return 0x8000001Au64;}
+   record[0..8].copy_from_slice(&e.provider.to_le_bytes());record[8..16].copy_from_slice(&e.pid.to_le_bytes());record[16..24].copy_from_slice(&e.tid.to_le_bytes());record[24..26].copy_from_slice(&e.length.to_le_bytes());record[32..48].copy_from_slice(&e.descriptor);
+   n=e.length as usize;payload[..n].copy_from_slice(&e.payload[..n]);*e=KernelEtwEvent::EMPTY;ETW_KERNEL_HEAD=(ETW_KERNEL_HEAD+1)%ETW_EVENT_CAPACITY;ETW_KERNEL_LEN-=1;
+  }
+ }
+ if let Err(s)=copy_nt_output(args[0],&record){return s;}
+ if n>0 {if let Err(s)=copy_nt_output(args[1],&payload[..core::cmp::min(n,args[2] as usize)]){return s;}}
+ if args[3]!=0 {if let Err(s)=copy_nt_output(args[3],&(n as u32).to_le_bytes()){return s;}}
+ NT_STATUS_SUCCESS
+}
+pub fn etw_process_exit_rundown(pid:u64) {
+ let _g=KernelEtwGuard::lock();
+ unsafe {
+  let providers=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
+  for i in 0..ETW_PROVIDER_CAPACITY {let p=&mut *providers.add(i);if p.active&&p.owner==pid{*p=KernelEtwProvider::EMPTY;}}
+  let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();let old_head=ETW_KERNEL_HEAD;let old_len=ETW_KERNEL_LEN;let mut kept=0usize;
+  for off in 0..old_len {let src=(old_head+off)%ETW_EVENT_CAPACITY;let e=*events.add(src);if !e.active||e.pid==pid{*events.add(src)=KernelEtwEvent::EMPTY;continue;}let dst=(old_head+kept)%ETW_EVENT_CAPACITY;if dst!=src{*events.add(dst)=e;*events.add(src)=KernelEtwEvent::EMPTY;}kept+=1;}
+  ETW_KERNEL_LEN=kept;if kept==0{ETW_KERNEL_HEAD=0;}
+ }
+}
+
 const NT_CURRENT_PROCESS: u64 = u64::MAX;
 const NT_CURRENT_THREAD: u64 = u64::MAX - 1;
 // Service IDs extracted from the exact AMD64 NTDLL reference image recorded in
@@ -933,6 +1033,10 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_QUERY_INFORMATION_PROCESS => nt_query_process(args),
         NT_SYSCALL_QUERY_INFORMATION_THREAD => nt_query_thread(args),
         NT_SYSCALL_QUERY_SYSTEM_INFORMATION => nt_query_system(args),
+        NT_SYSCALL_ETW_REGISTER => etw_register(args),
+        NT_SYSCALL_ETW_ENABLE_STATE => etw_enable_state(args),
+        NT_SYSCALL_ETW_WRITE_EVENT => etw_write_event(args),
+        NT_SYSCALL_ETW_READ_EVENT => etw_read_event(args),
         NT_SYSCALL_OPEN_KEY => nt_open_key(args),
         NT_SYSCALL_QUERY_VALUE_KEY => nt_query_value_key(args),
         NT_SYSCALL_OPEN_FILE => nt_open_file(args),
@@ -1045,6 +1149,10 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_YIELD_EXECUTION => 0,
             NT_SYSCALL_QUERY_INFORMATION_PROCESS | NT_SYSCALL_QUERY_INFORMATION_THREAD => 5,
             NT_SYSCALL_QUERY_SYSTEM_INFORMATION => 4,
+            NT_SYSCALL_ETW_REGISTER => 2,
+            NT_SYSCALL_ETW_ENABLE_STATE => 2,
+            NT_SYSCALL_ETW_WRITE_EVENT => 4,
+            NT_SYSCALL_ETW_READ_EVENT => 4,
             NT_SYSCALL_OPEN_KEY => 3,
             NT_SYSCALL_QUERY_VALUE_KEY => 6,
             NT_SYSCALL_OPEN_FILE => 6,
