@@ -7,13 +7,11 @@
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 use alloc::vec::Vec;
-use core::{ffi::c_void, ptr};
+use core::ptr;
 use crate::printf::{self as formatter, Argument, FormatSpec, Length};
 
 const MAX_FORMAT_UNITS: usize = 65_536;
 const MAX_STRING_UNITS: usize = 65_536;
-const STATUS_INVALID_PARAMETER: i32 = 0xC000000D_u32 as i32;
-const STATUS_BUFFER_TOO_SMALL: i32 = 0xC0000023_u32 as i32;
 
 #[derive(Debug)]
 enum OwnedArg {
@@ -53,74 +51,6 @@ unsafe fn next_slot(cursor: &mut *const u8) -> Option<u64> {
     let v = unsafe { ptr::read_unaligned((*cursor).cast::<u64>()) };
     *cursor = unsafe { (*cursor).add(8) };
     Some(v)
-}
-
-fn spec_has_arg(s: &FormatSpec) -> bool { s.conversion != b'%' }
-
-unsafe fn collect_args(format: &[u8], mut cursor: *const u8, wide_printf: bool)
-    -> Option<(Vec<OwnedArg>, Vec<Argument<'static>>)> {
-    let specs = formatter::parse_format(format).ok()?;
-    let mut owned: Vec<OwnedArg> = Vec::new();
-    for s in specs.iter() {
-        if s.conversion == b'%' { continue; }
-        if s.width_from_arg {
-            let raw = unsafe { next_slot(&mut cursor)? } as u32 as i32;
-            owned.push(OwnedArg::Signed(raw as i64));
-        }
-        if s.precision_from_arg {
-            let raw = unsafe { next_slot(&mut cursor)? } as u32 as i32;
-            owned.push(OwnedArg::Signed(raw as i64));
-        }
-        if !spec_has_arg(s) { continue; }
-        let raw = unsafe { next_slot(&mut cursor)? };
-        let a = match s.conversion {
-            b'd' | b'i' => {
-                let v = match s.length {
-                    Length::LongLong => raw as i64,
-                    Length::Native => raw as i64,
-                    _ => raw as u32 as i32 as i64,
-                };
-                OwnedArg::Signed(v)
-            }
-            b'u' | b'o' | b'x' | b'X' => OwnedArg::Unsigned(match s.length {
-                Length::LongLong | Length::Native => raw,
-                _ => raw as u32 as u64,
-            }),
-            b'p' => OwnedArg::Pointer(raw as usize),
-            b'c' | b'C' => OwnedArg::Char(raw as u32),
-            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => OwnedArg::Float(f64::from_bits(raw)),
-            b's' | b'S' => {
-                let use_wide = if wide_printf { s.length == Length::Short } else { s.wide_string };
-                if use_wide {
-                    let w = unsafe { read_c_wide(raw as *const u16, MAX_STRING_UNITS)? };
-                    OwnedArg::Wide(w)
-                } else {
-                    let b = unsafe { read_c_bytes(raw as *const u8, MAX_STRING_UNITS)? };
-                    OwnedArg::Ansi(b)
-                }
-            }
-            _ => return None,
-        };
-        owned.push(a);
-    }
-    // Build borrowed views only after the owned vector is complete. Leaking is
-    // deliberately avoided; the lifetime is shortened to this call below.
-    let mut borrowed: Vec<Argument<'_>> = Vec::with_capacity(owned.len());
-    for a in owned.iter() {
-        borrowed.push(match a {
-            OwnedArg::Signed(v) => Argument::Signed(*v),
-            OwnedArg::Unsigned(v) => Argument::Unsigned(*v),
-            OwnedArg::Pointer(v) => Argument::Pointer(*v),
-            OwnedArg::Char(v) => Argument::Char(*v),
-            OwnedArg::Ansi(v) => Argument::Ansi(v),
-            OwnedArg::Wide(v) => Argument::Wide(v),
-            OwnedArg::Float(v) => Argument::Float(*v),
-        });
-    }
-    // This function is not used directly: the helper below keeps owned and
-    // borrowed storage in one scope. The static return type is unreachable.
-    let _ = borrowed;
-    None
 }
 
 unsafe fn format_narrow(format_ptr: *const u8, va: *const u8) -> Option<Vec<u8>> {
@@ -338,18 +268,15 @@ sprintf:
     .p2align 4
     .globl sprintf_s
 sprintf_s:
+    movq %r9, 32(%rsp)
     subq $40, %rsp
     movq %rcx, %r10
     movq %rdx, %r11
     movq %r8, %rax
-    leaq 80(%rsp), %r8
+    leaq 72(%rsp), %r9
     movq %r10, %rcx
     movq %r11, %rdx
-    movq %rax, %r9
-    // helper signature is (dst, capacity, format, va_list)
-    // Reorder to RCX=dst, RDX=capacity, R8=format, R9=va_list.
-    movq %r9, %r8
-    movq %rax, %r9
+    movq %rax, %r8
     callq {sprintf_s_impl}
     addq $40, %rsp
     retq
@@ -372,16 +299,15 @@ swprintf:
     .p2align 4
     .globl swprintf_s
 swprintf_s:
+    movq %r9, 32(%rsp)
     subq $40, %rsp
     movq %rcx, %r10
     movq %rdx, %r11
     movq %r8, %rax
-    leaq 80(%rsp), %r8
+    leaq 72(%rsp), %r9
     movq %r10, %rcx
     movq %r11, %rdx
-    movq %rax, %r9
-    movq %r9, %r8
-    movq %rax, %r9
+    movq %rax, %r8
     callq {swprintf_s_impl}
     addq $40, %rsp
     retq
