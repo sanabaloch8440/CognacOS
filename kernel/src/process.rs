@@ -436,14 +436,24 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     if image_base == 0 || stack_base <= stack_limit || stack_limit < USER_START {
         return Err(ProcessError::InvalidLayout);
     }
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] map PEB begin\r\n"); }
     map_zeroed(space, PEB_ADDRESS, 1)?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] map PEB done; map TEB begin\r\n"); }
     map_zeroed(space, TEB_ADDRESS, 2)?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] map TEB done; map TLS begin\r\n"); }
     map_zeroed(space, TLS_VECTOR_ADDRESS, 1)?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] map TLS done; map LDR begin\r\n"); }
     map_zeroed(space, LDR_ADDRESS, 1)?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] map LDR done; map LDR entries begin\r\n"); }
     map_zeroed(space, LDR_ENTRY_ADDRESS, 2)?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] map LDR entries done; map image name begin\r\n"); }
     map_zeroed(space, IMAGE_NAME_ADDRESS, 2)?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] map image name done; map params begin\r\n"); }
     map_zeroed(space, PROCESS_PARAMS_ADDRESS, 1)?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] map params done; KUSER map begin\r\n"); }
     map_kuser_shared_page(space)?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] KUSER map done; begin PEB population\r\n"); }
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] PEB population complete; allocate PID\r\n"); }
     let pid = NEXT_PID.fetch_add(4, core::sync::atomic::Ordering::Relaxed);
     // PEB x64: BeingDebugged, ImageBaseAddress, Ldr, ProcessParameters.
     put_u8(space, PEB_ADDRESS + 2, 0)?;
@@ -536,6 +546,8 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     put_u64(space, TEB_ADDRESS + 0x60, PEB_ADDRESS)?;
     // The x64 TLS slots begin at offset 0x1480, so TEB occupies two pages.
     put_u64(space, TEB_ADDRESS + 0x1480, 0)?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] process structures complete; register EPROCESS begin\r\n"); }
     register_process(pid, space.root_physical())?;
+    unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] EPROCESS registered; initialization complete\r\n"); }
     Ok(ProcessEnvironment { process_id: pid, peb: PEB_ADDRESS, teb: TEB_ADDRESS, tls_vector: TLS_VECTOR_ADDRESS })
 }
