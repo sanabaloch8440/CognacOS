@@ -6,7 +6,7 @@
 //! the in-tree typed formatter and never call CRT/NTDLL formatting exports.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
-use alloc::vec::Vec;
+use alloc::{string::String, vec::Vec};
 use core::ptr;
 use crate::printf::{self as formatter, Argument, Length};
 
