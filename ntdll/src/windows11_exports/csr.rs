@@ -23,7 +23,7 @@ unsafe fn allocate_capture(count:u32, bytes:u32)->*mut CaptureBuffer {
  if count>65535 || bytes>0x7fff_ffff {return ptr::null_mut();}
  let offsets=(count as usize).checked_mul(core::mem::size_of::<usize>()); let Some(offsets)=offsets else{return ptr::null_mut()};
  let head=core::mem::offset_of!(CaptureBuffer,pointer_offsets); let Some(base)=head.checked_add(offsets) else{return ptr::null_mut()};
- let Some(total)=base.checked_add(bytes as usize).and_then(|v|v.checked_add((count as usize).saturating_mul(3))).filter(|v|*v<=isize::MAX as usize) else{return ptr::null_mut()};
+ let Some(total)=base.checked_add(bytes as usize).and_then(|v|v.checked_add((count as usize).saturating_mul(3))).filter(|v|*v<=isize::MAX as usize && *v<=u32::MAX as usize) else{return ptr::null_mut()};
  let heap=unsafe{RtlGetProcessHeap()}; if heap.is_null(){return ptr::null_mut();}
  let p=unsafe{RtlAllocateHeap(heap,HEAP_ZERO_MEMORY,total)} as *mut CaptureBuffer; if p.is_null(){return p;}
  unsafe{(*p).size=total as u32;(*p).pointer_count=0;(*p).buffer_end=(p.cast::<u8>().add(base));} if !register_capacity(p,count){unsafe{let _=RtlFreeHeap(heap,0,p.cast());}return ptr::null_mut();} p
