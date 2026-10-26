@@ -630,3 +630,31 @@ pub unsafe extern "C" fn wcstoul(s:*const u16,end:*mut *mut u16,base:i32)->u32{w
 #[no_mangle] pub unsafe extern "C" fn isxdigit(c:i32)->i32{((0..=127).contains(&c)&&(c as u8).is_ascii_hexdigit()) as i32}
 #[no_mangle] pub unsafe extern "C" fn tolower(c:i32)->i32{if (65..=90).contains(&c){c+32}else{c}}
 #[no_mangle] pub unsafe extern "C" fn toupper(c:i32)->i32{if (97..=122).contains(&c){c-32}else{c}}
+
+#[no_mangle]
+pub unsafe extern "system" fn mbstowcs(dest:*mut u16,src:*const c_char,count:usize)->usize {
+ if src.is_null(){return usize::MAX;} let mut i=0usize;
+ if dest.is_null(){while unsafe{*src.add(i)}!=0{i+=1;}return i;}
+ while i<count {let c=unsafe{*src.add(i)} as u8;if c==0{unsafe{dest.add(i).write(0);}return i;}unsafe{dest.add(i).write(c as u16);}i+=1;} i
+}
+#[no_mangle]
+pub unsafe extern "system" fn wcstombs(dest:*mut c_char,src:*const u16,count:usize)->usize {
+ if src.is_null(){return usize::MAX;}let mut i=0usize;
+ if dest.is_null(){loop{let c=unsafe{*src.add(i)};if c==0{return i;}if c>0x7f{return usize::MAX;}i+=1;}}
+ while i<count {let c=unsafe{*src.add(i)};if c==0{unsafe{dest.add(i).write(0);}return i;}if c>0x7f{return usize::MAX;}unsafe{dest.add(i).write(c as u8 as c_char);}i+=1;}i
+}
+#[no_mangle]
+pub unsafe extern "system" fn strtok_s(string:*mut c_char,delimiters:*const c_char,context:*mut *mut c_char)->*mut c_char {
+ if delimiters.is_null()||context.is_null(){return ptr::null_mut();}let mut p=if string.is_null(){unsafe{*context}}else{string};if p.is_null(){return ptr::null_mut();}
+ unsafe { while *p!=0 {let mut d=delimiters;let mut found=false;while *d!=0{if *p==*d{found=true;break;}d=d.add(1);}if !found{break;}p=p.add(1);} if *p==0{*context=p;return ptr::null_mut();}let start=p;while *p!=0{let mut d=delimiters;while *d!=0&&*d!=*p{d=d.add(1);}if *d!=0{*p=0;*context=p.add(1);return start;}p=p.add(1);}*context=p;start }
+}
+#[no_mangle]
+pub unsafe extern "system" fn wcstok_s(string:*mut u16,delimiters:*const u16,context:*mut *mut u16)->*mut u16 {
+ if delimiters.is_null()||context.is_null(){return ptr::null_mut();}let mut p=if string.is_null(){unsafe{*context}}else{string};if p.is_null(){return ptr::null_mut();}
+ unsafe { while *p!=0{let mut d=delimiters;let mut found=false;while *d!=0{if *p==*d{found=true;break;}d=d.add(1);}if !found{break;}p=p.add(1);}if *p==0{*context=p;return ptr::null_mut();}let start=p;while *p!=0{let mut d=delimiters;while *d!=0&&*d!=*p{d=d.add(1);}if *d!=0{*p=0;*context=p.add(1);return start;}p=p.add(1);}*context=p;start}
+}
+#[no_mangle]
+pub unsafe extern "system" fn iswctype(c:u32,mask:u16)->i32 {
+ if c>0x7f{return 0;}let ch=c as u8;let mut flags=0u16;
+ if ch.is_ascii_uppercase(){flags|=0x01|0x100;} if ch.is_ascii_lowercase(){flags|=0x02|0x100;}if ch.is_ascii_digit(){flags|=0x04;}if ch.is_ascii_whitespace(){flags|=0x08;}if ch.is_ascii_punctuation(){flags|=0x10;}if ch.is_ascii_control(){flags|=0x20;}if ch==b' '||ch==b'\t'{flags|=0x40;}if ch.is_ascii_hexdigit(){flags|=0x80;}((flags&mask)!=0) as i32
+}
