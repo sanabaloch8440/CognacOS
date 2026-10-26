@@ -1188,6 +1188,8 @@ fn nt_query_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
 
 const AMD64_CONTEXT_SIZE: usize = 0x4d0;
 const AMD64_EXCEPTION_RECORD_SIZE: usize = 0x98;
+#[repr(align(16))]
+struct AlignedAmd64Context([u8; AMD64_CONTEXT_SIZE]);
 const NT_STATUS_BAD_STACK: u64 = 0xC000_0028;
 const NT_STATUS_INVALID_DISPOSITION: u64 = 0xC000_0026;
 
@@ -1241,15 +1243,21 @@ unsafe fn restore_context_to_syscall_frame(frame: *mut u64, bytes: &[u8]) -> u64
     f[17] = rflags;
     f[18] = rsp;
     f[19] = ss;
+    // Restore the Windows FXSAVE area only after every fallible user-memory
+    // operation has completed. The syscall return stub performs no SIMD work.
+    if flags & 0x0010_0008 == 0x0010_0008 {
+        let fp_state = unsafe { bytes.as_ptr().add(0x100) };
+        unsafe { core::arch::asm!("fxrstor64 [{}]", in(reg) fp_state, options(nostack)); }
+    }
     NT_STATUS_SUCCESS
 }
 
 /// NtContinue is implemented by replacing the syscall's saved user return
 /// frame. Returning success means IRETQ will resume at CONTEXT.Rip/Rsp.
 unsafe fn nt_continue_from_user(frame: *mut u64, context_address: u64) -> u64 {
-    let mut bytes = [0u8; AMD64_CONTEXT_SIZE];
-    if !copy_current_user_from(context_address, &mut bytes) { return NT_STATUS_ACCESS_VIOLATION; }
-    restore_context_to_syscall_frame(frame, &bytes)
+    let mut bytes = AlignedAmd64Context([0u8; AMD64_CONTEXT_SIZE]);
+    if !copy_current_user_from(context_address, &mut bytes.0) { return NT_STATUS_ACCESS_VIOLATION; }
+    restore_context_to_syscall_frame(frame, &bytes.0)
 }
 
 /// Build a first-chance user exception-dispatch entry frame. The record/context
