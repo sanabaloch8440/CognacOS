@@ -7,7 +7,8 @@ use core::{ffi::c_void, ptr, sync::atomic::{AtomicBool, Ordering}};
 type PVOID=*mut c_void; type NTSTATUS=i32;
 const STATUS_SUCCESS:NTSTATUS=0; const STATUS_INVALID_PARAMETER:NTSTATUS=0xC000000Du32 as i32; const STATUS_NO_MEMORY:NTSTATUS=0xC0000017u32 as i32; const STATUS_NOT_IMPLEMENTED:NTSTATUS=0xC0000002u32 as i32;
 const HEAP_ZERO_MEMORY:u32=8;
-extern "system" { fn RtlGetProcessHeap()->PVOID; fn RtlAllocateHeap(heap:PVOID,flags:u32,size:usize)->PVOID; fn RtlFreeHeap(heap:PVOID,flags:u32,mem:PVOID)->u8; }
+use crate::rtl_heap::RtlGetProcessHeap;
+extern "system" { fn RtlAllocateHeap(heap:PVOID,flags:u32,size:usize)->PVOID; fn RtlFreeHeap(heap:PVOID,flags:u32,mem:PVOID)->u8; }
 pub type PTP_WORK_CALLBACK=Option<unsafe extern "system" fn(instance:PVOID, context:PVOID, work:PVOID)>;
 #[repr(C)] struct Work { magic:u64, callback:PTP_WORK_CALLBACK, context:PVOID, pending:bool, running:bool, cancelled:bool, pool:PVOID }
 #[repr(C)] struct Pool { magic:u64, max_threads:u32, min_threads:u32 }
