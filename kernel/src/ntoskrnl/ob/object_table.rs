@@ -47,3 +47,47 @@ pub fn open_named(name:&[u8],required_access:u32)->Result<HandleInfo,ObjectError
  lock();let s=unsafe{&mut *STATE.state.get()};let Some(index)=s.handles.iter().position(|h|!h.used)else{unlock();return Err(ObjectError::TableFull);};
  let handle=s.next_handle;s.next_handle=s.next_handle.wrapping_add(4).max(4);s.handles[index]=HandleInfo{handle,object_id:id,kind,access:required_access,used:true};let out=s.handles[index];unlock();Ok(out)
 }
+
+
+/// Create a process handle whose object ID is the stable kernel EPROCESS address.
+/// The process registry owns the storage; callers must acquire/release an EPROCESS
+/// reference around handle use. This table only records the handle and granted access.
+pub fn create_process_handle(process_object: *mut core::ffi::c_void, access: u32) -> Result<HandleInfo, ObjectError> {
+    if process_object.is_null() { return Err(ObjectError::InvalidHandle); }
+    lock();
+    let s = unsafe { &mut *STATE.state.get() };
+    let Some(index) = s.handles.iter().position(|h| !h.used) else {
+        unlock();
+        return Err(ObjectError::TableFull);
+    };
+    let handle = s.next_handle;
+    s.next_handle = s.next_handle.wrapping_add(4).max(4);
+    let out = HandleInfo {
+        handle,
+        object_id: process_object as usize as u64,
+        kind: ObjectType::Process,
+        access,
+        used: true,
+    };
+    s.handles[index] = out;
+    unlock();
+    Ok(out)
+}
+
+/// Resolve a process handle and enforce both object type and granted access.
+/// The returned pointer is not itself a reference; the process registry must
+/// validate/reference it before dereferencing.
+pub fn lookup_process_handle(handle: u32, required_access: u32) -> Result<*mut core::ffi::c_void, ObjectError> {
+    let info = lookup(handle, required_access)?;
+    if info.kind != ObjectType::Process { return Err(ObjectError::InvalidHandle); }
+    let pointer = info.object_id as usize as *mut core::ffi::c_void;
+    if pointer.is_null() { return Err(ObjectError::InvalidHandle); }
+    Ok(pointer)
+}
+
+/// Close only a process handle after its caller has completed object rundown.
+pub fn close_process_handle(handle: u32) -> Result<(), ObjectError> {
+    let info = lookup(handle, 0)?;
+    if info.kind != ObjectType::Process { return Err(ObjectError::InvalidHandle); }
+    close(handle)
+}
