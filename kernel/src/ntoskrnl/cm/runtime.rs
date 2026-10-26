@@ -144,7 +144,14 @@ unsafe fn object_path(oa:*const ObjectAttributes)->Result<([u16;MAX_NAME],usize,
 /// Mounted REGF bytes remain in their original Windows hive representation.
 /// The loader must place hive bytes in permanent kernel-owned memory first.
 #[derive(Clone, Copy)]
-struct MountedHive { bytes: *const u8, len: usize, info: hive_backend::BaseInfo }
+type HiveFlush = fn(name: &'static str, phase: u32, hive: &[u8], journal: &[u8]) -> Result<(), i32>;
+const HIVE_FLUSH_PREPARE: u32 = 1;
+const HIVE_FLUSH_DATA: u32 = 2;
+const HIVE_FLUSH_COMMIT: u32 = 3;
+const HIVE_FLUSH_RECOVER: u32 = 4;
+const HIVE_SLOT_NAMES: [&str; 7] = ["SYSTEM", "SOFTWARE", "SECURITY", "SAM", "DEFAULT", "COMPONENTS", "BCD00000000"];
+#[derive(Clone, Copy)]
+struct MountedHive { bytes: *mut u8, len: usize, info: hive_backend::BaseInfo, journal: *mut u8, journal_len: usize, flush: Option<HiveFlush> }
 unsafe impl Sync for MountedHive {}
 static mut MOUNTED_HIVES: [MountedHive; 7] = [MountedHive {
     bytes: core::ptr::null(), len: 0,
@@ -168,7 +175,72 @@ pub unsafe fn mount_hive_bytes(name: &str, bytes: &'static [u8]) -> Result<(), i
     let slot = hive_slot_for_name(name).ok_or(STATUS_INVALID_PARAMETER)?;
     let parsed = hive_backend::Hive::open(bytes).map_err(|_| STATUS_INVALID_PARAMETER)?;
     let _guard = LOCK.lock();
-    unsafe { MOUNTED_HIVES[slot] = MountedHive { bytes: bytes.as_ptr(), len: bytes.len(), info: parsed.info }; }
+    unsafe { MOUNTED_HIVES[slot] = MountedHive { bytes: bytes.as_ptr() as *mut u8, len: bytes.len(), info: parsed.info, journal: core::ptr::null_mut(), journal_len: 0, flush: None }; }
+    Ok(())
+}
+
+/// Mount a writable hive backed by caller-owned permanent memory and a durable
+/// redo journal. The flush callback must implement phase ordering: PREPARE
+/// durably records the before-image first; DATA persists the changed hive while
+/// PREPARED is still durable; COMMIT persists the committed after-image last.
+/// This API intentionally refuses to infer disk durability from ordinary RAM.
+pub unsafe fn mount_writable_hive_bytes(
+    name: &str, bytes: &'static mut [u8], journal: &'static mut [u8], flush: HiveFlush,
+) -> Result<(), i32> {
+    let slot = hive_slot_for_name(name).ok_or(STATUS_INVALID_PARAMETER)?;
+    if crate::ntoskrnl::cm::hive_writer::RedoJournal::capacity(bytes.len()).filter(|n| *n <= journal.len()).is_none() {
+        return Err(STATUS_INSUFFICIENT_RESOURCES);
+    }
+    let recovered = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(bytes, journal)
+        .map_err(|_| STATUS_INVALID_PARAMETER)?;
+    if recovered {
+        flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, bytes, journal)?;
+    }
+    let parsed = hive_backend::Hive::open(bytes).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    let _guard = LOCK.lock();
+    unsafe { MOUNTED_HIVES[slot] = MountedHive {
+        bytes: bytes.as_mut_ptr(), len: bytes.len(), info: parsed.info,
+        journal: journal.as_mut_ptr(), journal_len: journal.len(), flush: Some(flush),
+    }; }
+    Ok(())
+}
+
+fn persistent_set_value(slot: usize, cell: u32, name: &[u16], kind: u32, data: &[u8]) -> Result<(), i32> {
+    if slot >= 7 { return Err(STATUS_INVALID_PARAMETER); }
+    let mounted = unsafe { core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot])) };
+    let flush = mounted.flush.ok_or(STATUS_NOT_SUPPORTED)?;
+    if mounted.bytes.is_null() || mounted.journal.is_null() { return Err(STATUS_NOT_SUPPORTED); }
+    let hive = unsafe { core::slice::from_raw_parts_mut(mounted.bytes, mounted.len) };
+    let journal = unsafe { core::slice::from_raw_parts_mut(mounted.journal, mounted.journal_len) };
+    let seq = crate::ntoskrnl::cm::hive_writer::RedoJournal::begin(hive, journal)
+        .map_err(|_| STATUS_INSUFFICIENT_RESOURCES)?;
+    flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_PREPARE, hive, journal)?;
+    let update = (|| {
+        let mut writer = crate::ntoskrnl::cm::hive_writer::HiveWriter::open(hive)
+            .map_err(|_| STATUS_INVALID_PARAMETER)?;
+        writer.mark_dirty(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        writer.set_value(cell, name, kind, data).map_err(|e| match e {
+            crate::ntoskrnl::cm::hive_writer::Error::NoSpace => STATUS_INSUFFICIENT_RESOURCES,
+            _ => STATUS_INVALID_PARAMETER,
+        })?;
+        writer.update_base_block(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        Ok::<(), i32>(())
+    })();
+    if let Err(status) = update {
+        let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+        let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
+        return Err(status);
+    }
+    if let Err(status) = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_DATA, hive, journal) {
+        let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+        let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
+        return Err(status);
+    }
+    crate::ntoskrnl::cm::hive_writer::RedoJournal::commit(hive, journal)
+        .map_err(|_| STATUS_INVALID_PARAMETER)?;
+    flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_COMMIT, hive, journal)?;
+    let parsed = hive_backend::Hive::open(hive).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    unsafe { (*core::ptr::addr_of_mut!(MOUNTED_HIVES[slot])).info = parsed.info; }
     Ok(())
 }
 
@@ -176,7 +248,7 @@ fn mounted_hive(slot: usize) -> Option<hive_backend::Hive<'static>> {
     if slot >= 7 { return None; }
     let mounted = unsafe { core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot])) };
     if mounted.bytes.is_null() || mounted.len == 0 { return None; }
-    let bytes = unsafe { core::slice::from_raw_parts(mounted.bytes, mounted.len) };
+    let bytes = unsafe { core::slice::from_raw_parts(mounted.bytes as *const u8, mounted.len) };
     Some(unsafe { hive_backend::Hive::from_validated(bytes, mounted.info) })
 }
 
@@ -314,7 +386,12 @@ pub unsafe extern "win64" fn ZwSetValueKey(h:*mut core::ffi::c_void,name:*const 
  let mut nbuf=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nbuf)}{Ok(n)=>n,Err(e)=>return e};
  if len as usize>MAX_DATA||(len!=0&&data.is_null()){return STATUS_INVALID_PARAMETER;}
  let _g=LOCK.lock();let s=state();let id=match key_with_access(h,KEY_SET_VALUE){Ok(id)=>id,Err(status)=>return status};
- if s.keys.iter().any(|k|k.used && !k.deleted && k.id==id && k.hive_slot!=0) { return STATUS_NOT_SUPPORTED; }
+ if let Some(key) = s.keys.iter().find(|k|k.used && !k.deleted && k.id==id && k.hive_slot!=0).copied() {
+  let status = persistent_set_value((key.hive_slot - 1) as usize, key.hive_cell, &nbuf[..n], kind,
+      unsafe { core::slice::from_raw_parts(data.cast::<u8>(), len as usize) });
+  let _ = title;
+  return status.unwrap_or_else(|e| e);
+ }
  let existing=s.values.iter().position(|v|v.used&&v.key_id==id&&eq(&v.name[..v.name_len as usize],&nbuf[..n]));
  let idx=match existing{Some(i)=>i,None=>match s.values.iter().position(|v|!v.used){Some(i)=>i,None=>return STATUS_INSUFFICIENT_RESOURCES}};
  let mut v=Value{used:true,key_id:id,name:nbuf,name_len:n as u16,kind,len:len as u16,data:[0;MAX_DATA]};
