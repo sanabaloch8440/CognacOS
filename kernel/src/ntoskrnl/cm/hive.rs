@@ -464,7 +464,7 @@ mod tests{
   h.begin_update().unwrap();
   let cell=h.allocate_cell(0x4d).unwrap();
   assert_eq!(cell,0x70);
-  { let nk=h.allocated_cell_mut(cell).unwrap(); nk[0..2].copy_from_slice(b"nk"); put16(nk,0x48,1); nk[0x4c]=b'X'; }
+  { let nk=h.allocated_cell_mut(cell).unwrap(); nk[0..2].copy_from_slice(b"nk"); put16(nk,2,0x20); put16(nk,0x48,1); nk[0x4c]=b'X'; }
   h.append_subkey_index(0x20,cell).unwrap();
   h.commit_update().unwrap();
   let parsed=Hive::open(h.bytes()).unwrap();
