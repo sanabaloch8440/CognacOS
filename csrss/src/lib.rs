@@ -103,7 +103,7 @@ pub unsafe extern "system" fn CsrServerRegisterApi(
     api_number: u32,
     handler: Option<unsafe extern "system" fn(*mut CsrApiMessage, usize) -> i32>,
 ) -> i32 {
-    if !INITIALIZED.load(Ordering::Acquire) || handler.is_none() || (api_number >> 16) > 0xffff {
+    if !INITIALIZED.load(Ordering::Acquire) || handler.is_none() {
         return STATUS_INVALID_PARAMETER;
     }
     let _guard = Lock::acquire();
@@ -203,9 +203,8 @@ pub unsafe extern "system" fn CsrServerDispatchMessage(
 /// convention. The object manager must publish this name when ALPC is wired.
 #[no_mangle]
 pub extern "system" fn CsrServerPortName() -> *const u16 {
-    static NAME: [u16; 25] = [
-        92, 65, 80, 73, 80, 101, 92, 67, 115, 114, 115, 115, 80, 111, 114, 116,
-        0, 0, 0, 0, 0, 0, 0, 0, 0,
+    static NAME: [u16; 17] = [
+        92, 87, 105, 110, 100, 111, 119, 115, 92, 65, 112, 105, 80, 111, 114, 116, 0,
     ];
     NAME.as_ptr()
 }
