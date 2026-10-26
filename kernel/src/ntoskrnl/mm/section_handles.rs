@@ -187,7 +187,7 @@ pub fn create_nt(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
 /// Import a caller-supplied Object Manager Section handle for an ALPC port.
 /// Takes an independent MM reference so closing the original handle is safe.
 pub fn reference_for_alpc(handle:u64)->Result<(u64,u64,u64,u32),u64>{
-    let (s,body)=resolve(handle,ACCESS_READ)?;
+    let (s,body)=match resolve(handle,ACCESS_READ){Ok(v)=>v,Err(_)=>resolve(handle,ACCESS_WRITE)?};
     let id=s.section_id.load(Ordering::Acquire);let root=s.owner_root.load(Ordering::Acquire);let size=s.size.load(Ordering::Acquire);let protection=s.protection.load(Ordering::Acquire);
     let status=crate::ntoskrnl::mm::section::reference(id,root);
     let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
