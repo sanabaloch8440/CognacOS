@@ -297,24 +297,12 @@ pub unsafe extern "system" fn NlsMbOemCodePageTag() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn PfxFindPrefix() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
-pub unsafe extern "system" fn PfxInitialize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
-pub unsafe extern "system" fn PfxInsertPrefix() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
-pub unsafe extern "system" fn PfxRemovePrefix() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtCaptureSnapshot() -> i32 {
