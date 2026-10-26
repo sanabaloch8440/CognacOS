@@ -1695,7 +1695,7 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     let mut context = [0u8; AMD64_CONTEXT_SIZE];
     put_u32(&mut context, 0x30, 0x0010_0007);
     put_u16(&mut context, 0x38, trap.cs as u16);
-    put_u16(&mut context, 0x4a, trap.ss as u16);
+    put_u16(&mut context, 0x42, trap.ss as u16);
     put_u32(&mut context, 0x44, trap.rflags as u32);
     for (offset, index) in [(0xf0,0usize),(0xe8,1),(0xe0,2),(0xd8,3),(0xd0,4),(0xc8,5),(0xc0,6),(0xb8,7),(0xa0,8),(0xb0,9),(0xa8,10),(0x88,11),(0x80,12),(0x90,13),(0x78,14)] {
         put_u64(&mut context, offset, trap.saved_registers[index]);
