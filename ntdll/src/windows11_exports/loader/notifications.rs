@@ -37,11 +37,43 @@ pub unsafe extern "system" fn LdrUnregisterDllNotification(cookie: PVOID) -> NTS
 
 #[no_mangle]
 pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
-    // This is the loader's process-shutdown barrier. The current loader port does
-    // not yet retain ABI-validated module entry-point callbacks, so it must not
-    // guess at DllMain pointers. ETW rundown is safe and happens before SYS_EXIT.
-    DLL_SHUTDOWN.store(true, Ordering::Release);
+    if DLL_SHUTDOWN.swap(true, Ordering::AcqRel) { return STATUS_SUCCESS; }
     crate::windows11_exports::etw::rundown_current_process();
+
+    // LDR_DATA_TABLE_ENTRY_PREFIX is the documented x64 prefix used by the
+    // loader's own enumeration path. The first load-order entry is the process
+    // image; only DLL entry points receive DLL_PROCESS_DETACH.
+    let Some(head) = (unsafe { current_peb_ldr_head() }) else { return STATUS_SUCCESS; };
+    let head_addr=head as usize;
+    let mut entries=[(0usize,0usize,0usize);MAX_LOADER_ENTRIES];
+    let mut count=0usize;
+    let mut link=unsafe{ptr::read_unaligned(head.cast::<usize>())};
+    while link!=0 && link!=head_addr && count<MAX_LOADER_ENTRIES {
+        let entry=link as *const super::LDR_DATA_TABLE_ENTRY_PREFIX;
+        let (base,entry_point,size)=unsafe{
+            ((*entry).DllBase as usize,(*entry).EntryPoint as usize,(*entry).SizeOfImage as usize)
+        };
+        if base!=0 && entry_point!=0 {
+            if let Ok((image_base,image_size,_))=unsafe{mapped_image_info(base as PVOID)} {
+                if entry_point>=image_base && entry_point<image_base.saturating_add(image_size)
+                    && size!=0 && size<=image_size {
+                    entries[count]=(base,entry_point,size);
+                }
+            }
+        }
+        count+=1;
+        link=unsafe{ptr::read_unaligned(link as *const usize)};
+    }
+    if count>=MAX_LOADER_ENTRIES { return STATUS_INVALID_PARAMETER; }
+    // Reverse load order so dependents detach before the DLLs they depend on.
+    // Entry points are called only after validating the mapped PE32+ image bounds.
+    for index in (1..count).rev() {
+        let (base,entry_point,_size)=entries[index];
+        if base==0 || entry_point==0 { continue; }
+        let detach: unsafe extern "system" fn(PVOID,u32,PVOID)->BOOLEAN =
+            unsafe{core::mem::transmute(entry_point)};
+        let _=unsafe{detach(base as PVOID,0,ptr::null_mut())};
+    }
     STATUS_SUCCESS
 }
 
