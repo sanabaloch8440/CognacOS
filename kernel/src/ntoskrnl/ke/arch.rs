@@ -1677,7 +1677,7 @@ fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
 /// Build the Windows x64 exception ABI on the faulting thread's user stack and
 /// transfer control to its registered NTDLL KiUserExceptionDispatcher.
 fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> bool {
-    let trap = unsafe { &mut *frame.cast::<UserExceptionTrapFrame>() };
+    let trap = unsafe { &mut *frame.cast_mut().cast::<UserExceptionTrapFrame>() };
     if trap.vector != vector || trap.error_code != error || trap.cs & 3 != 3 || trap.ss & 3 != 3 {
         cognacos_exception_fatal(vector, error, frame);
     }
