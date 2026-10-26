@@ -178,18 +178,22 @@ fn impersonate_client_of_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64
     let _message:PortMessage=match read_user(args[1]) {
         Ok(m)=>m, Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return s}
     };
-    let mut level=2u32; // SecurityImpersonation, capped to the token's registered level.
+    let listening_port=match crate::ntoskrnl::alpc::connection_port_id(endpoint.endpoint_id.load(Ordering::Acquire),current_pid()){
+        Ok(id)=>id,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return s as u64}
+    };
+    let mut level=None;
     for ctx in SECURITY_CONTEXT_OBJECTS.iter().filter(|c|c.active.load(Ordering::Acquire)
-        && c.owner_pid.load(Ordering::Acquire)==current_pid()) {
+        && c.owner_pid.load(Ordering::Acquire)==current_pid()
+        && c.port_id.load(Ordering::Acquire)==listening_port) {
         let id=ctx.context_id.load(Ordering::Acquire);
         if let Ok(info)=crate::ntoskrnl::alpc_resources::query_security_context(id,current_pid()) {
-            level=level.min(info.impersonation_level as u32);
+            level=Some(level.map_or(info.impersonation_level as u32,|old:u32|old.min(info.impersonation_level as u32)));
         }
     }
-    if level==0 {
+    let Some(level)=level.filter(|v|*v>0&&*v<=2) else {
         let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
         return 0xC000_0022;
-    }
+    };
     let source=crate::process::reference_primary_token(peer);
     if source.is_null() {
         let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
@@ -644,7 +648,7 @@ pub fn dispatch(number:u64,args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
         crate::syscall::NT_SYSCALL_ALPC_DELETE_SECURITY_CONTEXT=>delete_security_context(args),
         crate::syscall::NT_SYSCALL_ALPC_REVOKE_SECURITY_CONTEXT=>revoke_security_context(args),
         crate::syscall::NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_OF_PORT=>impersonate_client_of_port(args),
-        crate::syscall::NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT=>impersonate_client_of_port(args),
+        crate::syscall::NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT=>STATUS_NOT_IMPLEMENTED,
         crate::syscall::NT_SYSCALL_ALPC_DELETE_SECTION_VIEW=>delete_section_view(args),
         crate::syscall::NT_SYSCALL_ALPC_DISCONNECT_PORT=>disconnect_port(args),
         crate::syscall::NT_SYSCALL_ALPC_CONNECT_PORT=>connect_port(args),
