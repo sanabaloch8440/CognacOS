@@ -9,6 +9,7 @@ use core::alloc::Layout;
 use core::ffi::c_void;
 use core::ptr;
 use alloc::{alloc::{alloc, dealloc}, vec::Vec};
+use alloc::string::ToString;
 
 type NTSTATUS = i32;
 type ULONG = u32;

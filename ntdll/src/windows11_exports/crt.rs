@@ -606,17 +606,17 @@ pub unsafe extern "C" fn wcstoul(s:*const u16,end:*mut *mut u16,base:i32)->u32{w
 
 // Scalar C runtime math and ASCII classification routines.
 
-#[no_mangle] pub unsafe extern "C" fn atan(x:f64)->f64{x.atan()}
-#[no_mangle] pub unsafe extern "C" fn atan2(y:f64,x:f64)->f64{y.atan2(x)}
-#[no_mangle] pub unsafe extern "C" fn ceil(x:f64)->f64{x.ceil()}
-#[no_mangle] pub unsafe extern "C" fn cos(x:f64)->f64{x.cos()}
+#[no_mangle] pub unsafe extern "C" fn atan(x:f64)->f64{libm::atan(x)}
+#[no_mangle] pub unsafe extern "C" fn atan2(y:f64,x:f64)->f64{libm::atan2(y, x)}
+#[no_mangle] pub unsafe extern "C" fn ceil(x:f64)->f64{libm::ceil(x)}
+#[no_mangle] pub unsafe extern "C" fn cos(x:f64)->f64{libm::cos(x)}
 #[no_mangle] pub unsafe extern "C" fn fabs(x:f64)->f64{x.abs()}
-#[no_mangle] pub unsafe extern "C" fn floor(x:f64)->f64{x.floor()}
-#[no_mangle] pub unsafe extern "C" fn log(x:f64)->f64{x.ln()}
-#[no_mangle] pub unsafe extern "C" fn pow(x:f64,y:f64)->f64{x.powf(y)}
-#[no_mangle] pub unsafe extern "C" fn sin(x:f64)->f64{x.sin()}
-#[no_mangle] pub unsafe extern "C" fn sqrt(x:f64)->f64{x.sqrt()}
-#[no_mangle] pub unsafe extern "C" fn tan(x:f64)->f64{x.tan()}
+#[no_mangle] pub unsafe extern "C" fn floor(x:f64)->f64{libm::floor(x)}
+#[no_mangle] pub unsafe extern "C" fn log(x:f64)->f64{libm::log(x)}
+#[no_mangle] pub unsafe extern "C" fn pow(x:f64,y:f64)->f64{libm::pow(x, y)}
+#[no_mangle] pub unsafe extern "C" fn sin(x:f64)->f64{libm::sin(x)}
+#[no_mangle] pub unsafe extern "C" fn sqrt(x:f64)->f64{libm::sqrt(x)}
+#[no_mangle] pub unsafe extern "C" fn tan(x:f64)->f64{libm::tan(x)}
 #[no_mangle] pub unsafe extern "C" fn isalnum(c:i32)->i32{((0..=127).contains(&c)&&(c as u8).is_ascii_alphanumeric()) as i32}
 #[no_mangle] pub unsafe extern "C" fn isalpha(c:i32)->i32{((0..=127).contains(&c)&&(c as u8).is_ascii_alphabetic()) as i32}
 #[no_mangle] pub unsafe extern "C" fn iscntrl(c:i32)->i32{((0..=127).contains(&c)&&(c<32||c==127)) as i32}

@@ -11,6 +11,8 @@
 
 #![allow(non_camel_case_types, non_snake_case, dead_code)]
 
+use alloc::vec::Vec;
+
 pub type ULONG = u32;
 pub type USHORT = u16;
 pub type LANGID = u16;
