@@ -44,6 +44,15 @@ fn seconds_to_ticks(seconds: u64, hz: u64) -> u64 {
     (seconds as u128 * hz as u128).min(u64::MAX as u128) as u64
 }
 
+/// Convert monotonic-counter deltas to the nominal 1-ms watchdog tick unit
+/// used in the documented 0x101/0x133 bug-check parameters.
+#[inline]
+fn counter_to_watchdog_ticks(counter_delta: u64, hz: u64) -> u64 {
+    if hz == 0 { return 0; }
+    ((counter_delta as u128 * 1_000u128) / hz as u128)
+        .min(u64::MAX as u128) as u64
+}
+
 #[inline]
 fn current_cpu() -> usize {
     crate::hal::current_cpu_local()
@@ -74,7 +83,7 @@ pub(crate) fn ke_accumulate_ticks(_hal_timestamp: u64) {
                 let routine = ACTIVE_DPC_ROUTINE[cpu].load(Ordering::Acquire);
                 unsafe {
                     crate::ntoskrnl::ke::runtime::ke_bug_check_ex(
-                        DPC_WATCHDOG_VIOLATION, 0, elapsed as usize, limit as usize, routine as usize,
+                        DPC_WATCHDOG_VIOLATION, 0, counter_to_watchdog_ticks(elapsed, hz) as usize, counter_to_watchdog_ticks(limit, hz) as usize, routine as usize,
                     );
                 }
             }
@@ -94,8 +103,8 @@ pub(crate) fn ke_accumulate_ticks(_hal_timestamp: u64) {
                 // Arg1=1: cumulative time at DISPATCH_LEVEL or above.
                 unsafe {
                     crate::ntoskrnl::ke::runtime::ke_bug_check_ex(
-                        DPC_WATCHDOG_VIOLATION, 1, HIGH_IRQL_TOTAL[cpu].load(Ordering::Relaxed).saturating_add(elapsed) as usize,
-                        seconds_to_ticks(HIGH_IRQL_TIMEOUT_SECONDS, hz) as usize, 0,
+                        DPC_WATCHDOG_VIOLATION, 1, counter_to_watchdog_ticks(HIGH_IRQL_TOTAL[cpu].load(Ordering::Relaxed).saturating_add(elapsed), hz) as usize,
+                        (HIGH_IRQL_TIMEOUT_SECONDS * 1_000) as usize, 0,
                     );
                 }
             }
@@ -130,7 +139,7 @@ pub(crate) fn ke_accumulate_ticks(_hal_timestamp: u64) {
                 // CognacOS currently has no public PRCB ABI, so Arg3 is zero.
                 unsafe {
                     crate::ntoskrnl::ke::runtime::ke_bug_check_ex(
-                        CLOCK_WATCHDOG_TIMEOUT, timeout as usize, 0, 0, peer,
+                        CLOCK_WATCHDOG_TIMEOUT, (CLOCK_TIMEOUT_SECONDS * 1_000) as usize, 0, 0, peer,
                     );
                 }
             }
