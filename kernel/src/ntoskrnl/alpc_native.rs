@@ -137,6 +137,13 @@ fn connect_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let endpoint=match crate::ntoskrnl::alpc::connect(&name[..n],current_pid()){Ok(id)=>id,Err(s)=>return s as u32 as u64};
     make_endpoint_handle(endpoint,current_pid(),args[0])
 }
+fn connect_port_ex(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
+    if args[0]==0||args[1]==0||args[2]!=0||args[3]!=0||args[4]!=0||args[5]!=0||args[6]!=0||args[7]!=0||args[8]!=0||args[9]!=0||args[10]!=0{return STATUS_NOT_IMPLEMENTED}
+    let pid=current_pid();let mut name=[0u16;MAX_NAME];
+    let n=match object_name(args[1],&mut name,pid,0){Ok(n)=>n,Err(s)=>return s};
+    let endpoint=match crate::ntoskrnl::alpc::connect(&name[..n],pid){Ok(id)=>id,Err(s)=>return s as u32 as u64};
+    make_endpoint_handle(endpoint,pid,args[0])
+}
 fn accept_connect_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     if args[0]==0||args[2]!=0||args[3]!=0||args[4]!=0||args[5]!=0||args[6]==0||args[7]!=0{return STATUS_NOT_IMPLEMENTED}
     let (port,port_body)=match port_from_handle(args[1],ACCESS_WRITE){Ok(v)=>v,Err(s)=>return s};
@@ -384,6 +391,7 @@ pub fn dispatch(number:u64,args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
         crate::syscall::NT_SYSCALL_ALPC_DELETE_SECTION_VIEW=>delete_section_view(args),
         crate::syscall::NT_SYSCALL_ALPC_DISCONNECT_PORT=>disconnect_port(args),
         crate::syscall::NT_SYSCALL_ALPC_CONNECT_PORT=>connect_port(args),
+        crate::syscall::NT_SYSCALL_ALPC_CONNECT_PORT_EX=>connect_port_ex(args),
         crate::syscall::NT_SYSCALL_ALPC_ACCEPT_CONNECT_PORT=>accept_connect_port(args),
         crate::syscall::NT_SYSCALL_ALPC_SEND_WAIT_RECEIVE_PORT=>send_wait_receive_port(args),
         crate::syscall::NT_SYSCALL_ALPC_CREATE_SECTION_VIEW
