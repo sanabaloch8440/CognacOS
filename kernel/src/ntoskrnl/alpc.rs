@@ -219,6 +219,23 @@ pub fn receive(endpoint: u32, receiver_pid: u64, output: &mut [u8]) -> Result<(u
 }
 
 /// Tear down both endpoints and discard queued messages.
+/// Resolve the authenticated peer process for a connected endpoint.
+/// Never use user-supplied PORT_MESSAGE client identifiers as authority.
+pub fn peer_process_id(endpoint: u32, receiver_pid: u64) -> Result<u64, u32> {
+    let _g = Guard::acquire();
+    let s = unsafe { &*STATE.state.get() };
+    let ci = endpoint_connection(s, endpoint).ok_or(STATUS_PORT_DISCONNECTED)?;
+    let c = s.connections[ci];
+    if !c.accepted { return Err(STATUS_PORT_DISCONNECTED); }
+    if endpoint == c.client_endpoint && receiver_pid == c.client_pid {
+        Ok(c.server_pid)
+    } else if endpoint == c.server_endpoint && receiver_pid == c.server_pid {
+        Ok(c.client_pid)
+    } else {
+        Err(STATUS_INVALID_HANDLE)
+    }
+}
+
 pub fn disconnect(endpoint: u32, caller_pid: u64) -> Result<(), u32> {
     let mut g = Guard::acquire();
     let s = g.state();
