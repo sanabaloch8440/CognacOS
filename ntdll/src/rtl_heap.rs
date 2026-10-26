@@ -106,8 +106,7 @@ static PROCESS_HEAP_INIT_LOCK: AtomicU8 = AtomicU8::new(0);
 
 /// Exported data object referenced by PEB.ProcessHeap. It is the actual heap
 /// object, not a pointer slot, and is initialized in place on first use.
-#[no_mangle]
-pub static mut CognacNtdllProcessHeapObject: CognacHeap = CognacHeap {
+static mut CognacNtdllProcessHeapObject: CognacHeap = CognacHeap {
     magic: 0, flags: HEAP_GROWABLE, reserve_size: DEFAULT_RESERVE, commit_size: PAGE_SIZE,
     segments: ptr::null_mut(), next_heap: ptr::null_mut(),
     lock: AtomicU8::new(0), protected: AtomicU8::new(0), _padding: [0; 6],
