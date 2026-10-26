@@ -25,11 +25,12 @@ struct SectionObject {
     owner_root:AtomicU64,
     size:AtomicU64,
     references:AtomicU32,
+    protection:AtomicU32,
     active:AtomicBool,
     allocated:AtomicBool,
 }
 impl SectionObject {
-    const fn new()->Self { Self{section_id:AtomicU64::new(0),owner_root:AtomicU64::new(0),size:AtomicU64::new(0),references:AtomicU32::new(0),active:AtomicBool::new(false),allocated:AtomicBool::new(false)} }
+    const fn new()->Self { Self{section_id:AtomicU64::new(0),owner_root:AtomicU64::new(0),size:AtomicU64::new(0),references:AtomicU32::new(0),protection:AtomicU32::new(4),active:AtomicBool::new(false),allocated:AtomicBool::new(false)} }
 }
 static OBJECTS:[SectionObject;MAX_SECTION_HANDLES]=[const{SectionObject::new()};MAX_SECTION_HANDLES];
 
@@ -66,7 +67,8 @@ fn resolve(handle:u64,access:u32)->Result<(&'static SectionObject,*mut c_void),u
 }
 
 /// Kernel half of the private create-section service. Returns a typed handle.
-pub fn create(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
+pub fn create(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{ create_with_protection(args,4) }
+fn create_with_protection(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS],protection:u32)->u64{
     if args[1]==0||args[0]==0{return STATUS_INVALID_PARAMETER}
     let process=crate::process::eprocess_pointer_for_pid(crate::syscall::current_process_id());
     if process.is_null(){return STATUS_INVALID_HANDLE}
@@ -84,7 +86,7 @@ pub fn create(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
         let _=crate::ntoskrnl::mm::section::dereference(id,root);return STATUS_INSUFFICIENT_RESOURCES
     }
     let rounded=match args[0].checked_add(4095){Some(v)=>v&!4095,None=>{s.allocated.store(false,Ordering::Release);let _=crate::ntoskrnl::mm::section::dereference(id,root);return STATUS_INVALID_PARAMETER}};
-    s.section_id.store(id,Ordering::Release);s.owner_root.store(root,Ordering::Release);s.size.store(rounded,Ordering::Release);s.references.store(1,Ordering::Release);s.active.store(true,Ordering::Release);
+    s.section_id.store(id,Ordering::Release);s.owner_root.store(root,Ordering::Release);s.size.store(rounded,Ordering::Release);s.references.store(1,Ordering::Release);s.protection.store(protection,Ordering::Release);s.active.store(true,Ordering::Release);
     let name=[0u16;0];let type_name=[b'S' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'i' as u16,b'o' as u16,b'n' as u16];
     let body=s as *const SectionObject as *mut c_void;
     if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&type_name,&name,false,DEFAULT_SD.as_ptr(),DEFAULT_SD.len(),finalizer)}.is_err(){
@@ -141,13 +143,29 @@ pub fn copy(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     }
     let _=crate::ntoskrnl::ob::runtime::dereference_body(body);STATUS_SUCCESS
 }
+/// Windows NtCreateSection ABI bridge. Supports committed anonymous sections;
+/// file-backed sections and named OBJECT_ATTRIBUTES are rejected explicitly.
+pub fn create_nt(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
+    if args[0]==0||args[3]==0||args[2]!=0||args[6]!=0{return if args[2]!=0||args[6]!=0{0xC000_0002}else{STATUS_INVALID_PARAMETER}}
+    let mut raw=[0u8;8];
+    if !crate::syscall::copy_current_user_from(args[3],&mut raw){return STATUS_ACCESS_VIOLATION}
+    let size=i64::from_ne_bytes(raw);
+    if size<=0{return STATUS_INVALID_PARAMETER}
+    if args[5]!=0x0800_0000{return STATUS_INVALID_PARAMETER}
+    let protection=args[4] as u32;
+    if !matches!(protection,0x02|0x04|0x20){return STATUS_INVALID_PARAMETER}
+    let mut local=[0u64;crate::syscall::NT_MAX_ARGUMENTS];
+    local[0]=size as u64;local[1]=args[0];
+    create_with_protection(&local,protection)
+}
+
 /// Import a caller-supplied Object Manager Section handle for an ALPC port.
 /// Takes an independent MM reference so closing the original handle is safe.
-pub fn reference_for_alpc(handle:u64)->Result<(u64,u64,u64),u64>{
+pub fn reference_for_alpc(handle:u64)->Result<(u64,u64,u64,u32),u64>{
     let (s,body)=resolve(handle,ACCESS_READ)?;
-    let id=s.section_id.load(Ordering::Acquire);let root=s.owner_root.load(Ordering::Acquire);let size=s.size.load(Ordering::Acquire);
+    let id=s.section_id.load(Ordering::Acquire);let root=s.owner_root.load(Ordering::Acquire);let size=s.size.load(Ordering::Acquire);let protection=s.protection.load(Ordering::Acquire);
     let status=crate::ntoskrnl::mm::section::reference(id,root);
     let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
     if status<0{return Err(status as u32 as u64)}
-    Ok((id,root,size))
+    Ok((id,root,size,protection))
 }
