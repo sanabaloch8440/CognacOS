@@ -1255,14 +1255,19 @@ unsafe fn route_user_exception(frame: *mut u64, args: &[u64; NT_MAX_ARGUMENTS]) 
     let context_address = args[1];
     let first_chance = args[2] != 0;
     let dispatcher = args[3];
-    if !first_chance { return NT_STATUS_NOT_IMPLEMENTED; }
-    if !valid_user_code_pointer(dispatcher) { return NT_STATUS_INVALID_PARAMETER; }
     let mut record = [0u8; AMD64_EXCEPTION_RECORD_SIZE];
     let mut context = [0u8; AMD64_CONTEXT_SIZE];
     if !copy_current_user_from(record_address, &mut record)
         || !copy_current_user_from(context_address, &mut context) {
         return NT_STATUS_ACCESS_VIOLATION;
     }
+    if !first_chance {
+        let code = u32::from_le_bytes(record[0..4].try_into().unwrap()) as u64;
+        let pid = current_process_id();
+        if pid != 0 { crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, code); }
+        return NT_STATUS_INVALID_DISPOSITION;
+    }
+    if !valid_user_code_pointer(dispatcher) { return NT_STATUS_INVALID_PARAMETER; }
     // The supplied context must describe a plausible user-mode frame.
     if context_u32(&context, 0x30) & 0x0010_0000 == 0
         || !valid_user_code_pointer(context_u64(&context, 0xf8))
