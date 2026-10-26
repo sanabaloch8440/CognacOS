@@ -630,7 +630,6 @@ pub unsafe extern "system" fn RtlExpandEnvironmentStrings_U(
 
 /// Set the process-parameter environment pointer and optionally return the old
 /// block. This helper operates on an explicitly supplied parameter structure.
-#[no_mangle]
 pub unsafe extern "system" fn CognacRtlSetProcessParametersEnvironment(
     params: *mut RTL_USER_PROCESS_PARAMETERS,
     new_environment: *mut WCHAR,
