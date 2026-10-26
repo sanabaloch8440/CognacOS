@@ -242,6 +242,49 @@ pub(crate) fn release_captured_impersonation_token(token:*mut c_void) {
 
 /// Revert the current thread to its process primary token by clearing its
 /// impersonation token. Token metadata is reclaimed after the thread releases it.
+/// Tear down ALPC resources before a process address space is reaped.
+/// Resources are released once; Object Manager finalizers only release slots.
+pub(crate) fn rundown_process(pid:u64) {
+    if pid==0{return}
+    let process=crate::process::eprocess_pointer_for_pid(pid);
+    let root=if process.is_null(){0}else{unsafe{(*process).address_space_root}};
+    while let Some(view)=crate::ntoskrnl::alpc_resources::take_section_view_for_rundown(pid) {
+        if root!=0 { let _=crate::ntoskrnl::mm::section::unmap_view(root,view.base); }
+    }
+    for p in PORT_OBJECTS.iter() {
+        if p.allocated.load(Ordering::Acquire)&&p.owner_pid.load(Ordering::Acquire)==pid {
+            if p.active.swap(false,Ordering::AcqRel) {
+                let _=crate::ntoskrnl::alpc::close_port(p.port_id.load(Ordering::Acquire),pid);
+            }
+            let _=crate::ntoskrnl::ob::runtime::unregister_object(p as *const PortObject as *mut c_void);
+        }
+    }
+    for e in ENDPOINT_OBJECTS.iter() {
+        if e.allocated.load(Ordering::Acquire)&&e.owner_pid.load(Ordering::Acquire)==pid {
+            if e.active.swap(false,Ordering::AcqRel) {
+                let _=crate::ntoskrnl::alpc::disconnect(e.endpoint_id.load(Ordering::Acquire),pid);
+            }
+            let _=crate::ntoskrnl::ob::runtime::unregister_object(e as *const EndpointObject as *mut c_void);
+        }
+    }
+    for s in PORT_SECTIONS.iter() {
+        if s.allocated.load(Ordering::Acquire)&&s.owner_pid.load(Ordering::Acquire)==pid {
+            if s.active.swap(false,Ordering::AcqRel) {
+                let _=crate::ntoskrnl::mm::section::dereference(s.section_id.load(Ordering::Acquire),s.owner_root.load(Ordering::Acquire));
+            }
+            let _=crate::ntoskrnl::ob::runtime::unregister_object(s as *const PortSectionObject as *mut c_void);
+        }
+    }
+    for c in SECURITY_CONTEXT_OBJECTS.iter() {
+        if c.allocated.load(Ordering::Acquire)&&c.owner_pid.load(Ordering::Acquire)==pid {
+            if c.active.swap(false,Ordering::AcqRel) {
+                let _=crate::ntoskrnl::alpc_resources::delete_security_context(c.context_id.load(Ordering::Acquire),pid);
+            }
+            let _=crate::ntoskrnl::ob::runtime::unregister_object(c as *const SecurityContextObject as *mut c_void);
+        }
+    }
+}
+
 pub(crate) fn revert_current_impersonation()->u64 {
     let thread=crate::ntoskrnl::ke::thread::current_thread_object();
     let current=crate::ntoskrnl::ke::thread::reference_current_impersonation_token();
