@@ -33,6 +33,20 @@ cognacos_lookup_function_entry:
     mov eax, 0x140
     int 0x83
     ret
+    .p2align 4
+    .global cognacos_nt_continue
+cognacos_nt_continue:
+    mov r10, rcx
+    mov eax, 0x141
+    int 0x83
+    ret
+    .p2align 4
+    .global cognacos_nt_raise_exception
+cognacos_nt_raise_exception:
+    mov r10, rcx
+    mov eax, 0x142
+    int 0x83
+    ret
 "#);
 
 #[cfg(target_os = "none")]
@@ -40,6 +54,8 @@ extern "system" {
     fn cognacos_register_function_table(table: *const RUNTIME_FUNCTION, count: u32, base: u64) -> u64;
     fn cognacos_delete_function_table(table: *const RUNTIME_FUNCTION) -> u64;
     fn cognacos_lookup_function_entry(control_pc: u64, image_base: *mut u64, history_table: *mut c_void) -> *const RUNTIME_FUNCTION;
+    fn cognacos_nt_continue(context: *const CONTEXT, test_alert: u8) -> i32;
+    fn cognacos_nt_raise_exception(record: *const EXCEPTION_RECORD, context: *const CONTEXT, first_chance: u8, dispatcher: usize) -> i32;
 }
 
 const STATUS_NOT_IMPLEMENTED: i32 = 0xC0000002u32 as i32;
@@ -100,27 +116,88 @@ pub type EXCEPTION_ROUTINE = Option<unsafe extern "system" fn(
 pub unsafe extern "system" fn KiRaiseUserExceptionDispatcher() -> i32 {
     STATUS_NOT_IMPLEMENTED
 }
+
+/// Native user exception entry: the kernel supplies the copied exception record
+/// and CONTEXT in RCX/RDX on the interrupted thread's stack.
 #[no_mangle]
-pub unsafe extern "system" fn KiUserExceptionDispatcher() -> i32 {
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn KiUserExceptionDispatcher(
+    record: *mut EXCEPTION_RECORD, context: *mut CONTEXT
+) -> ! {
+    if record.is_null() || context.is_null() {
+        loop { core::hint::spin_loop(); }
+    }
+    if RtlDispatchException(record, context) != 0 {
+        let _ = NtContinue(context, 0);
+    }
+    let _ = NtRaiseException(record, context, 0);
+    // A second-chance exception should be terminated by the native process
+    // manager. Until the process-termination syscall is wired, never resume the
+    // faulting instruction with a corrupt dispatcher frame.
+    loop { core::hint::spin_loop(); }
 }
 
-/// NtContinue(PCONTEXT ContextRecord, BOOLEAN TestAlert)
+/// NtContinue(PCONTEXT ContextRecord, BOOLEAN TestAlert). A successful call
+/// does not return: the kernel restores the saved user register and IRET frame.
 #[no_mangle]
-pub unsafe extern "system" fn NtContinue(_context: *const CONTEXT, _test_alert: u8) -> i32 {
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtContinue(context: *const CONTEXT, test_alert: u8) -> i32 {
+    if context.is_null() { return STATUS_INVALID_PARAMETER; }
+    #[cfg(target_os = "none")]
+    { return cognacos_nt_continue(context, test_alert); }
+    #[cfg(not(target_os = "none"))]
+    { let _ = test_alert; STATUS_NOT_IMPLEMENTED }
 }
 #[no_mangle]
-pub unsafe extern "system" fn NtContinueEx(_context: *const CONTEXT, _continue_argument: *const c_void) -> i32 {
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtContinueEx(context: *const CONTEXT, _continue_argument: *const c_void) -> i32 {
+    NtContinue(context, 0)
 }
 #[no_mangle]
 pub unsafe extern "system" fn NtDebugContinue(_debug_object: usize, _client_id: *const c_void, _continue_status: i32) -> i32 {
     STATUS_NOT_IMPLEMENTED
 }
 #[no_mangle]
-pub unsafe extern "system" fn NtRaiseException(_record: *const EXCEPTION_RECORD, _context: *const CONTEXT, _first_chance: u8) -> i32 {
-    STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtRaiseException(record: *const EXCEPTION_RECORD, context: *const CONTEXT, first_chance: u8) -> i32 {
+    if record.is_null() || context.is_null() { return STATUS_INVALID_PARAMETER; }
+    #[cfg(target_os = "none")]
+    { return cognacos_nt_raise_exception(record, context, first_chance, KiUserExceptionDispatcher as usize); }
+    #[cfg(not(target_os = "none"))]
+    { let _ = first_chance; STATUS_NOT_IMPLEMENTED }
+}
+
+/// Walk AMD64 frames and invoke registered language-specific exception handlers.
+/// Returns TRUE only when a handler requests continuation; caller then NtContinue's
+/// the possibly modified context.
+#[no_mangle]
+pub unsafe extern "system" fn RtlDispatchException(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT) -> u8 {
+    if record.is_null() || context.is_null() { return 0; }
+    let original_pc = (*context).Rip;
+    if original_pc == 0 || (*context).Rsp == 0 || (*context).Rsp & 7 != 0 { return 0; }
+    let mut control_pc = original_pc;
+    let mut previous_rsp = 0u64;
+    for _ in 0..128 {
+        let mut image_base = 0u64;
+        let entry = RtlLookupFunctionEntry(control_pc, &mut image_base, ptr::null_mut());
+        let mut handler_data = ptr::null_mut();
+        let mut establisher = 0u64;
+        let handler = RtlVirtualUnwind(
+            0, image_base, control_pc, entry, context, &mut handler_data,
+            &mut establisher, ptr::null_mut()
+        );
+        if let Some(handler_fn) = handler {
+            let disposition = handler_fn(record, establisher as *mut c_void, context, handler_data);
+            match disposition {
+                0 => return 1,
+                1 => {},
+                _ => return 0,
+            }
+        }
+        if (*context).Rip == 0 || (*context).Rsp <= previous_rsp || (*context).Rsp & 7 != 0 {
+            return 0;
+        }
+        previous_rsp = (*context).Rsp;
+        control_pc = (*context).Rip;
+        if entry.is_null() && control_pc == 0 { return 0; }
+    }
+    0
 }
 
 #[no_mangle]
