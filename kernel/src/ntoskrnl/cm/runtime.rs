@@ -83,6 +83,41 @@ fn key_path(s:&State,id:u32,out:&mut [u16;MAX_NAME])->Option<usize>{
  }
  Some(n)
 }
+
+const KEY_QUERY_VALUE: u32 = 0x0001;
+const KEY_SET_VALUE: u32 = 0x0002;
+const KEY_CREATE_SUB_KEY: u32 = 0x0004;
+const KEY_ENUMERATE_SUB_KEYS: u32 = 0x0008;
+const DELETE: u32 = 0x0001_0000;
+
+/// Validate both the typed RegistryKey object and the granted access on this
+/// particular handle. A valid handle is not by itself authorization.
+fn key_with_access(h: *mut core::ffi::c_void, desired: u32) -> Result<u32, i32> {
+    #[cfg(test)]
+    {
+        let s = state();
+        return key_from_handle(s, h).ok_or(0xC000_0008u32 as i32);
+    }
+    #[cfg(not(test))]
+    {
+        let object_type = [82u16,101,103,105,115,116,114,121,75,101,121];
+        let ty = crate::ntoskrnl::ob::runtime::ensure_type(
+            &object_type, KEY_QUERY_VALUE, KEY_SET_VALUE, KEY_ENUMERATE_SUB_KEYS,
+            KEY_QUERY_VALUE | KEY_SET_VALUE | KEY_CREATE_SUB_KEY | KEY_ENUMERATE_SUB_KEYS,
+            u32::MAX,
+        )?;
+        let body = crate::ntoskrnl::ob::runtime::reference_by_handle(
+            h, desired, ty, crate::ntoskrnl::ob::runtime::current_owner(), true,
+        )?;
+        let s = state();
+        let result = s.keys.iter().find(|k| k.used && !k.deleted
+            && core::ptr::addr_of!(*k).cast::<core::ffi::c_void>() == body)
+            .map(|k| k.id).ok_or(0xC000_0008u32 as i32);
+        let _ = crate::ntoskrnl::ob::runtime::dereference_body(body);
+        result
+    }
+}
+
 fn key_from_handle(s:&State,h:*mut core::ffi::c_void)->Option<u32>{
  #[cfg(test)] {let v=h as usize;if v<HANDLE_BASE{return None;}let id=(v-HANDLE_BASE) as u32;return s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==id).map(|k|k.id);}
  #[cfg(not(test))] {
@@ -271,7 +306,7 @@ pub unsafe extern "win64" fn ZwOpenKey(out:*mut *mut core::ffi::c_void,access:u3
 pub unsafe extern "win64" fn ZwSetValueKey(h:*mut core::ffi::c_void,name:*const UnicodeString,title:u32,kind:u32,data:*const core::ffi::c_void,len:u32)->i32{
  let mut nbuf=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nbuf)}{Ok(n)=>n,Err(e)=>return e};
  if len as usize>MAX_DATA||(len!=0&&data.is_null()){return STATUS_INVALID_PARAMETER;}
- let _g=LOCK.lock();let s=state();let Some(id)=key_from_handle(s,h)else{return STATUS_INVALID_PARAMETER;};
+ let _g=LOCK.lock();let s=state();let id=match key_with_access(h,KEY_SET_VALUE){Ok(id)=>id,Err(status)=>return status};
  let existing=s.values.iter().position(|v|v.used&&v.key_id==id&&eq(&v.name[..v.name_len as usize],&nbuf[..n]));
  let idx=match existing{Some(i)=>i,None=>match s.values.iter().position(|v|!v.used){Some(i)=>i,None=>return STATUS_INSUFFICIENT_RESOURCES}};
  let mut v=Value{used:true,key_id:id,name:nbuf,name_len:n as u16,kind,len:len as u16,data:[0;MAX_DATA]};
@@ -283,7 +318,7 @@ pub struct KeyValuePartialInformation { pub title_index:u32,pub kind:u32,pub dat
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwQueryValueKey(h:*mut core::ffi::c_void,name:*const UnicodeString,class:u32,out:*mut core::ffi::c_void,out_len:u32,result_len:*mut u32)->i32{
  if class!=2 || (out.is_null() && out_len != 0) { return STATUS_NOT_SUPPORTED; }let mut nbuf=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nbuf)}{Ok(n)=>n,Err(e)=>return e};
- let _g=LOCK.lock();let s=state();let Some(id)=key_from_handle(s,h)else{return STATUS_INVALID_PARAMETER;};
+ let _g=LOCK.lock();let s=state();let id=match key_with_access(h,KEY_QUERY_VALUE){Ok(id)=>id,Err(status)=>return status};
  if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.id==id) {
   if k.hive_slot!=0 {
    let Some(hive)=mounted_hive((k.hive_slot-1) as usize) else{return STATUS_OBJECT_NAME_NOT_FOUND;};
@@ -310,13 +345,13 @@ pub unsafe extern "win64" fn ZwQueryValueKey(h:*mut core::ffi::c_void,name:*cons
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwDeleteValueKey(h:*mut core::ffi::c_void,name:*const UnicodeString)->i32{
  let mut nb=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nb)}{Ok(n)=>n,Err(e)=>return e};
- let _g=LOCK.lock();let s=state();let Some(id)=key_from_handle(s,h)else{return STATUS_INVALID_PARAMETER;};
+ let _g=LOCK.lock();let s=state();let id=match key_with_access(h,KEY_SET_VALUE){Ok(id)=>id,Err(status)=>return status};
  let Some(v)=s.values.iter_mut().find(|v|v.used&&v.key_id==id&&eq(&v.name[..v.name_len as usize],&nb[..n]))else{return STATUS_OBJECT_NAME_NOT_FOUND;};
  *v=Value::EMPTY;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwDeleteKey(h:*mut core::ffi::c_void)->i32{
- let _g=LOCK.lock();let s=state();let Some(id)=key_from_handle(s,h)else{return STATUS_INVALID_PARAMETER;};
+ let _g=LOCK.lock();let s=state();let id=match key_with_access(h,DELETE){Ok(id)=>id,Err(status)=>return status};
  if s.keys.iter().any(|k|k.used&&!k.deleted&&k.parent==id)||s.values.iter().any(|v|v.used&&v.key_id==id){return STATUS_ACCESS_DENIED;}
  let Some(index)=s.keys.iter().position(|k|k.used&&k.id==id)else{return STATUS_OBJECT_NAME_NOT_FOUND;};
  let body=core::ptr::addr_of_mut!(s.keys[index]).cast::<core::ffi::c_void>();s.keys[index].deleted=true;
@@ -324,7 +359,7 @@ pub unsafe extern "win64" fn ZwDeleteKey(h:*mut core::ffi::c_void)->i32{
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwFlushKey(h:*mut core::ffi::c_void)->i32{
- let _g=LOCK.lock();let s=state();if key_from_handle(s,h).is_some(){STATUS_SUCCESS}else{STATUS_INVALID_PARAMETER}
+ let _g=LOCK.lock();let _s=state();match key_with_access(h,KEY_QUERY_VALUE){Ok(_)=>STATUS_NOT_SUPPORTED,Err(status)=>status}
 }
 
 fn ascii_utf16(src: &[u8], out: &mut [u16]) -> Option<usize> {
