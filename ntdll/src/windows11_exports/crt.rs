@@ -832,3 +832,17 @@ pub unsafe extern "system" fn vDbgPrintEx() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn labs(value: i32) -> i32 { value.wrapping_abs() }
+
+
+// longjmp is a non-returning CRT control-transfer routine. Until the matching
+// MSVC x64 jmp_buf save/restore implementation is available, fail-fast rather
+// than returning a bogus NTSTATUS to the caller and continuing with corrupt state.
+#[no_mangle]
+pub unsafe extern "system" fn longjmp(_environment: *mut c_void, _value: i32) -> ! {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        core::arch::asm!("int 0x29", in("rcx") 7usize, options(noreturn, nostack));
+    }
+    #[cfg(not(target_os = "windows"))]
+    loop { core::hint::spin_loop(); }
+}
