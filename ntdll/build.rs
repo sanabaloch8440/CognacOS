@@ -131,6 +131,11 @@ fn main() {
         "NtAlpcOpenSenderProcess", "NtAlpcOpenSenderThread", "NtAlpcImpersonateClientOfPort",
         "NtAlpcImpersonateClientContainerOfPort",
     ] { declared.insert(name.to_string()); }
+    // The six formatter exports are implemented by x64 assembly entry shims in printf.rs.
+    // Prevent generated zero-argument stubs from colliding with those ABI entry points.
+    for name in ["_vscprintf", "_vscwprintf", "sprintf", "sprintf_s", "swprintf", "swprintf_s"] {
+        declared.insert(name.to_string());
+    }
     names.remove("NtCreateSection");
     let mut output = String::from("// Generated exclusively from the committed Windows 11 x64 export inventory.\n// Generic ABI placeholders only: no parameter semantics are implemented.\n");
     let mut count = 0usize;
