@@ -5,6 +5,9 @@ use core::arch::{asm, global_asm};
 use crate::{pe::LoadedImage, ntoskrnl::mm::address_space::{AddressSpace, VmError}};
 const PAGE: u64 = 4096;
 const USER_STACK: u64 = 0x0000_0082_0000_0000;
+// Bounded stack for real NTDLL routines and nested TLS callbacks; one guard page remains below it.
+const USER_STACK_PAGES: u64 = 16;
+const USER_STACK_TOP: u64 = USER_STACK + USER_STACK_PAGES * PAGE;
 const CALLBACK_BASE: u64 = 0x0000_0083_0000_0000;
 const TLS_DATA_BASE: u64 = 0x0000_0080_8000_0000;
 const TLS_STRIDE: u64 = 0x0100_0000;
@@ -217,8 +220,12 @@ fn cleanup_process(space:&mut AddressSpace,image_base:u64,pid:u64)->Result<(),Vm
 /// in user mode, then transfer to the image entry point. The synthetic smoke
 /// image exits through SYS_EXIT to exercise the real dispatcher.
 pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> Result<(), VmError> {
-    let stack_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
-    unsafe { space.map_user_page(USER_STACK, stack_page, true, false)?; }
+    // Real NTDLL calls need more than one page for nested helpers and callbacks.
+    // Leave USER_STACK-PAGE unmapped as a guard below this bounded stack.
+    for index in 0..USER_STACK_PAGES {
+        let stack_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+        unsafe { space.map_user_page(USER_STACK + index * PAGE, stack_page, true, false)?; }
+    }
     // Map the staged Rust NTDLL into this process before creating its PEB/LDR
     // so the loader list, process heap, TLS, and DllMain callout refer to the
     // image actually mapped in this address space.
@@ -241,7 +248,7 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
         // ntdll.dll in this address space; don't map the same DLL twice.
         None
     };
-    let env = unsafe { crate::process::initialize(space, image.base, image.entry, image.image_size, USER_STACK + PAGE, USER_STACK) }
+    let env = unsafe { crate::process::initialize(space, image.base, image.entry, image.image_size, USER_STACK_TOP, USER_STACK) }
         .map_err(|_| VmError::OutOfMemory)?;
     // Verify the exact Windows 11 24H2 XState ABI through the same checked
     // user-copy path native NTDLL uses, and verify the shared page is read-only.
@@ -309,11 +316,11 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
             let n=crate::pe_runtime::tls_callbacks(module.base,&mut dll_callbacks)
                 .map_err(|_|VmError::InvalidAddress)?;
             for callback in dll_callbacks[..n].iter().copied() {
-                unsafe{invoke_user_function(space,callback,module.base,env.teb,USER_STACK+PAGE,trampoline_index)?;}
+                unsafe{invoke_user_function(space,callback,module.base,env.teb,USER_STACK_TOP,trampoline_index)?;}
                 trampoline_index+=1;
             }
             if module.entrypoint!=0 {
-                unsafe{invoke_user_function(space,module.entrypoint,module.base,env.teb,USER_STACK+PAGE,trampoline_index)?;}
+                unsafe{invoke_user_function(space,module.entrypoint,module.base,env.teb,USER_STACK_TOP,trampoline_index)?;}
                 trampoline_index+=1;
             }
         }
@@ -321,11 +328,11 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
         let callback_count=crate::pe_runtime::tls_callbacks(image.base,&mut callbacks)
             .map_err(|_|VmError::InvalidAddress)?;
         for callback in callbacks[..callback_count].iter().copied() {
-            unsafe{invoke_user_function(space,callback,image.base,env.teb,USER_STACK+PAGE,trampoline_index)?;}
+            unsafe{invoke_user_function(space,callback,image.base,env.teb,USER_STACK_TOP,trampoline_index)?;}
             trampoline_index+=1;
         }
         crate::serial_write(b"PE TLS callbacks executed in ring 3; per-image TLS blocks initialized.\r\n");
-        unsafe{rdotos_process_enter_user(image.entry,USER_STACK+PAGE,env.teb);}
+        unsafe{rdotos_process_enter_user(image.entry,USER_STACK_TOP,env.teb);}
         Ok(())
     })();
     unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
