@@ -143,6 +143,11 @@ pub const NT_SYSCALL_QUERY_SYSTEM_INFORMATION: u64 = 0x104;
 pub const NT_SYSCALL_OPEN_KEY: u64 = 0x105;
 pub const NT_SYSCALL_QUERY_VALUE_KEY: u64 = 0x106;
 pub const NT_SYSCALL_OPEN_FILE: u64 = 0x107;
+pub const NT_SYSCALL_CREATE_KEY: u64 = 0x120;
+pub const NT_SYSCALL_SET_VALUE_KEY: u64 = 0x121;
+pub const NT_SYSCALL_DELETE_VALUE_KEY: u64 = 0x122;
+pub const NT_SYSCALL_DELETE_KEY: u64 = 0x123;
+pub const NT_SYSCALL_FLUSH_KEY: u64 = 0x124;
 pub const NT_SYSCALL_READ_FILE: u64 = 0x108;
 pub const NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY: u64 = 0x109;
 pub const NT_SYSCALL_FREE_VIRTUAL_MEMORY: u64 = 0x10a;
@@ -476,8 +481,8 @@ pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 // Service IDs are discovered from the staged PE's own exported syscall stubs.
 const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
-static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 15] =
-    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 15];
+static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 20] =
+    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 20];
 const SERVICE_NT_CLOSE: usize = 0;
 const SERVICE_NT_YIELD_EXECUTION: usize = 1;
 const SERVICE_NT_QUERY_INFORMATION_PROCESS: usize = 2;
@@ -493,6 +498,11 @@ const SERVICE_NT_PROTECT_VIRTUAL_MEMORY: usize = 11;
 const SERVICE_NT_QUERY_VIRTUAL_MEMORY: usize = 12;
 const SERVICE_NT_READ_VIRTUAL_MEMORY: usize = 13;
 const SERVICE_NT_WRITE_VIRTUAL_MEMORY: usize = 14;
+const SERVICE_NT_CREATE_KEY: usize = 15;
+const SERVICE_NT_SET_VALUE_KEY: usize = 16;
+const SERVICE_NT_DELETE_VALUE_KEY: usize = 17;
+const SERVICE_NT_DELETE_KEY: usize = 18;
+const SERVICE_NT_FLUSH_KEY: usize = 19;
 
 fn image_u16(image: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
@@ -521,7 +531,7 @@ fn image_rva_offset(image: &[u8], section_table: usize, section_count: usize,
     }
     None
 }
-fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 15]> {
+fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 20]> {
     if image.get(0..2)? != b"MZ" { return None; }
     let pe = image_u32(image, 0x3c)? as usize;
     if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" { return None; }
@@ -547,8 +557,8 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 15]> {
     let functions = image_rva_offset(image, section_table, section_count, headers_size, functions_rva, function_count.checked_mul(4)?)?;
     let names = image_rva_offset(image, section_table, section_count, headers_size, names_rva, name_count.checked_mul(4)?)?;
     let ordinals = image_rva_offset(image, section_table, section_count, headers_size, ordinals_rva, name_count.checked_mul(2)?)?;
-    let required_names: [&[u8]; 15] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile", b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory", b"NtReadVirtualMemory", b"NtWriteVirtualMemory"];
-    let mut discovered = [SERVICE_UNAVAILABLE; 15];
+    let required_names: [&[u8]; 20] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile", b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory", b"NtReadVirtualMemory", b"NtWriteVirtualMemory", b"NtCreateKey", b"NtSetValueKey", b"NtDeleteValueKey", b"NtDeleteKey", b"NtFlushKey"];
+    let mut discovered = [SERVICE_UNAVAILABLE; 20];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
         let name_at = image_rva_offset(image, section_table, section_count, headers_size, name_rva, 1)?;
@@ -597,6 +607,11 @@ pub fn windows_service_number(name: &[u8]) -> Option<u32> {
         b"NtQueryVirtualMemory" => SERVICE_NT_QUERY_VIRTUAL_MEMORY,
         b"NtReadVirtualMemory" => SERVICE_NT_READ_VIRTUAL_MEMORY,
         b"NtWriteVirtualMemory" => SERVICE_NT_WRITE_VIRTUAL_MEMORY,
+        b"NtCreateKey" => SERVICE_NT_CREATE_KEY,
+        b"NtSetValueKey" => SERVICE_NT_SET_VALUE_KEY,
+        b"NtDeleteValueKey" => SERVICE_NT_DELETE_VALUE_KEY,
+        b"NtDeleteKey" => SERVICE_NT_DELETE_KEY,
+        b"NtFlushKey" => SERVICE_NT_FLUSH_KEY,
         _ => return None,
     };
     let value = WINDOWS_SERVICE_NUMBERS[slot].load(Ordering::Acquire);
@@ -1152,6 +1167,82 @@ fn nt_read_file(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     if count == 0 { 0xC000_0011u32 as u64 } else { NT_STATUS_SUCCESS }
 }
 
+
+fn nt_create_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] == 0 || args[2] == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let mut oa = [0u8; 48];
+    if let Err(status) = copy_nt_input(args[2], &mut oa) { return status; }
+    let oa_len = u32::from_le_bytes(oa[0..4].try_into().unwrap());
+    if oa_len < 48 { return NT_STATUS_INVALID_PARAMETER; }
+    let root = u64::from_le_bytes(oa[8..16].try_into().unwrap());
+    let us_address = u64::from_le_bytes(oa[16..24].try_into().unwrap());
+    if us_address == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let mut us = [0u8; 16];
+    if let Err(status) = copy_nt_input(us_address, &mut us) { return status; }
+    let length = u16::from_le_bytes([us[0], us[1]]) as usize;
+    let maximum = u16::from_le_bytes([us[2], us[3]]) as usize;
+    let buffer_address = u64::from_le_bytes(us[8..16].try_into().unwrap());
+    if length % 2 != 0 || length > maximum || length / 2 > NT_REGISTRY_NAME_UNITS
+        || (length != 0 && buffer_address == 0) { return NT_STATUS_INVALID_PARAMETER; }
+    let mut raw = [0u8; NT_REGISTRY_NAME_UNITS * 2];
+    if length != 0 { if let Err(status) = copy_nt_input(buffer_address, &mut raw[..length]) { return status; } }
+    let mut path = [0u16; NT_REGISTRY_NAME_UNITS];
+    for i in 0..length / 2 { path[i] = u16::from_le_bytes([raw[i*2], raw[i*2+1]]); }
+    let name = crate::ntoskrnl::cm::runtime::UnicodeString { length:length as u16, maximum_length:maximum as u16, buffer:path.as_ptr() };
+    let attributes = crate::ntoskrnl::cm::runtime::ObjectAttributes {
+        length:oa_len, root_directory:root as *mut core::ffi::c_void, object_name:&name,
+        attributes:u32::from_le_bytes(oa[24..28].try_into().unwrap()),
+        security_descriptor:u64::from_le_bytes(oa[32..40].try_into().unwrap()) as *mut core::ffi::c_void,
+        security_qos:u64::from_le_bytes(oa[40..48].try_into().unwrap()) as *mut core::ffi::c_void,
+    };
+    let mut handle = core::ptr::null_mut();
+    let mut disposition = 0u32;
+    let status = unsafe { crate::ntoskrnl::cm::runtime::ZwCreateKey(&mut handle,args[1] as u32,&attributes,args[3] as u32,core::ptr::null(),args[5] as u32,&mut disposition) };
+    if status != 0 { return status as u32 as u64; }
+    if let Err(status) = copy_nt_output(args[0], &(handle as usize as u64).to_le_bytes()) {
+        let _ = unsafe { crate::ntoskrnl::ob::runtime::ObCloseHandle(handle,1) }; return status;
+    }
+    if args[6] != 0 {
+        if let Err(status) = write_return_length(args[6],disposition) {
+            let _ = unsafe { crate::ntoskrnl::ob::runtime::ObCloseHandle(handle,1) }; return status;
+        }
+    }
+    NT_STATUS_SUCCESS
+}
+fn nt_set_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0]==0 || args[1]==0 || args[5]>256 || (args[5]!=0 && args[4]==0) { return NT_STATUS_INVALID_PARAMETER; }
+    let mut us=[0u8;16]; if let Err(status)=copy_nt_input(args[1],&mut us){return status;}
+    let length=u16::from_le_bytes([us[0],us[1]]) as usize; let maximum=u16::from_le_bytes([us[2],us[3]]) as usize;
+    let address=u64::from_le_bytes(us[8..16].try_into().unwrap());
+    if length%2!=0 || length>maximum || length/2>NT_REGISTRY_NAME_UNITS || (length!=0 && address==0){return NT_STATUS_INVALID_PARAMETER;}
+    let mut name_bytes=[0u8;NT_REGISTRY_NAME_UNITS*2];
+    if length!=0 {if let Err(status)=copy_nt_input(address,&mut name_bytes[..length]){return status;}}
+    let mut units=[0u16;NT_REGISTRY_NAME_UNITS]; for i in 0..length/2{units[i]=u16::from_le_bytes([name_bytes[i*2],name_bytes[i*2+1]]);}
+    let name=crate::ntoskrnl::cm::runtime::UnicodeString{length:length as u16,maximum_length:maximum as u16,buffer:units.as_ptr()};
+    let mut data=[0u8;256];let n=args[5] as usize;
+    if n!=0 {if let Err(status)=copy_nt_input(args[4],&mut data[..n]){return status;}}
+    unsafe {crate::ntoskrnl::cm::runtime::ZwSetValueKey(args[0] as *mut core::ffi::c_void,&name,args[2] as u32,args[3] as u32,data.as_ptr().cast(),n as u32) as u32 as u64}
+}
+fn nt_delete_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0]==0 || args[1]==0{return NT_STATUS_INVALID_PARAMETER;}
+    let mut us=[0u8;16];if let Err(status)=copy_nt_input(args[1],&mut us){return status;}
+    let length=u16::from_le_bytes([us[0],us[1]]) as usize;let maximum=u16::from_le_bytes([us[2],us[3]]) as usize;
+    let address=u64::from_le_bytes(us[8..16].try_into().unwrap());
+    if length%2!=0||length>maximum||length/2>NT_REGISTRY_NAME_UNITS||(length!=0&&address==0){return NT_STATUS_INVALID_PARAMETER;}
+    let mut bytes=[0u8;NT_REGISTRY_NAME_UNITS*2];if length!=0{if let Err(status)=copy_nt_input(address,&mut bytes[..length]){return status;}}
+    let mut units=[0u16;NT_REGISTRY_NAME_UNITS];for i in 0..length/2{units[i]=u16::from_le_bytes([bytes[i*2],bytes[i*2+1]]);}
+    let name=crate::ntoskrnl::cm::runtime::UnicodeString{length:length as u16,maximum_length:maximum as u16,buffer:units.as_ptr()};
+    unsafe{crate::ntoskrnl::cm::runtime::ZwDeleteValueKey(args[0] as *mut core::ffi::c_void,&name) as u32 as u64}
+}
+fn nt_delete_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0]==0{return NT_STATUS_INVALID_PARAMETER;}
+    unsafe{crate::ntoskrnl::cm::runtime::ZwDeleteKey(args[0] as *mut core::ffi::c_void) as u32 as u64}
+}
+fn nt_flush_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0]==0{return NT_STATUS_INVALID_PARAMETER;}
+    unsafe{crate::ntoskrnl::cm::runtime::ZwFlushKey(args[0] as *mut core::ffi::c_void) as u32 as u64}
+}
+
 fn nt_query_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     if args[0] == 0 || args[1] == 0 || (args[3] == 0 && args[4] != 0) { return NT_STATUS_INVALID_PARAMETER; }
     let mut us = [0u8; 16];
@@ -1432,6 +1523,11 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_ETW_CREATE_NAMED_SESSION => etw_create_named_session(args),
         NT_SYSCALL_OPEN_KEY => nt_open_key(args),
         NT_SYSCALL_QUERY_VALUE_KEY => nt_query_value_key(args),
+        NT_SYSCALL_CREATE_KEY => nt_create_key(args),
+        NT_SYSCALL_SET_VALUE_KEY => nt_set_value_key(args),
+        NT_SYSCALL_DELETE_VALUE_KEY => nt_delete_value_key(args),
+        NT_SYSCALL_DELETE_KEY => nt_delete_key(args),
+        NT_SYSCALL_FLUSH_KEY => nt_flush_key(args),
         NT_SYSCALL_OPEN_FILE => nt_open_file(args),
         NT_SYSCALL_READ_FILE => nt_read_file(args),
         NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::allocate(args),
@@ -1494,6 +1590,11 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         Some(SERVICE_NT_QUERY_SYSTEM_INFORMATION) => NT_SYSCALL_QUERY_SYSTEM_INFORMATION,
         Some(SERVICE_NT_OPEN_KEY) => NT_SYSCALL_OPEN_KEY,
         Some(SERVICE_NT_QUERY_VALUE_KEY) => NT_SYSCALL_QUERY_VALUE_KEY,
+        Some(SERVICE_NT_CREATE_KEY) => NT_SYSCALL_CREATE_KEY,
+        Some(SERVICE_NT_SET_VALUE_KEY) => NT_SYSCALL_SET_VALUE_KEY,
+        Some(SERVICE_NT_DELETE_VALUE_KEY) => NT_SYSCALL_DELETE_VALUE_KEY,
+        Some(SERVICE_NT_DELETE_KEY) => NT_SYSCALL_DELETE_KEY,
+        Some(SERVICE_NT_FLUSH_KEY) => NT_SYSCALL_FLUSH_KEY,
         Some(SERVICE_NT_OPEN_FILE) => NT_SYSCALL_OPEN_FILE,
         Some(SERVICE_NT_READ_FILE) => NT_SYSCALL_READ_FILE,
         Some(SERVICE_NT_ALLOCATE_VIRTUAL_MEMORY) => NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY,
