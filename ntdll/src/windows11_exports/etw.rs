@@ -13,6 +13,34 @@ const EVENT_CAPACITY: usize = 64;
 const MAX_EVENT_PAYLOAD: usize = 256;
 const MAX_DATA_DESCRIPTORS: usize = 8;
 const ACTIVITY_CAPACITY: usize = 128;
+const NT_SYSCALL_ETW_REGISTER: u64 = 0x133;
+const NT_SYSCALL_ETW_ENABLE_STATE: u64 = 0x134;
+const NT_SYSCALL_ETW_WRITE_EVENT: u64 = 0x135;
+const NT_SYSCALL_ETW_READ_EVENT: u64 = 0x136;
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+fn kernel_etw_call(number:u64,a0:u64,a1:u64,a2:u64,a3:u64)->Option<u64>{
+ let result:u64;
+ unsafe { core::arch::asm!("int 0x83", inout("rax") number=>result, in("r10") a0, in("rdx") a1, in("r8") a2, in("r9") a3, lateout("rcx") _, lateout("r11") _); }
+ Some(result)
+}
+#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+fn kernel_etw_call(_number:u64,_a0:u64,_a1:u64,_a2:u64,_a3:u64)->Option<u64>{None}
+
+fn sync_kernel_enable_state(handle:u64) {
+ let mut state=[0u8;24];
+ let Some(status)=kernel_etw_call(NT_SYSCALL_ETW_ENABLE_STATE,handle,state.as_mut_ptr() as u64,0,0) else{return;};
+ if status!=0{return;}
+ let guid={
+  let _guard=EtwGuard::lock();
+  let entries=core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
+  let Some(i)=provider_index(entries,handle) else{return;};
+  unsafe{(*entries.add(i)).guid}
+ };
+ let any=u64::from_le_bytes(state[8..16].try_into().unwrap());
+ let all=u64::from_le_bytes(state[16..24].try_into().unwrap());
+ let _=controller_set_provider(&guid,state[0]!=0,state[1],any,all);
+}
+
 const EVENT_ACTIVITY_CTRL_GET_ID: u32 = 1;
 const EVENT_ACTIVITY_CTRL_SET_ID: u32 = 2;
 const EVENT_ACTIVITY_CTRL_CREATE_ID: u32 = 3;
@@ -137,6 +165,10 @@ pub unsafe extern "system" fn EtwEventRegister(provider: *const Guid, callback: 
     if provider.is_null() || handle.is_null() { return ERROR_INVALID_PARAMETER; }
     let guid = unsafe { core::ptr::read_unaligned(provider) };
     let (owner_pid, _) = current_process_thread();
+    let mut kernel_handle=0u64;
+    if let Some(status)=kernel_etw_call(NT_SYSCALL_ETW_REGISTER,&guid as *const Guid as u64,&mut kernel_handle as *mut u64 as u64,0,0) {
+        if status!=0 { unsafe { handle.write(0); } return ERROR_NOT_ENOUGH_MEMORY; }
+    }
     let _guard = EtwGuard::lock();
     let entries = core::ptr::addr_of_mut!(ETW_PROVIDERS).cast::<EtwProvider>();
     // Registering an already registered GUID is permitted and creates an
@@ -144,7 +176,7 @@ pub unsafe extern "system" fn EtwEventRegister(provider: *const Guid, callback: 
     for i in 0..PROVIDER_CAPACITY {
         let e = unsafe { &mut *entries.add(i) };
         if !e.active {
-            let id = ETW_NEXT.fetch_add(1, Ordering::Relaxed).max(1);
+            let id = if kernel_handle != 0 { kernel_handle } else { ETW_NEXT.fetch_add(1, Ordering::Relaxed).max(1) };
             *e = EtwProvider { handle: id, guid, active: true, owner_pid, callback: callback as usize, context: context as usize, enabled: false, level: 0, match_any: 0, match_all: 0 };
             unsafe { handle.write(id); }
             return ERROR_SUCCESS;
@@ -167,6 +199,7 @@ pub unsafe extern "system" fn EtwEventUnregister(handle: u64) -> u32 {
 #[no_mangle]
 pub unsafe extern "system" fn EtwEventEnabled(handle: u64, descriptor: *const EventDescriptor) -> u8 {
     if descriptor.is_null() { return 0; }
+    sync_kernel_enable_state(handle);
     let _guard = EtwGuard::lock();
     let entries = core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
     provider_index(entries, handle).map(|i| {
@@ -176,6 +209,7 @@ pub unsafe extern "system" fn EtwEventEnabled(handle: u64, descriptor: *const Ev
 
 #[no_mangle]
 pub unsafe extern "system" fn EtwEventProviderEnabled(handle: u64, level: u8, keyword: u64) -> u8 {
+    sync_kernel_enable_state(handle);
     let _guard = EtwGuard::lock();
     let entries = core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
     provider_index(entries, handle).map(|i| provider_matches(unsafe { &*entries.add(i) }, level, keyword)).unwrap_or(false) as u8
@@ -187,6 +221,18 @@ pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const Even
         return ERROR_INVALID_PARAMETER;
     }
     let descriptor_value = unsafe { core::ptr::read_unaligned(descriptor) };
+    let mut kernel_payload=[0u8;MAX_EVENT_PAYLOAD];
+    let mut kernel_payload_len=0usize;
+    for i in 0..count as usize {
+        let item=unsafe{core::ptr::read_unaligned(data.add(i))};
+        let n=item.size as usize;
+        if kernel_payload_len.checked_add(n).filter(|end|*end<=MAX_EVENT_PAYLOAD).is_none(){return ERROR_MORE_DATA;}
+        if n>0 {unsafe{core::ptr::copy_nonoverlapping(item.ptr as *const u8,kernel_payload.as_mut_ptr().add(kernel_payload_len),n);}}
+        kernel_payload_len+=n;
+    }
+    if let Some(status)=kernel_etw_call(NT_SYSCALL_ETW_WRITE_EVENT,handle,descriptor as u64,kernel_payload.as_ptr() as u64,kernel_payload_len as u64) {
+        if status!=0 {return ERROR_INVALID_PARAMETER;}
+    }
     let mut payload = [0u8; MAX_EVENT_PAYLOAD];
     let mut payload_len = 0usize;
     for i in 0..count as usize {
