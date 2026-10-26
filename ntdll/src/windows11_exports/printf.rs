@@ -1,36 +1,396 @@
-//! Windows 11 x64 NTDLL formatting compatibility exports.
-//! Only names present in the repository's pinned Windows 11 x64 NTDLL export
-//! inventory belong here. These legacy entry points remain explicit
-//! STATUS_NOT_IMPLEMENTED fallbacks until ABI-correct varargs/va_list bridges
-//! are available; they must not be mistaken for working CRT formatters.
+//! Windows x64 NTDLL printf-family ABI bridges.
+//!
+//! The public variadic entry points are small assembly shims because stable Rust
+//! cannot define C-variadic functions. They home the Windows x64 argument
+//! registers and pass a native va_list cursor to Rust helpers. The helpers use
+//! the in-tree typed formatter and never call CRT/NTDLL formatting exports.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
-#[no_mangle]
-pub unsafe extern "system" fn _vscprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+use alloc::vec::Vec;
+use core::{ffi::c_void, ptr};
+use crate::printf::{self as formatter, Argument, FormatSpec, Length};
+
+const MAX_FORMAT_UNITS: usize = 65_536;
+const MAX_STRING_UNITS: usize = 65_536;
+const STATUS_INVALID_PARAMETER: i32 = 0xC000000D_u32 as i32;
+const STATUS_BUFFER_TOO_SMALL: i32 = 0xC0000023_u32 as i32;
+
+#[derive(Debug)]
+enum OwnedArg {
+    Signed(i64),
+    Unsigned(u64),
+    Pointer(usize),
+    Char(u32),
+    Ansi(Vec<u8>),
+    Wide(Vec<u16>),
+    Float(f64),
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn _vscwprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+unsafe fn read_c_bytes(p: *const u8, max: usize) -> Option<Vec<u8>> {
+    if p.is_null() { return None; }
+    let mut out = Vec::new();
+    for i in 0..max {
+        let b = unsafe { p.add(i).read() };
+        if b == 0 { return Some(out); }
+        out.push(b);
+    }
+    None
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn sprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+unsafe fn read_c_wide(p: *const u16, max: usize) -> Option<Vec<u16>> {
+    if p.is_null() { return None; }
+    let mut out = Vec::new();
+    for i in 0..max {
+        let u = unsafe { p.add(i).read() };
+        if u == 0 { return Some(out); }
+        out.push(u);
+    }
+    None
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn sprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+unsafe fn next_slot(cursor: &mut *const u8) -> Option<u64> {
+    if cursor.is_null() || (*cursor).is_null() { return None; }
+    let v = unsafe { ptr::read_unaligned((*cursor).cast::<u64>()) };
+    *cursor = unsafe { (*cursor).add(8) };
+    Some(v)
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn swprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+fn spec_has_arg(s: &FormatSpec) -> bool { s.conversion != b'%' }
+
+unsafe fn collect_args(format: &[u8], mut cursor: *const u8, wide_printf: bool)
+    -> Option<(Vec<OwnedArg>, Vec<Argument<'static>>)> {
+    let specs = formatter::parse_format(format).ok()?;
+    let mut owned: Vec<OwnedArg> = Vec::new();
+    for s in specs.iter() {
+        if s.conversion == b'%' { continue; }
+        if s.width_from_arg {
+            let raw = unsafe { next_slot(&mut cursor)? } as u32 as i32;
+            owned.push(OwnedArg::Signed(raw as i64));
+        }
+        if s.precision_from_arg {
+            let raw = unsafe { next_slot(&mut cursor)? } as u32 as i32;
+            owned.push(OwnedArg::Signed(raw as i64));
+        }
+        if !spec_has_arg(s) { continue; }
+        let raw = unsafe { next_slot(&mut cursor)? };
+        let a = match s.conversion {
+            b'd' | b'i' => {
+                let v = match s.length {
+                    Length::LongLong => raw as i64,
+                    Length::Native => raw as i64,
+                    _ => raw as u32 as i32 as i64,
+                };
+                OwnedArg::Signed(v)
+            }
+            b'u' | b'o' | b'x' | b'X' => OwnedArg::Unsigned(match s.length {
+                Length::LongLong | Length::Native => raw,
+                _ => raw as u32 as u64,
+            }),
+            b'p' => OwnedArg::Pointer(raw as usize),
+            b'c' | b'C' => OwnedArg::Char(raw as u32),
+            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => OwnedArg::Float(f64::from_bits(raw)),
+            b's' | b'S' => {
+                let use_wide = if wide_printf { s.length == Length::Short } else { s.wide_string };
+                if use_wide {
+                    let w = unsafe { read_c_wide(raw as *const u16, MAX_STRING_UNITS)? };
+                    OwnedArg::Wide(w)
+                } else {
+                    let b = unsafe { read_c_bytes(raw as *const u8, MAX_STRING_UNITS)? };
+                    OwnedArg::Ansi(b)
+                }
+            }
+            _ => return None,
+        };
+        owned.push(a);
+    }
+    // Build borrowed views only after the owned vector is complete. Leaking is
+    // deliberately avoided; the lifetime is shortened to this call below.
+    let mut borrowed: Vec<Argument<'_>> = Vec::with_capacity(owned.len());
+    for a in owned.iter() {
+        borrowed.push(match a {
+            OwnedArg::Signed(v) => Argument::Signed(*v),
+            OwnedArg::Unsigned(v) => Argument::Unsigned(*v),
+            OwnedArg::Pointer(v) => Argument::Pointer(*v),
+            OwnedArg::Char(v) => Argument::Char(*v),
+            OwnedArg::Ansi(v) => Argument::Ansi(v),
+            OwnedArg::Wide(v) => Argument::Wide(v),
+            OwnedArg::Float(v) => Argument::Float(*v),
+        });
+    }
+    // This function is not used directly: the helper below keeps owned and
+    // borrowed storage in one scope. The static return type is unreachable.
+    let _ = borrowed;
+    None
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn swprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+unsafe fn format_narrow(format_ptr: *const u8, va: *const u8) -> Option<Vec<u8>> {
+    let fmt = unsafe { read_c_bytes(format_ptr, MAX_FORMAT_UNITS)? };
+    let specs = formatter::parse_format(&fmt).ok()?;
+    let mut cursor = va;
+    let mut owned: Vec<OwnedArg> = Vec::new();
+    for s in specs.iter() {
+        if s.conversion == b'%' { continue; }
+        if s.width_from_arg {
+            owned.push(OwnedArg::Signed(unsafe { next_slot(&mut cursor)? } as u32 as i32 as i64));
+        }
+        if s.precision_from_arg {
+            owned.push(OwnedArg::Signed(unsafe { next_slot(&mut cursor)? } as u32 as i32 as i64));
+        }
+        let raw = unsafe { next_slot(&mut cursor)? };
+        owned.push(match s.conversion {
+            b'd' | b'i' => OwnedArg::Signed(match s.length {
+                Length::LongLong | Length::Native => raw as i64,
+                _ => raw as u32 as i32 as i64,
+            }),
+            b'u' | b'o' | b'x' | b'X' => OwnedArg::Unsigned(match s.length {
+                Length::LongLong | Length::Native => raw,
+                _ => raw as u32 as u64,
+            }),
+            b'p' => OwnedArg::Pointer(raw as usize),
+            b'c' | b'C' => OwnedArg::Char(raw as u32),
+            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => OwnedArg::Float(f64::from_bits(raw)),
+            b's' | b'S' if s.wide_string => OwnedArg::Wide(unsafe { read_c_wide(raw as *const u16, MAX_STRING_UNITS)? }),
+            b's' | b'S' => OwnedArg::Ansi(unsafe { read_c_bytes(raw as *const u8, MAX_STRING_UNITS)? }),
+            _ => return None,
+        });
+    }
+    let mut args: Vec<Argument<'_>> = Vec::with_capacity(owned.len());
+    for a in owned.iter() {
+        args.push(match a {
+            OwnedArg::Signed(v) => Argument::Signed(*v),
+            OwnedArg::Unsigned(v) => Argument::Unsigned(*v),
+            OwnedArg::Pointer(v) => Argument::Pointer(*v),
+            OwnedArg::Char(v) => Argument::Char(*v),
+            OwnedArg::Ansi(v) => Argument::Ansi(v),
+            OwnedArg::Wide(v) => Argument::Wide(v),
+            OwnedArg::Float(v) => Argument::Float(*v),
+        });
+    }
+    formatter::format_bytes(&fmt, &args, None).ok().map(|r| r.bytes)
 }
+
+unsafe fn format_wide(format_ptr: *const u16, va: *const u8) -> Option<Vec<u16>> {
+    let wide_fmt = unsafe { read_c_wide(format_ptr, MAX_FORMAT_UNITS)? };
+    // The grammar characters are ASCII. Preserve non-ASCII literal text by
+    // emitting it through a separate UTF-16 path; format_bytes handles the
+    // ASCII format/argument grammar without invoking any CRT formatter.
+    if wide_fmt.iter().any(|u| *u > 0x7f) {
+        return format_wide_general(&wide_fmt, va);
+    }
+    let fmt: Vec<u8> = wide_fmt.iter().map(|u| *u as u8).collect();
+    let specs = formatter::parse_format(&fmt).ok()?;
+    let mut cursor = va;
+    let mut owned: Vec<OwnedArg> = Vec::new();
+    for s in specs.iter() {
+        if s.conversion == b'%' { continue; }
+        if s.width_from_arg { owned.push(OwnedArg::Signed(unsafe { next_slot(&mut cursor)? } as u32 as i32 as i64)); }
+        if s.precision_from_arg { owned.push(OwnedArg::Signed(unsafe { next_slot(&mut cursor)? } as u32 as i32 as i64)); }
+        let raw = unsafe { next_slot(&mut cursor)? };
+        owned.push(match s.conversion {
+            b'd' | b'i' => OwnedArg::Signed(match s.length { Length::LongLong | Length::Native => raw as i64, _ => raw as u32 as i32 as i64 }),
+            b'u' | b'o' | b'x' | b'X' => OwnedArg::Unsigned(match s.length { Length::LongLong | Length::Native => raw, _ => raw as u32 as u64 }),
+            b'p' => OwnedArg::Pointer(raw as usize),
+            b'c' | b'C' => OwnedArg::Char(raw as u32),
+            b'f' | b'F' | b'e' | b'E' | b'g' | b'G' => OwnedArg::Float(f64::from_bits(raw)),
+            b's' | b'S' if s.length != Length::Short => OwnedArg::Wide(unsafe { read_c_wide(raw as *const u16, MAX_STRING_UNITS)? }),
+            b's' | b'S' => OwnedArg::Ansi(unsafe { read_c_bytes(raw as *const u8, MAX_STRING_UNITS)? }),
+            _ => return None,
+        });
+    }
+    let mut args: Vec<Argument<'_>> = Vec::with_capacity(owned.len());
+    for a in owned.iter() {
+        args.push(match a {
+            OwnedArg::Signed(v) => Argument::Signed(*v),
+            OwnedArg::Unsigned(v) => Argument::Unsigned(*v),
+            OwnedArg::Pointer(v) => Argument::Pointer(*v),
+            OwnedArg::Char(v) => Argument::Char(*v),
+            OwnedArg::Ansi(v) => Argument::Ansi(v),
+            OwnedArg::Wide(v) => Argument::Wide(v),
+            OwnedArg::Float(v) => Argument::Float(*v),
+        });
+    }
+    let bytes = formatter::format_bytes(&fmt, &args, None).ok()?.bytes;
+    let text = core::str::from_utf8(&bytes).ok()?;
+    Some(text.encode_utf16().collect())
+}
+
+unsafe fn format_wide_general(format: &[u16], _va: *const u8) -> Option<Vec<u16>> {
+    // Until the formatter supports UTF-16 literals natively, refuse to silently
+    // corrupt non-ASCII format strings.
+    let _ = format;
+    None
+}
+
+unsafe fn write_narrow(dst: *mut u8, cap: Option<usize>, text: &[u8], secure: bool) -> i32 {
+    if dst.is_null() { return -1; }
+    let needed = text.len().checked_add(1)?;
+    if let Some(capacity) = cap {
+        if capacity == 0 || (secure && needed > capacity) {
+            if capacity > 0 { unsafe { dst.write(0) }; }
+            return -1;
+        }
+        let n = text.len().min(capacity - 1);
+        unsafe { ptr::copy_nonoverlapping(text.as_ptr(), dst, n); dst.add(n).write(0); }
+        if secure && n != text.len() { unsafe { dst.write(0) }; return -1; }
+        return if n == text.len() { text.len() as i32 } else { -1 };
+    }
+    unsafe { ptr::copy_nonoverlapping(text.as_ptr(), dst, text.len()); dst.add(text.len()).write(0); }
+    text.len().try_into().ok().unwrap_or(-1)
+}
+
+unsafe fn write_wide(dst: *mut u16, cap: Option<usize>, text: &[u16], secure: bool) -> i32 {
+    if dst.is_null() { return -1; }
+    let needed = text.len().checked_add(1)?;
+    if let Some(capacity) = cap {
+        if capacity == 0 || (secure && needed > capacity) {
+            if capacity > 0 { unsafe { dst.write(0) }; }
+            return -1;
+        }
+        let n = text.len().min(capacity - 1);
+        unsafe { ptr::copy_nonoverlapping(text.as_ptr(), dst, n); dst.add(n).write(0); }
+        if secure && n != text.len() { unsafe { dst.write(0) }; return -1; }
+        return if n == text.len() { text.len() as i32 } else { -1 };
+    }
+    unsafe { ptr::copy_nonoverlapping(text.as_ptr(), dst, text.len()); dst.add(text.len()).write(0); }
+    text.len().try_into().ok().unwrap_or(-1)
+}
+
+unsafe fn format_wide_entry(dst: *mut u16, cap: Option<usize>, fmt: *const u16, va: *const u8, secure: bool) -> i32 {
+    let Some(out) = (unsafe { format_wide(fmt, va) }) else {
+        if secure && !dst.is_null() && cap.unwrap_or(0) > 0 { unsafe { dst.write(0) }; }
+        return -1;
+    };
+    unsafe { write_wide(dst, cap, &out, secure) }
+}
+
+#[inline(never)]
+unsafe extern "system" fn vscprintf_impl(fmt: *const u8, va: *const u8) -> i32 {
+    let Some(out) = (unsafe { format_narrow(fmt, va) }) else { return -1; };
+    out.len().try_into().ok().unwrap_or(-1)
+}
+
+#[inline(never)]
+unsafe extern "system" fn vscwprintf_impl(fmt: *const u16, va: *const u8) -> i32 {
+    let Some(out) = (unsafe { format_wide(fmt, va) }) else { return -1; };
+    out.len().try_into().ok().unwrap_or(-1)
+}
+
+#[inline(never)]
+unsafe extern "system" fn sprintf_impl(dst: *mut u8, fmt: *const u8, va: *const u8) -> i32 {
+    let Some(out) = (unsafe { format_narrow(fmt, va) }) else { return -1; };
+    unsafe { write_narrow(dst, None, &out, false) }
+}
+
+#[inline(never)]
+unsafe extern "system" fn sprintf_s_impl(dst: *mut u8, cap: usize, fmt: *const u8, va: *const u8) -> i32 {
+    let Some(out) = (unsafe { format_narrow(fmt, va) }) else {
+        if !dst.is_null() && cap > 0 { unsafe { dst.write(0) }; }
+        return -1;
+    };
+    unsafe { write_narrow(dst, Some(cap), &out, true) }
+}
+
+#[inline(never)]
+unsafe extern "system" fn swprintf_impl(dst: *mut u16, fmt: *const u16, va: *const u8) -> i32 {
+    let Some(out) = (unsafe { format_wide(fmt, va) }) else { return -1; };
+    unsafe { write_wide(dst, None, &out, false) }
+}
+
+#[inline(never)]
+unsafe extern "system" fn swprintf_s_impl(dst: *mut u16, cap: usize, fmt: *const u16, va: *const u8) -> i32 {
+    unsafe { format_wide_entry(dst, Some(cap), fmt, va, true) }
+}
+
+#[cfg(target_os = "windows")]
+core::arch::global_asm!(r#"
+    .text
+    .p2align 4
+    .globl _vscprintf
+_vscprintf:
+    subq $40, %rsp
+    callq {vscprintf_impl}
+    addq $40, %rsp
+    retq
+
+    .p2align 4
+    .globl _vscwprintf
+_vscwprintf:
+    subq $40, %rsp
+    callq {vscwprintf_impl}
+    addq $40, %rsp
+    retq
+
+    .p2align 4
+    .globl sprintf
+sprintf:
+    movq %r8, 24(%rsp)
+    movq %r9, 32(%rsp)
+    subq $40, %rsp
+    movq %rcx, %r10
+    movq %rdx, %r11
+    leaq 64(%rsp), %r8
+    movq %r10, %rcx
+    movq %r11, %rdx
+    callq {sprintf_impl}
+    addq $40, %rsp
+    retq
+
+    .p2align 4
+    .globl sprintf_s
+sprintf_s:
+    subq $40, %rsp
+    movq %rcx, %r10
+    movq %rdx, %r11
+    movq %r8, %rax
+    leaq 80(%rsp), %r8
+    movq %r10, %rcx
+    movq %r11, %rdx
+    movq %rax, %r9
+    // helper signature is (dst, capacity, format, va_list)
+    // Reorder to RCX=dst, RDX=capacity, R8=format, R9=va_list.
+    movq %r9, %r8
+    movq %rax, %r9
+    callq {sprintf_s_impl}
+    addq $40, %rsp
+    retq
+
+    .p2align 4
+    .globl swprintf
+swprintf:
+    movq %r8, 24(%rsp)
+    movq %r9, 32(%rsp)
+    subq $40, %rsp
+    movq %rcx, %r10
+    movq %rdx, %r11
+    leaq 64(%rsp), %r8
+    movq %r10, %rcx
+    movq %r11, %rdx
+    callq {swprintf_impl}
+    addq $40, %rsp
+    retq
+
+    .p2align 4
+    .globl swprintf_s
+swprintf_s:
+    subq $40, %rsp
+    movq %rcx, %r10
+    movq %rdx, %r11
+    movq %r8, %rax
+    leaq 80(%rsp), %r8
+    movq %r10, %rcx
+    movq %r11, %rdx
+    movq %rax, %r9
+    movq %r9, %r8
+    movq %rax, %r9
+    callq {swprintf_s_impl}
+    addq $40, %rsp
+    retq
+"#,
+    vscprintf_impl = sym vscprintf_impl,
+    vscwprintf_impl = sym vscwprintf_impl,
+    sprintf_impl = sym sprintf_impl,
+    sprintf_s_impl = sym sprintf_s_impl,
+    swprintf_impl = sym swprintf_impl,
+    swprintf_s_impl = sym swprintf_s_impl,
+    options(att_syntax)
+);
