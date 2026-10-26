@@ -412,12 +412,44 @@ fn open_hive_key(out: *mut *mut core::ffi::c_void, access: u32, path: &[u16]) ->
     Some(STATUS_SUCCESS)
 }
 
+fn create_absolute_hive_key(
+    out: *mut *mut core::ffi::c_void, access: u32, full_path: &[u16],
+    slot: usize, relative: &[u16], disposition: *mut u32,
+) -> i32 {
+    let Some(hive) = mounted_hive(slot) else { return STATUS_OBJECT_NAME_NOT_FOUND; };
+    if hive.find_path(relative).is_ok() {
+        let status = open_hive_key(out, access, full_path).unwrap_or(STATUS_NOT_SUPPORTED);
+        if status == STATUS_SUCCESS && !disposition.is_null() { unsafe { *disposition = 2; } }
+        return status;
+    }
+    let split = relative.iter().rposition(|c| *c == b'\\' as u16);
+    let (parent_path, leaf) = match split {
+        Some(i) => (&relative[..i], &relative[i+1..]),
+        None => (&[][..], relative),
+    };
+    if leaf.is_empty() { return STATUS_INVALID_PARAMETER; }
+    let parent = match hive.find_path(parent_path) {
+        Ok(k) => k,
+        Err(hive_backend::Error::NotFound) => return STATUS_OBJECT_NAME_NOT_FOUND,
+        Err(_) => return STATUS_INVALID_PARAMETER,
+    };
+    if mounted_hive(slot).is_none() { return STATUS_OBJECT_NAME_NOT_FOUND; }
+    match persistent_create_subkey(slot, parent.cell_index(), leaf) {
+        Ok(_) => {
+            let status = open_hive_key(out, access, full_path).unwrap_or(STATUS_NOT_SUPPORTED);
+            if status == STATUS_SUCCESS && !disposition.is_null() { unsafe { *disposition = 1; } }
+            status
+        }
+        Err(e) => e,
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired_access:u32,oa:*const ObjectAttributes,_title_index:u32,_class:*const UnicodeString,options:u32,disposition:*mut u32)->i32{
  if out.is_null(){return STATUS_INVALID_PARAMETER;}if options&!0x0000_0002!=0{return STATUS_INVALID_PARAMETER;}
  let _g=LOCK.lock();
  let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
- if hive_path(&name[..n]).is_some() { return STATUS_NOT_SUPPORTED; }
+ if let Some((slot, relative)) = hive_path(&name[..n]) { return create_absolute_hive_key(out, desired_access, &name[..n], slot, relative, disposition); }
  if !unsafe { (*oa).root_directory }.is_null() {
   if let Err(status)=key_with_access(unsafe { (*oa).root_directory },KEY_CREATE_SUB_KEY) { return status; }
  }
