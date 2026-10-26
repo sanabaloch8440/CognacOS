@@ -176,7 +176,27 @@ unsafe fn invoke_user_function(
     let code=callback_trampoline(function,image_base);
     unsafe{space.copy_to_user(va,&code)?;}
     unsafe{space.protect_user_page(va,false,true)?;}
-    unsafe{rdotos_process_enter_user(va,stack_top,teb);}
+    unsafe {
+        crate::serial_write(b"[DBG][NTOSKRNL][USER] trampoline enter ordinal=");
+        crate::serial_write_hex(ordinal as u64);
+        crate::serial_write(b" trampoline=");
+        crate::serial_write_hex(va);
+        crate::serial_write(b" target=");
+        crate::serial_write_hex(function);
+        crate::serial_write(b" image=");
+        crate::serial_write_hex(image_base);
+        crate::serial_write(b" teb=");
+        crate::serial_write_hex(teb);
+        crate::serial_write(b" rsp=");
+        crate::serial_write_hex(stack_top);
+        crate::serial_write(b"\\r\\n");
+        rdotos_process_enter_user(va,stack_top,teb);
+        crate::serial_write(b"[DBG][NTOSKRNL][USER] trampoline returned ordinal=");
+        crate::serial_write_hex(ordinal as u64);
+        crate::serial_write(b" target=");
+        crate::serial_write_hex(function);
+        crate::serial_write(b"\\r\\n");
+    }
     Ok(())
 }
 
