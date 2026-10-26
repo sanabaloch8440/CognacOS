@@ -26,8 +26,9 @@ const HEAP_STD: ULONG = 0;
 const HEAP_LFH: ULONG = 2;
 const HEAP_COMPATIBILITY_INFORMATION: ULONG = 0;
 
+use crate::rtl_heap::RtlGetProcessHeap;
+
 extern "system" {
-    fn RtlGetProcessHeap() -> HANDLE;
     fn RtlValidateHeap(heap: HANDLE, flags: ULONG, address: PVOID) -> u8;
 }
 
