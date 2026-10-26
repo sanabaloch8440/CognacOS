@@ -86,6 +86,7 @@ fn main() {
         "NtAlpcOpenSenderProcess", "NtAlpcOpenSenderThread", "NtAlpcImpersonateClientOfPort",
         "NtAlpcImpersonateClientContainerOfPort",
     ] { declared.insert(name.to_string()); }
+    names.remove("NtCreateSection");
     let mut output = String::from("// Generated from the committed Windows 11 x64 export inventory plus the in-tree Wine ntdll.spec.\n// Generic ABI placeholders only: no parameter semantics are implemented.\n");
     let mut count = 0usize;
     for name in names {
