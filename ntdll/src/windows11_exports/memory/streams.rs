@@ -3,6 +3,8 @@
 use core::{ffi::c_void, ptr};
 use super::virtual_memory::{HANDLE, PVOID, SIZE_T, ULONG, NTSTATUS};
 const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
+const STATUS_SUCCESS: NTSTATUS = 0;
+const STATUS_NO_MEMORY: NTSTATUS = 0xC000_0017u32 as i32;
 
 // In-memory and section-backed IStream-compatible layouts. Section streams use
 // CognacOS's private section-object bridge; they are bounded and pagefile-backed
