@@ -4,6 +4,11 @@
 
 const STATUS_SUCCESS: i32 = 0;
 const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
+
+// SQM/telemetry is optional. Until a provider is configured, event writes are
+// no-ops and capability queries report disabled. APIs that require a real
+// runtime subsystem or an output structure remain explicitly unsupported.
 #[repr(C)] #[derive(Clone, Copy)] struct UnicodeString { length: u16, maximum_length: u16, buffer: *const u16 }
 unsafe fn apiset_schema_has(name: *const UnicodeString) -> Result<bool, i32> {
  if name.is_null() { return Err(STATUS_INVALID_PARAMETER); } let n = unsafe { &*name };
@@ -134,34 +139,34 @@ pub unsafe extern "system" fn ApiSetQuerySchema(schema: *mut *const u8, schema_s
 
 #[no_mangle]
 pub unsafe extern "system" fn ExpInterlockedPopEntrySListEnd() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn ExpInterlockedPopEntrySListFault() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn ExpInterlockedPopEntrySListResume() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 
 #[no_mangle]
 pub unsafe extern "system" fn KiUserCallbackDispatcher() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn KiUserInvertedFunctionTable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 
 #[no_mangle]
 pub unsafe extern "system" fn longjmp() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
@@ -180,261 +185,294 @@ pub static mut NlsMbOemCodePageTag: u8 = 0; // Single-byte OEM default; updated 
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtCaptureSnapshot() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtDuplicateSnapshot() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtFreeRemoteSnapshot() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtFreeSnapshot() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtFreeWalkMarker() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtQuerySnapshot() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtValidateDescriptor() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn PssNtWalkSnapshot() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn SbExecuteProcedure() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn SbSelectProcedure() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn ShipAssert() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn ShipAssertGetBufferInfo() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn ShipAssertMsgA() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn ShipAssertMsgW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn sscanf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn sscanf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn swscanf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 
 #[no_mangle]
 pub unsafe extern "system" fn vDbgPrintExWithPrefix() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn vsprintf() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn vsprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn vswprintf_s() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WerReportSQMEvent() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmAddToAverageDWORD() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmAddToStream() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmAddToStreamEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCheckEscalationAddToStreamEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCheckEscalationSetDWORD() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCheckEscalationSetDWORD64() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCheckEscalationSetString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCommonDatapointDelete() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCommonDatapointSetDWORD() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCommonDatapointSetDWORD64() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCommonDatapointSetStreamEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmCommonDatapointSetString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmEndSession() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmEventEnabled() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // SQM is disabled until a provider is configured.
+    0
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmEventWrite() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmGetEscalationRuleStatus() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmGetInstrumentationProperty() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmIncrementDWORD() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmIsOptedIn() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // SQM is disabled until a provider is configured.
+    0
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmIsOptedInEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // SQM is disabled until a provider is configured.
+    0
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmIsSessionDisabled() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // SQM is disabled until a provider is configured.
+    0
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmSetDWORD() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmSetDWORD64() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmSetEscalationInfo() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmSetIfMaxDWORD() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmSetIfMinDWORD() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmSetString() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmStartSession() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmStartSessionForPartner() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn WinSqmStartSqmOptinListener() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    // Telemetry is optional; no provider is configured, so this is a safe no-op.
+    STATUS_SUCCESS
 }
