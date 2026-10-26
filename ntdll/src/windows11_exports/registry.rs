@@ -1,4 +1,8 @@
-//! Windows 11 x64 NTDLL registry export placeholders.
+//! Windows x64 NTDLL registry exports.
+//!
+//! ABI note: registry entry points must preserve the Windows x64 parameter
+//! layout. Operations without a connected kernel registry service fail closed;
+//! they must not report success or mutate user memory speculatively.
 //! Replace generic signatures with ABI-correct declarations as each routine is implemented.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
@@ -118,6 +122,8 @@ pub unsafe extern "system" fn NtNotifyChangeMultipleKeys() -> i32 {
 }
 
 // NtOpenKey is provided by the typed x64 syscall stub in syscall_x86_64.rs.
+// NtQueryValueKey is likewise provided by that syscall stub. These two
+// entry points are the only registry syscalls currently wired to the kernel.
 
 #[no_mangle]
 pub unsafe extern "system" fn NtOpenKeyedEvent() -> i32 {
@@ -125,8 +131,18 @@ pub unsafe extern "system" fn NtOpenKeyedEvent() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtOpenKeyEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtOpenKeyEx(
+    key_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const crate::reg::OBJECT_ATTRIBUTES,
+    open_options: u32,
+) -> i32 {
+    // NtOpenKeyEx has the same object-attribute contract as NtOpenKey;
+    // OpenOptions currently has no implemented kernel semantics.
+    if open_options != 0 {
+        return 0xC000000Du32 as i32; // STATUS_INVALID_PARAMETER
+    }
+    crate::syscall_x86_64::NtOpenKey(key_handle, desired_access, object_attributes)
 }
 
 #[no_mangle]
@@ -407,8 +423,12 @@ pub unsafe extern "system" fn ZwNotifyChangeMultipleKeys() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwOpenKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwOpenKey(
+    key_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const crate::reg::OBJECT_ATTRIBUTES,
+) -> i32 {
+    crate::syscall_x86_64::NtOpenKey(key_handle, desired_access, object_attributes)
 }
 
 #[no_mangle]
@@ -457,8 +477,18 @@ pub unsafe extern "system" fn ZwQueryOpenSubKeysEx() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwQueryValueKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwQueryValueKey(
+    key_handle: *mut core::ffi::c_void,
+    value_name: *const core::ffi::c_void,
+    key_value_information_class: u32,
+    key_value_information: *mut core::ffi::c_void,
+    length: u32,
+    result_length: *mut u32,
+) -> i32 {
+    crate::syscall_x86_64::NtQueryValueKey(
+        key_handle, value_name, key_value_information_class,
+        key_value_information, length, result_length,
+    )
 }
 
 #[no_mangle]
