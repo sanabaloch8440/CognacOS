@@ -501,46 +501,46 @@ jobs:
             tail -n 500 build/qemu-debug.log || true
             echo "=== Resolve native NTDLL RIP against its PDB/DWARF line tables ==="
             python3 - <<'PY'
-            import re, struct, subprocess
-            from pathlib import Path
+          import re, struct, subprocess
+          from pathlib import Path
 
-            gdb = Path("build/gdb-state.txt").read_text(errors="replace")
-            serial = Path("build/serial.log").read_text(errors="replace")
-            m = re.search(r"\\brip\\s+0x([0-9a-fA-F]+)", gdb)
-            if not m:
-                print("GDB did not report RIP; retain gdb-state.txt and qemu-debug.log for manual analysis.")
-                raise SystemExit(0)
-            rip = int(m.group(1), 16)
-            pe_path = Path("target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll")
-            if not pe_path.exists():
-                print(f"NTDLL PE/PDB input missing: {pe_path}")
-                raise SystemExit(0)
-            blob = pe_path.read_bytes()
-            if blob[:2] != b"MZ":
-                print("NTDLL input is not a PE image.")
-                raise SystemExit(0)
-            pe = struct.unpack_from("<I", blob, 0x3c)[0]
-            if blob[pe:pe+4] != b"PE\\0\\0":
-                print("NTDLL PE signature is invalid.")
-                raise SystemExit(0)
-            opt = pe + 24
-            image_base = struct.unpack_from("<Q", blob, opt + 24)[0]
-            image_size = struct.unpack_from("<I", blob, opt + 56)[0]
-            candidates = [int(x, 16) for x in re.findall(r"module=0x([0-9a-fA-F]+)", serial)]
-            candidates.append(image_base)
-            base = next((b for b in reversed(candidates) if b <= rip < b + image_size), None)
-            if base is None:
-                print(f"Current RIP 0x{rip:x} is outside known NTDLL image ranges; image preferred base=0x{image_base:x}.")
-                print("Kernel/HAL source locations, full registers, and exception trace are above.")
-                raise SystemExit(0)
-            rva = rip - base
-            print(f"NTDLL source resolution: RIP=0x{rip:x}, loaded_base=0x{base:x}, RVA=0x{rva:x}")
-            cmd = ["llvm-symbolizer", "--obj=" + str(pe_path), "--relative-address", "--functions=linkage", "--demangle", hex(rva)]
-            result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            print(result.stdout.rstrip() or "llvm-symbolizer returned no line information; inspect the archived PDB.")
-            if result.returncode:
-                print(f"llvm-symbolizer exit status: {result.returncode}")
-            PY
+          gdb = Path("build/gdb-state.txt").read_text(errors="replace")
+          serial = Path("build/serial.log").read_text(errors="replace")
+          m = re.search(r"\\brip\\s+0x([0-9a-fA-F]+)", gdb)
+          if not m:
+              print("GDB did not report RIP; retain gdb-state.txt and qemu-debug.log for manual analysis.")
+              raise SystemExit(0)
+          rip = int(m.group(1), 16)
+          pe_path = Path("target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll")
+          if not pe_path.exists():
+              print(f"NTDLL PE/PDB input missing: {pe_path}")
+              raise SystemExit(0)
+          blob = pe_path.read_bytes()
+          if blob[:2] != b"MZ":
+              print("NTDLL input is not a PE image.")
+              raise SystemExit(0)
+          pe = struct.unpack_from("<I", blob, 0x3c)[0]
+          if blob[pe:pe+4] != b"PE\\0\\0":
+              print("NTDLL PE signature is invalid.")
+              raise SystemExit(0)
+          opt = pe + 24
+          image_base = struct.unpack_from("<Q", blob, opt + 24)[0]
+          image_size = struct.unpack_from("<I", blob, opt + 56)[0]
+          candidates = [int(x, 16) for x in re.findall(r"module=0x([0-9a-fA-F]+)", serial)]
+          candidates.append(image_base)
+          base = next((b for b in reversed(candidates) if b <= rip < b + image_size), None)
+          if base is None:
+              print(f"Current RIP 0x{rip:x} is outside known NTDLL image ranges; image preferred base=0x{image_base:x}.")
+              print("Kernel/HAL source locations, full registers, and exception trace are above.")
+              raise SystemExit(0)
+          rva = rip - base
+          print(f"NTDLL source resolution: RIP=0x{rip:x}, loaded_base=0x{base:x}, RVA=0x{rva:x}")
+          cmd = ["llvm-symbolizer", "--obj=" + str(pe_path), "--relative-address", "--functions=linkage", "--demangle", hex(rva)]
+          result = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+          print(result.stdout.rstrip() or "llvm-symbolizer returned no line information; inspect the archived PDB.")
+          if result.returncode:
+              print(f"llvm-symbolizer exit status: {result.returncode}")
+          PY
             exit 1
           fi
 
