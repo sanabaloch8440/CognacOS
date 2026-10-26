@@ -189,8 +189,6 @@ pub unsafe extern "system" fn NlsMbOemCodePageTag() -> i32 {
 #[no_mangle]
 
 #[no_mangle]
-
-#[no_mangle]
 pub unsafe extern "system" fn PssNtCaptureSnapshot() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -295,8 +293,6 @@ pub unsafe extern "system" fn vsprintf_s() -> i32 {
 pub unsafe extern "system" fn vswprintf_s() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
-
-#[no_mangle]
 
 #[no_mangle]
 pub unsafe extern "system" fn WerReportSQMEvent() -> i32 {
