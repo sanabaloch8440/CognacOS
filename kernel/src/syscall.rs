@@ -273,24 +273,29 @@ fn etw_write_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  NT_STATUS_SUCCESS
 }
 fn etw_read_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
- // Output record: provider/PID/TID/length, descriptor, activity ID and related ID.
  if args[0]==0 || args[1]==0 || args[2]>ETW_PAYLOAD_CAPACITY as u64{return NT_STATUS_INVALID_PARAMETER;}
+ let pid=current_process_id();
  let mut record=[0u8;80];let mut payload=[0u8;ETW_PAYLOAD_CAPACITY];let mut n=0usize;
  {
   let _g=KernelEtwGuard::lock();
   unsafe {
    if ETW_KERNEL_LEN==0{return 0x8000001Au64;}
-   let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();let e=&mut *events.add(ETW_KERNEL_HEAD);
-   if !e.active {ETW_KERNEL_HEAD=(ETW_KERNEL_HEAD+1)%ETW_EVENT_CAPACITY;ETW_KERNEL_LEN-=1;return 0x8000001Au64;}
-   let pid=current_process_id();
-   let providers=core::ptr::addr_of!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
-   let provider_owner=(0..ETW_PROVIDER_CAPACITY).find_map(|i|{let p=&*providers.add(i);if p.active&&p.handle==e.provider{Some(p.owner)}else{None}});
-   let own_provider=provider_owner==Some(pid);
    let sessions=core::ptr::addr_of!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
-   let authorized=own_provider || (args[4]!=0 && (0..16).any(|i|{let s=&*sessions.add(i);s.active&&s.handle==args[4]&&s.owner==pid}));
-   if !authorized{return 0xC0000022;}
+   let session_authorized=args[4]!=0&&(0..16).any(|i|{let s=&*sessions.add(i);s.active&&s.handle==args[4]&&s.owner==pid});
+   let providers=core::ptr::addr_of!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
+   let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();
+   let mut selected=None;
+   for off in 0..ETW_KERNEL_LEN {
+    let idx=(ETW_KERNEL_HEAD+off)%ETW_EVENT_CAPACITY;let e=&*events.add(idx);
+    let owner=(0..ETW_PROVIDER_CAPACITY).find_map(|i|{let p=&*providers.add(i);if p.active&&p.handle==e.provider{Some(p.owner)}else{None}});
+    if session_authorized||owner==Some(pid){selected=Some(off);break;}
+   }
+   let Some(offset)=selected else{return 0x8000001Au64;};
+   let idx=(ETW_KERNEL_HEAD+offset)%ETW_EVENT_CAPACITY;let e=*events.add(idx);
    record[0..8].copy_from_slice(&e.provider.to_le_bytes());record[8..16].copy_from_slice(&e.pid.to_le_bytes());record[16..24].copy_from_slice(&e.tid.to_le_bytes());record[24..26].copy_from_slice(&e.length.to_le_bytes());record[32..48].copy_from_slice(&e.descriptor);record[48..64].copy_from_slice(&e.activity);record[64..80].copy_from_slice(&e.related_activity);
-   n=e.length as usize;payload[..n].copy_from_slice(&e.payload[..n]);*e=KernelEtwEvent::EMPTY;ETW_KERNEL_HEAD=(ETW_KERNEL_HEAD+1)%ETW_EVENT_CAPACITY;ETW_KERNEL_LEN-=1;
+   n=e.length as usize;payload[..n].copy_from_slice(&e.payload[..n]);
+   for off in offset..(ETW_KERNEL_LEN-1){let dst=(ETW_KERNEL_HEAD+off)%ETW_EVENT_CAPACITY;let src=(ETW_KERNEL_HEAD+off+1)%ETW_EVENT_CAPACITY;*events.add(dst)=*events.add(src);}
+   let last=(ETW_KERNEL_HEAD+ETW_KERNEL_LEN-1)%ETW_EVENT_CAPACITY;*events.add(last)=KernelEtwEvent::EMPTY;ETW_KERNEL_LEN-=1;if ETW_KERNEL_LEN==0{ETW_KERNEL_HEAD=0;}
   }
  }
  if let Err(s)=copy_nt_output(args[0],&record){return s;}
