@@ -285,13 +285,11 @@ pub unsafe extern "system" fn NtGetCurrentProcessorNumberEx(processor_number: *m
 /// Enumerates process handles. CognacOS has no process object table yet;
 /// this keeps the native ABI correct while reporting the missing service.
 #[no_mangle]
-/// Enumerate registered processes using kernel-owned process objects and handles.
+/// Enumerate registered processes through the kernel process table.
 #[no_mangle]
 pub unsafe extern "system" fn NtGetNextProcess(
-    process_handle: *mut core::ffi::c_void,
-    desired_access: u32,
-    handle_attributes: u32,
-    flags: u32,
+    process_handle: *mut core::ffi::c_void, desired_access: u32,
+    handle_attributes: u32, flags: u32,
     new_process_handle: *mut *mut core::ffi::c_void,
 ) -> i32 {
     const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
@@ -377,7 +375,7 @@ pub unsafe extern "system" fn NtOpenJobObject() -> i32 {
 /// yet provide a process-handle/object-manager service, so valid requests
 /// return STATUS_NOT_IMPLEMENTED without fabricating a handle.
 #[no_mangle]
-/// Open a registered process by CLIENT_ID through CognacOS's native Object Manager.
+/// Open a process by CLIENT_ID using the kernel Object Manager.
 #[no_mangle]
 pub unsafe extern "system" fn NtOpenProcess(
     process_handle: *mut *mut core::ffi::c_void,
@@ -391,6 +389,34 @@ pub unsafe extern "system" fn NtOpenProcess(
     cognacos_nt_open_process(process_handle, desired_access, object_attributes, client_id)
 }
 
+pub unsafe extern "system" fn NtOpenProcessToken() -> i32 {
+    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn NtOpenProcessTokenEx() -> i32 {
+    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+}
+
+/// Opens a thread by client ID. The ABI is defined, but thread objects and
+/// handle lookup are not implemented by the current kernel.
+#[no_mangle]
+pub unsafe extern "system" fn NtOpenThread(
+    thread_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const core::ffi::c_void,
+    client_id: *const core::ffi::c_void,
+) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
+    if thread_handle.is_null() || object_attributes.is_null() || client_id.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let _ = desired_access;
+    STATUS_NOT_IMPLEMENTED
+}
+
+#[no_mangle]
 pub unsafe extern "system" fn NtOpenThreadToken() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
