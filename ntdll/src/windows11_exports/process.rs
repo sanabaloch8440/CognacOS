@@ -257,14 +257,43 @@ pub unsafe extern "system" fn NtGetCurrentProcessorNumberEx(processor_number: *m
     STATUS_SUCCESS
 }
 
+/// Enumerates process handles. CognacOS has no process object table yet;
+/// this keeps the native ABI correct while reporting the missing service.
 #[no_mangle]
-pub unsafe extern "system" fn NtGetNextProcess() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtGetNextProcess(
+    process_handle: *mut core::ffi::c_void,
+    desired_access: u32,
+    handle_attributes: u32,
+    flags: u32,
+    new_process_handle: *mut *mut core::ffi::c_void,
+) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
+    if new_process_handle.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let _ = (process_handle, desired_access, handle_attributes, flags);
+    STATUS_NOT_IMPLEMENTED
 }
 
+/// Enumerates threads belonging to a process. Thread enumeration depends on
+/// the not-yet-implemented scheduler/thread object table.
 #[no_mangle]
-pub unsafe extern "system" fn NtGetNextThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtGetNextThread(
+    process_handle: *mut core::ffi::c_void,
+    thread_handle: *mut core::ffi::c_void,
+    desired_access: u32,
+    handle_attributes: u32,
+    flags: u32,
+    new_thread_handle: *mut *mut core::ffi::c_void,
+) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    const STATUS_NOT_IMPLEMENTED: i32 = 0xC000_0002u32 as i32;
+    if new_thread_handle.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let _ = (process_handle, thread_handle, desired_access, handle_attributes, flags);
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[no_mangle]
@@ -887,13 +916,26 @@ pub unsafe extern "system" fn ZwGetCurrentProcessorNumberEx(processor_number: *m
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwGetNextProcess() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwGetNextProcess(
+    process_handle: *mut core::ffi::c_void,
+    desired_access: u32,
+    handle_attributes: u32,
+    flags: u32,
+    new_process_handle: *mut *mut core::ffi::c_void,
+) -> i32 {
+    unsafe { NtGetNextProcess(process_handle, desired_access, handle_attributes, flags, new_process_handle) }
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwGetNextThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwGetNextThread(
+    process_handle: *mut core::ffi::c_void,
+    thread_handle: *mut core::ffi::c_void,
+    desired_access: u32,
+    handle_attributes: u32,
+    flags: u32,
+    new_thread_handle: *mut *mut core::ffi::c_void,
+) -> i32 {
+    unsafe { NtGetNextThread(process_handle, thread_handle, desired_access, handle_attributes, flags, new_thread_handle) }
 }
 
 #[no_mangle]
