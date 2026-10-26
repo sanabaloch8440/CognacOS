@@ -192,6 +192,16 @@ The implementation remains partial. It now publishes the Windows-layout XState f
 - [ ] Expand WDK conformance tests and run representative Windows x64 drivers only after dependencies and safety prerequisites are met.
 - [ ] Avoid a single headline score unless its denominator, behavior rubric, and tested revision are published alongside it.
 
+## NTDLL miscellaneous exports and ETW
+
+- [x] Move wide-character CRT classification and single-code-point case conversion routines into the dedicated NTDLL CRT source module.
+- [x] Add bounded ETW provider registration/unregistration and copy event payloads into an owned, fixed-size ring buffer; event descriptors and payload pointers are validated before recording.
+- [ ] Connect the ETW ring to a kernel/session controller, implement enable callbacks and activity IDs, and add a consumer-facing transport with process-exit rundown.
+- [ ] Replace remaining zero-argument miscellaneous placeholders only alongside verified Windows 11 x64 signatures and their underlying kernel/service prerequisites.
+- [ ] Add host tests for provider lifecycle, ring wrap/drop behavior, invalid descriptor arrays, and exact payload copying.
+
+The current ETW implementation is a CognacOS process-local diagnostic buffer, not a Windows ETW controller or cross-process tracing implementation. It has a 64-provider table, 64-event ring, and 256-byte per-event payload cap. The internal dequeue hook is a bridge point; until a controller/consumer transport is wired, this is not equivalent to full Windows ETW session delivery. API-set schema helpers currently parse the process PEB's v6 API-set namespace and should be validated against pinned Windows 11 runtime fixtures.
+
 ## Tracking rules
 
 - One canonical checkbox per deliverable; do not repeat historical milestone logs in multiple documents.
