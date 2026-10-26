@@ -189,13 +189,13 @@ unsafe fn invoke_user_function(
         crate::serial_write_hex(teb);
         crate::serial_write(b" rsp=");
         crate::serial_write_hex(stack_top);
-        crate::serial_write(b"\\r\\n");
+        crate::serial_write(b"\r\n");
         rdotos_process_enter_user(va,stack_top,teb);
         crate::serial_write(b"[DBG][NTOSKRNL][USER] trampoline returned ordinal=");
         crate::serial_write_hex(ordinal as u64);
         crate::serial_write(b" target=");
         crate::serial_write_hex(function);
-        crate::serial_write(b"\\r\\n");
+        crate::serial_write(b"\r\n");
     }
     Ok(())
 }
