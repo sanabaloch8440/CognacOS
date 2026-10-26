@@ -48,6 +48,10 @@ static ALPC_SECURITY_CONTEXT_TYPE:AtomicU32=AtomicU32::new(0);
 struct SecurityContextObject { context_id:AtomicU32, owner_pid:AtomicU64, port_id:AtomicU32, active:AtomicBool, allocated:AtomicBool }
 impl SecurityContextObject { const fn new()->Self { Self { context_id:AtomicU32::new(0), owner_pid:AtomicU64::new(0), port_id:AtomicU32::new(0), active:AtomicBool::new(false), allocated:AtomicBool::new(false) } } }
 static SECURITY_CONTEXT_OBJECTS:[SecurityContextObject;MAX_PORT_OBJECTS]=[const { SecurityContextObject::new() };MAX_PORT_OBJECTS];
+#[repr(C,align(16))]
+struct CapturedTokenStorage { words:[u64;8], allocated:AtomicBool }
+impl CapturedTokenStorage { const fn new()->Self { Self { words:[0;8], allocated:AtomicBool::new(false) } } }
+static CAPTURED_TOKENS:[CapturedTokenStorage;MAX_PORT_OBJECTS]=[const { CapturedTokenStorage::new() };MAX_PORT_OBJECTS];
 #[repr(C)]
 #[derive(Clone,Copy)]
 struct SecurityQualityOfService { length:u32, impersonation_level:u32, context_tracking_mode:u8, effective_only:u8, _padding:[u8;2] }
@@ -157,6 +161,98 @@ fn create_security_context(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let result=if write_user(args[2],&attr).is_err(){let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::close_handle(handle as *mut c_void,crate::ntoskrnl::ob::runtime::current_owner());STATUS_ACCESS_VIOLATION}else{STATUS_SUCCESS};
     let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);result
 }
+
+/// Capture the peer's registered primary access token, duplicate its security
+/// identity as an impersonation token, and assign it to the current KTHREAD.
+/// Unknown/missing tokens fail closed; no PID supplied by user memory is trusted.
+fn impersonate_client_of_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64 {
+    if args[1]==0 || args[2]!=0 { return STATUS_INVALID_PARAMETER; }
+    let (endpoint,body)=match endpoint_from_handle(args[0],ACCESS_CONTROL) {
+        Ok(v)=>v, Err(s)=>return s
+    };
+    let peer=match crate::ntoskrnl::alpc::peer_process_id(endpoint.endpoint_id.load(Ordering::Acquire),current_pid()) {
+        Ok(pid)=>pid, Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return s as u64}
+    };
+    // Validate the message header is readable. Identity comes from the
+    // connection object above, not its mutable ClientId fields.
+    let _message:PortMessage=match read_user(args[1]) {
+        Ok(m)=>m, Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return s}
+    };
+    let mut level=2u32; // SecurityImpersonation, capped to the token's registered level.
+    for ctx in SECURITY_CONTEXT_OBJECTS.iter().filter(|c|c.active.load(Ordering::Acquire)
+        && c.owner_pid.load(Ordering::Acquire)==current_pid()) {
+        let id=ctx.context_id.load(Ordering::Acquire);
+        if let Ok(info)=crate::ntoskrnl::alpc_resources::query_security_context(id,current_pid()) {
+            level=level.min(info.impersonation_level as u32);
+        }
+    }
+    if level==0 {
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
+        return 0xC000_0022;
+    }
+    let source=crate::process::reference_primary_token(peer);
+    if source.is_null() {
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
+        return 0xC000_0022;
+    }
+    let Some(slot)=CAPTURED_TOKENS.iter().position(|t|!t.allocated.load(Ordering::Acquire)) else {
+        let _=unsafe{crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(source)};
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    };
+    let storage=&CAPTURED_TOKENS[slot];
+    if storage.allocated.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() {
+        let _=unsafe{crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(source)};
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    let destination=storage.words.as_ptr() as *mut c_void;
+    let duplicate=unsafe{crate::ntoskrnl::se::runtime::se_internal_DuplicateTokenSecurity(source,destination,2,level)};
+    let _=unsafe{crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(source)};
+    if duplicate<0 {
+        storage.allocated.store(false,Ordering::Release);
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
+        return duplicate as u32 as u64;
+    }
+    let thread=crate::ntoskrnl::ke::thread::current_thread_object();
+    let status=crate::ntoskrnl::ke::thread::assign_thread_impersonation_token(thread,destination);
+    if status<0 {
+        let _=unsafe{crate::ntoskrnl::se::runtime::se_internal_UnregisterTokenMetadata(destination)};
+        storage.allocated.store(false,Ordering::Release);
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
+        return status as u32 as u64;
+    }
+    let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
+    STATUS_SUCCESS
+}
+
+/// Called after KTHREAD drops its impersonation-token reference during rundown.
+pub(crate) fn release_captured_impersonation_token(token:*mut c_void) {
+    if token.is_null(){return}
+    for storage in CAPTURED_TOKENS.iter() {
+        if storage.words.as_ptr() as *mut c_void == token
+            && storage.allocated.load(Ordering::Acquire)
+            && crate::ntoskrnl::se::runtime::se_internal_TokenReferenceCount(token)==0 {
+            let _=unsafe{crate::ntoskrnl::se::runtime::se_internal_UnregisterTokenMetadata(token)};
+            storage.allocated.store(false,Ordering::Release);
+            return;
+        }
+    }
+}
+
+/// Revert the current thread to its process primary token by clearing its
+/// impersonation token. Token metadata is reclaimed after the thread releases it.
+pub(crate) fn revert_current_impersonation()->u64 {
+    let thread=crate::ntoskrnl::ke::thread::current_thread_object();
+    let current=crate::ntoskrnl::ke::thread::reference_current_impersonation_token();
+    if current.is_null(){return STATUS_SUCCESS}
+    let status=crate::ntoskrnl::ke::thread::assign_thread_impersonation_token(thread,core::ptr::null_mut());
+    let _=unsafe{crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(current)};
+    if status<0{return status as u32 as u64}
+    release_captured_impersonation_token(current);
+    STATUS_SUCCESS
+}
+
 fn delete_security_context(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let (port,port_body)=match port_from_handle(args[0],ACCESS_CONTROL){Ok(v)=>v,Err(s)=>return s};
     if args[1]!=0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}
@@ -488,6 +584,8 @@ pub fn dispatch(number:u64,args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
         crate::syscall::NT_SYSCALL_ALPC_CREATE_SECURITY_CONTEXT=>create_security_context(args),
         crate::syscall::NT_SYSCALL_ALPC_DELETE_SECURITY_CONTEXT=>delete_security_context(args),
         crate::syscall::NT_SYSCALL_ALPC_REVOKE_SECURITY_CONTEXT=>revoke_security_context(args),
+        crate::syscall::NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_OF_PORT=>impersonate_client_of_port(args),
+        crate::syscall::NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT=>impersonate_client_of_port(args),
         crate::syscall::NT_SYSCALL_ALPC_DELETE_SECTION_VIEW=>delete_section_view(args),
         crate::syscall::NT_SYSCALL_ALPC_DISCONNECT_PORT=>disconnect_port(args),
         crate::syscall::NT_SYSCALL_ALPC_CONNECT_PORT=>connect_port(args),
