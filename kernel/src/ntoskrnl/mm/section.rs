@@ -142,7 +142,7 @@ pub fn map_view(handle: u64, root: u64, base: u64, offset: u64, length: u64, wri
     let _guard = LOCK.lock();
     let sections = unsafe { &mut *core::ptr::addr_of_mut!(SECTIONS) };
     let views = unsafe { &mut *core::ptr::addr_of_mut!(VIEWS) };
-    let section = sections.get(slot).filter(|s| s.live && s.generation == generation && s.owner_root == root).ok_or(STATUS_INVALID_HANDLE)?;
+    let section = sections.get(slot).filter(|s| s.live && s.generation == generation).ok_or(STATUS_INVALID_HANDLE)?;
     if end_offset > section.size || end_offset / PAGE > section.page_count as u64 { return Err(STATUS_INVALID_PARAMETER); }
     let view_slot = views.iter().position(|v| !v.live).ok_or(STATUS_NO_MEMORY)?;
     let new_refs = section.references.checked_add(1).ok_or(STATUS_NO_MEMORY)?;
