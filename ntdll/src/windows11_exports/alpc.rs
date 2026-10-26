@@ -17,6 +17,8 @@ pub type PULONG = *mut ULONG;
 pub type SIZE_T = usize;
 pub type PSIZE_T = *mut SIZE_T;
 pub type ACCESS_MASK = u32;
+pub type BOOLEAN = u8;
+pub type PALPC_MESSAGE_ATTRIBUTES = *mut ALPC_MESSAGE_ATTRIBUTES;
 pub type ALPC_HANDLE = HANDLE;
 pub type PALPC_HANDLE = *mut ALPC_HANDLE;
 
@@ -127,4 +129,133 @@ unsafe extern "system" {
     pub fn NtAlpcOpenSenderThread(ThreadHandle: PHANDLE, PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, Flags: ULONG, DesiredAccess: ACCESS_MASK, ObjectAttributes: *const OBJECT_ATTRIBUTES) -> NTSTATUS;
     pub fn NtAlpcImpersonateClientOfPort(PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, Flags: ULONG) -> NTSTATUS;
     pub fn NtAlpcImpersonateClientContainerOfPort(PortHandle: HANDLE, PortMessage: *const PORT_MESSAGE, Flags: ULONG) -> NTSTATUS;
+}
+
+
+const STATUS_SUCCESS: NTSTATUS = 0;
+const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC000_0002u32 as i32;
+const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
+const STATUS_BUFFER_TOO_SMALL: NTSTATUS = 0xC000_0023u32 as i32;
+const ALPC_MESSAGE_SECURITY_ATTRIBUTE: ULONG = 0x8000_0000;
+const ALPC_MESSAGE_VIEW_ATTRIBUTE: ULONG = 0x4000_0000;
+const ALPC_MESSAGE_CONTEXT_ATTRIBUTE: ULONG = 0x2000_0000;
+const ALPC_MESSAGE_HANDLE_ATTRIBUTE: ULONG = 0x1000_0000;
+
+#[repr(C)]
+struct ALPC_CONTEXT_ATTR { PortContext: PVOID, MessageContext: PVOID, Sequence: ULONG, MessageId: ULONG, CallbackId: ULONG }
+#[repr(C)]
+struct ALPC_HANDLE_ATTR { Flags: ULONG, _padding: ULONG, Handle: HANDLE, ObjectType: ULONG, DesiredAccess: ACCESS_MASK }
+#[repr(C)]
+struct ALPC_PORT_COMPLETION_LIST_INFORMATION { Buffer: PVOID, Size: SIZE_T, ConcurrencyCount: ULONG, AttributeFlags: ULONG }
+
+fn align_up(value: usize, alignment: usize) -> Option<usize> {
+    value.checked_add(alignment - 1).map(|v| v & !(alignment - 1))
+}
+fn attribute_size(flag: ULONG) -> Option<usize> {
+    match flag {
+        ALPC_MESSAGE_SECURITY_ATTRIBUTE => Some(core::mem::size_of::<ALPC_SECURITY_ATTR>()),
+        ALPC_MESSAGE_VIEW_ATTRIBUTE => Some(core::mem::size_of::<ALPC_DATA_VIEW_ATTR>()),
+        ALPC_MESSAGE_CONTEXT_ATTRIBUTE => Some(core::mem::size_of::<ALPC_CONTEXT_ATTR>()),
+        ALPC_MESSAGE_HANDLE_ATTRIBUTE => Some(core::mem::size_of::<ALPC_HANDLE_ATTR>()),
+        _ => None,
+    }
+}
+
+#[no_mangle]
+pub extern "system" fn AlpcMaxAllowedMessageLength() -> ULONG { 512 }
+
+#[no_mangle]
+pub extern "system" fn AlpcGetHeaderSize(_Flags: ULONG) -> ULONG {
+    core::mem::size_of::<PORT_MESSAGE>() as ULONG
+}
+
+/// Compute the x64 message-attribute storage requirement and initialize the
+/// header. Attribute payloads are laid out in Windows' security/view/context/handle order.
+#[no_mangle]
+pub unsafe extern "system" fn AlpcInitializeMessageAttribute(
+    AttributeFlags: ULONG,
+    Buffer: PALPC_MESSAGE_ATTRIBUTES,
+    BufferSize: ULONG,
+    RequiredBufferSize: PULONG,
+) -> NTSTATUS {
+    let known = ALPC_MESSAGE_SECURITY_ATTRIBUTE | ALPC_MESSAGE_VIEW_ATTRIBUTE |
+        ALPC_MESSAGE_CONTEXT_ATTRIBUTE | ALPC_MESSAGE_HANDLE_ATTRIBUTE;
+    if AttributeFlags & !known != 0 || RequiredBufferSize.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut required = core::mem::size_of::<ALPC_MESSAGE_ATTRIBUTES>();
+    for flag in [ALPC_MESSAGE_SECURITY_ATTRIBUTE, ALPC_MESSAGE_VIEW_ATTRIBUTE,
+                 ALPC_MESSAGE_CONTEXT_ATTRIBUTE, ALPC_MESSAGE_HANDLE_ATTRIBUTE] {
+        if AttributeFlags & flag != 0 {
+            let Some(size) = attribute_size(flag).and_then(|s| align_up(s, core::mem::align_of::<usize>())) else { return STATUS_INVALID_PARAMETER; };
+            let Some(next) = required.checked_add(size) else { return STATUS_INVALID_PARAMETER; };
+            required = next;
+        }
+    }
+    unsafe { RequiredBufferSize.write(required as ULONG); }
+    if Buffer.is_null() || BufferSize as usize < required { return STATUS_BUFFER_TOO_SMALL; }
+    unsafe {
+        (*Buffer).AllocatedAttributes = AttributeFlags;
+        (*Buffer).ValidAttributes = 0;
+    }
+    STATUS_SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn AlpcGetMessageAttribute(Buffer: PALPC_MESSAGE_ATTRIBUTES, AttributeFlag: ULONG) -> PVOID {
+    if Buffer.is_null() || attribute_size(AttributeFlag).is_none() { return core::ptr::null_mut(); }
+    let allocated = unsafe { (*Buffer).AllocatedAttributes };
+    if allocated & AttributeFlag == 0 { return core::ptr::null_mut(); }
+    let mut offset = core::mem::size_of::<ALPC_MESSAGE_ATTRIBUTES>();
+    for flag in [ALPC_MESSAGE_SECURITY_ATTRIBUTE, ALPC_MESSAGE_VIEW_ATTRIBUTE,
+                 ALPC_MESSAGE_CONTEXT_ATTRIBUTE, ALPC_MESSAGE_HANDLE_ATTRIBUTE] {
+        if allocated & flag != 0 {
+            if flag == AttributeFlag { return unsafe { (Buffer as *mut u8).add(offset).cast() }; }
+            let Some(size) = attribute_size(flag).and_then(|s| align_up(s, core::mem::align_of::<usize>())) else { return core::ptr::null_mut(); };
+            let Some(next) = offset.checked_add(size) else { return core::ptr::null_mut(); };
+            offset = next;
+        }
+    }
+    core::ptr::null_mut()
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn AlpcRegisterCompletionList(
+    PortHandle: HANDLE, Buffer: PVOID, Size: ULONG, ConcurrencyCount: ULONG, AttributeFlags: ULONG,
+) -> NTSTATUS {
+    if Buffer.is_null() || Size == 0 || ConcurrencyCount == 0 { return STATUS_INVALID_PARAMETER; }
+    let info = ALPC_PORT_COMPLETION_LIST_INFORMATION { Buffer, Size: Size as SIZE_T, ConcurrencyCount, AttributeFlags };
+    unsafe { NtAlpcSetInformation(PortHandle, 6, (&info as *const ALPC_PORT_COMPLETION_LIST_INFORMATION).cast_mut().cast(), core::mem::size_of_val(&info) as ULONG) }
+}
+#[no_mangle]
+pub unsafe extern "system" fn AlpcUnregisterCompletionList(PortHandle: HANDLE) -> NTSTATUS {
+    unsafe { NtAlpcSetInformation(PortHandle, 7, core::ptr::null_mut(), 0) }
+}
+#[no_mangle]
+pub unsafe extern "system" fn AlpcRundownCompletionList(PortHandle: HANDLE) -> NTSTATUS {
+    unsafe { NtAlpcSetInformation(PortHandle, 10, core::ptr::null_mut(), 0) }
+}
+#[no_mangle]
+pub unsafe extern "system" fn AlpcAdjustCompletionListConcurrencyCount(PortHandle: HANDLE, ConcurrencyCount: ULONG) -> NTSTATUS {
+    unsafe { NtAlpcSetInformation(PortHandle, 8, (&ConcurrencyCount as *const ULONG).cast_mut().cast(), core::mem::size_of::<ULONG>() as ULONG) }
+}
+#[no_mangle]
+pub unsafe extern "system" fn AlpcRegisterCompletionListWorkerThread(_CompletionList: PVOID) -> BOOLEAN { 0 }
+#[no_mangle]
+pub unsafe extern "system" fn AlpcUnregisterCompletionListWorkerThread(_CompletionList: PVOID) -> BOOLEAN { 0 }
+#[no_mangle]
+pub unsafe extern "system" fn AlpcGetCompletionListLastMessageInformation(_CompletionList: PVOID, LastMessageId: PULONG, LastCallbackId: PULONG) {
+    if !LastMessageId.is_null() { unsafe { LastMessageId.write(0); } }
+    if !LastCallbackId.is_null() { unsafe { LastCallbackId.write(0); } }
+}
+#[no_mangle]
+pub unsafe extern "system" fn AlpcGetOutstandingCompletionListMessageCount(_CompletionList: PVOID) -> ULONG { 0 }
+#[no_mangle]
+pub unsafe extern "system" fn AlpcGetMessageFromCompletionList(_CompletionList: PVOID, MessageAttributes: *mut PALPC_MESSAGE_ATTRIBUTES) -> *mut PORT_MESSAGE {
+    if !MessageAttributes.is_null() { unsafe { MessageAttributes.write(core::ptr::null_mut()); } }
+    core::ptr::null_mut()
+}
+#[no_mangle]
+pub unsafe extern "system" fn AlpcFreeCompletionListMessage(_CompletionList: PVOID, _Message: *mut PORT_MESSAGE) {}
+#[no_mangle]
+pub unsafe extern "system" fn AlpcGetCompletionListMessageAttributes(_CompletionList: PVOID, _Message: *mut PORT_MESSAGE) -> PALPC_MESSAGE_ATTRIBUTES {
+    core::ptr::null_mut()
 }
