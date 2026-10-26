@@ -236,6 +236,17 @@ pub fn peer_process_id(endpoint: u32, receiver_pid: u64) -> Result<u64, u32> {
     }
 }
 
+/// Return the listening port associated with a connected endpoint after
+/// verifying the current process is one of the connection's authenticated peers.
+pub fn connection_port_id(endpoint:u32,caller_pid:u64)->Result<u32,u32>{
+    let _g=Guard::acquire();
+    let s=unsafe{&*STATE.state.get()};
+    let ci=endpoint_connection(s,endpoint).ok_or(STATUS_PORT_DISCONNECTED)?;
+    let c=s.connections[ci];
+    if !c.accepted || (caller_pid!=c.client_pid && caller_pid!=c.server_pid){return Err(STATUS_INVALID_HANDLE)}
+    Ok(c.server_port)
+}
+
 pub fn disconnect(endpoint: u32, caller_pid: u64) -> Result<(), u32> {
     let mut g = Guard::acquire();
     let s = g.state();
