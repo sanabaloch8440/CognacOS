@@ -452,12 +452,21 @@ pub unsafe extern "system" fn RtlCreateUserProcessEx() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlExitUserProcess() -> i32 {
-    // Run user-mode ETW provider/activity cleanup before handing control to the
-    // eventual native process-termination service. This export still fails closed
-    // until the real process-exit syscall and ABI-correct signature are available.
+pub unsafe extern "system" fn RtlExitUserProcess(exit_status: i32) -> ! {
+    // Run loader shutdown and user-mode rundown first. The actual exit transition
+    // is the kernel's SYS_EXIT gate, whose EXIT_SENTINEL diverts to the process
+    // exit stub rather than returning to a dying address space.
+    let _ = unsafe { super::loader::LdrShutdownProcess() };
     super::etw::rundown_current_process();
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+    #[cfg(target_os = "none")]
+    unsafe {
+        core::arch::asm!("int 0x81", in("rax") 0u64, in("rdi") exit_status as u64, options(noreturn));
+    }
+    #[cfg(not(target_os = "none"))]
+    {
+        let _ = exit_status;
+        loop { core::hint::spin_loop(); }
+    }
 }
 
 #[no_mangle]
