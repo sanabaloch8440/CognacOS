@@ -43,6 +43,18 @@ static PORT_OBJECTS:[PortObject;MAX_PORT_OBJECTS]=[const { PortObject::new() };M
 static ALPC_PORT_TYPE:AtomicU32=AtomicU32::new(0);
 static ALPC_SECTION_TYPE:AtomicU32=AtomicU32::new(0);
 static ALPC_ENDPOINT_TYPE:AtomicU32=AtomicU32::new(0);
+static ALPC_SECURITY_CONTEXT_TYPE:AtomicU32=AtomicU32::new(0);
+#[repr(C)]
+struct SecurityContextObject { context_id:AtomicU32, owner_pid:AtomicU64, port_id:AtomicU32, active:AtomicBool, allocated:AtomicBool }
+impl SecurityContextObject { const fn new()->Self { Self { context_id:AtomicU32::new(0), owner_pid:AtomicU64::new(0), port_id:AtomicU32::new(0), active:AtomicBool::new(false), allocated:AtomicBool::new(false) } } }
+static SECURITY_CONTEXT_OBJECTS:[SecurityContextObject;MAX_PORT_OBJECTS]=[const { SecurityContextObject::new() };MAX_PORT_OBJECTS];
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct SecurityQualityOfService { length:u32, impersonation_level:u32, context_tracking_mode:u8, effective_only:u8, _padding:[u8;2] }
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct SecurityAttribute { flags:u32, _padding:u32, qos:usize, context_handle:usize }
+
 #[repr(C)]
 struct EndpointObject { endpoint_id:AtomicU32, owner_pid:AtomicU64, active:AtomicBool, allocated:AtomicBool }
 impl EndpointObject { const fn new()->Self { Self { endpoint_id:AtomicU32::new(0), owner_pid:AtomicU64::new(0), active:AtomicBool::new(false), allocated:AtomicBool::new(false) } } }
@@ -80,6 +92,91 @@ unsafe extern "win64" fn port_finalizer(body:*mut c_void) {
 }
 fn current_pid()->u64 { crate::syscall::current_process_id() }
 
+
+fn security_context_type()->Result<u16,u64>{
+    let old=ALPC_SECURITY_CONTEXT_TYPE.load(Ordering::Acquire);
+    if old!=0{return Ok(old as u16)}
+    let name=[b'A' as u16,b'L' as u16,b'P' as u16,b'C' as u16,b' ' as u16,b'S' as u16,b'e' as u16,b'c' as u16,b'u' as u16,b'r' as u16,b'i' as u16,b't' as u16,b'y' as u16,b' ' as u16,b'C' as u16,b't' as u16,b'x' as u16];
+    match crate::ntoskrnl::ob::runtime::ensure_type(&name,ACCESS_READ,ACCESS_WRITE,0,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL){
+        Ok(id)=>{ALPC_SECURITY_CONTEXT_TYPE.store(id as u32,Ordering::Release);Ok(id)}
+        Err(_)=>Err(STATUS_INSUFFICIENT_RESOURCES)
+    }
+}
+unsafe extern "win64" fn security_context_finalizer(body:*mut c_void){
+    if body.is_null(){return}
+    let ctx=unsafe{&*(body as *const SecurityContextObject)};
+    if ctx.active.swap(false,Ordering::AcqRel){
+        let _=crate::ntoskrnl::alpc_resources::delete_security_context(ctx.context_id.load(Ordering::Acquire),ctx.owner_pid.load(Ordering::Acquire));
+    }
+    ctx.allocated.store(false,Ordering::Release);
+}
+fn security_context_from_handle(handle:u64,port_id:u32)->Result<(&'static SecurityContextObject,*mut c_void),u64>{
+    let owner=crate::ntoskrnl::ob::runtime::current_owner();
+    let body=crate::ntoskrnl::ob::runtime::reference_by_handle(handle as *mut c_void,ACCESS_READ,ALPC_SECURITY_CONTEXT_TYPE.load(Ordering::Acquire) as u16,owner,false).map_err(|e|e as u32 as u64)?;
+    let ptr=body as *const SecurityContextObject;
+    if !SECURITY_CONTEXT_OBJECTS.iter().any(|c|core::ptr::eq(c as *const SecurityContextObject,ptr)){
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return Err(STATUS_OBJECT_TYPE_MISMATCH)
+    }
+    let ctx=unsafe{&*ptr};
+    if !ctx.active.load(Ordering::Acquire){let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return Err(0xC000_0008)}
+    if ctx.owner_pid.load(Ordering::Acquire)!=current_pid()||ctx.port_id.load(Ordering::Acquire)!=port_id{
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return Err(0xC000_0022)
+    }
+    Ok((ctx,body))
+}
+fn create_security_context(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
+    let (port,port_body)=match port_from_handle(args[0],ACCESS_CONTROL){Ok(v)=>v,Err(s)=>return s};
+    if args[1]!=0||args[2]==0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}
+    let mut attr:SecurityAttribute=match read_user(args[2]){Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
+    // ALPC_SECFLG_CREATE_HANDLE; other flags require the full token/QoS implementation.
+    if attr.flags!=0x0002_0000||attr.qos==0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_NOT_IMPLEMENTED}
+    let qos:SecurityQualityOfService=match read_user(attr.qos as u64){Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
+    if qos.length as usize<core::mem::size_of::<SecurityQualityOfService>()||qos.impersonation_level>2 {
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER
+    }
+    if let Err(s)=security_context_type(){let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}
+    let pid=current_pid();
+    let id=match crate::ntoskrnl::alpc_resources::create_security_context(pid,pid,ACCESS_READ|ACCESS_CONTROL,qos.impersonation_level as u8){Ok(id)=>id,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s as u64}};
+    let Some(slot)=SECURITY_CONTEXT_OBJECTS.iter().position(|s|!s.allocated.load(Ordering::Acquire)) else {
+        let _=crate::ntoskrnl::alpc_resources::delete_security_context(id,pid);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INSUFFICIENT_RESOURCES
+    };
+    let ctx=&SECURITY_CONTEXT_OBJECTS[slot];
+    if ctx.allocated.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){
+        let _=crate::ntoskrnl::alpc_resources::delete_security_context(id,pid);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INSUFFICIENT_RESOURCES
+    }
+    ctx.context_id.store(id,Ordering::Release);ctx.owner_pid.store(pid,Ordering::Release);ctx.port_id.store(port.port_id.load(Ordering::Acquire),Ordering::Release);ctx.active.store(true,Ordering::Release);
+    let type_name=[b'A' as u16,b'L' as u16,b'P' as u16,b'C' as u16,b' ' as u16,b'S' as u16,b'e' as u16,b'c' as u16,b'u' as u16,b'r' as u16,b'i' as u16,b't' as u16,b'y' as u16,b' ' as u16,b'C' as u16,b't' as u16,b'x' as u16];
+    let name=[0u16;0];let body=ctx as *const SecurityContextObject as *mut c_void;
+    if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&type_name,&name,false,ALPC_DEFAULT_SD.as_ptr(),ALPC_DEFAULT_SD.len(),security_context_finalizer)}.is_err(){
+        ctx.active.store(false,Ordering::Release);ctx.allocated.store(false,Ordering::Release);let _=crate::ntoskrnl::alpc_resources::delete_security_context(id,pid);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return 0xC000_0035
+    }
+    let handle=match crate::ntoskrnl::ob::runtime::open_by_pointer(body,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL,crate::ntoskrnl::ob::runtime::current_owner(),false,0){
+        Ok(h)=>h as usize,Err(e)=>{let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return e as u32 as u64}
+    };
+    attr.context_handle=handle;
+    let result=if write_user(args[2],&attr).is_err(){let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::close_handle(handle as *mut c_void,crate::ntoskrnl::ob::runtime::current_owner());STATUS_ACCESS_VIOLATION}else{STATUS_SUCCESS};
+    let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);result
+}
+fn delete_security_context(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
+    let (port,port_body)=match port_from_handle(args[0],ACCESS_CONTROL){Ok(v)=>v,Err(s)=>return s};
+    if args[1]!=0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}
+    let (ctx,ctx_body)=match security_context_from_handle(args[2],port.port_id.load(Ordering::Acquire)){Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
+    let id=ctx.context_id.load(Ordering::Acquire);let pid=ctx.owner_pid.load(Ordering::Acquire);
+    let status=crate::ntoskrnl::alpc_resources::delete_security_context(id,pid).map(|_|STATUS_SUCCESS).unwrap_or(0xC000_0008);
+    ctx.active.store(false,Ordering::Release);
+    let owner=crate::ntoskrnl::ob::runtime::current_owner();
+    let _=crate::ntoskrnl::ob::runtime::unregister_object(ctx_body);
+    let _=crate::ntoskrnl::ob::runtime::close_handle(args[2] as *mut c_void,owner);
+    let _=crate::ntoskrnl::ob::runtime::dereference_body(ctx_body);
+    let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);status
+}
+fn revoke_security_context(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
+    let (port,port_body)=match port_from_handle(args[0],ACCESS_CONTROL){Ok(v)=>v,Err(s)=>return s};
+    if args[1]!=0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}
+    let (ctx,ctx_body)=match security_context_from_handle(args[2],port.port_id.load(Ordering::Acquire)){Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
+    let status=crate::ntoskrnl::alpc_resources::revoke_security_context(ctx.context_id.load(Ordering::Acquire),ctx.owner_pid.load(Ordering::Acquire)).map(|_|STATUS_SUCCESS).unwrap_or(0xC000_0008);
+    let _=crate::ntoskrnl::ob::runtime::dereference_body(ctx_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);status
+}
 fn endpoint_type()->Result<u16,u64>{
     let old=ALPC_ENDPOINT_TYPE.load(Ordering::Acquire);
     if old!=0{return Ok(old as u16)}
@@ -388,6 +485,9 @@ pub fn dispatch(number:u64,args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
         crate::syscall::NT_SYSCALL_ALPC_CREATE_PORT_SECTION=>create_port_section(args),
         crate::syscall::NT_SYSCALL_ALPC_DELETE_PORT_SECTION=>delete_port_section(args),
         crate::syscall::NT_SYSCALL_ALPC_CREATE_SECTION_VIEW=>create_section_view(args),
+        crate::syscall::NT_SYSCALL_ALPC_CREATE_SECURITY_CONTEXT=>create_security_context(args),
+        crate::syscall::NT_SYSCALL_ALPC_DELETE_SECURITY_CONTEXT=>delete_security_context(args),
+        crate::syscall::NT_SYSCALL_ALPC_REVOKE_SECURITY_CONTEXT=>revoke_security_context(args),
         crate::syscall::NT_SYSCALL_ALPC_DELETE_SECTION_VIEW=>delete_section_view(args),
         crate::syscall::NT_SYSCALL_ALPC_DISCONNECT_PORT=>disconnect_port(args),
         crate::syscall::NT_SYSCALL_ALPC_CONNECT_PORT=>connect_port(args),
