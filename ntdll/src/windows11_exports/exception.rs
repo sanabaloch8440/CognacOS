@@ -1,9 +1,9 @@
 //! Windows 11 x64 NTDLL exception and unwind exports.
 //!
-//! Public ABI layouts and signatures follow the Windows x64 CONTEXT,
-//! EXCEPTION_RECORD, RUNTIME_FUNCTION and RTL exception APIs. Operations that
-//! require a process exception dispatcher, loader function-table registry, or
-//! kernel continuation service fail closed until those services are connected.
+//! Windows x64 CONTEXT, EXCEPTION_RECORD, runtime-function unwind and native
+//! exception-routing support. Dynamic tables and dispatch registration are
+//! process-scoped kernel services; unsupported chained metadata and newer
+//! extended XSTATE formats remain explicitly outside the current implementation.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 use core::ffi::c_void;
@@ -799,8 +799,11 @@ mod tests {
         assert_eq!(core::mem::size_of::<CONTEXT>(), 0x4d0);
         assert_eq!(core::mem::align_of::<CONTEXT>(), 16);
         assert_eq!(core::mem::offset_of!(CONTEXT, ContextFlags), 48);
+        assert_eq!(core::mem::offset_of!(CONTEXT, SegSs), 66);
+        assert_eq!(core::mem::offset_of!(CONTEXT, EFlags), 68);
         assert_eq!(core::mem::offset_of!(CONTEXT, Rax), 120);
         assert_eq!(core::mem::offset_of!(CONTEXT, Rip), 248);
+        assert_eq!(core::mem::offset_of!(CONTEXT, opaque), 256);
         assert_eq!(core::mem::size_of::<EXCEPTION_RECORD>(), 0x98);
         assert_eq!(core::mem::size_of::<RUNTIME_FUNCTION>(), 12);
     }
