@@ -192,7 +192,8 @@ impl RedoJournal{
   let p=Self::H+n;j[p..p+n].copy_from_slice(hive);w32(j,20,checksum(hive));w32(j,8,Self::COMMITTED);Ok(())
  }
  pub fn recover(hive:&mut[u8],j:&[u8])->Result<bool,Error>{
-  if j.get(0..4)!=Some(&b"CGRJ"[..])||r32(j,4)?!=1{return Ok(false)}let n=r32(j,12)? as usize;
+  if j.iter().all(|b|*b==0){return Ok(false)}
+  if j.get(0..4)!=Some(&b"CGRJ"[..])||r32(j,4)?!=1{return Err(Error::Journal)}let n=r32(j,12)? as usize;
   if n!=hive.len()||j.len()<Self::capacity(n).ok_or(Error::Journal)?{return Err(Error::Journal)}
   let (off,sum)=match r32(j,8)?{Self::PREPARED=>(Self::H,r32(j,16)?),Self::COMMITTED=>(Self::H+n,r32(j,20)?),_=>return Err(Error::Journal)};
   let image=j.get(off..off+n).ok_or(Error::Truncated)?;if checksum(image)!=sum{return Err(Error::BadChecksum)}hive.copy_from_slice(image);Ok(true)
