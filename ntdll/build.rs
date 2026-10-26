@@ -19,6 +19,48 @@ fn main() {
             panic!("invalid name in Windows 11 NTDLL export inventory: {name}");
         }
     }
+    // Any Rust item explicitly given an unmangled symbol name is a candidate
+    // DLL export. Reject helpers and Cognac-only names here, before they can
+    // silently widen the Windows ABI surface.
+    fn audit_exports(path: &std::path::Path, inventory: &BTreeSet<String>, errors: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(path) else { return };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                audit_exports(&p, inventory, errors);
+                continue;
+            }
+            if p.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
+            let Ok(src) = fs::read_to_string(&p) else { continue };
+            let lines: Vec<&str> = src.lines().collect();
+            for (index, line) in lines.iter().enumerate() {
+                if line.trim() != "#[no_mangle]" { continue; }
+                for candidate in lines.iter().skip(index + 1).take(12) {
+                    let candidate = candidate.trim();
+                    let declaration = candidate
+                        .find("fn ")
+                        .map(|pos| &candidate[pos + 3..])
+                        .or_else(|| candidate.find("static mut ").map(|pos| &candidate[pos + 11..]))
+                        .or_else(|| candidate.find("static ").map(|pos| &candidate[pos + 7..]));
+                    if let Some(declaration) = declaration {
+                        let name: String = declaration.chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                            .collect();
+                        if !name.is_empty() && !inventory.contains(&name) {
+                            errors.push(format!("{}:{}: non-Windows NTDLL symbol `{}` has #[no_mangle]", p.display(), index + 1, name));
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    let mut export_errors = Vec::new();
+    audit_exports(std::path::Path::new("src"), &names, &mut export_errors);
+    if !export_errors.is_empty() {
+        panic!("NTDLL export inventory audit failed:\n{}", export_errors.join("\n"));
+    }
+
     // Avoid collisions with any Rust declaration already present in this crate.
     let mut declared = BTreeSet::new();
     fn scan(path: &std::path::Path, declared: &mut BTreeSet<String>) {
