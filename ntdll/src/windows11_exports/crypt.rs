@@ -5,7 +5,7 @@
 //! and bucket directories created by this implementation are allocated here.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec::Vec};
 
 use core::ffi::c_void;
 use core::mem::{size_of, MaybeUninit};
