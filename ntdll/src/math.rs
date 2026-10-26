@@ -4,7 +4,7 @@
 
 #![allow(non_snake_case)]
 
-/// Mirrors Wine's NTDLL abs helper for ordinary signed integers.
+/// Implements the Windows NTDLL C-runtime `abs` helper for signed integers.
 ///
 /// C leaves abs(INT_MIN) undefined. Wrapping negation avoids introducing a
 /// Rust debug-build panic for that same edge case; callers should not rely on
@@ -29,7 +29,7 @@ mod tests {
 
     #[test]
     fn abs_minimum_integer_does_not_panic() {
-        // C's abs(INT_MIN) is undefined; this port explicitly uses wrapping
+        // C's abs(INT_MIN) is undefined; this implementation explicitly uses wrapping
         // negation to keep behavior deterministic on Rust debug and release.
         assert_eq!(abs(i32::MIN), i32::MIN);
     }
