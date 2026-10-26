@@ -153,10 +153,6 @@ pub unsafe extern "system" fn ExpInterlockedPopEntrySListResume() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn KiUserCallbackDispatcher() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
 
 #[no_mangle]
 pub unsafe extern "system" fn KiUserInvertedFunctionTable() -> i32 {
@@ -164,10 +160,6 @@ pub unsafe extern "system" fn KiUserInvertedFunctionTable() -> i32 {
 }
 
 
-#[no_mangle]
-pub unsafe extern "system" fn longjmp() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
@@ -193,20 +185,8 @@ pub static mut NlsMbOemCodePageTag: u8 = 0; // Single-byte OEM default; updated 
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn sscanf() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn sscanf_s() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
 
-#[no_mangle]
-pub unsafe extern "system" fn swscanf_s() -> i32 {
-    STATUS_NOT_IMPLEMENTED
-}
 
 
 
