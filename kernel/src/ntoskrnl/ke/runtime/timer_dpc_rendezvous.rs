@@ -488,7 +488,9 @@ fn drain_local_dpc_queue(cpu:usize)->bool{
         };
         if let Some((routine,object,context,arg1,arg2))=callback {
             let function:DpcRoutine=unsafe{core::mem::transmute(routine)};
+            watchdog_dpc_begin(routine);
             unsafe{function(object as *mut _,context as *mut _,arg1 as *mut _,arg2 as *mut _);}
+            watchdog_dpc_end();
             {
                 let mut table=DPCS.lock();
                 if let Some(record)=table.records.iter_mut().find(|r|r.object==object && r.running) {
@@ -532,7 +534,9 @@ pub fn dispatch_threaded_dpcs(){
         };
         if let Some((routine,object,context,arg1,arg2))=callback{
             let function:DpcRoutine=unsafe{core::mem::transmute(routine)};
+            watchdog_dpc_begin(routine);
             unsafe{function(object as *mut _,context as *mut _,arg1 as *mut _,arg2 as *mut _);}
+            watchdog_dpc_end();
             let mut table=DPCS.lock();
             if let Some(record)=table.records.iter_mut().find(|r|r.object==object&&r.running){record.running=false;}
             drop(table);
