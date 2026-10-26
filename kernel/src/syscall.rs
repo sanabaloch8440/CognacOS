@@ -366,6 +366,13 @@ fn etw_create_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  }
  NT_STATUS_SUCCESS
 }
+fn etw_session_name_equal(left:&[u16],right:&[u16])->bool {
+ if left.len()!=right.len(){return false;}
+ left.iter().zip(right.iter()).all(|(a,b)|{
+  let fold=|ch:u16|if (b'A' as u16..=b'Z' as u16).contains(&ch){ch+32}else{ch};
+  fold(*a)==fold(*b)
+ })
+}
 fn etw_create_named_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  let name_ptr=args[0];let name_len=args[1] as usize;let out=args[2];
  if out==0||name_len==0||name_len>63||name_ptr==0{return NT_STATUS_INVALID_PARAMETER;}
@@ -381,7 +388,7 @@ fn etw_create_named_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  let _g=KernelEtwGuard::lock();
  unsafe {
   let table=core::ptr::addr_of_mut!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
-  if (0..16).any(|i|{let s=&*table.add(i);s.active&&s.name_len as usize==name_len&&s.name[..name_len]==name[..name_len]}){return 0xC0000035;}
+  if (0..16).any(|i|{let s=&*table.add(i);s.active&&etw_session_name_equal(&s.name[..s.name_len as usize],&name[..name_len])}){return 0xC0000035;}
   let Some(i)=(0..16).find(|&i|!(*table.add(i)).active)else{return 0xC000009A;};
   let handle=ETW_KERNEL_NEXT.fetch_add(1,Ordering::Relaxed).max(1);
   *table.add(i)=KernelEtwSession{active:true,handle,owner:pid,name_len:name_len as u8,_pad:[0;7],name};
