@@ -561,3 +561,44 @@ pub unsafe extern "C" fn wcsncpy(d:*mut u16,s:*const u16,n:usize)->*mut u16{if d
 pub unsafe extern "C" fn wcscat(d:*mut u16,s:*const u16)->*mut u16{if d.is_null()||s.is_null(){return d;}let mut i=0;while *d.add(i)!=0{i+=1;}let mut j=0;loop{let c=*s.add(j);*d.add(i+j)=c;if c==0{break;}j+=1;}d}
 #[no_mangle]
 pub unsafe extern "C" fn wcsncat(d:*mut u16,s:*const u16,n:usize)->*mut u16{if d.is_null()||s.is_null(){return d;}let mut i=0;while *d.add(i)!=0{i+=1;}let mut j=0;while j<n&&*s.add(j)!=0{*d.add(i+j)=*s.add(j);j+=1;}*d.add(i+j)=0;d}
+
+
+/// Microsoft-specific secure search/sort signatures use the context as the first comparator argument.
+#[no_mangle]
+pub unsafe extern "C" fn bsearch_s(key:*const c_void,base:*const c_void,count:usize,width:usize,compare:Option<unsafe extern "C" fn(*mut c_void,*const c_void,*const c_void)->i32>,context:*mut c_void)->*mut c_void {
+ if key.is_null()||compare.is_none()||width==0||(base.is_null()&&count!=0){return ptr::null_mut();}
+ let cmp=compare.unwrap();let(mut lo,mut hi)=(0usize,count);
+ while lo<hi{let mid=lo+(hi-lo)/2;let item=(base as *const u8).add(mid*width) as *const c_void;let r=cmp(context,key,item);if r==0{return item as *mut c_void;}if r<0{hi=mid;}else{lo=mid+1;}}ptr::null_mut()
+}
+#[no_mangle]
+pub unsafe extern "C" fn qsort_s(base:*mut c_void,count:usize,width:usize,compare:Option<unsafe extern "C" fn(*mut c_void,*const c_void,*const c_void)->i32>,context:*mut c_void){
+ if base.is_null()||count<2||width==0||compare.is_none(){return;}let cmp=compare.unwrap();let p=base as *mut u8;let swap=|a:usize,b:usize|unsafe{for j in 0..width{ptr::swap(p.add(a*width+j),p.add(b*width+j));}};let sift=|mut root:usize,end:usize|unsafe{loop{let child=root*2+1;if child>=end{break;}let mut largest=child;if child+1<end&&cmp(context,p.add(child*width) as _,p.add((child+1)*width) as _) <0{largest=child+1;}if cmp(context,p.add(root*width) as _,p.add(largest*width) as _)>=0{break;}swap(root,largest);root=largest;}};let mut start=count/2;while start>0{start-=1;sift(start,count);}let mut end=count;while end>1{end-=1;swap(0,end);sift(0,end);}
+}
+#[no_mangle]
+pub unsafe extern "C" fn memcpy_s(dst:*mut c_void,dst_size:usize,src:*const c_void,count:usize)->i32{if count==0{return 0;}if dst.is_null()||src.is_null()||count>dst_size{if !dst.is_null(){ptr::write_bytes(dst,0,dst_size);}return EINVAL;}ptr::copy_nonoverlapping(src as *const u8,dst as *mut u8,count);0}
+#[no_mangle]
+pub unsafe extern "C" fn memmove_s(dst:*mut c_void,dst_size:usize,src:*const c_void,count:usize)->i32{if count==0{return 0;}if dst.is_null()||src.is_null()||count>dst_size{if !dst.is_null(){ptr::write_bytes(dst,0,dst_size);}return EINVAL;}ptr::copy(src as *const u8,dst as *mut u8,count);0}
+#[no_mangle]
+pub unsafe extern "C" fn strtoul(s:*const c_char,end:*mut *mut c_char,base:i32)->u64{if !end.is_null(){*end=s as *mut c_char;}if s.is_null()||!(base==0||(2..=36).contains(&base)){return 0;}let mut p=s;while (*p as u8).is_ascii_whitespace(){p=p.add(1);}let neg=*p==b'-' as i8;if neg||*p==b'+' as i8{p=p.add(1);}let mut radix=base as u32;if radix==0{if *p==b'0' as i8&&(*p.add(1)==b'x' as i8||*p.add(1)==b'X' as i8){radix=16;p=p.add(2);}else if *p==b'0' as i8{radix=8;}else{radix=10;}}else if radix==16&&*p==b'0' as i8&&(*p.add(1)==b'x' as i8||*p.add(1)==b'X' as i8){p=p.add(2);}let mut any=false;let mut v=0u64;loop{let ch=*p as u8;let d=if ch>=b'0'&&ch<=b'9'{(ch-b'0')as u32}else if ch>=b'a'&&ch<=b'z'{(ch-b'a'+10)as u32}else if ch>=b'A'&&ch<=b'Z'{(ch-b'A'+10)as u32}else{break};if d>=radix{break;}any=true;v=v.saturating_mul(radix as u64).saturating_add(d as u64);p=p.add(1);}if !any{return 0;}if !end.is_null(){*end=p as *mut c_char;}if neg{0u64.wrapping_sub(v)}else{v}}
+#[no_mangle]
+pub unsafe extern "C" fn strspn(s:*const c_char,accept:*const c_char)->usize{if s.is_null()||accept.is_null(){return 0;}let mut i=0;while *s.add(i)!=0{let mut j=0;while *accept.add(j)!=0&&*accept.add(j)!=*s.add(i){j+=1;}if *accept.add(j)==0{break;}i+=1;}i}
+#[no_mangle]
+pub unsafe extern "C" fn strcspn(s:*const c_char,reject:*const c_char)->usize{if s.is_null()||reject.is_null(){return 0;}let mut i=0;while *s.add(i)!=0{let mut j=0;while *reject.add(j)!=0&&*reject.add(j)!=*s.add(i){j+=1;}if *reject.add(j)!=0{break;}i+=1;}i}
+#[no_mangle]
+pub unsafe extern "C" fn strpbrk(s:*const c_char,accept:*const c_char)->*mut c_char{if s.is_null()||accept.is_null(){return ptr::null_mut();}let mut i=0;while *s.add(i)!=0{let mut j=0;while *accept.add(j)!=0{if *s.add(i)==*accept.add(j){return s.add(i) as *mut c_char;}j+=1;}i+=1;}ptr::null_mut()}
+#[no_mangle]
+pub unsafe extern "C" fn strstr(haystack:*const c_char,needle:*const c_char)->*mut c_char{if haystack.is_null()||needle.is_null(){return ptr::null_mut();}if *needle==0{return haystack as *mut c_char;}let mut i=0;while *haystack.add(i)!=0{let mut j=0;while *needle.add(j)!=0&&*haystack.add(i+j)==*needle.add(j){j+=1;}if *needle.add(j)==0{return haystack.add(i) as *mut c_char;}i+=1;}ptr::null_mut()}
+#[no_mangle]
+pub unsafe extern "C" fn wcsnlen(s:*const u16,max:usize)->usize{if s.is_null(){return 0;}let mut i=0;while i<max&&*s.add(i)!=0{i+=1;}i}
+#[no_mangle]
+pub unsafe extern "C" fn wcsspn(s:*const u16,accept:*const u16)->usize{if s.is_null()||accept.is_null(){return 0;}let mut i=0;while *s.add(i)!=0{let mut j=0;while *accept.add(j)!=0&&*accept.add(j)!=*s.add(i){j+=1;}if *accept.add(j)==0{break;}i+=1;}i}
+#[no_mangle]
+pub unsafe extern "C" fn wcscspn(s:*const u16,reject:*const u16)->usize{if s.is_null()||reject.is_null(){return 0;}let mut i=0;while *s.add(i)!=0{let mut j=0;while *reject.add(j)!=0&&*reject.add(j)!=*s.add(i){j+=1;}if *reject.add(j)!=0{break;}i+=1;}i}
+#[no_mangle]
+pub unsafe extern "C" fn wcspbrk(s:*const u16,accept:*const u16)->*mut u16{if s.is_null()||accept.is_null(){return ptr::null_mut();}let mut i=0;while *s.add(i)!=0{let mut j=0;while *accept.add(j)!=0{if *s.add(i)==*accept.add(j){return s.add(i) as *mut u16;}j+=1;}i+=1;}ptr::null_mut()}
+#[no_mangle]
+pub unsafe extern "C" fn wcsstr(haystack:*const u16,needle:*const u16)->*mut u16{if haystack.is_null()||needle.is_null(){return ptr::null_mut();}if *needle==0{return haystack as *mut u16;}let mut i=0;while *haystack.add(i)!=0{let mut j=0;while *needle.add(j)!=0&&*haystack.add(i+j)==*needle.add(j){j+=1;}if *needle.add(j)==0{return haystack.add(i) as *mut u16;}i+=1;}ptr::null_mut()}
+#[no_mangle]
+pub unsafe extern "C" fn wcstol(s:*const u16,end:*mut *mut u16,base:i32)->i32{if !end.is_null(){*end=s as *mut u16;}if s.is_null()||!(base==0||(2..=36).contains(&base)){return 0;}let mut i=0usize;while (*s.add(i))<=0x20&&*s.add(i)!=0{i+=1;}let mut neg=false;if *s.add(i)==45{neg=true;i+=1;}else if *s.add(i)==43{i+=1;}let mut radix=base as u32;if radix==0{if *s.add(i)==48{if *s.add(i+1)==120||*s.add(i+1)==88{radix=16;i+=2;}else{radix=8;}}else{radix=10;}}else if radix==16&&*s.add(i)==48&&(*s.add(i+1)==120||*s.add(i+1)==88){i+=2;}let mut any=false;let mut v=0u64;let mut limit=if neg{(i32::MAX as u64)+1}else{i32::MAX as u64};loop{let ch=*s.add(i) as u32;let d=if ch>=48&&ch<=57{ch-48}else if ch>=97&&ch<=122{ch-97+10}else if ch>=65&&ch<=90{ch-65+10}else{break};if d>=radix{break;}any=true;v=v.saturating_mul(radix as u64).saturating_add(d as u64).min(limit);i+=1;}if !any{return 0;}if !end.is_null(){*end=s.add(i) as *mut u16;}if neg{v.wrapping_neg() as i32}else{v as i32}}
+#[no_mangle]
+pub unsafe extern "C" fn wcstoul(s:*const u16,end:*mut *mut u16,base:i32)->u32{wcstol(s,end,base) as u32}
