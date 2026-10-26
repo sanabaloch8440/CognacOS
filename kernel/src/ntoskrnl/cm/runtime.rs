@@ -960,8 +960,12 @@ mod tests {
   let child_cell;
   {
    let hive=hive_backend::Hive::open(&bytes).unwrap();
-   let key=hive.find_path(&child_name).unwrap();
+   let key=hive.key_at(child).unwrap();
+   let mut decoded=[0u16;8];
+   assert_eq!(key.name_utf16(&mut decoded).unwrap(),child_name.len());
+   assert_eq!(&decoded[..child_name.len()],&child_name);
    child_cell=key.cell_index();
+   assert_eq!(hive.find_path(&child_name).unwrap().cell_index(),child_cell);
    let value=key.find_value(&value_name).unwrap();
    let mut data=[0u8;8];
    assert_eq!(value.data(&mut data).unwrap(),5);
