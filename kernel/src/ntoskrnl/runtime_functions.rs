@@ -152,7 +152,7 @@ pub fn lookup(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         else if rva >= entry.end { lo = mid + 1; }
         else { found = entry_address; break; }
     }
-    if args[1] != 0 && crate::syscall::copy_current_user_to(args[1], &image_base.to_le_bytes()).is_err() {
+    if args[1] != 0 && !crate::syscall::copy_current_user_to(args[1], &image_base.to_le_bytes()) {
         found = 0;
     }
     {
