@@ -934,3 +934,22 @@ mod tests {
         assert_eq!(frame, context.Rsp);
     }
 }
+
+
+// Kernel-to-user callback dispatcher. This entry must return through the
+// NtCallbackReturn protocol, not as an ordinary Rust function. Until the
+// callback table and return syscall are wired, fail-fast rather than returning
+// to the kernel with an invalid callback frame.
+#[no_mangle]
+pub unsafe extern "system" fn KiUserCallbackDispatcher(
+    _callback_index: u32,
+    _argument: *mut c_void,
+    _argument_length: u32,
+) -> ! {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        core::arch::asm!("int 0x29", in("rcx") 7usize, options(noreturn, nostack));
+    }
+    #[cfg(not(target_os = "windows"))]
+    loop { core::hint::spin_loop(); }
+}
