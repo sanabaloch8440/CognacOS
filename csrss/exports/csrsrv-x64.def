@@ -1,0 +1,38 @@
+; CognacOS CSRSRV server-DLL export contract.
+; Reference: Windows 10 x64 10.0.19041 CSRSRV export inventory, which is the
+; nearest fully enumerated public baseline. Verify against the exact Windows 11
+; 24H2/25H2 reference PE before claiming byte-for-byte Windows 11 parity.
+LIBRARY csrsrv
+EXPORTS
+    CsrAddStaticServerThread                 @1
+    CsrCallServerFromServer                  @2
+    CsrConnectToUser                         @3
+    CsrCreateProcess                         @4
+    CsrCreateRemoteThread                    @5
+    CsrCreateThread                          @6
+    CsrDeferredCreateProcess                 @7
+    CsrDereferenceProcess                    @8
+    CsrDereferenceThread                     @9
+    CsrDestroyProcess                        @10
+    CsrDestroyThread                         @11
+    CsrExecServerThread                      @12
+    CsrGetProcessLuid                        @13
+    CsrImpersonateClient                     @14
+    CsrIsClientSandboxed                     @15
+    CsrLockProcessByClientId                 @16
+    CsrLockThreadByClientId                  @17
+    CsrLockedReferenceProcess                @18
+    CsrQueryApiPort                          @19
+    CsrReferenceThread                       @20
+    CsrRegisterClientThreadSetup             @21
+    CsrReplyToMessage                        @22
+    CsrRevertToSelf                          @23
+    CsrServerInitialization                 @24
+    CsrSetBackgroundPriority                 @25
+    CsrSetForegroundPriority                 @26
+    CsrShutdownProcesses                     @27
+    CsrUnhandledExceptionFilter              @28
+    CsrUnlockProcess                         @29
+    CsrUnlockThread                          @30
+    CsrValidateMessageBuffer                 @31
+    CsrValidateMessageString                 @32
