@@ -82,7 +82,7 @@ fn provider_matches(p: &EtwProvider, level: u8, keyword: u64) -> bool {
     keyword == 0 || p.match_all == 0 || p.match_all & keyword == p.match_all
 }
 fn current_process_thread() -> (u64, u64) {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", any(target_os = "windows", target_os = "none")))]
     unsafe {
         let teb: *const u8;
         core::arch::asm!("mov {}, gs:[0x30]", out(reg) teb, options(nostack, preserves_flags, readonly));
@@ -369,6 +369,28 @@ fn EvtIntReportEventAndSourceAsync() -> i32 { 0xC0000002u32 as i32 }
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static CALLBACK_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+    unsafe extern "system" fn test_enable_callback(
+        _source: *const Guid, _enabled: u32, _level: u8, _any: u64, _all: u64,
+        _filter: *const core::ffi::c_void, _context: *mut core::ffi::c_void,
+    ) { CALLBACK_COUNT.fetch_add(1, Ordering::Relaxed); }
+
+    #[test]
+    fn controller_notifies_callback_and_filters_keywords() {
+        CALLBACK_COUNT.store(0, Ordering::Relaxed);
+        let guid = Guid { data1: 0x87654321, data2: 0x1234, data3: 0x4321, data4: [8,7,6,5,4,3,2,1] };
+        let mut handle = 0u64;
+        let callback = test_enable_callback as *const () as *const core::ffi::c_void;
+        assert_eq!(unsafe { EtwEventRegister(&guid, callback, core::ptr::null_mut(), &mut handle) }, ERROR_SUCCESS);
+        assert_eq!(controller_set_provider(&guid, true, 4, 0x2, 0), 1);
+        assert_eq!(CALLBACK_COUNT.load(Ordering::Relaxed), 1);
+        assert_eq!(unsafe { EtwEventProviderEnabled(handle, 3, 0x2) }, 1);
+        assert_eq!(unsafe { EtwEventProviderEnabled(handle, 3, 0x4) }, 0);
+        assert_eq!(controller_set_provider(&guid, false, 0, 0, 0), 1);
+        assert_eq!(CALLBACK_COUNT.load(Ordering::Relaxed), 2);
+        assert_eq!(unsafe { EtwEventUnregister(handle) }, ERROR_SUCCESS);
+    }
 
     #[test]
     fn provider_event_payload_round_trip_and_rundown() {
