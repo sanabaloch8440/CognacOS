@@ -506,7 +506,7 @@ jobs:
 
           gdb = Path("build/gdb-state.txt").read_text(errors="replace")
           serial = Path("build/serial.log").read_text(errors="replace")
-          m = re.search(r"\\brip\\s+0x([0-9a-fA-F]+)", gdb)
+          m = re.search(r"\brip\s+0x([0-9a-fA-F]+)", gdb)
           if not m:
               print("GDB did not report RIP; retain gdb-state.txt and qemu-debug.log for manual analysis.")
               raise SystemExit(0)
