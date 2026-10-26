@@ -275,7 +275,7 @@ pub fn snapshot_referenced(pointer: *mut core::ffi::c_void) -> Option<ProcessSna
     let registry = TABLE.lock();
     registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC
         && core::ptr::addr_of!(**p) as *mut EProcess as *mut core::ffi::c_void == pointer
-        && p.references != 0)
+        )
         .map(|p| ProcessSnapshot { process_id: p.process_id, state: p.state, exit_code: p.exit_code })
 }
 
