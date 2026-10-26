@@ -130,6 +130,7 @@ fn current_process_thread() -> (u64, u64) {
     #[allow(unreachable_code)] (0, 0)
 }
 fn current_activity(pid: u64, tid: u64) -> Guid {
+    let _guard=EtwGuard::lock();
     let slots = core::ptr::addr_of!(ETW_ACTIVITIES).cast::<ActivitySlot>();
     for i in 0..ACTIVITY_CAPACITY {
         let slot = unsafe { &*slots.add(i) };
@@ -260,7 +261,7 @@ pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const Even
         let item=unsafe{core::ptr::read_unaligned(data.add(i))};
         let n=item.size as usize;
         if kernel_payload_len.checked_add(n).filter(|end|*end<=MAX_EVENT_PAYLOAD).is_none(){return ERROR_MORE_DATA;}
-        if n>0 {unsafe{core::ptr::copy_nonoverlapping(item.ptr as *const u8,kernel_payload.as_mut_ptr().add(kernel_payload_len),n);}}
+        if n>0 {if item.ptr==0{return ERROR_INVALID_PARAMETER;} unsafe{core::ptr::copy_nonoverlapping(item.ptr as *const u8,kernel_payload.as_mut_ptr().add(kernel_payload_len),n);}}
         kernel_payload_len+=n;
     }
     let (pid,tid)=current_process_thread();
@@ -442,7 +443,7 @@ pub unsafe extern "system" fn EtwEventActivityIdControl(control_code: u32, activ
 /// Create a kernel ETW session. The kernel requires an unrestricted administrator token
 /// with the SystemProfile privilege; the session handle is owner-scoped.
 pub(crate) fn controller_create_session(out_handle: &mut u64) -> i32 {
-    match kernel_etw_call(NT_SYSCALL_ETW_CREATE_SESSION,0,out_handle as *mut u64 as u64,0,0) {
+    match kernel_etw_call(NT_SYSCALL_ETW_CREATE_SESSION,1,out_handle as *mut u64 as u64,0,0) {
         Some(0)=>0, Some(status)=>status as u32 as i32, None=>0xC0000002u32 as i32
     }
 }
@@ -450,7 +451,7 @@ pub(crate) fn controller_create_session(out_handle: &mut u64) -> i32 {
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 pub(crate) fn controller_enable_provider(session:u64,guid:&Guid,enabled:bool,level:u8,any:u64,all:u64)->i32 {
  let result:u64;
- unsafe { core::arch::asm!("sub rsp, 48", "mov qword ptr [rsp + 32], {any_kw}", "mov qword ptr [rsp + 40], {all_kw}", "int 0x83", "add rsp, 48",
+ unsafe { core::arch::asm!("sub rsp, 56", "mov qword ptr [rsp + 40], {any_kw}", "mov qword ptr [rsp + 48], {all_kw}", "int 0x83", "add rsp, 56",
  any_kw=in(reg) any, all_kw=in(reg) all,
  inout("rax") NT_SYSCALL_ETW_ENABLE_SESSION=>result,in("r10") session,in("rdx") guid as *const Guid as u64,in("r8") enabled as u64,in("r9") level as u64,lateout("rcx") _,lateout("r11") _); }
  result as u32 as i32
