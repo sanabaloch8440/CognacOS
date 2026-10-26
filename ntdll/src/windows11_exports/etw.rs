@@ -249,8 +249,7 @@ pub unsafe extern "system" fn EtwEventProviderEnabled(handle: u64, level: u8, ke
     provider_index(entries, handle).map(|i| provider_matches(unsafe { &*entries.add(i) }, level, keyword)).unwrap_or(false) as u8
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const EventDescriptor, count: u32, data: *const EventDataDescriptor) -> u32 {
+unsafe fn etw_event_write_impl(handle: u64, descriptor: *const EventDescriptor, activity_override: Option<&Guid>, related_override: Option<&Guid>, count: u32, data: *const EventDataDescriptor) -> u32 {
     if descriptor.is_null() || count as usize > MAX_DATA_DESCRIPTORS || (count != 0 && data.is_null()) {
         return ERROR_INVALID_PARAMETER;
     }
@@ -265,8 +264,9 @@ pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const Even
         kernel_payload_len+=n;
     }
     let (pid,tid)=current_process_thread();
-    let activity=current_activity(pid,tid);
-    let related=Guid::default();
+    let current=current_activity(pid,tid);
+    let activity=activity_override.copied().unwrap_or(current);
+    let related=related_override.copied().unwrap_or_default();
     let mut wire=[0u8;48];
     unsafe {
         core::ptr::copy_nonoverlapping((&descriptor_value as *const EventDescriptor).cast::<u8>(),wire.as_mut_ptr(),16);
@@ -326,6 +326,23 @@ pub unsafe extern "system" fn EtwEventWrite(handle: u64, descriptor: *const Even
     ERROR_SUCCESS
 }
 
+
+#[no_mangle]
+pub unsafe extern "system" fn EtwEventWrite(
+    handle:u64, descriptor:*const EventDescriptor, count:u32, data:*const EventDataDescriptor
+)->u32 {
+    unsafe { etw_event_write_impl(handle,descriptor,None,None,count,data) }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn EtwEventWriteTransfer(
+    handle:u64, descriptor:*const EventDescriptor, activity_id:*const Guid,
+    related_activity_id:*const Guid, count:u32, data:*const EventDataDescriptor
+)->u32 {
+    let activity=if activity_id.is_null(){None}else{Some(unsafe{core::ptr::read_unaligned(activity_id)})};
+    let related=if related_activity_id.is_null(){None}else{Some(unsafe{core::ptr::read_unaligned(related_activity_id)})};
+    unsafe { etw_event_write_impl(handle,descriptor,activity.as_ref(),related.as_ref(),count,data) }
+}
 
 /// Apply a controller's enable state and filters. Callback execution is outside the lock.
 pub(crate) fn controller_set_provider(guid: &Guid, enabled: bool, level: u8, match_any: u64, match_all: u64) -> usize {
