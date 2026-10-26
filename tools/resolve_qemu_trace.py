@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Map QEMU x86 exception PCs to source lines using kernel/HAL DWARF and NTDLL PDB."""
+"""Map live GDB RIPs and QEMU x86 exception PCs to source lines."""
 import argparse
 import re
 import struct
@@ -41,11 +41,12 @@ def resolve_elf(path, pc):
 
 def main():
     ap = argparse.ArgumentParser()
-    for name in ("trace", "serial", "kernel", "hal", "ntdll"):
+    for name in ("trace", "serial", "kernel", "hal", "ntdll", "gdb"):
         ap.add_argument("--" + name, type=Path, required=True)
     a = ap.parse_args()
     trace = a.trace.read_text(errors="replace") if a.trace.exists() else ""
     serial = a.serial.read_text(errors="replace") if a.serial.exists() else ""
+    gdb = a.gdb.read_text(errors="replace") if a.gdb.exists() else ""
     modules = [int(x, 16) for x in re.findall(r"module=0x([0-9a-fA-F]+)", serial)]
     info = pe_info(a.ntdll)
     if info:
@@ -54,17 +55,47 @@ def main():
     else:
         image_size = 0
 
+    def resolve_pc(pc):
+        location = resolve_elf(a.kernel, pc)
+        if location:
+            return "[ntoskrnl]\n" + location
+        location = resolve_elf(a.hal, pc)
+        if location:
+            return "[HAL]\n" + location
+        if info and image_size:
+            base = next((b for b in reversed(modules) if b <= pc < b + image_size), None)
+            if base is not None:
+                rva = pc - base
+                location = command([
+                    "llvm-symbolizer", "--obj=" + str(a.ntdll), "--relative-address",
+                    "--functions=linkage", "--demangle", hex(rva)
+                ])
+                if location and "??:0" not in location and "??:?" not in location:
+                    return f"[NTDLL] base=0x{base:x} RVA=0x{rva:x}\n{location}"
+        return "Source line unavailable; inspect archived debug companions."
+
+    print("=== GDB stopped-CPU RIPs -> source line ===")
+    pcs = []
+    for match in re.finditer(r"\brip\s+0x([0-9a-fA-F]+)", gdb):
+        pc = int(match.group(1), 16)
+        if pc not in pcs:
+            pcs.append(pc)
+    if not pcs:
+        print("No RIP register records found in GDB snapshot.")
+    for pc in pcs:
+        print(f"\nRIP=0x{pc:x}\n{resolve_pc(pc)}")
+
     # QEMU -d int records vector/error and the corresponding architectural PC.
     pattern = re.compile(
         r"\bv=([0-9a-fA-F]{1,2})\s+e=([0-9a-fA-F]+).*?"
         r"\bIP=([0-9a-fA-F]+):([0-9a-fA-F]+)\s+pc=([0-9a-fA-F]+)"
     )
     events = []
-    for m in pattern.finditer(trace):
-        vector = int(m.group(1), 16)
+    for match in pattern.finditer(trace):
+        vector = int(match.group(1), 16)
         if vector < 32:
-            events.append((vector, int(m.group(2), 16), int(m.group(5), 16)))
-    print("=== QEMU exception PC -> source line ===")
+            events.append((vector, int(match.group(2), 16), int(match.group(5), 16)))
+    print("\n=== QEMU exception PCs -> source lines ===")
     if not events:
         print("No x86 exception vectors 0-31 were recorded; this may be a hang/spin path rather than a CPU exception.")
         return 0
@@ -77,29 +108,9 @@ def main():
             latest.append(event)
         if len(latest) == 30:
             break
-
     for vector, error, pc in latest:
         print(f"\nvector=0x{vector:02x} error=0x{error:x} PC=0x{pc:x}")
-        location = resolve_elf(a.kernel, pc)
-        if location:
-            print("[ntoskrnl]\n" + location)
-            continue
-        location = resolve_elf(a.hal, pc)
-        if location:
-            print("[HAL]\n" + location)
-            continue
-        if info and image_size:
-            base = next((b for b in reversed(modules) if b <= pc < b + image_size), None)
-            if base is not None:
-                rva = pc - base
-                location = command([
-                    "llvm-symbolizer", "--obj=" + str(a.ntdll), "--relative-address",
-                    "--functions=linkage", "--demangle", hex(rva)
-                ])
-                if location and "??:0" not in location and "??:?" not in location:
-                    print(f"[NTDLL] base=0x{base:x} RVA=0x{rva:x}\n{location}")
-                    continue
-        print("Source line unavailable for this PC; inspect gdb-state.txt and archived debug companions.")
+        print(resolve_pc(pc))
     return 0
 
 
