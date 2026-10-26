@@ -188,7 +188,6 @@ pub const NT_SYSCALL_ETW_REGISTER:u64=0x133;
 pub const NT_SYSCALL_ETW_ENABLE_STATE:u64=0x134;
 pub const NT_SYSCALL_ETW_WRITE_EVENT:u64=0x135;
 pub const NT_SYSCALL_ETW_READ_EVENT:u64=0x136;
-pub const NT_SYSCALL_ETW_SET_ENABLE:u64=0x137;
 pub const NT_SYSCALL_ETW_CREATE_SESSION:u64=0x138;
 pub const NT_SYSCALL_ETW_ENABLE_SESSION:u64=0x139;
 
@@ -282,6 +281,13 @@ fn etw_read_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
    if ETW_KERNEL_LEN==0{return 0x8000001Au64;}
    let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();let e=&mut *events.add(ETW_KERNEL_HEAD);
    if !e.active {ETW_KERNEL_HEAD=(ETW_KERNEL_HEAD+1)%ETW_EVENT_CAPACITY;ETW_KERNEL_LEN-=1;return 0x8000001Au64;}
+   let pid=current_process_id();
+   let providers=core::ptr::addr_of!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
+   let provider_owner=(0..ETW_PROVIDER_CAPACITY).find_map(|i|{let p=&*providers.add(i);if p.active&&p.handle==e.provider{Some(p.owner)}else{None}});
+   let own_provider=provider_owner==Some(pid);
+   let sessions=core::ptr::addr_of!(ETW_KERNEL_SESSIONS).cast::<KernelEtwSession>();
+   let authorized=own_provider || (args[4]!=0 && (0..16).any(|i|{let s=&*sessions.add(i);s.active&&s.handle==args[4]&&s.owner==pid}));
+   if !authorized{return 0xC0000022;}
    record[0..8].copy_from_slice(&e.provider.to_le_bytes());record[8..16].copy_from_slice(&e.pid.to_le_bytes());record[16..24].copy_from_slice(&e.tid.to_le_bytes());record[24..26].copy_from_slice(&e.length.to_le_bytes());record[32..48].copy_from_slice(&e.descriptor);record[48..64].copy_from_slice(&e.activity);record[64..80].copy_from_slice(&e.related_activity);
    n=e.length as usize;payload[..n].copy_from_slice(&e.payload[..n]);*e=KernelEtwEvent::EMPTY;ETW_KERNEL_HEAD=(ETW_KERNEL_HEAD+1)%ETW_EVENT_CAPACITY;ETW_KERNEL_LEN-=1;
   }
@@ -292,18 +298,6 @@ fn etw_read_event(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  NT_STATUS_SUCCESS
 }
 
-fn etw_set_enable(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
- let handle=args[0];let enabled=args[1]!=0;let level=args[2] as u8;let any=args[3];let all=args[4];
- if args[2]>u8::MAX as u64{return NT_STATUS_INVALID_PARAMETER;}
- let _g=KernelEtwGuard::lock();
- unsafe {
-  let table=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
-  let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|{let p=&*table.add(i);p.active&&p.handle==handle&&p.owner==current_process_id()}) else{return NT_STATUS_INVALID_HANDLE;};
-  let p=&mut *table.add(i);p.enabled=enabled;p.level=level;p.any=any;p.all=all;
- }
- NT_STATUS_SUCCESS
-}
-pub 
 fn etw_create_session(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  if args[1]==0{return NT_STATUS_INVALID_PARAMETER;}
  let pid=current_process_id();
@@ -1091,7 +1085,6 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_ETW_ENABLE_STATE => etw_enable_state(args),
         NT_SYSCALL_ETW_WRITE_EVENT => etw_write_event(args),
         NT_SYSCALL_ETW_READ_EVENT => etw_read_event(args),
-        NT_SYSCALL_ETW_SET_ENABLE => etw_set_enable(args),
         NT_SYSCALL_ETW_CREATE_SESSION => etw_create_session(args),
         NT_SYSCALL_ETW_ENABLE_SESSION => etw_enable_session(args),
         NT_SYSCALL_OPEN_KEY => nt_open_key(args),
@@ -1209,8 +1202,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_ETW_REGISTER => 2,
             NT_SYSCALL_ETW_ENABLE_STATE => 2,
             NT_SYSCALL_ETW_WRITE_EVENT => 4,
-            NT_SYSCALL_ETW_READ_EVENT => 4,
-            NT_SYSCALL_ETW_SET_ENABLE => 5,
+            NT_SYSCALL_ETW_READ_EVENT => 5,
             NT_SYSCALL_ETW_CREATE_SESSION => 2,
             NT_SYSCALL_ETW_ENABLE_SESSION => 6,
             NT_SYSCALL_OPEN_KEY => 3,
