@@ -132,6 +132,44 @@ impl<'a> HiveWriter<'a>{
   if self.bytes.len()<BASE{return Err(Error::Truncated)}
   w32(self.bytes,4,sequence);w32(self.bytes,8,sequence.wrapping_add(1).max(1));w32(self.bytes,0x1fc,0);Ok(())
  }
+ /// Remove a value by replacing the value-list cell without moving any
+ /// surviving VK cells. Detached cells are reclaimed by a later compaction pass.
+ pub fn delete_value(&mut self,key_id:u32,name:&[u16])->Result<(),Error>{
+  let k=self.cell(key_id)?;if k.get(0..2)!=Some(&b"nk"[..])||k.len()<0x4c{return Err(Error::InvalidKey)}
+  let count=r32(k,0x24)?;if count==0{return Err(Error::InvalidValue)}let old_list=r32(k,0x28)?;
+  let list=self.cell(old_list)?;if list.len()<count as usize*4{return Err(Error::InvalidValue)}
+  let mut indexes=[0u32;1024];if count as usize>indexes.len(){return Err(Error::InvalidValue)}
+  let mut found=false;let mut kept=0usize;
+  for i in 0..count as usize{
+   let id=r32(list,i*4)?;let v=self.cell(id)?;if v.get(0..2)!=Some(&b"vk"[..])||v.len()<0x14{return Err(Error::InvalidValue)}
+   let n=r16(v,2)? as usize;let flags=r16(v,0x10)?;let mut matches=false;
+   if flags&1!=0{matches=n==name.len()&&v[0x14..0x14+n].iter().zip(name).all(|(a,b)|fold(*a as u16)==fold(*b))}
+   else if n%2==0&&n==name.len()*2{matches=v[0x14..0x14+n].chunks_exact(2).zip(name).all(|(a,b)|fold(u16::from_le_bytes([a[0],a[1]]))==fold(*b))}
+   if matches{found=true}else{indexes[kept]=id;kept+=1}
+  }
+  if !found{return Err(Error::InvalidValue)}
+  if kept==0{let k=self.cell_mut(key_id)?;w32(k,0x24,0);w32(k,0x28,u32::MAX);return Ok(())}
+  let new_list=self.allocate_cell(kept*4)?;
+  {let l=self.cell_mut(new_list)?;for i in 0..kept{w32(l,i*4,indexes[i]);}}
+  let k=self.cell_mut(key_id)?;w32(k,0x24,kept as u32);w32(k,0x28,new_list);Ok(())
+ }
+ /// Remove an empty subkey from its parent's index. Deleting a non-empty key
+ /// is rejected; surviving NK cell indices remain stable.
+ pub fn delete_key(&mut self,key_id:u32)->Result<(),Error>{
+  let k=self.cell(key_id)?;if k.get(0..2)!=Some(&b"nk"[..])||k.len()<0x4c{return Err(Error::InvalidKey)}
+  if r32(k,0x14)?!=0||r32(k,0x24)?!=0{return Err(Error::InvalidKey)}
+  let parent=r32(k,0x10)?;if parent==u32::MAX||parent==key_id{return Err(Error::InvalidKey)}
+  let p=self.cell(parent)?;let count=r32(p,0x14)?;let old_list=r32(p,0x1c)?;
+  if count==0||count as usize>1024{return Err(Error::InvalidKey)}
+  let list=self.cell(old_list)?;if list.get(0..2)!=Some(&b"li"[..])||list.len()<2+count as usize*4{return Err(Error::UnsupportedIndex)}
+  let mut indexes=[0u32;1024];let mut kept=0usize;let mut found=false;
+  for i in 0..count as usize{let id=r32(list,2+i*4)?;if id==key_id{found=true}else{indexes[kept]=id;kept+=1}}
+  if !found{return Err(Error::InvalidKey)}
+  if kept==0{let p=self.cell_mut(parent)?;w32(p,0x14,0);w32(p,0x1c,u32::MAX);return Ok(())}
+  let new_list=self.allocate_cell(2+kept*4)?;
+  {let l=self.cell_mut(new_list)?;l[..2].copy_from_slice(b"li");w16(l,2,kept as u16);for i in 0..kept{w32(l,2+i*4,indexes[i]);}}
+  let p=self.cell_mut(parent)?;w32(p,0x14,kept as u32);w32(p,0x1c,new_list);Ok(())
+ }
  pub fn update_base_block(&mut self,sequence:u32)->Result<(),Error>{
   if self.bytes.len()<BASE{return Err(Error::Truncated)}w32(self.bytes,4,sequence);w32(self.bytes,8,sequence);
   let mut c=0u32;for o in (0..0x1fc).step_by(4){c^=r32(self.bytes,o)?;}if c==0{c=1}else if c==u32::MAX{c=u32::MAX-1}w32(self.bytes,0x1fc,c);Ok(())
