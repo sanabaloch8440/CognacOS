@@ -231,7 +231,7 @@ fn etw_register(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
   let table=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
   if let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|!(*table.add(i)).active) {
    let handle=ETW_KERNEL_NEXT.fetch_add(1,Ordering::Relaxed).max(1);
-   *table.add(i)=KernelEtwProvider{active:true,handle,owner:pid,guid,enabled:false,level:0,_pad:[0;7],any:0,all:0};
+   *table.add(i)=KernelEtwProvider{active:true,handle,owner:pid,guid,enabled:false,level:0,_pad:[0;7],any:0,all:0,session:0};
    if let Err(s)=copy_nt_output(args[1],&handle.to_le_bytes()){*table.add(i)=KernelEtwProvider::EMPTY;return s;}
    return NT_STATUS_SUCCESS;
   }
