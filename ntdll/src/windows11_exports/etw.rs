@@ -17,12 +17,21 @@ const NT_SYSCALL_ETW_REGISTER: u64 = 0x133;
 const NT_SYSCALL_ETW_ENABLE_STATE: u64 = 0x134;
 const NT_SYSCALL_ETW_WRITE_EVENT: u64 = 0x135;
 const NT_SYSCALL_ETW_READ_EVENT: u64 = 0x136;
+const NT_SYSCALL_ETW_SET_ENABLE: u64 = 0x137;
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 fn kernel_etw_call(number:u64,a0:u64,a1:u64,a2:u64,a3:u64)->Option<u64>{
  let result:u64;
  unsafe { core::arch::asm!("int 0x83", inout("rax") number=>result, in("r10") a0, in("rdx") a1, in("r8") a2, in("r9") a3, lateout("rcx") _, lateout("r11") _); }
  Some(result)
 }
+#[cfg(all(target_arch = "x86_64", target_os = "none"))]
+fn kernel_etw_set_enable(handle:u64,enabled:bool,level:u8,any:u64,all:u64)->Option<u64>{
+ let result:u64;
+ unsafe { core::arch::asm!("push {mask}", "int 0x83", "add rsp, 8", mask=in(reg) all, inout("rax") NT_SYSCALL_ETW_SET_ENABLE=>result, in("r10") handle, in("rdx") enabled as u64, in("r8") level as u64, in("r9") any, lateout("rcx") _, lateout("r11") _); }
+ Some(result)
+}
+#[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
+fn kernel_etw_set_enable(_handle:u64,_enabled:bool,_level:u8,_any:u64,_all:u64)->Option<u64>{None}
 #[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
 fn kernel_etw_call(_number:u64,_a0:u64,_a1:u64,_a2:u64,_a3:u64)->Option<u64>{None}
 
@@ -140,6 +149,23 @@ fn provider_index(entries: *const EtwProvider, handle: u64) -> Option<usize> {
 /// Internal dequeue hook for a future kernel ETW/session bridge. Payloads are
 /// copied into owned storage; no caller pointers are retained.
 pub(crate) fn take_event(out_provider: &mut [u8; 16], out_descriptor: &mut [u8; 16], out_payload: &mut [u8; MAX_EVENT_PAYLOAD], out_length: &mut usize) -> bool {
+    #[cfg(all(target_arch = "x86_64", target_os = "none"))]
+    {
+        let mut record=[0u8;48]; let mut bytes=[0u8;MAX_EVENT_PAYLOAD]; let mut length=0u32;
+        if kernel_etw_call(NT_SYSCALL_ETW_READ_EVENT,record.as_mut_ptr() as u64,bytes.as_mut_ptr() as u64,bytes.len() as u64,&mut length as *mut u32 as u64)==Some(0) {
+            let handle=u64::from_le_bytes(record[0..8].try_into().unwrap());
+            let guid={
+                let _guard=EtwGuard::lock();let entries=core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
+                let found=(0..PROVIDER_CAPACITY).find(|&i|unsafe{let p=&*entries.add(i);p.active&&p.handle==handle});
+                match found {Some(i)=>unsafe{(*entries.add(i)).guid},None=>return false}
+            };
+            *provider=guid;*process_id=u64::from_le_bytes(record[8..16].try_into().unwrap());
+            *thread_id=u64::from_le_bytes(record[16..24].try_into().unwrap());
+            *payload_len=(u16::from_le_bytes(record[24..26].try_into().unwrap()) as usize).min(payload.len());
+            let mut d=[0u8;16];d.copy_from_slice(&record[32..48]);*descriptor=unsafe{core::ptr::read_unaligned(d.as_ptr().cast::<EventDescriptor>())};
+            payload[..*payload_len].copy_from_slice(&bytes[..*payload_len]);*activity=Guid::default();*related=Guid::default();return true;
+        }
+    }
     let _guard = EtwGuard::lock();
     unsafe {
         if ETW_EVENT_LEN == 0 { return false; }
@@ -292,6 +318,19 @@ pub(crate) fn controller_set_provider(guid: &Guid, enabled: bool, level: u8, mat
                 p.enabled = enabled; p.level = level; p.match_any = match_any; p.match_all = match_all;
                 if p.callback != 0 { callbacks[count] = (p.callback, p.context, p.guid); count += 1; }
             }
+        }
+    }
+    // Push the controller state into the kernel-owned provider record. The kernel
+    // never calls user callbacks; callbacks below run only in this user-mode path.
+    if let Some(_guardless_status) = Some(()) {
+        let mut handles=[0u64;PROVIDER_CAPACITY]; let mut n=0usize;
+        {
+            let _guard=EtwGuard::lock();
+            let entries=core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
+            for i in 0..PROVIDER_CAPACITY { let p=unsafe{&*entries.add(i)}; if p.active&&p.guid==*guid { handles[n]=p.handle;n+=1; } }
+        }
+        for handle in handles.into_iter().take(n) {
+            let _=kernel_etw_set_enable(handle,enabled,level,match_any,match_all);
         }
     }
     for (callback, context, source) in callbacks.into_iter().take(count) {
