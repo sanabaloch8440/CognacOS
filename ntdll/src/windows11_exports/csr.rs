@@ -44,7 +44,17 @@ unsafe fn reserve(cb:*mut CaptureBuffer,len:u32,out:*mut PVOID,source:*const u8)
 #[no_mangle] pub unsafe extern "system" fn CsrCaptureMessageString(cb:*mut CaptureBuffer,string:*const i8,string_length:u32,maximum_length:u32,captured:*mut AnsiString) {if captured.is_null(){return;} if string_length>maximum_length||maximum_length>u16::MAX as u32 {unsafe{(*captured).length=0;(*captured).maximum_length=0;(*captured).buffer=ptr::null_mut();}return;} let slot=unsafe{ptr::addr_of_mut!((*captured).buffer).cast::<PVOID>()}; if unsafe{reserve(cb,maximum_length,slot,ptr::null())}==0&&maximum_length!=0{return;} let out=unsafe{(*captured).buffer.cast::<u8>()}; if !out.is_null()&&!string.is_null()&&string_length!=0{unsafe{ptr::copy_nonoverlapping(string.cast::<u8>(),out,string_length as usize);}} unsafe{(*captured).length=string_length as u16;(*captured).maximum_length=maximum_length as u16;if !out.is_null()&&string_length<maximum_length{out.add(string_length as usize).write(0);}}}
 #[no_mangle] pub unsafe extern "system" fn CsrCaptureMessageMultiUnicodeStringsInPlace(capture:*mut *mut CaptureBuffer,count:u32,strings:*mut *mut UnicodeString)->i32 {if capture.is_null()||(count!=0&&strings.is_null()){return STATUS_INVALID_PARAMETER;} let mut total=0u32;for i in 0..count {let u=unsafe{*strings.add(i as usize)};if !u.is_null(){if unsafe{(*u).length>(*u).maximum_length||(*u).maximum_length&1!=0}{return STATUS_INVALID_PARAMETER;}total=match total.checked_add(unsafe{(*u).maximum_length as u32}){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};}} if unsafe{(*capture).is_null()}{let cb=unsafe{allocate_capture(count,total)};if cb.is_null(){return STATUS_NO_MEMORY;}unsafe{capture.write(cb);}} for i in 0..count {let u=unsafe{*strings.add(i as usize)};if u.is_null(){continue;}let len=unsafe{(*u).maximum_length as u32};let src=unsafe{(*u).buffer};let slot=unsafe{ptr::addr_of_mut!((*u).buffer).cast::<PVOID>()};if unsafe{reserve(*capture,len,slot,src.cast())}==0&&len!=0{return STATUS_INVALID_PARAMETER;}} STATUS_SUCCESS}
 #[no_mangle] pub unsafe extern "system" fn CsrClientCallServer(_message:*mut c_void,_capture:*mut CaptureBuffer,_api_number:u32,_data_length:u32)->i32 {STATUS_PORT_DISCONNECTED}
-#[no_mangle] pub unsafe extern "system" fn CsrClientConnectToServer(_server_name:*const u16,_connect_info:u32,_connection_info:*mut c_void,_connection_info_size:*mut u32,_duplicate_handle:u8)->i32 {STATUS_PORT_DISCONNECTED}
+#[no_mangle] pub unsafe extern "system" fn CsrClientConnectToServer(
+    _object_directory: *const u16,
+    _server_dll_index: u32,
+    _callback_information: *const c_void,
+    _connection_information: *mut c_void,
+    _connection_information_length: *mut u32,
+) -> i32 {
+    // This is the x64 NTDLL export ABI. It cannot succeed until the kernel
+    // exposes ALPC connect/accept and CSRSS publishes its connection port.
+    STATUS_PORT_DISCONNECTED
+}
 
 // Remaining CSR exports require a live CognacOS CSR server or session state.
 
