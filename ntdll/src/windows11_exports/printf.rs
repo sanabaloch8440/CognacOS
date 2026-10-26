@@ -8,7 +8,7 @@
 
 use alloc::vec::Vec;
 use core::ptr;
-use crate::printf::{self as formatter, Argument, FormatSpec, Length};
+use crate::printf::{self as formatter, Argument, Length};
 
 const MAX_FORMAT_UNITS: usize = 65_536;
 const MAX_STRING_UNITS: usize = 65_536;
