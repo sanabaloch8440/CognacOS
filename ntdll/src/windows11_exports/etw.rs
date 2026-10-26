@@ -315,8 +315,9 @@ pub(crate) fn controller_set_provider(guid: &Guid, enabled: bool, level: u8, mat
         for i in 0..PROVIDER_CAPACITY {
             let p = unsafe { &mut *entries.add(i) };
             if p.active && p.guid == *guid {
+                let changed=p.enabled!=enabled || p.level!=level || p.match_any!=match_any || p.match_all!=match_all;
                 p.enabled = enabled; p.level = level; p.match_any = match_any; p.match_all = match_all;
-                if p.callback != 0 { callbacks[count] = (p.callback, p.context, p.guid); count += 1; }
+                if changed && p.callback != 0 { callbacks[count] = (p.callback, p.context, p.guid); count += 1; }
             }
         }
     }
@@ -356,6 +357,8 @@ pub(crate) fn consumer_read_event(provider: &mut Guid, descriptor: &mut EventDes
         r.active = false; ETW_EVENT_HEAD = (ETW_EVENT_HEAD + 1) % EVENT_CAPACITY; ETW_EVENT_LEN -= 1; true
     }
 }
+
+pub(crate) fn rundown_current_process() { let (pid, _) = current_process_thread(); if pid != 0 { process_exit_rundown(pid); } }
 
 /// Process-exit rundown hook. Call before releasing the process's TEB/address space.
 pub(crate) fn process_exit_rundown(process_id: u64) {
