@@ -13,6 +13,7 @@ mod misc;
 mod etw;
 mod csr;
 mod threadpool;
+mod prefix;
 
 mod debug;
 mod resource;
