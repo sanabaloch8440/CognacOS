@@ -100,6 +100,8 @@ jobs:
           cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-unknown-linux-gnu
       - name: Check native CSR server dispatcher core
         run: cargo check --manifest-path csrss/Cargo.toml --lib --target x86_64-unknown-linux-gnu
+      - name: Test native CSR dispatch and client lifecycle
+        run: cargo test --manifest-path csrss/Cargo.toml --lib --target x86_64-unknown-linux-gnu
       - name: Build separate native PE32+ HAL and driver images
         shell: bash
         run: |
