@@ -95,6 +95,12 @@ fn cognac_ntdll_panic(_info: &core::panic::PanicInfo<'_>) -> ! {
     loop { core::hint::spin_loop(); }
 }
 
+/// The freestanding DLL is built with panic=abort, so unwind personality
+/// references emitted by alloc are never invoked.
+#[cfg(target_os = "windows")]
+#[no_mangle]
+pub extern "C" fn rust_eh_personality() {}
+
 
 
 #[cfg(feature = "relay-port")]
