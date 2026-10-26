@@ -251,6 +251,10 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
  if out.is_null(){return STATUS_INVALID_PARAMETER;}if options&!0x0000_0002!=0{return STATUS_INVALID_PARAMETER;}
  let _g=LOCK.lock();
  let (name,n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
+ if hive_path(&name[..n]).is_some() { return STATUS_NOT_SUPPORTED; }
+ if !unsafe { (*oa).root_directory }.is_null() {
+  if let Err(status)=key_with_access(unsafe { (*oa).root_directory },KEY_CREATE_SUB_KEY) { return status; }
+ }
  let s=state();
  if let Some(k)=s.keys.iter().find(|k|k.used&&!k.deleted&&k.parent==parent&&eq(&k.name[..k.name_len as usize],&name[..n])){
   #[cfg(test)] unsafe{*out=handle(k.id);}
@@ -277,6 +281,9 @@ pub unsafe extern "win64" fn ZwCreateKey(out:*mut *mut core::ffi::c_void,desired
 pub unsafe extern "win64" fn ZwOpenKey(out:*mut *mut core::ffi::c_void,access:u32,oa:*const ObjectAttributes)->i32{
  if out.is_null(){return STATUS_INVALID_PARAMETER;}let _g=LOCK.lock();
  let (mut name,mut n,parent)=match unsafe{object_path(oa)}{Ok(v)=>v,Err(e)=>return e};
+ if !unsafe { (*oa).root_directory }.is_null() {
+  if let Err(status)=key_with_access(unsafe { (*oa).root_directory },KEY_ENUMERATE_SUB_KEYS) { return status; }
+ }
  if parent==0 {
   if let Some(status)=open_hive_key(out,access,&name[..n]) { return status; }
  } else {
@@ -307,6 +314,7 @@ pub unsafe extern "win64" fn ZwSetValueKey(h:*mut core::ffi::c_void,name:*const 
  let mut nbuf=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nbuf)}{Ok(n)=>n,Err(e)=>return e};
  if len as usize>MAX_DATA||(len!=0&&data.is_null()){return STATUS_INVALID_PARAMETER;}
  let _g=LOCK.lock();let s=state();let id=match key_with_access(h,KEY_SET_VALUE){Ok(id)=>id,Err(status)=>return status};
+ if s.keys.iter().any(|k|k.used && !k.deleted && k.id==id && k.hive_slot!=0) { return STATUS_NOT_SUPPORTED; }
  let existing=s.values.iter().position(|v|v.used&&v.key_id==id&&eq(&v.name[..v.name_len as usize],&nbuf[..n]));
  let idx=match existing{Some(i)=>i,None=>match s.values.iter().position(|v|!v.used){Some(i)=>i,None=>return STATUS_INSUFFICIENT_RESOURCES}};
  let mut v=Value{used:true,key_id:id,name:nbuf,name_len:n as u16,kind,len:len as u16,data:[0;MAX_DATA]};
@@ -346,12 +354,14 @@ pub unsafe extern "win64" fn ZwQueryValueKey(h:*mut core::ffi::c_void,name:*cons
 pub unsafe extern "win64" fn ZwDeleteValueKey(h:*mut core::ffi::c_void,name:*const UnicodeString)->i32{
  let mut nb=[0u16;MAX_NAME];let n=match unsafe{read_name(name,&mut nb)}{Ok(n)=>n,Err(e)=>return e};
  let _g=LOCK.lock();let s=state();let id=match key_with_access(h,KEY_SET_VALUE){Ok(id)=>id,Err(status)=>return status};
+ if s.keys.iter().any(|k|k.used && !k.deleted && k.id==id && k.hive_slot!=0) { return STATUS_NOT_SUPPORTED; }
  let Some(v)=s.values.iter_mut().find(|v|v.used&&v.key_id==id&&eq(&v.name[..v.name_len as usize],&nb[..n]))else{return STATUS_OBJECT_NAME_NOT_FOUND;};
  *v=Value::EMPTY;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ZwDeleteKey(h:*mut core::ffi::c_void)->i32{
  let _g=LOCK.lock();let s=state();let id=match key_with_access(h,DELETE){Ok(id)=>id,Err(status)=>return status};
+ if s.keys.iter().any(|k|k.used && !k.deleted && k.id==id && k.hive_slot!=0) { return STATUS_NOT_SUPPORTED; }
  if s.keys.iter().any(|k|k.used&&!k.deleted&&k.parent==id)||s.values.iter().any(|v|v.used&&v.key_id==id){return STATUS_ACCESS_DENIED;}
  let Some(index)=s.keys.iter().position(|k|k.used&&k.id==id)else{return STATUS_OBJECT_NAME_NOT_FOUND;};
  let body=core::ptr::addr_of_mut!(s.keys[index]).cast::<core::ffi::c_void>();s.keys[index].deleted=true;
