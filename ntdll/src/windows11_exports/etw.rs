@@ -22,6 +22,7 @@ const NT_SYSCALL_ETW_ENABLE_SESSION: u64 = 0x139;
 const NT_SYSCALL_ETW_STOP_SESSION: u64 = 0x13a;
 const NT_SYSCALL_ETW_UNREGISTER: u64 = 0x13b;
 const NT_SYSCALL_ETW_CREATE_NAMED_SESSION: u64 = 0x13c;
+const NT_SYSCALL_ETW_QUERY_EVENT_ENABLED: u64 = 0x13d;
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 fn kernel_etw_call(number:u64,a0:u64,a1:u64,a2:u64,a3:u64)->Option<u64>{
  let result:u64;
@@ -242,20 +243,30 @@ pub unsafe extern "system" fn EtwEventUnregister(handle: u64) -> u32 {
 #[no_mangle]
 pub unsafe extern "system" fn EtwEventEnabled(handle: u64, descriptor: *const EventDescriptor) -> u8 {
     if descriptor.is_null() { return 0; }
+    let descriptor_value=unsafe{core::ptr::read_unaligned(descriptor)};
     sync_kernel_enable_state(handle);
+    if let Some(enabled)=kernel_query_event_enabled(handle,&descriptor_value) { return enabled as u8; }
     let _guard = EtwGuard::lock();
     let entries = core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
     provider_index(entries, handle).map(|i| {
-        let p = unsafe { &*entries.add(i) }; p.enabled && provider_matches(p, unsafe { &*descriptor }.level, unsafe { &*descriptor }.keyword)
+        let p = unsafe { &*entries.add(i) }; p.enabled && provider_matches(p, descriptor_value.level, descriptor_value.keyword)
     }).unwrap_or(false) as u8
 }
 
 #[no_mangle]
 pub unsafe extern "system" fn EtwEventProviderEnabled(handle: u64, level: u8, keyword: u64) -> u8 {
     sync_kernel_enable_state(handle);
+    let descriptor=EventDescriptor{id:0,version:0,channel:0,level,opcode:0,task:0,keyword};
+    if let Some(enabled)=kernel_query_event_enabled(handle,&descriptor) { return enabled as u8; }
     let _guard = EtwGuard::lock();
     let entries = core::ptr::addr_of!(ETW_PROVIDERS).cast::<EtwProvider>();
     provider_index(entries, handle).map(|i| provider_matches(unsafe { &*entries.add(i) }, level, keyword)).unwrap_or(false) as u8
+}
+
+fn kernel_query_event_enabled(handle:u64,descriptor:&EventDescriptor)->Option<bool> {
+    match kernel_etw_call(NT_SYSCALL_ETW_QUERY_EVENT_ENABLED,handle,descriptor as *const EventDescriptor as u64,0,0) {
+        Some(0)=>Some(false),Some(1)=>Some(true),Some(_)=>Some(false),None=>None
+    }
 }
 
 unsafe fn etw_event_write_impl(handle: u64, descriptor: *const EventDescriptor, activity_override: Option<&Guid>, related_override: Option<&Guid>, count: u32, data: *const EventDataDescriptor) -> u32 {
