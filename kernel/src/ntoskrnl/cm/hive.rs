@@ -533,6 +533,8 @@ mod tests{
   let parsed=Hive::open(h.bytes()).unwrap();
   assert_eq!(parsed.root().unwrap().subkey_count().unwrap(),1);
   let mut name=[0u16;4];assert_eq!(parsed.root().unwrap().find_subkey(&[b'X' as u16]).unwrap().name_utf16(&mut name).unwrap(),1);
+  h.begin_update().unwrap();h.remove_subkey_index(0x20,cell).unwrap();h.free_cell(cell).unwrap();h.commit_update().unwrap();
+  assert_eq!(Hive::open(h.bytes()).unwrap().root().unwrap().subkey_count().unwrap(),0);
  }
  #[test]fn redo_log_replays_checked_patch_and_repairs_base_block(){
   let mut hive=[0u8;8192];create_minimal_hive(&mut hive).unwrap();
