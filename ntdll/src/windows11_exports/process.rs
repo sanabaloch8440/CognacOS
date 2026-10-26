@@ -173,8 +173,15 @@ pub unsafe extern "system" fn NtFilterTokenEx() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtFlushProcessWriteBuffers() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub extern "system" fn NtFlushProcessWriteBuffers() -> i32 {
+    // Full memory fence: orders writes before this call against subsequent
+    // loads/stores on the calling processor. A true cross-processor flush
+    // requires scheduler/IPI support from the kernel.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::asm!("mfence", options(nostack, preserves_flags));
+    }
+    0
 }
 
 #[no_mangle]
@@ -183,13 +190,60 @@ pub unsafe extern "system" fn NtGetContextThread() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtGetCurrentProcessorNumber() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub extern "system" fn NtGetCurrentProcessorNumber() -> u32 {
+    // Windows x64 kernels commonly publish the current logical processor in
+    // IA32_TSC_AUX. This is only valid when the kernel programs that MSR.
+    // RDTSCP is feature-gated so older CPUs never receive an invalid opcode.
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let max_ext: u32;
+        core::arch::asm!("cpuid", inout("eax") 0x8000_0000u32 => max_ext,
+            lateout("ebx") _, lateout("ecx") _, lateout("edx") _, options(nomem, nostack));
+        if max_ext >= 0x8000_0001 {
+            let features: u32;
+            core::arch::asm!("cpuid", inout("eax") 0x8000_0001u32 => features,
+                lateout("ebx") _, lateout("ecx") _, lateout("edx") _, options(nomem, nostack));
+            if features & (1 << 27) != 0 {
+                let low: u32;
+                let high: u32;
+                let aux: u32;
+                core::arch::asm!("rdtscp", out("eax") low, out("edx") high, out("ecx") aux,
+                    options(nomem, nostack));
+                let _ = (low, high);
+                return aux & 0xFFFF;
+            }
+        }
+    }
+    // A single-processor bootstrap has processor number zero until the kernel
+    // exposes a processor-number service. Do not guess from APIC IDs.
+    0
+}
+
+#[repr(C)]
+pub struct COGNAC_PROCESSOR_NUMBER {
+    pub Group: u16,
+    pub Number: u8,
+    pub Reserved: u8,
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtGetCurrentProcessorNumberEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn NtGetCurrentProcessorNumberEx(processor_number: *mut COGNAC_PROCESSOR_NUMBER) -> i32 {
+    const STATUS_SUCCESS: i32 = 0;
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
+    if processor_number.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    // The native kernel currently exposes only the bootstrap processor group.
+    // Use the same source as NtGetCurrentProcessorNumber and report group zero.
+    let number = NtGetCurrentProcessorNumber();
+    unsafe {
+        processor_number.write(COGNAC_PROCESSOR_NUMBER {
+            Group: 0,
+            Number: number.min(u8::MAX as u32) as u8,
+            Reserved: 0,
+        });
+    }
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
