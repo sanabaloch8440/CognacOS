@@ -283,7 +283,7 @@ pub fn replay_hvle(hive:&mut[u8],log:&[u8],scratch:&mut[u8])->Result<HvleRecover
  scratch[..hive.len()].copy_from_slice(hive);
  let result=(||{
   let mut report=HvleRecoveryReport{entries_applied:0,pages_applied:0,final_sequence:hive_primary};
-  let mut expected=log_seq;let mut offset=512usize;let mut bins=r32(hive,0x28)?;
+  let mut expected=log_seq;let mut offset=512usize;let mut bins=r32(hive,0x28)? as usize;
   while offset+4<=log.len(){
    if log.get(offset..offset+4)!=Some(&b"HvLE"[..]){
     if log[offset..].iter().all(|b|*b==0){break}
