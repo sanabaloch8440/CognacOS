@@ -1049,6 +1049,11 @@ mod tests {
    assert_eq!(key.name_utf16(&mut decoded).unwrap(),child_name.len());
    assert_eq!(&decoded[..child_name.len()],&child_name);
    child_cell=key.cell_index();
+   assert_eq!(hive.root().unwrap().subkey_count().unwrap(),1);
+   let list_id=u32::from_le_bytes(bytes[0x1040..0x1044].try_into().unwrap());
+   let list_abs=4096+list_id as usize+4;
+   assert_eq!(&bytes[list_abs..list_abs+2],b"li");
+   assert_eq!(u32::from_le_bytes(bytes[list_abs+2..list_abs+6].try_into().unwrap()),child_cell);
    assert_eq!(hive.find_path(&child_name).unwrap().cell_index(),child_cell);
    let value=key.find_value(&value_name).unwrap();
    let mut data=[0u8;8];
