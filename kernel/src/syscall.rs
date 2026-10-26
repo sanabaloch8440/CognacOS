@@ -148,6 +148,9 @@ pub const NT_SYSCALL_SET_VALUE_KEY: u64 = 0x146;
 pub const NT_SYSCALL_DELETE_VALUE_KEY: u64 = 0x147;
 pub const NT_SYSCALL_DELETE_KEY: u64 = 0x148;
 pub const NT_SYSCALL_FLUSH_KEY: u64 = 0x149;
+pub const NT_SYSCALL_ENUMERATE_KEY: u64 = 0x14a;
+pub const NT_SYSCALL_ENUMERATE_VALUE_KEY: u64 = 0x14b;
+pub const NT_SYSCALL_QUERY_KEY: u64 = 0x14c;
 pub const NT_SYSCALL_READ_FILE: u64 = 0x108;
 pub const NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY: u64 = 0x109;
 pub const NT_SYSCALL_FREE_VIRTUAL_MEMORY: u64 = 0x10a;
@@ -1238,6 +1241,46 @@ fn nt_delete_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     if args[0]==0{return NT_STATUS_INVALID_PARAMETER;}
     unsafe{crate::ntoskrnl::cm::runtime::ZwDeleteKey(args[0] as *mut core::ffi::c_void) as u32 as u64}
 }
+fn nt_registry_info(args: &[u64; NT_MAX_ARGUMENTS], operation: u8) -> u64 {
+    let is_query = operation == 2;
+    let handle = args[0];
+    let index_or_class = if is_query { args[1] } else { args[1] };
+    let class = if is_query { args[1] } else { args[2] };
+    let output_arg = if is_query { 2 } else { 3 };
+    let length_arg = if is_query { 3 } else { 4 };
+    let result_arg = if is_query { 4 } else { 5 };
+    if handle == 0 || (args[output_arg] == 0 && args[length_arg] != 0) {
+        return NT_STATUS_INVALID_PARAMETER;
+    }
+    let capacity = core::cmp::min(args[length_arg] as usize, NT_REGISTRY_QUERY_MAX);
+    let mut output = [0u8; NT_REGISTRY_QUERY_MAX];
+    let mut required = 0u32;
+    let status = unsafe {
+        match operation {
+            0 => crate::ntoskrnl::cm::runtime::ZwEnumerateKey(
+                handle as *mut core::ffi::c_void, index_or_class as u32, class as u32,
+                output.as_mut_ptr().cast(), capacity as u32, &mut required),
+            1 => crate::ntoskrnl::cm::runtime::ZwEnumerateValueKey(
+                handle as *mut core::ffi::c_void, index_or_class as u32, class as u32,
+                output.as_mut_ptr().cast(), capacity as u32, &mut required),
+            _ => crate::ntoskrnl::cm::runtime::ZwQueryKey(
+                handle as *mut core::ffi::c_void, class as u32,
+                output.as_mut_ptr().cast(), capacity as u32, &mut required),
+        }
+    };
+    if result_arg < NT_MAX_ARGUMENTS && args[result_arg] != 0 {
+        if let Err(fault) = write_return_length(args[result_arg], required) { return fault; }
+    }
+    if status == 0 {
+        let count = core::cmp::min(required as usize, capacity);
+        if let Err(fault) = copy_nt_output(args[output_arg], &output[..count]) { return fault; }
+    }
+    status as u32 as u64
+}
+fn nt_enumerate_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 { nt_registry_info(args, 0) }
+fn nt_enumerate_value_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 { nt_registry_info(args, 1) }
+fn nt_query_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 { nt_registry_info(args, 2) }
+
 fn nt_flush_key(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     if args[0]==0{return NT_STATUS_INVALID_PARAMETER;}
     unsafe{crate::ntoskrnl::cm::runtime::ZwFlushKey(args[0] as *mut core::ffi::c_void) as u32 as u64}
@@ -1528,6 +1571,9 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_DELETE_VALUE_KEY => nt_delete_value_key(args),
         NT_SYSCALL_DELETE_KEY => nt_delete_key(args),
         NT_SYSCALL_FLUSH_KEY => nt_flush_key(args),
+        NT_SYSCALL_ENUMERATE_KEY => nt_enumerate_key(args),
+        NT_SYSCALL_ENUMERATE_VALUE_KEY => nt_enumerate_value_key(args),
+        NT_SYSCALL_QUERY_KEY => nt_query_key(args),
         NT_SYSCALL_OPEN_FILE => nt_open_file(args),
         NT_SYSCALL_READ_FILE => nt_read_file(args),
         NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY => crate::ntoskrnl::mm::native_vm::allocate(args),
