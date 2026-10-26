@@ -66,6 +66,7 @@ fn main() {
     // These APIs are implemented in windows11_exports/memory.rs and must not be shadowed.
     declared.insert("RtlGetNonVolatileToken".to_string());
     declared.insert("RtlFreeNonVolatileToken".to_string());
+    declared.insert("NtCreateSection".to_string());
     // ALPC has explicit x64 ABI declarations and assembly entry points in alpc.rs.
     // Keep the generated zero-argument fallback exports from shadowing them.
     for name in [
