@@ -101,13 +101,11 @@ unsafe fn format_narrow(format_ptr: *const u8, va: *const u8) -> Option<Vec<u8>>
 
 unsafe fn format_wide(format_ptr: *const u16, va: *const u8) -> Option<Vec<u16>> {
     let wide_fmt = unsafe { read_c_wide(format_ptr, MAX_FORMAT_UNITS)? };
-    // The grammar characters are ASCII. Preserve non-ASCII literal text by
-    // emitting it through a separate UTF-16 path; format_bytes handles the
-    // ASCII format/argument grammar without invoking any CRT formatter.
-    if wide_fmt.iter().any(|u| *u > 0x7f) {
-        return format_wide_general(&wide_fmt, va);
-    }
-    let fmt: Vec<u8> = wide_fmt.iter().map(|u| *u as u8).collect();
+    // Convert the UTF-16 format to UTF-8 before parsing. Format directives
+    // are ASCII, while non-ASCII literal characters must survive unchanged.
+    // Reject malformed surrogate sequences rather than silently replacing
+    // them; the resulting UTF-8 bytes are decoded back to UTF-16 below.
+    let fmt: Vec<u8> = String::from_utf16(&wide_fmt).ok()?.into_bytes();
     let specs = formatter::parse_format(&fmt).ok()?;
     let mut cursor = va;
     let mut owned: Vec<OwnedArg> = Vec::new();
@@ -142,13 +140,6 @@ unsafe fn format_wide(format_ptr: *const u16, va: *const u8) -> Option<Vec<u16>>
     let bytes = formatter::format_bytes(&fmt, &args, None).ok()?.bytes;
     let text = core::str::from_utf8(&bytes).ok()?;
     Some(text.encode_utf16().collect())
-}
-
-unsafe fn format_wide_general(format: &[u16], _va: *const u8) -> Option<Vec<u16>> {
-    // Until the formatter supports UTF-16 literals natively, refuse to silently
-    // corrupt non-ASCII format strings.
-    let _ = format;
-    None
 }
 
 unsafe fn write_narrow(dst: *mut u8, cap: Option<usize>, text: &[u8], secure: bool) -> i32 {
