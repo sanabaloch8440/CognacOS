@@ -174,55 +174,69 @@ pub unsafe extern "system" fn NtRaiseException(record: *const EXCEPTION_RECORD, 
     { let _ = first_chance; STATUS_NOT_IMPLEMENTED }
 }
 
-/// Walk AMD64 frames and invoke registered language-specific exception handlers.
-/// Returns TRUE only when a handler requests continuation; caller then NtContinue's
-/// the possibly modified context.
+/// Windows x64 DISPATCHER_CONTEXT supplied to language-specific handlers.
+#[repr(C)]
+struct RTL_DISPATCHER_CONTEXT {
+    ControlPc: u64,
+    ImageBase: u64,
+    FunctionEntry: *const RUNTIME_FUNCTION,
+    EstablisherFrame: u64,
+    TargetIp: u64,
+    ContextRecord: *mut CONTEXT,
+    LanguageHandler: EXCEPTION_ROUTINE,
+    HandlerData: *mut c_void,
+    HistoryTable: *mut c_void,
+    ScopeIndex: u32,
+    Fill0: u32,
+}
+
+/// Walk AMD64 frames while preserving the original exception context unless a
+/// language handler explicitly modifies it and requests ExceptionContinueExecution.
 #[no_mangle]
 pub unsafe extern "system" fn RtlDispatchException(record: *mut EXCEPTION_RECORD, context: *mut CONTEXT) -> u8 {
     if record.is_null() || context.is_null() { return 0; }
-    let original_pc = (*context).Rip;
-    if original_pc == 0 || (*context).Rsp == 0 || (*context).Rsp & 7 != 0 { return 0; }
-    let mut control_pc = original_pc;
+    let mut walk_context = ptr::read_unaligned(context);
+    let mut control_pc = walk_context.Rip;
     let mut previous_rsp = 0u64;
+    if control_pc == 0 || walk_context.Rsp == 0 || walk_context.Rsp & 7 != 0 { return 0; }
     for _ in 0..128 {
         let mut image_base = 0u64;
         let entry = RtlLookupFunctionEntry(control_pc, &mut image_base, ptr::null_mut());
         let mut handler_data = ptr::null_mut();
         let mut establisher = 0u64;
         let handler = RtlVirtualUnwind(
-            1, image_base, control_pc, entry, context, &mut handler_data,
+            1, image_base, control_pc, entry, &mut walk_context, &mut handler_data,
             &mut establisher, ptr::null_mut()
         );
         if let Some(handler_fn) = handler {
-            let disposition = handler_fn(record, establisher as *mut c_void, context, handler_data);
+            let mut dispatcher_context = RTL_DISPATCHER_CONTEXT {
+                ControlPc: control_pc,
+                ImageBase: image_base,
+                FunctionEntry: entry,
+                EstablisherFrame: establisher,
+                TargetIp: 0,
+                ContextRecord: context,
+                LanguageHandler: Some(handler_fn),
+                HandlerData: handler_data,
+                HistoryTable: ptr::null_mut(),
+                ScopeIndex: 0,
+                Fill0: 0,
+            };
+            let disposition = handler_fn(record, establisher as *mut c_void, context, (&mut dispatcher_context as *mut RTL_DISPATCHER_CONTEXT).cast());
             match disposition {
-                0 => return 1,
-                1 => {},
+                0 => return 1, // ExceptionContinueExecution
+                1 => {},       // ExceptionContinueSearch
                 _ => return 0,
             }
         }
-        if (*context).Rip == 0 || (*context).Rsp <= previous_rsp || (*context).Rsp & 7 != 0 {
+        if walk_context.Rip == 0 || walk_context.Rsp <= previous_rsp || walk_context.Rsp & 7 != 0 {
             return 0;
         }
-        previous_rsp = (*context).Rsp;
-        control_pc = (*context).Rip;
+        previous_rsp = walk_context.Rsp;
+        control_pc = walk_context.Rip;
         if entry.is_null() && control_pc == 0 { return 0; }
     }
     0
-}
-
-/// Register the NTDLL user-mode exception entry with the kernel. The kernel
-/// uses this process-scoped address to deliver CPU faults as Windows x64
-/// EXCEPTION_RECORD/CONTEXT pairs instead of terminating the process immediately.
-#[no_mangle]
-pub unsafe extern "system" fn RtlRegisterExceptionDispatcher() -> i32 {
-    #[cfg(target_os = "none")]
-    {
-        let status = cognacos_register_exception_dispatcher(KiUserExceptionDispatcher as usize);
-        return status as u32 as i32;
-    }
-    #[cfg(not(target_os = "none"))]
-    { STATUS_NOT_IMPLEMENTED }
 }
 
 #[no_mangle]
