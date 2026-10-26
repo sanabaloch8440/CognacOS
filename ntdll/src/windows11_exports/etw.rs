@@ -393,6 +393,21 @@ mod tests {
     }
 
     #[test]
+    fn activity_id_control_create_set_get_and_rundown() {
+        let (pid, tid) = current_process_thread();
+        if tid == 0 { return; }
+        let mut id = Guid::default();
+        assert_eq!(unsafe { EtwEventActivityIdControl(EVENT_ACTIVITY_CTRL_CREATE_ID, &mut id) }, 0);
+        assert_ne!(id, Guid::default());
+        assert_eq!(unsafe { EtwEventActivityIdControl(EVENT_ACTIVITY_CTRL_SET_ID, &mut id) }, 0);
+        let mut observed = Guid::default();
+        assert_eq!(unsafe { EtwEventActivityIdControl(EVENT_ACTIVITY_CTRL_GET_ID, &mut observed) }, 0);
+        assert_eq!(observed, id);
+        process_exit_rundown(pid);
+        assert_eq!(current_activity(pid, tid), Guid::default());
+    }
+
+    #[test]
     fn provider_event_payload_round_trip_and_rundown() {
         let guid = Guid { data1: 0x12345678, data2: 0x1234, data3: 0x5678, data4: [1,2,3,4,5,6,7,8] };
         let mut handle = 0u64;
