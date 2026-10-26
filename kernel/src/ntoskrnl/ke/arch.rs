@@ -1661,50 +1661,83 @@ fn user_exception_status(vector: u64, _error: u64) -> u64 {
     }
 }
 
-/// Unresolved CPL3 exceptions are process-scoped. This is the termination fallback
-/// until a user-mode exception/SEH dispatcher can resume or unwind user execution.
-fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> ! {
-    let trap = unsafe { &*frame.cast::<UserExceptionTrapFrame>() };
-    if trap.vector != vector || trap.error_code != error || trap.cs & 3 != 3
-        || trap.ss & 3 != 3 {
-        // A structurally inconsistent hardware frame is a supervisor integrity fault.
+const AMD64_CONTEXT_SIZE: usize = 0x4d0;
+const AMD64_EXCEPTION_RECORD_SIZE: usize = 0x98;
+
+fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
+    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+}
+fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
+    bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+}
+fn put_u64(bytes: &mut [u8], offset: usize, value: u64) {
+    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+/// Build the Windows x64 exception ABI on the faulting thread's user stack and
+/// transfer control to its registered NTDLL KiUserExceptionDispatcher.
+fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> bool {
+    let trap = unsafe { &mut *frame.cast::<UserExceptionTrapFrame>() };
+    if trap.vector != vector || trap.error_code != error || trap.cs & 3 != 3 || trap.ss & 3 != 3 {
         cognacos_exception_fatal(vector, error, frame);
     }
     let pid = crate::thread::current_process_id();
-    if pid == 0 {
-        cognacos_exception_fatal(vector, error, frame);
+    if pid == 0 { cognacos_exception_fatal(vector, error, frame); }
+    let valid = trap.rip >= 0x1000 && trap.rip < crate::ntoskrnl::mm::address_space::USER_END
+        && trap.rsp >= 0x1000 && trap.rsp < crate::ntoskrnl::mm::address_space::USER_END
+        && trap.rsp & 7 == 0;
+    let dispatcher = crate::syscall::exception_dispatcher_for(pid);
+    if !valid || dispatcher < 0x1000 || dispatcher >= crate::ntoskrnl::mm::address_space::USER_END {
+        let status = if valid { user_exception_status(vector, error) } else { STATUS_ACCESS_VIOLATION };
+        crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, status);
     }
-    // Invalid/noncanonical user RIP or RSP is a fault in the process context,
-    // not a reason to bugcheck the kernel.
-    let valid_user_context = trap.rip >= 0x1000
-        && trap.rip < crate::ntoskrnl::mm::address_space::USER_END
-        && trap.rsp >= 0x1000
-        && trap.rsp < crate::ntoskrnl::mm::address_space::USER_END;
-    unsafe {
-        crate::serial_write(b"CPL3 exception: vector=");
-        crate::serial_write_hex(vector);
-        crate::serial_write(b" error=");
-        crate::serial_write_hex(error);
-        crate::serial_write(b" RIP=");
-        crate::serial_write_hex(trap.rip);
-        if vector == 14 {
-            let cr2: u64;
-            core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
-            crate::serial_write(b" CR2=");
-            crate::serial_write_hex(cr2);
-        }
-        crate::serial_write(b" process=");
-        crate::serial_write_hex(pid);
-        crate::serial_write(b"\r\n");
-    }
-    let status = if valid_user_context {
-        user_exception_status(vector, error)
-    } else {
-        STATUS_ACCESS_VIOLATION
-    };
-    crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, status)
-}
 
+    let mut context = [0u8; AMD64_CONTEXT_SIZE];
+    put_u32(&mut context, 0x30, 0x0010_0007);
+    put_u16(&mut context, 0x38, trap.cs as u16);
+    put_u16(&mut context, 0x4a, trap.ss as u16);
+    put_u32(&mut context, 0x44, trap.rflags as u32);
+    for (offset, index) in [(0xf0,0usize),(0xe8,1),(0xe0,2),(0xd8,3),(0xd0,4),(0xc8,5),(0xc0,6),(0xb8,7),(0xa0,8),(0xb0,9),(0xa8,10),(0x88,11),(0x80,12),(0x90,13),(0x78,14)] {
+        put_u64(&mut context, offset, trap.saved_registers[index]);
+    }
+    put_u64(&mut context, 0x98, trap.rsp);
+    put_u64(&mut context, 0xf8, trap.rip);
+
+    let mut record = [0u8; AMD64_EXCEPTION_RECORD_SIZE];
+    put_u32(&mut record, 0, user_exception_status(vector, error) as u32);
+    put_u64(&mut record, 16, trap.rip);
+    if vector == 14 {
+        let fault_address: u64;
+        unsafe { core::arch::asm!("mov {}, cr2", out(reg) fault_address, options(nomem, nostack, preserves_flags)); }
+        put_u32(&mut record, 24, 2);
+        let access = if error & 0x10 != 0 { 8 } else if error & 0x2 != 0 { 1 } else { 0 };
+        put_u64(&mut record, 32, access);
+        put_u64(&mut record, 40, fault_address);
+    }
+
+    let record_offset = 0x28usize;
+    let context_offset = (record_offset + AMD64_EXCEPTION_RECORD_SIZE + 15) & !15;
+    let total = context_offset + AMD64_CONTEXT_SIZE + 16;
+    let Some(raw_start) = trap.rsp.checked_sub(total as u64) else {
+        crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, STATUS_ACCESS_VIOLATION);
+    };
+    let new_rsp = (raw_start & !15) + 8;
+    if new_rsp < 0x1000 || new_rsp >= trap.rsp
+        || !crate::syscall::copy_current_user_to(new_rsp, &0u64.to_le_bytes())
+        || !crate::syscall::copy_current_user_to(new_rsp + record_offset as u64, &record)
+        || !crate::syscall::copy_current_user_to(new_rsp + context_offset as u64, &context) {
+        crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, STATUS_ACCESS_VIOLATION);
+    }
+    let record_user = new_rsp + record_offset as u64;
+    let context_user = new_rsp + context_offset as u64;
+    trap.saved_registers = [0; 15];
+    trap.saved_registers[11] = context_user;
+    trap.saved_registers[12] = record_user;
+    trap.rip = dispatcher;
+    trap.rsp = new_rsp;
+    trap.rflags = 0x202;
+    true
+}
 /// Dispatch recoverable faults. A return value of one asks the assembly stub to
 /// restore the original frame and IRETQ; unhandled supervisor exceptions halt.
 #[unsafe(no_mangle)]
@@ -1720,7 +1753,7 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
                 unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
                 if crate::ntoskrnl::mm::address_space::handle_current_user_page_fault(cr2, error) { return 1; }
             }
-            dispatch_user_mode_exception(vector, error, frame);
+            if dispatch_user_mode_exception(vector, error, frame) { return 1; }
         }
     }
     if vector == 14 {
