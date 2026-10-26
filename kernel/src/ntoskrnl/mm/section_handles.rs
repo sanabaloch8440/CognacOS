@@ -67,8 +67,9 @@ fn resolve(handle:u64,access:u32)->Result<(&'static SectionObject,*mut c_void),u
 }
 
 /// Kernel half of the private create-section service. Returns a typed handle.
-pub fn create(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{ create_with_protection(args,4) }
-fn create_with_protection(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS],protection:u32)->u64{
+pub fn create(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{ create_with_protection_and_access(args,4,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL) }
+fn create_with_protection(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS],protection:u32)->u64{ create_with_protection_and_access(args,protection,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL) }
+fn create_with_protection_and_access(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS],protection:u32,granted_access:u32)->u64{
     if args[1]==0||args[0]==0{return STATUS_INVALID_PARAMETER}
     let process=crate::process::eprocess_pointer_for_pid(crate::syscall::current_process_id());
     if process.is_null(){return STATUS_INVALID_HANDLE}
@@ -92,7 +93,7 @@ fn create_with_protection(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS],protectio
     if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(body,&type_name,&name,false,DEFAULT_SD.as_ptr(),DEFAULT_SD.len(),finalizer)}.is_err(){
         s.active.store(false,Ordering::Release);s.allocated.store(false,Ordering::Release);let _=crate::ntoskrnl::mm::section::dereference(id,root);return 0xC000_0035
     }
-    let handle=match crate::ntoskrnl::ob::runtime::open_by_pointer(body,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL,crate::ntoskrnl::ob::runtime::current_owner(),false,0){
+    let handle=match crate::ntoskrnl::ob::runtime::open_by_pointer(body,granted_access,crate::ntoskrnl::ob::runtime::current_owner(),false,0){
         Ok(h)=>h as usize,Err(e)=>{let _=crate::ntoskrnl::ob::runtime::unregister_object(body);return e as u32 as u64}
     };
     if !crate::syscall::copy_current_user_to(args[1],&handle.to_ne_bytes()){
@@ -146,7 +147,16 @@ pub fn copy(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
 /// Windows NtCreateSection ABI bridge. Supports committed anonymous sections;
 /// file-backed sections and named OBJECT_ATTRIBUTES are rejected explicitly.
 pub fn create_nt(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
-    if args[0]==0||args[3]==0||args[2]!=0||args[6]!=0{return if args[2]!=0||args[6]!=0{0xC000_0002}else{STATUS_INVALID_PARAMETER}}
+    if args[0]==0||args[3]==0{return STATUS_INVALID_PARAMETER}
+    if args[2]!=0||args[6]!=0{return 0xC000_0002}
+    let desired=args[1] as u32;
+    let mut granted=0u32;
+    if desired==0x0200_0000 {granted=ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL;} else {
+        if desired&(0x0000_0001|0x0000_0004|0x0000_0008|0x0002_0000)!=0 {granted|=ACCESS_READ;}
+        if desired&(0x0000_0002|0x0000_0010)!=0 {granted|=ACCESS_WRITE;}
+        if desired&(0x0001_0000|0x0004_0000|0x0008_0000)!=0 {granted|=ACCESS_CONTROL;}
+    }
+    if granted==0{return STATUS_INVALID_PARAMETER}
     let mut raw=[0u8;8];
     if !crate::syscall::copy_current_user_from(args[3],&mut raw){return STATUS_ACCESS_VIOLATION}
     let size=i64::from_ne_bytes(raw);
@@ -156,7 +166,7 @@ pub fn create_nt(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     if !matches!(protection,0x02|0x04|0x20){return STATUS_INVALID_PARAMETER}
     let mut local=[0u64;crate::syscall::NT_MAX_ARGUMENTS];
     local[0]=size as u64;local[1]=args[0];
-    create_with_protection(&local,protection)
+    create_with_protection_and_access(&local,protection,granted)
 }
 
 /// Import a caller-supplied Object Manager Section handle for an ALPC port.
