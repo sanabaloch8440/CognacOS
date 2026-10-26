@@ -281,10 +281,22 @@ pub(crate) fn process_exit_rundown(process_id: u64) {
         let activities = core::ptr::addr_of_mut!(ETW_ACTIVITIES).cast::<ActivitySlot>();
         for i in 0..ACTIVITY_CAPACITY { let a = &mut *activities.add(i); if a.active && a.pid == process_id { *a = ActivitySlot::EMPTY; } }
         let events = core::ptr::addr_of_mut!(ETW_EVENTS).cast::<EventRecord>();
-        for i in 0..EVENT_CAPACITY { let e = &mut *events.add(i); if e.active && e.process_id == process_id { *e = EventRecord::EMPTY; } }
+        let old_len = ETW_EVENT_LEN;
+        let old_head = ETW_EVENT_HEAD;
         let mut retained = 0usize;
-        for offset in 0..ETW_EVENT_LEN { let idx = (ETW_EVENT_HEAD + offset) % EVENT_CAPACITY; if (*events.add(idx)).active { retained += 1; } }
-        ETW_EVENT_LEN = retained; if retained == 0 { ETW_EVENT_HEAD = 0; }
+        for offset in 0..old_len {
+            let source = (old_head + offset) % EVENT_CAPACITY;
+            let event = *events.add(source);
+            if !event.active || event.process_id == process_id {
+                *events.add(source) = EventRecord::EMPTY;
+                continue;
+            }
+            let destination = (old_head + retained) % EVENT_CAPACITY;
+            if destination != source { *events.add(destination) = event; *events.add(source) = EventRecord::EMPTY; }
+            retained += 1;
+        }
+        ETW_EVENT_LEN = retained;
+        if retained == 0 { ETW_EVENT_HEAD = 0; }
     }
 }
 
@@ -372,11 +384,18 @@ mod tests {
         assert_eq!(unsafe { EtwEventEnabled(handle, &descriptor) }, 1);
         assert_eq!(unsafe { EtwEventWrite(handle, &descriptor, 1, &data) }, ERROR_SUCCESS);
 
-        let mut provider_bytes = [0u8; 16];
-        let mut descriptor_bytes = [0u8; 16];
+        let mut provider = Guid::default();
+        let mut received_descriptor = EventDescriptor::default();
+        let mut activity = Guid::default();
+        let mut related = Guid::default();
+        let mut pid = 0u64;
+        let mut tid = 0u64;
         let mut payload_bytes = [0u8; MAX_EVENT_PAYLOAD];
         let mut payload_len = 0usize;
-        assert!(take_event(&mut provider_bytes, &mut descriptor_bytes, &mut payload_bytes, &mut payload_len));
+        assert!(consumer_read_event(&mut provider, &mut received_descriptor, &mut activity, &mut related,
+            &mut pid, &mut tid, &mut payload_bytes, &mut payload_len));
+        assert_eq!(provider, guid);
+        assert_eq!(received_descriptor.id, descriptor.id);
         assert_eq!(payload_len, payload.len());
         assert_eq!(&payload_bytes[..payload_len], &payload);
         assert_eq!(unsafe { EtwEventUnregister(handle) }, ERROR_SUCCESS);
