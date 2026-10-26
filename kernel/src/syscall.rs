@@ -194,6 +194,9 @@ pub const NT_SYSCALL_ETW_STOP_SESSION:u64=0x13a;
 pub const NT_SYSCALL_ETW_UNREGISTER:u64=0x13b;
 pub const NT_SYSCALL_ETW_CREATE_NAMED_SESSION:u64=0x13c;
 pub const NT_SYSCALL_ETW_QUERY_EVENT_ENABLED:u64=0x13d;
+pub const NT_SYSCALL_REGISTER_FUNCTION_TABLE:u64=0x13e;
+pub const NT_SYSCALL_DELETE_FUNCTION_TABLE:u64=0x13f;
+pub const NT_SYSCALL_LOOKUP_FUNCTION_ENTRY:u64=0x140;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -1227,6 +1230,9 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_DEREFERENCE_SECTION => crate::ntoskrnl::mm::native_vm::dereference_section(args),
         NT_SYSCALL_SECTION_COPY => crate::ntoskrnl::mm::native_vm::section_copy(args),
         NT_SYSCALL_NT_CREATE_SECTION => crate::ntoskrnl::mm::section_handles::create_nt(args),
+        NT_SYSCALL_REGISTER_FUNCTION_TABLE => crate::ntoskrnl::runtime_functions::register(args),
+        NT_SYSCALL_DELETE_FUNCTION_TABLE => crate::ntoskrnl::runtime_functions::delete(args),
+        NT_SYSCALL_LOOKUP_FUNCTION_ENTRY => crate::ntoskrnl::runtime_functions::lookup(args),
         NT_SYSCALL_REFERENCE_SECTION => crate::ntoskrnl::mm::native_vm::reference_section(args),
         NT_SYSCALL_ALPC_CREATE_PORT..=NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT | NT_SYSCALL_ALPC_CONNECT_PORT_EX => crate::ntoskrnl::alpc_native::dispatch(number,args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
