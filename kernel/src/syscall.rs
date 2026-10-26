@@ -191,6 +191,7 @@ pub const NT_SYSCALL_ETW_READ_EVENT:u64=0x136;
 pub const NT_SYSCALL_ETW_CREATE_SESSION:u64=0x138;
 pub const NT_SYSCALL_ETW_ENABLE_SESSION:u64=0x139;
 pub const NT_SYSCALL_ETW_STOP_SESSION:u64=0x13a;
+pub const NT_SYSCALL_ETW_UNREGISTER:u64=0x13b;
 
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
@@ -237,6 +238,19 @@ fn etw_register(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
   }
  }
  0xC000009Au64
+}
+fn etw_unregister(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
+ let handle=args[0];let pid=current_process_id();let _g=KernelEtwGuard::lock();
+ unsafe {
+  let providers=core::ptr::addr_of_mut!(ETW_KERNEL_PROVIDERS).cast::<KernelEtwProvider>();
+  let Some(i)=(0..ETW_PROVIDER_CAPACITY).find(|&i|{let p=&*providers.add(i);p.active&&p.handle==handle&&p.owner==pid})else{return NT_STATUS_INVALID_HANDLE;};
+  *providers.add(i)=KernelEtwProvider::EMPTY;
+  let events=core::ptr::addr_of_mut!(ETW_KERNEL_EVENTS).cast::<KernelEtwEvent>();
+  let old_head=ETW_KERNEL_HEAD;let old_len=ETW_KERNEL_LEN;let mut kept=0usize;
+  for off in 0..old_len {let src=(old_head+off)%ETW_EVENT_CAPACITY;let e=*events.add(src);if !e.active||e.provider==handle{*events.add(src)=KernelEtwEvent::EMPTY;continue;}let dst=(old_head+kept)%ETW_EVENT_CAPACITY;if dst!=src{*events.add(dst)=e;*events.add(src)=KernelEtwEvent::EMPTY;}kept+=1;}
+  ETW_KERNEL_LEN=kept;if kept==0{ETW_KERNEL_HEAD=0;}
+ }
+ NT_STATUS_SUCCESS
 }
 fn etw_enable_state(args:&[u64;NT_MAX_ARGUMENTS])->u64 {
  if args[0]==0 || args[1]==0{return NT_STATUS_INVALID_PARAMETER;}
@@ -1099,6 +1113,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_QUERY_INFORMATION_THREAD => nt_query_thread(args),
         NT_SYSCALL_QUERY_SYSTEM_INFORMATION => nt_query_system(args),
         NT_SYSCALL_ETW_REGISTER => etw_register(args),
+        NT_SYSCALL_ETW_UNREGISTER => etw_unregister(args),
         NT_SYSCALL_ETW_ENABLE_STATE => etw_enable_state(args),
         NT_SYSCALL_ETW_WRITE_EVENT => etw_write_event(args),
         NT_SYSCALL_ETW_READ_EVENT => etw_read_event(args),
@@ -1218,6 +1233,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_QUERY_INFORMATION_PROCESS | NT_SYSCALL_QUERY_INFORMATION_THREAD => 5,
             NT_SYSCALL_QUERY_SYSTEM_INFORMATION => 4,
             NT_SYSCALL_ETW_REGISTER => 2,
+            NT_SYSCALL_ETW_UNREGISTER => 1,
             NT_SYSCALL_ETW_ENABLE_STATE => 2,
             NT_SYSCALL_ETW_WRITE_EVENT => 4,
             NT_SYSCALL_ETW_READ_EVENT => 5,
