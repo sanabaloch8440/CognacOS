@@ -66,7 +66,21 @@ fn register_process(pid: u64, address_space_root: u64) -> Result<(), ProcessErro
     for i in 0..count { name[prefix.len()+i] = digits[count-1-i]; }
     let full_len = prefix.len()+count;
     let ty = [b'P' as u16,b'r' as u16,b'o' as u16,b'c' as u16,b'e' as u16,b's' as u16,b's' as u16];
-    if unsafe { crate::ntoskrnl::ob::runtime::register_external_object(pointer.cast(), &ty, &name[..full_len], false, core::ptr::null(), 0) }.is_err() {
+    // Default process DACL grants only basic query/synchronization rights to
+    // Everyone. More privileged process access requires a future registered
+    // token/DACL policy; an absent descriptor must never imply full access.
+    let mut sd = [0u8; 48];
+    sd[0] = 1; // SECURITY_DESCRIPTOR_REVISION
+    sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes()); // SELF_RELATIVE | DACL_PRESENT
+    sd[16..20].copy_from_slice(&20u32.to_le_bytes());
+    sd[20] = 2; // ACL revision
+    sd[22..24].copy_from_slice(&28u16.to_le_bytes());
+    sd[24..26].copy_from_slice(&1u16.to_le_bytes());
+    sd[28] = 0; // ACCESS_ALLOWED_ACE_TYPE
+    sd[30..32].copy_from_slice(&20u16.to_le_bytes());
+    sd[32..36].copy_from_slice(&(0x0010_0000u32 | 0x0000_0400 | 0x0000_1000).to_le_bytes());
+    sd[36..48].copy_from_slice(&[1, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]); // S-1-1-0 Everyone
+    if unsafe { crate::ntoskrnl::ob::runtime::register_external_object(pointer.cast(), &ty, &name[..full_len], false, sd.as_ptr(), sd.len()) }.is_err() {
         let mut registry = TABLE.lock();
         if let Some(p) = registry.0.iter_mut().find(|p| core::ptr::eq(&**p, pointer)) { *p = EProcess::EMPTY; }
         return Err(ProcessError::TooManyProcesses);
