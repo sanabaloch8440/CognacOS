@@ -15,6 +15,9 @@ pub(crate) fn register_clock_interrupt_handler() -> Result<(), crate::hal::HalEr
 pub(crate) fn ki_clock_interrupt(now: u64) {
     LAST_CLOCK_TICK.store(now, Ordering::Release);
     CLOCK_INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+    // Keep tick accounting and peer-clock watchdog checks on the same path as
+    // the actual HAL clock notifier, not in a polling thread that could starve.
+    crate::ntoskrnl::ke::runtime::ke_accumulate_ticks(now);
     crate::ntoskrnl::ke::runtime::timer_tick(now);
     let mut expired = [crate::dispatcher::ExpiredWait { thread: 0, object: 0 }; 64];
     let count = crate::dispatcher::expire_detailed(now, &mut expired);
