@@ -105,7 +105,7 @@ const ATTRIBUTE_SIZES: [(ULONG, usize); 7] = [
 
 /// Returns the header plus storage required for each recognized attribute.
 #[no_mangle]
-pub extern "system" fn AlpcGetHeaderSize(attribute_flags: ULONG) -> SIZE_T {
+pub extern "system" fn AlpcGetHeaderSize(attribute_flags: ULONG) -> ULONG {
     ATTRIBUTE_SIZES.iter().fold(
         size_of::<ALPC_MESSAGE_ATTRIBUTES>(),
         |total, (flag, size)| {
@@ -156,18 +156,18 @@ pub unsafe extern "system" fn AlpcGetMessageAttribute(
 pub unsafe extern "system" fn AlpcInitializeMessageAttribute(
     attribute_flags: ULONG,
     buffer: *mut ALPC_MESSAGE_ATTRIBUTES,
-    buffer_size: SIZE_T,
-    required_buffer_size: *mut SIZE_T,
+    buffer_size: ULONG,
+    required_buffer_size: *mut ULONG,
 ) -> NTSTATUS {
     if required_buffer_size.is_null() {
-        return STATUS_BUFFER_TOO_SMALL;
+        return STATUS_INVALID_PARAMETER;
     }
 
-    let required = AlpcGetHeaderSize(attribute_flags);
+    let required = AlpcGetHeaderSize(attribute_flags) as usize;
     // SAFETY: Required by this function's pointer contract.
-    unsafe { required_buffer_size.write(required) };
+    unsafe { required_buffer_size.write(required as ULONG) };
 
-    if buffer_size < required {
+    if (buffer_size as usize) < required {
         return STATUS_BUFFER_TOO_SMALL;
     }
 
