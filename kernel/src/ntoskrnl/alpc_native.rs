@@ -532,7 +532,7 @@ fn create_section_view(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     if view.flags!=0 || view.view_base!=0 || view.view_size==0 {let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}
     let (section,section_body)=match section_from_handle(view.section_handle as u64){Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
     let pid=current_pid();let root=match root_for_current(){Ok(r)=>r,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return s}};
-    if section.owner_pid.load(Ordering::Acquire)!=pid || section.port_id.load(Ordering::Acquire)!=port.port_id.load(Ordering::Acquire) || section.owner_root.load(Ordering::Acquire)!=root {
+    if section.port_id.load(Ordering::Acquire)!=port.port_id.load(Ordering::Acquire) {
         let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return 0xC000_0022;
     }
     let length=match (view.view_size as u64).checked_add(4095){Some(n)=>n&!4095,None=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(section_body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}};
