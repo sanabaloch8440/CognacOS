@@ -12,6 +12,8 @@ const ERR_INVALID:u64=(-22i64) as u64;
 const MAX_WRITE:usize=512;
 static CURRENT_PID:AtomicU64=AtomicU64::new(0);
 static CALL_COUNT:AtomicU64=AtomicU64::new(0);
+// Bounded boot trace prevents serial floods while preserving the last early NT calls.
+static NT_SYSCALL_TRACE_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_EXIT:AtomicU64=AtomicU64::new(u64::MAX);
 struct ActiveSpace(core::cell::UnsafeCell<*const AddressSpace>);
 unsafe impl Sync for ActiveSpace {}
@@ -1438,13 +1440,6 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     }
 }
 
-#[inline(always)]
-fn windows_syscall_debug_marker(byte: u8) {
-    unsafe {
-        core::arch::asm!("out dx, al", in("dx") 0x3f8u16, in("al") byte, options(nomem, nostack, preserves_flags));
-    }
-}
-
 /// Enable the reference service table only after verifying the staged NTDLL,
 /// or temporarily while running the kernel's built-in ABI smoke fixture.
 pub fn set_windows_service_table_enabled(enabled: bool) {
@@ -1461,7 +1456,6 @@ pub fn windows_service_table_matches(image: &[u8]) -> bool {
 /// unverified tables fail closed instead of dispatching a possibly wrong API.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
-    windows_syscall_debug_marker(b'W');
     if frame.is_null() { return NT_STATUS_ACCESS_VIOLATION; }
     if !WINDOWS_SERVICE_TABLE_ENABLED.load(Ordering::Acquire) {
         CALL_COUNT.fetch_add(1, Ordering::AcqRel);
@@ -1492,9 +1486,7 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         }
     };
     unsafe { *frame.add(14) = native; }
-    windows_syscall_debug_marker(b'M');
     let status = cognacos_nt_syscall_dispatch(frame);
-    windows_syscall_debug_marker(b'R');
     unsafe { *frame.add(14) = service; }
     status
 }
@@ -1504,7 +1496,6 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
 /// dereferenced by the service handlers.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
-    windows_syscall_debug_marker(b'N');
     if frame.is_null() { return NT_STATUS_ACCESS_VIOLATION; }
     CALL_COUNT.fetch_add(1, Ordering::AcqRel);
     unsafe {
@@ -1512,6 +1503,26 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
         let f = core::slice::from_raw_parts(frame, 20);
         let number = f[14];
         let user_rsp = f[18];
+        let trace_index = NT_SYSCALL_TRACE_COUNT.fetch_add(1, Ordering::Relaxed);
+        if trace_index < 128 {
+            crate::serial_write(b"[DBG][NTDLL->NTOSKRNL][SYSCALL] enter seq=");
+            crate::serial_write_hex(trace_index);
+            crate::serial_write(b" service=");
+            crate::serial_write_hex(number);
+            crate::serial_write(b" rip=");
+            crate::serial_write_hex(f[15]);
+            crate::serial_write(b" rsp=");
+            crate::serial_write_hex(user_rsp);
+            crate::serial_write(b" rcx=");
+            crate::serial_write_hex(f[12]);
+            crate::serial_write(b" rdx=");
+            crate::serial_write_hex(f[11]);
+            crate::serial_write(b" r8=");
+            crate::serial_write_hex(f[7]);
+            crate::serial_write(b" r9=");
+            crate::serial_write_hex(f[6]);
+            crate::serial_write(b"\\r\\n");
+        }
         let mut args = [0u64; NT_MAX_ARGUMENTS];
         args[0] = f[5];  // R10 = arg1
         args[1] = f[11]; // RDX = arg2
