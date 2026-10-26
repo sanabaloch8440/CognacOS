@@ -216,15 +216,15 @@ fn persistent_create_subkey(slot: usize, parent_cell: u32, name: &[u16]) -> Resu
     if mounted.bytes.is_null() || mounted.journal.is_null() { return Err(STATUS_NOT_SUPPORTED); }
     let hive = unsafe { core::slice::from_raw_parts_mut(mounted.bytes, mounted.len) };
     let journal = unsafe { core::slice::from_raw_parts_mut(mounted.journal, mounted.journal_len) };
-    let seq = crate::ntoskrnl::cm::hive_writer::RedoJournal::begin(hive, journal)
+    let seq = hive_writer_backend::RedoJournal::begin(hive, journal)
         .map_err(|_| STATUS_INSUFFICIENT_RESOURCES)?;
     flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_PREPARE, hive, journal)?;
     let child = (|| {
-        let mut writer = crate::ntoskrnl::cm::hive_writer::HiveWriter::open(hive)
+        let mut writer = hive_writer_backend::HiveWriter::open(hive)
             .map_err(|_| STATUS_INVALID_PARAMETER)?;
         writer.mark_dirty(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
         let id = writer.create_subkey(parent_cell, name).map_err(|e| match e {
-            crate::ntoskrnl::cm::hive_writer::Error::NoSpace => STATUS_INSUFFICIENT_RESOURCES,
+            hive_writer_backend::Error::NoSpace => STATUS_INSUFFICIENT_RESOURCES,
             _ => STATUS_INVALID_PARAMETER,
         })?;
         writer.update_base_block(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
@@ -233,17 +233,17 @@ fn persistent_create_subkey(slot: usize, parent_cell: u32, name: &[u16]) -> Resu
     let child = match child {
         Ok(id) => id,
         Err(status) => {
-            let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+            let _ = hive_writer_backend::RedoJournal::recover(hive, journal);
             let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
             return Err(status);
         }
     };
     if let Err(status) = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_DATA, hive, journal) {
-        let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+        let _ = hive_writer_backend::RedoJournal::recover(hive, journal);
         let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
         return Err(status);
     }
-    crate::ntoskrnl::cm::hive_writer::RedoJournal::commit(hive, journal)
+    hive_writer_backend::RedoJournal::commit(hive, journal)
         .map_err(|_| STATUS_INVALID_PARAMETER)?;
     flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_COMMIT, hive, journal)?;
     let parsed = hive_backend::Hive::open(hive).map_err(|_| STATUS_INVALID_PARAMETER)?;
@@ -259,7 +259,7 @@ fn persistent_delete_key(slot: usize, cell: u32) -> Result<(), i32> {
 }
 fn persistent_mutation(
     slot: usize,
-    mutate: impl FnOnce(&mut crate::ntoskrnl::cm::hive_writer::HiveWriter<'_>) -> Result<(), crate::ntoskrnl::cm::hive_writer::Error>,
+    mutate: impl FnOnce(&mut hive_writer_backend::HiveWriter<'_>) -> Result<(), hive_writer_backend::Error>,
 ) -> Result<(), i32> {
     if slot >= 7 { return Err(STATUS_INVALID_PARAMETER); }
     let mounted = unsafe { core::ptr::read(core::ptr::addr_of!(MOUNTED_HIVES[slot])) };
@@ -267,30 +267,30 @@ fn persistent_mutation(
     if mounted.bytes.is_null() || mounted.journal.is_null() { return Err(STATUS_NOT_SUPPORTED); }
     let hive = unsafe { core::slice::from_raw_parts_mut(mounted.bytes, mounted.len) };
     let journal = unsafe { core::slice::from_raw_parts_mut(mounted.journal, mounted.journal_len) };
-    let seq = crate::ntoskrnl::cm::hive_writer::RedoJournal::begin(hive, journal).map_err(|_| STATUS_INSUFFICIENT_RESOURCES)?;
+    let seq = hive_writer_backend::RedoJournal::begin(hive, journal).map_err(|_| STATUS_INSUFFICIENT_RESOURCES)?;
     flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_PREPARE, hive, journal)?;
     let result = (|| {
-        let mut writer = crate::ntoskrnl::cm::hive_writer::HiveWriter::open(hive).map_err(|_| STATUS_INVALID_PARAMETER)?;
+        let mut writer = hive_writer_backend::HiveWriter::open(hive).map_err(|_| STATUS_INVALID_PARAMETER)?;
         writer.mark_dirty(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
         mutate(&mut writer).map_err(|e| match e {
-            crate::ntoskrnl::cm::hive_writer::Error::NoSpace => STATUS_INSUFFICIENT_RESOURCES,
-            crate::ntoskrnl::cm::hive_writer::Error::InvalidValue => STATUS_OBJECT_NAME_NOT_FOUND,
+            hive_writer_backend::Error::NoSpace => STATUS_INSUFFICIENT_RESOURCES,
+            hive_writer_backend::Error::InvalidValue => STATUS_OBJECT_NAME_NOT_FOUND,
             _ => STATUS_INVALID_PARAMETER,
         })?;
         writer.update_base_block(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
         Ok::<(), i32>(())
     })();
     if let Err(status) = result {
-        let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+        let _ = hive_writer_backend::RedoJournal::recover(hive, journal);
         let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
         return Err(status);
     }
     if let Err(status) = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_DATA, hive, journal) {
-        let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+        let _ = hive_writer_backend::RedoJournal::recover(hive, journal);
         let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
         return Err(status);
     }
-    crate::ntoskrnl::cm::hive_writer::RedoJournal::commit(hive, journal).map_err(|_| STATUS_INVALID_PARAMETER)?;
+    hive_writer_backend::RedoJournal::commit(hive, journal).map_err(|_| STATUS_INVALID_PARAMETER)?;
     flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_COMMIT, hive, journal)?;
     let parsed = hive_backend::Hive::open(hive).map_err(|_| STATUS_INVALID_PARAMETER)?;
     unsafe { (*core::ptr::addr_of_mut!(MOUNTED_HIVES[slot])).info = parsed.info; }
@@ -304,31 +304,31 @@ fn persistent_set_value(slot: usize, cell: u32, name: &[u16], kind: u32, data: &
     if mounted.bytes.is_null() || mounted.journal.is_null() { return Err(STATUS_NOT_SUPPORTED); }
     let hive = unsafe { core::slice::from_raw_parts_mut(mounted.bytes, mounted.len) };
     let journal = unsafe { core::slice::from_raw_parts_mut(mounted.journal, mounted.journal_len) };
-    let seq = crate::ntoskrnl::cm::hive_writer::RedoJournal::begin(hive, journal)
+    let seq = hive_writer_backend::RedoJournal::begin(hive, journal)
         .map_err(|_| STATUS_INSUFFICIENT_RESOURCES)?;
     flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_PREPARE, hive, journal)?;
     let update = (|| {
-        let mut writer = crate::ntoskrnl::cm::hive_writer::HiveWriter::open(hive)
+        let mut writer = hive_writer_backend::HiveWriter::open(hive)
             .map_err(|_| STATUS_INVALID_PARAMETER)?;
         writer.mark_dirty(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
         writer.set_value(cell, name, kind, data).map_err(|e| match e {
-            crate::ntoskrnl::cm::hive_writer::Error::NoSpace => STATUS_INSUFFICIENT_RESOURCES,
+            hive_writer_backend::Error::NoSpace => STATUS_INSUFFICIENT_RESOURCES,
             _ => STATUS_INVALID_PARAMETER,
         })?;
         writer.update_base_block(seq).map_err(|_| STATUS_INVALID_PARAMETER)?;
         Ok::<(), i32>(())
     })();
     if let Err(status) = update {
-        let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+        let _ = hive_writer_backend::RedoJournal::recover(hive, journal);
         let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
         return Err(status);
     }
     if let Err(status) = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_DATA, hive, journal) {
-        let _ = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(hive, journal);
+        let _ = hive_writer_backend::RedoJournal::recover(hive, journal);
         let _ = flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, hive, journal);
         return Err(status);
     }
-    crate::ntoskrnl::cm::hive_writer::RedoJournal::commit(hive, journal)
+    hive_writer_backend::RedoJournal::commit(hive, journal)
         .map_err(|_| STATUS_INVALID_PARAMETER)?;
     flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_COMMIT, hive, journal)?;
     let parsed = hive_backend::Hive::open(hive).map_err(|_| STATUS_INVALID_PARAMETER)?;
