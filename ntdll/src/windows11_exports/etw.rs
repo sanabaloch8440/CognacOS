@@ -17,6 +17,11 @@ const NT_SYSCALL_ETW_REGISTER: u64 = 0x133;
 const NT_SYSCALL_ETW_ENABLE_STATE: u64 = 0x134;
 const NT_SYSCALL_ETW_WRITE_EVENT: u64 = 0x135;
 const NT_SYSCALL_ETW_READ_EVENT: u64 = 0x136;
+const NT_SYSCALL_ETW_CREATE_SESSION: u64 = 0x138;
+const NT_SYSCALL_ETW_ENABLE_SESSION: u64 = 0x139;
+const NT_SYSCALL_ETW_STOP_SESSION: u64 = 0x13a;
+const NT_SYSCALL_ETW_UNREGISTER: u64 = 0x13b;
+const NT_SYSCALL_ETW_CREATE_NAMED_SESSION: u64 = 0x13c;
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
 fn kernel_etw_call(number:u64,a0:u64,a1:u64,a2:u64,a3:u64)->Option<u64>{
  let result:u64;
@@ -463,6 +468,25 @@ pub(crate) fn controller_stop_session(session:u64)->i32 {
 }
 #[cfg(not(all(target_arch = "x86_64", target_os = "none")))]
 pub(crate) fn controller_stop_session(_session:u64)->i32 { 0xC0000002u32 as i32 }
+
+/// Create a named, privileged kernel ETW session. The UTF-16 name is copied by the
+/// kernel before it is stored; no pointer into this stack slice is retained.
+pub(crate) fn controller_create_named_session(name: &[u16], out_handle: &mut u64) -> i32 {
+    if name.is_empty() || name.len() > 63 || name.iter().any(|ch| *ch == 0) {
+        return 0xC000000Du32 as i32;
+    }
+    match kernel_etw_call(
+        NT_SYSCALL_ETW_CREATE_NAMED_SESSION,
+        name.as_ptr() as u64,
+        name.len() as u64,
+        out_handle as *mut u64 as u64,
+        0,
+    ) {
+        Some(0) => 0,
+        Some(status) => status as u32 as i32,
+        None => 0xC0000002u32 as i32,
+    }
+}
 
 /// Enable/disable a provider through a privileged kernel-owned session.
 #[cfg(all(target_arch = "x86_64", target_os = "none"))]
