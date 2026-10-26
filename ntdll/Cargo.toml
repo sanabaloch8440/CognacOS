@@ -15,7 +15,6 @@ libm = { version = "0.2", default-features = false }
 
 [features]
 default = []
-relay-port = []
 
 [profile.dev]
 panic = "abort"
