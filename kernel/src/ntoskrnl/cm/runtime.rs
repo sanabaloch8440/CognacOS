@@ -1033,6 +1033,29 @@ mod tests {
   assert_eq!(report.final_sequence,2);
   assert_eq!(dirty,after);
  }
+ #[test] fn regf_ri_index_uses_declared_counts_not_cell_padding() {
+  let mut bytes=[0u8;8192];
+  hive_backend::create_minimal_hive(&mut bytes).unwrap();
+  let child_name=[84u16,101,115,116];
+  let mut writer=hive_writer_backend::HiveWriter::open(&mut bytes).unwrap();
+  let child=writer.create_subkey(0x20,&child_name).unwrap();
+  let list_id=u32::from_le_bytes(writer.bytes()[0x1040..0x1044].try_into().unwrap());
+  let ri_id=writer.allocate_cell(8).unwrap();
+  writer.update_base_block(2).unwrap();
+  drop(writer);
+
+  // Wrap the ordinary LI cell in a one-entry RI cell. The allocated RI
+  // cell has alignment padding, which must not be interpreted as an index.
+  let ri_abs=4096+ri_id as usize+4;
+  bytes[ri_abs..ri_abs+2].copy_from_slice(b"ri");
+  bytes[ri_abs+2..ri_abs+4].copy_from_slice(&1u16.to_le_bytes());
+  bytes[ri_abs+4..ri_abs+8].copy_from_slice(&list_id.to_le_bytes());
+  bytes[0x1040..0x1044].copy_from_slice(&ri_id.to_le_bytes());
+
+  let hive=hive_backend::Hive::open(&bytes).unwrap();
+  assert_eq!(hive.find_path(&child_name).unwrap().cell_index(),child);
+ }
+
  #[test] fn writable_regf_cells_indexes_and_redo_recovery() {
   let mut bytes=[0u8;8192];
   hive_backend::create_minimal_hive(&mut bytes).unwrap();
