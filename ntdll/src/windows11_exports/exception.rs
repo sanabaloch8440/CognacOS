@@ -273,6 +273,27 @@ pub unsafe extern "system" fn RtlCaptureContext(context: *mut CONTEXT) {
     );
     #[cfg(target_arch = "x86_64")]
     core::arch::asm!(
+        "pushfq",
+        "pop rax",
+        "mov dword ptr [{p} + 68], eax",
+        "mov ax, cs",
+        "mov word ptr [{p} + 56], ax",
+        "mov ax, ds",
+        "mov word ptr [{p} + 58], ax",
+        "mov ax, es",
+        "mov word ptr [{p} + 60], ax",
+        "mov ax, fs",
+        "mov word ptr [{p} + 62], ax",
+        "mov ax, gs",
+        "mov word ptr [{p} + 64], ax",
+        "mov ax, ss",
+        "mov word ptr [{p} + 74], ax",
+        p = in(reg) context,
+        out("rax") _,
+        options(preserves_flags)
+    );
+    #[cfg(target_arch = "x86_64")]
+    core::arch::asm!(
         "fxsave64 [{}]",
         in(reg) (context.cast::<u8>().add(0x100)),
         options(nostack)
