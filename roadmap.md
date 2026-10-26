@@ -11,7 +11,8 @@
 - [ ] Replace bounded tables only for volatile keys/values if needed; persistent hive-backed keys now use REGF cells rather than the volatile value table.
 - [ ] Implement Windows-native `HvLE` log parsing, checksum/hash verification, dirty-page replay, recovery selection, and crash-consistent compatibility with Windows-generated transaction logs.
 - [x] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to CognacOS-private native-service IDs; writable-hive flush uses the configured durability callback, while immutable mounts return `STATUS_NOT_SUPPORTED`.
-- [ ] Route absolute-path hive key creation, REGF enumeration, and remaining Windows information classes through the writable backend; add change notifications and Windows transaction semantics.
+- [x] Route absolute-path `NtCreateKey` into writable REGF cells when the target hive is explicitly mounted with a durability provider.
+- [ ] Add REGF-backed enumeration and remaining Windows information classes, change notifications, and Windows transaction semantics.
 - [ ] Add complete `KEY_*` access-mask mapping, registry DACL inheritance, and token-aware security policy.
 - [ ] Add host tests for access-denied handles, relative opens, malformed user pointers, mutation rollback, and persistent hive reopen/recovery; require a passing QEMU boot before claiming runtime validation.
 
