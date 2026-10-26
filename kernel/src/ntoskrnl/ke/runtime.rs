@@ -138,3 +138,6 @@ include!("runtime/nmi_callbacks.rs");
 
 // Ke-owned clock/interrupt dispatch formerly split out as Ki.
 include!("runtime/interrupt_dispatch.rs");
+
+// Per-processor tick accounting, DPC timing, and clock watchdog detection.
+include!("runtime/watchdog.rs");
