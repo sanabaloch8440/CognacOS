@@ -478,7 +478,7 @@ fn exit_current()->! {
             (old_rsp_ptr,idle,old_token)
         }
     };
-    if old_token != 0 { let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(old_token as *mut c_void) }; }
+    if old_token != 0 { let token=old_token as *mut c_void; let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) }; crate::ntoskrnl::alpc_native::release_captured_impersonation_token(token); }
     unsafe{crate::ntoskrnl::ke::arch::context_switch(old_rsp_ptr,new_rsp)};
     loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}
 }
