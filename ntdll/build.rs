@@ -2,7 +2,19 @@ use std::{collections::BTreeSet, env, fs, path::PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=exports/windows-11-x64-exports.txt");
+    println!("cargo:rerun-if-changed=exports/ntdll-x64.def");
+    println!("cargo:rerun-if-changed=exports/ntdll-rust.def");
     println!("cargo:rerun-if-changed=src");
+    for source in [
+        "../root/wine/dlls/ntdll/cognac_native.c",
+        "../root/wine/dlls/ntdll/cognac_rtl_string.c",
+        "../root/wine/dlls/ntdll/cognac_heap.c",
+        "../root/wine/dlls/ntdll/cognac_loader.c",
+        "../root/wine/dlls/ntdll/cognac_printf.c",
+        "../root/wine/dlls/ntdll/rtl_memory.c",
+    ] {
+        println!("cargo:rerun-if-changed={}", source);
+    }
     // The public NTDLL export surface comes exclusively from the pinned Windows 11
     // inventory. The Wine .spec is metadata for the separate Wine tree, not an
     // authority for CognacOS's native DLL exports.
@@ -19,6 +31,38 @@ fn main() {
             panic!("invalid name in Windows 11 NTDLL export inventory: {name}");
         }
     }
+    // Both PE definition files must remain subsets of the pinned inventory.
+    for definition in ["exports/ntdll-x64.def", "exports/ntdll-rust.def"] {
+        let text = fs::read_to_string(definition)
+            .unwrap_or_else(|error| panic!("cannot read {}: {}", definition, error));
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with(';') || line.starts_with("LIBRARY ") || line == "EXPORTS" {
+                continue;
+            }
+            let name = line.split_whitespace().next().unwrap_or("");
+            if !names.contains(name) {
+                panic!("{} exports `{}`, which is absent from the pinned Windows 11 inventory", definition, name);
+            }
+        }
+    }
+
+    // The .def files, not per-function annotations, own native C exports.
+    for source in [
+        "../root/wine/dlls/ntdll/cognac_native.c",
+        "../root/wine/dlls/ntdll/cognac_rtl_string.c",
+        "../root/wine/dlls/ntdll/cognac_heap.c",
+        "../root/wine/dlls/ntdll/cognac_loader.c",
+        "../root/wine/dlls/ntdll/cognac_printf.c",
+        "../root/wine/dlls/ntdll/rtl_memory.c",
+    ] {
+        let text = fs::read_to_string(source)
+            .unwrap_or_else(|error| panic!("cannot read {}: {}", source, error));
+        if text.contains("__declspec(dllexport)") {
+            panic!("{} bypasses the NTDLL export allowlist with __declspec(dllexport)", source);
+        }
+    }
+
     // Any Rust item explicitly given an unmangled symbol name is a candidate
     // DLL export. Reject helpers and Cognac-only names here, before they can
     // silently widen the Windows ABI surface.
