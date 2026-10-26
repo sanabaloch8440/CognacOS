@@ -221,3 +221,58 @@ pub extern "system" fn CsrServerQueryState(out: *mut u32, capacity: u32) -> i32 
     }
     STATUS_SUCCESS
 }
+
+
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe extern "system" fn test_handler(message: *mut CsrApiMessage, _length: usize) -> i32 {
+        if message.is_null() { return STATUS_INVALID_PARAMETER; }
+        unsafe { (*message).return_value = 0x1234; }
+        STATUS_SUCCESS
+    }
+
+    #[test]
+    fn dispatch_validates_message_and_calls_registered_handler() {
+        assert_eq!(CsrServerInitialize(), STATUS_SUCCESS);
+        assert_eq!(unsafe { CsrServerRegisterApi(0x42, Some(test_handler)) }, STATUS_SUCCESS);
+        let mut message: CsrApiMessage = unsafe { core::mem::zeroed() };
+        message.api_number = 0x42;
+        message.port.total_length = (size_of::<PortMessage>() + 8) as u16;
+        message.port.data_length = 8;
+        assert_eq!(
+            unsafe { CsrServerDispatchMessage(&mut message, size_of::<PortMessage>() + 8) },
+            STATUS_SUCCESS
+        );
+        assert_eq!(message.return_value, STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn unknown_api_is_rejected_and_bad_lengths_fail_closed() {
+        let mut message: CsrApiMessage = unsafe { core::mem::zeroed() };
+        message.api_number = 0x7fff_ffff;
+        message.port.total_length = (size_of::<PortMessage>() + 8) as u16;
+        message.port.data_length = 8;
+        assert_eq!(
+            unsafe { CsrServerDispatchMessage(&mut message, size_of::<PortMessage>() + 8) },
+            STATUS_INVALID_SYSTEM_SERVICE
+        );
+        assert_eq!(
+            unsafe { CsrServerDispatchMessage(&mut message, size_of::<PortMessage>()) },
+            STATUS_INVALID_PARAMETER
+        );
+    }
+
+    #[test]
+    fn client_lifecycle_is_bounded_and_reference_counted() {
+        assert_eq!(unsafe { CsrServerRegisterClient(77, 12) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { CsrServerRegisterClient(77, 13) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { CsrServerUnregisterClient(77) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { CsrServerUnregisterClient(77) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { CsrServerUnregisterClient(77) }, STATUS_INVALID_PARAMETER);
+    }
+}
