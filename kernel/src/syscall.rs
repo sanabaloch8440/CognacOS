@@ -96,6 +96,16 @@ pub fn clear_current_process() {
 }
 pub fn dispatch_count()->u64 { CALL_COUNT.load(Ordering::Acquire) }
 pub fn current_process_id() -> u64 { CURRENT_PID.load(Ordering::Acquire) }
+/// Checked copy helpers for native syscall adapters. They never dereference a
+/// caller-controlled address directly in kernel mode.
+pub fn copy_current_user_from(address:u64, output:&mut [u8])->bool {
+    let pointer=unsafe{*ACTIVE_SPACE.0.get()};
+    !pointer.is_null() && unsafe{(&*pointer).copy_from_user(address,output)}.is_ok()
+}
+pub fn copy_current_user_to(address:u64, input:&[u8])->bool {
+    let pointer=unsafe{*ACTIVE_SPACE.0.get()};
+    !pointer.is_null() && unsafe{(&*pointer).copy_to_user(address,input)}.is_ok()
+}
 pub fn last_exit_code()->u64 { LAST_EXIT.load(Ordering::Acquire) }
 pub fn dispatch(number:u64,args:[u64;6])->u64 {
     CALL_COUNT.fetch_add(1,Ordering::AcqRel);
@@ -150,6 +160,29 @@ pub const NT_SYSCALL_CREATE_SECTION: u64 = 0x117;
 pub const NT_SYSCALL_DEREFERENCE_SECTION: u64 = 0x118;
 pub const NT_SYSCALL_SECTION_COPY: u64 = 0x119;
 pub const NT_SYSCALL_REFERENCE_SECTION: u64 = 0x11a;
+pub const NT_SYSCALL_ALPC_CREATE_PORT:u64=0x11b;
+pub const NT_SYSCALL_ALPC_DISCONNECT_PORT:u64=0x11c;
+pub const NT_SYSCALL_ALPC_CONNECT_PORT:u64=0x11d;
+pub const NT_SYSCALL_ALPC_ACCEPT_CONNECT_PORT:u64=0x11e;
+pub const NT_SYSCALL_ALPC_SEND_WAIT_RECEIVE_PORT:u64=0x11f;
+pub const NT_SYSCALL_ALPC_CREATE_PORT_SECTION:u64=0x120;
+pub const NT_SYSCALL_ALPC_DELETE_PORT_SECTION:u64=0x121;
+pub const NT_SYSCALL_ALPC_CREATE_SECTION_VIEW:u64=0x122;
+pub const NT_SYSCALL_ALPC_DELETE_SECTION_VIEW:u64=0x123;
+pub const NT_SYSCALL_ALPC_CREATE_SECURITY_CONTEXT:u64=0x124;
+pub const NT_SYSCALL_ALPC_DELETE_SECURITY_CONTEXT:u64=0x125;
+pub const NT_SYSCALL_ALPC_REVOKE_SECURITY_CONTEXT:u64=0x126;
+pub const NT_SYSCALL_ALPC_CREATE_RESOURCE_RESERVE:u64=0x127;
+pub const NT_SYSCALL_ALPC_DELETE_RESOURCE_RESERVE:u64=0x128;
+pub const NT_SYSCALL_ALPC_QUERY_INFORMATION:u64=0x129;
+pub const NT_SYSCALL_ALPC_SET_INFORMATION:u64=0x12a;
+pub const NT_SYSCALL_ALPC_QUERY_INFORMATION_MESSAGE:u64=0x12b;
+pub const NT_SYSCALL_ALPC_CANCEL_MESSAGE:u64=0x12c;
+pub const NT_SYSCALL_ALPC_OPEN_SENDER_PROCESS:u64=0x12d;
+pub const NT_SYSCALL_ALPC_OPEN_SENDER_THREAD:u64=0x12e;
+pub const NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_OF_PORT:u64=0x12f;
+pub const NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT:u64=0x130;
+
 pub const NT_MAX_ARGUMENTS: usize = 17;
 const NT_STATUS_SUCCESS: u64 = 0;
 const NT_STATUS_NOT_IMPLEMENTED: u64 = 0xC000_0002;
@@ -920,6 +953,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_DEREFERENCE_SECTION => crate::ntoskrnl::mm::native_vm::dereference_section(args),
         NT_SYSCALL_SECTION_COPY => crate::ntoskrnl::mm::native_vm::section_copy(args),
         NT_SYSCALL_REFERENCE_SECTION => crate::ntoskrnl::mm::native_vm::reference_section(args),
+        NT_SYSCALL_ALPC_CREATE_PORT..=NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT => crate::ntoskrnl::alpc_native::dispatch(number,args),
         _ => NT_STATUS_NOT_IMPLEMENTED,
     }
 }
@@ -1027,6 +1061,28 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_DEREFERENCE_SECTION => 1,
             NT_SYSCALL_SECTION_COPY => 5,
             NT_SYSCALL_REFERENCE_SECTION => 1,
+            NT_SYSCALL_ALPC_CREATE_PORT=>3,
+            NT_SYSCALL_ALPC_DISCONNECT_PORT=>2,
+            NT_SYSCALL_ALPC_CONNECT_PORT=>11,
+            NT_SYSCALL_ALPC_ACCEPT_CONNECT_PORT=>9,
+            NT_SYSCALL_ALPC_SEND_WAIT_RECEIVE_PORT=>8,
+            NT_SYSCALL_ALPC_CREATE_PORT_SECTION=>6,
+            NT_SYSCALL_ALPC_DELETE_PORT_SECTION=>3,
+            NT_SYSCALL_ALPC_CREATE_SECTION_VIEW=>3,
+            NT_SYSCALL_ALPC_DELETE_SECTION_VIEW=>3,
+            NT_SYSCALL_ALPC_CREATE_SECURITY_CONTEXT=>3,
+            NT_SYSCALL_ALPC_DELETE_SECURITY_CONTEXT=>3,
+            NT_SYSCALL_ALPC_REVOKE_SECURITY_CONTEXT=>3,
+            NT_SYSCALL_ALPC_CREATE_RESOURCE_RESERVE=>4,
+            NT_SYSCALL_ALPC_DELETE_RESOURCE_RESERVE=>3,
+            NT_SYSCALL_ALPC_QUERY_INFORMATION=>5,
+            NT_SYSCALL_ALPC_SET_INFORMATION=>4,
+            NT_SYSCALL_ALPC_QUERY_INFORMATION_MESSAGE=>6,
+            NT_SYSCALL_ALPC_CANCEL_MESSAGE=>3,
+            NT_SYSCALL_ALPC_OPEN_SENDER_PROCESS=>6,
+            NT_SYSCALL_ALPC_OPEN_SENDER_THREAD=>6,
+            NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_OF_PORT=>3,
+            NT_SYSCALL_ALPC_IMPERSONATE_CLIENT_CONTAINER_OF_PORT=>3,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
         };
         if count > 4 {
