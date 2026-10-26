@@ -222,7 +222,11 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     // Map the staged Rust NTDLL into this process before creating its PEB/LDR
     // so the loader list, process heap, TLS, and DllMain callout refer to the
     // image actually mapped in this address space.
-    let _process_ntdll = if !image.is_dll {
+    let ntdll_already_registered = crate::winabi::resolve_import(
+        b"ntdll.dll",
+        crate::pe::ImportSymbol::Name(b"NtQuerySystemInformation"),
+    ).is_some();
+    let _process_ntdll = if !image.is_dll && !ntdll_already_registered {
         if let Some(ntdll_bytes) = crate::boot_ntdll_bytes() {
             let loaded = unsafe { crate::pe::load_dll(space, ntdll_bytes, b"ntdll.dll", None) }
                 .map_err(|_| VmError::InvalidAddress)?;
@@ -233,8 +237,8 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
             None
         }
     } else {
-        // NTDLL itself is also exercised as a main image by the isolated ABI
-        // smoke test; never recursively map a second NTDLL into that process.
+        // The isolated native-NTDLL smoke has already registered and mapped
+        // ntdll.dll in this address space; don't map the same DLL twice.
         None
     };
     let env = unsafe { crate::process::initialize(space, image.base, image.entry, image.image_size, USER_STACK + PAGE, USER_STACK) }
