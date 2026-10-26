@@ -602,3 +602,31 @@ pub unsafe extern "C" fn wcsstr(haystack:*const u16,needle:*const u16)->*mut u16
 pub unsafe extern "C" fn wcstol(s:*const u16,end:*mut *mut u16,base:i32)->i32{if !end.is_null(){*end=s as *mut u16;}if s.is_null()||!(base==0||(2..=36).contains(&base)){return 0;}let mut i=0usize;while (*s.add(i))<=0x20&&*s.add(i)!=0{i+=1;}let mut neg=false;if *s.add(i)==45{neg=true;i+=1;}else if *s.add(i)==43{i+=1;}let mut radix=base as u32;if radix==0{if *s.add(i)==48{if *s.add(i+1)==120||*s.add(i+1)==88{radix=16;i+=2;}else{radix=8;}}else{radix=10;}}else if radix==16&&*s.add(i)==48&&(*s.add(i+1)==120||*s.add(i+1)==88){i+=2;}let mut any=false;let mut v=0u64;let mut limit=if neg{(i32::MAX as u64)+1}else{i32::MAX as u64};loop{let ch=*s.add(i) as u32;let d=if ch>=48&&ch<=57{ch-48}else if ch>=97&&ch<=122{ch-97+10}else if ch>=65&&ch<=90{ch-65+10}else{break};if d>=radix{break;}any=true;v=v.saturating_mul(radix as u64).saturating_add(d as u64).min(limit);i+=1;}if !any{return 0;}if !end.is_null(){*end=s.add(i) as *mut u16;}if neg{v.wrapping_neg() as i32}else{v as i32}}
 #[no_mangle]
 pub unsafe extern "C" fn wcstoul(s:*const u16,end:*mut *mut u16,base:i32)->u32{wcstol(s,end,base) as u32}
+
+
+// Scalar C runtime math and ASCII classification routines.
+
+#[no_mangle] pub unsafe extern "C" fn atan(x:f64)->f64{x.atan()}
+#[no_mangle] pub unsafe extern "C" fn atan2(y:f64,x:f64)->f64{y.atan2(x)}
+#[no_mangle] pub unsafe extern "C" fn ceil(x:f64)->f64{x.ceil()}
+#[no_mangle] pub unsafe extern "C" fn cos(x:f64)->f64{x.cos()}
+#[no_mangle] pub unsafe extern "C" fn fabs(x:f64)->f64{x.abs()}
+#[no_mangle] pub unsafe extern "C" fn floor(x:f64)->f64{x.floor()}
+#[no_mangle] pub unsafe extern "C" fn log(x:f64)->f64{x.ln()}
+#[no_mangle] pub unsafe extern "C" fn pow(x:f64,y:f64)->f64{x.powf(y)}
+#[no_mangle] pub unsafe extern "C" fn sin(x:f64)->f64{x.sin()}
+#[no_mangle] pub unsafe extern "C" fn sqrt(x:f64)->f64{x.sqrt()}
+#[no_mangle] pub unsafe extern "C" fn tan(x:f64)->f64{x.tan()}
+#[no_mangle] pub unsafe extern "C" fn isalnum(c:i32)->i32{((0..=127).contains(&c)&&(c as u8).is_ascii_alphanumeric()) as i32}
+#[no_mangle] pub unsafe extern "C" fn isalpha(c:i32)->i32{((0..=127).contains(&c)&&(c as u8).is_ascii_alphabetic()) as i32}
+#[no_mangle] pub unsafe extern "C" fn iscntrl(c:i32)->i32{((0..=127).contains(&c)&&(c<32||c==127)) as i32}
+#[no_mangle] pub unsafe extern "C" fn isdigit(c:i32)->i32{((0..=127).contains(&c)&&(c as u8).is_ascii_digit()) as i32}
+#[no_mangle] pub unsafe extern "C" fn isgraph(c:i32)->i32{(33..=126).contains(&c) as i32}
+#[no_mangle] pub unsafe extern "C" fn islower(c:i32)->i32{((0..=127).contains(&c)&&(c as u8).is_ascii_lowercase()) as i32}
+#[no_mangle] pub unsafe extern "C" fn isprint(c:i32)->i32{(32..=126).contains(&c) as i32}
+#[no_mangle] pub unsafe extern "C" fn ispunct(c:i32)->i32{((33..=126).contains(&c)&&!(c as u8).is_ascii_alphanumeric()) as i32}
+#[no_mangle] pub unsafe extern "C" fn isspace(c:i32)->i32{matches!(c,9..=13|32) as i32}
+#[no_mangle] pub unsafe extern "C" fn isupper(c:i32)->i32{((0..=127).contains(&c)&&(c as u8).is_ascii_uppercase()) as i32}
+#[no_mangle] pub unsafe extern "C" fn isxdigit(c:i32)->i32{((0..=127).contains(&c)&&(c as u8).is_ascii_hexdigit()) as i32}
+#[no_mangle] pub unsafe extern "C" fn tolower(c:i32)->i32{if (65..=90).contains(&c){c+32}else{c}}
+#[no_mangle] pub unsafe extern "C" fn toupper(c:i32)->i32{if (97..=122).contains(&c){c-32}else{c}}
