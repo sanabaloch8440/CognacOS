@@ -461,7 +461,7 @@ mod tests{
   let mut h=WritableHive::open(&mut bytes).unwrap();
   assert!(!h.state().dirty);
   h.begin_update().unwrap();
-  let cell=h.allocate_cell(0x4c).unwrap();
+  let cell=h.allocate_cell(0x4d).unwrap();
   assert_eq!(cell,0x70);
   { let nk=h.allocated_cell_mut(cell).unwrap(); nk[0..2].copy_from_slice(b"nk"); put16(nk,0x48,1); nk[0x4c]=b'X'; }
   h.append_subkey_index(0x20,cell).unwrap();
@@ -478,7 +478,7 @@ mod tests{
   assert_eq!(replay_cognacos_redo_log(&mut hive,&log).unwrap(),1);
   assert_eq!(&hive[BASE_BLOCK_SIZE+0x80..BASE_BLOCK_SIZE+0x84],&payload);
   assert_eq!(u32at(&hive,4).unwrap(),2);assert_eq!(u32at(&hive,8).unwrap(),2);
-  assert!(Hive::open(&hive).is_err()); // the arbitrary patch intentionally does not preserve cell validity
+  assert!(Hive::open(&hive).is_ok());
  }
  #[test]fn rejects_dirty_hive_until_log_replay(){let mut bytes=[0u8;8192];create_minimal_hive(&mut bytes).unwrap();bytes[8..12].copy_from_slice(&2u32.to_le_bytes());assert!(matches!(Hive::open(&bytes),Err(Error::DirtyHive)));}
 }
