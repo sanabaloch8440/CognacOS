@@ -179,7 +179,7 @@ pub unsafe extern "system" fn RtlDispatchException(record: *mut EXCEPTION_RECORD
         let mut handler_data = ptr::null_mut();
         let mut establisher = 0u64;
         let handler = RtlVirtualUnwind(
-            0, image_base, control_pc, entry, context, &mut handler_data,
+            1, image_base, control_pc, entry, context, &mut handler_data,
             &mut establisher, ptr::null_mut()
         );
         if let Some(handler_fn) = handler {
@@ -529,8 +529,20 @@ pub unsafe extern "system" fn RtlVirtualUnwind(
         let _ = unwind_leaf(context, establisher_frame);
         return None;
     }
-    let _ = unwind_function(handler_type, image_base, control_pc, function_entry, context, handler_data, establisher_frame);
-    None
+    let status = unwind_function(handler_type, image_base, control_pc, function_entry, context, handler_data, establisher_frame);
+    if status != 0 || handler_type & 3 == 0 { return None; }
+    let f = &*function_entry;
+    let info = match image_base.checked_add(f.UnwindData as u64) { Some(v) => v, None => return None };
+    let header = ptr::read_unaligned(info as *const u8);
+    let flags = header >> 3;
+    let count = ptr::read_unaligned((info + 2) as *const u8) as u64;
+    if flags & 4 != 0 || flags & (handler_type as u8 & 3) == 0 { return None; }
+    let handler_rva_offset = info + 4 + ((count * 2 + 3) & !3);
+    let handler_rva = ptr::read_unaligned(handler_rva_offset as *const u32) as u64;
+    if handler_rva == 0 { return None; }
+    if !handler_data.is_null() { *handler_data = (handler_rva_offset + 4) as *mut c_void; }
+    let address = match image_base.checked_add(handler_rva) { Some(v) => v, None => return None };
+    Some(core::mem::transmute::<usize, unsafe extern "system" fn(*mut EXCEPTION_RECORD, *mut c_void, *mut CONTEXT, *mut c_void) -> i32>(address as usize))
 }
 #[no_mangle]
 pub unsafe extern "system" fn RtlVirtualUnwind2(
