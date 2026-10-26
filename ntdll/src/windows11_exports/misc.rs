@@ -91,8 +91,46 @@ pub unsafe extern "system" fn ApiSetQueryApiSetPresence(name: *const UnicodeStri
 pub unsafe extern "system" fn ApiSetQueryApiSetPresenceEx(name: *const UnicodeString, in_schema: *mut u8, present: *mut u8) -> i32 { if name.is_null() || in_schema.is_null() || present.is_null() { return STATUS_INVALID_PARAMETER; } let n=unsafe{&*name}; if n.length&1!=0 || n.length>n.maximum_length || n.buffer.is_null() {return STATUS_INVALID_PARAMETER;} let u=unsafe{core::slice::from_raw_parts(n.buffer,n.length as usize/2)}; if u.iter().any(|c|*c==46) {return STATUS_INVALID_PARAMETER;} match unsafe{apiset_schema_has(name)} {Ok(v)=>{unsafe{in_schema.write(v as u8);present.write(v as u8);} STATUS_SUCCESS},Err(e)=>e} }
 
 #[no_mangle]
-pub unsafe extern "system" fn ApiSetQuerySchema() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ApiSetQuerySchema(schema: *mut *const u8, schema_size: *mut u32) -> i32 {
+    const STATUS_ACCESS_VIOLATION: i32 = 0xC0000005u32 as i32;
+    if schema.is_null() || schema_size.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // On Windows x64, PEB.ApiSetMap is at offset 0x68. The schema is owned
+    // by the process loader; this routine returns a borrowed pointer and does
+    // not allocate, copy, or transfer ownership of the mapping.
+    let peb: *const u8;
+    unsafe {
+        core::arch::asm!(
+            "mov {}, gs:[0x60]",
+            out(reg) peb,
+            options(nostack, preserves_flags, readonly)
+        );
+    }
+    if peb.is_null() {
+        return STATUS_NOT_FOUND;
+    }
+    let map = unsafe {
+        core::ptr::read_unaligned(peb.add(0x68).cast::<usize>())
+    } as *const u8;
+    if map.is_null() {
+        return STATUS_NOT_FOUND;
+    }
+
+    let version = unsafe { core::ptr::read_unaligned(map.cast::<u32>()) };
+    let size = unsafe { core::ptr::read_unaligned(map.add(4).cast::<u32>()) };
+    // Validate the fixed v6 header before exposing the pointer. Detailed
+    // entry validation remains the responsibility of the lookup routines.
+    if version != 6 || size < 28 || size as usize > 16 * 1024 * 1024 {
+        return STATUS_NOT_FOUND;
+    }
+
+    unsafe {
+        schema.write(map);
+        schema_size.write(size);
+    }
+    STATUS_SUCCESS
 }
 
 
