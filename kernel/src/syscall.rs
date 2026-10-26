@@ -632,7 +632,10 @@ cognacos_nt_syscall_entry:
     # NT_SYSCALL_* IDs. Windows build-specific service ordinals use SYSCALL.
     call cognacos_nt_syscall_dispatch
     mov rsp, rbx
+    cmp rax, -1
+    je .Lcognacos_nt_context_restored
     mov qword ptr [rsp + 112], rax
+.Lcognacos_nt_context_restored:
     pop r15
     pop r14
     pop r13
@@ -1564,7 +1567,8 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             }
         }
         if number == NT_SYSCALL_NT_CONTINUE {
-            return nt_continue_from_user(frame, args[0]);
+            let status = nt_continue_from_user(frame, args[0]);
+            return if status == NT_STATUS_SUCCESS { u64::MAX } else { status };
         }
         if number == NT_SYSCALL_NT_RAISE_EXCEPTION {
             return route_user_exception(frame, &args);
