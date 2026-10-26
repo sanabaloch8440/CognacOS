@@ -202,6 +202,18 @@ The implementation remains partial. It now publishes the Windows-layout XState f
 
 The current ETW implementation is a CognacOS process-local diagnostic buffer, not a Windows ETW controller or cross-process tracing implementation. It has a 64-provider table, 64-event ring, and 256-byte per-event payload cap. The internal dequeue hook is a bridge point; until a controller/consumer transport is wired, this is not equivalent to full Windows ETW session delivery. API-set schema helpers currently parse the process PEB's v6 API-set namespace and should be validated against pinned Windows 11 runtime fixtures.
 
+## ETW provider runtime
+
+- [x] Add provider enable state with level, match-any and match-all keyword filtering; invoke optional provider enable callbacks outside the provider lock.
+- [x] Implement thread-keyed activity IDs for GET, SET, CREATE, GET_SET, and CREATE_SET operations.
+- [x] Record process/thread identity and activity IDs with each event, and add a pull-based consumer routine that copies records into caller-owned buffers.
+- [x] Add bounded process-exit rundown for provider registrations, activity slots, and queued events, including stable ring compaction.
+- [ ] Wire the NTDLL controller hooks and event transport through the CognacOS native syscall dispatcher to a kernel-owned session/provider table and shared kernel event ring.
+- [ ] Call NTDLL-side rundown from the real process teardown/loader-detach path; call kernel session rundown from the process manager before address-space reclamation.
+- [ ] Add callback/filter tests, activity-ID tests, ring-overrun and process-rundown tests; validate under the x64 host and QEMU workflows.
+
+The provider callback/filter logic and consumer dequeue are implemented as NTDLL-local hooks. They are not yet connected to a kernel-owned session controller: controller_set_provider, consumer_read_event, and process_exit_rundown are crate-internal interfaces, not a cross-privilege transport. This distinction is intentional; a user-mode callback must never be called directly by kernel code. The kernel must update provider state through a checked syscall, and NTDLL must invoke its callback on the provider's user-mode thread/context.
+
 ## Tracking rules
 
 - One canonical checkbox per deliverable; do not repeat historical milestone logs in multiple documents.
