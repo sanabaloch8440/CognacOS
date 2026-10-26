@@ -90,34 +90,20 @@ unsafe impl core::alloc::GlobalAlloc for NtdllGlobalAllocator {
 #[global_allocator]
 static NTDLL_GLOBAL_ALLOCATOR: NtdllGlobalAllocator = NtdllGlobalAllocator;
 
+/// Rust panics are fatal in this freestanding DLL. Use the Windows x64 fast-fail
+/// instruction directly: no formatting, allocator, exception handlers, or
+/// potentially recursive NTDLL calls are permitted on this path.
 #[cfg(target_os = "windows")]
 #[panic_handler]
 fn cognac_ntdll_panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    loop { core::hint::spin_loop(); }
+    unsafe {
+        core::arch::asm!(
+            "int 0x29",
+            in("rcx") 7usize, // FAST_FAIL_FATAL_APP_EXIT
+            options(noreturn, nostack)
+        );
+    }
 }
-
-/// The freestanding DLL is built with panic=abort, so unwind personality
-/// references emitted by alloc are never invoked.
-#[cfg(target_os = "windows")]
-#[no_mangle]
-pub extern "C" fn rust_eh_personality() {}
-
-/// Freestanding fallback for the MSVC C++ exception personality referenced by
-/// compiler-generated unwind metadata. Rust panics abort; C++ handlers are not
-/// invoked by the native NTDLL runtime.
-#[cfg(target_os = "windows")]
-#[no_mangle]
-pub unsafe extern "system" fn __CxxFrameHandler3(
-    _record: *mut core::ffi::c_void,
-    _frame: u64,
-    _context: *mut core::ffi::c_void,
-    _dispatcher: *mut core::ffi::c_void,
-) -> i32 { 1 }
-
-
-
-#[cfg(feature = "relay-port")]
-pub mod relay;
 
 // Generate ABI placeholders for exports not yet implemented by the Rust ports.
 include!(concat!(env!("OUT_DIR"), "/ntdll_export_stubs.rs"));
