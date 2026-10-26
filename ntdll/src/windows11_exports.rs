@@ -12,6 +12,7 @@ mod crt;
 mod misc;
 mod etw;
 mod csr;
+mod threadpool;
 
 mod debug;
 mod resource;
