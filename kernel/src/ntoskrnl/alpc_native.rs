@@ -109,10 +109,10 @@ fn endpoint_from_handle(handle:u64,required:u32)->Result<(&'static EndpointObjec
     Ok((e,body))
 }
 fn make_endpoint_handle(endpoint_id:u32,owner_pid:u64,output:u64)->u64{
-    if let Err(s)=endpoint_type(){return s}
-    let Some(slot)=ENDPOINT_OBJECTS.iter().position(|e|!e.allocated.load(Ordering::Acquire)) else{return STATUS_INSUFFICIENT_RESOURCES};
+    if let Err(s)=endpoint_type(){let _=crate::ntoskrnl::alpc::disconnect(endpoint_id,owner_pid);return s}
+    let Some(slot)=ENDPOINT_OBJECTS.iter().position(|e|!e.allocated.load(Ordering::Acquire)) else{let _=crate::ntoskrnl::alpc::disconnect(endpoint_id,owner_pid);return STATUS_INSUFFICIENT_RESOURCES};
     let endpoint=&ENDPOINT_OBJECTS[slot];
-    if endpoint.allocated.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return STATUS_INSUFFICIENT_RESOURCES}
+    if endpoint.allocated.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){let _=crate::ntoskrnl::alpc::disconnect(endpoint_id,owner_pid);return STATUS_INSUFFICIENT_RESOURCES}
     endpoint.endpoint_id.store(endpoint_id,Ordering::Release);endpoint.owner_pid.store(owner_pid,Ordering::Release);endpoint.active.store(true,Ordering::Release);
     let type_name=[b'A' as u16,b'L' as u16,b'P' as u16,b'C' as u16,b' ' as u16,b'E' as u16,b'n' as u16,b'd' as u16,b'p' as u16,b'o' as u16,b'i' as u16,b'n' as u16,b't' as u16];
     let name=[0u16;0];let body=endpoint as *const EndpointObject as *mut c_void;
@@ -262,7 +262,7 @@ fn create_port_section(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     let handle=match crate::ntoskrnl::ob::runtime::open_by_pointer(body,ACCESS_READ|ACCESS_WRITE|ACCESS_CONTROL,crate::ntoskrnl::ob::runtime::current_owner(),true,0){
         Ok(h)=>h as usize,Err(e)=>{let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return e as u32 as u64}
     };
-    let actual=match args[3].checked_add(4095){Some(n)=>n&!4095,None=>{let _=crate::ntoskrnl::ob::runtime::close_handle(handle as *mut c_void,crate::ntoskrnl::ob::runtime::current_owner());let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}};
+    let actual=match args[3].checked_add(4095){Some(n)=>n&!4095,None=>{let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::close_handle(handle as *mut c_void,crate::ntoskrnl::ob::runtime::current_owner());let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);return STATUS_INVALID_PARAMETER}};
     let result=if write_user(args[4],&handle).is_err()||write_user(args[5],&actual).is_err(){let _=crate::ntoskrnl::ob::runtime::unregister_object(body);let _=crate::ntoskrnl::ob::runtime::close_handle(handle as *mut c_void,crate::ntoskrnl::ob::runtime::current_owner());STATUS_ACCESS_VIOLATION}else{STATUS_SUCCESS};
     let _=crate::ntoskrnl::ob::runtime::dereference_body(port_body);
     result
@@ -415,7 +415,7 @@ fn create_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     if PORT_OBJECTS[slot].allocated.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return STATUS_INSUFFICIENT_RESOURCES;}
     let mut name=[0u16;MAX_NAME];
     let name_len=match object_name(args[1],&mut name,pid,slot){Ok(n)=>n,Err(s)=>{PORT_OBJECTS[slot].allocated.store(false,Ordering::Release);return s}};
-    let max_msg=if args[2]==0 {512} else {match read_user::<PortAttributes>(args[2]){Ok(p)=>if p.max_message_length==0{512}else{p.max_message_length.min(512)},Err(s)=>{PORT_OBJECTS[slot].active.store(false,Ordering::Release);return s}}};
+    let max_msg=if args[2]==0 {512} else {match read_user::<PortAttributes>(args[2]){Ok(p)=>if p.max_message_length==0{512}else{p.max_message_length.min(512)},Err(s)=>{PORT_OBJECTS[slot].allocated.store(false,Ordering::Release);return s}}};
     if max_msg<sizeof_port_message(){PORT_OBJECTS[slot].allocated.store(false,Ordering::Release);return STATUS_INVALID_PARAMETER}
     let id=match crate::ntoskrnl::alpc::create_port(&name[..name_len],pid,max_msg){Ok(id)=>id,Err(s)=>{PORT_OBJECTS[slot].allocated.store(false,Ordering::Release);return s as u32 as u64}};
     let p=&PORT_OBJECTS[slot];p.port_id.store(id,Ordering::Release);p.owner_pid.store(pid,Ordering::Release);p.active.store(true,Ordering::Release);
