@@ -45,7 +45,7 @@ pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
     // image; only DLL entry points receive DLL_PROCESS_DETACH.
     let Some(head) = (unsafe { current_peb_ldr_head() }) else { return STATUS_SUCCESS; };
     let head_addr=head as usize;
-    let mut entries=[(0usize,0usize,0usize);MAX_LOADER_ENTRIES];
+    let mut entries=[(0usize,0usize,0usize,0usize);MAX_LOADER_ENTRIES];
     let mut count=0usize;
     let mut link=unsafe{ptr::read_unaligned(head.cast::<usize>())};
     while link!=0 && link!=head_addr && count<MAX_LOADER_ENTRIES {
@@ -57,7 +57,7 @@ pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
             if let Ok((image_base,image_size,_))=unsafe{mapped_image_info(base as PVOID)} {
                 if entry_point>=image_base && entry_point<image_base.saturating_add(image_size)
                     && size!=0 && size<=image_size {
-                    entries[count]=(base,entry_point,size);
+                    entries[count]=(base,entry_point,size,link);
                 }
             }
         }
@@ -65,16 +65,102 @@ pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
         link=unsafe{ptr::read_unaligned(link as *const usize)};
     }
     if count>=MAX_LOADER_ENTRIES { return STATUS_INVALID_PARAMETER; }
-    // Reverse load order so dependents detach before the DLLs they depend on.
-    // Entry points are called only after validating the mapped PE32+ image bounds.
-    for index in (1..count).rev() {
-        let (base,entry_point,_size)=entries[index];
-        if base==0 || entry_point==0 { continue; }
+    // Prefer the actual resolved IAT dependency graph over a guessed reverse
+    // load-order traversal. If imports are unresolved or the graph is cyclic,
+    // the bounded fallback preserves reverse load order for remaining entries.
+    let order = loader_detach_order(&entries, count);
+    for index in order.into_iter().take(count.saturating_sub(1)) {
+        let (base,entry_point,_size,_ldr_entry)=entries[index];
+        if index==0 || base==0 || entry_point==0 { continue; }
         let detach: unsafe extern "system" fn(PVOID,u32,PVOID)->i32 =
             unsafe{core::mem::transmute(entry_point)};
+        // A nonzero DllMain result does not cancel process shutdown. True SEH
+        // containment needs the user exception dispatcher; this call remains
+        // guarded by image-range validation and the one-shot shutdown barrier.
         let _=unsafe{detach(base as PVOID,0,ptr::null_mut())};
     }
     STATUS_SUCCESS
+}
+
+/// Build a bounded detach order from the resolved PE import-address tables.
+/// For A -> B (A imports an address inside B), A is detached before B.
+fn loader_detach_order(
+    entries: &[(usize, usize, usize, usize); MAX_LOADER_ENTRIES],
+    count: usize,
+) -> [usize; MAX_LOADER_ENTRIES] {
+    let mut remaining=[false;MAX_LOADER_ENTRIES];
+    let mut depends=[[false;MAX_LOADER_ENTRIES];MAX_LOADER_ENTRIES];
+    for i in 1..count { remaining[i]=entries[i].0!=0; }
+    for i in 1..count {
+        let (base,_,size,_)=entries[i];
+        if base==0 || size==0 { continue; }
+        for j in 1..count {
+            if i==j || entries[j].0==0 { continue; }
+            depends[i][j]=module_imports_image(base,size,entries[j].0,entries[j].2);
+        }
+    }
+    let mut result=[0usize;MAX_LOADER_ENTRIES];
+    let mut written=0usize;
+    while written<count.saturating_sub(1) {
+        // A node with no remaining dependents is safe to detach now.
+        let mut candidate=None;
+        for i in (1..count).rev() {
+            if !remaining[i] { continue; }
+            let has_dependent=(1..count).any(|j|remaining[j]&&depends[j][i]);
+            if !has_dependent { candidate=Some(i); break; }
+        }
+        let chosen=match candidate {
+            Some(i)=>i,
+            None=>match (1..count).rev().find(|i|remaining[*i]) {Some(i)=>i,None=>break},
+        };
+        result[written]=chosen;written+=1;remaining[chosen]=false;
+    }
+    if written<count.saturating_sub(1) {
+        for i in (1..count).rev() { if remaining[i] { result[written]=i;written+=1; } }
+    }
+    result
+}
+
+fn module_imports_image(importer:usize, importer_size:usize, target:usize, target_size:usize)->bool {
+    if importer==0||target==0||importer_size<0x100||target_size==0{return false;}
+    let base=importer as *const u8;
+    let read_u16=|offset:usize|->Option<u16>{
+        if offset.checked_add(2)? > importer_size{return None;}
+        Some(unsafe{ptr::read_unaligned(base.add(offset).cast::<u16>())})
+    };
+    let read_u32=|offset:usize|->Option<u32>{
+        if offset.checked_add(4)? > importer_size{return None;}
+        Some(unsafe{ptr::read_unaligned(base.add(offset).cast::<u32>())})
+    };
+    if read_u16(0)!=Some(0x5a4d){return false;}
+    let nt=match read_u32(0x3c){Some(v)=>v as usize,None=>return false};
+    if nt.checked_add(24).is_none_or(|end|end>importer_size)
+        || read_u32(nt)!=Some(0x00004550){return false;}
+    let optional=nt+24;
+    if read_u16(optional)!=Some(0x20b){return false;}
+    let optional_size=match read_u16(nt+20){Some(v)=>v as usize,None=>return false};
+    if optional_size<128||optional.checked_add(optional_size).is_none_or(|end|end>importer_size){return false;}
+    let directory_count=match read_u32(optional+108){Some(v)=>v as usize,None=>return false};
+    if directory_count<=1{return false;}
+    let import_rva=match read_u32(optional+120){Some(v)=>v as usize,None=>return false};
+    let import_size=match read_u32(optional+124){Some(v)=>v as usize,None=>return false};
+    if import_rva==0||import_size<20||import_rva.checked_add(import_size).is_none_or(|end|end>importer_size){return false;}
+    let descriptor_count=core::cmp::min(import_size/20,1024);
+    for d in 0..descriptor_count {
+        let at=import_rva+d*20;
+        let first_thunk=match read_u32(at+16){Some(v)=>v as usize,None=>return false};
+        let name=match read_u32(at+12){Some(v)=>v,None=>return false};
+        if first_thunk==0&&name==0{break;}
+        if first_thunk==0||first_thunk>=importer_size{return false;}
+        for t in 0..4096usize {
+            let Some(offset)=first_thunk.checked_add(t*8) else{return false;};
+            if offset.checked_add(8).is_none_or(|end|end>importer_size){return false;}
+            let address=unsafe{ptr::read_unaligned(base.add(offset).cast::<usize>())};
+            if address==0{break;}
+            if address>=target&&address<target.saturating_add(target_size){return true;}
+        }
+    }
+    false
 }
 
 #[no_mangle]
