@@ -76,7 +76,7 @@ fn main() {
         "AlpcMaxAllowedMessageLength", "AlpcRegisterCompletionList",
         "AlpcRegisterCompletionListWorkerThread", "AlpcRundownCompletionList",
         "AlpcUnregisterCompletionList", "AlpcUnregisterCompletionListWorkerThread",
-        "NtAlpcCreatePort", "NtAlpcDisconnectPort", "NtAlpcConnectPort",
+        "NtAlpcCreatePort", "NtAlpcDisconnectPort", "NtAlpcConnectPort", "NtAlpcConnectPortEx",
         "NtAlpcAcceptConnectPort", "NtAlpcSendWaitReceivePort", "NtAlpcCreatePortSection",
         "NtAlpcDeletePortSection", "NtAlpcCreateSectionView", "NtAlpcDeleteSectionView",
         "NtAlpcCreateSecurityContext", "NtAlpcDeleteSecurityContext", "NtAlpcRevokeSecurityContext",
