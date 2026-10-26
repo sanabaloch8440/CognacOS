@@ -959,6 +959,49 @@ mod tests {
   assert_eq!(hive.info.bins_size,0x2000);
   assert!(hive.key_at(next).is_err()); // allocated generic cell is not an NK
  }
+ #[test] fn replay_valid_windows_hvle_log_entry() {
+  fn fix_header(b:&mut[u8]) {
+   let mut sum=0u32;
+   for off in (0..0x1fc).step_by(4) { sum ^= u32::from_le_bytes(b[off..off+4].try_into().unwrap()); }
+   if sum==0 {sum=1} else if sum==u32::MAX {sum=u32::MAX-1}
+   b[0x1fc..0x200].copy_from_slice(&sum.to_le_bytes());
+  }
+  let mut original=[0u8;8192];
+  hive_backend::create_minimal_hive(&mut original).unwrap();
+  let mut after=original;
+  let name=[84u16,101,115,116];
+  let mut writer=hive_writer_backend::HiveWriter::open(&mut after).unwrap();
+  writer.create_subkey(0x20,&name).unwrap();
+  writer.update_base_block(2).unwrap();
+  drop(writer);
+
+  let mut dirty=original;
+  dirty[8..12].copy_from_slice(&2u32.to_le_bytes());
+  fix_header(&mut dirty);
+  let mut log=[0u8;1536];
+  log[..512].copy_from_slice(&original[..512]);
+  log[0x1c..0x20].copy_from_slice(&6u32.to_le_bytes());
+  log[4..8].copy_from_slice(&2u32.to_le_bytes());
+  log[8..12].copy_from_slice(&2u32.to_le_bytes());
+  fix_header(&mut log);
+  let entry=&mut log[512..1536];
+  entry[..4].copy_from_slice(b"HvLE");
+  entry[4..8].copy_from_slice(&1024u32.to_le_bytes());
+  entry[8..12].copy_from_slice(&0u32.to_le_bytes());
+  entry[12..16].copy_from_slice(&2u32.to_le_bytes());
+  entry[16..20].copy_from_slice(&0x1000u32.to_le_bytes());
+  entry[20..24].copy_from_slice(&1u32.to_le_bytes());
+  entry[40..44].copy_from_slice(&0u32.to_le_bytes());
+  entry[44..48].copy_from_slice(&512u32.to_le_bytes());
+  entry[48..560].copy_from_slice(&after[4096..4608]);
+  hive_writer_backend::finalize_hvle_entry_hashes(entry).unwrap();
+  let mut scratch=[0u8;8192];
+  let report=hive_writer_backend::replay_hvle(&mut dirty,&log,&mut scratch).unwrap();
+  assert_eq!(report.entries_applied,1);
+  assert_eq!(report.pages_applied,1);
+  assert_eq!(report.final_sequence,2);
+  assert_eq!(dirty,after);
+ }
  #[test] fn writable_regf_cells_indexes_and_redo_recovery() {
   let mut bytes=[0u8;8192];
   hive_backend::create_minimal_hive(&mut bytes).unwrap();
