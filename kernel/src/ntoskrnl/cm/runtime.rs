@@ -1,5 +1,5 @@
-//! Configuration Manager registry core with volatile writes and read-only native REGF hive backing.
-//! Mounted hives remain in their original Windows format; hive writes/log replay are not implemented.
+//! Configuration Manager registry core with volatile keys and journaled writes for explicitly writable REGF mounts.
+//! Ordinary boot hives stay read-only unless mounted with durable storage and a recovery journal.
 use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 #[path = "hive.rs"]
@@ -195,7 +195,7 @@ pub unsafe fn mount_writable_hive_bytes(
     if hive_writer_backend::RedoJournal::capacity(bytes.len()).filter(|n| *n <= journal.len()).is_none() {
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     }
-    let recovered = crate::ntoskrnl::cm::hive_writer::RedoJournal::recover(bytes, journal)
+    let recovered = hive_writer_backend::RedoJournal::recover(bytes, journal)
         .map_err(|_| STATUS_INVALID_PARAMETER)?;
     if recovered {
         flush(HIVE_SLOT_NAMES[slot], HIVE_FLUSH_RECOVER, bytes, journal)?;
