@@ -7,7 +7,7 @@
 - [x] Add CognacOS-private native-service dispatch for `NtEnumerateKey`, `NtEnumerateValueKey`, and `NtQueryKey`, using checked user-memory copies and result-length reporting.
 - [ ] Replace bounded volatile key/value tables with a persistent REGF cell allocator, stable key/value index updates, base-block sequence/checksum updates, dirty-hive tracking, and transaction-log replay/recovery.
 - [ ] Wire the Rust NTDLL mutation exports to the native-service bridge; ABI-shaped exports alone are not considered implemented dispatch.
-- [ ] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to the private native-service bridge.
+- [x] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to CognacOS-private native-service IDs; the kernel still returns `STATUS_NOT_SUPPORTED` for flush because durable hive writes are not implemented.
 - [ ] Extend enumeration/query support to REGF-backed keys and remaining Windows information classes; add change notifications and transaction semantics.
 - [ ] Add complete `KEY_*` access-mask mapping, registry DACL inheritance, and token-aware security policy.
 - [ ] Add host tests for access-denied handles, relative opens, malformed user pointers, mutation rollback, and persistent hive reopen/recovery; require a passing QEMU boot before claiming runtime validation.
