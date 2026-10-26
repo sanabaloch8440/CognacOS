@@ -270,7 +270,7 @@ impl<'a> WritableHive<'a> {
     pub fn allocate_cell(&mut self, payload_len: usize) -> Result<u32, Error> {
         if !self.dirty { return Err(Error::DirtyHive); }
         let needed = payload_len.checked_add(4).and_then(|n| n.checked_add(7)).ok_or(Error::InvalidCell)? & !7;
-        if needed < 8 { return Err(Error::InvalidCell); }
+        if needed < 8 || needed > i32::MAX as usize { return Err(Error::InvalidCell); }
         let end = BASE_BLOCK_SIZE.checked_add(self.info.bins_size as usize).ok_or(Error::InvalidHiveSize)?;
         let mut bin = BASE_BLOCK_SIZE;
         while bin < end {
@@ -328,16 +328,15 @@ impl<'a> WritableHive<'a> {
     pub fn append_subkey_index(&mut self, parent_nk: u32, child_nk: u32) -> Result<u32, Error> {
         if !self.dirty { return Err(Error::DirtyHive); }
         let parent_abs = self.cell_absolute(parent_nk)?;
-        let parent_cell = {
+        let (count, old_list) = {
             let raw = i32::from_le_bytes(self.bytes.get(parent_abs..parent_abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_| Error::Truncated)?);
             if raw >= 0 || raw == i32::MIN { return Err(Error::InvalidCell); }
             let len = raw.unsigned_abs() as usize - 4;
-            self.bytes.get(parent_abs+4..parent_abs+4+len).ok_or(Error::Truncated)?.to_vec()
+            let parent_cell = self.bytes.get(parent_abs+4..parent_abs+4+len).ok_or(Error::Truncated)?;
+            if parent_cell.get(0..2) != Some(&b"nk"[..]) || parent_cell.len() < 0x4c { return Err(Error::InvalidKey); }
+            (u32at(parent_cell, 0x14)?, u32at(parent_cell, 0x1c)?)
         };
-        if parent_cell.get(0..2) != Some(&b"nk"[..]) || parent_cell.len() < 0x4c { return Err(Error::InvalidKey); }
-        let count = u32at(&parent_cell, 0x14)?;
         if count >= 0xffff { return Err(Error::InvalidKey); }
-        let old_list = u32at(&parent_cell, 0x1c)?;
         let mut entries = [0u32; 4096];
         if count as usize >= entries.len() { return Err(Error::InvalidKey); }
         if count != 0 {
@@ -352,7 +351,7 @@ impl<'a> WritableHive<'a> {
             } else { return Err(Error::UnsupportedIndex); }
         }
         entries[count as usize] = child_nk;
-        let payload_len = 2 + (count as usize + 1) * 4;
+        let payload_len = 4 + (count as usize + 1) * 4;
         let list = self.allocate_cell(payload_len)?;
         {
             let dst = self.allocated_cell_mut(list)?;
@@ -373,15 +372,14 @@ impl<'a> WritableHive<'a> {
     pub fn append_value_index(&mut self, key_nk: u32, value_vk: u32) -> Result<u32, Error> {
         if !self.dirty { return Err(Error::DirtyHive); }
         let abs = self.cell_absolute(key_nk)?;
-        let (count, old_list, payload) = {
+        let (count, old_list) = {
             let raw = i32::from_le_bytes(self.bytes.get(abs..abs+4).ok_or(Error::Truncated)?.try_into().map_err(|_| Error::Truncated)?);
             if raw >= 0 || raw == i32::MIN { return Err(Error::InvalidCell); }
             let len = raw.unsigned_abs() as usize - 4;
             let cell = self.bytes.get(abs+4..abs+4+len).ok_or(Error::Truncated)?;
             if cell.get(0..2) != Some(&b"nk"[..]) || cell.len() < 0x2c { return Err(Error::InvalidKey); }
-            (u32at(cell,0x24)?,u32at(cell,0x28)?,cell.to_vec())
+            (u32at(cell,0x24)?,u32at(cell,0x28)?)
         };
-        let _ = payload;
         if count >= 0xffff { return Err(Error::InvalidValue); }
         let mut entries=[0u32;4096];
         if count as usize >= entries.len(){return Err(Error::InvalidValue);}
