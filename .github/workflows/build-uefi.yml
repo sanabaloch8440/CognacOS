@@ -110,6 +110,11 @@ jobs:
           ln -sf "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld" "$RUNNER_TEMP/ntdll-linker/lld-link"
           test -x "$RUNNER_TEMP/ntdll-linker/lld-link"
           export PATH="$RUNNER_TEMP/ntdll-linker:$PATH"
+          # rustc's Windows target adds ntdll.lib by default. The native DLL
+          # must not import itself, so satisfy that target-default input with
+          # an empty archive; all native service entry points are linked in-tree.
+          ar rcs ntdll.lib
+          trap 'rm -f ntdll.lib' EXIT
           cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           dll=target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll
           test -s "$dll"
