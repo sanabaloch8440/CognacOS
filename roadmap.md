@@ -204,15 +204,17 @@ The current ETW implementation is a CognacOS process-local diagnostic buffer, no
 
 ## ETW provider runtime
 
-- [x] Add provider enable state with level, match-any and match-all keyword filtering; invoke optional provider enable callbacks outside the provider lock.
-- [x] Implement thread-keyed activity IDs for GET, SET, CREATE, GET_SET, and CREATE_SET operations.
-- [x] Record process/thread identity and activity IDs with each event, and add a pull-based consumer routine that copies records into caller-owned buffers.
-- [x] Add bounded process-exit rundown for provider registrations, activity slots, and queued events, including stable ring compaction.
-- [ ] Wire the NTDLL controller hooks and event transport through the CognacOS native syscall dispatcher to a kernel-owned session/provider table and shared kernel event ring.
-- [ ] Call NTDLL-side rundown from the real process teardown/loader-detach path; call kernel session rundown from the process manager before address-space reclamation.
-- [ ] Add callback/filter tests, activity-ID tests, ring-overrun and process-rundown tests; validate under the x64 host and QEMU workflows.
+- [x] Add kernel-owned bounded provider state, owner-checked registration/enable-state operations, and a fixed-size kernel event ring with checked user-buffer copies.
+- [x] Add native syscall IDs for provider registration, enable-state query/configuration, event writes, and consumer reads; the kernel never calls user-mode callbacks.
+- [x] Bridge NTDLL registration and event writes to the kernel and pull consumer records through the checked native transport; retain the local bounded ring as a fallback/test path.
+- [x] Deliver enable callbacks from NTDLL user mode when the observed enable/filter state changes; level, match-any and match-all filters are applied before recording.
+- [x] Add kernel process-exit rundown to the process registry mark_exited transition, before address-space reclamation; add an NTDLL rundown hook to the current RtlExitUserProcess entry.
+- [x] Keep thread-keyed activity-ID control and record process/thread IDs in NTDLL's event path.
+- [ ] Finish kernel event activity/related-activity metadata and a privileged cross-process ETW session controller. Current enable configuration is restricted to the registering process; this is not yet a full Windows ETW session/security model.
+- [ ] Replace the RtlExitUserProcess placeholder with the real ABI and termination syscall, and invoke NTDLL rundown from the final process/loader teardown path rather than a placeholder export.
+- [ ] Add ring-overrun, malformed-buffer, provider-owner isolation, enable callback, activity-ID and concurrent rundown tests; validate host and QEMU workflows.
 
-The provider callback/filter logic and consumer dequeue are implemented as NTDLL-local hooks. They are not yet connected to a kernel-owned session controller: controller_set_provider, consumer_read_event, and process_exit_rundown are crate-internal interfaces, not a cross-privilege transport. This distinction is intentional; a user-mode callback must never be called directly by kernel code. The kernel must update provider state through a checked syscall, and NTDLL must invoke its callback on the provider's user-mode thread/context.
+Kernel ETW syscalls validate all user buffers through the active address space and never retain caller pointers. Provider enable callbacks run only in NTDLL after it observes kernel state changes. The consumer transport currently exposes a bounded event record and payload; activity IDs are still maintained by NTDLL rather than carried through the kernel ring. The current implementation is an incremental CognacOS tracing backend, not full Windows ETW compatibility.
 
 ## Tracking rules
 
