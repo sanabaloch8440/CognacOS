@@ -42,11 +42,6 @@ unsafe fn reserve(cb:*mut CaptureBuffer,len:u32,out:*mut PVOID,source:*const u8)
 #[no_mangle] pub unsafe extern "system" fn CsrClientConnectToServer(_server_name:*const u16,_connect_info:u32,_connection_info:*mut c_void,_connection_info_size:*mut u32,_duplicate_handle:u8)->i32 {STATUS_PORT_DISCONNECTED}
 
 // Remaining CSR exports require a live CognacOS CSR server or session state.
-#[no_mangle]
-pub unsafe extern "system" fn CsrCaptureTimeout() -> i32 { 0xC0000002u32 as i32 }
-
-#[no_mangle]
-pub unsafe extern "system" fn CsrGetProcessId() -> i32 { 0xC0000002u32 as i32 }
 
 #[no_mangle]
 pub unsafe extern "system" fn CsrIdentifyAlertableThread() -> i32 { 0xC0000002u32 as i32 }
@@ -56,3 +51,13 @@ pub unsafe extern "system" fn CsrSetPriorityClass() -> i32 { 0xC0000002u32 as i3
 
 #[no_mangle]
 pub unsafe extern "system" fn CsrVerifyRegion() -> i32 { 0xC0000002u32 as i32 }
+
+#[no_mangle]
+pub unsafe extern "system" fn CsrCaptureTimeout(milliseconds:u32, timeout:*mut i64)->*mut i64 {
+ if milliseconds==u32::MAX{return ptr::null_mut();} if timeout.is_null(){return ptr::null_mut();}
+ let ticks=(milliseconds as i64).saturating_mul(-10_000); unsafe{timeout.write(ticks);} timeout
+}
+#[no_mangle]
+pub unsafe extern "system" fn CsrGetProcessId()->u32 {
+ let pid:usize; unsafe{core::arch::asm!("mov {}, gs:[0x40]",out(reg) pid,options(nostack,preserves_flags,readonly));} pid as u32
+}
