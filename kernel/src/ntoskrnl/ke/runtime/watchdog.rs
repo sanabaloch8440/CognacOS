@@ -64,7 +64,7 @@ pub(crate) fn ke_accumulate_ticks(_hal_timestamp: u64) {
     LAST_CLOCK_SEEN[cpu].store(now, Ordering::Release);
     TICK_COUNT[cpu].fetch_add(1, Ordering::Relaxed);
 
-    let irql = crate::ntoskrnl::ke::runtime::ke_get_current_irql_value();
+    let irql = CURRENT_IRQL[cpu].load(Ordering::Acquire);
     if irql >= 2 {
         let start = HIGH_IRQL_START[cpu].load(Ordering::Acquire);
         if start == 0 {
