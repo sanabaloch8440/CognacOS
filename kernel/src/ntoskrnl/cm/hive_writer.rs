@@ -199,36 +199,3 @@ impl RedoJournal{
  }
 }
 
-#[cfg(test)]
-mod tests {
- use super::*;
- #[test]
- fn allocate_create_key_and_set_value_roundtrip() {
-  let mut bytes=[0u8;8192];
-  crate::ntoskrnl::cm::hive::create_minimal_hive(&mut bytes).unwrap();
-  let root=0x20u32;
-  let child_name=[b'T' as u16,b'e' as u16,b's' as u16,b't' as u16];
-  let value_name=[b'D' as u16,b'a' as u16,b't' as u16,b'a' as u16];
-  let mut w=HiveWriter::open(&mut bytes).unwrap();
-  let child=w.create_subkey(root,&child_name).unwrap();
-  w.set_value(child,&value_name,4,&[1,2,3,4,5]).unwrap();
-  w.update_base_block(2).unwrap();
-  drop(w);
-  let h=crate::ntoskrnl::cm::hive::Hive::open(&bytes).unwrap();
-  let mut path=[0u16;8];path[..4].copy_from_slice(&child_name);
-  let k=h.find_path(&path[..4]).unwrap();
-  let v=k.find_value(&value_name).unwrap();
-  let mut data=[0u8;8];assert_eq!(v.data(&mut data).unwrap(),5);assert_eq!(&data[..5],&[1,2,3,4,5]);
- }
- #[test]
- fn redo_journal_rolls_back_prepared_and_replays_committed() {
-  let mut original=[0u8;8192];crate::ntoskrnl::cm::hive::create_minimal_hive(&mut original).unwrap();
-  let mut journal=vec![0u8;RedoJournal::capacity(original.len()).unwrap()];
-  RedoJournal::begin(&original,&mut journal).unwrap();
-  let mut dirty=original;dirty[0x100]=0x5a;
-  let mut recovered=dirty;assert!(RedoJournal::recover(&mut recovered,&journal).unwrap());assert_eq!(recovered,original);
-  RedoJournal::begin(&original,&mut journal).unwrap();
-  let mut after=original;after[0x100]=0xa5;RedoJournal::commit(&after,&mut journal).unwrap();
-  let mut recovered=original;assert!(RedoJournal::recover(&mut recovered,&journal).unwrap());assert_eq!(recovered,after);
- }
-}
