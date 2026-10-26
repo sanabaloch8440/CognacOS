@@ -1216,7 +1216,7 @@ unsafe fn restore_context_to_syscall_frame(frame: *mut u64, bytes: &[u8]) -> u64
         return NT_STATUS_BAD_STACK;
     }
     let cs = u16::from_le_bytes(bytes[0x38..0x3a].try_into().unwrap()) as u64;
-    let ss = u16::from_le_bytes(bytes[0x4a..0x4c].try_into().unwrap()) as u64;
+    let ss = u16::from_le_bytes(bytes[0x42..0x44].try_into().unwrap()) as u64;
     if cs & 3 != 3 || ss & 3 != 3 { return NT_STATUS_INVALID_PARAMETER; }
     let mut rflags = context_u32(bytes, 0x44) as u64;
     // Never restore IOPL, NT, VM, or reserved bits from a user-provided context.
