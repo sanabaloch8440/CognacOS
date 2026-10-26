@@ -11,6 +11,7 @@ mod runtime;
 mod crt;
 mod misc;
 mod etw;
+mod csr;
 
 mod debug;
 mod resource;
