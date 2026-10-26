@@ -55,20 +55,22 @@ struct Message {
     source: u32,
     destination: u32,
     length: u16,
+    sequence: u32,
     bytes: [u8; MAX_MESSAGE_SIZE],
 }
 impl Message {
-    const EMPTY: Self = Self { active: false, source: 0, destination: 0, length: 0, bytes: [0; MAX_MESSAGE_SIZE] };
+    const EMPTY: Self = Self { active: false, source: 0, destination: 0, length: 0, sequence: 0, bytes: [0; MAX_MESSAGE_SIZE] };
 }
 struct State {
     ports: [Port; MAX_PORTS],
     connections: [Connection; MAX_CONNECTIONS],
     messages: [Message; MAX_MESSAGES],
     next_id: u32,
+    next_message: u32,
 }
 impl State {
     const fn new() -> Self {
-        Self { ports: [Port::EMPTY; MAX_PORTS], connections: [Connection::EMPTY; MAX_CONNECTIONS], messages: [Message::EMPTY; MAX_MESSAGES], next_id: 1 }
+        Self { ports: [Port::EMPTY; MAX_PORTS], connections: [Connection::EMPTY; MAX_CONNECTIONS], messages: [Message::EMPTY; MAX_MESSAGES], next_id: 1, next_message: 1 }
     }
 }
 struct LockedState { lock: AtomicBool, state: core::cell::UnsafeCell<State> }
@@ -132,7 +134,9 @@ pub fn connect(name: &[u16], client_pid: u64) -> Result<u32, u32> {
     let server_port = s.ports.iter().position(|p| p.active && p.listening && p.name_len as usize == name.len() && p.name[..name.len()] == *name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
     let slot = s.connections.iter().position(|c| !c.active).ok_or(STATUS_PENDING)?;
     let request_id = alloc_id(s);
-    s.connections[slot] = Connection { active: true, accepted: false, request_id, server_port: server_port as u32 + 1, client_pid, server_pid: s.ports[server_port].owner_pid, client_endpoint: 0, server_endpoint: 0 };
+    // The request identifier is also the client's endpoint identifier.
+    // It becomes usable when the server accepts the request.
+    s.connections[slot] = Connection { active: true, accepted: false, request_id, server_port: server_port as u32 + 1, client_pid, server_pid: s.ports[server_port].owner_pid, client_endpoint: request_id, server_endpoint: 0 };
     Ok(request_id)
 }
 
@@ -144,10 +148,8 @@ pub fn accept(port_id: u32, owner_pid: u64, request_id: u32, accept_request: boo
     if !port.active || !port.listening || port.owner_pid != owner_pid { return Err(STATUS_INVALID_HANDLE); }
     let slot = s.connections.iter().position(|c| c.active && !c.accepted && c.request_id == request_id && c.server_port == port_id).ok_or(STATUS_INVALID_PARAMETER)?;
     if !accept_request { s.connections[slot] = Connection::EMPTY; return Err(STATUS_PORT_DISCONNECTED); }
-    let client_endpoint = alloc_id(s);
     let server_endpoint = alloc_id(s);
     s.connections[slot].accepted = true;
-    s.connections[slot].client_endpoint = client_endpoint;
     s.connections[slot].server_endpoint = server_endpoint;
     Ok(server_endpoint)
 }
@@ -166,12 +168,17 @@ pub fn send(endpoint: u32, sender_pid: u64, bytes: &[u8]) -> Result<(), u32> {
         (c.server_endpoint, c.client_endpoint, c.server_pid)
     } else { return Err(STATUS_INVALID_HANDLE); };
     if sender_pid != expected_pid { return Err(STATUS_INVALID_HANDLE); }
+    let port_index = c.server_port.saturating_sub(1) as usize;
+    let port_limit = s.ports.get(port_index).filter(|p| p.active).map(|p| p.max_message as usize).unwrap_or(0);
+    if bytes.len() > port_limit { return Err(STATUS_BUFFER_TOO_SMALL); }
     let slot = s.messages.iter().position(|m| !m.active).ok_or(STATUS_PENDING)?;
     let mut msg = Message::EMPTY;
     msg.active = true;
     msg.source = source;
     msg.destination = destination;
     msg.length = bytes.len() as u16;
+    msg.sequence = s.next_message;
+    s.next_message = s.next_message.wrapping_add(1).max(1);
     msg.bytes[..bytes.len()].copy_from_slice(bytes);
     s.messages[slot] = msg;
     Ok(())
@@ -185,7 +192,7 @@ pub fn receive(endpoint: u32, receiver_pid: u64, output: &mut [u8]) -> Result<(u
     let c = s.connections[ci];
     let expected_pid = if endpoint == c.client_endpoint { c.client_pid } else if endpoint == c.server_endpoint { c.server_pid } else { return Err(STATUS_INVALID_HANDLE); };
     if receiver_pid != expected_pid { return Err(STATUS_INVALID_HANDLE); }
-    let slot = s.messages.iter().enumerate().filter(|(_, m)| m.active && m.destination == endpoint).min_by_key(|(_, m)| m.source).map(|(i, _)| i).ok_or(STATUS_PENDING)?;
+    let slot = s.messages.iter().enumerate().filter(|(_, m)| m.active && m.destination == endpoint).min_by_key(|(_, m)| m.sequence).map(|(i, _)| i).ok_or(STATUS_PENDING)?;
     let msg = s.messages[slot];
     if output.len() < msg.length as usize { return Err(STATUS_BUFFER_TOO_SMALL); }
     output[..msg.length as usize].copy_from_slice(&msg.bytes[..msg.length as usize]);
