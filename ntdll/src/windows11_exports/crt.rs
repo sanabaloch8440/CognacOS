@@ -824,10 +824,6 @@ pub unsafe extern "system" fn towupper(c: u32) -> u32 { char::from_u32(c).and_th
 
 
 
-#[no_mangle]
-pub unsafe extern "system" fn vDbgPrintEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
 
 
 #[no_mangle]
