@@ -209,6 +209,7 @@ The ETW path now includes a kernel-owned event ring and session-aware consumer t
 - [x] Add privileged session create/enable/stop syscalls. Session creation requires an unrestricted administrator token with SystemProfile privilege; session handles are owner-scoped.
 - [x] Add bounded UTF-16 named-session creation (63 code units maximum) with duplicate-name rejection; session names are kernel-owned and never retain caller pointers.
 - [x] Allow each provider to hold independent enable/filter state for every active session; events carry a session bitmask so each consumer sees only events matching its own session filters.
+- [x] Query `EtwEventEnabled` / `EtwEventProviderEnabled` against the kernel's per-session filters instead of approximating the union with a single local filter.
 - [x] Add session-aware consumer reads with provider-owner isolation, plus bounded record/payload copies.
 - [x] Carry activity ID and related activity ID through the kernel ring and consumer record; implement NTDLL EtwEventWriteTransfer in addition to EtwEventWrite.
 - [x] Deliver enable callbacks from NTDLL user mode after it observes changed kernel state; kernel code never invokes user-mode callbacks.
