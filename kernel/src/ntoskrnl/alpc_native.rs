@@ -142,7 +142,7 @@ fn send_wait_receive_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
         let (endpoint,body)=match endpoint_from_handle(args[0],ACCESS_WRITE){Ok(v)=>v,Err(s)=>return s};
         let header:PortMessage=match read_user(send_ptr){Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return s}};
         let length=header.data_length as usize;
-        if length==0||length>512||header.total_length as usize<(core::mem::size_of::<PortMessage>()+length){
+        if length==0||length>512||(header.total_length as usize)<(core::mem::size_of::<PortMessage>()+length){
             let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return STATUS_INVALID_PARAMETER
         }
         let mut data=[0u8;512];
@@ -166,7 +166,8 @@ fn send_wait_receive_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
         let out=match result{Ok(v)=>v,Err(s)=>{let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return s as u64}};
         let total=core::mem::size_of::<PortMessage>()+out.0;
         let header=PortMessage{data_length:out.0 as u16,total_length:total as u16,message_type:1,data_info_offset:0,client_id:[0;2],message_id:out.1,client_view_size:0};
-        if !write_user(receive_ptr,&header).is_ok()||!crate::syscall::copy_current_user_to(receive_ptr+core::mem::size_of::<PortMessage>() as u64,&data[..out.0]){
+        let Some(data_address)=receive_ptr.checked_add(core::mem::size_of::<PortMessage>() as u64) else {let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return STATUS_ACCESS_VIOLATION};
+        if write_user(receive_ptr,&header).is_err()||!crate::syscall::copy_current_user_to(data_address,&data[..out.0]){
             let _=crate::ntoskrnl::ob::runtime::dereference_body(body);return STATUS_ACCESS_VIOLATION
         }
         let _=write_user(args[5],&total);
@@ -402,7 +403,7 @@ fn create_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     if PORT_OBJECTS[slot].active.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err(){return STATUS_INSUFFICIENT_RESOURCES;}
     let mut name=[0u16;MAX_NAME];
     let name_len=match object_name(args[1],&mut name,pid,slot){Ok(n)=>n,Err(s)=>{PORT_OBJECTS[slot].active.store(false,Ordering::Release);return s}};
-    let max_msg=if args[2]==0 {512} else {match read_user::<PortAttributes>(args[2]){Ok(p)=>if p.max_message_length==0{512}else{p.max_message_length.min(512)},Err(s)=>return s}};
+    let max_msg=if args[2]==0 {512} else {match read_user::<PortAttributes>(args[2]){Ok(p)=>if p.max_message_length==0{512}else{p.max_message_length.min(512)},Err(s)=>{PORT_OBJECTS[slot].active.store(false,Ordering::Release);return s}}};
     if max_msg<sizeof_port_message(){PORT_OBJECTS[slot].active.store(false,Ordering::Release);return STATUS_INVALID_PARAMETER}
     let id=match crate::ntoskrnl::alpc::create_port(&name[..name_len],pid,max_msg){Ok(id)=>id,Err(s)=>{PORT_OBJECTS[slot].active.store(false,Ordering::Release);return s as u32 as u64}};
     let p=&PORT_OBJECTS[slot];p.port_id.store(id,Ordering::Release);p.owner_pid.store(pid,Ordering::Release);
@@ -418,6 +419,14 @@ fn create_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
     STATUS_SUCCESS
 }
 fn disconnect_port(args:&[u64;crate::syscall::NT_MAX_ARGUMENTS])->u64{
+    if args[1]!=0{return STATUS_INVALID_PARAMETER}
+    if let Ok((endpoint,body))=endpoint_from_handle(args[0],ACCESS_WRITE){
+        let result=crate::ntoskrnl::alpc::disconnect(endpoint.endpoint_id.load(Ordering::Acquire),current_pid()).map(|_|STATUS_SUCCESS).unwrap_or(0xC000_0037);
+        endpoint.active.store(false,Ordering::Release);
+        let _=crate::ntoskrnl::ob::runtime::dereference_body(body);
+        let _=crate::ntoskrnl::ob::runtime::unregister_object(body);
+        return result
+    }
     let (p,body)=match port_from_handle(args[0],ACCESS_WRITE){Ok(v)=>v,Err(s)=>return s};
     let id=p.port_id.load(Ordering::Acquire);let owner=p.owner_pid.load(Ordering::Acquire);
     let status=crate::ntoskrnl::alpc::close_port(id,owner).map(|_|STATUS_SUCCESS).unwrap_or(0xC000_0037);
