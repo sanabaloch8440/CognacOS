@@ -192,3 +192,28 @@ mod tests {
         }
     }
 }
+
+
+// ABI-typed va_list form of DbgPrintEx. Debug output is disabled until the
+// kernel debug transport is wired; return the byte-count result (zero bytes).
+#[no_mangle]
+pub unsafe extern "system" fn vDbgPrintEx(
+    _component_id: u32,
+    _level: u32,
+    _format: *const i8,
+    _arguments: *const core::ffi::c_void,
+) -> u32 {
+    0
+}
+
+// ABI-typed prefixed va_list form of DbgPrintEx; no text is emitted yet.
+#[no_mangle]
+pub unsafe extern "system" fn vDbgPrintExWithPrefix(
+    _prefix: *const i8,
+    _component_id: u32,
+    _level: u32,
+    _format: *const i8,
+    _arguments: *const core::ffi::c_void,
+) -> u32 {
+    0
+}
