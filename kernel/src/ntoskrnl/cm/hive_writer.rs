@@ -53,15 +53,20 @@ impl<'a> HiveWriter<'a>{
   if depth>8{return Err(Error::InvalidKey)}
   let c=self.cell(list_id)?;let sig=c.get(0..2).ok_or(Error::InvalidCell)?;
   if sig==b"ri"{
-   let n=r16(c,2)? as usize;
-   if c.len()<4+n*4{return Err(Error::InvalidKey)}
-   for i in 0..n{self.collect_key_index(r32(c,4+i*4)?,None,out,used,depth+1)?;}
+   let capacity=c.len().saturating_sub(2)/4;let mut n=0usize;
+   while n<capacity{let id=r32(c,2+n*4)?;if id==0||id==u32::MAX{break}n+=1;}
+   for i in 0..n{self.collect_key_index(r32(c,2+i*4)?,None,out,used,depth+1)?;}
    return Ok(())
   }
   let stride=if sig==b"li"{4}else if sig==b"lf"||sig==b"lh"{8}else{return Err(Error::UnsupportedIndex)};
-  let n=expected.unwrap_or(r16(c,2)? as usize);
-  if r16(c,2)? as usize!=n||c.len()<4+n*stride||*used+n>out.len(){return Err(Error::InvalidKey)}
-  for i in 0..n{out[*used]=r32(c,4+i*stride)?;*used+=1;}
+  let capacity=c.len().saturating_sub(2)/stride;
+  let n=if let Some(n)=expected{n}else{
+   let mut n=0usize;
+   while n<capacity{let id=r32(c,2+n*stride)?;if id==0||id==u32::MAX{break}n+=1;}
+   n
+  };
+  if c.len()<2+n*stride||*used+n>out.len(){return Err(Error::InvalidKey)}
+  for i in 0..n{out[*used]=r32(c,2+i*stride)?;*used+=1;}
   Ok(())
  }
  /// Allocate from a free HBIN cell, splitting it while preserving 8-byte alignment.
@@ -123,8 +128,8 @@ impl<'a> HiveWriter<'a>{
   let id=self.allocate_cell(0x4c+n)?;
   {let c=self.cell_mut(id)?;c[..2].copy_from_slice(b"nk");w16(c,2,if compressed{0x20}else{0});w32(c,0x10,parent);w32(c,0x14,0);w32(c,0x18,0);w32(c,0x1c,u32::MAX);w32(c,0x20,u32::MAX);w32(c,0x24,0);w32(c,0x28,u32::MAX);w32(c,0x2c,u32::MAX);w32(c,0x30,u32::MAX);w16(c,0x48,n as u16);w16(c,0x4a,0);c[0x4c..0x4c+n].copy_from_slice(&enc[..n]);}
   let new_count=count.checked_add(1).ok_or(Error::InvalidKey)?;if new_count>u16::MAX as u32{return Err(Error::InvalidKey)}
-  let list_id=self.allocate_cell(4+new_count as usize*4)?;
-  {let c=self.cell_mut(list_id)?;c[..2].copy_from_slice(b"li");w16(c,2,new_count as u16);for i in 0..used{w32(c,4+i*4,indexes[i]);}w32(c,4+used*4,id);}
+  let list_id=self.allocate_cell(2+new_count as usize*4)?;
+  {let c=self.cell_mut(list_id)?;c[..2].copy_from_slice(b"li");for i in 0..used{w32(c,2+i*4,indexes[i]);}w32(c,2+used*4,id);}
   let p=self.cell_mut(parent)?;w32(p,0x14,new_count);w32(p,0x1c,list_id);Ok(id)
  }
  /// Set a value. Replacements keep the existing list slot; new values append
@@ -195,8 +200,8 @@ impl<'a> HiveWriter<'a>{
   for i in 0..used{if indexes[i]==key_id{found=true}else{indexes[kept]=indexes[i];kept+=1}}
   if !found{return Err(Error::InvalidKey)}
   if kept==0{let p=self.cell_mut(parent)?;w32(p,0x14,0);w32(p,0x1c,u32::MAX);return Ok(())}
-  let new_list=self.allocate_cell(4+kept*4)?;
-  {let l=self.cell_mut(new_list)?;l[..2].copy_from_slice(b"li");w16(l,2,kept as u16);for i in 0..kept{w32(l,4+i*4,indexes[i]);}}
+  let new_list=self.allocate_cell(2+kept*4)?;
+  {let l=self.cell_mut(new_list)?;l[..2].copy_from_slice(b"li");for i in 0..kept{w32(l,2+i*4,indexes[i]);}}
   let p=self.cell_mut(parent)?;w32(p,0x14,kept as u32);w32(p,0x1c,new_list);Ok(())
  }
  pub fn update_base_block(&mut self,sequence:u32)->Result<(),Error>{
