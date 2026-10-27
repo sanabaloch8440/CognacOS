@@ -677,6 +677,11 @@ jobs:
           grep -F 'Windows API-set resolution and PE TLS/unwind registration passed.' build/serial.log
           grep -F 'PE TLS callbacks executed in ring 3; per-image TLS blocks initialized.' build/serial.log
           grep -F 'Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).' build/serial.log
+          grep -F 'Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.' build/serial.log
+          grep -F 'Disk class: GPT data partition discovered through live disk reads.' build/serial.log
+          grep -F 'ext4: partition superblock read through the same bounded disk interface.' build/serial.log
+          grep -F 'Guest ext4 README.txt bytes match expected content exactly.' build/serial.log
+          grep -F 'Guest ATA/GPT/ext4 README end-to-end test passed.' build/serial.log
           grep -F 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log
           grep -F 'CognacOS Rust NTDLL passed ring-3 tests through the unified Windows x64 SYSCALL ABI.' build/serial.log
       - name: SMP boot and interrupt stress matrix (2, 4, 8 vCPUs)
