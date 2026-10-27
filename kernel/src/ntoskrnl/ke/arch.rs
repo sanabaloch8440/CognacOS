@@ -1597,6 +1597,7 @@ pub unsafe fn initialize() {
 /// is not supported until recovery and interrupt-stack switching are implemented.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *const u64) -> ! {
+    crate::ntoskrnl::ke::diagnostics::dump_serial(16);
     unsafe {
         crate::serial_write(b"\r\nCognacOS FATAL CPU exception vector=");
         crate::serial_write_hex(vector);
@@ -1754,6 +1755,14 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
 /// restore the original frame and IRETQ; unhandled supervisor exceptions halt.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
+    let saved_rip = unsafe { frame.add(17).read() };
+    if vector == 14 {
+        let cr2: u64;
+        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+        crate::ntoskrnl::ke::diagnostics::record(crate::ntoskrnl::ke::diagnostics::EVENT_PAGE_FAULT, cr2, error, saved_rip);
+    } else {
+        crate::ntoskrnl::ke::diagnostics::record(crate::ntoskrnl::ke::diagnostics::EVENT_EXCEPTION, vector, error, saved_rip);
+    }
     if vector == 2 && crate::ntoskrnl::ke::runtime::dispatch_nmi_callbacks() { return 1; }
     // Determine privilege from the saved CS. A user fault must never consume a
     // kernel probe fixup, even if its RIP happens to match a registered record.
