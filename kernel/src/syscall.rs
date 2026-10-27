@@ -486,8 +486,8 @@ pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 // Service IDs are discovered from the staged PE's own exported syscall stubs.
 const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
-static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 20] =
-    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 20];
+static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 23] =
+    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 23];
 const SERVICE_NT_CLOSE: usize = 0;
 const SERVICE_NT_YIELD_EXECUTION: usize = 1;
 const SERVICE_NT_QUERY_INFORMATION_PROCESS: usize = 2;
@@ -508,6 +508,9 @@ const SERVICE_NT_SET_VALUE_KEY: usize = 16;
 const SERVICE_NT_DELETE_VALUE_KEY: usize = 17;
 const SERVICE_NT_DELETE_KEY: usize = 18;
 const SERVICE_NT_FLUSH_KEY: usize = 19;
+const SERVICE_NT_ENUMERATE_KEY: usize = 20;
+const SERVICE_NT_ENUMERATE_VALUE_KEY: usize = 21;
+const SERVICE_NT_QUERY_KEY: usize = 22;
 
 fn image_u16(image: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
@@ -536,7 +539,7 @@ fn image_rva_offset(image: &[u8], section_table: usize, section_count: usize,
     }
     None
 }
-fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 20]> {
+fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 23]> {
     if image.get(0..2)? != b"MZ" { return None; }
     let pe = image_u32(image, 0x3c)? as usize;
     if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" { return None; }
@@ -565,15 +568,16 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 20]> {
     // Rust NTDLL is the sole native user/kernel boundary. Require every
     // syscall export used by the current kernel, including registry mutations.
     // A partial table is a boot error, not a reason to switch ABI paths.
-    let required_names: [&[u8]; 20] = [
+    let required_names: [&[u8]; 23] = [
         b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess",
         b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey",
         b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile",
         b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory",
         b"NtQueryVirtualMemory", b"NtReadVirtualMemory", b"NtWriteVirtualMemory",
         b"NtCreateKey", b"NtSetValueKey", b"NtDeleteValueKey", b"NtDeleteKey", b"NtFlushKey",
+        b"NtEnumerateKey", b"NtEnumerateValueKey", b"NtQueryKey",
     ];
-    let mut discovered = [SERVICE_UNAVAILABLE; 20];
+    let mut discovered = [SERVICE_UNAVAILABLE; 23];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
         let name_at = image_rva_offset(image, section_table, section_count, headers_size, name_rva, 1)?;
@@ -627,6 +631,9 @@ pub fn windows_service_number(name: &[u8]) -> Option<u32> {
         b"NtDeleteValueKey" => SERVICE_NT_DELETE_VALUE_KEY,
         b"NtDeleteKey" => SERVICE_NT_DELETE_KEY,
         b"NtFlushKey" => SERVICE_NT_FLUSH_KEY,
+        b"NtEnumerateKey" => SERVICE_NT_ENUMERATE_KEY,
+        b"NtEnumerateValueKey" => SERVICE_NT_ENUMERATE_VALUE_KEY,
+        b"NtQueryKey" => SERVICE_NT_QUERY_KEY,
         _ => return None,
     };
     let value = WINDOWS_SERVICE_NUMBERS[slot].load(Ordering::Acquire);
@@ -1733,6 +1740,9 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         Some(SERVICE_NT_DELETE_VALUE_KEY) => NT_SYSCALL_DELETE_VALUE_KEY,
         Some(SERVICE_NT_DELETE_KEY) => NT_SYSCALL_DELETE_KEY,
         Some(SERVICE_NT_FLUSH_KEY) => NT_SYSCALL_FLUSH_KEY,
+        Some(SERVICE_NT_ENUMERATE_KEY) => NT_SYSCALL_ENUMERATE_KEY,
+        Some(SERVICE_NT_ENUMERATE_VALUE_KEY) => NT_SYSCALL_ENUMERATE_VALUE_KEY,
+        Some(SERVICE_NT_QUERY_KEY) => NT_SYSCALL_QUERY_KEY,
         Some(SERVICE_NT_OPEN_FILE) => NT_SYSCALL_OPEN_FILE,
         Some(SERVICE_NT_READ_FILE) => NT_SYSCALL_READ_FILE,
         Some(SERVICE_NT_ALLOCATE_VIRTUAL_MEMORY) => NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY,
