@@ -10,6 +10,10 @@
 
 extern crate alloc;
 
+/// Canonical shared NT ABI definitions; migrate local duplicates to this crate
+/// only after their x64 layout and semantics have been verified.
+pub use cognacos_nt_abi as nt_abi;
+
 // Linker-only compatibility entry points. Assembly definitions satisfy the PE
 // linker without creating Rust #[no_mangle] exports for implementation symbols.
 #[cfg(target_os = "windows")]
