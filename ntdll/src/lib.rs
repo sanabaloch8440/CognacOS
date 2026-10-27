@@ -40,7 +40,7 @@ pub use native::path as path;
 pub use native::printf as printf;
 pub use native::process as process;
 pub use native::resource as resource;
-pub use native::legacy_time as time;
+pub use native::time as time;
 pub use native::version as version;
 
 // All implementation modules live under native/. These re-exports preserve

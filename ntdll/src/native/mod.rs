@@ -23,7 +23,7 @@ pub mod atom;
 pub mod env;
 pub mod version;
 pub mod exception;
-mod time;
+pub mod time;
 mod strings;
 pub mod crypt;
 pub mod path;
