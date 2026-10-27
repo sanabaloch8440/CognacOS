@@ -22,9 +22,8 @@ const IRP_STACK_OFFSET: usize = 0xB8;
 const IRP_STATUS_OFFSET: usize = 0x30;
 const IRP_INFORMATION_OFFSET: usize = 0x38;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct UnicodeString { pub length: u16, pub maximum_length: u16, pub buffer: *mut u16 }
+/// Canonical counted UTF-16 string ABI shared with NTDLL and driver headers.
+pub type UnicodeString = crate::nt_abi::object::UNICODE_STRING;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct IoStatusBlock { pub status: isize, pub information: usize }
