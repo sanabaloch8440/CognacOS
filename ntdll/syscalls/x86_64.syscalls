@@ -26,3 +26,5 @@ NtFlushKey 0x149 1
 NtEnumerateKey 0x14a 6
 NtEnumerateValueKey 0x14b 6
 NtQueryKey 0x14c 5
+NtOpenProcess 0x026 4
+NtGetNextProcess 0x100 5
