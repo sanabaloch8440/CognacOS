@@ -426,7 +426,6 @@ pub unsafe extern "system" fn RtlIntegerToUnicodeString(
 
 
 pub const STATUS_NAME_TOO_LONG: LONG = 0xC000_0106_u32 as LONG;
-pub const STATUS_BUFFER_OVERFLOW: LONG = 0x8000_0005_u32 as LONG;
 
 /// Checked ANSI descriptor initialization; leaves the descriptor untouched on overflow.
 #[no_mangle]
