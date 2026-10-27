@@ -272,6 +272,7 @@ unsafe fn initialize_process_heap_object() -> *mut CognacHeap {
     heap
 }
 
+#[no_mangle]
 pub unsafe extern "system" fn RtlGetProcessHeap() -> HANDLE {
     let existing = PROCESS_HEAP.load(Ordering::Acquire);
     let heap = if !existing.is_null() {
