@@ -166,6 +166,30 @@ NtFlushKey:
     movl $0x149, %eax
     syscall
     ret
+
+    .p2align 4
+    .globl NtEnumerateKey
+NtEnumerateKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x14a, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtEnumerateValueKey
+NtEnumerateValueKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x14b, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtQueryKey
+NtQueryKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x14c, %eax
+    syscall
+    ret
 "#, options(att_syntax));
 
 unsafe extern "system" {
@@ -189,4 +213,7 @@ unsafe extern "system" {
     pub fn NtDeleteValueKey(key: *mut c_void, name: *const crate::reg::UNICODE_STRING) -> i32;
     pub fn NtDeleteKey(key: *mut c_void) -> i32;
     pub fn NtFlushKey(key: *mut c_void) -> i32;
+    pub fn NtEnumerateKey(key: *mut c_void, index: u32, class: u32, information: *mut c_void, length: u32, result_length: *mut u32) -> i32;
+    pub fn NtEnumerateValueKey(key: *mut c_void, index: u32, class: u32, information: *mut c_void, length: u32, result_length: *mut u32) -> i32;
+    pub fn NtQueryKey(key: *mut c_void, class: u32, information: *mut c_void, length: u32, result_length: *mut u32) -> i32;
 }
