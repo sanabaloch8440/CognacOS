@@ -43,7 +43,7 @@ pub mod heap;
 mod memory;
 mod security;
 mod registry;
-mod process;
+pub mod process;
 
 // Consolidated runtime/RTL modules migrated from the former src/ root.
 pub mod debugbuffer;
