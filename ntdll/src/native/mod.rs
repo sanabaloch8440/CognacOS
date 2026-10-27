@@ -50,8 +50,6 @@ pub mod rtl_native;
 pub mod rtl_peb;
 pub mod rtl_string;
 pub mod string;
-#[cfg(not(target_os = "windows"))]
-pub mod syscall_x86_64;
 pub mod trace;
 #[cfg(target_os = "windows")]
 pub(crate) unsafe fn initialize_native_process() {
