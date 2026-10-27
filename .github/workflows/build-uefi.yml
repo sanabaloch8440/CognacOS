@@ -445,19 +445,19 @@ jobs:
           # Poll for up to 30 seconds, allowing the VM to remain live at the
           # exact failing instruction if the ring-3 completion marker is absent.
           for _ in $(seq 1 120); do
-            if grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log; then
+            if grep -Eq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI\.|Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed\.' build/serial.log; then
               break
             fi
             if ! kill -0 "$qemu_pid" 2>/dev/null; then
-              echo "QEMU exited before the native NTDLL completion marker." >&2
+              echo "QEMU exited before either supported ring-3 syscall smoke completion marker." >&2
               cat build/serial.log || true
               exit 1
             fi
             sleep 0.25
           done
 
-          if ! grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log; then
-            echo "Native NTDLL smoke test did not complete; attaching GDB to the same live QEMU instance."
+          if ! grep -Eq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI\.|Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed\.' build/serial.log; then
+            echo "Ring-3 syscall smoke test did not complete; attaching GDB to the same live QEMU instance."
             command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
             set +e
             # Load DWARF-bearing ELF companions so GDB can resolve source file:line
