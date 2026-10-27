@@ -274,13 +274,28 @@ unsafe fn initialize_process_heap_object() -> *mut CognacHeap {
 
 pub unsafe extern "system" fn RtlGetProcessHeap() -> HANDLE {
     let existing = PROCESS_HEAP.load(Ordering::Acquire);
-    if !existing.is_null() { return existing.cast(); }
-    let created = unsafe { initialize_process_heap_object() };
-    if created.is_null() { return ptr::null_mut(); }
-    match PROCESS_HEAP.compare_exchange(ptr::null_mut(), created, Ordering::AcqRel, Ordering::Acquire) {
-        Ok(_) => created.cast(),
-        Err(winner) => winner.cast(),
+    let heap = if !existing.is_null() {
+        existing
+    } else {
+        let created = unsafe { initialize_process_heap_object() };
+        if created.is_null() { return ptr::null_mut(); }
+        match PROCESS_HEAP.compare_exchange(ptr::null_mut(), created, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => created,
+            Err(winner) => winner,
+        }
+    };
+    // Match Windows NTDLL: publish the actual default heap in PEB.ProcessHeap.
+    // The kernel creates the PEB in the current user address space; never write
+    // through a null or non-user GS base.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        let peb: usize;
+        core::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, preserves_flags));
+        if peb != 0 && peb < 0x0000_8000_0000_0000usize {
+            (peb as *mut u8).add(0x30).cast::<HANDLE>().write(heap.cast());
+        }
     }
+    heap.cast()
 }
 
 #[no_mangle]
