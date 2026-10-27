@@ -144,9 +144,9 @@ const ALPC_MESSAGE_CONTEXT_ATTRIBUTE: ULONG = 0x2000_0000;
 const ALPC_MESSAGE_HANDLE_ATTRIBUTE: ULONG = 0x1000_0000;
 
 #[repr(C)]
-struct ALPC_CONTEXT_ATTR { PortContext: PVOID, MessageContext: PVOID, Sequence: ULONG, MessageId: ULONG, CallbackId: ULONG }
+struct ALPC_CONTEXT_ATTR_NATIVE { PortContext: PVOID, MessageContext: PVOID, Sequence: ULONG, MessageId: ULONG, CallbackId: ULONG }
 #[repr(C)]
-struct ALPC_HANDLE_ATTR { Flags: ULONG, _padding: ULONG, Handle: HANDLE, ObjectType: ULONG, DesiredAccess: ACCESS_MASK }
+struct ALPC_HANDLE_ATTR_NATIVE { Flags: ULONG, _padding: ULONG, Handle: HANDLE, ObjectType: ULONG, DesiredAccess: ACCESS_MASK }
 #[repr(C)]
 struct ALPC_PORT_COMPLETION_LIST_INFORMATION { Buffer: PVOID, Size: SIZE_T, ConcurrencyCount: ULONG, AttributeFlags: ULONG }
 
@@ -157,8 +157,8 @@ fn attribute_size(flag: ULONG) -> Option<usize> {
     match flag {
         ALPC_MESSAGE_SECURITY_ATTRIBUTE => Some(core::mem::size_of::<ALPC_SECURITY_ATTR>()),
         ALPC_MESSAGE_VIEW_ATTRIBUTE => Some(core::mem::size_of::<ALPC_DATA_VIEW_ATTR>()),
-        ALPC_MESSAGE_CONTEXT_ATTRIBUTE => Some(core::mem::size_of::<ALPC_CONTEXT_ATTR>()),
-        ALPC_MESSAGE_HANDLE_ATTRIBUTE => Some(core::mem::size_of::<ALPC_HANDLE_ATTR>()),
+        ALPC_MESSAGE_CONTEXT_ATTRIBUTE => Some(core::mem::size_of::<ALPC_CONTEXT_ATTR_NATIVE>()),
+        ALPC_MESSAGE_HANDLE_ATTRIBUTE => Some(core::mem::size_of::<ALPC_HANDLE_ATTR_NATIVE>()),
         _ => None,
     }
 }
