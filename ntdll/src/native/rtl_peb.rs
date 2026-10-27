@@ -16,10 +16,8 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
-pub type PVOID = *mut c_void;
-pub type LONG = i32;
-pub type NTSTATUS = i32;
-pub type HANDLE = *mut c_void;
+pub use crate::nt_abi::types::{HANDLE, LONG, PVOID};
+pub use crate::nt_abi::ntstatus::NTSTATUS;
 
 const STATUS_SUCCESS: NTSTATUS = 0;
 const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
