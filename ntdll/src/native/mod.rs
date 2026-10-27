@@ -5,7 +5,7 @@ pub(crate) mod syscall_stubs;
 mod syscall;
 mod runtime;
 mod crt;
-mod misc;
+pub mod misc;
 mod process_snapshot;
 mod appcompat;
 mod telemetry;

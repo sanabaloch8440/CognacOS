@@ -35,7 +35,7 @@ pub use native::crypt as crypt;
 pub use native::env as env;
 pub use native::exception;
 pub use native::heap as heap;
-pub use native::legacy_misc as misc;
+pub use native::misc as misc;
 pub use native::path as path;
 pub use native::printf as printf;
 pub use native::process as process;
