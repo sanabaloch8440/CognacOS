@@ -939,8 +939,7 @@ pub fn handle_current_user_page_fault(address:u64,error_code:u64)->bool {
     // while the native syscall dispatcher has the process that owns active CR3.
     // Prefer the per-thread association when present; use the active syscall
     // process only for this unbound bootstrap context.
-    let thread_pid=crate::thread::current_process_id();
-    let pid=if thread_pid!=0 {thread_pid} else {crate::syscall::current_process_id()};
+    let pid=current_process_id_for_active_address_space();
     if pid==0 {return false}
     let process=crate::process::eprocess_pointer_for_pid(pid);
     if process.is_null(){return false}
@@ -954,6 +953,22 @@ pub fn active_root_physical() -> u64 {
     let cr3: u64;
     unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); }
     cr3 & ADDR
+}
+
+/// Resolve the process that actually owns the active user CR3. A stale nonzero
+/// thread PID must not hide the syscall-bound bootstrap process.
+pub fn current_process_id_for_active_address_space() -> u64 {
+    let root = active_root_physical();
+    if root == 0 { return 0; }
+    let thread_pid = crate::thread::current_process_id();
+    let syscall_pid = crate::syscall::current_process_id();
+    for pid in [thread_pid, syscall_pid] {
+        if pid == 0 { continue; }
+        let process = crate::process::eprocess_pointer_for_pid(pid);
+        if process.is_null() { continue; }
+        if unsafe { (*process).address_space_root } == root { return pid; }
+    }
+    0
 }
 pub unsafe fn map_external_user_pages_active(pfns: &[u64], writable: bool) -> Result<u64, VmError> {
     if pfns.is_empty() || pfns.len() > 8192 { return Err(VmError::InvalidAddress); }
