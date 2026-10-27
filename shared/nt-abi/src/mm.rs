@@ -18,7 +18,7 @@ pub const MEM_DECOMMIT: ULONG = 0x4000;
 pub const MEM_RELEASE: ULONG = 0x8000;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct MEMORY_BASIC_INFORMATION {
     pub base_address: *mut core::ffi::c_void,
     pub allocation_base: *mut core::ffi::c_void,
@@ -30,6 +30,40 @@ pub struct MEMORY_BASIC_INFORMATION {
     pub type_: ULONG,
 }
 
+impl Default for MEMORY_BASIC_INFORMATION {
+    fn default() -> Self {
+        Self {
+            base_address: core::ptr::null_mut(),
+            allocation_base: core::ptr::null_mut(),
+            allocation_protect: 0,
+            partition_id: 0,
+            region_size: 0,
+            state: 0,
+            protect: 0,
+            type_: 0,
+        }
+    }
+}
+
 pub const fn align_down_page(address: ULONG_PTR) -> ULONG_PTR {
     address & !(PAGE_SIZE - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn memory_basic_information_matches_x64_size() {
+        if cfg!(target_pointer_width = "64") {
+            assert_eq!(core::mem::size_of::<MEMORY_BASIC_INFORMATION>(), 48);
+            assert_eq!(core::mem::align_of::<MEMORY_BASIC_INFORMATION>(), 8);
+        }
+    }
+
+    #[test]
+    fn page_alignment_rounds_down_without_changing_aligned_values() {
+        assert_eq!(align_down_page(0x1234), 0x1000);
+        assert_eq!(align_down_page(0x2000), 0x2000);
+    }
 }
