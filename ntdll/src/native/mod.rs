@@ -14,7 +14,7 @@ mod csr;
 mod threadpool;
 mod prefix;
 mod debug;
-mod resource;
+pub mod resource;
 mod bitmap;
 mod peb;
 pub mod printf;

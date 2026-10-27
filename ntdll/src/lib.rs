@@ -39,7 +39,7 @@ pub use native::legacy_misc as misc;
 pub use native::path as path;
 pub use native::printf as printf;
 pub use native::process as process;
-pub use native::legacy_resource as resource;
+pub use native::resource as resource;
 pub use native::legacy_time as time;
 pub use native::version as version;
 
