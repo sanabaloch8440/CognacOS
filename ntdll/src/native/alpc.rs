@@ -208,3 +208,192 @@ pub unsafe extern "system" fn AlpcFreeCompletionListMessage(_CompletionList: PVO
 pub unsafe extern "system" fn AlpcGetCompletionListMessageAttributes(_CompletionList: PVOID, _Message: *mut PORT_MESSAGE) -> PALPC_MESSAGE_ATTRIBUTES {
     core::ptr::null_mut()
 }
+
+
+// Wine-derived ALPC message-attribute helpers are consolidated here. The
+// shared message header and security attribute use the canonical native ABI
+// types above; legacy-only attribute layouts stay scoped to this helper module.
+mod attribute_compat {
+#![allow(non_camel_case_types, non_snake_case)]
+use super::{NTSTATUS, PVOID, ULONG, ALPC_MESSAGE_ATTRIBUTES, ALPC_SECURITY_ATTR};
+use core::{ffi::c_void, mem::size_of};
+
+const ALPC_MESSAGE_SECURITY_ATTRIBUTE: ULONG = super::ALPC_MESSAGE_SECURITY_ATTRIBUTE;
+const ALPC_MESSAGE_VIEW_ATTRIBUTE: ULONG = super::ALPC_MESSAGE_VIEW_ATTRIBUTE;
+const ALPC_MESSAGE_CONTEXT_ATTRIBUTE: ULONG = super::ALPC_MESSAGE_CONTEXT_ATTRIBUTE;
+const ALPC_MESSAGE_HANDLE_ATTRIBUTE: ULONG = super::ALPC_MESSAGE_HANDLE_ATTRIBUTE;
+pub const ALPC_MESSAGE_TOKEN_ATTRIBUTE: ULONG = 0x0800_0000;
+pub const ALPC_MESSAGE_DIRECT_ATTRIBUTE: ULONG = 0x0400_0000;
+pub const ALPC_MESSAGE_WORK_ON_BEHALF_ATTRIBUTE: ULONG = 0x0200_0000;
+pub const ALPC_MESSAGE_ATTRIBUTE_ALL: ULONG = 0xFE00_0000;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ALPC_VIEW_ATTR {
+    pub Flags: ULONG,
+    pub SectionHandle: *mut c_void,
+    pub ViewBase: *mut c_void,
+    pub ViewSize: SIZE_T,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ALPC_CONTEXT_ATTR {
+    pub PortContext: *mut c_void,
+    pub MessageContext: *mut c_void,
+    pub Sequence: ULONG,
+    pub MessageId: ULONG,
+    pub CallbackId: ULONG,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ALPC_HANDLE_ATTR32 {
+    pub Flags: ULONG,
+    pub Reserved0: ULONG,
+    pub SameAccess: ULONG,
+    pub SameAttributes: ULONG,
+    pub Indirect: ULONG,
+    pub Inherit: ULONG,
+    pub Reserved1: ULONG,
+    pub Handle: ULONG,
+    pub ObjectType: ULONG,
+    pub DesiredAccess: ULONG,
+    pub GrantedAccess: ULONG,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ALPC_HANDLE_ATTR {
+    pub Flags: ULONG,
+    pub Reserved0: ULONG,
+    pub SameAccess: ULONG,
+    pub SameAttributes: ULONG,
+    pub Indirect: ULONG,
+    pub Inherit: ULONG,
+    pub Reserved1: ULONG,
+    pub Handle: *mut c_void,
+    pub HandleAttrArray: *mut ALPC_HANDLE_ATTR32,
+    pub ObjectType: ULONG,
+    pub HandleCount: ULONG,
+    pub DesiredAccess: ULONG,
+    pub GrantedAccess: ULONG,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ALPC_TOKEN_ATTR {
+    pub TokenId: u64,
+    pub AuthenticationId: u64,
+    pub ModifiedId: u64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ALPC_DIRECT_ATTR {
+    pub Event: *mut c_void,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ALPC_WORK_ON_BEHALF_ATTR {
+    pub Ticket: u64,
+}
+
+const ATTRIBUTE_SIZES: [(ULONG, usize); 7] = [
+    (ALPC_MESSAGE_SECURITY_ATTRIBUTE, size_of::<ALPC_SECURITY_ATTR>()),
+    (ALPC_MESSAGE_VIEW_ATTRIBUTE, size_of::<ALPC_VIEW_ATTR>()),
+    (ALPC_MESSAGE_CONTEXT_ATTRIBUTE, size_of::<ALPC_CONTEXT_ATTR>()),
+    (ALPC_MESSAGE_HANDLE_ATTRIBUTE, size_of::<ALPC_HANDLE_ATTR>()),
+    (ALPC_MESSAGE_TOKEN_ATTRIBUTE, size_of::<ALPC_TOKEN_ATTR>()),
+    (ALPC_MESSAGE_DIRECT_ATTRIBUTE, size_of::<ALPC_DIRECT_ATTR>()),
+    (ALPC_MESSAGE_WORK_ON_BEHALF_ATTRIBUTE, size_of::<ALPC_WORK_ON_BEHALF_ATTR>()),
+];
+
+/// Returns the header plus storage required for each recognized attribute.
+#[no_mangle]
+pub extern "system" fn AlpcGetHeaderSize(attribute_flags: ULONG) -> ULONG {
+    ATTRIBUTE_SIZES.iter().fold(
+        size_of::<ALPC_MESSAGE_ATTRIBUTES>(),
+        |total, (flag, size)| {
+            if attribute_flags & *flag != 0 { total + *size } else { total }
+        },
+    ) as ULONG
+}
+
+/// Returns the pointer to one allocated attribute, or null when unavailable.
+///
+/// # Safety
+/// attributes must point to a readable header and the allocation must contain
+/// all attribute storage described by AllocatedAttributes.
+#[no_mangle]
+pub unsafe extern "system" fn AlpcGetMessageAttribute(
+    attributes: *mut ALPC_MESSAGE_ATTRIBUTES,
+    attribute_flag: ULONG,
+) -> PVOID {
+    if attribute_flag == 0 || attribute_flag & (attribute_flag - 1) != 0 {
+        return core::ptr::null_mut();
+    }
+    if attributes.is_null() {
+        return core::ptr::null_mut();
+    }
+
+    // SAFETY: Required by this function's pointer contract.
+    let allocated = unsafe { (*attributes).AllocatedAttributes };
+    if (attribute_flag & allocated & ALPC_MESSAGE_ATTRIBUTE_ALL) != attribute_flag {
+        return core::ptr::null_mut();
+    }
+
+    let higher_attributes = allocated & !(attribute_flag | (attribute_flag - 1));
+    // SAFETY: The caller guarantees the allocation covers the declared attributes.
+    unsafe {
+        attributes.cast::<u8>().add(AlpcGetHeaderSize(higher_attributes) as usize).cast::<c_void>()
+    }
+}
+
+/// Initializes the attribute header and reports the required allocation size.
+///
+/// The caller must provide a writable required_buffer_size pointer. A null
+/// buffer is accepted when only querying the required size.
+///
+/// # Safety
+/// required_buffer_size must be writable; a non-null buffer must provide at
+/// least buffer_size writable bytes.
+#[no_mangle]
+pub unsafe extern "system" fn AlpcInitializeMessageAttribute(
+    attribute_flags: ULONG,
+    buffer: *mut ALPC_MESSAGE_ATTRIBUTES,
+    buffer_size: ULONG,
+    required_buffer_size: *mut ULONG,
+) -> NTSTATUS {
+    if required_buffer_size.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    let required = AlpcGetHeaderSize(attribute_flags) as usize;
+    // SAFETY: Required by this function's pointer contract.
+    unsafe { required_buffer_size.write(required as ULONG) };
+
+    if (buffer_size as usize) < required {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+
+    if !buffer.is_null() {
+        // SAFETY: The caller guarantees writability and the size check covers the header.
+        unsafe {
+            (*buffer).AllocatedAttributes = attribute_flags;
+            (*buffer).ValidAttributes = 0;
+        }
+    }
+
+    STATUS_SUCCESS
+}
+
+
+}
+
+pub use attribute_compat::{
+    AlpcGetHeaderSize, AlpcGetMessageAttribute, AlpcInitializeMessageAttribute,
+    ALPC_CONTEXT_ATTR, ALPC_HANDLE_ATTR, ALPC_HANDLE_ATTR32, ALPC_TOKEN_ATTR,
+    ALPC_DIRECT_ATTR, ALPC_WORK_ON_BEHALF_ATTR, ALPC_VIEW_ATTR,
+};
