@@ -14,6 +14,17 @@ pub struct UNICODE_STRING {
 
 pub type PUNICODE_STRING = *mut UNICODE_STRING;
 
+/// Counted 8-bit ANSI string used by native RTL interfaces.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct ANSI_STRING {
+    pub length: USHORT,
+    pub maximum_length: USHORT,
+    pub buffer: *mut u8,
+}
+
+pub type PANSI_STRING = *mut ANSI_STRING;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct OBJECT_ATTRIBUTES {
@@ -49,6 +60,21 @@ mod tests {
             assert_eq!(size_of::<UNICODE_STRING>(), 8);
             assert_eq!(align_of::<UNICODE_STRING>(), 4);
             assert_eq!(offset_of!(UNICODE_STRING, buffer), 4);
+        }
+    }
+
+    #[test]
+    fn ansi_string_layout_matches_windows_pointer_width() {
+        assert_eq!(offset_of!(ANSI_STRING, length), 0);
+        assert_eq!(offset_of!(ANSI_STRING, maximum_length), 2);
+        if cfg!(target_pointer_width = "64") {
+            assert_eq!(size_of::<ANSI_STRING>(), 16);
+            assert_eq!(align_of::<ANSI_STRING>(), 8);
+            assert_eq!(offset_of!(ANSI_STRING, buffer), 8);
+        } else {
+            assert_eq!(size_of::<ANSI_STRING>(), 8);
+            assert_eq!(align_of::<ANSI_STRING>(), 4);
+            assert_eq!(offset_of!(ANSI_STRING, buffer), 4);
         }
     }
 
