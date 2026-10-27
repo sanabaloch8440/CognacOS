@@ -10,8 +10,6 @@ const COGNAC_NT_CURRENT_PROCESS: HANDLE = usize::MAX as HANDLE;
 // RTL memory-zone and block-lookaside implementation. These are process-local
 // allocators backed by the native VM service; metadata is not a Windows-private
 // layout and must not be inspected by external code.
-use core::sync::atomic::{AtomicBool, Ordering};
-
 const STATUS_NO_MEMORY: NTSTATUS = 0xC000_0017u32 as i32;
 const STATUS_INVALID_HANDLE: NTSTATUS = 0xC000_0008u32 as i32;
 const STATUS_INVALID_PARAMETER_2: NTSTATUS = 0xC000_00F0u32 as i32;
@@ -62,7 +60,7 @@ struct MemoryBlockLookaside {
 fn align_memory(value: usize, alignment: usize) -> Option<usize> {
     value.checked_add(alignment - 1).map(|v| v & !(alignment - 1))
 }
-unsafe fn native_vm_allocate(size: usize) -> Option<(PVOID, usize)> {
+pub(super) unsafe fn native_vm_allocate(size: usize) -> Option<(PVOID, usize)> {
     if size == 0 { return None; }
     let mut base: PVOID = ptr::null_mut();
     let mut bytes = size;
@@ -73,7 +71,7 @@ unsafe fn native_vm_allocate(size: usize) -> Option<(PVOID, usize)> {
     };
     if status < 0 || base.is_null() { None } else { Some((base, bytes)) }
 }
-unsafe fn native_vm_release(base: PVOID) {
+pub(super) unsafe fn native_vm_release(base: PVOID) {
     if base.is_null() { return; }
     let mut address = base;
     let mut size = 0usize;
