@@ -1,326 +1,106 @@
-## Native registry / Configuration Manager
+# CognacOS — actionable roadmap
 
-- [x] Route native `NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, and `NtFlushKey` service IDs discovered from the staged AMD64 NTDLL image into the kernel native dispatcher; decode their x64 arguments and copy caller-controlled names/data through checked user-memory helpers.
-- [x] Enforce per-handle granted-access checks for key query, value mutation, key deletion, and relative namespace traversal through typed Object Manager RegistryKey handles.
-- [x] Keep ordinary immutable boot-hive mounts read-only and fail closed rather than shadowing mutations in volatile state. Explicitly writable mounts require caller-owned hive/journal buffers plus a durability callback; `NtFlushKey` reports callback failures.
-- [x] Implement `ZwEnumerateKey` for `KeyBasicInformation` on volatile keys, `ZwEnumerateValueKey` for `KeyValueBasicInformation`, and `ZwQueryKey` for `KeyBasicInformation` / `KeyNameInformation`; unsupported classes and REGF enumeration return explicit errors.
-- [x] Add CognacOS-private native-service dispatch for `NtEnumerateKey`, `NtEnumerateValueKey`, and `NtQueryKey`, using checked user-memory copies and result-length reporting.
-- [x] Add a REGF writer for aligned cell allocation, NK/VK creation, stable index publication/removal, base-block sequence/checksum maintenance, and dirty-state handling.
-- [x] Add a writable-hive mount contract with caller-owned hive/journal buffers and explicit PREPARE/DATA/COMMIT/RECOVER flush callbacks; route mounted-hive create/set/delete and flush operations through the writer and journal.
-- [x] Add bounded before/after-image redo recovery with full journal validation before replay. This is CognacOS's journal protocol, not Windows `HvLE`.
-- [x] Add a single-log Windows 8.1+ `HvLE` replay path with entry-size/sequence checks, Marvin32 hash validation, dirty-page bounds checks, base-block repair, and rollback-on-invalid-image; a caller must select the applicable log and supply scratch space.
-- [x] Validate writer allocation, create/set/delete, HBIN growth, private redo rollback/replay, and synthetic HvLE replay in host-side registry tests; these tests pass in Actions. The overall QEMU smoke test still fails in the separate `ntoskrnl::mm::kernel_space::self_test` path before this registry backend is exercised.
-- [ ] Add legacy `DIRT` dirty-vector log replay, dual `LOG1`/`LOG2` selection and sequence-chain policy, and validate hash behavior against Windows-generated corpus fixtures.
-- [ ] Expand or replace bounded storage only if volatile-key/value capacity requires it. Persistent hive-backed value payloads are stored in REGF cells and bypass the volatile value table; the shared key-slot/Object Manager metadata cache still limits how many key objects can be open at once.
-- [x] Wire Rust NTDLL mutation exports (`NtCreateKey`, `NtSetValueKey`, `NtDeleteValueKey`, `NtDeleteKey`, `NtFlushKey`) to CognacOS-private native-service IDs; writable-hive flush uses the configured durability callback, while immutable mounts return `STATUS_NOT_SUPPORTED`.
-- [x] Route absolute-path `NtCreateKey` into writable REGF cells when the target hive is explicitly mounted with a durability provider.
-- [ ] Add REGF-backed enumeration and remaining Windows information classes, change notifications, and Windows transaction semantics.
-- [ ] Add complete `KEY_*` access-mask mapping, registry DACL inheritance, and token-aware security policy.
-- [ ] Add host tests for access-denied handles, relative opens, malformed user pointers, mutation rollback, and persistent hive reopen/recovery; require a passing QEMU boot before claiming runtime validation.
+**Goal:** a maintainable Rust-first x86-64 OS with NT-inspired interfaces and a long-term path toward Windows x64 driver compatibility. Windows 11 or general third-party driver compatibility is not yet achieved.
 
-The registry's mounted SYSTEM/SOFTWARE/etc. hive parser remains read-only. The current volatile Configuration Manager store is bounded and does not survive reboot. Do not describe registry writes as persistent until the native hive writer and crash-recovery tests pass.
-# CognacOS Roadmap
+This is the canonical task list. Completed work is summarized by area; detailed routine inventories belong in the [Ke comparison](WINDOWS11_COGNACOS_NTOSKRNL_KE_COMPARISON.md) and [Se comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md). Do not duplicate historical implementation notes here.
 
-## Native CSR / ALPC subsystem
+## Execution order
 
-- [x] Add a bounded kernel ALPC transport core with named-port creation, listen state, queued connection requests, accept/reject, copied message send/receive, sender PID checks, message limits, disconnect, and port rundown.
-- [x] Add regression coverage for ALPC connection and bidirectional message flow; run it in GitHub Actions.
-- [x] Add a CSR server dispatcher core with bounded API registration, CSR message validation, and client bookkeeping.
-- [x] Add a CSRSRV x64 export inventory and a PE export/ordinal comparison utility.
-- [x] Add ABI-shaped `NtAlpc*` x64 entry points on CognacOS private service IDs; route create/connect/accept/send-receive/disconnect through the native dispatcher. These IDs are not Windows syscall ordinals.
-- [x] Represent ALPC port, endpoint, and ALPC-section handles as typed Object Manager objects with granted-access validation and DACL evaluation. The current default DACL is permissive (Everyone allow) and caller-supplied descriptors are rejected; this is not the Windows security policy.
-- [x] Add a bounded ALPC advanced-resource metadata core for section-view registration, owner-scoped security contexts/revocation, and FIFO completion queues; run unit tests in CI. Section views require a VM mapping to have already been established and do not map memory themselves.
-- [x] Back `NtAlpcCreatePortSection` with the in-tree MM section object and implement same-address-space section-view map/unmap through the section manager.
-- [x] Add Object Manager-backed Section handles and an ABI-shaped `NtCreateSection` path for anonymous committed sections; `NtAlpcCreatePortSection` can now take one of these handles and retains an independent MM reference.
-- [ ] Add named/file-backed Section creation, full Section access-mask semantics, and handle duplication/transfer so peer processes can acquire the ALPC section handle through the normal NT handle-transfer path.
-- [x] Permit MM section backing pages to be mapped into a target address space and allow a valid ALPC section handle to map in a peer process.
-- [x] Trigger ALPC port, endpoint, section-view, and security-context cleanup from the process `mark_exited` path.
-- [x] Resolve peer identity from the kernel connection object, duplicate the peer process's registered primary-token security identity into an impersonation token, and assign it to the current KTHREAD. Missing/unregistered tokens fail closed; container impersonation remains unsupported and the token backend is still CognacOS's registered token model, not a complete Windows TOKEN implementation.
-- [ ] Wire ALPC message attributes, connection-time QoS capture, container impersonation policy, native `NtSetInformationThread` revert semantics, and scheduler-backed blocking wait/wakeup; current send/receive is bounded and nonblocking.
-- [ ] Implement ALPC resource reserves and the Windows shared-memory completion-list ABI, atomics, worker-thread registration, rundown, and concurrency accounting. The current FIFO metadata queue is not ABI-equivalent.
-- [ ] Build `csrss.exe` and `csrsrv.dll` as native PE32+ user images, implement the real server-DLL initialization handshake, and launch them through a session-manager path.
-- [ ] Compare the CSRSRV export manifest against the exact target Windows 11 x64 `csrsrv.dll` PE. The current committed 32-name/ordinal inventory is based on the public Windows 10 x64 10.0.19041 reference and is **not yet verified as an exact Windows 11 match**.
-- [ ] Add an asynchronous process-creation path for mapped user PE images. The existing `usermode::run_loaded_image` remains a synchronous smoke-test runner and is not a general session-manager launcher.
+1. **Green the current revision.** Reproduce the latest workflow failure, fix its root cause, and pass Rust builds, NTDLL PE/export checks, QEMU boot smoke, and 2/4/8-vCPU SMP tests. Do not treat older green runs as validation of newer code.
+2. **Memory safety and isolation.** Prove independent address spaces and supervisor-only mappings; stress faults, checked copies, pin/unpin, unmap, and teardown concurrently; implement safe user working-set trimming and pagefile-backed user paging.
+3. **I/O lifetime safety.** Validate exactly-once completion, cancellation races, callbacks during teardown, outstanding-IRP drain, and unload/remove barriers with kernel-level fault injection under QEMU SMP.
+4. **Native user-mode loader.** Connect NTDLL to the existing bounded VFS-to-PE transaction using process-owned address-space/section services; validate recursive dependency order, forwarded exports, rollback, attach/detach, and final unload.
+5. **Process and executive semantics.** Complete per-process handles, token lifecycle, user APC/SEH delivery, wait-all reservations, and scheduler-backed blocking waits.
+6. **Storage and Windows ABI coverage.** Add safe PCI/DMA/IOMMU and disk/VFS integration, crash-safe writable filesystem support, remaining registry/security semantics, then automate ABI and WDK-style conformance tests.
 
-## Kernel source organization
+## Current foundations (brief)
 
-- [x] Move address-space and user virtual-memory implementation into `ntoskrnl/mm/address_space.rs`; keep `vm.rs` as a compatibility re-export while call sites migrate.
-- [x] Move x86-64 descriptor setup, interrupt entry, exception dispatch and context-switch primitives into `ntoskrnl/ke/arch.rs`; remove the root `arch.rs` module.
-- [x] Merge the former `ntoskrnl/ki` clock/interrupt dispatch runtime into `ntoskrnl/ke/runtime.rs` and remove the separate Ki module.
-- [x] Remove root `vm.rs` and `vm_range.rs`; route address-space and user-range consumers through `ntoskrnl/mm/address_space`.
+- **Boot/platform:** UEFI loader, PE32+ kernel handoff, SHA-256/Ed25519 kernel verification, ACPI/AP startup, GDT/IDT/TSS/IST, and CI/QEMU validation paths.
+- **Memory:** address-space and checked-copy primitives, demand-zero region metadata, resident accounting, MDL/pinning foundations, bounded supervisor fault fixups, and process-scoped CPL3 termination.
+- **Scheduling/processor state:** per-CPU queues, affinity stealing, timer preemption, DPC/APC foundations, and legacy x87/SSE XSAVE/XRSTOR paths.
+- **NT executive/NTDLL:** shared no_std ABI crate; selected native VM, registry, ETW, ALPC/section, process, and loader paths use CognacOS-private service IDs.
+- **Object/I/O/security:** initial typed Object Manager handles, access checks, WDM IRP completion claims and device rundown, bounded token/security metadata, and audit groundwork.
+- **Registry/loader/storage:** read-only REGF mounting plus a bounded writable-hive backend and recovery primitives; bounded VFS-to-PE transaction backend; native Rust ext-family filesystem foundations.
+- **Important limitation:** code presence and host tests do not prove QEMU/SMP correctness or Windows ABI/driver compatibility.
 
-This is the canonical progress tracker. Checkboxes describe code and validation in the repository; they do not imply production readiness or Windows driver compatibility. Detailed per-routine status belongs in the [Ke comparison](WINDOWS11_COGNACOS_NTOSKRNL_KE_COMPARISON.md) and [Se comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md).
+## P0 — CI and runtime validation
 
-**Target:** a maintainable Rust-first x86-64 OS with NT-inspired interfaces and a long-term path toward Windows x64 driver compatibility.
+- [ ] Inspect the latest failed [GitHub Actions run](https://github.com/umarfarooq7869/CognacOS/actions); identify the first causal error rather than downstream symptoms.
+- [ ] Pass the complete current-revision build, NTDLL PE/export/no-import checks, QEMU boot smoke, and 2/4/8-vCPU SMP matrix.
+- [ ] Ensure every new boot regression is asserted in workflow logs and fails the job when its expected result is absent.
+- [ ] Publish the passing run/commit in this section only after all required jobs finish successfully.
 
-## Native NT virtual memory
+## P1 — Memory safety and process isolation
 
-- [x] Add current-process-only `NtAllocateVirtualMemory` reserve+commit path with checked user pointers, page rounding, W^X policy, and demand-zero region registration.
-- [x] Add checked current-process `NtReadVirtualMemory` / `NtWriteVirtualMemory` copies and byte-count reporting.
-- [x] Export the supported Rust NTDLL VM entry points through the dedicated CognacOS native-service gate (`int 0x83`) and wire it to the kernel's native NT dispatcher.
-- [x] Match the Windows x64 `MEMORY_BASIC_INFORMATION` 48-byte layout and `SIZE_T` return-length ABI; add layout regression tests.
-- [x] Add current-process `NtFreeVirtualMemory` for whole-region `MEM_DECOMMIT` and `MEM_RELEASE`, including working-set/pagefile cleanup and TLB invalidation before resident frame reclamation.
-- [x] Add page-table protection updates with cross-CPU TLB synchronization and rollback of already changed resident pages on a later protection failure.
-- [x] Add `MemoryBasicInformation` queries reporting tracked region bounds, allocation protection, current protection, and `MEM_COMMIT` / `MEM_RESERVE` / `MEM_FREE` states.
-- [x] Track decommitted reservations so they no longer demand-fault back into committed pages and remain unavailable to the allocator.
-- [ ] Extend decommit/protect to arbitrary partial ranges by splitting region metadata; current operations intentionally require a complete tracked region.
-- [ ] Make decommit/release rollback fully atomic if an unexpected pagefile or physical allocator failure occurs after preflight.
-- [ ] Add QEMU tests for allocate/decommit/release, permission changes, MBI boundary cases, invalid pointers, and cross-process handle rejection.
+- [ ] Add adversarial CPL3 tests for cross-process same-VA mappings, supervisor-page access, protection faults, process survival, and syscall/trap transitions.
+- [ ] Stress concurrent address-space teardown against page faults, user copies, pin/unpin, and unmap; prove reference/rundown safety and no use-after-free.
+- [ ] Test cross-page copies, read-only destinations, partial-copy failures, map/unmap races, invalid pointers, and allocation rollback.
+- [ ] Implement user-page eviction/pagefile-backed page-in and demand-zero fault tests.
+- [ ] Implement working-set trimming with pin/lock exclusion, cross-CPU TLB shootdown acknowledgements, and reclamation only after invalidation; stress under allocation pressure and SMP.
+- [ ] Extend native VM decommit/protect to partial ranges with correct region splitting and transactional rollback; test all supported information classes and reject unsupported cross-process handles.
 
-These are current-process-only primitives. Cross-process process handles and full Windows allocation semantics remain unsupported; a successful source build does not establish full Windows 11 VM compatibility.
+## P1 — I/O manager and device rundown
 
-## Extended processor state (XSAVE/XSTATE)
+- [ ] Run kernel-level cancellation/completion/unload fault injection under QEMU SMP: exactly-once completion, cancel-vs-complete interleavings, callback-vs-teardown, outstanding-IRP drain, remove locks, and device deletion.
+- [ ] Complete file/device object lifetime and documented IRP completion/cancellation semantics before expanding driver coverage.
+- [ ] Add PCI enumeration/resource assignment and a real AHCI/NVMe path only after DMA safety is available.
+- [ ] Implement and validate VT-d/AMD IOMMU translation; fail closed when safe DMA translation is unavailable.
+- [ ] Complete device/power ordering, wake handling, and S4 persistence/resume.
 
-- [x] Add x86-64 CPUID leaf 0xD discovery, CR0/CR4/XCR0 setup, a frozen system-wide enabled mask, standard-area sizing, and per-feature metadata.
-- [x] Add guarded XSAVE/XRSTOR helpers with initialization, mask, buffer-length, and 64-byte-alignment validation.
-- [x] Add aligned x87/SSE state areas to kernel threads and idle contexts; restore incoming state in the low-level stack-switch assembly after scheduler callbacks.
-- [x] Add `KeSaveExtendedProcessorState` / `KeRestoreExtendedProcessorState` entry points with feature-mask checks, bounded nested save scopes, same-thread/same-IRQL validation, stale-handle protection, and restore after releasing bookkeeping locks.
-- [x] Run the processor XSTATE setup hook from `KiInitializeProcessor`, and reject a processor that cannot honor an already-enabled system-wide XSTATE policy.
-- [x] Save interrupted user XSTATE in assembly before Rust syscall, exception, timer, external IRQ, and dedicated IPI handlers; restore it immediately before `IRETQ`. Reset user state before initial ring-3 entry.
-- [x] Publish the Windows 11 24H2 x64 `KUSER_SHARED_DATA.XState` field at `0x7FFE0000 + 0x3D8`, using the exact 0x348-byte `XSTATE_CONFIGURATION` layout. The same physical page is shared read-only by process address spaces; the low mapping uses a privately cloned page-table path so unrelated identity mappings remain supervisor-only. Other KUSER_SHARED_DATA fields are still zero/unimplemented.
-- [x] Wire native process startup to initialize the shared page and NTDLL's lazy XSTATE bootstrap to read the Windows-layout field.
-- [x] Add NTDLL `RtlGetEnabledExtendedFeatures`, `RtlGetExtendedContextLength[2]`, `RtlInitializeExtendedContext[2]`, `RtlLocateLegacyContext`, `RtlLocateExtendedFeature[2]`, `RtlSet/GetExtendedFeaturesMask`, and `RtlCopyExtendedContext`.
-- [x] Add standard and compacted `CONTEXT_EX` sizing/feature-offset logic. The kernel currently advertises compacted format as disabled, so the compacted path is dormant.
-- [x] Replace the private configuration page with the Windows 11 24H2 x64 `KUSER_SHARED_DATA.XState` field layout and assert its size/field offsets at compile time.
-- [x] Match the opaque x64 `XSTATE_SAVE` caller storage to 0x38 bytes / 8-byte alignment and preflight null, user, pageable, unmapped, and read-only kernel buffers before touching them. The record's internal bytes remain private; fault-injection validation is pending.
-- [ ] Ensure every user process/thread is associated with a scheduler `ThreadRecord`; the bootstrap path still has a per-CPU user-state fallback rather than a universal per-thread record.
-- [ ] Enable AVX/YMM only after expanded per-thread state sizing and all kernel/user trap, context-copy, and restore paths support the expanded mask. Supervisor XSS, AVX-512, AMX, and PKRU remain disabled.
-- [x] Support caller-supplied `XSTATE_CONFIGURATION` pointers in `RtlLocateExtendedFeature2`; implement group-aware `RtlCopyContext` and partial legacy/XSTATE copying in `RtlCopyExtendedContext`.
-- [x] Add deterministic CPU-mask/migration checks, nested XSAVE/XRSTOR self-tests on processor bring-up, context-buffer tests in the Rust NTDLL source, user-range host tests, source-contract checks, and QEMU log assertions. The Rust NTDLL tests are still source-only and have not been executed.
+## P1 — NTDLL and native PE loader
 
-The implementation remains partial. It now publishes the Windows-layout XState field and saves/restores legacy x87/SSE state around thread switches and user-origin trap/syscall paths. AVX/YMM, supervisor XSS, AVX-512, AMX, and PKRU remain disabled until per-thread area sizing and all save/restore/context paths are expanded. The new kernel/QEMU checks are committed but the latest workflow run is still queued; Rust NTDLL context tests are not yet build-integrated.
+- [ ] Wire the VFS-backed dependency transaction into the native NTDLL syscall path with exclusive, process-owned address-space mutation/rundown.
+- [ ] Connect section creation, map/unmap, module registry, PEB loader-list updates, and NtClose lifetime semantics.
+- [ ] Add synthetic multi-DLL graph tests: dependency-before-parent mapping, duplicate references, missing file/import, cycle detection, forwarded exports/ordinals, map/link failure rollback, and initializer failure.
+- [ ] Queue DLL attach/detach callouts on a process thread; prevent unload until callbacks and dependent references have drained.
+- [ ] Complete NtOpenFile/NtReadFile documented flags, asynchronous I/O, event/APC completion, cancellation, IO_STATUS_BLOCK ordering, buffer validation, and general file handles.
+- [ ] Replace the immutable boot-asset provider with a mounted disk-backed VFS including directory traversal, normalized paths, sharing/access checks, synchronized file positions, and file-object lifetime.
+- [ ] Add end-to-end tests proving the actual NTDLL PE is loaded and invoked from CPL3, not merely that shared dispatcher helpers work.
 
-## Current validation
+## P1 — Object Manager, security, and user-mode execution
 
-- Last recorded full passing kernel/UEFI/QEMU/SMP run: [run 40159978518](https://github.com/umarfarooq7869/CognacOS/actions/runs/40159978518), commit `ed2198d2a5dbaf5820cc863297396098abcfaa58`.
-- That run passed the QEMU boot smoke test and 2/4/8-vCPU SMP startup, interrupt, scheduler, and TLB-shootdown matrix. It does not validate the fault-containment and I/O-rundown items below unless the relevant tests were included.
-- Later changes must be checked against the latest [Actions runs](https://github.com/umarfarooq7869/CognacOS/actions) before any milestone is marked validated. TPM-present measurement and firmware-enrolled Secure Boot remain separate validation tasks.
-- Native NTDLL freestanding PE32+ build, export checks, and no-import check passed: [run 40172132060](https://github.com/umarfarooq7869/CognacOS/actions/runs/40172132060), commit `d0cea1d7ae8d84c3bca784ecbd122bb8963cfc9d`.
-- QEMU boot smoke passed, including the native NT dispatcher self-test for five arguments, invalid output buffers, unsupported IDs, and 17-argument stack decoding: [run 40172070835](https://github.com/umarfarooq7869/CognacOS/actions/runs/40172070835), commit `f2fcf55bab1b49dac75bb0f1df323a39d4e97abb`. The 2/4/8-vCPU SMP stress matrix was still running at the last check, so the full workflow is not yet recorded as passing.
+- [ ] Replace global handle slots with process-bound handle tables and automatic process/thread identity binding; test access checks and rundown during process exit.
+- [ ] Complete token creation/duplication, primary and impersonation token lifecycle, privilege state, and reference-safe teardown.
+- [ ] Add object callbacks, handle inheritance, namespace parsing, SACL/audit policy, and documented object-type semantics.
+- [ ] Implement Windows-compatible user APC dispatch and SEH/unwind resume; unresolved CPL3 faults currently terminate the owning process.
+- [ ] Implement wait-all queue-entry reservation and scheduler-backed blocking waits; add WDK-style race/conformance tests.
+- [ ] Associate every user thread with a scheduler ThreadRecord; enable AVX/YMM only after all thread, trap, context-copy, and restore paths support the expanded XSTATE area.
 
-## Milestone 1 — Boot and platform foundations
+## P2 — Registry, NLS, and writable filesystem
 
-- [x] UEFI loader and native AMD64 PE32+ kernel handoff.
-- [x] Kernel GDT/IDT, page-table activation, diagnostics, physical-page allocator, and high-half mappings.
-- [x] ACPI table parsing, AP startup, per-CPU GDT/TSS and IST stacks, directed IPI acknowledgements.
-- [x] Build, PE validation, OVMF/QEMU boot, and multi-vCPU workflow coverage.
-- [ ] Validate on physical hardware and broaden malformed-image/firmware testing.
-- [x] Enforce SHA-256 and Ed25519 signature verification of the kernel PE32+ image before loading; reject missing or invalid signatures.
-- [x] Detect optional UEFI Secure Boot/SetupMode state and pass the verified-kernel digest plus security flags through BootInfo v8.
-- [x] Add optional TPM 2.0 TCG2 PCR 4 measurement of the verified kernel; TPM absence or measurement failure does not block boot.
-- [x] Add CI signature generation, valid-signature verification, and tampered-image rejection; allow optional UEFI loader signing when a firmware-trusted certificate is configured.
-- [ ] Configure and protect stable release signing keys; validate Secure Boot with an enrolled certificate and TPM 2.0 on QEMU/physical firmware.
-- [ ] Implement Windows Authenticode/CI policy semantics and signed driver/module enforcement; current Ed25519 kernel signature is CognacOS-specific.
-- [ ] Add relocatable-image support.
-
-## Milestone 2 — Memory isolation and fault containment (in progress)
-
-- [x] Validate user-copy ranges against the permitted user virtual-address interval.
-- [x] Preflight all pages before multi-page user copies; hold address-space lifetime protection across validation and transfer.
-- [x] Make user-page mapping roll back newly allocated intermediate page tables on supported failure paths.
-- [x] Run host regression tests for range boundaries, zero-length pointers, and integer overflow.
-- [ ] Add integration tests for cross-page failures, read-only destinations, mapping rollback, and map/unmap races.
-- [x] Implement bounded vector/RIP trap-frame fixup records for recoverable supervisor probes, including exact CR2/error matching for page faults, explicit recovery RIP and saved-RAX result, reader-pinned unregister, and a boot self-test requiring an invalid probe to return `STATUS_ACCESS_VIOLATION`.
-- [x] Route CPL=3 exceptions using the saved CS and a defined trap-frame layout; try user page-fault resolution first, then terminate only the owning process with an exception-specific exit status. Supervisor faults continue through kernel VM/fixup handling or the fatal kernel path.
-- [ ] Add a passing current CI/QEMU run for the new probe regression test and adversarial CPL3 fault-isolation tests; the boot self-test is implemented but not yet confirmed by a new workflow result.
-- [ ] Stress concurrent process/address-space teardown against faults, user copies, pin/unpin, and unmap; verify reference/rundown ownership and absence of use-after-free.
-- [x] Integrate timer-driven preemption and verify a non-yielding kernel thread is preempted for a runnable peer in QEMU.
-- [x] Add per-address-space demand-zero region metadata and resident working-set accounting APIs.
-- [x] Route CPL=3 vector-14 faults to the current process's address-space demand-zero resolver; supervisor faults continue through kernel VM handling.
-- [ ] Add user-process eviction/pagefile backing (currently only the kernel pageable pool has pagefile eviction/page-in).
-- [ ] Add demand-zero resolver integration tests and safe concurrent unmap/fault stress.
-- [x] Add non-dereferencing user-range probes and page-by-page permission validation; copy helpers preflight full ranges before transfer.
-- [ ] Implement a bounded working-set trim path: select reclaimable resident pages, prevent concurrent pin/lock/remap, invalidate translations on every affected CPU, wait for TLB-shootdown acknowledgements, then reclaim physical pages only after invalidation completes.
-- [ ] Test working-set trimming under multi-vCPU load, including stale-TLB access, concurrent pin/unpin, unmap, address-space destruction, allocation pressure, and rollback on incomplete shootdown.
-- [ ] Harden I/O completion, cancellation, driver unload, and device/IRP rundown with race and fault-injection tests: exactly-once completion, cancel/completion interleavings, outstanding-IRP drain, remove/unload barriers, and callbacks racing teardown. Initial implementation now claims IRP completion once, tracks bounded per-IRP device references across asynchronous dispatch, prevents IRP storage from being freed during completion/cancel callbacks, and defers device deletion/unload while outstanding IRPs remain. A boot-time WDM regression checks a pending IRP holds unload and repeated completion invokes its callback once; do not mark complete until current QEMU SMP validation and kernel-level callback-vs-teardown fault injection pass.
-- [x] Add deterministic host-side concurrency-model tests for exactly-once completion claims, cancel/completion races, outstanding-IRP drain, unload admission barriers, callback teardown, and injected callback faults; CI runs 512 cancel/completion/unload interleavings plus drain and completion-contention stress.
-- [ ] Run the kernel WDM rundown regression under QEMU SMP/fault injection and add kernel-level callback races before claiming rundown semantics complete.
-- [ ] Prove per-process kernel/user page-table isolation, syscall/trap transitions, and protection against cross-process mappings with adversarial tests. A boot-time test now creates two independent roots, maps the same user VA to distinct physical frames, checks process-local contents and rejects user access to supervisor mappings; the existing ring-3 fixture exercises IRETQ entry, syscall dispatch, and process exit. Keep this open until the latest QEMU boot and 2/4/8-vCPU runs pass and adversarial CPL3 access-fault/process-survival tests are added.
-- [ ] Pass current QEMU multi-vCPU and stress/fault-injection validation before closing the milestone.
-
-## Milestone 3 — Scheduler, waits, APCs, timers, and DPCs
-
-- [x] Cooperative thread dispatch, scheduler wake IPIs, dispatcher object foundations, and deadline-based timer infrastructure.
-- [x] Cross-processor Ke rendezvous and DPC Synchronize/Done barriers have passed a previous 2/4/8-vCPU workflow.
-- [x] Consolidate classic KTIMER and KTIMER2 into one timer metadata table and expiry scan; add generation-based stale-expiry checks.
-- [x] Exercise 64 queued-DPC cancellation/reinsertion cycles, in-flight callback reinitialization protection, timer cancellation, and Timer2 callback-rundown behavior in the boot self-test.
-- [x] Integrate local timer interrupts, rescheduling, per-CPU ready queues, affinity-aware stealing, and delayed ready-queue publication until the outgoing RSP is saved.
-- [x] Run threaded DPC callbacks only at PASSIVE_LEVEL using per-CPU workers; track queued and in-flight callbacks for flush/rundown.
-- [x] Track APCs while delivering, avoid rerunning the kernel routine when a user-return frame must be retried, and reclaim completed APC records.
-- [x] Add wait-any queue-entry transfer, mutant abandoned-status propagation, atomic immediate wait-all mutant acquisition, and blocking wait-all mutant reservations keyed to the waiting thread.
-- [ ] Implement full Windows user APC dispatcher ABI (including safe shadow space/return trampoline) and user-mode exception/SEH resume/unwind delivery; unresolved CPL3 exceptions currently terminate only the owning process.
-- [ ] Add wait-all queue-entry reservation (queue wait-any is supported) and broader WDK race/conformance stress tests.
-- [ ] Add recovery diagnostics for an online but unresponsive processor.
-
-## Milestone 4 — Object Manager, security, and process identity
-
-- [x] Bounded typed objects, generation-tagged handles, directory/symbolic-link foundations, generic access mapping, and post-rundown finalizers.
-- [x] Initial security descriptor validation, DACL/privilege checks, token metadata hooks, and bounded audit-event recording.
-- [ ] Replace global handle slots with scheduler-bound per-process handle tables and automatic process/thread identity binding.
-- [ ] Implement complete token creation/duplication, primary-token and impersonation lifecycle, privilege state, and reference-safe teardown.
-- [ ] Add Ob callbacks, SACL/audit policy, handle inheritance, complete namespace parsing, and broader object-type semantics.
-- [ ] Validate exact supported public ABI layouts and behavior against WDK-built tests; do not emulate undocumented private structures by guesswork.
-
-## Milestone 5 — I/O manager, PnP, power, DMA, and storage
-
-- [x] Initial x64 WDM layouts, device creation/deletion, IRP allocation/dispatch/completion, cancel routine foundations, and device rundown.
-- [x] Initial PnP/power state transitions, bounded power-IRP handling, and S4 image codec/recovery primitives.
-- [x] Separate ACPI, PCI, HAL-contract, processor, and storage protocol foundations; native Rust ext-family parser.
-- [ ] Complete cancellation-vs-completion, remove-lock, unload, device-stack, and file-object lifetime semantics; validate exactly-once completion, outstanding-IRP drain, callback rundown, and device deletion under injected races.
-- [ ] Implement PCI enumeration/resource assignment, real AHCI/NVMe hardware paths, and partition/VFS integration.
-- [ ] Register and validate a real VT-d/AMD IOMMU backend; keep DMA unavailable when safe translation is absent.
-- [ ] Complete device-tree/power ordering, wake handling, and end-to-end S4 persistence/resume.
+- [ ] Add legacy REGF DIRT replay, correct LOG1/LOG2 selection/sequence policy, and validate against Windows-generated hive fixtures.
+- [ ] Add REGF-backed enumeration, remaining query classes, change notifications, transaction semantics, complete KEY_* access masks, DACL inheritance, and token-aware policy.
+- [ ] Test access denial, relative opens, invalid user buffers, mutation rollback, and persistent hive reopen/recovery; do not call a mount persistent without a passing durability/recovery test.
+- [ ] Implement NLS table parsing, code-page/locale services, and Windows/NTFS partition discovery.
 - [ ] Implement crash-safe ext filesystem metadata/journal operations before enabling general writable mounts.
 
-## Native file and DLL loader progress (in progress)
+## P2 — ALPC, CSR, and session services
 
-- [ ] Extend the initial read-only file-object provider into a mounted, disk-backed VFS with directory traversal, path normalization, share/access checks, file-object lifetime and file-position synchronization. Current provider exposes only explicitly registered immutable boot assets; it is not a general filesystem.
-- [ ] Complete native `NtOpenFile` and `NtReadFile` ABI handling: all documented flags, asynchronous I/O, events/APCs, cancellation, `IO_STATUS_BLOCK` ordering, complete user-buffer probing, and general file handles. The current synchronous path is deliberately bounded and does not implement the full Windows file contract.
-- [ ] Add file-backed section objects and native `NtCreateSection` / `NtMapViewOfSection` / `NtUnmapViewOfSection` / `NtClose` lifetime integration with `AddressSpace`; retain PE32+ relocation/import checks and enforce W^X on final pages. Prerequisite teardown pieces now exist: `AddressSpace::unmap_user_page` removes a user PTE and reclaims empty page tables, and `pe::unload_dll` unregisters PE runtime/export metadata and releases image frames after a caller preflights the mapping. They are not yet reachable from NTDLL through a native syscall.
-- [ ] Make the PE module registry per-process and authoritative: image base/size, normalized full/base names, load state, dependency edges, references/pins, initializer status, rollback tickets, and safe unmap/rundown. `kernel/src/pe_loader.rs` now provides a bounded VFS-to-PE transaction API that reads registered files into caller-supplied scratch memory, maps/registers images, counts duplicate loads, and drains orphaned dependency images. The native syscall still does not safely obtain exclusive ownership of the active process `AddressSpace`, so NTDLL cannot call this bridge yet.
-- [ ] Complete `LdrLoadDll` with a native syscall bridge into `kernel/src/pe_loader.rs`, PEB loader-list publication, recursive import/dependency loading, forwarder/API-set handling and initializer callbacks. The kernel-side bounded VFS-read → PE32+ map → module-registry transaction and unload/dependency-rundown primitives now exist; they are not yet callable from NTDLL through native syscalls. Delay-import binding can resolve symbols from already-loaded dependencies, but `LdrLoadDll` still fails closed for absent modules.
-- [ ] Implement `LdrUnloadDll` and `LdrAddRefDll` against kernel-owned module lifetime and dependency references. The current NTDLL bookkeeping is conservative; it does not unlink PEB entries or unmap memory.
-- [x] Add typed PEB loader-list lookup by base name/full name/mapping base/address, loader-owned full-name descriptors, procedure-address-for-caller forwarding, bounded loaded-module enumeration and module-information snapshots, mapped-PE resource lookup/access with bounds checks, DLL-notification cookie registration/removal, bounded default/user DLL search-path construction and release, delay-import thunk binding against already-loaded dependencies, and AMD64 `DIR64` relocation-block processing in `ntdll/src/windows11_exports/loader.rs.
-- [x] Add loader regression tests for directory-cookie lifetime, native DLL-directory descriptor behavior, mapped-PE resource lookup/access, invalid resource levels, DLL-notification cookie lifetime, and AMD64 relocation-block handling. Kernel-side VFS and PE module registry already have missing-file, stale-file-handle, malformed-image, duplicate-load, initialization-failure and reference-lifetime tests.
-- [ ] Add end-to-end NTDLL-to-kernel tests for VFS-backed `LdrLoadDll`, unresolved import rollback, dependency graph loading, initializer failure and final unload while other references remain; these remain blocked on native section/map/unmap and process-address-space bridges.
-- [ ] Pass the current `build-uefi.yml` compile, NTDLL export checks, and QEMU boot/SMP workflow for the loader/file-service revision before marking this milestone validated.
+- [ ] Add named/file-backed Section objects, full Section access masks, and normal handle duplication/transfer to peer processes.
+- [ ] Wire ALPC message attributes, connection-time QoS, impersonation/revert policy, and scheduler-backed blocking waits.
+- [ ] Implement ALPC resource reserves and the Windows shared-memory completion-list ABI, worker registration, atomics, and rundown.
+- [ ] Build native PE32+ csrss.exe/csrsrv.dll, implement server-DLL initialization, and add an asynchronous process/session-manager launch path.
+- [ ] Verify CSRSRV exports against an exact pinned Windows 11 x64 binary; the current inventory is not yet confirmed as an exact Windows 11 match.
 
-## Milestone 6 — Registry, NLS, executable loading, and Windows user mode
+## P2 — ETW and miscellaneous native exports
 
-- [x] Bounded native `regf`/hbin parsing, common subkey indexes, seven hive identities, empty hive-image creation, SYSTEM service lookup, and raw BCD/NLS access.
-- [x] Bounded PE32+ AMD64 loading with relocations/imports, TLS callbacks, API-set aliases, and initial unwind metadata registration.
-- [ ] Implement dirty-hive log replay, registry mutation/writeback, notifications/transactions/security, and full query/enumeration classes.
-- [ ] Parse NLS tables and implement code-page/locale services; discover files on separate Windows/NTFS partitions.
-- [ ] Complete Windows loader, user-mode DLL/syscall compatibility, unwind/SEH, and process lifecycle integration.
-- [x] Split the 70 KB NTDLL loader source into focused search-path, module, resource, notification/query, and delay-load files; implement an optional delay-import export-presence query that only resolves already-loaded modules and fails closed on missing symbols.
-- [ ] Replace remaining generic loader placeholders only after their exact Windows 11 x64 signatures and required kernel/registry/activation-context services are available; do not count generic zero-argument placeholders as ABI-compatible.
-- [x] Add a documented NTDLL loading issue ledger with the real Windows x64 image's measured PE/export/`.pdata` dimensions; fix runtime-function/export capacity limits, separate callback-return vector `0x83` from NT syscall vector `0x82`, stage optional NTDLL through boot-info v9, and probe distinct fallback image bases. See [NTDLL loading issues and fixes](root/wine/dlls/ntdll/LOAD_ISSUES.md).
-- [ ] Validate mapping and export registration of the supplied stock Windows NTDLL in QEMU; the user-provided Microsoft binary is deliberately not committed. The CI boot image currently contains the freestanding CognacOS NTDLL.
-- [x] Full QEMU/UEFI workflow passed with native NTDLL mapping, export registration, DllMain callback, ring-3 wrapper calls (syscall-table configuration, five-argument process/thread queries, system query, yield), process cleanup, and the 2/4/8-vCPU SMP stress matrix. [Run 40176419581](https://github.com/umarfarooq7869/CognacOS/actions/runs/40176419581).
-- [ ] Run the stock Windows NTDLL map/export test by manually dispatching [the UEFI workflow](https://github.com/umarfarooq7869/CognacOS/actions/workflows/build-uefi.yml) with `ntdll_url` pointing to the supplied raw DLL or ZIP. The Microsoft binary is deliberately not committed; regular CI uses the freestanding CognacOS NTDLL.
+- [ ] Test ETW multi-session fan-out, independent filters, duplicate names, stop/rundown races, ring overrun, invalid buffers, activity IDs, and process-exit concurrency.
+- [ ] Expose the Windows-compatible StartTraceW/ControlTraceW controller surface and complete EnableTraceEx2/QueryAllTracesW behavior.
+- [ ] Add user-mode SEH containment around DLL detach callbacks.
+- [ ] Replace remaining placeholder exports only with verified Windows 11 x64 signatures and implemented prerequisites.
+- [ ] Add host tests for ETW provider lifecycle, ring wrap/drop, invalid descriptor arrays, and exact payload copying.
 
-## Milestone 7 — Windows 11 x64 routine compatibility
-- [x] Connect native NTDLL wrappers to NTOSKRNL through CognacOS DPL3 interrupt vector `0x82`; dispatch `NtClose`, `NtYieldExecution`, and basic process/thread/system information classes to real kernel subsystems using internal service IDs `0x100`–`0x104`.
-- [x] Add a boot/QEMU dispatcher self-test for five-argument process queries, invalid user output buffers, unsupported service IDs, and the bounded 17-argument stack-copy path.
-- [ ] Run and inspect the latest QEMU workflow on the committed revision; test the loaded native NTDLL PE end-to-end from CPL3, and stress concurrent configuration and user-buffer mapping races. The current boot test calls the same dispatcher/copy helpers directly and does not yet prove the NTDLL DLL itself was loaded and invoked.
+## P2 — ABI, boot security, and compatibility evidence
 
-- [x] Implement and resolve native NTOSKRNL RTL memory exports present in the pinned Windows 11 manifest: copy/move/fill/zero, prefix and ULONG comparisons, CRC32, zero-memory testing, and unsigned multiply-high. Correct the `RtlCompareMemoryUlong` return width to Windows `ULONG` and CRC length parameters to unsigned `ULONG`. Internal helpers for ULONG-pattern fill and volatile memory operations remain callable only by kernel code until their export status is confirmed in the pinned manifest. Regression tests are now part of CI; a new CI run is still required before treating them as passing.
+- [ ] Automate signature, structure-layout, calling-convention, import, and export-table checks against a pinned Windows 11 x64 reference manifest for every implemented subsystem.
+- [ ] Add targeted tests for the x64 variadic printf bridge: Unicode BMP and supplementary characters, surrogate pairs, malformed UTF-16, width/precision, narrow/wide strings, and secure-buffer boundaries; verify final PE exports.
+- [ ] Add WDK-built ABI/conformance tests and test representative Windows x64 drivers only after dependency and safety prerequisites pass.
+- [ ] Configure protected release signing keys; test enrolled-key Secure Boot and TPM 2.0 measurement on firmware. CognacOS Ed25519 kernel signing is not Authenticode or Windows driver-signing policy.
+- [ ] Add relocatable-image support and broaden malformed-image/firmware tests on physical hardware.
+- [ ] Enable AVX/YMM, AVX-512, AMX, supervisor XSS, or PKRU only after their complete architectural state and security paths are implemented and tested.
 
-- [x] Maintain a pinned Windows 11 x64 reference manifest and compare defined implementations/resolver paths against it.
-- [x] Keep internal CognacOS helpers out of the Windows export table; export only defined routines present in the pinned manifest.
-- [x] Maintain routine-level Ke and Se comparison documents with scoped evidence and explicit limitations.
-- [ ] Add automated ABI/signature/layout and export-table checks for every implemented subsystem.
-- [ ] Expand WDK conformance tests and run representative Windows x64 drivers only after dependencies and safety prerequisites are met.
-- [ ] Avoid a single headline score unless its denominator, behavior rubric, and tested revision are published alongside it.
+## Acceptance rules
 
-## NTDLL miscellaneous exports and ETW
-
-- [x] Move wide-character CRT classification and single-code-point case conversion routines into the dedicated NTDLL CRT source module.
-- [x] Add bounded ETW provider registration/unregistration and copy event payloads into an owned, fixed-size ring buffer; event descriptors and payload pointers are validated before recording.
-- [x] Connect ETW provider registration, event/activity metadata, kernel session control, and session-aware consumer transport with process-exit rundown (Windows controller API parity remains open).
-- [ ] Replace remaining zero-argument miscellaneous placeholders only alongside verified Windows 11 x64 signatures and their underlying kernel/service prerequisites.
-- [ ] Add host tests for provider lifecycle, ring wrap/drop behavior, invalid descriptor arrays, and exact payload copying.
-
-The ETW path now includes a kernel-owned event ring and session-aware consumer transport; the NTDLL-local ring remains a host/test fallback. Event payloads are bounded to 256 bytes. These are CognacOS-native primitives, not a claim of complete Windows ETW compatibility. API-set schema helpers currently parse the process PEB's v6 API-set namespace and should be validated against pinned Windows 11 runtime fixtures.
-
-## ETW provider runtime
-
-- [x] Add kernel-owned provider records, a bounded kernel event ring, owner-checked registration and checked user-buffer copies.
-- [x] Add owner-checked provider unregister and remove its queued kernel events; session teardown disables providers associated with that session.
-- [x] Add privileged session create/enable/stop syscalls. Session creation requires an unrestricted administrator token with SystemProfile privilege; session handles are owner-scoped.
-- [x] Add bounded UTF-16 named-session creation (63 code units maximum) with duplicate-name rejection; session names are kernel-owned and never retain caller pointers.
-- [x] Allow each provider to hold independent enable/filter state for every active session; events carry a session bitmask so each consumer sees only events matching its own session filters.
-- [x] Query `EtwEventEnabled` / `EtwEventProviderEnabled` against the kernel's per-session filters instead of approximating the union with a single local filter.
-- [x] Add session-aware consumer reads with provider-owner isolation, plus bounded record/payload copies.
-- [x] Carry activity ID and related activity ID through the kernel ring and consumer record; implement NTDLL EtwEventWriteTransfer in addition to EtwEventWrite.
-- [x] Deliver enable callbacks from NTDLL user mode after it observes changed kernel state; kernel code never invokes user-mode callbacks.
-- [x] Connect kernel provider/session rundown to the process registry's mark_exited transition before address-space reclamation.
-- [x] Replace the RtlExitUserProcess not-implemented return with the CognacOS SYS_EXIT gate, and add LdrShutdownProcess to run bounded DLL_PROCESS_DETACH callbacks in reverse load order after validating PE image bounds.
-- [ ] Validate ETW session creation against real configured tokens, session isolation/stop races, ring overrun, invalid user buffers, activity metadata and concurrent process rundown; run the x64 build and QEMU smoke workflow.
-- [x] Replace the guessed reverse-list detach order with a bounded dependency order derived from resolved PE import-address tables; cycles or malformed graphs use a deterministic bounded fallback.
-- [ ] Add Windows-compatible SEH containment for DLL_PROCESS_DETACH. CognacOS does not yet have a user-mode exception dispatcher that can safely recover from a fault in arbitrary DllMain code, so image-bound validation is not exception isolation.
-- [ ] Expose named sessions through the Windows-compatible StartTraceW/ControlTraceW controller surface and complete EnableTraceEx2/QueryAllTracesW behavior; the kernel named-session syscall and NTDLL bridge are only the internal foundation.
-- [ ] Validate multi-session fan-out, independent filters, duplicate names, session stop/rundown races, ring overrun, invalid buffers, import-graph ordering and detach concurrency in host tests and QEMU.
-
-The current backend is an incremental CognacOS implementation, not full Windows ETW compatibility. Kernel session control now supports per-session subscriptions, independent filters, named sessions and session-scoped event delivery, but the changes still require compilation and runtime validation. The loader computes detach order from resolved IAT dependencies where available; it still lacks Windows-compatible exception containment and full loader-lock/initialization-order semantics.
-
-## Tracking rules
-
-- One canonical checkbox per deliverable; do not repeat historical milestone logs in multiple documents.
-- Mark `[x]` only when the implementation is present and a relevant test or validation path exists.
-- Record workflow links and commit IDs in the **Current validation** section, not scattered throughout historical notes.
-- Keep dated implementation history in Git commits; keep this file focused on present state and next acceptance criteria.
-- Update the README only for stable high-level facts; detailed status belongs here and in the subsystem comparisons.
-
-
-## PE dependency loading transaction
-
-- [x] Add bounded PE32+ import discovery before parent-image mapping, including normal and RVA-based delay imports.
-- [x] Deduplicate import names case-insensitively and cap the discovered plan at 32 module names.
-- [x] Reject malformed descriptors and missing dependencies before mapping the parent image.
-- [x] Reject dependency graph cycles and prevent unload while a module is initializing.
-- [x] Add a concrete VFS-backed recursive loader API that locates staged System32 dependency files and maps dependencies before parents using bounded per-depth buffers.
-- [x] Roll back newly mapped dependencies in reverse order using process/slot/generation-checked registry tickets and PE unmapping.
-- [ ] Route the existing single-image loader and NTDLL native syscall bridge through this transaction API.
-- [ ] Resolve forwarded exports and ordinals through the selected loaded module.
-- [ ] Connect NTDLL mapping/unmapping to process-owned kernel section services.
-- [ ] Queue attach/detach callouts on a process thread and wait for rundown before unmapping.
-
-The current first phase is intentionally fail-closed: if any discovered dependency is not already mapped, the parent is not mapped and the load returns STATUS_DLL_NOT_FOUND. This avoids partial parent images, but it is not yet recursive dependency loading.
-
-
-### Recursive dependency transaction engine (concrete backend added; integration validation pending)
-
-- [x] Add an iterative DFS transaction API with a fixed maximum depth and fixed-size rollback journal.
-- [x] Use a distinct caller-owned file buffer for each active dependency depth.
-- [x] Map each image only after its dependencies are loaded, then publish dependency edges.
-- [x] Roll back newly mapped images in reverse order on map, link, file-read, parse, or dependency-lookup failure.
-- [x] Detect active-path cycles and reject graphs exceeding configured bounds.
-- [x] Implement a concrete backend connecting process VFS reads, module-registry lookup/edge publication, PE32+ mapping, and generation-checked rollback.
-- [ ] Route the existing single-image loader and NTDLL native syscall bridge through `load_dll_transaction_from_vfs`.
-- [ ] Add synthetic multi-DLL graph tests covering post-order mapping, missing files, cycles, and rollback after map/link failure; run them in CI.
-
-The concrete entry point is `kernel/src/pe_loader.rs::load_dll_transaction_from_vfs`. It resolves dependencies under the staged `\\SystemRoot\\System32` and `\\Windows\\System32` paths. The legacy `load_dll_from_vfs` entry point remains fail-closed and has not been switched over. The VFS only serves explicitly registered immutable files; disk-backed lookup, forwarded exports, and native NTDLL syscall wiring remain separate work. This code is not validated until the current kernel/host/QEMU workflows pass.
-
-
-### NTDLL memory exports
-
-- [x] Replace zero-argument declarations for the core `Nt/Zw*VirtualMemory` family with typed x64 parameter lists and wire supported calls through the private `int 0x83` native-service gate.
-- [x] Implement current-process allocation/read/write and bounded resident-page lock/unlock services; decommit refuses pinned pages.
-- [x] Add bounded kernel section objects with physical-page backing, reference tracking, checked section copy, and a section-backed RTL stream path.
-- [x] Implement CM/IO memory-resource descriptor encode/decode for port, memory, and large-memory descriptors with length/alignment validation.
-- [x] Add secure-memory-cache callback registration/deregistration and notifications after successful VM free/protect calls.
-- [x] Wire effective-token SID membership checks through the kernel security reference monitor; non-null user token handles remain unsupported.
-- [x] Add firmware-validated persistent-memory token/range checks and x86 cache-line flush plus SFENCE persistence operations.
-- [x] Keep the x64 `MEMORY_BASIC_INFORMATION` ABI/layout checks and RTL resource/callback regression tests.
-- [ ] Add section view mapping and file-backed section objects; connect section object lifetime to the full Object Manager handle table.
-- [ ] Complete user-handle token resolution, full token access checks, impersonation/AppContainer semantics, and security-descriptor inheritance for sections.
-- [ ] Complete nonresident-page fault-in for locking, process-teardown lock rundown, and file-backed VM flush.
-- [ ] Complete `NtAllocateVirtualMemoryEx` extended parameters, stream growth/revert/region-lock semantics, and hardware validation of persistent-memory durability on real EFI_MEMORY_NV hardware.
-
-The private `int 0x83` gate is CognacOS-specific and is not Windows' build-specific SYSCALL ordinal ABI. VM and section facilities remain bounded and current-process-oriented; these are incremental kernel services, not a claim of full Windows 11 compatibility. Unsupported combinations fail closed.
-
-
-## Recent NTDLL printf and varargs bridge (implementation present; validation failing)
-
-- [x] Add Windows x64 assembly entry shims for the six inventory-listed functions `_vscprintf`, `_vscwprintf`, `sprintf`, `sprintf_s`, `swprintf`, and `swprintf_s`; the shims home register arguments and pass a native argument cursor to Rust helpers.
-- [x] Route the bridge through the in-tree typed formatter rather than recursively calling CRT/NTDLL formatting exports.
-- [x] Convert valid UTF-16 wide-format strings to UTF-8 for parsing and convert formatted output back to UTF-16, preserving non-ASCII literal text.
-- [x] Keep non-inventory names out of the native export surface and prevent generated placeholder declarations from colliding with the assembly symbols.
-- [ ] Add dedicated tests for Unicode BMP literals, supplementary-plane characters, surrogate pairs, malformed UTF-16, width/precision arguments, narrow/wide strings, and secure-buffer boundaries.
-- [ ] Verify the six symbols in the final PE export/link result and exercise the ABI under the native user-mode test harness.
-- [ ] Pass the latest full GitHub Actions QEMU boot smoke test before marking this work validated.
-
-The bridge is an incremental implementation, not a complete MSVC/UCRT replacement. Supported format conversions are limited by `ntdll/src/printf.rs`; positional arguments and some CRT-specific semantics remain unsupported. Invalid UTF-16 is rejected. Secure variants return an error and clear the destination when possible, but a Microsoft-compatible invalid-parameter handler is not implemented. The latest workflow run for this change built far enough to launch QEMU but failed the boot smoke test; therefore the formatting change and current kernel boot state are not yet validated by a passing end-to-end run.
-
-## Recent ntoskrnl process, loader, and diagnostic integration (validation pending)
-
-- [x] Add process-init debug markers to help locate stalls across native process creation and NTDLL startup.
-- [x] Keep native VM, ETW/session, ALPC/section, loader, and exception paths connected through CognacOS's private native-service gate where implemented; these service IDs are not Windows syscall ordinals.
-- [x] Add bounded supervisor fault-fixup records with explicit recovery RIP/RAX results and route unresolved CPL3 exceptions to the owning process's termination path.
-- [x] Add PE dependency-transaction scaffolding with bounded graph traversal, generation-checked rollback, and dependency-before-parent mapping.
-- [ ] Identify and fix the current QEMU boot-smoke failure; the latest run's diagnostics show the boot CPU at the kernel idle loop and APs parked, but this alone does not identify the original cause.
-- [ ] Complete and validate ring-3 process startup through NTDLL, including real context restoration, exception/unwind delivery, and process-exit behavior.
-- [ ] Run the latest kernel/NTDLL changes through passing host tests, PE export/link checks, QEMU boot, and SMP checks before promoting these foundations to validated milestones.
-
-These checkboxes describe code paths or scaffolding present in source, not a claim that all listed subsystems are complete or Windows 11-compatible. Keep subsystem-specific open items in their existing sections and comparison documents.
+- [ ] Do not mark a milestone validated until the relevant tests pass on the current commit; older successful runs are historical evidence only.
+- [ ] Keep one canonical task per deliverable; move completed work to Git history and keep this roadmap focused on open acceptance criteria.
+- [ ] Never equate export presence, compilation, or an emulator boot with full Windows 11 semantics or third-party driver compatibility.
