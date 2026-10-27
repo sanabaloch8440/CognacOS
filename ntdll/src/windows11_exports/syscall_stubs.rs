@@ -124,6 +124,48 @@ NtQuerySystemInformation:
     movl $0x36, %eax
     syscall
     ret
+
+    # CognacOS service ordinals are read back from these canonical Windows
+    # x64 stubs by the kernel at boot; callers use the standard SYSCALL ABI.
+    .p2align 4
+    .globl NtCreateKey
+NtCreateKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x145, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtSetValueKey
+NtSetValueKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x146, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtDeleteValueKey
+NtDeleteValueKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x147, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtDeleteKey
+NtDeleteKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x148, %eax
+    syscall
+    ret
+
+    .p2align 4
+    .globl NtFlushKey
+NtFlushKey:
+    .byte 0x4c, 0x8b, 0xd1
+    movl $0x149, %eax
+    syscall
+    ret
 "#, options(att_syntax));
 
 unsafe extern "system" {
@@ -142,4 +184,9 @@ unsafe extern "system" {
     pub fn NtQueryInformationProcess(process: *mut c_void, class: u32, information: *mut c_void, length: u32, return_length: *mut u32) -> i32;
     pub fn NtQueryInformationThread(thread: *mut c_void, class: u32, information: *mut c_void, length: u32, return_length: *mut u32) -> i32;
     pub fn NtQuerySystemInformation(class: u32, information: *mut c_void, length: u32, return_length: *mut u32) -> i32;
+    pub fn NtCreateKey(key: *mut *mut c_void, access: u32, attributes: *const crate::reg::OBJECT_ATTRIBUTES, title: u32, class: *const crate::reg::UNICODE_STRING, options: u32, disposition: *mut u32) -> i32;
+    pub fn NtSetValueKey(key: *mut c_void, name: *const crate::reg::UNICODE_STRING, title: u32, value_type: u32, data: *mut c_void, data_size: u32) -> i32;
+    pub fn NtDeleteValueKey(key: *mut c_void, name: *const crate::reg::UNICODE_STRING) -> i32;
+    pub fn NtDeleteKey(key: *mut c_void) -> i32;
+    pub fn NtFlushKey(key: *mut c_void) -> i32;
 }
