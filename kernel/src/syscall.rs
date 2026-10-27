@@ -1717,6 +1717,8 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_ETW_STOP_SESSION => 1,
             NT_SYSCALL_OPEN_KEY => 3,
             NT_SYSCALL_QUERY_VALUE_KEY => 6,
+            NT_SYSCALL_ENUMERATE_KEY | NT_SYSCALL_ENUMERATE_VALUE_KEY => 6,
+            NT_SYSCALL_QUERY_KEY => 5,
             NT_SYSCALL_CREATE_KEY => 7,
             NT_SYSCALL_SET_VALUE_KEY => 6,
             NT_SYSCALL_DELETE_VALUE_KEY => 2,
