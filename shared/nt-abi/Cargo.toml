@@ -1,0 +1,10 @@
+[package]
+name = "cognacos-nt-abi"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+description = "Shared, no_std Windows NT-style ABI definitions for CognacOS"
+
+[features]
+default = []
+alloc = []
