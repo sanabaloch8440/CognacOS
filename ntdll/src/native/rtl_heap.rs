@@ -15,12 +15,8 @@
 use core::{ffi::c_void, mem, ptr};
 use core::sync::atomic::{AtomicPtr, AtomicU8, Ordering};
 
-pub type ULONG = u32;
-pub type SIZE_T = usize;
-pub type BOOLEAN = u8;
-pub type HANDLE = *mut c_void;
-pub type PVOID = *mut c_void;
-pub type NTSTATUS = i32;
+pub use crate::nt_abi::types::{BOOLEAN, HANDLE, PVOID, SIZE_T, ULONG};
+pub use crate::nt_abi::ntstatus::NTSTATUS;
 
 const STATUS_SUCCESS: NTSTATUS = 0;
 const STATUS_INVALID_HANDLE: NTSTATUS = 0xC000_0008u32 as i32;
