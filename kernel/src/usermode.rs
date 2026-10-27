@@ -395,154 +395,8 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
 const NTDLL_TEST_CODE: u64 = 0x0000_0084_0000_0000;
 const NTDLL_TEST_DATA: u64 = 0x0000_0085_0000_0000;
 
-/// Run Windows-numbered NtQueryInformationSystem/Process/Thread calls from
-/// actual CPL3 code using the privileged SYSCALL instruction. Used when the
-/// staged DLL is stock Windows NTDLL and therefore does not expose CognacOS's
-/// custom syscall-table configuration export.
-pub unsafe fn run_windows_syscall_abi_smoke(
-    space: &mut AddressSpace,
-    ntdll: LoadedImage,
-) -> Result<(), VmError> {
-    let service_query_system = crate::syscall::windows_service_number(b"NtQuerySystemInformation")
-        .ok_or(VmError::InvalidAddress)?;
-    let service_query_process = crate::syscall::windows_service_number(b"NtQueryInformationProcess")
-        .ok_or(VmError::InvalidAddress)?;
-    let service_query_thread = crate::syscall::windows_service_number(b"NtQueryInformationThread")
-        .ok_or(VmError::InvalidAddress)?;
-    let mut data = [0u8; 4096];
-    data[0x3f0] = 66;
-    data[0x3f1] = 65;
-    let data_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
-    unsafe { space.map_user_page(NTDLL_TEST_DATA, data_page, true, false)?; }
-    unsafe { space.copy_to_user(NTDLL_TEST_DATA, &data)?; }
-
-    let mut code = [0u8; 1024];
-    let mut length = 0usize;
-    let mut failures = [0usize; 16];
-    let mut failure_count = 0usize;
-    macro_rules! emit {
-        ($bytes:expr) => {{
-            let bytes: &[u8] = $bytes;
-            let end = length.checked_add(bytes.len()).ok_or(VmError::InvalidAddress)?;
-            if end > code.len() { return Err(VmError::InvalidAddress); }
-            code[length..end].copy_from_slice(bytes);
-            length = end;
-        }};
-    }
-    macro_rules! imm64 {
-        ($prefix:expr, $value:expr) => {{
-            emit!($prefix);
-            emit!(&($value as u64).to_le_bytes());
-        }};
-    }
-    macro_rules! fail_if {
-        ($opcode:expr) => {{
-            emit!($opcode);
-            let at = length;
-            emit!(&[0, 0, 0, 0]);
-            if failure_count >= failures.len() { return Err(VmError::InvalidAddress); }
-            failures[failure_count] = at;
-            failure_count += 1;
-        }};
-    }
-    macro_rules! check_dword {
-        ($address:expr, $expected:expr) => {{
-            imm64!(&[0x48, 0xb8], $address);
-            emit!(&[0x8b, 0x00, 0x3d]);
-            emit!(&($expected as u32).to_le_bytes());
-            fail_if!(&[0x0f, 0x85]);
-        }};
-    }
-
-    emit!(&[0x48, 0x83, 0xec, 0x30]); // Windows shadow space + fifth argument.
-    emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
-    imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f0);
-    emit!(&[0xba, 1, 0, 0, 0, 0xcd, 0x81]);
-    // NtQuerySystemInformation(0, output, 64, &returnLength), service 0x36.
-    imm64!(&[0x48, 0xb9], 0);
-    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0x100);
-    emit!(&[0x41, 0xb8, 64, 0, 0, 0]);
-    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x180);
-    emit!(&[0x4c, 0x8b, 0xd1, 0xb8]);
-    emit!(&service_query_system.to_le_bytes());
-    emit!(&[0x0f, 0x05, 0x85, 0xc0]);
-    fail_if!(&[0x0f, 0x85]);
-    emit!(&[0xb8, 2, 0, 0, 0, 0x31, 0xff]);
-    imm64!(&[0x48, 0xbe], NTDLL_TEST_DATA + 0x3f1);
-    emit!(&[0xba, 1, 0, 0, 0, 0xcd, 0x81]);
-    check_dword!(NTDLL_TEST_DATA + 0x180, 64);
-    check_dword!(NTDLL_TEST_DATA + 0x108, 4096);
-
-    // NtQueryInformationProcess(-1, 0, output, 48, &returnLength), service 0x19.
-    imm64!(&[0x48, 0xb9], u64::MAX);
-    emit!(&[0xba, 0, 0, 0, 0]);
-    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA + 0x200);
-    emit!(&[0x41, 0xb9, 48, 0, 0, 0]);
-    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0x280);
-    emit!(&[0x48, 0x89, 0x44, 0x24, 0x28]);
-    emit!(&[0x4c, 0x8b, 0xd1, 0xb8]);
-    emit!(&service_query_process.to_le_bytes());
-    emit!(&[0x0f, 0x05, 0x85, 0xc0]);
-    fail_if!(&[0x0f, 0x85]);
-    check_dword!(NTDLL_TEST_DATA + 0x280, 48);
-
-    // NtQueryInformationThread(-2, 0, output, 48, &returnLength), service 0x25.
-    imm64!(&[0x48, 0xb9], u64::MAX - 1);
-    emit!(&[0xba, 0, 0, 0, 0]);
-    imm64!(&[0x49, 0xb8], NTDLL_TEST_DATA + 0x300);
-    emit!(&[0x41, 0xb9, 48, 0, 0, 0]);
-    imm64!(&[0x48, 0xb8], NTDLL_TEST_DATA + 0x380);
-    emit!(&[0x48, 0x89, 0x44, 0x24, 0x28]);
-    emit!(&[0x4c, 0x8b, 0xd1, 0xb8]);
-    emit!(&service_query_thread.to_le_bytes());
-    emit!(&[0x0f, 0x05, 0x85, 0xc0]);
-    fail_if!(&[0x0f, 0x85]);
-    check_dword!(NTDLL_TEST_DATA + 0x380, 48);
-
-    // A bad output pointer must return STATUS_ACCESS_VIOLATION, not fault in
-    // ring 0. Then an unknown Windows ordinal must fail closed as NOT_IMPLEMENTED.
-    imm64!(&[0x48, 0xb9], 0);
-    emit!(&[0xba, 1, 0, 0, 0]);
-    emit!(&[0x41, 0xb8, 64, 0, 0, 0]);
-    imm64!(&[0x49, 0xb9], NTDLL_TEST_DATA + 0x900);
-    emit!(&[0x4c, 0x8b, 0xd1, 0xb8]);
-    emit!(&service_query_system.to_le_bytes());
-    emit!(&[0x0f, 0x05]);
-    emit!(&[0x3d, 0x05, 0, 0, 0xc0]);
-    fail_if!(&[0x0f, 0x85]);
-
-    emit!(&[0xb8, 0xad, 0xde, 0, 0, 0x0f, 0x05]);
-    emit!(&[0x3d, 0x02, 0, 0, 0xc0]);
-    fail_if!(&[0x0f, 0x85]);
-
-    emit!(&[0x31, 0xff, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]); // exit(0)
-    let mut failure_labels = [0usize; 16];
-    for index in 0..failure_count {
-        failure_labels[index] = length;
-        emit!(&[0xbf]);
-        emit!(&((index as u32 + 1).to_le_bytes()));
-        emit!(&[0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b]);
-    }
-    for (index, at) in failures[..failure_count].iter().copied().enumerate() {
-        let displacement = i32::try_from(failure_labels[index] as isize - (at + 4) as isize)
-            .map_err(|_| VmError::InvalidAddress)?;
-        code[at..at + 4].copy_from_slice(&displacement.to_le_bytes());
-    }
-
-    let code_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
-    unsafe { space.map_user_page(NTDLL_TEST_CODE, code_page, true, false)?; }
-    unsafe { space.copy_to_user(NTDLL_TEST_CODE, &code[..length])?; }
-    unsafe { space.protect_user_page(NTDLL_TEST_CODE, false, true)?; }
-    let test_image = LoadedImage { base: ntdll.base, entry: NTDLL_TEST_CODE, image_size: ntdll.image_size, is_dll: false };
-    unsafe { run_loaded_image(space, test_image)?; }
-    Ok(())
-}
-
-/// Load-and-execute smoke test for the freestanding CognacOS NTDLL. The DLL is
-/// mapped and its real export table registered by pe::load_dll before this is
-/// called. The native image is identified by its exported per-process heap
-/// object, and its Nt* exports must be canonical Windows SYSCALL stubs. A stock
-/// Windows NTDLL is tested separately by the focused ABI smoke above.
+/// Load-and-execute smoke test for CognacOS's Rust NTDLL. The mapped PE export
+/// table and canonical Windows x64 SYSCALL stubs are the sole user/kernel path.
 pub unsafe fn run_native_ntdll_smoke(
     space: &mut AddressSpace,
     ntdll: LoadedImage,
@@ -653,10 +507,6 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_validate_heap = crate::winabi::resolve_import(
         b"ntdll.dll", ImportSymbol::Name(b"RtlValidateHeap"))
         .ok_or(VmError::InvalidAddress)?;
-    let process_heap_object = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"CognacNtdllProcessHeapObject"))
-        .ok_or(VmError::InvalidAddress)?;
-
     let mut data = [0u8; 4096];
     data[0x3f0] = 66;
     data[0x3f1] = 65;
@@ -942,22 +792,22 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0x48, 0x39, 0xd0]);
     fail_if!(&[0x0f, 0x85]);
 
-    // GS:[0x60] must expose the active process PEB and its ProcessHeap field.
+    // GS:[0x60] must expose the active process PEB.
     call_ptr!(rtl_get_current_peb);
     imm64!(&[0x48, 0xba], crate::process::PEB_ADDRESS);
     emit!(&[0x48, 0x39, 0xd0]);
     fail_if!(&[0x0f, 0x85]);
-    imm64!(&[0x48, 0xb8], crate::process::PEB_ADDRESS);
-    emit!(&[0x48, 0x8b, 0x40, 0x30]); // PEB.ProcessHeap
-    imm64!(&[0x48, 0xba], process_heap_object);
+
+    // The default heap is created through NTDLL and published in PEB.ProcessHeap.
+    call_ptr!(rtl_get_process_heap);
+    emit!(&[0x48, 0x85, 0xc0]);
+    fail_if!(&[0x0f, 0x84]); // must return a valid heap handle
+    imm64!(&[0x48, 0xba], crate::process::PEB_ADDRESS);
+    emit!(&[0x48, 0x8b, 0x52, 0x30]); // RDX = PEB.ProcessHeap
     emit!(&[0x48, 0x39, 0xd0]);
     fail_if!(&[0x0f, 0x85]);
 
     // Default process heap: PEB handle, allocation, size, realloc, free and validation.
-    call_ptr!(rtl_get_process_heap);
-    imm64!(&[0x48, 0xba], process_heap_object);
-    emit!(&[0x48, 0x39, 0xd0]); // returned heap handle must equal the exported PEB heap object
-    fail_if!(&[0x0f, 0x85]);
     imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xD00);
     emit!(&[0x48, 0x89, 0x02]); // save heap handle
 
