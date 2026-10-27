@@ -90,10 +90,9 @@ pub(crate) fn pool_allocation_info(ptr: *const u8) -> Option<(usize, u32)> {
 
 #[repr(C)]
 pub struct RtlBitmap { pub size_of_bitmap: u32, pub buffer: *mut u32 }
-#[repr(C)]
-pub struct AnsiString { pub length: u16, pub maximum_length: u16, pub buffer: *mut u8 }
-#[repr(C)]
-pub struct UnicodeString { pub length: u16, pub maximum_length: u16, pub buffer: *mut u16 }
+/// Canonical shared NT ABI layouts; aliases preserve established kernel paths.
+pub type AnsiString = crate::nt_abi::object::ANSI_STRING;
+pub type UnicodeString = crate::nt_abi::object::UNICODE_STRING;
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct Luid { pub low_part: u32, pub high_part: i32 }
