@@ -456,7 +456,7 @@ jobs:
             sudo parted -s build/cognacos-uefi.img print
             exit 1
           fi
-          sudo mkfs.ext4 -F -q -L COGNACDATA -d build/ext4-root "${loopdev}p2"
+          sudo mkfs.ext4 -F -q -L COGNACDATA -O ^metadata_csum,^huge_file,^dir_nlink,^extra_isize,^dir_index,^has_journal -d build/ext4-root "${loopdev}p2"
           # Validate the exact bytes stored in the filesystem, not merely the
           # source staging file. This does not substitute for the guest test.
           sudo debugfs -R 'cat /README.txt' "${loopdev}p2" 2>/dev/null > build/ext4-readback.txt
