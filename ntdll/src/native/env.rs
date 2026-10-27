@@ -293,32 +293,32 @@ unsafe fn query_environment_variable_u_explicit(
     name: *const UNICODE_STRING,
     value: *mut UNICODE_STRING,
 ) -> NTSTATUS {
-    if name.is_null() || value.is_null() || (*name).Buffer.is_null() {
+    if name.is_null() || value.is_null() || (*name).buffer.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
-    (*value).Length = 0;
-    if (*name).Length == 0 { return STATUS_VARIABLE_NOT_FOUND; }
+    (*value).length = 0;
+    if (*name).length == 0 { return STATUS_VARIABLE_NOT_FOUND; }
     if environment.is_null() { return STATUS_INVALID_PARAMETER; }
 
-    let name_len = ((*name).Length as usize) / 2;
-    let found = find_variable(environment, (*name).Buffer, name_len);
+    let name_len = ((*name).length as usize) / 2;
+    let found = find_variable(environment, (*name).buffer, name_len);
     if found.is_null() { return STATUS_VARIABLE_NOT_FOUND; }
 
     let len = wcslen16(found);
     let byte_len = len.saturating_mul(2);
     if byte_len > USHORT::MAX as usize { return STATUS_BUFFER_TOO_SMALL; }
-    (*value).Length = byte_len as USHORT;
+    (*value).length = byte_len as USHORT;
 
-    if byte_len > (*value).MaximumLength as usize {
+    if byte_len > (*value).maximum_length as usize {
         return STATUS_BUFFER_TOO_SMALL;
     }
-    if (*value).Buffer.is_null() && byte_len != 0 {
-        (*value).Length = 0;
+    if (*value).buffer.is_null() && byte_len != 0 {
+        (*value).length = 0;
         return STATUS_INVALID_PARAMETER;
     }
-    let copy_units = core::cmp::min(len + 1, (*value).MaximumLength as usize / 2);
+    let copy_units = core::cmp::min(len + 1, (*value).maximum_length as usize / 2);
     if copy_units != 0 {
-        core::ptr::copy(found, (*value).Buffer, copy_units);
+        core::ptr::copy(found, (*value).buffer, copy_units);
     }
     STATUS_SUCCESS
 }
@@ -492,8 +492,8 @@ pub unsafe extern "system" fn RtlExpandEnvironmentStrings_U(
     if source.is_null() || destination.is_null() { return STATUS_INVALID_PARAMETER; }
     let mut required_units = 0usize;
     let status = RtlExpandEnvironmentStrings(
-        environment, (*source).Buffer, (*source).Length as usize / 2,
-        (*destination).Buffer, (*destination).MaximumLength as usize / 2,
+        environment, (*source).buffer, (*source).length as usize / 2,
+        (*destination).buffer, (*destination).maximum_length as usize / 2,
         &mut required_units,
     );
     if !required_bytes.is_null() {
@@ -501,7 +501,7 @@ pub unsafe extern "system" fn RtlExpandEnvironmentStrings_U(
     }
     if required_units.saturating_mul(2) > USHORT::MAX as usize { return STATUS_BUFFER_TOO_SMALL; }
     if status == STATUS_SUCCESS {
-        (*destination).Length = required_units.saturating_sub(1).saturating_mul(2) as USHORT;
+        (*destination).length = required_units.saturating_sub(1).saturating_mul(2) as USHORT;
     }
     status
 }
