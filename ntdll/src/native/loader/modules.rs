@@ -111,9 +111,9 @@ pub unsafe extern "system" fn LdrGetDllFullName(dll_handle: PVOID, full_dll_name
     let output = unsafe { &mut *full_dll_name };
     // The returned descriptor borrows the loader-owned name; it does not copy
     // into a caller-owned buffer or transfer ownership of the string.
-    output.Length = source_length;
-    output.MaximumLength = source_maximum;
-    output.Buffer = source_buffer;
+    output.length = source_length;
+    output.maximum_length = source_maximum;
+    output.buffer = source_buffer;
     STATUS_SUCCESS
 }
 
