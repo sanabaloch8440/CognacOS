@@ -511,7 +511,7 @@ pub unsafe extern "system" fn ZwQueryOpenSubKeysEx() -> i32 {
 #[no_mangle]
 pub unsafe extern "system" fn ZwQueryValueKey(
     key_handle: *mut core::ffi::c_void,
-    value_name: *const core::ffi::c_void,
+    value_name: *const crate::reg::UNICODE_STRING,
     key_value_information_class: u32,
     key_value_information: *mut core::ffi::c_void,
     length: u32,
