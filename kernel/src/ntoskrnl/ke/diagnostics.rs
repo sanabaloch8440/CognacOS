@@ -34,6 +34,41 @@ impl Slot {
 static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static SLOTS: [Slot; CAPACITY] = [const { Slot::new() }; CAPACITY];
 
+/// Decoded architectural x86-64 page-fault error-code fields.
+/// This is pure bit decoding: safe to use in the allocation-free exception path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PageFaultInfo {
+    /// P=1: protection violation; P=0: translation not present.
+    pub protection_violation: bool,
+    /// W/R=1 means the access attempted a write.
+    pub write: bool,
+    /// U/S=1 means the access originated at CPL3.
+    pub user: bool,
+    /// RSVD=1 means a reserved paging-structure bit was set.
+    pub reserved_bit: bool,
+    /// I/D=1 means the fault was caused by instruction fetch.
+    pub instruction_fetch: bool,
+    /// PK=1 means a protection-key check caused the fault.
+    pub protection_key: bool,
+    /// SS=1 means the fault involved a shadow-stack access.
+    pub shadow_stack: bool,
+    /// SGX=1 means the fault is associated with SGX.
+    pub sgx: bool,
+}
+
+pub const fn decode_page_fault_error(error: u64) -> PageFaultInfo {
+    PageFaultInfo {
+        protection_violation: error & (1 << 0) != 0,
+        write: error & (1 << 1) != 0,
+        user: error & (1 << 2) != 0,
+        reserved_bit: error & (1 << 3) != 0,
+        instruction_fetch: error & (1 << 4) != 0,
+        protection_key: error & (1 << 5) != 0,
+        shadow_stack: error & (1 << 6) != 0,
+        sgx: error & (1 << 15) != 0,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EventRecord {
     pub sequence: u64,
@@ -116,6 +151,30 @@ pub fn dump_serial(limit: usize) {
 mod tests {
     use super::*;
     static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn page_fault_error_code_decodes_access_and_fault_reason_bits() {
+        let not_present_read = decode_page_fault_error(0);
+        assert!(!not_present_read.protection_violation);
+        assert!(!not_present_read.write);
+        assert!(!not_present_read.user);
+        assert!(!not_present_read.reserved_bit);
+        assert!(!not_present_read.instruction_fetch);
+
+        let user_write_protection = decode_page_fault_error(0b00111);
+        assert!(user_write_protection.protection_violation);
+        assert!(user_write_protection.write);
+        assert!(user_write_protection.user);
+
+        let reserved_instruction = decode_page_fault_error((1 << 3) | (1 << 4));
+        assert!(reserved_instruction.reserved_bit);
+        assert!(reserved_instruction.instruction_fetch);
+
+        let extended = decode_page_fault_error((1 << 5) | (1 << 6) | (1 << 15));
+        assert!(extended.protection_key);
+        assert!(extended.shadow_stack);
+        assert!(extended.sgx);
+    }
 
     #[test]
     fn trace_records_publish_and_old_slots_are_rejected_after_wraparound() {
