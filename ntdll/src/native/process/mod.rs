@@ -2,30 +2,7 @@
 //! Replace generic signatures with ABI-correct declarations as each routine is implemented.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
-use core::arch::global_asm;
-
-global_asm!(r#"
-    .text
-    .p2align 4
-    .global cognacos_nt_open_process
-cognacos_nt_open_process:
-    mov r10, rcx
-    mov eax, 0x150
-    syscall
-    ret
-    .p2align 4
-    .global cognacos_nt_get_next_process
-cognacos_nt_get_next_process:
-    mov r10, rcx
-    mov eax, 0x151
-    syscall
-    ret
-"#);
-
-unsafe extern "system" {
-    fn cognacos_nt_open_process(out: *mut *mut core::ffi::c_void, access: u32, attributes: *const core::ffi::c_void, client_id: *const core::ffi::c_void) -> i32;
-    fn cognacos_nt_get_next_process(previous: *mut core::ffi::c_void, access: u32, attributes: u32, flags: u32, out: *mut *mut core::ffi::c_void) -> i32;
-}
+use crate::native::syscall_stubs::{NtGetNextProcess, NtOpenProcess};
 
 #[no_mangle]
 pub unsafe extern "system" fn NtAcceptConnectPort() -> i32 {
@@ -281,18 +258,6 @@ pub unsafe extern "system" fn NtGetCurrentProcessorNumberEx(processor_number: *m
     STATUS_SUCCESS
 }
 
-/// Enumerates process handles through the native process-table syscall path.
-#[no_mangle]
-pub unsafe extern "system" fn NtGetNextProcess(
-    process_handle: *mut core::ffi::c_void, desired_access: u32,
-    handle_attributes: u32, flags: u32,
-    new_process_handle: *mut *mut core::ffi::c_void,
-) -> i32 {
-    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
-    if new_process_handle.is_null() { return STATUS_INVALID_PARAMETER; }
-    unsafe { new_process_handle.write(core::ptr::null_mut()); }
-    cognacos_nt_get_next_process(process_handle, desired_access, handle_attributes, flags, new_process_handle)
-}
 
 pub unsafe extern "system" fn NtGetNextThread(
     process_handle: *mut core::ffi::c_void,
@@ -367,19 +332,6 @@ pub unsafe extern "system" fn NtOpenJobObject() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-/// Opens a process by client ID through the kernel Object Manager.
-#[no_mangle]
-pub unsafe extern "system" fn NtOpenProcess(
-    process_handle: *mut *mut core::ffi::c_void,
-    desired_access: u32,
-    object_attributes: *const core::ffi::c_void,
-    client_id: *const core::ffi::c_void,
-) -> i32 {
-    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000Du32 as i32;
-    if process_handle.is_null() || object_attributes.is_null() || client_id.is_null() { return STATUS_INVALID_PARAMETER; }
-    unsafe { process_handle.write(core::ptr::null_mut()); }
-    cognacos_nt_open_process(process_handle, desired_access, object_attributes, client_id)
-}
 
 pub unsafe extern "system" fn NtOpenProcessToken() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
