@@ -300,9 +300,9 @@ pub unsafe extern "system" fn LdrQueryOptionalDelayLoadedAPI(
     if status != STATUS_SUCCESS { return STATUS_NOT_FOUND; }
 
     let procedure_descriptor = crate::rtl_loader::COGNAC_ANSI_STRING {
-        Length: procedure_len as u16,
-        MaximumLength: procedure_len as u16,
-        Buffer: procedure_ascii.as_mut_ptr(),
+        length: procedure_len as u16,
+        maximum_length: procedure_len as u16,
+        buffer: procedure_ascii.as_mut_ptr(),
     };
     let status = unsafe {
         crate::rtl_loader::LdrGetProcedureAddress(
