@@ -288,18 +288,8 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
         return Err(VmError::PermissionDenied);
     }
     unsafe { crate::serial_write(b"KUSER_SHARED_DATA XState mapping and read-only ABI test passed.\r\n"); }
-    // The native NTDLL exports its per-process heap object as data. Point
-    // PEB.ProcessHeap at that mapped object before user code begins.
-    if let Some(process_heap) = crate::winabi::resolve_import(
-        b"ntdll.dll", crate::pe::ImportSymbol::Name(b"CognacNtdllProcessHeapObject"))
-    {
-        unsafe { space.copy_to_user(env.peb + 0x30, &process_heap.to_le_bytes())?; }
-        let mut heap_check = [0u8; 8];
-        unsafe { space.copy_from_user(env.peb + 0x30, &mut heap_check)?; }
-        if u64::from_le_bytes(heap_check) != process_heap {
-            return Err(VmError::PermissionDenied);
-        }
-    }
+    // PEB.ProcessHeap starts null and is initialized by Rust NTDLL's
+    // RtlGetProcessHeap, rather than a Cognac-only PE export.
     let mut pointer_check=[0u8;8];
     unsafe { space.copy_from_user(env.teb+0x60,&mut pointer_check)?; }
     if u64::from_le_bytes(pointer_check)!=env.peb { return Err(VmError::PermissionDenied); }
