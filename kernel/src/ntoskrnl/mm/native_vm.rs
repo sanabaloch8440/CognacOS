@@ -33,7 +33,13 @@ fn region_is_free(space: &AddressSpace, start: u64, length: u64) -> bool {
     if space.demand_area_overlaps(start, length) { return false; }
     let mut offset = 0;
     while offset < length {
-        if space.query_region(start + offset).is_some_and(|region| region.7) { return false; }
+        // Reservation metadata alone misses resident pages such as the PEB,
+        // TEB, stacks, and loader data. Inspect the actual user page tables too.
+        match space.translate_user(start + offset, false) {
+            Ok(_) => return false,
+            Err(crate::ntoskrnl::mm::address_space::VmError::NotMapped) => {}
+            Err(_) => return false,
+        }
         offset += PAGE;
     }
     true
