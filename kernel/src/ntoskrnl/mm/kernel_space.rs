@@ -592,9 +592,14 @@ pub fn self_test() -> bool {
   let Some(physical)=crate::memory::first_high_conventional_page() else{return self_test_fail(line!())};
   let Some(virtual_address)=crate::memory::direct_map_address(physical) else{return self_test_fail(line!())};
   let root=ROOT.load(Ordering::Acquire);
-  // Inspect the page tables before dereferencing the direct-map VA. Previously
-  // the self-test touched the address first, turning a missing direct-map leaf
-  // into an unrecoverable kernel #PF instead of a diagnosable test failure.
+  // The direct map is demand-created, so an absent PML4 entry is expected
+  // until the first access. Exercise the same non-present supervisor-read
+  // fault path used by the exception dispatcher before inspecting the mapping.
+  // This avoids incorrectly treating an uninstantiated lazy mapping as corruption.
+  if unsafe { crate::memory::inspect_mapping(root, virtual_address) }.is_err()
+      && !handle_page_fault(virtual_address, 0) {
+   return self_test_fail(line!());
+  }
   #[cfg(feature = "diagnostic-vm")]
   let mapping=match unsafe{crate::memory::inspect_mapping_diagnostic(root,virtual_address)} {
    Ok(mapping)=>mapping,
