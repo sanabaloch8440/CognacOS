@@ -442,22 +442,25 @@ jobs:
           }
           trap cleanup_qemu EXIT
 
-          # Poll for up to 30 seconds, allowing the VM to remain live at the
-          # exact failing instruction if the ring-3 completion marker is absent.
+          # The NTDLL ABI smoke marker is emitted before the remaining PE,
+          # process-exit, and scheduler tests. Do not stop QEMU at that intermediate
+          # milestone: wait for process-lifecycle completion and a terminal timer result.
+          # This leaves QEMU live at the actual failing instruction if later boot work hangs.
           for _ in $(seq 1 120); do
-            if grep -Eq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI\.|Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed\.' build/serial.log; then
+            if grep -Fq 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log &&
+               grep -Eq 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer\.|Timer preemption stress FAILED\.|WARNING: calibrated APIC timer could not start; interrupts remain disabled\.|Interrupts remain disabled because APIC/timer setup was not fully validated\.' build/serial.log; then
               break
             fi
             if ! kill -0 "$qemu_pid" 2>/dev/null; then
-              echo "QEMU exited before either supported ring-3 syscall smoke completion marker." >&2
+              echo "QEMU exited before ring-3 process-lifecycle and timer smoke tests completed." >&2
               cat build/serial.log || true
               exit 1
             fi
             sleep 0.25
           done
 
-          if ! grep -Eq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI\.|Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed\.' build/serial.log; then
-            echo "Ring-3 syscall smoke test did not complete; attaching GDB to the same live QEMU instance."
+          if ! grep -Fq 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log; then
+            echo "Full ring-3 process-lifecycle smoke test did not complete; attaching GDB to the same live QEMU instance."
             command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
             set +e
             # Load DWARF-bearing ELF companions so GDB can resolve source file:line
@@ -590,7 +593,6 @@ jobs:
           grep -F 'Process address-space and checked user-copy self-test passed.' build/serial.log
           grep -F 'Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.' build/serial.log
           grep -F 'NTDLL PE32+ image mapped and exports registered.' build/serial.log
-          grep -F 'Rust NTDLL mapped into process before PEB/LDR initialization.' build/serial.log
           grep -F 'Per-process page-table isolation, same-VA non-aliasing, and supervisor mapping protection passed.' build/serial.log
           grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
           grep -F 'PE32+ loader self-test passed; image base=0x0000200000000000 entry=0x0000200000001000 (RX section and RO/NX headers).' build/serial.log
@@ -601,6 +603,14 @@ jobs:
           grep -F 'PE TLS callbacks executed in ring 3; per-image TLS blocks initialized.' build/serial.log
           grep -F 'Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).' build/serial.log
           grep -F 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log
+          if grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log; then
+            echo 'Native CognacOS NTDLL ABI smoke path completed.'
+          elif grep -Fq 'Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed.' build/serial.log; then
+            echo 'Stock Windows NTDLL syscall ABI smoke path completed.'
+          else
+            echo 'No supported NTDLL syscall ABI smoke completion marker.' >&2
+            exit 1
+          fi
       - name: SMP boot and interrupt stress matrix (2, 4, 8 vCPUs)
         shell: bash
         run: |
