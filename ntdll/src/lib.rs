@@ -41,7 +41,7 @@ pub use native::legacy_printf as printf;
 pub use native::process as process;
 pub use native::legacy_resource as resource;
 pub use native::legacy_time as time;
-pub use native::legacy_version as version;
+pub use native::version as version;
 
 // All implementation modules live under native/. These re-exports preserve
 // existing crate::module paths while callers are migrated incrementally.
