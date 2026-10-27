@@ -124,3 +124,15 @@ mod tests {
         assert!(w.translate(0x0fff, 1).is_err());
     }
 }
+
+#[cfg(test)]
+mod ntstatus_adapter_tests {
+    use super::*;
+    #[test]
+    fn pci_errors_map_to_shared_ntstatus() {
+        use nt_abi::ntstatus::*;
+        assert_eq!(error_to_ntstatus(PciError::UnsupportedRange), STATUS_INVALID_DEVICE_REQUEST);
+        assert_eq!(error_to_ntstatus(PciError::InvalidBdf), STATUS_INVALID_PARAMETER);
+        assert_eq!(error_to_ntstatus(PciError::AddressOverflow), STATUS_INVALID_PARAMETER);
+    }
+}
