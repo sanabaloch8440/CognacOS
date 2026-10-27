@@ -126,6 +126,13 @@ pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         }
         return code;
     }
+    unsafe {
+        crate::serial_write(b"[DBG][MM][NtAllocateVirtualMemory] reserved base/size=");
+        crate::serial_write_hex(start);
+        crate::serial_write(b" ");
+        crate::serial_write_hex(end-start);
+        crate::serial_write(b"\r\n");
+    }
     let out_base=start.to_ne_bytes(); let out_size=(end-start).to_ne_bytes();
     if unsafe { address_space::copy_to_user_root(root,args[1],&out_base) }.is_err()
         || unsafe { address_space::copy_to_user_root(root,args[3],&out_size) }.is_err() {
