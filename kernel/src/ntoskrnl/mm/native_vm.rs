@@ -105,7 +105,19 @@ pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         return 0xC000_0045; // STATUS_INVALID_PAGE_PROTECTION
     }
     let space = match attached(root) { Ok(s)=>s, Err(s)=>return s };
-    if let Err(e)=space.register_demand_zero_region(start,end-start,writable,executable,args[5] as u32) { return status(e); }
+    if let Err(e)=space.register_demand_zero_region(start,end-start,writable,executable,args[5] as u32) {
+        let code = status(e);
+        unsafe {
+            crate::serial_write(b"[DBG][MM][NtAllocateVirtualMemory] reservation rejected base/size/status=");
+            crate::serial_write_hex(start);
+            crate::serial_write(b" ");
+            crate::serial_write_hex(end-start);
+            crate::serial_write(b" ");
+            crate::serial_write_hex(code);
+            crate::serial_write(b"\r\n");
+        }
+        return code;
+    }
     let out_base=start.to_ne_bytes(); let out_size=(end-start).to_ne_bytes();
     if unsafe { address_space::copy_to_user_root(root,args[1],&out_base) }.is_err()
         || unsafe { address_space::copy_to_user_root(root,args[3],&out_size) }.is_err() {
