@@ -289,7 +289,7 @@ fn partition_read_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
 }
 
 fn register_storage_device(name: &[u8], read: crate::io::DispatchFn) -> Result<u32, crate::io::IoError> {
-    let mut dispatch = [None; 16];
+    let mut dispatch: [Option<crate::io::DispatchFn>; 16] = [None; 16];
     dispatch[crate::io::IRP_MJ_CREATE as usize] = Some(success_dispatch);
     dispatch[crate::io::IRP_MJ_CLOSE as usize] = Some(success_dispatch);
     dispatch[crate::io::IRP_MJ_READ as usize] = Some(read);
