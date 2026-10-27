@@ -59,7 +59,7 @@ pub mod ntddk {
 /// WDM driver-facing declaration surface.
 pub mod wdm {
     pub use crate::io::{DEVICE_OBJECT, DRIVER_OBJECT, IO_STATUS_BLOCK, IRP, PDRIVER_DISPATCH};
-    pub use crate::object::{OBJECT_ATTRIBUTES, UNICODE_STRING};
+    pub use crate::object::{OBJECT_ATTRIBUTES, POBJECT_ATTRIBUTES, PUNICODE_STRING, UNICODE_STRING};
     pub use crate::types::{
         BOOLEAN, HANDLE, LARGE_INTEGER, LIST_ENTRY, LONG, NTSTATUS_TYPE, PVOID, SIZE_T,
         ULONG, ULONG_PTR, USHORT, WCHAR,
@@ -70,7 +70,7 @@ pub mod wdm {
 /// Filesystem/IFS-facing declaration surface analogous to ntifs.h.
 pub mod ntifs {
     pub use crate::io::{DEVICE_OBJECT, DRIVER_OBJECT, IO_STATUS_BLOCK, IRP, PDRIVER_DISPATCH};
-    pub use crate::object::{OBJECT_ATTRIBUTES, UNICODE_STRING};
+    pub use crate::object::{OBJECT_ATTRIBUTES, POBJECT_ATTRIBUTES, PUNICODE_STRING, UNICODE_STRING};
     pub use crate::types::{
         BOOLEAN, HANDLE, LARGE_INTEGER, LIST_ENTRY, LONG, NTSTATUS_TYPE, PVOID, SIZE_T,
         ULONG, ULONG_PTR, USHORT, WCHAR,
