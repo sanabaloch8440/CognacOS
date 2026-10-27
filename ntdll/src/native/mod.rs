@@ -39,7 +39,7 @@ mod crypt;
 mod path;
 
 mod loader;
-mod heap;
+pub mod heap;
 mod memory;
 mod security;
 mod registry;
@@ -82,8 +82,6 @@ pub mod legacy_atom;
 pub mod legacy_crypt;
 #[path = "legacy_env.rs"]
 pub mod legacy_env;
-#[path = "legacy_heap.rs"]
-pub mod legacy_heap;
 #[path = "legacy_misc.rs"]
 pub mod legacy_misc;
 #[path = "legacy_path.rs"]
