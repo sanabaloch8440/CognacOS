@@ -59,7 +59,7 @@ static SECURE_CACHE_CALLBACK_LOCK: AtomicBool = AtomicBool::new(false);
 static mut SECURE_CACHE_CALLBACK_TABLE: [usize; SECURE_CACHE_CALLBACKS] = [0; SECURE_CACHE_CALLBACKS];
 fn secure_cache_lock() { while SECURE_CACHE_CALLBACK_LOCK.compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { core::hint::spin_loop(); } }
 fn secure_cache_unlock() { SECURE_CACHE_CALLBACK_LOCK.store(false, Ordering::Release); }
-fn notify_secure_cache_callbacks(base: PVOID, length: SIZE_T) {
+pub(super) fn notify_secure_cache_callbacks(base: PVOID, length: SIZE_T) {
     let mut callbacks = [0usize; SECURE_CACHE_CALLBACKS];
     secure_cache_lock();
     unsafe { callbacks.copy_from_slice(&*core::ptr::addr_of!(SECURE_CACHE_CALLBACK_TABLE)); }
