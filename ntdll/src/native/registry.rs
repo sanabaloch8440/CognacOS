@@ -126,9 +126,9 @@ pub unsafe extern "system" fn NtOpenKeyEx(
     if open_options != 0 {
         return 0xC000000Du32 as i32; // STATUS_INVALID_PARAMETER
     }
-    #[cfg(not(target_os = "windows"))]
-    { crate::syscall_x86_64::NtOpenKey(key_handle, desired_access, object_attributes) }
     #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtOpenKey(key_handle, desired_access, object_attributes) }
+    #[cfg(not(target_os = "windows"))]
     { let _ = (key_handle, desired_access, object_attributes); 0xC0000002u32 as i32 }
 }
 
@@ -465,12 +465,12 @@ pub unsafe extern "system" fn ZwQueryValueKey(
     length: u32,
     result_length: *mut u32,
 ) -> i32 {
-    #[cfg(not(target_os = "windows"))]
-    { crate::syscall_x86_64::NtQueryValueKey(
+    #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtQueryValueKey(
         key_handle, value_name, key_value_information_class,
         key_value_information, length, result_length,
     ) }
-    #[cfg(target_os = "windows")]
+    #[cfg(not(target_os = "windows"))]
     { let _ = (key_handle, value_name, key_value_information_class,
         key_value_information, length, result_length); 0xC0000002u32 as i32 }
 }
