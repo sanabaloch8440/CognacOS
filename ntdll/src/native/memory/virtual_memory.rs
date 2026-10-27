@@ -25,8 +25,7 @@ const MEM_DECOMMIT: ULONG = 0x4000;
 pub(super) const MEM_RELEASE: ULONG = 0x8000;
 const MEMORY_BASIC_INFORMATION_CLASS: ULONG = 0;
 
-#[repr(C)]
-pub struct IO_STATUS_BLOCK { pub status_or_pointer: usize, pub information: usize }
+pub use crate::nt_abi::io::IO_STATUS_BLOCK;
 
 /// Windows x64 MEMORY_BASIC_INFORMATION (48-byte layout).
 #[repr(C)]
@@ -358,3 +357,18 @@ pub unsafe extern "system" fn ZwWriteVirtualMemory(process_handle: HANDLE, base_
     unsafe { NtWriteVirtualMemory(process_handle, base_address, buffer, buffer_size, number_of_bytes_written) }
 }
 
+
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod shared_io_status_abi_tests {
+    use super::IO_STATUS_BLOCK;
+    use core::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn virtual_memory_flush_uses_shared_windows_io_status_block_layout() {
+        assert_eq!(size_of::<IO_STATUS_BLOCK>(), 16);
+        assert_eq!(align_of::<IO_STATUS_BLOCK>(), 8);
+        assert_eq!(offset_of!(IO_STATUS_BLOCK, status), 0);
+        assert_eq!(offset_of!(IO_STATUS_BLOCK, information), 8);
+    }
+}
