@@ -273,3 +273,61 @@ mod tests {
         }
     }
 }
+
+
+// Canonical environment query/expansion ABI exports. The implementations
+// reuse the PEB-locking and UTF-16 helpers in process_parameters.rs.
+#[no_mangle]
+pub unsafe extern "system" fn RtlQueryEnvironmentVariable_U(
+    environment: *mut u16,
+    name: *const super::process_parameters::UNICODE_STRING,
+    value: *mut super::process_parameters::UNICODE_STRING,
+) -> i32 {
+    unsafe { super::process_parameters::RtlQueryEnvironmentVariable_U(environment, name, value) }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlQueryEnvironmentVariable(
+    environment: *mut u16,
+    name: *const u16,
+    name_len: usize,
+    value: *mut u16,
+    value_length: usize,
+    return_length: *mut usize,
+) -> i32 {
+    unsafe {
+        super::process_parameters::RtlQueryEnvironmentVariable(
+            environment, name, name_len, value, value_length, return_length,
+        )
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlExpandEnvironmentStrings(
+    environment: *const u16,
+    source: *const u16,
+    source_len: usize,
+    destination: *mut u16,
+    destination_count: usize,
+    required_length: *mut usize,
+) -> i32 {
+    unsafe {
+        super::process_parameters::RtlExpandEnvironmentStrings(
+            environment, source, source_len, destination, destination_count, required_length,
+        )
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlExpandEnvironmentStrings_U(
+    environment: *const u16,
+    source: *const super::process_parameters::UNICODE_STRING,
+    destination: *mut super::process_parameters::UNICODE_STRING,
+    required_bytes: *mut u32,
+) -> i32 {
+    unsafe {
+        super::process_parameters::RtlExpandEnvironmentStrings_U(
+            environment, source, destination, required_bytes,
+        )
+    }
+}
