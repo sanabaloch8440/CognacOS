@@ -6,6 +6,7 @@ license = "GPL-2.0-or-later"
 publish = false
 
 [dependencies]
+cognacos-nt-abi = { path = "../../shared/nt-abi" }
 cognacos-hal-contract = { path = "../hal" }
 
 [lib]
