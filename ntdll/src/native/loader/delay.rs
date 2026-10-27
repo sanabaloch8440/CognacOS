@@ -73,8 +73,8 @@ pub unsafe extern "system" fn LdrResolveDelayLoadedAPI(
             Ok(n) if n > 0 => n, _ => return ptr::null_mut(),
         };
         let ansi = crate::rtl_loader::COGNAC_ANSI_STRING {
-            Length: function_len as u16, MaximumLength: function_len as u16,
-            Buffer: function_ascii.as_mut_ptr(),
+            length: function_len as u16, maximum_length: function_len as u16,
+            buffer: function_ascii.as_mut_ptr(),
         };
         unsafe { crate::rtl_loader::LdrGetProcedureAddress(dll_handle, &ansi, 0, &mut procedure) }
     };
