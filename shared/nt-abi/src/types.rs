@@ -16,6 +16,19 @@ pub type ULONG_PTR = usize;
 pub type SIZE_T = usize;
 pub type KAFFINITY = usize;
 
+/// Intrusive Windows RTL splay-tree links, shared by native RTL and kernel users.
+/// The root node's Parent points to itself; child links are null when absent.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+#[allow(non_camel_case_types)]
+pub struct RTL_SPLAY_LINKS {
+    pub Parent: *mut RTL_SPLAY_LINKS,
+    pub LeftChild: *mut RTL_SPLAY_LINKS,
+    pub RightChild: *mut RTL_SPLAY_LINKS,
+}
+
+pub type PRTL_SPLAY_LINKS = *mut RTL_SPLAY_LINKS;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct LARGE_INTEGER {
@@ -45,4 +58,15 @@ pub struct GUID {
     pub data2: u16,
     pub data3: u16,
     pub data4: [u8; 8],
+}
+
+#[cfg(test)]
+mod abi_layout_tests {
+    use super::*;
+
+    #[test]
+    fn rtl_splay_links_match_three_pointer_layout() {
+        assert_eq!(core::mem::size_of::<RTL_SPLAY_LINKS>(), 3 * core::mem::size_of::<usize>());
+        assert_eq!(core::mem::align_of::<RTL_SPLAY_LINKS>(), core::mem::align_of::<usize>());
+    }
 }
