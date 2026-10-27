@@ -16,75 +16,11 @@ type PULONG = *mut ULONG;
 
 // CognacOS-private native-service IDs; these are deliberately not Windows
 // build-specific syscall ordinals.
-global_asm!(r#"
-    .text
-    .p2align 4
-    .global cognacos_nt_enumerate_key
-cognacos_nt_enumerate_key:
-    mov r10, rcx
-    mov eax, 0x14a
-    int 0x82
-    ret
-    .p2align 4
-    .global cognacos_nt_enumerate_value_key
-cognacos_nt_enumerate_value_key:
-    mov r10, rcx
-    mov eax, 0x14b
-    int 0x82
-    ret
-    .p2align 4
-    .global cognacos_nt_query_key
-cognacos_nt_query_key:
-    mov r10, rcx
-    mov eax, 0x14c
-    int 0x82
-    ret
-    .p2align 4
-    .global cognacos_nt_create_key
-cognacos_nt_create_key:
-    mov r10, rcx
-    mov eax, 0x145
-    int 0x82
-    ret
-    .p2align 4
-    .global cognacos_nt_set_value_key
-cognacos_nt_set_value_key:
-    mov r10, rcx
-    mov eax, 0x146
-    int 0x82
-    ret
-    .p2align 4
-    .global cognacos_nt_delete_value_key
-cognacos_nt_delete_value_key:
-    mov r10, rcx
-    mov eax, 0x147
-    int 0x82
-    ret
-    .p2align 4
-    .global cognacos_nt_delete_key
-cognacos_nt_delete_key:
-    mov r10, rcx
-    mov eax, 0x148
-    int 0x82
-    ret
-    .p2align 4
-    .global cognacos_nt_flush_key
-cognacos_nt_flush_key:
-    mov r10, rcx
-    mov eax, 0x149
-    int 0x82
-    ret
-"#);
-unsafe extern "system" {
-    fn cognacos_nt_enumerate_key(key: HANDLE, index: ULONG, class: ULONG, info: PVOID, length: ULONG, result_length: PULONG) -> i32;
-    fn cognacos_nt_enumerate_value_key(key: HANDLE, index: ULONG, class: ULONG, info: PVOID, length: ULONG, result_length: PULONG) -> i32;
-    fn cognacos_nt_query_key(key: HANDLE, class: ULONG, info: PVOID, length: ULONG, result_length: PULONG) -> i32;
-    fn cognacos_nt_create_key(key: *mut HANDLE, access: ULONG, attributes: *const crate::reg::OBJECT_ATTRIBUTES, title: ULONG, class: *const crate::reg::UNICODE_STRING, options: ULONG, disposition: PULONG) -> i32;
-    fn cognacos_nt_set_value_key(key: HANDLE, name: *const crate::reg::UNICODE_STRING, title: ULONG, value_type: ULONG, data: PVOID, data_size: ULONG) -> i32;
-    fn cognacos_nt_delete_value_key(key: HANDLE, name: *const crate::reg::UNICODE_STRING) -> i32;
-    fn cognacos_nt_delete_key(key: HANDLE) -> i32;
-    fn cognacos_nt_flush_key(key: HANDLE) -> i32;
-}
+// Nt* syscall entrypoints are defined in syscall_stubs.rs with the canonical
+// Windows x64 SYSCALL sequence. The kernel discovers service IDs from the
+// exported PE stubs; this module owns higher-level registry behavior.
+
+
 
 #[no_mangle]
 pub unsafe extern "system" fn NtCommitRegistryTransaction() -> i32 {
@@ -99,19 +35,6 @@ pub unsafe extern "system" fn NtCompactKeys() -> i32 {
 #[no_mangle]
 pub unsafe extern "system" fn NtCompressKey() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtCreateKey(
-    key_handle: *mut *mut core::ffi::c_void,
-    desired_access: u32,
-    object_attributes: *const crate::reg::OBJECT_ATTRIBUTES,
-    title_index: u32,
-    class: *const crate::reg::UNICODE_STRING,
-    create_options: u32,
-    disposition: *mut u32,
-) -> i32 {
-    unsafe { cognacos_nt_create_key(key_handle, desired_access, object_attributes, title_index, class, create_options, disposition) }
 }
 
 #[no_mangle]
@@ -130,19 +53,6 @@ pub unsafe extern "system" fn NtCreateRegistryTransaction() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtDeleteKey(key_handle: *mut core::ffi::c_void) -> i32 {
-    unsafe { cognacos_nt_delete_key(key_handle) }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtDeleteValueKey(
-    key_handle: *mut core::ffi::c_void,
-    value_name: *const crate::reg::UNICODE_STRING,
-) -> i32 {
-    unsafe { cognacos_nt_delete_value_key(key_handle, value_name) }
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn NtEnumerateKey(
     key_handle: HANDLE, index: ULONG, information_class: ULONG,
     information: PVOID, length: ULONG, result_length: PULONG,
@@ -156,11 +66,6 @@ pub unsafe extern "system" fn NtEnumerateValueKey(
     information: PVOID, length: ULONG, result_length: PULONG,
 ) -> i32 {
     unsafe { cognacos_nt_enumerate_value_key(key_handle, index, information_class, information, length, result_length) }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtFlushKey(key_handle: *mut core::ffi::c_void) -> i32 {
-    unsafe { cognacos_nt_flush_key(key_handle) }
 }
 
 #[no_mangle]
@@ -328,18 +233,6 @@ pub unsafe extern "system" fn NtSaveMergedKeys() -> i32 {
 #[no_mangle]
 pub unsafe extern "system" fn NtSetInformationKey() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtSetValueKey(
-    key_handle: *mut core::ffi::c_void,
-    value_name: *const crate::reg::UNICODE_STRING,
-    title_index: u32,
-    value_type: u32,
-    data: *const core::ffi::c_void,
-    data_size: u32,
-) -> i32 {
-    unsafe { cognacos_nt_set_value_key(key_handle, value_name, title_index, value_type, data.cast_mut(), data_size) }
 }
 
 #[no_mangle]
