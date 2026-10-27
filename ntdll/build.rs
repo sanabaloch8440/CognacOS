@@ -174,8 +174,9 @@ fn main() {
 
     // ReactOS-inspired, definition-driven syscall stub generation. The manifest
     // is the single source of truth for the currently implemented CognacOS
-    // dispatcher IDs; it intentionally does not import ReactOS or Windows
-    // build-specific service ordinals.
+    // service ordinals from a pinned Windows 11 AMD64 reference image. These
+    // ordinals are build-specific; the kernel discovers them from the built PE
+    // stubs and translates them to stable internal handlers.
     let syscall_manifest = PathBuf::from("syscalls/x86_64.syscalls");
     println!("cargo:rerun-if-changed={}", syscall_manifest.display());
     let syscall_source = fs::read_to_string(&syscall_manifest)
@@ -213,6 +214,9 @@ fn main() {
             panic!("{}:{}: manifest entry {} has no ABI declaration in src/native/syscall_stubs.rs", syscall_manifest.display(), line_index + 1, name);
         }
         asm.push_str(&format!("\n.p2align 4\n.globl {name}\n{name}:\n    .byte 0x4c, 0x8b, 0xd1\n    movl ${:#x}, %eax\n    syscall\n    ret\n", id));
+    }
+    if syscall_names.len() != 23 {
+        panic!("syscall manifest has {} entries; the kernel currently requires exactly 23 native services", syscall_names.len());
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     fs::write(out.join("ntdll_syscall_stubs.S"), asm)
