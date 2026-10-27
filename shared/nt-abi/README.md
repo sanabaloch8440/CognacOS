@@ -28,3 +28,8 @@ The crate is `no_std` and uses fixed-width NT scalar types. Layout tests now che
 
 
 Recent NTDLL migrations also consume canonical shared scalar and pointer types in the RTL red-black tree, bitmap, heap, PEB/critical-section, and virtual-memory modules. The loader now re-exports the shared `UNICODE_STRING` rather than declaring a second counted-string structure. These changes centralize definitions; they do not by themselves certify the full runtime behavior or all private Windows layouts.
+
+
+The NTDLL process-parameter module now reuses the shared `UNICODE_STRING` and asserts the Windows x64 `RTL_USER_PROCESS_PARAMETERS` layout, including the Windows 11 tail fields through `HeapMemoryTypeMask`. Field names use the Windows SDK spellings `DesktopInfo` and `RuntimeData`. NTDLL virtual-memory flush declarations reuse the shared `IO_STATUS_BLOCK` rather than a local two-word approximation. Loader notification and delay-import helpers use the shared `ANSI_STRING`/ `UNICODE_STRING` field definitions, and the loader's status values are centralized in `ntstatus` and surfaced through the WDK-style facades.
+
+These are ABI declaration/layout corrections, not a claim of full Windows 11 compatibility. The process-parameter offset tests and latest NTDLL/kernel/QEMU workflow runs must pass before the migration is considered validated; the shared driver and IRP scaffolding remains explicitly unverified for third-party WDK binaries.
