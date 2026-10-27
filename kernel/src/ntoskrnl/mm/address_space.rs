@@ -934,7 +934,14 @@ pub fn trim_current_working_set(target:usize)->usize {
 pub fn handle_current_user_page_fault(address:u64,error_code:u64)->bool {
     const PF_USER:u64=1<<2;
     if error_code&PF_USER==0 { return false; }
-    let pid=crate::thread::current_process_id();
+    // The current ring-3 bootstrap can run before it is attached to a
+    // scheduler-owned ETHREAD. In that case the thread table reports PID 0,
+    // while the native syscall dispatcher has the process that owns active CR3.
+    // Prefer the per-thread association when present; use the active syscall
+    // process only for this unbound bootstrap context.
+    let thread_pid=crate::thread::current_process_id();
+    let pid=if thread_pid!=0 {thread_pid} else {crate::syscall::current_process_id()};
+    if pid==0 {return false}
     let process=crate::process::eprocess_pointer_for_pid(pid);
     if process.is_null(){return false}
     let root=unsafe{(*process).address_space_root};
