@@ -28,7 +28,7 @@ pub unsafe extern "win64" fn rtl_char_to_integer(string: *const u8, base: u32, v
     if string.is_null() || value.is_null() { return STATUS_INVALID_PARAMETER; }
 
     let mut i = 0usize;
-    while matches!(unsafe { *string.add(i) }, b' ' | b'\\t' | b'\\r' | b'\\n') { i += 1; }
+    while matches!(unsafe { *string.add(i) }, b' ' | b'\t' | b'\r' | b'\n') { i += 1; }
     let negative = match unsafe { *string.add(i) } {
         b'+' => { i += 1; false }
         b'-' => { i += 1; true }
@@ -67,7 +67,7 @@ pub unsafe extern "win64" fn rtl_char_to_integer(string: *const u8, base: u32, v
         digits += 1;
         i += 1;
     }
-    while matches!(unsafe { *string.add(i) }, b' ' | b'\\t' | b'\\r' | b'\\n') { i += 1; }
+    while matches!(unsafe { *string.add(i) }, b' ' | b'\t' | b'\r' | b'\n') { i += 1; }
     if digits == 0 || unsafe { *string.add(i) } != 0 { return STATUS_INVALID_PARAMETER; }
 
     if negative { result = result.wrapping_neg(); }
@@ -87,15 +87,15 @@ mod char_to_integer_tests {
 
     #[test]
     fn char_to_integer_supports_sign_whitespace_and_radix_prefix() {
-        assert_eq!(parse(b"  -0x2A \\0", 0), (0, (-42i32) as u32));
-        assert_eq!(parse(b"077\\0", 0), (0, 63));
-        assert_eq!(parse(b"+101\\0", 2), (0, 5));
+        assert_eq!(parse(b"  -0x2A \0", 0), (0, (-42i32) as u32));
+        assert_eq!(parse(b"077\0", 0), (0, 63));
+        assert_eq!(parse(b"+101\0", 2), (0, 5));
     }
 
     #[test]
     fn char_to_integer_rejects_invalid_input_without_changing_output() {
-        assert_eq!(parse(b"12z\\0", 10), (0xC000_000Du32 as i32, 0xA5A5_A5A5));
-        assert_eq!(parse(b"\\0", 10), (0xC000_000Du32 as i32, 0xA5A5_A5A5));
-        assert_eq!(parse(b"4294967296\\0", 10), (0xC000_0095u32 as i32, 0xA5A5_A5A5));
+        assert_eq!(parse(b"12z\0", 10), (0xC000_000Du32 as i32, 0xA5A5_A5A5));
+        assert_eq!(parse(b"\0", 10), (0xC000_000Du32 as i32, 0xA5A5_A5A5));
+        assert_eq!(parse(b"4294967296\0", 10), (0xC000_0095u32 as i32, 0xA5A5_A5A5));
     }
 }
