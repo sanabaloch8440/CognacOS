@@ -486,7 +486,7 @@ pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 // Service IDs are discovered from the staged PE's own exported syscall stubs.
 const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
-static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 23] =
+static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 25] =
     [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 23];
 const SERVICE_NT_CLOSE: usize = 0;
 const SERVICE_NT_YIELD_EXECUTION: usize = 1;
@@ -511,6 +511,8 @@ const SERVICE_NT_FLUSH_KEY: usize = 19;
 const SERVICE_NT_ENUMERATE_KEY: usize = 20;
 const SERVICE_NT_ENUMERATE_VALUE_KEY: usize = 21;
 const SERVICE_NT_QUERY_KEY: usize = 22;
+const SERVICE_NT_OPEN_PROCESS: usize = 23;
+const SERVICE_NT_GET_NEXT_PROCESS: usize = 24;
 
 fn image_u16(image: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
@@ -539,7 +541,7 @@ fn image_rva_offset(image: &[u8], section_table: usize, section_count: usize,
     }
     None
 }
-fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 23]> {
+fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 25]> {
     if image.get(0..2)? != b"MZ" { return None; }
     let pe = image_u32(image, 0x3c)? as usize;
     if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" { return None; }
@@ -568,7 +570,7 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 23]> {
     // Rust NTDLL is the sole native user/kernel boundary. Require every
     // syscall export used by the current kernel, including registry mutations.
     // A partial table is a boot error, not a reason to switch ABI paths.
-    let required_names: [&[u8]; 23] = [
+    let required_names: [&[u8]; 25] = [
         b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess",
         b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey",
         b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile",
@@ -576,8 +578,9 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 23]> {
         b"NtQueryVirtualMemory", b"NtReadVirtualMemory", b"NtWriteVirtualMemory",
         b"NtCreateKey", b"NtSetValueKey", b"NtDeleteValueKey", b"NtDeleteKey", b"NtFlushKey",
         b"NtEnumerateKey", b"NtEnumerateValueKey", b"NtQueryKey",
+        b"NtOpenProcess", b"NtGetNextProcess",
     ];
-    let mut discovered = [SERVICE_UNAVAILABLE; 23];
+    let mut discovered = [SERVICE_UNAVAILABLE; 25];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
         let name_at = image_rva_offset(image, section_table, section_count, headers_size, name_rva, 1)?;
@@ -634,6 +637,8 @@ pub fn windows_service_number(name: &[u8]) -> Option<u32> {
         b"NtEnumerateKey" => SERVICE_NT_ENUMERATE_KEY,
         b"NtEnumerateValueKey" => SERVICE_NT_ENUMERATE_VALUE_KEY,
         b"NtQueryKey" => SERVICE_NT_QUERY_KEY,
+        b"NtOpenProcess" => SERVICE_NT_OPEN_PROCESS,
+        b"NtGetNextProcess" => SERVICE_NT_GET_NEXT_PROCESS,
         _ => return None,
     };
     let value = WINDOWS_SERVICE_NUMBERS[slot].load(Ordering::Acquire);
@@ -1563,13 +1568,10 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
             status as u32 as u64
         }
         NT_SYSCALL_YIELD_EXECUTION => {
-            // The current ring-3 loader/NTDLL smoke runner enters user mode from
-            // the boot stack; it is not a scheduler-owned ETHREAD. A stale
-            // per-CPU current-thread ID from earlier scheduler self-tests is
-            // not proof that this caller can safely context-switch. Until the
-            // process bootstrap is attached to a scheduler thread, yield is a
-            // successful no-op rather than rescheduling an unrelated thread.
-            NT_STATUS_SUCCESS
+            // Windows returns STATUS_NO_YIELD_PERFORMED when no schedulable
+            // peer thread can run. The current ring-3 bootstrap is not attached
+            // to a scheduler-owned ETHREAD, so do not report a false success.
+            0x4000_0024
         }
         NT_SYSCALL_QUERY_INFORMATION_PROCESS => nt_query_process(args),
         NT_SYSCALL_OPEN_PROCESS => nt_open_process(args),
@@ -1675,6 +1677,8 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         Some(SERVICE_NT_ENUMERATE_KEY) => NT_SYSCALL_ENUMERATE_KEY,
         Some(SERVICE_NT_ENUMERATE_VALUE_KEY) => NT_SYSCALL_ENUMERATE_VALUE_KEY,
         Some(SERVICE_NT_QUERY_KEY) => NT_SYSCALL_QUERY_KEY,
+        Some(SERVICE_NT_OPEN_PROCESS) => NT_SYSCALL_OPEN_PROCESS,
+        Some(SERVICE_NT_GET_NEXT_PROCESS) => NT_SYSCALL_GET_NEXT_PROCESS,
         Some(SERVICE_NT_OPEN_FILE) => NT_SYSCALL_OPEN_FILE,
         Some(SERVICE_NT_READ_FILE) => NT_SYSCALL_READ_FILE,
         Some(SERVICE_NT_ALLOCATE_VIRTUAL_MEMORY) => NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY,
