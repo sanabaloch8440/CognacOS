@@ -1,8 +1,8 @@
 //! Low-level NTDLL trace channel shared by loader/runtime modules.
 //!
-//! Events use the CognacOS native interrupt ABI (INT 82h, service 0x144), not
-//! the build-specific Windows SYSCALL number table. The kernel rate-limits
-//! output and prints event IDs plus two machine-word arguments for serial,
+//! Events use the shared Windows x64 SYSCALL entry with the internal trace
+//! service selector 0x144. The kernel rate-limits output and prints event IDs
+//! plus two machine-word arguments for serial,
 //! WinDBG serial capture, and GDB/QEMU log correlation.
 #![allow(dead_code)]
 
@@ -29,7 +29,7 @@ pub fn trace(event: u64, arg0: u64, arg1: u64) {
         core::arch::asm!(
             "mov r10, rcx",
             "mov eax, 0x144",
-            "int 0x82",
+            "syscall",
             in("rcx") event,
             in("rdx") arg0,
             in("r8") arg1,
