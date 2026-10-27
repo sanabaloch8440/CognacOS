@@ -102,6 +102,21 @@ jobs:
           python3 ntdll/tools/check_export_table.py
           cargo check --manifest-path ntdll/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-unknown-linux-gnu
+      - name: Enforce one NTDLL syscall transition path
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RInE 'int[[:space:]]+0x82' ntdll/src; then
+            echo "NTDLL must not use the legacy DPL3 interrupt-gate syscall path." >&2
+            exit 1
+          fi
+          if grep -RInF 'install_user_gate(0x82' kernel/src; then
+            echo "The kernel must not install the obsolete NT syscall interrupt gate." >&2
+            exit 1
+          fi
+          grep -Fq 'movl $0x145, %eax' ntdll/src/windows11_exports/syscall_stubs.rs
+          grep -Fq 'syscall' ntdll/src/windows11_exports/syscall_stubs.rs
+          echo "NTDLL and NTOSKRNL use one architectural SYSCALL entry path."
       - name: Build Rust NTDLL as a native PE32+ DLL
         shell: bash
         env:
