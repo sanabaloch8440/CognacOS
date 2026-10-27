@@ -1681,7 +1681,11 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     if trap.vector != vector || trap.error_code != error || trap.cs & 3 != 3 || trap.ss & 3 != 3 {
         cognacos_exception_fatal(vector, error, frame);
     }
-    let pid = crate::thread::current_process_id();
+    // The initial ring-3 smoke process is entered from the boot path before
+    // it owns a scheduler ETHREAD. Use its active syscall process binding when
+    // the thread subsystem has no process association yet.
+    let thread_pid = crate::thread::current_process_id();
+    let pid = if thread_pid != 0 { thread_pid } else { crate::syscall::current_process_id() };
     if pid == 0 { cognacos_exception_fatal(vector, error, frame); }
     let valid = trap.rip >= 0x1000 && trap.rip < crate::ntoskrnl::mm::address_space::USER_END
         && trap.rsp >= 0x1000 && trap.rsp < crate::ntoskrnl::mm::address_space::USER_END
