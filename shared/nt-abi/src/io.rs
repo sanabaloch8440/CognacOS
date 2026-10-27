@@ -98,8 +98,12 @@ mod tests {
     #[test]
     fn io_status_block_matches_x64_size_and_alignment() {
         if cfg!(target_pointer_width = "64") {
+            assert_eq!(core::mem::size_of::<IO_STATUS_BLOCK_STATUS>(), 8);
+            assert_eq!(core::mem::align_of::<IO_STATUS_BLOCK_STATUS>(), 8);
             assert_eq!(core::mem::size_of::<IO_STATUS_BLOCK>(), 16);
             assert_eq!(core::mem::align_of::<IO_STATUS_BLOCK>(), 8);
+            assert_eq!(core::mem::offset_of!(IO_STATUS_BLOCK, status), 0);
+            assert_eq!(core::mem::offset_of!(IO_STATUS_BLOCK, information), 8);
         }
     }
 }
