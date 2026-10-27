@@ -117,6 +117,7 @@ jobs:
           grep -Eq '^NtCreateKey[[:space:]]+0x145$' ntdll/syscalls/x86_64.syscalls
           grep -Fq 'ntdll_syscall_stubs.S' ntdll/src/native/syscall_stubs.rs
           grep -Fq 'syscall' ntdll/build.rs
+          test ! -e ntdll/src/native/syscall_x86_64.rs
           echo "NTDLL stubs are generated from the canonical syscall manifest."
       - name: Build Rust NTDLL as a native PE32+ DLL
         shell: bash
