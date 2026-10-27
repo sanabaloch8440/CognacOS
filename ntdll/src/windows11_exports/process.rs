@@ -20,7 +20,7 @@ cognacos_nt_get_next_process:
     mov eax, 0x151
     int 0x82
     ret
-"#, options(att_syntax));
+"#);
 
 unsafe extern "system" {
     fn cognacos_nt_open_process(out: *mut *mut core::ffi::c_void, access: u32, attributes: *const core::ffi::c_void, client_id: *const core::ffi::c_void) -> i32;
