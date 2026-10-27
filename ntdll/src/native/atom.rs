@@ -297,7 +297,7 @@ pub unsafe extern "system" fn RtlInitializeAtomPackage() -> BOOLEAN {
 
 
 // Legacy-compatible RTL atom-table APIs retained alongside the canonical Nt* APIs.
-mod legacy_compat {
+pub mod legacy_compat {
 //! Rust source port of Wine's \`dlls/ntdll/atom.c\`.
 //!
 //! This is a source-only port. It intentionally calls the Windows-compatible
