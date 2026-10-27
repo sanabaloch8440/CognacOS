@@ -125,7 +125,7 @@ jobs:
               names.append(name)
           if len(names) < 2000 or len(names) != len(set(names)):
               raise SystemExit(f"unexpected Windows NTDLL inventory: {len(names)} unique={len(set(names))}")
-          Path("build/ntdll/ntdll-rust.def").write_text("LIBRARY ntdll\\nEXPORTS\\n" + "".join(f"    {name}\\n" for name in names))
+          Path("build/ntdll/ntdll-rust.def").write_text("LIBRARY ntdll\nEXPORTS\n" + "".join(f"    {name}\n" for name in names))
           print(f"Generated Rust NTDLL definition with {len(names)} Windows 11 exports")
           PY
           sysroot="$(rustc --print sysroot)"
