@@ -5,6 +5,9 @@ edition = "2024"
 license = "GPL-2.0-or-later"
 publish = false
 
+[dependencies]
+cognacos-nt-abi = { path = "../../shared/nt-abi" }
+
 [lib]
 path = "src/lib.rs"
 
