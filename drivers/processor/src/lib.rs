@@ -75,3 +75,15 @@ mod tests {
         assert_eq!(d.capabilities().logical_processor_count, 4);
     }
 }
+
+#[cfg(test)]
+mod ntstatus_adapter_tests {
+    use super::*;
+    #[test]
+    fn processor_status_maps_to_shared_ntstatus() {
+        use nt_abi::ntstatus::*;
+        assert_eq!(status_to_ntstatus(ProcessorStatus::Success), STATUS_SUCCESS);
+        assert_eq!(status_to_ntstatus(ProcessorStatus::InvalidProcessorCount), STATUS_INVALID_PARAMETER);
+        assert_eq!(status_to_ntstatus(ProcessorStatus::UnsupportedOperation), STATUS_INVALID_DEVICE_REQUEST);
+    }
+}
