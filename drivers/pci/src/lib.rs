@@ -14,6 +14,16 @@ use core::sync::atomic::Ordering;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PciError { InvalidWindow, InvalidBdf, InvalidOffset, AddressOverflow, UnsupportedRange }
 
+/// Convert PCI discovery/configuration failures to the shared NTSTATUS ABI.
+pub const fn error_to_ntstatus(error: PciError) -> nt_abi::ntstatus::NTSTATUS {
+    use nt_abi::ntstatus::*;
+    match error {
+        PciError::UnsupportedRange => STATUS_INVALID_DEVICE_REQUEST,
+        PciError::InvalidWindow | PciError::InvalidBdf | PciError::InvalidOffset
+        | PciError::AddressOverflow => STATUS_INVALID_PARAMETER,
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct EcamWindow {
