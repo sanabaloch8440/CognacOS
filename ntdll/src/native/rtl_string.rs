@@ -19,28 +19,13 @@ pub const STATUS_SUCCESS: LONG = 0x0000_0000;
 pub const STATUS_INVALID_PARAMETER: LONG = 0xC000_000D_u32 as LONG;
 pub const STATUS_BUFFER_TOO_SMALL: LONG = 0xC000_0023_u32 as LONG;
 
-/// ABI-compatible ANSI_STRING layout for the x64 CognacOS target.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct COGNAC_ANSI_STRING {
-    pub Length: USHORT,
-    pub MaximumLength: USHORT,
-    pub Buffer: *mut u8,
-}
-
-/// ABI-compatible UNICODE_STRING layout for the x64 CognacOS target.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct COGNAC_UNICODE_STRING {
-    pub Length: USHORT,
-    pub MaximumLength: USHORT,
-    pub Buffer: *mut WCHAR,
-}
-
-pub type PCOGNAC_ANSI_STRING = *mut COGNAC_ANSI_STRING;
-pub type PCCOGNAC_ANSI_STRING = *const COGNAC_ANSI_STRING;
-pub type PCOGNAC_UNICODE_STRING = *mut COGNAC_UNICODE_STRING;
-pub type PCCOGNAC_UNICODE_STRING = *const COGNAC_UNICODE_STRING;
+/// Compatibility names alias the canonical shared NT ABI layouts.
+pub type COGNAC_ANSI_STRING = crate::nt_abi::object::ANSI_STRING;
+pub type COGNAC_UNICODE_STRING = crate::nt_abi::object::UNICODE_STRING;
+pub type PCOGNAC_ANSI_STRING = crate::nt_abi::object::PANSI_STRING;
+pub type PCCOGNAC_ANSI_STRING = *const crate::nt_abi::object::ANSI_STRING;
+pub type PCOGNAC_UNICODE_STRING = crate::nt_abi::object::PUNICODE_STRING;
+pub type PCCOGNAC_UNICODE_STRING = *const crate::nt_abi::object::UNICODE_STRING;
 
 /// ASCII-only fold matching the current C source's case-insensitive behavior.
 #[inline]
@@ -76,9 +61,9 @@ pub unsafe extern "system" fn RtlInitAnsiString(
     // SAFETY: A non-null destination must point to a writable descriptor.
     let descriptor = unsafe { &mut *destination };
     if source.is_null() {
-        descriptor.Length = 0;
-        descriptor.MaximumLength = 0;
-        descriptor.Buffer = core::ptr::null_mut();
+        descriptor.length = 0;
+        descriptor.maximum_length = 0;
+        descriptor.buffer = core::ptr::null_mut();
         return;
     }
 
@@ -86,9 +71,9 @@ pub unsafe extern "system" fn RtlInitAnsiString(
     while length < 0xfffe && unsafe { source.add(length).read() } != 0 {
         length += 1;
     }
-    descriptor.Length = length as USHORT;
-    descriptor.MaximumLength = (length + 1) as USHORT;
-    descriptor.Buffer = source.cast_mut();
+    descriptor.length = length as USHORT;
+    descriptor.maximum_length = (length + 1) as USHORT;
+    descriptor.buffer = source.cast_mut();
 }
 
 /// Initializes a UNICODE_STRING view over a NUL-terminated UTF-16 string.
@@ -103,9 +88,9 @@ pub unsafe extern "system" fn RtlInitUnicodeString(
     // SAFETY: A non-null destination must point to a writable descriptor.
     let descriptor = unsafe { &mut *destination };
     if source.is_null() {
-        descriptor.Length = 0;
-        descriptor.MaximumLength = 0;
-        descriptor.Buffer = core::ptr::null_mut();
+        descriptor.length = 0;
+        descriptor.maximum_length = 0;
+        descriptor.buffer = core::ptr::null_mut();
         return;
     }
 
@@ -113,10 +98,10 @@ pub unsafe extern "system" fn RtlInitUnicodeString(
     while length < 0x7ffe && unsafe { source.add(length).read() } != 0 {
         length += 1;
     }
-    descriptor.Length = (length * core::mem::size_of::<WCHAR>()) as USHORT;
-    descriptor.MaximumLength =
-        descriptor.Length + core::mem::size_of::<WCHAR>() as USHORT;
-    descriptor.Buffer = source.cast_mut();
+    descriptor.length = (length * core::mem::size_of::<WCHAR>()) as USHORT;
+    descriptor.maximum_length =
+        descriptor.length + core::mem::size_of::<WCHAR>() as USHORT;
+    descriptor.buffer = source.cast_mut();
 }
 
 /// Lexicographically compares two ANSI_STRING descriptors.
@@ -135,32 +120,32 @@ pub unsafe extern "system" fn RtlCompareString(
     }
     // SAFETY: Non-null pointers must reference readable descriptors.
     let (first, second) = unsafe { (&*first, &*second) };
-    if (first.Length != 0 && first.Buffer.is_null())
-        || (second.Length != 0 && second.Buffer.is_null())
+    if (first.length != 0 && first.buffer.is_null())
+        || (second.length != 0 && second.buffer.is_null())
     {
-        return if first.Length != 0 {
+        return if first.length != 0 {
             1
-        } else if second.Length != 0 {
+        } else if second.length != 0 {
             -1
         } else {
             0
         };
     }
 
-    let limit = core::cmp::min(first.Length, second.Length) as usize;
+    let limit = core::cmp::min(first.length, second.length) as usize;
     for index in 0..limit {
         // SAFETY: Each descriptor's buffer must be readable for Length bytes.
         let (a, b) = unsafe {
             (
-                fold_ansi(first.Buffer.add(index).read(), ignore_case),
-                fold_ansi(second.Buffer.add(index).read(), ignore_case),
+                fold_ansi(first.buffer.add(index).read(), ignore_case),
+                fold_ansi(second.buffer.add(index).read(), ignore_case),
             )
         };
         if a != b {
             return a as LONG - b as LONG;
         }
     }
-    first.Length as LONG - second.Length as LONG
+    first.length as LONG - second.length as LONG
 }
 
 /// Returns nonzero when both ANSI strings have equal lengths and contents.
@@ -174,7 +159,7 @@ pub unsafe extern "system" fn RtlEqualString(
         return 0;
     }
     // SAFETY: Non-null pointers must reference readable descriptors.
-    if unsafe { (*first).Length != (*second).Length } {
+    if unsafe { (*first).length != (*second).length } {
         return 0;
     }
     (unsafe { RtlCompareString(first, second, ignore_case) == 0 }) as BOOLEAN
@@ -196,30 +181,30 @@ pub unsafe extern "system" fn RtlCompareUnicodeString(
     }
     // SAFETY: Non-null pointers must reference readable descriptors.
     let (first, second) = unsafe { (&*first, &*second) };
-    if (first.Length & 1) != 0 || (second.Length & 1) != 0 {
-        return if (first.Length & 1) != 0 { 1 } else { -1 };
+    if (first.length & 1) != 0 || (second.length & 1) != 0 {
+        return if (first.length & 1) != 0 { 1 } else { -1 };
     }
-    if (first.Length != 0 && first.Buffer.is_null())
-        || (second.Length != 0 && second.Buffer.is_null())
+    if (first.length != 0 && first.buffer.is_null())
+        || (second.length != 0 && second.buffer.is_null())
     {
-        return if first.Length != 0 {
+        return if first.length != 0 {
             1
-        } else if second.Length != 0 {
+        } else if second.length != 0 {
             -1
         } else {
             0
         };
     }
 
-    let first_count = (first.Length / 2) as usize;
-    let second_count = (second.Length / 2) as usize;
+    let first_count = (first.length / 2) as usize;
+    let second_count = (second.length / 2) as usize;
     let limit = core::cmp::min(first_count, second_count);
     for index in 0..limit {
         // SAFETY: Buffers must be readable for their declared UTF-16 lengths.
         let (a, b) = unsafe {
             (
-                fold_unicode(first.Buffer.add(index).read(), ignore_case),
-                fold_unicode(second.Buffer.add(index).read(), ignore_case),
+                fold_unicode(first.buffer.add(index).read(), ignore_case),
+                fold_unicode(second.buffer.add(index).read(), ignore_case),
             )
         };
         if a != b {
@@ -240,7 +225,7 @@ pub unsafe extern "system" fn RtlEqualUnicodeString(
         return 0;
     }
     // SAFETY: Non-null pointers must reference readable descriptors.
-    if unsafe { (*first).Length != (*second).Length } {
+    if unsafe { (*first).length != (*second).length } {
         return 0;
     }
     (unsafe { RtlCompareUnicodeString(first, second, ignore_case) == 0 }) as BOOLEAN
@@ -257,45 +242,45 @@ pub unsafe extern "system" fn RtlCopyUnicodeString(
     }
     // SAFETY: Destination must point to a writable descriptor.
     let destination = unsafe { &mut *destination };
-    destination.Length = 0;
-    if destination.Buffer.is_null() || destination.MaximumLength < 2 {
+    destination.length = 0;
+    if destination.buffer.is_null() || destination.maximum_length < 2 {
         return;
     }
     if source.is_null() {
-        unsafe { destination.Buffer.write(0) };
+        unsafe { destination.buffer.write(0) };
         return;
     }
     // SAFETY: Source must point to a readable descriptor.
     let source = unsafe { &*source };
-    if source.Buffer.is_null() || source.Length == 0 {
-        unsafe { destination.Buffer.write(0) };
+    if source.buffer.is_null() || source.length == 0 {
+        unsafe { destination.buffer.write(0) };
         return;
     }
 
-    let mut count = (source.Length / 2) as usize;
+    let mut count = (source.length / 2) as usize;
     count = core::cmp::min(
         count,
-        (destination.MaximumLength as usize / 2).saturating_sub(1),
+        (destination.maximum_length as usize / 2).saturating_sub(1),
     );
 
-    let destination_address = destination.Buffer as ULONG_PTR;
-    let source_address = source.Buffer as ULONG_PTR;
+    let destination_address = destination.buffer as ULONG_PTR;
+    let source_address = source.buffer as ULONG_PTR;
     if destination_address < source_address {
         for index in 0..count {
             // SAFETY: Caller provides readable source and writable destination ranges.
-            unsafe { destination.Buffer.add(index).write(source.Buffer.add(index).read()) };
+            unsafe { destination.buffer.add(index).write(source.buffer.add(index).read()) };
         }
     } else if destination_address > source_address {
         let mut index = count;
         while index != 0 {
             index -= 1;
             // SAFETY: Reverse copy handles overlapping ranges.
-            unsafe { destination.Buffer.add(index).write(source.Buffer.add(index).read()) };
+            unsafe { destination.buffer.add(index).write(source.buffer.add(index).read()) };
         }
     }
     // SAFETY: MaximumLength >= 2 and count is bounded to leave one WCHAR.
-    unsafe { destination.Buffer.add(count).write(0) };
-    destination.Length = (count * 2) as USHORT;
+    unsafe { destination.buffer.add(count).write(0) };
+    destination.length = (count * 2) as USHORT;
 }
 
 #[inline]
@@ -325,21 +310,21 @@ pub unsafe extern "system" fn RtlUnicodeStringToInteger(
     }
     // SAFETY: Non-null pointers must reference readable/writable descriptors.
     let string = unsafe { &*string };
-    if (string.Length & 1) != 0 || (string.Length != 0 && string.Buffer.is_null()) {
+    if (string.length & 1) != 0 || (string.length != 0 && string.buffer.is_null()) {
         return STATUS_INVALID_PARAMETER;
     }
 
-    let count = (string.Length / 2) as usize;
+    let count = (string.length / 2) as usize;
     let mut index = 0usize;
     let mut value: ULONG = 0;
     let mut sign: i32 = 1;
     let mut found = false;
 
-    while index < count && unsafe { is_ascii_space(string.Buffer.add(index).read()) } {
+    while index < count && unsafe { is_ascii_space(string.buffer.add(index).read()) } {
         index += 1;
     }
     if index < count {
-        let ch = unsafe { string.Buffer.add(index).read() };
+        let ch = unsafe { string.buffer.add(index).read() };
         if ch == b'+' as WCHAR || ch == b'-' as WCHAR {
             if ch == b'-' as WCHAR {
                 sign = -1;
@@ -351,8 +336,8 @@ pub unsafe extern "system" fn RtlUnicodeStringToInteger(
         base = 10;
     }
     if base == 16 && index + 1 < count {
-        let first = unsafe { string.Buffer.add(index).read() };
-        let second = unsafe { string.Buffer.add(index + 1).read() };
+        let first = unsafe { string.buffer.add(index).read() };
+        let second = unsafe { string.buffer.add(index + 1).read() };
         if first == b'0' as WCHAR && (second == b'x' as WCHAR || second == b'X' as WCHAR) {
             index += 2;
         }
@@ -362,12 +347,12 @@ pub unsafe extern "system" fn RtlUnicodeStringToInteger(
     }
 
     while index < count {
-        let ch = unsafe { string.Buffer.add(index).read() };
+        let ch = unsafe { string.buffer.add(index).read() };
         let digit = unicode_digit(ch);
         if digit < 0 {
             if unsafe { is_ascii_space(ch) } {
                 while index < count
-                    && unsafe { is_ascii_space(string.Buffer.add(index).read()) }
+                    && unsafe { is_ascii_space(string.buffer.add(index).read()) }
                 {
                     index += 1;
                 }
@@ -406,10 +391,10 @@ pub unsafe extern "system" fn RtlIntegerToUnicodeString(
     }
     // SAFETY: Destination must point to a writable descriptor.
     let destination = unsafe { &mut *destination };
-    if destination.Buffer.is_null() {
+    if destination.buffer.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
-    destination.Length = 0;
+    destination.length = 0;
     if base == 0 {
         base = 10;
     }
@@ -433,16 +418,16 @@ pub unsafe extern "system" fn RtlIntegerToUnicodeString(
         }
     }
 
-    if (count + 1) * 2 > destination.MaximumLength as usize {
+    if (count + 1) * 2 > destination.maximum_length as usize {
         return STATUS_BUFFER_TOO_SMALL;
     }
     for index in 0..count {
         // SAFETY: Capacity was checked above; buffer must be writable.
-        unsafe { destination.Buffer.add(index).write(reversed[count - index - 1]) };
+        unsafe { destination.buffer.add(index).write(reversed[count - index - 1]) };
     }
     // SAFETY: Capacity check reserves the terminating WCHAR.
-    unsafe { destination.Buffer.add(count).write(0) };
-    destination.Length = (count * 2) as USHORT;
+    unsafe { destination.buffer.add(count).write(0) };
+    destination.length = (count * 2) as USHORT;
     STATUS_SUCCESS
 }
 
@@ -461,9 +446,9 @@ pub unsafe extern "system" fn RtlInitAnsiStringEx(
     }
     if source.is_null() {
         unsafe {
-            (*destination).Length = 0;
-            (*destination).MaximumLength = 0;
-            (*destination).Buffer = core::ptr::null_mut();
+            (*destination).length = 0;
+            (*destination).maximum_length = 0;
+            (*destination).buffer = core::ptr::null_mut();
         }
         return STATUS_SUCCESS;
     }
@@ -475,9 +460,9 @@ pub unsafe extern "system" fn RtlInitAnsiStringEx(
         return STATUS_NAME_TOO_LONG;
     }
     unsafe {
-        (*destination).Length = length as USHORT;
-        (*destination).MaximumLength = (length + 1) as USHORT;
-        (*destination).Buffer = source.cast_mut();
+        (*destination).length = length as USHORT;
+        (*destination).maximum_length = (length + 1) as USHORT;
+        (*destination).buffer = source.cast_mut();
     }
     STATUS_SUCCESS
 }
@@ -493,9 +478,9 @@ pub unsafe extern "system" fn RtlInitUnicodeStringEx(
     }
     if source.is_null() {
         unsafe {
-            (*destination).Length = 0;
-            (*destination).MaximumLength = 0;
-            (*destination).Buffer = core::ptr::null_mut();
+            (*destination).length = 0;
+            (*destination).maximum_length = 0;
+            (*destination).buffer = core::ptr::null_mut();
         }
         return STATUS_SUCCESS;
     }
@@ -508,9 +493,9 @@ pub unsafe extern "system" fn RtlInitUnicodeStringEx(
         return STATUS_NAME_TOO_LONG;
     }
     unsafe {
-        (*destination).Length = length as USHORT;
-        (*destination).MaximumLength = (length + 2) as USHORT;
-        (*destination).Buffer = source.cast_mut();
+        (*destination).length = length as USHORT;
+        (*destination).maximum_length = (length + 2) as USHORT;
+        (*destination).buffer = source.cast_mut();
     }
     STATUS_SUCCESS
 }
@@ -526,16 +511,16 @@ pub unsafe extern "system" fn RtlCopyString(
     }
     let dst = unsafe { &mut *destination };
     let Some(src) = (if source.is_null() { None } else { Some(unsafe { &*source }) }) else {
-        dst.Length = 0;
+        dst.length = 0;
         return;
     };
-    if dst.Buffer.is_null() || src.Buffer.is_null() {
-        dst.Length = 0;
+    if dst.buffer.is_null() || src.buffer.is_null() {
+        dst.length = 0;
         return;
     }
-    let count = core::cmp::min(src.Length, dst.MaximumLength) as usize;
-    unsafe { core::ptr::copy(src.Buffer, dst.Buffer, count) };
-    dst.Length = count as USHORT;
+    let count = core::cmp::min(src.length, dst.maximum_length) as usize;
+    unsafe { core::ptr::copy(src.buffer, dst.buffer, count) };
+    dst.length = count as USHORT;
 }
 
 /// Tests whether the first ANSI string is a prefix of the second.
@@ -549,17 +534,17 @@ pub unsafe extern "system" fn RtlPrefixString(
         return 0;
     }
     let (prefix, value) = unsafe { (&*prefix, &*value) };
-    if prefix.Length > value.Length {
+    if prefix.length > value.length {
         return 0;
     }
-    if prefix.Length == 0 {
+    if prefix.length == 0 {
         return 1;
     }
-    if prefix.Buffer.is_null() || value.Buffer.is_null() {
+    if prefix.buffer.is_null() || value.buffer.is_null() {
         return 0;
     }
-    for i in 0..prefix.Length as usize {
-        let (a, b) = unsafe { (prefix.Buffer.add(i).read(), value.Buffer.add(i).read()) };
+    for i in 0..prefix.length as usize {
+        let (a, b) = unsafe { (prefix.buffer.add(i).read(), value.buffer.add(i).read()) };
         if fold_ansi(a, ignore_case) != fold_ansi(b, ignore_case) {
             return 0;
         }
@@ -580,21 +565,21 @@ pub unsafe extern "system" fn RtlAppendAsciizToString(
         return STATUS_SUCCESS;
     }
     let dst = unsafe { &mut *destination };
-    if dst.Length > dst.MaximumLength || (dst.Length != 0 && dst.Buffer.is_null()) {
+    if dst.length > dst.maximum_length || (dst.length != 0 && dst.buffer.is_null()) {
         return STATUS_INVALID_PARAMETER;
     }
     let mut count = 0usize;
     while unsafe { source.add(count).read() } != 0 {
         count += 1;
     }
-    if count > (dst.MaximumLength - dst.Length) as usize {
+    if count > (dst.maximum_length - dst.length) as usize {
         return STATUS_BUFFER_OVERFLOW;
     }
     if count != 0 {
-        if dst.Buffer.is_null() { return STATUS_INVALID_PARAMETER; }
-        unsafe { core::ptr::copy(source, dst.Buffer.add(dst.Length as usize), count) };
+        if dst.buffer.is_null() { return STATUS_INVALID_PARAMETER; }
+        unsafe { core::ptr::copy(source, dst.buffer.add(dst.length as usize), count) };
     }
-    dst.Length += count as USHORT;
+    dst.length += count as USHORT;
     STATUS_SUCCESS
 }
 
@@ -609,19 +594,19 @@ pub unsafe extern "system" fn RtlAppendStringToString(
     }
     let dst = unsafe { &mut *destination };
     let src = unsafe { &*source };
-    if dst.Length > dst.MaximumLength || src.Length > 0 && src.Buffer.is_null() {
+    if dst.length > dst.maximum_length || src.length > 0 && src.buffer.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
-    if src.Length > dst.MaximumLength - dst.Length {
+    if src.length > dst.maximum_length - dst.length {
         return STATUS_BUFFER_OVERFLOW;
     }
-    if src.Length != 0 {
-        if dst.Buffer.is_null() { return STATUS_INVALID_PARAMETER; }
+    if src.length != 0 {
+        if dst.buffer.is_null() { return STATUS_INVALID_PARAMETER; }
         unsafe {
-            core::ptr::copy(src.Buffer, dst.Buffer.add(dst.Length as usize), src.Length as usize);
+            core::ptr::copy(src.buffer, dst.buffer.add(dst.length as usize), src.length as usize);
         }
     }
-    dst.Length += src.Length;
+    dst.length += src.length;
     STATUS_SUCCESS
 }
 
@@ -636,26 +621,26 @@ pub unsafe extern "system" fn RtlAppendUnicodeStringToString(
     }
     let dst = unsafe { &mut *destination };
     let src = unsafe { &*source };
-    if (dst.Length | src.Length) & 1 != 0
-        || dst.Length > dst.MaximumLength
-        || (src.Length != 0 && src.Buffer.is_null())
+    if (dst.length | src.length) & 1 != 0
+        || dst.length > dst.maximum_length
+        || (src.length != 0 && src.buffer.is_null())
     {
         return STATUS_INVALID_PARAMETER;
     }
-    if src.Length > dst.MaximumLength - dst.Length {
+    if src.length > dst.maximum_length - dst.length {
         return STATUS_BUFFER_OVERFLOW;
     }
-    if src.Length != 0 {
-        if dst.Buffer.is_null() { return STATUS_INVALID_PARAMETER; }
+    if src.length != 0 {
+        if dst.buffer.is_null() { return STATUS_INVALID_PARAMETER; }
         unsafe {
             core::ptr::copy(
-                src.Buffer,
-                dst.Buffer.add((dst.Length / 2) as usize),
-                (src.Length / 2) as usize,
+                src.buffer,
+                dst.buffer.add((dst.length / 2) as usize),
+                (src.length / 2) as usize,
             );
         }
     }
-    dst.Length += src.Length;
+    dst.length += src.length;
     STATUS_SUCCESS
 }
 
@@ -672,7 +657,7 @@ pub unsafe extern "system" fn RtlAppendUnicodeToString(
         return STATUS_SUCCESS;
     }
     let dst = unsafe { &mut *destination };
-    if dst.Length & 1 != 0 || dst.Length > dst.MaximumLength {
+    if dst.length & 1 != 0 || dst.length > dst.maximum_length {
         return STATUS_INVALID_PARAMETER;
     }
     let mut count = 0usize;
@@ -680,15 +665,15 @@ pub unsafe extern "system" fn RtlAppendUnicodeToString(
         count += 1;
     }
     let bytes = count.saturating_mul(2);
-    if bytes > (dst.MaximumLength - dst.Length) as usize {
+    if bytes > (dst.maximum_length - dst.length) as usize {
         return STATUS_BUFFER_OVERFLOW;
     }
     if count != 0 {
-        if dst.Buffer.is_null() { return STATUS_INVALID_PARAMETER; }
+        if dst.buffer.is_null() { return STATUS_INVALID_PARAMETER; }
         unsafe {
-            core::ptr::copy(source, dst.Buffer.add((dst.Length / 2) as usize), count);
+            core::ptr::copy(source, dst.buffer.add((dst.length / 2) as usize), count);
         }
     }
-    dst.Length += bytes as USHORT;
+    dst.length += bytes as USHORT;
     STATUS_SUCCESS
 }
