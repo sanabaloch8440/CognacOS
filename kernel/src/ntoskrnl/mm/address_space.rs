@@ -934,14 +934,11 @@ pub fn trim_current_working_set(target:usize)->usize {
 pub fn handle_current_user_page_fault(address:u64,error_code:u64)->bool {
     const PF_USER:u64=1<<2;
     if error_code&PF_USER==0 { return false; }
-    // The bootstrap thread slot may be unbound or stale. Resolve the owner by
-    // matching candidate EPROCESS roots to the CR3 actually active on this CPU.
-    let pid=current_process_id_for_active_address_space();
-    if pid==0 {return false}
-    let process=crate::process::eprocess_pointer_for_pid(pid);
-    if process.is_null(){return false}
-    let root=unsafe{(*process).address_space_root};
-    if root==0 || root!=active_root_physical(){return false}
+    // During the first ring-3 transitions, the thread and syscall PID slots can
+    // lag the CR3 switch. CR3 is authoritative for this fault; validate it
+    // against the process registry rather than requiring a possibly stale PID.
+    let root=active_root_physical();
+    if root==0 || !crate::process::address_space_root_is_registered(root) { return false; }
     let mut space=AddressSpace{root, kuser_tables:[0;3]};
     space.handle_page_fault(address,error_code)
 }
