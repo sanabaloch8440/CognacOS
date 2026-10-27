@@ -32,7 +32,7 @@ mod atom;
 mod env;
 mod version;
 
-mod exception;
+pub mod exception;
 mod time;
 mod strings;
 mod crypt;
