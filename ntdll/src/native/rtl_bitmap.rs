@@ -4,8 +4,7 @@
 
 #![allow(non_snake_case)]
 
-pub type ULONG = u32;
-pub type BOOLEAN = u8;
+pub use crate::nt_abi::types::{BOOLEAN, ULONG};
 pub type CCHAR = i8;
 
 pub const INVALID_BIT: ULONG = u32::MAX;
