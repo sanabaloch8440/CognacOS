@@ -17,11 +17,8 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
 pub use crate::nt_abi::types::{HANDLE, LONG, PVOID};
-pub use crate::nt_abi::ntstatus::NTSTATUS;
+pub use crate::nt_abi::ntstatus::{NTSTATUS, STATUS_INVALID_PARAMETER, STATUS_NOT_OWNER, STATUS_SUCCESS};
 
-const STATUS_SUCCESS: NTSTATUS = 0;
-const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
-const STATUS_NOT_OWNER: NTSTATUS = 0xC000_005Au32 as i32;
 
 #[repr(C)]
 pub struct RTL_CRITICAL_SECTION {
