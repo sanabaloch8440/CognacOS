@@ -1,6 +1,9 @@
 //! CognacOS storage-stack primitives following the documented Windows class/port/miniport split.
 //! This is an independent implementation, not Microsoft's proprietary driver source.
 #![no_std]
+
+/// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
+pub use cognacos_nt_abi as nt_abi;
 #[cfg(test)] extern crate std;
 
 pub const SECTOR_SIZE_512: u32 = 512;
