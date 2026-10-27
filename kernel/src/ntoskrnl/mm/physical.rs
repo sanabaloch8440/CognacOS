@@ -624,11 +624,21 @@ pub struct MappingInfo {
     pub user_accessible: bool,
 }
 
-/// Inspect the active bootstrap's four-level page tables without allocating or
-/// modifying anything. Supports 1 GiB, 2 MiB and 4 KiB leaves. The caller must
-/// ensure the root and every referenced table are identity-accessible.
-pub unsafe fn inspect_mapping(pml4_physical: u64, virtual_address: u64)
-    -> Result<MappingInfo, AllocError>
+/// Identifies the first invalid entry encountered during a page-table walk.
+/// Stage: 1=input, 2=PML4, 3=PDPT, 4=PD, 5=PT.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MappingInspectionFailure {
+    pub stage: u8,
+    pub pml4e: u64,
+    pub pdpte: u64,
+    pub pde: u64,
+    pub pte: u64,
+}
+
+/// Inspect the bootstrap's four-level page tables and retain the entries
+/// observed at the first failure. This is diagnostic-only and does not mutate tables.
+pub unsafe fn inspect_mapping_diagnostic(pml4_physical: u64, virtual_address: u64)
+    -> Result<MappingInfo, MappingInspectionFailure>
 {
     const USER: u64 = 1 << 2;
     if pml4_physical == 0 || pml4_physical >= PHYSICAL_LIMIT
@@ -636,14 +646,14 @@ pub unsafe fn inspect_mapping(pml4_physical: u64, virtual_address: u64)
         || !(virtual_address <= 0x0000_7fff_ffff_ffff
             || virtual_address >= 0xffff_8000_0000_0000)
     {
-        return Err(AllocError::InvalidMap);
+        return Err(MappingInspectionFailure{stage:1,pml4e:0,pdpte:0,pde:0,pte:0});
     }
     let pml4 = pml4_physical as *const u64;
     let pml4e = unsafe { pml4.add(((virtual_address >> 39) & 0x1ff) as usize).read() };
-    if pml4e & PRESENT == 0 || pml4e & LARGE != 0 { return Err(AllocError::InvalidMap); }
+    if pml4e & PRESENT == 0 || pml4e & LARGE != 0 { return Err(MappingInspectionFailure{stage:2,pml4e,pdpte:0,pde:0,pte:0}); }
     let pdpt = (pml4e & ADDRESS_MASK) as *const u64;
     let pdpte = unsafe { pdpt.add(((virtual_address >> 30) & 0x1ff) as usize).read() };
-    if pdpte & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    if pdpte & PRESENT == 0 { return Err(MappingInspectionFailure{stage:3,pml4e,pdpte,pde:0,pte:0}); }
     if pdpte & LARGE != 0 {
         let base = pdpte & HUGE_ADDRESS_MASK;
         let offset = virtual_address & ((1u64 << 30) - 1);
@@ -656,7 +666,7 @@ pub unsafe fn inspect_mapping(pml4_physical: u64, virtual_address: u64)
     }
     let pd = (pdpte & ADDRESS_MASK) as *const u64;
     let pde = unsafe { pd.add(((virtual_address >> 21) & 0x1ff) as usize).read() };
-    if pde & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    if pde & PRESENT == 0 { return Err(MappingInspectionFailure{stage:4,pml4e,pdpte,pde,pte:0}); }
     if pde & LARGE != 0 {
         let base = pde & LARGE_ADDRESS_MASK;
         let offset = virtual_address & ((1u64 << 21) - 1);
@@ -669,7 +679,7 @@ pub unsafe fn inspect_mapping(pml4_physical: u64, virtual_address: u64)
     }
     let pt = (pde & ADDRESS_MASK) as *const u64;
     let pte = unsafe { pt.add(((virtual_address >> 12) & 0x1ff) as usize).read() };
-    if pte & PRESENT == 0 { return Err(AllocError::InvalidMap); }
+    if pte & PRESENT == 0 { return Err(MappingInspectionFailure{stage:5,pml4e,pdpte,pde,pte}); }
     Ok(MappingInfo {
         physical_address: (pte & ADDRESS_MASK) | (virtual_address & (PAGE_SIZE - 1)),
         page_size: PAGE_SIZE,
@@ -677,6 +687,14 @@ pub unsafe fn inspect_mapping(pml4_physical: u64, virtual_address: u64)
         executable: (pml4e | pdpte | pde | pte) & NO_EXECUTE == 0,
         user_accessible: pml4e & pdpte & pde & pte & USER != 0,
     })
+}
+
+/// Compatibility wrapper for callers that only need success/failure.
+pub unsafe fn inspect_mapping(pml4_physical: u64, virtual_address: u64)
+    -> Result<MappingInfo, AllocError>
+{
+    unsafe { inspect_mapping_diagnostic(pml4_physical, virtual_address) }
+        .map_err(|_| AllocError::InvalidMap)
 }
 
 /// Verify every page touched by a bootstrap dependency is present and identity
