@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-2.0-or-later"
 
+[features]
+default = []
+# Enable detailed page-table walk failure records in CI/QEMU diagnostics.
+diagnostic-vm = []
+
 [dependencies]
 cognacos-acpi = { path = "../drivers/acpi" }
 cognacos-pci = { path = "../drivers/pci" }
