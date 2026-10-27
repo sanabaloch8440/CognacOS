@@ -82,7 +82,6 @@ pub mod legacy_atom;
 pub mod legacy_crypt;
 #[path = "legacy_env.rs"]
 pub mod legacy_env;
-#[path = "legacy_exception.rs"]
 #[path = "legacy_heap.rs"]
 pub mod legacy_heap;
 #[path = "legacy_misc.rs"]
