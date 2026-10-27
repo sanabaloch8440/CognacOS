@@ -1184,7 +1184,8 @@ impl core::fmt::Write for PanicSerialWriter {
 fn panic(info: &PanicInfo<'_>) -> ! {
     use core::fmt::Write as _;
 
-    crate::ntoskrnl::ke::diagnostics::record(crate::ntoskrnl::ke::diagnostics::EVENT_PANIC, 0, 0, 0);
+    let panic_line = info.location().map(|location| location.line() as u64).unwrap_or(0);
+    crate::ntoskrnl::ke::diagnostics::record(crate::ntoskrnl::ke::diagnostics::EVENT_PANIC, panic_line, 0, 0);
     unsafe { serial_write(b"\r\nCognacOS FATAL: Rust panic"); }
     if let Some(location) = info.location() {
         let mut writer = PanicSerialWriter;
