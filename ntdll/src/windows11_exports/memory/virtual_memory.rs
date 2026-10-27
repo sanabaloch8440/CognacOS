@@ -8,6 +8,7 @@
 use core::ffi::c_void;
 use core::ptr;
 use core::arch::global_asm;
+use super::nonvolatile::notify_secure_cache_callbacks;
 #[cfg(target_os = "windows")]
 use super::super::syscall_stubs::{NtAllocateVirtualMemory, NtFreeVirtualMemory, NtProtectVirtualMemory, NtQueryVirtualMemory, NtReadVirtualMemory, NtWriteVirtualMemory};
 
