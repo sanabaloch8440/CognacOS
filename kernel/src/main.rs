@@ -1171,10 +1171,29 @@ pub unsafe fn halt() -> ! {
     loop { unsafe { asm!("cli; hlt", options(nomem, nostack)); } }
 }
 
+struct PanicSerialWriter;
+
+impl core::fmt::Write for PanicSerialWriter {
+    fn write_str(&mut self, value: &str) -> core::fmt::Result {
+        unsafe { serial_write(value.as_bytes()); }
+        Ok(())
+    }
+}
+
 #[panic_handler]
-fn panic(_info: &PanicInfo<'_>) -> ! {
+fn panic(info: &PanicInfo<'_>) -> ! {
+    use core::fmt::Write as _;
+
+    unsafe { serial_write(b"\r\nCognacOS FATAL: Rust panic"); }
+    if let Some(location) = info.location() {
+        let mut writer = PanicSerialWriter;
+        let _ = write!(&mut writer, " at {}:{}", location.file(), location.line());
+    }
+    unsafe { serial_write(b"\r\n  message: "); }
+    let mut writer = PanicSerialWriter;
+    let _ = write!(&mut writer, "{}\r\n", info.message());
     unsafe {
-        serial_write(b"\r\nCognacOS FATAL: Rust panic; system halted.\r\n");
+        serial_write(b"System halted.\r\n");
         halt()
     }
 }
