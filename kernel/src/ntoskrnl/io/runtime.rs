@@ -9,8 +9,8 @@ pub const IRP_MJ_CREATE:u8=0;pub const IRP_MJ_CLOSE:u8=2;pub const IRP_MJ_READ:u
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum IoStatus{Free,Pending,Success,InvalidRequest,NoSuchDevice,BufferTooLarge,DeviceError,Cancelled,TimedOut}
 #[derive(Clone,Copy,Debug)]
-pub struct Irp{pub id:u64,pub major:u8,pub device_id:u32,pub user_buffer:u64,pub length:usize,pub information:usize,pub status:IoStatus,pub completed:bool,pub in_flight:bool,pub dispatching:bool,pub deadline_tick:u64}
-impl Irp{const EMPTY:Self=Self{id:0,major:0,device_id:0,user_buffer:0,length:0,information:0,status:IoStatus::Free,completed:false,in_flight:false,dispatching:false,deadline_tick:0};}
+pub struct Irp{pub id:u64,pub major:u8,pub device_id:u32,pub user_buffer:u64,pub byte_offset:u64,pub length:usize,pub information:usize,pub status:IoStatus,pub completed:bool,pub in_flight:bool,pub dispatching:bool,pub deadline_tick:u64}
+impl Irp{const EMPTY:Self=Self{id:0,major:0,device_id:0,user_buffer:0,byte_offset:0,length:0,information:0,status:IoStatus::Free,completed:false,in_flight:false,dispatching:false,deadline_tick:0};}
 pub type DispatchFn=fn(&mut Irp)->IoStatus;
 #[derive(Clone,Copy)]
 pub struct Device{pub id:u32,pub name:[u8;32],pub name_len:u8,pub dispatch:[Option<DispatchFn>;16],pub used:bool,pub deleting:bool,pub active_dispatches:u32}
@@ -35,6 +35,16 @@ pub fn submit(device_id:u32,major:u8,user_buffer:u64,length:usize)->Result<u64,I
 /// Submit an IRP with an optional relative deadline in monotonic clock ticks.
 /// Expiry is enforced before dispatch and when an asynchronous completion arrives.
 pub fn submit_with_timeout(device_id:u32,major:u8,user_buffer:u64,length:usize,timeout_ticks:Option<u64>)->Result<u64,IoError>{
+ submit_at_with_timeout(device_id,major,user_buffer,0,length,timeout_ticks)
+}
+/// Submit an IRP with an explicit byte offset. `user_buffer` is a kernel-owned
+/// system buffer for these synchronous storage dispatches; user pointers must
+/// be captured and validated before reaching this interface.
+pub fn submit_read_at(device_id:u32,byte_offset:u64,kernel_buffer:*mut u8,length:usize)->Result<u64,IoError>{
+ if kernel_buffer.is_null(){return Err(IoError::BufferTooLarge)}
+ submit_at_with_timeout(device_id,IRP_MJ_READ,kernel_buffer as u64,byte_offset,length,None)
+}
+fn submit_at_with_timeout(device_id:u32,major:u8,user_buffer:u64,byte_offset:u64,length:usize,timeout_ticks:Option<u64>)->Result<u64,IoError>{
  if major as usize>=16{return Err(IoError::InvalidMajor);}if length>MAX_IRP_BYTES{return Err(IoError::BufferTooLarge);}
  let now=crate::hal::query_performance_counter();
  let deadline=match timeout_ticks{Some(0)=>now,Some(t)=>now.checked_add(t).ok_or(IoError::BufferTooLarge)?,None=>0};
@@ -42,7 +52,7 @@ pub fn submit_with_timeout(device_id:u32,major:u8,user_buffer:u64,length:usize,t
  if !s.devices.iter().any(|d|d.used&&d.id==device_id&&!d.deleting){return Err(IoError::UnknownDevice);}
  let index=s.irps.iter().position(|i|i.status==IoStatus::Free).ok_or(IoError::TooManyRequests)?;
  let id=s.next_irp;s.next_irp=s.next_irp.wrapping_add(1).max(1);
- s.irps[index]=Irp{id,major,device_id,user_buffer,length,information:0,status:if timeout_ticks==Some(0){IoStatus::TimedOut}else{IoStatus::Pending},completed:timeout_ticks==Some(0),in_flight:false,dispatching:false,deadline_tick:deadline};Ok(id)
+ s.irps[index]=Irp{id,major,device_id,user_buffer,byte_offset,length,information:0,status:if timeout_ticks==Some(0){IoStatus::TimedOut}else{IoStatus::Pending},completed:timeout_ticks==Some(0),in_flight:false,dispatching:false,deadline_tick:deadline};Ok(id)
 }
 /// Expire requests that have not yet been claimed by a driver. In-flight
 /// hardware operations require a driver-specific cancellation protocol.
