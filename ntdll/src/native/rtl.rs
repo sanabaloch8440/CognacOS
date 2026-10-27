@@ -12,16 +12,8 @@
 
 pub use crate::nt_abi::types::{BOOLEAN, PVOID, ULONG};
 
-/// Windows RTL_SPLAY_LINKS ABI: root nodes point their Parent field to themselves.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct RTL_SPLAY_LINKS {
-    pub Parent: *mut RTL_SPLAY_LINKS,
-    pub LeftChild: *mut RTL_SPLAY_LINKS,
-    pub RightChild: *mut RTL_SPLAY_LINKS,
-}
-
-pub type PRTL_SPLAY_LINKS = *mut RTL_SPLAY_LINKS;
+/// Canonical shared ABI declaration; re-export keeps existing crate paths intact.
+pub use crate::nt_abi::types::{PRTL_SPLAY_LINKS, RTL_SPLAY_LINKS};
 
 #[inline]
 unsafe fn is_root(links: PRTL_SPLAY_LINKS) -> bool {
