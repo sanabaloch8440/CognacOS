@@ -87,6 +87,15 @@ pub unsafe extern "system" fn RtlGetCurrentPeb() -> PVOID {
             options(nostack, preserves_flags, readonly)
         );
     }
+    // The kernel creates a zeroed PEB. Initialize the default process heap on
+    // first access, then publish its real handle in PEB.ProcessHeap.
+    if !peb.is_null() {
+        let slot = unsafe { peb.cast::<u8>().add(0x30).cast::<PVOID>() };
+        if unsafe { slot.read() }.is_null() {
+            let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
+            if !heap.is_null() { unsafe { slot.write(heap) }; }
+        }
+    }
     peb
 }
 
