@@ -15,3 +15,8 @@ EXPORTS
     NtQueryInformationProcess
     NtQueryInformationThread
     NtQuerySystemInformation
+    NtCreateKey
+    NtSetValueKey
+    NtDeleteValueKey
+    NtDeleteKey
+    NtFlushKey
