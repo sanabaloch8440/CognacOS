@@ -444,6 +444,7 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_reallocate_heap = resolve_required_ntdll_export(b"RtlReAllocateHeap")?;
     let rtl_size_heap = resolve_required_ntdll_export(b"RtlSizeHeap")?;
     let rtl_validate_heap = resolve_required_ntdll_export(b"RtlValidateHeap")?;
+    unsafe { crate::serial_write(b"[DBG][NTDLL] all required smoke exports resolved\r\n"); }
     let mut data = [0u8; 4096];
     data[0x3f0] = 66;
     data[0x3f1] = 65;
@@ -479,6 +480,7 @@ pub unsafe fn run_native_ntdll_smoke(
     let data_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
     unsafe { space.map_user_page(NTDLL_TEST_DATA, data_page, true, false)?; }
     unsafe { space.copy_to_user(NTDLL_TEST_DATA, &data)?; }
+    unsafe { crate::serial_write(b"[DBG][NTDLL] smoke data page mapped and initialized\r\n"); }
 
     let mut code = [0u8; 4096];
     let mut length = 0usize;
@@ -885,6 +887,7 @@ pub unsafe fn run_native_ntdll_smoke(
         image_size: ntdll.image_size,
         is_dll: false,
     };
+    unsafe { crate::serial_write(b"[DBG][NTDLL] smoke code mapped; entering shared process loader\r\n"); }
     unsafe { run_loaded_image(space, test_image)?; }
     Ok(())
 }
