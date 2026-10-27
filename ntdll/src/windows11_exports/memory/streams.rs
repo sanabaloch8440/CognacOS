@@ -1,7 +1,9 @@
 //! In-memory and section-backed IStream-compatible helpers.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 use core::{ffi::c_void, ptr};
-use super::virtual_memory::{HANDLE, PVOID, SIZE_T, ULONG, NTSTATUS};
+use super::virtual_memory::{self, HANDLE, PVOID, SIZE_T, ULONG, NTSTATUS};
+use super::virtual_memory::{cognacos_rtl_create_section, cognacos_rtl_dereference_section, cognacos_rtl_reference_section, cognacos_rtl_section_copy, cognacos_nt_read_virtual_memory};
+use super::zones::{native_vm_allocate, native_vm_release};
 const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
 const STATUS_SUCCESS: NTSTATUS = 0;
 const STATUS_NO_MEMORY: NTSTATUS = 0xC000_0017u32 as i32;
@@ -235,7 +237,7 @@ pub unsafe extern "system" fn RtlReadOutOfProcessMemoryStream(this: PVOID, buffe
     let amount = (end - current).min(length as usize);
     if amount == 0 { return S_OK; }
     let mut copied = 0usize;
-    let status = unsafe { NtReadVirtualMemory(stream.process_handle, stream.current, buffer, amount, &mut copied) };
+    let status = unsafe { cognacos_nt_read_virtual_memory(stream.process_handle, stream.current, buffer, amount, &mut copied) };
     if status < 0 { return status; }
     stream.current = (current + copied) as PVOID;
     if !bytes_read.is_null() { unsafe { ptr::write(bytes_read, copied as ULONG); } }
