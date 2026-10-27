@@ -114,7 +114,10 @@ jobs:
             echo "The kernel must not install the obsolete NT syscall interrupt gate." >&2
             exit 1
           fi
-          grep -Eq '^NtCreateKey[[:space:]]+0x145
+          grep -Eq '^NtCreateKey[[:space:]]+0x145$' ntdll/syscalls/x86_64.syscalls
+          grep -Fq 'ntdll_syscall_stubs.S' ntdll/src/native/syscall_stubs.rs
+          grep -Fq 'syscall' ntdll/build.rs
+          echo "NTDLL stubs are generated from the canonical syscall manifest."
       - name: Build Rust NTDLL as a native PE32+ DLL
         shell: bash
         env:
@@ -714,6 +717,3 @@ jobs:
             build/drivers/storahci.sys
             build/drivers/stornvme.sys
             build/drivers/disk.sys
- ntdll/syscalls/x86_64.syscalls
-          grep -Fq 'ntdll_syscall_stubs.S' ntdll/src/native/syscall_stubs.rs
-          grep -Fq 'syscall' ntdll/build.rs
