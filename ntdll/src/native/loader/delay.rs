@@ -55,7 +55,7 @@ pub unsafe extern "system" fn LdrResolveDelayLoadedAPI(
         };
         let mut dll_utf16 = [0u16; 260];
         for i in 0..dll_len { dll_utf16[i] = dll_ascii[i] as u16; }
-        let name = UNICODE_STRING { Length: (dll_len * 2) as u16, MaximumLength: (dll_len * 2) as u16, Buffer: dll_utf16.as_mut_ptr() };
+        let name = UNICODE_STRING { length: (dll_len * 2) as u16, maximum_length: (dll_len * 2) as u16, buffer: dll_utf16.as_mut_ptr() };
         if unsafe { LdrLoadDll(ptr::null(), ptr::null_mut(), &name, &mut dll_handle) } != STATUS_SUCCESS {
             return ptr::null_mut();
         }
