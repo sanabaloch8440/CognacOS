@@ -12,8 +12,7 @@
 
 use core::ffi::c_void;
 
-pub type BOOLEAN = u8;
-pub type PVOID = *mut c_void;
+pub use crate::nt_abi::types::{BOOLEAN, PVOID, ULONG};
 
 /// Windows RTL_SPLAY_LINKS ABI: root nodes point their Parent field to themselves.
 #[repr(C)]
@@ -336,7 +335,6 @@ pub fn RtlUlonglongByteSwap(value: u64) -> u64 { value.swap_bytes() }
 // Source-first Rust helpers; exports are deferred until build integration.
 // ---------------------------------------------------------------------------
 pub type CLONG = i32;
-pub type ULONG = u32;
 pub type PULONG = *mut ULONG;
 pub type PBOOLEAN = *mut BOOLEAN;
 pub type PRTL_GENERIC_COMPARE_ROUTINE = Option<unsafe extern "system" fn(*mut RTL_GENERIC_TABLE, PVOID, PVOID) -> i32>;
