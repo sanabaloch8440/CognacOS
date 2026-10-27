@@ -71,7 +71,7 @@ pub unsafe extern "system" fn LdrShutdownProcess() -> NTSTATUS {
     }
     DLL_SHUTDOWN_OWNER_TID.store(current_loader_thread_id(), Ordering::Release);
     let _completion = ShutdownCompletion;
-    crate::windows11_exports::etw::rundown_current_process();
+    crate::native::etw::rundown_current_process();
 
     // LDR_DATA_TABLE_ENTRY_PREFIX is the documented x64 prefix used by the
     // loader's own enumeration path. The first load-order entry is the process

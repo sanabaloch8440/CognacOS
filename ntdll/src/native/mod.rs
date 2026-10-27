@@ -16,7 +16,7 @@ mod misc;
 mod process_snapshot;
 mod appcompat;
 mod telemetry;
-mod etw;
+pub(crate) mod etw;
 mod csr;
 mod threadpool;
 mod prefix;
