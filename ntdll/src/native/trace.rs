@@ -27,13 +27,11 @@ pub fn trace(event: u64, arg0: u64, arg1: u64) {
     unsafe {
         let status: u64;
         core::arch::asm!(
-            "mov r10, rcx",
             "mov eax, 0x144",
             "syscall",
-            in("rcx") event,
+            in("r10") event,
             in("rdx") arg0,
             in("r8") arg1,
-            lateout("r10") _,
             lateout("rax") status,
             options(preserves_flags),
         );
