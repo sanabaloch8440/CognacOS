@@ -10,7 +10,7 @@
 
 ## Migration status
 
-The kernel and NTDLL both depend on this crate. NTDLL exposes it as `crate::nt_abi`; the kernel has an `nt_abi` compatibility path for existing code. The shared `NTSTATUS`, scalar aliases, `UNICODE_STRING`, and selected object/I/O declarations are the source of truth for new code and migrated call sites.
+The kernel and NTDLL both depend on this crate. NTDLL exposes it as `crate::nt_abi`; the kernel has an `nt_abi` compatibility path for existing code. The shared `NTSTATUS`, scalar aliases, `UNICODE_STRING`, `RTL_SPLAY_LINKS`, and selected object/I/O declarations are the source of truth for new code and migrated call sites. `NTSTATUS_TYPE` is a compatibility alias of the canonical signed `NTSTATUS`; the NTDLL `rtl` module re-exports the shared `RTL_SPLAY_LINKS`/`PRTL_SPLAY_LINKS` definitions so existing `crate::rtl::*` paths remain valid.
 
 This dependency alone does not mean every local type has been migrated. In particular, the kernel's active WDM implementation uses field-access patterns and runtime-owned object layouts that differ from the initial shared scaffolding. Do not replace those types with a shared struct until call sites have been audited and the x64 size, alignment, field offsets, and semantics are proven equivalent. Preserve existing module paths with `pub use` re-exports or thin compatibility adapters while migration is in progress.
 
@@ -24,4 +24,4 @@ This dependency alone does not mean every local type has been migrated. In parti
 6. Treat the initial IRP/DEVICE_OBJECT/DRIVER_OBJECT layouts as migration scaffolding, not a complete WDK-accurate layout. Extend only against a pinned Windows SDK/WDK reference and add layout tests.
 7. Run the kernel and NTDLL build/test workflows after each migration batch. Never describe a declared function or type as implemented merely because its ABI declaration exists.
 
-The crate is `no_std` and uses fixed-width NT scalar types. Current layout tests cover selected x64 structures only; the driver/IRP structures remain scaffolding and must not yet be treated as third-party WDK binary compatibility.
+The crate is `no_std` and uses fixed-width NT scalar types. Current layout tests cover selected shared structures, including the three-pointer RTL splay-link layout; the driver/IRP structures remain scaffolding and must not yet be treated as third-party WDK binary compatibility.
