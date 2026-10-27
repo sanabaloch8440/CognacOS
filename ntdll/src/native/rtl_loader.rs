@@ -14,14 +14,9 @@
 #![allow(non_camel_case_types, non_snake_case)]
 
 use core::ptr;
+use crate::nt_abi::types::{LONG, PVOID, ULONG, ULONG_PTR, UCHAR, USHORT, WCHAR};
+use crate::nt_abi::object::{ANSI_STRING, UNICODE_STRING};
 
-pub type UCHAR = u8;
-pub type USHORT = u16;
-pub type WCHAR = u16;
-pub type ULONG = u32;
-pub type LONG = i32;
-pub type ULONG_PTR = usize;
-pub type PVOID = *mut core::ffi::c_void;
 pub type PULONG = *mut ULONG;
 
 pub const STATUS_SUCCESS: LONG = 0;
@@ -30,23 +25,10 @@ pub const STATUS_INVALID_IMAGE_FORMAT: LONG = 0xC000_007B_u32 as LONG;
 pub const STATUS_PROCEDURE_NOT_FOUND: LONG = 0xC000_007A_u32 as LONG;
 pub const STATUS_DLL_NOT_FOUND: LONG = 0xC000_0135_u32 as LONG;
 
-#[repr(C)]
-pub struct COGNAC_UNICODE_STRING {
-    pub Length: USHORT,
-    pub MaximumLength: USHORT,
-    pub Buffer: *mut WCHAR,
-}
-
-pub type PCCOGNAC_UNICODE_STRING = *const COGNAC_UNICODE_STRING;
-
-#[repr(C)]
-pub struct COGNAC_ANSI_STRING {
-    pub Length: USHORT,
-    pub MaximumLength: USHORT,
-    pub Buffer: *mut u8,
-}
-
-pub type PCCOGNAC_ANSI_STRING = *const COGNAC_ANSI_STRING;
+pub type COGNAC_UNICODE_STRING = UNICODE_STRING;
+pub type PCCOGNAC_UNICODE_STRING = *const UNICODE_STRING;
+pub type COGNAC_ANSI_STRING = ANSI_STRING;
+pub type PCCOGNAC_ANSI_STRING = *const ANSI_STRING;
 
 #[inline]
 unsafe fn pe_u16(pointer: *const UCHAR) -> USHORT {
@@ -127,9 +109,9 @@ pub unsafe extern "system" fn LdrGetDllHandle(
 
     // SAFETY: Non-null pointers must reference valid descriptors/output storage.
     let name = unsafe { &*dll_name };
-    if (name.Length & 1) != 0
-        || (name.Length != 0 && name.Buffer.is_null())
-        || name.Length > 512
+    if (name.length & 1) != 0
+        || (name.length != 0 && name.buffer.is_null())
+        || name.length > 512
     {
         return STATUS_INVALID_PARAMETER;
     }
@@ -159,13 +141,13 @@ pub unsafe extern "system" fn LdrGetDllHandle(
         let mut equal = true;
 
         if (name_length & 1) == 0
-            && name_length == name.Length
+            && name_length == name.length
             && (name_length == 0 || !name_buffer.is_null())
         {
             let count = (name_length / 2) as usize;
             for index in 0..count {
                 let left = unsafe { name_buffer.add(index).read() };
-                let right = unsafe { name.Buffer.add(index).read() };
+                let right = unsafe { name.buffer.add(index).read() };
                 if loader_fold_char(left) != loader_fold_char(right) {
                     equal = false;
                     break;
@@ -263,7 +245,7 @@ pub unsafe extern "system" fn LdrGetProcedureAddress(
 
     if !procedure_name.is_null() {
         let name = unsafe { &*procedure_name };
-        if name.Length != 0 && name.Buffer.is_null() {
+        if name.length != 0 && name.buffer.is_null() {
             return STATUS_INVALID_PARAMETER;
         }
 
@@ -281,7 +263,7 @@ pub unsafe extern "system" fn LdrGetProcedureAddress(
             if length == image_size - name_rva {
                 return STATUS_INVALID_IMAGE_FORMAT;
             }
-            if length != name.Length as ULONG {
+            if length != name.length as ULONG {
                 continue;
             }
 
@@ -291,7 +273,7 @@ pub unsafe extern "system" fn LdrGetProcedureAddress(
                     base.add(name_rva as usize + character as usize).read()
                 };
                 let requested = unsafe {
-                    name.Buffer.add(character as usize).read()
+                    name.buffer.add(character as usize).read()
                 };
                 if exported != requested {
                     break;
