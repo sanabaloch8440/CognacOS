@@ -2,6 +2,7 @@
 //! Use fixed-width aliases so ABI widths do not depend on host assumptions.
 
 pub type BOOLEAN = u8;
+pub type UCHAR = u8;
 pub type WCHAR = u16;
 pub type USHORT = u16;
 pub type ULONG = u32;
