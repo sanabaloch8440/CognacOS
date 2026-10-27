@@ -1,5 +1,26 @@
 use std::{collections::BTreeSet, env, fs, path::PathBuf};
 
+fn prototype_argument_count(source: &str, name: &str) -> Option<usize> {
+    let marker = format!("pub fn {name}(");
+    let start = source.find(&marker)?.checked_add(marker.len())?;
+    let mut depth = 1usize;
+    let mut commas = 0usize;
+    let mut has_parameter = false;
+    for ch in source[start..].chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 { return Some(if has_parameter { commas + 1 } else { 0 }); }
+            }
+            ',' if depth == 1 => commas += 1,
+            c if depth == 1 && !c.is_whitespace() => has_parameter = true,
+            _ => {}
+        }
+    }
+    None
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=exports/windows-11-x64-exports.txt");
     println!("cargo:rerun-if-changed=exports/ntdll-x64.def");
@@ -190,8 +211,8 @@ fn main() {
         let line = raw_line.split('#').next().unwrap_or("").trim();
         if line.is_empty() { continue; }
         let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.len() != 2 {
-            panic!("{}:{}: expected NtName and service_id", syscall_manifest.display(), line_index + 1);
+        if fields.len() != 3 {
+            panic!("{}:{}: expected NtName, service_id, and argument_count", syscall_manifest.display(), line_index + 1);
         }
         let name = fields[0];
         if !name.starts_with("Nt") || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
@@ -210,8 +231,15 @@ fn main() {
         if !syscall_ids.insert(id) {
             panic!("{}:{}: duplicate syscall service ID {:#x}", syscall_manifest.display(), line_index + 1, id);
         }
-        if !declarations.contains(&format!("pub fn {name}(")) {
-            panic!("{}:{}: manifest entry {} has no ABI declaration in src/native/syscall_stubs.rs", syscall_manifest.display(), line_index + 1, name);
+        let expected_arguments = fields[2].parse::<usize>()
+            .unwrap_or_else(|_| panic!("{}:{}: invalid argument count {}", syscall_manifest.display(), line_index + 1, fields[2]));
+        if expected_arguments > 17 {
+            panic!("{}:{}: unsupported x64 native argument count {}", syscall_manifest.display(), line_index + 1, expected_arguments);
+        }
+        let actual_arguments = prototype_argument_count(&declarations, name)
+            .unwrap_or_else(|| panic!("{}:{}: manifest entry {} has no parseable ABI declaration", syscall_manifest.display(), line_index + 1, name));
+        if actual_arguments != expected_arguments {
+            panic!("{}:{}: {} declares {} arguments but manifest records {}", syscall_manifest.display(), line_index + 1, name, actual_arguments, expected_arguments);
         }
         asm.push_str(&format!("\n.p2align 4\n.globl {name}\n{name}:\n    .byte 0x4c, 0x8b, 0xd1\n    movl ${:#x}, %eax\n    syscall\n    ret\n", id));
     }
