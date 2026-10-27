@@ -1751,6 +1751,11 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         Some(SERVICE_NT_QUERY_VIRTUAL_MEMORY) => NT_SYSCALL_QUERY_VIRTUAL_MEMORY,
         Some(SERVICE_NT_READ_VIRTUAL_MEMORY) => NT_SYSCALL_READ_VIRTUAL_MEMORY,
         Some(SERVICE_NT_WRITE_VIRTUAL_MEMORY) => NT_SYSCALL_WRITE_VIRTUAL_MEMORY,
+        // Internal CognacOS executive services use the same architectural
+        // Windows x64 SYSCALL entry and register/stack ABI. These IDs are
+        // kernel-private service selectors, not exported NTDLL names. Known
+        // exported Nt* stubs are always resolved by the PE-discovered table above.
+        None if (0x100..=0x1ff).contains(&service) => service,
         _ => {
             CALL_COUNT.fetch_add(1, Ordering::AcqRel);
             return NT_STATUS_NOT_IMPLEMENTED;
