@@ -16,4 +16,4 @@
 4. Verify Windows x64 sizes, offsets, calling conventions, and target-build differences with compile-time assertions and fixtures before claiming WDK compatibility.
 5. Treat the initial IRP/DEVICE_OBJECT/DRIVER_OBJECT layouts as migration scaffolding, not a complete WDK-accurate layout. Extend only against a pinned Windows SDK/WDK reference and add layout tests.
 
-The crate is `no_std` and uses fixed-width NT scalar types. It is deliberately not wired into every crate yet: each existing definition must be reconciled before replacing it, to avoid duplicate symbols, ABI drift, or breaking the current kernel/NTDLL build.
+The crate is `no_std` and uses fixed-width NT scalar types. It is now linked into both the kernel and NTDLL as the first consumers; existing local definitions have not all been migrated yet. Continue subsystem-by-subsystem so layouts and call-site semantics are reconciled before replacing duplicate definitions. The ABI tests added so far cover selected x64 layouts only; the driver/IRP structures remain scaffolding and must not yet be treated as third-party WDK binary compatibility.
