@@ -9,7 +9,7 @@ user_range = (ROOT / "kernel/src/ntoskrnl/mm/user_range.rs").read_text()
 process = (ROOT / "kernel/src/process.rs").read_text()
 syscall = (ROOT / "kernel/src/syscall.rs").read_text()
 arch = (ROOT / "kernel/src/ntoskrnl/ke/arch.rs").read_text()
-ntdll = (ROOT / "ntdll/src/native/exception.rs").read_text()
+ntdll = (ROOT / "ntdll/src/native/legacy_exception.rs").read_text()
 
 assert "const _: [(); 0x348] = [(); core::mem::size_of::<WindowsXStateConfiguration>()]" in xstate
 assert "const _: [(); 0x348] = [(); core::mem::size_of::<WindowsXStateConfiguration>()]" in ntdll
