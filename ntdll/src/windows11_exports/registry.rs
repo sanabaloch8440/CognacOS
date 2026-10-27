@@ -53,22 +53,6 @@ pub unsafe extern "system" fn NtCreateRegistryTransaction() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtEnumerateKey(
-    key_handle: HANDLE, index: ULONG, information_class: ULONG,
-    information: PVOID, length: ULONG, result_length: PULONG,
-) -> i32 {
-    unsafe { cognacos_nt_enumerate_key(key_handle, index, information_class, information, length, result_length) }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtEnumerateValueKey(
-    key_handle: HANDLE, index: ULONG, information_class: ULONG,
-    information: PVOID, length: ULONG, result_length: PULONG,
-) -> i32 {
-    unsafe { cognacos_nt_enumerate_value_key(key_handle, index, information_class, information, length, result_length) }
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn NtFreezeRegistry() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -123,9 +107,7 @@ pub unsafe extern "system" fn NtNotifyChangeMultipleKeys() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-// NtOpenKey is provided by the typed x64 syscall stub in syscall_x86_64.rs.
-// NtQueryValueKey is likewise provided by that syscall stub. These two
-// entry points are the only registry syscalls currently wired to the kernel.
+// NtOpenKey and NtQueryValueKey are exported by syscall_stubs.rs.
 
 #[no_mangle]
 pub unsafe extern "system" fn NtOpenKeyedEvent() -> i32 {
@@ -166,14 +148,6 @@ pub unsafe extern "system" fn NtOpenRegistryTransaction() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtQueryKey(
-    key_handle: HANDLE, information_class: ULONG,
-    information: PVOID, length: ULONG, result_length: PULONG,
-) -> i32 {
-    unsafe { cognacos_nt_query_key(key_handle, information_class, information, length, result_length) }
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn NtQueryMultipleValueKey() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -188,7 +162,7 @@ pub unsafe extern "system" fn NtQueryOpenSubKeysEx() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-// NtQueryValueKey is provided by the typed x64 syscall stub in syscall_x86_64.rs.
+// NtQueryValueKey is exported by syscall_stubs.rs.
 
 #[no_mangle]
 pub unsafe extern "system" fn NtReleaseKeyedEvent() -> i32 {
