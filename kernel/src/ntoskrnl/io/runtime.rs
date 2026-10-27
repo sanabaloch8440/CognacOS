@@ -44,6 +44,11 @@ pub fn submit_read_at(device_id:u32,byte_offset:u64,kernel_buffer:*mut u8,length
  if kernel_buffer.is_null(){return Err(IoError::BufferTooLarge)}
  submit_at_with_timeout(device_id,IRP_MJ_READ,kernel_buffer as u64,byte_offset,length,None)
 }
+/// Submit a bounded kernel-buffer WRITE IRP at a device-relative byte offset.
+pub fn submit_write_at(device_id:u32,byte_offset:u64,kernel_buffer:*const u8,length:usize)->Result<u64,IoError>{
+ if kernel_buffer.is_null(){return Err(IoError::BufferTooLarge)}
+ submit_at_with_timeout(device_id,IRP_MJ_WRITE,kernel_buffer as u64,byte_offset,length,None)
+}
 fn submit_at_with_timeout(device_id:u32,major:u8,user_buffer:u64,byte_offset:u64,length:usize,timeout_ticks:Option<u64>)->Result<u64,IoError>{
  if major as usize>=16{return Err(IoError::InvalidMajor);}if length>MAX_IRP_BYTES{return Err(IoError::BufferTooLarge);}
  let now=crate::hal::query_performance_counter();
