@@ -100,7 +100,6 @@ fn main() {
                 let line = line.trim();
                 if line.contains("#[no_mangle]") {
                     pending_no_mangle = 12;
-                    continue;
                 }
                 if line.starts_with("unsafe extern ") || line.starts_with("extern \"system\" {")
                     || line.starts_with("extern \"C\" {") {
