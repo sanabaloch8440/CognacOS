@@ -27,6 +27,8 @@ pub(crate) use ntoskrnl::ob::object_table as object;
 pub(crate) mod io;
 #[path = "ntoskrnl/io/file_services.rs"]
 pub(crate) mod file_services;
+#[path = "ntoskrnl/io/ata_disk.rs"]
+mod ata_disk;
 use cognacos_ext4 as extfs;
 pub(crate) use ntoskrnl::rtl_runtime::nls;
 mod ntoskrnl;
@@ -805,6 +807,15 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).\r\n");
+
+        // Exercise the actual QEMU IDE boot disk, not a synthetic parser fixture.
+        // Failure is fatal so CI cannot confuse host-side debugfs checks with a
+        // successful guest storage/filesystem read.
+        if !ata_disk::run_ext4_readme_test() {
+            serial_write(b"FATAL: guest ATA/GPT/ext4 README end-to-end test failed.\r\n");
+            halt();
+        }
+        serial_write(b"Guest ATA/GPT/ext4 README end-to-end test passed.\r\n");
 
         // APIC registers are intentionally not enabled here: no firmware MADT
         // handoff, AP startup trampoline, timer calibration, or complete IRQ
