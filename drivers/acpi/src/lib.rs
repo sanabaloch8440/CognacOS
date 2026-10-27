@@ -431,3 +431,16 @@ mod dmar_tests {
         assert!(info.units[0].include_all);
     }
 }
+
+#[cfg(test)]
+mod ntstatus_adapter_tests {
+    use super::*;
+    #[test]
+    fn acpi_errors_map_to_shared_ntstatus() {
+        use nt_abi::ntstatus::*;
+        assert_eq!(error_to_ntstatus(AcpiError::Truncated), STATUS_BUFFER_TOO_SMALL);
+        assert_eq!(error_to_ntstatus(AcpiError::TooManyEntries), STATUS_INSUFFICIENT_RESOURCES);
+        assert_eq!(error_to_ntstatus(AcpiError::MissingRoot), STATUS_UNSUCCESSFUL);
+        assert_eq!(error_to_ntstatus(AcpiError::BadChecksum), STATUS_INVALID_PARAMETER);
+    }
+}
