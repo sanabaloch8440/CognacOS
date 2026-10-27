@@ -1,5 +1,8 @@
 //! Generic processor-class driver policy and HAL capability validation.
 #![no_std]
+
+/// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
+pub use cognacos_nt_abi as nt_abi;
 #[cfg(test)]
 extern crate std;
 use cognacos_hal_contract::{HalServiceTable, HAL_CONTRACT_VERSION};
