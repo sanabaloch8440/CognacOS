@@ -14,6 +14,18 @@ pub fn rsdp_address() -> u64 { LAST_RSDP_ADDRESS.load(core::sync::atomic::Orderi
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AcpiError { Truncated, BadSignature, BadLength, BadChecksum, TooManyEntries, MalformedEntry, MissingRoot, MissingMadt, AddressOutOfRange }
 
+/// Convert ACPI discovery failures to the shared NTSTATUS ABI at the driver boundary.
+pub const fn error_to_ntstatus(error: AcpiError) -> nt_abi::ntstatus::NTSTATUS {
+    use nt_abi::ntstatus::*;
+    match error {
+        AcpiError::Truncated => STATUS_BUFFER_TOO_SMALL,
+        AcpiError::TooManyEntries => STATUS_INSUFFICIENT_RESOURCES,
+        AcpiError::MissingRoot | AcpiError::MissingMadt => STATUS_UNSUCCESSFUL,
+        AcpiError::BadSignature | AcpiError::BadLength | AcpiError::BadChecksum
+        | AcpiError::MalformedEntry | AcpiError::AddressOutOfRange => STATUS_INVALID_PARAMETER,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct CpuEntry { pub apic_id: u32, pub processor_uid: u32, pub enabled: bool, pub x2apic: bool }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
