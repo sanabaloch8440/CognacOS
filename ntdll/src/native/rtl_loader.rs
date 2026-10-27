@@ -14,16 +14,12 @@
 #![allow(non_camel_case_types, non_snake_case)]
 
 use core::ptr;
-use crate::nt_abi::types::{LONG, PVOID, ULONG, ULONG_PTR, UCHAR, USHORT, WCHAR};
+use crate::nt_abi::types::{PVOID, ULONG, ULONG_PTR, UCHAR, USHORT, WCHAR};
+use crate::nt_abi::ntstatus::{NTSTATUS, STATUS_DLL_NOT_FOUND, STATUS_INVALID_IMAGE_FORMAT, STATUS_INVALID_PARAMETER, STATUS_PROCEDURE_NOT_FOUND, STATUS_SUCCESS};
 use crate::nt_abi::object::{ANSI_STRING, UNICODE_STRING};
 
 pub type PULONG = *mut ULONG;
 
-pub const STATUS_SUCCESS: LONG = 0;
-pub const STATUS_INVALID_PARAMETER: LONG = 0xC000_000D_u32 as LONG;
-pub const STATUS_INVALID_IMAGE_FORMAT: LONG = 0xC000_007B_u32 as LONG;
-pub const STATUS_PROCEDURE_NOT_FOUND: LONG = 0xC000_007A_u32 as LONG;
-pub const STATUS_DLL_NOT_FOUND: LONG = 0xC000_0135_u32 as LONG;
 
 pub type COGNAC_UNICODE_STRING = UNICODE_STRING;
 pub type PCCOGNAC_UNICODE_STRING = *const UNICODE_STRING;
@@ -102,7 +98,7 @@ pub unsafe extern "system" fn LdrGetDllHandle(
     _dll_characteristics: PULONG,
     dll_name: PCCOGNAC_UNICODE_STRING,
     dll_handle: *mut PVOID,
-) -> LONG {
+) -> NTSTATUS {
     if dll_name.is_null() || dll_handle.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
@@ -178,7 +174,7 @@ pub unsafe extern "system" fn LdrGetProcedureAddress(
     procedure_name: PCCOGNAC_ANSI_STRING,
     procedure_number: ULONG,
     procedure_address: *mut PVOID,
-) -> LONG {
+) -> NTSTATUS {
     if dll_handle.is_null() || procedure_address.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
