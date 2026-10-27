@@ -595,6 +595,7 @@ pub fn self_test() -> bool {
   // Inspect the page tables before dereferencing the direct-map VA. Previously
   // the self-test touched the address first, turning a missing direct-map leaf
   // into an unrecoverable kernel #PF instead of a diagnosable test failure.
+  #[cfg(feature = "diagnostic-vm")]
   let mapping=match unsafe{crate::memory::inspect_mapping_diagnostic(root,virtual_address)} {
    Ok(mapping)=>mapping,
    Err(failure)=>{
@@ -608,6 +609,11 @@ pub fn self_test() -> bool {
     SELF_TEST_MAP_PTE.store(failure.pte,Ordering::Release);
     return self_test_fail(line!());
    }
+  };
+  #[cfg(not(feature = "diagnostic-vm"))]
+  let mapping=match unsafe{crate::memory::inspect_mapping(root,virtual_address)} {
+   Ok(mapping)=>mapping,
+   Err(_)=>return self_test_fail(line!()),
   };
   if mapping.physical_address!=physical || mapping.page_size!=PAGE
       || !mapping.writable || mapping.executable || mapping.user_accessible {return self_test_fail(line!())}
