@@ -307,7 +307,7 @@ jobs:
       - name: Build freestanding Rust kernel with project linker script
         env:
           RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
-        run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
+        run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release --features diagnostic-vm
       - name: Convert fixed-base kernel ELF to PE32+
         run: |
           python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
