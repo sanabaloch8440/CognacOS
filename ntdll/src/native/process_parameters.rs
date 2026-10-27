@@ -281,7 +281,6 @@ unsafe fn query_environment_variable_u_explicit(
 
 
 /// Query a named variable from an explicit environment block or the current PEB environment.
-#[no_mangle]
 pub unsafe extern "system" fn RtlQueryEnvironmentVariable_U(
     environment: *mut WCHAR,
     name: *const UNICODE_STRING,
@@ -333,7 +332,6 @@ unsafe fn query_environment_variable_explicit(
 
 
 /// Query a variable from an explicit environment block or the current process environment.
-#[no_mangle]
 pub unsafe extern "system" fn RtlQueryEnvironmentVariable(
     environment: *mut WCHAR,
     name: *const WCHAR,
@@ -579,7 +577,6 @@ unsafe fn expand_environment_strings_explicit(
 
 
 /// Expand environment references using an explicit block or the current PEB environment.
-#[no_mangle]
 pub unsafe extern "system" fn RtlExpandEnvironmentStrings(
     environment: *const WCHAR,
     source: *const WCHAR,
@@ -603,7 +600,6 @@ pub unsafe extern "system" fn RtlExpandEnvironmentStrings(
     status
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn RtlExpandEnvironmentStrings_U(
     environment: *const WCHAR,
     source: *const UNICODE_STRING,
