@@ -548,13 +548,35 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
 /// Exercise a real high-half mapping and reclamation before the pool uses it.
 /// Source line of the last failed kernel-VM self-test assertion; zero means no failure.
 static SELF_TEST_FAILURE_LINE: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_MAP_ROOT: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_MAP_PHYSICAL: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_MAP_VIRTUAL: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_MAP_STAGE: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_MAP_PML4E: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_MAP_PDPTE: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_MAP_PDE: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_MAP_PTE: AtomicU64 = AtomicU64::new(0);
 fn self_test_fail(line: u32) -> bool {
  SELF_TEST_FAILURE_LINE.store(line as u64, Ordering::Release);
  false
 }
 pub fn self_test_failure_line() -> u32 { SELF_TEST_FAILURE_LINE.load(Ordering::Acquire) as u32 }
+/// Root, expected physical address, VA, walk stage, and observed PML4E/PDPTE/PDE/PTE.
+pub fn self_test_mapping_failure() -> [u64; 8] {
+ [
+  SELF_TEST_MAP_ROOT.load(Ordering::Acquire),
+  SELF_TEST_MAP_PHYSICAL.load(Ordering::Acquire),
+  SELF_TEST_MAP_VIRTUAL.load(Ordering::Acquire),
+  SELF_TEST_MAP_STAGE.load(Ordering::Acquire),
+  SELF_TEST_MAP_PML4E.load(Ordering::Acquire),
+  SELF_TEST_MAP_PDPTE.load(Ordering::Acquire),
+  SELF_TEST_MAP_PDE.load(Ordering::Acquire),
+  SELF_TEST_MAP_PTE.load(Ordering::Acquire),
+ ]
+}
 pub fn self_test() -> bool {
  SELF_TEST_FAILURE_LINE.store(0, Ordering::Release);
+ SELF_TEST_MAP_STAGE.store(0, Ordering::Release);
  let ipi_before=crate::smp::tlb_ipi_count();
  // This self-test dereferences arena VAs on the executing CPU. The arena's
  // page tables are owned by ROOT, so do not run it from a CPU using another
@@ -573,7 +595,20 @@ pub fn self_test() -> bool {
   // Inspect the page tables before dereferencing the direct-map VA. Previously
   // the self-test touched the address first, turning a missing direct-map leaf
   // into an unrecoverable kernel #PF instead of a diagnosable test failure.
-  let Ok(mapping)=(unsafe{crate::memory::inspect_mapping(root,virtual_address)}) else{return self_test_fail(line!())};
+  let mapping=match unsafe{crate::memory::inspect_mapping_diagnostic(root,virtual_address)} {
+   Ok(mapping)=>mapping,
+   Err(failure)=>{
+    SELF_TEST_MAP_ROOT.store(root,Ordering::Release);
+    SELF_TEST_MAP_PHYSICAL.store(physical,Ordering::Release);
+    SELF_TEST_MAP_VIRTUAL.store(virtual_address,Ordering::Release);
+    SELF_TEST_MAP_STAGE.store(failure.stage as u64,Ordering::Release);
+    SELF_TEST_MAP_PML4E.store(failure.pml4e,Ordering::Release);
+    SELF_TEST_MAP_PDPTE.store(failure.pdpte,Ordering::Release);
+    SELF_TEST_MAP_PDE.store(failure.pde,Ordering::Release);
+    SELF_TEST_MAP_PTE.store(failure.pte,Ordering::Release);
+    return self_test_fail(line!());
+   }
+  };
   if mapping.physical_address!=physical || mapping.page_size!=PAGE
       || !mapping.writable || mapping.executable || mapping.user_accessible {return self_test_fail(line!())}
   let active_root=crate::ntoskrnl::mm::address_space::active_root_physical();
