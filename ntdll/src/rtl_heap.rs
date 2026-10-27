@@ -284,17 +284,9 @@ pub unsafe extern "system" fn RtlGetProcessHeap() -> HANDLE {
             Err(winner) => winner,
         }
     };
-    // Match Windows NTDLL: publish the actual default heap in PEB.ProcessHeap.
-    // The kernel creates the PEB in the current user address space; never write
-    // through a null or non-user GS base.
-    #[cfg(target_os = "windows")]
-    unsafe {
-        let peb: usize;
-        core::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, preserves_flags));
-        if peb != 0 && peb < 0x0000_8000_0000_0000usize {
-            (peb as *mut u8).add(0x30).cast::<HANDLE>().write(heap.cast());
-        }
-    }
+    // RtlGetCurrentPeb publishes PEB.ProcessHeap using the PEB pointer
+    // captured before this routine makes allocation syscalls. Do not reread
+    // GS here: this function may resume immediately after a syscall.
     heap.cast()
 }
 
