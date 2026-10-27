@@ -562,11 +562,17 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 20]> {
     let functions = image_rva_offset(image, section_table, section_count, headers_size, functions_rva, function_count.checked_mul(4)?)?;
     let names = image_rva_offset(image, section_table, section_count, headers_size, names_rva, name_count.checked_mul(4)?)?;
     let ordinals = image_rva_offset(image, section_table, section_count, headers_size, ordinals_rva, name_count.checked_mul(2)?)?;
-    // Require only the canonical syscall exports present in the staged Rust
-    // NTDLL export definition. Registry mutation services are not exported by
-    // this image yet; leave their slots unavailable instead of rejecting the
-    // otherwise usable syscall table.
-    let required_names: [&[u8]; 15] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile", b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory", b"NtReadVirtualMemory", b"NtWriteVirtualMemory"];
+    // Rust NTDLL is the sole native user/kernel boundary. Require every
+    // syscall export used by the current kernel, including registry mutations.
+    // A partial table is a boot error, not a reason to switch ABI paths.
+    let required_names: [&[u8]; 20] = [
+        b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess",
+        b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey",
+        b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile",
+        b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory",
+        b"NtQueryVirtualMemory", b"NtReadVirtualMemory", b"NtWriteVirtualMemory",
+        b"NtCreateKey", b"NtSetValueKey", b"NtDeleteValueKey", b"NtDeleteKey", b"NtFlushKey",
+    ];
     let mut discovered = [SERVICE_UNAVAILABLE; 20];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
