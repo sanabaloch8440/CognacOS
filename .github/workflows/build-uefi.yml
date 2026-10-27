@@ -542,7 +542,7 @@ jobs:
             cat build/serial.log || true
             echo "=== QEMU CPU exception / reset trace ==="
             tail -n 500 build/qemu-debug.log || true
-            echo "=== Resolve native NTDLL RIP against its PDB/DWARF line tables ==="
+            echo "=== Classify captured RIP and resolve NTDLL only when it belongs to that image ==="
             python3 - <<'PY'
           import re, struct, subprocess
           from pathlib import Path
@@ -573,8 +573,10 @@ jobs:
           candidates.append(image_base)
           base = next((b for b in reversed(candidates) if b <= rip < b + image_size), None)
           if base is None:
-              print(f"Current RIP 0x{rip:x} is outside known NTDLL image ranges; image preferred base=0x{image_base:x}.")
-              print("Kernel/HAL source locations, full registers, and exception trace are above.")
+              print(f"Captured RIP 0x{rip:x} is outside all known NTDLL image ranges; NTDLL preferred base=0x{image_base:x}, image size=0x{image_size:x}.")
+              print("This is not evidence that execution was inside NTDLL or that the PE loader is broken.")
+              print("Treat this RIP as a kernel/HAL/other-image address and use the kernel/HAL DWARF and QEMU exception trace above.")
+              print("NTDLL source resolution requires a RIP inside its actual loaded image range; do not subtract the NTDLL preferred base from an unrelated address.")
               raise SystemExit(0)
           rva = rip - base
           print(f"NTDLL source resolution: RIP=0x{rip:x}, loaded_base=0x{base:x}, RVA=0x{rva:x}")
