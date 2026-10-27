@@ -1,4 +1,4 @@
-//! Initial RdotOS x64 ring-3 syscall ABI; intentionally distinct from NT syscalls.
+//! Windows x64 NT syscall dispatch plus the separate process-exit gate.
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use crate::ntoskrnl::mm::address_space::AddressSpace;
@@ -130,9 +130,10 @@ pub fn dispatch(number:u64,args:[u64;6])->u64 {
 }
 
 /*
- * CognacOS native NT syscall ABI. NTDLL enters through DPL3 interrupt 0x82;
- * this is an explicit CognacOS transition (not the Windows SYSCALL/MSR ABI).
- * IDs are deliberately separate from Windows-build-specific service numbers.
+ * Internal kernel dispatch IDs for native NT services. User-mode NTDLL enters
+ * only through the architectural Windows x64 SYSCALL/MSR ABI; exported service
+ * numbers are discovered from this Rust NTDLL's PE stubs and translated here
+ * to stable internal handlers.
  */
 pub const NT_SYSCALL_CLOSE: u64 = 0x100;
 pub const NT_SYSCALL_YIELD_EXECUTION: u64 = 0x101;
