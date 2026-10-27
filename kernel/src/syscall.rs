@@ -1643,6 +1643,15 @@ pub fn windows_service_table_matches(image: &[u8]) -> bool {
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
     if frame.is_null() { return NT_STATUS_ACCESS_VIOLATION; }
+    if CALL_COUNT.load(Ordering::Relaxed) < 16 {
+        let user_gs_base: u64;
+        unsafe { core::arch::asm!("mov {}, gs:[40]", out(reg) user_gs_base, options(nostack, preserves_flags)); }
+        unsafe {
+            crate::serial_write(b"[DBG][NTOSKRNL][SYSCALL] saved user GS base=");
+            crate::serial_write_hex(user_gs_base);
+            crate::serial_write(b"\\r\\n");
+        }
+    }
     if !WINDOWS_SERVICE_TABLE_ENABLED.load(Ordering::Acquire) {
         CALL_COUNT.fetch_add(1, Ordering::AcqRel);
         return NT_STATUS_NOT_IMPLEMENTED;
