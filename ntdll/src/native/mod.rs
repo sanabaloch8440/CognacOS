@@ -1,9 +1,10 @@
-//! Windows 11 x64 NTDLL named-export surface.
+//! Native Windows 11 x64 NTDLL implementation modules.
 //!
-//! This file is the module index for the pinned Windows 11 x64 export surface.
-//! Implemented routines live in the established NTDLL source modules; remaining
-//! name-level placeholders are grouped into focused subsystem files below.
-//! Their generic zero-argument signatures are not ABI-safe Windows replacements.
+//! This is the single in-crate implementation tree for the Windows 11 export
+//! surface. Subsystems are organized by responsibility; public symbols are
+//! linked into the same ntdll.dll as the established RTL/runtime modules.
+//! Names in the pinned export inventory do not imply complete semantics until
+//! the corresponding implementation and ABI tests are complete.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 #[cfg(target_os = "windows")]

@@ -130,7 +130,7 @@ fn main() {
     scan(std::path::Path::new("src"), &mut declared);
     // Explicitly protect the unwind-table ABI implementation from generated export stubs.
     declared.insert("RtlAddFunctionTable".to_string());
-    // These APIs are implemented in windows11_exports/memory.rs and must not be shadowed.
+    // These APIs are implemented in native/memory.rs and must not be shadowed.
     declared.insert("RtlGetNonVolatileToken".to_string());
     declared.insert("RtlFreeNonVolatileToken".to_string());
     declared.insert("NtCreateSection".to_string());

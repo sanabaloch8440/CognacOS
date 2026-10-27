@@ -63,7 +63,7 @@ pub mod trace;
 pub mod version;
 
 // Committed Windows 11 x64 export surface: real Rust symbols, not build-generated names.
-pub mod windows11_exports;
+pub mod native;
 
 #[cfg(target_os = "windows")]
 struct NtdllGlobalAllocator;
