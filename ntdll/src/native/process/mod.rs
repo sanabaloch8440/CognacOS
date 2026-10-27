@@ -428,9 +428,8 @@ pub unsafe extern "system" fn NtQueryInformationPort() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
-// NtQueryInformationProcess is provided by the typed x64 syscall stub in syscall_x86_64.rs.
-
-// NtQueryInformationThread is provided by the typed x64 syscall stub in syscall_x86_64.rs.
+// NtQueryInformationProcess and NtQueryInformationThread are emitted from the
+// canonical syscall manifest by build.rs and implemented in syscall_stubs.rs.
 
 #[no_mangle]
 pub unsafe extern "system" fn NtQueryInformationToken() -> i32 {
