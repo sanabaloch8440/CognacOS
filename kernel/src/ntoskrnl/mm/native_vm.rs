@@ -87,7 +87,9 @@ pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         if !region_is_free(&space,start,rounded) { return 0xC000_0018; } // STATUS_CONFLICTING_ADDRESSES
         (start,end)
     } else {
-        let mut candidate = 0x0000_0001_0000_0000u64;
+        // Start inside CognacOS's canonical Windows user VA range; low 4 GiB
+        // addresses are intentionally not user-mappable in this layout.
+        let mut candidate = USER_START;
         let mut found = None;
         while candidate.checked_add(rounded).is_some_and(|e| e < USER_END) {
             let space = match attached(root) { Ok(s)=>s, Err(s)=>return s };
