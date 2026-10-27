@@ -12,14 +12,10 @@ use super::nonvolatile::notify_secure_cache_callbacks;
 #[cfg(target_os = "windows")]
 use super::super::syscall_stubs::{NtAllocateVirtualMemory, NtFreeVirtualMemory, NtProtectVirtualMemory, NtQueryVirtualMemory, NtReadVirtualMemory, NtWriteVirtualMemory};
 
-pub type NTSTATUS = i32;
-pub type HANDLE = *mut c_void;
-pub type PVOID = *mut c_void;
-pub type PSIZE_T = *mut usize;
+pub use crate::nt_abi::types::{HANDLE, PVOID, SIZE_T, ULONG, ULONG_PTR};
+pub use crate::nt_abi::ntstatus::NTSTATUS;
+pub type PSIZE_T = *mut SIZE_T;
 pub type PULONG = *mut ULONG;
-pub type ULONG = u32;
-pub type ULONG_PTR = usize;
-pub type SIZE_T = usize;
 
 pub(super) const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC000_0002u32 as i32;
 pub(super) const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
