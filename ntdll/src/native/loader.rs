@@ -10,11 +10,8 @@
 
 use core::{ffi::c_void, ptr, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 
-type NTSTATUS = i32;
-type ULONG = u32;
-type BOOLEAN = u8;
-type PVOID = *mut c_void;
-type ULONG_PTR = usize;
+pub use crate::nt_abi::types::{BOOLEAN, PVOID, ULONG, ULONG_PTR};
+pub use crate::nt_abi::ntstatus::NTSTATUS;
 
 const STATUS_SUCCESS: NTSTATUS = 0;
 const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
