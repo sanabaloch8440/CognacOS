@@ -13,7 +13,7 @@
 use core::ffi::c_void;
 use core::ptr::{null, null_mut};
 
-use crate::nt_abi::types::{BOOLEAN, HANDLE, ULONG, USHORT, WCHAR};
+use crate::nt_abi::types::{BOOLEAN, HANDLE, ULONG, ULONG_PTR, USHORT, WCHAR};
 use crate::nt_abi::types::SIZE_T;
 use crate::nt_abi::ntstatus::NTSTATUS;
 
@@ -71,6 +71,15 @@ pub struct RTL_USER_PROCESS_PARAMETERS {
     pub PackageDependencyData: *mut c_void,
     pub ProcessGroupId: ULONG,
     pub LoaderThreads: ULONG,
+    /// Windows 11 process-parameter redirection DLL descriptor.
+    pub RedirectionDllName: UNICODE_STRING,
+    /// Windows 11 heap partition name descriptor.
+    pub HeapPartitionName: UNICODE_STRING,
+    /// Optional default thread-pool CPU-set mask array.
+    pub DefaultThreadpoolCpuSetMasks: *mut ULONG_PTR,
+    pub DefaultThreadpoolCpuSetMaskCount: ULONG,
+    pub DefaultThreadpoolThreadMaximum: ULONG,
+    pub HeapMemoryTypeMask: ULONG,
 }
 
 extern "system" {
@@ -503,4 +512,25 @@ pub unsafe extern "system" fn RtlCreateProcessParameters(
 ) -> NTSTATUS {
     RtlCreateProcessParametersEx(result, image, dll_path, current_directory, command_line,
         environment, window_title, desktop, shell_info, runtime_info, 0)
+}
+
+
+#[cfg(all(test, target_pointer_width = "64"))]
+mod abi_layout_tests {
+    use super::*;
+    use core::mem::{align_of, offset_of, size_of};
+
+    #[test]
+    fn rtl_user_process_parameters_matches_windows_11_x64_layout() {
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, Environment), 0x80);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, EnvironmentSize), 0x3f0);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, RedirectionDllName), 0x410);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, HeapPartitionName), 0x420);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, DefaultThreadpoolCpuSetMasks), 0x430);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, DefaultThreadpoolCpuSetMaskCount), 0x438);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, DefaultThreadpoolThreadMaximum), 0x43c);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, HeapMemoryTypeMask), 0x440);
+        assert_eq!(align_of::<RTL_USER_PROCESS_PARAMETERS>(), 8);
+        assert_eq!(size_of::<RTL_USER_PROCESS_PARAMETERS>(), 0x448);
+    }
 }
