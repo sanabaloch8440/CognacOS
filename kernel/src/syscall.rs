@@ -562,7 +562,11 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 20]> {
     let functions = image_rva_offset(image, section_table, section_count, headers_size, functions_rva, function_count.checked_mul(4)?)?;
     let names = image_rva_offset(image, section_table, section_count, headers_size, names_rva, name_count.checked_mul(4)?)?;
     let ordinals = image_rva_offset(image, section_table, section_count, headers_size, ordinals_rva, name_count.checked_mul(2)?)?;
-    let required_names: [&[u8]; 20] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile", b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory", b"NtReadVirtualMemory", b"NtWriteVirtualMemory", b"NtCreateKey", b"NtSetValueKey", b"NtDeleteValueKey", b"NtDeleteKey", b"NtFlushKey"];
+    // Require only the canonical syscall exports present in the staged Rust
+    // NTDLL export definition. Registry mutation services are not exported by
+    // this image yet; leave their slots unavailable instead of rejecting the
+    // otherwise usable syscall table.
+    let required_names: [&[u8]; 15] = [b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess", b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey", b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile", b"NtAllocateVirtualMemory", b"NtFreeVirtualMemory", b"NtProtectVirtualMemory", b"NtQueryVirtualMemory", b"NtReadVirtualMemory", b"NtWriteVirtualMemory"];
     let mut discovered = [SERVICE_UNAVAILABLE; 20];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
@@ -584,7 +588,7 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 20]> {
         if !image.get(stub.checked_add(8)?..window_end)?.windows(2).any(|op| op == [0x0f, 0x05]) { continue; }
         discovered[slot] = service as u64;
     }
-    if discovered.iter().any(|service| *service == SERVICE_UNAVAILABLE) { return None; }
+    if discovered[..required_names.len()].iter().any(|service| *service == SERVICE_UNAVAILABLE) { return None; }
     Some(discovered)
 }
 pub fn configure_windows_service_table_from_image(image: &[u8]) -> bool {
