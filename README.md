@@ -62,6 +62,7 @@ Fault containment has bounded supervisor exception fixups with an explicit recov
 - `kernel/src/ntoskrnl/mm/address_space.rs` — process address spaces and checked user-memory access
 - `kernel/src/ntoskrnl/io/file_services.rs` — initial read-only provider for explicitly staged boot files
 - `kernel/src/pe.rs`, `kernel/src/pe_modules.rs` — bounded PE32+ mapping and module-lifetime scaffolding
+- `shared/nt-abi/` — shared `no_std` NT ABI crate with Windows.h-/ntddk.h-/wdm.h-/ntifs.h-style Rust module facades; currently integrated as a public ABI dependency of NTDLL, with subsystem-by-subsystem duplicate migration still required
 - `ntdll/src/windows11_exports/` — Rust NTDLL exports, including typed loaded-module lookup APIs
 - `kernel/src/ntoskrnl/` and `kernel/src/hal/` — NT-inspired executive and HAL implementations
 - `drivers/ext4/` — native Rust ext-family filesystem crate; general VFS mounting remains incomplete
