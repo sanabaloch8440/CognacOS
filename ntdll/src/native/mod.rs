@@ -26,7 +26,7 @@ pub mod exception;
 mod time;
 mod strings;
 pub mod crypt;
-mod path;
+pub mod path;
 mod loader;
 pub mod heap;
 mod memory;
