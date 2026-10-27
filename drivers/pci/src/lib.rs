@@ -4,6 +4,9 @@
 //! device-memory attributes before calling these routines. This module does not
 //! assume a universal ECAM base or silently identity-map arbitrary physical RAM.
 #![no_std]
+
+/// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
+pub use cognacos_nt_abi as nt_abi;
 #[cfg(test)]
 extern crate std;
 use core::sync::atomic::Ordering;
