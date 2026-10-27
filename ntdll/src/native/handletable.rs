@@ -12,8 +12,8 @@ pub use crate::nt_abi::types::{BOOLEAN, HANDLE, PVOID, ULONG, SIZE_T};
 pub use crate::nt_abi::ntstatus::{
     NTSTATUS, STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED, STATUS_NO_MEMORY, STATUS_SUCCESS,
 };
-pub use crate::nt_abi::mm::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE};
-const COMMIT_SIZE: usize = 4096;
+pub use crate::nt_abi::mm::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, PAGE_SIZE};
+const COMMIT_SIZE: usize = PAGE_SIZE;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
