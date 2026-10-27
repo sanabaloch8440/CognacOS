@@ -221,7 +221,6 @@ unsafe extern "system" {
     pub(super) fn cognacos_rtl_dereference_section(handle: PVOID) -> NTSTATUS;
     pub(super) fn cognacos_rtl_section_copy(handle: PVOID, offset: u64, buffer: PVOID, length: SIZE_T, write: ULONG) -> NTSTATUS;
     pub(super) fn cognacos_rtl_reference_section(handle: PVOID) -> NTSTATUS;
-    pub(super) fn cognacos_rtl_section_copy(handle: PVOID, offset: u64, buffer: PVOID, length: SIZE_T, write: ULONG) -> NTSTATUS;
     fn cognacos_nt_create_section(section_handle: *mut HANDLE, desired_access: ULONG, object_attributes: PVOID, maximum_size: *const i64, page_protection: ULONG, allocation_attributes: ULONG, file_handle: HANDLE) -> NTSTATUS;
 }
 
