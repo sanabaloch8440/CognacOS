@@ -12,6 +12,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 libm = { version = "0.2", default-features = false }
+cognacos-nt-abi = { path = "../shared/nt-abi" }
 
 [features]
 default = []
