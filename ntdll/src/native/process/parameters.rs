@@ -62,9 +62,9 @@ pub struct RTL_USER_PROCESS_PARAMETERS {
     pub WindowFlags: ULONG,
     pub ShowWindowFlags: ULONG,
     pub WindowTitle: UNICODE_STRING,
-    pub Desktop: UNICODE_STRING,
+    pub DesktopInfo: UNICODE_STRING,
     pub ShellInfo: UNICODE_STRING,
-    pub RuntimeInfo: UNICODE_STRING,
+    pub RuntimeData: UNICODE_STRING,
     pub CurrentDirectories: [RTL_DRIVE_LETTER_CURDIR; 32],
     pub EnvironmentSize: SIZE_T,
     pub EnvironmentVersion: SIZE_T,
@@ -522,7 +522,16 @@ mod abi_layout_tests {
 
     #[test]
     fn rtl_user_process_parameters_matches_windows_11_x64_layout() {
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, CurrentDirectory), 0x38);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, DllPath), 0x50);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, ImagePathName), 0x60);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, CommandLine), 0x70);
         assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, Environment), 0x80);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, WindowTitle), 0xb0);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, DesktopInfo), 0xc0);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, ShellInfo), 0xd0);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, RuntimeData), 0xe0);
+        assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, CurrentDirectories), 0xf0);
         assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, EnvironmentSize), 0x3f0);
         assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, RedirectionDllName), 0x410);
         assert_eq!(offset_of!(RTL_USER_PROCESS_PARAMETERS, HeapPartitionName), 0x420);
