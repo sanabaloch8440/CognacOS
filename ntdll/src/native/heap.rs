@@ -241,6 +241,6 @@ pub unsafe extern "system" fn RtlSetHeapInformation(
     }
 }
 
-/// Host-side checks for the fixed bootstrap contract and query/set status paths.
-/// These tests are not a substitute for ABI or QEMU validation.
+// Host-side tests for the fixed bootstrap contract and query/set status paths
+// belong in the crate's integration-test suite; ABI/QEMU validation is still required.
 
