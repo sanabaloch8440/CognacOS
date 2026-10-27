@@ -8,7 +8,8 @@ pub type ULONG = u32;
 pub type ULONG64 = u64;
 pub type LONG = i32;
 pub type LONG64 = i64;
-pub type NTSTATUS_TYPE = i32;
+/// Compatibility alias for the canonical signed NTSTATUS type.
+pub type NTSTATUS_TYPE = crate::ntstatus::NTSTATUS;
 pub type HANDLE = *mut core::ffi::c_void;
 pub type PVOID = *mut core::ffi::c_void;
 pub type PCVOID = *const core::ffi::c_void;
