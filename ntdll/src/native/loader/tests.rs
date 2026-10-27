@@ -6,16 +6,16 @@ mod tests {
     fn dll_directory_round_trip_uses_native_unicode_string_abi() {
         let mut path: Vec<u16> = "C:\\System32".encode_utf16().collect();
         let input = UNICODE_STRING {
-            Length: (path.len() * 2) as u16,
-            MaximumLength: (path.len() * 2) as u16,
-            Buffer: path.as_mut_ptr(),
+            length: (path.len() * 2) as u16,
+            maximum_length: (path.len() * 2) as u16,
+            buffer: path.as_mut_ptr(),
         };
         assert_eq!(unsafe { LdrSetDllDirectory(&input) }, STATUS_SUCCESS);
-        let mut output = UNICODE_STRING { Length: 0, MaximumLength: 0, Buffer: ptr::null_mut() };
+        let mut output = UNICODE_STRING { length: 0, maximum_length: 0, buffer: ptr::null_mut() };
         assert_eq!(unsafe { LdrGetDllDirectory(&mut output) }, STATUS_SUCCESS);
-        assert_eq!(output.Length, input.Length);
-        assert!(!output.Buffer.is_null());
-        assert_eq!(unsafe { core::slice::from_raw_parts(output.Buffer, path.len()) }, path.as_slice());
+        assert_eq!(output.length, input.length);
+        assert!(!output.buffer.is_null());
+        assert_eq!(unsafe { core::slice::from_raw_parts(output.buffer, path.len()) }, path.as_slice());
         assert_eq!(unsafe { LdrSetDllDirectory(ptr::null()) }, STATUS_SUCCESS);
     }
 
@@ -23,9 +23,9 @@ mod tests {
     fn dll_directory_cookie_rejects_stale_handles() {
         let mut path: Vec<u16> = "C:\\Plugins".encode_utf16().collect();
         let input = UNICODE_STRING {
-            Length: (path.len() * 2) as u16,
-            MaximumLength: (path.len() * 2) as u16,
-            Buffer: path.as_mut_ptr(),
+            length: (path.len() * 2) as u16,
+            maximum_length: (path.len() * 2) as u16,
+            buffer: path.as_mut_ptr(),
         };
         let mut cookie: PVOID = ptr::null_mut();
         assert_eq!(unsafe { LdrAddDllDirectory(&input, &mut cookie) }, STATUS_SUCCESS);
