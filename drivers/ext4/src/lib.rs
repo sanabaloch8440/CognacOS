@@ -18,6 +18,20 @@ const SUPPORTED_RO_COMPAT:u32=0x0003; // sparse_super and large_file only
 const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG|INCOMPAT_64BIT;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,InvalidChecksum,InvalidPartitionTable,UnsupportedPartitionTable,Io}
+
+/// Translate filesystem-core errors into the canonical NTSTATUS ABI at the driver boundary.
+pub const fn error_to_ntstatus(error: Error) -> nt_abi::ntstatus::NTSTATUS {
+    use nt_abi::ntstatus::*;
+    match error {
+        Error::Truncated => STATUS_BUFFER_TOO_SMALL,
+        Error::UnsupportedIncompatFeature | Error::UnsupportedFormat | Error::UnsupportedRoCompatFeature
+        | Error::UnsupportedCompatFeature | Error::UnsupportedPartitionTable => STATUS_NOT_IMPLEMENTED,
+        Error::Io => STATUS_UNSUCCESSFUL,
+        Error::BadMagic | Error::InvalidBlockSize | Error::InvalidInodeSize | Error::InvalidGeometry
+        | Error::OutOfRange | Error::InvalidDirectoryEntry | Error::InvalidExtentTree
+        | Error::InvalidChecksum | Error::InvalidPartitionTable => STATUS_INVALID_PARAMETER,
+    }
+}
 fn u16at(b:&[u8],o:usize)->Result<u16,Error>{let e=o.checked_add(2).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u16::from_le_bytes([s[0],s[1]]))}
 fn u32at(b:&[u8],o:usize)->Result<u32,Error>{let e=o.checked_add(4).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
