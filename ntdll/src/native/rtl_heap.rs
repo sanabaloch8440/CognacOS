@@ -423,6 +423,15 @@ pub unsafe extern "system" fn RtlReAllocateHeap(handle: HANDLE, flags: ULONG, ad
         if !(*b).next.is_null() && (*(*b).next).free != 0 && (*b).size + mem::size_of::<Block>() + (*(*b).next).size >= wanted {
             merge_next(b);
             if (*b).size >= wanted {
+                // After coalescing, split the excess tail so RtlSizeHeap reports
+                // the requested size rather than the entire merged free span.
+                if wanted.checked_add(mem::size_of::<Block>() + ALIGN).map_or(false, |minimum| (*b).size >= minimum) {
+                    let split = b.cast::<u8>().add(mem::size_of::<Block>() + wanted).cast::<Block>();
+                    ptr::write(split, Block { magic: BLOCK_MAGIC, size: (*b).size - wanted - mem::size_of::<Block>(), previous: b, next: (*b).next, user_value: ptr::null_mut(), user_flags: 0, free: 1 });
+                    if !(*split).next.is_null() { (*(*split).next).previous = split; }
+                    (*b).next = split;
+                    (*b).size = wanted;
+                }
                 if flags & HEAP_ZERO_MEMORY != 0 && size > old_size { ptr::write_bytes(address.cast::<u8>().add(old_size), 0, size - old_size); }
                 unlock(&(*heap).lock);
                 return address;
