@@ -554,11 +554,16 @@ pub fn self_test() -> bool {
  if crate::memory::first_high_conventional_page().is_some() {
   let Some(physical)=crate::memory::first_high_conventional_page() else{return false};
   let Some(virtual_address)=crate::memory::direct_map_address(physical) else{return false};
-  let _sample=unsafe{(virtual_address as *const u8).read_volatile()};
   let root=ROOT.load(Ordering::Acquire);
+  // Inspect the page tables before dereferencing the direct-map VA. Previously
+  // the self-test touched the address first, turning a missing direct-map leaf
+  // into an unrecoverable kernel #PF instead of a diagnosable test failure.
   let Ok(mapping)=(unsafe{crate::memory::inspect_mapping(root,virtual_address)}) else{return false};
   if mapping.physical_address!=physical || mapping.page_size!=PAGE
       || !mapping.writable || mapping.executable || mapping.user_accessible {return false}
+  let active_root=crate::ntoskrnl::mm::address_space::active_root_physical();
+  if active_root!=root { return false; }
+  let _sample=unsafe{(virtual_address as *const u8).read_volatile()};
 
   // Confirm the allocator itself can return, zero, access, and recycle a frame
   // above 4 GiB instead of merely exposing a direct-map address for one.
