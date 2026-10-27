@@ -300,8 +300,19 @@ pub unsafe extern "system" fn ZwCompressKey() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwCreateKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwCreateKey(
+    key_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const crate::reg::OBJECT_ATTRIBUTES,
+    title_index: u32,
+    class: *const crate::reg::UNICODE_STRING,
+    create_options: u32,
+    disposition: *mut u32,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtCreateKey(key_handle, desired_access, object_attributes, title_index, class, create_options, disposition) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (key_handle, desired_access, object_attributes, title_index, class, create_options, disposition); 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
@@ -320,28 +331,60 @@ pub unsafe extern "system" fn ZwCreateRegistryTransaction() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwDeleteKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwDeleteKey(key_handle: *mut core::ffi::c_void) -> i32 {
+    #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtDeleteKey(key_handle) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = key_handle; 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwDeleteValueKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwDeleteValueKey(
+    key_handle: *mut core::ffi::c_void,
+    value_name: *const crate::reg::UNICODE_STRING,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtDeleteValueKey(key_handle, value_name) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (key_handle, value_name); 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwEnumerateKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwEnumerateKey(
+    key_handle: *mut core::ffi::c_void,
+    index: u32,
+    information_class: u32,
+    information: *mut core::ffi::c_void,
+    length: u32,
+    result_length: *mut u32,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtEnumerateKey(key_handle, index, information_class, information, length, result_length) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (key_handle, index, information_class, information, length, result_length); 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwEnumerateValueKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwEnumerateValueKey(
+    key_handle: *mut core::ffi::c_void,
+    index: u32,
+    information_class: u32,
+    information: *mut core::ffi::c_void,
+    length: u32,
+    result_length: *mut u32,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtEnumerateValueKey(key_handle, index, information_class, information, length, result_length) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (key_handle, index, information_class, information, length, result_length); 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwFlushKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwFlushKey(key_handle: *mut core::ffi::c_void) -> i32 {
+    #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtFlushKey(key_handle) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = key_handle; 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
@@ -437,8 +480,17 @@ pub unsafe extern "system" fn ZwOpenRegistryTransaction() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwQueryKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwQueryKey(
+    key_handle: *mut core::ffi::c_void,
+    information_class: u32,
+    information: *mut core::ffi::c_void,
+    length: u32,
+    result_length: *mut u32,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtQueryKey(key_handle, information_class, information, length, result_length) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (key_handle, information_class, information, length, result_length); 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
@@ -521,8 +573,18 @@ pub unsafe extern "system" fn ZwSetInformationKey() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn ZwSetValueKey() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn ZwSetValueKey(
+    key_handle: *mut core::ffi::c_void,
+    value_name: *const crate::reg::UNICODE_STRING,
+    title_index: u32,
+    value_type: u32,
+    data: *mut core::ffi::c_void,
+    data_size: u32,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtSetValueKey(key_handle, value_name, title_index, value_type, data, data_size) }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = (key_handle, value_name, title_index, value_type, data, data_size); 0xC0000002u32 as i32 }
 }
 
 #[no_mangle]
