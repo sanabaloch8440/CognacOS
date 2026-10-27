@@ -546,7 +546,15 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
  table[i]=Extent::EMPTY;Ok(())
 }
 /// Exercise a real high-half mapping and reclamation before the pool uses it.
+/// Source line of the last failed kernel-VM self-test assertion; zero means no failure.
+static SELF_TEST_FAILURE_LINE: AtomicU64 = AtomicU64::new(0);
+fn self_test_fail(line: u32) -> bool {
+ SELF_TEST_FAILURE_LINE.store(line as u64, Ordering::Release);
+ false
+}
+pub fn self_test_failure_line() -> u32 { SELF_TEST_FAILURE_LINE.load(Ordering::Acquire) as u32 }
 pub fn self_test() -> bool {
+ SELF_TEST_FAILURE_LINE.store(0, Ordering::Release);
  let ipi_before=crate::smp::tlb_ipi_count();
  // This self-test dereferences arena VAs on the executing CPU. The arena's
  // page tables are owned by ROOT, so do not run it from a CPU using another
@@ -559,15 +567,15 @@ pub fn self_test() -> bool {
  // the direct map and verify the resulting leaf is supervisor, writable, NX,
  // and translates back to the expected physical page.
  if crate::memory::first_high_conventional_page().is_some() {
-  let Some(physical)=crate::memory::first_high_conventional_page() else{return false};
-  let Some(virtual_address)=crate::memory::direct_map_address(physical) else{return false};
+  let Some(physical)=crate::memory::first_high_conventional_page() else{return self_test_fail(line!())};
+  let Some(virtual_address)=crate::memory::direct_map_address(physical) else{return self_test_fail(line!())};
   let root=ROOT.load(Ordering::Acquire);
   // Inspect the page tables before dereferencing the direct-map VA. Previously
   // the self-test touched the address first, turning a missing direct-map leaf
   // into an unrecoverable kernel #PF instead of a diagnosable test failure.
-  let Ok(mapping)=(unsafe{crate::memory::inspect_mapping(root,virtual_address)}) else{return false};
+  let Ok(mapping)=(unsafe{crate::memory::inspect_mapping(root,virtual_address)}) else{return self_test_fail(line!())};
   if mapping.physical_address!=physical || mapping.page_size!=PAGE
-      || !mapping.writable || mapping.executable || mapping.user_accessible {return false}
+      || !mapping.writable || mapping.executable || mapping.user_accessible {return self_test_fail(line!())}
   let active_root=crate::ntoskrnl::mm::address_space::active_root_physical();
   // A timer/CPU transition can change CR3 between the initial ownership check
   // and this probe. In that case the kernel arena is not invalid; this CPU is
@@ -578,80 +586,80 @@ pub fn self_test() -> bool {
 
   // Confirm the allocator itself can return, zero, access, and recycle a frame
   // above 4 GiB instead of merely exposing a direct-map address for one.
-  let Ok(high_page)= (unsafe{crate::memory::allocate_data_page()}) else{return false};
-  if high_page<0x1_0000_0000 {let _=unsafe{crate::memory::free_page(high_page)};return false}
+  let Ok(high_page)= (unsafe{crate::memory::allocate_data_page()}) else{return self_test_fail(line!())};
+  if high_page<0x1_0000_0000 {let _=unsafe{crate::memory::free_page(high_page)};return self_test_fail(line!())}
   let Some(alias)=crate::memory::direct_map_address(high_page) else {
-   let _=unsafe{crate::memory::free_page(high_page)};return false
+   let _=unsafe{crate::memory::free_page(high_page)};return self_test_fail(line!())
   };
   let word=alias as *mut u64;
-  if unsafe{word.read_volatile()}!=0 {let _=unsafe{crate::memory::free_page(high_page)};return false}
+  if unsafe{word.read_volatile()}!=0 {let _=unsafe{crate::memory::free_page(high_page)};return self_test_fail(line!())}
   unsafe{word.write_volatile(0x5244_4f54_4f53_484d);}
   if unsafe{word.read_volatile()}!=0x5244_4f54_4f53_484d {
-   unsafe{word.write_volatile(0)};let _=unsafe{crate::memory::free_page(high_page)};return false
+   unsafe{word.write_volatile(0)};let _=unsafe{crate::memory::free_page(high_page)};return self_test_fail(line!())
   }
   unsafe{word.write_volatile(0);}
-  if unsafe{crate::memory::free_page(high_page)}.is_err(){return false}
+  if unsafe{crate::memory::free_page(high_page)}.is_err(){return self_test_fail(line!())}
  }
  // Exercise distinct extent sizes and every page boundary, then verify exact
  // reclamation and arena reuse. This runs once during boot and again after AP startup.
  for pages in [1usize, 2, 3, 8, 16] {
-  let p = match allocate_pages(pages) { Ok(p) => p, Err(_) => return false };
+  let p = match allocate_pages(pages) { Ok(p) => p, Err(_) => return self_test_fail(line!()) };
   unsafe {
    for page in 0..pages { p.add(page * PAGE as usize).write((0x31u8).wrapping_add(page as u8)); }
    for page in 0..pages {
     if p.add(page * PAGE as usize).read() != (0x31u8).wrapping_add(page as u8) {
-     let _ = free_pages(p, pages); return false;
+     let _ = free_pages(p, pages); return self_test_fail(line!());
     }
    }
   }
-  if free_pages(p, pages).is_err() || allocation_pages(p).is_some() { return false; }
+  if free_pages(p, pages).is_err() || allocation_pages(p).is_some() { return self_test_fail(line!()); }
   if OWN_ROOT_SLOT.load(Ordering::Acquire) {
    let _g=Guard::lock();
    let no_live_extents=unsafe{&*TABLE.0.get()}.iter().all(|extent|!extent.live);
    if no_live_extents {
     let root=ROOT.load(Ordering::Acquire) as *const u64;
-    if unsafe{root.add(ix(BASE)[0]).read()}&P!=0 { return false; }
+    if unsafe{root.add(ix(BASE)[0]).read()}&P!=0 { return self_test_fail(line!()); }
    }
   }
  }
  // Fixed-address image extents must be allocatable and transition from
  // writable/NX staging to strict RX and RW/NX pages without W+X permissions.
  let fixed_va=BASE+0x0f000000;
- let fixed=match allocate_pages_at(fixed_va,2){Ok(p)=>p,Err(_)=>return false};
- if fixed as u64!=fixed_va{let _=free_pages(fixed,2);return false;}
+ let fixed=match allocate_pages_at(fixed_va,2){Ok(p)=>p,Err(_)=>return self_test_fail(line!())};
+ if fixed as u64!=fixed_va{let _=free_pages(fixed,2);return self_test_fail(line!());}
  unsafe{fixed.write(0x51);fixed.add(PAGE as usize).write(0x62);}
  if protect_pages(fixed_va,2,false,false).is_err()
   ||protect_pages(fixed_va,1,false,true).is_err()
-  ||protect_pages(fixed_va+PAGE,1,true,false).is_err(){let _=free_pages(fixed,2);return false;}
+  ||protect_pages(fixed_va+PAGE,1,true,false).is_err(){let _=free_pages(fixed,2);return self_test_fail(line!());}
  let root=ROOT.load(Ordering::Acquire);
  let rx=unsafe{crate::memory::inspect_mapping(root,fixed_va)};
  let rw=unsafe{crate::memory::inspect_mapping(root,fixed_va+PAGE)};
  if !matches!(rx,Ok(m) if !m.writable&&m.executable&&!m.user_accessible)
   ||!matches!(rw,Ok(m) if m.writable&&!m.executable&&!m.user_accessible)
   ||unsafe{fixed.read()}!=0x51||unsafe{fixed.add(PAGE as usize).read()}!=0x62
-  ||free_pages(fixed,2).is_err(){return false;}
+  ||free_pages(fixed,2).is_err(){return self_test_fail(line!());}
  // Demand-zero pageable extents must fault pages in independently and still
  // participate in the same SMP-safe reclamation path.
- let p=match allocate_pageable_pages(3){Ok(p)=>p,Err(_)=>return false};
- if allocation_pages(p).is_none(){let _=free_pages(p,3);return false;}
+ let p=match allocate_pageable_pages(3){Ok(p)=>p,Err(_)=>return self_test_fail(line!())};
+ if allocation_pages(p).is_none(){let _=free_pages(p,3);return self_test_fail(line!());}
  unsafe { p.write(0xA7);p.add(PAGE as usize+17).write(0x5C);p.add(2*PAGE as usize+31).write(0xE1); }
- if unsafe{p.read()}!=0xA7 || unsafe{p.add(PAGE as usize+17).read()}!=0x5C || unsafe{p.add(2*PAGE as usize+31).read()}!=0xE1 {let _=free_pages(p,3);return false;}
+ if unsafe{p.read()}!=0xA7 || unsafe{p.add(PAGE as usize+17).read()}!=0x5C || unsafe{p.add(2*PAGE as usize+31).read()}!=0xE1 {let _=free_pages(p,3);return self_test_fail(line!());}
  let start=((p as u64-BASE)/PAGE) as usize;
  let all_resident={let _g=Guard::lock();let mapped=unsafe{&*MAPPED_BITS.0.get()};(0..3).all(|n|mapped[(start+n)/64]&(1u64<<((start+n)%64))!=0)};
- if !all_resident {let _=free_pages(p,3);return false;}
+ if !all_resident {let _=free_pages(p,3);return self_test_fail(line!());}
  if crate::pagefile::is_active() {
-  if free_pages(p,3).is_err(){return false;}
-  let swap_test=match allocate_pageable_pages(1){Ok(v)=>v,Err(_)=>{let _=free_pages(p,3);return false}};
+  if free_pages(p,3).is_err(){return self_test_fail(line!());}
+  let swap_test=match allocate_pageable_pages(1){Ok(v)=>v,Err(_)=>{let _=free_pages(p,3);return self_test_fail(line!())}};
   unsafe{swap_test.write(0xD3);swap_test.add(4095).write(0x6B);}
-  if reclaim_pageable_pages(1)!=1 {let _=free_pages(swap_test,1);let _=free_pages(p,3);return false;}
+  if reclaim_pageable_pages(1)!=1 {let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
   let swap_index=((swap_test as u64-BASE)/PAGE) as usize;
   let is_swapped={let _g=Guard::lock();let bits=unsafe{&*SWAPPED_BITS.0.get()};bits[swap_index/64]&(1u64<<(swap_index%64))!=0};
-  if !is_swapped {let _=free_pages(swap_test,1);let _=free_pages(p,3);return false;}
+  if !is_swapped {let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
   // These reads deliberately trigger a real protection/page-not-present fault
   // and must restore bytes from the ATA-backed pagefile slot.
   let restored=unsafe{swap_test.read()}==0xD3 && unsafe{swap_test.add(4095).read()}==0x6B;
   let is_resident={let _g=Guard::lock();let bits=unsafe{&*MAPPED_BITS.0.get()};let swaps=unsafe{&*SWAPPED_BITS.0.get()};bits[swap_index/64]&(1u64<<(swap_index%64))!=0 && swaps[swap_index/64]&(1u64<<(swap_index%64))==0};
-  if !restored||!is_resident||free_pages(swap_test,1).is_err(){let _=free_pages(p,3);return false;}
+  if !restored||!is_resident||free_pages(swap_test,1).is_err(){let _=free_pages(p,3);return self_test_fail(line!());}
  }
  let freed=if crate::pagefile::is_active(){allocation_pages(p).is_none()}else{free_pages(p,3).is_ok()&&allocation_pages(p).is_none()};
  freed && (!crate::smp::ipi_shootdowns_enabled() || crate::smp::tlb_ipi_count()>ipi_before)
