@@ -439,7 +439,7 @@ jobs:
           parted -s build/cognacos-uefi.img mkpart ESP fat32 1MiB 65MiB
           parted -s build/cognacos-uefi.img set 1 esp on
           parted -s build/cognacos-uefi.img mkpart COGNACDATA ext4 65MiB 100%
-          mformat -i build/cognacos-uefi.img@@1048576 -F ::
+          mformat -i build/cognacos-uefi.img@@1048576 -F -T 131072 ::
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/BOOT
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
