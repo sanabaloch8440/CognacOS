@@ -32,6 +32,7 @@ pub mod heap;
 mod memory;
 mod security;
 mod registry;
+#[path = "process/mod.rs"]
 pub mod process;
 pub mod debugbuffer;
 pub mod handletable;
@@ -56,7 +57,7 @@ pub mod trace;
 pub(crate) unsafe fn initialize_native_process() {
     let _ = unsafe { exception::RtlRegisterExceptionDispatcher() };
 }
-#[path = "process_parameters.rs"]
+#[path = "process/parameters.rs"]
 pub mod process_parameters;
 #[path = "legacy_misc.rs"]
 pub mod legacy_misc;
