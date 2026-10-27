@@ -273,9 +273,9 @@ pub unsafe extern "system" fn RtlNormalizeProcessParams(
     normalize_pointer(base, &mut (*params).ImagePathName.buffer);
     normalize_pointer(base, &mut (*params).CommandLine.buffer);
     normalize_pointer(base, &mut (*params).WindowTitle.buffer);
-    normalize_pointer(base, &mut (*params).Desktop.buffer);
+    normalize_pointer(base, &mut (*params).DesktopInfo.buffer);
     normalize_pointer(base, &mut (*params).ShellInfo.buffer);
-    normalize_pointer(base, &mut (*params).RuntimeInfo.buffer);
+    normalize_pointer(base, &mut (*params).RuntimeData.buffer);
     (*params).Flags |= PROCESS_PARAMS_FLAG_NORMALIZED;
     params
 }
@@ -293,9 +293,9 @@ pub unsafe extern "system" fn RtlDeNormalizeProcessParams(
     denormalize_pointer(base, &mut (*params).ImagePathName.buffer);
     denormalize_pointer(base, &mut (*params).CommandLine.buffer);
     denormalize_pointer(base, &mut (*params).WindowTitle.buffer);
-    denormalize_pointer(base, &mut (*params).Desktop.buffer);
+    denormalize_pointer(base, &mut (*params).DesktopInfo.buffer);
     denormalize_pointer(base, &mut (*params).ShellInfo.buffer);
-    denormalize_pointer(base, &mut (*params).RuntimeInfo.buffer);
+    denormalize_pointer(base, &mut (*params).RuntimeData.buffer);
     (*params).Flags &= !PROCESS_PARAMS_FLAG_NORMALIZED;
     params
 }
@@ -485,9 +485,9 @@ pub unsafe extern "system" fn RtlCreateProcessParametersEx(
     append_us(&mut data, strings[0], &mut (*params).ImagePathName, align);
     append_us(&mut data, strings[3], &mut (*params).CommandLine, align);
     append_us(&mut data, strings[4], &mut (*params).WindowTitle, align);
-    append_us(&mut data, strings[5], &mut (*params).Desktop, align);
+    append_us(&mut data, strings[5], &mut (*params).DesktopInfo, align);
     append_us(&mut data, strings[6], &mut (*params).ShellInfo, align);
-    append_us(&mut data, strings[7], &mut (*params).RuntimeInfo, align);
+    append_us(&mut data, strings[7], &mut (*params).RuntimeData, align);
     if env_units != 0 {
         (*params).Environment = data.cast::<WCHAR>();
         core::ptr::copy_nonoverlapping(environment, (*params).Environment, env_units);
