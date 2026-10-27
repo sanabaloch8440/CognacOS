@@ -487,7 +487,7 @@ pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
 static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 25] =
-    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 23];
+    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 25];
 const SERVICE_NT_CLOSE: usize = 0;
 const SERVICE_NT_YIELD_EXECUTION: usize = 1;
 const SERVICE_NT_QUERY_INFORMATION_PROCESS: usize = 2;
