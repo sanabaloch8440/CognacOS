@@ -115,9 +115,11 @@ pub fn dump_serial(limit: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn trace_records_publish_and_old_slots_are_rejected_after_wraparound() {
+        let _guard = TEST_LOCK.lock().unwrap();
         assert!(read(0).is_none());
         let before = latest_sequence();
         record(EVENT_EXCEPTION, 0x21, 0x22, 0x1234_5678);
@@ -143,5 +145,35 @@ mod tests {
         assert_eq!(last.arg0, CAPACITY as u64);
         assert_eq!(last.arg1, !(CAPACITY as u64));
         assert_eq!(last.instruction_pointer, 0xfeed_0000 + CAPACITY as u64);
+    }
+
+    #[test]
+    fn concurrent_writers_never_publish_torn_event_payloads() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        const WORKERS: usize = 8;
+        const EVENTS_PER_WORKER: usize = 1000;
+        let workers: std::vec::Vec<_> = (0..WORKERS).map(|worker| {
+            std::thread::spawn(move || {
+                for index in 0..EVENTS_PER_WORKER {
+                    let payload = ((worker as u64) << 32) | index as u64;
+                    record(EVENT_EXCEPTION, payload, !payload, payload ^ 0xa5a5_5a5a);
+                }
+            })
+        }).collect();
+        for worker in workers { worker.join().expect("trace writer thread panicked"); }
+
+        let latest = latest_sequence();
+        let first = latest.saturating_sub(CAPACITY as u64 - 1).max(1);
+        let mut valid_records = 0usize;
+        for sequence in first..=latest {
+            if let Some(event) = read(sequence) {
+                assert_eq!(event.sequence, sequence);
+                assert_eq!(event.event, EVENT_EXCEPTION);
+                assert_eq!(event.arg1, !event.arg0, "payload fields must come from one writer");
+                assert_eq!(event.instruction_pointer, event.arg0 ^ 0xa5a5_5a5a);
+                valid_records += 1;
+            }
+        }
+        assert!(valid_records > 0, "stress test should publish readable records");
     }
 }
