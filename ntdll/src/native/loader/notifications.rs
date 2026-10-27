@@ -289,9 +289,9 @@ pub unsafe extern "system" fn LdrQueryOptionalDelayLoadedAPI(
     }
 
     let dll_descriptor = UNICODE_STRING {
-        Length: (dll_len * 2) as u16,
-        MaximumLength: (dll_len * 2) as u16,
-        Buffer: dll_utf16.as_mut_ptr(),
+        length: (dll_len * 2) as u16,
+        maximum_length: (dll_len * 2) as u16,
+        buffer: dll_utf16.as_mut_ptr(),
     };
     let mut module = ptr::null_mut();
     let status = unsafe {
