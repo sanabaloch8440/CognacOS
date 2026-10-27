@@ -421,7 +421,7 @@ jobs:
       - name: Package a GPT EFI System Partition image
         run: |
           sudo apt-get update
-          sudo apt-get install -y dosfstools mtools parted qemu-system-x86 ovmf swtpm llvm
+          sudo apt-get install -y dosfstools e2fsprogs mtools parted qemu-system-x86 ovmf swtpm llvm
           mkdir -p build/EFI/BOOT build/kernel
           if [[ -f build/cognacos-bootloader.signed.efi ]]; then
             cp build/cognacos-bootloader.signed.efi build/EFI/BOOT/BOOTX64.EFI
@@ -434,14 +434,37 @@ jobs:
           truncate -s 256M build/cognacos-uefi.img
           truncate -s 128M build/pagefile.img
           parted -s build/cognacos-uefi.img mklabel gpt
-          parted -s build/cognacos-uefi.img mkpart ESP fat32 1MiB 100%
+          # Keep the FAT32 EFI System Partition small and dedicate the remaining
+          # disk space to a real ext4 data partition consumed by the guest.
+          parted -s build/cognacos-uefi.img mkpart ESP fat32 1MiB 65MiB
           parted -s build/cognacos-uefi.img set 1 esp on
+          parted -s build/cognacos-uefi.img mkpart COGNACDATA ext4 65MiB 100%
           mformat -i build/cognacos-uefi.img@@1048576 -F ::
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/BOOT
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/ntdll.dll ::/EFI/BOOT/ntdll.dll
+          mkdir -p build/ext4-root
+          printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-root/README.txt
+          loopdev="$(sudo losetup --find --show --partscan build/cognacos-uefi.img)"
+          cleanup_loop() { sudo losetup -d "$loopdev" 2>/dev/null || true; }
+          trap cleanup_loop EXIT
+          sudo udevadm settle
+          if [[ ! -b "${loopdev}p2" ]]; then
+            echo "GPT ext4 data partition was not exposed as ${loopdev}p2" >&2
+            sudo parted -s build/cognacos-uefi.img print
+            exit 1
+          fi
+          sudo mkfs.ext4 -F -q -L COGNACDATA -d build/ext4-root "${loopdev}p2"
+          # Validate the exact bytes stored in the filesystem, not merely the
+          # source staging file. This does not substitute for the guest test.
+          sudo debugfs -R 'cat /README.txt' "${loopdev}p2" 2>/dev/null > build/ext4-readback.txt
+          printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-expected.txt
+          cmp build/ext4-expected.txt build/ext4-readback.txt
+          echo "GPT ext4 partition created; /README.txt contents verified byte-for-byte."
+          cleanup_loop
+          trap - EXIT
       - name: Validate source-level QEMU crash resolver
         run: |
           set -euo pipefail
