@@ -1,6 +1,9 @@
 //! Bounded ACPI table parsing primitives for platform discovery.
 //! Callers must pass a readable, mapped byte slice obtained from firmware data.
 #![no_std]
+
+/// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
+pub use cognacos_nt_abi as nt_abi;
 #[cfg(test)]
 extern crate std;
 static LAST_RSDP_ADDRESS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
