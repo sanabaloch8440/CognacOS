@@ -21,7 +21,7 @@ mod printf;
 pub mod alpc;
 pub mod atom;
 pub mod env;
-mod version;
+pub mod version;
 pub mod exception;
 mod time;
 mod strings;
@@ -69,5 +69,3 @@ pub mod legacy_printf;
 pub mod legacy_resource;
 #[path = "legacy_time.rs"]
 pub mod legacy_time;
-#[path = "legacy_version.rs"]
-pub mod legacy_version;
