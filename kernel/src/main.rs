@@ -1006,40 +1006,19 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 }
             };
             serial_write(b"NTDLL PE32+ image mapped and exports registered.\r\n");
-            let reference_windows_table = syscall::configure_windows_service_table_from_image(ntdll_bytes);
-            let native_ntdll = winabi::resolve_import(
-                b"ntdll.dll", pe::ImportSymbol::Name(b"CognacNtdllProcessHeapObject")
-            ).is_some();
-            if native_ntdll {
-                if !reference_windows_table {
-                    serial_write(b"FATAL: native NTDLL is missing canonical Windows SYSCALL stubs.\r\n");
+            if !syscall::configure_windows_service_table_from_image(ntdll_bytes) {
+                serial_write(b"FATAL: Rust NTDLL is missing canonical Windows x64 SYSCALL exports.\r\n");
+                halt();
+            }
+            match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
+                Ok(()) => serial_write(b"CognacOS Rust NTDLL passed ring-3 tests through the unified Windows x64 SYSCALL ABI.\r\n"),
+                Err(_) => {
+                    serial_write(b"FATAL: CognacOS Rust NTDLL ring-3 smoke failed.\r\n");
                     halt();
                 }
-                match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
-                    Ok(()) => serial_write(b"CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.\r\n"),
-                    Err(_) => {
-                        serial_write(b"FATAL: CognacOS native NTDLL ring-3 smoke failed.\r\n");
-                        halt();
-                    }
-                }
-                syscall::set_windows_service_table_enabled(false);
-                // run_loaded_image's cleanup path already destroyed this address space.
-            } else if reference_windows_table {
-                match unsafe { usermode::run_windows_syscall_abi_smoke(&mut ntdll_space, ntdll_image) } {
-                    Ok(()) => serial_write(b"Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed.\r\n"),
-                    Err(_) => { serial_write(b"FATAL: Windows SYSCALL ABI ring-3 smoke test failed.\r\n"); halt(); }
-                }
-                syscall::set_windows_service_table_enabled(false);
-                // run_loaded_image's cleanup path already destroyed this address space.
-            } else {
-                syscall::set_windows_service_table_enabled(false);
-                winabi::unregister_module(b"ntdll.dll");
-                pe_runtime::unregister_image(ntdll_image.base);
-                if unsafe { ntdll_space.destroy() }.is_err() {
-                    serial_write(b"FATAL: unsupported Windows NTDLL cleanup failed.\r\n"); halt();
-                }
-                serial_write(b"Windows NTDLL mapped; no supported canonical syscall stub table found, execution skipped.\r\n");
             }
+            syscall::set_windows_service_table_enabled(false);
+            // run_loaded_image's cleanup path already destroyed this address space.
         } else {
             serial_write(b"WARNING: no staged ntdll.dll; PE loader smoke remains fixture-only.\r\n");
         }
