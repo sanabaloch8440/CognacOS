@@ -405,9 +405,9 @@ pub unsafe extern "system" fn ZwOpenKey(
     desired_access: u32,
     object_attributes: *const crate::reg::OBJECT_ATTRIBUTES,
 ) -> i32 {
-    #[cfg(not(target_os = "windows"))]
-    { crate::syscall_x86_64::NtOpenKey(key_handle, desired_access, object_attributes) }
     #[cfg(target_os = "windows")]
+    { crate::native::syscall_stubs::NtOpenKey(key_handle, desired_access, object_attributes) }
+    #[cfg(not(target_os = "windows"))]
     { let _ = (key_handle, desired_access, object_attributes); 0xC0000002u32 as i32 }
 }
 
