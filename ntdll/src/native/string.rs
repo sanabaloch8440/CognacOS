@@ -11,8 +11,7 @@
 
 use core::ffi::c_void;
 
-pub type SIZE_T = usize;
-pub type ULONG = u32;
+pub use crate::nt_abi::types::{SIZE_T, ULONG};
 pub type errno_t = i32;
 
 pub const EINVAL: errno_t = 22;
