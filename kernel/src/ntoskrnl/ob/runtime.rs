@@ -276,7 +276,7 @@ pub fn reference_by_handle(h:*mut c_void,desired:u32,expected_type:u16,owner:usi
  // object's current DACL here can revoke rights from an already-open handle
  // and diverges from NT handle semantics; access checks belong at open/dup.
  let body=o.body as *mut c_void;
- let s=state();s.objects[e.object].refs=s.objects[e.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,owner,3,desired,desired,STATUS_SUCCESS);let _=t;Ok(body)
+ let s=state();s.objects[e.object].refs=s.objects[e.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,owner,3,desired,mapped,STATUS_SUCCESS);Ok(body)
 }
 pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
  let reclaimed={let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,owner).ok_or(STATUS_INVALID_HANDLE)?;let oi=s.handles[hi].object;
