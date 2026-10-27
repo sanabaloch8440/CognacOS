@@ -498,9 +498,29 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         if !kernel_vm::self_test() {
-            serial_write(b"FATAL: kernel virtual mapping/reclamation self-test failed at kernel_space.rs line ");
+            serial_write(b"FATAL: kernel VM self-test failed at kernel_space.rs line ");
             unsafe { serial_write_decimal(kernel_vm::self_test_failure_line() as usize); }
             serial_write(b".\r\n");
+            let map = kernel_vm::self_test_mapping_failure();
+            if map[3] != 0 {
+                serial_write(b"VM-WALK-FAIL stage=");
+                unsafe { serial_write_decimal(map[3] as usize); }
+                serial_write(b" (1=input,2=PML4,3=PDPT,4=PD,5=PT) root=");
+                unsafe { serial_write_hex(map[0]); }
+                serial_write(b" expected-pa=");
+                unsafe { serial_write_hex(map[1]); }
+                serial_write(b" va=");
+                unsafe { serial_write_hex(map[2]); }
+                serial_write(b" PML4E=");
+                unsafe { serial_write_hex(map[4]); }
+                serial_write(b" PDPTE=");
+                unsafe { serial_write_hex(map[5]); }
+                serial_write(b" PDE=");
+                unsafe { serial_write_hex(map[6]); }
+                serial_write(b" PTE=");
+                unsafe { serial_write_hex(map[7]); }
+                serial_write(b"\r\n");
+            }
             halt();
         }
         serial_write(b"Kernel virtual-address arena and mapping self-test passed.\r\n");
