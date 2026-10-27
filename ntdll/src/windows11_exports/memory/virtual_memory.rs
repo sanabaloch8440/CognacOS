@@ -206,7 +206,7 @@ unsafe extern "system" {
     pub(super) fn cognacos_nt_free_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, free_type: ULONG) -> NTSTATUS;
     fn cognacos_nt_protect_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, new_protect: ULONG, old_protect: PULONG) -> NTSTATUS;
     fn cognacos_nt_query_virtual_memory(process_handle: HANDLE, base_address: PVOID, memory_information_class: ULONG, memory_information: PVOID, memory_information_length: SIZE_T, return_length: PSIZE_T) -> NTSTATUS;
-    fn cognacos_nt_read_virtual_memory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: PSIZE_T) -> NTSTATUS;
+    pub(super) fn cognacos_nt_read_virtual_memory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_read: PSIZE_T) -> NTSTATUS;
     fn cognacos_nt_write_virtual_memory(process_handle: HANDLE, base_address: PVOID, buffer: PVOID, buffer_size: SIZE_T, number_of_bytes_written: PSIZE_T) -> NTSTATUS;
     fn cognacos_nt_lock_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS;
     fn cognacos_nt_unlock_virtual_memory(process_handle: HANDLE, base_address: *mut PVOID, region_size: PSIZE_T, map_type: ULONG) -> NTSTATUS;
@@ -216,10 +216,11 @@ unsafe extern "system" {
     pub(super) fn cognacos_rtl_write_nonvolatile_memory(token: PVOID, destination: PVOID, source: *const c_void, size: SIZE_T, flags: ULONG) -> NTSTATUS;
     pub(super) fn cognacos_rtl_fill_nonvolatile_memory(token: PVOID, destination: PVOID, size: SIZE_T, value: u8, flags: ULONG) -> NTSTATUS;
     pub(super) fn cognacos_rtl_check_token_membership(token: HANDLE, sid: PVOID, member: *mut u8, flags: ULONG) -> NTSTATUS;
-    fn cognacos_rtl_create_section(size: SIZE_T, handle_out: *mut PVOID) -> NTSTATUS;
-    fn cognacos_rtl_dereference_section(handle: PVOID) -> NTSTATUS;
+    pub(super) fn cognacos_rtl_create_section(size: SIZE_T, handle_out: *mut PVOID) -> NTSTATUS;
+    pub(super) fn cognacos_rtl_dereference_section(handle: PVOID) -> NTSTATUS;
     fn cognacos_rtl_section_copy(handle: PVOID, offset: u64, buffer: PVOID, length: SIZE_T, write: ULONG) -> NTSTATUS;
-    fn cognacos_rtl_reference_section(handle: PVOID) -> NTSTATUS;
+    pub(super) fn cognacos_rtl_reference_section(handle: PVOID) -> NTSTATUS;
+    pub(super) fn cognacos_rtl_section_copy(handle: PVOID, offset: u64, buffer: PVOID, length: SIZE_T, write: ULONG) -> NTSTATUS;
     fn cognacos_nt_create_section(section_handle: *mut HANDLE, desired_access: ULONG, object_attributes: PVOID, maximum_size: *const i64, page_protection: ULONG, allocation_attributes: ULONG, file_handle: HANDLE) -> NTSTATUS;
 }
 
