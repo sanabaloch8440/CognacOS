@@ -56,8 +56,8 @@ pub mod trace;
 pub(crate) unsafe fn initialize_native_process() {
     let _ = unsafe { exception::RtlRegisterExceptionDispatcher() };
 }
-#[path = "legacy_env.rs"]
-pub mod legacy_env;
+#[path = "process_parameters.rs"]
+pub mod process_parameters;
 #[path = "legacy_misc.rs"]
 pub mod legacy_misc;
 #[path = "legacy_path.rs"]
