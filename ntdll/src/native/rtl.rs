@@ -334,7 +334,7 @@ pub type PRTL_GENERIC_FREE_ROUTINE = Option<unsafe extern "system" fn(*mut RTL_G
 pub const GENERIC_LESS_THAN: i32 = 0;
 pub const GENERIC_EQUAL: i32 = 1;
 pub const GENERIC_GREATER_THAN: i32 = 2;
-const GENERIC_TABLE_DATA_OFFSET: usize = 40;
+const GENERIC_TABLE_DATA_OFFSET: usize = core::mem::size_of::<RTL_SPLAY_LINKS>() + core::mem::size_of::<LIST_ENTRY>();
 
 
 #[repr(C)]
@@ -363,7 +363,7 @@ unsafe fn generic_list_entry(links: PRTL_SPLAY_LINKS) -> *mut LIST_ENTRY {
 #[inline]
 unsafe fn generic_data_from_list(entry: *mut LIST_ENTRY) -> PVOID {
     // SAFETY: entry is the list member of a valid generic table node.
-    unsafe { (entry as *mut u8).add(16).cast() }
+    unsafe { (entry as *mut u8).add(core::mem::size_of::<LIST_ENTRY>()).cast() }
 }
 #[inline]
 unsafe fn list_insert_tail(head: *mut LIST_ENTRY, entry: *mut LIST_ENTRY) {
