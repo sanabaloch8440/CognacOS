@@ -2,7 +2,7 @@
 //! Replace generic signatures with ABI-correct declarations as each routine is implemented.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
-use crate::native::syscall_stubs::{NtGetNextProcess, NtOpenProcess};
+use super::syscall_stubs::{NtGetNextProcess, NtOpenProcess};
 
 #[no_mangle]
 pub unsafe extern "system" fn NtAcceptConnectPort() -> i32 {
