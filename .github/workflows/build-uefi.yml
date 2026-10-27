@@ -118,6 +118,10 @@ jobs:
           grep -Fq 'ntdll_syscall_stubs.S' ntdll/src/native/syscall_stubs.rs
           grep -Fq 'syscall' ntdll/build.rs
           test ! -e ntdll/src/native/syscall_x86_64.rs
+          if grep -RInF 'syscall_x86_64' ntdll/src; then
+            echo "NTDLL must not retain references to the alternate syscall path." >&2
+            exit 1
+          fi
           echo "NTDLL stubs are generated from the canonical syscall manifest."
       - name: Build Rust NTDLL as a native PE32+ DLL
         shell: bash
