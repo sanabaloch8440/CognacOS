@@ -86,6 +86,7 @@ pub fn latest_sequence() -> u64 {
 }
 
 /// Print recent trace records to the early serial console during fatal handling.
+#[cfg(not(test))]
 pub fn dump_serial(limit: usize) {
     let latest = latest_sequence();
     let count = limit.min(CAPACITY).min(latest as usize);
@@ -107,5 +108,40 @@ pub fn dump_serial(limit: usize) {
                 crate::serial_write(b"\r\n");
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_records_publish_and_old_slots_are_rejected_after_wraparound() {
+        assert!(read(0).is_none());
+        let before = latest_sequence();
+        record(EVENT_EXCEPTION, 0x21, 0x22, 0x1234_5678);
+        let first = before + 1;
+        assert_eq!(latest_sequence(), first);
+        assert_eq!(read(first), Some(EventRecord {
+            sequence: first,
+            event: EVENT_EXCEPTION,
+            arg0: 0x21,
+            arg1: 0x22,
+            instruction_pointer: 0x1234_5678,
+        }));
+
+        for index in 0..=CAPACITY {
+            record(EVENT_VM_FAILURE, index as u64, !index as u64, 0xfeed_0000 + index as u64);
+        }
+        let latest = latest_sequence();
+        assert!(latest >= first + CAPACITY as u64 + 1);
+        assert!(read(first).is_none(), "overwritten sequence must not be returned");
+        let last = read(latest).expect("latest published event must be readable");
+        assert_eq!(last.sequence, latest);
+        assert_eq!(last.event, EVENT_VM_FAILURE);
+        assert_eq!(last.arg0, CAPACITY as u64);
+        assert_eq!(last.arg1, !(CAPACITY as u64));
+        assert_eq!(last.instruction_pointer, 0xfeed_0000 + CAPACITY as u64);
     }
 }
