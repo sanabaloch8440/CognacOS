@@ -114,7 +114,7 @@ jobs:
             echo "The kernel must not install the obsolete NT syscall interrupt gate." >&2
             exit 1
           fi
-          grep -Eq '^NtCreateKey[[:space:]]+0x145$' ntdll/syscalls/x86_64.syscalls
+          grep -Eq '^NtCreateKey[[:space:]]+0x145[[:space:]]+7$' ntdll/syscalls/x86_64.syscalls
           grep -Fq 'ntdll_syscall_stubs.S' ntdll/src/native/syscall_stubs.rs
           grep -Fq 'syscall' ntdll/build.rs
           test ! -e ntdll/src/native/syscall_x86_64.rs
