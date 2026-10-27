@@ -23,10 +23,19 @@ pub struct LARGE_INTEGER {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LIST_ENTRY {
     pub flink: *mut LIST_ENTRY,
     pub blink: *mut LIST_ENTRY,
+}
+
+impl Default for LIST_ENTRY {
+    fn default() -> Self {
+        Self {
+            flink: core::ptr::null_mut(),
+            blink: core::ptr::null_mut(),
+        }
+    }
 }
 
 #[repr(C)]
