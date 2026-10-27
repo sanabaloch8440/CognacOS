@@ -45,6 +45,27 @@ mod security;
 mod registry;
 mod process;
 
+// Consolidated runtime/RTL modules migrated from the former src/ root.
+pub mod debugbuffer;
+pub mod handletable;
+pub mod math;
+pub mod rbtree;
+pub mod reg;
+pub mod rtl;
+pub mod rtl_bitmap;
+pub mod rtl_error;
+pub mod rtl_heap;
+pub mod rtl_large_int;
+pub mod rtl_loader;
+pub mod rtl_memory;
+pub mod rtl_native;
+pub mod rtl_peb;
+pub mod rtl_string;
+pub mod string;
+#[cfg(not(target_os = "windows"))]
+pub mod syscall_x86_64;
+pub mod trace;
+
 /// Process-attach initialization invoked by the PE DLL entry point.
 #[cfg(target_os = "windows")]
 pub(crate) unsafe fn initialize_native_process() {

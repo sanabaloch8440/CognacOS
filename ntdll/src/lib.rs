@@ -32,38 +32,38 @@ __CxxFrameHandler3:
 pub mod alpc;
 pub mod atom;
 pub mod crypt;
-pub mod debugbuffer;
 pub mod env;
 pub mod exception;
-pub mod handletable;
 pub mod heap;
-pub mod math;
 pub mod misc;
 pub mod path;
 pub mod printf;
 pub mod process;
-pub mod rbtree;
-pub mod reg;
 pub mod resource;
-pub mod rtl;
-pub mod rtl_bitmap;
-pub mod rtl_error;
-pub mod rtl_heap;
-pub mod rtl_large_int;
-pub mod rtl_loader;
-pub mod rtl_memory;
-pub mod rtl_native;
-pub mod rtl_peb;
-pub mod rtl_string;
-pub mod string;
-#[cfg(not(target_os = "windows"))]
-pub mod syscall_x86_64;
 pub mod time;
-pub mod trace;
 pub mod version;
 
-// Committed Windows 11 x64 export surface: real Rust symbols, not build-generated names.
+// All implementation modules live under native/. These re-exports preserve
+// existing crate::module paths while callers are migrated incrementally.
 pub mod native;
+pub use native::debugbuffer;
+pub use native::handletable;
+pub use native::math;
+pub use native::rbtree;
+pub use native::reg;
+pub use native::rtl;
+pub use native::rtl_bitmap;
+pub use native::rtl_error;
+pub use native::rtl_heap;
+pub use native::rtl_large_int;
+pub use native::rtl_loader;
+pub use native::rtl_memory;
+pub use native::rtl_native;
+pub use native::rtl_peb;
+pub use native::rtl_string;
+pub use native::string;
+pub use native::syscall_x86_64;
+pub use native::trace;
 
 #[cfg(target_os = "windows")]
 struct NtdllGlobalAllocator;
