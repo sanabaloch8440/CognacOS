@@ -17,7 +17,7 @@ mod debug;
 mod resource;
 mod bitmap;
 mod peb;
-mod printf;
+pub mod printf;
 pub mod alpc;
 pub mod atom;
 pub mod env;
