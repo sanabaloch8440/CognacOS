@@ -106,7 +106,7 @@ static PROCESS_HEAP_INIT_LOCK: AtomicU8 = AtomicU8::new(0);
 
 /// Exported data object referenced by PEB.ProcessHeap. It is the actual heap
 /// object, not a pointer slot, and is initialized in place on first use.
-static mut CognacNtdllProcessHeapObject: CognacHeap = CognacHeap {
+static mut PROCESS_HEAP_OBJECT: CognacHeap = CognacHeap {
     magic: 0, flags: HEAP_GROWABLE, reserve_size: DEFAULT_RESERVE, commit_size: PAGE_SIZE,
     segments: ptr::null_mut(), next_heap: ptr::null_mut(),
     lock: AtomicU8::new(0), protected: AtomicU8::new(0), _padding: [0; 6],
@@ -248,7 +248,7 @@ pub unsafe extern "system" fn RtlCreateHeap(flags: ULONG, base: PVOID, reserve: 
 }
 
 unsafe fn initialize_process_heap_object() -> *mut CognacHeap {
-    let heap = ptr::addr_of_mut!(CognacNtdllProcessHeapObject);
+    let heap = ptr::addr_of_mut!(PROCESS_HEAP_OBJECT);
     unsafe { lock(&PROCESS_HEAP_INIT_LOCK); }
     if unsafe { (*heap).magic != HEAP_MAGIC } {
         unsafe {
@@ -320,7 +320,7 @@ pub unsafe extern "system" fn RtlDestroyHeap(handle: HANDLE) -> HANDLE {
         (*heap).magic = 0;
         (*heap).segments = ptr::null_mut();
         (*heap).next_heap = ptr::null_mut();
-        if heap != ptr::addr_of_mut!(CognacNtdllProcessHeapObject) {
+        if heap != ptr::addr_of_mut!(PROCESS_HEAP_OBJECT) {
             vm_free(heap.cast());
         }
     }
