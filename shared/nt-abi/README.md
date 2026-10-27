@@ -25,3 +25,6 @@ This dependency alone does not mean every local type has been migrated. The kern
 7. Run the kernel and NTDLL build/test workflows after each migration batch. Never describe a declared function or type as implemented merely because its ABI declaration exists.
 
 The crate is `no_std` and uses fixed-width NT scalar types. Layout tests now check pointer-width-specific sizes, alignments, and field offsets for `ANSI_STRING`, `UNICODE_STRING`, `OBJECT_ATTRIBUTES`, `IO_STATUS_BLOCK`, and the two-pointer LIST_ENTRY and three-pointer RTL splay-link layouts. The driver/IRP structures remain scaffolding and must not yet be treated as third-party WDK binary compatibility.
+
+
+Recent NTDLL migrations also consume canonical shared scalar and pointer types in the RTL red-black tree, bitmap, heap, PEB/critical-section, and virtual-memory modules. The loader now re-exports the shared `UNICODE_STRING` rather than declaring a second counted-string structure. These changes centralize definitions; they do not by themselves certify the full runtime behavior or all private Windows layouts.
