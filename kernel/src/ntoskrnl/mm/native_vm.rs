@@ -30,6 +30,7 @@ fn attached(root: u64) -> Result<AddressSpace, u64> {
     unsafe { AddressSpace::attach_existing(root) }.map_err(status)
 }
 fn region_is_free(space: &AddressSpace, start: u64, length: u64) -> bool {
+    if space.demand_area_overlaps(start, length) { return false; }
     let mut offset = 0;
     while offset < length {
         if space.query_region(start + offset).is_some_and(|region| region.7) { return false; }
