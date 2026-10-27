@@ -33,7 +33,7 @@ pub use native::legacy_alpc as alpc;
 pub use native::legacy_atom as atom;
 pub use native::legacy_crypt as crypt;
 pub use native::legacy_env as env;
-pub use native::legacy_exception as exception;
+pub use native::exception;
 pub use native::legacy_heap as heap;
 pub use native::legacy_misc as misc;
 pub use native::legacy_path as path;
