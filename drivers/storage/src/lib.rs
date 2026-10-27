@@ -247,3 +247,17 @@ mod tests {
         let mut bad=c; bad[4]=0xff; bad[5]=0xff; assert!(disk::parse_rw_cdb(&bad,g).is_err());
     }
 }
+
+#[cfg(test)]
+mod ntstatus_adapter_tests {
+    use super::*;
+    #[test]
+    fn storage_errors_map_to_shared_ntstatus() {
+        use nt_abi::ntstatus::*;
+        assert_eq!(error_to_ntstatus(StorageError::InvalidArgument), STATUS_INVALID_PARAMETER);
+        assert_eq!(error_to_ntstatus(StorageError::Busy), STATUS_DEVICE_BUSY);
+        assert_eq!(error_to_ntstatus(StorageError::Timeout), STATUS_TIMEOUT);
+        assert_eq!(error_to_ntstatus(StorageError::QueueFull), STATUS_INSUFFICIENT_RESOURCES);
+        assert_eq!(error_to_ntstatus(StorageError::Unsupported), STATUS_INVALID_DEVICE_REQUEST);
+    }
+}
