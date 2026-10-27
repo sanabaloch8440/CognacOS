@@ -271,7 +271,11 @@ pub fn open_by_pointer(body:*mut c_void,desired:u32,owner:usize,kernel_mode:bool
 }
 pub fn reference_by_handle(h:*mut c_void,desired:u32,expected_type:u16,owner:usize,kernel_mode:bool)->Result<*mut c_void,i32>{
  let _g=LOCK.lock();let s=state();let hi=handle_idx(s,h,owner).ok_or(STATUS_INVALID_HANDLE)?;let e=s.handles[hi];if e.owner==usize::MAX&&!kernel_mode{return Err(STATUS_INVALID_HANDLE)}let o=s.objects.get(e.object).ok_or(STATUS_INVALID_HANDLE)?;if !o.used||o.deleting{return Err(STATUS_INVALID_HANDLE)}if expected_type!=0&&o.type_id!=expected_type{return Err(STATUS_OBJECT_TYPE_MISMATCH)}
- let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let mapped=if desired&MAXIMUM_ALLOWED!=0{e.access}else{map_access(&t,desired)};if mapped&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}if !kernel_mode&&!access_check(s,o,mapped,owner){return Err(STATUS_ACCESS_DENIED)}let body=o.body as *mut c_void;
+ let t=s.types[type_idx(s,o.type_id).ok_or(STATUS_OBJECT_TYPE_MISMATCH)?];let mapped=if desired&MAXIMUM_ALLOWED!=0{e.access}else{map_access(&t,desired)};if mapped&!e.access!=0{return Err(STATUS_ACCESS_DENIED)}
+ // A handle's granted access is fixed when it is opened. Rechecking the
+ // object's current DACL here can revoke rights from an already-open handle
+ // and diverges from NT handle semantics; access checks belong at open/dup.
+ let body=o.body as *mut c_void;
  let s=state();s.objects[e.object].refs=s.objects[e.object].refs.checked_add(1).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;audit_locked(s,body as usize,owner,3,desired,desired,STATUS_SUCCESS);let _=t;Ok(body)
 }
 pub fn close_handle(h:*mut c_void,owner:usize)->Result<(),i32>{
@@ -552,6 +556,16 @@ mod tests{
   let duplicate=duplicate_handle(source,22,23,GENERIC_READ,false,false).unwrap();
   assert_eq!(reference_by_handle(duplicate,1,ty,23,true).unwrap(),body);
   assert!(dereference_body(body));close_handle(duplicate,23).unwrap();close_handle(source,22).unwrap();assert!(dereference_body(body));
+ }
+ #[test]fn handle_uses_granted_access_without_rechecking_dacl(){
+  let ty=register_type(&[102],1,2,4,7,7).unwrap();let body=0x9250usize as *mut c_void;
+  // An absent DACL grants no user access in this implementation; create with
+  // kernel mode, then verify the immutable handle grant is the authorization.
+  unsafe{register_object(body,ty,&[103],false,core::ptr::null(),0).unwrap();}
+  let h=open_by_pointer(body,1,45,true,0).unwrap();
+  assert_eq!(reference_by_handle(h,2,ty,45,false).unwrap_err(),STATUS_ACCESS_DENIED);
+  assert_eq!(reference_by_handle(h,1,ty,45,false).unwrap(),body);
+  assert!(dereference_body(body));close_handle(h,45).unwrap();assert!(dereference_body(body));
  }
  #[test]fn user_mode_cannot_close_or_reference_kernel_handle(){
   let ty=register_type(&[100],1,2,4,7,7).unwrap();let body=0x9244usize as *mut c_void;
