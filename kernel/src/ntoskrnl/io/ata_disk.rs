@@ -3,6 +3,8 @@
 //! IDE master (the boot image); the primary slave remains reserved for paging.
 use cognacos_ext4 as extfs;
 use extfs::ReadOnlyBlockDevice;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use crate::hal::IrqSpinLock;
 
 const DATA: u16 = 0x1f0;
 const ERROR: u16 = 0x1f1;
@@ -72,7 +74,15 @@ fn wait_drq() -> Result<(), AtaError> {
 
 /// ATA LBA28 primary-master device. Each command transfers exactly one sector,
 /// avoiding unbounded ATA multi-sector commands and making bounds explicit.
+#[derive(Clone, Copy)]
 struct AtaPrimaryMaster { sectors: u64 }
+
+static STORAGE_DISK: IrqSpinLock<Option<AtaPrimaryMaster>> = IrqSpinLock::new(None);
+static DISK_CAPACITY: AtomicU64 = AtomicU64::new(0);
+static DISK_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
+static PARTITION_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
+static PARTITION_START: AtomicU64 = AtomicU64::new(0);
+static PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);
 impl AtaPrimaryMaster {
     fn initialize() -> Result<Self, AtaError> {
         unsafe { out8(DRIVE, 0xa0); }
@@ -225,33 +235,119 @@ fn read_root_file<D: ReadOnlyBlockDevice>(
     Ok(length)
 }
 
-/// End-to-end guest check: identify the real IDE disk, read GPT and ext4 via
-/// that same block-device implementation, traverse root/inode/extents, and
-/// compare the guest-read file bytes against the exact expected payload.
+fn success_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
+    irp.information = 0;
+    crate::io::IoStatus::Success
+}
+
+fn valid_kernel_buffer(irp: &crate::io::Irp) -> bool {
+    irp.user_buffer >= 0xffff_8000_0000_0000
+        && irp.length <= crate::io::MAX_IRP_BYTES
+        && irp.user_buffer.checked_add(irp.length as u64).is_some()
+}
+
+/// Disk class READ dispatch. The current I/O manager passes a kernel-owned
+/// system buffer here; user-mode buffers must be captured/validated before IRP
+/// dispatch and are never dereferenced directly by this callback.
+fn disk_read_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
+    if !valid_kernel_buffer(irp) { return crate::io::IoStatus::DeviceError; }
+    let mut guard = STORAGE_DISK.lock();
+    let disk = match guard.as_mut() { Some(d) => d, None => return crate::io::IoStatus::NoSuchDevice };
+    let buffer = unsafe { core::slice::from_raw_parts_mut(irp.user_buffer as *mut u8, irp.length) };
+    match disk.read_at(irp.byte_offset, buffer) {
+        Ok(()) => { irp.information = irp.length; crate::io::IoStatus::Success }
+        Err(_) => crate::io::IoStatus::DeviceError,
+    }
+}
+
+/// Partition class READ dispatch: validate partition-relative bounds, translate
+/// to disk byte offsets, and forward through the registered disk object's IRP.
+fn partition_read_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
+    if !valid_kernel_buffer(irp) { return crate::io::IoStatus::DeviceError; }
+    let end = match irp.byte_offset.checked_add(irp.length as u64) {
+        Some(v) => v, None => return crate::io::IoStatus::DeviceError,
+    };
+    if end > PARTITION_CAPACITY.load(Ordering::Acquire) { return crate::io::IoStatus::DeviceError; }
+    let absolute = match PARTITION_START.load(Ordering::Acquire).checked_add(irp.byte_offset) {
+        Some(v) => v, None => return crate::io::IoStatus::DeviceError,
+    };
+    let disk_id = DISK_DEVICE_ID.load(Ordering::Acquire);
+    if disk_id == 0 { return crate::io::IoStatus::NoSuchDevice; }
+    let child = match crate::io::submit_read_at(disk_id, absolute, irp.user_buffer as *mut u8, irp.length) {
+        Ok(id) => id, Err(_) => return crate::io::IoStatus::DeviceError,
+    };
+    let dispatched = crate::io::dispatch_one(child);
+    let result = crate::io::query_irp(child);
+    let _ = crate::io::release_irp(child);
+    match (dispatched, result) {
+        (Ok(crate::io::IoStatus::Success), Some(r)) if r.status == crate::io::IoStatus::Success && r.information == irp.length => {
+            irp.information = irp.length;
+            crate::io::IoStatus::Success
+        }
+        _ => crate::io::IoStatus::DeviceError,
+    }
+}
+
+fn register_storage_device(name: &[u8], read: crate::io::DispatchFn) -> Result<u32, crate::io::IoError> {
+    let mut dispatch = [None; 16];
+    dispatch[crate::io::IRP_MJ_CREATE as usize] = Some(success_dispatch);
+    dispatch[crate::io::IRP_MJ_CLOSE as usize] = Some(success_dispatch);
+    dispatch[crate::io::IRP_MJ_READ as usize] = Some(read);
+    crate::io::register_device(name, dispatch)
+}
+
+/// Adapter which makes the registered I/O-manager device the sole block-device
+/// interface used by GPT and ext4. Reads are synchronous bounded READ IRPs.
+struct IoManagerBlockDevice { device_id: u32, capacity: u64 }
+impl ReadOnlyBlockDevice for IoManagerBlockDevice {
+    type DeviceError = crate::io::IoError;
+    fn capacity_bytes(&self) -> u64 { self.capacity }
+    fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Self::DeviceError> {
+        if out.len() > crate::io::MAX_IRP_BYTES { return Err(crate::io::IoError::BufferTooLarge); }
+        let id = crate::io::submit_read_at(self.device_id, offset, out.as_mut_ptr(), out.len())?;
+        let dispatched = crate::io::dispatch_one(id);
+        let result = crate::io::query_irp(id);
+        let release = crate::io::release_irp(id);
+        match (dispatched, result, release) {
+            (Ok(crate::io::IoStatus::Success), Some(r), Ok(()))
+                if r.status == crate::io::IoStatus::Success && r.information == out.len() => Ok(()),
+            (Err(e), _, _) => Err(e),
+            (_, _, Err(e)) => Err(e),
+            _ => Err(crate::io::IoError::UnknownIrp),
+        }
+    }
+}
+
+/// End-to-end guest check. The physical port driver backs a registered disk
+/// object; GPT and ext4 then read only through disk/partition READ IRPs.
 pub fn run_ext4_readme_test() -> bool {
-    let mut disk = match AtaPrimaryMaster::initialize() {
-        Ok(d) => d,
-        Err(_) => return false,
+    let disk = match AtaPrimaryMaster::initialize() { Ok(d) => d, Err(_) => return false };
+    DISK_CAPACITY.store(disk.sectors.saturating_mul(SECTOR_BYTES as u64), Ordering::Release);
+    *STORAGE_DISK.lock() = Some(disk);
+    let disk_id = match register_storage_device(b"\\Device\\Harddisk0", disk_read_dispatch) {
+        Ok(id) => id, Err(_) => return false,
     };
+    DISK_DEVICE_ID.store(disk_id, Ordering::Release);
     crate::serial_write(b"Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.\r\n");
-    let partition = match extfs::read_gpt_partition(&mut disk, 1, SECTOR_BYTES as u32) {
-        Ok(p) => p,
-        Err(_) => return false,
+    let mut whole_disk = IoManagerBlockDevice { device_id: disk_id, capacity: DISK_CAPACITY.load(Ordering::Acquire) };
+    let partition = match extfs::read_gpt_partition(&mut whole_disk, 1, SECTOR_BYTES as u32) {
+        Ok(p) => p, Err(_) => return false,
     };
-    crate::serial_write(b"Disk class: GPT data partition discovered through live disk reads.\r\n");
-    let mut volume = match extfs::PartitionDevice::new(disk, partition) {
-        Ok(v) => v,
-        Err(_) => return false,
+    let start = match partition.start_byte() { Ok(v) => v, Err(_) => return false };
+    let capacity = match partition.capacity_bytes() { Ok(v) => v, Err(_) => return false };
+    PARTITION_START.store(start, Ordering::Release);
+    PARTITION_CAPACITY.store(capacity, Ordering::Release);
+    let partition_id = match register_storage_device(b"\\Device\\Harddisk0\\Partition1", partition_read_dispatch) {
+        Ok(id) => id, Err(_) => return false,
     };
-    let sb = match extfs::read_superblock(&mut volume) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
-    crate::serial_write(b"ext4: partition superblock read through the same bounded disk interface.\r\n");
+    PARTITION_DEVICE_ID.store(partition_id, Ordering::Release);
+    crate::serial_write(b"Disk class: Harddisk0 and Partition1 registered in the kernel I/O manager; GPT data partition discovered by READ IRPs.\r\n");
+    let mut volume = IoManagerBlockDevice { device_id: partition_id, capacity };
+    let sb = match extfs::read_superblock(&mut volume) { Ok(s) => s, Err(_) => return false };
+    crate::serial_write(b"ext4: partition superblock read through the registered partition READ interface.\r\n");
     let mut actual = [0u8; 128];
     let length = match read_root_file(&mut volume, &sb, b"README.txt", &mut actual) {
-        Ok(n) => n,
-        Err(_) => return false,
+        Ok(n) => n, Err(_) => return false,
     };
     if length != EXPECTED.len() || &actual[..length] != EXPECTED { return false; }
     crate::serial_write(b"Guest ext4 README.txt bytes match expected content exactly.\r\n");
