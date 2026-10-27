@@ -1349,7 +1349,7 @@ mod wdm_tests {
   let mut device:*mut DeviceObject=ptr::null_mut();
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
   driver.major_function[3]=Some(completing_dispatch);
-  let mut status=IoStatusBlock{status:STATUS_PENDING as isize,information:0};
+  let mut status=IoStatusBlock { status: crate::nt_abi::io::IO_STATUS_BLOCK_STATUS { status: STATUS_PENDING }, information: 0 };
   let mut buffer=[0u8;512];
   let irp=unsafe{io_build_asynchronous_fsd_request(3,device,buffer.as_mut_ptr().cast(),buffer.len() as u32,ptr::null(),&mut status)};
   assert!(!irp.is_null());
