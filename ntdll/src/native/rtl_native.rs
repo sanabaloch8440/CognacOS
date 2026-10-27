@@ -14,20 +14,15 @@
 
 use core::ffi::c_void;
 
-pub type LONG = i32;
-pub type ULONG = u32;
-pub type DWORD = u32;
-pub type WCHAR = u16;
-pub type PVOID = *mut c_void;
-pub type PULONG = *mut ULONG;
-pub type HINSTANCE = *mut c_void;
-pub type LPVOID = *mut c_void;
-pub type BOOL = i32;
-pub type NTSTATUS = LONG;
+pub use crate::nt_abi::types::{LONG, ULONG, WCHAR, PVOID};
+pub use crate::nt_abi::ntstatus::{STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED, STATUS_SUCCESS};
 
-pub const STATUS_SUCCESS: NTSTATUS = 0;
-pub const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC000_0002_u32 as NTSTATUS;
-pub const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000D_u32 as NTSTATUS;
+pub type DWORD = ULONG;
+pub type PULONG = *mut ULONG;
+pub type HINSTANCE = PVOID;
+pub type LPVOID = PVOID;
+pub type BOOL = i32;
+pub type NTSTATUS = crate::nt_abi::ntstatus::NTSTATUS;
 
 pub const ERROR_SUCCESS: ULONG = 0;
 pub const ERROR_INVALID_HANDLE: ULONG = 6;
