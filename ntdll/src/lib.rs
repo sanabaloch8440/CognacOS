@@ -29,7 +29,7 @@ __CxxFrameHandler3:
     ret
 "#, options(att_syntax));
 
-pub use native::legacy_alpc as alpc;
+pub use native::alpc as alpc;
 pub use native::legacy_atom as atom;
 pub use native::legacy_crypt as crypt;
 pub use native::legacy_env as env;
