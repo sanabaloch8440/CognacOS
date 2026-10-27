@@ -93,15 +93,38 @@ fn main() {
             if p.is_dir() { scan(&p, declared); continue; }
             if p.extension().and_then(|e| e.to_str()) != Some("rs") { continue; }
             let Ok(src) = fs::read_to_string(p) else { continue };
-            for line in src.lines() {
+            let lines: Vec<&str> = src.lines().collect();
+            let mut pending_no_mangle = 0usize;
+            let mut in_extern_block = false;
+            for line in lines {
                 let line = line.trim();
-                for marker in ["fn ", "static mut ", "static "] {
-                    if let Some(pos) = line.find(marker) {
-                        let rest = &line[pos + marker.len()..];
-                        let ident: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
-                        if !ident.is_empty() { declared.insert(ident); }
+                if line.contains("#[no_mangle]") {
+                    pending_no_mangle = 12;
+                    continue;
+                }
+                if line.starts_with("unsafe extern ") || line.starts_with("extern \"system\" {")
+                    || line.starts_with("extern \"C\" {") {
+                    in_extern_block = line.contains('{');
+                    continue;
+                }
+                if in_extern_block && line.starts_with('}') {
+                    in_extern_block = false;
+                    continue;
+                }
+                if pending_no_mangle > 0 || in_extern_block {
+                    for marker in ["fn ", "static mut ", "static "] {
+                        if let Some(pos) = line.find(marker) {
+                            let rest = &line[pos + marker.len()..];
+                            let ident: String = rest.chars()
+                                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                                .collect();
+                            if !ident.is_empty() { declared.insert(ident); }
+                            pending_no_mangle = 0;
+                            break;
+                        }
                     }
                 }
+                pending_no_mangle = pending_no_mangle.saturating_sub(1);
             }
         }
     }
