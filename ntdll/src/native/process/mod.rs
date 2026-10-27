@@ -2,7 +2,35 @@
 //! Replace generic signatures with ABI-correct declarations as each routine is implemented.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
+#[cfg(target_os = "windows")]
 use super::syscall_stubs::{NtGetNextProcess, NtOpenProcess};
+#[cfg(not(target_os = "windows"))]
+use core::arch::global_asm;
+
+#[cfg(not(target_os = "windows"))]
+global_asm!(r#"
+    .text
+    .p2align 4
+    .global cognacos_nt_open_process
+cognacos_nt_open_process:
+    mov r10, rcx
+    mov eax, 0x150
+    syscall
+    ret
+    .p2align 4
+    .global cognacos_nt_get_next_process
+cognacos_nt_get_next_process:
+    mov r10, rcx
+    mov eax, 0x151
+    syscall
+    ret
+"#);
+
+#[cfg(not(target_os = "windows"))]
+unsafe extern "system" {
+    fn cognacos_nt_open_process(out: *mut *mut core::ffi::c_void, access: u32, attributes: *const core::ffi::c_void, client_id: *const core::ffi::c_void) -> i32;
+    fn cognacos_nt_get_next_process(previous: *mut core::ffi::c_void, access: u32, attributes: u32, flags: u32, out: *mut *mut core::ffi::c_void) -> i32;
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn NtAcceptConnectPort() -> i32 {
