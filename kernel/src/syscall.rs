@@ -1649,7 +1649,7 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         unsafe {
             crate::serial_write(b"[DBG][NTOSKRNL][SYSCALL] saved user GS base=");
             crate::serial_write_hex(user_gs_base);
-            crate::serial_write(b"\\r\\n");
+            crate::serial_write(b"\r\n");
         }
     }
     if !WINDOWS_SERVICE_TABLE_ENABLED.load(Ordering::Acquire) {
@@ -1830,7 +1830,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
         if trace_index < 32 {
             crate::serial_write(b"[DBG][NTOSKRNL][SYSCALL] dispatch-native begin service=");
             crate::serial_write_hex(number);
-            crate::serial_write(b"\\r\\n");
+            crate::serial_write(b"\r\n");
         }
         let result = dispatch_native_nt(number, &args);
         if trace_index < 32 {
@@ -1838,7 +1838,7 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             crate::serial_write_hex(number);
             crate::serial_write(b" status=");
             crate::serial_write_hex(result);
-            crate::serial_write(b"\\r\\n");
+            crate::serial_write(b"\r\n");
         }
         result
     }
