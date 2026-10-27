@@ -3,26 +3,26 @@
 # IDs are pinned Windows 11 AMD64 reference-image service ordinals, not stable ABI constants.
 # The kernel discovers each ID from the built NTDLL stub and maps it to a stable internal handler.
 # Windows service ordinals can change between Windows builds; never reuse these for another reference build without revalidation.
-NtClose 0x00f
-NtOpenKey 0x012
-NtQueryValueKey 0x017
-NtOpenFile 0x033
-NtReadFile 0x006
-NtAllocateVirtualMemory 0x018
-NtFreeVirtualMemory 0x01e
-NtProtectVirtualMemory 0x050
-NtQueryVirtualMemory 0x023
-NtReadVirtualMemory 0x03f
-NtWriteVirtualMemory 0x03a
-NtYieldExecution 0x046
-NtQueryInformationProcess 0x019
-NtQueryInformationThread 0x025
-NtQuerySystemInformation 0x036
-NtCreateKey 0x145
-NtSetValueKey 0x146
-NtDeleteValueKey 0x147
-NtDeleteKey 0x148
-NtFlushKey 0x149
-NtEnumerateKey 0x14a
-NtEnumerateValueKey 0x14b
-NtQueryKey 0x14c
+NtClose 0x00f 1
+NtOpenKey 0x012 3
+NtQueryValueKey 0x017 6
+NtOpenFile 0x033 6
+NtReadFile 0x006 9
+NtAllocateVirtualMemory 0x018 6
+NtFreeVirtualMemory 0x01e 4
+NtProtectVirtualMemory 0x050 5
+NtQueryVirtualMemory 0x023 6
+NtReadVirtualMemory 0x03f 5
+NtWriteVirtualMemory 0x03a 5
+NtYieldExecution 0x046 0
+NtQueryInformationProcess 0x019 5
+NtQueryInformationThread 0x025 5
+NtQuerySystemInformation 0x036 4
+NtCreateKey 0x145 7
+NtSetValueKey 0x146 6
+NtDeleteValueKey 0x147 2
+NtDeleteKey 0x148 1
+NtFlushKey 0x149 1
+NtEnumerateKey 0x14a 6
+NtEnumerateValueKey 0x14b 6
+NtQueryKey 0x14c 5
