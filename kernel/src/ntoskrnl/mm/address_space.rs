@@ -297,6 +297,17 @@ impl AddressSpace {
         *slot=DemandArea{root:self.root,start,end,allocation_protect,current_protect:allocation_protect,writable,executable,committed:true,live:true}; Ok(())
     }
 
+    /// Check whether an uncommitted demand-zero reservation overlaps a range.
+    /// Page-table queries alone cannot see these reservations before their first fault.
+    pub fn demand_area_overlaps(&self, start: u64, length: u64) -> bool {
+        let Some(end) = start.checked_add(length) else { return true; };
+        if length == 0 { return true; }
+        let _guard = ADDRESS_SPACE_LIFETIME_LOCK.lock();
+        unsafe { &*DEMAND_AREAS.0.get() }.iter().any(|area| {
+            area.live && area.root == self.root && start < area.end && area.start < end
+        })
+    }
+
     /// Resolve a demand-zero or pagefile-backed user fault. A busy working-set
     /// entry serializes simultaneous faults and trim/teardown for the same page.
     pub fn handle_page_fault(&mut self,address:u64,error_code:u64)->bool {
