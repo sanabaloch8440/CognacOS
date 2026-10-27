@@ -1,10 +1,10 @@
-//! CognacOS native NTDLL Rust port collection.
+//! CognacOS's native Rust implementation of the Windows 11 x64 NTDLL.
 //!
-//! Modules are kept separate while the C-to-Rust ports are validated. This
-//! crate currently provides a compilation/integration boundary; it does not
-//! yet replace the freestanding PE32+ bootstrap in root/wine/dlls/ntdll.
-//! Export collisions and ABI wiring must be resolved before linking these
-//! modules into a single production DLL.
+//! Subsystems are linked into one freestanding PE32+ DLL. The pinned Windows 11
+//! x64 export inventory defines the public name surface; canonical Windows x64
+//! SYSCALL stubs connect implemented Nt* APIs to the kernel's single syscall
+//! entry. Remaining exports are explicitly incomplete and must not be treated
+//! as full Windows semantic implementations merely because their names exist.
 #![cfg_attr(target_os = "windows", no_std)]
 #![allow(non_camel_case_types, non_snake_case, dead_code, improper_ctypes)]
 
