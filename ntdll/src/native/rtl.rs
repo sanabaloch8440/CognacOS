@@ -10,7 +10,7 @@
 
 #![allow(non_camel_case_types, non_snake_case)]
 
-pub use crate::nt_abi::types::{BOOLEAN, PVOID, ULONG};
+pub use crate::nt_abi::types::{BOOLEAN, LIST_ENTRY, PVOID, ULONG};
 
 /// Canonical shared ABI declaration; re-export keeps existing crate paths intact.
 pub use crate::nt_abi::types::{PRTL_SPLAY_LINKS, RTL_SPLAY_LINKS};
@@ -336,12 +336,6 @@ pub const GENERIC_EQUAL: i32 = 1;
 pub const GENERIC_GREATER_THAN: i32 = 2;
 const GENERIC_TABLE_DATA_OFFSET: usize = 40;
 
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct LIST_ENTRY {
-    pub Flink: *mut LIST_ENTRY,
-    pub Blink: *mut LIST_ENTRY,
-}
 
 #[repr(C)]
 pub struct RTL_GENERIC_TABLE {
@@ -375,21 +369,21 @@ unsafe fn generic_data_from_list(entry: *mut LIST_ENTRY) -> PVOID {
 unsafe fn list_insert_tail(head: *mut LIST_ENTRY, entry: *mut LIST_ENTRY) {
     // SAFETY: head is a circular list head and entry is writable detached storage.
     unsafe {
-        let tail = (*head).Blink;
-        (*entry).Flink = head;
-        (*entry).Blink = tail;
-        (*tail).Flink = entry;
-        (*head).Blink = entry;
+        let tail = (*head).blink;
+        (*entry).flink = head;
+        (*entry).blink = tail;
+        (*tail).flink = entry;
+        (*head).blink = entry;
     }
 }
 #[inline]
 unsafe fn list_remove(entry: *mut LIST_ENTRY) {
     // SAFETY: entry is linked into a valid circular list.
     unsafe {
-        (*(*entry).Blink).Flink = (*entry).Flink;
-        (*(*entry).Flink).Blink = (*entry).Blink;
-        (*entry).Flink = entry;
-        (*entry).Blink = entry;
+        (*(*entry).blink).flink = (*entry).flink;
+        (*(*entry).flink).blink = (*entry).blink;
+        (*entry).flink = entry;
+        (*entry).blink = entry;
     }
 }
 #[inline]
@@ -422,8 +416,8 @@ pub unsafe fn RtlInitializeGenericTable(
     unsafe {
         (*table).TableRoot = core::ptr::null_mut();
         let head = &mut (*table).InsertOrderList as *mut LIST_ENTRY;
-        (*head).Flink = head;
-        (*head).Blink = head;
+        (*head).flink = head;
+        (*head).blink = head;
         (*table).OrderedPointer = head;
         (*table).NumberGenericTableElements = 0;
         (*table).WhichOrderedElement = 0;
@@ -476,8 +470,8 @@ pub unsafe fn RtlInsertElementGenericTable(
         if node.is_null() { return core::ptr::null_mut(); }
         RtlInitializeSplayLinks(node);
         let list = generic_list_entry(node);
-        (*list).Flink = list;
-        (*list).Blink = list;
+        (*list).flink = list;
+        (*list).blink = list;
         let data = generic_data(node);
         core::ptr::copy_nonoverlapping(value.cast::<u8>(), data.cast::<u8>(), size as usize);
         list_insert_tail(&mut (*table).InsertOrderList, list);
@@ -570,16 +564,16 @@ pub unsafe fn RtlGetElementGenericTable(table: *mut RTL_GENERIC_TABLE, index: UL
         let mut entry: *mut LIST_ENTRY;
         if (*table).WhichOrderedElement != 0 && index >= (*table).WhichOrderedElement {
             entry = (*table).OrderedPointer;
-            for _ in 0..(index + 1 - (*table).WhichOrderedElement) { entry = (*entry).Flink; }
+            for _ in 0..(index + 1 - (*table).WhichOrderedElement) { entry = (*entry).flink; }
         } else if (*table).WhichOrderedElement != 0 && index < (*table).WhichOrderedElement {
             entry = (*table).OrderedPointer;
-            for _ in 0..((*table).WhichOrderedElement - index - 1) { entry = (*entry).Blink; }
+            for _ in 0..((*table).WhichOrderedElement - index - 1) { entry = (*entry).blink; }
         } else if index < count / 2 {
-            entry = (*head).Flink;
-            for _ in 0..index { entry = (*entry).Flink; }
+            entry = (*head).flink;
+            for _ in 0..index { entry = (*entry).flink; }
         } else {
-            entry = (*head).Blink;
-            for _ in 0..(count - index - 1) { entry = (*entry).Blink; }
+            entry = (*head).blink;
+            for _ in 0..(count - index - 1) { entry = (*entry).blink; }
         }
         (*table).OrderedPointer = entry;
         (*table).WhichOrderedElement = index + 1;
