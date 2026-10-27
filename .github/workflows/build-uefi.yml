@@ -542,6 +542,12 @@ jobs:
             cat build/serial.log || true
             echo "=== QEMU CPU exception / reset trace ==="
             tail -n 500 build/qemu-debug.log || true
+            # llvm-symbolizer discovers the CodeView PDB beside the PE image.
+            # The linker writes it under build/ntdll, so stage a matching copy
+            # next to the DLL before either NTDLL symbol-resolution diagnostic.
+            if [[ -f build/ntdll/cognac_ntdll.pdb && -f target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll ]]; then
+              cp build/ntdll/cognac_ntdll.pdb target/x86_64-pc-windows-msvc/release/cognac_ntdll.pdb
+            fi
             echo "=== Classify captured RIP and resolve NTDLL only when it belongs to that image ==="
             python3 - <<'PY'
           import re, struct, subprocess
