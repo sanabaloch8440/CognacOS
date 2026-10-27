@@ -33,13 +33,7 @@ const VALID_SEARCH_FLAGS: ULONG = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR
     | LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS
     | LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct UNICODE_STRING {
-    pub Length: u16,
-    pub MaximumLength: u16,
-    pub Buffer: *mut u16,
-}
+pub use crate::nt_abi::object::UNICODE_STRING;
 
 const MAX_PATH_UNITS: usize = 512;
 const MAX_DLL_DIRECTORIES: usize = 32;
@@ -222,15 +216,15 @@ unsafe fn find_entry_by_base(base: usize) -> Option<*mut u8> {
 unsafe fn entry_name_matches(entry: *const u8, name: *const UNICODE_STRING, full: bool) -> bool {
     if name.is_null() { return false; }
     let wanted = unsafe { &*name };
-    if wanted.Length & 1 != 0 || wanted.Length > wanted.MaximumLength
-        || (wanted.Length != 0 && wanted.Buffer.is_null()) { return false; }
+    if wanted.length & 1 != 0 || wanted.length > wanted.maximum_length
+        || (wanted.length != 0 && wanted.buffer.is_null()) { return false; }
     let offset = if full { 0x48 } else { 0x58 };
     let length = unsafe { ptr::read_unaligned(entry.add(offset).cast::<u16>()) };
     let buffer = unsafe { ptr::read_unaligned(entry.add(offset + 8).cast::<usize>()) } as *const u16;
-    if length != wanted.Length || length & 1 != 0 || (length != 0 && (buffer.is_null() || wanted.Buffer.is_null())) { return false; }
+    if length != wanted.length || length & 1 != 0 || (length != 0 && (buffer.is_null() || wanted.buffer.is_null())) { return false; }
     for i in 0..(length as usize / 2) {
         let a = unsafe { ptr::read_unaligned(buffer.add(i)) };
-        let b = unsafe { ptr::read_unaligned(wanted.Buffer.add(i)) };
+        let b = unsafe { ptr::read_unaligned(wanted.buffer.add(i)) };
         let fold = |v: u16| if (b'A' as u16..=b'Z' as u16).contains(&v) { v + 32 } else { v };
         if fold(a) != fold(b) { return false; }
     }
@@ -290,14 +284,14 @@ impl Drop for StateGuard { fn drop(&mut self) { STATE_LOCK.store(false, Ordering
 unsafe fn copy_absolute_path(source: *const UNICODE_STRING, output: &mut PathSlot) -> NTSTATUS {
     if source.is_null() { return STATUS_INVALID_PARAMETER; }
     let descriptor = unsafe { &*source };
-    if (descriptor.Length & 1) != 0 || descriptor.Length > descriptor.MaximumLength
-        || descriptor.Length as usize / 2 >= MAX_PATH_UNITS
-        || (descriptor.Length != 0 && descriptor.Buffer.is_null()) {
+    if (descriptor.length & 1) != 0 || descriptor.length > descriptor.maximum_length
+        || descriptor.length as usize / 2 >= MAX_PATH_UNITS
+        || (descriptor.length != 0 && descriptor.buffer.is_null()) {
         return STATUS_INVALID_PARAMETER;
     }
-    let count = descriptor.Length as usize / 2;
+    let count = descriptor.length as usize / 2;
     if count == 0 { *output = PathSlot::EMPTY; output.active = true; return STATUS_SUCCESS; }
-    let path = unsafe { core::slice::from_raw_parts(descriptor.Buffer, count) };
+    let path = unsafe { core::slice::from_raw_parts(descriptor.buffer, count) };
     // Windows AddDllDirectory requires an absolute path. Accept drive-rooted and
     // NT/UNC rooted forms; relative paths are rejected.
     let absolute = (count >= 3 && path[1] == b':' as u16 && (path[2] == b'\\' as u16 || path[2] == b'/' as u16))
