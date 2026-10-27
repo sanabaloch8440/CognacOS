@@ -38,7 +38,7 @@ pub use native::heap as heap;
 pub use native::legacy_misc as misc;
 pub use native::legacy_path as path;
 pub use native::legacy_printf as printf;
-pub use native::legacy_process as process;
+pub use native::process as process;
 pub use native::legacy_resource as resource;
 pub use native::legacy_time as time;
 pub use native::legacy_version as version;
