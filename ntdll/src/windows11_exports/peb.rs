@@ -2,6 +2,17 @@
 //! Replace generic signatures with ABI-correct declarations as each routine is implemented.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
+use core::ffi::c_void;
+
+/// Return the active process's Windows x64 PEB through the TEB GS slot.
+#[no_mangle]
+pub unsafe extern "system" fn RtlGetCurrentPeb() -> *mut c_void {
+    let peb: *mut c_void;
+    unsafe { core::arch::asm!("mov {}, gs:[0x60]", out(reg) peb, options(nostack, preserves_flags, readonly)); }
+    peb
+}
+
+
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetNtGlobalFlags() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
