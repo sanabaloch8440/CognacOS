@@ -359,6 +359,16 @@ pub fn reference_process_root(pointer:*mut core::ffi::c_void)->Option<u64>{
 }
 /// True while any process-object reference can still use this address-space root.
 /// AddressSpace::destroy calls this while holding ADDRESS_SPACE_LIFETIME_LOCK.
+/// Check whether a CR3 root is owned by a live process, independent of the
+/// current thread/syscall PID bookkeeping. Page-fault dispatch uses this when
+/// CR3 is the authoritative context during early ring-3 startup.
+pub fn address_space_root_is_registered(root: u64) -> bool {
+    if root == 0 { return false; }
+    let registry = TABLE.lock();
+    registry.0.iter().any(|p| p.used && p.magic == EPROCESS_MAGIC
+        && p.address_space_root == root
+        && (p.state == ProcessState::Running || p.state == ProcessState::Created))
+}
 pub fn address_space_has_references(root:u64)->bool{
  if root==0{return false}
  let registry=TABLE.lock();
