@@ -21,6 +21,16 @@ pub struct ProcessorCapabilities {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessorStatus { Success, InvalidHalContract, InvalidProcessorCount, UnsupportedOperation }
 
+/// Convert processor-driver results to the shared NTSTATUS ABI.
+pub const fn status_to_ntstatus(status: ProcessorStatus) -> nt_abi::ntstatus::NTSTATUS {
+    use nt_abi::ntstatus::*;
+    match status {
+        ProcessorStatus::Success => STATUS_SUCCESS,
+        ProcessorStatus::InvalidProcessorCount => STATUS_INVALID_PARAMETER,
+        ProcessorStatus::InvalidHalContract | ProcessorStatus::UnsupportedOperation => STATUS_INVALID_DEVICE_REQUEST,
+    }
+}
+
 pub struct ProcessorDriver { initialized: bool, capabilities: ProcessorCapabilities }
 impl ProcessorDriver {
     pub const fn new() -> Self {
