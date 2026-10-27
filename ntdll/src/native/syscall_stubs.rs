@@ -10,6 +10,8 @@ core::arch::global_asm!(
 
 unsafe extern "system" {
     pub fn NtClose(handle: *mut c_void) -> i32;
+    pub fn NtOpenProcess(process_handle: *mut *mut c_void, desired_access: u32, object_attributes: *const c_void, client_id: *const c_void) -> i32;
+    pub fn NtGetNextProcess(process_handle: *mut c_void, desired_access: u32, handle_attributes: u32, flags: u32, new_process_handle: *mut *mut c_void) -> i32;
     pub fn NtOpenKey(key: *mut *mut c_void, access: u32, attributes: *const crate::reg::OBJECT_ATTRIBUTES) -> i32;
     pub fn NtQueryValueKey(key: *mut c_void, name: *const crate::reg::UNICODE_STRING, class: u32, information: *mut c_void, length: u32, return_length: *mut u32) -> i32;
     pub fn NtOpenFile(file_handle: *mut *mut c_void, desired_access: u32, object_attributes: *const c_void, io_status_block: *mut c_void, share_access: u32, open_options: u32) -> i32;
