@@ -564,7 +564,12 @@ pub unsafe fn run_native_ntdll_smoke(
     check_dword!(NTDLL_TEST_DATA + 0x208, 4096);
 
     call_ptr!(yield_execution);
-    emit!(&[0x85, 0xc0]);
+    // Windows NtYieldExecution may legitimately return STATUS_NO_YIELD_PERFORMED
+    // (0x40000024) when no peer thread is ready. Accept that informational
+    // status as well as STATUS_SUCCESS; reject other nonzero NTSTATUS values.
+    emit!(&[0x3d, 0x24, 0x00, 0x00, 0x40]); // cmp eax, STATUS_NO_YIELD_PERFORMED
+    emit!(&[0x74, 0x08]); // je past test+jcc when no yield was performed
+    emit!(&[0x85, 0xc0]); // test eax, eax
     fail_if!(&[0x0f, 0x85]);
     // Exercise native RTL Unicode/ANSI string routines from ring 3.
     imm64!(&[0x48, 0xb9], NTDLL_TEST_DATA + 0xA40);
