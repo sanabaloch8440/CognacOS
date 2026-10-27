@@ -6,24 +6,13 @@
 
 #![allow(non_snake_case, non_camel_case_types, dead_code)]
 
-use core::ffi::c_void;
 use core::{mem, ptr};
 
-type NTSTATUS = i32;
-type ULONG = u32;
-type SIZE_T = usize;
-type BOOLEAN = u8;
-type HANDLE = *mut c_void;
-type PVOID = *mut c_void;
-
-const STATUS_SUCCESS: NTSTATUS = 0;
-const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC000_0002u32 as i32;
-const STATUS_NO_MEMORY: NTSTATUS = 0xC000_0017u32 as i32;
-const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
-const MEM_COMMIT: ULONG = 0x1000;
-const MEM_RESERVE: ULONG = 0x2000;
-const MEM_RELEASE: ULONG = 0x8000;
-const PAGE_READWRITE: ULONG = 0x04;
+pub use crate::nt_abi::types::{BOOLEAN, HANDLE, PVOID, ULONG, SIZE_T};
+pub use crate::nt_abi::ntstatus::{
+    NTSTATUS, STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED, STATUS_NO_MEMORY, STATUS_SUCCESS,
+};
+pub use crate::nt_abi::mm::{MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE};
 const COMMIT_SIZE: usize = 4096;
 
 #[repr(C)]
