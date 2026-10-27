@@ -106,10 +106,28 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: lld-link
-          RUSTFLAGS: "-C debuginfo=2 -C force-frame-pointers=yes -C link-arg=/DEBUG:FULL -C link-arg=/PDB:${{ github.workspace }}/build/ntdll/cognac_ntdll.pdb -C link-arg=/DEF:${{ github.workspace }}/ntdll/exports/ntdll-rust.def -C link-arg=/ENTRY:DllMain -C link-arg=/NODEFAULTLIB -C link-arg=/LIBPATH:${{ github.workspace }}/ntdll"
+          RUSTFLAGS: "-C debuginfo=2 -C force-frame-pointers=yes -C link-arg=/DEBUG:FULL -C link-arg=/PDB:${{ github.workspace }}/build/ntdll/cognac_ntdll.pdb -C link-arg=/DEF:${{ github.workspace }}/build/ntdll/ntdll-rust.def -C link-arg=/ENTRY:DllMain -C link-arg=/NODEFAULTLIB -C link-arg=/LIBPATH:${{ github.workspace }}/ntdll"
         run: |
           set -euo pipefail
           mkdir -p build/ntdll
+          # Export the pinned Windows 11 x64 NTDLL name inventory from the
+          # Rust DLL, rather than shipping a small custom Cognac-only subset.
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          names = []
+          for raw in Path("ntdll/exports/windows-11-x64-exports.txt").read_text().splitlines():
+              name = raw.strip()
+              if not name or name.startswith("#"):
+                  continue
+              if not re.fullmatch(r"[A-Za-z0-9_]+", name):
+                  raise SystemExit(f"invalid NTDLL export name: {name!r}")
+              names.append(name)
+          if len(names) < 2000 or len(names) != len(set(names)):
+              raise SystemExit(f"unexpected Windows NTDLL inventory: {len(names)} unique={len(set(names))}")
+          Path("build/ntdll/ntdll-rust.def").write_text("LIBRARY ntdll\\nEXPORTS\\n" + "".join(f"    {name}\\n" for name in names))
+          print(f"Generated Rust NTDLL definition with {len(names)} Windows 11 exports")
+          PY
           sysroot="$(rustc --print sysroot)"
           mkdir -p "$RUNNER_TEMP/ntdll-linker"
           ln -sf "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld" "$RUNNER_TEMP/ntdll-linker/lld-link"
