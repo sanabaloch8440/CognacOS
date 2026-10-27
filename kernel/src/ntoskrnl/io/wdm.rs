@@ -24,9 +24,8 @@ const IRP_INFORMATION_OFFSET: usize = 0x38;
 
 /// Canonical counted UTF-16 string ABI shared with NTDLL and driver headers.
 pub type UnicodeString = crate::nt_abi::object::UNICODE_STRING;
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct IoStatusBlock { pub status: isize, pub information: usize }
+/// Use the canonical Windows IO_STATUS_BLOCK union layout shared with NTDLL and drivers.
+pub type IoStatusBlock = crate::nt_abi::io::IO_STATUS_BLOCK;
 pub type DriverDispatch = unsafe extern "system" fn(*mut DeviceObject, *mut Irp) -> i32;
 pub type DriverUnload = unsafe extern "system" fn(*mut DriverObject);
 pub type IoCompletionRoutine = unsafe extern "system" fn(*mut DeviceObject, *mut Irp, *mut c_void) -> i32;
@@ -1323,7 +1322,7 @@ mod wdm_tests {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};
   let mut device:*mut DeviceObject=ptr::null_mut();
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
-  let mut status=IoStatusBlock{status:STATUS_PENDING as isize,information:0};
+  let mut status=IoStatusBlock { status: crate::nt_abi::io::IO_STATUS_BLOCK_STATUS { status: STATUS_PENDING }, information: 0 };
   let mut buffer=[0u8;512];
   let offset=4096i64;
   let irp=unsafe{io_build_asynchronous_fsd_request(3,device,buffer.as_mut_ptr().cast(),buffer.len() as u32,&offset,&mut status)};
@@ -1355,7 +1354,7 @@ mod wdm_tests {
   let irp=unsafe{io_build_asynchronous_fsd_request(3,device,buffer.as_mut_ptr().cast(),buffer.len() as u32,ptr::null(),&mut status)};
   assert!(!irp.is_null());
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
-  assert_eq!(status.status,STATUS_SUCCESS as isize);
+  assert_eq!(unsafe { status.status.status }, STATUS_SUCCESS);
   assert_eq!(status.information,123);
   unsafe{io_free_irp(irp);io_delete_device(device);}
  }
