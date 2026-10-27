@@ -393,6 +393,101 @@ pub unsafe extern "system" fn AlpcInitializeMessageAttribute(
 }
 
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_size_includes_only_recognized_attributes() {
+        assert_eq!(AlpcGetHeaderSize(0), size_of::<ALPC_MESSAGE_ATTRIBUTES>() as ULONG);
+        assert_eq!(
+            AlpcGetHeaderSize(ALPC_MESSAGE_SECURITY_ATTRIBUTE),
+            (size_of::<ALPC_MESSAGE_ATTRIBUTES>() + size_of::<ALPC_SECURITY_ATTR>()) as ULONG
+        );
+        assert_eq!(
+            AlpcGetHeaderSize(ALPC_MESSAGE_ATTRIBUTE_ALL | 1),
+            (ATTRIBUTE_SIZES.iter().map(|(_, size)| *size).sum::<usize>()
+                + size_of::<ALPC_MESSAGE_ATTRIBUTES>()) as ULONG
+        );
+    }
+
+    #[test]
+    fn initialize_reports_required_size_and_checks_capacity() {
+        let flags = ALPC_MESSAGE_VIEW_ATTRIBUTE | ALPC_MESSAGE_TOKEN_ATTRIBUTE;
+        let required = AlpcGetHeaderSize(flags);
+        let mut reported = 0u32;
+        let mut header = ALPC_MESSAGE_ATTRIBUTES {
+            AllocatedAttributes: 0,
+            ValidAttributes: u32::MAX,
+        };
+
+        // SAFETY: Both output pointers are valid for their declared types.
+        let status = unsafe {
+            AlpcInitializeMessageAttribute(flags, &mut header, required - 1, &mut reported)
+        };
+        assert_eq!(status, STATUS_BUFFER_TOO_SMALL);
+        assert_eq!(reported, required);
+        assert_eq!(header.AllocatedAttributes, 0);
+
+        // SAFETY: Both pointers are valid and the advertised capacity is sufficient.
+        let status = unsafe {
+            AlpcInitializeMessageAttribute(flags, &mut header, required, &mut reported)
+        };
+        assert_eq!(status, STATUS_SUCCESS);
+        assert_eq!(header.AllocatedAttributes, flags);
+        assert_eq!(header.ValidAttributes, 0);
+    }
+
+    #[test]
+    fn attribute_pointer_is_ordered_by_descending_flag() {
+        let flags = ALPC_MESSAGE_SECURITY_ATTRIBUTE
+            | ALPC_MESSAGE_CONTEXT_ATTRIBUTE
+            | ALPC_MESSAGE_TOKEN_ATTRIBUTE;
+        let total = AlpcGetHeaderSize(flags);
+        let mut storage = vec![0u64; (total as usize + 7) / 8];
+        let header = storage.as_mut_ptr().cast::<ALPC_MESSAGE_ATTRIBUTES>();
+
+        // SAFETY: Storage is sufficiently sized and suitably aligned for the header.
+        unsafe {
+            (*header).AllocatedAttributes = flags;
+            let security = AlpcGetMessageAttribute(header, ALPC_MESSAGE_SECURITY_ATTRIBUTE);
+            let context = AlpcGetMessageAttribute(header, ALPC_MESSAGE_CONTEXT_ATTRIBUTE);
+            let token = AlpcGetMessageAttribute(header, ALPC_MESSAGE_TOKEN_ATTRIBUTE);
+
+            assert_eq!(security as usize - header as usize, size_of::<ALPC_MESSAGE_ATTRIBUTES>());
+            assert_eq!(
+                context as usize - header as usize,
+                (size_of::<ALPC_MESSAGE_ATTRIBUTES>() + size_of::<ALPC_SECURITY_ATTR>())
+            );
+            assert_eq!(
+                token as usize - header as usize,
+                (size_of::<ALPC_MESSAGE_ATTRIBUTES>()
+                    + size_of::<ALPC_SECURITY_ATTR>()
+                    + size_of::<ALPC_CONTEXT_ATTR>())
+            );
+            assert!(AlpcGetMessageAttribute(header, 0).is_null());
+            assert!(AlpcGetMessageAttribute(
+                header,
+                ALPC_MESSAGE_TOKEN_ATTRIBUTE | ALPC_MESSAGE_VIEW_ATTRIBUTE
+            ).is_null());
+            assert!(AlpcGetMessageAttribute(header, ALPC_MESSAGE_VIEW_ATTRIBUTE).is_null());
+        }
+    }
+
+    #[test]
+    fn x64_attribute_layout_sizes_match_winternl() {
+        assert_eq!(size_of::<ALPC_MESSAGE_ATTRIBUTES>(), 8);
+        assert_eq!(size_of::<ALPC_SECURITY_ATTR>(), 24);
+        assert_eq!(size_of::<ALPC_VIEW_ATTR>(), 32);
+        assert_eq!(size_of::<ALPC_CONTEXT_ATTR>(), 32);
+        assert_eq!(size_of::<ALPC_HANDLE_ATTR32>(), 44);
+        assert_eq!(size_of::<ALPC_HANDLE_ATTR>(), 64);
+        assert_eq!(size_of::<ALPC_TOKEN_ATTR>(), 24);
+        assert_eq!(size_of::<ALPC_DIRECT_ATTR>(), 8);
+        assert_eq!(size_of::<ALPC_WORK_ON_BEHALF_ATTR>(), 8);
+    }
+}
+
 }
 
 pub use attribute_compat::{
