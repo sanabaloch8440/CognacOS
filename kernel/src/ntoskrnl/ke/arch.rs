@@ -1627,8 +1627,40 @@ pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *cons
         if vector == 14 {
             let cr2: u64;
             core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+            let pf = crate::ntoskrnl::ke::diagnostics::decode_page_fault_error(error);
             crate::serial_write(b" CR2=");
             crate::serial_write_hex(cr2);
+            crate::serial_write(b"\r\nPAGEFAULT kind=");
+            if pf.reserved_bit {
+                crate::serial_write(b"reserved-bit-violation");
+            } else if pf.protection_violation {
+                crate::serial_write(b"protection-violation");
+            } else {
+                crate::serial_write(b"not-present");
+            }
+            crate::serial_write(b" access=");
+            if pf.instruction_fetch {
+                crate::serial_write(b"instruction-fetch");
+            } else if pf.write {
+                crate::serial_write(b"write");
+            } else {
+                crate::serial_write(b"read");
+            }
+            crate::serial_write(b" privilege=");
+            if pf.user { crate::serial_write(b"user"); }
+            else { crate::serial_write(b"supervisor"); }
+            crate::serial_write(b" reserved=");
+            crate::serial_write(if pf.reserved_bit { b"yes" } else { b"no" });
+            crate::serial_write(b" protection-key=");
+            crate::serial_write(if pf.protection_key { b"yes" } else { b"no" });
+            crate::serial_write(b" shadow-stack=");
+            crate::serial_write(if pf.shadow_stack { b"yes" } else { b"no" });
+            crate::serial_write(b" sgx=");
+            crate::serial_write(if pf.sgx { b"yes" } else { b"no" });
+            crate::serial_write(b" error=");
+            crate::serial_write_hex(error);
+            crate::serial_write(b" RIP=");
+            crate::serial_write_hex(frame.add(17).read());
         }
         crate::serial_write(b"\r\nSystem halted.\r\n");
         crate::halt()
