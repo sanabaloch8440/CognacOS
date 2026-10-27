@@ -74,8 +74,6 @@ pub(crate) unsafe fn initialize_native_process() {
 
 // Previous root-level implementations retained under native/legacy_* while
 // duplicate symbols are reconciled subsystem-by-subsystem.
-#[path = "legacy_alpc.rs"]
-pub mod legacy_alpc;
 #[path = "legacy_atom.rs"]
 pub mod legacy_atom;
 #[path = "legacy_crypt.rs"]
