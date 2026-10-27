@@ -71,3 +71,32 @@ pub mod trace;
 pub(crate) unsafe fn initialize_native_process() {
     let _ = unsafe { exception::RtlRegisterExceptionDispatcher() };
 }
+
+// Previous root-level implementations retained under native/legacy_* while
+// duplicate symbols are reconciled subsystem-by-subsystem.
+#[path = "legacy_alpc.rs"]
+pub mod legacy_alpc;
+#[path = "legacy_atom.rs"]
+pub mod legacy_atom;
+#[path = "legacy_crypt.rs"]
+pub mod legacy_crypt;
+#[path = "legacy_env.rs"]
+pub mod legacy_env;
+#[path = "legacy_exception.rs"]
+pub mod legacy_exception;
+#[path = "legacy_heap.rs"]
+pub mod legacy_heap;
+#[path = "legacy_misc.rs"]
+pub mod legacy_misc;
+#[path = "legacy_path.rs"]
+pub mod legacy_path;
+#[path = "legacy_printf.rs"]
+pub mod legacy_printf;
+#[path = "legacy_process.rs"]
+pub mod legacy_process;
+#[path = "legacy_resource.rs"]
+pub mod legacy_resource;
+#[path = "legacy_time.rs"]
+pub mod legacy_time;
+#[path = "legacy_version.rs"]
+pub mod legacy_version;

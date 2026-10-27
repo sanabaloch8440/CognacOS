@@ -29,19 +29,19 @@ __CxxFrameHandler3:
     ret
 "#, options(att_syntax));
 
-pub mod alpc;
-pub mod atom;
-pub mod crypt;
-pub mod env;
-pub mod exception;
-pub mod heap;
-pub mod misc;
-pub mod path;
-pub mod printf;
-pub mod process;
-pub mod resource;
-pub mod time;
-pub mod version;
+pub use native::legacy_alpc as alpc;
+pub use native::legacy_atom as atom;
+pub use native::legacy_crypt as crypt;
+pub use native::legacy_env as env;
+pub use native::legacy_exception as exception;
+pub use native::legacy_heap as heap;
+pub use native::legacy_misc as misc;
+pub use native::legacy_path as path;
+pub use native::legacy_printf as printf;
+pub use native::legacy_process as process;
+pub use native::legacy_resource as resource;
+pub use native::legacy_time as time;
+pub use native::legacy_version as version;
 
 // All implementation modules live under native/. These re-exports preserve
 // existing crate::module paths while callers are migrated incrementally.
