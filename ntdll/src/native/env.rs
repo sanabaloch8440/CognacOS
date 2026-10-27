@@ -7,12 +7,13 @@
 
 use core::alloc::Layout;
 use core::ffi::c_void;
-use core::ptr;
+use core::ptr::{self, null, null_mut};
 use alloc::{alloc::{alloc, dealloc}, vec::Vec};
 use alloc::string::ToString;
 
 type NTSTATUS = i32;
 type ULONG = u32;
+type WCHAR = u16;
 type SIZE_T = usize;
 type PWSTR = *mut u16;
 type PCWSTR = *const u16;
@@ -20,6 +21,8 @@ type PVOID = *mut c_void;
 
 const STATUS_SUCCESS: NTSTATUS = 0;
 const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
+const STATUS_BUFFER_TOO_SMALL: NTSTATUS = 0xC000_0023u32 as i32;
+const STATUS_VARIABLE_NOT_FOUND: NTSTATUS = 0xC000_0100u32 as i32;
 const STATUS_NO_MEMORY: NTSTATUS = 0xC000_0017u32 as i32;
 const RTL_CREATE_ENVIRONMENT_TRANSLATE: ULONG = 0x1;
 const ENV_MAGIC: u64 = 0x434F_474E_454E_5631;
@@ -275,59 +278,229 @@ mod tests {
 }
 
 
-// Canonical environment query/expansion ABI exports. The implementations
-// reuse the PEB-locking and UTF-16 helpers in process_parameters.rs.
-#[no_mangle]
+// Environment query/expansion uses the shared process environment lookup and
+// PEB locking helpers. These routines do not allocate or free environment
+// blocks, so ownership remains with the creator of the supplied block.
+use super::process_parameters::{
+    current_environment_slot, find_variable, wcslen16, RtlAcquirePebLock,
+    RtlGetCurrentPeb, RtlReleasePebLock, UNICODE_STRING,
+};
+
+/// RtlQueryEnvironmentVariable_U. A null environment selects the current PEB environment under FastPebLock.
+unsafe fn query_environment_variable_u_explicit(
+    environment: *mut WCHAR,
+    name: *const UNICODE_STRING,
+    value: *mut UNICODE_STRING,
+) -> NTSTATUS {
+    if name.is_null() || value.is_null() || (*name).Buffer.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    (*value).Length = 0;
+    if (*name).Length == 0 { return STATUS_VARIABLE_NOT_FOUND; }
+    if environment.is_null() { return STATUS_INVALID_PARAMETER; }
+
+    let name_len = ((*name).Length as usize) / 2;
+    let found = find_variable(environment, (*name).Buffer, name_len);
+    if found.is_null() { return STATUS_VARIABLE_NOT_FOUND; }
+
+    let len = wcslen16(found);
+    let byte_len = len.saturating_mul(2);
+    if byte_len > USHORT::MAX as usize { return STATUS_BUFFER_TOO_SMALL; }
+    (*value).Length = byte_len as USHORT;
+
+    if byte_len > (*value).MaximumLength as usize {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    if (*value).Buffer.is_null() && byte_len != 0 {
+        (*value).Length = 0;
+        return STATUS_INVALID_PARAMETER;
+    }
+    let copy_units = core::cmp::min(len + 1, (*value).MaximumLength as usize / 2);
+    if copy_units != 0 {
+        core::ptr::copy(found, (*value).Buffer, copy_units);
+    }
+    STATUS_SUCCESS
+}
+
+
+/// Query a named variable from an explicit environment block or the current PEB environment.
 pub unsafe extern "system" fn RtlQueryEnvironmentVariable_U(
-    environment: *mut u16,
-    name: *const super::process_parameters::UNICODE_STRING,
-    value: *mut super::process_parameters::UNICODE_STRING,
-) -> i32 {
-    unsafe { super::process_parameters::RtlQueryEnvironmentVariable_U(environment, name, value) }
+    environment: *mut WCHAR,
+    name: *const UNICODE_STRING,
+    value: *mut UNICODE_STRING,
+) -> NTSTATUS {
+    if !environment.is_null() {
+        return query_environment_variable_u_explicit(environment, name, value);
+    }
+    RtlAcquirePebLock();
+    let slot = current_environment_slot();
+    let current = if slot.is_null() { null_mut() } else { *slot };
+    let status = if current.is_null() {
+        STATUS_INVALID_PARAMETER
+    } else {
+        query_environment_variable_u_explicit(current, name, value)
+    };
+    RtlReleasePebLock();
+    status
 }
 
-#[no_mangle]
+/// RtlQueryEnvironmentVariable. Return length is measured in WCHAR units,
+/// matching the native API. Null environment/current-process lookup is deferred.
+unsafe fn query_environment_variable_explicit(
+    environment: *mut WCHAR,
+    name: *const WCHAR,
+    name_len: SIZE_T,
+    value: *mut WCHAR,
+    value_length: SIZE_T,
+    return_length: *mut SIZE_T,
+) -> NTSTATUS {
+    if !return_length.is_null() { *return_length = 0; }
+    if name.is_null() || name_len == 0 { return STATUS_VARIABLE_NOT_FOUND; }
+    if environment.is_null() { return STATUS_INVALID_PARAMETER; }
+
+    let found = find_variable(environment, name, name_len);
+    if found.is_null() { return STATUS_VARIABLE_NOT_FOUND; }
+
+    let len = wcslen16(found);
+    if !return_length.is_null() { *return_length = len; }
+    if len > value_length { 
+        if !return_length.is_null() { *return_length = len + 1; }
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    if value.is_null() && value_length != 0 { return STATUS_INVALID_PARAMETER; }
+    let copy_units = core::cmp::min(len + 1, value_length);
+    if copy_units != 0 { core::ptr::copy(found, value, copy_units); }
+    STATUS_SUCCESS
+}
+
+
+/// Query a variable from an explicit environment block or the current process environment.
 pub unsafe extern "system" fn RtlQueryEnvironmentVariable(
-    environment: *mut u16,
-    name: *const u16,
-    name_len: usize,
-    value: *mut u16,
-    value_length: usize,
-    return_length: *mut usize,
-) -> i32 {
-    unsafe {
-        super::process_parameters::RtlQueryEnvironmentVariable(
-            environment, name, name_len, value, value_length, return_length,
-        )
+    environment: *mut WCHAR,
+    name: *const WCHAR,
+    name_len: SIZE_T,
+    value: *mut WCHAR,
+    value_length: SIZE_T,
+    return_length: *mut SIZE_T,
+) -> NTSTATUS {
+    if !environment.is_null() {
+        return query_environment_variable_explicit(environment, name, name_len, value, value_length, return_length);
     }
+    RtlAcquirePebLock();
+    let slot = current_environment_slot();
+    let current = if slot.is_null() { null_mut() } else { *slot };
+    let status = if current.is_null() {
+        STATUS_INVALID_PARAMETER
+    } else {
+        query_environment_variable_explicit(current, name, name_len, value, value_length, return_length)
+    };
+    RtlReleasePebLock();
+    status
 }
 
-#[no_mangle]
+/// Expand %NAME% references. The return length includes the trailing NUL and
+/// is measured in UTF-16 code units, as in Wine's ntdll implementation.
+unsafe fn expand_environment_strings_explicit(
+    environment: *const WCHAR,
+    source: *const WCHAR,
+    source_len: SIZE_T,
+    destination: *mut WCHAR,
+    destination_count: SIZE_T,
+    required_length: *mut SIZE_T,
+) -> NTSTATUS {
+    if source.is_null() || (destination_count != 0 && destination.is_null()) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    if environment.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut src = source;
+    let mut remaining = source_len;
+    let mut dst_pos = 0usize;
+    let mut required = 1usize;
+    while remaining != 0 {
+        let token: *const WCHAR;
+        let token_len: usize;
+        let copy_len: usize;
+        if *src != b'%' as WCHAR {
+            let mut n = 0;
+            while n < remaining && *src.add(n) != b'%' as WCHAR { n += 1; }
+            token = src; token_len = n; copy_len = n;
+            src = src.add(n); remaining -= n;
+        } else {
+            let mut end = 1usize;
+            while end < remaining && *src.add(end) != b'%' as WCHAR { end += 1; }
+            if end < remaining {
+                let found = find_variable(environment, src.add(1), end - 1);
+                if !found.is_null() {
+                    token = found; token_len = wcslen16(found);
+                    src = src.add(end + 1); remaining -= end + 1;
+                    if token_len < destination_count.saturating_sub(dst_pos) { copy_len = token_len; }
+                    else { copy_len = 0; }
+                } else {
+                    token = src; token_len = end + 1; copy_len = end + 1;
+                    src = src.add(end + 1); remaining -= end + 1;
+                }
+            } else {
+                token = src; token_len = remaining; copy_len = remaining;
+                src = src.add(remaining); remaining = 0;
+            }
+        }
+        required = required.saturating_add(token_len);
+        if destination_count > dst_pos {
+            let available = destination_count - dst_pos;
+            let n = core::cmp::min(copy_len, available.saturating_sub(1));
+            if n != 0 { core::ptr::copy(token, destination.add(dst_pos), n); }
+            dst_pos += n;
+        }
+    }
+    if !required_length.is_null() { *required_length = required; }
+    if destination_count != 0 && dst_pos < destination_count { *destination.add(dst_pos) = 0; }
+    if destination_count >= required { STATUS_SUCCESS } else { STATUS_BUFFER_TOO_SMALL }
+}
+
+
+/// Expand environment references using an explicit block or the current PEB environment.
 pub unsafe extern "system" fn RtlExpandEnvironmentStrings(
-    environment: *const u16,
-    source: *const u16,
-    source_len: usize,
-    destination: *mut u16,
-    destination_count: usize,
-    required_length: *mut usize,
-) -> i32 {
-    unsafe {
-        super::process_parameters::RtlExpandEnvironmentStrings(
-            environment, source, source_len, destination, destination_count, required_length,
-        )
+    environment: *const WCHAR,
+    source: *const WCHAR,
+    source_len: SIZE_T,
+    destination: *mut WCHAR,
+    destination_count: SIZE_T,
+    required_length: *mut SIZE_T,
+) -> NTSTATUS {
+    if !environment.is_null() {
+        return expand_environment_strings_explicit(environment, source, source_len, destination, destination_count, required_length);
     }
+    RtlAcquirePebLock();
+    let slot = current_environment_slot();
+    let current = if slot.is_null() { null_mut() } else { *slot };
+    let status = if current.is_null() {
+        STATUS_INVALID_PARAMETER
+    } else {
+        expand_environment_strings_explicit(current, source, source_len, destination, destination_count, required_length)
+    };
+    RtlReleasePebLock();
+    status
 }
 
-#[no_mangle]
 pub unsafe extern "system" fn RtlExpandEnvironmentStrings_U(
-    environment: *const u16,
-    source: *const super::process_parameters::UNICODE_STRING,
-    destination: *mut super::process_parameters::UNICODE_STRING,
-    required_bytes: *mut u32,
-) -> i32 {
-    unsafe {
-        super::process_parameters::RtlExpandEnvironmentStrings_U(
-            environment, source, destination, required_bytes,
-        )
+    environment: *const WCHAR,
+    source: *const UNICODE_STRING,
+    destination: *mut UNICODE_STRING,
+    required_bytes: *mut ULONG,
+) -> NTSTATUS {
+    if source.is_null() || destination.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut required_units = 0usize;
+    let status = RtlExpandEnvironmentStrings(
+        environment, (*source).Buffer, (*source).Length as usize / 2,
+        (*destination).Buffer, (*destination).MaximumLength as usize / 2,
+        &mut required_units,
+    );
+    if !required_bytes.is_null() {
+        *required_bytes = required_units.saturating_mul(2).min(ULONG::MAX as usize) as ULONG;
     }
+    if required_units.saturating_mul(2) > USHORT::MAX as usize { return STATUS_BUFFER_TOO_SMALL; }
+    if status == STATUS_SUCCESS {
+        (*destination).Length = required_units.saturating_sub(1).saturating_mul(2) as USHORT;
+    }
+    status
 }
