@@ -10,8 +10,6 @@
 
 #![allow(non_camel_case_types, non_snake_case)]
 
-use core::ffi::c_void;
-
 pub use crate::nt_abi::types::{BOOLEAN, PVOID, ULONG};
 
 /// Windows RTL_SPLAY_LINKS ABI: root nodes point their Parent field to themselves.
