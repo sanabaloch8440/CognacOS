@@ -20,7 +20,7 @@ mod peb;
 mod printf;
 pub mod alpc;
 pub mod atom;
-mod env;
+pub mod env;
 mod version;
 pub mod exception;
 mod time;
