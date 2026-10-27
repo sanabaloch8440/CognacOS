@@ -7,17 +7,10 @@
 
 #![allow(non_snake_case)]
 
-pub type UCHAR = u8;
-pub type USHORT = u16;
-pub type WCHAR = u16;
-pub type ULONG = u32;
-pub type LONG = i32;
-pub type ULONG_PTR = usize;
-pub type BOOLEAN = u8;
-
-pub const STATUS_SUCCESS: LONG = 0x0000_0000;
-pub const STATUS_INVALID_PARAMETER: LONG = 0xC000_000D_u32 as LONG;
-pub const STATUS_BUFFER_TOO_SMALL: LONG = 0xC000_0023_u32 as LONG;
+pub use crate::nt_abi::types::{BOOLEAN, LONG, ULONG, ULONG_PTR, UCHAR, USHORT, WCHAR};
+pub use crate::nt_abi::ntstatus::{
+    STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL, STATUS_INVALID_PARAMETER, STATUS_SUCCESS,
+};
 
 /// Compatibility names alias the canonical shared NT ABI layouts.
 pub type COGNAC_ANSI_STRING = crate::nt_abi::object::ANSI_STRING;
