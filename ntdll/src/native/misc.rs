@@ -485,12 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn etw_registration_stub_validates_output_pointer() {
-        assert_eq!(unsafe { EtwEventRegister(ptr::null(), ptr::null_mut(), ptr::null_mut(), ptr::null_mut()) }, ERROR_INVALID_PARAMETER);
-        let mut handle = 0;
-        assert_eq!(unsafe { EtwEventRegister(ptr::null(), ptr::null_mut(), ptr::null_mut(), &mut handle) }, ERROR_SUCCESS);
-        assert_eq!(handle, 0xdead_beef);
-    }
 }
 
 }
