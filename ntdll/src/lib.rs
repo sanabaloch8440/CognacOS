@@ -62,7 +62,6 @@ pub use native::rtl_native;
 pub use native::rtl_peb;
 pub use native::rtl_string;
 pub use native::string;
-#[cfg(not(target_os = "windows"))]
 pub use native::trace;
 
 #[cfg(target_os = "windows")]
