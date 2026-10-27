@@ -12,6 +12,19 @@ pub const MAX_TRANSFER_BYTES: u32 = 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StorageError { InvalidArgument, OutOfRange, Unsupported, Busy, Timeout, DeviceError, QueueFull, InvalidState, Overflow }
 
+/// Translate storage-stack failures to the shared NTSTATUS ABI used by ntoskrnl and NTDLL.
+pub const fn error_to_ntstatus(error: StorageError) -> nt_abi::ntstatus::NTSTATUS {
+    use nt_abi::ntstatus::*;
+    match error {
+        StorageError::InvalidArgument | StorageError::OutOfRange | StorageError::Overflow => STATUS_INVALID_PARAMETER,
+        StorageError::Unsupported | StorageError::InvalidState => STATUS_INVALID_DEVICE_REQUEST,
+        StorageError::Busy => STATUS_DEVICE_BUSY,
+        StorageError::Timeout => STATUS_TIMEOUT,
+        StorageError::DeviceError => STATUS_UNSUCCESSFUL,
+        StorageError::QueueFull => STATUS_INSUFFICIENT_RESOURCES,
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Geometry { pub sector_count: u64, pub logical_sector_size: u32, pub physical_sector_size: u32 }
 impl Geometry {
