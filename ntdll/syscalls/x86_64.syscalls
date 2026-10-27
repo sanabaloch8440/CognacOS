@@ -1,6 +1,8 @@
 # CognacOS x64 native syscall manifest.
 # Format: exported_name service_id
-# These are CognacOS kernel dispatcher IDs, not portable Windows build IDs.
+# IDs are pinned Windows 11 AMD64 reference-image service ordinals, not stable ABI constants.
+# The kernel discovers each ID from the built NTDLL stub and maps it to a stable internal handler.
+# Windows service ordinals can change between Windows builds; never reuse these for another reference build without revalidation.
 NtClose 0x00f
 NtOpenKey 0x012
 NtQueryValueKey 0x017
