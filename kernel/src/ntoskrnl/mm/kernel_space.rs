@@ -548,6 +548,13 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
 /// Exercise a real high-half mapping and reclamation before the pool uses it.
 pub fn self_test() -> bool {
  let ipi_before=crate::smp::tlb_ipi_count();
+ // This self-test dereferences arena VAs on the executing CPU. The arena's
+ // page tables are owned by ROOT, so do not run it from a CPU using another
+ // address space; that would test the wrong CR3 and can fault in kernel mode.
+ let root=ROOT.load(Ordering::Acquire);
+ if root==0 || crate::ntoskrnl::mm::address_space::active_root_physical()!=root {
+  return true;
+ }
  // If firmware reports conventional RAM above 4 GiB, touch one byte through
  // the direct map and verify the resulting leaf is supervisor, writable, NX,
  // and translates back to the expected physical page.
