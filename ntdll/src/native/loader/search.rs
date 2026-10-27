@@ -65,9 +65,9 @@ pub unsafe extern "system" fn LdrGetDllDirectory(path_name: *mut UNICODE_STRING)
     // This native API accepts a UNICODE_STRING descriptor, not a separate
     // caller buffer/length pair. Return a borrowed pointer to process-local
     // loader storage, matching the one-argument ABI.
-    descriptor.Length = bytes as u16;
-    descriptor.MaximumLength = bytes as u16;
-    descriptor.Buffer = if path.len == 0 { ptr::null_mut() } else { path.data.as_ptr() as *mut u16 };
+    descriptor.length = bytes as u16;
+    descriptor.maximum_length = bytes as u16;
+    descriptor.buffer = if path.len == 0 { ptr::null_mut() } else { path.data.as_ptr() as *mut u16 };
     STATUS_SUCCESS
 }
 
