@@ -11,14 +11,14 @@ global_asm!(r#"
 cognacos_nt_open_process:
     mov r10, rcx
     mov eax, 0x150
-    int 0x82
+    syscall
     ret
     .p2align 4
     .global cognacos_nt_get_next_process
 cognacos_nt_get_next_process:
     mov r10, rcx
     mov eax, 0x151
-    int 0x82
+    syscall
     ret
 "#);
 
