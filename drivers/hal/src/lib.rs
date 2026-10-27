@@ -1,5 +1,8 @@
 //! Versioned platform-neutral service contract between the NT executive and HAL.
 #![no_std]
+
+/// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
+pub use cognacos_nt_abi as nt_abi;
 #[cfg(test)]
 extern crate std;
 
