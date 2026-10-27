@@ -1,0 +1,26 @@
+# CognacOS x64 native syscall manifest.
+# Format: exported_name service_id
+# These are CognacOS kernel dispatcher IDs, not portable Windows build IDs.
+NtClose 0x00f
+NtOpenKey 0x012
+NtQueryValueKey 0x017
+NtOpenFile 0x033
+NtReadFile 0x006
+NtAllocateVirtualMemory 0x018
+NtFreeVirtualMemory 0x01e
+NtProtectVirtualMemory 0x050
+NtQueryVirtualMemory 0x023
+NtReadVirtualMemory 0x03f
+NtWriteVirtualMemory 0x03a
+NtYieldExecution 0x046
+NtQueryInformationProcess 0x019
+NtQueryInformationThread 0x025
+NtQuerySystemInformation 0x036
+NtCreateKey 0x145
+NtSetValueKey 0x146
+NtDeleteValueKey 0x147
+NtDeleteKey 0x148
+NtFlushKey 0x149
+NtEnumerateKey 0x14a
+NtEnumerateValueKey 0x14b
+NtQueryKey 0x14c
