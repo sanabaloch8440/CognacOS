@@ -84,7 +84,6 @@ rdotos_syscall_entry:
 unsafe extern "C" { fn rdotos_syscall_entry(); }
 pub unsafe fn initialize() {
     unsafe { crate::ntoskrnl::ke::arch::install_user_gate(0x81, rdotos_syscall_entry as usize as u64); }
-    unsafe { initialize_native_nt_syscalls(); }
 }
 pub fn set_current_process(pid:u64,space:*const AddressSpace) {
     LAST_EXIT.store(u64::MAX,Ordering::Release);
@@ -643,106 +642,11 @@ const PROCESS_BASIC_INFORMATION_CLASS: u64 = 0;
 const THREAD_BASIC_INFORMATION_CLASS: u64 = 0;
 const SYSTEM_BASIC_INFORMATION_CLASS: u64 = 0;
 
-global_asm!(r#"
-    .section .text
-    .global cognacos_nt_syscall_entry
-    .type cognacos_nt_syscall_entry, @function
-cognacos_nt_syscall_entry:
-    cli
-    cld
-    push rax
-    push rbx
-    push rcx
-    push rdx
-    push rsi
-    push rdi
-    push rbp
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
-    push r15
-    mov rbx, rsp
-    mov rdi, rsp
-    and rsp, -16
-    # INT 0x82 is CognacOS's private native-service ABI: EAX carries
-    # NT_SYSCALL_* IDs. Windows build-specific service ordinals use SYSCALL.
-    call cognacos_nt_syscall_dispatch
-    mov rsp, rbx
-    cmp rax, -1
-    je .Lcognacos_nt_context_restored
-    mov qword ptr [rsp + 112], rax
-.Lcognacos_nt_context_restored:
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rbp
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rax
-    iretq
-"#);
-unsafe extern "C" { fn cognacos_nt_syscall_entry(); }
+
 
 /// Direct CognacOS native-service gate; EAX carries NT_SYSCALL_* rather than a
 /// Windows-build-specific service ordinal.
-global_asm!(r#"
-    .section .text
-    .global cognacos_native_nt_syscall_entry
-    .type cognacos_native_nt_syscall_entry, @function
-cognacos_native_nt_syscall_entry:
-    cli
-    cld
-    push rax
-    push rbx
-    push rcx
-    push rdx
-    push rsi
-    push rdi
-    push rbp
-    push r8
-    push r9
-    push r10
-    push r11
-    push r12
-    push r13
-    push r14
-    push r15
-    mov rbx, rsp
-    mov rdi, rsp
-    and rsp, -16
-    call cognacos_nt_syscall_dispatch
-    mov rsp, rbx
-    mov qword ptr [rsp + 112], rax
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rbp
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
-    pop rbx
-    pop rax
-    iretq
-"#);
-unsafe extern "C" { fn cognacos_native_nt_syscall_entry(); }
+
 
 #[repr(C, align(16))]
 struct WindowsSyscallCpuLocal {
@@ -976,13 +880,6 @@ unsafe fn read_msr(index: u32) -> u64 {
 }
 unsafe fn write_msr(index: u32, value: u64) {
     unsafe { core::arch::asm!("wrmsr", in("ecx") index, in("eax") value as u32, in("edx") (value >> 32) as u32, options(nostack, preserves_flags)); }
-}
-
-pub unsafe fn initialize_native_nt_syscalls() {
-    unsafe {
-        crate::ntoskrnl::ke::arch::install_user_gate(0x82, cognacos_nt_syscall_entry as usize as u64);
-        crate::ntoskrnl::ke::arch::install_user_gate(0x83, cognacos_native_nt_syscall_entry as usize as u64);
-    }
 }
 
 fn copy_nt_output(address: u64, bytes: &[u8]) -> Result<(), u64> {
