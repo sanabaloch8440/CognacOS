@@ -1,6 +1,6 @@
 #![no_std]
 #![no_main]
-use core::ffi::c_void;
+use cognacos_nt_abi::types::PVOID;
 #[used]
 #[unsafe(link_section = ".rodata")]
 static DRIVER_SIGNATURE: [u8; 8] = *b"HAL_____";
@@ -8,5 +8,5 @@ static DRIVER_SIGNATURE: [u8; 8] = *b"HAL_____";
 #[unsafe(link_section = ".data")]
 static DRIVER_COOKIE: u64 = 0x5244_4F54_4F53_0001;
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn DriverEntry(_driver: *mut c_void, _context: *mut c_void) -> i32 { 0 }
+pub unsafe extern "win64" fn DriverEntry(_driver: PVOID, _context: PVOID) -> i32 { 0 }
 #[panic_handler] fn panic(_: &core::panic::PanicInfo<'_>) -> ! { loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } } }
