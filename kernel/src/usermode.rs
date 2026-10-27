@@ -385,6 +385,23 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
 const NTDLL_TEST_CODE: u64 = 0x0000_0084_0000_0000;
 const NTDLL_TEST_DATA: u64 = 0x0000_0085_0000_0000;
 
+fn resolve_required_ntdll_export(name: &'static [u8]) -> Result<u64, VmError> {
+    match crate::winabi::resolve_import(
+        b"ntdll.dll",
+        crate::pe::ImportSymbol::Name(name),
+    ) {
+        Some(address) => Ok(address),
+        None => {
+            unsafe {
+                crate::serial_write(b"[DBG][NTDLL] required export missing: ");
+                crate::serial_write(name);
+                crate::serial_write(b"\r\n");
+            }
+            Err(VmError::InvalidAddress)
+        }
+    }
+}
+
 /// Load-and-execute smoke test for CognacOS's Rust NTDLL. The mapped PE export
 /// table and canonical Windows x64 SYSCALL stubs are the sole user/kernel path.
 pub unsafe fn run_native_ntdll_smoke(
@@ -392,111 +409,41 @@ pub unsafe fn run_native_ntdll_smoke(
     ntdll: LoadedImage,
 ) -> Result<(), VmError> {
     use crate::pe::ImportSymbol;
-    let query_process = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"NtQueryInformationProcess"))
-        .ok_or(VmError::InvalidAddress)?;
-    let query_thread = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"NtQueryInformationThread"))
-        .ok_or(VmError::InvalidAddress)?;
-    let query_system = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"NtQuerySystemInformation"))
-        .ok_or(VmError::InvalidAddress)?;
-    let yield_execution = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"NtYieldExecution"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_init_unicode = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlInitUnicodeString"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_compare_unicode = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlCompareUnicodeString"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_copy_unicode = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlCopyUnicodeString"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_unicode_to_integer = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlUnicodeStringToInteger"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_integer_to_unicode = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlIntegerToUnicodeString"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_init_ansi = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlInitAnsiString"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_equal_ansi = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlEqualString"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_get_nt_version = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlGetNtVersionNumbers"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_status_to_dos = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlNtStatusToDosError"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_compare_memory = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlCompareMemory"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_compute_crc32 = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlComputeCrc32"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_is_zero_memory = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlIsZeroMemory"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_fill_memory = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlFillMemory"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_zero_memory = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlZeroMemory"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_move_memory = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlMoveMemory"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_copy_memory = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlCopyMemory"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_compare_memory_ulong = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlCompareMemoryUlong"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_get_version = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlGetVersion"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_get_process_heap = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlGetProcessHeap"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_get_current_peb = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlGetCurrentPeb"))
-        .ok_or(VmError::InvalidAddress)?;
-    let ldr_get_procedure_address = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"LdrGetProcedureAddress"))
-        .ok_or(VmError::InvalidAddress)?;
-    let ldr_get_dll_handle = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"LdrGetDllHandle"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_get_last_error = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlGetLastWin32Error"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_set_last_error = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlSetLastWin32Error"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_get_last_status = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlGetLastNtStatus"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_set_error_from_status = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlSetLastWin32ErrorAndNtStatusFromNtStatus"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_allocate_heap = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlAllocateHeap"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_free_heap = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlFreeHeap"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_reallocate_heap = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlReAllocateHeap"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_size_heap = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlSizeHeap"))
-        .ok_or(VmError::InvalidAddress)?;
-    let rtl_validate_heap = crate::winabi::resolve_import(
-        b"ntdll.dll", ImportSymbol::Name(b"RtlValidateHeap"))
-        .ok_or(VmError::InvalidAddress)?;
+    let query_process = resolve_required_ntdll_export(b"NtQueryInformationProcess")?;
+    let query_thread = resolve_required_ntdll_export(b"NtQueryInformationThread")?;
+    let query_system = resolve_required_ntdll_export(b"NtQuerySystemInformation")?;
+    let yield_execution = resolve_required_ntdll_export(b"NtYieldExecution")?;
+    let rtl_init_unicode = resolve_required_ntdll_export(b"RtlInitUnicodeString")?;
+    let rtl_compare_unicode = resolve_required_ntdll_export(b"RtlCompareUnicodeString")?;
+    let rtl_copy_unicode = resolve_required_ntdll_export(b"RtlCopyUnicodeString")?;
+    let rtl_unicode_to_integer = resolve_required_ntdll_export(b"RtlUnicodeStringToInteger")?;
+    let rtl_integer_to_unicode = resolve_required_ntdll_export(b"RtlIntegerToUnicodeString")?;
+    let rtl_init_ansi = resolve_required_ntdll_export(b"RtlInitAnsiString")?;
+    let rtl_equal_ansi = resolve_required_ntdll_export(b"RtlEqualString")?;
+    let rtl_get_nt_version = resolve_required_ntdll_export(b"RtlGetNtVersionNumbers")?;
+    let rtl_status_to_dos = resolve_required_ntdll_export(b"RtlNtStatusToDosError")?;
+    let rtl_compare_memory = resolve_required_ntdll_export(b"RtlCompareMemory")?;
+    let rtl_compute_crc32 = resolve_required_ntdll_export(b"RtlComputeCrc32")?;
+    let rtl_is_zero_memory = resolve_required_ntdll_export(b"RtlIsZeroMemory")?;
+    let rtl_fill_memory = resolve_required_ntdll_export(b"RtlFillMemory")?;
+    let rtl_zero_memory = resolve_required_ntdll_export(b"RtlZeroMemory")?;
+    let rtl_move_memory = resolve_required_ntdll_export(b"RtlMoveMemory")?;
+    let rtl_copy_memory = resolve_required_ntdll_export(b"RtlCopyMemory")?;
+    let rtl_compare_memory_ulong = resolve_required_ntdll_export(b"RtlCompareMemoryUlong")?;
+    let rtl_get_version = resolve_required_ntdll_export(b"RtlGetVersion")?;
+    let rtl_get_process_heap = resolve_required_ntdll_export(b"RtlGetProcessHeap")?;
+    let rtl_get_current_peb = resolve_required_ntdll_export(b"RtlGetCurrentPeb")?;
+    let ldr_get_procedure_address = resolve_required_ntdll_export(b"LdrGetProcedureAddress")?;
+    let ldr_get_dll_handle = resolve_required_ntdll_export(b"LdrGetDllHandle")?;
+    let rtl_get_last_error = resolve_required_ntdll_export(b"RtlGetLastWin32Error")?;
+    let rtl_set_last_error = resolve_required_ntdll_export(b"RtlSetLastWin32Error")?;
+    let rtl_get_last_status = resolve_required_ntdll_export(b"RtlGetLastNtStatus")?;
+    let rtl_set_error_from_status = resolve_required_ntdll_export(b"RtlSetLastWin32ErrorAndNtStatusFromNtStatus")?;
+    let rtl_allocate_heap = resolve_required_ntdll_export(b"RtlAllocateHeap")?;
+    let rtl_free_heap = resolve_required_ntdll_export(b"RtlFreeHeap")?;
+    let rtl_reallocate_heap = resolve_required_ntdll_export(b"RtlReAllocateHeap")?;
+    let rtl_size_heap = resolve_required_ntdll_export(b"RtlSizeHeap")?;
+    let rtl_validate_heap = resolve_required_ntdll_export(b"RtlValidateHeap")?;
     let mut data = [0u8; 4096];
     data[0x3f0] = 66;
     data[0x3f1] = 65;
