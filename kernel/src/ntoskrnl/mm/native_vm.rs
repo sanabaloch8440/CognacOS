@@ -39,8 +39,21 @@ fn region_is_free(space: &AddressSpace, start: u64, length: u64) -> bool {
 }
 /// Args follow the x64 NT ABI: process, base*, zeroBits, size*, type, protect.
 pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
-    if args[0] != CURRENT_PROCESS { return STATUS_INVALID_HANDLE; }
-    if args[1] == 0 || args[3] == 0 || args[2] != 0 { return STATUS_INVALID_PARAMETER; }
+    if args[0] != CURRENT_PROCESS {
+        crate::serial_write(b"[DBG][MM][NtAllocateVirtualMemory] invalid process handle=");
+        crate::serial_write_hex(args[0]);
+        crate::serial_write(b"\r\n");
+        return STATUS_INVALID_HANDLE;
+    }
+    if args[1] == 0 || args[3] == 0 || args[2] != 0 {
+        crate::serial_write(b"[DBG][MM][NtAllocateVirtualMemory] invalid base/size/zeroBits=");
+        for value in [args[1], args[3], args[2]] {
+            crate::serial_write_hex(value);
+            crate::serial_write(b" ");
+        }
+        crate::serial_write(b"\r\n");
+        return STATUS_INVALID_PARAMETER;
+    }
     let root = match current_root() { Ok(r) => r, Err(s) => return s };
     let mut base_bytes = [0u8; 8];
     let mut size_bytes = [0u8; 8];
@@ -48,7 +61,16 @@ pub fn allocate(args: &[u64; crate::syscall::NT_MAX_ARGUMENTS]) -> u64 {
         || unsafe { address_space::copy_from_user_root(root,args[3],&mut size_bytes) }.is_err() { return STATUS_ACCESS_VIOLATION; }
     let requested = u64::from_ne_bytes(base_bytes);
     let size = u64::from_ne_bytes(size_bytes);
-    if size == 0 || size > (256 * 1024 * 1024) || args[4] != 0x3000 { return STATUS_INVALID_PARAMETER; }
+    if size == 0 || size > (256 * 1024 * 1024) || args[4] != 0x3000 {
+        crate::serial_write(b"[DBG][MM][NtAllocateVirtualMemory] invalid size/allocationType=");
+        crate::serial_write_hex(size as u64);
+        crate::serial_write(b" ");
+        crate::serial_write_hex(args[4]);
+        crate::serial_write(b" protect=");
+        crate::serial_write_hex(args[5]);
+        crate::serial_write(b"\r\n");
+        return STATUS_INVALID_PARAMETER;
+    }
     let rounded = match size.checked_add(PAGE-1) { Some(v) => v & !(PAGE-1), None => return STATUS_INVALID_PARAMETER };
     let (start, end) = if requested != 0 {
         let start = requested & !(PAGE-1);
