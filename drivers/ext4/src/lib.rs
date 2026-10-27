@@ -1,10 +1,10 @@
 //! ext2/ext3/ext4 filesystem driver core for CognacOS.
 //! Writes are limited to existing allocated data blocks; journaled metadata mutation is not implemented.
 #![no_std]
+#![allow(dead_code)]
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
-#![allow(dead_code)]
 #[cfg(test)] extern crate std;
 pub const SUPERBLOCK_BYTES:usize=1024;
 pub const SUPERBLOCK_DISK_OFFSET:u64=1024;
