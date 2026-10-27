@@ -328,7 +328,7 @@ pub fn run_ext4_readme_test() -> bool {
         Ok(id) => id, Err(_) => return false,
     };
     DISK_DEVICE_ID.store(disk_id, Ordering::Release);
-    crate::serial_write(b"Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.\r\n");
+    unsafe { crate::serial_write(b"Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.\r\n"); }
     let mut whole_disk = IoManagerBlockDevice { device_id: disk_id, capacity: DISK_CAPACITY.load(Ordering::Acquire) };
     let partition = match extfs::read_gpt_partition(&mut whole_disk, 1, SECTOR_BYTES as u32) {
         Ok(p) => p, Err(_) => return false,
@@ -341,15 +341,15 @@ pub fn run_ext4_readme_test() -> bool {
         Ok(id) => id, Err(_) => return false,
     };
     PARTITION_DEVICE_ID.store(partition_id, Ordering::Release);
-    crate::serial_write(b"Disk class: Harddisk0 and Partition1 registered in the kernel I/O manager; GPT data partition discovered by READ IRPs.\r\n");
+    unsafe { crate::serial_write(b"Disk class: Harddisk0 and Partition1 registered in the kernel I/O manager; GPT data partition discovered by READ IRPs.\r\n"); }
     let mut volume = IoManagerBlockDevice { device_id: partition_id, capacity };
     let sb = match extfs::read_superblock(&mut volume) { Ok(s) => s, Err(_) => return false };
-    crate::serial_write(b"ext4: partition superblock read through the registered partition READ interface.\r\n");
+    unsafe { crate::serial_write(b"ext4: partition superblock read through the registered partition READ interface.\r\n"); }
     let mut actual = [0u8; 128];
     let length = match read_root_file(&mut volume, &sb, b"README.txt", &mut actual) {
         Ok(n) => n, Err(_) => return false,
     };
     if length != EXPECTED.len() || &actual[..length] != EXPECTED { return false; }
-    crate::serial_write(b"Guest ext4 README.txt bytes match expected content exactly.\r\n");
+    unsafe { crate::serial_write(b"Guest ext4 README.txt bytes match expected content exactly.\r\n"); }
     true
 }
