@@ -3,7 +3,10 @@
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 #[cfg(target_os = "windows")]
-use super::syscall_stubs::{NtGetNextProcess, NtOpenProcess};
+use super::syscall_stubs::{
+    NtGetNextProcess as syscall_nt_get_next_process,
+    NtOpenProcess as syscall_nt_open_process,
+};
 #[cfg(not(target_os = "windows"))]
 use core::arch::global_asm;
 
@@ -30,6 +33,33 @@ cognacos_nt_get_next_process:
 unsafe extern "system" {
     fn cognacos_nt_open_process(out: *mut *mut core::ffi::c_void, access: u32, attributes: *const core::ffi::c_void, client_id: *const core::ffi::c_void) -> i32;
     fn cognacos_nt_get_next_process(previous: *mut core::ffi::c_void, access: u32, attributes: u32, flags: u32, out: *mut *mut core::ffi::c_void) -> i32;
+}
+
+#[inline]
+unsafe fn nt_open_process(
+    process_handle: *mut *mut core::ffi::c_void,
+    desired_access: u32,
+    object_attributes: *const core::ffi::c_void,
+    client_id: *const core::ffi::c_void,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    { syscall_nt_open_process(process_handle, desired_access, object_attributes, client_id) }
+    #[cfg(not(target_os = "windows"))]
+    { cognacos_nt_open_process(process_handle, desired_access, object_attributes, client_id) }
+}
+
+#[inline]
+unsafe fn nt_get_next_process(
+    process_handle: *mut core::ffi::c_void,
+    desired_access: u32,
+    handle_attributes: u32,
+    flags: u32,
+    new_process_handle: *mut *mut core::ffi::c_void,
+) -> i32 {
+    #[cfg(target_os = "windows")]
+    { syscall_nt_get_next_process(process_handle, desired_access, handle_attributes, flags, new_process_handle) }
+    #[cfg(not(target_os = "windows"))]
+    { cognacos_nt_get_next_process(process_handle, desired_access, handle_attributes, flags, new_process_handle) }
 }
 
 #[no_mangle]
@@ -911,7 +941,7 @@ pub unsafe extern "system" fn ZwGetNextProcess(
     flags: u32,
     new_process_handle: *mut *mut core::ffi::c_void,
 ) -> i32 {
-    unsafe { NtGetNextProcess(process_handle, desired_access, handle_attributes, flags, new_process_handle) }
+    unsafe { nt_get_next_process(process_handle, desired_access, handle_attributes, flags, new_process_handle) }
 }
 
 #[no_mangle]
@@ -967,7 +997,7 @@ pub unsafe extern "system" fn ZwOpenProcess(
     object_attributes: *const core::ffi::c_void,
     client_id: *const core::ffi::c_void,
 ) -> i32 {
-    unsafe { NtOpenProcess(process_handle, desired_access, object_attributes, client_id) }
+    unsafe { nt_open_process(process_handle, desired_access, object_attributes, client_id) }
 }
 
 #[no_mangle]
