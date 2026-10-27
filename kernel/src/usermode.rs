@@ -431,7 +431,6 @@ pub unsafe fn run_native_ntdll_smoke(
     let rtl_copy_memory = resolve_required_ntdll_export(b"RtlCopyMemory")?;
     let rtl_compare_memory_ulong = resolve_required_ntdll_export(b"RtlCompareMemoryUlong")?;
     let rtl_get_version = resolve_required_ntdll_export(b"RtlGetVersion")?;
-    let rtl_get_process_heap = resolve_required_ntdll_export(b"RtlGetProcessHeap")?;
     let rtl_get_current_peb = resolve_required_ntdll_export(b"RtlGetCurrentPeb")?;
     let ldr_get_procedure_address = resolve_required_ntdll_export(b"LdrGetProcedureAddress")?;
     let ldr_get_dll_handle = resolve_required_ntdll_export(b"LdrGetDllHandle")?;
@@ -737,14 +736,14 @@ pub unsafe fn run_native_ntdll_smoke(
     emit!(&[0x48, 0x39, 0xd0]);
     fail_if!(&[0x0f, 0x85]);
 
-    // The default heap is created through NTDLL and published in PEB.ProcessHeap.
-    call_ptr!(rtl_get_process_heap);
+    // RtlGetCurrentPeb initializes the default heap lazily and publishes
+    // its handle in PEB.ProcessHeap, without requiring a Cognac-only export.
+    imm64!(&[0x48, 0xb8], crate::process::PEB_ADDRESS);
+    emit!(&[0x48, 0x8b, 0x40, 0x30]); // RAX = PEB.ProcessHeap
     emit!(&[0x48, 0x85, 0xc0]);
-    fail_if!(&[0x0f, 0x84]); // must return a valid heap handle
-    imm64!(&[0x48, 0xba], crate::process::PEB_ADDRESS);
-    emit!(&[0x48, 0x8b, 0x52, 0x30]); // RDX = PEB.ProcessHeap
-    emit!(&[0x48, 0x39, 0xd0]);
-    fail_if!(&[0x0f, 0x85]);
+    fail_if!(&[0x0f, 0x84]); // the default process heap must be initialized
+    imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xD00);
+    emit!(&[0x48, 0x89, 0x02]); // save heap handle for the heap ABI tests
 
     // Default process heap: PEB handle, allocation, size, realloc, free and validation.
     imm64!(&[0x48, 0xba], NTDLL_TEST_DATA + 0xD00);
