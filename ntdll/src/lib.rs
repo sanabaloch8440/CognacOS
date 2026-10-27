@@ -34,7 +34,7 @@ pub use native::legacy_atom as atom;
 pub use native::legacy_crypt as crypt;
 pub use native::legacy_env as env;
 pub use native::exception;
-pub use native::legacy_heap as heap;
+pub use native::heap as heap;
 pub use native::legacy_misc as misc;
 pub use native::legacy_path as path;
 pub use native::legacy_printf as printf;
