@@ -661,3 +661,16 @@ mod host_tests {
 
 }
 const CHECKSUM_TYPE_OFFSET_FOR_TEST: usize = 373;
+
+#[cfg(test)]
+mod ntstatus_adapter_tests {
+    use super::*;
+    #[test]
+    fn filesystem_errors_map_to_shared_ntstatus() {
+        use nt_abi::ntstatus::*;
+        assert_eq!(error_to_ntstatus(Error::Truncated), STATUS_BUFFER_TOO_SMALL);
+        assert_eq!(error_to_ntstatus(Error::UnsupportedIncompatFeature), STATUS_NOT_IMPLEMENTED);
+        assert_eq!(error_to_ntstatus(Error::Io), STATUS_UNSUCCESSFUL);
+        assert_eq!(error_to_ntstatus(Error::InvalidExtentTree), STATUS_INVALID_PARAMETER);
+    }
+}
