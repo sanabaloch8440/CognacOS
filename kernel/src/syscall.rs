@@ -645,10 +645,6 @@ const SYSTEM_BASIC_INFORMATION_CLASS: u64 = 0;
 
 
 
-/// Direct CognacOS native-service gate; EAX carries NT_SYSCALL_* rather than a
-/// Windows-build-specific service ordinal.
-
-
 #[repr(C, align(16))]
 struct WindowsSyscallCpuLocal {
     user_rsp: u64,
@@ -656,9 +652,12 @@ struct WindowsSyscallCpuLocal {
     scratch_rax: u64,
     scratch_rdx: u64,
     stack_page: u64,
+    user_gs_base: u64,
 }
 impl WindowsSyscallCpuLocal {
-    const fn new() -> Self { Self { user_rsp: 0, kernel_rsp: 0, scratch_rax: 0, scratch_rdx: 0, stack_page: 0 } }
+    const fn new() -> Self {
+        Self { user_rsp: 0, kernel_rsp: 0, scratch_rax: 0, scratch_rdx: 0, stack_page: 0, user_gs_base: 0 }
+    }
 }
 static mut WINDOWS_SYSCALL_CPUS: [WindowsSyscallCpuLocal; crate::hal::MAX_CPUS] =
     [const { WindowsSyscallCpuLocal::new() }; crate::hal::MAX_CPUS];
@@ -670,6 +669,20 @@ global_asm!(r#"
 cognacos_windows_syscall_entry:
     # SYSCALL does not switch RSP. FMASK has already disabled interrupts.
     swapgs
+    # After SWAPGS, IA32_KERNEL_GS_BASE holds the caller's TEB base. Save it
+    # per CPU and restore it explicitly before returning, even if nested kernel
+    # code touched GS MSRs while servicing an NT call.
+    push rax
+    push rdx
+    push rcx
+    mov ecx, 0xC0000102
+    rdmsr
+    shl rdx, 32
+    or rax, rdx
+    mov qword ptr gs:[40], rax
+    pop rcx
+    pop rdx
+    pop rax
     # Temporary marker s confirms that LSTAR and SWAPGS were reached.
     push rax
     push rdx
@@ -801,6 +814,18 @@ cognacos_windows_syscall_entry:
     pop rdx
     pop rcx
     pop rbx
+    pop rax
+    # Preserve the exact user TEB GS base across the syscall boundary.
+    push rax
+    push rdx
+    push rcx
+    mov rax, qword ptr gs:[40]
+    mov rdx, rax
+    shr rdx, 32
+    mov ecx, 0xC0000102
+    wrmsr
+    pop rcx
+    pop rdx
     pop rax
     swapgs
     iretq
