@@ -13,13 +13,9 @@
 use core::ffi::c_void;
 use core::ptr::{null, null_mut};
 
-type WCHAR = u16;
-type ULONG = u32;
-type USHORT = u16;
-type SIZE_T = usize;
-type NTSTATUS = i32;
-type BOOLEAN = u8;
-type HANDLE = *mut c_void;
+use crate::nt_abi::types::{BOOLEAN, HANDLE, ULONG, USHORT, WCHAR};
+use crate::nt_abi::types::SIZE_T;
+use crate::nt_abi::ntstatus::NTSTATUS;
 
 const STATUS_SUCCESS: NTSTATUS = 0;
 const STATUS_NO_MEMORY: NTSTATUS = 0xC000_0017u32 as i32;
@@ -30,13 +26,7 @@ const STATUS_INVALID_PARAMETER_1: NTSTATUS = 0xC000_00EFu32 as i32;
 const HEAP_ZERO_MEMORY: ULONG = 0x0000_0008;
 const PROCESS_PARAMS_FLAG_NORMALIZED: ULONG = 0x0000_0001;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct UNICODE_STRING {
-    pub Length: USHORT,
-    pub MaximumLength: USHORT,
-    pub Buffer: *mut WCHAR,
-}
+pub use crate::nt_abi::object::UNICODE_STRING;
 
 #[repr(C)]
 pub struct RTL_DRIVE_LETTER_CURDIR {
@@ -269,14 +259,14 @@ pub unsafe extern "system" fn RtlNormalizeProcessParams(
         return params;
     }
     let base = params.cast::<u8>();
-    normalize_pointer(base, &mut (*params).CurrentDirectory.DosPath.Buffer);
-    normalize_pointer(base, &mut (*params).DllPath.Buffer);
-    normalize_pointer(base, &mut (*params).ImagePathName.Buffer);
-    normalize_pointer(base, &mut (*params).CommandLine.Buffer);
-    normalize_pointer(base, &mut (*params).WindowTitle.Buffer);
-    normalize_pointer(base, &mut (*params).Desktop.Buffer);
-    normalize_pointer(base, &mut (*params).ShellInfo.Buffer);
-    normalize_pointer(base, &mut (*params).RuntimeInfo.Buffer);
+    normalize_pointer(base, &mut (*params).CurrentDirectory.DosPath.buffer);
+    normalize_pointer(base, &mut (*params).DllPath.buffer);
+    normalize_pointer(base, &mut (*params).ImagePathName.buffer);
+    normalize_pointer(base, &mut (*params).CommandLine.buffer);
+    normalize_pointer(base, &mut (*params).WindowTitle.buffer);
+    normalize_pointer(base, &mut (*params).Desktop.buffer);
+    normalize_pointer(base, &mut (*params).ShellInfo.buffer);
+    normalize_pointer(base, &mut (*params).RuntimeInfo.buffer);
     (*params).Flags |= PROCESS_PARAMS_FLAG_NORMALIZED;
     params
 }
@@ -289,14 +279,14 @@ pub unsafe extern "system" fn RtlDeNormalizeProcessParams(
         return params;
     }
     let base = params.cast::<u8>();
-    denormalize_pointer(base, &mut (*params).CurrentDirectory.DosPath.Buffer);
-    denormalize_pointer(base, &mut (*params).DllPath.Buffer);
-    denormalize_pointer(base, &mut (*params).ImagePathName.Buffer);
-    denormalize_pointer(base, &mut (*params).CommandLine.Buffer);
-    denormalize_pointer(base, &mut (*params).WindowTitle.Buffer);
-    denormalize_pointer(base, &mut (*params).Desktop.Buffer);
-    denormalize_pointer(base, &mut (*params).ShellInfo.Buffer);
-    denormalize_pointer(base, &mut (*params).RuntimeInfo.Buffer);
+    denormalize_pointer(base, &mut (*params).CurrentDirectory.DosPath.buffer);
+    denormalize_pointer(base, &mut (*params).DllPath.buffer);
+    denormalize_pointer(base, &mut (*params).ImagePathName.buffer);
+    denormalize_pointer(base, &mut (*params).CommandLine.buffer);
+    denormalize_pointer(base, &mut (*params).WindowTitle.buffer);
+    denormalize_pointer(base, &mut (*params).Desktop.buffer);
+    denormalize_pointer(base, &mut (*params).ShellInfo.buffer);
+    denormalize_pointer(base, &mut (*params).RuntimeInfo.buffer);
     (*params).Flags &= !PROCESS_PARAMS_FLAG_NORMALIZED;
     params
 }
@@ -315,22 +305,22 @@ unsafe fn set_environment_variable_impl(
     name: *const UNICODE_STRING,
     value: *const UNICODE_STRING,
 ) -> NTSTATUS {
-    if name.is_null() || (*name).Buffer.is_null() || (*name).Length == 0
-        || ((*name).Length as usize) % 2 != 0
+    if name.is_null() || (*name).buffer.is_null() || (*name).length == 0
+        || ((*name).length as usize) % 2 != 0
     {
         return STATUS_INVALID_PARAMETER_1;
     }
     if environment.is_null() || (*environment).is_null() {
         return STATUS_INVALID_PARAMETER;
     }
-    let name_len = (*name).Length as usize / 2;
-    let name_ptr = (*name).Buffer;
+    let name_len = (*name).length as usize / 2;
+    let name_ptr = (*name).buffer;
     let mut i = 1usize;
     while i < name_len {
         if *name_ptr.add(i) == b'=' as WCHAR { return STATUS_INVALID_PARAMETER; }
         i += 1;
     }
-    if !value.is_null() && ((*value).Length > 0 && (*value).Buffer.is_null()) {
+    if !value.is_null() && ((*value).length > 0 && (*value).buffer.is_null()) {
         return STATUS_INVALID_PARAMETER;
     }
 
@@ -354,7 +344,7 @@ unsafe fn set_environment_variable_impl(
     let removed_units = if found.is_null() { 0 } else { wcslen16(found) + 1 };
     let suffix_start = if found.is_null() { env.add(old_units - 1) } else { found.add(removed_units) };
     let suffix_units = old_units.saturating_sub(suffix_start.offset_from(env) as usize);
-    let new_entry_units = if value.is_null() { 0 } else { name_len + 1 + ((*value).Length as usize / 2) + 1 };
+    let new_entry_units = if value.is_null() { 0 } else { name_len + 1 + ((*value).length as usize / 2) + 1 };
     let new_units = prefix_units + new_entry_units + suffix_units;
     let old_bytes = old_units.saturating_mul(2);
     let new_bytes = new_units.saturating_mul(2);
@@ -369,8 +359,8 @@ unsafe fn set_environment_variable_impl(
         out = out.add(name_len);
         *out = b'=' as WCHAR;
         out = out.add(1);
-        let value_len = (*value).Length as usize / 2;
-        if value_len != 0 { core::ptr::copy_nonoverlapping((*value).Buffer, out, value_len); }
+        let value_len = (*value).length as usize / 2;
+        if value_len != 0 { core::ptr::copy_nonoverlapping((*value).buffer, out, value_len); }
         out = out.add(value_len);
         *out = 0;
     }
@@ -427,16 +417,16 @@ unsafe fn rounded(size: usize, align: usize) -> usize {
 
 unsafe fn append_us(data: &mut *mut u8, source: *const UNICODE_STRING, target: *mut UNICODE_STRING, align: usize) {
     if source.is_null() {
-        (*target).Length = 0; (*target).MaximumLength = 0; (*target).Buffer = null_mut(); return;
+        (*target).length = 0; (*target).maximum_length = 0; (*target).buffer = null_mut(); return;
     }
-    (*target).Length = (*source).Length;
-    (*target).MaximumLength = (*source).MaximumLength;
-    if (*source).MaximumLength == 0 { (*target).Buffer = null_mut(); return; }
-    (*target).Buffer = *data as *mut WCHAR;
-    if (*source).Length != 0 && !(*source).Buffer.is_null() {
-        core::ptr::copy_nonoverlapping((*source).Buffer, (*target).Buffer, (*source).Length as usize / 2);
+    (*target).length = (*source).length;
+    (*target).maximum_length = (*source).maximum_length;
+    if (*source).maximum_length == 0 { (*target).buffer = null_mut(); return; }
+    (*target).buffer = *data as *mut WCHAR;
+    if (*source).length != 0 && !(*source).buffer.is_null() {
+        core::ptr::copy_nonoverlapping((*source).buffer, (*target).buffer, (*source).length as usize / 2);
     }
-    *data = (*data).add(rounded((*source).MaximumLength as usize, align));
+    *data = (*data).add(rounded((*source).maximum_length as usize, align));
 }
 
 /// Build an in-allocation, self-contained process-parameter block from the
@@ -456,11 +446,11 @@ pub unsafe extern "system" fn RtlCreateProcessParametersEx(
     runtime_info: *const UNICODE_STRING,
     flags: ULONG,
 ) -> NTSTATUS {
-    if result.is_null() || image.is_null() || (*image).Buffer.is_null() {
+    if result.is_null() || image.is_null() || (*image).buffer.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
     *result = null_mut();
-    let empty = UNICODE_STRING { Length: 0, MaximumLength: 0, Buffer: null_mut() };
+    let empty = UNICODE_STRING { length: 0, maximum_length: 0, buffer: null_mut() };
     let strings = [image, if dll_path.is_null() { &empty } else { &*dll_path },
         if current_directory.is_null() { &empty } else { &*current_directory },
         if command_line.is_null() { image } else { &*command_line },
@@ -471,7 +461,7 @@ pub unsafe extern "system" fn RtlCreateProcessParametersEx(
     let align = core::mem::size_of::<usize>();
     let header = core::mem::size_of::<RTL_USER_PROCESS_PARAMETERS>();
     let mut size = header;
-    for item in strings { size = size.saturating_add(rounded(unsafe { (*item).MaximumLength } as usize, align)); }
+    for item in strings { size = size.saturating_add(rounded(unsafe { (*item).maximum_length } as usize, align)); }
     let env_units = if environment.is_null() { 0 } else { env_length(environment) };
     size = size.saturating_add(rounded(env_units * 2, align));
     let params = alloc(size, true).cast::<RTL_USER_PROCESS_PARAMETERS>();
