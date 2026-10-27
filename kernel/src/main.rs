@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 
+// Canonical Windows NT-style ABI types are shared with NTDLL and driver crates.
+pub(crate) use cognacos_nt_abi as nt_abi;
+
 pub(crate) use ntoskrnl::mm::{kernel_space as kernel_vm, pagefile, physical as memory};
 pub(crate) use ntoskrnl::se::runtime as security;
 mod user;
