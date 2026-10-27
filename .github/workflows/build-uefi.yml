@@ -621,14 +621,7 @@ jobs:
           grep -F 'PE TLS callbacks executed in ring 3; per-image TLS blocks initialized.' build/serial.log
           grep -F 'Ext filesystem parser self-test passed (read-only ext2/ext3/ext4 metadata; unsupported features rejected).' build/serial.log
           grep -F 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log
-          if grep -Fq 'CognacOS native NTDLL passed ring-3 tests through the Windows x64 SYSCALL ABI.' build/serial.log; then
-            echo 'Native CognacOS NTDLL ABI smoke path completed.'
-          elif grep -Fq 'Windows NTDLL mapped; real ring-3 SYSCALL ABI and dynamically discovered service numbers passed.' build/serial.log; then
-            echo 'Stock Windows NTDLL syscall ABI smoke path completed.'
-          else
-            echo 'No supported NTDLL syscall ABI smoke completion marker.' >&2
-            exit 1
-          fi
+          grep -F 'CognacOS Rust NTDLL passed ring-3 tests through the unified Windows x64 SYSCALL ABI.' build/serial.log
       - name: SMP boot and interrupt stress matrix (2, 4, 8 vCPUs)
         shell: bash
         run: |
