@@ -201,8 +201,16 @@ fn main() {
         if !syscall_names.insert(name.to_string()) {
             panic!("{}:{}: duplicate syscall name {}", syscall_manifest.display(), line_index + 1, name);
         }
+        if id > 0x0fff {
+            panic!("{}:{}: x64 NT service ID {:#x} exceeds the supported native service range", syscall_manifest.display(), line_index + 1, id);
+        }
         if !syscall_ids.insert(id) {
             panic!("{}:{}: duplicate syscall service ID {:#x}", syscall_manifest.display(), line_index + 1, id);
+        }
+        let declarations = fs::read_to_string("src/native/syscall_stubs.rs")
+            .expect("cannot read canonical syscall declarations");
+        if !declarations.contains(&format!("pub fn {name}(")) {
+            panic!("{}:{}: manifest entry {} has no ABI declaration in src/native/syscall_stubs.rs", syscall_manifest.display(), line_index + 1, name);
         }
         asm.push_str(&format!("\n.p2align 4\n.globl {name}\n{name}:\n    .byte 0x4c, 0x8b, 0xd1\n    movl ${:#x}, %eax\n    syscall\n    ret\n", id));
     }
