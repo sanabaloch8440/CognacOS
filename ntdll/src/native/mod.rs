@@ -88,8 +88,6 @@ pub mod legacy_misc;
 pub mod legacy_path;
 #[path = "legacy_printf.rs"]
 pub mod legacy_printf;
-#[path = "legacy_process.rs"]
-pub mod legacy_process;
 #[path = "legacy_resource.rs"]
 pub mod legacy_resource;
 #[path = "legacy_time.rs"]
