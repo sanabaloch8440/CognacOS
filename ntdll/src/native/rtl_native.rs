@@ -219,7 +219,7 @@ unsafe extern "system" fn cognac_ntdll_dll_main(
             return 0;
         }
         #[cfg(target_os = "windows")]
-        unsafe { crate::windows11_exports::initialize_native_process(); }
+        unsafe { crate::native::initialize_native_process(); }
     }
     1 // TRUE
 }
