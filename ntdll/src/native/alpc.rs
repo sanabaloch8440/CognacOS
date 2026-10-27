@@ -215,7 +215,10 @@ pub unsafe extern "system" fn AlpcGetCompletionListMessageAttributes(_Completion
 // types above; legacy-only attribute layouts stay scoped to this helper module.
 mod attribute_compat {
 #![allow(non_camel_case_types, non_snake_case)]
-use super::{NTSTATUS, PVOID, ULONG, ALPC_MESSAGE_ATTRIBUTES, ALPC_SECURITY_ATTR};
+use super::{NTSTATUS, PVOID, ULONG, SIZE_T, ALPC_MESSAGE_ATTRIBUTES, ALPC_SECURITY_ATTR};
+const STATUS_SUCCESS: NTSTATUS = 0;
+const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000_000Du32 as i32;
+const STATUS_BUFFER_TOO_SMALL: NTSTATUS = 0xC000_0023u32 as i32;
 use core::{ffi::c_void, mem::size_of};
 
 const ALPC_MESSAGE_SECURITY_ATTRIBUTE: ULONG = super::ALPC_MESSAGE_SECURITY_ATTRIBUTE;
@@ -396,4 +399,6 @@ pub use attribute_compat::{
     AlpcGetHeaderSize, AlpcGetMessageAttribute, AlpcInitializeMessageAttribute,
     ALPC_CONTEXT_ATTR, ALPC_HANDLE_ATTR, ALPC_HANDLE_ATTR32, ALPC_TOKEN_ATTR,
     ALPC_DIRECT_ATTR, ALPC_WORK_ON_BEHALF_ATTR, ALPC_VIEW_ATTR,
+    ALPC_MESSAGE_TOKEN_ATTRIBUTE, ALPC_MESSAGE_DIRECT_ATTRIBUTE,
+    ALPC_MESSAGE_WORK_ON_BEHALF_ATTRIBUTE, ALPC_MESSAGE_ATTRIBUTE_ALL,
 };
