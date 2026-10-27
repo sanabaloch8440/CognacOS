@@ -57,13 +57,3 @@ pub(crate) unsafe fn initialize_native_process() {
 }
 #[path = "process/parameters.rs"]
 pub mod process_parameters;
-#[path = "legacy_misc.rs"]
-pub mod legacy_misc;
-#[path = "legacy_path.rs"]
-pub mod legacy_path;
-#[path = "legacy_printf.rs"]
-pub mod legacy_printf;
-#[path = "legacy_resource.rs"]
-pub mod legacy_resource;
-#[path = "legacy_time.rs"]
-pub mod legacy_time;
