@@ -483,8 +483,6 @@ mod tests {
         let missing = 99i32;
         assert!(unsafe { _lfind((&missing as *const i32).cast(), values.as_ptr().cast(), &count, 4, Some(cmp_i32)) }.is_null());
     }
-
-    #[test]
 }
 
 }
