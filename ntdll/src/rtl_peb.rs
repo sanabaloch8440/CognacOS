@@ -50,6 +50,7 @@ unsafe fn current_thread_id() -> HANDLE {
 ///
 /// # Safety
 /// The process must have installed a valid Windows-layout TEB in user GS.
+#[no_mangle]
 pub unsafe extern "system" fn RtlGetCurrentTeb() -> PVOID {
     let teb: PVOID;
     unsafe { core::arch::asm!("mov {}, gs:[0x30]", out(reg) teb, options(nostack, preserves_flags, readonly)) };
