@@ -232,17 +232,15 @@ pub extern "system" fn NtGetCurrentProcessorNumber() -> u32 {
     // RDTSCP is feature-gated so older CPUs never receive an invalid opcode.
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        let max_ext: u32;
-        core::arch::asm!("cpuid", inout("eax") 0x8000_0000u32 => max_ext,
-            lateout("ebx") _, lateout("ecx") _, lateout("edx") _, options(nomem, nostack));
+        // Use the compiler's CPUID intrinsic so this remains valid on ELF/Linux
+        // test builds, where LLVM reserves RBX for its own use.
+        let max_ext = core::arch::x86_64::__cpuid(0x8000_0000).eax;
         if max_ext >= 0x8000_0001 {
-            let features: u32;
-            core::arch::asm!("cpuid", inout("eax") 0x8000_0001u32 => features,
-                lateout("ebx") _, lateout("ecx") _, lateout("edx") _, options(nomem, nostack));
+            let features = core::arch::x86_64::__cpuid(0x8000_0001).edx;
             if features & (1 << 27) != 0 {
+                let aux: u32;
                 let low: u32;
                 let high: u32;
-                let aux: u32;
                 core::arch::asm!("rdtscp", out("eax") low, out("edx") high, out("ecx") aux,
                     options(nomem, nostack));
                 let _ = (low, high);
@@ -250,6 +248,7 @@ pub extern "system" fn NtGetCurrentProcessorNumber() -> u32 {
             }
         }
     }
+
     // A single-processor bootstrap has processor number zero until the kernel
     // exposes a processor-number service. Do not guess from APIC IDs.
     0
