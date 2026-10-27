@@ -8,10 +8,7 @@
 
 #![allow(non_camel_case_types, non_snake_case)]
 
-use core::ffi::c_void;
-
-pub type BOOLEAN = u8;
-pub type PVOID = *mut c_void;
+pub use crate::nt_abi::types::{BOOLEAN, PVOID};
 
 const RED: usize = 1;
 const TAG_MASK: usize = 3;
