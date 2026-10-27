@@ -10,8 +10,8 @@ core::arch::global_asm!(
 
 unsafe extern "system" {
     pub fn NtClose(handle: *mut c_void) -> i32;
-    pub fn NtOpenKey(key: *mut *mut c_void, access: u32, attributes: *const c_void) -> i32;
-    pub fn NtQueryValueKey(key: *mut c_void, name: *const c_void, class: u32, information: *mut c_void, length: u32, return_length: *mut u32) -> i32;
+    pub fn NtOpenKey(key: *mut *mut c_void, access: u32, attributes: *const crate::reg::OBJECT_ATTRIBUTES) -> i32;
+    pub fn NtQueryValueKey(key: *mut c_void, name: *const crate::reg::UNICODE_STRING, class: u32, information: *mut c_void, length: u32, return_length: *mut u32) -> i32;
     pub fn NtOpenFile(file_handle: *mut *mut c_void, desired_access: u32, object_attributes: *const c_void, io_status_block: *mut c_void, share_access: u32, open_options: u32) -> i32;
     pub fn NtReadFile(file_handle: *mut c_void, event: *mut c_void, apc_routine: *mut c_void, apc_context: *mut c_void, io_status_block: *mut c_void, buffer: *mut c_void, length: u32, byte_offset: *mut i64, key: *mut u32) -> i32;
     pub fn NtAllocateVirtualMemory(process: *mut c_void, base_address: *mut *mut c_void, zero_bits: usize, region_size: *mut usize, allocation_type: u32, protect: u32) -> i32;
