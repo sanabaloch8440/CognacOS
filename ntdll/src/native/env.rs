@@ -14,6 +14,7 @@ use alloc::string::ToString;
 type NTSTATUS = i32;
 type ULONG = u32;
 type WCHAR = u16;
+type USHORT = u16;
 type SIZE_T = usize;
 type PWSTR = *mut u16;
 type PCWSTR = *const u16;
