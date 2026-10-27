@@ -70,5 +70,16 @@ mod abi_layout_tests {
     fn rtl_splay_links_match_three_pointer_layout() {
         assert_eq!(core::mem::size_of::<RTL_SPLAY_LINKS>(), 3 * core::mem::size_of::<usize>());
         assert_eq!(core::mem::align_of::<RTL_SPLAY_LINKS>(), core::mem::align_of::<usize>());
+        assert_eq!(core::mem::offset_of!(RTL_SPLAY_LINKS, Parent), 0);
+        assert_eq!(core::mem::offset_of!(RTL_SPLAY_LINKS, LeftChild), core::mem::size_of::<usize>());
+        assert_eq!(core::mem::offset_of!(RTL_SPLAY_LINKS, RightChild), 2 * core::mem::size_of::<usize>());
+    }
+
+    #[test]
+    fn list_entry_matches_two_pointer_windows_layout() {
+        assert_eq!(core::mem::size_of::<LIST_ENTRY>(), 2 * core::mem::size_of::<usize>());
+        assert_eq!(core::mem::align_of::<LIST_ENTRY>(), core::mem::align_of::<usize>());
+        assert_eq!(core::mem::offset_of!(LIST_ENTRY, flink), 0);
+        assert_eq!(core::mem::offset_of!(LIST_ENTRY, blink), core::mem::size_of::<usize>());
     }
 }
