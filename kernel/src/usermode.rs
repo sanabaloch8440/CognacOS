@@ -926,7 +926,7 @@ pub unsafe fn run_native_ntdll_smoke(
         is_dll: false,
     };
     unsafe {
-        crate::serial_write(b"[DBG][NTDLL] smoke code mapped; entering shared process loader\\r\\n");
+        crate::serial_write(b"[DBG][NTDLL] smoke code mapped; entering shared process loader\r\n");
         // This code is generated at runtime and has no ELF/PDB of its own.
         // Publish its exact address interval so a captured RIP can be classified
         // as a smoke-stub offset rather than incorrectly symbolized as NTDLL.
