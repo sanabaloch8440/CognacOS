@@ -918,18 +918,38 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   state.irps[i].completion_state=1;
  }
  let mut finished=false;
- for _ in 0..16 {
+ for _ in 0..17 {
   let (location,stack_count)=unsafe{((*irp).bytes[0x43] as usize,(*irp).bytes[0x42] as usize)};
-  if location==0 || location>stack_count || stack_count==0 || stack_count>16 {break}
+  if stack_count==0||stack_count>16||location==0 {break}
+  if location>stack_count {
+   finalize_irp_status(irp);
+   let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
+   crate::dma::release_irp_mappings(irp.cast());
+   crate::ntoskrnl::po::runtime::po_complete_irp(irp,status);
+   finished=true;
+   break
+  }
   let stack=unsafe{io_get_current_irp_stack_location(irp)};
   if stack.is_null(){break}
   let control=unsafe{(*stack).control};
+  let routine=unsafe{(*stack).completion_routine};
+  let context=unsafe{(*stack).context};
+  let device_object=unsafe{(*stack).device_object};
   let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
   let cancelled=unsafe{(*irp).bytes[0x44]!=0};
   let invoke=(status>=0&&(control&0x40)!=0)||(status<0&&(control&0x80)!=0)||(cancelled&&(control&0x20)!=0);
+  // The I/O manager advances the current stack location before invoking the
+  // completion callback. If it returns STATUS_MORE_PROCESSING_REQUIRED, that
+  // advanced location is retained so a later IoCompleteRequest resumes above
+  // this callback instead of invoking the same callback twice.
+  let next=unsafe{stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
+  unsafe {
+   (*irp).bytes[0x43]=(location+1).min(0xff) as u8;
+   write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast());
+  }
   if invoke {
-   if let Some(routine)=unsafe{(*stack).completion_routine} {
-    let result=unsafe{routine((*stack).device_object,irp,(*stack).context)};
+   if let Some(routine)=routine {
+    let result=unsafe{routine(device_object,irp,context)};
     if result==0xC0000016u32 as i32 {
      let mut state=WDM.lock();
      if let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {state.irps[i].completion_state=0;}
@@ -937,10 +957,6 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
     }
    }
   }
-  let current=unsafe{(*irp).bytes[0x43]};
-  if current==0xff{break}
-  let next=unsafe{stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
-  unsafe { (*irp).bytes[0x43]=current.saturating_add(1); write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast()); }
   if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {
    finalize_irp_status(irp);
    let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
@@ -1028,6 +1044,9 @@ pub unsafe extern "system" fn io_detach_device(target:*mut DeviceObject) {
     let Some(index)=state.devices.iter().position(|s|s.used&&s.attached_to==target) else{return};
     let source=&mut state.devices[index].object as *mut DeviceObject;
     if unsafe{(*target).attached_device}!=source{return}
+    // A lower filter cannot be detached while another filter is still above
+    // it; doing so would orphan that upper attachment and corrupt stack depth.
+    if !unsafe{(*source).attached_device.is_null()} {return}
     unsafe{(*target).attached_device=ptr::null_mut();(*source).attached_device=ptr::null_mut();(*source).stack_size=1;}
     state.devices[index].attached_to=ptr::null_mut();
 }
@@ -1694,6 +1713,32 @@ mod wdm_tests {
   unsafe{io_free_irp(irp);}
   assert!(!unsafe{io_get_current_irp_stack_location(irp)}.is_null());
   unsafe{io_complete_request(irp,0);}
+  unsafe{io_free_irp(irp);io_delete_device(device);}
+ }
+
+ static MORE_PROCESSING_CALLBACKS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+ unsafe extern "system" fn stop_completion_once(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
+  MORE_PROCESSING_CALLBACKS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
+  0xC0000016u32 as i32
+ }
+ #[test]
+ fn more_processing_required_advances_past_the_callback_before_resume() {
+  MORE_PROCESSING_CALLBACKS.store(0,core::sync::atomic::Ordering::Release);
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.major_function[0]=Some(completing_dispatch);
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  unsafe {
+   (*io_get_next_irp_stack_location(irp)).major_function=0;
+   io_set_completion_routine(irp,Some(stop_completion_once),ptr::null_mut(),1,1,1);
+  }
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
+  assert_eq!(MORE_PROCESSING_CALLBACKS.load(core::sync::atomic::Ordering::Acquire),1);
+  assert_eq!(unsafe{(*irp).bytes[0x43]},3);
+  unsafe{io_complete_request(irp,0);}
+  assert_eq!(MORE_PROCESSING_CALLBACKS.load(core::sync::atomic::Ordering::Acquire),1);
   unsafe{io_free_irp(irp);io_delete_device(device);}
  }
 
