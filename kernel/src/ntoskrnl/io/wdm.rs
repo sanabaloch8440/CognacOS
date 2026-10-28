@@ -894,6 +894,20 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
   }
  };
  if deleting||driver.is_null(){return STATUS_DELETE_PENDING}
+ // Windows requires a completion routine when a synchronous builder IRP has
+ // no Event to signal. Validate before mutating the IRP stack or taking rundown.
+ let needs_completion={
+  let state=WDM.lock();
+  state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp))
+   .is_some_and(|s|s.built_sync_ioctl&&s.sync_event.is_null())
+ };
+ if needs_completion {
+  let next=unsafe{io_get_next_irp_stack_location(irp)};
+  if next.is_null()||unsafe{(*next).completion_routine.is_none()} {
+   release_device_dispatch_rundown(device);
+   return STATUS_INVALID_PARAMETER;
+  }
+ }
  if !track_irp_device(irp,device) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  if !acquire_irp_active_op(irp) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  let irp_stack_count=unsafe{(*irp).bytes[0x42] as usize};
@@ -2100,6 +2114,7 @@ mod wdm_tests {
    let slot=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)).unwrap();
    slot.sync_thread_id=0xBEEF;
   }
+  unsafe{io_set_completion_routine(irp,Some(counted_completion),ptr::null_mut(),1,1,1);}
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
   assert_eq!(io_cancel_thread_irps(0xBEEF),1);
   assert_eq!(unsafe{(*irp).bytes[0x44]},1);
