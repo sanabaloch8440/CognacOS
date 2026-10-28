@@ -3120,7 +3120,7 @@ mod cognac_sync_abi_tests {
 
     #[test]
     fn rtl_critical_section_exports_have_native_return_widths() {
-        let _: unsafe extern "system" fn(*mut CognacCriticalSection, u32) -> i32 =
+        let _: unsafe extern "system" fn(*mut CognacCriticalSection, usize) -> i32 =
             RtlInitializeCriticalSectionAndSpinCount;
         let _: unsafe extern "system" fn(*mut CognacCriticalSection, u32, u32) -> i32 =
             RtlInitializeCriticalSectionEx;
