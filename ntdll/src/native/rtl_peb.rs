@@ -59,7 +59,17 @@ unsafe fn ensure_lock_semaphore(cs: *mut RTL_CRITICAL_SECTION) -> Result<HANDLE,
     if created.is_null() { return Err(STATUS_INVALID_PARAMETER); }
 
     match semaphore.compare_exchange(core::ptr::null_mut(), created, Ordering::AcqRel, Ordering::Acquire) {
-        Ok(_) => Ok(created),
+        Ok(_) => {
+            // Close the race where the owner released before LockSemaphore was
+            // published. The waiter has already incremented LockCount, so an
+            // unsignalled event here would otherwise lose the handoff.
+            let owner = unsafe { &*(core::ptr::addr_of!((*cs).OwningThread) as *const AtomicPtr<c_void>) };
+            let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
+            if owner.load(Ordering::Acquire).is_null() && lock.load(Ordering::Acquire) >= 0 {
+                let _ = unsafe { NtSetEvent(created, core::ptr::null_mut()) };
+            }
+            Ok(created)
+        }
         Err(winner) => {
             let _ = unsafe { NtClose(created) };
             Ok(winner)
