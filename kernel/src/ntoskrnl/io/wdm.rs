@@ -487,20 +487,20 @@ pub unsafe extern "system" fn IoPnPStopDevice(device:*mut DeviceObject)->i32{
  unsafe{IoPnPDispatchLifecycle(device,IRP_MN_STOP_DEVICE,ptr::null(),ptr::null())}
 }
 /// Remove a device using the required surprise-removal-before-remove sequence.
-/// If surprise removal completes asynchronously, call again after its IRP has
-/// completed; the second call observes SURPRISE_REMOVED and sends REMOVE_DEVICE.
+/// If surprise removal completes asynchronously, the manager automatically
+/// dispatches REMOVE_DEVICE after successful terminal completion.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn IoPnPRemoveDevice(device:*mut DeviceObject)->i32{
  if device.is_null(){return STATUS_INVALID_PARAMETER}
  let state=io_pnp_state(device);
  if state<0{return STATUS_INVALID_PARAMETER}
- if state==PNP_STATE_REMOVED{return STATUS_SUCCESS}
- if state==PNP_STATE_STARTED {
+ if state==PNP_STATE_REMOVED as i32{return STATUS_SUCCESS}
+ if state==PNP_STATE_STARTED as i32 {
   // The manager owns the continuation: successful surprise-removal completion
   // automatically queues REMOVE_DEVICE, including when the first IRP pends.
   return unsafe{io_pnp_dispatch_lifecycle_internal(device,IRP_MN_SURPRISE_REMOVAL,ptr::null(),ptr::null(),true)}
  }
- if state!=PNP_STATE_SURPRISE_REMOVED&&state!=PNP_STATE_STOPPED&&state!=PNP_STATE_NOT_STARTED{return STATUS_DEVICE_BUSY}
+ if state!=PNP_STATE_SURPRISE_REMOVED as i32&&state!=PNP_STATE_STOPPED as i32&&state!=PNP_STATE_NOT_STARTED as i32{return STATUS_DEVICE_BUSY}
  unsafe{IoPnPDispatchLifecycle(device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null())}
 }
 
