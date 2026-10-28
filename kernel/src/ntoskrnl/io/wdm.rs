@@ -2335,7 +2335,7 @@ mod wdm_tests {
  static IOCTL_COMPLETIONS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
  unsafe extern "system" fn ioctl_buffered_dispatch(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
   let stack=unsafe{io_get_current_irp_stack_location(irp)};
-  assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())},8);
+  assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())},128*1024);
   assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(12).cast::<u32>())},2);
   assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(20).cast::<u32>())},0x00222000);
   let system_buffer=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),0x18).cast::<u8>()};
@@ -2359,7 +2359,7 @@ mod wdm_tests {
   let mut device:*mut DeviceObject=ptr::null_mut();
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
   let input=*b"IN";
-  let mut output=[0u8;8];
+  let mut output=[0u8;128*1024];
   let mut iosb:IoStatusBlock=unsafe{core::mem::zeroed()};
   let mut event=core::mem::MaybeUninit::<crate::ntoskrnl::ke::runtime::DispatcherHeader>::uninit();
   unsafe{crate::ntoskrnl::ke::runtime::ke_initialize_event(event.as_mut_ptr(),0,0);}
