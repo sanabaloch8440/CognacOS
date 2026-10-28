@@ -230,6 +230,7 @@ fn read_inode<D: ReadOnlyBlockDevice>(
 /// It rejects unsupported directory formats instead of guessing at entries.
 fn read_root_file<D: ReadOnlyBlockDevice>(
     dev: &mut D, sb: &extfs::Superblock, name: &[u8], out: &mut [u8],
+    file_inode_out: &mut [u8; 256],
 ) -> Result<usize, extfs::Error> {
     if name.is_empty() || name.contains(&b'/') || !sb.has_extents() {
         return Err(extfs::Error::UnsupportedFormat);
@@ -267,6 +268,7 @@ fn read_root_file<D: ReadOnlyBlockDevice>(
     let file_ino = found.ok_or(extfs::Error::OutOfRange)?;
     let file = read_inode(dev, sb, file_ino, &mut inode_raw)?;
     if !file.is_regular_file || file.size > out.len() as u64 { return Err(extfs::Error::OutOfRange); }
+    file_inode_out.copy_from_slice(&inode_raw);
     let length = file.size as usize;
     let mut done = 0usize;
     let mut scratch = [0u8; 4096];
@@ -455,10 +457,55 @@ pub fn run_ext4_readme_test() -> bool {
     let sb = match extfs::read_superblock(&mut volume) { Ok(s) => s, Err(_) => return false };
     unsafe { crate::serial_write(b"ext4: partition superblock read through the registered partition READ interface.\r\n"); }
     let mut actual = [0u8; 128];
-    let length = match read_root_file(&mut volume, &sb, b"README.txt", &mut actual) {
+    let mut file_inode_raw = [0u8; 256];
+    let length = match read_root_file(&mut volume, &sb, b"README.txt", &mut actual, &mut file_inode_raw) {
         Ok(n) => n, Err(_) => return false,
     };
     if length != EXPECTED.len() || &actual[..length] != EXPECTED { return false; }
     unsafe { crate::serial_write(b"Guest ext4 README.txt bytes match expected content exactly.\r\n"); }
+
+    // Exercise the actual filesystem writer over the registered partition WRITE
+    // IRP path. Only the existing extent and existing file length are writable:
+    // no inode allocation, directory mutation, or journal replay is claimed.
+    let mut changed = [0u8; 128];
+    changed[..EXPECTED.len()].copy_from_slice(EXPECTED);
+    changed[0] = b'X';
+    let mut writable = match extfs::ExtFilesystem::mount_writable(volume) {
+        Ok(fs) => fs, Err(_) => return false,
+    };
+    let mut scratch = [0u8; 4096];
+    match writable.write_file_data(&file_inode_raw[40..100], EXPECTED.len() as u64, 0,
+        &changed[..EXPECTED.len()], &mut scratch[..sb.block_size as usize]) {
+        Ok(n) if n == EXPECTED.len() => {},
+        _ => return false,
+    }
+    let mut volume = writable.into_device();
+    let mut changed_readback = [0u8; 128];
+    let mut inode_after_write = [0u8; 256];
+    let changed_len = match read_root_file(&mut volume, &sb, b"README.txt", &mut changed_readback, &mut inode_after_write) {
+        Ok(n) => n, Err(_) => return false,
+    };
+    let changed_ok = changed_len == EXPECTED.len() && &changed_readback[..changed_len] == &changed[..EXPECTED.len()];
+    if !changed_ok { return false; }
+    unsafe { crate::serial_write(b"Guest ext4 WRITE IRP modified existing README data and read it back exactly.\r\n"); }
+
+    // Restore the fixture even though the guest performed a real persistent
+    // write, so repeat boots see the same deterministic expected file.
+    let mut writable = match extfs::ExtFilesystem::mount_writable(volume) {
+        Ok(fs) => fs, Err(_) => return false,
+    };
+    match writable.write_file_data(&inode_after_write[40..100], EXPECTED.len() as u64, 0,
+        EXPECTED, &mut scratch[..sb.block_size as usize]) {
+        Ok(n) if n == EXPECTED.len() => {},
+        _ => return false,
+    }
+    let mut volume = writable.into_device();
+    let mut restored = [0u8; 128];
+    let mut restored_inode = [0u8; 256];
+    let restored_len = match read_root_file(&mut volume, &sb, b"README.txt", &mut restored, &mut restored_inode) {
+        Ok(n) => n, Err(_) => return false,
+    };
+    if restored_len != EXPECTED.len() || &restored[..restored_len] != EXPECTED { return false; }
+    unsafe { crate::serial_write(b"Guest ext4 README.txt restored and verified byte-for-byte after write test.\r\n"); }
     true
 }
