@@ -82,6 +82,9 @@ struct IrpSlot {
  object: Irp, stack: [IoStackLocation;MAX_WDM_STACK_LOCATIONS],
  system_buffer:[u8;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:usize,
  ioctl_output_buffer:*mut c_void, ioctl_output_len:usize, built_sync_ioctl:bool,
+ // Synchronous builder IRPs are owned by their creating thread until terminal
+ // completion or thread-exit cancellation.
+ sync_thread_id:u64, sync_event:*mut c_void,
 }
 unsafe impl Send for IrpSlot {}
 struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WDM_IRPS] }
@@ -97,7 +100,7 @@ impl WdmState {
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, suspended_completion:false, free_requested:false, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();MAX_WDM_STACK_LOCATIONS], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
+   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, suspended_completion:false, free_requested:false, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();MAX_WDM_STACK_LOCATIONS], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false, sync_thread_id:0, sync_event:ptr::null_mut() } }; MAX_WDM_IRPS],
   }
  }
 }
@@ -726,7 +729,7 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*
  if stack_size<=0||charge_quota>1{return ptr::null_mut()}
  let mut state=WDM.lock();
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
- slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.suspended_completion=false;slot.free_requested=false;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.object.bytes.fill(0);
+ slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.suspended_completion=false;slot.free_requested=false;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.sync_thread_id=0;slot.sync_event=ptr::null_mut();slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  // IRP.Size is sizeof(IRP), not the total IRP-plus-stack allocation size.
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
@@ -767,7 +770,7 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
   let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
   let mdl=slot.owned_mdl;
   slot.owned_mdl=ptr::null_mut();
-  slot.object.bytes.fill(0);slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.used=false;
+  slot.object.bytes.fill(0);slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.sync_thread_id=0;slot.sync_event=ptr::null_mut();slot.used=false;
   mdl
  };
  crate::dma::release_irp_mappings(irp.cast());
@@ -932,16 +935,16 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
 /// Build a synchronous device-control IRP. METHOD_BUFFERED and the two
 /// direct methods are supported; METHOD_NEITHER preserves the caller's kernel
 /// pointers. This kernel currently has no KeSetEvent-compatible wait/wake
-/// primitive, so a non-null Event is rejected rather than falsely promising
-/// Windows event semantics. For Event == NULL, the caller must install a
-/// completion routine before calling IoCallDriver.
+/// primitive. A supplied event is signaled after the IOSB is finalized and the
+/// IRP reaches terminal completion. Event == NULL requires the caller to install
+/// a completion routine before calling IoCallDriver.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_build_device_io_control_request(
  ioctl_code:u32, device:*mut DeviceObject, input_buffer:*mut c_void,
  input_length:u32, output_buffer:*mut c_void, output_length:u32,
  internal_device_control:u8, event:*mut c_void, io_status:*mut IoStatusBlock
 )->*mut Irp {
- if device.is_null()||io_status.is_null()||internal_device_control>1||!event.is_null()
+ if device.is_null()||io_status.is_null()||internal_device_control>1
   ||(input_length!=0&&input_buffer.is_null())||(output_length!=0&&output_buffer.is_null()) {
   return ptr::null_mut()
  }
@@ -977,11 +980,15 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
     slot.object.bytes[0x10..0x14].copy_from_slice(&(0x04u32|0x10u32|0x20u32).to_le_bytes());
    }
    slot.built_sync_ioctl=true;
+   slot.sync_thread_id=crate::thread::current_thread_id().unwrap_or(0);
+   slot.sync_event=event;
   } else {
    // METHOD_NEITHER's Type3InputBuffer and Irp.UserBuffer are kernel pointers
    // supplied by this kernel-mode caller, as required by this DDI contract.
    slot.object.bytes[0x10..0x14].copy_from_slice(&0x04u32.to_le_bytes());
    slot.built_sync_ioctl=true;
+   slot.sync_thread_id=crate::thread::current_thread_id().unwrap_or(0);
+   slot.sync_event=event;
   }
   // UserBuffer retains the caller's output pointer for all transfer methods;
   // drivers use SystemBuffer or MdlAddress according to the IOCTL method.
@@ -1145,6 +1152,16 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   }
  }
  if finished {
+  // Remove the request from the creator's queue before waking it. finalize_irp_status
+  // has published the IOSB, and terminal state is now visible.
+  let completion_event={
+   let mut state=WDM.lock();
+   state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)).map(|slot|{
+    slot.sync_thread_id=0;
+    let event=slot.sync_event;slot.sync_event=ptr::null_mut();event
+   }).unwrap_or(ptr::null_mut())
+  };
+  if !completion_event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(completion_event.cast(),0,0);}}
   let callbacks_drained={
    let state=WDM.lock();
    state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp))
@@ -1471,6 +1488,29 @@ pub unsafe extern "system" fn io_set_cancel_routine(
  let previous=unsafe{&*slot}.swap(replacement,core::sync::atomic::Ordering::AcqRel);
  release_irp_active_op(irp);
  if previous.is_null(){None}else{Some(unsafe{core::mem::transmute::<*mut c_void,DriverCancelRoutine>(previous)})}
+}
+
+/// Cancel all builder-owned synchronous IRPs associated with an exiting thread.
+/// Detach stack-backed IOSB/event pointers before cancellation: a lower driver
+/// may finish later if it has no cancel routine or cannot stop I/O immediately.
+pub fn io_cancel_thread_irps(thread_id:u64)->usize {
+ if thread_id==0{return 0}
+ let mut pending=[ptr::null_mut::<Irp>();MAX_WDM_IRPS];
+ let mut count=0usize;
+ {
+  let mut state=WDM.lock();
+  for slot in state.irps.iter_mut(){
+   if !slot.used||!slot.built_sync_ioctl||slot.sync_thread_id!=thread_id{continue}
+   if count==pending.len(){break}
+   let irp=ptr::addr_of_mut!(slot.object);
+   slot.sync_thread_id=0;
+   slot.sync_event=ptr::null_mut();
+   write_ptr(slot.object.bytes.as_mut_ptr(),0x48,ptr::null_mut());
+   pending[count]=irp;count+=1;
+  }
+ }
+ for irp in pending[..count].iter().copied(){unsafe{let _=io_cancel_irp(irp);}}
+ count
 }
 
 /// Request cancellation using the global cancel-spin-lock protocol. A driver
