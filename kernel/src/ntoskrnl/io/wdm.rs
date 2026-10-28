@@ -442,7 +442,7 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
  if referenced.is_null(){return STATUS_DELETE_PENDING}
  let stack_size=unsafe{(*dispatch_device).stack_size.max(1) as i16};
  let irp=unsafe{io_allocate_irp(stack_size,0)};
- if irp.is_null(){unsafe{io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
+ if irp.is_null(){unsafe{io_dereference_device_object(dispatch_device)};return STATUS_INSUFFICIENT_RESOURCES}
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
  if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
  unsafe{(*stack).major_function=0x1b;(*stack).minor_function=minor;(*stack).parameters[0]=allocated as u64;(*stack).parameters[1]=translated as u64;}
