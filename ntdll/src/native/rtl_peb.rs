@@ -6,10 +6,10 @@
 //! migration. Do not link this module alongside the C definitions.
 //!
 //! The lock is recursive and uses the ABI's LockCount/RecursionCount/
-//! OwningThread fields. Contenders yield after bounded spinning. It does not
-//! yet implement the Windows event-backed waiter wake-up policy, so it is a
-//! bootstrap synchronization primitive, not a full replacement for the
-//! Windows critical-section algorithm under heavy contention.
+//! OwningThread fields. Contenders use CognacOS's private address-wait/wake
+//! service after bounded spinning. This is not Windows' private event-backed
+//! implementation, and blocking requires a scheduler-owned thread; bootstrap
+//! contexts fall back to yielding/spinning rather than claiming to have waited.
 
 #![allow(non_camel_case_types, non_snake_case)]
 
