@@ -151,7 +151,20 @@ pub unsafe extern "win64" fn RdotObSetProcessTokenSids(owner:usize,sid_ptrs:*con
 }
 fn sid_matches(s:&State,owner:usize,sid:&[u8])->bool{
  let everyone=sid.len()==12&&sid[0]==1&&sid[1]==1&&sid[2..7].iter().all(|x|*x==0)&&sid[7]==1&&sid[8..12]==[0,0,0,0];
- everyone||s.tokens.iter().find(|t|t.used&&t.owner==owner).is_some_and(|t|(0..t.count as usize).any(|i|t.lengths[i] as usize==sid.len()&&t.sids[i][..sid.len()]==*sid))
+ if everyone || s.tokens.iter().find(|t|t.used&&t.owner==owner)
+     .is_some_and(|t|(0..t.count as usize).any(|i|t.lengths[i] as usize==sid.len()&&t.sids[i][..sid.len()]==*sid)) {
+     return true;
+ }
+ // Also check the effective NT token, so token-derived default DACL ACEs
+ // remain enforceable even if the legacy owner->SID mirror is not populated.
+ let mut token = crate::thread::reference_current_impersonation_token();
+ if token.is_null() {
+     token = crate::process::reference_primary_token(owner as u64);
+ }
+ if token.is_null() { return false; }
+ let matched = crate::ntoskrnl::se::runtime::se_internal_TokenContainsSid(token, sid);
+ let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) };
+ matched
 }
 pub fn ensure_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u16,i32>{
  {let _g=LOCK.lock();let s=state();if let Some(t)=s.types.iter().find(|t|t.used&&eq(&t.name[..t.len as usize],name)){return Ok(t.id)}}
