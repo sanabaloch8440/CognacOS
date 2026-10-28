@@ -470,6 +470,7 @@ fn io_pnp_manager_irp_completed(irp:*mut Irp){
   if request.remove_after_surprise&&status==STATUS_SUCCESS {
    let _=unsafe{io_pnp_dispatch_lifecycle_internal(request.device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null(),false)};
   }
+ }
 }
 
 /// Start a PnP device by sending its real START_DEVICE IRP with the
