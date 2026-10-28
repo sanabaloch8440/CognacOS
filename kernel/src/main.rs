@@ -1157,22 +1157,28 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     serial_write(b" dispatch-routines=");
                     unsafe { serial_write_decimal(dispatch_count); }
                     if !device_object.is_null() && dispatch_count != 0 {
-                        serial_write(b"\\r\\nbeep.sys device and dispatch registration passed.\\r\\n");
+                        serial_write(b"\r\nbeep.sys device and dispatch registration passed.\r\n");
                         // Route a real WDM IOCTL through beep.sys' registered dispatch.
                         // IOCTL_BEEP_SET = CTL_CODE(FILE_DEVICE_BEEP, 0, METHOD_BUFFERED, FILE_ANY_ACCESS).
                         match unsafe { submit_beep_ioctl(driver_object, device_object) } {
-                            Some((dispatch_status, irp_status)) => {
-                                serial_write(b"BEEP DISPATCH: registered IRP_MJ_DEVICE_CONTROL routine returned NTSTATUS=");
+                            Some((create_status, create_io, dispatch_status, irp_status)) => {
+                                serial_write(b"\r\nBEEP CREATE: dispatch=");
+                                serial_write_hex(create_status as u32 as u64);
+                                serial_write(b" IoStatus=");
+                                serial_write_hex(create_io as u32 as u64);
+                                serial_write(b"\r\nBEEP DEVICE CONTROL: dispatch=");
                                 serial_write_hex(dispatch_status as u32 as u64);
-                                serial_write(b" IRP.IoStatus.Status=");
+                                serial_write(b" IoStatus=");
                                 serial_write_hex(irp_status as u32 as u64);
-                                if dispatch_status >= 0 && irp_status >= 0 {
-                                    serial_write(b"\\r\\nBEEP DISPATCH RESULT: PASS - registered dispatch routine was invoked and both statuses succeeded.\\r\\n");
+                                if create_status >= 0 && create_io >= 0 &&
+                                   (dispatch_status >= 0 || dispatch_status == nt_abi::ntstatus::STATUS_PENDING) &&
+                                   (irp_status >= 0 || irp_status == nt_abi::ntstatus::STATUS_PENDING) {
+                                    serial_write(b"\r\nBEEP DISPATCH RESULT: PASS - create succeeded and IOCTL reached the registered device-control dispatch routine.\r\n");
                                 } else {
-                                    serial_write(b"\\r\\nBEEP DISPATCH RESULT: FAIL - dispatch returned a failing NTSTATUS.\\r\\n");
+                                    serial_write(b"\r\nBEEP DISPATCH RESULT: FAIL - create or device-control request returned an unexpected failure status.\r\n");
                                 }
                             }
-                            None => serial_write(b"\\r\\nBEEP DISPATCH RESULT: FAIL - no registered device-control dispatch routine was available.\\r\\n"),
+                            None => serial_write(b"\r\nBEEP DISPATCH RESULT: FAIL - required registered create/device-control dispatch routine was unavailable.\r\n"),
                         }
                         // Separate hardware-path diagnostic; audio is supplemental evidence.
                         if unsafe { qemu_pc_speaker_diagnostic_tone() } {
@@ -1265,34 +1271,75 @@ unsafe fn outb(port: u16, value: u8) {
 }
 
 
-/// Submit a bounded buffered IOCTL through beep.sys' registered dispatch routine.
+/// Build and submit a minimal WDM request using the registered dispatch table.
+/// The test models a device open before issuing IOCTL_BEEP_SET.
 unsafe fn submit_beep_ioctl(
     driver_object: *mut ntoskrnl::driver_loader::DriverObject,
     device_object: *mut core::ffi::c_void,
-) -> Option<(i32, i32)> {
+) -> Option<(i32, i32, i32, i32)> {
     use nt_abi::io::{IO_STACK_LOCATION, IRP};
+    const IRP_MJ_CREATE: usize = 0;
     const IRP_MJ_DEVICE_CONTROL: usize = 14;
-    const IOCTL_BEEP_SET: u32 = 0x0000_1000; // FILE_DEVICE_BEEP, function 0, METHOD_BUFFERED, FILE_ANY_ACCESS
+    const IOCTL_BEEP_SET: u32 = 0x0000_1000;
     if driver_object.is_null() || device_object.is_null() { return None; }
-    let dispatch = unsafe { (*driver_object).major_function[IRP_MJ_DEVICE_CONTROL] }?;
-    // BEEP_SET_PARAMETERS { ULONG Frequency; ULONG Duration; }, duration in ms.
-    let mut parameters = [880u32, 200u32];
-    let mut stack = IO_STACK_LOCATION {
-        major_function: IRP_MJ_DEVICE_CONTROL as u8, minor_function: 0,
+    let create_dispatch = unsafe { (*driver_object).major_function[IRP_MJ_CREATE] }?;
+    let control_dispatch = unsafe { (*driver_object).major_function[IRP_MJ_DEVICE_CONTROL] }?;
+
+    // FILE_OBJECT's public x64 prefix: Type, Size, DeviceObject. Remaining bytes
+    // are zeroed so a driver that consults optional fields sees a deterministic object.
+    let mut file_storage = [0usize; 28];
+    file_storage[0] = (0x00d8usize << 16) | 5usize; // Type=IO_TYPE_FILE, Size=sizeof(FILE_OBJECT)
+    file_storage[1] = device_object as usize;       // DeviceObject at x64 offset 0x08
+    let file_object = file_storage.as_mut_ptr().cast::<core::ffi::c_void>();
+
+    let mut create_stack = IO_STACK_LOCATION {
+        major_function: IRP_MJ_CREATE as u8, minor_function: 0,
         flags: 0, control: 0, parameters: [0; 0x20],
-        device_object: device_object.cast(), file_object: core::ptr::null_mut(),
+        device_object: device_object.cast(), file_object,
         completion_routine: None, context: core::ptr::null_mut(),
     };
-    stack.parameters[0..4].copy_from_slice(&0u32.to_le_bytes());
-    stack.parameters[4..8].copy_from_slice(&(core::mem::size_of_val(&parameters) as u32).to_le_bytes());
-    stack.parameters[8..12].copy_from_slice(&IOCTL_BEEP_SET.to_le_bytes());
+    let mut create_irp = make_beep_test_irp(&mut create_stack, core::ptr::null_mut());
+    let create_status = unsafe {
+        create_dispatch(device_object, (&mut create_irp as *mut IRP).cast::<core::ffi::c_void>())
+    };
+    let create_io_status = unsafe { create_irp.io_status.status.status };
+    if create_status < 0 || create_io_status < 0 {
+        return Some((create_status, create_io_status, create_status, create_io_status));
+    }
+
+    // BEEP_SET_PARAMETERS { ULONG Frequency; ULONG Duration; }.
+    // 880 Hz is within the documented legacy Beep frequency range; duration is ms.
+    let mut parameters = [880u32, 200u32];
+    let mut control_stack = IO_STACK_LOCATION {
+        major_function: IRP_MJ_DEVICE_CONTROL as u8, minor_function: 0,
+        flags: 0, control: 0, parameters: [0; 0x20],
+        device_object: device_object.cast(), file_object,
+        completion_routine: None, context: core::ptr::null_mut(),
+    };
+    control_stack.parameters[0..4].copy_from_slice(&0u32.to_le_bytes());
+    control_stack.parameters[4..8].copy_from_slice(&(core::mem::size_of_val(&parameters) as u32).to_le_bytes());
+    control_stack.parameters[8..12].copy_from_slice(&IOCTL_BEEP_SET.to_le_bytes());
+    let mut control_irp = make_beep_test_irp(&mut control_stack, (&mut parameters as *mut [u32; 2]).cast());
+    let control_status = unsafe {
+        control_dispatch(device_object, (&mut control_irp as *mut IRP).cast::<core::ffi::c_void>())
+    };
+    let control_io_status = unsafe { control_irp.io_status.status.status };
+    Some((create_status, create_io_status, control_status, control_io_status))
+}
+
+/// Initialize the fixed x64 IRP fields used by the synchronous runtime test.
+fn make_beep_test_irp(
+    stack: &mut nt_abi::io::IO_STACK_LOCATION,
+    system_buffer: *mut core::ffi::c_void,
+) -> nt_abi::io::IRP {
+    use nt_abi::io::{IO_STATUS_BLOCK, IO_STATUS_BLOCK_STATUS, IRP};
     let mut irp = IRP {
         type_: 6, size: core::mem::size_of::<IRP>() as u16,
-        mdl_address: core::ptr::null_mut(), flags: 0x10, // IRP_BUFFERED_IO
-        associated_irp: [(&mut parameters as *mut [u32; 2]) as usize],
+        mdl_address: core::ptr::null_mut(), flags: 0x10,
+        associated_irp: [system_buffer as usize],
         thread_list_entry: [0; 2],
-        io_status: nt_abi::io::IO_STATUS_BLOCK {
-            status: nt_abi::io::IO_STATUS_BLOCK_STATUS { status: nt_abi::ntstatus::STATUS_PENDING },
+        io_status: IO_STATUS_BLOCK {
+            status: IO_STATUS_BLOCK_STATUS { status: nt_abi::ntstatus::STATUS_PENDING },
             information: 0,
         },
         requestor_mode: 0, pending_returned: 0, stack_count: 1, current_location: 1,
@@ -1301,13 +1348,9 @@ unsafe fn submit_beep_ioctl(
         overlay: [0; 2], cancel_routine: core::ptr::null_mut(),
         user_buffer: core::ptr::null_mut(), tail: [0; 11],
     };
-    // IRP Tail.Overlay.CurrentStackLocation is x64 offset 0xB8 (tail[8]).
-    irp.tail[8] = (&mut stack as *mut IO_STACK_LOCATION) as usize;
-    let dispatch_status = unsafe {
-        dispatch(device_object, (&mut irp as *mut IRP).cast::<core::ffi::c_void>())
-    };
-    let irp_status = unsafe { irp.io_status.status.status };
-    Some((dispatch_status, irp_status))
+    // Tail.Overlay.CurrentStackLocation is at x64 IRP offset 0xB8.
+    irp.tail[8] = (stack as *mut nt_abi::io::IO_STACK_LOCATION) as usize;
+    irp
 }
 
 /// Emit a short PIT channel-2 tone through the legacy PC speaker.
