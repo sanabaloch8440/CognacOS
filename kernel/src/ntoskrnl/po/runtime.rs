@@ -160,12 +160,20 @@ pub(crate) unsafe fn po_prepare_irp_dispatch(device:*mut DeviceObject,irp:*mut W
   if refd.is_null(){return STATUS_DELETE_PENDING}
   let status=unsafe{io::io_begin_pnp_transition(device,minor)};
   if status!=STATUS_SUCCESS{unsafe{io::io_dereference_device_object(device)};return status}
+  // START_DEVICE is not allowed to reach the driver until both bus-provided
+  // resource lists have passed bounded validation and translated resources
+  // have been reserved atomically by the kernel resource arbiter.
+  let resource_status=unsafe{io::io_prepare_pnp_resources(device,irp,minor,parameters[0] as *const core::ffi::c_void,parameters[1] as *const core::ffi::c_void)};
+  if resource_status!=STATUS_SUCCESS {
+   unsafe{let _=io::io_complete_pnp_transition(device,minor,resource_status);io::io_dereference_device_object(device);}
+   return resource_status
+  }
   (2,0)
  };
  if let Err(status)=add_transition(Transition{used:true,irp,device,kind,target,minor}) {
   match kind {
    1=>unsafe{let _=io::io_complete_device_power_transition(device,target,STATUS_INVALID_DEVICE_REQUEST);io::io_dereference_device_object(device)},
-   2=>unsafe{let _=io::io_complete_pnp_transition(device,minor,STATUS_INVALID_DEVICE_REQUEST);io::io_dereference_device_object(device)},
+   2=>unsafe{io::io_finish_pnp_resources(irp,device,minor,STATUS_INVALID_DEVICE_REQUEST);let _=io::io_complete_pnp_transition(device,minor,STATUS_INVALID_DEVICE_REQUEST);io::io_dereference_device_object(device)},
    3=>release_system_power_irp(irp),
    _=>{}
   }
@@ -196,7 +204,7 @@ fn finish_matching(irp:*mut WdmIrp,device:Option<*mut DeviceObject>,status:i32,i
  for t in ready.iter().take(n){
   match t.kind{
    1=>unsafe{let _=io::io_complete_device_power_transition(t.device,t.target,status);io::io_dereference_device_object(t.device)},
-   2=>unsafe{let _=io::io_complete_pnp_transition(t.device,t.minor,status);io::io_dereference_device_object(t.device)},
+   2=>unsafe{io::io_finish_pnp_resources(irp,t.device,t.minor,status);let _=io::io_complete_pnp_transition(t.device,t.minor,status);io::io_dereference_device_object(t.device)},
    3=>{if status==STATUS_SUCCESS{SYSTEM_POWER_STATE.store(t.target as u32,Ordering::Release)}release_system_power_irp(irp);},
    4=>unsafe{io::io_dereference_device_object(t.device)},
    _=>{}
