@@ -907,7 +907,7 @@ fn append_default_dacl_ace(
 /// token groups while they fit in the bounded representation.
 fn build_token_default_dacl(entry: &SecurityTokenIdentity) -> Option<([u8; 236], usize)> {
     const SYSTEM_SID: [u8; 12] = [1,1,0,0,0,0,0,5,18,0,0,0];
-    const ADMINS_SID: [u8; 16] = [1,2,0,0,0,0,0,5,32,0,0,0];
+    const ADMINS_SID: [u8; 16] = [1,2,0,0,0,0,0,5,32,0,0,0,32,2,0,0];
     let mut acl = [0u8; 236];
     acl[0] = 2; // ACL_REVISION
     let mut offset = 8usize;
