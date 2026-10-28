@@ -1,6 +1,15 @@
 //! Windows 11 x64 NTDLL runtime export placeholders.
 //! Replace generic signatures with ABI-correct declarations as each routine is implemented.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
+use core::ffi::c_void;
+use core::sync::atomic::{AtomicUsize, Ordering};
+const SRW_EXCLUSIVE: usize = 1usize << (usize::BITS - 1);
+const SRW_READERS: usize = SRW_EXCLUSIVE - 1;
+#[inline] unsafe fn atomic_usize_at(p:*mut usize)->&'static core::sync::atomic::AtomicUsize{unsafe{&*p.cast::<AtomicUsize>()}}
+#[inline] fn pointer_cookie()->usize{static COOKIE_ANCHOR:u8=0;(&COOKIE_ANCHOR as *const u8 as usize).rotate_left(13)^(0xA5D3_9E71_C62B_480Fu64 as usize)}
+#[inline] fn encode_pointer(p:usize)->usize{p.rotate_left(17)^pointer_cookie()}
+#[inline] fn decode_pointer(p:usize)->usize{(p^pointer_cookie()).rotate_right(17)}
+
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlAbortRXact() -> i32 {
@@ -23,14 +32,10 @@ pub unsafe extern "system" fn RtlAcquireReleaseSRWLockExclusive() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlAcquireSRWLockExclusive() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlAcquireSRWLockExclusive(lock:*mut usize){if lock.is_null(){return;}let s=unsafe{atomic_usize_at(lock)};loop{if s.compare_exchange(0,SRW_EXCLUSIVE,Ordering::Acquire,Ordering::Relaxed).is_ok(){return;}core::hint::spin_loop();}}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlAcquireSRWLockShared() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlAcquireSRWLockShared(lock:*mut usize){if lock.is_null(){return;}let s=unsafe{atomic_usize_at(lock)};loop{let v=s.load(Ordering::Relaxed);if v&SRW_EXCLUSIVE!=0||v&SRW_READERS==SRW_READERS{core::hint::spin_loop();continue;}if s.compare_exchange_weak(v,v+1,Ordering::Acquire,Ordering::Relaxed).is_ok(){return;}}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlActivateActivationContext() -> i32 {
@@ -545,9 +550,7 @@ pub unsafe extern "system" fn RtlDeactivateActivationContextUnsafeFast() -> i32 
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlDecodePointer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlDecodePointer(pointer:*mut c_void)->*mut c_void{decode_pointer(pointer as usize) as *mut c_void}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDecodeRemotePointer() -> i32 {
@@ -555,9 +558,7 @@ pub unsafe extern "system" fn RtlDecodeRemotePointer() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlDecodeSystemPointer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlDecodeSystemPointer(pointer:*mut c_void)->*mut c_void{decode_pointer(pointer as usize) as *mut c_void}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeCommitDebugInfo() -> i32 {
@@ -727,9 +728,7 @@ pub unsafe extern "system" fn RtlEnclaveCallDispatchReturn() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlEncodePointer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlEncodePointer(pointer:*mut c_void)->*mut c_void{encode_pointer(pointer as usize) as *mut c_void}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlEncodeRemotePointer() -> i32 {
@@ -737,9 +736,7 @@ pub unsafe extern "system" fn RtlEncodeRemotePointer() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlEncodeSystemPointer() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlEncodeSystemPointer(pointer:*mut c_void)->*mut c_void{encode_pointer(pointer as usize) as *mut c_void}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlEnterUmsSchedulingMode() -> i32 {
@@ -972,14 +969,10 @@ pub unsafe extern "system" fn RtlGetCriticalSectionRecursionCount() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlGetCurrentProcessorNumber() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlGetCurrentProcessorNumber()->u32{0}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlGetCurrentProcessorNumberEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlGetCurrentProcessorNumberEx(number:*mut c_void){if !number.is_null(){unsafe{core::ptr::write_bytes(number,0,4);}}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetCurrentServiceSessionId() -> i32 {
@@ -1282,9 +1275,7 @@ pub unsafe extern "system" fn RtlInitializeBitMapEx() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitializeConditionVariable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlInitializeConditionVariable(condition:*mut usize){if !condition.is_null(){unsafe{condition.write(0);}}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitializeContext() -> i32 {
@@ -1347,9 +1338,7 @@ pub unsafe extern "system" fn RtlInitializeSListHead() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitializeSRWLock() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlInitializeSRWLock(lock:*mut usize){if !lock.is_null(){unsafe{lock.write(0);}}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitNlsTables() -> i32 {
@@ -2267,14 +2256,10 @@ pub unsafe extern "system" fn RtlReleasePrivilege() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlReleaseSRWLockExclusive() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlReleaseSRWLockExclusive(lock:*mut usize){if !lock.is_null(){unsafe{atomic_usize_at(lock).store(0,Ordering::Release);}}}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlReleaseSRWLockShared() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlReleaseSRWLockShared(lock:*mut usize){if !lock.is_null(){unsafe{atomic_usize_at(lock).fetch_sub(1,Ordering::Release);}}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlRemoteCall() -> i32 {
@@ -2707,14 +2692,10 @@ pub unsafe extern "system" fn RtlTraceDatabaseValidate() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlTryAcquireSRWLockExclusive() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlTryAcquireSRWLockExclusive(lock:*mut usize)->u8{if lock.is_null(){return 0;}unsafe{atomic_usize_at(lock).compare_exchange(0,SRW_EXCLUSIVE,Ordering::Acquire,Ordering::Relaxed).is_ok() as u8}}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlTryAcquireSRWLockShared() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlTryAcquireSRWLockShared(lock:*mut usize)->u8{if lock.is_null(){return 0;}let s=unsafe{atomic_usize_at(lock)};loop{let v=s.load(Ordering::Relaxed);if v&SRW_EXCLUSIVE!=0||v&SRW_READERS==SRW_READERS{return 0;}if s.compare_exchange_weak(v,v+1,Ordering::Acquire,Ordering::Relaxed).is_ok(){return 1;}}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlTryConvertSRWLockSharedToExclusiveOrRelease() -> i32 {
@@ -2897,14 +2878,10 @@ pub unsafe extern "system" fn RtlWakeAddressSingleNoFence() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlWakeAllConditionVariable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlWakeAllConditionVariable(condition:*mut usize){if !condition.is_null(){unsafe{atomic_usize_at(condition).fetch_add(1,Ordering::Release);}}}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlWakeConditionVariable() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlWakeConditionVariable(condition:*mut usize){if !condition.is_null(){unsafe{atomic_usize_at(condition).fetch_add(1,Ordering::Release);}}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlWalkFrameChain() -> i32 {
