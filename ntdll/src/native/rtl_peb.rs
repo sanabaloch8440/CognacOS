@@ -18,6 +18,7 @@ use core::sync::atomic::{AtomicI32, AtomicPtr, Ordering};
 
 pub use crate::nt_abi::types::{HANDLE, LONG, PVOID};
 pub use crate::nt_abi::ntstatus::{NTSTATUS, STATUS_INVALID_PARAMETER, STATUS_NOT_OWNER, STATUS_SUCCESS};
+const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC000_0002u32 as i32;
 
 
 #[repr(C)]
