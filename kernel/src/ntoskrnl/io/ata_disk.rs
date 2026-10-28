@@ -566,5 +566,10 @@ pub fn run_ext4_readme_test() -> bool {
     } else {
         unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot unavailable; starting with volatile trace only.\r\n"); }
     }
+    if crate::ntoskrnl::debug::persist_to_storage() {
+        unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot write/flush passed.\r\n"); }
+    } else {
+        unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot write skipped or failed.\r\n"); }
+    }
     true
 }
