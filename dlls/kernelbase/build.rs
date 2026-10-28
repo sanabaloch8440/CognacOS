@@ -32,6 +32,7 @@ fn main(){
  for e in &exports {
   if !e.forwarder.is_empty() || manual.contains(&e.name.as_str()){continue}
   if e.name.is_empty(){out.push_str(&format!("#[no_mangle]\npub extern \"system\" fn CognacOrdinalStub_{}() -> ULONG_PTR {{ 0 }}\n",e.ordinal));}
+  else if e.name == "exit" { out.push_str("#[export_name = \"exit\"]\npub extern \"C\" fn cognac_export_exit(_code: i32) -> ! { loop { core::hint::spin_loop(); } }\n"); }
   else {out.push_str(&format!("#[export_name = {:?}]\npub extern \"system\" fn cognac_export_{}() -> ULONG_PTR {{ 0 }}\n",e.name,e.ordinal));}
  }
  let p=PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));fs::write(p.join("kernelbase_exports.rs"),out).expect("write generated exports");
