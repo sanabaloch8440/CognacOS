@@ -561,5 +561,10 @@ pub fn run_ext4_readme_test() -> bool {
     };
     if restored_len != EXPECTED.len() || &restored[..restored_len] != EXPECTED { return false; }
     unsafe { crate::serial_write(b"Guest ext4 README.txt restored and verified byte-for-byte after write test.\r\n"); }
+    if crate::ntoskrnl::debug::restore_from_storage() {
+        unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot restored from dedicated GPT partition.\r\n"); }
+    } else {
+        unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot unavailable; starting with volatile trace only.\r\n"); }
+    }
     true
 }
