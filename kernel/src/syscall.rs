@@ -1777,7 +1777,7 @@ fn nt_create_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         return NT_STATUS_INVALID_PARAMETER;
     }
     let owner = crate::ntoskrnl::ob::runtime::current_owner();
-    let (name, name_len, attributes) = match native_event_object_attributes(args[2], owner, false) {
+    let (name, name_len, attributes) = match native_event_object_attributes(args[2], owner, true) {
         Ok(value) => value,
         Err(status) => return status as u32 as u64,
     };
