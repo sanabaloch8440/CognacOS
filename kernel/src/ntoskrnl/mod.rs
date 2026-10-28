@@ -16,6 +16,7 @@ mod manifest_26100;
 pub(crate) mod driver_loader;
 pub(crate) mod runtime_functions;
 pub(crate) mod dbg;
+pub(crate) mod debug;
 pub mod abi_signatures;
 
 
