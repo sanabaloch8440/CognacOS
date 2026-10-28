@@ -1262,13 +1262,14 @@ pub unsafe extern "win64" fn io_build_device_io_control_request(
  if !attached {unsafe{io_free_irp(irp)};return ptr::null_mut()}
  unsafe {
   (*next).major_function=if internal_device_control!=0{0x0f}else{0x0e};
-  // WDK marks InputBufferLength and IoControlCode POINTER_ALIGNMENT
-  // fields: on x64 their offsets in Parameters.DeviceIoControl are 8 and 16.
-  ptr::write_unaligned(next.cast::<u8>().add(4).cast::<u32>(),output_length);
-  ptr::write_unaligned(next.cast::<u8>().add(12).cast::<u32>(),input_length);
-  ptr::write_unaligned(next.cast::<u8>().add(20).cast::<u32>(),ioctl_code);
+  // IO_STACK_LOCATION's Parameters union starts at byte 8 on x64.
+  // DEVICE_IO_CONTROL fields are relative to that union: output length 0,
+  // input length 8, control code 16, and Type3InputBuffer 24.
+  ptr::write_unaligned(next.cast::<u8>().add(8).cast::<u32>(),output_length);
+  ptr::write_unaligned(next.cast::<u8>().add(16).cast::<u32>(),input_length);
+  ptr::write_unaligned(next.cast::<u8>().add(24).cast::<u32>(),ioctl_code);
   if method==3 {
-   ptr::write_unaligned(next.cast::<u8>().add(28).cast::<*mut c_void>(),input_buffer);
+   ptr::write_unaligned(next.cast::<u8>().add(32).cast::<*mut c_void>(),input_buffer);
   }
  }
  if method==1||method==2 {
