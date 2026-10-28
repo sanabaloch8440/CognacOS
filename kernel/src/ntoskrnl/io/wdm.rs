@@ -17,6 +17,7 @@ pub const IRP_SIZE_X64: usize = 0xD0;
 pub const IO_STACK_LOCATION_SIZE_X64: usize = 0x48;
 const MAX_WDM_DEVICES: usize = 32;
 const MAX_WDM_IRPS: usize = 64;
+const MAX_WDM_STACK_LOCATIONS: usize = 127;
 const MAX_DEVICE_EXTENSION: usize = 512;
 const IRP_STACK_OFFSET: usize = 0xB8;
 const IRP_STATUS_OFFSET: usize = 0x30;
@@ -78,7 +79,7 @@ struct IrpSlot {
  outstanding_count:usize, outstanding_devices:[*mut DeviceObject;16],
  // Keep object and stack adjacent: WDM requires the stack array to immediately
  // follow the fixed-size IRP allocation.
- object: Irp, stack: [IoStackLocation;16],
+ object: Irp, stack: [IoStackLocation;MAX_WDM_STACK_LOCATIONS],
  system_buffer:[u8;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:usize,
  ioctl_output_buffer:*mut c_void, ioctl_output_len:usize, built_sync_ioctl:bool,
 }
@@ -96,7 +97,7 @@ impl WdmState {
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
+   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
   }
  }
 }
@@ -718,7 +719,7 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->*mut Irp {
- if stack_size<=0||stack_size>16||charge_quota>1{return ptr::null_mut()}
+ if stack_size<=0||stack_size as usize>MAX_WDM_STACK_LOCATIONS||charge_quota>1{return ptr::null_mut()}
  let mut state=WDM.lock();
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
  slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.object.bytes.fill(0);
@@ -1020,7 +1021,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   state.irps[i].completion_state=1;
  }
  let mut finished=false;
- for _ in 0..17 {
+ for _ in 0..(MAX_WDM_STACK_LOCATIONS+1) {
   let (location,stack_count)=unsafe{((*irp).bytes[0x43] as usize,(*irp).bytes[0x42] as usize)};
   if stack_count==0||stack_count>16||location==0 {break}
   if location>stack_count {
@@ -1137,7 +1138,7 @@ pub unsafe extern "system" fn io_attach_device_to_device_stack(
     }
     if !unsafe{(*top).attached_device.is_null()} { return ptr::null_mut(); }
     let stack_size=unsafe{(*top).stack_size};
-    if stack_size==u8::MAX { return ptr::null_mut(); }
+    if stack_size>=127 { return ptr::null_mut(); }
     unsafe {
         (*top).attached_device=source;
         (*source).attached_device=ptr::null_mut();
