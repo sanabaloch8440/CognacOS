@@ -35,7 +35,7 @@ extern "system" {
 }
 
 #[inline]
-unsafe fn cognac_wait_on_lock(address:*mut LONG,expected:LONG){
+unsafe fn cognac_wait_on_lock(address:*mut LONG,expected:LONG)->NTSTATUS{
     #[cfg(all(target_os="windows",target_arch="x86_64"))]
     {
         let status:u64;
@@ -53,10 +53,10 @@ unsafe fn cognac_wait_on_lock(address:*mut LONG,expected:LONG){
                 options(nostack)
             );
         }
-        let _=status;
+        return status as u32 as i32;
     }
     #[cfg(not(all(target_os="windows",target_arch="x86_64")))]
-    { let _=(address,expected); }
+    { let _=(address,expected); STATUS_NOT_IMPLEMENTED }
 }
 
 #[inline]
@@ -122,6 +122,11 @@ pub unsafe extern "system" fn RtlEnterCriticalSection(cs: *mut RTL_CRITICAL_SECT
 
     let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
     let recursion = unsafe { &*(core::ptr::addr_of!((*cs).RecursionCount) as *const AtomicI32) };
+
+    // RTL_CRITICAL_SECTION.SpinCount is a caller-configured spin budget, not a
+    // fixed implementation constant. Respect the Windows x64 24-bit range;
+    // zero means proceed to the blocking path immediately.
+    let spin_limit = unsafe { (*cs).SpinCount.min(0x00FF_FFFF) };
     let mut spins = 0usize;
     loop {
         if lock.compare_exchange(-1, 0, Ordering::Acquire, Ordering::Relaxed).is_ok() {
@@ -129,18 +134,33 @@ pub unsafe extern "system" fn RtlEnterCriticalSection(cs: *mut RTL_CRITICAL_SECT
             owner.store(tid, Ordering::Release);
             return STATUS_SUCCESS;
         }
+
         #[cfg(target_arch = "x86_64")]
-        unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)) };
-        spins += 1;
-        if spins >= 4096 {
-            spins = 0;
-            let observed=lock.load(Ordering::Acquire);
-            if observed!=-1 {
-                unsafe{cognac_wait_on_lock(core::ptr::addr_of_mut!((*cs).LockCount),observed);}
-            } else {
+        if spins < spin_limit {
+            unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)) };
+        }
+        if spins < spin_limit {
+            spins += 1;
+            continue;
+        }
+
+        // The kernel service rechecks LockCount while registering the waiter,
+        // so an unlock racing with this call is not lost. Early bootstrap may
+        // still lack a scheduler-owned thread; in that case explicitly yield
+        // and retry rather than treating STATUS_NOT_IMPLEMENTED as a completed
+        // wait. A zero spin count reaches this path on the first contention.
+        let observed = lock.load(Ordering::Acquire);
+        if observed != -1 {
+            let status = unsafe {
+                cognac_wait_on_lock(core::ptr::addr_of_mut!((*cs).LockCount), observed)
+            };
+            if status == STATUS_NOT_IMPLEMENTED {
                 let _ = unsafe { NtYieldExecution() };
             }
+        } else {
+            let _ = unsafe { NtYieldExecution() };
         }
+        spins = 0;
     }
 }
 
