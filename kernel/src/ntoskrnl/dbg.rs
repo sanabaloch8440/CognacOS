@@ -4,23 +4,15 @@
 //! a KDNET/USB/1394 debugger transport. Format arguments are not consumed here;
 //! DbgPrint's stable Rust declaration accepts the format pointer only.
 use core::ffi::c_char;
-use core::sync::atomic::{AtomicU32, Ordering};
-
 pub type ULONG = u32;
 pub type BOOLEAN = u8;
 pub type NTSTATUS = i32;
 const STATUS_SUCCESS: NTSTATUS = 0;
 const STATUS_NOT_IMPLEMENTED: ULONG = 0xC000_0002;
-const FILTER_COUNT: usize = 256;
-static FILTERS: [AtomicU32; FILTER_COUNT] = [const { AtomicU32::new(0) }; FILTER_COUNT];
-
-#[inline]
-fn slot(component: ULONG) -> usize { (component as usize).min(FILTER_COUNT - 1) }
 
 #[inline]
 fn enabled(component: ULONG, level: ULONG) -> bool {
-    let mask = FILTERS[slot(component)].load(Ordering::Acquire);
-    if level < 32 { mask & (1 << level) != 0 } else { mask & level != 0 }
+    crate::ntoskrnl::debug::query_filter(component, level)
 }
 
 #[inline]
@@ -53,12 +45,22 @@ unsafe fn write_c_string(value: *const c_char) -> ULONG {
 /// which are ignored by this initial transport implementation.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DbgPrint(format: *const c_char) -> ULONG {
+    crate::ntoskrnl::debug::record_unfiltered(
+        crate::ntoskrnl::debug::COMPONENT_DEFAULT,
+        crate::ntoskrnl::debug::LEVEL_WARNING,
+        crate::ntoskrnl::debug::EVENT_DEBUG_PRINT,
+        format as usize as u64, 0, 0,
+    );
     unsafe { write_c_string(format) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DbgPrintEx(component: ULONG, level: ULONG, format: *const c_char) -> ULONG {
     if !enabled(component, level) { return 0; }
+    crate::ntoskrnl::debug::trace(
+        component, level, crate::ntoskrnl::debug::EVENT_DEBUG_PRINT,
+        format as usize as u64, 0, 0,
+    );
     unsafe { write_c_string(format) }
 }
 
@@ -69,11 +71,11 @@ pub unsafe extern "system" fn DbgQueryDebugFilterState(component: ULONG, level: 
 
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn DbgSetDebugFilterState(component: ULONG, level: ULONG, state: BOOLEAN) -> NTSTATUS {
-    let mask = &FILTERS[slot(component)];
-    let bits = if level < 32 { 1u32 << level } else { level };
-    if state != 0 { mask.fetch_or(bits, Ordering::AcqRel); }
-    else { mask.fetch_and(!bits, Ordering::AcqRel); }
-    STATUS_SUCCESS
+    if crate::ntoskrnl::debug::set_filter(component, level, state != 0) {
+        STATUS_SUCCESS
+    } else {
+        0xC000_000D_u32
+    }
 }
 
 #[unsafe(no_mangle)]
