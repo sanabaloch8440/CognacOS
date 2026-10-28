@@ -96,6 +96,8 @@ static FIRST_USER_FAULT_SS: core::sync::atomic::AtomicU64 = core::sync::atomic::
 static FIRST_USER_FAULT_CR2: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_NTDLL_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_NTDLL_SIZE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 fn preserve_first_user_fault(vector: u64, error: u64, frame: *const u64) {
     use core::sync::atomic::Ordering;
@@ -118,10 +120,14 @@ fn preserve_first_user_fault(vector: u64, error: u64, frame: *const u64) {
     FIRST_USER_FAULT_SS.store(read(21), Ordering::Relaxed);
     FIRST_USER_FAULT_CR2.store(cr2, Ordering::Relaxed);
     FIRST_USER_FAULT_CR3.store(cr3, Ordering::Relaxed);
-    FIRST_USER_FAULT_PID.store(
-        crate::ntoskrnl::mm::address_space::current_process_id_for_active_address_space(),
-        Ordering::Relaxed,
-    );
+    let pid = crate::ntoskrnl::mm::address_space::current_process_id_for_active_address_space();
+    FIRST_USER_FAULT_PID.store(pid, Ordering::Relaxed);
+    // Resolve and freeze the user module range while the first frame is being
+    // captured; the fatal path itself never takes the module-registry lock.
+    if let Some((_, module)) = crate::pe_modules::find_for_process(pid, b"ntdll.dll") {
+        FIRST_USER_FAULT_NTDLL_BASE.store(module.base, Ordering::Relaxed);
+        FIRST_USER_FAULT_NTDLL_SIZE.store(module.size as u64, Ordering::Relaxed);
+    }
     FIRST_USER_FAULT_STATE.store(2, Ordering::Release);
 }
 
@@ -142,22 +148,22 @@ unsafe fn dump_first_user_fault() {
         crate::serial_write(b" CR3="); crate::serial_write_hex(FIRST_USER_FAULT_CR3.load(Ordering::Relaxed));
         let pid = FIRST_USER_FAULT_PID.load(Ordering::Relaxed);
         crate::serial_write(b" PID="); crate::serial_write_hex(pid);
-        if let Some((_, ntdll)) = crate::pe_modules::find_for_process(pid, b"ntdll.dll") {
-            let rip = FIRST_USER_FAULT_RIP.load(Ordering::Relaxed);
+        let base = FIRST_USER_FAULT_NTDLL_BASE.load(Ordering::Relaxed);
+        let size = FIRST_USER_FAULT_NTDLL_SIZE.load(Ordering::Relaxed);
+        let rip = FIRST_USER_FAULT_RIP.load(Ordering::Relaxed);
+        if base != 0 && size != 0 {
             crate::serial_write(b"\\r\\nNTDLL MODULE: base=");
-            crate::serial_write_hex(ntdll.base);
+            crate::serial_write_hex(base);
             crate::serial_write(b" size=");
-            crate::serial_write_hex(ntdll.size as u64);
+            crate::serial_write_hex(size);
             crate::serial_write(b" RVA=");
-            if rip >= ntdll.base && rip < ntdll.base.saturating_add(ntdll.size as u64) {
-                crate::serial_write_hex(rip - ntdll.base);
+            if rip >= base && rip < base.saturating_add(size) {
+                crate::serial_write_hex(rip - base);
             } else {
                 crate::serial_write(b"outside-image");
             }
-            crate::serial_write(b" state=");
-            crate::serial_write_hex(ntdll.state as u64);
         } else {
-            crate::serial_write(b"\\r\\nNTDLL MODULE: no ntdll.dll entry in per-process module registry");
+            crate::serial_write(b"\\r\\nNTDLL MODULE: range unavailable in per-process module registry");
         }
         crate::serial_write(b"\\r\\n===== END PRESERVED FIRST USER-MODE FAULT =====\\r\\n");
     }
