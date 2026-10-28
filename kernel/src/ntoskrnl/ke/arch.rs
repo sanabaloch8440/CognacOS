@@ -136,7 +136,7 @@ unsafe fn dump_first_user_fault() {
     use core::sync::atomic::Ordering;
     if FIRST_USER_FAULT_STATE.load(Ordering::Acquire) != 2 { return; }
     unsafe {
-        crate::serial_write(b"\r\n===== PRESERVED FIRST USER-MODE FAULT (immutable) =====\\r\\n");
+        crate::serial_write(b"\r\n===== PRESERVED FIRST USER-MODE FAULT (immutable) =====\r\n");
         crate::serial_write(b"vector="); crate::serial_write_hex(FIRST_USER_FAULT_VECTOR.load(Ordering::Relaxed));
         crate::serial_write(b" error="); crate::serial_write_hex(FIRST_USER_FAULT_ERROR.load(Ordering::Relaxed));
         crate::serial_write(b" RIP="); crate::serial_write_hex(FIRST_USER_FAULT_RIP.load(Ordering::Relaxed));
@@ -165,7 +165,7 @@ unsafe fn dump_first_user_fault() {
         } else {
             crate::serial_write(b"\r\nNTDLL MODULE: range unavailable in per-process module registry");
         }
-        crate::serial_write(b"\r\n===== END PRESERVED FIRST USER-MODE FAULT =====\\r\\n");
+        crate::serial_write(b"\r\n===== END PRESERVED FIRST USER-MODE FAULT =====\r\n");
     }
 }
 
