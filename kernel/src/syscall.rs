@@ -1702,7 +1702,7 @@ fn native_event_type_id() -> Result<u16, i32> {
 /// Names are copied into kernel memory before namespace operations. Relative
 /// names are resolved against a directory handle; security descriptors are
 /// rejected until user-mode descriptor capture/validation is implemented.
-fn native_event_object_attributes(address: u64, owner: usize) -> Result<([u16; 128], usize, u32), i32> {
+fn native_event_object_attributes(address: u64, owner: usize, reject_security_descriptor: bool) -> Result<([u16; 128], usize, u32), i32> {
     let mut name = [0u16; 128];
     if address == 0 { return Ok((name, 0, 0)); }
     let mut oa = [0u8; 48];
@@ -1713,7 +1713,7 @@ fn native_event_object_attributes(address: u64, owner: usize) -> Result<([u16; 1
     let us_address = u64::from_le_bytes(oa[16..24].try_into().unwrap());
     let attributes = u32::from_le_bytes(oa[24..28].try_into().unwrap());
     let security_descriptor = u64::from_le_bytes(oa[32..40].try_into().unwrap());
-    if security_descriptor != 0 { return Err(0xC000_00BBu32 as i32); }
+    if reject_security_descriptor && security_descriptor != 0 { return Err(0xC000_00BBu32 as i32); }
     if us_address == 0 { return Ok((name, 0, attributes)); }
     let mut us = [0u8; 16];
     copy_nt_input(us_address, &mut us).map_err(|s| s as u32 as i32)?;
@@ -1751,7 +1751,7 @@ fn native_event_object_attributes(address: u64, owner: usize) -> Result<([u16; 1
 fn nt_open_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     if args[0] == 0 || args[2] == 0 { return NT_STATUS_INVALID_PARAMETER; }
     let owner = crate::ntoskrnl::ob::runtime::current_owner();
-    let (name, name_len, attributes) = match native_event_object_attributes(args[2], owner) {
+    let (name, name_len, attributes) = match native_event_object_attributes(args[2], owner, false) {
         Ok(value) => value,
         Err(status) => return status as u32 as u64,
     };
