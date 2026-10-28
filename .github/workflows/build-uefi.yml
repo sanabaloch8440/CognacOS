@@ -95,6 +95,8 @@ jobs:
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib metadata_csum_superblock_is_checked_and_corruption_rejected
       - name: Test ext4 writes reject requests beyond EOF
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib writes_past_inode_eof_are_rejected_before_device_io
+      - name: Test ext4 in-place writes preserve untouched bytes
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib writes_existing_extent_data_with_read_modify_write_and_flush
       - name: Build and validate Rust NTDLL crate
         shell: bash
         run: |
