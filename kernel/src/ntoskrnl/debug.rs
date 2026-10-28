@@ -144,6 +144,99 @@ pub fn latest_sequence() -> u64 {
     NEXT_SEQUENCE.load(Ordering::Acquire).saturating_sub(1)
 }
 
+const PERSIST_MAGIC: &[u8; 8] = b"COGTRC01";
+const PERSIST_HEADER: usize = 32;
+const PERSIST_RECORD: usize = 48;
+const PERSIST_BYTES: usize = PERSIST_HEADER + TRACE_CAPACITY * PERSIST_RECORD;
+static PERSIST_BUSY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static mut PERSIST_BUFFER: [u8; PERSIST_BYTES] = [0; PERSIST_BYTES];
+
+fn checksum(bytes: &[u8]) -> u32 {
+    let mut crc = !0u32;
+    for &byte in bytes {
+        crc ^= byte as u32;
+        for _ in 0..8 { crc = (crc >> 1) ^ (0xedb8_8320u32 & (0u32.wrapping_sub(crc & 1))); }
+    }
+    !crc
+}
+fn put_u32(buf: &mut [u8], at: usize, value: u32) { buf[at..at+4].copy_from_slice(&value.to_le_bytes()); }
+fn put_u64(buf: &mut [u8], at: usize, value: u64) { buf[at..at+8].copy_from_slice(&value.to_le_bytes()); }
+fn get_u32(buf: &[u8], at: usize) -> u32 { u32::from_le_bytes(buf[at..at+4].try_into().unwrap_or([0;4])) }
+fn get_u64(buf: &[u8], at: usize) -> u64 { u64::from_le_bytes(buf[at..at+8].try_into().unwrap_or([0;8])) }
+
+/// Persist the current bounded trace snapshot to the explicitly reserved GPT
+/// debug partition. Returns false if storage/partition is unavailable.
+pub fn persist_to_storage() -> bool {
+    if PERSIST_BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { return false; }
+    let result = unsafe {
+        let ptr = core::ptr::addr_of_mut!(PERSIST_BUFFER).cast::<u8>();
+        core::ptr::write_bytes(ptr, 0, PERSIST_BYTES);
+        let buf = core::slice::from_raw_parts_mut(ptr, PERSIST_BYTES);
+        buf[..8].copy_from_slice(PERSIST_MAGIC);
+        put_u32(buf, 8, 1);
+        let latest = latest_sequence();
+        let count = (latest.min(TRACE_CAPACITY as u64)) as usize;
+        put_u32(buf, 12, count as u32);
+        put_u64(buf, 16, latest);
+        let first = latest.saturating_sub(count as u64).saturating_add(1);
+        let mut written = 0usize;
+        if count != 0 {
+            for seq in first..=latest {
+                if let Some(record) = read(seq) {
+                    let at = PERSIST_HEADER + written * PERSIST_RECORD;
+                    put_u64(buf, at, record.sequence);
+                    put_u32(buf, at+8, record.component);
+                    put_u32(buf, at+12, record.level);
+                    put_u32(buf, at+16, record.event);
+                    put_u32(buf, at+20, 0);
+                    put_u64(buf, at+24, record.arg0);
+                    put_u64(buf, at+32, record.arg1);
+                    put_u64(buf, at+40, record.instruction_pointer);
+                    written += 1;
+                }
+            }
+        }
+        put_u32(buf, 12, written as u32);
+        let crc = checksum(&buf[PERSIST_HEADER..PERSIST_HEADER + written * PERSIST_RECORD]);
+        put_u32(buf, 24, crc);
+        put_u32(buf, 28, 0);
+        crate::ata_disk::debug_trace_store_write(0, &buf[..PERSIST_HEADER + written * PERSIST_RECORD])
+    };
+    PERSIST_BUSY.store(false, Ordering::Release);
+    result
+}
+
+/// Restore validated records from the reserved GPT debug partition. Records
+/// are replayed into the volatile ring with fresh sequence numbers.
+pub fn restore_from_storage() -> bool {
+    if PERSIST_BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() { return false; }
+    let result = unsafe {
+        let ptr = core::ptr::addr_of_mut!(PERSIST_BUFFER).cast::<u8>();
+        let buf = core::slice::from_raw_parts_mut(ptr, PERSIST_BYTES);
+        if !crate::ata_disk::debug_trace_store_read(0, &mut buf[..PERSIST_HEADER]) ||
+            &buf[..8] != PERSIST_MAGIC || get_u32(buf, 8) != 1 {
+            false
+        } else {
+            let count = get_u32(buf, 12) as usize;
+            let size = PERSIST_HEADER.saturating_add(count.saturating_mul(PERSIST_RECORD));
+            if count > TRACE_CAPACITY || size > PERSIST_BYTES ||
+                !crate::ata_disk::debug_trace_store_read(0, &mut buf[..size]) ||
+                checksum(&buf[PERSIST_HEADER..size]) != get_u32(buf, 24) {
+                false
+            } else {
+                for index in 0..count {
+                    let at = PERSIST_HEADER + index * PERSIST_RECORD;
+                    record_unfiltered(get_u32(buf, at+8), get_u32(buf, at+12), get_u32(buf, at+16),
+                        get_u64(buf, at+24), get_u64(buf, at+32), get_u64(buf, at+40));
+                }
+                true
+            }
+        }
+    };
+    PERSIST_BUSY.store(false, Ordering::Release);
+    result
+}
+
 /// Dump recent structured events to the early UART. Safe for fatal paths; bounded.
 #[cfg(not(test))]
 pub fn dump_serial(limit: usize) {
