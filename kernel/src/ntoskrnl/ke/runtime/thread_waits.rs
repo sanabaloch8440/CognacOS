@@ -536,6 +536,7 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
     alertable: u8,
     timeout: *const i64,
 ) -> i32 {
+    crate::ntoskrnl::ke::runtime::consume_ke_set_event_wait_handoff();
     if object.is_null() { return STATUS_INVALID_PARAMETER; }
     if !matches!(unsafe { (*object).kind }, EVENT_NOTIFICATION | EVENT_SYNCHRONIZATION | 5 | TIMER_NOTIFICATION | TIMER_SYNCHRONIZATION | QUEUE_OBJECT | MUTANT_OBJECT) {
         return STATUS_NOT_IMPLEMENTED;
@@ -601,6 +602,7 @@ pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     timeout: *const i64,
     _wait_block_array: *mut core::ffi::c_void,
 ) -> i32 {
+    crate::ntoskrnl::ke::runtime::consume_ke_set_event_wait_handoff();
     if count == 0 || count > 64 || objects.is_null() || !(wait_type == 0 || wait_type == 1) {
         return STATUS_INVALID_PARAMETER;
     }
