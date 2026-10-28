@@ -173,6 +173,12 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::io_copy_current_irp_stack_location_to_next as usize)
   } else if requested.eq_ignore_ascii_case(b"IoSkipCurrentIrpStackLocation") {
    Some(crate::io::io_skip_current_irp_stack_location as usize)
+  } else if requested.eq_ignore_ascii_case(b"MmLockPagableDataSection") {
+   Some(mm::runtime::mm_lock_pagable_data_section as usize)
+  } else if requested.eq_ignore_ascii_case(b"MmUnlockPagableImageSection") {
+   Some(mm::runtime::mm_unlock_pagable_image_section as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoGetRequestorSessionId") {
+   Some(crate::io::io_get_requestor_session_id as usize)
   } else if requested.eq_ignore_ascii_case(b"MmFreeMdl") {
    Some(mm::runtime::mm_free_mdl as usize)
   } else if requested.eq_ignore_ascii_case(b"MmPrepareMdlForReuse") {
