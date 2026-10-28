@@ -1012,24 +1012,28 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
  };
  if stack_size<=0{return ptr::null_mut()}
  let method=(ioctl_code&3) as u8;
- if method==0&&(input_length.max(output_length) as usize)>MAX_IOCTL_SYSTEM_BUFFER{return ptr::null_mut()}
- if method!=3&&(input_length as usize)>MAX_IOCTL_SYSTEM_BUFFER{return ptr::null_mut()}
+ let required_buffer=match method {0=>input_length.max(output_length) as usize,1|2=>input_length as usize,_=>0};
  let irp=unsafe{io_allocate_irp(stack_size,0)};
  if irp.is_null(){return ptr::null_mut()}
  let next=unsafe{io_get_next_irp_stack_location(irp)};
  if next.is_null(){unsafe{io_free_irp(irp)};return ptr::null_mut()}
+ let (system_buffer,system_buffer_pages)=if required_buffer==0 {(ptr::null_mut(),0)} else {
+  let pages=match required_buffer.checked_add(PAGE_SIZE-1){Some(n)=>n/PAGE_SIZE,None=>{unsafe{io_free_irp(irp)};return ptr::null_mut()}};
+  match crate::ntoskrnl::mm::kernel_space::allocate_pages(pages) {
+   Ok(p)=>{unsafe{ptr::write_bytes(p,0,pages*PAGE_SIZE);} (p,pages)},
+   Err(_)=>{unsafe{io_free_irp(irp)};return ptr::null_mut()}
+  }
+ };
  {
   let mut state=WDM.lock();
   let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{drop(state);unsafe{io_free_irp(irp)};return ptr::null_mut()};
   let slot=&mut state.irps[index];
   if method!=3 {
-   slot.system_buffer_len=input_length as usize;
-   if input_length!=0 {
-    unsafe{ptr::copy_nonoverlapping(input_buffer.cast::<u8>(),slot.system_buffer.as_mut_ptr(),input_length as usize);}
-   }
-   write_ptr(slot.object.bytes.as_mut_ptr(),0x18,slot.system_buffer.as_mut_ptr().cast());
+   slot.system_buffer=system_buffer;slot.system_buffer_pages=system_buffer_pages;
+   slot.system_buffer_len=if method==0 {required_buffer}else{input_length as usize};
+   if input_length!=0 {unsafe{ptr::copy_nonoverlapping(input_buffer.cast::<u8>(),slot.system_buffer,input_length as usize);}}
+   write_ptr(slot.object.bytes.as_mut_ptr(),0x18,slot.system_buffer.cast());
    if method==0 {
-    slot.system_buffer_len=slot.system_buffer_len.max(output_length as usize);
     slot.ioctl_output_buffer=output_buffer;
     slot.ioctl_output_len=output_length as usize;
     slot.object.bytes[0x10..0x14].copy_from_slice(&(0x04u32|0x10u32|0x20u32).to_le_bytes());
@@ -1103,7 +1107,7 @@ fn finalize_irp_status(irp:*mut Irp) {
   let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
   if slot.built_sync_ioctl && (unsafe{(*irp).bytes[0x10]&0x10})!=0 && !slot.ioctl_output_buffer.is_null() {
    let n=information.min(slot.ioctl_output_len).min(slot.system_buffer_len);
-   if n!=0 {unsafe{ptr::copy_nonoverlapping(slot.system_buffer.as_ptr(),slot.ioctl_output_buffer.cast::<u8>(),n);}}
+   if n!=0 {unsafe{ptr::copy_nonoverlapping(slot.system_buffer,slot.ioctl_output_buffer.cast::<u8>(),n);}}
   }
   slot.built_sync_ioctl
  };
@@ -1554,9 +1558,10 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
  if thread_id==0{return 0}
  let mut total=0usize;
  loop {
-  let mut pending=[(ptr::null_mut::<Irp>(),false);MAX_WDM_IRPS];
+  let mut pending=[(ptr::null_mut::<Irp>(),false);IRP_CANCEL_BATCH];
   let mut count=0usize;
   let mut completion_in_progress=false;
+  let mut more=false;
   {
    let mut state=WDM.lock();
    for slot in state.irps.iter_mut(){
@@ -1564,7 +1569,7 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
     // Completion/dispatch owns the packet while callbacks are active. Wait
     // until that critical section ends before detaching caller-stack data.
     if slot.completion_state==1||slot.active_ops!=0 {completion_in_progress=true;continue}
-    if count==pending.len(){break}
+    if count==pending.len(){more=true;continue}
     let irp=ptr::addr_of_mut!(slot.object);
     let never_dispatched=slot.outstanding_count==0&&slot.completion_state==0;
     slot.sync_thread_id=0;
@@ -1586,6 +1591,7 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
    }
   }
   total+=count;
+  if more {continue}
   if !completion_in_progress {break}
   core::hint::spin_loop();
  }
