@@ -830,6 +830,9 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*
   let mut state=WDM.lock();
   if let Some(slot)=state.irps.iter_mut().find(|s|!s.used){return initialize_irp_slot(slot,stack_size)}
  }
+ // Growing the nonpaged metadata pool can enter the VM allocator. Never do
+ // that at DISPATCH_LEVEL; pre-grown slots remain usable at elevated IRQL.
+ if unsafe{crate::ntoskrnl::ke::runtime::ke_get_current_irql()}>1{return ptr::null_mut()}
  // Grow in slabs, not one VM extent per IRP. This avoids turning the VM
  // extent-descriptor count into a hidden small IRP limit. Slots remain reusable
  // after IoFreeIrp; backing pages are retained as a nonpaged high-water pool.
