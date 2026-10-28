@@ -880,6 +880,12 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  if deleting||driver.is_null(){return STATUS_DELETE_PENDING}
  if !track_irp_device(irp,device) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  if !acquire_irp_active_op(irp) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
+ let irp_stack_count=unsafe{(*irp).bytes[0x42] as usize};
+ let required_stack_count=unsafe{(*device).stack_size as usize};
+ if irp_stack_count<required_stack_count {
+  release_irp_active_op(irp);release_device_dispatch_rundown(device);
+  return STATUS_INVALID_DEVICE_REQUEST;
+ }
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
  if stack.is_null(){release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_PARAMETER}
  let location=unsafe{(*irp).bytes[0x43]};
