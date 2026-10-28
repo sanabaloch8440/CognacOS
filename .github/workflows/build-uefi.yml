@@ -800,6 +800,9 @@ jobs:
             sha256sum test/beep.sys
             echo
             llvm-readobj --file-headers --coff-imports test/beep.sys
+            echo
+            echo "=== beep.sys DriverEntry disassembly (RVA 0x6000-0x60a0) ==="
+            llvm-objdump -d --start-address=0x6000 --stop-address=0x60a0 test/beep.sys
           } > "$log" 2>&1
           status=$?
           set -e
@@ -820,7 +823,7 @@ jobs:
           echo
           echo "=== QEMU runtime driver-load result ===" | tee -a "$log"
           if [ -f build/serial.log ]; then
-            grep -E "beep\\.sys|DriverEntry|driver test" build/serial.log | tee -a "$log" || true
+            grep -E "beep\\.sys|DriverEntry|driver test|FATAL CPU exception|PAGEFAULT|RAX=" build/serial.log | tee -a "$log" || true
             if grep -Fq "beep.sys DriverEntry returned NTSTATUS success" build/serial.log; then
               echo "RUNTIME RESULT: PASS - DriverEntry returned success." | tee -a "$log"
             elif grep -Fq "beep.sys runtime load failed before successful DriverEntry" build/serial.log; then
