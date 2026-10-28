@@ -639,7 +639,7 @@ mod host_tests {
 
     #[test]
     fn gpt_header_and_entry_array_crc_are_validated() {
-        let mut disk=MemDisk{bytes:[0;32768]};
+        let mut disk=MemDisk{bytes:[0;32768],flush_count:0};
         let entries=&mut disk.bytes[2*512..2*512+128];
         entries[..16].fill(0x11);
         entries[32..40].copy_from_slice(&4u64.to_le_bytes());
@@ -668,7 +668,7 @@ mod host_tests {
 
     #[test]
     fn ext_filesystem_mounts_from_partition_relative_superblock() {
-        let mut disk=MemDisk{bytes:[0;32768]};
+        let mut disk=MemDisk{bytes:[0;32768],flush_count:0};
         let start=4*512+SUPERBLOCK_DISK_OFFSET as usize;
         let sb=&mut disk.bytes[start..start+SUPERBLOCK_BYTES];
         sb[0..4].copy_from_slice(&4u32.to_le_bytes());
