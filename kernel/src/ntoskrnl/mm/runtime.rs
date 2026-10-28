@@ -1281,7 +1281,8 @@ pub unsafe extern "win64" fn mm_unlock_pagable_image_section(handle: *mut c_void
     if handle.is_null() { return; }
     let release = {
         let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
-        let Some(entry) = locks.iter_mut().find(|entry| core::ptr::eq((*entry as *mut PageableImageLock).cast::<c_void>(), handle)) else { return; };
+        let Some(index) = locks.iter().position(|entry| core::ptr::eq((entry as *const PageableImageLock).cast::<c_void>(), handle)) else { return; };
+        let entry = &mut locks[index];
         if !entry.used || !entry.pageable || entry.references == 0 { return; }
         entry.references -= 1;
         if entry.references == 0 { Some((entry.section_base, entry.section_end)) } else { None }
