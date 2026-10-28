@@ -16,8 +16,27 @@ const MAX_IMAGE_SIZE:usize=32*1024*1024;
 pub enum DriverLoadError { Truncated, BadDosHeader, BadPeSignature, WrongMachine, WrongSubsystem, NotDll, InvalidHeader, InvalidSection, ImageTooLarge, WrongBase, ImportsUnsupported, ImportNotFound, InvalidImport, RelocationsUnsupported, RelocationUnsupported, WxSection, EntryNotExecutable, MappingFailed, NoMemory, EntryFailed(i32) }
 #[derive(Clone,Copy,Debug)]
 pub struct LoadedDriver { pub image_base:u64,pub image_size:u32,pub entry_point:u64,pub status:i32 }
+/// Windows x64 DRIVER_OBJECT layout passed to a native driver's DriverEntry.
+/// Keep this layout in lockstep with the shared WDM ABI; a shortened host-side
+/// record is not safe because real drivers index MajorFunction at offset 0x70.
 #[repr(C)]
-pub struct DriverObject { pub size:u32,pub flags:u32,pub driver_start:*mut c_void,pub driver_size:u32,pub driver_section:*mut c_void,pub driver_extension:*mut c_void,pub unload:Option<unsafe extern "win64" fn(*mut DriverObject)> }
+pub struct DriverObject {
+ pub object_type:i16,
+ pub size:i16,
+ pub device_object:*mut c_void,
+ pub flags:u32,
+ pub driver_start:*mut c_void,
+ pub driver_size:u32,
+ pub driver_section:*mut c_void,
+ pub driver_extension:*mut c_void,
+ pub driver_name:crate::nt_abi::object::UNICODE_STRING,
+ pub hardware_database:*mut crate::nt_abi::object::UNICODE_STRING,
+ pub fast_io_dispatch:*mut c_void,
+ pub driver_init:Option<unsafe extern "win64" fn(*mut DriverObject,*mut c_void)->i32>,
+ pub driver_start_io:Option<unsafe extern "win64" fn(*mut c_void,*mut c_void)>,
+ pub driver_unload:Option<unsafe extern "win64" fn(*mut DriverObject)>,
+ pub major_function:[Option<unsafe extern "win64" fn(*mut c_void,*mut c_void)->i32>;28],
+}
 
 fn u16at(b:&[u8],o:usize)->Result<u16,DriverLoadError>{Ok(u16::from_le_bytes(b.get(o..o.checked_add(2).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?.try_into().map_err(|_|DriverLoadError::Truncated)?))}
 /// Validate the canonical DOS/PE signatures and return the PE header offset.
@@ -222,6 +241,14 @@ where F:FnMut(&[u16],&mut[u8])->Option<usize>{
 #[cfg(test)]
 mod pe_signature_tests {
  use super::*;
+ #[test]
+ fn driver_object_matches_windows_x64_size_and_dispatch_offset() {
+  assert_eq!(core::mem::offset_of!(DriverObject, device_object), 0x08);
+  assert_eq!(core::mem::offset_of!(DriverObject, driver_name), 0x38);
+  assert_eq!(core::mem::offset_of!(DriverObject, driver_unload), 0x68);
+  assert_eq!(core::mem::offset_of!(DriverObject, major_function), 0x70);
+  assert_eq!(core::mem::size_of::<DriverObject>(), 0x150);
+ }
  #[test]
  fn accepts_canonical_pe_signature() {
   let mut file=vec![0u8;0x44];
