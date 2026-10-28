@@ -1204,7 +1204,54 @@ pub unsafe extern "win64" fn io_call_driver(device:*mut DeviceObject, irp:*mut I
   unsafe{write_ptr(ptr::addr_of_mut!((*irp).bytes).cast::<u8>(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());*ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x43)=location;}
   release_irp_active_op(irp);release_device_dispatch_rundown(device);return prepare
  }
+ let minor=unsafe{(*stack).minor_function};
+ let debug_driver=crate::ntoskrnl::debug::query_filter(
+  crate::ntoskrnl::debug::COMPONENT_DRIVER,
+  crate::ntoskrnl::debug::LEVEL_INFO,
+ );
+ crate::ntoskrnl::debug::trace(
+  crate::ntoskrnl::debug::COMPONENT_DRIVER,
+  crate::ntoskrnl::debug::LEVEL_INFO,
+  crate::ntoskrnl::debug::EVENT_DRIVER_DISPATCH,
+  device as usize as u64,
+  ((major as u64)<<32)|(minor as u64),
+  dispatch as *const () as usize as u64,
+ );
+ if debug_driver {
+  unsafe {
+   crate::serial_write(b"DRIVER DEBUG: dispatch enter routine=");
+   crate::serial_write_hex(dispatch as *const () as usize as u64);
+   crate::serial_write(b" major=");
+   crate::serial_write_hex(major as u64);
+   crate::serial_write(b" minor=");
+   crate::serial_write_hex(minor as u64);
+   crate::serial_write(b" device=");
+   crate::serial_write_hex(device as usize as u64);
+   crate::serial_write(b" irp=");
+   crate::serial_write_hex(irp as usize as u64);
+   crate::serial_write(b"\\r\\n");
+  }
+ }
  let status=unsafe{dispatch(device,irp)};
+ crate::ntoskrnl::debug::trace(
+  crate::ntoskrnl::debug::COMPONENT_DRIVER,
+  crate::ntoskrnl::debug::LEVEL_INFO,
+  crate::ntoskrnl::debug::EVENT_DRIVER_DISPATCH_RETURN,
+  irp as usize as u64,
+  status as u32 as u64,
+  dispatch as *const () as usize as u64,
+ );
+ if debug_driver {
+  unsafe {
+   crate::serial_write(b"DRIVER DEBUG: dispatch return status=");
+   crate::serial_write_hex(status as u32 as u64);
+   crate::serial_write(b" routine=");
+   crate::serial_write_hex(dispatch as *const () as usize as u64);
+   crate::serial_write(b" irp=");
+   crate::serial_write_hex(irp as usize as u64);
+   crate::serial_write(b"\\r\\n");
+  }
+ }
  // STATUS_PENDING is not a substitute for IoMarkIrpPending. The lower
  // driver marks its own stack location; completion unwind propagates it.
  crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
