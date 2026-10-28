@@ -128,3 +128,59 @@ pub fn thread_exit_cleanup(thread:u64){
 }
 
 
+
+
+// ---- FAST_MUTEX ABI entry points -------------------------------------------
+// x64 FAST_MUTEX fields used here: Count at 0, Owner at 8, Contention at 16,
+// and OldIrql at 48. The embedded KEVENT is retained in-place for ABI layout;
+// the current executive wait backend does not yet expose a dedicated fast-mutex
+// wait object, so contention is serialized with an atomic acquire loop.
+#[inline]
+unsafe fn fast_mutex_atomic_i32(object: *mut core::ffi::c_void, offset: usize)
+    -> Option<&'static core::sync::atomic::AtomicI32>
+{
+    if object.is_null() || (object as usize).checked_add(offset)? % core::mem::align_of::<i32>() != 0 {
+        return None;
+    }
+    Some(unsafe { &*((object as *mut u8).add(offset).cast::<core::sync::atomic::AtomicI32>()) })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ex_acquire_fast_mutex(fast_mutex: *mut core::ffi::c_void) {
+    let Some(count) = (unsafe { fast_mutex_atomic_i32(fast_mutex, 0) }) else { return };
+    let old_irql = unsafe { ke_raise_irql_for_fast_mutex() };
+    loop {
+        if count.compare_exchange(1, 0, Ordering::Acquire, Ordering::Relaxed).is_ok() {
+            unsafe {
+                fast_mutex.add(48).cast::<u32>().write_unaligned(old_irql as u32);
+                fast_mutex.add(8).cast::<u64>().write_unaligned(
+                    crate::thread::current_thread_id().unwrap_or(0)
+                );
+            }
+            return;
+        }
+        if let Some(contention) = unsafe { fast_mutex_atomic_i32(fast_mutex, 16) } {
+            let _ = contention.fetch_add(1, Ordering::Relaxed);
+        }
+        core::hint::spin_loop();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ex_release_fast_mutex(fast_mutex: *mut core::ffi::c_void) {
+    let Some(count) = (unsafe { fast_mutex_atomic_i32(fast_mutex, 0) }) else { return };
+    let owner = unsafe { fast_mutex.add(8).cast::<u64>().read_unaligned() };
+    let current = crate::thread::current_thread_id().unwrap_or(0);
+    if owner != 0 && owner != current { return; }
+    let old_irql = unsafe { fast_mutex.add(48).cast::<u32>().read_unaligned() as u8 };
+    unsafe { fast_mutex.add(8).cast::<u64>().write_unaligned(0); }
+    count.store(1, Ordering::Release);
+    unsafe { ke_lower_irql(old_irql); }
+}
+
+#[inline]
+unsafe fn ke_raise_irql_for_fast_mutex() -> u8 {
+    // Fast mutexes run at APC_LEVEL. KfRaiseIrql preserves the existing
+    // processor-local IRQL/interrupt state used by the Ke implementation.
+    unsafe { kf_raise_irql(1) }
+}
