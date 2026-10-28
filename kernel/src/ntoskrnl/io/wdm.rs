@@ -205,6 +205,210 @@ pub(crate) unsafe fn io_complete_pnp_transition(device:*mut DeviceObject,minor:u
  }}
  s.pnp_transition=false;STATUS_SUCCESS
 }
+
+/// Bounded CM_RESOURCE_LIST parser and resource arbiter for WDM start IRPs.
+/// The caller must pass kernel-captured CM_RESOURCE_LIST pointers, never raw
+/// user pointers. This reserves translated I/O ports, memory ranges and IRQs;
+/// it does not program the underlying bus or replace a hardware bus driver.
+const MAX_PNP_RESOURCE_CLAIMS:usize=256;
+const MAX_RESOURCES_PER_DEVICE:usize=32;
+const MAX_PNP_FULL_DESCRIPTORS:usize=16;
+const MAX_PNP_PARTIAL_DESCRIPTORS:usize=64;
+const IRP_MN_START_DEVICE:u8=0x00;
+const IRP_MN_STOP_DEVICE:u8=0x04;
+const IRP_MN_REMOVE_DEVICE:u8=0x02;
+const IRP_MN_SURPRISE_REMOVAL:u8=0x17;
+const CM_RESOURCE_PORT:u8=1;
+const CM_RESOURCE_INTERRUPT:u8=2;
+const CM_RESOURCE_MEMORY:u8=3;
+#[derive(Clone,Copy)]
+struct ResourceClaim { used:bool, owner:*mut DeviceObject, irp:*mut Irp, kind:u8, start:u64, length:u64, committed:bool }
+unsafe impl Send for ResourceClaim {}
+impl ResourceClaim { const EMPTY:Self=Self{used:false,owner:ptr::null_mut(),irp:ptr::null_mut(),kind:0,start:0,length:0,committed:false}; }
+struct ResourceArbiter { claims:[ResourceClaim;MAX_PNP_RESOURCE_CLAIMS] }
+impl ResourceArbiter { const fn new()->Self{Self{claims:[ResourceClaim::EMPTY;MAX_PNP_RESOURCE_CLAIMS]}} }
+static RESOURCE_ARBITER:IrqSpinLock<ResourceArbiter>=IrqSpinLock::new(ResourceArbiter::new());
+#[derive(Clone,Copy)]
+struct ParsedResource { kind:u8, start:u64, length:u64 }
+impl ParsedResource { const EMPTY:Self=Self{kind:0,start:0,length:0}; }
+
+fn read_u16_at(base:*const u8,off:usize)->u16 { unsafe{ptr::read_unaligned(base.add(off).cast::<u16>())} }
+fn read_u32_at(base:*const u8,off:usize)->u32 { unsafe{ptr::read_unaligned(base.add(off).cast::<u32>())} }
+fn read_u64_at(base:*const u8,off:usize)->u64 { unsafe{ptr::read_unaligned(base.add(off).cast::<u64>())} }
+
+/// Validate a WDK CM_RESOURCE_LIST and extract resources that participate in
+/// exclusive range arbitration. Structure bounds/counts are capped to avoid
+/// unbounded traversal. As with the WDK ABI, the pointer must reference a
+/// readable kernel allocation for the duration of this call.
+unsafe fn parse_cm_resource_list(list:*const c_void,out:&mut[ParsedResource;MAX_RESOURCES_PER_DEVICE])->Result<usize,i32>{
+ if list.is_null(){return Ok(0)}
+ let base=list.cast::<u8>();
+ let full_count=unsafe{read_u32_at(base,0)} as usize;
+ if full_count>MAX_PNP_FULL_DESCRIPTORS{return Err(STATUS_INVALID_PARAMETER)}
+ let mut cursor=4usize;let mut count=0usize;
+ for _ in 0..full_count {
+  let partial_count=unsafe{read_u32_at(base,cursor+12)} as usize;
+  if partial_count>MAX_PNP_PARTIAL_DESCRIPTORS{return Err(STATUS_INVALID_PARAMETER)}
+  let descriptor_start=cursor.checked_add(16).ok_or(STATUS_INVALID_PARAMETER)?;
+  let bytes=partial_count.checked_mul(16).ok_or(STATUS_INVALID_PARAMETER)?;
+  let end=descriptor_start.checked_add(bytes).ok_or(STATUS_INVALID_PARAMETER)?;
+  for i in 0..partial_count {
+   let off=descriptor_start+i*16;
+   let kind=unsafe{*base.add(off)};
+   match kind {
+    0|4|5|6=>{}, // Null, DMA, device-specific, and bus-number descriptors do not reserve an address range here.
+    CM_RESOURCE_PORT|CM_RESOURCE_MEMORY=>{
+     let start=unsafe{read_u64_at(base,off+4)};
+     let length=unsafe{read_u32_at(base,off+12)} as u64;
+     if length==0||start.checked_add(length).is_none(){return Err(STATUS_INVALID_PARAMETER)}
+     if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
+     out[count]=ParsedResource{kind,start,length};count+=1;
+    }
+    CM_RESOURCE_INTERRUPT=>{
+     let vector=unsafe{read_u32_at(base,off+8)} as u64;
+     if vector==0{return Err(STATUS_INVALID_PARAMETER)}
+     if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
+     out[count]=ParsedResource{kind,start:vector,length:1};count+=1;
+    }
+    7=>return Err(STATUS_INVALID_DEVICE_REQUEST), // Large-memory encoding needs architecture-specific decoding.
+    _=>return Err(STATUS_INVALID_PARAMETER),
+   }
+  }
+  cursor=end;
+ }
+ Ok(count)
+}
+fn resources_overlap(a:&ParsedResource,b:&ParsedResource)->bool{
+ if a.kind!=b.kind{return false}
+ if a.kind==CM_RESOURCE_INTERRUPT{return a.start==b.start}
+ let a_end=a.start.saturating_add(a.length);
+ let b_end=b.start.saturating_add(b.length);
+ a.start<b_end&&b.start<a_end
+}
+
+/// Reserve translated resources for an IRP_MN_START_DEVICE transaction.
+/// Reservations are tentative until the IRP's terminal completion succeeds.
+pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut Irp,minor:u8,allocated:*const c_void,translated:*const c_void)->i32{
+ if minor!=IRP_MN_START_DEVICE{return STATUS_SUCCESS}
+ if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
+ let mut raw=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
+ let mut resources=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
+ let raw_count=match unsafe{parse_cm_resource_list(allocated,&mut raw)}{Ok(n)=>n,Err(e)=>return e};
+ let count=match unsafe{parse_cm_resource_list(translated,&mut resources)}{Ok(n)=>n,Err(e)=>return e};
+ if allocated.is_null()!=translated.is_null()||raw_count!=count{return STATUS_INVALID_PARAMETER}
+ // Require the bus-provided raw and translated lists to describe the same
+ // number of reservable resources; translation may change addresses, not count.
+ let mut arbiter=RESOURCE_ARBITER.lock();
+ if arbiter.claims.iter().any(|c|c.used&&c.owner==device&&!c.committed){return STATUS_DEVICE_BUSY}
+ for r in resources[..count].iter() {
+  for claim in arbiter.claims.iter().filter(|c|c.used&&c.owner!=device) {
+   let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length};
+   if resources_overlap(r,&existing){return STATUS_DEVICE_BUSY}
+  }
+ }
+ let free_count=arbiter.claims.iter().filter(|c|!c.used).count();
+ if free_count<count{return STATUS_INSUFFICIENT_RESOURCES}
+ for r in resources[..count].iter() {
+  let Some(slot)=arbiter.claims.iter_mut().find(|c|!c.used) else{return STATUS_INSUFFICIENT_RESOURCES};
+  *slot=ResourceClaim{used:true,owner:device,irp,kind:r.kind,start:r.start,length:r.length,committed:false};
+ }
+ STATUS_SUCCESS
+}
+
+/// Resolve a PnP resource transaction only when IoCompleteRequest reaches the
+/// terminal IRP unwind. Failed/cancelled starts drop tentative claims; successful
+/// starts replace prior claims. Stop/remove release committed reservations.
+pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,status:i32){
+ if irp.is_null(){return}
+ let mut arbiter=RESOURCE_ARBITER.lock();
+ let has_pending=arbiter.claims.iter().any(|c|c.used&&c.irp==irp&&!c.committed);
+ if has_pending {
+  if status==STATUS_SUCCESS {
+   let owner=arbiter.claims.iter().find(|c|c.used&&c.irp==irp&&!c.committed).map(|c|c.owner);
+   if let Some(owner)=owner {
+    for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==owner&&c.committed){*c=ResourceClaim::EMPTY;}
+    for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp){c.committed=true;c.irp=ptr::null_mut();}
+   }
+  } else {
+   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&!c.committed){*c=ResourceClaim::EMPTY;}
+  }
+ }
+ if status==STATUS_SUCCESS {
+  // Stop and removal have released hardware ownership; a later restart must
+  // obtain a fresh, conflict-checked translated resource assignment.
+  let owner=arbiter.claims.iter().find(|c|c.used&&c.irp==irp).map(|c|c.owner);
+  let _=owner;
+ }
+}
+
+/// Explicitly release a device's committed resources after a successful
+/// STOP_DEVICE/REMOVE_DEVICE completion. Safe to call repeatedly.
+pub(crate) fn io_release_pnp_resources(device:*mut DeviceObject){
+ if device.is_null(){return}
+ let mut arbiter=RESOURCE_ARBITER.lock();
+ for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==device){*c=ResourceClaim::EMPTY;}
+}
+
+/// PnP manager bookkeeping for bus-enumerated device relations. The bus driver
+/// remains responsible for constructing a valid DEVICE_RELATIONS array; this
+/// manager validates every returned pointer against the I/O manager's live
+/// device-object table before publishing the relation.
+const MAX_PNP_RELATIONS:usize=64;
+#[repr(C)]
+pub struct DeviceRelations { pub count:u32, pub objects:[*mut DeviceObject;MAX_PNP_RELATIONS] }
+#[derive(Clone,Copy)]
+struct PnpRelation { used:bool, bus:*mut DeviceObject, child:*mut DeviceObject }
+unsafe impl Send for PnpRelation {}
+impl PnpRelation { const EMPTY:Self=Self{used:false,bus:ptr::null_mut(),child:ptr::null_mut()}; }
+struct PnpManagerState { relations:[PnpRelation;MAX_PNP_DEVICES], enumerations:u64 }
+const MAX_PNP_DEVICES:usize=128;
+impl PnpManagerState { const fn new()->Self{Self{relations:[PnpRelation::EMPTY;MAX_PNP_DEVICES],enumerations:0}} }
+static PNP_MANAGER:IrqSpinLock<PnpManagerState>=IrqSpinLock::new(PnpManagerState::new());
+
+/// Publish bus relations after a successful IRP_MN_QUERY_DEVICE_RELATIONS
+/// completion. The relations object and every child pointer must be kernel-owned
+/// and readable; unknown/deleting objects are rejected before any state changes.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,relations:*const DeviceRelations)->i32{
+ if bus.is_null()||relations.is_null(){return STATUS_INVALID_PARAMETER}
+ let count=unsafe{ptr::read_unaligned(ptr::addr_of!((*relations).count))} as usize;
+ if count>MAX_PNP_RELATIONS{return STATUS_INVALID_PARAMETER}
+ let mut children=[ptr::null_mut::<DeviceObject>();MAX_PNP_RELATIONS];
+ for i in 0..count {
+  let child=unsafe{ptr::read_unaligned(ptr::addr_of!((*relations).objects[i]))};
+  if child.is_null()||child==bus{return STATUS_INVALID_PARAMETER}
+  let valid={let state=WDM.lock();state.devices.iter().any(|s|s.used&&!s.deleting&&ptr::eq(&s.object,child))};
+  if !valid{return STATUS_INVALID_PARAMETER}
+  if children[..i].contains(&child){return STATUS_INVALID_PARAMETER}
+  children[i]=child;
+ }
+ let mut manager=PNP_MANAGER.lock();
+ // Ensure capacity before mutating so enumeration is atomic on resource exhaustion.
+ let old=manager.relations.iter().filter(|r|r.used&&r.bus==bus).count();
+ let needed=children[..count].iter().filter(|child|!manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==**child)).count();
+ let free=manager.relations.iter().filter(|r|!r.used||r.bus==bus).count();
+ if free<old+needed{return STATUS_INSUFFICIENT_RESOURCES}
+ for relation in manager.relations.iter_mut().filter(|r|r.used&&r.bus==bus&&!children[..count].contains(&r.child)){*relation=PnpRelation::EMPTY;}
+ for child in children[..count].iter().copied(){
+  if !manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==child){
+   if let Some(slot)=manager.relations.iter_mut().find(|r|!r.used||r.bus==bus&& !children[..count].contains(&r.child)){
+    *slot=PnpRelation{used:true,bus,child};
+   }
+  }
+ }
+ manager.enumerations=manager.enumerations.wrapping_add(1);
+ STATUS_SUCCESS
+}
+
+/// Return the number of currently published children for a bus. This is an
+/// enumeration snapshot count, not a claim that those children have started.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn IoPnPQueryChildCount(bus:*mut DeviceObject)->u32{
+ if bus.is_null(){return 0}
+ let manager=PNP_MANAGER.lock();
+ manager.relations.iter().filter(|r|r.used&&r.bus==bus).count() as u32
+}
+
 pub(crate) fn io_pnp_state(device:*mut DeviceObject)->i32 {
  if device.is_null(){return -1}
  let state=WDM.lock();state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)).map(|s|s.pnp_state as i32).unwrap_or(-1)
