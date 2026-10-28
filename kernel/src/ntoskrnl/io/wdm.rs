@@ -750,21 +750,43 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  io_release_pnp_resources(device);
  unsafe{io_unregister_file_system(device);}
 }
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*mut Irp {
- if stack_size<=0||charge_quota>1{return ptr::null_mut()}
- let mut state=WDM.lock();
- let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
- slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.suspended_completion=false;slot.free_requested=false;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.sync_thread_id=0;slot.sync_event=ptr::null_mut();slot.object.bytes.fill(0);
+fn initialize_irp_slot(slot:&mut IrpSlot,stack_size:i8)->*mut Irp {
+ let next=slot.next;
+ slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;
+ slot.suspended_completion=false;slot.free_requested=false;slot.active_ops=0;
+ slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());
+ slot.system_buffer=ptr::null_mut();slot.system_buffer_pages=0;slot.system_buffer_len=0;
+ slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;
+ slot.sync_thread_id=0;slot.sync_event=ptr::null_mut();
+ slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
- // IRP.Size is sizeof(IRP), not the total IRP-plus-stack allocation size.
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
  slot.object.bytes[0x42]=stack_size as u8;slot.object.bytes[0x43]=(stack_size as u8).wrapping_add(1);
- slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
- let object=&mut slot.object as *mut Irp;
+ slot.stack.fill(IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()});
+ slot.next=next;
+ let object=ptr::addr_of_mut!(slot.object);
  let one_past=unsafe{slot.stack.as_mut_ptr().add(stack_size as usize).cast::<c_void>()};
- unsafe { write_ptr((*object).bytes.as_mut_ptr(),IRP_STACK_OFFSET,one_past); }
+ unsafe{write_ptr((*object).bytes.as_mut_ptr(),IRP_STACK_OFFSET,one_past);}
  object
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*mut Irp {
+ if stack_size<=0||stack_size as usize>MAX_WDM_STACK_LOCATIONS||charge_quota>1{return ptr::null_mut()}
+ {
+  let mut state=WDM.lock();
+  if let Some(slot)=state.irps.iter_mut().find(|s|!s.used){return initialize_irp_slot(slot,stack_size)}
+ }
+ let pages=(core::mem::size_of::<IrpSlot>()+PAGE_SIZE-1)/PAGE_SIZE;
+ let memory=match crate::ntoskrnl::mm::kernel_space::allocate_pages(pages){Ok(p)=>p,Err(_)=>return ptr::null_mut()};
+ let candidate=memory.cast::<IrpSlot>();
+ unsafe{ptr::write(candidate,IrpSlot::empty());}
+ let mut state=WDM.lock();
+ if let Some(slot)=state.irps.iter_mut().find(|s|!s.used){
+  let object=initialize_irp_slot(slot,stack_size);drop(state);
+  let _=crate::ntoskrnl::mm::kernel_space::free_pages(memory,pages);return object
+ }
+ let object=initialize_irp_slot(unsafe{&mut *candidate},stack_size);
+ state.irps.push_front(candidate);object
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
@@ -772,35 +794,24 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
  {
   let mut state=WDM.lock();
   let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
-  // A pending IRP remains owned by the lower stack until terminal
-  // completion. Never turn an in-flight packet into a freeable packet merely
-  // because IoCallDriver's dispatch frame has returned.
-  if slot.completion_state==1 {
-   // A completion callback may free a driver-created IRP and then return
-   // STATUS_MORE_PROCESSING_REQUIRED. Defer physical reclamation until the
-   // callback's return value makes that ownership transfer unambiguous.
-   slot.free_requested=true;
-   return;
-  }
-  if slot.completion_state==3 || slot.active_ops!=0
-      || (slot.completion_state==0 && slot.outstanding_count!=0) {
-   return;
-  }
-  slot.free_requested=false;
-  slot.suspended_completion=false;
-  slot.completion_state=2;
+  if slot.completion_state==1 {slot.free_requested=true;return}
+  if slot.completion_state==3||slot.active_ops!=0||(slot.completion_state==0&&slot.outstanding_count!=0){return}
+  slot.free_requested=false;slot.suspended_completion=false;slot.completion_state=2;
  }
  release_irp_device_rundown(irp);
- let owned_mdl={
+ let (owned_mdl,system_buffer,system_buffer_pages)={
   let mut state=WDM.lock();
   let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
-  let mdl=slot.owned_mdl;
-  slot.owned_mdl=ptr::null_mut();
-  slot.object.bytes.fill(0);slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.sync_thread_id=0;slot.sync_event=ptr::null_mut();slot.used=false;
-  mdl
+  let mdl=slot.owned_mdl;slot.owned_mdl=ptr::null_mut();
+  let buffer=slot.system_buffer;let pages=slot.system_buffer_pages;
+  slot.object.bytes.fill(0);slot.system_buffer=ptr::null_mut();slot.system_buffer_pages=0;slot.system_buffer_len=0;
+  slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;
+  slot.sync_thread_id=0;slot.sync_event=ptr::null_mut();slot.used=false;
+  (mdl,buffer,pages)
  };
  crate::dma::release_irp_mappings(irp.cast());
  if !owned_mdl.is_null(){unsafe{crate::ntoskrnl::mm::runtime::mm_free_mdl(owned_mdl);}}
+ if !system_buffer.is_null()&&system_buffer_pages!=0{let _=crate::ntoskrnl::mm::kernel_space::free_pages(system_buffer,system_buffer_pages);}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_get_current_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
