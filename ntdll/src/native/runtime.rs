@@ -2869,7 +2869,7 @@ pub unsafe extern "system" fn RtlTryConvertSRWLockSharedToExclusiveOrRelease() -
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlTryEnterCriticalSection(cs:*mut CognacCriticalSection)->u8{if cs.is_null(){return 0;}let id=current_thread_id();if unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).load(Ordering::Acquire)}==id&&id!=0{unsafe{(*cs).recursion_count=(*cs).recursion_count.saturating_add(1);}return 1;}let l=unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count))};if l.compare_exchange(-1,0,Ordering::Acquire,Ordering::Relaxed).is_err(){return 0;}unsafe{(*cs).owning_thread=id as *mut c_void;(*cs).recursion_count=1;}1}
+pub unsafe extern "system" fn RtlTryEnterCriticalSection(cs:*mut CognacCriticalSection)->u8{if cs.is_null(){return 0;}let id=current_thread_id();if unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).load(Ordering::Acquire)}==id&&id!=0{unsafe{(*cs).recursion_count=(*cs).recursion_count.saturating_add(1);}return 1;}let l=unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count))};if l.compare_exchange(-1,0,Ordering::Acquire,Ordering::Relaxed).is_err(){return 0;}unsafe{(*cs).recursion_count=1;atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).store(id,Ordering::Release);}1}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlUdiv128() -> i32 {
