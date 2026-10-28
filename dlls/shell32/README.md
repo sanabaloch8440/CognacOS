@@ -30,4 +30,8 @@ Do not remove attribution, relicense third-party artwork as CognacOS-only, or co
 - `RESOURCE_MANIFEST.md` — file-by-file provenance and license ledger.
 - `LICENSES/` — full license texts and upstream attribution notices copied alongside the corresponding assets.
 
+## Imported starter set
+
+The first batch of 20 Tango Project icons is now stored under `resources/icons/`: file, executable, folder/open folder, drive, CD-ROM, network, computer, printer, Control Panel, search, help, share, shortcut, empty/full Recycle Bin, desktop, favorites, locked item, and disconnected drive. See `RESOURCE_CATALOG.md` for names and exact upstream paths.
+
 These resources are a starting library for future shell32 implementation; importing artwork does not import ReactOS shell32 code or imply that the CognacOS shell32 APIs are already implemented.
