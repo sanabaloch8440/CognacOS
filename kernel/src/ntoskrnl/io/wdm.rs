@@ -541,8 +541,8 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
  if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
  unsafe{
   (*stack).major_function=0x1b;(*stack).minor_function=minor;
-  ptr::write_unaligned(stack.cast::<u8>().add(4).cast::<*mut c_void>(),allocated);
-  ptr::write_unaligned(stack.cast::<u8>().add(12).cast::<*mut c_void>(),translated);
+  ptr::write_unaligned(stack.cast::<u8>().add(4).cast::<*mut c_void>(),allocated as *mut c_void);
+  ptr::write_unaligned(stack.cast::<u8>().add(12).cast::<*mut c_void>(),translated as *mut c_void);
  }
  {
   let mut manager=PNP_MANAGER.lock();
@@ -1847,7 +1847,7 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
     if count==pending.len(){more=true;break}
     let never_dispatched=state.irps[index].outstanding_count==0&&state.irps[index].completion_state==0;
     let _=sync_queue_detach_locked(&mut state,cursor);
-    write_ptr(unsafe{ptr::addr_of_mut!((*cursor).bytes).cast::<u8>()},0x48,ptr::null_mut());
+    unsafe { write_ptr(ptr::addr_of_mut!((*cursor).bytes).cast::<u8>(),0x48,ptr::null_mut()); }
     pending[count]=(cursor,never_dispatched);count+=1;cursor=next;
    }
    more|=state.thread_irps.iter().any(|q|q.used&&q.thread_id==thread_id);
