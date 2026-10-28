@@ -432,7 +432,7 @@ impl BlockDevice for IoManagerBlockDevice {
 /// Optional reserved GPT partition for crash-trace persistence. The partition
 /// is discovered from GPT entry index 2; no arbitrary sectors are overwritten.
 pub fn debug_trace_store_read(offset: u64, output: &mut [u8]) -> bool {
-    trace_store_transfer(offset, output, false)
+    trace_store_transfer(offset, output)
 }
 pub fn debug_trace_store_write(offset: u64, input: &[u8]) -> bool {
     let mut copy = [0u8; 512];
@@ -455,7 +455,7 @@ pub fn debug_trace_store_write(offset: u64, input: &[u8]) -> bool {
     }
     true
 }
-fn trace_store_transfer(offset: u64, output: &mut [u8], _write: bool) -> bool {
+fn trace_store_transfer(offset: u64, output: &mut [u8]) -> bool {
     let capacity = TRACE_PARTITION_CAPACITY.load(Ordering::Acquire);
     if capacity == 0 || offset.checked_add(output.len() as u64).map_or(true, |end| end > capacity) { return false; }
     let mut done = 0usize;
@@ -465,7 +465,7 @@ fn trace_store_transfer(offset: u64, output: &mut [u8], _write: bool) -> bool {
         let within = (absolute % 512) as usize;
         let amount = (512 - within).min(output.len() - done);
         let mut sector = [0u8; 512];
-        let mut guard = STORAGE_DISK.lock();
+        let mut guard = match STORAGE_DISK.try_lock() { Some(guard) => guard, None => return false };
         let Some(disk) = guard.as_mut() else { return false; };
         if disk.read_sector(lba, &mut sector).is_err() { return false; }
         output[done..done + amount].copy_from_slice(&sector[within..within + amount]);
