@@ -184,3 +184,20 @@ unsafe fn ke_raise_irql_for_fast_mutex() -> u8 {
     // processor-local IRQL/interrupt state used by the Ke implementation.
     unsafe { kf_raise_irql(1) }
 }
+
+
+/// Initialize the public x64 FAST_MUTEX storage before first use.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn ex_initialize_fast_mutex(fast_mutex: *mut core::ffi::c_void) {
+    if fast_mutex.is_null() || (fast_mutex as usize) % core::mem::align_of::<u64>() != 0 { return; }
+    unsafe {
+        fast_mutex.cast::<core::sync::atomic::AtomicI32>().write(core::sync::atomic::AtomicI32::new(1));
+        fast_mutex.add(8).cast::<u64>().write(0);
+        fast_mutex.add(16).cast::<u32>().write(0);
+        // Embedded KEVENT occupies bytes 24..48. Zeroing is appropriate for
+        // the event storage before the first acquire; it is not used as the
+        // current contention wait backend.
+        core::ptr::write_bytes(fast_mutex.add(24), 0, 24);
+        fast_mutex.add(48).cast::<u32>().write(0);
+    }
+}
