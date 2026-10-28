@@ -152,11 +152,6 @@ pub unsafe extern "system" fn RtlDeleteCriticalSection(cs: *mut RTL_CRITICAL_SEC
     }
 }
 
-/// Acquire a Windows-layout recursive critical section.
-///
-/// The caller must supply a correctly initialized RTL_CRITICAL_SECTION whose
-/// LockCount is -1 while unowned. This routine does not initialize objects.
-#[no_mangle]
 unsafe fn abandon_critical_section_wait(cs: *mut RTL_CRITICAL_SECTION) {
     let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
     let new_count = lock.fetch_sub(1, Ordering::AcqRel) - 1;
@@ -170,6 +165,9 @@ unsafe fn abandon_critical_section_wait(cs: *mut RTL_CRITICAL_SECTION) {
     }
 }
 
+/// Acquire a Windows-layout recursive critical section. The event handle in
+/// LockSemaphore is created lazily only when a different thread contends.
+#[no_mangle]
 pub unsafe extern "system" fn RtlEnterCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> NTSTATUS {
     if cs.is_null() { return STATUS_INVALID_PARAMETER; }
     let tid = unsafe { current_thread_id() };
