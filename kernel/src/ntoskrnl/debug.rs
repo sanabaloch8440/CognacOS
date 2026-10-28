@@ -1,5 +1,5 @@
 /// NTOSKRNL Debug Subsystem: bounded structured tracing and dynamic component filters.
-//!
+/// 
 /// This is the kernel-side equivalent of a small tracefs/dynamic-debug core:
 /// events are allocation-free, best-effort, sequence-stamped, and readable after
 /// a failure. It is not a live KD transport and never dereferences event payloads.
