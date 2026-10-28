@@ -154,6 +154,9 @@ pub extern "C" fn cognacos_current_user_xstate_ptr() -> *const u8 {
 /// Select the highest-ID-independent first runnable thread and switch stacks.
 /// If the ready queue is empty, a blocked/yielding thread switches back to its saved idle context.
 fn reschedule(block:bool)->Result<(),ThreadError>{
+    // All scheduler entry points, not just the timer ISR, honor the
+    // KeSetEvent(Wait=TRUE) handoff until KeWaitXxx has established its wait.
+    if crate::ntoskrnl::ke::runtime::ke_preemption_deferred(){return Err(ThreadError::InvalidState)}
     let prior_interrupts_enabled=crate::ntoskrnl::ke::arch::interrupts_enabled();
     let cpu=cpu_index()?;
     let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
