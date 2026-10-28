@@ -102,7 +102,7 @@ pub fn poll() {
                     write(b"\r\n");
                     let mut line = [0u8; INPUT_CAPACITY];
                     unsafe {
-                        line[..len].copy_from_slice(&INPUT[..len]);
+                        core::ptr::copy_nonoverlapping(core::ptr::addr_of!(INPUT).cast::<u8>(), line.as_mut_ptr(), len);
                         INPUT_LEN = 0;
                     }
                     command(&line[..len]);
@@ -114,7 +114,7 @@ pub fn poll() {
             },
             0x20..=0x7e => unsafe {
                 if INPUT_LEN < INPUT_CAPACITY {
-                    INPUT[INPUT_LEN] = byte;
+                    core::ptr::write(core::ptr::addr_of_mut!(INPUT).cast::<u8>().add(INPUT_LEN), byte);
                     INPUT_LEN += 1;
                     write(&[byte]);
                 }
