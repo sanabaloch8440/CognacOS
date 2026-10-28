@@ -723,7 +723,7 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*mut Irp {
- if stack_size<=0||stack_size as usize>MAX_WDM_STACK_LOCATIONS||charge_quota>1{return ptr::null_mut()}
+ if stack_size<=0||charge_quota>1{return ptr::null_mut()}
  let mut state=WDM.lock();
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
  slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.suspended_completion=false;slot.free_requested=false;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.object.bytes.fill(0);
@@ -937,7 +937,7 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
   let Some(slot)=state.devices.iter().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};
   slot.object.stack_size
  };
- if stack_size==0{return ptr::null_mut()}
+ if stack_size<=0{return ptr::null_mut()}
  let method=(ioctl_code&3) as u8;
  if method==0&&(input_length.max(output_length) as usize)>MAX_IOCTL_SYSTEM_BUFFER{return ptr::null_mut()}
  if method!=3&&(input_length as usize)>MAX_IOCTL_SYSTEM_BUFFER{return ptr::null_mut()}
@@ -1220,7 +1220,7 @@ pub unsafe extern "system" fn io_detach_device(target:*mut DeviceObject) {
 pub unsafe extern "system" fn io_initialize_irp(
     irp:*mut Irp, packet_size:u16, stack_size:i8
 ) {
-    if irp.is_null() || stack_size<=0 || stack_size>127 {return}
+    if irp.is_null() || stack_size<=0 {return}
     let required=IRP_SIZE_X64.checked_add(stack_size as usize*IO_STACK_LOCATION_SIZE_X64);
     if required.is_none_or(|n|n>packet_size as usize){return}
     unsafe {
