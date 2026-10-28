@@ -444,7 +444,7 @@ pub fn debug_trace_store_write(offset: u64, input: &[u8]) -> bool {
         let lba = TRACE_PARTITION_START.load(Ordering::Acquire).saturating_add(absolute / 512);
         let within = (absolute % 512) as usize;
         let amount = (512 - within).min(input.len() - done);
-        let mut guard = STORAGE_DISK.lock();
+        let mut guard = match STORAGE_DISK.try_lock() { Some(guard) => guard, None => return false };
         let Some(disk) = guard.as_mut() else { return false; };
         if within != 0 || amount != 512 {
             if disk.read_sector(lba, &mut copy).is_err() { return false; }
