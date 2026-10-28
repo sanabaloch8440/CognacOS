@@ -146,7 +146,7 @@ unsafe fn fast_mutex_atomic_i32(object: *mut core::ffi::c_void, offset: usize)
 }
 
 #[inline]
-unsafe fn fast_mutex_event(object: *mut core::ffi::c_void) -> *mut super::DispatcherHeader {
+unsafe fn fast_mutex_event(object: *mut core::ffi::c_void) -> *mut DispatcherHeader {
     unsafe { object.cast::<u8>().add(24).cast::<super::DispatcherHeader>() }
 }
 
@@ -158,7 +158,7 @@ pub unsafe extern "win64" fn ex_initialize_fast_mutex(fast_mutex: *mut core::ffi
         fast_mutex.add(8).cast::<u64>().write(0);
         fast_mutex.add(16).cast::<u32>().write(0);
         // Synchronization event wakes one waiter per release.
-        super::ke_initialize_event(fast_mutex_event(fast_mutex), 1, 0);
+        ke_initialize_event(fast_mutex_event(fast_mutex), 1, 0);
         fast_mutex.add(48).cast::<u8>().write(0);
     }
 }
@@ -166,7 +166,7 @@ pub unsafe extern "win64" fn ex_initialize_fast_mutex(fast_mutex: *mut core::ffi
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ex_acquire_fast_mutex(fast_mutex: *mut core::ffi::c_void) {
     let Some(count) = (unsafe { fast_mutex_atomic_i32(fast_mutex, 0) }) else { return };
-    let old_irql = unsafe { super::kf_raise_irql(1) };
+    let old_irql = unsafe { kf_raise_irql(1) };
     let previous = count.fetch_sub(1, core::sync::atomic::Ordering::Acquire);
     if previous > 0 {
         unsafe {
@@ -188,7 +188,7 @@ pub unsafe extern "win64" fn ex_acquire_fast_mutex(fast_mutex: *mut core::ffi::c
     }
     loop {
         let status = unsafe {
-            super::ke_wait_for_single_object(
+            ke_wait_for_single_object(
                 fast_mutex_event(fast_mutex), 0, 0, 0, core::ptr::null()
             )
         };
@@ -216,10 +216,10 @@ pub unsafe extern "win64" fn ex_release_fast_mutex(fast_mutex: *mut core::ffi::c
     if previous < 0 {
         // KeSetEvent follows the normal dispatcher synchronization-event path,
         // waking one queued waiter and consuming the signal as it is released.
-        let _ = unsafe { super::ke_set_event(fast_mutex_event(fast_mutex), 0, 0) };
+        let _ = unsafe { ke_set_event(fast_mutex_event(fast_mutex), 0, 0) };
         let contention = unsafe { &*((fast_mutex as *mut u8).add(16).cast::<core::sync::atomic::AtomicU32>()) };
         let value = contention.load(core::sync::atomic::Ordering::Relaxed);
         if value != 0 { let _ = contention.fetch_sub(1, core::sync::atomic::Ordering::Relaxed); }
     }
-    unsafe { super::ke_lower_irql(old_irql); }
+    unsafe { ke_lower_irql(old_irql); }
 }
