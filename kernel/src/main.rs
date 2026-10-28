@@ -32,6 +32,7 @@ mod ata_disk;
 use cognacos_ext4 as extfs;
 pub(crate) use ntoskrnl::rtl_runtime::nls;
 mod ntoskrnl;
+mod debug_console;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -1496,7 +1497,13 @@ unsafe fn serial_write_decimal(mut value: usize) {
 }
 
 pub unsafe fn halt() -> ! {
-    loop { unsafe { asm!("cli; hlt", options(nomem, nostack)); } }
+    // Keep a polled COM1 debugger prompt available after boot completion and
+    // fatal diagnostics. No interrupts, allocation, or scheduler dependency.
+    unsafe { serial_write(b"\\r\\ncognacos-kd> type help for debugger commands\\r\\n"); }
+    loop {
+        crate::debug_console::poll();
+        unsafe { asm!("pause", options(nomem, nostack)); }
+    }
 }
 
 struct PanicSerialWriter;
