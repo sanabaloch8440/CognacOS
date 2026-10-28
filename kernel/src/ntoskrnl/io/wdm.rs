@@ -934,7 +934,7 @@ fn initialize_irp_slot(slot:&mut IrpSlot,stack_size:i8)->*mut Irp {
  slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());
  slot.system_buffer=ptr::null_mut();slot.system_buffer_pages=0;slot.system_buffer_len=0;
  slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;
- slot.sync_thread_id=0;slot.requestor_pid=crate::syscall::current_process_id();slot.sync_event=ptr::null_mut();slot.sync_next=ptr::null_mut();slot.sync_prev=ptr::null_mut();slot.sync_queued=false;
+ slot.sync_thread_id=0;slot.requestor_pid=crate::thread::current_process_id();slot.sync_event=ptr::null_mut();slot.sync_next=ptr::null_mut();slot.sync_prev=ptr::null_mut();slot.sync_queued=false;
  slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
@@ -974,6 +974,19 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
  initialize_irp_slot(slot,stack_size)
 }
+/// Copy the original requestor identity to a derived IRP. Internal forwarding
+/// paths must use this when an IRP is created on behalf of a request from a
+/// different thread/process (for example, a worker that builds a lower-stack IRP).
+pub(crate) unsafe fn io_inherit_requestor_identity(destination: *mut Irp, source: *const Irp) -> bool {
+ if destination.is_null() || source.is_null() { return false; }
+ let mut state=WDM.lock();
+ let source_pid=state.irps.iter().find(|slot|slot.used&&ptr::eq(&slot.object,source)).map(|slot|slot.requestor_pid);
+ let Some(source_pid)=source_pid else { return false; };
+ let Some(destination_slot)=state.irps.iter_mut().find(|slot|slot.used&&ptr::eq(&slot.object,destination)) else { return false; };
+ destination_slot.requestor_pid=source_pid;
+ true
+}
+
 #[unsafe(export_name = "IoFreeIrp")]
 pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
  if irp.is_null(){return}
