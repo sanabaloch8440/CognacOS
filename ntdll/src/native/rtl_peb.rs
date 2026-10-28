@@ -100,28 +100,6 @@ extern "system" { fn RtlGetCurrentPeb() -> PVOID; }
 /// The caller must supply a correctly initialized RTL_CRITICAL_SECTION whose
 /// LockCount is -1 while unowned. This routine does not initialize objects.
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitializeCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> NTSTATUS {
-    if cs.is_null() { return STATUS_INVALID_PARAMETER; }
-    unsafe {
-        core::ptr::addr_of_mut!((*cs).DebugInfo).write(core::ptr::null_mut());
-        core::ptr::addr_of_mut!((*cs).LockCount).write(-1);
-        core::ptr::addr_of_mut!((*cs).RecursionCount).write(0);
-        core::ptr::addr_of_mut!((*cs).OwningThread).write(core::ptr::null_mut());
-        core::ptr::addr_of_mut!((*cs).LockSemaphore).write(core::ptr::null_mut());
-        core::ptr::addr_of_mut!((*cs).SpinCount).write(0);
-    }
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn RtlInitializeCriticalSectionAndSpinCount(cs: *mut RTL_CRITICAL_SECTION, spin_count: usize) -> NTSTATUS {
-    let status = unsafe { RtlInitializeCriticalSection(cs) };
-    if status < 0 { return status; }
-    unsafe { (*cs).SpinCount = spin_count & SPIN_COUNT_MASK; }
-    STATUS_SUCCESS
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn RtlEnterCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> NTSTATUS {
     if cs.is_null() { return STATUS_INVALID_PARAMETER; }
     let tid = unsafe { current_thread_id() };
@@ -209,45 +187,6 @@ pub unsafe extern "system" fn RtlLeaveCriticalSection(cs: *mut RTL_CRITICAL_SECT
         }
     }
     STATUS_SUCCESS
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn RtlTryEnterCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> u8 {
-    if cs.is_null() { return 0; }
-    let tid = unsafe { current_thread_id() };
-    if tid.is_null() { return 0; }
-    let owner = unsafe { &*(core::ptr::addr_of!((*cs).OwningThread) as *const AtomicPtr<c_void>) };
-    let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
-    let recursion = unsafe { &*(core::ptr::addr_of!((*cs).RecursionCount) as *const AtomicI32) };
-    if owner.load(Ordering::Acquire) == tid {
-        lock.fetch_add(1, Ordering::Relaxed);
-        recursion.fetch_add(1, Ordering::Relaxed);
-        return 1;
-    }
-    if lock.compare_exchange(-1, 0, Ordering::Acquire, Ordering::Relaxed).is_err() { return 0; }
-    while owner.compare_exchange(core::ptr::null_mut(), tid, Ordering::AcqRel, Ordering::Acquire).is_err() {
-        #[cfg(target_arch = "x86_64")]
-        unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)) };
-        let _ = unsafe { NtYieldExecution() };
-    }
-    recursion.store(1, Ordering::Relaxed);
-    1
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn RtlDeleteCriticalSection(cs: *mut RTL_CRITICAL_SECTION) {
-    if cs.is_null() { return; }
-    let owner = unsafe { &*(core::ptr::addr_of!((*cs).OwningThread) as *const AtomicPtr<c_void>) };
-    let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
-    if !owner.load(Ordering::Acquire).is_null() || lock.load(Ordering::Acquire) != -1 { return; }
-    let semaphore = unsafe { &*(core::ptr::addr_of!((*cs).LockSemaphore) as *const AtomicPtr<c_void>) };
-    let event = semaphore.swap(core::ptr::null_mut(), Ordering::AcqRel);
-    if !event.is_null() { let _ = unsafe { NtClose(event) }; }
-    unsafe {
-        core::ptr::addr_of_mut!((*cs).DebugInfo).write(core::ptr::null_mut());
-        core::ptr::addr_of_mut!((*cs).RecursionCount).write(0);
-        core::ptr::addr_of_mut!((*cs).SpinCount).write(0);
-    }
 }
 
 /// Acquire PEB.FastPebLock when the process runtime has initialized it.
