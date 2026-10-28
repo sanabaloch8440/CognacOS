@@ -383,69 +383,30 @@ pub unsafe extern "system" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rel
   if children[..i].contains(&child){return STATUS_INVALID_PARAMETER}
   children[i]=child;
  }
+ let mut removed=[ptr::null_mut::<DeviceObject>();MAX_PNP_DEVICES];
+ let mut removed_count=0usize;
  let mut manager=PNP_MANAGER.lock();
- // Ensure capacity before mutating so enumeration is atomic on resource exhaustion.
  let free=manager.relations.iter().filter(|r|!r.used||r.bus==bus).count();
  if free<count{return STATUS_INSUFFICIENT_RESOURCES}
+ for relation in manager.relations.iter().filter(|r|r.used&&r.bus==bus&&!children[..count].contains(&r.child)) {
+  if removed_count<removed.len(){removed[removed_count]=relation.child;removed_count+=1;}
+ }
  for relation in manager.relations.iter_mut().filter(|r|r.used&&r.bus==bus&&!children[..count].contains(&r.child)){*relation=PnpRelation::EMPTY;}
  for child in children[..count].iter().copied(){
   if !manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==child){
-   if let Some(slot)=manager.relations.iter_mut().find(|r|!r.used||r.bus==bus&& !children[..count].contains(&r.child)){
+   if let Some(slot)=manager.relations.iter_mut().find(|r|!r.used||r.bus==bus&&!children[..count].contains(&r.child)){
     *slot=PnpRelation{used:true,bus,child};
    }
   }
  }
  manager.enumerations=manager.enumerations.wrapping_add(1);
+ drop(manager);
+ // Children removed from BusRelations must go through real PnP teardown rather
+ // than simply disappearing from the enumeration table.
+ for child in removed[..removed_count].iter().copied(){
+  let _=unsafe{IoPnPRemoveDevice(child)};
+ }
  STATUS_SUCCESS
-}
-
-
-/// Dispatch one real IRP_MJ_PNP lifecycle request under PnP-manager ownership.
-/// START_DEVICE requires kernel-captured allocated and translated resource lists.
-/// Pending IRPs remain owned until terminal IoCompleteRequest.
-#[unsafe(no_mangle)]
-pub unsafe extern "system" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void)->i32 {
- if device.is_null()||!matches!(minor,0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x17){return STATUS_INVALID_PARAMETER}
- let referenced=unsafe{io_reference_device_object(device)};
- if referenced.is_null(){return STATUS_DELETE_PENDING}
- let stack_size=unsafe{(*device).stack_size.max(1) as i16};
- let irp=unsafe{io_allocate_irp(stack_size,0)};
- if irp.is_null(){unsafe{io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
- let stack=unsafe{io_get_next_irp_stack_location(irp)};
- if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
- unsafe { (*stack).major_function=0x1b;(*stack).minor_function=minor;(*stack).parameters[0]=allocated as u64;(*stack).parameters[1]=translated as u64; }
- {
-  let mut manager=PNP_MANAGER.lock();
-  let Some(slot)=manager.managed_irps.iter_mut().find(|s|!s.used) else {
-   drop(manager);unsafe{io_free_irp(irp);io_dereference_device_object(device)};
-   return STATUS_INSUFFICIENT_RESOURCES
-  };
-  *slot=ManagedPnpIrp{used:true,irp,device,returned:false,completed:false};
- }
- let status=unsafe{io_call_driver(device,irp)};
- let terminal={let state=WDM.lock();state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)).is_some_and(|s|s.completion_state==2)};
- if status!=STATUS_PENDING&&!terminal {
-  unsafe{(*irp).bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&status.to_le_bytes());io_complete_request(irp,0);}
- }
- let release={
-  let mut manager=PNP_MANAGER.lock();
-  if let Some(slot)=manager.managed_irps.iter_mut().find(|s|s.used&&s.irp==irp){
-   slot.returned=true;
-   if slot.completed{*slot=ManagedPnpIrp::EMPTY;true}else{false}
-  }else{false}
- };
- if release {unsafe{io_free_irp(irp);io_dereference_device_object(device)}}
- status
-}
-fn io_pnp_manager_irp_completed(irp:*mut Irp){
- if irp.is_null(){return}
- let released={
-  let mut manager=PNP_MANAGER.lock();
-  let Some(slot)=manager.managed_irps.iter_mut().find(|s|s.used&&s.irp==irp) else{return};
-  slot.completed=true;
-  if slot.returned {let result=*slot;*slot=ManagedPnpIrp::EMPTY;Some(result)}else{None}
- };
- if let Some(request)=released {unsafe{io_free_irp(request.irp);io_dereference_device_object(request.device)}}
 }
 
 /// Start a PnP device by sending its real START_DEVICE IRP with the
