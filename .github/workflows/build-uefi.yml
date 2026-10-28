@@ -791,7 +791,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/beep-driver-assessment
-          report=build/beep-driver-assessment/output.txt
+          report=build/beep-driver-assessment/audio.txt
           {
             echo
             echo "=== QEMU PC speaker audio capture ==="
@@ -910,6 +910,7 @@ jobs:
             build/serial.log
             build/serial-smp-*.log
             build/beep-driver-assessment/output.txt
+            build/beep-driver-assessment/audio.txt
             build/beep.wav
             build/gdb-state.txt
             build/gdb-diagnose.gdb
