@@ -35,7 +35,7 @@ fn forget_loaded_driver(driver:*mut DriverObject,base:u64) {
 }
 /// Release the image associated with a driver after IoUnloadDriver has completed
 /// device rundown and invoked DriverUnload. Unknown/non-loader-owned drivers are ignored.
-pub unsafe fn unload_driver_image(driver:*mut DriverObject)->bool {
+pub unsafe fn unload_driver_image(driver:*mut c_void)->bool {
  if driver.is_null(){return false;}
  let record={let mut records=LOADED_DRIVER_IMAGES.lock();let Some(index)=records.iter().position(|r|r.used&&r.driver==driver as usize) else{return false;};let record=records[index];records[index]=DriverImageRecord::EMPTY;record};
  unsafe{unload_image(record.base,record.size)}.is_ok()
