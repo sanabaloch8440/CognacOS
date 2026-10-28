@@ -1603,7 +1603,7 @@ pub unsafe extern "system" fn io_delete_symbolic_link(link_name:*mut UnicodeStri
 /// all operations are routed through its callbacks as required by WDM.
 #[repr(C)]
 pub struct IoCsq {
- pub type_:u32,pub size:u32,
+ pub type_:u32,pub padding:u32,
  pub insert_irp:*mut c_void,pub remove_irp:*mut c_void,pub peek_next_irp:*mut c_void,
  pub acquire_lock:*mut c_void,pub release_lock:*mut c_void,pub complete_canceled_irp:*mut c_void,
  pub reserve_pointer:*mut c_void,
@@ -1618,7 +1618,8 @@ type CsqAcquire=unsafe extern "system" fn(*mut IoCsq,*mut u8);
 type CsqRelease=unsafe extern "system" fn(*mut IoCsq,u8);
 type CsqCompleteCanceled=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
 const CSQ_IRP_CONTEXT_OFFSET:usize=0x90;
-const CSQ_EXTENDED_INSERT_MARKER:usize=1;
+const IO_TYPE_CSQ:u32=2;
+const IO_TYPE_CSQ_EX:u32=3;
 const CSQ_CONTEXT_TYPE:u32=1;
 
 unsafe fn csq_callback<T:Copy>(csq:*mut IoCsq,offset:usize)->T {
@@ -1653,15 +1654,15 @@ unsafe extern "system" fn csq_cancel_routine(_device:*mut DeviceObject,irp:*mut 
 unsafe fn csq_initialize_common(csq:*mut IoCsq,insert:*mut c_void,extended:bool,remove:*mut c_void,peek:*mut c_void,acquire:*mut c_void,release:*mut c_void,complete:*mut c_void)->i32 {
  if csq.is_null()||insert.is_null()||remove.is_null()||peek.is_null()||acquire.is_null()||release.is_null()||complete.is_null(){return STATUS_INVALID_PARAMETER}
  unsafe{
-  ptr::write_unaligned(ptr::addr_of_mut!((*csq).type_),0);
-  ptr::write_unaligned(ptr::addr_of_mut!((*csq).size),core::mem::size_of::<IoCsq>() as u32);
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).type_),if extended {IO_TYPE_CSQ_EX}else{IO_TYPE_CSQ});
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).padding),0);
   ptr::write_unaligned(ptr::addr_of_mut!((*csq).insert_irp),insert);
   ptr::write_unaligned(ptr::addr_of_mut!((*csq).remove_irp),remove);
   ptr::write_unaligned(ptr::addr_of_mut!((*csq).peek_next_irp),peek);
   ptr::write_unaligned(ptr::addr_of_mut!((*csq).acquire_lock),acquire);
   ptr::write_unaligned(ptr::addr_of_mut!((*csq).release_lock),release);
   ptr::write_unaligned(ptr::addr_of_mut!((*csq).complete_canceled_irp),complete);
-  ptr::write_unaligned(ptr::addr_of_mut!((*csq).reserve_pointer),if extended {CSQ_EXTENDED_INSERT_MARKER as *mut c_void}else{ptr::null_mut()});
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).reserve_pointer),ptr::null_mut());
  }
  STATUS_SUCCESS
 }
@@ -1677,7 +1678,7 @@ pub unsafe extern "system" fn io_csq_initialize_ex(csq:*mut IoCsq,insert:Option<
 }
 unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext,insert_context:*mut c_void,extended_api:bool)->i32 {
  if csq.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
- let extended=unsafe{read_ptr(csq.cast::<u8>(),56) as usize}==CSQ_EXTENDED_INSERT_MARKER;
+ let extended=unsafe{ptr::read_unaligned(csq.cast::<u8>().cast::<u32>())}==IO_TYPE_CSQ_EX;
  let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
  let cancelled=unsafe{(*irp).bytes[0x44]!=0};
