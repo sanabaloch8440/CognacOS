@@ -12,6 +12,32 @@ static IRQL_DEPTH: [core::sync::atomic::AtomicU8; 64] =
     [const { core::sync::atomic::AtomicU8::new(0) }; 64];
 static IRQL_FLAGS: [core::sync::atomic::AtomicU64; 64 * IRQL_STACK_DEPTH] =
     [const { core::sync::atomic::AtomicU64::new(0) }; 64 * IRQL_STACK_DEPTH];
+/// KeSetEvent(Wait=TRUE) defers local preemption until the immediately
+/// following KeWaitXxx call consumes this one-shot handoff.
+static KESET_WAIT_HANDOFF:[core::sync::atomic::AtomicBool;64]=
+    [const{core::sync::atomic::AtomicBool::new(false)};64];
+static KESET_WAIT_PREVIOUS_IRQL:[core::sync::atomic::AtomicU8;64]=
+    [const{core::sync::atomic::AtomicU8::new(PASSIVE_LEVEL)};64];
+
+pub(crate) fn ke_preemption_deferred()->bool {
+    KESET_WAIT_HANDOFF[cpu_slot()].load(Ordering::Acquire)
+}
+fn begin_ke_set_event_wait_handoff() {
+    let cpu=cpu_slot();
+    if crate::thread::current_thread_id().is_none()
+        || CURRENT_IRQL[cpu].load(Ordering::Acquire)>1 { return; }
+    KESET_WAIT_PREVIOUS_IRQL[cpu].store(CURRENT_IRQL[cpu].load(Ordering::Acquire),Ordering::Relaxed);
+    KESET_WAIT_HANDOFF[cpu].store(true,Ordering::Release);
+    CURRENT_IRQL[cpu].store(DISPATCH_LEVEL,Ordering::Release);
+}
+pub(crate) fn consume_ke_set_event_wait_handoff() {
+    let cpu=cpu_slot();
+    if KESET_WAIT_HANDOFF[cpu].swap(false,Ordering::AcqRel) {
+        let previous=KESET_WAIT_PREVIOUS_IRQL[cpu].swap(PASSIVE_LEVEL,Ordering::AcqRel);
+        CURRENT_IRQL[cpu].store(previous,Ordering::Release);
+    }
+}
+
 
 #[inline]
 fn cpu_slot() -> usize {
