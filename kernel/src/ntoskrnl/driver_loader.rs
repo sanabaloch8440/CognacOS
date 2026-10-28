@@ -170,8 +170,38 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
   (*driver_object).driver_init=Some(core::mem::transmute::<u64,unsafe extern "win64" fn(*mut DriverObject,*mut c_void)->i32>(base.checked_add(entry_rva as u64).ok_or(DriverLoadError::InvalidHeader)?));
  }
  let entry=base.checked_add(entry_rva as u64).ok_or(DriverLoadError::InvalidHeader)?;
+ // Publish an entry event before transferring control so a fault inside the
+ // driver is distinguishable from a loader/import failure.
+ crate::ntoskrnl::debug::record_unfiltered(
+  crate::ntoskrnl::debug::COMPONENT_DRIVER,
+  crate::ntoskrnl::debug::LEVEL_INFO,
+  crate::ntoskrnl::debug::EVENT_DRIVER_ENTRY,
+  base, image_size as u64, entry,
+ );
+ unsafe {
+  crate::serial_write(b"DRIVER DEBUG: DriverEntry enter image=");
+  crate::serial_write_hex(base);
+  crate::serial_write(b" size=");
+  crate::serial_write_hex(image_size as u64);
+  crate::serial_write(b" entry=");
+  crate::serial_write_hex(entry);
+  crate::serial_write(b"\\r\\n");
+ }
  let routine:unsafe extern "win64" fn(*mut DriverObject,*mut c_void)->i32=unsafe{core::mem::transmute(entry as usize)};
  let status=unsafe{routine(driver_object,context)};
+ crate::ntoskrnl::debug::record_unfiltered(
+  crate::ntoskrnl::debug::COMPONENT_DRIVER,
+  if status < 0 { crate::ntoskrnl::debug::LEVEL_ERROR } else { crate::ntoskrnl::debug::LEVEL_INFO },
+  crate::ntoskrnl::debug::EVENT_DRIVER_ENTRY_RETURN,
+  base, status as u32 as u64, entry,
+ );
+ unsafe {
+  crate::serial_write(b"DRIVER DEBUG: DriverEntry return status=");
+  crate::serial_write_hex(status as u32 as u64);
+  crate::serial_write(b" image=");
+  crate::serial_write_hex(base);
+  crate::serial_write(b"\\r\\n");
+ }
  if status<0 {
   crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);
   return Err(DriverLoadError::EntryFailed(status));
