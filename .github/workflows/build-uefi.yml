@@ -778,6 +778,42 @@ jobs:
             grep -F "SMP scheduler, cross-CPU wakeup, contended-lock, IRP/object teardown stress passed." "$log"
             grep -F "Kernel VM extent stress and SMP TLB shootdown self-test passed." "$log"
           done
+      - name: Assess Microsoft beep.sys PE compatibility
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p build/beep-driver-assessment
+          log=build/beep-driver-assessment/output.txt
+          {
+            echo "CognacOS Microsoft beep.sys compatibility assessment"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Mode: static PE/import inspection; this does not execute or load beep.sys in the guest."
+            echo
+            if [ ! -f test/beep.sys ]; then
+              echo "FAIL: test/beep.sys is missing."
+              exit 1
+            fi
+            echo "Input: test/beep.sys"
+            sha256sum test/beep.sys
+            echo
+            llvm-readobj --file-headers --coff-imports test/beep.sys
+          } > "$log" 2>&1
+          status=$?
+          cat "$log"
+          if [ "$status" -ne 0 ]; then
+            echo "beep.sys static inspection failed; see output.txt." >&2
+            exit "$status"
+          fi
+          grep -Eq 'Machine: IMAGE_FILE_MACHINE_AMD64|Machine: AMD64' "$log" || {
+            echo "FAIL: beep.sys is not identified as an AMD64 PE image." | tee -a "$log"
+            exit 1
+          }
+          grep -Eq 'Magic: 0x20B|PE32\+' "$log" || {
+            echo "FAIL: beep.sys is not identified as PE32+." | tee -a "$log"
+            exit 1
+          }
+          echo "PASS: AMD64 PE32+ headers and import table parsed successfully." | tee -a "$log"
+          echo "LIMITATION: static compatibility only; runtime DriverEntry/device behavior is not tested by this step." | tee -a "$log"
       - name: Upload Rust artifacts and boot log
         if: always()
         uses: actions/upload-artifact@v4
