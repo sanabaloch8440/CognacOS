@@ -442,7 +442,11 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
  let status=unsafe{io_call_driver(device,irp)};
  let terminal={let state=WDM.lock();state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)).is_some_and(|s|s.completion_state==2)};
  if status!=STATUS_PENDING&&!terminal {
-  unsafe{(*irp).bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&status.to_le_bytes());io_complete_request(irp,0);}
+  unsafe{
+   let status_bytes=status.to_le_bytes();
+   ptr::copy_nonoverlapping(status_bytes.as_ptr(),(*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET),status_bytes.len());
+   io_complete_request(irp,0);
+  }
  }
  let completed={
   let mut manager=PNP_MANAGER.lock();
