@@ -401,6 +401,9 @@ pub fn set_preemption_enabled(enabled:bool){
     PREEMPTION_ENABLED.store(enabled,core::sync::atomic::Ordering::Release);
 }
 pub fn preempt_from_timer_interrupt(){
+    // KeSetEvent(Wait=TRUE) must be immediately followed by KeWaitXxx without
+    // an intervening local context switch. The wait entry consumes the token.
+    if crate::ntoskrnl::ke::runtime::ke_preemption_deferred(){return}
     let Some(id)=current_thread_id() else{return};
     let pid=current_process_id();
     if pid!=0 && crate::process::query(pid).is_some_and(|p|p.state==crate::process::ProcessState::Exited) {
