@@ -133,6 +133,18 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::io_cancel_irp as usize)
   } else if requested.eq_ignore_ascii_case(b"IoSetCancelRoutine") {
    Some(crate::io::io_set_cancel_routine as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoCsqInitialize") {
+   Some(crate::io::io_csq_initialize as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoCsqInitializeEx") {
+   Some(crate::io::io_csq_initialize_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoCsqInsertIrp") {
+   Some(crate::io::io_csq_insert_irp as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoCsqInsertIrpEx") {
+   Some(crate::io::io_csq_insert_irp_ex as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoCsqRemoveIrp") {
+   Some(crate::io::io_csq_remove_irp as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoCsqRemoveNextIrp") {
+   Some(crate::io::io_csq_remove_next_irp as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCreateSymbolicLink") {
    Some(crate::io::io_create_symbolic_link as usize)
   } else if requested.eq_ignore_ascii_case(b"IoDeleteSymbolicLink") {
