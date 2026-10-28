@@ -116,6 +116,7 @@ impl Index<usize> for IrpTable{type Output=IrpSlot;fn index(&self,index:usize)->
 impl IndexMut<usize> for IrpTable{fn index_mut(&mut self,index:usize)->&mut Self::Output{assert!(index<self.len);let mut p=self.head;for _ in 0..index{p=unsafe{(*p).next};}unsafe{&mut *p}}}
 #[derive(Clone,Copy)]
 struct ThreadIrpQueue { used:bool,thread_id:u64,head:*mut Irp,tail:*mut Irp }
+unsafe impl Send for ThreadIrpQueue {}
 impl ThreadIrpQueue { const EMPTY:Self=Self{used:false,thread_id:0,head:ptr::null_mut(),tail:ptr::null_mut()}; }
 struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: IrpTable, thread_irps:[ThreadIrpQueue;MAX_SYNC_IRP_THREADS] }
 impl WdmState {
