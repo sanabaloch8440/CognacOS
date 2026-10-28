@@ -1148,8 +1148,9 @@ mod tests {
 
 // ---- Driver image section residency and paging ------------------------------
 // The PE driver loader registers exact page-aligned section ranges. Non-pageable
-// sections are pinned for the image lifetime; PAGE/PAGEDATA sections are pinned
-// only while MmLockPagableDataSection references their section handle.
+// sections are pinned for the image lifetime; pageable sections are pinned only
+// while MmLockPagableDataSection references their section handle. The exported
+// lock routine still returns handles for non-pageable sections.
 const MAX_PAGEABLE_IMAGE_LOCKS: usize = 256;
 #[derive(Clone, Copy)]
 struct PageableImageLock {
@@ -1256,19 +1257,26 @@ pub fn unregister_driver_image_sections(image_base: u64) {
 }
 
 /// PVOID MmLockPagableDataSection(PVOID AddressWithinSection).
-/// Only a pointer inside an exact, loader-registered pageable PE section is
-/// accepted. The first reference pins every PFN; nested locks share the pin.
+/// Return a stable, reference-counted section handle for any address in a
+/// loader-registered PE section. Non-pageable sections are already pinned for
+/// the image lifetime; pageable sections acquire one PFN pin set on first lock.
 #[unsafe(export_name = "MmLockPagableDataSection")]
 pub unsafe extern "win64" fn mm_lock_pagable_data_section(address: *const c_void) -> *mut c_void {
     let va = address as u64;
     let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
-    let Some(index) = locks.iter().position(|entry| entry.used && entry.pageable
+    let Some(index) = locks.iter().position(|entry| entry.used
         && va >= entry.section_base && va < entry.section_end) else { return core::ptr::null_mut(); };
     let base = locks[index].section_base;
     let end = locks[index].section_end;
-    if locks[index].references == 0 && !pin_kernel_image_range(base, end) { return core::ptr::null_mut(); }
+    let pageable = locks[index].pageable;
+    if pageable && locks[index].references == 0 && !pin_kernel_image_range(base, end) {
+        return core::ptr::null_mut();
+    }
     let Some(next) = locks[index].references.checked_add(1) else {
-        if locks[index].references == 0 { drop(locks); unpin_kernel_image_range(base, end); }
+        if pageable && locks[index].references == 0 {
+            drop(locks);
+            unpin_kernel_image_range(base, end);
+        }
         return core::ptr::null_mut();
     };
     locks[index].references = next;
@@ -1283,9 +1291,13 @@ pub unsafe extern "win64" fn mm_unlock_pagable_image_section(handle: *mut c_void
         let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
         let Some(index) = locks.iter().position(|entry| core::ptr::eq((entry as *const PageableImageLock).cast::<c_void>(), handle)) else { return; };
         let entry = &mut locks[index];
-        if !entry.used || !entry.pageable || entry.references == 0 { return; }
+        if !entry.used || entry.references == 0 { return; }
         entry.references -= 1;
-        if entry.references == 0 { Some((entry.section_base, entry.section_end)) } else { None }
+        if entry.pageable && entry.references == 0 {
+            Some((entry.section_base, entry.section_end))
+        } else {
+            None
+        }
     };
     if let Some((base, end)) = release { unpin_kernel_image_range(base, end); }
 }
