@@ -37,6 +37,9 @@ static SWAP_SLOTS: SwapSlots = SwapSlots(core::cell::UnsafeCell::new([u16::MAX; 
 struct ReclaimSlots(core::cell::UnsafeCell<[u32; MAX_EXTENT_PAGES]>); unsafe impl Sync for ReclaimSlots {}
 static RECLAIM_SLOTS: ReclaimSlots = ReclaimSlots(core::cell::UnsafeCell::new([u32::MAX; MAX_EXTENT_PAGES]));
 static TABLE: Table = Table(core::cell::UnsafeCell::new([Extent::EMPTY; MAX]));
+// Per-page protection survives pagefile eviction and is restored on page-in.
+struct PageFlags(core::cell::UnsafeCell<[u8; PAGES]>); unsafe impl Sync for PageFlags {}
+static PAGE_FLAGS: PageFlags = PageFlags(core::cell::UnsafeCell::new([0; PAGES]));
 static ROOT: AtomicU64 = AtomicU64::new(0);
 // Serializes demand-created direct-map leafs independently of the pageable arena lock.
 static DIRECT_MAP_LOCK: AtomicBool = AtomicBool::new(false);
@@ -322,6 +325,7 @@ pub fn protect_pages(address:u64,pages:usize,writable:bool,executable:bool)->Res
   let va=address+n as u64*PAGE;let leaf=unsafe{leaf_ptr(root,va)}.ok_or(Error::NotMapped)?;
   let mut entry=unsafe{leaf.read_volatile()};if entry&P==0{return Err(Error::NotMapped)}
   entry&=!(W|NX);if writable{entry|=W;}if !executable{entry|=NX;}
+  unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = (writable as u8) | ((!executable as u8) << 1); }
   unsafe{leaf.write_volatile(entry);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
  }
  synchronize_kernel_tlb();Ok(())
@@ -433,7 +437,7 @@ pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
  let bits=unsafe{&mut *BITS.0.get()};let mut start=0usize;let mut found=None;
  while start+pages<=PAGES { let mut n=0;while n<pages&&bits[(start+n)/64]&(1u64<<((start+n)%64))==0{n+=1;}if n==pages{found=Some(start);break;}start+=n+1; }
  let start=found.ok_or(Error::NoVirtualSpace)?;
- for n in 0..pages { bits[(start+n)/64]|=1u64<<((start+n)%64); }
+ for n in 0..pages { bits[(start+n)/64]|=1u64<<((start+n)%64); unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = 1; } }
  table[ti]=Extent{start,pages,pageable:true,owns_frames:true,live:true};
  Ok((BASE+start as u64*PAGE) as *mut u8)
 }
@@ -484,12 +488,16 @@ pub fn handle_page_fault(address:u64,error_code:u64)->bool {
   let slot=unsafe{(&*SWAP_SLOTS.0.get())[page_index]};
   let Some(destination)=crate::memory::physical_access_pointer(pa) else {let _=unsafe{crate::memory::free_page(pa)};return false};
   if slot==u16::MAX||unsafe{crate::pagefile::read_page(slot as u32,destination)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
-  if unsafe{map(root,page_va,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
+  let desired=unsafe{(&*PAGE_FLAGS.0.get())[page_index]};
+  let flags=(if desired&1!=0{W}else{0})|(if desired&2!=0{NX}else{0});
+  if unsafe{map_with_flags(root,page_va,pa,flags)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
   mapped[word]|=mask;swapped[word]&=!mask;unsafe{(&mut *SWAP_SLOTS.0.get())[page_index]=u16::MAX;}
   synchronize_kernel_tlb();let _=crate::pagefile::free_slot(slot as u32);true
  }else{
   // allocate_data_page already zeroed the frame through its physical access alias.
-  if unsafe{map(root,page_va,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
+  let desired=unsafe{(&*PAGE_FLAGS.0.get())[page_index]};
+  let flags=(if desired&1!=0{W}else{0})|(if desired&2!=0{NX}else{0});
+  if unsafe{map_with_flags(root,page_va,pa,flags)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};return false}
   mapped[word]|=mask;synchronize_kernel_tlb();true
  }
 }
