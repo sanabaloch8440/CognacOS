@@ -724,8 +724,8 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
  slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
- let allocation_size=IRP_SIZE_X64+stack_size as usize*IO_STACK_LOCATION_SIZE_X64;
- slot.object.bytes[2..4].copy_from_slice(&(allocation_size as u16).to_le_bytes());
+ // IRP.Size is sizeof(IRP), not the total IRP-plus-stack allocation size.
+ slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
  slot.object.bytes[0x42]=stack_size as u8;slot.object.bytes[0x43]=(stack_size+1) as u8;
  slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
  let object=&mut slot.object as *mut Irp;
@@ -1177,7 +1177,7 @@ pub unsafe extern "system" fn io_initialize_irp(
     unsafe {
         ptr::write_bytes(irp.cast::<u8>(),0,packet_size as usize);
         ptr::write_unaligned((*irp).bytes.as_mut_ptr().cast::<i16>(),6);
-        ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(2).cast::<u16>(),packet_size);
+        ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(2).cast::<u16>(),IRP_SIZE_X64 as u16);
         (*irp).bytes[0x42]=stack_size;
         (*irp).bytes[0x43]=stack_size.saturating_add(1);
         let stack_base=irp.cast::<u8>().add(IRP_SIZE_X64);
@@ -1765,6 +1765,7 @@ mod wdm_tests {
   assert_eq!(unsafe{(*irp).bytes[0x42]},0);
   unsafe{io_initialize_irp(irp, storage.len() as u16, 2);}
   assert_eq!(unsafe{(*irp).bytes[0x42]},2);
+  assert_eq!(unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(2).cast::<u16>())},IRP_SIZE_X64 as u16);
   assert_eq!(unsafe{io_get_current_irp_stack_location(irp)} as usize,storage.as_ptr() as usize+storage.len());
  }
 
