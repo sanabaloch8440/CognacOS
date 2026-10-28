@@ -944,6 +944,11 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
  input_length:u32, output_buffer:*mut c_void, output_length:u32,
  internal_device_control:u8, event:*mut c_void, io_status:*mut IoStatusBlock
 )->*mut Irp {
+ let creator_thread=crate::thread::current_thread_id().unwrap_or(0);
+ // The WDK contract requires a real creating-thread context. Host-side unit
+ // tests exercise the packet layout without booting the scheduler.
+ #[cfg(not(test))]
+ if creator_thread==0 {return ptr::null_mut()}
  if device.is_null()||io_status.is_null()||internal_device_control>1
   ||(input_length!=0&&input_buffer.is_null())||(output_length!=0&&output_buffer.is_null()) {
   return ptr::null_mut()
@@ -980,7 +985,7 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
     slot.object.bytes[0x10..0x14].copy_from_slice(&(0x04u32|0x10u32|0x20u32).to_le_bytes());
    }
    slot.built_sync_ioctl=true;
-   slot.sync_thread_id=crate::thread::current_thread_id().unwrap_or(0);
+   slot.sync_thread_id=creator_thread;
    slot.sync_event=event;
   } else {
    // METHOD_NEITHER's Type3InputBuffer and Irp.UserBuffer are kernel pointers
