@@ -179,14 +179,18 @@ fn release_system_power_irp(irp:*mut WdmIrp) {
 }
 pub(crate) fn po_finish_dispatch_return(irp:*mut WdmIrp,device:*mut DeviceObject,status:i32){
  if status==STATUS_PENDING{return}
- finish_matching(irp,Some(device),status);
+ // Do not publish PnP state on dispatch return. The PnP reservation and its
+ // device reference survive until IoCompleteRequest reaches terminal unwind.
+ finish_matching(irp,Some(device),status,false);
 }
-fn finish_matching(irp:*mut WdmIrp,device:Option<*mut DeviceObject>,status:i32){
+fn finish_matching(irp:*mut WdmIrp,device:Option<*mut DeviceObject>,status:i32,include_pnp:bool){
  let mut ready=[Transition::EMPTY;MAX_POWER_TRANSITIONS];let mut n=0usize;
  {
   let mut s=TRANSITIONS.lock();
   for slot in s.slots.iter_mut(){
-   if slot.used&&slot.irp==irp&&device.is_none_or(|d|slot.device==d){ready[n]=*slot;n+=1;*slot=Transition::EMPTY;}
+   if slot.used&&slot.irp==irp&&device.is_none_or(|d|slot.device==d)&&(include_pnp||slot.kind!=2){
+    ready[n]=*slot;n+=1;*slot=Transition::EMPTY;
+   }
   }
  }
  for t in ready.iter().take(n){
@@ -199,7 +203,7 @@ fn finish_matching(irp:*mut WdmIrp,device:Option<*mut DeviceObject>,status:i32){
   }
  }
 }
-pub(crate) fn po_complete_irp(irp:*mut WdmIrp,status:i32){finish_matching(irp,None,status);finish_power_request(irp,status);}
+pub(crate) fn po_complete_irp(irp:*mut WdmIrp,status:i32){finish_matching(irp,None,status,true);finish_power_request(irp,status);}
 
 pub type PowerRequestComplete=unsafe extern "system" fn(*mut DeviceObject,u8,PowerState,*mut core::ffi::c_void,*mut WdmIrp);
 const MAX_POWER_REQUESTS:usize=32;

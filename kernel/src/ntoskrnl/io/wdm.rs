@@ -166,22 +166,43 @@ pub(crate) const PNP_STATE_NOT_STARTED:u8=0;
 pub(crate) const PNP_STATE_STARTED:u8=1;
 pub(crate) const PNP_STATE_STOPPED:u8=2;
 pub(crate) const PNP_STATE_REMOVED:u8=3;
+/// Only lifecycle-changing minors reserve a transition. Other PnP queries
+/// are dispatched without mutating the device's lifecycle state.
+fn pnp_minor_changes_lifecycle(minor:u8)->bool { matches!(minor,0x00..=0x06|0x17) }
 pub(crate) unsafe fn io_begin_pnp_transition(device:*mut DeviceObject,minor:u8)->i32 {
  if device.is_null(){return STATUS_INVALID_PARAMETER}
+ if !pnp_minor_changes_lifecycle(minor){return STATUS_SUCCESS}
  let mut state=WDM.lock();
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
  if s.deleting||s.pnp_state==PNP_STATE_REMOVED{return STATUS_DELETE_PENDING}
  if s.pnp_transition{return STATUS_DEVICE_BUSY}
- let valid=match minor {0x00=>s.pnp_state==PNP_STATE_NOT_STARTED||s.pnp_state==PNP_STATE_STOPPED,0x01|0x05=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0,0x02|0x17=>true,0x03=>s.pnp_pending==0x01,0x04=>s.pnp_state==PNP_STATE_STARTED,0x06=>s.pnp_pending==0x05,_=>false};
+ let valid=match minor {
+  0x00=>s.pnp_state==PNP_STATE_NOT_STARTED||s.pnp_state==PNP_STATE_STOPPED,
+  0x01|0x05=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0,
+  0x02|0x17=>s.pnp_state!=PNP_STATE_REMOVED,
+  0x03=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0x01,
+  0x04=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0,
+  0x06=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0x05,
+  _=>true
+ };
  if !valid{return STATUS_INVALID_DEVICE_REQUEST}
  s.pnp_transition=true;s.pnp_transition_minor=minor;STATUS_SUCCESS
 }
 pub(crate) unsafe fn io_complete_pnp_transition(device:*mut DeviceObject,minor:u8,status:i32)->i32 {
  if device.is_null(){return STATUS_INVALID_PARAMETER}
+ if !pnp_minor_changes_lifecycle(minor){return STATUS_SUCCESS}
  let mut state=WDM.lock();
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
  if !s.pnp_transition||s.pnp_transition_minor!=minor{return STATUS_INVALID_DEVICE_REQUEST}
- if status==STATUS_SUCCESS {match minor {0x00=>{s.pnp_state=PNP_STATE_STARTED;s.pnp_pending=0;},0x01|0x05=>s.pnp_pending=minor,0x02|0x17=>{s.pnp_state=PNP_STATE_REMOVED;s.pnp_pending=0;},0x03|0x06=>s.pnp_pending=0,0x04=>{s.pnp_state=PNP_STATE_STOPPED;s.pnp_pending=0;},_=>{}}}
+ // Only a terminal successful IRP completion may publish the new state.
+ if status==STATUS_SUCCESS {match minor {
+  0x00=>{s.pnp_state=PNP_STATE_STARTED;s.pnp_pending=0;},
+  0x01|0x05=>s.pnp_pending=minor,
+  0x02|0x17=>{s.pnp_state=PNP_STATE_REMOVED;s.pnp_pending=0;},
+  0x03|0x06=>s.pnp_pending=0,
+  0x04=>{s.pnp_state=PNP_STATE_STOPPED;s.pnp_pending=0;},
+  _=>{}
+ }}
  s.pnp_transition=false;STATUS_SUCCESS
 }
 pub(crate) fn io_pnp_state(device:*mut DeviceObject)->i32 {
@@ -1383,4 +1404,59 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut rejected)},STATUS_DELETE_PENDING);
   assert!(rejected.is_null());
  }
+ unsafe extern "system" fn pnp_start_pending(_device:*mut DeviceObject,_irp:*mut Irp)->i32 { STATUS_PENDING }
+ #[test]
+ fn pnp_pending_start_does_not_publish_started_until_completion() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  driver.major_function[0x1b]=Some(pnp_start_pending);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  let stack=unsafe{io_get_next_irp_stack_location(irp)};
+  unsafe{(*stack).major_function=0x1b;(*stack).minor_function=0x00;}
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
+  assert_eq!(io_pnp_state(device),PNP_STATE_NOT_STARTED);
+  unsafe{
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   io_complete_request(irp,0);
+  }
+  assert_eq!(io_pnp_state(device),PNP_STATE_STARTED);
+  unsafe{io_free_irp(irp);io_delete_device(device);}
+ }
+ unsafe extern "system" fn pnp_start_complete_success(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+  unsafe {
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   io_complete_request(irp,0);
+  }
+  STATUS_SUCCESS
+ }
+ unsafe extern "system" fn pnp_start_complete_failure(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+  unsafe {
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_INVALID_DEVICE_REQUEST);
+   io_complete_request(irp,0);
+  }
+  STATUS_INVALID_DEVICE_REQUEST
+ }
+ #[test]
+ fn pnp_state_changes_only_after_terminal_completion() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  driver.major_function[0x1b]=Some(pnp_start_complete_failure);
+  let failed=unsafe{io_allocate_irp(2,0)};
+  let stack=unsafe{io_get_next_irp_stack_location(failed)};
+  unsafe{(*stack).major_function=0x1b;(*stack).minor_function=0x00;}
+  assert_eq!(unsafe{io_call_driver(device,failed)},STATUS_INVALID_DEVICE_REQUEST);
+  assert_eq!(io_pnp_state(device),PNP_STATE_NOT_STARTED);
+  unsafe{io_free_irp(failed);}
+  driver.major_function[0x1b]=Some(pnp_start_complete_success);
+  let started=unsafe{io_allocate_irp(2,0)};
+  let stack=unsafe{io_get_next_irp_stack_location(started)};
+  unsafe{(*stack).major_function=0x1b;(*stack).minor_function=0x00;}
+  assert_eq!(unsafe{io_call_driver(device,started)},STATUS_SUCCESS);
+  assert_eq!(io_pnp_state(device),PNP_STATE_STARTED);
+  unsafe{io_free_irp(started);io_delete_device(device);}
+ }
+
 }
