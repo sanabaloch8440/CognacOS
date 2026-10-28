@@ -1139,8 +1139,17 @@ fn nt_query_system(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     info[24..28].copy_from_slice(&65536u32.to_le_bytes()); // AllocationGranularity
     info[32..40].copy_from_slice(&0x0000_0000_0001_0000u64.to_le_bytes()); // MinimumUserModeAddress
     info[40..48].copy_from_slice(&0x0000_8000_0000_0000u64.to_le_bytes()); // MaximumUserModeAddress
-    info[48..56].copy_from_slice(&1u64.to_le_bytes()); // minimal single-processor affinity
-    info[56] = 1; // NumberOfProcessors
+    // Report the processors that the HAL has actually brought online. The
+    // scheduler and affinity APIs use this same logical-CPU numbering; never
+    // advertise CPU 0 alone when APs are online, and never count offline slots.
+    let mut active_affinity = 0u64;
+    for cpu in 0..crate::hal::MAX_CPUS.min(64) {
+        if crate::hal::cpu_state(cpu).ok() == Some(crate::hal::CPU_ONLINE) {
+            active_affinity |= 1u64 << cpu;
+        }
+    }
+    info[48..56].copy_from_slice(&active_affinity.to_le_bytes());
+    info[56] = active_affinity.count_ones().min(u8::MAX as u32) as u8;
     if let Err(status) = write_return_length(args[3], SIZE as u32) { return status; }
     if let Err(status) = copy_nt_output(args[1], &info) { return status; }
     NT_STATUS_SUCCESS
