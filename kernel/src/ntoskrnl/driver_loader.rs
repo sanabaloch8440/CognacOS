@@ -86,6 +86,7 @@ pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut Driver
 }
 /// Loader variant accepting the dependency manager's symbol resolver.
 pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut DriverObject,context:*mut c_void,resolver:crate::pe::ImportResolver)->Result<LoadedDriver,DriverLoadError>{
+ if driver_object.is_null(){return Err(DriverLoadError::InvalidHeader);}
  let nt=pe_header_offset(file)?;
  let coff=nt+4;
  if u16at(file,coff)?!=0x8664{return Err(DriverLoadError::WrongMachine);}
