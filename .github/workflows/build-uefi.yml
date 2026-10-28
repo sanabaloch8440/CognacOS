@@ -593,7 +593,31 @@ jobs:
           # Capture the legacy PC speaker output to a WAV artifact. The kernel
           # emits a diagnostic tone only after beep.sys DriverEntry and device
           # registration succeed; this proves the QEMU audio path, not the driver's IOCTL.
-          rm -f build/beep.wav
+          rm -f build/beep.wav build/gdb-first-user-fault.txt
+          command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
+          # Attach GDB before firmware starts executing. A conditional hardware
+          # breakpoint captures the first CPL3 exception frame and then resumes
+          # automatically, so diagnostics do not depend on a post-crash attach.
+          cat > build/gdb-first-fault.gdb <<'GDB'
+          set pagination off
+          set confirm off
+          set architecture i386:x86-64
+          file target/x86_64-unknown-none/release/cognacos-kernel
+          target remote 127.0.0.1:12345
+          hbreak cognacos_exception_dispatch
+          condition 1 (*(unsigned long long *)($rdx + 144) & 3) == 3
+          commands 1
+            silent
+            printf "\\n===== GDB FIRST RING-3 EXCEPTION =====\\n"
+            printf "vector=%#lx error=%#lx frame=%#lx\\n", $rdi, $rsi, $rdx
+            printf "RIP=%#lx CS=%#lx RFLAGS=%#lx RSP=%#lx SS=%#lx\\n", *(unsigned long long *)($rdx + 136), *(unsigned long long *)($rdx + 144), *(unsigned long long *)($rdx + 152), *(unsigned long long *)($rdx + 160), *(unsigned long long *)($rdx + 168)
+            info registers cr2 cr3
+            x/22gx $rdx
+            printf "===== END GDB FIRST RING-3 EXCEPTION =====\\n"
+            continue
+          end
+          continue
+          GDB
           qemu-system-x86_64 \
             -audiodev wav,id=beepout,path=build/beep.wav \
             -machine pc,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
@@ -604,10 +628,14 @@ jobs:
             -boot order=c -display none -monitor none \
             -serial file:build/serial.log -gdb tcp::12345 \
             -d int,cpu_reset,guest_errors -D build/qemu-debug.log \
-            -no-reboot -no-shutdown &
+            -S -no-reboot -no-shutdown &
           qemu_pid=$!
+          gdb -q -batch -x build/gdb-first-fault.gdb > build/gdb-first-user-fault.txt 2>&1 &
+          gdb_pid=$!
           cleanup_qemu() {
+            kill "$gdb_pid" 2>/dev/null || true
             kill "$qemu_pid" 2>/dev/null || true
+            wait "$gdb_pid" 2>/dev/null || true
             wait "$qemu_pid" 2>/dev/null || true
           }
           trap cleanup_qemu EXIT
@@ -632,6 +660,12 @@ jobs:
           if ! grep -Fq 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log; then
             echo "Full ring-3 process-lifecycle smoke test did not complete; attaching GDB to the same live QEMU instance."
             command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
+            # Stop the always-on first-fault monitor before taking the full
+            # post-failure snapshot; only one GDB client may own this stub.
+            kill "$gdb_pid" 2>/dev/null || true
+            wait "$gdb_pid" 2>/dev/null || true
+            echo "=== GDB first-user-fault snapshot captured during execution ==="
+            cat build/gdb-first-user-fault.txt || true
             set +e
             # Load DWARF-bearing ELF companions so GDB can resolve source file:line
             # for the kernel and HAL, while attaching to the *same* failing QEMU.
