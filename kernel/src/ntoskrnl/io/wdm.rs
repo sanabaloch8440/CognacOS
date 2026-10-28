@@ -951,17 +951,20 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
     slot.system_buffer_len=slot.system_buffer_len.max(output_length as usize);
     slot.ioctl_output_buffer=output_buffer;
     slot.ioctl_output_len=output_length as usize;
-    slot.object.bytes[0x10..0x14].copy_from_slice(&(0x10u32|0x20u32).to_le_bytes());
+    slot.object.bytes[0x10..0x14].copy_from_slice(&(0x04u32|0x10u32|0x20u32).to_le_bytes());
    } else {
-    slot.object.bytes[0x10..0x14].copy_from_slice(&0x10u32.to_le_bytes());
+    slot.object.bytes[0x10..0x14].copy_from_slice(&(0x04u32|0x10u32|0x20u32).to_le_bytes());
    }
    slot.built_sync_ioctl=true;
   } else {
    // METHOD_NEITHER's Type3InputBuffer and Irp.UserBuffer are kernel pointers
    // supplied by this kernel-mode caller, as required by this DDI contract.
-   write_ptr(slot.object.bytes.as_mut_ptr(),0x70,output_buffer);
+   slot.object.bytes[0x10..0x14].copy_from_slice(&0x04u32.to_le_bytes());
    slot.built_sync_ioctl=true;
   }
+  // UserBuffer retains the caller's output pointer for all transfer methods;
+  // drivers use SystemBuffer or MdlAddress according to the IOCTL method.
+  write_ptr(slot.object.bytes.as_mut_ptr(),0x70,output_buffer);
   write_ptr(slot.object.bytes.as_mut_ptr(),0x48,io_status.cast());
   ptr::write_unaligned(slot.object.bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_PENDING);
   ptr::write_unaligned(slot.object.bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
