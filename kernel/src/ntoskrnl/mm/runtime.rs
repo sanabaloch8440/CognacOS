@@ -1146,49 +1146,156 @@ mod tests {
 }
 
 
-// ---- Pageable image-section lock ABI ---------------------------------------
-// The current kernel does not page driver images out yet. These records provide
-// stable, reference-counted section handles for paired lock/unlock calls; they
-// do not claim to implement page-out prevention until image paging is enabled.
-const MAX_PAGEABLE_IMAGE_LOCKS: usize = 64;
+// ---- Driver image section residency and paging ------------------------------
+// The PE driver loader registers exact page-aligned section ranges. Non-pageable
+// sections are pinned for the image lifetime; PAGE/PAGEDATA sections are pinned
+// only while MmLockPagableDataSection references their section handle.
+const MAX_PAGEABLE_IMAGE_LOCKS: usize = 256;
 #[derive(Clone, Copy)]
-struct PageableImageLock { used: bool, section_base: usize, references: u32 }
-impl PageableImageLock { const EMPTY: Self = Self { used: false, section_base: 0, references: 0 }; }
+struct PageableImageLock {
+    used: bool,
+    section_base: u64,
+    section_end: u64,
+    image_base: u64,
+    references: u32,
+    pageable: bool,
+    permanent_pin: bool,
+}
+impl PageableImageLock {
+    const EMPTY: Self = Self { used: false, section_base: 0, section_end: 0,
+        image_base: 0, references: 0, pageable: false, permanent_pin: false };
+}
 unsafe impl Send for PageableImageLock {}
 static PAGEABLE_IMAGE_LOCKS: crate::hal::IrqSpinLock<[PageableImageLock; MAX_PAGEABLE_IMAGE_LOCKS]> =
     crate::hal::IrqSpinLock::new([PageableImageLock::EMPTY; MAX_PAGEABLE_IMAGE_LOCKS]);
 
+fn aligned_image_range(base: u64, size: u64) -> Option<(u64, u64)> {
+    if size == 0 { return None; }
+    let start = base & !(PAGE_SIZE - 1);
+    let raw_end = base.checked_add(size)?;
+    let end = raw_end.checked_add(PAGE_SIZE - 1)? & !(PAGE_SIZE - 1);
+    if start < 0xffff_8000_0000_0000 || end <= start { return None; }
+    Some((start, end))
+}
+
+/// Pin all resident physical frames backing a kernel image section. Pageable
+/// pages are faulted in first; the VM mapping lock then prevents eviction while
+/// PFNs are translated and reference-counted by the physical-page pin registry.
+fn pin_kernel_image_range(base: u64, end: u64) -> bool {
+    if end <= base || base & (PAGE_SIZE - 1) != 0 || end & (PAGE_SIZE - 1) != 0 { return false; }
+    let mut va = base;
+    while va < end {
+        if crate::kernel_vm::is_pageable_address(va)
+            && !crate::kernel_vm::ensure_page_resident(va, false) { return false; }
+        va += PAGE_SIZE;
+    }
+    let _guard = crate::kernel_vm::lock_pageable_mappings();
+    let mut va = base;
+    while va < end {
+        let Some(pa) = translate(va, false) else {
+            let mut undo = base;
+            while undo < va {
+                if let Some(old_pa) = translate(undo, false) { unlock_pfns(&[old_pa & !(PAGE_SIZE - 1)]); }
+                undo += PAGE_SIZE;
+            }
+            return false;
+        };
+        if !crate::memory::is_ram_physical_address(pa & !(PAGE_SIZE - 1))
+            || !lock_pfns(&[pa & !(PAGE_SIZE - 1)]) {
+            let mut undo = base;
+            while undo < va {
+                if let Some(old_pa) = translate(undo, false) { unlock_pfns(&[old_pa & !(PAGE_SIZE - 1)]); }
+                undo += PAGE_SIZE;
+            }
+            return false;
+        }
+        va += PAGE_SIZE;
+    }
+    true
+}
+fn unpin_kernel_image_range(base: u64, end: u64) {
+    if end <= base { return; }
+    let _guard = crate::kernel_vm::lock_pageable_mappings();
+    let mut va = base;
+    while va < end {
+        if let Some(pa) = translate(va, false) { unlock_pfns(&[pa & !(PAGE_SIZE - 1)]); }
+        va += PAGE_SIZE;
+    }
+}
+
+/// Register one validated PE section after its pages have been mapped and
+/// final protections applied. Non-pageable sections are pinned immediately.
+pub fn register_driver_image_section(image_base: u64, section_base: u64, section_size: u64, pageable: bool) -> bool {
+    let Some((base, end)) = aligned_image_range(section_base, section_size) else { return false; };
+    let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
+    if locks.iter().any(|entry| entry.used && base < entry.section_end && entry.section_base < end) { return false; }
+    let Some(index) = locks.iter().position(|entry| !entry.used) else { return false; };
+    if !pageable && !pin_kernel_image_range(base, end) { return false; }
+    locks[index] = PageableImageLock { used: true, section_base: base, section_end: end,
+        image_base, references: 0, pageable, permanent_pin: !pageable };
+    true
+}
+
+/// Remove all section metadata for a driver image after its code has stopped
+/// executing and its unload callback has completed.
+pub fn unregister_driver_image_sections(image_base: u64) {
+    let mut release = [(0u64, 0u64); MAX_PAGEABLE_IMAGE_LOCKS];
+    let count = {
+        let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
+        let mut count = 0;
+        for entry in locks.iter_mut().filter(|entry| entry.used && entry.image_base == image_base) {
+            if entry.permanent_pin || entry.references != 0 {
+                release[count] = (entry.section_base, entry.section_end);
+                count += 1;
+            }
+            *entry = PageableImageLock::EMPTY;
+        }
+        count
+    };
+    for (base, end) in release[..count].iter().copied() { unpin_kernel_image_range(base, end); }
+}
+
 /// PVOID MmLockPagableDataSection(PVOID AddressWithinSection).
-/// Returns a stable opaque handle only for a mapped kernel address.
+/// Only a pointer inside an exact, loader-registered pageable PE section is
+/// accepted. The first reference pins every PFN; nested locks share the pin.
 #[unsafe(export_name = "MmLockPagableDataSection")]
 pub unsafe extern "win64" fn mm_lock_pagable_data_section(address: *const c_void) -> *mut c_void {
-    let va = address as usize;
-    if va < 0xffff_8000_0000_0000 || unsafe { mm_is_address_valid(address) } == 0 {
+    let va = address as u64;
+    let index = {
+        let locks = PAGEABLE_IMAGE_LOCKS.lock();
+        let Some(index) = locks.iter().position(|entry| entry.used && entry.pageable
+            && va >= entry.section_base && va < entry.section_end) else { return core::ptr::null_mut(); };
+        index
+    };
+    let (base, end, refs) = {
+        let locks = PAGEABLE_IMAGE_LOCKS.lock();
+        let entry = locks[index];
+        (entry.section_base, entry.section_end, entry.references)
+    };
+    if refs == 0 && !pin_kernel_image_range(base, end) { return core::ptr::null_mut(); }
+    let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
+    if !locks[index].used || locks[index].section_base != base || locks[index].section_end != end {
+        if refs == 0 { drop(locks); unpin_kernel_image_range(base, end); }
         return core::ptr::null_mut();
     }
-    // PE section alignment is at least a page. Until image metadata is retained
-    // by the loader, use the 64-KiB allocation-granularity bucket as the stable
-    // identity and keep a refcounted record rather than returning a fabricated
-    // token or the caller's arbitrary interior pointer.
-    let base = va & !0xffffusize;
-    let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
-    if let Some(i) = locks.iter().position(|entry| entry.used && entry.section_base == base) {
-        let Some(next) = locks[i].references.checked_add(1) else { return core::ptr::null_mut(); };
-        locks[i].references = next;
-        return core::ptr::addr_of_mut!(locks[i]).cast();
-    }
-    let Some(i) = locks.iter().position(|entry| !entry.used) else { return core::ptr::null_mut(); };
-    locks[i] = PageableImageLock { used: true, section_base: base, references: 1 };
-    core::ptr::addr_of_mut!(locks[i]).cast()
+    let Some(next) = locks[index].references.checked_add(1) else {
+        if refs == 0 { drop(locks); unpin_kernel_image_range(base, end); }
+        return core::ptr::null_mut();
+    };
+    locks[index].references = next;
+    core::ptr::addr_of_mut!(locks[index]).cast()
 }
 
 /// VOID MmUnlockPagableImageSection(PVOID ImageSectionHandle).
 #[unsafe(export_name = "MmUnlockPagableImageSection")]
 pub unsafe extern "win64" fn mm_unlock_pagable_image_section(handle: *mut c_void) {
     if handle.is_null() { return; }
-    let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
-    let Some(entry) = locks.iter_mut().find(|entry| core::ptr::eq((*entry as *mut PageableImageLock).cast::<c_void>(), handle)) else { return; };
-    if !entry.used || entry.references == 0 { return; }
-    entry.references -= 1;
-    if entry.references == 0 { *entry = PageableImageLock::EMPTY; }
+    let release = {
+        let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
+        let Some(entry) = locks.iter_mut().find(|entry| core::ptr::eq((*entry as *mut PageableImageLock).cast::<c_void>(), handle)) else { return; };
+        if !entry.used || !entry.pageable || entry.references == 0 { return; }
+        entry.references -= 1;
+        if entry.references == 0 { Some((entry.section_base, entry.section_end)) } else { None }
+    };
+    if let Some((base, end)) = release { unpin_kernel_image_range(base, end); }
 }
