@@ -1767,7 +1767,7 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     // of the instruction sequence in cognacos_exception_common:
     // R15,R14,R13,R12,R11,R10,R9,R8,RBP,RDI,RSI,RDX,RCX,RBX,RAX.
     // Map that physical stack order to the canonical Windows AMD64 CONTEXT.
-    for ( (offset, index) in [
+    for (offset, index) in [
         (0x78, 14usize), // RAX
         (0x90, 13),      // RBX
         (0x80, 12),      // RCX
