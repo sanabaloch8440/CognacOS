@@ -1313,7 +1313,7 @@ unsafe fn submit_beep_ioctl(
     // open-by-name/object-manager path for this test device.
     let mut create_stack = IO_STACK_LOCATION {
         major_function: IRP_MJ_CREATE as u8, minor_function: 0,
-        flags: 0, control: 0, parameters: [0; 0x20],
+        flags: 0, control: 0, parameters: [0; 0x28],
         device_object: device_object.cast(), file_object,
         completion_routine: None, context: core::ptr::null_mut(),
     };
@@ -1376,17 +1376,11 @@ unsafe fn submit_beep_ioctl(
         io::io_set_completion_routine(
             irp, Some(beep_test_completion), core::ptr::null_mut(), 1, 1, 1,
         );
-        // Keep the test's completion registration anchored to the exact stack
-        // slot whose parameters were prepared above. This also makes a broken
-        // IoSetCompletionRoutine stack calculation observable rather than
-        // silently submitting a synchronous IRP with no completion callback.
-        if (*stack).completion_routine.is_none() {
-            (*stack).completion_routine = Some(beep_test_completion);
-            (*stack).context = core::ptr::null_mut();
-            (*stack).control |= 0xE0; // success, error, and cancel
-        }
+        // Report the callback actually stored in the ABI stack slot. Do not
+        // patch the slot directly here: that would hide an IoSetCompletionRoutine
+        // or stack-layout regression in the I/O manager.
         serial_write(b"BEEP COMPLETION ROUTINE: stack-slot callback=");
-        serial_write_hex((*stack).completion_routine.map(|_| beep_test_completion as usize as u64).unwrap_or(0));
+        serial_write_hex((*stack).completion_routine.map(|routine| routine as usize as u64).unwrap_or(0));
         serial_write(b" control=");
         serial_write_hex((*stack).control as u64);
         serial_write(b"\\r\\n");
