@@ -21,7 +21,7 @@ fn civil(days:i64)->(i32,i32,i32){let z=days+719468;let era=if z>=0{z}else{z-146
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_suite_mask()->u32{0}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_active_console_id()->u32{ACTIVE_CONSOLE_ID.load(Ordering::Acquire)}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_set_active_console_id(id:u32){ACTIVE_CONSOLE_ID.store(id,Ordering::Release);}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_current_service_session_id()->u32{0}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_get_current_service_session_id()->u32{crate::process::session_id_for_pid(crate::thread::current_process_id()).unwrap_or(0)}
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn rtl_is_processor_feature_present(feature: u32) -> u8 {
     #[cfg(target_arch = "x86_64")]
@@ -62,7 +62,7 @@ pub unsafe extern "win64" fn rtl_is_processor_feature_present(feature: u32) -> u
         0
     }
 }
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_session_sku()->u8{(SESSION_SKU_FLAGS.load(Ordering::Acquire)&1!=0) as u8}
+#[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_session_sku()->u8{((SESSION_SKU_FLAGS.load(Ordering::Acquire)&1!=0)||crate::process::has_multiple_sessions()) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_multi_users_in_session_sku()->u8{(SESSION_SKU_FLAGS.load(Ordering::Acquire)&2!=0) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_elevated_rid(rid:u32)->u8{(rid==0x3000) as u8}
 #[unsafe(no_mangle)] pub unsafe extern "win64" fn rtl_is_nt_ddi_version_available(version:u32)->u8{(version<=0x0A000000) as u8}
