@@ -93,3 +93,8 @@ The three StartIo imports are now registered to the WDM implementation in `kerne
 - `IoSetStartIoAttributes` records keyed-device and boosted-I/O policy for the device.
 
 The queue table is currently bounded (64 queued IRPs per device, with the existing 32-device limit). This first pass does not yet provide complete Windows cancel-lock ordering, canceled-queued-IRP draining, or I/O priority boosting; those must be added before claiming full StartIo compatibility. The CI build and guest driver test are still required.
+
+
+## DEVICE_OBJECT / KDEVICE_QUEUE ABI correction (2026-10-28)
+
+The x64 public WDM layout now embeds a typed `KDeviceQueue` at `DEVICE_OBJECT+0x98`, rather than placing it at `+0xA0` behind a non-WDK `AlignmentRequirement` field. The embedded queue is asserted to be `0x28` bytes; `KDeviceQueueEntry` is asserted to be `0x18` bytes. The downstream `Dpc`, active-thread, security-descriptor, device-lock, and extension offsets were shifted accordingly, and the structure retains the SDK-sized `0x150` total size. These compile-time layout assertions must pass before StartIo queue behavior can be considered ABI-valid; queue semantics and guest runtime validation remain separate requirements.
