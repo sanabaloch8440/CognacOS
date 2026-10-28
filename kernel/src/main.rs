@@ -1150,6 +1150,17 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     serial_write(b" entry=");
                     serial_write_hex(loaded.entry_point);
                     serial_write(b".\r\n");
+                    let device_object = unsafe { (*driver_object).device_object };
+                    let dispatch_count = unsafe { (*driver_object).major_function.iter().filter(|entry| entry.is_some()).count() };
+                    serial_write(b"beep.sys device object=");
+                    serial_write_hex(device_object as u64);
+                    serial_write(b" dispatch-routines=");
+                    unsafe { serial_write_decimal(dispatch_count); }
+                    if !device_object.is_null() && dispatch_count != 0 {
+                        serial_write(b"\r\nbeep.sys device and dispatch registration passed.\r\n");
+                    } else {
+                        serial_write(b"\r\nbeep.sys DriverEntry succeeded but device/dispatch registration is incomplete.\r\n");
+                    }
                 }
                 Err(error) => {
                     serial_write(b"beep.sys runtime load failed before successful DriverEntry: ");
