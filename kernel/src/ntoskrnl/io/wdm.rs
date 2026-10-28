@@ -49,7 +49,7 @@ pub struct DeviceObject {
     pub attached_device: *mut DeviceObject, pub current_irp: *mut Irp,
     pub timer: *mut c_void, pub flags: u32, pub characteristics: u32,
     pub vpb: *mut c_void, pub device_extension: *mut c_void,
-    pub device_type: u32, pub stack_size: u8, pub queue_padding: [u8; 3],
+    pub device_type: u32, pub stack_size: i8, pub queue_padding: [u8; 3],
     pub queue: [u8; 0x48], pub alignment_requirement: u32, pub device_queue_padding: [u8; 4],
     pub device_queue: [u8; 0x28], pub dpc: [u8; 0x40], pub active_thread_count: u32,
     pub security_descriptor: *mut c_void, pub device_lock: [u8; 0x18],
@@ -881,7 +881,9 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  if !track_irp_device(irp,device) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  if !acquire_irp_active_op(irp) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  let irp_stack_count=unsafe{(*irp).bytes[0x42] as usize};
- let required_stack_count=unsafe{(*device).stack_size as usize};
+ let required_stack_size=unsafe{(*device).stack_size};
+ if required_stack_size<=0 {release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST;}
+ let required_stack_count=required_stack_size as usize;
  if irp_stack_count<required_stack_count {
   release_irp_active_op(irp);release_device_dispatch_rundown(device);
   return STATUS_INVALID_DEVICE_REQUEST;
