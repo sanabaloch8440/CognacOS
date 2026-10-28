@@ -61,7 +61,7 @@ fn words(line: &[u8]) -> [Option<&[u8]>; 4] {
 fn command(line: &[u8]) {
     let w = words(line);
     match w[0] {
-        Some(b"help") => write(b"debug commands: help | status | trace [count-hex] | filter <component-hex> <level-hex> <on|off>\r\n"),
+        Some(b"help") => write(b"debug commands: help | status | trace [count-hex] | filter <component-hex> <level-hex> <on|off> | persist | restore\r\n"),
         Some(b"status") => {
             write(b"trace latest sequence=");
             hex(debug::latest_sequence());
@@ -72,6 +72,14 @@ fn command(line: &[u8]) {
         Some(b"trace") => {
             let requested = w[1].and_then(parse_u32).unwrap_or(32) as usize;
             debug::dump_serial(requested.min(debug::TRACE_CAPACITY));
+        }
+        Some(b"persist") => {
+            if debug::persist_to_storage() { write(b"trace snapshot persisted to reserved GPT partition\\r\\n"); }
+            else { write(b"persist failed: dedicated trace partition unavailable or I/O failed\\r\\n"); }
+        }
+        Some(b"restore") => {
+            if debug::restore_from_storage() { write(b"validated trace snapshot restored\\r\\n"); }
+            else { write(b"restore failed: no valid snapshot or storage unavailable\\r\\n"); }
         }
         Some(b"filter") => {
             let component = w[1].and_then(parse_u32);
