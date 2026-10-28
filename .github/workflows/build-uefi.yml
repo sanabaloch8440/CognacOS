@@ -518,7 +518,10 @@ jobs:
           # disk space to a real ext4 data partition consumed by the guest.
           parted -s build/cognacos-uefi.img mkpart ESP fat32 1MiB 65MiB
           parted -s build/cognacos-uefi.img set 1 esp on
-          parted -s build/cognacos-uefi.img mkpart COGNACDATA ext4 65MiB 100%
+          # Keep the final 16 MiB as an explicit debug-trace partition.
+          # The kernel writes only inside GPT entry 3; it never uses ext4 free space or GPT backup metadata.
+          parted -s build/cognacos-uefi.img mkpart COGNACDATA ext4 65MiB 240MiB
+          parted -s build/cognacos-uefi.img mkpart COGNACDEBUG ext4 240MiB 255MiB
           mformat -i build/cognacos-uefi.img@@1048576 -F -T 131072 ::
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI
           mmd -i build/cognacos-uefi.img@@1048576 ::/EFI/BOOT
