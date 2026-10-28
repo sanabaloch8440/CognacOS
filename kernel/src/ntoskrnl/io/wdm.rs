@@ -136,6 +136,55 @@ impl WdmState {
  }
 }
 static WDM: IrqSpinLock<WdmState> = IrqSpinLock::new(WdmState::new());
+/// Link/unlink builder-created synchronous IRPs on a per-thread intrusive
+/// queue. The WDM lock serializes queue membership with completion and exit.
+fn sync_queue_attach_locked(state:&mut WdmState,irp:*mut Irp,thread_id:u64)->bool {
+ if irp.is_null(){return false}
+ let Some(index)=state.irps.iter().position(|slot|slot.used&&ptr::eq(&slot.object,irp)) else{return false};
+ if thread_id==0 {state.irps[index].sync_thread_id=0;state.irps[index].sync_queued=false;return true}
+ if state.irps[index].sync_queued{return state.irps[index].sync_thread_id==thread_id}
+ let queue_index=state.thread_irps.iter().position(|q|q.used&&q.thread_id==thread_id)
+  .or_else(||state.thread_irps.iter().position(|q|!q.used));
+ let Some(qi)=queue_index else{return false};
+ if !state.thread_irps[qi].used {
+  state.thread_irps[qi]=ThreadIrpQueue{used:true,thread_id,head:ptr::null_mut(),tail:ptr::null_mut()};
+ }
+ let tail=state.thread_irps[qi].tail;
+ if !tail.is_null(){
+  let Some(tail_index)=state.irps.iter().position(|slot|slot.used&&ptr::eq(&slot.object,tail)) else{return false};
+  state.irps[tail_index].sync_next=irp;
+ }
+ state.irps[index].sync_thread_id=thread_id;
+ state.irps[index].sync_prev=tail;
+ state.irps[index].sync_next=ptr::null_mut();
+ state.irps[index].sync_queued=true;
+ if state.thread_irps[qi].head.is_null(){state.thread_irps[qi].head=irp;}
+ state.thread_irps[qi].tail=irp;
+ true
+}
+/// Detach a synchronous IRP and return its completion event. Caller owns WDM lock.
+fn sync_queue_detach_locked(state:&mut WdmState,irp:*mut Irp)->*mut c_void {
+ let Some(index)=state.irps.iter().position(|slot|slot.used&&ptr::eq(&slot.object,irp)) else{return ptr::null_mut()};
+ let thread_id=state.irps[index].sync_thread_id;
+ let prev=state.irps[index].sync_prev;
+ let next=state.irps[index].sync_next;
+ let queued=state.irps[index].sync_queued;
+ let event=state.irps[index].sync_event;
+ if queued {
+  if let Some(qi)=state.thread_irps.iter().position(|q|q.used&&q.thread_id==thread_id) {
+   if prev.is_null(){state.thread_irps[qi].head=next;}else if let Some(pi)=state.irps.iter().position(|slot|slot.used&&ptr::eq(&slot.object,prev)){state.irps[pi].sync_next=next;}
+   if next.is_null(){state.thread_irps[qi].tail=prev;}else if let Some(ni)=state.irps.iter().position(|slot|slot.used&&ptr::eq(&slot.object,next)){state.irps[ni].sync_prev=prev;}
+   if state.thread_irps[qi].head.is_null(){state.thread_irps[qi]=ThreadIrpQueue::EMPTY;}
+  }
+ }
+ state.irps[index].sync_thread_id=0;
+ state.irps[index].sync_event=ptr::null_mut();
+ state.irps[index].sync_next=ptr::null_mut();
+ state.irps[index].sync_prev=ptr::null_mut();
+ state.irps[index].sync_queued=false;
+ event
+}
+
 // Private high bits prevent new device creation after unload begins.
 const DRIVER_UNLOADING_FLAG:u32=1<<31;
 const DRIVER_UNLOADED_FLAG:u32=1<<30;
@@ -762,7 +811,7 @@ fn initialize_irp_slot(slot:&mut IrpSlot,stack_size:i8)->*mut Irp {
  slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());
  slot.system_buffer=ptr::null_mut();slot.system_buffer_pages=0;slot.system_buffer_len=0;
  slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;
- slot.sync_thread_id=0;slot.sync_event=ptr::null_mut();
+ slot.sync_thread_id=0;slot.sync_event=ptr::null_mut();slot.sync_next=ptr::null_mut();slot.sync_prev=ptr::null_mut();slot.sync_queued=false;
  slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
