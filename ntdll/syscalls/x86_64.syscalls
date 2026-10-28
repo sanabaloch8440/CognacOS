@@ -32,3 +32,4 @@ NtCreateEvent 0x14d 5
 NtSetEvent 0x14e 2
 NtResetEvent 0x14f 2
 NtWaitForSingleObject 0x150 3
+NtOpenEvent 0x151 3
