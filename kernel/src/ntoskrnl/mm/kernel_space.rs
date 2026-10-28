@@ -325,7 +325,7 @@ pub fn protect_pages(address:u64,pages:usize,writable:bool,executable:bool)->Res
   let va=address+n as u64*PAGE;let leaf=unsafe{leaf_ptr(root,va)}.ok_or(Error::NotMapped)?;
   let mut entry=unsafe{leaf.read_volatile()};if entry&P==0{return Err(Error::NotMapped)}
   entry&=!(W|NX);if writable{entry|=W;}if !executable{entry|=NX;}
-  unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = (writable as u8) | ((!executable as u8) << 1); }
+  unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = (writable as u8) | (((!executable) as u8) << 1); }
   unsafe{leaf.write_volatile(entry);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
  }
  synchronize_kernel_tlb();Ok(())
