@@ -5,14 +5,6 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
 const SRW_EXCLUSIVE: usize = 1usize << (usize::BITS - 1);
 const SRW_READERS: usize = SRW_EXCLUSIVE - 1;
-#[no_mangle]
-pub unsafe extern "system" fn VerSetConditionMask(mut condition_mask:u64,type_mask:u32,condition:u8)->u64 {
-    let fields:[(u32,u32);8]=[(0x1,0),(0x2,1),(0x4,2),(0x8,3),(0x10,4),(0x20,5),(0x40,6),(0x80,7)];
-    let value=(condition as u64)&0x7;
-    for (flag,index) in fields { if type_mask & flag != 0 { let shift=index*3; condition_mask=(condition_mask & !(0x7u64<<shift)) | (value<<shift); } }
-    condition_mask
-}
-
 #[repr(C)]
 struct CognacCriticalSection { debug_info:*mut c_void, lock_count:i32, recursion_count:i32, owning_thread:*mut c_void, lock_semaphore:*mut c_void, spin_count:usize }
 #[inline] unsafe fn atomic_i32_at(p:*mut i32)->&'static core::sync::atomic::AtomicI32{unsafe{&*p.cast::<core::sync::atomic::AtomicI32>()}}
