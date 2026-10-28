@@ -785,6 +785,10 @@ jobs:
         shell: bash
         run: |
           mkdir -p build/beep-driver-assessment
+          if ! command -v llvm-readobj >/dev/null || ! command -v llvm-objdump >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y llvm
+          fi
           log=build/beep-driver-assessment/output.txt
           set +e
           {
