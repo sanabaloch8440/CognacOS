@@ -1,8 +1,8 @@
 //! Shared WDM I/O ABI layouts. Runtime ownership and synchronization stay in ntoskrnl.
 //!
-//! The IRP and device/driver structures below are initial compatibility layouts,
-//! not yet validated against a pinned Windows 11 WDK. Do not expose them to
-//! third-party binary drivers until layout tests and field-by-field auditing pass.
+//! The x64 structures below follow the public WDK field layout for the fields
+//! represented here; compile-time tests pin key offsets. This does not imply
+//! complete WDM behavioral compatibility or validate every union member.
 
 use crate::ntstatus::NTSTATUS;
 use crate::object::UNICODE_STRING;
