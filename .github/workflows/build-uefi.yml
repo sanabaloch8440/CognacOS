@@ -546,8 +546,13 @@ jobs:
           # Keep the original QEMU instance alive while GDB attaches. The old
           # timeout-based run killed QEMU before the diagnostic branch could run,
           # so its "GDB snapshot" silently started a second, unrelated boot.
+          # Capture the legacy PC speaker output to a WAV artifact. The kernel
+          # emits a diagnostic tone only after beep.sys DriverEntry and device
+          # registration succeed; this proves the QEMU audio path, not the driver's IOCTL.
+          rm -f build/beep.wav
           qemu-system-x86_64 \
-            -machine pc -m 5G -cpu max -smp 4 \
+            -audiodev wav,id=beepout,path=build/beep.wav \
+            -machine pc,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=ide,format=raw,file=build/cognacos-uefi.img \
@@ -780,6 +785,53 @@ jobs:
             grep -F "SMP scheduler, cross-CPU wakeup, contended-lock, IRP/object teardown stress passed." "$log"
             grep -F "Kernel VM extent stress and SMP TLB shootdown self-test passed." "$log"
           done
+      - name: Verify captured QEMU PC speaker tone
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/beep-driver-assessment
+          report=build/beep-driver-assessment/output.txt
+          {
+            echo
+            echo "=== QEMU PC speaker audio capture ==="
+            if [[ ! -s build/beep.wav ]]; then
+              echo "AUDIO RESULT: FAIL - QEMU did not produce build/beep.wav."
+              exit 1
+            fi
+            python3 - <<'PY'
+          import array, math, wave
+          from pathlib import Path
+          path = Path("build/beep.wav")
+          try:
+              with wave.open(str(path), "rb") as wav:
+                  channels = wav.getnchannels()
+                  width = wav.getsampwidth()
+                  rate = wav.getframerate()
+                  frames = wav.readframes(wav.getnframes())
+          except (wave.Error, EOFError) as exc:
+              raise SystemExit(f"AUDIO RESULT: FAIL - invalid WAV: {exc}")
+          if width not in (1, 2, 3, 4) or not frames:
+              raise SystemExit("AUDIO RESULT: FAIL - WAV has no usable audio samples.")
+          if width == 1:
+              samples = [b - 128 for b in frames]
+          elif width == 2:
+              samples = array.array("h")
+              samples.frombytes(frames[:len(frames) // 2 * 2])
+          elif width == 4:
+              samples = array.array("i")
+              samples.frombytes(frames[:len(frames) // 4 * 4])
+          else:
+              samples = [int.from_bytes(frames[i:i+3], "little", signed=True)
+                         for i in range(0, len(frames)-2, 3)]
+          peak = max((abs(int(s)) for s in samples), default=0)
+          rms = math.sqrt(sum(int(s) * int(s) for s in samples) / max(1, len(samples)))
+          print(f"WAV: {path}, channels={channels}, sample_rate={rate}, sample_width={width}, frames={len(frames)//width}, peak={peak}, rms={rms:.2f}")
+          if peak == 0 or rms < 1.0:
+              raise SystemExit("AUDIO RESULT: FAIL - captured samples are silent.")
+          print("AUDIO RESULT: PASS - captured QEMU PC speaker audio contains non-zero samples.")
+          PY
+          } | tee -a "$report"
       - name: Assess Microsoft beep.sys PE compatibility
         if: always()
         shell: bash
@@ -858,6 +910,7 @@ jobs:
             build/serial.log
             build/serial-smp-*.log
             build/beep-driver-assessment/output.txt
+            build/beep.wav
             build/gdb-state.txt
             build/gdb-diagnose.gdb
             build/qemu-debug.log
