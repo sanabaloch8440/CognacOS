@@ -301,7 +301,7 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
             crate::serial_write_hex(enabled_xstate);
             crate::serial_write(b" size=");
             crate::serial_write_hex(xstate_size as u64);
-            crate::serial_write(b"\\r\\n");
+            crate::serial_write(b"\r\n");
         }
         return Err(VmError::PermissionDenied);
     }
@@ -936,7 +936,7 @@ pub unsafe fn run_native_ntdll_smoke(
         crate::serial_write_hex(length as u64);
         crate::serial_write(b" end=");
         crate::serial_write_hex(NTDLL_TEST_CODE.saturating_add(length as u64));
-        crate::serial_write(b"\\r\\n");
+        crate::serial_write(b"\r\n");
     }
     unsafe { run_loaded_image(space, test_image)?; }
     Ok(())
