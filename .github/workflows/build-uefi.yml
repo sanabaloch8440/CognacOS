@@ -828,8 +828,10 @@ jobs:
           echo "=== QEMU runtime driver-load result ===" | tee -a "$log"
           if [ -f build/serial.log ]; then
             grep -E "beep\\.sys|DriverEntry|driver test|FATAL CPU exception|PAGEFAULT|RAX=" build/serial.log | tee -a "$log" || true
-            if grep -Fq "beep.sys DriverEntry returned NTSTATUS success" build/serial.log; then
-              echo "RUNTIME RESULT: PASS - DriverEntry returned success." | tee -a "$log"
+            if grep -Fq "beep.sys device and dispatch registration passed." build/serial.log; then
+              echo "RUNTIME RESULT: PASS - DriverEntry succeeded and registered a device plus dispatch handlers." | tee -a "$log"
+            elif grep -Fq "beep.sys DriverEntry returned NTSTATUS success" build/serial.log; then
+              echo "RUNTIME RESULT: PARTIAL - DriverEntry succeeded, but expected device/dispatch registration was not verified." | tee -a "$log"
             elif grep -Fq "beep.sys runtime load failed before successful DriverEntry" build/serial.log; then
               echo "RUNTIME RESULT: NOT COMPATIBLE YET - the kernel loader reported a prerequisite/import/entry failure." | tee -a "$log"
             elif grep -Fq "Runtime driver test: attempting native beep.sys load and DriverEntry." build/serial.log; then
