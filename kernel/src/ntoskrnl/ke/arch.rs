@@ -136,7 +136,7 @@ unsafe fn dump_first_user_fault() {
     use core::sync::atomic::Ordering;
     if FIRST_USER_FAULT_STATE.load(Ordering::Acquire) != 2 { return; }
     unsafe {
-        crate::serial_write(b"\\r\\n===== PRESERVED FIRST USER-MODE FAULT (immutable) =====\\r\\n");
+        crate::serial_write(b"\r\n===== PRESERVED FIRST USER-MODE FAULT (immutable) =====\\r\\n");
         crate::serial_write(b"vector="); crate::serial_write_hex(FIRST_USER_FAULT_VECTOR.load(Ordering::Relaxed));
         crate::serial_write(b" error="); crate::serial_write_hex(FIRST_USER_FAULT_ERROR.load(Ordering::Relaxed));
         crate::serial_write(b" RIP="); crate::serial_write_hex(FIRST_USER_FAULT_RIP.load(Ordering::Relaxed));
@@ -152,7 +152,7 @@ unsafe fn dump_first_user_fault() {
         let size = FIRST_USER_FAULT_NTDLL_SIZE.load(Ordering::Relaxed);
         let rip = FIRST_USER_FAULT_RIP.load(Ordering::Relaxed);
         if base != 0 && size != 0 {
-            crate::serial_write(b"\\r\\nNTDLL MODULE: base=");
+            crate::serial_write(b"\r\nNTDLL MODULE: base=");
             crate::serial_write_hex(base);
             crate::serial_write(b" size=");
             crate::serial_write_hex(size);
@@ -163,9 +163,9 @@ unsafe fn dump_first_user_fault() {
                 crate::serial_write(b"outside-image");
             }
         } else {
-            crate::serial_write(b"\\r\\nNTDLL MODULE: range unavailable in per-process module registry");
+            crate::serial_write(b"\r\nNTDLL MODULE: range unavailable in per-process module registry");
         }
-        crate::serial_write(b"\\r\\n===== END PRESERVED FIRST USER-MODE FAULT =====\\r\\n");
+        crate::serial_write(b"\r\n===== END PRESERVED FIRST USER-MODE FAULT =====\\r\\n");
     }
 }
 
@@ -1706,7 +1706,7 @@ pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *cons
         crate::serial_write(b" RIP=");
         crate::serial_write_hex(frame.add(17).read());
         if let Some((base, size, driver_object)) = faulting_driver {
-            crate::serial_write(b"\\r\\nFAULTING DRIVER IMAGE: base=");
+            crate::serial_write(b"\r\nFAULTING DRIVER IMAGE: base=");
             crate::serial_write_hex(base);
             crate::serial_write(b" RVA=");
             crate::serial_write_hex(fatal_rip.saturating_sub(base));
