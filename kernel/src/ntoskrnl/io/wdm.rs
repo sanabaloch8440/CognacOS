@@ -946,6 +946,10 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   unsafe {
    (*irp).bytes[0x43]=(location+1).min(0xff) as u8;
    write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast());
+   // Pending state must be visible to each higher driver's completion frame.
+   if (*irp).bytes[0x41]!=0 && (location+1)<=stack_count {
+    (*next).control|=0x01;
+   }
   }
   if invoke {
    if let Some(routine)=routine {
@@ -985,7 +989,11 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
- if !irp.is_null() { unsafe { (*irp).bytes[0x41]=1; } }
+ if irp.is_null(){return}
+ unsafe { (*irp).bytes[0x41]=1; }
+ // SL_PENDING_RETURNED is carried in the current driver's stack location.
+ let stack=unsafe{io_get_current_irp_stack_location(irp)};
+ if !stack.is_null(){unsafe{(*stack).control|=0x01;}}
 }
 
 #[unsafe(no_mangle)]
@@ -1503,7 +1511,19 @@ mod wdm_tests {
   assert_eq!(core::mem::size_of::<UnicodeString>(),16);
   assert_eq!(core::mem::size_of::<IoStatusBlock>(),16);
   assert_eq!(core::mem::size_of::<IoStackLocation>(),IO_STACK_LOCATION_SIZE_X64);
+  assert_eq!(core::mem::offset_of!(IoStackLocation,major_function),0x00);
+  assert_eq!(core::mem::offset_of!(IoStackLocation,parameters),0x04);
+  assert_eq!(core::mem::offset_of!(IoStackLocation,device_object),0x28);
+  assert_eq!(core::mem::offset_of!(IoStackLocation,file_object),0x30);
+  assert_eq!(core::mem::offset_of!(IoStackLocation,completion_routine),0x38);
+  assert_eq!(core::mem::offset_of!(IoStackLocation,context),0x40);
+  assert_eq!(core::mem::offset_of!(DriverObject,device_object),0x08);
+  assert_eq!(core::mem::offset_of!(DriverObject,flags),0x10);
+  assert_eq!(core::mem::offset_of!(DriverObject,driver_start),0x18);
+  assert_eq!(core::mem::offset_of!(DriverObject,driver_name),0x38);
+  assert_eq!(core::mem::offset_of!(DriverObject,driver_unload),0x68);
   assert_eq!(core::mem::offset_of!(DriverObject,major_function),112);
+  assert_eq!(core::mem::size_of::<DriverObject>(),0x150);
   assert_eq!(core::mem::offset_of!(DeviceObject,driver_object),8);
   assert_eq!(core::mem::offset_of!(DeviceObject,device_extension),64);
   assert_eq!(core::mem::offset_of!(DeviceObject,stack_size),76);
