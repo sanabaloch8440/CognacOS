@@ -4,7 +4,7 @@ fn read_exports(path:&str)->Vec<Export>{
  println!("cargo:rerun-if-changed={path}");
  let raw=fs::read_to_string(path).unwrap_or_else(|e|panic!("cannot read {path}: {e}"));
  let mut out=Vec::new(); let mut ords=BTreeSet::new(); let mut names=BTreeSet::new();
- for (i,line) in raw.lines().enumerate(){let line=line.trim_end();if line.is_empty()||line.starts_with('#'){continue}
+ for (i,line) in raw.lines().enumerate(){let line=line.strip_suffix('\r').unwrap_or(line);if line.is_empty()||line.starts_with('#'){continue}
   let f:Vec<&str>=line.split('\t').collect();assert_eq!(f.len(),3,"{path}:{} expected ordinal<TAB>name<TAB>forwarder",i+1);
   let ordinal:u32=f[0].parse().unwrap_or_else(|_|panic!("{path}:{} bad ordinal",i+1));assert!(ords.insert(ordinal),"{path}: duplicate ordinal {ordinal}");
   let name=f[1].to_owned();let forwarder=f[2].to_owned();
