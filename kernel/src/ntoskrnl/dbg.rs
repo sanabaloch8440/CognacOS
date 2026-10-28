@@ -74,7 +74,7 @@ pub unsafe extern "system" fn DbgSetDebugFilterState(component: ULONG, level: UL
     if crate::ntoskrnl::debug::set_filter(component, level, state != 0) {
         STATUS_SUCCESS
     } else {
-        0xC000_000D_u32
+        0xC000_000D_u32 as i32
     }
 }
 
