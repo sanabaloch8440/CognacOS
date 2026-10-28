@@ -805,8 +805,8 @@ jobs:
             echo
             llvm-readobj --file-headers --coff-imports test/beep.sys
             echo
-            echo "=== beep.sys DriverEntry disassembly (RVA 0x6000-0x60a0) ==="
-            llvm-objdump -d --start-address=0x6000 --stop-address=0x60a0 test/beep.sys
+            echo "=== beep.sys disassembly (full image; DriverEntry RVA is 0x6010) ==="
+            llvm-objdump -D --print-imm-hex test/beep.sys
           } > "$log" 2>&1
           status=$?
           set -e
