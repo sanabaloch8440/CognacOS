@@ -2,8 +2,9 @@
 //!
 //! Layouts and dispatch conventions here follow the public x64 WDK ABI for the
 //! fields used by this implementation. This is not a claim of complete WDM
-//! compatibility: MDLs, cancellation ownership, remove locks, I/O stack
-//! completion unwinding, security descriptors, VPBs, and many IRP variants are
+//! compatibility: cancellation ownership for builder-created synchronous IRPs
+//! is now tracked per creator thread, but general cancel-safe queues, complete
+//! cancel-spin-lock races, security descriptors, VPBs, and many IRP variants are
 //! still unsupported. Driver images must not be treated as generally loadable.
 use core::{ffi::c_void, ptr};
 use crate::hal::IrqSpinLock;
