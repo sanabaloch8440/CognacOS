@@ -378,7 +378,7 @@ static IO_CANCEL_SPIN_LOCK: core::sync::atomic::AtomicBool =
 
 /// Acquire the global NT I/O cancel spin lock and raise to DISPATCH_LEVEL.
 /// The caller must supply a writable KIRQL slot, as required by the WDK ABI.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoAcquireCancelSpinLock")]
 pub extern "system" fn io_acquire_cancel_spin_lock(old_irql: *mut u8) {
     if old_irql.is_null() {
         return;
@@ -399,7 +399,7 @@ pub extern "system" fn io_acquire_cancel_spin_lock(old_irql: *mut u8) {
 }
 
 /// Release the global cancel spin lock, then restore the caller's previous IRQL.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoReleaseCancelSpinLock")]
 pub extern "system" fn io_release_cancel_spin_lock(old_irql: u8) {
     IO_CANCEL_SPIN_LOCK.store(false, core::sync::atomic::Ordering::Release);
     unsafe { crate::ntoskrnl::ke::runtime::ke_lower_irql(old_irql); }
