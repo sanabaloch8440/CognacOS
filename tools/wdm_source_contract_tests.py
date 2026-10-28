@@ -10,6 +10,11 @@ exports = (root / "kernel/src/ntoskrnl/mod.rs").read_text(encoding="utf-8")
 manifest = (root / "kernel/src/ntoskrnl/manifest_26100.json").read_text(encoding="utf-8")
 
 errors = []
+if re.search(r"#\[repr\([^\]]+\)\]\s*const\s", wdm):
+    errors.append("repr attribute is incorrectly attached to a const item")
+if not re.search(r"#\[repr\(C\)\]\s*struct IrpSlot\b", wdm):
+    errors.append("IrpSlot must retain C layout for contiguous IRP/stack storage")
+
 # Rust 2024 rejects implicit references created by indexing/method calls through
 # raw IRP pointers. All accesses must go through explicit raw-address operations.
 for pattern in (
