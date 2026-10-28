@@ -35,28 +35,30 @@ extern "system" {
 }
 
 #[inline]
-unsafe fn cognac_wait_on_lock(address:*mut LONG,expected:LONG)->NTSTATUS{
-    #[cfg(all(target_os="windows",target_arch="x86_64"))]
-    {
-        let status:u64;
-        unsafe{
-            core::arch::asm!(
-                "mov r10, rcx",
-                "syscall",
-                inlateout("rax") 0x152u64 => status,
-                inlateout("rcx") address as u64 => _,
-                in("rdx") expected as u32 as u64,
-                in("r8") 4u64,
-                in("r9") u64::MAX,
-                lateout("r10") _,
-                lateout("r11") _,
-                options(nostack)
-            );
-        }
-        return status as u32 as i32;
+#[cfg(all(target_os="windows", target_arch="x86_64"))]
+unsafe fn cognac_wait_on_lock(address: *mut LONG, expected: LONG) -> NTSTATUS {
+    let status: u64;
+    unsafe {
+        core::arch::asm!(
+            "mov r10, rcx",
+            "syscall",
+            inlateout("rax") 0x152u64 => status,
+            inlateout("rcx") address as u64 => _,
+            in("rdx") expected as u32 as u64,
+            in("r8") 4u64,
+            in("r9") u64::MAX,
+            lateout("r10") _,
+            lateout("r11") _,
+            options(nostack)
+        );
     }
-    #[cfg(not(all(target_os="windows",target_arch="x86_64")))]
-    { let _=(address,expected); STATUS_NOT_IMPLEMENTED }
+    status as u32 as i32
+}
+
+#[inline]
+#[cfg(not(all(target_os="windows", target_arch="x86_64")))]
+unsafe fn cognac_wait_on_lock(_address: *mut LONG, _expected: LONG) -> NTSTATUS {
+    STATUS_NOT_IMPLEMENTED
 }
 
 #[inline]
