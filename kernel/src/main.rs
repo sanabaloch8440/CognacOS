@@ -1141,7 +1141,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         Err(_) => serial_write(b"Failed to schedule beep.sys test worker.\\r\\n"),
                     }
                     serial_write(b"Local APIC timer enabled after AP startup/self-tests; timer-driven preemption enabled.\r\n");
+                    serial_write(b"cognacos-kd> type help for debugger commands\r\n");
                     loop {
+                        crate::debug_console::poll();
                         unsafe { asm!("sti; hlt", options(nomem, nostack)); }
                         ntoskrnl::ke::runtime::dispatch_threaded_dpcs();
                         if thread::has_ready_threads() { let _ = thread::yield_current(); }
