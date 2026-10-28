@@ -982,7 +982,23 @@ pub(crate) unsafe fn se_internal_TokenQueryDefaultDacl(
 pub(crate) unsafe fn se_internal_TokenSetDefaultDacl(
     token: *mut c_void, acl: *const u8, length: usize,
 ) -> i32 {
-    if token.is_null() || acl.is_null() || length < 8 || length > 236 { return STATUS_INVALID_PARAMETER; }
+    if token.is_null() || length > 236 || (length != 0 && acl.is_null()) || (length != 0 && length < 8) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    // A null TOKEN_DEFAULT_DACL is distinct from a token with no registered
+    // default-DACL information. Windows treats the resulting object DACL as null.
+    if length == 0 {
+        let _guard = SECURITY_TOKEN_LOCK.lock();
+        let entries = unsafe { &mut *core::ptr::addr_of_mut!(SECURITY_TOKEN_IDENTITIES) };
+        let Some(entry) = entries.iter_mut().find(|e| e.used && e.token == token as usize) else {
+            return 0xC000_0008u32 as i32;
+        };
+        entry.default_dacl = [0; 236];
+        entry.default_dacl_len = 0;
+        entry.default_dacl_present = true;
+        entry.default_dacl_explicit = true;
+        return STATUS_SUCCESS;
+    }
     let bytes = unsafe { core::slice::from_raw_parts(acl, length) };
     let acl_size = u16::from_le_bytes([bytes[2], bytes[3]]) as usize;
     let ace_count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
