@@ -887,7 +887,7 @@ unsafe fn copy_sid_set(
 fn append_default_dacl_ace(
     acl: &mut [u8; 236], offset: &mut usize, count: &mut u16, sid: &[u8],
 ) -> bool {
-    const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
+    const GENERIC_ALL_ACCESS: u32 = 0x1000_0000;
     if sid.len() < 8 || sid.len() > SECURITY_SID_BYTES || *offset + 8 + sid.len() > acl.len() {
         return false;
     }
@@ -895,7 +895,7 @@ fn append_default_dacl_ace(
     acl[*offset] = 0; // ACCESS_ALLOWED_ACE_TYPE
     acl[*offset + 1] = 0;
     acl[*offset + 2..*offset + 4].copy_from_slice(&(ace_len as u16).to_le_bytes());
-    acl[*offset + 4..*offset + 8].copy_from_slice(&EVENT_ALL_ACCESS.to_le_bytes());
+    acl[*offset + 4..*offset + 8].copy_from_slice(&GENERIC_ALL_ACCESS.to_le_bytes());
     acl[*offset + 8..*offset + ace_len].copy_from_slice(sid);
     *offset += ace_len;
     *count += 1;
