@@ -249,8 +249,9 @@ jobs:
               pub fn debug_trace_store_read(_: u64, _: &mut [u8]) -> bool { false }
               pub fn debug_trace_store_write(_: u64, _: &[u8]) -> bool { false }
           }
-          #[path = concat!(env!("GITHUB_WORKSPACE"), "/kernel/src/ntoskrnl/debug.rs")]
-          mod debug;
+          mod debug {
+              include!(concat!(env!("GITHUB_WORKSPACE"), "/kernel/src/ntoskrnl/debug.rs"));
+          }
           RS
           rustc --edition=2024 --test /tmp/cognacos-ntoskrnl-debug-tests.rs -o /tmp/cognacos-ntoskrnl-debug-tests
           /tmp/cognacos-ntoskrnl-debug-tests
