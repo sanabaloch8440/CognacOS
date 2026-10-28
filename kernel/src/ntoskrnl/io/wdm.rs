@@ -358,9 +358,9 @@ unsafe impl Send for PnpRelation {}
 impl PnpRelation { const EMPTY:Self=Self{used:false,bus:ptr::null_mut(),child:ptr::null_mut()}; }
 const MAX_PNP_MANAGER_IRPS:usize=64;
 #[derive(Clone,Copy)]
-struct ManagedPnpIrp { used:bool, irp:*mut Irp, device:*mut DeviceObject, returned:bool, completed:bool }
+struct ManagedPnpIrp { used:bool, irp:*mut Irp, device:*mut DeviceObject, returned:bool, completed:bool, status:i32, remove_after_surprise:bool }
 unsafe impl Send for ManagedPnpIrp {}
-impl ManagedPnpIrp { const EMPTY:Self=Self{used:false,irp:ptr::null_mut(),device:ptr::null_mut(),returned:false,completed:false}; }
+impl ManagedPnpIrp { const EMPTY:Self=Self{used:false,irp:ptr::null_mut(),device:ptr::null_mut(),returned:false,completed:false,status:STATUS_PENDING,remove_after_surprise:false}; }
 struct PnpManagerState { relations:[PnpRelation;MAX_PNP_DEVICES], managed_irps:[ManagedPnpIrp;MAX_PNP_MANAGER_IRPS], enumerations:u64 }
 const MAX_PNP_DEVICES:usize=128;
 impl PnpManagerState { const fn new()->Self{Self{relations:[PnpRelation::EMPTY;MAX_PNP_DEVICES],managed_irps:[ManagedPnpIrp::EMPTY;MAX_PNP_MANAGER_IRPS],enumerations:0}} }
@@ -409,6 +409,67 @@ pub unsafe extern "system" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rel
  STATUS_SUCCESS
 }
 
+/// Dispatch one real IRP_MJ_PNP lifecycle request under PnP-manager ownership.
+/// START_DEVICE is validated/resourced by the normal Po/I/O dispatch path.
+/// Pending IRPs remain owned until terminal IoCompleteRequest.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void)->i32 {
+ unsafe{io_pnp_dispatch_lifecycle_internal(device,minor,allocated,translated,false)}
+}
+unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void,remove_after_surprise:bool)->i32 {
+ if device.is_null()||!matches!(minor,0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x17){return STATUS_INVALID_PARAMETER}
+ let referenced=unsafe{io_reference_device_object(device)};
+ if referenced.is_null(){return STATUS_DELETE_PENDING}
+ let stack_size=unsafe{(*device).stack_size.max(1) as i16};
+ let irp=unsafe{io_allocate_irp(stack_size,0)};
+ if irp.is_null(){unsafe{io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
+ let stack=unsafe{io_get_next_irp_stack_location(irp)};
+ if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
+ unsafe{(*stack).major_function=0x1b;(*stack).minor_function=minor;(*stack).parameters[0]=allocated as u64;(*stack).parameters[1]=translated as u64;}
+ {
+  let mut manager=PNP_MANAGER.lock();
+  let Some(slot)=manager.managed_irps.iter_mut().find(|s|!s.used) else {
+   drop(manager);unsafe{io_free_irp(irp);io_dereference_device_object(device)};
+   return STATUS_INSUFFICIENT_RESOURCES
+  };
+  *slot=ManagedPnpIrp{used:true,irp,device,returned:false,completed:false,status:STATUS_PENDING,remove_after_surprise};
+ }
+ let status=unsafe{io_call_driver(device,irp)};
+ let terminal={let state=WDM.lock();state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)).is_some_and(|s|s.completion_state==2)};
+ if status!=STATUS_PENDING&&!terminal {
+  unsafe{(*irp).bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&status.to_le_bytes());io_complete_request(irp,0);}
+ }
+ let completed={
+  let mut manager=PNP_MANAGER.lock();
+  if let Some(slot)=manager.managed_irps.iter_mut().find(|s|s.used&&s.irp==irp){
+   slot.returned=true;
+   if slot.completed{let result=*slot;*slot=ManagedPnpIrp::EMPTY;Some(result)}else{None}
+  }else{None}
+ };
+ if let Some(request)=completed {
+  unsafe{io_free_irp(request.irp);io_dereference_device_object(request.device);}
+  if request.remove_after_surprise&&request.status==STATUS_SUCCESS {
+   let _=unsafe{io_pnp_dispatch_lifecycle_internal(request.device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null(),false)};
+  }
+ }
+ status
+}
+fn io_pnp_manager_irp_completed(irp:*mut Irp){
+ if irp.is_null(){return}
+ let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
+ let completed={
+  let mut manager=PNP_MANAGER.lock();
+  let Some(slot)=manager.managed_irps.iter_mut().find(|s|s.used&&s.irp==irp) else{return};
+  slot.completed=true;slot.status=status;
+  if slot.returned{let result=*slot;*slot=ManagedPnpIrp::EMPTY;Some(result)}else{None}
+ };
+ if let Some(request)=completed {
+  unsafe{io_free_irp(request.irp);io_dereference_device_object(request.device);}
+  if request.remove_after_surprise&&status==STATUS_SUCCESS {
+   let _=unsafe{io_pnp_dispatch_lifecycle_internal(request.device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null(),false)};
+  }
+}
+
 /// Start a PnP device by sending its real START_DEVICE IRP with the
 /// allocated and translated resource lists supplied by the bus/resource arbiter.
 #[unsafe(no_mangle)]
@@ -430,11 +491,10 @@ pub unsafe extern "system" fn IoPnPRemoveDevice(device:*mut DeviceObject)->i32{
  if state<0{return STATUS_INVALID_PARAMETER}
  if state==PNP_STATE_REMOVED{return STATUS_SUCCESS}
  if state==PNP_STATE_STARTED {
-  let status=unsafe{IoPnPDispatchLifecycle(device,IRP_MN_SURPRISE_REMOVAL,ptr::null(),ptr::null())};
-  if status!=STATUS_SUCCESS{return status}
+  // The manager owns the continuation: successful surprise-removal completion
+  // automatically queues REMOVE_DEVICE, including when the first IRP pends.
+  return unsafe{io_pnp_dispatch_lifecycle_internal(device,IRP_MN_SURPRISE_REMOVAL,ptr::null(),ptr::null(),true)}
  }
- let state=io_pnp_state(device);
- if state==PNP_STATE_REMOVED{return STATUS_SUCCESS}
  if state!=PNP_STATE_SURPRISE_REMOVED&&state!=PNP_STATE_STOPPED&&state!=PNP_STATE_NOT_STARTED{return STATUS_DEVICE_BUSY}
  unsafe{IoPnPDispatchLifecycle(device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null())}
 }
@@ -845,6 +905,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
     .is_some_and(|s|s.active_ops==0)
   };
   if callbacks_drained {release_irp_device_rundown(irp);}
+  io_pnp_manager_irp_completed(irp);
  }
  if finished {io_pnp_manager_irp_completed(irp);}
 }
