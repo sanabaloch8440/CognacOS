@@ -1261,25 +1261,14 @@ pub fn unregister_driver_image_sections(image_base: u64) {
 #[unsafe(export_name = "MmLockPagableDataSection")]
 pub unsafe extern "win64" fn mm_lock_pagable_data_section(address: *const c_void) -> *mut c_void {
     let va = address as u64;
-    let index = {
-        let locks = PAGEABLE_IMAGE_LOCKS.lock();
-        let Some(index) = locks.iter().position(|entry| entry.used && entry.pageable
-            && va >= entry.section_base && va < entry.section_end) else { return core::ptr::null_mut(); };
-        index
-    };
-    let (base, end, refs) = {
-        let locks = PAGEABLE_IMAGE_LOCKS.lock();
-        let entry = locks[index];
-        (entry.section_base, entry.section_end, entry.references)
-    };
-    if refs == 0 && !pin_kernel_image_range(base, end) { return core::ptr::null_mut(); }
     let mut locks = PAGEABLE_IMAGE_LOCKS.lock();
-    if !locks[index].used || locks[index].section_base != base || locks[index].section_end != end {
-        if refs == 0 { drop(locks); unpin_kernel_image_range(base, end); }
-        return core::ptr::null_mut();
-    }
+    let Some(index) = locks.iter().position(|entry| entry.used && entry.pageable
+        && va >= entry.section_base && va < entry.section_end) else { return core::ptr::null_mut(); };
+    let base = locks[index].section_base;
+    let end = locks[index].section_end;
+    if locks[index].references == 0 && !pin_kernel_image_range(base, end) { return core::ptr::null_mut(); }
     let Some(next) = locks[index].references.checked_add(1) else {
-        if refs == 0 { drop(locks); unpin_kernel_image_range(base, end); }
+        if locks[index].references == 0 { drop(locks); unpin_kernel_image_range(base, end); }
         return core::ptr::null_mut();
     };
     locks[index].references = next;
