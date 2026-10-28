@@ -784,6 +784,7 @@ jobs:
         run: |
           mkdir -p build/beep-driver-assessment
           log=build/beep-driver-assessment/output.txt
+          set +e
           {
             echo "CognacOS Microsoft beep.sys compatibility assessment"
             echo "Commit: ${GITHUB_SHA}"
@@ -799,6 +800,7 @@ jobs:
             llvm-readobj --file-headers --coff-imports test/beep.sys
           } > "$log" 2>&1
           status=$?
+          set -e
           cat "$log"
           if [ "$status" -ne 0 ]; then
             echo "beep.sys static inspection failed; see output.txt." >&2
@@ -808,7 +810,7 @@ jobs:
             echo "FAIL: beep.sys is not identified as an AMD64 PE image." | tee -a "$log"
             exit 1
           }
-          grep -Eq 'Magic: 0x20B|PE32\+' "$log" || {
+          grep -Fq 'Magic: 0x20B' "$log" || {
             echo "FAIL: beep.sys is not identified as PE32+." | tee -a "$log"
             exit 1
           }
@@ -829,6 +831,7 @@ jobs:
             build/cognacos-uefi.img
             build/serial.log
             build/serial-smp-*.log
+            build/beep-driver-assessment/output.txt
             build/gdb-state.txt
             build/gdb-diagnose.gdb
             build/qemu-debug.log
