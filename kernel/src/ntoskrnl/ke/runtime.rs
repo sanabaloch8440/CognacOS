@@ -32,9 +32,12 @@ fn begin_ke_set_event_wait_handoff() {
 }
 pub(crate) fn consume_ke_set_event_wait_handoff() {
     let cpu=cpu_slot();
-    if KESET_WAIT_HANDOFF[cpu].swap(false,Ordering::AcqRel) {
+    if KESET_WAIT_HANDOFF[cpu].load(Ordering::Acquire) {
         let previous=KESET_WAIT_PREVIOUS_IRQL[cpu].swap(PASSIVE_LEVEL,Ordering::AcqRel);
+        // Restore IRQL before opening the preemption gate. An interrupt between
+        // these stores still observes the handoff token and cannot switch away.
         CURRENT_IRQL[cpu].store(previous,Ordering::Release);
+        KESET_WAIT_HANDOFF[cpu].store(false,Ordering::Release);
     }
 }
 
