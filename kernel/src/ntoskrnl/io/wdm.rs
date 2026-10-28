@@ -776,17 +776,23 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*
   let mut state=WDM.lock();
   if let Some(slot)=state.irps.iter_mut().find(|s|!s.used){return initialize_irp_slot(slot,stack_size)}
  }
- let pages=(core::mem::size_of::<IrpSlot>()+PAGE_SIZE-1)/PAGE_SIZE;
- let memory=match crate::ntoskrnl::mm::kernel_space::allocate_pages(pages){Ok(p)=>p,Err(_)=>return ptr::null_mut()};
- let candidate=memory.cast::<IrpSlot>();
- unsafe{ptr::write(candidate,IrpSlot::empty());}
+ // Grow in slabs, not one VM extent per IRP. This avoids turning the VM
+ // extent-descriptor count into a hidden small IRP limit. Slots remain reusable
+ // after IoFreeIrp; backing pages are retained as a nonpaged high-water pool.
+ const IRP_SLAB_PAGES:usize=256;
+ let slab_bytes=IRP_SLAB_PAGES*PAGE_SIZE;
+ let slot_bytes=core::mem::size_of::<IrpSlot>();
+ let count=slab_bytes/slot_bytes;
+ if count==0{return ptr::null_mut()}
+ let memory=match crate::ntoskrnl::mm::kernel_space::allocate_pages(IRP_SLAB_PAGES){Ok(p)=>p,Err(_)=>return ptr::null_mut()};
  let mut state=WDM.lock();
- if let Some(slot)=state.irps.iter_mut().find(|s|!s.used){
-  let object=initialize_irp_slot(slot,stack_size);drop(state);
-  let _=crate::ntoskrnl::mm::kernel_space::free_pages(memory,pages);return object
+ for index in 0..count {
+  let candidate=unsafe{memory.add(index*slot_bytes).cast::<IrpSlot>()};
+  unsafe{ptr::write(candidate,IrpSlot::empty());}
+  state.irps.push_front(candidate);
  }
- let object=initialize_irp_slot(unsafe{&mut *candidate},stack_size);
- state.irps.push_front(candidate);object
+ let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
+ initialize_irp_slot(slot,stack_size)
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
