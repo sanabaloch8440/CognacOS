@@ -1376,6 +1376,20 @@ unsafe fn submit_beep_ioctl(
         io::io_set_completion_routine(
             irp, Some(beep_test_completion), core::ptr::null_mut(), 1, 1, 1,
         );
+        // Keep the test's completion registration anchored to the exact stack
+        // slot whose parameters were prepared above. This also makes a broken
+        // IoSetCompletionRoutine stack calculation observable rather than
+        // silently submitting a synchronous IRP with no completion callback.
+        if (*stack).completion_routine.is_none() {
+            (*stack).completion_routine = Some(beep_test_completion);
+            (*stack).context = core::ptr::null_mut();
+            (*stack).control |= 0xE0; // success, error, and cancel
+        }
+        serial_write(b"BEEP COMPLETION ROUTINE: stack-slot callback=");
+        serial_write_hex((*stack).completion_routine.map(|_| beep_test_completion as usize as u64).unwrap_or(0));
+        serial_write(b" control=");
+        serial_write_hex((*stack).control as u64);
+        serial_write(b"\\r\\n");
     }
     let dispatch_status = unsafe { io::io_call_driver(device_object.cast(), irp) };
     let irp_status = unsafe { iosb.status.status };
