@@ -927,17 +927,21 @@ fn track_irp_device(irp:*mut Irp, device:*mut DeviceObject)->bool {
 /// Release the IRP's device references once. The caller must keep the IRP
 /// allocated until this function returns.
 fn release_irp_active_op(irp:*mut Irp) {
- let should_release={
+ let (should_release,completion_event)={
   let mut state=WDM.lock();
   let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
   if state.irps[index].active_ops!=0 {state.irps[index].active_ops-=1;}
-  state.irps[index].active_ops==0
-   && state.irps[index].completion_state==2
-   && state.irps[index].outstanding_count!=0
+  let terminal=state.irps[index].active_ops==0&&state.irps[index].completion_state==2;
+  let release=terminal&&state.irps[index].outstanding_count!=0;
+  let event=if terminal {sync_queue_detach_locked(&mut state,irp)}else{ptr::null_mut()};
+  (release,event)
  };
  // Completion may finish while a cancel/dispatch callback is still pinned.
- // Keep device rundown until the final callback pin is dropped.
+ // Keep device rundown until the final callback pin is dropped; only then wake
+ // the synchronous caller and permit its IRP to be reclaimed.
  if should_release {release_irp_device_rundown(irp);}
+ if !completion_event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(completion_event.cast(),0,0);}}
+ try_free_completed_sync_ioctl_irp(irp);
 }
 
 /// Drop every device rundown reference attached to an IRP exactly once.
@@ -1282,16 +1286,14 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
  if finished {
   // Remove the request from the creator's queue before waking it. finalize_irp_status
   // has published the IOSB, and terminal state is now visible.
-  let completion_event={
+  let (completion_event,callbacks_drained)={
    let mut state=WDM.lock();
-   if state.irps.iter().any(|slot|slot.used&&ptr::eq(&slot.object,irp)){
+   let active_zero=state.irps.iter().find(|slot|slot.used&&ptr::eq(&slot.object,irp))
+    .is_some_and(|slot|slot.active_ops==0);
+   let event=if active_zero&&state.irps.iter().any(|slot|slot.used&&ptr::eq(&slot.object,irp)){
     sync_queue_detach_locked(&mut state,irp)
-   }else{ptr::null_mut()}
-  };
-  let callbacks_drained={
-   let state=WDM.lock();
-   state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp))
-    .is_some_and(|s|s.active_ops==0)
+   }else{ptr::null_mut()};
+   (event,active_zero)
   };
   if callbacks_drained {release_irp_device_rundown(irp);}
   io_pnp_manager_irp_completed(irp);
