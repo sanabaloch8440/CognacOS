@@ -1141,6 +1141,24 @@ pub unsafe extern "win64" fn io_call_driver(device:*mut DeviceObject, irp:*mut I
  if needs_completion {
   let next=unsafe{io_get_next_irp_stack_location(irp)};
   if next.is_null()||unsafe{(*next).completion_routine.is_none()} {
+   // Emit the exact IRP/stack state at the guard, not a caller-side guess.
+   // This lets QEMU logs distinguish a bad stack pointer from a missing
+   // callback registration without changing the IRP before rejection.
+   unsafe {
+    crate::serial_write(b"WDM IRP COMPLETION GUARD: irp=");
+    crate::serial_write_hex(irp as usize as u64);
+    crate::serial_write(b" current=");
+    crate::serial_write_hex(io_get_current_irp_stack_location(irp) as usize as u64);
+    crate::serial_write(b" next=");
+    crate::serial_write_hex(next as usize as u64);
+    crate::serial_write(b" callback=");
+    crate::serial_write_hex(if next.is_null(){0}else{(*next).completion_routine.map(|routine|routine as usize as u64).unwrap_or(0)});
+    crate::serial_write(b" stack_count=");
+    crate::serial_write_decimal(*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize);
+    crate::serial_write(b" current_location=");
+    crate::serial_write_decimal(*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x43) as usize);
+    crate::serial_write(b"\\r\\n");
+   }
    release_device_dispatch_rundown(device);
    return STATUS_INVALID_PARAMETER;
   }
