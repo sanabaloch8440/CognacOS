@@ -7,6 +7,7 @@ use crate::ntoskrnl::debug;
 const INPUT_CAPACITY: usize = 96;
 static mut INPUT: [u8; INPUT_CAPACITY] = [0; INPUT_CAPACITY];
 static mut INPUT_LEN: usize = 0;
+static CONSOLE_BUSY: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 #[inline]
 unsafe fn uart_read_byte() -> Option<u8> {
@@ -96,6 +97,8 @@ fn command(line: &[u8]) {
 /// Poll COM1 without waiting. Call from a safe, single-owner console context.
 /// Input is bounded, line-oriented, and does not allocate.
 pub fn poll() {
+    if CONSOLE_BUSY.compare_exchange(false, true, core::sync::atomic::Ordering::Acquire,
+        core::sync::atomic::Ordering::Relaxed).is_err() { return; }
     loop {
         let byte = unsafe { uart_read_byte() };
         let Some(byte) = byte else { break; };
@@ -126,6 +129,7 @@ pub fn poll() {
             _ => {}
         }
     }
+    CONSOLE_BUSY.store(false, core::sync::atomic::Ordering::Release);
 }
 
 #[cfg(test)]
