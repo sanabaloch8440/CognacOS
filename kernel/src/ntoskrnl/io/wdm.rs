@@ -680,6 +680,106 @@ unsafe fn write_isize(base:*mut u8, offset:usize, value:isize) { unsafe { ptr::w
 /// counted UTF-16 strings; the kernel owns the returned device object and its
 /// zeroed extension for its lifetime.
 #[unsafe(no_mangle)]
+
+// ---- StartIo queue ABI -----------------------------------------------------
+// The public DEVICE_OBJECT embeds KDEVICE_QUEUE storage. Until that layout is
+// corrected to the exact SDK size, queue linkage is tracked in a bounded
+// kernel-owned table keyed by DEVICE_OBJECT; IRP and device ABI objects remain
+// the caller-visible objects. StartIo is always called after dropping the lock.
+const START_IO_DEPTH: usize = 64;
+#[derive(Clone, Copy)]
+struct StartIoQueue {
+    device: *mut DeviceObject,
+    entries: [*mut Irp; START_IO_DEPTH],
+    keys: [u32; START_IO_DEPTH],
+    count: usize,
+    keyed: bool,
+    boosted: bool,
+}
+unsafe impl Send for StartIoQueue {}
+impl StartIoQueue {
+    const EMPTY: Self = Self { device: ptr::null_mut(), entries: [ptr::null_mut(); START_IO_DEPTH], keys: [0; START_IO_DEPTH], count: 0, keyed: false, boosted: false };
+}
+struct StartIoState { queues: [StartIoQueue; MAX_WDM_DEVICES] }
+unsafe impl Send for StartIoState {}
+impl StartIoState { const fn new() -> Self { Self { queues: [StartIoQueue::EMPTY; MAX_WDM_DEVICES] } } }
+static START_IO: IrqSpinLock<StartIoState> = IrqSpinLock::new(StartIoState::new());
+
+fn start_io_slot(state: &mut StartIoState, device: *mut DeviceObject) -> Option<usize> {
+    if let Some(i) = state.queues.iter().position(|q| q.device == device) { return Some(i); }
+    let i = state.queues.iter().position(|q| q.device.is_null())?;
+    state.queues[i].device = device;
+    Some(i)
+}
+unsafe fn invoke_start_io(device: *mut DeviceObject, irp: *mut Irp) {
+    if device.is_null() || irp.is_null() { return; }
+    let driver = unsafe { (*device).driver_object };
+    if driver.is_null() { return; }
+    let callback = unsafe { (*driver).driver_start_io };
+    if callback.is_null() { return; }
+    let start: unsafe extern "system" fn(*mut DeviceObject, *mut Irp) = unsafe { core::mem::transmute(callback) };
+    unsafe { start(device, irp); }
+}
+
+/// VOID IoSetStartIoAttributes(PDEVICE_OBJECT, BOOLEAN KeyedDevice, BOOLEAN BoostedIo).
+pub unsafe extern "system" fn io_set_start_io_attributes(device: *mut DeviceObject, keyed_device: u8, boosted_io: u8) {
+    if device.is_null() { return; }
+    let mut state = START_IO.lock();
+    if let Some(i) = start_io_slot(&mut state, device) {
+        state.queues[i].keyed = keyed_device != 0;
+        state.queues[i].boosted = boosted_io != 0;
+    }
+}
+
+/// VOID IoStartPacket(PDEVICE_OBJECT, PIRP, PULONG Key, PDRIVER_CANCEL CancelFunction).
+pub unsafe extern "system" fn io_start_packet(device: *mut DeviceObject, irp: *mut Irp, key: *const u32, cancel_function: Option<DriverCancelRoutine>) {
+    if device.is_null() || irp.is_null() { return; }
+    if let Some(cancel) = cancel_function {
+        let _ = unsafe { io_set_cancel_routine(irp, Some(cancel)); };
+    }
+    let key_value = if key.is_null() { 0 } else { unsafe { key.read_unaligned() } };
+    let start_now = {
+        let mut state = START_IO.lock();
+        let Some(index) = start_io_slot(&mut state, device) else { return; };
+        if unsafe { (*device).current_irp.is_null() } {
+            unsafe { (*device).current_irp = irp; }
+            true
+        } else {
+            let q = &mut state.queues[index];
+            if q.count >= START_IO_DEPTH { return; }
+            let at = if q.keyed {
+                q.keys[..q.count].iter().position(|k| *k > key_value).unwrap_or(q.count)
+            } else { q.count };
+            for n in (at..q.count).rev() { q.entries[n + 1] = q.entries[n]; q.keys[n + 1] = q.keys[n]; }
+            q.entries[at] = irp; q.keys[at] = key_value; q.count += 1;
+            false
+        }
+    };
+    if start_now { unsafe { invoke_start_io(device, irp); } }
+}
+
+/// VOID IoStartNextPacket(PDEVICE_OBJECT, BOOLEAN Cancelable).
+pub unsafe extern "system" fn io_start_next_packet(device: *mut DeviceObject, _cancelable: u8) {
+    if device.is_null() { return; }
+    let next = {
+        let mut state = START_IO.lock();
+        let Some(index) = state.queues.iter().position(|q| q.device == device) else {
+            unsafe { (*device).current_irp = ptr::null_mut(); }
+            return;
+        };
+        unsafe { (*device).current_irp = ptr::null_mut(); }
+        let q = &mut state.queues[index];
+        if q.count == 0 { ptr::null_mut() } else {
+            let irp = q.entries[0];
+            for n in 1..q.count { q.entries[n - 1] = q.entries[n]; q.keys[n - 1] = q.keys[n]; }
+            q.count -= 1; q.entries[q.count] = ptr::null_mut(); q.keys[q.count] = 0;
+            unsafe { (*device).current_irp = irp; }
+            irp
+        }
+    };
+    if !next.is_null() { unsafe { invoke_start_io(device, next); } }
+}
+
 pub unsafe extern "system" fn io_create_device(
  driver:*mut DriverObject, extension_size:u32, device_name:*mut UnicodeString,
  device_type:u32, characteristics:u32, exclusive:u8, output:*mut *mut DeviceObject
