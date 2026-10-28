@@ -894,15 +894,21 @@ jobs:
           else
             echo "RUNTIME RESULT: NOT RUN - no QEMU serial log was produced." | tee -a "$log"
           fi
-          echo "BEEP DEVICE-CONTROL RESULT: NOT TESTED - this run has not submitted a Windows device-control request." | tee -a "$log"
+          if grep -Fq "BEEP DISPATCH RESULT: PASS" build/serial.log 2>/dev/null; then
+            echo "BEEP DEVICE-CONTROL RESULT: PASS - IRP_MJ_DEVICE_CONTROL was routed to the registered beep.sys dispatch routine and both NTSTATUS values succeeded." | tee -a "$log"
+          elif grep -Fq "BEEP DISPATCH RESULT: FAIL" build/serial.log 2>/dev/null; then
+            echo "BEEP DEVICE-CONTROL RESULT: FAIL - dispatch was missing or returned a failing NTSTATUS." | tee -a "$log"
+          else
+            echo "BEEP DEVICE-CONTROL RESULT: NOT VERIFIED - runtime log has no successful dispatch result." | tee -a "$log"
+          fi
           if [[ -f build/beep-driver-assessment/audio.txt ]]; then
             cat build/beep-driver-assessment/audio.txt | tee -a "$log"
           fi
           if grep -Fq "beep.sys device and dispatch registration passed." build/serial.log 2>/dev/null &&
-             grep -Fq "AUDIO RESULT: PASS" build/beep-driver-assessment/audio.txt 2>/dev/null; then
-            echo "FINAL RESULT: PARTIAL PASS - driver initialization and QEMU speaker audio path passed; device-control handling remains unverified." | tee -a "$log"
+             grep -Fq "BEEP DISPATCH RESULT: PASS" build/serial.log 2>/dev/null; then
+            echo "FINAL RESULT: PASS - driver initialization and a real device-control dispatch both succeeded; speaker audio capture is reported separately." | tee -a "$log"
           else
-            echo "FINAL RESULT: INCOMPLETE - review driver initialization and audio capture results above." | tee -a "$log"
+            echo "FINAL RESULT: INCOMPLETE - review driver initialization, device-control dispatch, and audio capture results above." | tee -a "$log"
           fi
       - name: Upload Rust artifacts and boot log
         if: always()
