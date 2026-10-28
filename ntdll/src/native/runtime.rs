@@ -1433,45 +1433,6 @@ pub unsafe extern "system" fn RtlInitializeSListHead() -> i32 {
 pub unsafe extern "system" fn RtlInitializeSRWLock(lock:*mut usize){if !lock.is_null(){unsafe{lock.write(0);}}}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlEnterCriticalSection(cs:*mut CognacCriticalSection)->i32{
-    if cs.is_null(){return STATUS_INVALID_PARAMETER;}
-    let id=current_thread_id();
-    if id==0{return STATUS_NOT_IMPLEMENTED;}
-    if unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).load(Ordering::Acquire)}==id{
-        unsafe{(*cs).recursion_count=(*cs).recursion_count.saturating_add(1);}
-        return STATUS_SUCCESS;
-    }
-    let lock=unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count))};
-    let spins=unsafe{(*cs).spin_count.min(1_000_000)};
-    loop{
-        if lock.compare_exchange(-1,0,Ordering::Acquire,Ordering::Relaxed).is_ok(){
-            unsafe{(*cs).recursion_count=1;atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).store(id,Ordering::Release);}
-            return STATUS_SUCCESS;
-        }
-        for _ in 0..spins{if lock.load(Ordering::Relaxed)==-1{break;}core::hint::spin_loop();}
-        let observed=lock.load(Ordering::Acquire);
-        if observed!=-1{
-            let _=unsafe{wait_on_i32(core::ptr::addr_of_mut!((*cs).lock_count),observed,u64::MAX)};
-        }
-    }
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn RtlLeaveCriticalSection(cs:*mut CognacCriticalSection)->i32{
-    if cs.is_null(){return STATUS_INVALID_PARAMETER;}
-    let id=current_thread_id();
-    if id==0||unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).load(Ordering::Acquire)}!=id||unsafe{(*cs).recursion_count}<=0{return STATUS_INVALID_PARAMETER;}
-    unsafe{(*cs).recursion_count-=1;}
-    if unsafe{(*cs).recursion_count}==0{
-        unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).store(0,Ordering::Release);}
-        unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count)).store(-1,Ordering::Release);}
-        unsafe{wake_word(core::ptr::addr_of_mut!((*cs).lock_count).cast::<usize>(),false);}
-    }
-    STATUS_SUCCESS
-}
-
-
-#[no_mangle]
 pub unsafe extern "system" fn RtlInitNlsTables() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -2709,10 +2670,10 @@ pub unsafe extern "system" fn RtlSleepConditionVariableCS(condition:*mut usize,c
         if t>0{return STATUS_NOT_IMPLEMENTED;}
         (((t.unsigned_abs() as u128)+9_999)/10_000).min(u64::MAX as u128) as u64
     };
-    let leave=unsafe{RtlLeaveCriticalSection(cs)};
+    let leave=unsafe{crate::native::rtl_peb::RtlLeaveCriticalSection(cs.cast())};
     if leave<0{return leave;}
     let waited=unsafe{wait_on_word(condition,expected,wait_timeout)};
-    let entered=unsafe{RtlEnterCriticalSection(cs)};
+    let entered=unsafe{crate::native::rtl_peb::RtlEnterCriticalSection(cs.cast())};
     if entered<0{return entered;}
     waited
 }
@@ -3176,10 +3137,10 @@ mod cognac_sync_abi_tests {
             RtlInitializeCriticalSectionEx;
         let _: unsafe extern "system" fn(*mut CognacCriticalSection, u32) -> u32 =
             RtlSetCriticalSectionSpinCount;
-        let _: unsafe extern "system" fn(*mut CognacCriticalSection) -> i32 =
-            RtlEnterCriticalSection;
-        let _: unsafe extern "system" fn(*mut CognacCriticalSection) -> i32 =
-            RtlLeaveCriticalSection;
+        let _: unsafe extern "system" fn(*mut crate::native::rtl_peb::RTL_CRITICAL_SECTION) -> i32 =
+            crate::native::rtl_peb::RtlEnterCriticalSection;
+        let _: unsafe extern "system" fn(*mut crate::native::rtl_peb::RTL_CRITICAL_SECTION) -> i32 =
+            crate::native::rtl_peb::RtlLeaveCriticalSection;
     }
 
     #[test]
@@ -3187,11 +3148,12 @@ mod cognac_sync_abi_tests {
         let mut cs=core::mem::MaybeUninit::<CognacCriticalSection>::uninit();
         assert_eq!(unsafe{RtlInitializeCriticalSection(cs.as_mut_ptr())},STATUS_SUCCESS);
         let cs=unsafe{cs.assume_init_mut()};
-        assert_eq!(unsafe{RtlEnterCriticalSection(cs)},STATUS_SUCCESS);
-        assert_eq!(unsafe{RtlEnterCriticalSection(cs)},STATUS_SUCCESS);
+        let cs_abi=cs as *mut CognacCriticalSection as *mut crate::native::rtl_peb::RTL_CRITICAL_SECTION;
+        assert_eq!(unsafe{crate::native::rtl_peb::RtlEnterCriticalSection(cs_abi)},STATUS_SUCCESS);
+        assert_eq!(unsafe{crate::native::rtl_peb::RtlEnterCriticalSection(cs_abi)},STATUS_SUCCESS);
         assert_eq!(cs.recursion_count,2);
-        assert_eq!(unsafe{RtlLeaveCriticalSection(cs)},STATUS_SUCCESS);
-        assert_eq!(unsafe{RtlLeaveCriticalSection(cs)},STATUS_SUCCESS);
+        assert_eq!(unsafe{crate::native::rtl_peb::RtlLeaveCriticalSection(cs_abi)},STATUS_SUCCESS);
+        assert_eq!(unsafe{crate::native::rtl_peb::RtlLeaveCriticalSection(cs_abi)},STATUS_SUCCESS);
         assert_eq!(cs.lock_count,-1);
         assert_eq!(unsafe{RtlDeleteCriticalSection(cs)},STATUS_SUCCESS);
 
