@@ -298,6 +298,11 @@ fn resources_overlap(a:&ParsedResource,b:&ParsedResource)->bool{
 pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut Irp,minor:u8,allocated:*const c_void,translated:*const c_void)->i32{
  if minor!=IRP_MN_START_DEVICE{return STATUS_SUCCESS}
  if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
+ // Resource arbitration is performed once at the top of the stack and claims
+ // belong to the attachment base (PDO), even when a filter receives START first.
+ if unsafe{io_get_attached_device(device)}!=device{return STATUS_SUCCESS}
+ let resource_owner=unsafe{io_get_device_attachment_base_ref(device)};
+ if resource_owner.is_null(){return STATUS_INVALID_PARAMETER}
  let mut raw=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
  let mut resources=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
  let raw_count=match unsafe{parse_cm_resource_list(allocated,&mut raw)}{Ok(n)=>n,Err(e)=>return e};
@@ -307,7 +312,8 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
  // number of reservable resources; translation may change addresses, not count.
  for i in 0..count { for j in i+1..count { if resources_overlap(&resources[i],&resources[j]) { return STATUS_INVALID_PARAMETER; } } }
  let mut arbiter=RESOURCE_ARBITER.lock();
- if arbiter.claims.iter().any(|c|c.used&&c.owner==device&&!c.committed){return STATUS_DEVICE_BUSY}
+ if arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&c.irp==irp&&!c.committed){return STATUS_SUCCESS}
+ if arbiter.claims.iter().any(|c|c.used&&c.owner==resource_owner&&!c.committed){return STATUS_DEVICE_BUSY}
  for r in resources[..count].iter() {
   for claim in arbiter.claims.iter().filter(|c|c.used&&c.owner!=device) {
    let existing=ParsedResource{kind:claim.kind,start:claim.start,length:claim.length};
@@ -318,7 +324,7 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
  if free_count<count{return STATUS_INSUFFICIENT_RESOURCES}
  for r in resources[..count].iter() {
   let Some(slot)=arbiter.claims.iter_mut().find(|c|!c.used) else{return STATUS_INSUFFICIENT_RESOURCES};
-  *slot=ResourceClaim{used:true,owner:device,irp,kind:r.kind,start:r.start,length:r.length,committed:false};
+  *slot=ResourceClaim{used:true,owner:resource_owner,irp,kind:r.kind,start:r.start,length:r.length,committed:false};
  }
  STATUS_SUCCESS
 }
@@ -328,19 +334,24 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
 /// starts replace prior claims. Stop/remove release committed reservations.
 pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,minor:u8,status:i32){
  if irp.is_null()||device.is_null(){return}
+ // Only the top-of-stack completion owns the transaction. Claims are attached
+ // to the stack base so filters cannot double-reserve or prematurely release them.
+ if unsafe{io_get_attached_device(device)}!=device{return}
+ let resource_owner=unsafe{io_get_device_attachment_base_ref(device)};
+ if resource_owner.is_null(){return}
  let device_deleting={let state=WDM.lock();state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)).is_none_or(|s|s.deleting)};
  let effective_status=if minor==IRP_MN_START_DEVICE&&device_deleting{STATUS_DELETE_PENDING}else{status};
  let mut arbiter=RESOURCE_ARBITER.lock();
  if minor==IRP_MN_START_DEVICE {
-  let has_pending=arbiter.claims.iter().any(|c|c.used&&c.irp==irp&&c.owner==device&&!c.committed);
+  let has_pending=arbiter.claims.iter().any(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed);
   if effective_status==STATUS_SUCCESS {
-   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==device&&c.committed){*c=ResourceClaim::EMPTY;}
-   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==device&&!c.committed){c.committed=true;c.irp=ptr::null_mut();}
+   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner&&c.committed){*c=ResourceClaim::EMPTY;}
+   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==resource_owner&&!c.committed){c.committed=true;c.irp=ptr::null_mut();}
   } else if has_pending {
    for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==device&&!c.committed){*c=ResourceClaim::EMPTY;}
   }
  } else if status==STATUS_SUCCESS&&(minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_REMOVE_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL) {
-  for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==device){*c=ResourceClaim::EMPTY;}
+  for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==resource_owner){*c=ResourceClaim::EMPTY;}
  }
 }
 
@@ -425,9 +436,11 @@ pub unsafe extern "system" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,mi
 }
 unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void,remove_after_surprise:bool)->i32 {
  if device.is_null()||!matches!(minor,0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x07|0x17){return STATUS_INVALID_PARAMETER}
- let referenced=unsafe{io_reference_device_object(device)};
+ let dispatch_device=unsafe{io_get_attached_device(device)};
+ if dispatch_device.is_null(){return STATUS_DELETE_PENDING}
+ let referenced=unsafe{io_reference_device_object(dispatch_device)};
  if referenced.is_null(){return STATUS_DELETE_PENDING}
- let stack_size=unsafe{(*device).stack_size.max(1) as i16};
+ let stack_size=unsafe{(*dispatch_device).stack_size.max(1) as i16};
  let irp=unsafe{io_allocate_irp(stack_size,0)};
  if irp.is_null(){unsafe{io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
@@ -439,9 +452,9 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
    drop(manager);unsafe{io_free_irp(irp);io_dereference_device_object(device)};
    return STATUS_INSUFFICIENT_RESOURCES
   };
-  *slot=ManagedPnpIrp{used:true,irp,device,returned:false,completed:false,status:STATUS_PENDING,remove_after_surprise,enumerate_bus:minor==0x07};
+  *slot=ManagedPnpIrp{used:true,irp,device:dispatch_device,returned:false,completed:false,status:STATUS_PENDING,remove_after_surprise,enumerate_bus:minor==0x07};
  }
- let status=unsafe{io_call_driver(device,irp)};
+ let status=unsafe{io_call_driver(dispatch_device,irp)};
  let terminal={let state=WDM.lock();state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)).is_some_and(|s|s.completion_state==2)};
  if status!=STATUS_PENDING&&!terminal {
   unsafe{
