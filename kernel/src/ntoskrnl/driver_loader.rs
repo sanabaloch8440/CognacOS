@@ -180,10 +180,13 @@ pub unsafe fn load_allocated_with_resolver(file:&[u8],driver_object:*mut DriverO
  let preferred=u64at(file,opt+24)?;let size=u32at(file,opt+56)? as usize;
  if size==0||size>MAX_IMAGE_SIZE{return Err(DriverLoadError::ImageTooLarge);}
  let pages=size.checked_add(4095).ok_or(DriverLoadError::InvalidHeader)?/4096;
- // Driver images use the pageable kernel arena. The loader's section registry
- // pins non-PAGE sections permanently and MmLockPagableDataSection pins PAGE
- // sections on demand; relocation handles preferred-base conflicts.
- let mapped=crate::kernel_vm::allocate_pageable_pages(pages).map_err(|_|DriverLoadError::NoMemory)?;
+ // Driver images use pageable kernel mappings. Preserve an available reserved
+ // preferred slot (important for images without relocation data); otherwise the
+ // loader relocates into a demand-paged extent. Section metadata pins non-PAGE
+ // sections permanently and MmLockPagableDataSection pins PAGE sections on demand.
+ let mapped=if crate::kernel_vm::is_driver_image_base(preferred) {
+  crate::kernel_vm::allocate_pageable_pages_at(preferred,pages).or_else(|_|crate::kernel_vm::allocate_pageable_pages(pages))
+ } else { crate::kernel_vm::allocate_pageable_pages(pages) }.map_err(|_|DriverLoadError::NoMemory)?;
  let base=mapped as u64;
  let image=unsafe{core::slice::from_raw_parts_mut(mapped,size)};
  // Reserve unload bookkeeping before DriverEntry can publish devices or callbacks.
