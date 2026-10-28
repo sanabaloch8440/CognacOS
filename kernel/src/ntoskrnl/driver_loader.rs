@@ -6,6 +6,7 @@ use core::ffi::c_void;
 use crate::pe::ImportSymbol;
 
 const IMAGE_FILE_DLL:u16=0x2000;
+const IMAGE_FILE_EXECUTABLE_IMAGE:u16=0x0002;
 const IMAGE_SCN_MEM_EXECUTE:u32=0x2000_0000;
 const IMAGE_SCN_MEM_WRITE:u32=0x8000_0000;
 const IMAGE_SUBSYSTEM_NATIVE:u16=1;
@@ -90,7 +91,7 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
  if u16at(file,coff)?!=0x8664{return Err(DriverLoadError::WrongMachine);}
  let count=u16at(file,coff+2)? as usize;
  let characteristics=u16at(file,coff+18)?;
- if characteristics&IMAGE_FILE_DLL==0{return Err(DriverLoadError::NotDll);}
+ if characteristics&(IMAGE_FILE_DLL|IMAGE_FILE_EXECUTABLE_IMAGE)==0{return Err(DriverLoadError::NotDll);}
  let opt_size=u16at(file,coff+16)? as usize;let opt=coff+20;
  if count==0||count>MAX_SECTIONS||opt_size<240||u16at(file,opt)?!=0x20b{return Err(DriverLoadError::InvalidHeader);}
  if u16at(file,opt+68)?!=IMAGE_SUBSYSTEM_NATIVE{return Err(DriverLoadError::WrongSubsystem);}
@@ -157,6 +158,11 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
    crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);
    return Err(DriverLoadError::MappingFailed);
   }
+ }
+ unsafe {
+  (*driver_object).driver_start=base as *mut c_void;
+  (*driver_object).driver_size=image_size as u32;
+  (*driver_object).driver_init=Some(core::mem::transmute::<u64,unsafe extern "win64" fn(*mut DriverObject,*mut c_void)->i32>(base.checked_add(entry_rva as u64).ok_or(DriverLoadError::InvalidHeader)?));
  }
  let entry=base.checked_add(entry_rva as u64).ok_or(DriverLoadError::InvalidHeader)?;
  let routine:unsafe extern "win64" fn(*mut DriverObject,*mut c_void)->i32=unsafe{core::mem::transmute(entry as usize)};
