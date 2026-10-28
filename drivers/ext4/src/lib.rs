@@ -572,7 +572,7 @@ mod host_tests {
         );
     }
 
-    struct MemDisk { bytes:[u8;32768] }
+    struct MemDisk { bytes:[u8;32768], flush_count:u32 }
     impl ReadOnlyBlockDevice for MemDisk {
         type DeviceError=();
         fn capacity_bytes(&self)->u64{self.bytes.len() as u64}
@@ -586,12 +586,12 @@ mod host_tests {
             let start=offset as usize;let end=start.checked_add(data.len()).ok_or(())?;
             let dst=self.bytes.get_mut(start..end).ok_or(())?;dst.copy_from_slice(data);Ok(())
         }
-        fn flush(&mut self)->Result<(),Self::DeviceError>{Ok(())}
+        fn flush(&mut self)->Result<(),Self::DeviceError>{self.flush_count+=1;Ok(())}
     }
 
     #[test]
     fn writes_existing_extent_data_with_read_modify_write_and_flush() {
-        let mut disk = MemDisk { bytes: [0; 32768] };
+        let mut disk = MemDisk { bytes: [0; 32768], flush_count: 0 };
         let data_start = 5 * 1024;
         disk.bytes[data_start..data_start + 1024].fill(0x5a);
         let sb = Superblock {
@@ -614,11 +614,12 @@ mod host_tests {
         assert_eq!(fs.write_file_data(&root, 1024, 13, &[0xa1, 0xb2, 0xc3], &mut scratch), Ok(3));
         let disk = fs.into_device();
         assert_eq!(&disk.bytes[data_start + 12..data_start + 17], &[0x5a, 0xa1, 0xb2, 0xc3, 0x5a]);
+        assert_eq!(disk.flush_count, 1, "successful file writes must flush the device");
     }
 
     #[test]
     fn mbr_partition_view_translates_and_contains_io() {
-        let mut disk=MemDisk{bytes:[0;32768]};
+        let mut disk=MemDisk{bytes:[0;32768],flush_count:0};
         disk.bytes[510]=0x55;disk.bytes[511]=0xaa;
         let e=446;
         disk.bytes[e+4]=0x83;
