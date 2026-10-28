@@ -327,6 +327,40 @@ mod token_metadata_tests {
         assert_eq!(unsafe { SeTokenType(token) }, 0);
     }
     #[test]
+    fn token_default_dacl_is_derived_from_identity_and_can_be_queried() {
+        let mut storage = 0u64;
+        let token = (&mut storage as *mut u64).cast::<c_void>();
+        let user_sid = [1u8, 1, 0, 0, 0, 0, 0, 5, 21, 0, 0, 0];
+        let sid_ptrs = [user_sid.as_ptr()];
+        let lengths = [user_sid.len() as u8];
+        assert_eq!(unsafe { se_internal_RegisterTokenMetadata(token, 1, 0, 0, 0, 1, 0x99) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { se_internal_RegisterTokenSids(token, sid_ptrs.as_ptr(), lengths.as_ptr(), 1) }, STATUS_SUCCESS);
+        let mut acl = [0u8; 236];
+        let mut required = 0usize;
+        assert_eq!(unsafe { se_internal_TokenQueryDefaultDacl(token, acl.as_mut_ptr(), acl.len(), &mut required) }, STATUS_SUCCESS);
+        assert_eq!(required, u16::from_le_bytes([acl[2], acl[3]]) as usize);
+        assert_eq!(acl[0], 2);
+        assert_eq!(u16::from_le_bytes([acl[4], acl[5]]), 3);
+        assert_eq!(u32::from_le_bytes([acl[12], acl[13], acl[14], acl[15]]), 0x1000_0000);
+        assert_eq!(&acl[16..28], &user_sid);
+        let mut explicit_acl = [0u8; 28];
+        explicit_acl[0] = 2;
+        explicit_acl[2..4].copy_from_slice(&28u16.to_le_bytes());
+        explicit_acl[4..6].copy_from_slice(&1u16.to_le_bytes());
+        explicit_acl[8] = 0;
+        explicit_acl[10..12].copy_from_slice(&20u16.to_le_bytes());
+        explicit_acl[12..16].copy_from_slice(&0x0002_0000u32.to_le_bytes());
+        explicit_acl[16..28].copy_from_slice(&user_sid);
+        assert_eq!(unsafe { se_internal_TokenSetDefaultDacl(token, explicit_acl.as_ptr(), explicit_acl.len()) }, STATUS_SUCCESS);
+        acl.fill(0);
+        required = 0;
+        assert_eq!(unsafe { se_internal_TokenQueryDefaultDacl(token, acl.as_mut_ptr(), acl.len(), &mut required) }, STATUS_SUCCESS);
+        assert_eq!(required, explicit_acl.len());
+        assert_eq!(&acl[..required], &explicit_acl);
+        assert_eq!(unsafe { se_internal_UnregisterTokenMetadata(token) }, STATUS_SUCCESS);
+    }
+
+    #[test]
     fn single_privilege_check_is_fail_closed_without_thread_token() {
         assert_eq!(unsafe { SeSinglePrivilegeCheck(3, 1) }, 0);
         assert_eq!(unsafe { SeSinglePrivilegeCheck(3, 0) }, 1);
