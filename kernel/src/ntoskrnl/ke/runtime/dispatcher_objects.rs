@@ -27,8 +27,12 @@ pub unsafe extern "win64" fn ke_read_state_event(event: *const DispatcherHeader)
     if event.is_null() { return 0; }
     unsafe { (&*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>()).load(Ordering::Acquire) }
 }
-pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, increment: i32, _wait: u8) -> i32 {
+pub unsafe extern "win64" fn ke_set_event(event: *mut DispatcherHeader, increment: i32, wait: u8) -> i32 {
     if event.is_null() { return 0; }
+    // WDK requires Wait=TRUE to be followed immediately by KeWaitXxx. Keep
+    // local preemption deferred and raise the modeled IRQL until that wait
+    // consumes the handoff; the wait routine restores the caller's old IRQL.
+    if wait != 0 { begin_ke_set_event_wait_handoff(); }
     let _object_guard = DISPATCHER_OBJECT_LOCK.lock();
     let state = unsafe { &*core::ptr::addr_of!((*event).signal_state).cast::<core::sync::atomic::AtomicI32>() };
     let old = state.swap(1, Ordering::AcqRel);
