@@ -762,11 +762,10 @@ pub unsafe extern "system" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut
  if irp.is_null(){return ptr::null_mut()}
  let current=unsafe{io_get_current_irp_stack_location(irp)};
  if current.is_null(){return ptr::null_mut()}
- let state=WDM.lock();
- let Some(slot)=state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return ptr::null_mut()};
- let count=slot.object.bytes[0x42] as usize;
- if count==0||count>slot.stack.len(){return ptr::null_mut()}
- let base=slot.stack.as_ptr() as usize;
+ // The WDM ABI places stack locations immediately after the fixed IRP.
+ let count=unsafe{(*irp).bytes[0x42] as usize};
+ if count==0||count>0x7f{return ptr::null_mut()}
+ let base=(irp as usize).saturating_add(IRP_SIZE_X64);
  let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
  let cur=current as usize;
  if cur<=base||cur>end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return ptr::null_mut()}
@@ -879,15 +878,8 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
   release_irp_active_op(irp);release_device_dispatch_rundown(device);return prepare
  }
  let status=unsafe{dispatch(device,irp)};
- // IoCallDriver records a pending return in the IRP so completion unwind and
- // upper drivers can observe asynchronous completion. Do not mutate a packet
- // whose terminal completion already won a race with the dispatch return.
- if status==STATUS_PENDING {
-  let mut state=WDM.lock();
-  if let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) {
-   if slot.completion_state==0 { slot.object.bytes[0x41]=1; }
-  }
- }
+ // STATUS_PENDING is not a substitute for IoMarkIrpPending. The lower
+ // driver marks its own stack location; completion unwind propagates it.
  crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
  release_irp_active_op(irp);
  release_device_dispatch_rundown(device);
@@ -932,6 +924,8 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   let stack=unsafe{io_get_current_irp_stack_location(irp)};
   if stack.is_null(){break}
   let control=unsafe{(*stack).control};
+  // SL_PENDING_RETURNED is converted into IRP.PendingReturned during unwind.
+  if control&0x01!=0 {unsafe{(*irp).bytes[0x41]=1;}}
   let routine=unsafe{(*stack).completion_routine};
   let context=unsafe{(*stack).context};
   let device_object=unsafe{(*stack).device_object};
@@ -990,8 +984,8 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
  if irp.is_null(){return}
- unsafe { (*irp).bytes[0x41]=1; }
- // SL_PENDING_RETURNED is carried in the current driver's stack location.
+ // Windows sets SL_PENDING_RETURNED on the current stack location; the I/O
+ // manager propagates this into IRP.PendingReturned while unwinding.
  let stack=unsafe{io_get_current_irp_stack_location(irp)};
  if !stack.is_null(){unsafe{(*stack).control|=0x01;}}
 }
@@ -1083,19 +1077,18 @@ pub unsafe extern "system" fn io_initialize_irp(
 /// Copy the current stack parameters into the next lower driver's stack slot.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mut Irp) {
-    if irp.is_null(){return}
-    let state=WDM.lock();
-    let Some(slot)=state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
-    let count=slot.object.bytes[0x42] as usize;
-    if count==0||count>slot.stack.len(){return}
-    let current=unsafe{io_get_current_irp_stack_location(irp)};
-    let base=slot.stack.as_ptr() as usize;
-    let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
-    let cur=current as usize;
-    if cur<base||cur>=end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return}
-    let next=cur.checked_sub(IO_STACK_LOCATION_SIZE_X64).unwrap_or(0);
-    if next<base{return}
-    unsafe{ptr::copy_nonoverlapping(current, next as *mut IoStackLocation, 1);}
+ if irp.is_null(){return}
+ let count=unsafe{(*irp).bytes[0x42] as usize};
+ if count==0||count>0x7f{return}
+ let current=unsafe{io_get_current_irp_stack_location(irp)};
+ if current.is_null(){return}
+ let base=(irp as usize).saturating_add(IRP_SIZE_X64);
+ let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
+ let cur=current as usize;
+ if cur<base||cur>=end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return}
+ let next=cur.checked_sub(IO_STACK_LOCATION_SIZE_X64).unwrap_or(0);
+ if next<base{return}
+ unsafe{ptr::copy_nonoverlapping(current,next as *mut IoStackLocation,1);}
 }
 
 /// Arrange for IoCallDriver to reuse the current stack slot instead of
@@ -1103,21 +1096,20 @@ pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mu
 /// returns it to the same slot.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
-    if irp.is_null(){return}
-    let state=WDM.lock();
-    let Some(slot)=state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
-    let count=slot.object.bytes[0x42] as usize;
-    if count==0||count>slot.stack.len(){return}
-    let current=unsafe{io_get_current_irp_stack_location(irp)};
-    let base=slot.stack.as_ptr() as usize;
-    let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
-    let cur=current as usize;
-    if cur<base||cur>=end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return}
-    if cur+IO_STACK_LOCATION_SIZE_X64>end{return}
-    unsafe{
-        write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,(cur+IO_STACK_LOCATION_SIZE_X64) as *mut c_void);
-        (*irp).bytes[0x43]=(*irp).bytes[0x43].saturating_add(1);
-    }
+ if irp.is_null(){return}
+ let count=unsafe{(*irp).bytes[0x42] as usize};
+ if count==0||count>0x7f{return}
+ let current=unsafe{io_get_current_irp_stack_location(irp)};
+ if current.is_null(){return}
+ let base=(irp as usize).saturating_add(IRP_SIZE_X64);
+ let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
+ let cur=current as usize;
+ if cur<base||cur>=end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return}
+ if cur+IO_STACK_LOCATION_SIZE_X64>end{return}
+ unsafe {
+  write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,(cur+IO_STACK_LOCATION_SIZE_X64) as *mut c_void);
+  (*irp).bytes[0x43]=(*irp).bytes[0x43].saturating_add(1);
+ }
 }
 
 
