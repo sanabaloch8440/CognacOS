@@ -65,7 +65,7 @@ pub struct Irp { pub bytes: [u8; IRP_SIZE_X64] }
 #[derive(Clone, Copy)]
 pub struct IoStackLocation {
     pub major_function: u8, pub minor_function: u8, pub flags: u8, pub control: u8,
-    pub parameters: [u64; 4], pub device_object: *mut DeviceObject,
+    pub parameters: [u8; 0x20], pub device_object: *mut DeviceObject,
     pub file_object: *mut c_void, pub completion_routine: Option<IoCompletionRoutine>,
     pub context: *mut c_void,
 }
@@ -97,7 +97,7 @@ impl WdmState {
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
+   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
   }
  }
 }
@@ -455,7 +455,11 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
  if irp.is_null(){unsafe{io_dereference_device_object(dispatch_device)};return STATUS_INSUFFICIENT_RESOURCES}
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
  if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
- unsafe{(*stack).major_function=0x1b;(*stack).minor_function=minor;(*stack).parameters[0]=allocated as u64;(*stack).parameters[1]=translated as u64;}
+ unsafe{
+  (*stack).major_function=0x1b;(*stack).minor_function=minor;
+  ptr::write_unaligned(stack.cast::<u8>().add(4).cast::<*mut c_void>(),allocated);
+  ptr::write_unaligned(stack.cast::<u8>().add(12).cast::<*mut c_void>(),translated);
+ }
  {
   let mut manager=PNP_MANAGER.lock();
   let Some(slot)=manager.managed_irps.iter_mut().find(|s|!s.used) else {
@@ -882,7 +886,8 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  if major>=28{release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
  let dispatch=unsafe{(*driver).major_function[major]};
  let Some(dispatch)=dispatch else{release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST};
- let prepare=unsafe{crate::ntoskrnl::po::runtime::po_prepare_irp_dispatch(device,irp,major as u8,(*stack).minor_function,(*stack).parameters)};
+ let parameters=unsafe{ptr::read_unaligned((*stack).parameters.as_ptr().cast::<[u64;4]>())};
+ let prepare=unsafe{crate::ntoskrnl::po::runtime::po_prepare_irp_dispatch(device,irp,major as u8,(*stack).minor_function,parameters)};
  if prepare!=STATUS_SUCCESS{
   unsafe{write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());(*irp).bytes[0x43]=location;}
   release_irp_active_op(irp);release_device_dispatch_rundown(device);return prepare
@@ -955,11 +960,13 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
  }
  unsafe {
   (*next).major_function=if internal_device_control!=0{0x0f}else{0x0e};
+  // WDK marks InputBufferLength and IoControlCode POINTER_ALIGNMENT
+  // fields: on x64 their offsets in Parameters.DeviceIoControl are 8 and 16.
   ptr::write_unaligned(next.cast::<u8>().add(4).cast::<u32>(),output_length);
-  ptr::write_unaligned(next.cast::<u8>().add(8).cast::<u32>(),input_length);
-  ptr::write_unaligned(next.cast::<u8>().add(12).cast::<u32>(),ioctl_code);
+  ptr::write_unaligned(next.cast::<u8>().add(12).cast::<u32>(),input_length);
+  ptr::write_unaligned(next.cast::<u8>().add(20).cast::<u32>(),ioctl_code);
   if method==3 {
-   ptr::write_unaligned(next.cast::<u8>().add(16).cast::<*mut c_void>(),input_buffer);
+   ptr::write_unaligned(next.cast::<u8>().add(28).cast::<*mut c_void>(),input_buffer);
   }
  }
  if method==1||method==2 {
@@ -1480,8 +1487,10 @@ pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
  }
  unsafe{
   (*next).major_function=major as u8;
-  (*next).parameters[0]=length as u64;
-  (*next).parameters[1]=offset as u64;
+  // READ/WRITE layout uses ULONG Length at union offset 0 and
+  // LARGE_INTEGER ByteOffset at union offset 0x10 on Windows x64.
+  ptr::write_unaligned(next.cast::<u8>().add(4).cast::<u32>(),length);
+  ptr::write_unaligned(next.cast::<u8>().add(20).cast::<i64>(),offset);
   write_ptr((*irp).bytes.as_mut_ptr(),0x70,buffer);
   write_ptr((*irp).bytes.as_mut_ptr(),0x48,io_status.cast());
   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_PENDING);
@@ -1858,6 +1867,10 @@ mod wdm_tests {
 
  static IOCTL_COMPLETIONS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
  unsafe extern "system" fn ioctl_buffered_dispatch(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+  let stack=unsafe{io_get_current_irp_stack_location(irp)};
+  assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())},8);
+  assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(12).cast::<u32>())},2);
+  assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(20).cast::<u32>())},0x00222000);
   let system_buffer=unsafe{read_ptr((*irp).bytes.as_ptr(),0x18).cast::<u8>()};
   if !system_buffer.is_null(){unsafe{ptr::copy_nonoverlapping(b"OK".as_ptr(),system_buffer,2);}}
   unsafe{
@@ -1983,8 +1996,8 @@ mod wdm_tests {
   assert!(!irp.is_null());
   let stack=unsafe{io_get_next_irp_stack_location(irp)};
   assert_eq!(unsafe{(*stack).major_function},3);
-  assert_eq!(unsafe{(*stack).parameters[0]},512);
-  assert_eq!(unsafe{(*stack).parameters[1]},4096);
+  assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())},512);
+  assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(20).cast::<i64>())},4096);
   unsafe{io_free_irp(irp);io_delete_device(device);}
  }
 
