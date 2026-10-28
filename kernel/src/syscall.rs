@@ -1660,6 +1660,14 @@ static NTDLL_DEBUG_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 const EVENT_MODIFY_STATE: u32 = 0x0002;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 const EVENT_TYPE_NAME: [u16; 5] = [b'E' as u16, b'v' as u16, b'e' as u16, b'n' as u16, b't' as u16];
+/// Default ACL for named events while token default-DACL inheritance is not
+/// implemented. Grants EVENT_ALL_ACCESS to Everyone; explicit caller SDs are
+/// rejected rather than silently ignored.
+const NATIVE_EVENT_DEFAULT_SD: [u8; 48] = [
+    1,0,4,128, 0,0,0,0, 0,0,0,0, 0,0,0,0, 20,0,0,0,
+    2,0,28,0, 0,0,0,0,
+    0,0,20,0, 255,255,255,255, 1,1,0,0,0,0,0,1, 0,0,0,0,
+];
 
 struct NativeEventSlot {
     used: AtomicBool,
@@ -1776,15 +1784,19 @@ fn nt_create_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     let named = name_len != 0;
     if named {
         let event_type = match native_event_type_id() { Ok(value) => value, Err(status) => return status as u32 as u64 };
-        if crate::ntoskrnl::ob::runtime::reference_by_name(&name[..name_len], event_type, args[1] as u32, false).is_ok() {
-            // Drop the temporary lookup reference before opening a real handle.
-            let body = crate::ntoskrnl::ob::runtime::reference_by_name(&name[..name_len], event_type, 0, true).ok();
-            if let Some(body) = body { let _ = crate::ntoskrnl::ob::runtime::dereference_body(body); }
-            if attributes & 0x80 == 0 { return 0xC000_0035; } // STATUS_OBJECT_NAME_COLLISION
-            return match crate::ntoskrnl::ob::runtime::open_by_name(&name[..name_len], args[1] as u32, owner, false, attributes) {
-                Ok(handle) => { let raw = handle as usize as u64; if let Err(status) = copy_nt_output(args[0], &raw.to_le_bytes()) { let _ = crate::ntoskrnl::ob::runtime::close_handle(handle, owner); return status; } 0x4000_0000 },
-                Err(status) => status as u32 as u64,
-            };
+        match crate::ntoskrnl::ob::runtime::reference_by_name(&name[..name_len], event_type, args[1] as u32, false) {
+            Ok(body) => {
+                let _ = crate::ntoskrnl::ob::runtime::dereference_body(body);
+                if attributes & 0x80 == 0 { return 0xC000_0035; } // STATUS_OBJECT_NAME_COLLISION
+                return match crate::ntoskrnl::ob::runtime::open_by_name(&name[..name_len], args[1] as u32, owner, false, attributes) {
+                    Ok(handle) => { let raw = handle as usize as u64; if let Err(status) = copy_nt_output(args[0], &raw.to_le_bytes()) { let _ = crate::ntoskrnl::ob::runtime::close_handle(handle, owner); return status; } 0x4000_0000 },
+                    Err(status) => status as u32 as u64,
+                };
+            }
+            Err(status) if status as u32 as u64 == 0xC000_0034 => {} // STATUS_OBJECT_NAME_NOT_FOUND
+            Err(status) if status as u32 as u64 == 0xC000_0024 && attributes & 0x80 != 0 => return status as u32 as u64,
+            Err(status) if status as u32 as u64 == 0xC000_0024 => return 0xC000_0035,
+            Err(status) => return status as u32 as u64,
         }
     }
     let Some(slot) = NATIVE_EVENT_SLOTS.iter().find(|slot|
@@ -1792,9 +1804,13 @@ fn nt_create_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     ) else { return 0xC000_009A; }; // STATUS_INSUFFICIENT_RESOURCES
     let header = slot.header_ptr();
     unsafe { crate::ntoskrnl::ke::runtime::ke_initialize_event(header, args[3] as i32, args[4] as u8); }
+    let (security_descriptor, security_descriptor_len) = if named {
+        (NATIVE_EVENT_DEFAULT_SD.as_ptr(), NATIVE_EVENT_DEFAULT_SD.len())
+    } else { (core::ptr::null(), 0) };
     let registered = unsafe {
         crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(
-            header.cast(), &EVENT_TYPE_NAME, &name[..name_len], false, core::ptr::null(), 0, native_event_finalizer,
+            header.cast(), &EVENT_TYPE_NAME, &name[..name_len], false,
+            security_descriptor, security_descriptor_len, native_event_finalizer,
         )
     };
     if let Err(status) = registered {
