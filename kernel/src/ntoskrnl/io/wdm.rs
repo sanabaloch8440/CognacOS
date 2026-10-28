@@ -1981,7 +1981,7 @@ mod wdm_tests {
   assert!(!irp.is_null());
   unsafe{io_set_completion_routine(irp,Some(ioctl_counted_completion),ptr::null_mut(),1,1,1);}
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
-  assert_eq!(iosb.status,STATUS_SUCCESS);
+  assert_eq!(unsafe{iosb.status.status},STATUS_SUCCESS);
   assert_eq!(iosb.information,2);
   assert_eq!(&output[..2],b"OK");
   assert_eq!(IOCTL_COMPLETIONS.load(core::sync::atomic::Ordering::Acquire),1);
