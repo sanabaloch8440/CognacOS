@@ -105,6 +105,8 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
  let import_size=if dirs>1{u32at(file,opt+112+12)?}else{0};
  let reloc_rva=if dirs>5{u32at(file,opt+112+5*8)?}else{0};
  let reloc_size=if dirs>5{u32at(file,opt+112+5*8+4)?}else{0};
+ let load_config_rva=if dirs>10{u32at(file,opt+112+10*8)?}else{0};
+ let load_config_size=if dirs>10{u32at(file,opt+112+10*8+4)?}else{0};
  if mapped.as_mut_ptr() as u64!=base{return Err(DriverLoadError::WrongBase);}
  if (import_rva==0)!=(import_size==0)||(reloc_rva==0)!=(reloc_size==0){return Err(DriverLoadError::InvalidHeader);}
  if image_size==0||image_size>MAX_IMAGE_SIZE||mapped.len()<image_size||headers==0||headers>file.len()||headers>image_size||section_align<4096||!section_align.is_power_of_two()||file_align==0||!file_align.is_power_of_two()||entry_rva as usize>=image_size{return Err(DriverLoadError::InvalidHeader);}
@@ -129,6 +131,8 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
  }
  if !entry_executable{return Err(DriverLoadError::EntryNotExecutable);}
  if reloc_rva!=0{apply_relocations(mapped,base,preferred,reloc_rva,reloc_size)?;}
+ // Windows replaces the default /GS cookie before invoking a native image.
+ if load_config_rva!=0&&load_config_size!=0{initialize_security_cookie(mapped,base,load_config_rva,load_config_size)?;}
  if import_rva!=0{apply_imports(mapped,import_rva,import_size,resolver)?;}
  // Default the whole image to read-only/NX, then grant only the section
  // permissions declared by validated section characteristics.
@@ -225,6 +229,34 @@ fn c_string(bytes:&[u8],rva:u32,maximum:usize)->Result<&[u8],DriverLoadError>{
  let tail=bytes.get(rva as usize..).ok_or(DriverLoadError::InvalidImport)?;
  let len=tail.iter().take(maximum).position(|b|*b==0).ok_or(DriverLoadError::InvalidImport)?;
  if len==0{return Err(DriverLoadError::InvalidImport)}Ok(&tail[..len])
+}
+
+/// Initialize IMAGE_LOAD_CONFIG_DIRECTORY64.SecurityCookie for /GS-protected
+/// native images before DriverEntry; MSVC's entry thunk fast-fails on the
+/// compiler's default cookie.
+fn initialize_security_cookie(image:&mut[u8],base:u64,load_config_rva:u32,load_config_size:u32)->Result<(),DriverLoadError>{
+ const SECURITY_COOKIE_OFFSET:usize=0x58;
+ const DEFAULT_COOKIE:u64=0x0000_2b99_2ddf_a232;
+ if (load_config_size as usize)<SECURITY_COOKIE_OFFSET+8{return Ok(());}
+ let field=(load_config_rva as usize).checked_add(SECURITY_COOKIE_OFFSET).ok_or(DriverLoadError::InvalidHeader)?;
+ if field.checked_add(8).is_none_or(|end|end>image.len()){return Err(DriverLoadError::InvalidHeader);}
+ let cookie_va=u64at(image,field)?;
+ if cookie_va==0{return Ok(());}
+ let cookie_rva=cookie_va.checked_sub(base).ok_or(DriverLoadError::InvalidHeader)? as usize;
+ if cookie_rva.checked_add(8).is_none_or(|end|end>image.len()){return Err(DriverLoadError::InvalidHeader);}
+ let current=u64at(image,cookie_rva)?;
+ if current!=0&&current!=DEFAULT_COOKIE{return Ok(());}
+ let lo:u32;let hi:u32;
+ unsafe{core::arch::asm!("rdtsc",out("eax") lo,out("edx") hi,options(nomem,nostack,preserves_flags));}
+ let mut cookie=(((hi as u64)<<32)|(lo as u64))
+  ^ base.rotate_left(17)
+  ^ (image.as_ptr() as u64).rotate_right(9)
+  ^ 0x9e37_79b9_7f4a_7c15;
+ cookie&=0x0000_ffff_ffff_ffff;
+ if cookie==0||cookie==DEFAULT_COOKIE{cookie^=0x0000_a5a5_5a5a_1234;}
+ if cookie==0||cookie==DEFAULT_COOKIE{cookie=0x0000_4c11_db7a_5eed;}
+ put_u64(image,cookie_rva,cookie)?;
+ Ok(())
 }
 fn apply_relocations(image:&mut[u8],base:u64,preferred:u64,rva:u32,size:u32)->Result<(),DriverLoadError>{
  if base==preferred{return Ok(())}
