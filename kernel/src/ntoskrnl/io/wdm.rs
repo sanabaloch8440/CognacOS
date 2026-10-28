@@ -731,7 +731,7 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
  // IRP.Size is sizeof(IRP), not the total IRP-plus-stack allocation size.
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
  slot.object.bytes[0x42]=stack_size as u8;slot.object.bytes[0x43]=(stack_size+1) as u8;
- slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
+ slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
  let object=&mut slot.object as *mut Irp;
  let one_past=unsafe{slot.stack.as_mut_ptr().add(stack_size as usize).cast::<c_void>()};
  unsafe { write_ptr((*object).bytes.as_mut_ptr(),IRP_STACK_OFFSET,one_past); }
@@ -1284,7 +1284,7 @@ pub unsafe extern "system" fn io_reuse_irp(irp:*mut Irp, status:i32) {
     let count=slot.object.bytes[0x42] as usize;
     if count==0||count>slot.stack.len()||slot.completion_state==1||slot.active_ops!=0||slot.outstanding_count!=0{return}
     slot.completion_state=0;
-    slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
+    slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
     // Preserve Type, Size, StackCount, AllocationFlags, and the allocation,
     // but reset per-request pointers/flags/status before reusing the packet.
     slot.object.bytes[0x08..0x30].fill(0);
