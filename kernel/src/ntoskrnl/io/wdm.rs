@@ -876,6 +876,9 @@ pub unsafe extern "system" fn io_unload_driver(driver:*mut DriverObject)->i32 {
   }
  };
  if let Some(callback)=callback{unsafe{callback(driver)}}
+ // The driver image remains pinned through device rundown and DriverUnload.
+ // Releasing it earlier could evict/free the code while its callback executes.
+ let _ = unsafe { crate::ntoskrnl::driver_loader::unload_driver_image(driver) };
  STATUS_SUCCESS
 }
 
