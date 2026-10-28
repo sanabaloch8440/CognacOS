@@ -22,12 +22,16 @@ struct DriverImageRecord { used:bool, driver:usize, base:u64, size:u32 }
 impl DriverImageRecord { const EMPTY:Self=Self{used:false,driver:0,base:0,size:0}; }
 static LOADED_DRIVER_IMAGES:crate::hal::IrqSpinLock<[DriverImageRecord;MAX_LOADED_DRIVER_IMAGES]>=
  crate::hal::IrqSpinLock::new([DriverImageRecord::EMPTY;MAX_LOADED_DRIVER_IMAGES]);
-fn remember_loaded_driver(driver:*mut DriverObject,image:LoadedDriver)->bool {
- if driver.is_null(){return false;}
+fn remember_loaded_driver(driver:*mut DriverObject,base:u64,size:u32)->bool {
+ if driver.is_null()||base==0||size==0{return false;}
  let mut records=LOADED_DRIVER_IMAGES.lock();
  if records.iter().any(|r|r.used&&r.driver==driver as usize){return false;}
  let Some(slot)=records.iter_mut().find(|r|!r.used) else{return false;};
- *slot=DriverImageRecord{used:true,driver:driver as usize,base:image.image_base,size:image.image_size};true
+ *slot=DriverImageRecord{used:true,driver:driver as usize,base,size};true
+}
+fn forget_loaded_driver(driver:*mut DriverObject,base:u64) {
+ let mut records=LOADED_DRIVER_IMAGES.lock();
+ if let Some(slot)=records.iter_mut().find(|r|r.used&&r.driver==driver as usize&&r.base==base){*slot=DriverImageRecord::EMPTY;}
 }
 /// Release the image associated with a driver after IoUnloadDriver has completed
 /// device rundown and invoked DriverUnload. Unknown/non-loader-owned drivers are ignored.
@@ -182,15 +186,14 @@ pub unsafe fn load_allocated_with_resolver(file:&[u8],driver_object:*mut DriverO
  let mapped=crate::kernel_vm::allocate_pageable_pages(pages).map_err(|_|DriverLoadError::NoMemory)?;
  let base=mapped as u64;
  let image=unsafe{core::slice::from_raw_parts_mut(mapped,size)};
+ // Reserve unload bookkeeping before DriverEntry can publish devices or callbacks.
+ if !remember_loaded_driver(driver_object,base,size as u32) {
+  let _=crate::kernel_vm::free_pages(mapped,pages);
+  return Err(DriverLoadError::NoMemory);
+ }
  match unsafe{load_with_resolver(file,image,base,driver_object,context,resolver)}{
-  Ok(driver)=>{
-   if !remember_loaded_driver(driver_object,driver) {
-    crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);
-    let _=crate::kernel_vm::free_pages(mapped,pages);
-    Err(DriverLoadError::NoMemory)
-   } else { Ok(driver) }
-  },
-  Err(error)=>{crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);let _=crate::kernel_vm::free_pages(mapped,pages);Err(error)}
+  Ok(driver)=>Ok(driver),
+  Err(error)=>{forget_loaded_driver(driver_object,base);crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);let _=crate::kernel_vm::free_pages(mapped,pages);Err(error)}
  }
 }
 
