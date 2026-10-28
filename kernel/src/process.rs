@@ -20,7 +20,7 @@ const MAX_PROCESSES: usize = 64;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessState { Created, Running, Exited, Reaped }
 #[derive(Clone, Copy, Debug)]
-pub struct ProcessSnapshot { pub process_id: u64, pub state: ProcessState, pub session_id: u32, pub exit_code: u64 }
+pub struct ProcessSnapshot { pub process_id: u64, pub state: ProcessState, pub exit_code: u64 }
 
 /// Stable kernel-resident process object used by NT process-pointer APIs.
 /// This is CognacOS's internal EPROCESS-compatible anchor, not the private
@@ -292,13 +292,13 @@ pub fn snapshot_referenced(pointer: *mut core::ffi::c_void) -> Option<ProcessSna
     registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC
         && core::ptr::addr_of!(**p) as *mut EProcess as *mut core::ffi::c_void == pointer
         )
-        .map(|p| ProcessSnapshot { process_id: p.process_id, state: p.state, session_id: p.session_id, exit_code: p.exit_code })
+        .map(|p| ProcessSnapshot { process_id: p.process_id, state: p.state, exit_code: p.exit_code })
 }
 
 pub fn query(pid: u64) -> Option<ProcessSnapshot> {
     let registry = TABLE.lock();
     registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid)
-        .map(|p| ProcessSnapshot { process_id: p.process_id, state: p.state, session_id: p.session_id, exit_code: p.exit_code })
+        .map(|p| ProcessSnapshot { process_id: p.process_id, state: p.state, exit_code: p.exit_code })
 }
 pub fn reap(pid: u64) -> Option<u64> {
     let (pointer, code) = {
