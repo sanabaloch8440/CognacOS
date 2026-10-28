@@ -1679,12 +1679,18 @@ fn native_event_default_security_descriptor() -> Result<([u8; 256], usize), u64>
     };
     let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) };
     if status < 0 { return Err(status as u32 as u64); }
-    if acl_len < 8 || acl_len > acl.len() { return Err(0xC000_000D); }
-    let acl_size = u16::from_le_bytes([acl[2], acl[3]]) as usize;
-    if acl_size != acl_len { return Err(0xC000_000D); }
+    if acl_len > acl.len() { return Err(0xC000_000D); }
     let mut sd = [0u8; 256];
     sd[0] = 1; // SECURITY_DESCRIPTOR_REVISION
     sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes()); // SELF_RELATIVE | DACL_PRESENT
+    if acl_len == 0 {
+        // A token with an explicitly null default DACL produces a null DACL.
+        // DACL_PRESENT with offset zero represents that state in a self-relative SD.
+        return Ok((sd, 20));
+    }
+    if acl_len < 8 { return Err(0xC000_000D); }
+    let acl_size = u16::from_le_bytes([acl[2], acl[3]]) as usize;
+    if acl_size != acl_len { return Err(0xC000_000D); }
     sd[16..20].copy_from_slice(&20u32.to_le_bytes());
     sd[20..20 + acl_len].copy_from_slice(&acl[..acl_len]);
     Ok((sd, 20 + acl_len))
