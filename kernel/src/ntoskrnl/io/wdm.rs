@@ -1504,25 +1504,37 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
  if thread_id==0{return 0}
  let mut total=0usize;
  loop {
-  let mut pending=[ptr::null_mut::<Irp>();MAX_WDM_IRPS];
+  let mut pending=[(ptr::null_mut::<Irp>(),false);MAX_WDM_IRPS];
   let mut count=0usize;
   let mut completion_in_progress=false;
   {
    let mut state=WDM.lock();
    for slot in state.irps.iter_mut(){
     if !slot.used||!slot.built_sync_ioctl||slot.sync_thread_id!=thread_id{continue}
-    // Completion owns the packet while invoking an upper completion routine.
-    // Wait until that critical section ends before detaching caller-stack data.
-    if slot.completion_state==1 {completion_in_progress=true;continue}
+    // Completion/dispatch owns the packet while callbacks are active. Wait
+    // until that critical section ends before detaching caller-stack data.
+    if slot.completion_state==1||slot.active_ops!=0 {completion_in_progress=true;continue}
     if count==pending.len(){break}
     let irp=ptr::addr_of_mut!(slot.object);
+    let never_dispatched=slot.outstanding_count==0&&slot.completion_state==0;
     slot.sync_thread_id=0;
     slot.sync_event=ptr::null_mut();
     write_ptr(slot.object.bytes.as_mut_ptr(),0x48,ptr::null_mut());
-    pending[count]=irp;count+=1;
+    pending[count]=(irp,never_dispatched);count+=1;
    }
   }
-  for irp in pending[..count].iter().copied(){unsafe{let _=io_cancel_irp(irp);}}
+  for (irp,never_dispatched) in pending[..count].iter().copied(){
+   let cancel_routine_called=unsafe{io_cancel_irp(irp)}!=0;
+   // A builder IRP which was never sent has no lower driver to finish it.
+   // Complete it here if no cancel routine took ownership.
+   if never_dispatched&&!cancel_routine_called {
+    unsafe{
+     ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),0xC0000120u32 as i32);
+     ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
+     io_complete_request(irp,0);
+    }
+   }
+  }
   total+=count;
   if !completion_in_progress {break}
   core::hint::spin_loop();
