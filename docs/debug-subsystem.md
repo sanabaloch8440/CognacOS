@@ -9,6 +9,7 @@ CognacOS has a dedicated kernel debug subsystem at `kernel/src/ntoskrnl/debug.rs
 - **Dynamic component filters:** `DbgSetDebugFilterState` and `DbgQueryDebugFilterState` use the same filter table as the structured tracing subsystem.
 - **Failure-path capture:** IRP completion-guard rejection, page faults, CPU exceptions, and kernel panics are recorded before serial diagnostics are emitted.
 - **Post-failure dump:** fatal exception and panic paths print recent structured records to the UART, followed by the existing low-level kernel trace.
+- **CI-retained evidence:** the build workflow retains the serial log and the beep-driver assessment as downloadable workflow artifacts. The assessment now extracts any structured trace dump and relevant crash/driver lines into `output.txt`, so evidence survives the CI job even though kernel RAM does not.
 
 The implementation is inspired by Linux's bounded tracing/event model and dynamic-debug filtering, and by ReactOS's kernel debug-print/filter APIs. It intentionally avoids heap allocation and blocking locks in exception paths.
 
@@ -59,7 +60,7 @@ crate::ntoskrnl::debug::set_filter(
 
 ## Current limitations
 
-- The ring is volatile and bounded; it is not persistent storage and may overwrite older records.
+- The ring is volatile and bounded; it is not persistent storage and may overwrite older records. CI preserves the serial log and assessment file as artifacts, but this is post-run evidence collection—not kernel-persistent tracing across resets.
 - UART output is currently the primary transport. There is no KDNET/USB/1394 remote session, interactive debugger command loop, symbol resolver, or live trace control interface yet.
 - `DbgPrint`/ `DbgPrintEx` retain the current limited ABI implementation; variadic formatting is not fully implemented, so the trace ring records the format-string address rather than a rendered message.
 - Driver-load and dispatch event IDs are defined for a stable event vocabulary; broader instrumentation is incremental.
@@ -67,4 +68,4 @@ crate::ntoskrnl::debug::set_filter(
 
 ## Validation
 
-The Rust tests cover filter independence, record round-tripping, rejection of stale records after ring wraparound, and filtered events not consuming ring slots. QEMU panic/exception output should include the `NTOSKRNL DEBUG TRACE` section when recent records exist.
+The workflow now runs the structured debug subsystem's own Rust tests directly (in addition to the older kernel diagnostics tests). They cover filter independence, record round-tripping, rejection of stale records after ring wraparound, and filtered events not consuming ring slots. QEMU panic/exception output should include the `NTOSKRNL DEBUG TRACE` section when recent records exist. The beep-driver assessment extracts that section if present and explicitly reports when no dump was emitted; it does not treat a missing trace dump as a successful driver test.
