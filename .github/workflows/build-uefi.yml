@@ -104,11 +104,12 @@ jobs:
           python3 ntdll/tools/check_export_table.py
           cargo check --manifest-path ntdll/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-unknown-linux-gnu
-      - name: Check Rust kernel32 and shell32 crates
+      - name: Check Rust kernel32, kernelbase, and shell32 crates
         shell: bash
         run: |
           set -euo pipefail
           cargo check --manifest-path dlls/kernel32/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
+          cargo check --manifest-path dlls/kernelbase/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo check --manifest-path dlls/shell32/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
       - name: Enforce one NTDLL syscall transition path
         shell: bash
@@ -193,7 +194,7 @@ jobs:
           assert opt_size >= 240 and sections > 0, "Rust NTDLL optional header/sections are invalid"
           print(f"Rust NTDLL PE32+ validation passed: {sections} sections")
           PY
-      - name: Build Rust kernel32.dll and shell32.dll as native PE32+ DLLs
+      - name: Build Rust kernel32.dll, kernelbase.dll, and shell32.dll as native PE32+ DLLs
         shell: bash
         env:
           CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: lld-link
@@ -215,10 +216,13 @@ jobs:
           ar rcs dlls/kernel32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           ar rcs dlls/shell32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/kernel32/exports/kernel32-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/kernel32" cargo build --manifest-path dlls/kernel32/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
+          RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/kernelbase/exports/kernelbase-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/kernelbase" cargo build --manifest-path dlls/kernelbase/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
+          cp target/x86_64-pc-windows-msvc/release/kernelbase.dll build/dlls/kernelbase.dll
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/shell32/exports/shell32-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/shell32" cargo build --manifest-path dlls/shell32/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           cp target/x86_64-pc-windows-msvc/release/kernel32.dll build/dlls/kernel32.dll
           cp target/x86_64-pc-windows-msvc/release/shell32.dll build/dlls/shell32.dll
           file build/dlls/kernel32.dll | grep -q 'PE32+.*DLL'
+          file build/dlls/kernelbase.dll | grep -q 'PE32+.*DLL'
           file build/dlls/shell32.dll | grep -q 'PE32+.*DLL'
           rm -f dlls/kernel32/kernel32.lib dlls/kernel32/ntdll.lib dlls/shell32/kernel32.lib dlls/shell32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj" "$RUNNER_TEMP/cognacos-dll-empty.rs"
       - name: Check native CSR server dispatcher core
@@ -771,6 +775,7 @@ jobs:
             build/EFI/BOOT/BOOTX64.EFI
             build/EFI/BOOT/ntdll.dll
             build/dlls/kernel32.dll
+            build/dlls/kernelbase.dll
             build/dlls/shell32.dll
             build/kernel/cognacos-kernel.exe
             build/cognacos-uefi.img

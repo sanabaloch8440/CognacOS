@@ -1,0 +1,23 @@
+[package]
+name = "cognacos-kernelbase"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "kernelbase"
+path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+cognacos-nt-abi = { path = "../../shared/nt-abi" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "s"
