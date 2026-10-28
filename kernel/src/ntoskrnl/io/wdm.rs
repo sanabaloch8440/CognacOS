@@ -105,7 +105,7 @@ struct IrpSlot {
  object: Irp, stack: [IoStackLocation;MAX_WDM_STACK_LOCATIONS],
  system_buffer:*mut u8, system_buffer_pages:usize, system_buffer_len:usize,
  ioctl_output_buffer:*mut c_void, ioctl_output_len:usize, built_sync_ioctl:bool,
- sync_thread_id:u64, sync_event:*mut c_void, sync_next:*mut Irp, sync_prev:*mut Irp, sync_queued:bool,
+ sync_thread_id:u64, requestor_pid:u64, sync_event:*mut c_void, sync_next:*mut Irp, sync_prev:*mut Irp, sync_queued:bool,
 }
 impl IrpSlot {
  const fn empty()->Self { Self {
@@ -116,7 +116,7 @@ impl IrpSlot {
   stack:[IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()};MAX_WDM_STACK_LOCATIONS],
   system_buffer:ptr::null_mut(),system_buffer_pages:0,system_buffer_len:0,
   ioctl_output_buffer:ptr::null_mut(),ioctl_output_len:0,built_sync_ioctl:false,
-  sync_thread_id:0,sync_event:ptr::null_mut(),sync_next:ptr::null_mut(),sync_prev:ptr::null_mut(),sync_queued:false,
+  sync_thread_id:0,requestor_pid:0,sync_event:ptr::null_mut(),sync_next:ptr::null_mut(),sync_prev:ptr::null_mut(),sync_queued:false,
  }}
 }
 unsafe impl Send for IrpSlot {}
@@ -821,7 +821,7 @@ pub unsafe extern "system" fn io_create_device(
  if unsafe{(*driver).flags}&(DRIVER_UNLOADING_FLAG|DRIVER_UNLOADED_FLAG)!=0{return STATUS_DELETE_PENDING}
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
+ slot.used=true;slot.requestor_pid=crate::syscall::current_process_id();slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
  slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
@@ -2869,4 +2869,27 @@ mod wdm_tests {
   unsafe{io_delete_device(device);}
  }
 
+}
+
+
+// ---- Requestor session query ------------------------------------------------
+/// NTSTATUS IoGetRequestorSessionId(PIRP Irp, PULONG pSessionId).
+/// Only IRPs owned by the kernel's tracked I/O manager are accepted; unknown
+/// requestor identity fails rather than being silently treated as session zero.
+#[unsafe(export_name = "IoGetRequestorSessionId")]
+pub unsafe extern "win64" fn io_get_requestor_session_id(irp: *mut Irp, session_id: *mut u32) -> i32 {
+    const STATUS_INVALID_PARAMETER: i32 = 0xC000_000D_u32 as i32;
+    const STATUS_NOT_FOUND: i32 = 0xC000_0225_u32 as i32;
+    if irp.is_null() || session_id.is_null() { return STATUS_INVALID_PARAMETER; }
+    let pid = {
+        let state = WDM.lock();
+        let Some(slot) = state.irps.iter().find(|slot| slot.used && ptr::eq(&slot.object, irp)) else {
+            return STATUS_NOT_FOUND;
+        };
+        slot.requestor_pid
+    };
+    if pid == 0 { return STATUS_NOT_FOUND; }
+    let Some(session) = crate::process::session_id_for_pid(pid) else { return STATUS_NOT_FOUND; };
+    unsafe { session_id.write(session); }
+    STATUS_SUCCESS
 }
