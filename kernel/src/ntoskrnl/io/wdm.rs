@@ -298,6 +298,7 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
  if allocated.is_null()!=translated.is_null()||raw_count!=count{return STATUS_INVALID_PARAMETER}
  // Require the bus-provided raw and translated lists to describe the same
  // number of reservable resources; translation may change addresses, not count.
+ for i in 0..count { for j in i+1..count { if resources_overlap(&resources[i],&resources[j]) { return STATUS_INVALID_PARAMETER; } } }
  let mut arbiter=RESOURCE_ARBITER.lock();
  if arbiter.claims.iter().any(|c|c.used&&c.owner==device&&!c.committed){return STATUS_DEVICE_BUSY}
  for r in resources[..count].iter() {
@@ -377,8 +378,6 @@ pub unsafe extern "system" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rel
  }
  let mut manager=PNP_MANAGER.lock();
  // Ensure capacity before mutating so enumeration is atomic on resource exhaustion.
- let old=manager.relations.iter().filter(|r|r.used&&r.bus==bus).count();
- let needed=children[..count].iter().filter(|child|!manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==**child)).count();
  let free=manager.relations.iter().filter(|r|!r.used||r.bus==bus).count();
  if free<count{return STATUS_INSUFFICIENT_RESOURCES}
  for relation in manager.relations.iter_mut().filter(|r|r.used&&r.bus==bus&&!children[..count].contains(&r.child)){*relation=PnpRelation::EMPTY;}
@@ -548,7 +547,13 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  slot.attached_to=ptr::null_mut();
  slot.name_len=0;slot.name.fill(0);
  slot.used=false;slot.deleting=false;
+ // Drop stale bus/child links before making the backing device slot reusable.
+ {
+  let mut manager=PNP_MANAGER.lock();
+  for relation in manager.relations.iter_mut().filter(|r|r.used&&(r.bus==device||r.child==device)){*relation=PnpRelation::EMPTY;}
+ }
  drop(state);
+ io_release_pnp_resources(device);
  unsafe{io_unregister_file_system(device);}
 }
 #[unsafe(no_mangle)]
