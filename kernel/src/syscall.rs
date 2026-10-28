@@ -258,7 +258,7 @@ fn wait_on_user_address(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     if let Some(slot)=waiters.iter().position(|w|w.active&&w.process==process&&w.address==address&&w.thread==thread) {
         waiters[slot]=UserAddressWaiter::EMPTY;
     }
-    crate::thread::take_wait_status().unwrap_or(NT_STATUS_SUCCESS) as u32 as u64
+    crate::thread::take_wait_status().unwrap_or(NT_STATUS_SUCCESS as i32) as u32 as u64
 }
 
 /// Expire finite NTDLL address waits from the kernel clock interrupt path.
