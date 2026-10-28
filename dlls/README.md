@@ -1,5 +1,5 @@
 # CognacOS user-mode DLLs
 
-The `kernel32/` and `shell32/` directories contain early freestanding x64 PE32+ DLL stubs with explicit .def export tables. These are compatibility scaffolding, not complete Windows implementations. See each DLL's README for export scope and stub behavior.
+`kernel32/` and `shell32/` are Rust crates that build x64 PE32+ DLLs. Both depend on the shared `cognacos-nt-abi` crate rather than defining duplicate NT scalar and pointer aliases. Their export inventories are checked against the matching .def files at build time.
 
-Build locally with `clang` and `lld-link`, or use the `Build x64 DLL stubs` GitHub Actions workflow. Generated DLLs are workflow artifacts and are not committed into source control.
+The generated functions are placeholders; exporting a name does not mean the API is implemented. Build and validate them through the existing `.github/workflows/build-uefi.yml` workflow; no separate DLL-only workflow is needed.
