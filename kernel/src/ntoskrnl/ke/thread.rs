@@ -462,7 +462,24 @@ fn exit_current()->! {
     let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
     let (old_rsp_ptr,new_rsp,old_token)={
         let mut table=THREADS.lock();
-        let current=match table.records.iter_mut().find(|t|t.id==id&&t.state==ThreadState::Running){Some(t)=>t,None=>loop{core::hint::spin_loop()}};
+        let current_index=table.records.iter().position(|t|t.id==id&&t.state==ThreadState::Running);
+        let Some(current_index)=current_index else {
+            // A stale CPU-local current-thread ID must not spin forever while
+            // holding THREADS: that permanently blocks every other CPU trying
+            // to enter the scheduler. This can happen on exception/teardown
+            // paths when scheduler and KTHREAD bookkeeping diverge. Quarantine
+            // the orphaned stack and return to this CPU's saved idle context.
+            drop(table);
+            local.current_thread.store(0,core::sync::atomic::Ordering::Release);
+            let idle=unsafe{*idle_rsp_ptr};
+            if idle.is_null(){loop{core::hint::spin_loop()}}
+            let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
+            if idle_top!=0{let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,idle_top);}
+            let mut abandoned_rsp: *mut u64 = core::ptr::null_mut();
+            unsafe{crate::ntoskrnl::ke::arch::context_switch(&mut abandoned_rsp as *mut *mut u64,idle)};
+            loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}
+        };
+        let current=&mut table.records[current_index];
         current.state=ThreadState::Exited;
         current.entry=None;
         current.argument=core::ptr::null_mut();
