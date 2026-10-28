@@ -222,6 +222,7 @@ pub const NT_SYSCALL_CREATE_EVENT: u64 = 0x155;
 pub const NT_SYSCALL_SET_EVENT: u64 = 0x156;
 pub const NT_SYSCALL_RESET_EVENT: u64 = 0x157;
 pub const NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT: u64 = 0x158;
+pub const NT_SYSCALL_OPEN_EVENT: u64 = 0x159;
 
 #[derive(Clone, Copy)]
 struct UserAddressWaiter { active: bool, process: u64, address: u64, thread: u64, deadline: u64 }
@@ -575,8 +576,8 @@ pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 // Service IDs are discovered from the staged PE's own exported syscall stubs.
 const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
-static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 29] =
-    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 29];
+static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 30] =
+    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 30];
 const SERVICE_NT_CLOSE: usize = 0;
 const SERVICE_NT_YIELD_EXECUTION: usize = 1;
 const SERVICE_NT_QUERY_INFORMATION_PROCESS: usize = 2;
@@ -606,6 +607,7 @@ const SERVICE_NT_CREATE_EVENT: usize = 25;
 const SERVICE_NT_SET_EVENT: usize = 26;
 const SERVICE_NT_RESET_EVENT: usize = 27;
 const SERVICE_NT_WAIT_FOR_SINGLE_OBJECT: usize = 28;
+const SERVICE_NT_OPEN_EVENT: usize = 29;
 
 fn image_u16(image: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
@@ -634,7 +636,7 @@ fn image_rva_offset(image: &[u8], section_table: usize, section_count: usize,
     }
     None
 }
-fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 29]> {
+fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 30]> {
     if image.get(0..2)? != b"MZ" { return None; }
     let pe = image_u32(image, 0x3c)? as usize;
     if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" { return None; }
@@ -663,7 +665,7 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 29]> {
     // Rust NTDLL is the sole native user/kernel boundary. Require every
     // syscall export used by the current kernel, including registry mutations.
     // A partial table is a boot error, not a reason to switch ABI paths.
-    let required_names: [&[u8]; 29] = [
+    let required_names: [&[u8]; 30] = [
         b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess",
         b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey",
         b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile",
@@ -672,7 +674,7 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 29]> {
         b"NtCreateKey", b"NtSetValueKey", b"NtDeleteValueKey", b"NtDeleteKey", b"NtFlushKey",
         b"NtEnumerateKey", b"NtEnumerateValueKey", b"NtQueryKey",
         b"NtOpenProcess", b"NtGetNextProcess",
-        b"NtCreateEvent", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
+        b"NtCreateEvent", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject", b"NtOpenEvent",
     ];
     let mut discovered = [SERVICE_UNAVAILABLE; 29];
     for index in 0..name_count {
@@ -737,6 +739,7 @@ pub fn windows_service_number(name: &[u8]) -> Option<u32> {
         b"NtSetEvent" => SERVICE_NT_SET_EVENT,
         b"NtResetEvent" => SERVICE_NT_RESET_EVENT,
         b"NtWaitForSingleObject" => SERVICE_NT_WAIT_FOR_SINGLE_OBJECT,
+        b"NtOpenEvent" => SERVICE_NT_OPEN_EVENT,
         _ => return None,
     };
     let value = WINDOWS_SERVICE_NUMBERS[slot].load(Ordering::Acquire);
@@ -1686,14 +1689,104 @@ fn native_event_type_id() -> Result<u16, i32> {
     crate::ntoskrnl::ob::runtime::ensure_type(&EVENT_TYPE_NAME, 1, 2, 4, 7, u32::MAX)
 }
 
+
+/// Parse the x64 OBJECT_ATTRIBUTES/UNICODE_STRING supplied by a user process.
+/// Names are copied into kernel memory before namespace operations. Relative
+/// names are resolved against a directory handle; security descriptors are
+/// rejected until user-mode descriptor capture/validation is implemented.
+fn native_event_object_attributes(address: u64, owner: usize) -> Result<([u16; 128], usize, u32), i32> {
+    let mut name = [0u16; 128];
+    if address == 0 { return Ok((name, 0, 0)); }
+    let mut oa = [0u8; 48];
+    copy_nt_input(address, &mut oa).map_err(|s| s as u32 as i32)?;
+    let length = u32::from_le_bytes(oa[0..4].try_into().unwrap());
+    if length < 48 { return Err(NT_STATUS_INVALID_PARAMETER as u32 as i32); }
+    let root = u64::from_le_bytes(oa[8..16].try_into().unwrap());
+    let us_address = u64::from_le_bytes(oa[16..24].try_into().unwrap());
+    let attributes = u32::from_le_bytes(oa[24..28].try_into().unwrap());
+    let security_descriptor = u64::from_le_bytes(oa[32..40].try_into().unwrap());
+    if security_descriptor != 0 { return Err(0xC000_00BBu32 as i32); }
+    if us_address == 0 { return Ok((name, 0, attributes)); }
+    let mut us = [0u8; 16];
+    copy_nt_input(us_address, &mut us).map_err(|s| s as u32 as i32)?;
+    let bytes = u16::from_le_bytes(us[0..2].try_into().unwrap()) as usize;
+    let maximum = u16::from_le_bytes(us[2..4].try_into().unwrap()) as usize;
+    let buffer = u64::from_le_bytes(us[8..16].try_into().unwrap());
+    if bytes == 0 || bytes & 1 != 0 || bytes > maximum || bytes / 2 > name.len() || buffer == 0 {
+        return Err(NT_STATUS_INVALID_PARAMETER as u32 as i32);
+    }
+    let units = bytes / 2;
+    let mut raw = [0u8; 256];
+    copy_nt_input(buffer, &mut raw[..bytes]).map_err(|s| s as u32 as i32)?;
+    for i in 0..units {
+        name[i] = u16::from_le_bytes([raw[i * 2], raw[i * 2 + 1]]);
+        if name[i] == 0 { return Err(NT_STATUS_INVALID_PARAMETER as u32 as i32); }
+    }
+    if name[0] == b'\\' as u16 { return Ok((name, units, attributes)); }
+    if root == 0 { return Err(0xC000_003Bu32 as i32); } // STATUS_OBJECT_PATH_SYNTAX_BAD
+    let directory_type_name = [b'D' as u16,b'i' as u16,b'r' as u16,b'e' as u16,b'c' as u16,b't' as u16,b'o' as u16,b'r' as u16,b'y' as u16];
+    let directory_type = crate::ntoskrnl::ob::runtime::ensure_type(&directory_type_name, 1, 2, 4, 7, u32::MAX)?;
+    let body = crate::ntoskrnl::ob::runtime::reference_by_handle(root as *mut core::ffi::c_void, 0, directory_type, owner, false)?;
+    let mut prefix = [0u16; 128];
+    let prefix_len = crate::ntoskrnl::ob::runtime::object_name(body, &mut prefix)?;
+    let _ = crate::ntoskrnl::ob::runtime::dereference_body(body);
+    if prefix_len == 0 || prefix_len + 1 + units > name.len() { return Err(0xC000_003Bu32 as i32); }
+    let mut full = [0u16; 128];
+    full[..prefix_len].copy_from_slice(&prefix[..prefix_len]);
+    let mut total = prefix_len;
+    if full[total - 1] != b'\\' as u16 { full[total] = b'\\' as u16; total += 1; }
+    full[total..total + units].copy_from_slice(&name[..units]);
+    total += units;
+    Ok((full, total, attributes))
+}
+
+fn nt_open_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] == 0 || args[2] == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let owner = crate::ntoskrnl::ob::runtime::current_owner();
+    let (name, name_len, attributes) = match native_event_object_attributes(args[2], owner) {
+        Ok(value) => value,
+        Err(status) => return status as u32 as u64,
+    };
+    if name_len == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let event_type = match native_event_type_id() { Ok(value) => value, Err(status) => return status as u32 as u64 };
+    match crate::ntoskrnl::ob::runtime::reference_by_name(&name[..name_len], event_type, args[1] as u32, false) {
+        Err(status) => return status as u32 as u64,
+        Ok(body) => { let _ = crate::ntoskrnl::ob::runtime::dereference_body(body); }
+    }
+    let handle = match crate::ntoskrnl::ob::runtime::open_by_name(&name[..name_len], args[1] as u32, owner, false, attributes) {
+        Ok(handle) => handle,
+        Err(status) => return status as u32 as u64,
+    };
+    if let Err(status) = copy_nt_output(args[0], &(handle as usize as u64).to_le_bytes()) {
+        let _ = crate::ntoskrnl::ob::runtime::close_handle(handle, owner);
+        return status;
+    }
+    NT_STATUS_SUCCESS
+}
+
 fn nt_create_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     if args[0] == 0 || args[3] > 1 || args[4] > 1 {
         return NT_STATUS_INVALID_PARAMETER;
     }
-    // The first event-backed critical-section implementation supports unnamed
-    // events, which is all RTL_CRITICAL_SECTION requires. Named namespace parsing
-    // is deliberately rejected rather than silently ignoring OBJECT_ATTRIBUTES.
-    if args[2] != 0 { return 0xC000_00BB; } // STATUS_NOT_SUPPORTED
+    let owner = crate::ntoskrnl::ob::runtime::current_owner();
+    let (name, name_len, attributes) = match native_event_object_attributes(args[2], owner) {
+        Ok(value) => value,
+        Err(status) => return status as u32 as u64,
+    };
+    let named = name_len != 0;
+    if named {
+        let event_type = match native_event_type_id() { Ok(value) => value, Err(status) => return status as u32 as u64 };
+        if crate::ntoskrnl::ob::runtime::reference_by_name(&name[..name_len], event_type, args[1] as u32, false).is_ok() {
+            // Drop the temporary lookup reference before opening a real handle.
+            let body = crate::ntoskrnl::ob::runtime::reference_by_name(&name[..name_len], event_type, 0, true).ok();
+            if let Some(body) = body { let _ = crate::ntoskrnl::ob::runtime::dereference_body(body); }
+            if attributes & 0x80 == 0 { return 0xC000_0035; } // STATUS_OBJECT_NAME_COLLISION
+            return match crate::ntoskrnl::ob::runtime::open_by_name(&name[..name_len], args[1] as u32, owner, false, attributes) {
+                Ok(handle) => { let raw = handle as usize as u64; if let Err(status) = copy_nt_output(args[0], &raw.to_le_bytes()) { let _ = crate::ntoskrnl::ob::runtime::close_handle(handle, owner); return status; } 0x4000_0000 },
+                Err(status) => status as u32 as u64,
+            };
+        }
+    }
     let Some(slot) = NATIVE_EVENT_SLOTS.iter().find(|slot|
         slot.used.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
     ) else { return 0xC000_009A; }; // STATUS_INSUFFICIENT_RESOURCES
@@ -1701,16 +1794,15 @@ fn nt_create_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     unsafe { crate::ntoskrnl::ke::runtime::ke_initialize_event(header, args[3] as i32, args[4] as u8); }
     let registered = unsafe {
         crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(
-            header.cast(), &EVENT_TYPE_NAME, &[], false, core::ptr::null(), 0, native_event_finalizer,
+            header.cast(), &EVENT_TYPE_NAME, &name[..name_len], false, core::ptr::null(), 0, native_event_finalizer,
         )
     };
     if let Err(status) = registered {
         slot.used.store(false, Ordering::Release);
         return status as u32 as u64;
     }
-    let owner = crate::ntoskrnl::ob::runtime::current_owner();
     let handle = match crate::ntoskrnl::ob::runtime::open_by_pointer(
-        header.cast(), args[1] as u32, owner, true, 0,
+        header.cast(), args[1] as u32, owner, false, attributes,
     ) {
         Ok(handle) => handle,
         Err(status) => {
@@ -1800,6 +1892,7 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_SET_EVENT => nt_set_event(args),
         NT_SYSCALL_RESET_EVENT => nt_reset_event(args),
         NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT => nt_wait_for_single_object(args),
+        NT_SYSCALL_OPEN_EVENT => nt_open_event(args),
         NT_SYSCALL_WAKE_ADDRESS => wake_user_address(args,false),
         NT_SYSCALL_WAKE_ALL_ADDRESS => wake_user_address(args,true),
         NT_SYSCALL_DEBUG_EVENT => {
@@ -1942,6 +2035,7 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         Some(SERVICE_NT_SET_EVENT) => NT_SYSCALL_SET_EVENT,
         Some(SERVICE_NT_RESET_EVENT) => NT_SYSCALL_RESET_EVENT,
         Some(SERVICE_NT_WAIT_FOR_SINGLE_OBJECT) => NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT,
+        Some(SERVICE_NT_OPEN_EVENT) => NT_SYSCALL_OPEN_EVENT,
         Some(SERVICE_NT_OPEN_FILE) => NT_SYSCALL_OPEN_FILE,
         Some(SERVICE_NT_READ_FILE) => NT_SYSCALL_READ_FILE,
         Some(SERVICE_NT_ALLOCATE_VIRTUAL_MEMORY) => NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY,
