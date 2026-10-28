@@ -558,7 +558,7 @@ pub unsafe fn run_native_ntdll_smoke(
             fail_if!(&[0x0f, 0x85]);
         }};
     }
-    emit!(&[0x48, 0x83, 0xec, 0x30]); // Shadow space plus fifth-argument slot; keeps RSP 16-byte aligned.
+    emit!(&[0x48, 0x83, 0xec, 0x38]); // 32-byte shadow space plus 8-byte alignment/fifth-argument slack; RSP is 16-byte aligned before each call.
     // NtQueryInformationProcess(-1, ProcessBasicInformation, info, 48, &returnLength).
     imm64!(&[0x48, 0xb9], u64::MAX);
     emit!(&[0xba, 0, 0, 0, 0]);
