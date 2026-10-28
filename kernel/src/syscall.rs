@@ -218,6 +218,10 @@ pub const NT_SYSCALL_DEBUG_EVENT: u64 = 0x144;
 pub const NT_SYSCALL_WAIT_ON_ADDRESS: u64 = 0x152;
 pub const NT_SYSCALL_WAKE_ADDRESS: u64 = 0x153;
 pub const NT_SYSCALL_WAKE_ALL_ADDRESS: u64 = 0x154;
+pub const NT_SYSCALL_CREATE_EVENT: u64 = 0x155;
+pub const NT_SYSCALL_SET_EVENT: u64 = 0x156;
+pub const NT_SYSCALL_RESET_EVENT: u64 = 0x157;
+pub const NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT: u64 = 0x158;
 
 #[derive(Clone, Copy)]
 struct UserAddressWaiter { active: bool, process: u64, address: u64, thread: u64, deadline: u64 }
@@ -571,8 +575,8 @@ pub const WIN_NT_YIELD_EXECUTION: u64 = 0x46;
 // Service IDs are discovered from the staged PE's own exported syscall stubs.
 const SERVICE_UNAVAILABLE: u64 = u64::MAX;
 static WINDOWS_SERVICE_TABLE_ENABLED: AtomicBool = AtomicBool::new(false);
-static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 25] =
-    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 25];
+static WINDOWS_SERVICE_NUMBERS: [AtomicU64; 29] =
+    [const { AtomicU64::new(SERVICE_UNAVAILABLE) }; 29];
 const SERVICE_NT_CLOSE: usize = 0;
 const SERVICE_NT_YIELD_EXECUTION: usize = 1;
 const SERVICE_NT_QUERY_INFORMATION_PROCESS: usize = 2;
@@ -598,6 +602,10 @@ const SERVICE_NT_ENUMERATE_VALUE_KEY: usize = 21;
 const SERVICE_NT_QUERY_KEY: usize = 22;
 const SERVICE_NT_OPEN_PROCESS: usize = 23;
 const SERVICE_NT_GET_NEXT_PROCESS: usize = 24;
+const SERVICE_NT_CREATE_EVENT: usize = 25;
+const SERVICE_NT_SET_EVENT: usize = 26;
+const SERVICE_NT_RESET_EVENT: usize = 27;
+const SERVICE_NT_WAIT_FOR_SINGLE_OBJECT: usize = 28;
 
 fn image_u16(image: &[u8], at: usize) -> Option<u16> {
     Some(u16::from_le_bytes(image.get(at..at.checked_add(2)?)?.try_into().ok()?))
@@ -626,7 +634,7 @@ fn image_rva_offset(image: &[u8], section_table: usize, section_count: usize,
     }
     None
 }
-fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 25]> {
+fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 29]> {
     if image.get(0..2)? != b"MZ" { return None; }
     let pe = image_u32(image, 0x3c)? as usize;
     if image.get(pe..pe.checked_add(4)?)? != b"PE\0\0" { return None; }
@@ -655,7 +663,7 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 25]> {
     // Rust NTDLL is the sole native user/kernel boundary. Require every
     // syscall export used by the current kernel, including registry mutations.
     // A partial table is a boot error, not a reason to switch ABI paths.
-    let required_names: [&[u8]; 25] = [
+    let required_names: [&[u8]; 29] = [
         b"NtClose", b"NtYieldExecution", b"NtQueryInformationProcess",
         b"NtQueryInformationThread", b"NtQuerySystemInformation", b"NtOpenKey",
         b"NtQueryValueKey", b"NtOpenFile", b"NtReadFile",
@@ -664,8 +672,9 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 25]> {
         b"NtCreateKey", b"NtSetValueKey", b"NtDeleteValueKey", b"NtDeleteKey", b"NtFlushKey",
         b"NtEnumerateKey", b"NtEnumerateValueKey", b"NtQueryKey",
         b"NtOpenProcess", b"NtGetNextProcess",
+        b"NtCreateEvent", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject",
     ];
-    let mut discovered = [SERVICE_UNAVAILABLE; 25];
+    let mut discovered = [SERVICE_UNAVAILABLE; 29];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
         let name_at = image_rva_offset(image, section_table, section_count, headers_size, name_rva, 1)?;
@@ -724,6 +733,10 @@ pub fn windows_service_number(name: &[u8]) -> Option<u32> {
         b"NtQueryKey" => SERVICE_NT_QUERY_KEY,
         b"NtOpenProcess" => SERVICE_NT_OPEN_PROCESS,
         b"NtGetNextProcess" => SERVICE_NT_GET_NEXT_PROCESS,
+        b"NtCreateEvent" => SERVICE_NT_CREATE_EVENT,
+        b"NtSetEvent" => SERVICE_NT_SET_EVENT,
+        b"NtResetEvent" => SERVICE_NT_RESET_EVENT,
+        b"NtWaitForSingleObject" => SERVICE_NT_WAIT_FOR_SINGLE_OBJECT,
         _ => return None,
     };
     let value = WINDOWS_SERVICE_NUMBERS[slot].load(Ordering::Acquire);
@@ -1641,9 +1654,152 @@ pub fn exception_dispatcher_rundown(owner: u64) {
 }
 static NTDLL_DEBUG_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 
+const EVENT_MODIFY_STATE: u32 = 0x0002;
+const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
+const EVENT_TYPE_NAME: [u16; 5] = [b'E' as u16, b'v' as u16, b'e' as u16, b'n' as u16, b't' as u16];
+
+struct NativeEventSlot {
+    used: AtomicBool,
+    header: core::cell::UnsafeCell<core::mem::MaybeUninit<crate::ntoskrnl::ke::runtime::DispatcherHeader>>,
+}
+impl NativeEventSlot {
+    const fn new() -> Self {
+        Self { used: AtomicBool::new(false), header: core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit()) }
+    }
+    fn header_ptr(&self) -> *mut crate::ntoskrnl::ke::runtime::DispatcherHeader {
+        unsafe { (*self.header.get()).as_mut_ptr() }
+    }
+}
+unsafe impl Sync for NativeEventSlot {}
+static NATIVE_EVENT_SLOTS: [NativeEventSlot; 64] = [const { NativeEventSlot::new() }; 64];
+
+unsafe extern "win64" fn native_event_finalizer(body: *mut core::ffi::c_void) {
+    for slot in &NATIVE_EVENT_SLOTS {
+        if slot.header_ptr().cast::<core::ffi::c_void>() == body {
+            slot.used.store(false, Ordering::Release);
+            return;
+        }
+    }
+}
+
+fn native_event_type_id() -> Result<u16, i32> {
+    crate::ntoskrnl::ob::runtime::ensure_type(&EVENT_TYPE_NAME, 1, 2, 4, 7, u32::MAX)
+}
+
+fn nt_create_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] == 0 || args[3] > 1 || args[4] > 1 {
+        return NT_STATUS_INVALID_PARAMETER;
+    }
+    // The first event-backed critical-section implementation supports unnamed
+    // events, which is all RTL_CRITICAL_SECTION requires. Named namespace parsing
+    // is deliberately rejected rather than silently ignoring OBJECT_ATTRIBUTES.
+    if args[2] != 0 { return 0xC000_00BB; } // STATUS_NOT_SUPPORTED
+    let Some(slot) = NATIVE_EVENT_SLOTS.iter().find(|slot|
+        slot.used.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    ) else { return 0xC000_009A; }; // STATUS_INSUFFICIENT_RESOURCES
+    let header = slot.header_ptr();
+    unsafe { crate::ntoskrnl::ke::runtime::ke_initialize_event(header, args[3] as i32, args[4] as u8); }
+    let registered = unsafe {
+        crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(
+            header.cast(), &EVENT_TYPE_NAME, &[], false, core::ptr::null(), 0, native_event_finalizer,
+        )
+    };
+    if let Err(status) = registered {
+        slot.used.store(false, Ordering::Release);
+        return status as u32 as u64;
+    }
+    let owner = crate::ntoskrnl::ob::runtime::current_owner();
+    let handle = match crate::ntoskrnl::ob::runtime::open_by_pointer(
+        header.cast(), args[1] as u32, owner, true, 0,
+    ) {
+        Ok(handle) => handle,
+        Err(status) => {
+            let _ = crate::ntoskrnl::ob::runtime::unregister_object(header.cast());
+            return status as u32 as u64;
+        }
+    };
+    // Drop the registration's initial object reference; the returned handle now
+    // owns the lifetime, and outstanding waits add their own temporary reference.
+    let _ = crate::ntoskrnl::ob::runtime::dereference_body(header.cast());
+    let raw_handle = handle as usize as u64;
+    if let Err(status) = copy_nt_output(args[0], &raw_handle.to_le_bytes()) {
+        let _ = crate::ntoskrnl::ob::runtime::close_handle(handle, owner);
+        return status;
+    }
+    NT_STATUS_SUCCESS
+}
+
+fn nt_set_or_reset_event(args: &[u64; NT_MAX_ARGUMENTS], set: bool) -> u64 {
+    if args[0] == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let event_type = match native_event_type_id() {
+        Ok(value) => value,
+        Err(status) => return status as u32 as u64,
+    };
+    let owner = crate::ntoskrnl::ob::runtime::current_owner();
+    let body = match crate::ntoskrnl::ob::runtime::reference_by_handle(
+        args[0] as *mut core::ffi::c_void, EVENT_MODIFY_STATE, event_type, owner, false,
+    ) {
+        Ok(body) => body,
+        Err(status) => return status as u32 as u64,
+    };
+    let previous = unsafe {
+        if set {
+            crate::ntoskrnl::ke::runtime::ke_set_event(body.cast(), 0, 0)
+        } else {
+            crate::ntoskrnl::ke::runtime::ke_reset_event(body.cast())
+        }
+    };
+    let _ = crate::ntoskrnl::ob::runtime::dereference_body(body);
+    if args[1] != 0 {
+        if let Err(status) = copy_nt_output(args[1], &previous.to_le_bytes()) { return status; }
+    }
+    NT_STATUS_SUCCESS
+}
+fn nt_set_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 { nt_set_or_reset_event(args, true) }
+fn nt_reset_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 { nt_set_or_reset_event(args, false) }
+
+fn nt_wait_for_single_object(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
+    if args[0] == 0 { return NT_STATUS_INVALID_PARAMETER; }
+    let event_type = match native_event_type_id() {
+        Ok(value) => value,
+        Err(status) => return status as u32 as u64,
+    };
+    let owner = crate::ntoskrnl::ob::runtime::current_owner();
+    let body = match crate::ntoskrnl::ob::runtime::reference_by_handle(
+        args[0] as *mut core::ffi::c_void, SYNCHRONIZE_ACCESS, event_type, owner, false,
+    ) {
+        Ok(body) => body,
+        Err(status) => return status as u32 as u64,
+    };
+    let mut timeout_value = 0i64;
+    let timeout_ptr = if args[2] == 0 {
+        core::ptr::null()
+    } else {
+        let mut bytes = [0u8; 8];
+        if let Err(status) = copy_nt_input(args[2], &mut bytes) {
+            let _ = crate::ntoskrnl::ob::runtime::dereference_body(body);
+            return status;
+        }
+        timeout_value = i64::from_le_bytes(bytes);
+        &timeout_value as *const i64
+    };
+    let status = unsafe {
+        crate::ntoskrnl::ke::runtime::ke_wait_for_single_object(
+            body.cast(), 0, 0, (args[1] & 0xff) as u8, timeout_ptr,
+        )
+    };
+    let _ = crate::ntoskrnl::ob::runtime::dereference_body(body);
+    status as u32 as u64
+}
+
+
 fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     match number {
         NT_SYSCALL_WAIT_ON_ADDRESS => wait_on_user_address(args),
+        NT_SYSCALL_CREATE_EVENT => nt_create_event(args),
+        NT_SYSCALL_SET_EVENT => nt_set_event(args),
+        NT_SYSCALL_RESET_EVENT => nt_reset_event(args),
+        NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT => nt_wait_for_single_object(args),
         NT_SYSCALL_WAKE_ADDRESS => wake_user_address(args,false),
         NT_SYSCALL_WAKE_ALL_ADDRESS => wake_user_address(args,true),
         NT_SYSCALL_DEBUG_EVENT => {
@@ -1782,6 +1938,10 @@ pub extern "C" fn cognacos_windows_syscall_dispatch(frame: *mut u64) -> u64 {
         Some(SERVICE_NT_QUERY_KEY) => NT_SYSCALL_QUERY_KEY,
         Some(SERVICE_NT_OPEN_PROCESS) => NT_SYSCALL_OPEN_PROCESS,
         Some(SERVICE_NT_GET_NEXT_PROCESS) => NT_SYSCALL_GET_NEXT_PROCESS,
+        Some(SERVICE_NT_CREATE_EVENT) => NT_SYSCALL_CREATE_EVENT,
+        Some(SERVICE_NT_SET_EVENT) => NT_SYSCALL_SET_EVENT,
+        Some(SERVICE_NT_RESET_EVENT) => NT_SYSCALL_RESET_EVENT,
+        Some(SERVICE_NT_WAIT_FOR_SINGLE_OBJECT) => NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT,
         Some(SERVICE_NT_OPEN_FILE) => NT_SYSCALL_OPEN_FILE,
         Some(SERVICE_NT_READ_FILE) => NT_SYSCALL_READ_FILE,
         Some(SERVICE_NT_ALLOCATE_VIRTUAL_MEMORY) => NT_SYSCALL_ALLOCATE_VIRTUAL_MEMORY,
@@ -1913,6 +2073,9 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_NT_RAISE_EXCEPTION => 4,
             NT_SYSCALL_REGISTER_EXCEPTION_DISPATCHER => 1,
             NT_SYSCALL_WAIT_ON_ADDRESS => 4,
+            NT_SYSCALL_CREATE_EVENT => 5,
+            NT_SYSCALL_SET_EVENT | NT_SYSCALL_RESET_EVENT => 2,
+            NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT => 3,
             NT_SYSCALL_WAKE_ADDRESS | NT_SYSCALL_WAKE_ALL_ADDRESS => 1,
             NT_SYSCALL_DEBUG_EVENT => 3,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
