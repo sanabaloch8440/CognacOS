@@ -16,6 +16,7 @@ pub unsafe extern "system" fn VerSetConditionMask(mut condition_mask:u64,type_ma
 #[repr(C)]
 struct CognacCriticalSection { debug_info:*mut c_void, lock_count:i32, recursion_count:i32, owning_thread:*mut c_void, lock_semaphore:*mut c_void, spin_count:usize }
 #[inline] unsafe fn atomic_i32_at(p:*mut i32)->&'static core::sync::atomic::AtomicI32{unsafe{&*p.cast::<core::sync::atomic::AtomicI32>()}}
+#[inline] unsafe fn atomic_owner_at(p:*mut *mut c_void)->&'static AtomicUsize{unsafe{&*p.cast::<AtomicUsize>()}}
 #[inline] fn current_thread_id()->usize{
  #[cfg(target_os="windows")]
  unsafe{let teb:usize;core::arch::asm!("mov {}, gs:[0x30]",out(reg)teb,options(nostack,preserves_flags,readonly));if teb!=0{return core::ptr::read_unaligned((teb+0x48) as *const usize);}}
@@ -700,7 +701,7 @@ pub unsafe extern "system" fn RtlDeleteCriticalSection(cs:*mut CognacCriticalSec
     if cs.is_null(){return STATUS_INVALID_PARAMETER;}
     let lock=unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count))};
     if lock.load(Ordering::Acquire)!=-1{return STATUS_INVALID_PARAMETER;}
-    unsafe{(*cs).debug_info=core::ptr::null_mut();(*cs).owning_thread=core::ptr::null_mut();(*cs).recursion_count=0;(*cs).lock_semaphore=core::ptr::null_mut();(*cs).spin_count=0;}
+    unsafe{(*cs).debug_info=core::ptr::null_mut();atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).store(0,Ordering::Release);(*cs).recursion_count=0;(*cs).lock_semaphore=core::ptr::null_mut();(*cs).spin_count=0;}
     STATUS_SUCCESS
 }
 
@@ -1436,7 +1437,7 @@ pub unsafe extern "system" fn RtlEnterCriticalSection(cs:*mut CognacCriticalSect
     if cs.is_null(){return STATUS_INVALID_PARAMETER;}
     let id=current_thread_id();
     if id==0{return STATUS_NOT_IMPLEMENTED;}
-    if unsafe{(*cs).owning_thread as usize}==id{
+    if unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).load(Ordering::Acquire)}==id{
         unsafe{(*cs).recursion_count=(*cs).recursion_count.saturating_add(1);}
         return STATUS_SUCCESS;
     }
@@ -1444,7 +1445,7 @@ pub unsafe extern "system" fn RtlEnterCriticalSection(cs:*mut CognacCriticalSect
     let spins=unsafe{(*cs).spin_count.min(1_000_000)};
     loop{
         if lock.compare_exchange(-1,0,Ordering::Acquire,Ordering::Relaxed).is_ok(){
-            unsafe{(*cs).owning_thread=id as *mut c_void;(*cs).recursion_count=1;}
+            unsafe{(*cs).recursion_count=1;atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).store(id,Ordering::Release);}
             return STATUS_SUCCESS;
         }
         for _ in 0..spins{if lock.load(Ordering::Relaxed)==-1{break;}core::hint::spin_loop();}
@@ -1459,10 +1460,10 @@ pub unsafe extern "system" fn RtlEnterCriticalSection(cs:*mut CognacCriticalSect
 pub unsafe extern "system" fn RtlLeaveCriticalSection(cs:*mut CognacCriticalSection)->i32{
     if cs.is_null(){return STATUS_INVALID_PARAMETER;}
     let id=current_thread_id();
-    if id==0||unsafe{(*cs).owning_thread as usize}!=id||unsafe{(*cs).recursion_count}<=0{return STATUS_INVALID_PARAMETER;}
+    if id==0||unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).load(Ordering::Acquire)}!=id||unsafe{(*cs).recursion_count}<=0{return STATUS_INVALID_PARAMETER;}
     unsafe{(*cs).recursion_count-=1;}
     if unsafe{(*cs).recursion_count}==0{
-        unsafe{(*cs).owning_thread=core::ptr::null_mut();}
+        unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).store(0,Ordering::Release);}
         unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count)).store(-1,Ordering::Release);}
         unsafe{wake_word(core::ptr::addr_of_mut!((*cs).lock_count).cast::<usize>(),false);}
     }
@@ -2700,7 +2701,7 @@ pub unsafe extern "system" fn RtlSidIsHigherLevel() -> i32 {
 pub unsafe extern "system" fn RtlSleepConditionVariableCS(condition:*mut usize,cs:*mut CognacCriticalSection,timeout:*const i64)->i32{
     if condition.is_null()||cs.is_null(){return STATUS_INVALID_PARAMETER;}
     let id=current_thread_id();
-    if id==0||unsafe{(*cs).owning_thread as usize}!=id||unsafe{(*cs).recursion_count}!=1{return STATUS_INVALID_PARAMETER;}
+    if id==0||unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).load(Ordering::Acquire)}!=id||unsafe{(*cs).recursion_count}!=1{return STATUS_INVALID_PARAMETER;}
     let expected=unsafe{atomic_usize_at(condition).load(Ordering::Acquire)};
     let wait_timeout=if timeout.is_null(){u64::MAX}else{
         let t=unsafe{timeout.read_unaligned()};
@@ -2868,7 +2869,7 @@ pub unsafe extern "system" fn RtlTryConvertSRWLockSharedToExclusiveOrRelease() -
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlTryEnterCriticalSection(cs:*mut CognacCriticalSection)->u8{if cs.is_null(){return 0;}let id=current_thread_id();if unsafe{(*cs).owning_thread as usize}==id&&id!=0{unsafe{(*cs).recursion_count=(*cs).recursion_count.saturating_add(1);}return 1;}let l=unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count))};if l.compare_exchange(-1,0,Ordering::Acquire,Ordering::Relaxed).is_err(){return 0;}unsafe{(*cs).owning_thread=id as *mut c_void;(*cs).recursion_count=1;}1}
+pub unsafe extern "system" fn RtlTryEnterCriticalSection(cs:*mut CognacCriticalSection)->u8{if cs.is_null(){return 0;}let id=current_thread_id();if unsafe{atomic_owner_at(core::ptr::addr_of_mut!((*cs).owning_thread)).load(Ordering::Acquire)}==id&&id!=0{unsafe{(*cs).recursion_count=(*cs).recursion_count.saturating_add(1);}return 1;}let l=unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count))};if l.compare_exchange(-1,0,Ordering::Acquire,Ordering::Relaxed).is_err(){return 0;}unsafe{(*cs).owning_thread=id as *mut c_void;(*cs).recursion_count=1;}1}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlUdiv128() -> i32 {
