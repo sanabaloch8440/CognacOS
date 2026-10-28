@@ -205,11 +205,6 @@ pub unsafe extern "system" fn NtCreateEnlistment() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtCreateEvent() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn NtCreateEventPair() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -1050,11 +1045,6 @@ pub unsafe extern "system" fn NtReplacePartitionUnit() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn NtResetEvent() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
 pub unsafe extern "system" fn NtResetWriteWatch() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
@@ -1131,11 +1121,6 @@ pub unsafe extern "system" fn NtSetDriverEntryOrder() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn NtSetEaFile() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtSetEvent() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
@@ -1401,11 +1386,6 @@ pub unsafe extern "system" fn NtWaitForMultipleObjects() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn NtWaitForMultipleObjects32() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
-
-#[no_mangle]
-pub unsafe extern "system" fn NtWaitForSingleObject() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
 
