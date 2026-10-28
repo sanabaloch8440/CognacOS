@@ -1126,7 +1126,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             static mut BEEP_DRIVER_OBJECT: core::mem::MaybeUninit<DriverObject> = core::mem::MaybeUninit::uninit();
             let driver_object = core::ptr::addr_of_mut!(BEEP_DRIVER_OBJECT).cast::<DriverObject>();
             unsafe { driver_object.write(DriverObject {
-                object_type: 0, size: core::mem::size_of::<DriverObject>() as i16,
+                object_type: 4, size: core::mem::size_of::<DriverObject>() as i16,
                 device_object: core::ptr::null_mut(), flags: 0,
                 driver_start: core::ptr::null_mut(), driver_size: 0,
                 driver_section: core::ptr::null_mut(), driver_extension: core::ptr::null_mut(),
