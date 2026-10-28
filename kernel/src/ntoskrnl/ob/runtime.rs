@@ -155,16 +155,22 @@ fn sid_matches(s:&State,owner:usize,sid:&[u8])->bool{
      .is_some_and(|t|(0..t.count as usize).any(|i|t.lengths[i] as usize==sid.len()&&t.sids[i][..sid.len()]==*sid)) {
      return true;
  }
- // Also check the effective NT token, so token-derived default DACL ACEs
- // remain enforceable even if the legacy owner->SID mirror is not populated.
- let mut token = crate::thread::reference_current_impersonation_token();
- if token.is_null() {
-     token = crate::process::reference_primary_token(owner as u64);
+ // The standalone host-side Object Manager harness compiles this file as
+ // its crate root and intentionally has no process/thread/token modules.
+ // The production kernel path checks the effective NT token here.
+ #[cfg(not(test))]
+ {
+     let mut token = crate::thread::reference_current_impersonation_token();
+     if token.is_null() {
+         token = crate::process::reference_primary_token(owner as u64);
+     }
+     if token.is_null() { return false; }
+     let matched = crate::ntoskrnl::se::runtime::se_internal_TokenContainsSid(token, sid);
+     let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) };
+     return matched;
  }
- if token.is_null() { return false; }
- let matched = crate::ntoskrnl::se::runtime::se_internal_TokenContainsSid(token, sid);
- let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) };
- matched
+ #[cfg(test)]
+ { let _ = owner; false }
 }
 pub fn ensure_type(name:&[u16],gr:u32,gw:u32,gx:u32,ga:u32,valid:u32)->Result<u16,i32>{
  {let _g=LOCK.lock();let s=state();if let Some(t)=s.types.iter().find(|t|t.used&&eq(&t.name[..t.len as usize],name)){return Ok(t.id)}}
