@@ -330,8 +330,10 @@ fn dacl_allowed(s:&State,o:&Object,owner:usize)->u32{
  if acl_size<8||off.checked_add(acl_size).is_none_or(|e|e>b.len()){return 0}
  let mut p=off+8;let mut granted=0u32;let mut denied=0u32;
  for _ in 0..ace_count{if p+8>off+acl_size{return 0}let ty=b[p];let size=read_u16(b,p+2).unwrap_or(0) as usize;if size<8||p.checked_add(size).is_none_or(|e|e>off+acl_size){return 0}
-  let mask=read_u32(b,p+4).unwrap_or(0);let sid=&b[p+8..p+size];
-  if sid_matches(s,owner,sid){if ty==1{denied|=mask}else if ty==0{granted|=mask}}p+=size;
+  let mask=read_u32(b,p+4).unwrap_or(0);
+  let mapped_mask=type_idx(s,o.type_id).map(|ti|map_access(&s.types[ti],mask)).unwrap_or(mask);
+  let sid=&b[p+8..p+size];
+  if sid_matches(s,owner,sid){if ty==1{denied|=mapped_mask}else if ty==0{granted|=mapped_mask}}p+=size;
  }
  granted&!denied
 }
