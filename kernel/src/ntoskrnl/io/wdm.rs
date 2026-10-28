@@ -934,7 +934,7 @@ fn initialize_irp_slot(slot:&mut IrpSlot,stack_size:i8)->*mut Irp {
  slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());
  slot.system_buffer=ptr::null_mut();slot.system_buffer_pages=0;slot.system_buffer_len=0;
  slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;
- slot.sync_thread_id=0;slot.sync_event=ptr::null_mut();slot.sync_next=ptr::null_mut();slot.sync_prev=ptr::null_mut();slot.sync_queued=false;
+ slot.sync_thread_id=0;slot.requestor_pid=crate::syscall::current_process_id();slot.sync_event=ptr::null_mut();slot.sync_next=ptr::null_mut();slot.sync_prev=ptr::null_mut();slot.sync_queued=false;
  slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
