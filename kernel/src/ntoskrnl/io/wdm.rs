@@ -1543,6 +1543,172 @@ pub unsafe extern "system" fn io_delete_symbolic_link(link_name:*mut UnicodeStri
 }
 
 
+/// Windows x64 IO_CSQ public storage layout. The queue remains driver-owned;
+/// all operations are routed through its callbacks as required by WDM.
+#[repr(C)]
+pub struct IoCsq {
+ pub type_:u32,pub size:u32,
+ pub insert_irp:*mut c_void,pub remove_irp:*mut c_void,pub peek_next_irp:*mut c_void,
+ pub acquire_lock:*mut c_void,pub release_lock:*mut c_void,pub complete_canceled_irp:*mut c_void,
+ pub reserve_pointer:*mut c_void,
+}
+#[repr(C)]
+pub struct IoCsqIrpContext { pub type_:u32,pub padding:u32,pub irp:*mut Irp,pub csq:*mut IoCsq }
+type CsqInsert=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
+type CsqInsertEx=unsafe extern "system" fn(*mut IoCsq,*mut Irp,*mut c_void)->i32;
+type CsqRemove=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
+type CsqPeek=unsafe extern "system" fn(*mut IoCsq,*mut Irp,*mut c_void)->*mut Irp;
+type CsqAcquire=unsafe extern "system" fn(*mut IoCsq,*mut u8);
+type CsqRelease=unsafe extern "system" fn(*mut IoCsq,u8);
+type CsqCompleteCanceled=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
+const CSQ_IRP_CONTEXT_OFFSET:usize=0x90;
+const CSQ_EXTENDED_INSERT_MARKER:usize=1;
+const CSQ_CONTEXT_TYPE:u32=1;
+
+unsafe fn csq_callback<T:Copy>(csq:*mut IoCsq,offset:usize)->T {
+ unsafe{ptr::read_unaligned((csq.cast::<u8>().add(offset)).cast::<T>())}
+}
+unsafe fn csq_lock(csq:*mut IoCsq)->u8 {
+ let acquire:CsqAcquire=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,32))};
+ let mut irql=0u8;unsafe{acquire(csq,&mut irql)};irql
+}
+unsafe fn csq_unlock(csq:*mut IoCsq,irql:u8) {
+ let release:CsqRelease=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,40))};
+ unsafe{release(csq,irql)}
+}
+unsafe fn csq_set_cancel_routine(irp:*mut Irp,routine:*mut c_void)->*mut c_void {
+ let field=unsafe{(*irp).bytes.as_mut_ptr().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
+ unsafe{(&*field).swap(routine,core::sync::atomic::Ordering::AcqRel)}
+}
+unsafe extern "system" fn csq_cancel_routine(_device:*mut DeviceObject,irp:*mut Irp) {
+ if irp.is_null(){return}
+ let csq=unsafe{read_ptr((*irp).bytes.as_ptr(),CSQ_IRP_CONTEXT_OFFSET).cast::<IoCsq>()};
+ if csq.is_null(){return}
+ let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ let queue_irql=unsafe{csq_lock(csq)};
+ let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
+ unsafe{remove(csq,irp);}
+ write_ptr(unsafe{(*irp).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
+ unsafe{csq_unlock(csq,queue_irql);}
+ unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ let complete:CsqCompleteCanceled=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,48))};
+ unsafe{complete(csq,irp);}
+}
+unsafe fn csq_initialize_common(csq:*mut IoCsq,insert:*mut c_void,extended:bool,remove:*mut c_void,peek:*mut c_void,acquire:*mut c_void,release:*mut c_void,complete:*mut c_void)->i32 {
+ if csq.is_null()||insert.is_null()||remove.is_null()||peek.is_null()||acquire.is_null()||release.is_null()||complete.is_null(){return STATUS_INVALID_PARAMETER}
+ unsafe{
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).type_),0);
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).size),core::mem::size_of::<IoCsq>() as u32);
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).insert_irp),insert);
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).remove_irp),remove);
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).peek_next_irp),peek);
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).acquire_lock),acquire);
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).release_lock),release);
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).complete_canceled_irp),complete);
+  ptr::write_unaligned(ptr::addr_of_mut!((*csq).reserve_pointer),if extended {CSQ_EXTENDED_INSERT_MARKER as *mut c_void}else{ptr::null_mut()});
+ }
+ STATUS_SUCCESS
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_csq_initialize(csq:*mut IoCsq,insert:Option<CsqInsert>,remove:Option<CsqRemove>,peek:Option<CsqPeek>,acquire:Option<CsqAcquire>,release:Option<CsqRelease>,complete:Option<CsqCompleteCanceled>)->i32 {
+ let (Some(insert),Some(remove),Some(peek),Some(acquire),Some(release),Some(complete))=(insert,remove,peek,acquire,release,complete) else{return STATUS_INVALID_PARAMETER};
+ unsafe{csq_initialize_common(csq,insert as *const () as *mut c_void,false,remove as *const () as *mut c_void,peek as *const () as *mut c_void,acquire as *const () as *mut c_void,release as *const () as *mut c_void,complete as *const () as *mut c_void)}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_csq_initialize_ex(csq:*mut IoCsq,insert:Option<CsqInsertEx>,remove:Option<CsqRemove>,peek:Option<CsqPeek>,acquire:Option<CsqAcquire>,release:Option<CsqRelease>,complete:Option<CsqCompleteCanceled>)->i32 {
+ let (Some(insert),Some(remove),Some(peek),Some(acquire),Some(release),Some(complete))=(insert,remove,peek,acquire,release,complete) else{return STATUS_INVALID_PARAMETER};
+ unsafe{csq_initialize_common(csq,insert as *const () as *mut c_void,true,remove as *const () as *mut c_void,peek as *const () as *mut c_void,acquire as *const () as *mut c_void,release as *const () as *mut c_void,complete as *const () as *mut c_void)}
+}
+unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext,insert_context:*mut c_void,extended_api:bool)->i32 {
+ if csq.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
+ let extended=unsafe{read_ptr(csq.cast::<u8>(),56) as usize}==CSQ_EXTENDED_INSERT_MARKER;
+ let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ let queue_irql=unsafe{csq_lock(csq)};
+ let cancelled=unsafe{(*irp).bytes[0x44]!=0};
+ let mut status=STATUS_SUCCESS;
+ if !cancelled {
+  write_ptr(unsafe{(*irp).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,csq.cast());
+  let routine=csq_cancel_routine as *const () as *mut c_void;
+  unsafe{csq_set_cancel_routine(irp,routine);}
+  if extended {
+   let insert:CsqInsertEx=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,8))};
+   status=unsafe{insert(csq,irp,insert_context)};
+  } else {
+   let insert:CsqInsert=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,8))};
+   unsafe{insert(csq,irp);}
+  }
+  if status!=STATUS_SUCCESS {
+   unsafe{csq_set_cancel_routine(irp,ptr::null_mut());}
+   write_ptr(unsafe{(*irp).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
+  } else if !context.is_null() {
+   unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).type_),CSQ_CONTEXT_TYPE);}
+   unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).irp),irp);}
+   unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).csq),csq);}
+  }
+ }
+ unsafe{csq_unlock(csq,queue_irql);}
+ unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ if cancelled {
+  let complete:CsqCompleteCanceled=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,48))};
+  unsafe{complete(csq,irp);}
+  return 0xC0000120u32 as i32;
+ }
+ if status==STATUS_SUCCESS {unsafe{io_mark_irp_pending(irp);}}
+ if extended_api {status}else{STATUS_SUCCESS}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_csq_insert_irp(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext) {
+ let _=unsafe{csq_insert_impl(csq,irp,context,ptr::null_mut(),false)};
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_csq_insert_irp_ex(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext,insert_context:*mut c_void)->i32 {
+ unsafe{csq_insert_impl(csq,irp,context,insert_context,true)}
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCsqIrpContext)->*mut Irp {
+ if csq.is_null()||context.is_null(){return ptr::null_mut()}
+ let irp=unsafe{ptr::read_unaligned(ptr::addr_of!((*context).irp))};
+ if irp.is_null()||unsafe{ptr::read_unaligned(ptr::addr_of!((*context).csq))}!=csq{return ptr::null_mut()}
+ let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ let queue_irql=unsafe{csq_lock(csq)};
+ let cancel=unsafe{(*irp).bytes[0x44]!=0};
+ let routine=unsafe{read_ptr((*irp).bytes.as_ptr(),IRP_CANCEL_ROUTINE_OFFSET)};
+ if cancel||routine.is_null(){
+  unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+  return ptr::null_mut()
+ }
+ unsafe{csq_set_cancel_routine(irp,ptr::null_mut());}
+ let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
+ unsafe{remove(csq,irp);}
+ write_ptr(unsafe{(*irp).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
+ unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).type_),0);}
+ irp
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context:*mut c_void)->*mut Irp {
+ if csq.is_null(){return ptr::null_mut()}
+ let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
+ let queue_irql=unsafe{csq_lock(csq)};
+ let peek:CsqPeek=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,24))};
+ let candidate=unsafe{peek(csq,ptr::null_mut(),peek_context)};
+ if candidate.is_null()||unsafe{(*candidate).bytes[0x44]!=0} {
+  unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+  return ptr::null_mut()
+ }
+ let routine=unsafe{read_ptr((*candidate).bytes.as_ptr(),IRP_CANCEL_ROUTINE_OFFSET)};
+ if routine.is_null(){
+  unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+  return ptr::null_mut()
+ }
+ unsafe{csq_set_cancel_routine(candidate,ptr::null_mut());}
+ let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
+ unsafe{remove(csq,candidate);}
+ write_ptr(unsafe{(*candidate).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
+ unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
+ candidate
+}
+
 const IRP_CANCEL_ROUTINE_OFFSET:usize=0x68;
 /// Atomically replace the IRP cancel callback and return the previous callback.
 #[unsafe(no_mangle)]
