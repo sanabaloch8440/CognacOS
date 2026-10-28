@@ -2392,8 +2392,8 @@ mod wdm_tests {
   // thread in this host-side unit test.
   {
    let mut state=WDM.lock();
-   let slot=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)).unwrap();
-   slot.sync_thread_id=0xBEEF;
+   let _=sync_queue_detach_locked(&mut state,irp);
+   assert!(sync_queue_attach_locked(&mut state,irp,0xBEEF));
   }
   unsafe{io_set_completion_routine(irp,Some(counted_completion),ptr::null_mut(),1,1,1);}
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
