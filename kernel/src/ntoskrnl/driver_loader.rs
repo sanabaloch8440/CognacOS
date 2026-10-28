@@ -345,7 +345,28 @@ fn apply_imports(image:&mut[u8],rva:u32,size:u32,resolver:crate::pe::ImportResol
     let name_rva=u32::try_from(name_offset).map_err(|_|DriverLoadError::InvalidImport)?;
     let symbol_src=c_string(image,name_rva,512)?;let symbol_len=symbol_src.len();symbol_buf[..symbol_len].copy_from_slice(symbol_src);ImportSymbol::Name(&symbol_buf[..symbol_len])
    };
-   let address=resolver(dll,symbol).ok_or(DriverLoadError::ImportNotFound)?;
+   let address=match resolver(dll,symbol) {
+    Some(address)=>address,
+    None=>{
+     crate::ntoskrnl::debug::record_unfiltered(
+      crate::ntoskrnl::debug::COMPONENT_DRIVER,
+      crate::ntoskrnl::debug::LEVEL_ERROR,
+      crate::ntoskrnl::debug::EVENT_DRIVER_IMPORT_FAILURE,
+      thunk_index as u64, dll_len as u64, 0,
+     );
+     unsafe {
+      crate::serial_write(b"DRIVER LOAD ERROR: unresolved import ");
+      crate::serial_write(dll);
+      crate::serial_write(b"!");
+      match symbol {
+       ImportSymbol::Name(name)=>crate::serial_write(name),
+       ImportSymbol::Ordinal(ordinal)=>{crate::serial_write(b"#");crate::serial_write_hex(ordinal as u64);}
+      }
+      crate::serial_write(b" (import resolution failed before DriverEntry)\\r\\n");
+     }
+     return Err(DriverLoadError::ImportNotFound);
+    }
+   };
    put_u64(image,dst,address)?;thunk_index+=1;
   }
   if !thunk_terminated{return Err(DriverLoadError::InvalidImport)}
