@@ -2057,6 +2057,21 @@ pub(crate) fn rundown_self_test()->bool {
 mod wdm_tests {
  use super::*;
  #[test]
+ fn x64_io_csq_layout_matches_wdk_storage_abi() {
+  assert_eq!(core::mem::size_of::<IoCsq>(),0x40);
+  assert_eq!(core::mem::offset_of!(IoCsq,type_),0x00);
+  assert_eq!(core::mem::offset_of!(IoCsq,insert_irp),0x08);
+  assert_eq!(core::mem::offset_of!(IoCsq,remove_irp),0x10);
+  assert_eq!(core::mem::offset_of!(IoCsq,peek_next_irp),0x18);
+  assert_eq!(core::mem::offset_of!(IoCsq,acquire_lock),0x20);
+  assert_eq!(core::mem::offset_of!(IoCsq,release_lock),0x28);
+  assert_eq!(core::mem::offset_of!(IoCsq,complete_canceled_irp),0x30);
+  assert_eq!(core::mem::offset_of!(IoCsq,reserve_pointer),0x38);
+  assert_eq!(core::mem::size_of::<IoCsqIrpContext>(),0x18);
+  assert_eq!(core::mem::offset_of!(IoCsqIrpContext,irp),0x08);
+  assert_eq!(core::mem::offset_of!(IoCsqIrpContext,csq),0x10);
+ }
+ #[test]
  fn x64_wdm_prefix_layouts_match_expected_offsets() {
   assert_eq!(core::mem::size_of::<UnicodeString>(),16);
   assert_eq!(core::mem::size_of::<IoStatusBlock>(),16);
