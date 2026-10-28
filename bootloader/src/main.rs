@@ -185,6 +185,8 @@ fn main() -> Status {
     }
     let ntdll_file=stage_optional_file(&mut root,NTDLL_PRIMARY_PATH,NTDLL_FALLBACK_PATH,MAX_NTDLL_FILE);
     if ntdll_file.address != 0 { uefi::println!("Staged optional ntdll.dll ({} bytes)",ntdll_file.length); }
+    let beep_file = stage_optional_file(&mut root, BEEP_PRIMARY_PATH, BEEP_FALLBACK_PATH, 4 * 1024 * 1024);
+    if beep_file.address != 0 { uefi::println!("Staged optional beep.sys driver image ({} bytes)", beep_file.length); }
     drop(root);
     drop(fs);
 
