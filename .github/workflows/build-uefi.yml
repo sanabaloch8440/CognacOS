@@ -565,8 +565,9 @@ jobs:
       - name: Validate source-level QEMU crash resolver
         run: |
           set -euo pipefail
-          python3 -m py_compile tools/resolve_qemu_trace.py
+          python3 -m py_compile tools/resolve_qemu_trace.py tools/test_resolve_qemu_trace.py
           python3 tools/resolve_qemu_trace.py --help >/dev/null
+          python3 tools/test_resolve_qemu_trace.py
       - name: Boot smoke test under OVMF/QEMU
         shell: bash
         run: |
