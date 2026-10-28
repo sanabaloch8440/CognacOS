@@ -27,7 +27,7 @@ fn pe_header_offset(file:&[u8])->Result<usize,DriverLoadError>{
  if file.len()<0x40{return Err(DriverLoadError::Truncated);}
  if u16at(file,0)?!=0x5a4d{return Err(DriverLoadError::BadDosHeader);}
  let nt=u32at(file,0x3c)? as usize;
- if file.get(nt..nt.checked_add(4).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?!=b"PE\\0\\0"{return Err(DriverLoadError::BadPeSignature);}
+ if file.get(nt..nt.checked_add(4).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?!=b"PE\0\0"{return Err(DriverLoadError::BadPeSignature);}
  Ok(nt)
 }
 fn u32at(b:&[u8],o:usize)->Result<u32,DriverLoadError>{Ok(u32::from_le_bytes(b.get(o..o.checked_add(4).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?.try_into().map_err(|_|DriverLoadError::Truncated)?))}
@@ -227,7 +227,7 @@ mod pe_signature_tests {
   let mut file=vec![0u8;0x44];
   file[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
   file[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
-  file[0x40..0x44].copy_from_slice(b"PE\\0\\0");
+  file[0x40..0x44].copy_from_slice(b"PE\0\0");
   assert_eq!(pe_header_offset(&file),Ok(0x40));
  }
  #[test]
