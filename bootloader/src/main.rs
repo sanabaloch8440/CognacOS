@@ -20,6 +20,8 @@ use uefi::{boot, cstr16};
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\cognacos-kernel.exe");
 const NTDLL_PRIMARY_PATH: &uefi::CStr16 = cstr16!("\\Windows\\System32\\ntdll.dll");
 const NTDLL_FALLBACK_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\ntdll.dll");
+const BEEP_PRIMARY_PATH: &uefi::CStr16 = cstr16!("\\Windows\\System32\\drivers\\beep.sys");
+const BEEP_FALLBACK_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\beep.sys");
 const HIVE_PATHS: [(&uefi::CStr16,&uefi::CStr16,usize);7] = [
  (cstr16!("\\Windows\\System32\\config\\SYSTEM"),cstr16!("\\EFI\\CognacOS\\Hives\\SYSTEM"),128*1024*1024),
  (cstr16!("\\Windows\\System32\\config\\SOFTWARE"),cstr16!("\\EFI\\CognacOS\\Hives\\SOFTWARE"),256*1024*1024),
@@ -49,7 +51,7 @@ const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // Stable boot-info ABI magic; preserve the existing value.
-const BOOT_INFO_VERSION: u32 = 9;
+const BOOT_INFO_VERSION: u32 = 10;
 const HIGH_HALF_PT_PAGES: usize = 64;
 const KERNEL_STACK_VIRTUAL_GUARD: u64 = 0xffff_ff00_0000_0000;
 
@@ -73,6 +75,7 @@ struct BootInfo {
     registry_hives: [BootFile;7],
     nls_files: [BootFile;8],
     ntdll_file: BootFile,
+    beep_file: BootFile,
     security_flags: u64,
     kernel_digest: [u8; 32],
 }
@@ -355,6 +358,7 @@ fn main() -> Status {
         registry_hives,
         nls_files,
         ntdll_file,
+        beep_file,
         security_flags,
         kernel_digest: actual_digest,
     };
@@ -386,7 +390,7 @@ fn main() -> Status {
                 == Some(kernel_stack_guard_page + boot::PAGE_SIZE as u64)
             && bootstrap_physical_at(pml4_physical, KERNEL_STACK_VIRTUAL_GUARD).is_none()
     };
-    let assets_mapped = registry_hives.iter().chain(nls_files.iter()).chain(core::iter::once(&ntdll_file)).all(|asset| {
+    let assets_mapped = registry_hives.iter().chain(nls_files.iter()).chain([&ntdll_file, &beep_file].iter().copied()).all(|asset| {
         if asset.address == 0 && asset.length == 0 { return true; }
         if asset.address == 0 || asset.length == 0 { return false; }
         let end = match asset.address.checked_add(asset.length) { Some(v) => v, None => return false };
