@@ -1610,13 +1610,13 @@ pub struct IoCsq {
 }
 #[repr(C)]
 pub struct IoCsqIrpContext { pub type_:u32,pub padding:u32,pub irp:*mut Irp,pub csq:*mut IoCsq }
-type CsqInsert=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
-type CsqInsertEx=unsafe extern "system" fn(*mut IoCsq,*mut Irp,*mut c_void)->i32;
-type CsqRemove=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
-type CsqPeek=unsafe extern "system" fn(*mut IoCsq,*mut Irp,*mut c_void)->*mut Irp;
-type CsqAcquire=unsafe extern "system" fn(*mut IoCsq,*mut u8);
-type CsqRelease=unsafe extern "system" fn(*mut IoCsq,u8);
-type CsqCompleteCanceled=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
+pub type CsqInsert=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
+pub type CsqInsertEx=unsafe extern "system" fn(*mut IoCsq,*mut Irp,*mut c_void)->i32;
+pub type CsqRemove=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
+pub type CsqPeek=unsafe extern "system" fn(*mut IoCsq,*mut Irp,*mut c_void)->*mut Irp;
+pub type CsqAcquire=unsafe extern "system" fn(*mut IoCsq,*mut u8);
+pub type CsqRelease=unsafe extern "system" fn(*mut IoCsq,u8);
+pub type CsqCompleteCanceled=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
 const CSQ_IRP_CONTEXT_OFFSET:usize=0x90;
 const IO_TYPE_CSQ:u32=2;
 const IO_TYPE_CSQ_EX:u32=3;
