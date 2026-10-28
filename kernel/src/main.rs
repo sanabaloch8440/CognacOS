@@ -32,7 +32,7 @@ mod ata_disk;
 use cognacos_ext4 as extfs;
 pub(crate) use ntoskrnl::rtl_runtime::nls;
 mod ntoskrnl;
-mod debug_console;
+#[path = "ntoskrnl/debug_console.rs"]\nmod debug_console;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
