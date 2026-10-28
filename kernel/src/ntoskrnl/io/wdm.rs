@@ -1404,6 +1404,26 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut rejected)},STATUS_DELETE_PENDING);
   assert!(rejected.is_null());
  }
+ unsafe extern "system" fn pnp_start_pending(_device:*mut DeviceObject,_irp:*mut Irp)->i32 { STATUS_PENDING }
+ #[test]
+ fn pnp_pending_start_does_not_publish_started_until_completion() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  driver.major_function[0x1b]=Some(pnp_start_pending);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  let stack=unsafe{io_get_next_irp_stack_location(irp)};
+  unsafe{(*stack).major_function=0x1b;(*stack).minor_function=0x00;}
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
+  assert_eq!(io_pnp_state(device),PNP_STATE_NOT_STARTED);
+  unsafe{
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   io_complete_request(irp,0);
+  }
+  assert_eq!(io_pnp_state(device),PNP_STATE_STARTED);
+  unsafe{io_free_irp(irp);io_delete_device(device);}
+ }
  unsafe extern "system" fn pnp_start_complete_success(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
   unsafe {
    ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
