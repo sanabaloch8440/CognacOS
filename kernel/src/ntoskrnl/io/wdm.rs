@@ -910,7 +910,6 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   if callbacks_drained {release_irp_device_rundown(irp);}
   io_pnp_manager_irp_completed(irp);
  }
- if finished {io_pnp_manager_irp_completed(irp);}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
