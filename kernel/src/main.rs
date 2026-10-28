@@ -1174,11 +1174,12 @@ unsafe fn outb(port: u16, value: u8) {
 static mut BEEP_TEST_STACK: [u8; 8192] = [0; 8192];
 
 extern "C" fn beep_test_worker(_argument: *mut core::ffi::c_void) {
-    serial_write(b"Runtime beep.sys test started on scheduler-owned kernel thread.\\r\\n");
+    unsafe { serial_write(b"Runtime beep.sys test started on scheduler-owned kernel thread.\\r\\n"); }
     run_beep_runtime_test();
 }
 
 fn run_beep_runtime_test() {
+    unsafe {
             // Real runtime test: invoke the native driver loader and DriverEntry.
         if let Some(beep_bytes) = boot_beep_bytes() {
             use ntoskrnl::driver_loader::{DriverLoadError, DriverObject, load_allocated};
@@ -1284,8 +1285,9 @@ fn run_beep_runtime_test() {
                 }
             }
         } else {
-            serial_write(b"Runtime driver test skipped: beep.sys was not staged by UEFI.\r\n    ");
+            serial_write(b"Runtime driver test skipped: beep.sys was not staged by UEFI.\r\n");
         }
+    }
 }
 
 /// Build and submit a minimal WDM request using the registered dispatch table.
