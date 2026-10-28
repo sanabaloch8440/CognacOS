@@ -592,6 +592,19 @@ pub unsafe extern "win64" fn ke_wait_for_single_object(
 /// Multiple-object waits use shared wait groups for wait-any and wait-all, including
 /// per-thread mutant reservations. Queue entries are supported for wait-any only;
 /// wait-all queue-entry reservation remains unsupported.
+/// NTSTATUS KeWaitForMutexObject(PKMUTEX, KWAIT_REASON, KPROCESSOR_MODE,
+/// BOOLEAN, PLARGE_INTEGER). This uses the same dispatcher wait path as a
+/// single-object wait, including consumption of a KeSetEvent(Wait=TRUE) handoff.
+pub unsafe extern "win64" fn ke_wait_for_mutex_object(
+    mutex: *mut DispatcherHeader,
+    wait_reason: i32,
+    wait_mode: i32,
+    alertable: u8,
+    timeout: *const i64,
+) -> i32 {
+    unsafe { ke_wait_for_single_object(mutex, wait_reason, wait_mode, alertable, timeout) }
+}
+
 pub unsafe extern "win64" fn ke_wait_for_multiple_objects(
     count: u32,
     objects: *const *mut DispatcherHeader,
