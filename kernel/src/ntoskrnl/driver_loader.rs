@@ -20,6 +20,16 @@ pub struct LoadedDriver { pub image_base:u64,pub image_size:u32,pub entry_point:
 pub struct DriverObject { pub size:u32,pub flags:u32,pub driver_start:*mut c_void,pub driver_size:u32,pub driver_section:*mut c_void,pub driver_extension:*mut c_void,pub unload:Option<unsafe extern "win64" fn(*mut DriverObject)> }
 
 fn u16at(b:&[u8],o:usize)->Result<u16,DriverLoadError>{Ok(u16::from_le_bytes(b.get(o..o.checked_add(2).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?.try_into().map_err(|_|DriverLoadError::Truncated)?))}
+/// Validate the canonical DOS/PE signatures and return the PE header offset.
+/// Shared by both allocation and mapping paths so malformed signatures cannot
+/// diverge between the two entry points.
+fn pe_header_offset(file:&[u8])->Result<usize,DriverLoadError>{
+ if file.len()<0x40{return Err(DriverLoadError::Truncated);}
+ if u16at(file,0)?!=0x5a4d{return Err(DriverLoadError::BadDosHeader);}
+ let nt=u32at(file,0x3c)? as usize;
+ if file.get(nt..nt.checked_add(4).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?!=b"PE\\0\\0"{return Err(DriverLoadError::BadPeSignature);}
+ Ok(nt)
+}
 fn u32at(b:&[u8],o:usize)->Result<u32,DriverLoadError>{Ok(u32::from_le_bytes(b.get(o..o.checked_add(4).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?.try_into().map_err(|_|DriverLoadError::Truncated)?))}
 fn u64at(b:&[u8],o:usize)->Result<u64,DriverLoadError>{Ok(u64::from_le_bytes(b.get(o..o.checked_add(8).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?.try_into().map_err(|_|DriverLoadError::Truncated)?))}
 fn range(total:usize,start:u32,len:u32)->Result<core::ops::Range<usize>,DriverLoadError>{let a=start as usize;let z=a.checked_add(len as usize).ok_or(DriverLoadError::InvalidHeader)?;if z>total{Err(DriverLoadError::Truncated)}else{Ok(a..z)}}
@@ -31,10 +41,7 @@ pub unsafe fn load(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut Driver
 }
 /// Loader variant accepting the dependency manager's symbol resolver.
 pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_object:*mut DriverObject,context:*mut c_void,resolver:crate::pe::ImportResolver)->Result<LoadedDriver,DriverLoadError>{
- if file.len()<0x40{return Err(DriverLoadError::Truncated);}
- if u16at(file,0)?!=0x5a4d{return Err(DriverLoadError::BadDosHeader);}
- let nt=u32at(file,0x3c)? as usize;
- if file.get(nt..nt.checked_add(4).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?!=b"PE\0\0"{return Err(DriverLoadError::BadPeSignature);}
+ let nt=pe_header_offset(file)?;
  let coff=nt+4;
  if u16at(file,coff)?!=0x8664{return Err(DriverLoadError::WrongMachine);}
  let count=u16at(file,coff+2)? as usize;
@@ -101,9 +108,7 @@ pub unsafe fn load_allocated(file:&[u8],driver_object:*mut DriverObject,context:
  unsafe{load_allocated_with_resolver(file,driver_object,context,crate::ntoskrnl::resolve)}
 }
 pub unsafe fn load_allocated_with_resolver(file:&[u8],driver_object:*mut DriverObject,context:*mut c_void,resolver:crate::pe::ImportResolver)->Result<LoadedDriver,DriverLoadError>{
- if file.len()<0x40||u16at(file,0)?!=0x5a4d{return Err(DriverLoadError::BadDosHeader);}
- let nt=u32at(file,0x3c)? as usize;
- if file.get(nt..nt.checked_add(4).ok_or(DriverLoadError::InvalidHeader)?).ok_or(DriverLoadError::Truncated)?!=b"PE\\0\\0"{return Err(DriverLoadError::BadPeSignature);}
+ let nt=pe_header_offset(file)?;
  let opt=nt.checked_add(4+20).ok_or(DriverLoadError::InvalidHeader)?;
  if u16at(file,nt+4)?!=0x8664||u16at(file,opt)?!=0x20b{return Err(DriverLoadError::WrongMachine);}
  let preferred=u64at(file,opt+24)?;let size=u32at(file,opt+56)? as usize;
@@ -213,4 +218,31 @@ where F:FnMut(&[u16],&mut[u8])->Option<usize>{
  let len=resolve_image(config.image_path,image_buffer).ok_or(RegistryDriverLoadError::ImageResolutionFailed)?;
  if len==0||len>image_buffer.len(){return Err(RegistryDriverLoadError::ImageTooLarge);}
  unsafe{load_allocated_with_resolver(&image_buffer[..len],driver_object,context,symbol_resolver)}.map_err(RegistryDriverLoadError::Load)
+}
+#[cfg(test)]
+mod pe_signature_tests {
+ use super::*;
+ #[test]
+ fn accepts_canonical_pe_signature() {
+  let mut file=vec![0u8;0x44];
+  file[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
+  file[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+  file[0x40..0x44].copy_from_slice(b"PE\\0\\0");
+  assert_eq!(pe_header_offset(&file),Ok(0x40));
+ }
+ #[test]
+ fn rejects_backslash_zero_signature() {
+  let mut file=vec![0u8;0x46];
+  file[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
+  file[0x3c..0x40].copy_from_slice(&0x40u32.to_le_bytes());
+  file[0x40..0x46].copy_from_slice(b"PE\\\\0\\\\0");
+  assert_eq!(pe_header_offset(&file),Err(DriverLoadError::BadPeSignature));
+ }
+ #[test]
+ fn rejects_out_of_bounds_pe_header() {
+  let mut file=vec![0u8;0x40];
+  file[0..2].copy_from_slice(&0x5a4du16.to_le_bytes());
+  file[0x3c..0x40].copy_from_slice(&0xfffffff0u32.to_le_bytes());
+  assert_eq!(pe_header_offset(&file),Err(DriverLoadError::Truncated));
+ }
 }
