@@ -991,7 +991,7 @@ pub(crate) unsafe fn se_internal_TokenSetDefaultDacl(
     for _ in 0..ace_count {
         if p + 8 > length { return STATUS_INVALID_PARAMETER; }
         let ace_type = bytes[p];
-        if ace_type != 0 && ace_type != 1 { return STATUS_NOT_SUPPORTED; }
+        if ace_type != 0 && ace_type != 1 { return 0xC000_00BBu32 as i32; }
         let ace_size = u16::from_le_bytes([bytes[p + 2], bytes[p + 3]]) as usize;
         if ace_size < 16 || p + ace_size > length { return STATUS_INVALID_PARAMETER; }
         let sid = &bytes[p + 8..p + ace_size];
