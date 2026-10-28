@@ -417,6 +417,7 @@ pub use wdm::{
     io_release_device_remove_lock, io_begin_device_power_transition, io_complete_device_power_transition,
     device_power_state,
     io_set_cancel_routine, io_cancel_irp, io_cancel_thread_irps, io_build_asynchronous_fsd_request,
+    io_build_device_io_control_request,
     io_csq_initialize, io_csq_initialize_ex, io_csq_insert_irp, io_csq_insert_irp_ex,
     io_csq_remove_irp, io_csq_remove_next_irp, IoCsq, IoCsqIrpContext,
     CsqInsert, CsqInsertEx, CsqRemove, CsqPeek, CsqAcquire, CsqRelease, CsqCompleteCanceled,
