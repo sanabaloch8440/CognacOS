@@ -1660,14 +1660,35 @@ static NTDLL_DEBUG_EVENT_COUNT: AtomicU64 = AtomicU64::new(0);
 const EVENT_MODIFY_STATE: u32 = 0x0002;
 const SYNCHRONIZE_ACCESS: u32 = 0x0010_0000;
 const EVENT_TYPE_NAME: [u16; 5] = [b'E' as u16, b'v' as u16, b'e' as u16, b'n' as u16, b't' as u16];
-/// Default ACL for named events while token default-DACL inheritance is not
-/// implemented. Grants EVENT_ALL_ACCESS to Everyone; explicit caller SDs are
-/// rejected rather than silently ignored.
-const NATIVE_EVENT_DEFAULT_SD: [u8; 48] = [
-    1,0,4,128, 0,0,0,0, 0,0,0,0, 0,0,0,0, 20,0,0,0,
-    2,0,28,0, 0,0,0,0,
-    0,0,20,0, 255,255,255,255, 1,1,0,0,0,0,0,1, 0,0,0,0,
-];
+/// Construct a self-relative security descriptor from the effective token's
+/// TOKEN_DEFAULT_DACL. Impersonation token takes precedence over the process
+/// primary token. The queried ACL and descriptor are kernel-owned stack copies
+/// and are consumed synchronously by Object Manager registration.
+fn native_event_default_security_descriptor() -> Result<([u8; 256], usize), u64> {
+    let mut token = crate::thread::reference_current_impersonation_token();
+    if token.is_null() {
+        token = crate::process::reference_primary_token(crate::thread::current_process_id());
+    }
+    if token.is_null() { return Err(0xC000_0078); } // STATUS_NO_TOKEN
+    let mut acl = [0u8; 236];
+    let mut acl_len = 0usize;
+    let status = unsafe {
+        crate::ntoskrnl::se::runtime::se_internal_TokenQueryDefaultDacl(
+            token, acl.as_mut_ptr(), acl.len(), &mut acl_len,
+        )
+    };
+    let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) };
+    if status < 0 { return Err(status as u32 as u64); }
+    if acl_len < 8 || acl_len > acl.len() { return Err(0xC000_000D); }
+    let acl_size = u16::from_le_bytes([acl[2], acl[3]]) as usize;
+    if acl_size != acl_len { return Err(0xC000_000D); }
+    let mut sd = [0u8; 256];
+    sd[0] = 1; // SECURITY_DESCRIPTOR_REVISION
+    sd[2..4].copy_from_slice(&0x8004u16.to_le_bytes()); // SELF_RELATIVE | DACL_PRESENT
+    sd[16..20].copy_from_slice(&20u32.to_le_bytes());
+    sd[20..20 + acl_len].copy_from_slice(&acl[..acl_len]);
+    Ok((sd, 20 + acl_len))
+}
 
 struct NativeEventSlot {
     used: AtomicBool,
@@ -1804,13 +1825,14 @@ fn nt_create_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     ) else { return 0xC000_009A; }; // STATUS_INSUFFICIENT_RESOURCES
     let header = slot.header_ptr();
     unsafe { crate::ntoskrnl::ke::runtime::ke_initialize_event(header, args[3] as i32, args[4] as u8); }
-    let (security_descriptor, security_descriptor_len) = if named {
-        (NATIVE_EVENT_DEFAULT_SD.as_ptr(), NATIVE_EVENT_DEFAULT_SD.len())
-    } else { (core::ptr::null(), 0) };
+    let (security_descriptor, security_descriptor_len) = match native_event_default_security_descriptor() {
+        Ok(value) => value,
+        Err(status) => { slot.used.store(false, Ordering::Release); return status; }
+    };
     let registered = unsafe {
         crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(
             header.cast(), &EVENT_TYPE_NAME, &name[..name_len], false,
-            security_descriptor, security_descriptor_len, native_event_finalizer,
+            security_descriptor.as_ptr(), security_descriptor_len, native_event_finalizer,
         )
     };
     if let Err(status) = registered {
