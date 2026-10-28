@@ -83,7 +83,9 @@ static DISK_CAPACITY: AtomicU64 = AtomicU64::new(0);
 static DISK_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 static PARTITION_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 static PARTITION_START: AtomicU64 = AtomicU64::new(0);
-static PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);\nstatic TRACE_PARTITION_START: AtomicU64 = AtomicU64::new(0);\nstatic TRACE_PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);
+static PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);
+static TRACE_PARTITION_START: AtomicU64 = AtomicU64::new(0);
+static TRACE_PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);
 impl AtaPrimaryMaster {
     fn initialize() -> Result<Self, AtaError> {
         unsafe { out8(DRIVE, 0xa0); }
