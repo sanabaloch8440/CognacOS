@@ -49,13 +49,13 @@ struct ProcessRegistry([EProcess; MAX_PROCESSES]);
 static TABLE: crate::hal::IrqSpinLock<ProcessRegistry> =
     crate::hal::IrqSpinLock::new(ProcessRegistry([EProcess::EMPTY; MAX_PROCESSES]));
 
-fn register_process(pid: u64, address_space_root: u64) -> Result<(), ProcessError> {
+fn register_process(pid: u64, address_space_root: u64, session_id: u32) -> Result<(), ProcessError> {
     if address_space_root == 0 { return Err(ProcessError::InvalidLayout); }
     let pointer = {
         let mut registry = TABLE.lock();
         let Some(index) = registry.0.iter().position(|p| !p.used) else { return Err(ProcessError::TooManyProcesses); };
         registry.0[index] = EProcess { magic: EPROCESS_MAGIC, process_id: pid, state: ProcessState::Created,
-            used: true, address_space_root, session_id: 0, _session_padding: 0, primary_token: 0, references: 0, _reserved: 0, exit_code: 0 };
+            used: true, address_space_root, session_id, _session_padding: 0, primary_token: 0, references: 0, _reserved: 0, exit_code: 0 };
         core::ptr::addr_of_mut!(registry.0[index])
     };
     // Every registered process is also an Object Manager object. The object body
@@ -477,8 +477,16 @@ fn put_u16(space: &AddressSpace, address: u64, value: u16) -> Result<(), Process
 fn put_u32(space: &AddressSpace, address: u64, value: u32) -> Result<(), ProcessError> {
     unsafe { space.copy_to_user(address, &value.to_le_bytes())?; } Ok(())
 }
-/// Initialize stable x64 PEB/TEB fields in a fresh address space.
+/// Initialize stable x64 PEB/TEB fields in a fresh address space in session 0.
+/// Use initialize_in_session when creating a process for another interactive session.
 pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry: u64, image_size: u32, stack_base: u64, stack_limit: u64)
+    -> Result<ProcessEnvironment, ProcessError> {
+    unsafe { initialize_in_session(space, image_base, image_entry, image_size, stack_base, stack_limit, 0) }
+}
+
+/// Initialize a process and associate it with an explicit Windows session ID.
+/// Session IDs are process metadata, not inferred from the creating thread.
+pub unsafe fn initialize_in_session(space: &mut AddressSpace, image_base: u64, image_entry: u64, image_size: u32, stack_base: u64, stack_limit: u64, session_id: u32)
     -> Result<ProcessEnvironment, ProcessError> {
     if image_base == 0 || stack_base <= stack_limit || stack_limit < USER_START {
         return Err(ProcessError::InvalidLayout);
@@ -594,15 +602,24 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     // The x64 TLS slots begin at offset 0x1480, so TEB occupies two pages.
     put_u64(space, TEB_ADDRESS + 0x1480, 0)?;
     unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] process structures complete; register EPROCESS begin\r\n"); }
-    register_process(pid, space.root_physical())?;
+    register_process(pid, space.root_physical(), session_id)?;
     unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] EPROCESS registered; initialization complete\r\n"); }
     Ok(ProcessEnvironment { process_id: pid, peb: PEB_ADDRESS, teb: TEB_ADDRESS, tls_vector: TLS_VECTOR_ADDRESS })
 }
 
 
-/// Return a session only for a currently registered process object. CognacOS
-/// currently creates processes in session 0; nonzero sessions are not yet
-/// supported and are not inferred from unrelated thread state.
+/// Change a registered process's session before it starts running. A session
+/// cannot be changed after the process has entered Running state; that avoids
+/// silently moving an active process between desktop/session namespaces.
+pub fn assign_session_before_start(pid: u64, session_id: u32) -> bool {
+    let mut registry = TABLE.lock();
+    let Some(process) = registry.0.iter_mut().find(|p| p.used && p.magic == EPROCESS_MAGIC
+        && p.process_id == pid && p.state == ProcessState::Created) else { return false; };
+    process.session_id = session_id;
+    true
+}
+
+/// Return a session only for a currently registered process object.
 pub fn session_id_for_pid(pid: u64) -> Option<u32> {
     let registry = TABLE.lock();
     registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid
