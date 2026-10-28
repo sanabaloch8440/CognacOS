@@ -1715,7 +1715,7 @@ unsafe extern "win64" fn native_event_finalizer(body: *mut core::ffi::c_void) {
 }
 
 fn native_event_type_id() -> Result<u16, i32> {
-    crate::ntoskrnl::ob::runtime::ensure_type(&EVENT_TYPE_NAME, 1, 2, 4, 7, u32::MAX)
+    crate::ntoskrnl::ob::runtime::ensure_type(&EVENT_TYPE_NAME, 0x0002_0001, 0x0002_0002, 0x0012_0000, 0x001F_0003, 0x001F_0003)
 }
 
 
