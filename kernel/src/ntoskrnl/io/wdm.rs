@@ -446,13 +446,15 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
    if slot.completed{let result=*slot;*slot=ManagedPnpIrp::EMPTY;Some(result)}else{None}
   }else{None}
  };
+ let mut final_status=status;
  if let Some(request)=completed {
   unsafe{io_free_irp(request.irp);io_dereference_device_object(request.device);}
   if request.remove_after_surprise&&request.status==STATUS_SUCCESS {
-   let _=unsafe{io_pnp_dispatch_lifecycle_internal(request.device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null(),false)};
+   let remove_status=unsafe{io_pnp_dispatch_lifecycle_internal(request.device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null(),false)};
+   if status!=STATUS_PENDING {final_status=remove_status;}
   }
  }
- status
+ final_status
 }
 fn io_pnp_manager_irp_completed(irp:*mut Irp){
  if irp.is_null(){return}
