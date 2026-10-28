@@ -1012,7 +1012,7 @@ pub(crate) unsafe fn se_internal_TokenSetDefaultDacl(
         if ace_size < 16 || p + ace_size > length { return STATUS_INVALID_PARAMETER; }
         let sid = &bytes[p + 8..p + ace_size];
         if sid.len() < 8 || sid[0] != 1 || sid[1] as usize * 4 + 8 != sid.len()
-            || 8 + sid[1] as usize * 4 != ace_size {
+            || 16 + sid[1] as usize * 4 != ace_size {
             return STATUS_INVALID_PARAMETER;
         }
         p += ace_size;
