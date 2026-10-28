@@ -72,7 +72,16 @@ pub struct IoStackLocation {
 struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
-struct IrpSlot { used: bool, owned_mdl: *mut c_void, completion_state:u8, active_ops:u32, outstanding_count:usize, outstanding_devices:[*mut DeviceObject;16], object: Irp, stack: [IoStackLocation;16] }
+const MAX_IOCTL_SYSTEM_BUFFER:usize=4096;
+struct IrpSlot {
+ used: bool, owned_mdl: *mut c_void, completion_state:u8, active_ops:u32,
+ outstanding_count:usize, outstanding_devices:[*mut DeviceObject;16],
+ // Keep object and stack adjacent: WDM requires the stack array to immediately
+ // follow the fixed-size IRP allocation.
+ object: Irp, stack: [IoStackLocation;16],
+ system_buffer:[u8;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:usize,
+ ioctl_output_buffer:*mut c_void, ioctl_output_len:usize, built_sync_ioctl:bool,
+}
 unsafe impl Send for IrpSlot {}
 struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WDM_IRPS] }
 impl WdmState {
@@ -87,7 +96,7 @@ impl WdmState {
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16] } }; MAX_WDM_IRPS],
+   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };16], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
   }
  }
 }
@@ -712,7 +721,7 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
  if stack_size<=0||stack_size>16||charge_quota>1{return ptr::null_mut()}
  let mut state=WDM.lock();
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
- slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.object.bytes.fill(0);
+ slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  let allocation_size=IRP_SIZE_X64+stack_size as usize*IO_STACK_LOCATION_SIZE_X64;
  slot.object.bytes[2..4].copy_from_slice(&(allocation_size as u16).to_le_bytes());
@@ -746,7 +755,7 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
   let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
   let mdl=slot.owned_mdl;
   slot.owned_mdl=ptr::null_mut();
-  slot.object.bytes.fill(0);slot.used=false;
+  slot.object.bytes.fill(0);slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.used=false;
   mdl
  };
  crate::dma::release_irp_mappings(irp.cast());
@@ -885,6 +894,86 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  release_device_dispatch_rundown(device);
  status
 }
+/// Build a synchronous device-control IRP. METHOD_BUFFERED and the two
+/// direct methods are supported; METHOD_NEITHER preserves the caller's kernel
+/// pointers. This kernel currently has no KeSetEvent-compatible wait/wake
+/// primitive, so a non-null Event is rejected rather than falsely promising
+/// Windows event semantics. For Event == NULL, the caller must install a
+/// completion routine before calling IoCallDriver.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn io_build_device_io_control_request(
+ ioctl_code:u32, device:*mut DeviceObject, input_buffer:*mut c_void,
+ input_length:u32, output_buffer:*mut c_void, output_length:u32,
+ internal_device_control:u8, event:*mut c_void, io_status:*mut IoStatusBlock
+)->*mut Irp {
+ if device.is_null()||io_status.is_null()||internal_device_control>1||!event.is_null()
+  ||(input_length!=0&&input_buffer.is_null())||(output_length!=0&&output_buffer.is_null()) {
+  return ptr::null_mut()
+ }
+ let stack_size={
+  let state=WDM.lock();
+  let Some(slot)=state.devices.iter().find(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};
+  slot.object.stack_size
+ };
+ if stack_size==0{return ptr::null_mut()}
+ let method=(ioctl_code&3) as u8;
+ if method==0&&(input_length.max(output_length) as usize)>MAX_IOCTL_SYSTEM_BUFFER{return ptr::null_mut()}
+ if method!=3&&(input_length as usize)>MAX_IOCTL_SYSTEM_BUFFER{return ptr::null_mut()}
+ let irp=unsafe{io_allocate_irp(stack_size as i16,0)};
+ if irp.is_null(){return ptr::null_mut()}
+ let next=unsafe{io_get_next_irp_stack_location(irp)};
+ if next.is_null(){unsafe{io_free_irp(irp)};return ptr::null_mut()}
+ {
+  let mut state=WDM.lock();
+  let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{drop(state);unsafe{io_free_irp(irp)};return ptr::null_mut()};
+  if method!=3 {
+   slot.system_buffer_len=input_length as usize;
+   if input_length!=0 {
+    unsafe{ptr::copy_nonoverlapping(input_buffer.cast::<u8>(),slot.system_buffer.as_mut_ptr(),input_length as usize);}
+   }
+   write_ptr(slot.object.bytes.as_mut_ptr(),0x18,slot.system_buffer.as_mut_ptr().cast());
+   if method==0 {
+    slot.system_buffer_len=slot.system_buffer_len.max(output_length as usize);
+    slot.ioctl_output_buffer=output_buffer;
+    slot.ioctl_output_len=output_length as usize;
+    slot.object.bytes[0x10..0x14].copy_from_slice(&(0x10u32|0x20u32).to_le_bytes());
+   } else {
+    slot.object.bytes[0x10..0x14].copy_from_slice(&0x10u32.to_le_bytes());
+   }
+   slot.built_sync_ioctl=true;
+  } else {
+   // METHOD_NEITHER's Type3InputBuffer and Irp.UserBuffer are kernel pointers
+   // supplied by this kernel-mode caller, as required by this DDI contract.
+   write_ptr(slot.object.bytes.as_mut_ptr(),0x70,output_buffer);
+   slot.built_sync_ioctl=true;
+  }
+  write_ptr(slot.object.bytes.as_mut_ptr(),0x48,io_status.cast());
+  ptr::write_unaligned(slot.object.bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_PENDING);
+  ptr::write_unaligned(slot.object.bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
+ }
+ unsafe {
+  (*next).major_function=if internal_device_control!=0{0x0f}else{0x0e};
+  ptr::write_unaligned(next.cast::<u8>().add(4).cast::<u32>(),output_length);
+  ptr::write_unaligned(next.cast::<u8>().add(8).cast::<u32>(),input_length);
+  ptr::write_unaligned(next.cast::<u8>().add(12).cast::<u32>(),ioctl_code);
+  if method==3 {
+   ptr::write_unaligned(next.cast::<u8>().add(16).cast::<*mut c_void>(),input_buffer);
+  }
+ }
+ if method==1||method==2 {
+  if output_length!=0 {
+   let mdl=unsafe{io_allocate_mdl(output_buffer,output_length,0,0,irp)};
+   if mdl.is_null(){unsafe{io_free_irp(irp)};return ptr::null_mut()}
+   // METHOD_IN_DIRECT grants the driver read access to the second buffer;
+   // METHOD_OUT_DIRECT grants write access from the driver's perspective.
+   unsafe{crate::ntoskrnl::mm::runtime::mm_probe_and_lock_pages(mdl,0,if method==1{0}else{1});}
+   let flags=unsafe{ptr::read_unaligned(mdl.cast::<u8>().add(0x0a).cast::<i16>())};
+   if flags&0x0002==0{unsafe{io_free_mdl(mdl);io_free_irp(irp);}return ptr::null_mut()}
+  }
+ }
+ irp
+}
+
 fn finalize_irp_status(irp:*mut Irp) {
  if irp.is_null(){return}
  let base=unsafe{(*irp).bytes.as_mut_ptr()};
@@ -892,10 +981,20 @@ fn finalize_irp_status(irp:*mut Irp) {
  if iosb.is_null(){return}
  let status=unsafe{ptr::read_unaligned(base.add(IRP_STATUS_OFFSET).cast::<i32>())};
  let information=unsafe{ptr::read_unaligned(base.add(IRP_INFORMATION_OFFSET).cast::<usize>())};
+ let copy_out={
+  let mut state=WDM.lock();
+  let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+  if slot.built_sync_ioctl && (unsafe{(*irp).bytes[0x10]&0x10})!=0 && !slot.ioctl_output_buffer.is_null() {
+   let n=information.min(slot.ioctl_output_len).min(slot.system_buffer_len);
+   if n!=0 {unsafe{ptr::copy_nonoverlapping(slot.system_buffer.as_ptr(),slot.ioctl_output_buffer.cast::<u8>(),n);}}
+  }
+  slot.built_sync_ioctl
+ };
  unsafe {
   ptr::write_unaligned(iosb.cast::<u8>().cast::<isize>(),status as isize);
   ptr::write_unaligned(iosb.cast::<u8>().add(core::mem::size_of::<isize>()).cast::<usize>(),information);
  }
+ let _=copy_out;
 }
 
 #[unsafe(no_mangle)]
