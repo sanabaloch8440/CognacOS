@@ -1740,7 +1740,11 @@ pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCs
  unsafe{remove(csq,irp);}
  write_ptr(unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
  unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
- unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).type_),0);}
+ unsafe{
+  ptr::write_unaligned(ptr::addr_of_mut!((*context).type_),0);
+  ptr::write_unaligned(ptr::addr_of_mut!((*context).irp),ptr::null_mut());
+  ptr::write_unaligned(ptr::addr_of_mut!((*context).csq),ptr::null_mut());
+ }
  irp
 }
 #[unsafe(no_mangle)]
@@ -1844,7 +1848,7 @@ pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
  let cancel_slot=unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
  let callback=unsafe{&*cancel_slot}.swap(ptr::null_mut(),core::sync::atomic::Ordering::AcqRel);
  unsafe{super::io_release_cancel_spin_lock(old_irql);}
- if callback.is_null(){release_irp_active_op(irp);return 0}
+ if callback.is_null(){release_irp_active_op(irp);try_free_completed_sync_ioctl_irp(irp);return 0}
  let routine:DriverCancelRoutine=unsafe{core::mem::transmute(callback)};
  let device={
   let state=WDM.lock();
@@ -1864,6 +1868,7 @@ pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
  // remaining IRP-bound IOMMU mappings. Completion performs the same idempotent rundown.
  crate::dma::release_irp_mappings(irp.cast());
  release_irp_active_op(irp);
+ try_free_completed_sync_ioctl_irp(irp);
  1
 }
 
