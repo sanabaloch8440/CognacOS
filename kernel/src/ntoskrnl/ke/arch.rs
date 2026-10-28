@@ -1763,7 +1763,26 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     put_u16(&mut context, 0x38, trap.cs as u16);
     put_u16(&mut context, 0x42, trap.ss as u16);
     put_u32(&mut context, 0x44, trap.rflags as u32);
-    for (offset, index) in [(0xf0,0usize),(0xe8,1),(0xe0,2),(0xd8,3),(0xd0,4),(0xc8,5),(0xc0,6),(0xb8,7),(0xa0,8),(0xb0,9),(0xa8,10),(0x88,11),(0x80,12),(0x90,13),(0x78,14)] {
+    // UserExceptionTrapFrame.saved_registers follows the actual push order
+    // in cognacos_exception_common: RAX, RBX, RCX, RDX, RSI, RDI, RBP,
+    // R8-R15. Windows CONTEXT uses the canonical AMD64 register offsets.
+    for (offset, index) in [
+        (0x78, 0usize),  // RAX
+        (0x90, 1),       // RBX
+        (0x80, 2),       // RCX
+        (0x88, 3),       // RDX
+        (0xa8, 4),       // RSI
+        (0xb0, 5),       // RDI
+        (0xa0, 6),       // RBP
+        (0xb8, 7),       // R8
+        (0xc0, 8),       // R9
+        (0xc8, 9),       // R10
+        (0xd0, 10),      // R11
+        (0xd8, 11),      // R12
+        (0xe0, 12),      // R13
+        (0xe8, 13),      // R14
+        (0xf0, 14),      // R15
+    ] {
         put_u64(&mut context, offset, trap.saved_registers[index]);
     }
     put_u64(&mut context, 0x98, trap.rsp);
@@ -1801,8 +1820,11 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     let record_user = new_rsp + record_offset as u64;
     let context_user = new_rsp + context_offset as u64;
     trap.saved_registers = [0; 15];
-    trap.saved_registers[11] = context_user;
-    trap.saved_registers[12] = record_user;
+    // Windows x64 passes KiUserExceptionDispatcher(record, context) in
+    // RCX/RDX. The trap-frame save order is RAX,RBX,RCX,RDX,..., so indices
+    // 2 and 3 are the argument registers (not the nonvolatile R12/R13 slots).
+    trap.saved_registers[2] = record_user;
+    trap.saved_registers[3] = context_user;
     trap.rip = dispatcher;
     trap.rsp = new_rsp;
     trap.rflags = 0x202;
