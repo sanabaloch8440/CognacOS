@@ -1,5 +1,7 @@
-# CognacOS user-mode DLLs
+# Vendored Windows 11 x64 export baselines
 
-`kernel32/` and `shell32/` are Rust crates that build x64 PE32+ DLLs. Both depend on the shared `cognacos-nt-abi` crate rather than defining duplicate NT scalar and pointer aliases. Their export inventories are checked against the matching .def files at build time.
+- dlls/kernel32/exports/windows-11-x64-exports.tsv and kernel32-x64.def
+- dlls/kernelbase/exports/windows-11-x64-exports.tsv and kernelbase-x64.def
+- dlls/shell32/exports/windows-11-x64-exports.tsv and shell32-x64.def
 
-The generated functions are placeholders; exporting a name does not mean the API is implemented. Build and validate them through the existing `.github/workflows/build-uefi.yml` workflow; no separate DLL-only workflow is needed.
+These local files are pinned to Windows 11 x64 version 10.0.26100.7920. They contain ordinals, named and ordinal-only exports, and forwarder strings. Run python3 dlls/tools/verify_windows_exports.py to check the inventories, .def files, and KERNELBASE/NTDLL forwarder targets. No external website is queried by the build.

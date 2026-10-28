@@ -25,6 +25,16 @@ fn expected_def(dll:&str, exports:&[Export])->String{
 fn main(){
  println!("cargo:rerun-if-changed=src/lib.rs");println!("cargo:rerun-if-changed=exports/kernel32-x64.def");
  let path="exports/windows-11-x64-exports.tsv";let exports=read_exports(path);
+ if "kernel32" == "kernel32" {
+  let kb=read_exports("../kernelbase/exports/windows-11-x64-exports.tsv");
+  let nt=fs::read_to_string("../../ntdll/exports/windows-11-x64-exports.txt").expect("read local NTDLL export inventory");
+  let nt_names:BTreeSet<String>=nt.lines().map(str::trim).filter(|s|!s.is_empty()&&!s.starts_with('#')).map(str::to_owned).collect();
+  let kb_names:BTreeSet<String>=kb.iter().filter(|e|!e.name.is_empty()).map(|e|e.name.clone()).collect();
+  for e in &exports { if e.forwarder.is_empty(){continue} let Some((module,symbol))=e.forwarder.split_once('.') else {panic!("invalid forwarder: {}",e.forwarder)};
+   if module.eq_ignore_ascii_case("KERNELBASE") {assert!(kb_names.contains(symbol),"kernel32 forwarder {} targets missing KERNELBASE export {symbol}",e.name);}
+   if module.eq_ignore_ascii_case("NTDLL") {assert!(nt_names.contains(symbol),"kernel32 forwarder {} targets missing NTDLL export {symbol}",e.name);}
+  }
+ }
  let def_path="exports/kernel32-x64.def";let actual=fs::read_to_string(def_path).expect("missing .def");let expected=expected_def("kernel32",&exports);
  assert_eq!(actual,expected,"kernel32 .def diverges from the pinned Windows export manifest");
  let mut out=String::from("// Generated from the pinned Windows 11 x64 export manifest.\n");

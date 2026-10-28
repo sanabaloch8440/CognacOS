@@ -104,6 +104,8 @@ jobs:
           python3 ntdll/tools/check_export_table.py
           cargo check --manifest-path ntdll/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-unknown-linux-gnu
+      - name: Verify vendored Windows x64 export tables offline
+        run: python3 dlls/tools/verify_windows_exports.py
       - name: Check Rust kernel32, kernelbase, and shell32 crates
         shell: bash
         run: |
