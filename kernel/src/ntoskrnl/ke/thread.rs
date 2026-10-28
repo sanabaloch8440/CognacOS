@@ -445,6 +445,11 @@ fn exit_current()->! {
     let cpu=match cpu_index(){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
     let local=match crate::hal::cpu_local(cpu){Ok(v)=>v,Err(_)=>loop{core::hint::spin_loop()}};
     let id=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
+    // Windows associates IoBuildDeviceIoControlRequest IRPs with their
+    // creating thread and cancels them during thread teardown. The I/O manager
+    // detaches stack-backed IOSB/event pointers before asking lower drivers to
+    // cancel, so late completion cannot touch the exiting thread's stack.
+    let _ = crate::io::io_cancel_thread_irps(id);
     crate::ntoskrnl::ke::runtime::thread_exit_cleanup(id);
     let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
     let (old_rsp_ptr,new_rsp,old_token)={
