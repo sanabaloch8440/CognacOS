@@ -895,7 +895,7 @@ jobs:
             echo "RUNTIME RESULT: NOT RUN - no QEMU serial log was produced." | tee -a "$log"
           fi
           if grep -Fq "BEEP DISPATCH RESULT: PASS" build/serial.log 2>/dev/null; then
-            echo "BEEP DEVICE-CONTROL RESULT: PASS - IRP_MJ_DEVICE_CONTROL was routed to the registered beep.sys dispatch routine and both NTSTATUS values succeeded." | tee -a "$log"
+            echo "BEEP DEVICE-CONTROL RESULT: PASS - create succeeded and IOCTL reached the registered beep.sys dispatch routine (STATUS_SUCCESS or STATUS_PENDING accepted)." | tee -a "$log"
           elif grep -Fq "BEEP DISPATCH RESULT: FAIL" build/serial.log 2>/dev/null; then
             echo "BEEP DEVICE-CONTROL RESULT: FAIL - dispatch was missing or returned a failing NTSTATUS." | tee -a "$log"
           else
@@ -906,7 +906,7 @@ jobs:
           fi
           if grep -Fq "beep.sys device and dispatch registration passed." build/serial.log 2>/dev/null &&
              grep -Fq "BEEP DISPATCH RESULT: PASS" build/serial.log 2>/dev/null; then
-            echo "FINAL RESULT: PASS - driver initialization and a real device-control dispatch both succeeded; speaker audio capture is reported separately." | tee -a "$log"
+            echo "FINAL RESULT: PASS - driver initialization and device-control dispatch succeeded/accepted; speaker audio capture is reported separately." | tee -a "$log"
           else
             echo "FINAL RESULT: INCOMPLETE - review driver initialization, device-control dispatch, and audio capture results above." | tee -a "$log"
           fi
