@@ -19,6 +19,7 @@ pub(crate) fn ki_clock_interrupt(now: u64) {
     // the actual HAL clock notifier, not in a polling thread that could starve.
     crate::ntoskrnl::ke::runtime::ke_accumulate_ticks(now);
     crate::ntoskrnl::ke::runtime::timer_tick(now);
+    crate::syscall::expire_user_address_waits(now);
     let mut expired = [crate::dispatcher::ExpiredWait { thread: 0, object: 0 }; 64];
     let count = crate::dispatcher::expire_detailed(now, &mut expired);
     for wait in expired[..count].iter().copied() {
