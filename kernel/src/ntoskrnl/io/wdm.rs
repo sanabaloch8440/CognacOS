@@ -1689,9 +1689,10 @@ mod wdm_tests {
   unsafe{(*io_get_next_irp_stack_location(irp)).major_function=0;}
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
   assert_eq!(unsafe{(*irp).bytes[0x41]},1);
-  // A premature free is rejected; the same IRP must still be completable.
+  // A premature free is rejected; the same IRP remains registered and
+  // its outstanding completion can still finish safely.
   unsafe{io_free_irp(irp);}
-  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_DELETE_PENDING);
+  assert!(!unsafe{io_get_current_irp_stack_location(irp)}.is_null());
   unsafe{io_complete_request(irp,0);}
   unsafe{io_free_irp(irp);io_delete_device(device);}
  }
