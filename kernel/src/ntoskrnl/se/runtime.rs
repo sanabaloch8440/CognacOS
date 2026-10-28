@@ -919,18 +919,6 @@ fn build_token_default_dacl(entry: &SecurityTokenIdentity) -> Option<([u8; 236],
     }
     let _ = append_default_dacl_ace(&mut acl, &mut offset, &mut count, &SYSTEM_SID);
     let _ = append_default_dacl_ace(&mut acl, &mut offset, &mut count, &ADMINS_SID);
-    for i in 1..entry.count as usize {
-        let sid = &entry.sids[i][..entry.lengths[i] as usize];
-        let mut p = 8usize;
-        let mut found = false;
-        while p + 8 <= offset {
-            let n = u16::from_le_bytes([acl[p + 2], acl[p + 3]]) as usize;
-            if n < 8 || p + n > offset { break; }
-            if acl[p + 8..p + n] == *sid { found = true; break; }
-            p += n;
-        }
-        if !found { let _ = append_default_dacl_ace(&mut acl, &mut offset, &mut count, sid); }
-    }
     acl[2..4].copy_from_slice(&(offset as u16).to_le_bytes());
     acl[4..6].copy_from_slice(&count.to_le_bytes());
     Some((acl, offset))
@@ -947,7 +935,7 @@ pub(crate) unsafe fn se_internal_TokenQueryDefaultDacl(
     let Some(entry) = entries.iter().find(|e| e.used && e.token == token as usize) else {
         return 0xC000_0008u32 as i32; // STATUS_INVALID_HANDLE
     };
-    if !entry.default_dacl_present { return 0xC000_0078u32 as i32; } // STATUS_NO_TOKEN / no default DACL
+    if !entry.default_dacl_present { return 0xC000_007Cu32 as i32; } // STATUS_NO_TOKEN / no default DACL
     let len = entry.default_dacl_len as usize;
     unsafe { required.write(len); }
     if output.is_null() || capacity < len { return 0xC000_0023u32 as i32; }
