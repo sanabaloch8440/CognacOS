@@ -27,6 +27,47 @@ struct CognacCriticalSection { debug_info:*mut c_void, lock_count:i32, recursion
 #[inline] fn encode_pointer(p:usize)->usize{p.rotate_left(17)^pointer_cookie()}
 #[inline] fn decode_pointer(p:usize)->usize{(p^pointer_cookie()).rotate_right(17)}
 
+const STATUS_SUCCESS:i32=0;
+const STATUS_NOT_IMPLEMENTED:i32=0xC000_0002u32 as i32;
+const STATUS_INVALID_PARAMETER:i32=0xC000_000Du32 as i32;
+const STATUS_TIMEOUT:i32=0x0000_0102;
+const CONDITION_VARIABLE_LOCKMODE_SHARED:u32=1;
+
+/// CognacOS-private address wait/wake syscall ABI. This service is implemented
+/// by the kernel scheduler; it is intentionally not exposed as a Windows Nt* API.
+#[cfg(all(target_os="windows",target_arch="x86_64"))]
+unsafe fn cognac_syscall4(number:u64,a0:u64,a1:u64,a2:u64,a3:u64)->i32{
+    let status:u64;
+    unsafe{
+        core::arch::asm!(
+            "mov r10, rcx",
+            "syscall",
+            inlateout("rax") number => status,
+            inlateout("rcx") a0 => _,
+            in("rdx") a1,
+            in("r8") a2,
+            in("r9") a3,
+            lateout("r10") _,
+            lateout("r11") _,
+            options(nostack)
+        );
+    }
+    status as u32 as i32
+}
+#[cfg(not(all(target_os="windows",target_arch="x86_64")))]
+unsafe fn cognac_syscall4(_number:u64,_a0:u64,_a1:u64,_a2:u64,_a3:u64)->i32{STATUS_NOT_IMPLEMENTED}
+
+#[inline]
+unsafe fn wait_on_word(address:*mut usize,expected:usize,timeout:u64)->i32{
+    if address.is_null(){return STATUS_INVALID_PARAMETER;}
+    unsafe{cognac_syscall4(0x152,address as u64,expected as u64,8,timeout)}
+}
+#[inline]
+unsafe fn wake_word(address:*mut usize,all:bool){
+    if !address.is_null(){let _=unsafe{cognac_syscall4(if all{0x154}else{0x153},address as u64,0,0,0)};}
+}
+
+
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlAbortRXact() -> i32 {
@@ -628,7 +669,13 @@ pub unsafe extern "system" fn RtlDeleteBoundaryDescriptor() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlDeleteCriticalSection(cs:*mut CognacCriticalSection)->i32{if cs.is_null(){return 0xC000000Du32 as i32;}unsafe{(*cs).owning_thread=core::ptr::null_mut();(*cs).recursion_count=0;atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count)).store(-1,Ordering::Release);}0}
+pub unsafe extern "system" fn RtlDeleteCriticalSection(cs:*mut CognacCriticalSection)->i32{
+    if cs.is_null(){return STATUS_INVALID_PARAMETER;}
+    let lock=unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count))};
+    if lock.load(Ordering::Acquire)!=-1{return STATUS_INVALID_PARAMETER;}
+    unsafe{(*cs).debug_info=core::ptr::null_mut();(*cs).owning_thread=core::ptr::null_mut();(*cs).recursion_count=0;(*cs).lock_semaphore=core::ptr::null_mut();(*cs).spin_count=0;}
+    STATUS_SUCCESS
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeleteElementGenericTable() -> i32 {
@@ -1304,10 +1351,20 @@ pub unsafe extern "system" fn RtlInitializeCorrelationVector() -> i32 {
 pub unsafe extern "system" fn RtlInitializeCriticalSection(cs:*mut CognacCriticalSection)->i32{if cs.is_null(){return 0xC000000Du32 as i32;}unsafe{(*cs).debug_info=core::ptr::null_mut();(*cs).lock_count=-1;(*cs).recursion_count=0;(*cs).owning_thread=core::ptr::null_mut();(*cs).lock_semaphore=core::ptr::null_mut();(*cs).spin_count=0;}0}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitializeCriticalSectionAndSpinCount(cs:*mut CognacCriticalSection,spin_count:u32)->u8{if unsafe{RtlInitializeCriticalSection(cs)}<0{return 0;}unsafe{(*cs).spin_count=spin_count as usize;}1}
+pub unsafe extern "system" fn RtlInitializeCriticalSectionAndSpinCount(cs:*mut CognacCriticalSection,spin_count:u32)->i32{
+    let status=unsafe{RtlInitializeCriticalSection(cs)};
+    if status<0{return status;}
+    unsafe{(*cs).spin_count=spin_count as usize;}
+    STATUS_SUCCESS
+}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitializeCriticalSectionEx(cs:*mut CognacCriticalSection,spin_count:u32,_flags:u32)->i32{if spin_count>0x00FF_FFFF{return 0xC000000Du32 as i32;}let s=unsafe{RtlInitializeCriticalSection(cs)};if s>=0{unsafe{(*cs).spin_count=spin_count as usize;}}s}
+pub unsafe extern "system" fn RtlInitializeCriticalSectionEx(cs:*mut CognacCriticalSection,spin_count:u32,flags:u32)->i32{
+    if cs.is_null()||spin_count>0x00FF_FFFF||(flags&!0x0100_0000)!=0{return STATUS_INVALID_PARAMETER;}
+    let status=unsafe{RtlInitializeCriticalSection(cs)};
+    if status>=0{unsafe{(*cs).spin_count=spin_count as usize;}}
+    status
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitializeGenericTable() -> i32 {
@@ -1346,6 +1403,45 @@ pub unsafe extern "system" fn RtlInitializeSListHead() -> i32 {
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitializeSRWLock(lock:*mut usize){if !lock.is_null(){unsafe{lock.write(0);}}}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlEnterCriticalSection(cs:*mut CognacCriticalSection)->i32{
+    if cs.is_null(){return STATUS_INVALID_PARAMETER;}
+    let id=current_thread_id();
+    if id==0{return STATUS_NOT_IMPLEMENTED;}
+    if unsafe{(*cs).owning_thread as usize}==id{
+        unsafe{(*cs).recursion_count=(*cs).recursion_count.saturating_add(1);}
+        return STATUS_SUCCESS;
+    }
+    let lock=unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count))};
+    let spins=unsafe{(*cs).spin_count.min(1_000_000)};
+    loop{
+        if lock.compare_exchange(-1,0,Ordering::Acquire,Ordering::Relaxed).is_ok(){
+            unsafe{(*cs).owning_thread=id as *mut c_void;(*cs).recursion_count=1;}
+            return STATUS_SUCCESS;
+        }
+        for _ in 0..spins{if lock.load(Ordering::Relaxed)==-1{break;}core::hint::spin_loop();}
+        let observed=lock.load(Ordering::Acquire);
+        if observed!=-1{
+            let _=unsafe{wait_on_word(core::ptr::addr_of_mut!((*cs).lock_count).cast::<usize>(),observed as u32 as usize,u64::MAX)};
+        }
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlLeaveCriticalSection(cs:*mut CognacCriticalSection)->i32{
+    if cs.is_null(){return STATUS_INVALID_PARAMETER;}
+    let id=current_thread_id();
+    if id==0||unsafe{(*cs).owning_thread as usize}!=id||unsafe{(*cs).recursion_count}<=0{return STATUS_INVALID_PARAMETER;}
+    unsafe{(*cs).recursion_count-=1;}
+    if unsafe{(*cs).recursion_count}==0{
+        unsafe{(*cs).owning_thread=core::ptr::null_mut();}
+        unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count)).store(-1,Ordering::Release);}
+        unsafe{wake_word(core::ptr::addr_of_mut!((*cs).lock_count).cast::<usize>(),false);}
+    }
+    STATUS_SUCCESS
+}
+
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitNlsTables() -> i32 {
@@ -2259,10 +2355,22 @@ pub unsafe extern "system" fn RtlReleasePrivilege() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlReleaseSRWLockExclusive(lock:*mut usize){if !lock.is_null(){unsafe{atomic_usize_at(lock).store(0,Ordering::Release);}}}
+pub unsafe extern "system" fn RtlReleaseSRWLockExclusive(lock:*mut usize){
+    if lock.is_null(){return;}
+    let state=unsafe{atomic_usize_at(lock)};
+    if state.compare_exchange(SRW_EXCLUSIVE,0,Ordering::Release,Ordering::Relaxed).is_ok(){unsafe{wake_word(lock,true);}}
+}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlReleaseSRWLockShared(lock:*mut usize){if !lock.is_null(){unsafe{atomic_usize_at(lock).fetch_sub(1,Ordering::Release);}}}
+pub unsafe extern "system" fn RtlReleaseSRWLockShared(lock:*mut usize){
+    if lock.is_null(){return;}
+    let state=unsafe{atomic_usize_at(lock)};
+    loop{
+        let value=state.load(Ordering::Relaxed);
+        if value&SRW_EXCLUSIVE!=0||value&SRW_READERS==0{return;}
+        if state.compare_exchange_weak(value,value-1,Ordering::Release,Ordering::Relaxed).is_ok(){unsafe{wake_word(lock,true);}return;}
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlRemoteCall() -> i32 {
@@ -2389,7 +2497,7 @@ pub unsafe extern "system" fn RtlSetControlSecurityDescriptor() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlSetCriticalSectionSpinCount(cs:*mut CognacCriticalSection,spin_count:usize)->usize{if cs.is_null(){return 0;}let old=unsafe{(*cs).spin_count};unsafe{(*cs).spin_count=spin_count;}old}
+pub unsafe extern "system" fn RtlSetCriticalSectionSpinCount(cs:*mut CognacCriticalSection,spin_count:u32)->u32{if cs.is_null(){return 0;}let old=unsafe{(*cs).spin_count as u32};unsafe{(*cs).spin_count=spin_count as usize;}old}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetCurrentTransaction() -> i32 {
@@ -2562,13 +2670,33 @@ pub unsafe extern "system" fn RtlSidIsHigherLevel() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlSleepConditionVariableCS() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn RtlSleepConditionVariableCS(condition:*mut usize,cs:*mut CognacCriticalSection,timeout:*const i64)->i32{
+    if condition.is_null()||cs.is_null(){return STATUS_INVALID_PARAMETER;}
+    let id=current_thread_id();
+    if id==0||unsafe{(*cs).owning_thread as usize}!=id||unsafe{(*cs).recursion_count}!=1{return STATUS_INVALID_PARAMETER;}
+    let expected=unsafe{atomic_usize_at(condition).load(Ordering::Acquire)};
+    let wait_timeout=if timeout.is_null(){u64::MAX}else{let t=unsafe{timeout.read_unaligned()};if t==0{0}else{return STATUS_NOT_IMPLEMENTED;}};
+    let leave=unsafe{RtlLeaveCriticalSection(cs)};
+    if leave<0{return leave;}
+    let waited=unsafe{wait_on_word(condition,expected,wait_timeout)};
+    let entered=unsafe{RtlEnterCriticalSection(cs)};
+    if entered<0{return entered;}
+    waited
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlSleepConditionVariableSRW() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
+pub unsafe extern "system" fn RtlSleepConditionVariableSRW(condition:*mut usize,lock:*mut usize,timeout:*const i64,flags:u32)->i32{
+    if condition.is_null()||lock.is_null()||(flags&!CONDITION_VARIABLE_LOCKMODE_SHARED)!=0{return STATUS_INVALID_PARAMETER;}
+    let lock_state=unsafe{atomic_usize_at(lock)};
+    let expected=unsafe{atomic_usize_at(condition).load(Ordering::Acquire)};
+    let wait_timeout=if timeout.is_null(){u64::MAX}else{let t=unsafe{timeout.read_unaligned()};if t==0{0}else{return STATUS_NOT_IMPLEMENTED;}};
+    if flags&CONDITION_VARIABLE_LOCKMODE_SHARED!=0{
+        loop{let v=lock_state.load(Ordering::Relaxed);if v&SRW_EXCLUSIVE!=0||v&SRW_READERS==0{return STATUS_INVALID_PARAMETER;}if lock_state.compare_exchange_weak(v,v-1,Ordering::Release,Ordering::Relaxed).is_ok(){break;}}
+    }else if lock_state.compare_exchange(SRW_EXCLUSIVE,0,Ordering::Release,Ordering::Relaxed).is_err(){return STATUS_INVALID_PARAMETER;}
+    unsafe{wake_word(lock,true);}
+    let waited=unsafe{wait_on_word(condition,expected,wait_timeout)};
+    if flags&CONDITION_VARIABLE_LOCKMODE_SHARED!=0{unsafe{RtlAcquireSRWLockShared(lock);}}else{unsafe{RtlAcquireSRWLockExclusive(lock);}}
+    waited
 }
 
 #[no_mangle]
@@ -2876,10 +3004,10 @@ pub unsafe extern "system" fn RtlWakeAddressSingleNoFence() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlWakeAllConditionVariable(condition:*mut usize){if !condition.is_null(){unsafe{atomic_usize_at(condition).fetch_add(1,Ordering::Release);}}}
+pub unsafe extern "system" fn RtlWakeAllConditionVariable(condition:*mut usize){if !condition.is_null(){unsafe{atomic_usize_at(condition).fetch_add(1,Ordering::Release);wake_word(condition,true);}}}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlWakeConditionVariable(condition:*mut usize){if !condition.is_null(){unsafe{atomic_usize_at(condition).fetch_add(1,Ordering::Release);}}}
+pub unsafe extern "system" fn RtlWakeConditionVariable(condition:*mut usize){if !condition.is_null(){unsafe{atomic_usize_at(condition).fetch_add(1,Ordering::Release);wake_word(condition,false);}}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlWalkFrameChain() -> i32 {
