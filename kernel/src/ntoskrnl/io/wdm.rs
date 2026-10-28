@@ -584,7 +584,7 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
 }
 fn io_pnp_manager_irp_completed(irp:*mut Irp){
  if irp.is_null(){return}
- let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
+ let status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
  let completed={
   let mut manager=PNP_MANAGER.lock();
   let Some(slot)=manager.managed_irps.iter_mut().find(|s|s.used&&s.irp==irp) else{return};
@@ -820,7 +820,7 @@ fn initialize_irp_slot(slot:&mut IrpSlot,stack_size:i8)->*mut Irp {
  slot.next=next;
  let object=ptr::addr_of_mut!(slot.object);
  let one_past=unsafe{slot.stack.as_mut_ptr().add(stack_size as usize).cast::<c_void>()};
- unsafe{write_ptr((*object).bytes.as_mut_ptr(),IRP_STACK_OFFSET,one_past);}
+ unsafe{write_ptr(ptr::addr_of_mut!((*object).bytes).cast::<u8>(),IRP_STACK_OFFSET,one_past);}
  object
 }
 #[unsafe(no_mangle)]
@@ -877,7 +877,7 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_get_current_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
  if irp.is_null(){return ptr::null_mut()}
- unsafe{read_ptr((*irp).bytes.as_ptr(),IRP_STACK_OFFSET).cast()}
+ unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),IRP_STACK_OFFSET).cast()}
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
@@ -885,7 +885,7 @@ pub unsafe extern "system" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut
  let current=unsafe{io_get_current_irp_stack_location(irp)};
  if current.is_null(){return ptr::null_mut()}
  // The WDM ABI places stack locations immediately after the fixed IRP.
- let count=unsafe{(*irp).bytes[0x42] as usize};
+ let count=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize};
  if count==0||count>0x7f{return ptr::null_mut()}
  let base=(irp as usize).saturating_add(IRP_SIZE_X64);
  let end=base.saturating_add(count*IO_STACK_LOCATION_SIZE_X64);
@@ -1008,7 +1008,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  }
  if !track_irp_device(irp,device) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
  if !acquire_irp_active_op(irp) { release_device_dispatch_rundown(device); return STATUS_DELETE_PENDING; }
- let irp_stack_count=unsafe{(*irp).bytes[0x42] as usize};
+ let irp_stack_count=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize};
  let required_stack_size=unsafe{(*device).stack_size};
  if required_stack_size<=0 {release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST;}
  let required_stack_count=required_stack_size as usize;
@@ -1018,11 +1018,11 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  }
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
  if stack.is_null(){release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_PARAMETER}
- let location=unsafe{(*irp).bytes[0x43]};
+ let location=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x43)};
  if location<=1{release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
  unsafe {
-  write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast());
-  (*irp).bytes[0x43]=location-1;
+  write_ptr(ptr::addr_of_mut!((*irp).bytes).cast::<u8>(),IRP_STACK_OFFSET,stack.cast());
+  *ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x43)=location-1;
   (*stack).device_object=device;
  }
  let major=unsafe{(*stack).major_function as usize};
@@ -1032,7 +1032,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  let parameters=unsafe{ptr::read_unaligned((*stack).parameters.as_ptr().cast::<[u64;4]>())};
  let prepare=unsafe{crate::ntoskrnl::po::runtime::po_prepare_irp_dispatch(device,irp,major as u8,(*stack).minor_function,parameters)};
  if prepare!=STATUS_SUCCESS{
-  unsafe{write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());(*irp).bytes[0x43]=location;}
+  unsafe{write_ptr(ptr::addr_of_mut!((*irp).bytes).cast::<u8>(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());*ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x43)=location;}
   release_irp_active_op(irp);release_device_dispatch_rundown(device);return prepare
  }
  let status=unsafe{dispatch(device,irp)};
@@ -1160,7 +1160,7 @@ fn try_free_completed_sync_ioctl_irp(irp:*mut Irp) {
 
 fn finalize_irp_status(irp:*mut Irp) {
  if irp.is_null(){return}
- let base=unsafe{(*irp).bytes.as_mut_ptr()};
+ let base=unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()};
  let iosb=unsafe{read_ptr(base,0x48)};
  if iosb.is_null(){return}
  let status=unsafe{ptr::read_unaligned(base.add(IRP_STATUS_OFFSET).cast::<i32>())};
@@ -1168,7 +1168,7 @@ fn finalize_irp_status(irp:*mut Irp) {
  let copy_out={
   let mut state=WDM.lock();
   let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
-  if slot.built_sync_ioctl && (unsafe{(*irp).bytes[0x10]&0x10})!=0 && !slot.ioctl_output_buffer.is_null() {
+  if slot.built_sync_ioctl && (unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x10)&0x10})!=0 && !slot.ioctl_output_buffer.is_null() {
    let n=information.min(slot.ioctl_output_len).min(slot.system_buffer_len);
    if n!=0 {unsafe{ptr::copy_nonoverlapping(slot.system_buffer,slot.ioctl_output_buffer.cast::<u8>(),n);}}
   }
@@ -1195,11 +1195,11 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
  }
  let mut finished=false;
  for _ in 0..(MAX_WDM_STACK_LOCATIONS+1) {
-  let (location,stack_count)=unsafe{((*irp).bytes[0x43] as usize,(*irp).bytes[0x42] as usize)};
+  let (location,stack_count)=unsafe{(*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x43) as usize,*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize)};
   if stack_count==0||stack_count>MAX_WDM_STACK_LOCATIONS||location==0 {break}
   if location>stack_count {
    finalize_irp_status(irp);
-   let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
+   let status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
    crate::dma::release_irp_mappings(irp.cast());
    crate::ntoskrnl::po::runtime::po_complete_irp(irp,status);
    finished=true;
@@ -1209,11 +1209,11 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   if stack.is_null(){break}
   let control=unsafe{(*stack).control};
   // SL_PENDING_RETURNED is converted into IRP.PendingReturned during unwind.
-  if control&0x01!=0 {unsafe{(*irp).bytes[0x41]=1;}}
+  if control&0x01!=0 {unsafe{*ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x41)=1;}}
   let routine=unsafe{(*stack).completion_routine};
   let context=unsafe{(*stack).context};
-  let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
-  let cancelled=unsafe{(*irp).bytes[0x44]!=0};
+  let status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
+  let cancelled=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x44)!=0};
   let invoke=(status>=0&&(control&0x40)!=0)||(status<0&&(control&0x80)!=0)||(cancelled&&(control&0x20)!=0);
   // The I/O manager advances the current stack location before invoking the
   // completion callback. If it returns STATUS_MORE_PROCESSING_REQUIRED, that
@@ -1224,10 +1224,10 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   // that driver's DeviceObject, not the lower target stored in this stack slot.
   let completion_device_object=if location<stack_count {unsafe{(*next).device_object}} else {ptr::null_mut()};
   unsafe {
-   (*irp).bytes[0x43]=(location+1).min(0xff) as u8;
-   write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast());
+   *ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x43)=(location+1).min(0xff) as u8;
+   write_ptr(ptr::addr_of_mut!((*irp).bytes).cast::<u8>(),IRP_STACK_OFFSET,next.cast());
    // Pending state must be visible to each higher driver's completion frame.
-   if (*irp).bytes[0x41]!=0 && (location+1)<=stack_count {
+   if *ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x41)!=0 && (location+1)<=stack_count {
     (*next).control|=0x01;
    }
   }
@@ -1259,9 +1259,9 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
     }
    }
   }
-  if unsafe{(*irp).bytes[0x43]>(*irp).bytes[0x42]} {
+  if unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x43)>*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42)} {
    finalize_irp_status(irp);
-   let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
+   let status=unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>())};
    crate::dma::release_irp_mappings(irp.cast());
    crate::ntoskrnl::po::runtime::po_complete_irp(irp,status);
    finished=true;
@@ -1378,13 +1378,13 @@ pub unsafe extern "system" fn io_initialize_irp(
     if required.is_none_or(|n|n>packet_size as usize){return}
     unsafe {
         ptr::write_bytes(irp.cast::<u8>(),0,packet_size as usize);
-        ptr::write_unaligned((*irp).bytes.as_mut_ptr().cast::<i16>(),6);
-        ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(2).cast::<u16>(),IRP_SIZE_X64 as u16);
-        (*irp).bytes[0x42]=stack_size as u8;
-        (*irp).bytes[0x43]=(stack_size as u8).wrapping_add(1);
+        ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().cast::<i16>(),6);
+        ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(2).cast::<u16>(),IRP_SIZE_X64 as u16);
+        *ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x42)=stack_size as u8;
+        *ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x43)=(stack_size as u8).wrapping_add(1);
         let stack_base=irp.cast::<u8>().add(IRP_SIZE_X64);
         let current=stack_base.add(stack_size as usize*IO_STACK_LOCATION_SIZE_X64);
-        write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,current.cast());
+        write_ptr(ptr::addr_of_mut!((*irp).bytes).cast::<u8>(),IRP_STACK_OFFSET,current.cast());
     }
 }
 
@@ -1392,7 +1392,7 @@ pub unsafe extern "system" fn io_initialize_irp(
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mut Irp) {
  if irp.is_null(){return}
- let count=unsafe{(*irp).bytes[0x42] as usize};
+ let count=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize};
  if count==0||count>0x7f{return}
  let current=unsafe{io_get_current_irp_stack_location(irp)};
  if current.is_null(){return}
@@ -1411,7 +1411,7 @@ pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mu
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
  if irp.is_null(){return}
- let count=unsafe{(*irp).bytes[0x42] as usize};
+ let count=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize};
  if count==0||count>0x7f{return}
  let current=unsafe{io_get_current_irp_stack_location(irp)};
  if current.is_null(){return}
@@ -1421,8 +1421,8 @@ pub unsafe extern "system" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
  if cur<base||cur>=end||(cur-base)%IO_STACK_LOCATION_SIZE_X64!=0{return}
  if cur+IO_STACK_LOCATION_SIZE_X64>end{return}
  unsafe {
-  write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,(cur+IO_STACK_LOCATION_SIZE_X64) as *mut c_void);
-  (*irp).bytes[0x43]=(*irp).bytes[0x43].saturating_add(1);
+  write_ptr(ptr::addr_of_mut!((*irp).bytes).cast::<u8>(),IRP_STACK_OFFSET,(cur+IO_STACK_LOCATION_SIZE_X64) as *mut c_void);
+  {let location=*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x43);*ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x43)=location.saturating_add(1);}
  }
 }
 
@@ -1634,18 +1634,18 @@ unsafe fn csq_unlock(csq:*mut IoCsq,irql:u8) {
  unsafe{release(csq,irql)}
 }
 unsafe fn csq_set_cancel_routine(irp:*mut Irp,routine:*mut c_void)->*mut c_void {
- let field=unsafe{(*irp).bytes.as_mut_ptr().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
+ let field=unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
  unsafe{(&*field).swap(routine,core::sync::atomic::Ordering::AcqRel)}
 }
 unsafe extern "system" fn csq_cancel_routine(_device:*mut DeviceObject,irp:*mut Irp) {
  if irp.is_null(){return}
- let csq=unsafe{read_ptr((*irp).bytes.as_ptr(),CSQ_IRP_CONTEXT_OFFSET).cast::<IoCsq>()};
+ let csq=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),CSQ_IRP_CONTEXT_OFFSET).cast::<IoCsq>()};
  if csq.is_null(){return}
  let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
  let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
  unsafe{remove(csq,irp);}
- write_ptr(unsafe{(*irp).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
+ write_ptr(unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
  unsafe{csq_unlock(csq,queue_irql);}
  unsafe{super::io_release_cancel_spin_lock(old_irql);}
  let complete:CsqCompleteCanceled=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,48))};
@@ -1681,10 +1681,10 @@ unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpConte
  let extended=unsafe{ptr::read_unaligned(csq.cast::<u8>().cast::<u32>())}==IO_TYPE_CSQ_EX;
  let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
- let cancelled=unsafe{(*irp).bytes[0x44]!=0};
+ let cancelled=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x44)!=0};
  let mut status=STATUS_SUCCESS;
  if !cancelled {
-  write_ptr(unsafe{(*irp).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,csq.cast());
+  write_ptr(unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,csq.cast());
   let routine=csq_cancel_routine as *const () as *mut c_void;
   unsafe{csq_set_cancel_routine(irp,routine);}
   if extended {
@@ -1696,7 +1696,7 @@ unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpConte
   }
   if status!=STATUS_SUCCESS {
    unsafe{csq_set_cancel_routine(irp,ptr::null_mut());}
-   write_ptr(unsafe{(*irp).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
+   write_ptr(unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
   } else if !context.is_null() {
    unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).type_),CSQ_CONTEXT_TYPE);}
    unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).irp),irp);}
@@ -1728,9 +1728,9 @@ pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCs
  if irp.is_null()||unsafe{ptr::read_unaligned(ptr::addr_of!((*context).csq))}!=csq{return ptr::null_mut()}
  let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
- let cancel=unsafe{(*irp).bytes[0x44]!=0};
- let routine=unsafe{read_ptr((*irp).bytes.as_ptr(),IRP_CANCEL_ROUTINE_OFFSET)};
- let queue=unsafe{read_ptr((*irp).bytes.as_ptr(),CSQ_IRP_CONTEXT_OFFSET)};
+ let cancel=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x44)!=0};
+ let routine=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),IRP_CANCEL_ROUTINE_OFFSET)};
+ let queue=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),CSQ_IRP_CONTEXT_OFFSET)};
  if cancel||routine!=(csq_cancel_routine as *const () as *mut c_void)||queue!=csq.cast(){
   unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
   return ptr::null_mut()
@@ -1738,7 +1738,7 @@ pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCs
  unsafe{csq_set_cancel_routine(irp,ptr::null_mut());}
  let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
  unsafe{remove(csq,irp);}
- write_ptr(unsafe{(*irp).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
+ write_ptr(unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
  unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
  unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).type_),0);}
  irp
@@ -1750,12 +1750,12 @@ pub unsafe extern "system" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context
  let queue_irql=unsafe{csq_lock(csq)};
  let peek:CsqPeek=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,24))};
  let candidate=unsafe{peek(csq,ptr::null_mut(),peek_context)};
- if candidate.is_null()||unsafe{(*candidate).bytes[0x44]!=0} {
+ if candidate.is_null()||unsafe{*ptr::addr_of!((*candidate).bytes).cast::<u8>().add(0x44)!=0} {
   unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
   return ptr::null_mut()
  }
- let routine=unsafe{read_ptr((*candidate).bytes.as_ptr(),IRP_CANCEL_ROUTINE_OFFSET)};
- let queue=unsafe{read_ptr((*candidate).bytes.as_ptr(),CSQ_IRP_CONTEXT_OFFSET)};
+ let routine=unsafe{read_ptr(ptr::addr_of!((*candidate).bytes).cast::<u8>(),IRP_CANCEL_ROUTINE_OFFSET)};
+ let queue=unsafe{read_ptr(ptr::addr_of!((*candidate).bytes).cast::<u8>(),CSQ_IRP_CONTEXT_OFFSET)};
  if routine!=(csq_cancel_routine as *const () as *mut c_void)||queue!=csq.cast(){
   unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
   return ptr::null_mut()
@@ -1763,7 +1763,7 @@ pub unsafe extern "system" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context
  unsafe{csq_set_cancel_routine(candidate,ptr::null_mut());}
  let remove:CsqRemove=unsafe{core::mem::transmute(csq_callback::<*mut c_void>(csq,16))};
  unsafe{remove(csq,candidate);}
- write_ptr(unsafe{(*candidate).bytes.as_mut_ptr()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
+ write_ptr(unsafe{ptr::addr_of_mut!((*candidate).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
  unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
  candidate
 }
@@ -1775,7 +1775,7 @@ pub unsafe extern "system" fn io_set_cancel_routine(
  irp:*mut Irp, routine:Option<DriverCancelRoutine>
 )->Option<DriverCancelRoutine> {
  if irp.is_null()||!acquire_irp_active_op(irp){return None}
- let slot=unsafe{(*irp).bytes.as_mut_ptr().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
+ let slot=unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
  let replacement=routine.map_or(ptr::null_mut(),|r|r as *const () as *mut c_void);
  let previous=unsafe{&*slot}.swap(replacement,core::sync::atomic::Ordering::AcqRel);
  release_irp_active_op(irp);
@@ -1806,7 +1806,7 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
     if count==pending.len(){more=true;break}
     let never_dispatched=state.irps[index].outstanding_count==0&&state.irps[index].completion_state==0;
     let _=sync_queue_detach_locked(&mut state,cursor);
-    write_ptr(unsafe{(*cursor).bytes.as_mut_ptr()},0x48,ptr::null_mut());
+    write_ptr(unsafe{ptr::addr_of_mut!((*cursor).bytes).cast::<u8>()},0x48,ptr::null_mut());
     pending[count]=(cursor,never_dispatched);count+=1;cursor=next;
    }
    more|=state.thread_irps.iter().any(|q|q.used&&q.thread_id==thread_id);
@@ -1815,8 +1815,8 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
    let cancel_routine_called=unsafe{io_cancel_irp(irp)}!=0;
    if never_dispatched&&!cancel_routine_called {
     unsafe{
-     ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),0xC0000120u32 as i32);
-     ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
+     ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),0xC0000120u32 as i32);
+     ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
      io_complete_request(irp,0);
     }
    }
@@ -1840,8 +1840,8 @@ pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
  if !acquire_irp_active_op(irp){return 0}
  let mut old_irql=0u8;
  unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
- unsafe{(*irp).bytes[0x44]=1;}
- let cancel_slot=unsafe{(*irp).bytes.as_mut_ptr().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
+ unsafe{*ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(0x44)=1;}
+ let cancel_slot=unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
  let callback=unsafe{&*cancel_slot}.swap(ptr::null_mut(),core::sync::atomic::Ordering::AcqRel);
  unsafe{super::io_release_cancel_spin_lock(old_irql);}
  if callback.is_null(){release_irp_active_op(irp);return 0}
@@ -1914,10 +1914,10 @@ pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
   // LARGE_INTEGER ByteOffset at union offset 0x10 on Windows x64.
   ptr::write_unaligned(next.cast::<u8>().add(4).cast::<u32>(),length);
   ptr::write_unaligned(next.cast::<u8>().add(20).cast::<i64>(),offset);
-  write_ptr((*irp).bytes.as_mut_ptr(),0x70,buffer);
-  write_ptr((*irp).bytes.as_mut_ptr(),0x48,io_status.cast());
-  ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_PENDING);
-  ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
+  write_ptr(ptr::addr_of_mut!((*irp).bytes).cast::<u8>(),0x70,buffer);
+  write_ptr(ptr::addr_of_mut!((*irp).bytes).cast::<u8>(),0x48,io_status.cast());
+  ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_PENDING);
+  ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
  }
  irp
 }
@@ -2116,7 +2116,7 @@ mod wdm_tests {
  unsafe extern "system" fn test_dispatch(device:*mut DeviceObject, irp:*mut Irp)->i32 {
   if device.is_null() || irp.is_null() { return STATUS_INVALID_PARAMETER; }
   unsafe {
-   (*irp).bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&STATUS_SUCCESS.to_le_bytes());
+   ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
    io_complete_request(irp,0);
   }
   STATUS_SUCCESS
@@ -2181,8 +2181,8 @@ mod wdm_tests {
 
   let irp=unsafe{io_allocate_irp(32,0)};
   assert!(!irp.is_null());
-  assert_eq!(unsafe{(*irp).bytes[0x42]},32);
-  assert_eq!(unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(2).cast::<u16>())},IRP_SIZE_X64 as u16);
+  assert_eq!(unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42)},32);
+  assert_eq!(unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(2).cast::<u16>())},IRP_SIZE_X64 as u16);
   assert_eq!(unsafe{io_get_current_irp_stack_location(irp)} as usize,irp as usize+IRP_SIZE_X64+32*IO_STACK_LOCATION_SIZE_X64);
   assert!(!unsafe{io_get_current_irp_stack_location(irp)}.is_null());
   let next=unsafe{io_get_next_irp_stack_location(irp)};
@@ -2235,10 +2235,10 @@ mod wdm_tests {
   let mut storage=[0u8;IRP_SIZE_X64+2*IO_STACK_LOCATION_SIZE_X64];
   let irp=storage.as_mut_ptr().cast::<Irp>();
   unsafe{io_initialize_irp(irp, (storage.len()-1) as u16, 2);}
-  assert_eq!(unsafe{(*irp).bytes[0x42]},0);
+  assert_eq!(unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42)},0);
   unsafe{io_initialize_irp(irp, storage.len() as u16, 2);}
-  assert_eq!(unsafe{(*irp).bytes[0x42]},2);
-  assert_eq!(unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(2).cast::<u16>())},IRP_SIZE_X64 as u16);
+  assert_eq!(unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42)},2);
+  assert_eq!(unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(2).cast::<u16>())},IRP_SIZE_X64 as u16);
   assert_eq!(unsafe{io_get_current_irp_stack_location(irp)} as usize,storage.as_ptr() as usize+storage.len());
  }
 
@@ -2257,7 +2257,7 @@ mod wdm_tests {
   let irp=unsafe{io_allocate_irp(2,0)};
   assert!(!irp.is_null());
   unsafe{io_reuse_irp(irp,STATUS_SUCCESS);}
-  assert_eq!(unsafe{(*irp).bytes[0x43]},3);
+  assert_eq!(unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x43)},3);
   assert_eq!(unsafe{io_get_current_irp_stack_location(irp)} as usize,irp as usize+IRP_SIZE_X64+2*IO_STACK_LOCATION_SIZE_X64);
   unsafe{io_free_irp(irp);io_detach_device(lower);io_delete_device(upper);io_delete_device(lower);}
  }
@@ -2333,11 +2333,11 @@ mod wdm_tests {
   assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())},8);
   assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(12).cast::<u32>())},2);
   assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(20).cast::<u32>())},0x00222000);
-  let system_buffer=unsafe{read_ptr((*irp).bytes.as_ptr(),0x18).cast::<u8>()};
+  let system_buffer=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),0x18).cast::<u8>()};
   if !system_buffer.is_null(){unsafe{ptr::copy_nonoverlapping(b"OK".as_ptr(),system_buffer,2);}}
   unsafe{
-   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
-   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),2);
+   ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_INFORMATION_OFFSET).cast::<usize>(),2);
    io_complete_request(irp,0);
   }
   STATUS_SUCCESS
@@ -2393,8 +2393,8 @@ mod wdm_tests {
   unsafe{io_set_completion_routine(irp,Some(counted_completion),ptr::null_mut(),1,1,1);}
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
   assert_eq!(io_cancel_thread_irps(0xBEEF),1);
-  assert_eq!(unsafe{(*irp).bytes[0x44]},1);
-  assert!(unsafe{read_ptr((*irp).bytes.as_ptr(),0x48)}.is_null());
+  assert_eq!(unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x44)},1);
+  assert!(unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),0x48)}.is_null());
   // With no lower cancel routine, the IRP stays alive until the driver completes
   // it; late completion must not touch the exiting thread's IOSB.
   unsafe{io_complete_request(irp,0);}
@@ -2412,7 +2412,7 @@ mod wdm_tests {
   assert!(!irp.is_null());
   unsafe{(*io_get_next_irp_stack_location(irp)).major_function=0;}
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
-  assert_eq!(unsafe{(*irp).bytes[0x41]},0);
+  assert_eq!(unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x41)},0);
   assert_ne!(unsafe{(*io_get_current_irp_stack_location(irp)).control}&0x01,0);
   // A premature free is rejected; the same IRP remains registered and
   // its outstanding completion can still finish safely.
@@ -2462,7 +2462,7 @@ mod wdm_tests {
   }
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
   unsafe{io_reuse_irp(irp,STATUS_SUCCESS);}
-  assert_eq!(unsafe{(*irp).bytes[0x43]},3);
+  assert_eq!(unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x43)},3);
   assert!(!unsafe{io_get_next_irp_stack_location(irp)}.is_null());
   unsafe{io_free_irp(irp);io_delete_device(device);}
  }
@@ -2482,7 +2482,7 @@ mod wdm_tests {
   }
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
   assert_eq!(MORE_PROCESSING_CALLBACKS.load(core::sync::atomic::Ordering::Acquire),1);
-  assert_eq!(unsafe{(*irp).bytes[0x43]},3);
+  assert_eq!(unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x43)},3);
   unsafe{io_complete_request(irp,0);}
   assert_eq!(MORE_PROCESSING_CALLBACKS.load(core::sync::atomic::Ordering::Acquire),1);
   unsafe{io_free_irp(irp);io_delete_device(device);}
@@ -2537,8 +2537,8 @@ mod wdm_tests {
  unsafe extern "system" fn completing_dispatch(device:*mut DeviceObject,irp:*mut Irp)->i32 {
   if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
   unsafe{
-   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
-   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),123);
+   ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_INFORMATION_OFFSET).cast::<usize>(),123);
    io_complete_request(irp,0);
   }
   STATUS_SUCCESS
@@ -2597,7 +2597,7 @@ mod wdm_tests {
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
   assert_eq!(io_pnp_state(device),PNP_STATE_NOT_STARTED);
   unsafe{
-   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
    io_complete_request(irp,0);
   }
   assert_eq!(io_pnp_state(device),PNP_STATE_STARTED);
@@ -2605,14 +2605,14 @@ mod wdm_tests {
  }
  unsafe extern "system" fn pnp_start_complete_success(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
   unsafe {
-   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
    io_complete_request(irp,0);
   }
   STATUS_SUCCESS
  }
  unsafe extern "system" fn pnp_start_complete_failure(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
   unsafe {
-   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_INVALID_DEVICE_REQUEST);
+   ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_INVALID_DEVICE_REQUEST);
    io_complete_request(irp,0);
   }
   STATUS_INVALID_DEVICE_REQUEST
