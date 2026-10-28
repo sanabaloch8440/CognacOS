@@ -1774,4 +1774,42 @@ mod wdm_tests {
   unsafe{io_free_irp(started);io_delete_device(device);}
  }
 
+ #[test]
+ fn pnp_resource_lists_are_validated_and_conflicts_are_reserved() {
+  fn memory_list(start:u64,length:u32)->[u8;36] {
+   let mut list=[0u8;36];
+   list[0..4].copy_from_slice(&1u32.to_le_bytes()); // one CM_FULL_RESOURCE_DESCRIPTOR
+   list[12..14].copy_from_slice(&1u16.to_le_bytes()); // version
+   list[14..16].copy_from_slice(&1u16.to_le_bytes()); // revision
+   list[16..20].copy_from_slice(&1u32.to_le_bytes()); // one partial descriptor
+   list[20]=CM_RESOURCE_MEMORY;
+   list[24..32].copy_from_slice(&start.to_le_bytes());
+   list[32..36].copy_from_slice(&length.to_le_bytes());
+   list
+  }
+  let mut list=memory_list(0x100000,0x1000);
+  let mut driver1:DriverObject=unsafe{core::mem::zeroed()};
+  let mut driver2:DriverObject=unsafe{core::mem::zeroed()};
+  let mut dev1: *mut DeviceObject=ptr::null_mut();
+  let mut dev2: *mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver1,0,ptr::null_mut(),7,0,0,&mut dev1)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_create_device(&mut driver2,0,ptr::null_mut(),7,0,0,&mut dev2)},STATUS_SUCCESS);
+  let irp1=unsafe{io_allocate_irp(2,0)};
+  let irp2=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp1.is_null()&&!irp2.is_null());
+  let list_ptr=list.as_ptr().cast::<c_void>();
+  assert_eq!(unsafe{io_prepare_pnp_resources(dev1,irp1,IRP_MN_START_DEVICE,list_ptr,list_ptr)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_prepare_pnp_resources(dev2,irp2,IRP_MN_START_DEVICE,list_ptr,list_ptr)},STATUS_DEVICE_BUSY);
+  io_finish_pnp_resources(irp1,dev1,IRP_MN_START_DEVICE,STATUS_SUCCESS);
+  assert_eq!(unsafe{io_prepare_pnp_resources(dev2,irp2,IRP_MN_START_DEVICE,list_ptr,list_ptr)},STATUS_DEVICE_BUSY);
+  io_release_pnp_resources(dev1);
+  assert_eq!(unsafe{io_prepare_pnp_resources(dev2,irp2,IRP_MN_START_DEVICE,list_ptr,list_ptr)},STATUS_SUCCESS);
+  io_finish_pnp_resources(irp2,dev2,IRP_MN_START_DEVICE,STATUS_INVALID_DEVICE_REQUEST);
+  unsafe{io_free_irp(irp1);io_free_irp(irp2);io_delete_device(dev1);io_delete_device(dev2);}
+  // Overflowing ranges are rejected before they can enter the arbiter.
+  list=memory_list(u64::MAX-3,8);
+  let mut parsed=[ParsedResource::EMPTY;MAX_RESOURCES_PER_DEVICE];
+  assert_eq!(unsafe{parse_cm_resource_list(list.as_ptr().cast(),&mut parsed)},Err(STATUS_INVALID_PARAMETER));
+ }
+
 }
