@@ -613,6 +613,11 @@ jobs:
             printf "RIP=%#lx CS=%#lx RFLAGS=%#lx RSP=%#lx SS=%#lx\\n", *(unsigned long long *)($rdx + 136), *(unsigned long long *)($rdx + 144), *(unsigned long long *)($rdx + 152), *(unsigned long long *)($rdx + 160), *(unsigned long long *)($rdx + 168)
             info registers cr2 cr3
             x/22gx $rdx
+            set $fault_rip = *(unsigned long long *)($rdx + 136)
+            printf "===== FAULTING USER INSTRUCTIONS (runtime-generated stub or PE image) =====\\n"
+            x/24i $fault_rip-24
+            info symbol $fault_rip
+            info line *$fault_rip
             printf "===== END GDB FIRST RING-3 EXCEPTION =====\\n"
             continue
           end
