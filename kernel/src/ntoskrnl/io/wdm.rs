@@ -971,6 +971,8 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
    unsafe{crate::ntoskrnl::mm::runtime::mm_probe_and_lock_pages(mdl,0,if method==1{0}else{1});}
    let flags=unsafe{ptr::read_unaligned(mdl.cast::<u8>().add(0x0a).cast::<i16>())};
    if flags&0x0002==0{unsafe{io_free_mdl(mdl);io_free_irp(irp);}return ptr::null_mut()}
+   let mut state=WDM.lock();
+   if let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)){slot.owned_mdl=mdl;}
   }
  }
  irp
