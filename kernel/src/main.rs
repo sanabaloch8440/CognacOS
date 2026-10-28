@@ -1158,6 +1158,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     unsafe { serial_write_decimal(dispatch_count); }
                     if !device_object.is_null() && dispatch_count != 0 {
                         serial_write(b"\r\nbeep.sys device and dispatch registration passed.\r\n");
+                        // Separate hardware-path diagnostic: exercise QEMU's emulated
+                        // PC speaker only after DriverEntry/device registration succeeds.
+                        // This does NOT claim that a beep.sys IOCTL was dispatched.
+                        if unsafe { qemu_pc_speaker_diagnostic_tone() } {
+                            serial_write(b"QEMU PC speaker diagnostic tone requested after beep.sys load.\r\n");
+                        } else {
+                            serial_write(b"QEMU PC speaker diagnostic tone could not be requested.\r\n");
+                        }
                     } else {
                         serial_write(b"\r\nbeep.sys DriverEntry succeeded but device/dispatch registration is incomplete.\r\n");
                     }
@@ -1240,6 +1248,31 @@ unsafe fn serial_init() {
 
 unsafe fn outb(port: u16, value: u8) {
     unsafe { asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags)); }
+}
+
+/// Emit a short PIT channel-2 tone through the legacy PC speaker.
+///
+/// This is a QEMU audio-path diagnostic, not a substitute for issuing the
+/// Windows Beep.sys device-control IRP. The workflow verifies captured samples.
+unsafe fn qemu_pc_speaker_diagnostic_tone() -> bool {
+    let mut speaker_port: u8;
+    unsafe {
+        asm!("in al, dx", in("dx") 0x61u16, out("al") speaker_port,
+             options(nomem, nostack, preserves_flags));
+    }
+    // PIT channel 2, square-wave mode, approximately 880 Hz.
+    let divisor: u16 = (1_193_182u32 / 880) as u16;
+    unsafe {
+        outb(0x43, 0xb6);
+        outb(0x42, divisor as u8);
+        outb(0x42, (divisor >> 8) as u8);
+        outb(0x61, speaker_port | 0x03);
+    }
+    for _ in 0..20_000_000usize {
+        core::hint::spin_loop();
+    }
+    unsafe { outb(0x61, speaker_port & !0x03); }
+    true
 }
 
 pub unsafe fn serial_write(bytes: &[u8]) {
