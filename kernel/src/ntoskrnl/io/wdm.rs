@@ -2133,7 +2133,7 @@ mod wdm_tests {
   assert!(!next.is_null());
   unsafe { (*next).major_function=0; }
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
-  assert_eq!(unsafe{(*irp).bytes[IRP_STATUS_OFFSET]},0);
+  assert_eq!(unsafe{ptr::read_unaligned(ptr::addr_of!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET))},0);
   unsafe{io_free_irp(irp);}
   // Completion and IRP free release rundown; they must not implicitly delete
   // a device whose owner has not called IoDeleteDevice.
