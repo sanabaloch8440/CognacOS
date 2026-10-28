@@ -19,22 +19,22 @@ static SYSTEM_POWER_STATE: AtomicU32 = AtomicU32::new(1);
 /// Register the platform-specific storage, memory, device, and CPU restore backend.
 /// This RdotOS-private hook is not a Windows WDK export.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn RdotPoRegisterHibernationBackend(ops:*mut super::hibernate::HiberPlatformOps)->i32 {
+pub unsafe extern "win64" fn RdotPoRegisterHibernationBackend(ops:*mut super::hibernate::HiberPlatformOps)->i32 {
     unsafe { super::hibernate::register_platform(ops) }
 }
 /// Request S4. Returns only if the platform's enter-S4 routine returns.
 #[unsafe(no_mangle)]
-pub extern "system" fn RdotPoInitiateS4()->i32 { super::hibernate::initiate_s4() }
+pub extern "win64" fn RdotPoInitiateS4()->i32 { super::hibernate::initiate_s4() }
 /// Boot/resume-loader hook; must be invoked from a resume-safe execution environment.
 #[unsafe(no_mangle)]
-pub extern "system" fn RdotPoResumeFromHibernation()->i32 { super::hibernate::resume_from_hibernation() }
+pub extern "win64" fn RdotPoResumeFromHibernation()->i32 { super::hibernate::resume_from_hibernation() }
 #[unsafe(no_mangle)]
-pub extern "system" fn RdotPoValidateHibernationImages()->i32 { super::hibernate::validate_hibernation_images() }
+pub extern "win64" fn RdotPoValidateHibernationImages()->i32 { super::hibernate::validate_hibernation_images() }
 
 /// Report the committed state after a driver has completed its power transition.
 /// Hardware sequencing remains owned by the driver's IRP_MJ_POWER path.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoSetPowerState(
+pub unsafe extern "win64" fn PoSetPowerState(
     device: *mut DeviceObject,
     state_type: u32,
     new_state: PowerState,
@@ -213,7 +213,7 @@ fn finish_matching(irp:*mut WdmIrp,device:Option<*mut DeviceObject>,status:i32,i
 }
 pub(crate) fn po_complete_irp(irp:*mut WdmIrp,status:i32){finish_matching(irp,None,status,true);finish_power_request(irp,status);}
 
-pub type PowerRequestComplete=unsafe extern "system" fn(*mut DeviceObject,u8,PowerState,*mut core::ffi::c_void,*mut WdmIrp);
+pub type PowerRequestComplete=unsafe extern "win64" fn(*mut DeviceObject,u8,PowerState,*mut core::ffi::c_void,*mut WdmIrp);
 const MAX_POWER_REQUESTS:usize=32;
 #[derive(Clone,Copy)]
 struct PowerRequest{used:bool,irp:*mut WdmIrp,device:*mut DeviceObject,minor:u8,state:u32,context:*mut core::ffi::c_void,callback:Option<PowerRequestComplete>,returned:bool,completed:bool}
@@ -226,7 +226,7 @@ static POWER_REQUESTS:crate::hal::IrqSpinLock<RequestState>=crate::hal::IrqSpinL
 /// Request a device power transition through its driver's IRP_MJ_POWER routine.
 /// The manager owns the IRP and invokes the optional completion callback once.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoRequestPowerIrp(device:*mut DeviceObject,minor:u8,state:PowerState,callback:Option<PowerRequestComplete>,context:*mut core::ffi::c_void,output_irp:*mut *mut WdmIrp)->i32{
+pub unsafe extern "win64" fn PoRequestPowerIrp(device:*mut DeviceObject,minor:u8,state:PowerState,callback:Option<PowerRequestComplete>,context:*mut core::ffi::c_void,output_irp:*mut *mut WdmIrp)->i32{
  if device.is_null()||!matches!(minor,IRP_MN_WAIT_WAKE|IRP_MN_SET_POWER){return STATUS_INVALID_DEVICE_REQUEST}
  if !output_irp.is_null(){unsafe{output_irp.write(core::ptr::null_mut())}}
  let stack_size=unsafe{(*device).stack_size.max(1)};
@@ -273,10 +273,10 @@ fn finish_power_request(irp:*mut WdmIrp,_status:i32){
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoCallDriver(device:*mut DeviceObject,irp:*mut WdmIrp)->i32 { unsafe{io::io_call_driver(device,irp)} }
+pub unsafe extern "win64" fn PoCallDriver(device:*mut DeviceObject,irp:*mut WdmIrp)->i32 { unsafe{io::io_call_driver(device,irp)} }
 
 
-unsafe extern "system" fn power_request_cancel(device:*mut DeviceObject,irp:*mut WdmIrp) {
+unsafe extern "win64" fn power_request_cancel(device:*mut DeviceObject,irp:*mut WdmIrp) {
  if irp.is_null(){return}
  unsafe{(&mut (*irp).bytes)[0x30..0x34].copy_from_slice(&STATUS_CANCELLED.to_le_bytes());}
  let _=device;
@@ -286,7 +286,7 @@ unsafe extern "system" fn power_request_cancel(device:*mut DeviceObject,irp:*mut
 /// Register or update per-device idle detection. The returned ULONG pointer is
 /// a stable token, not a writable timer; idle countdowns use the monotonic clock.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoRegisterDeviceForIdleDetection(
+pub unsafe extern "win64" fn PoRegisterDeviceForIdleDetection(
  device:*mut DeviceObject, conservation_idle_time:u32, performance_idle_time:u32, state:u32
 )->*mut u32 {
  if device.is_null()||!(1..=4).contains(&state){return core::ptr::null_mut()}
@@ -320,21 +320,21 @@ fn find_idle_token(token:*mut u32)->Option<usize>{
  idle.slots.iter().position(|s|s.used&&core::ptr::addr_of!(s.token) as *mut u32==token)
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoSetDeviceBusyEx(token:*mut u32) {
+pub unsafe extern "win64" fn PoSetDeviceBusyEx(token:*mut u32) {
  let Some(index)=find_idle_token(token) else{return};
  let now=crate::hal::query_performance_counter();
  let mut idle=IDLE_DEVICES.lock();
  if let Some(s)=idle.slots.get_mut(index).filter(|s|s.used&&core::ptr::addr_of!(s.token) as *mut u32==token){s.last_busy=now;}
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoStartDeviceBusy(token:*mut u32) {
+pub unsafe extern "win64" fn PoStartDeviceBusy(token:*mut u32) {
  let Some(index)=find_idle_token(token) else{return};
  let now=crate::hal::query_performance_counter();
  let mut idle=IDLE_DEVICES.lock();
  if let Some(s)=idle.slots.get_mut(index).filter(|s|s.used&&core::ptr::addr_of!(s.token) as *mut u32==token){s.busy_count=s.busy_count.saturating_add(1);s.last_busy=now;}
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoEndDeviceBusy(token:*mut u32) {
+pub unsafe extern "win64" fn PoEndDeviceBusy(token:*mut u32) {
  let Some(index)=find_idle_token(token) else{return};
  let now=crate::hal::query_performance_counter();
  let mut idle=IDLE_DEVICES.lock();
@@ -344,11 +344,11 @@ pub unsafe extern "system" fn PoEndDeviceBusy(token:*mut u32) {
 /// Set which timeout policy applies; a passive-level worker can call
 /// PoPollIdleDevices to issue the resulting power IRPs outside the idle lock.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoSetIdlePowerPolicy(conservation: u8) {
+pub unsafe extern "win64" fn PoSetIdlePowerPolicy(conservation: u8) {
  IDLE_DEVICES.lock().conserve_policy=conservation!=0;
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoPollIdleDevices()->u32 {
+pub unsafe extern "win64" fn PoPollIdleDevices()->u32 {
  let now=crate::hal::query_performance_counter();
  let mut requests=[(core::ptr::null_mut::<DeviceObject>(),0u32);MAX_IDLE_DEVICES];
  let mut count=0usize;
@@ -374,7 +374,7 @@ pub unsafe extern "system" fn PoPollIdleDevices()->u32 {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn PoStartNextPowerIrp(_irp:*mut WdmIrp){}
+pub unsafe extern "win64" fn PoStartNextPowerIrp(_irp:*mut WdmIrp){}
 
 
 #[cfg(test)]
@@ -416,10 +416,10 @@ mod dispatch_tests {
     use core::sync::atomic::{AtomicU32, Ordering};
     use crate::io::{io_allocate_irp,io_call_driver,io_complete_request,io_create_device,io_delete_device,io_free_irp,io_get_next_irp_stack_location,io_pnp_state,device_power_state,DriverObject};
 
-    unsafe extern "system" fn success_dispatch(_device:*mut DeviceObject,_irp:*mut WdmIrp)->i32 { 0 }
-    unsafe extern "system" fn pending_dispatch(_device:*mut DeviceObject,_irp:*mut WdmIrp)->i32 { STATUS_PENDING }
+    unsafe extern "win64" fn success_dispatch(_device:*mut DeviceObject,_irp:*mut WdmIrp)->i32 { 0 }
+    unsafe extern "win64" fn pending_dispatch(_device:*mut DeviceObject,_irp:*mut WdmIrp)->i32 { STATUS_PENDING }
     static CALLBACK_COUNT:AtomicU32=AtomicU32::new(0);
-    unsafe extern "system" fn request_callback(_device:*mut DeviceObject,_minor:u8,_state:PowerState,_context:*mut core::ffi::c_void,_irp:*mut WdmIrp) {
+    unsafe extern "win64" fn request_callback(_device:*mut DeviceObject,_minor:u8,_state:PowerState,_context:*mut core::ffi::c_void,_irp:*mut WdmIrp) {
         CALLBACK_COUNT.fetch_add(1,Ordering::SeqCst);
     }
 
