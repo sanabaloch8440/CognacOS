@@ -2037,14 +2037,17 @@ mod wdm_tests {
   let input=*b"IN";
   let mut output=[0u8;8];
   let mut iosb:IoStatusBlock=unsafe{core::mem::zeroed()};
-  // METHOD_BUFFERED = 0; FILE_DEVICE_UNKNOWN/any valid function is sufficient
-  // for this I/O-manager contract test.
-  let irp=unsafe{io_build_device_io_control_request(0x00222000,device,input.as_ptr() as *mut c_void,2,output.as_mut_ptr().cast(),output.len() as u32,0,ptr::null_mut(),&mut iosb)};
+  let mut event=core::mem::MaybeUninit::<crate::ntoskrnl::ke::runtime::DispatcherHeader>::uninit();
+  unsafe{crate::ntoskrnl::ke::runtime::ke_initialize_event(event.as_mut_ptr(),0,0);}
+  // METHOD_BUFFERED = 0; the notification event must signal only after the
+  // output copy and IOSB publication are complete.
+  let irp=unsafe{io_build_device_io_control_request(0x00222000,device,input.as_ptr() as *mut c_void,2,output.as_mut_ptr().cast(),output.len() as u32,0,event.as_mut_ptr().cast(),&mut iosb)};
   assert!(!irp.is_null());
   unsafe{io_set_completion_routine(irp,Some(ioctl_counted_completion),ptr::null_mut(),1,1,1);}
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
   assert_eq!(unsafe{iosb.status.status},STATUS_SUCCESS);
   assert_eq!(iosb.information,2);
+  assert_eq!(unsafe{crate::ntoskrnl::ke::runtime::ke_read_state_event(event.as_ptr())},1);
   assert_eq!(&output[..2],b"OK");
   assert_eq!(IOCTL_COMPLETIONS.load(core::sync::atomic::Ordering::Acquire),1);
   // The builder-owned IRP is reclaimed at terminal completion.
