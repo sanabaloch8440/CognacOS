@@ -681,7 +681,9 @@ jobs:
           grep -F 'Disk class: Harddisk0 and Partition1 registered in the kernel I/O manager; GPT data partition discovered by READ IRPs.' build/serial.log
           grep -F 'ext4: partition superblock read through the registered partition READ interface.' build/serial.log
           grep -F 'Guest ext4 README.txt bytes match expected content exactly.' build/serial.log
-          grep -F 'Guest ATA/GPT/ext4 README end-to-end test passed.' build/serial.log
+          grep -F 'Guest ext4 WRITE IRP modified existing README data and read it back exactly.' build/serial.log
+          grep -F 'Guest ext4 README.txt restored and verified byte-for-byte after write test.' build/serial.log
+          grep -F 'Guest ATA/GPT/ext4 read/write end-to-end test passed.' build/serial.log
           grep -F 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log
           grep -F 'CognacOS Rust NTDLL passed ring-3 tests through the unified Windows x64 SYSCALL ABI.' build/serial.log
       - name: SMP boot and interrupt stress matrix (2, 4, 8 vCPUs)
