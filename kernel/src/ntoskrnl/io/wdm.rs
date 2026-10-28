@@ -1510,6 +1510,8 @@ mod wdm_tests {
  fn x64_wdm_prefix_layouts_match_expected_offsets() {
   assert_eq!(core::mem::size_of::<UnicodeString>(),16);
   assert_eq!(core::mem::size_of::<IoStatusBlock>(),16);
+  assert_eq!(core::mem::offset_of!(IoStatusBlock,status),0x00);
+  assert_eq!(core::mem::offset_of!(IoStatusBlock,information),0x08);
   assert_eq!(core::mem::size_of::<IoStackLocation>(),IO_STACK_LOCATION_SIZE_X64);
   assert_eq!(core::mem::offset_of!(IoStackLocation,major_function),0x00);
   assert_eq!(core::mem::offset_of!(IoStackLocation,parameters),0x04);
@@ -1622,6 +1624,29 @@ mod wdm_tests {
   assert!(unsafe{(*lower).attached_device.is_null()});
   assert_eq!(unsafe{(*upper).stack_size},1);
   unsafe{io_delete_device(upper);io_delete_device(lower);}
+ }
+
+ #[test]
+ fn three_level_filter_stack_detaches_only_from_the_top_down() {
+  let mut base_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut filter1_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut filter2_driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut base:*mut DeviceObject=ptr::null_mut();
+  let mut filter1:*mut DeviceObject=ptr::null_mut();
+  let mut filter2:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut base_driver,0,ptr::null_mut(),7,0,0,&mut base)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_create_device(&mut filter1_driver,0,ptr::null_mut(),7,0,0,&mut filter1)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_create_device(&mut filter2_driver,0,ptr::null_mut(),7,0,0,&mut filter2)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_attach_device_to_device_stack(filter1,base)},base);
+  assert_eq!(unsafe{io_attach_device_to_device_stack(filter2,base)},filter1);
+  assert_eq!(unsafe{(*filter1).stack_size},2);
+  assert_eq!(unsafe{(*filter2).stack_size},3);
+  unsafe{io_detach_device(base);}
+  assert_eq!(unsafe{(*base).attached_device},filter1,"lower filter must not be detached under an attached upper filter");
+  unsafe{io_detach_device(filter1);io_detach_device(base);}
+  assert!(unsafe{(*filter1).attached_device.is_null()});
+  assert!(unsafe{(*base).attached_device.is_null()});
+  unsafe{io_delete_device(filter2);io_delete_device(filter1);io_delete_device(base);}
  }
 
  #[test]
