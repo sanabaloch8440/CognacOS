@@ -60,40 +60,36 @@ fn words(line: &[u8]) -> [Option<&[u8]>; 4] {
 
 fn command(line: &[u8]) {
     let w = words(line);
-    match w[0] {
-        Some(b"help") => write(b"debug commands: help | status | trace [count-hex] | filter <component-hex> <level-hex> <on|off> | persist | restore\r\n"),
-        Some(b"status") => {
-            write(b"trace latest sequence=");
-            hex(debug::latest_sequence());
-            write(b" capacity=");
-            hex(debug::TRACE_CAPACITY as u64);
-            write(b" UART=COM1 polled-console=active remote-KD=not-configured\r\n");
+    let cmd = w[0].unwrap_or(&[]);
+    if cmd == b"help" {
+        write(b"debug commands: help | status | trace [count-hex] | filter <component-hex> <level-hex> <on|off> | persist | restore\r\n");
+    } else if cmd == b"status" {
+        write(b"trace latest sequence=");
+        hex(debug::latest_sequence());
+        write(b" capacity=");
+        hex(debug::TRACE_CAPACITY as u64);
+        write(b" UART=COM1 polled-console=active remote-KD=not-configured\r\n");
+    } else if cmd == b"trace" {
+        let requested = w[1].and_then(parse_u32).unwrap_or(32) as usize;
+        debug::dump_serial(requested.min(debug::TRACE_CAPACITY));
+    } else if cmd == b"persist" {
+        if debug::persist_to_storage() { write(b"trace snapshot persisted to reserved GPT partition\r\n"); }
+        else { write(b"persist failed: dedicated trace partition unavailable or I/O failed\r\n"); }
+    } else if cmd == b"restore" {
+        if debug::restore_from_storage() { write(b"validated trace snapshot restored\r\n"); }
+        else { write(b"restore failed: no valid snapshot or storage unavailable\r\n"); }
+    } else if cmd == b"filter" {
+        let component = w[1].and_then(parse_u32);
+        let level = w[2].and_then(parse_u32);
+        let state = w[3].unwrap_or(&[]);
+        match (component, level, state) {
+            (Some(c), Some(l), s) if s == b"on" && debug::set_filter(c, l, true) => write(b"filter enabled\r\n"),
+            (Some(c), Some(l), s) if s == b"off" && debug::set_filter(c, l, false) => write(b"filter disabled\r\n"),
+            (Some(_), Some(l), _) if l >= 32 => write(b"error: level must be 0..1f (hex)\r\n"),
+            _ => write(b"usage: filter <component-hex> <level-hex> <on|off>\r\n"),
         }
-        Some(b"trace") => {
-            let requested = w[1].and_then(parse_u32).unwrap_or(32) as usize;
-            debug::dump_serial(requested.min(debug::TRACE_CAPACITY));
-        }
-        Some(b"persist") => {
-            if debug::persist_to_storage() { write(b"trace snapshot persisted to reserved GPT partition\\r\\n"); }
-            else { write(b"persist failed: dedicated trace partition unavailable or I/O failed\\r\\n"); }
-        }
-        Some(b"restore") => {
-            if debug::restore_from_storage() { write(b"validated trace snapshot restored\\r\\n"); }
-            else { write(b"restore failed: no valid snapshot or storage unavailable\\r\\n"); }
-        }
-        Some(b"filter") => {
-            let component = w[1].and_then(parse_u32);
-            let level = w[2].and_then(parse_u32);
-            let state = w[3];
-            match (component, level, state) {
-                (Some(c), Some(l), Some(b"on")) if debug::set_filter(c, l, true) => write(b"filter enabled\r\n"),
-                (Some(c), Some(l), Some(b"off")) if debug::set_filter(c, l, false) => write(b"filter disabled\r\n"),
-                (Some(c), Some(l), _) if l >= 32 => write(b"error: level must be 0..1f (hex)\r\n"),
-                _ => write(b"usage: filter <component-hex> <level-hex> <on|off>\r\n"),
-            }
-        }
-        Some(_) => write(b"unknown command; type help\r\n"),
-        None => {}
+    } else if !cmd.is_empty() {
+        write(b"unknown command; type help\r\n");
     }
 }
 
