@@ -1669,7 +1669,7 @@ fn native_event_default_security_descriptor() -> Result<([u8; 256], usize), u64>
     if token.is_null() {
         token = crate::process::reference_primary_token(crate::thread::current_process_id());
     }
-    if token.is_null() { return Err(0xC000_0078); } // STATUS_NO_TOKEN
+    if token.is_null() { return Err(0xC000_007C); } // STATUS_NO_TOKEN
     let mut acl = [0u8; 236];
     let mut acl_len = 0usize;
     let status = unsafe {
