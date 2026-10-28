@@ -1756,7 +1756,10 @@ mod wdm_tests {
  }
  unsafe extern "system" fn test_dispatch(device:*mut DeviceObject, irp:*mut Irp)->i32 {
   if device.is_null() || irp.is_null() { return STATUS_INVALID_PARAMETER; }
-  unsafe { (*irp).bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&STATUS_SUCCESS.to_le_bytes()); }
+  unsafe {
+   (*irp).bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&STATUS_SUCCESS.to_le_bytes());
+   io_complete_request(irp,0);
+  }
   STATUS_SUCCESS
  }
  #[test]
@@ -1772,7 +1775,11 @@ mod wdm_tests {
   unsafe { (*next).major_function=0; }
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
   assert_eq!(unsafe{(*irp).bytes[IRP_STATUS_OFFSET]},0);
-  unsafe{io_free_irp(irp);io_delete_device(device);}
+  unsafe{io_free_irp(irp);}
+  // Completion and IRP free release rundown; they must not implicitly delete
+  // a device whose owner has not called IoDeleteDevice.
+  assert_eq!(driver.device_object,device);
+  unsafe{io_delete_device(device);}
  }
  #[test]
  fn removal_waits_for_remove_lock_and_reference_rundown() {
