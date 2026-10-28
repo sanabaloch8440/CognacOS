@@ -98,3 +98,13 @@ The queue table is currently bounded (64 queued IRPs per device, with the existi
 ## DEVICE_OBJECT / KDEVICE_QUEUE ABI correction (2026-10-28)
 
 The x64 public WDM layout now embeds a typed `KDeviceQueue` at `DEVICE_OBJECT+0x98`, rather than placing it at `+0xA0` behind a non-WDK `AlignmentRequirement` field. The embedded queue is asserted to be `0x28` bytes; `KDeviceQueueEntry` is asserted to be `0x18` bytes. The downstream `Dpc`, active-thread, security-descriptor, device-lock, and extension offsets were shifted accordingly, and the structure retains the SDK-sized `0x150` total size. These compile-time layout assertions must pass before StartIo queue behavior can be considered ABI-valid; queue semantics and guest runtime validation remain separate requirements.
+
+
+## Remaining import implementation pass (2026-10-28)
+
+The remaining three names are now registered to callable routines:
+
+- `MmLockPagableDataSection` / `MmUnlockPagableImageSection`: paired calls use stable opaque handles and reference counts. **Important limitation:** driver-image paging/page-out is not implemented, and the loader does not yet retain PE section-range metadata for these calls. The current 64-KiB address bucket is temporary bookkeeping, not exact Windows image-section identity or a real page-residency pin. This is not sufficient evidence for general third-party driver compatibility.
+- `IoGetRequestorSessionId`: uses the I/O manager's tracked IRP owner PID and registered process session metadata. Unknown/untracked IRPs fail rather than receiving a fabricated session ID. CognacOS currently models registered processes in session 0; multiple Windows sessions are not implemented.
+
+The resolver now binds all three imports to their respective implementations. Required next steps are replacing the pageable-section bucket with loader-owned image-section records and actual paging pins, recording requestor identity for IRPs entering from every I/O path, then adding focused ABI tests and QEMU driver tests. All 24 import names resolving is still not equivalent to `beep.sys` successfully loading or behaving correctly in the guest.
