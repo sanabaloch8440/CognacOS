@@ -891,6 +891,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  // driver marks its own stack location; completion unwind propagates it.
  crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
  release_irp_active_op(irp);
+ try_free_completed_sync_ioctl_irp(irp);
  release_device_dispatch_rundown(device);
  status
 }
@@ -974,6 +975,16 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
  irp
 }
 
+fn try_free_completed_sync_ioctl_irp(irp:*mut Irp) {
+ if irp.is_null(){return}
+ let ready={
+  let state=WDM.lock();
+  state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp))
+   .is_some_and(|s|s.built_sync_ioctl&&s.completion_state==2&&s.active_ops==0)
+ };
+ if ready {unsafe{io_free_irp(irp);}}
+}
+
 fn finalize_irp_status(irp:*mut Irp) {
  if irp.is_null(){return}
  let base=unsafe{(*irp).bytes.as_mut_ptr()};
@@ -991,8 +1002,8 @@ fn finalize_irp_status(irp:*mut Irp) {
   slot.built_sync_ioctl
  };
  unsafe {
-  ptr::write_unaligned(iosb.cast::<u8>().cast::<isize>(),status as isize);
-  ptr::write_unaligned(iosb.cast::<u8>().add(core::mem::size_of::<isize>()).cast::<usize>(),information);
+  ptr::write_unaligned(iosb.cast::<u8>().cast::<i32>(),status);
+  ptr::write_unaligned(iosb.cast::<u8>().add(8).cast::<usize>(),information);
  }
  let _=copy_out;
 }
@@ -1078,6 +1089,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   };
   if callbacks_drained {release_irp_device_rundown(irp);}
   io_pnp_manager_irp_completed(irp);
+  try_free_completed_sync_ioctl_irp(irp);
  }
 }
 #[unsafe(no_mangle)]
@@ -1263,10 +1275,14 @@ pub unsafe extern "system" fn io_reuse_irp(irp:*mut Irp, status:i32) {
     if count==0||count>slot.stack.len()||slot.completion_state==1||slot.active_ops!=0||slot.outstanding_count!=0{return}
     slot.completion_state=0;
     slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;4],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
-    slot.object.bytes[0x30..0x34].copy_from_slice(&status.to_le_bytes());
-    slot.object.bytes[0x38..0x40].fill(0);
+    // Preserve Type, Size, StackCount, AllocationFlags, and the allocation,
+    // but reset per-request pointers/flags/status before reusing the packet.
+    slot.object.bytes[0x08..0x30].fill(0);
+    slot.object.bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&status.to_le_bytes());
+    slot.object.bytes[IRP_INFORMATION_OFFSET..IRP_INFORMATION_OFFSET+8].fill(0);
     slot.object.bytes[0x41]=0;
-    slot.object.bytes[0x44]=0;
+    slot.object.bytes[0x44..0x48].fill(0);
+    slot.object.bytes[0x48..0x78].fill(0);
     slot.object.bytes[0x43]=(count+1) as u8;
     let current=unsafe{slot.stack.as_mut_ptr().add(count).cast::<c_void>()};
     unsafe{write_ptr(slot.object.bytes.as_mut_ptr(),IRP_STACK_OFFSET,current);}
