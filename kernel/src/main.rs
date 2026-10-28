@@ -1497,9 +1497,14 @@ unsafe fn serial_write_decimal(mut value: usize) {
 }
 
 pub unsafe fn halt() -> ! {
-    // Keep a polled COM1 debugger prompt available after boot completion and
-    // fatal diagnostics. No interrupts, allocation, or scheduler dependency.
-    unsafe { serial_write(b"\\r\\ncognacos-kd> type help for debugger commands\\r\\n"); }
+    // Persist the most recent trace when the disk-backed debug partition is
+    // available, then keep the polled COM1 debugger prompt available.
+    let saved = crate::ntoskrnl::debug::persist_to_storage();
+    unsafe {
+        if saved { serial_write(b"\\r\\nNTOSKRNL trace snapshot persisted.\\r\\n"); }
+        else { serial_write(b"\\r\\nNTOSKRNL trace persistence unavailable.\\r\\n"); }
+        serial_write(b"cognacos-kd> type help for debugger commands\\r\\n");
+    }
     loop {
         crate::debug_console::poll();
         unsafe { asm!("pause", options(nomem, nostack)); }
