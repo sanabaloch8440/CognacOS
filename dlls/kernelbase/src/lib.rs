@@ -8,5 +8,12 @@ const ERROR_CALL_NOT_IMPLEMENTED:ULONG=120;
 #[no_mangle] pub extern "system" fn GetCurrentProcess()->HANDLE{usize::MAX as HANDLE}
 #[no_mangle] pub extern "system" fn GetCurrentThread()->HANDLE{(usize::MAX-1) as HANDLE}
 include!(concat!(env!("OUT_DIR"),"/kernelbase_exports.rs"));
-#[cfg(target_os="windows")] core::arch::global_asm!(r#".text\n.p2align 4\n.globl DllMain\nDllMain:\n movl $1, %eax\n ret\n"#,options(att_syntax));
+#[cfg(target_os="windows")] core::arch::global_asm!(r#"
+.text
+.p2align 4
+.globl DllMain
+DllMain:
+ movl $1, %eax
+ ret
+"#,options(att_syntax));
 #[cfg(target_os="windows")] #[panic_handler] fn panic(_info:&core::panic::PanicInfo<'_>)->!{loop{core::hint::spin_loop();}}
