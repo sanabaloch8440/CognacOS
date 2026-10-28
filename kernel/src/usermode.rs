@@ -240,6 +240,12 @@ fn cleanup_process(space:&mut AddressSpace,image_base:u64,pid:u64)->Result<(),Vm
 /// in user mode, then transfer to the image entry point. The synthetic smoke
 /// image exits through SYS_EXIT to exercise the real dispatcher.
 pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> Result<(), VmError> {
+    unsafe { run_loaded_image_in_session(space, image, 0) }
+}
+
+/// Run a loaded image with an explicit session identity. Session IDs flow into
+/// the registered process object and therefore into IRP requestor-session queries.
+pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: LoadedImage, session_id: u32) -> Result<(), VmError> {
     // Real NTDLL calls need more than one page for nested helpers and callbacks.
     // Leave USER_STACK-PAGE unmapped as a guard below this bounded stack.
     for index in 0..USER_STACK_PAGES {
@@ -269,7 +275,7 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
         None
     };
     unsafe { crate::serial_write(b"[DBG][NTOSKRNL][USER] process-init begin\r\n"); }
-    let env = unsafe { crate::process::initialize(space, image.base, image.entry, image.image_size, USER_STACK_TOP, USER_STACK) }
+    let env = unsafe { crate::process::initialize_in_session(space, image.base, image.entry, image.image_size, USER_STACK_TOP, USER_STACK, session_id) }
         .map_err(|_| VmError::OutOfMemory)?;
     // Verify the exact Windows 11 24H2 XState ABI through the same checked
     // user-copy path native NTDLL uses, and verify the shared page is read-only.
