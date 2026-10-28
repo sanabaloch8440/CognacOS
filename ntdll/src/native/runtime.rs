@@ -2702,7 +2702,12 @@ pub unsafe extern "system" fn RtlSleepConditionVariableCS(condition:*mut usize,c
     let id=current_thread_id();
     if id==0||unsafe{(*cs).owning_thread as usize}!=id||unsafe{(*cs).recursion_count}!=1{return STATUS_INVALID_PARAMETER;}
     let expected=unsafe{atomic_usize_at(condition).load(Ordering::Acquire)};
-    let wait_timeout=if timeout.is_null(){u64::MAX}else{let t=unsafe{timeout.read_unaligned()};if t==0{0}else{return STATUS_NOT_IMPLEMENTED;}};
+    let wait_timeout=if timeout.is_null(){u64::MAX}else{
+        let t=unsafe{timeout.read_unaligned()};
+        if t==0{return STATUS_TIMEOUT;}
+        if t>0{return STATUS_NOT_IMPLEMENTED;}
+        (((t.unsigned_abs() as u128)+9_999)/10_000).min(u64::MAX as u128) as u64
+    };
     let leave=unsafe{RtlLeaveCriticalSection(cs)};
     if leave<0{return leave;}
     let waited=unsafe{wait_on_word(condition,expected,wait_timeout)};
@@ -2716,7 +2721,12 @@ pub unsafe extern "system" fn RtlSleepConditionVariableSRW(condition:*mut usize,
     if condition.is_null()||lock.is_null()||(flags&!CONDITION_VARIABLE_LOCKMODE_SHARED)!=0{return STATUS_INVALID_PARAMETER;}
     let lock_state=unsafe{atomic_usize_at(lock)};
     let expected=unsafe{atomic_usize_at(condition).load(Ordering::Acquire)};
-    let wait_timeout=if timeout.is_null(){u64::MAX}else{let t=unsafe{timeout.read_unaligned()};if t==0{0}else{return STATUS_NOT_IMPLEMENTED;}};
+    let wait_timeout=if timeout.is_null(){u64::MAX}else{
+        let t=unsafe{timeout.read_unaligned()};
+        if t==0{return STATUS_TIMEOUT;}
+        if t>0{return STATUS_NOT_IMPLEMENTED;}
+        (((t.unsigned_abs() as u128)+9_999)/10_000).min(u64::MAX as u128) as u64
+    };
     if flags&CONDITION_VARIABLE_LOCKMODE_SHARED!=0{
         loop{let v=lock_state.load(Ordering::Relaxed);if v&SRW_EXCLUSIVE!=0||v&SRW_READERS==0{return STATUS_INVALID_PARAMETER;}if lock_state.compare_exchange_weak(v,v-1,Ordering::Release,Ordering::Relaxed).is_ok(){break;}}
     }else if lock_state.compare_exchange(SRW_EXCLUSIVE,0,Ordering::Release,Ordering::Relaxed).is_err(){return STATUS_INVALID_PARAMETER;}
