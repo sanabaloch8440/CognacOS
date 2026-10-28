@@ -423,6 +423,6 @@ pub use wdm::{
     DeviceObject, DriverObject, IoCompletionRoutine, IoStackLocation, IoStatusBlock,
     UnicodeString,
 };
-pub(crate) use wdm::{io_set_device_power_state, io_begin_pnp_transition, io_complete_pnp_transition, io_pnp_state};
+pub(crate) use wdm::{io_set_device_power_state, io_begin_pnp_transition, io_complete_pnp_transition, io_pnp_state, io_prepare_pnp_resources, io_finish_pnp_resources, io_release_pnp_resources};
 pub(crate) use wdm::rundown_self_test;
 pub use wdm::Irp as WdmIrp;
