@@ -619,6 +619,16 @@ pub fn assign_session_before_start(pid: u64, session_id: u32) -> bool {
     true
 }
 
+/// Whether more than one live process session is currently represented.
+pub fn has_multiple_sessions() -> bool {
+    let registry = TABLE.lock();
+    let mut first: Option<u32> = None;
+    for process in registry.0.iter().filter(|p| p.used && p.magic == EPROCESS_MAGIC && p.state != ProcessState::Reaped) {
+        match first { None => first = Some(process.session_id), Some(id) if id != process.session_id => return true, _ => {} }
+    }
+    false
+}
+
 /// Return a session only for a currently registered process object.
 pub fn session_id_for_pid(pid: u64) -> Option<u32> {
     let registry = TABLE.lock();
