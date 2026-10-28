@@ -676,7 +676,7 @@ fn extract_windows_service_numbers(image: &[u8]) -> Option<[u64; 30]> {
         b"NtOpenProcess", b"NtGetNextProcess",
         b"NtCreateEvent", b"NtSetEvent", b"NtResetEvent", b"NtWaitForSingleObject", b"NtOpenEvent",
     ];
-    let mut discovered = [SERVICE_UNAVAILABLE; 29];
+    let mut discovered = [SERVICE_UNAVAILABLE; 30];
     for index in 0..name_count {
         let name_rva = image_u32(image, names.checked_add(index.checked_mul(4)?)?)?;
         let name_at = image_rva_offset(image, section_table, section_count, headers_size, name_rva, 1)?;
@@ -1777,7 +1777,7 @@ fn nt_create_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         return NT_STATUS_INVALID_PARAMETER;
     }
     let owner = crate::ntoskrnl::ob::runtime::current_owner();
-    let (name, name_len, attributes) = match native_event_object_attributes(args[2], owner) {
+    let (name, name_len, attributes) = match native_event_object_attributes(args[2], owner, false) {
         Ok(value) => value,
         Err(status) => return status as u32 as u64,
     };
