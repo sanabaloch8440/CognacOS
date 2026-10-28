@@ -33,10 +33,32 @@ def pe_info(path):
 
 
 def resolve_elf(path, pc):
+    """Resolve an ELF PC, retaining good inline frames and falling back to GDB
+    symbol/disassembly data when hand-written assembly has no DWARF line table."""
     if not path.exists():
         return ""
     out = command(["addr2line", "-e", str(path), "-f", "-C", "-i", hex(pc)])
-    return "" if not out or "??:0" in out or "??:?" in out else out
+    if out:
+        lines = [line for line in out.splitlines() if line.strip()]
+        # addr2line -i can emit a valid outer frame alongside an unknown inline
+        # frame. Do not discard the useful source location because of one ??.
+        useful = [line for line in lines if "??:0" not in line and "??:?" not in line and line != "??"]
+        if useful:
+            return "\\n".join(lines)
+    # Rust global_asm!/hand-written entry stubs may have no DWARF line table.
+    # GDB still knows the nearest symbol and can show the exact machine
+    # instruction at the faulting PC, rather than claiming there is no context.
+    gdb = command([
+        "gdb", "-q", "-batch", "-ex", f"file {path}",
+        "-ex", f"info symbol {hex(pc)}",
+        "-ex", f"info line *{hex(pc)}",
+        "-ex", f"x/8i {hex(pc)}",
+    ])
+    if not gdb:
+        return ""
+    if "No symbol matches" in gdb and "No line number information" in gdb:
+        return ""
+    return "[ELF symbol / assembly fallback; source line may not be emitted for this assembly range]\\n" + gdb
 
 
 def main():
