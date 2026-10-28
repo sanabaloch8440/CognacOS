@@ -1117,7 +1117,13 @@ fn nt_query_thread(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     info[8..16].copy_from_slice(&crate::process::TEB_ADDRESS.to_le_bytes());
     info[16..24].copy_from_slice(&CURRENT_PID.load(Ordering::Acquire).to_le_bytes());
     info[24..32].copy_from_slice(&(crate::ntoskrnl::ke::thread::current_thread_id().unwrap_or(0)).to_le_bytes());
-    info[32..40].copy_from_slice(&1u64.to_le_bytes()); // affinity
+    let thread_id = crate::ntoskrnl::ke::thread::current_thread_id().unwrap_or(0);
+    let affinity = crate::ntoskrnl::ke::thread::thread_affinity(thread_id).unwrap_or_else(|| {
+        crate::hal::current_cpu_local()
+            .map(|cpu| 1u64.checked_shl(cpu.logical_id.load(Ordering::Acquire) as u32).unwrap_or(0))
+            .unwrap_or(0)
+    });
+    info[32..40].copy_from_slice(&affinity.to_le_bytes()); // scheduler-owned thread affinity
     info[40..44].copy_from_slice(&8i32.to_le_bytes()); // priority
     info[44..48].copy_from_slice(&8i32.to_le_bytes()); // base priority
     if let Err(status) = write_return_length(args[4], SIZE as u32) { return status; }
