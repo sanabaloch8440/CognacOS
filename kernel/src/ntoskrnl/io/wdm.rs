@@ -76,7 +76,7 @@ unsafe impl Send for DeviceSlot {}
 const MAX_IOCTL_SYSTEM_BUFFER:usize=64*1024;
 struct IrpSlot {
  used: bool, owned_mdl: *mut c_void, completion_state:u8, suspended_completion:bool, free_requested:bool, active_ops:u32,
- outstanding_count:usize, outstanding_devices:[*mut DeviceObject;16],
+ outstanding_count:usize, outstanding_devices:[*mut DeviceObject;MAX_WDM_STACK_LOCATIONS],
  // Keep object and stack adjacent: WDM requires the stack array to immediately
  // follow the fixed-size IRP allocation.
  object: Irp, stack: [IoStackLocation;MAX_WDM_STACK_LOCATIONS],
@@ -97,7 +97,7 @@ impl WdmState {
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, suspended_completion:false, free_requested:false, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
+   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, suspended_completion:false, free_requested:false, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();MAX_WDM_STACK_LOCATIONS], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
   }
  }
 }
@@ -1041,7 +1041,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
  let mut finished=false;
  for _ in 0..(MAX_WDM_STACK_LOCATIONS+1) {
   let (location,stack_count)=unsafe{((*irp).bytes[0x43] as usize,(*irp).bytes[0x42] as usize)};
-  if stack_count==0||stack_count>16||location==0 {break}
+  if stack_count==0||stack_count>MAX_WDM_STACK_LOCATIONS||location==0 {break}
   if location>stack_count {
    finalize_irp_status(irp);
    let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
