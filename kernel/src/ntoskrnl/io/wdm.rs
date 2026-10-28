@@ -318,26 +318,19 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
 /// Resolve a PnP resource transaction only when IoCompleteRequest reaches the
 /// terminal IRP unwind. Failed/cancelled starts drop tentative claims; successful
 /// starts replace prior claims. Stop/remove release committed reservations.
-pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,status:i32){
- if irp.is_null(){return}
+pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,minor:u8,status:i32){
+ if irp.is_null()||device.is_null(){return}
  let mut arbiter=RESOURCE_ARBITER.lock();
- let has_pending=arbiter.claims.iter().any(|c|c.used&&c.irp==irp&&!c.committed);
- if has_pending {
+ if minor==IRP_MN_START_DEVICE {
+  let has_pending=arbiter.claims.iter().any(|c|c.used&&c.irp==irp&&c.owner==device&&!c.committed);
   if status==STATUS_SUCCESS {
-   let owner=arbiter.claims.iter().find(|c|c.used&&c.irp==irp&&!c.committed).map(|c|c.owner);
-   if let Some(owner)=owner {
-    for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==owner&&c.committed){*c=ResourceClaim::EMPTY;}
-    for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp){c.committed=true;c.irp=ptr::null_mut();}
-   }
-  } else {
-   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&!c.committed){*c=ResourceClaim::EMPTY;}
+   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==device&&c.committed){*c=ResourceClaim::EMPTY;}
+   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==device&&!c.committed){c.committed=true;c.irp=ptr::null_mut();}
+  } else if has_pending {
+   for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==device&&!c.committed){*c=ResourceClaim::EMPTY;}
   }
- }
- if status==STATUS_SUCCESS {
-  // Stop and removal have released hardware ownership; a later restart must
-  // obtain a fresh, conflict-checked translated resource assignment.
-  let owner=arbiter.claims.iter().find(|c|c.used&&c.irp==irp).map(|c|c.owner);
-  let _=owner;
+ } else if status==STATUS_SUCCESS&&(minor==IRP_MN_STOP_DEVICE||minor==IRP_MN_REMOVE_DEVICE||minor==IRP_MN_SURPRISE_REMOVAL) {
+  for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==device){*c=ResourceClaim::EMPTY;}
  }
 }
 
@@ -387,7 +380,7 @@ pub unsafe extern "system" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rel
  let old=manager.relations.iter().filter(|r|r.used&&r.bus==bus).count();
  let needed=children[..count].iter().filter(|child|!manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==**child)).count();
  let free=manager.relations.iter().filter(|r|!r.used||r.bus==bus).count();
- if free<old+needed{return STATUS_INSUFFICIENT_RESOURCES}
+ if free<count{return STATUS_INSUFFICIENT_RESOURCES}
  for relation in manager.relations.iter_mut().filter(|r|r.used&&r.bus==bus&&!children[..count].contains(&r.child)){*relation=PnpRelation::EMPTY;}
  for child in children[..count].iter().copied(){
   if !manager.relations.iter().any(|r|r.used&&r.bus==bus&&r.child==child){
