@@ -351,6 +351,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "KeReadStateQueue" => ke::runtime::ke_read_state_queue as usize,
   "KeAcquireSpinLockRaiseToSynch" => ke::runtime::ke_acquire_spin_lock_raise_to_synch as usize,
   "KeLowerIrql" => ke::runtime::ke_lower_irql as usize,
+  "KfRaiseIrql" => ke::runtime::kf_raise_irql as usize,
   "KeAcquireSpinLock" => ke::runtime::ke_acquire_spin_lock as usize,
   "KeAcquireSpinLockRaiseToDpc" => ke::runtime::ke_acquire_spin_lock_raise_to_dpc as usize,
   "KeReleaseSpinLock" => ke::runtime::ke_release_spin_lock as usize,
