@@ -11,7 +11,7 @@ def load(path):
  records=[]
  for no,line in enumerate((ROOT/path).read_text(encoding="utf-8").splitlines(),1):
   if not line or line.startswith("#"): continue
-  cols=line.split("\\t")
+  cols=line.split("\t")
   if len(cols)!=3: raise SystemExit(f"{path}:{no}: expected ordinal<TAB>name<TAB>forwarder")
   try: ordinal=int(cols[0])
   except ValueError: raise SystemExit(f"{path}:{no}: invalid ordinal {cols[0]!r}")
@@ -27,7 +27,7 @@ def expected(dll,records):
   if target: out.append(f"    {symbol}={target} @{ordinal}"+(" NONAME" if not name else ""))
   elif not name: out.append(f"    {symbol} @{ordinal} NONAME")
   else: out.append(f"    {name} @{ordinal}")
- return "\\n".join(out)+"\\n"
+ return "\n".join(out)+"\n"
 def main():
  all_records={}
  for dll,(tsv,definition) in BASE.items():
