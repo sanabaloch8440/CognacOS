@@ -3151,3 +3151,58 @@ pub unsafe extern "system" fn RtlXSave() -> i32 {
 pub unsafe extern "system" fn RtlZombifyActivationContext() -> i32 {
     0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
 }
+
+
+#[cfg(test)]
+mod cognac_sync_abi_tests {
+    use super::*;
+
+    #[test]
+    fn rtl_critical_section_matches_windows_x64_layout() {
+        assert_eq!(core::mem::size_of::<CognacCriticalSection>(), 40);
+        assert_eq!(core::mem::offset_of!(CognacCriticalSection, debug_info), 0);
+        assert_eq!(core::mem::offset_of!(CognacCriticalSection, lock_count), 8);
+        assert_eq!(core::mem::offset_of!(CognacCriticalSection, recursion_count), 12);
+        assert_eq!(core::mem::offset_of!(CognacCriticalSection, owning_thread), 16);
+        assert_eq!(core::mem::offset_of!(CognacCriticalSection, lock_semaphore), 24);
+        assert_eq!(core::mem::offset_of!(CognacCriticalSection, spin_count), 32);
+    }
+
+    #[test]
+    fn rtl_critical_section_exports_have_native_return_widths() {
+        let _: unsafe extern "system" fn(*mut CognacCriticalSection, u32) -> i32 =
+            RtlInitializeCriticalSectionAndSpinCount;
+        let _: unsafe extern "system" fn(*mut CognacCriticalSection, u32, u32) -> i32 =
+            RtlInitializeCriticalSectionEx;
+        let _: unsafe extern "system" fn(*mut CognacCriticalSection, u32) -> u32 =
+            RtlSetCriticalSectionSpinCount;
+        let _: unsafe extern "system" fn(*mut CognacCriticalSection) -> i32 =
+            RtlEnterCriticalSection;
+        let _: unsafe extern "system" fn(*mut CognacCriticalSection) -> i32 =
+            RtlLeaveCriticalSection;
+    }
+
+    #[test]
+    fn recursive_critical_section_and_srw_lock_smoke_test() {
+        let mut cs=core::mem::MaybeUninit::<CognacCriticalSection>::uninit();
+        assert_eq!(unsafe{RtlInitializeCriticalSection(cs.as_mut_ptr())},STATUS_SUCCESS);
+        let cs=unsafe{cs.assume_init_mut()};
+        assert_eq!(unsafe{RtlEnterCriticalSection(cs)},STATUS_SUCCESS);
+        assert_eq!(unsafe{RtlEnterCriticalSection(cs)},STATUS_SUCCESS);
+        assert_eq!(cs.recursion_count,2);
+        assert_eq!(unsafe{RtlLeaveCriticalSection(cs)},STATUS_SUCCESS);
+        assert_eq!(unsafe{RtlLeaveCriticalSection(cs)},STATUS_SUCCESS);
+        assert_eq!(cs.lock_count,-1);
+        assert_eq!(unsafe{RtlDeleteCriticalSection(cs)},STATUS_SUCCESS);
+
+        let mut srw=0usize;
+        unsafe{RtlAcquireSRWLockShared(&mut srw);}
+        assert_eq!(srw,1);
+        unsafe{RtlReleaseSRWLockShared(&mut srw);}
+        assert_eq!(srw,0);
+        unsafe{RtlAcquireSRWLockExclusive(&mut srw);}
+        assert_eq!(srw,SRW_EXCLUSIVE);
+        unsafe{RtlReleaseSRWLockExclusive(&mut srw);}
+        assert_eq!(srw,0);
+    }
+}
