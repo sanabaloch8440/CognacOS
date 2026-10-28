@@ -243,8 +243,8 @@ fn main() {
         }
         asm.push_str(&format!("\n.p2align 4\n.globl {name}\n{name}:\n    .byte 0x4c, 0x8b, 0xd1\n    movl ${:#x}, %eax\n    syscall\n    ret\n", id));
     }
-    if syscall_names.len() != 25 {
-        panic!("syscall manifest has {} entries; the kernel currently requires exactly 25 native services", syscall_names.len());
+    if syscall_names.len() != 29 {
+        panic!("syscall manifest has {} entries; the kernel currently requires exactly 29 native services", syscall_names.len());
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     fs::write(out.join("ntdll_syscall_stubs.S"), asm)
