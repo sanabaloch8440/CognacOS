@@ -1113,113 +1113,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.\r\n");
-        // Real runtime test: invoke the native driver loader and DriverEntry.
-        if let Some(beep_bytes) = boot_beep_bytes() {
-            use ntoskrnl::driver_loader::{DriverLoadError, DriverObject, load_allocated};
-            const BEEP_NAME: [u16; 13] = [92, 68, 114, 105, 118, 101, 114, 92, 66, 101, 101, 112, 0];
-            let driver_name = nt_abi::object::UNICODE_STRING {
-                length: ((BEEP_NAME.len() - 1) * 2) as u16,
-                maximum_length: (BEEP_NAME.len() * 2) as u16,
-                buffer: BEEP_NAME.as_ptr() as *mut u16,
-            };
-            // DriverObject must remain valid for any device objects published by the driver.
-            static mut BEEP_DRIVER_OBJECT: core::mem::MaybeUninit<DriverObject> = core::mem::MaybeUninit::uninit();
-            let driver_object = core::ptr::addr_of_mut!(BEEP_DRIVER_OBJECT).cast::<DriverObject>();
-            unsafe { driver_object.write(DriverObject {
-                object_type: 4, size: core::mem::size_of::<DriverObject>() as i16,
-                device_object: core::ptr::null_mut(), flags: 0,
-                driver_start: core::ptr::null_mut(), driver_size: 0,
-                driver_section: core::ptr::null_mut(), driver_extension: core::ptr::null_mut(),
-                driver_name, hardware_database: core::ptr::null_mut(),
-                fast_io_dispatch: core::ptr::null_mut(), driver_init: None,
-                driver_start_io: None, driver_unload: None, major_function: [None; 28],
-            }); }
-            const BEEP_REGISTRY_PATH: [u16; 57] = [92, 82, 101, 103, 105, 115, 116, 114, 121, 92, 77, 97, 99, 104, 105, 110, 101, 92, 83, 121, 115, 116, 101, 109, 92, 67, 117, 114, 114, 101, 110, 116, 67, 111, 110, 116, 114, 111, 108, 83, 101, 116, 92, 83, 101, 114, 118, 105, 99, 101, 115, 92, 66, 101, 101, 112, 0];
-            let mut registry_path = nt_abi::object::UNICODE_STRING {
-                length: ((BEEP_REGISTRY_PATH.len() - 1) * 2) as u16,
-                maximum_length: (BEEP_REGISTRY_PATH.len() * 2) as u16,
-                buffer: BEEP_REGISTRY_PATH.as_ptr() as *mut u16,
-            };
-            serial_write(b"Runtime driver test: attempting native beep.sys load and DriverEntry.\r\n");
-            match unsafe { load_allocated(beep_bytes, driver_object, (&mut registry_path as *mut nt_abi::object::UNICODE_STRING).cast()) } {
-                Ok(loaded) => {
-                    serial_write(b"beep.sys DriverEntry returned NTSTATUS success: image=");
-                    serial_write_hex(loaded.image_base);
-                    serial_write(b" size=");
-                    unsafe { serial_write_decimal(loaded.image_size as usize); }
-                    serial_write(b" entry=");
-                    serial_write_hex(loaded.entry_point);
-                    serial_write(b".\r\n");
-                    let device_object = unsafe { (*driver_object).device_object };
-                    let dispatch_count = unsafe { (*driver_object).major_function.iter().filter(|entry| entry.is_some()).count() };
-                    serial_write(b"beep.sys device object=");
-                    serial_write_hex(device_object as u64);
-                    serial_write(b" dispatch-routines=");
-                    unsafe { serial_write_decimal(dispatch_count); }
-                    if !device_object.is_null() && dispatch_count != 0 {
-                        serial_write(b"\r\nbeep.sys device and dispatch registration passed.\r\n");
-                        // Route a real WDM IOCTL through beep.sys' registered dispatch.
-                        // IOCTL_BEEP_SET = CTL_CODE(FILE_DEVICE_BEEP, 0, METHOD_BUFFERED, FILE_ANY_ACCESS).
-                        match unsafe { submit_beep_ioctl(driver_object, device_object) } {
-                            Some((create_status, create_io, dispatch_status, irp_status)) => {
-                                serial_write(b"\r\nBEEP CREATE: dispatch=");
-                                serial_write_hex(create_status as u32 as u64);
-                                serial_write(b" IoStatus=");
-                                serial_write_hex(create_io as u32 as u64);
-                                serial_write(b"\r\nBEEP DEVICE CONTROL: dispatch=");
-                                serial_write_hex(dispatch_status as u32 as u64);
-                                serial_write(b" IoStatus=");
-                                serial_write_hex(irp_status as u32 as u64);
-                                if create_status >= 0 && create_io >= 0 &&
-                                   (dispatch_status >= 0 || dispatch_status == nt_abi::ntstatus::STATUS_PENDING) &&
-                                   (irp_status >= 0 || irp_status == nt_abi::ntstatus::STATUS_PENDING) {
-                                    serial_write(b"\r\nBEEP DISPATCH RESULT: PASS - create succeeded and IOCTL reached the registered device-control dispatch routine.\r\n");
-                                } else {
-                                    serial_write(b"\r\nBEEP DISPATCH RESULT: FAIL - create or device-control request returned an unexpected failure status.\r\n");
-                                }
-                            }
-                            None => serial_write(b"\r\nBEEP DISPATCH RESULT: FAIL - required registered create/device-control dispatch routine was unavailable.\r\n"),
-                        }
-                        // Separate hardware-path diagnostic; audio is supplemental evidence.
-                        if unsafe { qemu_pc_speaker_diagnostic_tone() } {
-                            serial_write(b"QEMU PC speaker diagnostic tone requested after beep.sys load.\\r\\n");
-                        } else {
-                            serial_write(b"QEMU PC speaker diagnostic tone could not be requested.\\r\\n");
-                        }
-                    } else {
-                        serial_write(b"\r\nbeep.sys DriverEntry succeeded but device/dispatch registration is incomplete.\r\n");
-                    }
-                }
-                Err(error) => {
-                    serial_write(b"beep.sys runtime load failed before successful DriverEntry: ");
-                    serial_write(match error {
-                        DriverLoadError::Truncated => b"Truncated",
-                        DriverLoadError::BadDosHeader => b"BadDosHeader",
-                        DriverLoadError::BadPeSignature => b"BadPeSignature",
-                        DriverLoadError::WrongMachine => b"WrongMachine",
-                        DriverLoadError::WrongSubsystem => b"WrongSubsystem",
-                        DriverLoadError::NotDll => b"NotDllOrExecutable",
-                        DriverLoadError::InvalidHeader => b"InvalidHeader",
-                        DriverLoadError::InvalidSection => b"InvalidSection",
-                        DriverLoadError::ImageTooLarge => b"ImageTooLarge",
-                        DriverLoadError::WrongBase => b"WrongBase",
-                        DriverLoadError::ImportsUnsupported => b"ImportsUnsupported",
-                        DriverLoadError::ImportNotFound => b"ImportNotFound",
-                        DriverLoadError::InvalidImport => b"InvalidImport",
-                        DriverLoadError::RelocationsUnsupported => b"RelocationsUnsupported",
-                        DriverLoadError::RelocationUnsupported => b"RelocationUnsupported",
-                        DriverLoadError::WxSection => b"WxSection",
-                        DriverLoadError::EntryNotExecutable => b"EntryNotExecutable",
-                        DriverLoadError::MappingFailed => b"MappingFailed",
-                        DriverLoadError::NoMemory => b"NoMemory",
-                        DriverLoadError::EntryFailed(_) => b"DriverEntryFailed",
-                    });
-                    serial_write(b"\r\n");
-                }
-            }
-        } else {
-            serial_write(b"Runtime driver test skipped: beep.sys was not staged by UEFI.\r\n");
-        }
+        // beep.sys request testing is deferred until a scheduler-owned kernel thread exists.
+        serial_write(b"Runtime beep.sys test deferred until scheduler thread context is available.\r\n");
 
 
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
@@ -1234,6 +1129,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             match unsafe { hal::start_local_clock_event() } {
                 Ok(()) => {
                     thread::set_preemption_enabled(true);
+                    let beep_stack = unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(BEEP_TEST_STACK).cast::<u8>(), 8192) };
+                    match thread::spawn(beep_stack, 1, beep_test_worker, core::ptr::null_mut()) {
+                        Ok(_) => serial_write(b"Scheduled beep.sys test worker.\\r\\n"),
+                        Err(_) => serial_write(b"Failed to schedule beep.sys test worker.\\r\\n"),
+                    }
                     if thread::timer_preemption_self_test() {
                         serial_write(b"Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.\r\n");
                     } else {
@@ -1270,6 +1170,123 @@ unsafe fn outb(port: u16, value: u8) {
     unsafe { asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags)); }
 }
 
+
+static mut BEEP_TEST_STACK: [u8; 8192] = [0; 8192];
+
+extern "C" fn beep_test_worker(_argument: *mut core::ffi::c_void) {
+    serial_write(b"Runtime beep.sys test started on scheduler-owned kernel thread.\\r\\n");
+    run_beep_runtime_test();
+}
+
+fn run_beep_runtime_test() {
+            // Real runtime test: invoke the native driver loader and DriverEntry.
+        if let Some(beep_bytes) = boot_beep_bytes() {
+            use ntoskrnl::driver_loader::{DriverLoadError, DriverObject, load_allocated};
+            const BEEP_NAME: [u16; 13] = [92, 68, 114, 105, 118, 101, 114, 92, 66, 101, 101, 112, 0];
+            let driver_name = nt_abi::object::UNICODE_STRING {
+                length: ((BEEP_NAME.len() - 1) * 2) as u16,
+                maximum_length: (BEEP_NAME.len() * 2) as u16,
+                buffer: BEEP_NAME.as_ptr() as *mut u16,
+            };
+            // DriverObject must remain valid for any device objects published by the driver.
+            static mut BEEP_DRIVER_OBJECT: core::mem::MaybeUninit<DriverObject> = core::mem::MaybeUninit::uninit();
+            let driver_object = core::ptr::addr_of_mut!(BEEP_DRIVER_OBJECT).cast::<DriverObject>();
+            unsafe { driver_object.write(DriverObject {
+                object_type: 4, size: core::mem::size_of::<DriverObject>() as i16,
+                device_object: core::ptr::null_mut(), flags: 0,
+                driver_start: core::ptr::null_mut(), driver_size: 0,
+                driver_section: core::ptr::null_mut(), driver_extension: core::ptr::null_mut(),
+                driver_name, hardware_database: core::ptr::null_mut(),
+                fast_io_dispatch: core::ptr::null_mut(), driver_init: None,
+                driver_start_io: None, driver_unload: None, major_function: [None; 28],
+            }); }
+            const BEEP_REGISTRY_PATH: [u16; 57] = [92, 82, 101, 103, 105, 115, 116, 114, 121, 92, 77, 97, 99, 104, 105, 110, 101, 92, 83, 121, 115, 116, 101, 109, 92, 67, 117, 114, 114, 101, 110, 116, 67, 111, 110, 116, 114, 111, 108, 83, 101, 116, 92, 83, 101, 114, 118, 105, 99, 101, 115, 92, 66, 101, 101, 112, 0];
+            let mut registry_path = nt_abi::object::UNICODE_STRING {
+                length: ((BEEP_REGISTRY_PATH.len() - 1) * 2) as u16,
+                maximum_length: (BEEP_REGISTRY_PATH.len() * 2) as u16,
+                buffer: BEEP_REGISTRY_PATH.as_ptr() as *mut u16,
+            };
+            serial_write(b"Runtime driver test: attempting native beep.sys load and DriverEntry.\r\n    ");
+            match unsafe { load_allocated(beep_bytes, driver_object, (&mut registry_path as *mut nt_abi::object::UNICODE_STRING).cast()) } {
+                Ok(loaded) => {
+                    serial_write(b"beep.sys DriverEntry returned NTSTATUS success: image=");
+                    serial_write_hex(loaded.image_base);
+                    serial_write(b" size=");
+                    unsafe { serial_write_decimal(loaded.image_size as usize); }
+                    serial_write(b" entry=");
+                    serial_write_hex(loaded.entry_point);
+                    serial_write(b".\r\n    ");
+                    let device_object = unsafe { (*driver_object).device_object };
+                    let dispatch_count = unsafe { (*driver_object).major_function.iter().filter(|entry| entry.is_some()).count() };
+                    serial_write(b"beep.sys device object=");
+                    serial_write_hex(device_object as u64);
+                    serial_write(b" dispatch-routines=");
+                    unsafe { serial_write_decimal(dispatch_count); }
+                    if !device_object.is_null() && dispatch_count != 0 {
+                        serial_write(b"\r\n    beep.sys device and dispatch registration passed.\r\n    ");
+                        // Route a real WDM IOCTL through beep.sys' registered dispatch.
+                        // IOCTL_BEEP_SET = CTL_CODE(FILE_DEVICE_BEEP, 0, METHOD_BUFFERED, FILE_ANY_ACCESS).
+                        match unsafe { submit_beep_ioctl(driver_object, device_object) } {
+                            Some((create_status, create_io, dispatch_status, irp_status)) => {
+                                serial_write(b"\r\n    BEEP CREATE: dispatch=");
+                                serial_write_hex(create_status as u32 as u64);
+                                serial_write(b" IoStatus=");
+                                serial_write_hex(create_io as u32 as u64);
+                                serial_write(b"\r\n    BEEP DEVICE CONTROL: dispatch=");
+                                serial_write_hex(dispatch_status as u32 as u64);
+                                serial_write(b" IoStatus=");
+                                serial_write_hex(irp_status as u32 as u64);
+                                if create_status >= 0 && create_io >= 0 &&
+                                   (dispatch_status >= 0 || dispatch_status == nt_abi::ntstatus::STATUS_PENDING) &&
+                                   (irp_status >= 0 || irp_status == nt_abi::ntstatus::STATUS_PENDING) {
+                                    serial_write(b"\r\n    BEEP DISPATCH RESULT: PASS - create succeeded and IOCTL reached the registered device-control dispatch routine.\r\n    ");
+                                } else {
+                                    serial_write(b"\r\n    BEEP DISPATCH RESULT: FAIL - create or device-control request returned an unexpected failure status.\r\n    ");
+                                }
+                            }
+                            None => serial_write(b"\r\n    BEEP DISPATCH RESULT: FAIL - required registered create/device-control dispatch routine was unavailable.\r\n    "),
+                        }
+                        // Separate hardware-path diagnostic; audio is supplemental evidence.
+                        if unsafe { qemu_pc_speaker_diagnostic_tone() } {
+                            serial_write(b"QEMU PC speaker diagnostic tone requested after beep.sys load.\\r\\n    ");
+                        } else {
+                            serial_write(b"QEMU PC speaker diagnostic tone could not be requested.\\r\\n    ");
+                        }
+                    } else {
+                        serial_write(b"\r\n    beep.sys DriverEntry succeeded but device/dispatch registration is incomplete.\r\n    ");
+                    }
+                }
+                Err(error) => {
+                    serial_write(b"beep.sys runtime load failed before successful DriverEntry: ");
+                    serial_write(match error {
+                        DriverLoadError::Truncated => b"Truncated",
+                        DriverLoadError::BadDosHeader => b"BadDosHeader",
+                        DriverLoadError::BadPeSignature => b"BadPeSignature",
+                        DriverLoadError::WrongMachine => b"WrongMachine",
+                        DriverLoadError::WrongSubsystem => b"WrongSubsystem",
+                        DriverLoadError::NotDll => b"NotDllOrExecutable",
+                        DriverLoadError::InvalidHeader => b"InvalidHeader",
+                        DriverLoadError::InvalidSection => b"InvalidSection",
+                        DriverLoadError::ImageTooLarge => b"ImageTooLarge",
+                        DriverLoadError::WrongBase => b"WrongBase",
+                        DriverLoadError::ImportsUnsupported => b"ImportsUnsupported",
+                        DriverLoadError::ImportNotFound => b"ImportNotFound",
+                        DriverLoadError::InvalidImport => b"InvalidImport",
+                        DriverLoadError::RelocationsUnsupported => b"RelocationsUnsupported",
+                        DriverLoadError::RelocationUnsupported => b"RelocationUnsupported",
+                        DriverLoadError::WxSection => b"WxSection",
+                        DriverLoadError::EntryNotExecutable => b"EntryNotExecutable",
+                        DriverLoadError::MappingFailed => b"MappingFailed",
+                        DriverLoadError::NoMemory => b"NoMemory",
+                        DriverLoadError::EntryFailed(_) => b"DriverEntryFailed",
+                    });
+                    serial_write(b"\r\n    ");
+                }
+            }
+        } else {
+            serial_write(b"Runtime driver test skipped: beep.sys was not staged by UEFI.\r\n    ");
+        }
+}
 
 /// Build and submit a minimal WDM request using the registered dispatch table.
 /// The test models a device open before issuing IOCTL_BEEP_SET.
