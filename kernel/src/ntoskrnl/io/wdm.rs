@@ -1060,7 +1060,6 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   if control&0x01!=0 {unsafe{(*irp).bytes[0x41]=1;}}
   let routine=unsafe{(*stack).completion_routine};
   let context=unsafe{(*stack).context};
-  let device_object=unsafe{(*stack).device_object};
   let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
   let cancelled=unsafe{(*irp).bytes[0x44]!=0};
   let invoke=(status>=0&&(control&0x40)!=0)||(status<0&&(control&0x80)!=0)||(cancelled&&(control&0x20)!=0);
@@ -1069,6 +1068,9 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   // advanced location is retained so a later IoCompleteRequest resumes above
   // this callback instead of invoking the same callback twice.
   let next=unsafe{stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast::<IoStackLocation>()};
+  // The completion callback belongs to the next-higher driver. Windows passes
+  // that driver's DeviceObject, not the lower target stored in this stack slot.
+  let completion_device_object=if location<stack_count {unsafe{(*next).device_object}} else {ptr::null_mut()};
   unsafe {
    (*irp).bytes[0x43]=(location+1).min(0xff) as u8;
    write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,next.cast());
@@ -1079,7 +1081,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   }
   if invoke {
    if let Some(routine)=routine {
-    let result=unsafe{routine(device_object,irp,context)};
+    let result=unsafe{routine(completion_device_object,irp,context)};
     if result==0xC0000016u32 as i32 {
      {
       let mut state=WDM.lock();
