@@ -1205,6 +1205,9 @@ pub unsafe extern "win64" fn io_call_driver(device:*mut DeviceObject, irp:*mut I
   release_irp_active_op(irp);release_device_dispatch_rundown(device);return prepare
  }
  let minor=unsafe{(*stack).minor_function};
+ let routine_address=dispatch as *const () as usize as u64;
+ let driver_base=unsafe{(*driver).driver_start as usize as u64};
+ let routine_rva=routine_address.checked_sub(driver_base).unwrap_or(u64::MAX);
  let debug_driver=crate::ntoskrnl::debug::query_filter(
   crate::ntoskrnl::debug::COMPONENT_DRIVER,
   crate::ntoskrnl::debug::LEVEL_INFO,
@@ -1215,12 +1218,16 @@ pub unsafe extern "win64" fn io_call_driver(device:*mut DeviceObject, irp:*mut I
   crate::ntoskrnl::debug::EVENT_DRIVER_DISPATCH,
   device as usize as u64,
   ((major as u64)<<32)|(minor as u64),
-  dispatch as *const () as usize as u64,
+  routine_address,
  );
  if debug_driver {
   unsafe {
-   crate::serial_write(b"DRIVER DEBUG: dispatch enter routine=");
-   crate::serial_write_hex(dispatch as *const () as usize as u64);
+   crate::serial_write(b"DRIVER DEBUG: dispatch enter image=");
+   crate::serial_write_hex(driver_base);
+   crate::serial_write(b" RVA=");
+   crate::serial_write_hex(routine_rva);
+   crate::serial_write(b" routine=");
+   crate::serial_write_hex(routine_address);
    crate::serial_write(b" major=");
    crate::serial_write_hex(major as u64);
    crate::serial_write(b" minor=");
@@ -1239,14 +1246,18 @@ pub unsafe extern "win64" fn io_call_driver(device:*mut DeviceObject, irp:*mut I
   crate::ntoskrnl::debug::EVENT_DRIVER_DISPATCH_RETURN,
   irp as usize as u64,
   status as u32 as u64,
-  dispatch as *const () as usize as u64,
+  routine_address,
  );
  if debug_driver {
   unsafe {
    crate::serial_write(b"DRIVER DEBUG: dispatch return status=");
    crate::serial_write_hex(status as u32 as u64);
+   crate::serial_write(b" image=");
+   crate::serial_write_hex(driver_base);
+   crate::serial_write(b" RVA=");
+   crate::serial_write_hex(routine_rva);
    crate::serial_write(b" routine=");
-   crate::serial_write_hex(dispatch as *const () as usize as u64);
+   crate::serial_write_hex(routine_address);
    crate::serial_write(b" irp=");
    crate::serial_write_hex(irp as usize as u64);
    crate::serial_write(b"\\r\\n");
