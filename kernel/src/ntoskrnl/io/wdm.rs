@@ -945,8 +945,10 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
  internal_device_control:u8, event:*mut c_void, io_status:*mut IoStatusBlock
 )->*mut Irp {
  let creator_thread=crate::thread::current_thread_id().unwrap_or(0);
- // The WDK contract requires a real creating-thread context. Host-side unit
- // tests exercise the packet layout without booting the scheduler.
+ // IoBuildDeviceIoControlRequest is a synchronous, thread-associated DDI and
+ // Windows documents it for IRQL <= APC_LEVEL. Host-side tests can validate
+ // packet construction without a live scheduler thread.
+ if unsafe{crate::ntoskrnl::ke::runtime::ke_get_current_irql()}>1{return ptr::null_mut()}
  #[cfg(not(test))]
  if creator_thread==0 {return ptr::null_mut()}
  if device.is_null()||io_status.is_null()||internal_device_control>1
