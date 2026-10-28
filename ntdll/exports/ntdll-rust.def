@@ -25,3 +25,8 @@ EXPORTS
     NtQueryKey
     NtOpenProcess
     NtGetNextProcess
+    NtCreateEvent
+    NtSetEvent
+    NtResetEvent
+    NtWaitForSingleObject
+    NtOpenEvent
