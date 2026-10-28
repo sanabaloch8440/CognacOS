@@ -354,9 +354,14 @@ pub struct DeviceRelations { pub count:u32, pub objects:[*mut DeviceObject;MAX_P
 struct PnpRelation { used:bool, bus:*mut DeviceObject, child:*mut DeviceObject }
 unsafe impl Send for PnpRelation {}
 impl PnpRelation { const EMPTY:Self=Self{used:false,bus:ptr::null_mut(),child:ptr::null_mut()}; }
-struct PnpManagerState { relations:[PnpRelation;MAX_PNP_DEVICES], enumerations:u64 }
+const MAX_PNP_MANAGER_IRPS:usize=64;
+#[derive(Clone,Copy)]
+struct ManagedPnpIrp { used:bool, irp:*mut Irp, device:*mut DeviceObject, returned:bool, completed:bool }
+unsafe impl Send for ManagedPnpIrp {}
+impl ManagedPnpIrp { const EMPTY:Self=Self{used:false,irp:ptr::null_mut(),device:ptr::null_mut(),returned:false,completed:false}; }
+struct PnpManagerState { relations:[PnpRelation;MAX_PNP_DEVICES], managed_irps:[ManagedPnpIrp;MAX_PNP_MANAGER_IRPS], enumerations:u64 }
 const MAX_PNP_DEVICES:usize=128;
-impl PnpManagerState { const fn new()->Self{Self{relations:[PnpRelation::EMPTY;MAX_PNP_DEVICES],enumerations:0}} }
+impl PnpManagerState { const fn new()->Self{Self{relations:[PnpRelation::EMPTY;MAX_PNP_DEVICES],managed_irps:[ManagedPnpIrp::EMPTY;MAX_PNP_MANAGER_IRPS],enumerations:0}} }
 static PNP_MANAGER:IrqSpinLock<PnpManagerState>=IrqSpinLock::new(PnpManagerState::new());
 
 /// Publish bus relations after a successful IRP_MN_QUERY_DEVICE_RELATIONS
@@ -390,6 +395,55 @@ pub unsafe extern "system" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rel
  }
  manager.enumerations=manager.enumerations.wrapping_add(1);
  STATUS_SUCCESS
+}
+
+
+/// Dispatch one real IRP_MJ_PNP lifecycle request under PnP-manager ownership.
+/// START_DEVICE requires kernel-captured allocated and translated resource lists.
+/// Pending IRPs remain owned until terminal IoCompleteRequest.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void)->i32 {
+ if device.is_null()||!matches!(minor,0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x17){return STATUS_INVALID_PARAMETER}
+ let referenced=unsafe{io_reference_device_object(device)};
+ if referenced.is_null(){return STATUS_DELETE_PENDING}
+ let stack_size=unsafe{(*device).stack_size.max(1) as i16};
+ let irp=unsafe{io_allocate_irp(stack_size,0)};
+ if irp.is_null(){unsafe{io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
+ let stack=unsafe{io_get_next_irp_stack_location(irp)};
+ if stack.is_null(){unsafe{io_free_irp(irp);io_dereference_device_object(device)};return STATUS_INSUFFICIENT_RESOURCES}
+ unsafe { (*stack).major_function=0x1b;(*stack).minor_function=minor;(*stack).parameters[0]=allocated as u64;(*stack).parameters[1]=translated as u64; }
+ {
+  let mut manager=PNP_MANAGER.lock();
+  let Some(slot)=manager.managed_irps.iter_mut().find(|s|!s.used) else {
+   drop(manager);unsafe{io_free_irp(irp);io_dereference_device_object(device)};
+   return STATUS_INSUFFICIENT_RESOURCES
+  };
+  *slot=ManagedPnpIrp{used:true,irp,device,returned:false,completed:false};
+ }
+ let status=unsafe{io_call_driver(device,irp)};
+ let terminal={let state=WDM.lock();state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)).is_some_and(|s|s.completion_state==2)};
+ if status!=STATUS_PENDING&&!terminal {
+  unsafe{(*irp).bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&status.to_le_bytes());io_complete_request(irp,0);}
+ }
+ let release={
+  let mut manager=PNP_MANAGER.lock();
+  if let Some(slot)=manager.managed_irps.iter_mut().find(|s|s.used&&s.irp==irp){
+   slot.returned=true;
+   if slot.completed{*slot=ManagedPnpIrp::EMPTY;true}else{false}
+  }else{false}
+ };
+ if release {unsafe{io_free_irp(irp);io_dereference_device_object(device)}}
+ status
+}
+fn io_pnp_manager_irp_completed(irp:*mut Irp){
+ if irp.is_null(){return}
+ let released={
+  let mut manager=PNP_MANAGER.lock();
+  let Some(slot)=manager.managed_irps.iter_mut().find(|s|s.used&&s.irp==irp) else{return};
+  slot.completed=true;
+  if slot.returned {let result=*slot;*slot=ManagedPnpIrp::EMPTY;Some(result)}else{None}
+ };
+ if let Some(request)=released {unsafe{io_free_irp(request.irp);io_dereference_device_object(request.device)}}
 }
 
 /// Return the number of currently published children for a bus. This is an
@@ -798,7 +852,8 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
     .is_some_and(|s|s.active_ops==0)
   };
   if callbacks_drained {release_irp_device_rundown(irp);}
-}
+  io_pnp_manager_irp_completed(irp);
+ }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
