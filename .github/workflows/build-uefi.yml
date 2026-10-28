@@ -269,6 +269,8 @@ jobs:
                   pub fn latest_sequence() -> u64 { 0 }
                   pub fn dump_serial(_: usize) {}
                   pub fn set_filter(_: u32, _: u32, _: bool) -> bool { true }
+                  pub fn persist_to_storage() -> bool { false }
+                  pub fn restore_from_storage() -> bool { false }
               }
           }
           mod debug_console {
