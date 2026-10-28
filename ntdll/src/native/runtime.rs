@@ -63,6 +63,11 @@ unsafe fn wait_on_word(address:*mut usize,expected:usize,timeout:u64)->i32{
     unsafe{cognac_syscall4(0x152,address as u64,expected as u64,8,timeout)}
 }
 #[inline]
+unsafe fn wait_on_i32(address:*mut i32,expected:i32,timeout:u64)->i32{
+    if address.is_null(){return STATUS_INVALID_PARAMETER;}
+    unsafe{cognac_syscall4(0x152,address as u64,expected as u32 as u64,4,timeout)}
+}
+#[inline]
 unsafe fn wake_word(address:*mut usize,all:bool){
     if !address.is_null(){let _=unsafe{cognac_syscall4(if all{0x154}else{0x153},address as u64,0,0,0)};}
 }
@@ -90,10 +95,32 @@ pub unsafe extern "system" fn RtlAcquireReleaseSRWLockExclusive() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlAcquireSRWLockExclusive(lock:*mut usize){if lock.is_null(){return;}let s=unsafe{atomic_usize_at(lock)};loop{if s.compare_exchange(0,SRW_EXCLUSIVE,Ordering::Acquire,Ordering::Relaxed).is_ok(){return;}core::hint::spin_loop();}}
+pub unsafe extern "system" fn RtlAcquireSRWLockExclusive(lock:*mut usize){
+    if lock.is_null(){return;}
+    let state=unsafe{atomic_usize_at(lock)};
+    loop{
+        if state.compare_exchange(0,SRW_EXCLUSIVE,Ordering::Acquire,Ordering::Relaxed).is_ok(){return;}
+        let observed=state.load(Ordering::Acquire);
+        let _=unsafe{wait_on_word(lock,observed,u64::MAX)};
+        core::hint::spin_loop();
+    }
+}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlAcquireSRWLockShared(lock:*mut usize){if lock.is_null(){return;}let s=unsafe{atomic_usize_at(lock)};loop{let v=s.load(Ordering::Relaxed);if v&SRW_EXCLUSIVE!=0||v&SRW_READERS==SRW_READERS{core::hint::spin_loop();continue;}if s.compare_exchange_weak(v,v+1,Ordering::Acquire,Ordering::Relaxed).is_ok(){return;}}}
+pub unsafe extern "system" fn RtlAcquireSRWLockShared(lock:*mut usize){
+    if lock.is_null(){return;}
+    let state=unsafe{atomic_usize_at(lock)};
+    loop{
+        let value=state.load(Ordering::Relaxed);
+        if value&SRW_EXCLUSIVE==0&&value&SRW_READERS!=SRW_READERS{
+            if state.compare_exchange_weak(value,value+1,Ordering::Acquire,Ordering::Relaxed).is_ok(){return;}
+        }else{
+            let observed=state.load(Ordering::Acquire);
+            let _=unsafe{wait_on_word(lock,observed,u64::MAX)};
+            core::hint::spin_loop();
+        }
+    }
+}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlActivateActivationContext() -> i32 {
@@ -1423,7 +1450,7 @@ pub unsafe extern "system" fn RtlEnterCriticalSection(cs:*mut CognacCriticalSect
         for _ in 0..spins{if lock.load(Ordering::Relaxed)==-1{break;}core::hint::spin_loop();}
         let observed=lock.load(Ordering::Acquire);
         if observed!=-1{
-            let _=unsafe{wait_on_word(core::ptr::addr_of_mut!((*cs).lock_count).cast::<usize>(),observed as u32 as usize,u64::MAX)};
+            let _=unsafe{wait_on_i32(core::ptr::addr_of_mut!((*cs).lock_count),observed,u64::MAX)};
         }
     }
 }
