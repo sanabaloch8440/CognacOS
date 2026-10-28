@@ -1521,7 +1521,7 @@ pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
  // Buffered I/O requires a dedicated system-buffer pool, so fail closed.
  if flags&0x4!=0{return ptr::null_mut()}
  let offset=if starting_offset.is_null(){0}else{unsafe{starting_offset.read_unaligned()}};
- let irp=unsafe{io_allocate_irp(stack_size as i16,0)};
+ let irp=unsafe{io_allocate_irp(stack_size,0)};
  if irp.is_null(){return ptr::null_mut()}
  let next=unsafe{io_get_next_irp_stack_location(irp)};
  if next.is_null(){unsafe{io_free_irp(irp)};return ptr::null_mut()}
