@@ -1598,6 +1598,9 @@ pub unsafe fn initialize() {
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *const u64) -> ! {
     let fatal_rip = unsafe { frame.add(17).read() };
+    // Resolve the RIP before halting. If it lies in a loaded native driver,
+    // report the owning image and RVA even when the PE has no symbols/PDB.
+    let faulting_driver = crate::ntoskrnl::driver_loader::image_for_address(fatal_rip);
     crate::ntoskrnl::debug::record_unfiltered(
         crate::ntoskrnl::debug::COMPONENT_EXCEPTION,
         crate::ntoskrnl::debug::LEVEL_ERROR,
@@ -1613,6 +1616,16 @@ pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *cons
         crate::serial_write_hex(error);
         crate::serial_write(b" RIP=");
         crate::serial_write_hex(frame.add(17).read());
+        if let Some((base, size, driver_object)) = faulting_driver {
+            crate::serial_write(b"\\r\\nFAULTING DRIVER IMAGE: base=");
+            crate::serial_write_hex(base);
+            crate::serial_write(b" RVA=");
+            crate::serial_write_hex(fatal_rip.saturating_sub(base));
+            crate::serial_write(b" size=");
+            crate::serial_write_hex(size as u64);
+            crate::serial_write(b" DRIVER_OBJECT=");
+            crate::serial_write_hex(driver_object);
+        }
         crate::serial_write(b" CS=");
         crate::serial_write_hex(frame.add(18).read());
         crate::serial_write(b" RFLAGS=");
