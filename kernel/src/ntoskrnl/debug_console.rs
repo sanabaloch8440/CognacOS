@@ -1,7 +1,7 @@
-//! Non-blocking UART debugger console for NTOSKRNL.
-//! Commands: help, status, trace [count], filter <component> <level> <on|off>.
-//! This is a polled console, not a remote KD transport; callers must poll at a
-//! safe point where serial input is expected.
+/// Non-blocking UART debugger console for NTOSKRNL.
+/// Commands: help, status, trace [count], filter <component> <level> <on|off>.
+/// This is a polled console, not a remote KD transport; callers must poll at a
+/// safe point where serial input is expected.
 use crate::ntoskrnl::debug;
 
 const INPUT_CAPACITY: usize = 96;
