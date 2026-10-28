@@ -239,10 +239,20 @@ jobs:
         run: cargo check --manifest-path csrss/Cargo.toml --lib --target x86_64-unknown-linux-gnu
       - name: Test native CSR dispatch and client lifecycle
         run: cargo test --manifest-path csrss/Cargo.toml --lib --target x86_64-unknown-linux-gnu
-      - name: Test NTOSKRNL structured debug ring, filters, and wraparound
+      - name: Test NTOSKRNL structured debug ring and persistence validation
+        shell: bash
         run: |
           set -euo pipefail
-          rustc --edition=2024 --test kernel/src/ntoskrnl/debug.rs -o /tmp/cognacos-ntoskrnl-debug-tests
+          cat > /tmp/cognacos-ntoskrnl-debug-tests.rs <<'RS'
+          #![allow(dead_code)]
+          mod ata_disk {
+              pub fn debug_trace_store_read(_: u64, _: &mut [u8]) -> bool { false }
+              pub fn debug_trace_store_write(_: u64, _: &[u8]) -> bool { false }
+          }
+          #[path = concat!(env!("GITHUB_WORKSPACE"), "/kernel/src/ntoskrnl/debug.rs")]
+          mod debug;
+          RS
+          rustc --edition=2024 --test /tmp/cognacos-ntoskrnl-debug-tests.rs -o /tmp/cognacos-ntoskrnl-debug-tests
           /tmp/cognacos-ntoskrnl-debug-tests
       - name: Test interactive debugger command parser
         shell: bash
