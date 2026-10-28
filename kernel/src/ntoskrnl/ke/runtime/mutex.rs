@@ -147,7 +147,7 @@ unsafe fn fast_mutex_atomic_i32(object: *mut core::ffi::c_void, offset: usize)
 
 #[inline]
 unsafe fn fast_mutex_event(object: *mut core::ffi::c_void) -> *mut DispatcherHeader {
-    unsafe { object.cast::<u8>().add(24).cast::<super::DispatcherHeader>() }
+    unsafe { object.cast::<u8>().add(24).cast::<DispatcherHeader>() }
 }
 
 #[unsafe(no_mangle)]
