@@ -431,6 +431,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "KeReadStateSemaphore" => ke::runtime::ke_read_state_semaphore as usize,
   "KeReleaseSemaphore" => ke::runtime::ke_release_semaphore as usize,
   "KeWaitForSingleObject" => ke::runtime::ke_wait_for_single_object as usize,
+  "KeWaitForMutexObject" => ke::runtime::ke_wait_for_mutex_object as usize,
   "KeWaitForMultipleObjects" => ke::runtime::ke_wait_for_multiple_objects as usize,
   "KeDelayExecutionThread" => ke::runtime::ke_delay_execution_thread as usize,
   "HalAcpiGetTableEx" => crate::hal::exports::hal_acpi_get_table_ex as usize,
