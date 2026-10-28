@@ -166,7 +166,12 @@ pub unsafe extern "win64" fn ex_initialize_fast_mutex(fast_mutex: *mut core::ffi
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn ex_acquire_fast_mutex(fast_mutex: *mut core::ffi::c_void) {
     let Some(count) = (unsafe { fast_mutex_atomic_i32(fast_mutex, 0) }) else { return };
-    let old_irql = unsafe { kf_raise_irql(1) };
+    let cpu = cpu_slot();
+    let old_irql = CURRENT_IRQL[cpu].load(core::sync::atomic::Ordering::Acquire);
+    if old_irql < 1 {
+        CURRENT_IRQL[cpu].store(1, core::sync::atomic::Ordering::Release);
+        let _ = unsafe { crate::hal::set_interrupt_priority(1) };
+    }
     let previous = count.fetch_sub(1, core::sync::atomic::Ordering::Acquire);
     if previous > 0 {
         unsafe {
@@ -221,5 +226,7 @@ pub unsafe extern "win64" fn ex_release_fast_mutex(fast_mutex: *mut core::ffi::c
         let value = contention.load(core::sync::atomic::Ordering::Relaxed);
         if value != 0 { let _ = contention.fetch_sub(1, core::sync::atomic::Ordering::Relaxed); }
     }
-    unsafe { ke_lower_irql(old_irql); }
+    let cpu = cpu_slot();
+    CURRENT_IRQL[cpu].store(old_irql, core::sync::atomic::Ordering::Release);
+    let _ = unsafe { crate::hal::set_interrupt_priority(old_irql) };
 }
