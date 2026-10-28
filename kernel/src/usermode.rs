@@ -925,7 +925,19 @@ pub unsafe fn run_native_ntdll_smoke(
         image_size: ntdll.image_size,
         is_dll: false,
     };
-    unsafe { crate::serial_write(b"[DBG][NTDLL] smoke code mapped; entering shared process loader\r\n"); }
+    unsafe {
+        crate::serial_write(b"[DBG][NTDLL] smoke code mapped; entering shared process loader\\r\\n");
+        // This code is generated at runtime and has no ELF/PDB of its own.
+        // Publish its exact address interval so a captured RIP can be classified
+        // as a smoke-stub offset rather than incorrectly symbolized as NTDLL.
+        crate::serial_write(b"SMOKE STUB: base=");
+        crate::serial_write_hex(NTDLL_TEST_CODE);
+        crate::serial_write(b" size=");
+        crate::serial_write_hex(length as u64);
+        crate::serial_write(b" end=");
+        crate::serial_write_hex(NTDLL_TEST_CODE.saturating_add(length as u64));
+        crate::serial_write(b"\\r\\n");
+    }
     unsafe { run_loaded_image(space, test_image)?; }
     Ok(())
 }
