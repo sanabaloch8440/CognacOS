@@ -40,6 +40,15 @@ pub(crate) fn consume_ke_set_event_wait_handoff() {
         KESET_WAIT_HANDOFF[cpu].store(false,Ordering::Release);
     }
 }
+/// Scope guard keeps the KeSetEvent(Wait=TRUE) token active while the wait
+/// validates its arguments and establishes a dispatcher wait. The wait path
+/// explicitly drops it after queueing/rechecking and immediately before block.
+pub(crate) struct KeSetWaitHandoffGuard;
+impl Drop for KeSetWaitHandoffGuard {
+    fn drop(&mut self){consume_ke_set_event_wait_handoff();}
+}
+pub(crate) fn ke_set_wait_handoff_guard()->KeSetWaitHandoffGuard { KeSetWaitHandoffGuard }
+
 
 
 #[inline]
