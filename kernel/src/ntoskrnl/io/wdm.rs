@@ -73,7 +73,7 @@ pub struct IoStackLocation {
 struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
-const MAX_IOCTL_SYSTEM_BUFFER:usize=4096;
+const MAX_IOCTL_SYSTEM_BUFFER:usize=64*1024;
 struct IrpSlot {
  used: bool, owned_mdl: *mut c_void, completion_state:u8, active_ops:u32,
  outstanding_count:usize, outstanding_devices:[*mut DeviceObject;16],
@@ -932,7 +932,8 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
  if next.is_null(){unsafe{io_free_irp(irp)};return ptr::null_mut()}
  {
   let mut state=WDM.lock();
-  let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{drop(state);unsafe{io_free_irp(irp)};return ptr::null_mut()};
+  let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{drop(state);unsafe{io_free_irp(irp)};return ptr::null_mut()};
+  let slot=&mut state.irps[index];
   if method!=3 {
    slot.system_buffer_len=input_length as usize;
    if input_length!=0 {
