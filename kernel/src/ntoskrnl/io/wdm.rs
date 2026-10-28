@@ -1700,10 +1700,15 @@ unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpConte
   if status<0 {
    unsafe{csq_set_cancel_routine(irp,ptr::null_mut());}
    write_ptr(unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()},CSQ_IRP_CONTEXT_OFFSET,ptr::null_mut());
-  } else if !context.is_null() {
-   unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).type_),CSQ_CONTEXT_TYPE);}
-   unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).irp),irp);}
-   unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).csq),csq);}
+  } else {
+   if !context.is_null() {
+    unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).type_),CSQ_CONTEXT_TYPE);}
+    unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).irp),irp);}
+    unsafe{ptr::write_unaligned(ptr::addr_of_mut!((*context).csq),csq);}
+   }
+   // Mark pending while the cancel spin lock still excludes IoCancelIrp; a
+   // cancellation callback can otherwise complete/free this packet first.
+   if status>=0 {unsafe{io_mark_irp_pending(irp);}}
   }
  }
  unsafe{csq_unlock(csq,queue_irql);}
@@ -1713,7 +1718,6 @@ unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpConte
   unsafe{complete(csq,irp);}
   return 0xC0000120u32 as i32;
  }
- if status>=0 {unsafe{io_mark_irp_pending(irp);}}
  if extended_api {status}else{STATUS_SUCCESS}
 }
 #[unsafe(no_mangle)]
