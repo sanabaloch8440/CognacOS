@@ -1288,7 +1288,6 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
     sync_queue_detach_locked(&mut state,irp)
    }else{ptr::null_mut()}
   };
-  if !completion_event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(completion_event.cast(),0,0);}}
   let callbacks_drained={
    let state=WDM.lock();
    state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp))
@@ -1296,6 +1295,9 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   };
   if callbacks_drained {release_irp_device_rundown(irp);}
   io_pnp_manager_irp_completed(irp);
+  // Publish terminal state and release device/PnP rundown before waking the
+  // synchronous caller, so the resumed thread cannot race teardown.
+  if !completion_event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(completion_event.cast(),0,0);}}
   try_free_completed_sync_ioctl_irp(irp);
  }
 }
