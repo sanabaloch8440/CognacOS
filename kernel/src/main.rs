@@ -1129,15 +1129,15 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             match unsafe { hal::start_local_clock_event() } {
                 Ok(()) => {
                     thread::set_preemption_enabled(true);
-                    let beep_stack = unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(BEEP_TEST_STACK).cast::<u8>(), 8192) };
-                    match thread::spawn(beep_stack, 1, beep_test_worker, core::ptr::null_mut()) {
-                        Ok(_) => serial_write(b"Scheduled beep.sys test worker.\\r\\n"),
-                        Err(_) => serial_write(b"Failed to schedule beep.sys test worker.\\r\\n"),
-                    }
                     if thread::timer_preemption_self_test() {
                         serial_write(b"Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.\r\n");
                     } else {
                         serial_write(b"Timer preemption stress FAILED.\r\n");
+                    }
+                    let beep_stack = unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(BEEP_TEST_STACK).cast::<u8>(), 8192) };
+                    match thread::spawn(beep_stack, 1, beep_test_worker, core::ptr::null_mut()) {
+                        Ok(_) => serial_write(b"Scheduled beep.sys test worker.\\r\\n"),
+                        Err(_) => serial_write(b"Failed to schedule beep.sys test worker.\\r\\n"),
                     }
                     serial_write(b"Local APIC timer enabled after AP startup/self-tests; timer-driven preemption enabled.\r\n");
                     loop {
