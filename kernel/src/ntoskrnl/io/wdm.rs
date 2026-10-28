@@ -1495,22 +1495,32 @@ pub unsafe extern "system" fn io_set_cancel_routine(
 /// may finish later if it has no cancel routine or cannot stop I/O immediately.
 pub fn io_cancel_thread_irps(thread_id:u64)->usize {
  if thread_id==0{return 0}
- let mut pending=[ptr::null_mut::<Irp>();MAX_WDM_IRPS];
- let mut count=0usize;
- {
-  let mut state=WDM.lock();
-  for slot in state.irps.iter_mut(){
-   if !slot.used||!slot.built_sync_ioctl||slot.sync_thread_id!=thread_id{continue}
-   if count==pending.len(){break}
-   let irp=ptr::addr_of_mut!(slot.object);
-   slot.sync_thread_id=0;
-   slot.sync_event=ptr::null_mut();
-   write_ptr(slot.object.bytes.as_mut_ptr(),0x48,ptr::null_mut());
-   pending[count]=irp;count+=1;
+ let mut total=0usize;
+ loop {
+  let mut pending=[ptr::null_mut::<Irp>();MAX_WDM_IRPS];
+  let mut count=0usize;
+  let mut completion_in_progress=false;
+  {
+   let mut state=WDM.lock();
+   for slot in state.irps.iter_mut(){
+    if !slot.used||!slot.built_sync_ioctl||slot.sync_thread_id!=thread_id{continue}
+    // Completion owns the packet while invoking an upper completion routine.
+    // Wait until that critical section ends before detaching caller-stack data.
+    if slot.completion_state==1 {completion_in_progress=true;continue}
+    if count==pending.len(){break}
+    let irp=ptr::addr_of_mut!(slot.object);
+    slot.sync_thread_id=0;
+    slot.sync_event=ptr::null_mut();
+    write_ptr(slot.object.bytes.as_mut_ptr(),0x48,ptr::null_mut());
+    pending[count]=irp;count+=1;
+   }
   }
+  for irp in pending[..count].iter().copied(){unsafe{let _=io_cancel_irp(irp);}}
+  total+=count;
+  if !completion_in_progress {break}
+  core::hint::spin_loop();
  }
- for irp in pending[..count].iter().copied(){unsafe{let _=io_cancel_irp(irp);}}
- count
+ total
 }
 
 /// Request cancellation using the global cancel-spin-lock protocol. A driver
