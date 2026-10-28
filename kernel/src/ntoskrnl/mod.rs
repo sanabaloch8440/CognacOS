@@ -129,6 +129,8 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
    Some(crate::io::io_free_mdl as usize)
   } else if requested.eq_ignore_ascii_case(b"IoBuildAsynchronousFsdRequest") {
    Some(crate::io::io_build_asynchronous_fsd_request as usize)
+  } else if requested.eq_ignore_ascii_case(b"IoBuildDeviceIoControlRequest") {
+   Some(crate::io::io_build_device_io_control_request as usize)
   } else if requested.eq_ignore_ascii_case(b"IoCancelIrp") {
    Some(crate::io::io_cancel_irp as usize)
   } else if requested.eq_ignore_ascii_case(b"IoSetCancelRoutine") {
