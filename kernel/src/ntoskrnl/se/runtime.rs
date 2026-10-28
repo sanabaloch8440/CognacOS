@@ -956,10 +956,15 @@ pub(crate) unsafe fn se_internal_TokenSetDefaultDacl(
     let mut p = 8usize;
     for _ in 0..ace_count {
         if p + 8 > length { return STATUS_INVALID_PARAMETER; }
+        let ace_type = bytes[p];
+        if ace_type != 0 && ace_type != 1 { return STATUS_NOT_SUPPORTED; }
         let ace_size = u16::from_le_bytes([bytes[p + 2], bytes[p + 3]]) as usize;
-        if ace_size < 8 || p + ace_size > length { return STATUS_INVALID_PARAMETER; }
+        if ace_size < 16 || p + ace_size > length { return STATUS_INVALID_PARAMETER; }
         let sid = &bytes[p + 8..p + ace_size];
-        if sid.len() < 8 || sid[0] != 1 || sid[1] as usize * 4 + 8 != sid.len() { return STATUS_INVALID_PARAMETER; }
+        if sid.len() < 8 || sid[0] != 1 || sid[1] as usize * 4 + 8 != sid.len()
+            || 8 + sid[1] as usize * 4 != ace_size {
+            return STATUS_INVALID_PARAMETER;
+        }
         p += ace_size;
     }
     if p > length { return STATUS_INVALID_PARAMETER; }
