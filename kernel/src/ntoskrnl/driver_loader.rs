@@ -16,6 +16,27 @@ const MAX_IMAGE_SIZE:usize=32*1024*1024;
 pub enum DriverLoadError { Truncated, BadDosHeader, BadPeSignature, WrongMachine, WrongSubsystem, NotDll, InvalidHeader, InvalidSection, ImageTooLarge, WrongBase, ImportsUnsupported, ImportNotFound, InvalidImport, RelocationsUnsupported, RelocationUnsupported, WxSection, EntryNotExecutable, MappingFailed, NoMemory, EntryFailed(i32) }
 #[derive(Clone,Copy,Debug)]
 pub struct LoadedDriver { pub image_base:u64,pub image_size:u32,pub entry_point:u64,pub status:i32 }
+const MAX_LOADED_DRIVER_IMAGES:usize=256;
+#[derive(Clone,Copy)]
+struct DriverImageRecord { used:bool, driver:usize, base:u64, size:u32 }
+impl DriverImageRecord { const EMPTY:Self=Self{used:false,driver:0,base:0,size:0}; }
+static LOADED_DRIVER_IMAGES:crate::hal::IrqSpinLock<[DriverImageRecord;MAX_LOADED_DRIVER_IMAGES]>=
+ crate::hal::IrqSpinLock::new([DriverImageRecord::EMPTY;MAX_LOADED_DRIVER_IMAGES]);
+fn remember_loaded_driver(driver:*mut DriverObject,image:LoadedDriver)->bool {
+ if driver.is_null(){return false;}
+ let mut records=LOADED_DRIVER_IMAGES.lock();
+ if records.iter().any(|r|r.used&&r.driver==driver as usize){return false;}
+ let Some(slot)=records.iter_mut().find(|r|!r.used) else{return false;};
+ *slot=DriverImageRecord{used:true,driver:driver as usize,base:image.image_base,size:image.image_size};true
+}
+/// Release the image associated with a driver after IoUnloadDriver has completed
+/// device rundown and invoked DriverUnload. Unknown/non-loader-owned drivers are ignored.
+pub unsafe fn unload_driver_image(driver:*mut DriverObject)->bool {
+ if driver.is_null(){return false;}
+ let record={let mut records=LOADED_DRIVER_IMAGES.lock();let Some(index)=records.iter().position(|r|r.used&&r.driver==driver as usize) else{return false;};let record=records[index];records[index]=DriverImageRecord::EMPTY;record};
+ unsafe{unload_image(record.base,record.size)}.is_ok()
+}
+
 /// Windows x64 DRIVER_OBJECT layout passed to a native driver's DriverEntry.
 /// Keep this layout in lockstep with the shared WDM ABI; a shortened host-side
 /// record is not safe because real drivers index MajorFunction at offset 0x70.
@@ -162,7 +183,13 @@ pub unsafe fn load_allocated_with_resolver(file:&[u8],driver_object:*mut DriverO
  let base=mapped as u64;
  let image=unsafe{core::slice::from_raw_parts_mut(mapped,size)};
  match unsafe{load_with_resolver(file,image,base,driver_object,context,resolver)}{
-  Ok(driver)=>Ok(driver),
+  Ok(driver)=>{
+   if !remember_loaded_driver(driver_object,driver) {
+    crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);
+    let _=crate::kernel_vm::free_pages(mapped,pages);
+    Err(DriverLoadError::NoMemory)
+   } else { Ok(driver) }
+  },
   Err(error)=>{crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);let _=crate::kernel_vm::free_pages(mapped,pages);Err(error)}
  }
 }
