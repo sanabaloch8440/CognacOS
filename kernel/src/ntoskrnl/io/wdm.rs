@@ -196,7 +196,7 @@ pub(crate) unsafe fn io_complete_pnp_transition(device:*mut DeviceObject,minor:u
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
  if !s.pnp_transition||s.pnp_transition_minor!=minor{return STATUS_INVALID_DEVICE_REQUEST}
  // Only a terminal successful IRP completion may publish the new state.
- if status==STATUS_SUCCESS {match minor {
+ if status==STATUS_SUCCESS && (!s.deleting||matches!(minor,0x02|0x17)) {match minor {
   0x00=>{s.pnp_state=PNP_STATE_STARTED;s.pnp_pending=0;},
   0x01|0x05=>s.pnp_pending=minor,
   0x02=>{s.pnp_state=PNP_STATE_REMOVED;s.pnp_pending=0;},
@@ -328,10 +328,12 @@ pub(crate) unsafe fn io_prepare_pnp_resources(device:*mut DeviceObject,irp:*mut 
 /// starts replace prior claims. Stop/remove release committed reservations.
 pub(crate) fn io_finish_pnp_resources(irp:*mut Irp,device:*mut DeviceObject,minor:u8,status:i32){
  if irp.is_null()||device.is_null(){return}
+ let device_deleting={let state=WDM.lock();state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)).is_none_or(|s|s.deleting)};
+ let effective_status=if minor==IRP_MN_START_DEVICE&&device_deleting{STATUS_DELETE_PENDING}else{status};
  let mut arbiter=RESOURCE_ARBITER.lock();
  if minor==IRP_MN_START_DEVICE {
   let has_pending=arbiter.claims.iter().any(|c|c.used&&c.irp==irp&&c.owner==device&&!c.committed);
-  if status==STATUS_SUCCESS {
+  if effective_status==STATUS_SUCCESS {
    for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.owner==device&&c.committed){*c=ResourceClaim::EMPTY;}
    for c in arbiter.claims.iter_mut().filter(|c|c.used&&c.irp==irp&&c.owner==device&&!c.committed){c.committed=true;c.irp=ptr::null_mut();}
   } else if has_pending {
