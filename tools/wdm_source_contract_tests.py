@@ -46,8 +46,11 @@ for required in (
         errors.append(f"missing WDM implementation contract: {required}")
 
 for symbol in (
-    "IoCsqInitialize", "IoCsqInitializeEx", "IoCsqInsertIrp",
-    "IoCsqInsertIrpEx", "IoCsqRemoveIrp", "IoCsqRemoveNextIrp",
+    "IoAllocateIrp", "IoFreeIrp", "IoBuildDeviceIoControlRequest",
+    "IoCallDriver", "IoCompleteRequest", "IoAcquireCancelSpinLock",
+    "IoReleaseCancelSpinLock", "IoCsqInitialize", "IoCsqInitializeEx",
+    "IoCsqInsertIrp", "IoCsqInsertIrpEx", "IoCsqRemoveIrp",
+    "IoCsqRemoveNextIrp",
 ):
     if symbol not in exports or f'"name": "{symbol}"' not in manifest:
         errors.append(f"missing kernel export or manifest entry: {symbol}")
