@@ -459,7 +459,7 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
  if status!=STATUS_PENDING&&!terminal {
   unsafe{
    let status_bytes=status.to_le_bytes();
-   ptr::copy_nonoverlapping(status_bytes.as_ptr(),(*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET),status_bytes.len());
+   ptr::copy_nonoverlapping(status_bytes.as_ptr(),ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET),status_bytes.len());
    io_complete_request(irp,0);
   }
  }
