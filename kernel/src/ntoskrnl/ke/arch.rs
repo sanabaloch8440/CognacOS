@@ -1782,7 +1782,11 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     }
 
     let record_offset = 0x28usize;
-    let context_offset = (record_offset + AMD64_EXCEPTION_RECORD_SIZE + 15) & !15;
+    // The user entry RSP must be 8 mod 16 at function entry, but the
+    // Windows AMD64 CONTEXT itself must be 16-byte aligned (its FltSave
+    // region is consumed by aligned FXSAVE/FXRSTOR paths). Leave an 8-byte
+    // gap after the EXCEPTION_RECORD so both ABI requirements hold.
+    let context_offset = ((record_offset + AMD64_EXCEPTION_RECORD_SIZE + 7) & !15) + 8;
     let total = context_offset + AMD64_CONTEXT_SIZE + 16;
     let Some(raw_start) = trap.rsp.checked_sub(total as u64) else {
         crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, STATUS_ACCESS_VIOLATION);
