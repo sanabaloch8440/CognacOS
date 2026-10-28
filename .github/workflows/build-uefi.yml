@@ -894,6 +894,16 @@ jobs:
           else
             echo "RUNTIME RESULT: NOT RUN - no QEMU serial log was produced." | tee -a "$log"
           fi
+          echo "BEEP DEVICE-CONTROL RESULT: NOT TESTED - this run has not submitted a Windows device-control request." | tee -a "$log"
+          if [[ -f build/beep-driver-assessment/audio.txt ]]; then
+            cat build/beep-driver-assessment/audio.txt | tee -a "$log"
+          fi
+          if grep -Fq "beep.sys device and dispatch registration passed." build/serial.log 2>/dev/null &&
+             grep -Fq "AUDIO RESULT: PASS" build/beep-driver-assessment/audio.txt 2>/dev/null; then
+            echo "FINAL RESULT: PARTIAL PASS - driver initialization and QEMU speaker audio path passed; device-control handling remains unverified." | tee -a "$log"
+          else
+            echo "FINAL RESULT: INCOMPLETE - review driver initialization and audio capture results above." | tee -a "$log"
+          fi
       - name: Upload Rust artifacts and boot log
         if: always()
         uses: actions/upload-artifact@v4
