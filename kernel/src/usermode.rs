@@ -280,7 +280,23 @@ pub unsafe fn run_loaded_image(space: &mut AddressSpace, image: LoadedImage) -> 
     }
     let enabled_xstate = u64::from_le_bytes(xstate_header[0..8].try_into().unwrap());
     let xstate_size = u32::from_le_bytes(xstate_header[16..20].try_into().unwrap());
-    if enabled_xstate & 3 != 3 || enabled_xstate & !3 != 0 || xstate_size < 576 {
+    // XSAVE is optional on this boot path. If the CPU/kernel could not
+    // enable it, the published KUSER configuration must be consistently
+    // disabled (mask=0, size=0). Otherwise require exactly x87+SSE and a
+    // standard area large enough for legacy x87/SSE state.
+    let xstate_config_valid = match enabled_xstate {
+        0 => xstate_size == 0,
+        3 => xstate_size >= 576,
+        _ => false,
+    };
+    if !xstate_config_valid {
+        unsafe {
+            crate::serial_write(b"[DBG][NTOSKRNL][USER] invalid KUSER XState config mask=");
+            crate::serial_write_hex(enabled_xstate);
+            crate::serial_write(b" size=");
+            crate::serial_write_hex(xstate_size as u64);
+            crate::serial_write(b"\\r\\n");
+        }
         return Err(VmError::PermissionDenied);
     }
     if unsafe { space.copy_to_user(crate::process::KUSER_SHARED_DATA_ADDRESS + crate::process::KUSER_XSTATE_OFFSET,
