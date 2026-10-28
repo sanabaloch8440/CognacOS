@@ -927,38 +927,18 @@ fn track_irp_device(irp:*mut Irp, device:*mut DeviceObject)->bool {
 /// Release the IRP's device references once. The caller must keep the IRP
 /// allocated until this function returns.
 fn release_irp_active_op(irp:*mut Irp) {
- let terminal_last={
+ let (sync_terminal,release_regular_rundown)={
   let mut state=WDM.lock();
   let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
   if state.irps[index].active_ops==0{return}
-  if state.irps[index].active_ops==1&&state.irps[index].completion_state==2 {
-   // Keep one finalization pin until rundown is released and the event is
-   // signaled. Thread exit observes this pin and cannot abandon stack storage.
-   true
-  } else {
-   state.irps[index].active_ops-=1;
-   false
-  }
+  state.irps[index].active_ops-=1;
+  let drained=state.irps[index].active_ops==0;
+  (drained&&state.irps[index].completion_state==3,
+   drained&&state.irps[index].completion_state==2&&state.irps[index].outstanding_count!=0)
  };
- if terminal_last {
-  release_irp_device_rundown(irp);
-  let event={
-   let state=WDM.lock();
-   state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp))
-    .map(|slot|slot.sync_event).unwrap_or(ptr::null_mut())
-  };
-  if !event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(event.cast(),0,0);}}
-  {
-   let mut state=WDM.lock();
-   if let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {
-    if state.irps[index].active_ops!=0{state.irps[index].active_ops-=1;}
-    if state.irps[index].active_ops==0&&state.irps[index].completion_state==2 {
-     let _=sync_queue_detach_locked(&mut state,irp);
-    }
-   }
-  }
-  try_free_completed_sync_ioctl_irp(irp);
- }
+ if sync_terminal {finalize_terminal_sync_irp(irp);return}
+ if release_regular_rundown {release_irp_device_rundown(irp);}
+ try_free_completed_sync_ioctl_irp(irp);
 }
 
 /// Drop every device rundown reference attached to an IRP exactly once.
@@ -1183,6 +1163,32 @@ fn try_free_completed_sync_ioctl_irp(irp:*mut Irp) {
  if ready {unsafe{io_free_irp(irp);}}
 }
 
+/// Finish the last phase of a builder-owned synchronous IRP. State 3 means the
+/// IRP is terminal but still pinned so thread exit cannot release the caller's
+/// event/IOSB storage between queue detachment and event signaling.
+fn finalize_terminal_sync_irp(irp:*mut Irp) {
+ let event={
+  let mut state=WDM.lock();
+  let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+  if !state.irps[index].built_sync_ioctl||state.irps[index].completion_state!=3||state.irps[index].active_ops!=0{return}
+  state.irps[index].active_ops=1; // temporary notification pin
+  state.irps[index].sync_event
+ };
+ release_irp_device_rundown(irp);
+ if !event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(event.cast(),0,0);}}
+ {
+  let mut state=WDM.lock();
+  if let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {
+   if state.irps[index].completion_state==3&&state.irps[index].active_ops==1 {
+    state.irps[index].active_ops=0;
+    state.irps[index].completion_state=2;
+    let _=sync_queue_detach_locked(&mut state,irp);
+   }
+  }
+ }
+ try_free_completed_sync_ioctl_irp(irp);
+}
+
 fn finalize_irp_status(irp:*mut Irp) {
  if irp.is_null(){return}
  let base=unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>()};
@@ -1296,28 +1302,29 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
  {
   let mut state=WDM.lock();
   if let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {
-   // A malformed stack is retryable; a terminal unwind permanently closes it.
-   state.irps[i].completion_state=if finished {2}else{0};
+   // Synchronous builder IRPs stay queued/pinned through notification so
+   // thread exit cannot race the last event signal.
+   state.irps[i].completion_state=if !finished {0}else if state.irps[i].built_sync_ioctl {3}else{2};
   }
  }
  if finished {
-  // Remove the request from the creator's queue before waking it. finalize_irp_status
-  // has published the IOSB, and terminal state is now visible.
-  let (completion_event,callbacks_drained)={
-   let mut state=WDM.lock();
-   let active_zero=state.irps.iter().find(|slot|slot.used&&ptr::eq(&slot.object,irp))
-    .is_some_and(|slot|slot.active_ops==0);
-   let event=if active_zero&&state.irps.iter().any(|slot|slot.used&&ptr::eq(&slot.object,irp)){
-    sync_queue_detach_locked(&mut state,irp)
-   }else{ptr::null_mut()};
-   (event,active_zero)
-  };
-  if callbacks_drained {release_irp_device_rundown(irp);}
   io_pnp_manager_irp_completed(irp);
-  // Publish terminal state and release device/PnP rundown before waking the
-  // synchronous caller, so the resumed thread cannot race teardown.
-  if !completion_event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(completion_event.cast(),0,0);}}
-  try_free_completed_sync_ioctl_irp(irp);
+  let sync_builder={
+   let state=WDM.lock();
+   state.irps.iter().find(|slot|slot.used&&ptr::eq(&slot.object,irp))
+    .is_some_and(|slot|slot.built_sync_ioctl)
+  };
+  if sync_builder {
+   finalize_terminal_sync_irp(irp);
+  } else {
+   let callbacks_drained={
+    let state=WDM.lock();
+    state.irps.iter().find(|slot|slot.used&&ptr::eq(&slot.object,irp))
+     .is_some_and(|slot|slot.active_ops==0)
+   };
+   if callbacks_drained {release_irp_device_rundown(irp);}
+   try_free_completed_sync_ioctl_irp(irp);
+  }
  }
 }
 #[unsafe(export_name = "IoMarkIrpPending")]
@@ -1834,7 +1841,7 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
    while !cursor.is_null(){
     let Some(index)=state.irps.iter().position(|slot|slot.used&&ptr::eq(&slot.object,cursor)) else{break};
     let next=state.irps[index].sync_next;
-    if state.irps[index].completion_state==1||state.irps[index].active_ops!=0 {
+    if state.irps[index].completion_state==1||state.irps[index].completion_state==3||state.irps[index].active_ops!=0 {
      completion_in_progress=true;cursor=next;continue
     }
     if count==pending.len(){more=true;break}
