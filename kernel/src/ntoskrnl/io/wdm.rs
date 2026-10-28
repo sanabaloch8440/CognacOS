@@ -75,7 +75,7 @@ unsafe impl Send for DeviceSlot {}
 #[repr(C)]
 const MAX_IOCTL_SYSTEM_BUFFER:usize=64*1024;
 struct IrpSlot {
- used: bool, owned_mdl: *mut c_void, completion_state:u8, active_ops:u32,
+ used: bool, owned_mdl: *mut c_void, completion_state:u8, suspended_completion:bool, free_requested:bool, active_ops:u32,
  outstanding_count:usize, outstanding_devices:[*mut DeviceObject;16],
  // Keep object and stack adjacent: WDM requires the stack array to immediately
  // follow the fixed-size IRP allocation.
@@ -97,7 +97,7 @@ impl WdmState {
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
+   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, suspended_completion:false, free_requested:false, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();16], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false } }; MAX_WDM_IRPS],
   }
  }
 }
@@ -726,7 +726,7 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
  if stack_size<=0||stack_size as usize>MAX_WDM_STACK_LOCATIONS||charge_quota>1{return ptr::null_mut()}
  let mut state=WDM.lock();
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
- slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.object.bytes.fill(0);
+ slot.used=true;slot.owned_mdl=ptr::null_mut();slot.completion_state=0;slot.suspended_completion=false;slot.free_requested=false;slot.active_ops=0;slot.outstanding_count=0;slot.outstanding_devices.fill(ptr::null_mut());slot.system_buffer.fill(0);slot.system_buffer_len=0;slot.ioctl_output_buffer=ptr::null_mut();slot.ioctl_output_len=0;slot.built_sync_ioctl=false;slot.object.bytes.fill(0);
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  // IRP.Size is sizeof(IRP), not the total IRP-plus-stack allocation size.
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
@@ -746,12 +746,19 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
   // A pending IRP remains owned by the lower stack until terminal
   // completion. Never turn an in-flight packet into a freeable packet merely
   // because IoCallDriver's dispatch frame has returned.
-  if slot.completion_state==1 || slot.active_ops!=0
+  if slot.completion_state==1 {
+   // A completion callback may free a driver-created IRP and then return
+   // STATUS_MORE_PROCESSING_REQUIRED. Defer physical reclamation until the
+   // callback's return value makes that ownership transfer unambiguous.
+   slot.free_requested=true;
+   return;
+  }
+  if slot.completion_state==3 || slot.active_ops!=0
       || (slot.completion_state==0 && slot.outstanding_count!=0) {
    return;
   }
-  // Close the packet before dropping its device references so a racing
-  // completion cannot begin against storage being released.
+  slot.free_requested=false;
+  slot.suspended_completion=false;
   slot.completion_state=2;
  }
  release_irp_device_rundown(irp);
@@ -991,7 +998,7 @@ fn try_free_completed_sync_ioctl_irp(irp:*mut Irp) {
  let ready={
   let state=WDM.lock();
   state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp))
-   .is_some_and(|s|s.built_sync_ioctl&&s.completion_state==2&&s.active_ops==0)
+   .is_some_and(|s|(s.built_sync_ioctl||s.free_requested)&&s.completion_state==2&&s.active_ops==0)
  };
  if ready {unsafe{io_free_irp(irp);}}
 }
@@ -1028,6 +1035,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   let mut state=WDM.lock();
   let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
   if state.irps[i].completion_state!=0{return}
+  state.irps[i].suspended_completion=false;
   state.irps[i].completion_state=1;
  }
  let mut finished=false;
@@ -1070,9 +1078,27 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
    if let Some(routine)=routine {
     let result=unsafe{routine(device_object,irp,context)};
     if result==0xC0000016u32 as i32 {
-     let mut state=WDM.lock();
-     if let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {state.irps[i].completion_state=0;}
+     {
+      let mut state=WDM.lock();
+      if let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {
+       if state.irps[i].free_requested {
+        state.irps[i].completion_state=2;
+        state.irps[i].suspended_completion=false;
+       } else {
+        state.irps[i].completion_state=0;
+        state.irps[i].suspended_completion=true;
+       }
+      } else {return}
+     }
+     try_free_completed_sync_ioctl_irp(irp);
      return
+    } else {
+     // Freeing an IRP is only legal from a completion callback when that
+     // callback stops completion; otherwise retain the packet.
+     let mut state=WDM.lock();
+     if let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {
+      state.irps[i].free_requested=false;
+     }
     }
    }
   }
@@ -1279,24 +1305,35 @@ pub unsafe extern "system" fn io_get_lower_device_object(device:*mut DeviceObjec
 /// Reset an allocated IRP for reuse without releasing its allocation.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_reuse_irp(irp:*mut Irp, status:i32) {
-    if irp.is_null(){return}
-    let mut state=WDM.lock();
-    let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
-    let count=slot.object.bytes[0x42] as usize;
-    if count==0||count>slot.stack.len()||slot.completion_state==1||slot.active_ops!=0||slot.outstanding_count!=0{return}
-    slot.completion_state=0;
-    slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
-    // Preserve Type, Size, StackCount, AllocationFlags, and the allocation,
-    // but reset per-request pointers/flags/status before reusing the packet.
-    slot.object.bytes[0x08..0x30].fill(0);
-    slot.object.bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&status.to_le_bytes());
-    slot.object.bytes[IRP_INFORMATION_OFFSET..IRP_INFORMATION_OFFSET+8].fill(0);
-    slot.object.bytes[0x41]=0;
-    slot.object.bytes[0x44..0x48].fill(0);
-    slot.object.bytes[0x48..0x78].fill(0);
-    slot.object.bytes[0x43]=(count+1) as u8;
-    let current=unsafe{slot.stack.as_mut_ptr().add(count).cast::<c_void>()};
-    unsafe{write_ptr(slot.object.bytes.as_mut_ptr(),IRP_STACK_OFFSET,current);}
+ if irp.is_null(){return}
+ let release_old_refs={
+  let mut state=WDM.lock();
+  let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+  let slot=&mut state.irps[i];
+  let count=slot.object.bytes[0x42] as usize;
+  if count==0||count>slot.stack.len()||slot.completion_state==1||slot.completion_state==3
+    ||slot.active_ops!=0||slot.built_sync_ioctl||!slot.owned_mdl.is_null()
+    ||!unsafe{read_ptr(slot.object.bytes.as_ptr(),0x08)}.is_null()
+    ||(slot.outstanding_count!=0&&!slot.suspended_completion) {return}
+  if slot.suspended_completion {slot.completion_state=3;slot.suspended_completion=false;true}else{false}
+ };
+ if release_old_refs {release_irp_device_rundown(irp);}
+ let mut state=WDM.lock();
+ let Some(i)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+ let slot=&mut state.irps[i];
+ let count=slot.object.bytes[0x42] as usize;
+ if count==0||count>slot.stack.len()||slot.active_ops!=0||slot.outstanding_count!=0{return}
+ slot.completion_state=0;slot.suspended_completion=false;slot.free_requested=false;
+ slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
+ slot.object.bytes[0x08..0x30].fill(0);
+ slot.object.bytes[IRP_STATUS_OFFSET..IRP_STATUS_OFFSET+4].copy_from_slice(&status.to_le_bytes());
+ slot.object.bytes[IRP_INFORMATION_OFFSET..IRP_INFORMATION_OFFSET+8].fill(0);
+ slot.object.bytes[0x41]=0;
+ slot.object.bytes[0x44..0x48].fill(0);
+ slot.object.bytes[0x48..0x78].fill(0);
+ slot.object.bytes[0x43]=(count+1) as u8;
+ let current=unsafe{slot.stack.as_mut_ptr().add(count).cast::<c_void>()};
+ unsafe{write_ptr(slot.object.bytes.as_mut_ptr(),IRP_STACK_OFFSET,current);}
 }
 
 
