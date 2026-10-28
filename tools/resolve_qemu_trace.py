@@ -59,9 +59,14 @@ def in_ranges(pc, ranges):
 def useful_source_line(output):
     """True only for actual file:line records, not merely a function name."""
     for line in output.splitlines():
-        if re.search(r"(?:^|/)[^:\n]+:\d+(?::\d+)?$", line.strip()):
-            if not re.search(r":(?:0|\?)$", line.strip()):
-                return True
+        match = re.search(r"([^:\\n]+):(\\d+)(?::(\\d+))?$", line.strip())
+        if not match:
+            continue
+        # addr2line may append a column (often :0); test the line number,
+        # not the final numeric field, so file.rs:398:0 remains valid.
+        source, line_number, _column = match.groups()
+        if source not in ("??", "??/??") and int(line_number) > 0:
+            return True
     return False
 
 
