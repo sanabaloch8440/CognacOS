@@ -1,8 +1,7 @@
-//! Early boot ATA PIO disk transport and live GPT/ext4 readback test.
-//! This path is deliberately read-only and bounded. It targets QEMU's primary
-//! IDE master (the boot image); the primary slave remains reserved for paging.
+//! Bounded ATA PIO disk transport and end-to-end GPT/ext4 read/write validation.
+//! Targets QEMU's primary IDE master; each ATA command transfers one sector.
 use cognacos_ext4 as extfs;
-use extfs::ReadOnlyBlockDevice;
+use extfs::{ReadOnlyBlockDevice, BlockDevice};
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::hal::IrqSpinLock;
 
@@ -18,6 +17,8 @@ const ALT_STATUS: u16 = 0x3f6;
 const COMMAND: u16 = 0x1f7;
 const CMD_IDENTIFY: u8 = 0xec;
 const CMD_READ_SECTORS: u8 = 0x20;
+const CMD_WRITE_SECTORS: u8 = 0x30;
+const CMD_FLUSH_CACHE: u8 = 0xe7;
 const BSY: u8 = 0x80;
 const DRQ: u8 = 0x08;
 const ERR: u8 = 0x01;
@@ -105,6 +106,33 @@ impl AtaPrimaryMaster {
         if sectors == 0 { return Err(AtaError::Offline); }
         Ok(Self { sectors: sectors.min(MAX_LBA28_SECTORS) })
     }
+    fn write_sector(&mut self, lba: u64, data: &[u8; SECTOR_BYTES]) -> Result<(), AtaError> {
+        if lba >= self.sectors || lba >= MAX_LBA28_SECTORS { return Err(AtaError::Bounds); }
+        unsafe {
+            out8(DRIVE, 0xe0 | ((lba >> 24) as u8 & 0x0f));
+            delay_400ns();
+            out8(SECTOR_COUNT, 1);
+            out8(LBA_LOW, lba as u8);
+            out8(LBA_MID, (lba >> 8) as u8);
+            out8(LBA_HIGH, (lba >> 16) as u8);
+            out8(COMMAND, CMD_WRITE_SECTORS);
+        }
+        delay_400ns();
+        wait_drq()?;
+        for chunk in data.chunks_exact(2) {
+            let word = u16::from_le_bytes([chunk[0], chunk[1]]);
+            unsafe { core::arch::asm!("out dx, ax", in("dx") DATA, in("ax") word, options(nomem, nostack, preserves_flags)); }
+        }
+        let _ = wait_not_busy()?;
+        Ok(())
+    }
+    fn flush_cache(&mut self) -> Result<(), AtaError> {
+        let _ = wait_not_busy()?;
+        unsafe { out8(DRIVE, 0xe0); delay_400ns(); out8(COMMAND, CMD_FLUSH_CACHE); }
+        let _ = wait_not_busy()?;
+        Ok(())
+    }
+
     fn read_sector(&mut self, lba: u64, out: &mut [u8; SECTOR_BYTES]) -> Result<(), AtaError> {
         if lba >= self.sectors || lba >= MAX_LBA28_SECTORS { return Err(AtaError::Bounds); }
         unsafe {
@@ -146,6 +174,28 @@ impl ReadOnlyBlockDevice for AtaPrimaryMaster {
         }
         Ok(())
     }
+}
+impl BlockDevice for AtaPrimaryMaster {
+    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), Self::DeviceError> {
+        let end = offset.checked_add(data.len() as u64).ok_or(AtaError::Bounds)?;
+        if end > self.capacity_bytes() { return Err(AtaError::Bounds); }
+        let mut done = 0usize;
+        let mut sector = [0u8; SECTOR_BYTES];
+        while done < data.len() {
+            let pos = offset.checked_add(done as u64).ok_or(AtaError::Bounds)?;
+            let lba = pos / SECTOR_BYTES as u64;
+            let within = (pos % SECTOR_BYTES as u64) as usize;
+            let count = core::cmp::min(SECTOR_BYTES - within, data.len() - done);
+            if within != 0 || count != SECTOR_BYTES {
+                self.read_sector(lba, &mut sector)?;
+            }
+            sector[within..within + count].copy_from_slice(&data[done..done + count]);
+            self.write_sector(lba, &sector)?;
+            done += count;
+        }
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<(), Self::DeviceError> { self.flush_cache() }
 }
 
 fn u16_at(b: &[u8], o: usize) -> Option<u16> {
@@ -259,6 +309,20 @@ fn disk_read_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
         Err(_) => crate::io::IoStatus::DeviceError,
     }
 }
+fn disk_write_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
+    if !valid_kernel_buffer(irp) { return crate::io::IoStatus::DeviceError; }
+    let mut guard = STORAGE_DISK.lock();
+    let disk = match guard.as_mut() { Some(d) => d, None => return crate::io::IoStatus::NoSuchDevice };
+    let buffer = unsafe { core::slice::from_raw_parts(irp.user_buffer as *const u8, irp.length) };
+    match disk.write_at(irp.byte_offset, buffer) {
+        Ok(()) => { irp.information = irp.length; crate::io::IoStatus::Success }
+        Err(_) => crate::io::IoStatus::DeviceError,
+    }
+}
+fn disk_flush_cache() -> Result<(), crate::io::IoError> {
+    let mut guard = STORAGE_DISK.lock();
+    guard.as_mut().ok_or(crate::io::IoError::UnknownDevice)?.flush().map_err(|_| crate::io::IoError::DeviceBusy)
+}
 
 /// Partition class READ dispatch: validate partition-relative bounds, translate
 /// to disk byte offsets, and forward through the registered disk object's IRP.
@@ -288,11 +352,37 @@ fn partition_read_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
     }
 }
 
-fn register_storage_device(name: &[u8], read: crate::io::DispatchFn) -> Result<u32, crate::io::IoError> {
+fn partition_write_dispatch(irp: &mut crate::io::Irp) -> crate::io::IoStatus {
+    if !valid_kernel_buffer(irp) { return crate::io::IoStatus::DeviceError; }
+    let end = match irp.byte_offset.checked_add(irp.length as u64) {
+        Some(v) => v, None => return crate::io::IoStatus::DeviceError,
+    };
+    if end > PARTITION_CAPACITY.load(Ordering::Acquire) { return crate::io::IoStatus::DeviceError; }
+    let absolute = match PARTITION_START.load(Ordering::Acquire).checked_add(irp.byte_offset) {
+        Some(v) => v, None => return crate::io::IoStatus::DeviceError,
+    };
+    let disk_id = DISK_DEVICE_ID.load(Ordering::Acquire);
+    if disk_id == 0 { return crate::io::IoStatus::NoSuchDevice; }
+    let child = match crate::io::submit_write_at(disk_id, absolute, irp.user_buffer as *const u8, irp.length) {
+        Ok(id) => id, Err(_) => return crate::io::IoStatus::DeviceError,
+    };
+    let dispatched = crate::io::dispatch_one(child);
+    let result = crate::io::query_irp(child);
+    let _ = crate::io::release_irp(child);
+    match (dispatched, result) {
+        (Ok(crate::io::IoStatus::Success), Some(r)) if r.status == crate::io::IoStatus::Success && r.information == irp.length => {
+            irp.information = irp.length;
+            crate::io::IoStatus::Success
+        }
+        _ => crate::io::IoStatus::DeviceError,
+    }
+}
+fn register_storage_device(name: &[u8], read: crate::io::DispatchFn, write: crate::io::DispatchFn) -> Result<u32, crate::io::IoError> {
     let mut dispatch: [Option<crate::io::DispatchFn>; 16] = [None; 16];
     dispatch[crate::io::IRP_MJ_CREATE as usize] = Some(success_dispatch);
     dispatch[crate::io::IRP_MJ_CLOSE as usize] = Some(success_dispatch);
     dispatch[crate::io::IRP_MJ_READ as usize] = Some(read);
+    dispatch[crate::io::IRP_MJ_WRITE as usize] = Some(write);
     crate::io::register_device(name, dispatch)
 }
 
@@ -317,6 +407,25 @@ impl ReadOnlyBlockDevice for IoManagerBlockDevice {
         }
     }
 }
+impl BlockDevice for IoManagerBlockDevice {
+    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), Self::DeviceError> {
+        if data.len() > crate::io::MAX_IRP_BYTES { return Err(crate::io::IoError::BufferTooLarge); }
+        let id = crate::io::submit_write_at(self.device_id, offset, data.as_ptr(), data.len())?;
+        let dispatched = crate::io::dispatch_one(id);
+        let result = crate::io::query_irp(id);
+        let release = crate::io::release_irp(id);
+        match (dispatched, result, release) {
+            (Ok(crate::io::IoStatus::Success), Some(r), Ok(()))
+                if r.status == crate::io::IoStatus::Success && r.information == data.len() => Ok(()),
+            (Err(e), _, _) => Err(e),
+            (_, _, Err(e)) => Err(e),
+            _ => Err(crate::io::IoError::UnknownIrp),
+        }
+    }
+    fn flush(&mut self) -> Result<(), Self::DeviceError> {
+        disk_flush_cache()
+    }
+}
 
 /// End-to-end guest check. The physical port driver backs a registered disk
 /// object; GPT and ext4 then read only through disk/partition READ IRPs.
@@ -324,7 +433,7 @@ pub fn run_ext4_readme_test() -> bool {
     let disk = match AtaPrimaryMaster::initialize() { Ok(d) => d, Err(_) => return false };
     DISK_CAPACITY.store(disk.sectors.saturating_mul(SECTOR_BYTES as u64), Ordering::Release);
     *STORAGE_DISK.lock() = Some(disk);
-    let disk_id = match register_storage_device(b"\\Device\\Harddisk0", disk_read_dispatch) {
+    let disk_id = match register_storage_device(b"\\Device\\Harddisk0", disk_read_dispatch, disk_write_dispatch) {
         Ok(id) => id, Err(_) => return false,
     };
     DISK_DEVICE_ID.store(disk_id, Ordering::Release);
@@ -337,7 +446,7 @@ pub fn run_ext4_readme_test() -> bool {
     let capacity = match partition.capacity_bytes() { Ok(v) => v, Err(_) => return false };
     PARTITION_START.store(start, Ordering::Release);
     PARTITION_CAPACITY.store(capacity, Ordering::Release);
-    let partition_id = match register_storage_device(b"\\Device\\Harddisk0\\Partition1", partition_read_dispatch) {
+    let partition_id = match register_storage_device(b"\\Device\\Harddisk0\\Partition1", partition_read_dispatch, partition_write_dispatch) {
         Ok(id) => id, Err(_) => return false,
     };
     PARTITION_DEVICE_ID.store(partition_id, Ordering::Release);
