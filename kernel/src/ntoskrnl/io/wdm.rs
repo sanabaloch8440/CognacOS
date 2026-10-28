@@ -1832,4 +1832,19 @@ mod wdm_tests {
   assert_eq!(unsafe{parse_cm_resource_list(list.as_ptr().cast(),&mut parsed)},Err(STATUS_INVALID_PARAMETER));
  }
 
+ #[test]
+ fn pnp_manager_sends_real_start_stop_and_ordered_remove_irps() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  driver.major_function[0x1b]=Some(pnp_start_complete_success);
+  assert_eq!(unsafe{IoPnPStartDevice(device,ptr::null(),ptr::null())},STATUS_SUCCESS);
+  assert_eq!(io_pnp_state(device),PNP_STATE_STARTED as i32);
+  assert_eq!(unsafe{IoPnPStopDevice(device)},STATUS_SUCCESS);
+  assert_eq!(io_pnp_state(device),PNP_STATE_STOPPED as i32);
+  assert_eq!(unsafe{IoPnPRemoveDevice(device)},STATUS_SUCCESS);
+  assert_eq!(io_pnp_state(device),PNP_STATE_REMOVED as i32);
+  unsafe{io_delete_device(device);}
+ }
+
 }
