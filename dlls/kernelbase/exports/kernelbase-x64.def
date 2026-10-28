@@ -1,8 +1,9 @@
-; Starter subset only; forwarders/ordinals must be compared against a pinned Windows build.
+; CognacOS kernelbase.dll starter export surface.
+; Forwarders are PE export-directory forwarder strings.
 LIBRARY kernelbase.dll
 EXPORTS
-    AcquireSRWLockExclusive
-    AcquireSRWLockShared
+    AcquireSRWLockExclusive=NTDLL.RtlAcquireSRWLockExclusive
+    AcquireSRWLockShared=NTDLL.RtlAcquireSRWLockShared
     ActivateActCtx
     AddAtomA
     AddAtomW
@@ -41,9 +42,9 @@ EXPORTS
     DeleteFileW
     DeviceIoControl
     DuplicateHandle
-    EncodePointer
-    EncodeSystemPointer
-    EnterCriticalSection
+    EncodePointer=NTDLL.RtlEncodePointer
+    EncodeSystemPointer=NTDLL.RtlEncodeSystemPointer
+    EnterCriticalSection=NTDLL.RtlEnterCriticalSection
     ExitProcess
     ExitThread
     ExpandEnvironmentStringsA
@@ -93,12 +94,12 @@ EXPORTS
     GetSystemTime
     GetTickCount
     GetTickCount64
-    HeapAlloc
+    HeapAlloc=NTDLL.RtlAllocateHeap
     HeapCreate
     HeapDestroy
-    HeapFree
-    HeapReAlloc
-    HeapSize
+    HeapFree=NTDLL.RtlFreeHeap
+    HeapReAlloc=NTDLL.RtlReAllocateHeap
+    HeapSize=NTDLL.RtlSizeHeap
     InitializeCriticalSection
     InitializeCriticalSectionAndSpinCount
     InitializeCriticalSectionEx
@@ -109,7 +110,7 @@ EXPORTS
     InterlockedIncrement
     IsDebuggerPresent
     IsProcessorFeaturePresent
-    LeaveCriticalSection
+    LeaveCriticalSection=NTDLL.RtlLeaveCriticalSection
     LoadLibraryA
     LoadLibraryExA
     LoadLibraryExW

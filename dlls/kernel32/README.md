@@ -13,3 +13,6 @@ Most placeholders return zero. `GetLastError` returns `ERROR_CALL_NOT_IMPLEMENTE
 cargo check --manifest-path dlls/kernel32/Cargo.toml --target x86_64-unknown-linux-gnu
 cargo build --manifest-path dlls/kernel32/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
 ```
+
+
+The `.def` can declare PE forwarders (for example `Name=NTDLL.RtlName`). Forwarders are not generated as Rust function bodies. This starter manifest is not yet a complete Windows 11 x64 inventory.

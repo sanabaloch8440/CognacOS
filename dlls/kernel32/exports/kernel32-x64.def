@@ -1,5 +1,5 @@
-; CognacOS kernel32.dll x64 export surface.
-; Named placeholders only; this is not a complete Windows 11 export inventory.
+; CognacOS kernel32.dll starter export surface.
+; Forwarders are PE export-directory forwarder strings.
 LIBRARY kernel32.dll
 EXPORTS
     ActivateActCtx
@@ -91,7 +91,7 @@ EXPORTS
     DuplicateHandle
     EndUpdateResourceA
     EndUpdateResourceW
-    EnterCriticalSection
+    EnterCriticalSection=NTDLL.RtlEnterCriticalSection
     EnumCalendarInfoA
     EnumCalendarInfoW
     EnumDateFormatsA
@@ -237,13 +237,13 @@ EXPORTS
     GlobalLock
     GlobalMemoryStatusEx
     GlobalUnlock
-    HeapAlloc
+    HeapAlloc=NTDLL.RtlAllocateHeap
     HeapCompact
     HeapCreate
     HeapDestroy
-    HeapFree
-    HeapReAlloc
-    HeapSize
+    HeapFree=NTDLL.RtlFreeHeap
+    HeapReAlloc=NTDLL.RtlReAllocateHeap
+    HeapSize=NTDLL.RtlSizeHeap
     InitializeCriticalSection
     InitializeCriticalSectionAndSpinCount
     InitializeCriticalSectionEx
@@ -261,7 +261,7 @@ EXPORTS
     IsProcessorFeaturePresent
     IsValidCodePage
     IsValidLocale
-    LeaveCriticalSection
+    LeaveCriticalSection=NTDLL.RtlLeaveCriticalSection
     LoadLibraryA
     LoadLibraryExA
     LoadLibraryExW
