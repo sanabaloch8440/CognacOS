@@ -836,6 +836,17 @@ fn release_irp_active_op(irp:*mut Irp) {
 }
 
 /// Drop every device rundown reference attached to an IRP exactly once.
+fn try_finalize_deleting_device(device:*mut DeviceObject) {
+ if device.is_null(){return}
+ let finalize={
+  let state=WDM.lock();
+  state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device))
+   .is_some_and(|s|s.deleting&&s.object.reference_count<=1&&s.remove_lock_count==0
+    &&s.active_dispatches==0&&s.outstanding_irps==0&&!s.power_transition)
+ };
+ if finalize {unsafe{io_delete_device(device);}}
+}
+
 fn release_irp_device_rundown(irp:*mut Irp) {
  let devices={
   let mut state=WDM.lock();
@@ -851,7 +862,9 @@ fn release_irp_device_rundown(irp:*mut Irp) {
   }
   devices
  };
- for device in devices.into_iter().filter(|d|!d.is_null()) {unsafe{io_delete_device(device)};}
+ // Releasing an IRP's rundown pin must never request device deletion. Only
+ // finalize objects whose owner has already called IoDeleteDevice.
+ for device in devices.into_iter().filter(|d|!d.is_null()) {try_finalize_deleting_device(device);}
 }
 
 fn release_device_dispatch_rundown(device:*mut DeviceObject){
