@@ -57,16 +57,10 @@ This audit is based on the uploaded x64 native PE32+ driver `beep.sys` (40,960 b
 
 The existing kernel already contains implementations or resolver candidates for several imports: device creation/deletion, cancel-safe IRP queue operations, IRP completion, cancel-spin-lock operations, spin locks, IRQL lowering, events, device-queue removal, and Unicode-string initialization.
 
-The following names did not appear in the current named-export resolver dispatch during the initial audit and require implementation or a verified ABI-correct alias:
+The initial resolver gaps below have been reduced by subsequent commits. The StartIo entries are now registered to callable routines; pageable-section locking and requestor-session lookup remain outstanding. FAST_MUTEX and IRQL implementations exist but still require full runtime/guest validation:
 
-- `IoStartPacket`
-- `IoStartNextPacket`
-- `IoSetStartIoAttributes`
 - `MmLockPagableDataSection`
 - `MmUnlockPagableImageSection`
-- `ExAcquireFastMutex`
-- `ExReleaseFastMutex`
-- `KfRaiseIrql`
 - `IoGetRequestorSessionId`
 
 An export-catalogue entry is not proof of implementation. An import must only resolve when the target has the exact x64 calling convention, parameter/return types, and behavior. Unsupported imports must remain unresolved rather than be routed to a generic stub.
@@ -88,3 +82,14 @@ An export-catalogue entry is not proof of implementation. An import must only re
 - `DriverEntry` returns success and the driver creates its expected device object.
 - IRP dispatch/cancel/completion and unload are exercised in the guest without hangs, invalid IRQL transitions, use-after-free, or unresolved imports.
 - The CI log records the exact driver hash and each test stage; host-only PE inspection is not treated as guest validation.
+
+
+## StartIo implementation update (2026-10-28)
+
+The three StartIo imports are now registered to the WDM implementation in `kernel/src/ntoskrnl/io/wdm.rs`:
+
+- `IoStartPacket` tracks the active IRP and queues subsequent packets; keyed mode inserts by ascending sort key.
+- `IoStartNextPacket` promotes the next queued IRP and invokes `DriverStartIo` outside the queue lock.
+- `IoSetStartIoAttributes` records keyed-device and boosted-I/O policy for the device.
+
+The queue table is currently bounded (64 queued IRPs per device, with the existing 32-device limit). This first pass does not yet provide complete Windows cancel-lock ordering, canceled-queued-IRP draining, or I/O priority boosting; those must be added before claiming full StartIo compatibility. The CI build and guest driver test are still required.
