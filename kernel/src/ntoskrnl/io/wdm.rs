@@ -166,6 +166,7 @@ pub(crate) const PNP_STATE_NOT_STARTED:u8=0;
 pub(crate) const PNP_STATE_STARTED:u8=1;
 pub(crate) const PNP_STATE_STOPPED:u8=2;
 pub(crate) const PNP_STATE_REMOVED:u8=3;
+pub(crate) const PNP_STATE_SURPRISE_REMOVED:u8=4;
 /// Only lifecycle-changing minors reserve a transition. Other PnP queries
 /// are dispatched without mutating the device's lifecycle state.
 fn pnp_minor_changes_lifecycle(minor:u8)->bool { matches!(minor,0x00..=0x06|0x17) }
@@ -198,7 +199,8 @@ pub(crate) unsafe fn io_complete_pnp_transition(device:*mut DeviceObject,minor:u
  if status==STATUS_SUCCESS {match minor {
   0x00=>{s.pnp_state=PNP_STATE_STARTED;s.pnp_pending=0;},
   0x01|0x05=>s.pnp_pending=minor,
-  0x02|0x17=>{s.pnp_state=PNP_STATE_REMOVED;s.pnp_pending=0;},
+  0x02=>{s.pnp_state=PNP_STATE_REMOVED;s.pnp_pending=0;},
+  0x17=>{s.pnp_state=PNP_STATE_SURPRISE_REMOVED;s.pnp_pending=0;},
   0x03|0x06=>s.pnp_pending=0,
   0x04=>{s.pnp_state=PNP_STATE_STOPPED;s.pnp_pending=0;},
   _=>{}
@@ -444,6 +446,36 @@ fn io_pnp_manager_irp_completed(irp:*mut Irp){
   if slot.returned {let result=*slot;*slot=ManagedPnpIrp::EMPTY;Some(result)}else{None}
  };
  if let Some(request)=released {unsafe{io_free_irp(request.irp);io_dereference_device_object(request.device)}}
+}
+
+/// Start a PnP device by sending its real START_DEVICE IRP with the
+/// allocated and translated resource lists supplied by the bus/resource arbiter.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn IoPnPStartDevice(device:*mut DeviceObject,allocated:*const c_void,translated:*const c_void)->i32{
+ unsafe{IoPnPDispatchLifecycle(device,IRP_MN_START_DEVICE,allocated,translated)}
+}
+/// Stop a started device through its driver's IRP_MN_STOP_DEVICE dispatch.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn IoPnPStopDevice(device:*mut DeviceObject)->i32{
+ unsafe{IoPnPDispatchLifecycle(device,IRP_MN_STOP_DEVICE,ptr::null(),ptr::null())}
+}
+/// Remove a device using the required surprise-removal-before-remove sequence.
+/// If surprise removal completes asynchronously, call again after its IRP has
+/// completed; the second call observes SURPRISE_REMOVED and sends REMOVE_DEVICE.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn IoPnPRemoveDevice(device:*mut DeviceObject)->i32{
+ if device.is_null(){return STATUS_INVALID_PARAMETER}
+ let state=io_pnp_state(device);
+ if state<0{return STATUS_INVALID_PARAMETER}
+ if state==PNP_STATE_REMOVED{return STATUS_SUCCESS}
+ if state==PNP_STATE_STARTED {
+  let status=unsafe{IoPnPDispatchLifecycle(device,IRP_MN_SURPRISE_REMOVAL,ptr::null(),ptr::null())};
+  if status!=STATUS_SUCCESS{return status}
+ }
+ let state=io_pnp_state(device);
+ if state==PNP_STATE_REMOVED{return STATUS_SUCCESS}
+ if state!=PNP_STATE_SURPRISE_REMOVED&&state!=PNP_STATE_STOPPED&&state!=PNP_STATE_NOT_STARTED{return STATUS_DEVICE_BUSY}
+ unsafe{IoPnPDispatchLifecycle(device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null())}
 }
 
 /// Return the number of currently published children for a bus. This is an
