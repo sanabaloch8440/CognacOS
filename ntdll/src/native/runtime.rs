@@ -5,6 +5,15 @@ use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
 const SRW_EXCLUSIVE: usize = 1usize << (usize::BITS - 1);
 const SRW_READERS: usize = SRW_EXCLUSIVE - 1;
+#[repr(C)]
+struct CognacCriticalSection { debug_info:*mut c_void, lock_count:i32, recursion_count:i32, owning_thread:*mut c_void, lock_semaphore:*mut c_void, spin_count:usize }
+#[inline] unsafe fn atomic_i32_at(p:*mut i32)->&'static core::sync::atomic::AtomicI32{unsafe{&*p.cast::<core::sync::atomic::AtomicI32>()}}
+#[inline] fn current_thread_id()->usize{
+ #[cfg(target_os="windows")]
+ unsafe{let teb:usize;core::arch::asm!("mov {}, gs:[0x30]",out(reg)teb,options(nostack,preserves_flags,readonly));if teb!=0{return core::ptr::read_unaligned((teb+0x48) as *const usize);}}
+ 1
+}
+
 #[inline] unsafe fn atomic_usize_at(p:*mut usize)->&'static core::sync::atomic::AtomicUsize{unsafe{&*p.cast::<AtomicUsize>()}}
 #[inline] fn pointer_cookie()->usize{static COOKIE_ANCHOR:u8=0;(&COOKIE_ANCHOR as *const u8 as usize).rotate_left(13)^(0xA5D3_9E71_C62B_480Fu64 as usize)}
 #[inline] fn encode_pointer(p:usize)->usize{p.rotate_left(17)^pointer_cookie()}
@@ -611,9 +620,7 @@ pub unsafe extern "system" fn RtlDeleteBoundaryDescriptor() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlDeleteCriticalSection() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlDeleteCriticalSection(cs:*mut CognacCriticalSection)->i32{if cs.is_null(){return 0xC000000Du32 as i32;}unsafe{(*cs).owning_thread=core::ptr::null_mut();(*cs).recursion_count=0;atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count)).store(-1,Ordering::Release);}0}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlDeleteElementGenericTable() -> i32 {
@@ -964,9 +971,7 @@ pub unsafe extern "system" fn RtlGetControlSecurityDescriptor() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlGetCriticalSectionRecursionCount() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlGetCriticalSectionRecursionCount(cs:*mut CognacCriticalSection)->i32{if cs.is_null(){return 0;}unsafe{(*cs).recursion_count}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlGetCurrentProcessorNumber()->u32{0}
@@ -1288,19 +1293,13 @@ pub unsafe extern "system" fn RtlInitializeCorrelationVector() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitializeCriticalSection() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlInitializeCriticalSection(cs:*mut CognacCriticalSection)->i32{if cs.is_null(){return 0xC000000Du32 as i32;}unsafe{(*cs).debug_info=core::ptr::null_mut();(*cs).lock_count=-1;(*cs).recursion_count=0;(*cs).owning_thread=core::ptr::null_mut();(*cs).lock_semaphore=core::ptr::null_mut();(*cs).spin_count=0;}0}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitializeCriticalSectionAndSpinCount() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlInitializeCriticalSectionAndSpinCount(cs:*mut CognacCriticalSection,spin_count:u32)->u8{if unsafe{RtlInitializeCriticalSection(cs)}<0{return 0;}unsafe{(*cs).spin_count=spin_count as usize;}1}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlInitializeCriticalSectionEx() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlInitializeCriticalSectionEx(cs:*mut CognacCriticalSection,spin_count:u32,_flags:u32)->i32{if spin_count>0x00FF_FFFF{return 0xC000000Du32 as i32;}let s=unsafe{RtlInitializeCriticalSection(cs)};if s>=0{unsafe{(*cs).spin_count=spin_count as usize;}}s}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlInitializeGenericTable() -> i32 {
@@ -1436,14 +1435,10 @@ pub unsafe extern "system" fn RtlIsCloudFilesPlaceholder() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlIsCriticalSectionLocked() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlIsCriticalSectionLocked(cs:*mut CognacCriticalSection)->u8{if cs.is_null(){return 0;}(unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count)).load(Ordering::Acquire)}!=-1) as u8}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlIsCriticalSectionLockedByThread() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlIsCriticalSectionLockedByThread(cs:*mut CognacCriticalSection)->u8{if cs.is_null(){return 0;}(unsafe{(*cs).owning_thread as usize}==current_thread_id()) as u8}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlIsCurrentThread() -> i32 {
@@ -2387,9 +2382,7 @@ pub unsafe extern "system" fn RtlSetControlSecurityDescriptor() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlSetCriticalSectionSpinCount() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlSetCriticalSectionSpinCount(cs:*mut CognacCriticalSection,spin_count:usize)->usize{if cs.is_null(){return 0;}let old=unsafe{(*cs).spin_count};unsafe{(*cs).spin_count=spin_count;}old}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSetCurrentTransaction() -> i32 {
@@ -2703,9 +2696,7 @@ pub unsafe extern "system" fn RtlTryConvertSRWLockSharedToExclusiveOrRelease() -
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlTryEnterCriticalSection() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlTryEnterCriticalSection(cs:*mut CognacCriticalSection)->u8{if cs.is_null(){return 0;}let id=current_thread_id();if unsafe{(*cs).owning_thread as usize}==id&&id!=0{unsafe{(*cs).recursion_count=(*cs).recursion_count.saturating_add(1);}return 1;}let l=unsafe{atomic_i32_at(core::ptr::addr_of_mut!((*cs).lock_count))};if l.compare_exchange(-1,0,Ordering::Acquire,Ordering::Relaxed).is_err(){return 0;}unsafe{(*cs).owning_thread=id as *mut c_void;(*cs).recursion_count=1;}1}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlUdiv128() -> i32 {
