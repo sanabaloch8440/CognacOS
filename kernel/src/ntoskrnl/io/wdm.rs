@@ -358,9 +358,9 @@ unsafe impl Send for PnpRelation {}
 impl PnpRelation { const EMPTY:Self=Self{used:false,bus:ptr::null_mut(),child:ptr::null_mut()}; }
 const MAX_PNP_MANAGER_IRPS:usize=64;
 #[derive(Clone,Copy)]
-struct ManagedPnpIrp { used:bool, irp:*mut Irp, device:*mut DeviceObject, returned:bool, completed:bool, status:i32, remove_after_surprise:bool }
+struct ManagedPnpIrp { used:bool, irp:*mut Irp, device:*mut DeviceObject, returned:bool, completed:bool, status:i32, remove_after_surprise:bool, enumerate_bus:bool }
 unsafe impl Send for ManagedPnpIrp {}
-impl ManagedPnpIrp { const EMPTY:Self=Self{used:false,irp:ptr::null_mut(),device:ptr::null_mut(),returned:false,completed:false,status:STATUS_PENDING,remove_after_surprise:false}; }
+impl ManagedPnpIrp { const EMPTY:Self=Self{used:false,irp:ptr::null_mut(),device:ptr::null_mut(),returned:false,completed:false,status:STATUS_PENDING,remove_after_surprise:false,enumerate_bus:false}; }
 struct PnpManagerState { relations:[PnpRelation;MAX_PNP_DEVICES], managed_irps:[ManagedPnpIrp;MAX_PNP_MANAGER_IRPS], enumerations:u64 }
 const MAX_PNP_DEVICES:usize=128;
 impl PnpManagerState { const fn new()->Self{Self{relations:[PnpRelation::EMPTY;MAX_PNP_DEVICES],managed_irps:[ManagedPnpIrp::EMPTY;MAX_PNP_MANAGER_IRPS],enumerations:0}} }
@@ -417,7 +417,7 @@ pub unsafe extern "system" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,mi
  unsafe{io_pnp_dispatch_lifecycle_internal(device,minor,allocated,translated,false)}
 }
 unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void,remove_after_surprise:bool)->i32 {
- if device.is_null()||!matches!(minor,0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x17){return STATUS_INVALID_PARAMETER}
+ if device.is_null()||!matches!(minor,0x00|0x01|0x02|0x03|0x04|0x05|0x06|0x07|0x17){return STATUS_INVALID_PARAMETER}
  let referenced=unsafe{io_reference_device_object(device)};
  if referenced.is_null(){return STATUS_DELETE_PENDING}
  let stack_size=unsafe{(*device).stack_size.max(1) as i16};
@@ -432,7 +432,7 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
    drop(manager);unsafe{io_free_irp(irp);io_dereference_device_object(device)};
    return STATUS_INSUFFICIENT_RESOURCES
   };
-  *slot=ManagedPnpIrp{used:true,irp,device,returned:false,completed:false,status:STATUS_PENDING,remove_after_surprise};
+  *slot=ManagedPnpIrp{used:true,irp,device,returned:false,completed:false,status:STATUS_PENDING,remove_after_surprise,enumerate_bus:minor==0x07};
  }
  let status=unsafe{io_call_driver(device,irp)};
  let terminal={let state=WDM.lock();state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)).is_some_and(|s|s.completion_state==2)};
@@ -448,6 +448,10 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
  };
  let mut final_status=status;
  if let Some(request)=completed {
+  if request.enumerate_bus&&request.status==STATUS_SUCCESS {
+   let relations=unsafe{read_ptr((*request.irp).bytes.as_ptr(),IRP_INFORMATION_OFFSET)};
+   let _=unsafe{IoPnPProcessBusRelations(request.device,relations.cast::<DeviceRelations>())};
+  }
   unsafe{io_free_irp(request.irp);}
   if request.remove_after_surprise&&request.status==STATUS_SUCCESS {
    let remove_status=unsafe{io_pnp_dispatch_lifecycle_internal(request.device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null(),false)};
@@ -467,6 +471,10 @@ fn io_pnp_manager_irp_completed(irp:*mut Irp){
   if slot.returned{let result=*slot;*slot=ManagedPnpIrp::EMPTY;Some(result)}else{None}
  };
  if let Some(request)=completed {
+  if request.enumerate_bus&&status==STATUS_SUCCESS {
+   let relations=unsafe{read_ptr((*request.irp).bytes.as_ptr(),IRP_INFORMATION_OFFSET)};
+   let _=unsafe{IoPnPProcessBusRelations(request.device,relations.cast::<DeviceRelations>())};
+  }
   unsafe{io_free_irp(request.irp);}
   if request.remove_after_surprise&&status==STATUS_SUCCESS {
    let _=unsafe{io_pnp_dispatch_lifecycle_internal(request.device,IRP_MN_REMOVE_DEVICE,ptr::null(),ptr::null(),false)};
@@ -475,6 +483,13 @@ fn io_pnp_manager_irp_completed(irp:*mut Irp){
  }
 }
 
+/// Ask a bus driver for IRP_MN_QUERY_DEVICE_RELATIONS / BusRelations and
+/// publish the returned children when the IRP completes. STATUS_PENDING is
+/// supported; the manager retains the IRP and processes relations on completion.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn IoPnPEnumerateBus(bus:*mut DeviceObject)->i32{
+ unsafe{IoPnPDispatchLifecycle(bus,0x07,ptr::null(),ptr::null())}
+}
 /// Start a PnP device by sending its real START_DEVICE IRP with the
 /// allocated and translated resource lists supplied by the bus/resource arbiter.
 #[unsafe(no_mangle)]
