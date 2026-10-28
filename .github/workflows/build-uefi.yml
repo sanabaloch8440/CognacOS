@@ -244,6 +244,28 @@ jobs:
           set -euo pipefail
           rustc --edition=2024 --test kernel/src/ntoskrnl/debug.rs -o /tmp/cognacos-ntoskrnl-debug-tests
           /tmp/cognacos-ntoskrnl-debug-tests
+      - name: Test interactive debugger command parser
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/cognacos-debug-console-tests.rs <<'RS'
+          #![allow(dead_code)]
+          pub unsafe fn serial_write(_: &[u8]) {}
+          pub unsafe fn serial_write_hex(_: u64) {}
+          mod ntoskrnl {
+              pub mod debug {
+                  pub const TRACE_CAPACITY: usize = 128;
+                  pub fn latest_sequence() -> u64 { 0 }
+                  pub fn dump_serial(_: usize) {}
+                  pub fn set_filter(_: u32, _: u32, _: bool) -> bool { true }
+              }
+          }
+          mod debug_console {
+              include!(concat!(env!("GITHUB_WORKSPACE"), "/kernel/src/ntoskrnl/debug_console.rs"));
+          }
+          RS
+          rustc --edition=2024 --test /tmp/cognacos-debug-console-tests.rs -o /tmp/cognacos-debug-console-tests
+          /tmp/cognacos-debug-console-tests
       - name: Test legacy kernel diagnostic trace publication and wraparound
         run: |
           set -euo pipefail
