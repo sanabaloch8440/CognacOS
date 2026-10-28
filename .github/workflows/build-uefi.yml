@@ -884,7 +884,13 @@ jobs:
           echo
           echo "=== QEMU runtime driver-load result ===" | tee -a "$log"
           if [ -f build/serial.log ]; then
-            grep -E "beep\\.sys|DriverEntry|driver test|FATAL CPU exception|PAGEFAULT|RAX=" build/serial.log | tee -a "$log" || true
+            echo "=== NTOSKRNL structured debug trace / crash diagnostics ===" | tee -a "$log"
+            grep -E "NTOSKRNL DEBUG TRACE|^DBG |beep\\.sys|DriverEntry|driver test|FATAL CPU exception|PAGEFAULT|RAX=" build/serial.log | tee -a "$log" || true
+            if grep -Fq "NTOSKRNL DEBUG TRACE" build/serial.log; then
+              echo "TRACE RESULT: structured kernel trace dump was emitted into the retained serial log." | tee -a "$log"
+            else
+              echo "TRACE RESULT: no explicit ring dump in serial output; the ring is currently dumped on fatal paths, not every successful boot." | tee -a "$log"
+            fi
             if grep -Fq "beep.sys device and dispatch registration passed." build/serial.log; then
               echo "RUNTIME RESULT: PASS - DriverEntry succeeded and registered a device plus dispatch handlers." | tee -a "$log"
             elif grep -Fq "beep.sys DriverEntry returned NTSTATUS success" build/serial.log; then
