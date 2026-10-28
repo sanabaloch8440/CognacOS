@@ -82,6 +82,87 @@ const FIXUP_RESERVED: u64 = u64::MAX;
 const PF_ERROR_MATCH_MASK: u64 = 0x1f;
 const STATUS_ACCESS_VIOLATION: u64 = 0xC000_0005;
 
+/// First ring-3 exception snapshot. State transitions 0 -> 1 -> 2; once
+/// published, the first record is immutable for the remainder of this boot.
+static FIRST_USER_FAULT_STATE: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+static FIRST_USER_FAULT_VECTOR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_ERROR: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_RIP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_RSP: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_RFLAGS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_CS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_SS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_CR2: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+fn preserve_first_user_fault(vector: u64, error: u64, frame: *const u64) {
+    use core::sync::atomic::Ordering;
+    if FIRST_USER_FAULT_STATE.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        return;
+    }
+    let read = |index: usize| unsafe { frame.add(index).read() };
+    let mut cr2 = 0;
+    if vector == 14 {
+        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+    }
+    let cr3: u64;
+    unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); }
+    FIRST_USER_FAULT_VECTOR.store(vector, Ordering::Relaxed);
+    FIRST_USER_FAULT_ERROR.store(error, Ordering::Relaxed);
+    FIRST_USER_FAULT_RIP.store(read(17), Ordering::Relaxed);
+    FIRST_USER_FAULT_RSP.store(read(20), Ordering::Relaxed);
+    FIRST_USER_FAULT_RFLAGS.store(read(19), Ordering::Relaxed);
+    FIRST_USER_FAULT_CS.store(read(18), Ordering::Relaxed);
+    FIRST_USER_FAULT_SS.store(read(21), Ordering::Relaxed);
+    FIRST_USER_FAULT_CR2.store(cr2, Ordering::Relaxed);
+    FIRST_USER_FAULT_CR3.store(cr3, Ordering::Relaxed);
+    FIRST_USER_FAULT_PID.store(
+        crate::ntoskrnl::mm::address_space::current_process_id_for_active_address_space(),
+        Ordering::Relaxed,
+    );
+    FIRST_USER_FAULT_STATE.store(2, Ordering::Release);
+}
+
+/// Emit the immutable first ring-3 frame before reporting a later fatal fault.
+unsafe fn dump_first_user_fault() {
+    use core::sync::atomic::Ordering;
+    if FIRST_USER_FAULT_STATE.load(Ordering::Acquire) != 2 { return; }
+    unsafe {
+        crate::serial_write(b"\\r\\n===== PRESERVED FIRST USER-MODE FAULT (immutable) =====\\r\\n");
+        crate::serial_write(b"vector="); crate::serial_write_hex(FIRST_USER_FAULT_VECTOR.load(Ordering::Relaxed));
+        crate::serial_write(b" error="); crate::serial_write_hex(FIRST_USER_FAULT_ERROR.load(Ordering::Relaxed));
+        crate::serial_write(b" RIP="); crate::serial_write_hex(FIRST_USER_FAULT_RIP.load(Ordering::Relaxed));
+        crate::serial_write(b" RSP="); crate::serial_write_hex(FIRST_USER_FAULT_RSP.load(Ordering::Relaxed));
+        crate::serial_write(b" RFLAGS="); crate::serial_write_hex(FIRST_USER_FAULT_RFLAGS.load(Ordering::Relaxed));
+        crate::serial_write(b" CS="); crate::serial_write_hex(FIRST_USER_FAULT_CS.load(Ordering::Relaxed));
+        crate::serial_write(b" SS="); crate::serial_write_hex(FIRST_USER_FAULT_SS.load(Ordering::Relaxed));
+        crate::serial_write(b" CR2="); crate::serial_write_hex(FIRST_USER_FAULT_CR2.load(Ordering::Relaxed));
+        crate::serial_write(b" CR3="); crate::serial_write_hex(FIRST_USER_FAULT_CR3.load(Ordering::Relaxed));
+        let pid = FIRST_USER_FAULT_PID.load(Ordering::Relaxed);
+        crate::serial_write(b" PID="); crate::serial_write_hex(pid);
+        if let Some((_, ntdll)) = crate::pe_modules::find_for_process(pid, b"ntdll.dll") {
+            let rip = FIRST_USER_FAULT_RIP.load(Ordering::Relaxed);
+            crate::serial_write(b"\\r\\nNTDLL MODULE: base=");
+            crate::serial_write_hex(ntdll.base);
+            crate::serial_write(b" size=");
+            crate::serial_write_hex(ntdll.size as u64);
+            crate::serial_write(b" RVA=");
+            if rip >= ntdll.base && rip < ntdll.base.saturating_add(ntdll.size as u64) {
+                crate::serial_write_hex(rip - ntdll.base);
+            } else {
+                crate::serial_write(b"outside-image");
+            }
+            crate::serial_write(b" state=");
+            crate::serial_write_hex(ntdll.state as u64);
+        } else {
+            crate::serial_write(b"\\r\\nNTDLL MODULE: no ntdll.dll entry in per-process module registry");
+        }
+        crate::serial_write(b"\\r\\n===== END PRESERVED FIRST USER-MODE FAULT =====\\r\\n");
+    }
+}
+
 /// Fixed-size exception-table entry. The handler only scans this bounded table
 /// and never allocates or acquires a lock. RAX is the documented recovery result.
 struct TrapFixup {
@@ -1597,6 +1678,8 @@ pub unsafe fn initialize() {
 /// is not supported until recovery and interrupt-stack switching are implemented.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_exception_fatal(vector: u64, error: u64, frame: *const u64) -> ! {
+    // Dump the first ring-3 event before any diagnostics for the later fault.
+    unsafe { dump_first_user_fault(); }
     let fatal_rip = unsafe { frame.add(17).read() };
     // Resolve the RIP before halting. If it lies in a loaded native driver,
     // report the owning image and RVA even when the PE has no symbols/PDB.
@@ -1861,6 +1944,9 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
     if vector < EXCEPTION_VECTORS as u64 {
         let saved_cs = unsafe { frame.add(18).read() };
         if saved_cs & 3 == 3 {
+            // Preserve the earliest ring-3 exception before page-fault handling,
+            // user exception delivery, or any subsequent nested kernel fault.
+            preserve_first_user_fault(vector, error, frame);
             if vector == 14 {
                 let cr2: u64;
                 unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
