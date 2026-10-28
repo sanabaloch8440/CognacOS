@@ -312,6 +312,25 @@ pub fn allocate_pages_at(address:u64,pages:usize)->Result<*mut u8,Error>{
  table[ti]=Extent{start,pages,pageable:false,owns_frames:true,live:true};Ok(address as *mut u8)
 }
 
+/// Reserve a demand-paged kernel image at an exact virtual address. Unlike
+/// allocate_pages_at, this installs no frames until the loader first touches each
+/// page; it is intended for fixed-base native driver images with pageable sections.
+pub fn allocate_pageable_pages_at(address:u64,pages:usize)->Result<*mut u8,Error>{
+ if pages==0||pages>MAX_EXTENT_PAGES||address<PAGE+BASE||address&(PAGE-1)!=0{return Err(Error::Invalid)}
+ let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
+ let start=usize::try_from((address-BASE)/PAGE).map_err(|_|Error::Invalid)?;
+ if start.checked_add(pages).is_none_or(|end|end>PAGES){return Err(Error::NoVirtualSpace)}
+ let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};
+ let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
+ let reserved=is_driver_slot_base(address)&&pages<=DRIVER_SLOT_PAGES;
+ if table.iter().any(|e|e.live&&start<e.start+e.pages&&e.start<start+pages){return Err(Error::AlreadyMapped)}
+ let bits=unsafe{&mut *BITS.0.get()};let mapped=unsafe{&*MAPPED_BITS.0.get()};
+ if (start..start+pages).any(|n|(bits[n/64]&(1u64<<(n%64))!=0&&!reserved)||mapped[n/64]&(1u64<<(n%64))!=0){return Err(Error::AlreadyMapped)}
+ for n in start..start+pages{bits[n/64]|=1u64<<(n%64);unsafe{(&mut *PAGE_FLAGS.0.get())[n]=1;}}
+ table[ti]=Extent{start,pages,pageable:true,owns_frames:true,live:true};
+ Ok(address as *mut u8)
+}
+
 /// Change permissions on a page-aligned subrange of a live kernel VM extent.
 /// Read permission is implicit on x86-64; executable and writable are exclusive.
 pub fn protect_pages(address:u64,pages:usize,writable:bool,executable:bool)->Result<(),Error>{
