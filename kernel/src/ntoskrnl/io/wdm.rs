@@ -258,7 +258,12 @@ unsafe fn parse_cm_resource_list(list:*const c_void,out:&mut[ParsedResource;MAX_
    let off=descriptor_start+i*16;
    let kind=unsafe{*base.add(off)};
    match kind {
-    0|4|5|6=>{}, // Null, DMA, device-specific, and bus-number descriptors do not reserve an address range here.
+    0|5|6=>{}, // Null, device-specific, and bus-number resources are not global ranges.
+    4=>{
+     let channel=unsafe{read_u32_at(base,off+4)} as u64;
+     if count==out.len(){return Err(STATUS_INSUFFICIENT_RESOURCES)}
+     out[count]=ParsedResource{kind:4,start:channel,length:1};count+=1;
+    }
     CM_RESOURCE_PORT|CM_RESOURCE_MEMORY=>{
      let start=unsafe{read_u64_at(base,off+4)};
      let length=unsafe{read_u32_at(base,off+12)} as u64;
