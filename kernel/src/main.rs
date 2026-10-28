@@ -1183,7 +1183,16 @@ extern "C" fn beep_test_worker(_argument: *mut core::ffi::c_void) {
 }
 
 fn run_beep_runtime_test() {
+    // Enable verbose WDM tracing for this controlled test only. The same
+    // filter can be toggled by DbgSetDebugFilterState once a live debugger
+    // command channel is available.
+    let _ = ntoskrnl::debug::set_filter(
+        ntoskrnl::debug::COMPONENT_DRIVER,
+        ntoskrnl::debug::LEVEL_INFO,
+        true,
+    );
     unsafe {
+            serial_write(b"DRIVER DEBUG: verbose driver entry/dispatch tracing enabled for beep.sys test.\\r\\n");
             // Real runtime test: invoke the native driver loader and DriverEntry.
         if let Some(beep_bytes) = boot_beep_bytes() {
             use ntoskrnl::driver_loader::{DriverLoadError, DriverObject, load_allocated};
