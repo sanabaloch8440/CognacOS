@@ -18,6 +18,7 @@ pub const IRP_SIZE_X64: usize = 0xD0;
 pub const IO_STACK_LOCATION_SIZE_X64: usize = 0x48;
 const MAX_WDM_DEVICES: usize = 32;
 const IRP_CANCEL_BATCH: usize = 64;
+const MAX_SYNC_IRP_THREADS:usize=128;
 const MAX_WDM_STACK_LOCATIONS: usize = 127;
 const MAX_DEVICE_EXTENSION: usize = 512;
 const IRP_STACK_OFFSET: usize = 0xB8;
@@ -82,7 +83,7 @@ struct IrpSlot {
  object: Irp, stack: [IoStackLocation;MAX_WDM_STACK_LOCATIONS],
  system_buffer:*mut u8, system_buffer_pages:usize, system_buffer_len:usize,
  ioctl_output_buffer:*mut c_void, ioctl_output_len:usize, built_sync_ioctl:bool,
- sync_thread_id:u64, sync_event:*mut c_void,
+ sync_thread_id:u64, sync_event:*mut c_void, sync_next:*mut Irp, sync_prev:*mut Irp, sync_queued:bool,
 }
 impl IrpSlot {
  const fn empty()->Self { Self {
@@ -93,7 +94,7 @@ impl IrpSlot {
   stack:[IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()};MAX_WDM_STACK_LOCATIONS],
   system_buffer:ptr::null_mut(),system_buffer_pages:0,system_buffer_len:0,
   ioctl_output_buffer:ptr::null_mut(),ioctl_output_len:0,built_sync_ioctl:false,
-  sync_thread_id:0,sync_event:ptr::null_mut(),
+  sync_thread_id:0,sync_event:ptr::null_mut(),sync_next:ptr::null_mut(),sync_prev:ptr::null_mut(),sync_queued:false,
  }}
 }
 unsafe impl Send for IrpSlot {}
@@ -113,7 +114,10 @@ unsafe impl Send for IrpTable {}
 unsafe impl Sync for IrpTable {}
 impl Index<usize> for IrpTable{type Output=IrpSlot;fn index(&self,index:usize)->&Self::Output{assert!(index<self.len);let mut p=self.head;for _ in 0..index{p=unsafe{(*p).next};}unsafe{&*p}}}
 impl IndexMut<usize> for IrpTable{fn index_mut(&mut self,index:usize)->&mut Self::Output{assert!(index<self.len);let mut p=self.head;for _ in 0..index{p=unsafe{(*p).next};}unsafe{&mut *p}}}
-struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: IrpTable }
+#[derive(Clone,Copy)]
+struct ThreadIrpQueue { used:bool,thread_id:u64,head:*mut Irp,tail:*mut Irp }
+impl ThreadIrpQueue { const EMPTY:Self=Self{used:false,thread_id:0,head:ptr::null_mut(),tail:ptr::null_mut()}; }
+struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: IrpTable, thread_irps:[ThreadIrpQueue;MAX_SYNC_IRP_THREADS] }
 impl WdmState {
  const fn new() -> Self {
   Self {
@@ -127,6 +131,7 @@ impl WdmState {
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
    irps: IrpTable::new(),
+   thread_irps:[const{ThreadIrpQueue::EMPTY};MAX_SYNC_IRP_THREADS],
   }
  }
 }
