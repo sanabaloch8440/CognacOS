@@ -75,6 +75,8 @@ jobs:
           grep -Fq '#![no_std]' drivers/acpi/src/lib.rs
           grep -Fq '#![no_std]' drivers/pci/src/lib.rs
           echo "HAL and independent driver source-boundary checks passed."
+      - name: Test shared Windows x64 NT ABI layouts
+        run: cargo test --manifest-path shared/nt-abi/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Check HAL contract library
         run: cargo check --manifest-path drivers/hal/Cargo.toml --lib
       - name: Check ACPI driver library
