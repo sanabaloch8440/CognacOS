@@ -1344,7 +1344,7 @@ unsafe fn submit_beep_ioctl(
     serial_write(b" input_length=");
     unsafe { serial_write_decimal(core::mem::size_of_val(&parameters)); }
     serial_write(b" output_length=0 system_buffer=");
-    unsafe { serial_write_hex(unsafe { (*irp).associated_irp[0] as u64 }); }
+    unsafe { serial_write_hex(core::ptr::read_unaligned((*irp).bytes.as_ptr().add(0x18).cast::<usize>()) as u64); }
     serial_write(b" file_object=");
     unsafe { serial_write_hex(file_object as u64); }
     serial_write(b" FsContext=");
@@ -1372,7 +1372,7 @@ unsafe fn submit_beep_ioctl(
 
 unsafe extern "win64" fn beep_test_completion(
     _device: *mut io::DeviceObject,
-    _irp: *mut io::Irp,
+    _irp: *mut io::WdmIrp,
     _context: *mut core::ffi::c_void,
 ) -> i32 {
     nt_abi::ntstatus::STATUS_SUCCESS as i32
