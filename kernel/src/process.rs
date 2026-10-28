@@ -34,6 +34,8 @@ pub struct EProcess {
     state: ProcessState,
     used: bool,
     pub address_space_root: u64,
+    session_id: u32,
+    _session_padding: u32,
     pub(crate) primary_token: usize,
     references: u32,
     _reserved: u32,
@@ -41,7 +43,7 @@ pub struct EProcess {
 }
 impl EProcess {
     const EMPTY: Self = Self { magic: 0, process_id: 0, state: ProcessState::Reaped,
-        used: false, address_space_root: 0, primary_token: 0, references: 0, _reserved: 0, exit_code: 0 };
+        used: false, address_space_root: 0, session_id: 0, _session_padding: 0, primary_token: 0, references: 0, _reserved: 0, exit_code: 0 };
 }
 struct ProcessRegistry([EProcess; MAX_PROCESSES]);
 static TABLE: crate::hal::IrqSpinLock<ProcessRegistry> =
@@ -53,7 +55,7 @@ fn register_process(pid: u64, address_space_root: u64) -> Result<(), ProcessErro
         let mut registry = TABLE.lock();
         let Some(index) = registry.0.iter().position(|p| !p.used) else { return Err(ProcessError::TooManyProcesses); };
         registry.0[index] = EProcess { magic: EPROCESS_MAGIC, process_id: pid, state: ProcessState::Created,
-            used: true, address_space_root, primary_token: 0, references: 0, _reserved: 0, exit_code: 0 };
+            used: true, address_space_root, session_id: 0, _session_padding: 0, primary_token: 0, references: 0, _reserved: 0, exit_code: 0 };
         core::ptr::addr_of_mut!(registry.0[index])
     };
     // Every registered process is also an Object Manager object. The object body
@@ -595,4 +597,14 @@ pub unsafe fn initialize(space: &mut AddressSpace, image_base: u64, image_entry:
     register_process(pid, space.root_physical())?;
     unsafe { crate::serial_write(b"[DBG][PROCESS-INIT] EPROCESS registered; initialization complete\r\n"); }
     Ok(ProcessEnvironment { process_id: pid, peb: PEB_ADDRESS, teb: TEB_ADDRESS, tls_vector: TLS_VECTOR_ADDRESS })
+}
+
+
+/// Return a session only for a currently registered process object. CognacOS
+/// currently creates processes in session 0; nonzero sessions are not yet
+/// supported and are not inferred from unrelated thread state.
+pub fn session_id_for_pid(pid: u64) -> Option<u32> {
+    let registry = TABLE.lock();
+    registry.0.iter().find(|p| p.used && p.magic == EPROCESS_MAGIC && p.process_id == pid
+        && p.state != ProcessState::Reaped).map(|p| p.session_id)
 }
