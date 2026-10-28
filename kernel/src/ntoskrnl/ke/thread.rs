@@ -361,6 +361,7 @@ pub fn terminate_current_process_from_fault(pid:u64,exit_code:u64)->! {
     let _=crate::process::mark_exited(pid,exit_code);
     let current=current_thread_id().unwrap_or(0);
     let mut retire=[0u64;MAX_THREADS];
+    let mut retire_threads=[0u64;MAX_THREADS];
     let mut count=0usize;
     let mut notify=0u64;
     {
@@ -370,11 +371,11 @@ pub fn terminate_current_process_from_fault(pid:u64,exit_code:u64)->! {
             match thread.state {
                 ThreadState::Ready if thread.context_saved => {
                     thread.state=ThreadState::Exited;thread.entry=None;thread.argument=core::ptr::null_mut();
-                    if count<retire.len(){retire[count]=thread.scheduler_id;count+=1;}
+                    if count<retire.len(){retire[count]=thread.scheduler_id;retire_threads[count]=thread.id;count+=1;}
                 }
                 ThreadState::Blocked if thread.context_saved => {
                     thread.state=ThreadState::Exited;thread.entry=None;thread.argument=core::ptr::null_mut();
-                    if count<retire.len(){retire[count]=thread.scheduler_id;count+=1;}
+                    if count<retire.len(){retire[count]=thread.scheduler_id;retire_threads[count]=thread.id;count+=1;}
                 }
                 ThreadState::Blocked => {
                     // Close the switch-out/wake race: the publication callback
@@ -386,6 +387,7 @@ pub fn terminate_current_process_from_fault(pid:u64,exit_code:u64)->! {
             }
         }
     }
+    for thread_id in retire_threads[..count].iter().copied(){let _=crate::io::io_cancel_thread_irps(thread_id);}
     for scheduler_id in retire[..count].iter().copied(){let _=crate::scheduler::exit_task(scheduler_id);}
     for cpu in 0..crate::hal::MAX_CPUS {
         if notify&(1u64<<cpu)!=0&&crate::hal::cpu_state(cpu).ok()==Some(crate::hal::CPU_ONLINE){
