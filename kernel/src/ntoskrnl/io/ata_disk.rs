@@ -83,7 +83,7 @@ static DISK_CAPACITY: AtomicU64 = AtomicU64::new(0);
 static DISK_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 static PARTITION_DEVICE_ID: AtomicU32 = AtomicU32::new(0);
 static PARTITION_START: AtomicU64 = AtomicU64::new(0);
-static PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);
+static PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);\nstatic TRACE_PARTITION_START: AtomicU64 = AtomicU64::new(0);\nstatic TRACE_PARTITION_CAPACITY: AtomicU64 = AtomicU64::new(0);
 impl AtaPrimaryMaster {
     fn initialize() -> Result<Self, AtaError> {
         unsafe { out8(DRIVE, 0xa0); }
@@ -429,6 +429,51 @@ impl BlockDevice for IoManagerBlockDevice {
     }
 }
 
+/// Optional reserved GPT partition for crash-trace persistence. The partition
+/// is discovered from GPT entry index 2; no arbitrary sectors are overwritten.
+pub fn debug_trace_store_read(offset: u64, output: &mut [u8]) -> bool {
+    trace_store_transfer(offset, output, false)
+}
+pub fn debug_trace_store_write(offset: u64, input: &[u8]) -> bool {
+    let mut copy = [0u8; 512];
+    let mut done = 0usize;
+    let capacity = TRACE_PARTITION_CAPACITY.load(Ordering::Acquire);
+    if capacity == 0 || offset.checked_add(input.len() as u64).map_or(true, |end| end > capacity) { return false; }
+    while done < input.len() {
+        let absolute = match offset.checked_add(done as u64) { Some(v) => v, None => return false };
+        let lba = TRACE_PARTITION_START.load(Ordering::Acquire).saturating_add(absolute / 512);
+        let within = (absolute % 512) as usize;
+        let amount = (512 - within).min(input.len() - done);
+        let mut guard = STORAGE_DISK.lock();
+        let Some(disk) = guard.as_mut() else { return false; };
+        if within != 0 || amount != 512 {
+            if disk.read_sector(lba, &mut copy).is_err() { return false; }
+        } else { copy.fill(0); }
+        copy[within..within + amount].copy_from_slice(&input[done..done + amount]);
+        if disk.write_sector(lba, &copy).is_err() || disk.flush_cache().is_err() { return false; }
+        done += amount;
+    }
+    true
+}
+fn trace_store_transfer(offset: u64, output: &mut [u8], _write: bool) -> bool {
+    let capacity = TRACE_PARTITION_CAPACITY.load(Ordering::Acquire);
+    if capacity == 0 || offset.checked_add(output.len() as u64).map_or(true, |end| end > capacity) { return false; }
+    let mut done = 0usize;
+    while done < output.len() {
+        let absolute = match offset.checked_add(done as u64) { Some(v) => v, None => return false };
+        let lba = TRACE_PARTITION_START.load(Ordering::Acquire).saturating_add(absolute / 512);
+        let within = (absolute % 512) as usize;
+        let amount = (512 - within).min(output.len() - done);
+        let mut sector = [0u8; 512];
+        let mut guard = STORAGE_DISK.lock();
+        let Some(disk) = guard.as_mut() else { return false; };
+        if disk.read_sector(lba, &mut sector).is_err() { return false; }
+        output[done..done + amount].copy_from_slice(&sector[within..within + amount]);
+        done += amount;
+    }
+    true
+}
+
 /// End-to-end guest check. The physical port driver backs a registered disk
 /// object; GPT and ext4 then read only through disk/partition READ IRPs.
 pub fn run_ext4_readme_test() -> bool {
@@ -441,6 +486,15 @@ pub fn run_ext4_readme_test() -> bool {
     DISK_DEVICE_ID.store(disk_id, Ordering::Release);
     unsafe { crate::serial_write(b"Storage port: QEMU IDE primary-master IDENTIFY and bounded LBA28 reads initialized.\r\n"); }
     let mut whole_disk = IoManagerBlockDevice { device_id: disk_id, capacity: DISK_CAPACITY.load(Ordering::Acquire) };
+    // A third, dedicated GPT partition is optional. Trace writes are disabled
+    // unless the image explicitly reserves it; ext4 and GPT metadata are never used as scratch space.
+    if let Ok(trace_partition) = extfs::read_gpt_partition(&mut whole_disk, 2, SECTOR_BYTES as u32) {
+        if let (Ok(start), Ok(capacity)) = (trace_partition.start_byte(), trace_partition.capacity_bytes()) {
+            TRACE_PARTITION_START.store(start / SECTOR_BYTES as u64, Ordering::Release);
+            TRACE_PARTITION_CAPACITY.store(capacity, Ordering::Release);
+            unsafe { crate::serial_write(b"Debug trace persistence: dedicated GPT partition discovered.\\r\\n"); }
+        }
+    }
     let partition = match extfs::read_gpt_partition(&mut whole_disk, 1, SECTOR_BYTES as u32) {
         Ok(p) => p, Err(_) => return false,
     };
