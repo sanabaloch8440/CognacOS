@@ -39,7 +39,9 @@ fn forget_loaded_driver(driver:*mut DriverObject,base:u64) {
 /// Returns the image base, image size, and owning DRIVER_OBJECT address without
 /// dereferencing the object, so it is safe to call from a fatal exception path.
 pub fn image_for_address(address:u64)->Option<(u64,u32,u64)> {
- let records=LOADED_DRIVER_IMAGES.lock();
+ // Fatal exception paths must never spin on a lock possibly held by the
+ // faulting CPU. If the registry is busy, omit the optional module annotation.
+ let records=LOADED_DRIVER_IMAGES.try_lock()?;
  records.iter().find(|r|r.used&&address>=r.base&&address.checked_sub(r.base).is_some_and(|offset|offset<r.size as u64))
   .map(|r|(r.base,r.size,r.driver as u64))
 }
