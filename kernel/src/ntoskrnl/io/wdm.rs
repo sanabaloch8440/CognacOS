@@ -450,7 +450,7 @@ unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,a
  if dispatch_device.is_null(){return STATUS_DELETE_PENDING}
  let referenced=unsafe{io_reference_device_object(dispatch_device)};
  if referenced.is_null(){return STATUS_DELETE_PENDING}
- let stack_size=unsafe{(*dispatch_device).stack_size.max(1) as i16};
+ let stack_size=unsafe{(*dispatch_device).stack_size.max(1)};
  let irp=unsafe{io_allocate_irp(stack_size,0)};
  if irp.is_null(){unsafe{io_dereference_device_object(dispatch_device)};return STATUS_INSUFFICIENT_RESOURCES}
  let stack=unsafe{io_get_next_irp_stack_location(irp)};
@@ -722,7 +722,7 @@ pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
  unsafe{io_unregister_file_system(device);}
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->*mut Irp {
+pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*mut Irp {
  if stack_size<=0||stack_size as usize>MAX_WDM_STACK_LOCATIONS||charge_quota>1{return ptr::null_mut()}
  let mut state=WDM.lock();
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
@@ -730,7 +730,7 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i16, charge_quota:u8)->
  slot.object.bytes[0..2].copy_from_slice(&6i16.to_le_bytes());
  // IRP.Size is sizeof(IRP), not the total IRP-plus-stack allocation size.
  slot.object.bytes[2..4].copy_from_slice(&(IRP_SIZE_X64 as u16).to_le_bytes());
- slot.object.bytes[0x42]=stack_size as u8;slot.object.bytes[0x43]=(stack_size+1) as u8;
+ slot.object.bytes[0x42]=stack_size as u8;slot.object.bytes[0x43]=(stack_size as u8).wrapping_add(1);
  slot.stack.fill(IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() });
  let object=&mut slot.object as *mut Irp;
  let one_past=unsafe{slot.stack.as_mut_ptr().add(stack_size as usize).cast::<c_void>()};
@@ -941,7 +941,7 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
  let method=(ioctl_code&3) as u8;
  if method==0&&(input_length.max(output_length) as usize)>MAX_IOCTL_SYSTEM_BUFFER{return ptr::null_mut()}
  if method!=3&&(input_length as usize)>MAX_IOCTL_SYSTEM_BUFFER{return ptr::null_mut()}
- let irp=unsafe{io_allocate_irp(stack_size as i16,0)};
+ let irp=unsafe{io_allocate_irp(stack_size,0)};
  if irp.is_null(){return ptr::null_mut()}
  let next=unsafe{io_get_next_irp_stack_location(irp)};
  if next.is_null(){unsafe{io_free_irp(irp)};return ptr::null_mut()}
@@ -1218,17 +1218,17 @@ pub unsafe extern "system" fn io_detach_device(target:*mut DeviceObject) {
 /// PacketSize must cover the fixed x64 IRP plus StackSize full stack locations.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_initialize_irp(
-    irp:*mut Irp, packet_size:u16, stack_size:u8
+    irp:*mut Irp, packet_size:u16, stack_size:i8
 ) {
-    if irp.is_null() || stack_size==0 || stack_size>127 {return}
+    if irp.is_null() || stack_size<=0 || stack_size>127 {return}
     let required=IRP_SIZE_X64.checked_add(stack_size as usize*IO_STACK_LOCATION_SIZE_X64);
     if required.is_none_or(|n|n>packet_size as usize){return}
     unsafe {
         ptr::write_bytes(irp.cast::<u8>(),0,packet_size as usize);
         ptr::write_unaligned((*irp).bytes.as_mut_ptr().cast::<i16>(),6);
         ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(2).cast::<u16>(),IRP_SIZE_X64 as u16);
-        (*irp).bytes[0x42]=stack_size;
-        (*irp).bytes[0x43]=stack_size.saturating_add(1);
+        (*irp).bytes[0x42]=stack_size as u8;
+        (*irp).bytes[0x43]=(stack_size as u8).wrapping_add(1);
         let stack_base=irp.cast::<u8>().add(IRP_SIZE_X64);
         let current=stack_base.add(stack_size as usize*IO_STACK_LOCATION_SIZE_X64);
         write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,current.cast());
