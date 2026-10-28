@@ -36,12 +36,12 @@ for required in (
     "system_buffer:*mut u8",
     "thread_irps:[ThreadIrpQueue;MAX_SYNC_IRP_THREADS]",
     "sync_queue_attach_locked",
-    "pub unsafe extern \"system\" fn io_csq_initialize",
-    "pub unsafe extern \"system\" fn io_csq_initialize_ex",
-    "pub unsafe extern \"system\" fn io_csq_insert_irp",
-    "pub unsafe extern \"system\" fn io_csq_insert_irp_ex",
-    "pub unsafe extern \"system\" fn io_csq_remove_irp",
-    "pub unsafe extern \"system\" fn io_csq_remove_next_irp",
+    "pub unsafe extern \"win64\" fn io_csq_initialize",
+    "pub unsafe extern \"win64\" fn io_csq_initialize_ex",
+    "pub unsafe extern \"win64\" fn io_csq_insert_irp",
+    "pub unsafe extern \"win64\" fn io_csq_insert_irp_ex",
+    "pub unsafe extern \"win64\" fn io_csq_remove_irp",
+    "pub unsafe extern \"win64\" fn io_csq_remove_next_irp",
 ):
     if required not in wdm:
         errors.append(f"missing WDM implementation contract: {required}")
