@@ -460,7 +460,7 @@ fn exit_current()->! {
     let _ = crate::io::io_cancel_thread_irps(id);
     crate::ntoskrnl::ke::runtime::thread_exit_cleanup(id);
     let idle_rsp_ptr=IDLE_CONTEXTS[cpu].0.get();
-    let (old_rsp_ptr,new_rsp,old_token)={
+    let (old_rsp_ptr,new_rsp,old_token,next_xstate)={
         let mut table=THREADS.lock();
         let current_index=table.records.iter().position(|t|t.id==id&&t.state==ThreadState::Running);
         let Some(current_index)=current_index else {
@@ -475,8 +475,19 @@ fn exit_current()->! {
             if idle.is_null(){loop{core::hint::spin_loop()}}
             let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
             if idle_top!=0{let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,idle_top);}
+            let idle_xstate = if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
+                unsafe { core::ptr::addr_of!(IDLE_XSTATE[cpu]) }
+            } else {
+                core::ptr::null()
+            };
             let mut abandoned_rsp: *mut u64 = core::ptr::null_mut();
-            unsafe{crate::ntoskrnl::ke::arch::context_switch(&mut abandoned_rsp as *mut *mut u64,idle)};
+            unsafe {
+                crate::ntoskrnl::ke::arch::context_switch_xstate(
+                    &mut abandoned_rsp as *mut *mut u64,
+                    idle,
+                    idle_xstate,
+                )
+            };
             loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}
         };
         let current=&mut table.records[current_index];
@@ -497,19 +508,29 @@ fn exit_current()->! {
             local.current_thread.store(next.id,core::sync::atomic::Ordering::Release);
             let next_rsp=next.context_rsp;
             let next_stack_top=next.stack_top;
+            let next_xstate = if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
+                &next.xstate as *const KiThreadXStateArea
+            } else {
+                core::ptr::null()
+            };
             let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,next_stack_top);
-            (old_rsp_ptr,next_rsp,old_token)
+            (old_rsp_ptr,next_rsp,old_token,next_xstate)
         }else{
             local.current_thread.store(0,core::sync::atomic::Ordering::Release);
             let idle=unsafe{*idle_rsp_ptr};
             if idle.is_null(){loop{core::hint::spin_loop()}}
             let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
             if idle_top!=0{let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,idle_top);}
-            (old_rsp_ptr,idle,old_token)
+            let idle_xstate = if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
+                unsafe { core::ptr::addr_of!(IDLE_XSTATE[cpu]) }
+            } else {
+                core::ptr::null()
+            };
+            (old_rsp_ptr,idle,old_token,idle_xstate)
         }
     };
     if old_token != 0 { let token=old_token as *mut c_void; let _ = unsafe { crate::ntoskrnl::se::runtime::se_internal_DereferenceToken(token) }; crate::ntoskrnl::alpc_native::release_captured_impersonation_token(token); }
-    unsafe{crate::ntoskrnl::ke::arch::context_switch(old_rsp_ptr,new_rsp)};
+    unsafe{crate::ntoskrnl::ke::arch::context_switch_xstate(old_rsp_ptr,new_rsp,next_xstate)};
     loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}
 }
 /// Return the address of the current live thread record as an opaque KTHREAD token.
