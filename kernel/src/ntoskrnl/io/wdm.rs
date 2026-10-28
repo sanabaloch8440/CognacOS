@@ -853,10 +853,11 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
  if irp.is_null(){return}
  {
   let mut state=WDM.lock();
-  let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
-  if slot.completion_state==1 {slot.free_requested=true;return}
-  if slot.completion_state==3||slot.active_ops!=0||(slot.completion_state==0&&slot.outstanding_count!=0){return}
-  slot.free_requested=false;slot.suspended_completion=false;slot.completion_state=2;
+  let Some(index)=state.irps.iter().position(|slot|slot.used&&ptr::eq(&slot.object,irp)) else{return};
+  if state.irps[index].completion_state==1 {state.irps[index].free_requested=true;return}
+  if state.irps[index].completion_state==3||state.irps[index].active_ops!=0||(state.irps[index].completion_state==0&&state.irps[index].outstanding_count!=0){return}
+  state.irps[index].free_requested=false;state.irps[index].suspended_completion=false;state.irps[index].completion_state=2;
+  let _=sync_queue_detach_locked(&mut state,irp);
  }
  release_irp_device_rundown(irp);
  let (owned_mdl,system_buffer,system_buffer_pages)={
@@ -1118,6 +1119,8 @@ pub unsafe extern "system" fn io_build_device_io_control_request(
   ptr::write_unaligned(slot.object.bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_PENDING);
   ptr::write_unaligned(slot.object.bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),0);
  }
+ let attached={let mut state=WDM.lock();sync_queue_attach_locked(&mut state,irp,creator_thread)};
+ if !attached {unsafe{io_free_irp(irp)};return ptr::null_mut()}
  unsafe {
   (*next).major_function=if internal_device_control!=0{0x0f}else{0x0e};
   // WDK marks InputBufferLength and IoControlCode POINTER_ALIGNMENT
@@ -1277,10 +1280,9 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   // has published the IOSB, and terminal state is now visible.
   let completion_event={
    let mut state=WDM.lock();
-   state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)).map(|slot|{
-    slot.sync_thread_id=0;
-    let event=slot.sync_event;slot.sync_event=ptr::null_mut();event
-   }).unwrap_or(ptr::null_mut())
+   if state.irps.iter().any(|slot|slot.used&&ptr::eq(&slot.object,irp)){
+    sync_queue_detach_locked(&mut state,irp)
+   }else{ptr::null_mut()}
   };
   if !completion_event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(completion_event.cast(),0,0);}}
   let callbacks_drained={
@@ -1792,24 +1794,24 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
   let mut more=false;
   {
    let mut state=WDM.lock();
-   for slot in state.irps.iter_mut(){
-    if !slot.used||!slot.built_sync_ioctl||slot.sync_thread_id!=thread_id{continue}
-    // Completion/dispatch owns the packet while callbacks are active. Wait
-    // until that critical section ends before detaching caller-stack data.
-    if slot.completion_state==1||slot.active_ops!=0 {completion_in_progress=true;continue}
-    if count==pending.len(){more=true;continue}
-    let irp=ptr::addr_of_mut!(slot.object);
-    let never_dispatched=slot.outstanding_count==0&&slot.completion_state==0;
-    slot.sync_thread_id=0;
-    slot.sync_event=ptr::null_mut();
-    write_ptr(slot.object.bytes.as_mut_ptr(),0x48,ptr::null_mut());
-    pending[count]=(irp,never_dispatched);count+=1;
+   let Some(qi)=state.thread_irps.iter().position(|q|q.used&&q.thread_id==thread_id) else{break};
+   let mut cursor=state.thread_irps[qi].head;
+   while !cursor.is_null(){
+    let Some(index)=state.irps.iter().position(|slot|slot.used&&ptr::eq(&slot.object,cursor)) else{break};
+    let next=state.irps[index].sync_next;
+    if state.irps[index].completion_state==1||state.irps[index].active_ops!=0 {
+     completion_in_progress=true;cursor=next;continue
+    }
+    if count==pending.len(){more=true;break}
+    let never_dispatched=state.irps[index].outstanding_count==0&&state.irps[index].completion_state==0;
+    let _=sync_queue_detach_locked(&mut state,cursor);
+    write_ptr(unsafe{(*cursor).bytes.as_mut_ptr()},0x48,ptr::null_mut());
+    pending[count]=(cursor,never_dispatched);count+=1;cursor=next;
    }
+   more|=state.thread_irps.iter().any(|q|q.used&&q.thread_id==thread_id);
   }
   for (irp,never_dispatched) in pending[..count].iter().copied(){
    let cancel_routine_called=unsafe{io_cancel_irp(irp)}!=0;
-   // A builder IRP which was never sent has no lower driver to finish it.
-   // Complete it here if no cancel routine took ownership.
    if never_dispatched&&!cancel_routine_called {
     unsafe{
      ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),0xC0000120u32 as i32);
@@ -1819,7 +1821,10 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
    }
   }
   total+=count;
-  if more {continue}
+  if more {
+   if count==0&&completion_in_progress{core::hint::spin_loop();}
+   continue
+  }
   if !completion_in_progress {break}
   core::hint::spin_loop();
  }
