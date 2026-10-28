@@ -369,7 +369,7 @@ jobs:
         run: |
           python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
           file build/cognacos-kernel.exe
-          python3 tools/validate_pe_exports.py build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json --require SeAccessCheck --require SePrivilegeCheck --require SeSinglePrivilegeCheck --require SeValidSecurityDescriptor --require SeCaptureSubjectContext --require SeReleaseSubjectContext --require SeLockSubjectContext --require SeUnlockSubjectContext --require PsAssignImpersonationToken --require PsReferencePrimaryToken --require PsDereferencePrimaryToken
+          python3 tools/validate_pe_exports.py build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json --require SeAccessCheck --require SePrivilegeCheck --require SeSinglePrivilegeCheck --require SeValidSecurityDescriptor --require SeCaptureSubjectContext --require SeReleaseSubjectContext --require SeLockSubjectContext --require SeUnlockSubjectContext --require PsAssignImpersonationToken --require PsReferencePrimaryToken --require PsDereferencePrimaryToken --require IoAllocateIrp --require IoFreeIrp --require IoBuildDeviceIoControlRequest --require IoCallDriver --require IoCompleteRequest --require IoAcquireCancelSpinLock --require IoReleaseCancelSpinLock --require IoCsqInitialize --require IoCsqInitializeEx --require IoCsqInsertIrp --require IoCsqInsertIrpEx --require IoCsqRemoveIrp --require IoCsqRemoveNextIrp
           python3 - <<'PY'
           import struct
           p = open("build/cognacos-kernel.exe", "rb").read()
