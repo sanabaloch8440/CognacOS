@@ -788,6 +788,39 @@ jobs:
           grep -F 'Guest ATA/GPT/ext4 read/write end-to-end test passed.' build/serial.log
           grep -F 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log
           grep -F 'CognacOS Rust NTDLL passed ring-3 tests through the unified Windows x64 SYSCALL ABI.' build/serial.log
+      - name: Verify trace persistence across a second QEMU boot
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f /usr/share/OVMF/OVMF_CODE_4M.fd ] && [ -f /usr/share/OVMF/OVMF_VARS_4M.fd ]; then
+            code=/usr/share/OVMF/OVMF_CODE_4M.fd
+            vars_template=/usr/share/OVMF/OVMF_VARS_4M.fd
+          else
+            code=/usr/share/OVMF/OVMF_CODE.fd
+            vars_template=/usr/share/OVMF/OVMF_VARS.fd
+          fi
+          cp "$vars_template" build/OVMF_VARS_persist.fd
+          log=build/serial-persist.log
+          rm -f "$log"
+          set +e
+          timeout 30s qemu-system-x86_64 \
+            -machine pc -m 5G -cpu qemu64 -smp 2 \
+            -drive if=pflash,format=raw,readonly=on,file="$code" \
+            -drive if=pflash,format=raw,file=build/OVMF_VARS_persist.fd \
+            -drive if=ide,format=raw,file=build/cognacos-uefi.img \
+            -drive if=ide,format=raw,index=1,file=build/pagefile.img \
+            -boot order=c -display none -monitor none \
+            -serial "file:$log" -no-reboot -no-shutdown
+          status=$?
+          set -e
+          if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
+            echo "QEMU persistence reboot returned unexpected status $status" >&2
+            cat "$log" || true
+            exit "$status"
+          fi
+          cat "$log"
+          grep -F 'NTOSKRNL persistent trace snapshot restored from dedicated GPT partition.' "$log"
+          echo "PERSISTENCE RESULT: PASS - trace snapshot was restored on a second boot of the same disk image."
       - name: SMP boot and interrupt stress matrix (2, 4, 8 vCPUs)
         shell: bash
         run: |
@@ -973,6 +1006,7 @@ jobs:
             build/kernel/cognacos-kernel.exe
             build/cognacos-uefi.img
             build/serial.log
+            build/serial-persist.log
             build/serial-smp-*.log
             build/beep-driver-assessment/output.txt
             build/beep-driver-assessment/audio.txt
