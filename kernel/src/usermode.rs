@@ -371,8 +371,20 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
             trampoline_index+=1;
         }
         crate::serial_write(b"PE TLS callbacks executed in ring 3; per-image TLS blocks initialized.\r\n");
-        unsafe { crate::serial_write(b"[DBG][NTOSKRNL][USER] entering image entry RIP="); crate::serial_write_hex(image.entry); crate::serial_write(b" RSP="); crate::serial_write_hex(USER_STACK_TOP); crate::serial_write(b" TEB="); crate::serial_write_hex(env.teb); crate::serial_write(b"\r\n"); }
-        unsafe{rdotos_process_enter_user(image.entry,USER_STACK_TOP,env.teb);}
+        // Provide the return address expected by the Windows x64 thread-entry ABI.
+        // A minimal PE entry point that executes RET must terminate the process,
+        // not fetch an instruction from address zero above the mapped user stack.
+        const PROCESS_RETURN_TRAMPOLINE: u64 = 0x0000_0086_0000_0000;
+        let return_page = unsafe { crate::memory::allocate_page() }.map_err(|_| VmError::OutOfMemory)?;
+        unsafe { space.map_user_page(PROCESS_RETURN_TRAMPOLINE, return_page, true, false)?; }
+        // xor edi,edi; xor eax,eax; int 81h (SYS_EXIT(0)); ud2.
+        const RETURN_CODE: [u8; 8] = [0x31, 0xff, 0x31, 0xc0, 0xcd, 0x81, 0x0f, 0x0b];
+        unsafe { space.copy_to_user(PROCESS_RETURN_TRAMPOLINE, &RETURN_CODE)?; }
+        unsafe { space.protect_user_page(PROCESS_RETURN_TRAMPOLINE, false, true)?; }
+        let initial_user_rsp = USER_STACK_TOP - 8;
+        unsafe { space.copy_to_user(initial_user_rsp, &PROCESS_RETURN_TRAMPOLINE.to_le_bytes())?; }
+        unsafe { crate::serial_write(b"[DBG][NTOSKRNL][USER] entering image entry RIP="); crate::serial_write_hex(image.entry); crate::serial_write(b" RSP="); crate::serial_write_hex(initial_user_rsp); crate::serial_write(b" TEB="); crate::serial_write_hex(env.teb); crate::serial_write(b" return-trampoline="); crate::serial_write_hex(PROCESS_RETURN_TRAMPOLINE); crate::serial_write(b"\r\n"); }
+        unsafe{rdotos_process_enter_user(image.entry,initial_user_rsp,env.teb);}
         Ok(())
     })();
     unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
