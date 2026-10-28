@@ -810,6 +810,7 @@ struct SecurityTokenIdentity {
     capability_sids: [[u8; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS],
     // TOKEN_DEFAULT_DACL is stored as a validated ACL (not a security descriptor).
     default_dacl_present: bool,
+    default_dacl_explicit: bool,
     default_dacl_len: u16,
     default_dacl: [u8; 236],
 }
@@ -820,7 +821,7 @@ impl SecurityTokenIdentity {
         restricted_sids: [[0; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS],
         capability_count: 0, capability_lengths: [0; SECURITY_TOKEN_SIDS],
         capability_sids: [[0; SECURITY_SID_BYTES]; SECURITY_TOKEN_SIDS],
-        default_dacl_present: false, default_dacl_len: 0, default_dacl: [0; 236] };
+        default_dacl_present: false, default_dacl_explicit: false, default_dacl_len: 0, default_dacl: [0; 236] };
 }
 static SECURITY_TOKEN_LOCK: TokenMetaLock = TokenMetaLock::new();
 static mut SECURITY_TOKEN_IDENTITIES: [SecurityTokenIdentity; SECURITY_TOKEN_SLOTS] =
@@ -850,7 +851,7 @@ pub(crate) unsafe fn se_internal_RegisterTokenSids(
     // TOKEN_DEFAULT_DACL. Until then, synthesize the OS default from this token's
     // user/group SIDs plus LocalSystem and Builtin Administrators. Store it on the
     // token so duplication copies the exact ACL rather than regenerating it.
-    if !entry.default_dacl_present {
+    if !entry.default_dacl_explicit {
         if let Some((acl, acl_len)) = build_token_default_dacl(&entry) {
             entry.default_dacl = acl;
             entry.default_dacl_len = acl_len as u16;
@@ -883,49 +884,52 @@ unsafe fn copy_sid_set(
 /// Build the default DACL for a newly constructed token. The token's user SID
 /// is first, followed by LocalSystem, Builtin Administrators, and additional
 /// token groups while they fit in the bounded self-relative SD representation.
-fn build_token_default_dacl(entry: &SecurityTokenIdentity) -> Option<([u8; 236], usize)> {
+fn append_default_dacl_ace(
+    acl: &mut [u8; 236], offset: &mut usize, count: &mut u16, sid: &[u8],
+) -> bool {
     const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
+    if sid.len() < 8 || sid.len() > SECURITY_SID_BYTES || *offset + 8 + sid.len() > acl.len() {
+        return false;
+    }
+    let ace_len = 8 + sid.len();
+    acl[*offset] = 0; // ACCESS_ALLOWED_ACE_TYPE
+    acl[*offset + 1] = 0;
+    acl[*offset + 2..*offset + 4].copy_from_slice(&(ace_len as u16).to_le_bytes());
+    acl[*offset + 4..*offset + 8].copy_from_slice(&EVENT_ALL_ACCESS.to_le_bytes());
+    acl[*offset + 8..*offset + ace_len].copy_from_slice(sid);
+    *offset += ace_len;
+    *count += 1;
+    true
+}
+
+/// Build a default DACL for a newly constructed token. The token's user SID
+/// is first, followed by LocalSystem, Builtin Administrators, and additional
+/// token groups while they fit in the bounded representation.
+fn build_token_default_dacl(entry: &SecurityTokenIdentity) -> Option<([u8; 236], usize)> {
     const SYSTEM_SID: [u8; 12] = [1,1,0,0,0,0,0,5,18,0,0,0];
-    const ADMINS_SID: [u8; 16] = [1,2,0,0,0,0,0,5,32,0,0,0,32,2,0,0];
+    const ADMINS_SID: [u8; 16] = [1,2,0,0,0,0,0,5,32,0,0,0];
     let mut acl = [0u8; 236];
     acl[0] = 2; // ACL_REVISION
     let mut offset = 8usize;
     let mut count = 0u16;
-    let mut append_sid = |sid: &[u8]| -> bool {
-        if sid.len() < 8 || sid.len() > SECURITY_SID_BYTES || offset + 8 + sid.len() > acl.len() {
-            return false;
-        }
-        let ace_len = 8 + sid.len();
-        acl[offset] = 0; // ACCESS_ALLOWED_ACE_TYPE
-        acl[offset + 1] = 0;
-        acl[offset + 2..offset + 4].copy_from_slice(&(ace_len as u16).to_le_bytes());
-        acl[offset + 4..offset + 8].copy_from_slice(&EVENT_ALL_ACCESS.to_le_bytes());
-        acl[offset + 8..offset + ace_len].copy_from_slice(sid);
-        offset += ace_len;
-        count += 1;
-        true
-    };
-    // User SID is the first SID in the token's registered identity set.
     if entry.count == 0 { return None; }
     let user_len = entry.lengths[0] as usize;
-    if !append_sid(&entry.sids[0][..user_len]) { return None; }
-    let _ = append_sid(&SYSTEM_SID);
-    let _ = append_sid(&ADMINS_SID);
+    if !append_default_dacl_ace(&mut acl, &mut offset, &mut count, &entry.sids[0][..user_len]) {
+        return None;
+    }
+    let _ = append_default_dacl_ace(&mut acl, &mut offset, &mut count, &SYSTEM_SID);
+    let _ = append_default_dacl_ace(&mut acl, &mut offset, &mut count, &ADMINS_SID);
     for i in 1..entry.count as usize {
         let sid = &entry.sids[i][..entry.lengths[i] as usize];
-        // Duplicate ACEs do not change the allow result and waste the bounded ACL.
-        let already_present = {
-            let mut p = 8usize;
-            let mut found = false;
-            while p + 8 <= offset {
-                let n = u16::from_le_bytes([acl[p + 2], acl[p + 3]]) as usize;
-                if n < 8 || p + n > offset { break; }
-                if acl[p + 8..p + n] == *sid { found = true; break; }
-                p += n;
-            }
-            found
-        };
-        if !already_present { let _ = append_sid(sid); }
+        let mut p = 8usize;
+        let mut found = false;
+        while p + 8 <= offset {
+            let n = u16::from_le_bytes([acl[p + 2], acl[p + 3]]) as usize;
+            if n < 8 || p + n > offset { break; }
+            if acl[p + 8..p + n] == *sid { found = true; break; }
+            p += n;
+        }
+        if !found { let _ = append_default_dacl_ace(&mut acl, &mut offset, &mut count, sid); }
     }
     acl[2..4].copy_from_slice(&(offset as u16).to_le_bytes());
     acl[4..6].copy_from_slice(&count.to_le_bytes());
@@ -980,6 +984,7 @@ pub(crate) unsafe fn se_internal_TokenSetDefaultDacl(
     entry.default_dacl[..length].copy_from_slice(bytes);
     entry.default_dacl_len = length as u16;
     entry.default_dacl_present = true;
+    entry.default_dacl_explicit = true;
     STATUS_SUCCESS
 }
 
