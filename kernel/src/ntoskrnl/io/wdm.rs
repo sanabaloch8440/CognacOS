@@ -6,7 +6,7 @@
 //! is now tracked per creator thread, but general cancel-safe queues, complete
 //! cancel-spin-lock races, security descriptors, VPBs, and many IRP variants are
 //! still unsupported. Driver images must not be treated as generally loadable.
-use core::{ffi::c_void, ptr};
+use core::{ffi::c_void, ptr, ops::{Index, IndexMut}};
 use crate::hal::IrqSpinLock;
 
 pub use crate::nt_abi::ntstatus::{
@@ -17,7 +17,7 @@ pub use crate::nt_abi::ntstatus::{
 pub const IRP_SIZE_X64: usize = 0xD0;
 pub const IO_STACK_LOCATION_SIZE_X64: usize = 0x48;
 const MAX_WDM_DEVICES: usize = 32;
-const MAX_WDM_IRPS: usize = 64;
+const IRP_CANCEL_BATCH: usize = 64;
 const MAX_WDM_STACK_LOCATIONS: usize = 127;
 const MAX_DEVICE_EXTENSION: usize = 512;
 const IRP_STACK_OFFSET: usize = 0xB8;
@@ -74,21 +74,46 @@ pub struct IoStackLocation {
 struct DeviceSlot { used: bool, deleting: bool, active_dispatches:u32, outstanding_irps:u32, remove_lock_count: u32, power_state: u8, power_target: u8, power_transition: bool, pnp_state: u8, pnp_pending: u8, pnp_transition_minor: u8, pnp_transition: bool, attached_to: *mut DeviceObject, name_len: usize, name: [u16; 260], object: DeviceObject, extension: [u8; MAX_DEVICE_EXTENSION] }
 unsafe impl Send for DeviceSlot {}
 #[repr(C)]
-const MAX_IOCTL_SYSTEM_BUFFER:usize=64*1024;
+const PAGE_SIZE:usize=4096;
 struct IrpSlot {
+ next:*mut IrpSlot,
  used: bool, owned_mdl: *mut c_void, completion_state:u8, suspended_completion:bool, free_requested:bool, active_ops:u32,
  outstanding_count:usize, outstanding_devices:[*mut DeviceObject;MAX_WDM_STACK_LOCATIONS],
- // Keep object and stack adjacent: WDM requires the stack array to immediately
- // follow the fixed-size IRP allocation.
  object: Irp, stack: [IoStackLocation;MAX_WDM_STACK_LOCATIONS],
- system_buffer:[u8;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:usize,
+ system_buffer:*mut u8, system_buffer_pages:usize, system_buffer_len:usize,
  ioctl_output_buffer:*mut c_void, ioctl_output_len:usize, built_sync_ioctl:bool,
- // Synchronous builder IRPs are owned by their creating thread until terminal
- // completion or thread-exit cancellation.
  sync_thread_id:u64, sync_event:*mut c_void,
 }
+impl IrpSlot {
+ const fn empty()->Self { Self {
+  next:ptr::null_mut(),used:false,owned_mdl:ptr::null_mut(),completion_state:0,
+  suspended_completion:false,free_requested:false,active_ops:0,outstanding_count:0,
+  outstanding_devices:[ptr::null_mut();MAX_WDM_STACK_LOCATIONS],
+  object:Irp{bytes:[0;IRP_SIZE_X64]},
+  stack:[IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()};MAX_WDM_STACK_LOCATIONS],
+  system_buffer:ptr::null_mut(),system_buffer_pages:0,system_buffer_len:0,
+  ioctl_output_buffer:ptr::null_mut(),ioctl_output_len:0,built_sync_ioctl:false,
+  sync_thread_id:0,sync_event:ptr::null_mut(),
+ }}
+}
 unsafe impl Send for IrpSlot {}
-struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: [IrpSlot; MAX_WDM_IRPS] }
+struct IrpIter<'a>{next:*mut IrpSlot,_marker:core::marker::PhantomData<&'a IrpSlot>}
+impl<'a> Iterator for IrpIter<'a>{type Item=&'a IrpSlot;fn next(&mut self)->Option<Self::Item>{if self.next.is_null(){return None}let p=self.next;self.next=unsafe{(*p).next};Some(unsafe{&*p})}}
+struct IrpIterMut<'a>{next:*mut IrpSlot,_marker:core::marker::PhantomData<&'a mut IrpSlot>}
+impl<'a> Iterator for IrpIterMut<'a>{type Item=&'a mut IrpSlot;fn next(&mut self)->Option<Self::Item>{if self.next.is_null(){return None}let p=self.next;self.next=unsafe{(*p).next};Some(unsafe{&mut *p})}}
+struct IrpTable{head:*mut IrpSlot,len:usize}
+impl IrpTable{
+ const fn new()->Self{Self{head:ptr::null_mut(),len:0}}
+ fn iter(&self)->IrpIter<'_>{IrpIter{next:self.head,_marker:core::marker::PhantomData}}
+ fn iter_mut(&mut self)->IrpIterMut<'_>{IrpIterMut{next:self.head,_marker:core::marker::PhantomData}}
+ fn len(&self)->usize{self.len}
+ fn push_front(&mut self,slot:*mut IrpSlot){unsafe{(*slot).next=self.head;}self.head=slot;self.len+=1;}
+}
+unsafe impl Send for IrpTable {}
+unsafe impl Sync for IrpTable {}
+impl Index<usize> for IrpTable{type Output=IrpSlot;fn index(&self,index:usize)->&Self::Output{assert!(index<self.len);let mut p=self.head;for _ in 0..index{p=unsafe{(*p).next};}unsafe{&*p}}}
+impl IndexMut<usize> for IrpTable{fn index_mut(&mut self,index:usize)->&mut Self::Output{assert!(index<self.len);let mut p=self.head;for _ in 0..index{p=unsafe{(*p).next};}unsafe{&mut *p}}}
+struct WdmState { devices: [DeviceSlot; MAX_WDM_DEVICES], irps: IrpTable }
 impl WdmState {
  const fn new() -> Self {
   Self {
@@ -101,7 +126,7 @@ impl WdmState {
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
-   irps: [const { IrpSlot { used:false, owned_mdl:ptr::null_mut(), completion_state:0, suspended_completion:false, free_requested:false, active_ops:0, outstanding_count:0, outstanding_devices:[ptr::null_mut();MAX_WDM_STACK_LOCATIONS], object: Irp { bytes:[0;IRP_SIZE_X64] }, stack:[IoStackLocation { major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut() };MAX_WDM_STACK_LOCATIONS], system_buffer:[0;MAX_IOCTL_SYSTEM_BUFFER], system_buffer_len:0, ioctl_output_buffer:ptr::null_mut(), ioctl_output_len:0, built_sync_ioctl:false, sync_thread_id:0, sync_event:ptr::null_mut() } }; MAX_WDM_IRPS],
+   irps: IrpTable::new(),
   }
  }
 }
