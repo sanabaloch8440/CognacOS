@@ -1454,4 +1454,49 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut rejected)},STATUS_DELETE_PENDING);
   assert!(rejected.is_null());
  }
+ unsafe extern "system" fn pnp_start_complete_success(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+  unsafe {
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   io_complete_request(irp,0);
+  }
+  STATUS_SUCCESS
+ }
+ unsafe extern "system" fn pnp_start_complete_failure(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+  unsafe {
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_INVALID_DEVICE_REQUEST);
+   io_complete_request(irp,0);
+  }
+  STATUS_INVALID_DEVICE_REQUEST
+ }
+ fn pnp_irp(driver:&mut DriverObject,device:*mut DeviceObject,minor:u8)->i32 {
+  let irp=unsafe{io_allocate_irp(2,0)};
+  if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
+  let stack=unsafe{io_get_next_irp_stack_location(irp)};
+  if stack.is_null(){unsafe{io_free_irp(irp)};return STATUS_INVALID_PARAMETER}
+  unsafe { (*stack).major_function=0x1b;(*stack).minor_function=minor; }
+  let status=unsafe{io_call_driver(device,irp)};
+  unsafe{io_free_irp(irp);}
+  let _=driver;
+  status
+ }
+ #[test]
+ fn pnp_state_is_committed_only_by_successful_terminal_irp_completion() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  driver.major_function[0x1b]=Some(pnp_start_complete_failure);
+  assert_eq!(pnp_irp(&mut driver,device,0x00),STATUS_INVALID_DEVICE_REQUEST);
+  assert_eq!(io_pnp_state(device),PNP_STATE_NOT_STARTED);
+  driver.major_function[0x1b]=Some(pnp_start_complete_success);
+  assert_eq!(pnp_irp(&mut driver,device,0x00),STATUS_SUCCESS);
+  assert_eq!(io_pnp_state(device),PNP_STATE_STARTED);
+  // A second START_DEVICE is illegal until a successful STOP_DEVICE.
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  let stack=unsafe{io_get_next_irp_stack_location(irp)};
+  unsafe{(*stack).major_function=0x1b;(*stack).minor_function=0x00;}
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_INVALID_DEVICE_REQUEST);
+  unsafe{io_free_irp(irp);io_delete_device(device);}
+ }
+
 }
