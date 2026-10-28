@@ -29,10 +29,10 @@ const IRP_INFORMATION_OFFSET: usize = 0x38;
 pub type UnicodeString = crate::nt_abi::object::UNICODE_STRING;
 /// Use the canonical Windows IO_STATUS_BLOCK union layout shared with NTDLL and drivers.
 pub type IoStatusBlock = crate::nt_abi::io::IO_STATUS_BLOCK;
-pub type DriverDispatch = unsafe extern "system" fn(*mut DeviceObject, *mut Irp) -> i32;
-pub type DriverUnload = unsafe extern "system" fn(*mut DriverObject);
-pub type IoCompletionRoutine = unsafe extern "system" fn(*mut DeviceObject, *mut Irp, *mut c_void) -> i32;
-pub type DriverCancelRoutine = unsafe extern "system" fn(*mut DeviceObject, *mut Irp);
+pub type DriverDispatch = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp) -> i32;
+pub type DriverUnload = unsafe extern "win64" fn(*mut DriverObject);
+pub type IoCompletionRoutine = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp, *mut c_void) -> i32;
+pub type DriverCancelRoutine = unsafe extern "win64" fn(*mut DeviceObject, *mut Irp);
 
 #[repr(C)]
 pub struct DriverObject {
@@ -218,7 +218,7 @@ pub const DEVICE_POWER_D0:u8=0; pub const DEVICE_POWER_D1:u8=1; pub const DEVICE
 
 
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_reference_device_object(device:*mut DeviceObject)->*mut DeviceObject {
+pub unsafe extern "win64" fn io_reference_device_object(device:*mut DeviceObject)->*mut DeviceObject {
  if device.is_null(){return ptr::null_mut()}
  let mut state=WDM.lock();
  let Some(slot)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)&&!s.deleting) else{return ptr::null_mut()};
@@ -226,7 +226,7 @@ pub unsafe extern "system" fn io_reference_device_object(device:*mut DeviceObjec
  slot.object.reference_count=next;device
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_dereference_device_object(device:*mut DeviceObject) {
+pub unsafe extern "win64" fn io_dereference_device_object(device:*mut DeviceObject) {
  if device.is_null(){return}
  let finalize={
   let mut state=WDM.lock();
@@ -237,7 +237,7 @@ pub unsafe extern "system" fn io_dereference_device_object(device:*mut DeviceObj
  if finalize{unsafe{io_delete_device(device)}}
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_acquire_device_remove_lock(device:*mut DeviceObject)->i32 {
+pub unsafe extern "win64" fn io_acquire_device_remove_lock(device:*mut DeviceObject)->i32 {
  if device.is_null(){return STATUS_INVALID_PARAMETER}
  let mut state=WDM.lock();
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
@@ -246,7 +246,7 @@ pub unsafe extern "system" fn io_acquire_device_remove_lock(device:*mut DeviceOb
  s.remove_lock_count=n;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_release_device_remove_lock(device:*mut DeviceObject) {
+pub unsafe extern "win64" fn io_release_device_remove_lock(device:*mut DeviceObject) {
  if device.is_null(){return}
  let finalize={
   let mut state=WDM.lock();
@@ -257,7 +257,7 @@ pub unsafe extern "system" fn io_release_device_remove_lock(device:*mut DeviceOb
  if finalize{unsafe{io_delete_device(device)}}
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_begin_device_power_transition(device:*mut DeviceObject,target:u8)->i32 {
+pub unsafe extern "win64" fn io_begin_device_power_transition(device:*mut DeviceObject,target:u8)->i32 {
  if device.is_null()||target>DEVICE_POWER_D3{return STATUS_INVALID_PARAMETER}
  let mut state=WDM.lock();
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
@@ -266,7 +266,7 @@ pub unsafe extern "system" fn io_begin_device_power_transition(device:*mut Devic
  s.power_target=target;s.power_transition=true;STATUS_SUCCESS
 }
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_complete_device_power_transition(device:*mut DeviceObject,target:u8,status:i32)->i32 {
+pub unsafe extern "win64" fn io_complete_device_power_transition(device:*mut DeviceObject,target:u8,status:i32)->i32 {
  if device.is_null()||target>DEVICE_POWER_D3{return STATUS_INVALID_PARAMETER}
  let finalize={
   let mut state=WDM.lock();
@@ -504,7 +504,7 @@ static PNP_MANAGER:IrqSpinLock<PnpManagerState>=IrqSpinLock::new(PnpManagerState
 /// completion. The relations object and every child pointer must be kernel-owned
 /// and readable; unknown/deleting objects are rejected before any state changes.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,relations:*const DeviceRelations)->i32{
+pub unsafe extern "win64" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,relations:*const DeviceRelations)->i32{
  if bus.is_null()||relations.is_null(){return STATUS_INVALID_PARAMETER}
  let count=unsafe{ptr::read_unaligned(ptr::addr_of!((*relations).count))} as usize;
  if count>MAX_PNP_RELATIONS{return STATUS_INVALID_PARAMETER}
@@ -547,7 +547,7 @@ pub unsafe extern "system" fn IoPnPProcessBusRelations(bus:*mut DeviceObject,rel
 /// START_DEVICE is validated/resourced by the normal Po/I/O dispatch path.
 /// Pending IRPs remain owned until terminal IoCompleteRequest.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void)->i32 {
+pub unsafe extern "win64" fn IoPnPDispatchLifecycle(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void)->i32 {
  unsafe{io_pnp_dispatch_lifecycle_internal(device,minor,allocated,translated,false)}
 }
 unsafe fn io_pnp_dispatch_lifecycle_internal(device:*mut DeviceObject,minor:u8,allocated:*const c_void,translated:*const c_void,remove_after_surprise:bool)->i32 {
@@ -631,25 +631,25 @@ fn io_pnp_manager_irp_completed(irp:*mut Irp){
 /// publish the returned children when the IRP completes. STATUS_PENDING is
 /// supported; the manager retains the IRP and processes relations on completion.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn IoPnPEnumerateBus(bus:*mut DeviceObject)->i32{
+pub unsafe extern "win64" fn IoPnPEnumerateBus(bus:*mut DeviceObject)->i32{
  unsafe{IoPnPDispatchLifecycle(bus,0x07,ptr::null(),ptr::null())}
 }
 /// Start a PnP device by sending its real START_DEVICE IRP with the
 /// allocated and translated resource lists supplied by the bus/resource arbiter.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn IoPnPStartDevice(device:*mut DeviceObject,allocated:*const c_void,translated:*const c_void)->i32{
+pub unsafe extern "win64" fn IoPnPStartDevice(device:*mut DeviceObject,allocated:*const c_void,translated:*const c_void)->i32{
  unsafe{IoPnPDispatchLifecycle(device,IRP_MN_START_DEVICE,allocated,translated)}
 }
 /// Stop a started device through its driver's IRP_MN_STOP_DEVICE dispatch.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn IoPnPStopDevice(device:*mut DeviceObject)->i32{
+pub unsafe extern "win64" fn IoPnPStopDevice(device:*mut DeviceObject)->i32{
  unsafe{IoPnPDispatchLifecycle(device,IRP_MN_STOP_DEVICE,ptr::null(),ptr::null())}
 }
 /// Remove a device using the required surprise-removal-before-remove sequence.
 /// If surprise removal completes asynchronously, the manager automatically
 /// dispatches REMOVE_DEVICE after successful terminal completion.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn IoPnPRemoveDevice(device:*mut DeviceObject)->i32{
+pub unsafe extern "win64" fn IoPnPRemoveDevice(device:*mut DeviceObject)->i32{
  if device.is_null(){return STATUS_INVALID_PARAMETER}
  let state=io_pnp_state(device);
  if state<0{return STATUS_INVALID_PARAMETER}
@@ -666,7 +666,7 @@ pub unsafe extern "system" fn IoPnPRemoveDevice(device:*mut DeviceObject)->i32{
 /// Return the number of currently published children for a bus. This is an
 /// enumeration snapshot count, not a claim that those children have started.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn IoPnPQueryChildCount(bus:*mut DeviceObject)->u32{
+pub unsafe extern "win64" fn IoPnPQueryChildCount(bus:*mut DeviceObject)->u32{
  if bus.is_null(){return 0}
  let manager=PNP_MANAGER.lock();
  manager.relations.iter().filter(|r|r.used&&r.bus==bus).count() as u32
@@ -734,12 +734,12 @@ unsafe fn invoke_start_io(device: *mut DeviceObject, irp: *mut Irp) {
     if driver.is_null() { return; }
     let callback = unsafe { (*driver).driver_start_io };
     if callback.is_null() { return; }
-    let start: unsafe extern "system" fn(*mut DeviceObject, *mut Irp) = unsafe { core::mem::transmute(callback) };
+    let start: unsafe extern "win64" fn(*mut DeviceObject, *mut Irp) = unsafe { core::mem::transmute(callback) };
     unsafe { start(device, irp); }
 }
 
 /// VOID IoSetStartIoAttributes(PDEVICE_OBJECT, BOOLEAN KeyedDevice, BOOLEAN BoostedIo).
-pub unsafe extern "system" fn io_set_start_io_attributes(device: *mut DeviceObject, keyed_device: u8, boosted_io: u8) {
+pub unsafe extern "win64" fn io_set_start_io_attributes(device: *mut DeviceObject, keyed_device: u8, boosted_io: u8) {
     if device.is_null() { return; }
     let mut state = START_IO.lock();
     if let Some(i) = start_io_slot(&mut state, device) {
@@ -749,7 +749,7 @@ pub unsafe extern "system" fn io_set_start_io_attributes(device: *mut DeviceObje
 }
 
 /// VOID IoStartPacket(PDEVICE_OBJECT, PIRP, PULONG Key, PDRIVER_CANCEL CancelFunction).
-pub unsafe extern "system" fn io_start_packet(device: *mut DeviceObject, irp: *mut Irp, key: *const u32, cancel_function: Option<DriverCancelRoutine>) {
+pub unsafe extern "win64" fn io_start_packet(device: *mut DeviceObject, irp: *mut Irp, key: *const u32, cancel_function: Option<DriverCancelRoutine>) {
     if device.is_null() || irp.is_null() { return; }
     if let Some(cancel) = cancel_function {
         let _ = unsafe { io_set_cancel_routine(irp, Some(cancel)); };
@@ -776,7 +776,7 @@ pub unsafe extern "system" fn io_start_packet(device: *mut DeviceObject, irp: *m
 }
 
 /// VOID IoStartNextPacket(PDEVICE_OBJECT, BOOLEAN Cancelable).
-pub unsafe extern "system" fn io_start_next_packet(device: *mut DeviceObject, _cancelable: u8) {
+pub unsafe extern "win64" fn io_start_next_packet(device: *mut DeviceObject, _cancelable: u8) {
     if device.is_null() { return; }
     let next = {
         let mut state = START_IO.lock();
@@ -797,7 +797,7 @@ pub unsafe extern "system" fn io_start_next_packet(device: *mut DeviceObject, _c
     if !next.is_null() { unsafe { invoke_start_io(device, next); } }
 }
 
-pub unsafe extern "system" fn io_create_device(
+pub unsafe extern "win64" fn io_create_device(
  driver:*mut DriverObject, extension_size:u32, device_name:*mut UnicodeString,
  device_type:u32, characteristics:u32, exclusive:u8, output:*mut *mut DeviceObject
 )->i32 {
@@ -842,7 +842,7 @@ unsafe extern "win64" fn io_object_manager_finalizer(object:*mut c_void){unsafe{
 /// dispatch, remove-lock, reference and power-transition rundown. Repeated calls
 /// are safe: the unload callback is atomically claimed by clearing its pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_unload_driver(driver:*mut DriverObject)->i32 {
+pub unsafe extern "win64" fn io_unload_driver(driver:*mut DriverObject)->i32 {
  if driver.is_null(){return STATUS_INVALID_PARAMETER}
  let mut devices=[ptr::null_mut::<DeviceObject>();MAX_WDM_DEVICES];
  let count={
@@ -878,7 +878,7 @@ pub unsafe extern "system" fn io_unload_driver(driver:*mut DriverObject)->i32 {
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_delete_device(device:*mut DeviceObject) {
+pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
  if device.is_null(){return}
  let _ = crate::ntoskrnl::ob::runtime::unregister_object(device.cast());
  let mut state=WDM.lock();
@@ -945,7 +945,7 @@ fn initialize_irp_slot(slot:&mut IrpSlot,stack_size:i8)->*mut Irp {
  object
 }
 #[unsafe(export_name = "IoAllocateIrp")]
-pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*mut Irp {
+pub unsafe extern "win64" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*mut Irp {
  if stack_size<=0||stack_size as usize>MAX_WDM_STACK_LOCATIONS||charge_quota>1{return ptr::null_mut()}
  {
   let mut state=WDM.lock();
@@ -986,7 +986,7 @@ pub(crate) unsafe fn io_inherit_requestor_identity(destination: *mut Irp, source
 }
 
 #[unsafe(export_name = "IoFreeIrp")]
-pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
+pub unsafe extern "win64" fn io_free_irp(irp:*mut Irp) {
  if irp.is_null(){return}
  {
   let mut state=WDM.lock();
@@ -1012,12 +1012,12 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
  if !system_buffer.is_null()&&system_buffer_pages!=0{let _=crate::ntoskrnl::mm::kernel_space::free_pages(system_buffer,system_buffer_pages);}
 }
 #[unsafe(export_name = "IoGetCurrentIrpStackLocation")]
-pub unsafe extern "system" fn io_get_current_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
+pub unsafe extern "win64" fn io_get_current_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
  if irp.is_null(){return ptr::null_mut()}
  unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),IRP_STACK_OFFSET).cast()}
 }
 #[unsafe(export_name = "IoGetNextIrpStackLocation")]
-pub unsafe extern "system" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
+pub unsafe extern "win64" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
  if irp.is_null(){return ptr::null_mut()}
  let current=unsafe{io_get_current_irp_stack_location(irp)};
  if current.is_null(){return ptr::null_mut()}
@@ -1117,7 +1117,7 @@ fn release_device_dispatch_rundown(device:*mut DeviceObject){
 }
 
 #[unsafe(export_name = "IoCallDriver")]
-pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut Irp)->i32 {
+pub unsafe extern "win64" fn io_call_driver(device:*mut DeviceObject, irp:*mut Irp)->i32 {
  if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
  let (driver, deleting)={
   let mut state=WDM.lock();
@@ -1188,7 +1188,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
 /// IRP reaches terminal completion. Event == NULL requires the caller to install
 /// a completion routine before calling IoCallDriver.
 #[unsafe(export_name = "IoBuildDeviceIoControlRequest")]
-pub unsafe extern "system" fn io_build_device_io_control_request(
+pub unsafe extern "win64" fn io_build_device_io_control_request(
  ioctl_code:u32, device:*mut DeviceObject, input_buffer:*mut c_void,
  input_length:u32, output_buffer:*mut c_void, output_length:u32,
  internal_device_control:u8, event:*mut c_void, io_status:*mut IoStatusBlock
@@ -1346,7 +1346,7 @@ fn finalize_irp_status(irp:*mut Irp) {
 }
 
 #[unsafe(export_name = "IoCompleteRequest")]
-pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:i8) {
+pub unsafe extern "win64" fn io_complete_request(irp:*mut Irp, _priority_boost:i8) {
  if irp.is_null(){return}
  // Claim completion under WDM's lock. A competing completion cannot execute
  // the same completion routine twice or publish the IOSB twice.
@@ -1461,7 +1461,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
  }
 }
 #[unsafe(export_name = "IoMarkIrpPending")]
-pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
+pub unsafe extern "win64" fn io_mark_irp_pending(irp:*mut Irp) {
  if irp.is_null(){return}
  // Windows sets SL_PENDING_RETURNED on the current stack location; the I/O
  // manager propagates this into IRP.PendingReturned while unwinding.
@@ -1470,7 +1470,7 @@ pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
 }
 
 #[unsafe(export_name = "IoSetCompletionRoutine")]
-pub unsafe extern "system" fn io_set_completion_routine(
+pub unsafe extern "win64" fn io_set_completion_routine(
  irp:*mut Irp, routine:Option<IoCompletionRoutine>, context:*mut c_void,
  invoke_success:u8, invoke_error:u8, invoke_cancel:u8
 ) {
@@ -1487,7 +1487,7 @@ pub unsafe extern "system" fn io_set_completion_routine(
 /// Attach a filter/filesystem device above the current top of a device stack.
 /// The returned object is the lower device that receives forwarded IRPs.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_attach_device_to_device_stack(
+pub unsafe extern "win64" fn io_attach_device_to_device_stack(
     source:*mut DeviceObject, target:*mut DeviceObject
 )->*mut DeviceObject {
     if source.is_null() || target.is_null() || source==target { return ptr::null_mut(); }
@@ -1519,7 +1519,7 @@ pub unsafe extern "system" fn io_attach_device_to_device_stack(
 /// Detach the device attached above the supplied lower device, as returned by
 /// IoAttachDeviceToDeviceStack. Existing unrelated stack links are preserved.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_detach_device(target:*mut DeviceObject) {
+pub unsafe extern "win64" fn io_detach_device(target:*mut DeviceObject) {
     if target.is_null(){return}
     let mut state=WDM.lock();
     let Some(index)=state.devices.iter().position(|s|s.used&&s.attached_to==target) else{return};
@@ -1535,7 +1535,7 @@ pub unsafe extern "system" fn io_detach_device(target:*mut DeviceObject) {
 /// Initialize a caller-allocated WDM IRP and its trailing stack locations.
 /// PacketSize must cover the fixed x64 IRP plus StackSize full stack locations.
 #[unsafe(export_name = "IoInitializeIrp")]
-pub unsafe extern "system" fn io_initialize_irp(
+pub unsafe extern "win64" fn io_initialize_irp(
     irp:*mut Irp, packet_size:u16, stack_size:i8
 ) {
     if irp.is_null() || stack_size<=0 {return}
@@ -1555,7 +1555,7 @@ pub unsafe extern "system" fn io_initialize_irp(
 
 /// Copy the current stack parameters into the next lower driver's stack slot.
 #[unsafe(export_name = "IoCopyCurrentIrpStackLocationToNext")]
-pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mut Irp) {
+pub unsafe extern "win64" fn io_copy_current_irp_stack_location_to_next(irp:*mut Irp) {
  if irp.is_null(){return}
  let count=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize};
  if count==0||count>0x7f{return}
@@ -1574,7 +1574,7 @@ pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mu
 /// consuming another one: advance the current pointer so the dispatch decrement
 /// returns it to the same slot.
 #[unsafe(export_name = "IoSkipCurrentIrpStackLocation")]
-pub unsafe extern "system" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
+pub unsafe extern "win64" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
  if irp.is_null(){return}
  let count=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize};
  if count==0||count>0x7f{return}
@@ -1594,7 +1594,7 @@ pub unsafe extern "system" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
 
 /// Return the highest device object currently attached above the input device.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_get_attached_device(device:*mut DeviceObject)->*mut DeviceObject {
+pub unsafe extern "win64" fn io_get_attached_device(device:*mut DeviceObject)->*mut DeviceObject {
     if device.is_null(){return ptr::null_mut()}
     let state=WDM.lock();
     if !state.devices.iter().any(|s|s.used&&ptr::eq(&s.object,device)){return ptr::null_mut()}
@@ -1610,7 +1610,7 @@ pub unsafe extern "system" fn io_get_attached_device(device:*mut DeviceObject)->
 
 /// Return the bottom/base object of an attachment stack.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_get_device_attachment_base_ref(device:*mut DeviceObject)->*mut DeviceObject {
+pub unsafe extern "win64" fn io_get_device_attachment_base_ref(device:*mut DeviceObject)->*mut DeviceObject {
     if device.is_null(){return ptr::null_mut()}
     let state=WDM.lock();
     let Some(mut index)=state.devices.iter().position(|s|s.used&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};
@@ -1626,7 +1626,7 @@ pub unsafe extern "system" fn io_get_device_attachment_base_ref(device:*mut Devi
 
 /// Return the next lower object in the stack, or NULL for a base device.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_get_lower_device_object(device:*mut DeviceObject)->*mut DeviceObject {
+pub unsafe extern "win64" fn io_get_lower_device_object(device:*mut DeviceObject)->*mut DeviceObject {
     if device.is_null(){return ptr::null_mut()}
     let state=WDM.lock();
     let Some(slot)=state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)) else{return ptr::null_mut()};
@@ -1635,7 +1635,7 @@ pub unsafe extern "system" fn io_get_lower_device_object(device:*mut DeviceObjec
 
 /// Reset an allocated IRP for reuse without releasing its allocation.
 #[unsafe(export_name = "IoReuseIrp")]
-pub unsafe extern "system" fn io_reuse_irp(irp:*mut Irp, status:i32) {
+pub unsafe extern "win64" fn io_reuse_irp(irp:*mut Irp, status:i32) {
  if irp.is_null(){return}
  let release_old_refs={
   let mut state=WDM.lock();
@@ -1678,7 +1678,7 @@ static FILESYSTEMS:IrqSpinLock<FileSystemRegistry>=IrqSpinLock::new(FileSystemRe
 /// Mount dispatch, VPB allocation and mount-volume arbitration are separate
 /// features and are not implied by registration alone.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_register_file_system(device:*mut DeviceObject) {
+pub unsafe extern "win64" fn io_register_file_system(device:*mut DeviceObject) {
     if device.is_null(){return}
     let valid={let state=WDM.lock();state.devices.iter().any(|s|s.used&&!s.deleting&&ptr::eq(&s.object,device))};
     if !valid{return}
@@ -1694,7 +1694,7 @@ pub unsafe extern "system" fn io_register_file_system(device:*mut DeviceObject) 
 /// Remove a filesystem from discovery. The caller must first prevent new mount
 /// requests and drain existing volumes; this routine only removes registration.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_unregister_file_system(device:*mut DeviceObject) {
+pub unsafe extern "win64" fn io_unregister_file_system(device:*mut DeviceObject) {
     if device.is_null(){return}
     let mut registry=FILESYSTEMS.lock();
     let Some(index)=registry.devices[..registry.count].iter().position(|d|*d==device) else{return};
@@ -1737,7 +1737,7 @@ fn unicode_equal_folded(a:&[u16],b:&[u16])->bool {
 /// Create a bounded object-manager symbolic-link mapping. Resolution through
 /// this namespace is intentionally separate from this storage primitive.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_create_symbolic_link(link_name:*mut UnicodeString,target_name:*mut UnicodeString)->i32 {
+pub unsafe extern "win64" fn io_create_symbolic_link(link_name:*mut UnicodeString,target_name:*mut UnicodeString)->i32 {
  let Some((name_len,name_ptr))=valid_unicode_name(link_name) else{return STATUS_INVALID_PARAMETER};
  let Some((target_len,target_ptr))=valid_unicode_name(target_name) else{return STATUS_INVALID_PARAMETER};
  let mut name=[0u16;MAX_SYMBOLIC_LINK_CHARS];
@@ -1753,7 +1753,7 @@ pub unsafe extern "system" fn io_create_symbolic_link(link_name:*mut UnicodeStri
 
 /// Delete a previously created symbolic-link mapping by its counted name.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn io_delete_symbolic_link(link_name:*mut UnicodeString)->i32 {
+pub unsafe extern "win64" fn io_delete_symbolic_link(link_name:*mut UnicodeString)->i32 {
  let Some((name_len,name_ptr))=valid_unicode_name(link_name) else{return STATUS_INVALID_PARAMETER};
  let mut name=[0u16;MAX_SYMBOLIC_LINK_CHARS];
  unsafe{ptr::copy_nonoverlapping(name_ptr,name.as_mut_ptr(),name_len);}
@@ -1775,13 +1775,13 @@ pub struct IoCsq {
 }
 #[repr(C)]
 pub struct IoCsqIrpContext { pub type_:u32,pub padding:u32,pub irp:*mut Irp,pub csq:*mut IoCsq }
-pub type CsqInsert=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
-pub type CsqInsertEx=unsafe extern "system" fn(*mut IoCsq,*mut Irp,*mut c_void)->i32;
-pub type CsqRemove=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
-pub type CsqPeek=unsafe extern "system" fn(*mut IoCsq,*mut Irp,*mut c_void)->*mut Irp;
-pub type CsqAcquire=unsafe extern "system" fn(*mut IoCsq,*mut u8);
-pub type CsqRelease=unsafe extern "system" fn(*mut IoCsq,u8);
-pub type CsqCompleteCanceled=unsafe extern "system" fn(*mut IoCsq,*mut Irp);
+pub type CsqInsert=unsafe extern "win64" fn(*mut IoCsq,*mut Irp);
+pub type CsqInsertEx=unsafe extern "win64" fn(*mut IoCsq,*mut Irp,*mut c_void)->i32;
+pub type CsqRemove=unsafe extern "win64" fn(*mut IoCsq,*mut Irp);
+pub type CsqPeek=unsafe extern "win64" fn(*mut IoCsq,*mut Irp,*mut c_void)->*mut Irp;
+pub type CsqAcquire=unsafe extern "win64" fn(*mut IoCsq,*mut u8);
+pub type CsqRelease=unsafe extern "win64" fn(*mut IoCsq,u8);
+pub type CsqCompleteCanceled=unsafe extern "win64" fn(*mut IoCsq,*mut Irp);
 const CSQ_IRP_CONTEXT_OFFSET:usize=0x90;
 const IO_TYPE_CSQ:u32=2;
 const IO_TYPE_CSQ_EX:u32=3;
@@ -1802,7 +1802,7 @@ unsafe fn csq_set_cancel_routine(irp:*mut Irp,routine:*mut c_void)->*mut c_void 
  let field=unsafe{ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_CANCEL_ROUTINE_OFFSET).cast::<core::sync::atomic::AtomicPtr<c_void>>()};
  unsafe{(&*field).swap(routine,core::sync::atomic::Ordering::AcqRel)}
 }
-unsafe extern "system" fn csq_cancel_routine(_device:*mut DeviceObject,irp:*mut Irp) {
+unsafe extern "win64" fn csq_cancel_routine(_device:*mut DeviceObject,irp:*mut Irp) {
  if irp.is_null(){return}
  let csq=unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),CSQ_IRP_CONTEXT_OFFSET).cast::<IoCsq>()};
  if csq.is_null(){return}
@@ -1832,12 +1832,12 @@ unsafe fn csq_initialize_common(csq:*mut IoCsq,insert:*mut c_void,extended:bool,
  STATUS_SUCCESS
 }
 #[unsafe(export_name = "IoCsqInitialize")]
-pub unsafe extern "system" fn io_csq_initialize(csq:*mut IoCsq,insert:Option<CsqInsert>,remove:Option<CsqRemove>,peek:Option<CsqPeek>,acquire:Option<CsqAcquire>,release:Option<CsqRelease>,complete:Option<CsqCompleteCanceled>)->i32 {
+pub unsafe extern "win64" fn io_csq_initialize(csq:*mut IoCsq,insert:Option<CsqInsert>,remove:Option<CsqRemove>,peek:Option<CsqPeek>,acquire:Option<CsqAcquire>,release:Option<CsqRelease>,complete:Option<CsqCompleteCanceled>)->i32 {
  let (Some(insert),Some(remove),Some(peek),Some(acquire),Some(release),Some(complete))=(insert,remove,peek,acquire,release,complete) else{return STATUS_INVALID_PARAMETER};
  unsafe{csq_initialize_common(csq,insert as *const () as *mut c_void,false,remove as *const () as *mut c_void,peek as *const () as *mut c_void,acquire as *const () as *mut c_void,release as *const () as *mut c_void,complete as *const () as *mut c_void)}
 }
 #[unsafe(export_name = "IoCsqInitializeEx")]
-pub unsafe extern "system" fn io_csq_initialize_ex(csq:*mut IoCsq,insert:Option<CsqInsertEx>,remove:Option<CsqRemove>,peek:Option<CsqPeek>,acquire:Option<CsqAcquire>,release:Option<CsqRelease>,complete:Option<CsqCompleteCanceled>)->i32 {
+pub unsafe extern "win64" fn io_csq_initialize_ex(csq:*mut IoCsq,insert:Option<CsqInsertEx>,remove:Option<CsqRemove>,peek:Option<CsqPeek>,acquire:Option<CsqAcquire>,release:Option<CsqRelease>,complete:Option<CsqCompleteCanceled>)->i32 {
  let (Some(insert),Some(remove),Some(peek),Some(acquire),Some(release),Some(complete))=(insert,remove,peek,acquire,release,complete) else{return STATUS_INVALID_PARAMETER};
  unsafe{csq_initialize_common(csq,insert as *const () as *mut c_void,true,remove as *const () as *mut c_void,peek as *const () as *mut c_void,acquire as *const () as *mut c_void,release as *const () as *mut c_void,complete as *const () as *mut c_void)}
 }
@@ -1883,15 +1883,15 @@ unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpConte
  if extended_api {status}else{STATUS_SUCCESS}
 }
 #[unsafe(export_name = "IoCsqInsertIrp")]
-pub unsafe extern "system" fn io_csq_insert_irp(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext) {
+pub unsafe extern "win64" fn io_csq_insert_irp(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext) {
  let _=unsafe{csq_insert_impl(csq,irp,context,ptr::null_mut(),false)};
 }
 #[unsafe(export_name = "IoCsqInsertIrpEx")]
-pub unsafe extern "system" fn io_csq_insert_irp_ex(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext,insert_context:*mut c_void)->i32 {
+pub unsafe extern "win64" fn io_csq_insert_irp_ex(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext,insert_context:*mut c_void)->i32 {
  unsafe{csq_insert_impl(csq,irp,context,insert_context,true)}
 }
 #[unsafe(export_name = "IoCsqRemoveIrp")]
-pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCsqIrpContext)->*mut Irp {
+pub unsafe extern "win64" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCsqIrpContext)->*mut Irp {
  if csq.is_null()||context.is_null(){return ptr::null_mut()}
  let context_type=unsafe{ptr::read_unaligned(ptr::addr_of!((*context).type_))};
  let irp=unsafe{ptr::read_unaligned(ptr::addr_of!((*context).irp))};
@@ -1918,7 +1918,7 @@ pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCs
  irp
 }
 #[unsafe(export_name = "IoCsqRemoveNextIrp")]
-pub unsafe extern "system" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context:*mut c_void)->*mut Irp {
+pub unsafe extern "win64" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context:*mut c_void)->*mut Irp {
  if csq.is_null(){return ptr::null_mut()}
  let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
@@ -1945,7 +1945,7 @@ pub unsafe extern "system" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context
 const IRP_CANCEL_ROUTINE_OFFSET:usize=0x68;
 /// Atomically replace the IRP cancel callback and return the previous callback.
 #[unsafe(export_name = "IoSetCancelRoutine")]
-pub unsafe extern "system" fn io_set_cancel_routine(
+pub unsafe extern "win64" fn io_set_cancel_routine(
  irp:*mut Irp, routine:Option<DriverCancelRoutine>
 )->Option<DriverCancelRoutine> {
  if irp.is_null()||!acquire_irp_active_op(irp){return None}
@@ -2009,7 +2009,7 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
 /// Request cancellation using the global cancel-spin-lock protocol. A driver
 /// callback is invoked only after the lock and raised IRQL have been released.
 #[unsafe(export_name = "IoCancelIrp")]
-pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
+pub unsafe extern "win64" fn io_cancel_irp(irp:*mut Irp)->u8 {
  if irp.is_null(){return 0}
  if !acquire_irp_active_op(irp){return 0}
  let mut old_irql=0u8;
@@ -2059,7 +2059,7 @@ pub unsafe fn lookup_device_object(name:*mut UnicodeString)->*mut DeviceObject {
 /// buffered nor direct I/O. Buffered-I/O system buffers and MDL-backed direct
 /// I/O are rejected until their full lifetime/locking contracts are available.
 #[unsafe(export_name = "IoBuildAsynchronousFsdRequest")]
-pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
+pub unsafe extern "win64" fn io_build_asynchronous_fsd_request(
  major:u32, device:*mut DeviceObject, buffer:*mut c_void, length:u32,
  starting_offset:*const i64, io_status:*mut IoStatusBlock
 )->*mut Irp {
@@ -2101,7 +2101,7 @@ pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
 /// Allocate an MDL descriptor and optionally link it into an IRP's MDL chain.
 /// Page locking is deliberately separate, matching MmProbeAndLockPages.
 #[unsafe(export_name = "IoAllocateMdl")]
-pub unsafe extern "system" fn io_allocate_mdl(
+pub unsafe extern "win64" fn io_allocate_mdl(
  base:*mut c_void,length:u32,secondary_buffer:u8,charge_quota:u8,irp:*mut Irp
 )->*mut c_void {
  if base.is_null()||length==0||secondary_buffer>1||charge_quota!=0{return ptr::null_mut()}
@@ -2143,7 +2143,7 @@ pub unsafe extern "system" fn io_allocate_mdl(
 
 /// Unlink and free an MDL allocated by IoAllocateMdl.
 #[unsafe(export_name = "IoFreeMdl")]
-pub unsafe extern "system" fn io_free_mdl(mdl:*mut c_void) {
+pub unsafe extern "win64" fn io_free_mdl(mdl:*mut c_void) {
  if mdl.is_null(){return}
  {
   let mut state=WDM.lock();
@@ -2175,11 +2175,11 @@ pub unsafe extern "system" fn io_free_mdl(mdl:*mut c_void) {
 
 static RUNDOWN_SELFTEST_COMPLETIONS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static RUNDOWN_SELFTEST_UNLOADS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
-unsafe extern "system" fn rundown_selftest_pending(_device:*mut DeviceObject,_irp:*mut Irp)->i32 { STATUS_PENDING }
-unsafe extern "system" fn rundown_selftest_completion(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
+unsafe extern "win64" fn rundown_selftest_pending(_device:*mut DeviceObject,_irp:*mut Irp)->i32 { STATUS_PENDING }
+unsafe extern "win64" fn rundown_selftest_completion(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
  RUNDOWN_SELFTEST_COMPLETIONS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);STATUS_SUCCESS
 }
-unsafe extern "system" fn rundown_selftest_unload(_driver:*mut DriverObject) {
+unsafe extern "win64" fn rundown_selftest_unload(_driver:*mut DriverObject) {
  RUNDOWN_SELFTEST_UNLOADS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
 }
 
@@ -2302,7 +2302,7 @@ mod wdm_tests {
   assert_eq!(IRP_STATUS_OFFSET,0x30);
   assert_eq!(IRP_INFORMATION_OFFSET,0x38);
  }
- unsafe extern "system" fn test_dispatch(device:*mut DeviceObject, irp:*mut Irp)->i32 {
+ unsafe extern "win64" fn test_dispatch(device:*mut DeviceObject, irp:*mut Irp)->i32 {
   if device.is_null() || irp.is_null() { return STATUS_INVALID_PARAMETER; }
   unsafe {
    ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
@@ -2478,15 +2478,15 @@ mod wdm_tests {
  }
 
  static COMPLETION_CALLBACKS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
- unsafe extern "system" fn counted_completion(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
+ unsafe extern "win64" fn counted_completion(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
   COMPLETION_CALLBACKS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);STATUS_SUCCESS
  }
- unsafe extern "system" fn pending_dispatch(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+ unsafe extern "win64" fn pending_dispatch(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
   unsafe{io_mark_irp_pending(irp);}
   STATUS_PENDING
  }
  static CANCEL_CALLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
- unsafe extern "system" fn test_cancel(device:*mut DeviceObject,irp:*mut Irp) {
+ unsafe extern "win64" fn test_cancel(device:*mut DeviceObject,irp:*mut Irp) {
   if !irp.is_null() { CANCEL_CALLED.store(true,core::sync::atomic::Ordering::Release); }
   let _=device;
  }
@@ -2517,7 +2517,7 @@ mod wdm_tests {
  }
 
  static IOCTL_COMPLETIONS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
- unsafe extern "system" fn ioctl_buffered_dispatch(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+ unsafe extern "win64" fn ioctl_buffered_dispatch(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
   let stack=unsafe{io_get_current_irp_stack_location(irp)};
   assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(4).cast::<u32>())},128*1024);
   assert_eq!(unsafe{ptr::read_unaligned(stack.cast::<u8>().add(12).cast::<u32>())},2);
@@ -2531,7 +2531,7 @@ mod wdm_tests {
   }
   STATUS_SUCCESS
  }
- unsafe extern "system" fn ioctl_counted_completion(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
+ unsafe extern "win64" fn ioctl_counted_completion(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
   IOCTL_COMPLETIONS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
   STATUS_SUCCESS
  }
@@ -2612,11 +2612,11 @@ mod wdm_tests {
  }
 
  static MORE_PROCESSING_CALLBACKS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
- unsafe extern "system" fn stop_completion_once(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
+ unsafe extern "win64" fn stop_completion_once(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
   MORE_PROCESSING_CALLBACKS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
   0xC0000016u32 as i32
  }
- unsafe extern "system" fn free_then_stop_completion(_device:*mut DeviceObject,irp:*mut Irp,_context:*mut c_void)->i32 {
+ unsafe extern "win64" fn free_then_stop_completion(_device:*mut DeviceObject,irp:*mut Irp,_context:*mut c_void)->i32 {
   unsafe{io_free_irp(irp);}
   0xC0000016u32 as i32
  }
@@ -2723,7 +2723,7 @@ mod wdm_tests {
   unsafe{io_free_irp(irp);io_delete_device(device);}
  }
 
- unsafe extern "system" fn completing_dispatch(device:*mut DeviceObject,irp:*mut Irp)->i32 {
+ unsafe extern "win64" fn completing_dispatch(device:*mut DeviceObject,irp:*mut Irp)->i32 {
   if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
   unsafe{
    ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
@@ -2750,7 +2750,7 @@ mod wdm_tests {
 
 
  static UNLOAD_CALLS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
- unsafe extern "system" fn counted_driver_unload(_driver:*mut DriverObject){
+ unsafe extern "win64" fn counted_driver_unload(_driver:*mut DriverObject){
   UNLOAD_CALLS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
  }
  #[test]
@@ -2772,7 +2772,7 @@ mod wdm_tests {
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut rejected)},STATUS_DELETE_PENDING);
   assert!(rejected.is_null());
  }
- unsafe extern "system" fn pnp_start_pending(_device:*mut DeviceObject,_irp:*mut Irp)->i32 { STATUS_PENDING }
+ unsafe extern "win64" fn pnp_start_pending(_device:*mut DeviceObject,_irp:*mut Irp)->i32 { STATUS_PENDING }
  #[test]
  fn pnp_pending_start_does_not_publish_started_until_completion() {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};
@@ -2792,14 +2792,14 @@ mod wdm_tests {
   assert_eq!(io_pnp_state(device),PNP_STATE_STARTED);
   unsafe{io_free_irp(irp);io_delete_device(device);}
  }
- unsafe extern "system" fn pnp_start_complete_success(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+ unsafe extern "win64" fn pnp_start_complete_success(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
   unsafe {
    ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
    io_complete_request(irp,0);
   }
   STATUS_SUCCESS
  }
- unsafe extern "system" fn pnp_start_complete_failure(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+ unsafe extern "win64" fn pnp_start_complete_failure(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
   unsafe {
    ptr::write_unaligned(ptr::addr_of_mut!((*irp).bytes).cast::<u8>().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_INVALID_DEVICE_REQUEST);
    io_complete_request(irp,0);
