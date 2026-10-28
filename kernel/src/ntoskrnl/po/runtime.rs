@@ -229,14 +229,14 @@ static POWER_REQUESTS:crate::hal::IrqSpinLock<RequestState>=crate::hal::IrqSpinL
 pub unsafe extern "system" fn PoRequestPowerIrp(device:*mut DeviceObject,minor:u8,state:PowerState,callback:Option<PowerRequestComplete>,context:*mut core::ffi::c_void,output_irp:*mut *mut WdmIrp)->i32{
  if device.is_null()||!matches!(minor,IRP_MN_WAIT_WAKE|IRP_MN_SET_POWER){return STATUS_INVALID_DEVICE_REQUEST}
  if !output_irp.is_null(){unsafe{output_irp.write(core::ptr::null_mut())}}
- let stack_size=unsafe{(*device).stack_size.max(1) as i16};
+ let stack_size=unsafe{(*device).stack_size.max(1)};
  let irp=unsafe{io::io_allocate_irp(stack_size,0)};
  if irp.is_null(){return STATUS_INSUFFICIENT_RESOURCES}
  let target=unsafe{if minor==IRP_MN_WAIT_WAKE{state.system_state}else{state.device_state}};
  if (minor==IRP_MN_WAIT_WAKE&&!(1..=6).contains(&target))||(minor==IRP_MN_SET_POWER&&!(1..=4).contains(&target)){unsafe{io::io_free_irp(irp)};return STATUS_INVALID_DEVICE_REQUEST}
  let stack=unsafe{io::io_get_next_irp_stack_location(irp)};
  if stack.is_null(){unsafe{io::io_free_irp(irp)};return STATUS_INSUFFICIENT_RESOURCES}
- unsafe{(*stack).major_function=IRP_MJ_POWER;(*stack).minor_function=minor;(*stack).parameters[0]=if minor==IRP_MN_WAIT_WAKE{target as u64}else{1u64|((target as u64)<<32)};}
+ unsafe{(*stack).major_function=IRP_MJ_POWER;(*stack).minor_function=minor;core::ptr::write_unaligned((*stack).parameters.as_mut_ptr().cast::<u64>(),if minor==IRP_MN_WAIT_WAKE{target as u64}else{1u64|((target as u64)<<32)});}
  {
   let mut requests=POWER_REQUESTS.lock();
   let Some(slot)=requests.slots.iter_mut().find(|r|!r.used) else{drop(requests);unsafe{io::io_free_irp(irp)};return STATUS_INSUFFICIENT_RESOURCES};
