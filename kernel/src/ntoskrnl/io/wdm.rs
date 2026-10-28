@@ -1673,7 +1673,8 @@ pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCs
  let queue_irql=unsafe{csq_lock(csq)};
  let cancel=unsafe{(*irp).bytes[0x44]!=0};
  let routine=unsafe{read_ptr((*irp).bytes.as_ptr(),IRP_CANCEL_ROUTINE_OFFSET)};
- if cancel||routine.is_null(){
+ let queue=unsafe{read_ptr((*irp).bytes.as_ptr(),CSQ_IRP_CONTEXT_OFFSET)};
+ if cancel||routine!=(csq_cancel_routine as *const () as *mut c_void)||queue!=csq.cast(){
   unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
   return ptr::null_mut()
  }
@@ -1697,7 +1698,8 @@ pub unsafe extern "system" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context
   return ptr::null_mut()
  }
  let routine=unsafe{read_ptr((*candidate).bytes.as_ptr(),IRP_CANCEL_ROUTINE_OFFSET)};
- if routine.is_null(){
+ let queue=unsafe{read_ptr((*candidate).bytes.as_ptr(),CSQ_IRP_CONTEXT_OFFSET)};
+ if routine!=(csq_cancel_routine as *const () as *mut c_void)||queue!=csq.cast(){
   unsafe{csq_unlock(csq,queue_irql);}unsafe{super::io_release_cancel_spin_lock(old_irql);}
   return ptr::null_mut()
  }
