@@ -1818,7 +1818,7 @@ fn nt_create_event(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         return status as u32 as u64;
     }
     let handle = match crate::ntoskrnl::ob::runtime::open_by_pointer(
-        header.cast(), args[1] as u32, owner, false, attributes,
+        header.cast(), args[1] as u32, owner, !named, attributes,
     ) {
         Ok(handle) => handle,
         Err(status) => {
