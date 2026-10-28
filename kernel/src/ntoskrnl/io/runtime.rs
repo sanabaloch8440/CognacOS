@@ -417,6 +417,8 @@ pub use wdm::{
     io_release_device_remove_lock, io_begin_device_power_transition, io_complete_device_power_transition,
     device_power_state,
     io_set_cancel_routine, io_cancel_irp, io_cancel_thread_irps, io_build_asynchronous_fsd_request,
+    io_csq_initialize, io_csq_initialize_ex, io_csq_insert_irp, io_csq_insert_irp_ex,
+    io_csq_remove_irp, io_csq_remove_next_irp, IoCsq, IoCsqIrpContext,
     io_allocate_mdl, io_free_mdl, DriverCancelRoutine,
     io_free_irp, io_get_current_irp_stack_location,
     io_get_next_irp_stack_location, io_mark_irp_pending, io_set_completion_routine,
