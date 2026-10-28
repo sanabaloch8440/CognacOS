@@ -608,7 +608,7 @@ jobs:
           condition 1 (*(unsigned long long *)($rdx + 144) & 3) == 3
           commands 1
             silent
-            printf "\\n===== GDB FIRST RING-3 EXCEPTION =====\\n"
+            printf "\n===== GDB FIRST RING-3 EXCEPTION =====\\n"
             printf "vector=%#lx error=%#lx frame=%#lx\\n", $rdi, $rsi, $rdx
             printf "RIP=%#lx CS=%#lx RFLAGS=%#lx RSP=%#lx SS=%#lx\\n", *(unsigned long long *)($rdx + 136), *(unsigned long long *)($rdx + 144), *(unsigned long long *)($rdx + 152), *(unsigned long long *)($rdx + 160), *(unsigned long long *)($rdx + 168)
             info registers cr2 cr3
@@ -630,6 +630,8 @@ jobs:
             -d int,cpu_reset,guest_errors -D build/qemu-debug.log \
             -S -no-reboot -no-shutdown &
           qemu_pid=$!
+          # Give QEMU's GDB stub time to bind before the client connects.
+          sleep 1
           gdb -q -batch -x build/gdb-first-fault.gdb > build/gdb-first-user-fault.txt 2>&1 &
           gdb_pid=$!
           cleanup_qemu() {
