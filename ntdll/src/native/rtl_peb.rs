@@ -6,10 +6,8 @@
 //! migration. Do not link this module alongside the C definitions.
 //!
 //! The lock is recursive and uses the ABI's LockCount/RecursionCount/
-//! OwningThread fields. Contenders use CognacOS's private address-wait/wake
-//! service after bounded spinning. This is not Windows' private event-backed
-//! implementation, and blocking requires a scheduler-owned thread; bootstrap
-//! contexts fall back to yielding/spinning rather than claiming to have waited.
+//! OwningThread fields. Contenders use a lazily-created synchronization event
+//! stored in LockSemaphore and wait/signal through native NT dispatcher services.
 
 #![allow(non_camel_case_types, non_snake_case)]
 
@@ -35,59 +33,39 @@ extern "system" {
     fn NtYieldExecution() -> NTSTATUS;
 }
 
-#[inline]
-#[cfg(all(target_os="windows", target_arch="x86_64"))]
-unsafe fn cognac_wait_on_lock(address: *mut LONG, expected: LONG) -> NTSTATUS {
-    let status: u64;
-    unsafe {
-        core::arch::asm!(
-            "mov r10, rcx",
-            "syscall",
-            inlateout("rax") 0x152u64 => status,
-            inlateout("rcx") address as u64 => _,
-            in("rdx") expected as u32 as u64,
-            in("r8") 4u64,
-            in("r9") u64::MAX,
-            lateout("r10") _,
-            lateout("r11") _,
-            options(nostack)
-        );
-    }
-    status as u32 as i32
+extern "system" {
+    fn NtCreateEvent(event_handle: *mut HANDLE, desired_access: u32, object_attributes: *const c_void, event_type: u32, initial_state: u32) -> NTSTATUS;
+    fn NtSetEvent(event_handle: HANDLE, previous_state: *mut LONG) -> NTSTATUS;
+    fn NtWaitForSingleObject(handle: HANDLE, alertable: u8, timeout: *const i64) -> NTSTATUS;
+    fn NtClose(handle: HANDLE) -> NTSTATUS;
 }
 
-#[inline]
-#[cfg(not(all(target_os="windows", target_arch="x86_64")))]
-unsafe fn cognac_wait_on_lock(_address: *mut LONG, _expected: LONG) -> NTSTATUS {
-    STATUS_NOT_IMPLEMENTED
-}
+const EVENT_MODIFY_STATE: u32 = 0x0002;
+const SYNCHRONIZE: u32 = 0x0010_0000;
+const SYNCHRONIZATION_EVENT: u32 = 1;
+const SPIN_COUNT_MASK: usize = 0x00FF_FFFF;
 
 #[inline]
-unsafe fn cognac_wake_lock(address:*mut LONG){
-    #[cfg(all(target_os="windows",target_arch="x86_64"))]
-    {
-        let status:u64;
-        unsafe{
-            core::arch::asm!(
-                "mov r10, rcx",
-                "syscall",
-                inlateout("rax") 0x153u64 => status,
-                inlateout("rcx") address as u64 => _,
-                in("rdx") 0u64,
-                in("r8") 0u64,
-                in("r9") 0u64,
-                lateout("r10") _,
-                lateout("r11") _,
-                options(nostack)
-            );
+unsafe fn ensure_lock_semaphore(cs: *mut RTL_CRITICAL_SECTION) -> Result<HANDLE, NTSTATUS> {
+    let semaphore = unsafe { &*(core::ptr::addr_of!((*cs).LockSemaphore) as *const AtomicPtr<c_void>) };
+    let existing = semaphore.load(Ordering::Acquire);
+    if !existing.is_null() { return Ok(existing); }
+
+    let mut created: HANDLE = core::ptr::null_mut();
+    let status = unsafe {
+        NtCreateEvent(&mut created, EVENT_MODIFY_STATE | SYNCHRONIZE, core::ptr::null(), SYNCHRONIZATION_EVENT, 0)
+    };
+    if status < 0 { return Err(status); }
+    if created.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+
+    match semaphore.compare_exchange(core::ptr::null_mut(), created, Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => Ok(created),
+        Err(winner) => {
+            let _ = unsafe { NtClose(created) };
+            Ok(winner)
         }
-        let _=status;
     }
-    #[cfg(not(all(target_os="windows",target_arch="x86_64")))]
-    { let _=address; }
 }
-
-
 #[inline]
 unsafe fn current_thread_id() -> HANDLE {
     let tid: HANDLE;
@@ -112,58 +90,80 @@ extern "system" { fn RtlGetCurrentPeb() -> PVOID; }
 /// The caller must supply a correctly initialized RTL_CRITICAL_SECTION whose
 /// LockCount is -1 while unowned. This routine does not initialize objects.
 #[no_mangle]
+pub unsafe extern "system" fn RtlInitializeCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> NTSTATUS {
+    if cs.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe {
+        core::ptr::addr_of_mut!((*cs).DebugInfo).write(core::ptr::null_mut());
+        core::ptr::addr_of_mut!((*cs).LockCount).write(-1);
+        core::ptr::addr_of_mut!((*cs).RecursionCount).write(0);
+        core::ptr::addr_of_mut!((*cs).OwningThread).write(core::ptr::null_mut());
+        core::ptr::addr_of_mut!((*cs).LockSemaphore).write(core::ptr::null_mut());
+        core::ptr::addr_of_mut!((*cs).SpinCount).write(0);
+    }
+    STATUS_SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlInitializeCriticalSectionAndSpinCount(cs: *mut RTL_CRITICAL_SECTION, spin_count: usize) -> NTSTATUS {
+    let status = unsafe { RtlInitializeCriticalSection(cs) };
+    if status < 0 { return status; }
+    unsafe { (*cs).SpinCount = spin_count & SPIN_COUNT_MASK; }
+    STATUS_SUCCESS
+}
+
+#[no_mangle]
 pub unsafe extern "system" fn RtlEnterCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> NTSTATUS {
     if cs.is_null() { return STATUS_INVALID_PARAMETER; }
     let tid = unsafe { current_thread_id() };
     if tid.is_null() { return STATUS_INVALID_PARAMETER; }
     let owner = unsafe { &*(core::ptr::addr_of!((*cs).OwningThread) as *const AtomicPtr<c_void>) };
+    let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
+    let recursion = unsafe { &*(core::ptr::addr_of!((*cs).RecursionCount) as *const AtomicI32) };
+
     if owner.load(Ordering::Acquire) == tid {
-        let recursion = unsafe { &*(core::ptr::addr_of!((*cs).RecursionCount) as *const AtomicI32) };
+        lock.fetch_add(1, Ordering::Relaxed);
         recursion.fetch_add(1, Ordering::Relaxed);
         return STATUS_SUCCESS;
     }
 
-    let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
-    let recursion = unsafe { &*(core::ptr::addr_of!((*cs).RecursionCount) as *const AtomicI32) };
-
-    // RTL_CRITICAL_SECTION.SpinCount is a caller-configured spin budget, not a
-    // fixed implementation constant. Respect the Windows x64 24-bit range;
-    // zero means proceed to the blocking path immediately.
-    let spin_limit = unsafe { (*cs).SpinCount.min(0x00FF_FFFF) };
-    let mut spins = 0usize;
-    loop {
-        if lock.compare_exchange(-1, 0, Ordering::Acquire, Ordering::Relaxed).is_ok() {
-            recursion.store(1, Ordering::Relaxed);
-            owner.store(tid, Ordering::Release);
-            return STATUS_SUCCESS;
-        }
-
-        #[cfg(target_arch = "x86_64")]
-        if spins < spin_limit {
+    let previous = lock.fetch_add(1, Ordering::Acquire);
+    if previous == -1 {
+        while owner.compare_exchange(core::ptr::null_mut(), tid, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            #[cfg(target_arch = "x86_64")]
             unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)) };
-        }
-        if spins < spin_limit {
-            spins += 1;
-            continue;
-        }
-
-        // The kernel service rechecks LockCount while registering the waiter,
-        // so an unlock racing with this call is not lost. Early bootstrap may
-        // still lack a scheduler-owned thread; in that case explicitly yield
-        // and retry rather than treating STATUS_NOT_IMPLEMENTED as a completed
-        // wait. A zero spin count reaches this path on the first contention.
-        let observed = lock.load(Ordering::Acquire);
-        if observed != -1 {
-            let status = unsafe {
-                cognac_wait_on_lock(core::ptr::addr_of_mut!((*cs).LockCount), observed)
-            };
-            if status == STATUS_NOT_IMPLEMENTED {
-                let _ = unsafe { NtYieldExecution() };
-            }
-        } else {
             let _ = unsafe { NtYieldExecution() };
         }
-        spins = 0;
+        recursion.store(1, Ordering::Relaxed);
+        return STATUS_SUCCESS;
+    }
+
+    let spin_limit = unsafe { (*cs).SpinCount & SPIN_COUNT_MASK };
+    for _ in 0..spin_limit {
+        if owner.load(Ordering::Acquire).is_null() { break; }
+        #[cfg(target_arch = "x86_64")]
+        unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)) };
+    }
+
+    loop {
+        let event = match unsafe { ensure_lock_semaphore(cs) } {
+            Ok(handle) => handle,
+            Err(status) if status == STATUS_NOT_IMPLEMENTED => {
+                let _ = unsafe { NtYieldExecution() };
+                continue;
+            }
+            Err(status) => return status,
+        };
+        let status = unsafe { NtWaitForSingleObject(event, 0, core::ptr::null()) };
+        if status == STATUS_SUCCESS {
+            if owner.compare_exchange(core::ptr::null_mut(), tid, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                recursion.store(1, Ordering::Relaxed);
+                return STATUS_SUCCESS;
+            }
+        } else if status == STATUS_NOT_IMPLEMENTED {
+            let _ = unsafe { NtYieldExecution() };
+        } else {
+            return status;
+        }
     }
 }
 
@@ -177,17 +177,67 @@ pub unsafe extern "system" fn RtlLeaveCriticalSection(cs: *mut RTL_CRITICAL_SECT
 
     let recursion = unsafe { &*(core::ptr::addr_of!((*cs).RecursionCount) as *const AtomicI32) };
     let remaining = recursion.fetch_sub(1, Ordering::Relaxed) - 1;
-    if remaining > 0 { return STATUS_SUCCESS; }
+    if remaining > 0 {
+        let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
+        lock.fetch_sub(1, Ordering::Release);
+        return STATUS_SUCCESS;
+    }
     if remaining < 0 {
         recursion.store(0, Ordering::Relaxed);
         return STATUS_INVALID_PARAMETER;
     }
 
     let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
+    let new_count = lock.fetch_sub(1, Ordering::AcqRel) - 1;
     owner.store(core::ptr::null_mut(), Ordering::Release);
-    lock.store(-1, Ordering::Release);
-    unsafe{cognac_wake_lock(core::ptr::addr_of_mut!((*cs).LockCount));}
+    if new_count >= 0 {
+        let semaphore = unsafe { &*(core::ptr::addr_of!((*cs).LockSemaphore) as *const AtomicPtr<c_void>) };
+        let event = semaphore.load(Ordering::Acquire);
+        if !event.is_null() {
+            let status = unsafe { NtSetEvent(event, core::ptr::null_mut()) };
+            if status < 0 { return status; }
+        }
+    }
     STATUS_SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlTryEnterCriticalSection(cs: *mut RTL_CRITICAL_SECTION) -> u8 {
+    if cs.is_null() { return 0; }
+    let tid = unsafe { current_thread_id() };
+    if tid.is_null() { return 0; }
+    let owner = unsafe { &*(core::ptr::addr_of!((*cs).OwningThread) as *const AtomicPtr<c_void>) };
+    let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
+    let recursion = unsafe { &*(core::ptr::addr_of!((*cs).RecursionCount) as *const AtomicI32) };
+    if owner.load(Ordering::Acquire) == tid {
+        lock.fetch_add(1, Ordering::Relaxed);
+        recursion.fetch_add(1, Ordering::Relaxed);
+        return 1;
+    }
+    if lock.compare_exchange(-1, 0, Ordering::Acquire, Ordering::Relaxed).is_err() { return 0; }
+    while owner.compare_exchange(core::ptr::null_mut(), tid, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        #[cfg(target_arch = "x86_64")]
+        unsafe { core::arch::asm!("pause", options(nomem, nostack, preserves_flags)) };
+        let _ = unsafe { NtYieldExecution() };
+    }
+    recursion.store(1, Ordering::Relaxed);
+    1
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn RtlDeleteCriticalSection(cs: *mut RTL_CRITICAL_SECTION) {
+    if cs.is_null() { return; }
+    let owner = unsafe { &*(core::ptr::addr_of!((*cs).OwningThread) as *const AtomicPtr<c_void>) };
+    let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
+    if !owner.load(Ordering::Acquire).is_null() || lock.load(Ordering::Acquire) != -1 { return; }
+    let semaphore = unsafe { &*(core::ptr::addr_of!((*cs).LockSemaphore) as *const AtomicPtr<c_void>) };
+    let event = semaphore.swap(core::ptr::null_mut(), Ordering::AcqRel);
+    if !event.is_null() { let _ = unsafe { NtClose(event) }; }
+    unsafe {
+        core::ptr::addr_of_mut!((*cs).DebugInfo).write(core::ptr::null_mut());
+        core::ptr::addr_of_mut!((*cs).RecursionCount).write(0);
+        core::ptr::addr_of_mut!((*cs).SpinCount).write(0);
+    }
 }
 
 /// Acquire PEB.FastPebLock when the process runtime has initialized it.
