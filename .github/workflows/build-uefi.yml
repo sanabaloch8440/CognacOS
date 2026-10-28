@@ -359,6 +359,8 @@ jobs:
           mkdir -p build
           rustc --edition=2024 --test kernel/src/ntoskrnl/po/hibernate.rs -o build/hibernation-tests
           build/hibernation-tests
+      - name: Validate Windows x64 WDM source contracts
+        run: python3 tools/wdm_source_contract_tests.py
       - name: Build freestanding Rust kernel with project linker script
         env:
           RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
