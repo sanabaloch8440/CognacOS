@@ -56,6 +56,8 @@ static BOOT_NLS_ADDRESS:[core::sync::atomic::AtomicU64;8]=[const{core::sync::ato
 static BOOT_NLS_LENGTH:[core::sync::atomic::AtomicU64;8]=[const{core::sync::atomic::AtomicU64::new(0)};8];
 static BOOT_NTDLL_ADDRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BOOT_NTDLL_LENGTH:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BOOT_BEEP_ADDRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BOOT_BEEP_LENGTH:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BOOT_SECURITY_FLAGS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BOOT_KERNEL_DIGEST:[core::sync::atomic::AtomicU8;32]=[const{core::sync::atomic::AtomicU8::new(0)};32];
 
@@ -139,6 +141,7 @@ struct BootInfo {
     registry_hives: [BootFile;7],
     nls_files: [BootFile;8],
     ntdll_file: BootFile,
+    beep_file: BootFile,
     security_flags: u64,
     kernel_digest: [u8; 32],
 }
@@ -155,6 +158,12 @@ pub fn boot_ntdll_bytes()->Option<&'static [u8]>{
  let address=BOOT_NTDLL_ADDRESS.load(core::sync::atomic::Ordering::Acquire);
  let length=BOOT_NTDLL_LENGTH.load(core::sync::atomic::Ordering::Acquire) as usize;
  if address==0||length==0||length>16*1024*1024{return None;}
+ Some(unsafe{core::slice::from_raw_parts(address as *const u8,length)})
+}
+pub fn boot_beep_bytes()->Option<&'static [u8]>{
+ let address=BOOT_BEEP_ADDRESS.load(core::sync::atomic::Ordering::Acquire);
+ let length=BOOT_BEEP_LENGTH.load(core::sync::atomic::Ordering::Acquire) as usize;
+ if address==0||length==0||length>4*1024*1024{return None;}
  Some(unsafe{core::slice::from_raw_parts(address as *const u8,length)})
 }
 pub fn boot_nls_bytes(name:&str)->Option<&'static [u8]>{
@@ -187,6 +196,19 @@ unsafe fn install_boot_assets(info:&BootInfo){
    BOOT_NTDLL_LENGTH.store(ntdll.length,core::sync::atomic::Ordering::Release);
   }
  }
+ let beep=info.beep_file;
+ if beep.address!=0||beep.length!=0 {
+  if beep.address==0||beep.length==0||beep.length>4*1024*1024||beep.address.checked_add(beep.length).is_none_or(|e|e>0x1_0000_0000){
+   unsafe{serial_write(b"Rejected malformed boot beep.sys descriptor.\r\n");}
+  }else{
+   let bytes=unsafe{core::slice::from_raw_parts(beep.address as *const u8,beep.length as usize)};
+   if bytes.get(..2)==Some(b"MZ") {
+    BOOT_BEEP_ADDRESS.store(beep.address,core::sync::atomic::Ordering::Release);
+    BOOT_BEEP_LENGTH.store(beep.length,core::sync::atomic::Ordering::Release);
+    unsafe{serial_write(b"Native beep.sys driver staged for runtime loading.\r\n");}
+   }else{unsafe{serial_write(b"Rejected boot beep.sys image without MZ signature.\r\n");}}
+  }
+ }
  for i in 0..info.nls_files.len(){
   let file=info.nls_files[i];if file.address==0&&file.length==0{continue;}
   if file.address==0||file.length==0||file.length>nls::MAX_NLS_FILE_SIZE as u64||file.address.checked_add(file.length).is_none_or(|e|e>0x1_0000_0000){unsafe{serial_write(b"Rejected malformed boot NLS asset descriptor.\r\n");}continue;}
@@ -213,7 +235,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic == BOOT_INFO_MAGIC && info.version == 9
+        if info.magic == BOOT_INFO_MAGIC && info.version == 10
             && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() {
             BOOT_SECURITY_FLAGS.store(info.security_flags,core::sync::atomic::Ordering::Release);
             for (index,byte) in info.kernel_digest.iter().copied().enumerate(){
@@ -221,7 +243,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             }
             install_boot_assets(info);
         }
-        if info.magic != BOOT_INFO_MAGIC || info.version != 9
+        if info.magic != BOOT_INFO_MAGIC || info.version != 10
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
@@ -1091,6 +1113,66 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.\r\n");
+        // Real runtime test: invoke the native driver loader and DriverEntry.
+        if let Some(beep_bytes) = boot_beep_bytes() {
+            use ntoskrnl::driver_loader::{DriverLoadError, DriverObject, load_allocated};
+            const BEEP_NAME: [u16; 12] = [92, 68, 114, 105, 118, 101, 114, 92, 66, 101, 101, 112];
+            let driver_name = nt_abi::object::UNICODE_STRING {
+                length: (BEEP_NAME.len() * 2) as u16,
+                maximum_length: ((BEEP_NAME.len() + 1) * 2) as u16,
+                buffer: BEEP_NAME.as_ptr() as *mut u16,
+            };
+            let mut driver_object = DriverObject {
+                object_type: 0, size: core::mem::size_of::<DriverObject>() as i16,
+                device_object: core::ptr::null_mut(), flags: 0,
+                driver_start: core::ptr::null_mut(), driver_size: 0,
+                driver_section: core::ptr::null_mut(), driver_extension: core::ptr::null_mut(),
+                driver_name, hardware_database: core::ptr::null_mut(),
+                fast_io_dispatch: core::ptr::null_mut(), driver_init: None,
+                driver_start_io: None, driver_unload: None, major_function: [None; 28],
+            };
+            serial_write(b"Runtime driver test: attempting native beep.sys load and DriverEntry.\r\n");
+            match unsafe { load_allocated(beep_bytes, &mut driver_object, core::ptr::null_mut()) } {
+                Ok(loaded) => {
+                    serial_write(b"beep.sys DriverEntry returned NTSTATUS success: image=");
+                    serial_write_hex(loaded.image_base);
+                    serial_write(b" size=");
+                    unsafe { serial_write_decimal(loaded.image_size as usize); }
+                    serial_write(b" entry=");
+                    serial_write_hex(loaded.entry_point);
+                    serial_write(b".\r\n");
+                }
+                Err(error) => {
+                    serial_write(b"beep.sys runtime load failed before successful DriverEntry: ");
+                    serial_write(match error {
+                        DriverLoadError::Truncated => b"Truncated",
+                        DriverLoadError::BadDosHeader => b"BadDosHeader",
+                        DriverLoadError::BadPeSignature => b"BadPeSignature",
+                        DriverLoadError::WrongMachine => b"WrongMachine",
+                        DriverLoadError::WrongSubsystem => b"WrongSubsystem",
+                        DriverLoadError::NotDll => b"NotDllOrExecutable",
+                        DriverLoadError::InvalidHeader => b"InvalidHeader",
+                        DriverLoadError::InvalidSection => b"InvalidSection",
+                        DriverLoadError::ImageTooLarge => b"ImageTooLarge",
+                        DriverLoadError::WrongBase => b"WrongBase",
+                        DriverLoadError::ImportsUnsupported => b"ImportsUnsupported",
+                        DriverLoadError::ImportNotFound => b"ImportNotFound",
+                        DriverLoadError::InvalidImport => b"InvalidImport",
+                        DriverLoadError::RelocationsUnsupported => b"RelocationsUnsupported",
+                        DriverLoadError::RelocationUnsupported => b"RelocationUnsupported",
+                        DriverLoadError::WxSection => b"WxSection",
+                        DriverLoadError::EntryNotExecutable => b"EntryNotExecutable",
+                        DriverLoadError::MappingFailed => b"MappingFailed",
+                        DriverLoadError::NoMemory => b"NoMemory",
+                        DriverLoadError::EntryFailed(_) => b"DriverEntryFailed",
+                    });
+                    serial_write(b"\r\n");
+                }
+            }
+        } else {
+            serial_write(b"Runtime driver test skipped: beep.sys was not staged by UEFI.\r\n");
+        }
+
 
         serial_write(b"Kernel-owned identity map active for 0..4 GiB.\r\n");
         serial_write(b"Physical page allocator online (single-core bootstrap mode).\r\n");
