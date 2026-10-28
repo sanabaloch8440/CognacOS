@@ -1116,13 +1116,16 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         // Real runtime test: invoke the native driver loader and DriverEntry.
         if let Some(beep_bytes) = boot_beep_bytes() {
             use ntoskrnl::driver_loader::{DriverLoadError, DriverObject, load_allocated};
-            const BEEP_NAME: [u16; 12] = [92, 68, 114, 105, 118, 101, 114, 92, 66, 101, 101, 112];
+            const BEEP_NAME: [u16; 13] = [92, 68, 114, 105, 118, 101, 114, 92, 66, 101, 101, 112, 0];
             let driver_name = nt_abi::object::UNICODE_STRING {
-                length: (BEEP_NAME.len() * 2) as u16,
-                maximum_length: ((BEEP_NAME.len() + 1) * 2) as u16,
+                length: ((BEEP_NAME.len() - 1) * 2) as u16,
+                maximum_length: (BEEP_NAME.len() * 2) as u16,
                 buffer: BEEP_NAME.as_ptr() as *mut u16,
             };
-            let mut driver_object = DriverObject {
+            // DriverObject must remain valid for any device objects published by the driver.
+            static mut BEEP_DRIVER_OBJECT: core::mem::MaybeUninit<DriverObject> = core::mem::MaybeUninit::uninit();
+            let driver_object = core::ptr::addr_of_mut!(BEEP_DRIVER_OBJECT).cast::<DriverObject>();
+            unsafe { driver_object.write(DriverObject {
                 object_type: 0, size: core::mem::size_of::<DriverObject>() as i16,
                 device_object: core::ptr::null_mut(), flags: 0,
                 driver_start: core::ptr::null_mut(), driver_size: 0,
@@ -1130,9 +1133,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 driver_name, hardware_database: core::ptr::null_mut(),
                 fast_io_dispatch: core::ptr::null_mut(), driver_init: None,
                 driver_start_io: None, driver_unload: None, major_function: [None; 28],
-            };
+            }); }
             serial_write(b"Runtime driver test: attempting native beep.sys load and DriverEntry.\r\n");
-            match unsafe { load_allocated(beep_bytes, &mut driver_object, core::ptr::null_mut()) } {
+            match unsafe { load_allocated(beep_bytes, driver_object, core::ptr::null_mut()) } {
                 Ok(loaded) => {
                     serial_write(b"beep.sys DriverEntry returned NTSTATUS success: image=");
                     serial_write_hex(loaded.image_base);
