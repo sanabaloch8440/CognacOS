@@ -2330,24 +2330,16 @@ pub unsafe extern "system" fn RtlRetrieveNtUserPfn() -> i32 {
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlRunOnceBeginInitialize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlRunOnceBeginInitialize(once:*mut usize,flags:u32,pending:*mut u8,context:*mut *mut c_void)->i32{if once.is_null()||pending.is_null()||(flags&!1)!=0{return 0xC000000Du32 as i32;}let state=unsafe{atomic_usize_at(once)};loop{let v=state.load(Ordering::Acquire);if v==0{if flags&1!=0{unsafe{pending.write(1);}return 0xC000000Du32 as i32;}if state.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_ok(){unsafe{pending.write(1);}return 0;}continue;}if v&3==1{unsafe{pending.write(0);}if !context.is_null(){unsafe{context.write(core::ptr::null_mut());}}return 0x00000103;}if v&3==2{unsafe{pending.write(0);}if !context.is_null(){unsafe{context.write((v&!3) as *mut c_void);}}return 0;}return 0xC000000Du32 as i32;}}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlRunOnceComplete() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlRunOnceComplete(once:*mut usize,flags:u32,context:*mut c_void)->i32{if once.is_null()||(flags&!4)!=0||(context as usize)&3!=0{return 0xC000000Du32 as i32;}let state=unsafe{atomic_usize_at(once)};if flags&4!=0{return if state.compare_exchange(1,0,Ordering::Release,Ordering::Relaxed).is_ok(){0}else{0xC000000Du32 as i32};}if state.compare_exchange(1,(context as usize)|2,Ordering::Release,Ordering::Relaxed).is_ok(){0}else{0xC000000Du32 as i32}}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlRunOnceExecuteOnce() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlRunOnceExecuteOnce(once:*mut usize,callback:Option<unsafe extern "system" fn(*mut usize,*mut c_void,*mut *mut c_void)->u8>,parameter:*mut c_void,context:*mut *mut c_void)->u8{let Some(cb)=callback else{return 0;};let mut pending=0u8;let mut existing=core::ptr::null_mut();let status=unsafe{RtlRunOnceBeginInitialize(once,0,&mut pending,&mut existing)};if status==0&&!pending!=true{if !context.is_null(){unsafe{context.write(existing);}}return 1;}if status<0||status==0x103{return 0;}let mut result=core::ptr::null_mut();let ok=unsafe{cb(once,parameter,&mut result)}!=0;let complete=unsafe{RtlRunOnceComplete(once,if ok{0}else{4},if ok{result}else{core::ptr::null_mut()})};if ok&&complete==0{if !context.is_null(){unsafe{context.write(result);}}1}else{0}}
 
 #[no_mangle]
-pub unsafe extern "system" fn RtlRunOnceInitialize() -> i32 {
-    0xC0000002u32 as i32 // STATUS_NOT_IMPLEMENTED
-}
+pub unsafe extern "system" fn RtlRunOnceInitialize(once:*mut usize){if !once.is_null(){unsafe{once.write(0);}}}
 
 #[no_mangle]
 pub unsafe extern "system" fn RtlSelfRelativeToAbsoluteSD() -> i32 {
