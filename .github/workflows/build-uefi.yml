@@ -483,6 +483,7 @@ jobs:
           cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
           cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
           cp target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll build/EFI/BOOT/ntdll.dll
+          cp test/beep.sys build/EFI/BOOT/beep.sys
           truncate -s 256M build/cognacos-uefi.img
           truncate -s 128M build/pagefile.img
           parted -s build/cognacos-uefi.img mklabel gpt
@@ -497,6 +498,7 @@ jobs:
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/ntdll.dll ::/EFI/BOOT/ntdll.dll
+          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/beep.sys ::/EFI/BOOT/beep.sys
           mkdir -p build/ext4-root
           printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-root/README.txt
           loopdev="$(sudo losetup --find --show --partscan build/cognacos-uefi.img)"
@@ -788,7 +790,7 @@ jobs:
           {
             echo "CognacOS Microsoft beep.sys compatibility assessment"
             echo "Commit: ${GITHUB_SHA}"
-            echo "Mode: static PE/import inspection; this does not execute or load beep.sys in the guest."
+            echo "Mode: static PE inspection plus QEMU guest runtime DriverEntry attempt."
             echo
             if [ ! -f test/beep.sys ]; then
               echo "FAIL: test/beep.sys is missing."
@@ -815,7 +817,22 @@ jobs:
             exit 1
           }
           echo "PASS: AMD64 PE32+ headers and import table parsed successfully." | tee -a "$log"
-          echo "LIMITATION: static compatibility only; runtime DriverEntry/device behavior is not tested by this step." | tee -a "$log"
+          echo
+          echo "=== QEMU runtime driver-load result ===" | tee -a "$log"
+          if [ -f build/serial.log ]; then
+            grep -E "beep\\.sys|DriverEntry|driver test" build/serial.log | tee -a "$log" || true
+            if grep -Fq "beep.sys DriverEntry returned NTSTATUS success" build/serial.log; then
+              echo "RUNTIME RESULT: PASS - DriverEntry returned success." | tee -a "$log"
+            elif grep -Fq "beep.sys runtime load failed before successful DriverEntry" build/serial.log; then
+              echo "RUNTIME RESULT: NOT COMPATIBLE YET - the kernel loader reported a prerequisite/import/entry failure." | tee -a "$log"
+            elif grep -Fq "Runtime driver test: attempting native beep.sys load and DriverEntry." build/serial.log; then
+              echo "RUNTIME RESULT: INCOMPLETE - load was attempted but no terminal loader result was logged; inspect serial/QEMU diagnostics." | tee -a "$log"
+            else
+              echo "RUNTIME RESULT: NOT RUN - the kernel did not reach the beep.sys load point." | tee -a "$log"
+            fi
+          else
+            echo "RUNTIME RESULT: NOT RUN - no QEMU serial log was produced." | tee -a "$log"
+          fi
       - name: Upload Rust artifacts and boot log
         if: always()
         uses: actions/upload-artifact@v4
