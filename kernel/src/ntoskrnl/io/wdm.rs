@@ -1731,8 +1731,9 @@ pub unsafe extern "system" fn io_csq_insert_irp_ex(csq:*mut IoCsq,irp:*mut Irp,c
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCsqIrpContext)->*mut Irp {
  if csq.is_null()||context.is_null(){return ptr::null_mut()}
+ let context_type=unsafe{ptr::read_unaligned(ptr::addr_of!((*context).type_))};
  let irp=unsafe{ptr::read_unaligned(ptr::addr_of!((*context).irp))};
- if irp.is_null()||unsafe{ptr::read_unaligned(ptr::addr_of!((*context).csq))}!=csq{return ptr::null_mut()}
+ if context_type!=CSQ_CONTEXT_TYPE||irp.is_null()||unsafe{ptr::read_unaligned(ptr::addr_of!((*context).csq))}!=csq{return ptr::null_mut()}
  let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
  let queue_irql=unsafe{csq_lock(csq)};
  let cancel=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x44)!=0};
