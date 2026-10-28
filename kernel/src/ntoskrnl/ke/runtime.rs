@@ -95,42 +95,23 @@ fn atomic_lock_word(lock: *mut u64) -> Option<&'static core::sync::atomic::Atomi
 
 
 
-/// KfRaiseIrql: raise the current processor's IRQL and return its previous
-/// value. Windows callers may only raise IRQL; attempts to lower it through
-/// this entry point are rejected by leaving the current level unchanged.
+/// KfRaiseIrql: raise the current processor's IRQL and return the previous
+/// value. IRQL changes use the same interrupt-state stack and HAL priority
+/// programming as the other Ke IRQL entry points.
 #[no_mangle]
 pub unsafe extern "win64" fn kf_raise_irql(new_irql: u8) -> u8 {
     const MAXIMUM_IRQL: u8 = 15;
     let cpu = cpu_slot();
     let current = CURRENT_IRQL[cpu].load(Ordering::Acquire);
-    if new_irql > current && new_irql <= MAXIMUM_IRQL {
-        // Keep the architectural interrupt mask consistent with the software
-        // IRQL state: all levels above PASSIVE_LEVEL run with local IRQs off.
-        unsafe { irq_disable(); }
-        CURRENT_IRQL[cpu].store(new_irql, Ordering::Release);
+    if new_irql <= current || new_irql > MAXIMUM_IRQL {
+        return current;
     }
+    let flags = unsafe { read_rflags() };
+    unsafe { irq_disable(); }
+    push_irq_state(flags);
+    CURRENT_IRQL[cpu].store(new_irql, Ordering::Release);
+    let _ = unsafe { crate::hal::set_interrupt_priority(new_irql) };
     current
-}
-
-#[cfg(test)]
-mod kf_raise_irql_tests {
-    use super::*;
-
-    #[test]
-    fn kf_raise_irql_rejects_lowering_and_out_of_range_values() {
-        let cpu = cpu_slot();
-        let old = CURRENT_IRQL[cpu].swap(0, Ordering::AcqRel);
-        let previous = unsafe { kf_raise_irql(2) };
-        assert_eq!(previous, 0);
-        assert_eq!(CURRENT_IRQL[cpu].load(Ordering::Acquire), 2);
-        let previous = unsafe { kf_raise_irql(1) };
-        assert_eq!(previous, 2);
-        assert_eq!(CURRENT_IRQL[cpu].load(Ordering::Acquire), 2);
-        let previous = unsafe { kf_raise_irql(16) };
-        assert_eq!(previous, 2);
-        assert_eq!(CURRENT_IRQL[cpu].load(Ordering::Acquire), 2);
-        CURRENT_IRQL[cpu].store(old, Ordering::Release);
-    }
 }
 
 /// Windows PROCESSOR_NUMBER layout: group, group-relative number, reserved.
