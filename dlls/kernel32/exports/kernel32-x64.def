@@ -1,370 +1,1694 @@
-; CognacOS kernel32.dll starter export surface.
-; Forwarder targets are PE export-directory strings; inventory is not exhaustive.
 LIBRARY kernel32.dll
 EXPORTS
-    AcquireSRWLockExclusive=NTDLL.RtlAcquireSRWLockExclusive
-    AcquireSRWLockShared=NTDLL.RtlAcquireSRWLockShared
-    ActivateActCtx
-    AddAtomA
-    AddAtomW
-    AddConsoleAliasA
-    AddConsoleAliasW
-    AddVectoredContinueHandler=NTDLL.RtlAddVectoredContinueHandler
-    AddVectoredExceptionHandler=NTDLL.RtlAddVectoredExceptionHandler
-    AllocConsole
-    AreFileApisANSI
-    AttachConsole
-    BackupRead
-    BackupSeek
-    BackupWrite
-    Beep
-    BeginUpdateResourceA
-    BeginUpdateResourceW
-    BindIoCompletionCallback
-    BuildCommDCBA
-    BuildCommDCBW
-    CallNamedPipeA
-    CallNamedPipeW
-    CancelIo
-    CancelIoEx
-    CancelSynchronousIo
-    CheckRemoteDebuggerPresent
-    ClearCommBreak
-    ClearCommError
-    CloseHandle
-    CompareFileTime
-    CompareStringA
-    CompareStringEx
-    CompareStringOrdinal
-    CompareStringW
-    ConnectNamedPipe
-    ContinueDebugEvent
-    ConvertDefaultLocale
-    CopyFileA
-    CopyFileExA
-    CopyFileExW
-    CopyFileW
-    CreateDirectoryA
-    CreateDirectoryExA
-    CreateDirectoryExW
-    CreateDirectoryW
-    CreateEventA
-    CreateEventExA
-    CreateEventExW
-    CreateEventW
-    CreateFile2
-    CreateFileA
-    CreateFileMappingA
-    CreateFileMappingW
-    CreateFileW
-    CreateHardLinkA
-    CreateHardLinkW
-    CreateIoCompletionPort
-    CreateJobObjectA
-    CreateJobObjectW
-    CreateMailslotA
-    CreateMailslotW
-    CreateMutexA
-    CreateMutexExA
-    CreateMutexExW
-    CreateMutexW
-    CreateNamedPipeA
-    CreateNamedPipeW
-    CreatePipe
-    CreateProcessA
-    CreateProcessW
-    CreateRemoteThread
-    CreateSemaphoreA
-    CreateSemaphoreExA
-    CreateSemaphoreExW
-    CreateSemaphoreW
-    CreateSymbolicLinkA
-    CreateSymbolicLinkW
-    CreateThread
-    CreateToolhelp32Snapshot
-    DecodePointer=NTDLL.RtlDecodePointer
-    DeleteAtom
-    DeleteCriticalSection
-    DeleteFileA
-    DeleteFileW
-    DeleteTimerQueueTimer
-    DeleteVolumeMountPointA
-    DeleteVolumeMountPointW
-    DeviceIoControl
-    DisableThreadLibraryCalls
-    DisconnectNamedPipe
-    DuplicateHandle
-    EncodePointer=NTDLL.RtlEncodePointer
-    EncodeSystemPointer=NTDLL.RtlEncodeSystemPointer
-    EndUpdateResourceA
-    EndUpdateResourceW
-    EnterCriticalSection=NTDLL.RtlEnterCriticalSection
-    EnumCalendarInfoA
-    EnumCalendarInfoW
-    EnumDateFormatsA
-    EnumDateFormatsW
-    EnumSystemLocalesA
-    EnumSystemLocalesW
-    EnumTimeFormatsA
-    EnumTimeFormatsW
-    EnumWindowsLanguagesA
-    EnumWindowsLanguagesW
-    EscapeCommFunction
-    ExitProcess
-    ExitThread
-    ExpandEnvironmentStringsA
-    ExpandEnvironmentStringsW
-    FileTimeToLocalFileTime
-    FileTimeToSystemTime
-    FindAtomA
-    FindAtomW
-    FindClose
-    FindCloseChangeNotification
-    FindFirstChangeNotificationA
-    FindFirstChangeNotificationW
-    FindFirstFileA
-    FindFirstFileExA
-    FindFirstFileExW
-    FindFirstFileW
-    FindNextChangeNotification
-    FindNextFileA
-    FindNextFileW
-    FlushFileBuffers
-    FlushInstructionCache
-    FlushViewOfFile
-    FoldStringA
-    FoldStringW
-    FormatMessageA
-    FormatMessageW
-    FreeConsole
-    FreeEnvironmentStringsA
-    FreeEnvironmentStringsW
-    FreeLibrary
-    FreeLibraryAndExitThread
-    FreeResource
-    GetACP
-    GetAtomNameA
-    GetAtomNameW
-    GetBinaryTypeA
-    GetBinaryTypeW
-    GetCommandLineA
-    GetCommandLineW
-    GetComputerNameA
-    GetComputerNameExA
-    GetComputerNameExW
-    GetComputerNameW
-    GetConsoleCP
-    GetConsoleMode
-    GetConsoleOutputCP
-    GetCurrentDirectoryA
-    GetCurrentDirectoryW
-    GetCurrentProcess
-    GetCurrentProcessId
-    GetCurrentThread
-    GetCurrentThreadId
-    GetCurrentThreadStackLimits
-    GetDiskFreeSpaceA
-    GetDiskFreeSpaceExA
-    GetDiskFreeSpaceExW
-    GetDiskFreeSpaceW
-    GetDriveTypeA
-    GetDriveTypeW
-    GetEnvironmentStrings
-    GetEnvironmentStringsW
-    GetEnvironmentVariableA
-    GetEnvironmentVariableW
-    GetExitCodeProcess
-    GetExitCodeThread
-    GetFileAttributesA
-    GetFileAttributesExA
-    GetFileAttributesExW
-    GetFileAttributesW
-    GetFileInformationByHandle
-    GetFileSize
-    GetFileSizeEx
-    GetFileTime
-    GetFileType
-    GetFinalPathNameByHandleA
-    GetFinalPathNameByHandleW
-    GetFullPathNameA
-    GetFullPathNameW
-    GetLastError
-    GetLocalTime
-    GetLocaleInfoA
-    GetLocaleInfoW
-    GetLogicalDriveStringsA
-    GetLogicalDriveStringsW
-    GetLogicalDrives
-    GetModuleFileNameA
-    GetModuleFileNameW
-    GetModuleHandleA
-    GetModuleHandleExA
-    GetModuleHandleExW
-    GetModuleHandleW
-    GetNativeSystemInfo
-    GetOEMCP
-    GetOverlappedResult
-    GetPriorityClass
-    GetProcAddress
-    GetProcessHeap
-    GetProcessId
-    GetProcessIdOfThread
-    GetProcessTimes
-    GetStartupInfoA
-    GetStartupInfoW
-    GetStdHandle
-    GetSystemDirectoryA
-    GetSystemDirectoryW
-    GetSystemInfo
-    GetSystemTime
-    GetSystemTimeAsFileTime
-    GetSystemWindowsDirectoryA
-    GetSystemWindowsDirectoryW
-    GetTempFileNameA
-    GetTempFileNameW
-    GetTempPathA
-    GetTempPathW
-    GetThreadContext
-    GetThreadId
-    GetThreadPriority
-    GetTickCount
-    GetTickCount64
-    GetTimeZoneInformation
-    GetUserDefaultLCID
-    GetUserDefaultLangID
-    GetVersion
-    GetVersionExA
-    GetVersionExW
-    GetVolumeInformationA
-    GetVolumeInformationW
-    GetWindowsDirectoryA
-    GetWindowsDirectoryW
-    GlobalAlloc
-    GlobalFree
-    GlobalLock
-    GlobalMemoryStatusEx
-    GlobalUnlock
-    HeapAlloc=NTDLL.RtlAllocateHeap
-    HeapCompact
-    HeapCreate
-    HeapDestroy
-    HeapFree=NTDLL.RtlFreeHeap
-    HeapReAlloc=NTDLL.RtlReAllocateHeap
-    HeapSize=NTDLL.RtlSizeHeap
-    InitializeCriticalSection
-    InitializeCriticalSectionAndSpinCount
-    InitializeCriticalSectionEx
-    InterlockedCompareExchange
-    InterlockedDecrement
-    InterlockedExchange
-    InterlockedExchangeAdd
-    InterlockedIncrement
-    InterlockedOr
-    InterlockedPopEntrySList
-    InterlockedPushEntrySList
-    InterlockedSListPop
-    InterlockedSListPush
-    IsDebuggerPresent
-    IsProcessorFeaturePresent
-    IsValidCodePage
-    IsValidLocale
-    LeaveCriticalSection=NTDLL.RtlLeaveCriticalSection
-    LoadLibraryA
-    LoadLibraryExA
-    LoadLibraryExW
-    LoadLibraryW
-    LoadResource
-    LocalAlloc
-    LocalFree
-    LocalLock
-    LocalUnlock
-    LockFile
-    LockFileEx
-    LockResource
-    MapViewOfFile
-    MapViewOfFileEx
-    MoveFileA
-    MoveFileExA
-    MoveFileExW
-    MoveFileW
-    MultiByteToWideChar
-    OpenEventA
-    OpenEventW
-    OpenFileMappingA
-    OpenFileMappingW
-    OpenMutexA
-    OpenMutexW
-    OpenProcess
-    OpenSemaphoreA
-    OpenSemaphoreW
-    OutputDebugStringA
-    OutputDebugStringW
-    PeekNamedPipe
-    Process32First
-    Process32FirstW
-    Process32Next
-    Process32NextW
-    QueryDosDeviceA
-    QueryDosDeviceW
-    QueryPerformanceCounter
-    QueryPerformanceFrequency
-    ReadConsoleA
-    ReadConsoleW
-    ReadFile
-    ReadFileEx
-    ReadProcessMemory
-    ReleaseMutex
-    ReleaseSemaphore
-    ResetEvent
-    ResumeThread
-    SetCurrentDirectoryA
-    SetCurrentDirectoryW
-    SetEndOfFile
-    SetEnvironmentVariableA
-    SetEnvironmentVariableW
-    SetErrorMode
-    SetEvent
-    SetFileAttributesA
-    SetFileAttributesW
-    SetFilePointer
-    SetFilePointerEx
-    SetFileTime
-    SetLastError
-    SetPriorityClass
-    SetProcessAffinityMask
-    SetProcessPriorityBoost
-    SetThreadAffinityMask
-    SetThreadContext
-    SetThreadPriority
-    SetUnhandledExceptionFilter
-    Sleep
-    SleepConditionVariableCS
-    SleepEx
-    SuspendThread
-    SwitchToThread
-    SystemTimeToFileTime
-    TerminateProcess
-    TerminateThread
-    Thread32First
-    Thread32Next
-    TlsAlloc
-    TlsFree
-    TlsGetValue
-    TlsSetValue
-    TryEnterCriticalSection
-    UnhandledExceptionFilter
-    UnlockFile
-    UnlockFileEx
-    UnmapViewOfFile
-    WaitForMultipleObjects
-    WaitForMultipleObjectsEx
-    WaitForSingleObject
-    WaitForSingleObjectEx
-    WaitNamedPipeA
-    WaitNamedPipeW
-    WideCharToMultiByte
-    WriteConsoleA
-    WriteConsoleW
-    WriteFile
-    WriteFileEx
-    WriteProcessMemory
+    AcquireSRWLockExclusive=NTDLL.RtlAcquireSRWLockExclusive @1
+    AcquireSRWLockShared=NTDLL.RtlAcquireSRWLockShared @2
+    ActivateActCtx @3
+    ActivateActCtxWorker @4
+    ActivatePackageVirtualizationContext @5
+    AddAtomA @6
+    AddAtomW @7
+    AddConsoleAliasA @8
+    AddConsoleAliasW @9
+    AddDllDirectory=api-ms-win-core-libraryloader-l1-1-0.AddDllDirectory @10
+    AddIntegrityLabelToBoundaryDescriptor @11
+    AddLocalAlternateComputerNameA @12
+    AddLocalAlternateComputerNameW @13
+    AddRefActCtx @14
+    AddRefActCtxWorker @15
+    AddResourceAttributeAce @16
+    AddSIDToBoundaryDescriptor @17
+    AddScopedPolicyIDAce @18
+    AddSecureMemoryCacheCallback @19
+    AddVectoredContinueHandler=NTDLL.RtlAddVectoredContinueHandler @20
+    AddVectoredExceptionHandler=NTDLL.RtlAddVectoredExceptionHandler @21
+    AdjustCalendarDate @22
+    AllocConsole @23
+    AllocConsoleWithOptions @24
+    AllocateUserPhysicalPages @25
+    AllocateUserPhysicalPagesNuma @26
+    AppPolicyGetClrCompat=kernelbase.AppPolicyGetClrCompat @27
+    AppPolicyGetCreateFileAccess=kernelbase.AppPolicyGetCreateFileAccess @28
+    AppPolicyGetLifecycleManagement=kernelbase.AppPolicyGetLifecycleManagement @29
+    AppPolicyGetMediaFoundationCodecLoading=kernelbase.AppPolicyGetMediaFoundationCodecLoading @30
+    AppPolicyGetProcessTerminationMethod=kernelbase.AppPolicyGetProcessTerminationMethod @31
+    AppPolicyGetShowDeveloperDiagnostic=kernelbase.AppPolicyGetShowDeveloperDiagnostic @32
+    AppPolicyGetThreadInitializationType=kernelbase.AppPolicyGetThreadInitializationType @33
+    AppPolicyGetWindowingModel=kernelbase.AppPolicyGetWindowingModel @34
+    AppXGetOSMaxVersionTested=kernelbase.AppXGetOSMaxVersionTested @35
+    ApplicationRecoveryFinished @36
+    ApplicationRecoveryInProgress @37
+    AreFileApisANSI @38
+    AreShortNamesEnabled @39
+    AssignProcessToJobObject @40
+    AttachConsole @41
+    BackupRead @42
+    BackupReadEx @43
+    BackupSeek @44
+    BackupWrite @45
+    BackupWriteEx @46
+    BaseCheckAppcompatCache @47
+    BaseCheckAppcompatCacheEx @48
+    BaseCheckAppcompatCacheExWorker @49
+    BaseCheckAppcompatCacheWorker @50
+    BaseCheckElevation @51
+    BaseCleanupAppcompatCacheSupport @52
+    BaseCleanupAppcompatCacheSupportWorker @53
+    BaseDestroyVDMEnvironment @54
+    BaseDllReadWriteIniFile @55
+    BaseDumpAppcompatCache @56
+    BaseDumpAppcompatCacheWorker @57
+    BaseElevationPostProcessing @58
+    BaseFlushAppcompatCache @59
+    BaseFlushAppcompatCacheWorker @60
+    BaseFormatObjectAttributes @61
+    BaseFormatTimeOut @62
+    BaseFreeAppCompatDataForProcessWorker @63
+    BaseGenerateAppCompatData @64
+    BaseGetNamedObjectDirectory @65
+    BaseInitAppcompatCacheSupport @66
+    BaseInitAppcompatCacheSupportWorker @67
+    BaseIsAppcompatInfrastructureDisabled @68
+    BaseIsAppcompatInfrastructureDisabledWorker @69
+    BaseIsDosApplication @70
+    BaseQueryModuleData @71
+    BaseReadAppCompatDataForProcessWorker @72
+    BaseSetLastNTError @73
+    BaseThreadInitThunk @74
+    BaseUpdateAppcompatCache @75
+    BaseUpdateAppcompatCacheWorker @76
+    BaseUpdateVDMEntry @77
+    BaseWriteErrorElevationRequiredEvent @78
+    Basep8BitStringToDynamicUnicodeString @79
+    BasepAllocateActivationContextActivationBlock @80
+    BasepAnsiStringToDynamicUnicodeString @81
+    BasepAppContainerEnvironmentExtension @82
+    BasepAppXExtension @83
+    BasepCheckAppCompat @84
+    BasepCheckPplSupport @85
+    BasepCheckWebBladeHashes @86
+    BasepCheckWinSaferRestrictions @87
+    BasepConstructSxsCreateProcessMessage @88
+    BasepCopyEncryption @89
+    BasepFinishPackageActivation @90
+    BasepFinishPackageActivationForSxS @91
+    BasepFreeActivationContextActivationBlock @92
+    BasepFreeActivationTokenInfo @93
+    BasepFreeAppCompatData @94
+    BasepGetAppCompatData @95
+    BasepGetComputerNameFromNtPath @96
+    BasepGetExeArchType @97
+    BasepGetPackageActivationTokenForFilePath @98
+    BasepGetPackageActivationTokenForFilePath2 @99
+    BasepGetPackageActivationTokenForSxS @100
+    BasepGetPackageActivationTokenForSxS2 @101
+    BasepGetPackageActivationTokenForSxS3 @102
+    BasepGetPackagedAppInfoForFile @103
+    BasepInitAppCompatData @104
+    BasepIsProcessAllowed @105
+    BasepMapModuleHandle @106
+    BasepNotifyLoadStringResource @107
+    BasepPostSuccessAppXExtension @108
+    BasepProcessInvalidImage @109
+    BasepQueryAppCompat @110
+    BasepQueryModuleChpeSettings @111
+    BasepReleaseAppXContext @112
+    BasepReleasePackagedAppInfo @113
+    BasepReleaseSxsCreateProcessUtilityStruct @114
+    BasepReportFault @115
+    BasepSetFileEncryptionCompression @116
+    Beep @117
+    BeginUpdateResourceA @118
+    BeginUpdateResourceW @119
+    BindIoCompletionCallback @120
+    BuildCommDCBA @121
+    BuildCommDCBAndTimeoutsA @122
+    BuildCommDCBAndTimeoutsW @123
+    BuildCommDCBW @124
+    BuildIoRingCancelRequest=api-ms-win-core-ioring-l1-1-0.BuildIoRingCancelRequest @125
+    BuildIoRingFlushFile=api-ms-win-core-ioring-l1-1-1.BuildIoRingFlushFile @126
+    BuildIoRingReadFile=api-ms-win-core-ioring-l1-1-0.BuildIoRingReadFile @127
+    BuildIoRingReadFileScatter=api-ms-win-core-ioring-l1-1-2.BuildIoRingReadFileScatter @128
+    BuildIoRingRegisterBuffers=api-ms-win-core-ioring-l1-1-0.BuildIoRingRegisterBuffers @129
+    BuildIoRingRegisterFileHandles=api-ms-win-core-ioring-l1-1-0.BuildIoRingRegisterFileHandles @130
+    BuildIoRingWriteFile=api-ms-win-core-ioring-l1-1-1.BuildIoRingWriteFile @131
+    BuildIoRingWriteFileGather=api-ms-win-core-ioring-l1-1-2.BuildIoRingWriteFileGather @132
+    CallNamedPipeA @133
+    CallNamedPipeW @134
+    CallbackMayRunLong @135
+    CancelDeviceWakeupRequest @136
+    CancelIo @137
+    CancelIoEx @138
+    CancelSynchronousIo @139
+    CancelThreadpoolIo=NTDLL.TpCancelAsyncIoOperation @140
+    CancelTimerQueueTimer @141
+    CancelWaitableTimer @142
+    CeipIsOptedIn=kernelbase.CeipIsOptedIn @143
+    ChangeTimerQueueTimer @144
+    CheckAllowDecryptedRemoteDestinationPolicy @145
+    CheckElevation @146
+    CheckElevationEnabled @147
+    CheckForReadOnlyResource @148
+    CheckForReadOnlyResourceFilter @149
+    CheckNameLegalDOS8Dot3A @150
+    CheckNameLegalDOS8Dot3W @151
+    CheckRemoteDebuggerPresent @152
+    CheckTokenCapability @153
+    CheckTokenMembershipEx @154
+    ClearCommBreak @155
+    ClearCommError @156
+    CloseConsoleHandle @157
+    CloseHandle @158
+    CloseIoRing=api-ms-win-core-ioring-l1-1-0.CloseIoRing @159
+    ClosePackageInfo=kernelbase.ClosePackageInfo @160
+    ClosePrivateNamespace @161
+    CloseProfileUserMapping @162
+    ClosePseudoConsole @163
+    CloseState=kernelbase.CloseState @164
+    CloseThreadpool=NTDLL.TpReleasePool @165
+    CloseThreadpoolCleanupGroup=NTDLL.TpReleaseCleanupGroup @166
+    CloseThreadpoolCleanupGroupMembers=NTDLL.TpReleaseCleanupGroupMembers @167
+    CloseThreadpoolIo=NTDLL.TpReleaseIoCompletion @168
+    CloseThreadpoolTimer=NTDLL.TpReleaseTimer @169
+    CloseThreadpoolWait=NTDLL.TpReleaseWait @170
+    CloseThreadpoolWork=NTDLL.TpReleaseWork @171
+    CmdBatNotification @172
+    CommConfigDialogA @173
+    CommConfigDialogW @174
+    CompareCalendarDates @175
+    CompareFileTime @176
+    CompareStringA @177
+    CompareStringEx @178
+    CompareStringOrdinal @179
+    CompareStringW @180
+    ConnectNamedPipe @181
+    ConsoleMenuControl @182
+    ContinueDebugEvent @183
+    ConvertCalDateTimeToSystemTime @184
+    ConvertDefaultLocale @185
+    ConvertFiberToThread @186
+    ConvertNLSDayOfWeekToWin32DayOfWeek @187
+    ConvertSystemTimeToCalDateTime @188
+    ConvertThreadToFiber @189
+    ConvertThreadToFiberEx @190
+    CopyContext @191
+    CopyFile2 @192
+    CopyFileA @193
+    CopyFileExA @194
+    CopyFileExW @195
+    CopyFileTransactedA @196
+    CopyFileTransactedW @197
+    CopyFileW @198
+    CopyLZFile @199
+    CreateActCtxA @200
+    CreateActCtxW @201
+    CreateActCtxWWorker @202
+    CreateBoundaryDescriptorA @203
+    CreateBoundaryDescriptorW @204
+    CreateConsoleScreenBuffer @205
+    CreateDirectory2A @206
+    CreateDirectory2W @207
+    CreateDirectoryA @208
+    CreateDirectoryExA @209
+    CreateDirectoryExW @210
+    CreateDirectoryTransactedA @211
+    CreateDirectoryTransactedW @212
+    CreateDirectoryW @213
+    CreateEnclave=api-ms-win-core-enclave-l1-1-0.CreateEnclave @214
+    CreateEventA @215
+    CreateEventExA @216
+    CreateEventExW @217
+    CreateEventW @218
+    CreateFiber @219
+    CreateFiberEx @220
+    CreateFile2 @221
+    CreateFile3 @222
+    CreateFileA @223
+    CreateFileMappingA @224
+    CreateFileMappingFromApp=api-ms-win-core-memory-l1-1-1.CreateFileMappingFromApp @225
+    CreateFileMappingNumaA @226
+    CreateFileMappingNumaW @227
+    CreateFileMappingW @228
+    CreateFileTransactedA @229
+    CreateFileTransactedW @230
+    CreateFileW @231
+    CreateHardLinkA @232
+    CreateHardLinkTransactedA @233
+    CreateHardLinkTransactedW @234
+    CreateHardLinkW @235
+    CreateIoCompletionPort @236
+    CreateIoRing=api-ms-win-core-ioring-l1-1-0.CreateIoRing @237
+    CreateJobObjectA @238
+    CreateJobObjectW @239
+    CreateJobSet @240
+    CreateMailslotA @241
+    CreateMailslotW @242
+    CreateMemoryResourceNotification @243
+    CreateMutexA @244
+    CreateMutexExA @245
+    CreateMutexExW @246
+    CreateMutexW @247
+    CreateNamedPipeA @248
+    CreateNamedPipeW @249
+    CreatePackageVirtualizationContext @250
+    CreatePipe @251
+    CreatePrivateNamespaceA @252
+    CreatePrivateNamespaceW @253
+    CreateProcessA @254
+    CreateProcessAsUserA @255
+    CreateProcessAsUserW @256
+    CreateProcessInternalA @257
+    CreateProcessInternalW @258
+    CreateProcessW @259
+    CreatePseudoConsole @260
+    CreateRemoteThread @261
+    CreateRemoteThreadEx=api-ms-win-core-processthreads-l1-1-0.CreateRemoteThreadEx @262
+    CreateSemaphoreA @263
+    CreateSemaphoreExA @264
+    CreateSemaphoreExW @265
+    CreateSemaphoreW @266
+    CreateSymbolicLinkA @267
+    CreateSymbolicLinkTransactedA @268
+    CreateSymbolicLinkTransactedW @269
+    CreateSymbolicLinkW @270
+    CreateTapePartition @271
+    CreateThread @272
+    CreateThreadpool @273
+    CreateThreadpoolCleanupGroup @274
+    CreateThreadpoolIo @275
+    CreateThreadpoolTimer @276
+    CreateThreadpoolWait @277
+    CreateThreadpoolWork @278
+    CreateTimerQueue @279
+    CreateTimerQueueTimer @280
+    CreateToolhelp32Snapshot @281
+    CreateUmsCompletionList @282
+    CreateUmsThreadContext @283
+    CreateWaitableTimerA @284
+    CreateWaitableTimerExA @285
+    CreateWaitableTimerExW @286
+    CreateWaitableTimerW @287
+    CtrlRoutine=kernelbase.CtrlRoutine @288
+    DeactivateActCtx @289
+    DeactivateActCtxWorker @290
+    DeactivatePackageVirtualizationContext @291
+    DebugActiveProcess @292
+    DebugActiveProcessStop @293
+    DebugBreak @294
+    DebugBreakProcess @295
+    DebugSetProcessKillOnExit @296
+    DecodePointer=NTDLL.RtlDecodePointer @297
+    DecodeSystemPointer=NTDLL.RtlDecodeSystemPointer @298
+    DefineDosDeviceA @299
+    DefineDosDeviceW @300
+    DelayLoadFailureHook @301
+    DeleteAtom @302
+    DeleteBoundaryDescriptor @303
+    DeleteCriticalSection=NTDLL.RtlDeleteCriticalSection @304
+    DeleteFiber @305
+    DeleteFile2A @306
+    DeleteFile2W @307
+    DeleteFileA @308
+    DeleteFileTransactedA @309
+    DeleteFileTransactedW @310
+    DeleteFileW @311
+    DeleteProcThreadAttributeList=api-ms-win-core-processthreads-l1-1-0.DeleteProcThreadAttributeList @312
+    DeleteSynchronizationBarrier @313
+    DeleteTimerQueue @314
+    DeleteTimerQueueEx @315
+    DeleteTimerQueueTimer @316
+    DeleteUmsCompletionList @317
+    DeleteUmsThreadContext @318
+    DeleteVolumeMountPointA @319
+    DeleteVolumeMountPointW @320
+    DequeueUmsCompletionListItems @321
+    DeviceIoControl @322
+    DisableThreadLibraryCalls @323
+    DisableThreadProfiling @324
+    DisassociateCurrentThreadFromCallback=NTDLL.TpDisassociateCallback @325
+    DiscardVirtualMemory=api-ms-win-core-memory-l1-1-2.DiscardVirtualMemory @326
+    DisconnectNamedPipe @327
+    DnsHostnameToComputerNameA @328
+    DnsHostnameToComputerNameExW @329
+    DnsHostnameToComputerNameW @330
+    DosDateTimeToFileTime @331
+    DosPathToSessionPathA @332
+    DosPathToSessionPathW @333
+    DuplicateConsoleHandle @334
+    DuplicateEncryptionInfoFileExt @335
+    DuplicateHandle @336
+    DuplicatePackageVirtualizationContext @337
+    EnableProcessOptionalXStateFeatures @338
+    EnableThreadProfiling @339
+    EncodePointer=NTDLL.RtlEncodePointer @340
+    EncodeSystemPointer=NTDLL.RtlEncodeSystemPointer @341
+    EndUpdateResourceA @342
+    EndUpdateResourceW @343
+    EnterCriticalSection=NTDLL.RtlEnterCriticalSection @344
+    EnterSynchronizationBarrier @345
+    EnterUmsSchedulingMode @346
+    EnumCalendarInfoA @347
+    EnumCalendarInfoExA @348
+    EnumCalendarInfoExEx @349
+    EnumCalendarInfoExW @350
+    EnumCalendarInfoW @351
+    EnumDateFormatsA @352
+    EnumDateFormatsExA @353
+    EnumDateFormatsExEx @354
+    EnumDateFormatsExW @355
+    EnumDateFormatsW @356
+    EnumLanguageGroupLocalesA @357
+    EnumLanguageGroupLocalesW @358
+    EnumResourceLanguagesA @359
+    EnumResourceLanguagesExA @360
+    EnumResourceLanguagesExW @361
+    EnumResourceLanguagesW @362
+    EnumResourceNamesA @363
+    EnumResourceNamesExA @364
+    EnumResourceNamesExW @365
+    EnumResourceNamesW @366
+    EnumResourceTypesA @367
+    EnumResourceTypesExA @368
+    EnumResourceTypesExW @369
+    EnumResourceTypesW @370
+    EnumSystemCodePagesA @371
+    EnumSystemCodePagesW @372
+    EnumSystemFirmwareTables @373
+    EnumSystemGeoID @374
+    EnumSystemGeoNames @375
+    EnumSystemLanguageGroupsA @376
+    EnumSystemLanguageGroupsW @377
+    EnumSystemLocalesA @378
+    EnumSystemLocalesEx @379
+    EnumSystemLocalesW @380
+    EnumTimeFormatsA @381
+    EnumTimeFormatsEx @382
+    EnumTimeFormatsW @383
+    EnumUILanguagesA @384
+    EnumUILanguagesW @385
+    EnumerateLocalComputerNamesA @386
+    EnumerateLocalComputerNamesW @387
+    EraseTape @388
+    EscapeCommFunction @389
+    ExecuteUmsThread @390
+    ExitProcess @391
+    ExitThread=NTDLL.RtlExitUserThread @392
+    ExitVDM @393
+    ExpandEnvironmentStringsA @394
+    ExpandEnvironmentStringsW @395
+    ExpungeConsoleCommandHistoryA @396
+    ExpungeConsoleCommandHistoryW @397
+    FatalAppExitA @398
+    FatalAppExitW @399
+    FatalExit @400
+    FileTimeToDosDateTime @401
+    FileTimeToLocalFileTime @402
+    FileTimeToSystemTime @403
+    FillConsoleOutputAttribute @404
+    FillConsoleOutputCharacterA @405
+    FillConsoleOutputCharacterW @406
+    FindActCtxSectionGuid @407
+    FindActCtxSectionGuidWorker @408
+    FindActCtxSectionStringA @409
+    FindActCtxSectionStringW @410
+    FindActCtxSectionStringWWorker @411
+    FindAtomA @412
+    FindAtomW @413
+    FindClose @414
+    FindCloseChangeNotification @415
+    FindFirstChangeNotificationA @416
+    FindFirstChangeNotificationW @417
+    FindFirstFileA @418
+    FindFirstFileExA @419
+    FindFirstFileExW @420
+    FindFirstFileNameTransactedW @421
+    FindFirstFileNameW @422
+    FindFirstFileTransactedA @423
+    FindFirstFileTransactedW @424
+    FindFirstFileW @425
+    FindFirstStreamTransactedW @426
+    FindFirstStreamW=api-ms-win-core-file-l1-2-2.FindFirstStreamW @427
+    FindFirstVolumeA @428
+    FindFirstVolumeMountPointA @429
+    FindFirstVolumeMountPointW @430
+    FindFirstVolumeW @431
+    FindNLSString @432
+    FindNLSStringEx @433
+    FindNextChangeNotification @434
+    FindNextFileA @435
+    FindNextFileNameW @436
+    FindNextFileW @437
+    FindNextStreamW=api-ms-win-core-file-l1-2-2.FindNextStreamW @438
+    FindNextVolumeA @439
+    FindNextVolumeMountPointA @440
+    FindNextVolumeMountPointW @441
+    FindNextVolumeW @442
+    FindPackagesByPackageFamily=kernelbase.FindPackagesByPackageFamily @443
+    FindResourceA @444
+    FindResourceExA @445
+    FindResourceExW @446
+    FindResourceW @447
+    FindStringOrdinal @448
+    FindVolumeClose @449
+    FindVolumeMountPointClose @450
+    FlsAlloc @451
+    FlsFree @452
+    FlsGetValue @453
+    FlsGetValue2=kernelbase.FlsGetValue2 @454
+    FlsSetValue @455
+    FlushConsoleInputBuffer @456
+    FlushFileBuffers @457
+    FlushInstructionCache @458
+    FlushProcessWriteBuffers=NTDLL.NtFlushProcessWriteBuffers @459
+    FlushViewOfFile @460
+    FoldStringA @461
+    FoldStringW @462
+    FormatApplicationUserModelId=kernelbase.FormatApplicationUserModelId @463
+    FormatMessageA @464
+    FormatMessageW @465
+    FreeConsole @466
+    FreeEnvironmentStringsA @467
+    FreeEnvironmentStringsW @468
+    FreeLibrary @469
+    FreeLibraryAndExitThread @470
+    FreeLibraryWhenCallbackReturns=NTDLL.TpCallbackUnloadDllOnCompletion @471
+    FreeMemoryJobObject @472
+    FreeResource @473
+    FreeUserPhysicalPages @474
+    GenerateConsoleCtrlEvent @475
+    GetACP @476
+    GetActiveProcessorCount @477
+    GetActiveProcessorGroupCount @478
+    GetAppContainerAce @479
+    GetAppContainerNamedObjectPath @480
+    GetApplicationRecoveryCallback @481
+    GetApplicationRecoveryCallbackWorker @482
+    GetApplicationRestartSettings @483
+    GetApplicationRestartSettingsWorker @484
+    GetApplicationUserModelId=kernelbase.GetApplicationUserModelId @485
+    GetAtomNameA @486
+    GetAtomNameW @487
+    GetBinaryType @488
+    GetBinaryTypeA @489
+    GetBinaryTypeW @490
+    GetCPInfo @491
+    GetCPInfoExA @492
+    GetCPInfoExW @493
+    GetCachedSigningLevel @494
+    GetCalendarDateFormat @495
+    GetCalendarDateFormatEx @496
+    GetCalendarDaysInMonth @497
+    GetCalendarDifferenceInDays @498
+    GetCalendarInfoA @499
+    GetCalendarInfoEx @500
+    GetCalendarInfoW @501
+    GetCalendarMonthsInYear @502
+    GetCalendarSupportedDateRange @503
+    GetCalendarWeekNumber @504
+    GetComPlusPackageInstallStatus @505
+    GetCommConfig @506
+    GetCommMask @507
+    GetCommModemStatus @508
+    GetCommProperties @509
+    GetCommState @510
+    GetCommTimeouts @511
+    GetCommandLineA @512
+    GetCommandLineW @513
+    GetCompressedFileSizeA @514
+    GetCompressedFileSizeTransactedA @515
+    GetCompressedFileSizeTransactedW @516
+    GetCompressedFileSizeW @517
+    GetComputerNameA @518
+    GetComputerNameExA @519
+    GetComputerNameExW @520
+    GetComputerNameW @521
+    GetConsoleAliasA @522
+    GetConsoleAliasExesA @523
+    GetConsoleAliasExesLengthA @524
+    GetConsoleAliasExesLengthW @525
+    GetConsoleAliasExesW @526
+    GetConsoleAliasW @527
+    GetConsoleAliasesA @528
+    GetConsoleAliasesLengthA @529
+    GetConsoleAliasesLengthW @530
+    GetConsoleAliasesW @531
+    GetConsoleCP @532
+    GetConsoleCharType @533
+    GetConsoleCommandHistoryA @534
+    GetConsoleCommandHistoryLengthA @535
+    GetConsoleCommandHistoryLengthW @536
+    GetConsoleCommandHistoryW @537
+    GetConsoleCursorInfo @538
+    GetConsoleCursorMode @539
+    GetConsoleDisplayMode @540
+    GetConsoleFontInfo @541
+    GetConsoleFontSize @542
+    GetConsoleHardwareState @543
+    GetConsoleHistoryInfo @544
+    GetConsoleInputExeNameA=kernelbase.GetConsoleInputExeNameA @545
+    GetConsoleInputExeNameW=kernelbase.GetConsoleInputExeNameW @546
+    GetConsoleInputWaitHandle @547
+    GetConsoleKeyboardLayoutNameA @548
+    GetConsoleKeyboardLayoutNameW @549
+    GetConsoleMode @550
+    GetConsoleNlsMode @551
+    GetConsoleOriginalTitleA @552
+    GetConsoleOriginalTitleW @553
+    GetConsoleOutputCP @554
+    GetConsoleProcessList @555
+    GetConsoleScreenBufferInfo @556
+    GetConsoleScreenBufferInfoEx @557
+    GetConsoleSelectionInfo @558
+    GetConsoleTitleA @559
+    GetConsoleTitleW @560
+    GetConsoleWindow @561
+    GetCurrencyFormatA @562
+    GetCurrencyFormatEx @563
+    GetCurrencyFormatW @564
+    GetCurrentActCtx @565
+    GetCurrentActCtxWorker @566
+    GetCurrentApplicationUserModelId=kernelbase.GetCurrentApplicationUserModelId @567
+    GetCurrentConsoleFont @568
+    GetCurrentConsoleFontEx @569
+    GetCurrentDirectoryA @570
+    GetCurrentDirectoryW @571
+    GetCurrentPackageFamilyName=kernelbase.GetCurrentPackageFamilyName @572
+    GetCurrentPackageFullName=kernelbase.GetCurrentPackageFullName @573
+    GetCurrentPackageId=kernelbase.GetCurrentPackageId @574
+    GetCurrentPackageInfo=kernelbase.GetCurrentPackageInfo @575
+    GetCurrentPackagePath=kernelbase.GetCurrentPackagePath @576
+    GetCurrentPackageVirtualizationContext @577
+    GetCurrentProcess @578
+    GetCurrentProcessId @579
+    GetCurrentProcessorNumber=NTDLL.RtlGetCurrentProcessorNumber @580
+    GetCurrentProcessorNumberEx=NTDLL.RtlGetCurrentProcessorNumberEx @581
+    GetCurrentThread @582
+    GetCurrentThreadId @583
+    GetCurrentThreadStackLimits=api-ms-win-core-processthreads-l1-1-0.GetCurrentThreadStackLimits @584
+    GetCurrentUmsThread @585
+    GetDateFormatA @586
+    GetDateFormatAWorker @587
+    GetDateFormatEx @588
+    GetDateFormatW @589
+    GetDateFormatWWorker @590
+    GetDefaultCommConfigA @591
+    GetDefaultCommConfigW @592
+    GetDevicePowerState @593
+    GetDiskFreeSpaceA @594
+    GetDiskFreeSpaceExA @595
+    GetDiskFreeSpaceExW @596
+    GetDiskFreeSpaceW @597
+    GetDiskSpaceInformationA=api-ms-win-core-file-l1-2-3.GetDiskSpaceInformationA @598
+    GetDiskSpaceInformationW=api-ms-win-core-file-l1-2-3.GetDiskSpaceInformationW @599
+    GetDllDirectoryA @600
+    GetDllDirectoryW @601
+    GetDriveTypeA @602
+    GetDriveTypeW @603
+    GetDurationFormat @604
+    GetDurationFormatEx @605
+    GetDynamicTimeZoneInformation @606
+    GetEnabledXStateFeatures @607
+    GetEncryptedFileVersionExt @608
+    GetEnvironmentStrings @609
+    GetEnvironmentStringsA @610
+    GetEnvironmentStringsW @611
+    GetEnvironmentVariableA @612
+    GetEnvironmentVariableW @613
+    GetEraNameCountedString @614
+    GetErrorMode @615
+    GetExitCodeProcess @616
+    GetExitCodeThread @617
+    GetExpandedNameA @618
+    GetExpandedNameW @619
+    GetFileAttributesA @620
+    GetFileAttributesExA @621
+    GetFileAttributesExW @622
+    GetFileAttributesTransactedA @623
+    GetFileAttributesTransactedW @624
+    GetFileAttributesW @625
+    GetFileBandwidthReservation @626
+    GetFileInformationByHandle @627
+    GetFileInformationByHandleEx @628
+    GetFileInformationByName @629
+    GetFileMUIInfo @630
+    GetFileMUIPath @631
+    GetFileSize @632
+    GetFileSizeEx @633
+    GetFileTime @634
+    GetFileType @635
+    GetFinalPathNameByHandleA @636
+    GetFinalPathNameByHandleW @637
+    GetFirmwareEnvironmentVariableA @638
+    GetFirmwareEnvironmentVariableExA @639
+    GetFirmwareEnvironmentVariableExW @640
+    GetFirmwareEnvironmentVariableW @641
+    GetFirmwareType @642
+    GetFullPathNameA @643
+    GetFullPathNameTransactedA @644
+    GetFullPathNameTransactedW @645
+    GetFullPathNameW @646
+    GetGeoInfoA @647
+    GetGeoInfoEx @648
+    GetGeoInfoW @649
+    GetHandleInformation @650
+    GetIoRingInfo=api-ms-win-core-ioring-l1-1-0.GetIoRingInfo @651
+    GetLargePageMinimum @652
+    GetLargestConsoleWindowSize @653
+    GetLastError @654
+    GetLocalTime @655
+    GetLocaleInfoA @656
+    GetLocaleInfoEx @657
+    GetLocaleInfoW @658
+    GetLogicalDriveStringsA @659
+    GetLogicalDriveStringsW @660
+    GetLogicalDrives @661
+    GetLogicalProcessorInformation @662
+    GetLogicalProcessorInformationEx=api-ms-win-core-sysinfo-l1-1-0.GetLogicalProcessorInformationEx @663
+    GetLongPathNameA @664
+    GetLongPathNameTransactedA @665
+    GetLongPathNameTransactedW @666
+    GetLongPathNameW @667
+    GetMachineTypeAttributes=api-ms-win-core-processthreads-l1-1-7.GetMachineTypeAttributes @668
+    GetMailslotInfo @669
+    GetMaximumProcessorCount @670
+    GetMaximumProcessorGroupCount @671
+    GetMemoryErrorHandlingCapabilities @672
+    GetModuleFileNameA @673
+    GetModuleFileNameW @674
+    GetModuleHandleA @675
+    GetModuleHandleExA @676
+    GetModuleHandleExW @677
+    GetModuleHandleW @678
+    GetNLSVersion @679
+    GetNLSVersionEx @680
+    GetNamedPipeAttribute @681
+    GetNamedPipeClientComputerNameA @682
+    GetNamedPipeClientComputerNameW @683
+    GetNamedPipeClientProcessId @684
+    GetNamedPipeClientSessionId @685
+    GetNamedPipeHandleStateA @686
+    GetNamedPipeHandleStateW @687
+    GetNamedPipeInfo=api-ms-win-core-namedpipe-l1-2-1.GetNamedPipeInfo @688
+    GetNamedPipeServerProcessId @689
+    GetNamedPipeServerSessionId @690
+    GetNativeSystemInfo @691
+    GetNextUmsListItem @692
+    GetNextVDMCommand @693
+    GetNumaAvailableMemoryNode @694
+    GetNumaAvailableMemoryNodeEx @695
+    GetNumaHighestNodeNumber @696
+    GetNumaNodeNumberFromHandle @697
+    GetNumaNodeProcessorMask @698
+    GetNumaNodeProcessorMask2=api-ms-win-core-systemtopology-l1-1-2.GetNumaNodeProcessorMask2 @699
+    GetNumaNodeProcessorMaskEx @700
+    GetNumaProcessorNode @701
+    GetNumaProcessorNodeEx @702
+    GetNumaProximityNode @703
+    GetNumaProximityNodeEx @704
+    GetNumberFormatA @705
+    GetNumberFormatEx @706
+    GetNumberFormatW @707
+    GetNumberOfConsoleFonts @708
+    GetNumberOfConsoleInputEvents @709
+    GetNumberOfConsoleMouseButtons @710
+    GetOEMCP @711
+    GetOverlappedResult @712
+    GetOverlappedResultEx=api-ms-win-core-io-l1-1-1.GetOverlappedResultEx @713
+    GetPackageApplicationIds=kernelbase.GetPackageApplicationIds @714
+    GetPackageFamilyName=kernelbase.GetPackageFamilyName @715
+    GetPackageFullName=kernelbase.GetPackageFullName @716
+    GetPackageId=kernelbase.GetPackageId @717
+    GetPackageInfo=kernelbase.GetPackageInfo @718
+    GetPackagePath=kernelbase.GetPackagePath @719
+    GetPackagePathByFullName=kernelbase.GetPackagePathByFullName @720
+    GetPackagesByPackageFamily=kernelbase.GetPackagesByPackageFamily @721
+    GetPhysicallyInstalledSystemMemory @722
+    GetPriorityClass @723
+    GetPrivateProfileIntA @724
+    GetPrivateProfileIntW @725
+    GetPrivateProfileSectionA @726
+    GetPrivateProfileSectionNamesA @727
+    GetPrivateProfileSectionNamesW @728
+    GetPrivateProfileSectionW @729
+    GetPrivateProfileStringA @730
+    GetPrivateProfileStringW @731
+    GetPrivateProfileStructA @732
+    GetPrivateProfileStructW @733
+    GetProcAddress @734
+    GetProcessAffinityMask @735
+    GetProcessDEPPolicy @736
+    GetProcessDefaultCpuSetMasks=api-ms-win-core-processthreads-l1-1-6.GetProcessDefaultCpuSetMasks @737
+    GetProcessDefaultCpuSets=api-ms-win-core-processthreads-l1-1-3.GetProcessDefaultCpuSets @738
+    GetProcessGroupAffinity @739
+    GetProcessHandleCount @740
+    GetProcessHeap @741
+    GetProcessHeaps @742
+    GetProcessId @743
+    GetProcessIdOfThread @744
+    GetProcessInformation @745
+    GetProcessIoCounters @746
+    GetProcessMitigationPolicy=api-ms-win-core-processthreads-l1-1-1.GetProcessMitigationPolicy @747
+    GetProcessPreferredUILanguages @748
+    GetProcessPriorityBoost @749
+    GetProcessShutdownParameters @750
+    GetProcessTimes @751
+    GetProcessVersion @752
+    GetProcessWorkingSetSize @753
+    GetProcessWorkingSetSizeEx @754
+    GetProcessesInVirtualizationContext @755
+    GetProcessorSystemCycleTime=api-ms-win-core-sysinfo-l1-2-2.GetProcessorSystemCycleTime @756
+    GetProductInfo @757
+    GetProfileIntA @758
+    GetProfileIntW @759
+    GetProfileSectionA @760
+    GetProfileSectionW @761
+    GetProfileStringA @762
+    GetProfileStringW @763
+    GetQueuedCompletionStatus @764
+    GetQueuedCompletionStatusEx @765
+    GetShortPathNameA @766
+    GetShortPathNameW @767
+    GetStagedPackagePathByFullName=kernelbase.GetStagedPackagePathByFullName @768
+    GetStartupInfoA @769
+    GetStartupInfoW @770
+    GetStateFolder=kernelbase.GetStateFolder @771
+    GetStdHandle @772
+    GetStringScripts @773
+    GetStringTypeA @774
+    GetStringTypeExA @775
+    GetStringTypeExW @776
+    GetStringTypeW @777
+    GetSystemAppDataKey=kernelbase.GetSystemAppDataKey @778
+    GetSystemCpuSetInformation=api-ms-win-core-processthreads-l1-1-3.GetSystemCpuSetInformation @779
+    GetSystemDEPPolicy @780
+    GetSystemDefaultLCID @781
+    GetSystemDefaultLangID @782
+    GetSystemDefaultLocaleName @783
+    GetSystemDefaultUILanguage @784
+    GetSystemDirectoryA @785
+    GetSystemDirectoryW @786
+    GetSystemFileCacheSize @787
+    GetSystemFirmwareTable @788
+    GetSystemInfo @789
+    GetSystemPowerStatus @790
+    GetSystemPreferredUILanguages @791
+    GetSystemRegistryQuota @792
+    GetSystemTime @793
+    GetSystemTimeAdjustment @794
+    GetSystemTimeAsFileTime @795
+    GetSystemTimePreciseAsFileTime @796
+    GetSystemTimes @797
+    GetSystemWindowsDirectoryA @798
+    GetSystemWindowsDirectoryW @799
+    GetSystemWow64DirectoryA @800
+    GetSystemWow64DirectoryW @801
+    GetTapeParameters @802
+    GetTapePosition @803
+    GetTapeStatus @804
+    GetTempFileNameA @805
+    GetTempFileNameW @806
+    GetTempPath2A @807
+    GetTempPath2W @808
+    GetTempPathA @809
+    GetTempPathW @810
+    GetThreadContext @811
+    GetThreadDescription=api-ms-win-core-processthreads-l1-1-3.GetThreadDescription @812
+    GetThreadEnabledXStateFeatures @813
+    GetThreadErrorMode @814
+    GetThreadGroupAffinity @815
+    GetThreadIOPendingFlag @816
+    GetThreadId @817
+    GetThreadIdealProcessorEx @818
+    GetThreadInformation @819
+    GetThreadLocale @820
+    GetThreadPreferredUILanguages @821
+    GetThreadPriority @822
+    GetThreadPriorityBoost @823
+    GetThreadSelectedCpuSetMasks=api-ms-win-core-processthreads-l1-1-6.GetThreadSelectedCpuSetMasks @824
+    GetThreadSelectedCpuSets=api-ms-win-core-processthreads-l1-1-3.GetThreadSelectedCpuSets @825
+    GetThreadSelectorEntry @826
+    GetThreadTimes @827
+    GetThreadUILanguage @828
+    GetTickCount @829
+    GetTickCount64 @830
+    GetTimeFormatA @831
+    GetTimeFormatAWorker @832
+    GetTimeFormatEx @833
+    GetTimeFormatW @834
+    GetTimeFormatWWorker @835
+    GetTimeZoneInformation @836
+    GetTimeZoneInformationForYear @837
+    GetUILanguageInfo @838
+    GetUmsCompletionListEvent @839
+    GetUmsSystemThreadInformation @840
+    GetUserDefaultGeoName @841
+    GetUserDefaultLCID @842
+    GetUserDefaultLangID @843
+    GetUserDefaultLocaleName @844
+    GetUserDefaultUILanguage @845
+    GetUserGeoID @846
+    GetUserPreferredUILanguages @847
+    GetVDMCurrentDirectories @848
+    GetVersion @849
+    GetVersionExA @850
+    GetVersionExW @851
+    GetVolumeInformationA @852
+    GetVolumeInformationByHandleW @853
+    GetVolumeInformationW @854
+    GetVolumeNameForVolumeMountPointA @855
+    GetVolumeNameForVolumeMountPointW @856
+    GetVolumePathNameA @857
+    GetVolumePathNameW @858
+    GetVolumePathNamesForVolumeNameA @859
+    GetVolumePathNamesForVolumeNameW @860
+    GetWindowsDirectoryA @861
+    GetWindowsDirectoryW @862
+    GetWriteWatch @863
+    GetXStateFeaturesMask @864
+    GlobalAddAtomA @865
+    GlobalAddAtomExA @866
+    GlobalAddAtomExW @867
+    GlobalAddAtomW @868
+    GlobalAlloc @869
+    GlobalCompact @870
+    GlobalDeleteAtom @871
+    GlobalFindAtomA @872
+    GlobalFindAtomW @873
+    GlobalFix @874
+    GlobalFlags @875
+    GlobalFree @876
+    GlobalGetAtomNameA @877
+    GlobalGetAtomNameW @878
+    GlobalHandle @879
+    GlobalLock @880
+    GlobalMemoryStatus @881
+    GlobalMemoryStatusEx @882
+    GlobalReAlloc @883
+    GlobalSize @884
+    GlobalUnWire @885
+    GlobalUnfix @886
+    GlobalUnlock @887
+    GlobalWire @888
+    Heap32First @889
+    Heap32ListFirst @890
+    Heap32ListNext @891
+    Heap32Next @892
+    HeapAlloc=NTDLL.RtlAllocateHeap @893
+    HeapCompact @894
+    HeapCreate @895
+    HeapDestroy @896
+    HeapFree @897
+    HeapLock @898
+    HeapQueryInformation @899
+    HeapReAlloc=NTDLL.RtlReAllocateHeap @900
+    HeapSetInformation @901
+    HeapSize=NTDLL.RtlSizeHeap @902
+    HeapSummary @903
+    HeapUnlock @904
+    HeapValidate @905
+    HeapWalk @906
+    IdnToAscii @907
+    IdnToNameprepUnicode @908
+    IdnToUnicode @909
+    InitAtomTable @910
+    InitOnceBeginInitialize=api-ms-win-core-synch-l1-2-0.InitOnceBeginInitialize @911
+    InitOnceComplete=api-ms-win-core-synch-l1-2-0.InitOnceComplete @912
+    InitOnceExecuteOnce=api-ms-win-core-synch-l1-2-0.InitOnceExecuteOnce @913
+    InitOnceInitialize=NTDLL.RtlRunOnceInitialize @914
+    InitializeConditionVariable=NTDLL.RtlInitializeConditionVariable @915
+    InitializeContext @916
+    InitializeContext2 @917
+    InitializeCriticalSection=NTDLL.RtlInitializeCriticalSection @918
+    InitializeCriticalSectionAndSpinCount @919
+    InitializeCriticalSectionEx @920
+    InitializeEnclave=api-ms-win-core-enclave-l1-1-0.InitializeEnclave @921
+    InitializeProcThreadAttributeList=api-ms-win-core-processthreads-l1-1-0.InitializeProcThreadAttributeList @922
+    InitializeSListHead=NTDLL.RtlInitializeSListHead @923
+    InitializeSRWLock=NTDLL.RtlInitializeSRWLock @924
+    InitializeSynchronizationBarrier @925
+    InstallELAMCertificateInfo=api-ms-win-core-sysinfo-l1-2-1.InstallELAMCertificateInfo @926
+    InterlockedFlushSList=NTDLL.RtlInterlockedFlushSList @927
+    InterlockedPopEntrySList=NTDLL.RtlInterlockedPopEntrySList @928
+    InterlockedPushEntrySList=NTDLL.RtlInterlockedPushEntrySList @929
+    InterlockedPushListSList=NTDLL.RtlInterlockedPushListSList @930
+    InterlockedPushListSListEx=NTDLL.RtlInterlockedPushListSListEx @931
+    InvalidateConsoleDIBits @932
+    IsBadCodePtr @933
+    IsBadHugeReadPtr @934
+    IsBadHugeWritePtr @935
+    IsBadReadPtr @936
+    IsBadStringPtrA @937
+    IsBadStringPtrW @938
+    IsBadWritePtr @939
+    IsCalendarLeapDay @940
+    IsCalendarLeapMonth @941
+    IsCalendarLeapYear @942
+    IsDBCSLeadByte @943
+    IsDBCSLeadByteEx @944
+    IsDebuggerPresent @945
+    IsEnclaveTypeSupported=api-ms-win-core-enclave-l1-1-0.IsEnclaveTypeSupported @946
+    IsIoRingOpSupported=api-ms-win-core-ioring-l1-1-0.IsIoRingOpSupported @947
+    IsNLSDefinedString @948
+    IsNativeVhdBoot @949
+    IsNormalizedString @950
+    IsProcessCritical=api-ms-win-core-processthreads-l1-1-2.IsProcessCritical @951
+    IsProcessInJob @952
+    IsProcessorFeaturePresent @953
+    IsSystemResumeAutomatic @954
+    IsThreadAFiber @955
+    IsThreadpoolTimerSet=NTDLL.TpIsTimerSet @956
+    IsUserCetAvailableInEnvironment=api-ms-win-core-sysinfo-l1-2-6.IsUserCetAvailableInEnvironment @957
+    IsValidCalDateTime @958
+    IsValidCodePage @959
+    IsValidLanguageGroup @960
+    IsValidLocale @961
+    IsValidLocaleName @962
+    IsValidNLSVersion @963
+    IsWow64GuestMachineSupported=api-ms-win-core-wow64-l1-1-2.IsWow64GuestMachineSupported @964
+    IsWow64Process @965
+    IsWow64Process2=api-ms-win-core-wow64-l1-1-1.IsWow64Process2 @966
+    K32EmptyWorkingSet @967
+    K32EnumDeviceDrivers @968
+    K32EnumPageFilesA @969
+    K32EnumPageFilesW @970
+    K32EnumProcessModules @971
+    K32EnumProcessModulesEx @972
+    K32EnumProcesses @973
+    K32GetDeviceDriverBaseNameA @974
+    K32GetDeviceDriverBaseNameW @975
+    K32GetDeviceDriverFileNameA @976
+    K32GetDeviceDriverFileNameW @977
+    K32GetMappedFileNameA @978
+    K32GetMappedFileNameW @979
+    K32GetModuleBaseNameA @980
+    K32GetModuleBaseNameW @981
+    K32GetModuleFileNameExA @982
+    K32GetModuleFileNameExW @983
+    K32GetModuleInformation @984
+    K32GetPerformanceInfo @985
+    K32GetProcessImageFileNameA @986
+    K32GetProcessImageFileNameW @987
+    K32GetProcessMemoryInfo @988
+    K32GetWsChanges @989
+    K32GetWsChangesEx @990
+    K32InitializeProcessForWsWatch @991
+    K32QueryWorkingSet @992
+    K32QueryWorkingSetEx @993
+    LCIDToLocaleName @994
+    LCMapStringA @995
+    LCMapStringEx @996
+    LCMapStringW @997
+    LZClose @998
+    LZCloseFile @999
+    LZCopy @1000
+    LZCreateFileW @1001
+    LZDone @1002
+    LZInit @1003
+    LZOpenFileA @1004
+    LZOpenFileW @1005
+    LZRead @1006
+    LZSeek @1007
+    LZStart @1008
+    LeaveCriticalSection=NTDLL.RtlLeaveCriticalSection @1009
+    LeaveCriticalSectionWhenCallbackReturns=NTDLL.TpCallbackLeaveCriticalSectionOnCompletion @1010
+    LoadAppInitDlls @1011
+    LoadEnclaveData=api-ms-win-core-enclave-l1-1-0.LoadEnclaveData @1012
+    LoadLibraryA @1013
+    LoadLibraryExA @1014
+    LoadLibraryExW @1015
+    LoadLibraryW @1016
+    LoadModule @1017
+    LoadPackagedLibrary @1018
+    LoadResource @1019
+    LoadStringBaseExW @1020
+    LoadStringBaseW @1021
+    LocalAlloc @1022
+    LocalCompact @1023
+    LocalFileTimeToFileTime @1024
+    LocalFileTimeToLocalSystemTime=api-ms-win-core-timezone-l1-1-1.LocalFileTimeToLocalSystemTime @1025
+    LocalFlags @1026
+    LocalFree @1027
+    LocalHandle @1028
+    LocalLock @1029
+    LocalReAlloc @1030
+    LocalShrink @1031
+    LocalSize @1032
+    LocalSystemTimeToLocalFileTime=api-ms-win-core-timezone-l1-1-1.LocalSystemTimeToLocalFileTime @1033
+    LocalUnlock @1034
+    LocaleNameToLCID @1035
+    LocateXStateFeature @1036
+    LockFile @1037
+    LockFileEx @1038
+    LockResource @1039
+    LogUnexpectedCodepath=NTDLL.RtlLogUnexpectedCodepath @1040
+    MapUserPhysicalPages @1041
+    MapUserPhysicalPagesScatter @1042
+    MapViewOfFile @1043
+    MapViewOfFileEx @1044
+    MapViewOfFileExNuma @1045
+    MapViewOfFileFromApp=api-ms-win-core-memory-l1-1-1.MapViewOfFileFromApp @1046
+    Module32First @1047
+    Module32FirstW @1048
+    Module32Next @1049
+    Module32NextW @1050
+    MoveFileA @1051
+    MoveFileExA @1052
+    MoveFileExW @1053
+    MoveFileTransactedA @1054
+    MoveFileTransactedW @1055
+    MoveFileW @1056
+    MoveFileWithProgressA @1057
+    MoveFileWithProgressW @1058
+    MulDiv @1059
+    MultiByteToWideChar @1060
+    NeedCurrentDirectoryForExePathA @1061
+    NeedCurrentDirectoryForExePathW @1062
+    NlsCheckPolicy @1063
+    NlsGetCacheUpdateCount @1064
+    NlsUpdateLocale @1065
+    NlsUpdateSystemLocale @1066
+    NormalizeString @1067
+    NotifyMountMgr @1068
+    NotifyUILanguageChange @1069
+    NtVdm64CreateProcessInternalW @1070
+    OOBEComplete @1071
+    OfferVirtualMemory=api-ms-win-core-memory-l1-1-2.OfferVirtualMemory @1072
+    OpenConsoleW @1073
+    OpenConsoleWStub @1074
+    OpenEventA @1075
+    OpenEventW @1076
+    OpenFile @1077
+    OpenFileById @1078
+    OpenFileMappingA @1079
+    OpenFileMappingW @1080
+    OpenJobObjectA @1081
+    OpenJobObjectW @1082
+    OpenMutexA @1083
+    OpenMutexW @1084
+    OpenPackageInfoByFullName=kernelbase.OpenPackageInfoByFullName @1085
+    OpenPrivateNamespaceA @1086
+    OpenPrivateNamespaceW @1087
+    OpenProcess @1088
+    OpenProcessToken=api-ms-win-core-processthreads-l1-1-0.OpenProcessToken @1089
+    OpenProfileUserMapping @1090
+    OpenSemaphoreA @1091
+    OpenSemaphoreW @1092
+    OpenState=kernelbase.OpenState @1093
+    OpenStateExplicit=kernelbase.OpenStateExplicit @1094
+    OpenThread @1095
+    OpenThreadToken=api-ms-win-core-processthreads-l1-1-0.OpenThreadToken @1096
+    OpenWaitableTimerA @1097
+    OpenWaitableTimerW @1098
+    OutputDebugStringA @1099
+    OutputDebugStringW @1100
+    PackageFamilyNameFromFullName=kernelbase.PackageFamilyNameFromFullName @1101
+    PackageFamilyNameFromId=kernelbase.PackageFamilyNameFromId @1102
+    PackageFullNameFromId=kernelbase.PackageFullNameFromId @1103
+    PackageIdFromFullName=kernelbase.PackageIdFromFullName @1104
+    PackageNameAndPublisherIdFromFamilyName=kernelbase.PackageNameAndPublisherIdFromFamilyName @1105
+    ParseApplicationUserModelId=kernelbase.ParseApplicationUserModelId @1106
+    PeekConsoleInputA @1107
+    PeekConsoleInputW @1108
+    PeekNamedPipe @1109
+    PopIoRingCompletion=api-ms-win-core-ioring-l1-1-0.PopIoRingCompletion @1110
+    PostQueuedCompletionStatus @1111
+    PowerClearRequest @1112
+    PowerCreateRequest @1113
+    PowerSetRequest @1114
+    PrefetchVirtualMemory=api-ms-win-core-memory-l1-1-1.PrefetchVirtualMemory @1115
+    PrepareTape @1116
+    PrivCopyFileExW @1117
+    PrivMoveFileIdentityW @1118
+    Process32First @1119
+    Process32FirstW @1120
+    Process32Next @1121
+    Process32NextW @1122
+    ProcessIdToSessionId @1123
+    PssCaptureSnapshot @1124
+    PssDuplicateSnapshot @1125
+    PssFreeSnapshot @1126
+    PssQuerySnapshot @1127
+    PssWalkMarkerCreate @1128
+    PssWalkMarkerFree @1129
+    PssWalkMarkerGetPosition @1130
+    PssWalkMarkerRewind @1131
+    PssWalkMarkerSeek @1132
+    PssWalkMarkerSeekToBeginning @1133
+    PssWalkMarkerSetPosition @1134
+    PssWalkMarkerTell @1135
+    PssWalkSnapshot @1136
+    PulseEvent @1137
+    PurgeComm @1138
+    QueryActCtxSettingsW @1139
+    QueryActCtxSettingsWWorker @1140
+    QueryActCtxW @1141
+    QueryActCtxWWorker @1142
+    QueryDepthSList=NTDLL.RtlQueryDepthSList @1143
+    QueryDosDeviceA @1144
+    QueryDosDeviceW @1145
+    QueryFullProcessImageNameA @1146
+    QueryFullProcessImageNameW @1147
+    QueryIdleProcessorCycleTime @1148
+    QueryIdleProcessorCycleTimeEx @1149
+    QueryInformationJobObject @1150
+    QueryIoRateControlInformationJobObject @1151
+    QueryIoRingCapabilities=api-ms-win-core-ioring-l1-1-0.QueryIoRingCapabilities @1152
+    QueryMemoryResourceNotification @1153
+    QueryPerformanceCounter @1154
+    QueryPerformanceFrequency @1155
+    QueryProcessAffinityUpdateMode @1156
+    QueryProcessCycleTime @1157
+    QueryProtectedPolicy=api-ms-win-core-processthreads-l1-1-2.QueryProtectedPolicy @1158
+    QueryThreadCycleTime @1159
+    QueryThreadProfiling @1160
+    QueryThreadpoolStackInformation @1161
+    QueryUmsThreadInformation @1162
+    QueryUnbiasedInterruptTime @1163
+    QueueUserAPC @1164
+    QueueUserAPC2=api-ms-win-core-processthreads-l1-1-5.QueueUserAPC2 @1165
+    QueueUserWorkItem @1166
+    QuirkGetData2Worker @1167
+    QuirkGetDataWorker @1168
+    QuirkIsEnabled2Worker @1169
+    QuirkIsEnabled3Worker @1170
+    QuirkIsEnabledForPackage2Worker @1171
+    QuirkIsEnabledForPackage3Worker @1172
+    QuirkIsEnabledForPackage4Worker @1173
+    QuirkIsEnabledForPackageWorker @1174
+    QuirkIsEnabledForProcessWorker @1175
+    QuirkIsEnabledWorker @1176
+    RaiseException @1177
+    RaiseFailFastException=kernelbase.RaiseFailFastException @1178
+    RaiseInvalid16BitExeError @1179
+    ReOpenFile @1180
+    ReadConsoleA @1181
+    ReadConsoleInputA @1182
+    ReadConsoleInputExA=kernelbase.ReadConsoleInputExA @1183
+    ReadConsoleInputExW=kernelbase.ReadConsoleInputExW @1184
+    ReadConsoleInputW @1185
+    ReadConsoleOutputA @1186
+    ReadConsoleOutputAttribute @1187
+    ReadConsoleOutputCharacterA @1188
+    ReadConsoleOutputCharacterW @1189
+    ReadConsoleOutputW @1190
+    ReadConsoleW @1191
+    ReadDirectoryChangesExW @1192
+    ReadDirectoryChangesW @1193
+    ReadFile @1194
+    ReadFileEx @1195
+    ReadFileScatter @1196
+    ReadProcessMemory @1197
+    ReadThreadProfilingData @1198
+    ReclaimVirtualMemory=api-ms-win-core-memory-l1-1-2.ReclaimVirtualMemory @1199
+    RegCloseKey @1200
+    RegCopyTreeW @1201
+    RegCreateKeyExA @1202
+    RegCreateKeyExW @1203
+    RegDeleteKeyExA @1204
+    RegDeleteKeyExW @1205
+    RegDeleteTreeA @1206
+    RegDeleteTreeW @1207
+    RegDeleteValueA @1208
+    RegDeleteValueW @1209
+    RegDisablePredefinedCacheEx @1210
+    RegEnumKeyExA @1211
+    RegEnumKeyExW @1212
+    RegEnumValueA @1213
+    RegEnumValueW @1214
+    RegFlushKey @1215
+    RegGetKeySecurity @1216
+    RegGetValueA @1217
+    RegGetValueW @1218
+    RegLoadKeyA @1219
+    RegLoadKeyW @1220
+    RegLoadMUIStringA @1221
+    RegLoadMUIStringW @1222
+    RegNotifyChangeKeyValue @1223
+    RegOpenCurrentUser @1224
+    RegOpenKeyExA @1225
+    RegOpenKeyExW @1226
+    RegOpenUserClassesRoot @1227
+    RegQueryInfoKeyA @1228
+    RegQueryInfoKeyW @1229
+    RegQueryValueExA @1230
+    RegQueryValueExW @1231
+    RegRestoreKeyA @1232
+    RegRestoreKeyW @1233
+    RegSaveKeyExA @1234
+    RegSaveKeyExW @1235
+    RegSetKeySecurity @1236
+    RegSetValueExA @1237
+    RegSetValueExW @1238
+    RegUnLoadKeyA @1239
+    RegUnLoadKeyW @1240
+    RegisterApplicationRecoveryCallback @1241
+    RegisterApplicationRestart @1242
+    RegisterBadMemoryNotification @1243
+    RegisterConsoleIME @1244
+    RegisterConsoleOS2 @1245
+    RegisterConsoleVDM @1246
+    RegisterWaitForInputIdle @1247
+    RegisterWaitForSingleObject @1248
+    RegisterWaitForSingleObjectEx @1249
+    RegisterWaitUntilOOBECompleted @1250
+    RegisterWowBaseHandlers @1251
+    RegisterWowExec @1252
+    ReleaseActCtx @1253
+    ReleaseActCtxWorker @1254
+    ReleaseMutex @1255
+    ReleaseMutexWhenCallbackReturns=NTDLL.TpCallbackReleaseMutexOnCompletion @1256
+    ReleasePackageVirtualizationContext @1257
+    ReleasePseudoConsole @1258
+    ReleaseSRWLockExclusive=NTDLL.RtlReleaseSRWLockExclusive @1259
+    ReleaseSRWLockShared=NTDLL.RtlReleaseSRWLockShared @1260
+    ReleaseSemaphore @1261
+    ReleaseSemaphoreWhenCallbackReturns=NTDLL.TpCallbackReleaseSemaphoreOnCompletion @1262
+    RemoveDirectory2A @1263
+    RemoveDirectory2W @1264
+    RemoveDirectoryA @1265
+    RemoveDirectoryTransactedA @1266
+    RemoveDirectoryTransactedW @1267
+    RemoveDirectoryW @1268
+    RemoveDllDirectory=api-ms-win-core-libraryloader-l1-1-0.RemoveDllDirectory @1269
+    RemoveLocalAlternateComputerNameA @1270
+    RemoveLocalAlternateComputerNameW @1271
+    RemoveSecureMemoryCacheCallback @1272
+    RemoveVectoredContinueHandler=NTDLL.RtlRemoveVectoredContinueHandler @1273
+    RemoveVectoredExceptionHandler=NTDLL.RtlRemoveVectoredExceptionHandler @1274
+    ReplaceFile @1275
+    ReplaceFileA @1276
+    ReplaceFileW @1277
+    ReplacePartitionUnit @1278
+    RequestDeviceWakeup @1279
+    RequestWakeupLatency @1280
+    ResetEvent @1281
+    ResetWriteWatch @1282
+    ResizePseudoConsole @1283
+    ResolveDelayLoadedAPI=NTDLL.LdrResolveDelayLoadedAPI @1284
+    ResolveDelayLoadsFromDll=NTDLL.LdrResolveDelayLoadsFromDll @1285
+    ResolveLocaleName @1286
+    RestoreLastError=NTDLL.RtlRestoreLastWin32Error @1287
+    ResumeThread @1288
+    RtlAddFunctionTable @1289
+    RtlCaptureContext @1290
+    RtlCaptureStackBackTrace=NTDLL.RtlCaptureStackBackTrace @1291
+    RtlCompareMemory @1292
+    RtlCopyMemory @1293
+    RtlDeleteFunctionTable @1294
+    RtlFillMemory @1295
+    RtlInstallFunctionTableCallback @1296
+    RtlIsEcCode=NTDLL.RtlIsEcCode @1297
+    RtlLookupFunctionEntry @1298
+    RtlMoveMemory @1299
+    RtlPcToFileHeader @1300
+    RtlRaiseException @1301
+    RtlRestoreContext @1302
+    RtlUnwind @1303
+    RtlUnwindEx @1304
+    RtlVirtualUnwind @1305
+    RtlVirtualUnwind2 @1306
+    RtlZeroMemory=NTDLL.RtlZeroMemory @1307
+    ScrollConsoleScreenBufferA @1308
+    ScrollConsoleScreenBufferW @1309
+    SearchPathA @1310
+    SearchPathW @1311
+    SetCachedSigningLevel @1312
+    SetCalendarInfoA @1313
+    SetCalendarInfoW @1314
+    SetComPlusPackageInstallStatus @1315
+    SetCommBreak @1316
+    SetCommConfig @1317
+    SetCommMask @1318
+    SetCommState @1319
+    SetCommTimeouts @1320
+    SetComputerNameA @1321
+    SetComputerNameEx2W @1322
+    SetComputerNameExA @1323
+    SetComputerNameExW @1324
+    SetComputerNameW @1325
+    SetConsoleActiveScreenBuffer @1326
+    SetConsoleCP @1327
+    SetConsoleCtrlHandler @1328
+    SetConsoleCursor @1329
+    SetConsoleCursorInfo @1330
+    SetConsoleCursorMode @1331
+    SetConsoleCursorPosition @1332
+    SetConsoleDisplayMode @1333
+    SetConsoleFont @1334
+    SetConsoleHardwareState @1335
+    SetConsoleHistoryInfo @1336
+    SetConsoleIcon @1337
+    SetConsoleInputExeNameA=kernelbase.SetConsoleInputExeNameA @1338
+    SetConsoleInputExeNameW=kernelbase.SetConsoleInputExeNameW @1339
+    SetConsoleKeyShortcuts @1340
+    SetConsoleLocalEUDC @1341
+    SetConsoleMaximumWindowSize @1342
+    SetConsoleMenuClose @1343
+    SetConsoleMode @1344
+    SetConsoleNlsMode @1345
+    SetConsoleNumberOfCommandsA @1346
+    SetConsoleNumberOfCommandsW @1347
+    SetConsoleOS2OemFormat @1348
+    SetConsoleOutputCP @1349
+    SetConsolePalette @1350
+    SetConsoleScreenBufferInfoEx @1351
+    SetConsoleScreenBufferSize @1352
+    SetConsoleTextAttribute @1353
+    SetConsoleTitleA @1354
+    SetConsoleTitleW @1355
+    SetConsoleWindowInfo @1356
+    SetCriticalSectionSpinCount=NTDLL.RtlSetCriticalSectionSpinCount @1357
+    SetCurrentConsoleFontEx @1358
+    SetCurrentDirectoryA @1359
+    SetCurrentDirectoryW @1360
+    SetDefaultCommConfigA @1361
+    SetDefaultCommConfigW @1362
+    SetDefaultDllDirectories=api-ms-win-core-libraryloader-l1-1-0.SetDefaultDllDirectories @1363
+    SetDllDirectoryA @1364
+    SetDllDirectoryW @1365
+    SetDynamicTimeZoneInformation @1366
+    SetEndOfFile @1367
+    SetEnvironmentStringsA @1368
+    SetEnvironmentStringsW @1369
+    SetEnvironmentVariableA @1370
+    SetEnvironmentVariableW @1371
+    SetErrorMode @1372
+    SetEvent @1373
+    SetEventWhenCallbackReturns=NTDLL.TpCallbackSetEventOnCompletion @1374
+    SetFileApisToANSI @1375
+    SetFileApisToOEM @1376
+    SetFileAttributesA @1377
+    SetFileAttributesTransactedA @1378
+    SetFileAttributesTransactedW @1379
+    SetFileAttributesW @1380
+    SetFileBandwidthReservation @1381
+    SetFileCompletionNotificationModes @1382
+    SetFileInformationByHandle @1383
+    SetFileIoOverlappedRange @1384
+    SetFilePointer @1385
+    SetFilePointerEx @1386
+    SetFileShortNameA @1387
+    SetFileShortNameW @1388
+    SetFileTime @1389
+    SetFileValidData @1390
+    SetFirmwareEnvironmentVariableA @1391
+    SetFirmwareEnvironmentVariableExA @1392
+    SetFirmwareEnvironmentVariableExW @1393
+    SetFirmwareEnvironmentVariableW @1394
+    SetHandleCount @1395
+    SetHandleInformation @1396
+    SetInformationJobObject @1397
+    SetIoRateControlInformationJobObject @1398
+    SetIoRingCompletionEvent=api-ms-win-core-ioring-l1-1-0.SetIoRingCompletionEvent @1399
+    SetLastConsoleEventActive=kernelbase.SetLastConsoleEventActive @1400
+    SetLastError @1401
+    SetLocalPrimaryComputerNameA @1402
+    SetLocalPrimaryComputerNameW @1403
+    SetLocalTime @1404
+    SetLocaleInfoA @1405
+    SetLocaleInfoW @1406
+    SetMailslotInfo @1407
+    SetMessageWaitingIndicator @1408
+    SetNamedPipeAttribute @1409
+    SetNamedPipeHandleState @1410
+    SetPriorityClass @1411
+    SetProcessAffinityMask @1412
+    SetProcessAffinityUpdateMode @1413
+    SetProcessDEPPolicy @1414
+    SetProcessDefaultCpuSetMasks=api-ms-win-core-processthreads-l1-1-6.SetProcessDefaultCpuSetMasks @1415
+    SetProcessDefaultCpuSets=api-ms-win-core-processthreads-l1-1-3.SetProcessDefaultCpuSets @1416
+    SetProcessDynamicEHContinuationTargets=api-ms-win-core-processthreads-l1-1-4.SetProcessDynamicEHContinuationTargets @1417
+    SetProcessDynamicEnforcedCetCompatibleRanges=api-ms-win-core-processthreads-l1-1-6.SetProcessDynamicEnforcedCetCompatibleRanges @1418
+    SetProcessInformation @1419
+    SetProcessMitigationPolicy=api-ms-win-core-processthreads-l1-1-1.SetProcessMitigationPolicy @1420
+    SetProcessPreferredUILanguages @1421
+    SetProcessPriorityBoost @1422
+    SetProcessShutdownParameters @1423
+    SetProcessWorkingSetSize @1424
+    SetProcessWorkingSetSizeEx @1425
+    SetProtectedPolicy=api-ms-win-core-processthreads-l1-1-2.SetProtectedPolicy @1426
+    SetSearchPathMode @1427
+    SetStdHandle @1428
+    SetStdHandleEx @1429
+    SetSystemFileCacheSize @1430
+    SetSystemPowerState @1431
+    SetSystemTime @1432
+    SetSystemTimeAdjustment @1433
+    SetTapeParameters @1434
+    SetTapePosition @1435
+    SetTermsrvAppInstallMode @1436
+    SetThreadAffinityMask @1437
+    SetThreadContext @1438
+    SetThreadDescription=api-ms-win-core-processthreads-l1-1-3.SetThreadDescription @1439
+    SetThreadErrorMode @1440
+    SetThreadExecutionState @1441
+    SetThreadGroupAffinity @1442
+    SetThreadIdealProcessor @1443
+    SetThreadIdealProcessorEx @1444
+    SetThreadInformation @1445
+    SetThreadLocale @1446
+    SetThreadPreferredUILanguages @1447
+    SetThreadPriority @1448
+    SetThreadPriorityBoost @1449
+    SetThreadSelectedCpuSetMasks=api-ms-win-core-processthreads-l1-1-6.SetThreadSelectedCpuSetMasks @1450
+    SetThreadSelectedCpuSets=api-ms-win-core-processthreads-l1-1-3.SetThreadSelectedCpuSets @1451
+    SetThreadStackGuarantee @1452
+    SetThreadToken=api-ms-win-core-processthreads-l1-1-0.SetThreadToken @1453
+    SetThreadUILanguage @1454
+    SetThreadpoolStackInformation @1455
+    SetThreadpoolThreadMaximum=NTDLL.TpSetPoolMaxThreads @1456
+    SetThreadpoolThreadMinimum @1457
+    SetThreadpoolTimer=NTDLL.TpSetTimer @1458
+    SetThreadpoolTimerEx=NTDLL.TpSetTimerEx @1459
+    SetThreadpoolWait=NTDLL.TpSetWait @1460
+    SetThreadpoolWaitEx=NTDLL.TpSetWaitEx @1461
+    SetTimeZoneInformation @1462
+    SetTimerQueueTimer @1463
+    SetUmsThreadInformation @1464
+    SetUnhandledExceptionFilter @1465
+    SetUserGeoID @1466
+    SetUserGeoName @1467
+    SetVDMCurrentDirectories @1468
+    SetVolumeLabelA @1469
+    SetVolumeLabelW @1470
+    SetVolumeMountPointA @1471
+    SetVolumeMountPointW @1472
+    SetVolumeMountPointWStub @1473
+    SetWaitableTimer @1474
+    SetWaitableTimerEx=api-ms-win-core-synch-l1-1-0.SetWaitableTimerEx @1475
+    SetXStateFeaturesMask @1476
+    SetupComm @1477
+    ShowConsoleCursor @1478
+    SignalObjectAndWait @1479
+    SizeofResource @1480
+    Sleep @1481
+    SleepConditionVariableCS=api-ms-win-core-synch-l1-2-0.SleepConditionVariableCS @1482
+    SleepConditionVariableSRW=api-ms-win-core-synch-l1-2-0.SleepConditionVariableSRW @1483
+    SleepEx @1484
+    SortCloseHandle @1485
+    SortGetHandle @1486
+    StartThreadpoolIo=NTDLL.TpStartAsyncIoOperation @1487
+    SubmitIoRing=api-ms-win-core-ioring-l1-1-0.SubmitIoRing @1488
+    SubmitThreadpoolWork=NTDLL.TpPostWork @1489
+    SuspendThread @1490
+    SwitchToFiber @1491
+    SwitchToThread @1492
+    SystemTimeToFileTime @1493
+    SystemTimeToTzSpecificLocalTime @1494
+    SystemTimeToTzSpecificLocalTimeEx=api-ms-win-core-timezone-l1-1-0.SystemTimeToTzSpecificLocalTimeEx @1495
+    TerminateJobObject @1496
+    TerminateProcess @1497
+    TerminateThread @1498
+    TermsrvAppInstallMode @1499
+    TermsrvConvertSysRootToUserDir @1500
+    TermsrvCreateRegEntry @1501
+    TermsrvDeleteKey @1502
+    TermsrvDeleteValue @1503
+    TermsrvGetPreSetValue @1504
+    TermsrvGetWindowsDirectoryA @1505
+    TermsrvGetWindowsDirectoryW @1506
+    TermsrvOpenRegEntry @1507
+    TermsrvOpenUserClasses @1508
+    TermsrvRestoreKey @1509
+    TermsrvSetKeySecurity @1510
+    TermsrvSetValueKey @1511
+    TermsrvSyncUserIniFileExt @1512
+    Thread32First @1513
+    Thread32Next @1514
+    TlsAlloc @1515
+    TlsFree @1516
+    TlsGetValue @1517
+    TlsGetValue2=kernelbase.TlsGetValue2 @1518
+    TlsSetValue @1519
+    Toolhelp32ReadProcessMemory @1520
+    TransactNamedPipe @1521
+    TransmitCommChar @1522
+    TryAcquireSRWLockExclusive=NTDLL.RtlTryAcquireSRWLockExclusive @1523
+    TryAcquireSRWLockShared=NTDLL.RtlTryAcquireSRWLockShared @1524
+    TryEnterCriticalSection=NTDLL.RtlTryEnterCriticalSection @1525
+    TrySubmitThreadpoolCallback @1526
+    TzSpecificLocalTimeToSystemTime @1527
+    TzSpecificLocalTimeToSystemTimeEx=api-ms-win-core-timezone-l1-1-0.TzSpecificLocalTimeToSystemTimeEx @1528
+    UTRegister @1529
+    UTUnRegister @1530
+    UmsThreadYield @1531
+    UnhandledExceptionFilter @1532
+    UnlockFile @1533
+    UnlockFileEx @1534
+    UnmapViewOfFile @1535
+    UnmapViewOfFileEx=api-ms-win-core-memory-l1-1-1.UnmapViewOfFileEx @1536
+    UnregisterApplicationRecoveryCallback @1537
+    UnregisterApplicationRestart @1538
+    UnregisterBadMemoryNotification @1539
+    UnregisterConsoleIME @1540
+    UnregisterWait @1541
+    UnregisterWaitEx @1542
+    UnregisterWaitUntilOOBECompleted @1543
+    UpdateCalendarDayOfWeek @1544
+    UpdateProcThreadAttribute=api-ms-win-core-processthreads-l1-1-0.UpdateProcThreadAttribute @1545
+    UpdateResourceA @1546
+    UpdateResourceW @1547
+    VDMConsoleOperation @1548
+    VDMOperationStarted @1549
+    VerLanguageNameA @1550
+    VerLanguageNameW @1551
+    VerSetConditionMask=NTDLL.VerSetConditionMask @1552
+    VerifyConsoleIoHandle @1553
+    VerifyScripts @1554
+    VerifyVersionInfoA @1555
+    VerifyVersionInfoW @1556
+    VirtualAlloc @1557
+    VirtualAllocEx @1558
+    VirtualAllocExNuma @1559
+    VirtualFree @1560
+    VirtualFreeEx @1561
+    VirtualLock @1562
+    VirtualProtect @1563
+    VirtualProtectEx @1564
+    VirtualQuery @1565
+    VirtualQueryEx @1566
+    VirtualUnlock @1567
+    WTSGetActiveConsoleSessionId @1568
+    WaitCommEvent @1569
+    WaitForDebugEvent @1570
+    WaitForDebugEventEx=api-ms-win-core-debug-l1-1-2.WaitForDebugEventEx @1571
+    WaitForMultipleObjects @1572
+    WaitForMultipleObjectsEx @1573
+    WaitForSingleObject @1574
+    WaitForSingleObjectEx @1575
+    WaitForThreadpoolIoCallbacks=NTDLL.TpWaitForIoCompletion @1576
+    WaitForThreadpoolTimerCallbacks=NTDLL.TpWaitForTimer @1577
+    WaitForThreadpoolWaitCallbacks=NTDLL.TpWaitForWait @1578
+    WaitForThreadpoolWorkCallbacks=NTDLL.TpWaitForWork @1579
+    WaitNamedPipeA @1580
+    WaitNamedPipeW @1581
+    WakeAllConditionVariable=NTDLL.RtlWakeAllConditionVariable @1582
+    WakeConditionVariable=NTDLL.RtlWakeConditionVariable @1583
+    WerGetFlags @1584
+    WerGetFlagsWorker @1585
+    WerRegisterAdditionalProcess @1586
+    WerRegisterAppLocalDump @1587
+    WerRegisterCustomMetadata @1588
+    WerRegisterExcludedMemoryBlock @1589
+    WerRegisterFile @1590
+    WerRegisterFileWorker @1591
+    WerRegisterMemoryBlock @1592
+    WerRegisterMemoryBlockWorker @1593
+    WerRegisterRuntimeExceptionModule @1594
+    WerRegisterRuntimeExceptionModuleWorker @1595
+    WerSetFlags @1596
+    WerSetFlagsWorker @1597
+    WerUnregisterAdditionalProcess @1598
+    WerUnregisterAppLocalDump @1599
+    WerUnregisterCustomMetadata @1600
+    WerUnregisterExcludedMemoryBlock @1601
+    WerUnregisterFile @1602
+    WerUnregisterFileWorker @1603
+    WerUnregisterMemoryBlock @1604
+    WerUnregisterMemoryBlockWorker @1605
+    WerUnregisterRuntimeExceptionModule @1606
+    WerUnregisterRuntimeExceptionModuleWorker @1607
+    WerpGetDebugger @1608
+    WerpInitiateRemoteRecovery @1609
+    WerpLaunchAeDebug @1610
+    WerpNotifyLoadStringResourceWorker @1611
+    WerpNotifyUseStringResourceWorker @1612
+    WideCharToMultiByte @1613
+    WinExec @1614
+    Wow64DisableWow64FsRedirection @1615
+    Wow64EnableWow64FsRedirection @1616
+    Wow64GetThreadContext @1617
+    Wow64GetThreadSelectorEntry @1618
+    Wow64RevertWow64FsRedirection @1619
+    Wow64SetThreadContext @1620
+    Wow64SuspendThread @1621
+    WriteConsoleA @1622
+    WriteConsoleInputA @1623
+    WriteConsoleInputVDMA @1624
+    WriteConsoleInputVDMW @1625
+    WriteConsoleInputW @1626
+    WriteConsoleOutputA @1627
+    WriteConsoleOutputAttribute @1628
+    WriteConsoleOutputCharacterA @1629
+    WriteConsoleOutputCharacterW @1630
+    WriteConsoleOutputW @1631
+    WriteConsoleW @1632
+    WriteFile @1633
+    WriteFileEx @1634
+    WriteFileGather @1635
+    WritePrivateProfileSectionA @1636
+    WritePrivateProfileSectionW @1637
+    WritePrivateProfileStringA @1638
+    WritePrivateProfileStringW @1639
+    WritePrivateProfileStructA @1640
+    WritePrivateProfileStructW @1641
+    WriteProcessMemory @1642
+    WriteProfileSectionA @1643
+    WriteProfileSectionW @1644
+    WriteProfileStringA @1645
+    WriteProfileStringW @1646
+    WriteTapemark @1647
+    ZombifyActCtx @1648
+    ZombifyActCtxWorker @1649
+    __C_specific_handler=NTDLL.__C_specific_handler @1650
+    __chkstk=NTDLL.__chkstk @1651
+    __misaligned_access=NTDLL.__misaligned_access @1652
+    _hread @1653
+    _hwrite @1654
+    _lclose @1655
+    _lcreat @1656
+    _llseek @1657
+    _local_unwind=NTDLL._local_unwind @1658
+    _lopen @1659
+    _lread @1660
+    _lwrite @1661
+    lstrcat @1662
+    lstrcatA @1663
+    lstrcatW @1664
+    lstrcmp @1665
+    lstrcmpA @1666
+    lstrcmpW @1667
+    lstrcmpi @1668
+    lstrcmpiA @1669
+    lstrcmpiW @1670
+    lstrcpy @1671
+    lstrcpyA @1672
+    lstrcpyW @1673
+    lstrcpyn @1674
+    lstrcpynA @1675
+    lstrcpynW @1676
+    lstrlen @1677
+    lstrlenA @1678
+    lstrlenW @1679
+    timeBeginPeriod @1680
+    timeEndPeriod @1681
+    timeGetDevCaps @1682
+    timeGetSystemTime @1683
+    timeGetTime @1684
+    uaw_lstrcmpW @1685
+    uaw_lstrcmpiW @1686
+    uaw_lstrlenW @1687
+    uaw_wcschr @1688
+    uaw_wcscpy @1689
+    uaw_wcsicmp @1690
+    uaw_wcslen @1691
+    uaw_wcsrchr @1692

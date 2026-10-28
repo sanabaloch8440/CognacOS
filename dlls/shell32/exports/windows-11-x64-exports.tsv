@@ -1,0 +1,843 @@
+# WinExports reference export records: ordinal<TAB>name<TAB>forwarder
+2	SHChangeNotifyRegister	
+3	SHDefExtractIconA	
+4	SHChangeNotifyDeregister	
+5		SHUNIMPL.#35
+6	SHDefExtractIconW	
+7		SHUNIMPL.#192
+8		SHUNIMPL.#193
+9	PifMgr_OpenProperties	
+10	PifMgr_GetProperties	
+11	PifMgr_SetProperties	
+12		
+13	PifMgr_CloseProperties	
+14	SHStartNetConnectionDialogW	
+15		
+16	ILFindLastID	
+17	ILRemoveLastID	
+18	ILClone	
+19	ILCloneFirst	
+20		
+21	ILIsEqual	
+22	DAD_DragEnterEx2	
+23	ILIsParent	
+24	ILFindChild	
+25	ILCombine	
+26		SHUNIMPL.#36
+27	ILSaveToStream	
+28	SHILCreateFromPath	
+29		
+30		shlwapi.PathBuildRootW
+31		shlwapi.PathFindExtensionW
+32		shlwapi.PathAddBackslashW
+33		shlwapi.PathRemoveBlanksW
+34		shlwapi.PathFindFileNameW
+35		
+36		
+37		shlwapi.PathCombineW
+38		shlwapi.PathStripPathW
+39		shlwapi.PathIsUNCW
+40		shlwapi.PathIsRelativeW
+41	IsLFNDriveA	
+42	IsLFNDriveW	
+43	PathIsExe	
+44		
+45		
+46		shlwapi.PathMatchSpecW
+47	PathMakeUniqueName	
+48		shlwapi.PathSetDlgItemPathW
+49	PathQualify	
+50		shlwapi.PathStripToRootW
+51	PathResolve	
+52		shlwapi.PathGetArgsW
+53		SHUNIMPL.#388
+54		
+55		shlwapi.PathQuoteSpacesW
+56		shlwapi.PathUnquoteSpacesW
+57		shlwapi.PathGetDriveNumberW
+58		
+59	RestartDialog	
+60		
+61		
+62	PickIconDlg	
+63	GetFileNameFromBrowse	
+64	DriveType	
+65		
+66	IsNetDrive	
+67	Shell_MergeMenus	
+68	SHGetSetSettings	
+69		
+70		
+71	Shell_GetImageLists	
+72	Shell_GetCachedImageIndex	
+73	SHShellFolderView_Message	
+74	SHCreateStdEnumFmtEtc	
+75	PathYetAnotherMakeUniqueName	
+76		
+77	SHMapPIDLToSystemImageListIndex	
+78		SHUNIMPL.#37
+79		SHUNIMPL.#38
+80	SHOpenPropSheetW	
+81	OpenAs_RunDLL	
+82		SHUNIMPL.#39
+83	CIDLData_CreateFromIDArray	
+84		SHUNIMPL.#40
+85	OpenRegStream	
+86		SHUNIMPL.#41
+87		SHUNIMPL.#42
+88	SHDoDragDrop	
+89	SHCloneSpecialIDList	
+90	SHFindFiles	
+91		
+92	PathGetShortPath	
+93		shcore.Win32CreateDirectory
+94		
+95		
+96		SHUNIMPL.#43
+97		
+98	SHGetRealIDL	
+99		
+100	SHRestricted	
+101		SHUNIMPL.#1
+102	SHCoCreateInstance	api-ms-win-shell-shellcom-l1-1-0.SHCoCreateInstance
+103	SignalFileOpen	
+104		SHUNIMPL.#2
+105		SHUNIMPL.#3
+106		SHUNIMPL.#4
+107		SHUNIMPL.#5
+108		SHUNIMPL.#6
+109		SHUNIMPL.#7
+110		SHUNIMPL.#8
+111		SHUNIMPL.#9
+112		SHUNIMPL.#10
+113		SHUNIMPL.#11
+114		SHUNIMPL.#12
+115		SHUNIMPL.#13
+116		SHUNIMPL.#14
+117		SHUNIMPL.#15
+118		SHUNIMPL.#16
+119	IsLFNDrive	
+120		SHUNIMPL.#17
+121		SHUNIMPL.#44
+122		SHUNIMPL.#45
+123		SHUNIMPL.#46
+124		SHUNIMPL.#18
+125	OpenAs_RunDLLA	
+126		SHUNIMPL.#47
+127		SHUNIMPL.#371
+128		
+129	DAD_AutoScroll	
+130		SHUNIMPL.#48
+131	DAD_DragEnterEx	
+132	DAD_DragLeave	
+133	OpenAs_RunDLLW	
+134	DAD_DragMove	
+135	PrepareDiscForBurnRunDllW	
+136	DAD_SetDragImage	
+137	DAD_ShowDragImage	
+138	PrintersGetCommand_RunDLL	
+139	PrintersGetCommand_RunDLLA	
+140		SHUNIMPL.#19
+141		SHUNIMPL.#20
+142		SHUNIMPL.#21
+143		SHUNIMPL.#22
+144		SHUNIMPL.#23
+145		shlwapi.PathFindOnPathW
+146		SHUNIMPL.#49
+147	SHCLSIDFromString	
+148		SHUNIMPL.#50
+149	SHFind_InitMenuPopup	
+150	PrintersGetCommand_RunDLLW	
+151		SHUNIMPL.#51
+152	ILGetSize	
+153	ILGetNext	
+154	ILAppendID	
+155	ILFree	
+156		
+157	ILCreateFromPath	
+158		SHUNIMPL.#389
+159		shlwapi.PathIsDirectoryW
+160		
+161		SHUNIMPL.#214
+162	SHSimpleIDListFromPath	
+163		SHUNIMPL.#52
+164	Win32DeleteFile	
+165	SHCreateDirectory	
+166		SHUNIMPL.#53
+167	SHAddFromPropSheetExtArray	
+168	SHCreatePropSheetExtArray	
+169	SHDestroyPropSheetExtArray	
+170	SHReplaceFromPropSheetExtArray	
+171	PathCleanupSpec	
+172		
+173	SHValidateUNC	
+174	SHCreateShellFolderViewEx	
+175		
+176	SHSetInstanceExplorer	
+177		SHUNIMPL.#54
+178	SHObjectProperties	
+179	SHGetNewLinkInfoA	
+180	SHGetNewLinkInfoW	
+181		
+182	ShellMessageBoxW	shlwapi.ShellMessageBoxW
+183	ShellMessageBoxA	shlwapi.ShellMessageBoxA
+184		
+185		SHUNIMPL.#390
+186		
+187		SHUNIMPL.#235
+188		
+189	ILCreateFromPathA	
+190	ILCreateFromPathW	
+191	SHUpdateImageA	
+192	SHUpdateImageW	
+193	SHHandleUpdateImage	
+194		
+195	SHFree	
+196	SHAlloc	
+197		SHUNIMPL.#55
+198		SHUNIMPL.#56
+199	RealShellExecuteA	
+200		
+201		
+202		SHUNIMPL.#57
+203		
+204		
+205		
+206		
+207	RealShellExecuteExA	
+208	RealShellExecuteExW	
+209		
+210		
+211		
+212		
+213		
+214		
+215		
+216		SHUNIMPL.#24
+217		SHUNIMPL.#25
+218		SHUNIMPL.#26
+219		SHUNIMPL.#27
+220		SHUNIMPL.#28
+221		SHUNIMPL.#29
+222		SHUNIMPL.#30
+223		SHUNIMPL.#31
+224		SHUNIMPL.#32
+225		SHUNIMPL.#33
+226	RealShellExecuteW	
+227		SHUNIMPL.#34
+228	SHHelpShortcuts_RunDLL	
+229	SHHelpShortcuts_RunDLLA	
+230		SHUNIMPL.#372
+231	SHSetFolderPathA	
+232	SHSetFolderPathW	
+233		SHUNIMPL.#58
+234		SHUNIMPL.#59
+235		SHUNIMPL.#212
+236		
+237		
+238	SHHelpShortcuts_RunDLLW	
+239	PathIsSlowW	
+240	PathIsSlowA	
+241		
+242		SHUNIMPL.#373
+243		SHUNIMPL.#374
+244		
+245	SHTestTokenMembership	
+246		SHUNIMPL.#375
+247		SHUNIMPL.#376
+248		SHUNIMPL.#377
+249		shlwapi.PathParseIconLocationW
+250		shlwapi.PathRemoveExtensionW
+251		shlwapi.PathRemoveArgsW
+252		api-ms-win-core-url-l1-1-0.PathIsURLW
+253		SHUNIMPL.#378
+254		
+255	AppCompat_RunDLLW	
+256	SHCreateShellFolderView	
+257		
+258		
+259		
+260		
+261		
+262		
+263	AssocCreateForClasses	
+264		
+265		
+266		
+267	AssocElemCreateForKey	
+268	AssocGetDetailsOfPropKey	
+269	CallFileCopyHook	
+270		
+271		
+272	CheckEscapesW	
+273	CommandLineToArgvW	
+274	Control_RunDLL	
+275	Control_RunDLLA	
+276	Control_RunDLLAsUserW	
+277	Control_RunDLLW	
+278	DllCanUnloadNow	
+279	DllGetActivationFactory	
+280	DllGetClassObject	
+281	DllGetVersion	
+282	DllInstall	
+283	DllRegisterServer	
+284	DllUnregisterServer	
+285	DoEnvironmentSubstA	
+286	DoEnvironmentSubstW	
+287	DragAcceptFiles	
+288	DragFinish	
+289	DragQueryFile	
+290	DragQueryFileA	
+291	DragQueryFileAorW	
+292	DragQueryFileW	
+293	DragQueryPoint	
+294	DuplicateIcon	
+295	ExtractAssociatedIconA	
+296	ExtractAssociatedIconExA	
+297	ExtractAssociatedIconExW	
+298	ExtractAssociatedIconW	
+299	ExtractIconA	
+300	ExtractIconEx	
+301	ExtractIconExA	
+302	ExtractIconExW	
+303	ExtractIconW	
+304	FindExecutableA	
+305	FindExecutableW	
+306	FreeIconList	
+307	GetCurrentProcessExplicitAppUserModelID	
+308	InitNetworkAddressControl	
+309	InternalExtractIconListA	
+310	InternalExtractIconListW	
+311	LaunchMSHelp_RunDLLW	
+312	Options_RunDLL	
+313	Options_RunDLLA	
+314	Options_RunDLLW	
+315	RegenerateUserEnvironment	
+316	RunAsNewUser_RunDLLW	
+317	SHAddDefaultPropertiesByExt	
+318	SHAddToRecentDocs	
+319	SHAppBarMessage	
+320	SHAssocEnumHandlers	
+321	SHAssocEnumHandlersForProtocolByApplication	
+322	SHBindToFolderIDListParent	
+323	SHBindToFolderIDListParentEx	
+324	SHBindToObject	
+325	SHBindToParent	
+326	SHBrowseForFolder	
+327	SHBrowseForFolderA	
+328	SHBrowseForFolderW	
+329	SHChangeNotify	
+330	SHChangeNotifyRegisterThread	
+331	SHChangeNotifySuspendResume	
+332	SHCoCreateInstanceWorker	ext-ms-win-shell32-shellcom-l1-1-0.SHCoCreateInstanceWorker
+333	SHCreateAssociationRegistration	
+334	SHCreateCategoryEnum	
+335	SHCreateDataObject	
+336	SHCreateDefaultContextMenu	
+337	SHCreateDefaultExtractIcon	
+338	SHCreateDefaultPropertiesOp	
+339	SHCreateDirectoryExA	
+340	SHCreateDirectoryExW	
+341	SHCreateDrvExtIcon	
+342	SHCreateItemFromIDList	
+343	SHCreateItemFromParsingName	
+344	SHCreateItemFromRelativeName	
+345	SHCreateItemInKnownFolder	
+346	SHCreateItemWithParent	
+347	SHCreateLocalServerRunDll	
+348	SHCreateProcessAsUserW	
+349	SHCreateQueryCancelAutoPlayMoniker	
+350	SHCreateShellItem	
+351	SHCreateShellItemArray	
+352	SHCreateShellItemArrayFromDataObject	
+353	SHCreateShellItemArrayFromIDLists	
+354	SHCreateShellItemArrayFromShellItem	
+355	SHELL32_AddToBackIconTable	
+356	SHELL32_AddToFrontIconTable	
+357	SHELL32_AreAllItemsAvailable	
+358	SHELL32_CCommonPlacesFolder_CreateInstance	
+359	SHELL32_CDBurn_CloseSession	
+360	SHELL32_CDBurn_DriveSupportedForDataBurn	
+361	SHELL32_CDBurn_Erase	
+362	SHELL32_CDBurn_GetCDInfo	
+363	SHELL32_CDBurn_GetLiveFSDiscInfo	
+364	SHELL32_CDBurn_GetStagingPathOrNormalPath	
+365	SHELL32_CDBurn_GetTaskInfo	
+366	SHELL32_CDBurn_IsBlankDisc	
+367	SHELL32_CDBurn_IsBlankDisc2	
+368	SHELL32_CDBurn_IsLiveFS	
+369	SHELL32_CDBurn_OnDeviceChange	
+370	SHELL32_CDBurn_OnEject	
+371	SHELL32_CDBurn_OnMediaChange	
+372	SHELL32_CDefFolderMenu_Create2	
+373	SHELL32_CDefFolderMenu_Create2Ex	
+374	SHELL32_CDefFolderMenu_MergeMenu	
+375	SHELL32_CDrivesContextMenu_Create	
+376	SHELL32_CDrivesDropTarget_Create	
+377	SHELL32_CDrives_CreateSFVCB	
+378	SHELL32_CFSDropTarget_CreateInstance	
+379	SHELL32_CFSFolderCallback_Create	
+380	SHELL32_CFillPropertiesTask_CreateInstance	
+381	SHELL32_CLibraryDropTarget_CreateInstance	
+382	SHELL32_CLocationContextMenu_Create	
+383	SHELL32_CLocationFolderUI_CreateInstance	
+384	SHELL32_CMountPoint_DoAutorun	
+385	SHELL32_CMountPoint_DoAutorunPrompt	
+386	SHELL32_CMountPoint_IsAutoRunDriveAndEnabledByPolicy	
+387	SHELL32_CMountPoint_ProcessAutoRunFile	
+388	SHELL32_CMountPoint_WantAutorunUI	
+389	SHELL32_CMountPoint_WantAutorunUIGetReady	
+390	SHELL32_CNetFolderUI_CreateInstance	
+391	SHELL32_CPL_CategoryIdArrayFromVariant	
+392	SHELL32_CPL_IsLegacyCanonicalNameListedUnderKey	
+393	SHELL32_CPL_ModifyWowDisplayName	
+394	SHELL32_CRecentDocsContextMenu_CreateInstance	
+395	SHELL32_CTransferConfirmation_CreateInstance	
+396	SHELL32_CallFileCopyHooks	
+397	SHELL32_CanDisplayWin8CopyDialog	
+398	SHELL32_CloseAutoplayPrompt	
+399	SHELL32_CommandLineFromMsiDescriptor	
+400	SHELL32_CopySecondaryTiles	
+401	SHELL32_CreateConfirmationInterrupt	
+402	SHELL32_CreateConflictInterrupt	
+403	SHELL32_CreateDefaultOperationDataProvider	
+404	SHELL32_CreateFileFolderContextMenu	
+405	SHELL32_CreateLinkInfoW	
+406	SHELL32_CreateQosRecorder	
+407	SHELL32_CreateSharePointView	
+408	SHELL32_Create_IEnumUICommand	
+409	SHELL32_DestroyLinkInfo	
+410	SHELL32_EncryptDirectory	
+411	SHELL32_EncryptedFileKeyInfo	
+412	SHELL32_EnumCommonTasks	
+413	SHELL32_FreeEncryptedFileKeyInfo	
+414	SHELL32_GenerateAppID	
+415	SHELL32_GetAppIDRoot	
+416	SHELL32_GetCommandProviderForFolderType	
+417	SHELL32_GetDPIAdjustedLogicalSize	
+418	SHELL32_GetDiskCleanupPath	
+419	SHELL32_GetFileNameFromBrowse	
+420	SHELL32_GetIconOverlayManager	
+421	SHELL32_GetLinkInfoData	
+422	SHELL32_GetRatingBucket	
+423	SHELL32_GetSqmableFileName	
+424	SHELL32_GetThumbnailAdornerFromFactory	
+425	SHELL32_GetThumbnailAdornerFromFactory2	
+426	SHELL32_HandleUnrecognizedFileSystem	
+427	SHELL32_IconCacheCreate	
+428	SHELL32_IconCacheDestroy	
+429	SHELL32_IconCacheHandleAssociationChanged	
+430	SHELL32_IconCacheRestore	
+431	SHELL32_IconCache_AboutToExtractIcons	
+432	SHELL32_IconCache_DoneExtractingIcons	
+433	SHELL32_IconCache_ExpandEnvAndSearchPath	
+434	SHELL32_IconCache_RememberRecentlyExtractedIconsW	
+435	SHELL32_IconOverlayManagerInit	
+436	SHELL32_IsGetKeyboardLayoutPresent	
+437	SHELL32_IsSystemUpgradeInProgress	
+438	SHELL32_IsValidLinkInfo	
+439	SHELL32_LegacyEnumSpecialTasksByType	
+440	SHELL32_LegacyEnumTasks	
+441	SHELL32_LookupBackIconIndex	
+442	SHELL32_LookupFrontIconIndex	
+443	SHELL32_NormalizeRating	
+444	SHELL32_NotifyLinkTrackingServiceOfMove	
+445	SHELL32_PifMgr_CloseProperties	
+446	SHELL32_PifMgr_GetProperties	
+447	SHELL32_PifMgr_OpenProperties	
+448	SHELL32_PifMgr_SetProperties	
+449	SHELL32_Printers_CreateBindInfo	
+450	SHELL32_Printjob_GetPidl	
+451	SHELL32_PurgeSystemIcon	
+452	SHELL32_RefreshOverlayImages	
+453	SHELL32_ResolveLinkInfoW	
+454	SHELL32_SHAddSparseIcon	
+455	SHELL32_SHCreateByValueOperationInterrupt	
+456	SHELL32_SHCreateDefaultContextMenu	
+457	SHELL32_SHCreateLocalServer	
+458	SHELL32_SHCreateShellFolderView	
+459	SHELL32_SHDuplicateEncryptionInfoFile	
+460	SHELL32_SHEncryptFile	
+461	SHELL32_SHFormatDriveAsync	
+462	SHELL32_SHGetThreadUndoManager	
+463	SHELL32_SHGetUserNameW	
+464	SHELL32_SHIsVirtualDevice	
+465	SHELL32_SHLaunchPropSheet	
+466	SHELL32_SHLogILFromFSIL	
+467	SHELL32_SHOpenWithDialog	
+468	SHELL32_SHStartNetConnectionDialogW	
+469	SHELL32_SHUICommandFromGUID	
+470	SHELL32_SendToMenu_InvokeTargetedCommand	
+471	SHELL32_SendToMenu_VerifyTargetedCommand	
+472	SHELL32_ShowHideIconOnlyOnDesktop	
+473	SHELL32_SimpleRatingToFilterCondition	
+474	SHELL32_StampIconForFile	
+475	SHELL32_SuspendUndo	
+476	SHELL32_TryVirtualDiscImageDriveEject	
+477	SHELL32_VerifySaferTrust	
+478	SHEmptyRecycleBinA	
+479	SHEmptyRecycleBinW	
+480	SHEnableServiceObject	
+481	SHEnumerateUnreadMailAccountsW	
+482	SHEvaluateSystemCommandTemplate	
+483	SHExecuteErrorMessageBox	
+484	SHExtractIconsW	
+485	SHFileOperation	
+486	SHFileOperationA	
+487	SHFileOperationW	
+488	SHFormatDrive	
+489	SHFreeNameMappings	
+490	SHGetDataFromIDListA	
+491	SHGetDataFromIDListW	
+492	SHGetDesktopFolder	
+493	SHGetDiskFreeSpaceA	
+494	SHGetDiskFreeSpaceExA	
+495	SHGetDiskFreeSpaceExW	
+496	SHGetDriveMedia	
+497	SHGetFileInfo	
+498	SHGetFileInfoA	
+499	SHGetFileInfoW	
+500	SHGetFolderLocation	
+501	SHGetFolderPathA	
+502	SHGetFolderPathAndSubDirA	
+503	SHGetFolderPathAndSubDirW	
+504	SHGetFolderPathEx	
+505	SHGetFolderPathW	
+506	SHGetIDListFromObject	
+507	SHGetIconOverlayIndexA	
+508	SHGetIconOverlayIndexW	
+509	SHGetInstanceExplorer	
+510	SHGetItemFromDataObject	
+511	SHGetItemFromObject	
+512	SHGetKnownFolderIDList	
+513	SHGetKnownFolderItem	
+514	SHGetKnownFolderPath	
+515	SHGetLocalizedName	
+516	SHGetMalloc	
+517	SHGetNameFromIDList	
+518	SHGetNewLinkInfo	
+519	SHGetPathFromIDList	
+520		SHUNIMPL.#60
+521		SHUNIMPL.#61
+522		SHUNIMPL.#62
+523		SHUNIMPL.#63
+524	RealDriveType	
+525		SHUNIMPL.#234
+526	SHFlushSFCache	
+527	SHGetPathFromIDListA	
+528	SHGetPathFromIDListEx	
+529	SHGetPathFromIDListW	
+530	SHGetPropertyStoreForWindow	
+531	SHGetPropertyStoreFromIDList	
+532	SHGetPropertyStoreFromParsingName	
+533	SHGetSettings	
+534	SHGetSpecialFolderLocation	
+535	SHGetSpecialFolderPathA	
+536	SHGetSpecialFolderPathW	
+537	SHGetStockIconInfo	
+538	SHGetTemporaryPropertyForItem	
+539	SHGetUnreadMailCountW	
+540	SHInvokePrinterCommandA	
+541	SHInvokePrinterCommandW	
+542	SHIsFileAvailableOffline	
+543	SHLoadInProc	
+544	SHLoadNonloadedIconOverlayIdentifiers	
+545	SHOpenFolderAndSelectItems	
+546	SHOpenOrGetFolderView	
+547	SHOpenWithDialog	
+548	SHParseDisplayName	
+549	SHPathPrepareForWriteA	
+550	SHPathPrepareForWriteW	
+551	SHQueryRecycleBinA	
+552	SHQueryRecycleBinW	
+553	SHQueryUserNotificationState	
+554	SHRemoveLocalizedName	
+555	SHResolveLibrary	
+556	SHSetDefaultProperties	
+557	SHSetKnownFolderPath	
+558	SHSetLocalizedName	
+559	SHSetTemporaryPropertyForItem	
+560	SHSetUnreadMailCountW	
+561	SHShowManageLibraryUI	
+562	SHUpdateRecycleBinIcon	
+563	SetCurrentProcessExplicitAppUserModelID	
+564	SheChangeDirA	
+565	SheChangeDirExW	
+566	SheGetDirA	
+567	SheSetCurDrive	
+568	ShellAboutA	
+569	ShellAboutW	
+570	ShellExec_RunDLL	
+571	ShellExec_RunDLLA	
+572	ShellExec_RunDLLW	
+573	ShellExecuteA	
+574	ShellExecuteEx	
+575	ShellExecuteExA	
+576	ShellExecuteExW	
+577	ShellExecuteW	
+578	ShellHookProc	
+579	Shell_GetCachedImageIndexA	
+580	Shell_GetCachedImageIndexW	
+581	Shell_NotifyIcon	
+582	Shell_NotifyIconA	
+583	Shell_NotifyIconGetRect	
+584	Shell_NotifyIconW	
+585	StateRepoNewMenuCache_EnsureCacheAsync	
+586	StateRepoNewMenuCache_RebuildCacheAsync	
+587	StrChrA	
+588	StrChrIA	
+589	StrChrIW	
+590	StrChrW	
+591	StrCmpNA	
+592	StrCmpNIA	
+593	StrCmpNIW	
+594	StrCmpNW	
+595	StrNCmpA	
+596	StrNCmpIA	
+597	StrNCmpIW	
+598	StrNCmpW	
+599	StrRChrA	
+600	StrRChrIA	
+601	StrRChrIW	
+602	StrRChrW	
+603	StrRStrA	
+604	StrRStrIA	
+605	StrRStrIW	
+606	StrRStrW	
+607	StrStrA	
+608	StrStrIA	
+609	StrStrIW	
+610	StrStrW	
+611	UsersLibrariesFolderUI_CreateInstance	
+612	WOWShellExecute	
+613	WaitForExplorerRestartW	
+640		SHUNIMPL.#64
+641		SHUNIMPL.#65
+643		SHUNIMPL.#66
+644	SHChangeNotification_Lock	
+645	SHChangeNotification_Unlock	
+646		SHUNIMPL.#67
+648		SHUNIMPL.#379
+650		shlwapi.PathIsSameRootW
+651		
+652	WriteCabinetState	
+653		SHUNIMPL.#68
+654	ReadCabinetState	
+660		
+680	IsUserAnAdmin	
+681		SHUNIMPL.#428
+682	StgMakeUniqueName	
+683		
+684		
+685	SHPropStgCreate	
+688	SHPropStgReadMultiple	
+689	SHPropStgWriteMultiple	
+690		
+691		SHUNIMPL.#216
+700		SHUNIMPL.#380
+701	CDefFolderMenu_Create2	
+702		
+703		SHLWAPI.#269
+704		SHLWAPI.#270
+707		SHUNIMPL.#69
+708		SHUNIMPL.#70
+709	SHGetSetFolderCustomSettings	
+711		
+712		SHUNIMPL.#71
+713		
+714		
+715		SHUNIMPL.#191
+716	SHMultiFileProperties	
+719		SHUNIMPL.#478
+720		SHUNIMPL.#72
+721		SHUNIMPL.#73
+722		SHUNIMPL.#236
+723		
+724		SHUNIMPL.#381
+725		SHUNIMPL.#74
+726		SHUNIMPL.#75
+727	SHGetImageList	
+730	RestartDialogEx	
+731		SHUNIMPL.#479
+732		SHUNIMPL.#480
+733		
+740		
+743	SHCreateFileExtractIconW	
+744		
+745		SHUNIMPL.#382
+747	SHLimitInputEdit	
+748		
+749		SHUNIMPL.#76
+750	SHGetAttributesFromDataObject	
+751		
+752		
+753		
+754		
+755		
+756		SHUNIMPL.#77
+757		
+758		
+759		
+760		
+761		
+762		SHUNIMPL.#383
+763		
+764		
+765		
+766		SHUNIMPL.#385
+767		
+777		
+778		
+779		
+781		
+782		
+786		SHUNIMPL.#237
+787		
+788		
+789		
+790		
+791		
+792		
+810		
+811		
+812		
+813		
+814		
+815		
+816		
+817		
+818		
+819		
+820		SHUNIMPL.#249
+821		SHUNIMPL.#250
+822		SHUNIMPL.#251
+823		
+824		
+825		
+826		SHUNIMPL.#252
+827		SHUNIMPL.#253
+828		
+829		
+830		
+831		
+832		SHUNIMPL.#387
+833		
+834		SHUNIMPL.#254
+835		SHUNIMPL.#255
+836		SHUNIMPL.#256
+837		SHUNIMPL.#257
+838		SHUNIMPL.#258
+839		SHUNIMPL.#259
+840		
+841		SHUNIMPL.#424
+842		SHUNIMPL.#425
+843		SHUNIMPL.#386
+844		
+845		
+846	ILLoadFromStreamEx	
+847		
+848		
+849		
+850		
+851		
+852		SHUNIMPL.#391
+853		
+854		SHUNIMPL.#260
+856		SHUNIMPL.#423
+857		SHUNIMPL.#426
+858		SHUNIMPL.#392
+859		
+860		
+861		SHUNIMPL.#261
+862		
+863		SHUNIMPL.#262
+864		
+865		
+866		
+867		SHUNIMPL.#263
+868		SHUNIMPL.#264
+869		SHUNIMPL.#384
+870		
+871		
+872		SHUNIMPL.#265
+873		
+874		
+875		
+876		
+877		
+878		
+880		
+881		
+882		
+883		
+884		
+885		
+886		
+887		
+888		
+889		SHUNIMPL.#474
+890		SHUNIMPL.#475
+891		
+892		SHUNIMPL.#476
+893		
+894		
+895		
+896		
+897		
+898		
+899		
+900		
+901		
+902		SHUNIMPL.#473
+903		
+904		
+905		
+906		
+907		
+909		SHUNIMPL.#477
+910		
+911		
+912		
+913		
+914		
+915		
+916		
+919	GetSystemPersistedStorageItemList	
+920	CreateStorageItemFromPath_PartialTrustCaller	
+921	CreateStorageItemFromShellItem_FullTrustCaller	
+922		
+923		
+924		
+925	CreateStorageItemFromShellItem_FullTrustCaller_ForPackage	
+927		
+928		
+929	CreateStorageItemFromShellItem_FullTrustCaller_ForPackage_WithProcessHandle	
+930		
+931	CreateStorageItemFromShellItem_FullTrustCaller_UseImplicitFlagsAndPackage	
+932		
+933		
+935	CreateStorageItemFromPath_FullTrustCaller	
+936	CreateStorageItemFromPath_FullTrustCaller_ForPackage	
+937	CStorageItem_GetValidatedStorageItemObject	
+938		
+939		
+940		
+941	IsProcessAnExplorer	
+942	IsDesktopExplorerProcess	
+943		
+944		
+945		
+946		
+947		
+948		
+949		
+950		
+951		
+952		
+953		
+970		
+971		
+972		
+2000		
+2001		
+2002		

@@ -1,89 +1,844 @@
-; CognacOS shell32.dll x64 export surface.
-; Named placeholders only; this is not a complete Windows 11 export inventory.
 LIBRARY shell32.dll
 EXPORTS
-    CommandLineToArgvW
-    DragAcceptFiles
-    DragFinish
-    DragQueryFileA
-    DragQueryFileW
-    DragQueryPoint
-    ExtractAssociatedIconA
-    ExtractAssociatedIconW
-    ExtractIconA
-    ExtractIconExA
-    ExtractIconExW
-    ExtractIconW
-    FindExecutableA
-    FindExecutableW
-    ILAppendID
-    ILClone
-    ILCombine
-    ILCreateFromPathA
-    ILCreateFromPathW
-    ILFindLastID
-    ILFree
-    ILGetNext
-    ILGetSize
-    ILIsEqual
-    ILIsParent
-    ILRemoveLastID
-    IsUserAnAdmin
-    OpenAs_RunDLL
-    SHAddToRecentDocs
-    SHAppBarMessage
-    SHBindToParent
-    SHBrowseForFolderA
-    SHBrowseForFolderW
-    SHChangeNotify
-    SHChangeNotifyDeregister
-    SHChangeNotifyRegister
-    SHCreateDirectory
-    SHCreateDirectoryExA
-    SHCreateDirectoryExW
-    SHCreateItemFromParsingName
-    SHCreateShellItem
-    SHDefExtractIconA
-    SHDefExtractIconW
-    SHEmptyRecycleBinA
-    SHEmptyRecycleBinW
-    SHFileOperationA
-    SHFileOperationW
-    SHFormatDrive
-    SHGetDesktopFolder
-    SHGetFileInfoA
-    SHGetFileInfoW
-    SHGetFolderLocation
-    SHGetFolderPathA
-    SHGetFolderPathW
-    SHGetIconOverlayIndexA
-    SHGetIconOverlayIndexW
-    SHGetKnownFolderIDList
-    SHGetKnownFolderItem
-    SHGetKnownFolderPath
-    SHGetPathFromIDListA
-    SHGetPathFromIDListW
-    SHGetSpecialFolderLocation
-    SHGetSpecialFolderPathA
-    SHGetSpecialFolderPathW
-    SHGetStockIconInfo
-    SHInvokePrinterCommandA
-    SHInvokePrinterCommandW
-    SHLoadInProc
-    SHParseDisplayName
-    SHQueryRecycleBinA
-    SHQueryRecycleBinW
-    SHSetKnownFolderPath
-    SHUpdateImageA
-    SHUpdateImageW
-    ShellAboutA
-    ShellAboutW
-    ShellExecuteA
-    ShellExecuteExA
-    ShellExecuteExW
-    ShellExecuteW
-    Shell_NotifyIconA
-    Shell_NotifyIconW
-    StrCmpLogicalW
-    StrRetToBufA
-    StrRetToBufW
+    SHChangeNotifyRegister @2
+    SHDefExtractIconA @3
+    SHChangeNotifyDeregister @4
+    CognacOrdinalStub_5=SHUNIMPL.#35 @5 NONAME
+    SHDefExtractIconW @6
+    CognacOrdinalStub_7=SHUNIMPL.#192 @7 NONAME
+    CognacOrdinalStub_8=SHUNIMPL.#193 @8 NONAME
+    PifMgr_OpenProperties @9
+    PifMgr_GetProperties @10
+    PifMgr_SetProperties @11
+    CognacOrdinalStub_12 @12 NONAME
+    PifMgr_CloseProperties @13
+    SHStartNetConnectionDialogW @14
+    CognacOrdinalStub_15 @15 NONAME
+    ILFindLastID @16
+    ILRemoveLastID @17
+    ILClone @18
+    ILCloneFirst @19
+    CognacOrdinalStub_20 @20 NONAME
+    ILIsEqual @21
+    DAD_DragEnterEx2 @22
+    ILIsParent @23
+    ILFindChild @24
+    ILCombine @25
+    CognacOrdinalStub_26=SHUNIMPL.#36 @26 NONAME
+    ILSaveToStream @27
+    SHILCreateFromPath @28
+    CognacOrdinalStub_29 @29 NONAME
+    CognacOrdinalStub_30=shlwapi.PathBuildRootW @30 NONAME
+    CognacOrdinalStub_31=shlwapi.PathFindExtensionW @31 NONAME
+    CognacOrdinalStub_32=shlwapi.PathAddBackslashW @32 NONAME
+    CognacOrdinalStub_33=shlwapi.PathRemoveBlanksW @33 NONAME
+    CognacOrdinalStub_34=shlwapi.PathFindFileNameW @34 NONAME
+    CognacOrdinalStub_35 @35 NONAME
+    CognacOrdinalStub_36 @36 NONAME
+    CognacOrdinalStub_37=shlwapi.PathCombineW @37 NONAME
+    CognacOrdinalStub_38=shlwapi.PathStripPathW @38 NONAME
+    CognacOrdinalStub_39=shlwapi.PathIsUNCW @39 NONAME
+    CognacOrdinalStub_40=shlwapi.PathIsRelativeW @40 NONAME
+    IsLFNDriveA @41
+    IsLFNDriveW @42
+    PathIsExe @43
+    CognacOrdinalStub_44 @44 NONAME
+    CognacOrdinalStub_45 @45 NONAME
+    CognacOrdinalStub_46=shlwapi.PathMatchSpecW @46 NONAME
+    PathMakeUniqueName @47
+    CognacOrdinalStub_48=shlwapi.PathSetDlgItemPathW @48 NONAME
+    PathQualify @49
+    CognacOrdinalStub_50=shlwapi.PathStripToRootW @50 NONAME
+    PathResolve @51
+    CognacOrdinalStub_52=shlwapi.PathGetArgsW @52 NONAME
+    CognacOrdinalStub_53=SHUNIMPL.#388 @53 NONAME
+    CognacOrdinalStub_54 @54 NONAME
+    CognacOrdinalStub_55=shlwapi.PathQuoteSpacesW @55 NONAME
+    CognacOrdinalStub_56=shlwapi.PathUnquoteSpacesW @56 NONAME
+    CognacOrdinalStub_57=shlwapi.PathGetDriveNumberW @57 NONAME
+    CognacOrdinalStub_58 @58 NONAME
+    RestartDialog @59
+    CognacOrdinalStub_60 @60 NONAME
+    CognacOrdinalStub_61 @61 NONAME
+    PickIconDlg @62
+    GetFileNameFromBrowse @63
+    DriveType @64
+    CognacOrdinalStub_65 @65 NONAME
+    IsNetDrive @66
+    Shell_MergeMenus @67
+    SHGetSetSettings @68
+    CognacOrdinalStub_69 @69 NONAME
+    CognacOrdinalStub_70 @70 NONAME
+    Shell_GetImageLists @71
+    Shell_GetCachedImageIndex @72
+    SHShellFolderView_Message @73
+    SHCreateStdEnumFmtEtc @74
+    PathYetAnotherMakeUniqueName @75
+    CognacOrdinalStub_76 @76 NONAME
+    SHMapPIDLToSystemImageListIndex @77
+    CognacOrdinalStub_78=SHUNIMPL.#37 @78 NONAME
+    CognacOrdinalStub_79=SHUNIMPL.#38 @79 NONAME
+    SHOpenPropSheetW @80
+    OpenAs_RunDLL @81
+    CognacOrdinalStub_82=SHUNIMPL.#39 @82 NONAME
+    CIDLData_CreateFromIDArray @83
+    CognacOrdinalStub_84=SHUNIMPL.#40 @84 NONAME
+    OpenRegStream @85
+    CognacOrdinalStub_86=SHUNIMPL.#41 @86 NONAME
+    CognacOrdinalStub_87=SHUNIMPL.#42 @87 NONAME
+    SHDoDragDrop @88
+    SHCloneSpecialIDList @89
+    SHFindFiles @90
+    CognacOrdinalStub_91 @91 NONAME
+    PathGetShortPath @92
+    CognacOrdinalStub_93=shcore.Win32CreateDirectory @93 NONAME
+    CognacOrdinalStub_94 @94 NONAME
+    CognacOrdinalStub_95 @95 NONAME
+    CognacOrdinalStub_96=SHUNIMPL.#43 @96 NONAME
+    CognacOrdinalStub_97 @97 NONAME
+    SHGetRealIDL @98
+    CognacOrdinalStub_99 @99 NONAME
+    SHRestricted @100
+    CognacOrdinalStub_101=SHUNIMPL.#1 @101 NONAME
+    SHCoCreateInstance=api-ms-win-shell-shellcom-l1-1-0.SHCoCreateInstance @102
+    SignalFileOpen @103
+    CognacOrdinalStub_104=SHUNIMPL.#2 @104 NONAME
+    CognacOrdinalStub_105=SHUNIMPL.#3 @105 NONAME
+    CognacOrdinalStub_106=SHUNIMPL.#4 @106 NONAME
+    CognacOrdinalStub_107=SHUNIMPL.#5 @107 NONAME
+    CognacOrdinalStub_108=SHUNIMPL.#6 @108 NONAME
+    CognacOrdinalStub_109=SHUNIMPL.#7 @109 NONAME
+    CognacOrdinalStub_110=SHUNIMPL.#8 @110 NONAME
+    CognacOrdinalStub_111=SHUNIMPL.#9 @111 NONAME
+    CognacOrdinalStub_112=SHUNIMPL.#10 @112 NONAME
+    CognacOrdinalStub_113=SHUNIMPL.#11 @113 NONAME
+    CognacOrdinalStub_114=SHUNIMPL.#12 @114 NONAME
+    CognacOrdinalStub_115=SHUNIMPL.#13 @115 NONAME
+    CognacOrdinalStub_116=SHUNIMPL.#14 @116 NONAME
+    CognacOrdinalStub_117=SHUNIMPL.#15 @117 NONAME
+    CognacOrdinalStub_118=SHUNIMPL.#16 @118 NONAME
+    IsLFNDrive @119
+    CognacOrdinalStub_120=SHUNIMPL.#17 @120 NONAME
+    CognacOrdinalStub_121=SHUNIMPL.#44 @121 NONAME
+    CognacOrdinalStub_122=SHUNIMPL.#45 @122 NONAME
+    CognacOrdinalStub_123=SHUNIMPL.#46 @123 NONAME
+    CognacOrdinalStub_124=SHUNIMPL.#18 @124 NONAME
+    OpenAs_RunDLLA @125
+    CognacOrdinalStub_126=SHUNIMPL.#47 @126 NONAME
+    CognacOrdinalStub_127=SHUNIMPL.#371 @127 NONAME
+    CognacOrdinalStub_128 @128 NONAME
+    DAD_AutoScroll @129
+    CognacOrdinalStub_130=SHUNIMPL.#48 @130 NONAME
+    DAD_DragEnterEx @131
+    DAD_DragLeave @132
+    OpenAs_RunDLLW @133
+    DAD_DragMove @134
+    PrepareDiscForBurnRunDllW @135
+    DAD_SetDragImage @136
+    DAD_ShowDragImage @137
+    PrintersGetCommand_RunDLL @138
+    PrintersGetCommand_RunDLLA @139
+    CognacOrdinalStub_140=SHUNIMPL.#19 @140 NONAME
+    CognacOrdinalStub_141=SHUNIMPL.#20 @141 NONAME
+    CognacOrdinalStub_142=SHUNIMPL.#21 @142 NONAME
+    CognacOrdinalStub_143=SHUNIMPL.#22 @143 NONAME
+    CognacOrdinalStub_144=SHUNIMPL.#23 @144 NONAME
+    CognacOrdinalStub_145=shlwapi.PathFindOnPathW @145 NONAME
+    CognacOrdinalStub_146=SHUNIMPL.#49 @146 NONAME
+    SHCLSIDFromString @147
+    CognacOrdinalStub_148=SHUNIMPL.#50 @148 NONAME
+    SHFind_InitMenuPopup @149
+    PrintersGetCommand_RunDLLW @150
+    CognacOrdinalStub_151=SHUNIMPL.#51 @151 NONAME
+    ILGetSize @152
+    ILGetNext @153
+    ILAppendID @154
+    ILFree @155
+    CognacOrdinalStub_156 @156 NONAME
+    ILCreateFromPath @157
+    CognacOrdinalStub_158=SHUNIMPL.#389 @158 NONAME
+    CognacOrdinalStub_159=shlwapi.PathIsDirectoryW @159 NONAME
+    CognacOrdinalStub_160 @160 NONAME
+    CognacOrdinalStub_161=SHUNIMPL.#214 @161 NONAME
+    SHSimpleIDListFromPath @162
+    CognacOrdinalStub_163=SHUNIMPL.#52 @163 NONAME
+    Win32DeleteFile @164
+    SHCreateDirectory @165
+    CognacOrdinalStub_166=SHUNIMPL.#53 @166 NONAME
+    SHAddFromPropSheetExtArray @167
+    SHCreatePropSheetExtArray @168
+    SHDestroyPropSheetExtArray @169
+    SHReplaceFromPropSheetExtArray @170
+    PathCleanupSpec @171
+    CognacOrdinalStub_172 @172 NONAME
+    SHValidateUNC @173
+    SHCreateShellFolderViewEx @174
+    CognacOrdinalStub_175 @175 NONAME
+    SHSetInstanceExplorer @176
+    CognacOrdinalStub_177=SHUNIMPL.#54 @177 NONAME
+    SHObjectProperties @178
+    SHGetNewLinkInfoA @179
+    SHGetNewLinkInfoW @180
+    CognacOrdinalStub_181 @181 NONAME
+    ShellMessageBoxW=shlwapi.ShellMessageBoxW @182
+    ShellMessageBoxA=shlwapi.ShellMessageBoxA @183
+    CognacOrdinalStub_184 @184 NONAME
+    CognacOrdinalStub_185=SHUNIMPL.#390 @185 NONAME
+    CognacOrdinalStub_186 @186 NONAME
+    CognacOrdinalStub_187=SHUNIMPL.#235 @187 NONAME
+    CognacOrdinalStub_188 @188 NONAME
+    ILCreateFromPathA @189
+    ILCreateFromPathW @190
+    SHUpdateImageA @191
+    SHUpdateImageW @192
+    SHHandleUpdateImage @193
+    CognacOrdinalStub_194 @194 NONAME
+    SHFree @195
+    SHAlloc @196
+    CognacOrdinalStub_197=SHUNIMPL.#55 @197 NONAME
+    CognacOrdinalStub_198=SHUNIMPL.#56 @198 NONAME
+    RealShellExecuteA @199
+    CognacOrdinalStub_200 @200 NONAME
+    CognacOrdinalStub_201 @201 NONAME
+    CognacOrdinalStub_202=SHUNIMPL.#57 @202 NONAME
+    CognacOrdinalStub_203 @203 NONAME
+    CognacOrdinalStub_204 @204 NONAME
+    CognacOrdinalStub_205 @205 NONAME
+    CognacOrdinalStub_206 @206 NONAME
+    RealShellExecuteExA @207
+    RealShellExecuteExW @208
+    CognacOrdinalStub_209 @209 NONAME
+    CognacOrdinalStub_210 @210 NONAME
+    CognacOrdinalStub_211 @211 NONAME
+    CognacOrdinalStub_212 @212 NONAME
+    CognacOrdinalStub_213 @213 NONAME
+    CognacOrdinalStub_214 @214 NONAME
+    CognacOrdinalStub_215 @215 NONAME
+    CognacOrdinalStub_216=SHUNIMPL.#24 @216 NONAME
+    CognacOrdinalStub_217=SHUNIMPL.#25 @217 NONAME
+    CognacOrdinalStub_218=SHUNIMPL.#26 @218 NONAME
+    CognacOrdinalStub_219=SHUNIMPL.#27 @219 NONAME
+    CognacOrdinalStub_220=SHUNIMPL.#28 @220 NONAME
+    CognacOrdinalStub_221=SHUNIMPL.#29 @221 NONAME
+    CognacOrdinalStub_222=SHUNIMPL.#30 @222 NONAME
+    CognacOrdinalStub_223=SHUNIMPL.#31 @223 NONAME
+    CognacOrdinalStub_224=SHUNIMPL.#32 @224 NONAME
+    CognacOrdinalStub_225=SHUNIMPL.#33 @225 NONAME
+    RealShellExecuteW @226
+    CognacOrdinalStub_227=SHUNIMPL.#34 @227 NONAME
+    SHHelpShortcuts_RunDLL @228
+    SHHelpShortcuts_RunDLLA @229
+    CognacOrdinalStub_230=SHUNIMPL.#372 @230 NONAME
+    SHSetFolderPathA @231
+    SHSetFolderPathW @232
+    CognacOrdinalStub_233=SHUNIMPL.#58 @233 NONAME
+    CognacOrdinalStub_234=SHUNIMPL.#59 @234 NONAME
+    CognacOrdinalStub_235=SHUNIMPL.#212 @235 NONAME
+    CognacOrdinalStub_236 @236 NONAME
+    CognacOrdinalStub_237 @237 NONAME
+    SHHelpShortcuts_RunDLLW @238
+    PathIsSlowW @239
+    PathIsSlowA @240
+    CognacOrdinalStub_241 @241 NONAME
+    CognacOrdinalStub_242=SHUNIMPL.#373 @242 NONAME
+    CognacOrdinalStub_243=SHUNIMPL.#374 @243 NONAME
+    CognacOrdinalStub_244 @244 NONAME
+    SHTestTokenMembership @245
+    CognacOrdinalStub_246=SHUNIMPL.#375 @246 NONAME
+    CognacOrdinalStub_247=SHUNIMPL.#376 @247 NONAME
+    CognacOrdinalStub_248=SHUNIMPL.#377 @248 NONAME
+    CognacOrdinalStub_249=shlwapi.PathParseIconLocationW @249 NONAME
+    CognacOrdinalStub_250=shlwapi.PathRemoveExtensionW @250 NONAME
+    CognacOrdinalStub_251=shlwapi.PathRemoveArgsW @251 NONAME
+    CognacOrdinalStub_252=api-ms-win-core-url-l1-1-0.PathIsURLW @252 NONAME
+    CognacOrdinalStub_253=SHUNIMPL.#378 @253 NONAME
+    CognacOrdinalStub_254 @254 NONAME
+    AppCompat_RunDLLW @255
+    SHCreateShellFolderView @256
+    CognacOrdinalStub_257 @257 NONAME
+    CognacOrdinalStub_258 @258 NONAME
+    CognacOrdinalStub_259 @259 NONAME
+    CognacOrdinalStub_260 @260 NONAME
+    CognacOrdinalStub_261 @261 NONAME
+    CognacOrdinalStub_262 @262 NONAME
+    AssocCreateForClasses @263
+    CognacOrdinalStub_264 @264 NONAME
+    CognacOrdinalStub_265 @265 NONAME
+    CognacOrdinalStub_266 @266 NONAME
+    AssocElemCreateForKey @267
+    AssocGetDetailsOfPropKey @268
+    CallFileCopyHook @269
+    CognacOrdinalStub_270 @270 NONAME
+    CognacOrdinalStub_271 @271 NONAME
+    CheckEscapesW @272
+    CommandLineToArgvW @273
+    Control_RunDLL @274
+    Control_RunDLLA @275
+    Control_RunDLLAsUserW @276
+    Control_RunDLLW @277
+    DllCanUnloadNow @278
+    DllGetActivationFactory @279
+    DllGetClassObject @280
+    DllGetVersion @281
+    DllInstall @282
+    DllRegisterServer @283
+    DllUnregisterServer @284
+    DoEnvironmentSubstA @285
+    DoEnvironmentSubstW @286
+    DragAcceptFiles @287
+    DragFinish @288
+    DragQueryFile @289
+    DragQueryFileA @290
+    DragQueryFileAorW @291
+    DragQueryFileW @292
+    DragQueryPoint @293
+    DuplicateIcon @294
+    ExtractAssociatedIconA @295
+    ExtractAssociatedIconExA @296
+    ExtractAssociatedIconExW @297
+    ExtractAssociatedIconW @298
+    ExtractIconA @299
+    ExtractIconEx @300
+    ExtractIconExA @301
+    ExtractIconExW @302
+    ExtractIconW @303
+    FindExecutableA @304
+    FindExecutableW @305
+    FreeIconList @306
+    GetCurrentProcessExplicitAppUserModelID @307
+    InitNetworkAddressControl @308
+    InternalExtractIconListA @309
+    InternalExtractIconListW @310
+    LaunchMSHelp_RunDLLW @311
+    Options_RunDLL @312
+    Options_RunDLLA @313
+    Options_RunDLLW @314
+    RegenerateUserEnvironment @315
+    RunAsNewUser_RunDLLW @316
+    SHAddDefaultPropertiesByExt @317
+    SHAddToRecentDocs @318
+    SHAppBarMessage @319
+    SHAssocEnumHandlers @320
+    SHAssocEnumHandlersForProtocolByApplication @321
+    SHBindToFolderIDListParent @322
+    SHBindToFolderIDListParentEx @323
+    SHBindToObject @324
+    SHBindToParent @325
+    SHBrowseForFolder @326
+    SHBrowseForFolderA @327
+    SHBrowseForFolderW @328
+    SHChangeNotify @329
+    SHChangeNotifyRegisterThread @330
+    SHChangeNotifySuspendResume @331
+    SHCoCreateInstanceWorker=ext-ms-win-shell32-shellcom-l1-1-0.SHCoCreateInstanceWorker @332
+    SHCreateAssociationRegistration @333
+    SHCreateCategoryEnum @334
+    SHCreateDataObject @335
+    SHCreateDefaultContextMenu @336
+    SHCreateDefaultExtractIcon @337
+    SHCreateDefaultPropertiesOp @338
+    SHCreateDirectoryExA @339
+    SHCreateDirectoryExW @340
+    SHCreateDrvExtIcon @341
+    SHCreateItemFromIDList @342
+    SHCreateItemFromParsingName @343
+    SHCreateItemFromRelativeName @344
+    SHCreateItemInKnownFolder @345
+    SHCreateItemWithParent @346
+    SHCreateLocalServerRunDll @347
+    SHCreateProcessAsUserW @348
+    SHCreateQueryCancelAutoPlayMoniker @349
+    SHCreateShellItem @350
+    SHCreateShellItemArray @351
+    SHCreateShellItemArrayFromDataObject @352
+    SHCreateShellItemArrayFromIDLists @353
+    SHCreateShellItemArrayFromShellItem @354
+    SHELL32_AddToBackIconTable @355
+    SHELL32_AddToFrontIconTable @356
+    SHELL32_AreAllItemsAvailable @357
+    SHELL32_CCommonPlacesFolder_CreateInstance @358
+    SHELL32_CDBurn_CloseSession @359
+    SHELL32_CDBurn_DriveSupportedForDataBurn @360
+    SHELL32_CDBurn_Erase @361
+    SHELL32_CDBurn_GetCDInfo @362
+    SHELL32_CDBurn_GetLiveFSDiscInfo @363
+    SHELL32_CDBurn_GetStagingPathOrNormalPath @364
+    SHELL32_CDBurn_GetTaskInfo @365
+    SHELL32_CDBurn_IsBlankDisc @366
+    SHELL32_CDBurn_IsBlankDisc2 @367
+    SHELL32_CDBurn_IsLiveFS @368
+    SHELL32_CDBurn_OnDeviceChange @369
+    SHELL32_CDBurn_OnEject @370
+    SHELL32_CDBurn_OnMediaChange @371
+    SHELL32_CDefFolderMenu_Create2 @372
+    SHELL32_CDefFolderMenu_Create2Ex @373
+    SHELL32_CDefFolderMenu_MergeMenu @374
+    SHELL32_CDrivesContextMenu_Create @375
+    SHELL32_CDrivesDropTarget_Create @376
+    SHELL32_CDrives_CreateSFVCB @377
+    SHELL32_CFSDropTarget_CreateInstance @378
+    SHELL32_CFSFolderCallback_Create @379
+    SHELL32_CFillPropertiesTask_CreateInstance @380
+    SHELL32_CLibraryDropTarget_CreateInstance @381
+    SHELL32_CLocationContextMenu_Create @382
+    SHELL32_CLocationFolderUI_CreateInstance @383
+    SHELL32_CMountPoint_DoAutorun @384
+    SHELL32_CMountPoint_DoAutorunPrompt @385
+    SHELL32_CMountPoint_IsAutoRunDriveAndEnabledByPolicy @386
+    SHELL32_CMountPoint_ProcessAutoRunFile @387
+    SHELL32_CMountPoint_WantAutorunUI @388
+    SHELL32_CMountPoint_WantAutorunUIGetReady @389
+    SHELL32_CNetFolderUI_CreateInstance @390
+    SHELL32_CPL_CategoryIdArrayFromVariant @391
+    SHELL32_CPL_IsLegacyCanonicalNameListedUnderKey @392
+    SHELL32_CPL_ModifyWowDisplayName @393
+    SHELL32_CRecentDocsContextMenu_CreateInstance @394
+    SHELL32_CTransferConfirmation_CreateInstance @395
+    SHELL32_CallFileCopyHooks @396
+    SHELL32_CanDisplayWin8CopyDialog @397
+    SHELL32_CloseAutoplayPrompt @398
+    SHELL32_CommandLineFromMsiDescriptor @399
+    SHELL32_CopySecondaryTiles @400
+    SHELL32_CreateConfirmationInterrupt @401
+    SHELL32_CreateConflictInterrupt @402
+    SHELL32_CreateDefaultOperationDataProvider @403
+    SHELL32_CreateFileFolderContextMenu @404
+    SHELL32_CreateLinkInfoW @405
+    SHELL32_CreateQosRecorder @406
+    SHELL32_CreateSharePointView @407
+    SHELL32_Create_IEnumUICommand @408
+    SHELL32_DestroyLinkInfo @409
+    SHELL32_EncryptDirectory @410
+    SHELL32_EncryptedFileKeyInfo @411
+    SHELL32_EnumCommonTasks @412
+    SHELL32_FreeEncryptedFileKeyInfo @413
+    SHELL32_GenerateAppID @414
+    SHELL32_GetAppIDRoot @415
+    SHELL32_GetCommandProviderForFolderType @416
+    SHELL32_GetDPIAdjustedLogicalSize @417
+    SHELL32_GetDiskCleanupPath @418
+    SHELL32_GetFileNameFromBrowse @419
+    SHELL32_GetIconOverlayManager @420
+    SHELL32_GetLinkInfoData @421
+    SHELL32_GetRatingBucket @422
+    SHELL32_GetSqmableFileName @423
+    SHELL32_GetThumbnailAdornerFromFactory @424
+    SHELL32_GetThumbnailAdornerFromFactory2 @425
+    SHELL32_HandleUnrecognizedFileSystem @426
+    SHELL32_IconCacheCreate @427
+    SHELL32_IconCacheDestroy @428
+    SHELL32_IconCacheHandleAssociationChanged @429
+    SHELL32_IconCacheRestore @430
+    SHELL32_IconCache_AboutToExtractIcons @431
+    SHELL32_IconCache_DoneExtractingIcons @432
+    SHELL32_IconCache_ExpandEnvAndSearchPath @433
+    SHELL32_IconCache_RememberRecentlyExtractedIconsW @434
+    SHELL32_IconOverlayManagerInit @435
+    SHELL32_IsGetKeyboardLayoutPresent @436
+    SHELL32_IsSystemUpgradeInProgress @437
+    SHELL32_IsValidLinkInfo @438
+    SHELL32_LegacyEnumSpecialTasksByType @439
+    SHELL32_LegacyEnumTasks @440
+    SHELL32_LookupBackIconIndex @441
+    SHELL32_LookupFrontIconIndex @442
+    SHELL32_NormalizeRating @443
+    SHELL32_NotifyLinkTrackingServiceOfMove @444
+    SHELL32_PifMgr_CloseProperties @445
+    SHELL32_PifMgr_GetProperties @446
+    SHELL32_PifMgr_OpenProperties @447
+    SHELL32_PifMgr_SetProperties @448
+    SHELL32_Printers_CreateBindInfo @449
+    SHELL32_Printjob_GetPidl @450
+    SHELL32_PurgeSystemIcon @451
+    SHELL32_RefreshOverlayImages @452
+    SHELL32_ResolveLinkInfoW @453
+    SHELL32_SHAddSparseIcon @454
+    SHELL32_SHCreateByValueOperationInterrupt @455
+    SHELL32_SHCreateDefaultContextMenu @456
+    SHELL32_SHCreateLocalServer @457
+    SHELL32_SHCreateShellFolderView @458
+    SHELL32_SHDuplicateEncryptionInfoFile @459
+    SHELL32_SHEncryptFile @460
+    SHELL32_SHFormatDriveAsync @461
+    SHELL32_SHGetThreadUndoManager @462
+    SHELL32_SHGetUserNameW @463
+    SHELL32_SHIsVirtualDevice @464
+    SHELL32_SHLaunchPropSheet @465
+    SHELL32_SHLogILFromFSIL @466
+    SHELL32_SHOpenWithDialog @467
+    SHELL32_SHStartNetConnectionDialogW @468
+    SHELL32_SHUICommandFromGUID @469
+    SHELL32_SendToMenu_InvokeTargetedCommand @470
+    SHELL32_SendToMenu_VerifyTargetedCommand @471
+    SHELL32_ShowHideIconOnlyOnDesktop @472
+    SHELL32_SimpleRatingToFilterCondition @473
+    SHELL32_StampIconForFile @474
+    SHELL32_SuspendUndo @475
+    SHELL32_TryVirtualDiscImageDriveEject @476
+    SHELL32_VerifySaferTrust @477
+    SHEmptyRecycleBinA @478
+    SHEmptyRecycleBinW @479
+    SHEnableServiceObject @480
+    SHEnumerateUnreadMailAccountsW @481
+    SHEvaluateSystemCommandTemplate @482
+    SHExecuteErrorMessageBox @483
+    SHExtractIconsW @484
+    SHFileOperation @485
+    SHFileOperationA @486
+    SHFileOperationW @487
+    SHFormatDrive @488
+    SHFreeNameMappings @489
+    SHGetDataFromIDListA @490
+    SHGetDataFromIDListW @491
+    SHGetDesktopFolder @492
+    SHGetDiskFreeSpaceA @493
+    SHGetDiskFreeSpaceExA @494
+    SHGetDiskFreeSpaceExW @495
+    SHGetDriveMedia @496
+    SHGetFileInfo @497
+    SHGetFileInfoA @498
+    SHGetFileInfoW @499
+    SHGetFolderLocation @500
+    SHGetFolderPathA @501
+    SHGetFolderPathAndSubDirA @502
+    SHGetFolderPathAndSubDirW @503
+    SHGetFolderPathEx @504
+    SHGetFolderPathW @505
+    SHGetIDListFromObject @506
+    SHGetIconOverlayIndexA @507
+    SHGetIconOverlayIndexW @508
+    SHGetInstanceExplorer @509
+    SHGetItemFromDataObject @510
+    SHGetItemFromObject @511
+    SHGetKnownFolderIDList @512
+    SHGetKnownFolderItem @513
+    SHGetKnownFolderPath @514
+    SHGetLocalizedName @515
+    SHGetMalloc @516
+    SHGetNameFromIDList @517
+    SHGetNewLinkInfo @518
+    SHGetPathFromIDList @519
+    CognacOrdinalStub_520=SHUNIMPL.#60 @520 NONAME
+    CognacOrdinalStub_521=SHUNIMPL.#61 @521 NONAME
+    CognacOrdinalStub_522=SHUNIMPL.#62 @522 NONAME
+    CognacOrdinalStub_523=SHUNIMPL.#63 @523 NONAME
+    RealDriveType @524
+    CognacOrdinalStub_525=SHUNIMPL.#234 @525 NONAME
+    SHFlushSFCache @526
+    SHGetPathFromIDListA @527
+    SHGetPathFromIDListEx @528
+    SHGetPathFromIDListW @529
+    SHGetPropertyStoreForWindow @530
+    SHGetPropertyStoreFromIDList @531
+    SHGetPropertyStoreFromParsingName @532
+    SHGetSettings @533
+    SHGetSpecialFolderLocation @534
+    SHGetSpecialFolderPathA @535
+    SHGetSpecialFolderPathW @536
+    SHGetStockIconInfo @537
+    SHGetTemporaryPropertyForItem @538
+    SHGetUnreadMailCountW @539
+    SHInvokePrinterCommandA @540
+    SHInvokePrinterCommandW @541
+    SHIsFileAvailableOffline @542
+    SHLoadInProc @543
+    SHLoadNonloadedIconOverlayIdentifiers @544
+    SHOpenFolderAndSelectItems @545
+    SHOpenOrGetFolderView @546
+    SHOpenWithDialog @547
+    SHParseDisplayName @548
+    SHPathPrepareForWriteA @549
+    SHPathPrepareForWriteW @550
+    SHQueryRecycleBinA @551
+    SHQueryRecycleBinW @552
+    SHQueryUserNotificationState @553
+    SHRemoveLocalizedName @554
+    SHResolveLibrary @555
+    SHSetDefaultProperties @556
+    SHSetKnownFolderPath @557
+    SHSetLocalizedName @558
+    SHSetTemporaryPropertyForItem @559
+    SHSetUnreadMailCountW @560
+    SHShowManageLibraryUI @561
+    SHUpdateRecycleBinIcon @562
+    SetCurrentProcessExplicitAppUserModelID @563
+    SheChangeDirA @564
+    SheChangeDirExW @565
+    SheGetDirA @566
+    SheSetCurDrive @567
+    ShellAboutA @568
+    ShellAboutW @569
+    ShellExec_RunDLL @570
+    ShellExec_RunDLLA @571
+    ShellExec_RunDLLW @572
+    ShellExecuteA @573
+    ShellExecuteEx @574
+    ShellExecuteExA @575
+    ShellExecuteExW @576
+    ShellExecuteW @577
+    ShellHookProc @578
+    Shell_GetCachedImageIndexA @579
+    Shell_GetCachedImageIndexW @580
+    Shell_NotifyIcon @581
+    Shell_NotifyIconA @582
+    Shell_NotifyIconGetRect @583
+    Shell_NotifyIconW @584
+    StateRepoNewMenuCache_EnsureCacheAsync @585
+    StateRepoNewMenuCache_RebuildCacheAsync @586
+    StrChrA @587
+    StrChrIA @588
+    StrChrIW @589
+    StrChrW @590
+    StrCmpNA @591
+    StrCmpNIA @592
+    StrCmpNIW @593
+    StrCmpNW @594
+    StrNCmpA @595
+    StrNCmpIA @596
+    StrNCmpIW @597
+    StrNCmpW @598
+    StrRChrA @599
+    StrRChrIA @600
+    StrRChrIW @601
+    StrRChrW @602
+    StrRStrA @603
+    StrRStrIA @604
+    StrRStrIW @605
+    StrRStrW @606
+    StrStrA @607
+    StrStrIA @608
+    StrStrIW @609
+    StrStrW @610
+    UsersLibrariesFolderUI_CreateInstance @611
+    WOWShellExecute @612
+    WaitForExplorerRestartW @613
+    CognacOrdinalStub_640=SHUNIMPL.#64 @640 NONAME
+    CognacOrdinalStub_641=SHUNIMPL.#65 @641 NONAME
+    CognacOrdinalStub_643=SHUNIMPL.#66 @643 NONAME
+    SHChangeNotification_Lock @644
+    SHChangeNotification_Unlock @645
+    CognacOrdinalStub_646=SHUNIMPL.#67 @646 NONAME
+    CognacOrdinalStub_648=SHUNIMPL.#379 @648 NONAME
+    CognacOrdinalStub_650=shlwapi.PathIsSameRootW @650 NONAME
+    CognacOrdinalStub_651 @651 NONAME
+    WriteCabinetState @652
+    CognacOrdinalStub_653=SHUNIMPL.#68 @653 NONAME
+    ReadCabinetState @654
+    CognacOrdinalStub_660 @660 NONAME
+    IsUserAnAdmin @680
+    CognacOrdinalStub_681=SHUNIMPL.#428 @681 NONAME
+    StgMakeUniqueName @682
+    CognacOrdinalStub_683 @683 NONAME
+    CognacOrdinalStub_684 @684 NONAME
+    SHPropStgCreate @685
+    SHPropStgReadMultiple @688
+    SHPropStgWriteMultiple @689
+    CognacOrdinalStub_690 @690 NONAME
+    CognacOrdinalStub_691=SHUNIMPL.#216 @691 NONAME
+    CognacOrdinalStub_700=SHUNIMPL.#380 @700 NONAME
+    CDefFolderMenu_Create2 @701
+    CognacOrdinalStub_702 @702 NONAME
+    CognacOrdinalStub_703=SHLWAPI.#269 @703 NONAME
+    CognacOrdinalStub_704=SHLWAPI.#270 @704 NONAME
+    CognacOrdinalStub_707=SHUNIMPL.#69 @707 NONAME
+    CognacOrdinalStub_708=SHUNIMPL.#70 @708 NONAME
+    SHGetSetFolderCustomSettings @709
+    CognacOrdinalStub_711 @711 NONAME
+    CognacOrdinalStub_712=SHUNIMPL.#71 @712 NONAME
+    CognacOrdinalStub_713 @713 NONAME
+    CognacOrdinalStub_714 @714 NONAME
+    CognacOrdinalStub_715=SHUNIMPL.#191 @715 NONAME
+    SHMultiFileProperties @716
+    CognacOrdinalStub_719=SHUNIMPL.#478 @719 NONAME
+    CognacOrdinalStub_720=SHUNIMPL.#72 @720 NONAME
+    CognacOrdinalStub_721=SHUNIMPL.#73 @721 NONAME
+    CognacOrdinalStub_722=SHUNIMPL.#236 @722 NONAME
+    CognacOrdinalStub_723 @723 NONAME
+    CognacOrdinalStub_724=SHUNIMPL.#381 @724 NONAME
+    CognacOrdinalStub_725=SHUNIMPL.#74 @725 NONAME
+    CognacOrdinalStub_726=SHUNIMPL.#75 @726 NONAME
+    SHGetImageList @727
+    RestartDialogEx @730
+    CognacOrdinalStub_731=SHUNIMPL.#479 @731 NONAME
+    CognacOrdinalStub_732=SHUNIMPL.#480 @732 NONAME
+    CognacOrdinalStub_733 @733 NONAME
+    CognacOrdinalStub_740 @740 NONAME
+    SHCreateFileExtractIconW @743
+    CognacOrdinalStub_744 @744 NONAME
+    CognacOrdinalStub_745=SHUNIMPL.#382 @745 NONAME
+    SHLimitInputEdit @747
+    CognacOrdinalStub_748 @748 NONAME
+    CognacOrdinalStub_749=SHUNIMPL.#76 @749 NONAME
+    SHGetAttributesFromDataObject @750
+    CognacOrdinalStub_751 @751 NONAME
+    CognacOrdinalStub_752 @752 NONAME
+    CognacOrdinalStub_753 @753 NONAME
+    CognacOrdinalStub_754 @754 NONAME
+    CognacOrdinalStub_755 @755 NONAME
+    CognacOrdinalStub_756=SHUNIMPL.#77 @756 NONAME
+    CognacOrdinalStub_757 @757 NONAME
+    CognacOrdinalStub_758 @758 NONAME
+    CognacOrdinalStub_759 @759 NONAME
+    CognacOrdinalStub_760 @760 NONAME
+    CognacOrdinalStub_761 @761 NONAME
+    CognacOrdinalStub_762=SHUNIMPL.#383 @762 NONAME
+    CognacOrdinalStub_763 @763 NONAME
+    CognacOrdinalStub_764 @764 NONAME
+    CognacOrdinalStub_765 @765 NONAME
+    CognacOrdinalStub_766=SHUNIMPL.#385 @766 NONAME
+    CognacOrdinalStub_767 @767 NONAME
+    CognacOrdinalStub_777 @777 NONAME
+    CognacOrdinalStub_778 @778 NONAME
+    CognacOrdinalStub_779 @779 NONAME
+    CognacOrdinalStub_781 @781 NONAME
+    CognacOrdinalStub_782 @782 NONAME
+    CognacOrdinalStub_786=SHUNIMPL.#237 @786 NONAME
+    CognacOrdinalStub_787 @787 NONAME
+    CognacOrdinalStub_788 @788 NONAME
+    CognacOrdinalStub_789 @789 NONAME
+    CognacOrdinalStub_790 @790 NONAME
+    CognacOrdinalStub_791 @791 NONAME
+    CognacOrdinalStub_792 @792 NONAME
+    CognacOrdinalStub_810 @810 NONAME
+    CognacOrdinalStub_811 @811 NONAME
+    CognacOrdinalStub_812 @812 NONAME
+    CognacOrdinalStub_813 @813 NONAME
+    CognacOrdinalStub_814 @814 NONAME
+    CognacOrdinalStub_815 @815 NONAME
+    CognacOrdinalStub_816 @816 NONAME
+    CognacOrdinalStub_817 @817 NONAME
+    CognacOrdinalStub_818 @818 NONAME
+    CognacOrdinalStub_819 @819 NONAME
+    CognacOrdinalStub_820=SHUNIMPL.#249 @820 NONAME
+    CognacOrdinalStub_821=SHUNIMPL.#250 @821 NONAME
+    CognacOrdinalStub_822=SHUNIMPL.#251 @822 NONAME
+    CognacOrdinalStub_823 @823 NONAME
+    CognacOrdinalStub_824 @824 NONAME
+    CognacOrdinalStub_825 @825 NONAME
+    CognacOrdinalStub_826=SHUNIMPL.#252 @826 NONAME
+    CognacOrdinalStub_827=SHUNIMPL.#253 @827 NONAME
+    CognacOrdinalStub_828 @828 NONAME
+    CognacOrdinalStub_829 @829 NONAME
+    CognacOrdinalStub_830 @830 NONAME
+    CognacOrdinalStub_831 @831 NONAME
+    CognacOrdinalStub_832=SHUNIMPL.#387 @832 NONAME
+    CognacOrdinalStub_833 @833 NONAME
+    CognacOrdinalStub_834=SHUNIMPL.#254 @834 NONAME
+    CognacOrdinalStub_835=SHUNIMPL.#255 @835 NONAME
+    CognacOrdinalStub_836=SHUNIMPL.#256 @836 NONAME
+    CognacOrdinalStub_837=SHUNIMPL.#257 @837 NONAME
+    CognacOrdinalStub_838=SHUNIMPL.#258 @838 NONAME
+    CognacOrdinalStub_839=SHUNIMPL.#259 @839 NONAME
+    CognacOrdinalStub_840 @840 NONAME
+    CognacOrdinalStub_841=SHUNIMPL.#424 @841 NONAME
+    CognacOrdinalStub_842=SHUNIMPL.#425 @842 NONAME
+    CognacOrdinalStub_843=SHUNIMPL.#386 @843 NONAME
+    CognacOrdinalStub_844 @844 NONAME
+    CognacOrdinalStub_845 @845 NONAME
+    ILLoadFromStreamEx @846
+    CognacOrdinalStub_847 @847 NONAME
+    CognacOrdinalStub_848 @848 NONAME
+    CognacOrdinalStub_849 @849 NONAME
+    CognacOrdinalStub_850 @850 NONAME
+    CognacOrdinalStub_851 @851 NONAME
+    CognacOrdinalStub_852=SHUNIMPL.#391 @852 NONAME
+    CognacOrdinalStub_853 @853 NONAME
+    CognacOrdinalStub_854=SHUNIMPL.#260 @854 NONAME
+    CognacOrdinalStub_856=SHUNIMPL.#423 @856 NONAME
+    CognacOrdinalStub_857=SHUNIMPL.#426 @857 NONAME
+    CognacOrdinalStub_858=SHUNIMPL.#392 @858 NONAME
+    CognacOrdinalStub_859 @859 NONAME
+    CognacOrdinalStub_860 @860 NONAME
+    CognacOrdinalStub_861=SHUNIMPL.#261 @861 NONAME
+    CognacOrdinalStub_862 @862 NONAME
+    CognacOrdinalStub_863=SHUNIMPL.#262 @863 NONAME
+    CognacOrdinalStub_864 @864 NONAME
+    CognacOrdinalStub_865 @865 NONAME
+    CognacOrdinalStub_866 @866 NONAME
+    CognacOrdinalStub_867=SHUNIMPL.#263 @867 NONAME
+    CognacOrdinalStub_868=SHUNIMPL.#264 @868 NONAME
+    CognacOrdinalStub_869=SHUNIMPL.#384 @869 NONAME
+    CognacOrdinalStub_870 @870 NONAME
+    CognacOrdinalStub_871 @871 NONAME
+    CognacOrdinalStub_872=SHUNIMPL.#265 @872 NONAME
+    CognacOrdinalStub_873 @873 NONAME
+    CognacOrdinalStub_874 @874 NONAME
+    CognacOrdinalStub_875 @875 NONAME
+    CognacOrdinalStub_876 @876 NONAME
+    CognacOrdinalStub_877 @877 NONAME
+    CognacOrdinalStub_878 @878 NONAME
+    CognacOrdinalStub_880 @880 NONAME
+    CognacOrdinalStub_881 @881 NONAME
+    CognacOrdinalStub_882 @882 NONAME
+    CognacOrdinalStub_883 @883 NONAME
+    CognacOrdinalStub_884 @884 NONAME
+    CognacOrdinalStub_885 @885 NONAME
+    CognacOrdinalStub_886 @886 NONAME
+    CognacOrdinalStub_887 @887 NONAME
+    CognacOrdinalStub_888 @888 NONAME
+    CognacOrdinalStub_889=SHUNIMPL.#474 @889 NONAME
+    CognacOrdinalStub_890=SHUNIMPL.#475 @890 NONAME
+    CognacOrdinalStub_891 @891 NONAME
+    CognacOrdinalStub_892=SHUNIMPL.#476 @892 NONAME
+    CognacOrdinalStub_893 @893 NONAME
+    CognacOrdinalStub_894 @894 NONAME
+    CognacOrdinalStub_895 @895 NONAME
+    CognacOrdinalStub_896 @896 NONAME
+    CognacOrdinalStub_897 @897 NONAME
+    CognacOrdinalStub_898 @898 NONAME
+    CognacOrdinalStub_899 @899 NONAME
+    CognacOrdinalStub_900 @900 NONAME
+    CognacOrdinalStub_901 @901 NONAME
+    CognacOrdinalStub_902=SHUNIMPL.#473 @902 NONAME
+    CognacOrdinalStub_903 @903 NONAME
+    CognacOrdinalStub_904 @904 NONAME
+    CognacOrdinalStub_905 @905 NONAME
+    CognacOrdinalStub_906 @906 NONAME
+    CognacOrdinalStub_907 @907 NONAME
+    CognacOrdinalStub_909=SHUNIMPL.#477 @909 NONAME
+    CognacOrdinalStub_910 @910 NONAME
+    CognacOrdinalStub_911 @911 NONAME
+    CognacOrdinalStub_912 @912 NONAME
+    CognacOrdinalStub_913 @913 NONAME
+    CognacOrdinalStub_914 @914 NONAME
+    CognacOrdinalStub_915 @915 NONAME
+    CognacOrdinalStub_916 @916 NONAME
+    GetSystemPersistedStorageItemList @919
+    CreateStorageItemFromPath_PartialTrustCaller @920
+    CreateStorageItemFromShellItem_FullTrustCaller @921
+    CognacOrdinalStub_922 @922 NONAME
+    CognacOrdinalStub_923 @923 NONAME
+    CognacOrdinalStub_924 @924 NONAME
+    CreateStorageItemFromShellItem_FullTrustCaller_ForPackage @925
+    CognacOrdinalStub_927 @927 NONAME
+    CognacOrdinalStub_928 @928 NONAME
+    CreateStorageItemFromShellItem_FullTrustCaller_ForPackage_WithProcessHandle @929
+    CognacOrdinalStub_930 @930 NONAME
+    CreateStorageItemFromShellItem_FullTrustCaller_UseImplicitFlagsAndPackage @931
+    CognacOrdinalStub_932 @932 NONAME
+    CognacOrdinalStub_933 @933 NONAME
+    CreateStorageItemFromPath_FullTrustCaller @935
+    CreateStorageItemFromPath_FullTrustCaller_ForPackage @936
+    CStorageItem_GetValidatedStorageItemObject @937
+    CognacOrdinalStub_938 @938 NONAME
+    CognacOrdinalStub_939 @939 NONAME
+    CognacOrdinalStub_940 @940 NONAME
+    IsProcessAnExplorer @941
+    IsDesktopExplorerProcess @942
+    CognacOrdinalStub_943 @943 NONAME
+    CognacOrdinalStub_944 @944 NONAME
+    CognacOrdinalStub_945 @945 NONAME
+    CognacOrdinalStub_946 @946 NONAME
+    CognacOrdinalStub_947 @947 NONAME
+    CognacOrdinalStub_948 @948 NONAME
+    CognacOrdinalStub_949 @949 NONAME
+    CognacOrdinalStub_950 @950 NONAME
+    CognacOrdinalStub_951 @951 NONAME
+    CognacOrdinalStub_952 @952 NONAME
+    CognacOrdinalStub_953 @953 NONAME
+    CognacOrdinalStub_970 @970 NONAME
+    CognacOrdinalStub_971 @971 NONAME
+    CognacOrdinalStub_972 @972 NONAME
+    CognacOrdinalStub_2000 @2000 NONAME
+    CognacOrdinalStub_2001 @2001 NONAME
+    CognacOrdinalStub_2002 @2002 NONAME
