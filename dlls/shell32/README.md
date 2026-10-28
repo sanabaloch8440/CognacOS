@@ -1,37 +1,18 @@
-# CognacOS shell32 resource library
+# CognacOS shell32.dll — x64 stub stage
 
-This directory is the home for reusable shell resources for CognacOS `shell32`: icons, bitmap artwork, cursor/animation assets, resource IDs, and their provenance records.
+Shell32 provides shell namespace, file operation, folder, icon, notification, and shell-execution API names. This stub stage complements the separately licensed artwork in ../shell32/resources/; it does not yet load those resources.
 
-## Upstream source
+## Files
 
-- ReactOS shell32: https://github.com/reactos/reactos/tree/master/dll/win32/shell32
-- Resource declarations: https://github.com/reactos/reactos/blob/master/dll/win32/shell32/shell32.rc
-- ReactOS project license and notices: https://github.com/reactos/reactos/blob/master/COPYING
-- ReactOS intellectual-property guidance: https://reactos.org/intellectual-property-guideline/
+- `exports/shell32-x64.def`: explicit named PE exports.
+- `exports/windows-11-x64-exports.txt`: curated name inventory, not a complete Windows build-specific export table.
+- `src/stubs.c`: freestanding placeholder implementations.
+- `build.sh`: links a PE32+ DLL using Clang and LLD without the Windows SDK.
 
-## Important licensing rule
+## Stub contract
 
-ReactOS is a mixed-license repository. Do **not** assume every file under `dll/win32/shell32` has the same license. The source tree notes that the shell icons, bitmaps, and AVI resources have license information in their corresponding resource directories. In particular, ReactOS documents Tango-derived icon artwork under CC-BY-SA 2.5; the relevant upstream `Icon_Licence` notices must travel with those assets. Other files may be LGPL-2.1-or-later, GPL-2.0, or carry separate third-party terms.
+Most placeholders return zero (failure/null); selected HRESULT-style APIs return `E_NOTIMPL`; `GetLastError` returns `ERROR_CALL_NOT_IMPLEMENTED`; `SetLastError` is a no-op. A few pseudo-handle helpers return their documented pseudo-handle values. No parameter validation, object management, filesystem, process, registry, COM, or shell semantics are implemented. These simplified zero-argument ABI placeholders are for export/loader bring-up only and must not be treated as functional Win32 APIs.
 
-When importing a file, preserve its original copyright/license notice and add an entry to `RESOURCE_MANIFEST.md` with:
-- original ReactOS path and immutable upstream commit;
-- local destination path;
-- original author/copyright line, when supplied;
-- exact license and the path to its license text;
-- any local modification.
+## Build
 
-Do not remove attribution, relicense third-party artwork as CognacOS-only, or copy a resource until its individual license has been checked. If a resource cannot be traced to a clear license, leave it out and create an original replacement instead.
-
-## Layout
-
-- `icons/` — approved shell/file/folder/device icons and their per-asset notices.
-- `bitmaps/` — approved bitmap resources and notices.
-- `animations/` — approved animation resources and notices.
-- `RESOURCE_MANIFEST.md` — file-by-file provenance and license ledger.
-- `LICENSES/` — full license texts and upstream attribution notices copied alongside the corresponding assets.
-
-## Imported starter set
-
-The first batch of 20 Tango Project icons is now stored under `resources/icons/`: file, executable, folder/open folder, drive, CD-ROM, network, computer, printer, Control Panel, search, help, share, shortcut, empty/full Recycle Bin, desktop, favorites, locked item, and disconnected drive. See `RESOURCE_CATALOG.md` for names and exact upstream paths.
-
-These resources are a starting library for future shell32 implementation; importing artwork does not import ReactOS shell32 code or imply that the CognacOS shell32 APIs are already implemented.
+With `clang` and `lld-link` installed, run `./build.sh`. Output: `build/shell32.dll`. The DLL is not yet integrated into the boot image or loader search path; the CognacOS loader still needs to map it and resolve imports before applications can use it.
