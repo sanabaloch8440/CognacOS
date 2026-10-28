@@ -1134,8 +1134,14 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 fast_io_dispatch: core::ptr::null_mut(), driver_init: None,
                 driver_start_io: None, driver_unload: None, major_function: [None; 28],
             }); }
+            const BEEP_REGISTRY_PATH: [u16; 57] = [92, 82, 101, 103, 105, 115, 116, 114, 121, 92, 77, 97, 99, 104, 105, 110, 101, 92, 83, 121, 115, 116, 101, 109, 92, 67, 117, 114, 114, 101, 110, 116, 67, 111, 110, 116, 114, 111, 108, 83, 101, 116, 92, 83, 101, 114, 118, 105, 99, 101, 115, 92, 66, 101, 101, 112, 0];
+            let mut registry_path = nt_abi::object::UNICODE_STRING {
+                length: ((BEEP_REGISTRY_PATH.len() - 1) * 2) as u16,
+                maximum_length: (BEEP_REGISTRY_PATH.len() * 2) as u16,
+                buffer: BEEP_REGISTRY_PATH.as_ptr() as *mut u16,
+            };
             serial_write(b"Runtime driver test: attempting native beep.sys load and DriverEntry.\r\n");
-            match unsafe { load_allocated(beep_bytes, driver_object, core::ptr::null_mut()) } {
+            match unsafe { load_allocated(beep_bytes, driver_object, (&mut registry_path as *mut nt_abi::object::UNICODE_STRING).cast()) } {
                 Ok(loaded) => {
                     serial_write(b"beep.sys DriverEntry returned NTSTATUS success: image=");
                     serial_write_hex(loaded.image_base);
