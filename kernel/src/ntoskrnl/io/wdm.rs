@@ -821,7 +821,7 @@ pub unsafe extern "system" fn io_create_device(
  if unsafe{(*driver).flags}&(DRIVER_UNLOADING_FLAG|DRIVER_UNLOADED_FLAG)!=0{return STATUS_DELETE_PENDING}
  if name_len!=0&&state.devices.iter().any(|s|s.used&&s.name_len==name_len&&unicode_equal_folded(&s.name[..s.name_len],&counted_name[..name_len])) {return STATUS_OBJECT_NAME_COLLISION}
  let Some(slot)=state.devices.iter_mut().find(|s|!s.used) else {return STATUS_INSUFFICIENT_RESOURCES};
- slot.used=true;slot.requestor_pid=crate::syscall::current_process_id();slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
+ slot.used=true;slot.deleting=false;slot.active_dispatches=0;slot.outstanding_irps=0;slot.remove_lock_count=0;slot.power_state=0;slot.power_target=0;slot.power_transition=false;slot.pnp_state=0;slot.pnp_pending=0;slot.pnp_transition_minor=0;slot.pnp_transition=false;slot.attached_to=ptr::null_mut();
  slot.name_len=name_len;slot.name=[0;260];slot.name[..name_len].copy_from_slice(&counted_name[..name_len]);
  slot.object.driver_object=driver;slot.object.device_type=device_type;slot.object.characteristics=characteristics;
  slot.object.size=(core::mem::size_of::<DeviceObject>()+extension_size as usize) as u16;
@@ -878,7 +878,7 @@ pub unsafe extern "system" fn io_unload_driver(driver:*mut DriverObject)->i32 {
  if let Some(callback)=callback{unsafe{callback(driver)}}
  // The driver image remains pinned through device rundown and DriverUnload.
  // Releasing it earlier could evict/free the code while its callback executes.
- let _ = unsafe { crate::ntoskrnl::driver_loader::unload_driver_image(driver) };
+ let _ = unsafe { crate::ntoskrnl::driver_loader::unload_driver_image(driver.cast::<c_void>()) };
  STATUS_SUCCESS
 }
 
