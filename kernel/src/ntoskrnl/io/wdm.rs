@@ -166,23 +166,74 @@ pub(crate) const PNP_STATE_NOT_STARTED:u8=0;
 pub(crate) const PNP_STATE_STARTED:u8=1;
 pub(crate) const PNP_STATE_STOPPED:u8=2;
 pub(crate) const PNP_STATE_REMOVED:u8=3;
+/// Only these PnP minors mutate the local device lifecycle. Query-ID,
+/// query-relations, resource, capability, and interface IRPs still dispatch
+/// normally, but do not alter the lifecycle state.
+fn pnp_minor_changes_lifecycle(minor:u8)->bool {
+ matches!(minor,0x00..=0x06|0x17)
+}
 pub(crate) unsafe fn io_begin_pnp_transition(device:*mut DeviceObject,minor:u8)->i32 {
  if device.is_null(){return STATUS_INVALID_PARAMETER}
+ if !pnp_minor_changes_lifecycle(minor){return STATUS_SUCCESS}
  let mut state=WDM.lock();
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
  if s.deleting||s.pnp_state==PNP_STATE_REMOVED{return STATUS_DELETE_PENDING}
  if s.pnp_transition{return STATUS_DEVICE_BUSY}
- let valid=match minor {0x00=>s.pnp_state==PNP_STATE_NOT_STARTED||s.pnp_state==PNP_STATE_STOPPED,0x01|0x05=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0,0x02|0x17=>true,0x03=>s.pnp_pending==0x01,0x04=>s.pnp_state==PNP_STATE_STARTED,0x06=>s.pnp_pending==0x05,_=>false};
+ let valid=match minor {
+  // START_DEVICE is legal only before the first start or after a successful stop.
+  0x00=>s.pnp_state==PNP_STATE_NOT_STARTED||s.pnp_state==PNP_STATE_STOPPED,
+  // QUERY_REMOVE / QUERY_STOP require a started device and no outstanding query.
+  0x01|0x05=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0,
+  // REMOVE_DEVICE and SURPRISE_REMOVAL are terminal lifecycle operations.
+  0x02|0x17=>s.pnp_state!=PNP_STATE_REMOVED,
+  // Cancellation must match its preceding successful query.
+  0x03=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0x01,
+  0x04=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0,
+  0x06=>s.pnp_state==PNP_STATE_STARTED&&s.pnp_pending==0x05,
+  _=>true
+ };
  if !valid{return STATUS_INVALID_DEVICE_REQUEST}
  s.pnp_transition=true;s.pnp_transition_minor=minor;STATUS_SUCCESS
 }
 pub(crate) unsafe fn io_complete_pnp_transition(device:*mut DeviceObject,minor:u8,status:i32)->i32 {
  if device.is_null(){return STATUS_INVALID_PARAMETER}
+ if !pnp_minor_changes_lifecycle(minor){return STATUS_SUCCESS}
  let mut state=WDM.lock();
  let Some(s)=state.devices.iter_mut().find(|s|s.used&&ptr::eq(&s.object,device)) else{return STATUS_INVALID_PARAMETER};
  if !s.pnp_transition||s.pnp_transition_minor!=minor{return STATUS_INVALID_DEVICE_REQUEST}
- if status==STATUS_SUCCESS {match minor {0x00=>{s.pnp_state=PNP_STATE_STARTED;s.pnp_pending=0;},0x01|0x05=>s.pnp_pending=minor,0x02|0x17=>{s.pnp_state=PNP_STATE_REMOVED;s.pnp_pending=0;},0x03|0x06=>s.pnp_pending=0,0x04=>{s.pnp_state=PNP_STATE_STOPPED;s.pnp_pending=0;},_=>{}}}
+ // A failed or cancelled IRP releases the transition reservation but never
+ // publishes the target lifecycle state.
+ if status==STATUS_SUCCESS {match minor {
+  0x00=>{s.pnp_state=PNP_STATE_STARTED;s.pnp_pending=0;},
+  0x01|0x05=>s.pnp_pending=minor,
+  0x02|0x17=>{s.pnp_state=PNP_STATE_REMOVED;s.pnp_pending=0;},
+  0x03|0x06=>s.pnp_pending=0,
+  0x04=>{s.pnp_state=PNP_STATE_STOPPED;s.pnp_pending=0;},
+  _=>{}
+ }}
  s.pnp_transition=false;STATUS_SUCCESS
+}
+
+/// Commit lifecycle changes only after the IRP has reached terminal completion.
+/// The IRP's tracked-device list is the rundown-protected set of objects that
+/// actually received this request; state changes are applied outside the lock.
+fn io_commit_pnp_transitions_for_irp(irp:*mut Irp,status:i32) {
+ let pending={
+  let state=WDM.lock();
+  let Some(ir)=state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
+  let count=ir.outstanding_count.min(ir.outstanding_devices.len());
+  let mut out=[(ptr::null_mut::<DeviceObject>(),0u8);16];
+  let mut n=0usize;
+  for device in ir.outstanding_devices[..count].iter().copied().filter(|d|!d.is_null()) {
+   if let Some(d)=state.devices.iter().find(|s|s.used&&ptr::eq(&s.object,device)&&s.pnp_transition) {
+    out[n]=(device,d.pnp_transition_minor);n+=1;
+   }
+  }
+  (out,n)
+ };
+ for (device,minor) in pending.0[..pending.1].iter().copied() {
+  unsafe{let _=io_complete_pnp_transition(device,minor,status);}
+ }
 }
 pub(crate) fn io_pnp_state(device:*mut DeviceObject)->i32 {
  if device.is_null(){return -1}
@@ -491,15 +542,32 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  }
  let major=unsafe{(*stack).major_function as usize};
  if major>=28{release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST}
+ let pnp_minor=unsafe{(*stack).minor_function};
+ let pnp_transition_started=major==0x1b&&pnp_minor_changes_lifecycle(pnp_minor);
+ if pnp_transition_started {
+  let pnp_status=unsafe{io_begin_pnp_transition(device,pnp_minor)};
+  if pnp_status!=STATUS_SUCCESS {
+   release_irp_active_op(irp);release_device_dispatch_rundown(device);return pnp_status;
+  }
+ }
  let dispatch=unsafe{(*driver).major_function[major]};
- let Some(dispatch)=dispatch else{release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST};
+ let Some(dispatch)=dispatch else{
+  if pnp_transition_started {unsafe{let _=io_complete_pnp_transition(device,pnp_minor,STATUS_INVALID_DEVICE_REQUEST);}}
+  release_irp_active_op(irp);release_device_dispatch_rundown(device);return STATUS_INVALID_DEVICE_REQUEST
+ };
  let prepare=unsafe{crate::ntoskrnl::po::runtime::po_prepare_irp_dispatch(device,irp,major as u8,(*stack).minor_function,(*stack).parameters)};
  if prepare!=STATUS_SUCCESS{
+  if pnp_transition_started {unsafe{let _=io_complete_pnp_transition(device,pnp_minor,prepare);}}
   unsafe{write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());(*irp).bytes[0x43]=location;}
   release_irp_active_op(irp);release_device_dispatch_rundown(device);return prepare
  }
  let status=unsafe{dispatch(device,irp)};
  crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
+ // A dispatch error is a failed attempt and may release the reservation now.
+ // STATUS_PENDING and success are resolved only by terminal IoCompleteRequest.
+ if pnp_transition_started && status<0 && status!=STATUS_PENDING {
+  unsafe{let _=io_complete_pnp_transition(device,pnp_minor,status);}
+ }
  release_irp_active_op(irp);
  release_device_dispatch_rundown(device);
  status
@@ -557,6 +625,9 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
    let status=unsafe{ptr::read_unaligned((*irp).bytes.as_ptr().add(IRP_STATUS_OFFSET).cast::<i32>())};
    crate::dma::release_irp_mappings(irp.cast());
    crate::ntoskrnl::po::runtime::po_complete_irp(irp,status);
+   // The state machine is driven by terminal IRP completion, not by an
+   // internal transition request or an individual dispatch return.
+   io_commit_pnp_transitions_for_irp(irp,status);
    finished=true;
    break
   }
