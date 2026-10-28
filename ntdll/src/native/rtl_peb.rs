@@ -35,6 +35,57 @@ extern "system" {
 }
 
 #[inline]
+unsafe fn cognac_wait_on_lock(address:*mut LONG,expected:LONG){
+    #[cfg(all(target_os="windows",target_arch="x86_64"))]
+    {
+        let status:u64;
+        unsafe{
+            core::arch::asm!(
+                "mov r10, rcx",
+                "syscall",
+                inlateout("rax") 0x152u64 => status,
+                inlateout("rcx") address as u64 => _,
+                in("rdx") expected as u32 as u64,
+                in("r8") 4u64,
+                in("r9") u64::MAX,
+                lateout("r10") _,
+                lateout("r11") _,
+                options(nostack)
+            );
+        }
+        let _=status;
+    }
+    #[cfg(not(all(target_os="windows",target_arch="x86_64")))]
+    { let _=(address,expected); }
+}
+
+#[inline]
+unsafe fn cognac_wake_lock(address:*mut LONG){
+    #[cfg(all(target_os="windows",target_arch="x86_64"))]
+    {
+        let status:u64;
+        unsafe{
+            core::arch::asm!(
+                "mov r10, rcx",
+                "syscall",
+                inlateout("rax") 0x153u64 => status,
+                inlateout("rcx") address as u64 => _,
+                in("rdx") 0u64,
+                in("r8") 0u64,
+                in("r9") 0u64,
+                lateout("r10") _,
+                lateout("r11") _,
+                options(nostack)
+            );
+        }
+        let _=status;
+    }
+    #[cfg(not(all(target_os="windows",target_arch="x86_64")))]
+    { let _=address; }
+}
+
+
+#[inline]
 unsafe fn current_thread_id() -> HANDLE {
     let tid: HANDLE;
     unsafe { core::arch::asm!("mov {}, gs:[0x48]", out(reg) tid, options(nostack, preserves_flags, readonly)) };
@@ -83,7 +134,12 @@ pub unsafe extern "system" fn RtlEnterCriticalSection(cs: *mut RTL_CRITICAL_SECT
         spins += 1;
         if spins >= 4096 {
             spins = 0;
-            let _ = unsafe { NtYieldExecution() };
+            let observed=lock.load(Ordering::Acquire);
+            if observed!=-1 {
+                unsafe{cognac_wait_on_lock(core::ptr::addr_of_mut!((*cs).LockCount),observed);}
+            } else {
+                let _ = unsafe { NtYieldExecution() };
+            }
         }
     }
 }
@@ -107,6 +163,7 @@ pub unsafe extern "system" fn RtlLeaveCriticalSection(cs: *mut RTL_CRITICAL_SECT
     let lock = unsafe { &*(core::ptr::addr_of!((*cs).LockCount) as *const AtomicI32) };
     owner.store(core::ptr::null_mut(), Ordering::Release);
     lock.store(-1, Ordering::Release);
+    unsafe{cognac_wake_lock(core::ptr::addr_of_mut!((*cs).LockCount));}
     STATUS_SUCCESS
 }
 
