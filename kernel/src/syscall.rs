@@ -220,28 +220,32 @@ pub const NT_SYSCALL_WAKE_ADDRESS: u64 = 0x153;
 pub const NT_SYSCALL_WAKE_ALL_ADDRESS: u64 = 0x154;
 
 #[derive(Clone, Copy)]
-struct UserAddressWaiter { active: bool, process: u64, address: u64, thread: u64 }
-impl UserAddressWaiter { const EMPTY: Self = Self { active:false, process:0, address:0, thread:0 }; }
+struct UserAddressWaiter { active: bool, process: u64, address: u64, thread: u64, deadline: u64 }
+impl UserAddressWaiter { const EMPTY: Self = Self { active:false, process:0, address:0, thread:0, deadline:0 }; }
 static USER_ADDRESS_WAITERS: crate::hal::IrqSpinLock<[UserAddressWaiter; 128]> =
     crate::hal::IrqSpinLock::new([UserAddressWaiter::EMPTY; 128]);
 
 fn wait_on_user_address(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     let address=args[0];
     if address==0 || !(args[2]==4||args[2]==8) { return NT_STATUS_INVALID_PARAMETER; }
-    if args[3]!=u64::MAX && args[3]!=0 { return NT_STATUS_NOT_IMPLEMENTED; }
+    if args[3]==0 { return 0x0000_0102; } // STATUS_TIMEOUT
     let Some(thread)=crate::thread::current_thread_id() else { return NT_STATUS_NOT_IMPLEMENTED; };
     let process=current_process_id();
     if process==0 { return NT_STATUS_NOT_IMPLEMENTED; }
+    let deadline=if args[3]==u64::MAX {0}else{
+        let Some(hz)=crate::hal::query_performance_frequency_hz().filter(|v|*v!=0) else{return NT_STATUS_NOT_IMPLEMENTED;};
+        let ticks=((args[3] as u128)*(hz as u128)+999)/1000;
+        match crate::hal::query_performance_counter().checked_add(ticks.min(u64::MAX as u128) as u64){Some(v)=>v.max(1),None=>return NT_STATUS_NOT_IMPLEMENTED}
+    };
     let mut current=[0u8;8];
     let mut waiters=USER_ADDRESS_WAITERS.lock();
     if !copy_current_user_from(address,&mut current[..args[2] as usize]) { return NT_STATUS_ACCESS_VIOLATION; }
     let observed=if args[2]==4 {u32::from_le_bytes(current[..4].try_into().unwrap()) as u64}else{u64::from_le_bytes(current)};
     if observed!=args[1] { return NT_STATUS_SUCCESS; }
-    if args[3]==0 { return 0x0000_0102; } // STATUS_TIMEOUT
     let Some(slot)=waiters.iter().position(|w|!w.active) else { return 0xC000_009A; };
     // Registration and the value recheck share the same lock as wake. A wake
     // cannot pass between the value check and waiter publication unnoticed.
-    waiters[slot]=UserAddressWaiter{active:true,process,address,thread};
+    waiters[slot]=UserAddressWaiter{active:true,process,address,thread,deadline};
     drop(waiters);
     if crate::thread::block_current().is_err() {
         let mut waiters=USER_ADDRESS_WAITERS.lock();
@@ -254,7 +258,22 @@ fn wait_on_user_address(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     if let Some(slot)=waiters.iter().position(|w|w.active&&w.process==process&&w.address==address&&w.thread==thread) {
         waiters[slot]=UserAddressWaiter::EMPTY;
     }
-    NT_STATUS_SUCCESS
+    crate::thread::take_wait_status().unwrap_or(NT_STATUS_SUCCESS) as u32 as u64
+}
+
+/// Expire finite NTDLL address waits from the kernel clock interrupt path.
+pub(crate) fn expire_user_address_waits(now:u64) {
+    let mut expired=[0u64;128];
+    let mut count=0usize;
+    {
+        let mut waiters=USER_ADDRESS_WAITERS.lock();
+        for waiter in waiters.iter_mut() {
+            if waiter.active&&waiter.deadline!=0&&waiter.deadline<=now&&count<expired.len(){
+                expired[count]=waiter.thread;count+=1;*waiter=UserAddressWaiter::EMPTY;
+            }
+        }
+    }
+    for thread in expired[..count].iter().copied(){let _=crate::thread::complete_wait(thread,0x0000_0102);}
 }
 
 fn wake_user_address(args: &[u64; NT_MAX_ARGUMENTS], all: bool) -> u64 {
