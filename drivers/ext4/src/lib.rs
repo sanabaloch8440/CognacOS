@@ -590,6 +590,33 @@ mod host_tests {
     }
 
     #[test]
+    fn writes_existing_extent_data_with_read_modify_write_and_flush() {
+        let mut disk = MemDisk { bytes: [0; 32768] };
+        let data_start = 5 * 1024;
+        disk.bytes[data_start..data_start + 1024].fill(0x5a);
+        let sb = Superblock {
+            inodes_count: 8, blocks_count: 16, first_data_block: 1,
+            block_size: 1024, blocks_per_group: 15, inodes_per_group: 8,
+            inode_size: 128, descriptor_size: 32, revision: 1,
+            feature_compat: 0, feature_incompat: INCOMPAT_EXTENTS,
+            feature_ro_compat: 0, read_only: true,
+        };
+        let mut fs = ExtFilesystem { device: disk, superblock: sb, read_only: false };
+        let mut root = [0u8; 60];
+        root[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        root[2..4].copy_from_slice(&1u16.to_le_bytes());
+        root[4..6].copy_from_slice(&4u16.to_le_bytes());
+        root[6..8].copy_from_slice(&0u16.to_le_bytes());
+        root[12..16].copy_from_slice(&0u32.to_le_bytes());
+        root[16..18].copy_from_slice(&1u16.to_le_bytes());
+        root[20..24].copy_from_slice(&5u32.to_le_bytes());
+        let mut scratch = [0u8; 1024];
+        assert_eq!(fs.write_file_data(&root, 1024, 13, &[0xa1, 0xb2, 0xc3], &mut scratch), Ok(3));
+        let disk = fs.into_device();
+        assert_eq!(&disk.bytes[data_start + 12..data_start + 17], &[0x5a, 0xa1, 0xb2, 0xc3, 0x5a]);
+    }
+
+    #[test]
     fn mbr_partition_view_translates_and_contains_io() {
         let mut disk=MemDisk{bytes:[0;32768]};
         disk.bytes[510]=0x55;disk.bytes[511]=0xaa;
