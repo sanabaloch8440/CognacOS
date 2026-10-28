@@ -494,7 +494,7 @@ pub fn run_ext4_readme_test() -> bool {
         if let (Ok(start), Ok(capacity)) = (trace_partition.start_byte(), trace_partition.capacity_bytes()) {
             TRACE_PARTITION_START.store(start / SECTOR_BYTES as u64, Ordering::Release);
             TRACE_PARTITION_CAPACITY.store(capacity, Ordering::Release);
-            unsafe { crate::serial_write(b"Debug trace persistence: dedicated GPT partition discovered.\\r\\n"); }
+            unsafe { crate::serial_write(b"Debug trace persistence: dedicated GPT partition discovered.\r\n"); }
         }
     }
     let partition = match extfs::read_gpt_partition(&mut whole_disk, 1, SECTOR_BYTES as u32) {
