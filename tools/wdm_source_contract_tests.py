@@ -6,6 +6,7 @@ import sys
 
 root = Path(__file__).resolve().parents[1]
 wdm = (root / "kernel/src/ntoskrnl/io/wdm.rs").read_text(encoding="utf-8")
+io_runtime = (root / "kernel/src/ntoskrnl/io/runtime.rs").read_text(encoding="utf-8")
 exports = (root / "kernel/src/ntoskrnl/mod.rs").read_text(encoding="utf-8")
 manifest = (root / "kernel/src/ntoskrnl/manifest_26100.json").read_text(encoding="utf-8")
 
@@ -54,7 +55,8 @@ for symbol in (
 ):
     if symbol not in exports or f'"name": "{symbol}"' not in manifest:
         errors.append(f"missing kernel export or manifest entry: {symbol}")
-    if f'export_name = "{symbol}"' not in wdm:
+    alias_source = io_runtime if symbol in ("IoAcquireCancelSpinLock", "IoReleaseCancelSpinLock") else wdm
+    if f'export_name = "{symbol}"' not in alias_source:
         errors.append(f"missing PE export alias for {symbol}")
 
 if errors:
