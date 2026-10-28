@@ -1817,7 +1817,10 @@ mod wdm_tests {
  unsafe extern "system" fn counted_completion(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
   COMPLETION_CALLBACKS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);STATUS_SUCCESS
  }
- unsafe extern "system" fn pending_dispatch(_device:*mut DeviceObject,_irp:*mut Irp)->i32 { STATUS_PENDING }
+ unsafe extern "system" fn pending_dispatch(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+  unsafe{io_mark_irp_pending(irp);}
+  STATUS_PENDING
+ }
  static CANCEL_CALLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
  unsafe extern "system" fn test_cancel(device:*mut DeviceObject,irp:*mut Irp) {
   if !irp.is_null() { CANCEL_CALLED.store(true,core::sync::atomic::Ordering::Release); }
@@ -1849,6 +1852,46 @@ mod wdm_tests {
   unsafe{io_free_irp(irp);}
  }
 
+ static IOCTL_COMPLETIONS:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+ unsafe extern "system" fn ioctl_buffered_dispatch(_device:*mut DeviceObject,irp:*mut Irp)->i32 {
+  let system_buffer=unsafe{read_ptr((*irp).bytes.as_ptr(),0x18).cast::<u8>()};
+  if !system_buffer.is_null(){unsafe{ptr::copy_nonoverlapping(b"OK".as_ptr(),system_buffer,2);}}
+  unsafe{
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_STATUS_OFFSET).cast::<i32>(),STATUS_SUCCESS);
+   ptr::write_unaligned((*irp).bytes.as_mut_ptr().add(IRP_INFORMATION_OFFSET).cast::<usize>(),2);
+   io_complete_request(irp,0);
+  }
+  STATUS_SUCCESS
+ }
+ unsafe extern "system" fn ioctl_counted_completion(_device:*mut DeviceObject,_irp:*mut Irp,_context:*mut c_void)->i32 {
+  IOCTL_COMPLETIONS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
+  STATUS_SUCCESS
+ }
+ #[test]
+ fn build_device_io_control_request_copies_buffered_output_and_auto_frees() {
+  IOCTL_COMPLETIONS.store(0,core::sync::atomic::Ordering::Release);
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.major_function[0x0e]=Some(ioctl_buffered_dispatch);
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let input=*b"IN";
+  let mut output=[0u8;8];
+  let mut iosb:IoStatusBlock=unsafe{core::mem::zeroed()};
+  // METHOD_BUFFERED = 0; FILE_DEVICE_UNKNOWN/any valid function is sufficient
+  // for this I/O-manager contract test.
+  let irp=unsafe{io_build_device_io_control_request(0x00222000,device,input.as_ptr() as *mut c_void,2,output.as_mut_ptr().cast(),output.len() as u32,0,ptr::null_mut(),&mut iosb)};
+  assert!(!irp.is_null());
+  unsafe{io_set_completion_routine(irp,Some(ioctl_counted_completion),ptr::null_mut(),1,1,1);}
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
+  assert_eq!(iosb.status,STATUS_SUCCESS);
+  assert_eq!(iosb.information,2);
+  assert_eq!(&output[..2],b"OK");
+  assert_eq!(IOCTL_COMPLETIONS.load(core::sync::atomic::Ordering::Acquire),1);
+  // The builder-owned IRP is reclaimed at terminal completion.
+  assert!(!WDM.lock().irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp)));
+  unsafe{io_delete_device(device);}
+ }
+
  #[test]
  fn free_irp_does_not_reclaim_a_pending_request() {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};
@@ -1859,7 +1902,8 @@ mod wdm_tests {
   assert!(!irp.is_null());
   unsafe{(*io_get_next_irp_stack_location(irp)).major_function=0;}
   assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
-  assert_eq!(unsafe{(*irp).bytes[0x41]},1);
+  assert_eq!(unsafe{(*irp).bytes[0x41]},0);
+  assert_ne!(unsafe{(*io_get_current_irp_stack_location(irp)).control}&0x01,0);
   // A premature free is rejected; the same IRP remains registered and
   // its outstanding completion can still finish safely.
   unsafe{io_free_irp(irp);}
