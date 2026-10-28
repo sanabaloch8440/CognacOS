@@ -824,7 +824,7 @@ fn initialize_irp_slot(slot:&mut IrpSlot,stack_size:i8)->*mut Irp {
  unsafe{write_ptr(ptr::addr_of_mut!((*object).bytes).cast::<u8>(),IRP_STACK_OFFSET,one_past);}
  object
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoAllocateIrp")]
 pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*mut Irp {
  if stack_size<=0||stack_size as usize>MAX_WDM_STACK_LOCATIONS||charge_quota>1{return ptr::null_mut()}
  {
@@ -852,7 +852,7 @@ pub unsafe extern "system" fn io_allocate_irp(stack_size:i8, charge_quota:u8)->*
  let Some(slot)=state.irps.iter_mut().find(|s|!s.used) else{return ptr::null_mut()};
  initialize_irp_slot(slot,stack_size)
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoFreeIrp")]
 pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
  if irp.is_null(){return}
  {
@@ -878,12 +878,12 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
  if !owned_mdl.is_null(){unsafe{crate::ntoskrnl::mm::runtime::mm_free_mdl(owned_mdl);}}
  if !system_buffer.is_null()&&system_buffer_pages!=0{let _=crate::ntoskrnl::mm::kernel_space::free_pages(system_buffer,system_buffer_pages);}
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoGetCurrentIrpStackLocation")]
 pub unsafe extern "system" fn io_get_current_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
  if irp.is_null(){return ptr::null_mut()}
  unsafe{read_ptr(ptr::addr_of!((*irp).bytes).cast::<u8>(),IRP_STACK_OFFSET).cast()}
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoGetNextIrpStackLocation")]
 pub unsafe extern "system" fn io_get_next_irp_stack_location(irp:*mut Irp)->*mut IoStackLocation {
  if irp.is_null(){return ptr::null_mut()}
  let current=unsafe{io_get_current_irp_stack_location(irp)};
@@ -982,7 +982,7 @@ fn release_device_dispatch_rundown(device:*mut DeviceObject){
  if finalize{unsafe{io_delete_device(device)}}
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCallDriver")]
 pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut Irp)->i32 {
  if device.is_null()||irp.is_null(){return STATUS_INVALID_PARAMETER}
  let (driver, deleting)={
@@ -1053,7 +1053,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
 /// pointers. A supplied event is signaled after the IOSB is finalized and the
 /// IRP reaches terminal completion. Event == NULL requires the caller to install
 /// a completion routine before calling IoCallDriver.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoBuildDeviceIoControlRequest")]
 pub unsafe extern "system" fn io_build_device_io_control_request(
  ioctl_code:u32, device:*mut DeviceObject, input_buffer:*mut c_void,
  input_length:u32, output_buffer:*mut c_void, output_length:u32,
@@ -1185,7 +1185,7 @@ fn finalize_irp_status(irp:*mut Irp) {
  let _=copy_out;
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCompleteRequest")]
 pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:i8) {
  if irp.is_null(){return}
  // Claim completion under WDM's lock. A competing completion cannot execute
@@ -1301,7 +1301,7 @@ pub unsafe extern "system" fn io_complete_request(irp:*mut Irp, _priority_boost:
   try_free_completed_sync_ioctl_irp(irp);
  }
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoMarkIrpPending")]
 pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
  if irp.is_null(){return}
  // Windows sets SL_PENDING_RETURNED on the current stack location; the I/O
@@ -1310,7 +1310,7 @@ pub unsafe extern "system" fn io_mark_irp_pending(irp:*mut Irp) {
  if !stack.is_null(){unsafe{(*stack).control|=0x01;}}
 }
 
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoSetCompletionRoutine")]
 pub unsafe extern "system" fn io_set_completion_routine(
  irp:*mut Irp, routine:Option<IoCompletionRoutine>, context:*mut c_void,
  invoke_success:u8, invoke_error:u8, invoke_cancel:u8
@@ -1375,7 +1375,7 @@ pub unsafe extern "system" fn io_detach_device(target:*mut DeviceObject) {
 
 /// Initialize a caller-allocated WDM IRP and its trailing stack locations.
 /// PacketSize must cover the fixed x64 IRP plus StackSize full stack locations.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoInitializeIrp")]
 pub unsafe extern "system" fn io_initialize_irp(
     irp:*mut Irp, packet_size:u16, stack_size:i8
 ) {
@@ -1395,7 +1395,7 @@ pub unsafe extern "system" fn io_initialize_irp(
 }
 
 /// Copy the current stack parameters into the next lower driver's stack slot.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCopyCurrentIrpStackLocationToNext")]
 pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mut Irp) {
  if irp.is_null(){return}
  let count=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize};
@@ -1414,7 +1414,7 @@ pub unsafe extern "system" fn io_copy_current_irp_stack_location_to_next(irp:*mu
 /// Arrange for IoCallDriver to reuse the current stack slot instead of
 /// consuming another one: advance the current pointer so the dispatch decrement
 /// returns it to the same slot.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoSkipCurrentIrpStackLocation")]
 pub unsafe extern "system" fn io_skip_current_irp_stack_location(irp:*mut Irp) {
  if irp.is_null(){return}
  let count=unsafe{*ptr::addr_of!((*irp).bytes).cast::<u8>().add(0x42) as usize};
@@ -1475,7 +1475,7 @@ pub unsafe extern "system" fn io_get_lower_device_object(device:*mut DeviceObjec
 }
 
 /// Reset an allocated IRP for reuse without releasing its allocation.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoReuseIrp")]
 pub unsafe extern "system" fn io_reuse_irp(irp:*mut Irp, status:i32) {
  if irp.is_null(){return}
  let release_old_refs={
@@ -1672,12 +1672,12 @@ unsafe fn csq_initialize_common(csq:*mut IoCsq,insert:*mut c_void,extended:bool,
  }
  STATUS_SUCCESS
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCsqInitialize")]
 pub unsafe extern "system" fn io_csq_initialize(csq:*mut IoCsq,insert:Option<CsqInsert>,remove:Option<CsqRemove>,peek:Option<CsqPeek>,acquire:Option<CsqAcquire>,release:Option<CsqRelease>,complete:Option<CsqCompleteCanceled>)->i32 {
  let (Some(insert),Some(remove),Some(peek),Some(acquire),Some(release),Some(complete))=(insert,remove,peek,acquire,release,complete) else{return STATUS_INVALID_PARAMETER};
  unsafe{csq_initialize_common(csq,insert as *const () as *mut c_void,false,remove as *const () as *mut c_void,peek as *const () as *mut c_void,acquire as *const () as *mut c_void,release as *const () as *mut c_void,complete as *const () as *mut c_void)}
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCsqInitializeEx")]
 pub unsafe extern "system" fn io_csq_initialize_ex(csq:*mut IoCsq,insert:Option<CsqInsertEx>,remove:Option<CsqRemove>,peek:Option<CsqPeek>,acquire:Option<CsqAcquire>,release:Option<CsqRelease>,complete:Option<CsqCompleteCanceled>)->i32 {
  let (Some(insert),Some(remove),Some(peek),Some(acquire),Some(release),Some(complete))=(insert,remove,peek,acquire,release,complete) else{return STATUS_INVALID_PARAMETER};
  unsafe{csq_initialize_common(csq,insert as *const () as *mut c_void,true,remove as *const () as *mut c_void,peek as *const () as *mut c_void,acquire as *const () as *mut c_void,release as *const () as *mut c_void,complete as *const () as *mut c_void)}
@@ -1723,15 +1723,15 @@ unsafe fn csq_insert_impl(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpConte
  }
  if extended_api {status}else{STATUS_SUCCESS}
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCsqInsertIrp")]
 pub unsafe extern "system" fn io_csq_insert_irp(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext) {
  let _=unsafe{csq_insert_impl(csq,irp,context,ptr::null_mut(),false)};
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCsqInsertIrpEx")]
 pub unsafe extern "system" fn io_csq_insert_irp_ex(csq:*mut IoCsq,irp:*mut Irp,context:*mut IoCsqIrpContext,insert_context:*mut c_void)->i32 {
  unsafe{csq_insert_impl(csq,irp,context,insert_context,true)}
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCsqRemoveIrp")]
 pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCsqIrpContext)->*mut Irp {
  if csq.is_null()||context.is_null(){return ptr::null_mut()}
  let context_type=unsafe{ptr::read_unaligned(ptr::addr_of!((*context).type_))};
@@ -1758,7 +1758,7 @@ pub unsafe extern "system" fn io_csq_remove_irp(csq:*mut IoCsq,context:*mut IoCs
  }
  irp
 }
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCsqRemoveNextIrp")]
 pub unsafe extern "system" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context:*mut c_void)->*mut Irp {
  if csq.is_null(){return ptr::null_mut()}
  let mut old_irql=0u8;unsafe{super::io_acquire_cancel_spin_lock(&mut old_irql);}
@@ -1785,7 +1785,7 @@ pub unsafe extern "system" fn io_csq_remove_next_irp(csq:*mut IoCsq,peek_context
 
 const IRP_CANCEL_ROUTINE_OFFSET:usize=0x68;
 /// Atomically replace the IRP cancel callback and return the previous callback.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoSetCancelRoutine")]
 pub unsafe extern "system" fn io_set_cancel_routine(
  irp:*mut Irp, routine:Option<DriverCancelRoutine>
 )->Option<DriverCancelRoutine> {
@@ -1849,7 +1849,7 @@ pub fn io_cancel_thread_irps(thread_id:u64)->usize {
 
 /// Request cancellation using the global cancel-spin-lock protocol. A driver
 /// callback is invoked only after the lock and raised IRQL have been released.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoCancelIrp")]
 pub unsafe extern "system" fn io_cancel_irp(irp:*mut Irp)->u8 {
  if irp.is_null(){return 0}
  if !acquire_irp_active_op(irp){return 0}
@@ -1899,7 +1899,7 @@ pub unsafe fn lookup_device_object(name:*mut UnicodeString)->*mut DeviceObject {
 /// Build a bounded asynchronous READ/WRITE IRP for a device that uses neither
 /// buffered nor direct I/O. Buffered-I/O system buffers and MDL-backed direct
 /// I/O are rejected until their full lifetime/locking contracts are available.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoBuildAsynchronousFsdRequest")]
 pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
  major:u32, device:*mut DeviceObject, buffer:*mut c_void, length:u32,
  starting_offset:*const i64, io_status:*mut IoStatusBlock
@@ -1941,7 +1941,7 @@ pub unsafe extern "system" fn io_build_asynchronous_fsd_request(
 
 /// Allocate an MDL descriptor and optionally link it into an IRP's MDL chain.
 /// Page locking is deliberately separate, matching MmProbeAndLockPages.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoAllocateMdl")]
 pub unsafe extern "system" fn io_allocate_mdl(
  base:*mut c_void,length:u32,secondary_buffer:u8,charge_quota:u8,irp:*mut Irp
 )->*mut c_void {
@@ -1983,7 +1983,7 @@ pub unsafe extern "system" fn io_allocate_mdl(
 }
 
 /// Unlink and free an MDL allocated by IoAllocateMdl.
-#[unsafe(no_mangle)]
+#[unsafe(export_name = "IoFreeMdl")]
 pub unsafe extern "system" fn io_free_mdl(mdl:*mut c_void) {
  if mdl.is_null(){return}
  {
