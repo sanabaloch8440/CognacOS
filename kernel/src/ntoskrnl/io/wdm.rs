@@ -948,8 +948,7 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
 }
 /// Build a synchronous device-control IRP. METHOD_BUFFERED and the two
 /// direct methods are supported; METHOD_NEITHER preserves the caller's kernel
-/// pointers. This kernel currently has no KeSetEvent-compatible wait/wake
-/// primitive. A supplied event is signaled after the IOSB is finalized and the
+/// pointers. A supplied event is signaled after the IOSB is finalized and the
 /// IRP reaches terminal completion. Event == NULL requires the caller to install
 /// a completion routine before calling IoCallDriver.
 #[unsafe(no_mangle)]
