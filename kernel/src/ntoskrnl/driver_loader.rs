@@ -114,10 +114,32 @@ pub unsafe fn load_with_resolver(file:&[u8],mapped:&mut[u8],base:u64,driver_obje
   let pages=(span+4095)/4096;
   crate::kernel_vm::protect_pages(base+rva as u64,pages,flags&IMAGE_SCN_MEM_WRITE!=0,flags&IMAGE_SCN_MEM_EXECUTE!=0).map_err(|_|DriverLoadError::MappingFailed)?;
  }
+ // Register exact section ranges only after mapping and final protection checks.
+ // PAGE/PAGEDATA sections are evictable; all other sections receive lifetime
+ // PFN pins so executable code and ordinary data cannot be reclaimed.
+ for i in 0..count {
+  let o=table+i*40;
+  let virtual_size=u32at(file,o+8)?;
+  let rva=u32at(file,o+12)?;
+  let raw_size=u32at(file,o+16)?;
+  let span=core::cmp::max(virtual_size,raw_size) as u64;
+  if span==0 { continue; }
+  let name=file.get(o..o+8).ok_or(DriverLoadError::Truncated)?;
+  let name_len=name.iter().position(|b|*b==0).unwrap_or(name.len());
+  let name=&name[..name_len];
+  let pageable=name.starts_with(b"PAGE") || name.starts_with(b".PAGE");
+  if !crate::ntoskrnl::mm::runtime::register_driver_image_section(base,base+rva as u64,span,pageable) {
+   crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);
+   return Err(DriverLoadError::MappingFailed);
+  }
+ }
  let entry=base.checked_add(entry_rva as u64).ok_or(DriverLoadError::InvalidHeader)?;
  let routine:unsafe extern "win64" fn(*mut DriverObject,*mut c_void)->i32=unsafe{core::mem::transmute(entry as usize)};
  let status=unsafe{routine(driver_object,context)};
- if status<0{return Err(DriverLoadError::EntryFailed(status));}
+ if status<0 {
+  crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);
+  return Err(DriverLoadError::EntryFailed(status));
+ }
  Ok(LoadedDriver{image_base:base,image_size:image_size as u32,entry_point:entry,status})
 }
 
@@ -133,14 +155,26 @@ pub unsafe fn load_allocated_with_resolver(file:&[u8],driver_object:*mut DriverO
  let preferred=u64at(file,opt+24)?;let size=u32at(file,opt+56)? as usize;
  if size==0||size>MAX_IMAGE_SIZE{return Err(DriverLoadError::ImageTooLarge);}
  let pages=size.checked_add(4095).ok_or(DriverLoadError::InvalidHeader)?/4096;
- let preferred_mapping=if crate::kernel_vm::is_driver_image_base(preferred){crate::kernel_vm::allocate_pages_at(preferred,pages).ok()}else{None};
- let mapped=match preferred_mapping{Some(p)=>p,None=>crate::kernel_vm::allocate_pages(pages).map_err(|_|DriverLoadError::NoMemory)?};
+ // Driver images use the pageable kernel arena. The loader's section registry
+ // pins non-PAGE sections permanently and MmLockPagableDataSection pins PAGE
+ // sections on demand; relocation handles preferred-base conflicts.
+ let mapped=crate::kernel_vm::allocate_pageable_pages(pages).map_err(|_|DriverLoadError::NoMemory)?;
  let base=mapped as u64;
  let image=unsafe{core::slice::from_raw_parts_mut(mapped,size)};
  match unsafe{load_with_resolver(file,image,base,driver_object,context,resolver)}{
   Ok(driver)=>Ok(driver),
-  Err(error)=>{let _=crate::kernel_vm::free_pages(mapped,pages);Err(error)}
+  Err(error)=>{crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(base);let _=crate::kernel_vm::free_pages(mapped,pages);Err(error)}
  }
+}
+
+/// Release a driver image after DriverUnload has returned and all image
+/// callbacks/IRPs have drained. Callers must not unload while any CPU can execute
+/// inside the image.
+pub unsafe fn unload_image(image_base:u64,image_size:u32)->Result<(),DriverLoadError>{
+ if image_base<0xffff_8000_0000_0000||image_size==0{return Err(DriverLoadError::InvalidHeader)}
+ let pages=(image_size as usize).checked_add(4095).ok_or(DriverLoadError::InvalidHeader)?/4096;
+ crate::ntoskrnl::mm::runtime::unregister_driver_image_sections(image_base);
+ crate::kernel_vm::free_pages(image_base as *mut u8,pages).map_err(|_|DriverLoadError::MappingFailed)
 }
 
 fn put_u64(bytes:&mut[u8],offset:usize,value:u64)->Result<(),DriverLoadError>{
