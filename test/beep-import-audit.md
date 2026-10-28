@@ -2,6 +2,12 @@
 
 Target ABI: Windows 11 x64 / NT 10.0.26100 family. This is a source audit of the current CognacOS implementation, not a claim that the imported routines are fully Windows-compatible.
 
+## Binary disassembly findings (current `test/beep.sys`)
+
+The CI PE inspection and x64 disassembly identify this image as AMD64 PE32+ with native subsystem, entry RVA `0x6010`, image size `0xA000`, and no COFF symbol table (`SymbolCount: 0`). Its only import descriptor is `ntoskrnl.exe`; the imported names include WDM I/O, queue, synchronization, IRQL, and pageable-image routines. **It does not import `DbgPrint`, `DbgPrintEx`, or another explicit debug-print routine.** Therefore we cannot expect driver-originated debug strings from this binary. That is a property of this image, not proof that the kernel cannot debug it.
+
+The disassembly does contain ordinary x64 driver code and indirect calls through the IAT, so the kernel can still observe the driver at its entry point and at WDM dispatch boundaries. Because the binary has no symbols, source-level function names/locals are unavailable; diagnostics should identify loaded image plus RVA, callback address, IRP major/minor code, and returned NTSTATUS.
+
 ## Classification
 
 | Imported routine / group | Current source evidence | Classification / caveat |
