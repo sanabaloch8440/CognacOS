@@ -89,7 +89,7 @@ pub struct Irp { pub bytes: [u8; IRP_SIZE_X64] }
 #[derive(Clone, Copy)]
 pub struct IoStackLocation {
     pub major_function: u8, pub minor_function: u8, pub flags: u8, pub control: u8,
-    pub parameters: [u8; 0x28], pub device_object: *mut DeviceObject,
+    pub parameters: [u8; 0x20], pub device_object: *mut DeviceObject,
     pub file_object: *mut c_void, pub completion_routine: Option<IoCompletionRoutine>,
     pub context: *mut c_void,
 }
@@ -114,7 +114,7 @@ impl IrpSlot {
   suspended_completion:false,free_requested:false,active_ops:0,outstanding_count:0,
   outstanding_devices:[ptr::null_mut();MAX_WDM_STACK_LOCATIONS],
   object:Irp{bytes:[0;IRP_SIZE_X64]},
-  stack:[IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x28],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()};MAX_WDM_STACK_LOCATIONS],
+  stack:[IoStackLocation{major_function:0,minor_function:0,flags:0,control:0,parameters:[0;0x20],device_object:ptr::null_mut(),file_object:ptr::null_mut(),completion_routine:None,context:ptr::null_mut()};MAX_WDM_STACK_LOCATIONS],
   system_buffer:ptr::null_mut(),system_buffer_pages:0,system_buffer_len:0,
   ioctl_output_buffer:ptr::null_mut(),ioctl_output_len:0,built_sync_ioctl:false,
   sync_thread_id:0,requestor_pid:0,sync_event:ptr::null_mut(),sync_next:ptr::null_mut(),sync_prev:ptr::null_mut(),sync_queued:false,
@@ -1262,14 +1262,13 @@ pub unsafe extern "win64" fn io_build_device_io_control_request(
  if !attached {unsafe{io_free_irp(irp)};return ptr::null_mut()}
  unsafe {
   (*next).major_function=if internal_device_control!=0{0x0f}else{0x0e};
-  // IO_STACK_LOCATION's Parameters union starts at byte 8 on x64.
-  // DEVICE_IO_CONTROL fields are relative to that union: output length 0,
-  // input length 8, control code 16, and Type3InputBuffer 24.
-  ptr::write_unaligned(next.cast::<u8>().add(8).cast::<u32>(),output_length);
-  ptr::write_unaligned(next.cast::<u8>().add(16).cast::<u32>(),input_length);
-  ptr::write_unaligned(next.cast::<u8>().add(24).cast::<u32>(),ioctl_code);
+  // On x64, InputBufferLength and IoControlCode are POINTER_ALIGNMENT
+  // fields in the DeviceIoControl union (offsets 8 and 16 within Parameters).
+  ptr::write_unaligned(next.cast::<u8>().add(4).cast::<u32>(),output_length);
+  ptr::write_unaligned(next.cast::<u8>().add(12).cast::<u32>(),input_length);
+  ptr::write_unaligned(next.cast::<u8>().add(20).cast::<u32>(),ioctl_code);
   if method==3 {
-   ptr::write_unaligned(next.cast::<u8>().add(32).cast::<*mut c_void>(),input_buffer);
+   ptr::write_unaligned(next.cast::<u8>().add(28).cast::<*mut c_void>(),input_buffer);
   }
  }
  if method==1||method==2 {
