@@ -927,21 +927,38 @@ fn track_irp_device(irp:*mut Irp, device:*mut DeviceObject)->bool {
 /// Release the IRP's device references once. The caller must keep the IRP
 /// allocated until this function returns.
 fn release_irp_active_op(irp:*mut Irp) {
- let (should_release,completion_event)={
+ let terminal_last={
   let mut state=WDM.lock();
   let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
-  if state.irps[index].active_ops!=0 {state.irps[index].active_ops-=1;}
-  let terminal=state.irps[index].active_ops==0&&state.irps[index].completion_state==2;
-  let release=terminal&&state.irps[index].outstanding_count!=0;
-  let event=if terminal {sync_queue_detach_locked(&mut state,irp)}else{ptr::null_mut()};
-  (release,event)
+  if state.irps[index].active_ops==0{return}
+  if state.irps[index].active_ops==1&&state.irps[index].completion_state==2 {
+   // Keep one finalization pin until rundown is released and the event is
+   // signaled. Thread exit observes this pin and cannot abandon stack storage.
+   true
+  } else {
+   state.irps[index].active_ops-=1;
+   false
+  }
  };
- // Completion may finish while a cancel/dispatch callback is still pinned.
- // Keep device rundown until the final callback pin is dropped; only then wake
- // the synchronous caller and permit its IRP to be reclaimed.
- if should_release {release_irp_device_rundown(irp);}
- if !completion_event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(completion_event.cast(),0,0);}}
- try_free_completed_sync_ioctl_irp(irp);
+ if terminal_last {
+  release_irp_device_rundown(irp);
+  let event={
+   let state=WDM.lock();
+   state.irps.iter().find(|s|s.used&&ptr::eq(&s.object,irp))
+    .map(|slot|slot.sync_event).unwrap_or(ptr::null_mut())
+  };
+  if !event.is_null(){unsafe{crate::ntoskrnl::ke::runtime::ke_set_event(event.cast(),0,0);}}
+  {
+   let mut state=WDM.lock();
+   if let Some(index)=state.irps.iter().position(|s|s.used&&ptr::eq(&s.object,irp)) {
+    if state.irps[index].active_ops!=0{state.irps[index].active_ops-=1;}
+    if state.irps[index].active_ops==0&&state.irps[index].completion_state==2 {
+     let _=sync_queue_detach_locked(&mut state,irp);
+    }
+   }
+  }
+  try_free_completed_sync_ioctl_irp(irp);
+ }
 }
 
 /// Drop every device rundown reference attached to an IRP exactly once.
