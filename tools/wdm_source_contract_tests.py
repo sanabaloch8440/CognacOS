@@ -51,6 +51,8 @@ for symbol in (
 ):
     if symbol not in exports or f'"name": "{symbol}"' not in manifest:
         errors.append(f"missing kernel export or manifest entry: {symbol}")
+    if f'export_name = "{symbol}"' not in wdm:
+        errors.append(f"missing PE export alias for {symbol}")
 
 if errors:
     print("WDM source-contract checks FAILED:", file=sys.stderr)
