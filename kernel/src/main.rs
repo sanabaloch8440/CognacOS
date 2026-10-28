@@ -1313,7 +1313,7 @@ unsafe fn submit_beep_ioctl(
     // open-by-name/object-manager path for this test device.
     let mut create_stack = IO_STACK_LOCATION {
         major_function: IRP_MJ_CREATE as u8, minor_function: 0,
-        flags: 0, control: 0, parameters: [0; 0x28],
+        flags: 0, control: 0, parameters: [0; 0x20],
         device_object: device_object.cast(), file_object,
         completion_routine: None, context: core::ptr::null_mut(),
     };
