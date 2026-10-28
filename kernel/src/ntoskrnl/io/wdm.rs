@@ -1171,7 +1171,7 @@ pub unsafe extern "system" fn io_detach_device(target:*mut DeviceObject) {
 pub unsafe extern "system" fn io_initialize_irp(
     irp:*mut Irp, packet_size:u16, stack_size:u8
 ) {
-    if irp.is_null() || stack_size==0 || stack_size>16 {return}
+    if irp.is_null() || stack_size==0 || stack_size>127 {return}
     let required=IRP_SIZE_X64.checked_add(stack_size as usize*IO_STACK_LOCATION_SIZE_X64);
     if required.is_none_or(|n|n>packet_size as usize){return}
     unsafe {
