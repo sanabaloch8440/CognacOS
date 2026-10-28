@@ -227,15 +227,15 @@ static USER_ADDRESS_WAITERS: crate::hal::IrqSpinLock<[UserAddressWaiter; 128]> =
 
 fn wait_on_user_address(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     let address=args[0];
-    if address==0 || args[2]!=8 { return NT_STATUS_INVALID_PARAMETER; }
+    if address==0 || !(args[2]==4||args[2]==8) { return NT_STATUS_INVALID_PARAMETER; }
     if args[3]!=u64::MAX && args[3]!=0 { return NT_STATUS_NOT_IMPLEMENTED; }
     let Some(thread)=crate::thread::current_thread_id() else { return NT_STATUS_NOT_IMPLEMENTED; };
     let process=current_process_id();
     if process==0 { return NT_STATUS_NOT_IMPLEMENTED; }
     let mut current=[0u8;8];
     let mut waiters=USER_ADDRESS_WAITERS.lock();
-    if !copy_current_user_from(address,&mut current) { return NT_STATUS_ACCESS_VIOLATION; }
-    let observed=u64::from_le_bytes(current);
+    if !copy_current_user_from(address,&mut current[..args[2] as usize]) { return NT_STATUS_ACCESS_VIOLATION; }
+    let observed=if args[2]==4 {u32::from_le_bytes(current[..4].try_into().unwrap()) as u64}else{u64::from_le_bytes(current)};
     if observed!=args[1] { return NT_STATUS_SUCCESS; }
     if args[3]==0 { return 0x0000_0102; } // STATUS_TIMEOUT
     let Some(slot)=waiters.iter().position(|w|!w.active) else { return 0xC000_009A; };
