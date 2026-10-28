@@ -98,7 +98,7 @@ fn atomic_lock_word(lock: *mut u64) -> Option<&'static core::sync::atomic::Atomi
 /// KfRaiseIrql: raise the current processor's IRQL and return the previous
 /// value. IRQL changes use the same interrupt-state stack and HAL priority
 /// programming as the other Ke IRQL entry points.
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub unsafe extern "win64" fn kf_raise_irql(new_irql: u8) -> u8 {
     const MAXIMUM_IRQL: u8 = 15;
     let cpu = cpu_slot();
