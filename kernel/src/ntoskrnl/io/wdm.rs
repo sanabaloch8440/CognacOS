@@ -729,7 +729,13 @@ pub unsafe extern "system" fn io_free_irp(irp:*mut Irp) {
  {
   let mut state=WDM.lock();
   let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) else{return};
-  if slot.completion_state==1 || slot.active_ops!=0 { return; }
+  // A pending IRP remains owned by the lower stack until terminal
+  // completion. Never turn an in-flight packet into a freeable packet merely
+  // because IoCallDriver's dispatch frame has returned.
+  if slot.completion_state==1 || slot.active_ops!=0
+      || (slot.completion_state==0 && slot.outstanding_count!=0) {
+   return;
+  }
   // Close the packet before dropping its device references so a racing
   // completion cannot begin against storage being released.
   slot.completion_state=2;
@@ -873,6 +879,15 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
   release_irp_active_op(irp);release_device_dispatch_rundown(device);return prepare
  }
  let status=unsafe{dispatch(device,irp)};
+ // IoCallDriver records a pending return in the IRP so completion unwind and
+ // upper drivers can observe asynchronous completion. Do not mutate a packet
+ // whose terminal completion already won a race with the dispatch return.
+ if status==STATUS_PENDING {
+  let mut state=WDM.lock();
+  if let Some(slot)=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)) {
+   if slot.completion_state==0 { slot.object.bytes[0x41]=1; }
+  }
+ }
  crate::ntoskrnl::po::runtime::po_finish_dispatch_return(irp,device,status);
  release_irp_active_op(irp);
  release_device_dispatch_rundown(device);
@@ -1661,6 +1676,24 @@ mod wdm_tests {
   assert_eq!(unsafe{io_unload_driver(&mut driver)},STATUS_SUCCESS);
   assert_eq!(UNLOAD_CALLS.load(core::sync::atomic::Ordering::Acquire),1);
   unsafe{io_free_irp(irp);}
+ }
+
+ #[test]
+ fn free_irp_does_not_reclaim_a_pending_request() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.major_function[0]=Some(pending_dispatch);
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  unsafe{(*io_get_next_irp_stack_location(irp)).major_function=0;}
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
+  assert_eq!(unsafe{(*irp).bytes[0x41]},1);
+  // A premature free is rejected; the same IRP must still be completable.
+  unsafe{io_free_irp(irp);}
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_DELETE_PENDING);
+  unsafe{io_complete_request(irp,0);}
+  unsafe{io_free_irp(irp);io_delete_device(device);}
  }
 
  #[test]
