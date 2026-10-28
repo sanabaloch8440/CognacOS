@@ -2066,6 +2066,33 @@ mod wdm_tests {
  }
 
  #[test]
+ fn thread_exit_detaches_and_cancels_builder_owned_pending_irps() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.major_function[0x0e]=Some(pending_dispatch);
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let mut iosb:IoStatusBlock=unsafe{core::mem::zeroed()};
+  let irp=unsafe{io_build_device_io_control_request(0x00222003,device,ptr::null_mut(),0,ptr::null_mut(),0,0,ptr::null_mut(),&mut iosb)};
+  assert!(!irp.is_null());
+  // Simulate the current-thread queue entry without requiring a live scheduler
+  // thread in this host-side unit test.
+  {
+   let mut state=WDM.lock();
+   let slot=state.irps.iter_mut().find(|s|s.used&&ptr::eq(&s.object,irp)).unwrap();
+   slot.sync_thread_id=0xBEEF;
+  }
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_PENDING);
+  assert_eq!(io_cancel_thread_irps(0xBEEF),1);
+  assert_eq!(unsafe{(*irp).bytes[0x44]},1);
+  assert!(unsafe{read_ptr((*irp).bytes.as_ptr(),0x48)}.is_null());
+  // With no lower cancel routine, the IRP stays alive until the driver completes
+  // it; late completion must not touch the exiting thread's IOSB.
+  unsafe{io_complete_request(irp,0);}
+  assert!(!WDM.lock().irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp)));
+  unsafe{io_delete_device(device);}
+ }
+
+ #[test]
  fn free_irp_does_not_reclaim_a_pending_request() {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};
   driver.major_function[0]=Some(pending_dispatch);
