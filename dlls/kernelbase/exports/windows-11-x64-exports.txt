@@ -4,6 +4,8 @@ AcquireSRWLockShared
 ActivateActCtx
 AddAtomA
 AddAtomW
+AddVectoredContinueHandler
+AddVectoredExceptionHandler
 AllocConsole
 AreFileApisANSI
 AttachConsole
@@ -34,6 +36,7 @@ CreateProcessW
 CreateSemaphoreA
 CreateSemaphoreW
 CreateThread
+DecodePointer
 DeleteCriticalSection
 DeleteFileA
 DeleteFileW

@@ -1,12 +1,16 @@
 ; CognacOS kernel32.dll starter export surface.
-; Forwarders are PE export-directory forwarder strings.
+; Forwarder targets are PE export-directory strings; inventory is not exhaustive.
 LIBRARY kernel32.dll
 EXPORTS
+    AcquireSRWLockExclusive=NTDLL.RtlAcquireSRWLockExclusive
+    AcquireSRWLockShared=NTDLL.RtlAcquireSRWLockShared
     ActivateActCtx
     AddAtomA
     AddAtomW
     AddConsoleAliasA
     AddConsoleAliasW
+    AddVectoredContinueHandler=NTDLL.RtlAddVectoredContinueHandler
+    AddVectoredExceptionHandler=NTDLL.RtlAddVectoredExceptionHandler
     AllocConsole
     AreFileApisANSI
     AttachConsole
@@ -78,6 +82,7 @@ EXPORTS
     CreateSymbolicLinkW
     CreateThread
     CreateToolhelp32Snapshot
+    DecodePointer=NTDLL.RtlDecodePointer
     DeleteAtom
     DeleteCriticalSection
     DeleteFileA
@@ -89,6 +94,8 @@ EXPORTS
     DisableThreadLibraryCalls
     DisconnectNamedPipe
     DuplicateHandle
+    EncodePointer=NTDLL.RtlEncodePointer
+    EncodeSystemPointer=NTDLL.RtlEncodeSystemPointer
     EndUpdateResourceA
     EndUpdateResourceW
     EnterCriticalSection=NTDLL.RtlEnterCriticalSection

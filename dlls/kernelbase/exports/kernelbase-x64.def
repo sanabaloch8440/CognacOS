@@ -1,5 +1,5 @@
 ; CognacOS kernelbase.dll starter export surface.
-; Forwarders are PE export-directory forwarder strings.
+; Forwarder targets are PE export-directory strings; inventory is not exhaustive.
 LIBRARY kernelbase.dll
 EXPORTS
     AcquireSRWLockExclusive=NTDLL.RtlAcquireSRWLockExclusive
@@ -7,6 +7,8 @@ EXPORTS
     ActivateActCtx
     AddAtomA
     AddAtomW
+    AddVectoredContinueHandler=NTDLL.RtlAddVectoredContinueHandler
+    AddVectoredExceptionHandler=NTDLL.RtlAddVectoredExceptionHandler
     AllocConsole
     AreFileApisANSI
     AttachConsole
@@ -37,6 +39,7 @@ EXPORTS
     CreateSemaphoreA
     CreateSemaphoreW
     CreateThread
+    DecodePointer=NTDLL.RtlDecodePointer
     DeleteCriticalSection
     DeleteFileA
     DeleteFileW
