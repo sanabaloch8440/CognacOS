@@ -547,6 +547,9 @@ pub unsafe extern "system" fn io_call_driver(device:*mut DeviceObject, irp:*mut 
  if pnp_transition_started {
   let pnp_status=unsafe{io_begin_pnp_transition(device,pnp_minor)};
   if pnp_status!=STATUS_SUCCESS {
+   // The stack cursor was advanced before lifecycle validation; restore it
+   // so a rejected request leaves the caller's IRP reusable and well-formed.
+   unsafe{write_ptr((*irp).bytes.as_mut_ptr(),IRP_STACK_OFFSET,stack.cast::<u8>().add(IO_STACK_LOCATION_SIZE_X64).cast());(*irp).bytes[0x43]=location;}
    release_irp_active_op(irp);release_device_dispatch_rundown(device);return pnp_status;
   }
  }
