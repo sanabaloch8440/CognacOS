@@ -44,6 +44,28 @@ pub struct DriverObject {
     pub driver_start_io: *mut c_void, pub driver_unload: Option<DriverUnload>,
     pub major_function: [Option<DriverDispatch>; 28],
 }
+/// x64 WDK KDEVICE_QUEUE_ENTRY: LIST_ENTRY, sort key, and insertion state.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KDeviceQueueEntry {
+    pub flink: *mut KDeviceQueueEntry,
+    pub blink: *mut KDeviceQueueEntry,
+    pub sort_key: u32,
+    pub inserted: u8,
+    pub padding: [u8; 3],
+}
+
+/// x64 WDK KDEVICE_QUEUE. DEVICE_OBJECT embeds this at offset 0x98.
+#[repr(C)]
+pub struct KDeviceQueue {
+    pub type_: i16,
+    pub size: i16,
+    pub device_list_head: [u8; 0x10],
+    pub lock: usize,
+    pub busy: u8,
+    pub padding: [u8; 7],
+}
+
 #[repr(C, align(16))]
 pub struct DeviceObject {
     pub object_type: i16, pub size: u16, pub reference_count: i32,
@@ -52,8 +74,8 @@ pub struct DeviceObject {
     pub timer: *mut c_void, pub flags: u32, pub characteristics: u32,
     pub vpb: *mut c_void, pub device_extension: *mut c_void,
     pub device_type: u32, pub stack_size: i8, pub queue_padding: [u8; 3],
-    pub queue: [u8; 0x48], pub alignment_requirement: u32, pub device_queue_padding: [u8; 4],
-    pub device_queue: [u8; 0x28], pub dpc: [u8; 0x40], pub active_thread_count: u32,
+    pub queue: [u8; 0x48],
+    pub device_queue: KDeviceQueue, pub dpc: [u8; 0x40], pub active_thread_count: u32,
     pub security_descriptor: *mut c_void, pub device_lock: [u8; 0x18],
     pub sector_size: u16, pub spare1: u16, pub device_object_extension: *mut c_void,
     pub reserved: *mut c_void,
@@ -127,7 +149,7 @@ impl WdmState {
     driver_object:ptr::null_mut(),next_device:ptr::null_mut(),attached_device:ptr::null_mut(),
     current_irp:ptr::null_mut(),timer:ptr::null_mut(),flags:0,characteristics:0,vpb:ptr::null_mut(),
     device_extension:ptr::null_mut(),device_type:0,stack_size:1,queue_padding:[0;3],queue:[0;0x48],
-    alignment_requirement:0,device_queue_padding:[0;4],device_queue:[0;0x28],dpc:[0;0x40],active_thread_count:0,
+    device_queue:KDeviceQueue{type_:0,size:core::mem::size_of::<KDeviceQueue>() as i16,device_list_head:[0;0x10],lock:0,busy:0,padding:[0;7]},dpc:[0;0x40],active_thread_count:0,
     security_descriptor:ptr::null_mut(),device_lock:[0;0x18],sector_size:0,spare1:0,
     device_object_extension:ptr::null_mut(),reserved:ptr::null_mut()
    },extension:[0;MAX_DEVICE_EXTENSION] } }; MAX_WDM_DEVICES],
@@ -2247,22 +2269,21 @@ mod wdm_tests {
   assert_eq!(core::mem::offset_of!(DeviceObject,device_type),0x48);
   assert_eq!(core::mem::offset_of!(DeviceObject,stack_size),0x4c);
   assert_eq!(core::mem::offset_of!(DeviceObject,queue),0x50);
-  assert_eq!(core::mem::offset_of!(DeviceObject,alignment_requirement),0x98);
-  assert_eq!(core::mem::offset_of!(DeviceObject,device_queue),0xa0);
-  assert_eq!(core::mem::offset_of!(DeviceObject,dpc),0xc8);
-  assert_eq!(core::mem::offset_of!(DeviceObject,active_thread_count),0x108);
-  assert_eq!(core::mem::offset_of!(DeviceObject,security_descriptor),0x110);
-  assert_eq!(core::mem::offset_of!(DeviceObject,device_lock),0x118);
-  assert_eq!(core::mem::offset_of!(DeviceObject,sector_size),0x130);
-  assert_eq!(core::mem::offset_of!(DeviceObject,device_object_extension),0x138);
-  assert_eq!(core::mem::offset_of!(DeviceObject,reserved),0x140);
+  assert_eq!(core::mem::size_of::<KDeviceQueueEntry>(),0x18);
+  assert_eq!(core::mem::size_of::<KDeviceQueue>(),0x28);
+  assert_eq!(core::mem::offset_of!(KDeviceQueue,device_list_head),0x04);
+  assert_eq!(core::mem::offset_of!(KDeviceQueue,lock),0x18);
+  assert_eq!(core::mem::offset_of!(KDeviceQueue,busy),0x20);
+  assert_eq!(core::mem::offset_of!(DeviceObject,device_queue),0x98);
+  assert_eq!(core::mem::offset_of!(DeviceObject,dpc),0xc0);
+  assert_eq!(core::mem::offset_of!(DeviceObject,active_thread_count),0x100);
+  assert_eq!(core::mem::offset_of!(DeviceObject,security_descriptor),0x108);
+  assert_eq!(core::mem::offset_of!(DeviceObject,device_lock),0x110);
+  assert_eq!(core::mem::offset_of!(DeviceObject,sector_size),0x128);
+  assert_eq!(core::mem::offset_of!(DeviceObject,device_object_extension),0x130);
+  assert_eq!(core::mem::offset_of!(DeviceObject,reserved),0x138);
   assert_eq!(core::mem::size_of::<DeviceObject>(),0x150);
   assert_eq!(core::mem::offset_of!(DeviceObject,queue),0x50);
-  assert_eq!(core::mem::offset_of!(DeviceObject,alignment_requirement),0x98);
-  assert_eq!(core::mem::offset_of!(DeviceObject,device_queue),0xA0);
-  assert_eq!(core::mem::offset_of!(DeviceObject,dpc),0xC8);
-  assert_eq!(core::mem::offset_of!(DeviceObject,device_object_extension),0x138);
-  assert_eq!(core::mem::size_of::<DeviceObject>(),0x150);
   assert_eq!(core::mem::size_of::<Irp>(),IRP_SIZE_X64);
   assert_eq!(core::mem::size_of::<DeviceObject>(),0x150);
   assert_eq!(IRP_STACK_OFFSET,0xB8);
