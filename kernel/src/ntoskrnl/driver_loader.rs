@@ -34,6 +34,15 @@ fn forget_loaded_driver(driver:*mut DriverObject,base:u64) {
  let mut records=LOADED_DRIVER_IMAGES.lock();
  if let Some(slot)=records.iter_mut().find(|r|r.used&&r.driver==driver as usize&&r.base==base){*slot=DriverImageRecord::EMPTY;}
 }
+
+/// Resolve a faulting instruction pointer against loader-owned driver images.
+/// Returns the image base, image size, and owning DRIVER_OBJECT address without
+/// dereferencing the object, so it is safe to call from a fatal exception path.
+pub fn image_for_address(address:u64)->Option<(u64,u32,u64)> {
+ let records=LOADED_DRIVER_IMAGES.lock();
+ records.iter().find(|r|r.used&&address>=r.base&&address.checked_sub(r.base).is_some_and(|offset|offset<r.size as u64))
+  .map(|r|(r.base,r.size,r.driver as u64))
+}
 /// Release the image associated with a driver after IoUnloadDriver has completed
 /// device rundown and invoked DriverUnload. Unknown/non-loader-owned drivers are ignored.
 pub unsafe fn unload_driver_image(driver:*mut c_void)->bool {
