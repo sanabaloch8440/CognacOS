@@ -1313,7 +1313,7 @@ pub unsafe extern "system" fn io_reuse_irp(irp:*mut Irp, status:i32) {
   let count=slot.object.bytes[0x42] as usize;
   if count==0||count>slot.stack.len()||slot.completion_state==1||slot.completion_state==3
     ||slot.active_ops!=0||slot.built_sync_ioctl||!slot.owned_mdl.is_null()
-    ||!unsafe{read_ptr(slot.object.bytes.as_ptr(),0x08)}.is_null()
+    || !(unsafe{read_ptr(slot.object.bytes.as_ptr(),0x08)}).is_null()
     ||(slot.outstanding_count!=0&&!slot.suspended_completion) {return}
   if slot.suspended_completion {slot.completion_state=3;slot.suspended_completion=false;true}else{false}
  };
@@ -1972,6 +1972,46 @@ mod wdm_tests {
   MORE_PROCESSING_CALLBACKS.fetch_add(1,core::sync::atomic::Ordering::AcqRel);
   0xC0000016u32 as i32
  }
+ unsafe extern "system" fn free_then_stop_completion(_device:*mut DeviceObject,irp:*mut Irp,_context:*mut c_void)->i32 {
+  unsafe{io_free_irp(irp);}
+  0xC0000016u32 as i32
+ }
+ #[test]
+ fn free_irp_inside_more_processing_callback_is_deferred_until_safe() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.major_function[0]=Some(completing_dispatch);
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  unsafe{
+   (*io_get_next_irp_stack_location(irp)).major_function=0;
+   io_set_completion_routine(irp,Some(free_then_stop_completion),ptr::null_mut(),1,1,1);
+  }
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
+  assert!(!WDM.lock().irps.iter().any(|s|s.used&&ptr::eq(&s.object,irp)));
+  unsafe{io_delete_device(device);}
+ }
+
+ #[test]
+ fn reuse_after_more_processing_required_releases_old_stack_references() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  driver.major_function[0]=Some(completing_dispatch);
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  let irp=unsafe{io_allocate_irp(2,0)};
+  assert!(!irp.is_null());
+  unsafe{
+   (*io_get_next_irp_stack_location(irp)).major_function=0;
+   io_set_completion_routine(irp,Some(stop_completion_once),ptr::null_mut(),1,1,1);
+  }
+  assert_eq!(unsafe{io_call_driver(device,irp)},STATUS_SUCCESS);
+  unsafe{io_reuse_irp(irp,STATUS_SUCCESS);}
+  assert_eq!(unsafe{(*irp).bytes[0x43]},3);
+  assert!(!unsafe{io_get_next_irp_stack_location(irp)}.is_null());
+  unsafe{io_free_irp(irp);io_delete_device(device);}
+ }
+
  #[test]
  fn more_processing_required_advances_past_the_callback_before_resume() {
   MORE_PROCESSING_CALLBACKS.store(0,core::sync::atomic::Ordering::Release);
