@@ -1277,21 +1277,21 @@ unsafe fn submit_beep_ioctl(
     driver_object: *mut ntoskrnl::driver_loader::DriverObject,
     device_object: *mut core::ffi::c_void,
 ) -> Option<(i32, i32, i32, i32)> {
-    use nt_abi::io::{IO_STACK_LOCATION, IRP};
+    use nt_abi::io::{IO_STACK_LOCATION, IRP, IO_STATUS_BLOCK};
     const IRP_MJ_CREATE: usize = 0;
-    const IRP_MJ_DEVICE_CONTROL: usize = 14;
     const IOCTL_BEEP_SET: u32 = 0x0000_1000;
     if driver_object.is_null() || device_object.is_null() { return None; }
     let create_dispatch = unsafe { (*driver_object).major_function[IRP_MJ_CREATE] }?;
-    let control_dispatch = unsafe { (*driver_object).major_function[IRP_MJ_DEVICE_CONTROL] }?;
+    if unsafe { (*driver_object).major_function[14] }.is_none() { return None; }
 
-    // FILE_OBJECT's public x64 prefix: Type, Size, DeviceObject. Remaining bytes
-    // are zeroed so a driver that consults optional fields sees a deterministic object.
+    // FILE_OBJECT x64 prefix: Type, Size, DeviceObject, FsContext, FsContext2.
     let mut file_storage = [0usize; 28];
-    file_storage[0] = (0x00d8usize << 16) | 5usize; // Type=IO_TYPE_FILE, Size=sizeof(FILE_OBJECT)
-    file_storage[1] = device_object as usize;       // DeviceObject at x64 offset 0x08
+    file_storage[0] = (0x00d8usize << 16) | 5usize;
+    file_storage[1] = device_object as usize;
     let file_object = file_storage.as_mut_ptr().cast::<core::ffi::c_void>();
 
+    // Create remains a direct callback until the I/O manager supports an
+    // open-by-name/object-manager path for this test device.
     let mut create_stack = IO_STACK_LOCATION {
         major_function: IRP_MJ_CREATE as u8, minor_function: 0,
         flags: 0, control: 0, parameters: [0; 0x20],
@@ -1303,31 +1303,81 @@ unsafe fn submit_beep_ioctl(
         create_dispatch(device_object, (&mut create_irp as *mut IRP).cast::<core::ffi::c_void>())
     };
     let create_io_status = unsafe { create_irp.io_status.status.status };
+    serial_write(b"beep.sys CREATE (direct callback): dispatch=");
+    unsafe { serial_write_hex(create_status as u32 as u64); }
+    serial_write(b" IoStatus=");
+    unsafe { serial_write_hex(create_io_status as u32 as u64); }
+    serial_write(b" file_object=");
+    unsafe { serial_write_hex(file_object as u64); }
+    serial_write(b" FsContext=");
+    unsafe { serial_write_hex(file_storage[2] as u64); }
+    serial_write(b"\r\n");
     if create_status < 0 || create_io_status < 0 {
         return Some((create_status, create_io_status, create_status, create_io_status));
     }
 
-    // BEEP_SET_PARAMETERS { ULONG Frequency; ULONG Duration; }.
-    // 880 Hz is within the documented legacy Beep frequency range; duration is ms.
+    // Submit METHOD_BUFFERED IOCTL_BEEP_SET through the kernel's WDM builder
+    // and IoCallDriver path. The builder owns the IRP/system buffer lifetime.
     let mut parameters = [880u32, 200u32];
-    let mut control_stack = IO_STACK_LOCATION {
-        major_function: IRP_MJ_DEVICE_CONTROL as u8, minor_function: 0,
-        flags: 0, control: 0, parameters: [0; 0x20],
-        device_object: device_object.cast(), file_object,
-        completion_routine: None, context: core::ptr::null_mut(),
+    let mut iosb: IO_STATUS_BLOCK = unsafe { core::mem::zeroed() };
+    let irp = unsafe {
+        io::io_build_device_io_control_request(
+            IOCTL_BEEP_SET, device_object.cast(),
+            parameters.as_mut_ptr().cast(), core::mem::size_of_val(&parameters) as u32,
+            core::ptr::null_mut(), 0, 0,
+            core::ptr::null_mut(), &mut iosb,
+        )
     };
-    control_stack.parameters[0..4].copy_from_slice(&0u32.to_le_bytes());
-    control_stack.parameters[4..8].copy_from_slice(&(core::mem::size_of_val(&parameters) as u32).to_le_bytes());
-    control_stack.parameters[8..12].copy_from_slice(&IOCTL_BEEP_SET.to_le_bytes());
-    let mut control_irp = make_beep_test_irp(&mut control_stack, (&mut parameters as *mut [u32; 2]).cast());
-    let control_status = unsafe {
-        control_dispatch(device_object, (&mut control_irp as *mut IRP).cast::<core::ffi::c_void>())
-    };
-    let control_io_status = unsafe { control_irp.io_status.status.status };
-    Some((create_status, create_io_status, control_status, control_io_status))
+    if irp.is_null() {
+        serial_write(b"BEEP IO MANAGER: IoBuildDeviceIoControlRequest returned NULL (thread/IRQL, device, or allocation precondition failed).\r\n");
+        return Some((create_status, create_io_status, nt_abi::ntstatus::STATUS_INSUFFICIENT_RESOURCES as i32, nt_abi::ntstatus::STATUS_INSUFFICIENT_RESOURCES as i32));
+    }
+    let stack = unsafe { io::io_get_next_irp_stack_location(irp) };
+    if stack.is_null() {
+        unsafe { io::io_free_irp(irp); }
+        return Some((create_status, create_io_status, nt_abi::ntstatus::STATUS_INVALID_PARAMETER as i32, nt_abi::ntstatus::STATUS_INVALID_PARAMETER as i32));
+    }
+    unsafe { (*stack).file_object = file_object; }
+
+    serial_write(b"BEEP IOCTL PRE-DISPATCH: code=");
+    unsafe { serial_write_hex(IOCTL_BEEP_SET as u64); }
+    serial_write(b" input_length=");
+    unsafe { serial_write_decimal(core::mem::size_of_val(&parameters)); }
+    serial_write(b" output_length=0 system_buffer=");
+    unsafe { serial_write_hex(unsafe { (*irp).associated_irp[0] as u64 }); }
+    serial_write(b" file_object=");
+    unsafe { serial_write_hex(file_object as u64); }
+    serial_write(b" FsContext=");
+    unsafe { serial_write_hex(file_storage[2] as u64); }
+    serial_write(b" dispatch=IoCallDriver\r\n");
+
+    // The synchronous builder requires a completion routine when no event is
+    // supplied. It returns STATUS_SUCCESS to permit normal I/O-manager unwind.
+    unsafe {
+        io::io_set_completion_routine(
+            irp, Some(beep_test_completion), core::ptr::null_mut(), 1, 1, 1,
+        );
+    }
+    let dispatch_status = unsafe { io::io_call_driver(device_object.cast(), irp) };
+    let irp_status = unsafe { iosb.status.status };
+    serial_write(b"BEEP IO MANAGER RETURN: IoCallDriver=");
+    unsafe { serial_write_hex(dispatch_status as u32 as u64); }
+    serial_write(b" IOSB.Status=");
+    unsafe { serial_write_hex(irp_status as u32 as u64); }
+    serial_write(b" IOSB.Information=");
+    unsafe { serial_write_hex(iosb.information as u64); }
+    serial_write(b"\r\n");
+    Some((create_status, create_io_status, dispatch_status, irp_status))
 }
 
-/// Initialize the fixed x64 IRP fields used by the synchronous runtime test.
+unsafe extern "win64" fn beep_test_completion(
+    _device: *mut io::DeviceObject,
+    _irp: *mut io::Irp,
+    _context: *mut core::ffi::c_void,
+) -> i32 {
+    nt_abi::ntstatus::STATUS_SUCCESS as i32
+}
+
 fn make_beep_test_irp(
     stack: &mut nt_abi::io::IO_STACK_LOCATION,
     system_buffer: *mut core::ffi::c_void,
@@ -1348,7 +1398,6 @@ fn make_beep_test_irp(
         overlay: [0; 2], cancel_routine: core::ptr::null_mut(),
         user_buffer: core::ptr::null_mut(), tail: [0; 11],
     };
-    // Tail.Overlay.CurrentStackLocation is at x64 IRP offset 0xB8.
     irp.tail[8] = (stack as *mut nt_abi::io::IO_STACK_LOCATION) as usize;
     irp
 }
