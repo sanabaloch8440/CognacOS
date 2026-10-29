@@ -136,3 +136,33 @@ mod ntstatus_adapter_tests {
         assert_eq!(error_to_ntstatus(PciError::AddressOverflow), STATUS_INVALID_PARAMETER);
     }
 }
+
+
+/// PCI class-code matcher for xHCI (Base Class 0x0C, Subclass 0x03, ProgIF 0x30).
+pub const fn is_xhci_controller(class_code:u8,subclass:u8,programming_interface:u8)->bool{
+ class_code==0x0c&&subclass==0x03&&programming_interface==0x30
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum BarError{IoBar,ReservedMemoryType,MissingUpperDword,Unassigned,AddressOverflow}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct MemoryBar{pub base:u64,pub is_64_bit:bool,pub prefetchable:bool}
+/// Decode already-read BAR dwords without probing by writing all ones (which would
+/// mutate live hardware). Resource sizing and mapping are separate privileged steps.
+pub fn decode_memory_bar(low:u32,high:Option<u32>)->Result<MemoryBar,BarError>{
+ if low&1!=0{return Err(BarError::IoBar)}
+ let kind=(low>>1)&3;
+ if kind==1||kind==3{return Err(BarError::ReservedMemoryType)}
+ let is_64_bit=kind==2;
+ if is_64_bit&&high.is_none(){return Err(BarError::MissingUpperDword)}
+ let base=((high.unwrap_or(0) as u64)<<32)|(low as u64&!0xf);
+ if base==0{return Err(BarError::Unassigned)}
+ Ok(MemoryBar{base,is_64_bit,prefetchable:low&(1<<3)!=0})
+}
+
+#[cfg(test)]
+mod xhci_pci_tests{
+ use super::*;
+ #[test]fn recognizes_only_xhci_class_code(){assert!(is_xhci_controller(0x0c,0x03,0x30));assert!(!is_xhci_controller(0x0c,0x03,0x20));assert!(!is_xhci_controller(0x01,0x06,0x01));}
+ #[test]fn decodes_64_bit_mmio_bar(){let b=decode_memory_bar(0x0000_000c,Some(0x0000_0001)).unwrap();assert_eq!(b.base,0x1_0000_0000);assert!(b.is_64_bit);assert!(b.prefetchable);}
+ #[test]fn rejects_io_reserved_and_unassigned_bars(){assert_eq!(decode_memory_bar(1,None),Err(BarError::IoBar));assert_eq!(decode_memory_bar(0x2,None),Err(BarError::ReservedMemoryType));assert_eq!(decode_memory_bar(0,None),Err(BarError::Unassigned));assert_eq!(decode_memory_bar(0x4,None),Err(BarError::MissingUpperDword));}
+}
