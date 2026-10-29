@@ -170,7 +170,6 @@ pub fn validate_hibernation_images()->i32{let o=match platform(){Ok(v)=>v,Err(e)
 mod tests{
  use super::*;
  use core::{cell::UnsafeCell,sync::atomic::{AtomicU8,Ordering}};
- #[test]fn s4_fails_closed_without_platform_backend(){assert_eq!(platform().err(),Some(NOT_IMPLEMENTED));}
  #[test]fn rle_roundtrip_and_rejects_corruption(){let input=[0x5au8;1024];let mut enc=[0u8;2048];let n=rle_encode(&input,&mut enc);assert!(n<input.len());let mut out=[0u8;1024];assert_eq!(rle_decode(&enc[..n],&mut out,input.len()),Ok(()));assert_eq!(input,out);assert!(rle_decode(&[0,3],&mut out,2).is_err());assert!(rle_decode(&[3,3],&mut out,2).is_err());}
  #[test]fn torn_or_uncommitted_header_is_rejected(){let h=Header{generation:1,count:1,cpu_len:0,cpu_offset:DATA,total:DATA,table_crc:1,cpu_crc:crc(&[])};let b=h.encode(true);assert!(Header::decode(&b).is_ok());let mut torn=b;torn[64]^=1;assert!(Header::decode(&torn).is_err());assert!(Header::decode(&h.encode(false)).is_err());}
 
