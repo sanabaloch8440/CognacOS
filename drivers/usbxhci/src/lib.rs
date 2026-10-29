@@ -695,6 +695,7 @@ impl Default for CommandRingCursor { fn default() -> Self { Self::new() } }
 pub enum CommandSubmitError {
     InvalidRing,
     InvalidCommand,
+    TrackingFailed,
     RegisterIoFailure,
 }
 
@@ -949,7 +950,7 @@ pub fn submit_tracked_command<I: XhciRegisterIo, const N: usize>(
   return Err(CommandSubmitError::InvalidRing);
  }
  let dma=ring_dma.checked_add(cursor.enqueue_index as u64 * core::mem::size_of::<Trb>() as u64).ok_or(CommandSubmitError::InvalidRing)?;
- tracker.track(PendingCommand{command_trb_dma:dma,kind}).map_err(|_|CommandSubmitError::InvalidRing)?;
+ tracker.track(PendingCommand{command_trb_dma:dma,kind}).map_err(|_|CommandSubmitError::TrackingFailed)?;
  match submit_command(io,caps,ring_cpu,ring_dma,entry_count,cursor,command) {
   Ok(actual) if actual==dma=>Ok(actual),
   Ok(_)=>{tracker.cancel(dma);Err(CommandSubmitError::InvalidRing)},
@@ -987,4 +988,26 @@ mod controller_event_routing_tests {
   assert!(matches!(route_controller_event(&mut tracker,Trb::new(0,0,TRB_TYPE_TRANSFER_EVENT,true)),Ok(ControllerEvent::TransferEvent(_))));
   assert_eq!(tracker.pending_count(),0);
  }
+}
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerDrainError { Ring(XhciError), Event(ControllerEventError) }
+
+/// Consume live DMA event-ring entries, advance ERDP through drain_event_ring,
+/// and route command completions into the pending tracker in the same path.
+/// The callback should enqueue transfer/port work to a DPC or worker; keep it bounded.
+pub fn drain_controller_events<P, F, const N: usize>(
+ platform: &mut P, caps: &Capabilities, resources: &mut XhciRuntimeResources,
+ budget: u16, tracker: &mut CommandCompletionTracker<N>, mut handle: F,
+) -> Result<u16, ControllerDrainError>
+where P: XhciRegisterIo, F: FnMut(ControllerEvent) {
+ let mut routing_error=None;
+ let count=drain_event_ring(platform,caps,resources,budget,|event| {
+  match route_controller_event(tracker,event) {
+   Ok(routed)=>handle(routed),
+   Err(e)=>routing_error=Some(e),
+  }
+ }).map_err(ControllerDrainError::Ring)?;
+ if let Some(e)=routing_error { Err(ControllerDrainError::Event(e)) } else { Ok(count) }
 }
