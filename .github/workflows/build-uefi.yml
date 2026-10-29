@@ -873,6 +873,8 @@ jobs:
           grep -F 'PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.' build/serial.log
           grep -E '^QEMU xHCI DEVICE: BDF=' build/serial.log
           grep -E '^QEMU xHCI DEVICE COUNT=0x0*[1-9a-fA-F][0-9a-fA-F]*' build/serial.log
+          grep -E '^xHCI PnP resource published: device_object=0x[0-9a-fA-F]+ MMIO_VA=0x[0-9a-fA-F]+ length=0x[0-9a-fA-F]+' build/serial.log
+          grep -F 'PCI xHCI resource discovery and uncached MMIO mapping complete; driver binding remains gated on IOMMU and IRQ readiness.' build/serial.log
            grep -F 'CognacOS Rust kernel entered.' build/serial.log
           grep -F 'XSTATE processor policy initialized; enabled mask=' build/serial.log
           grep -F 'XSTATE XSAVE/XRSTOR processor self-test passed.' build/serial.log
