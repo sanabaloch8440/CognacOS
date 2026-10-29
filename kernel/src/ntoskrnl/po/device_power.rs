@@ -13,6 +13,22 @@ static REGISTRY:crate::hal::IrqSpinLock<Registry>=crate::hal::IrqSpinLock::new(R
 fn find(device:*mut DeviceObject)->Option<Entry>{if device.is_null(){return None} REGISTRY.lock().entries.iter().copied().find(|e|e.device==device as usize)}
 pub(crate) fn supports_wdm_state(device:*mut DeviceObject,state:u32)->bool{if !(1..=4).contains(&state){return false}let bit=1u8<<(state-1);find(device).map_or(bit&DEFAULT!=0,|e|e.states&bit!=0)}
 pub(crate) fn supports_wake(device:*mut DeviceObject)->bool{find(device).is_some_and(|e|e.wake)}
+/// A wait/wake request is valid only when every device object in the attached
+/// stack advertises wake support. Bound traversal so corrupt/cyclic attachment
+/// chains fail closed instead of looping forever.
+pub(crate) fn supports_wake_stack(device:*mut DeviceObject)->bool{
+ if device.is_null(){return false}
+ let mut current=device;
+ for _ in 0..16 {
+  let Some(entry)=find(current) else{return false};
+  if !entry.wake{return false}
+  let next=unsafe{(*current).attached_device};
+  if next.is_null(){return true}
+  if next==device{return false}
+  current=next;
+ }
+ false
+}
 pub(crate) fn register_default(device:*mut DeviceObject)->i32 { register(device,DEFAULT,false) }
 pub(crate) fn register(device:*mut DeviceObject,states:u8,wake:bool)->i32{
  if device.is_null()||states&D0==0||states&!(D0|D1|D2|D3)!=0||(wake&&states&D3!=0&&states&(D1|D2)==0){return INVALID}
