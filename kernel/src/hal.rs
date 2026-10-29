@@ -608,6 +608,46 @@ pub fn driver_service_table()->cognacos_hal_contract::HalServiceTable {
     }
 }
 
+
+/// Map a validated physical PCI BAR into the dedicated uncached MMIO aperture.
+/// The memory manager rejects ordinary RAM and owns virtual-slot lifetime.
+unsafe extern "C" fn service_map_device_io_space(physical:u64,length:u64,flags:u32,out:*mut u64)->DriverHalStatus {
+    use cognacos_hal_contract::{validate_device_mapping_flags,HAL_MEMORY_DEVICE,HAL_MEMORY_UNCACHED,HAL_MEMORY_READ_WRITE};
+    if out.is_null() || !validate_device_mapping_flags(flags)
+        || flags & (HAL_MEMORY_DEVICE|HAL_MEMORY_UNCACHED|HAL_MEMORY_READ_WRITE)
+            != (HAL_MEMORY_DEVICE|HAL_MEMORY_UNCACHED|HAL_MEMORY_READ_WRITE)
+        || length==0 || physical.checked_add(length).is_none() {
+        return driver_hal_invalid();
+    }
+    match crate::kernel_vm::map_io_space(physical,length) {
+        Ok(address) if address!=0 => { unsafe { out.write(address); } driver_hal_success() }
+        Ok(_) => driver_hal_invalid(),
+        Err(_) => driver_hal_unsupported(),
+    }
+}
+unsafe extern "C" fn service_unmap_device_io_space(address:u64,length:u64)->DriverHalStatus {
+    if address==0 || length==0 { return driver_hal_invalid(); }
+    match crate::kernel_vm::unmap_io_space(address,length) {
+        Ok(())=>driver_hal_success(),
+        Err(_)=>driver_hal_invalid(),
+    }
+}
+extern "C" fn service_memory_barrier() { device_full_barrier(); }
+
+/// Extended HAL services used by the PnP resource arbiter. MMIO mapping is
+/// advertised only after the kernel VM has initialized its dedicated aperture.
+pub fn driver_extended_service_table()->cognacos_hal_contract::HalExtendedServiceTable {
+    let ready=crate::kernel_vm::is_initialized();
+    cognacos_hal_contract::HalExtendedServiceTable {
+        size:core::mem::size_of::<cognacos_hal_contract::HalExtendedServiceTable>() as u32,
+        version:cognacos_hal_contract::HAL_EXTENDED_SERVICES_VERSION,
+        map_device_io_space:if ready {Some(service_map_device_io_space)} else {None},
+        unmap_device_io_space:if ready {Some(service_unmap_device_io_space)} else {None},
+        synchronize_interrupt:None,
+        memory_barrier:Some(service_memory_barrier),
+    }
+}
+
 /// Allocate a common buffer in the requesting device's IOMMU domain.
 /// The device must already have a validated PCI requester identity and the real
 /// IOMMU backend must be active. There is intentionally no physical-address fallback.
