@@ -20,6 +20,7 @@
 - [Windows 11 x64 Ke compatibility comparison](WINDOWS11_COGNACOS_NTOSKRNL_KE_COMPARISON.md)
 - [Windows 11 x64 Se compatibility comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md)
 - [Boot security guide](docs/boot-security.md)
+- [Keyboard driver stack](docs/keyboard-driver-stack.md) — kbdclass, kbdhid, HIDClass, and i8042prt
 
 ## Implemented foundations
 
