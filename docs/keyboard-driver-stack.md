@@ -47,3 +47,6 @@ A conservative capability registry defaults unregistered devices to D0/D3 and re
 - The xHCI core provides per-port U3 suspend/U0 resume primitives and controller D0-exit/D0-entry routines that mask interrupts, halt without freeing DMA or resetting slots, snapshot controller registers, and restore them before re-enabling interrupts. Callers must quiesce transfers before controller halt and propagate wait/wake through the USB parent stack.
 - The PS/2 core provides bounded 8042 self-test/configuration/port-test startup and a lifecycle owner that masks and synchronizes IRQ delivery before suspend, disables scanning, and reinitializes before restoring IRQ delivery on resume.
 - CI unit tests cover simulated scan-code delivery before/after PS/2 power transitions and xHCI port state changes. These are deterministic driver tests, **not** proof of live USB HID, PS/2 IRQ/DPC delivery, or QEMU keyboard input across real power transitions.
+
+
+The xHCI core also includes a wait/wake orchestration contract that requires device, hub, controller, and connected-port wake capability before arming. It enables wake in controller-to-device order and rolls back in reverse order on failure; cancellation attempts all teardown steps even if one layer fails. The backend callbacks are contracts only until real USB control-transfer and hub/host-controller wake handlers are wired.
