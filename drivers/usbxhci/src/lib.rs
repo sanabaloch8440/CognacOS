@@ -369,3 +369,152 @@ mod erst_tests{
   assert_eq!(make_erst_entry(0x4000,3),Err(ControllerInitError::InvalidDmaConfiguration));
  }
 }
+
+
+/// Concrete runtime boundary used by the xHCI controller owner. Implementations
+/// must return pinned, DMA-coherent memory and must not expose a device address
+/// that is merely a CPU virtual address. Interrupt registration must install an
+/// ISR-safe handler before the controller is started.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmaAllocation {
+    pub cpu_address: u64,
+    pub device_address: u64,
+    pub size: u64,
+}
+pub trait XhciPlatform: XhciRegisterIo {
+    fn allocate_dma(&mut self, size: u64, alignment: u64, max_device_address: u64) -> Result<DmaAllocation, ()>;
+    fn free_dma(&mut self, allocation: DmaAllocation);
+    fn register_interrupt(&mut self) -> Result<(), ()>;
+    fn unregister_interrupt(&mut self);
+    fn set_interrupt_enabled(&mut self, enabled: bool) -> Result<(), ()>;
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeStartError {
+    AllocationFailed,
+    InvalidAllocation,
+    InterruptRegistrationFailed,
+    Controller(ControllerInitError),
+    InterruptEnableFailed,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct XhciRuntimeResources {
+    pub dcbaa: DmaAllocation,
+    pub command_ring: DmaAllocation,
+    pub event_ring: DmaAllocation,
+    pub erst: DmaAllocation,
+    pub event_entries: u16,
+    pub dequeue_index: u16,
+    pub consumer_cycle: bool,
+    pub interrupt_registered: bool,
+}
+const RUNTIME_EVENT_ENTRIES: u16 = 256;
+const RUNTIME_RING_BYTES: u64 = RUNTIME_EVENT_ENTRIES as u64 * core::mem::size_of::<Trb>() as u64;
+fn valid_allocation(a: DmaAllocation, size: u64, alignment: u64) -> bool {
+    a.cpu_address != 0 && a.cpu_address & (alignment - 1) == 0
+        && a.size >= size && validate_dma_address(a.device_address, alignment).is_ok()
+        && a.device_address.checked_add(size).is_some()
+}
+unsafe fn zero_dma(a: DmaAllocation, size: usize) {
+    // SAFETY: XhciPlatform promises a writable CPU mapping covering a.size bytes.
+    unsafe { core::ptr::write_bytes(a.cpu_address as *mut u8, 0, size); }
+}
+fn free_allocations<P: XhciPlatform>(p: &mut P, a: [Option<DmaAllocation>; 4]) {
+    for allocation in a.into_iter().flatten().rev() { p.free_dma(allocation); }
+}
+/// Allocate and initialize the controller-owned DMA structures, register the
+/// interrupt before enabling the controller, then perform the bounded reset/run
+/// sequence. Every failure path frees acquired memory and unregisters the IRQ.
+pub fn start_controller<P: XhciPlatform>(
+    platform: &mut P, caps: &Capabilities, max_slots: u8, poll_budget: u32,
+) -> Result<XhciRuntimeResources, RuntimeStartError> {
+    let dcbaa_size = (max_slots as u64 + 1).checked_mul(8).ok_or(RuntimeStartError::InvalidAllocation)?;
+    let sizes = [dcbaa_size, RUNTIME_RING_BYTES, RUNTIME_RING_BYTES, core::mem::size_of::<ErstEntry>() as u64];
+    let aligns = [64u64, 64, 64, 64];
+    let mut allocations: [Option<DmaAllocation>; 4] = [None, None, None, None];
+    for i in 0..4 {
+        let a = match platform.allocate_dma(sizes[i], aligns[i], u64::MAX) {
+            Ok(a) if valid_allocation(a, sizes[i], aligns[i]) => a,
+            Ok(a) => { platform.free_dma(a); free_allocations(platform, allocations); return Err(RuntimeStartError::InvalidAllocation); }
+            Err(()) => { free_allocations(platform, allocations); return Err(RuntimeStartError::AllocationFailed); }
+        };
+        allocations[i] = Some(a);
+        // SAFETY: allocation contract guarantees the requested mapped size.
+        unsafe { zero_dma(a, sizes[i] as usize); }
+    }
+    let dcbaa = allocations[0].unwrap();
+    let command_ring = allocations[1].unwrap();
+    let event_ring = allocations[2].unwrap();
+    let erst = allocations[3].unwrap();
+    let entry = match make_erst_entry(event_ring.device_address, RUNTIME_EVENT_ENTRIES) {
+        Ok(e) => e, Err(_) => { free_allocations(platform, allocations); return Err(RuntimeStartError::InvalidAllocation); }
+    };
+    // SAFETY: ERST is an aligned, writable 16-byte DMA allocation and the entry
+    // layout is repr(C, align(16)) as required by xHCI.
+    unsafe { core::ptr::write_volatile(erst.cpu_address as *mut ErstEntry, entry); }
+    // Seed command ring segment's final TRB as a Link TRB pointing back to base.
+    let link = Trb::new(command_ring.device_address, 0, TRB_TYPE_LINK, true);
+    // SAFETY: the command ring allocation covers RUNTIME_RING_BYTES.
+    unsafe { core::ptr::write_volatile((command_ring.cpu_address as *mut Trb).add(RUNTIME_EVENT_ENTRIES as usize - 1), link); }
+    if platform.register_interrupt().is_err() {
+        free_allocations(platform, allocations);
+        return Err(RuntimeStartError::InterruptRegistrationFailed);
+    }
+    let dma = ControllerDmaConfig {
+        dcbaa: dcbaa.device_address, command_ring: command_ring.device_address,
+        erst: erst.device_address, event_ring: event_ring.device_address,
+        event_ring_entries: RUNTIME_EVENT_ENTRIES, max_slots,
+    };
+    if let Err(e) = initialize_controller(platform, caps, dma, true, poll_budget) {
+        platform.unregister_interrupt();
+        free_allocations(platform, allocations);
+        return Err(RuntimeStartError::Controller(e));
+    }
+    if platform.set_interrupt_enabled(true).is_err() {
+        // Stop the controller before releasing any memory it may still access.
+        let op = caps.cap_length as u32;
+        if let Ok(cmd) = platform.read32(op) {
+            let _ = platform.write32(op, cmd & !(USBCMD_RUN | USBCMD_INTERRUPT_ENABLE));
+            let _ = wait_register(|| platform.read32(op + 4).unwrap_or(0), USBSTS_HALTED, USBSTS_HALTED, poll_budget);
+        }
+        platform.unregister_interrupt();
+        free_allocations(platform, allocations);
+        return Err(RuntimeStartError::InterruptEnableFailed);
+    }
+    Ok(XhciRuntimeResources {
+        dcbaa, command_ring, event_ring, erst, event_entries: RUNTIME_EVENT_ENTRIES,
+        dequeue_index: 0, consumer_cycle: true, interrupt_registered: true,
+    })
+}
+/// Drain live DMA event TRBs up to a caller-supplied budget. The callback must
+/// be bounded and ISR/DPC-safe; this routine advances ERDP only after handling
+/// each event. A single segment is used, so the consumer cycle toggles on wrap.
+pub fn drain_event_ring<P, F>(
+    platform: &mut P, caps: &Capabilities, resources: &mut XhciRuntimeResources,
+    budget: u16, mut handle: F,
+) -> Result<u16, XhciError>
+where P: XhciRegisterIo, F: FnMut(Trb) {
+    if resources.event_entries < 16 || !resources.event_entries.is_power_of_two()
+        || resources.dequeue_index >= resources.event_entries {
+        return Err(XhciError::InvalidRingSize);
+    }
+    let mut consumed = 0u16;
+    while consumed < budget {
+        let slot = resources.event_ring.cpu_address as *const Trb;
+        // SAFETY: the platform keeps the DMA allocation mapped for this resource's lifetime.
+        let event = unsafe { core::ptr::read_volatile(slot.add(resources.dequeue_index as usize)) };
+        if event.cycle() != resources.consumer_cycle { break; }
+        handle(event);
+        resources.dequeue_index += 1;
+        if resources.dequeue_index == resources.event_entries {
+            resources.dequeue_index = 0;
+            resources.consumer_cycle = !resources.consumer_cycle;
+        }
+        let dequeue_dma = resources.event_ring.device_address
+            + resources.dequeue_index as u64 * core::mem::size_of::<Trb>() as u64;
+        let erdp = caps.runtime_offset + 0x38;
+        platform.write32(erdp, dequeue_dma as u32).map_err(|_| XhciError::InvalidParameter)?;
+        platform.write32(erdp + 4, (dequeue_dma >> 32) as u32).map_err(|_| XhciError::InvalidParameter)?;
+        consumed += 1;
+    }
+    Ok(consumed)
+}
