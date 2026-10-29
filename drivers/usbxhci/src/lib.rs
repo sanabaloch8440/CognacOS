@@ -281,9 +281,7 @@ pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:
  if !interrupt_registered{return Err(ControllerInitError::InterruptNotRegistered)}
  let op=caps.cap_length as u32;
  let cmd=reg_read(io,op).map_err(|_|ControllerInitError::RegisterIoFailure)?;
- let sts=reg_read(io,op+4).map_err(|_|ControllerInitError::RegisterIoFailure)?;
- if sts&USBSTS_NOT_READY!=0{return Err(ControllerInitError::ResetTimeout)}
- if sts&USBSTS_HALTED==0{return Err(ControllerInitError::ControllerDidNotHalt)}
+ poll_reg(io,op+4,USBSTS_NOT_READY,0,poll_budget)?;
  reg_write(io,op,cmd&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE))?;
  poll_reg(io,op+4,USBSTS_HALTED,USBSTS_HALTED,poll_budget)?;
  reg_write(io,op,(cmd&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE))|USBCMD_RESET)?;
