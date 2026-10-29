@@ -34,14 +34,30 @@ jobs:
   # Build job
   build:
     runs-on: ubuntu-latest
+    outputs:
+      pages_enabled: ${{ steps.pages.outputs.enabled }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
+      - name: Check whether GitHub Pages is enabled
+        id: pages
+        uses: actions/github-script@v7
         with:
-          # Configure Pages for Actions when the repository has not enabled it yet.
-          enablement: true
+          script: |
+            try {
+              await github.rest.repos.getPages({ owner: context.repo.owner, repo: context.repo.repo });
+              core.setOutput('enabled', 'true');
+            } catch (error) {
+              if (error.status === 404 || error.status === 403) {
+                core.setOutput('enabled', 'false');
+                core.warning('GitHub Pages is not enabled for this repository, or the token cannot access its Pages configuration. The site will be built and uploaded, but deployment is skipped. Enable Settings > Pages > Build and deployment > GitHub Actions to publish it.');
+              } else {
+                throw error;
+              }
+            }
+      - name: Setup Pages
+        if: steps.pages.outputs.enabled == 'true'
+        uses: actions/configure-pages@v5
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
@@ -60,4 +76,5 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
+        if: needs.build.outputs.pages_enabled == 'true'
         uses: actions/deploy-pages@v4
