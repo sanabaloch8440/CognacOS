@@ -97,6 +97,7 @@ static FIRST_USER_FAULT_CR2: core::sync::atomic::AtomicU64 = core::sync::atomic:
 static FIRST_USER_FAULT_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_TID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_RETURN_TARGET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_NTDLL_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_NTDLL_SIZE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -149,6 +150,7 @@ unsafe fn dump_first_user_fault() {
         let pid = FIRST_USER_FAULT_PID.load(Ordering::Relaxed);
         crate::serial_write(b" PID="); crate::serial_write_hex(pid);
         crate::serial_write(b" ETHREAD/TID="); crate::serial_write_hex(FIRST_USER_FAULT_TID.load(Ordering::Relaxed));
+        crate::serial_write(b" RETURN_TARGET="); crate::serial_write_hex(FIRST_USER_FAULT_RETURN_TARGET.load(Ordering::Relaxed));
         let base = FIRST_USER_FAULT_NTDLL_BASE.load(Ordering::Relaxed);
         let size = FIRST_USER_FAULT_NTDLL_SIZE.load(Ordering::Relaxed);
         let rip = FIRST_USER_FAULT_RIP.load(Ordering::Relaxed);
@@ -1843,6 +1845,7 @@ fn return_from_faulted_bootstrap_process(trap:&mut UserExceptionTrapFrame,pid:u6
  let _=crate::process::mark_exited(pid,status);
  trap.saved_registers=[0;15];
  trap.rip=rdotos_process_fault_return as usize as u64;
+ FIRST_USER_FAULT_RETURN_TARGET.store(trap.rip,core::sync::atomic::Ordering::Release);
  trap.cs=0x08;
  trap.rflags=0x202;
  true
