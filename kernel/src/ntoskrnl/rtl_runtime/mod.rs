@@ -83,6 +83,10 @@ pub(crate) fn pool_allocate_paged_tagged(size: usize, tag: u32, zeroed: bool) ->
 }
 
 /// Release a pool block, optionally checking its allocation tag.
+pub(crate) fn pool_try_free_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool {
+    pool::try_deallocate_tagged(ptr, expected_tag)
+}
+
 pub(crate) fn pool_free_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool {
     pool::deallocate_tagged(ptr, expected_tag)
 }
