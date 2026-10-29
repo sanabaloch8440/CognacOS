@@ -593,6 +593,7 @@ jobs:
           cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
           cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
           cp target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll build/EFI/BOOT/ntdll.dll
+          cp build/kbdus/kbdus.dll build/EFI/BOOT/kbdus.dll
           cp test/beep.sys build/EFI/BOOT/beep.sys
           truncate -s 256M build/cognacos-uefi.img
           truncate -s 128M build/pagefile.img
@@ -611,6 +612,7 @@ jobs:
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/ntdll.dll ::/EFI/BOOT/ntdll.dll
+          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/kbdus.dll ::/EFI/BOOT/kbdus.dll
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/beep.sys ::/EFI/BOOT/beep.sys
           mkdir -p build/ext4-root
           printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-root/README.txt
