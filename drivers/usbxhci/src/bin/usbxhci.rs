@@ -128,22 +128,21 @@ extern "C" fn xhci_dpc(context: u64) {
     let Some(hal) = (unsafe { ext.hal.as_ref() }) else { ext.runtime_lock.store(false, Ordering::Release); return; };
     let Some(dev) = (unsafe { ext.device.as_ref() }) else { ext.runtime_lock.store(false, Ordering::Release); return; };
     let runtime = unsafe { &mut *ext.runtime.get() };
-    if let Some(resources) = (unsafe { runtime.assume_init_mut() }).into() {
-        let mut platform = Platform { ext, hal, dev };
-        let caps = match read_capabilities(&mut platform, ext.mmio_length) {
-            Some(c) => c,
-            None => { ext.runtime_lock.store(false, Ordering::Release); return; }
-        };
-        let _ = xhci::drain_event_ring(&mut platform, &caps, resources, 128, |event| {
-            ext.event_count.fetch_add(1, Ordering::Relaxed);
-            match event.trb_type() as u32 {
-                xhci::TRB_TYPE_PORT_STATUS_CHANGE => { ext.port_change_count.fetch_add(1, Ordering::Relaxed); }
-                xhci::TRB_TYPE_COMMAND_COMPLETION => { ext.command_completion_count.fetch_add(1, Ordering::Relaxed); }
-                xhci::TRB_TYPE_TRANSFER_EVENT => { ext.transfer_completion_count.fetch_add(1, Ordering::Relaxed); }
-                _ => {}
-            }
-        });
-    }
+    let resources = unsafe { runtime.assume_init_mut() };
+    let mut platform = Platform { ext, hal, dev };
+    let caps = match read_capabilities(&mut platform, ext.mmio_length) {
+        Some(c) => c,
+        None => { ext.runtime_lock.store(false, Ordering::Release); return; }
+    };
+    let _ = xhci::drain_event_ring(&mut platform, &caps, resources, 128, |event| {
+        ext.event_count.fetch_add(1, Ordering::Relaxed);
+        match event.trb_type() as u32 {
+            xhci::TRB_TYPE_PORT_STATUS_CHANGE => { ext.port_change_count.fetch_add(1, Ordering::Relaxed); }
+            xhci::TRB_TYPE_COMMAND_COMPLETION => { ext.command_completion_count.fetch_add(1, Ordering::Relaxed); }
+            xhci::TRB_TYPE_TRANSFER_EVENT => { ext.transfer_completion_count.fetch_add(1, Ordering::Relaxed); }
+            _ => {}
+        }
+    });
     ext.runtime_lock.store(false, Ordering::Release);
 }
 
