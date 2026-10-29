@@ -669,15 +669,56 @@ jobs:
           qemu-system-x86_64 \
             -audiodev wav,id=beepout,path=build/beep.wav \
             -machine pc,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
+            # Attach a QEMU USB 3.x xHCI controller and an emulated HID keyboard. \
+            -device qemu-xhci,id=xhci \
+            -device usb-kbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=ide,format=raw,file=build/cognacos-uefi.img \
             -drive if=ide,format=raw,index=1,file=build/pagefile.img \
-            -boot order=c -display none -monitor none \
+            -boot order=c -display none -monitor unix:build/qemu-monitor.sock,server=on,wait=off \
             -serial file:build/serial.log -gdb tcp::12345 \
             -d int,cpu_reset,guest_errors -D build/qemu-debug.log \
             -S -no-reboot -no-shutdown &
           qemu_pid=$!
+          # Verify QEMU really attached both USB devices to this guest. This checks
+          # emulated hardware topology only; it does not claim guest driver enumeration.
+          python3 - <<'PY'
+          import socket, time
+          path = "build/qemu-monitor.sock"
+          deadline = time.monotonic() + 10
+          monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          monitor.settimeout(2)
+          while True:
+              try:
+                  monitor.connect(path)
+                  break
+              except (FileNotFoundError, ConnectionRefusedError):
+                  if time.monotonic() >= deadline:
+                      raise SystemExit("QEMU monitor did not become available")
+                  time.sleep(0.1)
+          def read_prompt():
+              data = bytearray()
+              end = time.monotonic() + 3
+              while b"(qemu)" not in data and time.monotonic() < end:
+                  try:
+                      chunk = monitor.recv(65536)
+                  except socket.timeout:
+                      break
+                  if not chunk:
+                      break
+                  data.extend(chunk)
+              return data.decode("utf-8", "replace")
+          read_prompt()
+          monitor.sendall(b"info qtree\\n")
+          tree = read_prompt()
+          monitor.close()
+          for expected in ("qemu-xhci", "usb-kbd"):
+              if expected not in tree:
+                  raise SystemExit(f"QEMU USB topology missing {expected}:\\n{tree}")
+          print("QEMU USB topology verified: xHCI controller + emulated USB keyboard attached.")
+          print("NOTE: this is a QEMU device-model check, not proof of CognacOS USB enumeration.")
+          PY
           # Give QEMU's GDB stub time to bind before the client connects.
           sleep 1
           gdb -q -batch -x build/gdb-first-fault.gdb > build/gdb-first-user-fault.txt 2>&1 &
