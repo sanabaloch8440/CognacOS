@@ -510,7 +510,26 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     }
                     Err(_) => serial_write(b"WARNING: ACPI SRAT rejected; node-local allocation remains disabled.\r\n"),
                 },
-                Err(_) => serial_write(b"ACPI SRAT unavailable; memory node ownership remains unknown.\r\n"),
+                Err(_) => {
+                    // Windows treats a genuinely non-NUMA machine as one node
+                    // (node 0). Only use that fallback when both SRAT and SLIT
+                    // are absent; a SLIT without SRAT is inconsistent firmware
+                    // data and must not be guessed into a topology.
+                    if unsafe { acpi::find_table(info.rsdp_address, *b"SLIT", 0) }.is_ok() {
+                        serial_write(b"WARNING: ACPI SLIT exists but SRAT is unavailable; NUMA ownership remains unknown.\r\n");
+                    } else {
+                        let mut ranges = [(0u64, 0u64); ntoskrnl::mm::topology::MAX_RANGES];
+                        let count = memory::physical_memory_ranges(&mut ranges);
+                        match ntoskrnl::mm::topology::initialize_single_node(&ranges[..count]) {
+                            Ok(accepted) => {
+                                serial_write(b"ACPI SRAT/SLIT absent; Windows-compatible UMA node 0 initialized, ranges: ");
+                                serial_write_decimal(accepted);
+                                serial_write(b"\r\n");
+                            }
+                            Err(_) => serial_write(b"ACPI SRAT unavailable and UMA fallback failed; memory node ownership remains unknown.\r\n"),
+                        }
+                    }
+                },
             }
         }
         // Publish direct-map W^X policy before any high-RAM probe can fault in
