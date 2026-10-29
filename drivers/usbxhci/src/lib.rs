@@ -61,11 +61,11 @@ impl<const N:usize> ProducerRing<N>{
  pub fn push(&mut self,mut trb:Trb)->Result<usize,XhciError>{
   if N<4||!N.is_power_of_two(){return Err(XhciError::InvalidRingSize)}
   if self.producer_index>=N-1{return Err(XhciError::InvalidParameter)}
+  if self.producer_index+1==N-1{validate_dma_address(self.dma_base,64)?;}
   trb.control=(trb.control&!1)|if self.cycle{1}else{0};
   let idx=self.producer_index;self.entries[idx]=trb;self.producer_index+=1;
   if self.producer_index==N-1{
-   validate_dma_address(self.dma_base,64)?;
-   self.entries[N-1]=Trb{parameter:self.dma_base,status:0,control:(TRB_TYPE_LINK<<TRB_TYPE_SHIFT)|1|2|if self.cycle{0}else{1}};
+   self.entries[N-1]=Trb{parameter:self.dma_base,status:0,control:(TRB_TYPE_LINK<<TRB_TYPE_SHIFT)|2|if self.cycle{1}else{0}};
    self.producer_index=0;self.cycle=!self.cycle;
   }
   Ok(idx)
