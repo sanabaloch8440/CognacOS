@@ -871,6 +871,8 @@ jobs:
           cat build/serial.log
           grep -F 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.' build/serial.log
           grep -F 'PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.' build/serial.log
+          grep -E '^QEMU xHCI DEVICE: BDF=' build/serial.log
+          grep -E '^QEMU xHCI DEVICE COUNT=0x0*[1-9a-fA-F][0-9a-fA-F]*' build/serial.log
            grep -F 'CognacOS Rust kernel entered.' build/serial.log
           grep -F 'XSTATE processor policy initialized; enabled mask=' build/serial.log
           grep -F 'XSTATE XSAVE/XRSTOR processor self-test passed.' build/serial.log
