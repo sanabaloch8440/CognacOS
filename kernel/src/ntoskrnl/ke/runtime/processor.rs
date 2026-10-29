@@ -39,7 +39,18 @@ pub unsafe extern "win64" fn ke_get_current_processor_index() -> u32 {
         .map(|cpu| cpu.logical_id.load(Ordering::Acquire))
         .unwrap_or(0)
 }
-pub unsafe extern "win64" fn ke_get_current_node_number() -> u32 { 0 }
+/// USHORT KeGetCurrentNodeNumber(void): resolve the running processor's
+/// proximity domain from the SRAT APIC/x2APIC affinity records. UMA firmware
+/// fallback is node 0; if firmware omits this CPU's affinity, retain the
+/// conservative node-0 fallback rather than selecting an unowned node.
+pub unsafe extern "win64" fn ke_get_current_node_number() -> u16 {
+    let apic_id = crate::hal::current_cpu_local()
+        .map(|cpu| cpu.apic_id.load(Ordering::Acquire));
+    match apic_id.and_then(|id| crate::ntoskrnl::mm::topology::node_for_apic_id(id)) {
+        Some(node) if node <= u16::MAX as u32 => node as u16,
+        _ => 0,
+    }
+}
 pub unsafe extern "win64" fn ke_get_recommended_shared_data_alignment() -> u32 { 64 }
 
 /// Initialize a Windows x64 KSPIN_LOCK word.
