@@ -92,6 +92,19 @@ pub fn publish_xhci(
     XHCI_PCI_DEVICE.bar_length.store(bar_length,Ordering::Relaxed);
     XHCI_PCI_DEVICE.bar_virtual.store(bar_virtual,Ordering::Relaxed);
     XHCI_PCI_DEVICE.state.store(STATE_MMIO_MAPPED,Ordering::Relaxed);
+    // Bind the stable PnP device-object address to its real PCI requester ID
+    // before exposing the object to driver/DMA-adapter consumers.
+    let requester_status = unsafe {
+        crate::dma::iommu::RdotDmaRegisterDeviceRequester(
+            core::ptr::addr_of!(XHCI_PCI_DEVICE) as *mut core::ffi::c_void,
+            0, bus, device, function,
+        )
+    };
+    if requester_status != 0 {
+        XHCI_PCI_DEVICE.state.store(0, Ordering::Relaxed);
+        PUBLISH_LOCK.store(false, Ordering::Release);
+        return Err(());
+    }
     XHCI_PCI_DEVICE.ready.store(true,Ordering::Release);
     PUBLISH_LOCK.store(false,Ordering::Release);
     Ok(core::ptr::addr_of!(XHCI_PCI_DEVICE) as u64)
