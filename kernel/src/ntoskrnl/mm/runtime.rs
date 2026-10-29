@@ -1088,40 +1088,40 @@ unsafe fn allocate_pages_for_mdl(
             }
         }
     } else {
-        // Windows interprets SkipBytes as successive address windows, not as
-        // a per-page alignment boundary. Try each window before giving up.
-        'pages: for index in 0..requested_pages {
-            let mut window = 0u64;
-            loop {
-                let offset = match window.checked_mul(skip_bytes) { Some(v) => v, None => break };
-                let (Some(low), Some(high)) = (low_address.checked_add(offset), high_address.checked_add(offset)) else { break };
-                match unsafe { crate::memory::allocate_page_in_range(low, high, 0) } {
-                    Ok(value) => {
-                        unsafe { pfns.add(index).write(value / PAGE_SIZE); }
-                        allocated += 1;
-                        continue 'pages;
-                    }
-                    Err(_) => {
-                        if skip_bytes == 0 { break; }
-                        window = match window.checked_add(1) { Some(v) => v, None => break };
+        // PREFER_CONTIGUOUS is a fragmentation hint: attempt a full run before
+        // falling back to ordinary page allocation, but never require a run.
+        if prefer_contiguous && skip_bytes == 0 {
+            if let Ok(base) = unsafe {
+                crate::memory::allocate_contiguous_pages_in_range(requested_pages, low_address, high_address, 0)
+            } {
+                for index in 0..requested_pages {
+                    unsafe { pfns.add(index).write(base / PAGE_SIZE + index as u64); }
+                }
+                allocated = requested_pages;
+            }
+        }
+        if allocated == 0 {
+            // SkipBytes defines successive address windows, not a per-page
+            // alignment boundary. Search each window before giving up.
+            'pages: for index in 0..requested_pages {
+                let mut window = 0u64;
+                loop {
+                    let offset = match window.checked_mul(skip_bytes) { Some(v) => v, None => break };
+                    let (Some(low), Some(high)) = (low_address.checked_add(offset), high_address.checked_add(offset)) else { break };
+                    match unsafe { crate::memory::allocate_page_in_range(low, high, 0) } {
+                        Ok(value) => {
+                            unsafe { pfns.add(index).write(value / PAGE_SIZE); }
+                            allocated += 1;
+                            continue 'pages;
+                        }
+                        Err(_) => {
+                            if skip_bytes == 0 { break; }
+                            window = match window.checked_add(1) { Some(v) => v, None => break };
+                        }
                     }
                 }
+                break;
             }
-            break;
-        }
-    }
-    // PREFER_CONTIGUOUS is a fragmentation hint, not a contiguity guarantee.
-    // The allocator's current implementation tries one run only when no
-    // SkipBytes windows are requested; otherwise it falls back to the normal
-    // window allocator rather than violating the address constraints.
-    if prefer_contiguous && !require_contiguous && skip_bytes == 0 && allocated == 0 {
-        if let Ok(base) = unsafe {
-            crate::memory::allocate_contiguous_pages_in_range(requested_pages, low_address, high_address, 0)
-        } {
-            for index in 0..requested_pages {
-                unsafe { pfns.add(index).write(base / PAGE_SIZE + index as u64); }
-            }
-            allocated = requested_pages;
         }
     }
     if allocated == 0 || (flags & MM_ALLOCATE_FULLY_REQUIRED != 0 && allocated != requested_pages) {
