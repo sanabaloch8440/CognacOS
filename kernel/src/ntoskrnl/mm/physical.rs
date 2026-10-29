@@ -596,7 +596,7 @@ pub unsafe fn try_allocate_pages_in_range(
     output: &mut [u64], low: u64, high: u64, require_all: bool,
 ) -> Result<usize, AllocError> {
     if low > high { return Err(AllocError::InvalidPage); }
-    let _guard = MemoryGuard::try_acquire().ok_or(AllocError::Busy)?;
+    let _guard = MemoryGuard::acquire();
     let low_free = unsafe { &mut *FREE_PAGES.0.get() };
     let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
     let mut count = 0usize;
@@ -658,7 +658,7 @@ pub unsafe fn try_allocate_pages_in_range(
 /// one NUMA proximity domain. This deliberately searches the returned-page
 /// lists only: bump regions are not split by SRAT ownership yet, so consuming
 /// from them here could silently discard pages belonging to other nodes.
-pub unsafe fn try_allocate_pages_in_node_range(
+pub unsafe fn allocate_pages_in_node_range(
     output: &mut [u64], node: u32, low: u64, high: u64, require_all: bool,
 ) -> Result<usize, AllocError> {
     if low > high || !crate::ntoskrnl::mm::topology::is_ready() {
