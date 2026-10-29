@@ -50,3 +50,18 @@ A conservative capability registry defaults unregistered devices to D0/D3 and re
 
 
 The xHCI core also includes a wait/wake orchestration contract that requires device, hub, controller, and connected-port wake capability before arming. It enables wake in controller-to-device order and rolls back in reverse order on failure; cancellation attempts all teardown steps even if one layer fails. The backend callbacks are contracts only until real USB control-transfer and hub/host-controller wake handlers are wired.
+
+
+## Windows 11 x64 alignment and implementation boundary
+
+This design follows Microsoft's documented **driver-role and device-stack contracts**, not a claim that CognacOS can load Microsoft's proprietary driver binaries. The current target is an NT-style WDM contract with distinct kernel executive, HAL services, and separately built drivers:
+
+- **Kernel / NT executive:** owns PnP device objects, IRP dispatch/completion and cancellation, resource arbitration, interrupt/DPC scheduling, DMA/IOMMU policy, and driver lifetime/rundown.
+- **HAL:** owns architecture-specific port/MMIO access, interrupt routing/synchronization, and the platform DMA backend contract. Driver crates must not reach into kernel-private modules or implement a second HAL.
+- **Drivers:** PCI, xHCI, HIDClass, KbdHid, KbdClass, and i8042prt remain separate no_std driver components. The xHCI core consumes explicit platform services rather than bypassing HAL.
+
+Microsoft's Windows driver documentation describes DriverEntry, AddDevice, dispatch, unload, ISR/DPC and DMA routines as distinct driver responsibilities; PnP IRPs must be propagated correctly through the stack. The documented USB host stack also separates the host-controller driver from the USB host-controller extension and hub/device stacks. References: [standard driver routines](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/introduction-to-standard-driver-routines), [passing PnP IRPs down the stack](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/passing-pnp-irps-down-the-device-stack), [USB host-controller driver architecture](https://learn.microsoft.com/en-us/windows-hardware/drivers/usbcon/developing-windows-drivers-for-usb-host-controllers), and [wait/wake propagation through device stacks](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/understanding-the-path-of-wait-wake-irps-through-a-device-tree).
+
+The latest implementation adds two **tested building blocks**: read-only ECAM discovery of xHCI PCI functions (including multifunction traversal and assigned 32/64-bit BAR decoding), and bounded xHCI interrupt-transfer TRB construction/completion tracking keyed by TRB DMA address. These additions deliberately do not enable PCI bus mastering, map BARs, allocate DMA, or register interrupts on their own.
+
+Still not implemented end-to-end: firmware ACPI MCFG-to-ECAM mapping in the live PCI driver path; kernel resource arbitration and PCI enable/disable; a real IOMMU-backed HAL DMA implementation; kernel-provided ISR/DPC registration; xHCI DriverEntry/PnP/IRP dispatch; port reset, slot/address/configure sequencing driven by actual completions; control transfers for descriptors and SET_PROTOCOL/SET_CONFIGURATION; endpoint context/ring setup and doorbell scheduling; transfer-event delivery into HIDClass/KbdHid/KbdClass; PS/2 IRQ/DPC packet delivery; and a QEMU test asserting real keyboard packets reach the input consumer. Until those are wired and QEMU-tested, this remains **controller/driver-core work, not Windows 11-compatible hardware support**.
