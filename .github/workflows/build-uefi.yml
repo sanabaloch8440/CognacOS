@@ -91,6 +91,22 @@ jobs:
         run: cargo check --manifest-path drivers/storage/Cargo.toml --lib
       - name: Test storage protocol and disk-class primitives
         run: cargo test --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Check keyboard class driver
+        run: cargo check --manifest-path drivers/kbdclass/Cargo.toml --lib
+      - name: Test keyboard class queue and exclusive ownership
+        run: cargo test --manifest-path drivers/kbdclass/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Check HID class driver
+        run: cargo check --manifest-path drivers/hidclass/Cargo.toml --lib
+      - name: Test HID top-level collection parser
+        run: cargo test --manifest-path drivers/hidclass/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Check HID keyboard mapper
+        run: cargo check --manifest-path drivers/kbdhid/Cargo.toml --lib
+      - name: Test HID keyboard report transitions
+        run: cargo test --manifest-path drivers/kbdhid/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Check PS/2 i8042 port driver
+        run: cargo check --manifest-path drivers/i8042prt/Cargo.toml --lib
+      - name: Test PS/2 scan-code and bounded polling
+        run: cargo test --manifest-path drivers/i8042prt/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Test ext4 parser and extent mapping
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib parser_mapping_and_crc_smoke_tests_pass
       - name: Test ext4 metadata checksum validation
@@ -314,6 +330,10 @@ jobs:
           build_driver acpi drivers/acpi acpi 0xffff8000d0000000 acpi.sys
           build_driver pci drivers/pci pci 0xffff8000e0000000 pci.sys
           build_driver processor drivers/processor processor 0xffff8000f0000000 processor.sys
+          build_driver hidclass drivers/hidclass hidclass 0xffff800170000000 hidclass.sys
+          build_driver kbdclass drivers/kbdclass kbdclass 0xffff800140000000 kbdclass.sys
+          build_driver kbdhid drivers/kbdhid kbdhid 0xffff800150000000 kbdhid.sys
+          build_driver i8042prt drivers/i8042prt i8042prt 0xffff800160000000 i8042prt.sys
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/storahci.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-storahci --release --bin storahci
           python3 tools/elf_to_pe32plus.py target/driver-storahci/x86_64-unknown-none/release/storahci build/drivers/storahci.sys --image-base 0xffff800110000000 --dll
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/stornvme.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-stornvme --release --bin stornvme
