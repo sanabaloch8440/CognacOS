@@ -50,6 +50,8 @@ These are implementation foundations, not declarations of full Windows 11 compat
 - shared/nt-abi/ — shared NT-style Rust ABI definitions
 - ntdll/src/ — Rust NTDLL exports and native runtime
 - drivers/ext4/ — native Rust ext-family filesystem driver
+- drivers/kbdclass/, drivers/hidclass/, drivers/kbdhid/, drivers/i8042prt/ — keyboard stack cores
+- drivers/usbxhci/ — xHCI controller-core foundation (not yet a complete USB host controller driver)
 - .github/workflows/ — build, host-test, and emulator validation
 - docs/ — public documentation
 
