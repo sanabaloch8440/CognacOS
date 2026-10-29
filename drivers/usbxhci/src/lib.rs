@@ -427,6 +427,7 @@ fn free_allocations<P: XhciPlatform>(p: &mut P, a: [Option<DmaAllocation>; 4]) {
 pub fn start_controller<P: XhciPlatform>(
     platform: &mut P, caps: &Capabilities, max_slots: u8, poll_budget: u32,
 ) -> Result<XhciRuntimeResources, RuntimeStartError> {
+    if max_slots == 0 || max_slots > caps.max_slots || caps.max_slots > MAX_SLOTS { return Err(RuntimeStartError::InvalidAllocation); }
     let dcbaa_size = (max_slots as u64 + 1).checked_mul(8).ok_or(RuntimeStartError::InvalidAllocation)?;
     let sizes = [dcbaa_size, RUNTIME_RING_BYTES, RUNTIME_RING_BYTES, core::mem::size_of::<ErstEntry>() as u64];
     let aligns = [64u64, 64, 64, 64];
@@ -452,7 +453,8 @@ pub fn start_controller<P: XhciPlatform>(
     // layout is repr(C, align(16)) as required by xHCI.
     unsafe { core::ptr::write_volatile(erst.cpu_address as *mut ErstEntry, entry); }
     // Seed command ring segment's final TRB as a Link TRB pointing back to base.
-    let link = Trb::new(command_ring.device_address, 0, TRB_TYPE_LINK, true);
+    let mut link = Trb::new(command_ring.device_address, 0, TRB_TYPE_LINK, true);
+    link.control |= 1 << 1; // Toggle Cycle (TC) on the segment Link TRB.
     // SAFETY: the command ring allocation covers RUNTIME_RING_BYTES.
     unsafe { core::ptr::write_volatile((command_ring.cpu_address as *mut Trb).add(RUNTIME_EVENT_ENTRIES as usize - 1), link); }
     if platform.register_interrupt().is_err() {
@@ -501,6 +503,7 @@ where P: XhciRegisterIo, F: FnMut(Trb) {
     while consumed < budget {
         let slot = resources.event_ring.cpu_address as *const Trb;
         // SAFETY: the platform keeps the DMA allocation mapped for this resource's lifetime.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
         let event = unsafe { core::ptr::read_volatile(slot.add(resources.dequeue_index as usize)) };
         if event.cycle() != resources.consumer_cycle { break; }
         handle(event);
@@ -512,7 +515,9 @@ where P: XhciRegisterIo, F: FnMut(Trb) {
         let dequeue_dma = resources.event_ring.device_address
             + resources.dequeue_index as u64 * core::mem::size_of::<Trb>() as u64;
         let erdp = caps.runtime_offset + 0x38;
-        platform.write32(erdp, dequeue_dma as u32).map_err(|_| XhciError::InvalidParameter)?;
+        // EHB (bit 3) acknowledges the event-handler-busy state while the low
+        // pointer bits remain naturally aligned and available for xHCI flags.
+        platform.write32(erdp, (dequeue_dma as u32) | (1 << 3)).map_err(|_| XhciError::InvalidParameter)?;
         platform.write32(erdp + 4, (dequeue_dma >> 32) as u32).map_err(|_| XhciError::InvalidParameter)?;
         consumed += 1;
     }
