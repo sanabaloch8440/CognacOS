@@ -40,6 +40,7 @@ impl PciDeviceObject {
     }
 }
 pub static XHCI_PCI_DEVICE: PciDeviceObject = PciDeviceObject::new();
+static PUBLISH_LOCK: AtomicBool = AtomicBool::new(false);
 
 pub const STATE_DISCOVERED:u32=1;
 pub const STATE_MMIO_MAPPED:u32=2;
@@ -74,7 +75,11 @@ pub fn publish_xhci(
     if device>=32||function>=8||vendor_id==0||vendor_id==0xffff||bar_physical==0
         ||bar_length<0x20||bar_virtual==0||bar_physical.checked_add(bar_length).is_none()
         ||bar_virtual.checked_add(bar_length).is_none() { return Err(()); }
-    if XHCI_PCI_DEVICE.ready.load(Ordering::Acquire) { return Err(()); }
+    if PUBLISH_LOCK.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){return Err(());}
+    if XHCI_PCI_DEVICE.ready.load(Ordering::Acquire) {
+        PUBLISH_LOCK.store(false,Ordering::Release);
+        return Err(());
+    }
     XHCI_PCI_DEVICE.bus.store(bus as u32,Ordering::Relaxed);
     XHCI_PCI_DEVICE.device.store(device as u32,Ordering::Relaxed);
     XHCI_PCI_DEVICE.function.store(function as u32,Ordering::Relaxed);
@@ -88,6 +93,7 @@ pub fn publish_xhci(
     XHCI_PCI_DEVICE.bar_virtual.store(bar_virtual,Ordering::Relaxed);
     XHCI_PCI_DEVICE.state.store(STATE_MMIO_MAPPED,Ordering::Relaxed);
     XHCI_PCI_DEVICE.ready.store(true,Ordering::Release);
+    PUBLISH_LOCK.store(false,Ordering::Release);
     Ok(core::ptr::addr_of!(XHCI_PCI_DEVICE) as u64)
 }
 
@@ -106,6 +112,6 @@ pub fn xhci_resources()->Option<XhciPciResources> {
 }
 
 pub fn advance_xhci_state(expected:u32,next:u32)->Result<(),()> {
-    if next!=expected+1||next>STATE_DRIVER_BOUND{return Err(())}
+    if !XHCI_PCI_DEVICE.ready.load(Ordering::Acquire)||next!=expected+1||next>STATE_DRIVER_BOUND{return Err(())}
     XHCI_PCI_DEVICE.state.compare_exchange(expected,next,Ordering::AcqRel,Ordering::Acquire).map(|_|()).map_err(|_|())
 }
