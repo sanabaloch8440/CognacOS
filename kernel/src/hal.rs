@@ -536,3 +536,115 @@ pub unsafe fn write_mmio_u32_checked(base: *mut u8, mapping_length: u64, offset:
     device_full_barrier();
     Ok(())
 }
+
+
+// ---- Versioned driver-facing HAL service publication -----------------------
+// The kernel is the owner of this table; drivers consume only the stable
+// contract crate. Hardware services which do not have a safe, complete backend
+// remain None rather than being exposed as successful no-op implementations.
+type DriverHalStatus = cognacos_hal_contract::HalStatus;
+fn driver_hal_success() -> DriverHalStatus { DriverHalStatus::SUCCESS }
+fn driver_hal_invalid() -> DriverHalStatus { DriverHalStatus::INVALID_PARAMETER }
+fn driver_hal_unsupported() -> DriverHalStatus { DriverHalStatus::NOT_SUPPORTED }
+
+unsafe extern "C" fn service_read_port_u8(port:u16,out:*mut u8)->DriverHalStatus {
+    if out.is_null(){return driver_hal_invalid()}
+    // SAFETY: this callback is called only by trusted kernel-mode driver code.
+    unsafe{out.write(read_port_u8(port));}
+    driver_hal_success()
+}
+unsafe extern "C" fn service_write_port_u8(port:u16,value:u8)->DriverHalStatus {
+    // SAFETY: privileged port access is intentionally restricted to kernel drivers.
+    unsafe{write_port_u8(port,value);}
+    driver_hal_success()
+}
+unsafe extern "C" fn service_read_mmio_u32(address:u64,out:*mut u32)->DriverHalStatus {
+    if address==0 || address&3!=0 || out.is_null(){return driver_hal_invalid()}
+    // SAFETY: driver must pass an address within a live device mapping it owns.
+    unsafe{out.write(read_mmio_u32(address as *const u32));}
+    device_read_barrier();
+    driver_hal_success()
+}
+unsafe extern "C" fn service_write_mmio_u32(address:u64,value:u32)->DriverHalStatus {
+    if address==0 || address&3!=0{return driver_hal_invalid()}
+    // SAFETY: driver must pass an address within a live writable device mapping.
+    unsafe{write_mmio_u32(address as *mut u32,value);}
+    device_full_barrier();
+    driver_hal_success()
+}
+extern "C" fn service_query_counter(value:*mut u64,frequency:*mut u64)->DriverHalStatus {
+    if value.is_null() || frequency.is_null(){return driver_hal_invalid()}
+    let now=apic::monotonic_ticks();
+    let Some(hz)=apic::tsc_frequency_hz() else{return driver_hal_unsupported()};
+    // SAFETY: checked output pointers are supplied by trusted kernel-mode callers.
+    unsafe{value.write(now);frequency.write(hz);}
+    driver_hal_success()
+}
+unsafe extern "C" fn service_send_ipi(apic_id:u32,vector:u8)->DriverHalStatus {
+    if apic_id>u8::MAX as u32{return driver_hal_unsupported()}
+    // SAFETY: APIC service validates the vector and requires an initialized local APIC.
+    match unsafe{apic::request_ipi(apic_id as u8,vector)} {
+        Ok(())=>driver_hal_success(),
+        Err(_)=>DriverHalStatus::DEVICE_ERROR,
+    }
+}
+
+/// Return the stable base HAL contract for kernel-mode driver adapters.
+/// MMIO callbacks operate on an already mapped virtual address; this function
+/// does not map physical BARs or authorize arbitrary physical addresses.
+pub fn driver_service_table()->cognacos_hal_contract::HalServiceTable {
+    cognacos_hal_contract::HalServiceTable {
+        size:core::mem::size_of::<cognacos_hal_contract::HalServiceTable>() as u32,
+        version:cognacos_hal_contract::HAL_CONTRACT_VERSION,
+        read_port_u8:Some(service_read_port_u8),
+        write_port_u8:Some(service_write_port_u8),
+        read_mmio_u32:Some(service_read_mmio_u32),
+        write_mmio_u32:Some(service_write_mmio_u32),
+        query_counter:Some(service_query_counter),
+        send_ipi:Some(service_send_ipi),
+        // IRQL transitions require the executive's per-thread IRQL state and
+        // restoration token; never publish an incomplete implementation.
+        set_irql:None,
+    }
+}
+
+/// Publish only device services that have a complete kernel implementation.
+/// DMA/IOMMU allocation and interrupt-to-DPC delivery are deliberately absent
+/// until the memory manager and executive provide pinning, isolation, rundown,
+/// vector/ISR registration, and deferred execution as one lifetime-safe path.
+/// xHCI startup must reject this table rather than use physical addresses directly.
+pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable {
+    cognacos_hal_contract::DeviceServiceTable {
+        size:core::mem::size_of::<cognacos_hal_contract::DeviceServiceTable>() as u32,
+        version:cognacos_hal_contract::DEVICE_SERVICES_VERSION,
+        allocate_dma:None,
+        free_dma:None,
+        register_interrupt:None,
+        unregister_interrupt:None,
+        set_interrupt_enabled:None,
+    }
+}
+
+#[cfg(test)]
+mod driver_service_publication_tests {
+    use super::*;
+    #[test]
+    fn base_service_table_is_versioned_and_exposes_only_existing_primitives() {
+        let table=driver_service_table();
+        assert!(table.compatible());
+        assert!(table.read_port_u8.is_some());
+        assert!(table.write_port_u8.is_some());
+        assert!(table.read_mmio_u32.is_some());
+        assert!(table.write_mmio_u32.is_some());
+        assert!(table.query_counter.is_some());
+        assert!(table.send_ipi.is_some());
+        assert!(table.set_irql.is_none());
+    }
+    #[test]
+    fn device_table_fails_closed_until_dma_and_interrupt_backends_are_real() {
+        let table=driver_device_service_table();
+        assert!(table.compatible());
+        assert!(!table.has_dma());
+        assert!(!table.has_interrupts());
+    }
+}
