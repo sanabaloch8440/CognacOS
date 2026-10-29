@@ -608,17 +608,56 @@ pub fn driver_service_table()->cognacos_hal_contract::HalServiceTable {
     }
 }
 
-/// Publish only device services that have a complete kernel implementation.
-/// DMA/IOMMU allocation and interrupt-to-DPC delivery are deliberately absent
-/// until the memory manager and executive provide pinning, isolation, rundown,
-/// vector/ISR registration, and deferred execution as one lifetime-safe path.
-/// xHCI startup must reject this table rather than use physical addresses directly.
+/// Allocate a common buffer in the requesting device's IOMMU domain.
+/// The device must already have a validated PCI requester identity and the real
+/// IOMMU backend must be active. There is intentionally no physical-address fallback.
+unsafe extern "C" fn service_allocate_dma(
+    device_object:u64,size:u64,alignment:u64,maximum_address:u64,flags:u32,
+    cpu_out:*mut u64,device_out:*mut u64,
+)->DriverHalStatus {
+    if device_object==0 || size==0 || size>u32::MAX as u64 || alignment==0
+        || !alignment.is_power_of_two() || alignment>dma::PAGE_SIZE || maximum_address==0
+        || flags!=0 || cpu_out.is_null() || device_out.is_null() {
+        return driver_hal_invalid();
+    }
+    if !dma::iommu::available() { return driver_hal_unsupported(); }
+    let object=device_object as *mut core::ffi::c_void;
+    let adapter=dma::create_device_adapter(object,3,maximum_address);
+    if adapter.is_null() { return driver_hal_unsupported(); }
+    match unsafe { dma::iommu_allocate_common(adapter,size as usize,maximum_address) } {
+        Ok((cpu,logical)) if !cpu.is_null() && logical!=0 && (cpu as u64)%alignment==0 => {
+            unsafe { cpu_out.write(cpu as u64); device_out.write(logical); }
+            driver_hal_success()
+        }
+        Ok((cpu,logical)) => {
+            let _=unsafe { dma::free_common_buffer_for_adapter(adapter,cpu,logical,size as usize) };
+            driver_hal_invalid()
+        }
+        Err(_) => driver_hal_unsupported(),
+    }
+}
+unsafe extern "C" fn service_free_dma(device_object:u64,cpu:u64,device_address:u64,size:u64)->DriverHalStatus {
+    if device_object==0 || cpu==0 || device_address==0 || size==0 || size>usize::MAX as u64 {
+        return driver_hal_invalid();
+    }
+    let adapter=dma::create_device_adapter(device_object as *mut core::ffi::c_void,3,u64::MAX);
+    if adapter.is_null() { return driver_hal_unsupported(); }
+    match unsafe { dma::free_common_buffer_for_adapter(adapter,cpu as *mut u8,device_address,size as usize) } {
+        Ok(())=>driver_hal_success(),
+        Err(_)=>driver_hal_unsupported(),
+    }
+}
+
+/// Publish the real IOMMU-backed DMA services. Interrupt callbacks remain absent
+/// until the kernel has a routed device vector and a safe deferred-DPC queue;
+/// consumers must not start an interrupt-driven controller without those services.
 pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable {
+    let dma_ready=dma::iommu::available();
     cognacos_hal_contract::DeviceServiceTable {
         size:core::mem::size_of::<cognacos_hal_contract::DeviceServiceTable>() as u32,
         version:cognacos_hal_contract::DEVICE_SERVICES_VERSION,
-        allocate_dma:None,
-        free_dma:None,
+        allocate_dma:if dma_ready {Some(service_allocate_dma)} else {None},
+        free_dma:if dma_ready {Some(service_free_dma)} else {None},
         register_interrupt:None,
         unregister_interrupt:None,
         set_interrupt_enabled:None,
