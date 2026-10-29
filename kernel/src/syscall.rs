@@ -1979,10 +1979,12 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
             status as u32 as u64
         }
         NT_SYSCALL_YIELD_EXECUTION => {
-            // Windows returns STATUS_NO_YIELD_PERFORMED when no schedulable
-            // peer thread can run. The current ring-3 bootstrap is not attached
-            // to a scheduler-owned ETHREAD, so do not report a false success.
-            0x4000_0024
+            if crate::ntoskrnl::ke::thread::yield_current_if_runnable() {
+                NT_STATUS_SUCCESS
+            } else {
+                // STATUS_NO_YIELD_PERFORMED: no peer task was ready.
+                0x4000_0024
+            }
         }
         NT_SYSCALL_QUERY_INFORMATION_PROCESS => nt_query_process(args),
         NT_SYSCALL_OPEN_PROCESS => nt_open_process(args),
