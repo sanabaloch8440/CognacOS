@@ -23,5 +23,25 @@ pub fn reserve(start:u64,length:u64,kind:CacheType)->Result<Reservation,CacheErr
  Ok(Reservation{start,end,kind,active:true})
 }
 impl Reservation{pub fn cache_type(&self)->CacheType{self.kind}pub fn range(&self)->(u64,u64){(self.start,self.end)}}
-impl Drop for Reservation{fn drop(&mut self){if !self.active{return}if let Ok(_g)=lock(){let es=unsafe{&mut *ENTRIES.0.get()};if let Some(e)=es.iter_mut().find(|e|e.live&&e.start==self.start&&e.end==self.end&&e.kind==self.kind){e.refs=e.refs.saturating_sub(1);if e.refs==0{*e=Entry::EMPTY}}}}}
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        if !self.active { return; }
+        // A live mapping reservation must never be silently leaked just because
+        // another CPU briefly owns the registry lock. This lock is held only
+        // while mutating the bounded table, never for the reservation lifetime.
+        let _guard = loop {
+            if let Ok(guard) = lock() { break guard; }
+            core::hint::spin_loop();
+        };
+        let entries = unsafe { &mut *ENTRIES.0.get() };
+        if let Some(entry) = entries.iter_mut().find(|entry|
+            entry.live && entry.start == self.start && entry.end == self.end
+                && entry.kind == self.kind
+        ) {
+            entry.refs = entry.refs.saturating_sub(1);
+            if entry.refs == 0 { *entry = Entry::EMPTY; }
+        }
+        self.active = false;
+    }
+}
 #[cfg(test)]mod tests{use super::*;#[test]fn conflicting_alias_types_are_rejected(){let a=reserve(0x1000,0x2000,CacheType::NonCached).unwrap();assert_eq!(reserve(0x2000,0x1000,CacheType::WriteCombined).err(),Some(CacheError::Conflict));drop(a);assert!(reserve(0x2000,0x1000,CacheType::WriteCombined).is_ok())}}
