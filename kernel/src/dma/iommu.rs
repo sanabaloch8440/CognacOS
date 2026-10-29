@@ -60,6 +60,9 @@ pub fn available()->bool{backend().is_ok()}
 pub fn device_busy(device:usize)->bool{let s=STATE.lock();s.maps.iter().any(|m|m.used&&m.device==device)||s.common.iter().any(|b|b.used&&b.device==device)}
 fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{
  if device==0||token==0||length==0||physical.checked_add(length as u64).is_none(){return Err(DmaError::InvalidLength)}
+ // A DMA adapter handle is not a PCI requester ID. Require PnP to have
+ // registered the stable device object's BDF before any mapping is attempted.
+ if requester_identity(device).is_none(){return Err(DmaError::AddressMask)}
  let b=backend().map_err(|_|DmaError::AddressMask)?;
  let logical=0u64;let cookie=0u64;
  let mut logical_out=logical;let mut cookie_out=cookie;
@@ -126,6 +129,7 @@ pub fn map_sg(device:usize,token:usize,fragments:&[(u64,u32)],direction:u8,out:&
 }
 pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Result<(*mut u8,u64),DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;if length==0{return Err(DmaError::InvalidLength)}
+ if requester_identity(device).is_none(){return Err(DmaError::AddressMask)}
  // Resolve the backend before acquiring physical pages. A missing IOMMU must
  // fail without leaking a contiguous allocation from the kernel page allocator.
  let b=backend().map_err(|_|DmaError::AddressMask)?;
@@ -147,6 +151,7 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
 }
 pub unsafe fn free_common(adapter:*mut c_void,cpu:*mut u8,logical:u64,length:usize)->Result<(),DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;
+ if requester_identity(device).is_none(){return Err(DmaError::AddressMask)}
  // Do not retire the registry record until a usable backend is available.
  // Otherwise a transient backend failure would orphan pages and lose the only
  // ownership record capable of freeing them.
@@ -160,7 +165,7 @@ pub unsafe fn free_common(adapter:*mut c_void,cpu:*mut u8,logical:u64,length:usi
  for i in 0..rec.pages{unsafe{crate::memory::free_page(rec.physical+i as u64*PAGE_SIZE)}.map_err(|_|DmaError::OutOfMemory)?;}Ok(())
 }
 pub fn flush_common(adapter:*mut c_void,cpu:*mut u8,length:usize)->Result<(),DmaError>{
- if cpu.is_null()||length==0{return Err(DmaError::InvalidLength)}let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;let b=backend().map_err(|_|DmaError::AddressMask)?;
+ if cpu.is_null()||length==0{return Err(DmaError::InvalidLength)}let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;if requester_identity(device).is_none(){return Err(DmaError::AddressMask)}let b=backend().map_err(|_|DmaError::AddressMask)?;
  let rec={let s=STATE.lock();s.common.iter().find(|c|c.used&&c.device==device&&c.cpu==cpu as usize&&length<=c.length).copied().ok_or(DmaError::NotFound)?};
  if unsafe{(b.sync.unwrap())(b.context,device,rec.logical,length as u32,2)}!=OK{return Err(DmaError::AddressMask)}fence(Ordering::SeqCst);unsafe{core::arch::asm!("mfence",options(nostack,preserves_flags));}Ok(())
 }
