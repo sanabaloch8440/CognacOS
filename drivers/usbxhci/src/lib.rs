@@ -47,15 +47,28 @@ pub fn parse_capabilities(b:&[u8])->Result<Capabilities,XhciError>{
  if max_slots==0||max_slots>MAX_SLOTS||max_ports==0||doorbell_offset<cap_length as u32||runtime_offset<cap_length as u32{return Err(XhciError::InvalidCapabilityLength)}
  Ok(Capabilities{cap_length,version:u16at(b,2)?,max_slots,max_interrupters,max_ports,doorbell_offset,runtime_offset,context_size:if hcc1&(1<<2)!=0{64}else{32},page_size_mask})
 }
-/// Fixed-capacity producer ring. Its backing memory must be DMA-safe, pinned and coherent.
-pub struct ProducerRing<const N:usize>{entries:[Trb;N],producer_index:usize,cycle:bool}
+/// Single-segment command/transfer ring model. The last TRB is a Link TRB,
+/// and the backing allocation must be contiguous, DMA-coherent and pinned.
+pub struct ProducerRing<const N:usize>{entries:[Trb;N],producer_index:usize,cycle:bool,dma_base:u64}
 impl<const N:usize> ProducerRing<N>{
- pub const fn new()->Self{Self{entries:[Trb{parameter:0,status:0,control:0};N],producer_index:0,cycle:true}}
- pub const fn len(&self)->usize{N} pub const fn producer_index(&self)->usize{self.producer_index} pub const fn cycle_state(&self)->bool{self.cycle}
+ pub const fn new()->Self{Self{entries:[Trb{parameter:0,status:0,control:0};N],producer_index:0,cycle:true,dma_base:0}}
+ pub const fn new_with_dma_base(dma_base:u64)->Self{Self{entries:[Trb{parameter:0,status:0,control:0};N],producer_index:0,cycle:true,dma_base}}
+ pub const fn len(&self)->usize{N}
+ pub const fn producer_index(&self)->usize{self.producer_index}
+ pub const fn cycle_state(&self)->bool{self.cycle}
+ /// Enqueue one TRB and follow the Link TRB when reaching the segment end.
+ /// Full-ring accounting is the caller's responsibility because hardware owns the dequeue pointer.
  pub fn push(&mut self,mut trb:Trb)->Result<usize,XhciError>{
-  if N<2||!N.is_power_of_two(){return Err(XhciError::InvalidRingSize)}
-  if self.producer_index+1>=N{return Err(XhciError::RingFull)}
-  trb.control=(trb.control&!1)|if self.cycle{1}else{0};let idx=self.producer_index;self.entries[idx]=trb;self.producer_index+=1;Ok(idx)
+  if N<4||!N.is_power_of_two(){return Err(XhciError::InvalidRingSize)}
+  if self.producer_index>=N-1{return Err(XhciError::InvalidParameter)}
+  trb.control=(trb.control&!1)|if self.cycle{1}else{0};
+  let idx=self.producer_index;self.entries[idx]=trb;self.producer_index+=1;
+  if self.producer_index==N-1{
+   validate_dma_address(self.dma_base,64)?;
+   self.entries[N-1]=Trb{parameter:self.dma_base,status:0,control:(TRB_TYPE_LINK<<TRB_TYPE_SHIFT)|1|2|if self.cycle{0}else{1}};
+   self.producer_index=0;self.cycle=!self.cycle;
+  }
+  Ok(idx)
  }
  pub fn get(&self,index:usize)->Option<Trb>{self.entries.get(index).copied()}
 }
@@ -223,7 +236,7 @@ mod milestone_tests{
  #[test]fn parses_capability_prefix(){let mut b=[0u8;0x30];b[0]=0x20;b[2]=0x10;b[4]=8;b[5]=1;b[7]=4;b[0x14..0x18].copy_from_slice(&0x100u32.to_le_bytes());b[0x18..0x1c].copy_from_slice(&0x200u32.to_le_bytes());let c=parse_capabilities(&b).unwrap();assert_eq!(c.max_slots,8);assert_eq!(c.max_ports,4);}
  #[test]fn trb_fields_round_trip(){let t=Trb::new(0x1234,0,TRB_TYPE_ENABLE_SLOT,true);assert_eq!(t.trb_type(),TRB_TYPE_ENABLE_SLOT as u8);assert!(t.cycle());}
  #[test]fn rejects_bad_dma_alignment(){assert_eq!(validate_dma_address(0x1003,16),Err(XhciError::InvalidDmaAddress));assert_eq!(validate_dma_address(0x1000,16),Ok(0x1000));}
- #[test]fn ring_does_not_overwrite_reserved_slot(){let mut r:ProducerRing<4>=ProducerRing::new();assert!(r.push(Trb::default()).is_ok());assert!(r.push(Trb::default()).is_ok());assert_eq!(r.push(Trb::default()),Err(XhciError::RingFull));}
+ #[test]fn producer_ring_links_and_toggles_cycle_on_wrap(){let mut r:ProducerRing<4>=ProducerRing::new_with_dma_base(0x1000);assert_eq!(r.push(Trb::default()),Ok(0));assert_eq!(r.push(Trb::default()),Ok(1));assert_eq!(r.push(Trb::default()),Ok(2));let link=r.get(3).unwrap();assert_eq!(link.trb_type(),TRB_TYPE_LINK as u8);assert_eq!(link.parameter,0x1000);assert_eq!(r.producer_index(),0);assert!(!r.cycle_state());assert_eq!(r.push(Trb::default()),Ok(0));assert!(!r.get(0).unwrap().cycle());}
  #[test]fn wait_is_bounded(){let mut n=0;assert_eq!(wait_register(||{n+=1;0},1,1,4),Err(XhciError::Timeout));assert_eq!(n,4);}
 }
 
