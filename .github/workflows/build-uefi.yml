@@ -870,7 +870,8 @@ jobs:
           trap - EXIT
           cat build/serial.log
           grep -F 'Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.' build/serial.log
-          grep -F 'CognacOS Rust kernel entered.' build/serial.log
+          grep -F 'PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.' build/serial.log
+           grep -F 'CognacOS Rust kernel entered.' build/serial.log
           grep -F 'XSTATE processor policy initialized; enabled mask=' build/serial.log
           grep -F 'XSTATE XSAVE/XRSTOR processor self-test passed.' build/serial.log
           grep -F 'KUSER_SHARED_DATA XState mapping and read-only ABI test passed.' build/serial.log
