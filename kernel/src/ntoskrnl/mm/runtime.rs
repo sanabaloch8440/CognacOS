@@ -1392,11 +1392,13 @@ pub fn self_test() -> bool {
         );
         protection_ok && mdl_storage_freed
     };
-    // Exercise nonzero LowAddress, an inclusive HighAddress, a 2 MiB
-    // SkipBytes boundary, and a fully-required contiguous two-page run.
+    // Exercise nonzero LowAddress, an inclusive HighAddress, and the
+    // Windows rule that REQUIRE_CONTIGUOUS_CHUNKS with nonzero SkipBytes
+    // requires TotalBytes to be an exact multiple of SkipBytes. Use one
+    // 8-KiB contiguous chunk, aligned to its 8-KiB boundary.
     let bounded_mdl = unsafe {
         mm_allocate_pages_for_mdl_ex(
-            0x10_0000, 0xffff_ffff, 0x20_0000, PAGE_SIZE * 2, 1,
+            0x10_0000, 0xffff_ffff, PAGE_SIZE * 2, PAGE_SIZE * 2, 1,
             MM_ALLOCATE_FULLY_REQUIRED | MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS,
         )
     };
@@ -1411,7 +1413,7 @@ pub fn self_test() -> bool {
         let valid = header.byte_count as u64 == PAGE_SIZE * 2
             && second == first.saturating_add(PAGE_SIZE)
             && first >= 0x10_0000 && last <= 0xffff_ffff
-            && first / 0x20_0000 == last / 0x20_0000;
+            && first / (PAGE_SIZE * 2) == last / (PAGE_SIZE * 2);
         unsafe { mm_free_pages_from_mdl(bounded_mdl); }
         let storage_freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
             bounded_mdl.cast(), Some(0x4c444d4d),
