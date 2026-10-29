@@ -10,8 +10,6 @@ pub struct VkToWchar { pub virtual_key:u8, pub attributes:u8, pub chars:[u16;5] 
 #[repr(C)]
 pub struct VkToWcharTable { pub entries:*const VkToWchar, pub modification_count:u8, pub entry_size:u8 }
 #[repr(C)]
-pub struct VkToWcharTableList { pub table:*const VkToWcharTable }
-unsafe impl Sync for VkToWcharTableList {}
 struct VkToWcharTablePointers([*const VkToWcharTable;2]);
 unsafe impl Sync for VkToWcharTablePointers {}
 #[repr(C)]
@@ -21,7 +19,6 @@ pub struct KbdModifiersTable { pub modifier_bits:*const ModifierBit, pub max_mod
 #[repr(C)]
 pub struct ScanVk { pub scan_code:u8, pub virtual_key:u16 }
 unsafe impl Sync for VkToWcharTable {}
-unsafe impl Sync for VkToWcharTableList {}
 unsafe impl Sync for KbdModifiersTable {}
 unsafe impl Sync for KbdTables {}
 #[repr(C)]
