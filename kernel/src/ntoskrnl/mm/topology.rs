@@ -43,6 +43,15 @@ pub fn parse_slit(table:&[u8])->Result<usize,TopologyError>{
  unsafe{let s=&mut *TOPOLOGY.0.get();s.2=matrix;s.3=n;}Ok(n)
 }
 pub fn is_ready()->bool{READY.load(Ordering::Acquire)}
+/// Number of memory proximity domains actually described by accepted SRAT
+/// ranges. This is not inferred from the SLIT matrix, which may include
+/// processor-only domains with no allocatable memory.
+pub fn memory_node_count() -> usize {
+    if !is_ready() { return 0; }
+    let s = unsafe { &*TOPOLOGY.0.get() };
+    s.0.iter().take(s.1).map(|range| range.node as usize + 1).max().unwrap_or(0)
+}
+
 /// Returns a node only when the complete range has one explicit SRAT owner.
 pub fn node_for_range(start:u64,length:u64)->Option<u32>{if !is_ready()||length==0{return None}let end=start.checked_add(length)?;let s=unsafe{&*TOPOLOGY.0.get()};let mut found=None;for r in s.0.iter().take(s.1){if start>=r.start&&end<=r.end{if found.is_some(){return None}found=Some(r.node)}}found}
 pub fn distance(from:u32,to:u32)->Option<u8>{let s=unsafe{&*TOPOLOGY.0.get()};if from as usize>=s.3||to as usize>=s.3{return None}Some(s.2[from as usize][to as usize])}
