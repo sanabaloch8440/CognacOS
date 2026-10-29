@@ -19,6 +19,11 @@ const TLS_STRIDE: u64 = 0x0100_0000;
 struct UserKernelStack([u8; 32768]);
 static mut USER_KERNEL_STACKS: [UserKernelStack; crate::hal::MAX_CPUS] =
     [const { UserKernelStack([0; 32768]) }; crate::hal::MAX_CPUS];
+static USER_RETURN_ACTIVE: [core::sync::atomic::AtomicBool; crate::hal::MAX_CPUS] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; crate::hal::MAX_CPUS];
+pub fn user_return_context_active(cpu:usize)->bool{
+    cpu<crate::hal::MAX_CPUS && USER_RETURN_ACTIVE[cpu].load(core::sync::atomic::Ordering::Acquire)
+}
 
 global_asm!(r#"
     .section .text
@@ -429,7 +434,11 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
         let initial_user_rsp = USER_STACK_TOP - 8;
         unsafe { space.copy_to_user(initial_user_rsp, &PROCESS_RETURN_TRAMPOLINE.to_le_bytes())?; }
         unsafe { crate::serial_write(b"[DBG][NTOSKRNL][USER] entering image entry RIP="); crate::serial_write_hex(image.entry); crate::serial_write(b" RSP="); crate::serial_write_hex(initial_user_rsp); crate::serial_write(b" TEB="); crate::serial_write_hex(env.teb); crate::serial_write(b" return-trampoline="); crate::serial_write_hex(PROCESS_RETURN_TRAMPOLINE); crate::serial_write(b"\r\n"); }
+        // The exception path may return a faulted process to this exact
+        // suspended caller. Pin the active return context to this CPU.
+        USER_RETURN_ACTIVE[cpu].store(true,core::sync::atomic::Ordering::Release);
         unsafe{rdotos_process_enter_user(image.entry,initial_user_rsp,env.teb);}
+        USER_RETURN_ACTIVE[cpu].store(false,core::sync::atomic::Ordering::Release);
         Ok(())
     })() };
     unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
