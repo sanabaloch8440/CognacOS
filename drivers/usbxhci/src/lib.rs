@@ -80,6 +80,17 @@ impl<const N:usize> Default for ProducerRing<N>{fn default()->Self{Self::new()}}
 pub const fn validate_dma_address(address:u64,alignment:u64)->Result<u64,XhciError>{
  if alignment==0||!alignment.is_power_of_two()||address&(alignment-1)!=0||address==0{Err(XhciError::InvalidDmaAddress)}else{Ok(address)}
 }
+/// Validate the complete device-visible DMA span, not just its first address.
+/// max_device_address is inclusive (for example, 0xffff_ffff for a 32-bit
+/// DMA controller). A span that wraps or crosses the device address limit is
+/// rejected before any address is programmed into a controller register.
+pub const fn validate_dma_span(address:u64,length:u64,max_device_address:u64)->Result<(),XhciError>{
+ if address==0||length==0 { return Err(XhciError::InvalidDmaAddress); }
+ match address.checked_add(length-1) {
+  Some(last) if last<=max_device_address => Ok(()),
+  _ => Err(XhciError::InvalidDmaAddress),
+ }
+}
 /// Bounded register polling. The callback performs exactly one register read per iteration.
 pub fn wait_register<F:FnMut()->u32>(mut read:F,mask:u32,expected:u32,budget:u32)->Result<(),XhciError>{
  for _ in 0..budget{if read()&mask==expected&mask{return Ok(())}core::hint::spin_loop()}Err(XhciError::Timeout)
@@ -313,6 +324,29 @@ pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:
 
 
 #[cfg(test)]
+mod dma_span_tests {
+    use super::*;
+    #[test]
+    fn dma_span_checks_the_entire_device_visible_range() {
+        assert_eq!(validate_dma_span(0x1000, 0x1000, 0x1fff), Ok(()));
+        assert_eq!(validate_dma_span(0xffff_f000, 0x1000, 0xffff_ffff), Ok(()));
+        assert_eq!(validate_dma_span(0xffff_f000, 0x1001, 0xffff_ffff), Err(XhciError::InvalidDmaAddress));
+        assert_eq!(validate_dma_span(u64::MAX - 7, 16, u64::MAX), Err(XhciError::InvalidDmaAddress));
+        assert_eq!(validate_dma_span(0, 16, u64::MAX), Err(XhciError::InvalidDmaAddress));
+        assert_eq!(validate_dma_span(0x1000, 0, u64::MAX), Err(XhciError::InvalidDmaAddress));
+    }
+    #[test]
+    fn allocation_requires_aligned_cpu_and_device_addresses_and_full_span() {
+        let good = DmaAllocation { cpu_address: 0x8000, device_address: 0x1_0000, size: 0x1000 };
+        assert!(valid_allocation(good, 0x800, 0x100, 0x1_0fff));
+        assert!(!valid_allocation(good, 0x1001, 0x100, 0x1_ffff));
+        assert!(!valid_allocation(good, 0x800, 0x100, 0x1_07ff));
+        assert!(!valid_allocation(DmaAllocation { cpu_address: 0x8001, ..good }, 0x800, 0x100, u64::MAX));
+        assert!(!valid_allocation(DmaAllocation { device_address: 0x1_0001, ..good }, 0x800, 0x100, u64::MAX));
+    }
+}
+
+#[cfg(test)]
 mod controller_init_tests{
  use super::*;
  struct FakeMmio{regs:[u32;256]}
@@ -410,10 +444,12 @@ pub struct XhciRuntimeResources {
 }
 const RUNTIME_EVENT_ENTRIES: u16 = 256;
 const RUNTIME_RING_BYTES: u64 = RUNTIME_EVENT_ENTRIES as u64 * core::mem::size_of::<Trb>() as u64;
-fn valid_allocation(a: DmaAllocation, size: u64, alignment: u64) -> bool {
-    a.cpu_address != 0 && a.cpu_address & (alignment - 1) == 0
-        && a.size >= size && validate_dma_address(a.device_address, alignment).is_ok()
-        && a.device_address.checked_add(size).is_some()
+fn valid_allocation(a: DmaAllocation, size: u64, alignment: u64, max_device_address: u64) -> bool {
+    alignment != 0 && alignment.is_power_of_two()
+        && a.cpu_address != 0 && a.cpu_address & (alignment - 1) == 0
+        && a.size >= size
+        && validate_dma_address(a.device_address, alignment).is_ok()
+        && validate_dma_span(a.device_address, size, max_device_address).is_ok()
 }
 unsafe fn zero_dma(a: DmaAllocation, size: usize) {
     // SAFETY: XhciPlatform promises a writable CPU mapping covering a.size bytes.
@@ -435,7 +471,7 @@ pub fn start_controller<P: XhciPlatform>(
     let mut allocations: [Option<DmaAllocation>; 4] = [None, None, None, None];
     for i in 0..4 {
         let a = match platform.allocate_dma(sizes[i], aligns[i], u64::MAX) {
-            Ok(a) if valid_allocation(a, sizes[i], aligns[i]) => a,
+            Ok(a) if valid_allocation(a, sizes[i], aligns[i], u64::MAX) => a,
             Ok(a) => { platform.free_dma(a); free_allocations(platform, allocations); return Err(RuntimeStartError::InvalidAllocation); }
             Err(()) => { free_allocations(platform, allocations); return Err(RuntimeStartError::AllocationFailed); }
         };
