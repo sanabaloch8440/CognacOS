@@ -1273,7 +1273,7 @@ mod controller_power_tests {
   fn unregister_interrupt(&mut self){self.irq_registered=false;self.irq_enabled=false;}
   fn set_interrupt_enabled(&mut self,e:bool)->Result<(),()>{if e&&!self.irq_registered{return Err(())}self.irq_enabled=e;Ok(())}
  }
- fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,context_size:32,page_size_mask:1}}
+ fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,extended_capabilities_offset:0,context_size:32,page_size_mask:1}}
  #[test] fn d0_exit_and_entry_preserve_dma_context_and_restore_interrupts(){
   let mut platform=FakePlatform::new();
   let mut resources=start_controller(&mut platform,&caps(),4,16).unwrap();
