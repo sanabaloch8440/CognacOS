@@ -24,6 +24,12 @@ This mirrors the broad Windows class/port/client layering. Windows' kbdclass.sys
 
 GitHub Actions host-tests queue bounds and exclusive ownership, HID descriptor parsing, boot-report transitions/rollover, PS/2 scan-code decoding and bounded polling, PCI ECAM/BAR decoding, HAL device-service contracts, and xHCI capability/TRB/ring/ERST/controller-start/descriptor/enumeration primitives. It builds kbdclass, hidclass, kbdhid, i8042prt, and usbxhci as separate AMD64 PE32+ images with the repository's current driver-image pipeline.
 
+## Device-power and S4 lifetime hardening milestone
+
+The power manager now checks D-state capability across the bounded attached-device stack before accepting device power queries/transitions. Wait/wake requests similarly require wake capability at every attached layer; cyclic or overlong attachment chains fail closed. This is capability validation and ordering protection, not a substitute for each bus/port/driver's hardware D0/D3 sequencing or propagation through a separate parent-bus relationship. A regression test covers multi-layer support, a layer that does not support wake, and a cyclic stack.
+
+The S4 image engine's platform callback descriptor is now copied into immutable kernel-owned storage, preventing use-after-return if the registration caller supplied a temporary descriptor. Platform context, storage, and callbacks must still remain valid for the kernel lifetime. The hibernation codec supports bounded checksummed images and commit-last metadata, but the boot path does not register a production storage/memory/CPU restore backend; real S4 persistence/resume is therefore still unavailable and fails closed.
+
 ## DMA lifetime hardening milestone
 
 The kernel IOMMU registry now copies the registered callback table into immutable kernel-owned storage instead of retaining a pointer to the caller's table. The backend context itself must still remain valid for the kernel lifetime, and registration remains one-shot. Common-buffer allocation now checks for a complete IOMMU backend before taking contiguous physical pages, avoiding a page leak when DMA translation is unavailable. A successful map that returns malformed logical-address/cookie values attempts rollback before failing closed.
