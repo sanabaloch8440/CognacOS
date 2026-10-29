@@ -630,15 +630,35 @@ pub fn suspend_controller_for_power<P:XhciPlatform>(platform:&mut P,caps:&Capabi
  let erst_base=((platform.read32(rt+0x34).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64)<<32)|platform.read32(rt+0x30).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64;
  let erdp=((platform.read32(rt+0x3c).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64)<<32)|(platform.read32(rt+0x38).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64&!0xf);
  if resources.interrupt_registered&&platform.set_interrupt_enabled(false).is_err(){return Err(XhciPowerError::InterruptDisableFailed)}
- platform.write32(iman_off,iman&!IMAN_INTERRUPT_ENABLE).map_err(|_|XhciPowerError::RegisterIoFailure)?;
- platform.write32(op,command&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE)).map_err(|_|XhciPowerError::RegisterIoFailure)?;
- for _ in 0..budget {
-  if platform.read32(op+4).map_err(|_|XhciPowerError::RegisterIoFailure)?&USBSTS_HALTED!=0 {
-   resources.suspended=true;
-   return Ok(XhciPowerSnapshot{command,config,dcbaap,crcr,iman,erst_size,erst_base,erdp});
-  }
-  core::hint::spin_loop();
+ if platform.write32(iman_off,iman&!IMAN_INTERRUPT_ENABLE).is_err(){
+  if resources.interrupt_registered{let _=platform.set_interrupt_enabled(true);}
+  return Err(XhciPowerError::RegisterIoFailure)
  }
+ if platform.write32(op,command&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE)).is_err(){
+  let _=platform.write32(iman_off,iman);
+  if resources.interrupt_registered{let _=platform.set_interrupt_enabled(true);}
+  return Err(XhciPowerError::RegisterIoFailure)
+ }
+ for _ in 0..budget {
+  match platform.read32(op+4) {
+   Ok(status) if status&USBSTS_HALTED!=0=>{
+    resources.suspended=true;
+    return Ok(XhciPowerSnapshot{command,config,dcbaap,crcr,iman,erst_size,erst_base,erdp});
+   }
+   Ok(_) => core::hint::spin_loop(),
+   Err(_) => {
+    let _=platform.write32(op,command);
+    let _=platform.write32(iman_off,iman);
+    if resources.interrupt_registered{let _=platform.set_interrupt_enabled(true);}
+    return Err(XhciPowerError::RegisterIoFailure)
+   }
+  }
+ }
+ // A failed halt is rolled back; never leave the IRQ masked for a transition
+ // that the caller must abandon.
+ let _=platform.write32(op,command);
+ let _=platform.write32(iman_off,iman);
+ if resources.interrupt_registered{let _=platform.set_interrupt_enabled(true);}
  Err(XhciPowerError::ControllerDidNotHalt)
 }
 /// Restore controller registers and existing DMA context before reenabling interrupts.
