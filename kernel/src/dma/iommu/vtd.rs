@@ -45,7 +45,7 @@ pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32
  if cap==0||ecap==0||iro.checked_add(0x20).is_none_or(|e|e>register_len as usize){unsafe{(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_NOT_SUPPORTED}
  let(mut rp,mut rv)=(0u64,core::ptr::null_mut());
  if unsafe{(ops.alloc_table.unwrap())(ops.context,&mut rp,&mut rv)}!=0||rp==0||rp&0xfff!=0||rv.is_null(){
-  if rp!=0&&!rv.is_null(){unsafe{(ops.free_table.unwrap())(ops.context,rp,rv)}}
+  if rp!=0&&!rv.is_null(){let _=unsafe{(ops.free_table.unwrap())(ops.context,rp,rv)};}
   unsafe{(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_INSUFFICIENT_RESOURCES
  }
  unsafe{core::ptr::write_bytes(rv,0,512)};
