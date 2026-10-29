@@ -676,3 +676,136 @@ mod hal_adapter_tests {
         assert_eq!(words[1], 0x1234);
     }
 }
+
+
+/// Producer state for the single-segment xHCI command ring. One TRB slot is
+/// reserved for the Link TRB; the command ring is single-producer and must be
+/// serialized by the caller (normally the controller's command lock).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandRingCursor {
+    pub enqueue_index: u16,
+    pub producer_cycle: bool,
+}
+impl CommandRingCursor {
+    pub const fn new() -> Self { Self { enqueue_index: 0, producer_cycle: true } }
+}
+impl Default for CommandRingCursor { fn default() -> Self { Self::new() } }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandSubmitError {
+    InvalidRing,
+    InvalidCommand,
+    RegisterIoFailure,
+}
+
+/// Publish one command TRB into a DMA-backed command ring and ring Doorbell 0.
+/// entry_count includes the reserved Link TRB. The command buffer must remain
+/// pinned/coherent and cursor must be protected against concurrent producers.
+/// A successful return means submitted, not completed; completion is reported
+/// separately through the event ring's Command Completion Event.
+pub fn submit_command<I: XhciRegisterIo>(
+    io: &mut I,
+    caps: &Capabilities,
+    ring_cpu: u64,
+    ring_dma: u64,
+    entry_count: u16,
+    cursor: &mut CommandRingCursor,
+    mut command: Trb,
+) -> Result<u64, CommandSubmitError> {
+    if entry_count < 4 || !entry_count.is_power_of_two()
+        || ring_cpu == 0 || ring_cpu & 0xf != 0
+        || validate_dma_address(ring_dma, 64).is_err()
+        || cursor.enqueue_index >= entry_count - 1
+        || caps.doorbell_offset < caps.cap_length as u32
+        || caps.doorbell_offset & 3 != 0 {
+        return Err(CommandSubmitError::InvalidRing);
+    }
+    let ty = command.trb_type();
+    if ty == 0 || ty == TRB_TYPE_LINK as u8 || ty >= TRB_TYPE_TRANSFER_EVENT as u8 {
+        return Err(CommandSubmitError::InvalidCommand);
+    }
+    let index = cursor.enqueue_index as usize;
+    let address = ring_cpu.checked_add((index * core::mem::size_of::<Trb>()) as u64)
+        .ok_or(CommandSubmitError::InvalidRing)?;
+    command.control = (command.control & !1) | u32::from(cursor.producer_cycle);
+    // SAFETY: caller supplies a writable, pinned DMA ring with entry_count slots.
+    unsafe { core::ptr::write_volatile(address as *mut Trb, command); }
+    core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+    let submitted_dma = ring_dma.checked_add((index * core::mem::size_of::<Trb>()) as u64)
+        .ok_or(CommandSubmitError::InvalidRing)?;
+    cursor.enqueue_index += 1;
+    if cursor.enqueue_index == entry_count - 1 {
+        let link = Trb {
+            parameter: ring_dma,
+            status: 0,
+            control: (TRB_TYPE_LINK << TRB_TYPE_SHIFT) | (1 << 1)
+                | u32::from(cursor.producer_cycle),
+        };
+        let link_address = ring_cpu.checked_add((entry_count as u64 - 1)
+            * core::mem::size_of::<Trb>() as u64).ok_or(CommandSubmitError::InvalidRing)?;
+        // SAFETY: last ring slot is reserved for the Link TRB.
+        unsafe { core::ptr::write_volatile(link_address as *mut Trb, link); }
+        cursor.enqueue_index = 0;
+        cursor.producer_cycle = !cursor.producer_cycle;
+    }
+    core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+    // Doorbell 0 is the command ring doorbell; its target is always zero.
+    io.write32(caps.doorbell_offset, 0).map_err(|_| CommandSubmitError::RegisterIoFailure)?;
+    Ok(submitted_dma)
+}
+
+#[cfg(test)]
+mod command_submission_tests {
+    use super::*;
+    struct FakeIo { regs: [u32; 64], writes: [u32; 8], count: usize }
+    impl FakeIo { fn new() -> Self { Self { regs: [0;64], writes: [u32::MAX;8], count: 0 } } }
+    impl XhciRegisterIo for FakeIo {
+        fn read32(&mut self, o:u32)->Result<u32,()> { self.regs.get((o/4) as usize).copied().ok_or(()) }
+        fn write32(&mut self,o:u32,v:u32)->Result<(),()> {
+            let i=(o/4) as usize; if i>=self.regs.len(){return Err(())}
+            self.regs[i]=v;
+            if self.count < self.writes.len() { self.writes[self.count]=o; }
+            self.count+=1; Ok(())
+        }
+    }
+    fn caps()->Capabilities { Capabilities { cap_length:0x40,version:0x100,max_slots:8,
+        max_interrupters:1,max_ports:4,doorbell_offset:0x100,runtime_offset:0x200,
+        context_size:32,page_size_mask:1 } }
+    #[test]
+    fn submits_command_and_rings_command_doorbell() {
+        let mut ring=[Trb::default();8]; let mut io=FakeIo::new();
+        let mut cursor=CommandRingCursor::new();
+        let cmd=Trb::new(0x1234,0,TRB_TYPE_ENABLE_SLOT,true);
+        assert_eq!(submit_command(&mut io,&caps(),ring.as_mut_ptr() as u64,0x1000,8,&mut cursor,cmd),Ok(0x1000));
+        assert_eq!(unsafe { core::ptr::read_volatile(ring.as_ptr()) }.trb_type(),TRB_TYPE_ENABLE_SLOT as u8);
+        assert!(unsafe { core::ptr::read_volatile(ring.as_ptr()) }.cycle());
+        assert_eq!(io.writes[0],0x100);
+        assert_eq!(io.regs[0x100/4],0);
+        assert_eq!(cursor.enqueue_index,1);
+    }
+    #[test]
+    fn writes_link_and_toggles_cycle_at_segment_end() {
+        let mut ring=[Trb::default();4]; let mut io=FakeIo::new();
+        let mut cursor=CommandRingCursor::new();
+        for _ in 0..3 {
+            submit_command(&mut io,&caps(),ring.as_mut_ptr() as u64,0x1000,4,&mut cursor,
+                Trb::new(0,0,TRB_TYPE_ENABLE_SLOT,true)).unwrap();
+        }
+        let link=unsafe { core::ptr::read_volatile(ring.as_ptr().add(3)) };
+        assert_eq!(link.trb_type(),TRB_TYPE_LINK as u8);
+        assert_eq!(link.parameter,0x1000);
+        assert_ne!(link.control & (1<<1),0);
+        assert_eq!(cursor.enqueue_index,0);
+        assert!(!cursor.producer_cycle);
+    }
+    #[test]
+    fn rejects_bad_ring_and_event_trbs() {
+        let mut ring=[Trb::default();8]; let mut io=FakeIo::new();
+        let mut cursor=CommandRingCursor::new();
+        assert_eq!(submit_command(&mut io,&caps(),ring.as_mut_ptr() as u64,0x1000,3,&mut cursor,
+            Trb::new(0,0,TRB_TYPE_ENABLE_SLOT,true)),Err(CommandSubmitError::InvalidRing));
+        assert_eq!(submit_command(&mut io,&caps(),ring.as_mut_ptr() as u64,0x1000,8,&mut cursor,
+            Trb::new(0,0,TRB_TYPE_COMMAND_COMPLETION,true)),Err(CommandSubmitError::InvalidCommand));
+        assert_eq!(io.count,0);
+    }
+}
