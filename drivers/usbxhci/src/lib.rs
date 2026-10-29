@@ -1284,7 +1284,7 @@ pub const TRB_IOC:u32=1<<5;
 pub const TRB_TRANSFER_LENGTH_MASK:u32=0x1ffff;
 pub const MAX_PENDING_TRANSFERS:usize=64;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum TransferError { InvalidBuffer,InvalidLength,InvalidEndpoint,InvalidSlot,TableFull,DuplicateTrb,UnknownCompletion,FailedCompletion(u8),ResidualTooLarge }
+pub enum TransferError { InvalidBuffer,InvalidLength,InvalidEndpoint,InvalidSlot,TableFull,DuplicateTrb,UnknownCompletion,MismatchedCompletion,FailedCompletion(u8),ResidualTooLarge }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct TransferRequest {pub trb_dma:u64,pub buffer_dma:u64,pub length:u32,pub endpoint_id:u8,pub slot_id:u8}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
@@ -1317,7 +1317,9 @@ impl<const N:usize> TransferTracker<N>{
  pub fn complete(&mut self,event:&Trb)->Result<TransferResult,TransferError>{
   if event.trb_type()!=TRB_TYPE_TRANSFER_EVENT as u8{return Err(TransferError::UnknownCompletion)}
   let index=self.pending.iter().position(|p|p.map(|r|r.trb_dma==event.parameter).unwrap_or(false)).ok_or(TransferError::UnknownCompletion)?;
-  let r=self.pending[index].take().ok_or(TransferError::UnknownCompletion)?;
+  let r=self.pending[index].ok_or(TransferError::UnknownCompletion)?;
+  if event.slot_id()!=r.slot_id || event.endpoint_id()!=r.endpoint_id{return Err(TransferError::MismatchedCompletion)}
+  self.pending[index]=None;
   let code=event.completion_code();self.len-=1;
   if code!=1{return Err(TransferError::FailedCompletion(code))}
   let residual=event.status&0x00ff_ffff;if residual>r.length{return Err(TransferError::ResidualTooLarge)}
@@ -1331,6 +1333,7 @@ impl<const N:usize> Default for TransferTracker<N>{fn default()->Self{Self::new(
  fn req(addr:u64)->TransferRequest{TransferRequest{trb_dma:addr,buffer_dma:0x8000,length:8,endpoint_id:3,slot_id:1}}
  #[test]fn builds_interrupt_in_normal_trb(){let t=build_interrupt_in_trb(0x8000,8,3,1).unwrap();assert_eq!(t.trb_type(),TRB_TYPE_NORMAL as u8);assert_eq!(t.parameter,0x8000);assert_eq!(t.status,8);assert_ne!(t.control&TRB_IOC,0);assert_eq!(build_interrupt_in_trb(0x8001,8,3,1),Err(TransferError::InvalidBuffer));}
  #[test]fn completion_is_correlated_and_consumed_once(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=Trb{parameter:0x1000,status:1u32<<24,control:TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT};let done=q.complete(&e).unwrap();assert_eq!(done.bytes_transferred,8);assert_eq!(q.len(),0);assert_eq!(q.complete(&e),Err(TransferError::UnknownCompletion));}
+ #[test]fn mismatched_slot_or_endpoint_does_not_consume_request(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=Trb{parameter:0x1000,status:1u32<<24,control:(TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT)|(2u32<<16)|(1u32<<24)};assert_eq!(q.complete(&e),Err(TransferError::MismatchedCompletion));assert_eq!(q.len(),1);}
  #[test]fn failures_never_report_success(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=Trb{parameter:0x1000,status:6u32<<24,control:TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT};assert_eq!(q.complete(&e),Err(TransferError::FailedCompletion(6)));q.reserve(req(0x2000)).unwrap();let e=Trb{parameter:0x2000,status:(1u32<<24)|9,control:TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT};assert_eq!(q.complete(&e),Err(TransferError::ResidualTooLarge));}
  #[test]fn slot_rundown_cancels_pending_transfers(){let mut q:TransferTracker<3>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();q.reserve(TransferRequest{slot_id:2,trb_dma:0x2000,..req(0x2000)}).unwrap();assert_eq!(q.cancel_slot(1),1);assert_eq!(q.len(),1);}
 }
