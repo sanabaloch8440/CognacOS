@@ -19,7 +19,7 @@ pub(crate) fn register(device:*mut DeviceObject,states:u8,wake:bool)->i32{
  let Some(e)=r.entries.iter_mut().find(|e|e.device==0)else{return FULL};*e=Entry{device:device as usize,states,wake};OK
 }
 pub(crate) fn unregister(device:*mut DeviceObject){if device.is_null(){return}if let Some(e)=REGISTRY.lock().entries.iter_mut().find(|e|e.device==device as usize){*e=Entry::EMPTY}}
-#[unsafe(no_mangle)] pub unsafe extern "win64" fn RdotPoRegisterDevicePowerCapabilities(device:*mut DeviceObject,states:u8,wake:u8)->i32{register(device,states,wake!=0)}
+
 #[cfg(test)] mod tests{use super::*;#[test]fn defaults_are_d0_d3_without_wake(){let d=0x1000usize as *mut DeviceObject;assert!(supports_wdm_state(d,1));assert!(!supports_wdm_state(d,2));assert!(supports_wdm_state(d,4));assert!(!supports_wake(d));}
 #[test]fn registered_capabilities_are_enforced(){let d=0x2000usize as *mut DeviceObject;assert_eq!(register(d,D0|D1|D3,true),OK);assert!(supports_wdm_state(d,2));assert!(supports_wake(d));unregister(d);assert!(!supports_wake(d));}
 #[test]fn invalid_capability_sets_rejected(){let d=0x3000usize as *mut DeviceObject;assert_eq!(register(d,D3,false),INVALID);assert_eq!(register(d,D0|D3,true),INVALID);}}
