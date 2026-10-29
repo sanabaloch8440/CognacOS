@@ -118,5 +118,5 @@ Recent work extends the MDL/physical allocator path with:
 Still intentionally incomplete:
 - MM_ALLOCATE_FROM_LOCAL_NODE_ONLY remains rejected until CognacOS parses ACPI SRAT/SLIT topology and tracks node ownership for physical ranges.
 - Non-cached and write-combined mappings remain unsupported until PAT/MTRR-aware cache-type policy is tracked consistently across every alias (identity map, direct map, and MDL system mapping). Applying cache bits to only one alias would be unsafe.
-- MM_ALLOCATE_NO_WAIT is non-pageing/nonblocking with respect to memory reclamation, but allocator lock acquisition currently uses the existing spin lock.
+- MM_ALLOCATE_NO_WAIT is non-paging and non-reclaiming with respect to memory reclamation, but allocator lock acquisition currently uses the existing spin lock.
 - This is incremental NT ABI compatibility, not a claim of complete Windows 11 memory-manager parity.
