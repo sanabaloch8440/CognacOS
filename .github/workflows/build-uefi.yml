@@ -111,10 +111,14 @@ jobs:
         run: cargo check --manifest-path drivers/i8042prt/Cargo.toml --lib
       - name: Test PS/2 scan-code and bounded polling
         run: cargo test --manifest-path drivers/i8042prt/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Test PS/2 keyboard input across simulated D0 suspend/resume
+        run: cargo test --manifest-path drivers/i8042prt/Cargo.toml --target x86_64-unknown-linux-gnu --lib power_lifecycle_tests
       - name: Check USB xHCI controller core
         run: cargo check --manifest-path drivers/usbxhci/Cargo.toml --lib
       - name: Test USB xHCI capability, rings, descriptors, enumeration, DMA and controller startup
         run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Test USB xHCI port power-state transitions
+        run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib power_state_tests
       - name: Test ext4 parser and extent mapping
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib parser_mapping_and_crc_smoke_tests_pass
       - name: Test ext4 metadata checksum validation
