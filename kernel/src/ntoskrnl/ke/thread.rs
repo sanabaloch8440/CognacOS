@@ -40,6 +40,7 @@ static PREEMPTION_TEST_OBSERVED:core::sync::atomic::AtomicBool=core::sync::atomi
 static PREEMPTION_TEST_PROGRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static PREEMPTION_ENABLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
+pub fn current_cpu_index()->Result<usize,ThreadError>{cpu_index()}
 fn cpu_index()->Result<usize,ThreadError>{
     if let Some(local)=crate::hal::current_cpu_local(){
         let logical=local.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize;
@@ -106,13 +107,7 @@ pub fn attach_current_user_thread(pid:u64,kernel_stack_top:u64)->Result<u64,Thre
  let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
  let mut table=THREADS.lock();
  let current=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
- if current!=0 {
-  let thread=table.records.iter_mut().find(|t|t.id==current&&t.state==ThreadState::Running).ok_or(ThreadError::NoCurrentThread)?;
-  thread.process_id=pid;
-  thread.stack_top=kernel_stack_top;
-  crate::scheduler::set_task_stack_top(thread.scheduler_id,kernel_stack_top).map_err(|_|ThreadError::InvalidState)?;
-  return Ok(thread.id);
- }
+ if current!=0{return Err(ThreadError::InvalidState);}
  let slot=table.records.iter().position(|t|t.state==ThreadState::Empty||t.state==ThreadState::Exited).ok_or(ThreadError::Full)?;
  let mut affinity=0u64;
  for index in 0..crate::hal::MAX_CPUS {
