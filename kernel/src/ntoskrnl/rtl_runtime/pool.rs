@@ -217,6 +217,10 @@ mod tests {
 pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { bounded::allocate_tagged(size, tag, zeroed) }
 #[cfg(target_os = "none")]
 pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { super::pool_page::allocate_tagged(size, tag, zeroed) }
+#[cfg(not(target_os = "none"))]
+pub(super) fn try_allocate_tagged(_size: usize, _tag: u32, _zeroed: bool) -> *mut u8 { core::ptr::null_mut() }
+#[cfg(target_os = "none")]
+pub(super) fn try_allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { super::pool_page::try_allocate_tagged(size, tag, zeroed) }
 
 #[cfg(not(target_os = "none"))]
 pub(super) fn allocate_paged_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { bounded::allocate_tagged(size, tag, zeroed) }
