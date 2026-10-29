@@ -1153,20 +1153,20 @@ pub unsafe extern "win64" fn mm_protect_mdl_system_address(mdl: *mut c_void, new
     if header.flags & MDL_MAPPED_SYSTEM_VA == 0 || header.mapped_system_va.is_null() {
         return STATUS_NOT_MAPPED_VIEW;
     }
-    let (writable, executable) = match new_protect {
-        0x01 => return STATUS_INVALID_PAGE_PROTECTION, // No-access needs non-present PTE support.
-        0x02 => (false, false), // PAGE_READONLY
-        0x04 => (true, false),  // PAGE_READWRITE
-        0x10 => (false, true),  // PAGE_EXECUTE
-        0x20 => (false, true),  // PAGE_EXECUTE_READ
-        0x40 => (true, true), // PAGE_EXECUTE_READWRITE is an explicit caller request.
+    let (writable, executable, present, allow_wx) = match new_protect {
+        0x01 => (false, false, false, false), // PAGE_NOACCESS
+        0x02 => (false, false, true, false),  // PAGE_READONLY
+        0x04 => (true, false, true, false),   // PAGE_READWRITE
+        0x10 => (false, true, true, false),   // PAGE_EXECUTE
+        0x20 => (false, true, true, false),   // PAGE_EXECUTE_READ
+        0x40 => (true, true, true, true),     // PAGE_EXECUTE_READWRITE
         _ => return STATUS_INVALID_PAGE_PROTECTION,
     };
     let pages = match mdl_page_count(header.byte_offset as u64, header.byte_count as u64) {
         Some(value) if value != 0 && value <= usize::MAX as u64 => value as usize,
         _ => return STATUS_INVALID_PARAMETER,
     };
-    if crate::kernel_vm::protect_pages(header.mapped_system_va as u64 & !(PAGE_SIZE - 1), pages, writable, executable).is_err() {
+    if crate::kernel_vm::protect_pages_with_access(header.mapped_system_va as u64 & !(PAGE_SIZE - 1), pages, writable, executable, present, allow_wx).is_err() {
         return STATUS_NOT_MAPPED_VIEW;
     }
     STATUS_SUCCESS
