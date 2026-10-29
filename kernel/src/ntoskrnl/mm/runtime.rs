@@ -1199,7 +1199,7 @@ unsafe fn allocate_pages_for_mdl(
             };
         }
         if no_wait {
-            let _ = crate::ntoskrnl::rtl_runtime::pool_try_deallocate_tagged(mdl, Some(0x4c444d4d));
+            let _ = crate::ntoskrnl::rtl_runtime::pool_try_free_tagged(mdl, Some(0x4c444d4d));
         } else {
             let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
         }
