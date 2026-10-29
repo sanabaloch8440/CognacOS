@@ -526,7 +526,9 @@ pub unsafe fn allocate_contiguous_pages_in_range(
         for i in 0..len {
             let base = unsafe { ptr.add(i).read() };
             let Some(end) = base.checked_add(bytes) else { continue; };
-            if base < low || end - 1 > high || (boundary != 0 && base / boundary != (end - 1) / boundary) {
+            if base < low || end - 1 > high
+                || (boundary != 0
+                    && (base % boundary != 0 || base / boundary != (end - 1) / boundary)) {
                 continue;
             }
             let mut found_all = true;
@@ -565,7 +567,10 @@ pub unsafe fn allocate_contiguous_pages_in_range(
         for i in 0..count {
             let original = regions[i];
             let Some(mut candidate) = align_up(original.next.max(low), PAGE_SIZE) else { continue; };
-            if boundary != 0 && candidate / boundary != candidate.saturating_add(bytes - 1) / boundary {
+            // Windows MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS requires
+            // each nonzero-SkipBytes chunk to start on its SkipBytes boundary,
+            // not merely to avoid crossing a boundary.
+            if boundary != 0 {
                 let Some(next) = align_up(candidate, boundary) else { continue; };
                 candidate = next;
             }
