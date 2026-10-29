@@ -1267,6 +1267,32 @@ pub fn self_test() -> bool {
         );
         protection_ok && mdl_storage_freed
     };
+    // Exercise nonzero LowAddress, an inclusive HighAddress, a 2 MiB
+    // SkipBytes boundary, and a fully-required contiguous two-page run.
+    let bounded_mdl = unsafe {
+        mm_allocate_pages_for_mdl_ex(
+            0x10_0000, 0xffff_ffff, 0x20_0000, PAGE_SIZE * 2, 1,
+            MM_ALLOCATE_FULLY_REQUIRED | MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS,
+        )
+    };
+    let bounded_ok = if bounded_mdl.is_null() {
+        false
+    } else {
+        let header = unsafe { &*bounded_mdl.cast::<MdlHeader>() };
+        let pfns = unsafe { bounded_mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>() };
+        let first = unsafe { pfns.read() } * PAGE_SIZE;
+        let second = unsafe { pfns.add(1).read() } * PAGE_SIZE;
+        let last = second.saturating_add(PAGE_SIZE - 1);
+        let valid = header.byte_count as u64 == PAGE_SIZE * 2
+            && second == first.saturating_add(PAGE_SIZE)
+            && first >= 0x10_0000 && last <= 0xffff_ffff
+            && first / 0x20_0000 == last / 0x20_0000;
+        unsafe { mm_free_pages_from_mdl(bounded_mdl); }
+        let storage_freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
+            bounded_mdl.cast(), Some(0x4c444d4d),
+        );
+        valid && storage_freed
+    };
     let ranges = unsafe { mm_get_physical_memory_ranges() };
     let ranges_ok = if ranges.is_null() {
         false
@@ -1285,7 +1311,7 @@ pub fn self_test() -> bool {
         );
         terminated && freed
     };
-    valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && ranges_ok
+    valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && bounded_ok && ranges_ok
 }
 
 #[cfg(test)]
