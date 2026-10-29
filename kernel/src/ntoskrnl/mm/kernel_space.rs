@@ -113,15 +113,19 @@ static IO_BITS: IoBits = IoBits(core::cell::UnsafeCell::new([0; IO_WORDS]));
 /// Physical RAM is rejected: this API is only for firmware/PCI MMIO resources.
 /// The returned address includes the original byte offset within the first page.
 pub fn map_io_space(physical: u64, length: u64) -> Result<u64, Error> {
- if !is_initialized() || length == 0 { return Err(Error::NotInitialized); }
+ if !is_initialized() { return Err(Error::NotInitialized); }
+ if length == 0 { return Err(Error::Invalid); }
  let page_base = physical & !(PAGE - 1);
  let offset = physical - page_base;
  let span = offset.checked_add(length).ok_or(Error::Invalid)?;
  let pages_u64 = span.checked_add(PAGE - 1).ok_or(Error::Invalid)? / PAGE;
  let pages = usize::try_from(pages_u64).map_err(|_| Error::Invalid)?;
  if pages == 0 || pages > IO_PAGES { return Err(Error::Invalid); }
+ let last_page = page_base.checked_add((pages as u64 - 1).checked_mul(PAGE).ok_or(Error::Invalid)?).ok_or(Error::Invalid)?;
+ if last_page & !ADDR != 0 { return Err(Error::Invalid); }
  for n in 0..pages {
-  if crate::memory::is_ram_physical_address(page_base + n as u64 * PAGE) {
+  let page = page_base.checked_add(n as u64 * PAGE).ok_or(Error::Invalid)?;
+  if crate::memory::is_ram_physical_address(page) {
    return Err(Error::Invalid);
   }
  }
