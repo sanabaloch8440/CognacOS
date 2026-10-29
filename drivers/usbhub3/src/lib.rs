@@ -8,6 +8,43 @@ pub const USB_DESC_DEVICE:u8=1;
 pub const USB_DESC_CONFIGURATION:u8=2;
 pub const USB_CLASS_HUB:u8=9;
 
+pub const USB_DESC_HUB:u8=0x29;
+pub const USB_DESC_SUPERSPEED_HUB:u8=0x2a;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum UsbSpeed { Low, Full, High, Super, SuperPlus }
+
+/// The xHCI stack handles all USB speeds. This describes the *hub protocol*,
+/// not the attached device's speed: a USB 3 hub may expose both a USB2 hub
+/// function (0x29) and a SuperSpeed hub function (0x2a).
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum HubProtocol { Usb2, SuperSpeed }
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct HubDescriptor { pub protocol:HubProtocol, pub port_count:u8, pub descriptor_length:u8 }
+
+/// Parse a hub-class descriptor after a successful GET_DESCRIPTOR(HUB).
+/// Bounds-check the variable DeviceRemovable bitmap for both descriptor types.
+pub fn parse_hub_descriptor(b:&[u8])->Result<HubDescriptor,DescriptorError>{
+    if b.len()<3 { return Err(DescriptorError::Truncated); }
+    let len=b[0] as usize;
+    let protocol=match b[1] {
+        USB_DESC_HUB=>HubProtocol::Usb2,
+        USB_DESC_SUPERSPEED_HUB=>HubProtocol::SuperSpeed,
+        _=>return Err(DescriptorError::WrongDescriptor),
+    };
+    if len>b.len() { return Err(DescriptorError::Truncated); }
+    let ports=b[2];
+    if ports==0 { return Err(DescriptorError::InvalidLength); }
+    let bitmap_bytes=(ports as usize+1+7)/8;
+    let minimum=match protocol {
+        HubProtocol::Usb2=>7+2*bitmap_bytes,
+        HubProtocol::SuperSpeed=>10+bitmap_bytes,
+    };
+    if len<minimum { return Err(DescriptorError::InvalidLength); }
+    Ok(HubDescriptor { protocol, port_count:ports, descriptor_length:b[0] })
+}
+
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct UsbDeviceDescriptor {
     pub usb_version:u16, pub device_class:u8, pub vendor_id:u16, pub product_id:u16,
@@ -110,6 +147,15 @@ mod tests {
         let d=parse_device_descriptor(&b).unwrap();
         assert_eq!(d.vendor_id,0x1234); assert_eq!(d.product_id,0x5678); assert_eq!(d.num_configurations,1);
         assert_eq!(parse_device_descriptor(&b[..8]),Err(DescriptorError::Truncated));
+    }
+    #[test] fn supports_usb2_and_superspeed_hub_descriptors(){
+        let usb2=[9,USB_DESC_HUB,4,0,0,50,0,0,0];
+        let ss=[11,USB_DESC_SUPERSPEED_HUB,4,0,0,50,0,0,0,0,0];
+        let a=parse_hub_descriptor(&usb2).unwrap();
+        let b=parse_hub_descriptor(&ss).unwrap();
+        assert_eq!(a.protocol,HubProtocol::Usb2); assert_eq!(a.port_count,4);
+        assert_eq!(b.protocol,HubProtocol::SuperSpeed); assert_eq!(b.port_count,4);
+        assert_eq!(parse_hub_descriptor(&ss[..5]),Err(DescriptorError::Truncated));
     }
     #[test] fn configuration_chain_rejects_bad_lengths(){
         let good=[9,2,9,0,0,1,0,0x80,50]; assert_eq!(validate_configuration_descriptor(&good),Ok(9));
