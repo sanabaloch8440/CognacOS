@@ -659,6 +659,43 @@ pub unsafe fn try_allocate_pages_in_range(
     if count == 0 { Err(AllocError::OutOfMemory) } else { Ok(count) }
 }
 
+/// Allocate a contiguous run wholly inside one SRAT-owned memory range.
+/// Address windows are intersected with node ranges before the generic physical
+/// allocator is called, so a successful run cannot cross a NUMA ownership edge.
+#[cfg(target_os = "none")]
+pub unsafe fn allocate_contiguous_pages_in_node_range(
+    pages: usize, node: u32, low: u64, high: u64, boundary: u64,
+) -> Result<u64, AllocError> {
+    if pages == 0 || low > high || !crate::ntoskrnl::mm::topology::is_ready()
+        || node as usize >= crate::ntoskrnl::mm::topology::memory_node_count() {
+        return Err(AllocError::InvalidPage);
+    }
+    let mut ranges = [(0u64, 0u64); crate::ntoskrnl::mm::topology::MAX_RANGES];
+    let count = crate::ntoskrnl::mm::topology::memory_ranges_for_node(node, &mut ranges);
+    let mut saw_range = false;
+    for &(start, length) in &ranges[..count] {
+        let Some(end) = start.checked_add(length) else { continue; };
+        let low_bound = low.max(start);
+        let high_bound = high.min(end.saturating_sub(1));
+        if low_bound > high_bound { continue; }
+        saw_range = true;
+        if let Ok(base) = unsafe {
+            allocate_contiguous_pages_in_range(pages, low_bound, high_bound, boundary)
+        } {
+            let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
+            if crate::ntoskrnl::mm::topology::node_for_range(base, bytes) == Some(node) {
+                return Ok(base);
+            }
+            // Defensive rollback: never return a run whose entire extent is not
+            // explicitly assigned to the requested proximity domain.
+            for index in (0..pages).rev() {
+                let _ = unsafe { free_page(base + index as u64 * PAGE_SIZE) };
+            }
+        }
+    }
+    Err(if saw_range { AllocError::OutOfMemory } else { AllocError::InvalidPage })
+}
+
 /// Allocate zeroed pages only from firmware ranges explicitly assigned to
 /// one NUMA proximity domain. This deliberately searches the returned-page
 /// lists only: bump regions are not split by SRAT ownership yet, so consuming
