@@ -100,6 +100,18 @@ mod tests {
     }
 
     #[test]
+    fn single_node_fallback_validates_and_assigns_uma_ranges() {
+        let ranges = [(0x10_0000, 0x20_0000), (0x40_0000, 0x10_0000)];
+        let (staged, count) = validate_single_node_ranges(&ranges).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(staged[0], MemoryRange { start: 0x10_0000, end: 0x30_0000, node: 0 });
+        assert_eq!(staged[1], MemoryRange { start: 0x40_0000, end: 0x50_0000, node: 0 });
+        assert_eq!(validate_single_node_ranges(&[(0x10_0000, 0x20_0000), (0x20_0000, 0x10_0000)]), Err(TopologyError::Overlap));
+        assert_eq!(validate_single_node_ranges(&[(0x10_0001, 0x1000)]), Err(TopologyError::InvalidTable));
+        assert_eq!(validate_single_node_ranges(&[(u64::MAX - 0xfff, 0x2000)]), Err(TopologyError::InvalidTable));
+    }
+
+    #[test]
     fn parses_and_publishes_a_valid_memory_affinity_range() {
         // ACPI SDT header (36 bytes), SRAT fixed body (12 bytes), then one
         // 40-byte Memory Affinity structure.
