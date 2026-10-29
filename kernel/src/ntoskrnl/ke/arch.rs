@@ -106,10 +106,8 @@ fn preserve_first_user_fault(vector: u64, error: u64, frame: *const u64) {
         return;
     }
     let read = |index: usize| unsafe { frame.add(index).read() };
-    let mut cr2 = 0;
-    if vector == 14 {
-        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
-    }
+    let cr2: u64;
+    unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
     let cr3: u64;
     unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); }
     FIRST_USER_FAULT_VECTOR.store(vector, Ordering::Relaxed);
