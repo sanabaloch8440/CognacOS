@@ -965,3 +965,26 @@ pub fn route_controller_event<const N:usize>(tracker:&mut CommandCompletionTrack
   _=>Ok(ControllerEvent::Other(event)),
  }
 }
+
+
+#[cfg(test)]
+mod controller_event_routing_tests {
+ use super::*;
+ #[test]
+ fn live_command_completion_is_correlated_to_pending_command() {
+  let mut tracker=CommandCompletionTracker::<2>::new();
+  let command_dma=0x4000;
+  assert_eq!(tracker.track(PendingCommand{command_trb_dma:command_dma,kind:CommandKind::EnableSlot}),Ok(()));
+  let mut event=Trb::new(command_dma,(1u32)<<24,TRB_TYPE_COMMAND_COMPLETION,true);
+  event.control|=3u32<<24;
+  assert_eq!(route_controller_event(&mut tracker,event),Ok(ControllerEvent::CommandCompleted(CommandCompletion{command:PendingCommand{command_trb_dma:command_dma,kind:CommandKind::EnableSlot},completion_code:1,slot_id:3})));
+  assert_eq!(tracker.pending_count(),0);
+ }
+ #[test]
+ fn port_and_transfer_events_are_routed_without_consuming_command_reservations() {
+  let mut tracker=CommandCompletionTracker::<2>::new();
+  assert!(matches!(route_controller_event(&mut tracker,Trb::new(0,0,TRB_TYPE_PORT_STATUS_CHANGE,true)),Ok(ControllerEvent::PortStatusChanged(_))));
+  assert!(matches!(route_controller_event(&mut tracker,Trb::new(0,0,TRB_TYPE_TRANSFER_EVENT,true)),Ok(ControllerEvent::TransferEvent(_))));
+  assert_eq!(tracker.pending_count(),0);
+ }
+}
