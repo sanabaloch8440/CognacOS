@@ -66,7 +66,7 @@ mod tests {
         // 40-byte Memory Affinity structure.
         let mut table = [0u8; 88];
         table[0..4].copy_from_slice(b"SRAT");
-        table[4..8].copy_from_slice(&(table.len() as u32).to_le_bytes());
+        table[4..8].copy_from_slice(&88u32.to_le_bytes());
         table[48] = 1; // Memory Affinity
         table[49] = 40;
         table[50..54].copy_from_slice(&2u32.to_le_bytes()); // proximity domain
