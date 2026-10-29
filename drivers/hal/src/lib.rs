@@ -97,3 +97,86 @@ mod device_service_tests{
   t.version=0;assert!(!t.compatible());
  }
 }
+
+
+/// Explicit memory attributes for device mappings. Exactly one cache policy is
+/// required; executable mappings are intentionally not part of the device-MMIO API.
+pub const HAL_MEMORY_DEVICE: u32 = 1 << 0;
+pub const HAL_MEMORY_UNCACHED: u32 = 1 << 1;
+pub const HAL_MEMORY_WRITE_COMBINED: u32 = 1 << 2;
+pub const HAL_MEMORY_READ_ONLY: u32 = 1 << 3;
+pub const HAL_MEMORY_READ_WRITE: u32 = 1 << 4;
+pub const HAL_DMA_CONTIGUOUS: u32 = 1 << 0;
+pub const HAL_DMA_COHERENT: u32 = 1 << 1;
+pub const HAL_DMA_ZEROED: u32 = 1 << 2;
+
+/// Validates the requested x64 device mapping policy before invoking a mapper.
+/// MMIO defaults are never inferred: the caller must explicitly select uncached
+/// or write-combined attributes and read-only or read-write access.
+pub const fn validate_device_mapping_flags(flags: u32) -> bool {
+    let cache = flags & (HAL_MEMORY_UNCACHED | HAL_MEMORY_WRITE_COMBINED);
+    let access = flags & (HAL_MEMORY_READ_ONLY | HAL_MEMORY_READ_WRITE);
+    flags & HAL_MEMORY_DEVICE != 0
+        && (cache == HAL_MEMORY_UNCACHED || cache == HAL_MEMORY_WRITE_COMBINED)
+        && (access == HAL_MEMORY_READ_ONLY || access == HAL_MEMORY_READ_WRITE)
+        && flags & !(HAL_MEMORY_DEVICE | HAL_MEMORY_UNCACHED | HAL_MEMORY_WRITE_COMBINED
+            | HAL_MEMORY_READ_ONLY | HAL_MEMORY_READ_WRITE) == 0
+}
+pub const fn validate_dma_flags(flags: u32) -> bool {
+    flags & (HAL_DMA_CONTIGUOUS | HAL_DMA_COHERENT) == (HAL_DMA_CONTIGUOUS | HAL_DMA_COHERENT)
+        && flags & !(HAL_DMA_CONTIGUOUS | HAL_DMA_COHERENT | HAL_DMA_ZEROED) == 0
+}
+
+/// Extended service ABI: separate from version 1 so existing consumers do not
+/// misinterpret a larger function table. Implementations must honor mapping
+/// attributes, device address limits, DMA lifetime, and interrupt synchronization.
+pub const HAL_EXTENDED_SERVICES_VERSION: u32 = 2;
+pub type MapDeviceIoSpace = unsafe extern "C" fn(physical_address: u64, length: u64, flags: u32, virtual_address: *mut u64) -> HalStatus;
+pub type UnmapDeviceIoSpace = unsafe extern "C" fn(virtual_address: u64, length: u64) -> HalStatus;
+pub type SynchronizeInterrupt = unsafe extern "C" fn(vector: u32, context: u64, routine: Option<extern "C" fn(u64) -> bool>) -> HalStatus;
+pub type MemoryBarrier = extern "C" fn();
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HalExtendedServiceTable {
+    pub size: u32,
+    pub version: u32,
+    pub map_device_io_space: Option<MapDeviceIoSpace>,
+    pub unmap_device_io_space: Option<UnmapDeviceIoSpace>,
+    pub synchronize_interrupt: Option<SynchronizeInterrupt>,
+    pub memory_barrier: Option<MemoryBarrier>,
+}
+impl HalExtendedServiceTable {
+    pub const fn compatible(&self) -> bool {
+        self.size as usize >= core::mem::size_of::<Self>()
+            && self.version == HAL_EXTENDED_SERVICES_VERSION
+    }
+    pub const fn has_mmio_mapping(&self) -> bool {
+        self.map_device_io_space.is_some() && self.unmap_device_io_space.is_some()
+    }
+}
+#[cfg(test)]
+mod hardware_contract_tests {
+    use super::*;
+    #[test]
+    fn mapping_policy_requires_explicit_nonconflicting_attributes() {
+        assert!(validate_device_mapping_flags(HAL_MEMORY_DEVICE | HAL_MEMORY_UNCACHED | HAL_MEMORY_READ_WRITE));
+        assert!(validate_device_mapping_flags(HAL_MEMORY_DEVICE | HAL_MEMORY_WRITE_COMBINED | HAL_MEMORY_READ_ONLY));
+        assert!(!validate_device_mapping_flags(HAL_MEMORY_DEVICE | HAL_MEMORY_READ_WRITE));
+        assert!(!validate_device_mapping_flags(HAL_MEMORY_DEVICE | HAL_MEMORY_UNCACHED | HAL_MEMORY_WRITE_COMBINED | HAL_MEMORY_READ_WRITE));
+        assert!(!validate_device_mapping_flags(HAL_MEMORY_UNCACHED | HAL_MEMORY_READ_WRITE));
+    }
+    #[test]
+    fn dma_contract_requires_contiguous_coherent_mapping() {
+        assert!(validate_dma_flags(HAL_DMA_CONTIGUOUS | HAL_DMA_COHERENT | HAL_DMA_ZEROED));
+        assert!(!validate_dma_flags(HAL_DMA_CONTIGUOUS));
+        assert!(!validate_dma_flags(HAL_DMA_COHERENT | HAL_DMA_ZEROED));
+    }
+    #[test]
+    fn extended_table_is_versioned_independently() {
+        let t = HalExtendedServiceTable { size: core::mem::size_of::<HalExtendedServiceTable>() as u32,
+            version: HAL_EXTENDED_SERVICES_VERSION, map_device_io_space: None,
+            unmap_device_io_space: None, synchronize_interrupt: None, memory_barrier: None };
+        assert!(t.compatible());
+        assert!(!t.has_mmio_mapping());
+    }
+}
