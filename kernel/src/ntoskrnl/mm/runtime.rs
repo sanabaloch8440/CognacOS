@@ -1291,18 +1291,12 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
             if let Ok(base) = unsafe {
                 if no_wait {
                     crate::ntoskrnl::mm::physical::try_allocate_contiguous_pages_in_node_range(
-                    requested_pages, node, low_address, high_address, 0,
+                        requested_pages, node, low_address, high_address, 0,
                     )
                 } else {
-                    if no_wait {
-                        crate::ntoskrnl::mm::physical::try_allocate_contiguous_pages_in_node_range(
-                            requested_pages, node, low_address, high_address, 0,
-                        )
-                    } else {
-                        crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
-                            requested_pages, node, low_address, high_address, 0,
-                        )
-                    }
+                    crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
+                        requested_pages, node, low_address, high_address, 0,
+                    )
                 }
             } {
                 for index in 0..requested_pages {
@@ -1364,9 +1358,15 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
             }
             for &node in &node_order[..nodes] {
                 if let Ok(base) = unsafe {
-                    crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
-                        requested_pages, node, low_address, high_address, 0,
-                    )
+                    if no_wait {
+                        crate::ntoskrnl::mm::physical::try_allocate_contiguous_pages_in_node_range(
+                            requested_pages, node, low_address, high_address, 0,
+                        )
+                    } else {
+                        crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
+                            requested_pages, node, low_address, high_address, 0,
+                        )
+                    }
                 } {
                     for index in 0..requested_pages {
                         pfns[index] = base / PAGE_SIZE + index as u64;
