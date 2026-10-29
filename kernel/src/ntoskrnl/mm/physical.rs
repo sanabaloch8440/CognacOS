@@ -658,6 +658,7 @@ pub unsafe fn try_allocate_pages_in_range(
 /// one NUMA proximity domain. This deliberately searches the returned-page
 /// lists only: bump regions are not split by SRAT ownership yet, so consuming
 /// from them here could silently discard pages belonging to other nodes.
+#[cfg(target_os = "none")]
 pub unsafe fn allocate_pages_in_node_range(
     output: &mut [u64], node: u32, low: u64, high: u64, require_all: bool,
 ) -> Result<usize, AllocError> {
