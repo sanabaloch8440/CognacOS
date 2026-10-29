@@ -414,6 +414,117 @@ pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
     }
 }
 
+/// Allocate one page satisfying an inclusive physical-address window and
+/// optional power-of-two boundary. Pages skipped by the window remain available
+/// to later callers; regions are split instead of advancing past skipped RAM.
+pub unsafe fn allocate_page_in_range(low: u64, high: u64, boundary: u64) -> Result<u64, AllocError> {
+    const PAGE: u64 = PAGE_SIZE;
+    if low > high || (boundary != 0 && (!boundary.is_power_of_two() || boundary < PAGE)) {
+        return Err(AllocError::InvalidPage);
+    }
+    let _guard = MemoryGuard::acquire();
+    fn allowed(page: u64, low: u64, high: u64, boundary: u64) -> bool {
+        let Some(end) = page.checked_add(PAGE_SIZE - 1) else { return false; };
+        page >= low && end <= high && (boundary == 0 || page / boundary == end / boundary)
+    }
+    // Reuse returned frames without consuming unrelated pages.
+    for (store, high_memory) in [(&FREE_PAGES, false), (&HIGH_FREE_PAGES, true)] {
+        let free = unsafe { &mut *store.0.get() };
+        let mut i = 0;
+        while i < free.1 {
+            let page = free.0[i];
+            if allowed(page, low, high, boundary) {
+                free.1 -= 1;
+                free.0[i] = free.0[free.1];
+                let pointer = if high_memory { direct_map_address(page).ok_or(AllocError::InvalidMap)? as *mut u8 } else { page as *mut u8 };
+                unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
+                return Ok(page);
+            }
+            i += 1;
+        }
+    }
+    // Carve a matching page out of either allocator region while preserving
+    // both the prefix and suffix as allocatable extents.
+    for (store, count_atomic, high_memory) in [
+        (&REGIONS, &REGION_COUNT, false),
+        (&HIGH_REGIONS, &HIGH_REGION_COUNT, true),
+    ] {
+        let regions = unsafe { &mut *store.0.get() };
+        let mut count = count_atomic.load(core::sync::atomic::Ordering::Acquire);
+        let mut i = 0;
+        while i < count {
+            let original = regions[i];
+            let mut candidate = align_up(original.next.max(low), PAGE).ok_or(AllocError::InvalidPage)?;
+            if boundary != 0 && candidate / boundary != candidate.saturating_add(PAGE - 1) / boundary {
+                candidate = align_up(candidate, boundary).ok_or(AllocError::InvalidPage)?;
+            }
+            if candidate.checked_add(PAGE).is_some_and(|end| end <= original.end && end - 1 <= high)
+                && allowed(candidate, low, high, boundary)
+            {
+                if candidate == original.next {
+                    regions[i].next = candidate + PAGE;
+                } else {
+                    if count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
+                    regions[i] = Region { next: original.next, end: candidate };
+                    regions[count] = Region { next: candidate + PAGE, end: original.end };
+                    count += 1;
+                    count_atomic.store(count, core::sync::atomic::Ordering::Release);
+                }
+                let pointer = if high_memory { direct_map_address(candidate).ok_or(AllocError::InvalidMap)? as *mut u8 } else { candidate as *mut u8 };
+                unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
+                return Ok(candidate);
+            }
+            i += 1;
+        }
+    }
+    Err(AllocError::OutOfMemory)
+}
+
+/// Allocate a single physically contiguous run within an inclusive address
+/// window. Used when callers request contiguous MDL chunks or prefer a run.
+pub unsafe fn allocate_contiguous_pages_in_range(
+    pages: usize, low: u64, high: u64, boundary: u64,
+) -> Result<u64, AllocError> {
+    if pages == 0 || low > high || (boundary != 0 && (!boundary.is_power_of_two() || boundary < PAGE_SIZE)) {
+        return Err(AllocError::InvalidPage);
+    }
+    let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
+    let _guard = MemoryGuard::acquire();
+    // Contiguous free-list runs are uncommon; scan region extents first. The
+    // region split retains unallocated prefixes and suffixes exactly.
+    for (store, count_atomic, high_memory) in [
+        (&REGIONS, &REGION_COUNT, false),
+        (&HIGH_REGIONS, &HIGH_REGION_COUNT, true),
+    ] {
+        let regions = unsafe { &mut *store.0.get() };
+        let mut count = count_atomic.load(core::sync::atomic::Ordering::Acquire);
+        for i in 0..count {
+            let original = regions[i];
+            let Some(mut candidate) = align_up(original.next.max(low), PAGE_SIZE) else { continue; };
+            if boundary != 0 && candidate / boundary != candidate.saturating_add(bytes - 1) / boundary {
+                let Some(next) = align_up(candidate, boundary) else { continue; };
+                candidate = next;
+            }
+            let Some(end) = candidate.checked_add(bytes) else { continue; };
+            if candidate < original.next || end > original.end || end - 1 > high
+                || (boundary != 0 && candidate / boundary != (end - 1) / boundary) { continue; }
+            if candidate == original.next {
+                regions[i].next = end;
+            } else {
+                if count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
+                regions[i] = Region { next: original.next, end: candidate };
+                regions[count] = Region { next: end, end: original.end };
+                count += 1;
+                count_atomic.store(count, core::sync::atomic::Ordering::Release);
+            }
+            let pointer = if high_memory { direct_map_address(candidate).ok_or(AllocError::InvalidMap)? as *mut u8 } else { candidate as *mut u8 };
+            unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
+            return Ok(candidate);
+        }
+    }
+    Err(AllocError::OutOfMemory)
+}
+
 /// Allocate one zeroed physical page. The early kernel uses identity mappings,
 /// so the returned physical address is also directly writable as a pointer.
 pub unsafe fn allocate_page() -> Result<u64, AllocError> {
