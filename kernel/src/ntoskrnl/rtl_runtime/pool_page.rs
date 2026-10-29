@@ -17,6 +17,18 @@ const MAX_PAGES_PER_ALLOCATION: usize = 65536;
 const NO_SLAB: u16 = u16::MAX;
 const BITMAP_WORDS: usize = PAGE_SIZE / MIN_BLOCK / 64;
 
+const NO_WAIT_LARGE_MAX: usize = 32768;
+const NO_WAIT_LARGE_SLOTS: usize = 16;
+const NO_WAIT_SLAB_SLOTS: usize = 8;
+const NO_SLAB_RESERVED: u16 = u16::MAX - 1;
+#[repr(C, align(4096))]
+struct NoWaitSlabReserve([[u8; PAGE_SIZE]; NO_WAIT_SLAB_SLOTS]);
+static mut NO_WAIT_SLAB_RESERVE: NoWaitSlabReserve = NoWaitSlabReserve([[0; PAGE_SIZE]; NO_WAIT_SLAB_SLOTS]);
+#[repr(C, align(4096))]
+struct NoWaitLargeReserve([[u8; NO_WAIT_LARGE_MAX]; NO_WAIT_LARGE_SLOTS]);
+static mut NO_WAIT_LARGE_RESERVE: NoWaitLargeReserve = NoWaitLargeReserve([[0; NO_WAIT_LARGE_MAX]; NO_WAIT_LARGE_SLOTS]);
+
+
 #[derive(Clone, Copy)]
 struct Allocation {
     base: u64,
@@ -102,7 +114,7 @@ fn small_class(size: usize) -> Option<usize> {
 /// creates backing pages and never waits for the pool lock, so it is suitable
 /// for the bounded resource acquisition phase of MM_ALLOCATE_NO_WAIT.
 pub(super) fn try_allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
-    let Some(class_size) = small_class(size) else { return core::ptr::null_mut(); };
+    if size == 0 || size > NO_WAIT_LARGE_MAX { return core::ptr::null_mut(); }
     #[cfg(target_os = "none")]
     let _guard = match LOCK.try_lock() {
         Some(guard) => Guard { _guard: guard },
@@ -117,65 +129,42 @@ pub(super) fn try_allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u
     #[cfg(not(target_os = "none"))]
     let _guard = Guard {};
     let table = unsafe { &mut *ALLOCATIONS.0.get() };
-    let Some(allocation_index) = table.iter().position(|a| !a.live) else {
-        return core::ptr::null_mut();
-    };
+    let Some(allocation_index) = table.iter().position(|a| !a.live) else { return core::ptr::null_mut(); };
     let slabs = unsafe { &mut *SLABS.0.get() };
-    let Some(slab_index) = slabs.iter().position(|s|
-        s.live && !s.pageable && s.block_size == class_size && s.find_free_slot().is_some()
-    ) else {
-        return core::ptr::null_mut();
-    };
-    let slab = &mut slabs[slab_index];
-    let Some(slot) = slab.find_free_slot() else { return core::ptr::null_mut(); };
-    slab.mark_used(slot);
-    let base = slab.base + (slot * class_size) as u64;
-    table[allocation_index] = Allocation {
-        base, backing_base: slab.base, pages: 1, requested: size, tag,
-        slab_index: slab_index as u16, slab_slot: slot as u16, live: true,
-    };
+    if let Some(class_size) = small_class(size) {
+        let mut slab_index = slabs.iter().position(|s| s.live && !s.pageable && s.block_size == class_size && s.find_free_slot().is_some());
+        if slab_index.is_none() {
+            let Some(empty_index) = slabs.iter().position(|s| !s.live) else { return core::ptr::null_mut(); };
+            let reserve_base = core::ptr::addr_of_mut!(NO_WAIT_SLAB_RESERVE).cast::<u8>();
+            let mut base = None;
+            for reserve_index in 0..NO_WAIT_SLAB_SLOTS {
+                let candidate = unsafe { reserve_base.add(reserve_index * PAGE_SIZE) } as u64;
+                if !slabs.iter().any(|s| s.live && s.base == candidate) { base = Some(candidate); break; }
+            }
+            let Some(base) = base else { return core::ptr::null_mut(); };
+            slabs[empty_index] = Slab { base, block_size: class_size, slots: PAGE_SIZE / class_size, pageable: false, used: [0; BITMAP_WORDS], live: true };
+            slab_index = Some(empty_index);
+        }
+        let slab_index = slab_index.unwrap();
+        let slab = &mut slabs[slab_index];
+        let Some(slot) = slab.find_free_slot() else { return core::ptr::null_mut(); };
+        slab.mark_used(slot);
+        let base = slab.base + (slot * class_size) as u64;
+        table[allocation_index] = Allocation { base, backing_base: slab.base, pages: 1, requested: size, tag, slab_index: slab_index as u16, slab_slot: slot as u16, live: true };
+        if zeroed { unsafe { core::ptr::write_bytes(base as *mut u8, 0, size); } }
+        return base as *mut u8;
+    }
+    let reserve_base = core::ptr::addr_of_mut!(NO_WAIT_LARGE_RESERVE).cast::<u8>();
+    let mut selected = None;
+    for slot in 0..NO_WAIT_LARGE_SLOTS {
+        let base = unsafe { reserve_base.add(slot * NO_WAIT_LARGE_MAX) } as u64;
+        if !table.iter().any(|a| a.live && a.base == base) { selected = Some((slot, base)); break; }
+    }
+    let Some((slot, base)) = selected else { return core::ptr::null_mut(); };
+    table[allocation_index] = Allocation { base, backing_base: base, pages: 0, requested: size, tag, slab_index: NO_SLAB_RESERVED, slab_slot: slot as u16, live: true };
     if zeroed { unsafe { core::ptr::write_bytes(base as *mut u8, 0, size); } }
     base as *mut u8
 }
-
-
-/// Release a small nonpaged slab allocation without waiting for the pool lock.
-/// Empty slabs are retained as reserve pages instead of being returned to the
-/// physical allocator, so rollback itself never enters a potentially blocking path.
-pub(super) fn try_deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool {
-    if ptr.is_null() { return true; }
-    #[cfg(target_os = "none")]
-    let _guard = match LOCK.try_lock() {
-        Some(guard) => Guard { _guard: guard },
-        None => return false,
-    };
-    #[cfg(not(target_os = "none"))]
-    {
-        if LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-            return false;
-        }
-    }
-    #[cfg(not(target_os = "none"))]
-    let _guard = Guard {};
-    let table = unsafe { &mut *ALLOCATIONS.0.get() };
-    let Some(index) = table.iter().position(|a| a.live && a.base == ptr as u64) else { return false; };
-    let allocation = table[index];
-    if allocation.slab_index == NO_SLAB
-        || expected_tag.is_some_and(|tag| allocation.tag != tag) {
-        return false;
-    }
-    let slabs = unsafe { &mut *SLABS.0.get() };
-    let slab_index = allocation.slab_index as usize;
-    let slot = allocation.slab_slot as usize;
-    let Some(slab) = slabs.get_mut(slab_index).filter(|s|
-        s.live && !s.pageable && s.base == allocation.backing_base
-        && slot < s.slots && s.used[slot / 64] & (1u64 << (slot % 64)) != 0
-    ) else { return false; };
-    slab.mark_free(slot);
-    table[index] = Allocation::EMPTY;
-    true
-}
-
 
 /// Allocate nonpaged storage. Small allocations share slab pages; allocations
 /// larger than 2 KiB receive their own contiguous page extent. Physical pages are
@@ -257,9 +246,12 @@ pub(super) fn deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool
     let Some(index) = table.iter().position(|a| a.live && a.base == ptr as u64) else { return false; };
     let allocation = table[index];
     if expected_tag.is_some_and(|tag| allocation.tag != tag) { return false; }
-
-    if allocation.slab_index != NO_SLAB {
-        let slabs = unsafe { &mut *SLABS.0.get() };
+    if allocation.slab_index == NO_SLAB_RESERVED {
+        table[index] = Allocation::EMPTY;
+        return true;
+    }
+    if allocation.slab_index == NO_SLAB { return false; }
+    let slabs = unsafe { &mut *SLABS.0.get() };
         let slab_index = allocation.slab_index as usize;
         let slot = allocation.slab_slot as usize;
         let Some(slab) = slabs.get(slab_index).filter(|s| s.live && s.base == allocation.backing_base) else { return false; };
