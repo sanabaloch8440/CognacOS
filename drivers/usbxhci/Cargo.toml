@@ -1,0 +1,12 @@
+[package]
+name = "cognacos-usbxhci"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+[dependencies]
+cognacos-nt-abi = { path = "../../shared/nt-abi" }
+[lib]
+path = "src/lib.rs"
+[[bin]]
+name = "usbxhci"
+path = "src/bin/usbxhci.rs"
