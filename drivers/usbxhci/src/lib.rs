@@ -1118,3 +1118,38 @@ where P: XhciRegisterIo, F: FnMut(ControllerEvent) {
  }).map_err(ControllerDrainError::Ring)?;
  if let Some(e)=routing_error { Err(ControllerDrainError::Event(e)) } else { Ok(count) }
 }
+
+#[cfg(test)]
+mod power_state_tests {
+ use super::*;
+ struct PortMmio { regs:[u32;512], delayed:u32 }
+ impl PortMmio { fn new()->Self { let mut s=Self{regs:[0;512],delayed:0};s.regs[0x440/4]=PORTSC_CCS|PORTSC_PP; s } }
+ impl XhciRegisterIo for PortMmio {
+  fn read32(&mut self,o:u32)->Result<u32,()>{self.regs.get((o/4) as usize).copied().ok_or(())}
+  fn write32(&mut self,o:u32,v:u32)->Result<(),()>{
+   let i=(o/4) as usize;if i>=self.regs.len(){return Err(())}
+   if o==0x440 {
+    let pls=(v&PORTSC_PLS_MASK)>>5;
+    let old=self.regs[i];
+    let state=if pls==PORTSC_LINK_RESUME as u32 {PORTSC_LINK_U0 as u32}else{pls};
+    self.regs[i]=(old&!(PORTSC_PLS_MASK|PORTSC_LWS|PORTSC_CHANGE_BITS))|(state<<5)|(v&PORTSC_PP);
+   } else {self.regs[i]=v}
+   Ok(())
+  }
+ }
+ fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,context_size:32,page_size_mask:1}}
+ #[test] fn connected_port_enters_u3_and_resumes_to_u0(){
+  let mut mmio=PortMmio::new();
+  let snapshot=suspend_port(&mut mmio,&caps(),1,8).unwrap();
+  assert_eq!(snapshot.port,1);assert_eq!((mmio.regs[0x440/4]&PORTSC_PLS_MASK)>>5,PORTSC_LINK_U3 as u32);
+  let mut delay=0;
+  resume_port(&mut mmio,&caps(),snapshot,8,|us|delay=us).unwrap();
+  assert_eq!(delay,20_000);
+  assert_eq!((mmio.regs[0x440/4]&PORTSC_PLS_MASK)>>5,PORTSC_LINK_U0 as u32);
+ }
+ #[test] fn disconnected_port_is_not_claimed_suspended(){
+  let mut mmio=PortMmio{regs:[0;512],delayed:0};
+  assert_eq!(suspend_port(&mut mmio,&caps(),1,8),Err(XhciPowerError::PortDisconnected));
+  assert_eq!(suspend_port(&mut mmio,&caps(),0,8),Err(XhciPowerError::InvalidPort));
+ }
+}
