@@ -865,7 +865,7 @@ impl<const N: usize> CommandCompletionTracker<N> {
         })
     }
     pub fn cancel(&mut self, command_trb_dma: u64) -> bool {
-        if let Some(slot) = self.pending.iter_mut().find(|slot| slot.is_some_and(|p| p.command_trb_dma == command_trb_dma)) { *slot = None; true } else { false }
+        if let Some(slot) = self.entries.iter_mut().find(|slot| slot.as_ref().is_some_and(|p| p.command_trb_dma == command_trb_dma)) { *slot = None; true } else { false }
     }
     pub fn pending_count(&self) -> usize { self.entries.iter().filter(|e| e.is_some()).count() }
 }
