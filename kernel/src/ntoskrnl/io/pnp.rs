@@ -124,10 +124,31 @@ pub fn xhci_resources()->Option<XhciPciResources> {
         bar_virtual:d.bar_virtual.load(Ordering::Relaxed),state:d.state.load(Ordering::Relaxed)})
 }
 
+/// Advance controller startup only when each prerequisite is independently met.
+/// The interrupt-ready transition requires a real HAL callback registration;
+/// it deliberately does not infer readiness from PCI's legacy IRQ line number.
 pub fn advance_xhci_state(expected:u32,next:u32)->Result<(),()> {
     if !XHCI_PCI_DEVICE.ready.load(Ordering::Acquire)||next!=expected+1||next>STATE_DRIVER_BOUND{return Err(())}
-    // A published MMIO BAR is not proof that DMA is safe. Do not let the
-    // controller advance to DMA_READY until a real IOMMU backend is registered.
     if next==STATE_DMA_READY && !crate::dma::iommu::available(){return Err(())}
+    if next==STATE_INTERRUPT_READY {
+        // A vector must be bound to a handler before the device can be treated
+        // as interrupt-ready. Route unmasking remains a separate HAL operation.
+        let vector = XHCI_INTERRUPT_VECTOR.load(Ordering::Acquire);
+        if vector == 0 || !crate::hal::device_interrupt_handler_registered(vector as u8) { return Err(()); }
+    }
+    if next==STATE_DRIVER_BOUND && XHCI_PCI_DEVICE.state.load(Ordering::Acquire)!=STATE_INTERRUPT_READY{return Err(())}
     XHCI_PCI_DEVICE.state.compare_exchange(expected,next,Ordering::AcqRel,Ordering::Acquire).map(|_|()).map_err(|_|())
+}
+
+static XHCI_INTERRUPT_VECTOR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Record the vector reserved and registered for the xHCI interrupt callback.
+/// The handler must already be installed; a different vector cannot replace it.
+pub fn register_xhci_interrupt_vector(vector:u8)->Result<(),()> {
+    if !crate::hal::device_interrupt_handler_registered(vector) { return Err(()); }
+    match XHCI_INTERRUPT_VECTOR.compare_exchange(0,vector as u32,Ordering::AcqRel,Ordering::Acquire) {
+        Ok(_) => Ok(()),
+        Err(existing) if existing==vector as u32 => Ok(()),
+        Err(_) => Err(()),
+    }
 }
