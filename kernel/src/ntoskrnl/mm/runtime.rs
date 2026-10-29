@@ -1168,18 +1168,28 @@ pub unsafe extern "win64" fn mm_allocate_pages_for_mdl_ex(
     unsafe { allocate_pages_for_mdl(low_address, high_address, skip_bytes, total_bytes, cache_type, flags) }
 }
 
-/// Allocate an MDL from an explicit NUMA node. The current allocator can
-/// satisfy this only from freed pages with validated SRAT ownership; it does
-/// not mislabel unclassified bump-region pages as belonging to the requested
-/// node. Nonzero SkipBytes and non-cached policies remain unsupported here.
+/// Allocate an MDL from an explicit NUMA node using SRAT-owned physical ranges.
+/// Nonblocking requests remain fail-closed until pool allocation and MDL lifetime
+/// registration can both be guaranteed nonblocking.
 pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
     low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
     cache_type: u32, ideal_node: u32, flags: u32,
 ) -> *mut c_void {
-    if total_bytes == 0 || skip_bytes != 0 || high_address < low_address
-        || cache_type != 1 || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
-        || flags & (MM_ALLOCATE_NO_WAIT | MM_ALLOCATE_PREFER_CONTIGUOUS
-            | MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS | 0x40 | 0x100) != 0 {
+    if flags & MM_ALLOCATE_NO_WAIT != 0 {
+        return core::ptr::null_mut();
+    }
+    let require_contiguous = flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0;
+    let prefer_contiguous = flags & MM_ALLOCATE_PREFER_CONTIGUOUS != 0;
+    if total_bytes == 0 || total_bytes > (u32::MAX as u64 - PAGE_SIZE)
+        || high_address < low_address
+        || (skip_bytes != 0 && (skip_bytes < PAGE_SIZE || skip_bytes % PAGE_SIZE != 0))
+        || (require_contiguous && skip_bytes != 0
+            && (!skip_bytes.is_power_of_two() || total_bytes % skip_bytes != 0))
+        || cache_type != 1
+        || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
+        || (flags & 0x40 != 0) // FAST_LARGE_PAGES requires a dedicated large-page cache.
+        || (flags & 0x100 != 0) // Hot-remove is not implemented.
+    {
         return core::ptr::null_mut();
     }
     let Some(rounded) = total_bytes.checked_add(PAGE_SIZE - 1) else { return core::ptr::null_mut(); };
@@ -1188,38 +1198,147 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
         || requested_pages > ((i16::MAX as u64 - MDL_HEADER_SIZE) / 8) as usize {
         return core::ptr::null_mut();
     }
+    let node_count = crate::ntoskrnl::mm::topology::memory_node_count();
+    if node_count == 0 || ideal_node as usize >= node_count {
+        return core::ptr::null_mut();
+    }
     let mdl_bytes = (MDL_HEADER_SIZE + requested_pages as u64 * 8) as usize;
     let mdl = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(mdl_bytes, 0x4c444d4d, true);
     if mdl.is_null() { return core::ptr::null_mut(); }
     let pfns = unsafe { core::slice::from_raw_parts_mut(
         mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>(), requested_pages,
     ) };
-    let node_count = crate::ntoskrnl::mm::topology::memory_node_count();
-    if node_count == 0 || ideal_node as usize >= node_count {
+    let local_only = flags & MM_ALLOCATE_FROM_LOCAL_NODE_ONLY != 0;
+    let mut allocated = 0usize;
+
+    // REQUIRE_CONTIGUOUS_CHUNKS with SkipBytes == 0 means one contiguous run.
+    // For nonzero SkipBytes each chunk is independently contiguous, exactly
+    // SkipBytes bytes long, and aligned to that physical boundary.
+    if require_contiguous && skip_bytes == 0 {
+        let mut node_order = [0u32; crate::ntoskrnl::mm::topology::MAX_NODES];
+        node_order[0] = ideal_node;
+        let mut nodes = 1usize;
+        if !local_only {
+            for node in 0..node_count as u32 {
+                if node != ideal_node { node_order[nodes] = node; nodes += 1; }
+            }
+        }
+        for &node in &node_order[..nodes] {
+            if let Ok(base) = unsafe {
+                crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
+                    requested_pages, node, low_address, high_address, 0,
+                )
+            } {
+                for index in 0..requested_pages {
+                    pfns[index] = base / PAGE_SIZE + index as u64;
+                }
+                allocated = requested_pages;
+                break;
+            }
+        }
+    } else if require_contiguous {
+        let pages_per_chunk = (skip_bytes / PAGE_SIZE) as usize;
+        let chunks = requested_pages / pages_per_chunk;
+        for chunk in 0..chunks {
+            let Some(offset) = (chunk as u64).checked_mul(skip_bytes) else { break; };
+            let (Some(low), Some(high)) = (low_address.checked_add(offset), high_address.checked_add(offset)) else { break; };
+            let mut node_order = [0u32; crate::ntoskrnl::mm::topology::MAX_NODES];
+            node_order[0] = ideal_node;
+            let mut nodes = 1usize;
+            if !local_only {
+                for node in 0..node_count as u32 {
+                    if node != ideal_node { node_order[nodes] = node; nodes += 1; }
+                }
+            }
+            let mut chunk_base = None;
+            for &node in &node_order[..nodes] {
+                if let Ok(base) = unsafe {
+                    crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
+                        pages_per_chunk, node, low, high, skip_bytes,
+                    )
+                } {
+                    chunk_base = Some(base);
+                    break;
+                }
+            }
+            let Some(base) = chunk_base else { break; };
+            let first = chunk * pages_per_chunk;
+            for page in 0..pages_per_chunk {
+                pfns[first + page] = base / PAGE_SIZE + page as u64;
+            }
+            allocated += pages_per_chunk;
+        }
+    } else {
+        // PREFER_CONTIGUOUS is a hint only. Try one run on the preferred node,
+        // then fall back to ordinary pages if no node can satisfy the run.
+        if prefer_contiguous && skip_bytes == 0 {
+            let mut node_order = [0u32; crate::ntoskrnl::mm::topology::MAX_NODES];
+            node_order[0] = ideal_node;
+            let mut nodes = 1usize;
+            if !local_only {
+                for node in 0..node_count as u32 {
+                    if node != ideal_node { node_order[nodes] = node; nodes += 1; }
+                }
+            }
+            for &node in &node_order[..nodes] {
+                if let Ok(base) = unsafe {
+                    crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
+                        requested_pages, node, low_address, high_address, 0,
+                    )
+                } {
+                    for index in 0..requested_pages {
+                        pfns[index] = base / PAGE_SIZE + index as u64;
+                    }
+                    allocated = requested_pages;
+                    break;
+                }
+            }
+        }
+        'pages: while allocated < requested_pages {
+            let mut window = 0u64;
+            loop {
+                let offset = match window.checked_mul(skip_bytes) { Some(v) => v, None => break };
+                let (Some(low), Some(high)) = (low_address.checked_add(offset), high_address.checked_add(offset)) else { break; };
+                if low >= crate::ntoskrnl::mm::physical::DIRECT_MAP_PHYSICAL_LIMIT { break; }
+                let mut node_order = [0u32; crate::ntoskrnl::mm::topology::MAX_NODES];
+                node_order[0] = ideal_node;
+                let mut nodes = 1usize;
+                if !local_only {
+                    for node in 0..node_count as u32 {
+                        if node != ideal_node { node_order[nodes] = node; nodes += 1; }
+                    }
+                }
+                let mut selected = None;
+                for &node in &node_order[..nodes] {
+                    if unsafe {
+                        crate::ntoskrnl::mm::physical::allocate_pages_in_node_range(
+                            &mut pfns[allocated..allocated + 1], node, low, high, false,
+                        )
+                    }.is_ok() {
+                        selected = Some(());
+                        break;
+                    }
+                }
+                if selected.is_some() {
+                    allocated += 1;
+                    continue 'pages;
+                }
+                if skip_bytes == 0 { break; }
+                window = match window.checked_add(1) { Some(v) => v, None => break };
+            }
+            break;
+        }
+    }
+
+    if allocated == 0 || (flags & MM_ALLOCATE_FULLY_REQUIRED != 0 && allocated != requested_pages) {
+        for &pfn in pfns[..allocated].iter().rev() {
+            let _ = unsafe { crate::memory::free_page(pfn * PAGE_SIZE) };
+        }
         let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
         return core::ptr::null_mut();
     }
-    // Prefer the requested node first. Unless LOCAL_NODE_ONLY is set, retry
-    // other SRAT-described memory nodes when the preferred node is insufficient.
-    let mut allocated = 0usize;
-    if let Ok(count) = unsafe {
-        crate::ntoskrnl::mm::physical::allocate_pages_in_node_range(
-            &mut pfns[allocated..], ideal_node, low_address, high_address, false,
-        )
-    } { allocated += count; }
-    if flags & MM_ALLOCATE_FROM_LOCAL_NODE_ONLY == 0 {
-        for node in 0..node_count as u32 {
-            if node == ideal_node || allocated == requested_pages { continue; }
-            if let Ok(count) = unsafe {
-                crate::ntoskrnl::mm::physical::allocate_pages_in_node_range(
-                    &mut pfns[allocated..], node, low_address, high_address, false,
-                )
-            } { allocated += count; }
-        }
-    }
-    if allocated == 0 || (flags & MM_ALLOCATE_FULLY_REQUIRED != 0 && allocated != requested_pages)
-        || !register_page_allocation_mdl(mdl as u64, allocated) {
-        for &pfn in pfns.iter().take(allocated) {
+    if !register_page_allocation_mdl(mdl as u64, allocated) {
+        for &pfn in pfns[..allocated].iter().rev() {
             let _ = unsafe { crate::memory::free_page(pfn * PAGE_SIZE) };
         }
         let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
