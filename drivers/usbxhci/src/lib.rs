@@ -809,3 +809,123 @@ mod command_submission_tests {
         assert_eq!(io.count,0);
     }
 }
+
+
+/// Command kinds tracked until the controller reports a Command Completion Event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommandKind { EnableSlot, AddressDevice, ConfigureEndpoint, Noop }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingCommand {
+    pub command_trb_dma: u64,
+    pub kind: CommandKind,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandCompletion {
+    pub command: PendingCommand,
+    pub completion_code: u8,
+    pub slot_id: u8,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompletionTrackError { Full, InvalidEvent, UnknownCommand }
+
+/// Fixed-capacity command correlation table. Insert immediately after publishing
+/// a command and before allowing the controller's interrupt path to process events.
+pub struct CommandCompletionTracker<const N: usize> {
+    entries: [Option<PendingCommand>; N],
+}
+impl<const N: usize> CommandCompletionTracker<N> {
+    pub const fn new() -> Self { Self { entries: [None; N] } }
+    pub fn track(&mut self, command: PendingCommand) -> Result<(), CompletionTrackError> {
+        if command.command_trb_dma == 0 || command.command_trb_dma & 0xf != 0 {
+            return Err(CompletionTrackError::InvalidEvent);
+        }
+        if self.entries.iter().flatten().any(|p| p.command_trb_dma == command.command_trb_dma) {
+            return Err(CompletionTrackError::InvalidEvent);
+        }
+        let slot = self.entries.iter_mut().find(|e| e.is_none()).ok_or(CompletionTrackError::Full)?;
+        *slot = Some(command);
+        Ok(())
+    }
+    /// Correlate an already cycle-validated event TRB. Unknown completions are
+    /// surfaced rather than silently discarded; callers should log them.
+    pub fn complete(&mut self, event: Trb) -> Result<CommandCompletion, CompletionTrackError> {
+        if event.trb_type() != TRB_TYPE_COMMAND_COMPLETION as u8 {
+            return Err(CompletionTrackError::InvalidEvent);
+        }
+        let command_dma = event.parameter & !0xf;
+        let index = self.entries.iter().position(|e|
+            e.map(|p| p.command_trb_dma == command_dma).unwrap_or(false)
+        ).ok_or(CompletionTrackError::UnknownCommand)?;
+        let command = self.entries[index].take().ok_or(CompletionTrackError::UnknownCommand)?;
+        Ok(CommandCompletion {
+            command,
+            completion_code: event.completion_code(),
+            slot_id: event.slot_id(),
+        })
+    }
+    pub fn pending_count(&self) -> usize { self.entries.iter().filter(|e| e.is_some()).count() }
+}
+impl<const N: usize> Default for CommandCompletionTracker<N> {
+    fn default() -> Self { Self::new() }
+}
+
+/// Build an Enable Slot command. The controller chooses the slot ID on completion.
+pub const fn enable_slot_command() -> Trb {
+    Trb::new(0, 0, TRB_TYPE_ENABLE_SLOT, true)
+}
+
+/// Build an Address Device command. input_context_dma must refer to a valid,
+/// aligned, DMA-visible Input Context owned by the caller.
+pub fn address_device_command(input_context_dma: u64, slot_id: u8) -> Result<Trb, XhciError> {
+    if slot_id == 0 || validate_dma_address(input_context_dma, 16).is_err() {
+        return Err(XhciError::InvalidParameter);
+    }
+    let mut trb = Trb::new(input_context_dma, 0, TRB_TYPE_ADDRESS_DEVICE, true);
+    trb.control = (trb.control & 0x00ff_ffff) | ((slot_id as u32) << 24);
+    Ok(trb)
+}
+
+/// Build a Configure Endpoint command. Input context contents and endpoint
+/// descriptors must already be validated by the USB/device layer.
+pub fn configure_endpoint_command(input_context_dma: u64, slot_id: u8) -> Result<Trb, XhciError> {
+    if slot_id == 0 || validate_dma_address(input_context_dma, 16).is_err() {
+        return Err(XhciError::InvalidParameter);
+    }
+    let mut trb = Trb::new(input_context_dma, 0, TRB_TYPE_CONFIGURE_ENDPOINT, true);
+    trb.control = (trb.control & 0x00ff_ffff) | ((slot_id as u32) << 24);
+    Ok(trb)
+}
+
+#[cfg(test)]
+mod command_completion_tests {
+    use super::*;
+    #[test]
+    fn correlates_completion_by_command_trb_pointer() {
+        let mut tracker = CommandCompletionTracker::<2>::new();
+        let pending = PendingCommand { command_trb_dma: 0x1040, kind: CommandKind::EnableSlot };
+        tracker.track(pending).unwrap();
+        let mut event = Trb::new(0x1040, 1 << 24, TRB_TYPE_COMMAND_COMPLETION, true);
+        event.control |= 7 << 24;
+        let done = tracker.complete(event).unwrap();
+        assert_eq!(done.command, pending);
+        assert_eq!(done.completion_code, 1);
+        assert_eq!(done.slot_id, 7);
+        assert_eq!(tracker.pending_count(), 0);
+    }
+    #[test]
+    fn rejects_unknown_and_non_completion_events() {
+        let mut tracker = CommandCompletionTracker::<1>::new();
+        assert_eq!(tracker.complete(Trb::new(0,0,TRB_TYPE_TRANSFER_EVENT,true)),
+            Err(CompletionTrackError::InvalidEvent));
+        assert_eq!(tracker.complete(Trb::new(0x1000,1<<24,TRB_TYPE_COMMAND_COMPLETION,true)),
+            Err(CompletionTrackError::UnknownCommand));
+    }
+    #[test]
+    fn validates_slot_and_input_context_before_building_commands() {
+        assert_eq!(address_device_command(0x1000,0).unwrap_err(),XhciError::InvalidParameter);
+        assert_eq!(configure_endpoint_command(0x1001,1).unwrap_err(),XhciError::InvalidParameter);
+        assert_eq!(address_device_command(0x1000,3).unwrap().slot_id(),3);
+        assert_eq!(configure_endpoint_command(0x2000,4).unwrap().slot_id(),4);
+        assert_eq!(enable_slot_command().trb_type(),TRB_TYPE_ENABLE_SLOT as u8);
+    }
+}
