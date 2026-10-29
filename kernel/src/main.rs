@@ -39,11 +39,11 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 
 use cognacos_kbdclass::{KeyboardInputData,KeyboardInputStack,KEY_BREAK};
-use cognacos_i8042prt::{ScanDecoder,STATUS_OUTPUT_FULL,STATUS_PORT,DATA_PORT};
+use cognacos_i8042prt::{Ps2KeyboardPort,PortIo,PowerAwarePortIo,PortError,controller_command,wait_output_full,wait_input_empty,CMD_READ_CONFIG,CMD_WRITE_CONFIG,CONFIG_KEYBOARD_IRQ,STATUS_OUTPUT_FULL,STATUS_PORT,DATA_PORT};
 use cognacos_kbdus::{Modifiers,translate_packet,VK_SHIFT,VK_CAPITAL,VK_CONTROL,VK_MENU};
 
 static mut KBD_STACK:KeyboardInputStack=KeyboardInputStack::new();
-static mut KBD_DECODER:ScanDecoder=ScanDecoder::new();
+static mut KBD_PORT:Ps2KeyboardPort=Ps2KeyboardPort::new();
 static mut KBD_MODIFIERS:Modifiers=Modifiers{shift:false,caps_lock:false,control:false,alt:false};
 static KBD_STACK_READY:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static KBD_INPUT_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
@@ -75,6 +75,28 @@ pub fn dequeue_keyboard_event()->Option<KeyboardEvent>{
 pub fn keyboard_event_drop_count()->u64{KBD_EVENT_DROPS.load(core::sync::atomic::Ordering::Relaxed)}
 
 
+
+struct KernelPs2PortIo;
+impl PortIo for KernelPs2PortIo {
+ fn read8(&mut self,port:u16)->u8{let v:u8;unsafe{asm!("in al, dx",in("dx") port,out("al") v,options(nomem,nostack,preserves_flags));}v}
+ fn write8(&mut self,port:u16,value:u8){unsafe{asm!("out dx, al",in("dx") port,in("al") value,options(nomem,nostack,preserves_flags));}}
+}
+impl PowerAwarePortIo for KernelPs2PortIo {
+ fn set_keyboard_irq_enabled(&mut self,enabled:bool)->Result<(),PortError>{
+  controller_command(self,CMD_READ_CONFIG,100_000)?;
+  let mut config=wait_output_full(self,100_000)?;
+  if enabled{config|=CONFIG_KEYBOARD_IRQ}else{config&=!CONFIG_KEYBOARD_IRQ}
+  controller_command(self,CMD_WRITE_CONFIG,100_000)?;
+  wait_input_empty(self,100_000)?;
+  self.write8(DATA_PORT,config);Ok(())
+ }
+ fn synchronize_keyboard_irq(&mut self)->Result<(),PortError>{
+  // CognacOS currently keeps legacy IRQ routing masked and polls the output buffer.
+  // This is safe until the IDT thunk and interrupt rundown path are installed.
+  Ok(())
+ }
+}
+
 /// Poll the legacy 8042 output buffer while the legacy IRQ route is still masked.
 /// This provides a safe bring-up path while IDT/IRQ registration is unfinished.
 fn poll_ps2_keyboard_input(){
@@ -83,6 +105,10 @@ fn poll_ps2_keyboard_input(){
   unsafe {
    let stack=&mut *core::ptr::addr_of_mut!(KBD_STACK);
    if stack.attach_port().is_err()||stack.open().is_err(){return}
+   let mut io=KernelPs2PortIo;
+   if (&mut *core::ptr::addr_of_mut!(KBD_PORT)).start(&mut io,100_000).is_err(){
+    serial_write(b"PS/2 keyboard controller initialization failed; polling input disabled.\\r\\n");return
+   }
   }
   KBD_STACK_READY.store(true,Ordering::Release);
   unsafe{serial_write(b"KEYBOARD STACK: PS/2 polling + KbdClass queue initialized; legacy IRQ remains masked.\\r\\n");}
@@ -92,7 +118,7 @@ fn poll_ps2_keyboard_input(){
   if status&STATUS_OUTPUT_FULL==0{break}
   let byte:u8;unsafe{asm!("in al, dx",in("dx") DATA_PORT,out("al") byte,options(nomem,nostack,preserves_flags));}
   if status&0x20!=0{continue}
-  let packet=unsafe{(&mut *core::ptr::addr_of_mut!(KBD_DECODER)).feed(byte)};
+  let packet=unsafe{(&mut *core::ptr::addr_of_mut!(KBD_PORT)).feed_scancode(byte)};
   let Some(packet)=packet else{continue};
   unsafe{
    let stack=&mut *core::ptr::addr_of_mut!(KBD_STACK);
