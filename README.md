@@ -21,6 +21,7 @@
 - [Windows 11 x64 Se compatibility comparison](WINDOWS11_COGNACOS_NTOSKRNL_SE_COMPARISON.md)
 - [Boot security guide](docs/boot-security.md)
 - [Keyboard driver stack](docs/keyboard-driver-stack.md) — kbdclass, kbdhid, HIDClass, and i8042prt
+- [USB driver stack](docs/usb-driver-stack.md) — Windows-style xHCI, UCX-equivalent, hub, and HID boundaries
 
 ## Implemented foundations
 
