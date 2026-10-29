@@ -615,12 +615,22 @@ pub unsafe fn try_allocate_pages_in_range(
             }
             None
         };
-        let page = find(low_free).or_else(|| find(high_free));
+        let page = match find(low_free) {
+            Some(page) => Some(page),
+            None => find(high_free),
+        };
         let Some(page) = page else { break; };
         output[count] = page;
         count += 1;
     }
-    if require_all && count != output.len() {
+
+    // Validate every high-memory alias before committing the allocation. If
+    // the direct map cannot represent one of the selected frames, return all
+    // selected frames to their original lists instead of leaking them.
+    let map_valid = output[..count].iter().all(|page| {
+        *page < PHYSICAL_LIMIT || direct_map_address(*page).is_some()
+    });
+    if (require_all && count != output.len()) || !map_valid {
         for &page in &output[..count] {
             let pages = if page >= PHYSICAL_LIMIT { high_free } else { low_free };
             if pages.1 < FREE_CAPACITY {
@@ -628,11 +638,16 @@ pub unsafe fn try_allocate_pages_in_range(
                 pages.1 += 1;
             }
         }
-        return Err(AllocError::OutOfMemory);
+        return Err(if map_valid { AllocError::OutOfMemory } else { AllocError::InvalidMap });
     }
     for &page in &output[..count] {
         let pointer = if page >= PHYSICAL_LIMIT {
-            direct_map_address(page).ok_or(AllocError::InvalidMap)? as *mut u8
+            // The preflight above guarantees this lookup succeeds unless the
+            // direct-map contract itself changes concurrently (it is static).
+            match direct_map_address(page) {
+                Some(alias) => alias as *mut u8,
+                None => return Err(AllocError::InvalidMap),
+            }
         } else { page as *mut u8 };
         unsafe { ptr::write_bytes(pointer, 0, PAGE_SIZE as usize); }
     }
