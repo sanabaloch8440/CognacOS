@@ -406,6 +406,7 @@ pub struct XhciRuntimeResources {
     pub dequeue_index: u16,
     pub consumer_cycle: bool,
     pub interrupt_registered: bool,
+    pub suspended: bool,
 }
 const RUNTIME_EVENT_ENTRIES: u16 = 256;
 const RUNTIME_RING_BYTES: u64 = RUNTIME_EVENT_ENTRIES as u64 * core::mem::size_of::<Trb>() as u64;
@@ -484,7 +485,7 @@ pub fn start_controller<P: XhciPlatform>(
     }
     Ok(XhciRuntimeResources {
         dcbaa, command_ring, event_ring, erst, event_entries: RUNTIME_EVENT_ENTRIES,
-        dequeue_index: 0, consumer_cycle: true, interrupt_registered: true,
+        dequeue_index: 0, consumer_cycle: true, interrupt_registered: true, suspended: false,
     })
 }
 /// Drain live DMA event TRBs up to a caller-supplied budget. The callback must
@@ -556,6 +557,112 @@ pub fn stop_controller<P: XhciPlatform>(
     platform.free_dma(resources.command_ring);
     platform.free_dma(resources.dcbaa);
     Ok(())
+}
+
+
+pub const PORTSC_CCS:u32=1<<0;
+pub const PORTSC_PLS_MASK:u32=0xf<<5;
+pub const PORTSC_PP:u32=1<<9;
+pub const PORTSC_LWS:u32=1<<16;
+pub const PORTSC_WAKE_ENABLE_MASK:u32=0x7<<25;
+pub const PORTSC_LINK_U0:u8=0;
+pub const PORTSC_LINK_U3:u8=3;
+pub const PORTSC_LINK_RESUME:u8=15;
+const PORTSC_CHANGE_BITS:u32=0x7f<<17;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum XhciPowerError { InvalidPort, RegisterIoFailure, PortDisconnected, PortDidNotSuspend, PortDidNotResume, InterruptDisableFailed, ControllerDidNotHalt, ControllerDidNotStart, AlreadySuspended, NotSuspended }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct PortPowerSnapshot { pub port:u8, pub connected:bool, pub prior_link_state:u8 }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct XhciPowerSnapshot {
+ command:u32, config:u32, dcbaap:u64, crcr:u64, iman:u32,
+ erst_size:u32, erst_base:u64, erdp:u64,
+}
+fn portsc_offset(caps:&Capabilities,port:u8)->Result<u32,XhciPowerError>{
+ if port==0||port>caps.max_ports{return Err(XhciPowerError::InvalidPort)}
+ (caps.cap_length as u32).checked_add(0x400).and_then(|v|v.checked_add((port as u32-1)*0x10)).ok_or(XhciPowerError::InvalidPort)
+}
+fn write_port_link_state<I:XhciRegisterIo>(io:&mut I,offset:u32,current:u32,pls:u8)->Result<(),XhciPowerError>{
+ let writable=(current&(PORTSC_PP|PORTSC_WAKE_ENABLE_MASK))&!PORTSC_CHANGE_BITS;
+ io.write32(offset,writable|(((pls as u32)<<5)&PORTSC_PLS_MASK)|PORTSC_LWS).map_err(|_|XhciPowerError::RegisterIoFailure)
+}
+/// Suspend a connected port to U3. Parent-stack wait/wake policy remains the caller's responsibility.
+pub fn suspend_port<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,port:u8,budget:u32)->Result<PortPowerSnapshot,XhciPowerError>{
+ let off=portsc_offset(caps,port)?;
+ let current=io.read32(off).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ if current&PORTSC_CCS==0{return Err(XhciPowerError::PortDisconnected)}
+ let prior=((current&PORTSC_PLS_MASK)>>5) as u8;
+ if prior!=PORTSC_LINK_U3 { write_port_link_state(io,off,current,PORTSC_LINK_U3)?; }
+ for _ in 0..budget {
+  let now=io.read32(off).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+  if ((now&PORTSC_PLS_MASK)>>5) as u8==PORTSC_LINK_U3 { return Ok(PortPowerSnapshot{port,connected:true,prior_link_state:prior}); }
+  core::hint::spin_loop();
+ }
+ Err(XhciPowerError::PortDidNotSuspend)
+}
+/// Resume a suspended port; delay_us must provide the USB resume signalling interval.
+pub fn resume_port<I:XhciRegisterIo,F:FnMut(u32)>(io:&mut I,caps:&Capabilities,snapshot:PortPowerSnapshot,budget:u32,mut delay_us:F)->Result<(),XhciPowerError>{
+ if !snapshot.connected{return Ok(())}
+ let off=portsc_offset(caps,snapshot.port)?;
+ let current=io.read32(off).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ if current&PORTSC_CCS==0{return Err(XhciPowerError::PortDisconnected)}
+ if ((current&PORTSC_PLS_MASK)>>5) as u8==PORTSC_LINK_U3 {
+  write_port_link_state(io,off,current,PORTSC_LINK_RESUME)?;
+  delay_us(20_000);
+ }
+ for _ in 0..budget {
+  let now=io.read32(off).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+  if ((now&PORTSC_PLS_MASK)>>5) as u8==PORTSC_LINK_U0{return Ok(())}
+  core::hint::spin_loop();
+ }
+ Err(XhciPowerError::PortDidNotResume)
+}
+/// Halt the xHC without freeing DMA rings or resetting slot contexts. Caller must quiesce transfers first.
+pub fn suspend_controller_for_power<P:XhciPlatform>(platform:&mut P,caps:&Capabilities,resources:&mut XhciRuntimeResources,budget:u32)->Result<XhciPowerSnapshot,XhciPowerError>{
+ if resources.suspended{return Err(XhciPowerError::AlreadySuspended)}
+ let op=caps.cap_length as u32; let rt=caps.runtime_offset; let iman_off=rt+0x20;
+ let command=platform.read32(op).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ let config=platform.read32(op+0x38).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ let dcbaap=((platform.read32(op+0x34).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64)<<32)|platform.read32(op+0x30).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64;
+ let crcr=((platform.read32(op+0x1c).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64)<<32)|platform.read32(op+0x18).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64;
+ let iman=platform.read32(iman_off).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ let erst_size=platform.read32(rt+0x28).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ let erst_base=((platform.read32(rt+0x34).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64)<<32)|platform.read32(rt+0x30).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64;
+ let erdp=((platform.read32(rt+0x3c).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64)<<32)|(platform.read32(rt+0x38).map_err(|_|XhciPowerError::RegisterIoFailure)? as u64&!0xf);
+ if resources.interrupt_registered&&platform.set_interrupt_enabled(false).is_err(){return Err(XhciPowerError::InterruptDisableFailed)}
+ platform.write32(iman_off,iman&!IMAN_INTERRUPT_ENABLE).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ platform.write32(op,command&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE)).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ for _ in 0..budget {
+  if platform.read32(op+4).map_err(|_|XhciPowerError::RegisterIoFailure)?&USBSTS_HALTED!=0 {
+   resources.suspended=true;
+   return Ok(XhciPowerSnapshot{command,config,dcbaap,crcr,iman,erst_size,erst_base,erdp});
+  }
+  core::hint::spin_loop();
+ }
+ Err(XhciPowerError::ControllerDidNotHalt)
+}
+/// Restore controller registers and existing DMA context before reenabling interrupts.
+pub fn resume_controller_from_power<P:XhciPlatform>(platform:&mut P,caps:&Capabilities,resources:&mut XhciRuntimeResources,snapshot:XhciPowerSnapshot,budget:u32)->Result<(),XhciPowerError>{
+ if !resources.suspended{return Err(XhciPowerError::NotSuspended)}
+ let op=caps.cap_length as u32;let rt=caps.runtime_offset;
+ let writes=[
+  (op+0x18,snapshot.crcr as u32),(op+0x1c,(snapshot.crcr>>32) as u32),
+  (op+0x30,snapshot.dcbaap as u32),(op+0x34,(snapshot.dcbaap>>32) as u32),
+  (op+0x38,snapshot.config),(rt+0x28,snapshot.erst_size),
+  (rt+0x30,snapshot.erst_base as u32),(rt+0x34,(snapshot.erst_base>>32) as u32),
+  (rt+0x38,snapshot.erdp as u32),(rt+0x3c,(snapshot.erdp>>32) as u32),
+  (rt+0x20,snapshot.iman|IMAN_INTERRUPT_ENABLE),
+ ];
+ for (offset,value) in writes {platform.write32(offset,value).map_err(|_|XhciPowerError::RegisterIoFailure)?;}
+ platform.write32(op,(snapshot.command&!USBCMD_RESET)|USBCMD_RUN|USBCMD_INTERRUPT_ENABLE).map_err(|_|XhciPowerError::RegisterIoFailure)?;
+ let mut running=false;
+ for _ in 0..budget {if platform.read32(op+4).map_err(|_|XhciPowerError::RegisterIoFailure)?&USBSTS_HALTED==0{running=true;break}core::hint::spin_loop();}
+ if !running{return Err(XhciPowerError::ControllerDidNotStart)}
+ if resources.interrupt_registered&&platform.set_interrupt_enabled(true).is_err(){
+  let _=platform.write32(op,snapshot.command&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE));
+  return Err(XhciPowerError::InterruptDisableFailed)
+ }
+ resources.suspended=false;Ok(())
 }
 
 /// Flags for the HAL DMA allocator. A successful allocation must provide a
