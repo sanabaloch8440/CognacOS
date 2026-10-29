@@ -148,3 +148,13 @@ Still intentionally incomplete:
 - [x] Validate power query/set requests and reject unregistered wait/wake requests.
 - [ ] Wire capabilities to PnP reporting and remove registry entries on device rundown.
 - [ ] Implement USB hub/port power sequencing, xHCI save/restore, parent-bus wake propagation, PS/2 power/IRQ restore, and QEMU suspend/resume tests.
+
+
+## Keyboard and USB power lifecycle (2026-10-29)
+
+- [x] Register conservative D0/D3 power capabilities on WDM device creation and clean them on successful remove/surprise-remove and final deletion.
+- [x] Add xHCI controller D0-exit/D0-entry primitives that retain DMA/slot contexts, snapshot/restore registers, and gate interrupts around halt/resume.
+- [x] Add per-port U3 suspend and resume signalling primitives with bounded polling.
+- [x] Add bounded PS/2 initialization and IRQ-synchronized keyboard suspend/resume lifecycle.
+- [x] Add CI tests for simulated keyboard input across PS/2 transitions and xHCI port power-state primitives.
+- [ ] Wire these primitives into live PnP/USB parent wait/wake policy, real interrupt/DPC delivery, HID transfer completion, and QEMU keyboard input before/after actual device power transitions.
