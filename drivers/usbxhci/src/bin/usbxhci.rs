@@ -25,6 +25,8 @@ pub struct XhciDriverExtension {
     pub version: u32,
     pub mmio_base: u64,
     pub mmio_length: u64,
+    /// Stable PnP device-object address registered with the IOMMU requester table.
+    pub device_object: u64,
     pub interrupt_vector: u32,
     pub max_slots: u32,
     pub hal: *const HalServiceTable,
@@ -75,13 +77,13 @@ impl XhciPlatform for Platform<'_> {
         let allocate = self.dev.allocate_dma.ok_or(())?;
         let mut cpu = 0u64;
         let mut device = 0u64;
-        let status = unsafe { allocate(size, alignment, maximum, 0, &mut cpu, &mut device) };
+        let status = unsafe { allocate(self.ext.device_object, size, alignment, maximum, 0, &mut cpu, &mut device) };
         if status.code != 0 || cpu == 0 || device == 0 { return Err(()); }
         Ok(DmaAllocation { cpu_address: cpu, device_address: device, size })
     }
     fn free_dma(&mut self, allocation: DmaAllocation) {
         if let Some(free) = self.dev.free_dma {
-            let _ = unsafe { free(allocation.cpu_address, allocation.device_address, allocation.size) };
+            let _ = unsafe { free(self.ext.device_object, allocation.cpu_address, allocation.device_address, allocation.size) };
         }
     }
     fn register_interrupt(&mut self) -> Result<(), ()> {
@@ -173,7 +175,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         || (ext.size as usize) < core::mem::size_of::<XhciDriverExtension>()
         || ext.mmio_base == 0 || ext.mmio_base & 3 != 0
         || ext.mmio_length < 0x1000 || ext.mmio_length > MMIO_LIMIT
-        || ext.interrupt_vector == 0 || ext.max_slots == 0 || ext.max_slots > 64
+        || ext.device_object == 0 || ext.interrupt_vector == 0 || ext.max_slots == 0 || ext.max_slots > 64
         || ext.hal.is_null() || ext.device.is_null() { return DRIVER_INVALID_PARAMETER; }
     let Some(hal) = (unsafe { ext.hal.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
     let Some(dev) = (unsafe { ext.device.as_ref() }) else { return DRIVER_INVALID_PARAMETER; };
