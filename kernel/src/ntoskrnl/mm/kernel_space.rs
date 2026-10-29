@@ -200,7 +200,7 @@ unsafe fn prune_empty_tables(root:u64,va:u64,count:&mut usize) {
 unsafe fn unmap(root:u64,va:u64)->Result<u64,Error>{
  let indexes=ix(va); let mut t=root as *mut u64;
  for i in indexes[..3].iter().copied(){let e=unsafe{t.add(i).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *mut u64;}
- let leaf=unsafe{t.add(indexes[3])};let e=unsafe{leaf.read()};if e&P==0{return Err(Error::NotMapped)}
+ let leaf=unsafe{t.add(indexes[3])};let e=unsafe{leaf.read()};if e==0{return Err(Error::NotMapped)}
  unsafe{leaf.write(0);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));} Ok(e&ADDR)
 }
 
@@ -332,9 +332,17 @@ pub fn allocate_pageable_pages_at(address:u64,pages:usize)->Result<*mut u8,Error
 }
 
 /// Change permissions on a page-aligned subrange of a live kernel VM extent.
-/// Read permission is implicit on x86-64; executable and writable are exclusive.
+/// The general kernel API keeps W^X; the NT MDL compatibility path below can
+/// explicitly request PAGE_EXECUTE_READWRITE or PAGE_NOACCESS.
 pub fn protect_pages(address:u64,pages:usize,writable:bool,executable:bool)->Result<(),Error>{
- if pages==0||address&(PAGE-1)!=0||writable&&executable{return Err(Error::Invalid)}
+ if writable&&executable{return Err(Error::Invalid)}
+ protect_pages_with_access(address,pages,writable,executable,true,false)
+}
+
+/// Apply x86 leaf-PTE access bits to a tracked kernel mapping. A non-present
+/// leaf retains its PFN so the mapping can later be restored or safely unmapped.
+pub fn protect_pages_with_access(address:u64,pages:usize,writable:bool,executable:bool,present:bool,allow_wx:bool)->Result<(),Error>{
+ if pages==0||address&(PAGE-1)!=0||writable&&executable&&!allow_wx{return Err(Error::Invalid)}
  let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
  let start=usize::try_from(address.checked_sub(BASE).ok_or(Error::Invalid)?/PAGE).map_err(|_|Error::Invalid)?;
  if start.checked_add(pages).is_none_or(|end|end>PAGES){return Err(Error::Invalid)}
@@ -342,9 +350,10 @@ pub fn protect_pages(address:u64,pages:usize,writable:bool,executable:bool)->Res
  if !table.iter().any(|e|e.live&&start>=e.start&&start+pages<=e.start+e.pages){return Err(Error::NotMapped)}
  for n in 0..pages{
   let va=address+n as u64*PAGE;let leaf=unsafe{leaf_ptr(root,va)}.ok_or(Error::NotMapped)?;
-  let mut entry=unsafe{leaf.read_volatile()};if entry&P==0{return Err(Error::NotMapped)}
-  entry&=!(W|NX);if writable{entry|=W;}if !executable{entry|=NX;}
-  unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = (writable as u8) | (((!executable) as u8) << 1); }
+  let mut entry=unsafe{leaf.read_volatile()};
+  if entry==0{return Err(Error::NotMapped)}
+  entry&=!(P|W|NX);if present{entry|=P;}if writable{entry|=W;}if !executable{entry|=NX;}
+  unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = (writable as u8) | (((!executable) as u8) << 1) | ((!present as u8) << 2); }
   unsafe{leaf.write_volatile(entry);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
  }
  synchronize_kernel_tlb();Ok(())
@@ -420,7 +429,7 @@ pub fn unmap_external_pages(ptr: *mut u8, pages: usize) -> Result<(), Error> {
   let indexes = ix(va+n as u64*PAGE); let mut walk = root as *const u64;
   for j in indexes[..3].iter().copied() { let e = unsafe { walk.add(j).read() }; if e&P == 0 || e&PS != 0 { return Err(Error::NotMapped); } walk = (e&ADDR) as *const u64; }
   let pte = unsafe { walk.add(indexes[3]).read() };
-  if pte&P == 0 { return Err(Error::NotMapped); }
+  if pte == 0 { return Err(Error::NotMapped); }
  }
  let mut table_count = 0usize;
  for n in 0..pages {
