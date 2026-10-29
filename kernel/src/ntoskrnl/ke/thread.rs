@@ -260,7 +260,7 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
             let next=&mut table.records[index];
             next.state=ThreadState::Running;
             local.current_thread.store(next.id,core::sync::atomic::Ordering::Release);
-            let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,next.stack_top);
+            let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,next.stack_top);let _=crate::syscall::set_kernel_stack(cpu,next.stack_top);
             (next.context_rsp, if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
                 &next.xstate as *const KiThreadXStateArea
             } else { core::ptr::null() })
@@ -291,7 +291,7 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
         }
         local.current_thread.store(0,core::sync::atomic::Ordering::Release);
         let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
-        if idle_top!=0{let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,idle_top);}
+        if idle_top!=0{let aligned=idle_top&!0xf;let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,aligned);let _=crate::syscall::set_kernel_stack(cpu,aligned);}
         let idle_xstate = if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
             unsafe { core::ptr::addr_of!(IDLE_XSTATE[cpu]) }
         } else { core::ptr::null() };
@@ -519,7 +519,7 @@ fn exit_current()->! {
             let idle=unsafe{*idle_rsp_ptr};
             if idle.is_null(){loop{core::hint::spin_loop()}}
             let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
-            if idle_top!=0{let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,idle_top);}
+            if idle_top!=0{let aligned=idle_top&!0xf;let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,aligned);let _=crate::syscall::set_kernel_stack(cpu,aligned);}
             let idle_xstate = if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
                 unsafe { core::ptr::addr_of!(IDLE_XSTATE[cpu]) }
             } else {
