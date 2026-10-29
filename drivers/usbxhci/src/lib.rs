@@ -1153,3 +1153,49 @@ mod power_state_tests {
   assert_eq!(suspend_port(&mut mmio,&caps(),0,8),Err(XhciPowerError::InvalidPort));
  }
 }
+
+#[cfg(test)]
+mod controller_power_tests {
+ use super::*;
+ #[repr(align(64))] struct Dma([u8;32768]);
+ struct FakePlatform { regs:[u32;1024], dma:Dma, next:usize, irq_registered:bool, irq_enabled:bool }
+ impl FakePlatform { fn new()->Self{let mut p=Self{regs:[0;1024],dma:Dma([0;32768]),next:0,irq_registered:false,irq_enabled:false};p.regs[0x44/4]=USBSTS_HALTED;p.regs[0x48/4]=1;p} }
+ impl XhciRegisterIo for FakePlatform {
+  fn read32(&mut self,o:u32)->Result<u32,()>{self.regs.get((o/4) as usize).copied().ok_or(())}
+  fn write32(&mut self,o:u32,v:u32)->Result<(),()>{
+   let i=(o/4) as usize;if i>=self.regs.len(){return Err(())}
+   if o==0x40 {
+    if v&USBCMD_RESET!=0 {self.regs[i]=v&!USBCMD_RESET;self.regs[0x44/4]=USBSTS_HALTED;}
+    else if v&USBCMD_RUN!=0 {self.regs[i]=v;self.regs[0x44/4]=0;}
+    else {self.regs[i]=v;self.regs[0x44/4]=USBSTS_HALTED;}
+   } else {self.regs[i]=v}
+   Ok(())
+  }
+ }
+ impl XhciPlatform for FakePlatform {
+  fn allocate_dma(&mut self,size:u64,alignment:u64,_max:u64)->Result<DmaAllocation,()>{
+   let mask=alignment as usize-1;self.next=(self.next+mask)&!mask;
+   let end=self.next.checked_add(size as usize).ok_or(())?;if end>self.dma.0.len(){return Err(())}
+   let a=DmaAllocation{cpu_address:unsafe{self.dma.0.as_mut_ptr().add(self.next)} as u64,device_address:0x10000+self.next as u64,size};
+   self.next=end;Ok(a)
+  }
+  fn free_dma(&mut self,_:DmaAllocation){}
+  fn register_interrupt(&mut self)->Result<(),()>{self.irq_registered=true;Ok(())}
+  fn unregister_interrupt(&mut self){self.irq_registered=false;self.irq_enabled=false;}
+  fn set_interrupt_enabled(&mut self,e:bool)->Result<(),()>{if e&&!self.irq_registered{return Err(())}self.irq_enabled=e;Ok(())}
+ }
+ fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,context_size:32,page_size_mask:1}}
+ #[test] fn d0_exit_and_entry_preserve_dma_context_and_restore_interrupts(){
+  let mut platform=FakePlatform::new();
+  let mut resources=start_controller(&mut platform,&caps(),4,16).unwrap();
+  let dcbaa=resources.dcbaa.device_address;
+  assert!(platform.irq_enabled);assert!(!resources.suspended);
+  let snapshot=suspend_controller_for_power(&mut platform,&caps(),&mut resources,16).unwrap();
+  assert!(resources.suspended);assert!(!platform.irq_enabled);assert!(platform.irq_registered);
+  assert_eq!(resources.dcbaa.device_address,dcbaa);
+  resume_controller_from_power(&mut platform,&caps(),&mut resources,snapshot,16).unwrap();
+  assert!(!resources.suspended);assert!(platform.irq_enabled);
+  assert_eq!(platform.regs[(0x40+0x30)/4],dcbaa as u32);
+  assert_eq!(platform.regs[0x40/4]&USBCMD_RUN,USBCMD_RUN);
+ }
+}
