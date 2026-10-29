@@ -353,7 +353,7 @@ pub fn protect_pages_with_access(address:u64,pages:usize,writable:bool,executabl
   let mut entry=unsafe{leaf.read_volatile()};
   if entry==0{return Err(Error::NotMapped)}
   entry&=!(P|W|NX);if present{entry|=P;}if writable{entry|=W;}if !executable{entry|=NX;}
-  unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = (writable as u8) | (((!executable) as u8) << 1) | ((!present as u8) << 2); }
+  unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = (writable as u8) | (((!executable) as u8) << 1) | (((!present) as u8) << 2); }
   unsafe{leaf.write_volatile(entry);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));}
  }
  synchronize_kernel_tlb();Ok(())
