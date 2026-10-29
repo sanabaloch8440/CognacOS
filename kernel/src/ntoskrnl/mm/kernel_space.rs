@@ -200,7 +200,7 @@ unsafe fn prune_empty_tables(root:u64,va:u64,count:&mut usize) {
 unsafe fn unmap(root:u64,va:u64)->Result<u64,Error>{
  let indexes=ix(va); let mut t=root as *mut u64;
  for i in indexes[..3].iter().copied(){let e=unsafe{t.add(i).read()};if e&P==0||e&PS!=0{return Err(Error::NotMapped)}t=(e&ADDR)as *mut u64;}
- let leaf=unsafe{t.add(indexes[3])};let e=unsafe{leaf.read()};if e==0{return Err(Error::NotMapped)}
+ let leaf=unsafe{t.add(indexes[3])};let e=unsafe{leaf.read()};let page_index=usize::try_from((va-BASE)/PAGE).map_err(|_|Error::Invalid)?;if e==0||(e&P==0&&(page_index>=PAGES||unsafe{&*MAPPED_BITS.0.get()}[page_index/64]&(1u64<<(page_index%64))==0)){return Err(Error::NotMapped)}
  unsafe{leaf.write(0);core::arch::asm!("invlpg [{}]",in(reg)va,options(nostack,preserves_flags));} Ok(e&ADDR)
 }
 
