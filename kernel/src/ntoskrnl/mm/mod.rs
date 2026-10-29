@@ -3,6 +3,8 @@ pub(crate) mod user_range;
 pub(crate) mod kernel_space;
 pub(crate) mod pagefile;
 pub(crate) mod physical;
+pub(crate) mod topology;
+pub(crate) mod cache_policy;
 pub(crate) mod runtime;
 pub(crate) mod native_vm;
 pub(crate) mod section;
