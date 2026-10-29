@@ -51,7 +51,7 @@ These are implementation foundations, not declarations of full Windows 11 compat
 - ntdll/src/ — Rust NTDLL exports and native runtime
 - drivers/ext4/ — native Rust ext-family filesystem driver
 - drivers/kbdclass/, drivers/hidclass/, drivers/kbdhid/, drivers/i8042prt/ — keyboard stack cores
-- drivers/usbxhci/ — xHCI reset/configure/start core, event-ring/ERST logic, and USB boot-keyboard descriptor/enumeration foundations (platform DMA/interrupt integration remains incomplete)
+- drivers/usbxhci/ — xHCI startup/event-ring core with a HAL-backed DMA/interrupt adapter (kernel DMA/IOMMU/interrupt callbacks remain incomplete)
 - .github/workflows/ — build, host-test, and emulator validation
 - docs/ — public documentation
 
