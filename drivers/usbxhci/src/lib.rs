@@ -345,3 +345,23 @@ mod controller_init_tests{
   assert_eq!(io.regs[(0x200+0x38)/4],0x13000);
  }
 }
+
+
+#[repr(C,align(16))]
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct ErstEntry{pub ring_segment_base:u64,pub ring_segment_size:u16,pub reserved:u16,pub reserved2:u32}
+pub fn make_erst_entry(event_ring_dma:u64,entries:u16)->Result<ErstEntry,ControllerInitError>{
+ if validate_dma_address(event_ring_dma,64).is_err()||entries<16||entries>4096||!entries.is_power_of_two(){return Err(ControllerInitError::InvalidDmaConfiguration)}
+ Ok(ErstEntry{ring_segment_base:event_ring_dma,ring_segment_size:entries,reserved:0,reserved2:0})
+}
+
+#[cfg(test)]
+mod erst_tests{
+ use super::*;
+ #[test]fn erst_entry_is_spec_sized_and_validated(){
+  assert_eq!(core::mem::size_of::<ErstEntry>(),16);
+  let e=make_erst_entry(0x4000,256).unwrap();assert_eq!(e.ring_segment_base,0x4000);assert_eq!(e.ring_segment_size,256);
+  assert_eq!(make_erst_entry(0x4008,256),Err(ControllerInitError::InvalidDmaConfiguration));
+  assert_eq!(make_erst_entry(0x4000,3),Err(ControllerInitError::InvalidDmaConfiguration));
+ }
+}
