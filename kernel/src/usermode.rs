@@ -355,8 +355,8 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
     let old_syscall_stack = crate::syscall::kernel_stack_top(cpu).unwrap_or(old_tss_stack);
     let stack_base = unsafe { core::ptr::addr_of_mut!(USER_KERNEL_STACKS[cpu].0).cast::<u8>() } as u64;
     let user_kernel_stack_top = stack_base.checked_add(32768).ok_or(VmError::InvalidAddress)? & !0xf;
-    let user_thread_id = crate::ntoskrnl::ke::thread::attach_current_user_thread(env.process_id, user_kernel_stack_top).ok();
-    let stack_installed = old_tss_stack != 0 && old_syscall_stack != 0 && user_thread_id.is_some()
+    let user_thread_binding = crate::ntoskrnl::ke::thread::attach_current_user_thread(env.process_id, user_kernel_stack_top).ok();
+    let stack_installed = old_tss_stack != 0 && old_syscall_stack != 0 && user_thread_binding.is_some()
         && crate::ntoskrnl::ke::arch::set_kernel_stack(cpu, user_kernel_stack_top)
         && crate::syscall::set_kernel_stack(cpu, user_kernel_stack_top);
     if !stack_installed {
@@ -408,8 +408,8 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
         Ok(())
     })() };
     unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
-    if let Some(thread_id) = user_thread_id {
-        let _ = crate::ntoskrnl::ke::thread::detach_current_user_thread(thread_id);
+    if let Some(binding) = user_thread_binding {
+        let _ = crate::ntoskrnl::ke::thread::finish_user_thread_binding(binding);
     }
     if old_tss_stack != 0 { let _ = crate::ntoskrnl::ke::arch::set_kernel_stack(cpu, old_tss_stack); }
     if old_syscall_stack != 0 { let _ = crate::syscall::set_kernel_stack(cpu, old_syscall_stack); }
