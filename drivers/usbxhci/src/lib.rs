@@ -1222,10 +1222,11 @@ pub fn arm_usb_wait_wake<B:UsbWakeBackend>(path:UsbWakePath,backend:&mut B)->Res
  Ok(())
 }
 pub fn cancel_usb_wait_wake<B:UsbWakeBackend>(backend:&mut B)->Result<(),UsbWakeError>{
- backend.disable_device_remote_wakeup().map_err(|_|UsbWakeError::DeviceFailure)?;
- backend.disarm_hub_wake().map_err(|_|UsbWakeError::HubFailure)?;
- backend.disarm_controller_wake().map_err(|_|UsbWakeError::ControllerFailure)?;
- Ok(())
+ let mut first=None;
+ if backend.disable_device_remote_wakeup().is_err(){first=Some(UsbWakeError::DeviceFailure)}
+ if backend.disarm_hub_wake().is_err()&&first.is_none(){first=Some(UsbWakeError::HubFailure)}
+ if backend.disarm_controller_wake().is_err()&&first.is_none(){first=Some(UsbWakeError::ControllerFailure)}
+ first.map_or(Ok(()),Err)
 }
 
 #[cfg(test)]
