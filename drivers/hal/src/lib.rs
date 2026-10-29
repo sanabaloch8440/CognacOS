@@ -65,11 +65,11 @@ mod tests {
 
 
 /// Separate versioned device-service contract for DMA and interrupt-backed drivers.
-/// These are declarations only: the kernel/HAL runtime must supply implementations
-/// that honor IOMMU isolation, cache coherency, IRQL rules, and device teardown.
-pub const DEVICE_SERVICES_VERSION:u32=1;
-pub type AllocateDma=unsafe extern "C" fn(size:u64,alignment:u64,maximum_address:u64,flags:u32,cpu_address:*mut u64,device_address:*mut u64)->HalStatus;
-pub type FreeDma=unsafe extern "C" fn(cpu_address:u64,device_address:u64,size:u64)->HalStatus;
+/// Version 2 includes the owning device object in DMA calls so the kernel can select
+/// its requester-specific IOMMU domain. DMA callbacks must reject unregistered devices.
+pub const DEVICE_SERVICES_VERSION:u32=2;
+pub type AllocateDma=unsafe extern "C" fn(device_object:u64,size:u64,alignment:u64,maximum_address:u64,flags:u32,cpu_address:*mut u64,device_address:*mut u64)->HalStatus;
+pub type FreeDma=unsafe extern "C" fn(device_object:u64,cpu_address:u64,device_address:u64,size:u64)->HalStatus;
 pub type InterruptIsr=extern "C" fn(context:u64)->bool;
 pub type InterruptDpc=extern "C" fn(context:u64);
 pub type RegisterInterrupt=unsafe extern "C" fn(vector:u32,context:u64,isr:Option<InterruptIsr>,dpc:Option<InterruptDpc>)->HalStatus;
