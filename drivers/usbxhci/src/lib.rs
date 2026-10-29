@@ -757,8 +757,8 @@ pub fn submit_command<I: XhciRegisterIo>(
 #[cfg(test)]
 mod command_submission_tests {
     use super::*;
-    struct FakeIo { regs: [u32; 64], writes: [u32; 8], count: usize }
-    impl FakeIo { fn new() -> Self { Self { regs: [0;64], writes: [u32::MAX;8], count: 0 } } }
+    struct FakeIo { regs: [u32; 128], writes: [u32; 8], count: usize }
+    impl FakeIo { fn new() -> Self { Self { regs: [0;128], writes: [u32::MAX;8], count: 0 } } }
     impl XhciRegisterIo for FakeIo {
         fn read32(&mut self, o:u32)->Result<u32,()> { self.regs.get((o/4) as usize).copied().ok_or(()) }
         fn write32(&mut self,o:u32,v:u32)->Result<(),()> {
