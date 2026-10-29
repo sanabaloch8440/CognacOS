@@ -40,7 +40,7 @@ use core::panic::PanicInfo;
 
 use cognacos_kbdclass::{KeyboardInputData,KeyboardInputStack,KEY_BREAK};
 use cognacos_i8042prt::{Ps2KeyboardPort,PortIo,PowerAwarePortIo,PortError,controller_command,wait_output_full,wait_input_empty,CMD_READ_CONFIG,CMD_WRITE_CONFIG,CONFIG_KEYBOARD_IRQ,STATUS_OUTPUT_FULL,STATUS_PORT,DATA_PORT};
-use cognacos_kbdus::{Modifiers,translate_packet,VK_SHIFT,VK_CAPITAL,VK_CONTROL,VK_MENU};
+use kbdus::{Modifiers,translate_packet,VK_SHIFT,VK_CAPITAL,VK_CONTROL,VK_MENU};
 
 static mut KBD_STACK:KeyboardInputStack=KeyboardInputStack::new();
 static mut KBD_PORT:Ps2KeyboardPort=Ps2KeyboardPort::new();
@@ -1910,7 +1910,7 @@ unsafe fn qemu_pc_speaker_diagnostic_tone() -> bool {
     true
 }
 
-pub unsafe fn serial_write(bytes: &[u8]) {
+pub fn serial_write(bytes: &[u8]) {
     for byte in bytes {
         unsafe {
             let mut spins = 0u32;
@@ -1925,7 +1925,7 @@ pub unsafe fn serial_write(bytes: &[u8]) {
     }
 }
 
-pub unsafe fn serial_write_hex(value: u64) {
+pub fn serial_write_hex(value: u64) {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut out = [0u8; 18];
     out[0] = b'0';
@@ -1936,7 +1936,7 @@ pub unsafe fn serial_write_hex(value: u64) {
     serial_write(&out);
 }
 
-unsafe fn serial_write_decimal(mut value: usize) {
+fn serial_write_decimal(mut value: usize) {
     let mut digits = [0u8; 20];
     let mut index = digits.len();
     if value == 0 {
