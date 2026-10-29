@@ -299,7 +299,7 @@ fn reschedule(block:bool)->Result<(),ThreadError>{
         }
         local.current_thread.store(0,core::sync::atomic::Ordering::Release);
         let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
-        if idle_top!=0{let aligned=idle_top&!0xf;let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,aligned);let _=crate::syscall::set_kernel_stack(cpu,aligned);}
+        if idle_top!=0{let aligned=idle_top&!0xf;let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,aligned);let _=crate::syscall::reset_kernel_stack(cpu);}
         let idle_xstate = if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
             unsafe { core::ptr::addr_of!(IDLE_XSTATE[cpu]) }
         } else { core::ptr::null() };
@@ -826,7 +826,7 @@ pub fn clear_wake_pending()->Result<(),ThreadError>{
 pub fn set_idle_stack_top(cpu:usize,stack_top:u64)->bool{
     if cpu>=crate::hal::MAX_CPUS||stack_top==0||stack_top&0xf!=0{return false;}
     IDLE_STACK_TOPS[cpu].store(stack_top,core::sync::atomic::Ordering::Release);
-    crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,stack_top) && crate::syscall::set_kernel_stack(cpu,stack_top)
+    crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,stack_top) && crate::syscall::reset_kernel_stack(cpu)
 }
 
 /// Initialize the runtime's per-CPU current-thread slots. The bootstrap context
