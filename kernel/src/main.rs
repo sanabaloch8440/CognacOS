@@ -38,6 +38,65 @@ mod debug_console;
 use core::arch::asm;
 use core::panic::PanicInfo;
 
+use cognacos_kbdclass::{KeyboardInputData,KeyboardInputStack,KEY_BREAK};
+use cognacos_i8042prt::{ScanDecoder,STATUS_OUTPUT_FULL,STATUS_PORT,DATA_PORT};
+use cognacos_kbdus::{Modifiers,translate_packet,VK_SHIFT,VK_CAPITAL,VK_CONTROL,VK_MENU};
+
+static mut KBD_STACK:KeyboardInputStack=KeyboardInputStack::new();
+static mut KBD_DECODER:ScanDecoder=ScanDecoder::new();
+static mut KBD_MODIFIERS:Modifiers=Modifiers{shift:false,caps_lock:false,control:false,alt:false};
+static KBD_STACK_READY:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static KBD_INPUT_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+
+/// Poll the legacy 8042 output buffer while the legacy IRQ route is still masked.
+/// This provides a safe bring-up path while IDT/IRQ registration is unfinished.
+fn poll_ps2_keyboard_input(){
+ use core::sync::atomic::Ordering;
+ if !KBD_STACK_READY.load(Ordering::Acquire) {
+  unsafe {
+   let stack=&mut *core::ptr::addr_of_mut!(KBD_STACK);
+   if stack.attach_port().is_err()||stack.open().is_err(){return}
+  }
+  KBD_STACK_READY.store(true,Ordering::Release);
+  unsafe{serial_write(b"KEYBOARD STACK: PS/2 polling + KbdClass queue initialized; legacy IRQ remains masked.\\r\\n");}
+ }
+ for _ in 0..16 {
+  let status:u8;unsafe{asm!("in al, dx",in("dx") STATUS_PORT,out("al") status,options(nomem,nostack,preserves_flags));}
+  if status&STATUS_OUTPUT_FULL==0{break}
+  let byte:u8;unsafe{asm!("in al, dx",in("dx") DATA_PORT,out("al") byte,options(nomem,nostack,preserves_flags));}
+  if status&0x20!=0{continue}
+  let packet=unsafe{(&mut *core::ptr::addr_of_mut!(KBD_DECODER)).feed(byte)};
+  let Some(packet)=packet else{continue};
+  unsafe{
+   let stack=&mut *core::ptr::addr_of_mut!(KBD_STACK);
+   if stack.submit_from_port(packet).is_err(){continue}
+   let mut out=[KeyboardInputData::default();1];
+   if stack.read_packets(&mut out).ok()!=Some(1){continue}
+   let p=out[0];
+   let key=translate_packet(p,*core::ptr::addr_of!(KBD_MODIFIERS));
+   let mods=&mut *core::ptr::addr_of_mut!(KBD_MODIFIERS);
+   let down=p.flags&KEY_BREAK==0;
+   match key.map(|e|e.virtual_key).unwrap_or(0){
+    VK_SHIFT=>mods.shift=down,
+    VK_CONTROL=>mods.control=down,
+    VK_MENU=>mods.alt=down,
+    VK_CAPITAL if down=>mods.caps_lock=!mods.caps_lock,
+    _=>{}
+   }
+   if let Some(e)=key{
+    let count=KBD_INPUT_COUNT.fetch_add(1,Ordering::Relaxed)+1;
+    serial_write(b"QEMU KEYBOARD INPUT: count=");serial_write_hex(count);
+    serial_write(b" VK=");serial_write_hex(e.virtual_key as u64);
+    serial_write(b" scan=");serial_write_hex(e.scan_code as u64);
+    serial_write(b" up=");serial_write_hex(e.key_up as u64);
+    if e.unicode!=0{serial_write(b" UTF16=");serial_write_hex(e.unicode as u64);}
+    serial_write(b"\\r\\n");
+   }
+  }
+ }
+}
+
+
 
 // PCI configuration mechanism #1 helpers. BAR sizing is performed only during
 // early boot, before any driver binds; command decode and bus mastering are
@@ -1356,7 +1415,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     serial_write(b"cognacos-kd> type help for debugger commands\r\n");
                     loop {
                         crate::debug_console::poll();
+                        poll_ps2_keyboard_input();
                         unsafe { asm!("sti; hlt", options(nomem, nostack)); }
+                        poll_ps2_keyboard_input();
                         ntoskrnl::ke::runtime::dispatch_threaded_dpcs();
                         if thread::has_ready_threads() { let _ = thread::yield_current(); }
                     }
