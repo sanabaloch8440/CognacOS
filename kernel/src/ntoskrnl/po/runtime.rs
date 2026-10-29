@@ -117,7 +117,7 @@ pub(crate) unsafe fn po_prepare_irp_dispatch(device:*mut DeviceObject,irp:*mut W
  if major==IRP_MJ_POWER {
   if minor==IRP_MN_WAIT_WAKE {
    let system_wake=(parameters[0] as u32) as u8;
-   if !(1..=6).contains(&system_wake)||!super::device_power::supports_wake(device){return STATUS_INVALID_DEVICE_REQUEST}
+   if !(1..=6).contains(&system_wake)||!super::device_power::supports_wake_stack(device){return STATUS_INVALID_DEVICE_REQUEST}
    let refd=unsafe{io::io_reference_device_object(device)};
    if refd.is_null(){return STATUS_DELETE_PENDING}
    let duplicate={let s=TRANSITIONS.lock();s.slots.iter().any(|t|t.used&&t.kind==4&&t.device==device)};
