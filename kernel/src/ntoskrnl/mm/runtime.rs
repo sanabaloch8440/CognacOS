@@ -252,10 +252,13 @@ pub fn is_page_locked(physical_page: u64) -> bool {
 }
 /// Nonblocking ownership probe used by physical-page rollback. Lock contention
 /// is treated as "still pinned" so the caller fails safely without waiting.
-pub fn try_is_page_locked(physical_page: u64) -> bool {
+pub fn try_page_lock_status(physical_page: u64) -> Option<bool> {
     let pfn = physical_page / PAGE_SIZE;
-    let Some(table) = LOCKED_PAGES.try_lock() else { return true; };
-    table.iter().any(|p| p.live && p.pfn == pfn && p.references != 0)
+    let table = LOCKED_PAGES.try_lock()?;
+    Some(table.iter().any(|p| p.live && p.pfn == pfn && p.references != 0))
+}
+pub fn try_is_page_locked(physical_page: u64) -> bool {
+    try_page_lock_status(physical_page).unwrap_or(true)
 }
 pub fn lock_pfns(pfns: &[u64]) -> bool {
     let mut table = LOCKED_PAGES.lock();
