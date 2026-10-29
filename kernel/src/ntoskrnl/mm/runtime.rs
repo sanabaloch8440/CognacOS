@@ -1024,8 +1024,18 @@ unsafe fn allocate_pages_for_mdl(
     if flags & MM_ALLOCATE_NO_WAIT != 0 {
         return core::ptr::null_mut();
     }
-    // NUMA ownership is not yet connected to the physical allocator. Never
-    // pretend that the local-node-only constraint was satisfied.
+    // Windows interprets FROM_LOCAL_NODE_ONLY as the current thread's ideal
+    // node. Route this flag through the node-aware allocator instead of
+    // rejecting it or silently allocating from an arbitrary physical range.
+    if flags & MM_ALLOCATE_FROM_LOCAL_NODE_ONLY != 0 {
+        let ideal_node = unsafe { crate::ntoskrnl::ke::runtime::ke_get_current_node_number() } as u32;
+        return unsafe {
+            mm_allocate_node_pages_for_mdl_ex(
+                low_address, high_address, skip_bytes, total_bytes,
+                cache_type, ideal_node, flags,
+            )
+        };
+    }
     let require_contiguous = flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0;
     if total_bytes == 0 || total_bytes > (u32::MAX as u64 - PAGE_SIZE)
         || high_address < low_address
