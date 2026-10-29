@@ -37,21 +37,25 @@ pub const fn usage_to_set1(usage: u8) -> Option<(u16, bool)> {
 /// Decode an 8-byte HID boot keyboard report into make/break transitions against previous usages.
 /// The caller supplies output storage; no allocation occurs. Modifier bits map to left/right Ctrl,
 /// Shift, Alt and GUI scan codes. ErrorRollOver is reported without generating synthetic releases.
-pub fn decode_boot_report(report:&[u8], previous:&mut [u8;6], out:&mut [KeyboardInputData])->Result<usize,HidError>{
+pub struct KeyboardState { pub previous_keys: [u8;6], pub previous_modifiers: u8 }
+impl KeyboardState { pub const fn new()->Self { Self { previous_keys:[0;6], previous_modifiers:0 } } }
+impl Default for KeyboardState { fn default()->Self { Self::new() } }
+
+pub fn decode_boot_report(report:&[u8], state:&mut KeyboardState, out:&mut [KeyboardInputData])->Result<usize,HidError>{
  if report.len()<8{return Err(HidError::ShortReport)}
  let keys=&report[2..8];
  if keys.contains(&1){return Err(HidError::ErrorRollOver)}
  let mut n=0;
  let modifiers=report[0];
  for bit in 0..8 { let usage=match bit {0=>0xe0,1=>0xe1,2=>0xe2,3=>0xe3,4=>0xe4,5=>0xe5,6=>0xe6,_=>0xe7};
-  let was=previous.contains(&usage); let now=modifiers&(1<<bit)!=0;
+  let was=state.previous_modifiers&(1<<bit)!=0; let now=modifiers&(1<<bit)!=0;
   if was!=now { if n>=out.len(){return Err(HidError::OutputFull)} let (scan,ext)=modifier_scan(usage); out[n]=KeyboardInputData{make_code:scan,flags:(if !now{KEY_BREAK}else{0})|(if ext{KEY_E0}else{0}),..Default::default()};n+=1; }
  }
- for &u in previous.iter() { if u!=0&&!keys.contains(&u) { if let Some((scan,ext))=usage_to_set1(u){if n>=out.len(){return Err(HidError::OutputFull)}out[n]=KeyboardInputData{make_code:scan,flags:KEY_BREAK|(if ext{KEY_E0}else{0}),..Default::default()};n+=1;} } }
- for &u in keys { if u!=0&&!previous.contains(&u) { if let Some((scan,ext))=usage_to_set1(u){if n>=out.len(){return Err(HidError::OutputFull)}out[n]=KeyboardInputData{make_code:scan,flags:if ext{KEY_E0}else{0},..Default::default()};n+=1;} } }
- *previous=[keys[0],keys[1],keys[2],keys[3],keys[4],keys[5]];
+ for &u in state.previous_keys.iter() { if u!=0&&!keys.contains(&u) { if let Some((scan,ext))=usage_to_set1(u){if n>=out.len(){return Err(HidError::OutputFull)}out[n]=KeyboardInputData{make_code:scan,flags:KEY_BREAK|(if ext{KEY_E0}else{0}),..Default::default()};n+=1;} } }
+ for &u in keys { if u!=0&&!state.previous_keys.contains(&u) { if let Some((scan,ext))=usage_to_set1(u){if n>=out.len(){return Err(HidError::OutputFull)}out[n]=KeyboardInputData{make_code:scan,flags:if ext{KEY_E0}else{0},..Default::default()};n+=1;} } }
+ state.previous_keys=[keys[0],keys[1],keys[2],keys[3],keys[4],keys[5]]; state.previous_modifiers=modifiers;
  Ok(n)
 }
 const fn modifier_scan(u:u8)->(u16,bool){match u{0xe0=>(0x1d,false),0xe1=>(0x2a,false),0xe2=>(0x38,false),0xe3=>(0x5b,true),0xe4=>(0x1d,true),0xe5=>(0x36,false),0xe6=>(0x38,true),_=>(0x5c,true)}}
 
-#[cfg(test)] mod tests { use super::*; #[test] fn maps_and_diffs_boot_reports(){let mut prev=[0;6];let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=0x04;assert_eq!(decode_boot_report(&r,&mut prev,&mut out),Ok(1));assert_eq!(out[0].make_code,0x1e);r[2]=0;assert_eq!(decode_boot_report(&r,&mut prev,&mut out),Ok(1));assert_ne!(out[0].flags&KEY_BREAK,0);} #[test] fn rollover_does_not_release_keys(){let mut prev=[4,0,0,0,0,0];let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=1;assert_eq!(decode_boot_report(&r,&mut prev,&mut out),Err(HidError::ErrorRollOver));assert_eq!(prev[0],4);} }
+#[cfg(test)] mod tests { use super::*; #[test] fn maps_and_diffs_boot_reports(){let mut state=KeyboardState::new();let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=0x04;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_eq!(out[0].make_code,0x1e);r[2]=0;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_ne!(out[0].flags&KEY_BREAK,0);} #[test] fn rollover_does_not_release_keys(){let mut state=KeyboardState{previous_keys:[4,0,0,0,0,0],previous_modifiers:0};let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=1;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Err(HidError::ErrorRollOver));assert_eq!(state.previous_keys[0],4);} }
