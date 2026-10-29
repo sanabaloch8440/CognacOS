@@ -616,21 +616,21 @@ unsafe extern "C" fn service_allocate_dma(
     cpu_out:*mut u64,device_out:*mut u64,
 )->DriverHalStatus {
     if device_object==0 || size==0 || size>u32::MAX as u64 || alignment==0
-        || !alignment.is_power_of_two() || alignment>dma::PAGE_SIZE || maximum_address==0
+        || !alignment.is_power_of_two() || alignment>crate::dma::PAGE_SIZE || maximum_address==0
         || flags & 3 != 3 || flags & !7 != 0 || cpu_out.is_null() || device_out.is_null() {
         return driver_hal_invalid();
     }
-    if !dma::iommu::available() { return driver_hal_unsupported(); }
+    if !crate::dma::iommu::available() { return driver_hal_unsupported(); }
     let object=device_object as *mut core::ffi::c_void;
-    let adapter=dma::create_device_adapter(object,3,maximum_address);
+    let adapter=crate::dma::create_device_adapter(object,3,maximum_address);
     if adapter.is_null() { return driver_hal_unsupported(); }
-    match unsafe { dma::iommu_allocate_common(adapter,size as usize,maximum_address) } {
+    match unsafe { crate::dma::iommu_allocate_common(adapter,size as usize,maximum_address) } {
         Ok((cpu,logical)) if !cpu.is_null() && logical!=0 && (cpu as u64)%alignment==0 => {
             unsafe { cpu_out.write(cpu as u64); device_out.write(logical); }
             driver_hal_success()
         }
         Ok((cpu,logical)) => {
-            let _=unsafe { dma::free_common_buffer_for_adapter(adapter,cpu,logical,size as usize) };
+            let _=unsafe { crate::dma::free_common_buffer_for_adapter(adapter,cpu,logical,size as usize) };
             driver_hal_invalid()
         }
         Err(_) => driver_hal_unsupported(),
@@ -640,9 +640,9 @@ unsafe extern "C" fn service_free_dma(device_object:u64,cpu:u64,device_address:u
     if device_object==0 || cpu==0 || device_address==0 || size==0 || size>usize::MAX as u64 {
         return driver_hal_invalid();
     }
-    let adapter=dma::create_device_adapter(device_object as *mut core::ffi::c_void,3,u64::MAX);
+    let adapter=crate::dma::create_device_adapter(device_object as *mut core::ffi::c_void,3,u64::MAX);
     if adapter.is_null() { return driver_hal_unsupported(); }
-    match unsafe { dma::free_common_buffer_for_adapter(adapter,cpu as *mut u8,device_address,size as usize) } {
+    match unsafe { crate::dma::free_common_buffer_for_adapter(adapter,cpu as *mut u8,device_address,size as usize) } {
         Ok(())=>driver_hal_success(),
         Err(_)=>driver_hal_unsupported(),
     }
@@ -652,7 +652,7 @@ unsafe extern "C" fn service_free_dma(device_object:u64,cpu:u64,device_address:u
 /// until the kernel has a routed device vector and a safe deferred-DPC queue;
 /// consumers must not start an interrupt-driven controller without those services.
 pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable {
-    let dma_ready=dma::iommu::available();
+    let dma_ready=crate::dma::iommu::available();
     cognacos_hal_contract::DeviceServiceTable {
         size:core::mem::size_of::<cognacos_hal_contract::DeviceServiceTable>() as u32,
         version:cognacos_hal_contract::DEVICE_SERVICES_VERSION,
