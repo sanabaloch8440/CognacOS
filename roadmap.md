@@ -118,7 +118,7 @@ Recent work extends the MDL/physical allocator path with:
 - Runtime coverage exercises the protection transitions and the MDL mapping/free lifecycle.
 
 Still intentionally incomplete:
-- SRAT memory affinity now feeds node-owned physical ranges, and processor-local APIC/x2APIC affinity records are parsed for KeGetCurrentNodeNumber. The API still uses a conservative node-0 fallback when firmware omits a CPU affinity; validate on multi-node firmware and add ideal-node thread policy before claiming full NUMA semantics.
+- SRAT memory affinity now feeds node-owned physical ranges; processor-local APIC/x2APIC affinity records back KeGetCurrentNodeNumber; and the generic MDL allocator routes MM_ALLOCATE_FROM_LOCAL_NODE_ONLY through the current node. The API still uses a conservative node-0 fallback when firmware omits a CPU affinity; validate on multi-node firmware and add scheduler-maintained ideal-node thread policy before claiming full NUMA semantics.
 - Non-cached and write-combined mappings remain unsupported until PAT/MTRR-aware cache-type policy is tracked consistently across every alias (identity map, direct map, and MDL system mapping). Applying cache bits to only one alias would be unsafe.
 - MM_ALLOCATE_NO_WAIT remains unsupported rather than risking a blocking pool/registry lock. The physical allocator has a try-lock path, but that alone is not sufficient to satisfy Windows' nonblocking contract.
 - This is incremental NT ABI compatibility, not a claim of complete Windows 11 memory-manager parity.
