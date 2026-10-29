@@ -337,9 +337,9 @@ mod controller_init_tests{
  #[test]fn bounded_controller_reset_and_start_programs_registers(){
   let mut io=FakeMmio::new();assert_eq!(initialize_controller(&mut io,&caps(),dma(),true,8),Ok(()));
   assert_eq!(io.regs[0x40/4]&USBCMD_RUN,USBCMD_RUN);
-  assert_eq!(io.regs[0x18/4],0x11001);
-  assert_eq!(io.regs[0x30/4],0x10000);
-  assert_eq!(io.regs[0x38/4],8);
+  assert_eq!(io.regs[(0x40+0x18)/4],0x11001);
+  assert_eq!(io.regs[(0x40+0x30)/4],0x10000);
+  assert_eq!(io.regs[(0x40+0x38)/4],8);
   assert_eq!(io.regs[(0x200+0x28)/4],1);
   assert_eq!(io.regs[(0x200+0x30)/4],0x12000);
   assert_eq!(io.regs[(0x200+0x38)/4],0x13000);
