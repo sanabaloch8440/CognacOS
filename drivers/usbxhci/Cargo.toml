@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-2.0-or-later"
 [dependencies]
 cognacos-nt-abi = { path = "../../shared/nt-abi" }
-cognacos-hal = { path = "../hal" }
+cognacos-hal-contract = { path = "../hal" }
 [lib]
 path = "src/lib.rs"
 [[bin]]
