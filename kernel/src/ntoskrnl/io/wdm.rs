@@ -2426,6 +2426,19 @@ mod wdm_tests {
   unsafe{io_delete_device(device);}
  }
  #[test]
+ fn power_capabilities_are_registered_and_cleaned_with_pnp_removal() {
+  let mut driver:DriverObject=unsafe{core::mem::zeroed()};
+  let mut device:*mut DeviceObject=ptr::null_mut();
+  assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut device)},STATUS_SUCCESS);
+  assert!(crate::ntoskrnl::po::device_power::supports_wdm_state(device,1));
+  assert_eq!(crate::ntoskrnl::po::device_power::register(device,1|2|8,false),STATUS_SUCCESS);
+  assert!(crate::ntoskrnl::po::device_power::supports_wdm_state(device,2));
+  assert_eq!(unsafe{io_begin_pnp_transition(device,0x02)},STATUS_SUCCESS);
+  assert_eq!(unsafe{io_complete_pnp_transition(device,0x02,STATUS_SUCCESS)},STATUS_SUCCESS);
+  assert!(!crate::ntoskrnl::po::device_power::supports_wdm_state(device,2));
+  unsafe{io_delete_device(device);}
+ }
+ #[test]
  fn removal_waits_for_remove_lock_and_reference_rundown() {
   let mut driver:DriverObject=unsafe{core::mem::zeroed()};let mut d:*mut DeviceObject=ptr::null_mut();
   assert_eq!(unsafe{io_create_device(&mut driver,0,ptr::null_mut(),7,0,0,&mut d)},STATUS_SUCCESS);
