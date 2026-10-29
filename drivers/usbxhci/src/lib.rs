@@ -557,3 +557,122 @@ pub fn stop_controller<P: XhciPlatform>(
     platform.free_dma(resources.dcbaa);
     Ok(())
 }
+
+/// Flags for the HAL DMA allocator. A successful allocation must provide a
+/// CPU mapping and a device-visible address for the same pinned contiguous
+/// range; COHERENT means CPU/device cache visibility is handled by the HAL.
+pub const HAL_DMA_CONTIGUOUS: u32 = 1 << 0;
+pub const HAL_DMA_COHERENT: u32 = 1 << 1;
+pub const HAL_DMA_ZEROED: u32 = 1 << 2;
+
+/// Adapter from the versioned CognacOS HAL service table to the xHCI core.
+/// It does not invent physical addresses or implement DMA/interrupts itself.
+pub struct HalBackedXhciPlatform {
+    services: *const cognacos_hal_contract::DeviceServiceTable,
+    mmio_base: u64,
+    mmio_length: u64,
+    interrupt_vector: u32,
+    interrupt_context: u64,
+    isr: Option<cognacos_hal_contract::InterruptIsr>,
+    dpc: Option<cognacos_hal_contract::InterruptDpc>,
+    registered: bool,
+}
+impl HalBackedXhciPlatform {
+    /// # Safety
+    /// services must remain readable and immutable for this adapter's lifetime.
+    /// mmio_base must be a valid kernel virtual mapping of the assigned xHCI BAR
+    /// with device memory attributes. Callback functions and context must remain valid.
+    pub unsafe fn new(
+        services: *const cognacos_hal_contract::DeviceServiceTable,
+        mmio_base: u64, mmio_length: u64, interrupt_vector: u32,
+        interrupt_context: u64,
+        isr: Option<cognacos_hal_contract::InterruptIsr>,
+        dpc: Option<cognacos_hal_contract::InterruptDpc>,
+    ) -> Result<Self, ()> {
+        if services.is_null() || mmio_base == 0 || mmio_length < 0x1000
+            || mmio_base.checked_add(mmio_length).is_none()
+            || interrupt_vector == 0 || isr.is_none() { return Err(()); }
+        // SAFETY: caller guarantees the table pointer is readable.
+        let table = unsafe { &*services };
+        if !table.compatible() || !table.has_dma() || !table.has_interrupts() { return Err(()); }
+        Ok(Self { services, mmio_base, mmio_length, interrupt_vector,
+            interrupt_context, isr, dpc, registered: false })
+    }
+    fn table(&self) -> &cognacos_hal_contract::DeviceServiceTable {
+        // SAFETY: upheld by constructor contract.
+        unsafe { &*self.services }
+    }
+}
+impl XhciRegisterIo for HalBackedXhciPlatform {
+    fn read32(&mut self, offset: u32) -> Result<u32, ()> {
+        if offset & 3 != 0 || (offset as u64).checked_add(4).filter(|end| *end <= self.mmio_length).is_none() { return Err(()); }
+        let address = self.mmio_base.checked_add(offset as u64).ok_or(())?;
+        // SAFETY: constructor guarantees a mapped MMIO span; offset is checked/aligned.
+        Ok(unsafe { core::ptr::read_volatile(address as *const u32) })
+    }
+    fn write32(&mut self, offset: u32, value: u32) -> Result<(), ()> {
+        if offset & 3 != 0 || (offset as u64).checked_add(4).filter(|end| *end <= self.mmio_length).is_none() { return Err(()); }
+        let address = self.mmio_base.checked_add(offset as u64).ok_or(())?;
+        // SAFETY: constructor guarantees a mapped MMIO span; offset is checked/aligned.
+        unsafe { core::ptr::write_volatile(address as *mut u32, value); }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+}
+impl XhciPlatform for HalBackedXhciPlatform {
+    fn allocate_dma(&mut self, size: u64, alignment: u64, max_device_address: u64) -> Result<DmaAllocation, ()> {
+        if size == 0 || alignment < 16 || !alignment.is_power_of_two() { return Err(()); }
+        let allocate = self.table().allocate_dma.ok_or(())?;
+        let mut cpu = 0u64; let mut device = 0u64;
+        let status = unsafe { allocate(size, alignment, max_device_address,
+            HAL_DMA_CONTIGUOUS | HAL_DMA_COHERENT | HAL_DMA_ZEROED, &mut cpu, &mut device) };
+        if status.code != 0 { return Err(()); }
+        Ok(DmaAllocation { cpu_address: cpu, device_address: device, size })
+    }
+    fn free_dma(&mut self, allocation: DmaAllocation) {
+        if let Some(free) = self.table().free_dma {
+            let _ = unsafe { free(allocation.cpu_address, allocation.device_address, allocation.size) };
+        }
+    }
+    fn register_interrupt(&mut self) -> Result<(), ()> {
+        if self.registered { return Err(()); }
+        let register = self.table().register_interrupt.ok_or(())?;
+        let status = unsafe { register(self.interrupt_vector, self.interrupt_context, self.isr, self.dpc) };
+        if status.code != 0 { return Err(()); }
+        self.registered = true;
+        Ok(())
+    }
+    fn unregister_interrupt(&mut self) {
+        if self.registered {
+            if let Some(unregister) = self.table().unregister_interrupt {
+                let _ = unsafe { unregister(self.interrupt_vector, self.interrupt_context) };
+            }
+            self.registered = false;
+        }
+    }
+    fn set_interrupt_enabled(&mut self, enabled: bool) -> Result<(), ()> {
+        if !self.registered { return Err(()); }
+        let set = self.table().set_interrupt_enabled.ok_or(())?;
+        let status = unsafe { set(self.interrupt_vector, enabled) };
+        if status.code == 0 { Ok(()) } else { Err(()) }
+    }
+}
+#[cfg(test)]
+mod hal_adapter_tests {
+    use super::*;
+    #[test]
+    fn rejects_invalid_mmio_accesses_without_touching_hardware() {
+        let mut words = [0u32; 4];
+        let mut platform = HalBackedXhciPlatform {
+            services: core::ptr::null(), mmio_base: words.as_mut_ptr() as u64,
+            mmio_length: core::mem::size_of_val(&words) as u64, interrupt_vector: 1,
+            interrupt_context: 0, isr: None, dpc: None, registered: false,
+        };
+        assert_eq!(platform.read32(1), Err(()));
+        assert_eq!(platform.read32(16), Err(()));
+        assert_eq!(platform.write32(2, 1), Err(()));
+        assert_eq!(platform.read32(0), Ok(0));
+        assert_eq!(platform.write32(4, 0x1234), Ok(()));
+        assert_eq!(words[1], 0x1234);
+    }
+}
