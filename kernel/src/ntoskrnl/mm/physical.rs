@@ -654,6 +654,68 @@ pub unsafe fn try_allocate_pages_in_range(
     if count == 0 { Err(AllocError::OutOfMemory) } else { Ok(count) }
 }
 
+/// Allocate zeroed pages only from firmware ranges explicitly assigned to
+/// one NUMA proximity domain. This deliberately searches the returned-page
+/// lists only: bump regions are not split by SRAT ownership yet, so consuming
+/// from them here could silently discard pages belonging to other nodes.
+pub unsafe fn try_allocate_pages_in_node_range(
+    output: &mut [u64], node: u32, low: u64, high: u64, require_all: bool,
+) -> Result<usize, AllocError> {
+    if low > high || !crate::ntoskrnl::mm::topology::is_ready() {
+        return Err(AllocError::InvalidPage);
+    }
+    let _guard = MemoryGuard::try_acquire().ok_or(AllocError::Busy)?;
+    let low_free = unsafe { &mut *FREE_PAGES.0.get() };
+    let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
+    let mut count = 0usize;
+    while count < output.len() {
+        let find = |pages: &mut ([u64; FREE_CAPACITY], usize)| -> Option<u64> {
+            let mut i = 0;
+            while i < pages.1 {
+                let page = pages.0[i];
+                let in_bounds = page >= low
+                    && page.checked_add(PAGE_SIZE - 1).is_some_and(|end| end <= high);
+                let on_node = crate::ntoskrnl::mm::topology::node_for_range(page, PAGE_SIZE) == Some(node);
+                if in_bounds && on_node {
+                    pages.1 -= 1;
+                    pages.0[i] = pages.0[pages.1];
+                    return Some(page);
+                }
+                i += 1;
+            }
+            None
+        };
+        let page = match find(&mut *low_free) {
+            Some(page) => Some(page),
+            None => find(&mut *high_free),
+        };
+        let Some(page) = page else { break; };
+        output[count] = page;
+        count += 1;
+    }
+
+    let map_valid = output[..count].iter().all(|page| {
+        *page < PHYSICAL_LIMIT || direct_map_address(*page).is_some()
+    });
+    if (require_all && count != output.len()) || !map_valid {
+        for &page in &output[..count] {
+            let pages = if page >= PHYSICAL_LIMIT { &mut *high_free } else { &mut *low_free };
+            if pages.1 < FREE_CAPACITY {
+                pages.0[pages.1] = page;
+                pages.1 += 1;
+            }
+        }
+        return Err(if map_valid { AllocError::OutOfMemory } else { AllocError::InvalidMap });
+    }
+    for &page in &output[..count] {
+        let pointer = if page >= PHYSICAL_LIMIT {
+            direct_map_address(page).ok_or(AllocError::InvalidMap)? as *mut u8
+        } else { page as *mut u8 };
+        unsafe { ptr::write_bytes(pointer, 0, PAGE_SIZE as usize); }
+    }
+    if count == 0 { Err(AllocError::OutOfMemory) } else { Ok(count) }
+}
+
 /// Allocate one zeroed physical page. The early kernel uses identity mappings,
 /// so the returned physical address is also directly writable as a pointer.
 pub unsafe fn allocate_page() -> Result<u64, AllocError> {
