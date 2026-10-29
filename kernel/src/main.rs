@@ -209,8 +209,7 @@ fn poll_ps2_keyboard_input(){
  use core::sync::atomic::Ordering;
  if PS2_IRQ_ACTIVE.load(Ordering::Acquire) {
   let count=PS2_IRQ_COUNT.load(Ordering::Acquire);
-  if count!=0 && PS2_IRQ_DIAGNOSTIC_COUNT.load(Ordering::Relaxed)!=count {
-   PS2_IRQ_DIAGNOSTIC_COUNT.store(count,Ordering::Relaxed);
+  if count!=0 && PS2_IRQ_DIAGNOSTIC_COUNT.compare_exchange(0,count,Ordering::AcqRel,Ordering::Relaxed).is_ok() {
    serial_write(b"PS/2 IRQ delivered: count=");serial_write_decimal(count as usize);
    serial_write(b"; keyboard bytes drained by ISR; APIC EOI handled by HAL dispatcher.\\r\\n");
   }
