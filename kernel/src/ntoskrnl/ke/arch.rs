@@ -2046,6 +2046,17 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
     cognacos_exception_fatal(vector, error, frame)
 }
 
+/// Validate that a vector already has a present 64-bit kernel interrupt gate in the installed IDT.
+pub fn device_interrupt_vector_ready(vector: u8) -> bool {
+    if vector < 0x20 || vector > 0xdf { return false; }
+    let entry = unsafe { core::ptr::addr_of!(IDT).cast::<IdtEntry>().add(vector as usize).read() };
+    let offset = (entry.offset_low as u64)
+        | ((entry.offset_middle as u64) << 16)
+        | ((entry.offset_high as u64) << 32);
+    offset != 0 && entry.selector == KERNEL_CODE_SELECTOR
+        && (entry.attributes & 0x8f) == 0x8e
+}
+
 /// Install a DPL3 interrupt gate for a controlled user-to-kernel entry point.
 /// External interrupts remain disabled; this is intended for software interrupts/syscalls.
 pub unsafe fn install_user_gate(vector: usize, handler: u64) {
