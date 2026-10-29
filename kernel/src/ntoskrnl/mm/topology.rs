@@ -84,6 +84,20 @@ pub fn memory_node_count() -> usize {
 
 /// Returns a node only when the complete range has one explicit SRAT owner.
 pub fn node_for_range(start:u64,length:u64)->Option<u32>{if !is_ready()||length==0{return None}let end=start.checked_add(length)?;let s=unsafe{&*TOPOLOGY.0.get()};let mut found=None;for r in s.0.iter().take(s.1){if start>=r.start&&end<=r.end{if found.is_some(){return None}found=Some(r.node)}}found}
+/// Copy validated SRAT memory ranges assigned to a node into caller storage.
+/// This lets the physical allocator intersect firmware-owned free extents with
+/// node ownership without scanning unrelated RAM page by page.
+pub fn memory_ranges_for_node(node:u32, output:&mut [(u64,u64)]) -> usize {
+ if !is_ready() { return 0; }
+ let s=unsafe{&*TOPOLOGY.0.get()};
+ let mut count=0usize;
+ for range in s.0.iter().take(s.1).filter(|range|range.node==node) {
+  if count==output.len() { break; }
+  output[count]=(range.start,range.end-range.start);
+  count+=1;
+ }
+ count
+}
 pub fn distance(from:u32,to:u32)->Option<u8>{let s=unsafe{&*TOPOLOGY.0.get()};if from as usize>=s.3||to as usize>=s.3{return None}Some(s.2[from as usize][to as usize])}
 #[cfg(test)]
 mod tests {
