@@ -100,6 +100,81 @@ pub fn initialize(root: u64) -> Result<(), Error> {
 }
 pub fn is_initialized()->bool { ROOT.load(Ordering::Acquire)!=0 }
 
+/// Dedicated uncached device-MMIO aperture. These virtual pages are separate
+/// from the pageable pool and never own/free the physical frames they map.
+const IO_BASE: u64 = BASE + (PAGES as u64 * PAGE);
+const IO_PAGES: usize = 16384; // 64 MiB of BAR/firmware MMIO windows.
+const IO_WORDS: usize = IO_PAGES / 64;
+struct IoBits(core::cell::UnsafeCell<[u64; IO_WORDS]>);
+unsafe impl Sync for IoBits {}
+static IO_BITS: IoBits = IoBits(core::cell::UnsafeCell::new([0; IO_WORDS]));
+
+/// Map a physical device aperture as supervisor RW, NX, PCD+PWT (uncached).
+/// Physical RAM is rejected: this API is only for firmware/PCI MMIO resources.
+/// The returned address includes the original byte offset within the first page.
+pub fn map_io_space(physical: u64, length: u64) -> Result<u64, Error> {
+ if !is_initialized() || length == 0 { return Err(Error::NotInitialized); }
+ let page_base = physical & !(PAGE - 1);
+ let offset = physical - page_base;
+ let span = offset.checked_add(length).ok_or(Error::Invalid)?;
+ let pages_u64 = span.checked_add(PAGE - 1).ok_or(Error::Invalid)? / PAGE;
+ let pages = usize::try_from(pages_u64).map_err(|_| Error::Invalid)?;
+ if pages == 0 || pages > IO_PAGES { return Err(Error::Invalid); }
+ for n in 0..pages {
+  if crate::memory::is_ram_physical_address(page_base + n as u64 * PAGE) {
+   return Err(Error::Invalid);
+  }
+ }
+ let _g = Guard::lock();
+ let root = ROOT.load(Ordering::Acquire);
+ let bits = unsafe { &mut *IO_BITS.0.get() };
+ let mut start = None;
+ let mut i = 0usize;
+ while i + pages <= IO_PAGES {
+  if (i..i+pages).all(|p| bits[p/64] & (1u64 << (p%64)) == 0) { start=Some(i); break; }
+  i += 1;
+ }
+ let start = start.ok_or(Error::NoVirtualSpace)?;
+ for n in start..start+pages { bits[n/64] |= 1u64 << (n%64); }
+ let va = IO_BASE + start as u64 * PAGE;
+ let mut done = 0usize;
+ while done < pages {
+  let pa = match page_base.checked_add(done as u64 * PAGE) { Some(v)=>v, None=>break };
+  if unsafe { map_with_flags(root, va + done as u64 * PAGE, pa, W | NX | (1<<3) | (1<<4)) }.is_err() { break; }
+  done += 1;
+ }
+ if done != pages {
+  for n in 0..done { let _ = unsafe { unmap(root, va + n as u64 * PAGE) }; }
+  for n in start..start+pages { bits[n/64] &= !(1u64 << (n%64)); }
+  return Err(Error::NoVirtualSpace);
+ }
+ synchronize_kernel_tlb();
+ va.checked_add(offset).ok_or(Error::Invalid)
+}
+
+/// Unmap a range returned by map_io_space. It never frees the BAR's physical
+/// frames. TLB invalidation completes before the virtual slots are reused.
+pub fn unmap_io_space(address: u64, length: u64) -> Result<(), Error> {
+ if length == 0 || address < IO_BASE { return Err(Error::Invalid); }
+ let offset = address & (PAGE-1);
+ let base = address - offset;
+ let span = offset.checked_add(length).ok_or(Error::Invalid)?;
+ let pages = usize::try_from(span.checked_add(PAGE-1).ok_or(Error::Invalid)? / PAGE).map_err(|_| Error::Invalid)?;
+ let start = usize::try_from((base-IO_BASE)/PAGE).map_err(|_| Error::Invalid)?;
+ if pages == 0 || start.checked_add(pages).filter(|end| *end<=IO_PAGES).is_none() { return Err(Error::Invalid); }
+ let _g = Guard::lock();
+ let bits = unsafe { &mut *IO_BITS.0.get() };
+ if !(start..start+pages).all(|p| bits[p/64] & (1u64 << (p%64)) != 0) { return Err(Error::NotMapped); }
+ let root=ROOT.load(Ordering::Acquire);
+ for n in start..start+pages {
+  unsafe { unmap(root, IO_BASE+n as u64*PAGE).map_err(|_|Error::NotMapped)?; }
+ }
+ synchronize_kernel_tlb();
+ for n in start..start+pages { bits[n/64] &= !(1u64 << (n%64)); }
+ Ok(())
+}
+
+
 fn flush_and_ack(logical_id: usize) {
  if logical_id >= crate::hal::MAX_CPUS { return; }
  let generation = TLB_GENERATION.load(Ordering::Acquire);
