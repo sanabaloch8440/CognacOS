@@ -2,7 +2,7 @@
 //! This is a portable layout engine, not yet the Windows KBDTABLES/KbdLayerDescriptor ABI.
 #![no_std]
 #[cfg(test)] extern crate std;
-use cognacos_kbdclass::{KeyboardInputData, KEY_BREAK, KEY_E0, KEY_E1};
+use cognacos_kbdclass::{KeyboardInputData, KEY_BREAK, KEY_E0};
 
 pub const VK_BACK:u16=0x08;
 pub const VK_TAB:u16=0x09;
@@ -55,9 +55,14 @@ pub const fn scan_to_vk(scan:u16,extended:bool)->Option<u16>{
   0x4b=>Some(VK_NUMPAD0+4),0x4c=>Some(VK_NUMPAD0+5),0x4d=>Some(VK_NUMPAD0+6),
   0x4f=>Some(VK_NUMPAD0+1),0x50=>Some(VK_NUMPAD0+2),0x51=>Some(VK_NUMPAD0+3),
   0x52=>Some(VK_NUMPAD0),0x53=>Some(0x6e),
-  0x10..=0x19=>Some((b'Q' as u16)+(scan-0x10)),
-  0x1e..=0x26=>Some((b'A' as u16)+(scan-0x1e)),
-  0x2c..=0x32=>Some((b'Z' as u16)+(scan-0x2c)),
+  0x10=>Some(b'Q' as u16),0x11=>Some(b'W' as u16),0x12=>Some(b'E' as u16),
+  0x13=>Some(b'R' as u16),0x14=>Some(b'T' as u16),0x15=>Some(b'Y' as u16),
+  0x16=>Some(b'U' as u16),0x17=>Some(b'I' as u16),0x18=>Some(b'O' as u16),0x19=>Some(b'P' as u16),
+  0x1e=>Some(b'A' as u16),0x1f=>Some(b'S' as u16),0x20=>Some(b'D' as u16),
+  0x21=>Some(b'F' as u16),0x22=>Some(b'G' as u16),0x23=>Some(b'H' as u16),
+  0x24=>Some(b'J' as u16),0x25=>Some(b'K' as u16),0x26=>Some(b'L' as u16),
+  0x2c=>Some(b'Z' as u16),0x2d=>Some(b'X' as u16),0x2e=>Some(b'C' as u16),
+  0x2f=>Some(b'V' as u16),0x30=>Some(b'B' as u16),0x31=>Some(b'N' as u16),0x32=>Some(b'M' as u16),
   0x02..=0x0a=>Some((b'1' as u16)+(scan-0x02)),0x0b=>Some(b'0' as u16),
   0x0c=>Some(0xbd),0x0d=>Some(0xbb),0x1a=>Some(0xdb),0x1b=>Some(0xdd),
   0x27=>Some(0xba),0x28=>Some(0xde),0x29=>Some(0xc0),0x2b=>Some(0xdc),
