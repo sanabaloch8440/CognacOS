@@ -125,10 +125,20 @@ fn probe_xhci_pci_function()->bool {
                 }
                 found+=1;
                 if published||bar_base==0||bar_size==0 {continue}
-                let bar_virtual=match kernel_vm::map_io_space(bar_base,bar_size) {
-                    Ok(address)=>address,
-                    Err(_)=>{unsafe{serial_write(b"xHCI PnP: BAR mapping rejected; controller remains unbound.\r\n");}continue}
-                };
+                let extended_hal=hal::driver_extended_service_table();
+                if !extended_hal.compatible() { continue; }
+                let Some(map_io)=extended_hal.map_device_io_space else { continue; };
+                let mut mapped_address=0u64;
+                let map_status=unsafe{map_io(bar_base,bar_size,
+                    cognacos_hal_contract::HAL_MEMORY_DEVICE
+                        | cognacos_hal_contract::HAL_MEMORY_UNCACHED
+                        | cognacos_hal_contract::HAL_MEMORY_READ_WRITE,
+                    &mut mapped_address)};
+                if map_status.code!=cognacos_hal_contract::HalStatus::SUCCESS.code || mapped_address==0 {
+                    unsafe{serial_write(b"xHCI PnP: HAL rejected BAR mapping; controller remains unbound.\r\n");}
+                    continue;
+                }
+                let bar_virtual=mapped_address;
                 let irq=unsafe{pci_config_read32(bus as u8,device,function,0x3c)};
                 match ntoskrnl::pnp::publish_xhci(bus as u8,device,function,vendor,(id>>16) as u16,
                     irq as u8,(irq>>8) as u8,bar_base,bar_size,bar_virtual) {
@@ -142,7 +152,11 @@ fn probe_xhci_pci_function()->bool {
                             serial_write(b"; DMA/IRQ not ready, bus mastering remains gated.\r\n");
                         }
                     }
-                    Err(_)=>{let _=kernel_vm::unmap_io_space(bar_virtual,bar_size);}
+                    Err(_)=>{
+                        if let Some(unmap_io)=extended_hal.unmap_device_io_space {
+                            let _=unsafe{unmap_io(bar_virtual,bar_size)};
+                        }
+                    }
                 }
             }
         }
