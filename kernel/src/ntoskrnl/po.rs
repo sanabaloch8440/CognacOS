@@ -101,3 +101,8 @@ pub(crate) mod hibernate;
 
 #[path = "po/runtime.rs"]
 pub(crate) mod runtime;
+
+
+/// Per-device D-state/wake capabilities; this is policy metadata, not a hardware switch.
+#[path = "po/device_power.rs"]
+pub(crate) mod device_power;
