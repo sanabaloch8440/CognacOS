@@ -724,7 +724,10 @@ pub unsafe fn allocate_pages_in_node_range(
     if owned_count == 0 { return Err(AllocError::OutOfMemory); }
     let mut allocated = 0usize;
     while allocated < output.len() {
-        let Some(_guard) = MemoryGuard::try_acquire() else { break; };
+        // This is the blocking NT allocation path; transient lock contention is
+        // not out-of-memory. MM_ALLOCATE_NO_WAIT is rejected by the caller until
+        // its entire pool/registry/rollback path can be made nonblocking.
+        let _guard = MemoryGuard::acquire();
         let low_free = unsafe { &mut *FREE_PAGES.0.get() };
         let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         let mut found = None;
