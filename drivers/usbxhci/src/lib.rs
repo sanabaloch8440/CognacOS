@@ -753,7 +753,7 @@ impl XhciPlatform for HalBackedXhciPlatform {
         let allocate = self.table().allocate_dma.ok_or(())?;
         let mut cpu = 0u64; let mut device = 0u64;
         let status = unsafe { allocate(self.device_object, size, alignment, max_device_address,
-            0, &mut cpu, &mut device) };
+            HAL_DMA_CONTIGUOUS | HAL_DMA_COHERENT | HAL_DMA_ZEROED, &mut cpu, &mut device) };
         if status.code != 0 { return Err(()); }
         Ok(DmaAllocation { cpu_address: cpu, device_address: device, size })
     }
