@@ -330,6 +330,10 @@ pub fn validate_mmio_range(base: u64, length: u64, physical_limit: u64) -> Resul
 /// Pure validation checks safe to run before interrupt controllers are enabled.
 pub fn self_test() -> bool {
     validate_mmio_range(0xfee0_0000, 0x1000, 0x1_0000_0000).is_ok()
+        && validate_mmio_access(0x10, 4, 0x1000).is_ok()
+        && validate_mmio_access(0x11, 4, 0x1000) == Err(HalError::InvalidMmioRange)
+        && validate_mmio_access(0xfff, 4, 0x1000) == Err(HalError::InvalidMmioRange)
+        && validate_mmio_access(0, 3, 0x1000) == Err(HalError::InvalidMmioRange)
         && validate_mmio_range(0xfee0_0001, 0x1000, 0x1_0000_0000) == Err(HalError::InvalidMmioRange)
         && validate_mmio_range(u64::MAX - 0xfff, 0x2000, u64::MAX) == Err(HalError::InvalidMmioRange)
         && CPU_LOCALS[0].logical_id.load(Ordering::Relaxed) == 0
@@ -489,4 +493,46 @@ pub unsafe fn write_mmio_u32(address: *mut u32, value: u32) {
     core::sync::atomic::compiler_fence(Ordering::SeqCst);
     unsafe { core::ptr::write_volatile(address, value); }
     core::sync::atomic::compiler_fence(Ordering::SeqCst);
+}
+
+
+/// Validate one register access against an already mapped device aperture.
+/// The span is the mapping length, not a guessed physical address range.
+pub fn validate_mmio_access(offset: u64, width: u64, mapping_length: u64) -> Result<(), HalError> {
+    if !matches!(width, 1 | 2 | 4 | 8) || offset % width != 0
+        || offset.checked_add(width).filter(|end| *end <= mapping_length).is_none() {
+        return Err(HalError::InvalidMmioRange);
+    }
+    Ok(())
+}
+
+/// Device-ordering barriers for register/data-structure handoff. These do not
+/// replace cache maintenance for non-coherent DMA or a correctly typed mapping.
+#[inline]
+pub fn device_read_barrier() { core::sync::atomic::fence(Ordering::Acquire); }
+#[inline]
+pub fn device_write_barrier() { core::sync::atomic::fence(Ordering::Release); }
+#[inline]
+pub fn device_full_barrier() { core::sync::atomic::fence(Ordering::SeqCst); }
+
+/// Bounds-checked 32-bit register access for a previously mapped MMIO aperture.
+#[inline]
+pub unsafe fn read_mmio_u32_checked(base: *const u8, mapping_length: u64, offset: u64) -> Result<u32, HalError> {
+    validate_mmio_access(offset, 4, mapping_length)?;
+    let address = (base as u64).checked_add(offset).ok_or(HalError::InvalidMmioRange)?;
+    device_read_barrier();
+    // SAFETY: caller guarantees base describes a live mapping of mapping_length bytes.
+    let value = unsafe { read_mmio_u32(address as *const u32) };
+    device_read_barrier();
+    Ok(value)
+}
+#[inline]
+pub unsafe fn write_mmio_u32_checked(base: *mut u8, mapping_length: u64, offset: u64, value: u32) -> Result<(), HalError> {
+    validate_mmio_access(offset, 4, mapping_length)?;
+    let address = (base as u64).checked_add(offset).ok_or(HalError::InvalidMmioRange)?;
+    device_write_barrier();
+    // SAFETY: caller guarantees base describes a live writable mapping of mapping_length bytes.
+    unsafe { write_mmio_u32(address as *mut u32, value); }
+    device_full_barrier();
+    Ok(())
 }
