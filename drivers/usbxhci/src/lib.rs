@@ -863,6 +863,9 @@ impl<const N: usize> CommandCompletionTracker<N> {
             slot_id: event.slot_id(),
         })
     }
+    pub fn cancel(&mut self, command_trb_dma: u64) -> bool {
+        if let Some(slot) = self.pending.iter_mut().find(|slot| slot.is_some_and(|p| p.command_trb_dma == command_trb_dma)) { *slot = None; true } else { false }
+    }
     pub fn pending_count(&self) -> usize { self.entries.iter().filter(|e| e.is_some()).count() }
 }
 impl<const N: usize> Default for CommandCompletionTracker<N> {
@@ -928,4 +931,37 @@ mod command_completion_tests {
         assert_eq!(configure_endpoint_command(0x2000,4).unwrap().slot_id(),4);
         assert_eq!(enable_slot_command().trb_type(),TRB_TYPE_ENABLE_SLOT as u8);
     }
+}
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerEvent { CommandCompleted(CommandCompletion), TransferEvent(Trb), PortStatusChanged(Trb), Other(Trb) }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerEventError { Completion(CompletionTrackError) }
+
+/// Install completion tracking before the doorbell can make a command visible.
+pub fn submit_tracked_command<I: XhciRegisterIo, const N: usize>(
+ io: &mut I, caps: &Capabilities, ring_cpu: u64, ring_dma: u64, entry_count: u16,
+ cursor: &mut CommandRingCursor, tracker: &mut CommandCompletionTracker<N>,
+ kind: CommandKind, command: Trb,
+) -> Result<u64, CommandSubmitError> {
+ if entry_count < 4 || !entry_count.is_power_of_two() || cursor.enqueue_index >= entry_count - 1 || ring_dma == 0 || ring_dma & 0x3f != 0 {
+  return Err(CommandSubmitError::InvalidRing);
+ }
+ let dma=ring_dma.checked_add(cursor.enqueue_index as u64 * core::mem::size_of::<Trb>() as u64).ok_or(CommandSubmitError::InvalidRing)?;
+ tracker.track(PendingCommand{command_trb_dma:dma,kind}).map_err(|_|CommandSubmitError::InvalidRing)?;
+ match submit_command(io,caps,ring_cpu,ring_dma,entry_count,cursor,command) {
+  Ok(actual) if actual==dma=>Ok(actual),
+  Ok(_)=>{tracker.cancel(dma);Err(CommandSubmitError::InvalidRing)},
+  Err(e)=>{tracker.cancel(dma);Err(e)}
+ }
+}
+/// Route an event already accepted by drain_event_ring; the caller handles transfer and port events.
+pub fn route_controller_event<const N:usize>(tracker:&mut CommandCompletionTracker<N>,event:Trb)->Result<ControllerEvent,ControllerEventError>{
+ match event.trb_type() as u32 {
+  TRB_TYPE_COMMAND_COMPLETION=>tracker.complete(event).map(ControllerEvent::CommandCompleted).map_err(ControllerEventError::Completion),
+  TRB_TYPE_TRANSFER_EVENT=>Ok(ControllerEvent::TransferEvent(event)),
+  TRB_TYPE_PORT_STATUS_CHANGE=>Ok(ControllerEvent::PortStatusChanged(event)),
+  _=>Ok(ControllerEvent::Other(event)),
+ }
 }
