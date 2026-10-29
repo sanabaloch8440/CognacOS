@@ -113,5 +113,8 @@ pub fn xhci_resources()->Option<XhciPciResources> {
 
 pub fn advance_xhci_state(expected:u32,next:u32)->Result<(),()> {
     if !XHCI_PCI_DEVICE.ready.load(Ordering::Acquire)||next!=expected+1||next>STATE_DRIVER_BOUND{return Err(())}
+    // A published MMIO BAR is not proof that DMA is safe. Do not let the
+    // controller advance to DMA_READY until a real IOMMU backend is registered.
+    if next==STATE_DMA_READY && !crate::dma::iommu::available(){return Err(())}
     XHCI_PCI_DEVICE.state.compare_exchange(expected,next,Ordering::AcqRel,Ordering::Acquire).map(|_|()).map_err(|_|())
 }
