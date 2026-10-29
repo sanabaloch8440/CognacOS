@@ -38,6 +38,71 @@ mod debug_console;
 use core::arch::asm;
 use core::panic::PanicInfo;
 
+
+// Read-only legacy PCI configuration-space probe used during early PnP bring-up.
+// It never writes BARs or enables bus mastering; resource ownership remains with
+// the kernel PnP/HAL path until safe MMIO, requester-bound DMA, and IRQ services exist.
+unsafe fn pci_config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
+    let address = 0x8000_0000u32
+        | ((bus as u32) << 16)
+        | ((device as u32) << 11)
+        | ((function as u32) << 8)
+        | ((offset as u32) & 0xfc);
+    unsafe {
+        hal::write_port_u32(0x0cf8, address);
+        hal::read_port_u32(0x0cfc)
+    }
+}
+
+/// Discover an xHCI PCI function without claiming it. DriverEntry must not run
+/// until PnP can supply a mapped BAR, requester-bound IOMMU DMA, and an IRQ route.
+fn probe_xhci_pci_function() -> bool {
+    serial_write(b"PCI xHCI discovery: scanning PCI configuration space (read-only).\r\n");
+    for bus in 0u16..=255 {
+        for device in 0u8..32 {
+            let id0 = unsafe { pci_config_read32(bus as u8, device, 0, 0x00) };
+            let vendor0 = id0 as u16;
+            if vendor0 == 0 || vendor0 == 0xffff { continue; }
+            let header0 = unsafe { pci_config_read32(bus as u8, device, 0, 0x0c) };
+            let function_count = if ((header0 >> 23) & 1) != 0 { 8 } else { 1 };
+            for function in 0..function_count {
+                let id = if function == 0 { id0 } else {
+                    unsafe { pci_config_read32(bus as u8, device, function, 0x00) }
+                };
+                let vendor = id as u16;
+                if vendor == 0 || vendor == 0xffff { continue; }
+                let class_revision = unsafe { pci_config_read32(bus as u8, device, function, 0x08) };
+                let programming_interface = ((class_revision >> 8) & 0xff) as u8;
+                let subclass = ((class_revision >> 16) & 0xff) as u8;
+                let class_code = ((class_revision >> 24) & 0xff) as u8;
+                if !pci::is_xhci_controller(class_code, subclass, programming_interface) { continue; }
+
+                let bar_low = unsafe { pci_config_read32(bus as u8, device, function, 0x10) };
+                let bar_kind = (bar_low >> 1) & 3;
+                let bar_high = if bar_low & 1 == 0 && bar_kind == 2 {
+                    unsafe { pci_config_read32(bus as u8, device, function, 0x14) }
+                } else { 0 };
+                let bar_base = ((bar_high as u64) << 32) | ((bar_low as u64) & !0xf);
+                serial_write(b"PCI xHCI discovered: BDF=");
+                serial_write_hex(((bus as u64) << 8) | ((device as u64) << 3) | function as u64);
+                serial_write(b" vendor/device=");
+                serial_write_hex(id as u64);
+                serial_write(b" BAR0=");
+                serial_write_hex(bar_base);
+                serial_write(b"\r\n");
+                if bar_low & 1 != 0 || bar_base == 0 {
+                    serial_write(b"PCI xHCI resource validation failed: BAR0 is not assigned MMIO; controller not claimed.\r\n");
+                    return false;
+                }
+                serial_write(b"PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.\r\n");
+                return true;
+            }
+        }
+    }
+    serial_write(b"PCI xHCI discovery failed: no matching controller found.\r\n");
+    false
+}
+
 fn io_smoke_dispatch(irp: &mut io::Irp) -> io::IoStatus {
     irp.information = irp.length;
     io::IoStatus::Success
@@ -345,6 +410,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: bootstrap CPU-local HAL setup failed.\r\n");
             halt();
         }
+        let _xhci_pci_discovered = probe_xhci_pci_function();
         ntoskrnl::ke::runtime::ke_initialize_executive();
         let bsp_stack_top = match info.kernel_stack_virtual_guard.checked_add(stack_allocation_bytes) {
             Some(top) if top != 0 => top,
