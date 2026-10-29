@@ -22,6 +22,34 @@ pub fn keyboard_command<I:PortIo>(io:&mut I,cmd:u8,limit:u32)->Result<(),PortErr
 }
 
 
+/// Sink implemented by the keyboard class layer. Called once per decoded scan-code packet.
+pub trait KeyboardPacketSink {
+ fn submit_keyboard_packet(&mut self, packet: KeyboardInputData) -> Result<(), ()>;
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct IrqDrainResult { pub packets:u8, pub bytes:u8, pub output_pending:bool }
+/// Drain the 8042 output buffer from an IRQ/DPC adapter. This routine does not
+/// acknowledge the interrupt controller; the architecture thunk must issue EOI
+/// after the bounded drain. The sink must be nonblocking and interrupt-safe.
+pub fn drain_keyboard_irq<I:PortIo,S:KeyboardPacketSink>(
+ io:&mut I, decoder:&mut ScanDecoder, sink:&mut S, budget:u8
+)->Result<IrqDrainResult,PortError>{
+ let mut result=IrqDrainResult::default();
+ for _ in 0..budget {
+  let status=io.read8(STATUS_PORT);
+  if status&STATUS_OUTPUT_FULL==0 { return Ok(result); }
+  let byte=io.read8(DATA_PORT);
+  result.bytes=result.bytes.saturating_add(1);
+  if status&0x20!=0 { continue; } // AUX mouse data is not keyboard input.
+  if let Some(packet)=decoder.feed(byte) {
+   sink.submit_keyboard_packet(packet).map_err(|_|PortError::UnexpectedResponse)?;
+   result.packets=result.packets.saturating_add(1);
+  }
+ }
+ result.output_pending=io.read8(STATUS_PORT)&STATUS_OUTPUT_FULL!=0;
+ Ok(result)
+}
+
 pub const CMD_ENABLE_SCANNING:u8=0xf4;
 pub const CMD_DISABLE_SCANNING:u8=0xf5;
 pub const CONFIG_KEYBOARD_IRQ:u8=1<<0;
@@ -121,5 +149,24 @@ mod power_lifecycle_tests {
   impl PowerAwarePortIo for Broken{fn set_keyboard_irq_enabled(&mut self,e:bool)->Result<(),PortError>{self.0.irq=e;Ok(())}fn synchronize_keyboard_irq(&mut self)->Result<(),PortError>{Ok(())}}
   let mut io=Broken(Fake::new());let mut keyboard=Ps2KeyboardPort::new();
   assert_eq!(keyboard.start(&mut io,2),Err(PortError::ControllerFailure));assert!(!io.0.irq);assert_eq!(keyboard.state(),KeyboardPortState::Failed);
+ }
+}
+
+#[cfg(test)]
+mod irq_delivery_tests {
+ use super::*;
+ struct Fake { bytes:std::vec::Vec<(u8,u8)>, at:usize }
+ impl PortIo for Fake {
+  fn read8(&mut self,p:u16)->u8 { if p==STATUS_PORT { if self.at<self.bytes.len(){self.bytes[self.at].1}else{0} } else {let v=self.bytes.get(self.at).map(|x|x.0).unwrap_or(0);self.at+=1;v} }
+  fn write8(&mut self,_:u16,_:u8){}
+ }
+ #[derive(Default)] struct Sink(std::vec::Vec<KeyboardInputData>);
+ impl KeyboardPacketSink for Sink { fn submit_keyboard_packet(&mut self,p:KeyboardInputData)->Result<(),()>{self.0.push(p);Ok(())} }
+ #[test] fn irq_drain_forwards_make_break_and_ignores_aux_bytes(){
+  let mut io=Fake{bytes:std::vec![(0x1e,STATUS_OUTPUT_FULL),(0x9e,STATUS_OUTPUT_FULL),(0x08,STATUS_OUTPUT_FULL|0x20)],at:0};
+  let mut decoder=ScanDecoder::new();let mut sink=Sink::default();
+  let r=drain_keyboard_irq(&mut io,&mut decoder,&mut sink,8).unwrap();
+  assert_eq!(r.packets,2);assert_eq!(sink.0.len(),2);assert_eq!(sink.0[0].make_code,0x1e);
+  assert_eq!(sink.0[1].flags&KEY_BREAK,KEY_BREAK);
  }
 }
