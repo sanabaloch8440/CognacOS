@@ -242,3 +242,65 @@ mod milestone_tests{
 
 /// Internal version marker used by the PE entry point to retain the controller core.
 pub const fn core_abi_version()->u32{1}
+
+
+pub const USBCMD_RUN:u32=1;
+pub const USBCMD_RESET:u32=1<<1;
+pub const USBCMD_INTERRUPT_ENABLE:u32=1<<2;
+pub const USBSTS_HALTED:u32=1;
+pub const USBSTS_NOT_READY:u32=1<<11;
+pub const IMAN_INTERRUPT_ENABLE:u32=1<<1;
+pub const CONFIG_MAX_SLOTS_MASK:u32=0xff;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct ControllerDmaConfig{pub dcbaa:u64,pub command_ring:u64,pub erst:u64,pub event_ring:u64,pub event_ring_entries:u16,pub max_slots:u8}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ControllerInitError{InvalidCapabilities,InvalidDmaConfiguration,InterruptNotRegistered,RegisterIoFailure,ResetTimeout,ControllerDidNotHalt,ControllerDidNotStart}
+/// Implemented by a kernel/HAL adapter over a validated, uncached BAR mapping.
+/// Register offsets are relative to the controller's MMIO BAR base.
+pub trait XhciRegisterIo{
+ fn read32(&mut self,offset:u32)->Result<u32,()>;
+ fn write32(&mut self,offset:u32,value:u32)->Result<(),()>;
+}
+fn reg_read<I:XhciRegisterIo>(io:&mut I,offset:u32)->Result<u32,ControllerInitError>{io.read32(offset).map_err(|_|ControllerInitError::RegisterIoFailure)}
+fn reg_write<I:XhciRegisterIo>(io:&mut I,offset:u32,value:u32)->Result<(),ControllerInitError>{io.write32(offset,value).map_err(|_|ControllerInitError::RegisterIoFailure)}
+fn poll_reg<I:XhciRegisterIo>(io:&mut I,offset:u32,mask:u32,expected:u32,budget:u32)->Result<(),ControllerInitError>{
+ for _ in 0..budget{if reg_read(io,offset)?&mask==expected&mask{return Ok(())}core::hint::spin_loop()}Err(ControllerInitError::ResetTimeout)
+}
+pub fn validate_controller_dma_config(caps:&Capabilities,c:&ControllerDmaConfig)->Result<(),ControllerInitError>{
+ if c.max_slots==0||c.max_slots>caps.max_slots||c.event_ring_entries<16||c.event_ring_entries>4096||!c.event_ring_entries.is_power_of_two(){return Err(ControllerInitError::InvalidDmaConfiguration)}
+ if validate_dma_address(c.dcbaa,64).is_err()||validate_dma_address(c.command_ring,64).is_err()||validate_dma_address(c.erst,64).is_err()||validate_dma_address(c.event_ring,64).is_err(){return Err(ControllerInitError::InvalidDmaConfiguration)}
+ Ok(())
+}
+/// Reset and program the controller's command ring, DCBAA, one ERST segment,
+/// event ring and slot limit, then start it. The caller must have already acquired
+/// PCI resources, created DMA-coherent allocations, and registered the interrupt.
+pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:ControllerDmaConfig,interrupt_registered:bool,poll_budget:u32)->Result<(),ControllerInitError>{
+ if caps.cap_length<CAPLENGTH_MIN||caps.doorbell_offset<caps.cap_length as u32||caps.runtime_offset<caps.cap_length as u32{return Err(ControllerInitError::InvalidCapabilities)}
+ validate_controller_dma_config(caps,&dma)?;
+ if !interrupt_registered{return Err(ControllerInitError::InterruptNotRegistered)}
+ let op=caps.cap_length as u32;
+ let cmd=reg_read(io,op).map_err(|_|ControllerInitError::RegisterIoFailure)?;
+ let sts=reg_read(io,op+4).map_err(|_|ControllerInitError::RegisterIoFailure)?;
+ if sts&USBSTS_NOT_READY!=0{return Err(ControllerInitError::ResetTimeout)}
+ if sts&USBSTS_HALTED==0{return Err(ControllerInitError::ControllerDidNotHalt)}
+ reg_write(io,op,cmd|USBCMD_RESET)?;
+ poll_reg(io,op,USBCMD_RESET,0,poll_budget)?;
+ poll_reg(io,op+4,USBSTS_NOT_READY,0,poll_budget)?;
+ if reg_read(io,op+4)?&USBSTS_HALTED==0{return Err(ControllerInitError::ControllerDidNotHalt)}
+ reg_write(io,op+0x18,(dma.command_ring as u32)|1)?;
+ reg_write(io,op+0x1c,(dma.command_ring>>32) as u32)?;
+ reg_write(io,op+0x30,dma.dcbaa as u32)?;
+ reg_write(io,op+0x34,(dma.dcbaa>>32) as u32)?;
+ reg_write(io,op+0x38,(dma.max_slots as u32)&CONFIG_MAX_SLOTS_MASK)?;
+ let rt=caps.runtime_offset;
+ let iman=rt+0x20;let erstsz=rt+0x28;let erstba=rt+0x30;let erdp=rt+0x38;
+ reg_write(io,erstsz,dma.event_ring_entries as u32)?;
+ reg_write(io,erstba,dma.erst as u32)?;
+ reg_write(io,erstba+4,(dma.erst>>32) as u32)?;
+ reg_write(io,erdp,dma.event_ring as u32)?;
+ reg_write(io,erdp+4,(dma.event_ring>>32) as u32)?;
+ reg_write(io,iman,IMAN_INTERRUPT_ENABLE)?;
+ reg_write(io,op,USBCMD_RUN|USBCMD_INTERRUPT_ENABLE)?;
+ for _ in 0..poll_budget{if reg_read(io,op+4)?&USBSTS_HALTED==0{return Ok(())}core::hint::spin_loop()}
+ Err(ControllerInitError::ControllerDidNotStart)
+}
