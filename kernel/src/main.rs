@@ -1034,6 +1034,21 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: native NT syscall dispatcher self-test failed.\r\n"); halt();
         }
         serial_write(b"Native NT syscall dispatcher QEMU self-test passed: five args, invalid buffers, unsupported IDs, and 17-arg stack copy.\r\n");
+        // Keep the bootstrap execution context represented by a real
+        // scheduler task before any user-mode image or driver smoke test runs.
+        let bootstrap_thread_id = match thread::current_thread_id() {
+            Some(id) => id,
+            None => match thread::adopt_current_kernel_thread(bsp_stack_top) {
+                Ok(id) => id,
+                Err(_) => {
+                    serial_write(b"FATAL: could not attach bootstrap execution to a scheduler-owned ETHREAD.\r\n");
+                    halt();
+                }
+            },
+        };
+        serial_write(b"Scheduler-owned bootstrap ETHREAD ready id=");
+        serial_write_hex(bootstrap_thread_id);
+        serial_write(b"; user faults and driver requests now have a current thread.\r\n");
         if let Some(ntdll_bytes) = boot_ntdll_bytes() {
             serial_write(b"Attempting to map staged ntdll.dll in an isolated user address space.\r\n");
             let mut ntdll_space = match unsafe { ntoskrnl::mm::address_space::AddressSpace::new(info.pml4_physical) } {
