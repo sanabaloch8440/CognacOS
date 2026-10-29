@@ -617,7 +617,7 @@ unsafe extern "C" fn service_allocate_dma(
 )->DriverHalStatus {
     if device_object==0 || size==0 || size>u32::MAX as u64 || alignment==0
         || !alignment.is_power_of_two() || alignment>dma::PAGE_SIZE || maximum_address==0
-        || flags!=0 || cpu_out.is_null() || device_out.is_null() {
+        || flags & 3 != 3 || flags & !7 != 0 || cpu_out.is_null() || device_out.is_null() {
         return driver_hal_invalid();
     }
     if !dma::iommu::available() { return driver_hal_unsupported(); }
