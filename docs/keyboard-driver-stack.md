@@ -86,3 +86,11 @@ Still not implemented end-to-end: firmware ACPI MCFG-to-ECAM mapping in the live
 ## Kernel-to-HAL service publication milestone
 
 The kernel now publishes a versioned `HalServiceTable` for driver adapters, backed by existing privileged port I/O, already-mapped MMIO access, TSC/monotonic counter query, and validated fixed-vector IPI services. IRQL mutation is intentionally left unavailable because the executive must own per-thread IRQL state and restoration. The kernel also publishes a versioned `DeviceServiceTable`, but DMA and interrupt/DPC entries remain `None`; xHCI must reject it rather than fabricate device addresses or run completion callbacks at the wrong IRQL. This is the first concrete kernel-to-HAL publication boundary, not yet a working DMA/interrupt backend or a live xHCI startup path. Next: wire memory-manager-owned contiguous/pinned DMA with IOMMU isolation, then kernel interrupt registration tied to IDT/APIC routing and a real DPC queue with rundown before enabling xHCI.
+
+
+## CognacOS implementation status
+
+- The kernel now initializes the emulated 8042 controller and polls its output buffer while the legacy IRQ route remains masked. This is a bring-up path, **not a completed PS/2 IRQ/IDT path**.
+- Decoded PS/2 scan-code packets are passed through the KbdClass queue and the US translation core. Translated key events enter a bounded kernel event queue and are logged as `QEMU KEYBOARD INPUT`; the user-mode Win32 message queue / `NtUserGetMessage` delivery is not wired yet.
+- `drivers/i8042prt` exposes a bounded IRQ-drain adapter and packet sink; `drivers/kbdhid` exposes a report-to-class-packet adapter; xHCI event TRBs now have typed decode/dispatch helpers. These are tested primitives, not evidence of a live USB host-controller transfer path.
+- `drivers/kbdus` exports `KbdLayerDescriptor` and defines a conservative US table; CI builds it as PE32+ and checks the export. Full Microsoft binary compatibility still needs validation against the exact Windows x64 KBDTABLES layout and an actual Win32 layout loader.
