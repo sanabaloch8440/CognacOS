@@ -115,8 +115,12 @@ jobs:
         run: cargo test --manifest-path drivers/i8042prt/Cargo.toml --target x86_64-unknown-linux-gnu --lib power_lifecycle_tests
       - name: Check USB xHCI controller core
         run: cargo check --manifest-path drivers/usbxhci/Cargo.toml --lib
-      - name: Test USB xHCI capability, rings, descriptors, enumeration, DMA and controller startup
+      - name: Test USB xHCI capability, rings, DMA and controller startup
         run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Check separate USB 3 hub policy library
+        run: cargo check --manifest-path drivers/usbhub3/Cargo.toml --lib
+      - name: Test USB hub descriptors, port lifecycle and stale-completion generation
+        run: cargo test --manifest-path drivers/usbhub3/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Test USB xHCI port power-state transitions
         run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib power_state_tests
       - name: Test USB xHCI controller D0 exit and entry
