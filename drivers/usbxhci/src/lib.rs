@@ -1199,3 +1199,31 @@ mod controller_power_tests {
   assert_eq!(platform.regs[0x40/4]&USBCMD_RUN,USBCMD_RUN);
  }
 }
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct UsbWakePath { pub port_connected:bool, pub device_supports_remote_wake:bool, pub hub_supports_wake:bool, pub controller_supports_wake:bool }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum UsbWakeError { UnsupportedPath, ControllerFailure, HubFailure, DeviceFailure }
+/// Backend operations are supplied by the real USB bus/function driver. Arming
+/// is ordered host-controller -> hub -> device; failures roll back in reverse.
+pub trait UsbWakeBackend {
+ fn arm_controller_wake(&mut self)->Result<(),()>;
+ fn arm_hub_wake(&mut self)->Result<(),()>;
+ fn enable_device_remote_wakeup(&mut self)->Result<(),()>;
+ fn disable_device_remote_wakeup(&mut self)->Result<(),()>;
+ fn disarm_hub_wake(&mut self)->Result<(),()>;
+ fn disarm_controller_wake(&mut self)->Result<(),()>;
+}
+pub fn arm_usb_wait_wake<B:UsbWakeBackend>(path:UsbWakePath,backend:&mut B)->Result<(),UsbWakeError>{
+ if !path.port_connected||!path.device_supports_remote_wake||!path.hub_supports_wake||!path.controller_supports_wake{return Err(UsbWakeError::UnsupportedPath)}
+ backend.arm_controller_wake().map_err(|_|UsbWakeError::ControllerFailure)?;
+ if backend.arm_hub_wake().is_err(){let _=backend.disarm_controller_wake();return Err(UsbWakeError::HubFailure)}
+ if backend.enable_device_remote_wakeup().is_err(){let _=backend.disarm_hub_wake();let _=backend.disarm_controller_wake();return Err(UsbWakeError::DeviceFailure)}
+ Ok(())
+}
+pub fn cancel_usb_wait_wake<B:UsbWakeBackend>(backend:&mut B)->Result<(),UsbWakeError>{
+ backend.disable_device_remote_wakeup().map_err(|_|UsbWakeError::DeviceFailure)?;
+ backend.disarm_hub_wake().map_err(|_|UsbWakeError::HubFailure)?;
+ backend.disarm_controller_wake().map_err(|_|UsbWakeError::ControllerFailure)?;
+ Ok(())
+}
