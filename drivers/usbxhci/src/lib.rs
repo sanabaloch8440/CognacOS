@@ -1,6 +1,7 @@
 //! Bounded xHCI controller primitives for CognacOS.
 //! This is a controller/transfer-ring core, not a complete USB host stack.
-//! MMIO, DMA allocation, interrupt routing, enumeration, and HID transport belong to HAL/kernel.
+//! MMIO, DMA allocation, interrupt routing, and controller event delivery are platform services;
+//! USB hub enumeration belongs to usbhub3 and HID report handling belongs to HIDClass/KbdHid.
 #![no_std]
 #[cfg(test)] extern crate std;
 pub const CAPLENGTH_MIN:u8=0x20;
