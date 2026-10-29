@@ -64,7 +64,11 @@ rdotos_process_fault_return:
     shr rdx, 32
     wrmsr
     mov rsp, qword ptr [rip + rdotos_process_saved_rsp]
-    jmp qword ptr [rip + rdotos_process_saved_rip]
+    # A contained user fault must not trust the mutable saved RIP: it may be
+    # zero/corrupted, which caused a second #PF at address 0 during recovery.
+    # Resume at the in-image continuation directly; it restores the callee-
+    # saved registers and returns to the kernel caller.
+    jmp .Lrdotos_process_return
 
     .global rdotos_process_enter_user
     .type rdotos_process_enter_user, @function
