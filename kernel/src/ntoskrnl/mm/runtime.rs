@@ -1250,7 +1250,7 @@ pub fn self_test() -> bool {
         unsafe { mm_free_pages_from_mdl(page_mdl); }
         let mdl_storage_freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
             page_mdl.cast(), Some(0x4c444d4d),
-        ).is_ok();
+        );
         protection_ok && mdl_storage_freed
     };
     let ranges = unsafe { mm_get_physical_memory_ranges() };
@@ -1259,7 +1259,7 @@ pub fn self_test() -> bool {
     } else {
         let values = ranges.cast::<u64>();
         let mut terminated = false;
-        for index in 0..=MAX_RANGES {
+        for index in 0..=256 {
             if unsafe { values.add(index * 2).read() } == 0
                 && unsafe { values.add(index * 2 + 1).read() } == 0 {
                 terminated = true;
@@ -1268,7 +1268,7 @@ pub fn self_test() -> bool {
         }
         let freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
             ranges.cast(), Some(0x524d4d4d),
-        ).is_ok();
+        );
         terminated && freed
     };
     valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && ranges_ok
