@@ -1562,11 +1562,11 @@ pub fn self_test() -> bool {
         #[cfg(target_os = "none")]
         unsafe {
             crate::serial_write(b"MM-SELFTEST node-mdl=null node-count=");
-            crate::serial_write_decimal(crate::ntoskrnl::mm::topology::memory_node_count() as u64);
+            crate::serial_write_decimal(crate::ntoskrnl::mm::topology::memory_node_count() as usize);
             crate::serial_write(b" ranges=");
             let mut debug_ranges = [(0u64, 0u64); 4];
             let debug_count = crate::ntoskrnl::mm::topology::memory_ranges_for_node(0, &mut debug_ranges);
-            crate::serial_write_decimal(debug_count as u64);
+            crate::serial_write_decimal(debug_count as usize);
             crate::serial_write(b"\\r\\n");
         }
         false
@@ -1592,13 +1592,13 @@ pub fn self_test() -> bool {
                 crate::serial_write(b"MM-SELFTEST node-mdl first=");
                 crate::serial_write_hex(first);
                 crate::serial_write(b" node=");
-                crate::serial_write_decimal(first_node.unwrap_or(u32::MAX) as u64);
+                crate::serial_write_decimal(first_node.unwrap_or(u32::MAX) as usize);
                 crate::serial_write(b" second=");
                 crate::serial_write_hex(second);
                 crate::serial_write(b" node=");
-                crate::serial_write_decimal(second_node.unwrap_or(u32::MAX) as u64);
+                crate::serial_write_decimal(second_node.unwrap_or(u32::MAX) as usize);
                 crate::serial_write(b" bytes=");
-                crate::serial_write_decimal(header.byte_count as u64);
+                crate::serial_write_decimal(header.byte_count as usize);
                 crate::serial_write(b" storage-freed=");
                 crate::serial_write(if storage_freed { b"1" } else { b"0" });
                 crate::serial_write(b"\\r\\n");
