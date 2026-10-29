@@ -123,6 +123,6 @@ mod tests {
         let generation=h.port(1).unwrap().generation();
         h.port_mut(1).unwrap().transition(PortEvent::Disconnect).unwrap();
         assert!(h.port(1).unwrap().generation()>generation);
-        assert_eq!(h.port_mut(3),Err(HubError::InvalidPort));
+        assert!(matches!(h.port_mut(3),Err(HubError::InvalidPort)));
     }
 }
