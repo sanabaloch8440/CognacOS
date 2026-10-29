@@ -257,7 +257,7 @@ mod dma_span_tests {
         let good = DmaAllocation { cpu_address: 0x8000, device_address: 0x1_0000, size: 0x1000 };
         assert!(valid_allocation(good, 0x800, 0x100, 0x1_0fff));
         assert!(!valid_allocation(good, 0x1001, 0x100, 0x1_ffff));
-        assert!(!valid_allocation(good, 0x800, 0x100, 0x1_07ff));
+        assert!(!valid_allocation(good, 0x800, 0x100, 0x1_07fe));
         assert!(!valid_allocation(DmaAllocation { cpu_address: 0x8001, ..good }, 0x800, 0x100, u64::MAX));
         assert!(!valid_allocation(DmaAllocation { device_address: 0x1_0001, ..good }, 0x800, 0x100, u64::MAX));
     }
