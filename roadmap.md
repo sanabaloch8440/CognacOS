@@ -138,3 +138,5 @@ Still intentionally incomplete:
 - This is incremental NT ABI compatibility, not a claim of complete Windows 11 memory-manager parity.
 
 - xHCI command-ring submission now publishes command TRBs with producer-cycle handling, writes the Link TRB with Toggle Cycle on wrap, and rings Doorbell 0 only after a release/full ordering fence. Host tests cover submission, link rollover, and invalid command/ring rejection. Command completion correlation, slot/address/configure sequencing, endpoint transfer rings, USB transfers, and HID delivery remain outstanding.
+
+- Added fixed-capacity xHCI Command Completion Event correlation keyed by command TRB DMA address, plus validated Enable Slot, Address Device, and Configure Endpoint command builders. Host tests cover completion correlation, unknown/non-completion events, and slot/input-context validation. Controller-owned event-ring draining, input-context population, command queue synchronization/timeouts, port reset, endpoint transfer rings, and HID delivery remain outstanding.
