@@ -1579,7 +1579,8 @@ pub fn self_test() -> bool {
         let second = second_pfn * PAGE_SIZE;
         let first_node = crate::ntoskrnl::mm::topology::node_for_range(first, PAGE_SIZE);
         let second_node = crate::ntoskrnl::mm::topology::node_for_range(second, PAGE_SIZE);
-        let valid = header.byte_count as u64 == PAGE_SIZE * 2
+        let byte_count = header.byte_count as u32;
+        let valid = byte_count as u64 == PAGE_SIZE * 2
             && [first, second].iter().all(|pa| *pa >= 0x10_0000 && *pa <= 0xffff_ffff)
             && first_node == Some(0) && second_node == Some(0);
         unsafe { mm_free_pages_from_mdl(node_mdl); }
@@ -1598,7 +1599,7 @@ pub fn self_test() -> bool {
                 crate::serial_write(b" node=");
                 crate::serial_write_decimal(second_node.unwrap_or(u32::MAX) as usize);
                 crate::serial_write(b" bytes=");
-                crate::serial_write_decimal(header.byte_count as usize);
+                crate::serial_write_decimal(byte_count as usize);
                 crate::serial_write(b" storage-freed=");
                 crate::serial_write(if storage_freed { b"1" } else { b"0" });
                 crate::serial_write(b"\\r\\n");
