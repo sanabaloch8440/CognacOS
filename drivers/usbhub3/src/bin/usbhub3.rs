@@ -3,7 +3,6 @@
 use core::ffi::c_void;
 use cognacos_nt_abi::types::PVOID;
 
-const STATUS_SUCCESS:i32=0;
 const STATUS_INVALID_PARAMETER:i32=0xC000000Du32 as i32;
 const STATUS_NOT_SUPPORTED:i32=0xC00000BBu32 as i32;
 const HUB_EXTENSION_MAGIC:u64=0x434F_474E_4143_4833; // "COGNACH3"
@@ -39,10 +38,10 @@ pub unsafe extern "win64" fn DriverEntry(driver:PVOID,_registry_path:PVOID)->i32
     if ext.query_port_status.is_none() || ext.reset_port.is_none() ||
        ext.control_transfer.is_none() || ext.create_child_pdo.is_none() ||
        ext.remove_child_pdo.is_none() { return STATUS_NOT_SUPPORTED; }
-    // Until the kernel publishes this contract, fail closed rather than claim
-    // that a hub is operational. The hub policy/descriptor library is testable
-    // independently and does not perform unsafe controller MMIO itself.
-    STATUS_SUCCESS
+    // Contract validation alone is not hub startup. Do not report success until
+    // the kernel wires the port-change worker, serialized EP0 URBs, enumeration,
+    // child-PDO publication, and remove/rundown barrier into this entry point.
+    STATUS_NOT_SUPPORTED
 }
 #[used]
 #[unsafe(link_section = ".rodata")]
