@@ -322,7 +322,10 @@ pub(crate) unsafe fn io_complete_pnp_transition(device:*mut DeviceObject,minor:u
   0x04=>{s.pnp_state=PNP_STATE_STOPPED;s.pnp_pending=0;},
   _=>{}
  }}
- s.pnp_transition=false;STATUS_SUCCESS
+ s.pnp_transition=false;
+ drop(state);
+ if status==STATUS_SUCCESS&&matches!(minor,0x02|0x17){crate::ntoskrnl::po::device_power::unregister(device);}
+ STATUS_SUCCESS
 }
 
 /// Bounded CM_RESOURCE_LIST parser and resource arbiter for WDM start IRPs.
@@ -834,6 +837,9 @@ pub unsafe extern "win64" fn io_create_device(
  if unsafe{crate::ntoskrnl::ob::runtime::register_external_object_with_finalizer(object.cast(),&type_name,&ob_name[..name_len],false,ptr::null(),0,io_object_manager_finalizer)}.is_err() {
   unsafe{io_delete_device(object)}; return STATUS_INSUFFICIENT_RESOURCES;
  }
+ if crate::ntoskrnl::po::device_power::register_default(object)!=STATUS_SUCCESS {
+  unsafe{io_delete_device(object)};return STATUS_INSUFFICIENT_RESOURCES;
+ }
  STATUS_SUCCESS
 }
 
@@ -923,6 +929,7 @@ pub unsafe extern "win64" fn io_delete_device(device:*mut DeviceObject) {
   for relation in manager.relations.iter_mut().filter(|r|r.used&&(r.bus==device||r.child==device)){*relation=PnpRelation::EMPTY;}
  }
  drop(state);
+ crate::ntoskrnl::po::device_power::unregister(device);
  io_release_pnp_resources(device);
  unsafe{io_unregister_file_system(device);}
 }
