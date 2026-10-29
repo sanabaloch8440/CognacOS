@@ -1236,7 +1236,42 @@ pub fn self_test() -> bool {
         unsafe { mm_free_contiguous_memory(contiguous); }
         bytes_ok && mdl_size == 64
     };
-    valid && mdl_ok && freed && contiguous_ok
+    // Exercise the newly wired page-MDL allocation, mapping, protection,
+    // release, and physical-range enumeration paths as one ownership cycle.
+    let page_mdl = unsafe { mm_allocate_pages_for_mdl(0, u64::MAX, 0, PAGE_SIZE * 2) };
+    let page_mdl_ok = if page_mdl.is_null() {
+        false
+    } else {
+        let mapped = unsafe { mm_map_locked_pages(page_mdl, 0) };
+        let protection_ok = !mapped.is_null()
+            && unsafe { mm_protect_mdl_system_address(page_mdl, 0x02) } == STATUS_SUCCESS
+            && unsafe { mm_protect_mdl_system_address(page_mdl, 0x04) } == STATUS_SUCCESS;
+        if !mapped.is_null() { unsafe { mm_unmap_locked_pages(mapped, page_mdl); } }
+        unsafe { mm_free_pages_from_mdl(page_mdl); }
+        let mdl_storage_freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
+            page_mdl.cast(), Some(0x4c444d4d),
+        ).is_ok();
+        protection_ok && mdl_storage_freed
+    };
+    let ranges = unsafe { mm_get_physical_memory_ranges() };
+    let ranges_ok = if ranges.is_null() {
+        false
+    } else {
+        let values = ranges.cast::<u64>();
+        let mut terminated = false;
+        for index in 0..=MAX_RANGES {
+            if unsafe { values.add(index * 2).read() } == 0
+                && unsafe { values.add(index * 2 + 1).read() } == 0 {
+                terminated = true;
+                break;
+            }
+        }
+        let freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
+            ranges.cast(), Some(0x524d4d4d),
+        ).is_ok();
+        terminated && freed
+    };
+    valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && ranges_ok
 }
 
 #[cfg(test)]
