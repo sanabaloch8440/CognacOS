@@ -22,7 +22,7 @@ This mirrors the broad Windows class/port/client layering. Windows' kbdclass.sys
 
 ## Validation
 
-GitHub Actions host-tests queue bounds and exclusive ownership, HID descriptor parsing, boot-report transitions/rollover, PS/2 scan-code decoding and bounded polling, and xHCI capability/TRB/ring/DMA/polling primitives. It builds kbdclass, hidclass, kbdhid, i8042prt, and usbxhci as separate AMD64 PE32+ images with the repository's current driver-image pipeline.
+GitHub Actions host-tests queue bounds and exclusive ownership, HID descriptor parsing, boot-report transitions/rollover, PS/2 scan-code decoding and bounded polling, PCI ECAM/BAR decoding, HAL device-service contracts, and xHCI capability/TRB/ring/ERST/controller-start/descriptor/enumeration primitives. It builds kbdclass, hidclass, kbdhid, i8042prt, and usbxhci as separate AMD64 PE32+ images with the repository's current driver-image pipeline.
 
 ## Explicit limitations
 
