@@ -290,19 +290,20 @@ pub(super) fn deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool
         table[index] = Allocation::EMPTY;
         return true;
     }
-    if allocation.slab_index == NO_SLAB { return false; }
-    let slabs = unsafe { &mut *SLABS.0.get() };
+    if allocation.slab_index != NO_SLAB {
+        let slabs = unsafe { &mut *SLABS.0.get() };
         let slab_index = allocation.slab_index as usize;
         let slot = allocation.slab_slot as usize;
-        let Some(slab) = slabs.get(slab_index).filter(|s| s.live && s.base == allocation.backing_base) else { return false; };
+        let Some(slab) = slabs.get(slab_index).filter(|s|
+            s.live && s.base == allocation.backing_base && slot < s.slots
+                && s.used[slot / 64] & (1u64 << (slot % 64)) != 0
+        ) else { return false; };
         let reserve_base = core::ptr::addr_of_mut!(NO_WAIT_SLAB_RESERVE) as u64;
         let reserve_end = reserve_base + (NO_WAIT_SLAB_SLOTS * PAGE_SIZE) as u64;
         let is_reserve = allocation.backing_base >= reserve_base && allocation.backing_base < reserve_end;
         if is_reserve {
             slabs[slab_index].mark_free(slot);
         } else if slab.is_empty_except(slot) {
-            // Do not discard the ownership record unless the backing page is
-            // actually returned; a full physical free list can be retried later.
             if unsafe { crate::kernel_vm::free_pages(allocation.backing_base as *mut u8, 1) }.is_err() {
                 return false;
             }
@@ -311,13 +312,11 @@ pub(super) fn deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool
             slabs[slab_index].mark_free(slot);
         }
     } else if unsafe { crate::kernel_vm::free_pages(allocation.backing_base as *mut u8, allocation.pages) }.is_err() {
-        // Keep the record live if the physical allocator cannot accept the run.
         return false;
     }
     table[index] = Allocation::EMPTY;
     true
 }
-
 
 #[cfg(test)]
 mod tests {
