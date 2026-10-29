@@ -1,11 +1,12 @@
 #![no_std]
 #![no_main]
 use cognacos_nt_abi::types::PVOID;
+use cognacos_usbxhci::core_abi_version;
 #[used]
 #[unsafe(link_section = ".rodata")]
 static DRIVER_SIGNATURE: [u8; 8] = *b"USBXHCI_";
 /// Entry placeholder; controller initialization requires kernel-provided resources and DMA services.
 #[unsafe(no_mangle)]
-pub unsafe extern "win64" fn DriverEntry(_driver:PVOID,_context:PVOID)->i32{0}
+pub unsafe extern "win64" fn DriverEntry(_driver:PVOID,_context:PVOID)->i32{if core_abi_version()==1{0}else{-1}}
 #[panic_handler]
 fn panic(_: &core::panic::PanicInfo<'_>)->!{loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}}
