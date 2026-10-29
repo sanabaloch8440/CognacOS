@@ -336,7 +336,7 @@ jobs:
           mkdir -p build/drivers
           build_driver() {
             local name="$1" package="$2" bin="$3" base="$4" output="$5"
-            RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/$package/driver.ld" \
+            RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C code-model=large -C link-arg=-T$GITHUB_WORKSPACE/$package/driver.ld" \
               cargo build --manifest-path "$package/Cargo.toml" --target x86_64-unknown-none \
                 --target-dir "target/driver-$name" --release --bin "$bin"
             python3 tools/elf_to_pe32plus.py "target/driver-$name/x86_64-unknown-none/release/$bin" \
