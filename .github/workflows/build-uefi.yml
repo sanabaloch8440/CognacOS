@@ -593,8 +593,6 @@ jobs:
           cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
           cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
           cp target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll build/EFI/BOOT/ntdll.dll
-            build/EFI/BOOT/kbdus.dll
-            build/kbdus/exports.txt
           cp build/kbdus/kbdus.dll build/EFI/BOOT/kbdus.dll
           cp test/beep.sys build/EFI/BOOT/beep.sys
           truncate -s 256M build/cognacos-uefi.img
@@ -1174,6 +1172,8 @@ jobs:
           path: |
             build/EFI/BOOT/BOOTX64.EFI
             build/EFI/BOOT/ntdll.dll
+            build/EFI/BOOT/kbdus.dll
+            build/kbdus/exports.txt
             build/dlls/kernel32.dll
             build/dlls/kernelbase.dll
             build/dlls/shell32.dll
