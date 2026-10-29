@@ -82,6 +82,18 @@ This is the canonical task list. Completed work is summarized by area; detailed 
 - [ ] Build native PE32+ csrss.exe/csrsrv.dll, implement server-DLL initialization, and add an asynchronous process/session-manager launch path.
 - [ ] Verify CSRSRV exports against an exact pinned Windows 11 x64 binary; the current inventory is not yet confirmed as an exact Windows 11 match.
 
+## P2 — Keyboard input drivers
+
+- [x] Add independent no_std driver cores for kbdclass.sys, kbdhid.sys, hidclass.sys, and i8042prt.sys; add bounded host tests and native PE32+ build validation.
+- [ ] Replace minimal DriverEntry stubs with real device-object/PnP registration and IRP dispatch; connect keyboard class reads to the OS input consumer.
+- [ ] Implement HID transport/minidriver integration for USB and Bluetooth, HIDClass request forwarding, report descriptor/report parsing, device removal, and cancellation/rundown.
+- [ ] Wire PS/2 controller access through HAL-owned port-I/O/interrupt services; add IRQ/DPC packet delivery, controller initialization/reset, ACK/RESEND and timeout tests under QEMU.
+- [ ] Add end-to-end QEMU tests that inject PS/2 input and verify delivered key make/break packets; add HID virtual-device tests and test keyboard disconnect/unload races.
+- [ ] Add service/INF-style device matching and registry-based loading before claiming Windows Plug and Play compatibility.
+- [ ] Keep vendor gaming keyboard filters and proprietary Razer/Logitech/Corsair features out of the baseline stack until the standard HID stack is functional; compliant HID keyboards should work without vendor-specific drivers.
+
+See [keyboard driver stack design](docs/keyboard-driver-stack.md) for the current boundary and known limitations.
+
 ## P2 — ETW and miscellaneous native exports
 
 - [ ] Test ETW multi-session fan-out, independent filters, duplicate names, stop/rundown races, ring overrun, invalid buffers, activity IDs, and process-exit concurrency.
