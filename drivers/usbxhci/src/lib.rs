@@ -1331,9 +1331,14 @@ impl<const N:usize> Default for TransferTracker<N>{fn default()->Self{Self::new(
 #[cfg(test)]mod transfer_runtime_tests{
  use super::*;
  fn req(addr:u64)->TransferRequest{TransferRequest{trb_dma:addr,buffer_dma:0x8000,length:8,endpoint_id:3,slot_id:1}}
+ // Transfer Event TRBs encode endpoint and slot IDs in control, not status.
+ fn event(addr:u64,completion:u8,residual:u32,endpoint:u8,slot:u8)->Trb{
+  Trb{parameter:addr,status:((completion as u32)<<24)|(residual&0x00ff_ffff),
+   control:(TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT)|((endpoint as u32)<<16)|((slot as u32)<<24)}
+ }
  #[test]fn builds_interrupt_in_normal_trb(){let t=build_interrupt_in_trb(0x8000,8,3,1).unwrap();assert_eq!(t.trb_type(),TRB_TYPE_NORMAL as u8);assert_eq!(t.parameter,0x8000);assert_eq!(t.status,8);assert_ne!(t.control&TRB_IOC,0);assert_eq!(build_interrupt_in_trb(0x8001,8,3,1),Err(TransferError::InvalidBuffer));}
- #[test]fn completion_is_correlated_and_consumed_once(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=Trb{parameter:0x1000,status:1u32<<24,control:TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT};let done=q.complete(&e).unwrap();assert_eq!(done.bytes_transferred,8);assert_eq!(q.len(),0);assert_eq!(q.complete(&e),Err(TransferError::UnknownCompletion));}
- #[test]fn mismatched_slot_or_endpoint_does_not_consume_request(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=Trb{parameter:0x1000,status:1u32<<24,control:(TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT)|(2u32<<16)|(1u32<<24)};assert_eq!(q.complete(&e),Err(TransferError::MismatchedCompletion));assert_eq!(q.len(),1);}
- #[test]fn failures_never_report_success(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=Trb{parameter:0x1000,status:6u32<<24,control:TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT};assert_eq!(q.complete(&e),Err(TransferError::FailedCompletion(6)));q.reserve(req(0x2000)).unwrap();let e=Trb{parameter:0x2000,status:(1u32<<24)|9,control:TRB_TYPE_TRANSFER_EVENT<<TRB_TYPE_SHIFT};assert_eq!(q.complete(&e),Err(TransferError::ResidualTooLarge));}
+ #[test]fn completion_is_correlated_and_consumed_once(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=event(0x1000,1,0,3,1);let done=q.complete(&e).unwrap();assert_eq!(done.bytes_transferred,8);assert_eq!(q.len(),0);assert_eq!(q.complete(&e),Err(TransferError::UnknownCompletion));}
+ #[test]fn mismatched_slot_or_endpoint_does_not_consume_request(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=event(0x1000,1,0,2,1);assert_eq!(q.complete(&e),Err(TransferError::MismatchedCompletion));assert_eq!(q.len(),1);}
+ #[test]fn failures_never_report_success(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=event(0x1000,6,0,3,1);assert_eq!(q.complete(&e),Err(TransferError::FailedCompletion(6)));q.reserve(req(0x2000)).unwrap();let e=event(0x2000,1,9,3,1);assert_eq!(q.complete(&e),Err(TransferError::ResidualTooLarge));}
  #[test]fn slot_rundown_cancels_pending_transfers(){let mut q:TransferTracker<3>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();q.reserve(TransferRequest{slot_id:2,trb_dma:0x2000,..req(0x2000)}).unwrap();assert_eq!(q.cancel_slot(1),1);assert_eq!(q.len(),1);}
 }
