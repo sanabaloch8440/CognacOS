@@ -350,13 +350,13 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
     unsafe { crate::serial_write(b"[DBG][NTOSKRNL][USER] activating address space and setting current process\r\n"); }
     crate::syscall::set_current_process(env.process_id, space as *const _);
     unsafe { space.activate(); }
-    let cpu = crate::ntoskrnl::ke::thread::current_cpu_index().map_err(|_| VmError::InvalidAddress)?;
-    let old_tss_stack = crate::ntoskrnl::ke::arch::kernel_stack_top(cpu).ok_or(VmError::InvalidAddress)?;
+    let cpu = crate::ntoskrnl::ke::thread::current_cpu_index().unwrap_or(0);
+    let old_tss_stack = crate::ntoskrnl::ke::arch::kernel_stack_top(cpu).unwrap_or(0);
     let old_syscall_stack = crate::syscall::kernel_stack_top(cpu).unwrap_or(old_tss_stack);
     let stack_base = unsafe { core::ptr::addr_of_mut!(USER_KERNEL_STACKS[cpu].0).cast::<u8>() } as u64;
     let user_kernel_stack_top = stack_base.checked_add(32768).ok_or(VmError::InvalidAddress)? & !0xf;
     let user_thread_id = crate::ntoskrnl::ke::thread::attach_current_user_thread(env.process_id, user_kernel_stack_top).ok();
-    let stack_installed = user_thread_id.is_some()
+    let stack_installed = old_tss_stack != 0 && old_syscall_stack != 0 && user_thread_id.is_some()
         && crate::ntoskrnl::ke::arch::set_kernel_stack(cpu, user_kernel_stack_top)
         && crate::syscall::set_kernel_stack(cpu, user_kernel_stack_top);
     if !stack_installed {
@@ -411,8 +411,8 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
     if let Some(thread_id) = user_thread_id {
         let _ = crate::ntoskrnl::ke::thread::detach_current_user_thread(thread_id);
     }
-    let _ = crate::ntoskrnl::ke::arch::set_kernel_stack(cpu, old_tss_stack);
-    let _ = crate::syscall::set_kernel_stack(cpu, old_syscall_stack);
+    if old_tss_stack != 0 { let _ = crate::ntoskrnl::ke::arch::set_kernel_stack(cpu, old_tss_stack); }
+    if old_syscall_stack != 0 { let _ = crate::syscall::set_kernel_stack(cpu, old_syscall_stack); }
     crate::syscall::clear_current_process();
     if let Err(error)=execution_result {
         let _=crate::process::mark_exited(env.process_id,u64::MAX-1);
