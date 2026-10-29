@@ -39,3 +39,11 @@ The next controller-core milestone adds a fixed-capacity command completion trac
 Microsoft's WDM model requires PnP capability reporting, power-IRP dispatch/forwarding, D-state transitions, and wait/wake propagation through the device stack. CognacOS has power-IRP lifecycle tracking and an S4 codec, but USB hub/port policy, a real xHCI PnP/IRP DriverEntry path, and PS/2 IRQ/DPC delivery remain unwired. It therefore cannot yet guarantee end-to-end power/resume/wake behavior for USB 3.x devices or USB/PS/2 keyboards.
 
 A conservative capability registry defaults unregistered devices to D0/D3 and rejects wait/wake unless the device explicitly registers verified support. D1/D2 and wake are opt-in; drivers must still implement hardware changes in IRP_MJ_POWER. xHCI command submission now reserves completion tracking before ringing the doorbell, and live event routing correlates command completions while surfacing transfer and port-status events. These are prerequisites, not end-to-end hardware support.
+
+
+## Device power transition implementation (2026-10-29)
+
+- WDM device creation now registers conservative D0/D3 capabilities; successful PnP remove/surprise-remove and final object deletion clear registry entries.
+- The xHCI core provides per-port U3 suspend/U0 resume primitives and controller D0-exit/D0-entry routines that mask interrupts, halt without freeing DMA or resetting slots, snapshot controller registers, and restore them before re-enabling interrupts. Callers must quiesce transfers before controller halt and propagate wait/wake through the USB parent stack.
+- The PS/2 core provides bounded 8042 self-test/configuration/port-test startup and a lifecycle owner that masks and synchronizes IRQ delivery before suspend, disables scanning, and reinitializes before restoring IRQ delivery on resume.
+- CI unit tests cover simulated scan-code delivery before/after PS/2 power transitions and xHCI port state changes. These are deterministic driver tests, **not** proof of live USB HID, PS/2 IRQ/DPC delivery, or QEMU keyboard input across real power transitions.
