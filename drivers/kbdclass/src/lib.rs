@@ -64,6 +64,25 @@ impl InputQueue {
 }
 impl Default for InputQueue { fn default() -> Self { Self::new() } }
 
+/// Driver-facing keyboard class endpoint. Port drivers submit make/break packets;
+/// the consumer drains them through a bounded read interface. Synchronization is
+/// deliberately supplied by the kernel adapter so IRQ callers never take a blocking lock.
+pub struct KeyboardInputStack { queue: InputQueue }
+impl KeyboardInputStack {
+ pub const fn new()->Self { Self{queue:InputQueue::new()} }
+ pub fn attach_port(&mut self)->Result<(),ClassError>{self.queue.connect()}
+ pub fn detach_port(&mut self){self.queue.disconnect()}
+ pub fn submit_from_port(&mut self,packet:KeyboardInputData)->Result<(),ClassError>{self.queue.push(packet)}
+ pub fn open(&mut self)->Result<(),ClassError>{self.queue.open_exclusive()}
+ pub fn close(&mut self){self.queue.close()}
+ pub fn read_packets(&mut self,out:&mut[KeyboardInputData])->Result<usize,ClassError>{self.queue.read(out)}
+ pub const fn pending(&self)->usize{self.queue.queued()}
+ pub const fn dropped_packets(&self)->u64{self.queue.dropped()}
+}
+impl Default for KeyboardInputStack { fn default()->Self{Self::new()} }
+
+
+
 #[cfg(test)]
 mod tests {
  use super::*;
@@ -77,5 +96,23 @@ mod tests {
   let mut q=InputQueue::new(); q.connect().unwrap();
   for i in 0..QUEUE_CAPACITY { q.push(KeyboardInputData{make_code:i as u16,..Default::default()}).unwrap(); }
   assert_eq!(q.push(KeyboardInputData::default()),Err(ClassError::QueueFull)); assert_eq!(q.dropped(),1);
+ }
+}
+
+
+#[cfg(test)]
+mod integrated_stack_tests {
+ use super::*;
+ #[test] fn port_packets_reach_class_read_queue_in_order(){
+  let mut stack=KeyboardInputStack::new();stack.attach_port().unwrap();stack.open().unwrap();
+  let down=KeyboardInputData{make_code:0x1e,..Default::default()};
+  let up=KeyboardInputData{make_code:0x1e,flags:KEY_BREAK,..Default::default()};
+  stack.submit_from_port(down).unwrap();stack.submit_from_port(up).unwrap();
+  let mut out=[KeyboardInputData::default();2];assert_eq!(stack.read_packets(&mut out),Ok(2));
+  assert_eq!(out,[down,up]);assert_eq!(stack.pending(),0);
+ }
+ #[test] fn detach_stops_future_port_packets(){
+  let mut stack=KeyboardInputStack::new();stack.attach_port().unwrap();stack.detach_port();
+  assert_eq!(stack.submit_from_port(KeyboardInputData::default()),Err(ClassError::NotConnected));
  }
 }
