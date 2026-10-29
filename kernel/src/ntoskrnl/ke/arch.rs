@@ -451,10 +451,15 @@ cognacos_exception_common:
     push r14
     push r15
     # Normalized exception frame: saved CS is 144 bytes above the GPR frame.
+    # Exception entry does not perform SWAPGS. Mark CPL3 origin and switch to
+    # the kernel GS base before any Rust code reads per-CPU/thread state.
+    xor r13d, r13d
     mov eax, dword ptr [rsp + 144]
     and eax, 3
     cmp eax, 3
     jne .Lcognacos_exception_skip_user_save
+    mov r13d, 1
+    swapgs
     # Freeze the first user fault before XSAVE or any other Rust dispatch.
     mov rbx, rsp
     mov rdi, qword ptr [rsp + 120]
@@ -476,20 +481,27 @@ cognacos_exception_common:
     mov rsp, r12
     test rax, rax
     jz .Lcognacos_unhandled_exception
+    cmp r13d, 1
+    jne .Lcognacos_exception_skip_user_restore
+    # A handled user exception normally returns to CPL3 and needs XSTATE
+    # restore. A terminated bootstrap process rewrites CS to ring0 and skips it.
     mov eax, dword ptr [rsp + 144]
     and eax, 3
     cmp eax, 3
-    jne .Lcognacos_exception_skip_user_restore
+    jne .Lcognacos_exception_restore_gs
     mov rbx, rsp
     and rsp, -16
     call cognacos_current_user_xstate_ptr
     mov rsp, rbx
     test rax, rax
-    jz .Lcognacos_exception_skip_user_restore
+    jz .Lcognacos_exception_restore_gs
     mov r10, rax
     mov eax, 3
     xor edx, edx
     xrstor64 [r10]
+.Lcognacos_exception_restore_gs:
+    # Restore the user GS base for IRETQ, including the ring0 fault-return gate.
+    swapgs
 .Lcognacos_exception_skip_user_restore:
     pop r15
     pop r14
