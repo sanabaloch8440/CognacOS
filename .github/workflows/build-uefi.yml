@@ -943,9 +943,11 @@ jobs:
                   rate = wav.getframerate()
                   frames = wav.readframes(wav.getnframes())
           except (wave.Error, EOFError) as exc:
-              print(f"AUDIO RESULT: INCOMPLETE - invalid WAV; audio capture is supplemental: {exc}")\n    raise SystemExit(0)
+              print(f"AUDIO RESULT: INCOMPLETE - invalid WAV; audio capture is supplemental: {exc}")
+              raise SystemExit(0)
           if width not in (1, 2, 3, 4) or not frames:
-              print("AUDIO RESULT: INCOMPLETE - WAV has no usable audio samples; audio capture is supplemental.")\n    raise SystemExit(0)
+              print("AUDIO RESULT: INCOMPLETE - WAV has no usable audio samples; audio capture is supplemental.")
+              raise SystemExit(0)
           if width == 1:
               samples = [b - 128 for b in frames]
           elif width == 2:
@@ -961,7 +963,8 @@ jobs:
           rms = math.sqrt(sum(int(s) * int(s) for s in samples) / max(1, len(samples)))
           print(f"WAV: {path}, channels={channels}, sample_rate={rate}, sample_width={width}, frames={len(frames)//width}, peak={peak}, rms={rms:.2f}")
           if peak == 0 or rms < 1.0:
-              print("AUDIO RESULT: INCOMPLETE - captured samples are silent; audio capture is supplemental.")\n    raise SystemExit(0)
+              print("AUDIO RESULT: INCOMPLETE - captured samples are silent; audio capture is supplemental.")
+              raise SystemExit(0)
           print("AUDIO RESULT: PASS - captured QEMU PC speaker audio contains non-zero samples.")
           PY
           } | tee -a "$report"
