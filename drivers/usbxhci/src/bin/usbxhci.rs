@@ -77,7 +77,7 @@ impl XhciPlatform for Platform<'_> {
         let allocate = self.dev.allocate_dma.ok_or(())?;
         let mut cpu = 0u64;
         let mut device = 0u64;
-        let status = unsafe { allocate(self.ext.device_object, size, alignment, maximum, 0, &mut cpu, &mut device) };
+        let status = unsafe { allocate(self.ext.device_object, size, alignment, maximum, 7, &mut cpu, &mut device) };
         if status.code != 0 || cpu == 0 || device == 0 { return Err(()); }
         Ok(DmaAllocation { cpu_address: cpu, device_address: device, size })
     }
