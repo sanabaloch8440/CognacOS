@@ -1931,6 +1931,12 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
 /// restore the original frame and IRETQ; unhandled supervisor exceptions halt.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
+    // Capture the first CPL3 fault before diagnostics, paging, symbol lookup,
+    // or exception dispatch can fault recursively and obscure its origin.
+    if vector < EXCEPTION_VECTORS as u64 {
+        let saved_cs = unsafe { frame.add(18).read() };
+        if saved_cs & 3 == 3 { preserve_first_user_fault(vector, error, frame); }
+    }
     let saved_rip = unsafe { frame.add(17).read() };
     if vector == 14 {
         let cr2: u64;
@@ -1957,9 +1963,6 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
     if vector < EXCEPTION_VECTORS as u64 {
         let saved_cs = unsafe { frame.add(18).read() };
         if saved_cs & 3 == 3 {
-            // Preserve the earliest ring-3 exception before page-fault handling,
-            // user exception delivery, or any subsequent nested kernel fault.
-            preserve_first_user_fault(vector, error, frame);
             if vector == 14 {
                 let cr2: u64;
                 unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
