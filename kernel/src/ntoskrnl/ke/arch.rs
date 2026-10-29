@@ -1841,7 +1841,9 @@ unsafe extern "C" { fn rdotos_process_fault_return(); }
 /// Contain a fault from the bootstrap user process without trying to resume
 /// its invalid user RIP or switching through a stale idle context.
 fn return_from_faulted_bootstrap_process(trap:&mut UserExceptionTrapFrame,pid:u64,status:u64)->bool{
- if !crate::ntoskrnl::ke::thread::is_bootstrap_user_thread(){return false;}
+ let Ok(cpu)=crate::ntoskrnl::ke::thread::current_cpu_index() else{return false;};
+ if !crate::usermode::user_return_context_active(cpu)
+  || crate::ntoskrnl::ke::thread::current_thread_id().is_none(){return false;}
  let _=crate::process::mark_exited(pid,status);
  trap.saved_registers=[0;15];
  trap.rip=rdotos_process_fault_return as usize as u64;
