@@ -1231,8 +1231,8 @@ pub unsafe extern "win64" fn mm_allocate_pages_for_mdl_ex(
 }
 
 /// Allocate an MDL from an explicit NUMA node using SRAT-owned physical ranges.
-/// Nonblocking requests remain fail-closed until pool allocation and MDL lifetime
-/// registration can both be guaranteed nonblocking.
+/// NO_WAIT uses reserve-backed pool storage and try-lock physical/registry paths;
+/// it can fail immediately when reserves, eligible low pages, or a lock is busy.
 pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
     low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
     cache_type: u32, ideal_node: u32, flags: u32,
