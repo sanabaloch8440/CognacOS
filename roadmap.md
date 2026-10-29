@@ -25,7 +25,7 @@ This is the canonical task list. Completed work is summarized by area; detailed 
 
 ## P0 — CI and runtime validation
 
-- [ ] Inspect the latest failed [GitHub Actions run](https://github.com/umarfarooq7869/CognacOS/actions); identify the first causal error rather than downstream symptoms.
+- [x] Investigated [run 40816579264](https://github.com/umarfarooq7869/CognacOS/actions/runs/40816579264): compilation and host-side checks passed; QEMU stopped in the NT MM self-test because NUMA page allocation treated transient allocator-lock contention as allocation failure. Changed the blocking node-aware allocator to acquire the allocator lock normally; the nonblocking API remains fail-closed until its complete allocation path is nonblocking.
 - [ ] Pass the complete current-revision build, NTDLL PE/export/no-import checks, QEMU boot smoke, and 2/4/8-vCPU SMP matrix.
 - [ ] Ensure every new boot regression is asserted in workflow logs and fails the job when its expected result is absent.
 - [ ] Publish the passing run/commit in this section only after all required jobs finish successfully.
