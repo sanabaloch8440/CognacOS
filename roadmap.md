@@ -28,6 +28,7 @@ This is the canonical task list. Completed work is summarized by area; detailed 
 - [x] Investigated [run 40816579264](https://github.com/umarfarooq7869/CognacOS/actions/runs/40816579264): compilation and host-side checks passed; QEMU stopped in the NT MM self-test because NUMA page allocation treated transient allocator-lock contention as allocation failure. Changed the blocking node-aware allocator to acquire the allocator lock normally; the nonblocking API remains fail-closed until its complete allocation path is nonblocking.
 - [ ] Pass the complete current-revision build, NTDLL PE/export/no-import checks, QEMU boot smoke, and 2/4/8-vCPU SMP matrix.
 - [ ] Ensure every new boot regression is asserted in workflow logs and fails the job when its expected result is absent.
+- [ ] Keyboard/USB hardware path: the kbdclass, HIDClass, kbdhid, and i8042prt packages have host-testable protocol cores; usbxhci now has checked capability parsing, TRB/ring primitives, DMA-address validation, bounded polling, CI tests, and a PE32+ image build. Still required before marking the stack operational: real controller reset/run, DMA-coherent ring/context allocation and IOMMU mappings, event-ring/interrupt service, USB enumeration and control/bulk transfers, HID report delivery, PS/2 IRQ/DPC wiring, PnP/IRP registration, and end-to-end QEMU keyboard input tests.
 - [ ] Publish the passing run/commit in this section only after all required jobs finish successfully.
 
 ## P1 — Memory safety and process isolation
