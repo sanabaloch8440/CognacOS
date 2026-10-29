@@ -989,6 +989,12 @@ fn register_page_allocation_mdl(address: u64, pages: usize) -> bool {
     *slot = PageAllocationMdl { address, pages, live: true };
     true
 }
+fn try_register_page_allocation_mdl(address: u64, pages: usize) -> bool {
+    let Some(mut table) = PAGE_ALLOCATION_MDLS.try_lock() else { return false; };
+    let Some(slot) = table.iter_mut().find(|entry| !entry.live) else { return false; };
+    *slot = PageAllocationMdl { address, pages, live: true };
+    true
+}
 fn page_allocation_mdl_pages(address: u64) -> Option<usize> {
     PAGE_ALLOCATION_MDLS.lock().iter().find(|entry| entry.live && entry.address == address).map(|entry| entry.pages)
 }
@@ -1017,13 +1023,8 @@ unsafe fn allocate_pages_for_mdl(
     low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
     cache_type: u32, flags: u32,
 ) -> *mut c_void {
-    // NO_WAIT is a hard nonblocking contract: this path currently lacks a
-    // nonblocking nonpaged-pool allocator and nonblocking MDL-registry lock.
-    // Fail immediately instead of accidentally blocking in pool_allocate_tagged,
-    // page allocation, or register_page_allocation_mdl.
-    if flags & MM_ALLOCATE_NO_WAIT != 0 {
-        return core::ptr::null_mut();
-    }
+    // Local-node-only requests are delegated to the node-aware implementation.
+    // Its node-specific allocation and rollback locks must be try-lock based too.
     // Windows interprets FROM_LOCAL_NODE_ONLY as the current thread's ideal
     // node. Route this flag through the node-aware allocator instead of
     // rejecting it or silently allocating from an arbitrary physical range.
@@ -1056,7 +1057,12 @@ unsafe fn allocate_pages_for_mdl(
         return core::ptr::null_mut();
     }
     let mdl_bytes = (MDL_HEADER_SIZE + requested_pages as u64 * 8) as usize;
-    let mdl = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(mdl_bytes, 0x4c444d4d, true);
+    let no_wait = flags & MM_ALLOCATE_NO_WAIT != 0;
+    let mdl = if no_wait {
+        crate::ntoskrnl::rtl_runtime::pool_try_allocate_tagged(mdl_bytes, 0x4c444d4d, true)
+    } else {
+        crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(mdl_bytes, 0x4c444d4d, true)
+    };
     if mdl.is_null() { return core::ptr::null_mut(); }
 
     let mut allocated = 0usize;
@@ -1067,7 +1073,11 @@ unsafe fn allocate_pages_for_mdl(
     // aligned to a SkipBytes boundary; chunks may be physically disjoint.
     if require_contiguous && skip_bytes == 0 {
         if let Ok(base) = unsafe {
-            crate::memory::allocate_contiguous_pages_in_range(requested_pages, low_address, high_address, 0)
+            if no_wait {
+                crate::memory::try_allocate_contiguous_pages_in_range(requested_pages, low_address, high_address, 0)
+            } else {
+                crate::memory::allocate_contiguous_pages_in_range(requested_pages, low_address, high_address, 0)
+            }
         } {
             for index in 0..requested_pages {
                 unsafe { pfns.add(index).write(base / PAGE_SIZE + index as u64); }
@@ -1087,7 +1097,11 @@ unsafe fn allocate_pages_for_mdl(
             };
             let (Some(low), Some(high)) = (low_address.checked_add(offset), high_address.checked_add(offset)) else { break; };
             let first = chunk * pages_per_chunk;
-            match unsafe { crate::memory::allocate_contiguous_pages_in_range(pages_per_chunk, low, high, skip_bytes) } {
+            match unsafe { if no_wait {
+                crate::memory::try_allocate_contiguous_pages_in_range(pages_per_chunk, low, high, skip_bytes)
+            } else {
+                crate::memory::allocate_contiguous_pages_in_range(pages_per_chunk, low, high, skip_bytes)
+            } } {
                 Ok(base) => {
                     for page in 0..pages_per_chunk {
                         unsafe { pfns.add(first + page).write(base / PAGE_SIZE + page as u64); }
@@ -1118,7 +1132,11 @@ unsafe fn allocate_pages_for_mdl(
                 loop {
                     let offset = match window.checked_mul(skip_bytes) { Some(v) => v, None => break };
                     let (Some(low), Some(high)) = (low_address.checked_add(offset), high_address.checked_add(offset)) else { break };
-                    match unsafe { crate::memory::allocate_page_in_range(low, high, 0) } {
+                    match unsafe { if no_wait {
+                        crate::memory::try_allocate_page_in_range(low, high, 0)
+                    } else {
+                        crate::memory::allocate_page_in_range(low, high, 0)
+                    } } {
                         Ok(value) => {
                             unsafe { pfns.add(index).write(value / PAGE_SIZE); }
                             allocated += 1;
@@ -1137,17 +1155,36 @@ unsafe fn allocate_pages_for_mdl(
     if allocated == 0 || (flags & MM_ALLOCATE_FULLY_REQUIRED != 0 && allocated != requested_pages) {
         for index in 0..allocated {
             let physical = unsafe { pfns.add(index).read() } * PAGE_SIZE;
-            let _ = unsafe { crate::memory::free_page(physical) };
+            let _ = unsafe {
+                if no_wait { crate::memory::try_free_page(physical) }
+                else { crate::memory::free_page(physical) }
+            };
         }
-        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        if no_wait {
+            let _ = crate::ntoskrnl::rtl_runtime::pool_try_deallocate_tagged(mdl, Some(0x4c444d4d));
+        } else {
+            let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        }
         return core::ptr::null_mut();
     }
-    if !register_page_allocation_mdl(mdl as u64, allocated) {
+    let registered = if no_wait {
+        try_register_page_allocation_mdl(mdl as u64, allocated)
+    } else {
+        register_page_allocation_mdl(mdl as u64, allocated)
+    };
+    if !registered {
         for index in 0..allocated {
             let physical = unsafe { pfns.add(index).read() } * PAGE_SIZE;
-            let _ = unsafe { crate::memory::free_page(physical) };
+            let _ = unsafe {
+                if no_wait { crate::memory::try_free_page(physical) }
+                else { crate::memory::free_page(physical) }
+            };
         }
-        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        if no_wait {
+            let _ = crate::ntoskrnl::rtl_runtime::pool_try_deallocate_tagged(mdl, Some(0x4c444d4d));
+        } else {
+            let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        }
         return core::ptr::null_mut();
     }
     let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
