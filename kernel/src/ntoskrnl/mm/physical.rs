@@ -455,9 +455,11 @@ pub unsafe fn allocate_page_in_range(low: u64, high: u64, boundary: u64) -> Resu
         while i < free.1 {
             let page = free.0[i];
             if allowed(page, low, high, boundary) {
+                // Validate the direct-map alias before removing the PFN from
+                // the free stack, so a failed mapping check cannot leak it.
+                let pointer = direct_map_address(page).ok_or(AllocError::InvalidMap)? as *mut u8;
                 free.1 -= 1;
                 free.0[i] = free.0[free.1];
-                let pointer = direct_map_address(page).ok_or(AllocError::InvalidMap)? as *mut u8;
                 unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
                 return Ok(page);
             }
@@ -482,6 +484,10 @@ pub unsafe fn allocate_page_in_range(low: u64, high: u64, boundary: u64) -> Resu
             if candidate.checked_add(PAGE).is_some_and(|end| end <= original.end && end - 1 <= high)
                 && allowed(candidate, low, high, boundary)
             {
+                // Resolve high-memory mapping before mutating the extent list.
+                let pointer = if high_memory {
+                    match direct_map_address(candidate) { Some(v) => v as *mut u8, None => return Err(AllocError::InvalidMap) }
+                } else { candidate as *mut u8 };
                 if candidate == original.next {
                     regions[i].next = candidate + PAGE;
                 } else {
@@ -491,7 +497,6 @@ pub unsafe fn allocate_page_in_range(low: u64, high: u64, boundary: u64) -> Resu
                     count += 1;
                     count_atomic.store(count, core::sync::atomic::Ordering::Release);
                 }
-                let pointer = if high_memory { direct_map_address(candidate).ok_or(AllocError::InvalidMap)? as *mut u8 } else { candidate as *mut u8 };
                 unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
                 return Ok(candidate);
             }
@@ -531,6 +536,9 @@ pub unsafe fn allocate_contiguous_pages_in_range(
                     && (base % boundary != 0 || base / boundary != (end - 1) / boundary)) {
                 continue;
             }
+            let pointer = if high_memory {
+                match direct_map_address(base) { Some(v) => v as *mut u8, None => continue }
+            } else { base as *mut u8 };
             let mut found_all = true;
             for n in 1..pages {
                 let wanted = base + n as u64 * PAGE_SIZE;
@@ -551,7 +559,6 @@ pub unsafe fn allocate_contiguous_pages_in_range(
                     ptr.add(index).write(ptr.add(current_len - 1).read());
                 }
             }
-            let pointer = if high_memory { direct_map_address(base).ok_or(AllocError::InvalidMap)? as *mut u8 } else { base as *mut u8 };
             unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
             return Ok(base);
         }
@@ -577,6 +584,9 @@ pub unsafe fn allocate_contiguous_pages_in_range(
             let Some(end) = candidate.checked_add(bytes) else { continue; };
             if candidate < original.next || end > original.end || end - 1 > high
                 || (boundary != 0 && candidate / boundary != (end - 1) / boundary) { continue; }
+            let pointer = if high_memory {
+                match direct_map_address(candidate) { Some(v) => v as *mut u8, None => return Err(AllocError::InvalidMap) }
+            } else { candidate as *mut u8 };
             if candidate == original.next {
                 regions[i].next = end;
             } else {
@@ -586,7 +596,6 @@ pub unsafe fn allocate_contiguous_pages_in_range(
                 count += 1;
                 count_atomic.store(count, core::sync::atomic::Ordering::Release);
             }
-            let pointer = if high_memory { direct_map_address(candidate).ok_or(AllocError::InvalidMap)? as *mut u8 } else { candidate as *mut u8 };
             unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
             return Ok(candidate);
         }
