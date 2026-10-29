@@ -710,12 +710,12 @@ jobs:
                   data.extend(chunk)
               return data.decode("utf-8", "replace")
           read_prompt()
-          monitor.sendall(b"info qtree\\n")
+          monitor.sendall(b"info qtree\n")
           tree = read_prompt()
           monitor.close()
           for expected in ("qemu-xhci", "usb-kbd"):
               if expected not in tree:
-                  raise SystemExit(f"QEMU USB topology missing {expected}:\\n{tree}")
+                  raise SystemExit(f"QEMU USB topology missing {expected}:\n{tree}")
           print("QEMU USB topology verified: xHCI controller + emulated USB keyboard attached.")
           print("NOTE: this is a QEMU device-model check, not proof of CognacOS USB enumeration.")
           PY
