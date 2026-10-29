@@ -273,7 +273,8 @@ pub fn validate_controller_dma_config(caps:&Capabilities,c:&ControllerDmaConfig)
 }
 /// Reset and program the controller's command ring, DCBAA, one ERST segment,
 /// event ring and slot limit, then start it. The caller must have already acquired
-/// PCI resources, created DMA-coherent allocations, and registered the interrupt.
+/// PCI resources, created DMA-coherent allocations, populated the ERST's first entry
+/// with event_ring + event_ring_entries, and registered the interrupt.
 pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:ControllerDmaConfig,interrupt_registered:bool,poll_budget:u32)->Result<(),ControllerInitError>{
  if caps.cap_length<CAPLENGTH_MIN||caps.doorbell_offset<caps.cap_length as u32||caps.runtime_offset<caps.cap_length as u32{return Err(ControllerInitError::InvalidCapabilities)}
  validate_controller_dma_config(caps,&dma)?;
@@ -283,7 +284,9 @@ pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:
  let sts=reg_read(io,op+4).map_err(|_|ControllerInitError::RegisterIoFailure)?;
  if sts&USBSTS_NOT_READY!=0{return Err(ControllerInitError::ResetTimeout)}
  if sts&USBSTS_HALTED==0{return Err(ControllerInitError::ControllerDidNotHalt)}
- reg_write(io,op,cmd|USBCMD_RESET)?;
+ reg_write(io,op,cmd&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE))?;
+ poll_reg(io,op+4,USBSTS_HALTED,USBSTS_HALTED,poll_budget)?;
+ reg_write(io,op,(cmd&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE))|USBCMD_RESET)?;
  poll_reg(io,op,USBCMD_RESET,0,poll_budget)?;
  poll_reg(io,op+4,USBSTS_NOT_READY,0,poll_budget)?;
  if reg_read(io,op+4)?&USBSTS_HALTED==0{return Err(ControllerInitError::ControllerDidNotHalt)}
@@ -294,7 +297,8 @@ pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:
  reg_write(io,op+0x38,(dma.max_slots as u32)&CONFIG_MAX_SLOTS_MASK)?;
  let rt=caps.runtime_offset;
  let iman=rt+0x20;let erstsz=rt+0x28;let erstba=rt+0x30;let erdp=rt+0x38;
- reg_write(io,erstsz,dma.event_ring_entries as u32)?;
+ // ERST memory must already contain one { event_ring DMA base, segment size } entry.
+ reg_write(io,erstsz,1)?;
  reg_write(io,erstba,dma.erst as u32)?;
  reg_write(io,erstba+4,(dma.erst>>32) as u32)?;
  reg_write(io,erdp,dma.event_ring as u32)?;
