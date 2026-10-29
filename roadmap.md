@@ -108,15 +108,17 @@ This is the canonical task list. Completed work is summarized by area; detailed 
 
 ## Memory-manager compatibility status (2026-10-29)
 
+The latest observed QEMU run (`40815716643`) fails the aggregate NT memory-manager translation/copy self-test before the runtime driver-load stage. A follow-up commit adds per-subtest serial diagnostics; the next run must identify and fix the failing component before this milestone can be marked green.
+
 Recent work extends the MDL/physical allocator path with:
 - Constrained physical page selection honoring inclusive low/high address bounds and the SkipBytes boundary.
 - A contiguous-run path for MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS, plus a best-effort contiguous attempt for MM_ALLOCATE_PREFER_CONTIGUOUS.
-- MM_ALLOCATE_NO_WAIT uses the immediate resident-page allocator; allocation does not invoke paging or wait for page-in.
+- MM_ALLOCATE_NO_WAIT currently fails closed. It must not be advertised as supported until nonblocking pool allocation, physical-page allocation, MDL registration, and rollback all use try-lock paths end-to-end.
 - MmProtectMdlSystemAddress supports PAGE_NOACCESS, read-only, read/write, execute, execute/read, and explicit execute/read/write protections. Non-present MDL PTEs retain their PFN so protections can be restored and mappings safely torn down.
 - Runtime coverage exercises the protection transitions and the MDL mapping/free lifecycle.
 
 Still intentionally incomplete:
-- MM_ALLOCATE_FROM_LOCAL_NODE_ONLY remains rejected until CognacOS parses ACPI SRAT/SLIT topology and tracks node ownership for physical ranges.
+- SRAT memory affinity now feeds node-owned physical ranges, and processor-local APIC/x2APIC affinity records are parsed for KeGetCurrentNodeNumber. The API still uses a conservative node-0 fallback when firmware omits a CPU affinity; validate on multi-node firmware and add ideal-node thread policy before claiming full NUMA semantics.
 - Non-cached and write-combined mappings remain unsupported until PAT/MTRR-aware cache-type policy is tracked consistently across every alias (identity map, direct map, and MDL system mapping). Applying cache bits to only one alias would be unsafe.
-- MM_ALLOCATE_NO_WAIT is non-paging and non-reclaiming with respect to memory reclamation, but allocator lock acquisition currently uses the existing spin lock.
+- MM_ALLOCATE_NO_WAIT remains unsupported rather than risking a blocking pool/registry lock. The physical allocator has a try-lock path, but that alone is not sufficient to satisfy Windows' nonblocking contract.
 - This is incremental NT ABI compatibility, not a claim of complete Windows 11 memory-manager parity.
