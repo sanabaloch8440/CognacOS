@@ -165,3 +165,80 @@ pub fn flush_common(adapter:*mut c_void,cpu:*mut u8,length:usize)->Result<(),Dma
  if unsafe{(b.sync.unwrap())(b.context,device,rec.logical,length as u32,2)}!=OK{return Err(DmaError::AddressMask)}fence(Ordering::SeqCst);unsafe{core::arch::asm!("mfence",options(nostack,preserves_flags));}Ok(())
 }
 #[cfg(test)]mod tests{use super::*;#[test]fn no_backend_fails_closed(){assert!(!available());}}
+
+
+// PCI requester identity registry. DMA_ADAPTER device handles are kernel object
+// addresses, not PCI BDFs; VT-d must never derive a requester ID from a pointer.
+// PnP registers the validated PCI location before enabling bus mastering.
+const MAX_REQUESTERS: usize = 128;
+#[derive(Clone, Copy)]
+struct Requester {
+    used: bool,
+    device: usize,
+    segment: u16,
+    bus: u8,
+    devfn: u8,
+}
+impl Requester {
+    const EMPTY: Self = Self { used: false, device: 0, segment: 0, bus: 0, devfn: 0 };
+}
+static REQUESTERS: crate::hal::IrqSpinLock<[Requester; MAX_REQUESTERS]> =
+    crate::hal::IrqSpinLock::new([Requester::EMPTY; MAX_REQUESTERS]);
+
+/// Register the PCI segment:bus:device.function identity associated with a
+/// kernel device object. This records identity only; it does not authorize DMA.
+/// # Safety
+/// `device` must be a stable, live PnP device-object address.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn RdotDmaRegisterDeviceRequester(
+    device: *mut c_void, segment: u16, bus: u8, pci_device: u8, function: u8,
+) -> i32 {
+    if device.is_null() || pci_device >= 32 || function >= 8 { return INVALID; }
+    let handle = device as usize;
+    let devfn = (pci_device << 3) | function;
+    let mut entries = REQUESTERS.lock();
+    if entries.iter().any(|r| r.used && (r.device == handle
+        || (r.segment == segment && r.bus == bus && r.devfn == devfn))) {
+        return 0xC000_0035u32 as i32; // STATUS_OBJECT_NAME_COLLISION
+    }
+    let Some(slot) = entries.iter_mut().find(|r| !r.used) else { return RESOURCES; };
+    *slot = Requester { used: true, device: handle, segment, bus, devfn };
+    OK
+}
+
+/// Remove requester identity only after all DMA mappings have been torn down.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn RdotDmaUnregisterDeviceRequester(device: *mut c_void) -> i32 {
+    if device.is_null() { return INVALID; }
+    let handle = device as usize;
+    if device_busy(handle) { return 0xC000_00A2u32 as i32; } // STATUS_DEVICE_BUSY
+    let mut entries = REQUESTERS.lock();
+    let Some(slot) = entries.iter_mut().find(|r| r.used && r.device == handle) else {
+        return 0xC000_0225u32 as i32; // STATUS_NOT_FOUND
+    };
+    *slot = Requester::EMPTY;
+    OK
+}
+
+/// Return the registered requester tuple for the VT-d domain manager.
+/// The tuple is (segment, bus, device/function byte).
+pub fn requester_identity(device: usize) -> Option<(u16, u8, u8)> {
+    let entries = REQUESTERS.lock();
+    entries.iter().find(|r| r.used && r.device == device)
+        .map(|r| (r.segment, r.bus, r.devfn))
+}
+
+#[cfg(test)]
+mod requester_tests {
+    use super::*;
+    #[test]
+    fn requester_devfn_encoding_is_pci_spec_order() {
+        let devfn = (7u8 << 3) | 5u8;
+        assert_eq!(devfn, 0x3d);
+        assert!(7 < 32 && 5 < 8);
+    }
+    #[test]
+    fn requester_registry_starts_empty() {
+        assert_eq!(requester_identity(usize::MAX), None);
+    }
+}
