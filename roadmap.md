@@ -46,7 +46,7 @@ This is the canonical task list. Completed work is summarized by area; detailed 
 - [ ] Complete file/device object lifetime and documented IRP completion/cancellation semantics before expanding driver coverage.
 - [ ] Add PCI enumeration/resource assignment and a real AHCI/NVMe path only after DMA safety is available.
 - [ ] Implement and validate VT-d/AMD IOMMU translation; fail closed when safe DMA translation is unavailable.
-- [ ] Complete device/power ordering, wake handling, and S4 persistence/resume.
+- [ ] Complete device/power ordering, wake handling, and S4 persistence/resume. A conservative per-device D-state/wake capability registry is now present; hardware transitions and parent-stack wake propagation remain outstanding.
 
 ## P1 — NTDLL and native PE loader
 
@@ -140,3 +140,11 @@ Still intentionally incomplete:
 - xHCI command-ring submission now publishes command TRBs with producer-cycle handling, writes the Link TRB with Toggle Cycle on wrap, and rings Doorbell 0 only after a release/full ordering fence. Host tests cover submission, link rollover, and invalid command/ring rejection. Command completion correlation, slot/address/configure sequencing, endpoint transfer rings, USB transfers, and HID delivery remain outstanding.
 
 - Added fixed-capacity xHCI Command Completion Event correlation keyed by command TRB DMA address, plus validated Enable Slot, Address Device, and Configure Endpoint command builders. Host tests cover completion correlation, unknown/non-completion events, and slot/input-context validation. Controller-owned event-ring draining, input-context population, command queue synchronization/timeouts, port reset, endpoint transfer rings, and HID delivery remain outstanding.
+
+
+## Device power prerequisites (2026-10-29)
+
+- [x] Add a conservative per-device D-state capability registry: default D0/D3, opt-in D1/D2, wake disabled unless explicitly registered.
+- [x] Validate power query/set requests and reject unregistered wait/wake requests.
+- [ ] Wire capabilities to PnP reporting and remove registry entries on device rundown.
+- [ ] Implement USB hub/port power sequencing, xHCI save/restore, parent-bus wake propagation, PS/2 power/IRQ restore, and QEMU suspend/resume tests.
