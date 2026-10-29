@@ -1,6 +1,110 @@
 //! US keyboard layout translation core for the Win32 input path.
 //! This is a portable layout engine, not yet the Windows KBDTABLES/KbdLayerDescriptor ABI.
 #![no_std]
+
+/// Initial x64 KBDTABLES-compatible descriptor layout for the CognacOS US layout.
+/// Keep fields pointer-sized and in the Windows keyboard-layout ABI order.
+/// This is intentionally a conservative US table (no dead keys or ligatures).
+#[repr(C)]
+pub struct VkToWchar { pub virtual_key:u8, pub attributes:u8, pub chars:[u16;5] }
+#[repr(C)]
+pub struct VkToWcharTable { pub entries:*const VkToWchar, pub modification_count:u8, pub entry_size:u8 }
+#[repr(C)]
+pub struct VkToWcharTableList { pub table:*const VkToWcharTable }
+#[repr(C)]
+pub struct ModifierBit { pub virtual_key:u8, pub modifier_bit:u8 }
+#[repr(C)]
+pub struct Modifiers { pub max_mod_bits:u16, pub modifier_bits:*const ModifierBit, pub modifier_number_table:*const u8 }
+#[repr(C)]
+pub struct ScanVk { pub scan_code:u8, pub virtual_key:u16 }
+#[repr(C)]
+pub struct KbdTables {
+ pub char_modifiers:*const Modifiers,
+ pub vk_to_wchar_table:*const VkToWcharTableList,
+ pub max_scan_to_vk:u8,
+ pub scan_to_vk:*const ScanVk,
+ pub locale_flags:u32,
+ pub max_dead_key_combinations:u8,
+ pub max_ligature:u8,
+ pub scan_to_vk_e0:*const u16,
+ pub scan_to_vk_e1:*const u16,
+ pub dead_keys:*const core::ffi::c_void,
+ pub key_names:*const core::ffi::c_void,
+ pub key_names_extended:*const core::ffi::c_void,
+ pub key_names_dead:*const core::ffi::c_void,
+ pub numpad_scan_code:*const u16,
+ pub max_mouse_virtual_keys:u8,
+ pub mouse_virtual_keys:*const core::ffi::c_void,
+}
+static VK_CHARS:[VkToWchar;49]=[
+ VkToWchar{virtual_key:0x30,attributes:0,chars:[b'0' as u16,b')' as u16,0,0,b'0' as u16]},
+ VkToWchar{virtual_key:0x31,attributes:0,chars:[b'1' as u16,b'!' as u16,0,0,b'1' as u16]},
+ VkToWchar{virtual_key:0x32,attributes:0,chars:[b'2' as u16,b'@' as u16,0,0,b'2' as u16]},
+ VkToWchar{virtual_key:0x33,attributes:0,chars:[b'3' as u16,b'#' as u16,0,0,b'3' as u16]},
+ VkToWchar{virtual_key:0x34,attributes:0,chars:[b'4' as u16,b'$' as u16,0,0,b'4' as u16]},
+ VkToWchar{virtual_key:0x35,attributes:0,chars:[b'5' as u16,b'%' as u16,0,0,b'5' as u16]},
+ VkToWchar{virtual_key:0x36,attributes:0,chars:[b'6' as u16,b'^' as u16,0,0,b'6' as u16]},
+ VkToWchar{virtual_key:0x37,attributes:0,chars:[b'7' as u16,b'&' as u16,0,0,b'7' as u16]},
+ VkToWchar{virtual_key:0x38,attributes:0,chars:[b'8' as u16,b'*' as u16,0,0,b'8' as u16]},
+ VkToWchar{virtual_key:0x39,attributes:0,chars:[b'9' as u16,b'(' as u16,0,0,b'9' as u16]},
+ VkToWchar{virtual_key:0x20,attributes:0,chars:[b' ' as u16,b' ' as u16,0,0,b' ' as u16]},
+ VkToWchar{virtual_key:0x0d,attributes:0,chars:[b'\r' as u16,b'\r' as u16,0,0,b'\r' as u16]},
+ VkToWchar{virtual_key:0x09,attributes:0,chars:[b'\t' as u16,b'\t' as u16,0,0,b'\t' as u16]},
+ VkToWchar{virtual_key:0x41,attributes:0,chars:[b'a' as u16,b'A' as u16,0,0,b'A' as u16]},
+ VkToWchar{virtual_key:0x42,attributes:0,chars:[b'b' as u16,b'B' as u16,0,0,b'B' as u16]},
+ VkToWchar{virtual_key:0x43,attributes:0,chars:[b'c' as u16,b'C' as u16,0,0,b'C' as u16]},
+ VkToWchar{virtual_key:0x44,attributes:0,chars:[b'd' as u16,b'D' as u16,0,0,b'D' as u16]},
+ VkToWchar{virtual_key:0x45,attributes:0,chars:[b'e' as u16,b'E' as u16,0,0,b'E' as u16]},
+ VkToWchar{virtual_key:0x46,attributes:0,chars:[b'f' as u16,b'F' as u16,0,0,b'F' as u16]},
+ VkToWchar{virtual_key:0x47,attributes:0,chars:[b'g' as u16,b'G' as u16,0,0,b'G' as u16]},
+ VkToWchar{virtual_key:0x48,attributes:0,chars:[b'h' as u16,b'H' as u16,0,0,b'H' as u16]},
+ VkToWchar{virtual_key:0x49,attributes:0,chars:[b'i' as u16,b'I' as u16,0,0,b'I' as u16]},
+ VkToWchar{virtual_key:0x4a,attributes:0,chars:[b'j' as u16,b'J' as u16,0,0,b'J' as u16]},
+ VkToWchar{virtual_key:0x4b,attributes:0,chars:[b'k' as u16,b'K' as u16,0,0,b'K' as u16]},
+ VkToWchar{virtual_key:0x4c,attributes:0,chars:[b'l' as u16,b'L' as u16,0,0,b'L' as u16]},
+ VkToWchar{virtual_key:0x4d,attributes:0,chars:[b'm' as u16,b'M' as u16,0,0,b'M' as u16]},
+ VkToWchar{virtual_key:0x4e,attributes:0,chars:[b'n' as u16,b'N' as u16,0,0,b'N' as u16]},
+ VkToWchar{virtual_key:0x4f,attributes:0,chars:[b'o' as u16,b'O' as u16,0,0,b'O' as u16]},
+ VkToWchar{virtual_key:0x50,attributes:0,chars:[b'p' as u16,b'P' as u16,0,0,b'P' as u16]},
+ VkToWchar{virtual_key:0x51,attributes:0,chars:[b'q' as u16,b'Q' as u16,0,0,b'Q' as u16]},
+ VkToWchar{virtual_key:0x52,attributes:0,chars:[b'r' as u16,b'R' as u16,0,0,b'R' as u16]},
+ VkToWchar{virtual_key:0x53,attributes:0,chars:[b's' as u16,b'S' as u16,0,0,b'S' as u16]},
+ VkToWchar{virtual_key:0x54,attributes:0,chars:[b't' as u16,b'T' as u16,0,0,b'T' as u16]},
+ VkToWchar{virtual_key:0x55,attributes:0,chars:[b'u' as u16,b'U' as u16,0,0,b'U' as u16]},
+ VkToWchar{virtual_key:0x56,attributes:0,chars:[b'v' as u16,b'V' as u16,0,0,b'V' as u16]},
+ VkToWchar{virtual_key:0x57,attributes:0,chars:[b'w' as u16,b'W' as u16,0,0,b'W' as u16]},
+ VkToWchar{virtual_key:0x58,attributes:0,chars:[b'x' as u16,b'X' as u16,0,0,b'X' as u16]},
+ VkToWchar{virtual_key:0x59,attributes:0,chars:[b'y' as u16,b'Y' as u16,0,0,b'Y' as u16]},
+ VkToWchar{virtual_key:0x5a,attributes:0,chars:[b'z' as u16,b'Z' as u16,0,0,b'Z' as u16]},
+ VkToWchar{virtual_key:0xbd,attributes:0,chars:[b'-' as u16,b'_' as u16,0,0,b'_' as u16]},
+ VkToWchar{virtual_key:0xbb,attributes:0,chars:[b'=' as u16,b'+' as u16,0,0,b'+' as u16]},
+ VkToWchar{virtual_key:0xdb,attributes:0,chars:[b'[' as u16,b'{' as u16,0,0,b'{' as u16]},
+ VkToWchar{virtual_key:0xdd,attributes:0,chars:[b']' as u16,b'}' as u16,0,0,b'}' as u16]},
+ VkToWchar{virtual_key:0xba,attributes:0,chars:[b';' as u16,b':' as u16,0,0,b':' as u16]},
+ VkToWchar{virtual_key:0xde,attributes:0,chars:[b'\'' as u16,b'"' as u16,0,0,b'"' as u16]},
+ VkToWchar{virtual_key:0xc0,attributes:0,chars:[b'`' as u16,b'~' as u16,0,0,b'~' as u16]},
+ VkToWchar{virtual_key:0xbc,attributes:0,chars:[b',' as u16,b'<' as u16,0,0,b'<' as u16]},
+ VkToWchar{virtual_key:0xbe,attributes:0,chars:[b'.' as u16,b'>' as u16,0,0,b'>' as u16]},
+ VkToWchar{virtual_key:0xbf,attributes:0,chars:[b'/' as u16,b'?' as u16,0,0,b'?' as u16]},
+ VkToWchar{virtual_key:0,attributes:0,chars:[0;5]},
+];
+static VK_TABLE:VkToWcharTable=VkToWcharTable{entries:VK_CHARS.as_ptr(),modification_count:5,entry_size:core::mem::size_of::<VkToWchar>() as u8};
+static VK_TABLE_LIST:[VkToWcharTableList;2]=[VkToWcharTableList{table:&VK_TABLE},VkToWcharTableList{table:core::ptr::null()}];
+static MODIFIER_BITS:[ModifierBit;4]=[ModifierBit{virtual_key:VK_SHIFT as u8,modifier_bit:1},ModifierBit{virtual_key:VK_CONTROL as u8,modifier_bit:2},ModifierBit{virtual_key:VK_MENU as u8,modifier_bit:4},ModifierBit{virtual_key:0,modifier_bit:0}];
+static MODIFIER_NUMBERS:[u8;8]=[0,1,2,3,4,5,6,0];
+static CHAR_MODIFIERS:Modifiers=Modifiers{max_mod_bits:3,modifier_bits:MODIFIER_BITS.as_ptr(),modifier_number_table:MODIFIER_NUMBERS.as_ptr()};
+static SCAN_TO_VK:[ScanVk;89]=[ScanVk{scan_code:0,virtual_key:0},ScanVk{scan_code:1,virtual_key:0},ScanVk{scan_code:2,virtual_key:0},ScanVk{scan_code:3,virtual_key:0},ScanVk{scan_code:4,virtual_key:0},ScanVk{scan_code:5,virtual_key:0},ScanVk{scan_code:6,virtual_key:0},ScanVk{scan_code:7,virtual_key:0},ScanVk{scan_code:8,virtual_key:0},ScanVk{scan_code:9,virtual_key:0},ScanVk{scan_code:10,virtual_key:0},ScanVk{scan_code:11,virtual_key:0},ScanVk{scan_code:12,virtual_key:0},ScanVk{scan_code:13,virtual_key:0},ScanVk{scan_code:14,virtual_key:0},ScanVk{scan_code:15,virtual_key:0},ScanVk{scan_code:16,virtual_key:0},ScanVk{scan_code:17,virtual_key:0},ScanVk{scan_code:18,virtual_key:0},ScanVk{scan_code:19,virtual_key:0},ScanVk{scan_code:20,virtual_key:0},ScanVk{scan_code:21,virtual_key:0},ScanVk{scan_code:22,virtual_key:0},ScanVk{scan_code:23,virtual_key:0},ScanVk{scan_code:24,virtual_key:0},ScanVk{scan_code:25,virtual_key:0},ScanVk{scan_code:26,virtual_key:0},ScanVk{scan_code:27,virtual_key:0},ScanVk{scan_code:28,virtual_key:0},ScanVk{scan_code:29,virtual_key:0},ScanVk{scan_code:30,virtual_key:0},ScanVk{scan_code:31,virtual_key:0},ScanVk{scan_code:32,virtual_key:0},ScanVk{scan_code:33,virtual_key:0},ScanVk{scan_code:34,virtual_key:0},ScanVk{scan_code:35,virtual_key:0},ScanVk{scan_code:36,virtual_key:0},ScanVk{scan_code:37,virtual_key:0},ScanVk{scan_code:38,virtual_key:0},ScanVk{scan_code:39,virtual_key:0},ScanVk{scan_code:40,virtual_key:0},ScanVk{scan_code:41,virtual_key:0},ScanVk{scan_code:42,virtual_key:0},ScanVk{scan_code:43,virtual_key:0},ScanVk{scan_code:44,virtual_key:0},ScanVk{scan_code:45,virtual_key:0},ScanVk{scan_code:46,virtual_key:0},ScanVk{scan_code:47,virtual_key:0},ScanVk{scan_code:48,virtual_key:0},ScanVk{scan_code:49,virtual_key:0},ScanVk{scan_code:50,virtual_key:0},ScanVk{scan_code:51,virtual_key:0},ScanVk{scan_code:52,virtual_key:0},ScanVk{scan_code:53,virtual_key:0},ScanVk{scan_code:54,virtual_key:0},ScanVk{scan_code:55,virtual_key:0},ScanVk{scan_code:56,virtual_key:0},ScanVk{scan_code:57,virtual_key:0},ScanVk{scan_code:58,virtual_key:0},ScanVk{scan_code:59,virtual_key:0},ScanVk{scan_code:60,virtual_key:0},ScanVk{scan_code:61,virtual_key:0},ScanVk{scan_code:62,virtual_key:0},ScanVk{scan_code:63,virtual_key:0},ScanVk{scan_code:64,virtual_key:0},ScanVk{scan_code:65,virtual_key:0},ScanVk{scan_code:66,virtual_key:0},ScanVk{scan_code:67,virtual_key:0},ScanVk{scan_code:68,virtual_key:0},ScanVk{scan_code:69,virtual_key:0},ScanVk{scan_code:70,virtual_key:0},ScanVk{scan_code:71,virtual_key:0},ScanVk{scan_code:72,virtual_key:0},ScanVk{scan_code:73,virtual_key:0},ScanVk{scan_code:74,virtual_key:0},ScanVk{scan_code:75,virtual_key:0},ScanVk{scan_code:76,virtual_key:0},ScanVk{scan_code:77,virtual_key:0},ScanVk{scan_code:78,virtual_key:0},ScanVk{scan_code:79,virtual_key:0},ScanVk{scan_code:80,virtual_key:0},ScanVk{scan_code:81,virtual_key:0},ScanVk{scan_code:82,virtual_key:0},ScanVk{scan_code:83,virtual_key:0},ScanVk{scan_code:84,virtual_key:0},ScanVk{scan_code:85,virtual_key:0},ScanVk{scan_code:86,virtual_key:0},ScanVk{scan_code:87,virtual_key:0},ScanVk{scan_code:88,virtual_key:0}];\n
+static E0:[u16;1]=[0]; static E1:[u16;1]=[0]; static NUMPAD:u16=0x4c;
+static KBD_TABLES:KbdTables=KbdTables{
+ char_modifiers:&CHAR_MODIFIERS,vk_to_wchar_table:VK_TABLE_LIST.as_ptr(),max_scan_to_vk:0x58,
+ scan_to_vk:SCAN_TO_VK.as_ptr(),locale_flags:0,max_dead_key_combinations:0,max_ligature:0,
+ scan_to_vk_e0:E0.as_ptr(),scan_to_vk_e1:E1.as_ptr(),dead_keys:core::ptr::null(),
+ key_names:core::ptr::null(),key_names_extended:core::ptr::null(),key_names_dead:core::ptr::null(),
+ numpad_scan_code:&NUMPAD,max_mouse_virtual_keys:0,mouse_virtual_keys:core::ptr::null()
+};
+#[unsafe(no_mangle)]
+pub extern "system" fn KbdLayerDescriptor()->*const KbdTables { &KBD_TABLES }
+
 #[cfg(test)] extern crate std;
 use cognacos_kbdclass::{KeyboardInputData, KEY_BREAK, KEY_E0};
 
