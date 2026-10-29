@@ -1084,7 +1084,11 @@ unsafe fn allocate_pages_for_mdl(
             }
             allocated = requested_pages;
         } else {
-            let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+            if no_wait {
+                let _ = crate::ntoskrnl::rtl_runtime::pool_try_free_tagged(mdl, Some(0x4c444d4d));
+            } else {
+                let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+            }
             return core::ptr::null_mut();
         }
     } else if require_contiguous {
@@ -1116,7 +1120,11 @@ unsafe fn allocate_pages_for_mdl(
         // falling back to ordinary page allocation, but never require a run.
         if prefer_contiguous && skip_bytes == 0 {
             if let Ok(base) = unsafe {
-                crate::memory::allocate_contiguous_pages_in_range(requested_pages, low_address, high_address, 0)
+                if no_wait {
+                    crate::memory::try_allocate_contiguous_pages_in_range(requested_pages, low_address, high_address, 0)
+                } else {
+                    crate::memory::allocate_contiguous_pages_in_range(requested_pages, low_address, high_address, 0)
+                }
             } {
                 for index in 0..requested_pages {
                     unsafe { pfns.add(index).write(base / PAGE_SIZE + index as u64); }
