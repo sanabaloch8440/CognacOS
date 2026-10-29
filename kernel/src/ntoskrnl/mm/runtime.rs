@@ -1725,6 +1725,30 @@ pub fn self_test() -> bool {
         );
         valid && storage_freed
     };
+    // The no-wait path must complete from preallocated metadata and try-lock
+    // physical/registry paths, without falling back to a blocking allocator.
+    let no_wait_mdl = unsafe {
+        mm_allocate_pages_for_mdl_ex(
+            0x10_0000, 0xffff_ffff, 0, PAGE_SIZE, 1,
+            MM_ALLOCATE_FULLY_REQUIRED | MM_ALLOCATE_NO_WAIT,
+        )
+    };
+    let no_wait_ok = if no_wait_mdl.is_null() {
+        false
+    } else {
+        let header = unsafe { &*no_wait_mdl.cast::<MdlHeader>() };
+        let pfn = unsafe {
+            no_wait_mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>().read()
+        };
+        let valid = header.byte_count as u64 == PAGE_SIZE
+            && pfn * PAGE_SIZE >= 0x10_0000
+            && pfn * PAGE_SIZE + PAGE_SIZE - 1 <= 0xffff_ffff;
+        unsafe { mm_free_pages_from_mdl(no_wait_mdl); }
+        let storage_freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
+            no_wait_mdl.cast(), Some(0x4c444d4d),
+        );
+        valid && storage_freed
+    };
     let ranges = unsafe { mm_get_physical_memory_ranges() };
     let ranges_ok = if ranges.is_null() {
         false
@@ -1754,16 +1778,17 @@ pub fn self_test() -> bool {
         if !bounded_ok { crate::serial_write(b"MM self-test failed: bounded contiguous chunks\\r\\n"); }
         if !node_ok { crate::serial_write(b"MM self-test failed: NUMA node allocation\\r\\n"); }
         if !node_chunk_ok { crate::serial_write(b"MM self-test failed: NUMA contiguous chunks\\r\\n"); }
+        if !no_wait_ok { crate::serial_write(b"MM self-test failed: MM_ALLOCATE_NO_WAIT\\r\\n"); }
         if !ranges_ok { crate::serial_write(b"MM self-test failed: physical ranges enumeration\\r\\n"); }
     }
-    let all_ok = valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && bounded_ok && node_ok && node_chunk_ok && ranges_ok;
+    let all_ok = valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && bounded_ok && node_ok && node_chunk_ok && no_wait_ok && ranges_ok;
     #[cfg(target_os = "none")]
     if !all_ok {
         // Keep the boot-time failure actionable: report each independent
         // compatibility probe rather than collapsing every failure to FALSE.
         unsafe {
-            crate::serial_write(b"MM-SELFTEST valid/mdl/freed/contig/page-mdl/bounded/node/node-chunk/ranges=");
-            for value in [valid, mdl_ok, freed, contiguous_ok, page_mdl_ok, bounded_ok, node_ok, node_chunk_ok, ranges_ok] {
+            crate::serial_write(b"MM-SELFTEST valid/mdl/freed/contig/page-mdl/bounded/node/node-chunk/no-wait/ranges=");
+            for value in [valid, mdl_ok, freed, contiguous_ok, page_mdl_ok, bounded_ok, node_ok, node_chunk_ok, no_wait_ok, ranges_ok] {
                 crate::serial_write(if value { b"1" } else { b"0" });
                 crate::serial_write(b"/");
             }
