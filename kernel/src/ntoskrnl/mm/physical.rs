@@ -792,7 +792,10 @@ pub unsafe fn allocate_pages_in_node_range(
             }
         } else { page as *mut u8 };
         unsafe { ptr::write_bytes(pointer, 0, PAGE_SIZE as usize); }
-        output[allocated] = page;
+        // The output contract is a PFN array (as consumed by MDLs), not a
+        // byte-address array. Returning the physical byte address here made
+        // the MDL multiply it by PAGE_SIZE a second time and fail node checks.
+        output[allocated] = page / PAGE_SIZE;
         allocated += 1;
     }
     if allocated == 0 || (require_all && allocated != output.len()) {
