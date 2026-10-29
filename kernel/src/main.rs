@@ -47,6 +47,33 @@ static mut KBD_DECODER:ScanDecoder=ScanDecoder::new();
 static mut KBD_MODIFIERS:Modifiers=Modifiers{shift:false,caps_lock:false,control:false,alt:false};
 static KBD_STACK_READY:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static KBD_INPUT_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct KeyboardEvent { pub virtual_key:u16,pub scan_code:u16,pub unicode:u16,pub key_up:bool,pub extended:bool }
+const KBD_EVENT_CAPACITY:usize=128;
+static mut KBD_EVENTS:[KeyboardEvent;KBD_EVENT_CAPACITY]=[KeyboardEvent{virtual_key:0,scan_code:0,unicode:0,key_up:false,extended:false};KBD_EVENT_CAPACITY];
+static KBD_EVENT_HEAD:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static KBD_EVENT_TAIL:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static KBD_EVENT_DROPS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+fn publish_keyboard_event(event:KeyboardEvent){
+ use core::sync::atomic::Ordering;
+ let head=KBD_EVENT_HEAD.load(Ordering::Relaxed);
+ let next=(head+1)%KBD_EVENT_CAPACITY;
+ if next==KBD_EVENT_TAIL.load(Ordering::Acquire){KBD_EVENT_DROPS.fetch_add(1,Ordering::Relaxed);return}
+ unsafe{core::ptr::write(core::ptr::addr_of_mut!(KBD_EVENTS).cast::<KeyboardEvent>().add(head),event);}
+ KBD_EVENT_HEAD.store(next,Ordering::Release);
+}
+/// Dequeue one translated key event for the future Win32 input-queue adapter.
+/// This is a single-consumer kernel API, not yet a user-mode NtUserGetMessage syscall.
+pub fn dequeue_keyboard_event()->Option<KeyboardEvent>{
+ use core::sync::atomic::Ordering;
+ let tail=KBD_EVENT_TAIL.load(Ordering::Relaxed);
+ if tail==KBD_EVENT_HEAD.load(Ordering::Acquire){return None}
+ let event=unsafe{core::ptr::read(core::ptr::addr_of!(KBD_EVENTS).cast::<KeyboardEvent>().add(tail))};
+ KBD_EVENT_TAIL.store((tail+1)%KBD_EVENT_CAPACITY,Ordering::Release);
+ Some(event)
+}
+pub fn keyboard_event_drop_count()->u64{KBD_EVENT_DROPS.load(core::sync::atomic::Ordering::Relaxed)}
+
 
 /// Poll the legacy 8042 output buffer while the legacy IRQ route is still masked.
 /// This provides a safe bring-up path while IDT/IRQ registration is unfinished.
@@ -84,6 +111,8 @@ fn poll_ps2_keyboard_input(){
     _=>{}
    }
    if let Some(e)=key{
+    let event=KeyboardEvent{virtual_key:e.virtual_key,scan_code:e.scan_code,unicode:e.unicode,key_up:e.key_up,extended:e.extended};
+    publish_keyboard_event(event);
     let count=KBD_INPUT_COUNT.fetch_add(1,Ordering::Relaxed)+1;
     serial_write(b"QEMU KEYBOARD INPUT: count=");serial_write_hex(count);
     serial_write(b" VK=");serial_write_hex(e.virtual_key as u64);
