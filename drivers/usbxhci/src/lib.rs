@@ -222,7 +222,7 @@ mod milestone_tests{
   let e=find_boot_keyboard_endpoint(&b).unwrap();assert_eq!(e.interface_number,0);assert_eq!(e.endpoint_address,0x81);assert_eq!(e.max_packet_size,8);
  }
  #[test]fn rejects_malformed_usb_descriptor_lengths(){
-  let b=[9,2,20,0,1,1,0,0x80,50,1,4];
+  let b=[9,2,11,0,1,1,0,0x80,50,1,4];
   assert_eq!(find_boot_keyboard_endpoint(&b),Err(UsbDescriptorError::InvalidLength));
  }
  #[test]fn enumeration_state_machine_rejects_skipped_hardware_steps(){
