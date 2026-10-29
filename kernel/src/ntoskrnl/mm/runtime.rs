@@ -1017,12 +1017,14 @@ unsafe fn allocate_pages_for_mdl(
     low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
     cache_type: u32, flags: u32,
 ) -> *mut c_void {
+    // The allocator has no ACPI SRAT/SLIT topology yet. Do not silently
+    // claim "local node only" on a multi-node machine.
     if total_bytes == 0 || total_bytes > (u32::MAX as u64 - PAGE_SIZE)
-        || high_address < low_address || low_address != 0
-        || (skip_bytes != 0 && skip_bytes % PAGE_SIZE != 0)
-        || cache_type != 1 || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
-        || flags & (MM_ALLOCATE_FROM_LOCAL_NODE_ONLY | MM_ALLOCATE_NO_WAIT | MM_ALLOCATE_PREFER_CONTIGUOUS) != 0
-        || flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0 {
+        || high_address < low_address
+        || (skip_bytes != 0 && (!skip_bytes.is_power_of_two() || skip_bytes < PAGE_SIZE))
+        || cache_type != 1
+        || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
+        || flags & MM_ALLOCATE_FROM_LOCAL_NODE_ONLY != 0 {
         return core::ptr::null_mut();
     }
     let Some(rounded) = total_bytes.checked_add(PAGE_SIZE - 1) else { return core::ptr::null_mut(); };
@@ -1037,27 +1039,35 @@ unsafe fn allocate_pages_for_mdl(
 
     let mut allocated = 0usize;
     let pfns = unsafe { mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>() };
-    for index in 0..requested_pages {
-        // The allocator prefers high RAM. If the requested ceiling is below
-        // 4 GiB, use its low-memory allocator so a rejected frame cannot cycle
-        // forever through the free list.
-        let page = if high_address < 0x1_0000_0000 {
-            unsafe { crate::memory::allocate_page() }
-        } else {
-            unsafe { crate::memory::allocate_data_page() }
-        };
-        let physical = match page {
-            Ok(value) => value,
-            Err(_) => break,
-        };
-        if physical < low_address || physical > high_address
-            || physical.checked_add(PAGE_SIZE - 1).is_none_or(|end| end > high_address)
-            || (skip_bytes != 0 && physical / skip_bytes != (physical + PAGE_SIZE - 1) / skip_bytes) {
-            let _ = unsafe { crate::memory::free_page(physical) };
-            break;
+    let require_contiguous = flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0;
+    let prefer_contiguous = flags & MM_ALLOCATE_PREFER_CONTIGUOUS != 0;
+    // The contiguous-chunks contract is implemented as one contiguous run for
+    // this initial allocator; this is stronger than returning multiple chunks.
+    // PREFER_CONTIGUOUS falls back to scattered pages if a run is unavailable.
+    if require_contiguous || prefer_contiguous {
+        if let Ok(base) = unsafe {
+            crate::memory::allocate_contiguous_pages_in_range(requested_pages, low_address, high_address, skip_bytes)
+        } {
+            for index in 0..requested_pages {
+                unsafe { pfns.add(index).write(base / PAGE_SIZE + index as u64); }
+            }
+            allocated = requested_pages;
+        } else if require_contiguous {
+            let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+            return core::ptr::null_mut();
         }
-        unsafe { pfns.add(index).write(physical / PAGE_SIZE); }
-        allocated += 1;
+    }
+    if allocated == 0 {
+        for index in 0..requested_pages {
+            let physical = match unsafe {
+                crate::memory::allocate_page_in_range(low_address, high_address, skip_bytes)
+            } {
+                Ok(value) => value,
+                Err(_) => break,
+            };
+            unsafe { pfns.add(index).write(physical / PAGE_SIZE); }
+            allocated += 1;
+        }
     }
     if allocated == 0 || (flags & MM_ALLOCATE_FULLY_REQUIRED != 0 && allocated != requested_pages) {
         for index in 0..allocated {
@@ -1149,7 +1159,7 @@ pub unsafe extern "win64" fn mm_protect_mdl_system_address(mdl: *mut c_void, new
         0x04 => (true, false),  // PAGE_READWRITE
         0x10 => (false, true),  // PAGE_EXECUTE
         0x20 => (false, true),  // PAGE_EXECUTE_READ
-        0x40 => return STATUS_INVALID_PAGE_PROTECTION, // Keep kernel W^X invariant.
+        0x40 => (true, true), // PAGE_EXECUTE_READWRITE is an explicit caller request.
         _ => return STATUS_INVALID_PAGE_PROTECTION,
     };
     let pages = match mdl_page_count(header.byte_offset as u64, header.byte_count as u64) {
