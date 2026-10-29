@@ -100,7 +100,7 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
 
 /// Scope a process identity and kernel entry stack onto the executing ETHREAD.
 #[derive(Clone,Copy)]
-pub struct UserThreadBinding { pub id:u64, previous_process_id:u64, previous_stack_top:u64, adopted:bool }
+pub struct UserThreadBinding { pub id:u64, previous_process_id:u64, previous_stack_top:u64, previous_affinity:u64, adopted:bool }
 pub fn attach_current_user_thread(pid:u64,kernel_stack_top:u64)->Result<UserThreadBinding,ThreadError>{
  if pid==0||kernel_stack_top==0||kernel_stack_top&0xf!=0{return Err(ThreadError::InvalidStack);}
  let cpu=cpu_index()?;
@@ -109,22 +109,23 @@ pub fn attach_current_user_thread(pid:u64,kernel_stack_top:u64)->Result<UserThre
  let current=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
  if current!=0 {
   let thread=table.records.iter_mut().find(|t|t.id==current&&t.state==ThreadState::Running).ok_or(ThreadError::NoCurrentThread)?;
-  let binding=UserThreadBinding{id:thread.id,previous_process_id:thread.process_id,previous_stack_top:thread.stack_top,adopted:false};
-  thread.process_id=pid;thread.stack_top=kernel_stack_top;
+  let binding=UserThreadBinding{id:thread.id,previous_process_id:thread.process_id,previous_stack_top:thread.stack_top,previous_affinity:thread.affinity,adopted:false};
+  let pinned=1u64<<cpu;
+  crate::scheduler::set_affinity(thread.scheduler_id,pinned).map_err(|_|ThreadError::InvalidState)?;
+  thread.process_id=pid;thread.stack_top=kernel_stack_top;thread.affinity=pinned;
   crate::scheduler::set_task_stack_top(thread.scheduler_id,kernel_stack_top).map_err(|_|ThreadError::InvalidState)?;
   return Ok(binding);
  }
  let slot=table.records.iter().position(|t|t.state==ThreadState::Empty||t.state==ThreadState::Exited).ok_or(ThreadError::Full)?;
- let mut affinity=0u64;
- for index in 0..crate::hal::MAX_CPUS {
-  if crate::hal::cpu_state(index).ok()==Some(crate::hal::CPU_ONLINE){affinity|=1u64<<index;}
- }
- if affinity==0||affinity&(1u64<<cpu)==0{return Err(ThreadError::InvalidAffinity);}
+ // The bootstrap user-return registers are still a per-CPU trampoline;
+ // pin this first ETHREAD until that state is moved fully into ETHREAD.
+ let affinity=1u64<<cpu;
+ if crate::hal::cpu_state(cpu).ok()!=Some(crate::hal::CPU_ONLINE){return Err(ThreadError::InvalidAffinity);}
  let scheduler_id=crate::scheduler::adopt_current_task(cpu,2,affinity,kernel_stack_top,0).map_err(|_|ThreadError::InvalidState)?;
  let id=table.next_id;table.next_id=table.next_id.wrapping_add(1).max(1);
  table.records[slot]=ThreadRecord{id,scheduler_id,process_id:pid,impersonation_token:0,state:ThreadState::Running,affinity,context_rsp:core::ptr::null_mut(),stack_top:kernel_stack_top,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:false,xstate:KiThreadXStateArea::zeroed(),user_xstate:KiThreadXStateArea::zeroed()};
  local.current_thread.store(id,core::sync::atomic::Ordering::Release);
- Ok(UserThreadBinding{id,previous_process_id:0,previous_stack_top:0,adopted:true})
+ Ok(UserThreadBinding{id,previous_process_id:0,previous_stack_top:0,previous_affinity:0,adopted:true})
 }
 pub fn finish_user_thread_binding(binding:UserThreadBinding)->bool{
  if binding.adopted{return detach_current_user_thread(binding.id);}
@@ -134,7 +135,9 @@ pub fn finish_user_thread_binding(binding:UserThreadBinding)->bool{
  let mut table=THREADS.lock();
  let Some(thread)=table.records.iter_mut().find(|t|t.id==binding.id&&t.state==ThreadState::Running) else{return false};
  thread.process_id=binding.previous_process_id;thread.stack_top=binding.previous_stack_top;
- crate::scheduler::set_task_stack_top(thread.scheduler_id,binding.previous_stack_top).is_ok()
+ let affinity_restored=crate::scheduler::set_affinity(thread.scheduler_id,binding.previous_affinity).is_ok();
+ thread.affinity=binding.previous_affinity;
+ affinity_restored&&crate::scheduler::set_task_stack_top(thread.scheduler_id,binding.previous_stack_top).is_ok()
 }
 pub fn detach_current_user_thread(id:u64)->bool{
  let Ok(cpu)=cpu_index() else{return false};
