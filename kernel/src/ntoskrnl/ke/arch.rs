@@ -1833,6 +1833,20 @@ fn user_exception_status(vector: u64, _error: u64) -> u64 {
 const AMD64_CONTEXT_SIZE: usize = 0x4d0;
 const AMD64_EXCEPTION_RECORD_SIZE: usize = 0x98;
 
+unsafe extern "C" { fn rdotos_process_fault_return(); }
+
+/// Contain a fault from the bootstrap user process without trying to resume
+/// its invalid user RIP or switching through a stale idle context.
+fn return_from_faulted_bootstrap_process(trap:&mut UserExceptionTrapFrame,pid:u64,status:u64)->bool{
+ if !crate::ntoskrnl::ke::thread::is_bootstrap_user_thread(){return false;}
+ let _=crate::process::mark_exited(pid,status);
+ trap.saved_registers=[0;15];
+ trap.rip=rdotos_process_fault_return as usize as u64;
+ trap.cs=0x08;
+ trap.rflags=0x202;
+ true
+}
+
 fn put_u16(bytes: &mut [u8], offset: usize, value: u16) {
     bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
 }
@@ -1860,6 +1874,7 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     let dispatcher = crate::syscall::exception_dispatcher_for(pid);
     if !valid || dispatcher < 0x1000 || dispatcher >= crate::ntoskrnl::mm::address_space::USER_END {
         let status = if valid { user_exception_status(vector, error) } else { STATUS_ACCESS_VIOLATION };
+        if return_from_faulted_bootstrap_process(trap,pid,status){return true;}
         crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, status);
     }
 
@@ -1924,6 +1939,7 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     let context_offset = ((record_offset + AMD64_EXCEPTION_RECORD_SIZE + 7) & !15) + 8;
     let total = context_offset + AMD64_CONTEXT_SIZE + 16;
     let Some(raw_start) = trap.rsp.checked_sub(total as u64) else {
+        if return_from_faulted_bootstrap_process(trap,pid,STATUS_ACCESS_VIOLATION){return true;}
         crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, STATUS_ACCESS_VIOLATION);
     };
     let new_rsp = (raw_start & !15) + 8;
@@ -1931,6 +1947,7 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
         || !crate::syscall::copy_current_user_to(new_rsp, &0u64.to_le_bytes())
         || !crate::syscall::copy_current_user_to(new_rsp + record_offset as u64, &record)
         || !crate::syscall::copy_current_user_to(new_rsp + context_offset as u64, &context) {
+        if return_from_faulted_bootstrap_process(trap,pid,STATUS_ACCESS_VIOLATION){return true;}
         crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid, STATUS_ACCESS_VIOLATION);
     }
     let record_user = new_rsp + record_offset as u64;
