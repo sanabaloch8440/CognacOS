@@ -1227,3 +1227,30 @@ pub fn cancel_usb_wait_wake<B:UsbWakeBackend>(backend:&mut B)->Result<(),UsbWake
  backend.disarm_controller_wake().map_err(|_|UsbWakeError::ControllerFailure)?;
  Ok(())
 }
+
+#[cfg(test)]
+mod usb_wake_chain_tests {
+ use super::*;
+ struct Backend { order:[u8;8], len:usize, fail:u8 }
+ impl Backend { fn new(fail:u8)->Self{Self{order:[0;8],len:0,fail}} fn push(&mut self,v:u8)->Result<(),()>{self.order[self.len]=v;self.len+=1;if self.fail==v{Err(())}else{Ok(())}} }
+ impl UsbWakeBackend for Backend {
+  fn arm_controller_wake(&mut self)->Result<(),()>{self.push(1)}
+  fn arm_hub_wake(&mut self)->Result<(),()>{self.push(2)}
+  fn enable_device_remote_wakeup(&mut self)->Result<(),()>{self.push(3)}
+  fn disable_device_remote_wakeup(&mut self)->Result<(),()>{self.push(4)}
+  fn disarm_hub_wake(&mut self)->Result<(),()>{self.push(5)}
+  fn disarm_controller_wake(&mut self)->Result<(),()>{self.push(6)}
+ }
+ fn path()->UsbWakePath{UsbWakePath{port_connected:true,device_supports_remote_wake:true,hub_supports_wake:true,controller_supports_wake:true}}
+ #[test] fn wake_is_armed_controller_to_hub_to_device_and_cancelled_in_reverse(){
+  let mut b=Backend::new(0);assert_eq!(arm_usb_wait_wake(path(),&mut b),Ok(()));assert_eq!(&b.order[..3],&[1,2,3]);
+  assert_eq!(cancel_usb_wait_wake(&mut b),Ok(()));assert_eq!(&b.order[3..6],&[4,5,6]);
+ }
+ #[test] fn unsupported_path_is_rejected_before_touching_hardware(){
+  let mut p=path();p.hub_supports_wake=false;let mut b=Backend::new(0);
+  assert_eq!(arm_usb_wait_wake(p,&mut b),Err(UsbWakeError::UnsupportedPath));assert_eq!(b.len,0);
+ }
+ #[test] fn device_failure_rolls_back_hub_and_controller_wake(){
+  let mut b=Backend::new(3);assert_eq!(arm_usb_wait_wake(path(),&mut b),Err(UsbWakeError::DeviceFailure));assert_eq!(&b.order[..5],&[1,2,3,5,6]);
+ }
+}
