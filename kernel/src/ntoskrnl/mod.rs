@@ -13,6 +13,7 @@ pub(crate) mod alpc;
 pub(crate) mod alpc_resources; pub(crate) mod alpc_native; pub(crate) mod ex; #[path = "ke/mod.rs"] pub(crate) mod ke;
 pub(crate) mod mm; pub(crate) mod ob; mod ps; mod io; pub(crate) mod po; pub(crate) mod cm; #[path = "se/mod.rs"] pub(crate) mod se; mod rtl; #[path = "rtl_runtime/mod.rs"] pub(crate) mod rtl_runtime; mod zw; mod other;
 mod manifest_26100;
+#[path = "io/pnp.rs"] pub(crate) mod pnp;
 pub(crate) mod driver_loader;
 pub(crate) mod runtime_functions;
 pub(crate) mod dbg;
