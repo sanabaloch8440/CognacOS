@@ -84,7 +84,7 @@ struct AdapterSlot { used:bool,device:usize,version:u32,maximum_address:u64,abi:
 unsafe impl Send for AdapterSlot {}
 impl AdapterSlot { const EMPTY:Self=Self{used:false,device:0,version:0,maximum_address:0,abi:DmaAdapterAbi{version:1,size:core::mem::size_of::<DmaAdapterAbi>() as u16,operations:core::ptr::null()}}; }
 static ADAPTERS:crate::hal::IrqSpinLock<[AdapterSlot;MAX_ADAPTERS]>=crate::hal::IrqSpinLock::new([const{AdapterSlot::EMPTY};MAX_ADAPTERS]);
-fn create_device_adapter(device:*mut core::ffi::c_void,version:u32,maximum_address:u64)->*mut core::ffi::c_void{
+pub(crate) fn create_device_adapter(device:*mut core::ffi::c_void,version:u32,maximum_address:u64)->*mut core::ffi::c_void{
  if device.is_null()||!iommu::available(){return core::ptr::null_mut()}
  let mut s=ADAPTERS.lock();
  if let Some(slot)=s.iter_mut().find(|a|a.used&&a.device==device as usize){return core::ptr::addr_of_mut!(slot.abi).cast()}
