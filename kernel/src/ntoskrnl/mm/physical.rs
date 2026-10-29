@@ -504,6 +504,49 @@ pub unsafe fn allocate_contiguous_pages_in_range(
     }
     let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
     let _guard = MemoryGuard::acquire();
+    // First try to reclaim a contiguous run already returned to either free
+    // stack. Remove every PFN only after proving the complete run is present.
+    for high_memory in [false, true] {
+        let (ptr, len_ptr): (*mut u64, *mut usize) = if high_memory {
+            let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
+            (free.0.as_mut_ptr(), &mut free.1)
+        } else {
+            let free = unsafe { &mut *FREE_PAGES.0.get() };
+            (free.0.as_mut_ptr(), &mut free.1)
+        };
+        let len = unsafe { *len_ptr };
+        if pages > len { continue; }
+        for i in 0..len {
+            let base = unsafe { ptr.add(i).read() };
+            let Some(end) = base.checked_add(bytes) else { continue; };
+            if base < low || end - 1 > high || (boundary != 0 && base / boundary != (end - 1) / boundary) {
+                continue;
+            }
+            let mut found_all = true;
+            for n in 1..pages {
+                let wanted = base + n as u64 * PAGE_SIZE;
+                if !(0..len).any(|j| unsafe { ptr.add(j).read() } == wanted) {
+                    found_all = false;
+                    break;
+                }
+            }
+            if !found_all { continue; }
+            for n in 0..pages {
+                let wanted = base + n as u64 * PAGE_SIZE;
+                let current_len = unsafe { *len_ptr };
+                let Some(index) = (0..current_len).find(|j| unsafe { ptr.add(*j).read() } == wanted) else {
+                    return Err(AllocError::InvalidMap);
+                };
+                unsafe {
+                    *len_ptr = current_len - 1;
+                    ptr.add(index).write(ptr.add(current_len - 1).read());
+                }
+            }
+            let pointer = if high_memory { direct_map_address(base).ok_or(AllocError::InvalidMap)? as *mut u8 } else { base as *mut u8 };
+            unsafe { ptr::write_bytes(pointer, 0, bytes as usize); }
+            return Ok(base);
+        }
+    }
     // Contiguous free-list runs are uncommon; scan region extents first. The
     // region split retains unallocated prefixes and suffixes exactly.
     for (store, count_atomic, high_memory) in [
