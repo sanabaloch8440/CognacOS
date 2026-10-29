@@ -947,6 +947,14 @@ pub fn set_kernel_stack(cpu:usize,stack_top:u64)->bool{
  unsafe{core::ptr::addr_of_mut!(WINDOWS_SYSCALL_CPUS[cpu].kernel_rsp).write(stack_top);}
  true
 }
+pub fn reset_kernel_stack(cpu:usize)->bool{
+ if cpu>=crate::hal::MAX_CPUS{return false;}
+ let page=unsafe{core::ptr::addr_of!(WINDOWS_SYSCALL_CPUS[cpu].stack_page).read()};
+ if page==0{return false;}
+ let Some(base)=crate::ntoskrnl::mm::physical::direct_map_address(page) else{return false;};
+ let Some(top)=base.checked_add(4096) else{return false;};
+ set_kernel_stack(cpu,top)
+}
 pub fn kernel_stack_top(cpu:usize)->Option<u64>{
  if cpu>=crate::hal::MAX_CPUS{return None;}
  let value=unsafe{core::ptr::addr_of!(WINDOWS_SYSCALL_CPUS[cpu].kernel_rsp).read()};
