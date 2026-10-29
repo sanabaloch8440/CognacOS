@@ -98,16 +98,22 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     Ok(id)
 }
 
-/// Bind the live bootstrap execution context to a scheduler-owned ETHREAD
-/// before entering ring 3. Its context is initially unsaved; the first yield
-/// stores the actual kernel RSP into this record before publishing it runnable.
-pub fn attach_current_user_thread(pid:u64,kernel_stack_top:u64)->Result<u64,ThreadError>{
+/// Scope a process identity and kernel entry stack onto the executing ETHREAD.
+#[derive(Clone,Copy)]
+pub struct UserThreadBinding { pub id:u64, previous_process_id:u64, previous_stack_top:u64, adopted:bool }
+pub fn attach_current_user_thread(pid:u64,kernel_stack_top:u64)->Result<UserThreadBinding,ThreadError>{
  if pid==0||kernel_stack_top==0||kernel_stack_top&0xf!=0{return Err(ThreadError::InvalidStack);}
  let cpu=cpu_index()?;
  let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
  let mut table=THREADS.lock();
  let current=local.current_thread.load(core::sync::atomic::Ordering::Acquire);
- if current!=0{return Err(ThreadError::InvalidState);}
+ if current!=0 {
+  let thread=table.records.iter_mut().find(|t|t.id==current&&t.state==ThreadState::Running).ok_or(ThreadError::NoCurrentThread)?;
+  let binding=UserThreadBinding{id:thread.id,previous_process_id:thread.process_id,previous_stack_top:thread.stack_top,adopted:false};
+  thread.process_id=pid;thread.stack_top=kernel_stack_top;
+  crate::scheduler::set_task_stack_top(thread.scheduler_id,kernel_stack_top).map_err(|_|ThreadError::InvalidState)?;
+  return Ok(binding);
+ }
  let slot=table.records.iter().position(|t|t.state==ThreadState::Empty||t.state==ThreadState::Exited).ok_or(ThreadError::Full)?;
  let mut affinity=0u64;
  for index in 0..crate::hal::MAX_CPUS {
@@ -118,11 +124,18 @@ pub fn attach_current_user_thread(pid:u64,kernel_stack_top:u64)->Result<u64,Thre
  let id=table.next_id;table.next_id=table.next_id.wrapping_add(1).max(1);
  table.records[slot]=ThreadRecord{id,scheduler_id,process_id:pid,impersonation_token:0,state:ThreadState::Running,affinity,context_rsp:core::ptr::null_mut(),stack_top:kernel_stack_top,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:false,xstate:KiThreadXStateArea::zeroed(),user_xstate:KiThreadXStateArea::zeroed()};
  local.current_thread.store(id,core::sync::atomic::Ordering::Release);
- Ok(id)
+ Ok(UserThreadBinding{id,previous_process_id:0,previous_stack_top:0,adopted:true})
 }
-/// Detach a bootstrap-adopted user thread after its IRET return gate has
-/// restored the suspended kernel caller. Ordinary scheduler-owned threads
-/// remain managed by exit_current instead.
+pub fn finish_user_thread_binding(binding:UserThreadBinding)->bool{
+ if binding.adopted{return detach_current_user_thread(binding.id);}
+ let Ok(cpu)=cpu_index() else{return false};
+ let Ok(local)=crate::hal::cpu_local(cpu) else{return false};
+ if local.current_thread.load(core::sync::atomic::Ordering::Acquire)!=binding.id{return false;}
+ let mut table=THREADS.lock();
+ let Some(thread)=table.records.iter_mut().find(|t|t.id==binding.id&&t.state==ThreadState::Running) else{return false};
+ thread.process_id=binding.previous_process_id;thread.stack_top=binding.previous_stack_top;
+ crate::scheduler::set_task_stack_top(thread.scheduler_id,binding.previous_stack_top).is_ok()
+}
 pub fn detach_current_user_thread(id:u64)->bool{
  let Ok(cpu)=cpu_index() else{return false};
  let Ok(local)=crate::hal::cpu_local(cpu) else{return false};
