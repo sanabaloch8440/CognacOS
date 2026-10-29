@@ -41,7 +41,7 @@ fn u32at(b:&[u8],o:usize)->Result<u32,XhciError>{Ok(u32::from_le_bytes([*b.get(o
 pub fn parse_capabilities(b:&[u8])->Result<Capabilities,XhciError>{
  if b.len()<0x20{return Err(XhciError::TruncatedCapabilities)}
  let cap_length=b[0];if cap_length<CAPLENGTH_MIN||cap_length as usize>b.len(){return Err(XhciError::InvalidCapabilityLength)}
- let hcs1=u32at(b,4)?;let hcc1=u32at(b,0x10)?;let page_size_mask=if b.len()>=0x2c{u32at(b,0x28)?}else{0};
+ let hcs1=u32at(b,4)?;let hcc1=u32at(b,0x10)?;\n // PAGESIZE lives in the operational register block at CAPLENGTH + 0x08,\n // not in the capability-register prefix; query it only after MMIO mapping.\n let page_size_mask=0;
  let max_slots=(hcs1&0xff) as u8;let max_interrupters=((hcs1>>8)&0x7ff) as u16;let max_ports=(hcs1>>24) as u8;
  let doorbell_offset=u32at(b,0x14)?&!3;let runtime_offset=u32at(b,0x18)?&!0x1f;
  if max_slots==0||max_slots>MAX_SLOTS||max_ports==0||doorbell_offset<cap_length as u32||runtime_offset<cap_length as u32{return Err(XhciError::InvalidCapabilityLength)}
