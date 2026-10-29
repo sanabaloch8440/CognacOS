@@ -485,6 +485,34 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 halt();
             }
         };
+        // Discover NUMA memory proximity domains from firmware before any
+        // driver allocation can request node-local pages. ACPI table parsing is
+        // bounded to the validated firmware mapping; absence of SRAT remains a
+        // supported non-NUMA/unknown-topology case rather than guessing node 0.
+        if info.rsdp_address != 0 {
+            match unsafe { acpi::find_table(info.rsdp_address, *b"SRAT", 0) } {
+                Ok(srat) => match ntoskrnl::mm::topology::parse_srat(srat) {
+                    Ok(ranges) => {
+                        serial_write(b"ACPI SRAT memory-affinity ranges accepted: ");
+                        serial_write_decimal(ranges);
+                        serial_write(b"\\r\\n");
+                        match unsafe { acpi::find_table(info.rsdp_address, *b"SLIT", 0) } {
+                            Ok(slit) => match ntoskrnl::mm::topology::parse_slit(slit) {
+                                Ok(nodes) => {
+                                    serial_write(b"ACPI SLIT NUMA distance matrix accepted; nodes: ");
+                                    serial_write_decimal(nodes);
+                                    serial_write(b"\\r\\n");
+                                }
+                                Err(_) => serial_write(b"WARNING: ACPI SLIT rejected; NUMA distances unavailable.\\r\\n"),
+                            },
+                            Err(_) => serial_write(b"WARNING: ACPI SLIT unavailable; NUMA distances unavailable.\\r\\n"),
+                        }
+                    }
+                    Err(_) => serial_write(b"WARNING: ACPI SRAT rejected; node-local allocation remains disabled.\\r\\n"),
+                },
+                Err(_) => serial_write(b"ACPI SRAT unavailable; memory node ownership remains unknown.\\r\\n"),
+            }
+        }
         // Publish direct-map W^X policy before any high-RAM probe can fault in
         // a leaf. An uninitialized policy intentionally defaults to read-only.
         if info.kernel_physical_section_count == 0
