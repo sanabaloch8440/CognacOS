@@ -68,7 +68,7 @@ unsafe fn probe_xhci_bar(bus:u8,device:u8,function:u8)->Option<(u64,u64)> {
     if decoded.prefetchable { return None; }
     let command=unsafe{pci_config_read32(bus,device,function,0x04)} as u16;
     // Only touch BAR sizing registers with memory/I/O decoding and bus mastering off.
-    unsafe{pci_config_write16(bus,device,function,0x04,command&!0x0007);}
+    unsafe{pci_config_write16(bus,device,function,0x04,pci::command_for_bar_probe(command));}
     unsafe{pci_config_write32(bus,device,function,0x10,u32::MAX);}
     if kind==2 { unsafe{pci_config_write32(bus,device,function,0x14,u32::MAX);} }
     let mask_low=unsafe{pci_config_read32(bus,device,function,0x10)};
@@ -76,7 +76,7 @@ unsafe fn probe_xhci_bar(bus:u8,device:u8,function:u8)->Option<(u64,u64)> {
     // Restore BARs before decode; preserve decode bits but force bus mastering off.
     unsafe{pci_config_write32(bus,device,function,0x10,low);}
     if let Some(saved)=high { unsafe{pci_config_write32(bus,device,function,0x14,saved);} }
-    unsafe{pci_config_write16(bus,device,function,0x04,command & !0x0004);}
+    unsafe{pci_config_write16(bus,device,function,0x04,pci::command_after_bar_probe(command));}
     let size=if kind==2 {
         let mask=((mask_high as u64)<<32)|((mask_low as u64)&!0xf);
         (!mask).wrapping_add(1)
