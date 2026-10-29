@@ -1020,7 +1020,7 @@ unsafe fn allocate_pages_for_mdl(
     if total_bytes == 0 || total_bytes > (u32::MAX as u64 - PAGE_SIZE)
         || high_address < low_address || low_address != 0
         || (skip_bytes != 0 && skip_bytes % PAGE_SIZE != 0)
-        || cache_type > 3 || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
+        || cache_type != 1 || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
         || flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0 {
         return core::ptr::null_mut();
     }
