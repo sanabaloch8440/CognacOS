@@ -12,6 +12,14 @@ const CALLBACK_BASE: u64 = 0x0000_0083_0000_0000;
 const TLS_DATA_BASE: u64 = 0x0000_0080_8000_0000;
 const TLS_STRIDE: u64 = 0x0100_0000;
 
+// Ring-3 exceptions and SYSCALL must enter on a kernel stack distinct from
+// the suspended bootstrap call stack. One guarded, page-aligned stack is
+// reserved per CPU for the current bootstrap user-thread launch.
+#[repr(align(4096))]
+struct UserKernelStack([u8; 32768]);
+static mut USER_KERNEL_STACKS: [UserKernelStack; crate::hal::MAX_CPUS] =
+    [const { UserKernelStack([0; 32768]) }; crate::hal::MAX_CPUS];
+
 global_asm!(r#"
     .section .text
     .global rdotos_process_exit_stub
@@ -342,9 +350,21 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
     unsafe { crate::serial_write(b"[DBG][NTOSKRNL][USER] activating address space and setting current process\r\n"); }
     crate::syscall::set_current_process(env.process_id, space as *const _);
     unsafe { space.activate(); }
+    let cpu = crate::ntoskrnl::ke::thread::current_cpu_index().map_err(|_| VmError::InvalidAddress)?;
+    let old_tss_stack = crate::ntoskrnl::ke::arch::kernel_stack_top(cpu).ok_or(VmError::InvalidAddress)?;
+    let old_syscall_stack = crate::syscall::kernel_stack_top(cpu).unwrap_or(old_tss_stack);
+    let stack_base = unsafe { core::ptr::addr_of_mut!(USER_KERNEL_STACKS[cpu].0).cast::<u8>() } as u64;
+    let user_kernel_stack_top = stack_base.checked_add(32768).ok_or(VmError::InvalidAddress)? & !0xf;
+    let user_thread_id = crate::ntoskrnl::ke::thread::attach_current_user_thread(env.process_id, user_kernel_stack_top).ok();
+    let stack_installed = user_thread_id.is_some()
+        && crate::ntoskrnl::ke::arch::set_kernel_stack(cpu, user_kernel_stack_top)
+        && crate::syscall::set_kernel_stack(cpu, user_kernel_stack_top);
+    if !stack_installed {
+        unsafe { crate::serial_write(b"[EXCEPTION] failed to attach user ETHREAD or install isolated kernel entry stack\r\n"); }
+    }
     // DLL TLS callbacks run before DllMain; the executable TLS callbacks run
     // before the executable entry point. All callbacks execute in ring 3.
-    let execution_result = (|| -> Result<(), VmError> {
+    let execution_result = if !stack_installed { Err(VmError::InvalidAddress) } else { (|| -> Result<(), VmError> {
         let mut trampoline_index=0usize;
         unsafe { crate::serial_write(b"[DBG][NTOSKRNL][LOADER] begin DLL TLS/DllMain sequence\r\n"); }
         for module in modules[..module_count].iter().copied() {
@@ -386,8 +406,13 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
         unsafe { crate::serial_write(b"[DBG][NTOSKRNL][USER] entering image entry RIP="); crate::serial_write_hex(image.entry); crate::serial_write(b" RSP="); crate::serial_write_hex(initial_user_rsp); crate::serial_write(b" TEB="); crate::serial_write_hex(env.teb); crate::serial_write(b" return-trampoline="); crate::serial_write_hex(PROCESS_RETURN_TRAMPOLINE); crate::serial_write(b"\r\n"); }
         unsafe{rdotos_process_enter_user(image.entry,initial_user_rsp,env.teb);}
         Ok(())
-    })();
+    })() };
     unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
+    if let Some(thread_id) = user_thread_id {
+        let _ = crate::ntoskrnl::ke::thread::detach_current_user_thread(thread_id);
+    }
+    let _ = crate::ntoskrnl::ke::arch::set_kernel_stack(cpu, old_tss_stack);
+    let _ = crate::syscall::set_kernel_stack(cpu, old_syscall_stack);
     crate::syscall::clear_current_process();
     if let Err(error)=execution_result {
         let _=crate::process::mark_exited(env.process_id,u64::MAX-1);
