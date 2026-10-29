@@ -428,15 +428,29 @@ pub unsafe fn allocate_page_in_range(low: u64, high: u64, boundary: u64) -> Resu
         page >= low && end <= high && (boundary == 0 || page / boundary == end / boundary)
     }
     // Reuse returned frames without consuming unrelated pages.
-    for (store, high_memory) in [(&FREE_PAGES, false), (&HIGH_FREE_PAGES, true)] {
-        let free = unsafe { &mut *store.0.get() };
+    {
+        let free = unsafe { &mut *FREE_PAGES.0.get() };
         let mut i = 0;
         while i < free.1 {
             let page = free.0[i];
             if allowed(page, low, high, boundary) {
                 free.1 -= 1;
                 free.0[i] = free.0[free.1];
-                let pointer = if high_memory { direct_map_address(page).ok_or(AllocError::InvalidMap)? as *mut u8 } else { page as *mut u8 };
+                unsafe { ptr::write_bytes(page as *mut u8, 0, PAGE as usize); }
+                return Ok(page);
+            }
+            i += 1;
+        }
+    }
+    {
+        let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
+        let mut i = 0;
+        while i < free.1 {
+            let page = free.0[i];
+            if allowed(page, low, high, boundary) {
+                free.1 -= 1;
+                free.0[i] = free.0[free.1];
+                let pointer = direct_map_address(page).ok_or(AllocError::InvalidMap)? as *mut u8;
                 unsafe { ptr::write_bytes(pointer, 0, PAGE as usize); }
                 return Ok(page);
             }
