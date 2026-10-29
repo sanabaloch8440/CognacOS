@@ -495,22 +495,22 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     Ok(ranges) => {
                         serial_write(b"ACPI SRAT memory-affinity ranges accepted: ");
                         serial_write_decimal(ranges);
-                        serial_write(b"\\r\\n");
+                        serial_write(b"\r\n");
                         match unsafe { acpi::find_table(info.rsdp_address, *b"SLIT", 0) } {
                             Ok(slit) => match ntoskrnl::mm::topology::parse_slit(slit) {
                                 Ok(nodes) => {
                                     serial_write(b"ACPI SLIT NUMA distance matrix accepted; nodes: ");
                                     serial_write_decimal(nodes);
-                                    serial_write(b"\\r\\n");
+                                    serial_write(b"\r\n");
                                 }
-                                Err(_) => serial_write(b"WARNING: ACPI SLIT rejected; NUMA distances unavailable.\\r\\n"),
+                                Err(_) => serial_write(b"WARNING: ACPI SLIT rejected; NUMA distances unavailable.\r\n"),
                             },
-                            Err(_) => serial_write(b"WARNING: ACPI SLIT unavailable; NUMA distances unavailable.\\r\\n"),
+                            Err(_) => serial_write(b"WARNING: ACPI SLIT unavailable; NUMA distances unavailable.\r\n"),
                         }
                     }
-                    Err(_) => serial_write(b"WARNING: ACPI SRAT rejected; node-local allocation remains disabled.\\r\\n"),
+                    Err(_) => serial_write(b"WARNING: ACPI SRAT rejected; node-local allocation remains disabled.\r\n"),
                 },
-                Err(_) => serial_write(b"ACPI SRAT unavailable; memory node ownership remains unknown.\\r\\n"),
+                Err(_) => serial_write(b"ACPI SRAT unavailable; memory node ownership remains unknown.\r\n"),
             }
         }
         // Publish direct-map W^X policy before any high-RAM probe can fault in
@@ -1183,8 +1183,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     }
                     let beep_stack = unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(BEEP_TEST_STACK).cast::<u8>(), 8192) };
                     match thread::spawn(beep_stack, 1, beep_test_worker, core::ptr::null_mut()) {
-                        Ok(_) => serial_write(b"Scheduled beep.sys test worker.\\r\\n"),
-                        Err(_) => serial_write(b"Failed to schedule beep.sys test worker.\\r\\n"),
+                        Ok(_) => serial_write(b"Scheduled beep.sys test worker.\r\n"),
+                        Err(_) => serial_write(b"Failed to schedule beep.sys test worker.\r\n"),
                     }
                     serial_write(b"Local APIC timer enabled after AP startup/self-tests; timer-driven preemption enabled.\r\n");
                     serial_write(b"cognacos-kd> type help for debugger commands\r\n");
@@ -1223,7 +1223,7 @@ unsafe fn outb(port: u16, value: u8) {
 static mut BEEP_TEST_STACK: [u8; 8192] = [0; 8192];
 
 extern "C" fn beep_test_worker(_argument: *mut core::ffi::c_void) {
-    unsafe { serial_write(b"Runtime beep.sys test started on scheduler-owned kernel thread.\\r\\n"); }
+    unsafe { serial_write(b"Runtime beep.sys test started on scheduler-owned kernel thread.\r\n"); }
     run_beep_runtime_test();
 }
 
@@ -1237,7 +1237,7 @@ fn run_beep_runtime_test() {
         true,
     );
     unsafe {
-            serial_write(b"DRIVER DEBUG: verbose driver entry/dispatch tracing enabled for beep.sys test.\\r\\n");
+            serial_write(b"DRIVER DEBUG: verbose driver entry/dispatch tracing enabled for beep.sys test.\r\n");
             // Real runtime test: invoke the native driver loader and DriverEntry.
         if let Some(beep_bytes) = boot_beep_bytes() {
             use ntoskrnl::driver_loader::{DriverLoadError, DriverObject, load_allocated};
@@ -1307,9 +1307,9 @@ fn run_beep_runtime_test() {
                         }
                         // Separate hardware-path diagnostic; audio is supplemental evidence.
                         if unsafe { qemu_pc_speaker_diagnostic_tone() } {
-                            serial_write(b"QEMU PC speaker diagnostic tone requested after beep.sys load.\\r\\n    ");
+                            serial_write(b"QEMU PC speaker diagnostic tone requested after beep.sys load.\r\n    ");
                         } else {
-                            serial_write(b"QEMU PC speaker diagnostic tone could not be requested.\\r\\n    ");
+                            serial_write(b"QEMU PC speaker diagnostic tone could not be requested.\r\n    ");
                         }
                     } else {
                         serial_write(b"\r\n    beep.sys DriverEntry succeeded but device/dispatch registration is incomplete.\r\n    ");
@@ -1441,7 +1441,7 @@ unsafe fn submit_beep_ioctl(
         serial_write_hex((*stack).completion_routine.map(|routine| routine as usize as u64).unwrap_or(0));
         serial_write(b" control=");
         serial_write_hex((*stack).control as u64);
-        serial_write(b"\\r\\n");
+        serial_write(b"\r\n");
     }
     let dispatch_status = unsafe { io::io_call_driver(device_object.cast(), irp) };
     let irp_status = unsafe { iosb.status.status };
@@ -1558,9 +1558,9 @@ pub unsafe fn halt() -> ! {
     // available, then keep the polled COM1 debugger prompt available.
     let saved = crate::ntoskrnl::debug::persist_to_storage();
     unsafe {
-        if saved { serial_write(b"\\r\\nNTOSKRNL trace snapshot persisted.\\r\\n"); }
-        else { serial_write(b"\\r\\nNTOSKRNL trace persistence unavailable.\\r\\n"); }
-        serial_write(b"cognacos-kd> type help for debugger commands\\r\\n");
+        if saved { serial_write(b"\r\nNTOSKRNL trace snapshot persisted.\r\n"); }
+        else { serial_write(b"\r\nNTOSKRNL trace persistence unavailable.\r\n"); }
+        serial_write(b"cognacos-kd> type help for debugger commands\r\n");
     }
     loop {
         crate::debug_console::poll();
