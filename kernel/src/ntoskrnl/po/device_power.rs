@@ -12,6 +12,20 @@ impl Registry{const fn new()->Self{Self{entries:[Entry::EMPTY;MAX_DEVICES]}}}
 static REGISTRY:crate::hal::IrqSpinLock<Registry>=crate::hal::IrqSpinLock::new(Registry::new());
 fn find(device:*mut DeviceObject)->Option<Entry>{if device.is_null(){return None} REGISTRY.lock().entries.iter().copied().find(|e|e.device==device as usize)}
 pub(crate) fn supports_wdm_state(device:*mut DeviceObject,state:u32)->bool{if !(1..=4).contains(&state){return false}let bit=1u8<<(state-1);find(device).map_or(bit&DEFAULT!=0,|e|e.states&bit!=0)}
+/// Reject a stack transition if any attached layer cannot support the target
+/// D-state. Unknown, cyclic, or overlong stacks fail closed.
+pub(crate) fn supports_wdm_state_stack(device:*mut DeviceObject,state:u32)->bool{
+ if device.is_null()||!(1..=4).contains(&state){return false}
+ let mut current=device;
+ for _ in 0..16 {
+  if !supports_wdm_state(current,state){return false}
+  let next=unsafe{(*current).attached_device};
+  if next.is_null(){return true}
+  if next==device{return false}
+  current=next;
+ }
+ false
+}
 pub(crate) fn supports_wake(device:*mut DeviceObject)->bool{find(device).is_some_and(|e|e.wake)}
 /// A wait/wake request is valid only when every device object in the attached
 /// stack advertises wake support. Bound traversal so corrupt/cyclic attachment
