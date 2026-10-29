@@ -1021,6 +1021,7 @@ unsafe fn allocate_pages_for_mdl(
         || high_address < low_address || low_address != 0
         || (skip_bytes != 0 && skip_bytes % PAGE_SIZE != 0)
         || cache_type != 1 || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
+        || flags & (MM_ALLOCATE_FROM_LOCAL_NODE_ONLY | MM_ALLOCATE_NO_WAIT | MM_ALLOCATE_PREFER_CONTIGUOUS) != 0
         || flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0 {
         return core::ptr::null_mut();
     }
