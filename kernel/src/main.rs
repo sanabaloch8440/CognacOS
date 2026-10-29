@@ -57,7 +57,7 @@ unsafe fn pci_config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u3
 
 fn probe_xhci_pci_function() -> bool {
     let mut found = 0u32;
-    unsafe { serial_write(b"PCI xHCI inventory: scanning PCI configuration space (read-only).\\r\\n"); }
+    unsafe { serial_write(b"PCI xHCI inventory: scanning PCI configuration space (read-only).\r\n"); }
     for bus in 0u16..=255 {
         for device in 0u8..32 {
             let id0 = unsafe { pci_config_read32(bus as u8, device, 0, 0x00) };
@@ -94,7 +94,7 @@ fn probe_xhci_pci_function() -> bool {
                     serial_write_hex(((class_code as u64) << 16) | ((subclass as u64) << 8) | programming_interface as u64);
                     serial_write(b" BAR0=");
                     serial_write_hex(bar_base);
-                    serial_write(b"\\r\\n");
+                    serial_write(b"\r\n");
                 }
                 found += 1;
             }
@@ -103,13 +103,13 @@ fn probe_xhci_pci_function() -> bool {
     unsafe {
         serial_write(b"QEMU xHCI DEVICE COUNT=");
         serial_write_hex(found as u64);
-        serial_write(b"\\r\\n");
+        serial_write(b"\r\n");
     }
     if found != 0 {
-        unsafe { serial_write(b"PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.\\r\\n"); }
+        unsafe { serial_write(b"PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.\r\n"); }
         true
     } else {
-        unsafe { serial_write(b"PCI xHCI discovery failed: no matching controller found.\\r\\n"); }
+        unsafe { serial_write(b"PCI xHCI discovery failed: no matching controller found.\r\n"); }
         false
     }
 }
