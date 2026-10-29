@@ -101,7 +101,7 @@ fn small_class(size: usize) -> Option<usize> {
 /// Try to allocate only from an already-created nonpaged slab. This path never
 /// creates backing pages and never waits for the pool lock, so it is suitable
 /// for the bounded resource acquisition phase of MM_ALLOCATE_NO_WAIT.
-fn try_allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
+pub(super) fn try_allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
     let Some(class_size) = small_class(size) else { return core::ptr::null_mut(); };
     #[cfg(target_os = "none")]
     let _guard = match LOCK.try_lock() {
