@@ -86,6 +86,7 @@ mod tests {
         table[9] = 0u8.wrapping_sub(checksum);
 
         assert_eq!(parse_srat(&table), Ok(1));
+        assert_eq!(memory_node_count(), 3);
         assert_eq!(node_for_range(0x10_1000, 0x1000), Some(2));
         assert_eq!(node_for_range(0x2f_f000, 0x2000), None);
     }
