@@ -46,8 +46,10 @@ This is the canonical task list. Completed work is summarized by area; detailed 
 - [ ] Complete file/device object lifetime and documented IRP completion/cancellation semantics before expanding driver coverage.
 - [ ] Add PCI enumeration/resource assignment and a real AHCI/NVMe path only after DMA safety is available.
 - [x] Harden DMA/IOMMU failure ownership: copy the one-shot backend callback table into kernel-owned immutable storage, require the backend before allocating common-buffer pages, and attempt rollback when a successful map returns malformed outputs.
-- [ ] Implement and validate hardware VT-d/AMD IOMMU translation, IOTLB invalidation, cache-coherency rules, and DMA teardown under device removal; fail closed when safe DMA translation is unavailable.
-- [ ] Complete device/power ordering, wake handling, and S4 persistence/resume. A conservative per-device D-state/wake capability registry is now present; hardware transitions and parent-stack wake propagation remain outstanding.
+- [x] Harden IOMMU backend registration and DMA ownership: immutable kernel-owned callback-table copy, backend-before-allocation checks, malformed-map rollback, and fail-closed DMA behavior when no complete translation backend exists.
+- [ ] Implement hardware VT-d and AMD-IOMMU translation, page-table/domain programming, IOTLB invalidation, cache-coherency synchronization, and device-removal teardown. ACPI Intel DMAR discovery/parser exists, but parsing firmware tables is not hardware DMA remapping.
+- [x] Add bounded attached-device-stack capability checks for D-state transitions and wait/wake; copy the S4 platform callback descriptor into kernel-owned immutable storage.
+- [ ] Complete parent-bus/USB-hub wake propagation, real hardware D-state sequencing, and production S4 storage/memory/CPU resume integration. The hibernation image codec is present, but no platform backend is registered by the boot path, so real S4 suspend/resume remains unavailable.
 
 ## P1 — NTDLL and native PE loader
 
