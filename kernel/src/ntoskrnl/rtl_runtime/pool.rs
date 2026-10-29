@@ -214,6 +214,11 @@ mod tests {
 }
 
 #[cfg(not(target_os = "none"))]
+pub(super) fn try_deallocate_tagged(_ptr: *mut u8, _expected_tag: Option<u32>) -> bool { false }
+#[cfg(target_os = "none")]
+pub(super) fn try_deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool { super::pool_page::try_deallocate_tagged(ptr, expected_tag) }
+
+#[cfg(not(target_os = "none"))]
 pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { bounded::allocate_tagged(size, tag, zeroed) }
 #[cfg(target_os = "none")]
 pub(super) fn allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 { super::pool_page::allocate_tagged(size, tag, zeroed) }
