@@ -117,7 +117,7 @@ mod power_lifecycle_tests {
  }
  #[test] fn failed_initialization_never_enables_irq(){
   struct Broken(Fake);
-  impl PortIo for Broken{fn read8(&mut self,p:u16)->u8{if p==STATUS_PORT{0}else{0}}fn write8(&mut self,_:u16,_:u8){}}
+  impl PortIo for Broken{fn read8(&mut self,p:u16)->u8{if p==STATUS_PORT{STATUS_OUTPUT_FULL}else{0}}fn write8(&mut self,_:u16,_:u8){}}
   impl PowerAwarePortIo for Broken{fn set_keyboard_irq_enabled(&mut self,e:bool)->Result<(),PortError>{self.0.irq=e;Ok(())}fn synchronize_keyboard_irq(&mut self)->Result<(),PortError>{Ok(())}}
   let mut io=Broken(Fake::new());let mut keyboard=Ps2KeyboardPort::new();
   assert_eq!(keyboard.start(&mut io,2),Err(PortError::ControllerFailure));assert!(!io.0.irq);assert_eq!(keyboard.state(),KeyboardPortState::Failed);
