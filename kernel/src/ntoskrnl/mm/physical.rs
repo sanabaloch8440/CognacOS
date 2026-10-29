@@ -217,6 +217,13 @@ struct MemoryGuard {
 }
 impl MemoryGuard {
     #[inline]
+    fn try_acquire() -> Option<Self> {
+        #[cfg(target_os = "none")]
+        { MEMORY_LOCK.try_lock().map(|guard| Self { _guard: guard }) }
+        #[cfg(not(target_os = "none"))]
+        { MEMORY_LOCK.compare_exchange(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed).ok().map(|_| Self {}) }
+    }
+    #[inline]
     fn acquire() -> Self {
         #[cfg(target_os = "none")]
         { Self { _guard: MEMORY_LOCK.lock() } }
@@ -235,7 +242,7 @@ impl Drop for MemoryGuard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AllocError { InvalidMap, TooManyRegions, OutOfMemory, InvalidPage, FreeListFull }
+pub enum AllocError { InvalidMap, TooManyRegions, OutOfMemory, InvalidPage, FreeListFull, Busy }
 
 fn align_up(value: u64, align: u64) -> Option<u64> {
     value.checked_add(align - 1).map(|v| v & !(align - 1))
@@ -604,6 +611,16 @@ pub unsafe fn allocate_page() -> Result<u64, AllocError> {
             return Ok(page);
         }
     }
+    Err(AllocError::OutOfMemory)
+}
+
+/// Nonblocking allocation for MM_ALLOCATE_NO_WAIT: never spins or reclaims.
+pub unsafe fn try_allocate_page() -> Result<u64, AllocError> {
+    let _guard = MemoryGuard::try_acquire().ok_or(AllocError::Busy)?;
+    let free = unsafe { &mut *FREE_PAGES.0.get() };
+    if free.1 != 0 { free.1 -= 1; let page=free.0[free.1]; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); }
+    let count=REGION_COUNT.load(core::sync::atomic::Ordering::Acquire); let regions=unsafe { &mut *REGIONS.0.get() };
+    for region in regions.iter_mut().take(count) { if region.next.checked_add(PAGE_SIZE).is_some_and(|end|end<=region.end) { let page=region.next; region.next+=PAGE_SIZE; unsafe { ptr::write_bytes(page as *mut u8,0,PAGE_SIZE as usize); } return Ok(page); } }
     Err(AllocError::OutOfMemory)
 }
 
