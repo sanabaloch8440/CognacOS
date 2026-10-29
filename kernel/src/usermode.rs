@@ -153,6 +153,14 @@ unsafe extern "C" {
     fn rdotos_process_enter_user(entry: u64, stack_top: u64, teb: u64);
 }
 
+unsafe fn enter_user_with_return_context(entry:u64,stack_top:u64,teb:u64){
+    let cpu=crate::ntoskrnl::ke::thread::current_cpu_index().unwrap_or(0);
+    if cpu>=crate::hal::MAX_CPUS{return;}
+    USER_RETURN_ACTIVE[cpu].store(true,core::sync::atomic::Ordering::Release);
+    unsafe{rdotos_process_enter_user(entry,stack_top,teb);}
+    USER_RETURN_ACTIVE[cpu].store(false,core::sync::atomic::Ordering::Release);
+}
+
 pub unsafe fn initialize() {
     unsafe { crate::ntoskrnl::ke::arch::install_user_gate(0x83, rdotos_process_exit_stub as usize as u64); }
 }
@@ -220,7 +228,7 @@ unsafe fn invoke_user_function(
         crate::serial_write(b" rsp=");
         crate::serial_write_hex(stack_top);
         crate::serial_write(b"\r\n");
-        rdotos_process_enter_user(va,stack_top,teb);
+        enter_user_with_return_context(va,stack_top,teb);
         crate::serial_write(b"[DBG][NTOSKRNL][USER] trampoline returned ordinal=");
         crate::serial_write_hex(ordinal as u64);
         crate::serial_write(b" target=");
@@ -436,9 +444,7 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
         unsafe { crate::serial_write(b"[DBG][NTOSKRNL][USER] entering image entry RIP="); crate::serial_write_hex(image.entry); crate::serial_write(b" RSP="); crate::serial_write_hex(initial_user_rsp); crate::serial_write(b" TEB="); crate::serial_write_hex(env.teb); crate::serial_write(b" return-trampoline="); crate::serial_write_hex(PROCESS_RETURN_TRAMPOLINE); crate::serial_write(b"\r\n"); }
         // The exception path may return a faulted process to this exact
         // suspended caller. Pin the active return context to this CPU.
-        USER_RETURN_ACTIVE[cpu].store(true,core::sync::atomic::Ordering::Release);
-        unsafe{rdotos_process_enter_user(image.entry,initial_user_rsp,env.teb);}
-        USER_RETURN_ACTIVE[cpu].store(false,core::sync::atomic::Ordering::Release);
+        unsafe{enter_user_with_return_context(image.entry,initial_user_rsp,env.teb);}
         Ok(())
     })() };
     unsafe { asm!("mov cr3, {}", in(reg) kernel_cr3, options(nostack, preserves_flags)); }
