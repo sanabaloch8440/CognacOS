@@ -1,10 +1,14 @@
 # Keyboard input stack
 
+The intended Windows-like order is **hardware/transport → HIDClass → KbdHid → KbdClass → Win32 input dispatch/layout translation**. `win32kbase.sys`/`win32k.sys` are part of the Windows GUI/input subsystem, not a direct hardware-driver stage. The US layout is conventionally named `kbdus.dll`; the US-International layout is a separate layout. CognacOS currently implements a tested portable US-layout translation core under `drivers/kbdus`, but has not yet implemented the Windows `KbdLayerDescriptor`/KBDTABLES binary contract or wired layout events into a working Win32 input queue.
+
+
 CognacOS now has initial, separately buildable Rust driver components for the Windows-style keyboard stack:
 
 - **kbdclass.sys** — bounded, fixed-capacity keyboard packet queue, connect/disconnect state, exclusive open semantics, and KEYBOARD_INPUT_DATA-shaped packets.
 - **hidclass.sys** — bounded HID short-item report-descriptor parser and top-level keyboard collection discovery.
 - **kbdhid.sys** — boot-keyboard report differencing, common HID usage to scan-code mapping, modifier make/break tracking, and HID rollover handling.
+- **kbdus layout core** — tested Set-1 scan-code to virtual-key mapping, US punctuation/shifted digits, Shift/Caps Lock casing, extended navigation keys, and key-up suppression of text; not yet a loadable Windows-compatible `kbdus.dll`.
 - **i8042prt.sys** — PS/2 port protocol helpers with bounded controller polling, ACK/RESEND handling, and scan-code Set 1 decoding. HAL now exposes privileged x86 port-I/O and volatile MMIO primitives behind unsafe APIs.
 - **usbxhci.sys** — xHCI core with checked capabilities, Link-TRB/cycle handling, USB descriptor parsing, enumeration-state validation, bounded controller startup, a HAL-backed platform adapter for the versioned DMA/interrupt service table, allocation/ERST initialization with rollback, live DMA event-ring draining with ERDP updates, bounded command-ring submission with Link-TRB cycle rollover and Doorbell 0 notification, and safe stop-before-free rundown. CI builds a separate native PE32+ image and runs host-side unit tests.
 
