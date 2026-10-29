@@ -50,6 +50,8 @@ static KBD_INPUT_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU
 static PS2_IRQ_ACTIVE:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static PS2_IRQ_ROUTE_READY:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static PS2_IRQ_VECTOR:core::sync::atomic::AtomicU8=core::sync::atomic::AtomicU8::new(0);
+static PS2_IRQ_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static PS2_IRQ_DIAGNOSTIC_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static PS2_IRQ_IO_BASE:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static PS2_IRQ_GSI_BASE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
 static PS2_IRQ_GSI:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
@@ -153,6 +155,7 @@ fn prepare_ps2_irq_route(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
 unsafe extern "win64" fn ps2_keyboard_interrupt(_vector:u8,_frame:*mut core::ffi::c_void,_context:*mut core::ffi::c_void)->bool {
  use core::sync::atomic::Ordering;
  if !KBD_STACK_READY.load(Ordering::Acquire) { return false; }
+ PS2_IRQ_COUNT.fetch_add(1,Ordering::Relaxed);
  let mut handled=false;
  for _ in 0..32 {
   let status:u8;unsafe{asm!("in al, dx",in("dx") STATUS_PORT,out("al") status,options(nomem,nostack,preserves_flags));}
@@ -204,7 +207,15 @@ fn enable_ps2_irq_route()->bool {
 /// This provides a safe bring-up path while IDT/IRQ registration is unfinished.
 fn poll_ps2_keyboard_input(){
  use core::sync::atomic::Ordering;
- if PS2_IRQ_ACTIVE.load(Ordering::Acquire) { return; }
+ if PS2_IRQ_ACTIVE.load(Ordering::Acquire) {
+  let count=PS2_IRQ_COUNT.load(Ordering::Acquire);
+  if count!=0 && PS2_IRQ_DIAGNOSTIC_COUNT.load(Ordering::Relaxed)!=count {
+   PS2_IRQ_DIAGNOSTIC_COUNT.store(count,Ordering::Relaxed);
+   serial_write(b"PS/2 IRQ delivered: count=");serial_write_decimal(count as usize);
+   serial_write(b"; keyboard bytes drained by ISR; APIC EOI handled by HAL dispatcher.\\r\\n");
+  }
+  return;
+ }
  if !KBD_STACK_READY.load(Ordering::Acquire) {
   unsafe {
    let stack=&mut *core::ptr::addr_of_mut!(KBD_STACK);
