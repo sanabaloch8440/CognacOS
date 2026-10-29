@@ -91,13 +91,16 @@ pub fn map_sg(device:usize,token:usize,fragments:&[(u64,u32)],direction:u8,out:&
 }
 pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Result<(*mut u8,u64),DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;if length==0{return Err(DmaError::InvalidLength)}
+ // Resolve the backend before acquiring physical pages. A missing IOMMU must
+ // fail without leaking a contiguous allocation from the kernel page allocator.
+ let b=backend().map_err(|_|DmaError::AddressMask)?;
  let pages=length.checked_add(PAGE_SIZE as usize-1).ok_or(DmaError::InvalidLength)?/PAGE_SIZE as usize;
  let physical=unsafe{crate::memory::allocate_contiguous_pages(pages)}.map_err(|_|DmaError::OutOfMemory)?;
  let bytes=(pages as u64).checked_mul(PAGE_SIZE).ok_or(DmaError::InvalidLength)?;
  if bytes>u32::MAX as u64||physical.checked_add(bytes-1).is_none(){for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
  let Some(cpu)=crate::memory::direct_map_address(physical)else{for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)};
  unsafe{ptr::write_bytes(cpu as *mut u8,0,bytes as usize);}
- let b=backend().map_err(|_|DmaError::AddressMask)?;let mut logical=0;let mut cookie=0;
+ let mut logical=0;let mut cookie=0;
  let st=unsafe{(b.map.unwrap())(b.context,device,physical,bytes as u32,2,&mut logical,&mut cookie)};
  if st!=OK||logical==0||cookie==0||logical.checked_add(bytes).is_none_or(|e|e-1>maximum){if st==OK&&cookie!=0{let _=unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)};}for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
  let mut s=STATE.lock();let logical_end=logical.checked_add(bytes).ok_or(DmaError::AddressMask)?;
@@ -109,8 +112,11 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
 }
 pub unsafe fn free_common(adapter:*mut c_void,cpu:*mut u8,logical:u64,length:usize)->Result<(),DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;
- let rec={let mut s=STATE.lock();let Some(i)=s.common.iter().position(|c|c.used&&c.device==device&&c.cpu==cpu as usize&&c.logical==logical&&c.length==length)else{return Err(DmaError::NotFound)};let c=s.common[i];s.common[i]=Common::EMPTY;c};
+ // Do not retire the registry record until a usable backend is available.
+ // Otherwise a transient backend failure would orphan pages and lose the only
+ // ownership record capable of freeing them.
  let b=backend().map_err(|_|DmaError::AddressMask)?;
+ let rec={let mut s=STATE.lock();let Some(i)=s.common.iter().position(|c|c.used&&c.device==device&&c.cpu==cpu as usize&&c.logical==logical&&c.length==length)else{return Err(DmaError::NotFound)};let c=s.common[i];s.common[i]=Common::EMPTY;c};
  let mapped_bytes=(rec.pages as u64*PAGE_SIZE) as u32;
  let sync=unsafe{(b.sync.unwrap())(b.context,device,rec.logical,mapped_bytes,2)};
  if sync!=OK{let mut s=STATE.lock();if let Some(slot)=s.common.iter_mut().find(|c|!c.used){*slot=rec;}return Err(DmaError::AddressMask)}
