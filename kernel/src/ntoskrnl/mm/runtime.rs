@@ -1017,11 +1017,21 @@ unsafe fn allocate_pages_for_mdl(
     low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
     cache_type: u32, flags: u32,
 ) -> *mut c_void {
-    // The allocator has no ACPI SRAT/SLIT topology yet. Do not silently
-    // claim "local node only" on a multi-node machine.
+    // NO_WAIT is a hard nonblocking contract: this path currently lacks a
+    // nonblocking nonpaged-pool allocator and nonblocking MDL-registry lock.
+    // Fail immediately instead of accidentally blocking in pool_allocate_tagged,
+    // page allocation, or register_page_allocation_mdl.
+    if flags & MM_ALLOCATE_NO_WAIT != 0 {
+        return core::ptr::null_mut();
+    }
+    // NUMA ownership is not yet connected to the physical allocator. Never
+    // pretend that the local-node-only constraint was satisfied.
+    let require_contiguous = flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0;
     if total_bytes == 0 || total_bytes > (u32::MAX as u64 - PAGE_SIZE)
         || high_address < low_address
         || (skip_bytes != 0 && (!skip_bytes.is_power_of_two() || skip_bytes < PAGE_SIZE))
+        || (require_contiguous && skip_bytes != 0
+            && (total_bytes % skip_bytes != 0 || !skip_bytes.is_power_of_two()))
         || cache_type != 1
         || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
         || flags & MM_ALLOCATE_FROM_LOCAL_NODE_ONLY != 0 {
@@ -1039,7 +1049,6 @@ unsafe fn allocate_pages_for_mdl(
 
     let mut allocated = 0usize;
     let pfns = unsafe { mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>() };
-    let require_contiguous = flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0;
     let prefer_contiguous = flags & MM_ALLOCATE_PREFER_CONTIGUOUS != 0;
     // The contiguous-chunks contract is implemented as one contiguous run for
     // this initial allocator; this is stronger than returning multiple chunks.
