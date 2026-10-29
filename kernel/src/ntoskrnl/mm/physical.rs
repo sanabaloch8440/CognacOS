@@ -1077,6 +1077,12 @@ fn page_is_locked_try(page: u64) -> bool {
 }
 #[cfg(not(target_os = "none"))]
 fn page_is_locked_try(_page: u64) -> bool { true }
+#[cfg(target_os = "none")]
+fn page_lock_status_try(page: u64) -> Option<bool> {
+    crate::ntoskrnl::mm::runtime::try_page_lock_status(page)
+}
+#[cfg(not(target_os = "none"))]
+fn page_lock_status_try(_page: u64) -> Option<bool> { Some(false) }
 #[cfg(not(target_os = "none"))]
 fn page_is_locked(_page: u64) -> bool { false }
 
@@ -1096,7 +1102,7 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
             return Err(AllocError::InvalidPage);
         }
         let _guard = if try_only { MemoryGuard::try_acquire().ok_or(AllocError::Busy)? } else { MemoryGuard::acquire() };
-        if (if try_only { page_is_locked_try(page) } else { page_is_locked(page) }) { return Err(AllocError::InvalidPage); }
+        if if try_only { page_is_locked_try(page) } else { page_is_locked(page) } { return Err(AllocError::InvalidPage); }
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 < FREE_CAPACITY {
             free.0[free.1] = page;
@@ -1127,7 +1133,7 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
     } else { MemoryGuard::acquire() };
     drain_deferred_frees_locked();
     if try_only {
-        match crate::ntoskrnl::mm::runtime::try_page_lock_status(page) {
+        match page_lock_status_try(page) {
             Some(true) => return Err(AllocError::InvalidPage),
             Some(false) => {},
             None => return if defer_free_page(page) { Ok(()) } else { Err(AllocError::FreeListFull) },
