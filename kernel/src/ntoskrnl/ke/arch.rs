@@ -1853,6 +1853,7 @@ fn return_from_faulted_bootstrap_process(trap:&mut UserExceptionTrapFrame,pid:u6
  if !crate::usermode::user_return_context_active(cpu)
   || crate::ntoskrnl::ke::thread::current_thread_id().is_none(){return false;}
  let _=crate::process::mark_exited(pid,status);
+ set_user_exception_dispatch_active(cpu,false);
  crate::usermode::mark_user_fault_contained(cpu);
  trap.saved_registers=[0;15];
  trap.rip=rdotos_process_fault_return as usize as u64;
