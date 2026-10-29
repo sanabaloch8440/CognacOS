@@ -315,6 +315,19 @@ extern "C" fn publish_switched_out(scheduler_id:usize){
         if crate::scheduler::wake_task(scheduler_id as u64).is_ok(){notify_affinity(affinity);}
     }
 }
+/// NT yield semantics: only report a successful yield when another runnable
+/// scheduler task exists for this CPU, and perform the real context switch.
+pub fn yield_current_if_runnable()->bool{
+ let Ok(cpu)=cpu_index() else{return false};
+ let Some(id)=current_thread_id() else{return false};
+ let scheduler_id={
+  let table=THREADS.lock();
+  let Some(thread)=table.records.iter().find(|t|t.id==id&&t.state==ThreadState::Running) else{return false};
+  thread.scheduler_id
+ };
+ if !crate::scheduler::has_runnable_for_cpu(cpu,scheduler_id){return false;}
+ yield_current().is_ok()
+}
 pub fn yield_current()->Result<(),ThreadError>{
     crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();
     crate::ntoskrnl::ke::runtime::dispatch_threaded_dpcs();
@@ -553,14 +566,14 @@ fn exit_current()->! {
             } else {
                 core::ptr::null()
             };
-            let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,next_stack_top);
+            let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,next_stack_top);let _=crate::syscall::set_kernel_stack(cpu,next_stack_top);
             (old_rsp_ptr,next_rsp,old_token,next_xstate)
         }else{
             local.current_thread.store(0,core::sync::atomic::Ordering::Release);
             let idle=unsafe{*idle_rsp_ptr};
             if idle.is_null(){loop{core::hint::spin_loop()}}
             let idle_top=IDLE_STACK_TOPS[cpu].load(core::sync::atomic::Ordering::Acquire);
-            if idle_top!=0{let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,idle_top);}
+            if idle_top!=0{let aligned=idle_top&!0xf;let _=crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,aligned);let _=crate::syscall::set_kernel_stack(cpu,aligned);}
             let idle_xstate = if crate::ntoskrnl::ke::runtime::ki_xstate_enabled() {
                 unsafe { core::ptr::addr_of!(IDLE_XSTATE[cpu]) }
             } else {
@@ -795,7 +808,7 @@ pub fn clear_wake_pending()->Result<(),ThreadError>{
 pub fn set_idle_stack_top(cpu:usize,stack_top:u64)->bool{
     if cpu>=crate::hal::MAX_CPUS||stack_top==0||stack_top&0xf!=0{return false;}
     IDLE_STACK_TOPS[cpu].store(stack_top,core::sync::atomic::Ordering::Release);
-    crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,stack_top)
+    crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,stack_top) && crate::syscall::set_kernel_stack(cpu,stack_top)
 }
 
 /// Initialize the runtime's per-CPU current-thread slots. The bootstrap context
