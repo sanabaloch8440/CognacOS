@@ -170,7 +170,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let prefix = unsafe { &*(driver as *const DriverObjectPrefix) };
     let Some(ext) = (unsafe { prefix.driver_extension.as_ref() }) else { return DRIVER_NOT_SUPPORTED; };
     if ext.magic != EXTENSION_MAGIC || ext.version != 1
-        || ext.size as usize < core::mem::size_of::<XhciDriverExtension>()
+        || (ext.size as usize) < core::mem::size_of::<XhciDriverExtension>()
         || ext.mmio_base == 0 || ext.mmio_base & 3 != 0
         || ext.mmio_length < 0x1000 || ext.mmio_length > MMIO_LIMIT
         || ext.interrupt_vector == 0 || ext.max_slots == 0 || ext.max_slots > 64
