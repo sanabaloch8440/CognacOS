@@ -39,79 +39,125 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 
 
-// Early PCI configuration-space inventory for the QEMU smoke test.
-// This is intentionally read-only: discovering a controller is not claiming it.
-// Driver takeover requires a mapped MMIO resource, requester-bound IOMMU DMA,
-// interrupt routing, and a PnP-created driver extension; do not bypass those gates.
-unsafe fn pci_config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
-    let address = 0x8000_0000u32
-        | ((bus as u32) << 16)
-        | ((device as u32) << 11)
-        | ((function as u32) << 8)
-        | ((offset as u32) & 0xfc);
-    unsafe {
-        hal::write_port_u32(0x0cf8, address);
-        hal::read_port_u32(0x0cfc)
-    }
+// PCI configuration mechanism #1 helpers. BAR sizing is performed only during
+// early boot, before any driver binds; command decode and bus mastering are
+// disabled while probing and the original BAR/command values are restored.
+unsafe fn pci_config_select(bus:u8,device:u8,function:u8,offset:u8) {
+    let address=0x8000_0000u32|((bus as u32)<<16)|((device as u32)<<11)
+        |((function as u32)<<8)|((offset as u32)&0xfc);
+    unsafe { hal::write_port_u32(0x0cf8,address); }
+}
+unsafe fn pci_config_read32(bus:u8,device:u8,function:u8,offset:u8)->u32 {
+    unsafe { pci_config_select(bus,device,function,offset); hal::read_port_u32(0x0cfc) }
+}
+unsafe fn pci_config_write32(bus:u8,device:u8,function:u8,offset:u8,value:u32) {
+    unsafe { pci_config_select(bus,device,function,offset); hal::write_port_u32(0x0cfc,value); }
+}
+unsafe fn pci_config_write16(bus:u8,device:u8,function:u8,offset:u8,value:u16) {
+    unsafe { pci_config_select(bus,device,function,offset); hal::write_port_u16(0x0cfc,value); }
 }
 
-fn probe_xhci_pci_function() -> bool {
-    let mut found = 0u32;
-    unsafe { serial_write(b"PCI xHCI inventory: scanning PCI configuration space (read-only).\r\n"); }
+/// Determine the assigned BAR size without leaving the device configuration
+/// modified. This routine runs before device drivers and never enables bus master.
+unsafe fn probe_xhci_bar(bus:u8,device:u8,function:u8)->Option<(u64,u64)> {
+    let low=unsafe{pci_config_read32(bus,device,function,0x10)};
+    let kind=(low>>1)&3;
+    if low&1!=0 || (kind!=0&&kind!=2) { return None; }
+    let high=if kind==2 {Some(unsafe{pci_config_read32(bus,device,function,0x14)})}else{None};
+    let decoded=pci::decode_memory_bar(low,high).ok()?;
+    if decoded.prefetchable { return None; }
+    let command=unsafe{pci_config_read32(bus,device,function,0x04)} as u16;
+    // Only touch BAR sizing registers with memory/I/O decoding and bus mastering off.
+    unsafe{pci_config_write16(bus,device,function,0x04,command&!0x0007);}
+    unsafe{pci_config_write32(bus,device,function,0x10,u32::MAX);}
+    if kind==2 { unsafe{pci_config_write32(bus,device,function,0x14,u32::MAX);} }
+    let mask_low=unsafe{pci_config_read32(bus,device,function,0x10)};
+    let mask_high=if kind==2 {unsafe{pci_config_read32(bus,device,function,0x14)}}else{0};
+    // Restore BARs before restoring command decode; bus mastering stays exactly as it was.
+    unsafe{pci_config_write32(bus,device,function,0x10,low);}
+    if let Some(saved)=high { unsafe{pci_config_write32(bus,device,function,0x14,saved);} }
+    unsafe{pci_config_write16(bus,device,function,0x04,command);}
+    let size=if kind==2 {
+        let mask=((mask_high as u64)<<32)|((mask_low as u64)&!0xf);
+        (!mask).wrapping_add(1)
+    } else {
+        (!(mask_low&!0xf)).wrapping_add(1) as u64
+    };
+    if size<0x1000||!size.is_power_of_two()||size>0x0400_0000
+        ||decoded.base&(size-1)!=0||decoded.base.checked_add(size).is_none() {
+        return None;
+    }
+    Some((decoded.base,size))
+}
+
+/// Discover xHCI, measure its assigned BAR, map it uncached and publish a stable
+/// ntoskrnl-owned PnP record. This is resource preparation, not controller takeover:
+/// no bus mastering, DMA ring allocation, reset, or interrupt source is enabled here.
+fn probe_xhci_pci_function()->bool {
+    let mut found=0u32;
+    let mut published=false;
+    unsafe{serial_write(b"PCI xHCI inventory: validating BAR resources and preparing PnP handoff.\r\n");}
     for bus in 0u16..=255 {
         for device in 0u8..32 {
-            let id0 = unsafe { pci_config_read32(bus as u8, device, 0, 0x00) };
-            let vendor0 = id0 as u16;
-            if vendor0 == 0 || vendor0 == 0xffff { continue; }
-            let header0 = unsafe { pci_config_read32(bus as u8, device, 0, 0x0c) };
-            let function_count: u8 = if ((header0 >> 23) & 1) != 0 { 8 } else { 1 };
+            let id0=unsafe{pci_config_read32(bus as u8,device,0,0x00)};
+            let vendor0=id0 as u16;
+            if vendor0==0||vendor0==0xffff {continue}
+            let header0=unsafe{pci_config_read32(bus as u8,device,0,0x0c)};
+            let function_count:u8=if ((header0>>23)&1)!=0 {8}else{1};
             for function in 0u8..function_count {
-                let id = if function == 0 { id0 } else {
-                    unsafe { pci_config_read32(bus as u8, device, function, 0x00) }
-                };
-                let vendor = id as u16;
-                if vendor == 0 || vendor == 0xffff { continue; }
-                let class_revision = unsafe { pci_config_read32(bus as u8, device, function, 0x08) };
-                let programming_interface = ((class_revision >> 8) & 0xff) as u8;
-                let subclass = ((class_revision >> 16) & 0xff) as u8;
-                let class_code = ((class_revision >> 24) & 0xff) as u8;
-                if !pci::is_xhci_controller(class_code, subclass, programming_interface) { continue; }
-
-                let bar_low = unsafe { pci_config_read32(bus as u8, device, function, 0x10) };
-                let bar_kind = (bar_low >> 1) & 3;
-                let bar_high = if bar_low & 1 == 0 && bar_kind == 2 {
-                    unsafe { pci_config_read32(bus as u8, device, function, 0x14) }
-                } else { 0 };
-                let bar_base = ((bar_high as u64) << 32) | ((bar_low as u64) & !0xf);
-                unsafe {
+                let id=if function==0{id0}else{unsafe{pci_config_read32(bus as u8,device,function,0x00)}};
+                let vendor=id as u16;
+                if vendor==0||vendor==0xffff {continue}
+                let class_revision=unsafe{pci_config_read32(bus as u8,device,function,0x08)};
+                let prog=((class_revision>>8)&0xff) as u8;
+                let subclass=((class_revision>>16)&0xff) as u8;
+                let class_code=((class_revision>>24)&0xff) as u8;
+                if !pci::is_xhci_controller(class_code,subclass,prog){continue}
+                let (bar_base,bar_size)=unsafe{probe_xhci_bar(bus as u8,device,function)}.unwrap_or((0,0));
+                unsafe{
                     serial_write(b"QEMU xHCI DEVICE: BDF=");
-                    serial_write_hex(((bus as u64) << 8) | ((device as u64) << 3) | function as u64);
-                    serial_write(b" vendor=");
-                    serial_write_hex(vendor as u64);
-                    serial_write(b" device=");
-                    serial_write_hex((id >> 16) as u16 as u64);
-                    serial_write(b" class=");
-                    serial_write_hex(((class_code as u64) << 16) | ((subclass as u64) << 8) | programming_interface as u64);
-                    serial_write(b" BAR0=");
-                    serial_write_hex(bar_base);
-                    serial_write(b"\r\n");
+                    serial_write_hex(((bus as u64)<<8)|((device as u64)<<3)|function as u64);
+                    serial_write(b" vendor=");serial_write_hex(vendor as u64);
+                    serial_write(b" device=");serial_write_hex((id>>16) as u16 as u64);
+                    serial_write(b" class=");serial_write_hex(((class_code as u64)<<16)|((subclass as u64)<<8)|prog as u64);
+                    serial_write(b" BAR0=");serial_write_hex(bar_base);
+                    serial_write(b" BAR_SIZE=");serial_write_hex(bar_size);serial_write(b"\r\n");
                 }
-                found += 1;
+                found+=1;
+                if published||bar_base==0||bar_size==0 {continue}
+                let bar_virtual=match kernel_vm::map_io_space(bar_base,bar_size) {
+                    Ok(address)=>address,
+                    Err(_)=>{unsafe{serial_write(b"xHCI PnP: BAR mapping rejected; controller remains unbound.\r\n");}continue}
+                };
+                let irq=unsafe{pci_config_read32(bus as u8,device,function,0x3c)};
+                match ntoskrnl::pnp::publish_xhci(bus as u8,device,function,vendor,(id>>16) as u16,
+                    irq as u8,(irq>>8) as u8,bar_base,bar_size,bar_virtual) {
+                    Ok(object)=>{
+                        published=true;
+                        unsafe{
+                            serial_write(b"xHCI PnP resource published: device_object=");
+                            serial_write_hex(object);serial_write(b" MMIO_VA=");
+                            serial_write_hex(bar_virtual);serial_write(b" length=");
+                            serial_write_hex(bar_size);
+                            serial_write(b"; DMA/IRQ not ready, bus mastering remains gated.\r\n");
+                        }
+                    }
+                    Err(_)=>{let _=kernel_vm::unmap_io_space(bar_virtual,bar_size);}
+                }
             }
         }
     }
-    unsafe {
-        serial_write(b"QEMU xHCI DEVICE COUNT=");
-        serial_write_hex(found as u64);
-        serial_write(b"\r\n");
+    unsafe{
+        serial_write(b"QEMU xHCI DEVICE COUNT=");serial_write_hex(found as u64);serial_write(b"\r\n");
     }
-    if found != 0 {
-        unsafe { serial_write(b"PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.\r\n"); }
-        true
+    if published {
+        unsafe{serial_write(b"PCI xHCI resource discovery and uncached MMIO mapping complete; driver binding remains gated on IOMMU and IRQ readiness.\r\n");}
+    } else if found!=0 {
+        unsafe{serial_write(b"PCI xHCI detected but no safe PnP MMIO resource could be published.\r\n");}
     } else {
-        unsafe { serial_write(b"PCI xHCI discovery failed: no matching controller found.\r\n"); }
-        false
+        unsafe{serial_write(b"PCI xHCI discovery failed: no matching controller found.\r\n");}
     }
+    published
 }
 
 fn io_smoke_dispatch(irp: &mut io::Irp) -> io::IoStatus {
@@ -421,7 +467,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: bootstrap CPU-local HAL setup failed.\r\n");
             halt();
         }
-        let _xhci_pci_discovered = probe_xhci_pci_function();
+        // xHCI PCI resource probing is deferred until kernel VM is initialized.
         ntoskrnl::ke::runtime::ke_initialize_executive();
         let bsp_stack_top = match info.kernel_stack_virtual_guard.checked_add(stack_allocation_bytes) {
             Some(top) if top != 0 => top,
@@ -680,6 +726,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Kernel virtual-address arena and mapping self-test passed.\r\n");
+        let _xhci_pnp_resources_ready = probe_xhci_pci_function();
         if unsafe { syscall::prepare_windows_syscall_stack(0) }.is_err() {
             serial_write(b"FATAL: could not allocate BSP Windows SYSCALL stack.\r\n");
             halt();
