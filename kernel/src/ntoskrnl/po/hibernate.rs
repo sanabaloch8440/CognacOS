@@ -38,6 +38,7 @@ pub type RestoreMemory=unsafe extern "system" fn(*mut c_void,u64,*const u8,usize
 /// and restore memory through a resume-safe loader that will not overwrite its
 /// active stack/code. restore_cpu_state must perform the final context transfer.
 #[repr(C)]
+#[derive(Clone,Copy)]
 pub struct HiberPlatformOps {
  pub size:u32, pub context:*mut c_void,
  pub quiesce_devices:Option<Simple>, pub resume_devices:Option<Simple>,
