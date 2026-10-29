@@ -166,3 +166,131 @@ mod xhci_pci_tests{
  #[test]fn decodes_64_bit_mmio_bar(){let b=decode_memory_bar(0x0000_000c,Some(0x0000_0001)).unwrap();assert_eq!(b.base,0x1_0000_0000);assert!(b.is_64_bit);assert!(b.prefetchable);}
  #[test]fn rejects_io_reserved_and_unassigned_bars(){assert_eq!(decode_memory_bar(1,None),Err(BarError::IoBar));assert_eq!(decode_memory_bar(0x2,None),Err(BarError::ReservedMemoryType));assert_eq!(decode_memory_bar(0,None),Err(BarError::Unassigned));assert_eq!(decode_memory_bar(0x4,None),Err(BarError::MissingUpperDword));}
 }
+
+
+// Read-only PCI function discovery. Enumeration never probes BAR sizes by writing
+// all-ones values: BAR assignment and mapping belong to the kernel PnP/resource layer.
+pub const PCI_VENDOR_ID_OFFSET:u16=0x00;
+pub const PCI_DEVICE_ID_OFFSET:u16=0x02;
+pub const PCI_COMMAND_OFFSET:u16=0x04;
+pub const PCI_CLASS_REVISION_OFFSET:u16=0x08;
+pub const PCI_HEADER_TYPE_OFFSET:u16=0x0e;
+pub const PCI_BAR0_OFFSET:u16=0x10;
+pub const PCI_COMMAND_MEMORY:u16=1<<1;
+pub const PCI_COMMAND_BUS_MASTER:u16=1<<2;
+
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct PciFunctionHeader {
+    pub vendor_id:u16,
+    pub device_id:u16,
+    pub command:u16,
+    pub revision_id:u8,
+    pub programming_interface:u8,
+    pub subclass:u8,
+    pub class_code:u8,
+    pub header_type:u8,
+}
+impl PciFunctionHeader {
+    /// Parse the common 16-byte PCI configuration header without interpreting
+    /// untrusted/reserved fields as resource addresses.
+    pub fn parse(bytes:&[u8])->Result<Self,PciError>{
+        if bytes.len()<16{return Err(PciError::InvalidOffset)}
+        let vendor_id=u16::from_le_bytes([bytes[0],bytes[1]]);
+        let device_id=u16::from_le_bytes([bytes[2],bytes[3]]);
+        if vendor_id==0xffff || vendor_id==0{return Err(PciError::InvalidBdf)}
+        Ok(Self{
+            vendor_id,device_id,
+            command:u16::from_le_bytes([bytes[4],bytes[5]]),
+            revision_id:bytes[8],
+            programming_interface:bytes[9],
+            subclass:bytes[10],
+            class_code:bytes[11],
+            header_type:bytes[14]&0x7f,
+        })
+    }
+    pub const fn is_xhci(&self)->bool{
+        is_xhci_controller(self.class_code,self.subclass,self.programming_interface)
+    }
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct XhciPciFunction {
+    pub segment:u16,pub bus:u8,pub device:u8,pub function:u8,
+    pub vendor_id:u16,pub device_id:u16,pub command:u16,pub bar:MemoryBar,
+}
+pub const MAX_XHCI_FUNCTIONS:usize=32;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum PciScanError { Window(PciError), Bar(BarError), ResultCapacity }
+impl From<PciError> for PciScanError {fn from(e:PciError)->Self{Self::Window(e)}}
+impl From<BarError> for PciScanError {fn from(e:BarError)->Self{Self::Bar(e)}}
+
+/// Discover xHCI functions in one firmware-described ECAM window. This only
+/// reads configuration space and reports the assigned BAR; it intentionally
+/// does not enable bus mastering, size BARs, map MMIO, or start the controller.
+/// Those privileged operations require kernel resource arbitration and HAL DMA
+/// / interrupt services. Multi-function devices are walked according to the
+/// header-type bit; absent functions are skipped.
+pub unsafe fn scan_xhci(
+    window:&EcamWindow,
+)->Result<([Option<XhciPciFunction>;MAX_XHCI_FUNCTIONS],usize),PciScanError>{
+    window.validate().map_err(PciScanError::Window)?;
+    let mut found=[None;MAX_XHCI_FUNCTIONS];
+    let mut count=0usize;
+    for bus in window.bus_start..=window.bus_end {
+        for device in 0u8..32 {
+            let mut multifunction=false;
+            for function in 0u8..8 {
+                if function>0 && !multifunction {break}
+                let vendor=unsafe{window.read_u16(window.segment,bus,device,function,PCI_VENDOR_ID_OFFSET)}
+                    .map_err(PciScanError::Window)?;
+                if vendor==0xffff || vendor==0 {if function==0{break}else{continue}}
+                let header_type=unsafe{window.read_u8(window.segment,bus,device,function,PCI_HEADER_TYPE_OFFSET)}
+                    .map_err(PciScanError::Window)?;
+                if function==0 {multifunction=header_type&0x80!=0}
+                let class=unsafe{window.read_u32(window.segment,bus,device,function,PCI_CLASS_REVISION_OFFSET)}
+                    .map_err(PciScanError::Window)?;
+                let revision=class as u8;
+                let prog_if=(class>>8) as u8;
+                let subclass=(class>>16) as u8;
+                let class_code=(class>>24) as u8;
+                if !is_xhci_controller(class_code,subclass,prog_if){continue}
+                // Type-0 endpoint headers expose BAR0 at 0x10. Do not treat
+                // bridge/CardBus layouts as controller endpoint resources.
+                if header_type&0x7f!=0 {continue}
+                let low=unsafe{window.read_u32(window.segment,bus,device,function,PCI_BAR0_OFFSET)}
+                    .map_err(PciScanError::Window)?;
+                let kind=(low>>1)&3;
+                let high=if kind==2 {Some(unsafe{window.read_u32(window.segment,bus,device,function,PCI_BAR0_OFFSET+4)}.map_err(PciScanError::Window)?)}else{None};
+                let bar=decode_memory_bar(low,high).map_err(PciScanError::Bar)?;
+                let device_id=unsafe{window.read_u16(window.segment,bus,device,function,PCI_DEVICE_ID_OFFSET)}
+                    .map_err(PciScanError::Window)?;
+                let command=unsafe{window.read_u16(window.segment,bus,device,function,PCI_COMMAND_OFFSET)}
+                    .map_err(PciScanError::Window)?;
+                if count==MAX_XHCI_FUNCTIONS{return Err(PciScanError::ResultCapacity)}
+                found[count]=Some(XhciPciFunction{segment:window.segment,bus,device,function,vendor_id:vendor,device_id,command,bar});
+                count+=1;
+                let _=revision; // retained in the common header parser for callers that need it
+            }
+        }
+    }
+    Ok((found,count))
+}
+
+#[cfg(test)]
+mod function_header_tests {
+    use super::*;
+    #[test]
+    fn parses_function_header_and_xhci_class(){
+        let mut b=[0u8;16];b[0..2].copy_from_slice(&0x8086u16.to_le_bytes());
+        b[2..4].copy_from_slice(&0x1234u16.to_le_bytes());b[4..6].copy_from_slice(&0x0006u16.to_le_bytes());
+        b[8]=1;b[9]=0x30;b[10]=0x03;b[11]=0x0c;b[14]=0;
+        let h=PciFunctionHeader::parse(&b).unwrap();
+        assert_eq!(h.vendor_id,0x8086);assert_eq!(h.device_id,0x1234);
+        assert!(h.is_xhci());assert_eq!(h.command,6);
+    }
+    #[test]
+    fn common_header_rejects_absent_and_truncated_functions(){
+        assert_eq!(PciFunctionHeader::parse(&[0;8]),Err(PciError::InvalidOffset));
+        let mut b=[0u8;16];b[0..2].copy_from_slice(&0xffffu16.to_le_bytes());
+        assert_eq!(PciFunctionHeader::parse(&b),Err(PciError::InvalidBdf));
+    }
+}
