@@ -1422,6 +1422,13 @@ pub fn per_cpu_tss_self_test(cpu: usize) -> bool {
     }
 }
 
+/// Read the current CPU's TSS privilege-transition stack.
+pub fn kernel_stack_top(cpu:usize)->Option<u64>{
+ if cpu>=crate::hal::MAX_CPUS{return None;}
+ let value=unsafe{core::ptr::addr_of!(CPU_TSS[cpu].rsp0).read_unaligned()};
+ (value!=0).then_some(value)
+}
+
 /// Update the privilege-transition stack when a kernel thread is dispatched.
 pub fn set_kernel_stack(cpu: usize, stack_top: u64) -> bool {
     if cpu >= crate::hal::MAX_CPUS || stack_top == 0 { return false; }
