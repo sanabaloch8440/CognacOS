@@ -814,6 +814,7 @@ jobs:
           grep -F 'NTDLL PE32+ image mapped and exports registered.' build/serial.log
           grep -F 'Per-process page-table isolation, same-VA non-aliasing, and supervisor mapping protection passed.' build/serial.log
           grep -F 'Security: ring-3 GDT/TSS RSP0 installed; IRETQ transition available.' build/serial.log
+          grep -F '[EXCEPTION] ring-3 ETHREAD attached id=' build/serial.log
           grep -F 'PE32+ loader self-test passed; image base=0x0000200000000000 entry=0x0000200000001000 (RX section and RO/NX headers).' build/serial.log
           grep -F 'PE fixture: DLL export registration passed.' build/serial.log
           grep -F 'PE fixture: normal import binding passed.' build/serial.log
