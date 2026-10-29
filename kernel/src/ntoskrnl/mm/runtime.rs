@@ -1540,6 +1540,59 @@ pub fn self_test() -> bool {
         );
         valid && storage_freed
     };
+    // Exercise explicit-node allocation from SRAT-owned, previously
+    // unallocated conventional-memory extents (not only returned PFN lists).
+    let node_mdl = unsafe {
+        mm_allocate_node_pages_for_mdl_ex(
+            0x10_0000, 0xffff_ffff, 0, PAGE_SIZE * 2, 1, 0,
+            MM_ALLOCATE_FULLY_REQUIRED | MM_ALLOCATE_FROM_LOCAL_NODE_ONLY,
+        )
+    };
+    let node_ok = if node_mdl.is_null() {
+        false
+    } else {
+        let header = unsafe { &*node_mdl.cast::<MdlHeader>() };
+        let pfns = unsafe { node_mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>() };
+        let first = unsafe { pfns.read() } * PAGE_SIZE;
+        let second = unsafe { pfns.add(1).read() } * PAGE_SIZE;
+        let valid = header.byte_count as u64 == PAGE_SIZE * 2
+            && [first, second].iter().all(|pa| *pa >= 0x10_0000
+                && *pa <= 0xffff_ffff
+                && crate::ntoskrnl::mm::topology::node_for_range(*pa, PAGE_SIZE) == Some(0));
+        unsafe { mm_free_pages_from_mdl(node_mdl); }
+        let storage_freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
+            node_mdl.cast(), Some(0x4c444d4d),
+        );
+        valid && storage_freed
+    };
+    // Explicit-node contiguous chunks must honor the same SkipBytes alignment
+    // and exact chunk-size rules as the generic Windows MDL allocator.
+    let node_chunk_mdl = unsafe {
+        mm_allocate_node_pages_for_mdl_ex(
+            0x10_0000, 0xffff_ffff, PAGE_SIZE * 2, PAGE_SIZE * 2, 1, 0,
+            MM_ALLOCATE_FULLY_REQUIRED | MM_ALLOCATE_FROM_LOCAL_NODE_ONLY
+                | MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS,
+        )
+    };
+    let node_chunk_ok = if node_chunk_mdl.is_null() {
+        false
+    } else {
+        let header = unsafe { &*node_chunk_mdl.cast::<MdlHeader>() };
+        let pfns = unsafe { node_chunk_mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>() };
+        let first = unsafe { pfns.read() } * PAGE_SIZE;
+        let second = unsafe { pfns.add(1).read() } * PAGE_SIZE;
+        let last = second.saturating_add(PAGE_SIZE - 1);
+        let valid = header.byte_count as u64 == PAGE_SIZE * 2
+            && second == first.saturating_add(PAGE_SIZE)
+            && first % (PAGE_SIZE * 2) == 0
+            && first / (PAGE_SIZE * 2) == last / (PAGE_SIZE * 2)
+            && crate::ntoskrnl::mm::topology::node_for_range(first, PAGE_SIZE * 2) == Some(0);
+        unsafe { mm_free_pages_from_mdl(node_chunk_mdl); }
+        let storage_freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
+            node_chunk_mdl.cast(), Some(0x4c444d4d),
+        );
+        valid && storage_freed
+    };
     let ranges = unsafe { mm_get_physical_memory_ranges() };
     let ranges_ok = if ranges.is_null() {
         false
@@ -1558,7 +1611,7 @@ pub fn self_test() -> bool {
         );
         terminated && freed
     };
-    valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && bounded_ok && ranges_ok
+    valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && bounded_ok && node_ok && node_chunk_ok && ranges_ok
 }
 
 #[cfg(test)]
