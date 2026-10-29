@@ -290,14 +290,6 @@ pub fn interrupts_enabled() -> bool {
 }
 
 /// Typed port-I/O operations live here instead of in individual device drivers.
-#[inline] pub unsafe fn read_port_u8(port: u16) -> u8 {
-    let value: u8;
-    unsafe { core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags)); }
-    value
-}
-#[inline] pub unsafe fn write_port_u8(port: u16, value: u8) {
-    unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags)); }
-}
 #[inline] pub unsafe fn read_port_u32(port: u16) -> u32 {
     let value: u32;
     unsafe { core::arch::asm!("in eax, dx", in("dx") port, out("eax") value, options(nomem, nostack, preserves_flags)); }
@@ -320,11 +312,9 @@ pub fn interrupts_enabled() -> bool {
 /// correct cache attributes and guarantee the complete range is mapped.
 #[inline] pub unsafe fn read_mmio_u8(address:*const u8)->u8{unsafe{core::ptr::read_volatile(address)}}
 #[inline] pub unsafe fn read_mmio_u16(address:*const u16)->u16{unsafe{core::ptr::read_volatile(address)}}
-#[inline] pub unsafe fn read_mmio_u32(address:*const u32)->u32{unsafe{core::ptr::read_volatile(address)}}
 #[inline] pub unsafe fn read_mmio_u64(address:*const u64)->u64{unsafe{core::ptr::read_volatile(address)}}
 #[inline] pub unsafe fn write_mmio_u8(address:*mut u8,value:u8){unsafe{core::ptr::write_volatile(address,value);}}
 #[inline] pub unsafe fn write_mmio_u16(address:*mut u16,value:u16){unsafe{core::ptr::write_volatile(address,value);core::sync::atomic::fence(Ordering::SeqCst);}}
-#[inline] pub unsafe fn write_mmio_u32(address:*mut u32,value:u32){unsafe{core::ptr::write_volatile(address,value);core::sync::atomic::fence(Ordering::SeqCst);}}
 #[inline] pub unsafe fn write_mmio_u64(address:*mut u64,value:u64){unsafe{core::ptr::write_volatile(address,value);core::sync::atomic::fence(Ordering::SeqCst);}}
 
 /// Validate a device MMIO span before a platform-specific mapper maps it.
