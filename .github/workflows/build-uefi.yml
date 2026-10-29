@@ -777,6 +777,39 @@ jobs:
             sleep 0.25
           done
 
+          # Inject real guest key events after boot reaches its live polling loop.
+          python3 - <<'PY'
+          import socket, time
+          monitor = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+          monitor.settimeout(2)
+          monitor.connect("build/qemu-monitor.sock")
+          def read_prompt():
+              data = bytearray()
+              end = time.monotonic() + 2
+              while b"(qemu)" not in data and time.monotonic() < end:
+                  try:
+                      chunk = monitor.recv(65536)
+                  except socket.timeout:
+                      break
+                  if not chunk:
+                      break
+                  data.extend(chunk)
+          read_prompt()
+          for key in (b"a", b"shift-a", b"ret"):
+              monitor.sendall(b"sendkey " + key + b"\n")
+              read_prompt()
+              time.sleep(0.15)
+          monitor.close()
+          time.sleep(1)
+          PY
+          if ! grep -Fq 'QEMU KEYBOARD INPUT:' build/serial.log; then
+            echo "QEMU keyboard input test failed: injected PS/2 key events did not reach the kernel input path." >&2
+            tail -n 120 build/serial.log || true
+            exit 1
+          fi
+          grep -F 'QEMU KEYBOARD INPUT:' build/serial.log | tail -n 8
+          echo "QEMU keyboard input test passed: injected key transitions reached KbdClass/US translation."
+
           if ! grep -Fq 'Ring-3 syscall dispatch, process exit, and PEB/TEB setup passed.' build/serial.log; then
             echo "Full ring-3 process-lifecycle smoke test did not complete; attaching GDB to the same live QEMU instance."
             command -v gdb >/dev/null || { sudo apt-get update && sudo apt-get install -y gdb; }
