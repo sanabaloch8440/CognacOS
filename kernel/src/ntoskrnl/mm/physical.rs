@@ -696,6 +696,7 @@ pub unsafe fn try_allocate_pages_in_range(
 ) -> Result<usize, AllocError> {
     if low > high { return Err(AllocError::InvalidPage); }
     let _guard = MemoryGuard::try_acquire().ok_or(AllocError::Busy)?;
+    drain_deferred_frees_locked();
     let low_free = unsafe { &mut *FREE_PAGES.0.get() };
     let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
     let mut count = 0usize;
@@ -844,6 +845,7 @@ unsafe fn allocate_pages_in_node_range_mode(
         // Blocking callers wait for transient contention; NO_WAIT callers use
         // this same ownership filter with try_lock and return immediately on Busy.
         let _guard = if try_only { MemoryGuard::try_acquire().ok_or(AllocError::Busy)? } else { MemoryGuard::acquire() };
+        drain_deferred_frees_locked();
         let low_free = unsafe { &mut *FREE_PAGES.0.get() };
         let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         let mut found = None;
