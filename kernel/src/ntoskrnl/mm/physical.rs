@@ -1126,7 +1126,13 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
         }
     } else { MemoryGuard::acquire() };
     drain_deferred_frees_locked();
-    if (if try_only { page_is_locked_try(page) } else { page_is_locked(page) }) {
+    if try_only {
+        match crate::ntoskrnl::mm::runtime::try_page_lock_status(page) {
+            Some(true) => return Err(AllocError::InvalidPage),
+            Some(false) => {},
+            None => return if defer_free_page(page) { Ok(()) } else { Err(AllocError::FreeListFull) },
+        }
+    } else if page_is_locked(page) {
         return Err(AllocError::InvalidPage);
     }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
