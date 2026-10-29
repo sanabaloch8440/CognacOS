@@ -566,6 +566,14 @@ pub fn register_interrupt_handler(vector: u8, handler: InterruptHandler, context
     Ok(())
 }
 
+/// True only when a device vector is allocated and has a registered callback.
+/// This does not imply that an IDT gate or I/O-APIC route has been enabled.
+pub fn interrupt_handler_registered(vector: u8) -> bool {
+    (VECTOR_FIRST..=VECTOR_LAST).contains(&vector)
+        && VECTOR_ALLOCATED[vector as usize].load(Ordering::Acquire)
+        && VECTOR_HANDLERS[vector as usize].load(Ordering::Acquire) != 0
+}
+
 /// Dispatch an external interrupt from the IDT common entry stub. Exactly one
 /// local-APIC EOI is issued after the callback, even when it reports unhandled.
 /// The entry stub must not also EOI this vector (avoid double acknowledgement).
