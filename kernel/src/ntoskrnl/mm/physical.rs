@@ -800,7 +800,8 @@ unsafe fn allocate_pages_in_node_range_mode(
         let low_free = unsafe { &mut *FREE_PAGES.0.get() };
         let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         let mut found = None;
-        for pages in if try_only { vec![&mut *low_free] } else { vec![&mut *low_free, &mut *high_free] } {
+        for (pages, high_memory) in [(&mut *low_free, false), (&mut *high_free, true)] {
+            if try_only && high_memory { continue; }
             let mut i = 0usize;
             while i < pages.1 {
                 let page = pages.0[i];
@@ -817,7 +818,11 @@ unsafe fn allocate_pages_in_node_range_mode(
             if found.is_some() { break; }
         }
         if found.is_none() {
-            'regions: for (store, count_atomic, high_memory) in if try_only { vec![(&REGIONS, &REGION_COUNT, false)] } else { vec![(&REGIONS, &REGION_COUNT, false), (&HIGH_REGIONS, &HIGH_REGION_COUNT, true)] } {
+            'regions: for (store, count_atomic, high_memory) in [
+                (&REGIONS, &REGION_COUNT, false),
+                (&HIGH_REGIONS, &HIGH_REGION_COUNT, true),
+            ] {
+                if try_only && high_memory { continue; }
                 let regions = unsafe { &mut *store.0.get() };
                 let mut region_count = count_atomic.load(core::sync::atomic::Ordering::Acquire);
                 for index in 0..region_count {
