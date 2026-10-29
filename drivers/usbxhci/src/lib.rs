@@ -124,93 +124,10 @@ impl<const N:usize> EventRingConsumer<N>{
 }
 impl<const N:usize> Default for EventRingConsumer<N>{fn default()->Self{Self::new()}}
 
-pub const USB_DESC_DEVICE:u8=1;
-pub const USB_DESC_CONFIGURATION:u8=2;
-pub const USB_DESC_INTERFACE:u8=4;
-pub const USB_DESC_ENDPOINT:u8=5;
-pub const USB_DESC_HID:u8=0x21;
-pub const USB_DESC_REPORT:u8=0x22;
-pub const USB_CLASS_HID:u8=3;
-pub const USB_SUBCLASS_BOOT:u8=1;
-pub const USB_PROTOCOL_KEYBOARD:u8=1;
-pub const USB_ENDPOINT_IN:u8=0x80;
-pub const USB_TRANSFER_INTERRUPT:u8=3;
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct UsbDeviceDescriptor{pub usb_version:u16,pub vendor_id:u16,pub product_id:u16,pub max_packet_size0:u8,pub num_configurations:u8}
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct HidKeyboardEndpoint{pub interface_number:u8,pub alternate_setting:u8,pub endpoint_address:u8,pub max_packet_size:u16,pub interval:u8}
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum UsbDescriptorError{Truncated,InvalidLength,WrongDescriptor,NoBootKeyboard,InvalidEndpoint}
-/// Parse the first 18 bytes of a standard USB device descriptor.
-pub fn parse_usb_device_descriptor(b:&[u8])->Result<UsbDeviceDescriptor,UsbDescriptorError>{
- if b.len()<18{return Err(UsbDescriptorError::Truncated)}
- if b[0]<18||b[1]!=USB_DESC_DEVICE{return Err(UsbDescriptorError::WrongDescriptor)}
- Ok(UsbDeviceDescriptor{usb_version:u16::from_le_bytes([b[2],b[3]]),max_packet_size0:b[7],vendor_id:u16::from_le_bytes([b[8],b[9]]),product_id:u16::from_le_bytes([b[10],b[11]]),num_configurations:b[17]})
-}
-/// Locate a boot-protocol keyboard interrupt-IN endpoint in a configuration blob.
-/// The input must be the complete configuration descriptor (wTotalLength bytes).
-pub fn find_boot_keyboard_endpoint(b:&[u8])->Result<HidKeyboardEndpoint,UsbDescriptorError>{
- if b.len()<9{return Err(UsbDescriptorError::Truncated)}
- if b[1]!=USB_DESC_CONFIGURATION||b[0]<9{return Err(UsbDescriptorError::WrongDescriptor)}
- let total=u16::from_le_bytes([b[2],b[3]]) as usize;
- if total>b.len()||total<9{return Err(UsbDescriptorError::Truncated)}
- let mut off=0usize;let mut iface:Option<(u8,u8)>=None;let mut found=None;
- while off<total{
-  if off+2>total{return Err(UsbDescriptorError::Truncated)}
-  let len=b[off] as usize;let ty=b[off+1];
-  if len<2||off+len>total{return Err(UsbDescriptorError::InvalidLength)}
-  if ty==USB_DESC_INTERFACE{
-   if len<9{return Err(UsbDescriptorError::InvalidLength)}
-   iface=if b[off+5]==USB_CLASS_HID&&b[off+6]==USB_SUBCLASS_BOOT&&b[off+7]==USB_PROTOCOL_KEYBOARD{Some((b[off+2],b[off+3]))}else{None};
-  }else if ty==USB_DESC_ENDPOINT{
-   if len<7{return Err(UsbDescriptorError::InvalidLength)}
-   if let Some((interface_number,alternate_setting))=iface{
-    let address=b[off+2];let attributes=b[off+3]&3;let packet=u16::from_le_bytes([b[off+4],b[off+5]])&0x07ff;
-    if address&USB_ENDPOINT_IN!=0&&attributes==USB_TRANSFER_INTERRUPT{
-     if packet==0{return Err(UsbDescriptorError::InvalidEndpoint)}
-     found=Some(HidKeyboardEndpoint{interface_number,alternate_setting,endpoint_address:address,max_packet_size:packet,interval:b[off+6]});
-    }
-   }
-  }
-  off+=len;
- }
- found.ok_or(UsbDescriptorError::NoBootKeyboard)
-}
-
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum EnumerationState{Offline,Connected,ResetComplete,SlotEnabled,Addressed,Configured,HidKeyboardReady,Failed}
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum EnumerationEvent{PortConnected,PortReset,SlotEnabled,Addressed,Configured,BootKeyboardFound,Disconnected,Failure}
-#[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum EnumerationError{InvalidTransition}
-/// Pure USB enumeration state machine. Hardware actions (port reset, command submission,
-/// control transfers and endpoint configuration) are issued by the platform adapter.
-pub struct UsbEnumeration{state:EnumerationState}
-impl UsbEnumeration{
- pub const fn new()->Self{Self{state:EnumerationState::Offline}}
- pub const fn state(&self)->EnumerationState{self.state}
- pub fn transition(&mut self,event:EnumerationEvent)->Result<EnumerationState,EnumerationError>{
-  use EnumerationEvent as E;use EnumerationState as S;
-  let next=match (self.state,event){
-   (_,E::Disconnected)=>(S::Offline),
-   (_,E::Failure)=>S::Failed,
-   (S::Offline,E::PortConnected)=>S::Connected,
-   (S::Connected,E::PortReset)=>S::ResetComplete,
-   (S::ResetComplete,E::SlotEnabled)=>S::SlotEnabled,
-   (S::SlotEnabled,E::Addressed)=>S::Addressed,
-   (S::Addressed,E::Configured)=>S::Configured,
-   (S::Configured,E::BootKeyboardFound)=>S::HidKeyboardReady,
-   _=>return Err(EnumerationError::InvalidTransition),
-  };
-  self.state=next;Ok(next)
- }
-}
-impl Default for UsbEnumeration{fn default()->Self{Self::new()}}
-
 #[cfg(test)]
-mod milestone_tests{
+mod event_ring_tests {
  use super::*;
- #[test]fn event_ring_honors_cycle_and_wrap(){
+ #[test] fn event_ring_honors_cycle_and_wrap(){
   let mut r:EventRingConsumer<2>=EventRingConsumer::new();
   assert!(r.peek().is_none());
   r.set_snapshot_for_test(0,Trb::new(0,0,TRB_TYPE_PORT_STATUS_CHANGE,true)).unwrap();
@@ -220,27 +137,6 @@ mod milestone_tests{
   r.advance().unwrap();assert_eq!(r.dequeue_index(),0);assert!(!r.consumer_cycle());
   r.set_snapshot_for_test(0,Trb::new(0,0,TRB_TYPE_COMMAND_COMPLETION,false)).unwrap();
   assert_eq!(r.peek().unwrap().trb_type(),TRB_TYPE_COMMAND_COMPLETION as u8);
- }
- #[test]fn parses_usb_device_descriptor(){
-  let b=[18,1,0x00,0x02,0,0,0,8,0x34,0x12,0x78,0x56,0,1,1,2,3,1];
-  let d=parse_usb_device_descriptor(&b).unwrap();assert_eq!(d.vendor_id,0x1234);assert_eq!(d.product_id,0x5678);assert_eq!(d.num_configurations,1);
- }
- #[test]fn finds_boot_keyboard_interrupt_in_endpoint(){
-  let b=[9,2,34,0,1,1,0,0x80,50,
-   9,4,0,0,1,3,1,1,0,
-   9,0x21,0x11,0x01,0,1,0x22,63,0,
-   7,5,0x81,3,8,0,10];
-  let e=find_boot_keyboard_endpoint(&b).unwrap();assert_eq!(e.interface_number,0);assert_eq!(e.endpoint_address,0x81);assert_eq!(e.max_packet_size,8);
- }
- #[test]fn rejects_malformed_usb_descriptor_lengths(){
-  let b=[9,2,11,0,1,1,0,0x80,50,1,4];
-  assert_eq!(find_boot_keyboard_endpoint(&b),Err(UsbDescriptorError::InvalidLength));
- }
- #[test]fn enumeration_state_machine_rejects_skipped_hardware_steps(){
-  let mut e=UsbEnumeration::new();assert_eq!(e.transition(EnumerationEvent::Addressed),Err(EnumerationError::InvalidTransition));
-  for event in [EnumerationEvent::PortConnected,EnumerationEvent::PortReset,EnumerationEvent::SlotEnabled,EnumerationEvent::Addressed,EnumerationEvent::Configured,EnumerationEvent::BootKeyboardFound]{e.transition(event).unwrap();}
-  assert_eq!(e.state(),EnumerationState::HidKeyboardReady);
-  e.transition(EnumerationEvent::Disconnected).unwrap();assert_eq!(e.state(),EnumerationState::Offline);
  }
 }
 
