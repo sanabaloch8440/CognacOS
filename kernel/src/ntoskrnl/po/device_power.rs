@@ -39,4 +39,17 @@ pub(crate) fn unregister(device:*mut DeviceObject){if device.is_null(){return}if
 
 #[cfg(test)] mod tests{use super::*;#[test]fn defaults_are_d0_d3_without_wake(){let d=0x1000usize as *mut DeviceObject;assert!(supports_wdm_state(d,1));assert!(!supports_wdm_state(d,2));assert!(supports_wdm_state(d,4));assert!(!supports_wake(d));}
 #[test]fn registered_capabilities_are_enforced(){let d=0x2000usize as *mut DeviceObject;assert_eq!(register(d,D0|D1|D3,true),OK);assert!(supports_wdm_state(d,2));assert!(supports_wake(d));unregister(d);assert!(!supports_wake(d));}
-#[test]fn invalid_capability_sets_rejected(){let d=0x3000usize as *mut DeviceObject;assert_eq!(register(d,D3,false),INVALID);assert_eq!(register(d,D0|D3,true),INVALID);}}
+#[test]fn invalid_capability_sets_rejected(){let d=0x3000usize as *mut DeviceObject;assert_eq!(register(d,D3,false),INVALID);assert_eq!(register(d,D0|D3,true),INVALID);}
+#[test]fn wake_requires_every_attached_stack_device(){
+ let mut lower:DeviceObject=unsafe{core::mem::zeroed()};
+ let mut upper:DeviceObject=unsafe{core::mem::zeroed()};
+ lower.attached_device=core::ptr::null_mut();upper.attached_device=&mut lower;
+ assert_eq!(register(&mut lower,D0|D1|D2|D3,true),OK);
+ assert_eq!(register(&mut upper,D0|D1|D2|D3,true),OK);
+ assert!(supports_wake_stack(&mut upper));
+ assert_eq!(register(&mut lower,D0|D1|D2|D3,false),OK);
+ assert!(!supports_wake_stack(&mut upper));
+ lower.attached_device=&mut upper;
+ assert!(!supports_wake_stack(&mut upper));
+ unregister(&mut upper);unregister(&mut lower);
+}}
