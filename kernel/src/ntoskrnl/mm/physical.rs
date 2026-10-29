@@ -601,7 +601,7 @@ pub unsafe fn try_allocate_pages_in_range(
     output: &mut [u64], low: u64, high: u64, require_all: bool,
 ) -> Result<usize, AllocError> {
     if low > high { return Err(AllocError::InvalidPage); }
-    let _guard = MemoryGuard::acquire();
+    let _guard = MemoryGuard::try_acquire().ok_or(AllocError::Busy)?;
     let low_free = unsafe { &mut *FREE_PAGES.0.get() };
     let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
     let mut count = 0usize;
