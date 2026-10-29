@@ -793,9 +793,8 @@ unsafe fn allocate_pages_in_node_range_mode(
     if owned_count == 0 { return Err(AllocError::OutOfMemory); }
     let mut allocated = 0usize;
     while allocated < output.len() {
-        // This is the blocking NT allocation path; transient lock contention is
-        // not out-of-memory. MM_ALLOCATE_NO_WAIT is rejected by the caller until
-        // its entire pool/registry/rollback path can be made nonblocking.
+        // Blocking callers wait for transient contention; NO_WAIT callers use
+        // this same ownership filter with try_lock and return immediately on Busy.
         let _guard = if try_only { MemoryGuard::try_acquire().ok_or(AllocError::Busy)? } else { MemoryGuard::acquire() };
         let low_free = unsafe { &mut *FREE_PAGES.0.get() };
         let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
