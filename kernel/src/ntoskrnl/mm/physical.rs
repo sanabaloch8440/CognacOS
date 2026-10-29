@@ -241,6 +241,53 @@ impl Drop for MemoryGuard {
     fn drop(&mut self) { MEMORY_LOCK.store(false, core::sync::atomic::Ordering::Release); }
 }
 
+const MAX_DEFERRED_FREES: usize = 8192;
+struct DeferredFree {
+    state: core::sync::atomic::AtomicU8,
+    page: core::sync::atomic::AtomicU64,
+}
+impl DeferredFree {
+    const fn new() -> Self {
+        Self { state: core::sync::atomic::AtomicU8::new(0), page: core::sync::atomic::AtomicU64::new(0) }
+    }
+}
+struct DeferredFreeQueue([DeferredFree; MAX_DEFERRED_FREES]);
+unsafe impl Sync for DeferredFreeQueue {}
+static DEFERRED_FREES: DeferredFreeQueue =
+    DeferredFreeQueue([const { DeferredFree::new() }; MAX_DEFERRED_FREES]);
+
+/// Lock-free bounded enqueue used when a NO_WAIT rollback cannot acquire the
+/// allocator lock. State 0=empty, 1=owned by producer/consumer, 2=published.
+fn defer_free_page(page: u64) -> bool {
+    for slot in DEFERRED_FREES.0.iter() {
+        if slot.state.compare_exchange(0, 1, core::sync::atomic::Ordering::Acquire,
+            core::sync::atomic::Ordering::Relaxed).is_ok() {
+            slot.page.store(page, core::sync::atomic::Ordering::Relaxed);
+            slot.state.store(2, core::sync::atomic::Ordering::Release);
+            return true;
+        }
+    }
+    false
+}
+
+/// Called only while MEMORY_LOCK is held; makes deferred PFNs available again.
+fn drain_deferred_frees_locked() {
+    let free = unsafe { &mut *FREE_PAGES.0.get() };
+    for slot in DEFERRED_FREES.0.iter() {
+        if slot.state.compare_exchange(2, 1, core::sync::atomic::Ordering::Acquire,
+            core::sync::atomic::Ordering::Relaxed).is_err() { continue; }
+        let page = slot.page.load(core::sync::atomic::Ordering::Relaxed);
+        if free.1 == FREE_CAPACITY {
+            slot.state.store(2, core::sync::atomic::Ordering::Release);
+            break;
+        }
+        free.0[free.1] = page;
+        free.1 += 1;
+        slot.page.store(0, core::sync::atomic::Ordering::Relaxed);
+        slot.state.store(0, core::sync::atomic::Ordering::Release);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocError { InvalidMap, TooManyRegions, OutOfMemory, InvalidPage, FreeListFull, Busy }
 
@@ -553,6 +600,7 @@ unsafe fn allocate_contiguous_pages_in_range_mode(
     let _guard = if try_only {
         MemoryGuard::try_acquire().ok_or(AllocError::Busy)?
     } else { MemoryGuard::acquire() };
+    drain_deferred_frees_locked();
     // First try to reclaim a contiguous run already returned to either free
     // stack. Remove every PFN only after proving the complete run is present.
     for high_memory in [false, true] {
@@ -883,6 +931,7 @@ unsafe fn allocate_pages_in_node_range_mode(
 /// so the returned physical address is also directly writable as a pointer.
 pub unsafe fn allocate_page() -> Result<u64, AllocError> {
     let _guard = MemoryGuard::acquire();
+    drain_deferred_frees_locked();
 
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if free.1 != 0 {
@@ -1065,11 +1114,19 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
         return Ok(());
     }
 
-    let _guard = MemoryGuard::acquire();
     if page < LOW_RESERVED_END || page & (PAGE_SIZE - 1) != 0 {
         return Err(AllocError::InvalidPage);
     }
-    if page_is_locked(page) { return Err(AllocError::InvalidPage); }
+    let _guard = if try_only {
+        match MemoryGuard::try_acquire() {
+            Some(guard) => guard,
+            None => return if defer_free_page(page) { Ok(()) } else { Err(AllocError::FreeListFull) },
+        }
+    } else { MemoryGuard::acquire() };
+    drain_deferred_frees_locked();
+    if (if try_only { page_is_locked_try(page) } else { page_is_locked(page) }) {
+        return Err(AllocError::InvalidPage);
+    }
     let free = unsafe { &mut *FREE_PAGES.0.get() };
     if free.1 < FREE_CAPACITY {
         free.0[free.1] = page;
