@@ -39,9 +39,10 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 
 
-// Read-only legacy PCI configuration-space probe used during early PnP bring-up.
-// It never writes BARs or enables bus mastering; resource ownership remains with
-// the kernel PnP/HAL path until safe MMIO, requester-bound DMA, and IRQ services exist.
+// Early PCI configuration-space inventory for the QEMU smoke test.
+// This is intentionally read-only: discovering a controller is not claiming it.
+// Driver takeover requires a mapped MMIO resource, requester-bound IOMMU DMA,
+// interrupt routing, and a PnP-created driver extension; do not bypass those gates.
 unsafe fn pci_config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u32 {
     let address = 0x8000_0000u32
         | ((bus as u32) << 16)
@@ -54,18 +55,17 @@ unsafe fn pci_config_read32(bus: u8, device: u8, function: u8, offset: u8) -> u3
     }
 }
 
-/// Discover an xHCI PCI function without claiming it. DriverEntry must not run
-/// until PnP can supply a mapped BAR, requester-bound IOMMU DMA, and an IRQ route.
 fn probe_xhci_pci_function() -> bool {
-    serial_write(b"PCI xHCI discovery: scanning PCI configuration space (read-only).\r\n");
+    let mut found = 0u32;
+    unsafe { serial_write(b"PCI xHCI inventory: scanning PCI configuration space (read-only).\\r\\n"); }
     for bus in 0u16..=255 {
         for device in 0u8..32 {
             let id0 = unsafe { pci_config_read32(bus as u8, device, 0, 0x00) };
             let vendor0 = id0 as u16;
             if vendor0 == 0 || vendor0 == 0xffff { continue; }
             let header0 = unsafe { pci_config_read32(bus as u8, device, 0, 0x0c) };
-            let function_count = if ((header0 >> 23) & 1) != 0 { 8 } else { 1 };
-            for function in 0..function_count {
+            let function_count: u8 = if ((header0 >> 23) & 1) != 0 { 8 } else { 1 };
+            for function in 0u8..function_count {
                 let id = if function == 0 { id0 } else {
                     unsafe { pci_config_read32(bus as u8, device, function, 0x00) }
                 };
@@ -83,24 +83,35 @@ fn probe_xhci_pci_function() -> bool {
                     unsafe { pci_config_read32(bus as u8, device, function, 0x14) }
                 } else { 0 };
                 let bar_base = ((bar_high as u64) << 32) | ((bar_low as u64) & !0xf);
-                serial_write(b"PCI xHCI discovered: BDF=");
-                serial_write_hex(((bus as u64) << 8) | ((device as u64) << 3) | function as u64);
-                serial_write(b" vendor/device=");
-                serial_write_hex(id as u64);
-                serial_write(b" BAR0=");
-                serial_write_hex(bar_base);
-                serial_write(b"\r\n");
-                if bar_low & 1 != 0 || bar_base == 0 {
-                    serial_write(b"PCI xHCI resource validation failed: BAR0 is not assigned MMIO; controller not claimed.\r\n");
-                    return false;
+                unsafe {
+                    serial_write(b"QEMU xHCI DEVICE: BDF=");
+                    serial_write_hex(((bus as u64) << 8) | ((device as u64) << 3) | function as u64);
+                    serial_write(b" vendor=");
+                    serial_write_hex(vendor as u64);
+                    serial_write(b" device=");
+                    serial_write_hex((id >> 16) as u16 as u64);
+                    serial_write(b" class=");
+                    serial_write_hex(((class_code as u64) << 16) | ((subclass as u64) << 8) | programming_interface as u64);
+                    serial_write(b" BAR0=");
+                    serial_write_hex(bar_base);
+                    serial_write(b"\\r\\n");
                 }
-                serial_write(b"PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.\r\n");
-                return true;
+                found += 1;
             }
         }
     }
-    serial_write(b"PCI xHCI discovery failed: no matching controller found.\r\n");
-    false
+    unsafe {
+        serial_write(b"QEMU xHCI DEVICE COUNT=");
+        serial_write_hex(found as u64);
+        serial_write(b"\\r\\n");
+    }
+    if found != 0 {
+        unsafe { serial_write(b"PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.\\r\\n"); }
+        true
+    } else {
+        unsafe { serial_write(b"PCI xHCI discovery failed: no matching controller found.\\r\\n"); }
+        false
+    }
 }
 
 fn io_smoke_dispatch(irp: &mut io::Irp) -> io::IoStatus {
