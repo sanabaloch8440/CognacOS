@@ -834,7 +834,7 @@ cognacos_windows_syscall_entry:
     shr rdx, 48
     cmp dx, 0xffff
     jne .Lwindows_stack_bad
-    test eax, 0xfff
+    test eax, 0xf
     jne .Lwindows_stack_bad
     mov al, 'T'
     jmp .Lwindows_stack_marker
@@ -937,6 +937,21 @@ cognacos_windows_syscall_entry:
     iretq
 "#);
 unsafe extern "C" { fn cognacos_windows_syscall_entry(); }
+
+/// Update the active thread's SYSCALL entry stack. Must match the TSS RSP0
+/// stack so #GP/#PF and SYSCALL handlers cannot scribble over a suspended
+/// bootstrap/kernel call stack.
+pub fn set_kernel_stack(cpu:usize,stack_top:u64)->bool{
+ if cpu>=crate::hal::MAX_CPUS||stack_top==0||stack_top&0xf!=0
+  || stack_top>>48!=0xffff{return false;}
+ unsafe{core::ptr::addr_of_mut!(WINDOWS_SYSCALL_CPUS[cpu].kernel_rsp).write(stack_top);}
+ true
+}
+pub fn kernel_stack_top(cpu:usize)->Option<u64>{
+ if cpu>=crate::hal::MAX_CPUS{return None;}
+ let value=unsafe{core::ptr::addr_of!(WINDOWS_SYSCALL_CPUS[cpu].kernel_rsp).read()};
+ (value!=0).then_some(value)
+}
 
 /// Install the architectural Windows x64 SYSCALL entry on the current CPU.
 /// Uses a private stack per CPU, preserves the user TEB's GS base via SWAPGS,
