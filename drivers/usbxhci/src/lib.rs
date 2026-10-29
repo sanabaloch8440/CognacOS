@@ -1313,3 +1313,25 @@ impl<const N:usize> Default for TransferTracker<N>{fn default()->Self{Self::new(
  #[test]fn failures_never_report_success(){let mut q:TransferTracker<2>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();let e=event(0x1000,6,0,3,1);assert_eq!(q.complete(&e),Err(TransferError::FailedCompletion(6)));q.reserve(req(0x2000)).unwrap();let e=event(0x2000,1,9,3,1);assert_eq!(q.complete(&e),Err(TransferError::ResidualTooLarge));}
  #[test]fn slot_rundown_cancels_pending_transfers(){let mut q:TransferTracker<3>=TransferTracker::new();q.reserve(req(0x1000)).unwrap();q.reserve(TransferRequest{slot_id:2,trb_dma:0x2000,..req(0x2000)}).unwrap();assert_eq!(q.cancel_slot(1),1);assert_eq!(q.len(),1);}
 }
+
+
+#[cfg(test)]
+mod controller_event_dispatch_tests {
+ use super::*;
+ #[derive(Default)] struct Sink { transfer:u32,command:u32,port:u32,last_port:u8 }
+ impl ControllerEventSink for Sink {
+  fn transfer_complete(&mut self,_:u64,_:u32,_:u8,_:u8,_:u8){self.transfer+=1}
+  fn command_complete(&mut self,_:u64,_:u8,_:u8){self.command+=1}
+  fn port_status_changed(&mut self,p:u8){self.port+=1;self.last_port=p}
+ }
+ #[test] fn decodes_and_dispatches_transfer_command_and_port_events(){
+  let transfer=Trb{parameter:0x1000,status:(1<<24)|12,control:(2<<16)|(3<<24)|((TRB_TYPE_TRANSFER_EVENT)<<TRB_TYPE_SHIFT)|1};
+  let ev=decode_controller_event(transfer).unwrap();assert_eq!(ev,ControllerEvent::TransferCompletion{trb_pointer:0x1000,residual_bytes:12,completion_code:1,endpoint_id:2,slot_id:3});
+  let command=Trb{parameter:0x2000,status:1<<24,control:(TRB_TYPE_COMMAND_COMPLETION<<TRB_TYPE_SHIFT)|1};
+  let port=Trb{parameter:1u64<<24,status:0,control:(TRB_TYPE_PORT_STATUS_CHANGE<<TRB_TYPE_SHIFT)|1};
+  let mut sink=Sink::default();dispatch_controller_event(ev,&mut sink);
+  dispatch_controller_event(decode_controller_event(command).unwrap(),&mut sink);
+  dispatch_controller_event(decode_controller_event(port).unwrap(),&mut sink);
+  assert_eq!((sink.transfer,sink.command,sink.port,sink.last_port),(1,1,1,1));
+ }
+}
