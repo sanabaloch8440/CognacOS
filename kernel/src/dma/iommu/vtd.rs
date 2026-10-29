@@ -34,6 +34,64 @@ unsafe fn w64(b:u64,o:usize,v:u64){unsafe{core::ptr::write_volatile((b as *mut u
 fn wait32(b:u64,o:usize,m:u32,set:bool)->bool{for _ in 0..2_000_000{if (unsafe{r32(b,o)}&m!=0)==set{return true} core::hint::spin_loop()}false}
 fn wait64(b:u64,o:usize,m:u64)->bool{for _ in 0..2_000_000{if unsafe{r64(b,o)}&m==0{return true}core::hint::spin_loop()}false}
 
+/// Intel VT-d root/context-table encodings. These helpers deliberately do
+/// not publish entries by themselves: callers must serialize updates, clean the
+/// table cache lines, and invalidate the appropriate context/IOTLB caches before
+/// a device can be allowed to bus-master.
+pub const VT_D_PAGE_MASK:u64=0x000f_ffff_ffff_f000;
+pub const VT_D_PRESENT:u64=1;
+pub const VT_D_CONTEXT_AW_4_LEVEL:u64=2;
+
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct RequesterId { pub bus:u8, pub device:u8, pub function:u8 }
+impl RequesterId {
+    pub const fn new(bus:u8,device:u8,function:u8)->Option<Self>{
+        if device<32&&function<8 {Some(Self{bus,device,function})}else{None}
+    }
+    pub const fn devfn(self)->usize{((self.device as usize)<<3)|(self.function as usize)}
+}
+
+/// Encode a present root-table entry for a 4-KiB-aligned context table.
+pub const fn encode_root_entry(context_table_physical:u64)->Option<u64>{
+    if context_table_physical==0||context_table_physical&0xfff!=0||context_table_physical&!VT_D_PAGE_MASK!=0{return None}
+    Some(context_table_physical|VT_D_PRESENT)
+}
+
+/// Encode the high 64 bits of a 4-level second-level context entry.
+/// Translation type 0 selects multi-level translation; AW=2 selects 48-bit
+/// guest-physical addresses. The low word is the SLPTPTR plus present bit.
+pub const fn encode_context_entry(domain_id:u16,second_level_root:u64)->Option<(u64,u64)>{
+    if domain_id==0||second_level_root==0||second_level_root&0xfff!=0||second_level_root&!VT_D_PAGE_MASK!=0{return None}
+    let low=second_level_root|VT_D_PRESENT;
+    let high=((domain_id as u64)<<8)|(VT_D_CONTEXT_AW_4_LEVEL<<3);
+    Some((low,high))
+}
+
+#[cfg(test)]
+mod context_encoding_tests {
+    use super::*;
+    #[test]
+    fn requester_id_uses_pci_devfn_index(){
+        let id=RequesterId::new(0,0x1f,7).unwrap();
+        assert_eq!(id.devfn(),255);
+        assert!(RequesterId::new(0,32,0).is_none());
+        assert!(RequesterId::new(0,0,8).is_none());
+    }
+    #[test]
+    fn root_entry_requires_aligned_representable_context_table(){
+        assert_eq!(encode_root_entry(0x1234_5000),Some(0x1234_5001));
+        assert_eq!(encode_root_entry(0),None);
+        assert_eq!(encode_root_entry(0x1234_5001),None);
+        assert_eq!(encode_root_entry(0x0010_0000_0000_0000),None);
+    }
+    #[test]
+    fn context_entry_encodes_domain_and_four_level_translation(){
+        assert_eq!(encode_context_entry(7,0x2345_6000),Some((0x2345_6001,(7<<8)|(2<<3))));
+        assert_eq!(encode_context_entry(0,0x2345_6000),None);
+        assert_eq!(encode_context_entry(1,0x2345_6001),None);
+    }
+}
+
 /// Enable one firmware-described VT-d unit with an empty root table. Devices
 /// must remain bus-master-disabled until per-requester context and second-level
 /// mappings are installed. No identity mapping is created.
