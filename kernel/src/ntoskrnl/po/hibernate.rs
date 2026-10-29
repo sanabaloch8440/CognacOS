@@ -1,7 +1,7 @@
 //! Crash-consistent S4 hibernation image engine.
 //! Requires a registered platform backend for storage, physical memory, CPU state,
 //! device-stack quiescence, and the final S4 transition. Missing services fail closed.
-use core::{ffi::c_void, ptr, sync::atomic::{AtomicPtr, Ordering}};
+use core::{ffi::c_void, ptr, cell::UnsafeCell, sync::atomic::{AtomicU8, Ordering}};
 const MAGIC:&[u8;8]=b"RDOTHIB1";
 const VERSION:u32=1;
 const HEADER:usize=128;
@@ -48,7 +48,16 @@ pub struct HiberPlatformOps {
 }
 unsafe impl Send for HiberPlatformOps {}
 unsafe impl Sync for HiberPlatformOps {}
-static PLATFORM:AtomicPtr<HiberPlatformOps>=AtomicPtr::new(ptr::null_mut());
+// The callback descriptor is copied to kernel-owned immutable storage. Its
+// context and resources remain platform-owned and must outlive the kernel.
+struct PlatformStorage(UnsafeCell<HiberPlatformOps>);
+unsafe impl Sync for PlatformStorage {}
+static PLATFORM_STORAGE:PlatformStorage=PlatformStorage(UnsafeCell::new(HiberPlatformOps{
+ size:0,context:ptr::null_mut(),quiesce_devices:None,resume_devices:None,
+ enumerate_memory:None,capture_cpu_state:None,restore_cpu_state:None,
+ write_slot:None,read_slot:None,flush_slot:None,restore_memory:None,enter_s4:None
+}));
+static PLATFORM_STATE:AtomicU8=AtomicU8::new(0); // absent, registering, published
 
 #[derive(Clone,Copy,Default)]
 struct RegionDesc { physical:u64, length:u64, offset:u64, stored:u64, checksum:u32 }
@@ -81,9 +90,24 @@ fn crc_update(c:&mut u32,b:&[u8]){for x in b{*c^=*x as u32;for _ in 0..8{*c=(*c>
 fn crc(b:&[u8])->u32{let mut c=!0u32;crc_update(&mut c,b);!c}
 fn rle_encode(input:&[u8],out:&mut [u8])->usize{let(mut i,mut o)=(0,0);while i<input.len(){let v=input[i];let mut n=1;while i+n<input.len()&&input[i+n]==v&&n<255{n+=1}if o+2>out.len(){return usize::MAX}out[o]=n as u8;out[o+1]=v;o+=2;i+=n;}o}
 fn rle_decode(input:&[u8],out:&mut [u8],expected:usize)->Result<(),i32>{if input.len()%2!=0||expected>out.len(){return Err(DATA_ERROR)}let mut n=0usize;for p in input.chunks_exact(2){let k=p[0] as usize;if k==0||n.checked_add(k).is_none_or(|x|x>expected){return Err(DATA_ERROR)}out[n..n+k].fill(p[1]);n+=k;}if n!=expected{return Err(DATA_ERROR)}Ok(())}
-fn platform()->Result<&'static HiberPlatformOps,i32>{let p=PLATFORM.load(Ordering::Acquire);if p.is_null(){return Err(NOT_IMPLEMENTED)}let o=unsafe{&*p};if o.size<core::mem::size_of::<HiberPlatformOps>() as u32||o.quiesce_devices.is_none()||o.resume_devices.is_none()||o.enumerate_memory.is_none()||o.capture_cpu_state.is_none()||o.restore_cpu_state.is_none()||o.write_slot.is_none()||o.read_slot.is_none()||o.flush_slot.is_none()||o.restore_memory.is_none()||o.enter_s4.is_none(){return Err(NOT_IMPLEMENTED)}Ok(o)}
-/// Register a static platform backend. The structure must remain alive permanently.
-pub unsafe fn register_platform(p:*mut HiberPlatformOps)->i32{if p.is_null(){return INVALID}let o=unsafe{&*p};if o.size<core::mem::size_of::<HiberPlatformOps>() as u32||o.quiesce_devices.is_none()||o.resume_devices.is_none()||o.enumerate_memory.is_none()||o.capture_cpu_state.is_none()||o.restore_cpu_state.is_none()||o.write_slot.is_none()||o.read_slot.is_none()||o.flush_slot.is_none()||o.restore_memory.is_none()||o.enter_s4.is_none(){return INVALID}if PLATFORM.compare_exchange(ptr::null_mut(),p,Ordering::AcqRel,Ordering::Acquire).is_err(){return 0xC000_0022u32 as i32}OK}
+fn platform()->Result<&'static HiberPlatformOps,i32>{
+ if PLATFORM_STATE.load(Ordering::Acquire)!=2{return Err(NOT_IMPLEMENTED)}
+ let o=unsafe{&*PLATFORM_STORAGE.0.get()};
+ if o.size<core::mem::size_of::<HiberPlatformOps>() as u32||o.quiesce_devices.is_none()||o.resume_devices.is_none()||o.enumerate_memory.is_none()||o.capture_cpu_state.is_none()||o.restore_cpu_state.is_none()||o.write_slot.is_none()||o.read_slot.is_none()||o.flush_slot.is_none()||o.restore_memory.is_none()||o.enter_s4.is_none(){return Err(NOT_IMPLEMENTED)}Ok(o)
+}
+/// Register the permanent platform backend. The descriptor is copied, but its
+/// context and referenced storage must remain valid for the kernel lifetime.
+///
+/// # Safety
+/// Every callback must obey its documented ABI and memory-safety contract.
+pub unsafe fn register_platform(p:*mut HiberPlatformOps)->i32{
+ if p.is_null(){return INVALID}
+ let o=unsafe{*p};
+ if o.size<core::mem::size_of::<HiberPlatformOps>() as u32||o.quiesce_devices.is_none()||o.resume_devices.is_none()||o.enumerate_memory.is_none()||o.capture_cpu_state.is_none()||o.restore_cpu_state.is_none()||o.write_slot.is_none()||o.read_slot.is_none()||o.flush_slot.is_none()||o.restore_memory.is_none()||o.enter_s4.is_none(){return INVALID}
+ if PLATFORM_STATE.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_err(){return 0xC000_0022u32 as i32}
+ unsafe{PLATFORM_STORAGE.0.get().write(o);}
+ PLATFORM_STATE.store(2,Ordering::Release);OK
+}
 fn rd(o:&HiberPlatformOps,s:u32,at:u64,b:&mut [u8])->i32{unsafe{(o.read_slot.unwrap())(o.context,s,at,b.as_mut_ptr(),b.len())}}
 fn wr(o:&HiberPlatformOps,s:u32,at:u64,b:&[u8])->i32{unsafe{(o.write_slot.unwrap())(o.context,s,at,b.as_ptr(),b.len())}}
 fn fl(o:&HiberPlatformOps,s:u32)->i32{unsafe{(o.flush_slot.unwrap())(o.context,s)}}
