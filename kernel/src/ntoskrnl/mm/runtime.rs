@@ -1624,7 +1624,21 @@ pub fn self_test() -> bool {
         if !node_chunk_ok { crate::serial_write(b"MM self-test failed: NUMA contiguous chunks\\r\\n"); }
         if !ranges_ok { crate::serial_write(b"MM self-test failed: physical ranges enumeration\\r\\n"); }
     }
-    valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && bounded_ok && node_ok && node_chunk_ok && ranges_ok
+    let all_ok = valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && bounded_ok && node_ok && node_chunk_ok && ranges_ok;
+    #[cfg(target_os = "none")]
+    if !all_ok {
+        // Keep the boot-time failure actionable: report each independent
+        // compatibility probe rather than collapsing every failure to FALSE.
+        unsafe {
+            crate::serial_write(b"MM-SELFTEST valid/mdl/freed/contig/page-mdl/bounded/node/node-chunk/ranges=");
+            for value in [valid, mdl_ok, freed, contiguous_ok, page_mdl_ok, bounded_ok, node_ok, node_chunk_ok, ranges_ok] {
+                crate::serial_write(if value { b"1" } else { b"0" });
+                crate::serial_write(b"/");
+            }
+            crate::serial_write(b"\\r\\n");
+        }
+    }
+    all_ok
 }
 
 #[cfg(test)]
