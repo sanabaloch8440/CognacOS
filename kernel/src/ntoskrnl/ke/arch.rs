@@ -120,15 +120,15 @@ fn preserve_first_user_fault(vector: u64, error: u64, frame: *const u64) {
     FIRST_USER_FAULT_SS.store(read(21), Ordering::Relaxed);
     FIRST_USER_FAULT_CR2.store(cr2, Ordering::Relaxed);
     FIRST_USER_FAULT_CR3.store(cr3, Ordering::Relaxed);
-    let pid = crate::ntoskrnl::mm::address_space::current_process_id_for_active_address_space();
-    FIRST_USER_FAULT_PID.store(pid, Ordering::Relaxed);
-    // Resolve and freeze the user module range while the first frame is being
-    // captured; the fatal path itself never takes the module-registry lock.
-    if let Some((_, module)) = crate::pe_modules::find_for_process(pid, b"ntdll.dll") {
-        FIRST_USER_FAULT_NTDLL_BASE.store(module.base, Ordering::Relaxed);
-        FIRST_USER_FAULT_NTDLL_SIZE.store(module.size as u64, Ordering::Relaxed);
-    }
+    // Atomic PID sampling avoids taking process/module locks before the
+    // first fault frame is frozen. Module symbolization is intentionally deferred.
+    FIRST_USER_FAULT_PID.store(crate::syscall::current_process_id(), Ordering::Relaxed);
     FIRST_USER_FAULT_STATE.store(2, Ordering::Release);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cognacos_preserve_user_fault_early(vector:u64,error:u64,frame:*const u64){
+    preserve_first_user_fault(vector,error,frame);
 }
 
 /// Emit the immutable first ring-3 frame before reporting a later fatal fault.
@@ -455,7 +455,14 @@ cognacos_exception_common:
     and eax, 3
     cmp eax, 3
     jne .Lcognacos_exception_skip_user_save
+    # Freeze the first user fault before XSAVE or any other Rust dispatch.
     mov rbx, rsp
+    mov rdi, qword ptr [rsp + 120]
+    mov rsi, qword ptr [rsp + 128]
+    mov rdx, rsp
+    and rsp, -16
+    call cognacos_preserve_user_fault_early
+    mov rsp, rbx
     and rsp, -16
     call cognacos_save_current_user_xstate_asm
     mov rsp, rbx
