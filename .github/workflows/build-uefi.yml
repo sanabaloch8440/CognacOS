@@ -409,7 +409,7 @@ jobs:
         run: python3 tools/wdm_source_contract_tests.py
       - name: Build freestanding Rust kernel with project linker script
         env:
-          RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld
+          RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld -C link-arg=--undefined=IoAcquireCancelSpinLock -C link-arg=--undefined=IoReleaseCancelSpinLock -C link-arg=--undefined=IoBuildDeviceIoControlRequest -C link-arg=--undefined=IoCsqInitialize -C link-arg=--undefined=IoCsqInitializeEx -C link-arg=--undefined=IoCsqInsertIrp -C link-arg=--undefined=IoCsqInsertIrpEx -C link-arg=--undefined=IoCsqRemoveIrp -C link-arg=--undefined=IoCsqRemoveNextIrp -C link-arg=--undefined=PsAssignImpersonationToken -C link-arg=--undefined=PsReferencePrimaryToken -C link-arg=--undefined=PsDereferencePrimaryToken -C link-arg=--undefined=SeAccessCheck -C link-arg=--undefined=SePrivilegeCheck -C link-arg=--undefined=SeSinglePrivilegeCheck -C link-arg=--undefined=SeValidSecurityDescriptor -C link-arg=--undefined=SeCaptureSubjectContext -C link-arg=--undefined=SeReleaseSubjectContext -C link-arg=--undefined=SeLockSubjectContext -C link-arg=--undefined=SeUnlockSubjectContext
         run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release --features diagnostic-vm
       - name: Convert fixed-base kernel ELF to PE32+
         run: |
