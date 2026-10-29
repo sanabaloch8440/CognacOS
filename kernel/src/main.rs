@@ -41,7 +41,7 @@ use core::panic::PanicInfo;
 
 // PCI configuration mechanism #1 helpers. BAR sizing is performed only during
 // early boot, before any driver binds; command decode and bus mastering are
-// disabled while probing and the original BAR/command values are restored.
+// disabled while probing; BARs are restored and bus mastering is forced off.
 unsafe fn pci_config_select(bus:u8,device:u8,function:u8,offset:u8) {
     let address=0x8000_0000u32|((bus as u32)<<16)|((device as u32)<<11)
         |((function as u32)<<8)|((offset as u32)&0xfc);
@@ -73,7 +73,7 @@ unsafe fn probe_xhci_bar(bus:u8,device:u8,function:u8)->Option<(u64,u64)> {
     if kind==2 { unsafe{pci_config_write32(bus,device,function,0x14,u32::MAX);} }
     let mask_low=unsafe{pci_config_read32(bus,device,function,0x10)};
     let mask_high=if kind==2 {unsafe{pci_config_read32(bus,device,function,0x14)}}else{0};
-    // Restore BARs before restoring command decode; bus mastering stays exactly as it was.
+    // Restore BARs before decode; preserve decode bits but force bus mastering off.
     unsafe{pci_config_write32(bus,device,function,0x10,low);}
     if let Some(saved)=high { unsafe{pci_config_write32(bus,device,function,0x14,saved);} }
     unsafe{pci_config_write16(bus,device,function,0x04,command & !0x0004);}
