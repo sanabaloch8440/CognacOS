@@ -325,6 +325,7 @@ pub fn resolve(dll: &[u8], symbol: ImportSymbol<'_>) -> Option<u64> {
   "MmSizeOfMdl" => mm::runtime::mm_size_of_mdl as usize,
   "MmAllocatePagesForMdl" => mm::runtime::mm_allocate_pages_for_mdl as usize,
   "MmAllocatePagesForMdlEx" => mm::runtime::mm_allocate_pages_for_mdl_ex as usize,
+  "MmAllocateNodePagesForMdlEx" => mm::runtime::mm_allocate_node_pages_for_mdl_ex as usize,
   "MmFreePagesFromMdl" => mm::runtime::mm_free_pages_from_mdl as usize,
   "MmFreePagesFromMdlEx" => mm::runtime::mm_free_pages_from_mdl_ex as usize,
   "MmGetPhysicalMemoryRanges" => mm::runtime::mm_get_physical_memory_ranges as usize,
