@@ -104,3 +104,19 @@ This is the canonical task list. Completed work is summarized by area; detailed 
 - [ ] Do not mark a milestone validated until the relevant tests pass on the current commit; older successful runs are historical evidence only.
 - [ ] Keep one canonical task per deliverable; move completed work to Git history and keep this roadmap focused on open acceptance criteria.
 - [ ] Never equate export presence, compilation, or an emulator boot with full Windows 11 semantics or third-party driver compatibility.
+
+
+## Memory-manager compatibility status (2026-10-29)
+
+Recent work extends the MDL/physical allocator path with:
+- Constrained physical page selection honoring inclusive low/high address bounds and the SkipBytes boundary.
+- A contiguous-run path for MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS, plus a best-effort contiguous attempt for MM_ALLOCATE_PREFER_CONTIGUOUS.
+- MM_ALLOCATE_NO_WAIT uses the immediate resident-page allocator; allocation does not invoke paging or wait for page-in.
+- MmProtectMdlSystemAddress supports PAGE_NOACCESS, read-only, read/write, execute, execute/read, and explicit execute/read/write protections. Non-present MDL PTEs retain their PFN so protections can be restored and mappings safely torn down.
+- Runtime coverage exercises the protection transitions and the MDL mapping/free lifecycle.
+
+Still intentionally incomplete:
+- MM_ALLOCATE_FROM_LOCAL_NODE_ONLY remains rejected until CognacOS parses ACPI SRAT/SLIT topology and tracks node ownership for physical ranges.
+- Non-cached and write-combined mappings remain unsupported until PAT/MTRR-aware cache-type policy is tracked consistently across every alias (identity map, direct map, and MDL system mapping). Applying cache bits to only one alias would be unsafe.
+- MM_ALLOCATE_NO_WAIT is non-pageing/nonblocking with respect to memory reclamation, but allocator lock acquisition currently uses the existing spin lock.
+- This is incremental NT ABI compatibility, not a claim of complete Windows 11 memory-manager parity.
