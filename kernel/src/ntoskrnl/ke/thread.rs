@@ -826,7 +826,7 @@ pub fn clear_wake_pending()->Result<(),ThreadError>{
 pub fn set_idle_stack_top(cpu:usize,stack_top:u64)->bool{
     if cpu>=crate::hal::MAX_CPUS||stack_top==0||stack_top&0xf!=0{return false;}
     IDLE_STACK_TOPS[cpu].store(stack_top,core::sync::atomic::Ordering::Release);
-    crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,stack_top) && crate::syscall::reset_kernel_stack(cpu)
+    crate::ntoskrnl::ke::arch::set_kernel_stack(cpu,stack_top)
 }
 
 /// Initialize the runtime's per-CPU current-thread slots. The bootstrap context
