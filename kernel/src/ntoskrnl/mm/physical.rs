@@ -589,6 +589,56 @@ pub unsafe fn allocate_contiguous_pages_in_range(
     Err(AllocError::OutOfMemory)
 }
 
+/// Nonblocking batch allocation from already-populated free lists only.
+/// The lock is acquired once with try_lock; this routine never carves allocator
+/// regions, waits for pages, or performs reclaim. Address bounds are inclusive.
+pub unsafe fn try_allocate_pages_in_range(
+    output: &mut [u64], low: u64, high: u64, require_all: bool,
+) -> Result<usize, AllocError> {
+    if low > high { return Err(AllocError::InvalidPage); }
+    let _guard = MemoryGuard::try_acquire().ok_or(AllocError::Busy)?;
+    let low_free = unsafe { &mut *FREE_PAGES.0.get() };
+    let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
+    let mut count = 0usize;
+    while count < output.len() {
+        let find = |pages: &mut ([u64; FREE_CAPACITY], usize)| -> Option<u64> {
+            let mut i = 0;
+            while i < pages.1 {
+                let page = pages.0[i];
+                let end = page.checked_add(PAGE_SIZE - 1);
+                if page >= low && end.is_some_and(|end| end <= high) {
+                    pages.1 -= 1;
+                    pages.0[i] = pages.0[pages.1];
+                    return Some(page);
+                }
+                i += 1;
+            }
+            None
+        };
+        let page = find(low_free).or_else(|| find(high_free));
+        let Some(page) = page else { break; };
+        output[count] = page;
+        count += 1;
+    }
+    if require_all && count != output.len() {
+        for &page in &output[..count] {
+            let pages = if page >= PHYSICAL_LIMIT { high_free } else { low_free };
+            if pages.1 < FREE_CAPACITY {
+                pages.0[pages.1] = page;
+                pages.1 += 1;
+            }
+        }
+        return Err(AllocError::OutOfMemory);
+    }
+    for &page in &output[..count] {
+        let pointer = if page >= PHYSICAL_LIMIT {
+            direct_map_address(page).ok_or(AllocError::InvalidMap)? as *mut u8
+        } else { page as *mut u8 };
+        unsafe { ptr::write_bytes(pointer, 0, PAGE_SIZE as usize); }
+    }
+    if count == 0 { Err(AllocError::OutOfMemory) } else { Ok(count) }
+}
+
 /// Allocate one zeroed physical page. The early kernel uses identity mappings,
 /// so the returned physical address is also directly writable as a pointer.
 pub unsafe fn allocate_page() -> Result<u64, AllocError> {
