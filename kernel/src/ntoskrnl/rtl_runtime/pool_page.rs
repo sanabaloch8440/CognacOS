@@ -284,6 +284,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn no_wait_pool_uses_preallocated_small_and_large_reserves() {
+        let small = try_allocate_tagged(128, 0x4e57534d, true);
+        assert!(!small.is_null());
+        assert_eq!((small as usize) % 16, 0);
+        for i in 0..128 { assert_eq!(unsafe { *small.add(i) }, 0); }
+        assert!(try_deallocate_tagged(small, Some(0x4e57534d)));
+
+        let large = try_allocate_tagged(3000, 0x4e574c47, true);
+        assert!(!large.is_null());
+        assert_eq!((large as usize) % 4096, 0);
+        for i in 0..3000 { assert_eq!(unsafe { *large.add(i) }, 0); }
+        assert!(deallocate_tagged(large, Some(0x4e574c47)));
+    }
+
+    #[test]
     fn small_classes_are_aligned_and_bounded() {
         assert_eq!(small_class(0), None);
         assert_eq!(small_class(1), Some(16));
