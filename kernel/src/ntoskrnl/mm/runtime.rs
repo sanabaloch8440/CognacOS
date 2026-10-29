@@ -1559,20 +1559,51 @@ pub fn self_test() -> bool {
         )
     };
     let node_ok = if node_mdl.is_null() {
+        #[cfg(target_os = "none")]
+        unsafe {
+            crate::serial_write(b"MM-SELFTEST node-mdl=null node-count=");
+            crate::serial_write_decimal(crate::ntoskrnl::mm::topology::memory_node_count() as u64);
+            crate::serial_write(b" ranges=");
+            let mut debug_ranges = [(0u64, 0u64); 4];
+            let debug_count = crate::ntoskrnl::mm::topology::memory_ranges_for_node(0, &mut debug_ranges);
+            crate::serial_write_decimal(debug_count as u64);
+            crate::serial_write(b"\\r\\n");
+        }
         false
     } else {
         let header = unsafe { &*node_mdl.cast::<MdlHeader>() };
         let pfns = unsafe { node_mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>() };
-        let first = unsafe { pfns.read() } * PAGE_SIZE;
-        let second = unsafe { pfns.add(1).read() } * PAGE_SIZE;
+        let first_pfn = unsafe { pfns.read() };
+        let second_pfn = unsafe { pfns.add(1).read() };
+        let first = first_pfn * PAGE_SIZE;
+        let second = second_pfn * PAGE_SIZE;
+        let first_node = crate::ntoskrnl::mm::topology::node_for_range(first, PAGE_SIZE);
+        let second_node = crate::ntoskrnl::mm::topology::node_for_range(second, PAGE_SIZE);
         let valid = header.byte_count as u64 == PAGE_SIZE * 2
-            && [first, second].iter().all(|pa| *pa >= 0x10_0000
-                && *pa <= 0xffff_ffff
-                && crate::ntoskrnl::mm::topology::node_for_range(*pa, PAGE_SIZE) == Some(0));
+            && [first, second].iter().all(|pa| *pa >= 0x10_0000 && *pa <= 0xffff_ffff)
+            && first_node == Some(0) && second_node == Some(0);
         unsafe { mm_free_pages_from_mdl(node_mdl); }
         let storage_freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
             node_mdl.cast(), Some(0x4c444d4d),
         );
+        #[cfg(target_os = "none")]
+        if !valid || !storage_freed {
+            unsafe {
+                crate::serial_write(b"MM-SELFTEST node-mdl first=");
+                crate::serial_write_hex(first);
+                crate::serial_write(b" node=");
+                crate::serial_write_decimal(first_node.unwrap_or(u32::MAX) as u64);
+                crate::serial_write(b" second=");
+                crate::serial_write_hex(second);
+                crate::serial_write(b" node=");
+                crate::serial_write_decimal(second_node.unwrap_or(u32::MAX) as u64);
+                crate::serial_write(b" bytes=");
+                crate::serial_write_decimal(header.byte_count as u64);
+                crate::serial_write(b" storage-freed=");
+                crate::serial_write(if storage_freed { b"1" } else { b"0" });
+                crate::serial_write(b"\\r\\n");
+            }
+        }
         valid && storage_freed
     };
     // Explicit-node contiguous chunks must honor the same SkipBytes alignment
