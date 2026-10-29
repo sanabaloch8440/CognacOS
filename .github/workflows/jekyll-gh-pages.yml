@@ -39,6 +39,9 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup Pages
         uses: actions/configure-pages@v5
+        with:
+          # Configure Pages for Actions when the repository has not enabled it yet.
+          enablement: true
       - name: Build with Jekyll
         uses: actions/jekyll-build-pages@v1
         with:
