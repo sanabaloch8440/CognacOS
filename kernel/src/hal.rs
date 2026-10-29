@@ -412,6 +412,32 @@ pub unsafe fn end_local_interrupt() {
 #[inline]
 pub fn capture_clock_synchronization_sample() { apic::capture_tsc_sync_sample(); }
 #[inline]
+/// Reserve a vector for a device interrupt. This reserves the vector only;
+/// architecture IDT installation and source routing are separate prerequisites.
+pub fn allocate_device_interrupt_vector() -> Result<u8, HalError> {
+    apic::allocate_interrupt_vector().map_err(|_| HalError::PlatformFailure)
+}
+
+/// Callback ABI for the HAL's external-interrupt dispatcher.
+pub type DeviceInterruptHandler = apic::InterruptHandler;
+
+/// Register a callback for a previously allocated vector. The caller must
+/// install a matching IDT gate before enabling any device interrupt source.
+pub fn register_device_interrupt_handler(
+    vector: u8,
+    handler: DeviceInterruptHandler,
+    context: *mut core::ffi::c_void,
+) -> Result<(), HalError> {
+    apic::register_interrupt_handler(vector, handler, context)
+        .map_err(|_| HalError::InvalidTransition)
+}
+
+/// Release an unused device vector after its source is masked and its IDT gate
+/// is detached. The caller must synchronize with any in-flight interrupts.
+pub fn release_device_interrupt_vector(vector: u8) -> Result<(), HalError> {
+    apic::release_interrupt_vector(vector).map_err(|_| HalError::InvalidTransition)
+}
+
 /// Check that a device interrupt vector has a live registered HAL callback.
 /// This is a handler-registration check, not proof that the route is unmasked.
 pub fn device_interrupt_handler_registered(vector: u8) -> bool {
