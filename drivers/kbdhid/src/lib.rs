@@ -30,7 +30,7 @@ pub const fn usage_to_set1(usage: u8) -> Option<(u16, bool)> {
   0x44=>Some((0x57,false)),0x45=>Some((0x58,false)),0x49=>Some((0x52,true)),0x4a=>Some((0x47,true)),
   0x4b=>Some((0x49,true)),0x4c=>Some((0x53,true)),0x4d=>Some((0x4f,true)),0x4e=>Some((0x51,true)),
   0x4f=>Some((0x4d,true)),0x50=>Some((0x4b,true)),0x51=>Some((0x50,true)),0x52=>Some((0x48,true)),
-  0x4c=>Some((0x53,true)),0x00=>None,_=>None
+  0x00=>None,_=>None
  }
 }
 
@@ -58,4 +58,4 @@ pub fn decode_boot_report(report:&[u8], state:&mut KeyboardState, out:&mut [Keyb
 }
 const fn modifier_scan(u:u8)->(u16,bool){match u{0xe0=>(0x1d,false),0xe1=>(0x2a,false),0xe2=>(0x38,false),0xe3=>(0x5b,true),0xe4=>(0x1d,true),0xe5=>(0x36,false),0xe6=>(0x38,true),_=>(0x5c,true)}}
 
-#[cfg(test)] mod tests { use super::*; #[test] fn maps_and_diffs_boot_reports(){let mut state=KeyboardState::new();let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=0x04;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_eq!(out[0].make_code,0x1e);r[2]=0;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_ne!(out[0].flags&KEY_BREAK,0);} #[test] fn rollover_does_not_release_keys(){let mut state=KeyboardState{previous_keys:[4,0,0,0,0,0],previous_modifiers:0};let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=1;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Err(HidError::ErrorRollOver));assert_eq!(state.previous_keys[0],4);} }
+#[cfg(test)] mod tests { use super::*; #[test] fn modifier_make_and_break_are_stateful(){let mut state=KeyboardState::new();let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[0]=0x02;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_eq!(out[0].make_code,0x2a);assert_eq!(out[0].flags&KEY_BREAK,0);assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(0));r[0]=0;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_ne!(out[0].flags&KEY_BREAK,0);} #[test] fn maps_and_diffs_boot_reports(){let mut state=KeyboardState::new();let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=0x04;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_eq!(out[0].make_code,0x1e);r[2]=0;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_ne!(out[0].flags&KEY_BREAK,0);} #[test] fn rollover_does_not_release_keys(){let mut state=KeyboardState{previous_keys:[4,0,0,0,0,0],previous_modifiers:0};let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=1;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Err(HidError::ErrorRollOver));assert_eq!(state.previous_keys[0],4);} }
