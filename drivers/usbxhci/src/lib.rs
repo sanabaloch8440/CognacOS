@@ -696,6 +696,7 @@ pub const HAL_DMA_ZEROED: u32 = 1 << 2;
 /// It does not invent physical addresses or implement DMA/interrupts itself.
 pub struct HalBackedXhciPlatform {
     services: *const cognacos_hal_contract::DeviceServiceTable,
+    device_object: u64,
     mmio_base: u64,
     mmio_length: u64,
     interrupt_vector: u32,
@@ -711,18 +712,18 @@ impl HalBackedXhciPlatform {
     /// with device memory attributes. Callback functions and context must remain valid.
     pub unsafe fn new(
         services: *const cognacos_hal_contract::DeviceServiceTable,
-        mmio_base: u64, mmio_length: u64, interrupt_vector: u32,
+        device_object: u64, mmio_base: u64, mmio_length: u64, interrupt_vector: u32,
         interrupt_context: u64,
         isr: Option<cognacos_hal_contract::InterruptIsr>,
         dpc: Option<cognacos_hal_contract::InterruptDpc>,
     ) -> Result<Self, ()> {
-        if services.is_null() || mmio_base == 0 || mmio_length < 0x1000
+        if services.is_null() || device_object == 0 || mmio_base == 0 || mmio_length < 0x1000
             || mmio_base.checked_add(mmio_length).is_none()
             || interrupt_vector == 0 || isr.is_none() { return Err(()); }
         // SAFETY: caller guarantees the table pointer is readable.
         let table = unsafe { &*services };
         if !table.compatible() || !table.has_dma() || !table.has_interrupts() { return Err(()); }
-        Ok(Self { services, mmio_base, mmio_length, interrupt_vector,
+        Ok(Self { services, device_object, mmio_base, mmio_length, interrupt_vector,
             interrupt_context, isr, dpc, registered: false })
     }
     fn table(&self) -> &cognacos_hal_contract::DeviceServiceTable {
@@ -751,14 +752,14 @@ impl XhciPlatform for HalBackedXhciPlatform {
         if size == 0 || alignment < 16 || !alignment.is_power_of_two() { return Err(()); }
         let allocate = self.table().allocate_dma.ok_or(())?;
         let mut cpu = 0u64; let mut device = 0u64;
-        let status = unsafe { allocate(size, alignment, max_device_address,
-            HAL_DMA_CONTIGUOUS | HAL_DMA_COHERENT | HAL_DMA_ZEROED, &mut cpu, &mut device) };
+        let status = unsafe { allocate(self.device_object, size, alignment, max_device_address,
+            0, &mut cpu, &mut device) };
         if status.code != 0 { return Err(()); }
         Ok(DmaAllocation { cpu_address: cpu, device_address: device, size })
     }
     fn free_dma(&mut self, allocation: DmaAllocation) {
         if let Some(free) = self.table().free_dma {
-            let _ = unsafe { free(allocation.cpu_address, allocation.device_address, allocation.size) };
+            let _ = unsafe { free(self.device_object, allocation.cpu_address, allocation.device_address, allocation.size) };
         }
     }
     fn register_interrupt(&mut self) -> Result<(), ()> {
