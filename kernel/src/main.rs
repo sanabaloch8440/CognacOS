@@ -1194,11 +1194,19 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             } else {
             match unsafe { hal::start_local_clock_event() } {
                 Ok(()) => {
-                    thread::set_preemption_enabled(true);
+                    // Keep timer interrupts enabled, but do not globally enable
+                    // asynchronous context switching until the timer-preemption
+                    // stress test has proved that its saved kernel contexts are
+                    // resumable. Previously enabling preemption first allowed a
+                    // bad saved RIP to turn this diagnostic into a supervisor
+                    // instruction-fetch fault at address zero.
+                    thread::set_preemption_enabled(false);
                     if thread::timer_preemption_self_test() {
+                        thread::set_preemption_enabled(true);
                         serial_write(b"Timer preemption stress passed: non-yielding thread was preempted for a runnable peer.\r\n");
                     } else {
-                        serial_write(b"Timer preemption stress FAILED.\r\n");
+                        thread::set_preemption_enabled(false);
+                        serial_write(b"Timer preemption stress FAILED; asynchronous preemption remains disabled for kernel safety.\r\n");
                     }
                     let beep_stack = unsafe { core::slice::from_raw_parts_mut(core::ptr::addr_of_mut!(BEEP_TEST_STACK).cast::<u8>(), 8192) };
                     match thread::spawn(beep_stack, 1, beep_test_worker, core::ptr::null_mut()) {
