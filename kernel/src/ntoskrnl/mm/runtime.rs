@@ -1237,9 +1237,7 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
     low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
     cache_type: u32, ideal_node: u32, flags: u32,
 ) -> *mut c_void {
-    if flags & MM_ALLOCATE_NO_WAIT != 0 {
-        return core::ptr::null_mut();
-    }
+    let no_wait = flags & MM_ALLOCATE_NO_WAIT != 0;
     let require_contiguous = flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0;
     let prefer_contiguous = flags & MM_ALLOCATE_PREFER_CONTIGUOUS != 0;
     if total_bytes == 0 || total_bytes > (u32::MAX as u64 - PAGE_SIZE)
@@ -1265,7 +1263,11 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
         return core::ptr::null_mut();
     }
     let mdl_bytes = (MDL_HEADER_SIZE + requested_pages as u64 * 8) as usize;
-    let mdl = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(mdl_bytes, 0x4c444d4d, true);
+    let mdl = if no_wait {
+        crate::ntoskrnl::rtl_runtime::pool_try_allocate_tagged(mdl_bytes, 0x4c444d4d, true)
+    } else {
+        crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(mdl_bytes, 0x4c444d4d, true)
+    };
     if mdl.is_null() { return core::ptr::null_mut(); }
     let pfns = unsafe { core::slice::from_raw_parts_mut(
         mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>(), requested_pages,
@@ -1287,9 +1289,21 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
         }
         for &node in &node_order[..nodes] {
             if let Ok(base) = unsafe {
-                crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
+                if no_wait {
+                    crate::ntoskrnl::mm::physical::try_allocate_contiguous_pages_in_node_range(
                     requested_pages, node, low_address, high_address, 0,
-                )
+                    )
+                } else {
+                    if no_wait {
+                        crate::ntoskrnl::mm::physical::try_allocate_contiguous_pages_in_node_range(
+                            requested_pages, node, low_address, high_address, 0,
+                        )
+                    } else {
+                        crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
+                            requested_pages, node, low_address, high_address, 0,
+                        )
+                    }
+                }
             } {
                 for index in 0..requested_pages {
                     pfns[index] = base / PAGE_SIZE + index as u64;
@@ -1315,9 +1329,15 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
             let mut chunk_base = None;
             for &node in &node_order[..nodes] {
                 if let Ok(base) = unsafe {
-                    crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
-                        pages_per_chunk, node, low, high, skip_bytes,
-                    )
+                    if no_wait {
+                        crate::ntoskrnl::mm::physical::try_allocate_contiguous_pages_in_node_range(
+                            pages_per_chunk, node, low, high, skip_bytes,
+                        )
+                    } else {
+                        crate::ntoskrnl::mm::physical::allocate_contiguous_pages_in_node_range(
+                            pages_per_chunk, node, low, high, skip_bytes,
+                        )
+                    }
                 } {
                     chunk_base = Some(base);
                     break;
@@ -1373,9 +1393,15 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
                 let mut selected = None;
                 for &node in &node_order[..nodes] {
                     if unsafe {
-                        crate::ntoskrnl::mm::physical::allocate_pages_in_node_range(
-                            &mut pfns[allocated..allocated + 1], node, low, high, false,
-                        )
+                        if no_wait {
+                            crate::ntoskrnl::mm::physical::try_allocate_pages_in_node_range(
+                                &mut pfns[allocated..allocated + 1], node, low, high, false,
+                            )
+                        } else {
+                            crate::ntoskrnl::mm::physical::allocate_pages_in_node_range(
+                                &mut pfns[allocated..allocated + 1], node, low, high, false,
+                            )
+                        }
                     }.is_ok() {
                         selected = Some(());
                         break;
@@ -1394,12 +1420,24 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
 
     if allocated == 0 || (flags & MM_ALLOCATE_FULLY_REQUIRED != 0 && allocated != requested_pages) {
         for &pfn in pfns[..allocated].iter().rev() {
-            let _ = unsafe { crate::memory::free_page(pfn * PAGE_SIZE) };
+            let _ = unsafe {
+                if no_wait { crate::memory::try_free_page(pfn * PAGE_SIZE) }
+                else { crate::memory::free_page(pfn * PAGE_SIZE) }
+            };
         }
-        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        if no_wait {
+            let _ = crate::ntoskrnl::rtl_runtime::pool_try_free_tagged(mdl, Some(0x4c444d4d));
+        } else {
+            let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        }
         return core::ptr::null_mut();
     }
-    if !register_page_allocation_mdl(mdl as u64, allocated) {
+    let registered = if no_wait {
+        try_register_page_allocation_mdl(mdl as u64, allocated)
+    } else {
+        register_page_allocation_mdl(mdl as u64, allocated)
+    };
+    if !registered {
         for &pfn in pfns[..allocated].iter().rev() {
             let _ = unsafe { crate::memory::free_page(pfn * PAGE_SIZE) };
         }
