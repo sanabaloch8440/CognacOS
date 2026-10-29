@@ -125,6 +125,61 @@ pub fn physical_access_pointer(physical_address: u64) -> Option<*mut u8> {
     direct_map_address(physical_address).map(|address| address as *mut u8)
 }
 
+
+/// Enumerate RAM-like firmware descriptors as sorted, merged (base, length)
+/// ranges. The caller supplies bounded storage; the result never exceeds it.
+pub fn physical_memory_ranges(output: &mut [(u64, u64)]) -> usize {
+    let base = FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire);
+    let entries = FIRMWARE_MAP_ENTRIES.load(core::sync::atomic::Ordering::Acquire);
+    let stride = FIRMWARE_MAP_STRIDE.load(core::sync::atomic::Ordering::Acquire);
+    if base == 0 || stride < core::mem::size_of::<MemoryDescriptor>() || output.is_empty() {
+        return 0;
+    }
+    let mut count = 0usize;
+    for i in 0..entries {
+        let Some(offset) = i.checked_mul(stride) else { break; };
+        let Some(pointer) = (base as usize).checked_add(offset) else { break; };
+        let descriptor = unsafe { ptr::read_unaligned(pointer as *const MemoryDescriptor) };
+        if !matches!(descriptor.kind, 1..=7 | 9 | 10 | 14) || descriptor.number_of_pages == 0 {
+            continue;
+        }
+        let Some(length) = descriptor.number_of_pages.checked_mul(PAGE_SIZE) else { continue; };
+        let start = descriptor.physical_start & !(PAGE_SIZE - 1);
+        let Some(end) = descriptor.physical_start.checked_add(length) else { continue; };
+        if end <= start { continue; }
+        if count == output.len() { break; }
+        output[count] = (start, end - start);
+        count += 1;
+    }
+    // Insertion-sort by base, then merge overlap/adjacency. Descriptor maps are
+    // normally sorted, but the ABI must not rely on firmware ordering.
+    for i in 1..count {
+        let item = output[i];
+        let mut j = i;
+        while j > 0 && output[j - 1].0 > item.0 {
+            output[j] = output[j - 1];
+            j -= 1;
+        }
+        output[j] = item;
+    }
+    let mut merged = 0usize;
+    for i in 0..count {
+        let (start, length) = output[i];
+        let Some(end) = start.checked_add(length) else { continue; };
+        if merged != 0 {
+            let previous = output[merged - 1];
+            let previous_end = previous.0.saturating_add(previous.1);
+            if start <= previous_end {
+                output[merged - 1].1 = previous_end.max(end).saturating_sub(previous.0);
+                continue;
+            }
+        }
+        output[merged] = (start, end - start);
+        merged += 1;
+    }
+    merged
+}
+
 /// Find a conventional-memory page above 4 GiB for a non-destructive direct-map test.
 pub fn first_high_conventional_page() -> Option<u64> {
     let base = FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire);
