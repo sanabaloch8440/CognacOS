@@ -49,7 +49,7 @@ pub fn parse_srat(table:&[u8])->Result<usize,TopologyError>{
  } else if ty==2 { // Processor Local x2APIC Affinity (ACPI SRAT type 2).
   if len<24{return Err(TopologyError::InvalidTable)}
   let flags=u32at(t,pos+12).ok_or(TopologyError::InvalidTable)?;
-  let node=u32at(t,pos+2).ok_or(TopologyError::InvalidTable)?;
+  let node=u32at(t,pos+4).ok_or(TopologyError::InvalidTable)?;
   let apic_id=u32at(t,pos+8).ok_or(TopologyError::InvalidTable)?;
   if flags&1!=0 { if node as usize>=MAX_NODES{return Err(TopologyError::InvalidNode)}
    if processor_count==MAX_PROCESSOR_AFFINITIES{return Err(TopologyError::Capacity)}
@@ -170,9 +170,9 @@ mod tests {
     fn parses_and_publishes_a_valid_memory_affinity_range() {
         // ACPI SDT header (36 bytes), SRAT fixed body (12 bytes), then one
         // 40-byte Memory Affinity structure.
-        let mut table = [0u8; 104];
+        let mut table = [0u8; 128];
         table[0..4].copy_from_slice(b"SRAT");
-        table[4..8].copy_from_slice(&104u32.to_le_bytes());
+        table[4..8].copy_from_slice(&128u32.to_le_bytes());
         table[48] = 1; // Memory Affinity
         table[49] = 40;
         table[50..54].copy_from_slice(&2u32.to_le_bytes()); // proximity domain
@@ -184,6 +184,11 @@ mod tests {
         table[90] = 2; // proximity domain 2
         table[91] = 7; // APIC ID 7
         table[92..96].copy_from_slice(&1u32.to_le_bytes()); // enabled
+        table[104] = 2; // Processor Local x2APIC Affinity
+        table[105] = 24;
+        table[108..112].copy_from_slice(&2u32.to_le_bytes()); // proximity domain at offset 4
+        table[112..116].copy_from_slice(&0x123u32.to_le_bytes()); // x2APIC ID
+        table[116..120].copy_from_slice(&1u32.to_le_bytes()); // enabled
         let checksum = table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
         table[9] = 0u8.wrapping_sub(checksum);
 
@@ -193,5 +198,6 @@ mod tests {
         assert_eq!(node_for_range(0x2f_f000, 0x2000), None);
         assert_eq!(node_for_apic_id(7), Some(2));
         assert_eq!(node_for_apic_id(8), None);
+        assert_eq!(node_for_apic_id(0x123), Some(2));
     }
 }
