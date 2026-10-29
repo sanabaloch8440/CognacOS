@@ -1413,6 +1413,7 @@ pub fn self_test() -> bool {
         let valid = header.byte_count as u64 == PAGE_SIZE * 2
             && second == first.saturating_add(PAGE_SIZE)
             && first >= 0x10_0000 && last <= 0xffff_ffff
+            && first % (PAGE_SIZE * 2) == 0
             && first / (PAGE_SIZE * 2) == last / (PAGE_SIZE * 2);
         unsafe { mm_free_pages_from_mdl(bounded_mdl); }
         let storage_freed = crate::ntoskrnl::rtl_runtime::pool_free_tagged(
