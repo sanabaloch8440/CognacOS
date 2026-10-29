@@ -18,6 +18,10 @@ pub struct Modifiers { pub max_mod_bits:u16, pub modifier_bits:*const ModifierBi
 #[repr(C)]
 pub struct ScanVk { pub scan_code:u8, pub virtual_key:u16 }
 #[repr(C)]
+unsafe impl Sync for VkToWcharTable {}
+unsafe impl Sync for VkToWcharTableList {}
+unsafe impl Sync for Modifiers {}
+unsafe impl Sync for KbdTables {}
 pub struct KbdTables {
  pub char_modifiers:*const Modifiers,
  pub vk_to_wchar_table:*const VkToWcharTableList,
@@ -251,3 +255,16 @@ mod layout_dll_tests {
   assert_eq!(SCAN_TO_VK[0x30].virtual_key,b'B' as u16);
  }
 }
+
+#[cfg(target_os="windows")]
+core::arch::global_asm!(r#"
+.text
+.p2align 4
+.globl DllMain
+DllMain:
+ movl $1, %eax
+ ret
+"#,options(att_syntax));
+#[cfg(target_os="windows")]
+#[panic_handler]
+fn panic(_info:&core::panic::PanicInfo<'_>)->!{loop{core::hint::spin_loop();}}
