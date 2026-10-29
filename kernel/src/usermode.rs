@@ -378,6 +378,14 @@ pub unsafe fn run_loaded_image_in_session(space: &mut AddressSpace, image: Loade
         && crate::syscall::set_kernel_stack(cpu, user_kernel_stack_top);
     if !stack_installed {
         unsafe { crate::serial_write(b"[EXCEPTION] failed to attach user ETHREAD or install isolated kernel entry stack\r\n"); }
+    } else if let Some(binding) = user_thread_binding {
+        unsafe {
+            crate::serial_write(b"[EXCEPTION] ring-3 ETHREAD attached id=");
+            crate::serial_write_hex(binding.id);
+            crate::serial_write(b" kernel-stack-top=");
+            crate::serial_write_hex(user_kernel_stack_top);
+            crate::serial_write(b" (TSS RSP0 and SYSCALL stack synchronized)\r\n");
+        }
     }
     // DLL TLS callbacks run before DllMain; the executable TLS callbacks run
     // before the executable entry point. All callbacks execute in ring 3.
