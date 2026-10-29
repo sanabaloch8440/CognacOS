@@ -13,8 +13,8 @@ const TLS_DATA_BASE: u64 = 0x0000_0080_8000_0000;
 const TLS_STRIDE: u64 = 0x0100_0000;
 
 // Ring-3 exceptions and SYSCALL must enter on a kernel stack distinct from
-// the suspended bootstrap call stack. One guarded, page-aligned stack is
-// reserved per CPU for the current bootstrap user-thread launch.
+// the suspended bootstrap call stack. A dedicated page-aligned stack is
+// reserved per CPU for the current user-thread launch.
 #[repr(align(4096))]
 struct UserKernelStack([u8; 32768]);
 static mut USER_KERNEL_STACKS: [UserKernelStack; crate::hal::MAX_CPUS] =
