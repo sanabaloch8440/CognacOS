@@ -1179,8 +1179,7 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
     if total_bytes == 0 || skip_bytes != 0 || high_address < low_address
         || cache_type != 1 || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
         || flags & (MM_ALLOCATE_NO_WAIT | MM_ALLOCATE_PREFER_CONTIGUOUS
-            | MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS | MM_ALLOCATE_FROM_LOCAL_NODE_ONLY
-            | 0x40 | 0x100) != 0 {
+            | MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS | 0x40 | 0x100) != 0 {
         return core::ptr::null_mut();
     }
     let Some(rounded) = total_bytes.checked_add(PAGE_SIZE - 1) else { return core::ptr::null_mut(); };
