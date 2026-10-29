@@ -1168,6 +1168,64 @@ pub unsafe extern "win64" fn mm_allocate_pages_for_mdl_ex(
     unsafe { allocate_pages_for_mdl(low_address, high_address, skip_bytes, total_bytes, cache_type, flags) }
 }
 
+/// Allocate an MDL from an explicit NUMA node. The current allocator can
+/// satisfy this only from freed pages with validated SRAT ownership; it does
+/// not mislabel unclassified bump-region pages as belonging to the requested
+/// node. Nonzero SkipBytes and non-cached policies remain unsupported here.
+pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
+    low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
+    cache_type: u32, flags: u32, preferred_node: u16,
+) -> *mut c_void {
+    if total_bytes == 0 || skip_bytes != 0 || high_address < low_address
+        || cache_type != 1 || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
+        || flags & (MM_ALLOCATE_NO_WAIT | MM_ALLOCATE_FROM_LOCAL_NODE_ONLY
+            | 0x40 | 0x100) != 0 {
+        return core::ptr::null_mut();
+    }
+    let Some(rounded) = total_bytes.checked_add(PAGE_SIZE - 1) else { return core::ptr::null_mut(); };
+    let requested_pages = (rounded / PAGE_SIZE) as usize;
+    if requested_pages == 0
+        || requested_pages > ((i16::MAX as u64 - MDL_HEADER_SIZE) / 8) as usize {
+        return core::ptr::null_mut();
+    }
+    let mdl_bytes = (MDL_HEADER_SIZE + requested_pages as u64 * 8) as usize;
+    let mdl = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(mdl_bytes, 0x4c444d4d, true);
+    if mdl.is_null() { return core::ptr::null_mut(); }
+    let pfns = unsafe { core::slice::from_raw_parts_mut(
+        mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>(), requested_pages,
+    ) };
+    let allocated = match unsafe {
+        crate::ntoskrnl::mm::physical::allocate_pages_in_node_range(
+            pfns, preferred_node as u32, low_address, high_address,
+            flags & MM_ALLOCATE_FULLY_REQUIRED != 0,
+        )
+    } {
+        Ok(count) => count,
+        Err(_) => {
+            let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+            return core::ptr::null_mut();
+        }
+    };
+    if allocated == 0 || !register_page_allocation_mdl(mdl as u64, allocated) {
+        for &pfn in pfns.iter().take(allocated) {
+            let _ = unsafe { crate::memory::free_page(pfn * PAGE_SIZE) };
+        }
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        return core::ptr::null_mut();
+    }
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    header.next = core::ptr::null_mut();
+    header.size = (MDL_HEADER_SIZE + allocated as u64 * 8) as i16;
+    header.flags = MDL_LOCKED;
+    header._padding = 0;
+    header.process = core::ptr::null_mut();
+    header.mapped_system_va = core::ptr::null_mut();
+    header.start_va = core::ptr::null_mut();
+    header.byte_count = core::cmp::min(total_bytes, allocated as u64 * PAGE_SIZE) as u32;
+    header.byte_offset = 0;
+    mdl.cast()
+}
+
 /// Release only physical frames owned by an MmAllocatePagesForMdl MDL.
 /// The MDL storage itself remains allocated for the caller to free separately.
 pub unsafe extern "win64" fn mm_free_pages_from_mdl(mdl: *mut c_void) {
