@@ -1891,6 +1891,7 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     if user_exception_dispatch_active(cpu) {
         let status=user_exception_status(vector,error);
         if return_from_faulted_bootstrap_process(trap,pid,status){return true;}
+        set_user_exception_dispatch_active(cpu,false);
         crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid,status);
     }
     let dispatcher = crate::syscall::exception_dispatcher_for(pid);
