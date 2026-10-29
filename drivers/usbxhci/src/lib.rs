@@ -503,10 +503,14 @@ where P: XhciRegisterIo, F: FnMut(Trb) {
     while consumed < budget {
         let slot = resources.event_ring.cpu_address as *const Trb;
         // SAFETY: the platform keeps the DMA allocation mapped for this resource's lifetime.
+        let event_ptr = unsafe { slot.add(resources.dequeue_index as usize) };
+        // xHCI publishes the TRB payload before publishing the Cycle bit. Read
+        // control first, then acquire-order the payload reads after ownership.
+        let published_control = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*event_ptr).control)) };
+        if (published_control & 1 != 0) != resources.consumer_cycle { break; }
         core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
-        let event = unsafe { core::ptr::read_volatile(slot.add(resources.dequeue_index as usize)) };
-        if event.cycle() != resources.consumer_cycle { break; }
-        handle(event);
+        let event = unsafe { core::ptr::read_volatile(event_ptr) };
+        handle(Trb { parameter: event.parameter, status: event.status, control: published_control });
         resources.dequeue_index += 1;
         if resources.dequeue_index == resources.event_entries {
             resources.dequeue_index = 0;
