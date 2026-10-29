@@ -96,6 +96,7 @@ static FIRST_USER_FAULT_SS: core::sync::atomic::AtomicU64 = core::sync::atomic::
 static FIRST_USER_FAULT_CR2: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static FIRST_USER_FAULT_TID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_NTDLL_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_NTDLL_SIZE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -123,6 +124,7 @@ fn preserve_first_user_fault(vector: u64, error: u64, frame: *const u64) {
     // Atomic PID sampling avoids taking process/module locks before the
     // first fault frame is frozen. Module symbolization is intentionally deferred.
     FIRST_USER_FAULT_PID.store(crate::syscall::current_process_id(), Ordering::Relaxed);
+    FIRST_USER_FAULT_TID.store(crate::ntoskrnl::ke::thread::current_thread_id().unwrap_or(0), Ordering::Relaxed);
     FIRST_USER_FAULT_STATE.store(2, Ordering::Release);
 }
 
@@ -148,6 +150,7 @@ unsafe fn dump_first_user_fault() {
         crate::serial_write(b" CR3="); crate::serial_write_hex(FIRST_USER_FAULT_CR3.load(Ordering::Relaxed));
         let pid = FIRST_USER_FAULT_PID.load(Ordering::Relaxed);
         crate::serial_write(b" PID="); crate::serial_write_hex(pid);
+        crate::serial_write(b" ETHREAD/TID="); crate::serial_write_hex(FIRST_USER_FAULT_TID.load(Ordering::Relaxed));
         let base = FIRST_USER_FAULT_NTDLL_BASE.load(Ordering::Relaxed);
         let size = FIRST_USER_FAULT_NTDLL_SIZE.load(Ordering::Relaxed);
         let rip = FIRST_USER_FAULT_RIP.load(Ordering::Relaxed);
