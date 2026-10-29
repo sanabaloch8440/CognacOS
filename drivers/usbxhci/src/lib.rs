@@ -792,7 +792,7 @@ mod hal_adapter_tests {
     fn rejects_invalid_mmio_accesses_without_touching_hardware() {
         let mut words = [0u32; 4];
         let mut platform = HalBackedXhciPlatform {
-            services: core::ptr::null(), mmio_base: words.as_mut_ptr() as u64,
+            services: core::ptr::null(), device_object: 1, mmio_base: words.as_mut_ptr() as u64,
             mmio_length: core::mem::size_of_val(&words) as u64, interrupt_vector: 1,
             interrupt_context: 0, isr: None, dpc: None, registered: false,
         };
