@@ -129,7 +129,7 @@ pub(crate) unsafe fn po_prepare_irp_dispatch(device:*mut DeviceObject,irp:*mut W
   }
  }
  let (kind,target)=if major==IRP_MJ_POWER {
-  if minor==IRP_MN_QUERY_POWER { let st=parameters[0] as u32; let raw=(parameters[0]>>32) as u32; return if (st==1&&super::device_power::supports_wdm_state(device,raw))||(st==0&&(1..=6).contains(&raw)){STATUS_SUCCESS}else{STATUS_INVALID_DEVICE_REQUEST}; }
+  if minor==IRP_MN_QUERY_POWER { let st=parameters[0] as u32; let raw=(parameters[0]>>32) as u32; return if (st==1&&super::device_power::supports_wdm_state_stack(device,raw))||(st==0&&(1..=6).contains(&raw)){STATUS_SUCCESS}else{STATUS_INVALID_DEVICE_REQUEST}; }
   if minor!=IRP_MN_SET_POWER{return STATUS_SUCCESS}
   let state_type=parameters[0] as u32;
   let raw=(parameters[0]>>32) as u32;
@@ -146,7 +146,7 @@ pub(crate) unsafe fn po_prepare_irp_dispatch(device:*mut DeviceObject,irp:*mut W
     (3,raw as u8)
    }
    1 if (1..=4).contains(&raw)=>{
-     if !super::device_power::supports_wdm_state(device,raw){return STATUS_INVALID_DEVICE_REQUEST}
+     if !super::device_power::supports_wdm_state_stack(device,raw){return STATUS_INVALID_DEVICE_REQUEST}
     let refd=unsafe{io::io_reference_device_object(device)};
     if refd.is_null(){return STATUS_DELETE_PENDING}
     let status=unsafe{io::io_begin_device_power_transition(device,(raw-1) as u8)};
