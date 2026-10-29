@@ -26,10 +26,14 @@ impl Reservation{pub fn cache_type(&self)->CacheType{self.kind}pub fn range(&sel
 impl Drop for Reservation {
     fn drop(&mut self) {
         if !self.active { return; }
-        // A live mapping reservation must never be silently leaked just because
-        // another CPU briefly owns the registry lock. This lock is held only
-        // while mutating the bounded table, never for the reservation lifetime.
-        let _guard = loop {
+        // Prevent same-CPU interrupt re-entry while waiting for this tiny
+        // registry critical section. Otherwise an interrupt that drops a
+        // reservation could spin forever behind the interrupted owner.
+        #[cfg(target_os = "none")]
+        let interrupt_state = unsafe { crate::hal::disable_interrupts() };
+        // A live reservation must not leak its reference just because another
+        // CPU briefly owns the registry lock. No lock is held for its lifetime.
+        let guard = loop {
             if let Ok(guard) = lock() { break guard; }
             core::hint::spin_loop();
         };
@@ -41,7 +45,10 @@ impl Drop for Reservation {
             entry.refs = entry.refs.saturating_sub(1);
             if entry.refs == 0 { *entry = Entry::EMPTY; }
         }
+        drop(guard);
         self.active = false;
+        #[cfg(target_os = "none")]
+        unsafe { crate::hal::restore_interrupts(interrupt_state); }
     }
 }
 #[cfg(test)]mod tests{use super::*;#[test]fn conflicting_alias_types_are_rejected(){let a=reserve(0x1000,0x2000,CacheType::NonCached).unwrap();assert_eq!(reserve(0x2000,0x1000,CacheType::WriteCombined).err(),Some(CacheError::Conflict));drop(a);assert!(reserve(0x2000,0x1000,CacheType::WriteCombined).is_ok())}}
