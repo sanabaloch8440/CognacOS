@@ -39,6 +39,23 @@ rdotos_process_exit_stub:
     mov rsp, qword ptr [rip + rdotos_process_saved_rsp]
     jmp qword ptr [rip + rdotos_process_saved_rip]
 
+    .global rdotos_process_fault_return
+    .type rdotos_process_fault_return, @function
+rdotos_process_fault_return:
+    cli
+    cld
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov ss, ax
+    mov ecx, 0xc0000101
+    mov rax, qword ptr [rip + rdotos_process_saved_gs]
+    mov rdx, rax
+    shr rdx, 32
+    wrmsr
+    mov rsp, qword ptr [rip + rdotos_process_saved_rsp]
+    jmp qword ptr [rip + rdotos_process_saved_rip]
+
     .global rdotos_process_enter_user
     .type rdotos_process_enter_user, @function
 rdotos_process_enter_user:
