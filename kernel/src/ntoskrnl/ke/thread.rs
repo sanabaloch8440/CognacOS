@@ -98,6 +98,24 @@ pub fn spawn(stack:&'static mut [u8],affinity:u64,entry:ThreadEntry,argument:*mu
     Ok(id)
 }
 
+/// Adopt the live BSP bootstrap context as a persistent scheduler-owned
+/// kernel thread after the scheduler's fixture tests have completed. This
+/// gives later user processes and I/O smoke tests a real current ETHREAD.
+pub fn adopt_current_kernel_thread(stack_top:u64)->Result<u64,ThreadError>{
+ if stack_top==0||stack_top&0xf!=0{return Err(ThreadError::InvalidStack);}
+ let cpu=cpu_index()?;
+ let local=crate::hal::cpu_local(cpu).map_err(|_|ThreadError::InvalidCpu)?;
+ let mut table=THREADS.lock();
+ if local.current_thread.load(core::sync::atomic::Ordering::Acquire)!=0{return Err(ThreadError::InvalidState);}
+ let slot=table.records.iter().position(|t|t.state==ThreadState::Empty||t.state==ThreadState::Exited).ok_or(ThreadError::Full)?;
+ let affinity=1u64<<cpu;
+ let scheduler_id=crate::scheduler::adopt_current_task(cpu,2,affinity,stack_top,0).map_err(|_|ThreadError::InvalidState)?;
+ let id=table.next_id;table.next_id=table.next_id.wrapping_add(1).max(1);
+ table.records[slot]=ThreadRecord{id,scheduler_id,process_id:0,impersonation_token:0,state:ThreadState::Running,affinity,context_rsp:core::ptr::null_mut(),stack_top,entry:None,argument:core::ptr::null_mut(),wake_pending:false,wait_status:0,critical_region_depth:0,guarded_region_depth:0,alert_pending:false,alertable_wait:false,user_apc_delivery_pending:false,queue_entry:0,context_saved:false,xstate:KiThreadXStateArea::zeroed(),user_xstate:KiThreadXStateArea::zeroed()};
+ local.current_thread.store(id,core::sync::atomic::Ordering::Release);
+ Ok(id)
+}
+
 /// Scope a process identity and kernel entry stack onto the executing ETHREAD.
 #[derive(Clone,Copy)]
 pub struct UserThreadBinding { pub id:u64, previous_process_id:u64, previous_stack_top:u64, previous_affinity:u64, adopted:bool }
