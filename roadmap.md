@@ -45,7 +45,8 @@ This is the canonical task list. Completed work is summarized by area; detailed 
 - [ ] Run kernel-level cancellation/completion/unload fault injection under QEMU SMP: exactly-once completion, cancel-vs-complete interleavings, callback-vs-teardown, outstanding-IRP drain, remove locks, and device deletion.
 - [ ] Complete file/device object lifetime and documented IRP completion/cancellation semantics before expanding driver coverage.
 - [ ] Add PCI enumeration/resource assignment and a real AHCI/NVMe path only after DMA safety is available.
-- [ ] Implement and validate VT-d/AMD IOMMU translation; fail closed when safe DMA translation is unavailable.
+- [x] Harden DMA/IOMMU failure ownership: copy the one-shot backend callback table into kernel-owned immutable storage, require the backend before allocating common-buffer pages, and attempt rollback when a successful map returns malformed outputs.
+- [ ] Implement and validate hardware VT-d/AMD IOMMU translation, IOTLB invalidation, cache-coherency rules, and DMA teardown under device removal; fail closed when safe DMA translation is unavailable.
 - [ ] Complete device/power ordering, wake handling, and S4 persistence/resume. A conservative per-device D-state/wake capability registry is now present; hardware transitions and parent-stack wake propagation remain outstanding.
 
 ## P1 — NTDLL and native PE loader
