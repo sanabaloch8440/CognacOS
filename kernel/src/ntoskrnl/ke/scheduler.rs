@@ -66,6 +66,28 @@ fn pop_best_from_queue(s:&mut SchedulerState,cpu:usize,exclude_id:u64)->Option<T
  let index=s.tasks.iter().position(|t|t.id==id&&t.state==TaskState::Ready)?;
  s.tasks[index].state=TaskState::Running;s.current[cpu]=id;Some(s.tasks[index])
 }
+/// Register an already executing CPU context as the scheduler's running task.
+pub fn adopt_current_task(cpu:usize,priority:u8,affinity:u64,stack_top:u64,instruction_pointer:u64)->Result<u64,SchedulerError>{
+ if cpu>=MAX_CPUS{return Err(SchedulerError::InvalidCpu);}
+ if priority as usize>=PRIORITY_LEVELS{return Err(SchedulerError::InvalidPriority);}
+ let affinity=eligible_mask(affinity);
+ if affinity==0||affinity&(1u64<<cpu)==0{return Err(SchedulerError::InvalidAffinity);}
+ let mut s=SCHED.lock();
+ if !s.initialized{return Err(SchedulerError::NotInitialized);}
+ if s.current[cpu]!=0{return Err(SchedulerError::CpuBusy);}
+ let index=s.tasks.iter().position(|t|t.state==TaskState::Empty||t.state==TaskState::Exited).ok_or(SchedulerError::Full)?;
+ let id=s.next_id;s.next_id=s.next_id.wrapping_add(1).max(1);
+ s.tasks[index]=Task{id,state:TaskState::Running,priority,affinity,stack_top,instruction_pointer};
+ s.current[cpu]=id;
+ Ok(id)
+}
+pub fn set_task_stack_top(id:u64,stack_top:u64)->Result<(),SchedulerError>{
+ if stack_top==0||stack_top&0xf!=0{return Err(SchedulerError::InvalidState);}
+ let mut s=SCHED.lock();
+ let task=s.tasks.iter_mut().find(|t|t.id==id&&t.state!=TaskState::Empty).ok_or(SchedulerError::UnknownTask)?;
+ task.stack_top=stack_top;
+ Ok(())
+}
 pub fn create_task(priority:u8,affinity:u64,stack_top:u64,instruction_pointer:u64)->Result<u64,SchedulerError>{
  if priority as usize>=PRIORITY_LEVELS{return Err(SchedulerError::InvalidPriority);}
  let affinity=eligible_mask(affinity);
