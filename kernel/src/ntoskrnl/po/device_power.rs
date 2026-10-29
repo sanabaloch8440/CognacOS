@@ -60,8 +60,10 @@ pub(crate) fn unregister(device:*mut DeviceObject){if device.is_null(){return}if
  lower.attached_device=core::ptr::null_mut();upper.attached_device=&mut lower;
  assert_eq!(register(&mut lower,D0|D1|D2|D3,true),OK);
  assert_eq!(register(&mut upper,D0|D1|D2|D3,true),OK);
+ assert!(supports_wdm_state_stack(&mut upper,2));
  assert!(supports_wake_stack(&mut upper));
- assert_eq!(register(&mut lower,D0|D1|D2|D3,false),OK);
+ assert_eq!(register(&mut lower,D0|D3,false),OK);
+ assert!(!supports_wdm_state_stack(&mut upper,2));
  assert!(!supports_wake_stack(&mut upper));
  lower.attached_device=&mut upper;
  assert!(!supports_wake_stack(&mut upper));
