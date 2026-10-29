@@ -187,9 +187,14 @@ pub fn firmware_handoff<I:XhciRegisterIo>(io:&mut I,first:u32,mmio_length:u32,bu
   if offset&3!=0 || offset<0x20 || offset.checked_add(4).filter(|end|*end<=mmio_length).is_none() || visited>=256 {return Err(ControllerInitError::InvalidCapabilities)}
   let header=reg_read(io,offset)?;let id=header&0xff;let next=((header>>8)&0xff)*4;
   if id==1 {
+   // Legacy Support capability's ownership bits live in its control/status
+   // dword at +4, not in the capability header at +0.
+   let control=offset.checked_add(4).ok_or(ControllerInitError::InvalidCapabilities)?;
+   if control.checked_add(4).filter(|end|*end<=mmio_length).is_none(){return Err(ControllerInitError::InvalidCapabilities)}
    const BIOS_OWNED:u32=1<<16;const OS_OWNED:u32=1<<24;
-   reg_write(io,offset,header|OS_OWNED)?;
-   for _ in 0..budget {if reg_read(io,offset)?&BIOS_OWNED==0{return Ok(())}core::hint::spin_loop()}
+   let ownership=reg_read(io,control)?;
+   reg_write(io,control,ownership|OS_OWNED)?;
+   for _ in 0..budget {if reg_read(io,control)?&BIOS_OWNED==0{return Ok(())}core::hint::spin_loop()}
    return Err(ControllerInitError::ResetTimeout)
   }
   if next==0{return Ok(())}
@@ -291,11 +296,11 @@ mod controller_init_tests{
   struct HandoffMmio{regs:[u32;256]}
   impl XhciRegisterIo for HandoffMmio{
    fn read32(&mut self,o:u32)->Result<u32,()>{self.regs.get((o/4) as usize).copied().ok_or(())}
-   fn write32(&mut self,o:u32,v:u32)->Result<(),()>{let i=(o/4) as usize;if i>=self.regs.len(){return Err(())}self.regs[i]=if o==0x80 {v&!(1<<16)} else {v};Ok(())}
+   fn write32(&mut self,o:u32,v:u32)->Result<(),()>{let i=(o/4) as usize;if i>=self.regs.len(){return Err(())}self.regs[i]=if o==0x84 {v&!(1<<16)} else {v};Ok(())}
   }
-  let mut io=HandoffMmio{regs:[0;256]};io.regs[0x80/4]=1|(1<<16);
+  let mut io=HandoffMmio{regs:[0;256]};io.regs[0x80/4]=1;io.regs[0x84/4]=1<<16;
   assert_eq!(firmware_handoff(&mut io,0x80,0x1000,8),Ok(()));
-  assert_ne!(io.regs[0x80/4]&(1<<24),0);assert_eq!(io.regs[0x80/4]&(1<<16),0);
+  assert_ne!(io.regs[0x84/4]&(1<<24),0);assert_eq!(io.regs[0x84/4]&(1<<16),0);
  }
  #[test]fn firmware_handoff_rejects_out_of_range_capability(){let mut io=FakeMmio::new();assert_eq!(firmware_handoff(&mut io,0x1000,0x1000,8),Err(ControllerInitError::InvalidCapabilities));}
  #[test]fn controller_init_requires_registered_interrupt(){
