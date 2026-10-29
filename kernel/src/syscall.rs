@@ -2257,7 +2257,13 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
         }
         if number == NT_SYSCALL_NT_CONTINUE {
             let status = nt_continue_from_user(frame, args[0]);
-            return if status == NT_STATUS_SUCCESS { u64::MAX } else { status };
+            if status == NT_STATUS_SUCCESS {
+                crate::ntoskrnl::ke::arch::set_user_exception_dispatch_active(
+                    crate::ntoskrnl::ke::thread::current_cpu_index().unwrap_or(0), false,
+                );
+                return u64::MAX;
+            }
+            return status;
         }
         if number == NT_SYSCALL_NT_RAISE_EXCEPTION {
             return route_user_exception(frame, &args);
