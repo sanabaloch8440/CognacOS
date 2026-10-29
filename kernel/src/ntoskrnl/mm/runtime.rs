@@ -1170,7 +1170,7 @@ pub unsafe extern "win64" fn mm_get_physical_memory_ranges() -> *mut c_void {
     let result = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(bytes, 0x524d4d4d, true);
     if result.is_null() { return core::ptr::null_mut(); }
     let ranges = unsafe { core::slice::from_raw_parts_mut(result.cast::<(u64, u64)>(), MAX_RANGES + 1) };
-    let count = crate::memory::physical_memory_ranges(ranges);
+    let count = crate::memory::physical_memory_ranges(&mut ranges[..MAX_RANGES]);
     if count == 0 {
         let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(result, Some(0x524d4d4d));
         return core::ptr::null_mut();
