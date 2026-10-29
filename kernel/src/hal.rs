@@ -665,7 +665,9 @@ unsafe extern "C" fn service_allocate_dma(
     let adapter=crate::dma::create_device_adapter(object,3,maximum_address);
     if adapter.is_null() { return driver_hal_unsupported(); }
     match unsafe { crate::dma::iommu_allocate_common(adapter,size as usize,maximum_address) } {
-        Ok((cpu,logical)) if !cpu.is_null() && logical!=0 && (cpu as u64)%alignment==0 => {
+        Ok((cpu,logical)) if !cpu.is_null() && logical!=0
+            && (cpu as u64)%alignment==0 && logical%alignment==0
+            && logical.checked_add(size-1).is_some_and(|last| last<=maximum_address) => {
             unsafe { cpu_out.write(cpu as u64); device_out.write(logical); }
             driver_hal_success()
         }
@@ -720,7 +722,7 @@ mod driver_service_publication_tests {
         assert!(table.set_irql.is_none());
     }
     #[test]
-    fn device_table_fails_closed_until_dma_and_interrupt_backends_are_real() {
+    fn device_table_fails_closed_until_interrupt_backend_is_real() {
         let table=driver_device_service_table();
         assert!(table.compatible());
         assert!(!table.has_dma());
