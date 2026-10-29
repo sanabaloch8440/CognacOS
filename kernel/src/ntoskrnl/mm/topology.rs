@@ -42,6 +42,36 @@ pub fn parse_slit(table:&[u8])->Result<usize,TopologyError>{
  for i in 0..n{for j in 0..n{let d=t[p];if d==0||(i==j&&d!=10){return Err(TopologyError::InvalidTable)}matrix[i][j]=d;p+=1;}}
  unsafe{let s=&mut *TOPOLOGY.0.get();s.2=matrix;s.3=n;}Ok(n)
 }
+/// Initialize the UMA fallback used by Windows on systems with no SRAT/SLIT.
+/// Ranges must be sorted, page-aligned, non-overlapping RAM ranges from firmware.
+fn validate_single_node_ranges(ranges: &[(u64, u64)]) -> Result<([MemoryRange; MAX_RANGES], usize), TopologyError> {
+ if ranges.is_empty() || ranges.len() > MAX_RANGES { return Err(TopologyError::Capacity); }
+ let mut staged = [MemoryRange::EMPTY; MAX_RANGES];
+ for (index, &(start, length)) in ranges.iter().enumerate() {
+  if length == 0 || start & 0xfff != 0 || length & 0xfff != 0 {
+   return Err(TopologyError::InvalidTable);
+  }
+  let end = start.checked_add(length).ok_or(TopologyError::InvalidTable)?;
+  if index != 0 && start < staged[index - 1].end { return Err(TopologyError::Overlap); }
+  staged[index] = MemoryRange { start, end, node: 0 };
+ }
+ Ok((staged, ranges.len()))
+}
+pub fn initialize_single_node(ranges: &[(u64, u64)]) -> Result<usize, TopologyError> {
+ if READY.load(Ordering::Acquire) { return Ok(memory_node_count()); }
+ let (staged, count) = validate_single_node_ranges(ranges)?;
+ let mut distances = [[0u8; MAX_NODES]; MAX_NODES];
+ distances[0][0] = 10;
+ unsafe {
+  let store = &mut *TOPOLOGY.0.get();
+  store.0 = staged;
+  store.1 = count;
+  store.2 = distances;
+  store.3 = 1;
+ }
+ READY.store(true, Ordering::Release);
+ Ok(count)
+}
 pub fn is_ready()->bool{READY.load(Ordering::Acquire)}
 /// Number of memory proximity domains actually described by accepted SRAT
 /// ranges. This is not inferred from the SLIT matrix, which may include
