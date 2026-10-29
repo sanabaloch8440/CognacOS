@@ -76,7 +76,7 @@ unsafe fn probe_xhci_bar(bus:u8,device:u8,function:u8)->Option<(u64,u64)> {
     // Restore BARs before restoring command decode; bus mastering stays exactly as it was.
     unsafe{pci_config_write32(bus,device,function,0x10,low);}
     if let Some(saved)=high { unsafe{pci_config_write32(bus,device,function,0x14,saved);} }
-    unsafe{pci_config_write16(bus,device,function,0x04,command);}
+    unsafe{pci_config_write16(bus,device,function,0x04,command & !0x0004);}
     let size=if kind==2 {
         let mask=((mask_high as u64)<<32)|((mask_low as u64)&!0xf);
         (!mask).wrapping_add(1)
