@@ -98,6 +98,47 @@ fn small_class(size: usize) -> Option<usize> {
     size.max(MIN_BLOCK).checked_next_power_of_two().filter(|n| *n <= SMALL_MAX)
 }
 
+/// Try to allocate only from an already-created nonpaged slab. This path never
+/// creates backing pages and never waits for the pool lock, so it is suitable
+/// for the bounded resource acquisition phase of MM_ALLOCATE_NO_WAIT.
+fn try_allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u8 {
+    let Some(class_size) = small_class(size) else { return core::ptr::null_mut(); };
+    #[cfg(target_os = "none")]
+    let _guard = match LOCK.try_lock() {
+        Some(guard) => Guard { _guard: guard },
+        None => return core::ptr::null_mut(),
+    };
+    #[cfg(not(target_os = "none"))]
+    {
+        if LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            return core::ptr::null_mut();
+        }
+    }
+    #[cfg(not(target_os = "none"))]
+    let _guard = Guard {};
+    let table = unsafe { &mut *ALLOCATIONS.0.get() };
+    let Some(allocation_index) = table.iter().position(|a| !a.live) else {
+        return core::ptr::null_mut();
+    };
+    let slabs = unsafe { &mut *SLABS.0.get() };
+    let Some(slab_index) = slabs.iter().position(|s|
+        s.live && !s.pageable && s.block_size == class_size && s.find_free_slot().is_some()
+    ) else {
+        return core::ptr::null_mut();
+    };
+    let slab = &mut slabs[slab_index];
+    let Some(slot) = slab.find_free_slot() else { return core::ptr::null_mut(); };
+    slab.mark_used(slot);
+    let base = slab.base + (slot * class_size) as u64;
+    table[allocation_index] = Allocation {
+        base, backing_base: slab.base, pages: 1, requested: size, tag,
+        slab_index: slab_index as u16, slab_slot: slot as u16, live: true,
+    };
+    if zeroed { unsafe { core::ptr::write_bytes(base as *mut u8, 0, size); } }
+    base as *mut u8
+}
+
+
 /// Allocate nonpaged storage. Small allocations share slab pages; allocations
 /// larger than 2 KiB receive their own contiguous page extent. Physical pages are
 /// always zeroed when first acquired, and the requested bytes are zeroed when the
