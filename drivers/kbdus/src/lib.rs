@@ -40,7 +40,7 @@ pub struct KbdTables {
  pub max_mouse_virtual_keys:u8,
  pub mouse_virtual_keys:*const core::ffi::c_void,
 }
-static VK_CHARS:[VkToWchar;49]=[
+static VK_CHARS:[VkToWchar;50]=[
  VkToWchar{virtual_key:0x30,attributes:0,chars:[b'0' as u16,b')' as u16,0,0,b'0' as u16]},
  VkToWchar{virtual_key:0x31,attributes:0,chars:[b'1' as u16,b'!' as u16,0,0,b'1' as u16]},
  VkToWchar{virtual_key:0x32,attributes:0,chars:[b'2' as u16,b'@' as u16,0,0,b'2' as u16]},
