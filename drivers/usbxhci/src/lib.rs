@@ -34,7 +34,7 @@ impl Trb{
  pub const fn endpoint_id(self)->u8{((self.control>>16)&0x1f) as u8}
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct Capabilities{pub cap_length:u8,pub version:u16,pub max_slots:u8,pub max_interrupters:u16,pub max_ports:u8,pub doorbell_offset:u32,pub runtime_offset:u32,pub context_size:usize,pub page_size_mask:u32}
+pub struct Capabilities{pub cap_length:u8,pub version:u16,pub max_slots:u8,pub max_interrupters:u16,pub max_ports:u8,pub doorbell_offset:u32,pub runtime_offset:u32,pub extended_capabilities_offset:u32,pub context_size:usize,pub page_size_mask:u32}
 fn u16at(b:&[u8],o:usize)->Result<u16,XhciError>{Ok(u16::from_le_bytes([*b.get(o).ok_or(XhciError::TruncatedCapabilities)?,*b.get(o+1).ok_or(XhciError::TruncatedCapabilities)?]))}
 fn u32at(b:&[u8],o:usize)->Result<u32,XhciError>{Ok(u32::from_le_bytes([*b.get(o).ok_or(XhciError::TruncatedCapabilities)?,*b.get(o+1).ok_or(XhciError::TruncatedCapabilities)?,*b.get(o+2).ok_or(XhciError::TruncatedCapabilities)?,*b.get(o+3).ok_or(XhciError::TruncatedCapabilities)?]))}
 /// Parse the fixed xHCI capability register prefix from an already validated MMIO snapshot.
@@ -48,7 +48,7 @@ pub fn parse_capabilities(b:&[u8])->Result<Capabilities,XhciError>{
  let max_slots=(hcs1&0xff) as u8;let max_interrupters=((hcs1>>8)&0x7ff) as u16;let max_ports=(hcs1>>24) as u8;
  let doorbell_offset=u32at(b,0x14)?&!3;let runtime_offset=u32at(b,0x18)?&!0x1f;
  if max_slots==0||max_slots>MAX_SLOTS||max_ports==0||doorbell_offset<cap_length as u32||runtime_offset<cap_length as u32{return Err(XhciError::InvalidCapabilityLength)}
- Ok(Capabilities{cap_length,version:u16at(b,2)?,max_slots,max_interrupters,max_ports,doorbell_offset,runtime_offset,context_size:if hcc1&(1<<2)!=0{64}else{32},page_size_mask})
+ Ok(Capabilities{cap_length,version:u16at(b,2)?,max_slots,max_interrupters,max_ports,doorbell_offset,runtime_offset,extended_capabilities_offset:((hcc1>>16)&0xffff)*4,context_size:if hcc1&(1<<2)!=0{64}else{32},page_size_mask})
 }
 /// Single-segment command/transfer ring model. The last TRB is a Link TRB,
 /// and the backing allocation must be contiguous, DMA-coherent and pinned.
@@ -280,6 +280,26 @@ fn reg_write<I:XhciRegisterIo>(io:&mut I,offset:u32,value:u32)->Result<(),Contro
 fn poll_reg<I:XhciRegisterIo>(io:&mut I,offset:u32,mask:u32,expected:u32,budget:u32)->Result<(),ControllerInitError>{
  for _ in 0..budget{if reg_read(io,offset)?&mask==expected&mask{return Ok(())}core::hint::spin_loop()}Err(ControllerInitError::ResetTimeout)
 }
+/// Transfer ownership from firmware to the OS through the xHCI legacy-support
+/// extended capability, if present. Capability traversal is bounded and malformed
+/// pointers fail closed rather than permitting out-of-range MMIO access.
+pub fn firmware_handoff<I:XhciRegisterIo>(io:&mut I,first:u32,mmio_length:u32,budget:u32)->Result<(),ControllerInitError>{
+ if first==0{return Ok(())}
+ let mut offset=first;let mut visited=0u16;
+ while offset!=0 {
+  if offset&3!=0 || offset<0x20 || offset.checked_add(4).filter(|end|*end<=mmio_length).is_none() || visited>=256 {return Err(ControllerInitError::InvalidCapabilities)}
+  let header=reg_read(io,offset)?;let id=header&0xff;let next=((header>>8)&0xff)*4;
+  if id==1 {
+   const BIOS_OWNED:u32=1<<16;const OS_OWNED:u32=1<<24;
+   reg_write(io,offset,header|OS_OWNED)?;
+   for _ in 0..budget {if reg_read(io,offset)?&BIOS_OWNED==0{return Ok(())}core::hint::spin_loop()}
+   return Err(ControllerInitError::ResetTimeout)
+  }
+  if next==0{return Ok(())}
+  offset=offset.checked_add(next).ok_or(ControllerInitError::InvalidCapabilities)?;visited+=1;
+ }
+ Ok(())
+}
 pub fn validate_controller_dma_config(caps:&Capabilities,c:&ControllerDmaConfig)->Result<(),ControllerInitError>{
  if c.max_slots==0||c.max_slots>caps.max_slots||c.event_ring_entries<16||c.event_ring_entries>4096||!c.event_ring_entries.is_power_of_two(){return Err(ControllerInitError::InvalidDmaConfiguration)}
  if validate_dma_address(c.dcbaa,64).is_err()||validate_dma_address(c.command_ring,64).is_err()||validate_dma_address(c.erst,64).is_err()||validate_dma_address(c.event_ring,64).is_err(){return Err(ControllerInitError::InvalidDmaConfiguration)}
@@ -293,6 +313,7 @@ pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:
  if caps.cap_length<CAPLENGTH_MIN||caps.doorbell_offset<caps.cap_length as u32||caps.runtime_offset<caps.cap_length as u32{return Err(ControllerInitError::InvalidCapabilities)}
  validate_controller_dma_config(caps,&dma)?;
  if !interrupt_registered{return Err(ControllerInitError::InterruptNotRegistered)}
+ firmware_handoff(io,caps.extended_capabilities_offset,0x10000,poll_budget)?;
  let op=caps.cap_length as u32;
  let cmd=reg_read(io,op).map_err(|_|ControllerInitError::RegisterIoFailure)?;
  poll_reg(io,op+4,USBSTS_NOT_READY,0,poll_budget)?;
@@ -362,13 +383,24 @@ mod controller_init_tests{
    }else{self.regs[i]=v;}Ok(())
   }
  }
- fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,context_size:32,page_size_mask:1}}
+ fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,extended_capabilities_offset:0,context_size:32,page_size_mask:1}}
  fn dma()->ControllerDmaConfig{ControllerDmaConfig{dcbaa:0x10000,command_ring:0x11000,erst:0x12000,event_ring:0x13000,event_ring_entries:256,max_slots:8}}
  #[test]fn validates_all_dma_alignments_and_slot_bounds(){
   let c=caps();assert_eq!(validate_controller_dma_config(&c,&dma()),Ok(()));
   let mut d=dma();d.event_ring=0x13008;assert_eq!(validate_controller_dma_config(&c,&d),Err(ControllerInitError::InvalidDmaConfiguration));
   let mut d=dma();d.max_slots=9;assert_eq!(validate_controller_dma_config(&c,&d),Err(ControllerInitError::InvalidDmaConfiguration));
  }
+ #[test]fn firmware_handoff_sets_os_owned_and_waits_for_bios_release(){
+  struct HandoffMmio{regs:[u32;256]}
+  impl XhciRegisterIo for HandoffMmio{
+   fn read32(&mut self,o:u32)->Result<u32,()>{self.regs.get((o/4) as usize).copied().ok_or(())}
+   fn write32(&mut self,o:u32,v:u32)->Result<(),()>{let i=(o/4) as usize;if i>=self.regs.len(){return Err(())}self.regs[i]=if o==0x80 {v&!(1<<16)} else {v};Ok(())}
+  }
+  let mut io=HandoffMmio{regs:[0;256]};io.regs[0x80/4]=1|(1<<16);
+  assert_eq!(firmware_handoff(&mut io,0x80,0x1000,8),Ok(()));
+  assert_ne!(io.regs[0x80/4]&(1<<24),0);assert_eq!(io.regs[0x80/4]&(1<<16),0);
+ }
+ #[test]fn firmware_handoff_rejects_out_of_range_capability(){let mut io=FakeMmio::new();assert_eq!(firmware_handoff(&mut io,0x1000,0x1000,8),Err(ControllerInitError::InvalidCapabilities));}
  #[test]fn controller_init_requires_registered_interrupt(){
   let mut io=FakeMmio::new();assert_eq!(initialize_controller(&mut io,&caps(),dma(),false,8),Err(ControllerInitError::InterruptNotRegistered));
  }
