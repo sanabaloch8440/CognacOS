@@ -14,16 +14,16 @@ pub struct VkToWcharTableList { pub table:*const VkToWcharTable }
 #[repr(C)]
 pub struct ModifierBit { pub virtual_key:u8, pub modifier_bit:u8 }
 #[repr(C)]
-pub struct Modifiers { pub max_mod_bits:u16, pub modifier_bits:*const ModifierBit, pub modifier_number_table:*const u8 }
+pub struct KbdModifiersTable { pub max_mod_bits:u16, pub modifier_bits:*const ModifierBit, pub modifier_number_table:*const u8 }
 #[repr(C)]
 pub struct ScanVk { pub scan_code:u8, pub virtual_key:u16 }
-#[repr(C)]
 unsafe impl Sync for VkToWcharTable {}
 unsafe impl Sync for VkToWcharTableList {}
-unsafe impl Sync for Modifiers {}
+unsafe impl Sync for KbdModifiersTable {}
 unsafe impl Sync for KbdTables {}
+#[repr(C)]
 pub struct KbdTables {
- pub char_modifiers:*const Modifiers,
+ pub char_modifiers:*const KbdModifiersTable,
  pub vk_to_wchar_table:*const VkToWcharTableList,
  pub max_scan_to_vk:u8,
  pub scan_to_vk:*const ScanVk,
@@ -96,7 +96,7 @@ static VK_TABLE:VkToWcharTable=VkToWcharTable{entries:VK_CHARS.as_ptr(),modifica
 static VK_TABLE_LIST:[VkToWcharTableList;2]=[VkToWcharTableList{table:&VK_TABLE},VkToWcharTableList{table:core::ptr::null()}];
 static MODIFIER_BITS:[ModifierBit;4]=[ModifierBit{virtual_key:VK_SHIFT as u8,modifier_bit:1},ModifierBit{virtual_key:VK_CONTROL as u8,modifier_bit:2},ModifierBit{virtual_key:VK_MENU as u8,modifier_bit:4},ModifierBit{virtual_key:0,modifier_bit:0}];
 static MODIFIER_NUMBERS:[u8;8]=[0,1,2,3,4,5,6,0];
-static CHAR_MODIFIERS:Modifiers=Modifiers{max_mod_bits:3,modifier_bits:MODIFIER_BITS.as_ptr(),modifier_number_table:MODIFIER_NUMBERS.as_ptr()};
+static CHAR_MODIFIERS:KbdModifiersTable=KbdModifiersTable{max_mod_bits:3,modifier_bits:MODIFIER_BITS.as_ptr(),modifier_number_table:MODIFIER_NUMBERS.as_ptr()};
 static SCAN_TO_VK:[ScanVk;89]=[ScanVk{scan_code:0,virtual_key:0},ScanVk{scan_code:1,virtual_key:27},ScanVk{scan_code:2,virtual_key:49},ScanVk{scan_code:3,virtual_key:50},ScanVk{scan_code:4,virtual_key:51},ScanVk{scan_code:5,virtual_key:52},ScanVk{scan_code:6,virtual_key:53},ScanVk{scan_code:7,virtual_key:54},ScanVk{scan_code:8,virtual_key:55},ScanVk{scan_code:9,virtual_key:56},ScanVk{scan_code:10,virtual_key:57},ScanVk{scan_code:11,virtual_key:48},ScanVk{scan_code:12,virtual_key:189},ScanVk{scan_code:13,virtual_key:187},ScanVk{scan_code:14,virtual_key:8},ScanVk{scan_code:15,virtual_key:9},ScanVk{scan_code:16,virtual_key:81},ScanVk{scan_code:17,virtual_key:87},ScanVk{scan_code:18,virtual_key:69},ScanVk{scan_code:19,virtual_key:82},ScanVk{scan_code:20,virtual_key:84},ScanVk{scan_code:21,virtual_key:89},ScanVk{scan_code:22,virtual_key:85},ScanVk{scan_code:23,virtual_key:73},ScanVk{scan_code:24,virtual_key:79},ScanVk{scan_code:25,virtual_key:80},ScanVk{scan_code:26,virtual_key:219},ScanVk{scan_code:27,virtual_key:221},ScanVk{scan_code:28,virtual_key:13},ScanVk{scan_code:29,virtual_key:17},ScanVk{scan_code:30,virtual_key:65},ScanVk{scan_code:31,virtual_key:83},ScanVk{scan_code:32,virtual_key:68},ScanVk{scan_code:33,virtual_key:70},ScanVk{scan_code:34,virtual_key:71},ScanVk{scan_code:35,virtual_key:72},ScanVk{scan_code:36,virtual_key:74},ScanVk{scan_code:37,virtual_key:75},ScanVk{scan_code:38,virtual_key:76},ScanVk{scan_code:39,virtual_key:186},ScanVk{scan_code:40,virtual_key:222},ScanVk{scan_code:41,virtual_key:192},ScanVk{scan_code:42,virtual_key:16},ScanVk{scan_code:43,virtual_key:220},ScanVk{scan_code:44,virtual_key:90},ScanVk{scan_code:45,virtual_key:88},ScanVk{scan_code:46,virtual_key:67},ScanVk{scan_code:47,virtual_key:86},ScanVk{scan_code:48,virtual_key:66},ScanVk{scan_code:49,virtual_key:78},ScanVk{scan_code:50,virtual_key:77},ScanVk{scan_code:51,virtual_key:188},ScanVk{scan_code:52,virtual_key:190},ScanVk{scan_code:53,virtual_key:191},ScanVk{scan_code:54,virtual_key:16},ScanVk{scan_code:55,virtual_key:106},ScanVk{scan_code:56,virtual_key:18},ScanVk{scan_code:57,virtual_key:32},ScanVk{scan_code:58,virtual_key:20},ScanVk{scan_code:59,virtual_key:112},ScanVk{scan_code:60,virtual_key:113},ScanVk{scan_code:61,virtual_key:114},ScanVk{scan_code:62,virtual_key:115},ScanVk{scan_code:63,virtual_key:116},ScanVk{scan_code:64,virtual_key:117},ScanVk{scan_code:65,virtual_key:118},ScanVk{scan_code:66,virtual_key:119},ScanVk{scan_code:67,virtual_key:120},ScanVk{scan_code:68,virtual_key:121},ScanVk{scan_code:69,virtual_key:144},ScanVk{scan_code:70,virtual_key:145},ScanVk{scan_code:71,virtual_key:103},ScanVk{scan_code:72,virtual_key:104},ScanVk{scan_code:73,virtual_key:105},ScanVk{scan_code:74,virtual_key:109},ScanVk{scan_code:75,virtual_key:100},ScanVk{scan_code:76,virtual_key:101},ScanVk{scan_code:77,virtual_key:102},ScanVk{scan_code:78,virtual_key:107},ScanVk{scan_code:79,virtual_key:97},ScanVk{scan_code:80,virtual_key:98},ScanVk{scan_code:81,virtual_key:99},ScanVk{scan_code:82,virtual_key:96},ScanVk{scan_code:83,virtual_key:110},ScanVk{scan_code:84,virtual_key:0},ScanVk{scan_code:85,virtual_key:0},ScanVk{scan_code:86,virtual_key:0},ScanVk{scan_code:87,virtual_key:122},ScanVk{scan_code:88,virtual_key:123}];
 static E0:[u16;1]=[0]; static E1:[u16;1]=[0]; static NUMPAD:u16=0x4c;
 static KBD_TABLES:KbdTables=KbdTables{
