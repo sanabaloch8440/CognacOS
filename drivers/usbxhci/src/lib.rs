@@ -966,7 +966,7 @@ mod command_submission_tests {
         }
     }
     fn caps()->Capabilities { Capabilities { cap_length:0x40,version:0x100,max_slots:8,
-        max_interrupters:1,max_ports:4,doorbell_offset:0x100,runtime_offset:0x200,
+        max_interrupters:1,max_ports:4,doorbell_offset:0x100,runtime_offset:0x200,extended_capabilities_offset:0,
         context_size:32,page_size_mask:1 } }
     #[test]
     fn submits_command_and_rings_command_doorbell() {
@@ -1226,7 +1226,7 @@ mod power_state_tests {
    Ok(())
   }
  }
- fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,context_size:32,page_size_mask:1}}
+ fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,extended_capabilities_offset:0,context_size:32,page_size_mask:1}}
  #[test] fn connected_port_enters_u3_and_resumes_to_u0(){
   let mut mmio=PortMmio::new();
   let snapshot=suspend_port(&mut mmio,&caps(),1,8).unwrap();
