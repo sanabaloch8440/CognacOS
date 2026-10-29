@@ -46,4 +46,38 @@ pub fn is_ready()->bool{READY.load(Ordering::Acquire)}
 /// Returns a node only when the complete range has one explicit SRAT owner.
 pub fn node_for_range(start:u64,length:u64)->Option<u32>{if !is_ready()||length==0{return None}let end=start.checked_add(length)?;let s=unsafe{&*TOPOLOGY.0.get()};let mut found=None;for r in s.0.iter().take(s.1){if start>=r.start&&end<=r.end{if found.is_some(){return None}found=Some(r.node)}}found}
 pub fn distance(from:u32,to:u32)->Option<u8>{let s=unsafe{&*TOPOLOGY.0.get()};if from as usize>=s.3||to as usize>=s.3{return None}Some(s.2[from as usize][to as usize])}
-#[cfg(test)]mod tests{use super::*;#[test]fn unknown_ranges_have_no_default_node(){assert_eq!(node_for_range(0x1000,0x1000),None)}#[test]fn rejects_bad_signature(){assert_eq!(parse_srat(&[0;64]),Err(TopologyError::InvalidTable))}}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_ranges_have_no_default_node() {
+        assert_eq!(node_for_range(0x1000, 0x1000), None);
+    }
+
+    #[test]
+    fn rejects_bad_signature() {
+        assert_eq!(parse_srat(&[0; 64]), Err(TopologyError::InvalidTable));
+    }
+
+    #[test]
+    fn parses_and_publishes_a_valid_memory_affinity_range() {
+        // ACPI SDT header (36 bytes), SRAT fixed body (12 bytes), then one
+        // 40-byte Memory Affinity structure.
+        let mut table = [0u8; 88];
+        table[0..4].copy_from_slice(b"SRAT");
+        table[4..8].copy_from_slice(&(table.len() as u32).to_le_bytes());
+        table[48] = 1; // Memory Affinity
+        table[49] = 40;
+        table[50..54].copy_from_slice(&2u32.to_le_bytes()); // proximity domain
+        table[56..64].copy_from_slice(&0x10_0000u64.to_le_bytes());
+        table[64..72].copy_from_slice(&0x20_0000u64.to_le_bytes());
+        table[76..80].copy_from_slice(&1u32.to_le_bytes()); // enabled
+        let checksum = table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        table[9] = 0u8.wrapping_sub(checksum);
+
+        assert_eq!(parse_srat(&table), Ok(1));
+        assert_eq!(node_for_range(0x10_1000, 0x1000), Some(2));
+        assert_eq!(node_for_range(0x2f_f000, 0x2000), None);
+    }
+}
