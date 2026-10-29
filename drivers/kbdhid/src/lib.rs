@@ -56,6 +56,34 @@ pub fn decode_boot_report(report:&[u8], state:&mut KeyboardState, out:&mut [Keyb
  state.previous_keys=[keys[0],keys[1],keys[2],keys[3],keys[4],keys[5]]; state.previous_modifiers=modifiers;
  Ok(n)
 }
+
+/// Adapter implemented by KbdClass. This keeps HID report decoding independent
+/// of queue locking and allows the kernel to provide an IRQ-safe packet sink.
+pub trait KeyboardPacketSink { fn submit(&mut self, packet:KeyboardInputData)->Result<(),()>; }
+pub fn deliver_boot_report<S:KeyboardPacketSink>(
+ report:&[u8],state:&mut KeyboardState,sink:&mut S
+)->Result<usize,HidError>{
+ let mut packets=[KeyboardInputData::default();16];
+ let n=decode_boot_report(report,state,&mut packets)?;
+ for packet in packets.iter().take(n) { sink.submit(*packet).map_err(|_|HidError::OutputFull)?; }
+ Ok(n)
+}
 const fn modifier_scan(u:u8)->(u16,bool){match u{0xe0=>(0x1d,false),0xe1=>(0x2a,false),0xe2=>(0x38,false),0xe3=>(0x5b,true),0xe4=>(0x1d,true),0xe5=>(0x36,false),0xe6=>(0x38,true),_=>(0x5c,true)}}
 
 #[cfg(test)] mod tests { use super::*; #[test] fn modifier_make_and_break_are_stateful(){let mut state=KeyboardState::new();let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[0]=0x02;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_eq!(out[0].make_code,0x2a);assert_eq!(out[0].flags&KEY_BREAK,0);assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(0));r[0]=0;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_ne!(out[0].flags&KEY_BREAK,0);} #[test] fn maps_and_diffs_boot_reports(){let mut state=KeyboardState::new();let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=0x04;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_eq!(out[0].make_code,0x1e);r[2]=0;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Ok(1));assert_ne!(out[0].flags&KEY_BREAK,0);} #[test] fn rollover_does_not_release_keys(){let mut state=KeyboardState{previous_keys:[4,0,0,0,0,0],previous_modifiers:0};let mut out=[KeyboardInputData::default();16];let mut r=[0;8];r[2]=1;assert_eq!(decode_boot_report(&r,&mut state,&mut out),Err(HidError::ErrorRollOver));assert_eq!(state.previous_keys[0],4);} }
+
+
+#[cfg(test)]
+mod class_delivery_tests {
+ use super::*;
+ #[derive(Default)] struct Sink(std::vec::Vec<KeyboardInputData>);
+ impl KeyboardPacketSink for Sink { fn submit(&mut self,p:KeyboardInputData)->Result<(),()>{self.0.push(p);Ok(())} }
+ #[test] fn hid_reports_are_delivered_as_class_packets(){
+  let mut state=KeyboardState::new();let mut sink=Sink::default();let mut report=[0u8;8];report[2]=0x04;
+  assert_eq!(deliver_boot_report(&report,&mut state,&mut sink),Ok(1));
+  assert_eq!(sink.0[0].make_code,0x1e);assert_eq!(sink.0[0].flags&KEY_BREAK,0);
+  report[2]=0;
+  assert_eq!(deliver_boot_report(&report,&mut state,&mut sink),Ok(1));
+  assert_eq!(sink.0[1].flags&KEY_BREAK,KEY_BREAK);
+ }
+}
