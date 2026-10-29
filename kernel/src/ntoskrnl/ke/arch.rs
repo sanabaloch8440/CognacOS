@@ -98,6 +98,14 @@ static FIRST_USER_FAULT_CR3: core::sync::atomic::AtomicU64 = core::sync::atomic:
 static FIRST_USER_FAULT_PID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_TID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_RETURN_TARGET: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static USER_EXCEPTION_DISPATCH_ACTIVE: [core::sync::atomic::AtomicBool; crate::hal::MAX_CPUS] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; crate::hal::MAX_CPUS];
+pub fn user_exception_dispatch_active(cpu:usize)->bool{
+    cpu<crate::hal::MAX_CPUS && USER_EXCEPTION_DISPATCH_ACTIVE[cpu].load(core::sync::atomic::Ordering::Acquire)
+}
+pub fn set_user_exception_dispatch_active(cpu:usize,active:bool){
+    if cpu<crate::hal::MAX_CPUS{USER_EXCEPTION_DISPATCH_ACTIVE[cpu].store(active,core::sync::atomic::Ordering::Release);}
+}
 static FIRST_USER_FAULT_NTDLL_BASE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static FIRST_USER_FAULT_NTDLL_SIZE: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
@@ -1878,6 +1886,12 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     let valid = trap.rip >= 0x1000 && trap.rip < crate::ntoskrnl::mm::address_space::USER_END
         && trap.rsp >= 0x1000 && trap.rsp < crate::ntoskrnl::mm::address_space::USER_END
         && trap.rsp & 7 == 0;
+    let cpu=crate::ntoskrnl::ke::thread::current_cpu_index().unwrap_or(0);
+    if user_exception_dispatch_active(cpu) {
+        let status=user_exception_status(vector,error);
+        if return_from_faulted_bootstrap_process(trap,pid,status){return true;}
+        crate::ntoskrnl::ke::thread::terminate_current_process_from_fault(pid,status);
+    }
     let dispatcher = crate::syscall::exception_dispatcher_for(pid);
     if !valid || dispatcher < 0x1000 || dispatcher >= crate::ntoskrnl::mm::address_space::USER_END {
         let status = if valid { user_exception_status(vector, error) } else { STATUS_ACCESS_VIOLATION };
@@ -1968,6 +1982,7 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     trap.rip = dispatcher;
     trap.rsp = new_rsp;
     trap.rflags = 0x202;
+    set_user_exception_dispatch_active(cpu,true);
     true
 }
 /// Dispatch recoverable faults. A return value of one asks the assembly stub to
