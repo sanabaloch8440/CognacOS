@@ -103,6 +103,23 @@ jobs:
         run: cargo check --manifest-path drivers/kbdus/Cargo.toml --lib
       - name: Test US keyboard layout scan-code, modifiers, and text translation
         run: cargo test --manifest-path drivers/kbdus/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Build and validate native Windows x64 US keyboard layout DLL
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/kbdus
+          sysroot="$(rustc --print sysroot)"
+          mkdir -p "$RUNNER_TEMP/kbdus-linker"
+          ln -sf "$sysroot/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld" "$RUNNER_TEMP/kbdus-linker/lld-link"
+          export PATH="$RUNNER_TEMP/kbdus-linker:$PATH"
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link \
+          RUSTFLAGS="-C debuginfo=2 -C link-arg=/DLL -C link-arg=/ENTRY:DllMain -C link-arg=/NODEFAULTLIB -C link-arg=/EXPORT:KbdLayerDescriptor" \
+            cargo build --manifest-path drivers/kbdus/Cargo.toml --target x86_64-pc-windows-msvc --release --lib
+          cp target/x86_64-pc-windows-msvc/release/kbdus.dll build/kbdus/kbdus.dll
+          llvm-readobj --file-headers --coff-exports build/kbdus/kbdus.dll > build/kbdus/exports.txt
+          grep -Fq "KbdLayerDescriptor" build/kbdus/exports.txt
+          grep -Eq "Magic: 0x20B" build/kbdus/exports.txt
+          echo "Built PE32+ kbdus.dll and verified KbdLayerDescriptor export."
       - name: Check HID class driver
         run: cargo check --manifest-path drivers/hidclass/Cargo.toml --lib
       - name: Test HID top-level collection parser
