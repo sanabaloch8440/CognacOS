@@ -166,6 +166,12 @@ pub fn unmap_io_space(address: u64, length: u64) -> Result<(), Error> {
  let bits = unsafe { &mut *IO_BITS.0.get() };
  if !(start..start+pages).all(|p| bits[p/64] & (1u64 << (p%64)) != 0) { return Err(Error::NotMapped); }
  let root=ROOT.load(Ordering::Acquire);
+ // Validate the entire span before changing any PTE so a bad/stale unmap
+ // cannot leave a partially torn-down device aperture.
+ for n in start..start+pages {
+  let leaf=unsafe { leaf_ptr(root,IO_BASE+n as u64*PAGE) }.ok_or(Error::NotMapped)?;
+  if unsafe { leaf.read_volatile() } & P == 0 { return Err(Error::NotMapped); }
+ }
  for n in start..start+pages {
   unsafe { unmap(root, IO_BASE+n as u64*PAGE).map_err(|_|Error::NotMapped)?; }
  }
