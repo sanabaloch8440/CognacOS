@@ -425,11 +425,23 @@ pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
 /// optional power-of-two boundary. Pages skipped by the window remain available
 /// to later callers; regions are split instead of advancing past skipped RAM.
 pub unsafe fn allocate_page_in_range(low: u64, high: u64, boundary: u64) -> Result<u64, AllocError> {
+    unsafe { allocate_page_in_range_mode(low, high, boundary, false) }
+}
+
+/// Bounded nonblocking variant used by MM_ALLOCATE_NO_WAIT. It never spins
+/// waiting for the physical allocator lock.
+pub unsafe fn try_allocate_page_in_range(low: u64, high: u64, boundary: u64) -> Result<u64, AllocError> {
+    unsafe { allocate_page_in_range_mode(low, high, boundary, true) }
+}
+
+unsafe fn allocate_page_in_range_mode(low: u64, high: u64, boundary: u64, try_only: bool) -> Result<u64, AllocError> {
     const PAGE: u64 = PAGE_SIZE;
     if low > high || (boundary != 0 && (!boundary.is_power_of_two() || boundary < PAGE)) {
         return Err(AllocError::InvalidPage);
     }
-    let _guard = MemoryGuard::acquire();
+    let _guard = if try_only {
+        MemoryGuard::try_acquire().ok_or(AllocError::Busy)?
+    } else { MemoryGuard::acquire() };
     fn allowed(page: u64, low: u64, high: u64, boundary: u64) -> bool {
         let Some(end) = page.checked_add(PAGE_SIZE - 1) else { return false; };
         page >= low && end <= high && (boundary == 0 || page / boundary == end / boundary)
@@ -511,11 +523,26 @@ pub unsafe fn allocate_page_in_range(low: u64, high: u64, boundary: u64) -> Resu
 pub unsafe fn allocate_contiguous_pages_in_range(
     pages: usize, low: u64, high: u64, boundary: u64,
 ) -> Result<u64, AllocError> {
+    unsafe { allocate_contiguous_pages_in_range_mode(pages, low, high, boundary, false) }
+}
+
+/// Nonblocking contiguous-run allocation. Returns Busy immediately on lock contention.
+pub unsafe fn try_allocate_contiguous_pages_in_range(
+    pages: usize, low: u64, high: u64, boundary: u64,
+) -> Result<u64, AllocError> {
+    unsafe { allocate_contiguous_pages_in_range_mode(pages, low, high, boundary, true) }
+}
+
+unsafe fn allocate_contiguous_pages_in_range_mode(
+    pages: usize, low: u64, high: u64, boundary: u64, try_only: bool,
+) -> Result<u64, AllocError> {
     if pages == 0 || low > high || (boundary != 0 && (!boundary.is_power_of_two() || boundary < PAGE_SIZE)) {
         return Err(AllocError::InvalidPage);
     }
     let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
-    let _guard = MemoryGuard::acquire();
+    let _guard = if try_only {
+        MemoryGuard::try_acquire().ok_or(AllocError::Busy)?
+    } else { MemoryGuard::acquire() };
     // First try to reclaim a contiguous run already returned to either free
     // stack. Remove every PFN only after proving the complete run is present.
     for high_memory in [false, true] {
@@ -954,12 +981,21 @@ fn page_is_locked(page: u64) -> bool {
 fn page_is_locked(_page: u64) -> bool { false }
 
 pub unsafe fn free_page(page: u64) -> Result<(), AllocError> {
+    unsafe { free_page_mode(page, false) }
+}
+
+/// Nonblocking page return used by rollback from MM_ALLOCATE_NO_WAIT.
+pub unsafe fn try_free_page(page: u64) -> Result<(), AllocError> {
+    unsafe { free_page_mode(page, true) }
+}
+
+unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
     if page >= PHYSICAL_LIMIT {
         if page >= DIRECT_MAP_PHYSICAL_LIMIT || page & (PAGE_SIZE - 1) != 0
             || !is_ram_physical_address(page) {
             return Err(AllocError::InvalidPage);
         }
-        let _guard = MemoryGuard::acquire();
+        let _guard = if try_only { MemoryGuard::try_acquire().ok_or(AllocError::Busy)? } else { MemoryGuard::acquire() };
         if page_is_locked(page) { return Err(AllocError::InvalidPage); }
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 < FREE_CAPACITY {
