@@ -136,3 +136,5 @@ Still intentionally incomplete:
 - MM_ALLOCATE_NO_WAIT has a reserve-backed try-lock path for generic and NUMA MDL requests. It returns promptly when reserve capacity or locks are unavailable and currently restricts no-wait physical frames to already-mapped low RAM; the deferred-free queue is bounded (capacity-exhaustion behavior needs stress testing), and QEMU/SMP validation remains required before claiming full Windows 11 parity.
 - Physical page and contiguous-run allocation now validate high-memory direct-map aliases before removing PFNs from free lists or mutating extents, avoiding page leaks on failed mapping validation.
 - This is incremental NT ABI compatibility, not a claim of complete Windows 11 memory-manager parity.
+
+- xHCI command-ring submission now publishes command TRBs with producer-cycle handling, writes the Link TRB with Toggle Cycle on wrap, and rings Doorbell 0 only after a release/full ordering fence. Host tests cover submission, link rollover, and invalid command/ring rejection. Command completion correlation, slot/address/configure sequencing, endpoint transfer rings, USB transfers, and HID delivery remain outstanding.
