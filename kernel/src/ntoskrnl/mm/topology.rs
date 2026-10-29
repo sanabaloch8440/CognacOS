@@ -170,15 +170,20 @@ mod tests {
     fn parses_and_publishes_a_valid_memory_affinity_range() {
         // ACPI SDT header (36 bytes), SRAT fixed body (12 bytes), then one
         // 40-byte Memory Affinity structure.
-        let mut table = [0u8; 88];
+        let mut table = [0u8; 104];
         table[0..4].copy_from_slice(b"SRAT");
-        table[4..8].copy_from_slice(&88u32.to_le_bytes());
+        table[4..8].copy_from_slice(&104u32.to_le_bytes());
         table[48] = 1; // Memory Affinity
         table[49] = 40;
         table[50..54].copy_from_slice(&2u32.to_le_bytes()); // proximity domain
         table[56..64].copy_from_slice(&0x10_0000u64.to_le_bytes());
         table[64..72].copy_from_slice(&0x20_0000u64.to_le_bytes());
         table[76..80].copy_from_slice(&1u32.to_le_bytes()); // enabled
+        table[88] = 0; // Processor Local APIC Affinity
+        table[89] = 16;
+        table[90] = 2; // proximity domain 2
+        table[91] = 7; // APIC ID 7
+        table[92..96].copy_from_slice(&1u32.to_le_bytes()); // enabled
         let checksum = table.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
         table[9] = 0u8.wrapping_sub(checksum);
 
@@ -186,5 +191,7 @@ mod tests {
         assert_eq!(memory_node_count(), 3);
         assert_eq!(node_for_range(0x10_1000, 0x1000), Some(2));
         assert_eq!(node_for_range(0x2f_f000, 0x2000), None);
+        assert_eq!(node_for_apic_id(7), Some(2));
+        assert_eq!(node_for_apic_id(8), None);
     }
 }
