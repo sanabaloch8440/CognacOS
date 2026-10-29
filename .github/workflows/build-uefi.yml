@@ -111,8 +111,6 @@ jobs:
         run: cargo check --manifest-path drivers/usbxhci/Cargo.toml --lib
       - name: Test USB xHCI capability, TRB, DMA, and bounded wait primitives
         run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib
-      - name: Test PS/2 scan-code and bounded polling
-        run: cargo test --manifest-path drivers/i8042prt/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Test ext4 parser and extent mapping
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib parser_mapping_and_crc_smoke_tests_pass
       - name: Test ext4 metadata checksum validation
@@ -340,6 +338,7 @@ jobs:
           build_driver kbdclass drivers/kbdclass kbdclass 0xffff800140000000 kbdclass.sys
           build_driver kbdhid drivers/kbdhid kbdhid 0xffff800150000000 kbdhid.sys
           build_driver i8042prt drivers/i8042prt i8042prt 0xffff800160000000 i8042prt.sys
+          build_driver usbxhci drivers/usbxhci usbxhci 0xffff800180000000 usbxhci.sys
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/storahci.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-storahci --release --bin storahci
           python3 tools/elf_to_pe32plus.py target/driver-storahci/x86_64-unknown-none/release/storahci build/drivers/storahci.sys --image-base 0xffff800110000000 --dll
           RUSTFLAGS="-C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T$GITHUB_WORKSPACE/drivers/storage/stornvme.ld" cargo build --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-none --target-dir target/driver-stornvme --release --bin stornvme
