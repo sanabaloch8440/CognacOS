@@ -356,6 +356,12 @@ jobs:
           mkdir -p build
           rustc --edition=2021 --test kernel/src/ntoskrnl/mm/physical.rs -o build/memory-tests
           build/memory-tests
+      - name: Run host-side ACPI NUMA topology tests
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          rustc --edition=2021 --test kernel/src/ntoskrnl/mm/topology.rs -o build/mm-topology-tests
+          build/mm-topology-tests
       - name: Run host-side Ke timer-generation regression tests
         run: |
           mkdir -p build
