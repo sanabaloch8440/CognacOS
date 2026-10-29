@@ -306,3 +306,42 @@ pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:
  for _ in 0..poll_budget{if reg_read(io,op+4)?&USBSTS_HALTED==0{return Ok(())}core::hint::spin_loop()}
  Err(ControllerInitError::ControllerDidNotStart)
 }
+
+
+#[cfg(test)]
+mod controller_init_tests{
+ use super::*;
+ struct FakeMmio{regs:[u32;256]}
+ impl FakeMmio{fn new()->Self{let mut x=Self{regs:[0;256]};x.regs[0x44/4]=USBSTS_HALTED;x}}
+ impl XhciRegisterIo for FakeMmio{
+  fn read32(&mut self,o:u32)->Result<u32,()>{self.regs.get((o/4) as usize).copied().ok_or(())}
+  fn write32(&mut self,o:u32,v:u32)->Result<(),()>{
+   let i=(o/4) as usize;if i>=self.regs.len(){return Err(())}
+   if o==0x40{
+    if v&USBCMD_RESET!=0{self.regs[i]=v&!USBCMD_RESET;self.regs[0x44/4]=USBSTS_HALTED;}
+    else if v&USBCMD_RUN!=0{self.regs[i]=v;self.regs[0x44/4]=0;}
+    else{self.regs[i]=v;self.regs[0x44/4]=USBSTS_HALTED;}
+   }else{self.regs[i]=v;}Ok(())
+  }
+ }
+ fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,context_size:32,page_size_mask:1}}
+ fn dma()->ControllerDmaConfig{ControllerDmaConfig{dcbaa:0x10000,command_ring:0x11000,erst:0x12000,event_ring:0x13000,event_ring_entries:256,max_slots:8}}
+ #[test]fn validates_all_dma_alignments_and_slot_bounds(){
+  let c=caps();assert_eq!(validate_controller_dma_config(&c,&dma()),Ok(()));
+  let mut d=dma();d.event_ring=0x13008;assert_eq!(validate_controller_dma_config(&c,&d),Err(ControllerInitError::InvalidDmaConfiguration));
+  let mut d=dma();d.max_slots=9;assert_eq!(validate_controller_dma_config(&c,&d),Err(ControllerInitError::InvalidDmaConfiguration));
+ }
+ #[test]fn controller_init_requires_registered_interrupt(){
+  let mut io=FakeMmio::new();assert_eq!(initialize_controller(&mut io,&caps(),dma(),false,8),Err(ControllerInitError::InterruptNotRegistered));
+ }
+ #[test]fn bounded_controller_reset_and_start_programs_registers(){
+  let mut io=FakeMmio::new();assert_eq!(initialize_controller(&mut io,&caps(),dma(),true,8),Ok(()));
+  assert_eq!(io.regs[0x40/4]&USBCMD_RUN,USBCMD_RUN);
+  assert_eq!(io.regs[0x18/4],0x11001);
+  assert_eq!(io.regs[0x30/4],0x10000);
+  assert_eq!(io.regs[0x38/4],8);
+  assert_eq!(io.regs[(0x200+0x28)/4],1);
+  assert_eq!(io.regs[(0x200+0x30)/4],0x12000);
+  assert_eq!(io.regs[(0x200+0x38)/4],0x13000);
+ }
+}
