@@ -972,6 +972,213 @@ pub unsafe extern "win64" fn mm_size_of_mdl(base: *const c_void, length: u64) ->
 
 /// Boot-time validation uses two real kernel VM pages, checks their translations,
 /// exercises the MM copy path, and always releases the test extents.
+
+// Physical pages allocated specifically for MmAllocatePagesForMdl[Ex] are
+// tracked separately from ordinary MmCreateMdl allocations. Their PFNs live
+// in the MDL itself; the registry proves ownership before any frame is freed.
+const MAX_PAGE_ALLOCATION_MDLS: usize = 128;
+#[derive(Clone, Copy)]
+struct PageAllocationMdl { address: u64, pages: usize, live: bool }
+impl PageAllocationMdl { const EMPTY: Self = Self { address: 0, pages: 0, live: false }; }
+static PAGE_ALLOCATION_MDLS: crate::hal::IrqSpinLock<[PageAllocationMdl; MAX_PAGE_ALLOCATION_MDLS]> =
+    crate::hal::IrqSpinLock::new([PageAllocationMdl::EMPTY; MAX_PAGE_ALLOCATION_MDLS]);
+
+fn register_page_allocation_mdl(address: u64, pages: usize) -> bool {
+    let mut table = PAGE_ALLOCATION_MDLS.lock();
+    let Some(slot) = table.iter_mut().find(|entry| !entry.live) else { return false; };
+    *slot = PageAllocationMdl { address, pages, live: true };
+    true
+}
+fn page_allocation_mdl_pages(address: u64) -> Option<usize> {
+    PAGE_ALLOCATION_MDLS.lock().iter().find(|entry| entry.live && entry.address == address).map(|entry| entry.pages)
+}
+fn unregister_page_allocation_mdl(address: u64) -> bool {
+    let mut table = PAGE_ALLOCATION_MDLS.lock();
+    let Some(slot) = table.iter_mut().find(|entry| entry.live && entry.address == address) else { return false; };
+    *slot = PageAllocationMdl::EMPTY;
+    true
+}
+
+const MM_DONT_ZERO_ALLOCATION: u32 = 0x01;
+const MM_ALLOCATE_FROM_LOCAL_NODE_ONLY: u32 = 0x02;
+const MM_ALLOCATE_FULLY_REQUIRED: u32 = 0x04;
+const MM_ALLOCATE_NO_WAIT: u32 = 0x08;
+const MM_ALLOCATE_PREFER_CONTIGUOUS: u32 = 0x10;
+const MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS: u32 = 0x20;
+const MM_ALLOCATE_KNOWN_FLAGS: u32 = 0x3f;
+const STATUS_INVALID_PAGE_PROTECTION: i32 = 0xC000_0045u32 as i32;
+const STATUS_NOT_MAPPED_VIEW: i32 = 0xC000_0019u32 as i32;
+
+/// Allocate a nonpaged MDL and physical pages. This implementation supports
+/// ordinary page allocations in the allocator's natural low/high RAM pools.
+/// Unsupported address-window/alignment requests fail rather than returning
+/// PFNs outside the caller's constraints.
+unsafe fn allocate_pages_for_mdl(
+    low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
+    cache_type: u32, flags: u32,
+) -> *mut c_void {
+    if total_bytes == 0 || total_bytes > (u32::MAX as u64 - PAGE_SIZE)
+        || high_address < low_address || low_address != 0
+        || (skip_bytes != 0 && skip_bytes % PAGE_SIZE != 0)
+        || cache_type > 3 || flags & !MM_ALLOCATE_KNOWN_FLAGS != 0
+        || flags & MM_ALLOCATE_REQUIRE_CONTIGUOUS_CHUNKS != 0 {
+        return core::ptr::null_mut();
+    }
+    let Some(rounded) = total_bytes.checked_add(PAGE_SIZE - 1) else { return core::ptr::null_mut(); };
+    let requested_pages = (rounded / PAGE_SIZE) as usize;
+    // MDL.Size is a signed 16-bit field in the x64 NT ABI.
+    if requested_pages == 0 || requested_pages > ((i16::MAX as u64 - MDL_HEADER_SIZE) / 8) as usize {
+        return core::ptr::null_mut();
+    }
+    let mdl_bytes = (MDL_HEADER_SIZE + requested_pages as u64 * 8) as usize;
+    let mdl = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(mdl_bytes, 0x4c444d4d, true);
+    if mdl.is_null() { return core::ptr::null_mut(); }
+
+    let mut allocated = 0usize;
+    let pfns = unsafe { mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>() };
+    for index in 0..requested_pages {
+        // The allocator prefers high RAM. If the requested ceiling is below
+        // 4 GiB, use its low-memory allocator so a rejected frame cannot cycle
+        // forever through the free list.
+        let page = if high_address < 0x1_0000_0000 {
+            unsafe { crate::memory::allocate_page() }
+        } else {
+            unsafe { crate::memory::allocate_data_page() }
+        };
+        let physical = match page {
+            Ok(value) => value,
+            Err(_) => break,
+        };
+        if physical < low_address || physical > high_address
+            || physical.checked_add(PAGE_SIZE - 1).is_none_or(|end| end > high_address)
+            || (skip_bytes != 0 && physical / skip_bytes != (physical + PAGE_SIZE - 1) / skip_bytes) {
+            let _ = unsafe { crate::memory::free_page(physical) };
+            break;
+        }
+        unsafe { pfns.add(index).write(physical / PAGE_SIZE); }
+        allocated += 1;
+    }
+    if allocated == 0 || (flags & MM_ALLOCATE_FULLY_REQUIRED != 0 && allocated != requested_pages) {
+        for index in 0..allocated {
+            let physical = unsafe { pfns.add(index).read() } * PAGE_SIZE;
+            let _ = unsafe { crate::memory::free_page(physical) };
+        }
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        return core::ptr::null_mut();
+    }
+    if !register_page_allocation_mdl(mdl as u64, allocated) {
+        for index in 0..allocated {
+            let physical = unsafe { pfns.add(index).read() } * PAGE_SIZE;
+            let _ = unsafe { crate::memory::free_page(physical) };
+        }
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        return core::ptr::null_mut();
+    }
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    header.next = core::ptr::null_mut();
+    header.size = (MDL_HEADER_SIZE + allocated as u64 * 8) as i16;
+    header.flags = MDL_LOCKED;
+    header._padding = 0;
+    header.process = core::ptr::null_mut();
+    header.mapped_system_va = core::ptr::null_mut();
+    header.start_va = core::ptr::null_mut();
+    header.byte_count = core::cmp::min(total_bytes, allocated as u64 * PAGE_SIZE) as u32;
+    header.byte_offset = 0;
+    mdl.cast()
+}
+
+/// MmAllocatePagesForMdl: cached, zero-filled physical pages.
+pub unsafe extern "win64" fn mm_allocate_pages_for_mdl(
+    low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
+) -> *mut c_void {
+    unsafe { allocate_pages_for_mdl(low_address, high_address, skip_bytes, total_bytes, 1, 0) }
+}
+
+/// Extended page allocation with explicit cache type and allocation flags.
+pub unsafe extern "win64" fn mm_allocate_pages_for_mdl_ex(
+    low_address: u64, high_address: u64, skip_bytes: u64, total_bytes: u64,
+    cache_type: u32, flags: u32,
+) -> *mut c_void {
+    unsafe { allocate_pages_for_mdl(low_address, high_address, skip_bytes, total_bytes, cache_type, flags) }
+}
+
+/// Release only physical frames owned by an MmAllocatePagesForMdl MDL.
+/// The MDL storage itself remains allocated for the caller to free separately.
+pub unsafe extern "win64" fn mm_free_pages_from_mdl(mdl: *mut c_void) {
+    if mdl.is_null() { return; }
+    let address = mdl as u64;
+    let Some(pages) = page_allocation_mdl_pages(address) else { return; };
+    if pages == 0 || pages > ((i16::MAX as u64 - MDL_HEADER_SIZE) / 8) as usize
+        || !mdl_header_is_writable(address) { return; }
+    let header = unsafe { &*mdl.cast::<MdlHeader>() };
+    if header.flags & MDL_MAPPED_SYSTEM_VA != 0 { return; }
+    let pfns = unsafe { mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>() };
+    // Validate the whole list before mutating allocator state.
+    for index in 0..pages {
+        let physical = match unsafe { pfns.add(index).read() }.checked_mul(PAGE_SIZE) {
+            Some(value) if value != 0 && value & (PAGE_SIZE - 1) == 0 => value,
+            _ => return,
+        };
+        if !crate::memory::is_ram_physical_address(physical) || is_page_locked(physical) { return; }
+    }
+    for index in 0..pages {
+        let physical = unsafe { pfns.add(index).read() } * PAGE_SIZE;
+        if unsafe { crate::memory::free_page(physical) }.is_err() { return; }
+    }
+    let _ = unregister_page_allocation_mdl(address);
+    let header = unsafe { &mut *mdl.cast::<MdlHeader>() };
+    header.flags &= !(MDL_LOCKED | MDL_MAPPED_SYSTEM_VA);
+    header.mapped_system_va = core::ptr::null_mut();
+}
+/// Compatibility export: currently the extended free semantics are identical.
+pub unsafe extern "win64" fn mm_free_pages_from_mdl_ex(mdl: *mut c_void) {
+    unsafe { mm_free_pages_from_mdl(mdl); }
+}
+
+/// Change protection only for a live system mapping created for this MDL.
+pub unsafe extern "win64" fn mm_protect_mdl_system_address(mdl: *mut c_void, new_protect: u32) -> i32 {
+    if mdl.is_null() || !mdl_header_is_writable(mdl as u64) { return STATUS_INVALID_PARAMETER; }
+    let header = unsafe { &*mdl.cast::<MdlHeader>() };
+    if header.flags & MDL_MAPPED_SYSTEM_VA == 0 || header.mapped_system_va.is_null() {
+        return STATUS_NOT_MAPPED_VIEW;
+    }
+    let (writable, executable) = match new_protect {
+        0x01 => return STATUS_INVALID_PAGE_PROTECTION, // No-access needs non-present PTE support.
+        0x02 => (false, false), // PAGE_READONLY
+        0x04 => (true, false),  // PAGE_READWRITE
+        0x10 => (false, true),  // PAGE_EXECUTE
+        0x20 => (false, true),  // PAGE_EXECUTE_READ
+        0x40 => return STATUS_INVALID_PAGE_PROTECTION, // Keep kernel W^X invariant.
+        _ => return STATUS_INVALID_PAGE_PROTECTION,
+    };
+    let pages = match mdl_page_count(header.byte_offset as u64, header.byte_count as u64) {
+        Some(value) if value != 0 && value <= usize::MAX as u64 => value as usize,
+        _ => return STATUS_INVALID_PARAMETER,
+    };
+    if crate::kernel_vm::protect_pages(header.mapped_system_va as u64 & !(PAGE_SIZE - 1), pages, writable, executable).is_err() {
+        return STATUS_NOT_MAPPED_VIEW;
+    }
+    STATUS_SUCCESS
+}
+
+/// Return a terminated PHYSICAL_MEMORY_RANGE array allocated from nonpaged pool.
+pub unsafe extern "win64" fn mm_get_physical_memory_ranges() -> *mut c_void {
+    const MAX_RANGES: usize = 256;
+    #[repr(C)]
+    struct PhysicalMemoryRange { base: u64, length: u64 }
+    let bytes = (MAX_RANGES + 1) * core::mem::size_of::<PhysicalMemoryRange>();
+    let result = crate::ntoskrnl::rtl_runtime::pool_allocate_tagged(bytes, 0x524d4d4d, true);
+    if result.is_null() { return core::ptr::null_mut(); }
+    let ranges = unsafe { core::slice::from_raw_parts_mut(result.cast::<(u64, u64)>(), MAX_RANGES + 1) };
+    let count = crate::memory::physical_memory_ranges(ranges);
+    if count == 0 {
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(result, Some(0x524d4d4d));
+        return core::ptr::null_mut();
+    }
+    ranges[count] = (0, 0);
+    result.cast()
+}
+
 pub fn self_test() -> bool {
     let source = match crate::kernel_vm::allocate_pages(1) { Ok(p) => p, Err(_) => return false };
     let destination = match crate::kernel_vm::allocate_pages(1) {
