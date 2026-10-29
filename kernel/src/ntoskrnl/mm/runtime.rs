@@ -1256,6 +1256,9 @@ pub fn self_test() -> bool {
         let mapped = unsafe { mm_map_locked_pages(page_mdl, 0) };
         let protection_ok = !mapped.is_null()
             && unsafe { mm_protect_mdl_system_address(page_mdl, 0x02) } == STATUS_SUCCESS
+            && unsafe { mm_protect_mdl_system_address(page_mdl, 0x01) } == STATUS_SUCCESS
+            && unsafe { mm_protect_mdl_system_address(page_mdl, 0x04) } == STATUS_SUCCESS
+            && unsafe { mm_protect_mdl_system_address(page_mdl, 0x40) } == STATUS_SUCCESS
             && unsafe { mm_protect_mdl_system_address(page_mdl, 0x04) } == STATUS_SUCCESS;
         if !mapped.is_null() { unsafe { mm_unmap_locked_pages(mapped, page_mdl); } }
         unsafe { mm_free_pages_from_mdl(page_mdl); }
