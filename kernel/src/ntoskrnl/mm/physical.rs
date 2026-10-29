@@ -434,10 +434,16 @@ pub unsafe fn try_allocate_page_in_range(low: u64, high: u64, boundary: u64) -> 
     unsafe { allocate_page_in_range_mode(low, high, boundary, true) }
 }
 
-unsafe fn allocate_page_in_range_mode(low: u64, high: u64, boundary: u64, try_only: bool) -> Result<u64, AllocError> {
+unsafe fn allocate_page_in_range_mode(low: u64, mut high: u64, boundary: u64, try_only: bool) -> Result<u64, AllocError> {
     const PAGE: u64 = PAGE_SIZE;
     if low > high || (boundary != 0 && (!boundary.is_power_of_two() || boundary < PAGE)) {
         return Err(AllocError::InvalidPage);
+    }
+    // The current no-wait path only touches the already identity-mapped low
+    // pool. Demand-creating a high direct-map PTE could fault or allocate.
+    if try_only {
+        high = high.min(PHYSICAL_LIMIT - 1);
+        if low > high { return Err(AllocError::OutOfMemory); }
     }
     let _guard = if try_only {
         MemoryGuard::try_acquire().ok_or(AllocError::Busy)?
@@ -534,10 +540,14 @@ pub unsafe fn try_allocate_contiguous_pages_in_range(
 }
 
 unsafe fn allocate_contiguous_pages_in_range_mode(
-    pages: usize, low: u64, high: u64, boundary: u64, try_only: bool,
+    pages: usize, low: u64, mut high: u64, boundary: u64, try_only: bool,
 ) -> Result<u64, AllocError> {
     if pages == 0 || low > high || (boundary != 0 && (!boundary.is_power_of_two() || boundary < PAGE_SIZE)) {
         return Err(AllocError::InvalidPage);
+    }
+    if try_only {
+        high = high.min(PHYSICAL_LIMIT - 1);
+        if low > high { return Err(AllocError::OutOfMemory); }
     }
     let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
     let _guard = if try_only {
@@ -977,6 +987,12 @@ pub unsafe fn allocate_contiguous_pages(pages: usize) -> Result<u64, AllocError>
 fn page_is_locked(page: u64) -> bool {
     crate::ntoskrnl::mm::runtime::is_page_locked(page)
 }
+#[cfg(target_os = "none")]
+fn page_is_locked_try(page: u64) -> bool {
+    crate::ntoskrnl::mm::runtime::try_is_page_locked(page)
+}
+#[cfg(not(target_os = "none"))]
+fn page_is_locked_try(_page: u64) -> bool { true }
 #[cfg(not(target_os = "none"))]
 fn page_is_locked(_page: u64) -> bool { false }
 
@@ -996,7 +1012,7 @@ unsafe fn free_page_mode(page: u64, try_only: bool) -> Result<(), AllocError> {
             return Err(AllocError::InvalidPage);
         }
         let _guard = if try_only { MemoryGuard::try_acquire().ok_or(AllocError::Busy)? } else { MemoryGuard::acquire() };
-        if page_is_locked(page) { return Err(AllocError::InvalidPage); }
+        if (if try_only { page_is_locked_try(page) } else { page_is_locked(page) }) { return Err(AllocError::InvalidPage); }
         let free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         if free.1 < FREE_CAPACITY {
             free.0[free.1] = page;
