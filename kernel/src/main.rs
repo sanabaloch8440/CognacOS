@@ -165,6 +165,7 @@ fn probe_xhci_pci_function()->bool {
         serial_write(b"QEMU xHCI DEVICE COUNT=");serial_write_hex(found as u64);serial_write(b"\r\n");
     }
     if published {
+        unsafe{serial_write(b"PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.\r\n");}
         unsafe{serial_write(b"PCI xHCI resource discovery and uncached MMIO mapping complete; driver binding remains gated on IOMMU and IRQ readiness.\r\n");}
     } else if found!=0 {
         unsafe{serial_write(b"PCI xHCI detected but no safe PnP MMIO resource could be published.\r\n");}
