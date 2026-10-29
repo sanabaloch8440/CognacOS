@@ -47,6 +47,13 @@ static mut KBD_PORT:Ps2KeyboardPort=Ps2KeyboardPort::new();
 static mut KBD_MODIFIERS:Modifiers=Modifiers{shift:false,caps_lock:false,control:false,alt:false};
 static KBD_STACK_READY:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static KBD_INPUT_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static PS2_IRQ_ACTIVE:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static PS2_IRQ_ROUTE_READY:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static PS2_IRQ_VECTOR:core::sync::atomic::AtomicU8=core::sync::atomic::AtomicU8::new(0);
+static PS2_IRQ_IO_BASE:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static PS2_IRQ_GSI_BASE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
+static PS2_IRQ_GSI:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
+
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct KeyboardEvent { pub virtual_key:u16,pub scan_code:u16,pub unicode:u16,pub key_up:bool,pub extended:bool }
 const KBD_EVENT_CAPACITY:usize=128;
@@ -97,10 +104,107 @@ impl PowerAwarePortIo for KernelPs2PortIo {
  }
 }
 
+/// Prepare IRQ1 from the firmware MADT. The I/O-APIC route stays masked until
+/// the 8042 and keyboard stack are initialized and the ISR is fully registered.
+fn prepare_ps2_irq_route(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
+ use core::sync::atomic::Ordering;
+ if PS2_IRQ_ROUTE_READY.load(Ordering::Acquire) { return true; }
+ let mut gsi=1u32;
+ let mut active_low=false;
+ let mut level_triggered=false;
+ let mut found_override=false;
+ for ov in madt.irq_overrides.iter().take(madt.irq_override_count) {
+  if ov.bus==0 && ov.source_irq==1 {
+   if found_override { serial_write(b"PS/2 IRQ: duplicate MADT override; refusing to enable.\\r\\n"); return false; }
+   gsi=ov.gsi; active_low=ov.active_low; level_triggered=ov.level_triggered; found_override=true;
+  }
+ }
+ let io=match madt.io_apics.iter().take(madt.io_apic_count).find(|io| gsi>=io.gsi_base && gsi.saturating_sub(io.gsi_base)<120) {
+  Some(io)=>io, None=>{serial_write(b"PS/2 IRQ: no I/O APIC owns IRQ1 GSI; polling retained.\\r\\n");return false}
+ };
+ let vector=match hal::allocate_device_interrupt_vector() {
+  Ok(v)=>v,Err(_)=>{serial_write(b"PS/2 IRQ: vector allocation failed.\\r\\n");return false}
+ };
+ if !ntoskrnl::ke::arch::device_interrupt_vector_ready(vector) {
+  let _=hal::release_device_interrupt_vector(vector);
+  serial_write(b"PS/2 IRQ: IDT gate validation failed; route remains masked.\\r\\n");return false
+ }
+ if hal::register_device_interrupt_handler(vector,ps2_keyboard_interrupt,core::ptr::null_mut()).is_err() {
+  let _=hal::release_device_interrupt_vector(vector);
+  serial_write(b"PS/2 IRQ: ISR registration failed; route remains masked.\\r\\n");return false
+ }
+ if unsafe {hal::configure_device_interrupt_route_masked(io.address as u64,io.gsi_base,gsi,vector,bsp_apic_id as u8,active_low,level_triggered)}.is_err() {
+  let _=hal::release_device_interrupt_vector(vector);
+  serial_write(b"PS/2 IRQ: I/O APIC route setup failed; route remains masked.\\r\\n");return false
+ }
+ PS2_IRQ_VECTOR.store(vector,Ordering::Release);
+ PS2_IRQ_IO_BASE.store(io.address as u64,Ordering::Release);
+ PS2_IRQ_GSI_BASE.store(io.gsi_base,Ordering::Release);
+ PS2_IRQ_GSI.store(gsi,Ordering::Release);
+ PS2_IRQ_ROUTE_READY.store(true,Ordering::Release);
+ serial_write(b"PS/2 IRQ: MADT IRQ1 resolved to GSI=");serial_write_decimal(gsi as usize);
+ serial_write(b" vector=");serial_write_hex(vector as u64);
+ serial_write(b"; route configured masked.\\r\\n");
+ true
+}
+
+/// Bounded IRQ-context drain. The generic IDT stub dispatches through HAL, which
+/// performs exactly one local-APIC EOI after this callback returns.
+unsafe extern "win64" fn ps2_keyboard_interrupt(_vector:u8,_frame:*mut core::ffi::c_void,_context:*mut core::ffi::c_void)->bool {
+ use core::sync::atomic::Ordering;
+ if !KBD_STACK_READY.load(Ordering::Acquire) { return false; }
+ let mut handled=false;
+ for _ in 0..32 {
+  let status:u8;unsafe{asm!("in al, dx",in("dx") STATUS_PORT,out("al") status,options(nomem,nostack,preserves_flags));}
+  if status&STATUS_OUTPUT_FULL==0 { break; }
+  let byte:u8;unsafe{asm!("in al, dx",in("dx") DATA_PORT,out("al") byte,options(nomem,nostack,preserves_flags));}
+  handled=true;
+  if status&0x20!=0 { continue; } // auxiliary/mouse byte; not a keyboard scan code
+  unsafe {
+   let packet=(&mut *core::ptr::addr_of_mut!(KBD_PORT)).feed_scancode(byte);
+   let Some(packet)=packet else{continue};
+   let stack=&mut *core::ptr::addr_of_mut!(KBD_STACK);
+   if stack.submit_from_port(packet).is_err(){continue}
+   let mut out=[KeyboardInputData::default();1];
+   if stack.read_packets(&mut out).ok()!=Some(1){continue}
+   let p=out[0];
+   let key=translate_packet(p,*core::ptr::addr_of!(KBD_MODIFIERS));
+   let mods=&mut *core::ptr::addr_of_mut!(KBD_MODIFIERS);
+   let down=p.flags&KEY_BREAK==0;
+   match key.map(|e|e.virtual_key).unwrap_or(0) {
+    VK_SHIFT=>mods.shift=down, VK_CONTROL=>mods.control=down, VK_MENU=>mods.alt=down,
+    VK_CAPITAL if down=>mods.caps_lock=!mods.caps_lock, _=>{}
+   }
+   if let Some(e)=key {
+    publish_keyboard_event(KeyboardEvent{virtual_key:e.virtual_key,scan_code:e.scan_code,unicode:e.unicode,key_up:e.key_up,extended:e.extended});
+    KBD_INPUT_COUNT.fetch_add(1,Ordering::Relaxed);
+   }
+  }
+ }
+ handled
+}
+
+fn enable_ps2_irq_route()->bool {
+ use core::sync::atomic::Ordering;
+ if !PS2_IRQ_ROUTE_READY.load(Ordering::Acquire) { return false; }
+ if PS2_IRQ_ACTIVE.load(Ordering::Acquire) { return true; }
+ let io=PS2_IRQ_IO_BASE.load(Ordering::Acquire);
+ let gsi_base=PS2_IRQ_GSI_BASE.load(Ordering::Acquire);
+ let gsi=PS2_IRQ_GSI.load(Ordering::Acquire);
+ PS2_IRQ_ACTIVE.store(true,Ordering::Release);
+ if unsafe{hal::set_device_interrupt_route_enabled(io,gsi_base,gsi,true)}.is_err() {
+  PS2_IRQ_ACTIVE.store(false,Ordering::Release);
+  serial_write(b"PS/2 IRQ: route enable failed; keeping polling fallback.\\r\\n");return false
+ }
+ serial_write(b"PS/2 IRQ: route enabled after controller initialization; bounded ISR active.\\r\\n");
+ true
+}
+
 /// Poll the legacy 8042 output buffer while the legacy IRQ route is still masked.
 /// This provides a safe bring-up path while IDT/IRQ registration is unfinished.
 fn poll_ps2_keyboard_input(){
  use core::sync::atomic::Ordering;
+ if PS2_IRQ_ACTIVE.load(Ordering::Acquire) { return; }
  if !KBD_STACK_READY.load(Ordering::Acquire) {
   unsafe {
    let stack=&mut *core::ptr::addr_of_mut!(KBD_STACK);
@@ -111,7 +215,8 @@ fn poll_ps2_keyboard_input(){
    }
   }
   KBD_STACK_READY.store(true,Ordering::Release);
-  unsafe{serial_write(b"KEYBOARD STACK: PS/2 polling + KbdClass queue initialized; legacy IRQ remains masked.\\r\\n");}
+  unsafe{serial_write(b"KEYBOARD STACK: PS/2 controller + KbdClass queue initialized; preparing real IRQ1 route.\\r\\n");
+  if PS2_IRQ_ROUTE_READY.load(Ordering::Acquire) { let _=enable_ps2_irq_route(); }}
  }
  for _ in 0..16 {
   let status:u8;unsafe{asm!("in al, dx",in("dx") STATUS_PORT,out("al") status,options(nomem,nostack,preserves_flags));}
@@ -956,6 +1061,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                                     }
                                     if routes_masked {
                                         unsafe { outb(0x21, 0xff); outb(0xa1, 0xff); }
+                                        let _=prepare_ps2_irq_route(&firmware_madt,bsp_apic_id);
                                         match unsafe { hal::calibrate_local_clock_event() } {
                                             Ok(count) => {
                                                 local_timer_ready = true;
