@@ -1611,6 +1611,19 @@ pub fn self_test() -> bool {
         );
         terminated && freed
     };
+    // Keep boot diagnostics actionable: a single aggregate boolean used to
+    // hide which MM contract regressed when QEMU halted before driver loading.
+    unsafe {
+        if !valid { crate::serial_write(b"MM self-test failed: translation/copy\\r\\n"); }
+        if !mdl_ok { crate::serial_write(b"MM self-test failed: nonpaged MDL build\\r\\n"); }
+        if !freed { crate::serial_write(b"MM self-test failed: temporary page release\\r\\n"); }
+        if !contiguous_ok { crate::serial_write(b"MM self-test failed: contiguous allocation\\r\\n"); }
+        if !page_mdl_ok { crate::serial_write(b"MM self-test failed: page-MDL map/protection/free\\r\\n"); }
+        if !bounded_ok { crate::serial_write(b"MM self-test failed: bounded contiguous chunks\\r\\n"); }
+        if !node_ok { crate::serial_write(b"MM self-test failed: NUMA node allocation\\r\\n"); }
+        if !node_chunk_ok { crate::serial_write(b"MM self-test failed: NUMA contiguous chunks\\r\\n"); }
+        if !ranges_ok { crate::serial_write(b"MM self-test failed: physical ranges enumeration\\r\\n"); }
+    }
     valid && mdl_ok && freed && contiguous_ok && page_mdl_ok && bounded_ok && node_ok && node_chunk_ok && ranges_ok
 }
 
