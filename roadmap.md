@@ -158,3 +158,7 @@ Still intentionally incomplete:
 - [x] Add bounded PS/2 initialization and IRQ-synchronized keyboard suspend/resume lifecycle.
 - [x] Add CI tests for simulated keyboard input across PS/2 transitions and xHCI port power-state primitives.
 - [ ] Wire these primitives into live PnP/USB parent wait/wake policy, real interrupt/DPC delivery, HID transfer completion, and QEMU keyboard input before/after actual device power transitions.
+
+
+- [x] Add ordered USB wait/wake orchestration with capability checks and reverse-order rollback/cancellation.
+- [ ] Connect the wait/wake orchestration callbacks to real hub/device control transfers and the kernel PnP parent relation graph; current tests exercise the backend contract with a fake controller/hub/device.
