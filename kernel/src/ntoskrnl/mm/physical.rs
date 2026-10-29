@@ -712,6 +712,22 @@ pub unsafe fn try_allocate_pages_in_range(
 pub unsafe fn allocate_contiguous_pages_in_node_range(
     pages: usize, node: u32, low: u64, high: u64, boundary: u64,
 ) -> Result<u64, AllocError> {
+    unsafe { allocate_contiguous_pages_in_node_range_mode(pages, node, low, high, boundary, false) }
+}
+#[cfg(target_os = "none")]
+pub unsafe fn try_allocate_contiguous_pages_in_node_range(
+    pages: usize, node: u32, low: u64, high: u64, boundary: u64,
+) -> Result<u64, AllocError> {
+    unsafe { allocate_contiguous_pages_in_node_range_mode(pages, node, low, high, boundary, true) }
+}
+#[cfg(target_os = "none")]
+unsafe fn allocate_contiguous_pages_in_node_range_mode(
+    pages: usize, node: u32, low: u64, mut high: u64, boundary: u64, try_only: bool,
+) -> Result<u64, AllocError> {
+    if try_only {
+        high = high.min(PHYSICAL_LIMIT - 1);
+        if low > high { return Err(AllocError::OutOfMemory); }
+    }
     if pages == 0 || low > high || !crate::ntoskrnl::mm::topology::is_ready()
         || node as usize >= crate::ntoskrnl::mm::topology::memory_node_count() {
         return Err(AllocError::InvalidPage);
@@ -726,7 +742,7 @@ pub unsafe fn allocate_contiguous_pages_in_node_range(
         if low_bound > high_bound { continue; }
         saw_range = true;
         if let Ok(base) = unsafe {
-            allocate_contiguous_pages_in_range(pages, low_bound, high_bound, boundary)
+            if try_only { try_allocate_contiguous_pages_in_range(pages, low_bound, high_bound, boundary) } else { allocate_contiguous_pages_in_range(pages, low_bound, high_bound, boundary) }
         } {
             let bytes = (pages as u64).checked_mul(PAGE_SIZE).ok_or(AllocError::InvalidPage)?;
             if crate::ntoskrnl::mm::topology::node_for_range(base, bytes) == Some(node) {
@@ -735,7 +751,7 @@ pub unsafe fn allocate_contiguous_pages_in_node_range(
             // Defensive rollback: never return a run whose entire extent is not
             // explicitly assigned to the requested proximity domain.
             for index in (0..pages).rev() {
-                let _ = unsafe { free_page(base + index as u64 * PAGE_SIZE) };
+                let _ = unsafe { if try_only { try_free_page(base + index as u64 * PAGE_SIZE) } else { free_page(base + index as u64 * PAGE_SIZE) } };
             }
         }
     }
@@ -750,6 +766,22 @@ pub unsafe fn allocate_contiguous_pages_in_node_range(
 pub unsafe fn allocate_pages_in_node_range(
     output: &mut [u64], node: u32, low: u64, high: u64, require_all: bool,
 ) -> Result<usize, AllocError> {
+    unsafe { allocate_pages_in_node_range_mode(output, node, low, high, require_all, false) }
+}
+#[cfg(target_os = "none")]
+pub unsafe fn try_allocate_pages_in_node_range(
+    output: &mut [u64], node: u32, low: u64, high: u64, require_all: bool,
+) -> Result<usize, AllocError> {
+    unsafe { allocate_pages_in_node_range_mode(output, node, low, high, require_all, true) }
+}
+#[cfg(target_os = "none")]
+unsafe fn allocate_pages_in_node_range_mode(
+    output: &mut [u64], node: u32, low: u64, mut high: u64, require_all: bool, try_only: bool,
+) -> Result<usize, AllocError> {
+    if try_only {
+        high = high.min(PHYSICAL_LIMIT - 1);
+        if low > high { return Err(AllocError::OutOfMemory); }
+    }
     if low > high || !crate::ntoskrnl::mm::topology::is_ready()
         || node as usize >= crate::ntoskrnl::mm::topology::memory_node_count() {
         return Err(AllocError::InvalidPage);
@@ -764,11 +796,11 @@ pub unsafe fn allocate_pages_in_node_range(
         // This is the blocking NT allocation path; transient lock contention is
         // not out-of-memory. MM_ALLOCATE_NO_WAIT is rejected by the caller until
         // its entire pool/registry/rollback path can be made nonblocking.
-        let _guard = MemoryGuard::acquire();
+        let _guard = if try_only { MemoryGuard::try_acquire().ok_or(AllocError::Busy)? } else { MemoryGuard::acquire() };
         let low_free = unsafe { &mut *FREE_PAGES.0.get() };
         let high_free = unsafe { &mut *HIGH_FREE_PAGES.0.get() };
         let mut found = None;
-        for pages in [&mut *low_free, &mut *high_free] {
+        for pages in if try_only { vec![&mut *low_free] } else { vec![&mut *low_free, &mut *high_free] } {
             let mut i = 0usize;
             while i < pages.1 {
                 let page = pages.0[i];
@@ -785,10 +817,7 @@ pub unsafe fn allocate_pages_in_node_range(
             if found.is_some() { break; }
         }
         if found.is_none() {
-            'regions: for (store, count_atomic, high_memory) in [
-                (&REGIONS, &REGION_COUNT, false),
-                (&HIGH_REGIONS, &HIGH_REGION_COUNT, true),
-            ] {
+            'regions: for (store, count_atomic, high_memory) in if try_only { vec![(&REGIONS, &REGION_COUNT, false)] } else { vec![(&REGIONS, &REGION_COUNT, false), (&HIGH_REGIONS, &HIGH_REGION_COUNT, true)] } {
                 let regions = unsafe { &mut *store.0.get() };
                 let mut region_count = count_atomic.load(core::sync::atomic::Ordering::Acquire);
                 for index in 0..region_count {
@@ -839,7 +868,7 @@ pub unsafe fn allocate_pages_in_node_range(
         // Roll back in reverse allocation order so pages carved from an extent
         // can coalesce back toward the original range.
         for &page in output[..allocated].iter().rev() {
-            let _ = unsafe { free_page(page) };
+            let _ = unsafe { if try_only { try_free_page(page) } else { free_page(page) } };
         }
         return Err(AllocError::OutOfMemory);
     }
