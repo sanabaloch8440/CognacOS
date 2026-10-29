@@ -13,20 +13,46 @@ pub type MapFn=unsafe extern "system" fn(*mut c_void,usize,u64,u32,u8,*mut u64,*
 pub type UnmapFn=unsafe extern "system" fn(*mut c_void,usize,u64,u64)->i32;
 pub type SyncFn=unsafe extern "system" fn(*mut c_void,usize,u64,u32,u8)->i32;
 #[repr(C)]
+#[derive(Clone,Copy)]
 pub struct IommuBackend { pub size:u32,pub context:*mut c_void,pub map:Option<MapFn>,pub unmap:Option<UnmapFn>,pub sync:Option<SyncFn> }
 unsafe impl Send for IommuBackend{} unsafe impl Sync for IommuBackend{}
-static BACKEND:core::sync::atomic::AtomicPtr<IommuBackend>=core::sync::atomic::AtomicPtr::new(ptr::null_mut());
+// Copy the callback table into kernel-owned storage at registration. Keeping an
+// AtomicPtr to the caller's struct allowed a stack-allocated descriptor to
+// become a use-after-free after the registration function returned.
+struct BackendStorage(core::cell::UnsafeCell<IommuBackend>);
+unsafe impl Sync for BackendStorage {}
+static BACKEND_STORAGE:BackendStorage=BackendStorage(core::cell::UnsafeCell::new(IommuBackend{
+ size:0,context:ptr::null_mut(),map:None,unmap:None,sync:None
+}));
+static BACKEND_STATE:core::sync::atomic::AtomicU8=core::sync::atomic::AtomicU8::new(0);
+// 0 = absent, 1 = registration in progress, 2 = published and immutable.
+
 #[derive(Clone,Copy)]struct Mapping{used:bool,busy:bool,device:usize,token:usize,irp:usize,physical:u64,logical:u64,length:u32,cookie:u64,direction:u8}
 impl Mapping{const EMPTY:Self=Self{used:false,busy:false,device:0,token:0,irp:0,physical:0,logical:0,length:0,cookie:0,direction:0};}
 #[derive(Clone,Copy)]struct Common{used:bool,device:usize,cpu:usize,physical:u64,logical:u64,length:usize,pages:usize,cookie:u64}
 impl Common{const EMPTY:Self=Self{used:false,device:0,cpu:0,physical:0,logical:0,length:0,pages:0,cookie:0};}
 struct State{maps:[Mapping;MAX_MAPPINGS],common:[Common;MAX_COMMON]}
 static STATE:crate::hal::IrqSpinLock<State>=crate::hal::IrqSpinLock::new(State{maps:[Mapping::EMPTY;MAX_MAPPINGS],common:[Common::EMPTY;MAX_COMMON]});
-fn backend()->Result<&'static IommuBackend,i32>{let p=BACKEND.load(Ordering::Acquire);if p.is_null(){return Err(NOT_SUPPORTED)}let b=unsafe{&*p};if b.size<core::mem::size_of::<IommuBackend>() as u32||b.map.is_none()||b.unmap.is_none()||b.sync.is_none(){return Err(NOT_SUPPORTED)}Ok(b)}
+fn backend()->Result<&'static IommuBackend,i32>{
+ if BACKEND_STATE.load(Ordering::Acquire)!=2{return Err(NOT_SUPPORTED)}
+ let b=unsafe{&*BACKEND_STORAGE.0.get()};
+ if b.size<core::mem::size_of::<IommuBackend>() as u32||b.map.is_none()||b.unmap.is_none()||b.sync.is_none(){return Err(NOT_SUPPORTED)}Ok(b)
+}
+/// Register the platform's permanent IOMMU backend exactly once.
+///
+/// # Safety
+/// The context pointer and every object reachable from it must remain valid for
+/// the lifetime of the kernel. The callback table itself is copied into
+/// kernel-owned immutable storage and may be stack-allocated by the caller.
 #[unsafe(no_mangle)]
 pub unsafe extern "system" fn RdotDmaRegisterIommuBackend(ops:*mut IommuBackend)->i32{
- if ops.is_null(){return INVALID}let b=unsafe{&*ops};if b.size<core::mem::size_of::<IommuBackend>() as u32||b.map.is_none()||b.unmap.is_none()||b.sync.is_none(){return INVALID}
- if BACKEND.compare_exchange(ptr::null_mut(),ops,Ordering::AcqRel,Ordering::Acquire).is_err(){return 0xC000_0022u32 as i32}OK
+ if ops.is_null(){return INVALID}
+ let b=unsafe{*ops};
+ if b.size<core::mem::size_of::<IommuBackend>() as u32||b.map.is_none()||b.unmap.is_none()||b.sync.is_none(){return INVALID}
+ if BACKEND_STATE.compare_exchange(0,1,Ordering::AcqRel,Ordering::Acquire).is_err(){return 0xC000_0022u32 as i32}
+ unsafe{BACKEND_STORAGE.0.get().write(b);}
+ BACKEND_STATE.store(2,Ordering::Release);
+ OK
 }
 pub fn available()->bool{backend().is_ok()}
 pub fn device_busy(device:usize)->bool{let s=STATE.lock();s.maps.iter().any(|m|m.used&&m.device==device)||s.common.iter().any(|b|b.used&&b.device==device)}
@@ -36,7 +62,14 @@ fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:
  let logical=0u64;let cookie=0u64;
  let mut logical_out=logical;let mut cookie_out=cookie;
  let status=unsafe{(b.map.unwrap())(b.context,device,physical,length,direction,&mut logical_out,&mut cookie_out)};
- if status!=OK||logical_out==0||cookie_out==0||logical_out.checked_add(length as u64).is_none(){return Err(DmaError::AddressMask)}
+ if status!=OK{return Err(DmaError::AddressMask)}
+ // A backend that reports success must return a usable logical span and cookie.
+ // If it partially installed a mapping but returned malformed outputs, attempt
+ // rollback before reporting failure so a bad backend cannot silently leak IOVA.
+ if logical_out==0||cookie_out==0||logical_out.checked_add(length as u64).is_none(){
+  if logical_out!=0&&cookie_out!=0{let _=unsafe{(b.unmap.unwrap())(b.context,device,logical_out,cookie_out)};}
+  return Err(DmaError::AddressMask)
+ }
  let mut s=STATE.lock();
  let logical_end=logical_out.checked_add(length as u64).ok_or(DmaError::AddressMask)?;
  let overlaps_map=s.maps.iter().any(|m|m.used&&m.device==device&&logical_out<m.logical.saturating_add(m.length as u64)&&m.logical<logical_end);
