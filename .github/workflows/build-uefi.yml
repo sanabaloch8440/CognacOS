@@ -666,10 +666,10 @@ jobs:
           end
           continue
           GDB
+          # Attach a QEMU USB 3.x xHCI controller and an emulated HID keyboard.
           qemu-system-x86_64 \
             -audiodev wav,id=beepout,path=build/beep.wav \
             -machine pc,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
-            # Attach a QEMU USB 3.x xHCI controller and an emulated HID keyboard. \
             -device qemu-xhci,id=xhci \
             -device usb-kbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
