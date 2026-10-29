@@ -257,7 +257,7 @@ pub const CONFIG_MAX_SLOTS_MASK:u32=0xff;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct ControllerDmaConfig{pub dcbaa:u64,pub command_ring:u64,pub erst:u64,pub event_ring:u64,pub event_ring_entries:u16,pub max_slots:u8}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ControllerInitError{InvalidCapabilities,InvalidDmaConfiguration,InterruptNotRegistered,RegisterIoFailure,ResetTimeout,ControllerDidNotHalt,ControllerDidNotStart}
+pub enum ControllerInitError{InvalidCapabilities,InvalidDmaConfiguration,UnsupportedPageSize,InterruptNotRegistered,RegisterIoFailure,ResetTimeout,ControllerDidNotHalt,ControllerDidNotStart}
 /// Implemented by a kernel/HAL adapter over a validated, uncached BAR mapping.
 /// Register offsets are relative to the controller's MMIO BAR base.
 pub trait XhciRegisterIo{
@@ -285,6 +285,7 @@ pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:
  let op=caps.cap_length as u32;
  let cmd=reg_read(io,op).map_err(|_|ControllerInitError::RegisterIoFailure)?;
  poll_reg(io,op+4,USBSTS_NOT_READY,0,poll_budget)?;
+ if reg_read(io,op+8)?&1==0{return Err(ControllerInitError::UnsupportedPageSize)}
  reg_write(io,op,cmd&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE))?;
  poll_reg(io,op+4,USBSTS_HALTED,USBSTS_HALTED,poll_budget)?;
  reg_write(io,op,(cmd&!(USBCMD_RUN|USBCMD_INTERRUPT_ENABLE))|USBCMD_RESET)?;
@@ -315,7 +316,7 @@ pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:
 mod controller_init_tests{
  use super::*;
  struct FakeMmio{regs:[u32;256]}
- impl FakeMmio{fn new()->Self{let mut x=Self{regs:[0;256]};x.regs[0x44/4]=USBSTS_HALTED;x}}
+ impl FakeMmio{fn new()->Self{let mut x=Self{regs:[0;256]};x.regs[0x44/4]=USBSTS_HALTED;x.regs[0x48/4]=1;x}}
  impl XhciRegisterIo for FakeMmio{
   fn read32(&mut self,o:u32)->Result<u32,()>{self.regs.get((o/4) as usize).copied().ok_or(())}
   fn write32(&mut self,o:u32,v:u32)->Result<(),()>{
