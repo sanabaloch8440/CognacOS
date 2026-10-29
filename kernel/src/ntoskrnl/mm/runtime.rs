@@ -1194,19 +1194,31 @@ pub unsafe extern "win64" fn mm_allocate_node_pages_for_mdl_ex(
     let pfns = unsafe { core::slice::from_raw_parts_mut(
         mdl.cast::<u8>().add(MDL_HEADER_SIZE as usize).cast::<u64>(), requested_pages,
     ) };
-    let allocated = match unsafe {
+    let node_count = crate::ntoskrnl::mm::topology::memory_node_count();
+    if node_count == 0 || ideal_node as usize >= node_count {
+        let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
+        return core::ptr::null_mut();
+    }
+    // Prefer the requested node first. Unless LOCAL_NODE_ONLY is set, retry
+    // other SRAT-described memory nodes when the preferred node is insufficient.
+    let mut allocated = 0usize;
+    if let Ok(count) = unsafe {
         crate::ntoskrnl::mm::physical::allocate_pages_in_node_range(
-            pfns, ideal_node, low_address, high_address,
-            flags & MM_ALLOCATE_FULLY_REQUIRED != 0,
+            &mut pfns[allocated..], ideal_node, low_address, high_address, false,
         )
-    } {
-        Ok(count) => count,
-        Err(_) => {
-            let _ = crate::ntoskrnl::rtl_runtime::pool_free_tagged(mdl, Some(0x4c444d4d));
-            return core::ptr::null_mut();
+    } { allocated += count; }
+    if flags & MM_ALLOCATE_FROM_LOCAL_NODE_ONLY == 0 {
+        for node in 0..node_count as u32 {
+            if node == ideal_node || allocated == requested_pages { continue; }
+            if let Ok(count) = unsafe {
+                crate::ntoskrnl::mm::physical::allocate_pages_in_node_range(
+                    &mut pfns[allocated..], node, low_address, high_address, false,
+                )
+            } { allocated += count; }
         }
-    };
-    if allocated == 0 || !register_page_allocation_mdl(mdl as u64, allocated) {
+    }
+    if allocated == 0 || (flags & MM_ALLOCATE_FULLY_REQUIRED != 0 && allocated != requested_pages)
+        || !register_page_allocation_mdl(mdl as u64, allocated) {
         for &pfn in pfns.iter().take(allocated) {
             let _ = unsafe { crate::memory::free_page(pfn * PAGE_SIZE) };
         }
