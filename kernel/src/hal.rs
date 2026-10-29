@@ -412,6 +412,12 @@ pub unsafe fn end_local_interrupt() {
 #[inline]
 pub fn capture_clock_synchronization_sample() { apic::capture_tsc_sync_sample(); }
 #[inline]
+/// Check that a device interrupt vector has a live registered HAL callback.
+/// This is a handler-registration check, not proof that the route is unmasked.
+pub fn device_interrupt_handler_registered(vector: u8) -> bool {
+    apic::interrupt_handler_registered(vector)
+}
+
 pub unsafe fn dispatch_platform_interrupt(vector: u8, frame: *mut core::ffi::c_void) -> bool {
     unsafe { apic::dispatch_external_interrupt(vector, frame) }
 }
