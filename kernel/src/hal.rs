@@ -467,3 +467,36 @@ pub unsafe fn set_interrupt_route_enabled(io_base: u64, gsi_base: u32, gsi: u32,
 
 /// Windows HAL export compatibility inventory and fail-closed stub metadata.
 pub mod exports;
+
+
+// ---- Low-level device I/O primitives for port and MMIO-backed drivers ----
+/// Read an x86 I/O-port byte. Caller must run at a privileged level and hold any
+/// device-specific serialization lock; this is not safe to expose directly to user mode.
+#[inline]
+pub unsafe fn read_port_u8(port: u16) -> u8 {
+    let value: u8;
+    unsafe { core::arch::asm!("in al, dx", in("dx") port, out("al") value, options(nomem, nostack, preserves_flags)); }
+    value
+}
+/// Write an x86 I/O-port byte. Caller must validate resource ownership and serialize
+/// controller transactions before issuing the instruction.
+#[inline]
+pub unsafe fn write_port_u8(port: u16, value: u8) {
+    unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") value, options(nomem, nostack, preserves_flags)); }
+}
+/// Read a 32-bit MMIO register from an already mapped, correctly-sized device region.
+/// The caller must ensure the mapping uses the device's required uncached memory type.
+#[inline]
+pub unsafe fn read_mmio_u32(address: *const u32) -> u32 {
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+    let value = unsafe { core::ptr::read_volatile(address) };
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+    value
+}
+/// Write a 32-bit MMIO register in an already mapped device region.
+#[inline]
+pub unsafe fn write_mmio_u32(address: *mut u32, value: u32) {
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+    unsafe { core::ptr::write_volatile(address, value); }
+    core::sync::atomic::compiler_fence(Ordering::SeqCst);
+}
