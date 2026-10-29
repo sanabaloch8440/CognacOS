@@ -77,3 +77,6 @@ pub fn wait_register<F:FnMut()->u32>(mut read:F,mask:u32,expected:u32,budget:u32
  #[test]fn ring_does_not_overwrite_reserved_slot(){let mut r:ProducerRing<4>=ProducerRing::new();assert!(r.push(Trb::default()).is_ok());assert!(r.push(Trb::default()).is_ok());assert_eq!(r.push(Trb::default()),Err(XhciError::RingFull));}
  #[test]fn wait_is_bounded(){let mut n=0;assert_eq!(wait_register(||{n+=1;0},1,1,4),Err(XhciError::Timeout));assert_eq!(n,4);}
 }
+
+/// Internal version marker used by the PE entry point to retain the controller core.
+pub const fn core_abi_version()->u32{1}
