@@ -32,3 +32,10 @@ These are driver-core foundations, **not yet end-to-end working hardware drivers
 The command-ring API submits bounded command TRBs and rings Doorbell 0 after publishing the TRB with release ordering. It reports submission only; command completion events must still be consumed and correlated by the controller owner. It does not yet implement slot enable/address-device/configure-endpoint sequencing, USB control/interrupt transfers, or HID report delivery.
 
 The next controller-core milestone adds a fixed-capacity command completion tracker keyed by the command TRB DMA address, with explicit errors for unknown or malformed completion events. It also adds validated builders for Enable Slot, Address Device, and Configure Endpoint command TRBs. These are primitives only: callers must track commands before processing interrupts, validate completion codes, allocate/populate input contexts, and perform the required USB enumeration state transitions.
+
+
+## Power-management readiness (audit, 2026-10-29)
+
+Microsoft's WDM model requires PnP capability reporting, power-IRP dispatch/forwarding, D-state transitions, and wait/wake propagation through the device stack. CognacOS has power-IRP lifecycle tracking and an S4 codec, but USB hub/port policy, a real xHCI PnP/IRP DriverEntry path, and PS/2 IRQ/DPC delivery remain unwired. It therefore cannot yet guarantee end-to-end power/resume/wake behavior for USB 3.x devices or USB/PS/2 keyboards.
+
+A conservative capability registry defaults unregistered devices to D0/D3 and rejects wait/wake unless the device explicitly registers verified support. D1/D2 and wake are opt-in; drivers must still implement hardware changes in IRP_MJ_POWER. xHCI command submission now reserves completion tracking before ringing the doorbell, and live event routing correlates command completions while surfacing transfer and port-status events. These are prerequisites, not end-to-end hardware support.
