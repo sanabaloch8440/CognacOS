@@ -62,3 +62,38 @@ mod tests {
         assert!(!t.compatible());
     }
 }
+
+
+/// Separate versioned device-service contract for DMA and interrupt-backed drivers.
+/// These are declarations only: the kernel/HAL runtime must supply implementations
+/// that honor IOMMU isolation, cache coherency, IRQL rules, and device teardown.
+pub const DEVICE_SERVICES_VERSION:u32=1;
+pub type AllocateDma=unsafe extern "C" fn(size:u64,alignment:u64,maximum_address:u64,flags:u32,cpu_address:*mut u64,device_address:*mut u64)->HalStatus;
+pub type FreeDma=unsafe extern "C" fn(cpu_address:u64,device_address:u64,size:u64)->HalStatus;
+pub type InterruptIsr=extern "C" fn(context:u64)->bool;
+pub type InterruptDpc=extern "C" fn(context:u64);
+pub type RegisterInterrupt=unsafe extern "C" fn(vector:u32,context:u64,isr:Option<InterruptIsr>,dpc:Option<InterruptDpc>)->HalStatus;
+pub type UnregisterInterrupt=unsafe extern "C" fn(vector:u32,context:u64)->HalStatus;
+pub type SetInterruptEnabled=unsafe extern "C" fn(vector:u32,enabled:bool)->HalStatus;
+#[repr(C)]
+#[derive(Clone,Copy)]
+pub struct DeviceServiceTable{
+ pub size:u32,pub version:u32,
+ pub allocate_dma:Option<AllocateDma>,pub free_dma:Option<FreeDma>,
+ pub register_interrupt:Option<RegisterInterrupt>,pub unregister_interrupt:Option<UnregisterInterrupt>,
+ pub set_interrupt_enabled:Option<SetInterruptEnabled>,
+}
+impl DeviceServiceTable{
+ pub const fn compatible(&self)->bool{self.size as usize>=core::mem::size_of::<Self>()&&self.version==DEVICE_SERVICES_VERSION}
+ pub const fn has_dma(&self)->bool{self.allocate_dma.is_some()&&self.free_dma.is_some()}
+ pub const fn has_interrupts(&self)->bool{self.register_interrupt.is_some()&&self.unregister_interrupt.is_some()&&self.set_interrupt_enabled.is_some()}
+}
+#[cfg(test)]
+mod device_service_tests{
+ use super::*;
+ #[test]fn device_services_require_version_and_complete_function_pairs(){
+  let mut t=DeviceServiceTable{size:core::mem::size_of::<DeviceServiceTable>() as u32,version:DEVICE_SERVICES_VERSION,allocate_dma:None,free_dma:None,register_interrupt:None,unregister_interrupt:None,set_interrupt_enabled:None};
+  assert!(t.compatible());assert!(!t.has_dma());assert!(!t.has_interrupts());
+  t.version=0;assert!(!t.compatible());
+ }
+}
