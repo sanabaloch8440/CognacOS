@@ -615,9 +615,9 @@ pub unsafe fn try_allocate_pages_in_range(
             }
             None
         };
-        let page = match find(low_free) {
+        let page = match find(&mut *low_free) {
             Some(page) => Some(page),
-            None => find(high_free),
+            None => find(&mut *high_free),
         };
         let Some(page) = page else { break; };
         output[count] = page;
@@ -632,7 +632,7 @@ pub unsafe fn try_allocate_pages_in_range(
     });
     if (require_all && count != output.len()) || !map_valid {
         for &page in &output[..count] {
-            let pages = if page >= PHYSICAL_LIMIT { high_free } else { low_free };
+            let pages = if page >= PHYSICAL_LIMIT { &mut *high_free } else { &mut *low_free };
             if pages.1 < FREE_CAPACITY {
                 pages.0[pages.1] = page;
                 pages.1 += 1;
