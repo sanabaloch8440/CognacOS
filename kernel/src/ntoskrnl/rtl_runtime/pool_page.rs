@@ -166,6 +166,46 @@ pub(super) fn try_allocate_tagged(size: usize, tag: u32, zeroed: bool) -> *mut u
     base as *mut u8
 }
 
+/// Nonblocking release for an allocation made by the no-wait pool path.
+/// Empty slabs are retained instead of returning backing pages to the physical
+/// allocator, so this rollback never acquires a second allocator lock.
+pub(super) fn try_deallocate_tagged(ptr: *mut u8, expected_tag: Option<u32>) -> bool {
+    if ptr.is_null() { return true; }
+    #[cfg(target_os = "none")]
+    let _guard = match LOCK.try_lock() {
+        Some(guard) => Guard { _guard: guard },
+        None => return false,
+    };
+    #[cfg(not(target_os = "none"))]
+    {
+        if LOCK.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+            return false;
+        }
+    }
+    #[cfg(not(target_os = "none"))]
+    let _guard = Guard {};
+    let table = unsafe { &mut *ALLOCATIONS.0.get() };
+    let Some(index) = table.iter().position(|a| a.live && a.base == ptr as u64) else { return false; };
+    let allocation = table[index];
+    if expected_tag.is_some_and(|tag| allocation.tag != tag) { return false; }
+    if allocation.slab_index == NO_SLAB_RESERVED {
+        table[index] = Allocation::EMPTY;
+        return true;
+    }
+    if allocation.slab_index == NO_SLAB { return false; }
+    let slabs = unsafe { &mut *SLABS.0.get() };
+    let slab_index = allocation.slab_index as usize;
+    let slot = allocation.slab_slot as usize;
+    let Some(slab) = slabs.get_mut(slab_index).filter(|s|
+        s.live && !s.pageable && s.base == allocation.backing_base
+            && slot < s.slots && s.used[slot / 64] & (1u64 << (slot % 64)) != 0
+    ) else { return false; };
+    slab.mark_free(slot);
+    table[index] = Allocation::EMPTY;
+    true
+}
+
+
 /// Allocate nonpaged storage. Small allocations share slab pages; allocations
 /// larger than 2 KiB receive their own contiguous page extent. Physical pages are
 /// always zeroed when first acquired, and the requested bytes are zeroed when the
