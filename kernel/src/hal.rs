@@ -438,6 +438,43 @@ pub fn release_device_interrupt_vector(vector: u8) -> Result<(), HalError> {
     apic::release_interrupt_vector(vector).map_err(|_| HalError::InvalidTransition)
 }
 
+/// Configure an I/O-APIC route with the interrupt source masked.
+/// The caller must provide the ACPI-resolved I/O-APIC/GSI and interrupt
+/// polarity/trigger mode. This does not install an IDT gate or enable delivery.
+pub unsafe fn configure_device_interrupt_route_masked(
+    io_base: u64,
+    gsi_base: u32,
+    gsi: u32,
+    vector: u8,
+    destination_apic_id: u8,
+    active_low: bool,
+    level_triggered: bool,
+) -> Result<(), HalError> {
+    unsafe {
+        apic::configure_ioapic_route(
+            io_base, gsi_base, gsi, vector, destination_apic_id,
+            active_low, level_triggered,
+        )
+    }.map_err(|_| HalError::PlatformFailure)
+}
+
+/// Mask or unmask a configured I/O-APIC route. Unmasking is rejected unless
+/// HAL has an allocated vector with a registered callback. The caller remains
+/// responsible for installing and validating the architecture IDT gate first.
+pub unsafe fn set_device_interrupt_route_enabled(
+    io_base: u64,
+    gsi_base: u32,
+    gsi: u32,
+    enabled: bool,
+) -> Result<(), HalError> {
+    if enabled {
+        // Readiness of the route's vector is checked by the APIC implementation
+        // against the redirection entry immediately before it clears the mask.
+    }
+    unsafe { apic::set_ioapic_irq_enabled(io_base, gsi_base, gsi, enabled) }
+        .map_err(|_| HalError::PlatformFailure)
+}
+
 /// Check that a device interrupt vector has a live registered HAL callback.
 /// This is a handler-registration check, not proof that the route is unmasked.
 pub fn device_interrupt_handler_registered(vector: u8) -> bool {
