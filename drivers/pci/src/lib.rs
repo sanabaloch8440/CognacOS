@@ -138,6 +138,27 @@ mod ntstatus_adapter_tests {
 }
 
 
+/// PCI Command-register policy for safe BAR sizing. Probe with I/O decode,
+/// memory decode and bus mastering all disabled; restore decode bits afterward
+/// but never restore bus mastering before an IOMMU domain is active.
+pub const fn command_for_bar_probe(command: u16) -> u16 { command & !0x0007 }
+pub const fn command_after_bar_probe(command: u16) -> u16 { command & !0x0004 }
+
+#[cfg(test)]
+mod pci_command_policy_tests {
+    use super::*;
+    #[test]
+    fn bar_probe_disables_decode_and_bus_mastering() {
+        assert_eq!(command_for_bar_probe(0x0007), 0);
+        assert_eq!(command_for_bar_probe(0x0147), 0x0140);
+    }
+    #[test]
+    fn post_probe_policy_never_reenables_bus_mastering() {
+        assert_eq!(command_after_bar_probe(0x0007), 0x0003);
+        assert_eq!(command_after_bar_probe(0x0147), 0x0143);
+    }
+}
+
 /// PCI class-code matcher for xHCI (Base Class 0x0C, Subclass 0x03, ProgIF 0x30).
 pub const fn is_xhci_controller(class_code:u8,subclass:u8,programming_interface:u8)->bool{
  class_code==0x0c&&subclass==0x03&&programming_interface==0x30
