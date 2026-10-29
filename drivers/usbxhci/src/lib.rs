@@ -523,3 +523,33 @@ where P: XhciRegisterIo, F: FnMut(Trb) {
     }
     Ok(consumed)
 }
+
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RuntimeStopError { InterruptDisableFailed, RegisterIoFailure, ControllerDidNotHalt }
+/// Quiesce the controller before releasing DMA memory. On timeout, allocations
+/// intentionally remain owned by the caller because hardware may still DMA into them.
+pub fn stop_controller<P: XhciPlatform>(
+    platform: &mut P, caps: &Capabilities, resources: XhciRuntimeResources, poll_budget: u32,
+) -> Result<(), RuntimeStopError> {
+    if resources.interrupt_registered && platform.set_interrupt_enabled(false).is_err() {
+        return Err(RuntimeStopError::InterruptDisableFailed);
+    }
+    let op = caps.cap_length as u32;
+    let command = platform.read32(op).map_err(|_| RuntimeStopError::RegisterIoFailure)?;
+    platform.write32(op, command & !(USBCMD_RUN | USBCMD_INTERRUPT_ENABLE))
+        .map_err(|_| RuntimeStopError::RegisterIoFailure)?;
+    let mut halted = false;
+    for _ in 0..poll_budget {
+        let status = platform.read32(op + 4).map_err(|_| RuntimeStopError::RegisterIoFailure)?;
+        if status & USBSTS_HALTED != 0 { halted = true; break; }
+        core::hint::spin_loop();
+    }
+    if !halted { return Err(RuntimeStopError::ControllerDidNotHalt); }
+    if resources.interrupt_registered { platform.unregister_interrupt(); }
+    platform.free_dma(resources.erst);
+    platform.free_dma(resources.event_ring);
+    platform.free_dma(resources.command_ring);
+    platform.free_dma(resources.dcbaa);
+    Ok(())
+}
