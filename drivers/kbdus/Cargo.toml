@@ -8,6 +8,6 @@ license = "GPL-2.0-or-later"
 cognacos-kbdclass = { path = "../../drivers/kbdclass" }
 
 [lib]
-name = "cognacos_kbdus"
+name = "kbdus"
 path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
