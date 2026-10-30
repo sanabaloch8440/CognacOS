@@ -521,6 +521,13 @@ pub fn normalize_inline_extent_root(root:&mut[u8])->Result<usize,Error>{
  entries[..count].sort_unstable_by_key(|e|e.0);
  let mut out=[(0u32,0u64,0u16);4];let mut used=0usize;
  for item in entries.iter().take(count).copied(){
+  for prior in out.iter().take(used){
+   let prior_len=if prior.2>0x8000{prior.2-0x8000}else{prior.2};
+   let prior_end=prior.1.checked_add(prior_len as u64).ok_or(Error::OutOfRange)?;
+   let item_len=if item.2>0x8000{item.2-0x8000}else{item.2};
+   let item_end=item.1.checked_add(item_len as u64).ok_or(Error::OutOfRange)?;
+   if item.1<prior_end&&prior.1<item_end{return Err(Error::InvalidExtentTree)}
+  }
   if used!=0{
    let prior=&mut out[used-1];
    let prior_len=if prior.2>0x8000{prior.2-0x8000}else{prior.2};
