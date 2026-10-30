@@ -196,20 +196,15 @@ pub fn commit_ordered_with_revokes_and_uuid<D:ReplayDevice,M:JournalBlockMap>(
  // ordered data, revoked blocks, or the journal superblock itself.
  let sb_phys=m.map_journal_block(0).map_err(|_|Error::Io)?;
  if sb_phys>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
+ let mut journal_phys=[0u64;MAX_TRANSACTION_TAGS+3];
  let mut logical=sb.first;
  for slot in 0..required {
   let physical=m.map_journal_block(logical).map_err(|_|Error::Io)?;
   if physical>=d.filesystem_blocks() || physical==sb_phys
    || metadata_targets.contains(&physical) || ordered_targets.contains(&physical)
-   || revoked_targets.contains(&physical) { return Err(Error::InvalidTag); }
-  // Journal logical blocks must map one-to-one within this transaction.
-  let mut prior=sb.first;
-  for _ in 0..slot {
-   if m.map_journal_block(prior).map_err(|_|Error::Io)?==physical {
-    return Err(Error::InvalidTag);
-   }
-   prior=next_log(&sb,prior);
-  }
+   || revoked_targets.contains(&physical)
+   || journal_phys[..slot].contains(&physical) { return Err(Error::InvalidTag); }
+  journal_phys[slot]=physical;
   logical=next_log(&sb,logical);
  }
  // Ordered data is deliberately written and flushed before any metadata log
@@ -279,15 +274,16 @@ pub fn commit_ordered_with_revokes_and_uuid<D:ReplayDevice,M:JournalBlockMap>(
   descriptor[bs-4..bs].copy_from_slice(&sum.to_be_bytes());
  }
  let mut cursor=first;
+ let mut log_slot=0usize;
  let mut transaction_crc=!0u32;
  if sb.checksum_mode==ChecksumMode::V1{
   transaction_crc=crate::checksum::crc32_be_update(transaction_crc,descriptor);
  }
- let desc_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+ let desc_phys=journal_phys[log_slot];log_slot+=1;
  d.write_block(desc_phys,descriptor).map_err(|_|Error::Io)?;
  cursor=next_log(&sb,cursor);
  for data in metadata_data{
-  let phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+  let phys=journal_phys[log_slot];log_slot+=1;
   let escaped=data.get(..4)==Some(&JBD2_MAGIC.to_be_bytes());
   if sb.checksum_mode==ChecksumMode::V1{
    if escaped{
@@ -318,7 +314,7 @@ pub fn commit_ordered_with_revokes_and_uuid<D:ReplayDevice,M:JournalBlockMap>(
    let sum=crate::checksum::jbd2_metadata_block_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;
    descriptor[bs-4..bs].copy_from_slice(&sum.to_be_bytes());
   }
-  let revoke_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+  let revoke_phys=journal_phys[log_slot];log_slot+=1;
   d.write_block(revoke_phys,descriptor).map_err(|_|Error::Io)?;
   cursor=next_log(&sb,cursor);
  }
@@ -331,7 +327,8 @@ pub fn commit_ordered_with_revokes_and_uuid<D:ReplayDevice,M:JournalBlockMap>(
   descriptor[16..20].copy_from_slice(&transaction_crc.to_be_bytes());
  }else if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
   descriptor[12]=4;descriptor[13]=4;
-  let sum=crate::checksum::jbd2_commit_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;  descriptor[16..20].copy_from_slice(&sum.to_be_bytes()); } let commit_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+  let sum=crate::checksum::jbd2_commit_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;  descriptor[16..20].copy_from_slice(&sum.to_be_bytes()); } let commit_phys=journal_phys[log_slot];log_slot+=1;
+ if log_slot!=required{return Err(Error::InvalidGeometry)}
  d.write_block(commit_phys,descriptor).map_err(|_|Error::Io)?;
  d.flush().map_err(|_|Error::Io)?;
  // The committed log is now authoritative. Checkpoint home metadata and only
