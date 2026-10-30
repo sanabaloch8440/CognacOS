@@ -944,6 +944,7 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
             if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
                 validate_directory_block_checksum(raw_superblock, parent_ino, generation, scratch_b)?;
             }
+            validate_directory_block(scratch_b, sb.inodes_count)?;
             let mut off = 0usize;
             while off < scratch_b.len() {
                 if scratch_b.len() - off < 8 { return Err(Error::InvalidDirectoryEntry); }
@@ -1034,6 +1035,7 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
             if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
                 validate_directory_block_checksum(raw_superblock, ino, generation, scratch_b)?;
             }
+            validate_directory_block(scratch_b, sb.inodes_count)?;
             let mut off = 0usize;
             while off < scratch_b.len() {
                 if scratch_b.len() - off < 8 { return Err(Error::InvalidDirectoryEntry); }
