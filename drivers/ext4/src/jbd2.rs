@@ -41,10 +41,10 @@ impl JournalSuperblock{
 /// metadata is journaled, committed, then checkpointed to home blocks. If a
 /// crash occurs after the commit record, replay is idempotent. The caller must
 /// serialize transactions for this journal and supply exact block-sized data.
-pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
+pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  d:&mut D,m:&mut M,journal_superblock:&mut[u8],
  ordered_targets:&[u64],ordered_data:&[&[u8]],
- metadata_targets:&[u64],metadata_data:&[&[u8]],
+ metadata_targets:&[u64],metadata_data:&[&[u8]],revoked_targets:&[u64],
  descriptor:&mut[u8],
 )->Result<u32,Error>{
  if ordered_targets.len()!=ordered_data.len()||metadata_targets.len()!=metadata_data.len()
@@ -56,8 +56,14 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
  if metadata_targets.len()>MAX_TRANSACTION_TAGS{return Err(Error::TransactionTooLarge)}
  let tag_size=if sb.block_count_64{12usize}else{8usize};
  let tag_bytes=tag_size.checked_mul(metadata_targets.len()).ok_or(Error::OutOfRange)?;
- let required=1usize.checked_add(metadata_targets.len()).and_then(|n|n.checked_add(1)).ok_or(Error::OutOfRange)?;
+ let required=1usize.checked_add(metadata_targets.len()).and_then(|n|n.checked_add(if revoked_targets.is_empty(){0}else{1})).and_then(|n|n.checked_add(1)).ok_or(Error::OutOfRange)?;
  if required>=sb.max_len as usize||12usize.checked_add(tag_bytes).and_then(|n|n.checked_add(16)).ok_or(Error::OutOfRange)?>bs{return Err(Error::TransactionTooLarge)}
+ let revoke_width=if sb.block_count_64{8usize}else{4usize};
+ if !revoked_targets.is_empty(){
+  if sb.feature_incompat&FEATURE_INCOMPAT_REVOKE==0{return Err(Error::UnsupportedFeature)}
+  if revoked_targets.len()>MAX_TRANSACTION_REVOKES||16usize.checked_add(revoked_targets.len().checked_mul(revoke_width).ok_or(Error::OutOfRange)?).ok_or(Error::OutOfRange)?>bs{return Err(Error::TransactionTooLarge)}
+  if revoked_targets.iter().any(|b|*b>=d.filesystem_blocks()){return Err(Error::OutOfRange)}
+ }
  for (target,data) in ordered_targets.iter().zip(ordered_data.iter()){
   if *target>=d.filesystem_blocks()||data.len()!=bs{return Err(Error::OutOfRange)}
  }
@@ -103,6 +109,22 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
   d.write_block(phys,data).map_err(|_|Error::Io)?;
   cursor=next_log(&sb,cursor);
  }
+ if !revoked_targets.is_empty(){
+  descriptor.fill(0);
+  descriptor[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+  descriptor[4..8].copy_from_slice(&JBD2_REVOKE_BLOCK.to_be_bytes());
+  descriptor[8..12].copy_from_slice(&sequence.to_be_bytes());
+  let bytes=16usize+revoked_targets.len()*revoke_width;
+  descriptor[12..16].copy_from_slice(&(bytes as u32).to_be_bytes());
+  for (i,target) in revoked_targets.iter().enumerate(){
+   let o=16+i*revoke_width;
+   descriptor[o..o+4].copy_from_slice(&(*target as u32).to_be_bytes());
+   if sb.block_count_64{descriptor[o+4..o+8].copy_from_slice(&((*target>>32) as u32).to_be_bytes())}
+  }
+  let revoke_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+  d.write_block(revoke_phys,descriptor).map_err(|_|Error::Io)?;
+  cursor=next_log(&sb,cursor);
+ }
  descriptor.fill(0);
  descriptor[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
  descriptor[4..8].copy_from_slice(&JBD2_COMMIT_BLOCK.to_be_bytes());
@@ -121,6 +143,16 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
  d.write_block(sb_phys,journal_superblock).map_err(|_|Error::Io)?;
  d.flush().map_err(|_|Error::Io)?;
  Ok(sequence)
+}
+
+/// Commit ordered data and journaled metadata without revoke records.
+pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8],
+ ordered_targets:&[u64],ordered_data:&[&[u8]],
+ metadata_targets:&[u64],metadata_data:&[&[u8]],descriptor:&mut[u8],
+)->Result<u32,Error>{
+ commit_ordered_with_revokes(d,m,journal_superblock,ordered_targets,ordered_data,
+  metadata_targets,metadata_data,&[],descriptor)
 }
 
 /// Full journal recovery entry point. The caller reads the journal inode's
