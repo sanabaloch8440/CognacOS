@@ -275,6 +275,12 @@ A bounded, allocation-free parser now validates external xattr block headers, re
 This is deliberately only the structural half of xattr ownership. The parser does **not** authenticate the ext4 xattr checksum, resolve the owning inode's `i_file_acl` pointer, prove inode allocation state, reconcile shared-block reference counts across all allocated inodes, or authorize xattr blocks for JBD2 replay. Mount recovery continues to reject replay targets in xattr blocks.
 
 
+## Checked-mount xattr and system-zone validation
+
+The checked system-zone layer now exposes `validate_inode_external_xattr_in_zones`, and `CheckedExtFilesystem::validate_external_xattr` applies it using the mount's validated superblock and protected-zone map. It validates the inode checksum before reading `i_file_acl`, bounds-checks the physical block, rejects overlap with protected system zones, and validates xattr structure. When `metadata_csum` is enabled it also derives the filesystem seed and verifies the external block checksum; otherwise it does not incorrectly require a checksum that the feature does not provide. Tests cover safe pointers, system-zone overlap, and bad inode checksums.
+
+This is still a validation API, not complete ownership discovery: the caller must independently prove inode allocation and xattr-block bitmap allocation. Shared reference-count reconciliation and xattr records in the JBD2 replay allowlist remain unimplemented, so this does not enable replay or writable mounting.
+
 ## External xattr checksum validation
 
 The external-xattr module now exposes `validate_external_xattr_checksum` in addition to structural parsing. It verifies the metadata checksum over the block with the checksum field zeroed, binding the absolute physical block number and, for exclusively referenced blocks (`h_refcount == 1`), the owning inode number and generation. Shared blocks use the shared-block checksum form and do not accept an arbitrary inode identity as checksum input. Tests cover exclusive/shared checksum construction, missing owner identity, and payload corruption.
