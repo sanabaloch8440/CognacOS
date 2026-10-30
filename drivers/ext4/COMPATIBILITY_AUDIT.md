@@ -258,3 +258,19 @@ compatibility. Async commit, fast commits, external journals, and a persistent
 multi-transaction checkpointing daemon remain outside the supported feature
 set. The mount layer must still provide exact metadata ownership policy and
 keep the filesystem offline after uncertain I/O failures.
+
+
+## Failure-atomic metadata operation staging
+
+The mutation layer now provides caller-buffered staging wrappers for regular-file
+create, unlink, and inline-extent resize. Each wrapper computes changes against
+separate inode/directory/freed-range buffers and publishes them to the caller's
+live buffers only after all operation-level validation and checksum updates
+succeed. This prevents a failed second half of a multi-object operation from
+leaving the caller's in-memory inode or directory image partially modified.
+
+These wrappers do not themselves commit storage. Callers must stage every
+resulting metadata image, bitmap, group descriptor, superblock and any ordered
+data/revoke records in one mount-owned JBD2 transaction before reporting the
+operation durable. Last-link unlink still requires extent and inode reclamation
+in that same transaction; external extent-tree mutation remains unsupported.
