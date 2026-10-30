@@ -223,7 +223,7 @@ fn poll_ps2_keyboard_input(){
    if stack.attach_port().is_err()||stack.open().is_err(){return}
    let mut io=KernelPs2PortIo;
    if (&mut *core::ptr::addr_of_mut!(KBD_PORT)).start(&mut io,100_000).is_err(){
-    serial_write(b"PS/2 keyboard controller initialization failed; polling input disabled.\\r\\n");return
+    serial_write(b"PS/2 keyboard controller initialization failed; polling input disabled.\r\n");return
    }
   }
   KBD_STACK_READY.store(true,Ordering::Release);
@@ -368,8 +368,8 @@ extern "C" fn xhci_set_bus_master(device_object:u64,enabled:bool)->bool{
     let verify=unsafe{hal::read_port_u32(0x0cfc)} as u16;
     let ok=(verify&0x4!=0)==enabled;
     if ok {
-        if enabled { unsafe{serial_write(b"xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.\\r\\n");} }
-        else { unsafe{serial_write(b"xHCI PCI bus mastering disabled.\\r\\n");} }
+        if enabled { unsafe{serial_write(b"xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.\r\n");} }
+        else { unsafe{serial_write(b"xHCI PCI bus mastering disabled.\r\n");} }
     }
     ok
 }
