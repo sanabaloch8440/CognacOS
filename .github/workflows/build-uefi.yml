@@ -170,6 +170,10 @@ jobs:
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib gpt_partition_create_extend_delete_updates_both_crc_protected_copies
       - name: Test GPT partition overlap and bounds rejection
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib gpt_partition_mutations_reject_overlap_and_out_of_usable_bounds
+      - name: Test MBR primary partition create, extend, and delete
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib mbr_primary_create_extend_delete_and_overlap_checks
+      - name: Test MBR mutation rejects protective and extended layouts
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib mbr_mutation_rejects_protective_and_extended_layouts
       - name: Test ext4 writes reject requests beyond EOF
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib writes_past_inode_eof_are_rejected_before_device_io
       - name: Test ext4 in-place writes preserve untouched bytes
