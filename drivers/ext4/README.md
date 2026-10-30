@@ -111,7 +111,7 @@ The coordinator is a bounded commit primitive, not yet the writable VFS mount pa
 The ext4 recovery path now rejects committed journal tags that point back into the internal journal inode's physical extents. This check runs before each home-block write and is covered by a regression test. It prevents journal self-overwrite but is not a substitute for per-object metadata ownership checks or JBD2 checksums. Writable mounting remains disabled.
 
 
-`CheckedExtFilesystem::mount_with_recovery` is the checked entry point for filesystems with an internal journal: it constructs the system-zone map, protects journal extents, performs bounded replay with journal self-overwrite protection, then mounts only after the journal is clean. This is still a restricted legacy-JBD2 implementation; unsupported checksum/async/fast-commit formats fail closed, and writable mounts remain disabled pending crash-injection and Linux interoperability validation.
+`CheckedExtFilesystem::mount_with_recovery` is the checked entry point for filesystems with an internal journal: it constructs the system-zone map, protects journal extents, performs bounded replay with journal self-overwrite protection, then mounts only after the journal is clean. This is still a restricted JBD2 implementation: checksum-v2/v3 replay is validated, while checksum-v1, async-commit, and fast-commit formats fail closed. Writable mounts remain disabled pending crash-injection and Linux interoperability validation.
 
 
 Mounted mutation code should use `ops::allocate_block_checked` and `ops::free_block_checked`: allocation skips bitmap-free blocks that overlap the retained system-zone map, while freeing rejects protected metadata and journal extents. The original unchecked primitives remain lower-level helpers and are not safe substitutes for the checked APIs.
@@ -123,7 +123,7 @@ The mount-owned transaction layer now exports a typed OperationBuilder for Creat
 
 The orphan module validates the legacy orphan chain with bounded caller storage and submits all inode repairs plus the cleared superblock head through one transaction callback. The callback must implement the correct linked-inode truncate and zero-link inode reclamation behavior; the module does not guess at extent/bitmap changes.
 
-These are foundations for wiring the actual VFS mutation paths, not proof that all operations are already connected. JBD2 checksum-v1/v2/v3 remain unsupported and fail closed. Mount-time orphan recovery is not yet connected to a concrete transaction adapter. Writable mounts remain disabled.
+These are foundations for wiring the actual VFS mutation paths, not proof that all operations are already connected. JBD2 checksum-v2/v3 replay is supported with superblock, metadata-block, tag-data, UUID, and commit validation; checksum-v1 remains unsupported. Mount-time orphan recovery is not yet connected to a concrete transaction adapter. Writable mounts remain disabled.
 
 
 ## JBD2 checksum validation
