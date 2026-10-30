@@ -78,6 +78,26 @@ pub fn insert_dx_entry(block:&mut[u8],count_offset:usize,hash:u32,child:u32,meta
  update_dx(block,count_offset,limit,count+1,metadata_csum,inode_seed)
 }
 
+/// Expand a full depth-zero root into a single-child root plus a new dx_node.
+/// The caller allocates new_node_logical and journals both blocks atomically.
+pub fn grow_dx_root(root:&mut[u8],new_node:&mut[u8],new_node_logical:u32,metadata_csum:bool,inode_seed:u32)->Result<(),Error>{
+ const RO:usize=32;const NO:usize=8;
+ if root.len()!=new_node.len()||root.len()<1024||new_node_logical==0||new_node_logical>0x0fff_ffff{return Err(Error::InvalidGeometry)}
+ if root[30]!=0{return Err(Error::UnsupportedFormat)}
+ let(limit,count)=dx_limit(root,RO,metadata_csum)?;
+ if metadata_csum{let stored=u32at(root,RO+limit*8+4)?;if dx_checksum(root,RO,limit,count,inode_seed)?!=stored{return Err(Error::InvalidChecksum)}}
+ let node_limit=root.len().checked_sub(NO+if metadata_csum{8}else{0}).ok_or(Error::InvalidGeometry)?/8;
+ if count>node_limit||node_limit>u16::MAX as usize{return Err(Error::OutOfRange)}
+ new_node.fill(0);new_node[..8].copy_from_slice(&root[..8]);
+ put16(new_node,NO,node_limit as u16)?;put16(new_node,NO+2,count as u16)?;
+ new_node[NO+4..NO+8].copy_from_slice(&root[RO+4..RO+8]);
+ for i in 1..count{let s=RO+i*8;let d=NO+i*8;new_node[d..d+8].copy_from_slice(&root[s..s+8]);}
+ update_dx(new_node,NO,node_limit,count,metadata_csum,inode_seed)?;
+ root[30]=1;root[RO..RO+limit*8].fill(0);
+ put16(root,RO,limit as u16)?;put16(root,RO+2,1)?;put32(root,RO+4,new_node_logical)?;
+ update_dx(root,RO,limit,1,metadata_csum,inode_seed)
+}
+
 /// Split a full interior dx_node into two valid nodes. The caller inserts the
 /// returned separator/new-node block into the parent in the same transaction.
 /// This primitive deliberately does not mutate the parent; a full parent must
@@ -89,7 +109,7 @@ pub fn split_dx_node(node:&mut[u8],new_node:&mut[u8],source_copy:&mut[u8],metada
  if metadata_csum{let stored=u32at(node,OFF+limit*8+4)?;if dx_checksum(node,OFF,limit,count,inode_seed)?!=stored{return Err(Error::InvalidChecksum)}}
  if count<2{return Err(Error::InvalidDirectoryEntry)}
  source_copy.copy_from_slice(node);
- let split=count/2;let separator=u32at(source_copy,OFF+split*8)?;
+ let split=count/2;let mut separator=u32at(source_copy,OFF+split*8)?;let previous=if split==1{0}else{u32at(source_copy,OFF+(split-1)*8)?};if (previous&!1)==(separator&!1){separator|=1;}
  let new_count=count-split;
  node.fill(0);new_node.fill(0);
  node[..8].copy_from_slice(&source_copy[..8]);new_node[..8].copy_from_slice(&source_copy[..8]);
