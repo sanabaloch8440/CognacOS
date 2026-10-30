@@ -428,7 +428,6 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
  if !sb.needs_recovery(){return Ok(ReplayReport::default())}
  let mut report=ReplayReport::default();let mut cursor=sb.start;let mut expected=sb.sequence;let log_capacity=sb.max_len.saturating_sub(sb.first);
  let mut tags=[Tag::EMPTY;MAX_TRANSACTION_TAGS];let mut tag_count=0usize;let mut revokes=[Revoke::EMPTY;MAX_TRANSACTION_REVOKES];let mut revoke_count=0usize;let mut guard=0u32;
- let mut journal_tag_uuid:Option<[u8;16]>=if sb.format_version==1{None}else{Some(sb.uuid)};
  while guard<log_capacity{
   guard+=1;read_journal(d,m,cursor,scratch)?;
   if be32(scratch,0)?!=JBD2_MAGIC||be32(scratch,8)?!=expected{report.stopped_on_incomplete=true;break}
@@ -481,12 +480,12 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
       if flags&!(TAG_ESCAPE|TAG_SAME_UUID|TAG_DELETED|TAG_LAST)!=0{return Err(Error::InvalidTag)}
       if sb.block_count_64{target|=(be32(scratch,off)? as u64)<<32;off=off.checked_add(4).ok_or(Error::OutOfRange)?}
       if flags&TAG_SAME_UUID==0{
+       // Linux JBD recovery treats the UUID extension as informational.
+       // Bounds-check and skip it; legacy v1 has no superblock UUID field.
        let end=off.checked_add(16).ok_or(Error::OutOfRange)?;
        if end>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
-       let mut observed=[0u8;16];observed.copy_from_slice(&scratch[off..end]);
-       if let Some(expected_uuid)=journal_tag_uuid{if observed!=expected_uuid{return Err(Error::InvalidTag)}}else{journal_tag_uuid=Some(observed)}
        off=end;
-      }else if journal_tag_uuid.is_none(){return Err(Error::InvalidTag)}
+      }
       if off>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
       if target>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
       let data_block=next_log(sb,tx_cursor);tags[tag_count]=Tag{target,journal_data:data_block,flags,sequence:expected};tag_count+=1;
@@ -775,7 +774,7 @@ mod tests{
   assert_eq!(report.blocks_replayed,1);
   assert_eq!(d.blocks[7],[0x6a;1024]);
  }
- #[test]fn legacy_v1_writer_uses_zero_journal_uuid(){
+ #[test]fn legacy_v1_writer_emits_supplied_journal_uuid(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   let mut js=[0u8;1024];
   js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
