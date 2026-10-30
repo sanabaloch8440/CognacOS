@@ -223,6 +223,8 @@ pub const NT_SYSCALL_SET_EVENT: u64 = 0x156;
 pub const NT_SYSCALL_RESET_EVENT: u64 = 0x157;
 pub const NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT: u64 = 0x158;
 pub const NT_SYSCALL_OPEN_EVENT: u64 = 0x159;
+pub const NT_SYSCALL_LOAD_DLL: u64 = 0x15a;
+pub const NT_SYSCALL_COMPLETE_DLL_INIT: u64 = 0x15b;
 
 #[derive(Clone, Copy)]
 struct UserAddressWaiter { active: bool, process: u64, address: u64, thread: u64, deadline: u64 }
@@ -1890,6 +1892,83 @@ fn nt_wait_for_single_object(args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
 }
 
 
+
+const DLL_FILE_CAPACITY:usize=4*1024*1024;
+const DLL_DEPTH:usize=crate::pe_dependencies::transaction::MAX_LOAD_DEPTH;
+const DLL_POOL_TAG:u32=0x4c44_4c43;
+#[repr(C)] struct LoadDllResponse{base:u64,entry:u64,slot:u32,generation:u32,already_loaded:u32,path_len:u32,path:[u8;crate::file_services::MAX_PATH_BYTES]}
+fn read_user_ascii(address:u64,out:&mut[u8])->Result<usize,u64>{
+ if address==0{return Err(NT_STATUS_INVALID_PARAMETER);}
+ for i in 0..out.len(){
+  if !copy_current_user_from(address.checked_add(i as u64).ok_or(NT_STATUS_ACCESS_VIOLATION)?,&mut out[i..i+1]){return Err(NT_STATUS_ACCESS_VIOLATION);}
+  if out[i]==0{return Ok(i);}if !out[i].is_ascii(){return Err(NT_STATUS_INVALID_PARAMETER);}
+ }
+ Err(0xC0000023)
+}
+fn nt_load_dll(args:&[u64;NT_MAX_ARGUMENTS])->u64{
+ if args[0]==0||args[2]==0{return NT_STATUS_INVALID_PARAMETER;}
+ let mut namebuf=[0u8;crate::pe_modules::MAX_NAME_BYTES];
+ let n=match read_user_ascii(args[0],&mut namebuf){Ok(n)if n>0=>n,_=>return NT_STATUS_ACCESS_VIOLATION};
+ let name=&namebuf[..n];
+ if !name.iter().all(|b|b.is_ascii_alphanumeric()||matches!(*b,b'.'|b'_'|b'-'|b'+')){return NT_STATUS_INVALID_PARAMETER;}
+ let mut path=[0u8;crate::file_services::MAX_PATH_BYTES];
+ let mut plen=if args[1]==0{0}else{match read_user_ascii(args[1],&mut path){Ok(n)=>n,Err(s)=>return s}};
+ let pid=current_process_id();let process=crate::process::eprocess_pointer_for_pid(pid);
+ if pid==0||process.is_null(){return NT_STATUS_INVALID_HANDLE;}
+ let root=unsafe{(*process).address_space_root};
+ let mut space=match unsafe{AddressSpace::attach_existing(root)}{Ok(v)=>v,Err(_)=>return NT_STATUS_INVALID_HANDLE};
+ let total=match DLL_FILE_CAPACITY.checked_mul(DLL_DEPTH+1){Some(v)=>v,None=>return NT_STATUS_INVALID_PARAMETER};
+ let pool=crate::ntoskrnl::ex::pool::ex_allocate_pool2(1,total,DLL_POOL_TAG);
+ if pool.is_null(){return 0xC000009Au64;}
+ let backing=unsafe{core::slice::from_raw_parts_mut(pool,total)};
+ let(rootbuf,rest)=backing.split_at_mut(DLL_FILE_CAPACITY);
+ let mut depth_buffers:[&mut[u8];DLL_DEPTH]=core::array::from_fn(|i|{let start=i*DLL_FILE_CAPACITY;&mut rest[start..start+DLL_FILE_CAPACITY]});
+ let mut loaded=if plen>0{
+  unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)}
+ }else{Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND)};
+ if matches!(loaded,Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND)|Err(crate::pe_loader::STATUS_DLL_NOT_FOUND)){
+  let prefix=br"\SystemRoot\System32\";
+  if prefix.len()+n<path.len(){path[..prefix.len()].copy_from_slice(prefix);path[prefix.len()..prefix.len()+n].copy_from_slice(name);plen=prefix.len()+n;
+   loaded=unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)};}
+ }
+ if matches!(loaded,Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND)|Err(crate::pe_loader::STATUS_DLL_NOT_FOUND)){
+  let prefix=br"\Windows\System32\";
+  if prefix.len()+n<path.len(){path[..prefix.len()].copy_from_slice(prefix);path[prefix.len()..prefix.len()+n].copy_from_slice(name);plen=prefix.len()+n;
+   loaded=unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)};}
+ }
+ let result=match loaded{Ok(v)=>v,Err(status)=>{crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return status as u32 as u64;}};
+ let mut response=LoadDllResponse{base:result.image.base,entry:0,slot:result.slot as u32,generation:result.generation,already_loaded:result.already_loaded as u32,path_len:plen as u32,path};
+ if !result.already_loaded{
+  match crate::pe_loader::prepare_module_initialization(&space,pid,name){
+   Ok((slot,generation,entry))=>{
+    response.slot=slot as u32;response.generation=generation;response.entry=entry;
+    match crate::pe_runtime::tls_layout(result.image.base){
+     Ok(layout)if !layout.present=>{},
+     Ok(_)=>{let _=unsafe{crate::pe_loader::complete_module_initialization(&mut space,pid,name,slot,generation,false)};crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return 0xC0000002u64;},
+     Err(_)=>{let _=unsafe{crate::pe_loader::complete_module_initialization(&mut space,pid,name,slot,generation,false)};crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return 0xC000007Bu64;}
+    }
+   }
+   Err(status)=>{let _=unsafe{crate::pe_loader::unload_dll(&mut space,pid,name)};crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return status as u32 as u64;}
+  }
+ }
+ let bytes=unsafe{core::slice::from_raw_parts((&response as *const LoadDllResponse).cast::<u8>(),core::mem::size_of::<LoadDllResponse>())};
+ let copied=copy_current_user_to(args[2],bytes);
+ if !copied&&!result.already_loaded{let _=unsafe{crate::pe_loader::complete_module_initialization(&mut space,pid,name,result.slot,result.generation,false)};}
+ crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);
+ if copied{NT_STATUS_SUCCESS}else{NT_STATUS_ACCESS_VIOLATION}
+}
+fn nt_complete_dll_init(args:&[u64;NT_MAX_ARGUMENTS])->u64{
+ if args[0]==0||args[1]>=crate::pe_modules::MAX_MODULES as u64||args[2]==0||args[3]>1{return NT_STATUS_INVALID_PARAMETER;}
+ let mut name=[0u8;crate::pe_modules::MAX_NAME_BYTES];
+ let n=match read_user_ascii(args[0],&mut name){Ok(n)if n>0=>n,_=>return NT_STATUS_ACCESS_VIOLATION};
+ let pid=current_process_id();let process=crate::process::eprocess_pointer_for_pid(pid);
+ if process.is_null(){return NT_STATUS_INVALID_HANDLE;}
+ let mut space=match unsafe{AddressSpace::attach_existing((*process).address_space_root)}{Ok(v)=>v,Err(_)=>return NT_STATUS_INVALID_HANDLE};
+ match unsafe{crate::pe_loader::complete_module_initialization(&mut space,pid,&name[..n],args[1]as usize,args[2]as u32,args[3]!=0)}{
+  Ok(())=>NT_STATUS_SUCCESS,Err(status)=>status as u32 as u64
+ }
+}
+
 fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
     match number {
         NT_SYSCALL_WAIT_ON_ADDRESS => wait_on_user_address(args),
@@ -1898,6 +1977,8 @@ fn dispatch_native_nt(number: u64, args: &[u64; NT_MAX_ARGUMENTS]) -> u64 {
         NT_SYSCALL_RESET_EVENT => nt_reset_event(args),
         NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT => nt_wait_for_single_object(args),
         NT_SYSCALL_OPEN_EVENT => nt_open_event(args),
+        NT_SYSCALL_LOAD_DLL => nt_load_dll(args),
+        NT_SYSCALL_COMPLETE_DLL_INIT => nt_complete_dll_init(args),
         NT_SYSCALL_WAKE_ADDRESS => wake_user_address(args,false),
         NT_SYSCALL_WAKE_ALL_ADDRESS => wake_user_address(args,true),
         NT_SYSCALL_DEBUG_EVENT => {
@@ -2177,6 +2258,8 @@ pub extern "C" fn cognacos_nt_syscall_dispatch(frame: *mut u64) -> u64 {
             NT_SYSCALL_CREATE_EVENT => 5,
             NT_SYSCALL_SET_EVENT | NT_SYSCALL_RESET_EVENT => 2,
             NT_SYSCALL_WAIT_FOR_SINGLE_OBJECT => 3,
+            NT_SYSCALL_LOAD_DLL => 3,
+            NT_SYSCALL_COMPLETE_DLL_INIT => 4,
             NT_SYSCALL_WAKE_ADDRESS | NT_SYSCALL_WAKE_ALL_ADDRESS => 1,
             NT_SYSCALL_DEBUG_EVENT => 3,
             _ => return NT_STATUS_NOT_IMPLEMENTED,
