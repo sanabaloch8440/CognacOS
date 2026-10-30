@@ -31,8 +31,21 @@ static BACKEND_STATE:core::sync::atomic::AtomicU8=core::sync::atomic::AtomicU8::
 
 #[derive(Clone,Copy)]struct Mapping{used:bool,busy:bool,device:usize,token:usize,irp:usize,physical:u64,logical:u64,length:u32,cookie:u64,direction:u8}
 impl Mapping{const EMPTY:Self=Self{used:false,busy:false,device:0,token:0,irp:0,physical:0,logical:0,length:0,cookie:0,direction:0};}
-#[derive(Clone,Copy)]struct Common{used:bool,device:usize,cpu:usize,physical:u64,logical:u64,length:usize,pages:usize,cookie:u64}
-impl Common{const EMPTY:Self=Self{used:false,device:0,cpu:0,physical:0,logical:0,length:0,pages:0,cookie:0};}
+#[derive(Clone,Copy)]struct Common{used:bool,busy:bool,device:usize,cpu:usize,physical:u64,logical:u64,length:usize,pages:usize,cookie:u64}
+impl Common{const EMPTY:Self=Self{used:false,busy:false,device:0,cpu:0,physical:0,logical:0,length:0,pages:0,cookie:0};}
+
+/// A mapping whose rollback cannot be proven must never return to a caller that
+/// may release its backing pages. Stop the kernel rather than permit DMA into
+/// reclaimed memory. Normal backend failures are returned before reaching here.
+fn fatal_dma_lifetime_violation()->!{
+    loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
+}
+fn rollback_backend_mapping(b:&IommuBackend,device:usize,logical:u64,cookie:u64){
+    if logical==0||cookie==0 { fatal_dma_lifetime_violation(); }
+    if unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)}!=OK {
+        fatal_dma_lifetime_violation();
+    }
+}
 struct State{maps:[Mapping;MAX_MAPPINGS],common:[Common;MAX_COMMON]}
 static STATE:crate::hal::IrqSpinLock<State>=crate::hal::IrqSpinLock::new(State{maps:[Mapping::EMPTY;MAX_MAPPINGS],common:[Common::EMPTY;MAX_COMMON]});
 fn backend()->Result<&'static IommuBackend,i32>{
@@ -58,6 +71,7 @@ pub unsafe extern "system" fn RdotDmaRegisterIommuBackend(ops:*mut IommuBackend)
 }
 pub fn available()->bool{backend().is_ok()}
 pub fn device_busy(device:usize)->bool{let s=STATE.lock();s.maps.iter().any(|m|m.used&&m.device==device)||s.common.iter().any(|b|b.used&&b.device==device)}
+pub fn common_allocation_count(device:usize)->usize{let s=STATE.lock();s.common.iter().filter(|c|c.used&&!c.busy&&c.device==device).count()}
 fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{
  if device==0||token==0||length==0||physical.checked_add(length as u64).is_none(){return Err(DmaError::InvalidLength)}
  // A DMA adapter handle is not a PCI requester ID. Require PnP to have
@@ -72,15 +86,15 @@ fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:
  // If it partially installed a mapping but returned malformed outputs, attempt
  // rollback before reporting failure so a bad backend cannot silently leak IOVA.
  if logical_out==0||cookie_out==0||logical_out.checked_add(length as u64).is_none(){
-  if logical_out!=0&&cookie_out!=0{let _=unsafe{(b.unmap.unwrap())(b.context,device,logical_out,cookie_out)};}
+  rollback_backend_mapping(b,device,logical_out,cookie_out);
   return Err(DmaError::AddressMask)
  }
  let mut s=STATE.lock();
  let logical_end=logical_out.checked_add(length as u64).ok_or(DmaError::AddressMask)?;
  let overlaps_map=s.maps.iter().any(|m|m.used&&m.device==device&&logical_out<m.logical.saturating_add(m.length as u64)&&m.logical<logical_end);
  let overlaps_common=s.common.iter().any(|x|x.used&&x.device==device&&logical_out<x.logical.saturating_add((x.pages as u64)*PAGE_SIZE)&&x.logical<logical_end);
- if overlaps_map||overlaps_common{drop(s);unsafe{(b.unmap.unwrap())(b.context,device,logical_out,cookie_out)};return Err(DmaError::AddressMask)}
- let Some(slot)=s.maps.iter_mut().find(|m|!m.used)else{drop(s);unsafe{(b.unmap.unwrap())(b.context,device,logical_out,cookie_out)};return Err(DmaError::RegistryFull)};
+ if overlaps_map||overlaps_common{drop(s);rollback_backend_mapping(b,device,logical_out,cookie_out);return Err(DmaError::AddressMask)}
+ let Some(slot)=s.maps.iter_mut().find(|m|!m.used)else{drop(s);rollback_backend_mapping(b,device,logical_out,cookie_out);return Err(DmaError::RegistryFull)};
  *slot=Mapping{used:true,busy:false,device,token,irp,physical,logical:logical_out,length,cookie:cookie_out,direction};fence(Ordering::SeqCst);Ok(logical_out)
 }
 fn unmap_index(index:usize)->bool{
@@ -98,7 +112,7 @@ pub fn map_transfer(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u3
  if !super::consume_map_register(token,device){return Err(DmaError::OutOfMemory)}
  match map_one(device,token as usize,0,physical,length,direction){
   Ok(v) if v.checked_add(length as u64).is_some_and(|end|end>0&&end-1<=super::adapter_maximum_address(adapter))=>Ok(v),
-  Ok(v)=>{let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token as usize&&m.logical==v)};if let Some(i)=idx{let _=unmap_index(i);}Err(DmaError::AddressMask)},
+  Ok(v)=>{let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.device==device&&m.token==token as usize&&m.logical==v)};if let Some(i)=idx{if !unmap_index(i){fatal_dma_lifetime_violation();}}else{fatal_dma_lifetime_violation();}Err(DmaError::AddressMask)},
   Err(e)=>{super::return_map_register(token,device);Err(e)}
  }
 }
@@ -134,20 +148,29 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
  // fail without leaking a contiguous allocation from the kernel page allocator.
  let b=backend().map_err(|_|DmaError::AddressMask)?;
  let pages=length.checked_add(PAGE_SIZE as usize-1).ok_or(DmaError::InvalidLength)?/PAGE_SIZE as usize;
- let physical=unsafe{crate::memory::allocate_contiguous_pages(pages)}.map_err(|_|DmaError::OutOfMemory)?;
  let bytes=(pages as u64).checked_mul(PAGE_SIZE).ok_or(DmaError::InvalidLength)?;
+ if bytes==0||bytes>u32::MAX as u64{return Err(DmaError::InvalidLength)}
+ let physical=unsafe{crate::memory::allocate_contiguous_pages(pages)}.map_err(|_|DmaError::OutOfMemory)?;
  if bytes>u32::MAX as u64||physical.checked_add(bytes-1).is_none(){for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
  let Some(cpu)=crate::memory::direct_map_address(physical)else{for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)};
  unsafe{ptr::write_bytes(cpu as *mut u8,0,bytes as usize);}
  let mut logical=0;let mut cookie=0;
  let st=unsafe{(b.map.unwrap())(b.context,device,physical,bytes as u32,2,&mut logical,&mut cookie)};
- if st!=OK||logical==0||cookie==0||logical.checked_add(bytes).is_none_or(|e|e-1>maximum){if st==OK&&cookie!=0{let _=unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)};}for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
+ if st!=OK {
+  for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}
+  return Err(DmaError::AddressMask)
+ }
+ if logical==0||cookie==0||logical.checked_add(bytes).is_none_or(|e|e-1>maximum){
+  rollback_backend_mapping(b,device,logical,cookie);
+  for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}
+  return Err(DmaError::AddressMask)
+ }
  let mut s=STATE.lock();let logical_end=logical.checked_add(bytes).ok_or(DmaError::AddressMask)?;
  let overlap_maps=s.maps.iter().any(|m|m.used&&m.device==device&&logical<m.logical.saturating_add(m.length as u64)&&m.logical<logical_end);
  let overlap_common=s.common.iter().any(|x|x.used&&x.device==device&&logical<x.logical.saturating_add((x.pages as u64)*PAGE_SIZE)&&x.logical<logical_end);
- if overlap_maps||overlap_common{drop(s);let _=unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)};for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
- let Some(slot)=s.common.iter_mut().find(|c|!c.used)else{drop(s);let _=unsafe{(b.unmap.unwrap())(b.context,device,logical,cookie)};for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::RegistryFull)};
- *slot=Common{used:true,device,cpu:cpu as usize,physical,logical,length,pages,cookie};fence(Ordering::SeqCst);Ok((cpu as *mut u8,logical))
+ if overlap_maps||overlap_common{drop(s);rollback_backend_mapping(b,device,logical,cookie);for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
+ let Some(slot)=s.common.iter_mut().find(|c|!c.used)else{drop(s);rollback_backend_mapping(b,device,logical,cookie);for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::RegistryFull)};
+ *slot=Common{used:true,busy:false,device,cpu:cpu as usize,physical,logical,length,pages,cookie};fence(Ordering::SeqCst);Ok((cpu as *mut u8,logical))
 }
 pub unsafe fn free_common(adapter:*mut c_void,cpu:*mut u8,logical:u64,length:usize)->Result<(),DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;
@@ -156,17 +179,18 @@ pub unsafe fn free_common(adapter:*mut c_void,cpu:*mut u8,logical:u64,length:usi
  // Otherwise a transient backend failure would orphan pages and lose the only
  // ownership record capable of freeing them.
  let b=backend().map_err(|_|DmaError::AddressMask)?;
- let rec={let mut s=STATE.lock();let Some(i)=s.common.iter().position(|c|c.used&&c.device==device&&c.cpu==cpu as usize&&c.logical==logical&&c.length==length)else{return Err(DmaError::NotFound)};let c=s.common[i];s.common[i]=Common::EMPTY;c};
+ let (index,rec)={let mut s=STATE.lock();let Some((i,c))=s.common.iter_mut().enumerate().find(|(_,c)|c.used&&!c.busy&&c.device==device&&c.cpu==cpu as usize&&c.logical==logical&&c.length==length)else{return Err(DmaError::NotFound)};c.busy=true;(i,*c)};
  let mapped_bytes=(rec.pages as u64*PAGE_SIZE) as u32;
  let sync=unsafe{(b.sync.unwrap())(b.context,device,rec.logical,mapped_bytes,2)};
- if sync!=OK{let mut s=STATE.lock();if let Some(slot)=s.common.iter_mut().find(|c|!c.used){*slot=rec;}return Err(DmaError::AddressMask)}
+ if sync!=OK{STATE.lock().common[index].busy=false;return Err(DmaError::AddressMask)}
  let st=unsafe{(b.unmap.unwrap())(b.context,device,rec.logical,rec.cookie)};
- if st!=OK{let mut s=STATE.lock();if let Some(slot)=s.common.iter_mut().find(|c|!c.used){*slot=rec;}return Err(DmaError::AddressMask)}
+ if st!=OK{STATE.lock().common[index].busy=false;return Err(DmaError::AddressMask)}
+ {let mut s=STATE.lock();if s.common[index].used&&s.common[index].cookie==rec.cookie{s.common[index]=Common::EMPTY;}else{fatal_dma_lifetime_violation();}}
  for i in 0..rec.pages{unsafe{crate::memory::free_page(rec.physical+i as u64*PAGE_SIZE)}.map_err(|_|DmaError::OutOfMemory)?;}Ok(())
 }
 pub fn flush_common(adapter:*mut c_void,cpu:*mut u8,length:usize)->Result<(),DmaError>{
  if cpu.is_null()||length==0{return Err(DmaError::InvalidLength)}let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;if requester_identity(device).is_none(){return Err(DmaError::AddressMask)}let b=backend().map_err(|_|DmaError::AddressMask)?;
- let rec={let s=STATE.lock();s.common.iter().find(|c|c.used&&c.device==device&&c.cpu==cpu as usize&&length<=c.length).copied().ok_or(DmaError::NotFound)?};
+ let rec={let s=STATE.lock();s.common.iter().find(|c|c.used&&!c.busy&&c.device==device&&c.cpu==cpu as usize&&length<=c.length).copied().ok_or(DmaError::NotFound)?};
  if unsafe{(b.sync.unwrap())(b.context,device,rec.logical,length as u32,2)}!=OK{return Err(DmaError::AddressMask)}fence(Ordering::SeqCst);unsafe{core::arch::asm!("mfence",options(nostack,preserves_flags));}Ok(())
 }
 #[cfg(test)]mod tests{use super::*;#[test]fn no_backend_fails_closed(){assert!(!available());}}
