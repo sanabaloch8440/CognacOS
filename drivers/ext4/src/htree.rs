@@ -110,7 +110,16 @@ fn parse_dx_map(
     if entries_end > block.len() - tail_bytes {
         return Err(Error::InvalidDirectoryEntry);
     }
-    Ok(DxMap { count, limit, offset: count_offset })
+    let map = DxMap { count, limit, offset: count_offset };
+    let mut previous_hash = 0u32;
+    for index in 0..count {
+        let (hash, child) = dx_entry(block, map, index)?;
+        if child == 0 || (index != 0 && hash < previous_hash) {
+            return Err(Error::InvalidDirectoryEntry);
+        }
+        previous_hash = hash;
+    }
+    Ok(map)
 }
 
 fn dx_entry(block: &[u8], map: DxMap, index: usize) -> Result<(u32, u32), Error> {
@@ -131,7 +140,7 @@ fn dx_entry(block: &[u8], map: DxMap, index: usize) -> Result<(u32, u32), Error>
 fn has_hash_collision(block: &[u8], map: DxMap, selected: usize, query_hash: u32) -> Result<bool, Error> {
     if selected + 1 >= map.count { return Ok(false); }
     let (next_hash, _) = dx_entry(block, map, selected + 1)?;
-    Ok((next_hash & !1) == (query_hash & !1))
+    Ok((next_hash & !1) == query_hash)
 }
 
 fn select_dx_entry(block: &[u8], map: DxMap, query_hash: u32) -> Result<(usize, u32), Error> {
@@ -207,6 +216,7 @@ pub fn lookup_htree_leaf<R: DirectoryBlockReader>(
     if root_block.len() < 1024 || scratch.len() != root_block.len() || directory_blocks < 2 {
         return Err(Error::InvalidGeometry);
     }
+    if query_hash & 1 != 0 { return Err(Error::InvalidGeometry); }
     let (hash_version, levels) = validate_dx_root(root_block)?;
     let root_map = parse_dx_map(root_block, DX_ROOT_ENTRIES_OFFSET, metadata_csum, inode_checksum_seed)?;
     let (mut selected, mut logical) = select_dx_entry(root_block, root_map, query_hash)?;
