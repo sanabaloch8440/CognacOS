@@ -375,7 +375,7 @@ pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
  let start=found.ok_or(Error::NoVirtualSpace)?;for n in 0..pages{bits[(start+n)/64]|=1u64<<((start+n)%64)}
  let va=BASE+start as u64*PAGE;let mut mapped=0;
  while mapped<pages {
-  let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if reclaim_one_locked(root)||reclaim_one_locked(root,None){match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>break}}else{break}}};
+  let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if reclaim_one_locked(root,None)||reclaim_one_locked(root,None){match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>break}}else{break}}};
   if unsafe{map(root,va+mapped as u64*PAGE,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};break} mapped+=1;
  }
  if mapped!=pages {for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,va+n as u64*PAGE)}{synchronize_kernel_tlb();let _=unsafe{crate::memory::free_page(pa)};}}for n in 0..pages{bits[(start+n)/64]&=!(1u64<<((start+n)%64))}return Err(Error::NoPhysicalMemory)}
@@ -610,7 +610,7 @@ pub fn handle_page_fault(address:u64,error_code:u64)->bool {
   if unsafe{leaf.read_volatile()}&P==0{return false}
   unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}return true
  }
- let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if !reclaim_one_locked(root)&&!reclaim_one_locked(root,None){return false}match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>return false}}};
+ let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if !reclaim_one_locked(root,None)&&!reclaim_one_locked(root,None){return false}match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>return false}}};
  if is_swapped {
   let slot=unsafe{(&*SWAP_SLOTS.0.get())[page_index]};
   let Some(destination)=crate::memory::physical_access_pointer(pa) else {let _=unsafe{crate::memory::free_page(pa)};return false};
