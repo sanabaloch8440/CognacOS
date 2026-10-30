@@ -181,3 +181,10 @@ resulting metadata image, bitmap, group descriptor, superblock and any ordered
 data/revoke records in one mount-owned JBD2 transaction before reporting the
 operation durable. Last-link unlink still requires extent and inode reclamation
 in that same transaction; external extent-tree mutation remains unsupported.
+
+
+## Conservative mount-derived metadata replay ownership
+
+Added `build_system_metadata_ownership`, a bounded caller-buffered builder that re-reads the primary group descriptor table, validates descriptor checksums when enabled, validates descriptor geometry against the retained system-zone map, and records exact ownership classes for the primary superblock, primary GDT blocks, per-group block/inode bitmaps, and inode-table blocks. The resulting `MetadataOwnershipMap` can be passed to `recover_internal_journal_with_policy`; duplicate ownership, out-of-range blocks, non-system-zone targets, and insufficient caller capacity fail closed.
+
+This is intentionally a conservative first-stage manifest. Backup superblocks/GDTs and inode-owned directory, extent-tree, xattr, and other metadata blocks are not authorized by this builder. A dirty journal transaction targeting any omitted block is rejected until a separate validated inode/object scanner adds an exact owner record. This does not enable writable mounting or claim complete Linux ext4 replay-target coverage.
