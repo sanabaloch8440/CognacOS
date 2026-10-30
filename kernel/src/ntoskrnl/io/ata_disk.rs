@@ -232,7 +232,7 @@ fn read_inode<D: ReadOnlyBlockDevice>(
 /// It rejects unsupported directory formats instead of guessing at entries.
 fn read_root_file<D: ReadOnlyBlockDevice>(
     dev: &mut D, sb: &extfs::Superblock, name: &[u8], out: &mut [u8],
-    file_inode_out: &mut [u8; 256],
+    file_inode_out: &mut [u8; 256], file_inode_number_out: &mut u32,
 ) -> Result<usize, extfs::Error> {
     if name.is_empty() || name.contains(&b'/') || !sb.has_extents() {
         return Err(extfs::Error::UnsupportedFormat);
@@ -271,6 +271,7 @@ fn read_root_file<D: ReadOnlyBlockDevice>(
     let file = read_inode(dev, sb, file_ino, &mut inode_raw)?;
     if !file.is_regular_file || file.size > out.len() as u64 { return Err(extfs::Error::OutOfRange); }
     file_inode_out.copy_from_slice(&inode_raw);
+    *file_inode_number_out = file_ino;
     let length = file.size as usize;
     let mut done = 0usize;
     let mut scratch = [0u8; 4096];
@@ -514,7 +515,8 @@ pub fn run_ext4_readme_test() -> bool {
     unsafe { crate::serial_write(b"ext4: partition superblock read through the registered partition READ interface.\r\n"); }
     let mut actual = [0u8; 128];
     let mut file_inode_raw = [0u8; 256];
-    let length = match read_root_file(&mut volume, &sb, b"README.txt", &mut actual, &mut file_inode_raw) {
+    let mut file_inode_number = 0u32;
+    let length = match read_root_file(&mut volume, &sb, b"README.txt", &mut actual, &mut file_inode_raw, &mut file_inode_number) {
         Ok(n) => n, Err(_) => return false,
     };
     if length != EXPECTED.len() || &actual[..length] != EXPECTED { return false; }
@@ -530,7 +532,7 @@ pub fn run_ext4_readme_test() -> bool {
         Ok(fs) => fs, Err(_) => return false,
     };
     let mut scratch = [0u8; 4096];
-    match writable.write_file_data(&file_inode_raw[40..100], EXPECTED.len() as u64, 0,
+    match writable.write_file_data(file_inode_number, &file_inode_raw, 0,
         &changed[..EXPECTED.len()], &mut scratch[..sb.block_size as usize]) {
         Ok(n) if n == EXPECTED.len() => {},
         _ => return false,
@@ -538,11 +540,12 @@ pub fn run_ext4_readme_test() -> bool {
     let mut volume = writable.into_device();
     let mut changed_readback = [0u8; 128];
     let mut inode_after_write = [0u8; 256];
-    let changed_len = match read_root_file(&mut volume, &sb, b"README.txt", &mut changed_readback, &mut inode_after_write) {
+    let mut changed_inode_number = 0u32;
+    let changed_len = match read_root_file(&mut volume, &sb, b"README.txt", &mut changed_readback, &mut inode_after_write, &mut changed_inode_number) {
         Ok(n) => n, Err(_) => return false,
     };
     let changed_ok = changed_len == EXPECTED.len() && &changed_readback[..changed_len] == &changed[..EXPECTED.len()];
-    if !changed_ok { return false; }
+    if !changed_ok || changed_inode_number != file_inode_number { return false; }
     unsafe { crate::serial_write(b"Guest ext4 WRITE IRP modified existing README data and read it back exactly.\r\n"); }
 
     // Restore the fixture even though the guest performed a real persistent
@@ -550,7 +553,7 @@ pub fn run_ext4_readme_test() -> bool {
     let mut writable = match extfs::ExtFilesystem::mount_writable(volume) {
         Ok(fs) => fs, Err(_) => return false,
     };
-    match writable.write_file_data(&inode_after_write[40..100], EXPECTED.len() as u64, 0,
+    match writable.write_file_data(changed_inode_number, &inode_after_write, 0,
         EXPECTED, &mut scratch[..sb.block_size as usize]) {
         Ok(n) if n == EXPECTED.len() => {},
         _ => return false,
@@ -558,10 +561,11 @@ pub fn run_ext4_readme_test() -> bool {
     let mut volume = writable.into_device();
     let mut restored = [0u8; 128];
     let mut restored_inode = [0u8; 256];
-    let restored_len = match read_root_file(&mut volume, &sb, b"README.txt", &mut restored, &mut restored_inode) {
+    let mut restored_inode_number = 0u32;
+    let restored_len = match read_root_file(&mut volume, &sb, b"README.txt", &mut restored, &mut restored_inode, &mut restored_inode_number) {
         Ok(n) => n, Err(_) => return false,
     };
-    if restored_len != EXPECTED.len() || &restored[..restored_len] != EXPECTED { return false; }
+    if restored_len != EXPECTED.len() || &restored[..restored_len] != EXPECTED || restored_inode_number != file_inode_number { return false; }
     unsafe { crate::serial_write(b"Guest ext4 README.txt restored and verified byte-for-byte after write test.\r\n"); }
     if crate::ntoskrnl::debug::restore_from_storage() {
         unsafe { crate::serial_write(b"NTOSKRNL persistent trace snapshot restored from dedicated GPT partition.\r\n"); }
