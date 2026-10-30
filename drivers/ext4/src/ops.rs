@@ -616,7 +616,8 @@ mod tests{
   sb[88..90].copy_from_slice(&128u16.to_le_bytes());
   let mut desc=[0u8;32];desc[12..14].copy_from_slice(&60u16.to_le_bytes());
   let mut bitmap=[0u8;8];
-  let zones=SystemZoneMap::new(&[super::super::BlockRange{start:1,end:3}]);
+  let zone_ranges=[super::super::BlockRange{start:1,end:3}];
+  let zones=SystemZoneMap::new(&zone_ranges);
   let block=allocate_block_checked(&mut sb,0,&mut desc,&mut bitmap,0,&zones).unwrap();
   assert_eq!(block,3);
   assert_eq!(bitmap[0]&0b0000_0111,0b0000_0100);
