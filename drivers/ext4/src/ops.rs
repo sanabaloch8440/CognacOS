@@ -1,7 +1,6 @@
 //! Bounded ext4 mutation primitives. These routines update in-memory metadata
 //! buffers and checksums; callers must commit the resulting buffers through
 //! the JBD2 transaction layer before exposing a mutation as durable.
-#![no_std]
 use super::{Error,Superblock,update_block_bitmap_checksum,update_inode_bitmap_checksum,
  update_group_descriptor_checksum,update_superblock_checksum,validate_directory_block_checksum,
  update_directory_block_checksum,validate_inode_checksum,update_inode_checksum};
