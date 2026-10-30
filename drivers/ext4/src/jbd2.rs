@@ -217,8 +217,7 @@ struct FilesystemBoundsOnly;
 impl ReplayTargetPolicy for FilesystemBoundsOnly {
  fn validate_replay_target(&mut self, _target: u64) -> Result<(), Error> { Ok(()) }
 }
-pub fn recover<D:ReplayDevice,M:JournalBlockMap>(
- d:&mut D,m:&mut M,journal_superblock:&mut[u8],scratch:&mut[u8],payload:&mut[u8],
+pub fn recover<D:ReplayDevice,M:JournalBlockMap>( d:&mut D,m:&mut M,journal_superblock:&mut[u8],scratch:&mut[u8],payload:&mut[u8],
 )->Result<ReplayReport,Error>{
  recover_with_policy(d,m,journal_superblock,scratch,payload,&mut FilesystemBoundsOnly)
 }
@@ -437,8 +436,7 @@ mod tests{
  #[test]fn committed_transactions_survive_an_incomplete_later_tail(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
-  d.blocks[3].fill(0x5a);
+  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());  d.blocks[3].fill(0x5a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
   header(&mut d.blocks[5],JBD2_DESCRIPTOR_BLOCK,2);
   d.blocks[5][12..16].copy_from_slice(&8u32.to_be_bytes());
@@ -551,7 +549,7 @@ mod tests{
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
   let payload=[0x6du8;1024];let sum=crate::checksum::jbd2_tag_checksum(seed,1,&payload);
   d.blocks[2][16..18].copy_from_slice(&(sum as u16).to_be_bytes());
-  d.blocks[2][18..20].copy_from_slice(&TAG_LAST.to_be_bytes());d.blocks[2][20..36].copy_from_slice(&uuid);
+  d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());d.blocks[2][20..36].copy_from_slice(&uuid);
   let ds=crate::checksum::jbd2_metadata_block_checksum(seed,&d.blocks[2]).unwrap();
   d.blocks[2][1020..].copy_from_slice(&ds.to_be_bytes());
   d.blocks[3]=payload;
