@@ -476,7 +476,7 @@ mod tests{
   let sb=JournalSuperblock::parse(&b).unwrap();assert!(sb.needs_recovery());b[40..44].copy_from_slice(&FEATURE_INCOMPAT_CSUM_V3.to_be_bytes());b[80]=4;let csum=crate::checksum::jbd2_superblock_checksum(&b).unwrap();b[252..256].copy_from_slice(&csum.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b).unwrap().checksum_mode,ChecksumMode::V3);b[100]^=1;assert_eq!(JournalSuperblock::parse(&b),Err(Error::InvalidChecksum));b[100]^=1;
   b[40..44].fill(0);b[36..40].copy_from_slice(&1u32.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b).unwrap().checksum_mode,ChecksumMode::V1); }
  #[test]fn journal_superblock_v3_checksum_parses_large_journal_block(){
-  let mut b=vec![0u8;4096];
+  let mut b=[0u8;4096];
   b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
   b[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
   b[12..16].copy_from_slice(&4096u32.to_be_bytes());
