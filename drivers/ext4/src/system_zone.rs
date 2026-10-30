@@ -881,13 +881,13 @@ pub fn discover_allocated_directories<D: ReadOnlyBlockDevice>(
 
 /// Adapter that maps HTree logical blocks through the owning directory's
 /// checked extent/legacy mapping path.
-struct NamespaceHtreeReader<'a, D: ReadOnlyBlockDevice> {
+struct NamespaceHtreeReader<'a, 'z, D: ReadOnlyBlockDevice> {
     dev: &'a mut D, sb: &'a Superblock, raw_superblock: &'a [u8],
-    zones: &'a SystemZoneMap<'a>, inode_number: u32, generation: u32,
+    zones: &'z SystemZoneMap<'a>, inode_number: u32, generation: u32,
     extent_root: [u8; 60], uses_extents: bool,
     map_scratch: &'a mut [u8], legacy_scratch: &'a mut [u8],
 }
-impl<D: ReadOnlyBlockDevice> crate::htree::DirectoryBlockReader for NamespaceHtreeReader<'_, D> {
+impl<D: ReadOnlyBlockDevice> crate::htree::DirectoryBlockReader for NamespaceHtreeReader<'_, '_, D> {
     fn read_directory_block(&mut self, logical: u32, out: &mut [u8]) -> Result<(), Error> {
         if out.len() != self.sb.block_size as usize
             || self.map_scratch.len() != self.sb.block_size as usize
