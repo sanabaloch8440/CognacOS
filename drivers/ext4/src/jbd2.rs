@@ -1,6 +1,6 @@
 //! Bounded JBD2 journal discovery, validation and replay.
-//! Supports legacy and checksum-v2/v3 JBD2 replay with bounded tag/revoke
-//! parsing. Checksum-v1, async commit, and fast commits remain unsupported.
+//! Supports bounded JBD2 replay and ordered commits for legacy and checksum-v1/v2/v3 journals.
+//! Async commit and fast commits remain unsupported.
 pub const JBD2_MAGIC:u32=0xc03b3998;
 pub const JBD2_SUPERBLOCK_V2:u32=4;
 pub const JBD2_DESCRIPTOR_BLOCK:u32=1;
@@ -86,6 +86,15 @@ impl JournalSuperblock{
  }
  pub fn needs_recovery(&self)->bool{self.start!=0}
 }
+fn update_superblock_checksum(block:&mut[u8],mode:ChecksumMode)->Result<(),Error>{
+ if mode==ChecksumMode::V2||mode==ChecksumMode::V3{
+  if block.len()<1024{return Err(Error::Truncated)}
+  block[252..256].fill(0);
+  let sum=crate::checksum::jbd2_superblock_checksum(block).ok_or(Error::InvalidGeometry)?;
+  block[252..256].copy_from_slice(&sum.to_be_bytes());
+ }
+ Ok(())
+}
 /// Commit one bounded metadata transaction using ordered-data mode.
 /// All ordered data blocks reach stable storage before the journal commit;
 /// metadata is journaled, committed, then checkpointed to home blocks. If a
@@ -100,26 +109,31 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  if ordered_targets.len()!=ordered_data.len()||metadata_targets.len()!=metadata_data.len()
   ||metadata_targets.is_empty()||descriptor.len()<1024{return Err(Error::InvalidGeometry)}
  let sb=JournalSuperblock::parse(journal_superblock)?;
- if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{return Err(Error::UnsupportedFeature)}
+ 
  let bs=sb.block_size as usize;
  if descriptor.len()!=bs||journal_superblock.len()!=bs{return Err(Error::NoScratch)}
  if sb.start!=0{return Err(Error::InvalidSequence)}
  if metadata_targets.len()>MAX_TRANSACTION_TAGS{return Err(Error::TransactionTooLarge)}
- let tag_size=if sb.block_count_64{12usize}else{8usize};
+ let tag_size=match sb.checksum_mode{
+  ChecksumMode::V2=>8usize+if sb.block_count_64{4}else{0},
+  ChecksumMode::V3=>16usize,
+  _=>8usize+if sb.block_count_64{4}else{0},
+ };
  let tag_bytes=tag_size.checked_mul(metadata_targets.len()).ok_or(Error::OutOfRange)?;
+ let checksum_tail=if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{4usize}else{0};
  let required=1usize.checked_add(metadata_targets.len()).and_then(|n|n.checked_add(if revoked_targets.is_empty(){0}else{1})).and_then(|n|n.checked_add(1)).ok_or(Error::OutOfRange)?;
- if required>=sb.max_len as usize||12usize.checked_add(tag_bytes).and_then(|n|n.checked_add(16)).ok_or(Error::OutOfRange)?>bs{return Err(Error::TransactionTooLarge)}
+ if required>=sb.max_len as usize||12usize.checked_add(tag_bytes).and_then(|n|n.checked_add(16)).and_then(|n|n.checked_add(checksum_tail)).ok_or(Error::OutOfRange)?>bs{return Err(Error::TransactionTooLarge)}
  let revoke_width=if sb.block_count_64{8usize}else{4usize};
  if !revoked_targets.is_empty(){
   if sb.feature_incompat&FEATURE_INCOMPAT_REVOKE==0{return Err(Error::UnsupportedFeature)}
-  if revoked_targets.len()>MAX_TRANSACTION_REVOKES||16usize.checked_add(revoked_targets.len().checked_mul(revoke_width).ok_or(Error::OutOfRange)?).ok_or(Error::OutOfRange)?>bs{return Err(Error::TransactionTooLarge)}
-  if revoked_targets.iter().any(|b|*b>=d.filesystem_blocks()){return Err(Error::OutOfRange)}
+  if revoked_targets.len()>MAX_TRANSACTION_REVOKES||16usize.checked_add(revoked_targets.len().checked_mul(revoke_width).ok_or(Error::OutOfRange)?).and_then(|n|n.checked_add(checksum_tail)).ok_or(Error::OutOfRange)?>bs{return Err(Error::TransactionTooLarge)}
+  if revoked_targets.iter().any(|b|*b>=d.filesystem_blocks()||(!sb.block_count_64&&*b>u32::MAX as u64)){return Err(Error::OutOfRange)}
  }
  for (target,data) in ordered_targets.iter().zip(ordered_data.iter()){
-  if *target>=d.filesystem_blocks()||data.len()!=bs{return Err(Error::OutOfRange)}
+  if *target>=d.filesystem_blocks()||data.len()!=bs||(!sb.block_count_64&&*target>u32::MAX as u64){return Err(Error::OutOfRange)}
  }
  for (target,data) in metadata_targets.iter().zip(metadata_data.iter()){
-  if *target>=d.filesystem_blocks()||data.len()!=bs{return Err(Error::OutOfRange)}
+  if *target>=d.filesystem_blocks()||data.len()!=bs||(!sb.block_count_64&&*target>u32::MAX as u64){return Err(Error::OutOfRange)}
  }
  // Ordered data is deliberately written and flushed before any metadata log
  // record can become committed.
@@ -132,6 +146,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  // Publish the recovery start before writing the transaction. An interrupted
  // pre-commit log is detected as incomplete and must never be replayed.
  journal_superblock[28..32].copy_from_slice(&first.to_be_bytes());
+ update_superblock_checksum(journal_superblock,sb.checksum_mode)?;
  let sb_phys=m.map_journal_block(0).map_err(|_|Error::Io)?;
  if sb_phys>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
  d.write_block(sb_phys,journal_superblock).map_err(|_|Error::Io)?;
@@ -141,15 +156,41 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  descriptor[4..8].copy_from_slice(&JBD2_DESCRIPTOR_BLOCK.to_be_bytes());
  descriptor[8..12].copy_from_slice(&sequence.to_be_bytes());
  let uuid=journal_superblock.get(48..64).ok_or(Error::Truncated)?;
+ let seed=crate::checksum::jbd2_csum_seed(&sb.uuid);
  let mut off=12usize;
  for (i,target) in metadata_targets.iter().enumerate(){
   let mut flags=if i+1==metadata_targets.len(){TAG_LAST}else{0};
   if i!=0{flags|=TAG_SAME_UUID}
-  descriptor[off..off+4].copy_from_slice(&(*target as u32).to_be_bytes());
-  descriptor[off+4..off+8].copy_from_slice(&flags.to_be_bytes());
-  off+=8;
-  if sb.block_count_64{descriptor[off..off+4].copy_from_slice(&((*target>>32) as u32).to_be_bytes());off+=4}
+  let data=metadata_data[i];
+  match sb.checksum_mode{
+   ChecksumMode::V2=>{
+    let sum=crate::checksum::jbd2_tag_checksum(seed,sequence,data) as u16;
+    descriptor[off..off+4].copy_from_slice(&(*target as u32).to_be_bytes());
+    descriptor[off+4..off+6].copy_from_slice(&sum.to_be_bytes());
+    descriptor[off+6..off+8].copy_from_slice(&(flags as u16).to_be_bytes());
+    off+=8;
+    if sb.block_count_64{descriptor[off..off+4].copy_from_slice(&((*target>>32) as u32).to_be_bytes());off+=4}
+   },
+   ChecksumMode::V3=>{
+    let sum=crate::checksum::jbd2_tag_checksum(seed,sequence,data);
+    descriptor[off..off+4].copy_from_slice(&(*target as u32).to_be_bytes());
+    descriptor[off+4..off+8].copy_from_slice(&flags.to_be_bytes());
+    descriptor[off+8..off+12].copy_from_slice(&((*target>>32) as u32).to_be_bytes());
+    descriptor[off+12..off+16].copy_from_slice(&sum.to_be_bytes());
+    off+=16;
+   },
+   _=>{
+    descriptor[off..off+4].copy_from_slice(&(*target as u32).to_be_bytes());
+    descriptor[off+4..off+8].copy_from_slice(&flags.to_be_bytes());
+    off+=8;
+    if sb.block_count_64{descriptor[off..off+4].copy_from_slice(&((*target>>32) as u32).to_be_bytes());off+=4}
+   }
+  }
   if i==0{descriptor[off..off+16].copy_from_slice(uuid);off+=16}
+ }
+ if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
+  let sum=crate::checksum::jbd2_metadata_block_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;
+  descriptor[bs-4..bs].copy_from_slice(&sum.to_be_bytes());
  }
  let mut cursor=first;
  let mut transaction_crc=!0u32;
@@ -179,6 +220,10 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
    descriptor[o..o+4].copy_from_slice(&(*target as u32).to_be_bytes());
    if sb.block_count_64{descriptor[o+4..o+8].copy_from_slice(&((*target>>32) as u32).to_be_bytes())}
   }
+  if checksum_tail!=0{
+   let sum=crate::checksum::jbd2_metadata_block_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;
+   descriptor[bs-4..bs].copy_from_slice(&sum.to_be_bytes());
+  }
   let revoke_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
   d.write_block(revoke_phys,descriptor).map_err(|_|Error::Io)?;
   cursor=next_log(&sb,cursor);
@@ -190,6 +235,10 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  if sb.checksum_mode==ChecksumMode::V1{
   descriptor[12]=1;descriptor[13]=4;
   descriptor[16..20].copy_from_slice(&transaction_crc.to_be_bytes());
+ }else if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
+  descriptor[12]=4;descriptor[13]=4;
+  let sum=crate::checksum::jbd2_commit_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;
+  descriptor[16..20].copy_from_slice(&sum.to_be_bytes());
  }
  let commit_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
  d.write_block(commit_phys,descriptor).map_err(|_|Error::Io)?;
@@ -202,6 +251,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  d.flush().map_err(|_|Error::Io)?;
  journal_superblock[28..32].fill(0);
  journal_superblock[24..28].copy_from_slice(&sequence.wrapping_add(1).to_be_bytes());
+ update_superblock_checksum(journal_superblock,sb.checksum_mode)?;
  d.write_block(sb_phys,journal_superblock).map_err(|_|Error::Io)?;
  d.flush().map_err(|_|Error::Io)?;
  Ok(sequence)
@@ -217,8 +267,7 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
 
 /// Full journal recovery entry point. The caller reads the journal inode's
 /// logical block zero into journal_superblock and supplies a mapping for its
-/// extents. After replaying every complete committed transaction, it clears
-/// the recovery-start field and advances the sequence. An incomplete tail is
+/// extents. After replaying every complete committed transaction, it clears/// the recovery-start field and advances the sequence. An incomplete tail is
 /// discarded only after all preceding committed transactions are checkpointed.
 pub trait ReplayTargetPolicy {
  fn validate_replay_target(&mut self, target: u64) -> Result<(), Error>;
@@ -437,8 +486,7 @@ mod tests{
  }
  #[test]fn clean_journal_is_noop_without_io(){  struct D;impl ReplayDevice for D{fn filesystem_blocks(&self)->u64{10}fn read_block(&mut self,_:u64,_:&mut[u8])->Result<(),()>{Err(())}fn write_block(&mut self,_:u64,_:&[u8])->Result<(),()>{Err(())}fn flush(&mut self)->Result<(),()>{Ok(())}}
   let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:0,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};let mut d=D;let mut a=[0u8;1024];let mut b=[0u8;1024];assert_eq!(replay(&mut d,&mut |_|Err(()),&sb,&mut a,&mut b),Ok(ReplayReport::default()));
- }
- struct Mem{blocks:[[u8;1024];64],flushes:u32}
+ } struct Mem{blocks:[[u8;1024];64],flushes:u32}
  impl ReplayDevice for Mem{
   fn filesystem_blocks(&self)->u64{64}
   fn read_block(&mut self,n:u64,out:&mut[u8])->Result<(),()>{let b=self.blocks.get(n as usize).ok_or(())?;if out.len()!=1024{return Err(())}out.copy_from_slice(b);Ok(())}
