@@ -5,6 +5,7 @@
 //! its entries and returns a logical directory leaf block. Filename hashing
 //! and leaf-name comparison remain the VFS caller's responsibility.
 use crate::checksum::crc32c_update;
+use crate::hash::{hash_directory_name, DirectoryHash};
 use crate::Error;
 
 const DX_ROOT_INFO_OFFSET: usize = 24;
@@ -13,7 +14,7 @@ const DX_NODE_ENTRIES_OFFSET: usize = 8;
 const DX_ENTRY_SIZE: usize = 8;
 const DX_TAIL_SIZE: usize = 8;
 const DX_BLOCK_MASK: u32 = 0x0fff_ffff;
-const MAX_DX_INDIRECT_LEVELS: u8 = 1;
+const MAX_DX_INDIRECT_LEVELS: u8 = 2;
 
 #[inline]
 fn le16(b: &[u8], o: usize) -> Result<u16, Error> {
@@ -289,6 +290,191 @@ pub fn validate_directory_leaf_checksum(
     let stored = le32(block, tail + 8)?;
     let calculated = crc32c_update(inode_checksum_seed, &block[..tail]);
     if stored == calculated { Ok(()) } else { Err(Error::InvalidChecksum) }
+}
+
+
+/// A stable logical path through the index. indices[0] selects the root
+/// entry; indices[1..] select entries in interior nodes. blocks[n] is the
+/// interior node selected at index level n.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HtreePath {
+    pub depth: u8,
+    pub indices: [u16; 3],
+    pub blocks: [u32; 2],
+    pub leaf_block: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DirectoryEntryView<'a> {
+    pub inode: u32,
+    pub file_type: u8,
+    pub name: &'a [u8],
+    pub hash: DirectoryHash,
+}
+
+/// Resolve a name's hash to a leaf and retain the complete index path needed
+/// to continue through collision leaves in sibling nodes.
+pub fn lookup_htree_path<R: DirectoryBlockReader>(
+    reader: &mut R, root: &[u8], directory_blocks: u32, hash: u32,
+    metadata_csum: bool, inode_seed: u32, scratch: &mut [u8],
+) -> Result<HtreePath, Error> {
+    if hash & 1 != 0 || root.len() < 1024 || scratch.len() != root.len() {
+        return Err(Error::InvalidGeometry);
+    }
+    let (_, depth) = validate_dx_root(root)?;
+    let mut path = HtreePath { depth, indices: [0; 3], blocks: [0; 2], leaf_block: 0 };
+    let map = parse_dx_map(root, DX_ROOT_ENTRIES_OFFSET, metadata_csum, inode_seed)?;
+    let (index, mut child) = select_dx_entry(root, map, hash)?;
+    path.indices[0] = index as u16;
+    if child >= directory_blocks { return Err(Error::OutOfRange); }
+    for level in 0..depth as usize {
+        if child == 0 || path.blocks[..level].contains(&child) {
+            return Err(Error::InvalidDirectoryEntry);
+        }
+        path.blocks[level] = child;
+        reader.read_directory_block(child, scratch)?;
+        if le32(scratch, 0)? != 0
+            || ext4_rec_len(le16(scratch, 4)?, scratch.len()) != scratch.len()
+            || scratch[6] != 0 || scratch[7] != 0
+        {
+            return Err(Error::InvalidDirectoryEntry);
+        }
+        let node = parse_dx_map(scratch, DX_NODE_ENTRIES_OFFSET, metadata_csum, inode_seed)?;
+        let (index, next) = select_dx_entry(scratch, node, hash)?;
+        path.indices[level + 1] = index as u16;
+        child = next;
+        if child >= directory_blocks { return Err(Error::OutOfRange); }
+    }
+    path.leaf_block = child;
+    Ok(path)
+}
+
+/// Advance in HTree order. For a filename lookup, only entries whose
+/// separator is a continuation of query_hash are followed. For readdir,
+/// always=true walks every leaf in tree order.
+pub fn next_htree_leaf<R: DirectoryBlockReader>(
+    reader: &mut R, root: &[u8], directory_blocks: u32, path: &mut HtreePath,
+    query_hash: u32, always: bool, metadata_csum: bool, inode_seed: u32,
+    scratch: &mut [u8],
+) -> Result<bool, Error> {
+    let depth = path.depth as usize;
+    for level in (0..=depth).rev() {
+        let (block, offset) = if level == 0 {
+            (root, DX_ROOT_ENTRIES_OFFSET)
+        } else {
+            reader.read_directory_block(path.blocks[level - 1], scratch)?;
+            if le32(scratch, 0)? != 0
+                || ext4_rec_len(le16(scratch, 4)?, scratch.len()) != scratch.len()
+                || scratch[6] != 0 || scratch[7] != 0
+            { return Err(Error::InvalidDirectoryEntry); }
+            (&scratch[..], DX_NODE_ENTRIES_OFFSET)
+        };
+        let map = parse_dx_map(block, offset, metadata_csum, inode_seed)?;
+        let next = path.indices[level] as usize + 1;
+        if next >= map.count { continue; }
+        let (separator, mut child) = dx_entry(block, map, next)?;
+        if !always && (separator & !1) != query_hash { return Ok(false); }
+        path.indices[level] = next as u16;
+        if child >= directory_blocks { return Err(Error::OutOfRange); }
+        for descend in level..depth {
+            path.blocks[descend] = child;
+            reader.read_directory_block(child, scratch)?;
+            if le32(scratch, 0)? != 0
+                || ext4_rec_len(le16(scratch, 4)?, scratch.len()) != scratch.len()
+                || scratch[6] != 0 || scratch[7] != 0
+            { return Err(Error::InvalidDirectoryEntry); }
+            let child_map = parse_dx_map(scratch, DX_NODE_ENTRIES_OFFSET, metadata_csum, inode_seed)?;
+            let (_, first_child) = dx_entry(scratch, child_map, 0)?;
+            path.indices[descend + 1] = 0;
+            child = first_child;
+            if child >= directory_blocks { return Err(Error::OutOfRange); }
+        }
+        path.leaf_block = child;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn visit_leaf<'a, F: FnMut(DirectoryEntryView<'a>) -> Result<bool, Error>>(
+    block: &'a [u8], metadata_csum: bool, inode_seed: u32, total_inodes: u32,
+    hash_version: u8, hash_seed: [u32; 4], siphash_key: Option<[u64; 2]>,
+    visitor: &mut F,
+) -> Result<bool, Error> {
+    validate_directory_leaf_checksum(block, inode_seed, metadata_csum)?;
+    let limit = if metadata_csum { block.len().checked_sub(12).ok_or(Error::Truncated)? } else { block.len() };
+    let mut offset = 0usize;
+    while offset < limit {
+        if limit - offset < 8 { return Err(Error::InvalidDirectoryEntry); }
+        let inode = le32(block, offset)?;
+        let rec = ext4_rec_len(le16(block, offset + 4)?, block.len());
+        let name_len = block[offset + 6] as usize;
+        let file_type = block[offset + 7];
+        if rec < 8 || rec & 3 != 0 || offset.checked_add(rec).ok_or(Error::OutOfRange)? > limit
+            || name_len > 255 || name_len > rec - 8
+            || (inode != 0 && inode > total_inodes)
+        { return Err(Error::InvalidDirectoryEntry); }
+        if inode != 0 && name_len != 0 {
+            let name = &block[offset + 8..offset + 8 + name_len];
+            let hash = hash_directory_name(hash_version, hash_seed, name, siphash_key)?;
+            if !visitor(DirectoryEntryView { inode, file_type, name, hash })? { return Ok(false); }
+        }
+        offset += rec;
+    }
+    if offset != limit { return Err(Error::InvalidDirectoryEntry); }
+    Ok(true)
+}
+
+/// Hash and compare a name against the selected leaf and every following
+/// collision leaf, including collision continuations in sibling index nodes.
+/// The caller supplies the on-disk name (after fscrypt/casefold preparation).
+pub fn lookup_htree_name<R: DirectoryBlockReader>(
+    reader: &mut R, root: &[u8], directory_blocks: u32, total_inodes: u32,
+    name: &[u8], hash_seed: [u32; 4], siphash_key: Option<[u64; 2]>,
+    metadata_csum: bool, inode_seed: u32, scratch: &mut [u8],
+) -> Result<u32, Error> {
+    if name.is_empty() || name.len() > 255 || name.iter().any(|b| *b == 0 || *b == b'/') {
+        return Err(Error::InvalidDirectoryEntry);
+    }
+    let version = validate_dx_root(root)?.0;
+    let hash = hash_directory_name(version, hash_seed, name, siphash_key)?;
+    let mut path = lookup_htree_path(reader, root, directory_blocks, hash.major, metadata_csum, inode_seed, scratch)?;
+    loop {
+        reader.read_directory_block(path.leaf_block, scratch)?;
+        let mut found = None;
+        visit_leaf(scratch, metadata_csum, inode_seed, total_inodes, version, hash_seed, siphash_key, &mut |entry| {
+            if entry.hash.major == hash.major && entry.name == name {
+                found = Some(entry.inode);
+                return Ok(false);
+            }
+            Ok(true)
+        })?;
+        if let Some(inode) = found { return Ok(inode); }
+        if !next_htree_leaf(reader, root, directory_blocks, &mut path, hash.major, false, metadata_csum, inode_seed, scratch)? {
+            return Err(Error::OutOfRange);
+        }
+    }
+}
+
+/// Enumerate indexed-directory leaves in HTree order. The callback receives
+/// each live entry and its computed hash; callers that need Linux readdir hash
+/// order should collect/sort by (major, minor, name) before emitting cookies.
+/// Returning false from the callback stops enumeration successfully.
+pub fn iterate_htree_directory<R: DirectoryBlockReader, F: FnMut(DirectoryEntryView<'_>) -> Result<bool, Error>>(
+    reader: &mut R, root: &[u8], directory_blocks: u32, total_inodes: u32,
+    hash_seed: [u32; 4], siphash_key: Option<[u64; 2]>, metadata_csum: bool,
+    inode_seed: u32, scratch: &mut [u8], mut visitor: F,
+) -> Result<(), Error> {
+    let version = validate_dx_root(root)?.0;
+    let mut path = lookup_htree_path(reader, root, directory_blocks, 0, metadata_csum, inode_seed, scratch)?;
+    loop {
+        reader.read_directory_block(path.leaf_block, scratch)?;
+        if !visit_leaf(scratch, metadata_csum, inode_seed, total_inodes, version, hash_seed, siphash_key, &mut visitor)? {
+            return Ok(());
+        }
+        if !next_htree_leaf(reader, root, directory_blocks, &mut path, 0, true, metadata_csum, inode_seed, scratch)? {
+            return Ok(());
+        }
+    }
 }
 
 #[cfg(test)]
