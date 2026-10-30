@@ -79,8 +79,8 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
       if flags&TAG_SAME_UUID==0{off=off.checked_add(16).ok_or(Error::OutOfRange)?;if off>bs{return Err(Error::InvalidTag)}}
       if target>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
       let data_block=next_log(sb,tx_cursor);tags[tag_count]=Tag{target,journal_data:data_block,flags};tag_count+=1;
-      tx_cursor=data_block;if flags&TAG_DELETED==0{read_journal(d,m,tx_cursor,payload)?}
-      tx_cursor=next_log(sb,tx_cursor);if flags&TAG_LAST!=0{break}
+      if flags&TAG_DELETED==0{tx_cursor=data_block;read_journal(d,m,tx_cursor,payload)?;tx_cursor=next_log(sb,tx_cursor)}
+      if flags&TAG_LAST!=0{break}
       if off>bs{return Err(Error::InvalidTag)}
      }
     }
