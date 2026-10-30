@@ -729,7 +729,7 @@ jobs:
             -device intel-iommu,intremap=off,caching-mode=on,aw-bits=48 \
             -device qemu-xhci,id=xhci \
             -device piix3-ide,id=legacyide,bus=pcie.0 \
-            -device usb-kbd,bus=xhci.0 \
+            -device usb-kbd,id=usbkbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
             -drive if=none,id=osdisk,format=raw,file=build/cognacos-uefi.img \
@@ -828,7 +828,16 @@ jobs:
                   if not chunk:
                       break
                   data.extend(chunk)
+              return bytes(data)
           read_prompt()
+          # QEMU HMP sendkey targets the attached USB keyboard when one is
+          # present. Remove it only after the xHCI topology assertion so these
+          # injected events exercise the guest's separate PS/2 IRQ1 path.
+          monitor.sendall(b"device_del usbkbd\n")
+          removed = read_prompt()
+          if b"not hotpluggable" in removed.lower() or b"not found" in removed.lower():
+              raise SystemExit(f"Could not detach USB keyboard for PS/2 input test: {removed!r}")
+          time.sleep(0.25)
           for key in (b"a", b"shift-a", b"ret"):
               monitor.sendall(b"sendkey " + key + b"\n")
               read_prompt()
