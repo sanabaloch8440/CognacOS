@@ -162,9 +162,11 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
   let mut flags=if i+1==metadata_targets.len(){TAG_LAST}else{0};
   if i!=0{flags|=TAG_SAME_UUID}
   let data=metadata_data[i];
+  let escaped=data.get(..4)==Some(&JBD2_MAGIC.to_be_bytes());
+  if escaped{flags|=TAG_ESCAPE}
   match sb.checksum_mode{
    ChecksumMode::V2=>{
-    let sum=crate::checksum::jbd2_tag_checksum(seed,sequence,data) as u16;
+    let sum=crate::checksum::jbd2_tag_checksum_escaped(seed,sequence,data,escaped).ok_or(Error::InvalidGeometry)? as u16;
     descriptor[off..off+4].copy_from_slice(&(*target as u32).to_be_bytes());
     descriptor[off+4..off+6].copy_from_slice(&sum.to_be_bytes());
     descriptor[off+6..off+8].copy_from_slice(&(flags as u16).to_be_bytes());
@@ -172,7 +174,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
     if sb.block_count_64{descriptor[off..off+4].copy_from_slice(&((*target>>32) as u32).to_be_bytes());off+=4}
    },
    ChecksumMode::V3=>{
-    let sum=crate::checksum::jbd2_tag_checksum(seed,sequence,data);
+    let sum=crate::checksum::jbd2_tag_checksum_escaped(seed,sequence,data,escaped).ok_or(Error::InvalidGeometry)?;
     descriptor[off..off+4].copy_from_slice(&(*target as u32).to_be_bytes());
     descriptor[off+4..off+8].copy_from_slice(&flags.to_be_bytes());
     descriptor[off+8..off+12].copy_from_slice(&((*target>>32) as u32).to_be_bytes());
@@ -202,10 +204,18 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  cursor=next_log(&sb,cursor);
  for data in metadata_data{
   let phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+  let escaped=data.get(..4)==Some(&JBD2_MAGIC.to_be_bytes());
   if sb.checksum_mode==ChecksumMode::V1{
-   transaction_crc=crate::checksum::crc32_be_update(transaction_crc,data);
+   if escaped{
+    transaction_crc=crate::checksum::crc32_be_update(transaction_crc,&[0;4]);
+    transaction_crc=crate::checksum::crc32_be_update(transaction_crc,&data[4..]);
+   }else{
+    transaction_crc=crate::checksum::crc32_be_update(transaction_crc,data);
+   }
   }
-  d.write_block(phys,data).map_err(|_|Error::Io)?;
+  descriptor.copy_from_slice(data);
+  if escaped{descriptor[..4].fill(0)}
+  d.write_block(phys,descriptor).map_err(|_|Error::Io)?;
   cursor=next_log(&sb,cursor);
  }
  if !revoked_targets.is_empty(){
@@ -247,8 +257,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  // then clear the journal's recovery-start pointer.
  for (target,data) in metadata_targets.iter().zip(metadata_data.iter()){
   d.write_block(*target,data).map_err(|_|Error::Io)?;
- }
- d.flush().map_err(|_|Error::Io)?;
+ } d.flush().map_err(|_|Error::Io)?;
  journal_superblock[28..32].fill(0);
  journal_superblock[24..28].copy_from_slice(&sequence.wrapping_add(1).to_be_bytes());
  update_superblock_checksum(journal_superblock,sb.checksum_mode)?;
@@ -497,8 +506,7 @@ mod tests{
  #[test]fn replay_applies_only_a_complete_committed_transaction(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
-  d.blocks[3].fill(0x5a);
+  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());  d.blocks[3].fill(0x5a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
   let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
