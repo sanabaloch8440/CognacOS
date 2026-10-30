@@ -12,7 +12,7 @@ pub mod system_zone;
 pub mod transaction;
 pub use transaction::{FilesystemBlockAdapter, MetadataObjectKind, MetadataOwnership, MetadataOwnershipMap, MetadataTargetPolicy, Transaction, TransactionCoordinator, MAX_STAGED_BLOCKS};
 pub use orphan::{recover_orphan_chain, OrphanRecord, OrphanRecoveryTransaction};
-pub use system_zone::{recover_internal_journal, CheckedExtFilesystem, build_system_zones, map_extent_block_checked_zones, map_extent_block_checked_zones_for_inode, protect_reserved_journal_inode_zones, validate_data_extent, BlockRange, SystemZoneMap};
+pub use system_zone::{recover_internal_journal, recover_internal_journal_with_policy, CheckedExtFilesystem, build_system_zones, map_extent_block_checked_zones, map_extent_block_checked_zones_for_inode, protect_reserved_journal_inode_zones, validate_data_extent, BlockRange, SystemZoneMap};
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
