@@ -158,7 +158,7 @@ pub fn initialize_regular_inode(
  put16(inode,26,meta.links)?;put32(inode,100,meta.generation)?;
  put16(inode,2,meta.uid as u16)?;put16(inode,24,meta.gid as u16)?;
  if inode.len()>=124{put16(inode,120,(meta.uid>>16) as u16)?;put16(inode,122,(meta.gid>>16) as u16)?}
- if inode.len()>=130{put16(inode,128,if inode.len()>=132{4}else{0})?}
+ if inode.len()>=130{let extra=core::cmp::min(inode.len()-128,32)&!3;put16(inode,128,extra as u16)?}
  if metadata_csum(sb)?{update_inode_checksum(sb,inode_number,inode)?}
  Ok(())
 }
@@ -181,6 +181,7 @@ pub fn initialize_directory_inode(
  put32(inode,32,0x0008_0000)?;put32(inode,100,meta.generation)?;
  put16(inode,2,meta.uid as u16)?;put16(inode,24,meta.gid as u16)?;
  if inode.len()>=124{put16(inode,120,(meta.uid>>16) as u16)?;put16(inode,122,(meta.gid>>16) as u16)?}
+ if inode.len()>=130{let extra=core::cmp::min(inode.len()-128,32)&!3;put16(inode,128,extra as u16)?}
  put32(inode,4,parsed.block_size)?;
  if inode.len()>=112{put32(inode,108,0)?}
  inode[40..100].fill(0);put16(inode,40,0xf30a)?;put16(inode,44,4)?;
