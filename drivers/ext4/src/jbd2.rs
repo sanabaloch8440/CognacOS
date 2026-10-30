@@ -62,20 +62,21 @@ pub const MAX_TRANSACTION_REVOKES:usize=256;
 pub enum Error{Truncated,BadMagic,UnsupportedFeature,InvalidGeometry,InvalidSequence,InvalidTag,InvalidRevoke,OutOfRange,Io,NoScratch,TransactionTooLarge}
 fn be32(b:&[u8],o:usize)->Result<u32,Error>{let e=o.checked_add(4).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u32::from_be_bytes([s[0],s[1],s[2],s[3]]))}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct JournalSuperblock{pub block_size:u32,pub max_len:u32,pub first:u32,pub sequence:u32,pub start:u32,pub feature_incompat:u32,pub block_count_64:bool}
+pub struct JournalSuperblock{pub block_size:u32,pub max_len:u32,pub first:u32,pub sequence:u32,pub start:u32,pub feature_incompat:u32,pub block_count_64:bool,pub checksum_mode:ChecksumMode,pub uuid:[u8;16]}
 impl JournalSuperblock{
  pub fn parse(b:&[u8])->Result<Self,Error>{
   if b.len()<1024{return Err(Error::Truncated)}
   if be32(b,0)?!=JBD2_MAGIC||be32(b,4)?!=JBD2_SUPERBLOCK_V2{return Err(Error::BadMagic)}
-  let block_size=be32(b,12)?;let max_len=be32(b,16)?;let first=be32(b,20)?;let sequence=be32(b,24)?;let start=be32(b,28)?;let feature_compat=be32(b,36)?;let feature_incompat=be32(b,40)?;
+  let block_size=be32(b,12)?;let max_len=be32(b,16)?;let first=be32(b,20)?;let sequence=be32(b,24)?;let start=be32(b,28)?;let feature_compat=be32(b,36)?;let feature_incompat=be32(b,40)?;let checksum_mode=checksum_mode(feature_compat,feature_incompat)?;let mut uuid=[0u8;16];uuid.copy_from_slice(&b[48..64]);
   if block_size as usize!=b.len()||block_size<1024||!block_size.is_power_of_two()||max_len<2||first==0||first>=max_len||start>=max_len{return Err(Error::InvalidGeometry)}
   // JBD2 checksum-v1 is a COMPAT feature, not an incompat bit. We do not
   // implement its transaction-wide CRC validation, so accepting it would
   // allow corrupted log payloads/commits to be replayed without integrity
   // verification. Fail closed until checksum-v1 is implemented.
-  if feature_compat&0x0001!=0{return Err(Error::UnsupportedFeature)}
-  if feature_incompat&!SUPPORTED_INCOMPAT!=0{return Err(Error::UnsupportedFeature)}
-  Ok(Self{block_size,max_len,first,sequence,start,feature_incompat,block_count_64:feature_incompat&FEATURE_INCOMPAT_64BIT!=0})
+  if checksum_mode==ChecksumMode::V1{return Err(Error::UnsupportedFeature)}
+  if feature_incompat&!(SUPPORTED_INCOMPAT|FEATURE_INCOMPAT_CSUM_V2|FEATURE_INCOMPAT_CSUM_V3)!=0{return Err(Error::UnsupportedFeature)}
+  if checksum_mode!=ChecksumMode::None && feature_incompat&FEATURE_INCOMPAT_ASYNC_COMMIT!=0{return Err(Error::UnsupportedFeature)}
+  Ok(Self{block_size,max_len,first,sequence,start,feature_incompat,block_count_64:feature_incompat&FEATURE_INCOMPAT_64BIT!=0,checksum_mode,uuid})
  }
  pub fn needs_recovery(&self)->bool{self.start!=0}
 }
@@ -310,22 +311,45 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
    if be32(scratch,0)?!=JBD2_MAGIC||be32(scratch,8)?!=expected{malformed=true;break}
    match be32(scratch,4)?{
     JBD2_DESCRIPTOR_BLOCK=>{
+     if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{if !verify_metadata_checksum(&sb.uuid,scratch){return Err(Error::InvalidTag)}}
      let mut off=12usize;
      loop{
       if tag_count>=MAX_TRANSACTION_TAGS{return Err(Error::TransactionTooLarge)}
-      let mut target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
+      let (mut target,flags,stored_csum)=match sb.checksum_mode {
+       ChecksumMode::V2=>{
+        let target=be32(scratch,off)? as u64;
+        let checksum=u16::from_be_bytes([*scratch.get(off+4).ok_or(Error::InvalidTag)?,*scratch.get(off+5).ok_or(Error::InvalidTag)?]) as u32;
+        let flags=u16::from_be_bytes([*scratch.get(off+6).ok_or(Error::InvalidTag)?,*scratch.get(off+7).ok_or(Error::InvalidTag)?]) as u32;
+        off=off.checked_add(8).ok_or(Error::OutOfRange)?;(target,flags,checksum)
+       },
+       ChecksumMode::V3=>{
+        let target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
+        let checksum=be32(scratch,off+8)?;off=off.checked_add(12).ok_or(Error::OutOfRange)?;(target,flags,checksum)
+       },
+       _=>{
+        let target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
+        off=off.checked_add(8).ok_or(Error::OutOfRange)?;(target,flags,0)
+       }
+      };
       if flags&!(TAG_ESCAPE|TAG_SAME_UUID|TAG_DELETED|TAG_LAST)!=0{return Err(Error::InvalidTag)}
-      off=off.checked_add(8).ok_or(Error::OutOfRange)?;
       if sb.block_count_64{target|=(be32(scratch,off)? as u64)<<32;off=off.checked_add(4).ok_or(Error::OutOfRange)?}
-      if flags&TAG_SAME_UUID==0{off=off.checked_add(16).ok_or(Error::OutOfRange)?;if off>bs{return Err(Error::InvalidTag)}}
+      if flags&TAG_SAME_UUID==0{let end=off.checked_add(16).ok_or(Error::OutOfRange)?;if end>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}if scratch[off..end]!=sb.uuid{return Err(Error::InvalidTag)}off=end}
+      if off>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
       if target>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
       let data_block=next_log(sb,tx_cursor);tags[tag_count]=Tag{target,journal_data:data_block,flags,sequence:expected};tag_count+=1;
-      if flags&TAG_DELETED==0{tx_cursor=data_block;read_journal(d,m,tx_cursor,payload)?;tx_cursor=next_log(sb,tx_cursor)}
+      if flags&TAG_DELETED==0{
+       tx_cursor=data_block;read_journal(d,m,tx_cursor,payload)?;
+       if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
+        if !verify_tag_checksum(&sb.uuid,expected,payload,stored_csum,sb.checksum_mode){return Err(Error::InvalidTag)}
+       }
+       tx_cursor=next_log(sb,tx_cursor)
+      }
       if flags&TAG_LAST!=0{break}
-      if off>bs{return Err(Error::InvalidTag)}
+      if off>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
      }
     }
     JBD2_REVOKE_BLOCK=>{
+     if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{if !verify_metadata_checksum(&sb.uuid,scratch){return Err(Error::InvalidRevoke)}}
      if sb.feature_incompat&FEATURE_INCOMPAT_REVOKE==0{return Err(Error::UnsupportedFeature)}
      let count=be32(scratch,12)? as usize;let width=if sb.block_count_64{8}else{4};
      if count<16||count>bs||(count-16)%width!=0{return Err(Error::InvalidRevoke)}
@@ -333,7 +357,10 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
      for i in 0..n{let o=16+i*width;let block=if width==8{((be32(scratch,o+4)? as u64)<<32)|(be32(scratch,o)? as u64)}else{be32(scratch,o)? as u64};if block>=d.filesystem_blocks(){return Err(Error::OutOfRange)}revokes[revoke_count]=Revoke{target:block,sequence:expected};revoke_count+=1}
      tx_cursor=next_log(sb,tx_cursor);
     }
-    JBD2_COMMIT_BLOCK=>{committed=true;tx_cursor=next_log(sb,tx_cursor);break}
+    JBD2_COMMIT_BLOCK=>{
+     if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{if !verify_commit_checksum(&sb.uuid,scratch){return Err(Error::InvalidSequence)}}
+     committed=true;tx_cursor=next_log(sb,tx_cursor);break
+    }
     _=>return Err(Error::InvalidSequence)
    }
   }
@@ -367,7 +394,7 @@ mod tests{
  }
  #[test]fn clean_journal_is_noop_without_io(){
   struct D;impl ReplayDevice for D{fn filesystem_blocks(&self)->u64{10}fn read_block(&mut self,_:u64,_:&mut[u8])->Result<(),()>{Err(())}fn write_block(&mut self,_:u64,_:&[u8])->Result<(),()>{Err(())}fn flush(&mut self)->Result<(),()>{Ok(())}}
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:0,feature_incompat:0,block_count_64:false};let mut d=D;let mut a=[0u8;1024];let mut b=[0u8;1024];assert_eq!(replay(&mut d,&mut |_|Err(()),&sb,&mut a,&mut b),Ok(ReplayReport::default()));
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:0,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};let mut d=D;let mut a=[0u8;1024];let mut b=[0u8;1024];assert_eq!(replay(&mut d,&mut |_|Err(()),&sb,&mut a,&mut b),Ok(ReplayReport::default()));
  }
  struct Mem{blocks:[[u8;1024];64],flushes:u32}
  impl ReplayDevice for Mem{
@@ -432,7 +459,7 @@ mod tests{
   d.blocks[3].fill(0x6b);header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
   header(&mut d.blocks[5],JBD2_REVOKE_BLOCK,2);d.blocks[5][12..16].copy_from_slice(&20u32.to_be_bytes());d.blocks[5][16..20].copy_from_slice(&7u32.to_be_bytes());
   header(&mut d.blocks[6],JBD2_COMMIT_BLOCK,2);
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_REVOKE,block_count_64:false};
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_REVOKE,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(r.transactions_replayed,2);assert_eq!(r.blocks_replayed,0);assert_eq!(r.blocks_revoked,1);assert_eq!(d.blocks[7],[0;1024]);
  }
