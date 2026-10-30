@@ -639,9 +639,11 @@ pub extern "C" fn rdotos_ap_entry(logical_id: u32, kernel_pml4: u64, ap_stack_to
         loop { core::hint::spin_loop(); }
     }
     ONLINE_APS.fetch_add(1, Ordering::AcqRel);
-    // If the BSP calibrated the timer quantum before AP startup, arm this AP's
-    // local timer too. Failure leaves the AP online for IPI/polling work.
-    let _ = unsafe { hal::start_local_clock_event() };
+    // Keep AP local timer interrupts masked until that CPU has passed its
+    // own timer/interrupt-frame preemption self-test. The BSP timer remains
+    // active; APs continue to service TLB/device IPIs and cooperative work.
+    // Do not enable an unvalidated AP timer path merely because BSP calibration
+    // succeeded. A per-CPU validation path will arm this timer later.
     // Until the BSP masks all legacy and I/O APIC routes, keep IF clear. Once
     // enabled, retain polling as a fail-safe if an IPI send cannot be delivered.
     loop {
