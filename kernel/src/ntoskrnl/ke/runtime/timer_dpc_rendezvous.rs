@@ -484,7 +484,7 @@ pub extern "C" fn hal_remove_device_dpc(dpc:*mut core::ffi::c_void)->bool{
     unsafe{ke_remove_queue_dpc(dpc)!=0}
 }
 pub extern "C" fn hal_initialize_device_dpc(dpc:*mut core::ffi::c_void,index:usize){
-    unsafe{ke_initialize_dpc(dpc,Some(crate::hal::device_dpc_dispatch_for_kernel),index as *mut core::ffi::c_void);}
+    unsafe{ke_initialize_dpc(dpc,Some(crate::hal::device_dpc_dispatch),index as *mut core::ffi::c_void);}
 }
 
 
