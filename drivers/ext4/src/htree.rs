@@ -14,7 +14,9 @@ const DX_NODE_ENTRIES_OFFSET: usize = 8;
 const DX_ENTRY_SIZE: usize = 8;
 const DX_TAIL_SIZE: usize = 8;
 const DX_BLOCK_MASK: u32 = 0x0fff_ffff;
-const MAX_DX_INDIRECT_LEVELS: u8 = 1;
+// With RO_COMPAT_LARGEDIR, ext4 permits two indirect dx levels (root +
+// two interior nodes + leaf). HtreePath has capacity for both nodes.
+const MAX_DX_INDIRECT_LEVELS: u8 = 2;
 
 #[inline]
 fn le16(b: &[u8], o: usize) -> Result<u16, Error> {
