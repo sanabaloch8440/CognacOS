@@ -853,13 +853,15 @@ unsafe extern "C" fn service_register_interrupt(vector:u32,context:u64,isr:Optio
 unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->DriverHalStatus{
     if !(0x20..=0xdf).contains(&vector){return driver_hal_invalid()}
     let i=vector as usize;if DEVICE_CONTEXT[i].load(Ordering::Acquire)!=context||DEVICE_ISR[i].load(Ordering::Acquire)==0{return driver_hal_invalid()}
+    // Close the callback gate before masking hardware so a concurrent
+    // enable request cannot reopen the route during teardown.
+    DEVICE_ACTIVE[i].store(false,Ordering::Release);
     let io=DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);
     if io!=0&&unsafe{set_device_interrupt_route_enabled(io,DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),DEVICE_ROUTE_GSI[i].load(Ordering::Acquire),false)}.is_err(){
         return driver_hal_unsupported()
     }
-    // Stop new callbacks first, remove a pending DPC, then wait for any ISR
-    // or already-running DPC to leave before releasing driver-owned context.
-    DEVICE_ACTIVE[i].store(false,Ordering::Release);
+    // Remove a pending DPC, then wait for any ISR or already-running DPC to
+    // leave before releasing driver-owned context.
     let dpc=core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast::<core::ffi::c_void>();
     let remove=DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire);
     if remove==0{return driver_hal_unsupported()}
@@ -878,7 +880,8 @@ unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->Drive
 }
 unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->DriverHalStatus{
     if !(0x20..=0xdf).contains(&vector){return driver_hal_invalid()}
-    let i=vector as usize;if DEVICE_ISR[i].load(Ordering::Acquire)==0{return driver_hal_invalid()}
+    let i=vector as usize;
+    if DEVICE_ISR[i].load(Ordering::Acquire)==0||!DEVICE_ACTIVE[i].load(Ordering::Acquire){return driver_hal_invalid()}
     let io=DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);if io==0{return driver_hal_unsupported()}
     match unsafe{set_device_interrupt_route_enabled(io,DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),DEVICE_ROUTE_GSI[i].load(Ordering::Acquire),enabled)}{
         Ok(())=>driver_hal_success(),Err(_)=>driver_hal_unsupported()
