@@ -234,3 +234,10 @@ allocation bit is set. A free, uninitialized, or checksum-invalid inode group
 cannot authorize replay targets. This validates allocation, not namespace
 reachability: callers must still provide a trusted directory inode set, and
 full inode-table/namespace discovery remains future work.
+
+
+## Allocated-directory discovery for journal replay (2026-10-30)
+
+The checked recovery path now has an automatic directory-discovery option. It scans each initialized inode bitmap after validating the owning group descriptor checksum and inode-bitmap checksum, ignores unallocated inode slots, validates each allocated candidate through the inode-table reader (including inode checksum validation), and records directory-mode inode numbers in caller-provided bounded storage. The new `mount_with_recovery_and_discovery` entry point feeds that discovered set into the existing exact directory-data and extent-node ownership builder before JBD2 replay.
+
+The scan fails closed on uninitialized inode-bitmap groups, checksum errors, invalid bitmap/table placement, and insufficient output capacity. It excludes the internal journal inode. This is allocated-object discovery, **not namespace reachability validation**: disconnected directories and stale-but-allocated directory inodes may still be discovered. Root/`.`/`..` consistency, parent graph traversal, cycle detection, backup metadata and xattr ownership remain separate work. The API is bounded and allocation-free; large volumes need caller-provisioned directory-list capacity.
