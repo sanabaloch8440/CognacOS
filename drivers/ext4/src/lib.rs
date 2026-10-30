@@ -299,6 +299,68 @@ fn inspect_extent_node(node:&[u8],logical:u32,sb:&Superblock,expected_depth:Opti
  }
 }
 
+/// A validated leaf extent from an inode's inline extent root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExtentRecord {
+    pub logical_start: u32,
+    pub physical_start: u64,
+    pub length: u32,
+    pub unwritten: bool,
+}
+
+/// Validate every entry in a depth-zero extent root and visit it in logical
+/// order. This is useful for truncate, fsmap and consistency checking; external
+/// extent-tree nodes must be walked separately before claiming whole-tree
+/// validation. The visitor may stop early by returning false.
+pub fn visit_inline_extent_root<F>(
+    root: &[u8],
+    blocks_count: u64,
+    mut visitor: F,
+) -> Result<usize, Error>
+where
+    F: FnMut(ExtentRecord) -> Result<bool, Error>,
+{
+    if root.len() < 60 || u16at(root, 0)? != EXTENT_MAGIC || u16at(root, 6)? != 0 {
+        return Err(Error::UnsupportedFormat);
+    }
+    let entries = u16at(root, 2)? as usize;
+    let max = u16at(root, 4)? as usize;
+    if max == 0 || max > 4 || entries > max {
+        return Err(Error::InvalidExtentTree);
+    }
+    let mut previous_end = None;
+    for index in 0..entries {
+        let offset = EXTENT_HEADER_SIZE + index * EXTENT_ENTRY_SIZE;
+        let logical = u32at(root, offset)?;
+        let raw_len = u16at(root, offset + 4)?;
+        if raw_len == 0 { return Err(Error::InvalidExtentTree); }
+        let unwritten = raw_len > 0x8000;
+        let length = if unwritten { raw_len - 0x8000 } else { raw_len } as u32;
+        if length == 0 { return Err(Error::InvalidExtentTree); }
+        let physical = ((u16at(root, offset + 6)? as u64) << 32)
+            | u32at(root, offset + 8)? as u64;
+        let logical_end = (logical as u64).checked_add(length as u64).ok_or(Error::OutOfRange)?;
+        let physical_end = physical.checked_add(length as u64).ok_or(Error::OutOfRange)?;
+        if previous_end.map_or(false, |end| logical as u64 < end)
+            || physical == 0 || physical_end > blocks_count {
+            return Err(Error::InvalidExtentTree);
+        }
+        previous_end = Some(logical_end);
+        if !visitor(ExtentRecord {
+            logical_start: logical,
+            physical_start: physical,
+            length,
+            unwritten,
+        })? { return Ok(index + 1); }
+    }
+    Ok(entries)
+}
+
+/// Validate an inline extent root without allocating a temporary extent list.
+pub fn validate_inline_extent_root(root: &[u8], blocks_count: u64) -> Result<(), Error> {
+    visit_inline_extent_root(root, blocks_count, |_| Ok(true)).map(|_| ())
+}
+
 /// Read an inode from the group inode table and validate its checksum before
 /// returning it. scratch must be one filesystem block; out must be exactly the
 /// inode size. This is the checked metadata read path for mutation callers.
