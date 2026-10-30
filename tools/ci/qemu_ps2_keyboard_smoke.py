@@ -94,7 +94,7 @@ def main() -> int:
     args.debug_log.write_text("")
     args.monitor.unlink(missing_ok=True)
 
-    vars_path = args.vars_template.parent / "OVMF_VARS_ps2.fd"
+    vars_path = args.serial.parent / "OVMF_VARS_ps2.fd"
     shutil.copyfile(args.vars_template, vars_path)
 
     command = [
