@@ -1382,4 +1382,64 @@ mod tests {
         assert_eq!(group_has_super(&sb, &raw, 9), Ok(true));
         assert_eq!(group_has_super(&sb, &raw, 3), Ok(false));
     }
+
+    #[test]
+    fn xattr_validation_rejects_system_zone_and_accepts_safe_pointer() {
+        let sb = Superblock {
+            inodes_count: 128, blocks_count: 1000, first_data_block: 0,
+            block_size: 4096, blocks_per_group: 1000, inodes_per_group: 128,
+            inode_size: 128, descriptor_size: 32, revision: 1,
+            feature_compat: 0, feature_incompat: 0, feature_ro_compat: 0,
+            read_only: true,
+        };
+        let raw_superblock = [0u8; SUPERBLOCK_BYTES];
+        let mut inode = [0u8; 128];
+        inode[100..104].copy_from_slice(&7u32.to_le_bytes());
+        inode[104..108].copy_from_slice(&25u32.to_le_bytes());
+        let mut block = [0u8; 4096];
+        block[0..4].copy_from_slice(&0xea02_0000u32.to_le_bytes());
+        block[4..8].copy_from_slice(&1u32.to_le_bytes());
+        block[8..12].copy_from_slice(&1u32.to_le_bytes());
+
+        let safe_ranges = [BlockRange { start: 10, end: 20 }];
+        let safe_zones = SystemZoneMap::new(&safe_ranges);
+        assert_eq!(
+            validate_inode_external_xattr_in_zones(
+                &raw_superblock, &sb, &safe_zones, 12, &inode, &block,
+            ),
+            Ok(Some(25)),
+        );
+
+        let protected_ranges = [BlockRange { start: 24, end: 26 }];
+        let protected_zones = SystemZoneMap::new(&protected_ranges);
+        assert_eq!(
+            validate_inode_external_xattr_in_zones(
+                &raw_superblock, &sb, &protected_zones, 12, &inode, &block,
+            ),
+            Err(Error::InvalidExtentTree),
+        );
+    }
+
+    #[test]
+    fn xattr_validation_rejects_bad_inode_checksum_when_enabled() {
+        let sb = Superblock {
+            inodes_count: 128, blocks_count: 1000, first_data_block: 0,
+            block_size: 4096, blocks_per_group: 1000, inodes_per_group: 128,
+            inode_size: 128, descriptor_size: 32, revision: 1,
+            feature_compat: 0, feature_incompat: 0, feature_ro_compat: 0x0400,
+            read_only: true,
+        };
+        let mut raw_superblock = [0u8; SUPERBLOCK_BYTES];
+        raw_superblock[100..104].copy_from_slice(&0x0400u32.to_le_bytes());
+        let inode = [0u8; 128];
+        let block = [0u8; 4096];
+        let ranges = [BlockRange { start: 10, end: 20 }];
+        let zones = SystemZoneMap::new(&ranges);
+        assert_eq!(
+            validate_inode_external_xattr_in_zones(
+                &raw_superblock, &sb, &zones, 12, &inode, &block,
+            ),
+            Err(Error::InvalidChecksum),
+        );
+    }
 }
