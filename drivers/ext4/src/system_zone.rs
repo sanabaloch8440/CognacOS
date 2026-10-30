@@ -195,17 +195,29 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
 /// and two block-sized replay buffers. Unsupported checksum/async/fast-commit
 /// formats are rejected by the JBD2 parser; this routine never guesses.
 pub fn recover_internal_journal<D: BlockDevice>(
-    dev: &mut D,
-    sb: &Superblock,
-    raw_superblock: &[u8],
-    zones: &SystemZoneMap<'_>,
-    inode_buffer: &mut [u8],
-    map_scratch: &mut [u8],
-    legacy_scratch: &mut [u8],
-    journal_map: &mut [u64],
-    journal_superblock: &mut [u8],
-    replay_scratch: &mut [u8],
-    replay_payload: &mut [u8],
+    dev: &mut D, sb: &Superblock, raw_superblock: &[u8], zones: &SystemZoneMap<'_>,
+    inode_buffer: &mut [u8], map_scratch: &mut [u8], legacy_scratch: &mut [u8],
+    journal_map: &mut [u64], journal_superblock: &mut [u8],
+    replay_scratch: &mut [u8], replay_payload: &mut [u8],
+) -> Result<jbd2::ReplayReport, Error> {
+    struct JournalOnly;
+    impl jbd2::ReplayTargetPolicy for JournalOnly {
+        fn validate_replay_target(&mut self, _target: u64) -> Result<(), jbd2::Error> { Ok(()) }
+    }
+    recover_internal_journal_with_policy(
+        dev, sb, raw_superblock, zones, inode_buffer, map_scratch, legacy_scratch,
+        journal_map, journal_superblock, replay_scratch, replay_payload, &mut JournalOnly,
+    )
+}
+
+/// Recovery entry point with an exact metadata-owner allowlist. The caller's
+/// policy is evaluated for every committed, non-revoked home-block target;
+/// journal self-overwrite is rejected independently before the callback.
+pub fn recover_internal_journal_with_policy<D: BlockDevice, P: jbd2::ReplayTargetPolicy>(
+    dev: &mut D, sb: &Superblock, raw_superblock: &[u8], zones: &SystemZoneMap<'_>,
+    inode_buffer: &mut [u8], map_scratch: &mut [u8], legacy_scratch: &mut [u8],
+    journal_map: &mut [u64], journal_superblock: &mut [u8],
+    replay_scratch: &mut [u8], replay_payload: &mut [u8], policy: &mut P,
 ) -> Result<jbd2::ReplayReport, Error> {
     let info = jbd2::discover_internal_journal(raw_superblock)
         .map_err(|_| Error::UnsupportedFormat)?;
@@ -268,20 +280,16 @@ pub fn recover_internal_journal<D: BlockDevice>(
         }
         fn flush(&mut self) -> Result<(), ()> { self.device.flush().map_err(|_| ()) }
     }
-    struct ReplayTargets<'a> { journal_blocks: &'a [u64] }
-    impl jbd2::ReplayTargetPolicy for ReplayTargets<'_> {
+    struct ReplayTargets<'a, P> { journal_blocks: &'a [u64], policy: &'a mut P }
+    impl<P: jbd2::ReplayTargetPolicy> jbd2::ReplayTargetPolicy for ReplayTargets<'_, P> {
         fn validate_replay_target(&mut self, target: u64) -> Result<(), jbd2::Error> {
-            // A corrupt descriptor must never redirect replay into the journal
-            // itself: doing so can destroy the log while it is being scanned.
-            if self.journal_blocks.contains(&target) {
-                return Err(jbd2::Error::InvalidTag);
-            }
-            Ok(())
+            if self.journal_blocks.contains(&target) { return Err(jbd2::Error::InvalidTag); }
+            self.policy.validate_replay_target(target)
         }
     }
     let mut adapter = Adapter { device: dev, sb: *sb };
     let mut map = |logical: u32| journal_map.get(logical as usize).copied().ok_or(());
-    let mut targets = ReplayTargets { journal_blocks: &journal_map[..journal_blocks as usize] };
+    let mut targets = ReplayTargets { journal_blocks: &journal_map[..journal_blocks as usize], policy };
     jbd2::recover_with_policy(
         &mut adapter, &mut map, journal_superblock, replay_scratch, replay_payload, &mut targets,
     ).map_err(|_| Error::UnsupportedFormat)
