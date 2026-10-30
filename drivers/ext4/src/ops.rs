@@ -139,6 +139,38 @@ fn validate_dir_entries(block:&[u8],limit:usize,total_inodes:u32)->Result<(),Err
   off+=rec;
  }Ok(())
 }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct NewInodeMetadata{
+ pub mode:u16,pub uid:u32,pub gid:u32,pub links:u16,pub generation:u32,
+ pub atime:u32,pub ctime:u32,pub mtime:u32,
+}
+/// Initialize a newly allocated regular-file inode. Bitmap allocation and
+/// parent-directory insertion are separate buffers and must be committed in
+/// the same JBD2 transaction by the caller.
+pub fn initialize_regular_inode(
+ sb:&[u8],inode_number:u32,inode:&mut[u8],meta:NewInodeMetadata,
+)->Result<(),Error>{
+ if inode.len()<128||inode_number==0||meta.links==0||meta.mode&0xf000!=0x8000{return Err(Error::InvalidGeometry)}
+ if inode.len()<Superblock::parse(sb)?.inode_size as usize{return Err(Error::Truncated)}
+ inode.fill(0);
+ put16(inode,0,meta.mode)?;put32(inode,8,meta.atime)?;put32(inode,12,meta.ctime)?;put32(inode,16,meta.mtime)?;
+ put16(inode,26,meta.links)?;put32(inode,100,meta.generation)?;
+ put16(inode,4,meta.uid as u16)?;put16(inode,24,meta.gid as u16)?;
+ if inode.len()>=124{put16(inode,120,(meta.uid>>16) as u16)?;put16(inode,122,(meta.gid>>16) as u16)?}
+ if inode.len()>=130{put16(inode,128,if inode.len()>=132{4}else{0})?}
+ if metadata_csum(sb)?{update_inode_checksum(sb,inode_number,inode)?}
+ Ok(())
+}
+
+/// Remove a directory name and return its inode number. Link-count updates,
+/// inode reclamation, and extent freeing must be staged in the same journal
+/// transaction by the filesystem operation coordinator.
+pub fn unlink_directory_name(
+ sb:&[u8],directory_inode:u32,generation:u32,block:&mut[u8],total_inodes:u32,name:&[u8],
+)->Result<u32,Error>{
+ remove_directory_entry(sb,directory_inode,generation,block,total_inodes,name)
+}
+
 /// Insert a directory entry into existing slack/free space. If metadata_csum
 /// is enabled, validate the old tail and refresh it after the mutation.
 pub fn insert_directory_entry(
@@ -205,7 +237,7 @@ pub fn remove_directory_entry(
 /// rejected rather than partially updated.
 pub fn insert_inline_extent(root:&mut[u8],logical:u32,physical:u64,len:u16)->Result<(),Error>{
  if root.len()<60||le16(root,0)?!=0xf30a||le16(root,6)?!=0{return Err(Error::UnsupportedFormat)}
- if len==0||len>0x8000||physical==0||physical.checked_add(len as u64).ok_or(Error::OutOfRange)?>((1u64<<48)-1){return Err(Error::OutOfRange)}
+ if len==0||len>0x8000||physical==0||physical.checked_add(len as u64).ok_or(Error::OutOfRange)?>(1u64<<48){return Err(Error::OutOfRange)}
  let entries=le16(root,2)? as usize;let max=le16(root,4)? as usize;
  if entries>max||max>4{return Err(Error::InvalidExtentTree)}
  let end=(logical as u64).checked_add(len as u64).ok_or(Error::OutOfRange)?;
@@ -265,7 +297,7 @@ pub fn truncate_inline_extents(root:&mut[u8],keep_blocks:u64,freed:&mut[(u64,u32
   if end>keep_blocks{
    let keep=(keep_blocks-logical) as u16;let drop=(end-keep_blocks) as u32;
    if removed>=freed.len(){return Err(Error::TransactionTooLarge)}
-   freed[removed]=(physical+keep as u64,drop);removed+=1;put16(root,o+4,keep)?;
+   freed[removed]=(physical+keep as u64,drop);removed+=1;put16(root,o+4,if raw>0x8000{keep|0x8000}else{keep})?
   }
   if out!=i{root.copy_within(o..o+12,12+out*12)}
   out+=1;
