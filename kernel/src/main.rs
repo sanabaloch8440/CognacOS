@@ -346,6 +346,27 @@ unsafe extern "C" fn vtd_clean_cache(_ctx:*mut core::ffi::c_void,_pa:u64,_length
 }
 /// Enable the firmware-described segment-0 VT-d unit before xHCI discovery.
 /// If unavailable, DMA stays fail-closed and PCI bus mastering remains disabled.
+extern "C" fn xhci_set_bus_master(device_object:u64,enabled:bool)->bool{
+    let Some(r)=ntoskrnl::pnp::xhci_resources() else{return false};
+    if device_object==0||device_object!=r.device_object||r.segment!=0{return false}
+    if enabled{
+        if r.state<ntoskrnl::pnp::STATE_DMA_READY||r.interrupt_vector==0
+            ||!hal::device_interrupt_handler_registered(r.interrupt_vector)
+            ||!dma::iommu::available()
+            ||!dma::iommu::device_busy(device_object as usize){return false}
+        let Some(id)=dma::iommu::vtd::RequesterId::new(r.bus,r.device,r.function) else{return false};
+        if !dma::iommu::vtd::requester_domain_usable(id){return false}
+    }
+    let address=0x8000_0000u32|((r.bus as u32)<<16)|((r.device as u32)<<11)
+        |((r.function as u32)<<8)|0x04;
+    unsafe{hal::write_port_u32(0x0cf8,address);}
+    let command=unsafe{hal::read_port_u32(0x0cfc)} as u16;
+    let next=if enabled{command|0x4}else{command&!0x4};
+    unsafe{hal::write_port_u16(0x0cfc,next);hal::write_port_u32(0x0cf8,address);}
+    let verify=unsafe{hal::read_port_u32(0x0cfc)} as u16;
+    (verify&0x4!=0)==enabled
+}
+
 unsafe extern "C" fn vtd_quarantine_requester(
  _context:*mut core::ffi::c_void,segment:u16,bus:u8,device:u8,function:u8
 )->i32{
@@ -1284,6 +1305,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                                             ntoskrnl::ke::runtime::hal_remove_device_dpc,
                                             ntoskrnl::ke::runtime::hal_initialize_device_dpc,
                                         );
+    hal::install_device_bus_master_hook(xhci_set_bus_master);
                                         let _xhci_pnp_resources_ready=probe_xhci_pci_function(&firmware_madt,bsp_apic_id);
                                         match unsafe { hal::calibrate_local_clock_event() } {
                                             Ok(count) => {
