@@ -1,8 +1,9 @@
 //! Bounded parser for ext4 external xattr blocks.
 //!
-//! This validates the on-disk header, entry table and value layout. It does
-//! not validate the block checksum or establish inode ownership; callers must
-//! perform those checks before trusting an xattr block for journal replay.
+//! This validates the on-disk header, entry table and value layout. A separate
+//! checksum helper authenticates block bytes when given the filesystem seed,
+//! physical block number and exclusive-owner identity where required. Neither
+//! helper establishes inode ownership or authorizes journal replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum XattrError {
     Truncated, BadMagic, InvalidReferenceCount, InvalidBlockCount,
