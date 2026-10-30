@@ -386,8 +386,12 @@ unsafe extern "C" fn vtd_quarantine_requester(
  if verify&0x4==0{0}else{-1}
 }
 
+static VT_D_REQUESTER_OWNER:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(u32::MAX);
 fn initialize_vtd_from_acpi(requester:dma::iommu::vtd::RequesterId)->bool{
- if dma::iommu::vtd::is_enabled(){return true;}
+ let requester_key=((requester.bus as u32)<<8)|((requester.device as u32)<<3)|requester.function as u32;
+ if dma::iommu::vtd::is_enabled(){
+  return dma::iommu::available()&&VT_D_REQUESTER_OWNER.load(core::sync::atomic::Ordering::Acquire)==requester_key;
+ }
  let rsdp=acpi::rsdp_address();
  if rsdp==0{unsafe{serial_write(b"VT-d: RSDP unavailable; DMA remains fail-closed.\r\n");}return false}
  let table=match unsafe{acpi::find_table(rsdp,*b"DMAR",0)}{
@@ -419,11 +423,12 @@ fn initialize_vtd_from_acpi(requester:dma::iommu::vtd::RequesterId)->bool{
   quarantine_requester:Some(vtd_quarantine_requester),
  };
  let status=unsafe{dma::iommu::vtd::initialize(&ops,unit.register_base,0x1000)};
- if status!=dma::iommu::vtd::STATUS_SUCCESS{
-  unsafe{serial_write(b"VT-d: initialization failed; DMA remains fail-closed status=");serial_write_hex(status as u32 as u64);serial_write(b"\r\n");}
+ if status!=dma::iommu::vtd::STATUS_SUCCESS||!dma::iommu::available(){
+  unsafe{serial_write(b"VT-d: initialization or generic DMA backend registration failed; DMA remains fail-closed status=");serial_write_hex(status as u32 as u64);serial_write(b"\r\n");}
   return false
  }
- unsafe{serial_write(b"VT-d: translation enabled; generic DMA backend registered.\r\n");}
+ VT_D_REQUESTER_OWNER.store(requester_key,core::sync::atomic::Ordering::Release);
+ unsafe{serial_write(b"VT-d: translation enabled; generic DMA backend registered for validated xHCI requester.\r\n");}
  true
 }
 
