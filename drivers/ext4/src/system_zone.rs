@@ -187,6 +187,27 @@ impl<'a, D: ReadOnlyBlockDevice> CheckedExtFilesystem<'a, D> {
             inode_number, inode_raw, block,
         )
     }
+    /// Discover and reconcile external xattr owners across every allocated
+    /// inode on this checked mount. The caller supplies bounded inventory
+    /// storage and block-sized scratch buffers. This validates ownership
+    /// evidence but does not add xattrs to the journal replay allowlist.
+    pub fn discover_external_xattr_owners(
+        &mut self,
+        owners: &mut [xattr::ExternalXattrOwner],
+        inode_buffer: &mut [u8],
+        bitmap_scratch: &mut [u8],
+        inode_scratch: &mut [u8],
+        xattr_scratch: &mut [u8],
+    ) -> Result<usize, Error> {
+        let CheckedExtFilesystem { filesystem, raw_superblock, ranges, zone_count } = self;
+        let zones = SystemZoneMap::new(&ranges[..*zone_count]);
+        let ExtFilesystem { device, superblock, .. } = filesystem;
+        discover_and_reconcile_external_xattr_owners(
+            device, superblock, raw_superblock, &zones, owners,
+            inode_buffer, bitmap_scratch, inode_scratch, xattr_scratch,
+        )
+    }
+
     /// Validate an external xattr block only after proving that both its
     /// owning inode and the referenced physical block are allocated in their
     /// checksummed bitmaps. The caller supplies the already-read xattr block
@@ -1083,9 +1104,6 @@ pub fn discover_and_reconcile_external_xattr_owners<D: ReadOnlyBlockDevice>(
         return Err(Error::UnsupportedFormat);
     }
     let gdt_start = (sb.first_data_block as u64).checked_add(1).ok_or(Error::OutOfRange)?;
-    let journal_inode = if sb.feature_compat & 0x0004 != 0 {
-        Some(u32at(raw_superblock, 224)?)
-    } else { None };
     let bitmap_bytes = (sb.inodes_per_group / 8) as usize;
     let mut found = 0usize;
     for group in 0..groups {
@@ -1131,7 +1149,6 @@ pub fn discover_and_reconcile_external_xattr_owners<D: ReadOnlyBlockDevice>(
             let ino64 = base.checked_add(bit as u64).and_then(|v| v.checked_add(1))
                 .ok_or(Error::OutOfRange)?;
             let ino = u32::try_from(ino64).map_err(|_| Error::OutOfRange)?;
-            if Some(ino) == journal_inode { continue; }
             read_inode(dev, sb, raw_superblock, ino, inode_buffer, inode_scratch)?;
             let physical = match xattr::external_xattr_block_pointer(
                 inode_buffer, sb.feature_incompat, sb.blocks_count,
