@@ -246,6 +246,28 @@ pub fn lookup_htree_leaf<R: DirectoryBlockReader>(
     Ok(HtreeLookup { leaf_block: logical, hash_version, possible_hash_collision: collision })
 }
 
+/// Resolve the index and read the selected leaf into `scratch`, verifying
+/// its ordinary directory-block checksum before returning. This is the
+/// preferred entry point for metadata_csum indexed-directory lookup; the
+/// caller can then run the ordinary dirent name comparison over scratch.
+pub fn lookup_htree_leaf_checked<R: DirectoryBlockReader>(
+    reader: &mut R,
+    root_block: &[u8],
+    directory_blocks: u32,
+    query_hash: u32,
+    metadata_csum: bool,
+    inode_checksum_seed: u32,
+    scratch: &mut [u8],
+) -> Result<HtreeLookup, Error> {
+    let lookup = lookup_htree_leaf(
+        reader, root_block, directory_blocks, query_hash,
+        metadata_csum, inode_checksum_seed, scratch,
+    )?;
+    reader.read_directory_block(lookup.leaf_block, scratch)?;
+    validate_directory_leaf_checksum(scratch, inode_checksum_seed, metadata_csum)?;
+    Ok(lookup)
+}
+
 /// Verify a conventional ext4 directory leaf's metadata checksum. The
 /// 12-byte dirent tail must occupy the final 12 bytes and its checksum covers
 /// all preceding bytes, matching ext4_dirblock_csum_verify().
@@ -323,6 +345,14 @@ mod tests {
         assert_eq!(found.hash_version, 1);
         assert!(!found.possible_hash_collision);
         assert_eq!(lookup_htree_leaf(&mut fixture, &root, 4, 0x1000, true, seed, &mut scratch).unwrap().leaf_block, 2);
+        let leaf = &mut fixture.blocks[3];
+        leaf[1016..1018].copy_from_slice(&12u16.to_le_bytes());
+        leaf[1019] = 0xde;
+        let leaf_crc = crc32c_update(seed, &leaf[..1012]);
+        leaf[1020..1024].copy_from_slice(&leaf_crc.to_le_bytes());
+        assert_eq!(lookup_htree_leaf_checked(&mut fixture, &root, 4, 0x5000, true, seed, &mut scratch).unwrap().leaf_block, 3);
+        fixture.blocks[3][100] ^= 1;
+        assert_eq!(lookup_htree_leaf_checked(&mut fixture, &root, 4, 0x5000, true, seed, &mut scratch), Err(Error::InvalidChecksum));
         root[40] ^= 1;
         assert_eq!(lookup_htree_leaf(&mut fixture, &root, 4, 0x5000, true, seed, &mut scratch), Err(Error::InvalidChecksum));
     }
