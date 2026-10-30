@@ -210,22 +210,23 @@ pub fn insert_inline_extent(root:&mut[u8],logical:u32,physical:u64,len:u16)->Res
  if entries>max||max>4{return Err(Error::InvalidExtentTree)}
  let end=(logical as u64).checked_add(len as u64).ok_or(Error::OutOfRange)?;
  for i in 0..entries{
-  let o=12+i*12;let first=le32(root,o)?;let n=le16(root,o+4)? as u64;
+  let o=12+i*12;let first=le32(root,o)?;let raw=le16(root,o+4)?;if raw==0{return Err(Error::InvalidExtentTree)}
+  let n=if raw>0x8000{(raw-0x8000) as u64}else{raw as u64};
   let old_end=(first as u64)+n;if (logical as u64)<old_end&&(first as u64)<end{return Err(Error::InvalidExtentTree)}
  }
  // Build a sorted temporary root so insertion never leaves a half-shifted tree.
  let mut tmp=[0u8;60];tmp.copy_from_slice(&root[..60]);let mut pos=0usize;
  while pos<entries&&le32(&tmp,12+pos*12)?<logical{pos+=1}
  if pos>0{
-  let p=12+(pos-1)*12;let p_log=le32(&tmp,p)?;let p_len=le16(&tmp,p+4)? as u64;
+  let p=12+(pos-1)*12;let p_log=le32(&tmp,p)?;let p_raw=le16(&tmp,p+4)?;let p_len=p_raw as u64;
   let p_phys=((le16(&tmp,p+6)? as u64)<<32)|(le32(&tmp,p+8)? as u64);
-  if p_log as u64+p_len==logical as u64&&p_phys+p_len==physical&&p_len+len as u64<=0x8000{
+  if p_raw<=0x8000&&p_log as u64+p_len==logical as u64&&p_phys+p_len==physical&&p_len+len as u64<=0x8000{
    put16(&mut tmp,p+4,(p_len+len as u64) as u16)?;root[..60].copy_from_slice(&tmp);return Ok(())
   }
  }
  if pos<entries{
-  let n=12+pos*12;let n_log=le32(&tmp,n)?;let n_phys=((le16(&tmp,n+6)? as u64)<<32)|(le32(&tmp,n+8)? as u64);
-  if end==n_log as u64&&physical+len as u64==n_phys{
+  let n=12+pos*12;let n_log=le32(&tmp,n)?;let n_raw=le16(&tmp,n+4)?;let n_phys=((le16(&tmp,n+6)? as u64)<<32)|(le32(&tmp,n+8)? as u64);
+  if n_raw<=0x8000&&end==n_log as u64&&physical+len as u64==n_phys{
    let merged_len=len as u64+le16(&tmp,n+4)? as u64;
    if merged_len>0x8000{return Err(Error::OutOfRange)}
    put32(&mut tmp,n,logical)?;put16(&mut tmp,n+4,merged_len as u16)?;
@@ -244,6 +245,15 @@ pub fn insert_inline_extent(root:&mut[u8],logical:u32,physical:u64,len:u16)->Res
 pub fn truncate_inline_extents(root:&mut[u8],keep_blocks:u64,freed:&mut[(u64,u32)])->Result<usize,Error>{
  if root.len()<60||le16(root,0)?!=0xf30a||le16(root,6)?!=0{return Err(Error::UnsupportedFormat)}
  let entries=le16(root,2)? as usize;let max=le16(root,4)? as usize;if entries>max||max>4{return Err(Error::InvalidExtentTree)}
+ // Preflight all output capacity and extent lengths before changing root.
+ let mut required=0usize;
+ for i in 0..entries{
+  let o=12+i*12;let logical=le32(root,o)? as u64;let raw=le16(root,o+4)?;
+  if raw==0{return Err(Error::InvalidExtentTree)}
+  let len=if raw>0x8000{(raw-0x8000) as u64}else{raw as u64};
+  if logical>=keep_blocks||logical.checked_add(len).ok_or(Error::OutOfRange)?>keep_blocks{required+=1}
+ }
+ if required>freed.len(){return Err(Error::TransactionTooLarge)}
  let mut removed=0usize;let mut out=0usize;
  for i in 0..entries{
   let o=12+i*12;let logical=le32(root,o)? as u64;let raw=le16(root,o+4)?;let len=if raw>0x8000{raw-0x8000}else{raw} as u64;
