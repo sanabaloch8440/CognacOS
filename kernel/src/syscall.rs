@@ -1943,7 +1943,7 @@ fn nt_load_dll(args:&[u64;NT_MAX_ARGUMENTS])->u64{
      loaded=unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)};
      if loaded.is_ok(){break;}
      if !matches!(loaded,Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND)|Err(crate::pe_loader::STATUS_DLL_NOT_FOUND)){
-      crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return loaded.err().unwrap_or(NT_STATUS_INVALID_PARAMETER) as u32 as u64;
+      crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return loaded.err().unwrap_or(NT_STATUS_INVALID_PARAMETER as u32 as i32) as u32 as u64;
      }
     }
     Err(status)=>{crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return status;}
