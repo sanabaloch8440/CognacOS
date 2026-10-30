@@ -355,7 +355,7 @@ pub unsafe extern "system" fn LdrLoadDll(
         )
     };
     if status < 0 { return status; }
-        /* stale path-generation block removed below */
+        /*
         generated_path as *const u16
     } else { dll_path };
     if search_path.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -399,6 +399,7 @@ pub unsafe extern "system" fn LdrLoadDll(
         if !heap.is_null() { let _ = unsafe { crate::rtl_heap::RtlFreeHeap(heap, 0, unknown_path.cast()) }; }
     }
     if status < 0 { return status; }
+    */
     if response.base == 0 || response.path_len as usize > response.path.len() { return STATUS_INVALID_PARAMETER; }
     if unsafe { publish_peb_entry(&response, module_name) }.is_null() {
         if response.already_loaded == 0 {
