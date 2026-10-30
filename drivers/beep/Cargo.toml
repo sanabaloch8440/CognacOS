@@ -7,9 +7,3 @@ publish = false
 
 [lib]
 path = "src/lib.rs"
-
-[[bin]]
-name = "beep"
-path = "src/bin/beep.rs"
-test = false
-bench = false
