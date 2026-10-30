@@ -634,6 +634,10 @@ jobs:
           cp build/cognacos-kernel.exe build/EFI/BOOT/cognacos-kernel.exe
           cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
           cp target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll build/EFI/BOOT/ntdll.dll
+          cp build/dlls/kernel32.dll build/EFI/BOOT/kernel32.dll
+          cp build/dlls/kernelbase.dll build/EFI/BOOT/kernelbase.dll
+          cp build/dlls/shell32.dll build/EFI/BOOT/shell32.dll
+          cp build/dlls/msvcrt.dll build/EFI/BOOT/msvcrt.dll
           cp build/kbdus/kbdus.dll build/EFI/BOOT/kbdus.dll
           # beep.sys is an optional external compatibility fixture. Keep the
           # image bootable when the fixture is not supplied; the assessment
@@ -660,6 +664,10 @@ jobs:
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/BOOTX64.EFI ::/EFI/BOOT/BOOTX64.EFI
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/ntdll.dll ::/EFI/BOOT/ntdll.dll
+          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/kernel32.dll ::/EFI/BOOT/kernel32.dll
+          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/kernelbase.dll ::/EFI/BOOT/kernelbase.dll
+          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/shell32.dll ::/EFI/BOOT/shell32.dll
+          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/msvcrt.dll ::/EFI/BOOT/msvcrt.dll
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/kbdus.dll ::/EFI/BOOT/kbdus.dll
           if [[ -f build/EFI/BOOT/beep.sys ]]; then
             mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/beep.sys ::/EFI/BOOT/beep.sys
