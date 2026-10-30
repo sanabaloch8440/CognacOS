@@ -230,3 +230,8 @@ blocks, update the directory inode and counters, route the new entry into the
 correct split leaf, recursively split full parents, and stage all changes in
 one JBD2 transaction. Large-directory depth extensions and writable HTree
 mount integration remain unsupported.
+
+
+## Mount-state validation update (2026-10-30)
+
+The common mount-state gate now rejects `EXT4_ERROR_FS`, `EXT4_ORPHAN_FS`, and nonzero `s_last_orphan` before the filesystem is exposed. This closes a gap in which a clean journal pointer could otherwise be mistaken for proof that all filesystem-level recovery work was complete. Journal replay and orphan cleanup are separate responsibilities; CognacOS still rejects orphaned volumes until the actual truncate/reclaim adapter is wired through a metadata transaction. A dirty-but-error-free journaled volume is not rejected solely because `EXT4_VALID_FS` is clear: it must still pass the explicit journal recovery path. This is a mount-safety improvement, not a writable-mount milestone.
