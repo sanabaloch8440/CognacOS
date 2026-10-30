@@ -99,6 +99,10 @@ is not yet wired to this iterator, so indexed directories remain rejected by
 `mount_with_recovery_and_namespace_discovery` until the mapping adapter and
 graph-level regression fixtures are integrated.
 
+## External xattr owner binding
+
+The xattr helpers now decode the inode's external-xattr pointer (including the high 16 bits for 64-bit filesystems), bounds-check it against the filesystem block count, and provide a combined validator that binds the pointer and inode generation to the external block checksum. The caller must first validate the inode checksum and must still independently establish bitmap allocation, system-zone exclusion, and global shared-reference consistency. This is not yet wired into the checked mount or journal-ownership discovery, so xattr blocks remain unauthorized replay targets.
+
 ## Validation
 
 The GitHub Actions workflow runs the JBD2 parser/replay/commit tests and the
