@@ -175,18 +175,23 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
 pub unsafe fn free_common(adapter:*mut c_void,cpu:*mut u8,logical:u64,length:usize)->Result<(),DmaError>{
  let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;
  if requester_identity(device).is_none(){return Err(DmaError::AddressMask)}
- // Do not retire the registry record until a usable backend is available.
- // Otherwise a transient backend failure would orphan pages and lose the only
- // ownership record capable of freeing them.
  let b=backend().map_err(|_|DmaError::AddressMask)?;
- let (index,rec)={let mut s=STATE.lock();let Some((i,c))=s.common.iter_mut().enumerate().find(|(_,c)|c.used&&!c.busy&&c.device==device&&c.cpu==cpu as usize&&c.logical==logical&&c.length==length)else{return Err(DmaError::NotFound)};c.busy=true;(i,*c)};
+ // Keep the ownership record published and mark it busy throughout sync and
+ // IOTLB teardown. Concurrent allocators cannot reuse its IOVA or pages.
+ let (index,rec)={let mut s=STATE.lock();
+  let Some(i)=s.common.iter().position(|c|c.used&&!c.busy&&c.device==device&&c.cpu==cpu as usize&&c.logical==logical&&c.length==length)else{return Err(DmaError::NotFound)};
+  s.common[i].busy=true;(i,s.common[i])};
  let mapped_bytes=(rec.pages as u64*PAGE_SIZE) as u32;
  let sync=unsafe{(b.sync.unwrap())(b.context,device,rec.logical,mapped_bytes,2)};
  if sync!=OK{STATE.lock().common[index].busy=false;return Err(DmaError::AddressMask)}
  let st=unsafe{(b.unmap.unwrap())(b.context,device,rec.logical,rec.cookie)};
  if st!=OK{STATE.lock().common[index].busy=false;return Err(DmaError::AddressMask)}
- {let mut s=STATE.lock();if s.common[index].used&&s.common[index].cookie==rec.cookie{s.common[index]=Common::EMPTY;}else{fatal_dma_lifetime_violation();}}
- for i in 0..rec.pages{unsafe{crate::memory::free_page(rec.physical+i as u64*PAGE_SIZE)}.map_err(|_|DmaError::OutOfMemory)?;}Ok(())
+ {let mut s=STATE.lock();
+  if !s.common[index].used||!s.common[index].busy||s.common[index].cookie!=rec.cookie{return Err(DmaError::NotFound)}
+  s.common[index]=Common::EMPTY;
+ }
+ for i in 0..rec.pages{unsafe{crate::memory::free_page(rec.physical+i as u64*PAGE_SIZE)}.map_err(|_|DmaError::OutOfMemory)?;}
+ Ok(())
 }
 pub fn flush_common(adapter:*mut c_void,cpu:*mut u8,length:usize)->Result<(),DmaError>{
  if cpu.is_null()||length==0{return Err(DmaError::InvalidLength)}let device=super::adapter_device(adapter).ok_or(DmaError::AddressMask)?;if requester_identity(device).is_none(){return Err(DmaError::AddressMask)}let b=backend().map_err(|_|DmaError::AddressMask)?;
