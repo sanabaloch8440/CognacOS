@@ -159,6 +159,14 @@ pub fn free_block_checked(
 )->Result<(),Error>{
  let parsed=Superblock::parse(sb)?;
  zones.validate_data_range(block,1,parsed.blocks_count)?;
+ let group_start=(parsed.first_data_block as u64)
+  .checked_add((group as u64).checked_mul(parsed.blocks_per_group as u64).ok_or(Error::OutOfRange)?)
+  .ok_or(Error::OutOfRange)?;
+ let group_end=core::cmp::min(
+  group_start.checked_add(parsed.blocks_per_group as u64).ok_or(Error::OutOfRange)?,
+  parsed.blocks_count,
+ );
+ if block<group_start||block>=group_end{return Err(Error::OutOfRange)}
  free_block(sb,group,block,desc,bitmap)
 }
 
