@@ -48,8 +48,10 @@ pub fn jbd2_tag_checksum(seed: u32, sequence: u32, data: &[u8]) -> u32 {
 /// JBD2 descriptor/revoke tail checksum. The final four bytes are excluded
 /// and hold the big-endian result.
 pub fn jbd2_metadata_block_checksum(seed: u32, block: &[u8]) -> Option<u32> {
-    let body = block.get(..block.len().checked_sub(4)?)?;
-    Some(crc32c_update(seed, body))
+    if block.len() < 4 { return None; }
+    let mut crc = crc32c_update(seed, &block[..block.len() - 4]);
+    // JBD2 specifies the tail checksum field as zero during calculation.
+    Some(crc32c_update(crc, &[0; 4]))
 }
 
 /// Validate a JBD2 descriptor/revoke block's trailing big-endian CRC32C.
