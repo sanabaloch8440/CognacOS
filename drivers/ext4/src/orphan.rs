@@ -49,6 +49,7 @@ where R:OrphanRecoveryTransaction,F:FnMut(u32,&mut[u8])->Result<(),Error>{
 #[cfg(test)]
 mod tests{
  use super::*;
+ use std::vec::Vec;
  #[derive(Default)]struct Tx{staged:Vec<u32>,superblock_staged:bool,committed:bool}
  impl OrphanRecoveryTransaction for Tx{
   fn stage_orphan(&mut self,r:OrphanRecord,_:&[u8])->Result<(),Error>{self.staged.push(r.inode_number);Ok(())}
