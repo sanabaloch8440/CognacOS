@@ -29,8 +29,13 @@ impl JournalSuperblock{
  pub fn parse(b:&[u8])->Result<Self,Error>{
   if b.len()<1024{return Err(Error::Truncated)}
   if be32(b,0)?!=JBD2_MAGIC||be32(b,4)?!=JBD2_SUPERBLOCK_V2{return Err(Error::BadMagic)}
-  let block_size=be32(b,12)?;let max_len=be32(b,16)?;let first=be32(b,20)?;let sequence=be32(b,24)?;let start=be32(b,28)?;let feature_incompat=be32(b,40)?;
+  let block_size=be32(b,12)?;let max_len=be32(b,16)?;let first=be32(b,20)?;let sequence=be32(b,24)?;let start=be32(b,28)?;let feature_compat=be32(b,36)?;let feature_incompat=be32(b,40)?;
   if block_size as usize!=b.len()||block_size<1024||!block_size.is_power_of_two()||max_len<2||first==0||first>=max_len||start>=max_len{return Err(Error::InvalidGeometry)}
+  // JBD2 checksum-v1 is a COMPAT feature, not an incompat bit. We do not
+  // implement its transaction-wide CRC validation, so accepting it would
+  // allow corrupted log payloads/commits to be replayed without integrity
+  // verification. Fail closed until checksum-v1 is implemented.
+  if feature_compat&0x0001!=0{return Err(Error::UnsupportedFeature)}
   if feature_incompat&!SUPPORTED_INCOMPAT!=0{return Err(Error::UnsupportedFeature)}
   Ok(Self{block_size,max_len,first,sequence,start,feature_incompat,block_count_64:feature_incompat&FEATURE_INCOMPAT_64BIT!=0})
  }
@@ -231,6 +236,11 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
  while guard<sb.max_len{
   guard+=1;read_journal(d,m,cursor,scratch)?;
   if be32(scratch,0)?!=JBD2_MAGIC||be32(scratch,8)?!=expected{report.stopped_on_incomplete=true;break}
+  // Keep each transaction provisional until its matching commit block has
+  // been validated. In particular, never let descriptor tags or revoke
+  // records from an interrupted tail leak into the final replay pass.
+  let transaction_tag_start=tag_count;
+  let transaction_revoke_start=revoke_count;
   let mut tx_cursor=cursor;let mut committed=false;let mut malformed=false;let mut tx_guard=0u32;
   while tx_guard<sb.max_len{
    tx_guard+=1;read_journal(d,m,tx_cursor,scratch)?;
@@ -262,7 +272,12 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
     _=>return Err(Error::InvalidSequence)
    }
   }
-  report.transactions_seen+=1;if malformed||!committed{report.stopped_on_incomplete=true;break}
+  report.transactions_seen+=1;if malformed||!committed{
+   tag_count=transaction_tag_start;
+   revoke_count=transaction_revoke_start;
+   report.stopped_on_incomplete=true;
+   break
+  }
   report.transactions_replayed+=1;expected=expected.wrapping_add(1);cursor=tx_cursor;
   if cursor==sb.start{break}
  }
@@ -282,6 +297,7 @@ mod tests{
  #[test]fn journal_superblock_checks_geometry_and_unsupported_features(){
   let mut b=[0u8;1024];b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());b[12..16].copy_from_slice(&1024u32.to_be_bytes());b[16..20].copy_from_slice(&64u32.to_be_bytes());b[20..24].copy_from_slice(&1u32.to_be_bytes());b[24..28].copy_from_slice(&7u32.to_be_bytes());b[28..32].copy_from_slice(&3u32.to_be_bytes());
   let sb=JournalSuperblock::parse(&b).unwrap();assert!(sb.needs_recovery());b[40..44].copy_from_slice(&FEATURE_INCOMPAT_CSUM_V3.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b),Err(Error::UnsupportedFeature));
+  b[40..44].fill(0);b[36..40].copy_from_slice(&1u32.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b),Err(Error::UnsupportedFeature));
  }
  #[test]fn clean_journal_is_noop_without_io(){
   struct D;impl ReplayDevice for D{fn filesystem_blocks(&self)->u64{10}fn read_block(&mut self,_:u64,_:&mut[u8])->Result<(),()>{Err(())}fn write_block(&mut self,_:u64,_:&[u8])->Result<(),()>{Err(())}fn flush(&mut self)->Result<(),()>{Ok(())}}
@@ -306,6 +322,21 @@ mod tests{
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(r.transactions_replayed,1);assert_eq!(r.blocks_replayed,1);assert_eq!(d.blocks[7],[0x5a;1024]);
+ }
+ #[test]fn incomplete_transaction_tags_are_never_replayed(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
+  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
+  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[3].fill(0x7c);
+  // Block 4 is deliberately not a matching commit record.
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false};
+  let mut a=[0u8;1024];let mut b=[0u8;1024];
+  let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
+  assert!(r.stopped_on_incomplete);
+  assert_eq!(r.transactions_replayed,0);
+  assert_eq!(r.blocks_replayed,0);
+  assert_eq!(d.blocks[7],[0;1024]);
  }
  #[test]fn later_revoke_suppresses_older_transaction_write(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
