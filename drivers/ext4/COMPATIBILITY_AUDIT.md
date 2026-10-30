@@ -332,3 +332,12 @@ This does not establish namespace reachability or discover all allocated
 directories. The caller-supplied inode list remains a trust boundary; complete
 inode-table scanning, directory graph validation, xattr ownership, backup
 metadata ownership, and Linux-generated recovery testing remain outstanding.
+
+
+## Automatic allocated-directory discovery (2026-10-30)
+
+Added `discover_allocated_directories` and `CheckedExtFilesystem::mount_with_recovery_and_discovery`. The scanner iterates all inode groups, validates the group descriptor and inode-bitmap checksums when metadata_csum is enabled, rejects `EXT4_BG_INODE_UNINIT`, checks that the inode bitmap and inode table are in the retained system-zone map, and tests each valid allocation bit. Each allocated inode is loaded through the standard inode-table path, which validates its inode checksum, then classified by file mode. Directory inode numbers are emitted into caller-owned fixed-capacity storage; the internal journal inode is excluded.
+
+The new mount entry point performs this scan before constructing the replay ownership map, then admits only the discovered directories' checksum-validated data blocks and traversed extent nodes. Capacity exhaustion and malformed/uninitialized groups fail closed. This removes the requirement for callers to manually enumerate directory inode numbers for the recovery path.
+
+**Important limit:** inode-bitmap discovery proves allocation and inode type, not namespace reachability. It may include disconnected or orphaned-but-allocated directories; it does not yet prove root inode 2, `.`/`..` consistency, parent-child relationships, uniqueness, or absence of namespace cycles. The existing mount-state gate continues to reject orphan-recovery states. Xattr blocks, backup metadata, and a full namespace graph validator remain outstanding. This milestone does not enable writable mounts or establish full Linux ext4 replay compatibility.
