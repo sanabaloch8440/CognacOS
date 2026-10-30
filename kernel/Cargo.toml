@@ -15,6 +15,7 @@ cognacos-acpi = { path = "../drivers/acpi" }
 cognacos-pci = { path = "../drivers/pci" }
 cognacos-hal-contract = { path = "../drivers/hal" }
 cognacos-ext4 = { path = "../drivers/ext4" }
+cognacos-fat32 = { path = "../drivers/fat32" }
 cognacos-kbdclass = { path = "../drivers/kbdclass" }
 cognacos-i8042prt = { path = "../drivers/i8042prt" }
 cognacos-kbdus = { path = "../drivers/kbdus" }
