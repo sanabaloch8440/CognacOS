@@ -96,7 +96,7 @@ pub enum WriteError{Filesystem(Error),ReadOnly,OutOfRange,Io,PartialBlock}
 /// Fixed upper bound for the no-alloc writable mount's retained ext4 system-zone map.
 /// Larger filesystems fail closed and can use CheckedExtFilesystem with caller storage.
 pub const MAX_WRITABLE_SYSTEM_ZONES: usize = 256;
-const MAX_EXT4_BLOCK_SIZE: usize = 65_536;
+const MAX_WRITABLE_BLOCK_SIZE: usize = 4096;
 
 /// Driver facade. Writable operations are deliberately limited to in-place
 /// writes to existing regular-file data extents on clean, unjournaled volumes.
@@ -144,9 +144,9 @@ impl<D:BlockDevice> ExtFilesystem<D>{
    return Err(Error::UnsupportedFormat)
   }
   let block_size=sb.block_size as usize;
-  if block_size>MAX_EXT4_BLOCK_SIZE{return Err(Error::UnsupportedFormat)}
+  if block_size>MAX_WRITABLE_BLOCK_SIZE{return Err(Error::UnsupportedFormat)}
   let mut ranges=[BlockRange{start:0,end:0};MAX_WRITABLE_SYSTEM_ZONES];
-  let mut scratch=[0u8;MAX_EXT4_BLOCK_SIZE];
+  let mut scratch=[0u8;MAX_WRITABLE_BLOCK_SIZE];
   let zone_count=build_system_zones(&mut device,&sb,&raw,&mut scratch[..block_size],&mut ranges)?;
   if zone_count==0{return Err(Error::InvalidGeometry)}
   Ok(Self{device,superblock:sb,read_only:false,raw_superblock:raw,
