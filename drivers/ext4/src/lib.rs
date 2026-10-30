@@ -724,6 +724,20 @@ fn read_gpt_layout<D: ReadOnlyBlockDevice>(
     if entries_crc!=u32at(primary,88)? || entries_crc!=u32at(backup,88)? {
         return Err(Error::InvalidChecksum);
     }
+    // Validate the backup entry array independently before modifying either
+    // copy; matching header CRC fields alone do not prove the backup data is sound.
+    let backup_offset=backup_entries_lba.checked_mul(sector_size as u64).ok_or(Error::OutOfRange)?;
+    let mut backup_crc=!0u32;
+    let mut checked=0usize;
+    let mut chunk=[0u8;4096];
+    while checked<array_len {
+        let n=core::cmp::min(chunk.len(),array_len-checked);
+        let at=backup_offset.checked_add(checked as u64).ok_or(Error::OutOfRange)?;
+        device.read_at(at,&mut chunk[..n]).map_err(|_|Error::Io)?;
+        backup_crc=crc32_ieee_extend(backup_crc,&chunk[..n]);
+        checked+=n;
+    }
+    if !backup_crc!=entries_crc { return Err(Error::InvalidChecksum); }
     Ok(GptLayout{sector_size:ss,disk_sectors,header_size,entry_count,entry_size,
         primary_entries_lba,backup_entries_lba,first_usable,last_usable})
 }
