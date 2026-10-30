@@ -111,6 +111,14 @@ impl JournalSuperblock{
   Ok(Self{format_version,block_size,max_len,first,sequence,start,feature_incompat,
    block_count_64:feature_incompat&FEATURE_INCOMPAT_64BIT!=0,checksum_mode,uuid})
  }
+ /// Bind a legacy v1 journal to its containing ext filesystem UUID. The
+ /// original superblock has no UUID field, but descriptor tags still carry
+ /// UUID extensions and Linux compares them with the filesystem UUID.
+ pub fn parse_with_filesystem_uuid(b:&[u8],filesystem_uuid:&[u8;16])->Result<Self,Error>{
+  let mut parsed=Self::parse(b)?;
+  if parsed.format_version==1{parsed.uuid=*filesystem_uuid;}
+  Ok(parsed)
+ }
  pub fn needs_recovery(&self)->bool{self.start!=0}
 }
 fn update_superblock_checksum(block:&mut[u8],mode:ChecksumMode)->Result<(),Error>{
@@ -693,7 +701,7 @@ mod tests{
   js[48]=0;assert_eq!(validate_journal_uuid(&sb,&js),Err(Error::BadMagic));
  }
 
- #[test]fn legacy_v1_superblock_replays_old_jbd_tags_without_uuid_extension(){
+ #[test]fn legacy_v1_superblock_replays_tags_bound_to_filesystem_uuid(){
   let mut js=[0u8;1024];
   header(&mut js,JBD2_SUPERBLOCK_V1,0);
   js[12..16].copy_from_slice(&1024u32.to_be_bytes());
@@ -701,11 +709,12 @@ mod tests{
   js[20..24].copy_from_slice(&1u32.to_be_bytes());
   js[24..28].copy_from_slice(&17u32.to_be_bytes());
   js[28..32].copy_from_slice(&2u32.to_be_bytes());
-  let sb=JournalSuperblock::parse(&js).unwrap();
+  let filesystem_uuid=[0x5au8;16];
+  let sb=JournalSuperblock::parse_with_filesystem_uuid(&js,&filesystem_uuid).unwrap();
   assert_eq!(sb.format_version,1);
   assert_eq!(sb.checksum_mode,ChecksumMode::None);
   assert_eq!(sb.feature_incompat,0);
-  assert_eq!(sb.uuid,[0;16]);
+  assert_eq!(sb.uuid,filesystem_uuid);
   // ext3-era ext4-compatible filesystems can still pin an internal journal
   // inode and filesystem UUID even though the v1 journal superblock has no
   // UUID field to compare against.
@@ -718,6 +727,7 @@ mod tests{
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,17);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[2][20..36].copy_from_slice(&filesystem_uuid);
   d.blocks[3].fill(0x6a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,17);
   let mut a=[0u8;1024];let mut b=[0u8;1024];
@@ -726,7 +736,7 @@ mod tests{
   assert_eq!(report.blocks_replayed,1);
   assert_eq!(d.blocks[7],[0x6a;1024]);
  }
- #[test]fn legacy_v1_writer_emits_zero_uuid_tag(){
+ #[test]fn legacy_v1_writer_emits_filesystem_uuid_tag(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   let mut js=[0u8;1024];
   js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
@@ -740,7 +750,7 @@ mod tests{
   assert_eq!(be32(&d.blocks[1],4).unwrap(),JBD2_DESCRIPTOR_BLOCK);
   assert_eq!(be32(&d.blocks[1],12).unwrap(),10);
   assert_eq!(be32(&d.blocks[1],16).unwrap(),TAG_LAST);
-  assert_eq!(&d.blocks[1][20..36],&[0;16]); // v1 superblocks have no UUID, so the legacy tag extension is zero-filled.
+  assert_eq!(&d.blocks[1][20..36],&[0x6b;16]); // The v1 superblock omits UUID; descriptor tags still carry the filesystem UUID.
   assert_eq!(d.blocks[10],metadata);
  }
   #[test]fn checksum_feature_bits_are_mutually_exclusive(){
