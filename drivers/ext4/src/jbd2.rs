@@ -484,4 +484,30 @@ mod tests{
   let mut js=[0u8;1024];js[48..64].copy_from_slice(&[0x5a;16]);assert_eq!(validate_journal_uuid(&sb,&js),Ok(()));
   js[48]=0;assert_eq!(validate_journal_uuid(&sb,&js),Err(Error::BadMagic));
  }
+
+ #[test]fn checksum_feature_bits_are_mutually_exclusive(){
+  assert_eq!(checksum_mode(0,0),Ok(ChecksumMode::None));
+  assert_eq!(checksum_mode(1,0),Ok(ChecksumMode::V1));
+  assert_eq!(checksum_mode(0,FEATURE_INCOMPAT_CSUM_V2),Ok(ChecksumMode::V2));
+  assert_eq!(checksum_mode(0,FEATURE_INCOMPAT_CSUM_V3),Ok(ChecksumMode::V3));
+  assert_eq!(checksum_mode(1,FEATURE_INCOMPAT_CSUM_V2),Err(Error::UnsupportedFeature));
+  assert_eq!(checksum_mode(0,FEATURE_INCOMPAT_CSUM_V2|FEATURE_INCOMPAT_CSUM_V3),Err(Error::UnsupportedFeature));
+ }
+ #[test]fn checksum_v2_v3_tag_helpers_validate_full_data_block(){
+  let uuid=[0x31;16];let seed=crate::checksum::jbd2_csum_seed(&uuid);let data=[0x62;1024];
+  let sum=crate::checksum::jbd2_tag_checksum(seed,19,&data);
+  assert!(verify_tag_checksum(&uuid,19,&data,sum,ChecksumMode::V3));
+  assert!(verify_tag_checksum(&uuid,19,&data,sum&0xffff,ChecksumMode::V2));
+  assert!(!verify_tag_checksum(&uuid,20,&data,sum,ChecksumMode::V3));
+  assert!(!verify_tag_checksum(&uuid,19,&data,sum,ChecksumMode::None));
+ }
+ #[test]fn checksum_v2_v3_block_verifiers_detect_corruption(){
+  let uuid=[0x27;16];let seed=crate::checksum::jbd2_csum_seed(&uuid);
+  let mut metadata=[0x45;1024];let sum=crate::checksum::jbd2_metadata_block_checksum(seed,&metadata).unwrap();
+  metadata[1020..].copy_from_slice(&sum.to_be_bytes());assert!(verify_metadata_checksum(&uuid,&metadata));
+  metadata[99]^=1;assert!(!verify_metadata_checksum(&uuid,&metadata));
+  let mut commit=[0x56;1024];let sum=crate::checksum::jbd2_commit_checksum(seed,&commit).unwrap();
+  commit[16..20].copy_from_slice(&sum.to_be_bytes());assert!(verify_commit_checksum(&uuid,&commit));
+  commit[200]^=1;assert!(!verify_commit_checksum(&uuid,&commit));
+ }
 }
