@@ -523,6 +523,111 @@ impl<D:BlockDevice> BlockDevice for PartitionDevice<D>{
 }
 
 
+
+const INCOMPAT_CSUM_SEED: u32 = 0x2000;
+const RO_COMPAT_METADATA_CSUM: u32 = 0x0400;
+const EXT4_SB_UUID_OFFSET: usize = 104;
+const EXT4_SB_CHECKSUM_SEED_OFFSET: usize = 624;
+const EXT4_GD_CHECKSUM_OFFSET: usize = 30;
+const EXT4_INODE_CHECKSUM_LO_OFFSET: usize = 124;
+const EXT4_INODE_CHECKSUM_HI_OFFSET: usize = 130;
+
+/// Return the filesystem-wide metadata checksum seed. With
+/// INCOMPAT_CSUM_SEED, ext4 stores the seed in s_checksum_seed; otherwise
+/// it is CRC32C(~0, s_uuid), as specified by ext4.
+pub fn ext4_metadata_checksum_seed(superblock: &[u8]) -> Result<u32, Error> {
+    if superblock.len() < SUPERBLOCK_BYTES { return Err(Error::Truncated); }
+    if u32at(superblock,100)? & RO_COMPAT_METADATA_CSUM == 0 {
+        return Err(Error::UnsupportedFormat);
+    }
+    if superblock[373] != 1 { return Err(Error::UnsupportedFormat); }
+    let incompat=u32at(superblock,96)?;
+    if incompat & INCOMPAT_CSUM_SEED != 0 {
+        return u32at(superblock,EXT4_SB_CHECKSUM_SEED_OFFSET);
+    }
+    let uuid=&superblock[EXT4_SB_UUID_OFFSET..EXT4_SB_UUID_OFFSET+16];
+    Ok(crc32c(!0u32,uuid))
+}
+
+/// Compute the ext4 metadata_csum group descriptor checksum. The checksum
+/// field itself (bg_checksum at offset 0x1e) is excluded from the stream.
+pub fn group_descriptor_checksum(
+    superblock: &[u8], group: u32, descriptor: &[u8],
+) -> Result<u16,Error> {
+    if descriptor.len()<32 { return Err(Error::Truncated); }
+    let seed=ext4_metadata_checksum_seed(superblock)?;
+    let crc=crc32c(seed,&group.to_le_bytes());
+    let crc=crc32c(crc,&descriptor[..EXT4_GD_CHECKSUM_OFFSET]);
+    let crc=crc32c(crc,&descriptor[EXT4_GD_CHECKSUM_OFFSET+2..]);
+    Ok(crc as u16)
+}
+
+pub fn validate_group_descriptor_checksum(
+    superblock: &[u8], group: u32, descriptor: &[u8],
+) -> Result<(),Error> {
+    if u16at(descriptor,EXT4_GD_CHECKSUM_OFFSET)?==group_descriptor_checksum(superblock,group,descriptor)? {
+        Ok(())
+    } else { Err(Error::InvalidChecksum) }
+}
+
+pub fn update_group_descriptor_checksum(
+    superblock: &[u8], group: u32, descriptor: &mut [u8],
+) -> Result<(),Error> {
+    let checksum=group_descriptor_checksum(superblock,group,descriptor)?;
+    let target=descriptor.get_mut(EXT4_GD_CHECKSUM_OFFSET..EXT4_GD_CHECKSUM_OFFSET+2)
+        .ok_or(Error::Truncated)?;
+    target.copy_from_slice(&checksum.to_le_bytes());
+    Ok(())
+}
+
+/// Calculate the inode checksum using the inode number, generation and inode
+/// bytes. The checksum fields are treated as zero while calculating.
+pub fn inode_checksum(superblock: &[u8], inode_number: u32, inode: &[u8]) -> Result<u32,Error> {
+    if inode.len()<128 || inode_number==0 { return Err(Error::Truncated); }
+    let seed=ext4_metadata_checksum_seed(superblock)?;
+    let generation=u32at(inode,100)?;
+    let mut crc=crc32c(seed,&inode_number.to_le_bytes());
+    crc=crc32c(crc,&generation.to_le_bytes());
+    crc=crc32c(crc,&inode[..EXT4_INODE_CHECKSUM_LO_OFFSET]);
+    crc=crc32c(crc,&[0u8;2]);
+    let has_hi=inode.len()>=132 && u16at(inode,128)? >= 4;
+    if has_hi {
+        crc=crc32c(crc,&inode[126..EXT4_INODE_CHECKSUM_HI_OFFSET]);
+        crc=crc32c(crc,&[0u8;2]);
+        crc=crc32c(crc,&inode[EXT4_INODE_CHECKSUM_HI_OFFSET+2..]);
+    } else {
+        crc=crc32c(crc,&inode[126..]);
+    }
+    Ok(crc)
+}
+
+pub fn validate_inode_checksum(
+    superblock: &[u8], inode_number: u32, inode: &[u8],
+) -> Result<(),Error> {
+    let calculated=inode_checksum(superblock,inode_number,inode)?;
+    let stored_lo=u16at(inode,EXT4_INODE_CHECKSUM_LO_OFFSET)? as u32;
+    let has_hi=inode.len()>=132 && u16at(inode,128)? >= 4;
+    let stored=if has_hi {
+        stored_lo | ((u16at(inode,EXT4_INODE_CHECKSUM_HI_OFFSET)? as u32)<<16)
+    } else { stored_lo };
+    let mask=if has_hi { u32::MAX } else { 0xffff };
+    if calculated & mask == stored { Ok(()) } else { Err(Error::InvalidChecksum) }
+}
+
+pub fn update_inode_checksum(
+    superblock: &[u8], inode_number: u32, inode: &mut [u8],
+) -> Result<(),Error> {
+    let calculated=inode_checksum(superblock,inode_number,inode)?;
+    let has_hi=inode.len()>=132 && u16at(inode,128)? >= 4;
+    inode[EXT4_INODE_CHECKSUM_LO_OFFSET..EXT4_INODE_CHECKSUM_LO_OFFSET+2]
+        .copy_from_slice(&(calculated as u16).to_le_bytes());
+    if has_hi {
+        inode[EXT4_INODE_CHECKSUM_HI_OFFSET..EXT4_INODE_CHECKSUM_HI_OFFSET+2]
+            .copy_from_slice(&((calculated>>16) as u16).to_le_bytes());
+    }
+    Ok(())
+}
+
 /// Validated GPT layout used by the mutation routines. The entry array is
 /// intentionally capped at 128 x 128-byte entries to bound early-boot memory.
 #[derive(Clone, Copy)]
@@ -931,6 +1036,47 @@ mod host_tests {
         assert_eq!(&disk.bytes[start+56..start+58],&EXT_MAGIC.to_le_bytes());
     }
 
+}
+
+
+#[cfg(test)]
+mod ext4_metadata_checksum_tests {
+    use super::*;
+    fn checksum_superblock()->[u8;SUPERBLOCK_BYTES] {
+        let mut sb=[0u8;SUPERBLOCK_BYTES];
+        sb[96..100].copy_from_slice(&INCOMPAT_CSUM_SEED.to_le_bytes());
+        sb[100..104].copy_from_slice(&RO_COMPAT_METADATA_CSUM.to_le_bytes());
+        sb[373]=1;
+        sb[EXT4_SB_CHECKSUM_SEED_OFFSET..EXT4_SB_CHECKSUM_SEED_OFFSET+4]
+            .copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        sb
+    }
+    #[test]
+    fn group_descriptor_checksum_round_trip_and_corruption_detection() {
+        let sb=checksum_superblock();
+        let mut gd=[0u8;64];
+        gd[12..16].copy_from_slice(&17u32.to_le_bytes());
+        update_group_descriptor_checksum(&sb,7,&mut gd).unwrap();
+        assert_eq!(validate_group_descriptor_checksum(&sb,7,&gd),Ok(()));
+        assert_eq!(validate_group_descriptor_checksum(&sb,8,&gd),Err(Error::InvalidChecksum));
+        gd[12]^=1;
+        assert_eq!(validate_group_descriptor_checksum(&sb,7,&gd),Err(Error::InvalidChecksum));
+    }
+    #[test]
+    fn inode_checksum_round_trip_with_and_without_high_word() {
+        let sb=checksum_superblock();
+        let mut inode=[0u8;256];
+        inode[100..104].copy_from_slice(&0x55aa_u32.to_le_bytes());
+        update_inode_checksum(&sb,42,&mut inode).unwrap();
+        assert_eq!(validate_inode_checksum(&sb,42,&inode),Ok(()));
+        assert_eq!(validate_inode_checksum(&sb,43,&inode),Err(Error::InvalidChecksum));
+        inode[8]^=1;
+        assert_eq!(validate_inode_checksum(&sb,42,&inode),Err(Error::InvalidChecksum));
+        let mut small=[0u8;128];
+        small[100..104].copy_from_slice(&9u32.to_le_bytes());
+        update_inode_checksum(&sb,2,&mut small).unwrap();
+        assert_eq!(validate_inode_checksum(&sb,2,&small),Ok(()));
+    }
 }
 
 #[cfg(test)]
