@@ -1146,6 +1146,11 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                                     if routes_masked {
                                         unsafe { outb(0x21, 0xff); outb(0xa1, 0xff); }
                                         let _=prepare_ps2_irq_route(&firmware_madt,bsp_apic_id);
+                                        hal::install_device_dpc_hooks(
+                                            ntoskrnl::ke::runtime::hal_queue_device_dpc,
+                                            ntoskrnl::ke::runtime::hal_remove_device_dpc,
+                                            ntoskrnl::ke::runtime::hal_initialize_device_dpc,
+                                        );
                                         let _xhci_pnp_resources_ready=probe_xhci_pci_function(&firmware_madt,bsp_apic_id);
                                         match unsafe { hal::calibrate_local_clock_event() } {
                                             Ok(count) => {
