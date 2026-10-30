@@ -822,7 +822,7 @@ mod inline_extent_normalization_tests {
   let mut b=[0u8;60];b[0..2].copy_from_slice(&0xf30au16.to_le_bytes());
   b[2..4].copy_from_slice(&3u16.to_le_bytes());b[4..6].copy_from_slice(&4u16.to_le_bytes());
   // Deliberately unsorted; the first two runs are physically/logically adjacent.
-  for (i,(logical,physical)) in [(4u32,30u64),(0,26),(8,40)].iter().enumerate(){
+  for (i,(logical,physical)) in [(2u32,28u64),(0,26),(8,40)].iter().enumerate(){
    let o=12+i*12;b[o..o+4].copy_from_slice(&logical.to_le_bytes());
    b[o+4..o+6].copy_from_slice(&2u16.to_le_bytes());
    b[o+8..o+12].copy_from_slice(&(*physical as u32).to_le_bytes());
