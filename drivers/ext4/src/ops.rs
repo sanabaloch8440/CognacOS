@@ -151,6 +151,7 @@ pub fn initialize_regular_inode(
  sb:&[u8],inode_number:u32,inode:&mut[u8],meta:NewInodeMetadata,
 )->Result<(),Error>{
  if inode.len()<128||inode_number==0||meta.links==0||meta.mode&0xf000!=0x8000{return Err(Error::InvalidGeometry)}
+ validate_superblock_checksum(sb)?;
  if inode.len()<Superblock::parse(sb)?.inode_size as usize{return Err(Error::Truncated)}
  inode.fill(0);
  put16(inode,0,meta.mode)?;put32(inode,8,meta.atime)?;put32(inode,12,meta.ctime)?;put32(inode,16,meta.mtime)?;
@@ -178,6 +179,8 @@ pub fn insert_directory_entry(
  child_inode:u32,name:&[u8],file_type:u8,
 )->Result<(),Error>{
  if child_inode==0||child_inode>total_inodes||name.is_empty()||name.len()>255{return Err(Error::InvalidDirectoryEntry)}
+ validate_superblock_checksum(sb)?;
+ validate_superblock_checksum(sb)?;
  let csum=metadata_csum(sb)?;if csum{validate_directory_block_checksum(sb,directory_inode,generation,block)?}
  let limit=dir_limit(block,csum)?;validate_dir_entries(block,limit,total_inodes)?;
  let need=ideal_rec_len(name.len())?;let mut off=0usize;let mut placed=false;
@@ -346,6 +349,7 @@ pub fn resize_inline_regular_file(
 
 /// Validate an inode before it is modified, when metadata_csum is enabled.
 pub fn validate_inode_before_mutation(sb:&[u8],inode_number:u32,inode:&[u8])->Result<(),Error>{
+ validate_superblock_checksum(sb)?;
  if metadata_csum(sb)?{validate_inode_checksum(sb,inode_number,inode)?}Ok(())
 }
 
