@@ -69,7 +69,13 @@ impl<D: BlockDevice> DiskStream<D> {
             let lba = at / self.sector_size as u64;
             let off = (at % self.sector_size as u64) as usize;
             let n = core::cmp::min(self.sector_size - off, count - done);
-            self.read_sector(lba, &mut sector[..self.sector_size])?;
+            if let Err(error) = self.read_sector(lba, &mut sector[..self.sector_size]) {
+                if done != 0 {
+                    self.position = self.position.checked_add(done as u64).ok_or(DiskError::Overflow)?;
+                    return Ok(done);
+                }
+                return Err(error);
+            }
             out[done..done+n].copy_from_slice(&sector[off..off+n]);
             done += n;
         }
