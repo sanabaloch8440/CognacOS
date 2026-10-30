@@ -127,7 +127,11 @@ pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32
  if !wait64(mmio,CCMD,ICC){unsafe{(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
  unsafe{w32(mmio,GCMD,(old&!TE)|SRTP|TE)};
  if !wait32(mmio,GSTS,TES,true){unsafe{w32(mmio,GCMD,(old&!TE)|SRTP);let _=wait32(mmio,GSTS,TES,false);(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
- *u=Unit{mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,ops:*ops,enabled:true};STATUS_SUCCESS
+ *u=Unit{mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,ops:*ops,enabled:true};
+ drop(_g);
+ let backend_status=unsafe{register_generic_dma_backend()};
+ if backend_status!=STATUS_SUCCESS{return backend_status}
+ STATUS_SUCCESS
 }
 
 /// Global IOTLB invalidation. A timeout is a hard failure: callers must retain
@@ -403,4 +407,101 @@ pub fn requester_domain_root(id:RequesterId)->Option<(u16,u64)>{
  let _guard=LOCK.lock();
  let domains=unsafe{&*DOMAINS.0.get()};
  domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8).map(|d|(d.id,d.root_physical))
+}
+
+
+// Generic DMA backend bridge. IOVAs are allocated from a private 32-bit window;
+// the physical page offset is preserved for byte-granular WDM transfers.
+const DMA_IOVA_START:u64=0x1_0000;
+const DMA_IOVA_END:u64=0x1_0000_0000;
+const MAX_DMA_MAPS:usize=512;
+#[derive(Clone,Copy)]
+struct DmaMap { used:bool, device:usize, iova:u64, span:u64, cookie:u64 }
+impl DmaMap { const EMPTY:Self=Self{used:false,device:0,iova:0,span:0,cookie:0}; }
+static DMA_MAPS:crate::hal::IrqSpinLock<[DmaMap;MAX_DMA_MAPS]>=
+ crate::hal::IrqSpinLock::new([DmaMap::EMPTY;MAX_DMA_MAPS]);
+static NEXT_DMA_IOVA:core::sync::atomic::AtomicU64=
+ core::sync::atomic::AtomicU64::new(DMA_IOVA_START);
+
+fn requester_for_device(device:usize)->Option<RequesterId>{
+ let (segment,bus,devfn)=crate::dma::iommu::requester_identity(device)?;
+ if segment!=0{return None}
+ RequesterId::new(bus,devfn>>3,devfn&7)
+}
+
+unsafe extern "system" fn generic_dma_map(
+ _context:*mut core::ffi::c_void,device:usize,physical:u64,length:u32,direction:u8,
+ logical_out:*mut u64,cookie_out:*mut u64
+)->i32{
+ if logical_out.is_null()||cookie_out.is_null()||device==0||length==0{return STATUS_INVALID_PARAMETER}
+ let Some(id)=requester_for_device(device) else{return STATUS_NOT_SUPPORTED};
+ if !is_enabled(){return STATUS_DEVICE_NOT_READY}
+ if requester_domain_root(id).is_none(){
+  if unsafe{create_requester_domain(id)}.is_err(){return STATUS_NOT_SUPPORTED}
+ }
+ let offset=physical&(SL_PAGE-1);
+ let physical_base=physical&!(SL_PAGE-1);
+ let span=match offset.checked_add(length as u64).and_then(|n|n.checked_add(SL_PAGE-1)){Some(n)=>n&!(SL_PAGE-1),None=>return STATUS_INVALID_PARAMETER};
+ let allocation=span.max(SL_PAGE);
+ let iova=NEXT_DMA_IOVA.fetch_update(Ordering::AcqRel,Ordering::Acquire,|old|{
+  old.checked_add(allocation).filter(|end|*end<=DMA_IOVA_END)
+ });
+ let base=match iova{Ok(v)=>v,Err(_)=>return STATUS_INSUFFICIENT_RESOURCES};
+ // WDM write_to_device=1 means device reads memory; 0 means device writes.
+ // Direction 2 is reserved by this kernel for bidirectional common buffers.
+ let permissions=match direction{0=>2,1=>1,2=>3,_=>return STATUS_INVALID_PARAMETER};
+ let status=unsafe{map_pages(id,base,physical_base,span,permissions)};
+ if status!=STATUS_SUCCESS{return status}
+ let logical=base+offset;
+ let mut maps=DMA_MAPS.lock();
+ let Some(slot)=maps.iter_mut().find(|m|!m.used) else{
+  drop(maps);let _=unsafe{unmap_pages(id,base,span)};return STATUS_INSUFFICIENT_RESOURCES
+ };
+ *slot=DmaMap{used:true,device,iova:base,span,cookie:base};
+ unsafe{logical_out.write(logical);cookie_out.write(base);}
+ STATUS_SUCCESS
+}
+
+unsafe extern "system" fn generic_dma_unmap(
+ _context:*mut core::ffi::c_void,device:usize,logical:u64,cookie:u64
+)->i32{
+ if device==0||logical==0||cookie==0{return STATUS_INVALID_PARAMETER}
+ let Some(id)=requester_for_device(device) else{return STATUS_NOT_SUPPORTED};
+ let record={
+  let maps=DMA_MAPS.lock();
+  maps.iter().find(|m|m.used&&m.device==device&&m.cookie==cookie
+   &&logical>=m.iova&&logical<m.iova.saturating_add(m.span)).copied()
+ };
+ let Some(record)=record else{return STATUS_INVALID_PARAMETER};
+ let status=unsafe{unmap_pages(id,record.iova,record.span)};
+ if status!=STATUS_SUCCESS{return status}
+ let mut maps=DMA_MAPS.lock();
+ if let Some(slot)=maps.iter_mut().find(|m|m.used&&m.device==device&&m.cookie==cookie){*slot=DmaMap::EMPTY;}
+ STATUS_SUCCESS
+}
+
+unsafe extern "system" fn generic_dma_sync(
+ _context:*mut core::ffi::c_void,_device:usize,logical:u64,length:u32,_direction:u8
+)->i32{
+ if logical==0||length==0{return STATUS_INVALID_PARAMETER}
+ // x86 DMA is cache coherent for ordinary WB memory. Order CPU writes before
+ // device ownership and device writes before subsequent CPU reads.
+ fence(Ordering::SeqCst);
+ unsafe{core::arch::asm!("mfence",options(nostack,preserves_flags));}
+ STATUS_SUCCESS
+}
+
+/// Register the VT-d mapper as the generic DMA backend. Call only after
+/// initialize() has enabled translation; requester BDFs are registered by PnP.
+/// The generic backend copies this descriptor into permanent kernel storage.
+pub unsafe fn register_generic_dma_backend()->i32{
+ if !is_enabled(){return STATUS_DEVICE_NOT_READY}
+ let mut ops=crate::dma::iommu::IommuBackend{
+  size:core::mem::size_of::<crate::dma::iommu::IommuBackend>() as u32,
+  context:core::ptr::null_mut(),
+  map:Some(generic_dma_map),
+  unmap:Some(generic_dma_unmap),
+  sync:Some(generic_dma_sync),
+ };
+ unsafe{crate::dma::iommu::RdotDmaRegisterIommuBackend(&mut ops)}
 }
