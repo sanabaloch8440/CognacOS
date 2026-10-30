@@ -567,7 +567,7 @@ fn run_ext4_readme_test() -> bool {
             #[cfg(debug_assertions)] unsafe {
                 crate::serial_write(b"EXT4 DEBUG: mount_writable rejected volume: ");
                 crate::serial_write(ext4_error_debug_name(error));
-                crate::serial_write(b"\\r\\n");
+                crate::serial_write(b"\r\n");
             }
             return false;
         },
@@ -580,7 +580,7 @@ fn run_ext4_readme_test() -> bool {
             #[cfg(debug_assertions)] unsafe {
                 crate::serial_write(b"EXT4 DEBUG: checked data write failed: ");
                 crate::serial_write(ext4_write_error_debug_name(&error));
-                crate::serial_write(b"\\r\\n");
+                crate::serial_write(b"\r\n");
             }
             return false;
         },
@@ -605,7 +605,7 @@ fn run_ext4_readme_test() -> bool {
             #[cfg(debug_assertions)] unsafe {
                 crate::serial_write(b"EXT4 DEBUG: restore mount rejected volume: ");
                 crate::serial_write(ext4_error_debug_name(error));
-                crate::serial_write(b"\\r\\n");
+                crate::serial_write(b"\r\n");
             }
             return false;
         },
@@ -617,7 +617,7 @@ fn run_ext4_readme_test() -> bool {
             #[cfg(debug_assertions)] unsafe {
                 crate::serial_write(b"EXT4 DEBUG: restore data write failed: ");
                 crate::serial_write(ext4_write_error_debug_name(&error));
-                crate::serial_write(b"\\r\\n");
+                crate::serial_write(b"\r\n");
             }
             return false;
         },
