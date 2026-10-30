@@ -48,7 +48,7 @@ high-block field is parsed in its on-disk position. The ordered-commit writer
 continues to reject checksum-enabled journals rather than emitting invalid
 records.
 
-Checksum-v1 remains unsupported, as do checksum-enabled journal writes.
+Checksum-v1 transaction replay is now supported using Linux-compatible CRC32_BE over each descriptor block and its data blocks. Checksum-enabled journal writes remain unsupported.
 The implementation must still be exercised against Linux-generated journal
 images and broader malformed-input/crash-recovery tests before enabling
 writable ext4 mounts. Any checksum failure aborts replay before home-block
@@ -56,9 +56,9 @@ writes are issued for that transaction.
 
 ## JBD2 checksum implementation status
 
-The crate now contains allocation-free IEEE CRC-32 and CRC32C primitives,
+The crate now contains allocation-free IEEE CRC-32 (reflected and big-endian) and CRC32C primitives,
 streamable raw-state updates, ext4 inode checksum seed derivation, and JBD2
-checksum-v2/v3 helper routines for UUID-derived seeds, tag data, descriptor/
+checksum-v1 transaction plus checksum-v2/v3 helper routines for UUID-derived seeds, tag data, descriptor/
 revoke tails, and commit blocks. Unit tests cover standard CRC vectors,
 sequence/payload binding, and corruption detection.
 
@@ -73,12 +73,11 @@ replay or writable mounts.
 
 ## Deliberate safety limits
 
-The implementation rejects JBD2 checksum-v2/v3, async-commit and fast-commit
-journals. The replay/commit path is bounded to 256 metadata tags and 256 revoke
+The implementation rejects async-commit and fast-commit journals. The replay/commit path is bounded to 256 metadata tags and 256 revoke
 records per replay/transaction. A transaction must fit one descriptor block.
 The caller must provide correct journal-inode extent mapping and serialize all
 writers. External extent-tree split/merge, indexed htree directories, external
-journals, and journal checksum formats are not supported by these routines.
+journals, and checksum-enabled journal writing is not supported by these routines.
 
 The new CheckedExtFilesystem mount facade builds and retains the system-zone map and invokes the reserved-journal-inode pass using caller-owned range and scratch buffers. The transaction coordinator is constructed by the mount manager with a MetadataTargetPolicy that must validate exact metadata ownership (superblock/GDT/bitmap/inode-table/directory/inode blocks) and must exclude the journal's own physical blocks from metadata targets. Transactions are serialized by exclusive borrowing and do not allocate memory. `recover_internal_journal` is a separate pre-mount recovery operation: it requires a writable partition-bounded BlockDevice, a complete caller-provided journal logical-to-physical map, and block-sized replay buffers. After successful recovery, mount again through CheckedExtFilesystem. The legacy ExtFilesystem facade remains available for compatibility but does not provide this checked mapping surface. The current ExtFilesystem mount facade rejects **all writable mounts**. This
 is a deliberate safety interlock: the current data-write path does not yet
@@ -103,7 +102,7 @@ of the driver test matrix.
 
 ## Transaction coordinator boundary
 
-The coordinator is a bounded commit primitive, not yet the writable VFS mount path. It permanently poisons its in-memory mount instance after any commit I/O error, preventing further transactions until recovery and remount. It requires the caller to provide validated journal-inode mapping, the retained system-zone map, a metadata-target policy tied to validated ext4 metadata ownership, and preallocated arenas. It currently supports the explicitly implemented legacy JBD2 format only. It does not implement transaction rollback in RAM after an I/O error; after the recovery-start pointer is durably published, any error must leave the mount offline and force journal recovery before reuse. It also does not yet provide mount-manager automatic recovery, orphan cleanup, atomic multi-inode operation builders, or Linux checksum-v1/v2/v3, async-commit, or fast-commit support. Writable mounting remains disabled until these integration and crash-injection requirements pass.
+The coordinator is a bounded commit primitive, not yet the writable VFS mount path. It permanently poisons its in-memory mount instance after any commit I/O error, preventing further transactions until recovery and remount. It requires the caller to provide validated journal-inode mapping, the retained system-zone map, a metadata-target policy tied to validated ext4 metadata ownership, and preallocated arenas. It currently supports legacy JBD2 and checksum-v1 replay formats; checksum-enabled writing and v2/v3 writing remain unsupported. It does not implement transaction rollback in RAM after an I/O error; after the recovery-start pointer is durably published, any error must leave the mount offline and force journal recovery before reuse. It also does not yet provide mount-manager automatic recovery, orphan cleanup, atomic multi-inode operation builders, or checksum-enabled journal writing, async-commit, or fast-commit support. Writable mounting remains disabled until these integration and crash-injection requirements pass.
 
 
 ### JBD2 recovery target isolation
@@ -129,3 +128,8 @@ These are foundations for wiring the actual VFS mutation paths, not proof that a
 ## JBD2 checksum validation
 
 The bounded recovery parser validates the JBD2 v2/v3 journal superblock before trusting its geometry or recovery pointer: checksum type must be CRC32C and the complete 1024-byte superblock CRC32C is checked with the checksum field zeroed. Descriptor/revoke tails, per-tag data checksums, UUIDs, and commit checksums are also validated before replay. Checksum-v1, async commit, and fast commits remain unsupported and fail closed. Checksum-enabled journal writing is not implemented; writable ext4 mounts remain disabled.
+
+
+## JBD2 checksum-v1 replay (2026-10-30)
+
+Checksum-v1 journals are no longer rejected. The replay scanner computes Linux's big-endian CRC-32 raw state from `~0`, covering each complete descriptor block followed by every associated journal data block in transaction order, and compares it with commit `h_chksum[0]` when the commit header identifies CRC32/size 4. Deleted tags still consume and checksum their following data block, matching Linux's tag-stream accounting. Corrupt descriptor or payload bytes fail the transaction with `InvalidChecksum` before replay writes. The commit writer remains disabled for checksum-enabled journals. Async commit and fast commit remain unsupported.
