@@ -78,3 +78,6 @@ The ext4 recovery path now rejects committed journal tags that point back into t
 
 
 `CheckedExtFilesystem::mount_with_recovery` is the checked entry point for filesystems with an internal journal: it constructs the system-zone map, protects journal extents, performs bounded replay with journal self-overwrite protection, then mounts only after the journal is clean. This is still a restricted legacy-JBD2 implementation; unsupported checksum/async/fast-commit formats fail closed, and writable mounts remain disabled pending crash-injection and Linux interoperability validation.
+
+
+Mounted mutation code should use `ops::allocate_block_checked` and `ops::free_block_checked`: allocation skips bitmap-free blocks that overlap the retained system-zone map, while freeing rejects protected metadata and journal extents. The original unchecked primitives remain lower-level helpers and are not safe substitutes for the checked APIs.
