@@ -732,7 +732,6 @@ pub fn discover_allocated_directories<D: ReadOnlyBlockDevice>(
     inode_scratch: &mut [u8],
 ) -> Result<usize, Error> {
     if raw_superblock.len() < SUPERBLOCK_BYTES
-        || directory_inodes.is_empty()
         || inode_buffer.len() != sb.inode_size as usize
         || bitmap_scratch.len() != sb.block_size as usize
         || inode_scratch.len() != sb.block_size as usize {
@@ -765,22 +764,35 @@ pub fn discover_allocated_directories<D: ReadOnlyBlockDevice>(
         if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
             validate_group_descriptor_checksum(raw_superblock, group, descriptor)?;
         }
-        if u16at(descriptor, 18)? & 0x0001 != 0 {
-            return Err(Error::UnsupportedFormat);
-        }
         let gd = GroupDescriptor::parse(descriptor, sb)?;
-        if !zones.is_system_block(gd.inode_bitmap) || !zones.is_system_block(gd.inode_table) {
+        let base = (group as u64).checked_mul(sb.inodes_per_group as u64)
+            .ok_or(Error::OutOfRange)?;
+        let remaining = (sb.inodes_count as u64).checked_sub(base).ok_or(Error::InvalidGeometry)?;
+        let in_group = core::cmp::min(sb.inodes_per_group as u64, remaining) as u32;
+        let inode_uninit = u16at(descriptor, 18)? & 0x0001 != 0;
+        if inode_uninit {
+            // Linux marks lazy, not-yet-initialized inode bitmaps as entirely
+            // free. Trust that shortcut only when the checksummed descriptor's
+            // free count agrees with this group's actual inode population.
+            if gd.free_inodes_count != in_group { return Err(Error::InvalidGeometry); }
+            continue;
+        }
+        if !zones.is_system_block(gd.inode_bitmap) {
             return Err(Error::InvalidGeometry);
+        }
+        let table_bytes = (in_group as u64).checked_mul(sb.inode_size as u64)
+            .ok_or(Error::OutOfRange)?;
+        let table_blocks = table_bytes.checked_add(sb.block_size as u64 - 1)
+            .ok_or(Error::OutOfRange)? / sb.block_size as u64;
+        for n in 0..table_blocks {
+            let block = gd.inode_table.checked_add(n).ok_or(Error::OutOfRange)?;
+            if !zones.is_system_block(block) { return Err(Error::InvalidGeometry); }
         }
         read_block(dev, sb, gd.inode_bitmap, bitmap_scratch)?;
         let bitmap = bitmap_scratch.get(..bitmap_bytes).ok_or(Error::Truncated)?;
         if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
             validate_inode_bitmap_checksum(raw_superblock, descriptor, bitmap)?;
         }
-        let base = (group as u64).checked_mul(sb.inodes_per_group as u64)
-            .ok_or(Error::OutOfRange)?;
-        let remaining = (sb.inodes_count as u64).checked_sub(base).ok_or(Error::InvalidGeometry)?;
-        let in_group = core::cmp::min(sb.inodes_per_group as u64, remaining) as u32;
         for bit in 0..in_group {
             if bitmap_scratch[(bit / 8) as usize] & (1u8 << (bit & 7)) == 0 {
                 continue;
