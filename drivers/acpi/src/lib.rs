@@ -425,14 +425,11 @@ pub fn dmar_unit_covers_requester(unit:&DmarUnit,segment:u16,bus:u8,device:u8,fu
     if unit.segment!=segment{return false}
     if unit.include_all{return true}
     unit.scopes.iter().take(unit.scope_count as usize).any(|scope|{
-        if scope.scope_type!=1&&scope.scope_type!=2{return false}
-        if scope.path_count==0{return false}
+        if scope.scope_type!=1||scope.path_count!=1{return false}
         let first=scope.path[0];
         if scope.start_bus==bus&&first.device==device&&first.function==function{return true}
-        // A scope path with a single bridge hop covers subordinate buses only
-        // when its path's first element matches the root bridge and the caller
-        // supplies the directly subordinate bus. Deeper PCI topology requires
-        // the PCI bus driver's full parent path and is intentionally not guessed.
+            // Sub-hierarchy scopes require the full PCI parent path; this early
+        // enumerator has no such path, so it deliberately does not guess.
         false
     })
 }
