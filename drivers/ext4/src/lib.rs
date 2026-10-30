@@ -5,6 +5,7 @@
 #![no_std]
 #![allow(dead_code)]
 
+pub mod checksum;
 pub mod jbd2;
 pub mod ops;
 pub mod orphan;
