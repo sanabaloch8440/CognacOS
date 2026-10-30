@@ -24,6 +24,10 @@ filesystem API.
   ranges for the caller to free in the same transaction.
 - Checksum-validated superblock, group descriptor, inode, bitmap, directory,
   and external extent-tree read/mutation paths.
+- Caller-bounded Linux-style system-zone construction for primary/backup
+  superblocks, backup descriptor tables, reserved GDT blocks, block/inode
+  bitmaps, and inode tables. Checked extent traversal rejects both child
+  extent-tree nodes and final data blocks that overlap those zones.
 
 ## Deliberate safety limits
 
@@ -34,7 +38,7 @@ The caller must provide correct journal-inode extent mapping and serialize all
 writers. External extent-tree split/merge, indexed htree directories, external
 journals, and journal checksum formats are not supported by these routines.
 
-The current ExtFilesystem mount facade rejects **all writable mounts**. This
+The system-zone builder is a standalone safety primitive at this milestone; it is not yet retained by ExtFilesystem at mount time, and the journal inode's blocks are not automatically added to the map. The current ExtFilesystem mount facade rejects **all writable mounts**. This
 is a deliberate safety interlock: the current data-write path does not yet
 validate extent targets against the complete ext4 system-zone map, and the
 journal/recovery and metadata mutation primitives are not integrated through
