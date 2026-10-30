@@ -10,7 +10,6 @@ use std::{boxed::Box, vec::Vec};
 pub type NTSTATUS = i32;
 pub type ULONG = u32;
 pub type PUCHAR = *mut u8;
-p type_dummy
 pub const STATUS_SUCCESS: NTSTATUS = 0;
 pub const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000000D_u32 as i32;
 pub const STATUS_NOT_SUPPORTED: NTSTATUS = 0xC00000BB_u32 as i32;
@@ -41,7 +40,7 @@ impl HashAlgorithm {
     fn provider_name(self) -> &'static str { match self { Self::Sha256 => "SHA256", Self::Sha384 => "SHA384", Self::Sha512 => "SHA512" } }
     fn digest(self, bytes: &[u8]) -> digest::Digest { match self { Self::Sha256 => digest::digest(&digest::SHA256, bytes), Self::Sha384 => digest::digest(&digest::SHA384, bytes), Self::Sha512 => digest::digest(&digest::SHA512, bytes) } }
     fn digest_len(self) -> u32 { match self { Self::Sha256 => 32, Self::Sha384 => 48, Self::Sha512 => 64 } }
-    fn block_len(self) -> u32 { 128 }
+    fn block_len(self) -> u32 { match self { Self::Sha256 => 64, Self::Sha384 | Self::Sha512 => 128 } }
 }
 
 struct AlgorithmHandle { algorithm: HashAlgorithm }
