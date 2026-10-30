@@ -759,9 +759,75 @@ unsafe extern "C" fn service_free_dma(device_object:u64,cpu:u64,device_address:u
     }
 }
 
-/// Publish the real IOMMU-backed DMA services. Interrupt callbacks remain absent
-/// until the kernel has a routed device vector and a safe deferred-DPC queue;
-/// consumers must not start an interrupt-driven controller without those services.
+
+/// Per-vector callback storage. The ISR only queues a KDPC; the executive
+/// dispatches it after the common interrupt dispatcher has issued APIC EOI.
+struct DeviceDpcStorage([u64;8]);
+static DEVICE_DPCS:[DeviceDpcStorage;256]=[const{DeviceDpcStorage([0;8])};256];
+static DEVICE_ISR:[core::sync::atomic::AtomicUsize;256]=[const{core::sync::atomic::AtomicUsize::new(0)};256];
+static DEVICE_DPC:[core::sync::atomic::AtomicUsize;256]=[const{core::sync::atomic::AtomicUsize::new(0)};256];
+static DEVICE_CONTEXT:[core::sync::atomic::AtomicU64;256]=[const{core::sync::atomic::AtomicU64::new(0)};256];
+static DEVICE_ROUTE_IO_BASE:[core::sync::atomic::AtomicU64;256]=[const{core::sync::atomic::AtomicU64::new(0)};256];
+static DEVICE_ROUTE_GSI_BASE:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
+static DEVICE_ROUTE_GSI:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
+
+/// Bind a validated, masked ACPI I/O-APIC route to a registered device vector.
+/// The caller must resolve PCI INTx routing and MADT overrides; no GSI is guessed.
+pub fn bind_device_interrupt_route(vector:u8,io_base:u64,gsi_base:u32,gsi:u32)->Result<(),HalError>{
+    let i=vector as usize;
+    if io_base==0||io_base&0xfff!=0||gsi<gsi_base||gsi-gsi_base>=120
+        ||!apic::interrupt_handler_registered(vector){return Err(HalError::InvalidTransition)}
+    DEVICE_ROUTE_IO_BASE[i].store(io_base,Ordering::Release);
+    DEVICE_ROUTE_GSI_BASE[i].store(gsi_base,Ordering::Release);
+    DEVICE_ROUTE_GSI[i].store(gsi,Ordering::Release);Ok(())
+}
+unsafe extern "win64" fn device_dpc_dispatch(_dpc:*mut core::ffi::c_void,context:*mut core::ffi::c_void,_a1:*mut core::ffi::c_void,_a2:*mut core::ffi::c_void){
+    let i=context as usize;if i>=256{return}
+    let raw=DEVICE_DPC[i].load(Ordering::Acquire);if raw==0{return}
+    let callback:cognacos_hal_contract::InterruptDpc=unsafe{core::mem::transmute(raw)};
+    callback(DEVICE_CONTEXT[i].load(Ordering::Acquire));
+}
+unsafe extern "win64" fn device_interrupt_dispatch(_vector:u8,_frame:*mut core::ffi::c_void,context:*mut core::ffi::c_void)->bool{
+    let i=context as usize;if i>=256{return false}
+    let raw=DEVICE_ISR[i].load(Ordering::Acquire);if raw==0{return false}
+    let callback:cognacos_hal_contract::InterruptIsr=unsafe{core::mem::transmute(raw)};
+    if !callback(DEVICE_CONTEXT[i].load(Ordering::Acquire)){return false}
+    crate::ntoskrnl::ke::runtime::queue_dpc_from_interrupt(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast())
+}
+unsafe extern "C" fn service_register_interrupt(vector:u32,context:u64,isr:Option<cognacos_hal_contract::InterruptIsr>,dpc:Option<cognacos_hal_contract::InterruptDpc>)->DriverHalStatus{
+    if !(0x20..=0xdf).contains(&vector)||context==0{return driver_hal_invalid()}
+    let (Some(isr),Some(dpc))=(isr,dpc) else{return driver_hal_invalid()};
+    let i=vector as usize;
+    if DEVICE_ISR[i].load(Ordering::Acquire)!=0||!ntoskrnl::ke::arch::device_interrupt_vector_ready(vector as u8){return driver_hal_invalid()}
+    DEVICE_CONTEXT[i].store(context,Ordering::Relaxed);DEVICE_DPC[i].store(dpc as usize,Ordering::Relaxed);DEVICE_ISR[i].store(isr as usize,Ordering::Release);
+    unsafe{ntoskrnl::ke::runtime::ke_initialize_dpc(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast(),Some(device_dpc_dispatch),i as *mut core::ffi::c_void);}
+    if register_device_interrupt_handler(vector as u8,device_interrupt_dispatch,i as *mut core::ffi::c_void).is_err(){
+        DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);return driver_hal_invalid()
+    }
+    driver_hal_success()
+}
+unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->DriverHalStatus{
+    if !(0x20..=0xdf).contains(&vector){return driver_hal_invalid()}
+    let i=vector as usize;if DEVICE_CONTEXT[i].load(Ordering::Acquire)!=context||DEVICE_ISR[i].load(Ordering::Acquire)==0{return driver_hal_invalid()}
+    let io=DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);
+    if io!=0{let _=unsafe{set_device_interrupt_route_enabled(io,DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),DEVICE_ROUTE_GSI[i].load(Ordering::Acquire),false)};}
+    let dpc=core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast::<core::ffi::c_void>();
+    let _=unsafe{ntoskrnl::ke::runtime::ke_remove_queue_dpc(dpc)};
+    DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);DEVICE_CONTEXT[i].store(0,Ordering::Release);
+    DEVICE_ROUTE_IO_BASE[i].store(0,Ordering::Release);let _=release_device_interrupt_vector(vector as u8);
+    driver_hal_success()
+}
+unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->DriverHalStatus{
+    if !(0x20..=0xdf).contains(&vector){return driver_hal_invalid()}
+    let i=vector as usize;if DEVICE_ISR[i].load(Ordering::Acquire)==0{return driver_hal_invalid()}
+    let io=DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);if io==0{return driver_hal_unsupported()}
+    match unsafe{set_device_interrupt_route_enabled(io,DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),DEVICE_ROUTE_GSI[i].load(Ordering::Acquire),enabled)}{
+        Ok(())=>driver_hal_success(),Err(_)=>driver_hal_unsupported()
+    }
+}
+
+/// Publish IOMMU-backed DMA and routed interrupt/DPC services. Interrupt
+/// unmasking remains gated until PnP binds a validated ACPI I/O-APIC route.
 pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable {
     let dma_ready=crate::dma::iommu::available();
     cognacos_hal_contract::DeviceServiceTable {
@@ -769,9 +835,9 @@ pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable 
         version:cognacos_hal_contract::DEVICE_SERVICES_VERSION,
         allocate_dma:if dma_ready {Some(service_allocate_dma)} else {None},
         free_dma:if dma_ready {Some(service_free_dma)} else {None},
-        register_interrupt:None,
-        unregister_interrupt:None,
-        set_interrupt_enabled:None,
+        register_interrupt:Some(service_register_interrupt),
+        unregister_interrupt:Some(service_unregister_interrupt),
+        set_interrupt_enabled:Some(service_set_interrupt_enabled),
     }
 }
 
