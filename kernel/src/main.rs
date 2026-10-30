@@ -351,8 +351,9 @@ fn initialize_vtd_from_acpi()->bool{
   Ok(t)=>t,Err(_)=>{unsafe{serial_write(b"VT-d: ACPI DMAR table not found; DMA remains fail-closed.\r\n");}return false}
  };
  let info=match acpi::parse_dmar(table){Ok(v)=>v,Err(_)=>{unsafe{serial_write(b"VT-d: malformed DMAR table; DMA remains fail-closed.\r\n");}return false}};
- let Some(unit)=info.units.iter().take(info.unit_count).find(|u|u.segment==0&&u.include_all)
-  .or_else(||info.units.iter().take(info.unit_count).find(|u|u.segment==0)) else{
+ // Device-scope parsing is not yet implemented, so only an include-all
+ // remapping unit is safe. Never guess which DRHD owns the xHCI requester.
+ let Some(unit)=info.units.iter().take(info.unit_count).find(|u|u.segment==0&&u.include_all) else{
   unsafe{serial_write(b"VT-d: no segment-0 remapping unit; DMA remains fail-closed.\r\n");}return false
  };
  let ops=dma::iommu::vtd::PlatformOps{
