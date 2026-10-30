@@ -813,7 +813,8 @@ mod tests {
         let mut scratch = [0u8; 1024];
         assert_eq!(lookup_htree_leaf(&mut fixture, &root, 4, 0x5000, false, seed, &mut scratch), Err(Error::InvalidDirectoryEntry));
         root[34..36].copy_from_slice(&2u16.to_le_bytes());
-        root[30] = 2;
+        // dx_root_info starts at byte 24; indirect_levels is byte 26.
+        root[26] = 2;
         assert_eq!(lookup_htree_leaf(&mut fixture, &root, 4, 0x5000, false, seed, &mut scratch), Err(Error::UnsupportedFormat));
 
         let mut leaf = [0u8; 1024];
