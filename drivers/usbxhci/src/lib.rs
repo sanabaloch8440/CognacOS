@@ -165,12 +165,14 @@ pub const CONFIG_MAX_SLOTS_MASK:u32=0xff;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct ControllerDmaConfig{pub dcbaa:u64,pub command_ring:u64,pub erst:u64,pub event_ring:u64,pub event_ring_entries:u16,pub max_slots:u8}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum ControllerInitError{InvalidCapabilities,InvalidDmaConfiguration,UnsupportedPageSize,InterruptNotRegistered,RegisterIoFailure,ResetTimeout,ControllerDidNotHalt,ControllerDidNotStart}
+pub enum ControllerInitError{InvalidCapabilities,InvalidDmaConfiguration,UnsupportedPageSize,InterruptNotRegistered,BusMasterEnableFailed,RegisterIoFailure,ResetTimeout,ControllerDidNotHalt,ControllerDidNotStart}
 /// Implemented by a kernel/HAL adapter over a validated, uncached BAR mapping.
 /// Register offsets are relative to the controller's MMIO BAR base.
 pub trait XhciRegisterIo{
  fn read32(&mut self,offset:u32)->Result<u32,()>;
  fn write32(&mut self,offset:u32,value:u32)->Result<(),()>;
+ /// Enable PCI bus mastering only after all DMA mappings and IRQ resources are ready.
+ fn set_bus_master(&mut self,_enabled:bool)->Result<(),()>{Ok(())}
 }
 fn reg_read<I:XhciRegisterIo>(io:&mut I,offset:u32)->Result<u32,ControllerInitError>{io.read32(offset).map_err(|_|ControllerInitError::RegisterIoFailure)}
 fn reg_write<I:XhciRegisterIo>(io:&mut I,offset:u32,value:u32)->Result<(),ControllerInitError>{io.write32(offset,value).map_err(|_|ControllerInitError::RegisterIoFailure)}
@@ -240,6 +242,10 @@ pub fn initialize_controller<I:XhciRegisterIo>(io:&mut I,caps:&Capabilities,dma:
  reg_write(io,erdp,dma.event_ring as u32)?;
  reg_write(io,erdp+4,(dma.event_ring>>32) as u32)?;
  reg_write(io,iman,IMAN_INTERRUPT_ENABLE)?;
+ // The controller is halted, its DMA structures are fully programmed, and the
+ // ISR/DPC route is registered. Only now permit PCI bus mastering, immediately
+ // before setting Run/Stop.
+ io.set_bus_master(true).map_err(|_|ControllerInitError::BusMasterEnableFailed)?;
  reg_write(io,op,USBCMD_RUN|USBCMD_INTERRUPT_ENABLE)?;
  for _ in 0..poll_budget{if reg_read(io,op+4)?&USBSTS_HALTED==0{return Ok(())}core::hint::spin_loop()}
  Err(ControllerInitError::ControllerDidNotStart)
@@ -355,7 +361,6 @@ pub trait XhciPlatform: XhciRegisterIo {
     fn register_interrupt(&mut self) -> Result<(), ()>;
     fn unregister_interrupt(&mut self);
     fn set_interrupt_enabled(&mut self, enabled: bool) -> Result<(), ()>;
-    fn set_bus_master(&mut self, enabled: bool) -> Result<(), ()>;
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeStartError {
@@ -438,13 +443,6 @@ pub fn start_controller<P: XhciPlatform>(
         erst: erst.device_address, event_ring: event_ring.device_address,
         event_ring_entries: RUNTIME_EVENT_ENTRIES, max_slots,
     };
-    // All four coherent DMA mappings and the interrupt callback now exist.
-    // This is the only point at which the platform may enable PCI bus mastering.
-    if platform.set_bus_master(true).is_err() {
-        platform.unregister_interrupt();
-        free_allocations(platform, allocations);
-        return Err(RuntimeStartError::Controller(ControllerInitError::InvalidDmaConfiguration));
-    }
     if let Err(e) = initialize_controller(platform, caps, dma, true, poll_budget) {
         let op = caps.cap_length as u32;
         let mut halted = false;
@@ -455,7 +453,7 @@ pub fn start_controller<P: XhciPlatform>(
                 core::hint::spin_loop();
             }
         }
-        let _ = platform.set_bus_master(false);
+        if platform.set_bus_master(false).is_err(){loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}}
         platform.unregister_interrupt();
         // If halt cannot be confirmed, deliberately leak the allocations: a
         // controller with uncertain state may still hold DMA addresses.
@@ -474,7 +472,7 @@ pub fn start_controller<P: XhciPlatform>(
             if platform.read32(op + 4).is_ok_and(|v| v & USBSTS_HALTED != 0) { halted = true; break; }
             core::hint::spin_loop();
         }
-        let _ = platform.set_bus_master(false);
+        if platform.set_bus_master(false).is_err(){loop{unsafe{core::arch::asm!("cli; hlt",options(nomem,nostack));}}}
         platform.unregister_interrupt();
         if halted { free_allocations(platform, allocations); }
         return Err(RuntimeStartError::InterruptEnableFailed);
