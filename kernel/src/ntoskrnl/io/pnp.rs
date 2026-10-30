@@ -147,13 +147,13 @@ static XHCI_INTERRUPT_VECTOR: core::sync::atomic::AtomicU32 = core::sync::atomic
 /// Reserve and configure the controller's PCI INTx route while keeping it
 /// masked. The IRQ line must already have been resolved through MADT overrides
 /// and matched to the I/O-APIC that owns its GSI range.
-pub fn prepare_xhci_interrupt_route(io_base:u64,gsi_base:u32,gsi:u32,bsp_apic_id:u8)->Result<u8,()>{
+pub fn prepare_xhci_interrupt_route(io_base:u64,gsi_base:u32,gsi:u32,bsp_apic_id:u8,active_low:bool,level_triggered:bool)->Result<u8,()>{
     if !XHCI_PCI_DEVICE.ready.load(Ordering::Acquire)||XHCI_INTERRUPT_VECTOR.load(Ordering::Acquire)!=0{return Err(())}
     let vector=crate::hal::allocate_device_interrupt_vector().map_err(|_|())?;
     if !crate::ntoskrnl::ke::arch::device_interrupt_vector_ready(vector){
         let _=crate::hal::release_device_interrupt_vector(vector);return Err(())
     }
-    if unsafe{crate::hal::configure_device_interrupt_route_masked(io_base,gsi_base,gsi,vector,bsp_apic_id,false,false)}.is_err(){
+    if unsafe{crate::hal::configure_device_interrupt_route_masked(io_base,gsi_base,gsi,vector,bsp_apic_id,active_low,level_triggered)}.is_err(){
         let _=crate::hal::release_device_interrupt_vector(vector);return Err(())
     }
     if crate::hal::bind_device_interrupt_route(vector,io_base,gsi_base,gsi).is_err(){
