@@ -40,7 +40,7 @@ The CheckedExtFilesystem read-only mount facade owns the caller-backed zone rang
 | Indexed directories | Rejected when DIR_INDEX is present | HTree lookup/insert/split, dx checksum validation and depth handling | Many standard Linux ext4 directories are refused |
 | Allocation | Bitmap bit selection, counters, checksums, simple inode/block allocate/free primitives | Metadata-aware multiblock allocator, reservations, preallocation, cluster/bigalloc, flex_bg, lazy init and system-zone protection | Not a safe or equivalent allocator; primitives are not mounted write operations |
 | JBD2 | Legacy descriptor tags, 32/64-bit targets, revoke records, sequence checks and bounded commit/replay | Multi-pass scan/revoke/replay, checksum v1/v2/v3, async commit, fast commits, larger logs, robust checkpointing and transaction lifecycle | Only a narrow legacy journal subset; unsupported checksum/async/fast-commit formats are refused |
-| Orphans | No mount-time orphan cleanup integration | Orphan list and orphan-file recovery | Crash-interrupted unlink/truncate lifecycle is incomplete |
+| Orphans | Bounded legacy s_last_orphan/i_dtime chain validation and transaction callback; no concrete cleanup adapter | Legacy orphan list plus newer orphan-file recovery, linked-inode truncation and zero-link deletion | Legacy chain planning exists, but mount integration, real truncate/reclaim operations, and orphan-file format/checksum support are missing |
 | External journal | Rejected | Supported with device/UUID binding | Not supported |
 | Data modes | One ordered-data commit primitive | journal, ordered and writeback modes with barriers and transaction ordering | No complete mode implementation or mount integration |
 
@@ -126,3 +126,8 @@ This milestone adds the following bounded primitives:
 Important boundaries: these APIs are integration surfaces, not a completed VFS operation implementation. No in-tree adapter currently translates all existing create/unlink/resize/allocate/free primitives into complete operation manifests, and no default mount-time orphan transaction adapter has been wired. The caller must build the exact metadata ownership allowlist from validated filesystem objects before using policy-validated recovery. JBD2 checksum-v1/v2/v3 remain rejected; Linux's on-disk layouts and checksum algorithms are not yet implemented. Writable mounts remain disabled.
 
 The next validation stage must include fault injection after every ordered-data write, journal-start publication, descriptor/data/revoke write, commit write/flush, home checkpoint and clean-superblock publication. The orphan transaction tests must cover linked truncate, zero-link reclaim, cyclic/corrupt lists, inode-generation reuse and failure/replay. Cross-validation must use Linux-generated images and e2fsck.
+
+
+### Linux orphan-format compatibility note
+
+Linux master supports both the legacy singly linked orphan list and the newer orphan-file feature. The new CognacOS orphan module currently handles only the legacy s_last_orphan/i_dtime chain. The ext4 orphan-file inode, per-block magic/checksum validation, ORPHAN_PRESENT mount-state handling and orphan-file cleanup are not implemented; those feature flags must continue to be rejected. Linux's orphan cleanup also distinguishes linked inodes (truncate to i_size) from zero-link inodes (delete/reclaim), which the CognacOS transaction callback contract requires but does not itself implement.
