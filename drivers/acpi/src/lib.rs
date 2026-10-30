@@ -337,99 +337,134 @@ pub fn parse_mcfg(bytes: &[u8]) -> Result<McfgInfo, AcpiError> {
 }
 
 
-/// Intel DMAR remapping hardware discovered from ACPI. Parsing this table does
-/// not enable remapping; a DRHD must be mapped uncached and fully initialized
-/// with root/context tables and invalidation before DMA callbacks can use it.
+/// PCI path element within an ACPI DMAR device scope.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DmarPath { pub device:u8, pub function:u8 }
+/// Parsed DRHD device scope. Paths are bounded and retain the exact PCI
+/// device/function chain; callers must not infer coverage from bus number alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmarDeviceScope {
+    pub scope_type:u8,pub enumeration_id:u8,pub start_bus:u8,
+    pub path:[DmarPath;8],pub path_count:u8,
+}
+impl DmarDeviceScope {
+    pub const EMPTY:Self=Self{scope_type:0,enumeration_id:0,start_bus:0,path:[DmarPath{device:0,function:0};8],path_count:0};
+}
+/// Intel VT-d remapping hardware discovered from ACPI. A DRHD with include-all
+/// covers the segment; otherwise only an explicitly matching endpoint or
+/// PCI-subhierarchy device scope authorizes the requester.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DmarUnit {
-    pub register_base: u64,
-    pub segment: u16,
-    pub include_all: bool,
+    pub register_base:u64,pub segment:u16,pub include_all:bool,
+    pub scopes:[DmarDeviceScope;16],pub scope_count:u8,
+}
+impl DmarUnit {
+    pub const EMPTY:Self=Self{register_base:0,segment:0,include_all:false,scopes:[DmarDeviceScope::EMPTY;16],scope_count:0};
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DmarInfo {
-    pub host_address_width: u8,
-    pub interrupt_remapping_supported: bool,
-    pub units: [DmarUnit; 8],
-    pub unit_count: usize,
+    pub host_address_width:u8,pub interrupt_remapping_supported:bool,
+    pub units:[DmarUnit;8],pub unit_count:usize,
 }
 impl DmarInfo {
-    pub const EMPTY: Self = Self {
-        host_address_width: 0, interrupt_remapping_supported: false,
-        units: [DmarUnit { register_base: 0, segment: 0, include_all: false }; 8],
-        unit_count: 0,
-    };
+    pub const EMPTY:Self=Self{host_address_width:0,interrupt_remapping_supported:false,units:[DmarUnit::EMPTY;8],unit_count:0};
 }
-/// Parse Intel VT-d DMAR DRHD structures with strict table and structure bounds.
-pub fn parse_dmar(bytes: &[u8]) -> Result<DmarInfo, AcpiError> {
-    if bytes.len() < 48 { return Err(AcpiError::Truncated); }
-    if bytes.get(0..4) != Some(b"DMAR") { return Err(AcpiError::BadSignature); }
-    let length = u32le(bytes, 4)? as usize;
-    if length < 48 || length > bytes.len() { return Err(AcpiError::BadLength); }
-    if !checksum_ok(&bytes[..length]) { return Err(AcpiError::BadChecksum); }
-    let mut out = DmarInfo::EMPTY;
-    out.host_address_width = bytes[36].saturating_add(1);
-    out.interrupt_remapping_supported = bytes[37] & 1 != 0;
-    let mut off = 48usize;
-    while off < length {
-        if off.checked_add(4).filter(|end| *end <= length).is_none() {
-            return Err(AcpiError::MalformedEntry);
+/// Parse Intel VT-d DMAR DRHD structures and their bounded PCI device scopes.
+pub fn parse_dmar(bytes:&[u8])->Result<DmarInfo,AcpiError>{
+    if bytes.len()<48{return Err(AcpiError::Truncated)}
+    if bytes.get(0..4)!=Some(b"DMAR"){return Err(AcpiError::BadSignature)}
+    let length=u32le(bytes,4)? as usize;
+    if length<48||length>bytes.len(){return Err(AcpiError::BadLength)}
+    if !checksum_ok(&bytes[..length]){return Err(AcpiError::BadChecksum)}
+    let mut out=DmarInfo::EMPTY;
+    out.host_address_width=bytes[36].saturating_add(1);
+    out.interrupt_remapping_supported=bytes[37]&1!=0;
+    let mut off=48usize;
+    while off<length{
+        if off.checked_add(4).filter(|e|*e<=length).is_none(){return Err(AcpiError::MalformedEntry)}
+        let kind=u16::from_le_bytes([bytes[off],bytes[off+1]]);
+        let size=u16::from_le_bytes([bytes[off+2],bytes[off+3]]) as usize;
+        if size<4||off.checked_add(size).filter(|e|*e<=length).is_none(){return Err(AcpiError::MalformedEntry)}
+        if kind==0{
+            if size<16{return Err(AcpiError::MalformedEntry)}
+            if out.unit_count==out.units.len(){return Err(AcpiError::TooManyEntries)}
+            let base=u64::from_le_bytes(bytes[off+8..off+16].try_into().map_err(|_|AcpiError::Truncated)?);
+            if base==0||base&0xfff!=0{return Err(AcpiError::MalformedEntry)}
+            let mut unit=DmarUnit::EMPTY;
+            unit.register_base=base;unit.include_all=bytes[off+4]&1!=0;
+            unit.segment=u16::from_le_bytes([bytes[off+6],bytes[off+7]]);
+            let mut cursor=off+16;let unit_end=off+size;
+            while cursor<unit_end{
+                if cursor.checked_add(6).filter(|e|*e<=unit_end).is_none(){return Err(AcpiError::MalformedEntry)}
+                let scope_len=bytes[cursor+1] as usize;
+                if scope_len<6||cursor.checked_add(scope_len).filter(|e|*e<=unit_end).is_none()
+                    ||(scope_len-6)%2!=0{return Err(AcpiError::MalformedEntry)}
+                let path_count=(scope_len-6)/2;
+                if path_count==0||path_count>8||unit.scope_count as usize==unit.scopes.len(){return Err(AcpiError::TooManyEntries)}
+                let mut scope=DmarDeviceScope::EMPTY;
+                scope.scope_type=bytes[cursor];scope.enumeration_id=bytes[cursor+4];scope.start_bus=bytes[cursor+5];
+                scope.path_count=path_count as u8;
+                for n in 0..path_count{
+                    let p=cursor+6+n*2;let device=bytes[p];let function=bytes[p+1];
+                    if device>=32||function>=8{return Err(AcpiError::MalformedEntry)}
+                    scope.path[n]=DmarPath{device,function};
+                }
+                unit.scopes[unit.scope_count as usize]=scope;unit.scope_count+=1;
+                cursor+=scope_len;
+            }
+            out.units[out.unit_count]=unit;out.unit_count+=1;
         }
-        let kind = u16::from_le_bytes([bytes[off], bytes[off + 1]]);
-        let size = u16::from_le_bytes([bytes[off + 2], bytes[off + 3]]) as usize;
-        if size < 4 || off.checked_add(size).filter(|end| *end <= length).is_none() {
-            return Err(AcpiError::MalformedEntry);
-        }
-        if kind == 0 {
-            if size < 16 { return Err(AcpiError::MalformedEntry); }
-            if out.unit_count == out.units.len() { return Err(AcpiError::TooManyEntries); }
-            let base = u64::from_le_bytes(bytes[off + 8..off + 16].try_into().map_err(|_| AcpiError::Truncated)?);
-            if base == 0 || base & 0xfff != 0 { return Err(AcpiError::MalformedEntry); }
-            out.units[out.unit_count] = DmarUnit {
-                include_all: bytes[off + 4] & 1 != 0,
-                segment: u16::from_le_bytes([bytes[off + 6], bytes[off + 7]]),
-                register_base: base,
-            };
-            out.unit_count += 1;
-        }
-        off += size;
+        off+=size;
     }
     Ok(out)
+}
+/// Determine whether a DRHD explicitly owns a requester. Scope type 1 is a
+/// PCI endpoint; type 2 is a PCI sub-hierarchy. Other scope types (IOAPIC,
+/// HPET, namespace) do not authorize an arbitrary endpoint.
+pub fn dmar_unit_covers_requester(unit:&DmarUnit,segment:u16,bus:u8,device:u8,function:u8)->bool{
+    if unit.segment!=segment{return false}
+    if unit.include_all{return true}
+    unit.scopes.iter().take(unit.scope_count as usize).any(|scope|{
+        if scope.scope_type!=1&&scope.scope_type!=2{return false}
+        if scope.path_count==0{return false}
+        let first=scope.path[0];
+        if scope.start_bus==bus&&first.device==device&&first.function==function{return true}
+        // A scope path with a single bridge hop covers subordinate buses only
+        // when its path's first element matches the root bridge and the caller
+        // supplies the directly subordinate bus. Deeper PCI topology requires
+        // the PCI bus driver's full parent path and is intentionally not guessed.
+        false
+    })
 }
 
 #[cfg(test)]
 mod dmar_tests {
-    use super::*;
-    #[test]
-    fn dmar_rejects_truncated_header_and_bad_signature() {
-        assert_eq!(parse_dmar(&[0; 47]), Err(AcpiError::Truncated));
-        let mut table = [0u8; 48];
-        table[0..4].copy_from_slice(b"NOPE");
-        table[4..8].copy_from_slice(&(48u32).to_le_bytes());
-        assert_eq!(parse_dmar(&table), Err(AcpiError::BadSignature));
-    }
-    #[test]
-    fn dmar_parses_drhd_register_base_and_segment() {
-        let mut table = [0u8; 64];
-        table[0..4].copy_from_slice(b"DMAR");
-        table[4..8].copy_from_slice(&(64u32).to_le_bytes());
-        table[36] = 47;
-        table[37] = 1;
-        table[48..50].copy_from_slice(&(0u16).to_le_bytes());
-        table[50..52].copy_from_slice(&(16u16).to_le_bytes());
-        table[52] = 1;
-        table[54..56].copy_from_slice(&(2u16).to_le_bytes());
-        table[56..64].copy_from_slice(&(0xfed9_0000u64).to_le_bytes());
-        let checksum = table.iter().fold(0u8, |sum, b| sum.wrapping_add(*b));
-        table[9] = table[9].wrapping_sub(checksum);
-        let info = parse_dmar(&table).unwrap();
-        assert_eq!(info.host_address_width, 48);
-        assert!(info.interrupt_remapping_supported);
-        assert_eq!(info.unit_count, 1);
-        assert_eq!(info.units[0].register_base, 0xfed9_0000);
-        assert_eq!(info.units[0].segment, 2);
-        assert!(info.units[0].include_all);
-    }
+ use super::*;
+ fn finish(mut table:Vec<u8>)->Vec<u8>{
+  let sum=table.iter().fold(0u8,|a,b|a.wrapping_add(*b));table[9]=table[9].wrapping_sub(sum);table
+ }
+ #[test]fn dmar_rejects_truncated_header_and_bad_signature(){
+  assert_eq!(parse_dmar(&[0;47]),Err(AcpiError::Truncated));
+  let mut t=vec![0u8;48];t[0..4].copy_from_slice(b"NOPE");t[4..8].copy_from_slice(&(48u32).to_le_bytes());
+  assert_eq!(parse_dmar(&t),Err(AcpiError::BadSignature));
+ }
+ #[test]fn dmar_parses_include_all_drhd(){
+  let mut t=vec![0u8;64];t[0..4].copy_from_slice(b"DMAR");t[4..8].copy_from_slice(&(64u32).to_le_bytes());t[36]=47;t[37]=1;
+  t[48..50].copy_from_slice(&(0u16).to_le_bytes());t[50..52].copy_from_slice(&(16u16).to_le_bytes());t[52]=1;
+  t[54..56].copy_from_slice(&(0u16).to_le_bytes());t[56..64].copy_from_slice(&(0xfed9_0000u64).to_le_bytes());
+  let info=parse_dmar(&finish(t)).unwrap();assert_eq!(info.host_address_width,48);assert!(info.interrupt_remapping_supported);
+  assert_eq!(info.unit_count,1);assert_eq!(info.units[0].register_base,0xfed9_0000);assert!(info.units[0].include_all);
+ }
+ #[test]fn dmar_parses_and_matches_explicit_endpoint_scope(){
+  let mut t=vec![0u8;78];t[0..4].copy_from_slice(b"DMAR");t[4..8].copy_from_slice(&(78u32).to_le_bytes());t[36]=47;
+  t[48..50].copy_from_slice(&(0u16).to_le_bytes());t[50..52].copy_from_slice(&(30u16).to_le_bytes());t[52]=0;
+  t[54..56].copy_from_slice(&(0u16).to_le_bytes());t[56..64].copy_from_slice(&(0xfed9_0000u64).to_le_bytes());
+  t[64]=1;t[65]=14;t[68]=0;t[69]=0;t[70]=3;t[71]=0;t[72]=0;t[73]=0;t[74]=3;t[75]=0;
+  // The scope's length is 14 bytes: 6-byte header + four path bytes.
+  let info=parse_dmar(&finish(t)).unwrap();let unit=&info.units[0];
+  assert!(!unit.include_all);assert_eq!(unit.scope_count,1);
+  assert!(dmar_unit_covers_requester(unit,0,0,3,0));assert!(!dmar_unit_covers_requester(unit,0,0,4,0));
+ }
 }
 
 #[cfg(test)]
