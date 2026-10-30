@@ -1,6 +1,8 @@
 //! Bounded ext4 system-zone construction and data-block validation.
 use super::*;
 
+const MAX_RESERVED_JOURNAL_BLOCKS: u64 = 1_048_576;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockRange { pub start: u64, pub end: u64 }
 impl BlockRange {
@@ -229,7 +231,7 @@ pub fn protect_reserved_journal_inode_zones<D: ReadOnlyBlockDevice>(
     let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
     if !inode.is_regular_file || inode.size == 0 { return Err(Error::InvalidGeometry); }
     let blocks = inode.size.checked_add(sb.block_size as u64 - 1).ok_or(Error::OutOfRange)? / sb.block_size as u64;
-    if blocks > u32::MAX as u64 { return Err(Error::OutOfRange); }
+    if blocks > u32::MAX as u64 || blocks > MAX_RESERVED_JOURNAL_BLOCKS { return Err(Error::OutOfRange); }
     let mut pending_start = 0u64;
     let mut pending_count = 0u64;
     for logical in 0..blocks as u32 {
