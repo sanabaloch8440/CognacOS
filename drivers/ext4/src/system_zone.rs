@@ -873,31 +873,123 @@ pub fn discover_allocated_directories<D: ReadOnlyBlockDevice>(
 }
 
 
-/// Validate the namespace graph for a bounded set of allocated directory
-/// inodes. `parents` is parallel to `directory_inodes` and receives each
-/// directory's unique parent inode. Root inode 2 must be present and parent
-/// itself. This pass deliberately rejects EXT4_INDEX_FL directories until the
-/// HTree-aware namespace iterator is used; it never interprets dx nodes as
-/// ordinary dirents.
+/// Adapter that maps HTree logical blocks through the owning directory's
+/// checked extent/legacy mapping path.
+struct NamespaceHtreeReader<'a, D: ReadOnlyBlockDevice> {
+    dev: &'a mut D, sb: &'a Superblock, raw_superblock: &'a [u8],
+    zones: &'a SystemZoneMap<'a>, inode_number: u32, generation: u32,
+    extent_root: [u8; 60], uses_extents: bool,
+    map_scratch: &'a mut [u8], legacy_scratch: &'a mut [u8],
+}
+impl<D: ReadOnlyBlockDevice> crate::htree::DirectoryBlockReader for NamespaceHtreeReader<'_, D> {
+    fn read_directory_block(&mut self, logical: u32, out: &mut [u8]) -> Result<(), Error> {
+        if out.len() != self.sb.block_size as usize
+            || self.map_scratch.len() != self.sb.block_size as usize
+            || self.legacy_scratch.len() != self.sb.block_size as usize {
+            return Err(Error::InvalidGeometry);
+        }
+        let physical = if self.uses_extents {
+            map_extent_block_checked_zones_for_inode(
+                self.dev, self.sb, self.raw_superblock, self.inode_number,
+                self.generation, &self.extent_root, logical, self.map_scratch,
+                self.zones, None,
+            )?
+        } else {
+            map_legacy_block(self.dev, self.sb, &self.extent_root, logical as u64,
+                self.map_scratch, self.legacy_scratch)?
+        }.ok_or(Error::InvalidExtentTree)?;
+        read_block(self.dev, self.sb, physical, out)
+    }
+}
+
+fn walk_namespace_directory<D, F>(
+    dev: &mut D, sb: &Superblock, raw_superblock: &[u8],
+    zones: &SystemZoneMap<'_>, inode_number: u32, generation: u32,
+    inode: &Inode, extent_root: &[u8; 60],
+    map_scratch: &mut [u8], legacy_scratch: &mut [u8],
+    root_buffer: &mut [u8], htree_scratch: &mut [u8],
+    visited_leaves: &mut [u32], visitor: &mut F,
+) -> Result<(), Error>
+where D: ReadOnlyBlockDevice,
+      F: for<'b> FnMut(crate::htree::DirectoryEntryView<'b>) -> Result<bool, Error>,
+{
+    let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
+        .ok_or(Error::OutOfRange)? / sb.block_size as u64;
+    if blocks == 0 || blocks > u32::MAX as u64 { return Err(Error::InvalidGeometry); }
+    if root_buffer.len() != sb.block_size as usize
+        || htree_scratch.len() != sb.block_size as usize
+        || map_scratch.len() != sb.block_size as usize
+        || legacy_scratch.len() != sb.block_size as usize {
+        return Err(Error::InvalidGeometry);
+    }
+    if inode.flags & 0x0000_1000 != 0 {
+        let mut reader = NamespaceHtreeReader {
+            dev, sb, raw_superblock, zones, inode_number, generation,
+            extent_root: *extent_root, uses_extents: inode.flags & 0x0008_0000 != 0,
+            map_scratch, legacy_scratch,
+        };
+        crate::htree::DirectoryBlockReader::read_directory_block(&mut reader, 0, root_buffer)?;
+        let hash_seed = crate::hash::ext4_directory_hash_seed(raw_superblock)?;
+        let hash_unsigned = crate::hash::ext4_hash_unsigned(raw_superblock)?;
+        let metadata_csum = sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0;
+        crate::htree::iterate_htree_directory_unique(
+            &mut reader, root_buffer, blocks as u32, sb.inodes_count,
+            hash_seed, None, hash_unsigned, metadata_csum,
+            inode_checksum_seed(raw_superblock, inode_number, generation)?,
+            htree_scratch, visited_leaves, |entry| visitor(entry),
+        )?;
+        return Ok(());
+    }
+    for logical in 0..blocks as u32 {
+        let physical = if inode.flags & 0x0008_0000 != 0 {
+            map_extent_block_checked_zones_for_inode(
+                dev, sb, raw_superblock, inode_number, generation, extent_root,
+                logical, map_scratch, zones, None,
+            )?
+        } else {
+            map_legacy_block(dev, sb, extent_root, logical as u64, map_scratch, legacy_scratch)?
+        }.ok_or(Error::InvalidExtentTree)?;
+        read_block(dev, sb, physical, htree_scratch)?;
+        if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+            validate_directory_block_checksum(raw_superblock, inode_number, generation, htree_scratch)?;
+        }
+        validate_directory_block(htree_scratch, sb.inodes_count)?;
+        let mut offset = 0usize;
+        while offset < htree_scratch.len() {
+            let target = u32at(htree_scratch, offset)?;
+            let rec_len = u16at(htree_scratch, offset + 4)? as usize;
+            let name_len = htree_scratch[offset + 6] as usize;
+            let file_type = htree_scratch[offset + 7];
+            if rec_len < 8 || rec_len & 3 != 0 || rec_len > htree_scratch.len() - offset
+                || name_len > rec_len - 8 { return Err(Error::InvalidDirectoryEntry); }
+            if target != 0 && name_len != 0 {
+                let name = &htree_scratch[offset + 8..offset + 8 + name_len];
+                if !visitor(crate::htree::DirectoryEntryView {
+                    inode: target, file_type, name,
+                    hash: crate::hash::DirectoryHash { major: 0, minor: 0 },
+                    logical_block: logical, offset: offset as u32,
+                })? { return Ok(()); }
+            }
+            offset += rec_len;
+        }
+    }
+    Ok(())
+}
+
+/// Validate a bounded directory namespace graph. Indexed directories are
+/// traversed through checksum-validated HTree root, index and leaf readers.
 pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
-    dev: &mut D,
-    sb: &Superblock,
-    raw_superblock: &[u8],
-    zones: &SystemZoneMap<'_>,
-    directory_inodes: &[u32],
-    parents: &mut [u32],
-    inode_buffer: &mut [u8],
-    scratch_a: &mut [u8],
-    scratch_b: &mut [u8],
+    dev: &mut D, sb: &Superblock, raw_superblock: &[u8], zones: &SystemZoneMap<'_>,
+    directory_inodes: &[u32], parents: &mut [u32], inode_buffer: &mut [u8],
+    scratch_a: &mut [u8], scratch_b: &mut [u8],
+    htree_root: &mut [u8], htree_scratch: &mut [u8], visited_leaves: &mut [u32],
 ) -> Result<(), Error> {
     const ROOT_INODE: u32 = 2;
-    const EXT4_INDEX_FL: u32 = 0x0000_1000;
     const FT_DIR: u8 = 2;
-    if raw_superblock.len() < SUPERBLOCK_BYTES
-        || directory_inodes.is_empty() || parents.len() != directory_inodes.len()
-        || inode_buffer.len() != sb.inode_size as usize
-        || scratch_a.len() != sb.block_size as usize
-        || scratch_b.len() != sb.block_size as usize {
+    if raw_superblock.len() < SUPERBLOCK_BYTES || directory_inodes.is_empty()
+        || parents.len() != directory_inodes.len() || inode_buffer.len() != sb.inode_size as usize
+        || scratch_a.len() != sb.block_size as usize || scratch_b.len() != sb.block_size as usize
+        || htree_root.len() != sb.block_size as usize || htree_scratch.len() != sb.block_size as usize {
         return Err(Error::InvalidGeometry);
     }
     validate_superblock_checksum(raw_superblock)?;
@@ -906,90 +998,48 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
     }
     for i in 0..directory_inodes.len() {
         let ino = directory_inodes[i];
-        if ino == 0 || ino > sb.inodes_count
-            || directory_inodes[..i].contains(&ino) {
+        if ino == 0 || ino > sb.inodes_count || directory_inodes[..i].contains(&ino) {
             return Err(Error::InvalidGeometry);
         }
         parents[i] = 0;
     }
 
-    // Pass one: derive a unique parent for each child directory from actual
-    // directory entries. File-type-less filesystems resolve the target inode.
     for parent_index in 0..directory_inodes.len() {
         let parent_ino = directory_inodes[parent_index];
         validate_inode_allocated(dev, sb, raw_superblock, parent_ino, scratch_a)?;
         read_inode(dev, sb, raw_superblock, parent_ino, inode_buffer, scratch_a)?;
         let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
-        if !inode.is_directory || inode.flags & EXT4_INDEX_FL != 0 {
-            return Err(Error::UnsupportedFormat);
-        }
+        if !inode.is_directory { return Err(Error::UnsupportedFormat); }
         let generation = u32at(inode_buffer, 100)?;
         let mut extent_root = [0u8; 60];
         extent_root.copy_from_slice(&inode_buffer[40..100]);
-        let uses_extents = inode.flags & 0x0008_0000 != 0;
-        let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
-            .ok_or(Error::OutOfRange)? / sb.block_size as u64;
-        if blocks == 0 || blocks > u32::MAX as u64 { return Err(Error::InvalidGeometry); }
-        for logical in 0..blocks as u32 {
-            let physical = if uses_extents {
-                map_extent_block_checked_zones_for_inode(
-                    dev, sb, raw_superblock, parent_ino, generation,
-                    &extent_root, logical, scratch_a, zones, None,
-                )?
-            } else {
-                map_legacy_block(dev, sb, &extent_root,
-                    logical as u64, scratch_a, scratch_b)?
-            }.ok_or(Error::InvalidExtentTree)?;
-            read_block(dev, sb, physical, scratch_b)?;
-            if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
-                validate_directory_block_checksum(raw_superblock, parent_ino, generation, scratch_b)?;
-            }
-            validate_directory_block(scratch_b, sb.inodes_count)?;
-            let mut off = 0usize;
-            while off < scratch_b.len() {
-                if scratch_b.len() - off < 8 { return Err(Error::InvalidDirectoryEntry); }
-                let child_ino = u32at(scratch_b, off)?;
-                let rec_len = u16at(scratch_b, off + 4)? as usize;
-                let name_len = scratch_b[off + 6] as usize;
-                let file_type = scratch_b[off + 7];
-                if rec_len < 8 || rec_len & 3 != 0 || rec_len > scratch_b.len() - off
-                    || name_len > rec_len - 8 {
-                    return Err(Error::InvalidDirectoryEntry);
+        let mut visitor = |entry: crate::htree::DirectoryEntryView<'_>| -> Result<bool, Error> {
+            if entry.inode == 0 || entry.name == b"." || entry.name == b".." { return Ok(true); }
+            let child = directory_inodes.iter().position(|&v| v == entry.inode);
+            let claims_dir = if sb.feature_incompat & INCOMPAT_FILETYPE != 0 {
+                entry.file_type == FT_DIR
+            } else { child.is_some() };
+            if claims_dir {
+                let index = child.ok_or(Error::InvalidGeometry)?;
+                if entry.inode == ROOT_INODE || parents[index] != 0 {
+                    return Err(Error::InvalidGeometry);
                 }
-                if child_ino > sb.inodes_count { return Err(Error::InvalidDirectoryEntry); }
-                if child_ino != 0 {
-                    let name = &scratch_b[off + 8..off + 8 + name_len];
-                    if name != b"." && name != b".." {
-                        let is_dir = if sb.feature_incompat & INCOMPAT_FILETYPE != 0
-                            && file_type != 0 {
-                            file_type == FT_DIR
-                        } else {
-                            validate_inode_allocated(dev, sb, raw_superblock, child_ino, scratch_a)?;
-                            read_inode(dev, sb, raw_superblock, child_ino, inode_buffer, scratch_a)?;
-                            Inode::parse(inode_buffer, sb.inode_size, sb.revision,
-                                sb.feature_ro_compat)?.is_directory
-                        };
-                        if is_dir {
-                            let child_index = directory_inodes.iter().position(|&v| v == child_ino)
-                                .ok_or(Error::InvalidGeometry)?;
-                            if child_ino == ROOT_INODE || parents[child_index] != 0 {
-                                return Err(Error::InvalidGeometry);
-                            }
-                            parents[child_index] = parent_ino;
-                        }
-                    }
-                }
-                off += rec_len;
+                parents[index] = parent_ino;
+            } else if child.is_some() && sb.feature_incompat & INCOMPAT_FILETYPE != 0
+                && entry.file_type != 0 {
+                return Err(Error::InvalidDirectoryEntry);
             }
-        }
+            Ok(true)
+        };
+        walk_namespace_directory(
+            dev, sb, raw_superblock, zones, parent_ino, generation, &inode, &extent_root,
+            scratch_a, scratch_b, htree_root, htree_scratch, visited_leaves, &mut visitor,
+        )?;
     }
+
     let root_index = directory_inodes.iter().position(|&ino| ino == ROOT_INODE)
         .ok_or(Error::InvalidGeometry)?;
     parents[root_index] = ROOT_INODE;
-
-    // Every allocated directory in the supplied discovery set must be
-    // reachable by a unique parent chain ending at root. A bounded walk
-    // detects cycles without a second visited bitmap.
     for start in 0..directory_inodes.len() {
         if parents[start] == 0 { return Err(Error::InvalidGeometry); }
         let mut current = directory_inodes[start];
@@ -999,15 +1049,10 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
                 .ok_or(Error::InvalidGeometry)?;
             current = parents[idx];
             steps += 1;
-            if current == 0 || steps > directory_inodes.len() {
-                return Err(Error::InvalidGeometry);
-            }
+            if current == 0 || steps > directory_inodes.len() { return Err(Error::InvalidGeometry); }
         }
     }
 
-    // Pass two: require exactly one self "." and one ".." entry matching
-    // the derived parent. This catches stale parent pointers and duplicate
-    // dot entries, independently of directory-entry traversal order.
     for index in 0..directory_inodes.len() {
         let ino = directory_inodes[index];
         validate_inode_allocated(dev, sb, raw_superblock, ino, scratch_a)?;
@@ -1016,49 +1061,23 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
         let generation = u32at(inode_buffer, 100)?;
         let mut extent_root = [0u8; 60];
         extent_root.copy_from_slice(&inode_buffer[40..100]);
-        let uses_extents = inode.flags & 0x0008_0000 != 0;
-        let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
-            .ok_or(Error::OutOfRange)? / sb.block_size as u64;
         let mut dot_count = 0usize;
         let mut dotdot_count = 0usize;
-        for logical in 0..blocks as u32 {
-            let physical = if uses_extents {
-                map_extent_block_checked_zones_for_inode(
-                    dev, sb, raw_superblock, ino, generation, &extent_root,
-                    logical, scratch_a, zones, None,
-                )?
-            } else {
-                map_legacy_block(dev, sb, &inode_buffer[40..100],
-                    logical as u64, scratch_a, scratch_b)?
-            }.ok_or(Error::InvalidExtentTree)?;
-            read_block(dev, sb, physical, scratch_b)?;
-            if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
-                validate_directory_block_checksum(raw_superblock, ino, generation, scratch_b)?;
+        let mut visitor = |entry: crate::htree::DirectoryEntryView<'_>| -> Result<bool, Error> {
+            if entry.inode == 0 { return Ok(true); }
+            if entry.name == b"." {
+                dot_count += 1;
+                if entry.inode != ino { return Err(Error::InvalidGeometry); }
+            } else if entry.name == b".." {
+                dotdot_count += 1;
+                if entry.inode != parents[index] { return Err(Error::InvalidGeometry); }
             }
-            validate_directory_block(scratch_b, sb.inodes_count)?;
-            let mut off = 0usize;
-            while off < scratch_b.len() {
-                if scratch_b.len() - off < 8 { return Err(Error::InvalidDirectoryEntry); }
-                let target = u32at(scratch_b, off)?;
-                let rec_len = u16at(scratch_b, off + 4)? as usize;
-                let name_len = scratch_b[off + 6] as usize;
-                if rec_len < 8 || rec_len & 3 != 0 || rec_len > scratch_b.len() - off
-                    || name_len > rec_len - 8 {
-                    return Err(Error::InvalidDirectoryEntry);
-                }
-                if target != 0 {
-                    let name = &scratch_b[off + 8..off + 8 + name_len];
-                    if name == b"." {
-                        dot_count += 1;
-                        if target != ino { return Err(Error::InvalidGeometry); }
-                    } else if name == b".." {
-                        dotdot_count += 1;
-                        if target != parents[index] { return Err(Error::InvalidGeometry); }
-                    }
-                }
-                off += rec_len;
-            }
-        }
+            Ok(true)
+        };
+        walk_namespace_directory(
+            dev, sb, raw_superblock, zones, ino, generation, &inode, &extent_root,
+            scratch_a, scratch_b, htree_root, htree_scratch, visited_leaves, &mut visitor,
+        )?;
         if dot_count != 1 || dotdot_count != 1 { return Err(Error::InvalidDirectoryEntry); }
     }
     Ok(())
