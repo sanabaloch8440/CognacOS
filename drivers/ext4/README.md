@@ -202,3 +202,22 @@ Replay remains intentionally limited to primary superblock/GDT, per-group bitmap
 Added `add_directory_metadata_ownership` and integrated it into `mount_with_recovery_and_ownership`. The mount caller supplies the directory inode numbers it has discovered (for example, from a validated namespace scan). Each inode is fetched through the checked inode-table path, its inode checksum is validated when metadata_csum is enabled, and it must parse as a directory. Every logical directory block is mapped through checked extent/legacy mapping with system-zone exclusion; metadata_csum directory tails are verified before the physical block is recorded as `Directory` ownership with its inode number and generation. Duplicate physical ownership and insufficient arena capacity fail closed.
 
 The mount recovery entry point now takes a `directory_inodes: &[u32]` argument. This is an explicit coverage boundary: only the supplied, validated directory inode set gains replay authorization. Directory blocks not in that set remain denied. External extent-tree nodes are checksum-validated while traversed but are not yet registered as replay targets; backup metadata and xattrs also remain unsupported. Callers must not supply inode numbers from untrusted directory entries without first validating their namespace and inode allocation state.
+
+
+## Directory extent-tree replay ownership
+
+The mount-owned recovery manifest now records every external extent-tree node
+encountered while mapping each supplied directory inode's logical blocks.
+Each node is checked against the retained system-zone map, validated with the
+owning inode number and generation when metadata checksums are enabled, and
+registered as an exact `ExtentNode` owner before the directory data block is
+authorized. Repeated references to the same node by the same inode/generation
+are coalesced; cross-owner aliases and collisions with directory data are
+rejected. The traversal is bounded by the on-disk maximum extent depth and the
+caller-provided ownership arena.
+
+This covers nodes on paths selected by populated directory logical blocks; it
+does not authorize unrelated/unreachable nodes, perform full-tree fsck-style
+validation, or discover directories automatically. The caller must still
+supply a trusted, validated directory inode set. Writable mounting remains
+disabled.
