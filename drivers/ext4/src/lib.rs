@@ -1,6 +1,7 @@
 //! ext2/ext3/ext4 filesystem driver core for CognacOS.
 
 pub mod jbd2;
+pub mod ops;
 //! Writes are limited to existing allocated data blocks; journaled metadata mutation is not implemented.
 #![no_std]
 #![allow(dead_code)]
