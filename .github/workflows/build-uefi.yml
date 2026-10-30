@@ -715,13 +715,13 @@ jobs:
           continue
           GDB
           # Attach a QEMU USB 3.x xHCI controller and an emulated HID keyboard.
+          # Q35 provides AHCI, not legacy ISA IDE. Add a PIIX3 PCI IDE \
+          # controller to exercise the kernel's primary-channel ATA PIO path. \
           qemu-system-x86_64 \
             -audiodev wav,id=beepout,path=build/beep.wav \
             -machine q35,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
             -device intel-iommu,intremap=off,caching-mode=on,aw-bits=48 \
             -device qemu-xhci,id=xhci \
-            # Q35 has AHCI but no legacy ISA IDE. Add a PIIX3 PCI IDE \
-            # controller so the guest's primary-channel ATA PIO path is real. \
             -device piix3-ide,id=legacyide,bus=pcie.0 \
             -device usb-kbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
