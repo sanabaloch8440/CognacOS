@@ -700,6 +700,74 @@ pub fn build_system_metadata_ownership<D: ReadOnlyBlockDevice>(
     Ok(used)
 }
 
+/// Verify both inode allocation and external-xattr block allocation using
+/// checksummed group descriptors/bitmaps. The caller must separately validate
+/// the inode image and xattr block contents/checksum and exclude system zones.
+/// Scratch buffers must each be exactly one filesystem block.
+pub fn validate_external_xattr_allocation<D: ReadOnlyBlockDevice>(
+    dev: &mut D,
+    sb: &Superblock,
+    raw_superblock: &[u8],
+    inode_number: u32,
+    physical_block: u64,
+    inode_scratch: &mut [u8],
+    bitmap_scratch: &mut [u8],
+) -> Result<(), Error> {
+    if raw_superblock.len() < SUPERBLOCK_BYTES
+        || inode_scratch.len() != sb.block_size as usize
+        || bitmap_scratch.len() != sb.block_size as usize {
+        return Err(Error::InvalidGeometry);
+    }
+    validate_superblock_checksum(raw_superblock)?;
+    validate_inode_allocated(dev, sb, raw_superblock, inode_number, inode_scratch)?;
+
+    if physical_block >= sb.blocks_count || physical_block < sb.first_data_block as u64 {
+        return Err(Error::OutOfRange);
+    }
+    let relative = physical_block - sb.first_data_block as u64;
+    let group = u32::try_from(relative / sb.blocks_per_group as u64)
+        .map_err(|_| Error::OutOfRange)?;
+    let bit = u32::try_from(relative % sb.blocks_per_group as u64)
+        .map_err(|_| Error::OutOfRange)?;
+    if group >= sb.group_count()? { return Err(Error::OutOfRange); }
+
+    let dpb = sb.block_size / sb.descriptor_size as u32;
+    if dpb == 0 || sb.descriptor_size as usize > 64 { return Err(Error::UnsupportedFormat); }
+    let descriptor_block = (sb.first_data_block as u64)
+        .checked_add(1)
+        .and_then(|v| v.checked_add((group / dpb) as u64))
+        .ok_or(Error::OutOfRange)?;
+    read_block(dev, sb, descriptor_block, bitmap_scratch)?;
+    let slot = (group % dpb) as usize;
+    let start = slot.checked_mul(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+    let end = start.checked_add(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+    let source = bitmap_scratch.get(start..end).ok_or(Error::Truncated)?;
+    let mut descriptor_copy = [0u8; 64];
+    descriptor_copy[..source.len()].copy_from_slice(source);
+    let descriptor = &descriptor_copy[..source.len()];
+    if sb.feature_ro_compat & 0x0400 != 0 {
+        validate_group_descriptor_checksum(raw_superblock, group, descriptor)?;
+    }
+    // EXT4_BG_BLOCK_UNINIT: the bitmap cannot be trusted as a direct record
+    // of allocation until the group has been initialized.
+    if u16at(descriptor, 18)? & 0x0002 != 0 { return Err(Error::InvalidGeometry); }
+    let gd = GroupDescriptor::parse(descriptor, sb)?;
+    read_block(dev, sb, gd.block_bitmap, bitmap_scratch)?;
+    if sb.feature_ro_compat & 0x0400 != 0 {
+        validate_block_bitmap_checksum(raw_superblock, descriptor, bitmap_scratch)?;
+    }
+    let group_start = (sb.first_data_block as u64)
+        .checked_add((group as u64).checked_mul(sb.blocks_per_group as u64).ok_or(Error::OutOfRange)?)
+        .ok_or(Error::OutOfRange)?;
+    let valid = core::cmp::min(sb.blocks_per_group as u64, sb.blocks_count.saturating_sub(group_start));
+    if bit as u64 >= valid { return Err(Error::OutOfRange); }
+    if bitmap_scratch.get((bit / 8) as usize).copied().ok_or(Error::Truncated)?
+        & (1u8 << (bit & 7)) == 0 {
+        return Err(Error::InvalidGeometry);
+    }
+    Ok(())
+}
+
 /// Prove that an inode is allocated by consulting its group's validated
 /// inode bitmap. Free or uninitialized inode groups are never accepted as
 /// owners of replayable directory metadata.
