@@ -41,9 +41,22 @@ where R:OrphanRecoveryTransaction,F:FnMut(u32,&mut[u8])->Result<(),Error>{
   if record.next_orphan>inode_count{return Err(Error::InvalidGeometry)}
   transaction.stage_orphan(record,inode_buffer)?;current=record.next_orphan;
  }
+ let old_head=le32(superblock,232)?;
  put32(superblock,232,0)?;
- if le32(superblock,100)?&0x0400!=0{update_superblock_checksum(superblock)?}
- transaction.stage_superblock(superblock)?;transaction.commit()?;Ok(count)
+ if le32(superblock,100)?&0x0400!=0 {
+  if let Err(error)=update_superblock_checksum(superblock) {
+   put32(superblock,232,old_head)?;return Err(error)
+  }
+ }
+ if let Err(error)=transaction.stage_superblock(superblock) {
+  put32(superblock,232,old_head)?;return Err(error)
+ }
+ if let Err(error)=transaction.commit() {
+  // A commit I/O error is uncertain on disk; the mount must remain offline
+  // and run journal recovery. Restore only this caller's staging image.
+  put32(superblock,232,old_head)?;return Err(error)
+ }
+ Ok(count)
 }
 
 #[cfg(test)]
