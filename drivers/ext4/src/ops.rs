@@ -317,9 +317,44 @@ mod tests{
   assert_eq!(le32(&b,12).unwrap(),12);assert_eq!(&b[20..25],b"hello");
   assert_eq!(remove_directory_entry(&[0u8;1024],2,0,&mut b,100,b"hello"),Ok(12));
  }
- #[test]fn inline_extent_insert_coalesces_and_truncate_returns_freed_ranges(){
-  let mut r=[0u8;60];r[0..2].copy_from_slice(&0xf30au16.to_le_bytes());r[2..4].copy_from_slice(&0u16.to_le_bytes());r[4..6].copy_from_slice(&4u16.to_le_bytes());r[6..8].copy_from_slice(&0u16.to_le_bytes());
-  insert_inline_extent(&mut r,0,100,2).unwrap();insert_inline_extent(&mut r,2,102,3).unwrap();assert_eq!(le16(&r,2).unwrap(),1);assert_eq!(le16(&r,16).unwrap(),5);
-  let mut freed=[(0u64,0u32);4];assert_eq!(truncate_inline_extents(&mut r,3,&mut freed).unwrap(),1);assert_eq!(freed[0],(103,2));assert_eq!(le16(&r,16).unwrap(),3);
+ #[test]fn metadata_checksum_allocator_updates_bitmap_group_and_superblock(){
+  let mut sb=[0u8;1024];
+  sb[0..4].copy_from_slice(&128u32.to_le_bytes());sb[4..8].copy_from_slice(&4096u32.to_le_bytes());
+  sb[20..24].copy_from_slice(&1u32.to_le_bytes());sb[24..28].copy_from_slice(&0u32.to_le_bytes());
+  sb[32..36].copy_from_slice(&1024u32.to_le_bytes());sb[40..44].copy_from_slice(&128u32.to_le_bytes());
+  sb[56..58].copy_from_slice(&0xef53u16.to_le_bytes());sb[76..80].copy_from_slice(&1u32.to_le_bytes());
+  sb[84..88].copy_from_slice(&11u32.to_le_bytes());sb[88..90].copy_from_slice(&128u16.to_le_bytes());
+  sb[96..100].copy_from_slice(&(super::super::INCOMPAT_FILETYPE|super::super::INCOMPAT_EXTENTS).to_le_bytes());
+  sb[100..104].copy_from_slice(&0x0400u32.to_le_bytes());sb[16..20].copy_from_slice(&100u32.to_le_bytes());
+  sb[12..16].copy_from_slice(&400u32.to_le_bytes());sb[373]=1;sb[104..120].copy_from_slice(&[0x31;16]);
+  let mut gd=[0u8;64];gd[0..4].copy_from_slice(&1u32.to_le_bytes());gd[4..8].copy_from_slice(&2u32.to_le_bytes());gd[8..12].copy_from_slice(&3u32.to_le_bytes());
+  gd[12..14].copy_from_slice(&100u16.to_le_bytes());gd[14..16].copy_from_slice(&100u16.to_le_bytes());
+  let mut ib=[0u8;16];let mut bb=[0u8;128];bb[0]=0x0f;
+  update_inode_bitmap_checksum(&sb,&mut gd,&ib).unwrap();update_block_bitmap_checksum(&sb,&mut gd,&bb).unwrap();
+  update_group_descriptor_checksum(&sb,0,&mut gd).unwrap();update_superblock_checksum(&mut sb).unwrap();
+  let ino=allocate_inode(&mut sb,0,&mut gd,&mut ib,0).unwrap();assert_eq!(ino,11);
+  validate_inode_bitmap_checksum(&sb,&gd,&ib).unwrap();validate_group_descriptor_checksum(&sb,0,&gd).unwrap();validate_superblock_checksum(&sb).unwrap();
+  let block=allocate_block(&mut sb,0,&mut gd,&mut bb,0).unwrap();assert_eq!(block,5);
+  validate_block_bitmap_checksum(&sb,&gd,&bb).unwrap();validate_group_descriptor_checksum(&sb,0,&gd).unwrap();validate_superblock_checksum(&sb).unwrap();
+ }
+ #[test]fn metadata_csum_directory_insert_remove_rewrites_tail(){
+  let mut sb=[0u8;1024];sb[100..104].copy_from_slice(&0x0400u32.to_le_bytes());sb[373]=1;sb[104..120].copy_from_slice(&[0x22;16]);
+  let mut dir=[0u8;1024];dir[0..4].copy_from_slice(&2u32.to_le_bytes());dir[4..6].copy_from_slice(&1012u16.to_le_bytes());dir[6]=1;dir[7]=2;dir[8]=b'.';
+  dir[1012..1016].copy_from_slice(&0u32.to_le_bytes());dir[1016..1018].copy_from_slice(&12u16.to_le_bytes());dir[1019]=0xde;
+  update_directory_block_checksum(&sb,2,7,&mut dir).unwrap();
+  insert_directory_entry(&sb,2,7,&mut dir,100,12,b"hello",1).unwrap();
+  validate_directory_block_checksum(&sb,2,7,&dir).unwrap();
+  assert_eq!(remove_directory_entry(&sb,2,7,&mut dir,100,b"hello"),Ok(12));
+  validate_directory_block_checksum(&sb,2,7,&dir).unwrap();
+ }
+ #[test]fn truncate_regular_inode_updates_extent_size_blocks_and_checksum(){
+  let mut sb=[0u8;1024];sb[100..104].copy_from_slice(&0x0400u32.to_le_bytes());sb[373]=1;sb[104..120].copy_from_slice(&[0x19;16]);
+  let mut inode=[0u8;256];inode[0..2].copy_from_slice(&0x8000u16.to_le_bytes());inode[4..8].copy_from_slice(&5120u32.to_le_bytes());
+  inode[28..32].copy_from_slice(&10u32.to_le_bytes());inode[40..42].copy_from_slice(&0xf30au16.to_le_bytes());inode[42..44].copy_from_slice(&1u16.to_le_bytes());inode[44..46].copy_from_slice(&4u16.to_le_bytes());
+  inode[52..56].copy_from_slice(&0u32.to_le_bytes());inode[56..58].copy_from_slice(&5u16.to_le_bytes());inode[60..64].copy_from_slice(&100u32.to_le_bytes());
+  inode[100..104].copy_from_slice(&7u32.to_le_bytes());update_inode_checksum(&sb,12,&mut inode).unwrap();
+  let mut freed=[(0u64,0u32);4];assert_eq!(resize_inline_regular_file(&sb,12,&mut inode,3072,&mut freed),Ok(1));
+  assert_eq!(le32(&inode,4).unwrap(),3072);assert_eq!(le32(&inode,28).unwrap(),6);assert_eq!(freed[0],(103,2));
+  validate_inode_checksum(&sb,12,&inode).unwrap();
  }
 }
