@@ -355,51 +355,7 @@ pub unsafe extern "system" fn LdrLoadDll(
         )
     };
     if status < 0 { return status; }
-        /*
-        generated_path as *const u16
-    } else { dll_path };
-    if search_path.is_null() { return STATUS_INVALID_PARAMETER; }
-    let mut path_list = [0u8; 4096];
-    let mut path_len = 0usize;
-    let mut terminated = false;
-    for index in 0..path_list.len() - 1 {
-        let unit = unsafe { ptr::read_unaligned(search_path.add(index)) };
-        if unit == 0 { terminated = true; break; }
-        if unit > 0x7f {
-            if !generated_path.is_null() {
-                let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
-                if !heap.is_null() { let _ = unsafe { crate::rtl_heap::RtlFreeHeap(heap, 0, generated_path.cast()) }; }
-            }
-            return STATUS_INVALID_PARAMETER;
-        }
-        path_list[index] = unit as u8;
-        path_len += 1;
-    }
-    if !terminated {
-        if !generated_path.is_null() {
-            let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
-            if !heap.is_null() { let _ = unsafe { crate::rtl_heap::RtlFreeHeap(heap, 0, generated_path.cast()) }; }
-        }
-        return STATUS_INVALID_PARAMETER;
-    }
-    path_list[path_len] = 0;
-    let mut response = LoadDllResponse { base:0, entry:0, slot:0, generation:0, already_loaded:0, path_len:0, path:[0;260] };
-    let status = unsafe {
-        crate::native::syscall_stubs::cognacos_nt_load_dll(
-            module_name.as_ptr(), path_list.as_ptr(),
-            (&mut response as *mut LoadDllResponse).cast(),
-        )
-    };
-    if !generated_path.is_null() {
-        let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
-        if !heap.is_null() { let _ = unsafe { crate::rtl_heap::RtlFreeHeap(heap, 0, generated_path.cast()) }; }
-    }
-    if !unknown_path.is_null() {
-        let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
-        if !heap.is_null() { let _ = unsafe { crate::rtl_heap::RtlFreeHeap(heap, 0, unknown_path.cast()) }; }
-    }
-    if status < 0 { return status; }
-    */
+        /* Default search avoids early PEB process-parameter dereferences. */
     if response.base == 0 || response.path_len as usize > response.path.len() { return STATUS_INVALID_PARAMETER; }
     if unsafe { publish_peb_entry(&response, module_name) }.is_null() {
         if response.already_loaded == 0 {
