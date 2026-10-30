@@ -108,7 +108,7 @@ The coordinator is a bounded commit primitive, not yet the writable VFS mount pa
 The ext4 recovery path now rejects committed journal tags that point back into the internal journal inode's physical extents. This check runs before each home-block write and is covered by a regression test. It prevents journal self-overwrite but is not a substitute for per-object metadata ownership checks or JBD2 checksums. Writable mounting remains disabled.
 
 
-`CheckedExtFilesystem::mount_with_recovery` is the checked entry point for filesystems with an internal journal: it constructs the system-zone map, protects journal extents, performs bounded replay with journal self-overwrite protection, then mounts only after the journal is clean. This is still a restricted JBD2 implementation: checksum-v2/v3 replay is validated, while checksum-v1, async-commit, and fast-commit formats fail closed. Writable mounts remain disabled pending crash-injection and Linux interoperability validation.
+`CheckedExtFilesystem::mount_with_recovery` is the checked entry point for filesystems with an internal journal: it constructs the system-zone map, protects journal extents, performs bounded replay with journal self-overwrite protection, then mounts only after the journal is clean. This is still a restricted JBD2 implementation: checksum-v1/v2/v3 replay and bounded ordered writing are implemented; async-commit and fast-commit formats fail closed. Writable mounts remain disabled pending crash-injection and Linux interoperability validation.
 
 
 Mounted mutation code should use `ops::allocate_block_checked` and `ops::free_block_checked`: allocation skips bitmap-free blocks that overlap the retained system-zone map, while freeing rejects protected metadata and journal extents. The original unchecked primitives remain lower-level helpers and are not safe substitutes for the checked APIs.
@@ -120,12 +120,12 @@ The mount-owned transaction layer now exports a typed OperationBuilder for Creat
 
 The orphan module validates the legacy orphan chain with bounded caller storage and submits all inode repairs plus the cleared superblock head through one transaction callback. The callback must implement the correct linked-inode truncate and zero-link inode reclamation behavior; the module does not guess at extent/bitmap changes.
 
-These are foundations for wiring the actual VFS mutation paths, not proof that all operations are already connected. JBD2 checksum-v2/v3 replay is supported with superblock, metadata-block, tag-data, UUID, and commit validation; checksum-v1 remains unsupported. Mount-time orphan recovery is not yet connected to a concrete transaction adapter. Writable mounts remain disabled.
+These are foundations for wiring the actual VFS mutation paths, not proof that all operations are already connected. JBD2 checksum-v1/v2/v3 replay is supported with transaction, superblock, metadata-block, tag-data, UUID, and commit validation. Mount-time orphan recovery is not yet connected to a concrete transaction adapter. Writable mounts remain disabled.
 
 
 ## JBD2 checksum validation
 
-The bounded recovery parser validates the JBD2 v2/v3 journal superblock before trusting its geometry or recovery pointer: checksum type must be CRC32C and the complete 1024-byte superblock CRC32C is checked with the checksum field zeroed. Descriptor/revoke tails, per-tag data checksums, UUIDs, and commit checksums are also validated before replay. Checksum-v1, async commit, and fast commits remain unsupported and fail closed. Checksum-enabled journal writing is not implemented; writable ext4 mounts remain disabled.
+The bounded recovery parser validates the JBD2 v2/v3 journal superblock before trusting its geometry or recovery pointer: checksum type must be CRC32C and the complete 1024-byte superblock CRC32C is checked with the checksum field zeroed. Descriptor/revoke tails, per-tag data checksums, UUIDs, and commit checksums are also validated before replay. Async commit and fast commits remain unsupported and fail closed. Bounded checksum-v1/v2/v3 ordered writing is implemented; writable ext4 mounts remain disabled.
 
 
 ## JBD2 checksum-v1 replay (2026-10-30)
@@ -135,7 +135,7 @@ Checksum-v1 journals are no longer rejected. The replay scanner computes Linux's
 
 ### JBD2 checksum-v1 commit writer
 
-The bounded ordered-commit path now supports checksum-v1 journals. It calculates CRC32_BE over the complete descriptor block and associated data blocks in the same order as Linux JBD2, writes type `JBD2_CRC32_CHKSUM` (1), size 4, and the raw checksum into the commit header, and still excludes revoke blocks from that checksum stream. The existing durability order is retained: ordered data flush, recovery-start publication, descriptor/data/revoke records, commit flush, home checkpoint flush, then clean-superblock publication. This is a bounded commit primitive, not authorization to enable writable mounts; checksum-v2/v3 writing and crash-injection coverage are still required.
+The bounded ordered-commit path now supports checksum-v1 journals. It calculates CRC32_BE over the complete descriptor block and associated data blocks in the same order as Linux JBD2, writes type `JBD2_CRC32_CHKSUM` (1), size 4, and the raw checksum into the commit header, and still excludes revoke blocks from that checksum stream. The existing durability order is retained: ordered data flush, recovery-start publication, descriptor/data/revoke records, commit flush, home checkpoint flush, then clean-superblock publication. This is a bounded commit primitive, not authorization to enable writable mounts; crash-injection and Linux interoperability coverage are still required.
 
 
 ## JBD2 checksum-v2/v3 ordered writer and payload escaping
