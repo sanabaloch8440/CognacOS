@@ -240,7 +240,16 @@ unsafe fn map_with_flags(root:u64, va:u64, pa:u64, leaf_flags:u64)->Result<(),Er
  for i in indexes[..3].iter().copied(){
   let slot=unsafe{t.add(i)}; let mut e=unsafe{slot.read()};
   if e&P==0 { let p=unsafe{crate::memory::allocate_page()}.map_err(|_|Error::NoPhysicalMemory)?; e=p|P|W; unsafe{slot.write(e);} }
-  else { if e&PS!=0 || e&4!=0{return Err(Error::Invalid)}; e|=W; unsafe{slot.write(e);} }
+  else {
+   // U/S on an ancestor only permits user access when every level,
+   // including the leaf, is user-accessible. Kernel mappings installed here
+   // always keep U/S clear in the leaf PTE, so an inherited user bit on a
+   // shared PML4E/PDPTE/PDE must not prevent supervisor-only demand mapping.
+   // Reject large-page entries: this routine installs 4 KiB leaves only.
+   if e&PS!=0{return Err(Error::Invalid)}
+   e|=W;
+   unsafe{slot.write(e);}
+  }
   t=(e&ADDR)as *mut u64;
  }
  let leaf=unsafe{t.add(indexes[3])}; if unsafe{leaf.read()}&P!=0{return Err(Error::AlreadyMapped)}
