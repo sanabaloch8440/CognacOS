@@ -813,3 +813,34 @@ mod tests{
  }
 
 }
+
+
+#[cfg(test)]
+mod inline_extent_normalization_tests {
+ use super::*;
+ fn root() -> [u8;60] {
+  let mut b=[0u8;60];b[0..2].copy_from_slice(&0xf30au16.to_le_bytes());
+  b[2..4].copy_from_slice(&3u16.to_le_bytes());b[4..6].copy_from_slice(&4u16.to_le_bytes());
+  // Deliberately unsorted; the first two runs are physically/logically adjacent.
+  for (i,(logical,physical)) in [(4u32,30u64),(0,26),(8,40)].iter().enumerate(){
+   let o=12+i*12;b[o..o+4].copy_from_slice(&logical.to_le_bytes());
+   b[o+4..o+6].copy_from_slice(&2u16.to_le_bytes());
+   b[o+8..o+12].copy_from_slice(&(*physical as u32).to_le_bytes());
+  }
+  b
+ }
+ #[test]
+ fn sorts_and_coalesces_adjacent_initialized_runs(){
+  let mut b=root();assert_eq!(normalize_inline_extent_root(&mut b),Ok(2));
+  assert_eq!(u16::from_le_bytes([b[2],b[3]]),2);
+  assert_eq!(u32::from_le_bytes(b[12..16].try_into().unwrap()),0);
+  assert_eq!(u16::from_le_bytes([b[16],b[17]]),4);
+  assert_eq!(u32::from_le_bytes(b[24..28].try_into().unwrap()),26);
+ }
+ #[test]
+ fn rejects_overlapping_logical_ranges_without_mutating_root(){
+  let mut b=root();b[24..28].copy_from_slice(&1u32.to_le_bytes());
+  let before=b;assert_eq!(normalize_inline_extent_root(&mut b),Err(Error::InvalidExtentTree));
+  assert_eq!(b,before);
+ }
+}
