@@ -215,10 +215,23 @@ pub fn recover_internal_journal<D: BlockDevice>(
         }
         fn flush(&mut self) -> Result<(), ()> { self.device.flush().map_err(|_| ()) }
     }
+    struct ReplayTargets<'a> { journal_blocks: &'a [u64] }
+    impl jbd2::ReplayTargetPolicy for ReplayTargets<'_> {
+        fn validate_replay_target(&mut self, target: u64) -> Result<(), jbd2::Error> {
+            // A corrupt descriptor must never redirect replay into the journal
+            // itself: doing so can destroy the log while it is being scanned.
+            if self.journal_blocks.contains(&target) {
+                return Err(jbd2::Error::InvalidTag);
+            }
+            Ok(())
+        }
+    }
     let mut adapter = Adapter { device: dev, sb: *sb };
     let mut map = |logical: u32| journal_map.get(logical as usize).copied().ok_or(());
-    jbd2::recover(&mut adapter, &mut map, journal_superblock, replay_scratch, replay_payload)
-        .map_err(|_| Error::UnsupportedFormat)
+    let mut targets = ReplayTargets { journal_blocks: &journal_map[..journal_blocks as usize] };
+    jbd2::recover_with_policy(
+        &mut adapter, &mut map, journal_superblock, replay_scratch, replay_payload, &mut targets,
+    ).map_err(|_| Error::UnsupportedFormat)
 
 }
 
