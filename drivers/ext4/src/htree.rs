@@ -578,6 +578,26 @@ pub fn iterate_htree_directory_from_superblock<R:DirectoryBlockReader,F:FnMut(Di
   siphash_key,hash_unsigned,metadata_csum,inode_seed,scratch,visitor)
 }
 
+/// Superblock-aware, hash-ordered readdir adapter for the VFS.
+pub fn iterate_htree_directory_sorted_from_superblock<R:DirectoryBlockReader,F:FnMut(DirectoryEntryView<'_>)->Result<bool,Error>>(
+ reader:&mut R,superblock:&[u8],directory_inode:u32,generation:u32,root:&[u8],
+ directory_blocks:u32,total_inodes:u32,siphash_key:Option<[u64;2]>,scratch:&mut[u8],
+ map:&mut[DirectoryHashMapEntry],visitor:F,
+)->Result<(),Error>{
+ crate::validate_superblock_checksum(superblock)?;
+ if superblock.len()<1024{return Err(Error::Truncated)}
+ let hash_seed=crate::hash::ext4_directory_hash_seed(superblock)?;
+ let hash_unsigned=crate::hash::ext4_hash_unsigned(superblock)?;
+ let ro=u32::from_le_bytes(superblock[100..104].try_into().map_err(|_|Error::Truncated)?);
+ let metadata_csum=ro&0x0400!=0;
+ let inode_seed=if metadata_csum{
+  let fs_seed=crate::ext4_metadata_checksum_seed(superblock)?;
+  crate::checksum::ext4_inode_csum_seed(fs_seed,directory_inode,generation)
+ }else{0};
+ iterate_htree_directory_sorted(reader,root,directory_blocks,total_inodes,hash_seed,
+  siphash_key,hash_unsigned,metadata_csum,inode_seed,scratch,map,visitor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
