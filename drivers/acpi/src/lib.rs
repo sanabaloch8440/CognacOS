@@ -436,16 +436,13 @@ pub fn dmar_unit_covers_requester(unit:&DmarUnit,segment:u16,bus:u8,device:u8,fu
 
 #[cfg(test)]
 mod dmar_tests {
- extern crate std;
- use std::vec;
- use std::vec::Vec;
  use super::*;
  fn finish_checksum(table:&mut [u8]){
   let sum=table.iter().fold(0u8,|a,b|a.wrapping_add(*b));table[9]=table[9].wrapping_sub(sum);
  }
  #[test]fn dmar_rejects_truncated_header_and_bad_signature(){
   assert_eq!(parse_dmar(&[0;47]),Err(AcpiError::Truncated));
-  let mut t=vec![0u8;48];t[0..4].copy_from_slice(b"NOPE");t[4..8].copy_from_slice(&(48u32).to_le_bytes());
+  let mut t=[0u8;48];t[0..4].copy_from_slice(b"NOPE");t[4..8].copy_from_slice(&(48u32).to_le_bytes());
   assert_eq!(parse_dmar(&t),Err(AcpiError::BadSignature));
  }
  #[test]fn dmar_parses_include_all_drhd(){
@@ -461,7 +458,7 @@ mod dmar_tests {
   t[54..56].copy_from_slice(&(0u16).to_le_bytes());t[56..64].copy_from_slice(&(0xfed9_0000u64).to_le_bytes());
   t[64]=1;t[65]=8;t[68]=0;t[69]=0;t[70]=3;t[71]=0;
   // The scope's length is 8 bytes: 6-byte header + one PCI path element.
-  let info=parse_dmar(&finish(t)).unwrap();let unit=&info.units[0];
+  finish_checksum(&mut t);let info=parse_dmar(&t).unwrap();let unit=&info.units[0];
   assert!(!unit.include_all);assert_eq!(unit.scope_count,1);
   assert!(dmar_unit_covers_requester(unit,0,0,3,0));assert!(!dmar_unit_covers_requester(unit,0,0,4,0));
  }
