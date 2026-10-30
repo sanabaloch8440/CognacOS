@@ -122,7 +122,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  let tag_bytes=tag_size.checked_mul(metadata_targets.len()).ok_or(Error::OutOfRange)?;
  let checksum_tail=if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{4usize}else{0};
  let required=1usize.checked_add(metadata_targets.len()).and_then(|n|n.checked_add(if revoked_targets.is_empty(){0}else{1})).and_then(|n|n.checked_add(1)).ok_or(Error::OutOfRange)?;
- if required>=sb.max_len as usize||12usize.checked_add(tag_bytes).and_then(|n|n.checked_add(16)).and_then(|n|n.checked_add(checksum_tail)).ok_or(Error::OutOfRange)?>bs{return Err(Error::TransactionTooLarge)}
+ if required>=sb.max_len.saturating_sub(sb.first) as usize||12usize.checked_add(tag_bytes).and_then(|n|n.checked_add(16)).and_then(|n|n.checked_add(checksum_tail)).ok_or(Error::OutOfRange)?>bs{return Err(Error::TransactionTooLarge)}
  let revoke_width=if sb.block_count_64{8usize}else{4usize};
  if !revoked_targets.is_empty(){
   if sb.feature_incompat&FEATURE_INCOMPAT_REVOKE==0{return Err(Error::UnsupportedFeature)}
@@ -247,8 +247,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
   descriptor[16..20].copy_from_slice(&transaction_crc.to_be_bytes());
  }else if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
   descriptor[12]=4;descriptor[13]=4;
-  let sum=crate::checksum::jbd2_commit_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;  descriptor[16..20].copy_from_slice(&sum.to_be_bytes()); }
- let commit_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+  let sum=crate::checksum::jbd2_commit_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;  descriptor[16..20].copy_from_slice(&sum.to_be_bytes()); } let commit_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
  d.write_block(commit_phys,descriptor).map_err(|_|Error::Io)?;
  d.flush().map_err(|_|Error::Io)?;
  // The committed log is now authoritative. Checkpoint home metadata and only
@@ -299,6 +298,7 @@ pub fn recover_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy
  let report=replay_with_policy(d,m,&sb,scratch,payload,policy)?;
  journal_superblock[28..32].fill(0);
  journal_superblock[24..28].copy_from_slice(&sb.sequence.wrapping_add(report.transactions_replayed).to_be_bytes());
+ update_superblock_checksum(journal_superblock,sb.checksum_mode)?;
  let physical=m.map_journal_block(0).map_err(|_|Error::Io)?;
  if physical>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
  d.write_block(physical,journal_superblock).map_err(|_|Error::Io)?;
@@ -361,9 +361,9 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
 )->Result<ReplayReport,Error>{
  let bs=sb.block_size as usize;if scratch.len()!=bs||payload.len()!=bs{return Err(Error::NoScratch)}
  if !sb.needs_recovery(){return Ok(ReplayReport::default())}
- let mut report=ReplayReport::default();let mut cursor=sb.start;let mut expected=sb.sequence;
+ let mut report=ReplayReport::default();let mut cursor=sb.start;let mut expected=sb.sequence;let log_capacity=sb.max_len.saturating_sub(sb.first);
  let mut tags=[Tag::EMPTY;MAX_TRANSACTION_TAGS];let mut tag_count=0usize;let mut revokes=[Revoke::EMPTY;MAX_TRANSACTION_REVOKES];let mut revoke_count=0usize;let mut guard=0u32;
- while guard<sb.max_len{
+ while guard<log_capacity{
   guard+=1;read_journal(d,m,cursor,scratch)?;
   if be32(scratch,0)?!=JBD2_MAGIC||be32(scratch,8)?!=expected{report.stopped_on_incomplete=true;break}
   // Keep each transaction provisional until its matching commit block has
@@ -372,7 +372,7 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
   let transaction_tag_start=tag_count;
   let transaction_revoke_start=revoke_count;
   let mut tx_cursor=cursor;let mut committed=false;let mut malformed=false;let mut tx_guard=0u32;let mut transaction_crc=!0u32;
-  while tx_guard<sb.max_len{
+  while tx_guard<log_capacity{
    tx_guard+=1;read_journal(d,m,tx_cursor,scratch)?;
    if be32(scratch,0)?!=JBD2_MAGIC||be32(scratch,8)?!=expected{malformed=true;break}
    match be32(scratch,4)?{
@@ -497,8 +497,7 @@ mod tests{
  impl ReplayDevice for Mem{
   fn filesystem_blocks(&self)->u64{64}  fn read_block(&mut self,n:u64,out:&mut[u8])->Result<(),()>{let b=self.blocks.get(n as usize).ok_or(())?;if out.len()!=1024{return Err(())}out.copy_from_slice(b);Ok(())}
   fn write_block(&mut self,n:u64,data:&[u8])->Result<(),()>{let b=self.blocks.get_mut(n as usize).ok_or(())?;if data.len()!=1024{return Err(())}b.copy_from_slice(data);Ok(())}  fn flush(&mut self)->Result<(),()>{self.flushes+=1;Ok(())}
- }
- fn header(b:&mut[u8;1024],kind:u32,seq:u32){b.fill(0);b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&kind.to_be_bytes());b[8..12].copy_from_slice(&seq.to_be_bytes());}
+ } fn header(b:&mut[u8;1024],kind:u32,seq:u32){b.fill(0);b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&kind.to_be_bytes());b[8..12].copy_from_slice(&seq.to_be_bytes());}
  #[test]fn replay_applies_only_a_complete_committed_transaction(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
@@ -602,11 +601,12 @@ mod tests{
   // replay scanner against the exact records emitted by the writer.
   js[24..28].copy_from_slice(&31u32.to_be_bytes());js[28..32].copy_from_slice(&1u32.to_be_bytes());
   update_superblock_checksum(&mut js,mode).unwrap();
-  let sb=JournalSuperblock::parse(&js).unwrap();
   let mut scratch=[0u8;1024];let mut payload=[0u8;1024];
-  let report=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut scratch,&mut payload).unwrap();
+  let report=recover(&mut d,&mut |n|Ok(n as u64),&mut js,&mut scratch,&mut payload).unwrap();
   assert_eq!(report.transactions_replayed,1);
   assert_eq!(d.blocks[10],metadata);
+  let clean=JournalSuperblock::parse(&js).unwrap();
+  assert_eq!(clean.start,0);assert_eq!(clean.sequence,32);
  }
  #[test]fn ordered_commit_emits_checksum_v2_descriptor_revoke_and_commit_checksums(){
   run_checksum_v2_v3_ordered_writer(ChecksumMode::V2,FEATURE_INCOMPAT_CSUM_V2);
