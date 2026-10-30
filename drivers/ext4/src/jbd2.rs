@@ -101,10 +101,9 @@ impl JournalSuperblock{
    return Err(Error::InvalidGeometry)
   }
   if format_version==2{
+   // Async commit and fast commit are deliberately unsupported. Keep them
+   // in the rejected mask even when a checksum mode is otherwise understood.
    if feature_incompat&!(SUPPORTED_INCOMPAT|FEATURE_INCOMPAT_CSUM_V2|FEATURE_INCOMPAT_CSUM_V3)!=0{
-    return Err(Error::UnsupportedFeature)
-   }
-   if checksum_mode!=ChecksumMode::None&&feature_incompat&FEATURE_INCOMPAT_ASYNC_COMMIT!=0{
     return Err(Error::UnsupportedFeature)
    }
   }
