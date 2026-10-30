@@ -1,7 +1,7 @@
 //! Bounded ext4 mutation primitives. These routines update in-memory metadata
 //! buffers and checksums; callers must commit the resulting buffers through
 //! the JBD2 transaction layer before exposing a mutation as durable.
-use super::{Error,Superblock,update_block_bitmap_checksum,update_inode_bitmap_checksum,
+use super::{Error,Superblock,SystemZoneMap,update_block_bitmap_checksum,update_inode_bitmap_checksum,
  update_group_descriptor_checksum,update_superblock_checksum,validate_superblock_checksum,validate_group_descriptor_checksum,
  validate_block_bitmap_checksum,validate_inode_bitmap_checksum,validate_directory_block_checksum,
  update_directory_block_checksum,validate_inode_checksum,update_inode_checksum};
@@ -113,6 +113,53 @@ pub fn free_inode(sb:&mut[u8],group:u32,inode_number:u32,desc:&mut[u8],bitmap:&m
  let count=group_counter(desc,14,46)?.checked_add(1).ok_or(Error::OutOfRange)?;
  set_group_counter(desc,14,46,count)?;put32(sb,16,le32(sb,16)?.checked_add(1).ok_or(Error::OutOfRange)?)?;
  finish_group(sb,group,desc,bitmap,true)?;finish_super(sb)
+}
+
+/// Allocate a data block while excluding every range in the mount's
+/// retained ext4 system-zone map. Unlike allocate_block(), this is suitable
+/// for checked mutation paths and will skip any free bitmap bit that aliases
+/// filesystem metadata or the protected internal journal.
+pub fn allocate_block_checked(
+ sb:&mut[u8],group:u32,desc:&mut[u8],bitmap:&mut[u8],goal:u32,
+ zones:&SystemZoneMap<'_>,
+)->Result<u64,Error>{
+ let parsed=Superblock::parse(sb)?;
+ if group>=parsed.group_count()?{return Err(Error::OutOfRange)}
+ validate_group_metadata(sb,group,desc,bitmap,false)?;
+ let first=parsed.first_data_block as u64
+  .checked_add((group as u64).checked_mul(parsed.blocks_per_group as u64).ok_or(Error::OutOfRange)?)
+  .ok_or(Error::OutOfRange)?;
+ let valid=core::cmp::min(parsed.blocks_per_group as u64,parsed.blocks_count.saturating_sub(first)) as u32;
+ if valid==0||valid as usize>bitmap.len().saturating_mul(8){return Err(Error::InvalidGeometry)}
+ let start=if goal<valid{goal}else{0};
+ let mut selected=None;
+ for n in 0..valid{
+  let bit=(start+n)%valid;
+  if bitmap[(bit/8) as usize]&(1<<(bit%8))!=0{continue}
+  let block=first.checked_add(bit as u64).ok_or(Error::OutOfRange)?;
+  match zones.validate_data_range(block,1,parsed.blocks_count){
+   Ok(())=>{selected=Some((bit,block));break}
+   Err(Error::InvalidExtentTree)=>continue,
+   Err(error)=>return Err(error),
+  }
+ }
+ let (bit,block)=selected.ok_or(Error::OutOfRange)?;
+ set_bit(bitmap,bit,true)?;
+ let count=group_counter(desc,12,44)?;let free=super_free_blocks(sb)?;
+ if count==0||free==0{set_bit(bitmap,bit,false)?;return Err(Error::InvalidGeometry)}
+ set_group_counter(desc,12,44,count-1)?;set_super_free_blocks(sb,free-1)?;
+ finish_group(sb,group,desc,bitmap,false)?;finish_super(sb)?;
+ Ok(block)
+}
+
+/// Free a block only when it is outside the retained system-zone map.
+pub fn free_block_checked(
+ sb:&mut[u8],group:u32,block:u64,desc:&mut[u8],bitmap:&mut[u8],
+ zones:&SystemZoneMap<'_>,
+)->Result<(),Error>{
+ let parsed=Superblock::parse(sb)?;
+ zones.validate_data_range(block,1,parsed.blocks_count)?;
+ free_block(sb,group,block,desc,bitmap)
 }
 
 /// Free a block after the caller has verified it is not filesystem metadata.
