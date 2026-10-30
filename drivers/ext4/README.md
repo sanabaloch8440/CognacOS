@@ -81,3 +81,12 @@ The ext4 recovery path now rejects committed journal tags that point back into t
 
 
 Mounted mutation code should use `ops::allocate_block_checked` and `ops::free_block_checked`: allocation skips bitmap-free blocks that overlap the retained system-zone map, while freeing rejects protected metadata and journal extents. The original unchecked primitives remain lower-level helpers and are not safe substitutes for the checked APIs.
+
+
+## Atomic operation and orphan recovery interfaces
+
+The mount-owned transaction layer now exports a typed OperationBuilder for Create, Unlink, Resize, Allocate and Free. Each operation requires a manifest of exact metadata object classes before commit; Free also requires a revoke record. The builder uses MetadataOwnershipMap, an exact per-block allowlist containing owner inode, generation and metadata class. Policy-validated journal recovery can use the same map and separately excludes the journal's own extents.
+
+The orphan module validates the legacy orphan chain with bounded caller storage and submits all inode repairs plus the cleared superblock head through one transaction callback. The callback must implement the correct linked-inode truncate and zero-link inode reclamation behavior; the module does not guess at extent/bitmap changes.
+
+These are foundations for wiring the actual VFS mutation paths, not proof that all operations are already connected. JBD2 checksum-v1/v2/v3 remain unsupported and fail closed. Mount-time orphan recovery is not yet connected to a concrete transaction adapter. Writable mounts remain disabled.
