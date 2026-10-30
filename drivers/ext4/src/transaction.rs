@@ -5,11 +5,50 @@
 //! ownership and the retained system-zone map protects ordered data/revokes.
 //! This layer deliberately does not enable writable mounts.
 
-use super::{Error, Superblock};
+use super::{BlockDevice, Error, Superblock};
 use super::jbd2::{self, JournalBlockMap, ReplayDevice};
 use super::system_zone::SystemZoneMap;
 
 pub const MAX_STAGED_BLOCKS: usize = jbd2::MAX_TRANSACTION_TAGS;
+
+/// Block-device adapter that bounds every journal/home-block I/O to the
+/// mounted filesystem geometry and the underlying partition capacity.
+pub struct FilesystemBlockAdapter<'a, D: BlockDevice> {
+    device: &'a mut D,
+    filesystem: Superblock,
+}
+
+impl<'a, D: BlockDevice> FilesystemBlockAdapter<'a, D> {
+    pub fn new(device: &'a mut D, filesystem: Superblock) -> Result<Self, Error> {
+        let end = filesystem.blocks_count.checked_mul(filesystem.block_size as u64)
+            .ok_or(Error::OutOfRange)?;
+        if end > device.capacity_bytes() { return Err(Error::OutOfRange); }
+        Ok(Self { device, filesystem })
+    }
+}
+
+impl<D: BlockDevice> ReplayDevice for FilesystemBlockAdapter<'_, D> {
+    fn filesystem_blocks(&self) -> u64 { self.filesystem.blocks_count }
+    fn read_block(&mut self, block: u64, out: &mut [u8]) -> Result<(), ()> {
+        if block >= self.filesystem.blocks_count || out.len() != self.filesystem.block_size as usize {
+            return Err(());
+        }
+        let offset = block.checked_mul(self.filesystem.block_size as u64).ok_or(())?;
+        self.device.read_at(offset, out).map_err(|_| ())
+    }
+    fn write_block(&mut self, block: u64, data: &[u8]) -> Result<(), ()> {
+        if block >= self.filesystem.blocks_count || data.len() != self.filesystem.block_size as usize {
+            return Err(());
+        }
+        let offset = block.checked_mul(self.filesystem.block_size as u64).ok_or(())?;
+        let end = offset.checked_add(data.len() as u64).ok_or(())?;
+        if end > self.device.capacity_bytes() { return Err(()); }
+        self.device.write_at(offset, data).map_err(|_| ())
+    }
+    fn flush(&mut self) -> Result<(), ()> { self.device.flush().map_err(|_| ()) }
+}
+
+
 
 pub trait MetadataTargetPolicy {
     fn validate_metadata_target(&mut self, block: u64) -> Result<(), Error>;
