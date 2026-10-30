@@ -738,7 +738,7 @@ pub fn self_test() -> bool {
       && !handle_page_fault(virtual_address, 0) {
    return self_test_fail(line!());
   }
-  #[cfg(feature = "diagnostic-vm")]
+  #[cfg(all(feature = "diagnostic-vm", debug_assertions))]
   let mapping=match unsafe{crate::memory::inspect_mapping_diagnostic(root,virtual_address)} {
    Ok(mapping)=>mapping,
    Err(failure)=>{
@@ -753,7 +753,7 @@ pub fn self_test() -> bool {
     return self_test_fail(line!());
    }
   };
-  #[cfg(not(feature = "diagnostic-vm"))]
+  #[cfg(not(all(feature = "diagnostic-vm", debug_assertions)))]
   let mapping=match unsafe{crate::memory::inspect_mapping(root,virtual_address)} {
    Ok(mapping)=>mapping,
    Err(_)=>return self_test_fail(line!()),
