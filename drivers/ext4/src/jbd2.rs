@@ -217,8 +217,7 @@ struct FilesystemBoundsOnly;
 impl ReplayTargetPolicy for FilesystemBoundsOnly {
  fn validate_replay_target(&mut self, _target: u64) -> Result<(), Error> { Ok(()) }
 }
-pub fn recover<D:ReplayDevice,M:JournalBlockMap>( d:&mut D,m:&mut M,journal_superblock:&mut[u8],scratch:&mut[u8],payload:&mut[u8],
-)->Result<ReplayReport,Error>{
+pub fn recover<D:ReplayDevice,M:JournalBlockMap>( d:&mut D,m:&mut M,journal_superblock:&mut[u8],scratch:&mut[u8],payload:&mut[u8],)->Result<ReplayReport,Error>{
  recover_with_policy(d,m,journal_superblock,scratch,payload,&mut FilesystemBoundsOnly)
 }
 
@@ -410,6 +409,22 @@ mod tests{
   let mut b=[0u8;1024];b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());b[12..16].copy_from_slice(&1024u32.to_be_bytes());b[16..20].copy_from_slice(&64u32.to_be_bytes());b[20..24].copy_from_slice(&1u32.to_be_bytes());b[24..28].copy_from_slice(&7u32.to_be_bytes());b[28..32].copy_from_slice(&3u32.to_be_bytes());
   let sb=JournalSuperblock::parse(&b).unwrap();assert!(sb.needs_recovery());b[40..44].copy_from_slice(&FEATURE_INCOMPAT_CSUM_V3.to_be_bytes());b[80]=4;let csum=crate::checksum::jbd2_superblock_checksum(&b).unwrap();b[252..256].copy_from_slice(&csum.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b).unwrap().checksum_mode,ChecksumMode::V3);b[100]^=1;assert_eq!(JournalSuperblock::parse(&b),Err(Error::InvalidChecksum));b[100]^=1;
   b[40..44].fill(0);b[36..40].copy_from_slice(&1u32.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b).unwrap().checksum_mode,ChecksumMode::V1); }
+ #[test]fn journal_superblock_v3_checksum_parses_large_journal_block(){
+  let mut b=vec![0u8;4096];
+  b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+  b[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
+  b[12..16].copy_from_slice(&4096u32.to_be_bytes());
+  b[16..20].copy_from_slice(&128u32.to_be_bytes());
+  b[20..24].copy_from_slice(&1u32.to_be_bytes());
+  b[24..28].copy_from_slice(&12u32.to_be_bytes());
+  b[40..44].copy_from_slice(&FEATURE_INCOMPAT_CSUM_V3.to_be_bytes());
+  b[80]=4;
+  let sum=crate::checksum::jbd2_superblock_checksum(&b).unwrap();
+  b[252..256].copy_from_slice(&sum.to_be_bytes());
+  assert_eq!(JournalSuperblock::parse(&b).unwrap().block_size,4096);
+  b[900]^=1;
+  assert_eq!(JournalSuperblock::parse(&b),Err(Error::InvalidChecksum));
+ }
  #[test]fn clean_journal_is_noop_without_io(){  struct D;impl ReplayDevice for D{fn filesystem_blocks(&self)->u64{10}fn read_block(&mut self,_:u64,_:&mut[u8])->Result<(),()>{Err(())}fn write_block(&mut self,_:u64,_:&[u8])->Result<(),()>{Err(())}fn flush(&mut self)->Result<(),()>{Ok(())}}
   let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:0,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};let mut d=D;let mut a=[0u8;1024];let mut b=[0u8;1024];assert_eq!(replay(&mut d,&mut |_|Err(()),&sb,&mut a,&mut b),Ok(ReplayReport::default()));
  }
@@ -437,8 +452,7 @@ mod tests{
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());  d.blocks[3].fill(0x5a);
-  header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
-  header(&mut d.blocks[5],JBD2_DESCRIPTOR_BLOCK,2);
+  header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);  header(&mut d.blocks[5],JBD2_DESCRIPTOR_BLOCK,2);
   d.blocks[5][12..16].copy_from_slice(&8u32.to_be_bytes());
   d.blocks[5][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[6].fill(0x7c);
