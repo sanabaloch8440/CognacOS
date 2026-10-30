@@ -209,13 +209,19 @@ pub fn current_cpu_local() -> Option<&'static CpuLocal> {
     let gs_base: u64;
     let kernel_gs_base: u64;
     unsafe {
-        core::arch::asm!("mov {}, gs:[0]", out(reg) self_pointer, options(nostack, readonly, preserves_flags));
         let low: u32; let high: u32;
         core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") low, out("edx") high, options(nostack, preserves_flags));
         gs_base = ((high as u64) << 32) | low as u64;
         let low: u32; let high: u32;
         core::arch::asm!("rdmsr", in("ecx") 0xC000_0102u32, out("eax") low, out("edx") high, options(nostack, preserves_flags));
         kernel_gs_base = ((high as u64) << 32) | low as u64;
+        // GS_BASE is intentionally zero between user-mode transitions in this
+        // bootstrap; do not probe linear address zero in that state.
+        if gs_base == 0 {
+            self_pointer = 0;
+        } else {
+            core::arch::asm!("mov {}, gs:[0]", out(reg) self_pointer, options(nostack, readonly, preserves_flags));
+        }
     }
     // In ordinary kernel context GS:[0] equals GS_BASE (CpuLocal.self_pointer).
     // During Windows SYSCALL, GS:[0] is instead the caller's RSP. Compare with
