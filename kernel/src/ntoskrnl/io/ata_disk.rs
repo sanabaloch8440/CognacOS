@@ -479,7 +479,40 @@ fn trace_store_transfer(offset: u64, output: &mut [u8]) -> bool {
 
 /// End-to-end guest check. The physical port driver backs a registered disk
 /// object; GPT and ext4 then read only through disk/partition READ IRPs.
-pub fn run_ext4_readme_test() -> bool {
+pub #[cfg(debug_assertions)]
+fn ext4_error_debug_name(error: extfs::Error) -> &'static [u8] {
+    match error {
+        extfs::Error::Truncated => b"Truncated",
+        extfs::Error::BadMagic => b"BadMagic",
+        extfs::Error::InvalidBlockSize => b"InvalidBlockSize",
+        extfs::Error::InvalidInodeSize => b"InvalidInodeSize",
+        extfs::Error::InvalidGeometry => b"InvalidGeometry",
+        extfs::Error::UnsupportedIncompatFeature => b"UnsupportedIncompatFeature",
+        extfs::Error::OutOfRange => b"OutOfRange",
+        extfs::Error::InvalidDirectoryEntry => b"InvalidDirectoryEntry",
+        extfs::Error::UnsupportedFormat => b"UnsupportedFormat",
+        extfs::Error::UnsupportedRoCompatFeature => b"UnsupportedRoCompatFeature",
+        extfs::Error::UnsupportedCompatFeature => b"UnsupportedCompatFeature",
+        extfs::Error::InvalidExtentTree => b"InvalidExtentTree",
+        extfs::Error::InvalidChecksum => b"InvalidChecksum",
+        extfs::Error::InvalidPartitionTable => b"InvalidPartitionTable",
+        extfs::Error::UnsupportedPartitionTable => b"UnsupportedPartitionTable",
+        extfs::Error::TransactionTooLarge => b"TransactionTooLarge",
+        extfs::Error::Io => b"Io",
+    }
+}
+#[cfg(debug_assertions)]
+fn ext4_write_error_debug_name(error: &extfs::WriteError) -> &'static [u8] {
+    match error {
+        extfs::WriteError::Filesystem(fs) => ext4_error_debug_name(*fs),
+        extfs::WriteError::ReadOnly => b"ReadOnly",
+        extfs::WriteError::OutOfRange => b"OutOfRange",
+        extfs::WriteError::Io => b"Io",
+        extfs::WriteError::PartialBlock => b"PartialBlock",
+    }
+}
+
+fn run_ext4_readme_test() -> bool {
     let disk = match AtaPrimaryMaster::initialize() { Ok(d) => d, Err(_) => return false };
     DISK_CAPACITY.store(disk.sectors.saturating_mul(SECTOR_BYTES as u64), Ordering::Release);
     *STORAGE_DISK.lock() = Some(disk);
@@ -529,12 +562,28 @@ pub fn run_ext4_readme_test() -> bool {
     changed[..EXPECTED.len()].copy_from_slice(EXPECTED);
     changed[0] = b'X';
     let mut writable = match extfs::ExtFilesystem::mount_writable(volume) {
-        Ok(fs) => fs, Err(_) => return false,
+        Ok(fs) => fs,
+        Err(error) => {
+            #[cfg(debug_assertions)] unsafe {
+                crate::serial_write(b"EXT4 DEBUG: mount_writable rejected volume: ");
+                crate::serial_write(ext4_error_debug_name(error));
+                crate::serial_write(b"\\r\\n");
+            }
+            return false;
+        },
     };
     let mut scratch = [0u8; 4096];
     match writable.write_file_data(file_inode_number, &file_inode_raw, 0,
         &changed[..EXPECTED.len()], &mut scratch[..sb.block_size as usize]) {
         Ok(n) if n == EXPECTED.len() => {},
+        Err(error) => {
+            #[cfg(debug_assertions)] unsafe {
+                crate::serial_write(b"EXT4 DEBUG: checked data write failed: ");
+                crate::serial_write(ext4_write_error_debug_name(&error));
+                crate::serial_write(b"\\r\\n");
+            }
+            return false;
+        },
         _ => return false,
     }
     let mut volume = writable.into_device();
@@ -551,11 +600,27 @@ pub fn run_ext4_readme_test() -> bool {
     // Restore the fixture even though the guest performed a real persistent
     // write, so repeat boots see the same deterministic expected file.
     let mut writable = match extfs::ExtFilesystem::mount_writable(volume) {
-        Ok(fs) => fs, Err(_) => return false,
+        Ok(fs) => fs,
+        Err(error) => {
+            #[cfg(debug_assertions)] unsafe {
+                crate::serial_write(b"EXT4 DEBUG: restore mount rejected volume: ");
+                crate::serial_write(ext4_error_debug_name(error));
+                crate::serial_write(b"\\r\\n");
+            }
+            return false;
+        },
     };
     match writable.write_file_data(changed_inode_number, &inode_after_write, 0,
         EXPECTED, &mut scratch[..sb.block_size as usize]) {
         Ok(n) if n == EXPECTED.len() => {},
+        Err(error) => {
+            #[cfg(debug_assertions)] unsafe {
+                crate::serial_write(b"EXT4 DEBUG: restore data write failed: ");
+                crate::serial_write(ext4_write_error_debug_name(&error));
+                crate::serial_write(b"\\r\\n");
+            }
+            return false;
+        },
         _ => return false,
     }
     let mut volume = writable.into_device();
