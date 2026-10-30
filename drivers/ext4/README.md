@@ -37,6 +37,23 @@ filesystem API.
   the internal journal inode and runs committed-transaction replay through the
   writable block-device contract before the caller retries the read-only mount.
 
+## JBD2 checksum-v2/v3 replay integration
+
+The recovery scanner now recognizes the checksum-v2 16-bit tag layout and
+checksum-v3 32-bit tag layout, validates the journal UUID on tags that carry
+one, checks descriptor and revoke block tail CRC32C values, validates each
+journaled data block before accepting its tag, and validates commit-block
+checksum type/size and CRC32C before accepting a transaction. The v3 tag's
+high-block field is parsed in its on-disk position. The ordered-commit writer
+continues to reject checksum-enabled journals rather than emitting invalid
+records.
+
+Checksum-v1 remains unsupported, as do checksum-enabled journal writes.
+The implementation must still be exercised against Linux-generated journal
+images and broader malformed-input/crash-recovery tests before enabling
+writable ext4 mounts. Any checksum failure aborts replay before home-block
+writes are issued for that transaction.
+
 ## JBD2 checksum implementation status
 
 The crate now contains allocation-free IEEE CRC-32 and CRC32C primitives,
