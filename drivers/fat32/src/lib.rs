@@ -10,7 +10,7 @@ use fatfs::{IoBase, IoError};
 pub const MAX_SECTOR_SIZE: usize = 4096;
 pub const MIN_SECTOR_SIZE: u32 = 512;
 pub const FAT32_MIN_CLUSTERS: u32 = 65_525;
-pub const FAT32_MAX_CLUSTERS: u32 = 0x0fff_fff5;
+pub const FAT32_MAX_CLUSTERS: u32 = 0x0fff_fff4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DiskError { InvalidGeometry, OutOfRange, WriteProtected, DeviceFailure, Overflow }
@@ -241,5 +241,16 @@ mod tests {
     #[test] fn rejects_non_fat32_boot_sector(){
         let mut s=DiskStream::new(MemoryDisk::new(128,512),0,128,false).unwrap();
         assert_eq!(validate_fat32(&mut s),Err(MountError::InvalidBootSector));
+    }
+    #[test] fn mounts_a_fat32_volume_formatted_by_upstream_fatfs(){
+        let mut stream=DiskStream::new(MemoryDisk::new(70_000,512),0,70_000,true).unwrap();
+        fatfs::format_volume(&mut stream,
+            fatfs::FormatVolumeOptions::new().fat_type(FatType::Fat32).total_sectors(70_000)
+        ).unwrap();
+        let disk=stream.into_device();
+        let mounted=FatFilesystem::mount_read_only(disk,0,70_000).unwrap();
+        assert_eq!(mounted.filesystem().fat_type(),FatType::Fat32);
+        assert_eq!(mounted.filesystem().cluster_size(),512);
+        mounted.flush().unwrap();
     }
 }
