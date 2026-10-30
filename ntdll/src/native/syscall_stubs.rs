@@ -8,7 +8,27 @@ core::arch::global_asm!(
     options(att_syntax)
 );
 
+core::arch::global_asm!(r#"
+    .text
+    .p2align 4
+    .globl cognacos_nt_load_dll
+cognacos_nt_load_dll:
+    movq %rcx, %r10
+    movl $0x15a, %eax
+    syscall
+    ret
+    .p2align 4
+    .globl cognacos_nt_complete_dll_init
+cognacos_nt_complete_dll_init:
+    movq %rcx, %r10
+    movl $0x15b, %eax
+    syscall
+    ret
+"#, options(att_syntax));
+
 unsafe extern "system" {
+    pub fn cognacos_nt_load_dll(name: *const u8, path: *const u8, response: *mut core::ffi::c_void) -> i32;
+    pub fn cognacos_nt_complete_dll_init(name: *const u8, slot: u32, generation: u32, success: u32) -> i32;
     pub fn NtClose(handle: *mut c_void) -> i32;
     pub fn NtCreateEvent(event_handle: *mut *mut c_void, desired_access: u32, object_attributes: *const c_void, event_type: u32, initial_state: u32) -> i32;
     pub fn NtOpenEvent(event_handle: *mut *mut c_void, desired_access: u32, object_attributes: *const c_void) -> i32;
