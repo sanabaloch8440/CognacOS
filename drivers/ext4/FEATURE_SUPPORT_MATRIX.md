@@ -10,7 +10,7 @@ bit does not make all operations on that feature safe.
 | Feature class | Current policy | Notes |
 |---|---|---|
 | Compatible features | Unknown compatible bits are tolerated | This follows ext4's rule that unknown compatible features do not change on-disk interpretation for an old reader. Individual features still need operation-specific checks. |
-| Read-only-compatible features | Only `0x0403` is accepted | sparse_super, large_file, metadata_csum. Other RO-compatible bits, including bigalloc, inline_data, encrypt, casefold, verity, project quota and large_dir, are rejected. |
+| Read-only-compatible features | `0x0403` plus `LARGE_DIR` (`0x4000`) is accepted | sparse_super, large_file, metadata_csum, and large_dir. LARGE_DIR requires DIR_INDEX. Other RO-compatible bits, including bigalloc, inline_data, encrypt, casefold, verity and project quota, are rejected. |
 | Incompatible features | Only the explicit `KNOWN_INCOMPAT` mask is accepted | filetype, extents, flex_bg, 64bit and csum_seed. meta_bg and all other unknown incompat bits are rejected. |
 | Revision | Revision values above 1 are rejected | Dynamic revision layout is the supported baseline. |
 | Block size | 1 KiB through 64 KiB, powers of two | The parser rejects larger log sizes. |
@@ -19,12 +19,12 @@ bit does not make all operations on that feature safe.
 
 | Area | Current implementation | Not yet compatible |
 |---|---|---|
-| ext2/ext3 legacy mapping | Existing legacy block mapping path | Full indirect-tree lifecycle, allocation/free, truncate and boundary interoperability matrix |
+| ext2/ext3 legacy mapping | Direct, single-, double- and triple-indirect read mapping; checked mapping rejects system-zone indirect blocks and data blocks | Full indirect-tree mutation lifecycle, allocation/free, truncate and boundary interoperability matrix |
 | extents | Checked lookup and selected mutation helpers | Full split/merge/root-depth lifecycle, unwritten conversion, truncate/punch/zero-range, delayed allocation and extent-status semantics |
 | flex_bg | Selected descriptor/bitmap placement validation | Complete Linux layout edge cases, resize and every flex-group geometry |
 | bigalloc | Rejected at superblock feature negotiation | Cluster-based allocation, accounting, checksums and extent semantics |
 | meta_bg | Explicitly rejected | Meta block-group descriptor placement and backup metadata |
-| metadata checksums | Selected superblock, group descriptor, bitmap, inode, extent, directory, xattr and JBD2 checks | Exhaustive structure-by-structure formula/coverage audit and Linux-generated golden vectors |
+| metadata checksums | Selected superblock, group descriptor, bitmap, inode, extent, directory, xattr and JBD2 checks; 64 KiB directory record lengths are decoded | Exhaustive structure-by-structure formula/coverage audit and Linux-generated golden vectors |
 | HTree | Read traversal and bounded split/index mutation primitives | Complete recursive index growth, three-level large_dir, full directory operation/VFS semantics and all hash/collision edge cases |
 | external xattrs | Structure, checksum, allocation and full owner-inventory reconciliation | EA inodes/value blocks, namespace policy, full mutation and replay ownership integration |
 | inline data | Not supported as a complete data path | Inline file/directory/symlink read/write and conversion |
