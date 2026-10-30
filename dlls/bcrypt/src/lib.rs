@@ -9,7 +9,6 @@ use std::{boxed::Box, vec::Vec};
 
 pub type NTSTATUS = i32;
 pub type ULONG = u32;
-pub type PUCHAR = *mut u8;
 pub const STATUS_SUCCESS: NTSTATUS = 0;
 pub const STATUS_INVALID_PARAMETER: NTSTATUS = 0xC000000D_u32 as i32;
 pub const STATUS_NOT_SUPPORTED: NTSTATUS = 0xC00000BB_u32 as i32;
@@ -120,13 +119,13 @@ pub unsafe extern "system" fn BCryptGetProperty(object: *mut c_void, property: *
     let alg = unsafe { &*object.cast::<AlgorithmHandle>() }.algorithm;
     let (kind, value) = match name.as_str() {
         "ObjectLength" => (0, 0), "HashDigestLength" => (0, alg.digest_len()), "HashBlockLength" => (0, alg.block_len()),
-        "AlgorithmName" => (1, 0), "ProviderName" => (1, 0), _ => return STATUS_NOT_SUPPORTED,
+        "AlgorithmName" => (1, 0), _ => return STATUS_NOT_SUPPORTED,
     };
     let required = if kind == 0 { 4 } else { (alg.provider_name().encode_utf16().count() as u32 + 1) * 2 };
     unsafe { result_len.write(required) };
     if output.is_null() || output_len < required { return STATUS_BUFFER_TOO_SMALL; }
     if kind == 0 { unsafe { write_u32(output, value) }; }
-    else { unsafe { write_wide(output, if name == "AlgorithmName" { alg.provider_name() } else { "CognacOS CNG" }) }; }
+    else { unsafe { write_wide(output, alg.provider_name()) }; }
     STATUS_SUCCESS
 }
 
