@@ -176,12 +176,12 @@ fn validate_dx_root(block: &[u8]) -> Result<(u8, u8), Error> {
         || le16(block, 4)? != 12
         || block[6] != 1
         || block[8] != b'.'
-        || block[9..12] != [0, 0, 0]
+        || &block[9..12] != &[0, 0, 0]
         || le32(block, 12)? == 0
         || ext4_rec_len(le16(block, 16)?, block.len()) != block.len() - 12
         || block[18] != 2
         || &block[20..22] != b".."
-        || block[22..24] != [0, 0]
+        || &block[22..24] != &[0, 0]
     {
         return Err(Error::InvalidDirectoryEntry);
     }
