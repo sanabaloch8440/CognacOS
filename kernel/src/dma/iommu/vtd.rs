@@ -214,10 +214,18 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
  let entry=unsafe{contexts[bus].virtual_address.add(id.devfn()*2)};
  unsafe{core::ptr::write_volatile(entry,low);core::ptr::write_volatile(entry.add(1),high)};
  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[bus].physical,4096)}!=0{
+  // Try to retract the context entry. Free the second-level root only after
+  // the clear is visible and both context/IOTLB caches are invalidated.
   unsafe{core::ptr::write_volatile(entry,0);core::ptr::write_volatile(entry.add(1),0)};
-  let _=unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[bus].physical,4096)};
-  let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
-  return Err(STATUS_NOT_SUPPORTED)
+  let clear_status=unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[bus].physical,4096)};
+  let invalidate_status=if clear_status==0{unsafe{invalidate_all_locked(u)}}else{STATUS_IO_TIMEOUT};
+  if clear_status==0&&invalidate_status==STATUS_SUCCESS{
+   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
+   return Err(STATUS_NOT_SUPPORTED)
+  }
+  domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va,poisoned:true};
+  poison_domain(u,id);
+  return Err(STATUS_IO_TIMEOUT)
  }
  domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va,poisoned:false};
  if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{
@@ -426,6 +434,9 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
  let domains=unsafe{&mut*DOMAINS.0.get()};
  let Some(index)=domains.iter().position(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8) else{return STATUS_INVALID_PARAMETER};
  let d=domains[index];
+ // Close the software admission gate before detaching any hardware context.
+ // A failed free/invalidation then leaves an unusable but fully pinned domain.
+ domains[index].poisoned=true;
  let contexts=unsafe{&mut*CONTEXTS.0.get()};
  let entry=unsafe{contexts[id.bus as usize].virtual_address.add(id.devfn()*2)};
  unsafe{core::ptr::write_volatile(entry,0);core::ptr::write_volatile(entry.add(1),0)};
