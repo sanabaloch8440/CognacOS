@@ -231,22 +231,22 @@ const SL_ADDR_MASK:u64=0x000f_ffff_ffff_f000;
 const SL_MAX:u64=1u64<<48;
 const SL_PAGE:u64=4096;
 
-#[derive(Clone,Copy)] struct TablePage{used:bool,physical:u64,virtual_address:*mut u64}
+#[derive(Clone,Copy)] struct TablePage{used:bool,domain_id:u16,physical:u64,virtual_address:*mut u64}
 unsafe impl Send for TablePage{} unsafe impl Sync for TablePage{}
-const EMPTY_TABLE_PAGE:TablePage=TablePage{used:false,physical:0,virtual_address:core::ptr::null_mut()};
+const EMPTY_TABLE_PAGE:TablePage=TablePage{used:false,domain_id:0,physical:0,virtual_address:core::ptr::null_mut()};
 struct TablePageStore(core::cell::UnsafeCell<[TablePage;4096]>); unsafe impl Sync for TablePageStore{}
 static TABLE_PAGES:TablePageStore=TablePageStore(core::cell::UnsafeCell::new([EMPTY_TABLE_PAGE;4096]));
 
 /// Walk or construct an intermediate second-level table. Allocated pages are
 /// zeroed and cache-cleaned before their parent entry is made present.
-unsafe fn walk_level(u:&Unit,table:*mut u64,table_pa:u64,index:usize,create:bool)->Result<*mut u64,i32>{
+unsafe fn walk_level(u:&Unit,domain_id:u16,table:*mut u64,table_pa:u64,index:usize,create:bool)->Result<*mut u64,i32>{
  let slot=unsafe{table.add(index)};
  let entry=unsafe{core::ptr::read_volatile(slot)};
  if entry&SL_R!=0{
   if entry&SL_W==0{return Err(STATUS_NOT_SUPPORTED)}
   let pa=entry&SL_ADDR_MASK;
   let pages=unsafe{&*TABLE_PAGES.0.get()};
-  let Some(p)=pages.iter().find(|p|p.used&&p.physical==pa) else{return Err(STATUS_NOT_SUPPORTED)};
+  let Some(p)=pages.iter().find(|p|p.used&&p.domain_id==domain_id&&p.physical==pa) else{return Err(STATUS_NOT_SUPPORTED)};
   return Ok(p.virtual_address)
  }
  if !create{return Err(STATUS_INVALID_PARAMETER)}
@@ -266,7 +266,7 @@ unsafe fn walk_level(u:&Unit,table:*mut u64,table_pa:u64,index:usize,create:bool
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};
   return Err(STATUS_INSUFFICIENT_RESOURCES)
  };
- *record=TablePage{used:true,physical:pa,virtual_address:va};
+ *record=TablePage{used:true,domain_id,physical:pa,virtual_address:va};
  unsafe{core::ptr::write_volatile(slot,pa|SL_R|SL_W)};
  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{
   // Keep the child page pinned because hardware may have observed its entry.
@@ -294,7 +294,7 @@ pub unsafe fn map_pages(id:RequesterId,iova:u64,physical:u64,length:u64,permissi
   let mut table=domain.root_virtual;
   let mut table_pa=domain.root_physical;
   for level in 0..3{
-   match unsafe{walk_level(u,table,table_pa,indexes[level],true)}{
+   match unsafe{walk_level(u,domain.id,table,table_pa,indexes[level],true)}{
     Ok(next)=>{
      let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
      table_pa=entry&SL_ADDR_MASK;table=next;
@@ -327,7 +327,7 @@ pub unsafe fn unmap_pages(id:RequesterId,iova:u64,length:u64)->i32{
   let mut table=domain.root_virtual;
   let mut table_pa=domain.root_physical;
   for level in 0..3{
-   match unsafe{walk_level(u,table,table_pa,indexes[level],false)}{
+   match unsafe{walk_level(u,domain.id,table,table_pa,indexes[level],false)}{
     Ok(next)=>{
      let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
      table_pa=entry&SL_ADDR_MASK;table=next;
@@ -358,7 +358,7 @@ pub fn lookup_mapping(id:RequesterId,iova:u64)->Option<(u64,u8)>{
   if e&SL_R==0{return None}
   if level==3{return Some(((e&SL_ADDR_MASK)|(iova&0xfff),(e&3)as u8))}
   let pa=e&SL_ADDR_MASK;
-  table=pages.iter().find(|p|p.used&&p.physical==pa)?.virtual_address;
+  table=pages.iter().find(|p|p.used&&p.domain_id==d.id&&p.physical==pa)?.virtual_address;
  }
  None
 }
@@ -377,6 +377,11 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
  unsafe{core::ptr::write_volatile(entry,0);core::ptr::write_volatile(entry.add(1),0)};
  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[id.bus as usize].physical,4096)}!=0{return STATUS_NOT_SUPPORTED}
  if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{return STATUS_IO_TIMEOUT}
+ let pages=unsafe{&mut*TABLE_PAGES.0.get()};
+ for page in pages.iter_mut().filter(|p|p.used&&p.domain_id==d.id){
+  if unsafe{(u.ops.free_table.unwrap())(u.ops.context,page.physical,page.virtual_address)}!=0{return STATUS_NOT_SUPPORTED}
+  *page=EMPTY_TABLE_PAGE;
+ }
  let status=unsafe{(u.ops.free_table.unwrap())(u.ops.context,d.root_physical,d.root_virtual)};
  if status!=0{return STATUS_NOT_SUPPORTED}
  domains[index]=EMPTY_DOMAIN;
