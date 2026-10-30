@@ -93,10 +93,27 @@ pub trait BlockDevice:ReadOnlyBlockDevice{
 }
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum WriteError{Filesystem(Error),ReadOnly,OutOfRange,Io,PartialBlock}
-/// Driver facade; write support intentionally excludes allocation and metadata.
-pub struct ExtFilesystem<D>{device:D,superblock:Superblock,read_only:bool}
+/// Fixed upper bound for the no-alloc writable mount's retained ext4 system-zone map.
+/// Larger filesystems fail closed and can use CheckedExtFilesystem with caller storage.
+pub const MAX_WRITABLE_SYSTEM_ZONES: usize = 256;
+const MAX_EXT4_BLOCK_SIZE: usize = 65_536;
+
+/// Driver facade. Writable operations are deliberately limited to in-place
+/// writes to existing regular-file data extents on clean, unjournaled volumes.
+pub struct ExtFilesystem<D>{
+ device:D,
+ superblock:Superblock,
+ read_only:bool,
+ raw_superblock:[u8;SUPERBLOCK_BYTES],
+ system_zones:[BlockRange;MAX_WRITABLE_SYSTEM_ZONES],
+ zone_count:usize,
+}
 impl<D:ReadOnlyBlockDevice> ExtFilesystem<D>{
- pub fn mount_read_only(mut device:D)->Result<Self,Error>{let sb=read_superblock(&mut device)?;Ok(Self{device,superblock:sb,read_only:true})}
+ pub fn mount_read_only(mut device:D)->Result<Self,Error>{
+  let sb=read_superblock(&mut device)?;
+  Ok(Self{device,superblock:sb,read_only:true,raw_superblock:[0;SUPERBLOCK_BYTES],
+   system_zones:[BlockRange{start:0,end:0};MAX_WRITABLE_SYSTEM_ZONES],zone_count:0})
+ }
  /// Mount a filesystem from a bounded partition view of a whole-disk device.
  pub fn mount_partition_read_only(device:D,partition:DiskPartition)->Result<ExtFilesystem<PartitionDevice<D>>,Error>{
   let view=PartitionDevice::new(device,partition)?;
@@ -106,52 +123,83 @@ impl<D:ReadOnlyBlockDevice> ExtFilesystem<D>{
  pub fn into_device(self)->D{self.device}
 }
 impl<D:BlockDevice> ExtFilesystem<D>{
- /// Writable mounting is deliberately disabled until extent block-validity
- /// checks, a mount-owned JBD2 transaction coordinator, orphan recovery, and
- /// metadata writeback ordering are integrated. The low-level mutation
- /// primitives below this facade are not sufficient to make arbitrary writes
- /// safe. A partition-bounded view is still required when this is enabled.
+ /// Mount a clean, unjournaled ext4 volume for restricted in-place data writes.
+ /// Journaled filesystems must first use CheckedExtFilesystem::mount_with_recovery;
+ /// this entry point refuses them rather than writing against unreplayed metadata.
+ /// The caller must supply a partition-relative BlockDevice, not a whole disk.
  pub fn mount_partition_writable(device:D,partition:DiskPartition)->Result<ExtFilesystem<PartitionDevice<D>>,Error>{
   let view=PartitionDevice::new(device,partition)?;
   ExtFilesystem::mount_writable(view)
  }
  pub fn mount_writable(mut device:D)->Result<Self,Error>{
-  let mut raw=[0u8;SUPERBLOCK_BYTES];device.read_at(SUPERBLOCK_DISK_OFFSET,&mut raw).map_err(|_|Error::Io)?;
-  let sb=Superblock::parse(&raw)?;validate_superblock_checksum(&raw)?;
+  let mut raw=[0u8;SUPERBLOCK_BYTES];
+  device.read_at(SUPERBLOCK_DISK_OFFSET,&mut raw).map_err(|_|Error::Io)?;
+  let sb=Superblock::parse(&raw)?;
+  validate_superblock_checksum(&raw)?;
   let end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;
-  if end>device.capacity_bytes(){return Err(Error::OutOfRange)}
-  // Fail closed: current write_file_data() does not yet validate every
-  // physical extent against ext4 system-zone metadata, and the JBD2 and
-  // metadata mutation primitives are not wired into a single mount-level
-  // transaction. Enabling this path could overwrite filesystem metadata or
-  // leave partially committed metadata after power loss.
-  let _ = sb;
-  Err(Error::UnsupportedFormat)
+  if end>device.capacity_bytes()||sb.read_only{return Err(Error::UnsupportedFormat)}
+  // This restricted writer never changes metadata. It still requires a clean
+  // filesystem and rejects orphan recovery or JBD replay requirements.
+  if sb.feature_compat&0x0004!=0||u16at(&raw,58)?&1==0||u32at(&raw,232)?!=0{
+   return Err(Error::UnsupportedFormat)
+  }
+  let block_size=sb.block_size as usize;
+  if block_size>MAX_EXT4_BLOCK_SIZE{return Err(Error::UnsupportedFormat)}
+  let mut ranges=[BlockRange{start:0,end:0};MAX_WRITABLE_SYSTEM_ZONES];
+  let mut scratch=[0u8;MAX_EXT4_BLOCK_SIZE];
+  let zone_count=build_system_zones(&mut device,&sb,&raw,&mut scratch[..block_size],&mut ranges)?;
+  if zone_count==0{return Err(Error::InvalidGeometry)}
+  Ok(Self{device,superblock:sb,read_only:false,raw_superblock:raw,
+   system_zones:ranges,zone_count})
  }
- /// Write within an existing regular file's current logical size. This prevents
- /// a data-write request from using a valid extent beyond EOF to overwrite data
- /// that belongs to another file or filesystem structure. Allocation and inode
- /// size changes are intentionally not performed here.
- pub fn write_file_data(&mut self,extent_root:&[u8],inode_size:u64,file_offset:u64,data:&[u8],scratch:&mut[u8])->Result<usize,WriteError>{
+ /// Write bytes only inside an existing regular file's current size. The full
+ /// inode checksum and each extent path are validated; every target data block
+ /// must be outside ext4 system zones. No allocation, inode, directory, or
+ /// journal metadata is modified by this restricted operation.
+ pub fn write_file_data(
+  &mut self,inode_number:u32,inode_raw:&[u8],file_offset:u64,data:&[u8],scratch:&mut[u8],
+ )->Result<usize,WriteError>{
+  if self.read_only||self.zone_count==0{return Err(WriteError::ReadOnly)}
+  if inode_raw.len()<self.superblock.inode_size as usize{return Err(WriteError::PartialBlock)}
+  let first_ino=u32at(&self.raw_superblock,84).map_err(WriteError::Filesystem)?;
+  if inode_number<first_ino{return Err(WriteError::OutOfRange)}
+  validate_inode_checksum(&self.raw_superblock,inode_number,inode_raw)
+   .map_err(WriteError::Filesystem)?;
+  let inode=Inode::parse(inode_raw,self.superblock.inode_size,self.superblock.revision,
+   self.superblock.feature_ro_compat).map_err(WriteError::Filesystem)?;
+  if !inode.is_regular_file{return Err(WriteError::OutOfRange)}
   let end=file_offset.checked_add(data.len() as u64).ok_or(WriteError::OutOfRange)?;
-  if end>inode_size{return Err(WriteError::OutOfRange)}
-  self.write_existing_extent_unchecked(extent_root,file_offset,data,scratch)
- }
- fn write_existing_extent_unchecked(&mut self,extent_root:&[u8],file_offset:u64,data:&[u8],scratch:&mut[u8])->Result<usize,WriteError>{
-  if self.read_only{return Err(WriteError::ReadOnly)}if data.is_empty(){return Ok(0)}
-  let bs=self.superblock.block_size as usize;if scratch.len()!=bs{return Err(WriteError::PartialBlock)}
+  if end>inode.size{return Err(WriteError::OutOfRange)}
+  if data.is_empty(){return Ok(0)}
+  let block_size=self.superblock.block_size as usize;
+  if scratch.len()!=block_size{return Err(WriteError::PartialBlock)}
+  let generation=u32at(inode_raw,100).map_err(WriteError::Filesystem)?;
+  let extent_root=inode_raw.get(40..100).ok_or(WriteError::PartialBlock)?;
+  let zones=SystemZoneMap::new(&self.system_zones[..self.zone_count]);
+  let device=&mut self.device;
+  let superblock=&self.superblock;
+  let raw_superblock=&self.raw_superblock;
   let mut written=0usize;
   while written<data.len(){
    let absolute=file_offset.checked_add(written as u64).ok_or(WriteError::OutOfRange)?;
-   let logical=absolute/(bs as u64);if logical>u32::MAX as u64{return Err(WriteError::OutOfRange)}
-   let within=(absolute%(bs as u64)) as usize;let amount=core::cmp::min(bs-within,data.len()-written);
-   let physical=map_extent_block(&mut self.device,&self.superblock,extent_root,logical as u32,scratch).map_err(WriteError::Filesystem)?.ok_or(WriteError::OutOfRange)?;
-   let block_offset=physical.checked_mul(bs as u64).ok_or(WriteError::OutOfRange)?;
-   if within!=0||amount!=bs{read_block(&mut self.device,&self.superblock,physical,scratch).map_err(WriteError::Filesystem)?;}
+   let logical=absolute/(block_size as u64);
+   if logical>u32::MAX as u64{return Err(WriteError::OutOfRange)}
+   let within=(absolute%(block_size as u64)) as usize;
+   let amount=core::cmp::min(block_size-within,data.len()-written);
+   let physical=map_extent_block_checked_zones(
+    device,superblock,raw_superblock,inode_number,generation,extent_root,
+    logical as u32,scratch,&zones,
+   ).map_err(WriteError::Filesystem)?.ok_or(WriteError::OutOfRange)?;
+   let block_offset=physical.checked_mul(block_size as u64).ok_or(WriteError::OutOfRange)?;
+   if within!=0||amount!=block_size{
+    read_block(device,superblock,physical,scratch).map_err(WriteError::Filesystem)?;
+   }
    scratch[within..within+amount].copy_from_slice(&data[written..written+amount]);
-   self.device.write_at(block_offset,scratch).map_err(|_|WriteError::Io)?;written+=amount;
+   device.write_at(block_offset,scratch).map_err(|_|WriteError::Io)?;
+   written+=amount;
   }
-  self.device.flush().map_err(|_|WriteError::Io)?;Ok(written)
+  device.flush().map_err(|_|WriteError::Io)?;
+  Ok(written)
  }
 }
 
