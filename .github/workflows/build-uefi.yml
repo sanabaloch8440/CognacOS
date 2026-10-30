@@ -174,6 +174,12 @@ jobs:
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib ext4_metadata_blocks_checksum_tests
       - name: Test ext4 HTree indexed root and interior-node lookup
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib indexed_root_
+      - name: Test ext4 directory hashes against Linux reference vectors
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib linux_reference_tests
+      - name: Test ext4 HTree collision lookup and indexed readdir
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib name_lookup_follows_hash_collision
+      - name: Test ext4 HTree leaf and index node splitting
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib htree_mut::tests
       - name: Test ext4 HTree malformed indexes and directory leaf checksums
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib rejects_bad_counts_depth_cycles_and_leaf_checksums
       - name: Test GPT partition create, extend, and delete
