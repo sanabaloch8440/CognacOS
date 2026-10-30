@@ -188,3 +188,10 @@ in that same transaction; external extent-tree mutation remains unsupported.
 Added `build_system_metadata_ownership`, a bounded caller-buffered builder that re-reads the primary group descriptor table, validates descriptor checksums when enabled, validates descriptor geometry against the retained system-zone map, and records exact ownership classes for the primary superblock, primary GDT blocks, per-group block/inode bitmaps, and inode-table blocks. The resulting `MetadataOwnershipMap` can be passed to `recover_internal_journal_with_policy`; duplicate ownership, out-of-range blocks, non-system-zone targets, and insufficient caller capacity fail closed.
 
 This is intentionally a conservative first-stage manifest. Backup superblocks/GDTs and inode-owned directory, extent-tree, xattr, and other metadata blocks are not authorized by this builder. A dirty journal transaction targeting any omitted block is rejected until a separate validated inode/object scanner adds an exact owner record. This does not enable writable mounting or claim complete Linux ext4 replay-target coverage.
+
+
+## Mount-owned conservative journal recovery entry point
+
+Added `CheckedExtFilesystem::mount_with_recovery_and_ownership`. It constructs the system-zone map, protects the internal journal inode extents, builds the validated primary-system-metadata ownership manifest, wraps it in the duplicate-rejecting `MetadataOwnershipMap`, and supplies that policy to JBD2 replay before returning a checked mount. The ownership-entry arena is caller-provided and bounded. The older `mount_with_recovery` remains fail-closed for dirty journals because it has no ownership arena.
+
+Replay remains intentionally limited to primary superblock/GDT, per-group bitmaps, and inode-table blocks. Transactions that update directories, extent nodes, xattrs, or backup metadata are rejected until validated inode/object ownership is added. This entry point is not a general-purpose writable mount and does not imply full ext4/JBD2 compatibility.
