@@ -10,6 +10,9 @@ const EXTENSION_MAGIC: u64 = 0x434f_474e_4143_5848; // "COGNACXH"
 const DRIVER_FAILED: i32 = 0xC0000001u32 as i32;
 const DRIVER_INVALID_PARAMETER: i32 = 0xC000000Du32 as i32;
 const DRIVER_NOT_SUPPORTED: i32 = 0xC00000BBu32 as i32;
+const DRIVER_INSUFFICIENT_RESOURCES: i32 = 0xC000009Au32 as i32;
+const DRIVER_DEVICE_NOT_READY: i32 = 0xC00000A3u32 as i32;
+const DRIVER_IO_TIMEOUT: i32 = 0xC00000B5u32 as i32;
 const POLL_BUDGET: u32 = 2_000_000;
 const MMIO_LIMIT: u64 = 0x10000;
 const USBSTS: u32 = 0x44;
@@ -190,11 +193,25 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         || hal.read_mmio_u32.is_none() || hal.write_mmio_u32.is_none()
         || !dev.has_dma() || !dev.has_interrupts() || !dev.has_bus_master() { return DRIVER_NOT_SUPPORTED; }
     let mut platform = Platform { ext, hal, dev };
-    let Some(caps) = read_capabilities(&mut platform, ext.mmio_length) else { return DRIVER_FAILED; };
+    let Some(caps) = read_capabilities(&mut platform, ext.mmio_length) else { return DRIVER_NOT_SUPPORTED; };
     let slots = (ext.max_slots as u8).min(caps.max_slots);
     let resources = match xhci::start_controller(&mut platform, &caps, slots, POLL_BUDGET) {
         Ok(resources) => resources,
-        Err(_) => return DRIVER_FAILED,
+        Err(xhci::RuntimeStartError::AllocationFailed) => return DRIVER_INSUFFICIENT_RESOURCES,
+        Err(xhci::RuntimeStartError::InvalidAllocation) => return DRIVER_INVALID_PARAMETER,
+        Err(xhci::RuntimeStartError::InterruptRegistrationFailed) => return DRIVER_NOT_SUPPORTED,
+        Err(xhci::RuntimeStartError::InterruptEnableFailed) => return DRIVER_DEVICE_NOT_READY,
+        Err(xhci::RuntimeStartError::Controller(error)) => return match error {
+            xhci::ControllerInitError::ResetTimeout
+            | xhci::ControllerInitError::ControllerDidNotHalt
+            | xhci::ControllerInitError::ControllerDidNotStart => DRIVER_IO_TIMEOUT,
+            xhci::ControllerInitError::BusMasterEnableFailed
+            | xhci::ControllerInitError::RegisterIoFailure => DRIVER_DEVICE_NOT_READY,
+            xhci::ControllerInitError::UnsupportedPageSize
+            | xhci::ControllerInitError::InterruptNotRegistered => DRIVER_NOT_SUPPORTED,
+            xhci::ControllerInitError::InvalidCapabilities
+            | xhci::ControllerInitError::InvalidDmaConfiguration => DRIVER_INVALID_PARAMETER,
+        },
     };
     unsafe { (*ext.runtime.get()).write(resources); }
     ext.ready.store(true, Ordering::Release);
