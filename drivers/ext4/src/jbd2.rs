@@ -123,6 +123,26 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
  Ok(sequence)
 }
 
+/// Full journal recovery entry point. The caller reads the journal inode's
+/// logical block zero into journal_superblock and supplies a mapping for its
+/// extents. After replaying every complete committed transaction, it clears
+/// the recovery-start field and advances the sequence. An incomplete tail is
+/// discarded only after all preceding committed transactions are checkpointed.
+pub fn recover<D:ReplayDevice,M:JournalBlockMap>(
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8],scratch:&mut[u8],payload:&mut[u8],
+)->Result<ReplayReport,Error>{
+ let sb=JournalSuperblock::parse(journal_superblock)?;
+ if !sb.needs_recovery(){return Ok(ReplayReport::default())}
+ let report=replay(d,m,&sb,scratch,payload)?;
+ journal_superblock[28..32].fill(0);
+ journal_superblock[24..28].copy_from_slice(&sb.sequence.wrapping_add(report.transactions_replayed).to_be_bytes());
+ let physical=m.map_journal_block(0).map_err(|_|Error::Io)?;
+ if physical>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
+ d.write_block(physical,journal_superblock).map_err(|_|Error::Io)?;
+ d.flush().map_err(|_|Error::Io)?;
+ Ok(report)
+}
+
 pub trait ReplayDevice{
  fn filesystem_blocks(&self)->u64;
  fn read_block(&mut self,block:u64,out:&mut[u8])->Result<(),()>;
