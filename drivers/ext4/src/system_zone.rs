@@ -12,6 +12,57 @@ impl BlockRange {
 }
 
 #[derive(Clone, Copy)]
+
+/// Validate an external xattr block using a checksum-validated inode image
+/// and this mount's system-zone map. The caller must establish that the inode
+/// is allocated and that the block bitmap marks the xattr block allocated;
+/// this helper handles inode checksum, pointer bounds, protected-zone
+/// exclusion, xattr structure, and metadata_csum when enabled.
+pub fn validate_inode_external_xattr_in_zones(
+    raw_superblock: &[u8],
+    sb: &Superblock,
+    zones: &SystemZoneMap<'_>,
+    inode_number: u32,
+    inode_raw: &[u8],
+    block: &[u8],
+) -> Result<Option<u64>, Error> {
+    if inode_raw.len() < sb.inode_size as usize || block.len() != sb.block_size as usize {
+        return Err(Error::Truncated);
+    }
+    validate_inode_checksum(raw_superblock, inode_number, inode_raw)?;
+    let physical = match xattr::external_xattr_block_pointer(
+        inode_raw, sb.feature_incompat, sb.blocks_count,
+    ) {
+        Ok(Some(block)) => block,
+        Ok(None) => return Ok(None),
+        Err(xattr::XattrError::Truncated) => return Err(Error::Truncated),
+        Err(_) => return Err(Error::InvalidExtentTree),
+    };
+    zones.validate_data_range(physical, 1, sb.blocks_count)?;
+    if zones.is_system_block(physical) {
+        return Err(Error::InvalidExtentTree);
+    }
+    if sb.feature_ro_compat & 0x0400 != 0 {
+        let seed = xattr::external_xattr_checksum_seed(raw_superblock)
+            .map_err(|_| Error::InvalidChecksum)?;
+        xattr::validate_inode_external_xattr_block(
+            inode_raw, sb.feature_incompat, sb.blocks_count, inode_number,
+            seed, physical, block,
+        ).map_err(|e| match e {
+            xattr::XattrError::InvalidChecksum => Error::InvalidChecksum,
+            xattr::XattrError::Truncated => Error::Truncated,
+            _ => Error::InvalidExtentTree,
+        })?;
+    } else {
+        xattr::validate_external_xattr_block(block)
+            .map_err(|e| match e {
+                xattr::XattrError::Truncated => Error::Truncated,
+                _ => Error::InvalidExtentTree,
+            })?;
+    }
+    Ok(Some(physical))
+}
+
 pub struct SystemZoneMap<'a> { ranges: &'a [BlockRange] }
 impl<'a> SystemZoneMap<'a> {
     pub fn new(ranges: &'a [BlockRange]) -> Self { Self { ranges } }
