@@ -164,6 +164,8 @@ jobs:
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib metadata_csum_superblock_is_checked_and_corruption_rejected
       - name: Test ext4 group descriptor and inode metadata checksums
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib ext4_metadata_checksum_tests
+      - name: Test ext4 superblock bitmap extent and directory checksums
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib ext4_metadata_blocks_checksum_tests
       - name: Test GPT partition create, extend, and delete
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib gpt_partition_create_extend_delete_updates_both_crc_protected_copies
       - name: Test GPT partition overlap and bounds rejection
