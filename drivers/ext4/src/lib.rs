@@ -136,6 +136,8 @@ impl<D:BlockDevice> ExtFilesystem<D>{
   device.read_at(SUPERBLOCK_DISK_OFFSET,&mut raw).map_err(|_|Error::Io)?;
   let sb=Superblock::parse(&raw)?;
   validate_superblock_checksum(&raw)?;
+  validate_mount_state(&raw)?;
+  validate_mount_state(&raw)?;
   let end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;
   if end>device.capacity_bytes()||sb.read_only{return Err(Error::UnsupportedFormat)}
   // This restricted writer never changes metadata. It still requires a clean
@@ -201,6 +203,24 @@ impl<D:BlockDevice> ExtFilesystem<D>{
   device.flush().map_err(|_|WriteError::Io)?;
   Ok(written)
  }
+}
+
+const EXT4_ERROR_FS: u16 = 0x0002;
+const EXT4_ORPHAN_FS: u16 = 0x0004;
+
+/// Refuse to expose a volume whose superblock records filesystem errors or
+/// unfinished orphan cleanup. Journal replay alone is not orphan recovery:
+/// the inode/extent/bitmap repairs must be committed before such a mount is
+/// considered safe. A dirty-but-error-free journaled volume may proceed to
+/// the explicit recovery path.
+pub fn validate_mount_state(raw: &[u8]) -> Result<(), Error> {
+    if raw.len() < SUPERBLOCK_BYTES { return Err(Error::Truncated); }
+    let state = u16at(raw, 58)?;
+    let orphan_head = u32at(raw, 232)?;
+    if state & (EXT4_ERROR_FS | EXT4_ORPHAN_FS) != 0 || orphan_head != 0 {
+        return Err(Error::UnsupportedFormat);
+    }
+    Ok(())
 }
 
 pub fn read_superblock<D:ReadOnlyBlockDevice>(dev:&mut D)->Result<Superblock,Error>{let end=SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64).ok_or(Error::OutOfRange)?;if dev.capacity_bytes()<end{return Err(Error::OutOfRange)}let mut b=[0u8;SUPERBLOCK_BYTES];dev.read_at(SUPERBLOCK_DISK_OFFSET,&mut b).map_err(|_|Error::Io)?;let sb=Superblock::parse(&b)?;validate_superblock_checksum(&b)?;let fs_end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;if fs_end>dev.capacity_bytes(){return Err(Error::OutOfRange)}Ok(sb)}
@@ -1674,5 +1694,37 @@ mod ntstatus_adapter_tests {
         assert_eq!(error_to_ntstatus(Error::UnsupportedIncompatFeature), STATUS_NOT_IMPLEMENTED);
         assert_eq!(error_to_ntstatus(Error::Io), STATUS_UNSUCCESSFUL);
         assert_eq!(error_to_ntstatus(Error::InvalidExtentTree), STATUS_INVALID_PARAMETER);
+    }
+}
+
+
+#[cfg(test)]
+mod mount_state_validation_tests {
+    use super::*;
+
+    fn clean_superblock() -> [u8; SUPERBLOCK_BYTES] {
+        let mut raw = [0u8; SUPERBLOCK_BYTES];
+        raw[58..60].copy_from_slice(&1u16.to_le_bytes());
+        raw
+    }
+
+    #[test]
+    fn rejects_error_and_orphan_state_before_exposing_mount() {
+        let mut raw = clean_superblock();
+        assert_eq!(validate_mount_state(&raw), Ok(()));
+        raw[58..60].copy_from_slice(&2u16.to_le_bytes());
+        assert_eq!(validate_mount_state(&raw), Err(Error::UnsupportedFormat));
+        raw[58..60].copy_from_slice(&4u16.to_le_bytes());
+        assert_eq!(validate_mount_state(&raw), Err(Error::UnsupportedFormat));
+        raw[58..60].copy_from_slice(&1u16.to_le_bytes());
+        raw[232..236].copy_from_slice(&12u32.to_le_bytes());
+        assert_eq!(validate_mount_state(&raw), Err(Error::UnsupportedFormat));
+    }
+
+    #[test]
+    fn permits_dirty_but_error_free_volume_for_explicit_journal_recovery() {
+        let mut raw = clean_superblock();
+        raw[58..60].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(validate_mount_state(&raw), Ok(()));
     }
 }
