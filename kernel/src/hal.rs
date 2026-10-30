@@ -892,14 +892,17 @@ unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->Dri
 /// unmasking remains gated until PnP binds a validated ACPI I/O-APIC route.
 pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable {
     let dma_ready=crate::dma::iommu::available();
+    let irq_ready=DEVICE_DPC_QUEUE_HOOK.load(Ordering::Acquire)!=0
+        &&DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire)!=0
+        &&DEVICE_DPC_INIT_HOOK.load(Ordering::Acquire)!=0;
     cognacos_hal_contract::DeviceServiceTable {
         size:core::mem::size_of::<cognacos_hal_contract::DeviceServiceTable>() as u32,
         version:cognacos_hal_contract::DEVICE_SERVICES_VERSION,
         allocate_dma:if dma_ready {Some(service_allocate_dma)} else {None},
         free_dma:if dma_ready {Some(service_free_dma)} else {None},
-        register_interrupt:Some(service_register_interrupt),
-        unregister_interrupt:Some(service_unregister_interrupt),
-        set_interrupt_enabled:Some(service_set_interrupt_enabled),
+        register_interrupt:if irq_ready {Some(service_register_interrupt)} else {None},
+        unregister_interrupt:if irq_ready {Some(service_unregister_interrupt)} else {None},
+        set_interrupt_enabled:if irq_ready {Some(service_set_interrupt_enabled)} else {None},
     }
 }
 
@@ -919,13 +922,14 @@ mod driver_service_publication_tests {
         assert!(table.set_irql.is_none());
     }
     #[test]
-    fn device_table_publishes_interrupt_services_but_dma_remains_iommu_gated() {
+    fn device_table_does_not_advertise_interrupts_before_executive_hooks_exist() {
         let table=driver_device_service_table();
         assert!(table.compatible());
         assert!(!table.has_dma());
-        assert!(table.has_interrupts());
-        assert!(table.register_interrupt.is_some());
-        assert!(table.unregister_interrupt.is_some());
-        assert!(table.set_interrupt_enabled.is_some());
+        if DEVICE_DPC_QUEUE_HOOK.load(Ordering::Acquire)==0 {
+            assert!(!table.has_interrupts());
+        } else {
+            assert!(table.has_interrupts());
+        }
     }
 }
