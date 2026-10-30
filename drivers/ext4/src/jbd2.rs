@@ -176,6 +176,42 @@ pub fn commit_ordered_with_revokes_and_uuid<D:ReplayDevice,M:JournalBlockMap>(
  for (target,data) in metadata_targets.iter().zip(metadata_data.iter()){
   if *target>=d.filesystem_blocks()||data.len()!=bs||(!sb.block_count_64&&*target>u32::MAX as u64){return Err(Error::OutOfRange)}
  }
+ // A block may occur in exactly one transaction class. Reject duplicate
+ // metadata tags, duplicate ordered writes, duplicate revokes, and all
+ // cross-class aliases before the first device write.
+ for i in 0..metadata_targets.len(){
+  if metadata_targets[..i].contains(&metadata_targets[i])
+   || ordered_targets.contains(&metadata_targets[i])
+   || revoked_targets.contains(&metadata_targets[i]) { return Err(Error::InvalidTag); }
+ }
+ for i in 0..ordered_targets.len(){
+  if ordered_targets[..i].contains(&ordered_targets[i])
+   || revoked_targets.contains(&ordered_targets[i]) { return Err(Error::InvalidTag); }
+ }
+ for i in 0..revoked_targets.len(){
+  if revoked_targets[..i].contains(&revoked_targets[i]) { return Err(Error::InvalidRevoke); }
+ }
+ // Preflight every physical journal block, including the journal superblock.
+ // A malformed extent map must not let log writes overwrite home metadata,
+ // ordered data, revoked blocks, or the journal superblock itself.
+ let sb_phys=m.map_journal_block(0).map_err(|_|Error::Io)?;
+ if sb_phys>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
+ let mut logical=sb.first;
+ for slot in 0..required {
+  let physical=m.map_journal_block(logical).map_err(|_|Error::Io)?;
+  if physical>=d.filesystem_blocks() || physical==sb_phys
+   || metadata_targets.contains(&physical) || ordered_targets.contains(&physical)
+   || revoked_targets.contains(&physical) { return Err(Error::InvalidTag); }
+  // Journal logical blocks must map one-to-one within this transaction.
+  let mut prior=sb.first;
+  for _ in 0..slot {
+   if m.map_journal_block(prior).map_err(|_|Error::Io)?==physical {
+    return Err(Error::InvalidTag);
+   }
+   prior=next_log(&sb,prior);
+  }
+  logical=next_log(&sb,logical);
+ }
  // Ordered data is deliberately written and flushed before any metadata log
  // record can become committed.
  for (target,data) in ordered_targets.iter().zip(ordered_data.iter()){
@@ -188,8 +224,6 @@ pub fn commit_ordered_with_revokes_and_uuid<D:ReplayDevice,M:JournalBlockMap>(
  // pre-commit log is detected as incomplete and must never be replayed.
  journal_superblock[28..32].copy_from_slice(&first.to_be_bytes());
  update_superblock_checksum(journal_superblock,sb.checksum_mode)?;
- let sb_phys=m.map_journal_block(0).map_err(|_|Error::Io)?;
- if sb_phys>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
  d.write_block(sb_phys,journal_superblock).map_err(|_|Error::Io)?;
  d.flush().map_err(|_|Error::Io)?;
  descriptor.fill(0);
