@@ -330,14 +330,31 @@ pub unsafe extern "system" fn LdrLoadDll(
 
     #[cfg(target_os = "windows")]
     {
-    let mut wide_name = [0u16; MAX_PATH_UNITS];
-    for (index, unit) in units.iter().copied().enumerate() { wide_name[index] = unit; }
-    wide_name[units.len()] = 0;
-    let mut generated_path: *mut u16 = ptr::null_mut();
-    let mut unknown_path: *mut u16 = ptr::null_mut();
-    let search_path = if dll_path.is_null() {
-        let status = unsafe { super::search::LdrGetDllPath(wide_name.as_ptr(), 0, &mut generated_path, &mut unknown_path) };
-        if status < 0 { return status; }
+    // LdrLoadDll's optional DllPath is a caller-supplied semicolon-delimited
+    // UTF-16 search path. When it is null, let the kernel use its trusted
+    // System32 fallback; do not dereference PEB.ProcessParameters here because
+    // early processes may not yet have a mapped process-parameters block.
+    let mut path_list = [0u8; 4096];
+    let mut path_len = 0usize;
+    if !dll_path.is_null() {
+        let mut terminated = false;
+        for index in 0..path_list.len() - 1 {
+            let unit = unsafe { ptr::read_unaligned(dll_path.add(index)) };
+            if unit == 0 { terminated = true; break; }
+            if unit > 0x7f { return STATUS_INVALID_PARAMETER; }
+            path_list[index] = unit as u8;
+            path_len += 1;
+        }
+        if !terminated { return STATUS_INVALID_PARAMETER; }
+    }
+    let mut response = LoadDllResponse { base:0, entry:0, slot:0, generation:0, already_loaded:0, path_len:0, path:[0;260] };
+    let status = unsafe {
+        crate::native::syscall_stubs::cognacos_nt_load_dll(
+            module_name.as_ptr(), if path_len == 0 { ptr::null() } else { path_list.as_ptr() },
+            (&mut response as *mut LoadDllResponse).cast(),
+        )
+    };
+    if status < 0 { return status; }
         generated_path as *const u16
     } else { dll_path };
     if search_path.is_null() { return STATUS_INVALID_PARAMETER; }
