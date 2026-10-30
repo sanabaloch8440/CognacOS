@@ -14,7 +14,7 @@ const DX_NODE_ENTRIES_OFFSET: usize = 8;
 const DX_ENTRY_SIZE: usize = 8;
 const DX_TAIL_SIZE: usize = 8;
 const DX_BLOCK_MASK: u32 = 0x0fff_ffff;
-const MAX_DX_INDIRECT_LEVELS: u8 = 2;
+const MAX_DX_INDIRECT_LEVELS: u8 = 1;
 
 #[inline]
 fn le16(b: &[u8], o: usize) -> Result<u16, Error> {
@@ -288,7 +288,7 @@ pub fn validate_directory_leaf_checksum(
         return Err(Error::InvalidDirectoryEntry);
     }
     let stored = le32(block, tail + 8)?;
-    let calculated = crc32c_update(inode_checksum_seed, &block[..tail]);
+    let calculated = crc32c_update(inode_checksum_seed, &block[..block.len() - 4]);
     if stored == calculated { Ok(()) } else { Err(Error::InvalidChecksum) }
 }
 
@@ -534,7 +534,7 @@ mod tests {
         let leaf = &mut fixture.blocks[3];
         leaf[1016..1018].copy_from_slice(&12u16.to_le_bytes());
         leaf[1019] = 0xde;
-        let leaf_crc = crc32c_update(seed, &leaf[..1012]);
+        let leaf_crc = crc32c_update(seed, &leaf[..1020]);
         leaf[1020..1024].copy_from_slice(&leaf_crc.to_le_bytes());
         assert_eq!(lookup_htree_leaf_checked(&mut fixture, &root, 4, 0x5000, true, seed, &mut scratch).unwrap().leaf_block, 3);
         fixture.blocks[3][100] ^= 1;
@@ -586,7 +586,7 @@ mod tests {
         let tail = 1012;
         leaf[tail + 4..tail + 6].copy_from_slice(&12u16.to_le_bytes());
         leaf[tail + 7] = 0xde;
-        let crc = crc32c_update(seed, &leaf[..tail]);
+        let crc = crc32c_update(seed, &leaf[..1020]);
         leaf[tail + 8..tail + 12].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(validate_directory_leaf_checksum(&leaf, seed, true), Ok(()));
         leaf[100] ^= 1;
