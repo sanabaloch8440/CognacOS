@@ -628,6 +628,129 @@ pub fn update_inode_checksum(
     Ok(())
 }
 
+
+fn ext4_inode_checksum_seed(
+    superblock: &[u8], inode_number: u32, generation: u32,
+) -> Result<u32,Error> {
+    let seed=ext4_metadata_checksum_seed(superblock)?;
+    let crc=crc32c(seed,&inode_number.to_le_bytes());
+    Ok(crc32c(crc,&generation.to_le_bytes()))
+}
+
+/// Recalculate the ext4 superblock checksum after a caller has changed fields.
+pub fn update_superblock_checksum(raw: &mut [u8]) -> Result<(),Error> {
+    if raw.len()<SUPERBLOCK_BYTES { return Err(Error::Truncated); }
+    if u32at(raw,100)? & RO_COMPAT_METADATA_CSUM == 0 { return Ok(()); }
+    if raw[373]!=1 { return Err(Error::UnsupportedFormat); }
+    let checksum=crc32c(!0u32,&raw[..1020]);
+    raw[1020..1024].copy_from_slice(&checksum.to_le_bytes());
+    Ok(())
+}
+
+fn metadata_bitmap_checksum(superblock: &[u8], bitmap: &[u8]) -> Result<u32,Error> {
+    let seed=ext4_metadata_checksum_seed(superblock)?;
+    Ok(crc32c(seed,bitmap))
+}
+fn read_bitmap_checksum(descriptor: &[u8], low_offset: usize, high_offset: usize) -> Result<u32,Error> {
+    let low=u16at(descriptor,low_offset)? as u32;
+    if descriptor.len()>=64 {
+        Ok(low | ((u16at(descriptor,high_offset)? as u32)<<16))
+    } else { Ok(low) }
+}
+fn write_bitmap_checksum(
+    descriptor: &mut [u8], low_offset: usize, high_offset: usize, checksum: u32,
+) -> Result<(),Error> {
+    let low=descriptor.get_mut(low_offset..low_offset+2).ok_or(Error::Truncated)?;
+    low.copy_from_slice(&(checksum as u16).to_le_bytes());
+    if descriptor.len()>=64 {
+        let high=descriptor.get_mut(high_offset..high_offset+2).ok_or(Error::Truncated)?;
+        high.copy_from_slice(&((checksum>>16) as u16).to_le_bytes());
+    }
+    Ok(())
+}
+pub fn update_block_bitmap_checksum(
+    superblock: &[u8], descriptor: &mut [u8], bitmap: &[u8],
+) -> Result<(),Error> {
+    write_bitmap_checksum(descriptor,24,56,metadata_bitmap_checksum(superblock,bitmap)?)
+}
+pub fn validate_block_bitmap_checksum(
+    superblock: &[u8], descriptor: &[u8], bitmap: &[u8],
+) -> Result<(),Error> {
+    if read_bitmap_checksum(descriptor,24,56)?==metadata_bitmap_checksum(superblock,bitmap)? {
+        Ok(())
+    } else { Err(Error::InvalidChecksum) }
+}
+pub fn update_inode_bitmap_checksum(
+    superblock: &[u8], descriptor: &mut [u8], bitmap: &[u8],
+) -> Result<(),Error> {
+    write_bitmap_checksum(descriptor,26,58,metadata_bitmap_checksum(superblock,bitmap)?)
+}
+pub fn validate_inode_bitmap_checksum(
+    superblock: &[u8], descriptor: &[u8], bitmap: &[u8],
+) -> Result<(),Error> {
+    if read_bitmap_checksum(descriptor,26,58)?==metadata_bitmap_checksum(superblock,bitmap)? {
+        Ok(())
+    } else { Err(Error::InvalidChecksum) }
+}
+
+/// Validate/update the checksum tail on an external extent-tree block.
+pub fn validate_extent_block_checksum(
+    superblock: &[u8], inode_number: u32, generation: u32, block: &[u8],
+) -> Result<(),Error> {
+    if block.len()<16 || u16at(block,0)?!=EXTENT_MAGIC { return Err(Error::InvalidExtentTree); }
+    let max=u16at(block,4)? as usize;
+    let tail=EXTENT_HEADER_SIZE.checked_add(max.checked_mul(EXTENT_ENTRY_SIZE).ok_or(Error::OutOfRange)?)
+        .ok_or(Error::OutOfRange)?;
+    if tail.checked_add(4).ok_or(Error::OutOfRange)?!=block.len() { return Err(Error::InvalidExtentTree); }
+    let seed=ext4_inode_checksum_seed(superblock,inode_number,generation)?;
+    let calculated=crc32c(seed,&block[..tail]);
+    if u32at(block,tail)?==calculated { Ok(()) } else { Err(Error::InvalidChecksum) }
+}
+pub fn update_extent_block_checksum(
+    superblock: &[u8], inode_number: u32, generation: u32, block: &mut [u8],
+) -> Result<(),Error> {
+    if block.len()<16 || u16at(block,0)?!=EXTENT_MAGIC { return Err(Error::InvalidExtentTree); }
+    let max=u16at(block,4)? as usize;
+    let tail=EXTENT_HEADER_SIZE.checked_add(max.checked_mul(EXTENT_ENTRY_SIZE).ok_or(Error::OutOfRange)?)
+        .ok_or(Error::OutOfRange)?;
+    if tail.checked_add(4).ok_or(Error::OutOfRange)?!=block.len() { return Err(Error::InvalidExtentTree); }
+    let seed=ext4_inode_checksum_seed(superblock,inode_number,generation)?;
+    let checksum=crc32c(seed,&block[..tail]);
+    block[tail..tail+4].copy_from_slice(&checksum.to_le_bytes());
+    Ok(())
+}
+
+/// Validate/update the 12-byte ext4 directory checksum tail. The block must
+/// end in the reserved-zero/rec_len=12/file_type=0xDE tail record.
+pub fn validate_directory_block_checksum(
+    superblock: &[u8], inode_number: u32, generation: u32, block: &[u8],
+) -> Result<(),Error> {
+    if block.len()<12 { return Err(Error::Truncated); }
+    let tail=block.len()-12;
+    if u32at(block,tail)?!=0 || u16at(block,tail+4)?!=12
+        || block[tail+6]!=0 || block[tail+7]!=0xde {
+        return Err(Error::InvalidDirectoryEntry);
+    }
+    let seed=ext4_inode_checksum_seed(superblock,inode_number,generation)?;
+    let calculated=crc32c(seed,&block[..block.len()-4]);
+    if u32at(block,block.len()-4)?==calculated { Ok(()) } else { Err(Error::InvalidChecksum) }
+}
+pub fn update_directory_block_checksum(
+    superblock: &[u8], inode_number: u32, generation: u32, block: &mut [u8],
+) -> Result<(),Error> {
+    if block.len()<12 { return Err(Error::Truncated); }
+    let tail=block.len()-12;
+    if u32at(block,tail)?!=0 || u16at(block,tail+4)?!=12
+        || block[tail+6]!=0 || block[tail+7]!=0xde {
+        return Err(Error::InvalidDirectoryEntry);
+    }
+    let seed=ext4_inode_checksum_seed(superblock,inode_number,generation)?;
+    let checksum=crc32c(seed,&block[..block.len()-4]);
+    let end=block.len();
+    block[end-4..end].copy_from_slice(&checksum.to_le_bytes());
+    Ok(())
+}
+
 /// Validated GPT layout used by the mutation routines. The entry array is
 /// intentionally capped at 128 x 128-byte entries to bound early-boot memory.
 #[derive(Clone, Copy)]
@@ -1094,6 +1217,54 @@ mod ext4_metadata_checksum_tests {
         small[100..104].copy_from_slice(&9u32.to_le_bytes());
         update_inode_checksum(&sb,2,&mut small).unwrap();
         assert_eq!(validate_inode_checksum(&sb,2,&small),Ok(()));
+    }
+}
+
+
+#[cfg(test)]
+mod ext4_metadata_blocks_checksum_tests {
+    use super::*;
+    fn sb()->[u8;SUPERBLOCK_BYTES] {
+        let mut b=[0u8;SUPERBLOCK_BYTES];
+        b[96..100].copy_from_slice(&INCOMPAT_CSUM_SEED.to_le_bytes());
+        b[100..104].copy_from_slice(&RO_COMPAT_METADATA_CSUM.to_le_bytes());
+        b[373]=1;
+        b[EXT4_SB_CHECKSUM_SEED_OFFSET..EXT4_SB_CHECKSUM_SEED_OFFSET+4]
+            .copy_from_slice(&0x89ab_cdefu32.to_le_bytes());
+        b
+    }
+    #[test]
+    fn superblock_and_bitmap_checksums_update_and_detect_corruption() {
+        let mut superblock=sb();
+        update_superblock_checksum(&mut superblock).unwrap();
+        assert_eq!(validate_superblock_checksum(&superblock),Ok(()));
+        let mut gd=[0u8;64];
+        let bitmap=[0x55u8;32];
+        update_block_bitmap_checksum(&superblock,&mut gd,&bitmap).unwrap();
+        update_inode_bitmap_checksum(&superblock,&mut gd,&bitmap).unwrap();
+        assert_eq!(validate_block_bitmap_checksum(&superblock,&gd,&bitmap),Ok(()));
+        assert_eq!(validate_inode_bitmap_checksum(&superblock,&gd,&bitmap),Ok(()));
+        let mut corrupt=bitmap; corrupt[0]^=1;
+        assert_eq!(validate_block_bitmap_checksum(&superblock,&gd,&corrupt),Err(Error::InvalidChecksum));
+    }
+    #[test]
+    fn extent_and_directory_block_checksums_round_trip() {
+        let superblock=sb();
+        let mut extent=[0u8;1024];
+        extent[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        extent[4..6].copy_from_slice(&((1024-16)/12 as usize as u16).to_le_bytes());
+        // Use the canonical capacity value for a 1 KiB extent block.
+        extent[4..6].copy_from_slice(&84u16.to_le_bytes());
+        update_extent_block_checksum(&superblock,7,9,&mut extent).unwrap();
+        assert_eq!(validate_extent_block_checksum(&superblock,7,9,&extent),Ok(()));
+        let mut directory=[0u8;1024];
+        let tail=1012;
+        directory[tail+4..tail+6].copy_from_slice(&12u16.to_le_bytes());
+        directory[tail+7]=0xde;
+        update_directory_block_checksum(&superblock,7,9,&mut directory).unwrap();
+        assert_eq!(validate_directory_block_checksum(&superblock,7,9,&directory),Ok(()));
+        directory[3]^=1;
+        assert_eq!(validate_directory_block_checksum(&superblock,7,9,&directory),Err(Error::InvalidChecksum));
     }
 }
 
