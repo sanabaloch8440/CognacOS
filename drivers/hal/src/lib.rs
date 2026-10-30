@@ -81,7 +81,7 @@ pub struct DeviceServiceTable{
  pub size:u32,pub version:u32,
  pub allocate_dma:Option<AllocateDma>,pub free_dma:Option<FreeDma>,
  pub register_interrupt:Option<RegisterInterrupt>,pub unregister_interrupt:Option<UnregisterInterrupt>,
- pub set_interrupt_enabled:Option<SetInterruptEnabled>,
+ pub set_interrupt_enabled:Option<SetInterruptEnabled>,pub set_bus_master:Option<SetBusMaster>,
 }
 impl DeviceServiceTable{
  pub const fn compatible(&self)->bool{self.size as usize>=core::mem::size_of::<Self>()&&self.version==DEVICE_SERVICES_VERSION}
