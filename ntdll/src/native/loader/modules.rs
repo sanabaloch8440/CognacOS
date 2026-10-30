@@ -351,7 +351,14 @@ pub unsafe extern "system" fn LdrLoadDll(
     };
     if status < 0 { return status; }
     if response.base == 0 || response.path_len as usize > response.path.len() { return STATUS_INVALID_PARAMETER; }
-    if unsafe { publish_peb_entry(&response, module_name) }.is_null() { return 0xC000_0017u32 as i32; }
+    if unsafe { publish_peb_entry(&response, module_name) }.is_null() {
+        if response.already_loaded == 0 {
+            let _ = unsafe { crate::native::syscall_stubs::cognacos_nt_complete_dll_init(
+                module_name.as_ptr(), response.slot, response.generation, 0,
+            ) };
+        }
+        return 0xC000_0017u32 as i32;
+    }
     if response.already_loaded == 0 {
         if response.entry != 0 {
             type DllEntry = unsafe extern "system" fn(PVOID, u32, PVOID) -> BOOLEAN;
