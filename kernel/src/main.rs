@@ -1842,7 +1842,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         Ok(_) => serial_write(b"Scheduled beep.sys test worker.\r\n"),
                         Err(_) => serial_write(b"Failed to schedule beep.sys test worker.\r\n"),
                     }
-                    serial_write(b"Local APIC timer enabled after AP startup/self-tests; timer-driven preemption enabled.\r\n");
+                    serial_write(b"Local APIC timers enabled; BSP timer preemption validated; AP timer preemption remains disabled pending per-CPU self-tests.\r\n");
                     serial_write(b"cognacos-kd> type help for debugger commands\r\n");
                     loop {
                         crate::debug_console::poll();
