@@ -494,6 +494,47 @@ pub fn iterate_htree_directory<R: DirectoryBlockReader, F: FnMut(DirectoryEntryV
     }
 }
 
+/// VFS-ready indexed lookup adapter. It derives the directory hash seed,
+/// signed/unsigned mode and inode checksum seed from the validated superblock.
+pub fn lookup_htree_name_from_superblock<R:DirectoryBlockReader>(
+ reader:&mut R,superblock:&[u8],directory_inode:u32,generation:u32,root:&[u8],
+ directory_blocks:u32,total_inodes:u32,disk_name:&[u8],siphash_key:Option<[u64;2]>,
+ scratch:&mut[u8],
+)->Result<u32,Error>{
+ crate::validate_superblock_checksum(superblock)?;
+ if superblock.len()<1024{return Err(Error::Truncated)}
+ let hash_seed=crate::hash::ext4_directory_hash_seed(superblock)?;
+ let hash_unsigned=crate::hash::ext4_hash_unsigned(superblock)?;
+ let ro=u32::from_le_bytes(superblock[100..104].try_into().map_err(|_|Error::Truncated)?);
+ let metadata_csum=ro&0x0400!=0;
+ let inode_seed=if metadata_csum{
+  let fs_seed=crate::ext4_metadata_checksum_seed(superblock)?;
+  crate::checksum::ext4_inode_csum_seed(fs_seed,directory_inode,generation)
+ }else{0};
+ lookup_htree_name(reader,root,directory_blocks,total_inodes,disk_name,hash_seed,
+  siphash_key,hash_unsigned,metadata_csum,inode_seed,scratch)
+}
+
+/// VFS-ready indexed readdir adapter; returns entries with hashes for the VFS
+/// to order and translate into stable directory cookies.
+pub fn iterate_htree_directory_from_superblock<R:DirectoryBlockReader,F:FnMut(DirectoryEntryView<'_>)->Result<bool,Error>>(
+ reader:&mut R,superblock:&[u8],directory_inode:u32,generation:u32,root:&[u8],
+ directory_blocks:u32,total_inodes:u32,siphash_key:Option<[u64;2]>,scratch:&mut[u8],visitor:F,
+)->Result<(),Error>{
+ crate::validate_superblock_checksum(superblock)?;
+ if superblock.len()<1024{return Err(Error::Truncated)}
+ let hash_seed=crate::hash::ext4_directory_hash_seed(superblock)?;
+ let hash_unsigned=crate::hash::ext4_hash_unsigned(superblock)?;
+ let ro=u32::from_le_bytes(superblock[100..104].try_into().map_err(|_|Error::Truncated)?);
+ let metadata_csum=ro&0x0400!=0;
+ let inode_seed=if metadata_csum{
+  let fs_seed=crate::ext4_metadata_checksum_seed(superblock)?;
+  crate::checksum::ext4_inode_csum_seed(fs_seed,directory_inode,generation)
+ }else{0};
+ iterate_htree_directory(reader,root,directory_blocks,total_inodes,hash_seed,
+  siphash_key,hash_unsigned,metadata_csum,inode_seed,scratch,visitor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
