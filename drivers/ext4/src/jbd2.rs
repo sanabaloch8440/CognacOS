@@ -2,7 +2,6 @@
 //! Supports legacy JBD2 tags with optional 64-bit block numbers and revoke
 //! records. Journals requiring checksum-v2/v3, async commit, or fast commits
 //! are rejected because their integrity semantics are not implemented here.
-#![no_std]
 pub const JBD2_MAGIC:u32=0xc03b3998;
 pub const JBD2_SUPERBLOCK_V2:u32=4;
 pub const JBD2_DESCRIPTOR_BLOCK:u32=1;
