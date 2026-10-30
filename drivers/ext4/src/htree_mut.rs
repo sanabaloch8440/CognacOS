@@ -127,4 +127,20 @@ mod tests{
   assert_eq!(dx_checksum(&a,off,limit,2,seed).unwrap(),u32at(&a,off+limit*8+4).unwrap());
   assert_eq!(dx_checksum(&b,off,limit,2,seed).unwrap(),u32at(&b,off+limit*8+4).unwrap());
  }
+ #[test]fn collision_lookup_crosses_leaf_and_readdir_enumerates_all_indexed_leaves(){
+  struct Reader{blocks:[[u8;1024];4]}
+  impl crate::htree::DirectoryBlockReader for Reader{fn read_directory_block(&mut self,n:u32,out:&mut[u8])->Result<(),Error>{let src=self.blocks.get(n as usize).ok_or(Error::OutOfRange)?;if out.len()!=1024{return Err(Error::InvalidGeometry)}out.copy_from_slice(src);Ok(())}}
+  let inode_seed=crate::ext4_inode_checksum_seed(0x7654_3210,2,9).unwrap();
+  let hash_seed=[0x1111_1111,0x2222_2222,0x3333_3333,0x4444_4444];let wanted=b"collision-target";
+  let h=hash_directory_name(1,hash_seed,wanted,None).unwrap();let mut root=[0u8;1024];
+  put32(&mut root,0,2).unwrap();put16(&mut root,4,12).unwrap();root[6]=1;root[8]=b'.';
+  put32(&mut root,12,2).unwrap();put16(&mut root,16,1012).unwrap();root[18]=2;root[20..22].copy_from_slice(b"..");
+  root[28]=1;root[29]=8;let limit=(1024-40)/8;put16(&mut root,32,limit as u16).unwrap();put16(&mut root,34,2).unwrap();
+  put32(&mut root,36,2).unwrap();put32(&mut root,40,h.major|1).unwrap();put32(&mut root,44,3).unwrap();update_dx(&mut root,32,limit,2,true,inode_seed).unwrap();
+  let mut reader=Reader{blocks:[[0;1024];4]};
+  for (n,ino,name) in [(2,21,b"other-entry".as_slice()),(3,22,wanted.as_slice())]{let b=&mut reader.blocks[n];put32(b,0,ino).unwrap();put16(b,4,1012).unwrap();b[6]=name.len() as u8;b[7]=1;b[8..8+name.len()].copy_from_slice(name);write_leaf_tail(b,inode_seed).unwrap();}
+  let mut scratch=[0u8;1024];assert_eq!(crate::htree::lookup_htree_name(&mut reader,&root,4,100,wanted,hash_seed,None,true,inode_seed,&mut scratch),Ok(22));
+  let mut seen=0;crate::htree::iterate_htree_directory(&mut reader,&root,4,100,hash_seed,None,true,inode_seed,&mut scratch,|entry|{seen+=1;assert!(entry.inode==21||entry.inode==22);Ok(true)}).unwrap();assert_eq!(seen,2);
+ }
+
 }
