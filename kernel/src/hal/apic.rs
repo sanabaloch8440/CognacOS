@@ -587,6 +587,8 @@ pub unsafe fn dispatch_external_interrupt(vector: u8, frame: *mut core::ffi::c_v
     if let Some(base) = local_apic_base() {
         unsafe { local_apic_eoi(base); }
     }
+    // Run deferred device work only after ISR return and APIC acknowledgement.
+    crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();
     handled
 }
 
