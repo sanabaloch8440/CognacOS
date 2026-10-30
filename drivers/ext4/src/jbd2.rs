@@ -133,8 +133,12 @@ pub trait ReplayDevice{
 pub trait JournalBlockMap{fn map_journal_block(&mut self,logical:u32)->Result<u64,()>;}
 impl<F:FnMut(u32)->Result<u64,()>> JournalBlockMap for F{fn map_journal_block(&mut self,n:u32)->Result<u64,()>{self(n)}}
 #[derive(Clone,Copy)]
-struct Tag{target:u64,journal_data:u32,flags:u32}
-impl Tag{const EMPTY:Self=Self{target:0,journal_data:0,flags:0};}
+struct Tag{target:u64,journal_data:u32,flags:u32,sequence:u32}
+impl Tag{const EMPTY:Self=Self{target:0,journal_data:0,flags:0,sequence:0};}
+#[derive(Clone,Copy)]
+struct Revoke{target:u64,sequence:u32}
+impl Revoke{const EMPTY:Self=Self{target:0,sequence:0};}
+fn sequence_at_or_after(a:u32,b:u32)->bool{(a.wrapping_sub(b) as i32)>=0}
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct ReplayReport{pub transactions_seen:u32,pub transactions_replayed:u32,pub blocks_replayed:u32,pub blocks_revoked:u32,pub stopped_on_incomplete:bool}
 fn next_log(sb:&JournalSuperblock,at:u32)->u32{let n=at+1;if n>=sb.max_len{sb.first}else{n}}
@@ -148,11 +152,11 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
  let bs=sb.block_size as usize;if scratch.len()!=bs||payload.len()!=bs{return Err(Error::NoScratch)}
  if !sb.needs_recovery(){return Ok(ReplayReport::default())}
  let mut report=ReplayReport::default();let mut cursor=sb.start;let mut expected=sb.sequence;
- let mut tags=[Tag::EMPTY;MAX_TRANSACTION_TAGS];let mut revokes=[0u64;MAX_TRANSACTION_REVOKES];let mut guard=0u32;
+ let mut tags=[Tag::EMPTY;MAX_TRANSACTION_TAGS];let mut tag_count=0usize;let mut revokes=[Revoke::EMPTY;MAX_TRANSACTION_REVOKES];let mut revoke_count=0usize;let mut guard=0u32;
  while guard<sb.max_len{
   guard+=1;read_journal(d,m,cursor,scratch)?;
   if be32(scratch,0)?!=JBD2_MAGIC||be32(scratch,8)?!=expected{report.stopped_on_incomplete=true;break}
-  let mut tag_count=0usize;let mut revoke_count=0usize;let mut tx_cursor=cursor;let mut committed=false;let mut malformed=false;let mut tx_guard=0u32;
+  let mut tx_cursor=cursor;let mut committed=false;let mut malformed=false;let mut tx_guard=0u32;
   while tx_guard<sb.max_len{
    tx_guard+=1;read_journal(d,m,tx_cursor,scratch)?;
    if be32(scratch,0)?!=JBD2_MAGIC||be32(scratch,8)?!=expected{malformed=true;break}
@@ -165,7 +169,7 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
       if sb.block_count_64{target|=(be32(scratch,off)? as u64)<<32;off=off.checked_add(4).ok_or(Error::OutOfRange)?}
       if flags&TAG_SAME_UUID==0{off=off.checked_add(16).ok_or(Error::OutOfRange)?;if off>bs{return Err(Error::InvalidTag)}}
       if target>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
-      let data_block=next_log(sb,tx_cursor);tags[tag_count]=Tag{target,journal_data:data_block,flags};tag_count+=1;
+      let data_block=next_log(sb,tx_cursor);tags[tag_count]=Tag{target,journal_data:data_block,flags,sequence:expected};tag_count+=1;
       if flags&TAG_DELETED==0{tx_cursor=data_block;read_journal(d,m,tx_cursor,payload)?;tx_cursor=next_log(sb,tx_cursor)}
       if flags&TAG_LAST!=0{break}
       if off>bs{return Err(Error::InvalidTag)}
@@ -175,7 +179,7 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
      let count=be32(scratch,12)? as usize;let width=if sb.block_count_64{8}else{4};
      if count<16||count>bs||(count-16)%width!=0{return Err(Error::InvalidRevoke)}
      let n=(count-16)/width;if revoke_count.checked_add(n).ok_or(Error::OutOfRange)?>MAX_TRANSACTION_REVOKES{return Err(Error::TransactionTooLarge)}
-     for i in 0..n{let o=16+i*width;let block=if width==8{((be32(scratch,o+4)? as u64)<<32)|(be32(scratch,o)? as u64)}else{be32(scratch,o)? as u64};if block>=d.filesystem_blocks(){return Err(Error::OutOfRange)}revokes[revoke_count]=block;revoke_count+=1}
+     for i in 0..n{let o=16+i*width;let block=if width==8{((be32(scratch,o+4)? as u64)<<32)|(be32(scratch,o)? as u64)}else{be32(scratch,o)? as u64};if block>=d.filesystem_blocks(){return Err(Error::OutOfRange)}revokes[revoke_count]=Revoke{target:block,sequence:expected};revoke_count+=1}
      tx_cursor=next_log(sb,tx_cursor);
     }
     JBD2_COMMIT_BLOCK=>{committed=true;tx_cursor=next_log(sb,tx_cursor);break}
@@ -183,14 +187,17 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
    }
   }
   report.transactions_seen+=1;if malformed||!committed{report.stopped_on_incomplete=true;break}
-  for tag in tags[..tag_count].iter().copied(){
-   if tag.flags&TAG_DELETED!=0{continue}
-   if revokes[..revoke_count].iter().any(|b|*b==tag.target){report.blocks_revoked+=1;continue}
-   read_journal(d,m,tag.journal_data,payload)?;write_target(d,tag.target,payload,tag.flags&TAG_ESCAPE!=0)?;report.blocks_replayed+=1;
-  }
-  d.flush().map_err(|_|Error::Io)?;report.transactions_replayed+=1;expected=expected.wrapping_add(1);cursor=tx_cursor;
+  report.transactions_replayed+=1;expected=expected.wrapping_add(1);cursor=tx_cursor;
   if cursor==sb.start{break}
  }
+ // Revoke records can occur after the transaction whose writes they cancel.
+ // Defer all home-block writes until the complete committed log has been scanned.
+ for tag in tags[..tag_count].iter().copied(){
+  if tag.flags&TAG_DELETED!=0{continue}
+  if revokes[..revoke_count].iter().any(|r|r.target==tag.target&&sequence_at_or_after(r.sequence,tag.sequence)){report.blocks_revoked+=1;continue}
+  read_journal(d,m,tag.journal_data,payload)?;write_target(d,tag.target,payload,tag.flags&TAG_ESCAPE!=0)?;report.blocks_replayed+=1;
+ }
+ if report.blocks_replayed!=0{d.flush().map_err(|_|Error::Io)?}
  Ok(report)
 }
 #[cfg(test)]
