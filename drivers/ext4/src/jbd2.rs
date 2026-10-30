@@ -2,6 +2,7 @@
 //! Supports bounded JBD2 replay and ordered commits for legacy and checksum-v1/v2/v3 journals.
 //! Async commit and fast commits remain unsupported.
 pub const JBD2_MAGIC:u32=0xc03b3998;
+pub const JBD2_SUPERBLOCK_V1:u32=3;
 pub const JBD2_SUPERBLOCK_V2:u32=4;
 pub const JBD2_DESCRIPTOR_BLOCK:u32=1;
 pub const JBD2_COMMIT_BLOCK:u32=2;
@@ -61,28 +62,54 @@ pub const MAX_TRANSACTION_REVOKES:usize=256;
 pub enum Error{Truncated,BadMagic,UnsupportedFeature,InvalidGeometry,InvalidSequence,InvalidTag,InvalidRevoke,InvalidChecksum,OutOfRange,Io,NoScratch,TransactionTooLarge}
 fn be32(b:&[u8],o:usize)->Result<u32,Error>{let e=o.checked_add(4).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u32::from_be_bytes([s[0],s[1],s[2],s[3]]))}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct JournalSuperblock{pub block_size:u32,pub max_len:u32,pub first:u32,pub sequence:u32,pub start:u32,pub feature_incompat:u32,pub block_count_64:bool,pub checksum_mode:ChecksumMode,pub uuid:[u8;16]}
+pub struct JournalSuperblock{pub format_version:u8,pub block_size:u32,pub max_len:u32,pub first:u32,pub sequence:u32,pub start:u32,pub feature_incompat:u32,pub block_count_64:bool,pub checksum_mode:ChecksumMode,pub uuid:[u8;16]}
 impl JournalSuperblock{
  pub fn parse(b:&[u8])->Result<Self,Error>{
   if b.len()<1024{return Err(Error::Truncated)}
-  if be32(b,0)?!=JBD2_MAGIC||be32(b,4)?!=JBD2_SUPERBLOCK_V2{return Err(Error::BadMagic)}
-  let block_size=be32(b,12)?;let max_len=be32(b,16)?;let first=be32(b,20)?;let sequence=be32(b,24)?;let start=be32(b,28)?;let feature_compat=be32(b,36)?;let feature_incompat=be32(b,40)?;let checksum_mode=checksum_mode(feature_compat,feature_incompat)?;let mut uuid=[0u8;16];uuid.copy_from_slice(&b[48..64]);
-  if checksum_mode==ChecksumMode::V2||checksum_mode==ChecksumMode::V3 {
-   if b[80]!=4{return Err(Error::UnsupportedFeature)}
-   let stored=be32(b,252)?;
-   let calculated=crate::checksum::jbd2_superblock_checksum(b).ok_or(Error::InvalidGeometry)?;
-   if stored!=calculated{return Err(Error::InvalidChecksum)}
+  if be32(b,0)?!=JBD2_MAGIC{return Err(Error::BadMagic)}
+  let format_version=match be32(b,4)?{
+   JBD2_SUPERBLOCK_V1=>1,
+   JBD2_SUPERBLOCK_V2=>2,
+   _=>return Err(Error::BadMagic),
+  };
+  let block_size=be32(b,12)?;
+  let max_len=be32(b,16)?;
+  let first=be32(b,20)?;
+  let sequence=be32(b,24)?;
+  let start=be32(b,28)?;
+  // Version 1 is the original JBD superblock used by older ext3 filesystems.
+  // Its defined header ends at s_errno (offset 0x24): feature words, UUID,
+  // checksum fields and the v2 tag UUID extension do not exist in this format.
+  let (feature_compat,feature_incompat,checksum_mode,uuid)=if format_version==1{
+   (0,0,ChecksumMode::None,[0u8;16])
+  }else{
+   let compat=be32(b,36)?;
+   let incompat=be32(b,40)?;
+   let mode=checksum_mode(compat,incompat)?;
+   let mut id=[0u8;16];id.copy_from_slice(&b[48..64]);
+   if mode==ChecksumMode::V2||mode==ChecksumMode::V3{
+    if b[80]!=4{return Err(Error::UnsupportedFeature)}
+    let stored=be32(b,252)?;
+    let calculated=crate::checksum::jbd2_superblock_checksum(b).ok_or(Error::InvalidGeometry)?;
+    if stored!=calculated{return Err(Error::InvalidChecksum)}
+   }
+   (compat,incompat,mode,id)
+  };
+  if block_size as usize!=b.len()||block_size<1024||!block_size.is_power_of_two()
+   ||max_len<2||first==0||first>=max_len||start>=max_len{
+   return Err(Error::InvalidGeometry)
   }
-  if block_size as usize!=b.len()||block_size<1024||!block_size.is_power_of_two()||max_len<2||first==0||first>=max_len||start>=max_len{return Err(Error::InvalidGeometry)}
-  // JBD2 checksum-v1 is a COMPAT feature, not an incompat bit. We do not
-  // implement its transaction-wide CRC validation, so accepting it would
-  // allow corrupted log payloads/commits to be replayed without integrity
-  // verification. Fail closed until checksum-v1 is implemented.
-  // Checksum-v1 is a COMPAT feature. Its transaction-wide CRC-32 is
-  // verified by the replay scanner before any transaction is applied.
-  if feature_incompat&!(SUPPORTED_INCOMPAT|FEATURE_INCOMPAT_CSUM_V2|FEATURE_INCOMPAT_CSUM_V3)!=0{return Err(Error::UnsupportedFeature)}
-  if checksum_mode!=ChecksumMode::None && feature_incompat&FEATURE_INCOMPAT_ASYNC_COMMIT!=0{return Err(Error::UnsupportedFeature)}
-  Ok(Self{block_size,max_len,first,sequence,start,feature_incompat,block_count_64:feature_incompat&FEATURE_INCOMPAT_64BIT!=0,checksum_mode,uuid})
+  if format_version==2{
+   if feature_incompat&!(SUPPORTED_INCOMPAT|FEATURE_INCOMPAT_CSUM_V2|FEATURE_INCOMPAT_CSUM_V3)!=0{
+    return Err(Error::UnsupportedFeature)
+   }
+   if checksum_mode!=ChecksumMode::None&&feature_incompat&FEATURE_INCOMPAT_ASYNC_COMMIT!=0{
+    return Err(Error::UnsupportedFeature)
+   }
+  }
+  let _=feature_compat;
+  Ok(Self{format_version,block_size,max_len,first,sequence,start,feature_incompat,
+   block_count_64:feature_incompat&FEATURE_INCOMPAT_64BIT!=0,checksum_mode,uuid})
  }
  pub fn needs_recovery(&self)->bool{self.start!=0}
 }
@@ -188,7 +215,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
     if sb.block_count_64{descriptor[off..off+4].copy_from_slice(&((*target>>32) as u32).to_be_bytes());off+=4}
    }
   }
-  if i==0{descriptor[off..off+16].copy_from_slice(uuid);off+=16}
+  if i==0&&sb.format_version>=2{descriptor[off..off+16].copy_from_slice(uuid);off+=16}
  }
  if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
   let sum=crate::checksum::jbd2_metadata_block_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;
@@ -405,7 +432,7 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
       };
       if flags&!(TAG_ESCAPE|TAG_SAME_UUID|TAG_DELETED|TAG_LAST)!=0{return Err(Error::InvalidTag)}
       if sb.block_count_64{target|=(be32(scratch,off)? as u64)<<32;off=off.checked_add(4).ok_or(Error::OutOfRange)?}
-      if flags&TAG_SAME_UUID==0{let end=off.checked_add(16).ok_or(Error::OutOfRange)?;if end>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}if scratch[off..end]!=sb.uuid{return Err(Error::InvalidTag)}off=end}
+      if sb.format_version>=2&&flags&TAG_SAME_UUID==0{let end=off.checked_add(16).ok_or(Error::OutOfRange)?;if end>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}if scratch[off..end]!=sb.uuid{return Err(Error::InvalidTag)}off=end}
       if off>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
       if target>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
       let data_block=next_log(sb,tx_cursor);tags[tag_count]=Tag{target,journal_data:data_block,flags,sequence:expected};tag_count+=1;
@@ -492,7 +519,7 @@ mod tests{
   assert_eq!(JournalSuperblock::parse(&b),Err(Error::InvalidChecksum));
  }
  #[test]fn clean_journal_is_noop_without_io(){  struct D;impl ReplayDevice for D{fn filesystem_blocks(&self)->u64{10}fn read_block(&mut self,_:u64,_:&mut[u8])->Result<(),()>{Err(())}fn write_block(&mut self,_:u64,_:&[u8])->Result<(),()>{Err(())}fn flush(&mut self)->Result<(),()>{Ok(())}}
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:0,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};let mut d=D;let mut a=[0u8;1024];let mut b=[0u8;1024];assert_eq!(replay(&mut d,&mut |_|Err(()),&sb,&mut a,&mut b),Ok(ReplayReport::default()));
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:0,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};let mut d=D;let mut a=[0u8;1024];let mut b=[0u8;1024];assert_eq!(replay(&mut d,&mut |_|Err(()),&sb,&mut a,&mut b),Ok(ReplayReport::default()));
  } struct Mem{blocks:[[u8;1024];64],flushes:u32}
  impl ReplayDevice for Mem{
   fn filesystem_blocks(&self)->u64{64}  fn read_block(&mut self,n:u64,out:&mut[u8])->Result<(),()>{let b=self.blocks.get(n as usize).ok_or(())?;if out.len()!=1024{return Err(())}out.copy_from_slice(b);Ok(())}
@@ -503,7 +530,7 @@ mod tests{
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());  d.blocks[3].fill(0x5a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(r.transactions_replayed,1);assert_eq!(r.blocks_replayed,1);assert_eq!(d.blocks[7],[0x5a;1024]);
@@ -517,7 +544,7 @@ mod tests{
   d.blocks[5][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[6].fill(0x7c);
   // Block 7 is not a commit record for transaction 2.
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert!(r.stopped_on_incomplete);
@@ -533,7 +560,7 @@ mod tests{
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[3].fill(0x7c);
   // Block 4 is deliberately not a matching commit record.
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert!(r.stopped_on_incomplete);
@@ -548,7 +575,7 @@ mod tests{
   d.blocks[3].fill(0x6b);header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
   header(&mut d.blocks[5],JBD2_REVOKE_BLOCK,2);d.blocks[5][12..16].copy_from_slice(&20u32.to_be_bytes());d.blocks[5][16..20].copy_from_slice(&7u32.to_be_bytes());
   header(&mut d.blocks[6],JBD2_COMMIT_BLOCK,2);
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_REVOKE,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_REVOKE,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(r.transactions_replayed,2);assert_eq!(r.blocks_replayed,0);assert_eq!(r.blocks_revoked,1);assert_eq!(d.blocks[7],[0;1024]);
  }
@@ -640,7 +667,7 @@ mod tests{
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[3].fill(0x5a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let result=replay_with_policy(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b,&mut RejectJournalBlock(7));
   assert_eq!(result,Err(Error::InvalidTag));
@@ -653,7 +680,49 @@ mod tests{
   js[48]=0;assert_eq!(validate_journal_uuid(&sb,&js),Err(Error::BadMagic));
  }
 
- #[test]fn checksum_feature_bits_are_mutually_exclusive(){
+ #[test]fn legacy_v1_superblock_replays_old_jbd_tags_without_uuid_extension(){
+  let mut js=[0u8;1024];
+  header(&mut js,JBD2_SUPERBLOCK_V1,0);
+  js[12..16].copy_from_slice(&1024u32.to_be_bytes());
+  js[16..20].copy_from_slice(&64u32.to_be_bytes());
+  js[20..24].copy_from_slice(&1u32.to_be_bytes());
+  js[24..28].copy_from_slice(&17u32.to_be_bytes());
+  js[28..32].copy_from_slice(&2u32.to_be_bytes());
+  let sb=JournalSuperblock::parse(&js).unwrap();
+  assert_eq!(sb.format_version,1);
+  assert_eq!(sb.checksum_mode,ChecksumMode::None);
+  assert_eq!(sb.feature_incompat,0);
+  assert_eq!(sb.uuid,[0;16]);
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,17);
+  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
+  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[3].fill(0x6a);
+  header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,17);
+  let mut a=[0u8;1024];let mut b=[0u8;1024];
+  let report=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
+  assert_eq!(report.transactions_replayed,1);
+  assert_eq!(report.blocks_replayed,1);
+  assert_eq!(d.blocks[7],[0x6a;1024]);
+ }
+ #[test]fn legacy_v1_writer_omits_the_v2_tag_uuid(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  let mut js=[0u8;1024];
+  js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+  js[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V1.to_be_bytes());
+  js[12..16].copy_from_slice(&1024u32.to_be_bytes());
+  js[16..20].copy_from_slice(&64u32.to_be_bytes());
+  js[20..24].copy_from_slice(&1u32.to_be_bytes());
+  js[24..28].copy_from_slice(&23u32.to_be_bytes());
+  let metadata=[0x71u8;1024];let mut descriptor=[0u8;1024];
+  assert_eq!(commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&mut descriptor),Ok(23));
+  assert_eq!(be32(&d.blocks[1],4).unwrap(),JBD2_DESCRIPTOR_BLOCK);
+  assert_eq!(be32(&d.blocks[1],12).unwrap(),10);
+  assert_eq!(be32(&d.blocks[1],16).unwrap(),TAG_LAST);
+  assert_eq!(&d.blocks[1][20..36],&[0;16]);
+  assert_eq!(d.blocks[10],metadata);
+ }
+  #[test]fn checksum_feature_bits_are_mutually_exclusive(){
   assert_eq!(checksum_mode(0,0),Ok(ChecksumMode::None));
   assert_eq!(checksum_mode(1,0),Ok(ChecksumMode::V1));
   assert_eq!(checksum_mode(0,FEATURE_INCOMPAT_CSUM_V2),Ok(ChecksumMode::V2));
@@ -684,7 +753,7 @@ mod tests{
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);d.blocks[4][12]=4;d.blocks[4][13]=4;
   let cs=crate::checksum::jbd2_commit_checksum(seed,&d.blocks[4]).unwrap();
   d.blocks[4][16..20].copy_from_slice(&cs.to_be_bytes());
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_CSUM_V2,block_count_64:false,checksum_mode:ChecksumMode::V2,uuid};
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_CSUM_V2,block_count_64:false,checksum_mode:ChecksumMode::V2,uuid};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let report=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(report.blocks_replayed,1);assert_eq!(d.blocks[7],payload);
@@ -706,7 +775,7 @@ mod tests{
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);d.blocks[4][12]=4;d.blocks[4][13]=4;
   let cs=crate::checksum::jbd2_commit_checksum(seed,&d.blocks[4]).unwrap();
   d.blocks[4][16..20].copy_from_slice(&cs.to_be_bytes());
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_CSUM_V3,block_count_64:false,checksum_mode:ChecksumMode::V3,uuid};
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_CSUM_V3,block_count_64:false,checksum_mode:ChecksumMode::V3,uuid};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let report=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(report.blocks_replayed,1);assert_eq!(d.blocks[7],payload);
@@ -726,7 +795,7 @@ mod tests{
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
   d.blocks[4][12]=1;d.blocks[4][13]=4;
   d.blocks[4][16..20].copy_from_slice(&crc.to_be_bytes());
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::V1,uuid};
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::V1,uuid};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let report=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(report.transactions_replayed,1);assert_eq!(report.blocks_replayed,1);
@@ -746,7 +815,7 @@ mod tests{
   crc=crate::checksum::crc32_be_update(crc,&d.blocks[3]);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);d.blocks[4][12]=1;d.blocks[4][13]=4;
   d.blocks[4][16..20].copy_from_slice(&crc.to_be_bytes());
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::V1,uuid:[0;16]};
+  let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::V1,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let report=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(report.transactions_replayed,1);assert_eq!(report.blocks_replayed,0);
