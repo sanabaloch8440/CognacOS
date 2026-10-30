@@ -1905,14 +1905,20 @@ fn read_user_ascii(address:u64,out:&mut[u8])->Result<usize,u64>{
  }
  Err(0xC0000023)
 }
+fn join_dll_path(directory:&[u8],name:&[u8],out:&mut[u8;crate::file_services::MAX_PATH_BYTES])->Result<usize,u64>{
+ let mut d=directory.len();while d>1&&matches!(directory[d-1],b'\\'|b'/'){d-=1;}
+ let n=d.checked_add(1).and_then(|v|v.checked_add(name.len())).ok_or(NT_STATUS_INVALID_PARAMETER)?;
+ if n>out.len(){return Err(0xC0000023);}
+ out[..d].copy_from_slice(&directory[..d]);out[d]=b'\\';out[d+1..n].copy_from_slice(name);Ok(n)
+}
 fn nt_load_dll(args:&[u64;NT_MAX_ARGUMENTS])->u64{
  if args[0]==0||args[2]==0{return NT_STATUS_INVALID_PARAMETER;}
  let mut namebuf=[0u8;crate::pe_modules::MAX_NAME_BYTES];
  let n=match read_user_ascii(args[0],&mut namebuf){Ok(n)if n>0=>n,_=>return NT_STATUS_ACCESS_VIOLATION};
  let name=&namebuf[..n];
  if !name.iter().all(|b|b.is_ascii_alphanumeric()||matches!(*b,b'.'|b'_'|b'-'|b'+')){return NT_STATUS_INVALID_PARAMETER;}
- let mut path=[0u8;crate::file_services::MAX_PATH_BYTES];
- let mut plen=if args[1]==0{0}else{match read_user_ascii(args[1],&mut path){Ok(n)=>n,Err(s)=>return s}};
+ let mut search_path=[0u8;1024];
+ let search_len=if args[1]==0{0}else{match read_user_ascii(args[1],&mut search_path){Ok(n)=>n,Err(s)=>return s}};
  let pid=current_process_id();let process=crate::process::eprocess_pointer_for_pid(pid);
  if pid==0||process.is_null(){return NT_STATUS_INVALID_HANDLE;}
  let root=unsafe{(*process).address_space_root};
@@ -1924,18 +1930,34 @@ fn nt_load_dll(args:&[u64;NT_MAX_ARGUMENTS])->u64{
  let mut depth_buffers:[&mut[u8];DLL_DEPTH]=core::array::from_fn(|i|unsafe{
   core::slice::from_raw_parts_mut(pool.add(DLL_FILE_CAPACITY*(i+1)),DLL_FILE_CAPACITY)
  });
- let mut loaded=if plen>0{
-  unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)}
- }else{Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND)};
- if matches!(loaded,Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND)|Err(crate::pe_loader::STATUS_DLL_NOT_FOUND)){
+ let mut path=[0u8;crate::file_services::MAX_PATH_BYTES];
+ let mut plen=0usize;
+ let mut loaded=Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND);
+ let mut offset=0usize;
+ while offset<search_len {
+  let end=search_path[offset..search_len].iter().position(|b|*b==b';').map(|n|offset+n).unwrap_or(search_len);
+  if end>offset {
+   match join_dll_path(&search_path[offset..end],name,&mut path) {
+    Ok(candidate_len)=>{
+     plen=candidate_len;
+     loaded=unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)};
+     if loaded.is_ok(){break;}
+     if !matches!(loaded,Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND)|Err(crate::pe_loader::STATUS_DLL_NOT_FOUND)){
+      crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return loaded.err().unwrap_or(NT_STATUS_INVALID_PARAMETER) as u32 as u64;
+     }
+    }
+    Err(status)=>{crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return status;}
+   }
+  }
+  if end==search_len{break;}offset=end+1;
+ }
+ if loaded.is_err() {
   let prefix=br"\SystemRoot\System32\";
-  if prefix.len()+n<path.len(){path[..prefix.len()].copy_from_slice(prefix);path[prefix.len()..prefix.len()+n].copy_from_slice(name);plen=prefix.len()+n;
-   loaded=unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)};}
+  if let Ok(candidate_len)=join_dll_path(prefix,name,&mut path){plen=candidate_len;loaded=unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)};}
  }
  if matches!(loaded,Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND)|Err(crate::pe_loader::STATUS_DLL_NOT_FOUND)){
   let prefix=br"\Windows\System32\";
-  if prefix.len()+n<path.len(){path[..prefix.len()].copy_from_slice(prefix);path[prefix.len()..prefix.len()+n].copy_from_slice(name);plen=prefix.len()+n;
-   loaded=unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)};}
+  if let Ok(candidate_len)=join_dll_path(prefix,name,&mut path){plen=candidate_len;loaded=unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)};}
  }
  let result=match loaded{Ok(v)=>v,Err(status)=>{crate::ntoskrnl::ex::pool::ex_free_pool2(pool,DLL_POOL_TAG,core::ptr::null(),0);return status as u32 as u64;}};
  let mut response=LoadDllResponse{base:result.image.base,entry:0,slot:result.slot as u32,generation:result.generation,already_loaded:result.already_loaded as u32,path_len:plen as u32,path};
