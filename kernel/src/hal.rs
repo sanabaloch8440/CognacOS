@@ -868,9 +868,12 @@ unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->Drive
     let mut spins=0usize;
     while DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0&&spins<1_000_000{core::hint::spin_loop();spins+=1;}
     if DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0{return driver_hal_unsupported()}
+    // APIC detaches the handler and waits for in-flight ISR dispatch before
+    // callback storage is cleared. A timeout leaves the inactive record intact
+    // so teardown can be retried without reusing the vector prematurely.
+    if release_device_interrupt_vector(vector as u8).is_err(){return driver_hal_unsupported()}
     DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);DEVICE_CONTEXT[i].store(0,Ordering::Release);
     DEVICE_ROUTE_IO_BASE[i].store(0,Ordering::Release);
-    if release_device_interrupt_vector(vector as u8).is_err(){return driver_hal_unsupported()}
     driver_hal_success()
 }
 unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->DriverHalStatus{
