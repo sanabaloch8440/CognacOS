@@ -793,71 +793,9 @@ cognacos_windows_syscall_entry:
     pop rcx
     pop rdx
     pop rax
-    # Temporary marker s confirms that LSTAR and SWAPGS were reached.
-    push rax
-    push rdx
-    mov dx, 0x3f8
-    mov al, 's'
-    out dx, al
-    pop rdx
-    pop rax
-    # Check the active GS base high word (H=kernel address, L=user address).
-    push rax
-    push rdx
-    push rcx
-    mov ecx, 0xC0000101
-    rdmsr
-    cmp edx, 0xffffffff
-    jne .Lwindows_gs_low
-    mov al, 'H'
-    jmp .Lwindows_gs_marker
-.Lwindows_gs_low:
-    mov al, 'L'
-.Lwindows_gs_marker:
-    mov dx, 0x3f8
-    out dx, al
-    pop rcx
-    pop rdx
-    pop rax
     cld
     # GS:[0] saves user RSP; GS:[8] is this CPU's private kernel stack top.
     mov qword ptr gs:[0], rsp
-    # Save volatile values in the per-CPU local area to trace GS access safely.
-    mov qword ptr gs:[16], rax
-    mov qword ptr gs:[24], rdx
-    mov dx, 0x3f8
-    mov al, 'g'
-    out dx, al
-    mov rax, qword ptr gs:[16]
-    mov rdx, qword ptr gs:[24]
-    # Check that the saved kernel stack top is a high-half canonical pointer.
-    mov qword ptr gs:[16], rax
-    mov qword ptr gs:[24], rdx
-    mov rax, qword ptr gs:[8]
-    mov rdx, rax
-    shr rdx, 48
-    cmp dx, 0xffff
-    jne .Lwindows_stack_bad
-    test eax, 0xf
-    jne .Lwindows_stack_bad
-    mov al, 'T'
-    jmp .Lwindows_stack_marker
-.Lwindows_stack_bad:
-    mov al, 'X'
-.Lwindows_stack_marker:
-    mov dx, 0x3f8
-    out dx, al
-    mov rax, qword ptr gs:[16]
-    mov rdx, qword ptr gs:[24]
-    mov rsp, qword ptr gs:[8]
-    # Temporary marker 'k' proves the per-CPU GS stack switch succeeded.
-    push rax
-    push rdx
-    mov dx, 0x3f8
-    mov al, 'k'
-    out dx, al
-    pop rdx
-    pop rax
     # Synthesize the privilege-return frame consumed by IRETQ.
     # IRETQ frame order from top: RIP, CS, RFLAGS, RSP, SS.
     push 0x1b
@@ -881,10 +819,6 @@ cognacos_windows_syscall_entry:
     push r13
     push r14
     push r15
-    # Temporary serial markers isolate SYSCALL entry, dispatch, and return.
-    mov dx, 0x3f8
-    mov al, 'S'
-    out dx, al
     mov rbx, rsp
     # Save the interrupted user XSTATE before entering Rust or any scheduler path.
     and rsp, -16
@@ -907,9 +841,6 @@ cognacos_windows_syscall_entry:
     xor edx, edx
     xrstor64 [r10]
 .Lwindows_syscall_no_xstate_restore:
-    mov dx, 0x3f8
-    mov al, 'D'
-    out dx, al
     pop r15
     pop r14
     pop r13
