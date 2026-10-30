@@ -9,7 +9,7 @@ use super::notifications::{image_ascii_string, IMAGE_ORDINAL_FLAG64};
 }
 #[repr(C)] struct LoadDllResponse {
     base: u64, entry: u64, slot: u32, generation: u32, already_loaded: u32,
-    path_len: u32, path: [u8; crate::file_services::MAX_PATH_BYTES],
+    path_len: u32, path: [u8; 260],
 }
 unsafe fn list_insert_tail(head: *mut LoaderLink, item: *mut LoaderLink) -> bool {
     if head.is_null() || item.is_null() { return false; }
@@ -307,7 +307,7 @@ pub unsafe extern "system" fn LdrLoadDll(
         || descriptor.length > descriptor.maximum_length || descriptor.buffer.is_null()
         || descriptor.length as usize / 2 >= MAX_PATH_UNITS { return STATUS_INVALID_PARAMETER; }
     let units = unsafe { core::slice::from_raw_parts(descriptor.buffer, descriptor.length as usize / 2) };
-    let mut name = [0u8; crate::pe_modules::MAX_NAME_BYTES];
+    let mut name = [0u8; 96];
     let mut name_len = 0usize;
     for unit in units {
         if *unit == 0 || *unit > 0x7f { return STATUS_INVALID_PARAMETER; }
@@ -325,7 +325,12 @@ pub unsafe extern "system" fn LdrLoadDll(
     let existing = unsafe { crate::rtl_loader::LdrGetDllHandle(dll_path as PVOID, dll_characteristics, dll_name.cast(), dll_handle) };
     if existing == STATUS_SUCCESS { return unsafe { track_module_reference(*dll_handle as usize, false) }; }
 
-    let mut path = [0u8; crate::file_services::MAX_PATH_BYTES];
+    #[cfg(not(target_os = "windows"))]
+    { let _ = dll_path; return STATUS_NOT_IMPLEMENTED; }
+
+    #[cfg(target_os = "windows")]
+    {
+    let mut path = [0u8; 260];
     let mut path_len = 0usize;
     if let Some((directory, length)) = unsafe { super::search::process_image_directory() } {
         if length + name_len < path.len() {
@@ -342,7 +347,7 @@ pub unsafe extern "system" fn LdrLoadDll(
         }
     }
     let _ = dll_path;
-    let mut response = LoadDllResponse { base:0, entry:0, slot:0, generation:0, already_loaded:0, path_len:0, path:[0;crate::file_services::MAX_PATH_BYTES] };
+    let mut response = LoadDllResponse { base:0, entry:0, slot:0, generation:0, already_loaded:0, path_len:0, path:[0;260] };
     let status = unsafe {
         crate::native::syscall_stubs::cognacos_nt_load_dll(
             module_name.as_ptr(), if path_len == 0 { ptr::null() } else { path.as_ptr() },
@@ -374,6 +379,7 @@ pub unsafe extern "system" fn LdrLoadDll(
     }
     unsafe { dll_handle.write(response.base as PVOID); }
     STATUS_SUCCESS
+    }
 }
 
 #[no_mangle]
