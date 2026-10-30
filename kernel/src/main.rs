@@ -436,16 +436,17 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
                         let irq_line=irq as u8;
                         if irq_line<16 {
                             let mut gsi=irq_line as u32;
-                            let mut active_low=false;let mut level_triggered=false;let mut duplicate=false;
+                            let mut active_low=false;let mut level_triggered=false;
+                            let mut override_seen=false;let mut duplicate=false;
                             for ov in madt.irq_overrides.iter().take(madt.irq_override_count) {
                                 if ov.bus==0&&ov.source_irq==irq_line {
-                                    if duplicate {duplicate=true;break;}
-                                    gsi=ov.gsi;active_low=ov.active_low;level_triggered=ov.level_triggered;duplicate=true;
+                                    if override_seen {duplicate=true;break;}
+                                    override_seen=true;gsi=ov.gsi;active_low=ov.active_low;level_triggered=ov.level_triggered;
                                 }
                             }
                             let io=madt.io_apics.iter().take(madt.io_apic_count)
                                 .find(|io|gsi>=io.gsi_base&&gsi.saturating_sub(io.gsi_base)<120);
-                            if !duplicate||irq_line!=0 {
+                            if !duplicate&&irq_line!=0 {
                                 if let Some(io)=io {
                                     match ntoskrnl::pnp::prepare_xhci_interrupt_route(io.address as u64,io.gsi_base,gsi,bsp_apic_id as u8,active_low,level_triggered) {
                                         Ok(vector)=>unsafe{serial_write(b"xHCI PnP: masked INTx route prepared; vector=");serial_write_hex(vector as u64);serial_write(b"\r\n");},
