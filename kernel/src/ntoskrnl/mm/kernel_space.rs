@@ -669,6 +669,8 @@ pub fn free_pages(ptr:*mut u8,pages:usize)->Result<(),Error>{
 /// Exercise a real high-half mapping and reclamation before the pool uses it.
 /// Source line of the last failed kernel-VM self-test assertion; zero means no failure.
 static SELF_TEST_FAILURE_LINE: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_PHASE: AtomicU64 = AtomicU64::new(0);
+static SELF_TEST_IPI_BEFORE: AtomicU64 = AtomicU64::new(0);
 static SELF_TEST_MAP_ROOT: AtomicU64 = AtomicU64::new(0);
 static SELF_TEST_MAP_PHYSICAL: AtomicU64 = AtomicU64::new(0);
 static SELF_TEST_MAP_VIRTUAL: AtomicU64 = AtomicU64::new(0);
@@ -683,6 +685,19 @@ fn self_test_fail(line: u32) -> bool {
 }
 pub fn self_test_failure_line() -> u32 { SELF_TEST_FAILURE_LINE.load(Ordering::Acquire) as u32 }
 /// Root, expected physical address, VA, walk stage, and observed PML4E/PDPTE/PDE/PTE.
+/// Debug-only snapshot: phase, source line, IPI count before/after, owner/active CR3, online CPUs, pagefile state.
+pub fn self_test_diagnostics() -> [u64; 8] {
+ [
+  SELF_TEST_PHASE.load(Ordering::Acquire),
+  SELF_TEST_FAILURE_LINE.load(Ordering::Acquire),
+  SELF_TEST_IPI_BEFORE.load(Ordering::Acquire),
+  crate::smp::tlb_ipi_count() as u64,
+  ROOT.load(Ordering::Acquire),
+  crate::ntoskrnl::mm::address_space::active_root_physical(),
+  crate::hal::online_cpu_count() as u64,
+  crate::pagefile::is_active() as u64,
+ ]
+}
 pub fn self_test_mapping_failure() -> [u64; 8] {
  [
   SELF_TEST_MAP_ROOT.load(Ordering::Acquire),
@@ -751,6 +766,7 @@ pub fn self_test() -> bool {
   if active_root!=root { return true; }
   let _sample=unsafe{(virtual_address as *const u8).read_volatile()};
 
+  SELF_TEST_PHASE.store(2,Ordering::Release);
   // Confirm the allocator itself can return, zero, access, and recycle a frame
   // above 4 GiB instead of merely exposing a direct-map address for one.
   let Ok(high_page)= (unsafe{crate::memory::allocate_data_page()}) else{return self_test_fail(line!())};
