@@ -1306,6 +1306,8 @@ jobs:
             build/dlls/kernel32.dll
             build/dlls/kernelbase.dll
             build/dlls/shell32.dll
+            build/dlls/syssetup.dll
+            build/dlls/rundll32.exe
             build/kernel/cognacos-kernel.exe
             build/cognacos-uefi.img
             build/serial.log
