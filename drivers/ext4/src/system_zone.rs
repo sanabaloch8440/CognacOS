@@ -305,8 +305,6 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
             replay_scratch, replay_payload,
         )
     }
-}
-
 
     /// Discover allocated directories, validate the root-reachable namespace
     /// graph and only then authorize directory metadata for JBD2 replay.
@@ -366,6 +364,8 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
             replay_scratch, replay_payload,
         )
     }
+}
+
 
 /// Fail-closed convenience recovery entry point. It verifies an already-clean
 /// internal journal, but refuses to replay dirty transactions because this API
