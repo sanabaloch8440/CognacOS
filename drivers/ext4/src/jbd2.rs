@@ -958,3 +958,39 @@ mod tests{
  }
 
 }
+
+#[cfg(test)]
+mod journal_ring_geometry_tests {
+    use super::*;
+
+    fn superblock(start: u32) -> [u8; 1024] {
+        let mut block = [0u8; 1024];
+        block[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+        block[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
+        block[12..16].copy_from_slice(&1024u32.to_be_bytes());
+        block[16..20].copy_from_slice(&64u32.to_be_bytes());
+        block[20..24].copy_from_slice(&4u32.to_be_bytes());
+        block[24..28].copy_from_slice(&1u32.to_be_bytes());
+        block[28..32].copy_from_slice(&start.to_be_bytes());
+        block
+    }
+
+    #[test]
+    fn rejects_nonzero_journal_start_before_first_log_block() {
+        assert_eq!(JournalSuperblock::parse(&superblock(1)), Err(Error::InvalidGeometry));
+    }
+
+    #[test]
+    fn accepts_recovery_start_inside_log_ring() {
+        let parsed = JournalSuperblock::parse(&superblock(4)).unwrap();
+        assert_eq!(parsed.start, 4);
+        assert!(parsed.needs_recovery());
+    }
+
+    #[test]
+    fn rejects_journal_blocks_larger_than_ext4_maximum() {
+        let mut block = superblock(0);
+        block[12..16].copy_from_slice(&131_072u32.to_be_bytes());
+        assert_eq!(JournalSuperblock::parse(&block), Err(Error::InvalidGeometry));
+    }
+}
