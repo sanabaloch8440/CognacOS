@@ -170,7 +170,6 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
  let slot=domains.iter().position(|d|d.id==0).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
  let contexts=unsafe{&mut*CONTEXTS.0.get()};
  let bus=id.bus as usize;
- let mut allocated_context=false;
  if contexts[bus].physical==0{
   let(mut pa,mut va)=(0u64,core::ptr::null_mut());
   if unsafe{(u.ops.alloc_table.unwrap())(u.ops.context,&mut pa,&mut va)}!=0||pa==0||pa&0xfff!=0||pa&!VT_D_PAGE_MASK!=0||va.is_null(){
@@ -184,13 +183,17 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
   }
   let Some(entry)=encode_root_entry(pa) else{let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};return Err(STATUS_INVALID_PARAMETER)};
   unsafe{core::ptr::write_volatile(u.root_virt.add(bus),entry)};
+  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,u.root_phys,4096)}!=0{
+   // Retain the context page because the root entry may be visible to hardware
+   // despite a cache-maintenance error.
+   contexts[bus]=BusContext{physical:pa,virtual_address:va};
+   return Err(STATUS_NOT_SUPPORTED)
+  }
   contexts[bus]=BusContext{physical:pa,virtual_address:va};
-  allocated_context=true;
  }
  let(mut root_pa,mut root_va)=(0u64,core::ptr::null_mut());
  if unsafe{(u.ops.alloc_table.unwrap())(u.ops.context,&mut root_pa,&mut root_va)}!=0||root_pa==0||root_pa&0xfff!=0||root_pa&!VT_D_PAGE_MASK!=0||root_va.is_null(){
   if root_pa!=0&&!root_va.is_null(){let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};}
-  if allocated_context{unsafe{core::ptr::write_volatile(u.root_virt.add(bus),0)};contexts[bus]=EMPTY_CONTEXT;}
   return Err(STATUS_INSUFFICIENT_RESOURCES)
  }
  unsafe{core::ptr::write_bytes(root_va,0,512)};
