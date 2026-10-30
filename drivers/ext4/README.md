@@ -286,3 +286,10 @@ This is still a validation API, not complete ownership discovery: the caller mus
 The external-xattr module now exposes `validate_external_xattr_checksum` in addition to structural parsing. It verifies the metadata checksum over the block with the checksum field zeroed, binding the absolute physical block number and, for exclusively referenced blocks (`h_refcount == 1`), the owning inode number and generation. Shared blocks use the shared-block checksum form and do not accept an arbitrary inode identity as checksum input. Tests cover exclusive/shared checksum construction, missing owner identity, and payload corruption.
 
 The exported `external_xattr_checksum_seed` helper derives the seed from a checksum-validated superblock, honoring `CSUM_SEED` and otherwise hashing `s_uuid`. The checksum validator also requires the absolute physical block number. This helper authenticates the bytes but does **not** discover the inode's `i_file_acl`, prove the inode is allocated, reconcile `h_refcount` against all allocated inode references, or authorize JBD2 replay. Those ownership and replay gates remain closed; writable mounting remains disabled.
+
+
+## External xattr allocation checks
+
+The checked-mount API now also exposes `validate_external_xattr_with_allocation`, which verifies the owner inode's allocation bit and the external xattr block's allocation bit using initialized, checksummed group descriptors and bitmaps before accepting the block. The lower-level `validate_external_xattr_allocation` helper is available when callers need to compose this check themselves. Both scratch buffers are caller-owned and block-sized. Uninitialized inode/block bitmap groups are rejected rather than treating their bits as authoritative.
+
+This closes the allocation-bit gap for an individual inode-to-xattr pointer. It does **not** prove that a shared xattr block's on-disk reference count matches all allocated inode references; global reference reconciliation remains required before xattr blocks can be authorized for journal replay or mutation. Tests and CI have not yet been run for this batch.
