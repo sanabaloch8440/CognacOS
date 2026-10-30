@@ -59,7 +59,7 @@ const TAG_LAST:u32=8;
 pub const MAX_TRANSACTION_TAGS:usize=256;
 pub const MAX_TRANSACTION_REVOKES:usize=256;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum Error{Truncated,BadMagic,UnsupportedFeature,InvalidGeometry,InvalidSequence,InvalidTag,InvalidRevoke,OutOfRange,Io,NoScratch,TransactionTooLarge}
+pub enum Error{Truncated,BadMagic,UnsupportedFeature,InvalidGeometry,InvalidSequence,InvalidTag,InvalidRevoke,InvalidChecksum,OutOfRange,Io,NoScratch,TransactionTooLarge}
 fn be32(b:&[u8],o:usize)->Result<u32,Error>{let e=o.checked_add(4).ok_or(Error::OutOfRange)?;let s=b.get(o..e).ok_or(Error::Truncated)?;Ok(u32::from_be_bytes([s[0],s[1],s[2],s[3]]))}
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct JournalSuperblock{pub block_size:u32,pub max_len:u32,pub first:u32,pub sequence:u32,pub start:u32,pub feature_incompat:u32,pub block_count_64:bool,pub checksum_mode:ChecksumMode,pub uuid:[u8;16]}
@@ -68,6 +68,12 @@ impl JournalSuperblock{
   if b.len()<1024{return Err(Error::Truncated)}
   if be32(b,0)?!=JBD2_MAGIC||be32(b,4)?!=JBD2_SUPERBLOCK_V2{return Err(Error::BadMagic)}
   let block_size=be32(b,12)?;let max_len=be32(b,16)?;let first=be32(b,20)?;let sequence=be32(b,24)?;let start=be32(b,28)?;let feature_compat=be32(b,36)?;let feature_incompat=be32(b,40)?;let checksum_mode=checksum_mode(feature_compat,feature_incompat)?;let mut uuid=[0u8;16];uuid.copy_from_slice(&b[48..64]);
+  if checksum_mode==ChecksumMode::V2||checksum_mode==ChecksumMode::V3 {
+   if b[80]!=4{return Err(Error::UnsupportedFeature)}
+   let stored=be32(b,252)?;
+   let calculated=crate::checksum::jbd2_superblock_checksum(b).ok_or(Error::InvalidGeometry)?;
+   if stored!=calculated{return Err(Error::InvalidChecksum)}
+  }
   if block_size as usize!=b.len()||block_size<1024||!block_size.is_power_of_two()||max_len<2||first==0||first>=max_len||start>=max_len{return Err(Error::InvalidGeometry)}
   // JBD2 checksum-v1 is a COMPAT feature, not an incompat bit. We do not
   // implement its transaction-wide CRC validation, so accepting it would
@@ -247,8 +253,7 @@ pub struct JournalInodeInfo{pub inode_number:u32,pub uuid:[u8;16]}
 pub fn discover_internal_journal(ext4_superblock:&[u8])->Result<JournalInodeInfo,Error>{
  if ext4_superblock.len()<1024{return Err(Error::Truncated)}
  let compat=u32::from_le_bytes(ext4_superblock[92..96].try_into().map_err(|_|Error::Truncated)?);
- if compat&0x0004==0{return Err(Error::InvalidGeometry)}
- let inode=u32::from_le_bytes(ext4_superblock[224..228].try_into().map_err(|_|Error::Truncated)?);
+ if compat&0x0004==0{return Err(Error::InvalidGeometry)} let inode=u32::from_le_bytes(ext4_superblock[224..228].try_into().map_err(|_|Error::Truncated)?);
  let external=u32::from_le_bytes(ext4_superblock[228..232].try_into().map_err(|_|Error::Truncated)?);
  if inode==0||external!=0{return Err(Error::UnsupportedFeature)}
  let mut uuid=[0u8;16];uuid.copy_from_slice(&ext4_superblock[208..224]);
@@ -393,7 +398,7 @@ mod tests{
  use super::*;
  #[test]fn journal_superblock_checks_geometry_and_unsupported_features(){
   let mut b=[0u8;1024];b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());b[12..16].copy_from_slice(&1024u32.to_be_bytes());b[16..20].copy_from_slice(&64u32.to_be_bytes());b[20..24].copy_from_slice(&1u32.to_be_bytes());b[24..28].copy_from_slice(&7u32.to_be_bytes());b[28..32].copy_from_slice(&3u32.to_be_bytes());
-  let sb=JournalSuperblock::parse(&b).unwrap();assert!(sb.needs_recovery());b[40..44].copy_from_slice(&FEATURE_INCOMPAT_CSUM_V3.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b).unwrap().checksum_mode,ChecksumMode::V3);
+  let sb=JournalSuperblock::parse(&b).unwrap();assert!(sb.needs_recovery());b[40..44].copy_from_slice(&FEATURE_INCOMPAT_CSUM_V3.to_be_bytes());b[80]=4;let csum=crate::checksum::jbd2_superblock_checksum(&b).unwrap();b[252..256].copy_from_slice(&csum.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b).unwrap().checksum_mode,ChecksumMode::V3);b[100]^=1;assert_eq!(JournalSuperblock::parse(&b),Err(Error::InvalidChecksum));b[100]^=1;
   b[40..44].fill(0);b[36..40].copy_from_slice(&1u32.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b),Err(Error::UnsupportedFeature));
  }
  #[test]fn clean_journal_is_noop_without_io(){
@@ -415,7 +420,7 @@ mod tests{
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[3].fill(0x5a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false};
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(r.transactions_replayed,1);assert_eq!(r.blocks_replayed,1);assert_eq!(d.blocks[7],[0x5a;1024]);
@@ -497,8 +502,7 @@ mod tests{
     if target==self.0{Err(Error::InvalidTag)}else{Ok(())}
    }
   }
-  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
-  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[3].fill(0x5a);
