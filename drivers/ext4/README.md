@@ -48,7 +48,7 @@ high-block field is parsed in its on-disk position. The ordered-commit writer
 continues to reject checksum-enabled journals rather than emitting invalid
 records.
 
-Checksum-v1 transaction replay is now supported using Linux-compatible CRC32_BE over each descriptor block and its data blocks. Checksum-enabled journal writes remain unsupported.
+Checksum-v1 transaction replay is now supported using Linux-compatible CRC32_BE over each descriptor block and its data blocks. Checksum-v1 ordered commits now emit the transaction CRC32_BE; checksum-v2/v3 journal writing remains unsupported.
 The implementation must still be exercised against Linux-generated journal
 images and broader malformed-input/crash-recovery tests before enabling
 writable ext4 mounts. Any checksum failure aborts replay before home-block
@@ -132,4 +132,9 @@ The bounded recovery parser validates the JBD2 v2/v3 journal superblock before t
 
 ## JBD2 checksum-v1 replay (2026-10-30)
 
-Checksum-v1 journals are no longer rejected. The replay scanner computes Linux's big-endian CRC-32 raw state from `~0`, covering each complete descriptor block followed by every associated journal data block in transaction order, and compares it with commit `h_chksum[0]` when the commit header identifies CRC32/size 4. Deleted tags still consume and checksum their following data block, matching Linux's tag-stream accounting. Corrupt descriptor or payload bytes fail the transaction with `InvalidChecksum` before replay writes. The commit writer remains disabled for checksum-enabled journals. Async commit and fast commit remain unsupported.
+Checksum-v1 journals are no longer rejected. The replay scanner computes Linux's big-endian CRC-32 raw state from `~0`, covering each complete descriptor block followed by every associated journal data block in transaction order, and compares it with commit `h_chksum[0]` when the commit header identifies CRC32/size 4. Deleted tags still consume and checksum their following data block, matching Linux's tag-stream accounting. Corrupt descriptor or payload bytes fail the transaction with `InvalidChecksum` before replay writes. The ordered commit writer now emits the checksum-v1 transaction CRC in the commit header; checksum-v2/v3 writers remain disabled. Async commit and fast commit remain unsupported.
+
+
+### JBD2 checksum-v1 commit writer
+
+The bounded ordered-commit path now supports checksum-v1 journals. It calculates CRC32_BE over the complete descriptor block and associated data blocks in the same order as Linux JBD2, writes type `JBD2_CRC32_CHKSUM` (1), size 4, and the raw checksum into the commit header, and still excludes revoke blocks from that checksum stream. The existing durability order is retained: ordered data flush, recovery-start publication, descriptor/data/revoke records, commit flush, home checkpoint flush, then clean-superblock publication. This is a bounded commit primitive, not authorization to enable writable mounts; checksum-v2/v3 writing and crash-injection coverage are still required.
