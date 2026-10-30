@@ -131,7 +131,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  d:&mut D,m:&mut M,journal_superblock:&mut[u8],
  ordered_targets:&[u64],ordered_data:&[&[u8]],
  metadata_targets:&[u64],metadata_data:&[&[u8]],revoked_targets:&[u64],
- filesystem_uuid:&[u8;16],descriptor:&mut[u8],
+ descriptor:&mut[u8],
 )->Result<u32,Error>{
  if ordered_targets.len()!=ordered_data.len()||metadata_targets.len()!=metadata_data.len()
   ||metadata_targets.is_empty()||descriptor.len()<1024{return Err(Error::InvalidGeometry)}
