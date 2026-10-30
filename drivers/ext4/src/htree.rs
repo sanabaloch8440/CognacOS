@@ -814,3 +814,81 @@ mod tests {
         assert_eq!(validate_directory_leaf_checksum(&leaf, seed, true), Err(Error::InvalidChecksum));
     }
 }
+
+
+#[cfg(test)]
+mod large_dir_depth_tests {
+    use super::*;
+
+    struct Reader { blocks: [[u8; 1024]; 4] }
+    impl DirectoryBlockReader for Reader {
+        fn read_directory_block(&mut self, logical: u32, out: &mut [u8]) -> Result<(), Error> {
+            if out.len() != 1024 { return Err(Error::InvalidGeometry); }
+            out.copy_from_slice(self.blocks.get(logical as usize).ok_or(Error::OutOfRange)?);
+            Ok(())
+        }
+    }
+
+    fn index_node(block: &mut [u8; 1024], child: u32) {
+        block.fill(0);
+        block[4..6].copy_from_slice(&1024u16.to_le_bytes());
+        block[8..10].copy_from_slice(&127u16.to_le_bytes());
+        block[10..12].copy_from_slice(&1u16.to_le_bytes());
+        block[12..16].copy_from_slice(&child.to_le_bytes());
+    }
+
+    #[test]
+    fn traverses_large_dir_root_and_two_interior_levels() {
+        let mut root = [0u8; 1024];
+        root[0..4].copy_from_slice(&2u32.to_le_bytes());
+        root[4..6].copy_from_slice(&12u16.to_le_bytes());
+        root[6] = 1;
+        root[8] = b'.';
+        root[12..16].copy_from_slice(&2u32.to_le_bytes());
+        root[16..18].copy_from_slice(&1012u16.to_le_bytes());
+        root[18] = 2;
+        root[20..22].copy_from_slice(b"..");
+        root[28] = 1;
+        root[29] = 8;
+        root[30] = 2;
+        root[32..34].copy_from_slice(&124u16.to_le_bytes());
+        root[34..36].copy_from_slice(&1u16.to_le_bytes());
+        root[36..40].copy_from_slice(&1u32.to_le_bytes());
+
+        let mut reader = Reader { blocks: [[0; 1024]; 4] };
+        index_node(&mut reader.blocks[1], 2);
+        index_node(&mut reader.blocks[2], 3);
+        let mut scratch = [0u8; 1024];
+        let path = lookup_htree_path(
+            &mut reader, &root, 4, 0, false, 0, &mut scratch,
+        ).unwrap();
+        assert_eq!(path.depth, 2);
+        assert_eq!(path.blocks, [1, 2]);
+        assert_eq!(path.leaf_block, 3);
+    }
+
+    #[test]
+    fn rejects_large_dir_depth_without_valid_index_path() {
+        let mut root = [0u8; 1024];
+        root[0..4].copy_from_slice(&2u32.to_le_bytes());
+        root[4..6].copy_from_slice(&12u16.to_le_bytes());
+        root[6] = 1;
+        root[8] = b'.';
+        root[12..16].copy_from_slice(&2u32.to_le_bytes());
+        root[16..18].copy_from_slice(&1012u16.to_le_bytes());
+        root[18] = 2;
+        root[20..22].copy_from_slice(b"..");
+        root[28] = 1;
+        root[29] = 8;
+        root[30] = 2;
+        root[32..34].copy_from_slice(&124u16.to_le_bytes());
+        root[34..36].copy_from_slice(&1u16.to_le_bytes());
+        root[36..40].copy_from_slice(&9u32.to_le_bytes());
+        let mut reader = Reader { blocks: [[0; 1024]; 4] };
+        let mut scratch = [0u8; 1024];
+        assert_eq!(
+            lookup_htree_path(&mut reader, &root, 4, 0, false, 0, &mut scratch),
+            Err(Error::OutOfRange)
+        );
+    }
+}
