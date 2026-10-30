@@ -166,7 +166,7 @@ mod tests{
  #[test]fn leaf_split_rebalances_entries_and_refreshes_both_checksums(){
   let mut sb=[0u8;1024];put32(&mut sb,100,0x0400).unwrap();sb[373]=1;sb[104..120].copy_from_slice(&[0x22;16]);crate::update_superblock_checksum(&mut sb).unwrap();
   let fs_seed=crate::ext4_metadata_checksum_seed(&sb).unwrap();let seed=crate::checksum::ext4_inode_csum_seed(fs_seed,12,7);
-  let mut old=[0u8;1024];put32(&mut old,0,20).unwrap();put16(&mut old,4,512).unwrap();old[6]=4;old[7]=1;old[8..12].copy_from_slice(b"alpha");
+  let mut old=[0u8;1024];put32(&mut old,0,20).unwrap();put16(&mut old,4,512).unwrap();old[6]=5;old[7]=1;old[8..13].copy_from_slice(b"alpha");
   put32(&mut old,512,21).unwrap();put16(&mut old,516,500).unwrap();old[518]=5;old[519]=1;old[520..525].copy_from_slice(b"bravo");
   write_leaf_tail(&mut old,seed).unwrap();crate::update_directory_block_checksum(&sb,12,7,&mut old).unwrap();
   let mut new=[0u8;1024];let mut scratch=[0u8;1024];let mut map=[DirectoryMapEntry::default();8];
