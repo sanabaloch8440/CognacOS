@@ -1,10 +1,12 @@
 //! ext2/ext3/ext4 filesystem driver core for CognacOS.
+//! Writes are limited to existing allocated data blocks; journaled metadata
+//! mutation is available through bounded primitives but is not yet enabled by
+//! the filesystem mount facade.
+#![no_std]
+#![allow(dead_code)]
 
 pub mod jbd2;
 pub mod ops;
-//! Writes are limited to existing allocated data blocks; journaled metadata mutation is not implemented.
-#![no_std]
-#![allow(dead_code)]
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
