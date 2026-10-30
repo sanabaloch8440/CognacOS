@@ -155,7 +155,7 @@ pub fn initialize_regular_inode(
  inode.fill(0);
  put16(inode,0,meta.mode)?;put32(inode,8,meta.atime)?;put32(inode,12,meta.ctime)?;put32(inode,16,meta.mtime)?;
  put16(inode,26,meta.links)?;put32(inode,100,meta.generation)?;
- put16(inode,4,meta.uid as u16)?;put16(inode,24,meta.gid as u16)?;
+ put16(inode,2,meta.uid as u16)?;put16(inode,24,meta.gid as u16)?;
  if inode.len()>=124{put16(inode,120,(meta.uid>>16) as u16)?;put16(inode,122,(meta.gid>>16) as u16)?}
  if inode.len()>=130{put16(inode,128,if inode.len()>=132{4}else{0})?}
  if metadata_csum(sb)?{update_inode_checksum(sb,inode_number,inode)?}
