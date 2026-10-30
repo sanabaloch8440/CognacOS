@@ -53,7 +53,10 @@ static PS2_IRQ_ACTIVE:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicB
 static PS2_IRQ_ROUTE_READY:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static PS2_IRQ_VECTOR:core::sync::atomic::AtomicU8=core::sync::atomic::AtomicU8::new(0);
 static PS2_IRQ_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+#[cfg(debug_assertions)]
 static PS2_IRQ_DIAGNOSTIC_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+#[cfg(debug_assertions)]
+static KBD_INPUT_DIAGNOSTIC_COUNT:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static PS2_IRQ_IO_BASE:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static PS2_IRQ_GSI_BASE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
 static PS2_IRQ_GSI:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
@@ -210,10 +213,18 @@ fn enable_ps2_irq_route()->bool {
 fn poll_ps2_keyboard_input(){
  use core::sync::atomic::Ordering;
  if PS2_IRQ_ACTIVE.load(Ordering::Acquire) {
-  let count=PS2_IRQ_COUNT.load(Ordering::Acquire);
-  if count!=0 && PS2_IRQ_DIAGNOSTIC_COUNT.compare_exchange(0,count,Ordering::AcqRel,Ordering::Relaxed).is_ok() {
-   serial_write(b"PS/2 IRQ delivered: count=");serial_write_decimal(count as usize);
-   serial_write(b"; keyboard bytes drained by ISR; APIC EOI handled by HAL dispatcher.\\r\\n");
+  #[cfg(debug_assertions)]
+  {
+   let irq_count=PS2_IRQ_COUNT.load(Ordering::Acquire);
+   if irq_count!=0 && PS2_IRQ_DIAGNOSTIC_COUNT.compare_exchange(0,irq_count,Ordering::AcqRel,Ordering::Relaxed).is_ok() {
+    serial_write(b"PS/2 IRQ delivered: count=");serial_write_decimal(irq_count as usize);
+    serial_write(b"; keyboard bytes drained by ISR; APIC EOI handled by HAL dispatcher.\\r\\n");
+   }
+   let input_count=KBD_INPUT_COUNT.load(Ordering::Acquire);
+   if input_count!=0 && KBD_INPUT_DIAGNOSTIC_COUNT.compare_exchange(0,input_count,Ordering::AcqRel,Ordering::Relaxed).is_ok() {
+    serial_write(b"QEMU KEYBOARD INPUT: source=IRQ1/KbdClass count=");serial_write_hex(input_count);
+    serial_write(b"\\r\\n");
+   }
   }
   return;
  }
@@ -257,12 +268,15 @@ fn poll_ps2_keyboard_input(){
     let event=KeyboardEvent{virtual_key:e.virtual_key,scan_code:e.scan_code,unicode:e.unicode,key_up:e.key_up,extended:e.extended};
     publish_keyboard_event(event);
     let count=KBD_INPUT_COUNT.fetch_add(1,Ordering::Relaxed)+1;
-    serial_write(b"QEMU KEYBOARD INPUT: count=");serial_write_hex(count);
-    serial_write(b" VK=");serial_write_hex(e.virtual_key as u64);
-    serial_write(b" scan=");serial_write_hex(e.scan_code as u64);
-    serial_write(b" up=");serial_write_hex(e.key_up as u64);
-    if e.unicode!=0{serial_write(b" UTF16=");serial_write_hex(e.unicode as u64);}
-    serial_write(b"\\r\\n");
+    #[cfg(debug_assertions)]
+    {
+     serial_write(b"QEMU KEYBOARD INPUT: count=");serial_write_hex(count);
+     serial_write(b" VK=");serial_write_hex(e.virtual_key as u64);
+     serial_write(b" scan=");serial_write_hex(e.scan_code as u64);
+     serial_write(b" up=");serial_write_hex(e.key_up as u64);
+     if e.unicode!=0{serial_write(b" UTF16=");serial_write_hex(e.unicode as u64);}
+     serial_write(b"\\r\\n");
+    }
    }
   }
  }
