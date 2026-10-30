@@ -106,7 +106,12 @@ impl XhciPlatform for Platform<'_> {
         let status = unsafe { set(self.ext.interrupt_vector, enabled) };
         if status.code == 0 { Ok(()) } else { Err(()) }
     }
-}
+
+    fn set_bus_master(&mut self, enabled: bool) -> Result<(), ()> {
+        let set = self.dev.set_bus_master.ok_or(())?;
+        let status = unsafe { set(self.ext.device_object, enabled) };
+        if status.code == 0 { Ok(()) } else { Err(()) }
+    }}
 
 extern "C" fn xhci_isr(context: u64) -> bool {
     if context == 0 { return false; }
@@ -182,7 +187,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     if !hal.compatible() || hal.version != HAL_CONTRACT_VERSION
         || !dev.compatible() || dev.version != DEVICE_SERVICES_VERSION
         || hal.read_mmio_u32.is_none() || hal.write_mmio_u32.is_none()
-        || !dev.has_dma() || !dev.has_interrupts() { return DRIVER_NOT_SUPPORTED; }
+        || !dev.has_dma() || !dev.has_interrupts() || !dev.has_bus_master() { return DRIVER_NOT_SUPPORTED; }
     let mut platform = Platform { ext, hal, dev };
     let Some(caps) = read_capabilities(&mut platform, ext.mmio_length) else { return DRIVER_FAILED; };
     let slots = (ext.max_slots as u8).min(caps.max_slots);
