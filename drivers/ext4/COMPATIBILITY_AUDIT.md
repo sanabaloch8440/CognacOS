@@ -58,6 +58,10 @@ transaction. In particular, no checksum-protected descriptor, revoke, commit,
 or tag is currently replayed. The feature comparison below remains a statement
 about end-to-end replay, not availability of standalone checksum helpers.
 
+## External xattr owner binding (2026-10-30)
+
+Added bounded decoding of i_file_acl from a validated inode image, including the high 16 bits when the 64-bit incompat feature is enabled. The combined validator checks that the supplied physical block matches the inode pointer and binds the inode number/generation to the external-xattr checksum. The API explicitly requires the caller to validate the inode checksum first. It does not establish allocation, system-zone safety, or global h_refcount consistency; xattr blocks therefore remain excluded from journal replay ownership until those checks are integrated.
+
 ## Feature-by-feature comparison
 
 | Area | CognacOS | Linux master | Compatibility consequence |
