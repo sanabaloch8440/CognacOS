@@ -182,6 +182,11 @@ pub fn free_block(sb:&mut[u8],group:u32,block:u64,desc:&mut[u8],bitmap:&mut[u8])
  finish_group(sb,group,desc,bitmap,false)?;finish_super(sb)
 }
 
+fn decode_dir_rec_len(raw:u16,block_size:usize)->usize{
+ if block_size<65_536{raw as usize}
+ else if raw==0||raw==u16::MAX{block_size}
+ else{((raw as usize)&0xfffc)|(((raw as usize)&3)<<16)}
+}
 fn dir_limit(block:&[u8],has_tail:bool)->Result<usize,Error>{
  if has_tail{if block.len()<12{return Err(Error::Truncated)}Ok(block.len()-12)}else{Ok(block.len())}
 }
