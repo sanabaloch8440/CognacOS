@@ -509,6 +509,62 @@ pub fn build_system_metadata_ownership<D: ReadOnlyBlockDevice>(
     Ok(used)
 }
 
+/// Extend a system-metadata ownership manifest with directory data blocks.
+/// Each inode is read from its validated inode table entry; extent mappings
+/// are checked against the retained system-zone map and directory block
+/// checksums are verified before a block is authorized for journal replay.
+/// Caller supplies one inode buffer and two block-sized scratch buffers.
+pub fn add_directory_metadata_ownership<D: ReadOnlyBlockDevice>(
+    dev: &mut D, sb: &Superblock, raw_superblock: &[u8],
+    zones: &SystemZoneMap<'_>, directory_inodes: &[u32],
+    inode_buffer: &mut [u8], scratch_a: &mut [u8], scratch_b: &mut [u8],
+    entries: &mut [transaction::MetadataOwnership], used: &mut usize,
+) -> Result<(), Error> {
+    use transaction::{MetadataObjectKind, MetadataOwnership};
+    if raw_superblock.len() < SUPERBLOCK_BYTES || inode_buffer.len() != sb.inode_size as usize
+        || scratch_a.len() != sb.block_size as usize || scratch_b.len() != sb.block_size as usize
+        || *used > entries.len() { return Err(Error::InvalidGeometry); }
+    validate_superblock_checksum(raw_superblock)?;
+    let journal_inode = if u32at(raw_superblock, 92)? & 0x0004 != 0 {
+        Some(u32at(raw_superblock, 224)?)
+    } else { None };
+    for &ino in directory_inodes {
+        if ino == 0 || Some(ino) == journal_inode { return Err(Error::InvalidGeometry); }
+        read_inode(dev, sb, raw_superblock, ino, inode_buffer, scratch_a)?;
+        let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
+        if !inode.is_directory { return Err(Error::InvalidGeometry); }
+        let generation = u32at(inode_buffer, 100)?;
+        let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
+            .ok_or(Error::OutOfRange)? / sb.block_size as u64;
+        if blocks > u32::MAX as u64 { return Err(Error::OutOfRange); }
+        for logical in 0..blocks as u32 {
+            let physical = if sb.has_extents() {
+                map_extent_block_checked_zones_for_inode(
+                    dev, sb, raw_superblock, ino, generation, &inode_buffer[40..100],
+                    logical, scratch_a, zones, journal_inode,
+                )?
+            } else {
+                let block = map_legacy_block(dev, sb, &inode_buffer[40..100],
+                    logical as u64, scratch_a, scratch_b)?;
+                if let Some(block) = block { zones.validate_data_range(block, 1, sb.blocks_count)?; }
+                block
+            }.ok_or(Error::InvalidExtentTree)?;
+            read_block(dev, sb, physical, scratch_b)?;
+            if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+                validate_directory_block_checksum(raw_superblock, ino, generation, scratch_b)?;
+            }
+            if entries[..*used].iter().any(|entry| entry.block == physical) {
+                return Err(Error::InvalidGeometry);
+            }
+            if *used == entries.len() { return Err(Error::TransactionTooLarge); }
+            entries[*used] = MetadataOwnership {
+                block: physical, owner_inode: ino, generation, kind: MetadataObjectKind::Directory,
+            };
+            *used += 1;
+        }
+    }
+    Ok(())
+}
 /// Add the ext4 internal journal inode's data blocks to the protected system
 /// zones, matching Linux ext4's reserved-inode protection. The caller supplies
 /// an inode-sized buffer and two block-sized scratch buffers. External journal
