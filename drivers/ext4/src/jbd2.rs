@@ -143,6 +143,30 @@ pub fn recover<D:ReplayDevice,M:JournalBlockMap>(
  Ok(report)
 }
 
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct JournalInodeInfo{pub inode_number:u32,pub uuid:[u8;16]}
+/// Discover an internal JBD2 journal from the ext4 superblock. External
+/// journal devices are intentionally rejected until the storage stack can
+/// bind and validate the external device UUID and lifetime.
+pub fn discover_internal_journal(ext4_superblock:&[u8])->Result<JournalInodeInfo,Error>{
+ if ext4_superblock.len()<1024{return Err(Error::Truncated)}
+ let compat=u32::from_le_bytes(ext4_superblock[92..96].try_into().map_err(|_|Error::Truncated)?);
+ if compat&0x0004==0{return Err(Error::InvalidGeometry)}
+ let inode=u32::from_le_bytes(ext4_superblock[224..228].try_into().map_err(|_|Error::Truncated)?);
+ let external=u32::from_le_bytes(ext4_superblock[228..232].try_into().map_err(|_|Error::Truncated)?);
+ if inode==0||external!=0{return Err(Error::UnsupportedFeature)}
+ let mut uuid=[0u8;16];uuid.copy_from_slice(&ext4_superblock[208..224]);
+ Ok(JournalInodeInfo{inode_number:inode,uuid})
+}
+/// Bind the journal superblock to the UUID recorded by ext4. A zero ext4
+/// journal UUID means the filesystem did not pin a journal UUID.
+pub fn validate_journal_uuid(ext4_superblock:&[u8],journal_superblock:&[u8])->Result<(),Error>{
+ let info=discover_internal_journal(ext4_superblock)?;
+ if info.uuid.iter().all(|b|*b==0){return Ok(())}
+ if journal_superblock.len()<64||journal_superblock[48..64]!=info.uuid{return Err(Error::BadMagic)}
+ Ok(())
+}
+
 pub trait ReplayDevice{
  fn filesystem_blocks(&self)->u64;
  fn read_block(&mut self,block:u64,out:&mut[u8])->Result<(),()>;
@@ -195,6 +219,7 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
      }
     }
     JBD2_REVOKE_BLOCK=>{
+     if sb.feature_incompat&FEATURE_INCOMPAT_REVOKE==0{return Err(Error::UnsupportedFeature)}
      let count=be32(scratch,12)? as usize;let width=if sb.block_count_64{8}else{4};
      if count<16||count>bs||(count-16)%width!=0{return Err(Error::InvalidRevoke)}
      let n=(count-16)/width;if revoke_count.checked_add(n).ok_or(Error::OutOfRange)?>MAX_TRANSACTION_REVOKES{return Err(Error::TransactionTooLarge)}
@@ -202,7 +227,7 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
      tx_cursor=next_log(sb,tx_cursor);
     }
     JBD2_COMMIT_BLOCK=>{committed=true;tx_cursor=next_log(sb,tx_cursor);break}
-    _=>{malformed=true;break}
+    _=>return Err(Error::InvalidSequence)
    }
   }
   report.transactions_seen+=1;if malformed||!committed{report.stopped_on_incomplete=true;break}
