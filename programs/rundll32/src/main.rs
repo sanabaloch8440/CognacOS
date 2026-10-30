@@ -52,7 +52,7 @@ pub unsafe extern "system" fn rundll32_entry() -> ! {
         let tail=module_name[index+1..].iter().position(|c|*c==0).unwrap_or(0);
         let count=tail;
         if count==0 || count>=entry_name.len(){unsafe{ExitProcess(2)}}
-        entry_name[..count].copy_from_slice(&module_name[index+1..index+1+count]);
+        let mut j=0usize; while j<count { entry_name[j]=module_name[index+1+j]; j+=1; }
         module_name[index]=0;
     } else {
         p=match unsafe{token(p,&mut entry_name)} {Ok(v)=>v,Err(_)=>unsafe{ExitProcess(2)}};
