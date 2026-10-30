@@ -66,6 +66,7 @@ pub unsafe extern "system" fn rundll32_entry() -> ! {
         if entry_name[ei]>0x7f {unsafe{FreeLibrary(module);ExitProcess(2)}}
         entry_ansi[ei]=entry_name[ei] as u8; ei+=1;
     }
+    let mut wide_entry=entry_name[ei.saturating_sub(1)]==b'W' as u16;
     let address=if entry_name[0]==b'#' as u16 {
         let mut ordinal=0u16;
         let mut i=1usize;
@@ -77,12 +78,41 @@ pub unsafe extern "system" fn rundll32_entry() -> ! {
         if ordinal==0 {unsafe{FreeLibrary(module);ExitProcess(2)}}
         unsafe{GetProcAddress(module,ordinal as usize as *const c_char)}
     } else {
-        unsafe{GetProcAddress(module,entry_ansi.as_ptr().cast())}
+        let explicit_suffix=entry_ansi[ei.saturating_sub(1)]==b'W' || entry_ansi[ei.saturating_sub(1)]==b'A';
+        let mut found=core::ptr::null_mut();
+        if !explicit_suffix && ei+1<entry_ansi.len() {
+            entry_ansi[ei]=b'W'; entry_ansi[ei+1]=0;
+            found=unsafe{GetProcAddress(module,entry_ansi.as_ptr().cast())};
+            if !found.is_null(){wide_entry=true;}
+            if found.is_null(){
+                entry_ansi[ei]=b'A'; entry_ansi[ei+1]=0;
+                found=unsafe{GetProcAddress(module,entry_ansi.as_ptr().cast())};
+            }
+        }
+        if found.is_null(){
+            entry_ansi[ei]=0;
+            found=unsafe{GetProcAddress(module,entry_ansi.as_ptr().cast())};
+        }
+        found
     };
     if address.is_null(){unsafe{FreeLibrary(module);ExitProcess(1)}}
-    type RundllEntry=unsafe extern "system" fn(*mut c_void,*mut c_void,*const u16,i32);
+    let mut ansi_tail=[0u8;8192];
+    let argument_pointer:*const c_void;
+    if wide_entry {
+        argument_pointer=p.cast();
+    } else {
+        let mut n=0usize;
+        while unsafe{*p.add(n)}!=0 {
+            let ch=unsafe{*p.add(n)};
+            if ch>0x7f || n+1>=ansi_tail.len(){unsafe{FreeLibrary(module);ExitProcess(2)}}
+            ansi_tail[n]=ch as u8; n+=1;
+        }
+        ansi_tail[n]=0;
+        argument_pointer=ansi_tail.as_ptr().cast();
+    }
+    type RundllEntry=unsafe extern "system" fn(*mut c_void,*mut c_void,*const c_void,i32);
     let callback:RundllEntry=unsafe{core::mem::transmute(address)};
-    unsafe{callback(core::ptr::null_mut(),module,p,1);FreeLibrary(module);ExitProcess(0)}
+    unsafe{callback(core::ptr::null_mut(),module,argument_pointer,1);FreeLibrary(module);ExitProcess(0)}
 }
 
 #[cfg(target_os = "windows")]
