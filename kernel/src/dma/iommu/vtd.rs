@@ -204,7 +204,7 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
   return Err(STATUS_INVALID_PARAMETER)
  };
- let entry=contexts[bus].virtual_address.add(id.devfn()*2);
+ let entry=unsafe{contexts[bus].virtual_address.add(id.devfn()*2)};
  unsafe{core::ptr::write_volatile(entry,low);core::ptr::write_volatile(entry.add(1),high)};
  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[bus].physical,4096)}!=0{
   unsafe{core::ptr::write_volatile(entry,0);core::ptr::write_volatile(entry.add(1),0)};
@@ -212,12 +212,12 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
   return Err(STATUS_NOT_SUPPORTED)
  }
+ domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va};
  if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{
-  // Keep all published table pages pinned: hardware may have cached a partial
-  // context update, so freeing them here would create a DMA use-after-free.
+  // Keep the domain discoverable and all published table pages pinned: hardware
+  // may have cached a partial context update, so freeing them is unsafe.
   return Err(STATUS_IO_TIMEOUT)
  }
- domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va};
  Ok(did)
 }
 
