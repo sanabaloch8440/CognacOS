@@ -74,8 +74,8 @@ replay or writable mounts.
 The implementation rejects async-commit and fast-commit journals. The replay/commit path is bounded to 256 metadata tags and 256 revoke
 records per replay/transaction. A transaction must fit one descriptor block.
 The caller must provide correct journal-inode extent mapping and serialize all
-writers. External extent-tree split/merge, indexed htree directories, external
-journals, and checksum-enabled journal writing is not supported by these routines.
+writers. External extent-tree split/merge, HTree insertion/splitting, external
+journals, and full writable-mount integration are not supported by these routines.
 
 The new CheckedExtFilesystem mount facade builds and retains the system-zone map and invokes the reserved-journal-inode pass using caller-owned range and scratch buffers. The transaction coordinator is constructed by the mount manager with a MetadataTargetPolicy that must validate exact metadata ownership (superblock/GDT/bitmap/inode-table/directory/inode blocks) and must exclude the journal's own physical blocks from metadata targets. Transactions are serialized by exclusive borrowing and do not allocate memory. `recover_internal_journal` is a separate pre-mount recovery operation: it requires a writable partition-bounded BlockDevice, a complete caller-provided journal logical-to-physical map, and block-sized replay buffers. After successful recovery, mount again through CheckedExtFilesystem. The legacy ExtFilesystem facade remains available for compatibility but does not provide this checked mapping surface. The current ExtFilesystem mount facade rejects **all writable mounts**. This
 is a deliberate safety interlock: the current data-write path does not yet
@@ -85,9 +85,10 @@ one mount-owned transaction coordinator. Enabling writable mounts before those
 pieces are complete could overwrite filesystem metadata or leave inconsistent
 metadata after a crash.
 
-Read-only support is also a strict feature subset. In particular, indexed
-HTree directories and several common Linux ext4 feature flags are not yet
-implemented. See [COMPATIBILITY_AUDIT.md](COMPATIBILITY_AUDIT.md) for the
+Read-only support is also a strict feature subset. DIR_INDEX is now accepted
+for read-only parsing, with checksum-validated HTree root/interior-node traversal
+and leaf selection. Filename hashing, collision-chain continuation, VFS name
+comparison, and indexed-directory mutation are not yet integrated. See [COMPATIBILITY_AUDIT.md](COMPATIBILITY_AUDIT.md) for the
 feature-by-feature comparison against Linux master, the corruption-risk review,
 and the milestones required before writable mounts can be enabled.
 
