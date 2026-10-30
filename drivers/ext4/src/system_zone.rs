@@ -812,6 +812,189 @@ pub fn discover_allocated_directories<D: ReadOnlyBlockDevice>(
     Ok(found)
 }
 
+
+/// Validate the namespace graph for a bounded set of allocated directory
+/// inodes. `parents` is parallel to `directory_inodes` and receives each
+/// directory's unique parent inode. Root inode 2 must be present and parent
+/// itself. This pass deliberately rejects EXT4_INDEX_FL directories until the
+/// HTree-aware namespace iterator is used; it never interprets dx nodes as
+/// ordinary dirents.
+pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
+    dev: &mut D,
+    sb: &Superblock,
+    raw_superblock: &[u8],
+    zones: &SystemZoneMap<'_>,
+    directory_inodes: &[u32],
+    parents: &mut [u32],
+    inode_buffer: &mut [u8],
+    scratch_a: &mut [u8],
+    scratch_b: &mut [u8],
+) -> Result<(), Error> {
+    const ROOT_INODE: u32 = 2;
+    const EXT4_INDEX_FL: u32 = 0x0000_1000;
+    const FT_DIR: u8 = 2;
+    if raw_superblock.len() < SUPERBLOCK_BYTES
+        || directory_inodes.is_empty() || parents.len() != directory_inodes.len()
+        || inode_buffer.len() != sb.inode_size as usize
+        || scratch_a.len() != sb.block_size as usize
+        || scratch_b.len() != sb.block_size as usize {
+        return Err(Error::InvalidGeometry);
+    }
+    validate_superblock_checksum(raw_superblock)?;
+    if directory_inodes.iter().filter(|&&ino| ino == ROOT_INODE).count() != 1 {
+        return Err(Error::InvalidGeometry);
+    }
+    for i in 0..directory_inodes.len() {
+        let ino = directory_inodes[i];
+        if ino == 0 || ino > sb.inodes_count
+            || directory_inodes[..i].contains(&ino) {
+            return Err(Error::InvalidGeometry);
+        }
+        parents[i] = 0;
+    }
+
+    // Pass one: derive a unique parent for each child directory from actual
+    // directory entries. File-type-less filesystems resolve the target inode.
+    for parent_index in 0..directory_inodes.len() {
+        let parent_ino = directory_inodes[parent_index];
+        validate_inode_allocated(dev, sb, raw_superblock, parent_ino, scratch_a)?;
+        read_inode(dev, sb, raw_superblock, parent_ino, inode_buffer, scratch_a)?;
+        let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
+        if !inode.is_directory || inode.flags & EXT4_INDEX_FL != 0 {
+            return Err(Error::UnsupportedFormat);
+        }
+        let generation = u32at(inode_buffer, 100)?;
+        let uses_extents = inode.flags & 0x0008_0000 != 0;
+        let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
+            .ok_or(Error::OutOfRange)? / sb.block_size as u64;
+        if blocks == 0 || blocks > u32::MAX as u64 { return Err(Error::InvalidGeometry); }
+        for logical in 0..blocks as u32 {
+            let physical = if uses_extents {
+                map_extent_block_checked_zones_for_inode(
+                    dev, sb, raw_superblock, parent_ino, generation,
+                    &inode_buffer[40..100], logical, scratch_a, zones, None,
+                )?
+            } else {
+                map_legacy_block(dev, sb, &inode_buffer[40..100],
+                    logical as u64, scratch_a, scratch_b)?
+            }.ok_or(Error::InvalidExtentTree)?;
+            read_block(dev, sb, physical, scratch_b)?;
+            if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+                validate_directory_block_checksum(raw_superblock, parent_ino, generation, scratch_b)?;
+            }
+            let mut off = 0usize;
+            while off < scratch_b.len() {
+                if scratch_b.len() - off < 8 { return Err(Error::InvalidDirectoryEntry); }
+                let child_ino = u32at(scratch_b, off)?;
+                let rec_len = u16at(scratch_b, off + 4)? as usize;
+                let name_len = scratch_b[off + 6] as usize;
+                let file_type = scratch_b[off + 7];
+                if rec_len < 8 || rec_len & 3 != 0 || rec_len > scratch_b.len() - off
+                    || name_len > rec_len - 8 {
+                    return Err(Error::InvalidDirectoryEntry);
+                }
+                if child_ino != 0 && child_ino <= sb.inodes_count {
+                    let name = &scratch_b[off + 8..off + 8 + name_len];
+                    if name != b"." && name != b".." {
+                        let is_dir = if sb.feature_incompat & INCOMPAT_FILETYPE != 0 {
+                            file_type == FT_DIR
+                        } else {
+                            read_inode(dev, sb, raw_superblock, child_ino, inode_buffer, scratch_a)?;
+                            Inode::parse(inode_buffer, sb.inode_size, sb.revision,
+                                sb.feature_ro_compat)?.is_directory
+                        };
+                        if is_dir {
+                            let child_index = directory_inodes.iter().position(|&v| v == child_ino)
+                                .ok_or(Error::InvalidGeometry)?;
+                            if child_ino == ROOT_INODE || parents[child_index] != 0 {
+                                return Err(Error::InvalidGeometry);
+                            }
+                            parents[child_index] = parent_ino;
+                        }
+                    }
+                }
+                off += rec_len;
+            }
+        }
+    }
+    let root_index = directory_inodes.iter().position(|&ino| ino == ROOT_INODE)
+        .ok_or(Error::InvalidGeometry)?;
+    parents[root_index] = ROOT_INODE;
+
+    // Every allocated directory in the supplied discovery set must be
+    // reachable by a unique parent chain ending at root. A bounded walk
+    // detects cycles without a second visited bitmap.
+    for start in 0..directory_inodes.len() {
+        if parents[start] == 0 { return Err(Error::InvalidGeometry); }
+        let mut current = directory_inodes[start];
+        let mut steps = 0usize;
+        while current != ROOT_INODE {
+            let idx = directory_inodes.iter().position(|&ino| ino == current)
+                .ok_or(Error::InvalidGeometry)?;
+            current = parents[idx];
+            steps += 1;
+            if current == 0 || steps > directory_inodes.len() {
+                return Err(Error::InvalidGeometry);
+            }
+        }
+    }
+
+    // Pass two: require exactly one self "." and one ".." entry matching
+    // the derived parent. This catches stale parent pointers and duplicate
+    // dot entries, independently of directory-entry traversal order.
+    for index in 0..directory_inodes.len() {
+        let ino = directory_inodes[index];
+        validate_inode_allocated(dev, sb, raw_superblock, ino, scratch_a)?;
+        read_inode(dev, sb, raw_superblock, ino, inode_buffer, scratch_a)?;
+        let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
+        let generation = u32at(inode_buffer, 100)?;
+        let uses_extents = inode.flags & 0x0008_0000 != 0;
+        let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
+            .ok_or(Error::OutOfRange)? / sb.block_size as u64;
+        let mut dot_count = 0usize;
+        let mut dotdot_count = 0usize;
+        for logical in 0..blocks as u32 {
+            let physical = if uses_extents {
+                map_extent_block_checked_zones_for_inode(
+                    dev, sb, raw_superblock, ino, generation, &inode_buffer[40..100],
+                    logical, scratch_a, zones, None,
+                )?
+            } else {
+                map_legacy_block(dev, sb, &inode_buffer[40..100],
+                    logical as u64, scratch_a, scratch_b)?
+            }.ok_or(Error::InvalidExtentTree)?;
+            read_block(dev, sb, physical, scratch_b)?;
+            if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+                validate_directory_block_checksum(raw_superblock, ino, generation, scratch_b)?;
+            }
+            let mut off = 0usize;
+            while off < scratch_b.len() {
+                if scratch_b.len() - off < 8 { return Err(Error::InvalidDirectoryEntry); }
+                let target = u32at(scratch_b, off)?;
+                let rec_len = u16at(scratch_b, off + 4)? as usize;
+                let name_len = scratch_b[off + 6] as usize;
+                if rec_len < 8 || rec_len & 3 != 0 || rec_len > scratch_b.len() - off
+                    || name_len > rec_len - 8 {
+                    return Err(Error::InvalidDirectoryEntry);
+                }
+                if target != 0 {
+                    let name = &scratch_b[off + 8..off + 8 + name_len];
+                    if name == b"." {
+                        dot_count += 1;
+                        if target != ino { return Err(Error::InvalidGeometry); }
+                    } else if name == b".." {
+                        dotdot_count += 1;
+                        if target != parents[index] { return Err(Error::InvalidGeometry); }
+                    }
+                }
+                off += rec_len;
+            }
+        }
+        if dot_count != 1 || dotdot_count != 1 { return Err(Error::InvalidDirectoryEntry); }
+    }
+    Ok(())
+}
+
 /// Add the ext4 internal journal inode's data blocks to the protected system
 /// zones, matching Linux ext4's reserved-inode protection. The caller supplies
 /// an inode-sized buffer and two block-sized scratch buffers. External journal
