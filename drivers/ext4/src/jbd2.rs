@@ -247,8 +247,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
   descriptor[16..20].copy_from_slice(&transaction_crc.to_be_bytes());
  }else if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
   descriptor[12]=4;descriptor[13]=4;
-  let sum=crate::checksum::jbd2_commit_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;  descriptor[16..20].copy_from_slice(&sum.to_be_bytes());
- }
+  let sum=crate::checksum::jbd2_commit_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;  descriptor[16..20].copy_from_slice(&sum.to_be_bytes()); }
  let commit_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
  d.write_block(commit_phys,descriptor).map_err(|_|Error::Io)?;
  d.flush().map_err(|_|Error::Io)?;
@@ -497,8 +496,7 @@ mod tests{
  } struct Mem{blocks:[[u8;1024];64],flushes:u32}
  impl ReplayDevice for Mem{
   fn filesystem_blocks(&self)->u64{64}  fn read_block(&mut self,n:u64,out:&mut[u8])->Result<(),()>{let b=self.blocks.get(n as usize).ok_or(())?;if out.len()!=1024{return Err(())}out.copy_from_slice(b);Ok(())}
-  fn write_block(&mut self,n:u64,data:&[u8])->Result<(),()>{let b=self.blocks.get_mut(n as usize).ok_or(())?;if data.len()!=1024{return Err(())}b.copy_from_slice(data);Ok(())}
-  fn flush(&mut self)->Result<(),()>{self.flushes+=1;Ok(())}
+  fn write_block(&mut self,n:u64,data:&[u8])->Result<(),()>{let b=self.blocks.get_mut(n as usize).ok_or(())?;if data.len()!=1024{return Err(())}b.copy_from_slice(data);Ok(())}  fn flush(&mut self)->Result<(),()>{self.flushes+=1;Ok(())}
  }
  fn header(b:&mut[u8;1024],kind:u32,seq:u32){b.fill(0);b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&kind.to_be_bytes());b[8..12].copy_from_slice(&seq.to_be_bytes());}
  #[test]fn replay_applies_only_a_complete_committed_transaction(){
@@ -582,13 +580,14 @@ mod tests{
   let uuid=[0x39;16];
   let mut js=[0u8;1024];js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());js[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
   js[12..16].copy_from_slice(&1024u32.to_be_bytes());js[16..20].copy_from_slice(&64u32.to_be_bytes());js[20..24].copy_from_slice(&1u32.to_be_bytes());js[24..28].copy_from_slice(&31u32.to_be_bytes());
-  js[40..44].copy_from_slice(&feature.to_be_bytes());js[48..64].copy_from_slice(&uuid);js[80]=4;
+  js[40..44].copy_from_slice(&(feature|FEATURE_INCOMPAT_REVOKE).to_be_bytes());js[48..64].copy_from_slice(&uuid);js[80]=4;
   update_superblock_checksum(&mut js,mode).unwrap();
   let mut metadata=[0x5au8;1024];metadata[..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
   let mut descriptor=[0u8;1024];
-  assert_eq!(commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&mut descriptor),Ok(31));
+  assert_eq!(commit_ordered_with_revokes(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&[11],&mut descriptor),Ok(31));
   assert_eq!(&d.blocks[2][..4],&[0;4]);
   assert!(verify_metadata_checksum(&uuid,&d.blocks[1]));
+  assert!(verify_metadata_checksum(&uuid,&d.blocks[3]));
   let stored=if mode==ChecksumMode::V2{
    assert_ne!(u16::from_be_bytes([d.blocks[1][18],d.blocks[1][19]]) as u32 & TAG_ESCAPE,0);
    u16::from_be_bytes([d.blocks[1][16],d.blocks[1][17]]) as u32
@@ -597,7 +596,7 @@ mod tests{
    be32(&d.blocks[1],24).unwrap()
   };
   assert!(verify_tag_checksum(&uuid,31,&d.blocks[2],stored,mode));
-  assert!(verify_commit_checksum(&uuid,&d.blocks[3]));
+  assert!(verify_commit_checksum(&uuid,&d.blocks[4]));
   assert_eq!(JournalSuperblock::parse(&js).unwrap().sequence,32);
   // Recreate the pre-checkpoint dirty journal superblock and run the same
   // replay scanner against the exact records emitted by the writer.
