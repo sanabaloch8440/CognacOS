@@ -15,7 +15,7 @@ const MAX: usize = 4096;
 // array lets free_pages invalidate all CPUs once before recycling any backing frame.
 const MAX_EXTENT_PAGES: usize = 65536;
 const MAX_RECLAIM_TABLES: usize = 4096;
-const DRIVER_SLOT_OFFSETS:[u64;8]=[0xc000_0000,0xd000_0000,0xe000_0000,0xf000_0000,0x1_4000_0000,0x1_5000_0000,0x1_6000_0000,0x1_8000_0000];
+const DRIVER_SLOT_OFFSETS:[u64;12]=[0xc000_0000,0xd000_0000,0xe000_0000,0xf000_0000,0x1_1000_0000,0x1_2000_0000,0x1_3000_0000,0x1_4000_0000,0x1_5000_0000,0x1_6000_0000,0x1_7000_0000,0x1_8000_0000];
 const DRIVER_SLOT_SIZE:u64=0x0800_0000;
 const DRIVER_SLOT_PAGES:usize=(DRIVER_SLOT_SIZE/PAGE) as usize;
 fn is_driver_slot_base(address:u64)->bool{DRIVER_SLOT_OFFSETS.iter().any(|offset|BASE+*offset==address)}
@@ -92,7 +92,7 @@ pub fn initialize(root: u64) -> Result<(), Error> {
   let slot=unsafe{(root as *const u64).add(ix(BASE)[0]).read()};
   OWN_ROOT_SLOT.store(slot&P==0,Ordering::Release);
  }
- // Keep all eight 128 MiB fixed-base native driver image slots unavailable to ordinary kernel allocations.
+ // Keep all twelve 128 MiB fixed-base native driver image slots unavailable to ordinary kernel allocations.
  // Each fixed-base driver may occupy at most 32 MiB within its reserved slot.
  let bits=unsafe{&mut *BITS.0.get()};
  for offset in DRIVER_SLOT_OFFSETS { let start=(offset/PAGE) as usize;for n in start..start+DRIVER_SLOT_PAGES{bits[n/64]|=1u64<<(n%64);} }
