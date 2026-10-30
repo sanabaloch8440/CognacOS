@@ -759,14 +759,18 @@ struct WindowsSyscallCpuLocal {
     scratch_rdx: u64,
     stack_page: u64,
     user_gs_base: u64,
+    // Must remain at byte 48; HAL uses this shared pointer while GS addresses
+    // this syscall-local block rather than CpuLocal directly.
+    cpu_local: u64,
 }
 impl WindowsSyscallCpuLocal {
     const fn new() -> Self {
-        Self { user_rsp: 0, kernel_rsp: 0, scratch_rax: 0, scratch_rdx: 0, stack_page: 0, user_gs_base: 0 }
+        Self { user_rsp: 0, kernel_rsp: 0, scratch_rax: 0, scratch_rdx: 0, stack_page: 0, user_gs_base: 0, cpu_local: 0 }
     }
 }
 static mut WINDOWS_SYSCALL_CPUS: [WindowsSyscallCpuLocal; crate::hal::MAX_CPUS] =
     [const { WindowsSyscallCpuLocal::new() }; crate::hal::MAX_CPUS];
+const _: () = assert!(core::mem::offset_of!(WindowsSyscallCpuLocal, cpu_local) == crate::hal::SYSCALL_CPU_LOCAL_POINTER_OFFSET);
 
 global_asm!(r#"
     .section .text
@@ -967,7 +971,9 @@ pub fn kernel_stack_top(cpu:usize)->Option<u64>{
 pub unsafe fn initialize_windows_syscall_abi(cpu: usize) -> Result<(), ()> {
     if cpu >= crate::hal::MAX_CPUS { return Err(()); }
     let local = unsafe { core::ptr::addr_of_mut!(WINDOWS_SYSCALL_CPUS[cpu]) };
+    let cpu_local = crate::hal::cpu_local(cpu).map_err(|_| ())? as *const crate::hal::CpuLocal as u64;
     unsafe {
+        (*local).cpu_local = cpu_local;
         if (*local).stack_page != 0 {
             let stack_base = crate::ntoskrnl::mm::physical::direct_map_address((*local).stack_page).ok_or(())?;
             (*local).kernel_rsp = stack_base + 4096;
