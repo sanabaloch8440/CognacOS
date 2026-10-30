@@ -796,6 +796,7 @@ cognacos_windows_syscall_entry:
     cld
     # GS:[0] saves user RSP; GS:[8] is this CPU's private kernel stack top.
     mov qword ptr gs:[0], rsp
+    mov rsp, qword ptr gs:[8]
     # Synthesize the privilege-return frame consumed by IRETQ.
     # IRETQ frame order from top: RIP, CS, RFLAGS, RSP, SS.
     push 0x1b
