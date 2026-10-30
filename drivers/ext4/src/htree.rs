@@ -501,6 +501,64 @@ pub fn iterate_htree_directory<R: DirectoryBlockReader, F: FnMut(DirectoryEntryV
     }
 }
 
+/// Enumerate an indexed directory while proving that every logical leaf is
+/// visited at most once. The caller supplies a fixed-capacity leaf set; an
+/// undersized set, duplicate leaf pointer, invalid index path, bad dx checksum,
+/// or bad leaf checksum fails closed. This also rejects duplicate references
+/// to empty leaves, which an entry-only callback cannot detect.
+pub fn iterate_htree_directory_unique<
+    R: DirectoryBlockReader,
+    F: FnMut(DirectoryEntryView<'_>) -> Result<bool, Error>,
+>(
+    reader: &mut R, root: &[u8], directory_blocks: u32, total_inodes: u32,
+    hash_seed: [u32; 4], siphash_key: Option<[u64; 2]>, hash_unsigned: bool,
+    metadata_csum: bool, inode_seed: u32, scratch: &mut [u8],
+    visited_leaves: &mut [u32], mut visitor: F,
+) -> Result<usize, Error> {
+    if root.len() < 1024 || scratch.len() != root.len() || directory_blocks < 2 {
+        return Err(Error::InvalidGeometry);
+    }
+    let version = effective_hash_version(validate_dx_root(root)?.0, hash_unsigned)?;
+    let _ = parse_dx_map(root, DX_ROOT_ENTRIES_OFFSET, metadata_csum, inode_seed)?;
+    for offset in [0usize, 12usize] {
+        let inode = le32(root, offset)?;
+        let name_len = root[offset + 6] as usize;
+        let name = root.get(offset + 8..offset + 8 + name_len)
+            .ok_or(Error::InvalidDirectoryEntry)?;
+        if inode == 0 || inode > total_inodes || name_len == 0 {
+            return Err(Error::InvalidDirectoryEntry);
+        }
+        if !visitor(DirectoryEntryView {
+            inode, file_type: root[offset + 7], name,
+            hash: DirectoryHash { major: 0, minor: 0 },
+            logical_block: 0, offset: offset as u32,
+        })? { return Ok(0); }
+    }
+
+    let mut path = lookup_htree_path(
+        reader, root, directory_blocks, 0, metadata_csum, inode_seed, scratch,
+    )?;
+    let mut visited = 0usize;
+    loop {
+        let leaf = path.leaf_block;
+        if leaf == 0 || leaf >= directory_blocks || visited_leaves[..visited].contains(&leaf) {
+            return Err(Error::InvalidDirectoryEntry);
+        }
+        if visited == visited_leaves.len() { return Err(Error::TransactionTooLarge); }
+        visited_leaves[visited] = leaf;
+        visited += 1;
+        reader.read_directory_block(leaf, scratch)?;
+        if !visit_leaf(
+            scratch, leaf, metadata_csum, inode_seed, total_inodes, version,
+            hash_seed, siphash_key, &mut visitor,
+        )? { return Ok(visited); }
+        if !next_htree_leaf(
+            reader, root, directory_blocks, &mut path, 0, true,
+            metadata_csum, inode_seed, scratch,
+        )? { return Ok(visited); }
+    }
+}
+
 /// Compact caller-owned index for Linux-style hash-ordered readdir.
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct DirectoryHashMapEntry{
@@ -692,6 +750,42 @@ mod tests {
         assert_eq!(found.leaf_block, 3);
         fixture.blocks[1][20] ^= 1;
         assert_eq!(lookup_htree_leaf(&mut fixture, &root, 4, 0x5000, true, seed, &mut scratch), Err(Error::InvalidChecksum));
+    }
+
+    #[test]
+    fn unique_iterator_rejects_duplicate_leaf_pointers_including_empty_leaves() {
+        let mut root = [0u8; 1024];
+        make_root(&mut root, 0, false);
+        root[44..48].copy_from_slice(&2u32.to_le_bytes());
+        let mut fixture = Fixture { blocks: [[0; 1024]; 4] };
+        fixture.blocks[2][0..4].copy_from_slice(&0u32.to_le_bytes());
+        fixture.blocks[2][4..6].copy_from_slice(&1024u16.to_le_bytes());
+        let mut scratch = [0u8; 1024];
+        let mut visited = [0u32; 4];
+        let result = iterate_htree_directory_unique(
+            &mut fixture, &root, 4, 32, [0; 4], None, true, false, 0,
+            &mut scratch, &mut visited, |_| Ok(true),
+        );
+        assert_eq!(result, Err(Error::InvalidDirectoryEntry));
+        assert_eq!(visited[0], 2);
+    }
+
+    #[test]
+    fn unique_iterator_requires_bounded_leaf_tracking_storage() {
+        let mut root = [0u8; 1024];
+        make_root(&mut root, 0, false);
+        let mut fixture = Fixture { blocks: [[0; 1024]; 4] };
+        for block in &mut fixture.blocks[2..4] {
+            block[0..4].copy_from_slice(&0u32.to_le_bytes());
+            block[4..6].copy_from_slice(&1024u16.to_le_bytes());
+        }
+        let mut scratch = [0u8; 1024];
+        let mut visited = [0u32; 1];
+        let result = iterate_htree_directory_unique(
+            &mut fixture, &root, 4, 32, [0; 4], None, true, false, 0,
+            &mut scratch, &mut visited, |_| Ok(true),
+        );
+        assert_eq!(result, Err(Error::TransactionTooLarge));
     }
 
     #[test]
