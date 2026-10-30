@@ -177,7 +177,7 @@ jobs:
       - name: Test ext4 directory hashes against Linux reference vectors
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib linux_reference_tests
       - name: Test ext4 HTree collision lookup and indexed readdir
-        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib name_lookup_follows_hash_collision
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib collision_lookup_crosses
       - name: Test ext4 HTree leaf and index node splitting
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib htree_mut::tests
       - name: Test ext4 HTree malformed indexes and directory leaf checksums
