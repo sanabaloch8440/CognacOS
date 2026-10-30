@@ -382,3 +382,8 @@ Still outstanding: derive the checksum seed from the mounted superblock in the c
 ## External xattr allocation follow-up (2026-10-30)
 
 Added a checked-mount path that verifies the owner inode allocation bit and xattr physical-block allocation bit through the corresponding initialized group bitmaps, validating group-descriptor and bitmap checksums when metadata_csum is enabled. Uninitialized bitmap groups fail closed. This is a per-pointer allocation proof only: shared-block reference counts are not reconciled across every allocated inode, and xattr blocks remain excluded from the JBD2 replay ownership manifest. Build/test status is unverified for this change.
+
+
+## External xattr reference reconciliation (2026-10-30)
+
+Added a bounded inventory-based reconciler that checks unique inode/block references and requires each observed block's on-disk `h_refcount` to equal the number of inventory entries referencing it. Tests cover matching shared/exclusive counts, mismatches, and duplicate owner records. The inventory must be complete and independently validated; automatic all-inode discovery is still outstanding. No xattr block is newly authorized for journal replay.
