@@ -38,7 +38,7 @@ static mut PREEMPTION_TEST_STACKS:[[u8;8192];2]=[[0;8192];2];
 static PREEMPTION_TEST_BUSY_DONE:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static PREEMPTION_TEST_OBSERVED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 static PREEMPTION_TEST_PROGRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
-static PREEMPTION_ENABLED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+static PREEMPTION_ENABLED:[core::sync::atomic::AtomicBool;crate::hal::MAX_CPUS]=[const{core::sync::atomic::AtomicBool::new(false)};crate::hal::MAX_CPUS];
 
 pub fn current_cpu_index()->Result<usize,ThreadError>{cpu_index()}
 fn cpu_index()->Result<usize,ThreadError>{
@@ -490,19 +490,26 @@ pub fn terminate_current_process_from_fault(pid:u64,exit_code:u64)->! {
 /// Timer-ISR entry: preempt only when this CPU has a runnable peer. The
 /// interrupt frame remains on the interrupted thread's stack while switched out.
 pub fn set_preemption_enabled(enabled:bool){
-    PREEMPTION_ENABLED.store(enabled,core::sync::atomic::Ordering::Release);
+    // The current self-test validates BSP timer preemption only. Keep the gate
+    // per CPU so an unvalidated AP timer cannot switch a thread context.
+    if let Ok(cpu)=cpu_index() {
+        if cpu<crate::hal::MAX_CPUS {
+            PREEMPTION_ENABLED[cpu].store(enabled,core::sync::atomic::Ordering::Release);
+        }
+    }
 }
 pub fn preempt_from_timer_interrupt(){
     // KeSetEvent(Wait=TRUE) must be immediately followed by KeWaitXxx without
     // an intervening local context switch. The wait entry consumes the token.
     if crate::ntoskrnl::ke::runtime::ke_preemption_deferred(){return}
+    let Ok(cpu)=cpu_index() else{return};
+    if cpu>=crate::hal::MAX_CPUS{return}
     let Some(id)=current_thread_id() else{return};
     let pid=current_process_id();
     if pid!=0 && crate::process::query(pid).is_some_and(|p|p.state==crate::process::ProcessState::Exited) {
         exit_current();
     }
-    if !PREEMPTION_ENABLED.load(core::sync::atomic::Ordering::Acquire){return}
-    let Ok(cpu)=cpu_index() else{return};
+    if !PREEMPTION_ENABLED[cpu].load(core::sync::atomic::Ordering::Acquire){return}
     if crate::scheduler::has_runnable_for_cpu(cpu,id){let _=reschedule(false);}
 }
 /// Wake a blocked thread. If it is still running, remember the wake to close enqueue/block races.
