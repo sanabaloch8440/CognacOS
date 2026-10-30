@@ -224,6 +224,57 @@ pub fn validate_external_xattr_checksum(
 }
 
 
+/// One independently validated inode reference to an external xattr block.
+/// Build this inventory only after validating inode allocation/checksum,
+/// block allocation/system-zone exclusion, and the block checksum/structure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExternalXattrOwner {
+    pub inode_number: u32,
+    pub generation: u32,
+    pub physical_block: u64,
+    pub on_disk_reference_count: u32,
+}
+
+/// Reconcile the on-disk h_refcount for every external xattr block represented
+/// in an inventory. The inventory must be complete for the mounted filesystem:
+/// this function can detect duplicate owner records and mismatched counts, but
+/// cannot prove that the caller scanned every allocated inode. No allocation is
+/// performed; work is bounded by the caller-provided slice length.
+pub fn reconcile_external_xattr_references(
+    owners: &[ExternalXattrOwner],
+) -> Result<usize, XattrError> {
+    for (i, owner) in owners.iter().enumerate() {
+        if owner.inode_number == 0 || owner.physical_block == 0
+            || owner.on_disk_reference_count == 0 {
+            return Err(XattrError::InvalidEntry);
+        }
+        if owners[..i].iter().any(|prior|
+            prior.inode_number == owner.inode_number
+                && prior.physical_block == owner.physical_block) {
+            return Err(XattrError::DuplicateEntry);
+        }
+        let mut count = 0u32;
+        for candidate in owners.iter().filter(|candidate|
+            candidate.physical_block == owner.physical_block) {
+            if candidate.on_disk_reference_count != owner.on_disk_reference_count {
+                return Err(XattrError::InvalidReferenceCount);
+            }
+            count = count.checked_add(1).ok_or(XattrError::InvalidReferenceCount)?;
+        }
+        if count != owner.on_disk_reference_count {
+            return Err(XattrError::InvalidReferenceCount);
+        }
+    }
+    // Number of distinct physical blocks in the reconciled inventory.
+    let mut distinct = 0usize;
+    for (i, owner) in owners.iter().enumerate() {
+        if !owners[..i].iter().any(|prior| prior.physical_block == owner.physical_block) {
+            distinct = distinct.checked_add(1).ok_or(XattrError::InvalidReferenceCount)?;
+        }
+    }
+    Ok(distinct)
+}
+
 /// Read the external-xattr block pointer from an already checksum-validated
 /// ext4 inode image. The caller must validate the inode checksum before
 /// relying on this pointer. With the 64-bit incompat feature, the high 16 bits
