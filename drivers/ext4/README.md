@@ -87,6 +87,18 @@ metadata after a crash.
 
 Read-only support is also a strict feature subset. DIR_INDEX is accepted and has Linux-compatible legacy, half-MD4, TEA and SipHash name hashing; checksum-validated root/node/leaf reads; collision continuation across sibling index nodes; direct filename comparison; and hash-ordered indexed readdir including `.` and `..` (using a caller-owned map buffer). The mutation module provides a split-and-insert operation for a selected leaf, dx-entry insertion, interior-node splitting and depth-zero root growth as caller-owned buffer primitives. These are not yet wired into a mount-owned, crash-safe VFS/JBD2 operation, so writable mounts remain disabled. See [COMPATIBILITY_AUDIT.md](COMPATIBILITY_AUDIT.md) for exact limits.
 
+## HTree enumeration safety
+
+The indexed-directory reader also exposes `iterate_htree_directory_unique`.
+It validates the dx root and traversed index nodes, verifies dx and leaf
+checksums, and records every visited logical leaf in caller-owned bounded
+storage. Duplicate leaf pointers are rejected even when the leaf is empty;
+insufficient tracking capacity fails closed. This closes an ambiguity that
+entry-only enumeration cannot detect. The recovery namespace graph validator
+is not yet wired to this iterator, so indexed directories remain rejected by
+`mount_with_recovery_and_namespace_discovery` until the mapping adapter and
+graph-level regression fixtures are integrated.
+
 ## Validation
 
 The GitHub Actions workflow runs the JBD2 parser/replay/commit tests and the
