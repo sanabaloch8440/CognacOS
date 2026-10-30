@@ -38,7 +38,13 @@ fn main() {
     let mut generated = String::from("// Generated from the pinned Windows 11 x64 msvcrt export manifest.\\n");
     for export in &exports {
         if runtime_symbols.contains(&export.name.as_str()) { continue; }
-        generated.push_str(&format!("#[cfg(target_os = \\"windows\\")]\\n#[export_name = {:?}]\\npub extern \\"system\\" fn cognac_msvcrt_export_{}() -> usize {{ 0 }}\\n", export.name, export.ordinal));
+        generated.push_str(&format!(
+            r#"#[cfg(target_os = "windows")]
+#[export_name = {:?}]
+pub extern "system" fn cognac_msvcrt_export_{}() -> usize {{ 0 }}
+"#,
+            export.name, export.ordinal
+        ));
     }
     let runtime_asm = r#"
 .text
