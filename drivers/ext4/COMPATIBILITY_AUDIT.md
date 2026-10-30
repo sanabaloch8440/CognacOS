@@ -82,8 +82,8 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 ## Required milestones before writable ext4
 
 1. [x] Implement bounded Linux-style system-zone construction for supported non-META_BG layouts; retain it in CheckedExtFilesystem, protect internal journal inode extents, and validate checked extent-tree child nodes and mapped data blocks. The allocator and writable mutation path still need to consume the same map.
-2. Implement full JBD2 checksum handling and the Linux scan/revoke/replay rules for the supported journal feature set; retain fail-closed rejection for formats not yet implemented.
-3. [~] Internal journal discovery, extent mapping, committed replay, journal-superblock update, and flush are now connected in a bounded pre-mount recovery operation. Integrate this operation into the mount manager's recovery phase and add crash-injection validation before treating it as production recovery.
+2. [~] The committed-transaction scan/revoke/replay path now supports an ext4-specific replay target policy and rejects writes into the journal's own extents. Still required: JBD2 checksum-v1/v2/v3, Linux-compatible revoke/checksum corner cases, and exact metadata ownership validation; unsupported formats remain fail-closed.
+3. [~] Internal journal discovery, extent mapping, committed replay, journal-self-overwrite protection, journal-superblock update, and flush are connected in a bounded pre-mount recovery operation. Integrate recovery into the mount manager and add crash-injection validation before treating it as production recovery.
 4. [~] Add a bounded mount-owned transaction coordinator with caller-backed staging, metadata-target policy, system-zone checks for ordered data/revokes, exclusive writer serialization, and partition-bounded I/O. Remaining: wire every filesystem operation through it, make mount-manager recovery automatic, add orphan handling, and prove failure/restart behavior with crash injection.
 5. Integrate allocation, inode initialization, parent directory updates, timestamps, link counts, orphan state, extent-tree split/merge, and truncation into one transaction.
 6. Implement HTree directories and checksum handling, then add support for common RO-compatible features one by one.
@@ -100,6 +100,12 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 - [Linux ext4 on-disk feature definitions](https://www.kernel.org/doc/html/latest/filesystems/ext4/super.html)
 - [Linux JBD2 journal format](https://www.kernel.org/doc/html/latest/filesystems/ext4/journal.html)
 
+
+## JBD2 replay-target isolation milestone (2026-10-30)
+
+JBD2 replay now exposes a target-policy hook that is invoked for each committed, non-revoked home-block write. The internal-journal recovery path supplies a policy that rejects any target whose physical block is part of the journal inode's own mapped extent set. This prevents a corrupted descriptor from directing replay into the log that is still being scanned. A regression test proves the target is rejected before the home block is modified. The generic JBD2 API retains a filesystem-bounds-only policy for non-ext4 users; ext4 recovery always uses the stricter journal-isolation policy.
+
+This does not yet establish that every replay target is a valid ext4 metadata object, nor does it add journal checksums. The journal checksum-v1/v2/v3, async-commit and fast-commit formats remain rejected. Replay target validation against exact inode/bitmap/directory metadata ownership remains required before writable mounting.
 
 ## Transaction coordinator milestone (2026-10-30)
 
