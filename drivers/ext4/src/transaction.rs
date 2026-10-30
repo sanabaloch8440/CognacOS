@@ -50,8 +50,63 @@ impl<D: BlockDevice> ReplayDevice for FilesystemBlockAdapter<'_, D> {
 
 
 
+/// Exact metadata ownership recorded by the mount layer after validating
+/// the owning ext4 object (descriptor, bitmap, inode table, inode, directory,
+/// extent node, or superblock). A block is replayable only when it has one
+/// unambiguous owner record; broad "not data" classifications are insufficient.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetadataObjectKind {
+    Superblock, GroupDescriptor, BlockBitmap, InodeBitmap, InodeTable,
+    Inode, Directory, ExtentNode, Xattr, Other,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MetadataOwnership {
+    pub block: u64,
+    pub owner_inode: u32,
+    pub generation: u32,
+    pub kind: MetadataObjectKind,
+}
+
+/// Caller-backed, sorted-or-unsorted exact block ownership allowlist.
+/// Duplicate physical blocks are rejected to avoid ambiguous aliases.
+pub struct MetadataOwnershipMap<'a> {
+    entries: &'a [MetadataOwnership],
+}
+
+impl<'a> MetadataOwnershipMap<'a> {
+    pub fn new(entries: &'a [MetadataOwnership]) -> Result<Self, Error> {
+        for (i, entry) in entries.iter().enumerate() {
+            if entries[..i].iter().any(|prior| prior.block == entry.block) {
+                return Err(Error::InvalidGeometry);
+            }
+        }
+        Ok(Self { entries })
+    }
+
+    pub fn owner(&self, block: u64) -> Option<MetadataOwnership> {
+        self.entries.iter().copied().find(|entry| entry.block == block)
+    }
+
+    pub fn validate(&self, block: u64) -> Result<MetadataOwnership, Error> {
+        self.owner(block).ok_or(Error::InvalidExtentTree)
+    }
+}
+
 pub trait MetadataTargetPolicy {
     fn validate_metadata_target(&mut self, block: u64) -> Result<(), Error>;
+}
+
+impl MetadataTargetPolicy for MetadataOwnershipMap<'_> {
+    fn validate_metadata_target(&mut self, block: u64) -> Result<(), Error> {
+        self.validate(block).map(|_| ())
+    }
+}
+
+impl jbd2::ReplayTargetPolicy for MetadataOwnershipMap<'_> {
+    fn validate_replay_target(&mut self, block: u64) -> Result<(), jbd2::Error> {
+        self.validate(block).map(|_| ()).map_err(|_| jbd2::Error::InvalidTag)
+    }
 }
 
 pub struct TransactionCoordinator<'a, D, M, P>
