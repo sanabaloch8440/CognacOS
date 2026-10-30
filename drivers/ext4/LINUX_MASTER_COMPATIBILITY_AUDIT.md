@@ -34,6 +34,22 @@ The ownership-map change is **not** replay authorization by itself. The complete
 Regression tests were added for shared-xattr owner records and JBD2 ring geometry. They have been committed but have **not** been executed in a local Cargo build or verified by a completed CI run in this work session. See [FEATURE_SUPPORT_MATRIX.md](FEATURE_SUPPORT_MATRIX.md) for the current explicit feature policy.
 
 
+## Large compatibility batch (2026-10-30)
+
+This follow-up batch closes several concrete read-path gaps:
+
+- Enabled Linux `LARGE_DIR` read-only-compatible feature negotiation, requiring the `DIR_INDEX` compatible feature.
+- Extended HTree traversal to two interior dx-node levels (root + two interior nodes + leaf), with superblock-aware adapters rejecting depth two unless `LARGE_DIR` is present.
+- Added regression fixtures for two-level HTree path traversal and malformed child pointers.
+- Added a zone-enforcing ext2/ext3 legacy mapper. It checks each indirect metadata block before reading it and checks the final data block before returning it. The internal journal inode must continue to use its dedicated mapping path because its blocks are deliberately protected as a journal zone.
+- Corrected 64 KiB directory-entry record-length decoding in both the base directory validator and mutation-path validator.
+- Added regression tests for full-block 64 KiB dirents, legacy direct/indirect system-zone rejection, and the LARGE_DIR/DIR_INDEX feature prerequisite.
+
+These changes improve read compatibility and validation, but do not implement extent-tree mutation lifecycle, full orphan-file support, inline data, EA inodes, or the cryptographic feature families. They do not enable a general writable mount.
+
+The new tests are committed but have not been executed in a Cargo build or CI in this session. The support matrix records the updated scope.
+
+
 ## Feature and subsystem comparison
 
 | Area | CognacOS current state | Linux master expectation | Remaining work |
