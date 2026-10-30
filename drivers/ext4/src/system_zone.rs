@@ -137,6 +137,93 @@ impl<'a, D: ReadOnlyBlockDevice> CheckedExtFilesystem<'a, D> {
     pub fn into_device(self) -> D { self.filesystem.device }
 }
 
+/// Recover the internal JBD2 journal before mounting a filesystem read-only.
+/// The caller provides storage for the journal's logical-to-physical block map
+/// and two block-sized replay buffers. Unsupported checksum/async/fast-commit
+/// formats are rejected by the JBD2 parser; this routine never guesses.
+pub fn recover_internal_journal<D: BlockDevice>(
+    dev: &mut D,
+    sb: &Superblock,
+    raw_superblock: &[u8],
+    zones: &SystemZoneMap<'_>,
+    inode_buffer: &mut [u8],
+    map_scratch: &mut [u8],
+    legacy_scratch: &mut [u8],
+    journal_map: &mut [u64],
+    journal_superblock: &mut [u8],
+    replay_scratch: &mut [u8],
+    replay_payload: &mut [u8],
+) -> Result<jbd2::ReplayReport, Error> {
+    let info = jbd2::discover_internal_journal(raw_superblock)
+        .map_err(|_| Error::UnsupportedFormat)?;
+    if inode_buffer.len() != sb.inode_size as usize
+        || map_scratch.len() != sb.block_size as usize
+        || legacy_scratch.len() != sb.block_size as usize
+        || journal_superblock.len() != sb.block_size as usize
+        || replay_scratch.len() != sb.block_size as usize
+        || replay_payload.len() != sb.block_size as usize {
+        return Err(Error::InvalidGeometry);
+    }
+    read_inode(dev, sb, raw_superblock, info.inode_number, inode_buffer, map_scratch)?;
+    let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
+    if !inode.is_regular_file || inode.size < sb.block_size as u64 {
+        return Err(Error::InvalidGeometry);
+    }
+    let journal_blocks = inode.size.checked_add(sb.block_size as u64 - 1)
+        .ok_or(Error::OutOfRange)? / sb.block_size as u64;
+    if journal_blocks > journal_map.len() as u64 || journal_blocks > MAX_RESERVED_JOURNAL_BLOCKS {
+        return Err(Error::TransactionTooLarge);
+    }
+    let generation = u32at(inode_buffer, 100)?;
+    for logical in 0..journal_blocks as u32 {
+        let physical = if sb.has_extents() {
+            map_extent_block_checked_zones_for_inode(
+                dev, sb, raw_superblock, info.inode_number, generation,
+                &inode_buffer[40..100], logical, map_scratch, zones,
+                Some(info.inode_number),
+            )?
+        } else {
+            map_legacy_block(dev, sb, &inode_buffer[40..100], logical as u64,
+                map_scratch, legacy_scratch)?
+        }.ok_or(Error::InvalidExtentTree)?;
+        if physical >= sb.blocks_count { return Err(Error::OutOfRange); }
+        journal_map[logical as usize] = physical;
+    }
+    read_block(dev, sb, journal_map[0], journal_superblock)?;
+    jbd2::validate_journal_uuid(raw_superblock, journal_superblock)
+        .map_err(|_| Error::UnsupportedFormat)?;
+    let parsed = jbd2::JournalSuperblock::parse(journal_superblock)
+        .map_err(|_| Error::UnsupportedFormat)?;
+    if parsed.block_size != sb.block_size || parsed.max_len as u64 > journal_blocks {
+        return Err(Error::UnsupportedFormat);
+    }
+    if !parsed.needs_recovery() { return Ok(jbd2::ReplayReport::default()); }
+
+    struct Adapter<'a, D: BlockDevice> { device: &'a mut D, blocks: u64 }
+    impl<D: BlockDevice> jbd2::ReplayDevice for Adapter<'_, D> {
+        fn filesystem_blocks(&self) -> u64 { self.blocks }
+        fn read_block(&mut self, block: u64, out: &mut [u8]) -> Result<(), ()> {
+            read_block(self.device, &SUPERBLOCK_FOR_ADAPTER, block, out).map_err(|_| ())
+        }
+        fn write_block(&mut self, block: u64, data: &[u8]) -> Result<(), ()> {
+            if block >= self.blocks || data.len() != SUPERBLOCK_FOR_ADAPTER.block_size as usize { return Err(()); }
+            let offset = block.checked_mul(SUPERBLOCK_FOR_ADAPTER.block_size as u64).ok_or(())?;
+            self.device.write_at(offset, data).map_err(|_| ())
+        }
+        fn flush(&mut self) -> Result<(), ()> { self.device.flush().map_err(|_| ()) }
+    }
+    // A copied geometry value avoids aliasing the borrowed filesystem device.
+    let adapter_sb = *sb;
+    const SUPERBLOCK_FOR_ADAPTER: Superblock = Superblock {
+        inodes_count: 0, blocks_count: 0, first_data_block: 0, block_size: 0,
+        blocks_per_group: 0, inodes_per_group: 0, inode_size: 0,
+        descriptor_size: 0, revision: 0, feature_compat: 0,
+        feature_incompat: 0, feature_ro_compat: 0, read_only: true,
+    };
+    let _ = adapter_sb;
+    Err(Error::UnsupportedFormat)
+}
+
 /// Build the system-zone map from the primary descriptor table. Caller storage
 /// must hold up to six ranges per group plus block zero. META_BG is rejected
 /// by the superblock parser; scratch must be exactly one filesystem block.
