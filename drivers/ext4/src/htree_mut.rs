@@ -30,6 +30,7 @@ pub fn split_directory_leaf(
 )->Result<u32,Error>{
  if old_leaf.len()!=new_leaf.len()||old_leaf.len()!=source_copy.len()||old_leaf.len()<1024{return Err(Error::InvalidGeometry)}
  let csum=has_csum(sb)?;let seed=if csum{crate::ext4_inode_checksum_seed(sb,inode,generation)?}else{0};
+ let version=crate::hash::effective_hash_version(version,crate::hash::ext4_hash_unsigned(sb)?)?;
  if csum{crate::validate_directory_block_checksum(sb,inode,generation,old_leaf)?;}
  let limit=old_leaf.len()-if csum{12}else{0};let mut off=0usize;let mut count=0usize;
  while off<limit{
@@ -84,6 +85,8 @@ pub fn grow_dx_root(root:&mut[u8],new_node:&mut[u8],new_node_logical:u32,metadat
  const RO:usize=32;const NO:usize=8;
  if root.len()!=new_node.len()||root.len()<1024||new_node_logical==0||new_node_logical>0x0fff_ffff{return Err(Error::InvalidGeometry)}
  if root[30]!=0{return Err(Error::UnsupportedFormat)}
+ if u32at(root,0)?==0||u16at(root,4)?!=12||root[6]!=1||root[8]!=b'.'||u32at(root,12)?==0||rec_len(u16at(root,16)?,root.len())!=root.len()-12||root[18]!=2||&root[20..22]!=b".."||u32at(root,24)?!=0||root[29]!=8||root[31]!=0{return Err(Error::InvalidDirectoryEntry)}
+ if root[28]!=0&&root[28]!=1&&root[28]!=2&&root[28]!=6{return Err(Error::UnsupportedFormat)}
  let(limit,count)=dx_limit(root,RO,metadata_csum)?;
  if metadata_csum{let stored=u32at(root,RO+limit*8+4)?;if dx_checksum(root,RO,limit,count,inode_seed)?!=stored{return Err(Error::InvalidChecksum)}}
  let node_limit=root.len().checked_sub(NO+if metadata_csum{8}else{0}).ok_or(Error::InvalidGeometry)?/8;
@@ -105,6 +108,7 @@ pub fn grow_dx_root(root:&mut[u8],new_node:&mut[u8],new_node_logical:u32,metadat
 pub fn split_dx_node(node:&mut[u8],new_node:&mut[u8],source_copy:&mut[u8],metadata_csum:bool,inode_seed:u32)->Result<(u32,u32),Error>{
  const OFF:usize=8;
  if node.len()!=new_node.len()||node.len()!=source_copy.len()||node.len()<1024{return Err(Error::InvalidGeometry)}
+ if u32at(node,0)?!=0||rec_len(u16at(node,4)?,node.len())!=node.len()||node[6]!=0||node[7]!=0{return Err(Error::InvalidDirectoryEntry)}
  let(limit,count)=dx_limit(node,OFF,metadata_csum)?;
  if metadata_csum{let stored=u32at(node,OFF+limit*8+4)?;if dx_checksum(node,OFF,limit,count,inode_seed)?!=stored{return Err(Error::InvalidChecksum)}}
  if count<2{return Err(Error::InvalidDirectoryEntry)}
