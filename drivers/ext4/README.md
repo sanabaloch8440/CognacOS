@@ -34,13 +34,19 @@ The caller must provide correct journal-inode extent mapping and serialize all
 writers. External extent-tree split/merge, indexed htree directories, external
 journals, and journal checksum formats are not supported by these routines.
 
-The current ExtFilesystem mount facade still rejects writable mounts that
-require journal recovery or metadata_csum mutation. That gate remains in place
-until the journal inode mapping, recovery, metadata read/write paths, and all
-allocation/directory/file operations are wired together through one mount-level
-transaction coordinator and validated against real ext4 images and crash
-injection. These lower-level APIs are not a claim of complete Linux ext4 or
-Windows filesystem-driver compatibility.
+The current ExtFilesystem mount facade rejects **all writable mounts**. This
+is a deliberate safety interlock: the current data-write path does not yet
+validate extent targets against the complete ext4 system-zone map, and the
+journal/recovery and metadata mutation primitives are not integrated through
+one mount-owned transaction coordinator. Enabling writable mounts before those
+pieces are complete could overwrite filesystem metadata or leave inconsistent
+metadata after a crash.
+
+Read-only support is also a strict feature subset. In particular, indexed
+HTree directories and several common Linux ext4 feature flags are not yet
+implemented. See [COMPATIBILITY_AUDIT.md](COMPATIBILITY_AUDIT.md) for the
+feature-by-feature comparison against Linux master, the corruption-risk review,
+and the milestones required before writable mounts can be enabled.
 
 ## Validation
 
