@@ -228,6 +228,15 @@ pub fn create_regular_file_entry(
  insert_directory_entry(sb,parent_inode,parent_generation,parent_directory,total_inodes,inode_number,name,1)
 }
 
+/// Add a new directory child entry (file_type=2). The parent inode's
+/// timestamps and link count are updated by the caller in the same transaction.
+pub fn create_directory_entry(
+ sb:&[u8],parent_inode:u32,parent_generation:u32,parent_block:&mut[u8],
+ total_inodes:u32,child_inode:u32,name:&[u8],
+)->Result<(),Error>{
+ insert_directory_entry(sb,parent_inode,parent_generation,parent_block,total_inodes,child_inode,name,2)
+}
+
 /// Decrement a regular inode's link count and set deletion time when the last
 /// link is removed. The caller frees its extents and inode bitmap in the same
 /// transaction when reclaim_inode is true.
@@ -241,6 +250,20 @@ pub fn unlink_regular_inode(
  if remaining==0{put32(inode,20,deletion_time)?}
  if metadata_csum(sb)?{update_inode_checksum(sb,inode_number,inode)?}
  Ok(remaining==0)
+}
+
+/// Remove a regular-file name and update its link count. If the last link is
+/// removed, the caller must free its extents, inode bitmap bit, and group
+/// counters in the same JBD2 transaction.
+pub fn unlink_regular_file_entry(
+ sb:&[u8],parent_inode:u32,parent_generation:u32,parent_block:&mut[u8],total_inodes:u32,
+ name:&[u8],expected_inode:u32,child_inode:&mut[u8],deletion_time:u32,
+)->Result<bool,Error>{
+ validate_inode_before_mutation(sb,expected_inode,child_inode)?;
+ if le16(child_inode,0)?&0xf000!=0x8000{return Err(Error::UnsupportedFormat)}
+ let removed=remove_directory_entry(sb,parent_inode,parent_generation,parent_block,total_inodes,name)?;
+ if removed!=expected_inode{return Err(Error::InvalidDirectoryEntry)}
+ unlink_regular_inode(sb,expected_inode,child_inode,deletion_time)
 }
 
 /// Remove a directory name and return its inode number. Link-count updates,
