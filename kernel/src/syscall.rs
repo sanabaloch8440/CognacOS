@@ -1917,7 +1917,7 @@ fn nt_load_dll(args:&[u64;NT_MAX_ARGUMENTS])->u64{
  let n=match read_user_ascii(args[0],&mut namebuf){Ok(n)if n>0=>n,_=>return NT_STATUS_ACCESS_VIOLATION};
  let name=&namebuf[..n];
  if !name.iter().all(|b|b.is_ascii_alphanumeric()||matches!(*b,b'.'|b'_'|b'-'|b'+')){return NT_STATUS_INVALID_PARAMETER;}
- let mut search_path=[0u8;1024];
+ let mut search_path=[0u8;4096];
  let search_len=if args[1]==0{0}else{match read_user_ascii(args[1],&mut search_path){Ok(n)=>n,Err(s)=>return s}};
  let pid=current_process_id();let process=crate::process::eprocess_pointer_for_pid(pid);
  if pid==0||process.is_null(){return NT_STATUS_INVALID_HANDLE;}
