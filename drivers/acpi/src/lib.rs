@@ -436,6 +436,9 @@ pub fn dmar_unit_covers_requester(unit:&DmarUnit,segment:u16,bus:u8,device:u8,fu
 
 #[cfg(test)]
 mod dmar_tests {
+ extern crate std;
+ use std::vec;
+ use std::vec::Vec;
  use super::*;
  fn finish(mut table:Vec<u8>)->Vec<u8>{
   let sum=table.iter().fold(0u8,|a,b|a.wrapping_add(*b));table[9]=table[9].wrapping_sub(sum);table
