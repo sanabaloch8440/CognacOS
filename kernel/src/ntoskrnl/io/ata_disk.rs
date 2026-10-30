@@ -477,9 +477,7 @@ fn trace_store_transfer(offset: u64, output: &mut [u8]) -> bool {
     true
 }
 
-/// End-to-end guest check. The physical port driver backs a registered disk
-/// object; GPT and ext4 then read only through disk/partition READ IRPs.
-pub #[cfg(debug_assertions)]
+#[cfg(debug_assertions)]
 fn ext4_error_debug_name(error: extfs::Error) -> &'static [u8] {
     match error {
         extfs::Error::Truncated => b"Truncated",
@@ -512,7 +510,9 @@ fn ext4_write_error_debug_name(error: &extfs::WriteError) -> &'static [u8] {
     }
 }
 
-fn run_ext4_readme_test() -> bool {
+/// End-to-end guest check. The physical port driver backs a registered disk
+/// object; GPT and ext4 then read only through disk/partition READ IRPs.
+pub fn run_ext4_readme_test() -> bool {
     let disk = match AtaPrimaryMaster::initialize() { Ok(d) => d, Err(_) => return false };
     DISK_CAPACITY.store(disk.sectors.saturating_mul(SECTOR_BYTES as u64), Ordering::Release);
     *STORAGE_DISK.lock() = Some(disk);
