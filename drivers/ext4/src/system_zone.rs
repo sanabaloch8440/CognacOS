@@ -1048,6 +1048,131 @@ pub fn discover_allocated_directories<D: ReadOnlyBlockDevice>(
 }
 
 
+
+/// Scan every allocated inode and build a complete, caller-bounded inventory of
+/// validated external-xattr owners. Every inode bitmap, group descriptor,
+/// inode checksum, xattr allocation bit, system-zone exclusion, xattr structure,
+/// and inode-bound xattr checksum is checked before an owner is recorded.
+/// The final reference-count reconciliation fails closed if the inventory is
+/// incomplete (including caller capacity exhaustion) or h_refcount disagrees.
+/// This function deliberately does not add xattr blocks to journal replay
+/// ownership; that requires a separate policy review.
+pub fn discover_and_reconcile_external_xattr_owners<D: ReadOnlyBlockDevice>(
+    dev: &mut D,
+    sb: &Superblock,
+    raw_superblock: &[u8],
+    zones: &SystemZoneMap<'_>,
+    owners: &mut [xattr::ExternalXattrOwner],
+    inode_buffer: &mut [u8],
+    bitmap_scratch: &mut [u8],
+    inode_scratch: &mut [u8],
+    xattr_scratch: &mut [u8],
+) -> Result<usize, Error> {
+    if raw_superblock.len() < SUPERBLOCK_BYTES
+        || inode_buffer.len() != sb.inode_size as usize
+        || bitmap_scratch.len() != sb.block_size as usize
+        || inode_scratch.len() != sb.block_size as usize
+        || xattr_scratch.len() != sb.block_size as usize
+        || sb.inodes_per_group & 7 != 0 {
+        return Err(Error::InvalidGeometry);
+    }
+    validate_superblock_checksum(raw_superblock)?;
+    let groups = sb.group_count()?;
+    let dpb = sb.block_size / sb.descriptor_size as u32;
+    if dpb == 0 || sb.descriptor_size as usize > 64 {
+        return Err(Error::UnsupportedFormat);
+    }
+    let gdt_start = (sb.first_data_block as u64).checked_add(1).ok_or(Error::OutOfRange)?;
+    let journal_inode = if sb.feature_compat & 0x0004 != 0 {
+        Some(u32at(raw_superblock, 224)?)
+    } else { None };
+    let bitmap_bytes = (sb.inodes_per_group / 8) as usize;
+    let mut found = 0usize;
+    for group in 0..groups {
+        let descriptor_block = gdt_start.checked_add((group / dpb) as u64)
+            .ok_or(Error::OutOfRange)?;
+        read_block(dev, sb, descriptor_block, bitmap_scratch)?;
+        let slot = (group % dpb) as usize;
+        let offset = slot.checked_mul(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+        let end = offset.checked_add(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+        let source = bitmap_scratch.get(offset..end).ok_or(Error::Truncated)?;
+        let mut descriptor_copy = [0u8; 64];
+        descriptor_copy[..source.len()].copy_from_slice(source);
+        let descriptor = &descriptor_copy[..source.len()];
+        if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+            validate_group_descriptor_checksum(raw_superblock, group, descriptor)?;
+        }
+        let gd = GroupDescriptor::parse(descriptor, sb)?;
+        let base = (group as u64).checked_mul(sb.inodes_per_group as u64)
+            .ok_or(Error::OutOfRange)?;
+        let remaining = (sb.inodes_count as u64).checked_sub(base).ok_or(Error::InvalidGeometry)?;
+        let in_group = core::cmp::min(sb.inodes_per_group as u64, remaining) as u32;
+        if u16at(descriptor, 18)? & 0x0001 != 0 {
+            if gd.free_inodes_count != in_group { return Err(Error::InvalidGeometry); }
+            continue;
+        }
+        if !zones.is_system_block(gd.inode_bitmap) { return Err(Error::InvalidGeometry); }
+        let table_bytes = (in_group as u64).checked_mul(sb.inode_size as u64)
+            .ok_or(Error::OutOfRange)?;
+        let table_blocks = table_bytes.checked_add(sb.block_size as u64 - 1)
+            .ok_or(Error::OutOfRange)? / sb.block_size as u64;
+        for n in 0..table_blocks {
+            if !zones.is_system_block(gd.inode_table.checked_add(n).ok_or(Error::OutOfRange)?) {
+                return Err(Error::InvalidGeometry);
+            }
+        }
+        read_block(dev, sb, gd.inode_bitmap, bitmap_scratch)?;
+        let bitmap = bitmap_scratch.get(..bitmap_bytes).ok_or(Error::Truncated)?;
+        if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+            validate_inode_bitmap_checksum(raw_superblock, descriptor, bitmap)?;
+        }
+        for bit in 0..in_group {
+            if bitmap_scratch[(bit / 8) as usize] & (1u8 << (bit & 7)) == 0 { continue; }
+            let ino64 = base.checked_add(bit as u64).and_then(|v| v.checked_add(1))
+                .ok_or(Error::OutOfRange)?;
+            let ino = u32::try_from(ino64).map_err(|_| Error::OutOfRange)?;
+            if Some(ino) == journal_inode { continue; }
+            read_inode(dev, sb, raw_superblock, ino, inode_buffer, inode_scratch)?;
+            let physical = match xattr::external_xattr_block_pointer(
+                inode_buffer, sb.feature_incompat, sb.blocks_count,
+            ) {
+                Ok(Some(block)) => block,
+                Ok(None) => continue,
+                Err(xattr::XattrError::Truncated) => return Err(Error::Truncated),
+                Err(_) => return Err(Error::InvalidExtentTree),
+            };
+            zones.validate_data_range(physical, 1, sb.blocks_count)?;
+            if zones.is_system_block(physical) { return Err(Error::InvalidExtentTree); }
+            validate_external_xattr_allocation(
+                dev, sb, raw_superblock, ino, physical, inode_scratch, bitmap_scratch,
+            )?;
+            read_block(dev, sb, physical, xattr_scratch)?;
+            validate_inode_external_xattr_in_zones(
+                raw_superblock, sb, zones, ino, inode_buffer, xattr_scratch,
+            )?;
+            let info = xattr::validate_external_xattr_block(xattr_scratch)
+                .map_err(|e| match e {
+                    xattr::XattrError::Truncated => Error::Truncated,
+                    _ => Error::InvalidExtentTree,
+                })?;
+            if found == owners.len() { return Err(Error::TransactionTooLarge); }
+            owners[found] = xattr::ExternalXattrOwner {
+                inode_number: ino,
+                generation: u32at(inode_buffer, 100)?,
+                physical_block: physical,
+                on_disk_reference_count: info.reference_count,
+            };
+            found += 1;
+        }
+    }
+    xattr::reconcile_external_xattr_references(&owners[..found])
+        .map_err(|e| match e {
+            xattr::XattrError::Truncated => Error::Truncated,
+            _ => Error::InvalidExtentTree,
+        })?;
+    Ok(found)
+}
+
 /// Adapter that maps HTree logical blocks through the owning directory's
 /// checked extent/legacy mapping path.
 struct NamespaceHtreeReader<'a, 'z, D: ReadOnlyBlockDevice> {
