@@ -250,7 +250,9 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
      let mut off=12usize;
      loop{
       if tag_count>=MAX_TRANSACTION_TAGS{return Err(Error::TransactionTooLarge)}
-      let mut target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;off=off.checked_add(8).ok_or(Error::OutOfRange)?;
+      let mut target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
+      if flags&!(TAG_ESCAPE|TAG_SAME_UUID|TAG_DELETED|TAG_LAST)!=0{return Err(Error::InvalidTag)}
+      off=off.checked_add(8).ok_or(Error::OutOfRange)?;
       if sb.block_count_64{target|=(be32(scratch,off)? as u64)<<32;off=off.checked_add(4).ok_or(Error::OutOfRange)?}
       if flags&TAG_SAME_UUID==0{off=off.checked_add(16).ok_or(Error::OutOfRange)?;if off>bs{return Err(Error::InvalidTag)}}
       if target>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
@@ -322,6 +324,27 @@ mod tests{
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert_eq!(r.transactions_replayed,1);assert_eq!(r.blocks_replayed,1);assert_eq!(d.blocks[7],[0x5a;1024]);
+ }
+ #[test]fn committed_transactions_survive_an_incomplete_later_tail(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
+  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
+  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[3].fill(0x5a);
+  header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
+  header(&mut d.blocks[5],JBD2_DESCRIPTOR_BLOCK,2);
+  d.blocks[5][12..16].copy_from_slice(&8u32.to_be_bytes());
+  d.blocks[5][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[6].fill(0x7c);
+  // Block 7 is not a commit record for transaction 2.
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false};
+  let mut a=[0u8;1024];let mut b=[0u8;1024];
+  let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
+  assert!(r.stopped_on_incomplete);
+  assert_eq!(r.transactions_replayed,1);
+  assert_eq!(r.blocks_replayed,1);
+  assert_eq!(d.blocks[7],[0x5a;1024]);
+  assert_eq!(d.blocks[8],[0;1024]);
  }
  #[test]fn incomplete_transaction_tags_are_never_replayed(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
