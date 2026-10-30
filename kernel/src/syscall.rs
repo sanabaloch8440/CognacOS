@@ -1920,9 +1920,10 @@ fn nt_load_dll(args:&[u64;NT_MAX_ARGUMENTS])->u64{
  let total=match DLL_FILE_CAPACITY.checked_mul(DLL_DEPTH+1){Some(v)=>v,None=>return NT_STATUS_INVALID_PARAMETER};
  let pool=crate::ntoskrnl::ex::pool::ex_allocate_pool2(1,total,DLL_POOL_TAG);
  if pool.is_null(){return 0xC000009Au64;}
- let backing=unsafe{core::slice::from_raw_parts_mut(pool,total)};
- let(rootbuf,rest)=backing.split_at_mut(DLL_FILE_CAPACITY);
- let mut depth_buffers:[&mut[u8];DLL_DEPTH]=core::array::from_fn(|i|{let start=i*DLL_FILE_CAPACITY;&mut rest[start..start+DLL_FILE_CAPACITY]});
+ let rootbuf=unsafe{core::slice::from_raw_parts_mut(pool,DLL_FILE_CAPACITY)};
+ let mut depth_buffers:[&mut[u8];DLL_DEPTH]=core::array::from_fn(|i|unsafe{
+  core::slice::from_raw_parts_mut(pool.add(DLL_FILE_CAPACITY*(i+1)),DLL_FILE_CAPACITY)
+ });
  let mut loaded=if plen>0{
   unsafe{crate::pe_loader::load_dll_transaction_from_vfs(&mut space,pid,&path[..plen],name,rootbuf,&mut depth_buffers,None)}
  }else{Err(crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND)};
