@@ -355,6 +355,7 @@ pub unsafe extern "system" fn LdrLoadDll(
         )
     };
     if status < 0 { return status; }
+        /* stale path-generation block removed below */
         generated_path as *const u16
     } else { dll_path };
     if search_path.is_null() { return STATUS_INVALID_PARAMETER; }
