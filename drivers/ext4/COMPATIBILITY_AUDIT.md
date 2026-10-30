@@ -26,6 +26,21 @@ The CheckedExtFilesystem read-only mount facade owns the caller-backed zone rang
 3. JBD2 descriptor tags now reject reserved flag bits rather than interpreting unknown tag semantics.
 4. Writable mounting now returns an unsupported-format error after validating the superblock and device bounds. This is intentional until extent system-zone validation, journal recovery, metadata writeback, and transaction coordination are integrated.
 
+## JBD2 checksum-engine milestone (2026-10-30)
+
+Added standalone CRC-32/IEEE and CRC32C/Castagnoli raw-state and finalized
+implementations, ext4 inode checksum-seed derivation, and JBD2 checksum-v2/v3
+helpers for UUID-derived seeds, tag payload checksums, descriptor/revoke
+metadata tails, and commit-block checksums. Regression tests include the
+standard `123456789` vectors and deliberate data/metadata corruption.
+
+**This does not enable checksum journals.** The current replay parser still
+rejects checksum-v1/v2/v3 because the scanner has not yet been wired to decode
+the different on-disk tag layouts and verify every record before accepting a
+transaction. In particular, no checksum-protected descriptor, revoke, commit,
+or tag is currently replayed. The feature comparison below remains a statement
+about end-to-end replay, not availability of standalone checksum helpers.
+
 ## Feature-by-feature comparison
 
 | Area | CognacOS | Linux master | Compatibility consequence |
