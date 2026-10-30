@@ -7,9 +7,11 @@
 
 pub mod jbd2;
 pub mod ops;
+pub mod orphan;
 pub mod system_zone;
 pub mod transaction;
-pub use transaction::{FilesystemBlockAdapter, MetadataTargetPolicy, Transaction, TransactionCoordinator, MAX_STAGED_BLOCKS};
+pub use transaction::{FilesystemBlockAdapter, MetadataObjectKind, MetadataOwnership, MetadataOwnershipMap, MetadataTargetPolicy, Transaction, TransactionCoordinator, MAX_STAGED_BLOCKS};
+pub use orphan::{recover_orphan_chain, OrphanRecord, OrphanRecoveryTransaction};
 pub use system_zone::{recover_internal_journal, CheckedExtFilesystem, build_system_zones, map_extent_block_checked_zones, map_extent_block_checked_zones_for_inode, protect_reserved_journal_inode_zones, validate_data_extent, BlockRange, SystemZoneMap};
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
