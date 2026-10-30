@@ -295,3 +295,23 @@ Replay remains intentionally limited to primary superblock/GDT, per-group bitmap
 Added `add_directory_metadata_ownership` and integrated it into `mount_with_recovery_and_ownership`. The mount caller supplies the directory inode numbers it has discovered (for example, from a validated namespace scan). Each inode is fetched through the checked inode-table path, its inode checksum is validated when metadata_csum is enabled, and it must parse as a directory. Every logical directory block is mapped through checked extent/legacy mapping with system-zone exclusion; metadata_csum directory tails are verified before the physical block is recorded as `Directory` ownership with its inode number and generation. Duplicate physical ownership and insufficient arena capacity fail closed.
 
 The mount recovery entry point now takes a `directory_inodes: &[u32]` argument. This is an explicit coverage boundary: only the supplied, validated directory inode set gains replay authorization. Directory blocks not in that set remain denied. External extent-tree nodes are checksum-validated while traversed but are not yet registered as replay targets; backup metadata and xattrs also remain unsupported. Callers must not supply inode numbers from untrusted directory entries without first validating their namespace and inode allocation state.
+
+
+## Directory extent-tree replay ownership milestone (2026-10-30)
+
+The mount-derived directory ownership pass now records external extent-tree
+nodes on every logical-block lookup path used to map each caller-supplied
+directory inode. It validates child-node placement against system zones,
+checks each node checksum using the owning inode number and generation when
+metadata_csum is active, verifies the expected depth through the existing
+extent-node parser, and adds an exact `ExtentNode` ownership record before
+directory data blocks are admitted. Repeated nodes are accepted only for the
+same inode/generation and kind; cross-owner aliases and collisions with
+directory data fail closed.
+
+Coverage is deliberately bounded to paths reached by populated directory
+logical blocks. This is not a full extent-tree scrubber, does not authorize
+unreachable nodes, and does not discover the complete directory namespace.
+The caller-provided directory inode list remains a trust boundary. External
+extent-tree mutation, xattrs, backup metadata ownership, full namespace
+discovery, and Linux image/crash testing remain outstanding.
