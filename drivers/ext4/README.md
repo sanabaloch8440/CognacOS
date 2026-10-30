@@ -137,3 +137,8 @@ The bounded ordered-commit path now supports checksum-v1 journals. It calculates
 ## JBD2 checksum-v2/v3 ordered writer and payload escaping
 
 The ordered writer now emits the Linux on-disk v2 and v3 tag layouts, calculates the per-data-block tag checksum over the journal-stored payload, writes descriptor and revoke tail CRC32C values, writes commit CRC32C, and refreshes the journal-superblock CRC32C whenever `s_start` or `s_sequence` changes. It handles the v3 tag's fixed 16-byte base layout and the v2 tag's optional 64-bit high block field. Payloads beginning with the JBD2 magic word are zero-escaped, marked with TAG_ESCAPE, checksummed in escaped form, and restored during replay. End-to-end tests write v2/v3 journals, validate descriptor/revoke/commit/tag checksums, and recover the generated log. The superblock checksum is computed over the fixed 1024-byte `journal_superblock_t`, even when the journal block size is larger. This remains a bounded primitive; writable ext4 mounting stays disabled until every VFS mutation path uses the transaction coordinator and crash-injection/interoperability testing passes.
+
+
+## Mount-state safety gate
+
+The mount entry points now validate the ext4 superblock state before exposing a filesystem. Volumes carrying `EXT4_ERROR_FS`, `EXT4_ORPHAN_FS`, or a nonzero legacy `s_last_orphan` are rejected. Journal replay is not treated as orphan cleanup: those inode, extent, bitmap, and counter repairs still require a concrete transaction-backed recovery adapter. Dirty-but-error-free journaled volumes remain eligible for the explicit recovery path; this check does not enable writable mounting.
