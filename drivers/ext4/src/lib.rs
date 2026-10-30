@@ -6,7 +6,6 @@
 #![allow(dead_code)]
 
 pub mod checksum;
-pub mod extent_tree;
 pub mod jbd2;
 pub mod htree;
 pub mod htree_mut;
