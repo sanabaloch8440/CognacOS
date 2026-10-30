@@ -70,7 +70,9 @@ pub fn build_system_zones<D: ReadOnlyBlockDevice>(
         let group_end = core::cmp::min(group_start.checked_add(sb.blocks_per_group as u64).ok_or(Error::OutOfRange)?, sb.blocks_count);
         if group_start >= group_end { return Err(Error::InvalidGeometry); }
         if group_has_super(sb, raw_superblock, group)? {
-            push(ranges, &mut used, group_start, 1, sb)?;
+            // For block sizes above 1 KiB, the primary superblock lives at
+            // byte offset 1024 inside block zero, already reserved above.
+            if group_start != 0 { push(ranges, &mut used, group_start, 1, sb)?; }
             let gdt_start = group_start.checked_add(1).ok_or(Error::OutOfRange)?;
             push(ranges, &mut used, gdt_start, gdt_blocks, sb)?;
             if !sparse_super2(sb) { push(ranges, &mut used, gdt_start.checked_add(gdt_blocks).ok_or(Error::OutOfRange)?, reserved_gdt, sb)?; }
