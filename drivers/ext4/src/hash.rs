@@ -20,7 +20,7 @@ pub fn ext4_hash_unsigned(sb:&[u8])->Result<bool,Error>{
  let flags=u32::from_le_bytes(sb[352..356].try_into().map_err(|_|Error::Truncated)?);
  Ok(flags&0x0002!=0)
 }
-pub fn effective_hash_version(root_version:u8,unsigned:bool)->Result<u8>{
+pub fn effective_hash_version(root_version:u8,unsigned:bool)->Result<u8,Error>{
  if root_version>DX_HASH_SIPHASH{return Err(Error::UnsupportedFormat)}
  if unsigned&&root_version<=DX_HASH_TEA{Ok(root_version+3)}else{Ok(root_version)}
 }
