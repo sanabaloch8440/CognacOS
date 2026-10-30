@@ -363,7 +363,7 @@ pub(crate) fn reclaim_pageable_address(address:u64)->bool {
  let page=((address-BASE)/PAGE) as usize;
  let _g=Guard::lock();
  let owned=unsafe{&*TABLE.0.get()}.iter().any(|e|e.live&&e.pageable&&page>=e.start&&page<e.start+e.pages);
- owned&&reclaim_one_locked(root,Some(page))
+ owned&&(reclaim_one_locked(root,Some(page))||reclaim_one_locked(root,Some(page)))
 }
 
 /// Allocate a contiguous virtual extent mapped to zeroed, not-necessarily-contiguous physical pages.
