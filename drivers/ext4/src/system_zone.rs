@@ -539,12 +539,15 @@ pub fn add_directory_metadata_ownership<D: ReadOnlyBlockDevice>(
         let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
         if !inode.is_directory { return Err(Error::InvalidGeometry); }
         let generation = u32at(inode_buffer, 100)?;
+        // EXTENTS_FL is an inode flag; the superblock feature only says the
+        // format is available, not that this particular inode uses it.
+        let inode_uses_extents = inode.flags & 0x0008_0000 != 0;
         let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
             .ok_or(Error::OutOfRange)? / sb.block_size as u64;
         if blocks > u32::MAX as u64 { return Err(Error::OutOfRange); }
 
         for logical in 0..blocks as u32 {
-            let physical = if sb.has_extents() {
+            let physical = if inode_uses_extents {
                 // Walk the complete lookup path for each populated logical
                 // directory block. Recording every external node on these
                 // paths makes all nodes that contribute to directory data
