@@ -267,6 +267,7 @@ pub fn map_extent_block_checked<D:ReadOnlyBlockDevice>(
 /// or journal replay are performed.
 pub fn map_extent_block<D:ReadOnlyBlockDevice>(dev:&mut D,sb:&Superblock,root:&[u8],logical:u32,scratch:&mut[u8])->Result<Option<u64>,Error>{
  if !sb.has_extents()||root.len()<60||scratch.len()!=sb.block_size as usize{return Err(Error::UnsupportedFormat)}
+ if sb.feature_ro_compat&RO_COMPAT_METADATA_CSUM!=0{return Err(Error::InvalidChecksum)}
  let mut is_root=true;
  let mut expected_depth=None;
  for _ in 0..=MAX_EXTENT_DEPTH{
