@@ -603,6 +603,16 @@ pub fn iterate_htree_directory_sorted<R:DirectoryBlockReader,F:FnMut(DirectoryEn
 
 /// VFS-ready indexed lookup adapter. It derives the directory hash seed,
 /// signed/unsigned mode and inode checksum seed from the validated superblock.
+fn validate_dx_superblock_features(superblock:&[u8],root:&[u8])->Result<(),Error>{
+ if superblock.len()<1024{return Err(Error::Truncated)}
+ let (_,levels)=validate_dx_root(root)?;
+ let compat=le32(superblock,92)?;
+ let ro=le32(superblock,100)?;
+ if levels!=0 && compat&0x0020==0{return Err(Error::UnsupportedFormat)}
+ if levels>1 && ro&0x4000==0{return Err(Error::UnsupportedFormat)}
+ Ok(())
+}
+
 pub fn lookup_htree_name_from_superblock<R:DirectoryBlockReader>(
  reader:&mut R,superblock:&[u8],directory_inode:u32,generation:u32,root:&[u8],
  directory_blocks:u32,total_inodes:u32,disk_name:&[u8],siphash_key:Option<[u64;2]>,
@@ -610,6 +620,7 @@ pub fn lookup_htree_name_from_superblock<R:DirectoryBlockReader>(
 )->Result<u32,Error>{
  crate::validate_superblock_checksum(superblock)?;
  if superblock.len()<1024{return Err(Error::Truncated)}
+ validate_dx_superblock_features(superblock,root)?;
  let hash_seed=crate::hash::ext4_directory_hash_seed(superblock)?;
  let hash_unsigned=crate::hash::ext4_hash_unsigned(superblock)?;
  let ro=u32::from_le_bytes(superblock[100..104].try_into().map_err(|_|Error::Truncated)?);
@@ -630,6 +641,7 @@ pub fn iterate_htree_directory_from_superblock<R:DirectoryBlockReader,F:FnMut(Di
 )->Result<(),Error>{
  crate::validate_superblock_checksum(superblock)?;
  if superblock.len()<1024{return Err(Error::Truncated)}
+ validate_dx_superblock_features(superblock,root)?;
  let hash_seed=crate::hash::ext4_directory_hash_seed(superblock)?;
  let hash_unsigned=crate::hash::ext4_hash_unsigned(superblock)?;
  let ro=u32::from_le_bytes(superblock[100..104].try_into().map_err(|_|Error::Truncated)?);
@@ -650,6 +662,7 @@ pub fn iterate_htree_directory_sorted_from_superblock<R:DirectoryBlockReader,F:F
 )->Result<(),Error>{
  crate::validate_superblock_checksum(superblock)?;
  if superblock.len()<1024{return Err(Error::Truncated)}
+ validate_dx_superblock_features(superblock,root)?;
  let hash_seed=crate::hash::ext4_directory_hash_seed(superblock)?;
  let hash_unsigned=crate::hash::ext4_hash_unsigned(superblock)?;
  let ro=u32::from_le_bytes(superblock[100..104].try_into().map_err(|_|Error::Truncated)?);
