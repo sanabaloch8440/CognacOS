@@ -413,6 +413,27 @@ mod tests {
         assert_eq!(validate_external_xattr_block(&b), Err(XattrError::InvalidReferenceCount));
     }
     #[test]
+    fn looks_up_and_visits_external_xattr_values() {
+        let mut b = empty_block();
+        b[32] = 1; b[33] = 1;
+        b[34..36].copy_from_slice(&60u16.to_le_bytes());
+        b[40..44].copy_from_slice(&3u32.to_le_bytes());
+        b[48] = b'x';
+        b[60..63].copy_from_slice(b"abc");
+        assert_eq!(lookup_external_xattr(&b, 1, b"x"), Ok(Some(&b"abc"[..])));
+        assert_eq!(lookup_external_xattr(&b, 1, b"missing"), Ok(None));
+        let mut seen = 0;
+        visit_external_xattrs(&b, |index, name, value| {
+            assert_eq!(index, 1);
+            assert_eq!(name, b"x");
+            assert_eq!(value, b"abc");
+            seen += 1;
+            true
+        }).unwrap();
+        assert_eq!(seen, 1);
+    }
+
+    #[test]
     fn rejects_value_inside_entry_table() {
         let mut b = empty_block();
         b[32] = 1; b[33] = 1;
