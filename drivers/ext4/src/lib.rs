@@ -241,6 +241,7 @@ pub fn map_extent_block_checked<D:ReadOnlyBlockDevice>(
  root:&[u8],logical:u32,scratch:&mut[u8],
 )->Result<Option<u64>,Error>{
  if root.len()<60||scratch.len()!=sb.block_size as usize{return Err(Error::UnsupportedFormat)}
+ validate_superblock_checksum(raw_superblock)?;
  let mut is_root=true;let mut expected_depth=None;
  for _ in 0..=MAX_EXTENT_DEPTH{
   let node=if is_root{&root[..60]}else{&scratch[..]};
