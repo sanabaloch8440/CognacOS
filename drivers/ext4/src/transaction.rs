@@ -77,8 +77,19 @@ pub struct MetadataOwnershipMap<'a> {
 impl<'a> MetadataOwnershipMap<'a> {
     pub fn new(entries: &'a [MetadataOwnership]) -> Result<Self, Error> {
         for (i, entry) in entries.iter().enumerate() {
-            if entries[..i].iter().any(|prior| prior.block == entry.block) {
+            if entry.kind == MetadataObjectKind::Xattr && entry.owner_inode == 0 {
                 return Err(Error::InvalidGeometry);
+            }
+            for prior in &entries[..i] {
+                if prior.block != entry.block { continue; }
+                // ext4 external xattr blocks may be shared. Keep one physical
+                // replay target but retain one validated owner record per inode.
+                // No other metadata class may alias a physical block.
+                if prior.kind != MetadataObjectKind::Xattr
+                    || entry.kind != MetadataObjectKind::Xattr
+                    || prior.owner_inode == entry.owner_inode {
+                    return Err(Error::InvalidGeometry);
+                }
             }
         }
         Ok(Self { entries })
@@ -86,6 +97,13 @@ impl<'a> MetadataOwnershipMap<'a> {
 
     pub fn owner(&self, block: u64) -> Option<MetadataOwnership> {
         self.entries.iter().copied().find(|entry| entry.block == block)
+    }
+
+    /// Number of independently recorded owners for a physical metadata block.
+    /// Shared xattr callers should compare this with the reconciled on-disk
+    /// h_refcount before constructing a replay allowlist.
+    pub fn owner_count(&self, block: u64) -> usize {
+        self.entries.iter().filter(|entry| entry.block == block).count()
     }
 
     pub fn validate(&self, block: u64) -> Result<MetadataOwnership, Error> {
