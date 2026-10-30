@@ -369,6 +369,88 @@ pub fn build_system_zones<D: ReadOnlyBlockDevice>(
     Ok(used)
 }
 
+/// Build a conservative replay-authorization manifest for metadata whose
+/// ownership is proven directly by the validated superblock and primary group
+/// descriptor table. The caller supplies fixed-capacity storage; no allocation
+/// is performed. Backup superblocks/GDTs and inode-owned directory/extent/xattr
+/// blocks are intentionally omitted, so replay to those targets remains denied
+/// until a higher-level object scanner validates their exact ownership.
+pub fn build_system_metadata_ownership<D: ReadOnlyBlockDevice>(
+    dev: &mut D,
+    sb: &Superblock,
+    raw_superblock: &[u8],
+    zones: &SystemZoneMap<'_>,
+    scratch: &mut [u8],
+    entries: &mut [transaction::MetadataOwnership],
+) -> Result<usize, Error> {
+    use transaction::{MetadataObjectKind as Kind, MetadataOwnership};
+    if raw_superblock.len() < SUPERBLOCK_BYTES || scratch.len() != sb.block_size as usize {
+        return Err(Error::InvalidGeometry);
+    }
+    validate_superblock_checksum(raw_superblock)?;
+    if sb.feature_incompat & INCOMPAT_META_BG != 0 { return Err(Error::UnsupportedIncompatFeature); }
+    let groups = sb.group_count()?;
+    let dpb = sb.block_size as u64 / sb.descriptor_size as u64;
+    if dpb == 0 { return Err(Error::InvalidGeometry); }
+    let gdt_bytes = (groups as u64).checked_mul(sb.descriptor_size as u64).ok_or(Error::OutOfRange)?;
+    let gdt_blocks = gdt_bytes.checked_add(sb.block_size as u64 - 1).ok_or(Error::OutOfRange)? / sb.block_size as u64;
+    let superblock_block = if sb.block_size == 1024 { 1 } else { 0 };
+    let mut used = 0usize;
+
+    fn add(
+        entries: &mut [transaction::MetadataOwnership],
+        used: &mut usize,
+        block: u64,
+        kind: transaction::MetadataObjectKind,
+        sb: &Superblock,
+        zones: &SystemZoneMap<'_>,
+    ) -> Result<(), Error> {
+        if block >= sb.blocks_count || !zones.is_system_block(block) { return Err(Error::InvalidGeometry); }
+        if *used == entries.len() { return Err(Error::TransactionTooLarge); }
+        if entries[..*used].iter().any(|entry| entry.block == block) { return Err(Error::InvalidGeometry); }
+        entries[*used] = transaction::MetadataOwnership {
+            block, owner_inode: 0, generation: 0, kind,
+        };
+        *used += 1;
+        Ok(())
+    }
+
+    add(entries, &mut used, superblock_block, Kind::Superblock, sb, zones)?;
+    let gdt_start = (sb.first_data_block as u64).checked_add(1).ok_or(Error::OutOfRange)?;
+    for offset in 0..gdt_blocks {
+        add(entries, &mut used, gdt_start.checked_add(offset).ok_or(Error::OutOfRange)?,
+            Kind::GroupDescriptor, sb, zones)?;
+    }
+
+    let itable_bytes = (sb.inodes_per_group as u64).checked_mul(sb.inode_size as u64).ok_or(Error::OutOfRange)?;
+    let itable_blocks = itable_bytes.checked_add(sb.block_size as u64 - 1).ok_or(Error::OutOfRange)? / sb.block_size as u64;
+    for group in 0..groups {
+        let descriptor_block = gdt_start.checked_add(group as u64 / dpb).ok_or(Error::OutOfRange)?;
+        read_block(dev, sb, descriptor_block, scratch)?;
+        let slot = (group as u64 % dpb) as usize;
+        let offset = slot.checked_mul(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+        let desc = scratch.get(offset..offset + sb.descriptor_size as usize).ok_or(Error::Truncated)?;
+        if sb.feature_ro_compat & 0x0400 != 0 {
+            validate_group_descriptor_checksum(raw_superblock, group, desc)?;
+        }
+        let gd = GroupDescriptor::parse(desc, sb)?;
+        let inode_base = (group as u64).checked_mul(sb.inodes_per_group as u64).ok_or(Error::OutOfRange)?;
+        let remaining = (sb.inodes_count as u64).checked_sub(inode_base).ok_or(Error::InvalidGeometry)?;
+        let actual_inodes = core::cmp::min(sb.inodes_per_group as u64, remaining);
+        let table_bytes = actual_inodes.checked_mul(sb.inode_size as u64).ok_or(Error::OutOfRange)?;
+        let actual_table_blocks = table_bytes.checked_add(sb.block_size as u64 - 1).ok_or(Error::OutOfRange)? / sb.block_size as u64;
+        if actual_table_blocks > itable_blocks { return Err(Error::InvalidGeometry); }
+
+        add(entries, &mut used, gd.block_bitmap, Kind::BlockBitmap, sb, zones)?;
+        add(entries, &mut used, gd.inode_bitmap, Kind::InodeBitmap, sb, zones)?;
+        for offset in 0..actual_table_blocks {
+            add(entries, &mut used, gd.inode_table.checked_add(offset).ok_or(Error::OutOfRange)?,
+                Kind::InodeTable, sb, zones)?;
+        }
+    }
+    Ok(used)
+}
+
 /// Add the ext4 internal journal inode's data blocks to the protected system
 /// zones, matching Linux ext4's reserved-inode protection. The caller supplies
 /// an inode-sized buffer and two block-sized scratch buffers. External journal
