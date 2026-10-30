@@ -45,6 +45,71 @@ fn group_has_super(sb: &Superblock, raw: &[u8], group: u32) -> Result<bool, Erro
     Ok(true)
 }
 
+/// Read-only ext4 mount that owns a validated system-zone view. The caller
+/// supplies bounded range storage and scratch buffers so the no_std driver
+/// does not allocate during mount. This wrapper deliberately exposes no
+/// writable mount or metadata mutation operations.
+pub struct CheckedExtFilesystem<'a, D: ReadOnlyBlockDevice> {
+    filesystem: ExtFilesystem<D>,
+    raw_superblock: [u8; SUPERBLOCK_BYTES],
+    ranges: &'a mut [BlockRange],
+    zone_count: usize,
+}
+
+impl<'a, D: ReadOnlyBlockDevice> CheckedExtFilesystem<'a, D> {
+    pub fn mount(
+        mut device: D,
+        ranges: &'a mut [BlockRange],
+        inode_buffer: &mut [u8],
+        scratch_a: &mut [u8],
+        scratch_b: &mut [u8],
+    ) -> Result<Self, Error> {
+        let mut raw_superblock = [0u8; SUPERBLOCK_BYTES];
+        let end = SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64).ok_or(Error::OutOfRange)?;
+        if device.capacity_bytes() < end { return Err(Error::OutOfRange); }
+        device.read_at(SUPERBLOCK_DISK_OFFSET, &mut raw_superblock).map_err(|_| Error::Io)?;
+        let sb = Superblock::parse(&raw_superblock)?;
+        validate_superblock_checksum(&raw_superblock)?;
+        if inode_buffer.len() != sb.inode_size as usize
+            || scratch_a.len() != sb.block_size as usize
+            || scratch_b.len() != sb.block_size as usize {
+            return Err(Error::InvalidGeometry);
+        }
+        let mut filesystem = ExtFilesystem::mount_read_only(device)?;
+        let zone_count = {
+            let ExtFilesystem { device, superblock, .. } = &mut filesystem;
+            let count = build_system_zones(device, superblock, &raw_superblock, scratch_a, ranges)?;
+            let mut used = count;
+            protect_reserved_journal_inode_zones(
+                device, superblock, &raw_superblock, ranges, &mut used,
+                inode_buffer, scratch_a, scratch_b,
+            )?;
+            used
+        };
+        Ok(Self { filesystem, raw_superblock, ranges, zone_count })
+    }
+
+    pub fn superblock(&self) -> &Superblock { &self.filesystem.superblock }
+    pub fn system_zones(&self) -> SystemZoneMap<'_> {
+        SystemZoneMap::new(&self.ranges[..self.zone_count])
+    }
+    pub fn map_extent_block(
+        &mut self, inode_number: u32, generation: u32, root: &[u8],
+        logical: u32, scratch: &mut [u8],
+    ) -> Result<Option<u64>, Error> {
+        let zones = SystemZoneMap::new(&self.ranges[..self.zone_count]);
+        let journal_ino = if u32at(&self.raw_superblock, 92)? & 0x0004 != 0 {
+            Some(u32at(&self.raw_superblock, 224)?)
+        } else { None };
+        map_extent_block_checked_zones_for_inode(
+            &mut self.filesystem.device, &self.filesystem.superblock,
+            &self.raw_superblock, inode_number, generation, root, logical,
+            scratch, &zones, journal_ino,
+        )
+    }
+    pub fn into_device(self) -> D { self.filesystem.device }
+}
+
 /// Build the system-zone map from the primary descriptor table. Caller storage
 /// must hold up to six ranges per group plus block zero. META_BG is rejected
 /// by the superblock parser; scratch must be exactly one filesystem block.
