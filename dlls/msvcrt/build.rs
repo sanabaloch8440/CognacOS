@@ -35,7 +35,7 @@ fn main() {
     let actual = fs::read_to_string("exports/msvcrt-x64.def").expect("missing msvcrt .def");
     assert_eq!(actual, expected_def(&exports), "msvcrt .def diverges from pinned Windows 11 export manifest");
     let mut generated = String::from("// Generated from the pinned Windows 11 x64 msvcrt export manifest.\n");
-    for export in &exports { generated.push_str(&format!("#[export_name = {:?}]\npub extern \"system\" fn cognac_msvcrt_export_{}() -> usize {{ 0 }}\n", export.name, export.ordinal)); }
+    for export in &exports { generated.push_str(&format!("#[cfg(target_os = \"windows\")]\n#[export_name = {:?}]\npub extern \"system\" fn cognac_msvcrt_export_{}() -> usize {{ 0 }}\n", export.name, export.ordinal)); }
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     fs::write(out_dir.join("msvcrt_exports.rs"), generated).expect("write generated msvcrt exports");
     println!("cargo:warning=msvcrt: {} exact Windows 11 x64 named exports; all entry bodies are compatibility stubs", exports.len());
