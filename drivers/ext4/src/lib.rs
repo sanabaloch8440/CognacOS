@@ -1954,3 +1954,56 @@ mod large_dir_feature_tests {
         assert_eq!(Superblock::parse(&raw), Err(Error::UnsupportedRoCompatFeature));
     }
 }
+
+
+#[cfg(test)]
+mod inline_extent_enumeration_tests {
+    use super::*;
+
+    fn root() -> [u8; 60] {
+        let mut b = [0u8; 60];
+        b[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
+        b[2..4].copy_from_slice(&2u16.to_le_bytes());
+        b[4..6].copy_from_slice(&4u16.to_le_bytes());
+        b[6..8].copy_from_slice(&0u16.to_le_bytes());
+        b[12..16].copy_from_slice(&0u32.to_le_bytes());
+        b[16..18].copy_from_slice(&2u16.to_le_bytes());
+        b[18..20].copy_from_slice(&0u16.to_le_bytes());
+        b[20..24].copy_from_slice(&10u32.to_le_bytes());
+        b[24..28].copy_from_slice(&5u32.to_le_bytes());
+        b[28..30].copy_from_slice(&0x8002u16.to_le_bytes());
+        b[30..32].copy_from_slice(&0u16.to_le_bytes());
+        b[32..36].copy_from_slice(&20u32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn visits_initialized_and_unwritten_extents_in_order() {
+        let mut seen = 0;
+        let count = visit_inline_extent_root(&root(), 100, |extent| {
+            if seen == 0 {
+                assert_eq!(extent, ExtentRecord {
+                    logical_start: 0, physical_start: 10, length: 2, unwritten: false,
+                });
+            } else {
+                assert_eq!(extent, ExtentRecord {
+                    logical_start: 5, physical_start: 20, length: 2, unwritten: true,
+                });
+            }
+            seen += 1;
+            Ok(true)
+        }).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(seen, 2);
+    }
+
+    #[test]
+    fn rejects_overlapping_logical_and_out_of_range_physical_extents() {
+        let mut b = root();
+        b[24..28].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(validate_inline_extent_root(&b, 100), Err(Error::InvalidExtentTree));
+        let mut b = root();
+        b[32..36].copy_from_slice(&99u32.to_le_bytes());
+        assert_eq!(validate_inline_extent_root(&b, 100), Err(Error::InvalidExtentTree));
+    }
+}
