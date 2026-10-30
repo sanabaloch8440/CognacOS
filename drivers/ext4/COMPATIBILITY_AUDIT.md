@@ -232,6 +232,9 @@ one JBD2 transaction. Large-directory depth extensions and writable HTree
 mount integration remain unsupported.
 
 
+
+The HTree layer also exposes `iterate_htree_directory_unique`, which validates the root and each traversed index node, checks dx/leaf checksums, tracks every visited leaf in caller-owned bounded storage, and rejects duplicate pointers even when the duplicated leaf contains no live entries. Capacity exhaustion fails closed. Regression tests cover duplicate empty-leaf references and undersized tracking storage. This is a validated enumeration primitive; the namespace graph validator is still not yet wired to this iterator, so indexed directories remain rejected by the recovery namespace-discovery mount path.
+
 ## Mount-state validation update (2026-10-30)
 
 The common mount-state gate now rejects `EXT4_ERROR_FS`, `EXT4_ORPHAN_FS`, and nonzero `s_last_orphan` before the filesystem is exposed. This closes a gap in which a clean journal pointer could otherwise be mistaken for proof that all filesystem-level recovery work was complete. Journal replay and orphan cleanup are separate responsibilities; CognacOS still rejects orphaned volumes until the actual truncate/reclaim adapter is wired through a metadata transaction. A dirty-but-error-free journaled volume is not rejected solely because `EXT4_VALID_FS` is clear: it must still pass the explicit journal recovery path. This is a mount-safety improvement, not a writable-mount milestone.
