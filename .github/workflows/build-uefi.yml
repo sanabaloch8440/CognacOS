@@ -716,7 +716,7 @@ jobs:
           qemu-system-x86_64 \
             -audiodev wav,id=beepout,path=build/beep.wav \
             -machine q35,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
-            -device intel-iommu,intremap=on,caching-mode=on,aw-bits=48 \
+            -device intel-iommu,intremap=off,caching-mode=on,aw-bits=48 \
             -device qemu-xhci,id=xhci \
             -device usb-kbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
@@ -1035,7 +1035,7 @@ jobs:
           set +e
           timeout 30s qemu-system-x86_64 \
             -machine pc -m 5G -cpu qemu64 -smp 2 \
-            -device intel-iommu,intremap=on,caching-mode=on,aw-bits=48 \
+            -device intel-iommu,intremap=off,caching-mode=on,aw-bits=48 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS_persist.fd \
             -drive if=ide,format=raw,file=build/cognacos-uefi.img \
