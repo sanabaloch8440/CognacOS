@@ -814,7 +814,9 @@ mod tests {
         assert_eq!(lookup_htree_leaf(&mut fixture, &root, 4, 0x5000, false, seed, &mut scratch), Err(Error::InvalidDirectoryEntry));
         root[34..36].copy_from_slice(&2u16.to_le_bytes());
         // dx_root_info stores hash_version, info_length, indirect_levels, flags at 28..32.
-        root[30] = 2;
+        // Two indirect levels are valid with ext4 RO_COMPAT_LARGEDIR;
+        // three exceeds the supported on-disk HTree depth and must fail closed.
+        root[30] = 3;
         assert_eq!(lookup_htree_leaf(&mut fixture, &root, 4, 0x5000, false, seed, &mut scratch), Err(Error::UnsupportedFormat));
 
         let mut leaf = [0u8; 1024];
