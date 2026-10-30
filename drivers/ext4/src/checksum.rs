@@ -129,3 +129,14 @@ mod tests {
         assert_ne!(jbd2_commit_checksum(seed, &block), Some(checksum));
     }
 }
+
+
+/// JBD2 v2/v3 superblock checksum: CRC32C(~0, the complete 1024-byte
+/// journal superblock with s_checksum at 0xfc..0x100 treated as zero).
+/// The checksum is stored in big-endian form without a final complement.
+pub fn jbd2_superblock_checksum(block: &[u8]) -> Option<u32> {
+    if block.len() != 1024 { return None; }
+    let mut crc = crc32c_update(!0, &block[..252]);
+    crc = crc32c_update(crc, &[0; 4]);
+    Some(crc32c_update(crc, &block[256..]))
+}
