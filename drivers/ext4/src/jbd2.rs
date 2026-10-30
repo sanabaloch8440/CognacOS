@@ -211,4 +211,43 @@ mod tests{
   struct D;impl ReplayDevice for D{fn filesystem_blocks(&self)->u64{10}fn read_block(&mut self,_:u64,_:&mut[u8])->Result<(),()>{Err(())}fn write_block(&mut self,_:u64,_:&[u8])->Result<(),()>{Err(())}fn flush(&mut self)->Result<(),()>{Ok(())}}
   let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:0,feature_incompat:0,block_count_64:false};let mut d=D;let mut a=[0u8;1024];let mut b=[0u8;1024];assert_eq!(replay(&mut d,&mut |_|Err(()),&sb,&mut a,&mut b),Ok(ReplayReport::default()));
  }
+ struct Mem{blocks:[[u8;1024];64],flushes:u32}
+ impl ReplayDevice for Mem{
+  fn filesystem_blocks(&self)->u64{64}
+  fn read_block(&mut self,n:u64,out:&mut[u8])->Result<(),()>{let b=self.blocks.get(n as usize).ok_or(())?;if out.len()!=1024{return Err(())}out.copy_from_slice(b);Ok(())}
+  fn write_block(&mut self,n:u64,data:&[u8])->Result<(),()>{let b=self.blocks.get_mut(n as usize).ok_or(())?;if data.len()!=1024{return Err(())}b.copy_from_slice(data);Ok(())}
+  fn flush(&mut self)->Result<(),()>{self.flushes+=1;Ok(())}
+ }
+ fn header(b:&mut[u8;1024],kind:u32,seq:u32){b.fill(0);b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&kind.to_be_bytes());b[8..12].copy_from_slice(&seq.to_be_bytes());}
+ #[test]fn replay_applies_only_a_complete_committed_transaction(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
+  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
+  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[3].fill(0x5a);
+  header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false};
+  let mut a=[0u8;1024];let mut b=[0u8;1024];
+  let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
+  assert_eq!(r.transactions_replayed,1);assert_eq!(r.blocks_replayed,1);assert_eq!(d.blocks[7],[0x5a;1024]);
+ }
+ #[test]fn later_revoke_suppresses_older_transaction_write(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
+  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[3].fill(0x6b);header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
+  header(&mut d.blocks[5],JBD2_REVOKE_BLOCK,2);d.blocks[5][12..16].copy_from_slice(&20u32.to_be_bytes());d.blocks[5][16..20].copy_from_slice(&7u32.to_be_bytes());
+  header(&mut d.blocks[6],JBD2_COMMIT_BLOCK,2);
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_REVOKE,block_count_64:false};
+  let mut a=[0u8;1024];let mut b=[0u8;1024];let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
+  assert_eq!(r.transactions_replayed,2);assert_eq!(r.blocks_replayed,0);assert_eq!(r.blocks_revoked,1);assert_eq!(d.blocks[7],[0;1024]);
+ }
+ #[test]fn ordered_commit_checkpoints_metadata_and_clears_recovery_pointer(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  let mut js=[0u8;1024];js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());js[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
+  js[12..16].copy_from_slice(&1024u32.to_be_bytes());js[16..20].copy_from_slice(&64u32.to_be_bytes());js[20..24].copy_from_slice(&1u32.to_be_bytes());js[24..28].copy_from_slice(&9u32.to_be_bytes());
+  let ordered=[0x31u8;1024];let metadata=[0x42u8;1024];let mut descriptor=[0u8;1024];
+  let seq=commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[11],&[&ordered],&[10],&[&metadata],&mut descriptor).unwrap();
+  assert_eq!(seq,9);assert_eq!(d.blocks[11],ordered);assert_eq!(d.blocks[10],metadata);assert_eq!(u32::from_be_bytes(js[28..32].try_into().unwrap()),0);assert_eq!(u32::from_be_bytes(js[24..28].try_into().unwrap()),10);assert!(d.flushes>=5);
+ }
 }
