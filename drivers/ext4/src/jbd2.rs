@@ -141,9 +141,23 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  metadata_targets:&[u64],metadata_data:&[&[u8]],revoked_targets:&[u64],
  descriptor:&mut[u8],
 )->Result<u32,Error>{
+ let filesystem_uuid=[0u8;16];
+ commit_ordered_with_revokes_for_filesystem_uuid(d,m,journal_superblock,
+  ordered_targets,ordered_data,metadata_targets,metadata_data,revoked_targets,
+  &filesystem_uuid,descriptor)
+}
+
+/// Legacy JBD v1 has no UUID in its superblock, but its descriptor tags still
+/// carry the containing ext filesystem UUID. Callers must bind that UUID here.
+pub fn commit_ordered_with_revokes_for_filesystem_uuid<D:ReplayDevice,M:JournalBlockMap>(
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8],
+ ordered_targets:&[u64],ordered_data:&[&[u8]],
+ metadata_targets:&[u64],metadata_data:&[&[u8]],revoked_targets:&[u64],
+ filesystem_uuid:&[u8;16],descriptor:&mut[u8],
+)->Result<u32,Error>{
  if ordered_targets.len()!=ordered_data.len()||metadata_targets.len()!=metadata_data.len()
   ||metadata_targets.is_empty()||descriptor.len()<1024{return Err(Error::InvalidGeometry)}
- let sb=JournalSuperblock::parse(journal_superblock)?;
+ let sb=JournalSuperblock::parse_with_filesystem_uuid(journal_superblock,filesystem_uuid)?;
  
  let bs=sb.block_size as usize;
  if descriptor.len()!=bs||journal_superblock.len()!=bs{return Err(Error::NoScratch)}
@@ -304,6 +318,17 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
 )->Result<u32,Error>{
  commit_ordered_with_revokes(d,m,journal_superblock,ordered_targets,ordered_data,
   metadata_targets,metadata_data,&[],descriptor)
+}
+
+/// Commit ordered data and metadata with the filesystem UUID supplied for legacy JBD v1.
+pub fn commit_ordered_for_filesystem_uuid<D:ReplayDevice,M:JournalBlockMap>(
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8],ordered_targets:&[u64],
+ ordered_data:&[&[u8]],metadata_targets:&[u64],metadata_data:&[&[u8]],
+ filesystem_uuid:&[u8;16],descriptor:&mut[u8],
+)->Result<u32,Error>{
+ commit_ordered_with_revokes_for_filesystem_uuid(d,m,journal_superblock,
+  ordered_targets,ordered_data,metadata_targets,metadata_data,&[],
+  filesystem_uuid,descriptor)
 }
 
 /// Full journal recovery entry point. The caller reads the journal inode's
@@ -745,8 +770,8 @@ mod tests{
   js[16..20].copy_from_slice(&64u32.to_be_bytes());
   js[20..24].copy_from_slice(&1u32.to_be_bytes());
   js[24..28].copy_from_slice(&23u32.to_be_bytes());
-  let metadata=[0x71u8;1024];let mut descriptor=[0u8;1024];
-  assert_eq!(commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&mut descriptor),Ok(23));
+  let metadata=[0x71u8;1024];let mut descriptor=[0u8;1024];let filesystem_uuid=[0x6bu8;16];
+  assert_eq!(commit_ordered_for_filesystem_uuid(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&filesystem_uuid,&mut descriptor),Ok(23));
   assert_eq!(be32(&d.blocks[1],4).unwrap(),JBD2_DESCRIPTOR_BLOCK);
   assert_eq!(be32(&d.blocks[1],12).unwrap(),10);
   assert_eq!(be32(&d.blocks[1],16).unwrap(),TAG_LAST);
