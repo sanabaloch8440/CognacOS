@@ -20,6 +20,29 @@ A numerical claim such as “99% compatible” is not currently measurable. Comp
 
 **Important:** this inventory is not yet integrated into journal replay's metadata ownership manifest. Xattr blocks remain denied replay targets. Large EA inodes/value-inode references are not supported. This batch does not enable writable mounts.
 
+## Additional implementation batch (2026-10-30)
+
+This batch adds several bounded, reusable filesystem operations without
+changing the mount feature masks or enabling writable mounting:
+
+- External xattr blocks now have zero-copy lookup by namespace index/name and
+  a visitor API for enumerating validated names and values.
+- Inline extent roots now have a public validator/enumerator that reports
+  initialized versus unwritten extents, plus a normalizer that sorts runs,
+  rejects logical overlap and coalesces compatible adjacent runs.
+- Legacy orphan-chain recovery now rejects free inodes and unsupported special
+  inode types before staging any transaction changes.
+- Regression tests cover xattr lookup/iteration, extent enumeration,
+  normalization, overlap rejection and orphan inode-type rejection.
+
+These additions close useful read/validation and metadata-manipulation gaps,
+but they do not implement inline file data, external extent-tree mutation,
+EA-inode values, orphan-file recovery, or complete xattr replay integration.
+The feature matrix was updated to reflect the narrower implemented subsets.
+As with the prior batch, source commits were verified through GitHub; no Cargo
+build or completed CI run has been established in this session.
+
+
 ## Follow-up hardening batch (2026-10-30)
 
 The subsequent implementation batch made the following bounded changes:
