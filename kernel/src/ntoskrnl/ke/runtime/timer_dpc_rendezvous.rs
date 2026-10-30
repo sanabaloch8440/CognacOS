@@ -475,6 +475,19 @@ pub fn queue_dpc_from_interrupt(dpc:*mut core::ffi::c_void)->bool {
     record.target_cpu=cpu;record.arg1=0;record.arg2=0;record.queued=true;true
 }
 
+/// Narrow C ABI hooks consumed by HAL. These keep all executive DPC metadata
+/// and scheduling policy in NTOSKRNL while allowing HAL to request deferred work.
+pub extern "C" fn hal_queue_device_dpc(dpc:*mut core::ffi::c_void)->bool{
+    queue_dpc_from_interrupt(dpc)
+}
+pub extern "C" fn hal_remove_device_dpc(dpc:*mut core::ffi::c_void)->bool{
+    unsafe{ke_remove_queue_dpc(dpc)!=0}
+}
+pub extern "C" fn hal_initialize_device_dpc(dpc:*mut core::ffi::c_void,index:usize){
+    unsafe{ke_initialize_dpc(dpc,Some(crate::hal::device_dpc_dispatch_for_kernel),index as *mut core::ffi::c_void);}
+}
+
+
 
 pub unsafe extern "win64" fn ke_remove_queue_dpc(dpc:*mut core::ffi::c_void)->u8{
     if dpc.is_null(){return 0}
