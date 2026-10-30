@@ -23,10 +23,10 @@ pub struct PlatformOps {
  pub quarantine_requester:Option<unsafe extern "C" fn(*mut core::ffi::c_void,u16,u8,u8,u8)->i32>,
 }
 unsafe impl Send for PlatformOps {} unsafe impl Sync for PlatformOps {}
-#[derive(Clone,Copy)] struct Unit { mmio:u64, length:u64, ecap:u64, root_phys:u64, root_virt:*mut u64, ops:PlatformOps, enabled:bool }
+#[derive(Clone,Copy)] struct Unit { mmio:u64, length:u64, ecap:u64, root_phys:u64, root_virt:*mut u64, max_domains:u32, ops:PlatformOps, enabled:bool }
 unsafe impl Send for Unit {} unsafe impl Sync for Unit {}
 struct Store(core::cell::UnsafeCell<Unit>); unsafe impl Sync for Store {}
-static UNIT:Store=Store(core::cell::UnsafeCell::new(Unit{mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),ops:PlatformOps{size:0,context:core::ptr::null_mut(),alloc_table:None,free_table:None,map_mmio:None,unmap_mmio:None,clean_cache:None,quarantine_requester:None},enabled:false}));
+static UNIT:Store=Store(core::cell::UnsafeCell::new(Unit{mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),max_domains:0,ops:PlatformOps{size:0,context:core::ptr::null_mut(),alloc_table:None,free_table:None,map_mmio:None,unmap_mmio:None,clean_cache:None,quarantine_requester:None},enabled:false}));
 #[derive(Clone,Copy)] struct BusContext { physical:u64, virtual_address:*mut u64 }
 unsafe impl Send for BusContext {} unsafe impl Sync for BusContext {}
 const EMPTY_CONTEXT:BusContext=BusContext{physical:0,virtual_address:core::ptr::null_mut()};
@@ -45,6 +45,17 @@ unsafe fn r64(b:u64,o:usize)->u64{unsafe{core::ptr::read_volatile((b as *const u
 unsafe fn w64(b:u64,o:usize,v:u64){unsafe{core::ptr::write_volatile((b as *mut u8).add(o).cast(),v)}}
 fn wait32(b:u64,o:usize,m:u32,set:bool)->bool{for _ in 0..2_000_000{if (unsafe{r32(b,o)}&m!=0)==set{return true} core::hint::spin_loop()}false}
 fn wait64(b:u64,o:usize,m:u64)->bool{for _ in 0..2_000_000{if unsafe{r64(b,o)}&m==0{return true}core::hint::spin_loop()}false}
+
+/// Validate the 48-bit, four-level translation format used by the mapper and
+/// bound domain IDs to the hardware NDOMS capability and our fixed domain table.
+fn supported_domain_count(cap:u64)->Option<u32>{
+ let sagaw=((cap>>8)&0x1f) as u32;
+ let mgaw=(((cap>>16)&0x3f)+1) as u32;
+ if sagaw&(1<<2)==0||mgaw<48{return None}
+ let ndoms=(cap&0x7) as u32;
+ let hardware_domains=1u32.checked_shl(4+2*ndoms)?;
+ Some(core::cmp::min(hardware_domains,256))
+}
 
 /// Intel VT-d root/context-table encodings. These helpers deliberately do
 /// not publish entries by themselves: callers must serialize updates, clean the
@@ -80,6 +91,19 @@ pub const fn encode_context_entry(domain_id:u16,second_level_root:u64)->Option<(
 }
 
 #[cfg(test)]
+mod supported_capability_tests{
+ use super::*;
+ #[test]fn four_level_48bit_and_domain_limit_are_required(){
+  let cap=(47u64<<16)|(1<<10)|2;
+  assert_eq!(supported_domain_count(cap),Some(256));
+  let cap_16_domains=(47u64<<16)|(1<<10);
+  assert_eq!(supported_domain_count(cap_16_domains),Some(16));
+  assert_eq!(supported_domain_count((47u64<<16)|(1<<9)|2),None);
+  assert_eq!(supported_domain_count((39u64<<16)|(1<<10)|2),None);
+ }
+}
+
+#[cfg(test)]
 mod context_encoding_tests {
     use super::*;
     #[test]
@@ -112,7 +136,8 @@ pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32
  let _g=LOCK.lock();let u=unsafe{&mut*UNIT.0.get()};if u.enabled{return STATUS_DEVICE_NOT_READY}
  let mut mmio=0; if unsafe{(ops.map_mmio.unwrap())(ops.context,register_pa,register_len,&mut mmio)}!=0||mmio==0{return STATUS_NOT_SUPPORTED}
  let cap=unsafe{r64(mmio,CAP)};let ecap=unsafe{r64(mmio,ECAP)};let iro=((ecap>>8)&0x3ff) as usize*16;
- if cap==0||ecap==0||iro.checked_add(0x20).is_none_or(|e|e>register_len as usize){unsafe{(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_NOT_SUPPORTED}
+ let Some(max_domains)=supported_domain_count(cap) else{unsafe{(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_NOT_SUPPORTED};
+ if cap==0||ecap==0||max_domains<2||iro.checked_add(0x20).is_none_or(|e|e>register_len as usize){unsafe{(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_NOT_SUPPORTED}
  let(mut rp,mut rv)=(0u64,core::ptr::null_mut());
  if unsafe{(ops.alloc_table.unwrap())(ops.context,&mut rp,&mut rv)}!=0||rp==0||rp&0xfff!=0||rv.is_null(){
   if rp!=0&&!rv.is_null(){let _=unsafe{(ops.free_table.unwrap())(ops.context,rp,rv)};}
@@ -128,7 +153,7 @@ pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32
  if !wait64(mmio,CCMD,ICC){unsafe{(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
  unsafe{w32(mmio,GCMD,(old&!TE)|SRTP|TE)};
  if !wait32(mmio,GSTS,TES,true){unsafe{w32(mmio,GCMD,(old&!TE)|SRTP);let _=wait32(mmio,GSTS,TES,false);(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
- *u=Unit{mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,ops:*ops,enabled:true};
+ *u=Unit{mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,max_domains,ops:*ops,enabled:true};
  drop(_g);
  let backend_status=unsafe{register_generic_dma_backend()};
  if backend_status!=STATUS_SUCCESS{return backend_status}
@@ -203,7 +228,7 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
  }
  unsafe{core::ptr::write_bytes(root_va,0,512)};
  let did=NEXT_DOMAIN.fetch_add(1,Ordering::AcqRel);
- if did==0||did==u16::MAX{
+ if did==0||did as u32>=u.max_domains||did==u16::MAX{
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
   return Err(STATUS_INSUFFICIENT_RESOURCES)
  }
