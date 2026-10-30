@@ -163,4 +163,27 @@ mod tests{
   let mut seen=0;crate::htree::iterate_htree_directory(&mut reader,&root,4,100,hash_seed,None,true,inode_seed,&mut scratch,|entry|{seen+=1;assert!(entry.inode==2||entry.inode==21||entry.inode==22);Ok(true)}).unwrap();assert_eq!(seen,4);
  }
 
+ #[test]fn leaf_split_rebalances_entries_and_refreshes_both_checksums(){
+  let mut sb=[0u8;1024];put32(&mut sb,100,0x0400).unwrap();sb[373]=1;sb[104..120].copy_from_slice(&[0x22;16]);crate::update_superblock_checksum(&mut sb).unwrap();
+  let fs_seed=crate::ext4_metadata_checksum_seed(&sb).unwrap();let seed=crate::checksum::ext4_inode_csum_seed(fs_seed,12,7);
+  let mut old=[0u8;1024];put32(&mut old,0,20).unwrap();put16(&mut old,4,512).unwrap();old[6]=4;old[7]=1;old[8..12].copy_from_slice(b"alpha");
+  put32(&mut old,512,21).unwrap();put16(&mut old,516,500).unwrap();old[518]=5;old[519]=1;old[520..525].copy_from_slice(b"bravo");
+  write_leaf_tail(&mut old,seed).unwrap();crate::update_directory_block_checksum(&sb,12,7,&mut old).unwrap();
+  let mut new=[0u8;1024];let mut scratch=[0u8;1024];let mut map=[DirectoryMapEntry::default();8];
+  let separator=split_directory_leaf(&sb,12,7,&mut old,&mut new,1,[0;4],None,&mut map,&mut scratch).unwrap();
+  crate::validate_directory_block_checksum(&sb,12,7,&old).unwrap();crate::validate_directory_block_checksum(&sb,12,7,&new).unwrap();
+  assert!(separator&!1<=0xffff_fffc);assert_ne!(u32at(&old,0).unwrap(),0);assert_ne!(u32at(&new,0).unwrap(),0);
+  assert_eq!(old[6] as usize+new[6] as usize,9);
+ }
+ #[test]fn root_growth_moves_index_entries_to_checked_dx_node(){
+  let seed=0x4455_6677;let mut root=[0u8;1024];put32(&mut root,0,2).unwrap();put16(&mut root,4,12).unwrap();root[6]=1;root[8]=b'.';
+  put32(&mut root,12,2).unwrap();put16(&mut root,16,1012).unwrap();root[18]=2;root[20..22].copy_from_slice(b"..");root[28]=1;root[29]=8;
+  let limit=(1024-40)/8;put16(&mut root,32,limit as u16).unwrap();put16(&mut root,34,2).unwrap();put32(&mut root,36,2).unwrap();put32(&mut root,40,0x4000).unwrap();put32(&mut root,44,3).unwrap();
+  update_dx(&mut root,32,limit,2,true,seed).unwrap();let mut node=[0u8;1024];
+  grow_dx_root(&mut root,&mut node,4,true,seed).unwrap();
+  assert_eq!(root[30],1);assert_eq!(u16at(&root,34).unwrap(),1);assert_eq!(u32at(&root,36).unwrap(),4);
+  assert_eq!(u32at(&node,0).unwrap(),0);assert_eq!(u16at(&node,4).unwrap(),1024);assert_eq!(u16at(&node,10).unwrap(),2);
+  let node_limit=(1024-16)/8;assert_eq!(dx_checksum(&node,8,node_limit,2,seed).unwrap(),u32at(&node,8+node_limit*8+4).unwrap());
+ }
+
 }
