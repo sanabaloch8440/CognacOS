@@ -897,6 +897,9 @@ unsafe extern "C" fn service_set_bus_master(device_object:u64,enabled:bool)->Dri
     if enabled {
         if r.state<crate::ntoskrnl::pnp::STATE_DMA_READY||r.interrupt_vector==0
             ||!device_interrupt_handler_registered(r.interrupt_vector)
+            ||!crate::dma::iommu::available()
+            ||!crate::dma::iommu::vtd::is_enabled()
+            ||crate::dma::iommu::common_allocation_count(device_object as usize)<4
             ||!crate::dma::iommu::device_busy(device_object as usize) {
             return driver_hal_unsupported();
         }
