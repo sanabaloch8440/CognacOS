@@ -598,7 +598,14 @@ jobs:
           cp build/cognacos-kernel.exe build/kernel/cognacos-kernel.exe
           cp target/x86_64-pc-windows-msvc/release/cognac_ntdll.dll build/EFI/BOOT/ntdll.dll
           cp build/kbdus/kbdus.dll build/EFI/BOOT/kbdus.dll
-          cp test/beep.sys build/EFI/BOOT/beep.sys
+          # beep.sys is an optional external compatibility fixture. Keep the
+          # image bootable when the fixture is not supplied; the assessment
+          # step below reports NOT RUN in that case.
+          if [[ -f test/beep.sys ]]; then
+            cp test/beep.sys build/EFI/BOOT/beep.sys
+          else
+            echo "BEEP.SYS IMAGE INPUT: NOT INCLUDED - test/beep.sys is absent."
+          fi
           truncate -s 256M build/cognacos-uefi.img
           truncate -s 128M build/pagefile.img
           parted -s build/cognacos-uefi.img mklabel gpt
@@ -617,7 +624,9 @@ jobs:
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/cognacos-kernel.exe ::/EFI/BOOT/cognacos-kernel.exe
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/ntdll.dll ::/EFI/BOOT/ntdll.dll
           mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/kbdus.dll ::/EFI/BOOT/kbdus.dll
-          mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/beep.sys ::/EFI/BOOT/beep.sys
+          if [[ -f build/EFI/BOOT/beep.sys ]]; then
+            mcopy -i build/cognacos-uefi.img@@1048576 build/EFI/BOOT/beep.sys ::/EFI/BOOT/beep.sys
+          fi
           mkdir -p build/ext4-root
           printf '%s' 'Readme, I have a secret to kernel stability' > build/ext4-root/README.txt
           loopdev="$(sudo losetup --find --show --partscan build/cognacos-uefi.img)"
