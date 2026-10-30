@@ -315,3 +315,20 @@ unreachable nodes, and does not discover the complete directory namespace.
 The caller-provided directory inode list remains a trust boundary. External
 extent-tree mutation, xattrs, backup metadata ownership, full namespace
 discovery, and Linux image/crash testing remain outstanding.
+
+
+## Allocated-inode ownership validation (2026-10-30)
+
+The mount-owned directory ownership pass no longer treats a readable inode
+record as sufficient proof of ownership. Before reading a supplied directory
+inode, it validates the primary group descriptor checksum, rejects
+`EXT4_BG_INODE_UNINIT`, reads the owning group's inode bitmap, validates the
+inode bitmap checksum over the defined `inodes_per_group / 8` bytes when
+metadata_csum is active, and verifies the requested inode allocation bit.
+This prevents free inode-table contents or uninitialized inode groups from
+being used to authorize directory data and extent-node replay targets.
+
+This does not establish namespace reachability or discover all allocated
+directories. The caller-supplied inode list remains a trust boundary; complete
+inode-table scanning, directory graph validation, xattr ownership, backup
+metadata ownership, and Linux-generated recovery testing remain outstanding.
