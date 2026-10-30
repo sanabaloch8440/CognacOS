@@ -313,6 +313,18 @@ where R:crate::htree::DirectoryBlockReader,
   root_block,directory_blocks,total_inodes,siphash_key,scratch,visitor)
 }
 
+/// Hash-ordered indexed readdir for the VFS. map must hold every live entry.
+pub fn iterate_indexed_directory_sorted<R,F>(
+ sb:&[u8],directory_inode:u32,generation:u32,root_block:&[u8],reader:&mut R,
+ directory_blocks:u32,total_inodes:u32,siphash_key:Option<[u64;2]>,scratch:&mut[u8],
+ map:&mut[crate::htree::DirectoryHashMapEntry],visitor:F,
+)->Result<(),Error>
+where R:crate::htree::DirectoryBlockReader,
+ F:FnMut(crate::htree::DirectoryEntryView<'_>)->Result<bool,Error>{
+ crate::htree::iterate_htree_directory_sorted_from_superblock(reader,sb,directory_inode,
+  generation,root_block,directory_blocks,total_inodes,siphash_key,scratch,map,visitor)
+}
+
 /// Create a regular file's inode and parent-directory entry in caller-owned
 /// metadata buffers. The inode bitmap allocation and all changed blocks must
 /// be included in the same JBD2 commit.
