@@ -489,7 +489,7 @@ pub fn iterate_htree_directory<R: DirectoryBlockReader, F: FnMut(DirectoryEntryV
     let mut path = lookup_htree_path(reader, root, directory_blocks, 0, metadata_csum, inode_seed, scratch)?;
     loop {
         reader.read_directory_block(path.leaf_block, scratch)?;
-        if !visit_leaf(scratch, metadata_csum, inode_seed, total_inodes, version, hash_seed, siphash_key, &mut visitor)? {
+        if !visit_leaf(scratch, path.leaf_block, metadata_csum, inode_seed, total_inodes, version, hash_seed, siphash_key, &mut visitor)? {
             return Ok(());
         }
         if !next_htree_leaf(reader, root, directory_blocks, &mut path, 0, true, metadata_csum, inode_seed, scratch)? {
