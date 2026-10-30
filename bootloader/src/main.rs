@@ -20,6 +20,12 @@ use uefi::{boot, cstr16};
 const KERNEL_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\cognacos-kernel.exe");
 const NTDLL_PRIMARY_PATH: &uefi::CStr16 = cstr16!("\\Windows\\System32\\ntdll.dll");
 const NTDLL_FALLBACK_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\ntdll.dll");
+const SYSTEM_DLL_PATHS: [(&uefi::CStr16, &uefi::CStr16, usize); 4] = [
+    (cstr16!("\\Windows\\System32\\kernel32.dll"), cstr16!("\\EFI\\BOOT\\kernel32.dll"), 16 * 1024 * 1024),
+    (cstr16!("\\Windows\\System32\\kernelbase.dll"), cstr16!("\\EFI\\BOOT\\kernelbase.dll"), 16 * 1024 * 1024),
+    (cstr16!("\\Windows\\System32\\shell32.dll"), cstr16!("\\EFI\\BOOT\\shell32.dll"), 16 * 1024 * 1024),
+    (cstr16!("\\Windows\\System32\\msvcrt.dll"), cstr16!("\\EFI\\BOOT\\msvcrt.dll"), 16 * 1024 * 1024),
+];
 const BEEP_PRIMARY_PATH: &uefi::CStr16 = cstr16!("\\Windows\\System32\\drivers\\beep.sys");
 const BEEP_FALLBACK_PATH: &uefi::CStr16 = cstr16!("\\EFI\\BOOT\\beep.sys");
 const HIVE_PATHS: [(&uefi::CStr16,&uefi::CStr16,usize);7] = [
@@ -51,7 +57,7 @@ const KERNEL_STACK_PAGES: usize = 64;
 const KERNEL_STACK_ALLOCATION_PAGES: usize = KERNEL_STACK_PAGES + 1;
 const LOW_MEMORY_MAP_PAGES: usize = 64;
 const BOOT_INFO_MAGIC: u64 = 0x5244_4F54_4F53_4249; // Stable boot-info ABI magic; preserve the existing value.
-const BOOT_INFO_VERSION: u32 = 10;
+const BOOT_INFO_VERSION: u32 = 11;
 const HIGH_HALF_PT_PAGES: usize = 64;
 const KERNEL_STACK_VIRTUAL_GUARD: u64 = 0xffff_ff00_0000_0000;
 
@@ -75,6 +81,7 @@ struct BootInfo {
     registry_hives: [BootFile;7],
     nls_files: [BootFile;8],
     ntdll_file: BootFile,
+    system_dlls: [BootFile; 4],
     beep_file: BootFile,
     security_flags: u64,
     kernel_digest: [u8; 32],
@@ -185,6 +192,13 @@ fn main() -> Status {
     }
     let ntdll_file=stage_optional_file(&mut root,NTDLL_PRIMARY_PATH,NTDLL_FALLBACK_PATH,MAX_NTDLL_FILE);
     if ntdll_file.address != 0 { uefi::println!("Staged optional ntdll.dll ({} bytes)",ntdll_file.length); }
+    let mut system_dlls = [BootFile::EMPTY; 4];
+    for (index, (primary, fallback, limit)) in SYSTEM_DLL_PATHS.iter().enumerate() {
+        system_dlls[index] = stage_optional_file(&mut root, primary, fallback, *limit);
+        if system_dlls[index].address != 0 {
+            uefi::println!("Staged system DLL {} ({} bytes)", index, system_dlls[index].length);
+        }
+    }
     let beep_file = stage_optional_file(&mut root, BEEP_PRIMARY_PATH, BEEP_FALLBACK_PATH, 4 * 1024 * 1024);
     if beep_file.address != 0 { uefi::println!("Staged optional beep.sys driver image ({} bytes)", beep_file.length); }
     drop(root);
@@ -360,6 +374,7 @@ fn main() -> Status {
         registry_hives,
         nls_files,
         ntdll_file,
+        system_dlls,
         beep_file,
         security_flags,
         kernel_digest: actual_digest,
@@ -392,7 +407,7 @@ fn main() -> Status {
                 == Some(kernel_stack_guard_page + boot::PAGE_SIZE as u64)
             && bootstrap_physical_at(pml4_physical, KERNEL_STACK_VIRTUAL_GUARD).is_none()
     };
-    let assets_mapped = registry_hives.iter().chain(nls_files.iter()).chain([&ntdll_file, &beep_file].iter().copied()).all(|asset| {
+    let assets_mapped = registry_hives.iter().chain(nls_files.iter()).chain([&ntdll_file, &beep_file].iter().copied()).chain(system_dlls.iter()).all(|asset| {
         if asset.address == 0 && asset.length == 0 { return true; }
         if asset.address == 0 || asset.length == 0 { return false; }
         let end = match asset.address.checked_add(asset.length) { Some(v) => v, None => return false };
