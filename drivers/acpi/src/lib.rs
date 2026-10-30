@@ -456,11 +456,11 @@ mod dmar_tests {
   assert_eq!(info.unit_count,1);assert_eq!(info.units[0].register_base,0xfed9_0000);assert!(info.units[0].include_all);
  }
  #[test]fn dmar_parses_and_matches_explicit_endpoint_scope(){
-  let mut t=vec![0u8;78];t[0..4].copy_from_slice(b"DMAR");t[4..8].copy_from_slice(&(78u32).to_le_bytes());t[36]=47;
-  t[48..50].copy_from_slice(&(0u16).to_le_bytes());t[50..52].copy_from_slice(&(30u16).to_le_bytes());t[52]=0;
+  let mut t=vec![0u8;72];t[0..4].copy_from_slice(b"DMAR");t[4..8].copy_from_slice(&(72u32).to_le_bytes());t[36]=47;
+  t[48..50].copy_from_slice(&(0u16).to_le_bytes());t[50..52].copy_from_slice(&(24u16).to_le_bytes());t[52]=0;
   t[54..56].copy_from_slice(&(0u16).to_le_bytes());t[56..64].copy_from_slice(&(0xfed9_0000u64).to_le_bytes());
-  t[64]=1;t[65]=14;t[68]=0;t[69]=0;t[70]=3;t[71]=0;t[72]=0;t[73]=0;t[74]=3;t[75]=0;
-  // The scope's length is 14 bytes: 6-byte header + four path bytes.
+  t[64]=1;t[65]=8;t[68]=0;t[69]=0;t[70]=3;t[71]=0;
+  // The scope's length is 8 bytes: 6-byte header + one PCI path element.
   let info=parse_dmar(&finish(t)).unwrap();let unit=&info.units[0];
   assert!(!unit.include_all);assert_eq!(unit.scope_count,1);
   assert!(dmar_unit_covers_requester(unit,0,0,3,0));assert!(!dmar_unit_covers_requester(unit,0,0,4,0));
