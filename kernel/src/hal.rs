@@ -762,6 +762,7 @@ unsafe extern "C" fn service_free_dma(device_object:u64,cpu:u64,device_address:u
 
 /// Per-vector callback storage. The ISR only queues a KDPC; the executive
 /// dispatches it after the common interrupt dispatcher has issued APIC EOI.
+#[repr(align(16))]
 struct DeviceDpcStorage([u64;8]);
 static DEVICE_DPCS:[DeviceDpcStorage;256]=[const{DeviceDpcStorage([0;8])};256];
 static DEVICE_ISR:[core::sync::atomic::AtomicUsize;256]=[const{core::sync::atomic::AtomicUsize::new(0)};256];
@@ -775,8 +776,10 @@ static DEVICE_ROUTE_GSI:[core::sync::atomic::AtomicU32;256]=[const{core::sync::a
 /// The caller must resolve PCI INTx routing and MADT overrides; no GSI is guessed.
 pub fn bind_device_interrupt_route(vector:u8,io_base:u64,gsi_base:u32,gsi:u32)->Result<(),HalError>{
     let i=vector as usize;
-    if io_base==0||io_base&0xfff!=0||gsi<gsi_base||gsi-gsi_base>=120
-        ||!apic::interrupt_handler_registered(vector){return Err(HalError::InvalidTransition)}
+    if io_base==0||io_base&0xfff!=0||gsi<gsi_base||gsi-gsi_base>=120{return Err(HalError::InvalidTransition)}
+    // Configure the vector's hardware route masked before a driver can ask
+    // to enable it. The APIC layer verifies that the vector is allocated.
+    unsafe{configure_device_interrupt_route_masked(io_base,gsi_base,gsi,vector,current_cpu_apic_id().unwrap_or(0) as u8,false,false)?;}
     DEVICE_ROUTE_IO_BASE[i].store(io_base,Ordering::Release);
     DEVICE_ROUTE_GSI_BASE[i].store(gsi_base,Ordering::Release);
     DEVICE_ROUTE_GSI[i].store(gsi,Ordering::Release);Ok(())
