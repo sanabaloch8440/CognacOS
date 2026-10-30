@@ -293,3 +293,10 @@ The exported `external_xattr_checksum_seed` helper derives the seed from a check
 The checked-mount API now also exposes `validate_external_xattr_with_allocation`, which verifies the owner inode's allocation bit and the external xattr block's allocation bit using initialized, checksummed group descriptors and bitmaps before accepting the block. The lower-level `validate_external_xattr_allocation` helper is available when callers need to compose this check themselves. Both scratch buffers are caller-owned and block-sized. Uninitialized inode/block bitmap groups are rejected rather than treating their bits as authoritative.
 
 This closes the allocation-bit gap for an individual inode-to-xattr pointer. It does **not** prove that a shared xattr block's on-disk reference count matches all allocated inode references; global reference reconciliation remains required before xattr blocks can be authorized for journal replay or mutation. Tests and CI have not yet been run for this batch.
+
+
+## External xattr reference reconciliation
+
+The xattr module now provides `ExternalXattrOwner` and `reconcile_external_xattr_references`. Given a complete inventory of independently validated inode-to-xattr references, the reconciler checks for duplicate owner records, inconsistent on-disk `h_refcount` values, and mismatches between the number of observed owners and each block's reference count. It uses caller-owned input storage and performs no allocation. Unit tests cover valid shared/exclusive references, count mismatches, and duplicate owners.
+
+Important limitation: reconciliation is only as complete as the supplied inventory. This batch does not yet scan every allocated inode and assemble that inventory automatically, so it does not authorize xattr blocks for JBD2 replay and does not enable writable mounts.
