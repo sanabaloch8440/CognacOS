@@ -163,3 +163,8 @@ The next validation stage must include fault injection after every ordered-data 
 ### Linux orphan-format compatibility note
 
 Linux master supports both the legacy singly linked orphan list and the newer orphan-file feature. The new CognacOS orphan module currently handles only the legacy s_last_orphan/i_dtime chain. The ext4 orphan-file inode, per-block magic/checksum validation, ORPHAN_PRESENT mount-state handling and orphan-file cleanup are not implemented; those feature flags must continue to be rejected. Linux's orphan cleanup also distinguishes linked inodes (truncate to i_size) from zero-link inodes (delete/reclaim), which the CognacOS transaction callback contract requires but does not itself implement.
+
+
+## JBD2 superblock checksum validation (2026-10-30)
+
+JBD2 checksum-v2/v3 superblock parsing now verifies the checksum type is CRC32C and validates the CRC32C over the complete 1024-byte journal superblock with the checksum field at offset 0xfc zeroed. A checksum mismatch returns `InvalidChecksum` before recovery can trust the superblock's ring geometry, sequence, UUID, or start pointer. Regression coverage builds a valid v3 superblock, confirms parsing, then corrupts a protected byte and confirms rejection. Checksum-v1, async commit, fast commit, checksum-enabled journal writing, and writable mounts remain unsupported.
