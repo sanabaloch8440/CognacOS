@@ -1202,32 +1202,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         if !kernel_vm::self_test() {
-            serial_write(b"FATAL: kernel VM self-test failed at kernel_space.rs line ");
-            unsafe { serial_write_decimal(kernel_vm::self_test_failure_line() as usize); }
-            serial_write(b".\r\n");
-            #[cfg(feature = "diagnostic-vm")]
-            {
-                let map = kernel_vm::self_test_mapping_failure();
-                if map[3] != 0 {
-                    serial_write(b"VM-WALK-FAIL stage=");
-                    unsafe { serial_write_decimal(map[3] as usize); }
-                    serial_write(b" (1=input,2=PML4,3=PDPT,4=PD,5=PT) root=");
-                    unsafe { serial_write_hex(map[0]); }
-                    serial_write(b" expected-pa=");
-                    unsafe { serial_write_hex(map[1]); }
-                    serial_write(b" va=");
-                    unsafe { serial_write_hex(map[2]); }
-                    serial_write(b" PML4E=");
-                    unsafe { serial_write_hex(map[4]); }
-                    serial_write(b" PDPTE=");
-                    unsafe { serial_write_hex(map[5]); }
-                    serial_write(b" PDE=");
-                    unsafe { serial_write_hex(map[6]); }
-                    serial_write(b" PTE=");
-                    unsafe { serial_write_hex(map[7]); }
-                    serial_write(b"\r\n");
-                }
-            }
+            serial_write(b"FATAL: kernel VM self-test failed.\r\n");
+            #[cfg(debug_assertions)]
+            serial_write_kernel_vm_diagnostics();
             halt();
         }
         serial_write(b"Kernel virtual-address arena and mapping self-test passed.\r\n");
@@ -1629,6 +1606,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write(b"SMP scheduler, cross-CPU wakeup, contended-lock, IRP/object teardown stress passed.\r\n");
         if !processor_startup.vm_stress_passed {
             serial_write(b"FATAL: SMP kernel VM/TLB shootdown self-test failed.\r\n");
+            #[cfg(debug_assertions)]
+            serial_write_kernel_vm_diagnostics();
             halt();
         }
         serial_write(b"Kernel VM extent stress and SMP TLB shootdown self-test passed.\r\n");
@@ -2216,6 +2195,51 @@ fn serial_write_decimal(mut value: usize) {
         value /= 10;
     }
     serial_write(&digits[index..]);
+}
+
+#[cfg(debug_assertions)]
+fn serial_write_kernel_vm_diagnostics() {
+    let d = kernel_vm::self_test_diagnostics();
+    serial_write(b"DEBUG VM: phase=");
+    unsafe { serial_write_decimal(d[0] as usize); }
+    serial_write(b" (1=direct-map,2=high-RAM,3=extent,4=protection,5=demand-zero,6=pagefile,7=final-reclaim) source-line=");
+    unsafe { serial_write_decimal(d[1] as usize); }
+    serial_write(b" TLB-IPI-before=");
+    unsafe { serial_write_decimal(d[2] as usize); }
+    serial_write(b" TLB-IPI-after=");
+    unsafe { serial_write_decimal(d[3] as usize); }
+    serial_write(b" owner-CR3=");
+    unsafe { serial_write_hex(d[4]); }
+    serial_write(b" active-CR3=");
+    unsafe { serial_write_hex(d[5]); }
+    serial_write(b" online-CPUs=");
+    unsafe { serial_write_decimal(d[6] as usize); }
+    serial_write(b" pagefile-active=");
+    unsafe { serial_write_decimal(d[7] as usize); }
+    serial_write(b"\r\n");
+    #[cfg(feature = "diagnostic-vm")]
+    {
+        let map = kernel_vm::self_test_mapping_failure();
+        if map[3] != 0 {
+            serial_write(b"DEBUG VM WALK: stage=");
+            unsafe { serial_write_decimal(map[3] as usize); }
+            serial_write(b" (1=input,2=PML4,3=PDPT,4=PD,5=PT) root=");
+            unsafe { serial_write_hex(map[0]); }
+            serial_write(b" expected-pa=");
+            unsafe { serial_write_hex(map[1]); }
+            serial_write(b" va=");
+            unsafe { serial_write_hex(map[2]); }
+            serial_write(b" PML4E=");
+            unsafe { serial_write_hex(map[4]); }
+            serial_write(b" PDPTE=");
+            unsafe { serial_write_hex(map[5]); }
+            serial_write(b" PDE=");
+            unsafe { serial_write_hex(map[6]); }
+            serial_write(b" PTE=");
+            unsafe { serial_write_hex(map[7]); }
+            serial_write(b"\r\n");
+        }
+    }
 }
 
 pub unsafe fn halt() -> ! {
