@@ -2,13 +2,13 @@
 
 **Audit date:** 2026-10-30  
 **Linux reference:** torvalds/linux master at d89e1d186ec9271bf78e62771779e9fc03bf0fc3  
-**CognacOS scope:** drivers/ext4/src/lib.rs, ops.rs, and jbd2.rs
+**CognacOS scope:** drivers/ext4/src/lib.rs, ops.rs, htree.rs, hash.rs, htree_mut.rs, and jbd2.rs
 
 This is a source-level compatibility and safety audit, not a claim that CognacOS is a drop-in implementation of Linux ext4. Linux ext4 is a large filesystem implementation with extensive mount-time feature negotiation, system-zone validation, journaling, recovery, concurrency, and crash testing.
 
 ## Executive result
 
-- **Read-only:** CognacOS can read a deliberately limited subset of ext2/ext3/ext4 layouts. DIR_INDEX is accepted for read-only parsing, and the initial HTree root/interior-node traversal validates dx checksums before selecting a leaf. Hash calculation, collision-chain continuation and VFS name comparison remain caller responsibilities.
+- **Read-only:** CognacOS can read a deliberately limited subset of ext2/ext3/ext4 layouts. DIR_INDEX is accepted for read-only parsing. Linux-compatible legacy/half-MD4/TEA/SipHash hashing, checksum-validated dx traversal, collision continuation across sibling nodes, exact prepared-name comparison and indexed leaf enumeration are implemented. SipHash requires an explicit fscrypt key. Buffer-level leaf/index split and root-growth primitives exist but are not wired into a crash-safe VFS transaction.
 - **Writable:** Writable mounting is now fail-closed. The previous facade could write through an extent mapping without validating that the target physical blocks were outside all ext4 system-zone metadata. It also lacked a mount-owned transaction coordinator. That was not a safe general-purpose writable mount.
 - **Recovery:** The bounded JBD2 replay implementation had a correctness defect: descriptor tags and revokes from a transaction were accumulated before its commit record was seen. An incomplete final transaction could therefore leak uncommitted metadata into the replay pass. This has been fixed, with regression tests.
 - **Compatibility:** Complete Linux ext4 compatibility is not achieved. Unsupported features are rejected rather than guessed at or silently interpreted.
@@ -69,7 +69,7 @@ about end-to-end replay, not availability of standalone checksum helpers.
 | Extents | Inline extent root lookup, external extent lookup with metadata checksum validation, inline insert/coalesce/truncate | Full B-tree validation, split/grow/merge, unwritten conversion, delayed allocation, fiemap, bigalloc, extent status cache and transaction integration | External-tree mutation and many extent semantics are missing |
 | Legacy block maps | Direct/single/double/triple indirect lookup | Mature mapping, validation, allocation and journaling | Basic lookup exists; complete legacy mutation does not |
 | Linear directories | Record validation, lookup, insertion, removal and checksum tail | Full namei operations, block growth, directory indexing and locking | Linear operations are partial |
-| Indexed directories | Read-only root/interior-node traversal; validates dx checksums and selects a hash-range leaf | HTree lookup plus collision continuation, insertion/split, readdir and locking | Candidate leaf selection is implemented; full name lookup and mutation are not |
+| Indexed directories | Linux legacy/half-MD4/TEA/SipHash hashes; dx root/node and leaf checksums; collision traversal; exact name comparison; indexed enumeration | Linux readdir cookie ordering, fscrypt/casefold preparation, locking, recursive split orchestration and transaction integration | Read lookup/enumeration and low-level split/grow primitives exist; writable HTree integration remains disabled |
 | Allocation | Bitmap bit selection, counters, checksums, simple inode/block allocate/free primitives | Metadata-aware multiblock allocator, reservations, preallocation, cluster/bigalloc, flex_bg, lazy init and system-zone protection | Not a safe or equivalent allocator; primitives are not mounted write operations |
 | JBD2 | Legacy descriptor tags, 32/64-bit targets, revoke records, sequence checks and bounded commit/replay | Multi-pass scan/revoke/replay, checksum v1/v2/v3, async commit, fast commits, larger logs, robust checkpointing and transaction lifecycle | Only a narrow legacy journal subset; unsupported checksum/async/fast-commit formats are refused |
 | Orphans | Bounded legacy s_last_orphan/i_dtime chain validation and transaction callback; no concrete cleanup adapter | Legacy orphan list plus newer orphan-file recovery, linked-inode truncation and zero-link deletion | Legacy chain planning exists, but mount integration, real truncate/reclaim operations, and orphan-file format/checksum support are missing |
@@ -80,13 +80,13 @@ about end-to-end replay, not availability of standalone checksum helpers.
 
 ### Common ext4 feature flags
 
-The current parser deliberately supports only a small set of RO-compatible flags. DIR_INDEX is a compatible feature and is now accepted because the HTree index path is implemented for candidate-leaf selection. Linux ext4 commonly encounters additional flags such as HUGE_FILE, DIR_NLINK, EXTRA_ISIZE, GDT_CSUM, BIGALLOC, quotas, project quotas, verity, and orphan-file state. Some are read-only-compatible in Linux, but CognacOS must implement their semantics before accepting them.
+The current parser deliberately supports only a small set of RO-compatible flags. DIR_INDEX is a compatible feature and is now accepted because Linux-style HTree hashing, candidate selection, collision traversal and name comparison are implemented. Linux ext4 commonly encounters additional flags such as HUGE_FILE, DIR_NLINK, EXTRA_ISIZE, GDT_CSUM, BIGALLOC, quotas, project quotas, verity, and orphan-file state. Some are read-only-compatible in Linux, but CognacOS must implement their semantics before accepting them.
 
 The current incompatible-feature policy also rejects layouts/features such as META_BG, encryption, inline data, casefold, large-directory extensions, and EA-inode support. This is safer than mounting a filesystem whose metadata is being misinterpreted.
 
 ### Directory formats
 
-CognacOS now parses the ext4 dx_root overlay and bounded dx_node levels, validates root/node dx_tail checksums using the inode checksum seed, validates count/limit geometry, and uses Linux's rightmost-separator-not-greater-than-hash selection rule. It accepts the DIR_INDEX compatible feature and must route indexed directories through this path rather than treating block zero as a linear leaf. The caller supplies a Linux-compatible precomputed hash; this milestone does not yet implement legacy/half-MD4/TEA/SIPHASH hashing, collision-chain iteration across sibling nodes, leaf name comparison, indexed readdir, or HTree mutation.
+CognacOS now parses the ext4 dx_root overlay and bounded dx_node levels, validates root/node dx_tail checksums using the inode checksum seed, validates count/limit geometry, and uses Linux's rightmost-separator-not-greater-than-hash selection rule. It accepts the DIR_INDEX compatible feature and must route indexed directories through this path rather than treating block zero as a linear leaf. `hash.rs` implements all six legacy/half-MD4/TEA variants and SipHash-2-4; SipHash requires a supplied fscrypt key. `lookup_htree_name` compares the prepared disk name and follows same-major continuation entries across sibling index nodes. `iterate_htree_directory` validates leaves and enumerates dot entries plus leaf entries with major/minor hashes; the VFS must sort hashes to reproduce Linux readdir ordering. `htree_mut.rs` provides leaf split, dx insertion, interior-node split and depth-zero root growth. These operate on caller-owned buffers and require one JBD2 transaction, allocation, inode updates and recursive parent splitting before they can be enabled. Large-directory depth extensions remain rejected.
 
 ### Extent and inode validation
 
@@ -118,7 +118,7 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 3. [~] Internal journal discovery, extent mapping, committed replay, journal-self-overwrite protection, journal-superblock update, and flush are connected to `CheckedExtFilesystem::mount_with_recovery`. Crash-injection validation is still required before treating recovery as production-ready.
 4. [~] Add a bounded mount-owned transaction coordinator with caller-backed staging, metadata-target policy, system-zone checks for ordered data/revokes, exclusive writer serialization, and partition-bounded I/O. Remaining: wire every filesystem operation through it, make mount-manager recovery automatic, add orphan handling, and prove failure/restart behavior with crash injection.
 5. Integrate allocation, inode initialization, parent directory updates, timestamps, link counts, orphan state, extent-tree split/merge, and truncation into one transaction.
-6. [~] HTree read-side candidate-leaf lookup and dx checksums are implemented; next add Linux hash algorithms, collision-chain continuation, leaf-name comparison and indexed readdir, then HTree insertion/splitting.
+6. [~] HTree hashes, collision-aware lookup, leaf enumeration and buffer-level split/grow primitives are implemented; next wire recursive index splits, VFS cookie ordering, allocation and directory mutations into the mount-owned JBD2 coordinator.
 7. Test against Linux-generated images from multiple e2fsprogs versions, feature matrices, 1/2/4 KiB blocks, 32/64-bit descriptors, sparse/flex groups, and crash injection at every journal write/flush boundary. Verify images with Linux e2fsck -fn and cross-read/write them with Linux.
 
 ## Linux reference files
@@ -207,3 +207,26 @@ names in the returned leaf, and continue into adjacent collision leaves when
 required. SIPHASH requires the directory's supported hash-in-dirent semantics;
 hashing is not implemented here. HTree insertion/splitting and writable
 mounts remain unsupported.
+
+
+## HTree hashing, collision lookup, readdir and split primitives (2026-10-30)
+
+Linux `fs/ext4/hash.c` algorithms are implemented for legacy, half-MD4 and
+TEA signed/unsigned variants plus SipHash-2-4. CI checks the Linux KUnit
+reference vectors (including seeded and non-ASCII inputs) and standard
+SipHash reference vectors. SipHash requires the per-directory fscrypt key;
+CognacOS never substitutes the superblock hash seed for that secret.
+
+The HTree reader retains its index path, follows same-major continuation
+leaves across sibling nodes, validates each index and leaf checksum, and
+compares exact prepared disk names. Indexed enumeration includes dot entries
+and returns major/minor hashes; the VFS must sort them to provide Linux-style
+readdir cookies/order.
+
+The mutation layer provides compact leaf splitting, dx separator insertion,
+interior-node splitting and depth-zero root growth. These are caller-owned
+buffer primitives, not an enabled writable path. The caller must allocate
+blocks, update the directory inode and counters, route the new entry into the
+correct split leaf, recursively split full parents, and stage all changes in
+one JBD2 transaction. Large-directory depth extensions and writable HTree
+mount integration remain unsupported.
