@@ -197,8 +197,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
 
 /// Commit ordered data and journaled metadata without revoke records.
 pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
- d:&mut D,m:&mut M,journal_superblock:&mut[u8],
- ordered_targets:&[u64],ordered_data:&[&[u8]],
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8], ordered_targets:&[u64],ordered_data:&[&[u8]],
  metadata_targets:&[u64],metadata_data:&[&[u8]],descriptor:&mut[u8],
 )->Result<u32,Error>{
  commit_ordered_with_revokes(d,m,journal_superblock,ordered_targets,ordered_data,
@@ -397,8 +396,7 @@ mod tests{
  #[test]fn journal_superblock_checks_geometry_and_unsupported_features(){
   let mut b=[0u8;1024];b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());b[12..16].copy_from_slice(&1024u32.to_be_bytes());b[16..20].copy_from_slice(&64u32.to_be_bytes());b[20..24].copy_from_slice(&1u32.to_be_bytes());b[24..28].copy_from_slice(&7u32.to_be_bytes());b[28..32].copy_from_slice(&3u32.to_be_bytes());
   let sb=JournalSuperblock::parse(&b).unwrap();assert!(sb.needs_recovery());b[40..44].copy_from_slice(&FEATURE_INCOMPAT_CSUM_V3.to_be_bytes());b[80]=4;let csum=crate::checksum::jbd2_superblock_checksum(&b).unwrap();b[252..256].copy_from_slice(&csum.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b).unwrap().checksum_mode,ChecksumMode::V3);b[100]^=1;assert_eq!(JournalSuperblock::parse(&b),Err(Error::InvalidChecksum));b[100]^=1;
-  b[40..44].fill(0);b[36..40].copy_from_slice(&1u32.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b),Err(Error::UnsupportedFeature));
- }
+  b[40..44].fill(0);b[36..40].copy_from_slice(&1u32.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b),Err(Error::UnsupportedFeature)); }
  #[test]fn clean_journal_is_noop_without_io(){
   struct D;impl ReplayDevice for D{fn filesystem_blocks(&self)->u64{10}fn read_block(&mut self,_:u64,_:&mut[u8])->Result<(),()>{Err(())}fn write_block(&mut self,_:u64,_:&[u8])->Result<(),()>{Err(())}fn flush(&mut self)->Result<(),()>{Ok(())}}
   let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:0,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};let mut d=D;let mut a=[0u8;1024];let mut b=[0u8;1024];assert_eq!(replay(&mut d,&mut |_|Err(()),&sb,&mut a,&mut b),Ok(ReplayReport::default()));
@@ -435,7 +433,7 @@ mod tests{
   d.blocks[5][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[6].fill(0x7c);
   // Block 7 is not a commit record for transaction 2.
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false};
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert!(r.stopped_on_incomplete);
@@ -451,7 +449,7 @@ mod tests{
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[3].fill(0x7c);
   // Block 4 is deliberately not a matching commit record.
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false};
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let r=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
   assert!(r.stopped_on_incomplete);
@@ -504,7 +502,7 @@ mod tests{
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[3].fill(0x5a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
-  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false};
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
   let result=replay_with_policy(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b,&mut RejectJournalBlock(7));
   assert_eq!(result,Err(Error::InvalidTag));
