@@ -137,7 +137,6 @@ impl<D:BlockDevice> ExtFilesystem<D>{
   let sb=Superblock::parse(&raw)?;
   validate_superblock_checksum(&raw)?;
   validate_mount_state(&raw)?;
-  validate_mount_state(&raw)?;
   let end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;
   if end>device.capacity_bytes()||sb.read_only{return Err(Error::UnsupportedFormat)}
   // This restricted writer never changes metadata. It still requires a clean
@@ -223,7 +222,7 @@ pub fn validate_mount_state(raw: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-pub fn read_superblock<D:ReadOnlyBlockDevice>(dev:&mut D)->Result<Superblock,Error>{let end=SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64).ok_or(Error::OutOfRange)?;if dev.capacity_bytes()<end{return Err(Error::OutOfRange)}let mut b=[0u8;SUPERBLOCK_BYTES];dev.read_at(SUPERBLOCK_DISK_OFFSET,&mut b).map_err(|_|Error::Io)?;let sb=Superblock::parse(&b)?;validate_superblock_checksum(&b)?;let fs_end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;if fs_end>dev.capacity_bytes(){return Err(Error::OutOfRange)}Ok(sb)}
+pub fn read_superblock<D:ReadOnlyBlockDevice>(dev:&mut D)->Result<Superblock,Error>{let end=SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64).ok_or(Error::OutOfRange)?;if dev.capacity_bytes()<end{return Err(Error::OutOfRange)}let mut b=[0u8;SUPERBLOCK_BYTES];dev.read_at(SUPERBLOCK_DISK_OFFSET,&mut b).map_err(|_|Error::Io)?;let sb=Superblock::parse(&b)?;validate_superblock_checksum(&b)?;validate_mount_state(&b)?;let fs_end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;if fs_end>dev.capacity_bytes(){return Err(Error::OutOfRange)}Ok(sb)}
 
 /// Reads one complete filesystem block. The device read is rejected if either
 /// the filesystem geometry or the physical device capacity would be exceeded.
