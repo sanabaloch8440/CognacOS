@@ -147,3 +147,21 @@ The mount entry points now validate the ext4 superblock state before exposing a 
 ## Recovery authorization gate
 
 The no-policy `recover_internal_journal` convenience entry point fails closed for dirty journals because it has no exact metadata-ownership manifest. Dirty-journal replay requires `recover_internal_journal_with_policy` and a validated owner allowlist. The no-policy `mount_with_recovery` wrapper therefore accepts only an already-clean journal; callers must perform policy-authorized recovery first, then retry the checked mount.
+
+
+## JBD2 transaction preflight hardening
+
+The JBD2 ordered-commit writer now validates the complete home-target set before
+performing I/O. Metadata targets, ordered-data targets, and revoke targets must
+be unique and mutually disjoint. It also preflights the physical journal
+superblock and every log slot needed by the transaction, rejecting out-of-range
+mappings, journal/home-block aliases, journal-superblock aliases, and duplicate
+physical mappings within the transaction. These checks happen before ordered
+data or journal writes, so malformed target lists and extent maps fail without
+partially modifying the device.
+
+This is transaction-integrity hardening, not a claim of full Linux JBD2
+compatibility. Async commit, fast commits, external journals, and a persistent
+multi-transaction checkpointing daemon remain outside the supported feature
+set. The mount layer must still provide exact metadata ownership policy and
+keep the filesystem offline after uncertain I/O failures.
