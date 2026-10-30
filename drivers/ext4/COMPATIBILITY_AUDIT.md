@@ -13,6 +13,12 @@ This is a source-level compatibility and safety audit, not a claim that CognacOS
 - **Recovery:** The bounded JBD2 replay implementation had a correctness defect: descriptor tags and revokes from a transaction were accumulated before its commit record was seen. An incomplete final transaction could therefore leak uncommitted metadata into the replay pass. This has been fixed, with regression tests.
 - **Compatibility:** Complete Linux ext4 compatibility is not achieved. Unsupported features are rejected rather than guessed at or silently interpreted.
 
+## System-zone milestone (2026-10-30)
+
+CognacOS now has a caller-bounded system-zone builder in `system_zone.rs`. It derives backup-superblock placement from SPARSE_SUPER/SPARSE_SUPER2, computes primary and backup GDT spans, accounts for reserved GDT blocks, reads and checksum-validates each primary group descriptor, and records block bitmap, inode bitmap, and inode-table ranges. The checked extent traversal variant validates both external extent-tree child blocks and final mapped data blocks against this map. It fails closed when caller-provided range storage is exhausted or metadata geometry/checksums are invalid.
+
+This is not yet mount-integrated: the mount facade does not own/persist the zone map, journal inode extents are not added as a separate reserved set, and allocation helpers do not yet consume the map. Writable mounting therefore remains disabled.
+
 ## Changes made during this audit
 
 1. JBD2 replay now snapshots the tag/revoke array positions at the start of each transaction. If the transaction is malformed or has no matching commit block, both positions are rolled back before replay proceeds. This ensures the replay pass sees only records from committed transactions.
@@ -75,7 +81,7 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 
 ## Required milestones before writable ext4
 
-1. Implement Linux-compatible system-zone construction and reject every extent/allocation target overlapping filesystem metadata.
+1. [x] Implement bounded Linux-style system-zone construction for supported non-META_BG layouts; validate checked extent-tree child nodes and mapped data blocks against superblock, backup GDT, reserved GDT, bitmap, and inode-table zones. Mount integration and journal-block accounting remain open.
 2. Implement full JBD2 checksum handling and the Linux scan/revoke/replay rules for the supported journal feature set; retain fail-closed rejection for formats not yet implemented.
 3. Bind journal inode discovery, extent mapping, recovery, journal-superblock updates and recovery completion into mount.
 4. Add a mount-owned transaction coordinator that captures every changed block, enforces ordered-data semantics, serializes writers, and guarantees rollback/recovery after interruption.
