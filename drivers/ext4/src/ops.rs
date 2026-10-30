@@ -216,6 +216,23 @@ pub fn initialize_directory_block(
  Ok(())
 }
 
+/// Look up a directory name after validating the directory block and checksum.
+pub fn lookup_directory_entry(
+ sb:&[u8],directory_inode:u32,generation:u32,block:&[u8],total_inodes:u32,name:&[u8],
+)->Result<u32,Error>{
+ if name.is_empty()||name.iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}
+ validate_superblock_checksum(sb)?;
+ let csum=metadata_csum(sb)?;if csum{validate_directory_block_checksum(sb,directory_inode,generation,block)?}
+ let limit=dir_limit(block,csum)?;validate_dir_entries(block,limit,total_inodes)?;
+ let mut off=0usize;
+ while off<limit{
+  let ino=le32(block,off)?;let rec=le16(block,off+4)? as usize;let n=block[off+6] as usize;
+  if ino!=0&&n==name.len()&&&block[off+8..off+8+n]==name{return Ok(ino)}
+  off+=rec;
+ }
+ Err(Error::OutOfRange)
+}
+
 /// Create a regular file's inode and parent-directory entry in caller-owned
 /// metadata buffers. The inode bitmap allocation and all changed blocks must
 /// be included in the same JBD2 commit.
@@ -224,6 +241,9 @@ pub fn create_regular_file_entry(
  inode_number:u32,inode:&mut[u8],meta:NewInodeMetadata,total_inodes:u32,name:&[u8],
 )->Result<(),Error>{
  if meta.mode&0xf000!=0x8000{return Err(Error::InvalidGeometry)}
+ match lookup_directory_entry(sb,parent_inode,parent_generation,parent_directory,total_inodes,name){
+  Ok(_)=>return Err(Error::InvalidDirectoryEntry),Err(Error::OutOfRange)=>{},Err(e)=>return Err(e)
+ }
  initialize_regular_inode(sb,inode_number,inode,meta)?;
  insert_directory_entry(sb,parent_inode,parent_generation,parent_directory,total_inodes,inode_number,name,1)
 }
@@ -261,6 +281,7 @@ pub fn unlink_regular_file_entry(
 )->Result<bool,Error>{
  validate_inode_before_mutation(sb,expected_inode,child_inode)?;
  if le16(child_inode,0)?&0xf000!=0x8000{return Err(Error::UnsupportedFormat)}
+ if lookup_directory_entry(sb,parent_inode,parent_generation,parent_block,total_inodes,name)?!=expected_inode{return Err(Error::InvalidDirectoryEntry)}
  let removed=remove_directory_entry(sb,parent_inode,parent_generation,parent_block,total_inodes,name)?;
  if removed!=expected_inode{return Err(Error::InvalidDirectoryEntry)}
  unlink_regular_inode(sb,expected_inode,child_inode,deletion_time)
