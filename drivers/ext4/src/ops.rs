@@ -12,8 +12,12 @@ fn put16(b:&mut[u8],o:usize,v:u16)->Result<(),Error>{b.get_mut(o..o+2).ok_or(Err
 fn put32(b:&mut[u8],o:usize,v:u32)->Result<(),Error>{b.get_mut(o..o+4).ok_or(Error::Truncated)?.copy_from_slice(&v.to_le_bytes());Ok(())}
 fn metadata_csum(sb:&[u8])->Result<bool,Error>{Ok(le32(sb,100)?&0x0400!=0)}
 fn find_bit(bitmap:&[u8],valid:u32,goal:u32)->Result<u32,Error>{
- if valid==0||valid as usize>bitmap.len().saturating_mul(8){return Err(Error::InvalidGeometry)}
- for n in 0..valid{let bit=(goal.wrapping_add(n))%valid;if bitmap[(bit/8) as usize]&(1<<(bit%8))==0{return Ok(bit)}}
+ find_bit_from(bitmap,0,valid,goal)
+}
+fn find_bit_from(bitmap:&[u8],first:u32,valid:u32,goal:u32)->Result<u32,Error>{
+ if valid==0||first>=valid||valid as usize>bitmap.len().saturating_mul(8){return Err(Error::InvalidGeometry)}
+ let span=valid-first;let start=if goal<first||goal>=valid{first}else{goal};
+ for n in 0..span{let bit=first+((start-first+n)%span);if bitmap[(bit/8) as usize]&(1<<(bit%8))==0{return Ok(bit)}}
  Err(Error::OutOfRange)
 }
 fn set_bit(bitmap:&mut[u8],bit:u32,set:bool)->Result<(),Error>{
@@ -68,8 +72,9 @@ pub fn allocate_inode(
  let first=group.checked_mul(parsed.inodes_per_group).ok_or(Error::OutOfRange)?;
  let valid=core::cmp::min(parsed.inodes_per_group,parsed.inodes_count.saturating_sub(first));
  let reserved=if group==0{le32(sb,84)?.saturating_sub(1)}else{0};
- let start=core::cmp::max(goal,reserved);
- let bit=allocate_bitmap_bit(bitmap,valid,start)?;
+ if reserved>=valid{return Err(Error::OutOfRange)}
+ let bit=find_bit_from(bitmap,reserved,valid,goal)?;
+ set_bit(bitmap,bit,true)?;
  let count=group_counter(desc,14,46)?;if count==0{set_bit(bitmap,bit,false)?;return Err(Error::InvalidGeometry)}
  set_group_counter(desc,14,46,count-1)?;
  let free=le32(sb,16)?;if free==0{set_bit(bitmap,bit,false)?;set_group_counter(desc,14,46,count)?;return Err(Error::InvalidGeometry)}
@@ -253,7 +258,8 @@ pub fn insert_directory_entry(
  sb:&[u8],directory_inode:u32,generation:u32,block:&mut[u8],total_inodes:u32,
  child_inode:u32,name:&[u8],file_type:u8,
 )->Result<(),Error>{
- if child_inode==0||child_inode>total_inodes||name.is_empty()||name.len()>255{return Err(Error::InvalidDirectoryEntry)}
+ if child_inode==0||child_inode>total_inodes||name.is_empty()||name.len()>255
+  ||name.iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}
  validate_superblock_checksum(sb)?;
  validate_superblock_checksum(sb)?;
  let csum=metadata_csum(sb)?;if csum{validate_directory_block_checksum(sb,directory_inode,generation,block)?}
@@ -261,6 +267,7 @@ pub fn insert_directory_entry(
  let need=ideal_rec_len(name.len())?;let mut off=0usize;let mut placed=false;
  while off<limit{
   let ino=le32(block,off)?;let rec=le16(block,off+4)? as usize;let n=block[off+6] as usize;
+  if ino!=0&&n==name.len()&&&block[off+8..off+8+n]==name{return Err(Error::InvalidDirectoryEntry)}
   if ino==0&&rec>=need{
    let use_len=if rec-need>=8{need}else{rec};
    put32(block,off,child_inode)?;put16(block,off+4,use_len as u16)?;block[off+6]=name.len() as u8;block[off+7]=file_type;
@@ -289,6 +296,7 @@ pub fn insert_directory_entry(
 pub fn remove_directory_entry(
  sb:&[u8],directory_inode:u32,generation:u32,block:&mut[u8],total_inodes:u32,name:&[u8],
 )->Result<u32,Error>{
+ if name.is_empty()||name.iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}
  let csum=metadata_csum(sb)?;if csum{validate_directory_block_checksum(sb,directory_inode,generation,block)?}
  let limit=dir_limit(block,csum)?;validate_dir_entries(block,limit,total_inodes)?;
  let mut off=0usize;let mut previous:Option<usize>=None;
