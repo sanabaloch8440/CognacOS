@@ -304,8 +304,9 @@ pub fn remove_directory_entry(
   let ino=le32(block,off)?;let rec=le16(block,off+4)? as usize;let n=block[off+6] as usize;
   if ino!=0&&n==name.len()&&&block[off+8..off+8+n]==name{
    if let Some(prev)=previous{
-    let prior=le16(block,prev+4)? as usize;put16(block,prev+4,prior.checked_add(rec).ok_or(Error::OutOfRange)? as u16)?;
-    block[off..off+8].fill(0);
+    let prior=le16(block,prev+4)? as usize;let combined=prior.checked_add(rec).ok_or(Error::OutOfRange)?;
+    if combined<=u16::MAX as usize{put16(block,prev+4,combined as u16)?;block[off..off+8].fill(0)}
+    else{put32(block,off,0)?;block[off+6]=0;block[off+7]=0;block[off+8..off+rec].fill(0)}
    }else{
     put32(block,off,0)?;block[off+6]=0;block[off+7]=0;block[off+8..off+rec].fill(0);
    }
@@ -417,12 +418,16 @@ pub fn resize_inline_regular_file(
  if new_size<old_size{
   let bs=Superblock::parse(sb)?.block_size as u64;
   let keep=new_size.checked_add(bs-1).ok_or(Error::OutOfRange)?/bs;
-  freed_count=truncate_inline_extents(&mut inode[40..100],keep,freed)?;
+  let mut new_root=[0u8;60];new_root.copy_from_slice(&inode[40..100]);
+  let mut pending=[(0u64,0u32);4];
+  freed_count=truncate_inline_extents(&mut new_root,keep,&mut pending)?;
+  if freed_count>freed.len(){return Err(Error::TransactionTooLarge)}
   let mut freed_blocks=0u64;
-  for (start,count) in freed.iter().take(freed_count){let _=start;freed_blocks=freed_blocks.checked_add(*count as u64).ok_or(Error::OutOfRange)?}
+  for (_,count) in pending.iter().take(freed_count){freed_blocks=freed_blocks.checked_add(*count as u64).ok_or(Error::OutOfRange)?}
   let sectors=freed_blocks.checked_mul(bs/512).ok_or(Error::OutOfRange)?;
   let lo=le32(inode,28)? as u64;let hi=if inode.len()>=120{le16(inode,116)? as u64}else{0};
   let current=lo|(hi<<32);let next=current.checked_sub(sectors).ok_or(Error::InvalidGeometry)?;
+  inode[40..100].copy_from_slice(&new_root);freed[..freed_count].copy_from_slice(&pending[..freed_count]);
   put32(inode,28,next as u32)?;if inode.len()>=120{put16(inode,116,(next>>32) as u16)?}
  }
  put32(inode,4,new_size as u32)?;put32(inode,108,(new_size>>32) as u32)?;
