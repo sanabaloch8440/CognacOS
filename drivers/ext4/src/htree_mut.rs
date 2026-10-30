@@ -150,7 +150,7 @@ mod tests{
  #[test]fn collision_lookup_crosses_leaf_and_readdir_enumerates_all_indexed_leaves(){
   struct Reader{blocks:[[u8;1024];4]}
   impl crate::htree::DirectoryBlockReader for Reader{fn read_directory_block(&mut self,n:u32,out:&mut[u8])->Result<(),Error>{let src=self.blocks.get(n as usize).ok_or(Error::OutOfRange)?;if out.len()!=1024{return Err(Error::InvalidGeometry)}out.copy_from_slice(src);Ok(())}}
-  let inode_seed=crate::ext4_inode_checksum_seed(0x7654_3210,2,9).unwrap();
+  let inode_seed=crate::checksum::ext4_inode_csum_seed(0x7654_3210,2,9);
   let hash_seed=[0x1111_1111,0x2222_2222,0x3333_3333,0x4444_4444];let wanted=b"collision-target";
   let h=hash_directory_name(1,hash_seed,wanted,None).unwrap();let mut root=[0u8;1024];
   put32(&mut root,0,2).unwrap();put16(&mut root,4,12).unwrap();root[6]=1;root[8]=b'.';
