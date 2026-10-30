@@ -50,6 +50,7 @@ These are implementation foundations, not declarations of full Windows 11 compat
 - kernel/src/hal/ — hardware abstraction layer
 - shared/nt-abi/ — shared NT-style Rust ABI definitions
 - ntdll/src/ — Rust NTDLL exports and native runtime
+- dlls/msvcrt/ — Rust PE32+ C runtime DLL with 1,330 pinned Windows 11 x64 exports (stub bodies)
 - drivers/ext4/ — native Rust ext-family filesystem driver
 - drivers/kbdclass/, drivers/hidclass/, drivers/kbdhid/, drivers/i8042prt/ — keyboard stack cores
 - drivers/usbxhci/ — xHCI startup/event-ring core with a HAL-backed DMA/interrupt adapter (kernel DMA/IOMMU/interrupt callbacks remain incomplete)
