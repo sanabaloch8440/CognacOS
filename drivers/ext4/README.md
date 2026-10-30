@@ -269,3 +269,10 @@ The supported HTree traversal remains bounded by the implementation's current ma
 A bounded, allocation-free parser now validates external xattr block headers, reference counts, the single-block layout, entry-table termination, namespace indices, entry names, value-block references, value bounds/alignment, duplicate (name-index, name) pairs, and overlapping value ranges. The parser is exposed as `xattr::validate_external_xattr_block` and has malformed-layout unit tests.
 
 This is deliberately only the structural half of xattr ownership. The parser does **not** authenticate the ext4 xattr checksum, resolve the owning inode's `i_file_acl` pointer, prove inode allocation state, reconcile shared-block reference counts across all allocated inodes, or authorize xattr blocks for JBD2 replay. Mount recovery continues to reject replay targets in xattr blocks.
+
+
+## External xattr checksum validation
+
+The external-xattr module now exposes `validate_external_xattr_checksum` in addition to structural parsing. It verifies the metadata checksum over the block with the checksum field zeroed, binding the absolute physical block number and, for exclusively referenced blocks (`h_refcount == 1`), the owning inode number and generation. Shared blocks use the shared-block checksum form and do not accept an arbitrary inode identity as checksum input. Tests cover exclusive/shared checksum construction, missing owner identity, and payload corruption.
+
+The caller must supply the correct filesystem checksum seed and physical block number. This helper authenticates the bytes but does **not** discover the inode's `i_file_acl`, prove the inode is allocated, reconcile `h_refcount` against all allocated inode references, or authorize JBD2 replay. Those ownership and replay gates remain closed; writable mounting remains disabled.
