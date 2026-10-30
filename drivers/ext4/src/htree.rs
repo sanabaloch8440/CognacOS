@@ -529,7 +529,8 @@ pub fn iterate_htree_directory_sorted<R:DirectoryBlockReader,F:FnMut(DirectoryEn
   let off=item.offset as usize;
   let inode=le32(block,off)?;let rec=ext4_rec_len(le16(block,off+4)?,block.len());
   let name_len=block[off+6] as usize;let file_type=block[off+7];
-  if inode==0||inode>total_inodes||rec<8||name_len==0||name_len>rec-8{return Err(Error::InvalidDirectoryEntry)}
+  let leaf_limit=if item.logical_block==0{block.len()}else if metadata_csum{block.len()-12}else{block.len()};
+  if inode==0||inode>total_inodes||rec<8||rec&3!=0||off.checked_add(rec).ok_or(Error::OutOfRange)?>leaf_limit||name_len==0||name_len>rec-8{return Err(Error::InvalidDirectoryEntry)}
   let name=block.get(off+8..off+8+name_len).ok_or(Error::InvalidDirectoryEntry)?;
   let hash=DirectoryHash{major:item.major,minor:item.minor};
   if !visitor(DirectoryEntryView{inode,file_type,name,hash,logical_block:item.logical_block,offset:item.offset})?{return Ok(())}
