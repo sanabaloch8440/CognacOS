@@ -32,6 +32,7 @@ pub const INCOMPAT_EXTENTS:u32=0x0040;
 pub const INCOMPAT_64BIT:u32=0x0080;
 pub const INCOMPAT_FLEX_BG:u32=0x0200;
 const RO_COMPAT_LARGE_DIR:u32=0x4000;
+const COMPAT_DIR_INDEX:u32=0x0020;
 const SUPPORTED_RO_COMPAT:u32=0x0403|RO_COMPAT_LARGE_DIR; // sparse_super, large_file, metadata_csum, large_dir
 const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG|INCOMPAT_64BIT|0x2000; // checksum seed
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
