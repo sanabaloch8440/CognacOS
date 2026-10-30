@@ -720,7 +720,8 @@ jobs:
             -machine q35,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
             -device intel-iommu,intremap=off,caching-mode=on,aw-bits=48 \
             -device qemu-xhci,id=xhci \
-            # q35 lacks the legacy IDE ports used by the ATA PIO smoke driver.\n            -device isa-ide \
+            -device isa-ide \
+
             -device usb-kbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
