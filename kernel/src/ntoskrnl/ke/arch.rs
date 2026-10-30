@@ -2318,6 +2318,9 @@ pub extern "C" fn cognacos_external_interrupt_dispatch(vector: u64, frame: *cons
             frame as *mut core::ffi::c_void,
         )
     };
+    // HAL has acknowledged the interrupt. NTOSKRNL now runs any device DPC
+    // queued by the registered executive hook at DISPATCH_LEVEL.
+    crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();
 }
 
 static TIMER_ISR_DIAGNOSTIC_ONCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
