@@ -546,7 +546,10 @@ fn validate_inode_allocated<D: ReadOnlyBlockDevice>(
     let gd = GroupDescriptor::parse(descriptor, sb)?;
     read_block(dev, sb, gd.inode_bitmap, scratch)?;
     if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
-        validate_inode_bitmap_checksum(raw_superblock, descriptor, scratch)?;
+        if sb.inodes_per_group & 7 != 0 { return Err(Error::InvalidGeometry); }
+        let bitmap_bytes = (sb.inodes_per_group / 8) as usize;
+        let bitmap = scratch.get(..bitmap_bytes).ok_or(Error::Truncated)?;
+        validate_inode_bitmap_checksum(raw_superblock, descriptor, bitmap)?;
     }
     let bit = (inode_number - 1) % sb.inodes_per_group;
     let byte = (bit / 8) as usize;
