@@ -83,6 +83,8 @@ jobs:
         run: cargo test --manifest-path drivers/hal/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Check ACPI driver library
         run: cargo check --manifest-path drivers/acpi/Cargo.toml --lib
+      - name: Test ACPI DMAR requester-scope parsing
+        run: cargo test --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Check PCI driver library
         run: cargo check --manifest-path drivers/pci/Cargo.toml --lib
       - name: Test PCI ECAM and xHCI resource decoding
