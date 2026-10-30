@@ -20,20 +20,21 @@ pub struct PlatformOps {
  pub map_mmio:Option<unsafe extern "C" fn(*mut core::ffi::c_void,u64,u64,*mut u64)->i32>,
  pub unmap_mmio:Option<unsafe extern "C" fn(*mut core::ffi::c_void,u64,u64)->i32>,
  pub clean_cache:Option<unsafe extern "C" fn(*mut core::ffi::c_void,u64,u64)->i32>,
+ pub quarantine_requester:Option<unsafe extern "C" fn(*mut core::ffi::c_void,u16,u8,u8,u8)->i32>,
 }
 unsafe impl Send for PlatformOps {} unsafe impl Sync for PlatformOps {}
 #[derive(Clone,Copy)] struct Unit { mmio:u64, length:u64, ecap:u64, root_phys:u64, root_virt:*mut u64, ops:PlatformOps, enabled:bool }
 unsafe impl Send for Unit {} unsafe impl Sync for Unit {}
 struct Store(core::cell::UnsafeCell<Unit>); unsafe impl Sync for Store {}
-static UNIT:Store=Store(core::cell::UnsafeCell::new(Unit{mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),ops:PlatformOps{size:0,context:core::ptr::null_mut(),alloc_table:None,free_table:None,map_mmio:None,unmap_mmio:None,clean_cache:None},enabled:false}));
+static UNIT:Store=Store(core::cell::UnsafeCell::new(Unit{mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),ops:PlatformOps{size:0,context:core::ptr::null_mut(),alloc_table:None,free_table:None,map_mmio:None,unmap_mmio:None,clean_cache:None,quarantine_requester:None},enabled:false}));
 #[derive(Clone,Copy)] struct BusContext { physical:u64, virtual_address:*mut u64 }
 unsafe impl Send for BusContext {} unsafe impl Sync for BusContext {}
 const EMPTY_CONTEXT:BusContext=BusContext{physical:0,virtual_address:core::ptr::null_mut()};
 struct ContextStore(core::cell::UnsafeCell<[BusContext;256]>); unsafe impl Sync for ContextStore {}
 static CONTEXTS:ContextStore=ContextStore(core::cell::UnsafeCell::new([EMPTY_CONTEXT;256]));
-#[derive(Clone,Copy)] struct Domain { bus:u8, devfn:u8, id:u16, root_physical:u64, root_virtual:*mut u64 }
+#[derive(Clone,Copy)] struct Domain { bus:u8, devfn:u8, id:u16, root_physical:u64, root_virtual:*mut u64, poisoned:bool }
 unsafe impl Send for Domain {} unsafe impl Sync for Domain {}
-const EMPTY_DOMAIN:Domain=Domain{bus:0,devfn:0,id:0,root_physical:0,root_virtual:core::ptr::null_mut()};
+const EMPTY_DOMAIN:Domain=Domain{bus:0,devfn:0,id:0,root_physical:0,root_virtual:core::ptr::null_mut(),poisoned:false};
 struct DomainStore(core::cell::UnsafeCell<[Domain;256]>); unsafe impl Sync for DomainStore {}
 static DOMAINS:DomainStore=DomainStore(core::cell::UnsafeCell::new([EMPTY_DOMAIN;256]));
 static NEXT_DOMAIN:core::sync::atomic::AtomicU16=core::sync::atomic::AtomicU16::new(1);
@@ -218,7 +219,7 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
   return Err(STATUS_NOT_SUPPORTED)
  }
- domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va};
+ domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va,poisoned:false};
  if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{
   // Keep the domain discoverable and all published table pages pinned: hardware
   // may have cached a partial context update, so freeing them is unsafe.
@@ -282,70 +283,114 @@ unsafe fn walk_level(u:&Unit,domain_id:u16,table:*mut u64,table_pa:u64,index:usi
 /// Map a contiguous physical range into a requester's IOVA space. Permissions
 /// bit 0 grants device reads and bit 1 grants device writes. All addresses and
 /// lengths are page-aligned. A global IOTLB invalidation completes publication.
+fn poison_domain(u:&Unit,id:RequesterId){
+ let domains=unsafe{&mut*DOMAINS.0.get()};
+ if let Some(d)=domains.iter_mut().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8){d.poisoned=true;}
+ // If cache maintenance or invalidation failed, revoke PCI bus mastering before
+ // returning. If that cannot be confirmed, keep the domain permanently poisoned.
+ if let Some(quarantine)=u.ops.quarantine_requester{
+  let _=unsafe{quarantine(u.ops.context,0,id.bus,id.device,id.function)};
+ }
+}
+fn locate_leaf(u:&Unit,domain:&Domain,va:u64)->Result<(*mut u64,u64),i32>{
+ let indexes=[((va>>39)&0x1ff)as usize,((va>>30)&0x1ff)as usize,((va>>21)&0x1ff)as usize,((va>>12)&0x1ff)as usize];
+ let mut table=domain.root_virtual;let mut table_pa=domain.root_physical;
+ for level in 0..3{
+  let next=unsafe{walk_level(u,domain.id,table,table_pa,indexes[level],false)}?;
+  let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
+  table_pa=entry&SL_ADDR_MASK;table=next;
+ }
+ Ok((unsafe{table.add(indexes[3])},table_pa))
+}
+/// Install a complete range transactionally. No leaf PTE becomes visible until
+/// every intermediate path and every target leaf has passed preflight. If cache
+/// publication or IOTLB invalidation fails, clear the entire new range and
+/// invalidate again. An unsuccessful rollback poisons and quarantines the requester.
 pub unsafe fn map_pages(id:RequesterId,iova:u64,physical:u64,length:u64,permissions:u8)->i32{
  if iova==0||physical==0||length==0||iova&0xfff!=0||physical&0xfff!=0||length&0xfff!=0
   ||permissions==0||permissions&!3!=0||iova.checked_add(length).is_none_or(|e|e>SL_MAX)
   ||physical.checked_add(length).is_none_or(|e|e>SL_MAX){return STATUS_INVALID_PARAMETER}
  let _guard=LOCK.lock();
- let u=unsafe{&*UNIT.0.get()};
- if !u.enabled{return STATUS_DEVICE_NOT_READY}
+ let u=unsafe{&*UNIT.0.get()};if !u.enabled{return STATUS_DEVICE_NOT_READY}
  let domains=unsafe{&*DOMAINS.0.get()};
- let Some(domain)=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8) else{return STATUS_DEVICE_NOT_READY};
+ let Some(domain)=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8).copied() else{return STATUS_DEVICE_NOT_READY};
+ if domain.poisoned{return STATUS_DEVICE_NOT_READY}
+ // Preflight may allocate empty intermediate tables, but never installs a leaf.
  let mut offset=0;
  while offset<length{
   let va=iova+offset;
   let indexes=[((va>>39)&0x1ff)as usize,((va>>30)&0x1ff)as usize,((va>>21)&0x1ff)as usize,((va>>12)&0x1ff)as usize];
-  let mut table=domain.root_virtual;
-  let mut table_pa=domain.root_physical;
+  let mut table=domain.root_virtual;let mut table_pa=domain.root_physical;
   for level in 0..3{
-   match unsafe{walk_level(u,domain.id,table,table_pa,indexes[level],true)}{
-    Ok(next)=>{
-     let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
-     table_pa=entry&SL_ADDR_MASK;table=next;
-    }
-    Err(e)=>return e
-   }
+   let next=match unsafe{walk_level(u,domain.id,table,table_pa,indexes[level],true)}{Ok(v)=>v,Err(e)=>return e};
+   let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
+   table_pa=entry&SL_ADDR_MASK;table=next;
   }
-  let leaf=unsafe{table.add(indexes[3])};
-  if unsafe{core::ptr::read_volatile(leaf)}&SL_R!=0{return STATUS_INVALID_PARAMETER}
-  unsafe{core::ptr::write_volatile(leaf,((physical+offset)&SL_ADDR_MASK)|(permissions as u64))};
-  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{return STATUS_NOT_SUPPORTED}
+  if unsafe{core::ptr::read_volatile(table.add(indexes[3]))}&SL_R!=0{return STATUS_INVALID_PARAMETER}
   offset+=SL_PAGE;
  }
- unsafe{invalidate_all_locked(u)}
+ // Publish leaves only after complete preflight.
+ offset=0;
+ while offset<length{
+  let (leaf,_)=match locate_leaf(u,&domain,iova+offset){Ok(v)=>v,Err(e)=>{poison_domain(u,id);return e}};
+  unsafe{core::ptr::write_volatile(leaf,((physical+offset)&SL_ADDR_MASK)|(permissions as u64));}
+  offset+=SL_PAGE;
+ }
+ // Flush each leaf's containing PT page. Repeated flushes are conservative;
+ // no mapping is returned to the caller until the global IOTLB invalidation ends.
+ offset=0;let mut status=STATUS_SUCCESS;
+ while offset<length{
+  let (_,table_pa)=match locate_leaf(u,&domain,iova+offset){Ok(v)=>v,Err(e)=>{status=e;break}};
+  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{status=STATUS_NOT_SUPPORTED;break}
+  offset+=SL_PAGE;
+ }
+ if status==STATUS_SUCCESS{status=unsafe{invalidate_all_locked(u)};}
+ if status==STATUS_SUCCESS{return STATUS_SUCCESS}
+ // Roll back every leaf; keep all intermediate tables allocated (empty tables
+ // are safe and avoiding their reclamation prevents parent-pointer races).
+ offset=0;let mut rollback_ok=true;
+ while offset<length{
+  match locate_leaf(u,&domain,iova+offset){
+   Ok((leaf,table_pa))=>{
+    unsafe{core::ptr::write_volatile(leaf,0);}
+    if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{rollback_ok=false;}
+   }
+   Err(_)=>rollback_ok=false,
+  }
+  offset+=SL_PAGE;
+ }
+ if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{rollback_ok=false}
+ if !rollback_ok{poison_domain(u,id);}
+ status
 }
 
-/// Clear a mapped IOVA range. Backing pages must not be reclaimed unless the
-/// IOTLB invalidation succeeds; on timeout the device may retain cached access.
+/// Remove a complete mapping. The registry owner retains the backing allocation
+/// on any error. A partial clear or failed invalidation poisons and quarantines
+/// the requester, preventing later bus mastering against uncertain translations.
 pub unsafe fn unmap_pages(id:RequesterId,iova:u64,length:u64)->i32{
  if iova==0||length==0||iova&0xfff!=0||length&0xfff!=0||iova.checked_add(length).is_none_or(|e|e>SL_MAX){return STATUS_INVALID_PARAMETER}
  let _guard=LOCK.lock();
- let u=unsafe{&*UNIT.0.get()};
- if !u.enabled{return STATUS_DEVICE_NOT_READY}
+ let u=unsafe{&*UNIT.0.get()};if !u.enabled{return STATUS_DEVICE_NOT_READY}
  let domains=unsafe{&*DOMAINS.0.get()};
- let Some(domain)=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8) else{return STATUS_DEVICE_NOT_READY};
+ let Some(domain)=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8).copied() else{return STATUS_DEVICE_NOT_READY};
+ if domain.poisoned{return STATUS_DEVICE_NOT_READY}
+ // Validate the entire range before clearing its first PTE.
  let mut offset=0;
  while offset<length{
-  let va=iova+offset;
-  let indexes=[((va>>39)&0x1ff)as usize,((va>>30)&0x1ff)as usize,((va>>21)&0x1ff)as usize,((va>>12)&0x1ff)as usize];
-  let mut table=domain.root_virtual;
-  let mut table_pa=domain.root_physical;
-  for level in 0..3{
-   match unsafe{walk_level(u,domain.id,table,table_pa,indexes[level],false)}{
-    Ok(next)=>{
-     let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
-     table_pa=entry&SL_ADDR_MASK;table=next;
-    }
-    Err(e)=>return e
-   }
-  }
-  let leaf=unsafe{table.add(indexes[3])};
+  let (leaf,_)=match locate_leaf(u,&domain,iova+offset){Ok(v)=>v,Err(e)=>return e};
   if unsafe{core::ptr::read_volatile(leaf)}&SL_R==0{return STATUS_INVALID_PARAMETER}
-  unsafe{core::ptr::write_volatile(leaf,0)};
-  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{return STATUS_NOT_SUPPORTED}
   offset+=SL_PAGE;
  }
- unsafe{invalidate_all_locked(u)}
+ offset=0;let mut status=STATUS_SUCCESS;
+ while offset<length{
+  let (leaf,table_pa)=match locate_leaf(u,&domain,iova+offset){Ok(v)=>v,Err(e)=>{status=e;break}};
+  unsafe{core::ptr::write_volatile(leaf,0);}
+  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{status=STATUS_NOT_SUPPORTED;break}
+  offset+=SL_PAGE;
+ }
+ if status==STATUS_SUCCESS{status=unsafe{invalidate_all_locked(u)};}
+ if status!=STATUS_SUCCESS{poison_domain(u,id);}
+ status
 }
 
 /// Software page-table lookup for tests and diagnostics; not a hardware test.
@@ -406,7 +451,7 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
 pub fn requester_domain_root(id:RequesterId)->Option<(u16,u64)>{
  let _guard=LOCK.lock();
  let domains=unsafe{&*DOMAINS.0.get()};
- domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8).map(|d|(d.id,d.root_physical))
+ domains.iter().find(|d|d.id!=0&&!d.poisoned&&d.bus==id.bus&&d.devfn==id.devfn() as u8).map(|d|(d.id,d.root_physical))
 }
 
 
