@@ -95,11 +95,15 @@ impl<'a> MetadataOwnershipMap<'a> {
 
 pub trait MetadataTargetPolicy {
     fn validate_metadata_target(&mut self, block: u64) -> Result<(), Error>;
+    fn metadata_kind(&self, _block: u64) -> Option<MetadataObjectKind> { None }
 }
 
 impl MetadataTargetPolicy for MetadataOwnershipMap<'_> {
     fn validate_metadata_target(&mut self, block: u64) -> Result<(), Error> {
         self.validate(block).map(|_| ())
+    }
+    fn metadata_kind(&self, block: u64) -> Option<MetadataObjectKind> {
+        self.owner(block).map(|entry| entry.kind)
     }
 }
 
@@ -138,6 +142,23 @@ where D: ReplayDevice, M: JournalBlockMap, P: MetadataTargetPolicy {
     }
 
     pub fn is_poisoned(&self) -> bool { self.poisoned }
+
+    /// Begin a typed filesystem operation. The manifest ensures the caller
+    /// cannot commit a partial metadata set for common create/unlink/resize/
+    /// allocate/free operations. Every staged metadata block must have an
+    /// exact ownership entry of the declared kind.
+    pub fn begin_operation<'b>(
+        &'b mut self, kind: OperationKind,
+        metadata_targets: &'b mut [u64], metadata_storage: &'b mut [u8],
+        ordered_targets: &'b mut [u64], ordered_storage: &'b mut [u8],
+        revoked_targets: &'b mut [u64], descriptor_scratch: &'b mut [u8],
+    ) -> Result<OperationBuilder<'b, 'a, D, M, P>, Error> {
+        let inner = self.begin(metadata_targets, metadata_storage, ordered_targets,
+            ordered_storage, revoked_targets, descriptor_scratch)?;
+        Ok(OperationBuilder { inner, kind, staged_kinds: 0 })
+    }
+
+
 
     pub fn begin<'b>(
         &'b mut self,
@@ -282,5 +303,91 @@ mod ownership_tests {
             MetadataOwnership { block: 7, owner_inode: 3, generation: 1, kind: MetadataObjectKind::ExtentNode },
         ];
         assert!(MetadataOwnershipMap::new(&entries).is_err());
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationKind { Create, Unlink, Resize, Allocate, Free }
+
+fn kind_bit(kind: MetadataObjectKind) -> u16 {
+    match kind {
+        MetadataObjectKind::Superblock => 1 << 0,
+        MetadataObjectKind::GroupDescriptor => 1 << 1,
+        MetadataObjectKind::BlockBitmap => 1 << 2,
+        MetadataObjectKind::InodeBitmap => 1 << 3,
+        MetadataObjectKind::InodeTable | MetadataObjectKind::Inode => 1 << 4,
+        MetadataObjectKind::Directory => 1 << 5,
+        MetadataObjectKind::ExtentNode => 1 << 6,
+        MetadataObjectKind::Xattr | MetadataObjectKind::Other => 1 << 7,
+    }
+}
+
+fn required_kinds(kind: OperationKind) -> u16 {
+    let common = kind_bit(MetadataObjectKind::Superblock)
+        | kind_bit(MetadataObjectKind::GroupDescriptor);
+    match kind {
+        OperationKind::Create => common | kind_bit(MetadataObjectKind::InodeBitmap)
+            | kind_bit(MetadataObjectKind::InodeTable) | kind_bit(MetadataObjectKind::Directory),
+        OperationKind::Unlink => common | kind_bit(MetadataObjectKind::InodeBitmap)
+            | kind_bit(MetadataObjectKind::InodeTable) | kind_bit(MetadataObjectKind::Directory)
+            | kind_bit(MetadataObjectKind::BlockBitmap),
+        OperationKind::Resize => common | kind_bit(MetadataObjectKind::InodeTable)
+            | kind_bit(MetadataObjectKind::ExtentNode) | kind_bit(MetadataObjectKind::BlockBitmap),
+        OperationKind::Allocate => common | kind_bit(MetadataObjectKind::BlockBitmap),
+        OperationKind::Free => common | kind_bit(MetadataObjectKind::BlockBitmap),
+    }
+}
+
+/// One atomic multi-object operation over the mount-owned journal coordinator.
+/// This is the required staging surface for VFS create/unlink/resize/allocation
+/// paths; it does not mutate disk until all manifest requirements are staged.
+pub struct OperationBuilder<'b, 'a, D, M, P>
+where D: ReplayDevice, M: JournalBlockMap, P: MetadataTargetPolicy {
+    inner: Transaction<'b, 'a, D, M, P>,
+    kind: OperationKind,
+    staged_kinds: u16,
+}
+
+impl<D, M, P> OperationBuilder<'_, '_, D, M, P>
+where D: ReplayDevice, M: JournalBlockMap, P: MetadataTargetPolicy {
+    pub fn stage_metadata(&mut self, block: u64, kind: MetadataObjectKind, image: &[u8]) -> Result<(), Error> {
+        let actual = self.inner.coordinator.policy.metadata_kind(block).ok_or(Error::InvalidExtentTree)?;
+        if actual != kind { return Err(Error::InvalidExtentTree); }
+        self.inner.stage_metadata(block, image)?;
+        self.staged_kinds |= kind_bit(kind);
+        Ok(())
+    }
+
+    pub fn stage_ordered_data(&mut self, block: u64, image: &[u8]) -> Result<(), Error> {
+        self.inner.stage_ordered_data(block, image)
+    }
+
+    pub fn stage_revoke(&mut self, block: u64) -> Result<(), Error> {
+        self.inner.stage_revoke(block)
+    }
+
+    pub fn commit(self) -> Result<u32, Error> {
+        if self.staged_kinds & required_kinds(self.kind) != required_kinds(self.kind) {
+            return Err(Error::InvalidGeometry);
+        }
+        if self.kind == OperationKind::Free && self.inner.revoke_count == 0 {
+            return Err(Error::InvalidGeometry);
+        }
+        self.inner.commit()
+    }
+}
+
+#[cfg(test)]
+mod operation_manifest_tests {
+    use super::*;
+    #[test]
+    fn operation_manifests_require_all_cross_object_metadata() {
+        let create = required_kinds(OperationKind::Create);
+        assert_ne!(create & kind_bit(MetadataObjectKind::Directory), 0);
+        assert_ne!(create & kind_bit(MetadataObjectKind::InodeBitmap), 0);
+        assert_ne!(create & kind_bit(MetadataObjectKind::InodeTable), 0);
+        assert_ne!(create & kind_bit(MetadataObjectKind::GroupDescriptor), 0);
+        assert_ne!(create & kind_bit(MetadataObjectKind::Superblock), 0);
+        assert_eq!(required_kinds(OperationKind::Free) & kind_bit(MetadataObjectKind::Directory), 0);
     }
 }
