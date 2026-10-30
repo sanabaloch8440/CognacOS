@@ -681,7 +681,15 @@ mod tests{
  #[test]fn ext4_internal_journal_discovery_pins_inode_and_uuid(){
   let mut sb=[0u8;1024];sb[92..96].copy_from_slice(&4u32.to_le_bytes());sb[208..224].copy_from_slice(&[0x5a;16]);sb[224..228].copy_from_slice(&8u32.to_le_bytes());
   let info=discover_internal_journal(&sb).unwrap();assert_eq!(info.inode_number,8);
-  let mut js=[0u8;1024];js[48..64].copy_from_slice(&[0x5a;16]);assert_eq!(validate_journal_uuid(&sb,&js),Ok(()));
+  let mut js=[0u8;1024];
+  js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+  js[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
+  js[12..16].copy_from_slice(&1024u32.to_be_bytes());
+  js[16..20].copy_from_slice(&64u32.to_be_bytes());
+  js[20..24].copy_from_slice(&1u32.to_be_bytes());
+  js[24..28].copy_from_slice(&1u32.to_be_bytes());
+  js[48..64].copy_from_slice(&[0x5a;16]);
+  assert_eq!(validate_journal_uuid(&sb,&js),Ok(()));
   js[48]=0;assert_eq!(validate_journal_uuid(&sb,&js),Err(Error::BadMagic));
  }
 
