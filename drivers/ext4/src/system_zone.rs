@@ -353,6 +353,7 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
                 &mut device, &sb, &raw_superblock, &zones, directory_inodes,
                 inode_buffer, scratch_a, scratch_b,
             )?;
+            if count > directory_parents.len() { return Err(Error::TransactionTooLarge); }
             validate_directory_namespace(
                 &mut device, &sb, &raw_superblock, &zones,
                 &directory_inodes[..count], &mut directory_parents[..count],
