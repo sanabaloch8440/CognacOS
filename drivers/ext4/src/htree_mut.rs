@@ -30,7 +30,7 @@ pub fn split_directory_leaf(
 )->Result<u32,Error>{
  if old_leaf.len()!=new_leaf.len()||old_leaf.len()!=source_copy.len()||old_leaf.len()<1024{return Err(Error::InvalidGeometry)}
  let csum=has_csum(sb)?;let seed=if csum{crate::ext4_inode_checksum_seed(sb,inode,generation)?}else{0};
- if csum{crate::ops::validate_directory_block_checksum(sb,inode,generation,old_leaf)?;}
+ if csum{crate::validate_directory_block_checksum(sb,inode,generation,old_leaf)?;}
  let limit=old_leaf.len()-if csum{12}else{0};let mut off=0usize;let mut count=0usize;
  while off<limit{
   if limit-off<8{return Err(Error::InvalidDirectoryEntry)}
