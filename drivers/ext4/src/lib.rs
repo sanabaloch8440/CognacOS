@@ -71,8 +71,6 @@ impl Superblock{
   if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
   // DIR_INDEX is a compatible feature; indexed directories are parsed through the checksum-validated HTree path.
   if revision>1{return Err(Error::UnsupportedFormat)}
-  if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
-  if revision>1{return Err(Error::UnsupportedFormat)}
   if feature_incompat&INCOMPAT_META_BG!=0||feature_incompat&!KNOWN_INCOMPAT!=0{return Err(Error::UnsupportedIncompatFeature)}
   Ok(Self{inodes_count,blocks_count,first_data_block,block_size,blocks_per_group,inodes_per_group,inode_size,descriptor_size,revision,feature_compat,feature_incompat,feature_ro_compat,read_only:false})
  }
