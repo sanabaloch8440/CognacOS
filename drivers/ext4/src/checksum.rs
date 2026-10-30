@@ -135,6 +135,19 @@ mod tests {
     }
 
     #[test]
+    fn jbd2_superblock_checksum_uses_fixed_1024_byte_structure() {
+        let mut block = [0u8; 4096];
+        block[12..16].copy_from_slice(&4096u32.to_be_bytes());
+        let sum = jbd2_superblock_checksum(&block).unwrap();
+        block[252..256].copy_from_slice(&sum.to_be_bytes());
+        assert_eq!(jbd2_superblock_checksum(&block), Some(sum));
+        block[3000] ^= 1;
+        assert_eq!(jbd2_superblock_checksum(&block), Some(sum));
+        block[900] ^= 1;
+        assert_ne!(jbd2_superblock_checksum(&block), Some(sum));
+    }
+
+    #[test]
     fn commit_checksum_zeroes_checksum_slot() {
         let seed = jbd2_csum_seed(&[0x77; 16]);
         let mut block = [0x44; 1024];
@@ -151,7 +164,10 @@ mod tests {
 /// journal superblock with s_checksum at 0xfc..0x100 treated as zero).
 /// The checksum is stored in big-endian form without a final complement.
 pub fn jbd2_superblock_checksum(block: &[u8]) -> Option<u32> {
-    if block.len() != 1024 { return None; }
+    if block.len() < 1024 { return None; }
+    // journal_superblock_t is a fixed 1024-byte on-disk structure even when
+    // the journal's logical block size is 2/4/16/64 KiB.
+    let block = &block[..1024];
     let mut crc = crc32c_update(!0, &block[..252]);
     crc = crc32c_update(crc, &[0; 4]);
     Some(crc32c_update(crc, &block[256..]))
