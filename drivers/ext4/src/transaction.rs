@@ -51,6 +51,7 @@ where D: ReplayDevice, M: JournalBlockMap, P: MetadataTargetPolicy {
         let bs = self.filesystem.block_size as usize;
         if metadata_targets.len() > MAX_STAGED_BLOCKS
             || metadata_storage.len() != metadata_targets.len().checked_mul(bs).ok_or(Error::OutOfRange)?
+            || ordered_targets.len() > MAX_STAGED_BLOCKS
             || ordered_storage.len() != ordered_targets.len().checked_mul(bs).ok_or(Error::OutOfRange)?
             || revoked_targets.len() > jbd2::MAX_TRANSACTION_REVOKES
             || descriptor_scratch.len() != bs {
