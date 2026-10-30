@@ -1858,3 +1858,37 @@ mod compatibility_edge_tests {
         assert_eq!(result, Err(Error::InvalidExtentTree));
     }
 }
+
+
+#[cfg(test)]
+mod large_dir_feature_tests {
+    use super::*;
+
+    fn image(compat: u32, ro_compat: u32) -> [u8; 1024] {
+        let mut raw = [0u8; 1024];
+        raw[0..4].copy_from_slice(&128u32.to_le_bytes());
+        raw[4..8].copy_from_slice(&4096u32.to_le_bytes());
+        raw[20..24].copy_from_slice(&1u32.to_le_bytes());
+        raw[32..36].copy_from_slice(&1024u32.to_le_bytes());
+        raw[40..44].copy_from_slice(&128u32.to_le_bytes());
+        raw[56..58].copy_from_slice(&EXT_MAGIC.to_le_bytes());
+        raw[76..80].copy_from_slice(&1u32.to_le_bytes());
+        raw[88..90].copy_from_slice(&128u16.to_le_bytes());
+        raw[92..96].copy_from_slice(&compat.to_le_bytes());
+        raw[96..100].copy_from_slice(&INCOMPAT_FILETYPE.to_le_bytes());
+        raw[100..104].copy_from_slice(&ro_compat.to_le_bytes());
+        raw
+    }
+
+    #[test]
+    fn accepts_large_dir_only_with_dir_index() {
+        let raw = image(COMPAT_DIR_INDEX, RO_COMPAT_LARGE_DIR);
+        assert!(Superblock::parse(&raw).is_ok());
+    }
+
+    #[test]
+    fn rejects_large_dir_without_dir_index() {
+        let raw = image(0, RO_COMPAT_LARGE_DIR);
+        assert_eq!(Superblock::parse(&raw), Err(Error::UnsupportedRoCompatFeature));
+    }
+}
