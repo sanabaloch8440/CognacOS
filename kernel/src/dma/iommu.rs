@@ -130,7 +130,14 @@ pub fn bind_irp(adapter:*mut c_void,token:*mut c_void,logical:u64,irp:*mut c_voi
  if let Some(m)=s.maps.iter_mut().find(|m|m.used&&m.device==device&&m.token==token as usize&&m.logical==logical){m.irp=irp as usize;return OK}INVALID
 }
 pub fn release_irp(irp:*mut c_void){
- if irp.is_null(){return}loop{let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.irp==irp as usize)};let Some(i)=idx else{break};if !unmap_index(i){break}}
+ if irp.is_null(){return}
+ loop{
+  let idx={let s=STATE.lock();s.maps.iter().position(|m|m.used&&m.irp==irp as usize)};
+  let Some(i)=idx else{break};
+  // The caller may free the IRP and its MDL immediately after this routine.
+  // Do not return control if IOTLB teardown did not prove DMA access revoked.
+  if !unmap_index(i){fatal_dma_lifetime_violation();}
+ }
 }
 pub fn map_fragment(adapter:*mut c_void,token:*mut c_void,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{map_transfer(adapter,token,physical,length,direction)}
 pub fn unmap_logical(device:usize,logical:u64)->bool{
