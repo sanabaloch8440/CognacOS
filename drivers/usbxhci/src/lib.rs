@@ -355,6 +355,7 @@ pub trait XhciPlatform: XhciRegisterIo {
     fn register_interrupt(&mut self) -> Result<(), ()>;
     fn unregister_interrupt(&mut self);
     fn set_interrupt_enabled(&mut self, enabled: bool) -> Result<(), ()>;
+    fn set_bus_master(&mut self, enabled: bool) -> Result<(), ()>;
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RuntimeStartError {
@@ -437,9 +438,28 @@ pub fn start_controller<P: XhciPlatform>(
         erst: erst.device_address, event_ring: event_ring.device_address,
         event_ring_entries: RUNTIME_EVENT_ENTRIES, max_slots,
     };
-    if let Err(e) = initialize_controller(platform, caps, dma, true, poll_budget) {
+    // All four coherent DMA mappings and the interrupt callback now exist.
+    // This is the only point at which the platform may enable PCI bus mastering.
+    if platform.set_bus_master(true).is_err() {
         platform.unregister_interrupt();
         free_allocations(platform, allocations);
+        return Err(RuntimeStartError::Controller(ControllerInitError::InvalidDmaConfiguration));
+    }
+    if let Err(e) = initialize_controller(platform, caps, dma, true, poll_budget) {
+        let op = caps.cap_length as u32;
+        let mut halted = false;
+        if let Ok(cmd) = platform.read32(op) {
+            let _ = platform.write32(op, cmd & !(USBCMD_RUN | USBCMD_INTERRUPT_ENABLE));
+            for _ in 0..poll_budget {
+                if platform.read32(op + 4).is_ok_and(|v| v & USBSTS_HALTED != 0) { halted = true; break; }
+                core::hint::spin_loop();
+            }
+        }
+        let _ = platform.set_bus_master(false);
+        platform.unregister_interrupt();
+        // If halt cannot be confirmed, deliberately leak the allocations: a
+        // controller with uncertain state may still hold DMA addresses.
+        if halted { free_allocations(platform, allocations); }
         return Err(RuntimeStartError::Controller(e));
     }
     if platform.set_interrupt_enabled(true).is_err() {
@@ -449,8 +469,14 @@ pub fn start_controller<P: XhciPlatform>(
             let _ = platform.write32(op, cmd & !(USBCMD_RUN | USBCMD_INTERRUPT_ENABLE));
             let _ = wait_register(|| platform.read32(op + 4).unwrap_or(0), USBSTS_HALTED, USBSTS_HALTED, poll_budget);
         }
+        let mut halted = false;
+        for _ in 0..poll_budget {
+            if platform.read32(op + 4).is_ok_and(|v| v & USBSTS_HALTED != 0) { halted = true; break; }
+            core::hint::spin_loop();
+        }
+        let _ = platform.set_bus_master(false);
         platform.unregister_interrupt();
-        free_allocations(platform, allocations);
+        if halted { free_allocations(platform, allocations); }
         return Err(RuntimeStartError::InterruptEnableFailed);
     }
     Ok(XhciRuntimeResources {
@@ -521,6 +547,8 @@ pub fn stop_controller<P: XhciPlatform>(
         core::hint::spin_loop();
     }
     if !halted { return Err(RuntimeStopError::ControllerDidNotHalt); }
+    // Once halted, revoke PCI bus mastering before tearing down IOMMU mappings.
+    platform.set_bus_master(false).map_err(|_| RuntimeStopError::InterruptDisableFailed)?;
     if resources.interrupt_registered { platform.unregister_interrupt(); }
     platform.free_dma(resources.erst);
     platform.free_dma(resources.event_ring);
