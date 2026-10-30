@@ -480,13 +480,13 @@ pub fn map_legacy_block_checked_zones<D: ReadOnlyBlockDevice>(
     scratch_b: &mut [u8],
     zones: &SystemZoneMap<'_>,
 ) -> Result<Option<u64>, Error> {
-    struct ZoneCheckedDevice<'a, D> {
-        inner: &'a mut D,
-        zones: &'a SystemZoneMap<'a>,
+    struct ZoneCheckedDevice<'d, 'z, 'r, D> {
+        inner: &'d mut D,
+        zones: &'z SystemZoneMap<'r>,
         block_size: u32,
         blocks_count: u64,
     }
-    impl<D: ReadOnlyBlockDevice> ReadOnlyBlockDevice for ZoneCheckedDevice<'_, D> {
+    impl<D: ReadOnlyBlockDevice> ReadOnlyBlockDevice for ZoneCheckedDevice<'_, '_, '_, D> {
         type DeviceError = Error;
         fn capacity_bytes(&self) -> u64 { self.inner.capacity_bytes() }
         fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Self::DeviceError> {
