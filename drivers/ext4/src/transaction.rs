@@ -251,3 +251,36 @@ where D: ReplayDevice, M: JournalBlockMap, P: MetadataTargetPolicy {
         result
     }
 }
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    #[test]
+    fn replay_allowlist_requires_exact_unique_metadata_owner() {
+        let entries = [
+            MetadataOwnership { block: 4, owner_inode: 2, generation: 1, kind: MetadataObjectKind::Directory },
+            MetadataOwnership { block: 9, owner_inode: 0, generation: 0, kind: MetadataObjectKind::GroupDescriptor },
+        ];
+        let mut map = MetadataOwnershipMap::new(&entries).unwrap();
+        assert_eq!(map.validate(4).unwrap().owner_inode, 2);
+        assert_eq!(map.validate(5), Err(Error::InvalidExtentTree));
+        assert_eq!(
+            <MetadataOwnershipMap<'_> as jbd2::ReplayTargetPolicy>::validate_replay_target(&mut map, 9),
+            Ok(())
+        );
+        assert_eq!(
+            <MetadataOwnershipMap<'_> as jbd2::ReplayTargetPolicy>::validate_replay_target(&mut map, 10),
+            Err(jbd2::Error::InvalidTag)
+        );
+    }
+
+    #[test]
+    fn ownership_map_rejects_ambiguous_duplicate_blocks() {
+        let entries = [
+            MetadataOwnership { block: 7, owner_inode: 2, generation: 1, kind: MetadataObjectKind::Directory },
+            MetadataOwnership { block: 7, owner_inode: 3, generation: 1, kind: MetadataObjectKind::ExtentNode },
+        ];
+        assert!(MetadataOwnershipMap::new(&entries).is_err());
+    }
+}
