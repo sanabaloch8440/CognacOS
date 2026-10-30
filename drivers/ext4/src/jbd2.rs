@@ -78,7 +78,8 @@ impl JournalSuperblock{
   // implement its transaction-wide CRC validation, so accepting it would
   // allow corrupted log payloads/commits to be replayed without integrity
   // verification. Fail closed until checksum-v1 is implemented.
-  if checksum_mode==ChecksumMode::V1{return Err(Error::UnsupportedFeature)}
+  // Checksum-v1 is a COMPAT feature. Its transaction-wide CRC-32 is
+  // verified by the replay scanner before any transaction is applied.
   if feature_incompat&!(SUPPORTED_INCOMPAT|FEATURE_INCOMPAT_CSUM_V2|FEATURE_INCOMPAT_CSUM_V3)!=0{return Err(Error::UnsupportedFeature)}
   if checksum_mode!=ChecksumMode::None && feature_incompat&FEATURE_INCOMPAT_ASYNC_COMMIT!=0{return Err(Error::UnsupportedFeature)}
   Ok(Self{block_size,max_len,first,sequence,start,feature_incompat,block_count_64:feature_incompat&FEATURE_INCOMPAT_64BIT!=0,checksum_mode,uuid})
@@ -197,8 +198,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
 
 /// Commit ordered data and journaled metadata without revoke records.
 pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
- d:&mut D,m:&mut M,journal_superblock:&mut[u8], ordered_targets:&[u64],ordered_data:&[&[u8]],
- metadata_targets:&[u64],metadata_data:&[&[u8]],descriptor:&mut[u8],
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8], ordered_targets:&[u64],ordered_data:&[&[u8]], metadata_targets:&[u64],metadata_data:&[&[u8]],descriptor:&mut[u8],
 )->Result<u32,Error>{
  commit_ordered_with_revokes(d,m,journal_superblock,ordered_targets,ordered_data,
   metadata_targets,metadata_data,&[],descriptor)
@@ -308,12 +308,15 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
   // records from an interrupted tail leak into the final replay pass.
   let transaction_tag_start=tag_count;
   let transaction_revoke_start=revoke_count;
-  let mut tx_cursor=cursor;let mut committed=false;let mut malformed=false;let mut tx_guard=0u32;
+  let mut tx_cursor=cursor;let mut committed=false;let mut malformed=false;let mut tx_guard=0u32;let mut transaction_crc=!0u32;
   while tx_guard<sb.max_len{
    tx_guard+=1;read_journal(d,m,tx_cursor,scratch)?;
    if be32(scratch,0)?!=JBD2_MAGIC||be32(scratch,8)?!=expected{malformed=true;break}
    match be32(scratch,4)?{
     JBD2_DESCRIPTOR_BLOCK=>{
+     if sb.checksum_mode==ChecksumMode::V1{
+      transaction_crc=crate::checksum::crc32_be_update(transaction_crc,scratch);
+     }
      if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{if !verify_metadata_checksum(&sb.uuid,scratch){return Err(Error::InvalidTag)}}
      let mut off=12usize;
      loop{
@@ -343,13 +346,17 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
       if off>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
       if target>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
       let data_block=next_log(sb,tx_cursor);tags[tag_count]=Tag{target,journal_data:data_block,flags,sequence:expected};tag_count+=1;
-      if flags&TAG_DELETED==0{
-       tx_cursor=data_block;read_journal(d,m,tx_cursor,payload)?;
-       if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
-        if !verify_tag_checksum(&sb.uuid,expected,payload,stored_csum,sb.checksum_mode){return Err(Error::InvalidTag)}
-       }
-       tx_cursor=next_log(sb,tx_cursor)
+      // Every descriptor tag consumes one following journal data block,
+      // including deleted tags. Linux's checksum-v1 calculation covers the
+      // complete descriptor block and every associated data block.
+      tx_cursor=data_block;read_journal(d,m,tx_cursor,payload)?;
+      if sb.checksum_mode==ChecksumMode::V1{
+       transaction_crc=crate::checksum::crc32_be_update(transaction_crc,payload);
       }
+      if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
+       if !verify_tag_checksum(&sb.uuid,expected,payload,stored_csum,sb.checksum_mode){return Err(Error::InvalidTag)}
+      }
+      tx_cursor=next_log(sb,tx_cursor);
       if flags&TAG_LAST!=0{break}
       if off>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
      }
@@ -364,6 +371,14 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
      tx_cursor=next_log(sb,tx_cursor);
     }
     JBD2_COMMIT_BLOCK=>{
+     if sb.checksum_mode==ChecksumMode::V1{
+      // JBD2 checksum-v1 stores CRC32_BE(~0, descriptor || data blocks)
+      // in h_chksum[0], with type=CRC32 and size=4. Revoke blocks and the
+      // commit block itself are not part of this transaction checksum.
+      if scratch[12]!=1||scratch[13]!=4||be32(scratch,16)?!=transaction_crc{
+       return Err(Error::InvalidChecksum)
+      }
+     }
      if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{if !verify_commit_checksum(&sb.uuid,scratch){return Err(Error::InvalidSequence)}}
      committed=true;tx_cursor=next_log(sb,tx_cursor);break
     }
@@ -397,8 +412,7 @@ mod tests{
   let mut b=[0u8;1024];b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());b[12..16].copy_from_slice(&1024u32.to_be_bytes());b[16..20].copy_from_slice(&64u32.to_be_bytes());b[20..24].copy_from_slice(&1u32.to_be_bytes());b[24..28].copy_from_slice(&7u32.to_be_bytes());b[28..32].copy_from_slice(&3u32.to_be_bytes());
   let sb=JournalSuperblock::parse(&b).unwrap();assert!(sb.needs_recovery());b[40..44].copy_from_slice(&FEATURE_INCOMPAT_CSUM_V3.to_be_bytes());b[80]=4;let csum=crate::checksum::jbd2_superblock_checksum(&b).unwrap();b[252..256].copy_from_slice(&csum.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b).unwrap().checksum_mode,ChecksumMode::V3);b[100]^=1;assert_eq!(JournalSuperblock::parse(&b),Err(Error::InvalidChecksum));b[100]^=1;
   b[40..44].fill(0);b[36..40].copy_from_slice(&1u32.to_be_bytes());assert_eq!(JournalSuperblock::parse(&b),Err(Error::UnsupportedFeature)); }
- #[test]fn clean_journal_is_noop_without_io(){
-  struct D;impl ReplayDevice for D{fn filesystem_blocks(&self)->u64{10}fn read_block(&mut self,_:u64,_:&mut[u8])->Result<(),()>{Err(())}fn write_block(&mut self,_:u64,_:&[u8])->Result<(),()>{Err(())}fn flush(&mut self)->Result<(),()>{Ok(())}}
+ #[test]fn clean_journal_is_noop_without_io(){  struct D;impl ReplayDevice for D{fn filesystem_blocks(&self)->u64{10}fn read_block(&mut self,_:u64,_:&mut[u8])->Result<(),()>{Err(())}fn write_block(&mut self,_:u64,_:&[u8])->Result<(),()>{Err(())}fn flush(&mut self)->Result<(),()>{Ok(())}}
   let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:0,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};let mut d=D;let mut a=[0u8;1024];let mut b=[0u8;1024];assert_eq!(replay(&mut d,&mut |_|Err(()),&sb,&mut a,&mut b),Ok(ReplayReport::default()));
  }
  struct Mem{blocks:[[u8;1024];64],flushes:u32}
