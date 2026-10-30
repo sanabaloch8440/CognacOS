@@ -5,7 +5,7 @@
 //! its entries and returns a logical directory leaf block. Filename hashing
 //! and leaf-name comparison remain the VFS caller's responsibility.
 use crate::checksum::crc32c_update;
-use crate::hash::{hash_directory_name, DirectoryHash};
+use crate::hash::{hash_directory_name, effective_hash_version, DirectoryHash};
 use crate::Error;
 
 const DX_ROOT_INFO_OFFSET: usize = 24;
@@ -429,13 +429,13 @@ fn visit_leaf<'a, F: FnMut(DirectoryEntryView<'a>) -> Result<bool, Error>>(
 /// The caller supplies the on-disk name (after fscrypt/casefold preparation).
 pub fn lookup_htree_name<R: DirectoryBlockReader>(
     reader: &mut R, root: &[u8], directory_blocks: u32, total_inodes: u32,
-    name: &[u8], hash_seed: [u32; 4], siphash_key: Option<[u64; 2]>,
+    name: &[u8], hash_seed: [u32; 4], siphash_key: Option<[u64; 2]>, hash_unsigned: bool,
     metadata_csum: bool, inode_seed: u32, scratch: &mut [u8],
 ) -> Result<u32, Error> {
     if name.is_empty() || name.len() > 255 || name.iter().any(|b| *b == 0 || *b == b'/') {
         return Err(Error::InvalidDirectoryEntry);
     }
-    let version = validate_dx_root(root)?.0;
+    let version = effective_hash_version(validate_dx_root(root)?.0, hash_unsigned)?;
     // "." and ".." live in dx_root itself, not in any indexed leaf.
     if name == b"." { return Ok(le32(root, 0)?); }
     if name == b".." { return Ok(le32(root, 12)?); }
@@ -464,10 +464,10 @@ pub fn lookup_htree_name<R: DirectoryBlockReader>(
 /// Returning false from the callback stops enumeration successfully.
 pub fn iterate_htree_directory<R: DirectoryBlockReader, F: FnMut(DirectoryEntryView<'_>) -> Result<bool, Error>>(
     reader: &mut R, root: &[u8], directory_blocks: u32, total_inodes: u32,
-    hash_seed: [u32; 4], siphash_key: Option<[u64; 2]>, metadata_csum: bool,
+    hash_seed: [u32; 4], siphash_key: Option<[u64; 2]>, hash_unsigned: bool, metadata_csum: bool,
     inode_seed: u32, scratch: &mut [u8], mut visitor: F,
 ) -> Result<(), Error> {
-    let version = validate_dx_root(root)?.0;
+    let version = effective_hash_version(validate_dx_root(root)?.0, hash_unsigned)?;
     // The dx_root overlays the ordinary "." and ".." directory entries.
     // Emit them before walking the leaf pages, as a normal VFS readdir expects.
     for offset in [0usize, 12usize] {
