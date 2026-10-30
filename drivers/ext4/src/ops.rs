@@ -285,10 +285,7 @@ pub fn resize_inline_regular_file(
  let old_size=(le32(inode,4)? as u64)|((le32(inode,108)? as u64)<<32);
  let mut freed_count=0usize;
  if new_size<old_size{
-  let block_size=le32(sb,24)?;let shift=le32(sb,24)?;
-  let _=shift;
-  let log=le32(sb,24)?;let bs=1024u64.checked_shl(log).ok_or(Error::InvalidGeometry)?;
-  if bs!=block_size as u64{return Err(Error::InvalidGeometry)}
+  let bs=Superblock::parse(sb)?.block_size as u64;
   let keep=new_size.checked_add(bs-1).ok_or(Error::OutOfRange)?/bs;
   freed_count=truncate_inline_extents(&mut inode[40..100],keep,freed)?;
   let mut freed_blocks=0u64;
