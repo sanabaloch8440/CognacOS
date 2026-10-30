@@ -198,4 +198,19 @@ mod tests{
   let node_limit=(1024-16)/8;assert_eq!(dx_checksum(&node,8,node_limit,2,seed).unwrap(),u32at(&node,8+node_limit*8+4).unwrap());
  }
 
+ #[test]fn collision_lookup_climbs_parent_and_enters_sibling_dx_node(){
+  struct Reader{blocks:[[u8;1024];6]}
+  impl crate::htree::DirectoryBlockReader for Reader{fn read_directory_block(&mut self,n:u32,out:&mut[u8])->Result<(),Error>{let src=self.blocks.get(n as usize).ok_or(Error::OutOfRange)?;if out.len()!=1024{return Err(Error::InvalidGeometry)}out.copy_from_slice(src);Ok(())}}
+  let seed=crate::checksum::ext4_inode_csum_seed(0x3344_5566,2,4);
+  let hs=[9u32,8,7,6];let wanted=b"sibling-node-hit";let h=hash_directory_name(4,hs,wanted,None).unwrap();
+  let mut root=[0u8;1024];put32(&mut root,0,2).unwrap();put16(&mut root,4,12).unwrap();root[6]=1;root[8]=b'.';
+  put32(&mut root,12,2).unwrap();put16(&mut root,16,1012).unwrap();root[18]=2;root[20..22].copy_from_slice(b"..");
+  root[28]=1;root[29]=8;root[30]=1;let rl=(1024-40)/8;put16(&mut root,32,rl as u16).unwrap();put16(&mut root,34,2).unwrap();
+  put32(&mut root,36,1).unwrap();put32(&mut root,40,h.major|1).unwrap();put32(&mut root,44,2).unwrap();update_dx(&mut root,32,rl,2,true,seed).unwrap();
+  let mut reader=Reader{blocks:[[0;1024];6]};
+  for (node,leaf) in [(1u32,3u32),(2u32,4u32)]{let b=&mut reader.blocks[node as usize];put32(b,0,0).unwrap();put16(b,4,1024).unwrap();let lim=(1024-16)/8;put16(b,8,lim as u16).unwrap();put16(b,10,1).unwrap();put32(b,12,leaf).unwrap();update_dx(b,8,lim,1,true,seed).unwrap();}
+  for (block,ino,name) in [(3usize,21u32,b"other".as_slice()),(4usize,22u32,wanted.as_slice())]{let b=&mut reader.blocks[block];put32(b,0,ino).unwrap();put16(b,4,1012).unwrap();b[6]=name.len()as u8;b[7]=1;b[8..8+name.len()].copy_from_slice(name);write_leaf_tail(b,seed).unwrap();}
+  let mut scratch=[0u8;1024];assert_eq!(crate::htree::lookup_htree_name(&mut reader,&root,6,100,wanted,hs,None,true,true,seed,&mut scratch),Ok(22));
+ }
+
 }
