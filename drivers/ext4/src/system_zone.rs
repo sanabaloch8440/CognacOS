@@ -662,6 +662,93 @@ pub fn add_directory_metadata_ownership<D: ReadOnlyBlockDevice>(
     }
     Ok(())
 }
+
+/// Discover every allocated directory inode by scanning each initialized inode
+/// bitmap. Descriptor and bitmap checksums are verified before bits are trusted;
+/// every candidate inode is then read through the inode-table path (including
+/// inode checksum validation) and classified by mode. The output is caller-owned
+/// and bounded. This discovers allocated directories, not namespace reachability:
+/// callers must still validate root/. /.. parent relationships before treating
+/// the result as a complete live namespace.
+pub fn discover_allocated_directories<D: ReadOnlyBlockDevice>(
+    dev: &mut D,
+    sb: &Superblock,
+    raw_superblock: &[u8],
+    zones: &SystemZoneMap<'_>,
+    directory_inodes: &mut [u32],
+    inode_buffer: &mut [u8],
+    bitmap_scratch: &mut [u8],
+    inode_scratch: &mut [u8],
+) -> Result<usize, Error> {
+    if raw_superblock.len() < SUPERBLOCK_BYTES
+        || directory_inodes.is_empty()
+        || inode_buffer.len() != sb.inode_size as usize
+        || bitmap_scratch.len() != sb.block_size as usize
+        || inode_scratch.len() != sb.block_size as usize {
+        return Err(Error::InvalidGeometry);
+    }
+    validate_superblock_checksum(raw_superblock)?;
+    let groups = sb.group_count()?;
+    let dpb = sb.block_size / sb.descriptor_size as u32;
+    if dpb == 0 || sb.descriptor_size as usize > 64
+        || sb.inodes_per_group & 7 != 0 {
+        return Err(Error::UnsupportedFormat);
+    }
+    let gdt_start = (sb.first_data_block as u64).checked_add(1).ok_or(Error::OutOfRange)?;
+    let journal_inode = if sb.feature_compat & 0x0004 != 0 {
+        Some(u32at(raw_superblock, 224)?)
+    } else { None };
+    let bitmap_bytes = (sb.inodes_per_group / 8) as usize;
+    let mut found = 0usize;
+    for group in 0..groups {
+        let descriptor_block = gdt_start.checked_add((group / dpb) as u64)
+            .ok_or(Error::OutOfRange)?;
+        read_block(dev, sb, descriptor_block, bitmap_scratch)?;
+        let slot = (group % dpb) as usize;
+        let offset = slot.checked_mul(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+        let end = offset.checked_add(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+        let descriptor_slice = bitmap_scratch.get(offset..end).ok_or(Error::Truncated)?;
+        let mut descriptor_copy = [0u8; 64];
+        descriptor_copy[..descriptor_slice.len()].copy_from_slice(descriptor_slice);
+        let descriptor = &descriptor_copy[..descriptor_slice.len()];
+        if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+            validate_group_descriptor_checksum(raw_superblock, group, descriptor)?;
+        }
+        if u16at(descriptor, 18)? & 0x0001 != 0 {
+            return Err(Error::UnsupportedFormat);
+        }
+        let gd = GroupDescriptor::parse(descriptor, sb)?;
+        if !zones.is_system_block(gd.inode_bitmap) || !zones.is_system_block(gd.inode_table) {
+            return Err(Error::InvalidGeometry);
+        }
+        read_block(dev, sb, gd.inode_bitmap, bitmap_scratch)?;
+        let bitmap = bitmap_scratch.get(..bitmap_bytes).ok_or(Error::Truncated)?;
+        if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+            validate_inode_bitmap_checksum(raw_superblock, descriptor, bitmap)?;
+        }
+        let base = (group as u64).checked_mul(sb.inodes_per_group as u64)
+            .ok_or(Error::OutOfRange)?;
+        let remaining = (sb.inodes_count as u64).checked_sub(base).ok_or(Error::InvalidGeometry)?;
+        let in_group = core::cmp::min(sb.inodes_per_group as u64, remaining) as u32;
+        for bit in 0..in_group {
+            if bitmap_scratch[(bit / 8) as usize] & (1u8 << (bit & 7)) == 0 {
+                continue;
+            }
+            let ino64 = base.checked_add(bit as u64).and_then(|v| v.checked_add(1))
+                .ok_or(Error::OutOfRange)?;
+            let ino = u32::try_from(ino64).map_err(|_| Error::OutOfRange)?;
+            if Some(ino) == journal_inode { continue; }
+            read_inode(dev, sb, raw_superblock, ino, inode_buffer, inode_scratch)?;
+            let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
+            if !inode.is_directory { continue; }
+            if found == directory_inodes.len() { return Err(Error::TransactionTooLarge); }
+            directory_inodes[found] = ino;
+            found += 1;
+        }
+    }
+    Ok(found)
+}
+
 /// Add the ext4 internal journal inode's data blocks to the protected system
 /// zones, matching Linux ext4's reserved-inode protection. The caller supplies
 /// an inode-sized buffer and two block-sized scratch buffers. External journal
