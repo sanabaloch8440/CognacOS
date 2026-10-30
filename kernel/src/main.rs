@@ -387,7 +387,7 @@ unsafe extern "C" fn vtd_quarantine_requester(
 }
 
 fn initialize_vtd_from_acpi(requester:dma::iommu::vtd::RequesterId)->bool{
- if dma::iommu::vtd::is_enabled(){return dma::iommu::vtd::requester_domain_usable(requester);}
+ if dma::iommu::vtd::is_enabled(){return true;}
  let rsdp=acpi::rsdp_address();
  if rsdp==0{unsafe{serial_write(b"VT-d: RSDP unavailable; DMA remains fail-closed.\r\n");}return false}
  let table=match unsafe{acpi::find_table(rsdp,*b"DMAR",0)}{
@@ -399,7 +399,17 @@ fn initialize_vtd_from_acpi(requester:dma::iommu::vtd::RequesterId)->bool{
  let Some(unit)=info.units.iter().take(info.unit_count)
   .find(|u|acpi::dmar_unit_covers_requester(u,requester.segment,requester.bus,requester.device,requester.function)) else{
   unsafe{serial_write(b"VT-d: no DRHD scope covers the xHCI requester; DMA remains fail-closed.\r\n");}
-  for u in info.units.iter().take(info.unit_count){unsafe{serial_write(b"VT-d DRHD segment=");serial_write_hex(u.segment as u64);serial_write(b" include_all=");serial_write_hex(u.include_all as u64);serial_write(b" scopes=");serial_write_hex(u.scope_count as u64);serial_write(b"\r\n");}}
+  for u in info.units.iter().take(info.unit_count){unsafe{
+   serial_write(b"VT-d DRHD segment=");serial_write_hex(u.segment as u64);
+   serial_write(b" include_all=");serial_write_hex(u.include_all as u64);
+   serial_write(b" scopes=");serial_write_hex(u.scope_count as u64);serial_write(b"\r\n");
+   for scope in u.scopes.iter().take(u.scope_count as usize){
+    serial_write(b"VT-d scope type=");serial_write_hex(scope.scope_type as u64);
+    serial_write(b" bus=");serial_write_hex(scope.start_bus as u64);
+    serial_write(b" path0=");if scope.path_count>0{serial_write_hex(((scope.path[0].device as u64)<<3)|scope.path[0].function as u64);}
+    serial_write(b"\r\n");
+   }
+  }}
   return false
  };
  let ops=dma::iommu::vtd::PlatformOps{
