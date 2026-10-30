@@ -1751,7 +1751,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 halt();
             }
             match unsafe { usermode::run_native_ntdll_smoke(&mut ntdll_space, ntdll_image) } {
-                Ok(()) => serial_write(b"CognacOS Rust NTDLL passed ring-3 tests through the unified Windows x64 SYSCALL ABI.\r\n"),
+                Ok(()) => serial_write(b"\r\nCognacOS Rust NTDLL passed ring-3 tests through the unified Windows x64 SYSCALL ABI.\r\n"),
                 Err(_) => {
                     // A user-mode exception is a process failure, not a kernel
                     // boot failure. Keep later scheduler, storage and driver
