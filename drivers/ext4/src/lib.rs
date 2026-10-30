@@ -19,8 +19,8 @@ pub const INCOMPAT_META_BG:u32=0x0010;
 pub const INCOMPAT_EXTENTS:u32=0x0040;
 pub const INCOMPAT_64BIT:u32=0x0080;
 pub const INCOMPAT_FLEX_BG:u32=0x0200;
-const SUPPORTED_RO_COMPAT:u32=0x0003; // sparse_super and large_file only
-const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG|INCOMPAT_64BIT;
+const SUPPORTED_RO_COMPAT:u32=0x0403; // sparse_super, large_file, metadata_csum
+const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG|INCOMPAT_64BIT|0x2000; // checksum seed
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,InvalidChecksum,InvalidPartitionTable,UnsupportedPartitionTable,Io}
 
@@ -139,7 +139,7 @@ impl<D:BlockDevice> ExtFilesystem<D>{
  }
 }
 
-pub fn read_superblock<D:ReadOnlyBlockDevice>(dev:&mut D)->Result<Superblock,Error>{let end=SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64).ok_or(Error::OutOfRange)?;if dev.capacity_bytes()<end{return Err(Error::OutOfRange)}let mut b=[0u8;SUPERBLOCK_BYTES];dev.read_at(SUPERBLOCK_DISK_OFFSET,&mut b).map_err(|_|Error::Io)?;let sb=Superblock::parse(&b)?;let fs_end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;if fs_end>dev.capacity_bytes(){return Err(Error::OutOfRange)}Ok(sb)}
+pub fn read_superblock<D:ReadOnlyBlockDevice>(dev:&mut D)->Result<Superblock,Error>{let end=SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64).ok_or(Error::OutOfRange)?;if dev.capacity_bytes()<end{return Err(Error::OutOfRange)}let mut b=[0u8;SUPERBLOCK_BYTES];dev.read_at(SUPERBLOCK_DISK_OFFSET,&mut b).map_err(|_|Error::Io)?;let sb=Superblock::parse(&b)?;validate_superblock_checksum(&b)?;let fs_end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;if fs_end>dev.capacity_bytes(){return Err(Error::OutOfRange)}Ok(sb)}
 
 /// Reads one complete filesystem block. The device read is rejected if either
 /// the filesystem geometry or the physical device capacity would be exceeded.
