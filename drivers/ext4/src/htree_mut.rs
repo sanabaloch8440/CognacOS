@@ -88,7 +88,7 @@ pub fn grow_dx_root(root:&mut[u8],new_node:&mut[u8],new_node_logical:u32,metadat
  if metadata_csum{let stored=u32at(root,RO+limit*8+4)?;if dx_checksum(root,RO,limit,count,inode_seed)?!=stored{return Err(Error::InvalidChecksum)}}
  let node_limit=root.len().checked_sub(NO+if metadata_csum{8}else{0}).ok_or(Error::InvalidGeometry)?/8;
  if count>node_limit||node_limit>u16::MAX as usize{return Err(Error::OutOfRange)}
- new_node.fill(0);new_node[..8].copy_from_slice(&root[..8]);
+ new_node.fill(0);put32(new_node,0,0)?;put16(new_node,4,rec_disk(new_node.len(),new_node.len())?)?;new_node[6]=0;new_node[7]=0;
  put16(new_node,NO,node_limit as u16)?;put16(new_node,NO+2,count as u16)?;
  new_node[NO+4..NO+8].copy_from_slice(&root[RO+4..RO+8]);
  for i in 1..count{let s=RO+i*8;let d=NO+i*8;new_node[d..d+8].copy_from_slice(&root[s..s+8]);}
