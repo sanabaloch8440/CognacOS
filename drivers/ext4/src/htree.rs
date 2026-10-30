@@ -465,6 +465,20 @@ pub fn iterate_htree_directory<R: DirectoryBlockReader, F: FnMut(DirectoryEntryV
     inode_seed: u32, scratch: &mut [u8], mut visitor: F,
 ) -> Result<(), Error> {
     let version = validate_dx_root(root)?.0;
+    // The dx_root overlays the ordinary "." and ".." directory entries.
+    // Emit them before walking the leaf pages, as a normal VFS readdir expects.
+    for offset in [0usize, 12usize] {
+        let inode = le32(root, offset)?;
+        let name_len = root[offset + 6] as usize;
+        let name = root.get(offset + 8..offset + 8 + name_len).ok_or(Error::InvalidDirectoryEntry)?;
+        if inode == 0 || inode > total_inodes || name_len == 0 {
+            return Err(Error::InvalidDirectoryEntry);
+        }
+        let hash = hash_directory_name(version, hash_seed, name, siphash_key)?;
+        if !visitor(DirectoryEntryView { inode, file_type: root[offset + 7], name, hash })? {
+            return Ok(());
+        }
+    }
     let mut path = lookup_htree_path(reader, root, directory_blocks, 0, metadata_csum, inode_seed, scratch)?;
     loop {
         reader.read_directory_block(path.leaf_block, scratch)?;
