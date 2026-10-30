@@ -542,18 +542,57 @@ pub fn add_directory_metadata_ownership<D: ReadOnlyBlockDevice>(
         let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
             .ok_or(Error::OutOfRange)? / sb.block_size as u64;
         if blocks > u32::MAX as u64 { return Err(Error::OutOfRange); }
+
         for logical in 0..blocks as u32 {
             let physical = if sb.has_extents() {
-                map_extent_block_checked_zones_for_inode(
-                    dev, sb, raw_superblock, ino, generation, &inode_buffer[40..100],
-                    logical, scratch_a, zones, journal_inode,
-                )?
+                // Walk the complete lookup path for each populated logical
+                // directory block. Recording every external node on these
+                // paths makes all nodes that contribute to directory data
+                // mapping eligible for narrowly scoped JBD2 replay.
+                let mut node_is_root = true;
+                let mut expected_depth = None;
+                let mut mapped = None;
+                let mut finished = false;
+                for _ in 0..=MAX_EXTENT_DEPTH {
+                    let node = if node_is_root { &inode_buffer[40..100] } else { &scratch_a[..] };
+                    let (depth, step) = inspect_extent_node(node, logical, sb, expected_depth)?;
+                    match step {
+                        ExtentStep::Found(block) => { mapped = Some(block); finished = true; break; }
+                        ExtentStep::ZeroOrHole => { finished = true; break; }
+                        ExtentStep::Child(child) => {
+                            if depth == 0 { return Err(Error::InvalidExtentTree); }
+                            zones.validate_data_range(child, 1, sb.blocks_count)?;
+                            if entries[..*used].iter().any(|entry| entry.block == child
+                                && (entry.owner_inode != ino || entry.generation != generation
+                                    || entry.kind != MetadataObjectKind::ExtentNode)) {
+                                return Err(Error::InvalidGeometry);
+                            }
+                            if !entries[..*used].iter().any(|entry| entry.block == child) {
+                                if *used == entries.len() { return Err(Error::TransactionTooLarge); }
+                                entries[*used] = MetadataOwnership {
+                                    block: child, owner_inode: ino, generation,
+                                    kind: MetadataObjectKind::ExtentNode,
+                                };
+                                *used += 1;
+                            }
+                            read_block(dev, sb, child, scratch_a)?;
+                            if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+                                validate_extent_block_checksum(raw_superblock, ino, generation, scratch_a)?;
+                            }
+                            expected_depth = Some(depth - 1);
+                            node_is_root = false;
+                        }
+                    }
+                }
+                if !finished { return Err(Error::InvalidExtentTree); }
+                mapped
             } else {
                 let block = map_legacy_block(dev, sb, &inode_buffer[40..100],
                     logical as u64, scratch_a, scratch_b)?;
                 if let Some(block) = block { zones.validate_data_range(block, 1, sb.blocks_count)?; }
                 block
             }.ok_or(Error::InvalidExtentTree)?;
+
             read_block(dev, sb, physical, scratch_b)?;
             if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
                 validate_directory_block_checksum(raw_superblock, ino, generation, scratch_b)?;
