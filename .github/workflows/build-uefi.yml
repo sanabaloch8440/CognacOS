@@ -200,6 +200,7 @@ jobs:
           cargo check --manifest-path dlls/kernel32/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo check --manifest-path dlls/kernelbase/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo check --manifest-path dlls/shell32/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
+          cargo check --manifest-path dlls/msvcrt/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
       - name: Enforce one NTDLL syscall transition path
         shell: bash
         run: |
@@ -299,26 +300,32 @@ jobs:
           pub extern "C" fn cognacos_empty_import_library_member() {}
           RS
           rustc --edition=2021 --target x86_64-pc-windows-msvc --crate-type lib --emit=obj -o "$RUNNER_TEMP/cognacos-dll-empty.obj" "$RUNNER_TEMP/cognacos-dll-empty.rs"
-          mkdir -p dlls/kernel32 dlls/kernelbase dlls/shell32
+          mkdir -p dlls/kernel32 dlls/kernelbase dlls/shell32 dlls/msvcrt
           ar rcs dlls/kernel32/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           ar rcs dlls/kernelbase/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           ar rcs dlls/kernelbase/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           ar rcs dlls/shell32/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           ar rcs dlls/kernel32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/shell32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          ar rcs dlls/shell32/ntdll.lib dlls/msvcrt/kernel32.lib dlls/msvcrt/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          ar rcs dlls/msvcrt/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          ar rcs dlls/msvcrt/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/kernel32/exports/kernel32-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/kernel32" cargo build --manifest-path dlls/kernel32/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/kernelbase/exports/kernelbase-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/kernelbase" cargo build --manifest-path dlls/kernelbase/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           cp target/x86_64-pc-windows-msvc/release/kernelbase.dll build/dlls/kernelbase.dll
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/shell32/exports/shell32-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/shell32" cargo build --manifest-path dlls/shell32/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           cp target/x86_64-pc-windows-msvc/release/kernel32.dll build/dlls/kernel32.dll
           cp target/x86_64-pc-windows-msvc/release/shell32.dll build/dlls/shell32.dll
+          RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/msvcrt/exports/msvcrt-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/msvcrt" cargo build --manifest-path dlls/msvcrt/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
+          cp target/x86_64-pc-windows-msvc/release/msvcrt.dll build/dlls/msvcrt.dll
           file build/dlls/kernel32.dll | grep -q 'PE32+.*DLL'
           file build/dlls/kernelbase.dll | grep -q 'PE32+.*DLL'
           file build/dlls/shell32.dll | grep -q 'PE32+.*DLL'
+          file build/dlls/msvcrt.dll | grep -q 'PE32+.*DLL'
           python3 tools/verify_dll_exports.py \
             --dll kernel32,build/dlls/kernel32.dll,dlls/kernel32/exports/windows-11-x64-exports.tsv \
             --dll kernelbase,build/dlls/kernelbase.dll,dlls/kernelbase/exports/windows-11-x64-exports.tsv \
-            --dll shell32,build/dlls/shell32.dll,dlls/shell32/exports/windows-11-x64-exports.tsv
+            --dll shell32,build/dlls/shell32.dll,dlls/shell32/exports/windows-11-x64-exports.tsv \\
+            --dll msvcrt,build/dlls/msvcrt.dll,dlls/msvcrt/exports/windows-11-x64-exports.tsv
           rm -f dlls/kernel32/kernel32.lib dlls/kernel32/ntdll.lib dlls/kernelbase/kernel32.lib dlls/kernelbase/ntdll.lib dlls/shell32/kernel32.lib dlls/shell32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj" "$RUNNER_TEMP/cognacos-dll-empty.rs"
       - name: Check native CSR server dispatcher core
         run: cargo check --manifest-path csrss/Cargo.toml --lib --target x86_64-unknown-linux-gnu

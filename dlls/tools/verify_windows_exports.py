@@ -6,6 +6,7 @@ BASE = {
  "kernel32": ("dlls/kernel32/exports/windows-11-x64-exports.tsv", "dlls/kernel32/exports/kernel32-x64.def"),
  "kernelbase": ("dlls/kernelbase/exports/windows-11-x64-exports.tsv", "dlls/kernelbase/exports/kernelbase-x64.def"),
  "shell32": ("dlls/shell32/exports/windows-11-x64-exports.tsv", "dlls/shell32/exports/shell32-x64.def"),
+ "msvcrt": ("dlls/msvcrt/exports/windows-11-x64-exports.tsv", "dlls/msvcrt/exports/msvcrt-x64.def"),
 }
 def load(path):
  records=[]
