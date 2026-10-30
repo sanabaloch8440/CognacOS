@@ -7,3 +7,5 @@ The kernel32, kernelbase, and shell32 inventories are pinned to Windows 11 x64 A
 Run `python3 dlls/tools/verify_windows_exports.py` to check each inventory against its .def and validate the kernel32 forwarder targets. `tools/verify_dll_exports.py` compares built PE export names, ordinals, and forwarder strings against the local manifests. All builds and checks are offline.
 
 These inventories are exact for their pinned binary snapshots, not universal across every Windows 11 servicing build. The Rust msvcrt functions currently return zero; matching exports does not mean C runtime behavior or application compatibility is implemented.
+
+The syssetup inventory is a separately sourced starter list of 11 exports and the SETUPAPI.InstallHinfSectionW forwarder. Its names and ordinals are confirmed by published 10.0.19041.1 export dumps, but the exact 10.0.26100.7920 AMD64 syssetup.dll table has not yet been independently captured; do not treat this entry as a certified Windows 11 servicing-build match.
