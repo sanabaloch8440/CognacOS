@@ -126,7 +126,7 @@ pub fn allocate_block_checked(
  let parsed=Superblock::parse(sb)?;
  if group>=parsed.group_count()?{return Err(Error::OutOfRange)}
  validate_group_metadata(sb,group,desc,bitmap,false)?;
- let first=parsed.first_data_block as u64
+ let first=(parsed.first_data_block as u64)
   .checked_add((group as u64).checked_mul(parsed.blocks_per_group as u64).ok_or(Error::OutOfRange)?)
   .ok_or(Error::OutOfRange)?;
  let valid=core::cmp::min(parsed.blocks_per_group as u64,parsed.blocks_count.saturating_sub(first)) as u32;
