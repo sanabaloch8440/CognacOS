@@ -1024,19 +1024,25 @@ jobs:
           log=build/serial-persist.log
           rm -f "$log"
           set +e
+          qemu_error=build/qemu-persist-launch.log
+          rm -f "$qemu_error"
           timeout 30s qemu-system-x86_64 \
-            -machine pc -m 5G -cpu qemu64 -smp 2 \
+            -machine q35 -m 5G -cpu max -smp 4 \
             -device intel-iommu,intremap=off,caching-mode=on,aw-bits=48 \
+            -device piix3-ide,id=legacyide,bus=pcie.0 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS_persist.fd \
-            -drive if=ide,format=raw,file=build/cognacos-uefi.img \
-            -drive if=ide,format=raw,index=1,file=build/pagefile.img \
+            -drive if=none,id=osdisk,format=raw,file=build/cognacos-uefi.img \
+            -device ide-hd,drive=osdisk,bus=legacyide.0,unit=0 \
+            -drive if=none,id=pagefile,format=raw,file=build/pagefile.img \
+            -device ide-hd,drive=pagefile,bus=legacyide.0,unit=1 \
             -boot order=c -display none -monitor none \
-            -serial "file:$log" -no-reboot -no-shutdown
+            -serial "file:$log" -no-reboot -no-shutdown 2>"$qemu_error"
           status=$?
           set -e
           if [ "$status" -ne 0 ] && [ "$status" -ne 124 ]; then
             echo "QEMU persistence reboot returned unexpected status $status" >&2
+            cat "$qemu_error" >&2 || true
             cat "$log" || true
             exit "$status"
           fi
@@ -1241,6 +1247,7 @@ jobs:
             build/qemu-ps2-debug.log
             build/qemu-ps2-debug.launch.log
             build/serial-persist.log
+            build/qemu-persist-launch.log
             build/serial-smp-*.log
             build/beep-driver-assessment/output.txt
             build/beep-driver-assessment/audio.txt
