@@ -341,7 +341,7 @@ pub unsafe extern "system" fn LdrLoadDll(
         generated_path as *const u16
     } else { dll_path };
     if search_path.is_null() { return STATUS_INVALID_PARAMETER; }
-    let mut path_list = [0u8; 1024];
+    let mut path_list = [0u8; 4096];
     let mut path_len = 0usize;
     let mut terminated = false;
     for index in 0..path_list.len() - 1 {
