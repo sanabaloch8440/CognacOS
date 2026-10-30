@@ -547,7 +547,7 @@ fn bind_xhci_pe_driver()->bool {
     }
     let hal_table=hal::driver_service_table();
     let device_table=hal::driver_device_service_table();
-    if !hal_table.compatible() || !device_table.compatible() || !device_table.has_dma() || !device_table.has_interrupts() {
+    if !hal_table.compatible() || !device_table.compatible() || !device_table.has_dma() || !device_table.has_interrupts() || !device_table.has_bus_master() {
         serial_write(b"xHCI bind: required HAL/device services are incomplete.\r\n"); return false;
     }
     if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_MMIO_MAPPED,ntoskrnl::pnp::STATE_DMA_READY).is_err() {
