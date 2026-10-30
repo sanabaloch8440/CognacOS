@@ -8,7 +8,7 @@
 pub mod jbd2;
 pub mod ops;
 pub mod system_zone;
-pub use system_zone::{build_system_zones, map_extent_block_checked_zones, validate_data_extent, BlockRange, SystemZoneMap};
+pub use system_zone::{build_system_zones, map_extent_block_checked_zones, map_extent_block_checked_zones_for_inode, protect_reserved_journal_inode_zones, validate_data_extent, BlockRange, SystemZoneMap};
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
