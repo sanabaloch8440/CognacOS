@@ -855,7 +855,9 @@ pub fn self_test() -> bool {
  }
  SELF_TEST_PHASE.store(7,Ordering::Release);
  let freed=if crate::pagefile::is_active(){allocation_pages(p).is_none()}else{free_pages(p,3).is_ok()&&allocation_pages(p).is_none()};
- freed && (!crate::smp::ipi_shootdowns_enabled() || crate::smp::tlb_ipi_count()>ipi_before)
+ let tlb_progress=!crate::smp::ipi_shootdowns_enabled() || crate::smp::tlb_ipi_count()>ipi_before;
+ if !freed || !tlb_progress { return self_test_fail(line!()); }
+ true
 }
 /// Report whether a system address belongs to a pageable pool extent, even
 /// while its current PTE happens to be resident.
