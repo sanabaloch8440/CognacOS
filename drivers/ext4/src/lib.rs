@@ -1803,7 +1803,7 @@ mod compatibility_edge_tests {
     }
 
     #[test]
-    fn 64k_directory_record_length_zero_means_full_block() {
+    fn directory_record_length_zero_encodes_full_64k_block() {
         let mut block = [0u8; 65_536];
         block[0..4].copy_from_slice(&2u32.to_le_bytes());
         block[4..6].copy_from_slice(&0u16.to_le_bytes());
