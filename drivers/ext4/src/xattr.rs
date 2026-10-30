@@ -158,6 +158,30 @@ pub fn validate_external_xattr_block(
 }
 
 
+
+/// Derive the ext4 checksum seed used by external xattr blocks from a
+/// checksum-validated superblock image. CSUM_SEED uses s_checksum_seed at
+/// offset 0x270; otherwise the seed is CRC32C(~0, s_uuid).
+pub fn external_xattr_checksum_seed(raw_superblock: &[u8]) -> Result<u32, XattrError> {
+    const SUPERBLOCK_BYTES: usize = 1024;
+    const FEATURE_INCOMPAT_CSUM_SEED: u32 = 0x2000;
+    const FEATURE_INCOMPAT_OFFSET: usize = 96;
+    const UUID_OFFSET: usize = 104;
+    const UUID_END: usize = UUID_OFFSET + 16;
+    const CHECKSUM_SEED_OFFSET: usize = 0x270;
+    if raw_superblock.len() < SUPERBLOCK_BYTES {
+        return Err(XattrError::Truncated);
+    }
+    crate::validate_superblock_checksum(raw_superblock)
+        .map_err(|_| XattrError::InvalidChecksum)?;
+    let incompat = u32le(raw_superblock, FEATURE_INCOMPAT_OFFSET)?;
+    if incompat & FEATURE_INCOMPAT_CSUM_SEED != 0 {
+        return u32le(raw_superblock, CHECKSUM_SEED_OFFSET);
+    }
+    let uuid = raw_superblock.get(UUID_OFFSET..UUID_END).ok_or(XattrError::Truncated)?;
+    Ok(crate::checksum::crc32c_update(!0, uuid))
+}
+
 /// Validate an external xattr block's metadata_csum checksum.
 ///
 /// `filesystem_seed` is the ext4 checksum seed (explicit s_checksum_seed
