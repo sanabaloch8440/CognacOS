@@ -37,6 +37,23 @@ filesystem API.
   the internal journal inode and runs committed-transaction replay through the
   writable block-device contract before the caller retries the read-only mount.
 
+## JBD2 checksum implementation status
+
+The crate now contains allocation-free IEEE CRC-32 and CRC32C primitives,
+streamable raw-state updates, ext4 inode checksum seed derivation, and JBD2
+checksum-v2/v3 helper routines for UUID-derived seeds, tag data, descriptor/
+revoke tails, and commit blocks. Unit tests cover standard CRC vectors,
+sequence/payload binding, and corruption detection.
+
+These are checksum engines and verification helpers, not yet end-to-end
+journal validation: the replay scanner does not yet parse the v2/v3 tag
+layouts or invoke these verifiers for every descriptor, revoke, tag payload,
+and commit. Checksum-v1's transaction-wide checksum stream is also not
+implemented. Consequently the journal superblock parser continues to reject
+all checksum-v1/v2/v3 journals. This fail-closed behavior is intentional;
+adding primitives must not be mistaken for enabling checksum-protected
+replay or writable mounts.
+
 ## Deliberate safety limits
 
 The implementation rejects JBD2 checksum-v2/v3, async-commit and fast-commit
