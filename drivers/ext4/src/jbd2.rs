@@ -111,14 +111,6 @@ impl JournalSuperblock{
   Ok(Self{format_version,block_size,max_len,first,sequence,start,feature_incompat,
    block_count_64:feature_incompat&FEATURE_INCOMPAT_64BIT!=0,checksum_mode,uuid})
  }
- /// Bind a legacy v1 journal to its containing ext filesystem UUID. The
- /// original superblock has no UUID field, but descriptor tags still carry
- /// UUID extensions and Linux compares them with the filesystem UUID.
- pub fn parse_with_filesystem_uuid(b:&[u8],filesystem_uuid:&[u8;16])->Result<Self,Error>{
-  let mut parsed=Self::parse(b)?;
-  if parsed.format_version==1{parsed.uuid=*filesystem_uuid;}
-  Ok(parsed)
- }
  pub fn needs_recovery(&self)->bool{self.start!=0}
 }
 fn update_superblock_checksum(block:&mut[u8],mode:ChecksumMode)->Result<(),Error>{
@@ -139,25 +131,11 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  d:&mut D,m:&mut M,journal_superblock:&mut[u8],
  ordered_targets:&[u64],ordered_data:&[&[u8]],
  metadata_targets:&[u64],metadata_data:&[&[u8]],revoked_targets:&[u64],
- descriptor:&mut[u8],
-)->Result<u32,Error>{
- let filesystem_uuid=[0u8;16];
- commit_ordered_with_revokes_for_filesystem_uuid(d,m,journal_superblock,
-  ordered_targets,ordered_data,metadata_targets,metadata_data,revoked_targets,
-  &filesystem_uuid,descriptor)
-}
-
-/// Legacy JBD v1 has no UUID in its superblock, but its descriptor tags still
-/// carry the containing ext filesystem UUID. Callers must bind that UUID here.
-pub fn commit_ordered_with_revokes_for_filesystem_uuid<D:ReplayDevice,M:JournalBlockMap>(
- d:&mut D,m:&mut M,journal_superblock:&mut[u8],
- ordered_targets:&[u64],ordered_data:&[&[u8]],
- metadata_targets:&[u64],metadata_data:&[&[u8]],revoked_targets:&[u64],
  filesystem_uuid:&[u8;16],descriptor:&mut[u8],
 )->Result<u32,Error>{
  if ordered_targets.len()!=ordered_data.len()||metadata_targets.len()!=metadata_data.len()
   ||metadata_targets.is_empty()||descriptor.len()<1024{return Err(Error::InvalidGeometry)}
- let sb=JournalSuperblock::parse_with_filesystem_uuid(journal_superblock,filesystem_uuid)?;
+ let sb=JournalSuperblock::parse(journal_superblock)?;
  
  let bs=sb.block_size as usize;
  if descriptor.len()!=bs||journal_superblock.len()!=bs{return Err(Error::NoScratch)}
@@ -318,17 +296,6 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
 )->Result<u32,Error>{
  commit_ordered_with_revokes(d,m,journal_superblock,ordered_targets,ordered_data,
   metadata_targets,metadata_data,&[],descriptor)
-}
-
-/// Commit ordered data and metadata with the filesystem UUID supplied for legacy JBD v1.
-pub fn commit_ordered_for_filesystem_uuid<D:ReplayDevice,M:JournalBlockMap>(
- d:&mut D,m:&mut M,journal_superblock:&mut[u8],ordered_targets:&[u64],
- ordered_data:&[&[u8]],metadata_targets:&[u64],metadata_data:&[&[u8]],
- filesystem_uuid:&[u8;16],descriptor:&mut[u8],
-)->Result<u32,Error>{
- commit_ordered_with_revokes_for_filesystem_uuid(d,m,journal_superblock,
-  ordered_targets,ordered_data,metadata_targets,metadata_data,&[],
-  filesystem_uuid,descriptor)
 }
 
 /// Full journal recovery entry point. The caller reads the journal inode's
@@ -726,7 +693,7 @@ mod tests{
   js[48]=0;assert_eq!(validate_journal_uuid(&sb,&js),Err(Error::BadMagic));
  }
 
- #[test]fn legacy_v1_superblock_replays_tags_bound_to_filesystem_uuid(){
+ #[test]fn legacy_v1_superblock_replays_legacy_tags(){
   let mut js=[0u8;1024];
   header(&mut js,JBD2_SUPERBLOCK_V1,0);
   js[12..16].copy_from_slice(&1024u32.to_be_bytes());
@@ -734,12 +701,11 @@ mod tests{
   js[20..24].copy_from_slice(&1u32.to_be_bytes());
   js[24..28].copy_from_slice(&17u32.to_be_bytes());
   js[28..32].copy_from_slice(&2u32.to_be_bytes());
-  let filesystem_uuid=[0x5au8;16];
-  let sb=JournalSuperblock::parse_with_filesystem_uuid(&js,&filesystem_uuid).unwrap();
+  let sb=JournalSuperblock::parse(&js).unwrap();
   assert_eq!(sb.format_version,1);
   assert_eq!(sb.checksum_mode,ChecksumMode::None);
   assert_eq!(sb.feature_incompat,0);
-  assert_eq!(sb.uuid,filesystem_uuid);
+  assert_eq!(sb.uuid,[0;16]);
   // ext3-era ext4-compatible filesystems can still pin an internal journal
   // inode and filesystem UUID even though the v1 journal superblock has no
   // UUID field to compare against.
@@ -752,7 +718,7 @@ mod tests{
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,17);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
-  d.blocks[2][20..36].copy_from_slice(&filesystem_uuid);
+  d.blocks[2][20..36].copy_from_slice(&[0;16]);
   d.blocks[3].fill(0x6a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,17);
   let mut a=[0u8;1024];let mut b=[0u8;1024];
@@ -761,7 +727,7 @@ mod tests{
   assert_eq!(report.blocks_replayed,1);
   assert_eq!(d.blocks[7],[0x6a;1024]);
  }
- #[test]fn legacy_v1_writer_emits_filesystem_uuid_tag(){
+ #[test]fn legacy_v1_writer_uses_zero_journal_uuid(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   let mut js=[0u8;1024];
   js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
@@ -770,12 +736,12 @@ mod tests{
   js[16..20].copy_from_slice(&64u32.to_be_bytes());
   js[20..24].copy_from_slice(&1u32.to_be_bytes());
   js[24..28].copy_from_slice(&23u32.to_be_bytes());
-  let metadata=[0x71u8;1024];let mut descriptor=[0u8;1024];let filesystem_uuid=[0x6bu8;16];
-  assert_eq!(commit_ordered_for_filesystem_uuid(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&filesystem_uuid,&mut descriptor),Ok(23));
+  let metadata=[0x71u8;1024];let mut descriptor=[0u8;1024];
+  assert_eq!(commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&mut descriptor),Ok(23));
   assert_eq!(be32(&d.blocks[1],4).unwrap(),JBD2_DESCRIPTOR_BLOCK);
   assert_eq!(be32(&d.blocks[1],12).unwrap(),10);
   assert_eq!(be32(&d.blocks[1],16).unwrap(),TAG_LAST);
-  assert_eq!(&d.blocks[1][20..36],&[0x6b;16]); // The v1 superblock omits UUID; descriptor tags still carry the filesystem UUID.
+  assert_eq!(&d.blocks[1][20..36],&[0;16]); // v1 has no journal UUID field, so the legacy tag UUID is zero.
   assert_eq!(d.blocks[10],metadata);
  }
   #[test]fn checksum_feature_bits_are_mutually_exclusive(){
