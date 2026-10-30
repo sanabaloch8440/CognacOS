@@ -530,12 +530,56 @@ mod tests{
   assert!(!verify_tag_checksum(&uuid,20,&data,sum,ChecksumMode::V3));
   assert!(!verify_tag_checksum(&uuid,19,&data,sum,ChecksumMode::None));
  }
+
+ #[test]fn replay_validates_checksum_v2_descriptor_tag_data_and_commit(){
+  let uuid=[0x19;16];let seed=crate::checksum::jbd2_csum_seed(&uuid);
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
+  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
+  let payload=[0x6du8;1024];let sum=crate::checksum::jbd2_tag_checksum(seed,1,&payload);
+  d.blocks[2][16..18].copy_from_slice(&(sum as u16).to_be_bytes());
+  d.blocks[2][18..20].copy_from_slice(&(TAG_LAST|TAG_SAME_UUID).to_be_bytes());
+  let ds=crate::checksum::jbd2_metadata_block_checksum(seed,&d.blocks[2]).unwrap();
+  d.blocks[2][1020..].copy_from_slice(&ds.to_be_bytes());
+  d.blocks[3]=payload;
+  header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);d.blocks[4][12]=4;d.blocks[4][13]=4;
+  let cs=crate::checksum::jbd2_commit_checksum(seed,&d.blocks[4]).unwrap();
+  d.blocks[4][16..20].copy_from_slice(&cs.to_be_bytes());
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_CSUM_V2,block_count_64:false,checksum_mode:ChecksumMode::V2,uuid};
+  let mut a=[0u8;1024];let mut b=[0u8;1024];
+  let report=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
+  assert_eq!(report.blocks_replayed,1);assert_eq!(d.blocks[7],payload);
+  d.blocks[3][10]^=1;
+  assert_eq!(replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b),Err(Error::InvalidTag));
+ }
+ #[test]fn replay_validates_checksum_v3_tag_layout_and_full_checksum(){
+  let uuid=[0x29;16];let seed=crate::checksum::jbd2_csum_seed(&uuid);
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
+  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
+  d.blocks[2][16..20].copy_from_slice(&(TAG_LAST|TAG_SAME_UUID).to_be_bytes());
+  d.blocks[2][20..24].copy_from_slice(&0u32.to_be_bytes());
+  let payload=[0x7eu8;1024];let sum=crate::checksum::jbd2_tag_checksum(seed,1,&payload);
+  d.blocks[2][24..28].copy_from_slice(&sum.to_be_bytes());
+  let ds=crate::checksum::jbd2_metadata_block_checksum(seed,&d.blocks[2]).unwrap();
+  d.blocks[2][1020..].copy_from_slice(&ds.to_be_bytes());
+  d.blocks[3]=payload;
+  header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);d.blocks[4][12]=4;d.blocks[4][13]=4;
+  let cs=crate::checksum::jbd2_commit_checksum(seed,&d.blocks[4]).unwrap();
+  d.blocks[4][16..20].copy_from_slice(&cs.to_be_bytes());
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:FEATURE_INCOMPAT_CSUM_V3,block_count_64:false,checksum_mode:ChecksumMode::V3,uuid};
+  let mut a=[0u8;1024];let mut b=[0u8;1024];
+  let report=replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b).unwrap();
+  assert_eq!(report.blocks_replayed,1);assert_eq!(d.blocks[7],payload);
+  d.blocks[2][24]^=1;
+  assert_eq!(replay(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b),Err(Error::InvalidTag));
+ }
  #[test]fn checksum_v2_v3_block_verifiers_detect_corruption(){
   let uuid=[0x27;16];let seed=crate::checksum::jbd2_csum_seed(&uuid);
   let mut metadata=[0x45;1024];let sum=crate::checksum::jbd2_metadata_block_checksum(seed,&metadata).unwrap();
   metadata[1020..].copy_from_slice(&sum.to_be_bytes());assert!(verify_metadata_checksum(&uuid,&metadata));
   metadata[99]^=1;assert!(!verify_metadata_checksum(&uuid,&metadata));
-  let mut commit=[0x56;1024];let sum=crate::checksum::jbd2_commit_checksum(seed,&commit).unwrap();
+  let mut commit=[0x56;1024];commit[12]=4;commit[13]=4;let sum=crate::checksum::jbd2_commit_checksum(seed,&commit).unwrap();
   commit[16..20].copy_from_slice(&sum.to_be_bytes());assert!(verify_commit_checksum(&uuid,&commit));
   commit[200]^=1;assert!(!verify_commit_checksum(&uuid,&commit));
  }
