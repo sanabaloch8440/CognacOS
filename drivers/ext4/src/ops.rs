@@ -577,6 +577,68 @@ pub fn validate_inode_before_mutation(sb:&[u8],inode_number:u32,inode:&[u8])->Re
  if metadata_csum(sb)?{validate_inode_checksum(sb,inode_number,inode)?}Ok(())
 }
 
+
+/// Failure-atomic create helper. Work is performed in caller-owned staging
+/// images; the caller's inode and directory buffers are copied back only after
+/// both inode initialization and directory insertion (including checksums)
+/// have succeeded. The caller must journal the inode bitmap, inode-table block,
+/// directory block, group descriptor and superblock together.
+pub fn create_regular_file_entry_atomic(
+ sb:&[u8],parent_inode:u32,parent_generation:u32,parent_directory:&mut[u8],
+ inode_number:u32,inode:&mut[u8],meta:NewInodeMetadata,total_inodes:u32,name:&[u8],
+ staged_directory:&mut[u8],staged_inode:&mut[u8],
+)->Result<(),Error>{
+ if staged_directory.len()!=parent_directory.len()||staged_inode.len()!=inode.len(){
+  return Err(Error::InvalidGeometry)
+ }
+ staged_directory.copy_from_slice(parent_directory);
+ staged_inode.copy_from_slice(inode);
+ create_regular_file_entry(sb,parent_inode,parent_generation,staged_directory,
+  inode_number,staged_inode,meta,total_inodes,name)?;
+ parent_directory.copy_from_slice(staged_directory);
+ inode.copy_from_slice(staged_inode);
+ Ok(())
+}
+
+/// Failure-atomic unlink helper. Directory removal and inode link-count /
+/// deletion-time changes are calculated in staging buffers and published to
+/// the caller only when both sides of the operation validate successfully.
+/// Last-link extent and inode-bitmap reclamation still belongs in the same
+/// encompassing JBD2 transaction.
+pub fn unlink_regular_file_entry_atomic(
+ sb:&[u8],parent_inode:u32,parent_generation:u32,parent_directory:&mut[u8],total_inodes:u32,
+ name:&[u8],expected_inode:u32,child_inode:&mut[u8],deletion_time:u32,
+ staged_directory:&mut[u8],staged_inode:&mut[u8],
+)->Result<bool,Error>{
+ if staged_directory.len()!=parent_directory.len()||staged_inode.len()!=child_inode.len(){
+  return Err(Error::InvalidGeometry)
+ }
+ staged_directory.copy_from_slice(parent_directory);
+ staged_inode.copy_from_slice(child_inode);
+ let last=unlink_regular_file_entry(sb,parent_inode,parent_generation,staged_directory,
+  total_inodes,name,expected_inode,staged_inode,deletion_time)?;
+ parent_directory.copy_from_slice(staged_directory);
+ child_inode.copy_from_slice(staged_inode);
+ Ok(last)
+}
+
+/// Failure-atomic inline-file resize. The inode image and freed-extent list are
+/// published only after extent truncation, sector accounting, size update and
+/// inode checksum recalculation all succeed.
+pub fn resize_inline_regular_file_atomic(
+ sb:&[u8],inode_number:u32,inode:&mut[u8],new_size:u64,freed:&mut[(u64,u32)],
+ staged_inode:&mut[u8],staged_freed:&mut[(u64,u32)],
+)->Result<usize,Error>{
+ if staged_inode.len()!=inode.len()||staged_freed.len()!=freed.len(){
+  return Err(Error::InvalidGeometry)
+ }
+ staged_inode.copy_from_slice(inode);
+ let count=resize_inline_regular_file(sb,inode_number,staged_inode,new_size,staged_freed)?;
+ inode.copy_from_slice(staged_inode);
+ freed[..count].copy_from_slice(&staged_freed[..count]);
+ Ok(count)
+}
+
 #[cfg(test)]
 mod tests{
  use super::*;
