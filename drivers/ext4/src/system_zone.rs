@@ -751,7 +751,7 @@ pub fn add_directory_metadata_ownership<D: ReadOnlyBlockDevice>(
                 if !finished { return Err(Error::InvalidExtentTree); }
                 mapped
             } else {
-                let block = map_legacy_block(dev, sb, &extent_root,
+                let block = map_legacy_block(dev, sb, &inode_buffer[40..100],
                     logical as u64, scratch_a, scratch_b)?;
                 if let Some(block) = block { zones.validate_data_range(block, 1, sb.blocks_count)?; }
                 block
