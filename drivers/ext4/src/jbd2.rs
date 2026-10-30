@@ -1,7 +1,6 @@
 //! Bounded JBD2 journal discovery, validation and replay.
-//! Supports legacy JBD2 tags with optional 64-bit block numbers and revoke
-//! records. Journals requiring checksum-v2/v3, async commit, or fast commits
-//! are rejected because their integrity semantics are not implemented here.
+//! Supports legacy and checksum-v2/v3 JBD2 replay with bounded tag/revoke
+//! parsing. Checksum-v1, async commit, and fast commits remain unsupported.
 pub const JBD2_MAGIC:u32=0xc03b3998;
 pub const JBD2_SUPERBLOCK_V2:u32=4;
 pub const JBD2_DESCRIPTOR_BLOCK:u32=1;
@@ -247,8 +246,7 @@ pub fn recover_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct JournalInodeInfo{pub inode_number:u32,pub uuid:[u8;16]}
-/// Discover an internal JBD2 journal from the ext4 superblock. External
-/// journal devices are intentionally rejected until the storage stack can
+/// Discover an internal JBD2 journal from the ext4 superblock. External/// journal devices are intentionally rejected until the storage stack can
 /// bind and validate the external device UUID and lifetime.
 pub fn discover_internal_journal(ext4_superblock:&[u8])->Result<JournalInodeInfo,Error>{
  if ext4_superblock.len()<1024{return Err(Error::Truncated)}
@@ -497,8 +495,7 @@ mod tests{
  }
  #[test]fn replay_policy_rejects_journal_self_overwrite_before_home_write(){
   struct RejectJournalBlock(u64);
-  impl ReplayTargetPolicy for RejectJournalBlock {
-   fn validate_replay_target(&mut self,target:u64)->Result<(),Error>{
+  impl ReplayTargetPolicy for RejectJournalBlock {   fn validate_replay_target(&mut self,target:u64)->Result<(),Error>{
     if target==self.0{Err(Error::InvalidTag)}else{Ok(())}
    }
   }
