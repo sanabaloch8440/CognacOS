@@ -844,4 +844,4 @@ pub fn is_pageable_address(address:u64)->bool {
 }
 
 pub fn allocation_pages(ptr:*const u8)->Option<usize>{let va=ptr as u64;if ptr.is_null()||va<BASE||(va-BASE)&(PAGE-1)!=0{return None}let start=((va-BASE)/PAGE)as usize;let _g=Guard::lock();unsafe{&*TABLE.0.get()}.iter().find(|e|e.live&&e.start==start).map(|e|e.pages)}
-#[cfg(test)]mod tests{use super::*;#[test]fn arena_geometry(){assert_eq!(BASE&(PAGE-1),0);assert_eq!(PAGES*PAGE as usize,1usize<<32);assert_eq!(ix(BASE)[0],256);assert_eq!(ix(BASE+PAGE)[3],1);}}
+#[cfg(test)]mod tests{use super::*;#[test]fn arena_geometry(){assert_eq!(BASE&(PAGE-1),0);assert_eq!(PAGES*PAGE as usize,1usize<<33);assert_eq!(ix(BASE)[0],256);assert_eq!(ix(BASE+PAGE)[3],1);for offset in DRIVER_SLOT_OFFSETS{assert!(is_driver_slot_base(BASE+offset));assert!(offset/PAGE+DRIVER_SLOT_PAGES as u64<=PAGES as u64);}}}
