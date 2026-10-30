@@ -720,12 +720,16 @@ jobs:
             -machine q35,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
             -device intel-iommu,intremap=off,caching-mode=on,aw-bits=48 \
             -device qemu-xhci,id=xhci \
-            -device isa-ide \
+            # Q35 has AHCI but no legacy ISA IDE. Add a PIIX3 PCI IDE \
+            # controller so the guest's primary-channel ATA PIO path is real. \
+            -device piix3-ide,id=legacyide,bus=pcie.0 \
             -device usb-kbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS.fd \
-            -drive if=ide,format=raw,file=build/cognacos-uefi.img \
-            -drive if=ide,format=raw,index=1,file=build/pagefile.img \
+            -drive if=none,id=osdisk,format=raw,file=build/cognacos-uefi.img \
+            -device ide-hd,drive=osdisk,bus=legacyide.0,unit=0 \
+            -drive if=none,id=pagefile,format=raw,file=build/pagefile.img \
+            -device ide-hd,drive=pagefile,bus=legacyide.0,unit=1 \
             -boot order=c -display none -monitor unix:build/qemu-monitor.sock,server=on,wait=off \
             -serial file:build/serial.log -gdb tcp::12345 \
             -d int,cpu_reset,guest_errors -D build/qemu-debug.log \
@@ -763,10 +767,10 @@ jobs:
           monitor.sendall(b"info qtree\n")
           tree = read_prompt()
           monitor.close()
-          for expected in ("qemu-xhci", "usb-kbd"):
+          for expected in ("qemu-xhci", "usb-kbd", "piix3-ide", "osdisk", "pagefile"):
               if expected not in tree:
-                  raise SystemExit(f"QEMU USB topology missing {expected}:\n{tree}")
-          print("QEMU USB topology verified: xHCI controller + emulated USB keyboard attached.")
+                  raise SystemExit(f"QEMU device topology missing {expected}:\n{tree}")
+          print("QEMU topology verified: xHCI + USB keyboard + PIIX3 primary-channel ATA disks.")
           if "intel-iommu" not in tree:
               raise SystemExit("QEMU IOMMU device missing from guest topology")
           print("QEMU topology includes Intel VT-d; guest DMAR parsing and translation are checked separately.")
