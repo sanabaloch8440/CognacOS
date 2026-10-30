@@ -282,4 +282,24 @@ mod tests{
   let mut scratch=[0u8;1024];assert_eq!(crate::htree::lookup_htree_name(&mut reader,&root,6,100,wanted,hs,None,true,true,seed,&mut scratch),Ok(22));
  }
 
+ #[test]fn split_and_insert_htree_entry_updates_leaf_pair_and_parent_index(){
+  struct Reader{blocks:[[u8;1024];5]}
+  impl crate::htree::DirectoryBlockReader for Reader{fn read_directory_block(&mut self,n:u32,out:&mut[u8])->Result<(),Error>{let src=self.blocks.get(n as usize).ok_or(Error::OutOfRange)?;if out.len()!=1024{return Err(Error::InvalidGeometry)}out.copy_from_slice(src);Ok(())}}
+  let mut sb=[0u8;1024];put32(&mut sb,100,0x0400).unwrap();sb[373]=1;sb[104..120].copy_from_slice(&[0x31;16]);
+  let hash_seed=[1u32,2,3,4];for(i,v)in hash_seed.iter().enumerate(){put32(&mut sb,236+i*4,*v).unwrap();}crate::update_superblock_checksum(&mut sb).unwrap();
+  let fs_seed=crate::ext4_metadata_checksum_seed(&sb).unwrap();let inode_seed=crate::checksum::ext4_inode_csum_seed(fs_seed,2,7);
+  let mut root=[0u8;1024];put32(&mut root,0,2).unwrap();put16(&mut root,4,12).unwrap();root[6]=1;root[8]=b'.';
+  put32(&mut root,12,2).unwrap();put16(&mut root,16,1012).unwrap();root[18]=2;root[20..22].copy_from_slice(b"..");root[28]=1;root[29]=8;
+  let limit=(1024-40)/8;put16(&mut root,32,limit as u16).unwrap();put16(&mut root,34,2).unwrap();put32(&mut root,36,2).unwrap();put32(&mut root,40,0xffff_fffe).unwrap();put32(&mut root,44,3).unwrap();update_dx(&mut root,32,limit,2,true,inode_seed).unwrap();
+  let mut reader=Reader{blocks:[[0;1024];5]};
+  let a=&mut reader.blocks[2];put32(a,0,20).unwrap();put16(a,4,512).unwrap();a[6]=5;a[7]=1;a[8..13].copy_from_slice(b"alpha");
+  put32(a,512,21).unwrap();put16(a,516,500).unwrap();a[518]=5;a[519]=1;a[520..525].copy_from_slice(b"bravo");write_leaf_tail(a,inode_seed).unwrap();
+  let b=&mut reader.blocks[3];put32(b,0,23).unwrap();put16(b,4,1012).unwrap();b[6]=5;b[7]=1;b[8..13].copy_from_slice(b"other");write_leaf_tail(b,inode_seed).unwrap();
+  let mut old_leaf=reader.blocks[2];let mut new_leaf=[0u8;1024];let mut parent=root;let mut map=[DirectoryMapEntry::default();8];let mut source=[0u8;1024];let mut scratch=[0u8;1024];
+  let target=split_and_insert_htree_entry(&sb,2,7,&root,&mut reader,4,100,2,&mut old_leaf,4,&mut new_leaf,0,&mut parent,32,30,b"delta-new",1,None,&mut map,&mut source,&mut scratch).unwrap();
+  reader.blocks[2]=old_leaf;reader.blocks[4]=new_leaf;let mut updated_root=parent;
+  let found=crate::htree::lookup_htree_name_from_superblock(&mut reader,&sb,2,7,&updated_root,5,100,b"delta-new",None,&mut scratch).unwrap();
+  assert_eq!(found,30);assert!(target==2||target==4);
+ }
+
 }
