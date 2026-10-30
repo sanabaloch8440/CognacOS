@@ -487,6 +487,9 @@ pub fn create_mbr_partition<D: BlockDevice>(
     device: &mut D, sector_size: u32, partition_type: u8,
     first_lba: u64, sector_count: u64, bootable: bool,
 ) -> Result<u8,Error> {
+    if !(512..=4096).contains(&sector_size) || !sector_size.is_power_of_two() {
+        return Err(Error::InvalidGeometry);
+    }
     if partition_type==0 || matches!(partition_type,0x05|0x0f|0x85|0xee)
         || first_lba==0 || sector_count==0 {
         return Err(Error::InvalidPartitionTable);
