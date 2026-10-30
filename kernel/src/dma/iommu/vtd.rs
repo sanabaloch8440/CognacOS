@@ -108,7 +108,7 @@ mod context_encoding_tests {
 /// must remain bus-master-disabled until per-requester context and second-level
 /// mappings are installed. No identity mapping is created.
 pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32{
- if ops.size<core::mem::size_of::<PlatformOps>() as u32||ops.alloc_table.is_none()||ops.free_table.is_none()||ops.map_mmio.is_none()||ops.unmap_mmio.is_none()||ops.clean_cache.is_none()||register_pa==0||register_len<0x1000||register_pa.checked_add(register_len).is_none(){return STATUS_INVALID_PARAMETER}
+ if ops.size<core::mem::size_of::<PlatformOps>() as u32||ops.alloc_table.is_none()||ops.free_table.is_none()||ops.map_mmio.is_none()||ops.unmap_mmio.is_none()||ops.clean_cache.is_none()||ops.quarantine_requester.is_none()||register_pa==0||register_len<0x1000||register_pa.checked_add(register_len).is_none(){return STATUS_INVALID_PARAMETER}
  let _g=LOCK.lock();let u=unsafe{&mut*UNIT.0.get()};if u.enabled{return STATUS_DEVICE_NOT_READY}
  let mut mmio=0; if unsafe{(ops.map_mmio.unwrap())(ops.context,register_pa,register_len,&mut mmio)}!=0||mmio==0{return STATUS_NOT_SUPPORTED}
  let cap=unsafe{r64(mmio,CAP)};let ecap=unsafe{r64(mmio,ECAP)};let iro=((ecap>>8)&0x3ff) as usize*16;
@@ -221,8 +221,9 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
  }
  domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va,poisoned:false};
  if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{
-  // Keep the domain discoverable and all published table pages pinned: hardware
-  // may have cached a partial context update, so freeing them is unsafe.
+  // Keep the domain and every published table page pinned. Quarantine the PCI
+  // requester before returning so a caller cannot proceed with uncertain state.
+  poison_domain(u,id);
   return Err(STATUS_IO_TIMEOUT)
  }
  Ok(did)
@@ -286,10 +287,14 @@ unsafe fn walk_level(u:&Unit,domain_id:u16,table:*mut u64,table_pa:u64,index:usi
 fn poison_domain(u:&Unit,id:RequesterId){
  let domains=unsafe{&mut*DOMAINS.0.get()};
  if let Some(d)=domains.iter_mut().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8){d.poisoned=true;}
- // If cache maintenance or invalidation failed, revoke PCI bus mastering before
- // returning. If that cannot be confirmed, keep the domain permanently poisoned.
- if let Some(quarantine)=u.ops.quarantine_requester{
-  let _=unsafe{quarantine(u.ops.context,0,id.bus,id.device,id.function)};
+ // A failed page-table rollback is not recoverable by returning an error to a
+ // caller that may release the backing pages. Require a confirmed PCI bus-master
+ // revoke; if the platform cannot prove it, fail-stop before memory is reclaimed.
+ let Some(quarantine)=u.ops.quarantine_requester else {
+  loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
+ };
+ if unsafe{quarantine(u.ops.context,0,id.bus,id.device,id.function)}!=0 {
+  loop { unsafe { core::arch::asm!("cli; hlt", options(nomem, nostack)); } }
  }
 }
 fn locate_leaf(u:&Unit,domain:&Domain,va:u64)->Result<(*mut u64,u64),i32>{
