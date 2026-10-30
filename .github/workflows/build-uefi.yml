@@ -176,6 +176,8 @@ jobs:
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib indexed_root_
       - name: Test ext4 directory hashes against Linux reference vectors
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib linux_reference_tests
+      - name: Test ext4 SipHash implementation and hash-version gates
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib hash::tests
       - name: Test ext4 HTree collision lookup and indexed readdir
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib collision_lookup_crosses
       - name: Test ext4 HTree leaf and index node splitting
