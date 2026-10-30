@@ -22,7 +22,7 @@ pub const INCOMPAT_FLEX_BG:u32=0x0200;
 const SUPPORTED_RO_COMPAT:u32=0x0403; // sparse_super, large_file, metadata_csum
 const KNOWN_INCOMPAT:u32=INCOMPAT_FILETYPE|INCOMPAT_EXTENTS|INCOMPAT_FLEX_BG|INCOMPAT_64BIT|0x2000; // checksum seed
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,InvalidChecksum,InvalidPartitionTable,UnsupportedPartitionTable,Io}
+pub enum Error{Truncated,BadMagic,InvalidBlockSize,InvalidInodeSize,InvalidGeometry,UnsupportedIncompatFeature,OutOfRange,InvalidDirectoryEntry,UnsupportedFormat,UnsupportedRoCompatFeature,UnsupportedCompatFeature,InvalidExtentTree,InvalidChecksum,InvalidPartitionTable,UnsupportedPartitionTable,TransactionTooLarge,Io}
 
 /// Translate filesystem-core errors into the canonical NTSTATUS ABI at the driver boundary.
 pub const fn error_to_ntstatus(error: Error) -> nt_abi::ntstatus::NTSTATUS {
@@ -32,6 +32,7 @@ pub const fn error_to_ntstatus(error: Error) -> nt_abi::ntstatus::NTSTATUS {
         Error::UnsupportedIncompatFeature | Error::UnsupportedFormat | Error::UnsupportedRoCompatFeature
         | Error::UnsupportedCompatFeature | Error::UnsupportedPartitionTable => STATUS_NOT_IMPLEMENTED,
         Error::Io => STATUS_UNSUCCESSFUL,
+        Error::TransactionTooLarge => STATUS_INSUFFICIENT_RESOURCES,
         Error::BadMagic | Error::InvalidBlockSize | Error::InvalidInodeSize | Error::InvalidGeometry
         | Error::OutOfRange | Error::InvalidDirectoryEntry | Error::InvalidExtentTree
         | Error::InvalidChecksum | Error::InvalidPartitionTable => STATUS_INVALID_PARAMETER,
