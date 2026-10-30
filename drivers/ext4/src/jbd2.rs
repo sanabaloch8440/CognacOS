@@ -37,6 +37,94 @@ impl JournalSuperblock{
  }
  pub fn needs_recovery(&self)->bool{self.start!=0}
 }
+/// Commit one bounded metadata transaction using ordered-data mode.
+/// All ordered data blocks reach stable storage before the journal commit;
+/// metadata is journaled, committed, then checkpointed to home blocks. If a
+/// crash occurs after the commit record, replay is idempotent. The caller must
+/// serialize transactions for this journal and supply exact block-sized data.
+pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8],
+ ordered_targets:&[u64],ordered_data:&[&[u8]],
+ metadata_targets:&[u64],metadata_data:&[&[u8]],
+ descriptor:&mut[u8],
+)->Result<u32,Error>{
+ if ordered_targets.len()!=ordered_data.len()||metadata_targets.len()!=metadata_data.len()
+  ||metadata_targets.is_empty()||descriptor.len()<1024{return Err(Error::InvalidGeometry)}
+ let sb=JournalSuperblock::parse(journal_superblock)?;
+ let bs=sb.block_size as usize;
+ if descriptor.len()!=bs||journal_superblock.len()!=bs{return Err(Error::NoScratch)}
+ if sb.start!=0{return Err(Error::InvalidSequence)}
+ if metadata_targets.len()>MAX_TRANSACTION_TAGS{return Err(Error::TransactionTooLarge)}
+ let tag_size=if sb.block_count_64{12usize}else{8usize};
+ let tag_bytes=tag_size.checked_mul(metadata_targets.len()).ok_or(Error::OutOfRange)?;
+ let required=1usize.checked_add(metadata_targets.len()).and_then(|n|n.checked_add(1)).ok_or(Error::OutOfRange)?;
+ if required>=sb.max_len as usize||12usize.checked_add(tag_bytes).and_then(|n|n.checked_add(16)).ok_or(Error::OutOfRange)?>bs{return Err(Error::TransactionTooLarge)}
+ for (target,data) in ordered_targets.iter().zip(ordered_data.iter()){
+  if *target>=d.filesystem_blocks()||data.len()!=bs{return Err(Error::OutOfRange)}
+ }
+ for (target,data) in metadata_targets.iter().zip(metadata_data.iter()){
+  if *target>=d.filesystem_blocks()||data.len()!=bs{return Err(Error::OutOfRange)}
+ }
+ // Ordered data is deliberately written and flushed before any metadata log
+ // record can become committed.
+ for (target,data) in ordered_targets.iter().zip(ordered_data.iter()){
+  d.write_block(*target,data).map_err(|_|Error::Io)?;
+ }
+ d.flush().map_err(|_|Error::Io)?;
+ let sequence=sb.sequence;
+ let first=sb.first;
+ // Publish the recovery start before writing the transaction. An interrupted
+ // pre-commit log is detected as incomplete and must never be replayed.
+ journal_superblock[28..32].copy_from_slice(&first.to_be_bytes());
+ let sb_phys=m.map_journal_block(0).map_err(|_|Error::Io)?;
+ if sb_phys>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
+ d.write_block(sb_phys,journal_superblock).map_err(|_|Error::Io)?;
+ d.flush().map_err(|_|Error::Io)?;
+ descriptor.fill(0);
+ descriptor[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+ descriptor[4..8].copy_from_slice(&JBD2_DESCRIPTOR_BLOCK.to_be_bytes());
+ descriptor[8..12].copy_from_slice(&sequence.to_be_bytes());
+ let uuid=journal_superblock.get(48..64).ok_or(Error::Truncated)?;
+ let mut off=12usize;
+ for (i,target) in metadata_targets.iter().enumerate(){
+  let mut flags=if i+1==metadata_targets.len(){TAG_LAST}else{0};
+  if i!=0{flags|=TAG_SAME_UUID}
+  descriptor[off..off+4].copy_from_slice(&(*target as u32).to_be_bytes());
+  descriptor[off+4..off+8].copy_from_slice(&flags.to_be_bytes());
+  off+=8;
+  if sb.block_count_64{descriptor[off..off+4].copy_from_slice(&((*target>>32) as u32).to_be_bytes());off+=4}
+  if i==0{descriptor[off..off+16].copy_from_slice(uuid);off+=16}
+ }
+ let mut cursor=first;
+ let desc_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+ d.write_block(desc_phys,descriptor).map_err(|_|Error::Io)?;
+ cursor=next_log(&sb,cursor);
+ for data in metadata_data{
+  let phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+  d.write_block(phys,data).map_err(|_|Error::Io)?;
+  cursor=next_log(&sb,cursor);
+ }
+ let mut commit=[0u8;1024];
+ if bs>commit.len(){return Err(Error::NoScratch)}
+ commit[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+ commit[4..8].copy_from_slice(&JBD2_COMMIT_BLOCK.to_be_bytes());
+ commit[8..12].copy_from_slice(&sequence.to_be_bytes());
+ let commit_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+ d.write_block(commit_phys,&commit[..bs]).map_err(|_|Error::Io)?;
+ d.flush().map_err(|_|Error::Io)?;
+ // The committed log is now authoritative. Checkpoint home metadata and only
+ // then clear the journal's recovery-start pointer.
+ for (target,data) in metadata_targets.iter().zip(metadata_data.iter()){
+  d.write_block(*target,data).map_err(|_|Error::Io)?;
+ }
+ d.flush().map_err(|_|Error::Io)?;
+ journal_superblock[28..32].fill(0);
+ journal_superblock[24..28].copy_from_slice(&sequence.wrapping_add(1).to_be_bytes());
+ d.write_block(sb_phys,journal_superblock).map_err(|_|Error::Io)?;
+ d.flush().map_err(|_|Error::Io)?;
+ Ok(sequence)
+}
+
 pub trait ReplayDevice{
  fn filesystem_blocks(&self)->u64;
  fn read_block(&mut self,block:u64,out:&mut[u8])->Result<(),()>;
