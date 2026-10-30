@@ -128,6 +128,12 @@ fn dx_entry(block: &[u8], map: DxMap, index: usize) -> Result<(u32, u32), Error>
 
 /// Select the rightmost index entry whose separator hash is <= query_hash.
 /// This is the same upper-bound search used by Linux dx_probe().
+fn has_hash_collision(block: &[u8], map: DxMap, selected: usize, query_hash: u32) -> Result<bool, Error> {
+    if selected + 1 >= map.count { return Ok(false); }
+    let (next_hash, _) = dx_entry(block, map, selected + 1)?;
+    Ok((next_hash & !1) == (query_hash & !1))
+}
+
 fn select_dx_entry(block: &[u8], map: DxMap, query_hash: u32) -> Result<(usize, u32), Error> {
     let mut low = 0usize;
     let mut high = map.count;
@@ -142,6 +148,15 @@ fn select_dx_entry(block: &[u8], map: DxMap, query_hash: u32) -> Result<(usize, 
     Ok((selected, child))
 }
 
+fn ext4_rec_len(raw: u16, block_size: usize) -> usize {
+    if block_size >= 65_536 {
+        if raw == 0 || raw == u16::MAX { block_size }
+        else { ((raw as usize) & 0xfffc) | (((raw as usize) & 3) << 16) }
+    } else {
+        raw as usize
+    }
+}
+
 fn validate_dx_root(block: &[u8]) -> Result<(u8, u8), Error> {
     if block.len() < DX_ROOT_ENTRIES_OFFSET + 8 {
         return Err(Error::Truncated);
@@ -152,7 +167,7 @@ fn validate_dx_root(block: &[u8]) -> Result<(u8, u8), Error> {
         || block[6] != 1
         || block[8] != b'.'
         || le32(block, 12)? == 0
-        || le16(block, 16)? as usize != block.len() - 12
+        || ext4_rec_len(le16(block, 16)?, block.len()) != block.len() - 12
         || block[18] != 2
         || &block[20..22] != b".."
     {
@@ -208,7 +223,7 @@ pub fn lookup_htree_leaf<R: DirectoryBlockReader>(
         previous[depth as usize + 1 - 1] = logical;
         reader.read_directory_block(logical, scratch)?;
         // An interior node begins with a fake dirent spanning the whole block.
-        if le32(scratch, 0)? != 0 || le16(scratch, 4)? as usize != scratch.len() {
+        if le32(scratch, 0)? != 0 || ext4_rec_len(le16(scratch, 4)?, scratch.len()) != scratch.len() {
             return Err(Error::InvalidDirectoryEntry);
         }
         let node_map = parse_dx_map(scratch, DX_NODE_ENTRIES_OFFSET, metadata_csum, inode_checksum_seed)?;
