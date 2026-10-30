@@ -422,3 +422,62 @@ mod tests {
         assert_eq!(validate_external_xattr_block(&b), Err(XattrError::InvalidValue));
     }
 }
+
+/// Look up one value in a structurally validated external xattr block.
+///
+/// `name_index` is the on-disk ext4 namespace index (user=1, posix_acl_access=2,
+/// posix_acl_default=3, trusted=4, lustre=5, security=6, system=7). The name
+/// excludes the namespace prefix. The returned slice borrows the supplied
+/// block; no allocation or value copying occurs.
+pub fn lookup_external_xattr<'a>(
+    block: &'a [u8],
+    name_index: u8,
+    name: &[u8],
+) -> Result<Option<&'a [u8]>, XattrError> {
+    if name_index == 0 || name.is_empty() || name.iter().any(|b| *b == 0) {
+        return Err(XattrError::InvalidEntry);
+    }
+    let info = validate_external_xattr_block(block)?;
+    let mut cursor = 32usize;
+    for _ in 0..info.entry_count {
+        let entry = entry_at(block, cursor)?;
+        if entry.name_index == name_index
+            && entry.name_len == name.len()
+            && &block[entry.name_start..entry.name_start + entry.name_len] == name {
+            if entry.value_len == 0 {
+                return Ok(Some(&block[entry.value_start..entry.value_start]));
+            }
+            let end = entry.value_start.checked_add(entry.value_len)
+                .ok_or(XattrError::InvalidValue)?;
+            return Ok(Some(block.get(entry.value_start..end).ok_or(XattrError::InvalidValue)?));
+        }
+        cursor = cursor.checked_add(16 + ((entry.name_len + 3) & !3))
+            .ok_or(XattrError::InvalidEntry)?;
+    }
+    Ok(None)
+}
+
+/// Visit every external xattr entry in on-disk order. Returning false stops
+/// iteration. Values and names borrow the caller's validated block.
+pub fn visit_external_xattrs<F>(
+    block: &[u8],
+    mut visitor: F,
+) -> Result<(), XattrError>
+where
+    F: FnMut(u8, &[u8], &[u8]) -> bool,
+{
+    let info = validate_external_xattr_block(block)?;
+    let mut cursor = 32usize;
+    for _ in 0..info.entry_count {
+        let entry = entry_at(block, cursor)?;
+        let name = &block[entry.name_start..entry.name_start + entry.name_len];
+        let end = entry.value_start.checked_add(entry.value_len)
+            .ok_or(XattrError::InvalidValue)?;
+        let value = if entry.value_len == 0 { &block[entry.value_start..entry.value_start] }
+            else { block.get(entry.value_start..end).ok_or(XattrError::InvalidValue)? };
+        if !visitor(entry.name_index, name, value) { break; }
+        cursor = cursor.checked_add(16 + ((entry.name_len + 3) & !3))
+            .ok_or(XattrError::InvalidEntry)?;
+    }
+    Ok(())
+}
