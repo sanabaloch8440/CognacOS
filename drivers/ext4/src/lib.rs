@@ -466,6 +466,53 @@ pub fn map_legacy_block<D: ReadOnlyBlockDevice>(
     Err(Error::OutOfRange)
 }
 
+/// Legacy indirect-block mapping with system-zone enforcement. Every indirect
+/// metadata block read is checked against the retained mount zone map, and the
+/// resolved data block is checked before it is returned. Do not use this
+/// helper for the internal journal inode, whose blocks are intentionally
+/// present in the protected journal zone.
+pub fn map_legacy_block_checked_zones<D: ReadOnlyBlockDevice>(
+    dev: &mut D,
+    sb: &Superblock,
+    inode_i_block: &[u8],
+    logical: u64,
+    scratch_a: &mut [u8],
+    scratch_b: &mut [u8],
+    zones: &SystemZoneMap<'_>,
+) -> Result<Option<u64>, Error> {
+    struct ZoneCheckedDevice<'a, D> {
+        inner: &'a mut D,
+        zones: &'a SystemZoneMap<'a>,
+        block_size: u32,
+        blocks_count: u64,
+    }
+    impl<D: ReadOnlyBlockDevice> ReadOnlyBlockDevice for ZoneCheckedDevice<'_, D> {
+        type DeviceError = Error;
+        fn capacity_bytes(&self) -> u64 { self.inner.capacity_bytes() }
+        fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Self::DeviceError> {
+            if self.block_size == 0 || offset % self.block_size as u64 != 0
+                || out.len() != self.block_size as usize {
+                return Err(Error::InvalidGeometry);
+            }
+            let block = offset / self.block_size as u64;
+            self.zones.validate_data_range(block, 1, self.blocks_count)?;
+            self.inner.read_at(offset, out).map_err(|_| Error::Io)
+        }
+    }
+    let result = {
+        let mut checked = ZoneCheckedDevice {
+            inner: dev, zones, block_size: sb.block_size, blocks_count: sb.blocks_count,
+        };
+        map_legacy_block(
+            &mut checked, sb, inode_i_block, logical, scratch_a, scratch_b,
+        )?
+    };
+    if let Some(block) = result {
+        zones.validate_data_range(block, 1, sb.blocks_count)?;
+    }
+    Ok(result)
+}
+
 fn validate_legacy_data_pointer(sb: &Superblock, block: u64) -> Result<Option<u64>, Error> {
     if block == 0 {
         Ok(None)
