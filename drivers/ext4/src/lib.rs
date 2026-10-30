@@ -877,6 +877,8 @@ pub fn inode_checksum(superblock: &[u8], inode_number: u32, inode: &[u8]) -> Res
 pub fn validate_inode_checksum(
     superblock: &[u8], inode_number: u32, inode: &[u8],
 ) -> Result<(),Error> {
+    if superblock.len()<SUPERBLOCK_BYTES{return Err(Error::Truncated)}
+    if u32at(superblock,100)?&RO_COMPAT_METADATA_CSUM==0{return Ok(())}
     let calculated=inode_checksum(superblock,inode_number,inode)?;
     let stored_lo=u16at(inode,EXT4_INODE_CHECKSUM_LO_OFFSET)? as u32;
     let has_hi=inode.len()>=132 && u16at(inode,128)? >= 4;
@@ -890,6 +892,8 @@ pub fn validate_inode_checksum(
 pub fn update_inode_checksum(
     superblock: &[u8], inode_number: u32, inode: &mut [u8],
 ) -> Result<(),Error> {
+    if superblock.len()<SUPERBLOCK_BYTES{return Err(Error::Truncated)}
+    if u32at(superblock,100)?&RO_COMPAT_METADATA_CSUM==0{return Ok(())}
     let calculated=inode_checksum(superblock,inode_number,inode)?;
     let has_hi=inode.len()>=132 && u16at(inode,128)? >= 4;
     inode[EXT4_INODE_CHECKSUM_LO_OFFSET..EXT4_INODE_CHECKSUM_LO_OFFSET+2]
