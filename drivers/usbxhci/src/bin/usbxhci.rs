@@ -71,6 +71,11 @@ impl XhciRegisterIo for Platform<'_> {
         let status = unsafe { write(self.ext.mmio_base.checked_add(offset as u64).ok_or(())?, value) };
         if status.code == 0 { Ok(()) } else { Err(()) }
     }
+    fn set_bus_master(&mut self, enabled: bool) -> Result<(), ()> {
+        let set = self.dev.set_bus_master.ok_or(())?;
+        let status = unsafe { set(self.ext.device_object, enabled) };
+        if status.code == 0 { Ok(()) } else { Err(()) }
+    }
 }
 impl XhciPlatform for Platform<'_> {
     fn allocate_dma(&mut self, size: u64, alignment: u64, maximum: u64) -> Result<DmaAllocation, ()> {
@@ -107,11 +112,7 @@ impl XhciPlatform for Platform<'_> {
         if status.code == 0 { Ok(()) } else { Err(()) }
     }
 
-    fn set_bus_master(&mut self, enabled: bool) -> Result<(), ()> {
-        let set = self.dev.set_bus_master.ok_or(())?;
-        let status = unsafe { set(self.ext.device_object, enabled) };
-        if status.code == 0 { Ok(()) } else { Err(()) }
-    }}
+}
 
 extern "C" fn xhci_isr(context: u64) -> bool {
     if context == 0 { return false; }
