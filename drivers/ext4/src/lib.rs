@@ -8,6 +8,7 @@
 pub mod checksum;
 pub mod jbd2;
 pub mod htree;
+pub mod htree_mut;
 pub mod hash;
 pub mod ops;
 pub mod orphan;
