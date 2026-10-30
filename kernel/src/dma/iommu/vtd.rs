@@ -22,10 +22,21 @@ pub struct PlatformOps {
  pub clean_cache:Option<unsafe extern "C" fn(*mut core::ffi::c_void,u64,u64)->i32>,
 }
 unsafe impl Send for PlatformOps {} unsafe impl Sync for PlatformOps {}
-#[derive(Clone,Copy)] struct Unit { mmio:u64, length:u64, ecap:u64, root_phys:u64, root_virt:*mut u64, enabled:bool }
+#[derive(Clone,Copy)] struct Unit { mmio:u64, length:u64, ecap:u64, root_phys:u64, root_virt:*mut u64, ops:PlatformOps, enabled:bool }
 unsafe impl Send for Unit {} unsafe impl Sync for Unit {}
 struct Store(core::cell::UnsafeCell<Unit>); unsafe impl Sync for Store {}
-static UNIT:Store=Store(core::cell::UnsafeCell::new(Unit{mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),enabled:false}));
+static UNIT:Store=Store(core::cell::UnsafeCell::new(Unit{mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),ops:PlatformOps{size:0,context:core::ptr::null_mut(),alloc_table:None,free_table:None,map_mmio:None,unmap_mmio:None,clean_cache:None},enabled:false}));
+#[derive(Clone,Copy)] struct BusContext { physical:u64, virtual_address:*mut u64 }
+unsafe impl Send for BusContext {} unsafe impl Sync for BusContext {}
+const EMPTY_CONTEXT:BusContext=BusContext{physical:0,virtual_address:core::ptr::null_mut()};
+struct ContextStore(core::cell::UnsafeCell<[BusContext;256]>); unsafe impl Sync for ContextStore {}
+static CONTEXTS:ContextStore=ContextStore(core::cell::UnsafeCell::new([EMPTY_CONTEXT;256]));
+#[derive(Clone,Copy)] struct Domain { bus:u8, devfn:u8, id:u16, root_physical:u64, root_virtual:*mut u64 }
+unsafe impl Send for Domain {} unsafe impl Sync for Domain {}
+const EMPTY_DOMAIN:Domain=Domain{bus:0,devfn:0,id:0,root_physical:0,root_virtual:core::ptr::null_mut()};
+struct DomainStore(core::cell::UnsafeCell<[Domain;256]>); unsafe impl Sync for DomainStore {}
+static DOMAINS:DomainStore=DomainStore(core::cell::UnsafeCell::new([EMPTY_DOMAIN;256]));
+static NEXT_DOMAIN:core::sync::atomic::AtomicU16=core::sync::atomic::AtomicU16::new(1);
 static LOCK:crate::hal::IrqSpinLock<()>=crate::hal::IrqSpinLock::new(());
 unsafe fn r32(b:u64,o:usize)->u32{unsafe{core::ptr::read_volatile((b as *const u8).add(o).cast())}}
 unsafe fn w32(b:u64,o:usize,v:u32){unsafe{core::ptr::write_volatile((b as *mut u8).add(o).cast(),v)}}
@@ -116,7 +127,7 @@ pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32
  if !wait64(mmio,CCMD,ICC){unsafe{(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
  unsafe{w32(mmio,GCMD,(old&!TE)|SRTP|TE)};
  if !wait32(mmio,GSTS,TES,true){unsafe{w32(mmio,GCMD,(old&!TE)|SRTP);let _=wait32(mmio,GSTS,TES,false);(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
- *u=Unit{mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,enabled:true};STATUS_SUCCESS
+ *u=Unit{mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,ops:*ops,enabled:true};STATUS_SUCCESS
 }
 
 /// Global IOTLB invalidation. A timeout is a hard failure: callers must retain
@@ -129,3 +140,120 @@ pub unsafe fn invalidate_iotlb()->i32{
 }
 pub fn is_enabled()->bool{unsafe{(&*UNIT.0.get()).enabled}}
 pub fn root_table_physical()->Option<u64>{let u=unsafe{&*UNIT.0.get()};if u.enabled{Some(u.root_phys)}else{None}}
+
+
+/// Invalidate all cached requester contexts and translations. This is
+/// intentionally global: the backend does not assume device-selective
+/// invalidation support until the corresponding capability is validated.
+unsafe fn invalidate_all_locked(u:&Unit)->i32{
+ let iro=((u.ecap>>8)&0x3ff) as usize*16;
+ if iro.checked_add(0x20).is_none_or(|e|e>u.length as usize){return STATUS_NOT_SUPPORTED}
+ unsafe{w64(u.mmio,CCMD,ICC|GLOBAL);fence(Ordering::SeqCst)}
+ if !wait64(u.mmio,CCMD,ICC){return STATUS_IO_TIMEOUT}
+ unsafe{w64(u.mmio,iro+8,IVT|IIRG_GLOBAL);fence(Ordering::SeqCst)}
+ if !wait64(u.mmio,iro+8,IVT){return STATUS_IO_TIMEOUT}
+ STATUS_SUCCESS
+}
+
+/// Install an isolated, initially empty second-level address space for one PCI
+/// requester. The caller must keep bus mastering disabled until mappings have
+/// subsequently been installed by the DMA domain mapper.
+///
+/// The function allocates a per-bus context table and a private four-level
+/// second-level root. It never creates identity mappings.
+pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
+ let _guard=LOCK.lock();
+ let u=unsafe{&mut*UNIT.0.get()};
+ if !u.enabled{return Err(STATUS_DEVICE_NOT_READY)}
+ let domains=unsafe{&mut*DOMAINS.0.get()};
+ if domains.iter().any(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8){return Err(STATUS_INVALID_PARAMETER)}
+ let slot=domains.iter().position(|d|d.id==0).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+ let contexts=unsafe{&mut*CONTEXTS.0.get()};
+ let bus=id.bus as usize;
+ let mut allocated_context=false;
+ if contexts[bus].physical==0{
+  let(mut pa,mut va)=(0u64,core::ptr::null_mut());
+  if unsafe{(u.ops.alloc_table.unwrap())(u.ops.context,&mut pa,&mut va)}!=0||pa==0||pa&0xfff!=0||pa&!VT_D_PAGE_MASK!=0||va.is_null(){
+   if pa!=0&&!va.is_null(){let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};}
+   return Err(STATUS_INSUFFICIENT_RESOURCES)
+  }
+  unsafe{core::ptr::write_bytes(va,0,512)};
+  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,pa,4096)}!=0{
+   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};
+   return Err(STATUS_NOT_SUPPORTED)
+  }
+  let Some(entry)=encode_root_entry(pa) else{let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};return Err(STATUS_INVALID_PARAMETER)};
+  unsafe{core::ptr::write_volatile(u.root_virt.add(bus),entry)};
+  contexts[bus]=BusContext{physical:pa,virtual_address:va};
+  allocated_context=true;
+ }
+ let(mut root_pa,mut root_va)=(0u64,core::ptr::null_mut());
+ if unsafe{(u.ops.alloc_table.unwrap())(u.ops.context,&mut root_pa,&mut root_va)}!=0||root_pa==0||root_pa&0xfff!=0||root_pa&!VT_D_PAGE_MASK!=0||root_va.is_null(){
+  if root_pa!=0&&!root_va.is_null(){let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};}
+  if allocated_context{unsafe{core::ptr::write_volatile(u.root_virt.add(bus),0)};contexts[bus]=EMPTY_CONTEXT;}
+  return Err(STATUS_INSUFFICIENT_RESOURCES)
+ }
+ unsafe{core::ptr::write_bytes(root_va,0,512)};
+ let did=NEXT_DOMAIN.fetch_add(1,Ordering::AcqRel);
+ if did==0||did==u16::MAX{
+  let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
+  if allocated_context{unsafe{core::ptr::write_volatile(u.root_virt.add(bus),0)};contexts[bus]=EMPTY_CONTEXT;}
+  return Err(STATUS_INSUFFICIENT_RESOURCES)
+ }
+ let Some((low,high))=encode_context_entry(did,root_pa) else{
+  let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
+  return Err(STATUS_INVALID_PARAMETER)
+ };
+ let entry=contexts[bus].virtual_address.add(id.devfn()*2);
+ unsafe{core::ptr::write_volatile(entry,low);core::ptr::write_volatile(entry.add(1),high)};
+ if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[bus].physical,4096)}!=0{
+  unsafe{core::ptr::write_volatile(entry,0);core::ptr::write_volatile(entry.add(1),0)};
+  let _=unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[bus].physical,4096)};
+  let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
+  return Err(STATUS_NOT_SUPPORTED)
+ }
+ if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{
+  // Keep all published table pages pinned: hardware may have cached a partial
+  // context update, so freeing them here would create a DMA use-after-free.
+  return Err(STATUS_IO_TIMEOUT)
+ }
+ domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va};
+ Ok(did)
+}
+
+/// Remove a requester domain only after all device DMA has been stopped. On
+/// invalidation failure the domain and its page tables remain allocated.
+pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
+ let _guard=LOCK.lock();
+ let u=unsafe{&mut*UNIT.0.get()};
+ if !u.enabled{return STATUS_DEVICE_NOT_READY}
+ let domains=unsafe{&mut*DOMAINS.0.get()};
+ let Some(index)=domains.iter().position(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8) else{return STATUS_INVALID_PARAMETER};
+ let d=domains[index];
+ let contexts=unsafe{&mut*CONTEXTS.0.get()};
+ let entry=unsafe{contexts[id.bus as usize].virtual_address.add(id.devfn()*2)};
+ unsafe{core::ptr::write_volatile(entry,0);core::ptr::write_volatile(entry.add(1),0)};
+ if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[id.bus as usize].physical,4096)}!=0{return STATUS_NOT_SUPPORTED}
+ if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{return STATUS_IO_TIMEOUT}
+ let status=unsafe{(u.ops.free_table.unwrap())(u.ops.context,d.root_physical,d.root_virtual)};
+ if status!=0{return STATUS_NOT_SUPPORTED}
+ domains[index]=EMPTY_DOMAIN;
+ if !domains.iter().any(|x|x.id!=0&&x.bus==id.bus){
+  let c=contexts[id.bus as usize];
+  unsafe{core::ptr::write_volatile(u.root_virt.add(id.bus as usize),0)};
+  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,u.root_phys,4096)}!=0{return STATUS_NOT_SUPPORTED}
+  if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{return STATUS_IO_TIMEOUT}
+  if unsafe{(u.ops.free_table.unwrap())(u.ops.context,c.physical,c.virtual_address)}!=0{return STATUS_NOT_SUPPORTED}
+  contexts[id.bus as usize]=EMPTY_CONTEXT;
+ }
+ STATUS_SUCCESS
+}
+
+/// Return the private second-level root for diagnostics and DMA mapper setup.
+/// The returned physical address is not a DMA address and must never be exposed
+/// to a device.
+pub fn requester_domain_root(id:RequesterId)->Option<(u16,u64)>{
+ let _guard=LOCK.lock();
+ let domains=unsafe{&*DOMAINS.0.get()};
+ domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8).map(|d|(d.id,d.root_physical))
+}
