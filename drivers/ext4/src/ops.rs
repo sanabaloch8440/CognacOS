@@ -500,6 +500,52 @@ pub fn insert_inline_extent(root:&mut[u8],logical:u32,physical:u64,len:u16)->Res
  put16(&mut tmp,2,(entries+1) as u16)?;root[..60].copy_from_slice(&tmp);Ok(())
 }
 
+/// Canonicalize a depth-zero inode extent root: sort entries, reject logical
+/// or physical overflow/overlap, and merge adjacent runs when both logical and
+/// physical ranges are contiguous and their initialized state matches.
+pub fn normalize_inline_extent_root(root:&mut[u8])->Result<usize,Error>{
+ if root.len()<60||le16(root,0)?!=0xf30a||le16(root,6)?!=0{return Err(Error::UnsupportedFormat)}
+ let count=le16(root,2)? as usize;let max=le16(root,4)? as usize;
+ if count>max||max==0||max>4{return Err(Error::InvalidExtentTree)}
+ let mut entries=[(0u32,0u64,0u16);4];
+ for i in 0..count{
+  let o=12+i*12;let logical=le32(root,o)?;let raw=le16(root,o+4)?;
+  if raw==0{return Err(Error::InvalidExtentTree)}
+  let physical=((le16(root,o+6)? as u64)<<32)|(le32(root,o+8)? as u64);
+  let len=if raw>0x8000{raw-0x8000}else{raw};
+  if len==0||physical==0||physical.checked_add(len as u64).ok_or(Error::OutOfRange)?>(1u64<<48){
+   return Err(Error::InvalidExtentTree)
+  }
+  entries[i]=(logical,physical,raw);
+ }
+ entries[..count].sort_unstable_by_key(|e|e.0);
+ let mut out=[(0u32,0u64,0u16);4];let mut used=0usize;
+ for item in entries.iter().take(count).copied(){
+  if used!=0{
+   let prior=&mut out[used-1];
+   let prior_len=if prior.2>0x8000{prior.2-0x8000}else{prior.2};
+   let item_len=if item.2>0x8000{item.2-0x8000}else{item.2};
+   let prior_unwritten=prior.2>0x8000;let item_unwritten=item.2>0x8000;
+   let logical_end=(prior.0 as u64).checked_add(prior_len as u64).ok_or(Error::OutOfRange)?;
+   let physical_end=prior.1.checked_add(prior_len as u64).ok_or(Error::OutOfRange)?;
+   if (item.0 as u64)<logical_end{return Err(Error::InvalidExtentTree)}
+   if (item.0 as u64)==logical_end&&item.1==physical_end&&prior_unwritten==item_unwritten{
+    let merged=prior_len as u32+item_len as u32;
+    let limit=if prior_unwritten{0x7fff}else{0x8000};
+    if merged<=limit{prior.2=(merged as u16)|if prior_unwritten{0x8000}else{0};continue}
+   }
+  }
+  used+=1;out[used-1]=item;
+ }
+ let mut tmp=[0u8;60];tmp[..12].copy_from_slice(&root[..12]);
+ put16(&mut tmp,2,used as u16)?;
+ for (i,(logical,physical,raw)) in out.iter().take(used).enumerate(){
+  let o=12+i*12;put32(&mut tmp,o,*logical)?;put16(&mut tmp,o+4,*raw)?;
+  put16(&mut tmp,o+6,(*physical>>32) as u16)?;put32(&mut tmp,o+8,*physical as u32)?;
+ }
+ root[..60].copy_from_slice(&tmp);Ok(used)
+}
+
 /// Shrink an inline extent root to the requested logical block count. Returned
 /// physical ranges must be released through block-group bitmap transactions.
 pub fn truncate_inline_extents(root:&mut[u8],keep_blocks:u64,freed:&mut[(u64,u32)])->Result<usize,Error>{
