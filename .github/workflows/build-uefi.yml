@@ -716,6 +716,9 @@ jobs:
           qemu-system-x86_64 \
             -audiodev wav,id=beepout,path=build/beep.wav \
             -machine pc,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
+            # QEMU's Intel VT-d model publishes an ACPI DMAR table and exposes \
+            # a real remapping unit for the guest's requester-domain tests. \
+            -device intel-iommu,intremap=on,caching-mode=on \
             -device qemu-xhci,id=xhci \
             -device usb-kbd,bus=xhci.0 \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
@@ -1024,6 +1027,7 @@ jobs:
           set +e
           timeout 30s qemu-system-x86_64 \
             -machine pc -m 5G -cpu qemu64 -smp 2 \
+            -device intel-iommu,intremap=on,caching-mode=on \
             -drive if=pflash,format=raw,readonly=on,file="$code" \
             -drive if=pflash,format=raw,file=build/OVMF_VARS_persist.fd \
             -drive if=ide,format=raw,file=build/cognacos-uefi.img \
