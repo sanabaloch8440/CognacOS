@@ -463,6 +463,19 @@ fn queue_dpc_deferred(dpc:*mut core::ffi::c_void,arg1:*mut core::ffi::c_void,arg
     Some(record.target_cpu)
 }
 
+/// Queue a device DPC from interrupt context without executing it on the ISR
+/// stack. The external-interrupt dispatcher drains the local queue only after
+/// the callback has returned and the local APIC has been acknowledged.
+pub fn queue_dpc_from_interrupt(dpc:*mut core::ffi::c_void)->bool {
+    if dpc.is_null(){return false}
+    let cpu=cpu_slot();
+    let mut table=DPCS.lock();
+    let Some(record)=table.records.iter_mut().find(|r|r.active&&r.object==dpc as usize) else{return false};
+    if record.queued||record.running{return false}
+    record.target_cpu=cpu;record.arg1=0;record.arg2=0;record.queued=true;true
+}
+
+
 pub unsafe extern "win64" fn ke_remove_queue_dpc(dpc:*mut core::ffi::c_void)->u8{
     if dpc.is_null(){return 0}
     let mut table=DPCS.lock();
