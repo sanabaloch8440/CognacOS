@@ -104,13 +104,12 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
   d.write_block(phys,data).map_err(|_|Error::Io)?;
   cursor=next_log(&sb,cursor);
  }
- let mut commit=[0u8;1024];
- if bs>commit.len(){return Err(Error::NoScratch)}
- commit[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
- commit[4..8].copy_from_slice(&JBD2_COMMIT_BLOCK.to_be_bytes());
- commit[8..12].copy_from_slice(&sequence.to_be_bytes());
+ descriptor.fill(0);
+ descriptor[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+ descriptor[4..8].copy_from_slice(&JBD2_COMMIT_BLOCK.to_be_bytes());
+ descriptor[8..12].copy_from_slice(&sequence.to_be_bytes());
  let commit_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
- d.write_block(commit_phys,&commit[..bs]).map_err(|_|Error::Io)?;
+ d.write_block(commit_phys,descriptor).map_err(|_|Error::Io)?;
  d.flush().map_err(|_|Error::Io)?;
  // The committed log is now authoritative. Checkpoint home metadata and only
  // then clear the journal's recovery-start pointer.
