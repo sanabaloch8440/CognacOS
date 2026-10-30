@@ -699,6 +699,9 @@ static BOOT_NLS_ADDRESS:[core::sync::atomic::AtomicU64;8]=[const{core::sync::ato
 static BOOT_NLS_LENGTH:[core::sync::atomic::AtomicU64;8]=[const{core::sync::atomic::AtomicU64::new(0)};8];
 static BOOT_NTDLL_ADDRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BOOT_NTDLL_LENGTH:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
+static BOOT_SYSTEM_DLL_ADDRESS:[core::sync::atomic::AtomicU64;4]=[const{core::sync::atomic::AtomicU64::new(0)};4];
+static BOOT_SYSTEM_DLL_LENGTH:[core::sync::atomic::AtomicU64;4]=[const{core::sync::atomic::AtomicU64::new(0)};4];
+const BOOT_SYSTEM_DLL_NAMES:[&str;4]=["kernel32.dll","kernelbase.dll","shell32.dll","msvcrt.dll"];
 static BOOT_BEEP_ADDRESS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BOOT_BEEP_LENGTH:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
 static BOOT_SECURITY_FLAGS:core::sync::atomic::AtomicU64=core::sync::atomic::AtomicU64::new(0);
@@ -784,6 +787,7 @@ struct BootInfo {
     registry_hives: [BootFile;7],
     nls_files: [BootFile;8],
     ntdll_file: BootFile,
+    system_dlls: [BootFile;4],
     beep_file: BootFile,
     security_flags: u64,
     kernel_digest: [u8; 32],
@@ -800,6 +804,13 @@ pub fn boot_hive_bytes(name:&str)->Option<&'static [u8]>{
 pub fn boot_ntdll_bytes()->Option<&'static [u8]>{
  let address=BOOT_NTDLL_ADDRESS.load(core::sync::atomic::Ordering::Acquire);
  let length=BOOT_NTDLL_LENGTH.load(core::sync::atomic::Ordering::Acquire) as usize;
+ if address==0||length==0||length>16*1024*1024{return None;}
+ Some(unsafe{core::slice::from_raw_parts(address as *const u8,length)})
+}
+pub fn boot_system_dll_bytes(name:&str)->Option<&'static [u8]>{
+ let index=BOOT_SYSTEM_DLL_NAMES.iter().position(|candidate|candidate.eq_ignore_ascii_case(name))?;
+ let address=BOOT_SYSTEM_DLL_ADDRESS[index].load(core::sync::atomic::Ordering::Acquire);
+ let length=BOOT_SYSTEM_DLL_LENGTH[index].load(core::sync::atomic::Ordering::Acquire) as usize;
  if address==0||length==0||length>16*1024*1024{return None;}
  Some(unsafe{core::slice::from_raw_parts(address as *const u8,length)})
 }
@@ -837,6 +848,20 @@ unsafe fn install_boot_assets(info:&BootInfo){
   }else{
    BOOT_NTDLL_ADDRESS.store(ntdll.address,core::sync::atomic::Ordering::Release);
    BOOT_NTDLL_LENGTH.store(ntdll.length,core::sync::atomic::Ordering::Release);
+  }
+ }
+ for (index,file) in info.system_dlls.iter().copied().enumerate() {
+  if file.address==0&&file.length==0 { continue; }
+  if file.address==0||file.length==0||file.length>16*1024*1024||file.address.checked_add(file.length).is_none_or(|e|e>0x1_0000_0000) {
+   unsafe{serial_write(b"Rejected malformed boot system DLL descriptor.\\r\\n");}
+   continue;
+  }
+  let bytes=unsafe{core::slice::from_raw_parts(file.address as *const u8,file.length as usize)};
+  if bytes.get(..2)==Some(b"MZ") {
+   BOOT_SYSTEM_DLL_ADDRESS[index].store(file.address,core::sync::atomic::Ordering::Release);
+   BOOT_SYSTEM_DLL_LENGTH[index].store(file.length,core::sync::atomic::Ordering::Release);
+  } else {
+   unsafe{serial_write(b"Rejected staged system DLL without MZ signature.\\r\\n");}
   }
  }
  let beep=info.beep_file;
@@ -878,7 +903,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         let info = &*boot_info;
-        if info.magic == BOOT_INFO_MAGIC && info.version == 10
+        if info.magic == BOOT_INFO_MAGIC && info.version == 11
             && (info.struct_size as usize) >= core::mem::size_of::<BootInfo>() {
             BOOT_SECURITY_FLAGS.store(info.security_flags,core::sync::atomic::Ordering::Release);
             for (index,byte) in info.kernel_digest.iter().copied().enumerate(){
@@ -886,7 +911,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             }
             install_boot_assets(info);
         }
-        if info.magic != BOOT_INFO_MAGIC || info.version != 10
+        if info.magic != BOOT_INFO_MAGIC || info.version != 11
             || (info.struct_size as usize) < core::mem::size_of::<BootInfo>()
         {
             serial_write(b"FATAL: invalid boot information structure.\r\n");
