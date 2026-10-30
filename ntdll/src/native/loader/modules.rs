@@ -1,6 +1,88 @@
 use super::*;
 use super::notifications::{image_ascii_string, IMAGE_ORDINAL_FLAG64};
 
+#[repr(C)] struct LoaderLink { flink: *mut LoaderLink, blink: *mut LoaderLink }
+#[repr(C)] struct LdrEntry {
+    load: LoaderLink, memory: LoaderLink, init: LoaderLink,
+    base: PVOID, entry: PVOID, size: ULONG, _pad: ULONG,
+    full_name: UNICODE_STRING, base_name: UNICODE_STRING,
+}
+#[repr(C)] struct LoadDllResponse {
+    base: u64, entry: u64, slot: u32, generation: u32, already_loaded: u32,
+    path_len: u32, path: [u8; crate::file_services::MAX_PATH_BYTES],
+}
+unsafe fn list_insert_tail(head: *mut LoaderLink, item: *mut LoaderLink) -> bool {
+    if head.is_null() || item.is_null() { return false; }
+    let tail = unsafe { (*head).blink };
+    if tail.is_null() { return false; }
+    unsafe { (*item).flink=head; (*item).blink=tail; (*tail).flink=item; (*head).blink=item; }
+    true
+}
+unsafe fn publish_peb_entry(response: &LoadDllResponse, name: &[u8]) -> *mut LdrEntry {
+    let Some(head0) = (unsafe { current_peb_ldr_head() }) else { return ptr::null_mut(); };
+    let ldr = unsafe { head0.sub(0x10) };
+    let head0 = head0.cast::<LoaderLink>() as *mut LoaderLink;
+    let head1 = unsafe { ldr.add(0x20) }.cast::<LoaderLink>() as *mut LoaderLink;
+    let head2 = unsafe { ldr.add(0x30) }.cast::<LoaderLink>() as *mut LoaderLink;
+    let full_len = response.path_len as usize;
+    if full_len > response.path.len() || name.is_empty() { return ptr::null_mut(); }
+    let bytes = match core::mem::size_of::<LdrEntry>().checked_add((full_len + name.len()) * 2) {
+        Some(n) => n, None => return ptr::null_mut(),
+    };
+    let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
+    if heap.is_null() { return ptr::null_mut(); }
+    let allocation = unsafe { crate::rtl_heap::RtlAllocateHeap(heap, 8, bytes) } as *mut u8;
+    if allocation.is_null() { return ptr::null_mut(); }
+    let entry = allocation.cast::<LdrEntry>();
+    let full = unsafe { allocation.add(core::mem::size_of::<LdrEntry>()) }.cast::<u16>();
+    let base = unsafe { full.add(full_len) };
+    for i in 0..full_len {
+        if !response.path[i].is_ascii() {
+            let _ = unsafe { crate::rtl_heap::RtlFreeHeap(heap, 0, allocation.cast()) };
+            return ptr::null_mut();
+        }
+        unsafe { full.add(i).write(response.path[i] as u16); }
+    }
+    for (i, ch) in name.iter().copied().enumerate() { unsafe { base.add(i).write(ch as u16); } }
+    unsafe {
+        ptr::write(entry, LdrEntry {
+            load: LoaderLink { flink: ptr::null_mut(), blink: ptr::null_mut() },
+            memory: LoaderLink { flink: ptr::null_mut(), blink: ptr::null_mut() },
+            init: LoaderLink { flink: ptr::null_mut(), blink: ptr::null_mut() },
+            base: response.base as PVOID, entry: response.entry as PVOID,
+            size: 0, _pad: 0,
+            full_name: UNICODE_STRING { length: (full_len * 2) as u16, maximum_length: (full_len * 2) as u16, buffer: full },
+            base_name: UNICODE_STRING { length: (name.len() * 2) as u16, maximum_length: (name.len() * 2) as u16, buffer: base },
+        });
+        let image = response.base as *const u8;
+        let nt = ptr::read_unaligned(image.add(0x3c).cast::<u32>()) as usize;
+        (*entry).size = ptr::read_unaligned(image.add(nt + 80).cast::<u32>());
+        if !list_insert_tail(head0, ptr::addr_of_mut!((*entry).load))
+            || !list_insert_tail(head1, ptr::addr_of_mut!((*entry).memory))
+            || !list_insert_tail(head2, ptr::addr_of_mut!((*entry).init)) {
+            let _ = crate::rtl_heap::RtlFreeHeap(heap, 0, allocation.cast());
+            return ptr::null_mut();
+        }
+    }
+    entry
+}
+unsafe fn remove_peb_entry(base: PVOID) {
+    let Some(entry) = (unsafe { find_entry_by_base(base as usize) }) else { return; };
+    let heap = unsafe { crate::rtl_heap::RtlGetProcessHeap() };
+    unsafe {
+        for offset in [0usize, 0x10, 0x20] {
+            let link = entry.add(offset).cast::<LoaderLink>();
+            let forward = (*link).flink;
+            let backward = (*link).blink;
+            if !forward.is_null() && !backward.is_null() {
+                (*backward).flink = forward;
+                (*forward).blink = backward;
+            }
+        }
+        if !heap.is_null() { let _ = crate::rtl_heap::RtlFreeHeap(heap, 0, entry.cast()); }
+    }
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn LdrAddLoadAsDataTable() -> i32 { STATUS_NOT_IMPLEMENTED }
 
@@ -220,12 +302,71 @@ pub unsafe extern "system" fn LdrLoadDll(
     let _ = super::super::exception::RtlRegisterExceptionDispatcher();
     if dll_name.is_null() || dll_handle.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { dll_handle.write(ptr::null_mut()); }
-    // Reuse an existing mapping without pretending that a missing module was
-    // loaded. New-image mapping requires the not-yet-implemented native section
-    // mapping/loader transaction bridge; fail closed until that exists.
-    let status = unsafe { crate::rtl_loader::LdrGetDllHandle(dll_path as PVOID, dll_characteristics, dll_name.cast(), dll_handle) };
-    if status == STATUS_SUCCESS { return unsafe { track_module_reference(*dll_handle as usize, false) }; }
-    STATUS_NOT_IMPLEMENTED
+    let descriptor = unsafe { &*dll_name };
+    if descriptor.length == 0 || descriptor.length & 1 != 0
+        || descriptor.length > descriptor.maximum_length || descriptor.buffer.is_null()
+        || descriptor.length as usize / 2 >= MAX_PATH_UNITS { return STATUS_INVALID_PARAMETER; }
+    let units = unsafe { core::slice::from_raw_parts(descriptor.buffer, descriptor.length as usize / 2) };
+    let mut name = [0u8; crate::pe_modules::MAX_NAME_BYTES];
+    let mut name_len = 0usize;
+    for unit in units {
+        if *unit == 0 || *unit > 0x7f { return STATUS_INVALID_PARAMETER; }
+        let byte = *unit as u8;
+        if byte == b'\\' || byte == b'/' { name_len = 0; continue; }
+        if name_len == name.len() { return STATUS_INVALID_PARAMETER; }
+        name[name_len] = byte; name_len += 1;
+    }
+    if name_len == 0 { return STATUS_INVALID_PARAMETER; }
+    if !name[..name_len].contains(&b'.') {
+        if name_len + 4 >= name.len() { return STATUS_INVALID_PARAMETER; }
+        name[name_len..name_len + 4].copy_from_slice(b".dll"); name_len += 4;
+    }
+    let module_name = &name[..name_len];
+    let existing = unsafe { crate::rtl_loader::LdrGetDllHandle(dll_path as PVOID, dll_characteristics, dll_name.cast(), dll_handle) };
+    if existing == STATUS_SUCCESS { return unsafe { track_module_reference(*dll_handle as usize, false) }; }
+
+    let mut path = [0u8; crate::file_services::MAX_PATH_BYTES];
+    let mut path_len = 0usize;
+    if let Some((directory, length)) = unsafe { super::search::process_image_directory() } {
+        if length + name_len < path.len() {
+            for i in 0..length {
+                if directory[i] > 0x7f { return STATUS_INVALID_PARAMETER; }
+                path[i] = directory[i] as u8;
+            }
+            path_len = length;
+            if path_len != 0 && path[path_len - 1] != b'\\' && path[path_len - 1] != b'/' {
+                path[path_len] = b'\\'; path_len += 1;
+            }
+            path[path_len..path_len + name_len].copy_from_slice(module_name);
+            path_len += name_len; path[path_len] = 0;
+        }
+    }
+    let _ = dll_path;
+    let mut response = LoadDllResponse { base:0, entry:0, slot:0, generation:0, already_loaded:0, path_len:0, path:[0;crate::file_services::MAX_PATH_BYTES] };
+    let status = unsafe {
+        crate::native::syscall_stubs::cognacos_nt_load_dll(
+            module_name.as_ptr(), if path_len == 0 { ptr::null() } else { path.as_ptr() },
+            (&mut response as *mut LoadDllResponse).cast(),
+        )
+    };
+    if status < 0 { return status; }
+    if response.base == 0 || response.path_len as usize > response.path.len() { return STATUS_INVALID_PARAMETER; }
+    if unsafe { publish_peb_entry(&response, module_name) }.is_null() { return 0xC000_0017u32 as i32; }
+    if response.already_loaded == 0 {
+        if response.entry != 0 {
+            type DllEntry = unsafe extern "system" fn(PVOID, u32, PVOID) -> BOOLEAN;
+            let entry: DllEntry = unsafe { core::mem::transmute(response.entry as usize) };
+            if unsafe { entry(response.base as PVOID, 1, ptr::null_mut()) } == 0 {
+                let _ = unsafe { crate::native::syscall_stubs::cognacos_nt_complete_dll_init(module_name.as_ptr(), response.slot, response.generation, 0) };
+                unsafe { remove_peb_entry(response.base as PVOID); }
+                return STATUS_DLL_INIT_FAILED;
+            }
+        }
+        let complete = unsafe { crate::native::syscall_stubs::cognacos_nt_complete_dll_init(module_name.as_ptr(), response.slot, response.generation, 1) };
+        if complete < 0 { unsafe { remove_peb_entry(response.base as PVOID); } return complete; }
+    }
+    unsafe { dll_handle.write(response.base as PVOID); }
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
