@@ -235,3 +235,8 @@ mount integration remain unsupported.
 ## Mount-state validation update (2026-10-30)
 
 The common mount-state gate now rejects `EXT4_ERROR_FS`, `EXT4_ORPHAN_FS`, and nonzero `s_last_orphan` before the filesystem is exposed. This closes a gap in which a clean journal pointer could otherwise be mistaken for proof that all filesystem-level recovery work was complete. Journal replay and orphan cleanup are separate responsibilities; CognacOS still rejects orphaned volumes until the actual truncate/reclaim adapter is wired through a metadata transaction. A dirty-but-error-free journaled volume is not rejected solely because `EXT4_VALID_FS` is clear: it must still pass the explicit journal recovery path. This is a mount-safety improvement, not a writable-mount milestone.
+
+
+## Recovery authorization gate (2026-10-30)
+
+The no-policy `recover_internal_journal` convenience entry point no longer authorizes home-block replay using filesystem bounds alone. It can verify an already-clean journal, but dirty journals require `recover_internal_journal_with_policy` and a validated exact metadata-ownership allowlist. The no-policy `mount_with_recovery` wrapper consequently rejects dirty journals; callers must perform policy-authorized recovery and then retry the checked mount. This deliberately closes the unsafe default-policy path rather than weakening target validation.
