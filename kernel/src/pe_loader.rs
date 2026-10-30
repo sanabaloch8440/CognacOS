@@ -291,6 +291,8 @@ struct VfsTransactionBackend<'a> {
     space: &'a mut AddressSpace,
     process_id: u64,
     resolver: Option<ImportResolver>,
+    application_directory: [u8; crate::file_services::MAX_PATH_BYTES],
+    application_directory_len: usize,
 }
 impl VfsTransactionBackend<'_> {
     fn module_path(name: &[u8], prefix: &[u8], output: &mut [u8; crate::file_services::MAX_PATH_BYTES]) -> Result<usize, i32> {
@@ -318,6 +320,14 @@ impl crate::pe_dependencies::transaction::Backend for VfsTransactionBackend<'_> 
     fn read_file(&mut self, name: &[u8], output: &mut [u8]) -> Result<usize, i32> {
         let normalized = crate::winabi::api_set_host(name).unwrap_or(name);
         let mut path = [0u8; crate::file_services::MAX_PATH_BYTES];
+        if self.application_directory_len != 0 {
+            let app = Self::module_path(normalized, &self.application_directory[..self.application_directory_len], &mut path)?;
+            match read_vfs_image(self.process_id, &path[..app], output) {
+                Ok(n) => return Ok(n),
+                Err(status) if status == crate::file_services::STATUS_OBJECT_NAME_NOT_FOUND => {}
+                Err(status) => return Err(status),
+            }
+        }
         let first = Self::module_path(normalized, br"\SystemRoot\System32\", &mut path)?;
         match read_vfs_image(self.process_id, &path[..first], output) {
             Ok(n) => return Ok(n),
@@ -413,7 +423,17 @@ pub unsafe fn load_dll_transaction_from_vfs(
         return Err(STATUS_RESOURCE_IN_USE);
     }
     let root_len = read_vfs_image(process_id, root_path, root_scratch)?;
-    let mut backend = VfsTransactionBackend { space, process_id, resolver };
+    let mut application_directory = [0u8; crate::file_services::MAX_PATH_BYTES];
+    let mut application_directory_len = 0usize;
+    if let Some(separator) = root_path.iter().rposition(|b| *b == b'\\' || *b == b'/') {
+        if separator != 0 && separator < application_directory.len() {
+            application_directory[..=separator].copy_from_slice(&root_path[..=separator]);
+            application_directory_len = separator + 1;
+        }
+    }
+    let mut backend = VfsTransactionBackend {
+        space, process_id, resolver, application_directory, application_directory_len,
+    };
     let handle = crate::pe_dependencies::transaction::load_transaction(
         &mut backend, module_name, &root_scratch[..root_len], depth_buffers,
     )?;
