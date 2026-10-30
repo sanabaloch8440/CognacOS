@@ -240,6 +240,46 @@ mod tests {
         assert_eq!(map.validate_data_range(99, 2, 100), Err(Error::OutOfRange));
     }
     #[test]
+    fn builds_primary_and_backup_system_zones_for_4k_filesystem() {
+        struct Dev { table: [u8; 4096] }
+        impl ReadOnlyBlockDevice for Dev {
+            type DeviceError = ();
+            fn capacity_bytes(&self) -> u64 { 16384 * 4096 }
+            fn read_at(&mut self, offset: u64, out: &mut [u8]) -> Result<(), Self::DeviceError> {
+                if offset != 4096 || out.len() != 4096 { return Err(()); }
+                out.copy_from_slice(&self.table);
+                Ok(())
+            }
+        }
+        let mut dev = Dev { table: [0; 4096] };
+        for (i, base) in [(0usize, 10u32), (1usize, 8200u32)] {
+            let o = i * 32;
+            dev.table[o..o+4].copy_from_slice(&base.to_le_bytes());
+            dev.table[o+4..o+8].copy_from_slice(&(base+1).to_le_bytes());
+            dev.table[o+8..o+12].copy_from_slice(&(base+2).to_le_bytes());
+        }
+        let sb = Superblock {
+            inodes_count: 256, blocks_count: 16384, first_data_block: 0, block_size: 4096,
+            blocks_per_group: 8192, inodes_per_group: 128, inode_size: 256,
+            descriptor_size: 32, revision: 1, feature_compat: 0,
+            feature_incompat: 0, feature_ro_compat: 0, read_only: true,
+        };
+        let raw = [0u8; SUPERBLOCK_BYTES];
+        let mut scratch = [0u8; 4096];
+        let mut ranges = [BlockRange { start: 0, end: 0 }; 13];
+        let used = build_system_zones(&mut dev, &sb, &raw, &mut scratch, &mut ranges).unwrap();
+        let map = SystemZoneMap::new(&ranges[..used]);
+        assert!(map.is_system_block(0));
+        assert!(map.is_system_block(1));
+        assert!(map.is_system_block(8192));
+        assert!(map.is_system_block(8193));
+        assert!(map.is_system_block(10));
+        assert!(map.is_system_block(8202));
+        assert_eq!(map.validate_data_range(30, 1, sb.blocks_count), Ok(()));
+        assert_eq!(map.validate_data_range(12, 1, sb.blocks_count), Err(Error::InvalidExtentTree));
+    }
+
+    #[test]
     fn sparse_super_group_selection() {
         let mut raw = [0u8; SUPERBLOCK_BYTES];
         raw[92..96].copy_from_slice(&1u32.to_le_bytes());
