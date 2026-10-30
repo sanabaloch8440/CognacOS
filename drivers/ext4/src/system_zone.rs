@@ -84,6 +84,31 @@ impl<'a, D: ReadOnlyBlockDevice> CheckedExtFilesystem<'a, D> {
                 device, superblock, &raw_superblock, ranges, &mut used,
                 inode_buffer, scratch_a, scratch_b,
             )?;
+            // Never expose metadata from a filesystem whose internal journal
+            // still requires replay. Full recovery/transaction coordination is
+            // a separate milestone; until then, dirty or unsupported journals
+            // are rejected rather than silently mounted with stale metadata.
+            if superblock.feature_compat & 0x0004 != 0 {
+                let journal = jbd2::discover_internal_journal(&raw_superblock)
+                    .map_err(|_| Error::UnsupportedFormat)?;
+                let zones = SystemZoneMap::new(&ranges[..used]);
+                let journal_block = if superblock.has_extents() {
+                    map_extent_block_checked_zones_for_inode(
+                        device, superblock, &raw_superblock, journal.inode_number,
+                        u32at(inode_buffer, 100)?, &inode_buffer[40..100],
+                        0, scratch_a, &zones, Some(journal.inode_number),
+                    )?
+                } else {
+                    map_legacy_block(device, superblock, &inode_buffer[40..100],
+                        0, scratch_a, scratch_b)?
+                }.ok_or(Error::InvalidExtentTree)?;
+                read_block(device, superblock, journal_block, scratch_b)?;
+                let journal_sb = jbd2::JournalSuperblock::parse(scratch_b)
+                    .map_err(|_| Error::UnsupportedFormat)?;
+                jbd2::validate_journal_uuid(&raw_superblock, scratch_b)
+                    .map_err(|_| Error::UnsupportedFormat)?;
+                if journal_sb.needs_recovery() { return Err(Error::UnsupportedFormat); }
+            }
             used
         };
         Ok(Self { filesystem, raw_superblock, ranges, zone_count })
