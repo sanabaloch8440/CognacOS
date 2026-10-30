@@ -396,7 +396,7 @@ mod tests{
   validate_directory_block_checksum(&sb,2,7,&dir).unwrap();
  }
  #[test]fn truncate_regular_inode_updates_extent_size_blocks_and_checksum(){
-  let mut sb=[0u8;1024];sb[100..104].copy_from_slice(&0x0400u32.to_le_bytes());sb[373]=1;sb[104..120].copy_from_slice(&[0x19;16]);update_superblock_checksum(&mut sb).unwrap();
+  let mut sb=[0u8;1024];sb[0..4].copy_from_slice(&16u32.to_le_bytes());sb[4..8].copy_from_slice(&100u32.to_le_bytes());sb[20..24].copy_from_slice(&1u32.to_le_bytes());sb[32..36].copy_from_slice(&32u32.to_le_bytes());sb[40..44].copy_from_slice(&16u32.to_le_bytes());sb[56..58].copy_from_slice(&0xef53u16.to_le_bytes());sb[76..80].copy_from_slice(&1u32.to_le_bytes());sb[88..90].copy_from_slice(&128u16.to_le_bytes());sb[96..100].copy_from_slice(&(super::super::INCOMPAT_FILETYPE|super::super::INCOMPAT_EXTENTS).to_le_bytes());sb[100..104].copy_from_slice(&0x0400u32.to_le_bytes());sb[373]=1;sb[104..120].copy_from_slice(&[0x19;16]);update_superblock_checksum(&mut sb).unwrap();
   let mut inode=[0u8;256];inode[0..2].copy_from_slice(&0x8000u16.to_le_bytes());inode[4..8].copy_from_slice(&5120u32.to_le_bytes());
   inode[28..32].copy_from_slice(&10u32.to_le_bytes());inode[40..42].copy_from_slice(&0xf30au16.to_le_bytes());inode[42..44].copy_from_slice(&1u16.to_le_bytes());inode[44..46].copy_from_slice(&4u16.to_le_bytes());
   inode[52..56].copy_from_slice(&0u32.to_le_bytes());inode[56..58].copy_from_slice(&5u16.to_le_bytes());inode[60..64].copy_from_slice(&100u32.to_le_bytes());
