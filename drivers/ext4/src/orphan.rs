@@ -35,7 +35,13 @@ where R:OrphanRecoveryTransaction,F:FnMut(u32,&mut[u8])->Result<(),Error>{
  while current!=0{
   if current>inode_count||current<1||count==visited.len()||visited[..count].contains(&current){return Err(Error::InvalidGeometry)}
   visited[count]=current;count+=1;inode_buffer.fill(0);read_inode(current,inode_buffer)?;
-  let mode=le16(inode_buffer,0)?;if mode==0{return Err(Error::InvalidGeometry)}
+  let mode=le16(inode_buffer,0)?;
+  // ext4 orphan chains contain regular files, directories and symlinks.
+  // Reject free inodes and special device/FIFO/socket records before asking
+  // the transaction adapter to truncate or reclaim them.
+  if !matches!(mode & 0xf000, 0x8000 | 0x4000 | 0xa000) {
+   return Err(Error::InvalidGeometry)
+  }
   let record=OrphanRecord{inode_number:current,next_orphan:le32(inode_buffer,20)?,
    links_count:le16(inode_buffer,26)?,size_low:le32(inode_buffer,4)?};
   if record.next_orphan>inode_count{return Err(Error::InvalidGeometry)}
