@@ -13,23 +13,23 @@ bit does not make all operations on that feature safe.
 | Read-only-compatible features | `0x0403` plus `LARGE_DIR` (`0x4000`) is accepted | sparse_super, large_file, metadata_csum, and large_dir. LARGE_DIR requires DIR_INDEX. Other RO-compatible bits, including bigalloc, inline_data, encrypt, casefold, verity and project quota, are rejected. |
 | Incompatible features | Only the explicit `KNOWN_INCOMPAT` mask is accepted | filetype, extents, flex_bg, 64bit and csum_seed. meta_bg and all other unknown incompat bits are rejected. |
 | Revision | Revision values above 1 are rejected | Dynamic revision layout is the supported baseline. |
-| Block size | 1 KiB through 64 KiB, powers of two | The parser rejects larger log sizes. |
+| Block size | 1 KiB through 64 KiB, powers of two | JBD2 parser rejects larger journal block sizes. |
 
 ## Implemented subsets and hard gaps
 
 | Area | Current implementation | Not yet compatible |
 |---|---|---|
 | ext2/ext3 legacy mapping | Direct, single-, double- and triple-indirect read mapping; checked mapping rejects system-zone indirect blocks and data blocks | Full indirect-tree mutation lifecycle, allocation/free, truncate and boundary interoperability matrix |
-| extents | Checked lookup and selected mutation helpers | Full split/merge/root-depth lifecycle, unwritten conversion, truncate/punch/zero-range, delayed allocation and extent-status semantics |
+| extents | Checked lookup, inline-root enumeration/validation, inline extent normalization, insertion and truncation helpers | External-tree mutation/split/merge/root-depth lifecycle, full unwritten conversion, punch/zero-range, delayed allocation and extent-status semantics |
 | flex_bg | Selected descriptor/bitmap placement validation | Complete Linux layout edge cases, resize and every flex-group geometry |
 | bigalloc | Rejected at superblock feature negotiation | Cluster-based allocation, accounting, checksums and extent semantics |
 | meta_bg | Explicitly rejected | Meta block-group descriptor placement and backup metadata |
 | metadata checksums | Selected superblock, group descriptor, bitmap, inode, extent, directory, xattr and JBD2 checks; 64 KiB directory record lengths are decoded | Exhaustive structure-by-structure formula/coverage audit and Linux-generated golden vectors |
-| HTree | Read traversal and bounded split/index mutation primitives | Complete recursive index growth, three-level large_dir, full directory operation/VFS semantics and all hash/collision edge cases |
-| external xattrs | Structure, checksum, allocation and full owner-inventory reconciliation | EA inodes/value blocks, namespace policy, full mutation and replay ownership integration |
-| inline data | Not supported as a complete data path | Inline file/directory/symlink read/write and conversion |
+| HTree | Read traversal, large_dir two-indirect-level traversal, collision-aware iteration and bounded split/index mutation primitives | Complete recursive index growth to every Linux-supported depth, full directory operation/VFS semantics and exhaustive hash/collision edge cases |
+| external xattrs | Structure/checksum/allocation validation, owner inventory reconciliation, zero-copy value lookup and iteration | EA inodes/value blocks, full mutation and replay ownership integration |
+| inline data | No complete inline-data path; inline extent roots now have enumeration, validation and normalization helpers (these are not inline-data support) | Inline file/directory/symlink read/write and conversion |
 | EA inodes | Rejected with unsupported RO-compatible feature | Large external xattr values and EA inode lifecycle |
-| orphan handling | Legacy orphan-chain planning/recovery primitives | Orphan-file format and atomic recovery across every interruption point |
+| orphan handling | Bounded legacy orphan-chain validation and transactional recovery planning, including inode-type checks | Orphan-file format and atomic recovery across every interruption point |
 | JBD2 fast commit | Rejected | Fast-commit replay and fallback semantics |
 | JBD2 async commit | Rejected | Async commit ordering and recovery semantics |
 | fscrypt | Rejected | Policy, key handling, encrypted names/data and directory hash integration |
