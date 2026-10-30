@@ -386,17 +386,21 @@ unsafe extern "C" fn vtd_quarantine_requester(
  if verify&0x4==0{0}else{-1}
 }
 
-fn initialize_vtd_from_acpi()->bool{
+fn initialize_vtd_from_acpi(requester:dma::iommu::vtd::RequesterId)->bool{
+ if dma::iommu::vtd::is_enabled(){return dma::iommu::vtd::requester_domain_usable(requester);}
  let rsdp=acpi::rsdp_address();
  if rsdp==0{unsafe{serial_write(b"VT-d: RSDP unavailable; DMA remains fail-closed.\r\n");}return false}
  let table=match unsafe{acpi::find_table(rsdp,*b"DMAR",0)}{
   Ok(t)=>t,Err(_)=>{unsafe{serial_write(b"VT-d: ACPI DMAR table not found; DMA remains fail-closed.\r\n");}return false}
  };
  let info=match acpi::parse_dmar(table){Ok(v)=>v,Err(_)=>{unsafe{serial_write(b"VT-d: malformed DMAR table; DMA remains fail-closed.\r\n");}return false}};
- // Device-scope parsing is not yet implemented, so only an include-all
- // remapping unit is safe. Never guess which DRHD owns the xHCI requester.
- let Some(unit)=info.units.iter().take(info.unit_count).find(|u|u.segment==0&&u.include_all) else{
-  unsafe{serial_write(b"VT-d: no segment-0 remapping unit; DMA remains fail-closed.\r\n");}return false
+ // Select only a DRHD whose include-all flag or parsed PCI endpoint scope
+ // explicitly owns this xHCI requester. Never infer ownership from bus 0.
+ let Some(unit)=info.units.iter().take(info.unit_count)
+  .find(|u|acpi::dmar_unit_covers_requester(u,requester.segment,requester.bus,requester.device,requester.function)) else{
+  unsafe{serial_write(b"VT-d: no DRHD scope covers the xHCI requester; DMA remains fail-closed.\r\n");}
+  for u in info.units.iter().take(info.unit_count){unsafe{serial_write(b"VT-d DRHD segment=");serial_write_hex(u.segment as u64);serial_write(b" include_all=");serial_write_hex(u.include_all as u64);serial_write(b" scopes=");serial_write_hex(u.scope_count as u64);serial_write(b"\r\n");}}
+  return false
  };
  let ops=dma::iommu::vtd::PlatformOps{
   size:core::mem::size_of::<dma::iommu::vtd::PlatformOps>() as u32,
@@ -417,7 +421,6 @@ fn initialize_vtd_from_acpi()->bool{
 /// ntoskrnl-owned PnP record. This is resource preparation, not controller takeover:
 /// no bus mastering, DMA ring allocation, reset, or interrupt source is enabled here.
 fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
-    let _vtd_ready=initialize_vtd_from_acpi();
     let mut found=0u32;
     let mut published=false;
     unsafe{serial_write(b"PCI xHCI inventory: validating BAR resources and preparing PnP handoff.\r\n");}
@@ -449,6 +452,8 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
                 }
                 found+=1;
                 if published||bar_base==0||bar_size==0 {continue}
+                let Some(requester)=dma::iommu::vtd::RequesterId::new(bus as u8,device,function) else {continue};
+                let _vtd_ready=initialize_vtd_from_acpi(requester);
                 let extended_hal=hal::driver_extended_service_table();
                 if !extended_hal.compatible() { continue; }
                 let Some(map_io)=extended_hal.map_device_io_space else { continue; };
