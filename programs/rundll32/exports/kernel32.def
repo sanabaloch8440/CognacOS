@@ -1,0 +1,7 @@
+LIBRARY kernel32.dll
+EXPORTS
+    GetCommandLineW
+    LoadLibraryW
+    GetProcAddress
+    FreeLibrary
+    ExitProcess
