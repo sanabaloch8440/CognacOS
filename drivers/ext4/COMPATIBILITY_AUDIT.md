@@ -17,7 +17,7 @@ This is a source-level compatibility and safety audit, not a claim that CognacOS
 
 CognacOS now has a caller-bounded system-zone builder in `system_zone.rs`. It derives backup-superblock placement from SPARSE_SUPER/SPARSE_SUPER2, computes primary and backup GDT spans, accounts for reserved GDT blocks, reads and checksum-validates each primary group descriptor, and records block bitmap, inode bitmap, and inode-table ranges. The checked extent traversal variant validates both external extent-tree child blocks and final mapped data blocks against this map. A reserved-inode pass also maps the internal journal inode, records its physical blocks as protected ranges, and provides the Linux-style exception for that inode's own accesses. It fails closed when caller-provided range storage is exhausted or metadata geometry/checksums are invalid.
 
-This is not yet mount-integrated: the mount facade does not own/persist the zone map, journal inode extents are not added as a separate reserved set, and allocation helpers do not yet consume the map. Writable mounting therefore remains disabled.
+The CheckedExtFilesystem read-only mount facade now owns the caller-backed zone range set for the mount lifetime, builds it during mount, and adds internal journal inode extents with the reserved-inode exception. The older ExtFilesystem facade remains for compatibility; allocation helpers and metadata mutation still do not consume the map. Writable mounting therefore remains disabled.
 
 ## Changes made during this audit
 
@@ -81,7 +81,7 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 
 ## Required milestones before writable ext4
 
-1. [x] Implement bounded Linux-style system-zone construction for supported non-META_BG layouts; validate checked extent-tree child nodes and mapped data blocks against superblock, backup GDT, reserved GDT, bitmap, and inode-table zones. Mount integration and journal-block accounting remain open.
+1. [x] Implement bounded Linux-style system-zone construction for supported non-META_BG layouts; retain it in CheckedExtFilesystem, protect internal journal inode extents, and validate checked extent-tree child nodes and mapped data blocks. The allocator and writable mutation path still need to consume the same map.
 2. Implement full JBD2 checksum handling and the Linux scan/revoke/replay rules for the supported journal feature set; retain fail-closed rejection for formats not yet implemented.
 3. Bind journal inode discovery, extent mapping, recovery, journal-superblock updates and recovery completion into mount.
 4. Add a mount-owned transaction coordinator that captures every changed block, enforces ordered-data semantics, serializes writers, and guarantees rollback/recovery after interruption.
