@@ -933,4 +933,30 @@ mod tests{
   commit[16..20].copy_from_slice(&sum.to_be_bytes());assert!(verify_commit_checksum(&uuid,&commit));
   commit[200]^=1;assert!(!verify_commit_checksum(&uuid,&commit));
  }
+ #[test]
+ fn writer_rejects_duplicate_and_overlapping_home_targets_before_io(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  let mut js=[0u8;1024];js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+  js[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
+  js[12..16].copy_from_slice(&1024u32.to_be_bytes());js[16..20].copy_from_slice(&64u32.to_be_bytes());
+  js[20..24].copy_from_slice(&1u32.to_be_bytes());js[24..28].copy_from_slice(&4u32.to_be_bytes());
+  let metadata=[0x42u8;1024];let ordered=[0x31u8;1024];let mut scratch=[0u8;1024];
+  assert_eq!(commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10,10],&[&metadata,&metadata],&mut scratch),Err(Error::InvalidTag));
+  assert_eq!(commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[10],&[&ordered],&[10],&[&metadata],&mut scratch),Err(Error::InvalidTag));
+  assert_eq!(d.flushes,0);assert_eq!(d.blocks[10],[0;1024]);
+ }
+ #[test]
+ fn writer_rejects_journal_extent_aliasing_a_home_target_before_io(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  let mut js=[0u8;1024];js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
+  js[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
+  js[12..16].copy_from_slice(&1024u32.to_be_bytes());js[16..20].copy_from_slice(&64u32.to_be_bytes());
+  js[20..24].copy_from_slice(&1u32.to_be_bytes());js[24..28].copy_from_slice(&5u32.to_be_bytes());
+  let metadata=[0x53u8;1024];let mut scratch=[0u8;1024];
+  let result=commit_ordered(&mut d,&mut |logical|Ok(if logical==1{10}else{logical as u64}),
+   &mut js,&[],&[],&[10],&[&metadata],&mut scratch);
+  assert_eq!(result,Err(Error::InvalidTag));
+  assert_eq!(d.flushes,0);assert_eq!(d.blocks[10],[0;1024]);
+ }
+
 }
