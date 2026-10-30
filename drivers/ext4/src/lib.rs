@@ -7,6 +7,7 @@
 
 pub mod checksum;
 pub mod jbd2;
+pub mod htree;
 pub mod ops;
 pub mod orphan;
 pub mod system_zone;
@@ -64,8 +65,8 @@ impl Superblock{
   let blocks_per_group=u32at(b,32)?;let inodes_per_group=u32at(b,40)?;
   if inodes_count==0||blocks_count==0||blocks_per_group==0||inodes_per_group==0||(first_data_block as u64)>=blocks_count||(block_size==1024&&first_data_block!=1)||(block_size>1024&&first_data_block!=0){return Err(Error::InvalidGeometry)}
   if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
-  // DIR_INDEX requires htree-aware directory parsing; never treat an indexed root as linear entries.
-  if feature_compat & 0x0020 != 0{return Err(Error::UnsupportedCompatFeature)}if revision>1{return Err(Error::UnsupportedFormat)}
+  // DIR_INDEX is a compatible feature; indexed directories are parsed through the checksum-validated HTree path.
+  if revision>1{return Err(Error::UnsupportedFormat)}
   if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
   if revision>1{return Err(Error::UnsupportedFormat)}
   if feature_incompat&INCOMPAT_META_BG!=0||feature_incompat&!KNOWN_INCOMPAT!=0{return Err(Error::UnsupportedIncompatFeature)}
