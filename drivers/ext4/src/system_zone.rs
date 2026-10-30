@@ -143,9 +143,9 @@ pub fn protect_reserved_journal_inode_zones<D: ReadOnlyBlockDevice>(
     for logical in 0..blocks as u32 {
         let physical = if sb.has_extents() {
             let zones = SystemZoneMap::new(&ranges[..*used]);
-            map_extent_block_checked_zones(
+            map_extent_block_checked_zones_for_inode(
                 dev, sb, raw_superblock, journal_ino, u32at(inode_buffer, 100)?,
-                &inode_buffer[40..100], logical, scratch_a, &zones,
+                &inode_buffer[40..100], logical, scratch_a, &zones, Some(journal_ino),
             )?
         } else {
             map_legacy_block(dev, sb, &inode_buffer[40..100], logical as u64, scratch_a, scratch_b)?
@@ -183,19 +183,35 @@ pub fn map_extent_block_checked_zones<D: ReadOnlyBlockDevice>(
     generation: u32, root: &[u8], logical: u32, scratch: &mut [u8],
     zones: &SystemZoneMap<'_>,
 ) -> Result<Option<u64>, Error> {
+    map_extent_block_checked_zones_for_inode(dev, sb, raw_superblock, inode_number,
+        generation, root, logical, scratch, zones, None)
+}
+
+/// Variant matching Linux ext4's reserved-inode exception: the journal inode
+/// may reference its own protected journal blocks, while every other inode is
+/// rejected if it maps into those ranges.
+pub fn map_extent_block_checked_zones_for_inode<D: ReadOnlyBlockDevice>(
+    dev: &mut D, sb: &Superblock, raw_superblock: &[u8], inode_number: u32,
+    generation: u32, root: &[u8], logical: u32, scratch: &mut [u8],
+    zones: &SystemZoneMap<'_>, reserved_inode: Option<u32>,
+) -> Result<Option<u64>, Error> {
     if root.len() < 60 || scratch.len() != sb.block_size as usize { return Err(Error::UnsupportedFormat); }
     validate_superblock_checksum(raw_superblock)?;
+    let bypass_reserved_zone = reserved_inode == Some(inode_number);
     let mut is_root = true;
     let mut expected_depth = None;
     for _ in 0..=MAX_EXTENT_DEPTH {
         let node = if is_root { &root[..60] } else { &scratch[..] };
         let (depth, step) = inspect_extent_node(node, logical, sb, expected_depth)?;
         match step {
-            ExtentStep::Found(block) => { validate_data_extent(zones, sb, block, 1)?; return Ok(Some(block)); }
+            ExtentStep::Found(block) => {
+                if !bypass_reserved_zone { validate_data_extent(zones, sb, block, 1)?; }
+                return Ok(Some(block));
+            }
             ExtentStep::ZeroOrHole => return Ok(None),
             ExtentStep::Child(child) => {
                 if depth == 0 { return Err(Error::InvalidExtentTree); }
-                validate_data_extent(zones, sb, child, 1)?;
+                if !bypass_reserved_zone { validate_data_extent(zones, sb, child, 1)?; }
                 read_block(dev, sb, child, scratch)?;
                 if sb.feature_ro_compat & 0x0400 != 0 {
                     validate_extent_block_checksum(raw_superblock, inode_number, generation, scratch)?;
