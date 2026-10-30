@@ -397,7 +397,7 @@ fn initialize_vtd_from_acpi(requester:dma::iommu::vtd::RequesterId)->bool{
  // Select only a DRHD whose include-all flag or parsed PCI endpoint scope
  // explicitly owns this xHCI requester. Never infer ownership from bus 0.
  let Some(unit)=info.units.iter().take(info.unit_count)
-  .find(|u|acpi::dmar_unit_covers_requester(u,requester.segment,requester.bus,requester.device,requester.function)) else{
+  .find(|u|acpi::dmar_unit_covers_requester(u,0,requester.bus,requester.device,requester.function)) else{
   unsafe{serial_write(b"VT-d: no DRHD scope covers the xHCI requester; DMA remains fail-closed.\r\n");}
   for u in info.units.iter().take(info.unit_count){unsafe{
    serial_write(b"VT-d DRHD segment=");serial_write_hex(u.segment as u64);
