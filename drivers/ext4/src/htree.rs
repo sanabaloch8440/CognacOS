@@ -310,6 +310,10 @@ pub struct DirectoryEntryView<'a> {
     pub file_type: u8,
     pub name: &'a [u8],
     pub hash: DirectoryHash,
+    /// Logical directory block (zero denotes dx_root for dot entries).
+    pub logical_block: u32,
+    /// Byte offset of this dirent in its logical block.
+    pub offset: u32,
 }
 
 /// Resolve a name's hash to a leaf and retain the complete index path needed
@@ -396,7 +400,7 @@ pub fn next_htree_leaf<R: DirectoryBlockReader>(
 }
 
 fn visit_leaf<'a, F: FnMut(DirectoryEntryView<'a>) -> Result<bool, Error>>(
-    block: &'a [u8], metadata_csum: bool, inode_seed: u32, total_inodes: u32,
+    block: &'a [u8], logical_block: u32, metadata_csum: bool, inode_seed: u32, total_inodes: u32,
     hash_version: u8, hash_seed: [u32; 4], siphash_key: Option<[u64; 2]>,
     visitor: &mut F,
 ) -> Result<bool, Error> {
@@ -416,7 +420,7 @@ fn visit_leaf<'a, F: FnMut(DirectoryEntryView<'a>) -> Result<bool, Error>>(
         if inode != 0 && name_len != 0 {
             let name = &block[offset + 8..offset + 8 + name_len];
             let hash = hash_directory_name(hash_version, hash_seed, name, siphash_key)?;
-            if !visitor(DirectoryEntryView { inode, file_type, name, hash })? { return Ok(false); }
+            if !visitor(DirectoryEntryView { inode, file_type, name, hash, logical_block, offset: offset as u32 })? { return Ok(false); }
         }
         offset += rec;
     }
@@ -444,7 +448,7 @@ pub fn lookup_htree_name<R: DirectoryBlockReader>(
     loop {
         reader.read_directory_block(path.leaf_block, scratch)?;
         let mut found = None;
-        visit_leaf(scratch, metadata_csum, inode_seed, total_inodes, version, hash_seed, siphash_key, &mut |entry| {
+        visit_leaf(scratch, path.leaf_block, metadata_csum, inode_seed, total_inodes, version, hash_seed, siphash_key, &mut |entry| {
             if entry.hash.major == hash.major && entry.name == name {
                 found = Some(entry.inode);
                 return Ok(false);
@@ -478,7 +482,7 @@ pub fn iterate_htree_directory<R: DirectoryBlockReader, F: FnMut(DirectoryEntryV
             return Err(Error::InvalidDirectoryEntry);
         }
         let hash = hash_directory_name(version, hash_seed, name, siphash_key)?;
-        if !visitor(DirectoryEntryView { inode, file_type: root[offset + 7], name, hash })? {
+        if !visitor(DirectoryEntryView { inode, file_type: root[offset + 7], name, hash, logical_block: 0, offset: offset as u32 })? {
             return Ok(());
         }
     }
@@ -492,6 +496,45 @@ pub fn iterate_htree_directory<R: DirectoryBlockReader, F: FnMut(DirectoryEntryV
             return Ok(());
         }
     }
+}
+
+/// Compact caller-owned index for Linux-style hash-ordered readdir.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct DirectoryHashMapEntry{
+ pub major:u32,pub minor:u32,pub logical_block:u32,pub offset:u32,
+}
+
+/// Enumerate the complete indexed directory in (major, minor) hash order.
+/// map must have room for every live dirent including dot entries. No partial
+/// enumeration is emitted if the map is too small or any leaf is corrupt.
+pub fn iterate_htree_directory_sorted<R:DirectoryBlockReader,F:FnMut(DirectoryEntryView<'_>)->Result<bool,Error>>(
+ reader:&mut R,root:&[u8],directory_blocks:u32,total_inodes:u32,hash_seed:[u32;4],
+ siphash_key:Option<[u64;2]>,hash_unsigned:bool,metadata_csum:bool,inode_seed:u32,
+ scratch:&mut[u8],map:&mut[DirectoryHashMapEntry],mut visitor:F,
+)->Result<(),Error>{
+ let mut count=0usize;
+ iterate_htree_directory(reader,root,directory_blocks,total_inodes,hash_seed,siphash_key,
+  hash_unsigned,metadata_csum,inode_seed,scratch,|entry|{
+   if count>=map.len(){return Err(Error::TransactionTooLarge)}
+   map[count]=DirectoryHashMapEntry{major:entry.hash.major,minor:entry.hash.minor,
+    logical_block:entry.logical_block,offset:entry.offset};count+=1;Ok(true)
+  })?;
+ map[..count].sort_unstable_by_key(|e|(e.major,e.minor,e.logical_block,e.offset));
+ for item in map.iter().take(count){
+  let block:&[u8]=if item.logical_block==0{root}else{
+   reader.read_directory_block(item.logical_block,scratch)?;
+   validate_directory_leaf_checksum(scratch,inode_seed,metadata_csum)?;
+   &scratch[..]
+  };
+  let off=item.offset as usize;
+  let inode=le32(block,off)?;let rec=ext4_rec_len(le16(block,off+4)?,block.len());
+  let name_len=block[off+6] as usize;let file_type=block[off+7];
+  if inode==0||inode>total_inodes||rec<8||name_len==0||name_len>rec-8{return Err(Error::InvalidDirectoryEntry)}
+  let name=block.get(off+8..off+8+name_len).ok_or(Error::InvalidDirectoryEntry)?;
+  let hash=DirectoryHash{major:item.major,minor:item.minor};
+  if !visitor(DirectoryEntryView{inode,file_type,name,hash,logical_block:item.logical_block,offset:item.offset})?{return Ok(())}
+ }
+ Ok(())
 }
 
 /// VFS-ready indexed lookup adapter. It derives the directory hash seed,
