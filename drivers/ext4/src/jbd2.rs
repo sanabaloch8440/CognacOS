@@ -215,7 +215,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
     if sb.block_count_64{descriptor[off..off+4].copy_from_slice(&((*target>>32) as u32).to_be_bytes());off+=4}
    }
   }
-  if i==0&&sb.format_version>=2{descriptor[off..off+16].copy_from_slice(uuid);off+=16}
+  if i==0{descriptor[off..off+16].copy_from_slice(uuid);off+=16}
  }
  if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{
   let sum=crate::checksum::jbd2_metadata_block_checksum(seed,descriptor).ok_or(Error::InvalidGeometry)?;
@@ -351,6 +351,11 @@ pub fn discover_internal_journal(ext4_superblock:&[u8])->Result<JournalInodeInfo
 pub fn validate_journal_uuid(ext4_superblock:&[u8],journal_superblock:&[u8])->Result<(),Error>{
  let info=discover_internal_journal(ext4_superblock)?;
  if info.uuid.iter().all(|b|*b==0){return Ok(())}
+ let journal=JournalSuperblock::parse(journal_superblock)?;
+ // Original JBD superblocks (format v1) predate the on-disk journal UUID
+ // field. They cannot be UUID-compared; external journals remain rejected
+ // by discover_internal_journal, so this only applies to the pinned inode.
+ if journal.format_version==1{return Ok(())}
  if journal_superblock.len()<64||journal_superblock[48..64]!=info.uuid{return Err(Error::BadMagic)}
  Ok(())
 }
@@ -432,7 +437,7 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
       };
       if flags&!(TAG_ESCAPE|TAG_SAME_UUID|TAG_DELETED|TAG_LAST)!=0{return Err(Error::InvalidTag)}
       if sb.block_count_64{target|=(be32(scratch,off)? as u64)<<32;off=off.checked_add(4).ok_or(Error::OutOfRange)?}
-      if sb.format_version>=2&&flags&TAG_SAME_UUID==0{let end=off.checked_add(16).ok_or(Error::OutOfRange)?;if end>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}if scratch[off..end]!=sb.uuid{return Err(Error::InvalidTag)}off=end}
+      if flags&TAG_SAME_UUID==0{let end=off.checked_add(16).ok_or(Error::OutOfRange)?;if end>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}if scratch[off..end]!=sb.uuid{return Err(Error::InvalidTag)}off=end}
       if off>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
       if target>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
       let data_block=next_log(sb,tx_cursor);tags[tag_count]=Tag{target,journal_data:data_block,flags,sequence:expected};tag_count+=1;
@@ -705,7 +710,7 @@ mod tests{
   assert_eq!(report.blocks_replayed,1);
   assert_eq!(d.blocks[7],[0x6a;1024]);
  }
- #[test]fn legacy_v1_writer_omits_the_v2_tag_uuid(){
+ #[test]fn legacy_v1_writer_emits_zero_uuid_tag(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   let mut js=[0u8;1024];
   js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
@@ -719,7 +724,7 @@ mod tests{
   assert_eq!(be32(&d.blocks[1],4).unwrap(),JBD2_DESCRIPTOR_BLOCK);
   assert_eq!(be32(&d.blocks[1],12).unwrap(),10);
   assert_eq!(be32(&d.blocks[1],16).unwrap(),TAG_LAST);
-  assert_eq!(&d.blocks[1][20..36],&[0;16]);
+  assert_eq!(&d.blocks[1][20..36],&[0;16]); // v1 superblocks have no UUID, so the legacy tag extension is zero-filled.
   assert_eq!(d.blocks[10],metadata);
  }
   #[test]fn checksum_feature_bits_are_mutually_exclusive(){
