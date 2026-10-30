@@ -101,6 +101,75 @@ pub fn grow_dx_root(root:&mut[u8],new_node:&mut[u8],new_node_logical:u32,metadat
  update_dx(root,RO,limit,1,metadata_csum,inode_seed)
 }
 
+/// Insert a dirent into a checked leaf using ext4's 64-KiB record-length
+/// encoding. The caller has already checked the directory's other HTree leaves.
+fn insert_leaf_dirent(sb:&[u8],inode:u32,generation:u32,block:&mut[u8],total_inodes:u32,
+ child:u32,name:&[u8],file_type:u8)->Result<(),Error>{
+ if child==0||child>total_inodes||name.is_empty()||name.len()>255||name.iter().any(|b|*b==0||*b==b'/'){return Err(Error::InvalidDirectoryEntry)}
+ crate::validate_superblock_checksum(sb)?;let csum=has_csum(sb)?;
+ if csum{crate::validate_directory_block_checksum(sb,inode,generation,block)?;}
+ let limit=block.len()-if csum{12}else{0};let need=ideal(name.len())?;let mut off=0usize;let mut placed=false;
+ while off<limit{
+  if limit-off<8{return Err(Error::InvalidDirectoryEntry)}
+  let ino=u32at(block,off)?;let rec=rec_len(u16at(block,off+4)?,block.len());let n=block[off+6] as usize;
+  if rec<8||rec&3!=0||off.checked_add(rec).ok_or(Error::OutOfRange)?>limit||n>rec-8{return Err(Error::InvalidDirectoryEntry)}
+  if ino!=0&&n==name.len()&&&block[off+8..off+8+n]==name{return Err(Error::InvalidDirectoryEntry)}
+  if ino==0&&rec>=need{
+   let used=if rec-need>=8{need}else{rec};put32(block,off,child)?;put16(block,off+4,rec_disk(used,block.len())?)?;block[off+6]=name.len()as u8;block[off+7]=file_type;block[off+8..off+8+name.len()].copy_from_slice(name);
+   if rec>used{let free=off+used;put32(block,free,0)?;put16(block,free+4,rec_disk(rec-used,block.len())?)?;block[free+6]=0;block[free+7]=0;}placed=true;break;
+  }
+  if ino!=0{let used=ideal(n)?;if rec>=used&&rec-used>=need{
+   put16(block,off+4,rec_disk(used,block.len())?)?;let new=off+used;let leftover=rec-used;let used_new=if leftover-need>=8{need}else{leftover};
+   put32(block,new,child)?;put16(block,new+4,rec_disk(used_new,block.len())?)?;block[new+6]=name.len()as u8;block[new+7]=file_type;block[new+8..new+8+name.len()].copy_from_slice(name);
+   if leftover>used_new{let free=new+used_new;put32(block,free,0)?;put16(block,free+4,rec_disk(leftover-used_new,block.len())?)?;block[free+6]=0;block[free+7]=0;}placed=true;break;
+  }}
+  off+=rec;
+ }
+ if !placed{return Err(Error::OutOfRange)}
+ if csum{crate::update_directory_block_checksum(sb,inode,generation,block)?;}Ok(())
+}
+
+/// Split the selected full HTree leaf, insert a new name into the correct half,
+/// and add the new leaf separator to its parent index block. The caller must
+/// stage old_leaf, new_leaf and parent_index together in one JBD2 transaction.
+/// If this function errors after the split, discard all three staged buffers.
+pub fn split_and_insert_htree_entry<R:crate::htree::DirectoryBlockReader>(
+ sb:&[u8],directory_inode:u32,generation:u32,root:&[u8],reader:&mut R,
+ directory_blocks:u32,total_inodes:u32,old_leaf_logical:u32,old_leaf:&mut[u8],
+ new_leaf_logical:u32,new_leaf:&mut[u8],parent_index_logical:u32,parent_index:&mut[u8],
+ parent_count_offset:usize,child_inode:u32,name:&[u8],file_type:u8,
+ siphash_key:Option<[u64;2]>,map:&mut[DirectoryMapEntry],source_copy:&mut[u8],
+ scratch:&mut[u8],
+)->Result<u32,Error>{
+ if new_leaf_logical==0||new_leaf_logical==old_leaf_logical||new_leaf_logical>0x0fff_ffff{return Err(Error::OutOfRange)}
+ let csum=has_csum(sb)?;let inode_seed=if csum{crate::ext4_inode_checksum_seed(sb,directory_inode,generation)?}else{0};
+ let hash_seed=crate::hash::ext4_directory_hash_seed(sb)?;
+ let unsigned=crate::hash::ext4_hash_unsigned(sb)?;
+ let version=crate::hash::effective_hash_version(*root.get(28).ok_or(Error::Truncated)?,unsigned)?;
+ let hash=hash_directory_name(version,hash_seed,name,siphash_key)?;
+ match crate::htree::lookup_htree_name_from_superblock(reader,sb,directory_inode,generation,root,
+  directory_blocks,total_inodes,name,siphash_key,scratch){
+  Ok(_) => return Err(Error::InvalidDirectoryEntry),
+  Err(Error::OutOfRange) => {},
+  Err(e) => return Err(e),
+ }
+ let path=crate::htree::lookup_htree_path(reader,root,directory_blocks,hash.major,csum,inode_seed,scratch)?;
+ if path.leaf_block!=old_leaf_logical{return Err(Error::InvalidGeometry)}
+ let parent_level=path.depth as usize;
+ let expected_parent=if parent_level==0{0}else{path.blocks[parent_level-1]};
+ let expected_offset=if parent_level==0{32}else{8};
+ if parent_index_logical!=expected_parent||parent_count_offset!=expected_offset||parent_index.len()!=root.len(){return Err(Error::InvalidGeometry)}
+ let(limit,count)=dx_limit(parent_index,parent_count_offset,csum)?;
+ if csum{let stored=u32at(parent_index,parent_count_offset+limit*8+4)?;if dx_checksum(parent_index,parent_count_offset,limit,count,inode_seed)?!=stored{return Err(Error::InvalidChecksum)}}
+ if count>=limit{return Err(Error::OutOfRange)}
+ let separator=split_directory_leaf(sb,directory_inode,generation,old_leaf,new_leaf,
+  *root.get(28).ok_or(Error::Truncated)?,hash_seed,siphash_key,map,source_copy)?;
+ let (target,target_logical)=if hash.major>=separator{(new_leaf,new_leaf_logical)}else{(old_leaf,old_leaf_logical)};
+ insert_leaf_dirent(sb,directory_inode,generation,target,total_inodes,child_inode,name,file_type)?;
+ insert_dx_entry(parent_index,parent_count_offset,separator,new_leaf_logical,csum,inode_seed)?;
+ Ok(target_logical)
+}
+
 /// Split a full interior dx_node into two valid nodes. The caller inserts the
 /// returned separator/new-node block into the parent in the same transaction.
 /// This primitive deliberately does not mutate the parent; a full parent must
