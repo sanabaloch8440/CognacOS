@@ -97,6 +97,8 @@ jobs:
         run: cargo check --manifest-path drivers/fat32/Cargo.toml --lib
       - name: Test FAT32 partition-bounded stream and geometry validation
         run: cargo test --manifest-path drivers/fat32/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Check freestanding kernel with FAT32 driver dependency
+        run: cargo check --manifest-path kernel/Cargo.toml --target x86_64-unknown-none
       - name: Check storage stack library
         run: cargo check --manifest-path drivers/storage/Cargo.toml --lib
       - name: Test storage protocol and disk-class primitives
