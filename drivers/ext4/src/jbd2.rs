@@ -324,7 +324,7 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
         off=off.checked_add(8).ok_or(Error::OutOfRange)?;(target,flags,checksum)
        },
        ChecksumMode::V3=>{
-        let target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
+        let mut target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
         off=off.checked_add(8).ok_or(Error::OutOfRange)?;
         let high=be32(scratch,off)?;off=off.checked_add(4).ok_or(Error::OutOfRange)?;
         if sb.block_count_64{target|=(high as u64)<<32}
