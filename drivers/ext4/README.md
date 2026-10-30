@@ -13,7 +13,8 @@ filesystem API.
 - JBD2 v2 superblock parsing, legacy descriptor tags, optional 64-bit block
   numbers, revoke records, commit sequence validation, committed transaction
   replay, incomplete-tail handling, and recovery-start cleanup.
-- Mount-owned JBD2 transactions stage bounded metadata/data images in caller-owned arenas, serialize writers through exclusive borrowing, validate metadata targets through a mount-supplied ownership policy, and reject system-zone data/revoke targets. A partition-bounded adapter checks every block I/O.\n- Ordered-data metadata commits: ordered data is written and flushed first;
+- Mount-owned JBD2 transactions stage bounded metadata/data images in caller-owned arenas, serialize writers through exclusive borrowing, validate metadata targets through a mount-supplied ownership policy, and reject system-zone data/revoke targets. A partition-bounded adapter checks every block I/O.
+- Ordered-data metadata commits: ordered data is written and flushed first;
   metadata is logged; a commit record is flushed; home metadata is checkpointed;
   and only then is the journal marked clean.
 - JBD2 revoke-record writing for block reclamation. Callers must serialize
