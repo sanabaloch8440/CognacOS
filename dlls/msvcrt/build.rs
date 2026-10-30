@@ -96,11 +96,13 @@ memmove:
 memset:
     pushq %rdi
     movq %rcx, %rax
+    movq %rcx, %r9
     movq %rcx, %rdi
     movq %r8, %rcx
     movb %dl, %al
     cld
     rep stosb
+    movq %r9, %rax
     popq %rdi
     ret
 
@@ -112,6 +114,8 @@ memcmp:
     movq %rcx, %rsi
     movq %rdx, %rdi
     movq %r8, %rcx
+    testq %rcx, %rcx
+    jz .Lmemcmp_equal
     cld
     repe cmpsb
     je .Lmemcmp_equal
