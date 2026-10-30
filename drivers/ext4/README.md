@@ -221,3 +221,16 @@ does not authorize unrelated/unreachable nodes, perform full-tree fsck-style
 validation, or discover directories automatically. The caller must still
 supply a trusted, validated directory inode set. Writable mounting remains
 disabled.
+
+
+## Allocated-inode validation for replay ownership
+
+Before a caller-supplied directory inode can contribute directory-block or
+extent-node ownership records, the mount recovery path now verifies its group
+descriptor checksum (when enabled), rejects groups marked
+`EXT4_BG_INODE_UNINIT`, reads the inode bitmap, validates the bitmap checksum
+over the ext4-defined inode-bitmap byte range, and confirms that the inode's
+allocation bit is set. A free, uninitialized, or checksum-invalid inode group
+cannot authorize replay targets. This validates allocation, not namespace
+reachability: callers must still provide a trusted directory inode set, and
+full inode-table/namespace discovery remains future work.
