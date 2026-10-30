@@ -104,6 +104,71 @@ pub fn build_system_zones<D: ReadOnlyBlockDevice>(
     Ok(used)
 }
 
+/// Add the ext4 internal journal inode's data blocks to the protected system
+/// zones, matching Linux ext4's reserved-inode protection. The caller supplies
+/// an inode-sized buffer and two block-sized scratch buffers. External journal
+/// devices remain unsupported.
+pub fn protect_reserved_journal_inode_zones<D: ReadOnlyBlockDevice>(
+    dev: &mut D,
+    sb: &Superblock,
+    raw_superblock: &[u8],
+    ranges: &mut [BlockRange],
+    used: &mut usize,
+    inode_buffer: &mut [u8],
+    scratch_a: &mut [u8],
+    scratch_b: &mut [u8],
+) -> Result<(), Error> {
+    if raw_superblock.len() < SUPERBLOCK_BYTES
+        || inode_buffer.len() != sb.inode_size as usize
+        || scratch_a.len() != sb.block_size as usize
+        || scratch_b.len() != sb.block_size as usize
+        || *used > ranges.len() {
+        return Err(Error::InvalidGeometry);
+    }
+    if u32at(raw_superblock, 92)? & 0x0004 == 0 { return Ok(()); }
+    let journal_ino = u32at(raw_superblock, 224)?;
+    if journal_ino == 0 { return Err(Error::InvalidGeometry); }
+    read_inode(dev, sb, raw_superblock, journal_ino, inode_buffer, scratch_a)?;
+    let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
+    if !inode.is_regular_file || inode.size == 0 { return Err(Error::InvalidGeometry); }
+    let blocks = inode.size.checked_add(sb.block_size as u64 - 1).ok_or(Error::OutOfRange)? / sb.block_size as u64;
+    if blocks > u32::MAX as u64 { return Err(Error::OutOfRange); }
+    let mut pending_start = 0u64;
+    let mut pending_count = 0u64;
+    for logical in 0..blocks as u32 {
+        let physical = if sb.has_extents() {
+            let zones = SystemZoneMap::new(&ranges[..*used]);
+            map_extent_block_checked_zones(
+                dev, sb, raw_superblock, journal_ino, u32at(inode_buffer, 100)?,
+                &inode_buffer[40..100], logical, scratch_a, &zones,
+            )?
+        } else {
+            map_legacy_block(dev, sb, &inode_buffer[40..100], logical as u64, scratch_a, scratch_b)?
+        }.ok_or(Error::InvalidExtentTree)?;
+        if pending_count != 0 && pending_start.checked_add(pending_count) == Some(physical) {
+            pending_count = pending_count.checked_add(1).ok_or(Error::OutOfRange)?;
+        } else {
+            if pending_count != 0 {
+                let zones = SystemZoneMap::new(&ranges[..*used]);
+                zones.validate_data_range(pending_start, pending_count, sb.blocks_count)?;
+                push(ranges, used, pending_start, pending_count, sb)?;
+            }
+            pending_start = physical;
+            pending_count = 1;
+        }
+    }
+    if pending_count != 0 {
+        let zones = SystemZoneMap::new(&ranges[..*used]);
+        zones.validate_data_range(pending_start, pending_count, sb.blocks_count)?;
+        push(ranges, used, pending_start, pending_count, sb)?;
+    }
+    ranges[..*used].sort_unstable_by_key(|r| r.start);
+    for i in 1..*used {
+        if ranges[i - 1].end > ranges[i].start { return Err(Error::InvalidGeometry); }
+    }
+    Ok(())
+}
+
 pub fn validate_data_extent(map: &SystemZoneMap<'_>, sb: &Superblock, start: u64, count: u64) -> Result<(), Error> {
     map.validate_data_range(start, count, sb.blocks_count)
 }
