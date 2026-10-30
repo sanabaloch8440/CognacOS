@@ -427,6 +427,145 @@ pub fn read_mbr_partition<D:ReadOnlyBlockDevice>(device:&mut D,slot:usize,sector
     let p=DiskPartition{first_lba:first,sector_count:count,sector_size};p.validate(device)?;Ok(p)
 }
 
+/// Read and validate the four primary MBR entries. Extended/logical and
+/// protective-GPT layouts are rejected by mutation helpers: changing only the
+/// primary table in those formats would leave the partition chain inconsistent.
+fn read_mbr_sector<D: ReadOnlyBlockDevice>(
+    device: &mut D, sector_size: u32, sector: &mut [u8;4096],
+) -> Result<(),Error> {
+    if !(512..=4096).contains(&sector_size) || !sector_size.is_power_of_two() {
+        return Err(Error::InvalidGeometry);
+    }
+    if device.capacity_bytes() < sector_size as u64 { return Err(Error::Truncated); }
+    device.read_at(0,&mut sector[..sector_size as usize]).map_err(|_|Error::Io)?;
+    if sector[510]!=0x55 || sector[511]!=0xaa { return Err(Error::InvalidPartitionTable); }
+    for slot in 0..4 {
+        let o=446+slot*16;
+        let status=sector[o];
+        let kind=sector[o+4];
+        if status!=0 && status!=0x80 { return Err(Error::InvalidPartitionTable); }
+        if kind==0 {
+            if sector[o+1..o+16].iter().any(|b|*b!=0) {
+                return Err(Error::InvalidPartitionTable);
+            }
+            continue;
+        }
+        if matches!(kind,0x05|0x0f|0x85|0xee) {
+            return Err(Error::UnsupportedPartitionTable);
+        }
+        let first=u32at(sector,o+8)? as u64;
+        let count=u32at(sector,o+12)? as u64;
+        if first==0 || count==0 { return Err(Error::InvalidPartitionTable); }
+        let end=first.checked_add(count).ok_or(Error::OutOfRange)?;
+        if end>device.capacity_bytes()/(sector_size as u64) || end>u32::MAX as u64+1 {
+            return Err(Error::OutOfRange);
+        }
+        for other in 0..slot {
+            let p=446+other*16;
+            if sector[p+4]==0 { continue; }
+            let a=u32at(sector,p+8)? as u64;
+            let n=u32at(sector,p+12)? as u64;
+            let b=a.checked_add(n).ok_or(Error::OutOfRange)?;
+            if first<b && a<end { return Err(Error::InvalidPartitionTable); }
+        }
+    }
+    Ok(())
+}
+
+fn write_mbr_sector<D: BlockDevice>(
+    device: &mut D, sector_size: u32, sector: &[u8;4096],
+) -> Result<(),Error> {
+    device.write_at(0,&sector[..sector_size as usize]).map_err(|_|Error::Io)?;
+    device.flush().map_err(|_|Error::Io)
+}
+
+/// Create a primary MBR partition in the first unused slot. The partition
+/// type must be a non-extended, non-protective type. MBR has no redundant
+/// table or checksum, so this operation cannot provide GPT-like power-loss
+/// atomicity; callers should prefer GPT on modern disks.
+pub fn create_mbr_partition<D: BlockDevice>(
+    device: &mut D, sector_size: u32, partition_type: u8,
+    first_lba: u64, sector_count: u64, bootable: bool,
+) -> Result<u8,Error> {
+    if partition_type==0 || matches!(partition_type,0x05|0x0f|0x85|0xee)
+        || first_lba==0 || sector_count==0 {
+        return Err(Error::InvalidPartitionTable);
+    }
+    let end=first_lba.checked_add(sector_count).ok_or(Error::OutOfRange)?;
+    if first_lba>u32::MAX as u64 || sector_count>u32::MAX as u64
+        || end>u32::MAX as u64+1
+        || end>device.capacity_bytes()/(sector_size as u64) {
+        return Err(Error::OutOfRange);
+    }
+    let mut sector=[0u8;4096];
+    read_mbr_sector(device,sector_size,&mut sector)?;
+    for slot in 0..4 {
+        let o=446+slot*16;
+        if sector[o+4]==0 { continue; }
+        let first=u32at(&sector,o+8)? as u64;
+        let count=u32at(&sector,o+12)? as u64;
+        let old_end=first.checked_add(count).ok_or(Error::OutOfRange)?;
+        if first<end && first_lba<old_end { return Err(Error::InvalidPartitionTable); }
+    }
+    let slot=(0..4).find(|i|sector[446+i*16+4]==0).ok_or(Error::OutOfRange)?;
+    let o=446+slot*16;
+    sector[o..o+16].fill(0);
+    sector[o]=if bootable {0x80} else {0};
+    sector[o+1..o+4].copy_from_slice(&[0xfe,0xff,0xff]);
+    sector[o+4]=partition_type;
+    sector[o+5..o+8].copy_from_slice(&[0xfe,0xff,0xff]);
+    sector[o+8..o+12].copy_from_slice(&(first_lba as u32).to_le_bytes());
+    sector[o+12..o+16].copy_from_slice(&(sector_count as u32).to_le_bytes());
+    write_mbr_sector(device,sector_size,&sector)?;
+    Ok(slot as u8)
+}
+
+/// Remove a primary MBR entry without erasing the partition's contents.
+pub fn delete_mbr_partition<D: BlockDevice>(
+    device: &mut D, sector_size: u32, slot: u8,
+) -> Result<(),Error> {
+    if slot>=4 { return Err(Error::OutOfRange); }
+    let mut sector=[0u8;4096];
+    read_mbr_sector(device,sector_size,&mut sector)?;
+    let o=446+slot as usize*16;
+    if sector[o+4]==0 { return Err(Error::InvalidPartitionTable); }
+    sector[o..o+16].fill(0);
+    write_mbr_sector(device,sector_size,&sector)
+}
+
+/// Extend a primary MBR partition in place. Shrinking and moving its start
+/// are not allowed; all neighbouring primary partitions are checked.
+pub fn extend_mbr_partition<D: BlockDevice>(
+    device: &mut D, sector_size: u32, slot: u8, new_sector_count: u64,
+) -> Result<DiskPartition,Error> {
+    if slot>=4 || new_sector_count==0 || new_sector_count>u32::MAX as u64 {
+        return Err(Error::OutOfRange);
+    }
+    let mut sector=[0u8;4096];
+    read_mbr_sector(device,sector_size,&mut sector)?;
+    let o=446+slot as usize*16;
+    if sector[o+4]==0 { return Err(Error::InvalidPartitionTable); }
+    let first=u32at(&sector,o+8)? as u64;
+    let old_count=u32at(&sector,o+12)? as u64;
+    if new_sector_count<=old_count { return Err(Error::InvalidGeometry); }
+    let end=first.checked_add(new_sector_count).ok_or(Error::OutOfRange)?;
+    if end>u32::MAX as u64+1 || end>device.capacity_bytes()/(sector_size as u64) {
+        return Err(Error::OutOfRange);
+    }
+    for other in 0..4 {
+        if other==slot as usize { continue; }
+        let p=446+other*16;
+        if sector[p+4]==0 { continue; }
+        let a=u32at(&sector,p+8)? as u64;
+        let n=u32at(&sector,p+12)? as u64;
+        let b=a.checked_add(n).ok_or(Error::OutOfRange)?;
+        if first<b && a<end { return Err(Error::InvalidPartitionTable); }
+    }
+    sector[o+12..o+16].copy_from_slice(&(new_sector_count as u32).to_le_bytes());
+    write_mbr_sector(device,sector_size,&sector)?;
+    Ok(DiskPartition{first_lba:first,sector_count:new_sector_count,sector_size})
+}
+
 /// IEEE CRC-32 used by GPT (not ext4's CRC32C).
 fn crc32_ieee_extend(mut crc:u32,bytes:&[u8])->u32{
     for byte in bytes{crc^=*byte as u32;for _ in 0..8{crc=if crc&1!=0{(crc>>1)^0xedb8_8320}else{crc>>1};}}
@@ -1043,6 +1182,31 @@ mod host_tests {
     impl BlockDevice for NoIoDevice {
         fn write_at(&mut self, _: u64, _: &[u8]) -> Result<(), Self::DeviceError> { Err(()) }
         fn flush(&mut self) -> Result<(), Self::DeviceError> { Err(()) }
+    }
+
+    #[test]
+    fn mbr_primary_create_extend_delete_and_overlap_checks() {
+        let mut disk=MemDisk { bytes:[0;32768], flush_count:0 };
+        disk.bytes[510]=0x55; disk.bytes[511]=0xaa;
+        let slot=create_mbr_partition(&mut disk,512,0x83,4,8,false).unwrap();
+        assert_eq!(slot,0);
+        let p=read_mbr_partition(&mut disk,0,512).unwrap();
+        assert_eq!((p.first_lba,p.sector_count),(4,8));
+        assert_eq!(extend_mbr_partition(&mut disk,512,0,12).unwrap().sector_count,12);
+        assert_eq!(create_mbr_partition(&mut disk,512,0x83,10,4,false),Err(Error::InvalidPartitionTable));
+        assert_eq!(delete_mbr_partition(&mut disk,512,0),Ok(()));
+        assert_eq!(read_mbr_partition(&mut disk,0,512),Err(Error::InvalidPartitionTable));
+        assert!(disk.flush_count>=3);
+    }
+
+    #[test]
+    fn mbr_mutation_rejects_protective_and_extended_layouts() {
+        let mut disk=MemDisk { bytes:[0;32768], flush_count:0 };
+        disk.bytes[510]=0x55; disk.bytes[511]=0xaa;
+        disk.bytes[450]=0xee;
+        assert_eq!(create_mbr_partition(&mut disk,512,0x83,4,8,false),Err(Error::UnsupportedPartitionTable));
+        disk.bytes[450]=0x05;
+        assert_eq!(delete_mbr_partition(&mut disk,512,0),Err(Error::UnsupportedPartitionTable));
     }
 
     #[test]
