@@ -436,6 +436,9 @@ pub fn lookup_htree_name<R: DirectoryBlockReader>(
         return Err(Error::InvalidDirectoryEntry);
     }
     let version = validate_dx_root(root)?.0;
+    // "." and ".." live in dx_root itself, not in any indexed leaf.
+    if name == b"." { return Ok(le32(root, 0)?); }
+    if name == b".." { return Ok(le32(root, 12)?); }
     let hash = hash_directory_name(version, hash_seed, name, siphash_key)?;
     let mut path = lookup_htree_path(reader, root, directory_blocks, hash.major, metadata_csum, inode_seed, scratch)?;
     loop {
