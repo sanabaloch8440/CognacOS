@@ -31,6 +31,8 @@ filesystem API.
   extent-tree nodes and final data blocks that overlap those zones. A separate
   reserved-inode pass protects internal journal inode extents and applies the
   Linux exception that permits the journal inode itself to access its ranges.
+  The checked read-only mount validates the journal UUID/features and refuses
+  dirty journals until full replay is integrated.
 
 ## Deliberate safety limits
 
