@@ -777,9 +777,8 @@ static DEVICE_ROUTE_GSI:[core::sync::atomic::AtomicU32;256]=[const{core::sync::a
 pub fn bind_device_interrupt_route(vector:u8,io_base:u64,gsi_base:u32,gsi:u32)->Result<(),HalError>{
     let i=vector as usize;
     if io_base==0||io_base&0xfff!=0||gsi<gsi_base||gsi-gsi_base>=120{return Err(HalError::InvalidTransition)}
-    // Configure the vector's hardware route masked before a driver can ask
-    // to enable it. The APIC layer verifies that the vector is allocated.
-    unsafe{configure_device_interrupt_route_masked(io_base,gsi_base,gsi,vector,current_cpu_apic_id().unwrap_or(0) as u8,false,false)?;}
+    // PnP configured this route masked after resolving its ACPI polarity,
+    // trigger mode, and destination APIC ID.
     DEVICE_ROUTE_IO_BASE[i].store(io_base,Ordering::Release);
     DEVICE_ROUTE_GSI_BASE[i].store(gsi_base,Ordering::Release);
     DEVICE_ROUTE_GSI[i].store(gsi,Ordering::Release);Ok(())
