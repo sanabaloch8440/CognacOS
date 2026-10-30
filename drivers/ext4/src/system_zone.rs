@@ -257,7 +257,9 @@ pub fn recover_internal_journal_with_policy<D: BlockDevice, P: jbd2::ReplayTarge
     read_block(dev, sb, journal_map[0], journal_superblock)?;
     jbd2::validate_journal_uuid(raw_superblock, journal_superblock)
         .map_err(|_| Error::UnsupportedFormat)?;
-    let parsed = jbd2::JournalSuperblock::parse(journal_superblock)
+    let mut filesystem_uuid=[0u8;16];
+    filesystem_uuid.copy_from_slice(&raw_superblock[104..120]);
+    let parsed = jbd2::JournalSuperblock::parse_with_filesystem_uuid(journal_superblock,&filesystem_uuid)
         .map_err(|_| Error::UnsupportedFormat)?;
     if parsed.block_size != sb.block_size || parsed.max_len as u64 > journal_blocks {
         return Err(Error::UnsupportedFormat);
