@@ -219,6 +219,8 @@ jobs:
           cargo check --manifest-path dlls/kernelbase/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo check --manifest-path dlls/shell32/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo check --manifest-path dlls/msvcrt/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
+          cargo check --manifest-path dlls/syssetup/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
+          cargo check --manifest-path programs/rundll32/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
       - name: Enforce one NTDLL syscall transition path
         shell: bash
         run: |
@@ -344,6 +346,18 @@ jobs:
             --dll kernelbase,build/dlls/kernelbase.dll,dlls/kernelbase/exports/windows-11-x64-exports.tsv \
             --dll shell32,build/dlls/shell32.dll,dlls/shell32/exports/windows-11-x64-exports.tsv \
             --dll msvcrt,build/dlls/msvcrt.dll,dlls/msvcrt/exports/windows-11-x64-exports.tsv
+          mkdir -p dlls/syssetup build/dlls
+          ar rcs dlls/syssetup/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          ar rcs dlls/syssetup/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/syssetup/exports/syssetup-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/syssetup" cargo build --manifest-path dlls/syssetup/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
+          cp target/x86_64-pc-windows-msvc/release/syssetup.dll build/dlls/syssetup.dll
+          file build/dlls/syssetup.dll | grep -q 'PE32+.*DLL'
+          python3 tools/verify_dll_exports.py --dll syssetup,build/dlls/syssetup.dll,dlls/syssetup/exports/windows-11-x64-exports.tsv
+          llvm-dlltool -m i386:x86-64 -d programs/rundll32/exports/kernel32.def -l programs/rundll32/kernel32.lib
+          RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:rundll32_entry -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/programs/rundll32" cargo build --manifest-path programs/rundll32/Cargo.toml --bin rundll32 --target x86_64-pc-windows-msvc --release
+          cp target/x86_64-pc-windows-msvc/release/rundll32.exe build/dlls/rundll32.exe
+          file build/dlls/rundll32.exe | grep -q 'PE32+.*(console)'
+          rm -f dlls/syssetup/kernel32.lib dlls/syssetup/ntdll.lib programs/rundll32/kernel32.lib
           rm -f dlls/kernel32/kernel32.lib dlls/kernel32/ntdll.lib dlls/kernelbase/kernel32.lib dlls/kernelbase/ntdll.lib dlls/shell32/kernel32.lib dlls/shell32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj" "$RUNNER_TEMP/cognacos-dll-empty.rs"
       - name: Check native CSR server dispatcher core
         run: cargo check --manifest-path csrss/Cargo.toml --lib --target x86_64-unknown-linux-gnu
