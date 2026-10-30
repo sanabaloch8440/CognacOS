@@ -237,8 +237,24 @@ pub unsafe fn load_allocated_with_resolver(file:&[u8],driver_object:*mut DriverO
  // loader relocates into a demand-paged extent. Section metadata pins non-PAGE
  // sections permanently and MmLockPagableDataSection pins PAGE sections on demand.
  let mapped=if crate::kernel_vm::is_driver_image_base(preferred) {
-  crate::kernel_vm::allocate_pageable_pages_at(preferred,pages).or_else(|_|crate::kernel_vm::allocate_pageable_pages(pages))
- } else { crate::kernel_vm::allocate_pageable_pages(pages) }.map_err(|_|DriverLoadError::NoMemory)?;
+  match crate::kernel_vm::allocate_pageable_pages_at(preferred,pages) {
+   Ok(address)=>address,
+   Err(error)=>{
+    crate::serial_write(b"PE driver loader: preferred fixed-base slot reservation failed code=");
+    crate::serial_write_hex(match error {
+     crate::kernel_vm::Error::NotInitialized=>1,crate::kernel_vm::Error::Invalid=>2,
+     crate::kernel_vm::Error::NoVirtualSpace=>3,crate::kernel_vm::Error::NoPhysicalMemory=>4,
+     crate::kernel_vm::Error::AlreadyMapped=>5,crate::kernel_vm::Error::NotMapped=>6,
+     crate::kernel_vm::Error::TableFull=>7,
+    });
+    crate::serial_write(b"\\r\\n");
+    return Err(DriverLoadError::NoMemory)
+   }
+  }
+ } else {
+  crate::serial_write(b"PE driver loader: preferred image base is outside reserved fixed driver slots.\\r\\n");
+  crate::kernel_vm::allocate_pageable_pages(pages).map_err(|_|DriverLoadError::NoMemory)?
+ };
  let base=mapped as u64;
  let image=unsafe{core::slice::from_raw_parts_mut(mapped,size)};
  // Reserve unload bookkeeping before DriverEntry can publish devices or callbacks.
