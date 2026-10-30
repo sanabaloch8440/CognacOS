@@ -353,3 +353,10 @@ Added `validate_directory_namespace` and integrated it into `mount_with_recovery
 **HTree integration:** the namespace graph validator now routes `EXT4_INDEX_FL` directories through the checksum-validated unique HTree iterator. The directory inode's checked extent/legacy mapper backs root, interior-node and leaf reads; dx checksums and leaf checksums are verified; collision continuations and sibling index traversal are included; root `.`/`..` entries are visited; duplicate leaf pointers (including empty leaves) and tracking-buffer exhaustion fail closed. Unknown dirent types are reconciled with the allocated-directory scan. The namespace-discovery mount entry point now requires caller-owned HTree root and traversal buffers plus a visited-leaf array.
 
 **Remaining HTree limits:** maximum supported indirect depth is still one interior level, and SipHash directories requiring an unavailable fscrypt key fail closed. Directory graph validation is not an fsck-equivalent consistency checker and does not validate every non-directory inode reference or all ext4 namespace features. Writable mounts remain disabled. Backup metadata and xattr replay ownership, orphan-file support, and Linux/e2fsprogs crash-interoperability testing remain outstanding.
+
+
+## External xattr block structural validation
+
+A bounded, allocation-free parser now validates external xattr block headers, reference counts, the single-block layout, entry-table termination, namespace indices, entry names, value-block references, value bounds/alignment, duplicate (name-index, name) pairs, and overlapping value ranges. The parser is exposed as `xattr::validate_external_xattr_block` and has malformed-layout unit tests.
+
+This is deliberately only the structural half of xattr ownership. The parser does **not** authenticate the ext4 xattr checksum, resolve the owning inode's `i_file_acl` pointer, prove inode allocation state, reconcile shared-block reference counts across all allocated inodes, or authorize xattr blocks for JBD2 replay. Mount recovery continues to reject replay targets in xattr blocks.

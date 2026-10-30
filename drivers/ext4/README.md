@@ -262,3 +262,10 @@ Added `validate_directory_namespace` and the stricter `mount_with_recovery_and_n
 The namespace validator now traverses `EXT4_INDEX_FL` directories through the HTree-aware unique-leaf iterator. It maps each index/leaf logical block through the directory inode's checked extent or legacy mapping, validates dx and directory-leaf checksums, includes the root's `.` and `..` entries, follows all indexed leaves including collision continuations, and rejects duplicate leaf references with caller-owned bounded tracking storage. Unknown dirent file types are resolved against the previously checksum-validated allocated-directory set. The namespace mount API therefore takes additional block-sized HTree root/scratch buffers and a leaf-visited array.
 
 The supported HTree traversal remains bounded by the implementation's current maximum indirect depth (one interior level); SipHash directories requiring an unavailable fscrypt key fail closed. This is still a bounded recovery-authorization milestone, not full namespace or writable ext4 support.
+
+
+## External xattr block structural validation
+
+A bounded, allocation-free parser now validates external xattr block headers, reference counts, the single-block layout, entry-table termination, namespace indices, entry names, value-block references, value bounds/alignment, duplicate (name-index, name) pairs, and overlapping value ranges. The parser is exposed as `xattr::validate_external_xattr_block` and has malformed-layout unit tests.
+
+This is deliberately only the structural half of xattr ownership. The parser does **not** authenticate the ext4 xattr checksum, resolve the owning inode's `i_file_acl` pointer, prove inode allocation state, reconcile shared-block reference counts across all allocated inodes, or authorize xattr blocks for JBD2 replay. Mount recovery continues to reject replay targets in xattr blocks.
