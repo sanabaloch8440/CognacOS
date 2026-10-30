@@ -189,7 +189,7 @@ fn validate_dx_root(block: &[u8]) -> Result<(u8, u8), Error> {
     let hash_version = block[28];
     // 0..=5 are legacy/half-MD4/TEA signed and unsigned variants;
     // 6 is SIPHASH. Hash calculation is intentionally outside this module.
-    if hash_version > 6 { return Err(Error::UnsupportedFormat); }
+    if hash_version != 0 && hash_version != 1 && hash_version != 2 && hash_version != 6 { return Err(Error::UnsupportedFormat); }
     let levels = block[30];
     if levels > MAX_DX_INDIRECT_LEVELS { return Err(Error::UnsupportedFormat); }
     Ok((hash_version, levels))
