@@ -2216,6 +2216,8 @@ fn serial_write_kernel_vm_diagnostics() {
     unsafe { serial_write_decimal(d[6] as usize); }
     serial_write(b" pagefile-active=");
     unsafe { serial_write_decimal(d[7] as usize); }
+    serial_write(b" IPI-shootdowns-enabled=");
+    unsafe { serial_write_decimal(d[8] as usize); }
     serial_write(b"\r\n");
     #[cfg(feature = "diagnostic-vm")]
     {
