@@ -67,7 +67,11 @@ impl Superblock{
   let descriptor_size=if feature_incompat&INCOMPAT_64BIT!=0{let n=u16at(b,254)?;if n<64||n as u32>block_size||n%8!=0{return Err(Error::UnsupportedFormat)}n}else{32};
   let first_data_block=u32at(b,20)?;
   let blocks_per_group=u32at(b,32)?;let inodes_per_group=u32at(b,40)?;
-  if inodes_count==0||blocks_count==0||blocks_per_group==0||inodes_per_group==0||(first_data_block as u64)>=blocks_count||(block_size==1024&&first_data_block!=1)||(block_size>1024&&first_data_block!=0){return Err(Error::InvalidGeometry)}
+  let bitmap_capacity=(block_size as u64).checked_mul(8).ok_or(Error::OutOfRange)?;
+  if inodes_count==0||blocks_count==0||blocks_per_group==0||inodes_per_group==0
+   ||blocks_per_group as u64>bitmap_capacity||inodes_per_group as u64>bitmap_capacity
+   ||(first_data_block as u64)>=blocks_count||(block_size==1024&&first_data_block!=1)
+   ||(block_size>1024&&first_data_block!=0){return Err(Error::InvalidGeometry)}
   if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
   // DIR_INDEX is a compatible feature; indexed directories are parsed through the checksum-validated HTree path.
   if revision>1{return Err(Error::UnsupportedFormat)}
