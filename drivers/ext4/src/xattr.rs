@@ -365,6 +365,30 @@ mod tests {
     }
 
     #[test]
+    fn reconciles_exclusive_and_shared_xattr_owners() {
+        let owners = [
+            ExternalXattrOwner { inode_number: 7, generation: 1, physical_block: 40, on_disk_reference_count: 2 },
+            ExternalXattrOwner { inode_number: 8, generation: 2, physical_block: 40, on_disk_reference_count: 2 },
+            ExternalXattrOwner { inode_number: 9, generation: 3, physical_block: 41, on_disk_reference_count: 1 },
+        ];
+        assert_eq!(reconcile_external_xattr_references(&owners), Ok(2));
+    }
+
+    #[test]
+    fn rejects_xattr_reference_count_mismatch_and_duplicate_owner() {
+        let mismatch = [
+            ExternalXattrOwner { inode_number: 7, generation: 1, physical_block: 40, on_disk_reference_count: 3 },
+            ExternalXattrOwner { inode_number: 8, generation: 2, physical_block: 40, on_disk_reference_count: 3 },
+        ];
+        assert_eq!(reconcile_external_xattr_references(&mismatch), Err(XattrError::InvalidReferenceCount));
+        let duplicate = [
+            ExternalXattrOwner { inode_number: 7, generation: 1, physical_block: 40, on_disk_reference_count: 2 },
+            ExternalXattrOwner { inode_number: 7, generation: 1, physical_block: 40, on_disk_reference_count: 2 },
+        ];
+        assert_eq!(reconcile_external_xattr_references(&duplicate), Err(XattrError::DuplicateEntry));
+    }
+
+    #[test]
     fn accepts_empty_external_block() {
         let info = validate_external_xattr_block(&empty_block()).unwrap();
         assert_eq!(info.entry_count, 0);
