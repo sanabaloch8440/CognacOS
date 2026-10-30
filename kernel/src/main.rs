@@ -373,7 +373,7 @@ fn initialize_vtd_from_acpi()->bool{
 /// Discover xHCI, measure its assigned BAR, map it uncached and publish a stable
 /// ntoskrnl-owned PnP record. This is resource preparation, not controller takeover:
 /// no bus mastering, DMA ring allocation, reset, or interrupt source is enabled here.
-fn probe_xhci_pci_function()->bool {
+fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     let _vtd_ready=initialize_vtd_from_acpi();
     let mut found=0u32;
     let mut published=false;
@@ -429,9 +429,31 @@ fn probe_xhci_pci_function()->bool {
                             serial_write(b"xHCI PnP resource published: device_object=");
                             serial_write_hex(object);serial_write(b" MMIO_VA=");
                             serial_write_hex(bar_virtual);serial_write(b" length=");
-                            serial_write_hex(bar_size);
-                            serial_write(b"; DMA/IRQ not ready, bus mastering remains gated.\r\n");
+                            serial_write_hex(bar_size);serial_write(b"\r\n");
                         }
+                        // Resolve legacy PCI INTx through MADT interrupt-source
+                        // overrides. Refuse ambiguous, absent, or non-legacy IRQs.
+                        let irq_line=irq as u8;
+                        if irq_line<16 {
+                            let mut gsi=irq_line as u32;
+                            let mut active_low=false;let mut level_triggered=false;let mut duplicate=false;
+                            for ov in madt.irq_overrides.iter().take(madt.irq_override_count) {
+                                if ov.bus==0&&ov.source_irq==irq_line {
+                                    if duplicate {duplicate=true;break;}
+                                    gsi=ov.gsi;active_low=ov.active_low;level_triggered=ov.level_triggered;duplicate=true;
+                                }
+                            }
+                            let io=madt.io_apics.iter().take(madt.io_apic_count)
+                                .find(|io|gsi>=io.gsi_base&&gsi.saturating_sub(io.gsi_base)<120);
+                            if !duplicate||irq_line!=0 {
+                                if let Some(io)=io {
+                                    match ntoskrnl::pnp::prepare_xhci_interrupt_route(io.address as u64,io.gsi_base,gsi,bsp_apic_id as u8,active_low,level_triggered) {
+                                        Ok(vector)=>unsafe{serial_write(b"xHCI PnP: masked INTx route prepared; vector=");serial_write_hex(vector as u64);serial_write(b"\r\n");},
+                                        Err(_)=>unsafe{serial_write(b"xHCI PnP: interrupt route preparation failed; controller remains unbound.\r\n");},
+                                    }
+                                } else {unsafe{serial_write(b"xHCI PnP: no I/O-APIC owns PCI interrupt GSI; controller remains unbound.\r\n");}}
+                            } else {unsafe{serial_write(b"xHCI PnP: PCI interrupt line lacks unambiguous MADT routing; controller remains unbound.\r\n");}}
+                        } else {unsafe{serial_write(b"xHCI PnP: invalid legacy PCI interrupt line; controller remains unbound.\r\n");}}
                     }
                     Err(_)=>{
                         if let Some(unmap_io)=extended_hal.unmap_device_io_space {
@@ -1022,7 +1044,6 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             halt();
         }
         serial_write(b"Kernel virtual-address arena and mapping self-test passed.\r\n");
-        let _xhci_pnp_resources_ready = probe_xhci_pci_function();
         if unsafe { syscall::prepare_windows_syscall_stack(0) }.is_err() {
             serial_write(b"FATAL: could not allocate BSP Windows SYSCALL stack.\r\n");
             halt();
@@ -1124,6 +1145,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                                     if routes_masked {
                                         unsafe { outb(0x21, 0xff); outb(0xa1, 0xff); }
                                         let _=prepare_ps2_irq_route(&firmware_madt,bsp_apic_id);
+                                        let _xhci_pnp_resources_ready=probe_xhci_pci_function(&firmware_madt,bsp_apic_id);
                                         match unsafe { hal::calibrate_local_clock_event() } {
                                             Ok(count) => {
                                                 local_timer_ready = true;
