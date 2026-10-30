@@ -87,6 +87,20 @@ pub fn jbd2_commit_checksum(seed: u32, block: &[u8]) -> Option<u32> {
     Some(crc32c_update(crc, &block[20..]))
 }
 
+/// JBD2 v2/v3 tag checksum over the bytes as stored in the journal. When
+/// TAG_ESCAPE is set, the leading JBD2 magic word is zeroed before hashing.
+pub fn jbd2_tag_checksum_escaped(seed: u32, sequence: u32, data: &[u8], escaped: bool) -> Option<u32> {
+    if escaped && data.len() < 4 { return None; }
+    let sequence = sequence.to_be_bytes();
+    let mut crc = crc32c_update(seed, &sequence);
+    if escaped {
+        crc = crc32c_update(crc, &[0; 4]);
+        Some(crc32c_update(crc, &data[4..]))
+    } else {
+        Some(crc32c_update(crc, data))
+    }
+}
+
 /// ext4 inode checksum seed for filesystems without the csum_seed feature:
 /// CRC32C(filesystem seed, inode number LE || inode generation LE).
 pub fn ext4_inode_csum_seed(filesystem_seed: u32, inode_number: u32, generation: u32) -> u32 {
