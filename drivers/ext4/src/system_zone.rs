@@ -171,6 +171,22 @@ impl<'a, D: ReadOnlyBlockDevice> CheckedExtFilesystem<'a, D> {
     pub fn system_zones(&self) -> SystemZoneMap<'_> {
         SystemZoneMap::new(&self.ranges[..self.zone_count])
     }
+    /// Validate a caller-read external xattr block against this checked
+    /// mount's superblock, inode checksum, and system-zone map. The inode must
+    /// be allocated and the xattr block bitmap bit must be verified by the
+    /// caller; this method does not authorize the block for journal replay.
+    pub fn validate_external_xattr(
+        &self,
+        inode_number: u32,
+        inode_raw: &[u8],
+        block: &[u8],
+    ) -> Result<Option<u64>, Error> {
+        let zones = SystemZoneMap::new(&self.ranges[..self.zone_count]);
+        validate_inode_external_xattr_in_zones(
+            &self.raw_superblock, &self.filesystem.superblock, &zones,
+            inode_number, inode_raw, block,
+        )
+    }
     pub fn map_extent_block(
         &mut self, inode_number: u32, generation: u32, root: &[u8],
         logical: u32, scratch: &mut [u8],
