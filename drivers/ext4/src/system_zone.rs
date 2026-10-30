@@ -3,6 +3,11 @@ use super::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockRange { pub start: u64, pub end: u64 }
+impl BlockRange {
+    pub fn overlaps(&self, start: u64, end: u64) -> bool {
+        start < self.end && self.start < end
+    }
+}
 
 #[derive(Clone, Copy)]
 pub struct SystemZoneMap<'a> { ranges: &'a [BlockRange] }
