@@ -523,6 +523,250 @@ impl<D:BlockDevice> BlockDevice for PartitionDevice<D>{
 }
 
 
+/// Validated GPT layout used by the mutation routines. The entry array is
+/// intentionally capped at 128 x 128-byte entries to bound early-boot memory.
+#[derive(Clone, Copy)]
+struct GptLayout {
+    sector_size: usize,
+    disk_sectors: u64,
+    header_size: usize,
+    entry_count: usize,
+    entry_size: usize,
+    primary_entries_lba: u64,
+    backup_entries_lba: u64,
+    first_usable: u64,
+    last_usable: u64,
+}
+
+const GPT_MAX_ENTRIES_BYTES: usize = 128 * 128;
+
+fn gpt_u64(b: &[u8], o: usize) -> Result<u64, Error> {
+    let e = o.checked_add(8).ok_or(Error::OutOfRange)?;
+    let s = b.get(o..e).ok_or(Error::Truncated)?;
+    Ok(u64::from_le_bytes(s.try_into().map_err(|_| Error::Truncated)?))
+}
+fn put_u32(b: &mut [u8], o: usize, v: u32) -> Result<(), Error> {
+    let e=o.checked_add(4).ok_or(Error::OutOfRange)?;
+    b.get_mut(o..e).ok_or(Error::Truncated)?.copy_from_slice(&v.to_le_bytes());
+    Ok(())
+}
+fn put_u64(b: &mut [u8], o: usize, v: u64) -> Result<(), Error> {
+    let e=o.checked_add(8).ok_or(Error::OutOfRange)?;
+    b.get_mut(o..e).ok_or(Error::Truncated)?.copy_from_slice(&v.to_le_bytes());
+    Ok(())
+}
+
+fn validate_gpt_header(raw: &[u8], sector_size: usize, expected_lba: u64) -> Result<usize, Error> {
+    if raw.len() < sector_size || &raw[..8] != b"EFI PART" {
+        return Err(Error::InvalidPartitionTable);
+    }
+    let header_size=u32at(raw,12)? as usize;
+    if !(92..=sector_size).contains(&header_size) { return Err(Error::InvalidPartitionTable); }
+    if gpt_u64(raw,24)? != expected_lba { return Err(Error::InvalidPartitionTable); }
+    let stored=u32at(raw,16)?;
+    let mut copy=[0u8;4096];
+    copy[..header_size].copy_from_slice(&raw[..header_size]);
+    copy[16..20].fill(0);
+    if crc32_ieee(&copy[..header_size]) != stored { return Err(Error::InvalidChecksum); }
+    Ok(header_size)
+}
+
+fn read_gpt_layout<D: ReadOnlyBlockDevice>(
+    device: &mut D,
+    sector_size: u32,
+    primary: &mut [u8;4096],
+    backup: &mut [u8;4096],
+    entries: &mut [u8;GPT_MAX_ENTRIES_BYTES],
+) -> Result<GptLayout, Error> {
+    if !(512..=4096).contains(&sector_size) || !sector_size.is_power_of_two() {
+        return Err(Error::InvalidGeometry);
+    }
+    let ss=sector_size as usize;
+    let disk_sectors=device.capacity_bytes()/(sector_size as u64);
+    if disk_sectors<6 { return Err(Error::Truncated); }
+    device.read_at(sector_size as u64,&mut primary[..ss]).map_err(|_|Error::Io)?;
+    let header_size=validate_gpt_header(primary,ss,1)?;
+    let backup_lba=gpt_u64(primary,32)?;
+    if backup_lba!=disk_sectors-1 { return Err(Error::UnsupportedPartitionTable); }
+    device.read_at(backup_lba*(sector_size as u64),&mut backup[..ss]).map_err(|_|Error::Io)?;
+    let backup_header_size=validate_gpt_header(backup,ss,backup_lba)?;
+    if backup_header_size!=header_size || gpt_u64(backup,32)?!=1 {
+        return Err(Error::InvalidPartitionTable);
+    }
+    let first_usable=gpt_u64(primary,40)?;
+    let last_usable=gpt_u64(primary,48)?;
+    if first_usable>last_usable || last_usable>=backup_lba { return Err(Error::InvalidPartitionTable); }
+    let entry_count=u32at(primary,80)? as usize;
+    let entry_size=u32at(primary,84)? as usize;
+    if entry_count==0 || entry_count>128 || entry_size!=128 {
+        return Err(Error::UnsupportedPartitionTable);
+    }
+    if u32at(backup,80)? as usize!=entry_count || u32at(backup,84)? as usize!=entry_size {
+        return Err(Error::InvalidPartitionTable);
+    }
+    let array_len=entry_count.checked_mul(entry_size).ok_or(Error::OutOfRange)?;
+    let primary_entries_lba=gpt_u64(primary,72)?;
+    let backup_entries_lba=gpt_u64(backup,72)?;
+    let array_sectors=(array_len+ss-1)/ss;
+    if primary_entries_lba<2 || primary_entries_lba.checked_add(array_sectors as u64).ok_or(Error::OutOfRange)?>first_usable
+        || backup_entries_lba.checked_add(array_sectors as u64).ok_or(Error::OutOfRange)?>backup_lba
+        || backup_entries_lba<=last_usable {
+        return Err(Error::InvalidPartitionTable);
+    }
+    let array_offset=primary_entries_lba.checked_mul(sector_size as u64).ok_or(Error::OutOfRange)?;
+    device.read_at(array_offset,&mut entries[..array_len]).map_err(|_|Error::Io)?;
+    let entries_crc=crc32_ieee(&entries[..array_len]);
+    if entries_crc!=u32at(primary,88)? || entries_crc!=u32at(backup,88)? {
+        return Err(Error::InvalidChecksum);
+    }
+    Ok(GptLayout{sector_size:ss,disk_sectors,header_size,entry_count,entry_size,
+        primary_entries_lba,backup_entries_lba,first_usable,last_usable})
+}
+
+/// Sector-preserving write: callers may update a short GPT entry array without
+/// issuing a partial physical-sector write to the underlying disk driver.
+fn write_sector_region<D: BlockDevice>(
+    device: &mut D, offset: u64, bytes: &[u8], sector_size: usize,
+) -> Result<(), Error> {
+    if offset % sector_size as u64 != 0 { return Err(Error::InvalidGeometry); }
+    let mut sector=[0u8;4096];
+    let mut done=0usize;
+    while done<bytes.len() {
+        let n=core::cmp::min(sector_size,bytes.len()-done);
+        let at=offset.checked_add(done as u64).ok_or(Error::OutOfRange)?;
+        if n==sector_size {
+            device.write_at(at,&bytes[done..done+n]).map_err(|_|Error::Io)?;
+        } else {
+            device.read_at(at,&mut sector[..sector_size]).map_err(|_|Error::Io)?;
+            sector[..n].copy_from_slice(&bytes[done..done+n]);
+            device.write_at(at,&sector[..sector_size]).map_err(|_|Error::Io)?;
+        }
+        done+=n;
+    }
+    Ok(())
+}
+
+fn write_gpt_pair<D: BlockDevice>(
+    device: &mut D,
+    layout: &GptLayout,
+    primary: &mut [u8;4096],
+    backup: &mut [u8;4096],
+    entries: &[u8;GPT_MAX_ENTRIES_BYTES],
+) -> Result<(), Error> {
+    let len=layout.entry_count.checked_mul(layout.entry_size).ok_or(Error::OutOfRange)?;
+    let crc=crc32_ieee(&entries[..len]);
+    put_u32(primary,88,crc)?;
+    put_u32(backup,88,crc)?;
+    put_u32(primary,16,0)?;
+    put_u32(backup,16,0)?;
+    put_u32(primary,16,crc32_ieee(&primary[..layout.header_size]))?;
+    put_u32(backup,16,crc32_ieee(&backup[..layout.header_size]))?;
+
+    // Commit the backup copy first. A power loss can leave a stale primary,
+    // but the backup remains independently valid and recoverable.
+    let backup_entries=layout.backup_entries_lba.checked_mul(layout.sector_size as u64).ok_or(Error::OutOfRange)?;
+    write_sector_region(device,backup_entries,&entries[..len],layout.sector_size)?;
+    write_sector_region(device,gpt_u64(backup,24)?.checked_mul(layout.sector_size as u64).ok_or(Error::OutOfRange)?,
+        &backup[..layout.sector_size],layout.sector_size)?;
+    device.flush().map_err(|_|Error::Io)?;
+    let primary_entries=layout.primary_entries_lba.checked_mul(layout.sector_size as u64).ok_or(Error::OutOfRange)?;
+    write_sector_region(device,primary_entries,&entries[..len],layout.sector_size)?;
+    write_sector_region(device,layout.sector_size as u64,&primary[..layout.sector_size],layout.sector_size)?;
+    device.flush().map_err(|_|Error::Io)?;
+    Ok(())
+}
+
+fn gpt_entry_is_empty(entry: &[u8]) -> bool { entry[..16].iter().all(|b|*b==0) }
+fn gpt_entry_range(entry: &[u8]) -> Result<(u64,u64),Error> {
+    Ok((gpt_u64(entry,32)?,gpt_u64(entry,40)?))
+}
+fn validate_gpt_new_range(
+    entries: &[u8], count: usize, first: u64, last: u64,
+    usable_first: u64, usable_last: u64, ignore_slot: Option<usize>,
+) -> Result<(),Error> {
+    if first<usable_first || last>usable_last || first>last { return Err(Error::OutOfRange); }
+    for slot in 0..count {
+        if Some(slot)==ignore_slot { continue; }
+        let e=&entries[slot*128..(slot+1)*128];
+        if gpt_entry_is_empty(e) { continue; }
+        let (a,b)=gpt_entry_range(e)?;
+        if first<=b && a<=last { return Err(Error::InvalidPartitionTable); }
+    }
+    Ok(())
+}
+
+/// Create a GPT partition in the first unused entry. The caller supplies the
+/// 16-byte type and unique GUIDs; GUID generation is deliberately left to the
+/// caller so this no_std driver never relies on weak/random identifiers.
+pub fn create_gpt_partition<D: BlockDevice>(
+    device: &mut D, sector_size: u32, type_guid: [u8;16], unique_guid: [u8;16],
+    first_lba: u64, last_lba: u64, attributes: u64, name_utf16: [u16;36],
+) -> Result<u32,Error> {
+    if type_guid.iter().all(|b|*b==0) || unique_guid.iter().all(|b|*b==0) {
+        return Err(Error::InvalidPartitionTable);
+    }
+    let mut primary=[0u8;4096]; let mut backup=[0u8;4096];
+    let mut entries=[0u8;GPT_MAX_ENTRIES_BYTES];
+    let layout=read_gpt_layout(device,sector_size,&mut primary,&mut backup,&mut entries)?;
+    validate_gpt_new_range(&entries,layout.entry_count,first_lba,last_lba,
+        layout.first_usable,layout.last_usable,None)?;
+    for slot in 0..layout.entry_count {
+        let e=&entries[slot*128..(slot+1)*128];
+        if !gpt_entry_is_empty(e) && e[16..32]==unique_guid { return Err(Error::InvalidPartitionTable); }
+    }
+    let slot=(0..layout.entry_count).find(|i|gpt_entry_is_empty(&entries[i*128..(i+1)*128]))
+        .ok_or(Error::OutOfRange)?;
+    let e=&mut entries[slot*128..(slot+1)*128];
+    e.fill(0); e[..16].copy_from_slice(&type_guid); e[16..32].copy_from_slice(&unique_guid);
+    e[32..40].copy_from_slice(&first_lba.to_le_bytes());
+    e[40..48].copy_from_slice(&last_lba.to_le_bytes());
+    e[48..56].copy_from_slice(&attributes.to_le_bytes());
+    for (i,ch) in name_utf16.iter().enumerate() {
+        e[56+i*2..58+i*2].copy_from_slice(&ch.to_le_bytes());
+    }
+    write_gpt_pair(device,&layout,&mut primary,&mut backup,&entries)?;
+    Ok(slot as u32)
+}
+
+/// Delete a GPT partition entry. This changes only partition metadata; it does
+/// not erase or overwrite the partition's former contents.
+pub fn delete_gpt_partition<D: BlockDevice>(
+    device: &mut D, sector_size: u32, slot: u32,
+) -> Result<(),Error> {
+    let mut primary=[0u8;4096]; let mut backup=[0u8;4096];
+    let mut entries=[0u8;GPT_MAX_ENTRIES_BYTES];
+    let layout=read_gpt_layout(device,sector_size,&mut primary,&mut backup,&mut entries)?;
+    let slot=slot as usize;
+    if slot>=layout.entry_count { return Err(Error::OutOfRange); }
+    let e=&mut entries[slot*128..(slot+1)*128];
+    if gpt_entry_is_empty(e) { return Err(Error::InvalidPartitionTable); }
+    e.fill(0);
+    write_gpt_pair(device,&layout,&mut primary,&mut backup,&entries)
+}
+
+/// Extend an existing GPT partition to a new inclusive ending LBA. Shrinking,
+/// overlap, and movement of the starting LBA are intentionally not permitted.
+pub fn extend_gpt_partition<D: BlockDevice>(
+    device: &mut D, sector_size: u32, slot: u32, new_last_lba: u64,
+) -> Result<DiskPartition,Error> {
+    let mut primary=[0u8;4096]; let mut backup=[0u8;4096];
+    let mut entries=[0u8;GPT_MAX_ENTRIES_BYTES];
+    let layout=read_gpt_layout(device,sector_size,&mut primary,&mut backup,&mut entries)?;
+    let slot=slot as usize;
+    if slot>=layout.entry_count { return Err(Error::OutOfRange); }
+    let e=&mut entries[slot*128..(slot+1)*128];
+    if gpt_entry_is_empty(e) { return Err(Error::InvalidPartitionTable); }
+    let (first,old_last)=gpt_entry_range(e)?;
+    if new_last_lba<=old_last { return Err(Error::InvalidGeometry); }
+    validate_gpt_new_range(&entries,layout.entry_count,first,new_last_lba,
+        layout.first_usable,layout.last_usable,Some(slot))?;
+    e[40..48].copy_from_slice(&new_last_lba.to_le_bytes());
+    write_gpt_pair(device,&layout,&mut primary,&mut backup,&entries)?;
+    Ok(DiskPartition{first_lba:first,sector_count:new_last_lba.checked_sub(first)
+        .and_then(|n|n.checked_add(1)).ok_or(Error::OutOfRange)?,sector_size:layout.sector_size as u32})
+}
+
+
 #[cfg(test)]
 mod host_tests {
     use super::*;
@@ -688,6 +932,77 @@ mod host_tests {
     }
 
 }
+
+#[cfg(test)]
+mod gpt_mutation_tests {
+    use super::*;
+    struct Disk { bytes: [u8;32768] }
+    impl ReadOnlyBlockDevice for Disk {
+        type DeviceError=();
+        fn capacity_bytes(&self)->u64 { self.bytes.len() as u64 }
+        fn read_at(&mut self,o:u64,b:&mut[u8])->Result<(),()> {
+            let s=o as usize; let e=s.checked_add(b.len()).ok_or(())?;
+            b.copy_from_slice(self.bytes.get(s..e).ok_or(())?); Ok(())
+        }
+    }
+    impl BlockDevice for Disk {
+        fn write_at(&mut self,o:u64,b:&[u8])->Result<(),()> {
+            let s=o as usize; let e=s.checked_add(b.len()).ok_or(())?;
+            self.bytes.get_mut(s..e).ok_or(())?.copy_from_slice(b); Ok(())
+        }
+        fn flush(&mut self)->Result<(),()> { Ok(()) }
+    }
+    fn make_disk()->Disk {
+        let mut d=Disk{bytes:[0;32768]};
+        let count=4usize; let array_len=count*128;
+        let mut entries=[0u8;512];
+        entries[..16].fill(0x11);
+        entries[16..32].fill(0x22);
+        entries[32..40].copy_from_slice(&8u64.to_le_bytes());
+        entries[40..48].copy_from_slice(&15u64.to_le_bytes());
+        let crc=crc32_ieee(&entries[..array_len]);
+        d.bytes[2*512..2*512+array_len].copy_from_slice(&entries[..array_len]);
+        let backup_entries_lba=62u64;
+        d.bytes[backup_entries_lba as usize*512..backup_entries_lba as usize*512+array_len].copy_from_slice(&entries[..array_len]);
+        for (lba,alt,entries_lba) in [(1u64,63u64,2u64),(63u64,1u64,62u64)] {
+            let h=&mut d.bytes[lba as usize*512..(lba as usize+1)*512];
+            h[..8].copy_from_slice(b"EFI PART"); h[8..12].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+            h[12..16].copy_from_slice(&92u32.to_le_bytes()); h[24..32].copy_from_slice(&lba.to_le_bytes());
+            h[32..40].copy_from_slice(&alt.to_le_bytes()); h[40..48].copy_from_slice(&4u64.to_le_bytes());
+            h[48..56].copy_from_slice(&60u64.to_le_bytes()); h[72..80].copy_from_slice(&entries_lba.to_le_bytes());
+            h[80..84].copy_from_slice(&(count as u32).to_le_bytes()); h[84..88].copy_from_slice(&128u32.to_le_bytes());
+            h[88..92].copy_from_slice(&crc.to_le_bytes());
+            let c=crc32_ieee(&h[..92]); h[16..20].copy_from_slice(&c.to_le_bytes());
+        }
+        d
+    }
+    #[test]
+    fn gpt_partition_create_extend_delete_updates_both_crc_protected_copies() {
+        let mut d=make_disk();
+        let slot=create_gpt_partition(&mut d,512,[0x33;16],[0x44;16],20,29,0,[0;36]).unwrap();
+        assert_eq!(slot,1);
+        assert_eq!(read_gpt_partition(&mut d,slot,512).unwrap(),
+            DiskPartition{first_lba:20,sector_count:10,sector_size:512});
+        let p=extend_gpt_partition(&mut d,512,slot,39).unwrap();
+        assert_eq!(p,DiskPartition{first_lba:20,sector_count:20,sector_size:512});
+        assert_eq!(read_gpt_partition(&mut d,slot,512).unwrap(),p);
+        delete_gpt_partition(&mut d,512,slot).unwrap();
+        assert_eq!(read_gpt_partition(&mut d,slot,512),Err(Error::InvalidPartitionTable));
+        // The primary and backup header checksums and both entry-array CRCs
+        // are revalidated by every mutation's subsequent read.
+        let mut p=[0u8;4096]; let mut b=[0u8;4096]; let mut e=[0u8;GPT_MAX_ENTRIES_BYTES];
+        read_gpt_layout(&mut d,512,&mut p,&mut b,&mut e).unwrap();
+    }
+    #[test]
+    fn gpt_partition_mutations_reject_overlap_and_out_of_usable_bounds() {
+        let mut d=make_disk();
+        assert_eq!(create_gpt_partition(&mut d,512,[0x33;16],[0x44;16],14,20,0,[0;36]),
+            Err(Error::InvalidPartitionTable));
+        assert_eq!(create_gpt_partition(&mut d,512,[0x33;16],[0x44;16],59,61,0,[0;36]),
+            Err(Error::OutOfRange));
+    }
+}
+
 const CHECKSUM_TYPE_OFFSET_FOR_TEST: usize = 373;
 
 #[cfg(test)]
