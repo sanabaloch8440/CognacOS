@@ -448,6 +448,14 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
 /// Return the private second-level root for diagnostics and DMA mapper setup.
 /// The returned physical address is not a DMA address and must never be exposed
 /// to a device.
+pub fn requester_domain_exists(id:RequesterId)->bool{
+ let _guard=LOCK.lock();let domains=unsafe{&*DOMAINS.0.get()};
+ domains.iter().any(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8)
+}
+pub fn requester_domain_usable(id:RequesterId)->bool{
+ let _guard=LOCK.lock();let domains=unsafe{&*DOMAINS.0.get()};
+ domains.iter().any(|d|d.id!=0&&!d.poisoned&&d.bus==id.bus&&d.devfn==id.devfn() as u8)
+}
 pub fn requester_domain_root(id:RequesterId)->Option<(u16,u64)>{
  let _guard=LOCK.lock();
  let domains=unsafe{&*DOMAINS.0.get()};
@@ -481,9 +489,9 @@ unsafe extern "system" fn generic_dma_map(
  if logical_out.is_null()||cookie_out.is_null()||device==0||length==0{return STATUS_INVALID_PARAMETER}
  let Some(id)=requester_for_device(device) else{return STATUS_NOT_SUPPORTED};
  if !is_enabled(){return STATUS_DEVICE_NOT_READY}
- if requester_domain_root(id).is_none(){
-  if unsafe{create_requester_domain(id)}.is_err(){return STATUS_NOT_SUPPORTED}
- }
+ if requester_domain_exists(id){
+  if !requester_domain_usable(id){return STATUS_DEVICE_NOT_READY}
+ }else if unsafe{create_requester_domain(id)}.is_err(){return STATUS_NOT_SUPPORTED}
  let offset=physical&(SL_PAGE-1);
  let physical_base=physical&!(SL_PAGE-1);
  let span=match offset.checked_add(length as u64).and_then(|n|n.checked_add(SL_PAGE-1)){Some(n)=>n&!(SL_PAGE-1),None=>return STATUS_INVALID_PARAMETER};
