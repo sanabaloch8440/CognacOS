@@ -526,6 +526,8 @@ static VECTOR_HANDLERS: [core::sync::atomic::AtomicUsize; 256] =
     [const { core::sync::atomic::AtomicUsize::new(0) }; 256];
 static VECTOR_CONTEXTS: [core::sync::atomic::AtomicUsize; 256] =
     [const { core::sync::atomic::AtomicUsize::new(0) }; 256];
+static VECTOR_IN_FLIGHT:[core::sync::atomic::AtomicUsize;256]=
+    [const{core::sync::atomic::AtomicUsize::new(0)};256];
 static VECTOR_REGISTRATION_LOCK: crate::hal::IrqSpinLock<()> = crate::hal::IrqSpinLock::new(());
 
 /// Reserve a device interrupt vector. Architectural exceptions, timer, IPI,
@@ -544,7 +546,14 @@ pub fn allocate_interrupt_vector() -> Result<u8, ApicError> {
 pub fn release_interrupt_vector(vector: u8) -> Result<(), ApicError> {
     if !(VECTOR_FIRST..=VECTOR_LAST).contains(&vector) { return Err(ApicError::InvalidVector); }
     let _guard = VECTOR_REGISTRATION_LOCK.lock();
+    // Detach the callback before waiting: a later/stale interrupt observes
+    // an empty vector, while dispatches that already acquired it are counted.
     VECTOR_HANDLERS[vector as usize].store(0, Ordering::Release);
+    let mut spins=0usize;
+    while VECTOR_IN_FLIGHT[vector as usize].load(Ordering::Acquire)!=0&&spins<1_000_000{
+        core::hint::spin_loop();spins+=1;
+    }
+    if VECTOR_IN_FLIGHT[vector as usize].load(Ordering::Acquire)!=0{return Err(ApicError::Timeout)}
     VECTOR_CONTEXTS[vector as usize].store(0, Ordering::Release);
     VECTOR_ALLOCATED[vector as usize].store(false, Ordering::Release);
     Ok(())
@@ -578,6 +587,7 @@ pub fn interrupt_handler_registered(vector: u8) -> bool {
 /// local-APIC EOI is issued after the callback, even when it reports unhandled.
 /// The entry stub must not also EOI this vector (avoid double acknowledgement).
 pub unsafe fn dispatch_external_interrupt(vector: u8, frame: *mut core::ffi::c_void) -> bool {
+    VECTOR_IN_FLIGHT[vector as usize].fetch_add(1,Ordering::AcqRel);
     let raw = VECTOR_HANDLERS[vector as usize].load(Ordering::Acquire);
     let handled = if raw == 0 { false } else {
         let callback: InterruptHandler = unsafe { core::mem::transmute(raw) };
@@ -587,6 +597,7 @@ pub unsafe fn dispatch_external_interrupt(vector: u8, frame: *mut core::ffi::c_v
     if let Some(base) = local_apic_base() {
         unsafe { local_apic_eoi(base); }
     }
+    VECTOR_IN_FLIGHT[vector as usize].fetch_sub(1,Ordering::Release);
     // Run deferred device work only after ISR return and APIC acknowledgement.
     crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();
     handled
