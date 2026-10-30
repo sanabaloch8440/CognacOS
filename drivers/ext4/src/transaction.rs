@@ -69,7 +69,8 @@ pub struct MetadataOwnership {
 }
 
 /// Caller-backed, sorted-or-unsorted exact block ownership allowlist.
-/// Duplicate physical blocks are rejected to avoid ambiguous aliases.
+/// Distinct inodes may own one shared external xattr block; all other physical
+/// aliases and duplicate owner records are rejected.
 pub struct MetadataOwnershipMap<'a> {
     entries: &'a [MetadataOwnership],
 }
