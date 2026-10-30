@@ -773,9 +773,9 @@ static DEVICE_IN_FLIGHT:[core::sync::atomic::AtomicU32;256]=[const{core::sync::a
 static DEVICE_ROUTE_IO_BASE:[core::sync::atomic::AtomicU64;256]=[const{core::sync::atomic::AtomicU64::new(0)};256];
 static DEVICE_ROUTE_GSI_BASE:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
 static DEVICE_ROUTE_GSI:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
-type DeviceDpcQueueHook=extern "C" fn(*mut core::ffi::c_void)->bool;
-type DeviceDpcRemoveHook=extern "C" fn(*mut core::ffi::c_void)->bool;
-type DeviceDpcInitHook=extern "C" fn(*mut core::ffi::c_void,usize);
+pub type DeviceDpcQueueHook=extern "C" fn(*mut core::ffi::c_void)->bool;
+pub type DeviceDpcRemoveHook=extern "C" fn(*mut core::ffi::c_void)->bool;
+pub type DeviceDpcInitHook=extern "C" fn(*mut core::ffi::c_void,usize);
 static DEVICE_DPC_INIT_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static DEVICE_DPC_QUEUE_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static DEVICE_DPC_REMOVE_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
@@ -800,7 +800,7 @@ pub fn bind_device_interrupt_route(vector:u8,io_base:u64,gsi_base:u32,gsi:u32)->
     DEVICE_ROUTE_GSI_BASE[i].store(gsi_base,Ordering::Release);
     DEVICE_ROUTE_GSI[i].store(gsi,Ordering::Release);Ok(())
 }
-unsafe extern "win64" fn device_dpc_dispatch(_dpc:*mut core::ffi::c_void,context:*mut core::ffi::c_void,_a1:*mut core::ffi::c_void,_a2:*mut core::ffi::c_void){
+pub unsafe extern "win64" fn device_dpc_dispatch(_dpc:*mut core::ffi::c_void,context:*mut core::ffi::c_void,_a1:*mut core::ffi::c_void,_a2:*mut core::ffi::c_void){
     let i=context as usize;if i>=256||!DEVICE_ACTIVE[i].load(Ordering::Acquire){return}
     DEVICE_IN_FLIGHT[i].fetch_add(1,Ordering::AcqRel);
     if !DEVICE_ACTIVE[i].load(Ordering::Acquire){DEVICE_IN_FLIGHT[i].fetch_sub(1,Ordering::Release);return}
