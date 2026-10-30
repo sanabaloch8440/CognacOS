@@ -163,6 +163,80 @@ pub fn initialize_regular_inode(
  Ok(())
 }
 
+/// Initialize a new directory inode with one inline extent for its first
+/// data block. The block must already be allocated in the group's block bitmap.
+pub fn initialize_directory_inode(
+ sb:&[u8],inode_number:u32,inode:&mut[u8],meta:NewInodeMetadata,
+ first_block:u64,
+)->Result<(),Error>{
+ let parsed=Superblock::parse(sb)?;
+ if inode.len()<parsed.inode_size as usize||inode_number==0||meta.links<2
+  ||meta.mode&0xf000!=0x4000||!parsed.has_extents()||first_block==0||first_block>=parsed.blocks_count{
+  return Err(Error::InvalidGeometry)
+ }
+ validate_superblock_checksum(sb)?;
+ inode.fill(0);put16(inode,0,meta.mode)?;
+ put32(inode,8,meta.atime)?;put32(inode,12,meta.ctime)?;put32(inode,16,meta.mtime)?;
+ put16(inode,26,meta.links)?;put32(inode,28,parsed.block_size/512)?;
+ put32(inode,32,0x0008_0000)?;put32(inode,100,meta.generation)?;
+ put16(inode,2,meta.uid as u16)?;put16(inode,24,meta.gid as u16)?;
+ if inode.len()>=124{put16(inode,120,(meta.uid>>16) as u16)?;put16(inode,122,(meta.gid>>16) as u16)?}
+ put32(inode,4,parsed.block_size)?;
+ if inode.len()>=112{put32(inode,108,0)?}
+ inode[40..100].fill(0);put16(inode,40,0xf30a)?;put16(inode,44,4)?;
+ insert_inline_extent(&mut inode[40..100],0,first_block,1)?;
+ if metadata_csum(sb)?{update_inode_checksum(sb,inode_number,inode)?}
+ Ok(())
+}
+
+/// Construct the first directory block containing "." and "..", including
+/// the ext4 metadata checksum tail when the feature is enabled.
+pub fn initialize_directory_block(
+ sb:&[u8],directory_inode:u32,parent_inode:u32,generation:u32,block:&mut[u8],
+)->Result<(),Error>{
+ let parsed=Superblock::parse(sb)?;
+ if block.len()!=parsed.block_size as usize||directory_inode==0||parent_inode==0
+  ||directory_inode>parsed.inodes_count||parent_inode>parsed.inodes_count{return Err(Error::InvalidGeometry)}
+ validate_superblock_checksum(sb)?;
+ let csum=metadata_csum(sb)?;let limit=dir_limit(block,csum)?;
+ if limit<24{return Err(Error::InvalidGeometry)}
+ block.fill(0);
+ put32(block,0,directory_inode)?;put16(block,4,12)?;block[6]=1;block[7]=2;block[8]=b'.';
+ put32(block,12,parent_inode)?;put16(block,16,(limit-12) as u16)?;block[18]=2;block[19]=2;block[20]=b'.';block[21]=b'.';
+ if csum{
+  let tail=limit;put32(block,tail,0)?;put16(block,tail+4,12)?;block[tail+6]=0;block[tail+7]=0xde;
+  update_directory_block_checksum(sb,directory_inode,generation,block)?;
+ }
+ Ok(())
+}
+
+/// Create a regular file's inode and parent-directory entry in caller-owned
+/// metadata buffers. The inode bitmap allocation and all changed blocks must
+/// be included in the same JBD2 commit.
+pub fn create_regular_file_entry(
+ sb:&[u8],parent_inode:u32,parent_generation:u32,parent_directory:&mut[u8],
+ inode_number:u32,inode:&mut[u8],meta:NewInodeMetadata,total_inodes:u32,name:&[u8],
+)->Result<(),Error>{
+ if meta.mode&0xf000!=0x8000{return Err(Error::InvalidGeometry)}
+ initialize_regular_inode(sb,inode_number,inode,meta)?;
+ insert_directory_entry(sb,parent_inode,parent_generation,parent_directory,total_inodes,inode_number,name,1)
+}
+
+/// Decrement a regular inode's link count and set deletion time when the last
+/// link is removed. The caller frees its extents and inode bitmap in the same
+/// transaction when reclaim_inode is true.
+pub fn unlink_regular_inode(
+ sb:&[u8],inode_number:u32,inode:&mut[u8],deletion_time:u32,
+)->Result<bool,Error>{
+ if inode.len()<128||le16(inode,0)?&0xf000!=0x8000{return Err(Error::UnsupportedFormat)}
+ validate_inode_before_mutation(sb,inode_number,inode)?;
+ let links=le16(inode,26)?;if links==0{return Err(Error::InvalidGeometry)}
+ let remaining=links-1;put16(inode,26,remaining)?;
+ if remaining==0{put32(inode,20,deletion_time)?}
+ if metadata_csum(sb)?{update_inode_checksum(sb,inode_number,inode)?}
+ Ok(remaining==0)
+}
+
 /// Remove a directory name and return its inode number. Link-count updates,
 /// inode reclamation, and extent freeing must be staged in the same journal
 /// transaction by the filesystem operation coordinator.
