@@ -13,6 +13,44 @@ pub const FEATURE_INCOMPAT_ASYNC_COMMIT:u32=4;
 pub const FEATURE_INCOMPAT_CSUM_V2:u32=8;
 pub const FEATURE_INCOMPAT_CSUM_V3:u32=16;
 pub const FEATURE_INCOMPAT_FAST_COMMIT:u32=32;
+/// On-disk JBD2 checksum feature selected by the journal superblock.
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum ChecksumMode { None, V1, V2, V3 }
+
+/// Decode JBD2 checksum feature bits and reject contradictory combinations.
+/// V1 is the COMPAT checksum bit; V2/V3 are INCOMPAT bits.
+pub fn checksum_mode(feature_compat:u32,feature_incompat:u32)->Result<ChecksumMode,Error>{
+ let v1=feature_compat&0x0001!=0;
+ let v2=feature_incompat&FEATURE_INCOMPAT_CSUM_V2!=0;
+ let v3=feature_incompat&FEATURE_INCOMPAT_CSUM_V3!=0;
+ if (v1 as u8+v2 as u8+v3 as u8)>1{return Err(Error::UnsupportedFeature)}
+ Ok(if v1{ChecksumMode::V1}else if v2{ChecksumMode::V2}else if v3{ChecksumMode::V3}else{ChecksumMode::None})
+}
+
+/// Verify the trailing CRC32C on a checksum-v2/v3 descriptor or revoke block.
+pub fn verify_metadata_checksum(uuid:&[u8;16],block:&[u8])->bool{
+ let seed=crate::checksum::jbd2_csum_seed(uuid);
+ crate::checksum::verify_jbd2_metadata_block(seed,block)
+}
+
+/// Verify the checksum-v2/v3 commit block checksum (stored at bytes 16..20).
+pub fn verify_commit_checksum(uuid:&[u8;16],block:&[u8])->bool{
+ if block.len()<20{return false}
+ let seed=crate::checksum::jbd2_csum_seed(uuid);
+ let Some(expected)=crate::checksum::jbd2_commit_checksum(seed,block) else{return false};
+ let stored=u32::from_be_bytes([block[16],block[17],block[18],block[19]]);
+ expected==stored
+}
+
+/// Verify a checksum-v2 (16-bit) or checksum-v3 (32-bit) descriptor tag
+/// against the complete journal data block.
+pub fn verify_tag_checksum(uuid:&[u8;16],sequence:u32,data:&[u8],stored:u32,mode:ChecksumMode)->bool{
+ if mode!=ChecksumMode::V2&&mode!=ChecksumMode::V3{return false}
+ let seed=crate::checksum::jbd2_csum_seed(uuid);
+ let calculated=crate::checksum::jbd2_tag_checksum(seed,sequence,data);
+ match mode{ChecksumMode::V2=>(calculated as u16)==(stored as u16),ChecksumMode::V3=>calculated==stored,_=>false}
+}
+
 const SUPPORTED_INCOMPAT:u32=FEATURE_INCOMPAT_REVOKE|FEATURE_INCOMPAT_64BIT;
 const TAG_ESCAPE:u32=1;
 const TAG_SAME_UUID:u32=2;
