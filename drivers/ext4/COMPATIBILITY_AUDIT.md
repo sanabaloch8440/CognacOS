@@ -37,7 +37,7 @@ metadata CRC calculation includes the full block with the tail field treated
 as zero. The commit writer explicitly refuses checksum-enabled journals so
 it cannot emit malformed v2/v3 transactions.
 
-**Remaining gaps:** checksum-v1 transaction-wide CRC32 is still rejected;
+**Remaining gaps:** checksum-v1 transaction-wide CRC32 replay is now implemented;
 superblock checksum validation and checksum-enabled journal writing are not
 implemented; Linux-generated image interoperability and crash-injection
 coverage are still required. Do not enable writable ext4 mounts based on this
@@ -114,7 +114,7 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 ## Required milestones before writable ext4
 
 1. [x] Implement bounded Linux-style system-zone construction for supported non-META_BG layouts; retain it in CheckedExtFilesystem, protect internal journal inode extents, and validate checked extent-tree child nodes and mapped data blocks. The new checked block allocator skips free bitmap bits that overlap the retained map, and the checked free path rejects system-zone blocks. Existing unchecked allocation/free primitives remain for low-level tests and must not be used by mounted mutation paths.
-2. [~] The committed-transaction scan/revoke/replay path now supports an ext4-specific replay target policy and rejects writes into the journal's own extents. Still required: JBD2 checksum-v1/v2/v3, Linux-compatible revoke/checksum corner cases, and exact metadata ownership validation; unsupported formats remain fail-closed.
+2. [~] The committed-transaction scan/revoke/replay path now supports an ext4-specific replay target policy and rejects writes into the journal's own extents. Still required: Linux-compatible revoke/checksum corner cases and exact metadata ownership validation; unsupported formats remain fail-closed.
 3. [~] Internal journal discovery, extent mapping, committed replay, journal-self-overwrite protection, journal-superblock update, and flush are connected to `CheckedExtFilesystem::mount_with_recovery`. Crash-injection validation is still required before treating recovery as production-ready.
 4. [~] Add a bounded mount-owned transaction coordinator with caller-backed staging, metadata-target policy, system-zone checks for ordered data/revokes, exclusive writer serialization, and partition-bounded I/O. Remaining: wire every filesystem operation through it, make mount-manager recovery automatic, add orphan handling, and prove failure/restart behavior with crash injection.
 5. Integrate allocation, inode initialization, parent directory updates, timestamps, link counts, orphan state, extent-tree split/merge, and truncation into one transaction.
@@ -137,7 +137,7 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 
 JBD2 replay now exposes a target-policy hook that is invoked for each committed, non-revoked home-block write. The internal-journal recovery path supplies a policy that rejects any target whose physical block is part of the journal inode's own mapped extent set. This prevents a corrupted descriptor from directing replay into the log that is still being scanned. A regression test proves the target is rejected before the home block is modified. The generic JBD2 API retains a filesystem-bounds-only policy for non-ext4 users; ext4 recovery always uses the stricter journal-isolation policy.
 
-This does not yet establish that every replay target is a valid ext4 metadata object, nor does it add journal checksums. The journal checksum-v1/v2/v3, async-commit and fast-commit formats remain rejected. Replay target validation against exact inode/bitmap/directory metadata ownership remains required before writable mounting.
+This does not yet establish that every replay target is a valid ext4 metadata object, nor does it add journal checksums. Checksum-v1/v2/v3 replay is supported; async-commit and fast-commit formats remain rejected. Replay target validation against exact inode/bitmap/directory metadata ownership remains required before writable mounting.
 
 ## Transaction coordinator milestone (2026-10-30)
 
@@ -167,4 +167,11 @@ Linux master supports both the legacy singly linked orphan list and the newer or
 
 ## JBD2 superblock checksum validation (2026-10-30)
 
-JBD2 checksum-v2/v3 superblock parsing now verifies the checksum type is CRC32C and validates the CRC32C over the complete 1024-byte journal superblock with the checksum field at offset 0xfc zeroed. A checksum mismatch returns `InvalidChecksum` before recovery can trust the superblock's ring geometry, sequence, UUID, or start pointer. Regression coverage builds a valid v3 superblock, confirms parsing, then corrupts a protected byte and confirms rejection. Checksum-v1, async commit, fast commit, checksum-enabled journal writing, and writable mounts remain unsupported.
+JBD2 checksum-v2/v3 superblock parsing now verifies the checksum type is CRC32C and validates the CRC32C over the complete 1024-byte journal superblock with the checksum field at offset 0xfc zeroed. A checksum mismatch returns `InvalidChecksum` before recovery can trust the superblock's ring geometry, sequence, UUID, or start pointer. Regression coverage builds a valid v3 superblock, confirms parsing, then corrupts a protected byte and confirms rejection. Async commit, fast commit, checksum-enabled journal writing, and writable mounts remain unsupported.
+
+
+## JBD2 checksum-v1 transaction replay (2026-10-30)
+
+Checksum-v1 is now accepted by the journal superblock feature decoder and verified end-to-end during replay. The implementation follows Linux `fs/jbd2/recovery.c`: it initializes the transaction CRC state to all ones, folds in each complete descriptor block and every following data block in log order using non-reflected CRC-32/IEEE (`crc32_be`), then checks the commit header's CRC32 type, size 4, and checksum value. Revoke blocks and the commit block itself are not included. Deleted tags still consume their data block and include it in the CRC stream. New tests cover a valid transaction, descriptor corruption, payload corruption, and deleted-tag stream alignment. This is intentionally fail-closed on a bad/missing checksum rather than accepting an unverified transaction. Linux also has compatibility handling for an all-zero checksum header on some older transactions; CognacOS currently requires the checksum header and value to be present when the v1 feature is enabled, which is stricter and may reject those legacy journals.
+
+**Remaining JBD2 gaps:** async commit and fast commit; Linux-style multi-pass scan/revoke/replay edge cases and commit-time stale-log discrimination; checksum-enabled journal writing; full external journal binding; broader Linux-generated image and power-loss tests. Writable ext4 mounts remain disabled.
