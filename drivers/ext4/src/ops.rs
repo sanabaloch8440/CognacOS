@@ -261,7 +261,6 @@ pub fn insert_directory_entry(
  if child_inode==0||child_inode>total_inodes||name.is_empty()||name.len()>255
   ||name.iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}
  validate_superblock_checksum(sb)?;
- validate_superblock_checksum(sb)?;
  let csum=metadata_csum(sb)?;if csum{validate_directory_block_checksum(sb,directory_inode,generation,block)?}
  let limit=dir_limit(block,csum)?;validate_dir_entries(block,limit,total_inodes)?;
  let need=ideal_rec_len(name.len())?;let mut off=0usize;let mut placed=false;
@@ -297,6 +296,7 @@ pub fn remove_directory_entry(
  sb:&[u8],directory_inode:u32,generation:u32,block:&mut[u8],total_inodes:u32,name:&[u8],
 )->Result<u32,Error>{
  if name.is_empty()||name.iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}
+ validate_superblock_checksum(sb)?;
  let csum=metadata_csum(sb)?;if csum{validate_directory_block_checksum(sb,directory_inode,generation,block)?}
  let limit=dir_limit(block,csum)?;validate_dir_entries(block,limit,total_inodes)?;
  let mut off=0usize;let mut previous:Option<usize>=None;
