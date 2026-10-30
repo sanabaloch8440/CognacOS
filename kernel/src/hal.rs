@@ -826,7 +826,9 @@ unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->Drive
     if !(0x20..=0xdf).contains(&vector){return driver_hal_invalid()}
     let i=vector as usize;if DEVICE_CONTEXT[i].load(Ordering::Acquire)!=context||DEVICE_ISR[i].load(Ordering::Acquire)==0{return driver_hal_invalid()}
     let io=DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);
-    if io!=0{let _=unsafe{set_device_interrupt_route_enabled(io,DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),DEVICE_ROUTE_GSI[i].load(Ordering::Acquire),false)};}
+    if io!=0&&unsafe{set_device_interrupt_route_enabled(io,DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),DEVICE_ROUTE_GSI[i].load(Ordering::Acquire),false)}.is_err(){
+        return driver_hal_unsupported()
+    }
     // Stop new callbacks first, remove a pending DPC, then wait for any ISR
     // or already-running DPC to leave before releasing driver-owned context.
     DEVICE_ACTIVE[i].store(false,Ordering::Release);
@@ -836,7 +838,8 @@ unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->Drive
     while DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0&&spins<1_000_000{core::hint::spin_loop();spins+=1;}
     if DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0{return driver_hal_unsupported()}
     DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);DEVICE_CONTEXT[i].store(0,Ordering::Release);
-    DEVICE_ROUTE_IO_BASE[i].store(0,Ordering::Release);let _=release_device_interrupt_vector(vector as u8);
+    DEVICE_ROUTE_IO_BASE[i].store(0,Ordering::Release);
+    if release_device_interrupt_vector(vector as u8).is_err(){return driver_hal_unsupported()}
     driver_hal_success()
 }
 unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->DriverHalStatus{
