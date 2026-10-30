@@ -20,6 +20,20 @@ A numerical claim such as “99% compatible” is not currently measurable. Comp
 
 **Important:** this inventory is not yet integrated into journal replay's metadata ownership manifest. Xattr blocks remain denied replay targets. Large EA inodes/value-inode references are not supported. This batch does not enable writable mounts.
 
+## Follow-up hardening batch (2026-10-30)
+
+The subsequent implementation batch made the following bounded changes:
+
+- Removed duplicate superblock feature/revision checks and added per-group bitmap-capacity bounds for `s_blocks_per_group` and `s_inodes_per_group`.
+- Tightened JBD2 superblock geometry: journal block sizes are capped at 64 KiB, and a nonzero recovery start must lie at or beyond `s_first` while remaining below `s_maxlen`.
+- Made async-commit and fast-commit rejection explicit in the JBD2 incompat-feature gate.
+- Extended the metadata ownership map to represent multiple distinct inode owners for one external xattr block. Duplicate owner records, cross-kind physical aliases, and ownerless Xattr records are rejected. `owner_count` exposes the number of recorded owners.
+
+The ownership-map change is **not** replay authorization by itself. The complete checked-mount xattr inventory and its on-disk reference-count reconciliation must be supplied before any shared xattr block is admitted to a replay manifest. This batch deliberately leaves replay and general writable mounting disabled.
+
+Regression tests were added for shared-xattr owner records and JBD2 ring geometry. They have been committed but have **not** been executed in a local Cargo build or verified by a completed CI run in this work session. See [FEATURE_SUPPORT_MATRIX.md](FEATURE_SUPPORT_MATRIX.md) for the current explicit feature policy.
+
+
 ## Feature and subsystem comparison
 
 | Area | CognacOS current state | Linux master expectation | Remaining work |
