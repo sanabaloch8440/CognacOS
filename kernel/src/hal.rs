@@ -857,10 +857,13 @@ mod driver_service_publication_tests {
         assert!(table.set_irql.is_none());
     }
     #[test]
-    fn device_table_fails_closed_until_interrupt_backend_is_real() {
+    fn device_table_publishes_interrupt_services_but_dma_remains_iommu_gated() {
         let table=driver_device_service_table();
         assert!(table.compatible());
         assert!(!table.has_dma());
-        assert!(!table.has_interrupts());
+        assert!(table.has_interrupts());
+        assert!(table.register_interrupt.is_some());
+        assert!(table.unregister_interrupt.is_some());
+        assert!(table.set_interrupt_enabled.is_some());
     }
 }
