@@ -1785,3 +1785,72 @@ mod mount_state_validation_tests {
         assert_eq!(validate_mount_state(&raw), Ok(()));
     }
 }
+
+
+#[cfg(test)]
+mod compatibility_edge_tests {
+    use super::*;
+    use crate::system_zone::{BlockRange, SystemZoneMap};
+
+    struct ZeroDevice;
+    impl ReadOnlyBlockDevice for ZeroDevice {
+        type DeviceError = ();
+        fn capacity_bytes(&self) -> u64 { 16 * 1024 * 1024 }
+        fn read_at(&mut self, _offset: u64, out: &mut [u8]) -> Result<(), Self::DeviceError> {
+            out.fill(0);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn 64k_directory_record_length_zero_means_full_block() {
+        let mut block = [0u8; 65_536];
+        block[0..4].copy_from_slice(&2u32.to_le_bytes());
+        block[4..6].copy_from_slice(&0u16.to_le_bytes());
+        block[6] = 1;
+        block[8] = b'x';
+        assert_eq!(validate_directory_block(&block, 16), Ok(1));
+    }
+
+    #[test]
+    fn legacy_direct_data_pointer_cannot_alias_system_zone() {
+        let sb = Superblock {
+            inodes_count: 128, blocks_count: 4096, first_data_block: 1,
+            block_size: 1024, blocks_per_group: 1024, inodes_per_group: 128,
+            inode_size: 128, descriptor_size: 32, revision: 1,
+            feature_compat: 0, feature_incompat: 0, feature_ro_compat: 0,
+            read_only: true,
+        };
+        let ranges = [BlockRange { start: 20, end: 21 }];
+        let zones = SystemZoneMap::new(&ranges);
+        let mut inode_block_map = [0u8; 60];
+        inode_block_map[0..4].copy_from_slice(&20u32.to_le_bytes());
+        let mut a = [0u8; 1024];
+        let mut b = [0u8; 1024];
+        let result = map_legacy_block_checked_zones(
+            &mut ZeroDevice, &sb, &inode_block_map, 0, &mut a, &mut b, &zones,
+        );
+        assert_eq!(result, Err(Error::InvalidExtentTree));
+    }
+
+    #[test]
+    fn legacy_indirect_pointer_cannot_read_from_system_zone() {
+        let sb = Superblock {
+            inodes_count: 128, blocks_count: 4096, first_data_block: 1,
+            block_size: 1024, blocks_per_group: 1024, inodes_per_group: 128,
+            inode_size: 128, descriptor_size: 32, revision: 1,
+            feature_compat: 0, feature_incompat: 0, feature_ro_compat: 0,
+            read_only: true,
+        };
+        let ranges = [BlockRange { start: 20, end: 21 }];
+        let zones = SystemZoneMap::new(&ranges);
+        let mut inode_block_map = [0u8; 60];
+        inode_block_map[48..52].copy_from_slice(&20u32.to_le_bytes());
+        let mut a = [0u8; 1024];
+        let mut b = [0u8; 1024];
+        let result = map_legacy_block_checked_zones(
+            &mut ZeroDevice, &sb, &inode_block_map, 12, &mut a, &mut b, &zones,
+        );
+        assert_eq!(result, Err(Error::InvalidExtentTree));
+    }
+}
