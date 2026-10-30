@@ -176,10 +176,12 @@ fn validate_dx_root(block: &[u8]) -> Result<(u8, u8), Error> {
         || le16(block, 4)? != 12
         || block[6] != 1
         || block[8] != b'.'
+        || block[9..12] != [0, 0, 0]
         || le32(block, 12)? == 0
         || ext4_rec_len(le16(block, 16)?, block.len()) != block.len() - 12
         || block[18] != 2
         || &block[20..22] != b".."
+        || block[22..24] != [0, 0]
     {
         return Err(Error::InvalidDirectoryEntry);
     }
@@ -441,8 +443,8 @@ pub fn lookup_htree_name<R: DirectoryBlockReader>(
     }
     let version = effective_hash_version(validate_dx_root(root)?.0, hash_unsigned)?;
     // "." and ".." live in dx_root itself, not in any indexed leaf.
-    if name == b"." { return Ok(le32(root, 0)?); }
-    if name == b".." { return Ok(le32(root, 12)?); }
+    if name == b"." { let ino=le32(root,0)?;if ino==0||ino>total_inodes{return Err(Error::InvalidDirectoryEntry)}return Ok(ino); }
+    if name == b".." { let ino=le32(root,12)?;if ino==0||ino>total_inodes{return Err(Error::InvalidDirectoryEntry)}return Ok(ino); }
     let hash = hash_directory_name(version, hash_seed, name, siphash_key)?;
     let mut path = lookup_htree_path(reader, root, directory_blocks, hash.major, metadata_csum, inode_seed, scratch)?;
     loop {
