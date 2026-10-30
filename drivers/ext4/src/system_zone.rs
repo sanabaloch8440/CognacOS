@@ -532,7 +532,11 @@ fn validate_inode_allocated<D: ReadOnlyBlockDevice>(
     let index = (group % descriptors_per_block) as usize;
     let start = index.checked_mul(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
     let end = start.checked_add(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
-    let descriptor = scratch.get(start..end).ok_or(Error::Truncated)?;
+    if sb.descriptor_size as usize > 64 { return Err(Error::UnsupportedFormat); }
+    let source = scratch.get(start..end).ok_or(Error::Truncated)?;
+    let mut descriptor_copy = [0u8; 64];
+    descriptor_copy[..source.len()].copy_from_slice(source);
+    let descriptor = &descriptor_copy[..source.len()];
     if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
         validate_group_descriptor_checksum(raw_superblock, group, descriptor)?;
     }
