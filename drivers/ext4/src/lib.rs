@@ -17,7 +17,7 @@ pub mod transaction;
 pub mod xattr;
 pub use transaction::{FilesystemBlockAdapter, MetadataObjectKind, MetadataOwnership, MetadataOwnershipMap, MetadataTargetPolicy, OperationBuilder, OperationKind, Transaction, TransactionCoordinator, MAX_STAGED_BLOCKS};
 pub use orphan::{recover_orphan_chain, OrphanRecord, OrphanRecoveryTransaction};
-pub use xattr::{validate_external_xattr_block, validate_external_xattr_checksum, ExternalXattrBlockInfo, XattrError};
+pub use xattr::{external_xattr_checksum_seed, validate_external_xattr_block, validate_external_xattr_checksum, ExternalXattrBlockInfo, XattrError};
 pub use system_zone::{discover_allocated_directories, validate_directory_namespace, recover_internal_journal, recover_internal_journal_with_policy, CheckedExtFilesystem, build_system_metadata_ownership, build_system_zones, map_extent_block_checked_zones, map_extent_block_checked_zones_for_inode, protect_reserved_journal_inode_zones, validate_data_extent, BlockRange, SystemZoneMap};
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
