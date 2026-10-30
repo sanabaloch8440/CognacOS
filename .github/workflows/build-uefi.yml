@@ -132,6 +132,10 @@ jobs:
         run: cargo check --manifest-path drivers/kbdhid/Cargo.toml --lib
       - name: Test HID keyboard report transitions
         run: cargo test --manifest-path drivers/kbdhid/Cargo.toml --target x86_64-unknown-linux-gnu --lib
+      - name: Check Windows x64 beep driver core
+        run: cargo check --manifest-path drivers/beep/Cargo.toml --lib
+      - name: Test Windows BEEP IOCTL, parameter validation and PIT speaker programming
+        run: cargo test --manifest-path drivers/beep/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Check PS/2 i8042 port driver
         run: cargo check --manifest-path drivers/i8042prt/Cargo.toml --lib
       - name: Test PS/2 scan-code and bounded polling
