@@ -778,8 +778,10 @@ fn write_gpt_pair<D: BlockDevice>(
     put_u32(backup,88,crc)?;
     put_u32(primary,16,0)?;
     put_u32(backup,16,0)?;
-    put_u32(primary,16,crc32_ieee(&primary[..layout.header_size]))?;
-    put_u32(backup,16,crc32_ieee(&backup[..layout.header_size]))?;
+    let primary_header_crc=crc32_ieee(&primary[..layout.header_size]);
+    let backup_header_crc=crc32_ieee(&backup[..layout.header_size]);
+    put_u32(primary,16,primary_header_crc)?;
+    put_u32(backup,16,backup_header_crc)?;
 
     // Commit the backup copy first. A power loss can leave a stale primary,
     // but the backup remains independently valid and recoverable.
@@ -873,13 +875,15 @@ pub fn extend_gpt_partition<D: BlockDevice>(
     let layout=read_gpt_layout(device,sector_size,&mut primary,&mut backup,&mut entries)?;
     let slot=slot as usize;
     if slot>=layout.entry_count { return Err(Error::OutOfRange); }
-    let e=&mut entries[slot*128..(slot+1)*128];
-    if gpt_entry_is_empty(e) { return Err(Error::InvalidPartitionTable); }
-    let (first,old_last)=gpt_entry_range(e)?;
+    let (first,old_last)={
+        let e=&entries[slot*128..(slot+1)*128];
+        if gpt_entry_is_empty(e) { return Err(Error::InvalidPartitionTable); }
+        gpt_entry_range(e)?
+    };
     if new_last_lba<=old_last { return Err(Error::InvalidGeometry); }
     validate_gpt_new_range(&entries,layout.entry_count,first,new_last_lba,
         layout.first_usable,layout.last_usable,Some(slot))?;
-    e[40..48].copy_from_slice(&new_last_lba.to_le_bytes());
+    entries[slot*128+40..slot*128+48].copy_from_slice(&new_last_lba.to_le_bytes());
     write_gpt_pair(device,&layout,&mut primary,&mut backup,&entries)?;
     Ok(DiskPartition{first_lba:first,sector_count:new_last_lba.checked_sub(first)
         .and_then(|n|n.checked_add(1)).ok_or(Error::OutOfRange)?,sector_size:layout.sector_size as u32})
