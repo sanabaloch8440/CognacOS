@@ -60,6 +60,12 @@ pub unsafe extern "system" fn rundll32_entry() -> ! {
 
     let module=unsafe{LoadLibraryW(module_name.as_ptr())};
     if module.is_null(){unsafe{ExitProcess(1)}}
+    let mut entry_ansi=[0u8;512];
+    let mut ei=0usize;
+    while ei<entry_name.len() && entry_name[ei]!=0 {
+        if entry_name[ei]>0x7f {unsafe{FreeLibrary(module);ExitProcess(2)}}
+        entry_ansi[ei]=entry_name[ei] as u8; ei+=1;
+    }
     let address=if entry_name[0]==b'#' as u16 {
         let mut ordinal=0u16;
         let mut i=1usize;
@@ -71,7 +77,7 @@ pub unsafe extern "system" fn rundll32_entry() -> ! {
         if ordinal==0 {unsafe{FreeLibrary(module);ExitProcess(2)}}
         unsafe{GetProcAddress(module,ordinal as usize as *const c_char)}
     } else {
-        unsafe{GetProcAddress(module,entry_name.as_ptr().cast())}
+        unsafe{GetProcAddress(module,entry_ansi.as_ptr().cast())}
     };
     if address.is_null(){unsafe{FreeLibrary(module);ExitProcess(1)}}
     type RundllEntry=unsafe extern "system" fn(*mut c_void,*mut c_void,*const u16,i32);
