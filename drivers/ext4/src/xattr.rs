@@ -223,6 +223,57 @@ pub fn validate_external_xattr_checksum(
     Ok(())
 }
 
+
+/// Read the external-xattr block pointer from an already checksum-validated
+/// ext4 inode image. The caller must validate the inode checksum before
+/// relying on this pointer. With the 64-bit incompat feature, the high 16 bits
+/// live at i_osd2.l_i_file_acl_high (offset 118).
+pub fn external_xattr_block_pointer(inode: &[u8], feature_incompat: u32, blocks_count: u64) -> Result<Option<u64>, XattrError> {
+    const INCOMPAT_64BIT: u32 = 0x0080;
+    let low = u32le(inode, 104)? as u64;
+    let high = if feature_incompat & INCOMPAT_64BIT != 0 { u16le(inode, 118)? as u64 } else { 0 };
+    let block = low | (high << 32);
+    if block == 0 { return Ok(None); }
+    if block >= blocks_count { return Err(XattrError::InvalidEntry); }
+    Ok(Some(block))
+}
+
+/// Validate an inode's external xattr block after the caller has verified
+/// the inode checksum and read the block at its i_file_acl address. This binds
+/// the pointer, physical block, inode number/generation, block structure and
+/// metadata_csum checksum. It does not prove allocation, reconcile shared
+/// references, or check system-zone overlap; those need filesystem-wide data.
+pub fn validate_inode_external_xattr_block(
+    inode: &[u8], feature_incompat: u32, blocks_count: u64, inode_number: u32,
+    filesystem_seed: u32, physical_block: u64, block: &[u8],
+) -> Result<(), XattrError> {
+    if inode_number == 0 { return Err(XattrError::InvalidEntry); }
+    let pointer = external_xattr_block_pointer(inode, feature_incompat, blocks_count)?;
+    if pointer != Some(physical_block) { return Err(XattrError::InvalidEntry); }
+    let generation = u32le(inode, 100)?;
+    validate_external_xattr_checksum(block, filesystem_seed, physical_block, Some((inode_number, generation)))
+}
+
+#[cfg(test)]
+mod inode_pointer_tests {
+    use super::*;
+    #[test]
+    fn reads_low_and_high_external_xattr_block_pointer() {
+        let mut inode = [0u8; 128];
+        inode[104..108].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+        inode[118..120].copy_from_slice(&0x9abcu16.to_le_bytes());
+        assert_eq!(external_xattr_block_pointer(&inode, 0, 0x1_0000_0000), Ok(Some(0x1234_5678)));
+        assert_eq!(external_xattr_block_pointer(&inode, 0x0080, 0x1_0000_0000), Ok(Some(0x9abc_1234_5678)));
+    }
+    #[test]
+    fn rejects_out_of_range_xattr_pointer_and_accepts_no_pointer() {
+        let mut inode = [0u8; 128];
+        assert_eq!(external_xattr_block_pointer(&inode, 0, 100), Ok(None));
+        inode[104..108].copy_from_slice(&100u32.to_le_bytes());
+        assert_eq!(external_xattr_block_pointer(&inode, 0, 100), Err(XattrError::InvalidEntry));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
