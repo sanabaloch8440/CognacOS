@@ -1,7 +1,9 @@
 # CognacOS rundll32.exe
 
-Native Windows x64 command-line host for DLL entry points. It parses the conventional module.dll,EntryPoint [arguments] form (and a separate DLL/entry form), loads the DLL with LoadLibraryW, resolves named or #ordinal entry points with GetProcAddress, invokes the x64 callback shape, and releases the module.
+Native freestanding Windows x64 command-line host for DLL entry points. It parses the conventional module.dll,EntryPoint [arguments] form and the separate DLL/entry form, loads the DLL with LoadLibraryW, resolves named or #ordinal entry points with GetProcAddress, invokes the four-argument x64 CALLBACK shape, and releases the module.
 
-This is an initial host, not a complete Windows implementation. It currently reconstructs Unicode arguments rather than preserving the exact original command-line tail, does not implement the full Windows quoting/ANSI-vs-Unicode dispatch rules, GUI error presentation, 32-bit/WOW64 host selection, shell activation contexts, or all Windows process lifetime semantics. DLL entry points must have the expected rundll32 callback ABI; arbitrary exports are not safe to call.
+For unsuffixed names it probes the W export first, then A, then the unsuffixed export. W callbacks receive the original UTF-16 command-line tail. A callbacks receive an ASCII-only conversion; non-ASCII arguments fail closed instead of being silently corrupted. The command-line tokenizer handles basic quote grouping but is not yet the complete Windows backslash/quote algorithm.
 
-Host tests cover argument selection and malformed invocation. Build the actual PE32+ executable for x86_64-pc-windows-msvc.
+Remaining compatibility work includes exact Windows command-line tokenization, full active-code-page conversion, GUI error reporting, 32-bit/WOW64 host selection, activation-context behavior, and exhaustive comparison with Windows 11 rundll32.exe. This host must only invoke exports designed for the rundll32 callback ABI; arbitrary DLL exports are unsafe to call.
+
+The Windows CI builds a freestanding AMD64 PE32+ executable and links only the five required Kernel32 imports. Host-target tests are deliberately not treated as a substitute for running it on CognacOS.
