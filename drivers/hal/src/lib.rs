@@ -86,7 +86,8 @@ pub struct DeviceServiceTable{
 impl DeviceServiceTable{
  pub const fn compatible(&self)->bool{self.size as usize>=core::mem::size_of::<Self>()&&self.version==DEVICE_SERVICES_VERSION}
  pub const fn has_dma(&self)->bool{self.allocate_dma.is_some()&&self.free_dma.is_some()}
- pub const fn has_interrupts(&self)->bool{self.register_interrupt.is_some()&&self.unregister_interrupt.is_some()&&self.set_interrupt_enabled.is_some()}\n pub const fn has_bus_master(&self)->bool{self.set_bus_master.is_some()}
+ pub const fn has_interrupts(&self)->bool{self.register_interrupt.is_some()&&self.unregister_interrupt.is_some()&&self.set_interrupt_enabled.is_some()}
+ pub const fn has_bus_master(&self)->bool{self.set_bus_master.is_some()}
 }
 #[cfg(test)]
 mod device_service_tests{
