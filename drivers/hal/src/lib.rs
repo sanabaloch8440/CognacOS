@@ -74,7 +74,8 @@ pub type InterruptIsr=extern "C" fn(context:u64)->bool;
 pub type InterruptDpc=extern "C" fn(context:u64);
 pub type RegisterInterrupt=unsafe extern "C" fn(vector:u32,context:u64,isr:Option<InterruptIsr>,dpc:Option<InterruptDpc>)->HalStatus;
 pub type UnregisterInterrupt=unsafe extern "C" fn(vector:u32,context:u64)->HalStatus;
-pub type SetInterruptEnabled=unsafe extern "C" fn(vector:u32,enabled:bool)->HalStatus;\npub type SetBusMaster=unsafe extern "C" fn(device_object:u64,enabled:bool)->HalStatus;
+pub type SetInterruptEnabled=unsafe extern "C" fn(vector:u32,enabled:bool)->HalStatus;
+pub type SetBusMaster=unsafe extern "C" fn(device_object:u64,enabled:bool)->HalStatus;
 #[repr(C)]
 #[derive(Clone,Copy)]
 pub struct DeviceServiceTable{
