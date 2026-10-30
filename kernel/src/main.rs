@@ -632,8 +632,14 @@ fn bind_xhci_pe_driver()->bool {
                 serial_write(b" port_changes="); serial_write_hex(ext.port_change_count.load(Ordering::Acquire)); serial_write(b"\r\n");
                 true
             }
+            Err(ntoskrnl::driver_loader::DriverLoadError::EntryFailed(status)) => {
+                serial_write(b"xHCI bind: DriverEntry returned NTSTATUS=");
+                serial_write_hex(status as u32 as u64);
+                serial_write(b"; controller remains unbound and bus mastering stays disabled.\r\n");
+                false
+            }
             Err(_) => {
-                serial_write(b"xHCI bind: PE image load or DriverEntry failed; controller remains unbound.\r\n");
+                serial_write(b"xHCI bind: PE image load failed before DriverEntry completed; controller remains unbound.\r\n");
                 false
             }
         }
