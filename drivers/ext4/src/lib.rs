@@ -1,7 +1,7 @@
 //! ext2/ext3/ext4 filesystem driver core for CognacOS.
-//! Writes are limited to existing allocated data blocks; journaled metadata
-//! mutation is available through bounded primitives but is not yet enabled by
-//! the filesystem mount facade.
+//! Mounting is read-only. Writable mount is fail-closed until physical extents
+//! are checked against ext4 system zones and metadata changes are coordinated
+//! by a mount-owned JBD2 transaction/recovery layer.
 #![no_std]
 #![allow(dead_code)]
 
@@ -96,9 +96,11 @@ impl<D:ReadOnlyBlockDevice> ExtFilesystem<D>{
  pub fn into_device(self)->D{self.device}
 }
 impl<D:BlockDevice> ExtFilesystem<D>{
- /// Mount writable only through a partition-bounded block-device view. The
- /// existing filesystem policy still rejects unsupported journaling/checksum
- /// features and does not allocate blocks or mutate metadata.
+ /// Writable mounting is deliberately disabled until extent block-validity
+ /// checks, a mount-owned JBD2 transaction coordinator, orphan recovery, and
+ /// metadata writeback ordering are integrated. The low-level mutation
+ /// primitives below this facade are not sufficient to make arbitrary writes
+ /// safe. A partition-bounded view is still required when this is enabled.
  pub fn mount_partition_writable(device:D,partition:DiskPartition)->Result<ExtFilesystem<PartitionDevice<D>>,Error>{
   let view=PartitionDevice::new(device,partition)?;
   ExtFilesystem::mount_writable(view)
@@ -106,12 +108,15 @@ impl<D:BlockDevice> ExtFilesystem<D>{
  pub fn mount_writable(mut device:D)->Result<Self,Error>{
   let mut raw=[0u8;SUPERBLOCK_BYTES];device.read_at(SUPERBLOCK_DISK_OFFSET,&mut raw).map_err(|_|Error::Io)?;
   let sb=Superblock::parse(&raw)?;validate_superblock_checksum(&raw)?;
-  if sb.feature_compat&0x0004!=0{return Err(Error::UnsupportedCompatFeature)}
-  if sb.feature_incompat&0x0004!=0{return Err(Error::UnsupportedIncompatFeature)}
-  if sb.feature_ro_compat&0x0400!=0{return Err(Error::UnsupportedRoCompatFeature)}
   let end=sb.blocks_count.checked_mul(sb.block_size as u64).ok_or(Error::OutOfRange)?;
   if end>device.capacity_bytes(){return Err(Error::OutOfRange)}
-  Ok(Self{device,superblock:sb,read_only:false})
+  // Fail closed: current write_file_data() does not yet validate every
+  // physical extent against ext4 system-zone metadata, and the JBD2 and
+  // metadata mutation primitives are not wired into a single mount-level
+  // transaction. Enabling this path could overwrite filesystem metadata or
+  // leave partially committed metadata after power loss.
+  let _ = sb;
+  Err(Error::UnsupportedFormat)
  }
  /// Write within an existing regular file's current logical size. This prevents
  /// a data-write request from using a valid extent beyond EOF to overwrite data
