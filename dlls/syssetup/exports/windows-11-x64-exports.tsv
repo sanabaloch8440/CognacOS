@@ -1,0 +1,12 @@
+# ordinal<TAB>name<TAB>forwarder; source list needs validation against pinned Windows 11 binary
+1	AsrAddSifEntryA	
+2	AsrAddSifEntryW	
+3	AsrCreateStateFileA	
+4	AsrCreateStateFileW	
+5	AsrFreeContext	
+6	AsrRestorePlugPlayRegistryData	
+7	GetAnswerFileSetting	
+8	SetupChangeFontSize	
+9	SetupInfObjectInstallActionW	SETUPAPI.InstallHinfSectionW
+10	SetupSetDisplay	
+11	WaitForSamService	
