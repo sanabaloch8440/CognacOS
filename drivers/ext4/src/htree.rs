@@ -211,34 +211,28 @@ pub fn lookup_htree_leaf<R: DirectoryBlockReader>(
     let root_map = parse_dx_map(root_block, DX_ROOT_ENTRIES_OFFSET, metadata_csum, inode_checksum_seed)?;
     let (mut selected, mut logical) = select_dx_entry(root_block, root_map, query_hash)?;
     if logical >= directory_blocks { return Err(Error::OutOfRange); }
-    let mut previous = [0u32; 2];
-    previous[0] = 0;
-    let mut map = root_map;
-    let mut current_block = root_block;
+    let mut collision = has_hash_collision(root_block, root_map, selected, query_hash)?;
+    let mut visited = [0u32; 2];
+    let mut visited_count = 0usize;
 
-    for depth in 0..levels {
-        if logical == 0 || previous[..=depth as usize].contains(&logical) {
+    for _ in 0..levels {
+        if logical == 0 || visited[..visited_count].contains(&logical) {
             return Err(Error::InvalidDirectoryEntry);
         }
-        previous[depth as usize + 1 - 1] = logical;
+        visited[visited_count] = logical;
+        visited_count += 1;
         reader.read_directory_block(logical, scratch)?;
         // An interior node begins with a fake dirent spanning the whole block.
-        if le32(scratch, 0)? != 0 || ext4_rec_len(le16(scratch, 4)?, scratch.len()) != scratch.len() {
+        if le32(scratch, 0)? != 0
+            || ext4_rec_len(le16(scratch, 4)?, scratch.len()) != scratch.len()
+        {
             return Err(Error::InvalidDirectoryEntry);
         }
         let node_map = parse_dx_map(scratch, DX_NODE_ENTRIES_OFFSET, metadata_csum, inode_checksum_seed)?;
-        let result = select_dx_entry(scratch, node_map, query_hash)?;
-        selected = result.0;
-        logical = result.1;
+        (selected, logical) = select_dx_entry(scratch, node_map, query_hash)?;
         if logical >= directory_blocks { return Err(Error::OutOfRange); }
-        map = node_map;
-        current_block = scratch;
+        collision = has_hash_collision(scratch, node_map, selected, query_hash)?;
     }
-    let (next_hash, _) = if selected + 1 < map.count {
-        dx_entry(current_block, map, selected + 1)?
-    } else { (u32::MAX, 0) };
-    let collision = selected + 1 < map.count
-        && (next_hash & !1) == (query_hash & !1);
     Ok(HtreeLookup { leaf_block: logical, hash_version, possible_hash_collision: collision })
 }
 
