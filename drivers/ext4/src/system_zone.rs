@@ -514,6 +514,45 @@ pub fn build_system_metadata_ownership<D: ReadOnlyBlockDevice>(
     Ok(used)
 }
 
+/// Prove that an inode is allocated by consulting its group's validated
+/// inode bitmap. Free or uninitialized inode groups are never accepted as
+/// owners of replayable directory metadata.
+fn validate_inode_allocated<D: ReadOnlyBlockDevice>(
+    dev: &mut D, sb: &Superblock, raw_superblock: &[u8],
+    inode_number: u32, scratch: &mut [u8],
+) -> Result<(), Error> {
+    if scratch.len() != sb.block_size as usize { return Err(Error::InvalidGeometry); }
+    let (group, _) = sb.inode_location(inode_number)?;
+    let descriptors_per_block = sb.block_size / sb.descriptor_size as u32;
+    if descriptors_per_block == 0 { return Err(Error::InvalidGeometry); }
+    let descriptor_block = (sb.first_data_block as u64).checked_add(1)
+        .and_then(|v| v.checked_add((group / descriptors_per_block) as u64))
+        .ok_or(Error::OutOfRange)?;
+    read_block(dev, sb, descriptor_block, scratch)?;
+    let index = (group % descriptors_per_block) as usize;
+    let start = index.checked_mul(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+    let end = start.checked_add(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+    let descriptor = scratch.get(start..end).ok_or(Error::Truncated)?;
+    if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+        validate_group_descriptor_checksum(raw_superblock, group, descriptor)?;
+    }
+    // EXT4_BG_INODE_UNINIT: no inode in this group may be trusted until its
+    // bitmap has been initialized by the filesystem.
+    if u16at(descriptor, 18)? & 0x0001 != 0 { return Err(Error::InvalidGeometry); }
+    let gd = GroupDescriptor::parse(descriptor, sb)?;
+    read_block(dev, sb, gd.inode_bitmap, scratch)?;
+    if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
+        validate_inode_bitmap_checksum(raw_superblock, descriptor, scratch)?;
+    }
+    let bit = (inode_number - 1) % sb.inodes_per_group;
+    let byte = (bit / 8) as usize;
+    let mask = 1u8 << (bit & 7);
+    if scratch.get(byte).copied().ok_or(Error::Truncated)? & mask == 0 {
+        return Err(Error::InvalidGeometry);
+    }
+    Ok(())
+}
+
 /// Extend a system-metadata ownership manifest with directory data blocks.
 /// Each inode is read from its validated inode table entry; extent mappings
 /// are checked against the retained system-zone map and directory block
