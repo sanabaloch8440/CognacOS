@@ -1388,7 +1388,7 @@ mod host_tests {
         raw[24..28].copy_from_slice(&0u32.to_le_bytes());
         raw[32..36].copy_from_slice(&15u32.to_le_bytes());
         raw[40..44].copy_from_slice(&8u32.to_le_bytes());
-        raw[56..58].copy_from_slice(&EXT4_SUPER_MAGIC.to_le_bytes());
+        raw[56..58].copy_from_slice(&0xef53u16.to_le_bytes());
         raw[58..60].copy_from_slice(&1u16.to_le_bytes());
         raw[84..88].copy_from_slice(&11u32.to_le_bytes());
         raw[88..90].copy_from_slice(&128u16.to_le_bytes());
