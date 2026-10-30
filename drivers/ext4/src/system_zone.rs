@@ -199,29 +199,27 @@ pub fn recover_internal_journal<D: BlockDevice>(
     }
     if !parsed.needs_recovery() { return Ok(jbd2::ReplayReport::default()); }
 
-    struct Adapter<'a, D: BlockDevice> { device: &'a mut D, blocks: u64 }
+    struct Adapter<'a, D: BlockDevice> { device: &'a mut D, sb: Superblock }
     impl<D: BlockDevice> jbd2::ReplayDevice for Adapter<'_, D> {
-        fn filesystem_blocks(&self) -> u64 { self.blocks }
+        fn filesystem_blocks(&self) -> u64 { self.sb.blocks_count }
         fn read_block(&mut self, block: u64, out: &mut [u8]) -> Result<(), ()> {
-            read_block(self.device, &SUPERBLOCK_FOR_ADAPTER, block, out).map_err(|_| ())
+            super::read_block(self.device, &self.sb, block, out).map_err(|_| ())
         }
         fn write_block(&mut self, block: u64, data: &[u8]) -> Result<(), ()> {
-            if block >= self.blocks || data.len() != SUPERBLOCK_FOR_ADAPTER.block_size as usize { return Err(()); }
-            let offset = block.checked_mul(SUPERBLOCK_FOR_ADAPTER.block_size as u64).ok_or(())?;
+            if block >= self.sb.blocks_count || data.len() != self.sb.block_size as usize { return Err(()); }
+            let offset = block.checked_mul(self.sb.block_size as u64).ok_or(())?;
+            let end = offset.checked_add(data.len() as u64).ok_or(())?;
+            let capacity = self.device.capacity_bytes();
+            if end > capacity { return Err(()); }
             self.device.write_at(offset, data).map_err(|_| ())
         }
         fn flush(&mut self) -> Result<(), ()> { self.device.flush().map_err(|_| ()) }
     }
-    // A copied geometry value avoids aliasing the borrowed filesystem device.
-    let adapter_sb = *sb;
-    const SUPERBLOCK_FOR_ADAPTER: Superblock = Superblock {
-        inodes_count: 0, blocks_count: 0, first_data_block: 0, block_size: 0,
-        blocks_per_group: 0, inodes_per_group: 0, inode_size: 0,
-        descriptor_size: 0, revision: 0, feature_compat: 0,
-        feature_incompat: 0, feature_ro_compat: 0, read_only: true,
-    };
-    let _ = adapter_sb;
-    Err(Error::UnsupportedFormat)
+    let mut adapter = Adapter { device: dev, sb: *sb };
+    let mut map = |logical: u32| journal_map.get(logical as usize).copied().ok_or(());
+    jbd2::recover(&mut adapter, &mut map, journal_superblock, replay_scratch, replay_payload)
+        .map_err(|_| Error::UnsupportedFormat)
+
 }
 
 /// Build the system-zone map from the primary descriptor table. Caller storage
