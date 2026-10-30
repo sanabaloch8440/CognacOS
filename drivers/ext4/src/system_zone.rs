@@ -41,7 +41,7 @@ fn group_has_super(sb: &Superblock, raw: &[u8], group: u32) -> Result<bool, Erro
 }
 
 /// Build the system-zone map from the primary descriptor table. Caller storage
-/// must hold at most four ranges per group plus block zero. META_BG is rejected
+/// must hold up to six ranges per group plus block zero. META_BG is rejected
 /// by the superblock parser; scratch must be exactly one filesystem block.
 pub fn build_system_zones<D: ReadOnlyBlockDevice>(
     dev: &mut D, sb: &Superblock, raw_superblock: &[u8],
@@ -77,7 +77,12 @@ pub fn build_system_zones<D: ReadOnlyBlockDevice>(
         let desc = scratch.get(off..off + sb.descriptor_size as usize).ok_or(Error::Truncated)?;
         if sb.feature_ro_compat & 0x0400 != 0 { validate_group_descriptor_checksum(raw_superblock, group, desc)?; }
         let gd = GroupDescriptor::parse(desc, sb)?;
-        let actual_itable = core::cmp::min(itable_blocks, group_end.saturating_sub(gd.inode_table));
+        let inode_base = (group as u64).checked_mul(sb.inodes_per_group as u64).ok_or(Error::OutOfRange)?;
+        let remaining_inodes = (sb.inodes_count as u64).checked_sub(inode_base).ok_or(Error::InvalidGeometry)?;
+        let group_inodes = core::cmp::min(sb.inodes_per_group as u64, remaining_inodes);
+        let group_itable_bytes = group_inodes.checked_mul(sb.inode_size as u64).ok_or(Error::OutOfRange)?;
+        let actual_itable = group_itable_bytes.checked_add(sb.block_size as u64 - 1).ok_or(Error::OutOfRange)? / sb.block_size as u64;
+        if actual_itable > itable_blocks { return Err(Error::InvalidGeometry); }
         push(ranges, &mut used, gd.block_bitmap, 1, sb)?;
         push(ranges, &mut used, gd.inode_bitmap, 1, sb)?;
         push(ranges, &mut used, gd.inode_table, actual_itable, sb)?;
@@ -99,9 +104,29 @@ pub fn map_extent_block_checked_zones<D: ReadOnlyBlockDevice>(
     generation: u32, root: &[u8], logical: u32, scratch: &mut [u8],
     zones: &SystemZoneMap<'_>,
 ) -> Result<Option<u64>, Error> {
-    let mapped = map_extent_block_checked(dev, sb, raw_superblock, inode_number, generation, root, logical, scratch)?;
-    if let Some(block) = mapped { validate_data_extent(zones, sb, block, 1)?; }
-    Ok(mapped)
+    if root.len() < 60 || scratch.len() != sb.block_size as usize { return Err(Error::UnsupportedFormat); }
+    validate_superblock_checksum(raw_superblock)?;
+    let mut is_root = true;
+    let mut expected_depth = None;
+    for _ in 0..=MAX_EXTENT_DEPTH {
+        let node = if is_root { &root[..60] } else { &scratch[..] };
+        let (depth, step) = inspect_extent_node(node, logical, sb, expected_depth)?;
+        match step {
+            ExtentStep::Found(block) => { validate_data_extent(zones, sb, block, 1)?; return Ok(Some(block)); }
+            ExtentStep::ZeroOrHole => return Ok(None),
+            ExtentStep::Child(child) => {
+                if depth == 0 { return Err(Error::InvalidExtentTree); }
+                validate_data_extent(zones, sb, child, 1)?;
+                read_block(dev, sb, child, scratch)?;
+                if sb.feature_ro_compat & 0x0400 != 0 {
+                    validate_extent_block_checksum(raw_superblock, inode_number, generation, scratch)?;
+                }
+                expected_depth = Some(depth - 1);
+                is_root = false;
+            }
+        }
+    }
+    Err(Error::InvalidExtentTree)
 }
 
 #[cfg(test)]
