@@ -421,6 +421,25 @@ mod tests{
   let mut a=[0u8;1024];let mut b=[0u8;1024];let r=recover(&mut d,&mut |n|Ok(n as u64),&mut js,&mut a,&mut b).unwrap();
   assert!(r.stopped_on_incomplete);assert_eq!(r.transactions_replayed,0);assert_eq!(be32(&js,28).unwrap(),0);assert_eq!(be32(&js,24).unwrap(),8);
  }
+ #[test]fn replay_policy_rejects_journal_self_overwrite_before_home_write(){
+  struct RejectJournalBlock(u64);
+  impl ReplayTargetPolicy for RejectJournalBlock {
+   fn validate_replay_target(&mut self,target:u64)->Result<(),Error>{
+    if target==self.0{Err(Error::InvalidTag)}else{Ok(())}
+   }
+  }
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
+  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
+  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[3].fill(0x5a);
+  header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
+  let sb=JournalSuperblock{block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false};
+  let mut a=[0u8;1024];let mut b=[0u8;1024];
+  let result=replay_with_policy(&mut d,&mut |n|Ok(n as u64),&sb,&mut a,&mut b,&mut RejectJournalBlock(7));
+  assert_eq!(result,Err(Error::InvalidTag));
+  assert_eq!(d.blocks[7],[0;1024]);
+ }
  #[test]fn ext4_internal_journal_discovery_pins_inode_and_uuid(){
   let mut sb=[0u8;1024];sb[92..96].copy_from_slice(&4u32.to_le_bytes());sb[208..224].copy_from_slice(&[0x5a;16]);sb[224..228].copy_from_slice(&8u32.to_le_bytes());
   let info=discover_internal_journal(&sb).unwrap();assert_eq!(info.inode_number,8);
