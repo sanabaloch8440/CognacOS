@@ -364,6 +364,6 @@ This is deliberately only the structural half of xattr ownership. The parser doe
 
 ## External xattr checksum validation (next bounded milestone)
 
-`xattr::validate_external_xattr_checksum` now layers checksum authentication over the structural parser. It validates CRC32C using the caller-supplied filesystem checksum seed and physical block number; blocks with reference count one also require the owning inode number and generation. Missing identity and checksum mismatch fail closed, and tests exercise exclusive/shared blocks plus corruption.
+`xattr::validate_external_xattr_checksum` now layers checksum authentication over the structural parser. The exported `external_xattr_checksum_seed` helper validates the superblock checksum and derives the correct seed from `s_checksum_seed` when `CSUM_SEED` is enabled, or from `s_uuid` otherwise. The block validator uses that seed and the physical block number; blocks with reference count one also require the owning inode number and generation. Missing identity and checksum mismatch fail closed, and tests exercise exclusive/shared blocks plus corruption.
 
 Still outstanding: derive the checksum seed from the mounted superblock in the checked mount path; discover `i_file_acl` from allocated, checksum-validated inodes; validate xattr block physical ranges against system zones; reconcile shared reference counts; and add exact xattr ownership records to the JBD2 replay allowlist. The new helper alone does not authorize xattr replay and does not change writable-mount policy.
