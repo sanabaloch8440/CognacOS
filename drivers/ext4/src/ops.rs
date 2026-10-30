@@ -640,6 +640,36 @@ pub fn resize_inline_regular_file_atomic(
 }
 
 #[cfg(test)]
+mod atomic_staging_tests {
+ use super::*;
+ #[test]
+ fn failed_resize_does_not_publish_inode_or_freed_ranges(){
+  let sb=[0u8;1024];
+  let mut inode=[0x5au8;128];
+  let before=inode;
+  let mut staged=[0u8;128];
+  let mut freed=[(0xaaaa_aaaa_aaaa_aaaa,0xaaaa_aaaau32);2];
+  let freed_before=freed;
+  let mut staged_freed=[(0u64,0u32);2];
+  assert!(resize_inline_regular_file_atomic(&sb,7,&mut inode,0,&mut freed,
+   &mut staged,&mut staged_freed).is_err());
+  assert_eq!(inode,before);
+  assert_eq!(freed,freed_before);
+ }
+ #[test]
+ fn atomic_create_rejects_bad_staging_capacity_without_touching_inputs(){
+  let sb=[0u8;1024];
+  let mut dir=[0x31u8;32];let before_dir=dir;
+  let mut inode=[0x42u8;128];let before_inode=inode;
+  let mut staged_dir=[0u8;31];let mut staged_inode=[0u8;128];
+  let meta=NewInodeMetadata{mode:0x81a4,uid:0,gid:0,links:1,generation:1,
+   atime:0,ctime:0,mtime:0};
+  assert_eq!(create_regular_file_entry_atomic(&sb,2,1,&mut dir,3,&mut inode,
+   meta,16,b"f",&mut staged_dir,&mut staged_inode),Err(Error::InvalidGeometry));
+  assert_eq!(dir,before_dir);assert_eq!(inode,before_inode);
+ }
+}
+#[cfg(test)]
 mod tests{
  use super::*;
  #[test]fn bitmap_allocation_and_release_are_bounded(){
