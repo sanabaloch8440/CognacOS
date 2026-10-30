@@ -81,7 +81,10 @@ fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:
  let logical=0u64;let cookie=0u64;
  let mut logical_out=logical;let mut cookie_out=cookie;
  let status=unsafe{(b.map.unwrap())(b.context,device,physical,length,direction,&mut logical_out,&mut cookie_out)};
- if status!=OK{return Err(DmaError::AddressMask)}
+ if status!=OK{
+  if logical_out!=0||cookie_out!=0{rollback_backend_mapping(b,device,logical_out,cookie_out);}
+  return Err(DmaError::AddressMask)
+ }
  // A backend that reports success must return a usable logical span and cookie.
  // If it partially installed a mapping but returned malformed outputs, attempt
  // rollback before reporting failure so a bad backend cannot silently leak IOVA.
@@ -164,6 +167,7 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
  let mut logical=0;let mut cookie=0;
  let st=unsafe{(b.map.unwrap())(b.context,device,physical,bytes as u32,2,&mut logical,&mut cookie)};
  if st!=OK {
+  if logical!=0||cookie!=0{rollback_backend_mapping(b,device,logical,cookie);}
   for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}
   return Err(DmaError::AddressMask)
  }
