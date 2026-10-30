@@ -118,7 +118,7 @@ pub fn free_block(sb:&mut[u8],group:u32,block:u64,desc:&mut[u8],bitmap:&mut[u8])
  let bit=block.checked_sub(first).ok_or(Error::OutOfRange)?;if bit>=parsed.blocks_per_group as u64||block>=parsed.blocks_count{return Err(Error::OutOfRange)}
  set_bit(bitmap,bit as u32,false)?;
  let count=group_counter(desc,12,44)?.checked_add(1).ok_or(Error::OutOfRange)?;
- set_group_counter(desc,12,44,count)?;set_super_free_blocks(sb,super_free_blocks(sb)?.checked_add(1).ok_or(Error::OutOfRange)?)?;
+ set_group_counter(desc,12,44,count)?;let new_free=super_free_blocks(sb)?.checked_add(1).ok_or(Error::OutOfRange)?;set_super_free_blocks(sb,new_free)?;
  finish_group(sb,group,desc,bitmap,false)?;finish_super(sb)
 }
 
@@ -226,7 +226,9 @@ pub fn insert_inline_extent(root:&mut[u8],logical:u32,physical:u64,len:u16)->Res
  if pos<entries{
   let n=12+pos*12;let n_log=le32(&tmp,n)?;let n_phys=((le16(&tmp,n+6)? as u64)<<32)|(le32(&tmp,n+8)? as u64);
   if end==n_log as u64&&physical+len as u64==n_phys{
-   put32(&mut tmp,n,logical)?;put16(&mut tmp,n+4,(len as u64+le16(&tmp,n+4)? as u64) as u16)?;
+   let merged_len=len as u64+le16(&tmp,n+4)? as u64;
+   if merged_len>0x8000{return Err(Error::OutOfRange)}
+   put32(&mut tmp,n,logical)?;put16(&mut tmp,n+4,merged_len as u16)?;
    put16(&mut tmp,n+6,(physical>>32) as u16)?;put32(&mut tmp,n+8,physical as u32)?;
    root[..60].copy_from_slice(&tmp);return Ok(())
   }
