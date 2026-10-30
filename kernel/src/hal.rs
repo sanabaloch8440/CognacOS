@@ -773,6 +773,21 @@ static DEVICE_IN_FLIGHT:[core::sync::atomic::AtomicU32;256]=[const{core::sync::a
 static DEVICE_ROUTE_IO_BASE:[core::sync::atomic::AtomicU64;256]=[const{core::sync::atomic::AtomicU64::new(0)};256];
 static DEVICE_ROUTE_GSI_BASE:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
 static DEVICE_ROUTE_GSI:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
+type DeviceDpcQueueHook=extern "C" fn(*mut core::ffi::c_void)->bool;
+type DeviceDpcRemoveHook=extern "C" fn(*mut core::ffi::c_void)->bool;
+type DeviceDpcInitHook=extern "C" fn(*mut core::ffi::c_void,usize);
+static DEVICE_DPC_INIT_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static DEVICE_DPC_QUEUE_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+static DEVICE_DPC_REMOVE_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+
+/// Install executive-owned DPC queue hooks without making HAL depend on NTOSKRNL.
+/// The hooks only enqueue/remove work; the kernel dispatches DPCs after EOI.
+pub fn install_device_dpc_hooks(queue:DeviceDpcQueueHook,remove:DeviceDpcRemoveHook,initialize:DeviceDpcInitHook){
+    DEVICE_DPC_QUEUE_HOOK.store(queue as usize,Ordering::Release);
+    DEVICE_DPC_REMOVE_HOOK.store(remove as usize,Ordering::Release);
+    DEVICE_DPC_INIT_HOOK.store(initialize as usize,Ordering::Release);
+}
+
 
 /// Bind a validated, masked ACPI I/O-APIC route to a registered device vector.
 /// The caller must resolve PCI INTx routing and MADT overrides; no GSI is guessed.
@@ -805,7 +820,13 @@ unsafe extern "win64" fn device_interrupt_dispatch(_vector:u8,_frame:*mut core::
         let callback:cognacos_hal_contract::InterruptIsr=unsafe{core::mem::transmute(raw)};
         callback(DEVICE_CONTEXT[i].load(Ordering::Acquire))
     };
-    let queued=handled&&crate::ntoskrnl::ke::runtime::queue_dpc_from_interrupt(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast());
+    let queued=if handled{
+        let hook=DEVICE_DPC_QUEUE_HOOK.load(Ordering::Acquire);
+        if hook==0{false}else{
+            let queue:DeviceDpcQueueHook=unsafe{core::mem::transmute(hook)};
+            queue(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast())
+        }
+    }else{false};
     DEVICE_IN_FLIGHT[i].fetch_sub(1,Ordering::Release);
     queued
 }
@@ -813,9 +834,13 @@ unsafe extern "C" fn service_register_interrupt(vector:u32,context:u64,isr:Optio
     if !(0x20..=0xdf).contains(&vector)||context==0{return driver_hal_invalid()}
     let (Some(isr),Some(dpc))=(isr,dpc) else{return driver_hal_invalid()};
     let i=vector as usize;
-    if DEVICE_ISR[i].load(Ordering::Acquire)!=0||!ntoskrnl::ke::arch::device_interrupt_vector_ready(vector as u8){return driver_hal_invalid()}
+    if DEVICE_ISR[i].load(Ordering::Acquire)!=0||DEVICE_DPC_QUEUE_HOOK.load(Ordering::Acquire)==0
+        ||DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire)==0{return driver_hal_invalid()}
     DEVICE_CONTEXT[i].store(context,Ordering::Relaxed);DEVICE_DPC[i].store(dpc as usize,Ordering::Relaxed);DEVICE_ISR[i].store(isr as usize,Ordering::Release);
-    unsafe{ntoskrnl::ke::runtime::ke_initialize_dpc(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast(),Some(device_dpc_dispatch),i as *mut core::ffi::c_void);}
+    let init=DEVICE_DPC_INIT_HOOK.load(Ordering::Acquire);
+    if init==0{DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);return driver_hal_unsupported()}
+    let initialize:DeviceDpcInitHook=unsafe{core::mem::transmute(init)};
+    initialize(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast(),i);
     if register_device_interrupt_handler(vector as u8,device_interrupt_dispatch,i as *mut core::ffi::c_void).is_err(){
         DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);return driver_hal_invalid()
     }
@@ -833,7 +858,10 @@ unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->Drive
     // or already-running DPC to leave before releasing driver-owned context.
     DEVICE_ACTIVE[i].store(false,Ordering::Release);
     let dpc=core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast::<core::ffi::c_void>();
-    let _=unsafe{ntoskrnl::ke::runtime::ke_remove_queue_dpc(dpc)};
+    let remove=DEVICE_DPC_REMOVE_HOOK.load(Ordering::Acquire);
+    if remove==0{return driver_hal_unsupported()}
+    let remove_fn:DeviceDpcRemoveHook=unsafe{core::mem::transmute(remove)};
+    let _=remove_fn(dpc);
     let mut spins=0usize;
     while DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0&&spins<1_000_000{core::hint::spin_loop();spins+=1;}
     if DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0{return driver_hal_unsupported()}
