@@ -190,23 +190,29 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
     }
 }
 
-/// Recover the internal JBD2 journal before mounting a filesystem read-only.
-/// The caller provides storage for the journal's logical-to-physical block map
-/// and two block-sized replay buffers. Unsupported checksum/async/fast-commit
-/// formats are rejected by the JBD2 parser; this routine never guesses.
+/// Fail-closed convenience recovery entry point. It verifies an already-clean
+/// internal journal, but refuses to replay dirty transactions because this API
+/// has no exact metadata-ownership manifest. Use
+/// `recover_internal_journal_with_policy` with a validated ownership map to replay.
 pub fn recover_internal_journal<D: BlockDevice>(
     dev: &mut D, sb: &Superblock, raw_superblock: &[u8], zones: &SystemZoneMap<'_>,
     inode_buffer: &mut [u8], map_scratch: &mut [u8], legacy_scratch: &mut [u8],
     journal_map: &mut [u64], journal_superblock: &mut [u8],
     replay_scratch: &mut [u8], replay_payload: &mut [u8],
 ) -> Result<jbd2::ReplayReport, Error> {
-    struct JournalOnly;
-    impl jbd2::ReplayTargetPolicy for JournalOnly {
-        fn validate_replay_target(&mut self, _target: u64) -> Result<(), jbd2::Error> { Ok(()) }
+    // This convenience entry point has no metadata-ownership manifest.
+    // It may confirm an already-clean journal, but it must never replay a
+    // committed transaction using filesystem-bounds-only authorization.
+    struct RejectUnclassifiedTargets;
+    impl jbd2::ReplayTargetPolicy for RejectUnclassifiedTargets {
+        fn validate_replay_target(&mut self, _target: u64) -> Result<(), jbd2::Error> {
+            Err(jbd2::Error::InvalidTag)
+        }
     }
     recover_internal_journal_with_policy(
         dev, sb, raw_superblock, zones, inode_buffer, map_scratch, legacy_scratch,
-        journal_map, journal_superblock, replay_scratch, replay_payload, &mut JournalOnly,
+        journal_map, journal_superblock, replay_scratch, replay_payload,
+        &mut RejectUnclassifiedTargets,
     )
 }
 
