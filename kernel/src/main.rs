@@ -364,7 +364,12 @@ extern "C" fn xhci_set_bus_master(device_object:u64,enabled:bool)->bool{
     let next=if enabled{command|0x4}else{command&!0x4};
     unsafe{hal::write_port_u16(0x0cfc,next);hal::write_port_u32(0x0cf8,address);}
     let verify=unsafe{hal::read_port_u32(0x0cfc)} as u16;
-    (verify&0x4!=0)==enabled
+    let ok=(verify&0x4!=0)==enabled;
+    if ok {
+        if enabled { unsafe{serial_write(b"xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.\\r\\n");} }
+        else { unsafe{serial_write(b"xHCI PCI bus mastering disabled.\\r\\n");} }
+    }
+    ok
 }
 
 unsafe extern "C" fn vtd_quarantine_requester(
