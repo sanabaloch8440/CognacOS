@@ -263,7 +263,7 @@ mod inode_pointer_tests {
         inode[104..108].copy_from_slice(&0x1234_5678u32.to_le_bytes());
         inode[118..120].copy_from_slice(&0x9abcu16.to_le_bytes());
         assert_eq!(external_xattr_block_pointer(&inode, 0, 0x1_0000_0000), Ok(Some(0x1234_5678)));
-        assert_eq!(external_xattr_block_pointer(&inode, 0x0080, 0x1_0000_0000), Ok(Some(0x9abc_1234_5678)));
+        assert_eq!(external_xattr_block_pointer(&inode, 0x0080, 0x9abd_0000_0000), Ok(Some(0x9abc_1234_5678)));
     }
     #[test]
     fn rejects_out_of_range_xattr_pointer_and_accepts_no_pointer() {
