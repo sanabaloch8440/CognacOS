@@ -326,4 +326,25 @@ mod tests{
   let seq=commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[11],&[&ordered],&[10],&[&metadata],&mut descriptor).unwrap();
   assert_eq!(seq,9);assert_eq!(d.blocks[11],ordered);assert_eq!(d.blocks[10],metadata);assert_eq!(u32::from_be_bytes(js[28..32].try_into().unwrap()),0);assert_eq!(u32::from_be_bytes(js[24..28].try_into().unwrap()),10);assert!(d.flushes>=5);
  }
+ #[test]fn ordered_commit_writes_revoke_record_before_commit(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  let mut js=[0u8;1024];js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());js[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
+  js[12..16].copy_from_slice(&1024u32.to_be_bytes());js[16..20].copy_from_slice(&64u32.to_be_bytes());js[20..24].copy_from_slice(&1u32.to_be_bytes());js[24..28].copy_from_slice(&3u32.to_be_bytes());js[40..44].copy_from_slice(&FEATURE_INCOMPAT_REVOKE.to_be_bytes());
+  let metadata=[0x73u8;1024];let mut scratch=[0u8;1024];
+  commit_ordered_with_revokes(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&[11],&mut scratch).unwrap();
+  assert_eq!(be32(&d.blocks[3],4).unwrap(),JBD2_REVOKE_BLOCK);assert_eq!(be32(&d.blocks[3],12).unwrap(),20);assert_eq!(be32(&d.blocks[3],16).unwrap(),11);assert_eq!(d.blocks[10],metadata);
+ }
+ #[test]fn recovery_discards_an_incomplete_tail_and_clears_start(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  let mut js=[0u8;1024];js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());js[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
+  js[12..16].copy_from_slice(&1024u32.to_be_bytes());js[16..20].copy_from_slice(&64u32.to_be_bytes());js[20..24].copy_from_slice(&1u32.to_be_bytes());js[24..28].copy_from_slice(&8u32.to_be_bytes());js[28..32].copy_from_slice(&2u32.to_be_bytes());
+  let mut a=[0u8;1024];let mut b=[0u8;1024];let r=recover(&mut d,&mut |n|Ok(n as u64),&mut js,&mut a,&mut b).unwrap();
+  assert!(r.stopped_on_incomplete);assert_eq!(r.transactions_replayed,0);assert_eq!(be32(&js,28).unwrap(),0);assert_eq!(be32(&js,24).unwrap(),8);
+ }
+ #[test]fn ext4_internal_journal_discovery_pins_inode_and_uuid(){
+  let mut sb=[0u8;1024];sb[92..96].copy_from_slice(&4u32.to_le_bytes());sb[208..224].copy_from_slice(&[0x5a;16]);sb[224..228].copy_from_slice(&8u32.to_le_bytes());
+  let info=discover_internal_journal(&sb).unwrap();assert_eq!(info.inode_number,8);
+  let mut js=[0u8;1024];js[48..64].copy_from_slice(&[0x5a;16]);assert_eq!(validate_journal_uuid(&sb,&js),Ok(()));
+  js[48]=0;assert_eq!(validate_journal_uuid(&sb,&js),Err(Error::BadMagic));
+ }
 }
