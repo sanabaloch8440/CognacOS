@@ -32,7 +32,9 @@ filesystem API.
   reserved-inode pass protects internal journal inode extents and applies the
   Linux exception that permits the journal inode itself to access its ranges.
   The checked read-only mount validates the journal UUID/features and refuses
-  dirty journals until full replay is integrated.
+  dirty journals. A separate bounded `recover_internal_journal` path now maps
+  the internal journal inode and runs committed-transaction replay through the
+  writable block-device contract before the caller retries the read-only mount.
 
 ## Deliberate safety limits
 
@@ -43,7 +45,7 @@ The caller must provide correct journal-inode extent mapping and serialize all
 writers. External extent-tree split/merge, indexed htree directories, external
 journals, and journal checksum formats are not supported by these routines.
 
-The new CheckedExtFilesystem mount facade builds and retains the system-zone map and invokes the reserved-journal-inode pass using caller-owned range and scratch buffers. The legacy ExtFilesystem facade remains available for compatibility but does not provide this checked mapping surface. The current ExtFilesystem mount facade rejects **all writable mounts**. This
+The new CheckedExtFilesystem mount facade builds and retains the system-zone map and invokes the reserved-journal-inode pass using caller-owned range and scratch buffers. `recover_internal_journal` is a separate pre-mount recovery operation: it requires a writable partition-bounded BlockDevice, a complete caller-provided journal logical-to-physical map, and block-sized replay buffers. After successful recovery, mount again through CheckedExtFilesystem. The legacy ExtFilesystem facade remains available for compatibility but does not provide this checked mapping surface. The current ExtFilesystem mount facade rejects **all writable mounts**. This
 is a deliberate safety interlock: the current data-write path does not yet
 validate extent targets against the complete ext4 system-zone map, and the
 journal/recovery and metadata mutation primitives are not integrated through
