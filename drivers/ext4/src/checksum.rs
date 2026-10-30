@@ -22,6 +22,19 @@ pub fn crc32c_update(seed: u32, bytes: &[u8]) -> u32 {
     update_reflected(seed, bytes, 0x82f6_3b78)
 }
 
+/// Non-reflected CRC-32/IEEE update used by the legacy JBD2 checksum-v1
+/// format (`crc32_be` in Linux). The raw state is carried between blocks;
+/// there is no final XOR for the JBD2 on-disk transaction checksum.
+pub fn crc32_be_update(mut crc: u32, bytes: &[u8]) -> u32 {
+    for &byte in bytes {
+        crc ^= (byte as u32) << 24;
+        for _ in 0..8 {
+            crc = (crc << 1) ^ (0x04c1_1db7 & 0u32.wrapping_sub(crc >> 31));
+        }
+    }
+    crc
+}
+
 /// Conventional finalized IEEE CRC-32.
 pub fn crc32(bytes: &[u8]) -> u32 {
     !crc32_update(!0, bytes)
@@ -89,6 +102,9 @@ mod tests {
     #[test]
     fn standard_crc_vectors() {
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
+        // CRC-32/MPEG-2 check value: same IEEE polynomial, big-endian
+        // processing, initial all-ones state, and no final complement.
+        assert_eq!(crc32_be_update(!0, b"123456789"), 0x0376_e6e7);
         assert_eq!(crc32c(b"123456789"), 0xe306_9283);
     }
 
