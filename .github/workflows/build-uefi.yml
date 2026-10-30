@@ -800,7 +800,7 @@ jobs:
           # Verify the IOMMU and xHCI handoff before unrelated PS/2 input tests.
           grep -F 'VT-d: translation enabled; generic DMA backend registered.' build/serial.log
           grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
-          grep -F 'xHCI PCI: bus mastering enabled after VT-d domain, IOVA mappings, and DMA-buffer lifetime checks.' build/serial.log
+          grep -F 'xHCI PCI: bus mastering enabled immediately before controller Run/Stop; VT-d domain and four DMA buffers verified.' build/serial.log
 
           # Inject real guest key events after boot reaches its live polling loop.
           python3 - <<'PY'
@@ -958,7 +958,7 @@ jobs:
           grep -F 'PCI xHCI resource discovery and uncached MMIO mapping complete.' build/serial.log
           grep -F 'VT-d: translation enabled; generic DMA backend registered.' build/serial.log
           grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
-          grep -F 'xHCI PCI: bus mastering enabled after VT-d domain, IOVA mappings, and DMA-buffer lifetime checks.' build/serial.log
+          grep -F 'xHCI PCI: bus mastering enabled immediately before controller Run/Stop; VT-d domain and four DMA buffers verified.' build/serial.log
           grep -E '^QEMU xHCI DEVICE: BDF=' build/serial.log
           grep -E '^QEMU xHCI DEVICE COUNT=0x0*[1-9a-fA-F][0-9a-fA-F]*' build/serial.log
           grep -E '^xHCI PnP resource published: device_object=0x[0-9a-fA-F]+ MMIO_VA=0x[0-9a-fA-F]+ length=0x[0-9a-fA-F]+' build/serial.log
