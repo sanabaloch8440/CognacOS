@@ -353,6 +353,8 @@ extern "C" fn xhci_set_bus_master(device_object:u64,enabled:bool)->bool{
         if r.state<ntoskrnl::pnp::STATE_DMA_READY||r.interrupt_vector==0
             ||!hal::device_interrupt_handler_registered(r.interrupt_vector)
             ||!dma::iommu::available()
+            ||!dma::iommu::vtd::is_enabled()
+            ||dma::iommu::common_allocation_count(device_object as usize)<4
             ||!dma::iommu::device_busy(device_object as usize){return false}
         let Some(id)=dma::iommu::vtd::RequesterId::new(r.bus,r.device,r.function) else{return false};
         if !dma::iommu::vtd::requester_domain_usable(id){return false}
@@ -547,16 +549,6 @@ static mut XHCI_DRIVER_OBJECT: core::mem::MaybeUninit<ntoskrnl::driver_loader::D
 static XHCI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
 
-fn set_xhci_bus_master(
-    table:&cognacos_hal_contract::DeviceServiceTable,
-    resources:&ntoskrnl::pnp::XhciPciResources,
-    enabled:bool,
-)->bool {
-    if !table.compatible()||!table.has_bus_master(){return false;}
-    let Some(set)=table.set_bus_master else{return false;};
-    unsafe{set(resources.device_object,enabled)}.code==cognacos_hal_contract::HalStatus::SUCCESS.code
-}
-
 fn bind_xhci_pe_driver()->bool {
     use core::sync::atomic::Ordering;
     if USBXHCI_PE_IMAGE.is_empty() {
@@ -610,20 +602,15 @@ fn bind_xhci_pe_driver()->bool {
                 serial_write(b"xHCI bind: DriverEntry succeeded image="); serial_write_hex(image.image_base);
                 serial_write(b" size="); serial_write_hex(image.image_size as u64); serial_write(b"\r\n");
                 if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_DMA_READY,ntoskrnl::pnp::STATE_INTERRUPT_READY).is_err() {
-                    serial_write(b"xHCI bind: DriverEntry succeeded but interrupt-ready PnP transition failed; bus mastering remains disabled.\r\n");
-                    return false;
+                    serial_write(b"xHCI bind: DriverEntry succeeded but interrupt-ready PnP transition failed; revoking DMA before halting.\\r\\n");
+                    if let Some(set)=device_table.set_interrupt_enabled { let _=set(resources.interrupt_vector as u32,false); }
+                    if let Some(set)=device_table.set_bus_master { if set(resources.device_object,false).code!=0 { loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); } } }
+                    loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); }
                 }
-                if !set_xhci_bus_master(&device_table,&resources,true) {
-                    serial_write(b"xHCI bind: requester domain or four persistent DMA buffers were not verified; bus mastering remains disabled.\r\n");
-                    return false;
-                }
-                serial_write(b"xHCI PCI: bus mastering enabled after VT-d domain, IOVA mappings, and DMA-buffer lifetime checks.\r\n");
                 if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_INTERRUPT_READY,ntoskrnl::pnp::STATE_DRIVER_BOUND).is_err() {
-                    if !set_xhci_bus_master(&device_table,&resources,false) {
-                        loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); }
-                    }
-                    serial_write(b"xHCI bind: driver initialized but PnP bound transition failed; bus mastering revoked.\r\n");
-                    return false;
+                    if let Some(set)=device_table.set_interrupt_enabled { let _=set(resources.interrupt_vector as u32,false); }
+                    if let Some(set)=device_table.set_bus_master { if set(resources.device_object,false).code!=0 { loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); } } }
+                    loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); }
                 }
                 let ext=&*extension;
                 serial_write(b"xHCI runtime: events="); serial_write_hex(ext.event_count.load(Ordering::Acquire));
