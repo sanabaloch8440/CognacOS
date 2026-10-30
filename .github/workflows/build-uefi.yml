@@ -324,7 +324,7 @@ jobs:
           python3 tools/verify_dll_exports.py \
             --dll kernel32,build/dlls/kernel32.dll,dlls/kernel32/exports/windows-11-x64-exports.tsv \
             --dll kernelbase,build/dlls/kernelbase.dll,dlls/kernelbase/exports/windows-11-x64-exports.tsv \
-            --dll shell32,build/dlls/shell32.dll,dlls/shell32/exports/windows-11-x64-exports.tsv \\
+            --dll shell32,build/dlls/shell32.dll,dlls/shell32/exports/windows-11-x64-exports.tsv \
             --dll msvcrt,build/dlls/msvcrt.dll,dlls/msvcrt/exports/windows-11-x64-exports.tsv
           rm -f dlls/kernel32/kernel32.lib dlls/kernel32/ntdll.lib dlls/kernelbase/kernel32.lib dlls/kernelbase/ntdll.lib dlls/shell32/kernel32.lib dlls/shell32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj" "$RUNNER_TEMP/cognacos-dll-empty.rs"
       - name: Check native CSR server dispatcher core
