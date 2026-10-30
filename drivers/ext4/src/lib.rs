@@ -90,7 +90,12 @@ impl GroupDescriptor{pub fn parse(b:&[u8],sb:&Superblock)->Result<Self,Error>{if
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub struct Inode{pub mode:u16,pub size:u64,pub blocks_512:u32,pub flags:u32,pub is_directory:bool,pub is_regular_file:bool,pub is_symlink:bool}
 impl Inode{pub fn parse(b:&[u8],size:u16,revision:u32,ro_compat:u32)->Result<Self,Error>{if size<128||b.len()<size as usize{return Err(Error::Truncated)}let mode=u16at(b,0)?;let size_lo=u32at(b,4)? as u64;let blocks_512=u32at(b,28)?;let flags=u32at(b,32)?;let is_regular_file=mode&0xf000==0x8000;let is_directory=mode&0xf000==0x4000;let is_symlink=mode&0xf000==0xa000;let hi=if is_regular_file&&revision!=0&&ro_compat&2!=0&&size>=112{u32at(b,108)? as u64}else{0};Ok(Self{mode,size:(hi<<32)|size_lo,blocks_512,flags,is_directory,is_regular_file,is_symlink})}}
-pub fn validate_directory_block(b:&[u8],total_inodes:u32)->Result<usize,Error>{if b.is_empty(){return Err(Error::Truncated)}let(mut off,mut count)=(0usize,0usize);while off<b.len(){if b.len()-off<8{return Err(Error::InvalidDirectoryEntry)}let ino=u32at(b,off)?;let rec=u16at(b,off+4)? as usize;let n=b[off+6] as usize;if rec<8||rec&3!=0||rec>b.len()-off||n>rec-8||(ino!=0&&ino>total_inodes){return Err(Error::InvalidDirectoryEntry)}if b[off+8..off+8+n].iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}count+=1;off+=rec;}Ok(count)}
+fn decode_ext4_dir_rec_len(raw:u16,block_size:usize)->usize{
+ if block_size<65_536 { raw as usize }
+ else if raw==0||raw==u16::MAX { block_size }
+ else { ((raw as usize)&0xfffc)|(((raw as usize)&3)<<16) }
+}
+pub fn validate_directory_block(b:&[u8],total_inodes:u32)->Result<usize,Error>{if b.is_empty(){return Err(Error::Truncated)}let(mut off,mut count)=(0usize,0usize);while off<b.len(){if b.len()-off<8{return Err(Error::InvalidDirectoryEntry)}let ino=u32at(b,off)?;let rec=decode_ext4_dir_rec_len(u16at(b,off+4)?,b.len());let n=b[off+6] as usize;if rec<8||rec&3!=0||rec>b.len()-off||n>rec-8||(ino!=0&&ino>total_inodes){return Err(Error::InvalidDirectoryEntry)}if b[off+8..off+8+n].iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}count+=1;off+=rec;}Ok(count)}
 pub trait ReadOnlyBlockDevice{type DeviceError;fn capacity_bytes(&self)->u64;fn read_at(&mut self,offset:u64,out:&mut[u8])->Result<(),Self::DeviceError>;}
 /// Writable block-device contract. Implementations serialize writes and flush.
 pub trait BlockDevice:ReadOnlyBlockDevice{
