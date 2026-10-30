@@ -198,7 +198,7 @@ fn validate_dir_entries(block:&[u8],limit:usize,total_inodes:u32)->Result<(),Err
  let mut off=0usize;
  while off<limit{
   if limit-off<8{return Err(Error::InvalidDirectoryEntry)}
-  let ino=le32(block,off)?;let rec=le16(block,off+4)? as usize;let name=block[off+6] as usize;
+  let ino=le32(block,off)?;let rec=decode_dir_rec_len(le16(block,off+4)?,block.len());let name=block[off+6] as usize;
   if rec<8||rec&3!=0||rec>limit-off||name>rec-8||(ino!=0&&ino>total_inodes){return Err(Error::InvalidDirectoryEntry)}
   if block[off+8..off+8+name].iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}
   off+=rec;
