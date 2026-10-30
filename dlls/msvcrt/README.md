@@ -8,6 +8,6 @@ CognacOS builds a native AMD64 PE32+ `msvcrt.dll` from Rust and exports the comp
 - Linker definition: `exports/msvcrt-x64.def`
 - Build-time generation: `build.rs`
 
-Every export currently has a zero-return placeholder body. This gives the PE loader a name/ordinal target but does **not** implement the C runtime ABI or semantics. Real signatures, floating-point return paths, variadic functions, CRT global data, FILE/locale/thread state, heap ownership, startup/termination, and exception/unwind integration remain future work. Do not treat arbitrary applications as runnable merely because their imports resolve.
+Most exports currently have zero-return placeholder bodies. The core `memcpy`, `memmove`, `memset`, `memcmp`, and `strlen` exports have x64 ABI assembly implementations so Rust's own runtime/linker memory operations do not resolve to inert stubs. The remaining functions do **not** implement their documented C runtime semantics. Real signatures, floating-point return paths, variadic functions, CRT global data, FILE/locale/thread state, heap ownership, startup/termination, and exception/unwind integration remain future work. Do not treat arbitrary applications as runnable merely because their imports resolve.
 
 The source inventory is vendored locally; builds and CI do not fetch export data from the network.
