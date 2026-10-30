@@ -440,8 +440,8 @@ mod dmar_tests {
  use std::vec;
  use std::vec::Vec;
  use super::*;
- fn finish(mut table:Vec<u8>)->Vec<u8>{
-  let sum=table.iter().fold(0u8,|a,b|a.wrapping_add(*b));table[9]=table[9].wrapping_sub(sum);table
+ fn finish_checksum(table:&mut [u8]){
+  let sum=table.iter().fold(0u8,|a,b|a.wrapping_add(*b));table[9]=table[9].wrapping_sub(sum);
  }
  #[test]fn dmar_rejects_truncated_header_and_bad_signature(){
   assert_eq!(parse_dmar(&[0;47]),Err(AcpiError::Truncated));
@@ -449,14 +449,14 @@ mod dmar_tests {
   assert_eq!(parse_dmar(&t),Err(AcpiError::BadSignature));
  }
  #[test]fn dmar_parses_include_all_drhd(){
-  let mut t=vec![0u8;64];t[0..4].copy_from_slice(b"DMAR");t[4..8].copy_from_slice(&(64u32).to_le_bytes());t[36]=47;t[37]=1;
+  let mut t=[0u8;64];t[0..4].copy_from_slice(b"DMAR");t[4..8].copy_from_slice(&(64u32).to_le_bytes());t[36]=47;t[37]=1;
   t[48..50].copy_from_slice(&(0u16).to_le_bytes());t[50..52].copy_from_slice(&(16u16).to_le_bytes());t[52]=1;
   t[54..56].copy_from_slice(&(0u16).to_le_bytes());t[56..64].copy_from_slice(&(0xfed9_0000u64).to_le_bytes());
-  let info=parse_dmar(&finish(t)).unwrap();assert_eq!(info.host_address_width,48);assert!(info.interrupt_remapping_supported);
+  finish_checksum(&mut t);let info=parse_dmar(&t).unwrap();assert_eq!(info.host_address_width,48);assert!(info.interrupt_remapping_supported);
   assert_eq!(info.unit_count,1);assert_eq!(info.units[0].register_base,0xfed9_0000);assert!(info.units[0].include_all);
  }
  #[test]fn dmar_parses_and_matches_explicit_endpoint_scope(){
-  let mut t=vec![0u8;72];t[0..4].copy_from_slice(b"DMAR");t[4..8].copy_from_slice(&(72u32).to_le_bytes());t[36]=47;
+  let mut t=[0u8;72];t[0..4].copy_from_slice(b"DMAR");t[4..8].copy_from_slice(&(72u32).to_le_bytes());t[36]=47;
   t[48..50].copy_from_slice(&(0u16).to_le_bytes());t[50..52].copy_from_slice(&(24u16).to_le_bytes());t[52]=0;
   t[54..56].copy_from_slice(&(0u16).to_le_bytes());t[56..64].copy_from_slice(&(0xfed9_0000u64).to_le_bytes());
   t[64]=1;t[65]=8;t[68]=0;t[69]=0;t[70]=3;t[71]=0;
