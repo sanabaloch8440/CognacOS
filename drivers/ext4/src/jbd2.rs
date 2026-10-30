@@ -35,7 +35,7 @@ pub fn verify_metadata_checksum(uuid:&[u8;16],block:&[u8])->bool{
 
 /// Verify the checksum-v2/v3 commit block checksum (stored at bytes 16..20).
 pub fn verify_commit_checksum(uuid:&[u8;16],block:&[u8])->bool{
- if block.len()<20{return false}
+ if block.len()<20||block[12]!=4||block[13]!=4{return false}
  let seed=crate::checksum::jbd2_csum_seed(uuid);
  let Some(expected)=crate::checksum::jbd2_commit_checksum(seed,block) else{return false};
  let stored=u32::from_be_bytes([block[16],block[17],block[18],block[19]]);
@@ -324,7 +324,9 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
        },
        ChecksumMode::V3=>{
         let target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
-        let checksum=be32(scratch,off+8)?;off=off.checked_add(12).ok_or(Error::OutOfRange)?;(target,flags,checksum)
+        off=off.checked_add(8).ok_or(Error::OutOfRange)?;
+        if sb.block_count_64{target|=(be32(scratch,off)? as u64)<<32;off=off.checked_add(4).ok_or(Error::OutOfRange)?}
+        let checksum=be32(scratch,off)?;off=off.checked_add(4).ok_or(Error::OutOfRange)?;(target,flags,checksum)
        },
        _=>{
         let target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
