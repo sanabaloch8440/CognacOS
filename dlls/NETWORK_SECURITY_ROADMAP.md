@@ -35,12 +35,12 @@ Applications call ws2_32, winhttp, or wininet over the kernel TCP/UDP and I/O co
 
 | Area | Status |
 |---|---|
-| Shared Rust dependency foundation | Initial crate added in this change |
+| Shared Rust dependency foundation | Initial crate added; CI check configured |
 | TLS client configuration | TLS 1.2+ with AWS-LC provider and bootstrap roots |
 | DER X.509 parsing helper | Initial strict parser |
 | Kernel TCP/UDP stack | Not yet verified as available |
 | Windows 11 DLL export baselines | Not yet imported for these modules |
-| Listed Windows ABI DLLs | Not yet implemented |
+| bcrypt.dll | Initial 8-function CNG hash/RNG subset; 60 exact exports, 52 fail-closed |\n| Other listed Windows ABI DLLs | Not yet implemented |
 | LSASS / LSA package integration | Not yet implemented |
 | End-to-end Windows application networking | Not yet available |
 
