@@ -302,11 +302,12 @@ unsafe fn leaf_ptr(root: u64, va: u64) -> Option<*mut u64> {
 /// Evict one pageable resident page. Callers hold the VM lock. A second-chance
 /// accessed-bit scan is followed by write-protection, an SMP TLB rendezvous,
 /// pagefile I/O, unmapping, a second rendezvous, and only then frame recycling.
-fn reclaim_one_locked(root:u64)->bool {
+fn reclaim_one_locked(root:u64,target_page:Option<usize>)->bool {
  if !crate::pagefile::is_active(){return false}
  let table=unsafe{&*TABLE.0.get()};
  for extent in table.iter().copied().filter(|e|e.live&&e.pageable) {
   for page_index in extent.start..extent.start+extent.pages {
+   if let Some(target)=target_page { if page_index!=target { continue; } }
    let word=page_index/64;let mask=1u64<<(page_index%64);
    let mapped=unsafe{&mut *MAPPED_BITS.0.get()};
    let swapped=unsafe{&mut *SWAPPED_BITS.0.get()};
@@ -348,8 +349,21 @@ fn reclaim_one_locked(root:u64)->bool {
 pub fn reclaim_pageable_pages(target:usize)->usize {
  if target==0||ROOT.load(Ordering::Acquire)==0{return 0}
  let root=ROOT.load(Ordering::Acquire);let _g=Guard::lock();let mut count=0;
- while count<target {if reclaim_one_locked(root){count+=1}else if reclaim_one_locked(root){count+=1}else{break}}
+ while count<target {if reclaim_one_locked(root,None){count+=1}else if reclaim_one_locked(root,None){count+=1}else{break}}
  count
+}
+
+/// Reclaim one specific pageable virtual page. Unlike global memory-pressure
+/// reclaim, this deterministic path guarantees that a caller can verify the
+/// contents and protection of the page it asked to page out.
+pub(crate) fn reclaim_pageable_address(address:u64)->bool {
+ if address<BASE||address>=BASE+(PAGES as u64)*PAGE||(address-BASE)%PAGE!=0{return false}
+ let root=ROOT.load(Ordering::Acquire);
+ if root==0{return false}
+ let page=((address-BASE)/PAGE) as usize;
+ let _g=Guard::lock();
+ let owned=unsafe{&*TABLE.0.get()}.iter().any(|e|e.live&&e.pageable&&page>=e.start&&page<e.start+e.pages);
+ owned&&reclaim_one_locked(root,Some(page))
 }
 
 /// Allocate a contiguous virtual extent mapped to zeroed, not-necessarily-contiguous physical pages.
@@ -361,7 +375,7 @@ pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
  let start=found.ok_or(Error::NoVirtualSpace)?;for n in 0..pages{bits[(start+n)/64]|=1u64<<((start+n)%64)}
  let va=BASE+start as u64*PAGE;let mut mapped=0;
  while mapped<pages {
-  let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if reclaim_one_locked(root)||reclaim_one_locked(root){match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>break}}else{break}}};
+  let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if reclaim_one_locked(root)||reclaim_one_locked(root,None){match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>break}}else{break}}};
   if unsafe{map(root,va+mapped as u64*PAGE,pa)}.is_err(){let _=unsafe{crate::memory::free_page(pa)};break} mapped+=1;
  }
  if mapped!=pages {for n in 0..mapped{if let Ok(pa)=unsafe{unmap(root,va+n as u64*PAGE)}{synchronize_kernel_tlb();let _=unsafe{crate::memory::free_page(pa)};}}for n in 0..pages{bits[(start+n)/64]&=!(1u64<<((start+n)%64))}return Err(Error::NoPhysicalMemory)}
@@ -596,7 +610,7 @@ pub fn handle_page_fault(address:u64,error_code:u64)->bool {
   if unsafe{leaf.read_volatile()}&P==0{return false}
   unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}return true
  }
- let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if !reclaim_one_locked(root)&&!reclaim_one_locked(root){return false}match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>return false}}};
+ let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if !reclaim_one_locked(root)&&!reclaim_one_locked(root,None){return false}match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>return false}}};
  if is_swapped {
   let slot=unsafe{(&*SWAP_SLOTS.0.get())[page_index]};
   let Some(destination)=crate::memory::physical_access_pointer(pa) else {let _=unsafe{crate::memory::free_page(pa)};return false};
@@ -842,7 +856,7 @@ pub fn self_test() -> bool {
   let swap_test=match allocate_pageable_pages(1){Ok(v)=>v,Err(_)=>{let _=free_pages(p,3);return self_test_fail(line!())}};
   unsafe{swap_test.write(0xD3);swap_test.add(4095).write(0x6B);}
   if protect_pages(swap_test as u64,1,false,true).is_err(){let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
-  if reclaim_pageable_pages(1)!=1 {let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
+  if !reclaim_pageable_address(swap_test as u64) {let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
   let swap_index=((swap_test as u64-BASE)/PAGE) as usize;
   let is_swapped={let _g=Guard::lock();let bits=unsafe{&*SWAPPED_BITS.0.get()};bits[swap_index/64]&(1u64<<(swap_index%64))!=0};
   if !is_swapped {let _=free_pages(swap_test,1);let _=free_pages(p,3);return self_test_fail(line!());}
