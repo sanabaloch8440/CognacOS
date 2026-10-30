@@ -199,6 +199,7 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
         mut device: D,
         ranges: &'a mut [BlockRange],
         ownership_entries: &'a mut [transaction::MetadataOwnership],
+        directory_inodes: &[u32],
         inode_buffer: &mut [u8],
         scratch_a: &mut [u8],
         scratch_b: &mut [u8],
@@ -232,9 +233,13 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
                 inode_buffer, scratch_a, scratch_b,
             )?;
             let zones = SystemZoneMap::new(&ranges[..used]);
-            let owner_count = build_system_metadata_ownership(
+            let mut owner_count = build_system_metadata_ownership(
                 &mut device, &sb, &raw_superblock, &zones, scratch_a,
                 ownership_entries,
+            )?;
+            add_directory_metadata_ownership(
+                &mut device, &sb, &raw_superblock, &zones, directory_inodes,
+                inode_buffer, scratch_a, scratch_b, ownership_entries, &mut owner_count,
             )?;
             let mut ownership = transaction::MetadataOwnershipMap::new(
                 &ownership_entries[..owner_count],
