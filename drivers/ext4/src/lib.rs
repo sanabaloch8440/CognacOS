@@ -75,6 +75,9 @@ impl Superblock{
    ||(first_data_block as u64)>=blocks_count||(block_size==1024&&first_data_block!=1)
    ||(block_size>1024&&first_data_block!=0){return Err(Error::InvalidGeometry)}
   if feature_ro_compat & !SUPPORTED_RO_COMPAT != 0{return Err(Error::UnsupportedRoCompatFeature)}
+  if feature_ro_compat & RO_COMPAT_LARGE_DIR != 0 && feature_compat & COMPAT_DIR_INDEX == 0 {
+   return Err(Error::UnsupportedRoCompatFeature)
+  }
   // large_dir is accepted only with the bounded two-interior-level HTree reader.
   // DIR_INDEX is a compatible feature; indexed directories are parsed through the checksum-validated HTree path.
   if revision>1{return Err(Error::UnsupportedFormat)}
