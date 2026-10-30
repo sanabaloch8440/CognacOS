@@ -49,7 +49,7 @@ pub fn jbd2_tag_checksum(seed: u32, sequence: u32, data: &[u8]) -> u32 {
 /// and hold the big-endian result.
 pub fn jbd2_metadata_block_checksum(seed: u32, block: &[u8]) -> Option<u32> {
     if block.len() < 4 { return None; }
-    let mut crc = crc32c_update(seed, &block[..block.len() - 4]);
+    let crc = crc32c_update(seed, &block[..block.len() - 4]);
     // JBD2 specifies the tail checksum field as zero during calculation.
     Some(crc32c_update(crc, &[0; 4]))
 }
