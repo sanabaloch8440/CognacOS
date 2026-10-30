@@ -1,0 +1,15 @@
+[package]
+name = "cognacos-fat32"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[features]
+default = []
+write-support = []
+
+[dependencies]
+fatfs = { git = "https://github.com/rafalh/rust-fatfs", rev = "38b3a7950bf0e765e34286d1dfe76c519ee347e2", default-features = false, features = ["lfn"] }
+
+[lib]
+path = "src/lib.rs"
