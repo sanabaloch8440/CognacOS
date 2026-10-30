@@ -578,6 +578,7 @@ pub fn add_directory_metadata_ownership<D: ReadOnlyBlockDevice>(
     } else { None };
     for &ino in directory_inodes {
         if ino == 0 || Some(ino) == journal_inode { return Err(Error::InvalidGeometry); }
+        validate_inode_allocated(dev, sb, raw_superblock, ino, scratch_a)?;
         read_inode(dev, sb, raw_superblock, ino, inode_buffer, scratch_a)?;
         let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
         if !inode.is_directory { return Err(Error::InvalidGeometry); }
