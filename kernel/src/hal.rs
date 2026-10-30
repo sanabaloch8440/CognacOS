@@ -768,6 +768,8 @@ static DEVICE_DPCS:[DeviceDpcStorage;256]=[const{DeviceDpcStorage([0;8])};256];
 static DEVICE_ISR:[core::sync::atomic::AtomicUsize;256]=[const{core::sync::atomic::AtomicUsize::new(0)};256];
 static DEVICE_DPC:[core::sync::atomic::AtomicUsize;256]=[const{core::sync::atomic::AtomicUsize::new(0)};256];
 static DEVICE_CONTEXT:[core::sync::atomic::AtomicU64;256]=[const{core::sync::atomic::AtomicU64::new(0)};256];
+static DEVICE_ACTIVE:[core::sync::atomic::AtomicBool;256]=[const{core::sync::atomic::AtomicBool::new(false)};256];
+static DEVICE_IN_FLIGHT:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
 static DEVICE_ROUTE_IO_BASE:[core::sync::atomic::AtomicU64;256]=[const{core::sync::atomic::AtomicU64::new(0)};256];
 static DEVICE_ROUTE_GSI_BASE:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
 static DEVICE_ROUTE_GSI:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
@@ -784,17 +786,28 @@ pub fn bind_device_interrupt_route(vector:u8,io_base:u64,gsi_base:u32,gsi:u32)->
     DEVICE_ROUTE_GSI[i].store(gsi,Ordering::Release);Ok(())
 }
 unsafe extern "win64" fn device_dpc_dispatch(_dpc:*mut core::ffi::c_void,context:*mut core::ffi::c_void,_a1:*mut core::ffi::c_void,_a2:*mut core::ffi::c_void){
-    let i=context as usize;if i>=256{return}
-    let raw=DEVICE_DPC[i].load(Ordering::Acquire);if raw==0{return}
-    let callback:cognacos_hal_contract::InterruptDpc=unsafe{core::mem::transmute(raw)};
-    callback(DEVICE_CONTEXT[i].load(Ordering::Acquire));
+    let i=context as usize;if i>=256||!DEVICE_ACTIVE[i].load(Ordering::Acquire){return}
+    DEVICE_IN_FLIGHT[i].fetch_add(1,Ordering::AcqRel);
+    if !DEVICE_ACTIVE[i].load(Ordering::Acquire){DEVICE_IN_FLIGHT[i].fetch_sub(1,Ordering::Release);return}
+    let raw=DEVICE_DPC[i].load(Ordering::Acquire);
+    if raw!=0{
+        let callback:cognacos_hal_contract::InterruptDpc=unsafe{core::mem::transmute(raw)};
+        callback(DEVICE_CONTEXT[i].load(Ordering::Acquire));
+    }
+    DEVICE_IN_FLIGHT[i].fetch_sub(1,Ordering::Release);
 }
 unsafe extern "win64" fn device_interrupt_dispatch(_vector:u8,_frame:*mut core::ffi::c_void,context:*mut core::ffi::c_void)->bool{
-    let i=context as usize;if i>=256{return false}
-    let raw=DEVICE_ISR[i].load(Ordering::Acquire);if raw==0{return false}
-    let callback:cognacos_hal_contract::InterruptIsr=unsafe{core::mem::transmute(raw)};
-    if !callback(DEVICE_CONTEXT[i].load(Ordering::Acquire)){return false}
-    crate::ntoskrnl::ke::runtime::queue_dpc_from_interrupt(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast())
+    let i=context as usize;if i>=256||!DEVICE_ACTIVE[i].load(Ordering::Acquire){return false}
+    DEVICE_IN_FLIGHT[i].fetch_add(1,Ordering::AcqRel);
+    if !DEVICE_ACTIVE[i].load(Ordering::Acquire){DEVICE_IN_FLIGHT[i].fetch_sub(1,Ordering::Release);return false}
+    let raw=DEVICE_ISR[i].load(Ordering::Acquire);
+    let handled=if raw==0{false}else{
+        let callback:cognacos_hal_contract::InterruptIsr=unsafe{core::mem::transmute(raw)};
+        callback(DEVICE_CONTEXT[i].load(Ordering::Acquire))
+    };
+    let queued=handled&&crate::ntoskrnl::ke::runtime::queue_dpc_from_interrupt(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast());
+    DEVICE_IN_FLIGHT[i].fetch_sub(1,Ordering::Release);
+    queued
 }
 unsafe extern "C" fn service_register_interrupt(vector:u32,context:u64,isr:Option<cognacos_hal_contract::InterruptIsr>,dpc:Option<cognacos_hal_contract::InterruptDpc>)->DriverHalStatus{
     if !(0x20..=0xdf).contains(&vector)||context==0{return driver_hal_invalid()}
@@ -806,6 +819,7 @@ unsafe extern "C" fn service_register_interrupt(vector:u32,context:u64,isr:Optio
     if register_device_interrupt_handler(vector as u8,device_interrupt_dispatch,i as *mut core::ffi::c_void).is_err(){
         DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);return driver_hal_invalid()
     }
+    DEVICE_ACTIVE[i].store(true,Ordering::Release);
     driver_hal_success()
 }
 unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->DriverHalStatus{
@@ -813,8 +827,14 @@ unsafe extern "C" fn service_unregister_interrupt(vector:u32,context:u64)->Drive
     let i=vector as usize;if DEVICE_CONTEXT[i].load(Ordering::Acquire)!=context||DEVICE_ISR[i].load(Ordering::Acquire)==0{return driver_hal_invalid()}
     let io=DEVICE_ROUTE_IO_BASE[i].load(Ordering::Acquire);
     if io!=0{let _=unsafe{set_device_interrupt_route_enabled(io,DEVICE_ROUTE_GSI_BASE[i].load(Ordering::Acquire),DEVICE_ROUTE_GSI[i].load(Ordering::Acquire),false)};}
+    // Stop new callbacks first, remove a pending DPC, then wait for any ISR
+    // or already-running DPC to leave before releasing driver-owned context.
+    DEVICE_ACTIVE[i].store(false,Ordering::Release);
     let dpc=core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast::<core::ffi::c_void>();
     let _=unsafe{ntoskrnl::ke::runtime::ke_remove_queue_dpc(dpc)};
+    let mut spins=0usize;
+    while DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0&&spins<1_000_000{core::hint::spin_loop();spins+=1;}
+    if DEVICE_IN_FLIGHT[i].load(Ordering::Acquire)!=0{return driver_hal_unsupported()}
     DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);DEVICE_CONTEXT[i].store(0,Ordering::Release);
     DEVICE_ROUTE_IO_BASE[i].store(0,Ordering::Release);let _=release_device_interrupt_vector(vector as u8);
     driver_hal_success()
