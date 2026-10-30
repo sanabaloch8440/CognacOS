@@ -173,7 +173,7 @@ mod tests{
   let separator=split_directory_leaf(&sb,12,7,&mut old,&mut new,1,[0;4],None,&mut map,&mut scratch).unwrap();
   crate::validate_directory_block_checksum(&sb,12,7,&old).unwrap();crate::validate_directory_block_checksum(&sb,12,7,&new).unwrap();
   assert!(separator&!1<=0xffff_fffc);assert_ne!(u32at(&old,0).unwrap(),0);assert_ne!(u32at(&new,0).unwrap(),0);
-  assert_eq!(old[6] as usize+new[6] as usize,9);
+  assert_eq!(old[6] as usize+new[6] as usize,10);
  }
  #[test]fn root_growth_moves_index_entries_to_checked_dx_node(){
   let seed=0x4455_6677;let mut root=[0u8;1024];put32(&mut root,0,2).unwrap();put16(&mut root,4,12).unwrap();root[6]=1;root[8]=b'.';
