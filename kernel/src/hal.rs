@@ -888,6 +888,33 @@ unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->Dri
     }
 }
 
+/// PCI bus mastering is a separate, fail-closed service. Enabling requires
+/// the live xHCI PnP identity, an unpoisoned VT-d domain, at least one registered
+/// IOMMU mapping, and a registered (still-masked) interrupt handler.
+unsafe extern "C" fn service_set_bus_master(device_object:u64,enabled:bool)->DriverHalStatus{
+    let Some(r)=crate::ntoskrnl::pnp::xhci_resources() else{return driver_hal_invalid()};
+    if device_object==0||device_object!=r.device_object||r.segment!=0{return driver_hal_invalid()}
+    if enabled {
+        if r.state<crate::ntoskrnl::pnp::STATE_DMA_READY||r.interrupt_vector==0
+            ||!device_interrupt_handler_registered(r.interrupt_vector)
+            ||!crate::dma::iommu::device_busy(device_object as usize) {
+            return driver_hal_unsupported();
+        }
+        let Some(id)=crate::dma::iommu::vtd::RequesterId::new(r.bus,r.device,r.function) else{return driver_hal_invalid()};
+        if !crate::dma::iommu::vtd::requester_domain_usable(id){return driver_hal_unsupported()}
+    }
+    let address=0x8000_0000u32|((r.bus as u32)<<16)|((r.device as u32)<<11)
+        |((r.function as u32)<<8)|0x04;
+    unsafe{write_port_u32(0x0cf8,address);}
+    let command=unsafe{read_port_u32(0x0cfc)} as u16;
+    let next=if enabled{command|0x4}else{command&!0x4};
+    unsafe{write_port_u16(0x0cfc,next);}
+    unsafe{write_port_u32(0x0cf8,address);}
+    let verify=unsafe{read_port_u32(0x0cfc)} as u16;
+    if (verify&0x4!=0)!=enabled{return driver_hal_unsupported()}
+    driver_hal_success()
+}
+
 /// Publish IOMMU-backed DMA and routed interrupt/DPC services. Interrupt
 /// unmasking remains gated until PnP binds a validated ACPI I/O-APIC route.
 pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable {
@@ -903,6 +930,7 @@ pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable 
         register_interrupt:if irq_ready {Some(service_register_interrupt)} else {None},
         unregister_interrupt:if irq_ready {Some(service_unregister_interrupt)} else {None},
         set_interrupt_enabled:if irq_ready {Some(service_set_interrupt_enabled)} else {None},
+        set_bus_master:if dma_ready&&irq_ready {Some(service_set_bus_master)} else {None},
     }
 }
 
