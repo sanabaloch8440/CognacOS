@@ -15,7 +15,7 @@ This is a source-level compatibility and safety audit, not a claim that CognacOS
 
 ## System-zone milestone (2026-10-30)
 
-CognacOS now has a caller-bounded system-zone builder in `system_zone.rs`. It derives backup-superblock placement from SPARSE_SUPER/SPARSE_SUPER2, computes primary and backup GDT spans, accounts for reserved GDT blocks, reads and checksum-validates each primary group descriptor, and records block bitmap, inode bitmap, and inode-table ranges. The checked extent traversal variant validates both external extent-tree child blocks and final mapped data blocks against this map. It fails closed when caller-provided range storage is exhausted or metadata geometry/checksums are invalid.
+CognacOS now has a caller-bounded system-zone builder in `system_zone.rs`. It derives backup-superblock placement from SPARSE_SUPER/SPARSE_SUPER2, computes primary and backup GDT spans, accounts for reserved GDT blocks, reads and checksum-validates each primary group descriptor, and records block bitmap, inode bitmap, and inode-table ranges. The checked extent traversal variant validates both external extent-tree child blocks and final mapped data blocks against this map. A reserved-inode pass also maps the internal journal inode, records its physical blocks as protected ranges, and provides the Linux-style exception for that inode's own accesses. It fails closed when caller-provided range storage is exhausted or metadata geometry/checksums are invalid.
 
 This is not yet mount-integrated: the mount facade does not own/persist the zone map, journal inode extents are not added as a separate reserved set, and allocation helpers do not yet consume the map. Writable mounting therefore remains disabled.
 
