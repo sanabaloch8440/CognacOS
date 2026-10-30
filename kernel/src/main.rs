@@ -319,10 +319,61 @@ unsafe fn probe_xhci_bar(bus:u8,device:u8,function:u8)->Option<(u64,u64)> {
     Some((decoded.base,size))
 }
 
+
+unsafe extern "C" fn vtd_alloc_table(_ctx:*mut core::ffi::c_void,pa_out:*mut u64,va_out:*mut *mut u64)->i32{
+ if pa_out.is_null()||va_out.is_null(){return dma::iommu::vtd::STATUS_INVALID_PARAMETER}
+ let pa=match unsafe{memory::allocate_contiguous_pages(1)}{Ok(v)=>v,Err(_)=>return dma::iommu::vtd::STATUS_INSUFFICIENT_RESOURCES};
+ let Some(va)=memory::direct_map_address(pa)else{let _=unsafe{memory::free_page(pa)};return dma::iommu::vtd::STATUS_INSUFFICIENT_RESOURCES};
+ unsafe{pa_out.write(pa);va_out.write(va as *mut u64);}
+ dma::iommu::vtd::STATUS_SUCCESS
+}
+unsafe extern "C" fn vtd_free_table(_ctx:*mut core::ffi::c_void,pa:u64,_va:*mut u64)->i32{
+ if pa==0||pa&0xfff!=0{return dma::iommu::vtd::STATUS_INVALID_PARAMETER}
+ match unsafe{memory::free_page(pa)}{Ok(())=>dma::iommu::vtd::STATUS_SUCCESS,Err(_)=>dma::iommu::vtd::STATUS_INSUFFICIENT_RESOURCES}
+}
+unsafe extern "C" fn vtd_map_mmio(_ctx:*mut core::ffi::c_void,pa:u64,length:u64,out:*mut u64)->i32{
+ if out.is_null(){return dma::iommu::vtd::STATUS_INVALID_PARAMETER}
+ match kernel_vm::map_io_space(pa,length){Ok(va)=>{unsafe{out.write(va)};dma::iommu::vtd::STATUS_SUCCESS},Err(_)=>dma::iommu::vtd::STATUS_NOT_SUPPORTED}
+}
+unsafe extern "C" fn vtd_unmap_mmio(_ctx:*mut core::ffi::c_void,va:u64,length:u64)->i32{
+ match kernel_vm::unmap_io_space(va,length){Ok(())=>dma::iommu::vtd::STATUS_SUCCESS,Err(_)=>dma::iommu::vtd::STATUS_NOT_SUPPORTED}
+}
+unsafe extern "C" fn vtd_clean_cache(_ctx:*mut core::ffi::c_void,_pa:u64,_length:u64)->i32{
+ unsafe{core::arch::asm!("mfence",options(nostack,preserves_flags));}
+ dma::iommu::vtd::STATUS_SUCCESS
+}
+/// Enable the firmware-described segment-0 VT-d unit before xHCI discovery.
+/// If unavailable, DMA stays fail-closed and PCI bus mastering remains disabled.
+fn initialize_vtd_from_acpi()->bool{
+ let rsdp=acpi::rsdp_address();
+ if rsdp==0{unsafe{serial_write(b"VT-d: RSDP unavailable; DMA remains fail-closed.\r\n");}return false}
+ let table=match unsafe{acpi::find_table(rsdp,*b"DMAR",0)}{
+  Ok(t)=>t,Err(_)=>{unsafe{serial_write(b"VT-d: ACPI DMAR table not found; DMA remains fail-closed.\r\n");}return false}
+ };
+ let info=match acpi::parse_dmar(table){Ok(v)=>v,Err(_)=>{unsafe{serial_write(b"VT-d: malformed DMAR table; DMA remains fail-closed.\r\n");}return false}};
+ let Some(unit)=info.units.iter().take(info.unit_count).find(|u|u.segment==0&&u.include_all)
+  .or_else(||info.units.iter().take(info.unit_count).find(|u|u.segment==0)) else{
+  unsafe{serial_write(b"VT-d: no segment-0 remapping unit; DMA remains fail-closed.\r\n");}return false
+ };
+ let ops=dma::iommu::vtd::PlatformOps{
+  size:core::mem::size_of::<dma::iommu::vtd::PlatformOps>() as u32,
+  context:core::ptr::null_mut(),alloc_table:Some(vtd_alloc_table),free_table:Some(vtd_free_table),
+  map_mmio:Some(vtd_map_mmio),unmap_mmio:Some(vtd_unmap_mmio),clean_cache:Some(vtd_clean_cache),
+ };
+ let status=unsafe{dma::iommu::vtd::initialize(&ops,unit.register_base,0x1000)};
+ if status!=dma::iommu::vtd::STATUS_SUCCESS{
+  unsafe{serial_write(b"VT-d: initialization failed; DMA remains fail-closed status=");serial_write_hex(status as u32 as u64);serial_write(b"\r\n");}
+  return false
+ }
+ unsafe{serial_write(b"VT-d: translation enabled; generic DMA backend registered.\r\n");}
+ true
+}
+
 /// Discover xHCI, measure its assigned BAR, map it uncached and publish a stable
 /// ntoskrnl-owned PnP record. This is resource preparation, not controller takeover:
 /// no bus mastering, DMA ring allocation, reset, or interrupt source is enabled here.
 fn probe_xhci_pci_function()->bool {
+    let _vtd_ready=initialize_vtd_from_acpi();
     let mut found=0u32;
     let mut published=false;
     unsafe{serial_write(b"PCI xHCI inventory: validating BAR resources and preparing PnP handoff.\r\n");}
