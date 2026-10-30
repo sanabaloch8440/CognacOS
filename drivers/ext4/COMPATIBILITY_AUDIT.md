@@ -180,3 +180,10 @@ Checksum-v1 is now accepted by the journal superblock feature decoder and verifi
 ## JBD2 checksum-v1 commit writer (2026-10-30)
 
 The bounded ordered-commit writer now accepts checksum-v1 journals and emits the Linux-compatible transaction checksum: CRC32_BE raw state initialized to `~0`, updated with the complete descriptor block and each associated data block, then stored in commit `h_chksum[0]` with checksum type 1 and size 4. Revoke blocks are excluded, matching Linux `calc_chksums()` in `fs/jbd2/recovery.c`. A writer regression test recomputes the checksum from the emitted journal blocks and compares the commit header. Checksum-v2/v3 writing remains explicitly rejected. This does not enable writable ext4 mounts; operation-to-transaction integration and power-loss fault injection are still missing.
+
+
+## JBD2 checksum-v2/v3 ordered commit writer (2026-10-30)
+
+The bounded ordered writer now emits Linux-format checksum-v2/v3 journal records: v2 16-bit tags with optional high block numbers; v3 fixed 16-byte tags; UUID elision after the first tag; per-tag CRC32C over transaction sequence plus the stored (escaped when necessary) data block; descriptor and revoke block tail CRC32C; commit CRC32C; and refreshed journal-superblock CRC32C after both recovery-start publication and clean-sequence publication. The fixed-size 1024-byte `journal_superblock_t` checksum is now calculated correctly even when the journal's logical block size is 4 KiB or larger. `TAG_ESCAPE` is emitted when a payload begins with JBD2 magic; the on-disk block is zero-escaped and replay restores the magic word. Regression tests exercise v2 and v3 ordered writes through recovery, including checksummed revoke records and escaped payloads.
+
+**Safety boundary:** this does not enable writable ext4 mounts. The writer is still a bounded one-descriptor transaction primitive, does not implement async commit or fast commit, and has not yet passed crash injection at every durability boundary or Linux/e2fsprogs image interoperability testing. Exact metadata ownership and all VFS operation paths still need to be wired to the mount-owned coordinator.
