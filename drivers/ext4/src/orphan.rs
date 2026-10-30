@@ -63,11 +63,11 @@ where R:OrphanRecoveryTransaction,F:FnMut(u32,&mut[u8])->Result<(),Error>{
 mod tests{
  use super::*;
  use std::vec::Vec;
- #[derive(Default)]struct Tx{staged:Vec<u32>,superblock_staged:bool,committed:bool}
+ #[derive(Default)]struct Tx{staged:Vec<u32>,superblock_staged:bool,committed:bool,fail_commit:bool}
  impl OrphanRecoveryTransaction for Tx{
   fn stage_orphan(&mut self,r:OrphanRecord,_:&[u8])->Result<(),Error>{self.staged.push(r.inode_number);Ok(())}
   fn stage_superblock(&mut self,_:&[u8])->Result<(),Error>{self.superblock_staged=true;Ok(())}
-  fn commit(&mut self)->Result<(),Error>{self.committed=true;Ok(())}
+  fn commit(&mut self)->Result<(),Error>{if self.fail_commit{return Err(Error::Io)}self.committed=true;Ok(())}
  }
  #[test]fn recovers_chain_in_one_commit_and_clears_head(){
   let mut sb=[0u8;1024];sb[232..236].copy_from_slice(&11u32.to_le_bytes());
@@ -79,6 +79,16 @@ mod tests{
   }).unwrap();
   assert_eq!(n,2);assert_eq!(tx.staged,[11,12]);assert!(tx.superblock_staged&&tx.committed);
   assert_eq!(u32::from_le_bytes(sb[232..236].try_into().unwrap()),0);
+ }
+ #[test]fn failed_commit_restores_caller_superblock_image(){
+  let mut sb=[0u8;1024];sb[232..236].copy_from_slice(&19u32.to_le_bytes());
+  let mut inode=[0u8;128];let mut visited=[0u32;4];let mut tx=Tx{fail_commit:true,..Tx::default()};
+  let result=recover_orphan_chain(&mut sb,32,&mut inode,&mut visited,&mut tx,|_,out|{
+   out[0..2].copy_from_slice(&0x8000u16.to_le_bytes());out[20..24].copy_from_slice(&0u32.to_le_bytes());Ok(())
+  });
+  assert_eq!(result,Err(Error::Io));
+  assert_eq!(u32::from_le_bytes(sb[232..236].try_into().unwrap()),19);
+  assert!(!tx.committed);
  }
  #[test]fn cycle_aborts_before_commit(){
   let mut sb=[0u8;1024];sb[232..236].copy_from_slice(&4u32.to_le_bytes());
