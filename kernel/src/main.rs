@@ -346,6 +346,18 @@ unsafe extern "C" fn vtd_clean_cache(_ctx:*mut core::ffi::c_void,_pa:u64,_length
 }
 /// Enable the firmware-described segment-0 VT-d unit before xHCI discovery.
 /// If unavailable, DMA stays fail-closed and PCI bus mastering remains disabled.
+unsafe extern "C" fn vtd_quarantine_requester(
+ _context:*mut core::ffi::c_void,segment:u16,bus:u8,device:u8,function:u8
+)->i32{
+ if segment!=0||device>=32||function>=8{return -1}
+ let Some(resources)=ntoskrnl::pnp::xhci_resources() else{return -1};
+ if resources.bus!=bus||resources.device!=device||resources.function!=function{return -1}
+ let command=unsafe{pci_config_read32(bus,device,function,0x04)} as u16;
+ unsafe{pci_config_write16(bus,device,function,0x04,command&!0x4);}
+ let verify=unsafe{pci_config_read32(bus,device,function,0x04)} as u16;
+ if verify&0x4==0{0}else{-1}
+}
+
 fn initialize_vtd_from_acpi()->bool{
  let rsdp=acpi::rsdp_address();
  if rsdp==0{unsafe{serial_write(b"VT-d: RSDP unavailable; DMA remains fail-closed.\r\n");}return false}
@@ -362,6 +374,7 @@ fn initialize_vtd_from_acpi()->bool{
   size:core::mem::size_of::<dma::iommu::vtd::PlatformOps>() as u32,
   context:core::ptr::null_mut(),alloc_table:Some(vtd_alloc_table),free_table:Some(vtd_free_table),
   map_mmio:Some(vtd_map_mmio),unmap_mmio:Some(vtd_unmap_mmio),clean_cache:Some(vtd_clean_cache),
+  quarantine_requester:Some(vtd_quarantine_requester),
  };
  let status=unsafe{dma::iommu::vtd::initialize(&ops,unit.register_base,0x1000)};
  if status!=dma::iommu::vtd::STATUS_SUCCESS{
