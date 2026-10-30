@@ -1,0 +1,15 @@
+[package]
+name = "cognacos-beep"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "beep"
+path = "src/bin/beep.rs"
+test = false
+bench = false
