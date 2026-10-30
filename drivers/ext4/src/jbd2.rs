@@ -165,12 +165,31 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
 /// extents. After replaying every complete committed transaction, it clears
 /// the recovery-start field and advances the sequence. An incomplete tail is
 /// discarded only after all preceding committed transactions are checkpointed.
+pub trait ReplayTargetPolicy {
+ fn validate_replay_target(&mut self, target: u64) -> Result<(), Error>;
+}
+
+struct FilesystemBoundsOnly;
+impl ReplayTargetPolicy for FilesystemBoundsOnly {
+ fn validate_replay_target(&mut self, _target: u64) -> Result<(), Error> { Ok(()) }
+}
+
 pub fn recover<D:ReplayDevice,M:JournalBlockMap>(
  d:&mut D,m:&mut M,journal_superblock:&mut[u8],scratch:&mut[u8],payload:&mut[u8],
 )->Result<ReplayReport,Error>{
+ recover_with_policy(d,m,journal_superblock,scratch,payload,&mut FilesystemBoundsOnly)
+}
+
+/// Recovery variant that validates every home-block target before replay.
+/// Mount code should reject journal self-overwrite and apply its validated
+/// metadata/system-zone policy here.
+pub fn recover_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>(
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8],scratch:&mut[u8],payload:&mut[u8],
+ policy:&mut P,
+)->Result<ReplayReport,Error>{
  let sb=JournalSuperblock::parse(journal_superblock)?;
  if !sb.needs_recovery(){return Ok(ReplayReport::default())}
- let report=replay(d,m,&sb,scratch,payload)?;
+ let report=replay_with_policy(d,m,&sb,scratch,payload,policy)?;
  journal_superblock[28..32].fill(0);
  journal_superblock[24..28].copy_from_slice(&sb.sequence.wrapping_add(report.transactions_replayed).to_be_bytes());
  let physical=m.map_journal_block(0).map_err(|_|Error::Io)?;
@@ -229,6 +248,12 @@ fn write_target<D:ReplayDevice>(d:&mut D,target:u64,data:&mut[u8],escaped:bool)-
 /// scratch buffers are required. Data is not applied until a commit block with
 /// the expected sequence has been observed.
 pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSuperblock,scratch:&mut[u8],payload:&mut[u8])->Result<ReplayReport,Error>{
+ replay_with_policy(d,m,sb,scratch,payload,&mut FilesystemBoundsOnly)
+}
+
+pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>(
+ d:&mut D,m:&mut M,sb:&JournalSuperblock,scratch:&mut[u8],payload:&mut[u8],policy:&mut P,
+)->Result<ReplayReport,Error>{
  let bs=sb.block_size as usize;if scratch.len()!=bs||payload.len()!=bs{return Err(Error::NoScratch)}
  if !sb.needs_recovery(){return Ok(ReplayReport::default())}
  let mut report=ReplayReport::default();let mut cursor=sb.start;let mut expected=sb.sequence;
@@ -288,6 +313,7 @@ pub fn replay<D:ReplayDevice,M:JournalBlockMap>(d:&mut D,m:&mut M,sb:&JournalSup
  for tag in tags[..tag_count].iter().copied(){
   if tag.flags&TAG_DELETED!=0{continue}
   if revokes[..revoke_count].iter().any(|r|r.target==tag.target&&sequence_at_or_after(r.sequence,tag.sequence)){report.blocks_revoked+=1;continue}
+  policy.validate_replay_target(tag.target)?;
   read_journal(d,m,tag.journal_data,payload)?;write_target(d,tag.target,payload,tag.flags&TAG_ESCAPE!=0)?;report.blocks_replayed+=1;
  }
  if report.blocks_replayed!=0{d.flush().map_err(|_|Error::Io)?}
