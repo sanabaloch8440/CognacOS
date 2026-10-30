@@ -638,8 +638,22 @@ fn bind_xhci_pe_driver()->bool {
                 serial_write(b"; controller remains unbound and bus mastering stays disabled.\r\n");
                 false
             }
-            Err(_) => {
-                serial_write(b"xHCI bind: PE image load failed before DriverEntry completed; controller remains unbound.\r\n");
+            Err(error) => {
+                use ntoskrnl::driver_loader::DriverLoadError as E;
+                serial_write(b"xHCI bind: PE loader rejected usbxhci.sys: ");
+                serial_write(match error {
+                    E::Truncated=>b"truncated image",E::BadDosHeader=>b"bad DOS header",
+                    E::BadPeSignature=>b"bad PE signature",E::WrongMachine=>b"wrong machine",
+                    E::WrongSubsystem=>b"wrong subsystem",E::NotDll=>b"not a driver DLL",
+                    E::InvalidHeader=>b"invalid PE header",E::InvalidSection=>b"invalid section",
+                    E::ImageTooLarge=>b"image too large",E::WrongBase=>b"wrong image base",
+                    E::ImportsUnsupported=>b"imports unsupported",E::ImportNotFound=>b"unresolved import",
+                    E::InvalidImport=>b"invalid import",E::RelocationsUnsupported=>b"relocations unsupported",
+                    E::RelocationUnsupported=>b"unsupported relocation",E::WxSection=>b"W+X section",
+                    E::EntryNotExecutable=>b"entry not executable",E::MappingFailed=>b"mapping failed",
+                    E::NoMemory=>b"out of memory",E::EntryFailed(_)=>b"DriverEntry returned failure",
+                });
+                serial_write(b"; controller remains unbound and bus mastering stays disabled.\r\n");
                 false
             }
         }
