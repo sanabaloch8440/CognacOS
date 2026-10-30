@@ -189,6 +189,64 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
         // that recovery left the journal clean before returning the handle.
         Self::mount(device, ranges, inode_buffer, scratch_a, scratch_b)
     }
+ 
+    /// Recover a dirty internal journal using a mount-derived, conservative
+    /// metadata ownership manifest. The caller provides bounded storage for
+    /// exact ownership entries. Only the primary superblock/GDT, group
+    /// bitmaps, and inode tables are authorized by this initial manifest;
+    /// inode-owned directory/extent/xattr targets remain rejected.
+    pub fn mount_with_recovery_and_ownership(
+        mut device: D,
+        ranges: &'a mut [BlockRange],
+        ownership_entries: &'a mut [transaction::MetadataOwnership],
+        inode_buffer: &mut [u8],
+        scratch_a: &mut [u8],
+        scratch_b: &mut [u8],
+        journal_map: &mut [u64],
+        journal_superblock: &mut [u8],
+        replay_scratch: &mut [u8],
+        replay_payload: &mut [u8],
+    ) -> Result<Self, Error> {
+        let mut raw_superblock = [0u8; SUPERBLOCK_BYTES];
+        let end = SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64)
+            .ok_or(Error::OutOfRange)?;
+        if device.capacity_bytes() < end { return Err(Error::OutOfRange); }
+        device.read_at(SUPERBLOCK_DISK_OFFSET, &mut raw_superblock)
+            .map_err(|_| Error::Io)?;
+        let sb = Superblock::parse(&raw_superblock)?;
+        validate_superblock_checksum(&raw_superblock)?;
+        if inode_buffer.len() != sb.inode_size as usize
+            || scratch_a.len() != sb.block_size as usize
+            || scratch_b.len() != sb.block_size as usize
+            || journal_superblock.len() != sb.block_size as usize
+            || replay_scratch.len() != sb.block_size as usize
+            || replay_payload.len() != sb.block_size as usize {
+            return Err(Error::InvalidGeometry);
+        }
+        if u32at(&raw_superblock, 92)? & 0x0004 != 0 {
+            let mut used = build_system_zones(
+                &mut device, &sb, &raw_superblock, scratch_a, ranges,
+            )?;
+            protect_reserved_journal_inode_zones(
+                &mut device, &sb, &raw_superblock, ranges, &mut used,
+                inode_buffer, scratch_a, scratch_b,
+            )?;
+            let zones = SystemZoneMap::new(&ranges[..used]);
+            let owner_count = build_system_metadata_ownership(
+                &mut device, &sb, &raw_superblock, &zones, scratch_a,
+                ownership_entries,
+            )?;
+            let mut ownership = transaction::MetadataOwnershipMap::new(
+                &ownership_entries[..owner_count],
+            )?;
+            recover_internal_journal_with_policy(
+                &mut device, &sb, &raw_superblock, &zones, inode_buffer,
+                scratch_a, scratch_b, journal_map, journal_superblock,
+                replay_scratch, replay_payload, &mut ownership,
+            )?;
+        }
+        Self::mount(device, ranges, inode_buffer, scratch_a, scratch_b)
+    }
 }
 
 /// Fail-closed convenience recovery entry point. It verifies an already-clean
