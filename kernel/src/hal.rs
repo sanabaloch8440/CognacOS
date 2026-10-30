@@ -892,22 +892,27 @@ unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->Dri
 /// the live xHCI PnP identity, an unpoisoned VT-d domain, at least one registered
 /// IOMMU mapping, and a registered (still-masked) interrupt handler.
 unsafe extern "C" fn service_set_bus_master(device_object:u64,enabled:bool)->DriverHalStatus{
-    let Some(r)=crate::ntoskrnl::pnp::xhci_resources() else{return driver_hal_invalid()};
-    if device_object==0||device_object!=r.device_object||r.segment!=0{return driver_hal_invalid()}
+    if device_object==0{return driver_hal_invalid()}
+    // HAL resolves the requester through the kernel-owned DMA identity registry;
+    // it does not reach into NTOSKRNL PnP structures or ACPI parser state.
+    let Some((segment,bus,devfn))=crate::dma::iommu::requester_identity(device_object as usize) else {
+        return driver_hal_invalid()
+    };
+    if segment!=0{return driver_hal_unsupported()}
     if enabled {
-        if r.state<crate::ntoskrnl::pnp::STATE_DMA_READY||r.interrupt_vector==0
-            ||!device_interrupt_handler_registered(r.interrupt_vector)
-            ||!crate::dma::iommu::available()
+        if !crate::dma::iommu::available()
             ||!crate::dma::iommu::vtd::is_enabled()
             ||crate::dma::iommu::common_allocation_count(device_object as usize)<4
             ||!crate::dma::iommu::device_busy(device_object as usize) {
             return driver_hal_unsupported();
         }
-        let Some(id)=crate::dma::iommu::vtd::RequesterId::new(r.bus,r.device,r.function) else{return driver_hal_invalid()};
+        let Some(id)=crate::dma::iommu::vtd::RequesterId::new(bus,devfn>>3,devfn&7) else {
+            return driver_hal_invalid()
+        };
         if !crate::dma::iommu::vtd::requester_domain_usable(id){return driver_hal_unsupported()}
     }
-    let address=0x8000_0000u32|((r.bus as u32)<<16)|((r.device as u32)<<11)
-        |((r.function as u32)<<8)|0x04;
+    let address=0x8000_0000u32|((bus as u32)<<16)|(((devfn>>3) as u32)<<11)
+        |(((devfn&7) as u32)<<8)|0x04;
     unsafe{write_port_u32(0x0cf8,address);}
     let command=unsafe{read_port_u32(0x0cfc)} as u16;
     let next=if enabled{command|0x4}else{command&!0x4};
