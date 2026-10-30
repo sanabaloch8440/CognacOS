@@ -520,6 +520,49 @@ static mut XHCI_DEVICE_SERVICES: core::mem::MaybeUninit<cognacos_hal_contract::D
 static mut XHCI_DRIVER_OBJECT: core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject> = core::mem::MaybeUninit::uninit();
 static XHCI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
 
+
+fn revoke_xhci_bus_master(resources:&ntoskrnl::pnp::XhciPciResources)->bool {
+    if resources.segment!=0 { return false; }
+    unsafe {
+        let command=pci_config_read32(resources.bus,resources.device,resources.function,0x04) as u16;
+        pci_config_write16(resources.bus,resources.device,resources.function,0x04,command&!0x4);
+        (pci_config_read32(resources.bus,resources.device,resources.function,0x04) as u16)&0x4==0
+    }
+}
+fn enable_xhci_bus_master(resources:&ntoskrnl::pnp::XhciPciResources)->bool {
+    use dma::iommu::vtd::RequesterId;
+    if resources.segment!=0 || !dma::iommu::available() || !dma::iommu::vtd::is_enabled() {
+        return false;
+    }
+    let Some(requester)=RequesterId::new(resources.bus,resources.device,resources.function) else { return false; };
+    if !dma::iommu::vtd::requester_domain_usable(requester)
+        || dma::iommu::common_allocation_count(resources.device_object as usize)<4
+        || !dma::iommu::device_busy(resources.device_object as usize) {
+        return false;
+    }
+    unsafe {
+        let command=pci_config_read32(resources.bus,resources.device,resources.function,0x04) as u16;
+        // The probe path must have left bus mastering off. Refuse to inherit a
+        // firmware-enabled bus-master bit without first observing it clear.
+        if command&0x4!=0 {
+            pci_config_write16(resources.bus,resources.device,resources.function,0x04,command&!0x4);
+            if (pci_config_read32(resources.bus,resources.device,resources.function,0x04) as u16)&0x4!=0 {
+                loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); }
+            }
+        }
+        pci_config_write16(resources.bus,resources.device,resources.function,0x04,command|0x6);
+        let verified=(pci_config_read32(resources.bus,resources.device,resources.function,0x04) as u16)&0x6==0x6;
+        if !verified {
+            let now=pci_config_read32(resources.bus,resources.device,resources.function,0x04) as u16;
+            pci_config_write16(resources.bus,resources.device,resources.function,0x04,now&!0x4);
+            if (pci_config_read32(resources.bus,resources.device,resources.function,0x04) as u16)&0x4!=0 {
+                loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); }
+            }
+        }
+        verified
+    }
+}
+
 fn bind_xhci_pe_driver()->bool {
     use core::sync::atomic::Ordering;
     if USBXHCI_PE_IMAGE.is_empty() {
@@ -572,9 +615,21 @@ fn bind_xhci_pe_driver()->bool {
             Ok(image) => {
                 serial_write(b"xHCI bind: DriverEntry succeeded image="); serial_write_hex(image.image_base);
                 serial_write(b" size="); serial_write_hex(image.image_size as u64); serial_write(b"\r\n");
-                if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_DMA_READY,ntoskrnl::pnp::STATE_INTERRUPT_READY).is_err()
-                    || ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_INTERRUPT_READY,ntoskrnl::pnp::STATE_DRIVER_BOUND).is_err() {
-                    serial_write(b"xHCI bind: DriverEntry succeeded but PnP state publication failed.\r\n"); return false;
+                if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_DMA_READY,ntoskrnl::pnp::STATE_INTERRUPT_READY).is_err() {
+                    serial_write(b"xHCI bind: DriverEntry succeeded but interrupt-ready PnP transition failed; bus mastering remains disabled.\r\n");
+                    return false;
+                }
+                if !enable_xhci_bus_master(&resources) {
+                    serial_write(b"xHCI bind: requester domain or four persistent DMA buffers were not verified; bus mastering remains disabled.\r\n");
+                    return false;
+                }
+                serial_write(b"xHCI PCI: bus mastering enabled after VT-d domain, IOVA mappings, and DMA-buffer lifetime checks.\r\n");
+                if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_INTERRUPT_READY,ntoskrnl::pnp::STATE_DRIVER_BOUND).is_err() {
+                    if !revoke_xhci_bus_master(&resources) {
+                        loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); }
+                    }
+                    serial_write(b"xHCI bind: driver initialized but PnP bound transition failed; bus mastering revoked.\r\n");
+                    return false;
                 }
                 let ext=&*extension;
                 serial_write(b"xHCI runtime: events="); serial_write_hex(ext.event_count.load(Ordering::Acquire));
