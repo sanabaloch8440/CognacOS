@@ -360,3 +360,10 @@ Added `validate_directory_namespace` and integrated it into `mount_with_recovery
 A bounded, allocation-free parser now validates external xattr block headers, reference counts, the single-block layout, entry-table termination, namespace indices, entry names, value-block references, value bounds/alignment, duplicate (name-index, name) pairs, and overlapping value ranges. The parser is exposed as `xattr::validate_external_xattr_block` and has malformed-layout unit tests.
 
 This is deliberately only the structural half of xattr ownership. The parser does **not** authenticate the ext4 xattr checksum, resolve the owning inode's `i_file_acl` pointer, prove inode allocation state, reconcile shared-block reference counts across all allocated inodes, or authorize xattr blocks for JBD2 replay. Mount recovery continues to reject replay targets in xattr blocks.
+
+
+## External xattr checksum validation (next bounded milestone)
+
+`xattr::validate_external_xattr_checksum` now layers checksum authentication over the structural parser. It validates CRC32C using the caller-supplied filesystem checksum seed and physical block number; blocks with reference count one also require the owning inode number and generation. Missing identity and checksum mismatch fail closed, and tests exercise exclusive/shared blocks plus corruption.
+
+Still outstanding: derive the checksum seed from the mounted superblock in the checked mount path; discover `i_file_acl` from allocated, checksum-validated inodes; validate xattr block physical ranges against system zones; reconcile shared reference counts; and add exact xattr ownership records to the JBD2 replay allowlist. The new helper alone does not authorize xattr replay and does not change writable-mount policy.
