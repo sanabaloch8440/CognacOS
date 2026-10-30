@@ -306,7 +306,7 @@ jobs:
           ar rcs dlls/kernelbase/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           ar rcs dlls/shell32/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           ar rcs dlls/kernel32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
-          ar rcs dlls/shell32/ntdll.lib dlls/msvcrt/kernel32.lib dlls/msvcrt/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
+          ar rcs dlls/shell32/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           ar rcs dlls/msvcrt/kernel32.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           ar rcs dlls/msvcrt/ntdll.lib "$RUNNER_TEMP/cognacos-dll-empty.obj"
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:DllMain -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/kernel32/exports/kernel32-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/kernel32" cargo build --manifest-path dlls/kernel32/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
