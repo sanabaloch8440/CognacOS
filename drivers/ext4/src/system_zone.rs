@@ -254,6 +254,57 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
         }
         Self::mount(device, ranges, inode_buffer, scratch_a, scratch_b)
     }
+
+    /// Discover allocated directories from the inode bitmaps, then build the
+    /// exact replay-ownership manifest and recover the internal journal. The
+    /// directory list is scratch output supplied by the caller; no heap
+    /// allocation is performed. Namespace reachability is not inferred.
+    pub fn mount_with_recovery_and_discovery(
+        mut device: D,
+        ranges: &'a mut [BlockRange],
+        ownership_entries: &'a mut [transaction::MetadataOwnership],
+        directory_inodes: &mut [u32],
+        inode_buffer: &mut [u8],
+        scratch_a: &mut [u8],
+        scratch_b: &mut [u8],
+        journal_map: &mut [u64],
+        journal_superblock: &mut [u8],
+        replay_scratch: &mut [u8],
+        replay_payload: &mut [u8],
+    ) -> Result<Self, Error> {
+        let mut raw_superblock = [0u8; SUPERBLOCK_BYTES];
+        let end = SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64)
+            .ok_or(Error::OutOfRange)?;
+        if device.capacity_bytes() < end { return Err(Error::OutOfRange); }
+        device.read_at(SUPERBLOCK_DISK_OFFSET, &mut raw_superblock).map_err(|_| Error::Io)?;
+        let sb = Superblock::parse(&raw_superblock)?;
+        validate_superblock_checksum(&raw_superblock)?;
+        if inode_buffer.len() != sb.inode_size as usize
+            || scratch_a.len() != sb.block_size as usize
+            || scratch_b.len() != sb.block_size as usize {
+            return Err(Error::InvalidGeometry);
+        }
+        let mut directory_count = 0usize;
+        if sb.feature_compat & 0x0004 != 0 {
+            let mut used = build_system_zones(
+                &mut device, &sb, &raw_superblock, scratch_a, ranges,
+            )?;
+            protect_reserved_journal_inode_zones(
+                &mut device, &sb, &raw_superblock, ranges, &mut used,
+                inode_buffer, scratch_a, scratch_b,
+            )?;
+            let zones = SystemZoneMap::new(&ranges[..used]);
+            directory_count = discover_allocated_directories(
+                &mut device, &sb, &raw_superblock, &zones, directory_inodes,
+                inode_buffer, scratch_a, scratch_b,
+            )?;
+        }
+        Self::mount_with_recovery_and_ownership(
+            device, ranges, ownership_entries, &directory_inodes[..directory_count],
+            inode_buffer, scratch_a, scratch_b, journal_map, journal_superblock,
+            replay_scratch, replay_payload,
+        )
+    }
 }
 
 /// Fail-closed convenience recovery entry point. It verifies an already-clean
