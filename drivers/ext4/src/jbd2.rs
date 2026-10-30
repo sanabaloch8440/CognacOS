@@ -94,6 +94,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  if ordered_targets.len()!=ordered_data.len()||metadata_targets.len()!=metadata_data.len()
   ||metadata_targets.is_empty()||descriptor.len()<1024{return Err(Error::InvalidGeometry)}
  let sb=JournalSuperblock::parse(journal_superblock)?;
+ if sb.checksum_mode!=ChecksumMode::None{return Err(Error::UnsupportedFeature)}
  let bs=sb.block_size as usize;
  if descriptor.len()!=bs||journal_superblock.len()!=bs{return Err(Error::NoScratch)}
  if sb.start!=0{return Err(Error::InvalidSequence)}
@@ -325,7 +326,8 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
        ChecksumMode::V3=>{
         let target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
         off=off.checked_add(8).ok_or(Error::OutOfRange)?;
-        if sb.block_count_64{target|=(be32(scratch,off)? as u64)<<32;off=off.checked_add(4).ok_or(Error::OutOfRange)?}
+        let high=be32(scratch,off)?;off=off.checked_add(4).ok_or(Error::OutOfRange)?;
+        if sb.block_count_64{target|=(high as u64)<<32}
         let checksum=be32(scratch,off)?;off=off.checked_add(4).ok_or(Error::OutOfRange)?;(target,flags,checksum)
        },
        _=>{
@@ -538,7 +540,7 @@ mod tests{
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
   let payload=[0x6du8;1024];let sum=crate::checksum::jbd2_tag_checksum(seed,1,&payload);
   d.blocks[2][16..18].copy_from_slice(&(sum as u16).to_be_bytes());
-  d.blocks[2][18..20].copy_from_slice(&(TAG_LAST|TAG_SAME_UUID).to_be_bytes());
+  d.blocks[2][18..20].copy_from_slice(&TAG_LAST.to_be_bytes());d.blocks[2][20..36].copy_from_slice(&uuid);
   let ds=crate::checksum::jbd2_metadata_block_checksum(seed,&d.blocks[2]).unwrap();
   d.blocks[2][1020..].copy_from_slice(&ds.to_be_bytes());
   d.blocks[3]=payload;
@@ -557,10 +559,10 @@ mod tests{
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&(TAG_LAST|TAG_SAME_UUID).to_be_bytes());
+  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[2][20..24].copy_from_slice(&0u32.to_be_bytes());
   let payload=[0x7eu8;1024];let sum=crate::checksum::jbd2_tag_checksum(seed,1,&payload);
-  d.blocks[2][24..28].copy_from_slice(&sum.to_be_bytes());
+  d.blocks[2][24..28].copy_from_slice(&sum.to_be_bytes());d.blocks[2][28..44].copy_from_slice(&uuid);
   let ds=crate::checksum::jbd2_metadata_block_checksum(seed,&d.blocks[2]).unwrap();
   d.blocks[2][1020..].copy_from_slice(&ds.to_be_bytes());
   d.blocks[3]=payload;
