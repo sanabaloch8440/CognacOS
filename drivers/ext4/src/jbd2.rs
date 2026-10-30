@@ -724,9 +724,8 @@ mod tests{
   assert_eq!(sb.checksum_mode,ChecksumMode::None);
   assert_eq!(sb.feature_incompat,0);
   assert_eq!(sb.uuid,[0;16]);
-  // ext3-era ext4-compatible filesystems can still pin an internal journal
-  // inode and filesystem UUID even though the v1 journal superblock has no
-  // UUID field to compare against.
+  // The v1 superblock has no UUID field to compare against; an internal
+  // journal is still identified by its pinned inode.
   let mut ext4=[0u8;1024];
   ext4[92..96].copy_from_slice(&4u32.to_le_bytes());
   ext4[208..224].copy_from_slice(&[0x5a;16]);
@@ -735,7 +734,7 @@ mod tests{
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,17);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..18].fill(0);d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());
+  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[2][20..36].copy_from_slice(&[0;16]);
   d.blocks[3].fill(0x6a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,17);
