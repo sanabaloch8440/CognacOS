@@ -716,8 +716,6 @@ jobs:
           qemu-system-x86_64 \
             -audiodev wav,id=beepout,path=build/beep.wav \
             -machine q35,pcspk-audiodev=beepout -m 5G -cpu max -smp 4 \
-            # QEMU's Intel VT-d model publishes an ACPI DMAR table and exposes \
-            # a real remapping unit for the guest's requester-domain tests. \
             -device intel-iommu,intremap=on,caching-mode=on,aw-bits=48 \
             -device qemu-xhci,id=xhci \
             -device usb-kbd,bus=xhci.0 \
