@@ -200,7 +200,6 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
  let did=NEXT_DOMAIN.fetch_add(1,Ordering::AcqRel);
  if did==0||did==u16::MAX{
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
-  if allocated_context{unsafe{core::ptr::write_volatile(u.root_virt.add(bus),0)};contexts[bus]=EMPTY_CONTEXT;}
   return Err(STATUS_INSUFFICIENT_RESOURCES)
  }
  let Some((low,high))=encode_context_entry(did,root_pa) else{
@@ -222,6 +221,146 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
   return Err(STATUS_IO_TIMEOUT)
  }
  Ok(did)
+}
+
+
+
+const SL_R:u64=1;
+const SL_W:u64=2;
+const SL_ADDR_MASK:u64=0x000f_ffff_ffff_f000;
+const SL_MAX:u64=1u64<<48;
+const SL_PAGE:u64=4096;
+
+#[derive(Clone,Copy)] struct TablePage{used:bool,physical:u64,virtual_address:*mut u64}
+unsafe impl Send for TablePage{} unsafe impl Sync for TablePage{}
+const EMPTY_TABLE_PAGE:TablePage=TablePage{used:false,physical:0,virtual_address:core::ptr::null_mut()};
+struct TablePageStore(core::cell::UnsafeCell<[TablePage;4096]>); unsafe impl Sync for TablePageStore{}
+static TABLE_PAGES:TablePageStore=TablePageStore(core::cell::UnsafeCell::new([EMPTY_TABLE_PAGE;4096]));
+
+/// Walk or construct an intermediate second-level table. Allocated pages are
+/// zeroed and cache-cleaned before their parent entry is made present.
+unsafe fn walk_level(u:&Unit,table:*mut u64,table_pa:u64,index:usize,create:bool)->Result<*mut u64,i32>{
+ let slot=unsafe{table.add(index)};
+ let entry=unsafe{core::ptr::read_volatile(slot)};
+ if entry&SL_R!=0{
+  if entry&SL_W==0{return Err(STATUS_NOT_SUPPORTED)}
+  let pa=entry&SL_ADDR_MASK;
+  let pages=unsafe{&*TABLE_PAGES.0.get()};
+  let Some(p)=pages.iter().find(|p|p.used&&p.physical==pa) else{return Err(STATUS_NOT_SUPPORTED)};
+  return Ok(p.virtual_address)
+ }
+ if !create{return Err(STATUS_INVALID_PARAMETER)}
+ let(mut pa,mut va)=(0u64,core::ptr::null_mut());
+ if unsafe{(u.ops.alloc_table.unwrap())(u.ops.context,&mut pa,&mut va)}!=0
+  ||pa==0||pa&0xfff!=0||pa&!SL_ADDR_MASK!=0||va.is_null(){
+  if pa!=0&&!va.is_null(){let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};}
+  return Err(STATUS_INSUFFICIENT_RESOURCES)
+ }
+ unsafe{core::ptr::write_bytes(va,0,512)};
+ if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,pa,SL_PAGE)}!=0{
+  let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};
+  return Err(STATUS_NOT_SUPPORTED)
+ }
+ let pages=unsafe{&mut*TABLE_PAGES.0.get()};
+ let Some(record)=pages.iter_mut().find(|p|!p.used) else{
+  let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};
+  return Err(STATUS_INSUFFICIENT_RESOURCES)
+ };
+ *record=TablePage{used:true,physical:pa,virtual_address:va};
+ unsafe{core::ptr::write_volatile(slot,pa|SL_R|SL_W)};
+ if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{
+  // Keep the child page pinned because hardware may have observed its entry.
+  return Err(STATUS_NOT_SUPPORTED)
+ }
+ Ok(va)
+}
+
+/// Map a contiguous physical range into a requester's IOVA space. Permissions
+/// bit 0 grants device reads and bit 1 grants device writes. All addresses and
+/// lengths are page-aligned. A global IOTLB invalidation completes publication.
+pub unsafe fn map_pages(id:RequesterId,iova:u64,physical:u64,length:u64,permissions:u8)->i32{
+ if iova==0||physical==0||length==0||iova&0xfff!=0||physical&0xfff!=0||length&0xfff!=0
+  ||permissions==0||permissions&!3!=0||iova.checked_add(length).is_none_or(|e|e>SL_MAX)
+  ||physical.checked_add(length).is_none_or(|e|e>SL_MAX){return STATUS_INVALID_PARAMETER}
+ let _guard=LOCK.lock();
+ let u=unsafe{&*UNIT.0.get()};
+ if !u.enabled{return STATUS_DEVICE_NOT_READY}
+ let domains=unsafe{&*DOMAINS.0.get()};
+ let Some(domain)=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8) else{return STATUS_DEVICE_NOT_READY};
+ let mut offset=0;
+ while offset<length{
+  let va=iova+offset;
+  let indexes=[((va>>39)&0x1ff)as usize,((va>>30)&0x1ff)as usize,((va>>21)&0x1ff)as usize,((va>>12)&0x1ff)as usize];
+  let mut table=domain.root_virtual;
+  let mut table_pa=domain.root_physical;
+  for level in 0..3{
+   match unsafe{walk_level(u,table,table_pa,indexes[level],true)}{
+    Ok(next)=>{
+     let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
+     table_pa=entry&SL_ADDR_MASK;table=next;
+    }
+    Err(e)=>return e
+   }
+  }
+  let leaf=unsafe{table.add(indexes[3])};
+  if unsafe{core::ptr::read_volatile(leaf)}&SL_R!=0{return STATUS_INVALID_PARAMETER}
+  unsafe{core::ptr::write_volatile(leaf,((physical+offset)&SL_ADDR_MASK)|(permissions as u64))};
+  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{return STATUS_NOT_SUPPORTED}
+  offset+=SL_PAGE;
+ }
+ unsafe{invalidate_all_locked(u)}
+}
+
+/// Clear a mapped IOVA range. Backing pages must not be reclaimed unless the
+/// IOTLB invalidation succeeds; on timeout the device may retain cached access.
+pub unsafe fn unmap_pages(id:RequesterId,iova:u64,length:u64)->i32{
+ if iova==0||length==0||iova&0xfff!=0||length&0xfff!=0||iova.checked_add(length).is_none_or(|e|e>SL_MAX){return STATUS_INVALID_PARAMETER}
+ let _guard=LOCK.lock();
+ let u=unsafe{&*UNIT.0.get()};
+ if !u.enabled{return STATUS_DEVICE_NOT_READY}
+ let domains=unsafe{&*DOMAINS.0.get()};
+ let Some(domain)=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8) else{return STATUS_DEVICE_NOT_READY};
+ let mut offset=0;
+ while offset<length{
+  let va=iova+offset;
+  let indexes=[((va>>39)&0x1ff)as usize,((va>>30)&0x1ff)as usize,((va>>21)&0x1ff)as usize,((va>>12)&0x1ff)as usize];
+  let mut table=domain.root_virtual;
+  let mut table_pa=domain.root_physical;
+  for level in 0..3{
+   match unsafe{walk_level(u,table,table_pa,indexes[level],false)}{
+    Ok(next)=>{
+     let entry=unsafe{core::ptr::read_volatile(table.add(indexes[level]))};
+     table_pa=entry&SL_ADDR_MASK;table=next;
+    }
+    Err(e)=>return e
+   }
+  }
+  let leaf=unsafe{table.add(indexes[3])};
+  if unsafe{core::ptr::read_volatile(leaf)}&SL_R==0{return STATUS_INVALID_PARAMETER}
+  unsafe{core::ptr::write_volatile(leaf,0)};
+  if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,table_pa,SL_PAGE)}!=0{return STATUS_NOT_SUPPORTED}
+  offset+=SL_PAGE;
+ }
+ unsafe{invalidate_all_locked(u)}
+}
+
+/// Software page-table lookup for tests and diagnostics; not a hardware test.
+pub fn lookup_mapping(id:RequesterId,iova:u64)->Option<(u64,u8)>{
+ if iova>=SL_MAX{return None}
+ let _guard=LOCK.lock();
+ let domains=unsafe{&*DOMAINS.0.get()};
+ let d=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8)?;
+ let pages=unsafe{&*TABLE_PAGES.0.get()};
+ let indexes=[((iova>>39)&0x1ff)as usize,((iova>>30)&0x1ff)as usize,((iova>>21)&0x1ff)as usize,((iova>>12)&0x1ff)as usize];
+ let mut table=d.root_virtual;
+ for (level,index) in indexes.iter().enumerate(){
+  let e=unsafe{core::ptr::read_volatile(table.add(*index))};
+  if e&SL_R==0{return None}
+  if level==3{return Some(((e&SL_ADDR_MASK)|(iova&0xfff),(e&3)as u8))}
+  let pa=e&SL_ADDR_MASK;
+  table=pages.iter().find(|p|p.used&&p.physical==pa)?.virtual_address;
+ }
+ None
 }
 
 /// Remove a requester domain only after all device DMA has been stopped. On
