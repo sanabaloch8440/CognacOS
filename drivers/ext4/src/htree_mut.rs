@@ -169,6 +169,10 @@ mod tests{
   let mut scratch=[0u8;1024];
   assert_eq!(crate::ops::lookup_indexed_directory_entry(&sb,2,9,&root,&mut reader,4,100,wanted,None,&mut scratch),Ok(22));
   let mut seen=0;crate::ops::iterate_indexed_directory(&sb,2,9,&root,&mut reader,4,100,None,&mut scratch,|entry|{seen+=1;assert!(entry.inode==2||entry.inode==21||entry.inode==22);Ok(true)}).unwrap();assert_eq!(seen,4);
+  let mut map=[crate::htree::DirectoryHashMapEntry::default();4];let mut previous=None;let mut sorted_seen=0;
+  crate::ops::iterate_indexed_directory_sorted(&sb,2,9,&root,&mut reader,4,100,None,&mut scratch,&mut map,|entry|{
+   let key=(entry.hash.major,entry.hash.minor);if let Some(p)=previous{assert!(p<=key);}previous=Some(key);sorted_seen+=1;Ok(true)
+  }).unwrap();assert_eq!(sorted_seen,4);
  }
 
  #[test]fn leaf_split_rebalances_entries_and_refreshes_both_checksums(){
