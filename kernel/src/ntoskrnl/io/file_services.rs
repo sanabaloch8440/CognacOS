@@ -61,6 +61,17 @@ pub fn mount_boot_system_files() {
                 let _ = register_static(b"\\SystemRoot\\System32\\ntdll.dll", bytes);
                 let _ = register_static(b"\\Windows\\System32\\ntdll.dll", bytes);
             }
+            for (name, systemroot_path, windows_path) in [
+                ("kernel32.dll", b"\\SystemRoot\\System32\\kernel32.dll" as &[u8], b"\\Windows\\System32\\kernel32.dll" as &[u8]),
+                ("kernelbase.dll", b"\\SystemRoot\\System32\\kernelbase.dll" as &[u8], b"\\Windows\\System32\\kernelbase.dll" as &[u8]),
+                ("shell32.dll", b"\\SystemRoot\\System32\\shell32.dll" as &[u8], b"\\Windows\\System32\\shell32.dll" as &[u8]),
+                ("msvcrt.dll", b"\\SystemRoot\\System32\\msvcrt.dll" as &[u8], b"\\Windows\\System32\\msvcrt.dll" as &[u8]),
+            ] {
+                if let Some(bytes) = crate::boot_system_dll_bytes(name) {
+                    let _ = register_static(systemroot_path, bytes);
+                    let _ = register_static(windows_path, bytes);
+                }
+            }
             INIT.store(2, Ordering::Release);
         }
         Err(1) => {
