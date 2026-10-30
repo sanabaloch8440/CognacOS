@@ -1026,17 +1026,20 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
         let mut visitor = |entry: crate::htree::DirectoryEntryView<'_>| -> Result<bool, Error> {
             if entry.inode == 0 || entry.name == b"." || entry.name == b".." { return Ok(true); }
             let child = directory_inodes.iter().position(|&v| v == entry.inode);
-            let claims_dir = if sb.feature_incompat & INCOMPAT_FILETYPE != 0 {
+            let has_file_type = sb.feature_incompat & INCOMPAT_FILETYPE != 0;
+            let claims_dir = if has_file_type && entry.file_type != 0 {
                 entry.file_type == FT_DIR
             } else { child.is_some() };
             if claims_dir {
                 let index = child.ok_or(Error::InvalidGeometry)?;
+                if has_file_type && entry.file_type != 0 && entry.file_type != FT_DIR {
+                    return Err(Error::InvalidDirectoryEntry);
+                }
                 if entry.inode == ROOT_INODE || parents[index] != 0 {
                     return Err(Error::InvalidGeometry);
                 }
                 parents[index] = parent_ino;
-            } else if child.is_some() && sb.feature_incompat & INCOMPAT_FILETYPE != 0
-                && entry.file_type != 0 {
+            } else if child.is_some() {
                 return Err(Error::InvalidDirectoryEntry);
             }
             Ok(true)
