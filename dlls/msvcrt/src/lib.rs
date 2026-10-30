@@ -6,6 +6,12 @@
 include!(concat!(env!("OUT_DIR"), "/msvcrt_exports.rs"));
 
 #[cfg(target_os = "windows")]
+core::arch::global_asm!(
+    include_str!(concat!(env!("OUT_DIR"), "/msvcrt_runtime.S")),
+    options(att_syntax)
+);
+
+#[cfg(target_os = "windows")]
 core::arch::global_asm!(r#"
     .text
     .p2align 4
