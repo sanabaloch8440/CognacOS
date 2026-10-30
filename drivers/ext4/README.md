@@ -124,3 +124,8 @@ The mount-owned transaction layer now exports a typed OperationBuilder for Creat
 The orphan module validates the legacy orphan chain with bounded caller storage and submits all inode repairs plus the cleared superblock head through one transaction callback. The callback must implement the correct linked-inode truncate and zero-link inode reclamation behavior; the module does not guess at extent/bitmap changes.
 
 These are foundations for wiring the actual VFS mutation paths, not proof that all operations are already connected. JBD2 checksum-v1/v2/v3 remain unsupported and fail closed. Mount-time orphan recovery is not yet connected to a concrete transaction adapter. Writable mounts remain disabled.
+
+
+## JBD2 checksum validation
+
+The bounded recovery parser validates the JBD2 v2/v3 journal superblock before trusting its geometry or recovery pointer: checksum type must be CRC32C and the complete 1024-byte superblock CRC32C is checked with the checksum field zeroed. Descriptor/revoke tails, per-tag data checksums, UUIDs, and commit checksums are also validated before replay. Checksum-v1, async commit, and fast commits remain unsupported and fail closed. Checksum-enabled journal writing is not implemented; writable ext4 mounts remain disabled.
