@@ -366,6 +366,12 @@ A bounded, allocation-free parser now validates external xattr block headers, re
 This is deliberately only the structural half of xattr ownership. The parser does **not** authenticate the ext4 xattr checksum, resolve the owning inode's `i_file_acl` pointer, prove inode allocation state, reconcile shared-block reference counts across all allocated inodes, or authorize xattr blocks for JBD2 replay. Mount recovery continues to reject replay targets in xattr blocks.
 
 
+## Checked-mount xattr/system-zone validation (2026-10-30)
+
+Added a checked-mount API to validate an external xattr block against the retained superblock and system-zone map. It validates the inode checksum before trusting `i_file_acl`, checks filesystem bounds and system-zone exclusion, and validates structure plus the metadata checksum when the feature is enabled. Unit tests cover a safe block, protected-zone overlap, and checksum failure.
+
+Remaining blockers: prove inode and xattr-block allocation from validated bitmaps, discover all owners to reconcile shared `h_refcount`, then add exact xattr metadata ownership to the JBD2 replay policy. Until those steps land, xattr blocks remain unauthorized replay targets and writable-mount policy is unchanged.
+
 ## External xattr checksum validation (next bounded milestone)
 
 `xattr::validate_external_xattr_checksum` now layers checksum authentication over the structural parser. The exported `external_xattr_checksum_seed` helper validates the superblock checksum and derives the correct seed from `s_checksum_seed` when `CSUM_SEED` is enabled, or from `s_uuid` otherwise. The block validator uses that seed and the physical block number; blocks with reference count one also require the owning inode number and generation. Missing identity and checksum mismatch fail closed, and tests exercise exclusive/shared blocks plus corruption.
