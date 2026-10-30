@@ -341,7 +341,7 @@ where
             | u32at(root, offset + 8)? as u64;
         let logical_end = (logical as u64).checked_add(length as u64).ok_or(Error::OutOfRange)?;
         let physical_end = physical.checked_add(length as u64).ok_or(Error::OutOfRange)?;
-        if previous_end.map_or(false, |end| logical as u64 < end)
+        if previous_end.map_or(false, |end| (logical as u64) < end)
             || physical == 0 || physical_end > blocks_count {
             return Err(Error::InvalidExtentTree);
         }
