@@ -75,3 +75,6 @@ The coordinator is a bounded commit primitive, not yet the writable VFS mount pa
 ### JBD2 recovery target isolation
 
 The ext4 recovery path now rejects committed journal tags that point back into the internal journal inode's physical extents. This check runs before each home-block write and is covered by a regression test. It prevents journal self-overwrite but is not a substitute for per-object metadata ownership checks or JBD2 checksums. Writable mounting remains disabled.
+
+
+`CheckedExtFilesystem::mount_with_recovery` is the checked entry point for filesystems with an internal journal: it constructs the system-zone map, protects journal extents, performs bounded replay with journal self-overwrite protection, then mounts only after the journal is clean. This is still a restricted legacy-JBD2 implementation; unsupported checksum/async/fast-commit formats fail closed, and writable mounts remain disabled pending crash-injection and Linux interoperability validation.
