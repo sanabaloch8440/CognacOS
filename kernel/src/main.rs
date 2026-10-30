@@ -38,6 +38,8 @@ mod debug_console;
 use core::arch::asm;
 use core::panic::PanicInfo;
 
+static USBXHCI_PE_IMAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/usbxhci.sys"));
+
 use cognacos_kbdclass::{KeyboardInputData,KeyboardInputStack,KEY_BREAK};
 use cognacos_i8042prt::{Ps2KeyboardPort,PortIo,PowerAwarePortIo,PortError,controller_command,wait_output_full,wait_input_empty,CMD_READ_CONFIG,CMD_WRITE_CONFIG,CONFIG_KEYBOARD_IRQ,STATUS_OUTPUT_FULL,STATUS_PORT,DATA_PORT};
 use kbdus::{Modifiers,translate_packet,VK_SHIFT,VK_CAPITAL,VK_CONTROL,VK_MENU};
@@ -469,14 +471,109 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
         serial_write(b"QEMU xHCI DEVICE COUNT=");serial_write_hex(found as u64);serial_write(b"\r\n");
     }
     if published {
-        unsafe{serial_write(b"PCI xHCI discovered; driver binding deferred pending safe MMIO/DMA/IRQ resources.\r\n");}
-        unsafe{serial_write(b"PCI xHCI resource discovery and uncached MMIO mapping complete; driver binding remains gated on IOMMU and IRQ readiness.\r\n");}
+        unsafe{serial_write(b"PCI xHCI resource discovery and uncached MMIO mapping complete.\r\n");}
+        if !bind_xhci_pe_driver() {
+            unsafe{serial_write(b"PCI xHCI discovered; PE driver did not bind; bus mastering remains disabled.\r\n");}
+        }
     } else if found!=0 {
         unsafe{serial_write(b"PCI xHCI detected but no safe PnP MMIO resource could be published.\r\n");}
     } else {
         unsafe{serial_write(b"PCI xHCI discovery failed: no matching controller found.\r\n");}
     }
     published
+}
+
+
+#[repr(C)]
+struct XhciDriverExtensionHeader {
+    magic:u64, size:u32, version:u32,
+    mmio_base:u64, mmio_length:u64, device_object:u64,
+    interrupt_vector:u32, max_slots:u32,
+    hal:*const cognacos_hal_contract::HalServiceTable,
+    device:*const cognacos_hal_contract::DeviceServiceTable,
+    ready:core::sync::atomic::AtomicBool,
+    interrupt_requested:core::sync::atomic::AtomicBool,
+    event_count:core::sync::atomic::AtomicU64,
+    port_change_count:core::sync::atomic::AtomicU64,
+    command_completion_count:core::sync::atomic::AtomicU64,
+    transfer_completion_count:core::sync::atomic::AtomicU64,
+    runtime_lock:core::sync::atomic::AtomicBool,
+}
+#[repr(C,align(16))]
+struct XhciDriverExtensionBacking([u64;512]);
+static mut XHCI_DRIVER_EXTENSION: XhciDriverExtensionBacking = XhciDriverExtensionBacking([0;512]);
+static mut XHCI_HAL_SERVICES: core::mem::MaybeUninit<cognacos_hal_contract::HalServiceTable> = core::mem::MaybeUninit::uninit();
+static mut XHCI_DEVICE_SERVICES: core::mem::MaybeUninit<cognacos_hal_contract::DeviceServiceTable> = core::mem::MaybeUninit::uninit();
+static mut XHCI_DRIVER_OBJECT: core::mem::MaybeUninit<ntoskrnl::driver_loader::DriverObject> = core::mem::MaybeUninit::uninit();
+static XHCI_DRIVER_BINDING_STARTED:core::sync::atomic::AtomicBool=core::sync::atomic::AtomicBool::new(false);
+
+fn bind_xhci_pe_driver()->bool {
+    use core::sync::atomic::Ordering;
+    if USBXHCI_PE_IMAGE.is_empty() {
+        serial_write(b"xHCI bind: usbxhci.sys was not embedded; driver remains unbound.\r\n");
+        return false;
+    }
+    if XHCI_DRIVER_BINDING_STARTED.compare_exchange(false,true,Ordering::AcqRel,Ordering::Acquire).is_err() { return false; }
+    let Some(resources)=ntoskrnl::pnp::xhci_resources() else {
+        serial_write(b"xHCI bind: PnP resource record unavailable.\r\n"); return false
+    };
+    if resources.interrupt_vector==0 || resources.bar_virtual==0 || resources.bar_length<0x1000 || !dma::iommu::available() {
+        serial_write(b"xHCI bind: safe IOMMU DMA or masked interrupt route unavailable; bus mastering stays disabled.\r\n");
+        return false;
+    }
+    let hal_table=hal::driver_service_table();
+    let device_table=hal::driver_device_service_table();
+    if !hal_table.compatible() || !device_table.compatible() || !device_table.has_dma() || !device_table.has_interrupts() {
+        serial_write(b"xHCI bind: required HAL/device services are incomplete.\r\n"); return false;
+    }
+    if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_MMIO_MAPPED,ntoskrnl::pnp::STATE_DMA_READY).is_err() {
+        serial_write(b"xHCI bind: PnP refused DMA-ready transition.\r\n"); return false;
+    }
+    unsafe {
+        let hal_ptr=core::ptr::addr_of_mut!(XHCI_HAL_SERVICES).cast::<cognacos_hal_contract::HalServiceTable>();
+        hal_ptr.write(hal_table);
+        let device_ptr=core::ptr::addr_of_mut!(XHCI_DEVICE_SERVICES).cast::<cognacos_hal_contract::DeviceServiceTable>();
+        device_ptr.write(device_table);
+        let extension=core::ptr::addr_of_mut!(XHCI_DRIVER_EXTENSION).cast::<XhciDriverExtensionHeader>();
+        extension.write(XhciDriverExtensionHeader {
+            magic:0x434f_474e_4143_5848, size:core::mem::size_of::<XhciDriverExtensionBacking>() as u32,
+            version:1, mmio_base:resources.bar_virtual, mmio_length:resources.bar_length,
+            device_object:resources.device_object, interrupt_vector:resources.interrupt_vector as u32,
+            max_slots:64, hal:hal_ptr, device:device_ptr,
+            ready:core::sync::atomic::AtomicBool::new(false),
+            interrupt_requested:core::sync::atomic::AtomicBool::new(false),
+            event_count:core::sync::atomic::AtomicU64::new(0),
+            port_change_count:core::sync::atomic::AtomicU64::new(0),
+            command_completion_count:core::sync::atomic::AtomicU64::new(0),
+            transfer_completion_count:core::sync::atomic::AtomicU64::new(0),
+            runtime_lock:core::sync::atomic::AtomicBool::new(false),
+        });
+        let driver=core::ptr::addr_of_mut!(XHCI_DRIVER_OBJECT).cast::<ntoskrnl::driver_loader::DriverObject>();
+        driver.write(core::mem::MaybeUninit::<ntoskrnl::driver_loader::DriverObject>::zeroed().assume_init());
+        (*driver).size=core::mem::size_of::<ntoskrnl::driver_loader::DriverObject>() as i16;
+        (*driver).driver_extension=extension.cast::<core::ffi::c_void>();
+        serial_write(b"xHCI bind: loading PE32+ usbxhci.sys bytes=");
+        serial_write_decimal(USBXHCI_PE_IMAGE.len());
+        serial_write(b" vector="); serial_write_hex(resources.interrupt_vector as u64); serial_write(b"\r\n");
+        match ntoskrnl::driver_loader::load_allocated_with_resolver(USBXHCI_PE_IMAGE,driver,core::ptr::null_mut(),ntoskrnl::resolve) {
+            Ok(image) => {
+                serial_write(b"xHCI bind: DriverEntry succeeded image="); serial_write_hex(image.image_base);
+                serial_write(b" size="); serial_write_hex(image.image_size as u64); serial_write(b"\r\n");
+                if ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_DMA_READY,ntoskrnl::pnp::STATE_INTERRUPT_READY).is_err()
+                    || ntoskrnl::pnp::advance_xhci_state(ntoskrnl::pnp::STATE_INTERRUPT_READY,ntoskrnl::pnp::STATE_DRIVER_BOUND).is_err() {
+                    serial_write(b"xHCI bind: DriverEntry succeeded but PnP state publication failed.\r\n"); return false;
+                }
+                let ext=&*extension;
+                serial_write(b"xHCI runtime: events="); serial_write_hex(ext.event_count.load(Ordering::Acquire));
+                serial_write(b" port_changes="); serial_write_hex(ext.port_change_count.load(Ordering::Acquire)); serial_write(b"\r\n");
+                true
+            }
+            Err(_) => {
+                serial_write(b"xHCI bind: PE image load or DriverEntry failed; controller remains unbound.\r\n");
+                false
+            }
+        }
+    }
 }
 
 fn io_smoke_dispatch(irp: &mut io::Irp) -> io::IoStatus {
