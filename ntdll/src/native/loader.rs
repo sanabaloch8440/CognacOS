@@ -2,10 +2,12 @@
 //!
 //! Shared ABI/state façade for the Windows 11 x64 loader exports. Focused
 //! implementations live under `loader/`. Search-directory controls, loaded-module
-//! queries, resource access, relocation blocks, notification registration, and
-//! delay-import lookup are implemented to their supported boundary. Mapping new
-//! DLLs, activation contexts, enclave loading, and callback delivery still require
-//! native image-manager and process-thread integration.
+//! queries, resource access, relocation blocks, notification registration, delay-import
+//! lookup, and the process-local LdrLoadDll bridge are implemented to their supported
+//! boundary. New images are mapped by the kernel's bounded dependency transaction,
+//! published into the PEB loader lists, and initialized through the user-mode DllMain
+//! callout. Static TLS, dependency DllMain ordering, activation contexts, Known DLLs,
+//! and the complete Windows 11 search policy remain unsupported.
 #![allow(non_snake_case, clippy::missing_safety_doc)]
 
 use core::{ffi::c_void, ptr, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
