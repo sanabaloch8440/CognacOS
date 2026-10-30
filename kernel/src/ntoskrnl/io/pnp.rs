@@ -64,6 +64,7 @@ pub struct XhciPciResources {
     pub bar_length:u64,
     pub bar_virtual:u64,
     pub state:u32,
+    pub interrupt_vector:u8,
 }
 
 /// Publish a single validated controller resource record. This does not enable
@@ -121,7 +122,8 @@ pub fn xhci_resources()->Option<XhciPciResources> {
         device_id:d.device_id.load(Ordering::Relaxed) as u16,requester_id:d.requester_id.load(Ordering::Relaxed) as u16,
         interrupt_line:d.interrupt_line.load(Ordering::Relaxed) as u8,interrupt_pin:d.interrupt_pin.load(Ordering::Relaxed) as u8,
         bar_physical:d.bar_physical.load(Ordering::Relaxed),bar_length:d.bar_length.load(Ordering::Relaxed),
-        bar_virtual:d.bar_virtual.load(Ordering::Relaxed),state:d.state.load(Ordering::Relaxed)})
+        bar_virtual:d.bar_virtual.load(Ordering::Relaxed),state:d.state.load(Ordering::Relaxed),
+        interrupt_vector:XHCI_INTERRUPT_VECTOR.load(Ordering::Acquire) as u8})
 }
 
 /// Advance controller startup only when each prerequisite is independently met.
@@ -141,6 +143,26 @@ pub fn advance_xhci_state(expected:u32,next:u32)->Result<(),()> {
 }
 
 static XHCI_INTERRUPT_VECTOR: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// Reserve and configure the controller's PCI INTx route while keeping it
+/// masked. The IRQ line must already have been resolved through MADT overrides
+/// and matched to the I/O-APIC that owns its GSI range.
+pub fn prepare_xhci_interrupt_route(io_base:u64,gsi_base:u32,gsi:u32,bsp_apic_id:u8)->Result<u8,()>{
+    if !XHCI_PCI_DEVICE.ready.load(Ordering::Acquire)||XHCI_INTERRUPT_VECTOR.load(Ordering::Acquire)!=0{return Err(())}
+    let vector=crate::hal::allocate_device_interrupt_vector().map_err(|_|())?;
+    if !crate::ntoskrnl::ke::arch::device_interrupt_vector_ready(vector){
+        let _=crate::hal::release_device_interrupt_vector(vector);return Err(())
+    }
+    if unsafe{crate::hal::configure_device_interrupt_route_masked(io_base,gsi_base,gsi,vector,bsp_apic_id,false,false)}.is_err(){
+        let _=crate::hal::release_device_interrupt_vector(vector);return Err(())
+    }
+    if crate::hal::bind_device_interrupt_route(vector,io_base,gsi_base,gsi).is_err(){
+        let _=crate::hal::release_device_interrupt_vector(vector);return Err(())
+    }
+    XHCI_INTERRUPT_VECTOR.store(vector as u32,Ordering::Release);
+    Ok(vector)
+}
+
 
 /// Record the vector reserved and registered for the xHCI interrupt callback.
 /// The handler must already be installed; a different vector cannot replace it.
