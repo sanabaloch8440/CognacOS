@@ -208,9 +208,18 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
     descriptor[off+12..off+16].copy_from_slice(&sum.to_be_bytes());
     off+=16;
    },
-   _=>{
+   _ if sb.format_version==1=>{
+    // Original JBD v1 tags are { blocknr: be32, flags: be32 }.
     descriptor[off..off+4].copy_from_slice(&(*target as u32).to_be_bytes());
     descriptor[off+4..off+8].copy_from_slice(&flags.to_be_bytes());
+    off+=8;
+   },
+   _=>{
+    // JBD2 v2 non-v3 tags reserve the first halfword for the legacy
+    // checksum field and store flags in the second halfword.
+    descriptor[off..off+4].copy_from_slice(&(*target as u32).to_be_bytes());
+    descriptor[off+4..off+6].fill(0);
+    descriptor[off+6..off+8].copy_from_slice(&(flags as u16).to_be_bytes());
     off+=8;
     if sb.block_count_64{descriptor[off..off+4].copy_from_slice(&((*target>>32) as u32).to_be_bytes());off+=4}
    }
@@ -430,8 +439,17 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
         if sb.block_count_64{target|=(high as u64)<<32}
         let checksum=be32(scratch,off)?;off=off.checked_add(4).ok_or(Error::OutOfRange)?;(target,flags,checksum)
        },
-       _=>{
+       _ if sb.format_version==1=>{
+        // Original JBD v1 descriptor tags store a full 32-bit flags word.
         let target=be32(scratch,off)? as u64;let flags=be32(scratch,off+4)?;
+        off=off.checked_add(8).ok_or(Error::OutOfRange)?;(target,flags,0)
+       },
+       _=>{
+        // JBD2 v2 tags use a 16-bit checksum followed by 16-bit flags,
+        // even when the journal has no checksum feature enabled.
+        let target=be32(scratch,off)? as u64;
+        let _checksum=u16::from_be_bytes([*scratch.get(off+4).ok_or(Error::InvalidTag)?,*scratch.get(off+5).ok_or(Error::InvalidTag)?]);
+        let flags=u16::from_be_bytes([*scratch.get(off+6).ok_or(Error::InvalidTag)?,*scratch.get(off+7).ok_or(Error::InvalidTag)?]) as u32;
         off=off.checked_add(8).ok_or(Error::OutOfRange)?;(target,flags,0)
        }
       };
@@ -533,7 +551,7 @@ mod tests{
  #[test]fn replay_applies_only_a_complete_committed_transaction(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());  d.blocks[3].fill(0x5a);
+  d.blocks[2][16..18].fill(0);d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());  d.blocks[3].fill(0x5a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
   let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
   let mut a=[0u8;1024];let mut b=[0u8;1024];
@@ -543,10 +561,10 @@ mod tests{
  #[test]fn committed_transactions_survive_an_incomplete_later_tail(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());  d.blocks[3].fill(0x5a);
+  d.blocks[2][16..18].fill(0);d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());  d.blocks[3].fill(0x5a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);  header(&mut d.blocks[5],JBD2_DESCRIPTOR_BLOCK,2);
   d.blocks[5][12..16].copy_from_slice(&8u32.to_be_bytes());
-  d.blocks[5][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[5][16..18].fill(0);d.blocks[5][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());
   d.blocks[6].fill(0x7c);
   // Block 7 is not a commit record for transaction 2.
   let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
@@ -562,7 +580,7 @@ mod tests{
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[2][16..18].fill(0);d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());
   d.blocks[3].fill(0x7c);
   // Block 4 is deliberately not a matching commit record.
   let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
@@ -576,7 +594,7 @@ mod tests{
  #[test]fn later_revoke_suppresses_older_transaction_write(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
-  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());d.blocks[2][16..18].fill(0);d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());
   d.blocks[3].fill(0x6b);header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
   header(&mut d.blocks[5],JBD2_REVOKE_BLOCK,2);d.blocks[5][12..16].copy_from_slice(&20u32.to_be_bytes());d.blocks[5][16..20].copy_from_slice(&7u32.to_be_bytes());
   header(&mut d.blocks[6],JBD2_COMMIT_BLOCK,2);
@@ -669,7 +687,7 @@ mod tests{
   }
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[2][16..18].fill(0);d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());
   d.blocks[3].fill(0x5a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,1);
   let sb=JournalSuperblock{format_version:2,block_size:1024,max_len:64,first:1,sequence:1,start:2,feature_incompat:0,block_count_64:false,checksum_mode:ChecksumMode::None,uuid:[0;16]};
@@ -717,7 +735,7 @@ mod tests{
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,17);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[2][16..18].fill(0);d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());
   d.blocks[2][20..36].copy_from_slice(&[0;16]);
   d.blocks[3].fill(0x6a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,17);
@@ -787,7 +805,7 @@ mod tests{
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[2][16..18].fill(0);d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());
   d.blocks[2][20..24].copy_from_slice(&0u32.to_be_bytes());
   let payload=[0x7eu8;1024];let sum=crate::checksum::jbd2_tag_checksum(seed,1,&payload);
   d.blocks[2][24..28].copy_from_slice(&sum.to_be_bytes());d.blocks[2][28..44].copy_from_slice(&uuid);
@@ -809,7 +827,7 @@ mod tests{
   let uuid=[0x3c;16];
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
-  d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
+  d.blocks[2][16..18].fill(0);d.blocks[2][18..20].copy_from_slice(&(TAG_LAST as u16).to_be_bytes());
   d.blocks[2][20..36].copy_from_slice(&uuid);
   d.blocks[3].fill(0x6d);
   let mut crc=crate::checksum::crc32_be_update(!0,&d.blocks[2]);
