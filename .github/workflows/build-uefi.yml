@@ -160,6 +160,10 @@ jobs:
         run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib usb_wake_chain_tests
       - name: Test JBD2 journal superblock validation and feature gating
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib jbd2::tests
+      - name: Test JBD2 journal validation, replay, revoke, and ordered commit
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib jbd2::tests
+      - name: Test ext4 bitmap, directory, inode, and inline extent mutations
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib ops::tests
       - name: Test ext4 parser and extent mapping
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib parser_mapping_and_crc_smoke_tests_pass
       - name: Test ext4 metadata checksum validation
