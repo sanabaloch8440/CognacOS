@@ -12,12 +12,12 @@
 
 ## Deliberate non-claims
 
-This is **not yet a loadable Windows 11-compatible `beep.sys`**. The protocol and hardware core are implemented, but the WDM integration is not complete. In particular, the current CognacOS kernel/driver contract does not yet provide the complete combination needed by this driver:
+This is **not yet a loadable Windows 11-compatible `beep.sys`**. The protocol and hardware core are implemented, but the beep driver's WDM integration is not complete. The kernel already has device-object, symbolic-link, IRP buffering/completion, timer/DPC, and versioned HAL port-I/O primitives; the missing work is connecting these services in a real beep `DriverEntry` and dispatch implementation. In particular, the current CognacOS kernel/driver contract does not yet provide the complete combination needed by this driver:
 
-1. A real `IoCreateDevice` / `IoCreateSymbolicLink` device-object and `\\Device\\Beep` / `\\DosDevices\\Beep` namespace lifecycle.
-2. A complete WDM dispatch path for IRP_MJ_CREATE, IRP_MJ_CLOSE, and IRP_MJ_DEVICE_CONTROL, including METHOD_BUFFERED SystemBuffer capture and IO_STATUS_BLOCK completion.
-3. A kernel timer/DPC service with cancel-safe rundown so a duration expiry stops the speaker without busy-waiting or blocking a dispatch thread.
-4. A documented, versioned HAL port-I/O service available to a loaded driver, including privilege/ownership policy for ports 0x42, 0x43, and 0x61.
+1. The beep driver still needs to call the kernel's existing `IoCreateDevice` / `IoCreateSymbolicLink` APIs and implement its `\Device\Beep` / `\DosDevices\Beep` namespace lifecycle.
+2. The beep driver still needs native `IRP_MJ_CREATE`, `IRP_MJ_CLOSE`, and `IRP_MJ_DEVICE_CONTROL` dispatch routines. The kernel already implements buffered SystemBuffer capture and IRP completion; the driver must use them correctly.
+3. The kernel already exports timer/DPC entry points (`KeInitializeTimer`, `KeSetTimer`, `KeCancelTimer`, `KeInitializeDpc`, `KeInsertQueueDpc`, and `KeRemoveQueueDpc`). The beep driver needs a timer/DPC adapter with cancellation and unload rundown. `SpeakerDeadline` now supplies a tested generation-ticket primitive so stale callbacks can be rejected; it is not itself a scheduled kernel timer.
+4. The HAL already publishes versioned port-byte read/write services in its driver service table. The driver still needs a supported way to acquire that table and enforce exclusive ownership/serialization for ports 0x42, 0x43, and 0x61.
 5. QEMU guest tests that open `\\.\\Beep`, issue `IOCTL_BEEP_SET`, observe PIT/speaker state, verify automatic duration stop, and unload cleanly.
 
 The driver image must not return success or be packaged as a working `.sys` until these dependencies are connected. The previous imported 24-symbol Windows `beep.sys` compatibility audit remains a separate target; its import set is not interchangeable with this smaller in-tree implementation.
