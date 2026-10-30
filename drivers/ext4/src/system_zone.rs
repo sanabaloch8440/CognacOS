@@ -137,9 +137,10 @@ impl<'a, D: ReadOnlyBlockDevice> CheckedExtFilesystem<'a, D> {
     pub fn into_device(self) -> D { self.filesystem.device }
 }
 
-/// Checked mount that performs internal-JBD2 recovery before exposing the
-/// filesystem. All recovery buffers and journal-map storage are caller-owned;
-/// unsupported journal formats or any I/O/checksum error abort the mount.
+/// Checked mount for a clean journal. Because this convenience method has no
+/// metadata-ownership manifest, it refuses dirty-journal replay. Call
+/// `recover_internal_journal_with_policy` with a validated ownership map first,
+/// then retry this mount. All buffers remain caller-owned.
 impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
     pub fn mount_with_recovery(
         mut device: D,
