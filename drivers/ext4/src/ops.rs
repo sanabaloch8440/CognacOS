@@ -538,8 +538,12 @@ mod tests{
  #[test]fn regular_file_creation_and_last_unlink_update_inode_checksum(){
   let mut sb=[0u8;1024];sb[0..4].copy_from_slice(&64u32.to_le_bytes());sb[4..8].copy_from_slice(&4096u32.to_le_bytes());sb[20..24].copy_from_slice(&1u32.to_le_bytes());sb[32..36].copy_from_slice(&1024u32.to_le_bytes());sb[40..44].copy_from_slice(&64u32.to_le_bytes());sb[56..58].copy_from_slice(&0xef53u16.to_le_bytes());sb[76..80].copy_from_slice(&1u32.to_le_bytes());sb[88..90].copy_from_slice(&128u16.to_le_bytes());sb[96..100].copy_from_slice(&(super::super::INCOMPAT_FILETYPE|super::super::INCOMPAT_EXTENTS).to_le_bytes());sb[100..104].copy_from_slice(&0x0400u32.to_le_bytes());sb[373]=1;sb[104..120].copy_from_slice(&[0x51;16]);update_superblock_checksum(&mut sb).unwrap();
   let meta=NewInodeMetadata{mode:0x81a4,uid:1000,gid:1000,links:1,generation:9,atime:1,ctime:1,mtime:1};
-  let mut inode=[0u8;256];initialize_regular_inode(&sb,20,&mut inode,meta).unwrap();validate_inode_checksum(&sb,20,&inode).unwrap();
-  assert_eq!(unlink_regular_inode(&sb,20,&mut inode,55),Ok(true));assert_eq!(le16(&inode,26).unwrap(),0);assert_eq!(le32(&inode,20).unwrap(),55);validate_inode_checksum(&sb,20,&inode).unwrap();
+  let mut inode=[0u8;256];let mut parent=[0u8;1024];initialize_directory_block(&sb,2,2,7,&mut parent).unwrap();
+  create_regular_file_entry(&sb,2,7,&mut parent,20,&mut inode,meta,64,b"hello").unwrap();
+  assert_eq!(lookup_directory_entry(&sb,2,7,&parent,64,b"hello"),Ok(20));validate_inode_checksum(&sb,20,&inode).unwrap();
+  assert_eq!(unlink_regular_file_entry(&sb,2,7,&mut parent,64,b"hello",20,&mut inode,55),Ok(true));
+  assert_eq!(le16(&inode,26).unwrap(),0);assert_eq!(le32(&inode,20).unwrap(),55);
+  validate_inode_checksum(&sb,20,&inode).unwrap();validate_directory_block_checksum(&sb,2,7,&parent).unwrap();
  }
  #[test]fn truncate_regular_inode_updates_extent_size_blocks_and_checksum(){
   let mut sb=[0u8;1024];sb[0..4].copy_from_slice(&16u32.to_le_bytes());sb[4..8].copy_from_slice(&100u32.to_le_bytes());sb[20..24].copy_from_slice(&1u32.to_le_bytes());sb[32..36].copy_from_slice(&32u32.to_le_bytes());sb[40..44].copy_from_slice(&16u32.to_le_bytes());sb[56..58].copy_from_slice(&0xef53u16.to_le_bytes());sb[76..80].copy_from_slice(&1u32.to_le_bytes());sb[88..90].copy_from_slice(&128u16.to_le_bytes());sb[96..100].copy_from_slice(&(super::super::INCOMPAT_FILETYPE|super::super::INCOMPAT_EXTENTS).to_le_bytes());sb[100..104].copy_from_slice(&0x0400u32.to_le_bytes());sb[373]=1;sb[104..120].copy_from_slice(&[0x19;16]);update_superblock_checksum(&mut sb).unwrap();
