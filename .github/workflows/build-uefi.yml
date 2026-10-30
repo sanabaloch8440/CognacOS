@@ -158,6 +158,8 @@ jobs:
         run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib controller_power_tests
       - name: Test ordered USB device-hub-controller wait-wake propagation
         run: cargo test --manifest-path drivers/usbxhci/Cargo.toml --target x86_64-unknown-linux-gnu --lib usb_wake_chain_tests
+      - name: Test JBD2 journal superblock validation and feature gating
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib jbd2::tests
       - name: Test ext4 parser and extent mapping
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib parser_mapping_and_crc_smoke_tests_pass
       - name: Test ext4 metadata checksum validation
