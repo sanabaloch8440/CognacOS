@@ -33,7 +33,7 @@ fn push(ranges: &mut [BlockRange], used: &mut usize, start: u64, count: u64, sb:
     if *used == ranges.len() { return Err(Error::TransactionTooLarge); }
     ranges[*used] = BlockRange { start, end }; *used += 1; Ok(())
 }
-fn sparse_super(sb: &Superblock) -> bool { sb.feature_compat & 1 != 0 }
+fn sparse_super(sb: &Superblock) -> bool { sb.feature_ro_compat & 1 != 0 }
 fn sparse_super2(sb: &Superblock) -> bool { sb.feature_compat & 0x0200 != 0 }
 fn power_of(mut n: u32, base: u32) -> bool {
     if n == 0 { return false; }
@@ -480,6 +480,26 @@ pub fn map_extent_block_checked_zones_for_inode<D: ReadOnlyBlockDevice>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sparse_super_backup_groups_use_the_ro_compat_feature_bit() {
+        let sb = Superblock {
+            inodes_count: 4096, blocks_count: 100_000, first_data_block: 0,
+            block_size: 4096, blocks_per_group: 8192, inodes_per_group: 2048,
+            inode_size: 256, descriptor_size: 64, revision: 1,
+            feature_compat: 0, feature_incompat: 0, feature_ro_compat: 1,
+            read_only: false,
+        };
+        let raw = [0u8; SUPERBLOCK_BYTES];
+        assert_eq!(group_has_super(&sb, &raw, 0), Ok(true));
+        assert_eq!(group_has_super(&sb, &raw, 1), Ok(true));
+        assert_eq!(group_has_super(&sb, &raw, 2), Ok(false));
+        assert_eq!(group_has_super(&sb, &raw, 3), Ok(true));
+        assert_eq!(group_has_super(&sb, &raw, 4), Ok(false));
+        assert_eq!(group_has_super(&sb, &raw, 5), Ok(true));
+        assert_eq!(group_has_super(&sb, &raw, 7), Ok(true));
+        assert_eq!(group_has_super(&sb, &raw, 8), Ok(false));
+    }
+
     #[test]
     fn range_validation_rejects_metadata_overlap_and_overflow() {
         let ranges = [BlockRange { start: 10, end: 20 }, BlockRange { start: 40, end: 48 }];
