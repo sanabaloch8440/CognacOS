@@ -187,6 +187,40 @@ impl<'a, D: ReadOnlyBlockDevice> CheckedExtFilesystem<'a, D> {
             inode_number, inode_raw, block,
         )
     }
+    /// Validate an external xattr block only after proving that both its
+    /// owning inode and the referenced physical block are allocated in their
+    /// checksummed bitmaps. The caller supplies the already-read xattr block
+    /// and two block-sized scratch buffers. This still does not reconcile
+    /// shared xattr reference counts across all allocated inodes.
+    pub fn validate_external_xattr_with_allocation(
+        &mut self,
+        inode_number: u32,
+        inode_raw: &[u8],
+        block: &[u8],
+        inode_scratch: &mut [u8],
+        bitmap_scratch: &mut [u8],
+    ) -> Result<Option<u64>, Error> {
+        let sb = &self.filesystem.superblock;
+        if inode_raw.len() < sb.inode_size as usize || block.len() != sb.block_size as usize {
+            return Err(Error::Truncated);
+        }
+        validate_inode_checksum(&self.raw_superblock, inode_number, inode_raw)?;
+        let physical = match xattr::external_xattr_block_pointer(
+            inode_raw, sb.feature_incompat, sb.blocks_count,
+        ) {
+            Ok(Some(value)) => value,
+            Ok(None) => return Ok(None),
+            Err(xattr::XattrError::Truncated) => return Err(Error::Truncated),
+            Err(_) => return Err(Error::InvalidExtentTree),
+        };
+        self.system_zones().validate_data_range(physical, 1, sb.blocks_count)?;
+        validate_external_xattr_allocation(
+            &mut self.filesystem.device, sb, &self.raw_superblock, inode_number,
+            physical, inode_scratch, bitmap_scratch,
+        )?;
+        self.validate_external_xattr(inode_number, inode_raw, block)
+    }
+
     pub fn map_extent_block(
         &mut self, inode_number: u32, generation: u32, root: &[u8],
         logical: u32, scratch: &mut [u8],
