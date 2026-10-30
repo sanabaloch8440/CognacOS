@@ -333,7 +333,7 @@ mod tests {
         let mut root = [0u8; 1024];
         make_root(&mut root, seed, true);
         root[30] = 1;
-        root[36..40].copy_from_slice(&1u32.to_le_bytes());
+        root[44..48].copy_from_slice(&1u32.to_le_bytes());
         set_dx_checksum(&mut root, 32, (1024 - 40) / 8, 2, seed);
         let mut fixture = Fixture { blocks: [[0; 1024]; 4] };
         let node = &mut fixture.blocks[1];
