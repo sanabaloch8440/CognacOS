@@ -201,6 +201,66 @@ fn inspect_extent_node(node:&[u8],logical:u32,sb:&Superblock,expected_depth:Opti
  }
 }
 
+/// Read an inode from the group inode table and validate its checksum before
+/// returning it. scratch must be one filesystem block; out must be exactly the
+/// inode size. This is the checked metadata read path for mutation callers.
+pub fn read_inode<D:ReadOnlyBlockDevice>(
+ dev:&mut D,sb:&Superblock,raw_superblock:&[u8],inode_number:u32,
+ out:&mut[u8],scratch:&mut[u8],
+)->Result<(),Error>{
+ if raw_superblock.len()<SUPERBLOCK_BYTES||scratch.len()!=sb.block_size as usize
+  ||out.len()!=sb.inode_size as usize{return Err(Error::InvalidGeometry)}
+ validate_superblock_checksum(raw_superblock)?;
+ let (group,byte_offset)=sb.inode_location(inode_number)?;
+ let descriptors_per_block=sb.block_size/(sb.descriptor_size as u32);
+ if descriptors_per_block==0{return Err(Error::InvalidGeometry)}
+ let table_block=(sb.first_data_block as u64).checked_add(1)
+  .and_then(|v|v.checked_add((group/descriptors_per_block) as u64)).ok_or(Error::OutOfRange)?;
+ read_block(dev,sb,table_block,scratch)?;
+ let index=(group%descriptors_per_block) as usize;
+ let desc_offset=index.checked_mul(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+ let desc_end=desc_offset.checked_add(sb.descriptor_size as usize).ok_or(Error::OutOfRange)?;
+ let descriptor=scratch.get(desc_offset..desc_end).ok_or(Error::Truncated)?;
+ if sb.feature_ro_compat&RO_COMPAT_METADATA_CSUM!=0{validate_group_descriptor_checksum(raw_superblock,group,descriptor)?}
+ let gd=GroupDescriptor::parse(descriptor,sb)?;
+ let table_index=(byte_offset/sb.block_size) as u64;
+ let within=(byte_offset%sb.block_size) as usize;
+ let inode_block=gd.inode_table.checked_add(table_index).ok_or(Error::OutOfRange)?;
+ read_block(dev,sb,inode_block,scratch)?;
+ let end=within.checked_add(out.len()).ok_or(Error::OutOfRange)?;
+ out.copy_from_slice(scratch.get(within..end).ok_or(Error::Truncated)?);
+ if sb.feature_ro_compat&RO_COMPAT_METADATA_CSUM!=0{validate_inode_checksum(raw_superblock,inode_number,out)?}
+ Ok(())
+}
+
+/// Extent lookup for metadata_csum filesystems. The inode checksum must have
+/// been validated by read_inode; every external extent node is validated with
+/// the inode number and generation before it is traversed.
+pub fn map_extent_block_checked<D:ReadOnlyBlockDevice>(
+ dev:&mut D,sb:&Superblock,raw_superblock:&[u8],inode_number:u32,generation:u32,
+ root:&[u8],logical:u32,scratch:&mut[u8],
+)->Result<Option<u64>,Error>{
+ if root.len()<60||scratch.len()!=sb.block_size as usize{return Err(Error::UnsupportedFormat)}
+ let mut is_root=true;let mut expected_depth=None;
+ for _ in 0..=MAX_EXTENT_DEPTH{
+  let node=if is_root{&root[..60]}else{&scratch[..]};
+  let (depth,step)=inspect_extent_node(node,logical,sb,expected_depth)?;
+  match step{
+   ExtentStep::Found(block)=>return Ok(Some(block)),
+   ExtentStep::ZeroOrHole=>return Ok(None),
+   ExtentStep::Child(child)=>{
+    if depth==0{return Err(Error::InvalidExtentTree)}
+    read_block(dev,sb,child,scratch)?;
+    if sb.feature_ro_compat&RO_COMPAT_METADATA_CSUM!=0{
+     validate_extent_block_checksum(raw_superblock,inode_number,generation,scratch)?;
+    }
+    expected_depth=Some(depth-1);is_root=false;
+   }
+  }
+ }
+ Err(Error::InvalidExtentTree)
+}
+
 /// Maps a logical file block using the inode's 60-byte extent root. scratch
 /// must be one filesystem block. None denotes a hole or an uninitialized
 /// extent; the file-read layer must return zeroes for either case. No writes
