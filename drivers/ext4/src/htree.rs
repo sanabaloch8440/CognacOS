@@ -481,7 +481,8 @@ pub fn iterate_htree_directory<R: DirectoryBlockReader, F: FnMut(DirectoryEntryV
         if inode == 0 || inode > total_inodes || name_len == 0 {
             return Err(Error::InvalidDirectoryEntry);
         }
-        let hash = hash_directory_name(version, hash_seed, name, siphash_key)?;
+        // Linux ext4 inserts both dot entries at the beginning of the hash tree.
+        let hash = DirectoryHash { major: 0, minor: 0 };
         if !visitor(DirectoryEntryView { inode, file_type: root[offset + 7], name, hash, logical_block: 0, offset: offset as u32 })? {
             return Ok(());
         }
