@@ -598,8 +598,6 @@ pub unsafe fn dispatch_external_interrupt(vector: u8, frame: *mut core::ffi::c_v
         unsafe { local_apic_eoi(base); }
     }
     VECTOR_IN_FLIGHT[vector as usize].fetch_sub(1,Ordering::Release);
-    // Run deferred device work only after ISR return and APIC acknowledgement.
-    crate::ntoskrnl::ke::runtime::dispatch_queued_dpcs();
     handled
 }
 
