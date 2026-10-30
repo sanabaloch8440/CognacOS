@@ -335,7 +335,7 @@ where
         let raw_len = u16at(root, offset + 4)?;
         if raw_len == 0 { return Err(Error::InvalidExtentTree); }
         let unwritten = raw_len > 0x8000;
-        let length = if unwritten { raw_len - 0x8000 } else { raw_len } as u32;
+        let length = (if unwritten { raw_len - 0x8000 } else { raw_len }) as u32;
         if length == 0 { return Err(Error::InvalidExtentTree); }
         let physical = ((u16at(root, offset + 6)? as u64) << 32)
             | u32at(root, offset + 8)? as u64;
