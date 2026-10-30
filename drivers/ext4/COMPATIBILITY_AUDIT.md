@@ -84,7 +84,7 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 1. [x] Implement bounded Linux-style system-zone construction for supported non-META_BG layouts; retain it in CheckedExtFilesystem, protect internal journal inode extents, and validate checked extent-tree child nodes and mapped data blocks. The allocator and writable mutation path still need to consume the same map.
 2. Implement full JBD2 checksum handling and the Linux scan/revoke/replay rules for the supported journal feature set; retain fail-closed rejection for formats not yet implemented.
 3. [~] Internal journal discovery, extent mapping, committed replay, journal-superblock update, and flush are now connected in a bounded pre-mount recovery operation. Integrate this operation into the mount manager's recovery phase and add crash-injection validation before treating it as production recovery.
-4. Add a mount-owned transaction coordinator that captures every changed block, enforces ordered-data semantics, serializes writers, and guarantees rollback/recovery after interruption.
+4. [~] Add a bounded mount-owned transaction coordinator with caller-backed staging, metadata-target policy, system-zone checks for ordered data/revokes, exclusive writer serialization, and partition-bounded I/O. Remaining: wire every filesystem operation through it, make mount-manager recovery automatic, add orphan handling, and prove failure/restart behavior with crash injection.
 5. Integrate allocation, inode initialization, parent directory updates, timestamps, link counts, orphan state, extent-tree split/merge, and truncation into one transaction.
 6. Implement HTree directories and checksum handling, then add support for common RO-compatible features one by one.
 7. Test against Linux-generated images from multiple e2fsprogs versions, feature matrices, 1/2/4 KiB blocks, 32/64-bit descriptors, sparse/flex groups, and crash injection at every journal write/flush boundary. Verify images with Linux e2fsck -fn and cross-read/write them with Linux.
@@ -99,3 +99,10 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 - [Linux JBD2 recovery implementation](https://github.com/torvalds/linux/blob/d89e1d186ec9271bf78e62771779e9fc03bf0fc3/fs/jbd2/recovery.c)
 - [Linux ext4 on-disk feature definitions](https://www.kernel.org/doc/html/latest/filesystems/ext4/super.html)
 - [Linux JBD2 journal format](https://www.kernel.org/doc/html/latest/filesystems/ext4/journal.html)
+
+
+## Transaction coordinator milestone (2026-10-30)
+
+Implemented `drivers/ext4/src/transaction.rs` and exported its API. The coordinator is mount-owned by construction (it borrows the device, journal map, journal superblock, zone map, and metadata policy for its lifetime); exclusive mutable borrowing serializes transactions. Metadata/data images are copied into caller-owned fixed-capacity arenas. Duplicate and cross-class target reuse is rejected. Ordered data and revoke targets must pass the retained system-zone map. Metadata targets require a policy callback that validates the exact metadata class and must reject the journal's own physical blocks. `FilesystemBlockAdapter` enforces block-size, filesystem-range, partition-capacity, and flush contracts.
+
+This milestone does **not** enable writable mounting. The commit engine is still restricted to supported legacy JBD2 formats, and an I/O error after durable recovery-start publication requires the volume to be taken offline and recovered before another transaction. Remaining work includes wiring all inode/extent/directory/bitmap/orphan operations into one transaction builder, automatic mount-manager recovery, robust abort/rundown state, Linux journal checksum formats, and crash injection at every write/flush boundary. No claim of Linux-equivalent crash safety is made until those tests pass.
