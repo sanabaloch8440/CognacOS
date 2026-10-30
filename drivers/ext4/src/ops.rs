@@ -602,4 +602,25 @@ mod tests{
   assert_eq!(le32(&inode,4).unwrap(),3072);assert_eq!(le32(&inode,28).unwrap(),6);assert_eq!(freed[0],(103,2));
   validate_inode_checksum(&sb,12,&inode).unwrap();
  }
+ #[test]fn checked_allocator_skips_system_zones_and_free_rejects_them(){
+  let mut sb=[0u8;1024];
+  sb[0..4].copy_from_slice(&64u32.to_le_bytes());
+  sb[4..8].copy_from_slice(&64u32.to_le_bytes());
+  sb[12..16].copy_from_slice(&60u32.to_le_bytes());
+  sb[20..24].copy_from_slice(&1u32.to_le_bytes());
+  sb[24..28].copy_from_slice(&0u32.to_le_bytes());
+  sb[32..36].copy_from_slice(&63u32.to_le_bytes());
+  sb[40..44].copy_from_slice(&64u32.to_le_bytes());
+  sb[56..58].copy_from_slice(&0xef53u16.to_le_bytes());
+  sb[76..80].copy_from_slice(&1u32.to_le_bytes());
+  sb[88..90].copy_from_slice(&128u16.to_le_bytes());
+  let mut desc=[0u8;32];desc[12..14].copy_from_slice(&60u16.to_le_bytes());
+  let mut bitmap=[0u8;8];
+  let zones=SystemZoneMap::new(&[super::super::BlockRange{start:1,end:3}]);
+  let block=allocate_block_checked(&mut sb,0,&mut desc,&mut bitmap,0,&zones).unwrap();
+  assert_eq!(block,3);
+  assert_eq!(bitmap[0]&0b0000_0111,0b0000_0100);
+  assert_eq!(free_block_checked(&mut sb,0,1,&mut desc,&mut bitmap,&zones),Err(Error::InvalidExtentTree));
+ }
+
 }
