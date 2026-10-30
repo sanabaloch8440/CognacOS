@@ -1,7 +1,7 @@
 //! Bounded HTree split and index-entry mutation primitives.
 //! These operate on caller-owned buffers only; callers must stage every
 //! changed leaf, index block, inode and allocation bitmap in one JBD2 commit.
-use crate::{checksum::crc32c_update, hash::{hash_directory_name,DirectoryHash}, Error};
+use crate::{checksum::crc32c_update, hash::hash_directory_name, Error};
 
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub struct DirectoryMapEntry { pub offset:u32, pub record_len:u32, pub major:u32, pub minor:u32 }
