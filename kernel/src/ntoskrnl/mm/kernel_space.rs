@@ -686,7 +686,7 @@ fn self_test_fail(line: u32) -> bool {
 pub fn self_test_failure_line() -> u32 { SELF_TEST_FAILURE_LINE.load(Ordering::Acquire) as u32 }
 /// Root, expected physical address, VA, walk stage, and observed PML4E/PDPTE/PDE/PTE.
 /// Debug-only snapshot: phase, source line, IPI count before/after, owner/active CR3, online CPUs, pagefile state.
-pub fn self_test_diagnostics() -> [u64; 8] {
+pub fn self_test_diagnostics() -> [u64; 9] {
  [
   SELF_TEST_PHASE.load(Ordering::Acquire),
   SELF_TEST_FAILURE_LINE.load(Ordering::Acquire),
@@ -696,6 +696,7 @@ pub fn self_test_diagnostics() -> [u64; 8] {
   crate::ntoskrnl::mm::address_space::active_root_physical(),
   crate::hal::online_cpu_count() as u64,
   crate::pagefile::is_active() as u64,
+  crate::smp::ipi_shootdowns_enabled() as u64,
  ]
 }
 pub fn self_test_mapping_failure() -> [u64; 8] {
