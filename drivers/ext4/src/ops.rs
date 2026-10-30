@@ -288,6 +288,19 @@ pub fn lookup_directory_entry(
  Err(Error::OutOfRange)
 }
 
+/// Indexed-directory counterpart to lookup_directory_entry(). The reader
+/// maps logical blocks through the directory inode's checked extent mapping;
+/// lookup performs HTree hashing, checksum validation, collision traversal
+/// and exact prepared-name comparison before returning an inode number.
+pub fn lookup_indexed_directory_entry<R:crate::htree::DirectoryBlockReader>(
+ sb:&[u8],directory_inode:u32,generation:u32,root_block:&[u8],reader:&mut R,
+ directory_blocks:u32,total_inodes:u32,disk_name:&[u8],siphash_key:Option<[u64;2]>,
+ scratch:&mut[u8],
+)->Result<u32,Error>{
+ crate::htree::lookup_htree_name_from_superblock(reader,sb,directory_inode,generation,
+  root_block,directory_blocks,total_inodes,disk_name,siphash_key,scratch)
+}
+
 /// Create a regular file's inode and parent-directory entry in caller-owned
 /// metadata buffers. The inode bitmap allocation and all changed blocks must
 /// be included in the same JBD2 commit.
