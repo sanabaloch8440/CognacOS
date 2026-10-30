@@ -481,15 +481,21 @@ jobs:
           build/hibernation-tests
       - name: Validate Windows x64 WDM source contracts
         run: python3 tools/wdm_source_contract_tests.py
-      - name: Build freestanding Rust kernel with project linker script
+      - name: Build optimized freestanding kernel
         env:
           RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld -C link-arg=--undefined=IoAcquireCancelSpinLock -C link-arg=--undefined=IoReleaseCancelSpinLock -C link-arg=--undefined=IoBuildDeviceIoControlRequest -C link-arg=--undefined=IoCsqInitialize -C link-arg=--undefined=IoCsqInitializeEx -C link-arg=--undefined=IoCsqInsertIrp -C link-arg=--undefined=IoCsqInsertIrpEx -C link-arg=--undefined=IoCsqRemoveIrp -C link-arg=--undefined=IoCsqRemoveNextIrp -C link-arg=--undefined=PsAssignImpersonationToken -C link-arg=--undefined=PsReferencePrimaryToken -C link-arg=--undefined=PsDereferencePrimaryToken -C link-arg=--undefined=SeAccessCheck -C link-arg=--undefined=SePrivilegeCheck -C link-arg=--undefined=SeSinglePrivilegeCheck -C link-arg=--undefined=SeValidSecurityDescriptor -C link-arg=--undefined=SeCaptureSubjectContext -C link-arg=--undefined=SeReleaseSubjectContext -C link-arg=--undefined=SeLockSubjectContext -C link-arg=--undefined=SeUnlockSubjectContext
-        run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release --features diagnostic-vm
-      - name: Convert fixed-base kernel ELF to PE32+
+        run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
+      - name: Build debug kernel with in-kernel VM diagnostics
+        env:
+          RUSTFLAGS: -C debuginfo=2 -C force-frame-pointers=yes -C relocation-model=static -C link-arg=-T${{ github.workspace }}/kernel/linker.ld -C link-arg=--undefined=IoAcquireCancelSpinLock -C link-arg=--undefined=IoReleaseCancelSpinLock -C link-arg=--undefined=IoBuildDeviceIoControlRequest -C link-arg=--undefined=IoCsqInitialize -C link-arg=--undefined=IoCsqInitializeEx -C link-arg=--undefined=IoCsqInsertIrp -C link-arg=--undefined=IoCsqInsertIrpEx -C link-arg=--undefined=IoCsqRemoveIrp -C link-arg=--undefined=IoCsqRemoveNextIrp -C link-arg=--undefined=PsAssignImpersonationToken -C link-arg=--undefined=PsReferencePrimaryToken -C link-arg=--undefined=PsDereferencePrimaryToken -C link-arg=--undefined=SeAccessCheck -C link-arg=--undefined=SePrivilegeCheck -C link-arg=--undefined=SeSinglePrivilegeCheck -C link-arg=--undefined=SeValidSecurityDescriptor -C link-arg=--undefined=SeCaptureSubjectContext -C link-arg=--undefined=SeReleaseSubjectContext -C link-arg=--undefined=SeLockSubjectContext -C link-arg=--undefined=SeUnlockSubjectContext
+        run: cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --features diagnostic-vm
+      - name: Convert debug and release kernels to PE32+
         run: |
-          python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
-          file build/cognacos-kernel.exe
+          python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/debug/cognacos-kernel build/cognacos-kernel.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
+          python3 tools/elf_to_pe32plus.py target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel-release.exe --export-manifest kernel/src/ntoskrnl/manifest_26100.json
+          file build/cognacos-kernel.exe build/cognacos-kernel-release.exe
           python3 tools/validate_pe_exports.py build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json --require SeAccessCheck --require SePrivilegeCheck --require SeSinglePrivilegeCheck --require SeValidSecurityDescriptor --require SeCaptureSubjectContext --require SeReleaseSubjectContext --require SeLockSubjectContext --require SeUnlockSubjectContext --require PsAssignImpersonationToken --require PsReferencePrimaryToken --require PsDereferencePrimaryToken --require IoAllocateIrp --require IoFreeIrp --require IoBuildDeviceIoControlRequest --require IoCallDriver --require IoCompleteRequest --require IoAcquireCancelSpinLock --require IoReleaseCancelSpinLock --require IoCsqInitialize --require IoCsqInitializeEx --require IoCsqInsertIrp --require IoCsqInsertIrpEx --require IoCsqRemoveIrp --require IoCsqRemoveNextIrp
+          python3 tools/validate_pe_exports.py build/cognacos-kernel-release.exe kernel/src/ntoskrnl/manifest_26100.json --require SeAccessCheck --require SePrivilegeCheck --require SeSinglePrivilegeCheck --require SeValidSecurityDescriptor --require SeCaptureSubjectContext --require SeReleaseSubjectContext --require SeLockSubjectContext --require SeUnlockSubjectContext --require PsAssignImpersonationToken --require PsReferencePrimaryToken --require PsDereferencePrimaryToken --require IoAllocateIrp --require IoFreeIrp --require IoBuildDeviceIoControlRequest --require IoCallDriver --require IoCompleteRequest --require IoAcquireCancelSpinLock --require IoReleaseCancelSpinLock --require IoCsqInitialize --require IoCsqInitializeEx --require IoCsqInsertIrp --require IoCsqInsertIrpEx --require IoCsqRemoveIrp --require IoCsqRemoveNextIrp
           python3 - <<'PY'
           import struct
           p = open("build/cognacos-kernel.exe", "rb").read()
@@ -1254,7 +1260,9 @@ jobs:
             build/gdb-diagnose.gdb
             build/qemu-debug.log
             build/ntdll/cognac_ntdll.pdb
+            target/x86_64-unknown-none/debug/cognacos-kernel
             target/x86_64-unknown-none/release/cognacos-kernel
+            build/cognacos-kernel-release.exe
             target/driver-hal/x86_64-unknown-none/release/hal
             target/driver-acpi/x86_64-unknown-none/release/acpi
             target/driver-pci/x86_64-unknown-none/release/pci
