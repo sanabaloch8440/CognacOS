@@ -904,6 +904,7 @@ impl<D: ReadOnlyBlockDevice> crate::htree::DirectoryBlockReader for NamespaceHtr
             map_legacy_block(self.dev, self.sb, &self.extent_root, logical as u64,
                 self.map_scratch, self.legacy_scratch)?
         }.ok_or(Error::InvalidExtentTree)?;
+        self.zones.validate_data_range(physical, 1, self.sb.blocks_count)?;
         read_block(self.dev, self.sb, physical, out)
     }
 }
@@ -959,6 +960,7 @@ where D: ReadOnlyBlockDevice,
         } else {
             map_legacy_block(dev, sb, extent_root, logical as u64, map_scratch, legacy_scratch)?
         }.ok_or(Error::InvalidExtentTree)?;
+        zones.validate_data_range(physical, 1, sb.blocks_count)?;
         read_block(dev, sb, physical, htree_scratch)?;
         if sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0 {
             validate_directory_block_checksum(raw_superblock, inode_number, generation, htree_scratch)?;
