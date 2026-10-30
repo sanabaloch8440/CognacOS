@@ -68,6 +68,37 @@ impl Speaker {
 }
 impl Default for Speaker{fn default()->Self{Self::new()}}
 
+/// Generation ticket for timer-driven speaker shutdown. A kernel timer/DPC
+/// stores the ticket returned by arm(); its callback must call expire(ticket).
+/// cancel() invalidates queued callbacks before the device is stopped or unloaded.
+/// This prevents an old timer callback from stopping a newer tone.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SpeakerDeadline { generation: u64, armed: bool }
+impl SpeakerDeadline {
+ pub const fn new()->Self { Self { generation: 0, armed: false } }
+ /// Begin a new timed tone and return the callback ticket to associate with it.
+ pub fn arm(&mut self)->u64 {
+  self.generation=self.generation.wrapping_add(1);
+  if self.generation==0 { self.generation=1; }
+  self.armed=true;
+  self.generation
+ }
+ /// Invalidate the outstanding timer/DPC ticket. Call KeCancelTimer and
+ /// remove/flush its DPC in the WDM adapter as appropriate for its IRQL.
+ pub fn cancel(&mut self) {
+  self.generation=self.generation.wrapping_add(1);
+  if self.generation==0 { self.generation=1; }
+  self.armed=false;
+ }
+ /// Returns true exactly once for the currently armed ticket.
+ pub fn expire(&mut self,ticket:u64)->bool {
+  if !self.armed || ticket==0 || ticket!=self.generation { return false; }
+  self.armed=false;
+  true
+ }
+ pub const fn is_armed(&self)->bool { self.armed }
+}
+
 /// Validates the buffered IOCTL contract without dereferencing an untrusted
 /// user pointer. The I/O manager must first capture METHOD_BUFFERED SystemBuffer.
 pub fn decode_ioctl(code:u32,input:&[u8])->Result<BeepSetParameters,i32>{
@@ -88,6 +119,18 @@ mod tests{
  extern crate std;
  #[test]fn ioctl_and_wire_layout_match_wdm_contract(){assert_eq!(IOCTL_BEEP_SET,0x10000);assert_eq!(core::mem::size_of::<BeepSetParameters>(),8);let mut b=[0u8;8];b[..4].copy_from_slice(&440u32.to_le_bytes());b[4..].copy_from_slice(&100u32.to_le_bytes());assert_eq!(decode_ioctl(IOCTL_BEEP_SET,&b).unwrap(),BeepSetParameters{frequency:440,duration_ms:100});}
  #[test]fn rejects_unknown_ioctl_short_buffer_and_invalid_values(){assert_eq!(decode_ioctl(0,&[0;8]),Err(STATUS_INVALID_DEVICE_REQUEST));assert_eq!(decode_ioctl(IOCTL_BEEP_SET,&[0;4]),Err(STATUS_BUFFER_TOO_SMALL));assert_eq!(validate(BeepSetParameters{frequency:36,duration_ms:1}),Err(BeepError::InvalidFrequency));assert_eq!(validate(BeepSetParameters{frequency:440,duration_ms:10_001}),Err(BeepError::InvalidDuration));}
+ #[test]fn stale_timer_ticket_cannot_stop_a_replacement_tone(){
+  let mut timer=SpeakerDeadline::new();
+  let first=timer.arm();
+  timer.cancel();
+  let second=timer.arm();
+  assert_ne!(first,second);
+  assert!(!timer.expire(first));
+  assert!(timer.is_armed());
+  assert!(timer.expire(second));
+  assert!(!timer.expire(second));
+  assert!(!timer.is_armed());
+ }
  #[test]fn pit_divisor_is_rounded_and_bounded(){assert_eq!(pit_divisor(0),None);assert_eq!(pit_divisor(440),Some(2712));assert_eq!(pit_divisor(37),Some(32248));assert_eq!(pit_divisor(32767),Some(36));}
  #[test]fn programs_channel_two_and_toggles_speaker_gate(){let mut io=Fake::default();let mut s=Speaker::new();assert_eq!(s.start(&mut io,BeepSetParameters{frequency:440,duration_ms:100}).unwrap(),Some(2712));assert!(s.is_active());assert!(io.writes.contains(&(PIT_COMMAND_PORT,0xb6)));assert_eq!(s.stop(&mut io),Ok(()));assert!(!s.is_active());assert_eq!(io.control&3,0);}
 }
