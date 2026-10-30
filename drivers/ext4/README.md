@@ -142,3 +142,8 @@ The ordered writer now emits the Linux on-disk v2 and v3 tag layouts, calculates
 ## Mount-state safety gate
 
 The mount entry points now validate the ext4 superblock state before exposing a filesystem. Volumes carrying `EXT4_ERROR_FS`, `EXT4_ORPHAN_FS`, or a nonzero legacy `s_last_orphan` are rejected. Journal replay is not treated as orphan cleanup: those inode, extent, bitmap, and counter repairs still require a concrete transaction-backed recovery adapter. Dirty-but-error-free journaled volumes remain eligible for the explicit recovery path; this check does not enable writable mounting.
+
+
+## Recovery authorization gate
+
+The no-policy `recover_internal_journal` convenience entry point fails closed for dirty journals because it has no exact metadata-ownership manifest. Dirty-journal replay requires `recover_internal_journal_with_policy` and a validated owner allowlist. The no-policy `mount_with_recovery` wrapper therefore accepts only an already-clean journal; callers must perform policy-authorized recovery first, then retry the checked mount.
