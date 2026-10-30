@@ -96,6 +96,16 @@ mod tests{
   assert_eq!(u32::from_le_bytes(sb[232..236].try_into().unwrap()),19);
   assert!(!tx.committed);
  }
+ #[test]fn rejects_special_inode_types_before_staging(){
+  let mut sb=[0u8;1024];sb[232..236].copy_from_slice(&5u32.to_le_bytes());
+  let mut inode=[0u8;128];let mut visited=[0u32;4];let mut tx=Tx::default();
+  let result=recover_orphan_chain(&mut sb,32,&mut inode,&mut visited,&mut tx,|_,out|{
+   out[0..2].copy_from_slice(&0x1000u16.to_le_bytes());
+   out[20..24].copy_from_slice(&0u32.to_le_bytes());Ok(())
+  });
+  assert_eq!(result,Err(Error::InvalidGeometry));
+  assert!(tx.staged.is_empty()&&!tx.committed);
+ }
  #[test]fn cycle_aborts_before_commit(){
   let mut sb=[0u8;1024];sb[232..236].copy_from_slice(&4u32.to_le_bytes());
   let mut inode=[0u8;128];let mut visited=[0u32;8];let mut tx=Tx::default();
