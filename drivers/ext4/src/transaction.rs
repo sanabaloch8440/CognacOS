@@ -409,3 +409,45 @@ mod operation_manifest_tests {
         assert_eq!(required_kinds(OperationKind::Free) & kind_bit(MetadataObjectKind::Directory), 0);
     }
 }
+
+#[cfg(test)]
+mod shared_xattr_ownership_tests {
+    use super::*;
+
+    fn record(block: u64, inode: u32, kind: MetadataObjectKind) -> MetadataOwnership {
+        MetadataOwnership { block, owner_inode: inode, generation: 7, kind }
+    }
+
+    #[test]
+    fn permits_distinct_owners_for_shared_external_xattr_block() {
+        let entries = [
+            record(900, 12, MetadataObjectKind::Xattr),
+            record(900, 19, MetadataObjectKind::Xattr),
+        ];
+        let map = MetadataOwnershipMap::new(&entries).unwrap();
+        assert_eq!(map.owner_count(900), 2);
+        assert_eq!(map.metadata_kind(900), Some(MetadataObjectKind::Xattr));
+        assert!(map.validate_metadata_target(900).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_owner_and_cross_kind_aliases() {
+        let duplicate = [
+            record(900, 12, MetadataObjectKind::Xattr),
+            record(900, 12, MetadataObjectKind::Xattr),
+        ];
+        assert!(MetadataOwnershipMap::new(&duplicate).is_err());
+
+        let alias = [
+            record(900, 12, MetadataObjectKind::Xattr),
+            record(900, 19, MetadataObjectKind::Directory),
+        ];
+        assert!(MetadataOwnershipMap::new(&alias).is_err());
+    }
+
+    #[test]
+    fn rejects_xattr_owner_zero() {
+        let entries = [record(900, 0, MetadataObjectKind::Xattr)];
+        assert!(MetadataOwnershipMap::new(&entries).is_err());
+    }
+}
