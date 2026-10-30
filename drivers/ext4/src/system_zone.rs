@@ -319,6 +319,9 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
         inode_buffer: &mut [u8],
         scratch_a: &mut [u8],
         scratch_b: &mut [u8],
+        htree_root: &mut [u8],
+        htree_scratch: &mut [u8],
+        visited_leaves: &mut [u32],
         journal_map: &mut [u64],
         journal_superblock: &mut [u8],
         replay_scratch: &mut [u8],
@@ -334,7 +337,9 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
         validate_superblock_checksum(&raw_superblock)?;
         if inode_buffer.len() != sb.inode_size as usize
             || scratch_a.len() != sb.block_size as usize
-            || scratch_b.len() != sb.block_size as usize {
+            || scratch_b.len() != sb.block_size as usize
+            || htree_root.len() != sb.block_size as usize
+            || htree_scratch.len() != sb.block_size as usize {
             return Err(Error::InvalidGeometry);
         }
         let mut count = 0usize;
@@ -355,7 +360,8 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
             validate_directory_namespace(
                 &mut device, &sb, &raw_superblock, &zones,
                 &directory_inodes[..count], &mut directory_parents[..count],
-                inode_buffer, scratch_a, scratch_b,
+                inode_buffer, scratch_a, scratch_b, htree_root, htree_scratch,
+                visited_leaves,
             )?;
         }
         Self::mount_with_recovery_and_ownership(
@@ -935,7 +941,11 @@ where D: ReadOnlyBlockDevice,
         crate::htree::iterate_htree_directory_unique(
             &mut reader, root_buffer, blocks as u32, sb.inodes_count,
             hash_seed, None, hash_unsigned, metadata_csum,
-            inode_checksum_seed(raw_superblock, inode_number, generation)?,
+            {
+                let seed = super::ext4_metadata_checksum_seed(raw_superblock)?;
+                let ino_seed = super::crc32c(seed, &inode_number.to_le_bytes());
+                super::crc32c(ino_seed, &generation.to_le_bytes())
+            },
             htree_scratch, visited_leaves, |entry| visitor(entry),
         )?;
         return Ok(());
