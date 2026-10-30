@@ -12,6 +12,8 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 
 pub const MAX_CPUS: usize = 64;
+// Shared GS-local ABI: WindowsSyscallCpuLocal stores its CpuLocal pointer at byte 48.
+pub const SYSCALL_CPU_LOCAL_POINTER_OFFSET: usize = 48;
 pub const CPU_OFFLINE: u8 = 0;
 pub const CPU_DISCOVERED: u8 = 1;
 pub const CPU_STARTING: u8 = 2;
@@ -203,9 +205,36 @@ pub unsafe fn install_cpu_local(index: usize) -> Result<(), HalError> {
 }
 #[inline]
 pub fn current_cpu_local() -> Option<&'static CpuLocal> {
-    let ptr: u64;
-    unsafe { core::arch::asm!("mov {}, gs:[0]", out(reg) ptr, options(nostack, readonly, preserves_flags)); }
-    if ptr == 0 { None } else { Some(unsafe { &*(ptr as *const CpuLocal) }) }
+    let self_pointer: u64;
+    unsafe { core::arch::asm!("mov {}, gs:[0]", out(reg) self_pointer, options(nostack, readonly, preserves_flags)); }
+    // In ordinary kernel context GS:[0] is CpuLocal.self_pointer. During a
+    // Windows SYSCALL, GS points at WindowsSyscallCpuLocal and GS:[0] is the
+    // caller's user RSP instead. Resolve the shared CpuLocal pointer from the
+    // syscall-local tail field in that case; never cast a user stack pointer.
+    if self_pointer != 0 && self_pointer & (core::mem::align_of::<CpuLocal>() as u64 - 1) == 0 {
+        return Some(unsafe { &*(self_pointer as *const CpuLocal) });
+    }
+    let gs_base: u64;
+    let kernel_gs_base: u64;
+    unsafe {
+        let low: u32; let high: u32;
+        core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") low, out("edx") high, options(nostack, preserves_flags));
+        gs_base = ((high as u64) << 32) | low as u64;
+        let low: u32; let high: u32;
+        core::arch::asm!("rdmsr", in("ecx") 0xC000_0102u32, out("eax") low, out("edx") high, options(nostack, preserves_flags));
+        kernel_gs_base = ((high as u64) << 32) | low as u64;
+    }
+    // Kernel GS may be temporarily zero outside SYSCALL; the inactive GS MSR
+    // then retains the syscall-local block. Prefer whichever base is high-half.
+    let base = if gs_base >> 48 == 0xffff { gs_base } else { kernel_gs_base };
+    if base == 0 { return None; }
+    let local_pointer = unsafe {
+        core::ptr::read_volatile((base + SYSCALL_CPU_LOCAL_POINTER_OFFSET as u64) as *const u64)
+    };
+    if local_pointer == 0 || local_pointer & (core::mem::align_of::<CpuLocal>() as u64 - 1) != 0 {
+        return None;
+    }
+    Some(unsafe { &*(local_pointer as *const CpuLocal) })
 }
 
 /// A non-poisoning IRQ-save spin lock. It disables local interrupts before
