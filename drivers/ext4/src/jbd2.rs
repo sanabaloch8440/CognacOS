@@ -100,7 +100,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  if ordered_targets.len()!=ordered_data.len()||metadata_targets.len()!=metadata_data.len()
   ||metadata_targets.is_empty()||descriptor.len()<1024{return Err(Error::InvalidGeometry)}
  let sb=JournalSuperblock::parse(journal_superblock)?;
- if sb.checksum_mode!=ChecksumMode::None{return Err(Error::UnsupportedFeature)}
+ if sb.checksum_mode==ChecksumMode::V2||sb.checksum_mode==ChecksumMode::V3{return Err(Error::UnsupportedFeature)}
  let bs=sb.block_size as usize;
  if descriptor.len()!=bs||journal_superblock.len()!=bs{return Err(Error::NoScratch)}
  if sb.start!=0{return Err(Error::InvalidSequence)}
@@ -152,11 +152,18 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
   if i==0{descriptor[off..off+16].copy_from_slice(uuid);off+=16}
  }
  let mut cursor=first;
+ let mut transaction_crc=!0u32;
+ if sb.checksum_mode==ChecksumMode::V1{
+  transaction_crc=crate::checksum::crc32_be_update(transaction_crc,descriptor);
+ }
  let desc_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
  d.write_block(desc_phys,descriptor).map_err(|_|Error::Io)?;
  cursor=next_log(&sb,cursor);
  for data in metadata_data{
   let phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
+  if sb.checksum_mode==ChecksumMode::V1{
+   transaction_crc=crate::checksum::crc32_be_update(transaction_crc,data);
+  }
   d.write_block(phys,data).map_err(|_|Error::Io)?;
   cursor=next_log(&sb,cursor);
  }
@@ -180,6 +187,10 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  descriptor[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
  descriptor[4..8].copy_from_slice(&JBD2_COMMIT_BLOCK.to_be_bytes());
  descriptor[8..12].copy_from_slice(&sequence.to_be_bytes());
+ if sb.checksum_mode==ChecksumMode::V1{
+  descriptor[12]=1;descriptor[13]=4;
+  descriptor[16..20].copy_from_slice(&transaction_crc.to_be_bytes());
+ }
  let commit_phys=m.map_journal_block(cursor).map_err(|_|Error::Io)?;
  d.write_block(commit_phys,descriptor).map_err(|_|Error::Io)?;
  d.flush().map_err(|_|Error::Io)?;
@@ -217,8 +228,7 @@ struct FilesystemBoundsOnly;
 impl ReplayTargetPolicy for FilesystemBoundsOnly {
  fn validate_replay_target(&mut self, _target: u64) -> Result<(), Error> { Ok(()) }
 }
-pub fn recover<D:ReplayDevice,M:JournalBlockMap>( d:&mut D,m:&mut M,journal_superblock:&mut[u8],scratch:&mut[u8],payload:&mut[u8],)->Result<ReplayReport,Error>{
- recover_with_policy(d,m,journal_superblock,scratch,payload,&mut FilesystemBoundsOnly)
+pub fn recover<D:ReplayDevice,M:JournalBlockMap>( d:&mut D,m:&mut M,journal_superblock:&mut[u8],scratch:&mut[u8],payload:&mut[u8],)->Result<ReplayReport,Error>{ recover_with_policy(d,m,journal_superblock,scratch,payload,&mut FilesystemBoundsOnly)
 }
 
 /// Recovery variant that validates every home-block target before replay.
@@ -437,8 +447,7 @@ mod tests{
  }
  fn header(b:&mut[u8;1024],kind:u32,seq:u32){b.fill(0);b[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());b[4..8].copy_from_slice(&kind.to_be_bytes());b[8..12].copy_from_slice(&seq.to_be_bytes());}
  #[test]fn replay_applies_only_a_complete_committed_transaction(){
-  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
-  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};  header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,1);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
   d.blocks[3].fill(0x5a);
@@ -499,6 +508,19 @@ mod tests{
   let ordered=[0x31u8;1024];let metadata=[0x42u8;1024];let mut descriptor=[0u8;1024];
   let seq=commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[11],&[&ordered],&[10],&[&metadata],&mut descriptor).unwrap();
   assert_eq!(seq,9);assert_eq!(d.blocks[11],ordered);assert_eq!(d.blocks[10],metadata);assert_eq!(u32::from_be_bytes(js[28..32].try_into().unwrap()),0);assert_eq!(u32::from_be_bytes(js[24..28].try_into().unwrap()),10);assert!(d.flushes>=5);
+ }
+ #[test]fn ordered_commit_emits_linux_checksum_v1_transaction_crc(){
+  let mut d=Mem{blocks:[[0;1024];64],flushes:0};
+  let mut js=[0u8;1024];js[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());js[4..8].copy_from_slice(&JBD2_SUPERBLOCK_V2.to_be_bytes());
+  js[12..16].copy_from_slice(&1024u32.to_be_bytes());js[16..20].copy_from_slice(&64u32.to_be_bytes());js[20..24].copy_from_slice(&1u32.to_be_bytes());js[24..28].copy_from_slice(&21u32.to_be_bytes());js[36..40].copy_from_slice(&1u32.to_be_bytes());
+  let metadata=[0x5au8;1024];let mut descriptor=[0u8;1024];
+  assert_eq!(commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&mut descriptor),Ok(21));
+  let mut expected=crate::checksum::crc32_be_update(!0,&d.blocks[1]);
+  expected=crate::checksum::crc32_be_update(expected,&d.blocks[2]);
+  assert_eq!(be32(&d.blocks[3],4).unwrap(),JBD2_COMMIT_BLOCK);
+  assert_eq!(d.blocks[3][12],1);assert_eq!(d.blocks[3][13],4);
+  assert_eq!(be32(&d.blocks[3],16).unwrap(),expected);
+  assert_eq!(d.blocks[10],metadata);
  }
  #[test]fn ordered_commit_writes_revoke_record_before_commit(){
   let mut d=Mem{blocks:[[0;1024];64],flushes:0};
