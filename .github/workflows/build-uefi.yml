@@ -172,6 +172,10 @@ jobs:
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib ext4_metadata_checksum_tests
       - name: Test ext4 superblock bitmap extent and directory checksums
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib ext4_metadata_blocks_checksum_tests
+      - name: Test ext4 HTree indexed root and interior-node lookup
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib indexed_root_
+      - name: Test ext4 HTree malformed indexes and directory leaf checksums
+        run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib rejects_bad_counts_depth_cycles_and_leaf_checksums
       - name: Test GPT partition create, extend, and delete
         run: cargo test --manifest-path drivers/ext4/Cargo.toml --target x86_64-unknown-linux-gnu --lib gpt_partition_create_extend_delete_updates_both_crc_protected_copies
       - name: Test GPT partition overlap and bounds rejection
