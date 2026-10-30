@@ -714,6 +714,8 @@ pub fn self_test() -> bool {
  SELF_TEST_FAILURE_LINE.store(0, Ordering::Release);
  SELF_TEST_MAP_STAGE.store(0, Ordering::Release);
  let ipi_before=crate::smp::tlb_ipi_count();
+ SELF_TEST_IPI_BEFORE.store(ipi_before,Ordering::Release);
+ SELF_TEST_PHASE.store(1,Ordering::Release);
  // This self-test dereferences arena VAs on the executing CPU. The arena's
  // page tables are owned by ROOT, so do not run it from a CPU using another
  // address space; that would test the wrong CR3 and can fault in kernel mode.
@@ -783,6 +785,7 @@ pub fn self_test() -> bool {
   unsafe{word.write_volatile(0);}
   if unsafe{crate::memory::free_page(high_page)}.is_err(){return self_test_fail(line!())}
  }
+ SELF_TEST_PHASE.store(3,Ordering::Release);
  // Exercise distinct extent sizes and every page boundary, then verify exact
  // reclamation and arena reuse. This runs once during boot and again after AP startup.
  for pages in [1usize, 2, 3, 8, 16] {
@@ -805,6 +808,7 @@ pub fn self_test() -> bool {
    }
   }
  }
+ SELF_TEST_PHASE.store(4,Ordering::Release);
  // Fixed-address image extents must be allocatable and transition from
  // writable/NX staging to strict RX and RW/NX pages without W+X permissions.
  let fixed_va=BASE+0x0f000000;
@@ -821,6 +825,7 @@ pub fn self_test() -> bool {
   ||!matches!(rw,Ok(m) if m.writable&&!m.executable&&!m.user_accessible)
   ||unsafe{fixed.read()}!=0x51||unsafe{fixed.add(PAGE as usize).read()}!=0x62
   ||free_pages(fixed,2).is_err(){return self_test_fail(line!());}
+ SELF_TEST_PHASE.store(5,Ordering::Release);
  // Demand-zero pageable extents must fault pages in independently and still
  // participate in the same SMP-safe reclamation path.
  let p=match allocate_pageable_pages(3){Ok(p)=>p,Err(_)=>return self_test_fail(line!())};
@@ -831,6 +836,7 @@ pub fn self_test() -> bool {
  let all_resident={let _g=Guard::lock();let mapped=unsafe{&*MAPPED_BITS.0.get()};(0..3).all(|n|mapped[(start+n)/64]&(1u64<<((start+n)%64))!=0)};
  if !all_resident {let _=free_pages(p,3);return self_test_fail(line!());}
  if crate::pagefile::is_active() {
+  SELF_TEST_PHASE.store(6,Ordering::Release);
   if free_pages(p,3).is_err(){return self_test_fail(line!());}
   let swap_test=match allocate_pageable_pages(1){Ok(v)=>v,Err(_)=>{let _=free_pages(p,3);return self_test_fail(line!())}};
   unsafe{swap_test.write(0xD3);swap_test.add(4095).write(0x6B);}
@@ -847,6 +853,7 @@ pub fn self_test() -> bool {
   let protection_ok=matches!(restored_protection,Ok(m) if !m.writable&&m.executable&&!m.user_accessible);
   if !restored||!is_resident||!protection_ok||free_pages(swap_test,1).is_err(){let _=free_pages(p,3);return self_test_fail(line!());}
  }
+ SELF_TEST_PHASE.store(7,Ordering::Release);
  let freed=if crate::pagefile::is_active(){allocation_pages(p).is_none()}else{free_pages(p,3).is_ok()&&allocation_pages(p).is_none()};
  freed && (!crate::smp::ipi_shootdowns_enabled() || crate::smp::tlb_ipi_count()>ipi_before)
 }
