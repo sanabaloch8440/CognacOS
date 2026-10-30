@@ -159,8 +159,8 @@ mod tests{
   put32(&mut root,36,2).unwrap();put32(&mut root,40,h.major|1).unwrap();put32(&mut root,44,3).unwrap();update_dx(&mut root,32,limit,2,true,inode_seed).unwrap();
   let mut reader=Reader{blocks:[[0;1024];4]};
   for (n,ino,name) in [(2,21,b"other-entry".as_slice()),(3,22,wanted.as_slice())]{let b=&mut reader.blocks[n];put32(b,0,ino).unwrap();put16(b,4,1012).unwrap();b[6]=name.len() as u8;b[7]=1;b[8..8+name.len()].copy_from_slice(name);write_leaf_tail(b,inode_seed).unwrap();}
-  let mut scratch=[0u8;1024];assert_eq!(crate::htree::lookup_htree_name(&mut reader,&root,4,100,wanted,hash_seed,None,true,inode_seed,&mut scratch),Ok(22));
-  let mut seen=0;crate::htree::iterate_htree_directory(&mut reader,&root,4,100,hash_seed,None,true,inode_seed,&mut scratch,|entry|{seen+=1;assert!(entry.inode==2||entry.inode==21||entry.inode==22);Ok(true)}).unwrap();assert_eq!(seen,4);
+  let mut scratch=[0u8;1024];assert_eq!(crate::htree::lookup_htree_name(&mut reader,&root,4,100,wanted,hash_seed,None,false,true,inode_seed,&mut scratch),Ok(22));
+  let mut seen=0;crate::htree::iterate_htree_directory(&mut reader,&root,4,100,hash_seed,None,false,true,inode_seed,&mut scratch,|entry|{seen+=1;assert!(entry.inode==2||entry.inode==21||entry.inode==22);Ok(true)}).unwrap();assert_eq!(seen,4);
  }
 
  #[test]fn leaf_split_rebalances_entries_and_refreshes_both_checksums(){
