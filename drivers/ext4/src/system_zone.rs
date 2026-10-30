@@ -95,11 +95,10 @@ pub fn build_system_zones<D: ReadOnlyBlockDevice>(
     // ext4 metadata objects must not alias one another. This catches corrupt
     // descriptors that point a bitmap/table into a backup superblock, GDT, or
     // another group's metadata before the map can authorize data writes.
-    for i in 0..used {
-        for j in (i + 1)..used {
-            if ranges[i].overlaps(ranges[j].start, ranges[j].end) {
-                return Err(Error::InvalidGeometry);
-            }
+    ranges[..used].sort_unstable_by_key(|r| r.start);
+    for i in 1..used {
+        if ranges[i - 1].end > ranges[i].start {
+            return Err(Error::InvalidGeometry);
         }
     }
     Ok(used)
