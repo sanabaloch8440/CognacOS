@@ -938,14 +938,14 @@ where D: ReadOnlyBlockDevice,
         let hash_seed = crate::hash::ext4_directory_hash_seed(raw_superblock)?;
         let hash_unsigned = crate::hash::ext4_hash_unsigned(raw_superblock)?;
         let metadata_csum = sb.feature_ro_compat & RO_COMPAT_METADATA_CSUM != 0;
+        let inode_seed = if metadata_csum {
+            let seed = super::ext4_metadata_checksum_seed(raw_superblock)?;
+            let ino_seed = super::crc32c(seed, &inode_number.to_le_bytes());
+            super::crc32c(ino_seed, &generation.to_le_bytes())
+        } else { 0 };
         crate::htree::iterate_htree_directory_unique(
             &mut reader, root_buffer, blocks as u32, sb.inodes_count,
-            hash_seed, None, hash_unsigned, metadata_csum,
-            {
-                let seed = super::ext4_metadata_checksum_seed(raw_superblock)?;
-                let ino_seed = super::crc32c(seed, &inode_number.to_le_bytes());
-                super::crc32c(ino_seed, &generation.to_le_bytes())
-            },
+            hash_seed, None, hash_unsigned, metadata_csum, inode_seed,
             htree_scratch, visited_leaves, |entry| visitor(entry),
         )?;
         return Ok(());
