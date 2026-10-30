@@ -775,7 +775,7 @@ static DEVICE_ROUTE_GSI_BASE:[core::sync::atomic::AtomicU32;256]=[const{core::sy
 static DEVICE_ROUTE_GSI:[core::sync::atomic::AtomicU32;256]=[const{core::sync::atomic::AtomicU32::new(0)};256];
 pub type DeviceDpcQueueHook=extern "C" fn(*mut core::ffi::c_void)->bool;
 pub type DeviceDpcRemoveHook=extern "C" fn(*mut core::ffi::c_void)->bool;
-pub type DeviceDpcInitHook=extern "C" fn(*mut core::ffi::c_void,usize);
+pub type DeviceDpcInitHook=extern "C" fn(*mut core::ffi::c_void,usize)->bool;
 static DEVICE_DPC_INIT_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static DEVICE_DPC_QUEUE_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
 static DEVICE_DPC_REMOVE_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
@@ -840,7 +840,10 @@ unsafe extern "C" fn service_register_interrupt(vector:u32,context:u64,isr:Optio
     let init=DEVICE_DPC_INIT_HOOK.load(Ordering::Acquire);
     if init==0{DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);return driver_hal_unsupported()}
     let initialize:DeviceDpcInitHook=unsafe{core::mem::transmute(init)};
-    initialize(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast(),i);
+    if !initialize(core::ptr::addr_of!(DEVICE_DPCS[i]).cast_mut().cast(),i){
+        DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);DEVICE_CONTEXT[i].store(0,Ordering::Release);
+        return driver_hal_unsupported()
+    }
     if register_device_interrupt_handler(vector as u8,device_interrupt_dispatch,i as *mut core::ffi::c_void).is_err(){
         DEVICE_ISR[i].store(0,Ordering::Release);DEVICE_DPC[i].store(0,Ordering::Release);return driver_hal_invalid()
     }
