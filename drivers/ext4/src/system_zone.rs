@@ -192,9 +192,11 @@ impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
  
     /// Recover a dirty internal journal using a mount-derived, conservative
     /// metadata ownership manifest. The caller provides bounded storage for
-    /// exact ownership entries. Only the primary superblock/GDT, group
-    /// bitmaps, and inode tables are authorized by this initial manifest;
-    /// inode-owned directory/extent/xattr targets remain rejected.
+    /// exact ownership entries and a trusted list of directory inode numbers.
+    /// Primary superblock/GDT, group bitmaps, inode tables, allocated supplied
+    /// directory data blocks, and their traversed extent nodes are authorized
+    /// only after the corresponding checksum/geometry/ownership checks. Xattr
+    /// blocks and undiscovered directories remain unauthorized.
     pub fn mount_with_recovery_and_ownership(
         mut device: D,
         ranges: &'a mut [BlockRange],
@@ -561,9 +563,10 @@ fn validate_inode_allocated<D: ReadOnlyBlockDevice>(
 }
 
 /// Extend a system-metadata ownership manifest with directory data blocks.
-/// Each inode is read from its validated inode table entry; extent mappings
-/// are checked against the retained system-zone map and directory block
-/// checksums are verified before a block is authorized for journal replay.
+/// Each inode is first proven allocated by its checksummed group inode bitmap,
+/// then read from its validated inode table entry. Extent mappings are checked
+/// against the retained system-zone map and directory block checksums are
+/// verified before a block is authorized for journal replay.
 /// Caller supplies one inode buffer and two block-sized scratch buffers.
 pub fn add_directory_metadata_ownership<D: ReadOnlyBlockDevice>(
     dev: &mut D, sb: &Superblock, raw_superblock: &[u8],
