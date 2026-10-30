@@ -275,8 +275,8 @@ pub fn set_inode_size(sb:&[u8],inode_number:u32,inode:&mut[u8],new_size:u64)->Re
 /// Resize a regular file whose extent tree is stored in the inode's inline
 /// root. Shrinking returns physical ranges for the caller to free in the same
 /// JBD2 transaction; extending creates a sparse tail and allocates no blocks.
-/// External extent trees are rejected until their node checksums and split/
-—merge updates can be journaled as one transaction.
+/// External extent trees are rejected until their node checksums and split/merge
+/// updates can be journaled as one transaction.
 pub fn resize_inline_regular_file(
  sb:&[u8],inode_number:u32,inode:&mut[u8],new_size:u64,freed:&mut[(u64,u32)],
 )->Result<usize,Error>{
