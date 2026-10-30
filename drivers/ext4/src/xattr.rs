@@ -7,6 +7,7 @@
 pub enum XattrError {
     Truncated, BadMagic, InvalidReferenceCount, InvalidBlockCount,
     InvalidEntry, InvalidValue, DuplicateEntry, OverlappingValues,
+    InvalidChecksum, MissingOwnerIdentity,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +157,47 @@ pub fn validate_external_xattr_block(
     })
 }
 
+
+/// Validate an external xattr block's metadata_csum checksum.
+///
+/// `filesystem_seed` is the ext4 checksum seed (explicit s_checksum_seed
+/// when CSUM_SEED is enabled, otherwise CRC32C(~0, s_uuid)). `physical_block`
+/// is the absolute filesystem block number. Exclusively referenced blocks
+/// (h_refcount == 1) additionally bind the owning inode number and generation.
+/// Shared blocks bind the physical block number and contents only.
+///
+/// The checksum field at bytes 16..20 is treated as zero. This authenticates
+/// bytes only; callers must separately prove inode ownership and reconcile
+/// shared reference counts before authorizing replay of an xattr block.
+pub fn validate_external_xattr_checksum(
+    block: &[u8],
+    filesystem_seed: u32,
+    physical_block: u64,
+    owner: Option<(u32, u32)>,
+) -> Result<(), XattrError> {
+    let info = validate_external_xattr_block(block)?;
+    if info.reference_count == 1 && owner.is_none() {
+        return Err(XattrError::MissingOwnerIdentity);
+    }
+
+    let mut crc = crate::checksum::crc32c_update(
+        filesystem_seed,
+        &physical_block.to_le_bytes(),
+    );
+    if info.reference_count == 1 {
+        let (inode_number, generation) = owner.ok_or(XattrError::MissingOwnerIdentity)?;
+        crc = crate::checksum::crc32c_update(crc, &inode_number.to_le_bytes());
+        crc = crate::checksum::crc32c_update(crc, &generation.to_le_bytes());
+    }
+    crc = crate::checksum::crc32c_update(crc, &block[..16]);
+    crc = crate::checksum::crc32c_update(crc, &[0; 4]);
+    crc = crate::checksum::crc32c_update(crc, &block[20..]);
+    if crc != u32le(block, 16)? {
+        return Err(XattrError::InvalidChecksum);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,6 +208,35 @@ mod tests {
         b[8..12].copy_from_slice(&1u32.to_le_bytes());
         b
     }
+
+    #[test]
+    fn validates_exclusive_and_shared_block_checksums() {
+        let seed = 0x1234_5678;
+        let physical = 42u64;
+        let owner = (7u32, 9u32);
+        let mut exclusive = empty_block();
+        let mut crc = crate::checksum::crc32c_update(seed, &physical.to_le_bytes());
+        crc = crate::checksum::crc32c_update(crc, &owner.0.to_le_bytes());
+        crc = crate::checksum::crc32c_update(crc, &owner.1.to_le_bytes());
+        crc = crate::checksum::crc32c_update(crc, &exclusive[..16]);
+        crc = crate::checksum::crc32c_update(crc, &[0; 4]);
+        crc = crate::checksum::crc32c_update(crc, &exclusive[20..]);
+        exclusive[16..20].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(validate_external_xattr_checksum(&exclusive, seed, physical, Some(owner)), Ok(()));
+        assert_eq!(validate_external_xattr_checksum(&exclusive, seed, physical, None), Err(XattrError::MissingOwnerIdentity));
+        exclusive[40] ^= 1;
+        assert_eq!(validate_external_xattr_checksum(&exclusive, seed, physical, Some(owner)), Err(XattrError::InvalidChecksum));
+
+        let mut shared = empty_block();
+        shared[4..8].copy_from_slice(&2u32.to_le_bytes());
+        let mut crc = crate::checksum::crc32c_update(seed, &physical.to_le_bytes());
+        crc = crate::checksum::crc32c_update(crc, &shared[..16]);
+        crc = crate::checksum::crc32c_update(crc, &[0; 4]);
+        crc = crate::checksum::crc32c_update(crc, &shared[20..]);
+        shared[16..20].copy_from_slice(&crc.to_le_bytes());
+        assert_eq!(validate_external_xattr_checksum(&shared, seed, physical, None), Ok(()));
+    }
+
     #[test]
     fn accepts_empty_external_block() {
         let info = validate_external_xattr_block(&empty_block()).unwrap();
