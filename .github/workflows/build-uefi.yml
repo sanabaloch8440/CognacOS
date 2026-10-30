@@ -591,7 +591,7 @@ jobs:
           fi
       - name: Validate source ELF and PE32+ kernel image
         run: |
-          file target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe
+          file target/x86_64-unknown-none/debug/cognacos-kernel build/cognacos-kernel.exe
           readelf -h target/x86_64-unknown-none/release/cognacos-kernel | grep -qE 'Class:.*ELF64'
           readelf -h target/x86_64-unknown-none/release/cognacos-kernel | grep -qE 'Machine:.*X86-64'
           readelf -h target/x86_64-unknown-none/release/cognacos-kernel | grep -qE 'Type:.*EXEC'
