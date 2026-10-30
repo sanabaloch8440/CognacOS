@@ -1,7 +1,8 @@
 # CognacOS ext4 driver: mutation and recovery status
 
-This crate now contains bounded ext4 metadata mutation primitives and a bounded
-JBD2 implementation. The primitives operate on caller-owned metadata buffers;
+This crate now contains bounded ext4 metadata mutation primitives, a bounded
+JBD2 implementation, and a read-only mount facade that retains a validated
+system-zone map. The primitives operate on caller-owned metadata buffers;
 the filesystem mount facade does not yet expose a general-purpose writable
 filesystem API.
 
@@ -40,7 +41,7 @@ The caller must provide correct journal-inode extent mapping and serialize all
 writers. External extent-tree split/merge, indexed htree directories, external
 journals, and journal checksum formats are not supported by these routines.
 
-The system-zone builder is a standalone safety primitive at this milestone; it is not yet retained by ExtFilesystem at mount time, and the caller must explicitly run the reserved-journal-inode pass with caller-owned inode and block scratch buffers. The current ExtFilesystem mount facade rejects **all writable mounts**. This
+The new CheckedExtFilesystem mount facade builds and retains the system-zone map and invokes the reserved-journal-inode pass using caller-owned range and scratch buffers. The legacy ExtFilesystem facade remains available for compatibility but does not provide this checked mapping surface. The current ExtFilesystem mount facade rejects **all writable mounts**. This
 is a deliberate safety interlock: the current data-write path does not yet
 validate extent targets against the complete ext4 system-zone map, and the
 journal/recovery and metadata mutation primitives are not integrated through
