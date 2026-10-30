@@ -416,8 +416,8 @@ const DMA_IOVA_START:u64=0x1_0000;
 const DMA_IOVA_END:u64=0x1_0000_0000;
 const MAX_DMA_MAPS:usize=512;
 #[derive(Clone,Copy)]
-struct DmaMap { used:bool, device:usize, iova:u64, span:u64, cookie:u64 }
-impl DmaMap { const EMPTY:Self=Self{used:false,device:0,iova:0,span:0,cookie:0}; }
+struct DmaMap { used:bool, ready:bool, busy:bool, device:usize, iova:u64, span:u64, cookie:u64 }
+impl DmaMap { const EMPTY:Self=Self{used:false,ready:false,busy:false,device:0,iova:0,span:0,cookie:0}; }
 static DMA_MAPS:crate::hal::IrqSpinLock<[DmaMap;MAX_DMA_MAPS]>=
  crate::hal::IrqSpinLock::new([DmaMap::EMPTY;MAX_DMA_MAPS]);
 static NEXT_DMA_IOVA:core::sync::atomic::AtomicU64=
@@ -442,23 +442,34 @@ unsafe extern "system" fn generic_dma_map(
  let offset=physical&(SL_PAGE-1);
  let physical_base=physical&!(SL_PAGE-1);
  let span=match offset.checked_add(length as u64).and_then(|n|n.checked_add(SL_PAGE-1)){Some(n)=>n&!(SL_PAGE-1),None=>return STATUS_INVALID_PARAMETER};
- let allocation=span.max(SL_PAGE);
- let iova=NEXT_DMA_IOVA.fetch_update(Ordering::AcqRel,Ordering::Acquire,|old|{
-  old.checked_add(allocation).filter(|end|*end<=DMA_IOVA_END)
- });
- let base=match iova{Ok(v)=>v,Err(_)=>return STATUS_INSUFFICIENT_RESOURCES};
- // WDM write_to_device=1 means device reads memory; 0 means device writes.
- // Direction 2 is reserved by this kernel for bidirectional common buffers.
+ let span=span.max(SL_PAGE);
  let permissions=match direction{0=>2,1=>1,2=>3,_=>return STATUS_INVALID_PARAMETER};
- let status=unsafe{map_pages(id,base,physical_base,span,permissions)};
- if status!=STATUS_SUCCESS{return status}
- let logical=base+offset;
- let mut maps=DMA_MAPS.lock();
- let Some(slot)=maps.iter_mut().find(|m|!m.used) else{
-  drop(maps);let _=unsafe{unmap_pages(id,base,span)};return STATUS_INSUFFICIENT_RESOURCES
+ // Reserve a free IOVA and registry slot atomically. First-fit allocation
+ // reuses holes after completed transfers and prevents concurrent overlap.
+ let (slot_index,base)={
+  let mut maps=DMA_MAPS.lock();
+  let Some(index)=maps.iter().position(|m|!m.used) else{return STATUS_INSUFFICIENT_RESOURCES};
+  let mut candidate=DMA_IOVA_START;
+  loop{
+   let mut next=None;
+   for m in maps.iter().filter(|m|m.used){
+    let candidate_end=match candidate.checked_add(span){Some(v)=>v,None=>return STATUS_INSUFFICIENT_RESOURCES};
+    if candidate<m.iova.saturating_add(m.span)&&m.iova<candidate_end{
+     let e=m.iova.saturating_add(m.span);
+     next=Some(next.unwrap_or(0u64).max(e));
+    }
+   }
+   match next{Some(e)=>candidate=match e.checked_add(SL_PAGE-1){Some(v)=>v&!(SL_PAGE-1),None=>return STATUS_INSUFFICIENT_RESOURCES},None=>break}
+   if candidate.checked_add(span).is_none_or(|e|e>DMA_IOVA_END){return STATUS_INSUFFICIENT_RESOURCES}
+  }
+  if candidate.checked_add(span).is_none_or(|e|e>DMA_IOVA_END){return STATUS_INSUFFICIENT_RESOURCES}
+  maps[index]=DmaMap{used:true,ready:false,busy:true,device,iova:candidate,span,cookie:candidate};
+  (index,candidate)
  };
- *slot=DmaMap{used:true,device,iova:base,span,cookie:base};
- unsafe{logical_out.write(logical);cookie_out.write(base);}
+ let status=unsafe{map_pages(id,base,physical_base,span,permissions)};
+ if status!=STATUS_SUCCESS{DMA_MAPS.lock()[slot_index]=DmaMap::EMPTY;return status}
+ {let mut maps=DMA_MAPS.lock();maps[slot_index].ready=true;maps[slot_index].busy=false;}
+ unsafe{logical_out.write(base+offset);cookie_out.write(base);}
  STATUS_SUCCESS
 }
 
@@ -467,25 +478,27 @@ unsafe extern "system" fn generic_dma_unmap(
 )->i32{
  if device==0||logical==0||cookie==0{return STATUS_INVALID_PARAMETER}
  let Some(id)=requester_for_device(device) else{return STATUS_NOT_SUPPORTED};
- let record={
-  let maps=DMA_MAPS.lock();
-  maps.iter().find(|m|m.used&&m.device==device&&m.cookie==cookie
-   &&logical>=m.iova&&logical<m.iova.saturating_add(m.span)).copied()
+ let (index,record)={
+  let mut maps=DMA_MAPS.lock();
+  let Some((i,m))=maps.iter_mut().enumerate().find(|(_,m)|m.used&&m.ready&&!m.busy&&m.device==device&&m.cookie==cookie
+   &&logical>=m.iova&&logical<m.iova.saturating_add(m.span)) else{return STATUS_INVALID_PARAMETER};
+  m.busy=true;(i,*m)
  };
- let Some(record)=record else{return STATUS_INVALID_PARAMETER};
  let status=unsafe{unmap_pages(id,record.iova,record.span)};
- if status!=STATUS_SUCCESS{return status}
  let mut maps=DMA_MAPS.lock();
- if let Some(slot)=maps.iter_mut().find(|m|m.used&&m.device==device&&m.cookie==cookie){*slot=DmaMap::EMPTY;}
- STATUS_SUCCESS
+ if status==STATUS_SUCCESS{maps[index]=DmaMap::EMPTY;}else{maps[index].busy=false;}
+ status
 }
 
 unsafe extern "system" fn generic_dma_sync(
- _context:*mut core::ffi::c_void,_device:usize,logical:u64,length:u32,_direction:u8
+ _context:*mut core::ffi::c_void,device:usize,logical:u64,length:u32,_direction:u8
 )->i32{
- if logical==0||length==0{return STATUS_INVALID_PARAMETER}
- // x86 DMA is cache coherent for ordinary WB memory. Order CPU writes before
- // device ownership and device writes before subsequent CPU reads.
+ if device==0||logical==0||length==0{return STATUS_INVALID_PARAMETER}
+ let end=match logical.checked_add(length as u64){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
+ let maps=DMA_MAPS.lock();
+ if !maps.iter().any(|m|m.used&&m.ready&&!m.busy&&m.device==device
+  &&logical>=m.iova&&end<=m.iova.saturating_add(m.span)){return STATUS_INVALID_PARAMETER}
+ drop(maps);
  fence(Ordering::SeqCst);
  unsafe{core::arch::asm!("mfence",options(nostack,preserves_flags));}
  STATUS_SUCCESS
