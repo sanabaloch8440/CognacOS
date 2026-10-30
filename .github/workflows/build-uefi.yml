@@ -221,6 +221,7 @@ jobs:
           cargo check --manifest-path dlls/msvcrt/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo check --manifest-path dlls/syssetup/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo check --manifest-path programs/rundll32/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
+          cargo test --manifest-path programs/rundll32/Cargo.toml --target x86_64-unknown-linux-gnu --bin rundll32
       - name: Enforce one NTDLL syscall transition path
         shell: bash
         run: |
