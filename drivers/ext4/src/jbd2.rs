@@ -133,9 +133,23 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  metadata_targets:&[u64],metadata_data:&[&[u8]],revoked_targets:&[u64],
  descriptor:&mut[u8],
 )->Result<u32,Error>{
+ let journal_uuid=[0u8;16];
+ commit_ordered_with_revokes_and_uuid(d,m,journal_superblock,ordered_targets,ordered_data,
+  metadata_targets,metadata_data,revoked_targets,&journal_uuid,descriptor)
+}
+
+/// Commit using the journal UUID carried in descriptor-tag extensions. This is
+/// required for legacy JBD v1, whose superblock has no UUID field.
+pub fn commit_ordered_with_revokes_and_uuid<D:ReplayDevice,M:JournalBlockMap>(
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8],
+ ordered_targets:&[u64],ordered_data:&[&[u8]],
+ metadata_targets:&[u64],metadata_data:&[&[u8]],revoked_targets:&[u64],
+ journal_uuid:&[u8;16],descriptor:&mut[u8],
+)->Result<u32,Error>{
  if ordered_targets.len()!=ordered_data.len()||metadata_targets.len()!=metadata_data.len()
   ||metadata_targets.is_empty()||descriptor.len()<1024{return Err(Error::InvalidGeometry)}
- let sb=JournalSuperblock::parse(journal_superblock)?;
+ let mut sb=JournalSuperblock::parse(journal_superblock)?;
+ if sb.format_version==1{sb.uuid=*journal_uuid}
  
  let bs=sb.block_size as usize;
  if descriptor.len()!=bs||journal_superblock.len()!=bs{return Err(Error::NoScratch)}
@@ -182,7 +196,7 @@ pub fn commit_ordered_with_revokes<D:ReplayDevice,M:JournalBlockMap>(
  descriptor[0..4].copy_from_slice(&JBD2_MAGIC.to_be_bytes());
  descriptor[4..8].copy_from_slice(&JBD2_DESCRIPTOR_BLOCK.to_be_bytes());
  descriptor[8..12].copy_from_slice(&sequence.to_be_bytes());
- let uuid=journal_superblock.get(48..64).ok_or(Error::Truncated)?;
+ let uuid=&sb.uuid;
  let seed=crate::checksum::jbd2_csum_seed(&sb.uuid);
  let mut off=12usize;
  for (i,target) in metadata_targets.iter().enumerate(){
@@ -307,6 +321,16 @@ pub fn commit_ordered<D:ReplayDevice,M:JournalBlockMap>(
   metadata_targets,metadata_data,&[],descriptor)
 }
 
+/// Commit ordered data and metadata using an explicit journal UUID for JBD v1.
+pub fn commit_ordered_with_uuid<D:ReplayDevice,M:JournalBlockMap>(
+ d:&mut D,m:&mut M,journal_superblock:&mut[u8],ordered_targets:&[u64],
+ ordered_data:&[&[u8]],metadata_targets:&[u64],metadata_data:&[&[u8]],
+ journal_uuid:&[u8;16],descriptor:&mut[u8],
+)->Result<u32,Error>{
+ commit_ordered_with_revokes_and_uuid(d,m,journal_superblock,ordered_targets,ordered_data,
+  metadata_targets,metadata_data,&[],journal_uuid,descriptor)
+}
+
 /// Full journal recovery entry point. The caller reads the journal inode's
 /// logical block zero into journal_superblock and supplies a mapping for its
 /// extents. After replaying every complete committed transaction, it clears/// the recovery-start field and advances the sequence. An incomplete tail is
@@ -404,6 +428,7 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
  if !sb.needs_recovery(){return Ok(ReplayReport::default())}
  let mut report=ReplayReport::default();let mut cursor=sb.start;let mut expected=sb.sequence;let log_capacity=sb.max_len.saturating_sub(sb.first);
  let mut tags=[Tag::EMPTY;MAX_TRANSACTION_TAGS];let mut tag_count=0usize;let mut revokes=[Revoke::EMPTY;MAX_TRANSACTION_REVOKES];let mut revoke_count=0usize;let mut guard=0u32;
+ let mut journal_tag_uuid:Option<[u8;16]>=if sb.format_version==1{None}else{Some(sb.uuid)};
  while guard<log_capacity{
   guard+=1;read_journal(d,m,cursor,scratch)?;
   if be32(scratch,0)?!=JBD2_MAGIC||be32(scratch,8)?!=expected{report.stopped_on_incomplete=true;break}
@@ -455,7 +480,13 @@ pub fn replay_with_policy<D:ReplayDevice,M:JournalBlockMap,P:ReplayTargetPolicy>
       };
       if flags&!(TAG_ESCAPE|TAG_SAME_UUID|TAG_DELETED|TAG_LAST)!=0{return Err(Error::InvalidTag)}
       if sb.block_count_64{target|=(be32(scratch,off)? as u64)<<32;off=off.checked_add(4).ok_or(Error::OutOfRange)?}
-      if flags&TAG_SAME_UUID==0{let end=off.checked_add(16).ok_or(Error::OutOfRange)?;if end>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}if scratch[off..end]!=sb.uuid{return Err(Error::InvalidTag)}off=end}
+      if flags&TAG_SAME_UUID==0{
+       let end=off.checked_add(16).ok_or(Error::OutOfRange)?;
+       if end>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
+       let mut observed=[0u8;16];observed.copy_from_slice(&scratch[off..end]);
+       if let Some(expected_uuid)=journal_tag_uuid{if observed!=expected_uuid{return Err(Error::InvalidTag)}}else{journal_tag_uuid=Some(observed)}
+       off=end;
+      }else if journal_tag_uuid.is_none(){return Err(Error::InvalidTag)}
       if off>bs.saturating_sub(if sb.checksum_mode==ChecksumMode::None{0}else{4}){return Err(Error::InvalidTag)}
       if target>=d.filesystem_blocks(){return Err(Error::OutOfRange)}
       let data_block=next_log(sb,tx_cursor);tags[tag_count]=Tag{target,journal_data:data_block,flags,sequence:expected};tag_count+=1;
@@ -735,7 +766,7 @@ mod tests{
   header(&mut d.blocks[2],JBD2_DESCRIPTOR_BLOCK,17);
   d.blocks[2][12..16].copy_from_slice(&7u32.to_be_bytes());
   d.blocks[2][16..20].copy_from_slice(&TAG_LAST.to_be_bytes());
-  d.blocks[2][20..36].copy_from_slice(&[0;16]);
+  d.blocks[2][20..36].copy_from_slice(&[0x5a;16]);
   d.blocks[3].fill(0x6a);
   header(&mut d.blocks[4],JBD2_COMMIT_BLOCK,17);
   let mut a=[0u8;1024];let mut b=[0u8;1024];
@@ -753,12 +784,12 @@ mod tests{
   js[16..20].copy_from_slice(&64u32.to_be_bytes());
   js[20..24].copy_from_slice(&1u32.to_be_bytes());
   js[24..28].copy_from_slice(&23u32.to_be_bytes());
-  let metadata=[0x71u8;1024];let mut descriptor=[0u8;1024];
-  assert_eq!(commit_ordered(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&mut descriptor),Ok(23));
+  let metadata=[0x71u8;1024];let mut descriptor=[0u8;1024];let journal_uuid=[0x6bu8;16];
+  assert_eq!(commit_ordered_with_uuid(&mut d,&mut |n|Ok(n as u64),&mut js,&[],&[],&[10],&[&metadata],&journal_uuid,&mut descriptor),Ok(23));
   assert_eq!(be32(&d.blocks[1],4).unwrap(),JBD2_DESCRIPTOR_BLOCK);
   assert_eq!(be32(&d.blocks[1],12).unwrap(),10);
   assert_eq!(be32(&d.blocks[1],16).unwrap(),TAG_LAST);
-  assert_eq!(&d.blocks[1][20..36],&[0;16]); // v1 has no journal UUID field, so the legacy tag UUID is zero.
+  assert_eq!(&d.blocks[1][20..36],&[0x6b;16]); // v1 stores the journal UUID in the tag extension.
   assert_eq!(d.blocks[10],metadata);
  }
   #[test]fn checksum_feature_bits_are_mutually_exclusive(){
