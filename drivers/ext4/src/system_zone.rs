@@ -937,7 +937,7 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
                     &extent_root, logical, scratch_a, zones, None,
                 )?
             } else {
-                map_legacy_block(dev, sb, &inode_buffer[40..100],
+                map_legacy_block(dev, sb, &extent_root,
                     logical as u64, scratch_a, scratch_b)?
             }.ok_or(Error::InvalidExtentTree)?;
             read_block(dev, sb, physical, scratch_b)?;
