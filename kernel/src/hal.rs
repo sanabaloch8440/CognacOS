@@ -206,23 +206,24 @@ pub unsafe fn install_cpu_local(index: usize) -> Result<(), HalError> {
 #[inline]
 pub fn current_cpu_local() -> Option<&'static CpuLocal> {
     let self_pointer: u64;
-    unsafe { core::arch::asm!("mov {}, gs:[0]", out(reg) self_pointer, options(nostack, readonly, preserves_flags)); }
-    // In ordinary kernel context GS:[0] is CpuLocal.self_pointer. During a
-    // Windows SYSCALL, GS points at WindowsSyscallCpuLocal and GS:[0] is the
-    // caller's user RSP instead. Resolve the shared CpuLocal pointer from the
-    // syscall-local tail field in that case; never cast a user stack pointer.
-    if self_pointer != 0 && self_pointer & (core::mem::align_of::<CpuLocal>() as u64 - 1) == 0 {
-        return Some(unsafe { &*(self_pointer as *const CpuLocal) });
-    }
     let gs_base: u64;
     let kernel_gs_base: u64;
     unsafe {
+        core::arch::asm!("mov {}, gs:[0]", out(reg) self_pointer, options(nostack, readonly, preserves_flags));
         let low: u32; let high: u32;
         core::arch::asm!("rdmsr", in("ecx") 0xC000_0101u32, out("eax") low, out("edx") high, options(nostack, preserves_flags));
         gs_base = ((high as u64) << 32) | low as u64;
         let low: u32; let high: u32;
         core::arch::asm!("rdmsr", in("ecx") 0xC000_0102u32, out("eax") low, out("edx") high, options(nostack, preserves_flags));
         kernel_gs_base = ((high as u64) << 32) | low as u64;
+    }
+    // In ordinary kernel context GS:[0] equals GS_BASE (CpuLocal.self_pointer).
+    // During Windows SYSCALL, GS:[0] is instead the caller's RSP. Compare with
+    // the actual GS base rather than relying on alignment: user RSP can be
+    // 64-byte aligned too.
+    if self_pointer != 0 && self_pointer == gs_base
+        && self_pointer & (core::mem::align_of::<CpuLocal>() as u64 - 1) == 0 {
+        return Some(unsafe { &*(self_pointer as *const CpuLocal) });
     }
     // Kernel GS may be temporarily zero outside SYSCALL; the inactive GS MSR
     // then retains the syscall-local block. Prefer whichever base is high-half.
