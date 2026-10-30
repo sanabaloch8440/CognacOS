@@ -241,10 +241,7 @@ pub fn validate_directory_leaf_checksum(
     if le32(block, tail)? != 0
         || le16(block, tail + 4)? as usize != 12
         || block[tail + 6] != 0
-        || block[tail + 7] != 0
-        || block[tail + 8] != 0
-        || block[tail + 9] != 0
-        || block[tail + 10] != 0xde
+        || block[tail + 7] != 0xde
     {
         return Err(Error::InvalidDirectoryEntry);
     }
@@ -353,7 +350,7 @@ mod tests {
         let mut leaf = [0u8; 1024];
         let tail = 1012;
         leaf[tail + 4..tail + 6].copy_from_slice(&12u16.to_le_bytes());
-        leaf[tail + 10] = 0xde;
+        leaf[tail + 7] = 0xde;
         let crc = crc32c_update(seed, &leaf[..tail]);
         leaf[tail + 8..tail + 12].copy_from_slice(&crc.to_le_bytes());
         assert_eq!(validate_directory_leaf_checksum(&leaf, seed, true), Ok(()));
