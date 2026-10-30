@@ -62,6 +62,7 @@ where D: ReplayDevice, M: JournalBlockMap, P: MetadataTargetPolicy {
     filesystem: Superblock,
     zones: SystemZoneMap<'a>,
     policy: &'a mut P,
+    poisoned: bool,
 }
 
 impl<'a, D, M, P> TransactionCoordinator<'a, D, M, P>
@@ -78,8 +79,10 @@ where D: ReplayDevice, M: JournalBlockMap, P: MetadataTargetPolicy {
             || journal.max_len as u64 > device.filesystem_blocks() {
             return Err(Error::UnsupportedFormat);
         }
-        Ok(Self { device, map, journal_superblock, filesystem, zones, policy })
+        Ok(Self { device, map, journal_superblock, filesystem, zones, policy, poisoned: false })
     }
+
+    pub fn is_poisoned(&self) -> bool { self.poisoned }
 
     pub fn begin<'b>(
         &'b mut self,
@@ -87,6 +90,7 @@ where D: ReplayDevice, M: JournalBlockMap, P: MetadataTargetPolicy {
         ordered_targets: &'b mut [u64], ordered_storage: &'b mut [u8],
         revoked_targets: &'b mut [u64], descriptor_scratch: &'b mut [u8],
     ) -> Result<Transaction<'b, 'a, D, M, P>, Error> {
+        if self.poisoned { return Err(Error::UnsupportedFormat); }
         let bs = self.filesystem.block_size as usize;
         if metadata_targets.len() > MAX_STAGED_BLOCKS
             || metadata_storage.len() != metadata_targets.len().checked_mul(bs).ok_or(Error::OutOfRange)?
@@ -181,12 +185,14 @@ where D: ReplayDevice, M: JournalBlockMap, P: MetadataTargetPolicy {
             let start = i.checked_mul(bs).ok_or(Error::OutOfRange)?;
             ordered_refs[i] = &self.ordered_storage[start..start + bs];
         }
-        jbd2::commit_ordered_with_revokes(
+        let result = jbd2::commit_ordered_with_revokes(
             self.coordinator.device, self.coordinator.map,
             self.coordinator.journal_superblock,
             &self.ordered_targets[..self.ordered_count], &ordered_refs[..self.ordered_count],
             &self.metadata_targets[..self.metadata_count], &metadata_refs[..self.metadata_count],
             &self.revoked_targets[..self.revoke_count], self.descriptor_scratch,
-        ).map_err(|_| Error::Io)
+        ).map_err(|_| Error::Io);
+        if result.is_err() { self.coordinator.poisoned = true; }
+        result
     }
 }
