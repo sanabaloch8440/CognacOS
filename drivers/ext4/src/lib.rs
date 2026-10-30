@@ -1345,19 +1345,13 @@ mod host_tests {
 
     #[test]
     fn writes_past_inode_eof_are_rejected_before_device_io() {
-        let sb = Superblock {
-            inodes_count: 1, blocks_count: 4, first_data_block: 1,
-            block_size: 1024, blocks_per_group: 3, inodes_per_group: 1,
-            inode_size: 128, descriptor_size: 32, revision: 1,
-            feature_compat: 0, feature_incompat: INCOMPAT_EXTENTS,
-            feature_ro_compat: 0, read_only: true,
-        };
-        let mut fs = ExtFilesystem { device: NoIoDevice, superblock: sb, read_only: false };
+        let (mut fs, inode) = writable_test_fs(4);
         let mut scratch = [0u8; 1024];
         assert_eq!(
-            fs.write_file_data(&[0; 60], 4, 4, &[1], &mut scratch),
+            fs.write_file_data(12, &inode, 4, &[1], &mut scratch),
             Err(WriteError::OutOfRange)
         );
+        assert_eq!(fs.device.flush_count, 0);
     }
 
     struct MemDisk { bytes:[u8;32768], flush_count:u32 }
@@ -1377,19 +1371,23 @@ mod host_tests {
         fn flush(&mut self)->Result<(),Self::DeviceError>{self.flush_count+=1;Ok(())}
     }
 
-    #[test]
-    fn writes_existing_extent_data_with_read_modify_write_and_flush() {
+    fn writable_test_fs(file_size: u32) -> (ExtFilesystem<MemDisk>, [u8; 256]) {
         let mut disk = MemDisk { bytes: [0; 32768], flush_count: 0 };
-        let data_start = 5 * 1024;
-        disk.bytes[data_start..data_start + 1024].fill(0x5a);
+        disk.bytes[5 * 1024..6 * 1024].fill(0x5a);
         let sb = Superblock {
             inodes_count: 8, blocks_count: 16, first_data_block: 1,
             block_size: 1024, blocks_per_group: 15, inodes_per_group: 8,
             inode_size: 128, descriptor_size: 32, revision: 1,
             feature_compat: 0, feature_incompat: INCOMPAT_EXTENTS,
-            feature_ro_compat: 0, read_only: true,
+            feature_ro_compat: 0, read_only: false,
         };
-        let mut fs = ExtFilesystem { device: disk, superblock: sb, read_only: false };
+        let mut raw = [0u8; SUPERBLOCK_BYTES];
+        raw[58..60].copy_from_slice(&1u16.to_le_bytes());
+        raw[84..88].copy_from_slice(&11u32.to_le_bytes());
+        let mut inode = [0u8; 256];
+        inode[0..2].copy_from_slice(&0x8000u16.to_le_bytes());
+        inode[4..8].copy_from_slice(&file_size.to_le_bytes());
+        inode[100..104].copy_from_slice(&1u32.to_le_bytes());
         let mut root = [0u8; 60];
         root[0..2].copy_from_slice(&EXTENT_MAGIC.to_le_bytes());
         root[2..4].copy_from_slice(&1u16.to_le_bytes());
@@ -1398,10 +1396,25 @@ mod host_tests {
         root[12..16].copy_from_slice(&0u32.to_le_bytes());
         root[16..18].copy_from_slice(&1u16.to_le_bytes());
         root[20..24].copy_from_slice(&5u32.to_le_bytes());
+        inode[40..100].copy_from_slice(&root);
+        let fs = ExtFilesystem {
+            device: disk,
+            superblock: sb,
+            read_only: false,
+            raw_superblock: raw,
+            system_zones: [BlockRange { start: 0, end: 5 }; MAX_WRITABLE_SYSTEM_ZONES],
+            zone_count: 1,
+        };
+        (fs, inode)
+    }
+
+    #[test]
+    fn writes_existing_extent_data_with_read_modify_write_and_flush() {
+        let (mut fs, inode) = writable_test_fs(1024);
         let mut scratch = [0u8; 1024];
-        assert_eq!(fs.write_file_data(&root, 1024, 13, &[0xa1, 0xb2, 0xc3], &mut scratch), Ok(3));
+        assert_eq!(fs.write_file_data(12, &inode, 13, &[0xa1, 0xb2, 0xc3], &mut scratch), Ok(3));
         let disk = fs.into_device();
-        assert_eq!(&disk.bytes[data_start + 12..data_start + 17], &[0x5a, 0xa1, 0xb2, 0xc3, 0x5a]);
+        assert_eq!(&disk.bytes[5 * 1024 + 12..5 * 1024 + 17], &[0x5a, 0xa1, 0xb2, 0xc3, 0x5a]);
         assert_eq!(disk.flush_count, 1, "successful file writes must flush the device");
     }
 
