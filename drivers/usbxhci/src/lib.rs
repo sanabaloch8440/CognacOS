@@ -278,18 +278,20 @@ mod dma_span_tests {
 #[cfg(test)]
 mod controller_init_tests{
  use super::*;
- struct FakeMmio{regs:[u32;256]}
- impl FakeMmio{fn new()->Self{let mut x=Self{regs:[0;256]};x.regs[0x44/4]=USBSTS_HALTED;x.regs[0x48/4]=1;x}}
+ struct FakeMmio{regs:[u32;256],bus_master_enabled:bool}
+ impl FakeMmio{fn new()->Self{let mut x=Self{regs:[0;256],bus_master_enabled:false};x.regs[0x44/4]=USBSTS_HALTED;x.regs[0x48/4]=1;x}}
  impl XhciRegisterIo for FakeMmio{
   fn read32(&mut self,o:u32)->Result<u32,()>{self.regs.get((o/4) as usize).copied().ok_or(())}
   fn write32(&mut self,o:u32,v:u32)->Result<(),()>{
    let i=(o/4) as usize;if i>=self.regs.len(){return Err(())}
    if o==0x40{
+    if v&USBCMD_RUN!=0&&!self.bus_master_enabled{return Err(())}
     if v&USBCMD_RESET!=0{self.regs[i]=v&!USBCMD_RESET;self.regs[0x44/4]=USBSTS_HALTED;}
     else if v&USBCMD_RUN!=0{self.regs[i]=v;self.regs[0x44/4]=0;}
     else{self.regs[i]=v;self.regs[0x44/4]=USBSTS_HALTED;}
    }else{self.regs[i]=v;}Ok(())
   }
+  fn set_bus_master(&mut self,enabled:bool)->Result<(),()>{self.bus_master_enabled=enabled;Ok(())}
  }
  fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,extended_capabilities_offset:0,context_size:32,page_size_mask:1}}
  fn dma()->ControllerDmaConfig{ControllerDmaConfig{dcbaa:0x10000,command_ring:0x11000,erst:0x12000,event_ring:0x13000,event_ring_entries:256,max_slots:8}}
