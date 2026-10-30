@@ -891,36 +891,19 @@ unsafe extern "C" fn service_set_interrupt_enabled(vector:u32,enabled:bool)->Dri
 /// PCI bus mastering is a separate, fail-closed service. Enabling requires
 /// the live xHCI PnP identity, an unpoisoned VT-d domain, at least one registered
 /// IOMMU mapping, and a registered (still-masked) interrupt handler.
+pub type DeviceBusMasterHook=extern "C" fn(u64,bool)->bool;
+static DEVICE_BUS_MASTER_HOOK:core::sync::atomic::AtomicUsize=core::sync::atomic::AtomicUsize::new(0);
+/// Install an executive-owned PCI resource validator without introducing a
+/// HAL -> NTOSKRNL dependency. HAL exposes only the versioned callback slot.
+pub fn install_device_bus_master_hook(hook:DeviceBusMasterHook){
+    DEVICE_BUS_MASTER_HOOK.store(hook as usize,Ordering::Release);
+}
 unsafe extern "C" fn service_set_bus_master(device_object:u64,enabled:bool)->DriverHalStatus{
     if device_object==0{return driver_hal_invalid()}
-    // HAL resolves the requester through the kernel-owned DMA identity registry;
-    // it does not reach into NTOSKRNL PnP structures or ACPI parser state.
-    let Some((segment,bus,devfn))=crate::dma::iommu::requester_identity(device_object as usize) else {
-        return driver_hal_invalid()
-    };
-    if segment!=0{return driver_hal_unsupported()}
-    if enabled {
-        if !crate::dma::iommu::available()
-            ||!crate::dma::iommu::vtd::is_enabled()
-            ||crate::dma::iommu::common_allocation_count(device_object as usize)<4
-            ||!crate::dma::iommu::device_busy(device_object as usize) {
-            return driver_hal_unsupported();
-        }
-        let Some(id)=crate::dma::iommu::vtd::RequesterId::new(bus,devfn>>3,devfn&7) else {
-            return driver_hal_invalid()
-        };
-        if !crate::dma::iommu::vtd::requester_domain_usable(id){return driver_hal_unsupported()}
-    }
-    let address=0x8000_0000u32|((bus as u32)<<16)|(((devfn>>3) as u32)<<11)
-        |(((devfn&7) as u32)<<8)|0x04;
-    unsafe{write_port_u32(0x0cf8,address);}
-    let command=unsafe{read_port_u32(0x0cfc)} as u16;
-    let next=if enabled{command|0x4}else{command&!0x4};
-    unsafe{write_port_u16(0x0cfc,next);}
-    unsafe{write_port_u32(0x0cf8,address);}
-    let verify=unsafe{read_port_u32(0x0cfc)} as u16;
-    if (verify&0x4!=0)!=enabled{return driver_hal_unsupported()}
-    driver_hal_success()
+    let raw=DEVICE_BUS_MASTER_HOOK.load(Ordering::Acquire);
+    if raw==0{return driver_hal_unsupported()}
+    let hook:DeviceBusMasterHook=unsafe{core::mem::transmute(raw)};
+    if hook(device_object,enabled){driver_hal_success()}else{driver_hal_unsupported()}
 }
 
 /// Publish IOMMU-backed DMA and routed interrupt/DPC services. Interrupt
@@ -938,7 +921,7 @@ pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable 
         register_interrupt:if irq_ready {Some(service_register_interrupt)} else {None},
         unregister_interrupt:if irq_ready {Some(service_unregister_interrupt)} else {None},
         set_interrupt_enabled:if irq_ready {Some(service_set_interrupt_enabled)} else {None},
-        set_bus_master:if dma_ready&&irq_ready {Some(service_set_bus_master)} else {None},
+        set_bus_master:if dma_ready&&irq_ready&&DEVICE_BUS_MASTER_HOOK.load(Ordering::Acquire)!=0 {Some(service_set_bus_master)} else {None},
     }
 }
 
