@@ -7,6 +7,7 @@
 
 pub mod jbd2;
 pub mod ops;
+pub mod system_zone;
 
 /// Canonical Windows NT ABI declarations shared with ntoskrnl and NTDLL.
 pub use cognacos_nt_abi as nt_abi;
