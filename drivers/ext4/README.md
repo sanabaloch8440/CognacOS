@@ -85,7 +85,7 @@ one mount-owned transaction coordinator. Enabling writable mounts before those
 pieces are complete could overwrite filesystem metadata or leave inconsistent
 metadata after a crash.
 
-Read-only support is also a strict feature subset. DIR_INDEX is accepted and has Linux-compatible legacy, half-MD4, TEA and SipHash name hashing; checksum-validated root/node/leaf reads; collision continuation across sibling index nodes; direct filename comparison; and indexed leaf enumeration including `.` and `..`. The mutation module provides leaf splitting, dx-entry insertion, interior-node splitting and depth-zero root growth as caller-owned buffer primitives. These are not yet wired into a mount-owned, crash-safe VFS/JBD2 operation, so writable mounts remain disabled. See [COMPATIBILITY_AUDIT.md](COMPATIBILITY_AUDIT.md) for exact limits.
+Read-only support is also a strict feature subset. DIR_INDEX is accepted and has Linux-compatible legacy, half-MD4, TEA and SipHash name hashing; checksum-validated root/node/leaf reads; collision continuation across sibling index nodes; direct filename comparison; and hash-ordered indexed readdir including `.` and `..` (using a caller-owned map buffer). The mutation module provides leaf splitting, dx-entry insertion, interior-node splitting and depth-zero root growth as caller-owned buffer primitives. These are not yet wired into a mount-owned, crash-safe VFS/JBD2 operation, so writable mounts remain disabled. See [COMPATIBILITY_AUDIT.md](COMPATIBILITY_AUDIT.md) for exact limits.
 
 ## Validation
 
