@@ -93,7 +93,7 @@ pub fn initialize(root: u64) -> Result<(), Error> {
   OWN_ROOT_SLOT.store(slot&P==0,Ordering::Release);
  }
  // Keep all twelve 128 MiB fixed-base native driver image slots unavailable to ordinary kernel allocations.
- // Each fixed-base driver may occupy at most 32 MiB within its reserved slot.
+ // Each fixed-base driver may occupy at most 128 MiB within its reserved slot.
  let bits=unsafe{&mut *BITS.0.get()};
  for offset in DRIVER_SLOT_OFFSETS { let start=(offset/PAGE) as usize;for n in start..start+DRIVER_SLOT_PAGES{bits[n/64]|=1u64<<(n%64);} }
  ROOT.store(root,Ordering::Release); Ok(())
