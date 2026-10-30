@@ -806,7 +806,7 @@ jobs:
             sleep 0.25
           done
 
-          # Verify the IOMMU and xHCI handoff before unrelated PS/2 input tests.
+          # Verify the IOMMU and xHCI handoff; PS/2 key injection runs in an isolated boot below.
           grep -F 'VT-d: translation enabled; generic DMA backend registered.' build/serial.log
           grep -F 'xHCI bind: DriverEntry succeeded' build/serial.log
           grep -F 'xHCI PCI bus mastering enabled after VT-d domain, DMA mappings, and IRQ registration.' build/serial.log
