@@ -6,7 +6,7 @@ license = "GPL-2.0-or-later"
 
 [features]
 default = []
-# Enable detailed page-table walk failure records in CI/QEMU diagnostics.
+# Enable detailed page-table walk failure records in debug CI/QEMU diagnostics only.
 diagnostic-vm = []
 
 [dependencies]
