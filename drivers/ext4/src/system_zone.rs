@@ -691,7 +691,7 @@ pub fn add_directory_metadata_ownership<D: ReadOnlyBlockDevice>(
                 if !finished { return Err(Error::InvalidExtentTree); }
                 mapped
             } else {
-                let block = map_legacy_block(dev, sb, &inode_buffer[40..100],
+                let block = map_legacy_block(dev, sb, &extent_root,
                     logical as u64, scratch_a, scratch_b)?;
                 if let Some(block) = block { zones.validate_data_range(block, 1, sb.blocks_count)?; }
                 block
@@ -864,6 +864,8 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
             return Err(Error::UnsupportedFormat);
         }
         let generation = u32at(inode_buffer, 100)?;
+        let mut extent_root = [0u8; 60];
+        extent_root.copy_from_slice(&inode_buffer[40..100]);
         let uses_extents = inode.flags & 0x0008_0000 != 0;
         let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
             .ok_or(Error::OutOfRange)? / sb.block_size as u64;
@@ -872,7 +874,7 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
             let physical = if uses_extents {
                 map_extent_block_checked_zones_for_inode(
                     dev, sb, raw_superblock, parent_ino, generation,
-                    &inode_buffer[40..100], logical, scratch_a, zones, None,
+                    &extent_root, logical, scratch_a, zones, None,
                 )?
             } else {
                 map_legacy_block(dev, sb, &inode_buffer[40..100],
@@ -893,12 +895,15 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
                     || name_len > rec_len - 8 {
                     return Err(Error::InvalidDirectoryEntry);
                 }
-                if child_ino != 0 && child_ino <= sb.inodes_count {
+                if child_ino > sb.inodes_count { return Err(Error::InvalidDirectoryEntry); }
+                if child_ino != 0 {
                     let name = &scratch_b[off + 8..off + 8 + name_len];
                     if name != b"." && name != b".." {
-                        let is_dir = if sb.feature_incompat & INCOMPAT_FILETYPE != 0 {
+                        let is_dir = if sb.feature_incompat & INCOMPAT_FILETYPE != 0
+                            && file_type != 0 {
                             file_type == FT_DIR
                         } else {
+                            validate_inode_allocated(dev, sb, raw_superblock, child_ino, scratch_a)?;
                             read_inode(dev, sb, raw_superblock, child_ino, inode_buffer, scratch_a)?;
                             Inode::parse(inode_buffer, sb.inode_size, sb.revision,
                                 sb.feature_ro_compat)?.is_directory
@@ -948,6 +953,8 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
         read_inode(dev, sb, raw_superblock, ino, inode_buffer, scratch_a)?;
         let inode = Inode::parse(inode_buffer, sb.inode_size, sb.revision, sb.feature_ro_compat)?;
         let generation = u32at(inode_buffer, 100)?;
+        let mut extent_root = [0u8; 60];
+        extent_root.copy_from_slice(&inode_buffer[40..100]);
         let uses_extents = inode.flags & 0x0008_0000 != 0;
         let blocks = inode.size.checked_add(sb.block_size as u64 - 1)
             .ok_or(Error::OutOfRange)? / sb.block_size as u64;
@@ -956,7 +963,7 @@ pub fn validate_directory_namespace<D: ReadOnlyBlockDevice>(
         for logical in 0..blocks as u32 {
             let physical = if uses_extents {
                 map_extent_block_checked_zones_for_inode(
-                    dev, sb, raw_superblock, ino, generation, &inode_buffer[40..100],
+                    dev, sb, raw_superblock, ino, generation, &extent_root,
                     logical, scratch_a, zones, None,
                 )?
             } else {
