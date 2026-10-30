@@ -99,7 +99,7 @@ CognacOS has checked external extent-node checksum helpers, but every read path 
 - Journaled writable mounts are not enabled.
 - metadata_csum writable mounts are not enabled.
 - Unknown incompatible features are rejected.
-- JBD2 checksum-v2/v3, async-commit, fast-commit and now checksum-v1 journals are rejected.
+- JBD2 checksum-v2/v3 replay is checksum-validated; checksum-v1, async-commit, and fast-commit journals are rejected.
 - Uncommitted JBD2 transaction tags/revokes are discarded.
 - Writable mounting is disabled until extent targets can be proven not to overlap superblocks, descriptor blocks, bitmaps, inode tables, journal blocks, or other system-zone metadata.
 
@@ -155,7 +155,7 @@ This milestone adds the following bounded primitives:
 - `OperationBuilder` introduces typed Create, Unlink, Resize, Allocate and Free transaction manifests. It requires the appropriate directory/inode/bitmap/group-descriptor/superblock/extent metadata classes before committing. Free operations additionally require at least one revoke record. Metadata images must match the exact class in the ownership map.
 - `orphan::recover_orphan_chain` validates the legacy s_last_orphan / i_dtime chain with caller-provided cycle-detection storage, stages every orphan and the cleared superblock head through one transaction callback, refreshes the superblock checksum when metadata_csum is enabled, and commits once. The transaction adapter must implement the actual linked-inode truncate versus zero-link inode reclaim semantics.
 
-Important boundaries: these APIs are integration surfaces, not a completed VFS operation implementation. No in-tree adapter currently translates all existing create/unlink/resize/allocate/free primitives into complete operation manifests, and no default mount-time orphan transaction adapter has been wired. The caller must build the exact metadata ownership allowlist from validated filesystem objects before using policy-validated recovery. JBD2 checksum-v1/v2/v3 remain rejected; Linux's on-disk layouts and checksum algorithms are not yet implemented. Writable mounts remain disabled.
+Important boundaries: these APIs are integration surfaces, not a completed VFS operation implementation. No in-tree adapter currently translates all existing create/unlink/resize/allocate/free primitives into complete operation manifests, and no default mount-time orphan transaction adapter has been wired. The caller must build the exact metadata ownership allowlist from validated filesystem objects before using policy-validated recovery. JBD2 checksum-v2/v3 replay is implemented with superblock, descriptor/revoke, tag-data, UUID, and commit validation; checksum-v1 remains rejected. Writable mounts remain disabled.
 
 The next validation stage must include fault injection after every ordered-data write, journal-start publication, descriptor/data/revoke write, commit write/flush, home checkpoint and clean-superblock publication. The orphan transaction tests must cover linked truncate, zero-link reclaim, cyclic/corrupt lists, inode-generation reuse and failure/replay. Cross-validation must use Linux-generated images and e2fsck.
 
