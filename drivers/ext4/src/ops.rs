@@ -2,7 +2,8 @@
 //! buffers and checksums; callers must commit the resulting buffers through
 //! the JBD2 transaction layer before exposing a mutation as durable.
 use super::{Error,Superblock,update_block_bitmap_checksum,update_inode_bitmap_checksum,
- update_group_descriptor_checksum,update_superblock_checksum,validate_directory_block_checksum,
+ update_group_descriptor_checksum,update_superblock_checksum,validate_superblock_checksum,validate_group_descriptor_checksum,
+ validate_block_bitmap_checksum,validate_inode_bitmap_checksum,validate_directory_block_checksum,
  update_directory_block_checksum,validate_inode_checksum,update_inode_checksum};
 
 fn le16(b:&[u8],o:usize)->Result<u16,Error>{let s=b.get(o..o+2).ok_or(Error::Truncated)?;Ok(u16::from_le_bytes([s[0],s[1]]))}
@@ -39,6 +40,13 @@ fn finish_group(sb:&[u8],group:u32,desc:&mut[u8],bitmap:&[u8],inode_bitmap:bool)
  }Ok(())
 }
 fn finish_super(sb:&mut[u8])->Result<(),Error>{if metadata_csum(sb)?{update_superblock_checksum(sb)?}Ok(())}
+fn validate_group_metadata(sb:&[u8],group:u32,desc:&[u8],bitmap:&[u8],inode_bitmap:bool)->Result<(),Error>{
+ if metadata_csum(sb)?{
+  validate_superblock_checksum(sb)?;
+  validate_group_descriptor_checksum(sb,group,desc)?;
+  if inode_bitmap{validate_inode_bitmap_checksum(sb,desc,bitmap)?}else{validate_block_bitmap_checksum(sb,desc,bitmap)?}
+ }Ok(())
+}
 
 /// Allocate one free bit in a group bitmap (ext4 bit numbering is LSB-first).
 pub fn allocate_bitmap_bit(bitmap:&mut[u8],valid_bits:u32,goal:u32)->Result<u32,Error>{
@@ -56,6 +64,7 @@ pub fn allocate_inode(
 )->Result<u32,Error>{
  let parsed=Superblock::parse(sb)?;
  if group>=parsed.group_count()?{return Err(Error::OutOfRange)}
+ validate_group_metadata(sb,group,desc,bitmap,true)?;
  let first=group.checked_mul(parsed.inodes_per_group).ok_or(Error::OutOfRange)?;
  let valid=core::cmp::min(parsed.inodes_per_group,parsed.inodes_count.saturating_sub(first));
  let reserved=if group==0{le32(sb,84)?.saturating_sub(1)}else{0};
@@ -76,6 +85,7 @@ pub fn allocate_block(
 )->Result<u64,Error>{
  let parsed=Superblock::parse(sb)?;
  if group>=parsed.group_count()?{return Err(Error::OutOfRange)}
+ validate_group_metadata(sb,group,desc,bitmap,false)?;
  let first=parsed.first_data_block as u64+(group as u64)*(parsed.blocks_per_group as u64);
  let valid=core::cmp::min(parsed.blocks_per_group as u64,parsed.blocks_count.saturating_sub(first)) as u32;
  let bit=allocate_bitmap_bit(bitmap,valid,goal)?;
@@ -88,7 +98,9 @@ pub fn allocate_block(
 
 /// Free a non-reserved inode and refresh all affected counters/checksums.
 pub fn free_inode(sb:&mut[u8],group:u32,inode_number:u32,desc:&mut[u8],bitmap:&mut[u8])->Result<(),Error>{
- let parsed=Superblock::parse(sb)?;let first=group.checked_mul(parsed.inodes_per_group).ok_or(Error::OutOfRange)?;
+ let parsed=Superblock::parse(sb)?;if group>=parsed.group_count()?{return Err(Error::OutOfRange)}
+ validate_group_metadata(sb,group,desc,bitmap,true)?;
+ let first=group.checked_mul(parsed.inodes_per_group).ok_or(Error::OutOfRange)?;
  let bit=inode_number.checked_sub(first+1).ok_or(Error::OutOfRange)?;
  if group>=parsed.group_count()?||inode_number>parsed.inodes_count||bit>=parsed.inodes_per_group{return Err(Error::OutOfRange)}
  if group==0&&inode_number<le32(sb,84)?{return Err(Error::InvalidGeometry)}
@@ -101,6 +113,7 @@ pub fn free_inode(sb:&mut[u8],group:u32,inode_number:u32,desc:&mut[u8],bitmap:&m
 /// Free a block after the caller has verified it is not filesystem metadata.
 pub fn free_block(sb:&mut[u8],group:u32,block:u64,desc:&mut[u8],bitmap:&mut[u8])->Result<(),Error>{
  let parsed=Superblock::parse(sb)?;if group>=parsed.group_count()?{return Err(Error::OutOfRange)}
+ validate_group_metadata(sb,group,desc,bitmap,false)?;
  let first=parsed.first_data_block as u64+(group as u64)*(parsed.blocks_per_group as u64);
  let bit=block.checked_sub(first).ok_or(Error::OutOfRange)?;if bit>=parsed.blocks_per_group as u64||block>=parsed.blocks_count{return Err(Error::OutOfRange)}
  set_bit(bitmap,bit as u32,false)?;
@@ -252,9 +265,42 @@ pub fn truncate_inline_extents(root:&mut[u8],keep_blocks:u64,freed:&mut[(u64,u32
 /// The caller must update extents, i_blocks, timestamps and journal all changes.
 pub fn set_inode_size(sb:&[u8],inode_number:u32,inode:&mut[u8],new_size:u64)->Result<(),Error>{
  if inode.len()<128||inode_number==0{return Err(Error::Truncated)}
+ validate_inode_before_mutation(sb,inode_number,inode)?;
+ if le16(inode,0)?&0xf000!=0x8000{return Err(Error::UnsupportedFormat)}
  put32(inode,4,new_size as u32)?;
  if inode.len()>=112{put32(inode,108,(new_size>>32) as u32)?}else if new_size>u32::MAX as u64{return Err(Error::OutOfRange)}
  if metadata_csum(sb)?{update_inode_checksum(sb,inode_number,inode)?}Ok(())
+}
+
+/// Resize a regular file whose extent tree is stored in the inode's inline
+/// root. Shrinking returns physical ranges for the caller to free in the same
+/// JBD2 transaction; extending creates a sparse tail and allocates no blocks.
+/// External extent trees are rejected until their node checksums and split/
+—merge updates can be journaled as one transaction.
+pub fn resize_inline_regular_file(
+ sb:&[u8],inode_number:u32,inode:&mut[u8],new_size:u64,freed:&mut[(u64,u32)],
+)->Result<usize,Error>{
+ if inode.len()<128||le16(inode,0)?&0xf000!=0x8000{return Err(Error::UnsupportedFormat)}
+ validate_inode_before_mutation(sb,inode_number,inode)?;
+ let old_size=(le32(inode,4)? as u64)|((le32(inode,108)? as u64)<<32);
+ let mut freed_count=0usize;
+ if new_size<old_size{
+  let block_size=le32(sb,24)?;let shift=le32(sb,24)?;
+  let _=shift;
+  let log=le32(sb,24)?;let bs=1024u64.checked_shl(log).ok_or(Error::InvalidGeometry)?;
+  if bs!=block_size as u64{return Err(Error::InvalidGeometry)}
+  let keep=new_size.checked_add(bs-1).ok_or(Error::OutOfRange)?/bs;
+  freed_count=truncate_inline_extents(&mut inode[40..100],keep,freed)?;
+  let mut freed_blocks=0u64;
+  for (start,count) in freed.iter().take(freed_count){let _=start;freed_blocks=freed_blocks.checked_add(*count as u64).ok_or(Error::OutOfRange)?}
+  let sectors=freed_blocks.checked_mul(bs/512).ok_or(Error::OutOfRange)?;
+  let lo=le32(inode,28)? as u64;let hi=if inode.len()>=120{le16(inode,116)? as u64}else{0};
+  let current=lo|(hi<<32);let next=current.checked_sub(sectors).ok_or(Error::InvalidGeometry)?;
+  put32(inode,28,next as u32)?;if inode.len()>=120{put16(inode,116,(next>>32) as u16)?}
+ }
+ put32(inode,4,new_size as u32)?;put32(inode,108,(new_size>>32) as u32)?;
+ if metadata_csum(sb)?{update_inode_checksum(sb,inode_number,inode)?}
+ Ok(freed_count)
 }
 
 /// Validate an inode before it is modified, when metadata_csum is enabled.
