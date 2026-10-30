@@ -86,7 +86,7 @@ pub const fn encode_root_entry(context_table_physical:u64)->Option<u64>{
 pub const fn encode_context_entry(domain_id:u16,second_level_root:u64)->Option<(u64,u64)>{
     if domain_id==0||second_level_root==0||second_level_root&0xfff!=0||second_level_root&!VT_D_PAGE_MASK!=0{return None}
     let low=second_level_root|VT_D_PRESENT;
-    let high=((domain_id as u64)<<8)|(VT_D_CONTEXT_AW_4_LEVEL<<3);
+    let high=((domain_id as u64)<<8)|(VT_D_CONTEXT_AW_4_LEVEL&0x7);
     Some((low,high))
 }
 
@@ -122,7 +122,7 @@ mod context_encoding_tests {
     }
     #[test]
     fn context_entry_encodes_domain_and_four_level_translation(){
-        assert_eq!(encode_context_entry(7,0x2345_6000),Some((0x2345_6001,(7<<8)|(2<<3))));
+        assert_eq!(encode_context_entry(7,0x2345_6000),Some((0x2345_6001,(7<<8)|2)));
         assert_eq!(encode_context_entry(0,0x2345_6000),None);
         assert_eq!(encode_context_entry(1,0x2345_6001),None);
     }
