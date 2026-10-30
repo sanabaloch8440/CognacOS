@@ -1382,8 +1382,17 @@ mod host_tests {
             feature_ro_compat: 0, read_only: false,
         };
         let mut raw = [0u8; SUPERBLOCK_BYTES];
+        raw[0..4].copy_from_slice(&8u32.to_le_bytes());
+        raw[4..8].copy_from_slice(&16u32.to_le_bytes());
+        raw[20..24].copy_from_slice(&1u32.to_le_bytes());
+        raw[24..28].copy_from_slice(&0u32.to_le_bytes());
+        raw[32..36].copy_from_slice(&15u32.to_le_bytes());
+        raw[40..44].copy_from_slice(&8u32.to_le_bytes());
+        raw[56..58].copy_from_slice(&EXT4_SUPER_MAGIC.to_le_bytes());
         raw[58..60].copy_from_slice(&1u16.to_le_bytes());
         raw[84..88].copy_from_slice(&11u32.to_le_bytes());
+        raw[88..90].copy_from_slice(&128u16.to_le_bytes());
+        raw[96..100].copy_from_slice(&INCOMPAT_EXTENTS.to_le_bytes());
         let mut inode = [0u8; 256];
         inode[0..2].copy_from_slice(&0x8000u16.to_le_bytes());
         inode[4..8].copy_from_slice(&file_size.to_le_bytes());
