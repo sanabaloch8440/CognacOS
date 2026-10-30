@@ -742,6 +742,11 @@ impl XhciRegisterIo for HalBackedXhciPlatform {
         core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
+    fn set_bus_master(&mut self, enabled: bool) -> Result<(), ()> {
+        let set = self.table().set_bus_master.ok_or(())?;
+        let status = unsafe { set(self.device_object, enabled) };
+        if status.code == 0 { Ok(()) } else { Err(()) }
+    }
 }
 impl XhciPlatform for HalBackedXhciPlatform {
     fn allocate_dma(&mut self, size: u64, alignment: u64, max_device_address: u64) -> Result<DmaAllocation, ()> {
@@ -781,11 +786,7 @@ impl XhciPlatform for HalBackedXhciPlatform {
         if status.code == 0 { Ok(()) } else { Err(()) }
     }
 
-    fn set_bus_master(&mut self, enabled: bool) -> Result<(), ()> {
-        let set = self.table().set_bus_master.ok_or(())?;
-        let status = unsafe { set(self.device_object, enabled) };
-        if status.code == 0 { Ok(()) } else { Err(()) }
-    }}
+}
 #[cfg(test)]
 mod hal_adapter_tests {
     use super::*;
@@ -1193,6 +1194,7 @@ mod controller_power_tests {
    } else {self.regs[i]=v}
    Ok(())
   }
+  fn set_bus_master(&mut self,_enabled:bool)->Result<(),()>{Ok(())}
  }
  impl XhciPlatform for FakePlatform {
   fn allocate_dma(&mut self,size:u64,alignment:u64,_max:u64)->Result<DmaAllocation,()>{
@@ -1205,7 +1207,6 @@ mod controller_power_tests {
   fn register_interrupt(&mut self)->Result<(),()>{self.irq_registered=true;Ok(())}
   fn unregister_interrupt(&mut self){self.irq_registered=false;self.irq_enabled=false;}
   fn set_interrupt_enabled(&mut self,e:bool)->Result<(),()>{if e&&!self.irq_registered{return Err(())}self.irq_enabled=e;Ok(())}
-  fn set_bus_master(&mut self,_e:bool)->Result<(),()>{Ok(())}
  }
  fn caps()->Capabilities{Capabilities{cap_length:0x40,version:0x100,max_slots:8,max_interrupters:1,max_ports:4,doorbell_offset:0x1000,runtime_offset:0x200,extended_capabilities_offset:0,context_size:32,page_size_mask:1}}
  #[test] fn d0_exit_and_entry_preserve_dma_context_and_restore_interrupts(){
