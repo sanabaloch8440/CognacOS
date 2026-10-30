@@ -95,8 +95,9 @@ impl JournalSuperblock{
    }
    (compat,incompat,mode,id)
   };
-  if block_size as usize!=b.len()||block_size<1024||!block_size.is_power_of_two()
-   ||max_len<2||first==0||first>=max_len||start>=max_len{
+  if block_size as usize!=b.len()||block_size<1024||block_size>65_536
+   ||!block_size.is_power_of_two()||max_len<2||first==0||first>=max_len
+   ||start>=max_len||(start!=0&&start<first){
    return Err(Error::InvalidGeometry)
   }
   if format_version==2{
