@@ -304,3 +304,23 @@ The checked-mount scanner `discover_and_reconcile_external_xattr_owners` now wal
 ## Feature support policy
 
 See [FEATURE_SUPPORT_MATRIX.md](FEATURE_SUPPORT_MATRIX.md) for the exact accepted superblock feature masks, explicitly rejected Linux ext4 features, and remaining interoperability work. Do not interpret accepted feature bits as full operational support.
+
+
+### External xattr ownership and journal replay
+
+The recovery entry point
+`CheckedExtFilesystem::mount_with_recovery_and_namespace_and_xattrs`
+now performs an allocated-inode scan before replay. It validates inode and
+xattr block allocation, inode checksums, xattr metadata checksums, physical
+system-zone exclusion, external xattr structure, and shared-block
+`h_refcount` reconciliation. It then adds each verified xattr owner to the
+exact JBD2 replay ownership manifest. Shared xattr blocks are accepted only
+when the complete scan accounts for the on-disk reference count; cross-kind
+physical aliases remain rejected.
+
+The older recovery APIs intentionally retain their narrower ownership scope.
+Use the new API when a journal may replay xattr metadata. It requires caller
+storage for the complete inode/directory/HTree/xattr inventories and fails
+closed when any supplied buffer is too small. It does not yet authorize
+external xattr *value blocks* (the entry format currently rejects nonzero
+value-block pointers), backup metadata mutations, or general writable mounts.

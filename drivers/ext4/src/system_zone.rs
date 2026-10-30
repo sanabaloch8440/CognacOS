@@ -11,8 +11,6 @@ impl BlockRange {
     }
 }
 
-#[derive(Clone, Copy)]
-
 /// Validate an external xattr block using a checksum-validated inode image
 /// and this mount's system-zone map. The caller must establish that the inode
 /// is allocated and that the block bitmap marks the xattr block allocated;
@@ -63,6 +61,7 @@ pub fn validate_inode_external_xattr_in_zones(
     Ok(Some(physical))
 }
 
+#[derive(Clone, Copy)]
 pub struct SystemZoneMap<'a> { ranges: &'a [BlockRange] }
 impl<'a> SystemZoneMap<'a> {
     pub fn new(ranges: &'a [BlockRange]) -> Self { Self { ranges } }
@@ -1685,5 +1684,122 @@ mod tests {
             ),
             Err(Error::InvalidChecksum),
         );
+    }
+}
+
+
+/// Full recovery mount that validates the namespace and discovers every
+/// allocated inode's external-xattr ownership before replay. The xattr owner
+/// inventory must fit in caller storage; overflow fails closed. Shared xattr
+/// blocks are authorized only after checksum, allocation, system-zone and
+/// h_refcount reconciliation checks. All buffers are caller-owned.
+impl<'a, D: BlockDevice> CheckedExtFilesystem<'a, D> {
+    pub fn mount_with_recovery_and_namespace_and_xattrs(
+        mut device: D,
+        ranges: &'a mut [BlockRange],
+        ownership_entries: &'a mut [transaction::MetadataOwnership],
+        directory_inodes: &mut [u32],
+        directory_parents: &mut [u32],
+        xattr_owners: &mut [xattr::ExternalXattrOwner],
+        inode_buffer: &mut [u8],
+        scratch_a: &mut [u8],
+        scratch_b: &mut [u8],
+        htree_root: &mut [u8],
+        htree_scratch: &mut [u8],
+        visited_leaves: &mut [u32],
+        xattr_scratch: &mut [u8],
+        journal_map: &mut [u64],
+        journal_superblock: &mut [u8],
+        replay_scratch: &mut [u8],
+        replay_payload: &mut [u8],
+    ) -> Result<Self, Error> {
+        let mut raw_superblock = [0u8; SUPERBLOCK_BYTES];
+        let end = SUPERBLOCK_DISK_OFFSET.checked_add(SUPERBLOCK_BYTES as u64)
+            .ok_or(Error::OutOfRange)?;
+        if device.capacity_bytes() < end { return Err(Error::OutOfRange); }
+        device.read_at(SUPERBLOCK_DISK_OFFSET, &mut raw_superblock)
+            .map_err(|_| Error::Io)?;
+        let sb = Superblock::parse(&raw_superblock)?;
+        validate_superblock_checksum(&raw_superblock)?;
+        if inode_buffer.len() != sb.inode_size as usize
+            || scratch_a.len() != sb.block_size as usize
+            || scratch_b.len() != sb.block_size as usize
+            || htree_root.len() != sb.block_size as usize
+            || htree_scratch.len() != sb.block_size as usize
+            || xattr_scratch.len() != sb.block_size as usize
+            || journal_superblock.len() != sb.block_size as usize
+            || replay_scratch.len() != sb.block_size as usize
+            || replay_payload.len() != sb.block_size as usize {
+            return Err(Error::InvalidGeometry);
+        }
+
+        if sb.feature_compat & 0x0004 != 0 {
+            let mut used = build_system_zones(
+                &mut device, &sb, &raw_superblock, scratch_a, ranges,
+            )?;
+            protect_reserved_journal_inode_zones(
+                &mut device, &sb, &raw_superblock, ranges, &mut used,
+                inode_buffer, scratch_a, scratch_b,
+            )?;
+            let zones = SystemZoneMap::new(&ranges[..used]);
+
+            let directory_count = discover_allocated_directories(
+                &mut device, &sb, &raw_superblock, &zones, directory_inodes,
+                inode_buffer, scratch_a, scratch_b,
+            )?;
+            if directory_count > directory_parents.len() {
+                return Err(Error::TransactionTooLarge);
+            }
+            validate_directory_namespace(
+                &mut device, &sb, &raw_superblock, &zones,
+                &directory_inodes[..directory_count],
+                &mut directory_parents[..directory_count],
+                inode_buffer, scratch_a, scratch_b, htree_root,
+                htree_scratch, visited_leaves,
+            )?;
+
+            let mut owner_count = build_system_metadata_ownership(
+                &mut device, &sb, &raw_superblock, &zones, scratch_a,
+                ownership_entries,
+            )?;
+            add_directory_metadata_ownership(
+                &mut device, &sb, &raw_superblock, &zones,
+                &directory_inodes[..directory_count], inode_buffer,
+                scratch_a, scratch_b, ownership_entries, &mut owner_count,
+            )?;
+
+            // Scan all allocated inodes, not only directories. The scan
+            // authenticates inode and xattr checksums, validates both bitmap
+            // allocation bits and rejects aliases into the system-zone map.
+            let xattr_count = discover_and_reconcile_external_xattr_owners(
+                &mut device, &sb, &raw_superblock, &zones, xattr_owners,
+                inode_buffer, scratch_a, scratch_b, xattr_scratch,
+            )?;
+            for owner in &xattr_owners[..xattr_count] {
+                if owner_count == ownership_entries.len() {
+                    return Err(Error::TransactionTooLarge);
+                }
+                ownership_entries[owner_count] = transaction::MetadataOwnership {
+                    block: owner.physical_block,
+                    owner_inode: owner.inode_number,
+                    generation: owner.generation,
+                    kind: transaction::MetadataObjectKind::Xattr,
+                };
+                owner_count += 1;
+            }
+
+            // MetadataOwnershipMap rejects xattr aliases with every other
+            // metadata class while allowing distinct, reconciled xattr owners.
+            let mut ownership = transaction::MetadataOwnershipMap::new(
+                &ownership_entries[..owner_count],
+            )?;
+            recover_internal_journal_with_policy(
+                &mut device, &sb, &raw_superblock, &zones, inode_buffer,
+                scratch_a, scratch_b, journal_map, journal_superblock,
+                replay_scratch, replay_payload, &mut ownership,
+            )?;
+        }
+
+        Self::mount(device, ranges, inode_buffer, scratch_a, scratch_b)
     }
 }
