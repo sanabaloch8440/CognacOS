@@ -356,10 +356,10 @@ impl DmarDeviceScope {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DmarUnit {
     pub register_base:u64,pub segment:u16,pub include_all:bool,
-    pub scopes:[DmarDeviceScope;16],pub scope_count:u8,
+    pub scopes:[DmarDeviceScope;64],pub scope_count:u8,
 }
 impl DmarUnit {
-    pub const EMPTY:Self=Self{register_base:0,segment:0,include_all:false,scopes:[DmarDeviceScope::EMPTY;16],scope_count:0};
+    pub const EMPTY:Self=Self{register_base:0,segment:0,include_all:false,scopes:[DmarDeviceScope::EMPTY;64],scope_count:0};
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DmarInfo {
