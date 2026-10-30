@@ -425,7 +425,7 @@ mod shared_xattr_ownership_tests {
             record(900, 12, MetadataObjectKind::Xattr),
             record(900, 19, MetadataObjectKind::Xattr),
         ];
-        let map = MetadataOwnershipMap::new(&entries).unwrap();
+        let mut map = MetadataOwnershipMap::new(&entries).unwrap();
         assert_eq!(map.owner_count(900), 2);
         assert_eq!(map.metadata_kind(900), Some(MetadataObjectKind::Xattr));
         assert!(map.validate_metadata_target(900).is_ok());
