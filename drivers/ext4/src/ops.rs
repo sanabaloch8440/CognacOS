@@ -1,0 +1,283 @@
+//! Bounded ext4 mutation primitives. These routines update in-memory metadata
+//! buffers and checksums; callers must commit the resulting buffers through
+//! the JBD2 transaction layer before exposing a mutation as durable.
+#![no_std]
+use super::{Error,Superblock,update_block_bitmap_checksum,update_inode_bitmap_checksum,
+ update_group_descriptor_checksum,update_superblock_checksum,validate_directory_block_checksum,
+ update_directory_block_checksum,validate_inode_checksum,update_inode_checksum};
+
+fn le16(b:&[u8],o:usize)->Result<u16,Error>{let s=b.get(o..o+2).ok_or(Error::Truncated)?;Ok(u16::from_le_bytes([s[0],s[1]]))}
+fn le32(b:&[u8],o:usize)->Result<u32,Error>{let s=b.get(o..o+4).ok_or(Error::Truncated)?;Ok(u32::from_le_bytes([s[0],s[1],s[2],s[3]]))}
+fn put16(b:&mut[u8],o:usize,v:u16)->Result<(),Error>{b.get_mut(o..o+2).ok_or(Error::Truncated)?.copy_from_slice(&v.to_le_bytes());Ok(())}
+fn put32(b:&mut[u8],o:usize,v:u32)->Result<(),Error>{b.get_mut(o..o+4).ok_or(Error::Truncated)?.copy_from_slice(&v.to_le_bytes());Ok(())}
+fn metadata_csum(sb:&[u8])->Result<bool,Error>{Ok(le32(sb,100)?&0x0400!=0)}
+fn find_bit(bitmap:&[u8],valid:u32,goal:u32)->Result<u32,Error>{
+ if valid==0||valid as usize>bitmap.len().saturating_mul(8){return Err(Error::InvalidGeometry)}
+ for n in 0..valid{let bit=(goal.wrapping_add(n))%valid;if bitmap[(bit/8) as usize]&(1<<(bit%8))==0{return Ok(bit)}}
+ Err(Error::OutOfRange)
+}
+fn set_bit(bitmap:&mut[u8],bit:u32,set:bool)->Result<(),Error>{
+ let byte=bitmap.get_mut((bit/8) as usize).ok_or(Error::OutOfRange)?;let mask=1u8<<(bit%8);
+ if set{if *byte&mask!=0{return Err(Error::InvalidGeometry)}*byte|=mask}else{if *byte&mask==0{return Err(Error::InvalidGeometry)}*byte&=!mask}
+ Ok(())
+}
+fn group_counter(desc:&[u8],low:usize,high:usize)->Result<u32,Error>{
+ let lo=le16(desc,low)? as u32;if desc.len()>=64{Ok(lo|((le16(desc,high)? as u32)<<16))}else{Ok(lo)}
+}
+fn set_group_counter(desc:&mut[u8],low:usize,high:usize,value:u32)->Result<(),Error>{
+ put16(desc,low,value as u16)?;if desc.len()>=64{put16(desc,high,(value>>16) as u16)?}else if value>u16::MAX as u32{return Err(Error::OutOfRange)}Ok(())
+}
+fn super_free_blocks(sb:&[u8])->Result<u64,Error>{
+ let lo=le32(sb,12)? as u64;if le32(sb,96)?&super::INCOMPAT_64BIT!=0{Ok(lo|((le32(sb,344)? as u64)<<32))}else{Ok(lo)}
+}
+fn set_super_free_blocks(sb:&mut[u8],v:u64)->Result<(),Error>{
+ put32(sb,12,v as u32)?;if le32(sb,96)?&super::INCOMPAT_64BIT!=0{put32(sb,344,(v>>32) as u32)?}else if v>u32::MAX as u64{return Err(Error::OutOfRange)}Ok(())
+}
+fn finish_group(sb:&[u8],group:u32,desc:&mut[u8],bitmap:&[u8],inode_bitmap:bool)->Result<(),Error>{
+ if metadata_csum(sb)?{
+  if inode_bitmap{update_inode_bitmap_checksum(sb,desc,bitmap)?}else{update_block_bitmap_checksum(sb,desc,bitmap)?}
+  update_group_descriptor_checksum(sb,group,desc)?;
+ }Ok(())
+}
+fn finish_super(sb:&mut[u8])->Result<(),Error>{if metadata_csum(sb)?{update_superblock_checksum(sb)?}Ok(())}
+
+/// Allocate one free bit in a group bitmap (ext4 bit numbering is LSB-first).
+pub fn allocate_bitmap_bit(bitmap:&mut[u8],valid_bits:u32,goal:u32)->Result<u32,Error>{
+ let bit=find_bit(bitmap,valid_bits,goal)?;set_bit(bitmap,bit,true)?;Ok(bit)
+}
+/// Release one previously allocated bitmap bit.
+pub fn release_bitmap_bit(bitmap:&mut[u8],valid_bits:u32,bit:u32)->Result<(),Error>{
+ if bit>=valid_bits{return Err(Error::OutOfRange)}set_bit(bitmap,bit,false)
+}
+
+/// Allocate an inode in a group and update the group/superblock free counters,
+/// bitmap checksum, descriptor checksum and superblock checksum.
+pub fn allocate_inode(
+ sb:&mut[u8],group:u32,desc:&mut[u8],bitmap:&mut[u8],goal:u32,
+)->Result<u32,Error>{
+ let parsed=Superblock::parse(sb)?;
+ if group>=parsed.group_count()?{return Err(Error::OutOfRange)}
+ let first=group.checked_mul(parsed.inodes_per_group).ok_or(Error::OutOfRange)?;
+ let valid=core::cmp::min(parsed.inodes_per_group,parsed.inodes_count.saturating_sub(first));
+ let reserved=if group==0{le32(sb,84)?.saturating_sub(1)}else{0};
+ let start=core::cmp::max(goal,reserved);
+ let bit=allocate_bitmap_bit(bitmap,valid,start)?;
+ let count=group_counter(desc,14,46)?;if count==0{set_bit(bitmap,bit,false)?;return Err(Error::InvalidGeometry)}
+ set_group_counter(desc,14,46,count-1)?;
+ let free=le32(sb,16)?;if free==0{set_bit(bitmap,bit,false)?;set_group_counter(desc,14,46,count)?;return Err(Error::InvalidGeometry)}
+ put32(sb,16,free-1)?;
+ finish_group(sb,group,desc,bitmap,true)?;finish_super(sb)?;
+ first.checked_add(bit).and_then(|v|v.checked_add(1)).ok_or(Error::OutOfRange)
+}
+
+/// Allocate a data block from a block group, updating 64-bit counters and
+/// metadata checksums. Returns the absolute filesystem block number.
+pub fn allocate_block(
+ sb:&mut[u8],group:u32,desc:&mut[u8],bitmap:&mut[u8],goal:u32,
+)->Result<u64,Error>{
+ let parsed=Superblock::parse(sb)?;
+ if group>=parsed.group_count()?{return Err(Error::OutOfRange)}
+ let first=parsed.first_data_block as u64+(group as u64)*(parsed.blocks_per_group as u64);
+ let valid=core::cmp::min(parsed.blocks_per_group as u64,parsed.blocks_count.saturating_sub(first)) as u32;
+ let bit=allocate_bitmap_bit(bitmap,valid,goal)?;
+ let count=group_counter(desc,12,44)?;let free=super_free_blocks(sb)?;
+ if count==0||free==0{set_bit(bitmap,bit,false)?;return Err(Error::InvalidGeometry)}
+ set_group_counter(desc,12,44,count-1)?;set_super_free_blocks(sb,free-1)?;
+ finish_group(sb,group,desc,bitmap,false)?;finish_super(sb)?;
+ first.checked_add(bit as u64).ok_or(Error::OutOfRange)
+}
+
+/// Free a non-reserved inode and refresh all affected counters/checksums.
+pub fn free_inode(sb:&mut[u8],group:u32,inode_number:u32,desc:&mut[u8],bitmap:&mut[u8])->Result<(),Error>{
+ let parsed=Superblock::parse(sb)?;let first=group.checked_mul(parsed.inodes_per_group).ok_or(Error::OutOfRange)?;
+ let bit=inode_number.checked_sub(first+1).ok_or(Error::OutOfRange)?;
+ if group>=parsed.group_count()?||inode_number>parsed.inodes_count||bit>=parsed.inodes_per_group{return Err(Error::OutOfRange)}
+ if group==0&&inode_number<le32(sb,84)?{return Err(Error::InvalidGeometry)}
+ set_bit(bitmap,bit,false)?;
+ let count=group_counter(desc,14,46)?.checked_add(1).ok_or(Error::OutOfRange)?;
+ set_group_counter(desc,14,46,count)?;put32(sb,16,le32(sb,16)?.checked_add(1).ok_or(Error::OutOfRange)?)?;
+ finish_group(sb,group,desc,bitmap,true)?;finish_super(sb)
+}
+
+/// Free a block after the caller has verified it is not filesystem metadata.
+pub fn free_block(sb:&mut[u8],group:u32,block:u64,desc:&mut[u8],bitmap:&mut[u8])->Result<(),Error>{
+ let parsed=Superblock::parse(sb)?;if group>=parsed.group_count()?{return Err(Error::OutOfRange)}
+ let first=parsed.first_data_block as u64+(group as u64)*(parsed.blocks_per_group as u64);
+ let bit=block.checked_sub(first).ok_or(Error::OutOfRange)?;if bit>=parsed.blocks_per_group as u64||block>=parsed.blocks_count{return Err(Error::OutOfRange)}
+ set_bit(bitmap,bit as u32,false)?;
+ let count=group_counter(desc,12,44)?.checked_add(1).ok_or(Error::OutOfRange)?;
+ set_group_counter(desc,12,44,count)?;set_super_free_blocks(sb,super_free_blocks(sb)?.checked_add(1).ok_or(Error::OutOfRange)?)?;
+ finish_group(sb,group,desc,bitmap,false)?;finish_super(sb)
+}
+
+fn dir_limit(block:&[u8],has_tail:bool)->Result<usize,Error>{
+ if has_tail{if block.len()<12{return Err(Error::Truncated)}Ok(block.len()-12)}else{Ok(block.len())}
+}
+fn ideal_rec_len(name_len:usize)->Result<usize,Error>{
+ if name_len==0||name_len>255{return Err(Error::InvalidDirectoryEntry)}
+ Ok((8usize.checked_add(name_len).ok_or(Error::OutOfRange)?+3)&!3)
+}
+fn validate_dir_entries(block:&[u8],limit:usize,total_inodes:u32)->Result<(),Error>{
+ let mut off=0usize;
+ while off<limit{
+  if limit-off<8{return Err(Error::InvalidDirectoryEntry)}
+  let ino=le32(block,off)?;let rec=le16(block,off+4)? as usize;let name=block[off+6] as usize;
+  if rec<8||rec&3!=0||rec>limit-off||name>rec-8||(ino!=0&&ino>total_inodes){return Err(Error::InvalidDirectoryEntry)}
+  if block[off+8..off+8+name].iter().any(|c|*c==0||*c==b'/'){return Err(Error::InvalidDirectoryEntry)}
+  off+=rec;
+ }Ok(())
+}
+/// Insert a directory entry into existing slack/free space. If metadata_csum
+/// is enabled, validate the old tail and refresh it after the mutation.
+pub fn insert_directory_entry(
+ sb:&[u8],directory_inode:u32,generation:u32,block:&mut[u8],total_inodes:u32,
+ child_inode:u32,name:&[u8],file_type:u8,
+)->Result<(),Error>{
+ if child_inode==0||child_inode>total_inodes||name.is_empty()||name.len()>255{return Err(Error::InvalidDirectoryEntry)}
+ let csum=metadata_csum(sb)?;if csum{validate_directory_block_checksum(sb,directory_inode,generation,block)?}
+ let limit=dir_limit(block,csum)?;validate_dir_entries(block,limit,total_inodes)?;
+ let need=ideal_rec_len(name.len())?;let mut off=0usize;let mut placed=false;
+ while off<limit{
+  let ino=le32(block,off)?;let rec=le16(block,off+4)? as usize;let n=block[off+6] as usize;
+  if ino==0&&rec>=need{
+   let use_len=if rec-need>=8{need}else{rec};
+   put32(block,off,child_inode)?;put16(block,off+4,use_len as u16)?;block[off+6]=name.len() as u8;block[off+7]=file_type;
+   block[off+8..off+8+name.len()].copy_from_slice(name);
+   if rec>use_len{let free=off+use_len;put32(block,free,0)?;put16(block,free+4,(rec-use_len) as u16)?;block[free+6]=0;block[free+7]=0}
+   placed=true;break
+  }
+  if ino!=0{
+   let used=ideal_rec_len(n)?;if rec>=used&&rec-used>=need{
+    put16(block,off+4,used as u16)?;
+    let new=off+used;let leftover=rec-used;let use_len=if leftover-need>=8{need}else{leftover};
+    put32(block,new,child_inode)?;put16(block,new+4,use_len as u16)?;block[new+6]=name.len() as u8;block[new+7]=file_type;
+    block[new+8..new+8+name.len()].copy_from_slice(name);
+    if leftover>use_len{let free=new+use_len;put32(block,free,0)?;put16(block,free+4,(leftover-use_len) as u16)?;block[free+6]=0;block[free+7]=0}
+    placed=true;break
+   }
+  }
+  off+=rec;
+ }
+ if !placed{return Err(Error::OutOfRange)}
+ if csum{update_directory_block_checksum(sb,directory_inode,generation,block)?}Ok(())
+}
+/// Remove a named directory entry, merging its record length into the previous
+/// entry when possible. The caller must separately free the inode/blocks in the
+/// same JBD2 transaction.
+pub fn remove_directory_entry(
+ sb:&[u8],directory_inode:u32,generation:u32,block:&mut[u8],total_inodes:u32,name:&[u8],
+)->Result<u32,Error>{
+ let csum=metadata_csum(sb)?;if csum{validate_directory_block_checksum(sb,directory_inode,generation,block)?}
+ let limit=dir_limit(block,csum)?;validate_dir_entries(block,limit,total_inodes)?;
+ let mut off=0usize;let mut previous:Option<usize>=None;
+ while off<limit{
+  let ino=le32(block,off)?;let rec=le16(block,off+4)? as usize;let n=block[off+6] as usize;
+  if ino!=0&&n==name.len()&&&block[off+8..off+8+n]==name{
+   if let Some(prev)=previous{
+    let prior=le16(block,prev+4)? as usize;put16(block,prev+4,prior.checked_add(rec).ok_or(Error::OutOfRange)? as u16)?;
+    block[off..off+8].fill(0);
+   }else{
+    put32(block,off,0)?;block[off+6]=0;block[off+7]=0;block[off+8..off+rec].fill(0);
+   }
+   if csum{update_directory_block_checksum(sb,directory_inode,generation,block)?}
+   return Ok(ino)
+  }
+  if ino!=0{previous=Some(off)}
+  off+=rec;
+ }
+ Err(Error::OutOfRange)
+}
+
+/// Insert an initialized extent into an inode's inline extent root (depth zero).
+/// Adjacent logical and physical runs are coalesced; external extent trees are
+/// rejected rather than partially updated.
+pub fn insert_inline_extent(root:&mut[u8],logical:u32,physical:u64,len:u16)->Result<(),Error>{
+ if root.len()<60||le16(root,0)?!=0xf30a||le16(root,6)?!=0{return Err(Error::UnsupportedFormat)}
+ if len==0||len>0x8000||physical==0||physical.checked_add(len as u64).ok_or(Error::OutOfRange)?>((1u64<<48)-1){return Err(Error::OutOfRange)}
+ let entries=le16(root,2)? as usize;let max=le16(root,4)? as usize;
+ if entries>max||max>4{return Err(Error::InvalidExtentTree)}
+ let end=(logical as u64).checked_add(len as u64).ok_or(Error::OutOfRange)?;
+ for i in 0..entries{
+  let o=12+i*12;let first=le32(root,o)?;let n=le16(root,o+4)? as u64;
+  let old_end=(first as u64)+n;if (logical as u64)<old_end&&(first as u64)<end{return Err(Error::InvalidExtentTree)}
+ }
+ // Build a sorted temporary root so insertion never leaves a half-shifted tree.
+ let mut tmp=[0u8;60];tmp.copy_from_slice(&root[..60]);let mut pos=0usize;
+ while pos<entries&&le32(&tmp,12+pos*12)?<logical{pos+=1}
+ if pos>0{
+  let p=12+(pos-1)*12;let p_log=le32(&tmp,p)?;let p_len=le16(&tmp,p+4)? as u64;
+  let p_phys=((le16(&tmp,p+6)? as u64)<<32)|(le32(&tmp,p+8)? as u64);
+  if p_log as u64+p_len==logical as u64&&p_phys+p_len==physical&&p_len+len as u64<=0x8000{
+   put16(&mut tmp,p+4,(p_len+len as u64) as u16)?;root[..60].copy_from_slice(&tmp);return Ok(())
+  }
+ }
+ if pos<entries{
+  let n=12+pos*12;let n_log=le32(&tmp,n)?;let n_phys=((le16(&tmp,n+6)? as u64)<<32)|(le32(&tmp,n+8)? as u64);
+  if end==n_log as u64&&physical+len as u64==n_phys{
+   put32(&mut tmp,n,logical)?;put16(&mut tmp,n+4,(len as u64+le16(&tmp,n+4)? as u64) as u16)?;
+   put16(&mut tmp,n+6,(physical>>32) as u16)?;put32(&mut tmp,n+8,physical as u32)?;
+   root[..60].copy_from_slice(&tmp);return Ok(())
+  }
+ }
+ if entries>=max{return Err(Error::OutOfRange)}
+ for i in (pos..entries).rev(){let from=12+i*12;let to=from+12;tmp.copy_within(from..from+12,to)}
+ let o=12+pos*12;put32(&mut tmp,o,logical)?;put16(&mut tmp,o+4,len)?;put16(&mut tmp,o+6,(physical>>32) as u16)?;put32(&mut tmp,o+8,physical as u32)?;
+ put16(&mut tmp,2,(entries+1) as u16)?;root[..60].copy_from_slice(&tmp);Ok(())
+}
+
+/// Shrink an inline extent root to the requested logical block count. Returned
+/// physical ranges must be released through block-group bitmap transactions.
+pub fn truncate_inline_extents(root:&mut[u8],keep_blocks:u64,freed:&mut[(u64,u32)])->Result<usize,Error>{
+ if root.len()<60||le16(root,0)?!=0xf30a||le16(root,6)?!=0{return Err(Error::UnsupportedFormat)}
+ let entries=le16(root,2)? as usize;let max=le16(root,4)? as usize;if entries>max||max>4{return Err(Error::InvalidExtentTree)}
+ let mut removed=0usize;let mut out=0usize;
+ for i in 0..entries{
+  let o=12+i*12;let logical=le32(root,o)? as u64;let raw=le16(root,o+4)?;let len=if raw>0x8000{raw-0x8000}else{raw} as u64;
+  let physical=((le16(root,o+6)? as u64)<<32)|(le32(root,o+8)? as u64);let end=logical.checked_add(len).ok_or(Error::OutOfRange)?;
+  if logical>=keep_blocks{
+   if removed>=freed.len(){return Err(Error::TransactionTooLarge)}
+   freed[removed]=(physical,len as u32);removed+=1;continue
+  }
+  if end>keep_blocks{
+   let keep=(keep_blocks-logical) as u16;let drop=(end-keep_blocks) as u32;
+   if removed>=freed.len(){return Err(Error::TransactionTooLarge)}
+   freed[removed]=(physical+keep as u64,drop);removed+=1;put16(root,o+4,keep)?;
+  }
+  if out!=i{root.copy_within(o..o+12,12+out*12)}
+  out+=1;
+ }
+ root[12+out*12..60].fill(0);put16(root,2,out as u16)?;Ok(removed)
+}
+
+/// Update i_size (including the high word) and refresh the inode checksum.
+/// The caller must update extents, i_blocks, timestamps and journal all changes.
+pub fn set_inode_size(sb:&[u8],inode_number:u32,inode:&mut[u8],new_size:u64)->Result<(),Error>{
+ if inode.len()<128||inode_number==0{return Err(Error::Truncated)}
+ put32(inode,4,new_size as u32)?;
+ if inode.len()>=112{put32(inode,108,(new_size>>32) as u32)?}else if new_size>u32::MAX as u64{return Err(Error::OutOfRange)}
+ if metadata_csum(sb)?{update_inode_checksum(sb,inode_number,inode)?}Ok(())
+}
+
+/// Validate an inode before it is modified, when metadata_csum is enabled.
+pub fn validate_inode_before_mutation(sb:&[u8],inode_number:u32,inode:&[u8])->Result<(),Error>{
+ if metadata_csum(sb)?{validate_inode_checksum(sb,inode_number,inode)?}Ok(())
+}
+
+#[cfg(test)]
+mod tests{
+ use super::*;
+ #[test]fn bitmap_allocation_and_release_are_bounded(){
+  let mut b=[0u8;2];assert_eq!(allocate_bitmap_bit(&mut b,12,3),Ok(3));assert_eq!(allocate_bitmap_bit(&mut b,12,3),Ok(4));assert_eq!(release_bitmap_bit(&mut b,12,3),Ok(()));assert_eq!(release_bitmap_bit(&mut b,12,3),Err(Error::InvalidGeometry));assert_eq!(release_bitmap_bit(&mut b,12,12),Err(Error::OutOfRange));
+ }
+ #[test]fn directory_entry_insert_and_unlink_preserve_record_chain(){
+  let mut b=[0u8;64];b[0..4].copy_from_slice(&2u32.to_le_bytes());b[4..6].copy_from_slice(&64u16.to_le_bytes());b[6]=1;b[7]=2;b[8]=b'.';
+  insert_directory_entry(&[0u8;1024],2,0,&mut b,100,12,b"hello",1).unwrap();
+  assert_eq!(le32(&b,12).unwrap(),12);assert_eq!(&b[20..25],b"hello");
+  assert_eq!(remove_directory_entry(&[0u8;1024],2,0,&mut b,100,b"hello"),Ok(12));
+ }
+ #[test]fn inline_extent_insert_coalesces_and_truncate_returns_freed_ranges(){
+  let mut r=[0u8;60];r[0..2].copy_from_slice(&0xf30au16.to_le_bytes());r[2..4].copy_from_slice(&0u16.to_le_bytes());r[4..6].copy_from_slice(&4u16.to_le_bytes());r[6..8].copy_from_slice(&0u16.to_le_bytes());
+  insert_inline_extent(&mut r,0,100,2).unwrap();insert_inline_extent(&mut r,2,102,3).unwrap();assert_eq!(le16(&r,2).unwrap(),1);assert_eq!(le16(&r,16).unwrap(),5);
+  let mut freed=[(0u64,0u32);4];assert_eq!(truncate_inline_extents(&mut r,3,&mut freed).unwrap(),1);assert_eq!(freed[0],(103,2));assert_eq!(le16(&r,16).unwrap(),3);
+ }
+}
