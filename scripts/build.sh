@@ -35,6 +35,7 @@ setup_toolchain() {
   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=lld"
   export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link
+  export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=rust-lld
   export CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER=rust-lld
   export CARGO_TARGET_X86_64_UNKNOWN_UEFI_LINKER=rust-lld
   export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
@@ -47,6 +48,7 @@ setup_toolchain() {
       printf 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang\n'
       printf 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld\n'
       printf 'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link\n'
+      printf 'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=rust-lld\n'
       printf 'CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER=rust-lld\n'
       printf 'CARGO_TARGET_X86_64_UNKNOWN_UEFI_LINKER=rust-lld\n'
       printf 'CARGO_TARGET_DIR=%s\n' "$CARGO_TARGET_DIR"
