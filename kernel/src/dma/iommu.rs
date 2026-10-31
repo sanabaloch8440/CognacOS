@@ -162,8 +162,19 @@ pub unsafe fn allocate_common(adapter:*mut c_void,length:usize,maximum:u64)->Res
  if bytes==0||bytes>u32::MAX as u64{return Err(DmaError::InvalidLength)}
  let physical=unsafe{crate::memory::allocate_contiguous_pages(pages)}.map_err(|_|DmaError::OutOfMemory)?;
  if bytes>u32::MAX as u64||physical.checked_add(bytes-1).is_none(){for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)}
- let Some(cpu)=crate::memory::direct_map_address(physical)else{for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)};
- unsafe{ptr::write_bytes(cpu as *mut u8,0,bytes as usize);}
+ let Some(cpu)=crate::memory::physical_access_pointer(physical)else{for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}return Err(DmaError::AddressMask)};
+ // Every direct-map leaf must be present before the CPU clears the backing
+ // range. A raw direct_map_address is only an address calculation; it does
+ // not install the PTE and can fault recursively while the DMA domain is
+ // being created.
+ for page in 0..pages {
+  let pa=physical+(page as u64)*PAGE_SIZE;
+  let Some(page_cpu)=crate::memory::physical_access_pointer(pa)else{
+   for i in 0..pages{let _=unsafe{crate::memory::free_page(physical+i as u64*PAGE_SIZE)};}
+   return Err(DmaError::AddressMask)
+  };
+  unsafe{ptr::write_bytes(page_cpu,0,PAGE_SIZE as usize);}
+ }
  let mut logical=0;let mut cookie=0;
  let st=unsafe{(b.map.unwrap())(b.context,device,physical,bytes as u32,2,&mut logical,&mut cookie)};
  if st!=OK {
