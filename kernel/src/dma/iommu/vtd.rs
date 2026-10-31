@@ -652,7 +652,6 @@ pub unsafe fn register_generic_dma_backend()->i32{
 pub unsafe fn initialize_for_dmar_path(
     ops:&PlatformOps,
     dmar:&cognacos_acpi::DmarInfo,
-    rmrr:&cognacos_acpi::DmarRmrrInfo,
     segment:u16,
     root_bus:u8,
     endpoint_path:&[cognacos_acpi::DmarPath],
@@ -666,7 +665,7 @@ pub unsafe fn initialize_for_dmar_path(
     let unit=match cognacos_acpi::select_dmar_unit(dmar,segment,root_bus,endpoint_path) {
         Ok(v)=>v,Err(_)=>return STATUS_NOT_SUPPORTED,
     };
-    if cognacos_acpi::dmar_rmrr_covers_path(rmrr,segment,root_bus,endpoint_path) {
+    if cognacos_acpi::dmar_rmrr_covers_path(&dmar.rmrr,segment,root_bus,endpoint_path) {
         return STATUS_NOT_SUPPORTED;
     }
     if unit.register_base==0||unit.register_base&0xfff!=0 {
@@ -683,7 +682,6 @@ pub unsafe fn initialize_for_dmar_path(
 pub unsafe fn initialize_for_pci_path(
     ops:&PlatformOps,
     dmar:&cognacos_acpi::DmarInfo,
-    rmrr:&cognacos_acpi::DmarRmrrInfo,
     path:&cognacos_pci::PciRequesterPath,
     register_len:u64,
 )->i32 {
@@ -700,7 +698,7 @@ pub unsafe fn initialize_for_pci_path(
         };
     }
     unsafe {
-        initialize_for_dmar_path(ops,dmar,rmrr,path.segment,path.root_bus,
+        initialize_for_dmar_path(ops,dmar,path.segment,path.root_bus,
             &scopes[..count],register_len)
     }
 }
