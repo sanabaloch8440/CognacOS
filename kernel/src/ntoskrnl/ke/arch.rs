@@ -1987,17 +1987,64 @@ fn dispatch_user_mode_exception(vector: u64, error: u64, frame: *const u64) -> b
     set_user_exception_dispatch_active(cpu,true);
     true
 }
+// Page-fault handlers may themselves touch demand-mapped memory. Keep a
+// per-CPU reentrancy guard so a nested fault cannot recursively corrupt the
+// original trap frame or deadlock on a VM/pagefile lock.
+static PAGE_FAULT_DISPATCH_ACTIVE: [core::sync::atomic::AtomicBool; crate::hal::MAX_CPUS] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; crate::hal::MAX_CPUS];
+
+struct PageFaultDispatchGuard { cpu: usize }
+impl PageFaultDispatchGuard {
+    fn acquire() -> Option<Self> {
+        let cpu = crate::hal::current_cpu_local()
+            .map(|local| local.logical_id.load(core::sync::atomic::Ordering::Acquire) as usize)
+            .unwrap_or(0);
+        if cpu >= crate::hal::MAX_CPUS { return None; }
+        PAGE_FAULT_DISPATCH_ACTIVE[cpu]
+            .compare_exchange(false, true, core::sync::atomic::Ordering::Acquire, core::sync::atomic::Ordering::Relaxed)
+            .ok()
+            .map(|_| Self { cpu })
+    }
+}
+impl Drop for PageFaultDispatchGuard {
+    fn drop(&mut self) {
+        PAGE_FAULT_DISPATCH_ACTIVE[self.cpu].store(false, core::sync::atomic::Ordering::Release);
+    }
+}
+
 /// Dispatch recoverable faults. A return value of one asks the assembly stub to
 /// restore the original frame and IRETQ; unhandled supervisor exceptions halt.
 #[unsafe(no_mangle)]
 pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *const u64) -> u64 {
-    // Capture the first CPL3 fault before diagnostics, paging, symbol lookup,
-    // or exception dispatch can fault recursively and obscure its origin.
-    if vector < EXCEPTION_VECTORS as u64 {
-        let saved_cs = unsafe { frame.add(18).read() };
-        if saved_cs & 3 == 3 { preserve_first_user_fault(vector, error, frame); }
-    }
     let saved_rip = unsafe { frame.add(17).read() };
+    let saved_cs = if vector < EXCEPTION_VECTORS as u64 {
+        unsafe { frame.add(18).read() }
+    } else { 0 };
+
+    // Preserve the first user frame before doing anything that can fault.
+    if saved_cs & 3 == 3 { preserve_first_user_fault(vector, error, frame); }
+
+    if vector == 2 && crate::ntoskrnl::ke::runtime::dispatch_nmi_callbacks() { return 1; }
+
+    // Resolve page faults before diagnostics: recording a trace can touch the
+    // same demand-mapped memory that caused this exception. A nested fault
+    // while paging is already active is fail-stopped without touching the
+    // possibly compromised trap frame or taking VM locks a second time.
+    if vector == 14 {
+        let Some(_fault_guard) = PageFaultDispatchGuard::acquire() else {
+            cognacos_exception_fatal(vector, error, frame);
+        };
+        let cr2: u64;
+        unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
+        if saved_cs & 3 == 3 {
+            if crate::ntoskrnl::mm::address_space::handle_current_user_page_fault(cr2, error) { return 1; }
+            if dispatch_user_mode_exception(vector, error, frame) { return 1; }
+        } else if crate::kernel_vm::handle_page_fault(cr2, error) {
+            return 1;
+        }
+        // The guard is released before diagnostics and exact-RIP probe fixups.
+    }
+
     if vector == 14 {
         let cr2: u64;
         unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
@@ -2017,30 +2064,18 @@ pub extern "C" fn cognacos_exception_dispatch(vector: u64, error: u64, frame: *c
             vector, error, saved_rip,
         );
     }
-    if vector == 2 && crate::ntoskrnl::ke::runtime::dispatch_nmi_callbacks() { return 1; }
-    // Determine privilege from the saved CS. A user fault must never consume a
-    // kernel probe fixup, even if its RIP happens to match a registered record.
-    if vector < EXCEPTION_VECTORS as u64 {
-        let saved_cs = unsafe { frame.add(18).read() };
-        if saved_cs & 3 == 3 {
-            if vector == 14 {
-                let cr2: u64;
-                unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
-                if crate::ntoskrnl::mm::address_space::handle_current_user_page_fault(cr2, error) { return 1; }
-            }
-            if dispatch_user_mode_exception(vector, error, frame) { return 1; }
-        }
+
+    // A user page fault was already offered to the user exception dispatcher
+    // above. Other user exceptions retain their existing delivery path.
+    if vector < EXCEPTION_VECTORS as u64 && saved_cs & 3 == 3 && vector != 14 {
+        if dispatch_user_mode_exception(vector, error, frame) { return 1; }
     }
     if vector == 14 {
         let cr2: u64;
         unsafe { core::arch::asm!("mov {}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags)); }
-        if crate::kernel_vm::handle_page_fault(cr2, error) { return 1; }
-        let saved_rip = unsafe { frame.add(17).read() };
         if apply_trap_frame_fixup(vector, saved_rip, cr2, error, frame) { return 1; }
-
     } else if vector < EXCEPTION_VECTORS as u64 {
         // Non-page-fault probes match vector/error/RIP only; CR2 is not meaningful.
-        let saved_rip = unsafe { frame.add(17).read() };
         if apply_trap_frame_fixup(vector, saved_rip, 0, error, frame) { return 1; }
     }
     cognacos_exception_fatal(vector, error, frame)

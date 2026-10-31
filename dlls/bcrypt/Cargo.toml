@@ -21,6 +21,7 @@ rsa = { version = "0.9", features = ["sha2"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
 sha2 = { version = "0.10", features = ["oid"] }
 p256 = { version = "0.13", features = ["ecdh"] }
+ml-kem = { version = "0.3.3", features = ["getrandom", "zeroize"] }
 
 [profile.dev]
 panic = "abort"
