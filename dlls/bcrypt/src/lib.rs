@@ -1005,7 +1005,7 @@ pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info
 #[repr(C)] pub struct CryptProviderRefs{pub cProviders:ULONG,pub rgpProviders:*mut *mut CryptProviderRef}
 #[no_mangle] pub unsafe extern "system" fn BCryptResolveProviders(context:*const u16,interface:ULONG,function:*const u16,provider:*const u16,mode:ULONG,flags:ULONG,size:*mut ULONG,out:*mut *mut CryptProviderRefs)->NTSTATUS{
  const CRYPT_MIN_DEPENDENCIES:ULONG=1;const CRYPT_PROCESS_ISOLATE:ULONG=0x0001_0000;
- if size.is_null()||out.is_null()||!matches!(mode,1|2|3|4)||flags&!(CRYPT_MIN_DEPENDENCIES|CRYPT_PROCESS_ISOLATE)!=0||interface>7{return STATUS_INVALID_PARAMETER;}
+ if size.is_null()||!matches!(mode,1|2|3|4)||flags&!(CRYPT_MIN_DEPENDENCIES|CRYPT_PROCESS_ISOLATE)!=0||interface>7{return STATUS_INVALID_PARAMETER;}
  let context_name=if context.is_null(){None}else{match config_name(context){Ok(v)=>Some(v),Err(e)=>return e}};
  let function_name=if function.is_null(){None}else{match config_name(function){Ok(v)=>Some(v),Err(e)=>return e}};
  let provider_name=if provider.is_null(){ "Microsoft Primitive Provider".to_string() }else{match config_name(provider){Ok(v)=>v,Err(e)=>return e}};
@@ -1019,7 +1019,7 @@ pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info
  let ref_offset=(header+ptr_bytes+7)&!7;let ref_size=core::mem::size_of::<CryptProviderRef>();
  let fn_off=ref_offset+ref_size;let provider_off=fn_off+(function_name.encode_utf16().count()+1)*2;
  let total=provider_off+(provider_name.encode_utf16().count()+1)*2;
- let base=match store_enum_buffer(total){Ok(v)=>v,Err(e)=>return e};
+ let base=match unsafe{config_output_buffer(size,out,total)}{Ok(v)=>v,Err(e)=>return e};
  let array=unsafe{base.add(header).cast::<*mut CryptProviderRef>()};
  let reference=unsafe{base.add(ref_offset).cast::<CryptProviderRef>()};
  let fn_ptr=enum_write_wide(base,fn_off,&function_name);let provider_ptr=enum_write_wide(base,provider_off,&provider_name);
@@ -1027,7 +1027,6 @@ pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info
   reference.write(CryptProviderRef{dwInterface:interface,pszFunction:fn_ptr,pszProvider:provider_ptr,cProperties:0,rgpProperties:ptr::null_mut(),pUM:ptr::null_mut(),pKM:ptr::null_mut()});
   array.write(reference);
   base.cast::<CryptProviderRefs>().write(CryptProviderRefs{cProviders:1,rgpProviders:array});
-  size.write(total as ULONG);out.write(base.cast());
  }
  STATUS_SUCCESS
 }
@@ -1673,6 +1672,10 @@ mod tests {
         assert_eq!(unsafe{BCryptQueryProviderRegistration(name.as_ptr(),4,2,&mut query_size,&mut queried)},STATUS_SUCCESS);
         assert_eq!(query_size,core::mem::size_of::<CryptProviderReg>() as ULONG);
         unsafe{BCryptFreeBuffer(providers.cast());BCryptFreeBuffer(queried.cast())};
+        let mut resolved_size=0;let mut resolved=ptr::null_mut();
+        assert_eq!(unsafe{BCryptResolveProviders(ptr::null(),2,ptr::null(),name.as_ptr(),4,0,&mut resolved_size,&mut resolved)},STATUS_SUCCESS);
+        assert_eq!(unsafe{(*resolved).cProviders},1);
+        unsafe{BCryptFreeBuffer(resolved.cast())};
         assert_eq!(unsafe{BCryptUnregisterProvider(name.as_ptr())},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptUnregisterProvider(name.as_ptr())},STATUS_NOT_FOUND);
     }
