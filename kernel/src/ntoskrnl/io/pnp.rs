@@ -83,6 +83,7 @@ pub fn publish_xhci(
     if count==0||count>8||path.endpoint_device>=32||path.endpoint_function>=8
         ||path.path[count-1].device!=path.endpoint_device
         ||path.path[count-1].function!=path.endpoint_function
+        ||path.path.iter().take(count).any(|p|p.device>=32||p.function>=8)
         ||vendor_id==0||vendor_id==0xffff||bar_physical==0
         ||bar_length<0x20||bar_virtual==0||bar_physical.checked_add(bar_length).is_none()
         ||bar_virtual.checked_add(bar_length).is_none() { return Err(()); }
