@@ -1039,10 +1039,10 @@ mod tests {
         let mut output=[0u8;32];
         assert_eq!(unsafe{BCryptHashData(hash,b"abc".as_ptr(),3,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptFinishHash(hash,output.as_mut_ptr(),32,0)},STATUS_SUCCESS);
-        assert_eq!(output,HashAlgorithm::Sha256.digest(b"abc").as_ref());
+        assert_eq!(output.as_slice(),HashAlgorithm::Sha256.digest(b"abc").as_ref());
         assert_eq!(unsafe{BCryptHashData(hash,b"def".as_ptr(),3,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptFinishHash(hash,output.as_mut_ptr(),32,0)},STATUS_SUCCESS);
-        assert_eq!(output,HashAlgorithm::Sha256.digest(b"def").as_ref());
+        assert_eq!(output.as_slice(),HashAlgorithm::Sha256.digest(b"def").as_ref());
         assert_eq!(unsafe{BCryptDestroyHash(hash)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
