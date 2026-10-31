@@ -170,7 +170,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     STATUS_SUCCESS
 }
 
-unsafe extern "system" fn create_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
+unsafe extern "win64" fn create_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let status = if !KEYBOARD.ready.load(Ordering::Acquire) { STATUS_DEVICE_NOT_READY } else {
         let _guard = Guard::acquire();
@@ -184,7 +184,7 @@ unsafe extern "system" fn create_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut
     complete(irp);
     status
 }
-unsafe extern "system" fn close_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
+unsafe extern "win64" fn close_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     {
         let _guard = Guard::acquire();
@@ -195,7 +195,7 @@ unsafe extern "system" fn close_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut 
     complete(irp);
     STATUS_SUCCESS
 }
-unsafe extern "system" fn read_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
+unsafe extern "win64" fn read_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
     if irp.is_null() || device.is_null() { return STATUS_INVALID_PARAMETER; }
     const DO_BUFFERED_IO: u32 = 0x0000_0004;
     if unsafe { (*device).flags } & DO_BUFFERED_IO == 0 {
@@ -263,7 +263,7 @@ unsafe extern "system" fn read_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IR
         }
     }
 }
-unsafe extern "system" fn pnp_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
+unsafe extern "win64" fn pnp_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { current_stack(irp) };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -288,7 +288,7 @@ unsafe extern "system" fn pnp_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut IR
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn KeyboardClassServiceCallback(
+pub unsafe extern "win64" fn KeyboardClassServiceCallback(
     _class_device: *mut DEVICE_OBJECT,
     input_start: *const KeyboardInputData,
     input_end: *const KeyboardInputData,
@@ -357,7 +357,7 @@ pub unsafe extern "win64" fn CognacKbdClassDropped() -> u64 {
     let _guard = Guard::acquire();
     unsafe { &*KEYBOARD.stack.get() }.dropped_packets()
 }
-unsafe extern "system" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
+unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     cancel_pending_reads(STATUS_DEVICE_NOT_READY);
     let _guard = Guard::acquire();
     if KEYBOARD.ready.swap(false, Ordering::AcqRel) { unsafe { &mut *KEYBOARD.stack.get() }.detach_port(); }
