@@ -133,12 +133,15 @@ fn main() {
             let output = args.next().map(PathBuf::from).unwrap_or_else(|| fail!("missing PE output"));
             let mut image_base = elf_pe::BASE;
             let mut dll = false;
-            for arg in args {
+            let mut export_manifest: Option<PathBuf> = None;
+            while let Some(arg) = args.next() {
                 let value = arg.to_string_lossy();
                 if value == "--dll" { dll = true; }
                 else if let Some(hex) = value.strip_prefix("--image-base=") {
                     image_base = u64::from_str_radix(hex.trim_start_matches("0x"), 16).unwrap_or_else(|_| fail!("invalid image base"));
-                } else if value == "--export-manifest" {\n                    export_manifest = Some(args.next().map(PathBuf::from).unwrap_or_else(|| fail!("--export-manifest requires a path")));\n                } else { fail!("unknown converter option {value}"); }
+                } else if value == "--export-manifest" {
+                    export_manifest = Some(args.next().map(PathBuf::from).unwrap_or_else(|| fail!("--export-manifest requires a path")));
+                } else { fail!("unknown converter option {value}"); }
             }
             elf_pe::convert_file(&input, &output, image_base, dll, export_manifest.as_deref()).unwrap_or_else(|e| fail!("ELF-to-PE conversion failed: {e}"));
             println!("PE32+ image written: {}", output.display());
