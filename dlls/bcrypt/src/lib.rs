@@ -821,6 +821,30 @@ mod tests {
     }
 
     #[test]
+    fn pbkdf2_key_derivation_defaults_to_empty_salt_and_ten_thousand_iterations() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let provider_name=wide("PBKDF2");let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,provider_name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let password=b"password";let mut key=ptr::null_mut();
+        assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut key,ptr::null_mut(),0,password.as_ptr() as *mut u8,password.len() as ULONG,0)},STATUS_SUCCESS);
+        let hash_name=wide("SHA256");
+        let mut buffer=BcryptBuffer{cbBuffer:(hash_name.len()*2) as ULONG,BufferType:0,pvBuffer:hash_name.as_ptr() as *mut c_void};
+        let mut desc=BcryptBufferDesc{ulVersion:0,cBuffers:1,pBuffers:&mut buffer};
+        let mut derived=[0u8;32];let mut written=0;
+        assert_eq!(unsafe{BCryptKeyDerivation(key,&mut desc,derived.as_mut_ptr(),32,&mut written,0)},STATUS_SUCCESS);
+        assert_eq!(written,32);
+        let mut prf=ptr::null_mut();
+        let sha=wide("SHA256");
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut prf,sha.as_ptr(),ptr::null(),BCRYPT_ALG_HANDLE_HMAC_FLAG)},STATUS_SUCCESS);
+        let mut expected=[0u8;32];
+        assert_eq!(unsafe{BCryptDeriveKeyPBKDF2(prf,password.as_ptr() as *mut u8,password.len() as ULONG,ptr::null_mut(),0,10_000,expected.as_mut_ptr(),32,0)},STATUS_SUCCESS);
+        assert_eq!(derived,expected);
+        assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(prf,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn pbkdf2_provider_accepts_an_empty_password() {
         let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
         let name=wide("PBKDF2");
