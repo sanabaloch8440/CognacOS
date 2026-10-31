@@ -3,9 +3,11 @@
 #![allow(non_snake_case)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use aws_lc_rs::{digest, hmac, pbkdf2, rand as aws_rand};
+use hmac::{Hmac, Mac};
+use pbkdf2::pbkdf2_hmac;
+use sha2::Digest;
 use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey, SigningKey}, signature::{hazmat::{PrehashVerifier, PrehashSigner}, SignatureEncoding}, traits::PublicKeyParts, BigUint, RsaPublicKey, RsaPrivateKey};
-use rand::rngs::OsRng;
+use rand::{rngs::OsRng, RngCore};
 use sha2::{Sha256, Sha384, Sha512};
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{aead::AeadInPlace, AesGcm};
@@ -51,12 +53,35 @@ impl HashAlgorithm {
             _ => Err(STATUS_NOT_SUPPORTED),
         }
     }
-    fn hmac_algorithm(self) -> hmac::Algorithm { match self { Self::Sha256 => hmac::HMAC_SHA256, Self::Sha384 => hmac::HMAC_SHA384, Self::Sha512 => hmac::HMAC_SHA512 } }
-    fn pbkdf2_algorithm(self) -> pbkdf2::Algorithm { match self { Self::Sha256 => pbkdf2::PBKDF2_HMAC_SHA256, Self::Sha384 => pbkdf2::PBKDF2_HMAC_SHA384, Self::Sha512 => pbkdf2::PBKDF2_HMAC_SHA512 } }
     fn provider_name(self) -> &'static str { match self { Self::Sha256 => "SHA256", Self::Sha384 => "SHA384", Self::Sha512 => "SHA512" } }
-    fn digest(self, bytes: &[u8]) -> digest::Digest { match self { Self::Sha256 => digest::digest(&digest::SHA256, bytes), Self::Sha384 => digest::digest(&digest::SHA384, bytes), Self::Sha512 => digest::digest(&digest::SHA512, bytes) } }
+    fn digest(self, bytes: &[u8]) -> Vec<u8> { match self { Self::Sha256 => Sha256::digest(bytes).to_vec(), Self::Sha384 => Sha384::digest(bytes).to_vec(), Self::Sha512 => Sha512::digest(bytes).to_vec() } }
     fn digest_len(self) -> u32 { match self { Self::Sha256 => 32, Self::Sha384 => 48, Self::Sha512 => 64 } }
     fn block_len(self) -> u32 { match self { Self::Sha256 => 64, Self::Sha384 | Self::Sha512 => 128 } }
+}
+
+
+fn hmac_digest(algorithm: HashAlgorithm, key: &[u8], data: &[u8]) -> Vec<u8> {
+    macro_rules! compute {
+        ($digest:ty) => {{
+            let mut mac = Hmac::<$digest>::new_from_slice(key).expect("HMAC accepts arbitrary key lengths");
+            mac.update(data);
+            mac.finalize().into_bytes().to_vec()
+        }};
+    }
+    match algorithm {
+        HashAlgorithm::Sha256 => compute!(Sha256),
+        HashAlgorithm::Sha384 => compute!(Sha384),
+        HashAlgorithm::Sha512 => compute!(Sha512),
+    }
+}
+
+fn derive_pbkdf2(algorithm: HashAlgorithm, iterations: NonZeroU32, salt: &[u8], password: &[u8], output: &mut [u8]) {
+    let rounds = iterations.get();
+    match algorithm {
+        HashAlgorithm::Sha256 => pbkdf2_hmac::<Sha256>(password, salt, rounds, output),
+        HashAlgorithm::Sha384 => pbkdf2_hmac::<Sha384>(password, salt, rounds, output),
+        HashAlgorithm::Sha512 => pbkdf2_hmac::<Sha512>(password, salt, rounds, output),
+    }
 }
 
 #[derive(Clone)]
@@ -207,8 +232,7 @@ pub unsafe extern "system" fn BCryptFinishHash(hash:*mut c_void,output:*mut u8,o
  if state.finished{return STATUS_INVALID_PARAMETER;}
  if output_len!=state.algorithm.digest_len(){return STATUS_INVALID_PARAMETER;}
  if state.hmac {
-     let key=hmac::Key::new(state.algorithm.hmac_algorithm(),&state.secret);
-     let digest=hmac::sign(&key,&state.data);
+     let digest=hmac_digest(state.algorithm,&state.secret,&state.data);
      unsafe{ptr::copy_nonoverlapping(digest.as_ref().as_ptr(),output,digest.as_ref().len())};
  } else {
      let digest=state.algorithm.digest(&state.data);
@@ -294,8 +318,7 @@ pub unsafe extern "system" fn BCryptProcessMultiOperations(object:*mut c_void,op
             }
         } else {
             let digest_bytes:Vec<u8>=if hash.hmac {
-                let key=hmac::Key::new(hash.algorithm.hmac_algorithm(),&hash.secret);
-                hmac::sign(&key,&hash.data).as_ref().to_vec()
+                hmac_digest(hash.algorithm,&hash.secret,&hash.data)
             } else { hash.algorithm.digest(&hash.data).as_ref().to_vec() };
             unsafe{ptr::copy_nonoverlapping(digest_bytes.as_ptr(),op.pbBuffer,digest_bytes.len())};
             hash.data.zeroize();hash.data.clear();
@@ -315,7 +338,7 @@ pub unsafe extern "system" fn BCryptGenRandom(algorithm: *mut c_void, buffer: *m
     if algorithm.is_null() { if flags != BCRYPT_USE_SYSTEM_PREFERRED_RNG { return STATUS_INVALID_PARAMETER; } }
     else { if flags != 0 { return STATUS_INVALID_PARAMETER; } let provider=match algorithm_handle(algorithm) { Ok(v)=>v, Err(e)=>return e }; if !provider.rng { return STATUS_INVALID_PARAMETER; } }
     if length == 0 { return STATUS_SUCCESS; }
-    match aws_rand::fill(unsafe { core::slice::from_raw_parts_mut(buffer, length as usize) }) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_NOT_SUPPORTED }
+    match OsRng.try_fill_bytes(unsafe { core::slice::from_raw_parts_mut(buffer, length as usize) }) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_NOT_SUPPORTED }
 }
 
 #[repr(C)]
@@ -423,7 +446,7 @@ pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(prf:*mut c_void,password:*mu
  if (password.is_null()&&password_len!=0)||(salt.is_null()&&salt_len!=0)||(derived.is_null()&&derived_len!=0)||iterations==0||flags!=0{return STATUS_INVALID_PARAMETER;}
  let p=match algorithm_handle(prf){Ok(v)=>v,Err(e)=>return e};if !p.hmac||p.cipher{return STATUS_INVALID_PARAMETER;}
  let iterations=match u32::try_from(iterations){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let nz=match NonZeroU32::new(iterations){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};let pass=if password_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(password,password_len as usize)}};let salt=if salt_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(salt,salt_len as usize)}};let out=if derived_len==0{&mut [][..]}else{unsafe{core::slice::from_raw_parts_mut(derived,derived_len as usize)}};
- pbkdf2::derive(p.algorithm.pbkdf2_algorithm(),nz,salt,pass,out);STATUS_SUCCESS
+ derive_pbkdf2(p.algorithm,nz,salt,pass,out);STATUS_SUCCESS
 }
 
 
@@ -431,7 +454,7 @@ pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(prf:*mut c_void,password:*mu
 pub unsafe extern "system" fn BCryptHash(algorithm:*mut c_void,secret:*const u8,secret_len:ULONG,input:*const u8,input_len:ULONG,output:*mut u8,output_len:ULONG)->NTSTATUS {
  if (secret.is_null()&&secret_len!=0)||(input.is_null()&&input_len!=0)||output.is_null(){return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};if p.cipher||(!p.hmac&&secret_len!=0){return STATUS_INVALID_PARAMETER;}if output_len<p.algorithm.digest_len(){return STATUS_BUFFER_TOO_SMALL;}
  let data=if input_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}};
- if p.hmac{let kbytes=if secret_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}};let k=hmac::Key::new(p.algorithm.hmac_algorithm(),kbytes);let d=hmac::sign(&k,data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}
+ if p.hmac{let kbytes=if secret_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}};let d=hmac_digest(p.algorithm,kbytes,data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}
  else{let d=p.algorithm.digest(data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}STATUS_SUCCESS
 }
 
@@ -822,7 +845,7 @@ pub unsafe extern "system" fn BCryptKeyDerivation(key:*mut c_void,params:*mut Bc
     if iterations==0 || iterations>u32::MAX as u64 || iterations>10_000_000 { return STATUS_INVALID_PARAMETER; }
     let nz=match NonZeroU32::new(iterations as u32){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
     let out=unsafe{core::slice::from_raw_parts_mut(output,output_len as usize)};
-    pbkdf2::derive(alg.pbkdf2_algorithm(),nz,&salt,&secret,out);
+    derive_pbkdf2(alg,nz,&salt,&secret,out);
     unsafe{result_len.write(output_len)};
     STATUS_SUCCESS
 }
@@ -941,8 +964,7 @@ pub unsafe extern "system" fn BCryptDeriveKeyCapi(hash:*mut c_void,target_alg:*m
     let state=match hash_handle(hash){Ok(v)=>v,Err(e)=>return e};
     if state.finished{return STATUS_INVALID_PARAMETER;}
     let digest=if state.hmac{
-        let key=hmac::Key::new(state.algorithm.hmac_algorithm(),&state.secret);
-        hmac::sign(&key,&state.data).as_ref().to_vec()
+        hmac_digest(state.algorithm,&state.secret,&state.data)
     }else{state.algorithm.digest(&state.data).as_ref().to_vec()};
     if output_len as usize>digest.len().saturating_mul(2){return STATUS_INVALID_PARAMETER;}
     let mut material=Vec::with_capacity(output_len as usize);
@@ -953,18 +975,18 @@ pub unsafe extern "system" fn BCryptDeriveKeyCapi(hash:*mut c_void,target_alg:*m
         for (i,b) in digest.iter().enumerate(){inner[i]^=*b;outer[i]^=*b;}
         let expanded=match state.algorithm {
             HashAlgorithm::Sha256=>{
-                let a=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256,&[inner.as_slice(),digest.as_slice()].concat());
-                let b=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256,&[outer.as_slice(),a.as_ref()].concat());
+                let a=Sha256::digest([inner.as_slice(),digest.as_slice()].concat());
+                let b=Sha256::digest([outer.as_slice(),a.as_slice()].concat());
                 [a.as_ref(),b.as_ref()].concat()
             },
             HashAlgorithm::Sha384=>{
-                let a=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA384,&[inner.as_slice(),digest.as_slice()].concat());
-                let b=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA384,&[outer.as_slice(),a.as_ref()].concat());
+                let a=Sha384::digest([inner.as_slice(),digest.as_slice()].concat());
+                let b=Sha384::digest([outer.as_slice(),a.as_slice()].concat());
                 [a.as_ref(),b.as_ref()].concat()
             },
             HashAlgorithm::Sha512=>{
-                let a=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA512,&[inner.as_slice(),digest.as_slice()].concat());
-                let b=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA512,&[outer.as_slice(),a.as_ref()].concat());
+                let a=Sha512::digest([inner.as_slice(),digest.as_slice()].concat());
+                let b=Sha512::digest([outer.as_slice(),a.as_slice()].concat());
                 [a.as_ref(),b.as_ref()].concat()
             },
         };
@@ -1405,14 +1427,13 @@ mod tests {
     }
     #[test]
     fn hmac_sha256_known_answer() {
-        let key = hmac::Key::new(hmac::HMAC_SHA256, b"key");
-        let tag = hmac::sign(&key, b"The quick brown fox jumps over the lazy dog");
+        let tag = hmac_digest(HashAlgorithm::Sha256, b"key", b"The quick brown fox jumps over the lazy dog");
         assert_eq!(tag.as_ref(), &[0xf7,0xbc,0x83,0xf4,0x30,0x53,0x84,0x24,0xb1,0x32,0x98,0xe6,0xaa,0x6f,0xb1,0x43,0xef,0x4d,0x59,0xa1,0x49,0x46,0x17,0x59,0x97,0x47,0x9d,0xbc,0x2d,0x1a,0x3c,0xd8]);
     }
     #[test]
     fn pbkdf2_sha256_known_answer() {
         let mut out = [0u8; 32];
-        pbkdf2::derive(pbkdf2::PBKDF2_HMAC_SHA256, NonZeroU32::new(1).unwrap(), b"salt", b"password", &mut out);
+        derive_pbkdf2(HashAlgorithm::Sha256, NonZeroU32::new(1).unwrap(), b"salt", b"password", &mut out);
         assert_eq!(out, [0x12,0x0f,0xb6,0xcf,0xfc,0xf8,0xb3,0x2c,0x43,0xe7,0x22,0x52,0x56,0xc4,0xf8,0x37,0xa8,0x65,0x48,0xc9,0x2c,0xcc,0x35,0x48,0x08,0x05,0x98,0x7c,0xb7,0x0b,0xe1,0x7b]);
     }
     #[test]
@@ -2102,9 +2123,8 @@ mod tests {
             BcryptMultiHashOperation{iHash:1,hashOperation:2,pbBuffer:b.as_mut_ptr(),cbBuffer:32},
         ];
         assert_eq!(unsafe{BCryptProcessMultiOperations(multi,1,ops.as_mut_ptr(),core::mem::size_of_val(&ops) as u32,0)},STATUS_SUCCESS);
-        let k=hmac::Key::new(hmac::HMAC_SHA256,secret);
-        assert_eq!(a,hmac::sign(&k,b"message-a").as_ref());
-        assert_eq!(b,hmac::sign(&k,b"message-b").as_ref());
+        assert_eq!(a,hmac_digest(HashAlgorithm::Sha256,secret,b"message-a"));
+        assert_eq!(b,hmac_digest(HashAlgorithm::Sha256,secret,b"message-b"));
         assert_eq!(unsafe{BCryptDestroyHash(multi)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
