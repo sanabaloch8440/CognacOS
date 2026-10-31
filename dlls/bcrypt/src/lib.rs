@@ -1082,7 +1082,7 @@ fn output_context_buffer<T>(size:*mut ULONG,out:*mut *mut T,base:*mut u8,total:U
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptQueryContextFunctionConfiguration(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,size:*mut ULONG,out:*mut *mut CryptContextFunctionConfig)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};
- let value=match contexts().lock(){Ok(m)=>match m.get(&c){Some(ctx)=>*ctx.function_configs.get(&(interface,f)).unwrap_or(&CryptContextFunctionConfig::default()),None=>return STATUS_NOT_FOUND},Err(_)=>return STATUS_NO_MEMORY};
+ let value=match contexts().lock(){Ok(m)=>match m.get(&c){Some(ctx)=>ctx.function_configs.get(&(interface,f)).copied().unwrap_or_default(),None=>return STATUS_NOT_FOUND},Err(_)=>return STATUS_NO_MEMORY};
  let n=core::mem::size_of::<CryptContextFunctionConfig>() as ULONG;unsafe{size.write(n)};let base=match store_enum_buffer(n as usize){Ok(v)=>v,Err(e)=>return e};unsafe{base.cast::<CryptContextFunctionConfig>().write(value);out.write(base.cast())};STATUS_SUCCESS
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptEnumContextFunctionProviders(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,size:*mut ULONG,out:*mut *mut CryptContextFunctionProviders)->NTSTATUS{
