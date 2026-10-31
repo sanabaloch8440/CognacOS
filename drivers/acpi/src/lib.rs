@@ -491,16 +491,16 @@ pub struct DmarRmrr {
     pub base:u64,
     pub limit:u64,
     pub segment:u16,
-    pub scopes:[DmarDeviceScope;64],
+    pub scopes:[DmarDeviceScope;16],
     pub scope_count:u8,
 }
 impl DmarRmrr {
-    pub const EMPTY:Self=Self{base:0,limit:0,segment:0,scopes:[DmarDeviceScope::EMPTY;64],scope_count:0};
+    pub const EMPTY:Self=Self{base:0,limit:0,segment:0,scopes:[DmarDeviceScope::EMPTY;16],scope_count:0};
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DmarRmrrInfo { pub regions:[DmarRmrr;16], pub count:usize }
+pub struct DmarRmrrInfo { pub regions:[DmarRmrr;8], pub count:usize }
 impl DmarRmrrInfo {
-    pub const EMPTY:Self=Self{regions:[DmarRmrr::EMPTY;16],count:0};
+    pub const EMPTY:Self=Self{regions:[DmarRmrr::EMPTY;8],count:0};
 }
 
 /// Parse all RMRR structures in a checksum-validated DMAR table. The returned
