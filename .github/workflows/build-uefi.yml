@@ -46,10 +46,15 @@ jobs:
             exit 1
           fi
           echo "No Python source files remain; repository tooling is Rust-native."
-      - name: Install Rust targets
+      - name: Install pinned Rust and LLVM LLD toolchain
+        shell: bash
         run: |
-          rustup update stable
-          rustup target add x86_64-unknown-uefi x86_64-unknown-none x86_64-pc-windows-gnu x86_64-pc-windows-msvc
+          set -euo pipefail
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-linux-gnu x86_64-unknown-uefi x86_64-unknown-none x86_64-pc-windows-msvc
+          sudo apt-get update
+          sudo apt-get install -y clang lld llvm cmake nasm perl
+          "$GITHUB_WORKSPACE/scripts/build.sh" toolchain
       - name: Run Rust-native repository contract validators
         shell: bash
         run: |
@@ -97,7 +102,7 @@ jobs:
       - name: Install LLVM PE inspection tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm cmake nasm perl gcc-mingw-w64-x86-64
+          sudo apt-get install -y clang lld llvm cmake nasm perl
       - name: Test CognacOS bcrypt CNG implementation
         run: cargo test --manifest-path dlls/bcrypt/Cargo.toml --target x86_64-unknown-linux-gnu --lib
       - name: Check native Windows x64 bcrypt.dll
@@ -107,11 +112,11 @@ jobs:
           mkdir -p build/bcrypt
           def_file="$GITHUB_WORKSPACE/dlls/bcrypt/exports/bcrypt-x64.def"
           test -s "$def_file"
-          CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc RUSTFLAGS="-C panic=abort -C link-arg=$def_file" cargo build --manifest-path dlls/bcrypt/Cargo.toml --target x86_64-pc-windows-gnu --release --lib
-          dll_path="target/x86_64-pc-windows-gnu/release/bcrypt.dll"
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link RUSTFLAGS="-C panic=abort -C link-arg=/DEF:$def_file -C link-arg=/ENTRY:DllMain -C link-arg=/NODEFAULTLIB" cargo build --manifest-path dlls/bcrypt/Cargo.toml --target x86_64-pc-windows-msvc --release --lib
+          dll_path="target/x86_64-pc-windows-msvc/release/bcrypt.dll"
           if [[ ! -s "$dll_path" ]]; then
             echo "Expected bcrypt cdylib was not produced at $dll_path."
-            find target/x86_64-pc-windows-gnu/release -maxdepth 2 -type f -printf '%p\n' | sort
+            find target/x86_64-pc-windows-msvc/release -maxdepth 2 -type f -printf '%p\n' | sort
             exit 1
           fi
           cp "$dll_path" build/bcrypt/bcrypt.dll
