@@ -101,7 +101,11 @@ fn main() {
         "check-csrsrv-def" => check_csrsrv_def(&args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"))),
         "check-wdm-source-contracts" => source_contract::check_wdm().unwrap_or_else(|e| fail!("{e}")),
         "check-xstate-source-contracts" => source_contract::check_xstate().unwrap_or_else(|e| fail!("{e}")),
-        "resolve-qemu-trace" => {\n            let values: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();\n            qemu_trace::run(&values).unwrap_or_else(|e| fail!("QEMU trace resolution failed: {e}"));\n        }\n        "verify-windows-exports" => windows_exports::run().unwrap_or_else(|e| fail!("Windows export baseline verification failed: {e}")),
+        "resolve-qemu-trace" => {
+            let values: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();
+            qemu_trace::run(&values).unwrap_or_else(|e| fail!("QEMU trace resolution failed: {e}"));
+        }
+        "verify-windows-exports" => windows_exports::run().unwrap_or_else(|e| fail!("Windows export baseline verification failed: {e}")),
         "verify-dll-exports" => {
             let specs: Vec<String> = args.collect::<Vec<_>>().into_iter().map(|x| x.to_string_lossy().into_owned()).collect();
             dll_exports::run(&specs).unwrap_or_else(|e| fail!("DLL export verification failed: {e}"));
