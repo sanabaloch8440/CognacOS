@@ -30,6 +30,7 @@ setup_toolchain() {
   mkdir -p "$shim"
   ln -sfn "$lld_bin" "$shim/rust-lld"
   ln -sfn "$lld_bin" "$shim/lld-link"
+  ln -sfn "$lld_bin" "$shim/ld.lld"
   export PATH="$shim:$PATH"
   export CC=clang CXX=clang++ AR=llvm-ar
   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
@@ -66,6 +67,8 @@ check_toolchain() {
   cargo --version
   clang --version | head -n 1
   ld.lld --version
+  [[ "$(readlink -f "$(command -v rust-lld)")" == "$(readlink -f "$(command -v ld.lld)")" ]] || die "ELF and COFF linkers do not resolve to the same LLD binary"
+  [[ "$(readlink -f "$(command -v lld-link)")" == "$(readlink -f "$(command -v rust-lld)")" ]] || die "lld-link does not resolve to the same LLD binary"
   printf 'Rust compiler: rustc (all project Rust sources)\n'
   printf 'Linker: LLVM LLD (ELF, UEFI/COFF and PE/COFF driver modes)\n'
   printf 'C dependency compiler: Clang (third-party C dependencies only)\n'
