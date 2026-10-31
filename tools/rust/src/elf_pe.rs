@@ -10,7 +10,7 @@ const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 
 #[derive(Clone)]
-struct Segment { vaddr:u64, filesz:u64, memsz:u64, offset:u64, flags:u32, data:Option<Vec<u8>> }
+struct Segment { vaddr:u64, filesz:u64, memsz:u64, offset:u64, flags:u32 }
 fn bad(s:&str)->String{s.to_owned()}
 fn slice(b:&[u8],o:u64,n:u64)->Result<&[u8],String>{let a=usize::try_from(o).map_err(|_|bad("offset overflow"))?;let z=usize::try_from(o.checked_add(n).ok_or("range overflow")?).map_err(|_|bad("range overflow"))?;b.get(a..z).ok_or_else(||bad("truncated input"))}
 fn u16at(b:&[u8],o:usize)->Result<u16,String>{Ok(u16::from_le_bytes(b.get(o..o+2).ok_or("truncated u16")?.try_into().unwrap()))}
@@ -41,7 +41,7 @@ pub fn convert_elf64_to_pe32plus(blob:&[u8], image_base:u64, dll:bool)->Result<V
   if fs>0 && off%FILE_ALIGN!=rva%FILE_ALIGN && (va.wrapping_sub(off))%PAGE!=0{return Err(bad("invalid ELF PT_LOAD alignment"));}
   if flags&PF_X!=0&&va<=entry&&entry<end{entry_ok=true;}
   if segs.iter().any(|s|va<s.vaddr+s.memsz&&s.vaddr<end){return Err(bad("overlapping PT_LOAD virtual ranges"));}
-  segs.push(Segment{vaddr:va,filesz:fs,memsz:ms,offset:off,flags,data:None});
+  segs.push(Segment{vaddr:va,filesz:fs,memsz:ms,offset:off,flags});
  }
  if segs.is_empty()||!entry_ok{return Err(bad("no loadable executable segment contains entry point"));}
  segs.sort_by_key(|s|s.vaddr);
@@ -83,4 +83,18 @@ mod tests{
  use super::*;
  #[test] fn rejects_non_elf(){assert!(convert_elf64_to_pe32plus(b"not elf",BASE,false).is_err());}
  #[test] fn rejects_truncated_elf(){let mut b=vec![0;64];b[..4].copy_from_slice(b"\x7fELF");assert!(convert_elf64_to_pe32plus(&b,BASE,false).is_err());}
+ #[test] fn converts_minimal_static_elf_to_amd64_pe32plus(){
+  let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
+  b[16..18].copy_from_slice(&2u16.to_le_bytes());b[18..20].copy_from_slice(&62u16.to_le_bytes());
+  b[24..32].copy_from_slice(&(BASE+0x1000).to_le_bytes());b[32..40].copy_from_slice(&64u64.to_le_bytes());
+  b[52..54].copy_from_slice(&64u16.to_le_bytes());b[54..56].copy_from_slice(&56u16.to_le_bytes());b[56..58].copy_from_slice(&1u16.to_le_bytes());
+  let p=64usize;b[p..p+4].copy_from_slice(&1u32.to_le_bytes());b[p+4..p+8].copy_from_slice(&5u32.to_le_bytes());
+  b[p+8..p+16].copy_from_slice(&0x1000u64.to_le_bytes());b[p+16..p+24].copy_from_slice(&(BASE+0x1000).to_le_bytes());
+  b[p+32..p+40].copy_from_slice(&4u64.to_le_bytes());b[p+40..p+48].copy_from_slice(&0x1000u64.to_le_bytes());
+  b[0x1000..0x1004].copy_from_slice(&[0x90,0x90,0xeb,0xfe]);
+  let pe=convert_elf64_to_pe32plus(&b,BASE,false).unwrap();
+  assert_eq!(&pe[..2],b"MZ");assert_eq!(&pe[0x80..0x84],b"PE\\0\\0");
+  assert_eq!(u16at(&pe,0x84).unwrap(),0x8664);assert_eq!(u16at(&pe,0x98).unwrap(),0x20b);
+ }
+
 }
