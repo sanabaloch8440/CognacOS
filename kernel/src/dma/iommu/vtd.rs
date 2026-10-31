@@ -212,7 +212,7 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
    return Err(STATUS_NOT_SUPPORTED)
   }
   let Some(entry)=encode_root_entry(pa) else{let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};return Err(STATUS_INVALID_PARAMETER)};
-  unsafe{core::ptr::write_volatile(u.root_virt.add(bus),entry)};
+  unsafe{core::ptr::write_volatile(u.root_virt.add(bus*2),entry)};
   if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,u.root_phys,4096)}!=0{
    // Retain the context page because the root entry may be visible to hardware
    // despite a cache-maintenance error.
@@ -477,7 +477,7 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
  domains[index]=EMPTY_DOMAIN;
  if !domains.iter().any(|x|x.id!=0&&x.bus==id.bus){
   let c=contexts[id.bus as usize];
-  unsafe{core::ptr::write_volatile(u.root_virt.add(id.bus as usize),0)};
+  unsafe{core::ptr::write_volatile(u.root_virt.add(id.bus as usize*2),0)};
   if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,u.root_phys,4096)}!=0{return STATUS_NOT_SUPPORTED}
   if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{return STATUS_IO_TIMEOUT}
   if unsafe{(u.ops.free_table.unwrap())(u.ops.context,c.physical,c.virtual_address)}!=0{return STATUS_NOT_SUPPORTED}
