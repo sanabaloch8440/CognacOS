@@ -229,7 +229,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 ntdll/tools/check_export_table.py
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-ntdll-def
           cargo check --manifest-path ntdll/Cargo.toml --all-targets --target x86_64-unknown-linux-gnu
           cargo build --manifest-path ntdll/Cargo.toml --lib --target x86_64-unknown-linux-gnu
       - name: Verify vendored Windows x64 export tables offline
@@ -447,7 +447,7 @@ jobs:
       - name: Test Rust-native build and PE tooling
         run: cargo test --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml
       - name: Validate CSRSRV export contract inventory
-        run: python3 tools/check_csrsrv_exports.py
+        run: cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-csrsrv-def
       - name: Build separate native PE32+ HAL and driver images
         shell: bash
         run: |
