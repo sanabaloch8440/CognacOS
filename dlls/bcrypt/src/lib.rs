@@ -823,7 +823,7 @@ pub unsafe extern "system" fn BCryptExportKey(key:*mut c_void,export_key:*mut c_
         if coordinates.len() != 65 || coordinates[0] != 4 { return STATUS_INVALID_PARAMETER; }
         const REQUIRED: usize = 72;
         unsafe { result_len.write(REQUIRED as ULONG); }
-        if output.is_null() || output_len as usize < REQUIRED { return STATUS_BUFFER_TOO_SMALL; }
+        if output.is_null() || (output_len as usize) < REQUIRED { return STATUS_BUFFER_TOO_SMALL; }
         unsafe {
             ptr::write_unaligned(output.cast::<ULONG>(), MAGIC);
             ptr::write_unaligned(output.add(4).cast::<ULONG>(), 32);
