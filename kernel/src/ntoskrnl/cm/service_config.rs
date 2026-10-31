@@ -130,3 +130,22 @@ pub fn query_service_details<'h,'b>(
     };
     Ok(ServiceConfigDetails{base,tag,group,group_len,depend_on_service,depend_on_service_len,depend_on_group,depend_on_group_len,has_parameters})
 }
+
+
+/// Read an arbitrary driver-specific value from
+/// Services\\<name>\\Parameters without interpreting or rewriting its type.
+/// Returns (registry type, byte count); None means the key or value is absent.
+pub fn query_service_parameter(
+    hive:&Hive<'_>,service_name:&[u16],value_name:&[u16],out:&mut[u8]
+)->Result<Option<(u32,usize)>,ExtendedConfigError>{
+    let service=service_key(hive,service_name)?;
+    let parameters=match service.find_subkey(&[80,97,114,97,109,101,116,101,114,115]){
+        Ok(key)=>key,Err(HiveError::NotFound)=>return Ok(None),Err(e)=>return Err(e.into())
+    };
+    let value=match parameters.find_value(value_name){
+        Ok(value)=>value,Err(HiveError::NotFound)=>return Ok(None),Err(e)=>return Err(e.into())
+    };
+    if value.data_len as usize>out.len(){return Err(ExtendedConfigError::BufferTooSmall)}
+    let n=value.data(out)?;
+    Ok(Some((value.kind,n)))
+}
