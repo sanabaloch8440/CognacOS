@@ -256,16 +256,23 @@ pub unsafe extern "system" fn BCryptProcessMultiOperations(object:*mut c_void,op
     let mut additional=Vec::<usize>::new();
     if additional.try_reserve_exact(state.states.len()).is_err(){return STATUS_NO_MEMORY;}
     additional.resize(state.states.len(),0);
+    let mut finalized:Vec<bool>=state.states.iter().map(|h|h.finished).collect();
     for i in 0..count {
         let op=unsafe{operations.add(i).read_unaligned()};
         if op.iHash as usize>=state.states.len() || (op.pbBuffer.is_null()&&op.cbBuffer!=0) {return STATUS_INVALID_PARAMETER;}
+        let index=op.iHash as usize;
         match op.hashOperation {
             OP_HASH_DATA => {
-                let slot=&mut additional[op.iHash as usize];
+                if finalized[index]{return STATUS_INVALID_PARAMETER;}
+                let slot=&mut additional[index];
                 *slot=match slot.checked_add(op.cbBuffer as usize){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
-                if state.states[op.iHash as usize].data.len().checked_add(*slot).is_none(){return STATUS_INVALID_PARAMETER;}
+                if state.states[index].data.len().checked_add(*slot).is_none(){return STATUS_INVALID_PARAMETER;}
             },
-            OP_FINISH_HASH => if op.pbBuffer.is_null() || op.cbBuffer<state.states[op.iHash as usize].algorithm.digest_len() {return STATUS_BUFFER_TOO_SMALL;},
+            OP_FINISH_HASH => {
+                if finalized[index]{return STATUS_INVALID_PARAMETER;}
+                if op.pbBuffer.is_null()||op.cbBuffer!=state.states[index].algorithm.digest_len(){return STATUS_INVALID_PARAMETER;}
+                if !state.states[index].reusable{finalized[index]=true;}
+            },
             _=>return STATUS_INVALID_PARAMETER,
         }
     }
@@ -288,6 +295,7 @@ pub unsafe extern "system" fn BCryptProcessMultiOperations(object:*mut c_void,op
             } else { hash.algorithm.digest(&hash.data).as_ref().to_vec() };
             unsafe{ptr::copy_nonoverlapping(digest_bytes.as_ptr(),op.pbBuffer,digest_bytes.len())};
             hash.data.zeroize();hash.data.clear();
+            if !hash.reusable{hash.finished=true;}
         }
     }
     STATUS_SUCCESS
@@ -1059,7 +1067,7 @@ mod tests {
     }
     #[test]
     fn bcrypt_hash_one_shot_sha256_matches_known_answer() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, gcm: false, cbc: false, kdf: false, rsa: false, rng: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, reusable: false, cipher: false, gcm: false, cbc: false, kdf: false, rsa: false, rng: false })).unwrap();
         let input = b"abc";
         let mut output = [0u8; 32];
         let status = unsafe { BCryptHash(provider, ptr::null(), 0, input.as_ptr(), input.len() as u32, output.as_mut_ptr(), output.len() as u32) };
@@ -1073,7 +1081,7 @@ mod tests {
 
     #[test]
     fn duplicate_hash_preserves_incremental_state() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, kdf: false, rsa: false, rng: false, gcm: false, cbc: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, reusable: false, cipher: false, kdf: false, rsa: false, rng: false, gcm: false, cbc: false })).unwrap();
         let mut original = ptr::null_mut();
         assert_eq!(unsafe { BCryptCreateHash(provider.cast(), &mut original, ptr::null_mut(), 0, ptr::null_mut(), 0, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptHashData(original, b"ab".as_ptr(), 2, 0) }, STATUS_SUCCESS);
