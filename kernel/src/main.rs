@@ -1191,14 +1191,52 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
         // Only after the new identity map is active may physical pages be touched
         // through their physical addresses. The allocator uses conventional RAM.
-        let region_count = match memory::initialize(
-            info.memory_map.cast::<u8>(),
-            info.memory_map_entries,
-            info.memory_descriptor_size,
-        ) {
+        // Parse DMAR before the physical allocator publishes any free pages.
+        // Every RMRR is globally reserved here, independent of which requester
+        // will later consume its identity mapping.
+        let mut rmrr_ranges = [(0u64, 0u64); 8];
+        let mut rmrr_count = 0usize;
+        if info.rsdp_address != 0 {
+            match unsafe { acpi::find_table(info.rsdp_address, *b"DMAR", 0) } {
+                Ok(dmar_bytes) => {
+                    let dmar = match acpi::parse_dmar(dmar_bytes) {
+                        Ok(parsed) => parsed,
+                        Err(_) => {
+                            serial_write(b"FATAL: malformed ACPI DMAR table; refusing unsafe memory initialization.\\r\\n");
+                            halt();
+                        }
+                    };
+                    for region in dmar.rmrr.regions.iter().take(dmar.rmrr.count) {
+                        let end = match region.limit.checked_add(1) {
+                            Some(value) => value,
+                            None => {
+                                serial_write(b"FATAL: invalid ACPI RMRR extent.\\r\\n");
+                                halt();
+                            }
+                        };
+                        if rmrr_count == rmrr_ranges.len() || region.base == 0
+                            || region.base >= end || region.base & 0xfff != 0 || end & 0xfff != 0 {
+                            serial_write(b"FATAL: unsupported ACPI RMRR reservation set.\\r\\n");
+                            halt();
+                        }
+                        rmrr_ranges[rmrr_count] = (region.base, end);
+                        rmrr_count += 1;
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        let region_count = match unsafe {
+            memory::initialize_with_reserved_ranges(
+                info.memory_map.cast::<u8>(),
+                info.memory_map_entries,
+                info.memory_descriptor_size,
+                &rmrr_ranges[..rmrr_count],
+            )
+        } {
             Ok(count) => count,
             Err(_) => {
-                serial_write(b"FATAL: invalid or unsupported physical memory map.\r\n");
+                serial_write(b"FATAL: invalid physical memory map or unsafe RMRR reservation.\\r\\n");
                 halt();
             }
         };
