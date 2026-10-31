@@ -408,3 +408,67 @@ mod requester_topology_tests {
         assert_eq!(resolve_requester_path(0,0,4,1,0,&overlap),Err(PciTopologyError::AmbiguousParentBridge));
     }
 }
+
+
+/// Decode the Type-1 bridge bus-number dword at configuration offset 0x18.
+pub fn decode_bridge_range(segment:u16,current_bus:u8,device:u8,function:u8,
+    buses:u32)->Result<PciBridgeRange,PciTopologyError> {
+    let primary=buses as u8;
+    let secondary=(buses>>8) as u8;
+    let subordinate=(buses>>16) as u8;
+    if device>=32||function>=8||primary!=current_bus||secondary<=primary
+        ||subordinate<secondary {
+        return Err(PciTopologyError::InvalidBridgeRange);
+    }
+    Ok(PciBridgeRange{segment,primary_bus:primary,secondary_bus:secondary,
+        subordinate_bus:subordinate,device,function})
+}
+
+pub const MAX_PCI_BRIDGES:usize=256;
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum PciBridgeScanError { Window(PciError), InvalidBridgeTopology, Capacity }
+/// Discover Type-1 PCI bridges and their primary/secondary/subordinate bus
+/// windows in one MCFG segment. This is read-only and never changes bus numbers.
+pub unsafe fn scan_bridge_ranges(window:&EcamWindow)
+    ->Result<([Option<PciBridgeRange>;MAX_PCI_BRIDGES],usize),PciBridgeScanError> {
+    window.validate().map_err(PciBridgeScanError::Window)?;
+    let mut found=[None;MAX_PCI_BRIDGES];
+    let mut count=0usize;
+    for bus in window.bus_start..=window.bus_end {
+        for device in 0u8..32 {
+            let mut multifunction=false;
+            for function in 0u8..8 {
+                if function>0&&!multifunction{break}
+                let vendor=unsafe{window.read_u16(window.segment,bus,device,function,PCI_VENDOR_ID_OFFSET)}
+                    .map_err(PciBridgeScanError::Window)?;
+                if vendor==0xffff||vendor==0 {if function==0{break}else{continue}}
+                let header=unsafe{window.read_u8(window.segment,bus,device,function,PCI_HEADER_TYPE_OFFSET)}
+                    .map_err(PciBridgeScanError::Window)?;
+                if function==0{multifunction=header&0x80!=0}
+                if header&0x7f!=1{continue}
+                let buses=unsafe{window.read_u32(window.segment,bus,device,function,0x18)}
+                    .map_err(PciBridgeScanError::Window)?;
+                let bridge=decode_bridge_range(window.segment,bus,device,function,buses)
+                    .map_err(|_|PciBridgeScanError::InvalidBridgeTopology)?;
+                if bridge.subordinate_bus>window.bus_end{return Err(PciBridgeScanError::InvalidBridgeTopology)}
+                if count==found.len(){return Err(PciBridgeScanError::Capacity)}
+                found[count]=Some(bridge);count+=1;
+            }
+        }
+    }
+    Ok((found,count))
+}
+
+#[cfg(test)]
+mod bridge_range_decode_tests {
+    use super::*;
+    #[test]
+    fn bridge_bus_numbers_must_match_the_enumerated_primary_bus() {
+        let buses=0x0008_0702u32;
+        assert_eq!(decode_bridge_range(2,2,3,0,buses),Ok(PciBridgeRange{
+            segment:2,primary_bus:2,secondary_bus:7,subordinate_bus:8,device:3,function:0
+        }));
+        assert_eq!(decode_bridge_range(2,1,3,0,buses),Err(PciTopologyError::InvalidBridgeRange));
+        assert_eq!(decode_bridge_range(2,2,3,0,0x0006_0702),Err(PciTopologyError::InvalidBridgeRange));
+    }
+}
