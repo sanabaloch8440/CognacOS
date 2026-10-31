@@ -27,6 +27,9 @@ pub struct PciDeviceObject {
     pub bar_length: AtomicU64,
     pub bar_virtual: AtomicU64,
     pub state: AtomicU32,
+    pub root_bus: AtomicU32,
+    pub path_count: AtomicU32,
+    pub path_devfn: [AtomicU32; 8],
 }
 impl PciDeviceObject {
     const fn new() -> Self {
@@ -36,7 +39,9 @@ impl PciDeviceObject {
             function:AtomicU32::new(0), vendor_id:AtomicU32::new(0), device_id:AtomicU32::new(0),
             requester_id:AtomicU32::new(0), interrupt_line:AtomicU32::new(0),
             interrupt_pin:AtomicU32::new(0), bar_physical:AtomicU64::new(0),
-            bar_length:AtomicU64::new(0), bar_virtual:AtomicU64::new(0), state:AtomicU32::new(0) }
+            bar_length:AtomicU64::new(0), bar_virtual:AtomicU64::new(0), state:AtomicU32::new(0),
+            root_bus:AtomicU32::new(0), path_count:AtomicU32::new(0),
+            path_devfn:[const { AtomicU32::new(0) };8] }
     }
 }
 pub static XHCI_PCI_DEVICE: PciDeviceObject = PciDeviceObject::new();
@@ -65,15 +70,20 @@ pub struct XhciPciResources {
     pub bar_virtual:u64,
     pub state:u32,
     pub interrupt_vector:u8,
+    pub requester_path:cognacos_pci::PciRequesterPath,
 }
 
 /// Publish a single validated controller resource record. This does not enable
 /// PCI bus mastering and does not imply DMA/interrupt readiness.
 pub fn publish_xhci(
-    bus:u8,device:u8,function:u8,vendor_id:u16,device_id:u16,
+    path:&cognacos_pci::PciRequesterPath,vendor_id:u16,device_id:u16,
     interrupt_line:u8,interrupt_pin:u8,bar_physical:u64,bar_length:u64,bar_virtual:u64,
 )->Result<u64,()> {
-    if device>=32||function>=8||vendor_id==0||vendor_id==0xffff||bar_physical==0
+    let count=path.path_count as usize;
+    if count==0||count>8||path.endpoint_device>=32||path.endpoint_function>=8
+        ||path.path[count-1].device!=path.endpoint_device
+        ||path.path[count-1].function!=path.endpoint_function
+        ||vendor_id==0||vendor_id==0xffff||bar_physical==0
         ||bar_length<0x20||bar_virtual==0||bar_physical.checked_add(bar_length).is_none()
         ||bar_virtual.checked_add(bar_length).is_none() { return Err(()); }
     if PUBLISH_LOCK.compare_exchange(false,true,Ordering::Acquire,Ordering::Relaxed).is_err(){return Err(());}
@@ -81,12 +91,19 @@ pub fn publish_xhci(
         PUBLISH_LOCK.store(false,Ordering::Release);
         return Err(());
     }
-    XHCI_PCI_DEVICE.bus.store(bus as u32,Ordering::Relaxed);
-    XHCI_PCI_DEVICE.device.store(device as u32,Ordering::Relaxed);
-    XHCI_PCI_DEVICE.function.store(function as u32,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.segment.store(path.segment as u32,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.bus.store(path.endpoint_bus as u32,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.device.store(path.endpoint_device as u32,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.function.store(path.endpoint_function as u32,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.root_bus.store(path.root_bus as u32,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.path_count.store(count as u32,Ordering::Relaxed);
+    for i in 0..8 {
+        let packed=if i<count {((path.path[i].device as u32)<<3)|path.path[i].function as u32}else{0};
+        XHCI_PCI_DEVICE.path_devfn[i].store(packed,Ordering::Relaxed);
+    }
     XHCI_PCI_DEVICE.vendor_id.store(vendor_id as u32,Ordering::Relaxed);
     XHCI_PCI_DEVICE.device_id.store(device_id as u32,Ordering::Relaxed);
-    XHCI_PCI_DEVICE.requester_id.store(((bus as u16 as u32)<<8)|((device as u32)<<3)|function as u32,Ordering::Relaxed);
+    XHCI_PCI_DEVICE.requester_id.store(((path.endpoint_bus as u16 as u32)<<8)|((path.endpoint_device as u32)<<3)|path.endpoint_function as u32,Ordering::Relaxed);
     XHCI_PCI_DEVICE.interrupt_line.store(interrupt_line as u32,Ordering::Relaxed);
     XHCI_PCI_DEVICE.interrupt_pin.store(interrupt_pin as u32,Ordering::Relaxed);
     XHCI_PCI_DEVICE.bar_physical.store(bar_physical,Ordering::Relaxed);
@@ -98,7 +115,7 @@ pub fn publish_xhci(
     let requester_status = unsafe {
         crate::dma::iommu::RdotDmaRegisterDeviceRequester(
             core::ptr::addr_of!(XHCI_PCI_DEVICE) as *mut core::ffi::c_void,
-            0, bus, device, function,
+            path.segment, path.endpoint_bus, path.endpoint_device, path.endpoint_function,
         )
     };
     if requester_status != 0 {
@@ -123,7 +140,17 @@ pub fn xhci_resources()->Option<XhciPciResources> {
         interrupt_line:d.interrupt_line.load(Ordering::Relaxed) as u8,interrupt_pin:d.interrupt_pin.load(Ordering::Relaxed) as u8,
         bar_physical:d.bar_physical.load(Ordering::Relaxed),bar_length:d.bar_length.load(Ordering::Relaxed),
         bar_virtual:d.bar_virtual.load(Ordering::Relaxed),state:d.state.load(Ordering::Relaxed),
-        interrupt_vector:XHCI_INTERRUPT_VECTOR.load(Ordering::Acquire) as u8})
+        interrupt_vector:XHCI_INTERRUPT_VECTOR.load(Ordering::Acquire) as u8,
+        requester_path:cognacos_pci::PciRequesterPath {
+            segment:d.segment.load(Ordering::Relaxed) as u16,
+            root_bus:d.root_bus.load(Ordering::Relaxed) as u8,
+            endpoint_bus:d.bus.load(Ordering::Relaxed) as u8,
+            endpoint_device:d.device.load(Ordering::Relaxed) as u8,
+            endpoint_function:d.function.load(Ordering::Relaxed) as u8,
+            path:{let mut p=[cognacos_pci::PciPathElement::default();8];
+                for i in 0..8 {let v=d.path_devfn[i].load(Ordering::Relaxed);p[i]=cognacos_pci::PciPathElement{device:(v>>3) as u8,function:(v&7) as u8};}p},
+            path_count:d.path_count.load(Ordering::Relaxed) as u8,
+        }})
 }
 
 /// Advance controller startup only when each prerequisite is independently met.
