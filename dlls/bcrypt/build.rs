@@ -46,7 +46,7 @@ fn main() {
                 "BCryptUnregisterProvider" => "provider:*const u16",
                 _ => "",
             };
-            generated.push_str(&format!("#[export_name = {:?}]\\npub extern \\"system\\" fn cognac_bcrypt_unsupported_{}({}) -> i32 {{ STATUS_NOT_IMPLEMENTED }}\\n", e.name, e.ordinal, wrapper));
+            generated.push_str(&format!("#[export_name = {:?}]\npub extern \"system\" fn cognac_bcrypt_unsupported_{}({}) -> i32 {{ STATUS_NOT_IMPLEMENTED }}\n", e.name, e.ordinal, wrapper));
         }
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
