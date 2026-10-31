@@ -1,9 +1,11 @@
 use serde_json::Value;
 use std::{collections::{BTreeMap, BTreeSet}, env, fs, path::{Path, PathBuf}, process};
 
-fn fail(message: impl std::fmt::Display) -> ! {
-    eprintln!("cognacos-tools: {message}");
-    process::exit(1);
+macro_rules! fail {
+    ($($arg:tt)*) => {{
+        eprintln!("cognacos-tools: {}", format!($($arg)*));
+        process::exit(1)
+    }};
 }
 
 fn read(path: &Path) -> String {
