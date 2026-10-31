@@ -1284,7 +1284,7 @@ mod tests {
         assert_eq!(encrypted,[0xce,0xa7,0x40,0x3d,0x4d,0x60,0x6b,0x6e,0x07,0x4e,0xc5,0xd3,0xba,0xf3,0x9d,0x18]);
         assert_eq!(tag,[0xd0,0xd1,0xc8,0xa7,0x99,0x99,0x6b,0xf0,0x26,0x5b,0x98,0xb5,0xd4,0x8a,0xb9,0x19]);
         let mut recovered=[0u8;16];
-        assert_eq!(unsafe{BCryptDecrypt(key,encrypted.as_mut_ptr(),16,(&mut info as *mut _).cast(),ptr::null_mut(),0,recovered.as_mut_ptr(),16,&mut written,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDecrypt(key,encrypted.as_mut_ptr(),16,(&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(),ptr::null_mut(),0,recovered.as_mut_ptr(),16,&mut written,0)},STATUS_SUCCESS);
         assert_eq!(recovered,plain);
         assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
