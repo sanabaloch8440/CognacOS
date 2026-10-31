@@ -76,7 +76,64 @@ pub fn convert_elf64_to_pe32plus(blob:&[u8], image_base:u64, dll:bool)->Result<V
  Ok(out)
 }
 
-pub fn convert_file(input:&Path,output:&Path,image_base:u64,dll:bool)->Result<(),String>{let data=fs::read(input).map_err(|e|e.to_string())?;let pe=convert_elf64_to_pe32plus(&data,image_base,dll)?;fs::write(output,&pe).map_err(|e|e.to_string())?;Ok(())}
+
+fn manifest_exports(elf:&[u8],manifest:&Path,image_base:u64)->Result<Vec<(String,u32,u64)>,String>{
+ let json:serde_json::Value=serde_json::from_slice(&fs::read(manifest).map_err(|e|e.to_string())?).map_err(|e|format!("invalid export manifest: {e}"))?;
+ let mut allowed=std::collections::BTreeMap::<String,u32>::new();
+ for e in json["exports"].as_array().ok_or("manifest exports must be an array")? {
+  if let (Some(name),Some(ord))=(e["name"].as_str(),e["ordinal"].as_u64()) {
+   if ord==0||ord>65535{return Err(format!("invalid export ordinal {ord}"));}
+   if allowed.insert(name.to_owned(),ord as u32).is_some(){return Err(format!("duplicate manifest export {name}"));}
+  }
+ }
+ if elf.len()<64{return Err("truncated ELF symbol table".into())}
+ let shoff=u64at(elf,40)?;let ents=u16at(elf,58)? as u64;let count=u16at(elf,60)? as u64;
+ if ents<64||count==0||shoff.checked_add(ents.checked_mul(count).ok_or("section table overflow")?).filter(|x|*x<=elf.len() as u64).is_none(){return Err("invalid ELF section-header table".into())}
+ let mut sections=Vec::new();
+ for i in 0..count {let o=usize::try_from(shoff+i*ents).map_err(|_|"section offset overflow")?;sections.push((u32at(elf,o)?,u32at(elf,o+4)?,u64at(elf,o+8)?,u64at(elf,o+16)?,u64at(elf,o+24)?,u64at(elf,o+32)?,u32at(elf,o+40)?,u32at(elf,o+44)?,u64at(elf,o+48)?,u64at(elf,o+56)?));}
+ let mut found=std::collections::BTreeMap::<String,(u32,u64)>::new();
+ for sec in &sections {let (_nm,kind,_flags,_addr,off,size,link,_info,_align,entsize)=*sec;if kind!=2{continue}
+  if link as usize>=sections.len()||entsize<24||size%entsize!=0{return Err("invalid ELF symbol/string table".into())}
+  let strings_sec=sections[link as usize];let strings=slice(elf,strings_sec.4,strings_sec.5)?;
+  let table=slice(elf,off,size)?;
+  for sym in table.chunks_exact(entsize as usize){let no=u32::from_le_bytes(sym[0..4].try_into().unwrap()) as usize;let info=sym[4];let shndx=u16::from_le_bytes(sym[6..8].try_into().unwrap());let value=u64::from_le_bytes(sym[8..16].try_into().unwrap());
+   if shndx==0||(info>>4)!=1&&(info>>4)!=2||(info&15)!=2||no>=strings.len(){continue}
+   let end=strings[no..].iter().position(|b|*b==0).map(|n|no+n).ok_or("unterminated ELF symbol name")?;
+   let name=std::str::from_utf8(&strings[no..end]).map_err(|_|"non-UTF8 ELF symbol")?;
+   if let Some(ord)=allowed.get(name){if let Some((_,old))=found.insert(name.to_owned(),(*ord,value)){if old!=value{return Err(format!("duplicate Windows export symbol {name}"))}}}
+  }
+ }
+ let mut out:Vec<_>=found.into_iter().map(|(n,(o,v))|(n,o,v)).collect();
+ out.sort_by(|a,b|a.0.cmp(&b.0));
+ for (n,_,v) in &out {if *v<image_base||*v-image_base>u32::MAX as u64{return Err(format!("export {n} outside PE image"))}}
+ Ok(out)
+}
+fn append_exports(pe:&mut Vec<u8>,exports:&[(String,u32,u64)])->Result<(),String>{
+ if exports.is_empty(){return Ok(())}
+ let peoff=u32at(pe,0x3c)? as usize;let coff=peoff+4;let nsec=u16at(pe,coff+2)? as usize;let opt=coff+20;let optsize=u16at(pe,coff+16)? as usize;let sh=opt+optsize;
+ let headers=u32at(pe,opt+60)? as usize;
+ let new_header=sh.checked_add(nsec.checked_mul(40).ok_or("section table overflow")?).ok_or("section header overflow")?;
+ if new_header+40>headers{return Err("PE header has no room for .edata section header".into())}
+ let image_base=u64at(pe,opt+24)?;let max_ord=exports.iter().map(|x|x.1).max().unwrap() as usize;
+ let eat_off=40usize;let names_off=eat_off.checked_add(max_ord*4).ok_or("EAT overflow")?;let ords_off=names_off.checked_add(exports.len()*4).ok_or("name table overflow")?;let strings_off=ords_off.checked_add(exports.len()*2).ok_or("ordinal table overflow")?;
+ let mut strings=Vec::new();let dll_off=strings_off;strings.extend_from_slice(b"ntoskrnl.exe\0");let mut name_offs=Vec::new();
+ for (name,_,_) in exports{name_offs.push(strings_off+strings.len());strings.extend_from_slice(name.as_bytes());strings.push(0);}
+ let mut data=vec![0u8;strings_off+strings.len()];
+ for (name,ord,value) in exports{let off=eat_off+(*ord as usize-1)*4;data[off..off+4].copy_from_slice(&((*value-image_base) as u32).to_le_bytes());let _=name;}
+ for (i,(_,ord,_)) in exports.iter().enumerate(){let off=ords_off+i*2;data[off..off+2].copy_from_slice(&((*ord as u16-1).to_le_bytes()));}
+ data[strings_off..].copy_from_slice(&strings);
+ let file_align=u32at(pe,opt+36)? as usize;let sect_align=u32at(pe,opt+32)? as usize;
+ let raw_off=(pe.len()+file_align-1)&!(file_align-1);let raw_size=(data.len()+file_align-1)&!(file_align-1);
+ let image_size=u32at(pe,opt+56)? as usize;let rva=(image_size+sect_align-1)&!(sect_align-1);
+ for (i,off) in name_offs.iter().enumerate(){let ptr=names_off+i*4;data[ptr..ptr+4].copy_from_slice(&((rva+off) as u32).to_le_bytes());}
+ let mut d=Vec::with_capacity(40);d.extend_from_slice(&[0;8]);d.extend_from_slice(&((rva+dll_off) as u32).to_le_bytes());d.extend_from_slice(&1u32.to_le_bytes());d.extend_from_slice(&(max_ord as u32).to_le_bytes());d.extend_from_slice(&(exports.len() as u32).to_le_bytes());d.extend_from_slice(&((rva+eat_off) as u32).to_le_bytes());d.extend_from_slice(&((rva+names_off) as u32).to_le_bytes());d.extend_from_slice(&((rva+ords_off) as u32).to_le_bytes());data[..40].copy_from_slice(&d);
+ pe.resize(raw_off+raw_size,0);pe[raw_off..raw_off+data.len()].copy_from_slice(&data);
+ pe[new_header..new_header+8].copy_from_slice(b".edata\0\0");p32(pe,new_header+8,data.len() as u32)?;p32(pe,new_header+12,rva as u32)?;p32(pe,new_header+16,raw_size as u32)?;p32(pe,new_header+20,raw_off as u32)?;p32(pe,new_header+36,0x40000040)?;
+ p16(pe,coff+2,(nsec+1) as u16)?;p32(pe,opt+56,align((rva+data.len()) as u64,sect_align as u64)? as u32)?;p32(pe,opt+112,rva as u32)?;p32(pe,opt+116,data.len() as u32)?;
+ Ok(())
+}
+
+pub fn convert_file(input:&Path,output:&Path,image_base:u64,dll:bool,export_manifest:Option<&Path>)->Result<(),String>{let data=fs::read(input).map_err(|e|e.to_string())?;let mut pe=convert_elf64_to_pe32plus(&data,image_base,dll)?;if let Some(path)=export_manifest{let exports=manifest_exports(&data,path,image_base)?;append_exports(&mut pe,&exports)?;}fs::write(output,&pe).map_err(|e|e.to_string())?;Ok(())}
 
 #[cfg(test)]
 mod tests{
