@@ -5,7 +5,7 @@ fn u32r(b:&[u8],o:usize)->Result<u32,String>{Ok(u32::from_le_bytes(b.get(o..o+4)
 fn rva(b:&[u8],v:u32,ss:&[(u32,u32,u32,u32)],hs:u32)->Result<usize,String>{if v<hs{if (v as usize)<b.len(){return Ok(v as usize)}return Err("header RVA outside file".into())}for &(va,vs,rs,ro) in ss{let span=vs.max(rs);if v>=va&&v<va.saturating_add(span){let d=v-va;if d>=rs{return Err(format!("RVA 0x{v:x} has no file backing"))}let p=ro.checked_add(d).ok_or("RVA overflow")? as usize;if p>=b.len(){return Err("RVA outside file".into())}return Ok(p)}}Err(format!("RVA 0x{v:x} does not map to a section"))}
 fn cstr(b:&[u8],o:usize)->Result<String,String>{let tail=b.get(o..).ok_or("string offset outside file")?;let n=tail.iter().position(|x|*x==0).ok_or("unterminated export string")?;String::from_utf8(tail[..n].to_vec()).map_err(|_|"non-ASCII/UTF-8 export name".into())}
 pub fn parse_exports(b:&[u8])->Result<BTreeMap<String,u32>,String>{
- if b.len()<2 || &b[..2]!=b"MZ"{return Err("missing MZ signature".into())}let pe=u32r(b,0x3c)? as usize;if b.get(pe..pe+4)!=Some(b"PE\0\0"){return Err("missing PE signature".into())}
+ if b.len()<2 || &b[..2]!=b"MZ"{return Err("missing MZ signature".into())}let pe=u32r(b,0x3c)? as usize;if b.get(pe..pe+4)!=Some(&b"PE\0\0"[..]){return Err("missing PE signature".into())}
  if u16r(b,pe+4)?!=0x8664{return Err("not AMD64".into())}if u16r(b,pe+24)?!=0x20b{return Err("not PE32+".into())}
  let n=u16r(b,pe+6)? as usize;let opt=pe+24;let os=u16r(b,pe+20)? as usize;let hs=u32r(b,opt+60)?;
  let sh=opt.checked_add(os).ok_or("section table overflow")?;let mut ss=Vec::new();
