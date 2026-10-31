@@ -31,9 +31,9 @@ fn tag_rank(group:&[u16],tag:Option<u32>,orders:&[GroupTagOrder<'_>])->(usize,u3
     let Some(tag)=tag else{return (usize::MAX,u32::MAX)};
     if let Some(order)=orders.iter().find(|entry|eq(group,entry.group)){
         if let Some(index)=order.tags.iter().position(|candidate|*candidate==tag){return(index,tag)}
-        return(usize::MAX-1,tag)
+        return(usize::MAX,0)
     }
-    (usize::MAX-1,tag)
+    (usize::MAX,0)
 }
 fn find_service(nodes:&[ServiceNode<'_>],name:&[u16])->Option<usize>{
     nodes.iter().position(|node|eq(node.name,name))
