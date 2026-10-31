@@ -6,7 +6,7 @@ CognacOS currently has 30 implemented export entry points in its build-time impl
 
 The one-shot `BCryptHash` path shares the SHA-2/HMAC provider selection and checks the output capacity before writing. `BCryptDuplicateHash` copies the complete incremental state and independently zeroizes its copied secret when destroyed. Both currently require library-managed object storage; caller-supplied hash-object buffers remain unsupported.
 
-Known limitations in this first batch: AES and other cipher providers, private-key generation/import and signing, advanced algorithm/context configuration, FIPS policy, provider registration, secure key storage, and full Windows CNG object-buffer semantics are not implemented. Handles are process-local heap objects; robust invalid/stale handle validation and cross-process provider semantics remain future work. Do not treat this as a complete bcrypt.dll replacement.
+Known limitations: AES is a deliberately bounded subset (CBC with PKCS#7-style block padding and GCM with 96-bit nonces/128-bit tags); other cipher families and modes are not implemented. Private-key generation/import and signing, advanced algorithm/context configuration, configurable FIPS policy, provider registration, secure key storage, pseudo-handles, and full Windows CNG caller-owned object-buffer semantics remain unsupported. Handles are process-local heap objects; robust invalid/stale handle validation and cross-process provider semantics remain future work. Do not treat this as a complete bcrypt.dll replacement.
 
 
 Multi-hash support: providers opened with `BCRYPT_MULTI_FLAG` can create up to 64 independent SHA-256/SHA-384/SHA-512 or HMAC states using `BCryptCreateMultiHash`. `BCryptProcessMultiOperations` accepts the documented `BCRYPT_MULTI_HASH_OPERATION` records and executes hash-data/finalize commands in caller order. States are reusable after finalization. The implementation uses sequential AWS-LC operations rather than SIMD parallel hashing, does not accept caller-owned object storage, and currently requires the documented provider flag. The batch is prevalidated structurally before state mutation, but allocation failure during data append can still leave earlier operations applied.
@@ -16,3 +16,14 @@ PBKDF2 key derivation: `BCryptOpenAlgorithmProvider(L"PBKDF2")` creates the KDF 
 
 
 Additional CNG operations: `BCryptDeriveKey` supports the `TRUNCATE` raw-secret KDF for CognacOS opaque secret handles; `BCryptDestroySecret` releases and zeroizes those handles. RSA support currently imports bounded `BCRYPT_RSAPUBLIC_BLOB` public keys and verifies precomputed SHA-256 digests with PKCS#1 v1.5 padding. RSA private-key generation/import and signing, other digest sizes/paddings, and full Windows key-object semantics remain unsupported. These are bounded subsets, not complete implementations of the corresponding Windows APIs.
+
+
+## x64 ABI corrections and regression coverage
+
+The provider enumeration ABI now matches the Windows declarations: `BCRYPT_PROVIDER_NAME` contains only its `LPWSTR pszProviderName` field (8 bytes on x64), rather than an extra flags field. `BCRYPT_ALGORITHM_IDENTIFIER` is asserted to be 16 bytes on x64; the authenticated-cipher info, buffer descriptor, multi-hash operation, and RSA blob header also have compile-time x64 size guards. Runtime tests verify the same layouts.
+
+The `BCryptGenRandom`, `BCryptGetFipsAlgorithmMode`, and `BCryptFreeBuffer` entry points now have unmangled export symbols. The RNG provider can be opened as `RNG` using the Microsoft Primitive Provider name, queried for `AlgorithmName`, and passed to `BCryptGenRandom` with flags zero. A null algorithm handle continues to require `BCRYPT_USE_SYSTEM_PREFERRED_RNG`.
+
+`BCryptEnumAlgorithms` now uses the Windows operation-bit mask and interface-class values for the implemented AES, SHA-2, RSA, and RNG providers. It no longer misreports PBKDF2 as a secret-agreement algorithm, and returns a null list for a valid operation mask with no matching algorithms. `BCryptEnumProviders` now emits the corrected one-pointer provider record.
+
+These checks improve ABI fidelity but do not establish complete CNG compatibility. The Windows x64 build step verifies the PE32+ image and all 60 export names; behavior still needs differential testing against Windows for each supported API and error path.
