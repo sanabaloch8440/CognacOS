@@ -136,7 +136,8 @@ pub fn query_service_details<'h,'b>(
     if base.start>SERVICE_DISABLED{return Err(ExtendedConfigError::InvalidStart)}
     if base.error_control>3{return Err(ExtendedConfigError::InvalidErrorControl)}
     let base_type=base.service_type&SERVICE_TYPE_MASK;
-    if !matches!(base_type,SERVICE_KERNEL_DRIVER|SERVICE_FILE_SYSTEM_DRIVER|SERVICE_ADAPTER|SERVICE_RECOGNIZER_DRIVER)\n      ||base.service_type&!(SERVICE_TYPE_MASK|0x100|0x200|0x400|0x800)!=0{
+    if !matches!(base_type,SERVICE_KERNEL_DRIVER|SERVICE_FILE_SYSTEM_DRIVER|SERVICE_ADAPTER|SERVICE_RECOGNIZER_DRIVER)
+      ||base.service_type&!(SERVICE_TYPE_MASK|0x100|0x200|0x400|0x800)!=0{
         return Err(ExtendedConfigError::InvalidType)
     }
     let key=service_key(hive,service_name)?;
