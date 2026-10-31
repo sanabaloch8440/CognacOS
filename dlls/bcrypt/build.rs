@@ -26,6 +26,7 @@ fn main() {
         "BCryptOpenAlgorithmProvider", "BCryptCloseAlgorithmProvider", "BCryptGetProperty", "BCryptHash", "BCryptGetFipsAlgorithmMode",
         "BCryptCreateHash", "BCryptHashData", "BCryptFinishHash", "BCryptDestroyHash", "BCryptDuplicateHash", "BCryptGenRandom", "BCryptDeriveKeyPBKDF2",
         "BCryptEnumAlgorithms", "BCryptEnumProviders", "BCryptFreeBuffer", "BCryptSetProperty", "BCryptGenerateSymmetricKey", "BCryptEncrypt", "BCryptDecrypt", "BCryptDestroyKey",
+        "BCryptDuplicateKey", "BCryptImportKey", "BCryptExportKey",
     ].into_iter().collect();
     let mut generated = String::from("// Unsupported exports fail closed with STATUS_NOT_IMPLEMENTED.\n");
     for e in &exports {
