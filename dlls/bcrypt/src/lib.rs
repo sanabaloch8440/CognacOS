@@ -1144,12 +1144,12 @@ fn output_context_buffer<T>(size:*mut ULONG,out:*mut *mut T,base:*mut u8,total:U
  match contexts().lock(){Ok(mut m)=>match m.get_mut(&name){Some(c)=>{c.config=cfg;STATUS_SUCCESS},None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptQueryContextConfiguration(table:ULONG,name:*const u16,size:*mut ULONG,out:*mut *mut CryptContextConfig)->NTSTATUS{
- let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}let name=match config_name(name){Ok(v)=>v,Err(e)=>return e};
+ let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null(){return STATUS_INVALID_PARAMETER;}let name=match config_name(name){Ok(v)=>v,Err(e)=>return e};
  let cfg=match contexts().lock(){Ok(m)=>match m.get(&name){Some(c)=>c.config,None=>return STATUS_NOT_FOUND},Err(_)=>return STATUS_NO_MEMORY};
  let n=core::mem::size_of::<CryptContextConfig>();let base=match unsafe{config_output_buffer(size,out,n)}{Ok(v)=>v,Err(e)=>return e};unsafe{base.cast::<CryptContextConfig>().write(cfg)};STATUS_SUCCESS
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptEnumContexts(table:ULONG,size:*mut ULONG,out:*mut *mut CryptContexts)->NTSTATUS{
- let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}
+ let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null(){return STATUS_INVALID_PARAMETER;}
  let mut names=match contexts().lock(){Ok(m)=>m.keys().cloned().collect::<Vec<_>>(),Err(_)=>return STATUS_NO_MEMORY};names.sort();
  let total=context_list_required(&names);let base=match unsafe{config_output_buffer(size,out,total)}{Ok(v)=>v,Err(e)=>return e};unsafe{context_list_write(base,&names)};STATUS_SUCCESS
 }
@@ -1162,7 +1162,7 @@ fn output_context_buffer<T>(size:*mut ULONG,out:*mut *mut T,base:*mut u8,total:U
  match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){None=>STATUS_NOT_FOUND,Some(ctx)=>{let Some(list)=ctx.functions.get_mut(&interface)else{return STATUS_NOT_FOUND};let old=list.len();list.retain(|x|x!=&f);if old==list.len(){STATUS_NOT_FOUND}else{STATUS_SUCCESS}}},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptEnumContextFunctions(table:ULONG,context:*const u16,interface:ULONG,size:*mut ULONG,out:*mut *mut CryptContextFunctions)->NTSTATUS{
- let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};
+ let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};
  let names=match contexts().lock(){Ok(m)=>match m.get(&c){Some(ctx)=>ctx.functions.get(&interface).cloned().unwrap_or_default(),None=>return STATUS_NOT_FOUND},Err(_)=>return STATUS_NO_MEMORY};
  let total=context_functions_required(&names);let base=match unsafe{config_output_buffer(size,out,total)}{Ok(v)=>v,Err(e)=>return e};unsafe{context_functions_write(base,&names)};STATUS_SUCCESS
 }
@@ -1171,12 +1171,12 @@ fn output_context_buffer<T>(size:*mut ULONG,out:*mut *mut T,base:*mut u8,total:U
  match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){Some(ctx) if ctx.functions.get(&interface).is_some_and(|v|v.contains(&f))=>{ctx.function_configs.insert((interface,f),value);STATUS_SUCCESS},Some(_)=>STATUS_NOT_FOUND,None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptQueryContextFunctionConfiguration(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,size:*mut ULONG,out:*mut *mut CryptContextFunctionConfig)->NTSTATUS{
- let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};
+ let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};
  let value=match contexts().lock(){Ok(m)=>match m.get(&c){Some(ctx)=>ctx.function_configs.get(&(interface,f)).copied().unwrap_or_default(),None=>return STATUS_NOT_FOUND},Err(_)=>return STATUS_NO_MEMORY};
  let n=core::mem::size_of::<CryptContextFunctionConfig>();let base=match unsafe{config_output_buffer(size,out,n)}{Ok(v)=>v,Err(e)=>return e};unsafe{base.cast::<CryptContextFunctionConfig>().write(value)};STATUS_SUCCESS
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptEnumContextFunctionProviders(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,size:*mut ULONG,out:*mut *mut CryptContextFunctionProviders)->NTSTATUS{
- let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};
+ let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};
  let names=match contexts().lock(){Ok(m)=>match m.get(&c){Some(ctx) if ctx.functions.get(&interface).is_some_and(|v|v.contains(&f))=>ctx.providers.get(&(interface,f)).cloned().unwrap_or_else(||vec!["Microsoft Primitive Provider".to_string()]),_=>return STATUS_NOT_FOUND},Err(_)=>return STATUS_NO_MEMORY};
  let header=core::mem::size_of::<CryptContextFunctionProviders>();let ptr_bytes=names.len()*core::mem::size_of::<*mut u16>();let strings=names.iter().map(|v|(v.encode_utf16().count()+1)*2).sum::<usize>();let total=header+ptr_bytes+strings;let base=match unsafe{config_output_buffer(size,out,total)}{Ok(v)=>v,Err(e)=>return e};let array=unsafe{base.add(header).cast::<*mut u16>()};let mut off=header+ptr_bytes;for (i,name) in names.iter().enumerate(){let p=enum_write_wide(base,off,name);unsafe{array.add(i).write(p)};off+=(name.encode_utf16().count()+1)*2;}
  unsafe{base.cast::<CryptContextFunctionProviders>().write(CryptContextFunctionProviders{cProviders:names.len() as ULONG,rgpszProviders:array})};STATUS_SUCCESS
