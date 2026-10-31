@@ -319,7 +319,7 @@ pub unsafe extern "system" fn BCryptProcessMultiOperations(object:*mut c_void,op
         } else {
             let digest_bytes:Vec<u8>=if hash.hmac {
                 hmac_digest(hash.algorithm,&hash.secret,&hash.data)
-            } else { hash.algorithm.digest(&hash.data).as_ref().to_vec() };
+            } else { hash.algorithm.digest(&hash.data) };
             unsafe{ptr::copy_nonoverlapping(digest_bytes.as_ptr(),op.pbBuffer,digest_bytes.len())};
             hash.data.zeroize();hash.data.clear();
             if !hash.reusable{hash.finished=true;}
@@ -965,7 +965,7 @@ pub unsafe extern "system" fn BCryptDeriveKeyCapi(hash:*mut c_void,target_alg:*m
     if state.finished{return STATUS_INVALID_PARAMETER;}
     let digest=if state.hmac{
         hmac_digest(state.algorithm,&state.secret,&state.data)
-    }else{state.algorithm.digest(&state.data).as_ref().to_vec()};
+    }else{state.algorithm.digest(&state.data)};
     if output_len as usize>digest.len().saturating_mul(2){return STATUS_INVALID_PARAMETER;}
     let mut material=Vec::with_capacity(output_len as usize);
     material.extend_from_slice(&digest);
