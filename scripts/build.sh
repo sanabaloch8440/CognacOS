@@ -151,6 +151,10 @@ case "${1:-help}" in
     setup_toolchain
     run_checks
     ;;
+  build)
+    setup_toolchain
+    build_images
+    ;;
   test)
     setup_toolchain
     run_tests
@@ -184,7 +188,8 @@ Usage: scripts/build.sh {setup|toolchain|format|fmt-check|lint|check|build|test|
   format     Format all Rust packages using the pinned rustfmt.
   fmt-check  Verify formatting without modifying files.
   lint       Run strict Clippy checks on the core libraries and tools.
-  check      Run core repository, kernel, UEFI and driver compile checks.\n  build      Build release kernel PE32+ image and check the UEFI loader.
+  check      Run core repository, kernel, UEFI and driver compile checks.
+  build      Build release kernel PE32+ image and check the UEFI loader.
   test       Run host-side ABI, driver and Rust tooling tests.
   all        Run check followed by test.
 Set CARGO_TARGET_DIR to override the default target/ directory.
