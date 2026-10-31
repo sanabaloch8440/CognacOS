@@ -541,7 +541,7 @@ fn enum_write_wide(base: *mut u8, offset: usize, value: &str) -> *mut u16 {
 #[no_mangle]
 pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut ULONG,list:*mut *mut BcryptAlgorithmIdentifier,flags:ULONG)->NTSTATUS {
  const H:ULONG=2;const R:ULONG=32;const KDF:ULONG=64;if count.is_null()||list.is_null()||flags!=0||operations==0||operations&!(1|H|4|8|16|R|KDF)!=0{return STATUS_INVALID_PARAMETER;}
- let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&1!=0{e.push(("AES",1));}if operations&H!=0{e.extend([("SHA256",2),("SHA384",2),("SHA512",2)]);}if operations&4!=0{e.push(("RSA",3));}if operations&16!=0{e.push(("RSA_SIGN",5));}if operations&R!=0{e.push(("RNG",6));}if operations&KDF!=0{e.push(("PBKDF2",7));}
+ let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&1!=0{e.push(("AES",1));}if operations&H!=0{e.extend([("SHA256",2),("SHA384",2),("SHA512",2)]);}if operations&4!=0{e.push(("RSA",3));}if operations&8!=0{e.push(("ECDH_P256",4));}if operations&16!=0{e.push(("RSA_SIGN",5));}if operations&R!=0{e.push(("RNG",6));}if operations&KDF!=0{e.push(("PBKDF2",7));}
  if e.is_empty(){unsafe{count.write(0);list.write(ptr::null_mut())};return STATUS_SUCCESS;}
  let sb=e.len()*core::mem::size_of::<BcryptAlgorithmIdentifier>();let nb:usize=e.iter().map(|(n,_)|(n.encode_utf16().count()+1)*2).sum();let base=match store_enum_buffer(sb+nb){Ok(v)=>v,Err(x)=>return x};let records=base.cast::<BcryptAlgorithmIdentifier>();let mut off=sb;
  for(i,(n,c))in e.iter().enumerate(){let np=enum_write_wide(base,off,n);unsafe{records.add(i).write(BcryptAlgorithmIdentifier{name:np,class:*c,flags:0})};off+=(n.encode_utf16().count()+1)*2;}
@@ -553,7 +553,7 @@ pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut U
 pub unsafe extern "system" fn BCryptEnumProviders(algorithm:*const u16,count:*mut ULONG,providers:*mut *mut BcryptProvider,flags:ULONG)->NTSTATUS {
  if algorithm.is_null()||count.is_null()||providers.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}
  let alg=match unsafe{read_property_name(algorithm)}{Ok(v)=>v,Err(e)=>return e};
- if !matches!(alg.as_str(),"AES"|"SHA256"|"SHA384"|"SHA512"|"RSA"|"RSA_SIGN"|"RNG"|"PBKDF2"){unsafe{count.write(0);providers.write(ptr::null_mut())};return 0xC0000225_u32 as i32;}
+ if !matches!(alg.as_str(),"AES"|"SHA256"|"SHA384"|"SHA512"|"RSA"|"RSA_SIGN"|"RNG"|"PBKDF2"|"ECDH_P256"){unsafe{count.write(0);providers.write(ptr::null_mut())};return 0xC0000225_u32 as i32;}
  const P:&str="Microsoft Primitive Provider";let sb=core::mem::size_of::<BcryptProvider>();let base=match store_enum_buffer(sb+(P.encode_utf16().count()+1)*2){Ok(v)=>v,Err(e)=>return e};let name=enum_write_wide(base,sb,P);let rec=base.cast::<BcryptProvider>();unsafe{rec.write(BcryptProvider{name});count.write(1);providers.write(rec)};STATUS_SUCCESS
 }
 
