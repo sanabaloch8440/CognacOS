@@ -65,8 +65,8 @@ mod tests {
 
 
 /// Separate versioned device-service contract for DMA and interrupt-backed drivers.
-/// Version 2 includes the owning device object in DMA calls so the kernel can select
-/// its requester-specific IOMMU domain. DMA callbacks must reject unregistered devices.
+/// Version 4 adds an exact live-mapping validation callback. DMA callbacks carry
+/// the owning device object so the kernel selects its requester-specific IOMMU domain.
 pub const DEVICE_SERVICES_VERSION:u32=4;
 pub type AllocateDma=unsafe extern "C" fn(device_object:u64,size:u64,alignment:u64,maximum_address:u64,flags:u32,cpu_address:*mut u64,device_address:*mut u64)->HalStatus;
 pub type FreeDma=unsafe extern "C" fn(device_object:u64,cpu_address:u64,device_address:u64,size:u64)->HalStatus;
@@ -87,7 +87,7 @@ pub struct DeviceServiceTable{
 }
 impl DeviceServiceTable{
  pub const fn compatible(&self)->bool{self.size as usize>=core::mem::size_of::<Self>()&&self.version==DEVICE_SERVICES_VERSION}
- pub const fn has_dma(&self)->bool{self.allocate_dma.is_some()&&self.free_dma.is_some()}
+ pub const fn has_dma(&self)->bool{self.allocate_dma.is_some()&&self.free_dma.is_some()&&self.validate_dma.is_some()}
  pub const fn has_dma_validation(&self)->bool{self.validate_dma.is_some()}
  pub const fn has_interrupts(&self)->bool{self.register_interrupt.is_some()&&self.unregister_interrupt.is_some()&&self.set_interrupt_enabled.is_some()}
  pub const fn has_bus_master(&self)->bool{self.set_bus_master.is_some()}
