@@ -721,10 +721,23 @@ jobs:
           readelf -h target/x86_64-unknown-none/release/cognacos-kernel | grep -qE 'Machine:.*X86-64'
           readelf -h target/x86_64-unknown-none/release/cognacos-kernel | grep -qE 'Type:.*EXEC'
           file build/cognacos-kernel.exe | grep -q 'PE32+'
+      - name: Validate reusable source-level GDB helpers
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          gdb -q -batch target/x86_64-unknown-none/release/cognacos-kernel \
+            -x tools/gdb/cognacos-forensics.gdb \
+            -ex 'help cognacos-forensics' \
+            > build/gdb-helper-validation.txt 2>&1
+          cat build/gdb-helper-validation.txt
+          grep -Fq 'CognacOS GDB forensic helpers loaded.' build/gdb-helper-validation.txt
+          grep -Fq 'Capture a reproducible register, stack, instruction, DWARF, and mapping snapshot' build/gdb-helper-validation.txt
+          echo "PASS: reusable GDB commands parse and load against the release DWARF ELF."
       - name: Package a GPT EFI System Partition image
         run: |
           sudo apt-get update
-          sudo apt-get install -y dosfstools e2fsprogs mtools parted qemu-system-x86 ovmf swtpm llvm
+          sudo apt-get install -y dosfstools e2fsprogs mtools parted qemu-system-x86 ovmf swtpm llvm gdb
           mkdir -p build/EFI/BOOT build/kernel
           if [[ -f build/cognacos-bootloader.signed.efi ]]; then
             cp build/cognacos-bootloader.signed.efi build/EFI/BOOT/BOOTX64.EFI
@@ -962,6 +975,8 @@ jobs:
             set substitute-path /home/runner/work/CognacOS/CognacOS .
             file target/x86_64-unknown-none/release/cognacos-kernel
             target remote 127.0.0.1:12345
+            source tools/gdb/cognacos-forensics.gdb
+            cognacos-forensics
             echo \\n===== LIVE CPU / SOURCE LOCATION =====\\n
             info registers
             info threads
@@ -986,6 +1001,7 @@ jobs:
           GDB
             set +e
             gdb -q -batch -x build/gdb-diagnose.gdb > build/gdb-state.txt 2>&1
+            if [[ -f cognacos-gdb-forensics.txt ]]; then cp cognacos-gdb-forensics.txt build/; fi
             gdb_status=$?
             set -e
             echo "=== GDB live failure snapshot (status=$gdb_status) ==="
@@ -1386,6 +1402,8 @@ jobs:
             build/beep-driver-assessment/audio.txt
             build/beep.wav
             build/gdb-state.txt
+            build/gdb-helper-validation.txt
+            build/cognacos-gdb-forensics.txt
             build/gdb-diagnose.gdb
             build/qemu-debug.log
             build/ntdll/cognac_ntdll.pdb
