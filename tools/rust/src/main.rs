@@ -138,7 +138,15 @@ fn main() {
         "validate-ntoskrnl-manifest" => validate_manifest(&args.next().map(PathBuf::from).unwrap_or(root.join("kernel/src/ntoskrnl/manifest_19041.json"))),
         "update-windows11-exports" => { let check = args.any(|x| x == "--check"); update_windows11_exports(check); },
         "check-ntdll-def" => check_ntdll_def(&args.next().map(PathBuf::from).unwrap_or(root.join("ntdll/exports/ntdll-x64.def"))),
-        "check-csrsrv-def" => {\n            let definition = args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"));\n            let mut reference = None;\n            while let Some(arg) = args.next() { if arg == "--reference" { reference = Some(args.next().map(PathBuf::from).unwrap_or_else(|| fail!("--reference requires a PE path"))); } else { fail!("unknown CSRSRV option {}", arg.to_string_lossy()); } }\n            check_csrsrv_def(&definition, reference.as_deref());\n        },
+        "check-csrsrv-def" => {
+            let definition = args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"));
+            let mut reference = None;
+            while let Some(arg) = args.next() {
+                if arg == "--reference" { reference = Some(args.next().map(PathBuf::from).unwrap_or_else(|| fail!("--reference requires a PE path"))); }
+                else { fail!("unknown CSRSRV option {}", arg.to_string_lossy()); }
+            }
+            check_csrsrv_def(&definition, reference.as_deref());
+        },
         "check-wdm-source-contracts" => source_contract::check_wdm().unwrap_or_else(|e| fail!("{e}")),
         "check-xstate-source-contracts" => source_contract::check_xstate().unwrap_or_else(|e| fail!("{e}")),
         "qemu-ps2-smoke" => {\n            let values: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();\n            qemu_ps2::run(&values).unwrap_or_else(|e| fail!("PS/2 QEMU smoke failed: {e}"));\n        }\n        "resolve-qemu-trace" => {
