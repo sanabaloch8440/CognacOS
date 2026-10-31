@@ -1,5 +1,5 @@
 //! CognacOS bcrypt.dll: Windows CNG-compatible hashing, KDF, AES, RNG and bounded RSA subset.
-//! All unimplemented Windows 11 exports return STATUS_NOT_IMPLEMENTED.
+//! Exports without a local backend fail closed with STATUS_NOT_IMPLEMENTED or STATUS_NOT_SUPPORTED.
 #![allow(non_snake_case)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
