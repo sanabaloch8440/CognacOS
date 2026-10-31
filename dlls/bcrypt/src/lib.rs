@@ -158,7 +158,7 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
     else if name=="RSA" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,true,false) }
     else if name=="RNG" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,false,true) }
     else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false,false,false),Err(e)=>return e } };
-    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,kdf,rsa:rsa_provider,rng:rng_provider,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,kdf,rsa:rsa_provider,rng:rng_provider,gcm:false,cbc:cipher})) {Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
@@ -304,11 +304,23 @@ pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*con
             if let Some(lengths)=lengths {
                 let required=core::mem::size_of::<BcryptKeyLengths>() as ULONG;
                 unsafe{result_len.write(required)};
-                if output.is_null()||output_len<required{return STATUS_BUFFER_TOO_SMALL;}
+                if output.is_null(){return STATUS_SUCCESS;}
+                if output_len<required{return STATUS_BUFFER_TOO_SMALL;}
                 unsafe{ptr::write_unaligned(output.cast::<BcryptKeyLengths>(),lengths)};
                 return STATUS_SUCCESS;
             }
         }
+    }
+    if name=="AuthTagLength" {
+        let is_gcm=key_handle(object).map(|k|k.gcm).unwrap_or_else(|_|algorithm_handle(object).map(|p|p.cipher&&p.gcm).unwrap_or(false));
+        if !is_gcm{return STATUS_NOT_SUPPORTED;}
+        let lengths=BcryptKeyLengths{dwMinLength:12,dwMaxLength:16,dwIncrement:1};
+        let required=core::mem::size_of::<BcryptKeyLengths>() as ULONG;
+        unsafe{result_len.write(required)};
+        if output.is_null(){return STATUS_SUCCESS;}
+        if output_len<required{return STATUS_BUFFER_TOO_SMALL;}
+        unsafe{ptr::write_unaligned(output.cast::<BcryptKeyLengths>(),lengths)};
+        return STATUS_SUCCESS;
     }
     let (kind, value, wide) = if let Ok(k) = key_handle(object) {
         match name.as_str() {
@@ -995,6 +1007,26 @@ mod tests {
             BCryptFreeBuffer(providers.cast());
         }
         assert_eq!(String::from_utf16(&name).unwrap(), "Microsoft Primitive Provider");
+    }
+
+    #[test]
+    fn aes_defaults_to_cbc_and_gcm_reports_supported_authentication_tags() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let algorithm=wide("AES");let chaining=wide("ChainingMode");let auth=wide("AuthTagLength");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,algorithm.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mut mode=[0u8;64];let mut required=0;
+        assert_eq!(unsafe{BCryptGetProperty(provider,chaining.as_ptr(),mode.as_mut_ptr(),64,&mut required,0)},STATUS_SUCCESS);
+        let units=unsafe{core::slice::from_raw_parts(mode.as_ptr().cast::<u16>(),required as usize/2-1)};
+        assert_eq!(String::from_utf16(units).unwrap(),"ChainingModeCBC");
+        let mut tag_lengths=BcryptKeyLengths{dwMinLength:0,dwMaxLength:0,dwIncrement:0};
+        assert_eq!(unsafe{BCryptGetProperty(provider,auth.as_ptr(),(&mut tag_lengths as *mut BcryptKeyLengths).cast::<u8>(),12,&mut required,0)},STATUS_NOT_SUPPORTED);
+        assert_eq!(unsafe{BCryptSetProperty(provider,chaining.as_ptr(),wide("ChainingModeGCM").as_ptr().cast(),(wide("ChainingModeGCM").len()*2) as ULONG,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptGetProperty(provider,auth.as_ptr(),ptr::null_mut(),0,&mut required,0)},STATUS_SUCCESS);
+        assert_eq!(required,12);
+        assert_eq!(unsafe{BCryptGetProperty(provider,auth.as_ptr(),(&mut tag_lengths as *mut BcryptKeyLengths).cast::<u8>(),12,&mut required,0)},STATUS_SUCCESS);
+        assert_eq!(tag_lengths.dwMinLength,12);assert_eq!(tag_lengths.dwMaxLength,16);assert_eq!(tag_lengths.dwIncrement,1);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
 
     #[test]
