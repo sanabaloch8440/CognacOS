@@ -172,7 +172,7 @@ pub trait XhciRegisterIo{
  fn read32(&mut self,offset:u32)->Result<u32,()>;
  fn write32(&mut self,offset:u32,value:u32)->Result<(),()>;
  /// Enable PCI bus mastering only after all DMA mappings and IRQ resources are ready.
- fn set_bus_master(&mut self,_enabled:bool)->Result<(),()>{Ok(())}
+ fn set_bus_master(&mut self,_enabled:bool)->Result<(),()>{Err(())}
 }
 fn reg_read<I:XhciRegisterIo>(io:&mut I,offset:u32)->Result<u32,ControllerInitError>{io.read32(offset).map_err(|_|ControllerInitError::RegisterIoFailure)}
 fn reg_write<I:XhciRegisterIo>(io:&mut I,offset:u32,value:u32)->Result<(),ControllerInitError>{io.write32(offset,value).map_err(|_|ControllerInitError::RegisterIoFailure)}
@@ -1219,7 +1219,7 @@ mod controller_power_tests {
    } else {self.regs[i]=v}
    Ok(())
   }
-  fn set_bus_master(&mut self,_enabled:bool)->Result<(),()>{Err(())}
+  fn set_bus_master(&mut self,_enabled:bool)->Result<(),()>{Ok(())}
  }
  impl XhciPlatform for FakePlatform {
   fn dma_mapping_ready(&self,_:DmaAllocation)->bool{true}
