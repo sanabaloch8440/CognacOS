@@ -20,7 +20,7 @@ use core::{ffi::c_void, ptr};
 use std::{boxed::Box, collections::{HashMap,HashSet}, sync::{Mutex, OnceLock}, vec::Vec};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use ml_kem::{MlKem512, MlKem768, MlKem1024};
-use ml_kem::kem::{Decapsulate as MlKemDecapsulate, Encapsulate as MlKemEncapsulate, Kem as MlKemKem};
+use ml_kem::kem::{Decapsulate as MlKemDecapsulate, Encapsulate as MlKemEncapsulate, Kem as MlKemKem, KeyExport as MlKemKeyExport};
 
 pub type NTSTATUS = i32;
 pub type ULONG = u32;
@@ -822,6 +822,40 @@ pub unsafe extern "system" fn BCryptDuplicateKey(key:*mut c_void,out:*mut *mut c
 pub unsafe extern "system" fn BCryptImportKey(algorithm:*mut c_void,import_key:*mut c_void,blob_type:*const u16,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,input:*mut u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
     if out.is_null() || blob_type.is_null() || !import_key.is_null() || !valid_object_buffer(object,object_len) || input.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
     let name = match unsafe { read_property_name(blob_type) } { Ok(v) => v, Err(e) => return e };
+    if matches!(name.as_str(),"MLKEM_PUBLIC_BLOB"|"MLKEM_ENCAPSULATION_BLOB"|"MLKEM_PRIVATE_SEED_BLOB") {
+        const PUBLIC_MAGIC:ULONG=0x504B4C4D;
+        const PRIVATE_SEED_MAGIC:ULONG=0x534B4C4D;
+        let private_seed=name=="MLKEM_PRIVATE_SEED_BLOB";
+        let (level,key_bytes)=match handle_table().lock() {
+            Ok(table)=>match table.get(&(key as usize)) {
+                Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pair512{dk,ek,..})) if !private_seed=>(1,ek.to_bytes().as_ref().to_vec()),
+                Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pair768{dk:_,ek,..})) if !private_seed=>(2,ek.to_bytes().as_ref().to_vec()),
+                Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pair1024{dk:_,ek,..})) if !private_seed=>(3,ek.to_bytes().as_ref().to_vec()),
+                Some(RegisteredHandle::MlKem(MlKemKeyHandle::Public512{ek})) if !private_seed=>(1,ek.to_bytes().as_ref().to_vec()),
+                Some(RegisteredHandle::MlKem(MlKemKeyHandle::Public768{ek})) if !private_seed=>(2,ek.to_bytes().as_ref().to_vec()),
+                Some(RegisteredHandle::MlKem(MlKemKeyHandle::Public1024{ek})) if !private_seed=>(3,ek.to_bytes().as_ref().to_vec()),
+                Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pair512{dk,..}|MlKemKeyHandle::Private512{dk})) if private_seed=>(1,dk.to_bytes().as_ref().to_vec()),
+                Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pair768{dk,..}|MlKemKeyHandle::Private768{dk})) if private_seed=>(2,dk.to_bytes().as_ref().to_vec()),
+                Some(RegisteredHandle::MlKem(MlKemKeyHandle::Pair1024{dk,..}|MlKemKeyHandle::Private1024{dk})) if private_seed=>(3,dk.to_bytes().as_ref().to_vec()),
+                _=>return STATUS_INVALID_PARAMETER,
+            },
+            Err(_)=>return STATUS_NO_MEMORY,
+        };
+        let parameter=match level {1=>"512",2=>"768",_=>"1024"};
+        let parameter_units=parameter.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let parameter_bytes=unsafe{core::slice::from_raw_parts(parameter_units.as_ptr().cast::<u8>(),parameter_units.len()*2)};
+        let required=core::mem::size_of::<BcryptMlKemBlobHeader>()+parameter_bytes.len()+key_bytes.len();
+        unsafe{result_len.write(required as ULONG);}
+        if output.is_null(){return STATUS_SUCCESS;}
+        if output_len as usize<required{return STATUS_BUFFER_TOO_SMALL;}
+        let header=BcryptMlKemBlobHeader{dwMagic:if private_seed{PRIVATE_SEED_MAGIC}else{PUBLIC_MAGIC},cbParameterSet:parameter_bytes.len() as ULONG,cbKey:key_bytes.len() as ULONG};
+        unsafe{
+            ptr::write_unaligned(output.cast::<BcryptMlKemBlobHeader>(),header);
+            ptr::copy_nonoverlapping(parameter_bytes.as_ptr(),output.add(core::mem::size_of::<BcryptMlKemBlobHeader>()),parameter_bytes.len());
+            ptr::copy_nonoverlapping(key_bytes.as_ptr(),output.add(core::mem::size_of::<BcryptMlKemBlobHeader>()+parameter_bytes.len()),key_bytes.len());
+        }
+        return STATUS_SUCCESS;
+    }
     if name != BCRYPT_KEY_DATA_BLOB { return STATUS_NOT_SUPPORTED; }
     let provider = match algorithm_handle(algorithm) { Ok(v) => v, Err(e) => return e };
     if !provider.cipher || (!provider.cbc && !provider.gcm) { return STATUS_INVALID_PARAMETER; }
