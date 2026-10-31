@@ -255,6 +255,124 @@ pub unsafe extern "system" fn BCryptGetFipsAlgorithmMode(enabled: *mut u8) -> NT
     STATUS_SUCCESS
 }
 
+
+
+// CNG enumeration buffers are owned by bcrypt.dll and released only through
+// BCryptFreeBuffer. The registry avoids trusting caller-supplied pointers when
+// freeing an allocation and keeps the returned storage stable.
+#[repr(C)]
+struct BcryptAlgorithmIdentifier {
+    name: *mut u16,
+    class: ULONG,
+    flags: ULONG,
+}
+#[repr(C)]
+struct BcryptProvider {
+    name: *mut u16,
+    flags: ULONG,
+}
+
+static ENUM_BUFFERS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<usize, Box<[u64]>>>
+> = std::sync::OnceLock::new();
+
+fn enum_buffers() -> &'static std::sync::Mutex<std::collections::HashMap<usize, Box<[u64]>>> {
+    ENUM_BUFFERS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn store_enum_buffer(bytes: usize) -> Result<*mut u8, NTSTATUS> {
+    let words = bytes.checked_add(7).ok_or(STATUS_NO_MEMORY)? / 8;
+    let mut storage = Vec::<u64>::new();
+    storage.try_reserve_exact(words).map_err(|_| STATUS_NO_MEMORY)?;
+    storage.resize(words, 0);
+    let mut storage = storage.into_boxed_slice();
+    let pointer = storage.as_mut_ptr().cast::<u8>();
+    let key = pointer as usize;
+    enum_buffers().lock().map_err(|_| STATUS_NO_MEMORY)?.insert(key, storage);
+    Ok(pointer)
+}
+
+fn enum_write_wide(base: *mut u8, offset: usize, value: &str) -> *mut u16 {
+    let target = unsafe { base.add(offset).cast::<u16>() };
+    for (index, unit) in value.encode_utf16().chain(core::iter::once(0)).enumerate() {
+        unsafe { target.add(index).write_unaligned(unit) };
+    }
+    target
+}
+
+/// Enumerates the SHA-2 hash providers and the system RNG implemented here.
+/// Only operations actually supported by this DLL are advertised.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptEnumAlgorithms(
+    operations: ULONG,
+    count: *mut ULONG,
+    list: *mut *mut BcryptAlgorithmIdentifier,
+    flags: ULONG,
+) -> NTSTATUS {
+    const HASH_OPERATION: ULONG = 0x00000002;
+    const RNG_OPERATION: ULONG = 0x00000020;
+    if count.is_null() || list.is_null() || flags != 0 ||
+        operations == 0 || operations & !(HASH_OPERATION | RNG_OPERATION) != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut entries: Vec<(&str, ULONG)> = Vec::new();
+    if operations & HASH_OPERATION != 0 {
+        entries.extend([("SHA256", HASH_OPERATION), ("SHA384", HASH_OPERATION), ("SHA512", HASH_OPERATION)]);
+    }
+    if operations & RNG_OPERATION != 0 {
+        entries.push(("RNG", RNG_OPERATION));
+    }
+    let struct_bytes = match entries.len().checked_mul(core::mem::size_of::<BcryptAlgorithmIdentifier>()) {
+        Some(n) => n, None => return STATUS_NO_MEMORY,
+    };
+    let names_bytes: usize = entries.iter().map(|(name, _)| (name.encode_utf16().count() + 1) * 2).sum();
+    let Some(total) = struct_bytes.checked_add(names_bytes) else { return STATUS_NO_MEMORY; };
+    let base = match store_enum_buffer(total) { Ok(p) => p, Err(s) => return s };
+    let records = base.cast::<BcryptAlgorithmIdentifier>();
+    let mut name_offset = struct_bytes;
+    for (index, (name, class)) in entries.iter().enumerate() {
+        let name_ptr = enum_write_wide(base, name_offset, name);
+        unsafe { records.add(index).write(BcryptAlgorithmIdentifier { name: name_ptr, class: *class, flags: 0 }) };
+        name_offset += (name.encode_utf16().count() + 1) * 2;
+    }
+    unsafe { count.write(entries.len() as ULONG); list.write(records); }
+    STATUS_SUCCESS
+}
+
+/// Enumerates this DLL's single registered implementation provider.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptEnumProviders(
+    count: *mut ULONG,
+    providers: *mut *mut BcryptProvider,
+    flags: ULONG,
+) -> NTSTATUS {
+    if count.is_null() || providers.is_null() || flags != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    const PROVIDER: &str = "CognacOS AWS-LC Provider";
+    let struct_bytes = core::mem::size_of::<BcryptProvider>();
+    let total = struct_bytes + (PROVIDER.encode_utf16().count() + 1) * 2;
+    let base = match store_enum_buffer(total) { Ok(p) => p, Err(s) => return s };
+    let name = enum_write_wide(base, struct_bytes, PROVIDER);
+    let record = base.cast::<BcryptProvider>();
+    unsafe {
+        record.write(BcryptProvider { name, flags: 0 });
+        count.write(1);
+        providers.write(record);
+    }
+    STATUS_SUCCESS
+}
+
+/// Releases a buffer returned by a bcrypt enumeration API. Unknown pointers
+/// are ignored rather than dereferenced or passed to the allocator.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptFreeBuffer(buffer: *mut c_void) {
+    if buffer.is_null() { return; }
+    if let Ok(mut buffers) = enum_buffers().lock() {
+        buffers.remove(&(buffer as usize));
+    }
+}
+
 include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 
 #[cfg(test)]
