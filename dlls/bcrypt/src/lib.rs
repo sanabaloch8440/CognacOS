@@ -188,10 +188,45 @@ pub unsafe extern "system" fn BCryptGenRandom(algorithm: *mut c_void, buffer: *m
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*const u16,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
- if property.is_null()||result_len.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let name=match unsafe{read_property_name(property)}{Ok(v)=>v,Err(e)=>return e};let p=match algorithm_handle(object){Ok(v)=>v,Err(e)=>return e};
- let (kind,value,wide)=if p.cipher {match name.as_str(){"ObjectLength"=>(0,0,""),"BlockLength"=>(0,16,""),"AlgorithmName"=>(1,0,"AES"),"ChainingMode" if p.gcm=>(1,0,"ChainingModeGCM"),"ChainingMode" if p.cbc=>(1,0,"ChainingModeCBC"),_=>return STATUS_NOT_SUPPORTED}}
- else {match name.as_str(){"ObjectLength"=>(0,0,""),"HashDigestLength"=>(0,p.algorithm.digest_len(),""),"HashBlockLength"=>(0,p.algorithm.block_len(),""),"AlgorithmName"=>(1,0,p.algorithm.provider_name()),"HashMode" if p.hmac=>(1,0,"HMAC"),_=>return STATUS_NOT_SUPPORTED}};
- let required=if kind==0{4}else{(wide.encode_utf16().count() as u32+1)*2};unsafe{result_len.write(required)};if output.is_null()||output_len<required{return STATUS_BUFFER_TOO_SMALL;}if kind==0{unsafe{write_u32(output,value)}}else{unsafe{write_wide(output,wide)}}STATUS_SUCCESS
+    if property.is_null() || result_len.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
+    let name = match unsafe { read_property_name(property) } { Ok(v) => v, Err(e) => return e };
+    let (kind, value, wide) = if let Ok(k) = key_handle(object) {
+        match name.as_str() {
+            "KeyLength" => (0, (k.key.len() as u32) * 8, ""),
+            "BlockLength" => (0, 16, ""),
+            "AlgorithmName" => (1, 0, "AES"),
+            "ChainingMode" if k.gcm => (1, 0, "ChainingModeGCM"),
+            "ChainingMode" if k.cbc => (1, 0, "ChainingModeCBC"),
+            _ => return STATUS_NOT_SUPPORTED,
+        }
+    } else {
+        let p = match algorithm_handle(object) { Ok(v) => v, Err(e) => return e };
+        if p.cipher {
+            match name.as_str() {
+                "ObjectLength" => (0, 0, ""),
+                "BlockLength" => (0, 16, ""),
+                "AlgorithmName" => (1, 0, "AES"),
+                "ChainingMode" if p.gcm => (1, 0, "ChainingModeGCM"),
+                "ChainingMode" if p.cbc => (1, 0, "ChainingModeCBC"),
+                _ => return STATUS_NOT_SUPPORTED,
+            }
+        } else {
+            match name.as_str() {
+                "ObjectLength" => (0, 0, ""),
+                "HashDigestLength" => (0, p.algorithm.digest_len(), ""),
+                "HashBlockLength" => (0, p.algorithm.block_len(), ""),
+                "AlgorithmName" => (1, 0, p.algorithm.provider_name()),
+                "HashMode" if p.hmac => (1, 0, "HMAC"),
+                _ => return STATUS_NOT_SUPPORTED,
+            }
+        }
+    };
+    let required = if kind == 0 { 4 } else { (wide.encode_utf16().count() as u32 + 1) * 2 };
+    unsafe { result_len.write(required) };
+    if output.is_null() || output_len < required { return STATUS_BUFFER_TOO_SMALL; }
+    if kind == 0 { unsafe { write_u32(output, value) }; }
+    else { unsafe { write_wide(output, wide) }; }
+    STATUS_SUCCESS
 }
 
 #[no_mangle]
