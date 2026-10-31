@@ -451,6 +451,28 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
     let mut found=0u32;
     let mut published=false;
     unsafe{serial_write(b"PCI xHCI inventory: validating BAR resources and preparing PnP handoff.\r\n");}
+    // Build a segment-0 bridge topology snapshot before matching any endpoint
+    // to DMAR scopes. Bus numbers alone are not a requester path.
+    let mut bridge_ranges=[pci::PciBridgeRange::default();256];
+    let mut bridge_count=0usize;
+    for bridge_bus in 0u16..=255 {
+        for bridge_device in 0u8..32 {
+            let id=unsafe{pci_config_read32(bridge_bus as u8,bridge_device,0,0x00)};
+            if id as u16==0||id as u16==0xffff {continue}
+            let header=unsafe{pci_config_read32(bridge_bus as u8,bridge_device,0,0x0c)};
+            let functions=if (header>>23)&1!=0 {8}else{1};
+            for bridge_function in 0u8..functions {
+                let function_id=if bridge_function==0{id}else{unsafe{pci_config_read32(bridge_bus as u8,bridge_device,bridge_function,0x00)}};
+                if function_id as u16==0||function_id as u16==0xffff {continue}
+                let h=if bridge_function==0{header}else{unsafe{pci_config_read32(bridge_bus as u8,bridge_device,bridge_function,0x0c)}};
+                if ((h>>16)&0x7f)!=1 {continue}
+                let buses=unsafe{pci_config_read32(bridge_bus as u8,bridge_device,bridge_function,0x18)};
+                if let Ok(range)=pci::decode_bridge_range(0,bridge_bus as u8,bridge_device,bridge_function,buses) {
+                    if bridge_count<bridge_ranges.len(){bridge_ranges[bridge_count]=range;bridge_count+=1;}
+                }
+            }
+        }
+    }
     for bus in 0u16..=255 {
         for device in 0u8..32 {
             let id0=unsafe{pci_config_read32(bus as u8,device,0,0x00)};
@@ -479,8 +501,10 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
                 }
                 found+=1;
                 if published||bar_base==0||bar_size==0 {continue}
-                let Some(requester)=dma::iommu::vtd::RequesterId::new(bus as u8,device,function) else {continue};
-                let _vtd_ready=initialize_vtd_from_acpi(requester);
+                let Ok(requester_path)=pci::resolve_requester_path(0,0,bus as u8,device,function,&bridge_ranges[..bridge_count]) else {
+                    unsafe{serial_write(b"xHCI PCI path unresolved; refusing to guess the DMAR requester.\\r\\n");}
+                    continue;
+                };
                 let extended_hal=hal::driver_extended_service_table();
                 if !extended_hal.compatible() { continue; }
                 let Some(map_io)=extended_hal.map_device_io_space else { continue; };
@@ -496,10 +520,11 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
                 }
                 let bar_virtual=mapped_address;
                 let irq=unsafe{pci_config_read32(bus as u8,device,function,0x3c)};
-                match ntoskrnl::pnp::publish_xhci(bus as u8,device,function,vendor,(id>>16) as u16,
+                match ntoskrnl::pnp::publish_xhci(&requester_path,vendor,(id>>16) as u16,
                     irq as u8,(irq>>8) as u8,bar_base,bar_size,bar_virtual) {
                     Ok(object)=>{
                         published=true;
+                        let _vtd_ready=initialize_vtd_from_acpi(&requester_path);
                         unsafe{
                             serial_write(b"xHCI PnP resource published: device_object=");
                             serial_write_hex(object);serial_write(b" MMIO_VA=");
