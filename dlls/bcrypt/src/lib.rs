@@ -179,6 +179,65 @@ pub unsafe extern "system" fn BCryptDuplicateHash(hash:*mut c_void,out:*mut *mut
 }
 
 
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BcryptMultiHashOperation { iHash: ULONG, hashOperation: ULONG, pbBuffer: *mut u8, cbBuffer: ULONG }
+
+/// Creates a bounded multi-hash object. Caller-owned object buffers are not
+/// accepted yet; the state is held in the opaque handle table.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptCreateMultiHash(algorithm:*mut c_void,out:*mut *mut c_void,count:ULONG,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
+    if out.is_null() || count==0 || count>64 || !object.is_null() || object_len!=0 || (secret.is_null()&&secret_len!=0) || flags!=0 { return STATUS_INVALID_PARAMETER; }
+    let provider=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
+    if provider.cipher || !provider.multi || (!provider.hmac&&secret_len!=0) { return STATUS_INVALID_PARAMETER; }
+    let key=if secret_len==0 { Vec::new() } else { unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec() };
+    let mut states=Vec::new();
+    if states.try_reserve_exact(count as usize).is_err(){return STATUS_NO_MEMORY;}
+    for _ in 0..count { states.push(HashHandle{algorithm:provider.algorithm,hmac:provider.hmac,secret:key.clone(),data:Vec::new()}); }
+    let token=match register_handle(RegisteredHandle::MultiHash(MultiHashHandle{states})){Ok(v)=>v,Err(e)=>return e};
+    unsafe{out.write(token)};STATUS_SUCCESS
+}
+
+/// Processes BCRYPT_MULTI_HASH_OPERATION records in caller order. All records
+/// are structurally validated before any state is changed.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptProcessMultiOperations(object:*mut c_void,operation_type:ULONG,operations:*mut BcryptMultiHashOperation,operations_len:ULONG,flags:ULONG)->NTSTATUS {
+    const OP_HASH_DATA:ULONG=1;const OP_FINISH_HASH:ULONG=2;const TYPE_HASH:ULONG=1;
+    if operation_type!=TYPE_HASH || flags!=0 || (operations.is_null()&&operations_len!=0) || operations_len as usize % core::mem::size_of::<BcryptMultiHashOperation>() != 0 { return STATUS_INVALID_PARAMETER; }
+    let count=operations_len as usize/core::mem::size_of::<BcryptMultiHashOperation>();
+    if count>4096{return STATUS_INVALID_PARAMETER;}
+    let mut table=match handle_table().lock(){Ok(v)=>v,Err(_)=>return STATUS_NO_MEMORY};
+    let Some(RegisteredHandle::MultiHash(state))=table.get_mut(&(object as usize)) else{return STATUS_INVALID_PARAMETER;};
+    for i in 0..count {
+        let op=unsafe{operations.add(i).read_unaligned()};
+        if op.iHash as usize>=state.states.len() || (op.pbBuffer.is_null()&&op.cbBuffer!=0) {return STATUS_INVALID_PARAMETER;}
+        match op.hashOperation {
+            OP_HASH_DATA => if state.states[op.iHash as usize].data.len().saturating_add(op.cbBuffer as usize)>64*1024*1024{return STATUS_INVALID_PARAMETER;},
+            OP_FINISH_HASH => if op.pbBuffer.is_null() || op.cbBuffer<state.states[op.iHash as usize].algorithm.digest_len() {return STATUS_BUFFER_TOO_SMALL;},
+            _=>return STATUS_INVALID_PARAMETER,
+        }
+    }
+    for i in 0..count {
+        let op=unsafe{operations.add(i).read_unaligned()};
+        let hash=&mut state.states[op.iHash as usize];
+        if op.hashOperation==OP_HASH_DATA {
+            if op.cbBuffer!=0 {
+                if hash.data.try_reserve(op.cbBuffer as usize).is_err(){return STATUS_NO_MEMORY;}
+                hash.data.extend_from_slice(unsafe{core::slice::from_raw_parts(op.pbBuffer,op.cbBuffer as usize)});
+            }
+        } else {
+            let digest_bytes:Vec<u8>=if hash.hmac {
+                let key=hmac::Key::new(hash.algorithm.hmac_algorithm(),&hash.secret);
+                hmac::sign(&key,&hash.data).as_ref().to_vec()
+            } else { hash.algorithm.digest(&hash.data).as_ref().to_vec() };
+            unsafe{ptr::copy_nonoverlapping(digest_bytes.as_ptr(),op.pbBuffer,digest_bytes.len())};
+            hash.data.zeroize();hash.data.clear();
+        }
+    }
+    STATUS_SUCCESS
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDestroyHash(hash:*mut c_void)->NTSTATUS{remove_handle(hash,1)}
 
