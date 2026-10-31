@@ -644,5 +644,32 @@ mod tests {
     }
 
     #[test]
+    fn symmetric_key_duplicate_and_key_data_blob_roundtrip() {
+        let wide = |s:&str| s.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let aes_name=wide("AES"); let mode_name=wide("ChainingMode"); let cbc_name=wide("ChainingModeCBC"); let blob_name=wide("KeyDataBlob");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,aes_name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mode_bytes=unsafe{core::slice::from_raw_parts(cbc_name.as_ptr().cast::<u8>(),cbc_name.len()*2)};
+        assert_eq!(unsafe{BCryptSetProperty(provider,mode_name.as_ptr(),mode_bytes.as_ptr(),mode_bytes.len() as u32,0)},STATUS_SUCCESS);
+        let raw=[0x11u8;16]; let mut original=ptr::null_mut();
+        assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut original,ptr::null_mut(),0,raw.as_ptr() as *mut u8,16,0)},STATUS_SUCCESS);
+        let mut duplicate=ptr::null_mut();
+        assert_eq!(unsafe{BCryptDuplicateKey(original,&mut duplicate,ptr::null_mut(),0,0)},STATUS_SUCCESS);
+        let mut needed=0;
+        assert_eq!(unsafe{BCryptExportKey(original,ptr::null_mut(),blob_name.as_ptr(),ptr::null_mut(),0,&mut needed,0)},STATUS_BUFFER_TOO_SMALL);
+        let mut blob=vec![0u8;needed as usize];
+        assert_eq!(unsafe{BCryptExportKey(original,ptr::null_mut(),blob_name.as_ptr(),blob.as_mut_ptr(),needed,&mut needed,0)},STATUS_SUCCESS);
+        let mut imported=ptr::null_mut();
+        assert_eq!(unsafe{BCryptImportKey(provider,ptr::null_mut(),blob_name.as_ptr(),&mut imported,ptr::null_mut(),0,blob.as_mut_ptr(),blob.len() as u32,0)},STATUS_SUCCESS);
+        let mut exported=vec![0u8;blob.len()]; let mut exported_len=0;
+        assert_eq!(unsafe{BCryptExportKey(imported,ptr::null_mut(),blob_name.as_ptr(),exported.as_mut_ptr(),exported.len() as u32,&mut exported_len,0)},STATUS_SUCCESS);
+        assert_eq!(blob,exported);
+        assert_eq!(unsafe{BCryptDestroyKey(imported)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroyKey(duplicate)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroyKey(original)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn supported_algorithms_have_expected_sizes() { assert_eq!(HashAlgorithm::Sha256.digest_len(),32); assert_eq!(HashAlgorithm::Sha384.digest_len(),48); assert_eq!(HashAlgorithm::Sha512.digest_len(),64); }
 }
