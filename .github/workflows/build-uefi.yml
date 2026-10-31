@@ -109,8 +109,11 @@ jobs:
           grep -Fq "BCryptOpenAlgorithmProvider" build/bcrypt/exports.txt
           grep -Fq "BCryptGenRandom" build/bcrypt/exports.txt
           grep -Fq "BCryptDeriveKeyPBKDF2" build/bcrypt/exports.txt
-          export_count="$(awk '/Export[[:space:]]*\\{/ { in_export=1; next } in_export && /^[[:space:]]*Name:/ { count++ } in_export && /^}/ { in_export=0 } END { print count+0 }' build/bcrypt/exports.txt)"
-          echo "Detected named bcrypt exports: $export_count"
+          # llvm-readobj prints each export as a multi-line block. Count
+          # the named BCrypt API entries directly; the image also contains
+          # unrelated aws-lc entropy exports which must not affect this count.
+          export_count="$(grep -cE '^[[:space:]]*Name: BCrypt' build/bcrypt/exports.txt || true)"
+          echo "Detected named BCrypt API exports: $export_count"
           test "$export_count" -eq 60
           grep -Eq "Magic: 0x20B" build/bcrypt/exports.txt
           echo "Built bcrypt.dll; verified PE32+ and all 60 named exports."
