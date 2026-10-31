@@ -759,7 +759,10 @@ mod tests {
         assert_eq!(unsafe{BCryptKeyDerivation(key,&mut desc,output.as_mut_ptr(),32,&mut written,0)},STATUS_SUCCESS);
         assert_eq!(written,32);
         assert_eq!(output,[0xc5,0xe4,0x78,0xd5,0x92,0x88,0xc8,0x41,0xaa,0x53,0x0d,0xb6,0x84,0x5c,0x4c,0x8d,0x96,0x28,0x93,0xa0,0x01,0xce,0x4e,0x11,0xa4,0x96,0x38,0x73,0xaa,0x98,0x13,0x4a]);
+        let mut duplicate=ptr::null_mut();
+        assert_eq!(unsafe{BCryptDuplicateKey(key,&mut duplicate,ptr::null_mut(),0,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroyKey(duplicate)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
 
