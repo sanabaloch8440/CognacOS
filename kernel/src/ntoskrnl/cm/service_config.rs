@@ -213,7 +213,9 @@ pub fn query_group_tag_order(hive:&Hive<'_>,group:&[u16],out:&mut[u32])->Result<
 fn active_control_set(hive:&Hive<'_>)->Result<u32,ExtendedConfigError>{
     let mut select=[0u16;16];let n=ascii("Select",&mut select)?;
     let key=hive.find_path(&select[..n])?;
-    optional_dword(key,&[67,117,114,114,101,110,116])?.ok_or(ExtendedConfigError::Base(Error::MissingStart))
+    let current=optional_dword(key,&[67,117,114,114,101,110,116])?.ok_or(ExtendedConfigError::Base(Error::MissingStart))?;
+    if current==0||current>999{return Err(ExtendedConfigError::Base(Error::InvalidImagePath))}
+    Ok(current)
 }
 
 #[cfg(test)]
