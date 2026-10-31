@@ -669,7 +669,7 @@ pub unsafe extern "system" fn BCryptEncrypt(key:*mut c_void,input:*mut u8,input_
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDecrypt(key:*mut c_void,input:*mut u8,input_len:ULONG,padding_info:*mut c_void,iv:*mut u8,iv_len:ULONG,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
  if padding_info.is_null(){return unsafe{bcrypt_cbc(key,input,input_len,iv,iv_len,output,output_len,result_len,flags,false)};}
- if result_len.is_null()||(input.is_null()&&input_len!=0)||flags!=0||!iv.is_null()||iv_len!=0{return STATUS_INVALID_PARAMETER;}let k=match key_handle(key){Ok(v)=>v,Err(e)=>return e};let(nonce,aad,tag,tag_len)=match unsafe{auth_info(padding_info)}{Ok(v)=>v,Err(e)=>return e};unsafe{result_len.write(input_len)};if output.is_null()||output_len<input_len{return STATUS_BUFFER_TOO_SMALL;}
+ if result_len.is_null()||(input.is_null()&&input_len!=0)||flags!=0||!iv.is_null()||iv_len!=0{return STATUS_INVALID_PARAMETER;}let k=match key_handle(key){Ok(v)=>v,Err(e)=>return e};if !k.gcm{return STATUS_NOT_SUPPORTED;}let(nonce,aad,tag,tag_len)=match unsafe{auth_info(padding_info)}{Ok(v)=>v,Err(e)=>return e};unsafe{result_len.write(input_len)};if (output.is_null()&&input_len!=0)||output_len<input_len{return STATUS_BUFFER_TOO_SMALL;}
  let mut buf=if input_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}.to_vec()};
  let tagbytes=unsafe{core::slice::from_raw_parts(tag,tag_len)};
  let valid=match k.key.len() {
@@ -1356,6 +1356,26 @@ mod tests {
             tag[0]^=1;
             assert_eq!(unsafe{BCryptDecrypt(key,encrypted.as_mut_ptr(),16,(&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(),ptr::null_mut(),0,recovered.as_mut_ptr(),16,&mut written,0)},STATUS_AUTH_TAG_MISMATCH);
         }
+        assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn aes_gcm_supports_empty_payload_with_null_input_and_output_buffers() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let algorithm=wide("AES");let property=wide("ChainingMode");let mode=wide("ChainingModeGCM");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,algorithm.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptSetProperty(provider,property.as_ptr(),mode.as_ptr().cast(),(mode.len()*2) as ULONG,0)},STATUS_SUCCESS);
+        let mut material=[0x17u8;16];let mut key=ptr::null_mut();
+        assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut key,ptr::null_mut(),0,material.as_mut_ptr(),16,0)},STATUS_SUCCESS);
+        let nonce=[0x28u8;12];let mut tag=[0u8;16];
+        let mut info=BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO{cbSize:core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as ULONG,dwInfoVersion:1,pbNonce:nonce.as_ptr() as *mut u8,cbNonce:12,pbAuthData:ptr::null_mut(),cbAuthData:0,pbTag:tag.as_mut_ptr(),cbTag:16,pbMacContext:ptr::null_mut(),cbMacContext:0,cbAAD:0,cbData:0,dwFlags:0};
+        let mut written=99;
+        assert_eq!(unsafe{BCryptEncrypt(key,ptr::null_mut(),0,(&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(),ptr::null_mut(),0,ptr::null_mut(),0,&mut written,0)},STATUS_SUCCESS);
+        assert_eq!(written,0);
+        assert_eq!(unsafe{BCryptDecrypt(key,ptr::null_mut(),0,(&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(),ptr::null_mut(),0,ptr::null_mut(),0,&mut written,0)},STATUS_SUCCESS);
+        assert_eq!(written,0);
         assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
