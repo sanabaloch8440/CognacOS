@@ -1,0 +1,41 @@
+use std::{fs,path::{Path,PathBuf},process::Command};
+
+fn run(args:&[&str])->String{Command::new(args[0]).args(&args[1..]).output().ok().map(|o|{let mut s=String::from_utf8_lossy(&o.stdout).to_string();if !o.stderr.is_empty(){s.push_str(&String::from_utf8_lossy(&o.stderr));}s.trim().to_owned()}).unwrap_or_default()}
+fn u16r(b:&[u8],o:usize)->Option<u16>{Some(u16::from_le_bytes(b.get(o..o+2)?.try_into().ok()?))}
+fn u32r(b:&[u8],o:usize)->Option<u32>{Some(u32::from_le_bytes(b.get(o..o+4)?.try_into().ok()?))}
+fn u64r(b:&[u8],o:usize)->Option<u64>{Some(u64::from_le_bytes(b.get(o..o+8)?.try_into().ok()?))}
+fn slice(b:&[u8],o:usize,n:usize)->Option<&[u8]>{b.get(o..o.checked_add(n)?)}
+fn pe_info(path:&Path)->Option<(u64,u32)>{let b=fs::read(path).ok()?;if slice(&b,0,2)?!=b"MZ"{return None}let pe=u32r(&b,0x3c)? as usize;if slice(&b,pe,4)?!=b"PE\0\0"{return None}let opt=pe.checked_add(24)?;if u16r(&b,opt)?!=0x20b{return None}Some((u64r(&b,opt+24)?,u32r(&b,opt+56)?))}
+#[derive(Clone)]struct Range{start:u64,end:u64,name:String}
+fn elf_exec_ranges(path:&Path)->Vec<Range>{let b=match fs::read(path){Ok(x)=>x,Err(_)=>return vec![]};if slice(&b,0,4)!=Some(b"\x7fELF")||b.get(4)!=Some(&2)||b.get(5)!=Some(&1){return vec![]}
+ let shoff=match u64r(&b,40){Some(x)=>x as usize,None=>return vec![]};let ents=u16r(&b,58).unwrap_or(0) as usize;let count=u16r(&b,60).unwrap_or(0) as usize;let namesidx=u16r(&b,62).unwrap_or(0) as usize;if ents<64||count==0||namesidx>=count{return vec![]}
+ let namesoff=match shoff.checked_add(namesidx*ents).and_then(|o|u64r(&b,o+24)).map(|x|x as usize){Some(x)=>x,None=>return vec![]};let namesz=match shoff.checked_add(namesidx*ents).and_then(|o|u64r(&b,o+32)).map(|x|x as usize){Some(x)=>x,None=>return vec![]};let names=match slice(&b,namesoff,namesz){Some(x)=>x,None=>return vec![]};
+ let mut out=Vec::new();for i in 0..count{let o=match shoff.checked_add(i*ents){Some(x)=>x,None=>break};let flags=u64r(&b,o+8).unwrap_or(0);let addr=u64r(&b,o+16).unwrap_or(0);let size=u64r(&b,o+32).unwrap_or(0);let no=u32r(&b,o).unwrap_or(u32::MAX) as usize;if flags&0x4==0||size==0||no>=names.len(){continue}let end=names[no..].iter().position(|x|*x==0).map(|n|no+n).unwrap_or(names.len());let name=String::from_utf8_lossy(&names[no..end]).to_string();if let Some(endaddr)=addr.checked_add(size){out.push(Range{start:addr,end:endaddr,name});}}
+ out
+}
+fn in_ranges(pc:u64,r:&[Range])->Option<&str>{r.iter().find(|x|x.start<=pc&&pc<x.end).map(|x|x.name.as_str())}
+fn useful_source_line(s:&str)->bool{s.lines().any(|l|{let l=l.trim();let Some((left,right))=l.rsplit_once(':') else{return false};let linepart=if right.parse::<u32>().is_ok(){left.rsplit_once(':').map(|(_,v)|v).unwrap_or(right)}else{right};let source=if right.parse::<u32>().is_ok(){left.rsplit_once(':').map(|(p,_)|p).unwrap_or(left)}else{left};source!="??"&&source!="??/??"&&linepart.parse::<u32>().map(|n|n>0).unwrap_or(false)})}
+fn resolve_elf(path:&Path,pc:u64,r:&[Range])->String{let Some(section)=in_ranges(pc,r)else{return String::new()};if !path.exists(){return String::new()}let p=path.to_string_lossy();let out=run(&["addr2line","-e",&p,"-f","-C","-i",&format!("0x{pc:x}")]);if !out.is_empty()&&useful_source_line(&out){return out.replace("??:0","[no line table: ?? :0]").replace("??:?","[no line table: ?? :?]")}
+ let gdb=run(&["gdb","-q","-batch","-ex",&format!("file {p}"),"-ex",&format!("info symbol 0x{pc:x}"),"-ex",&format!("info line *0x{pc:x}"),"-ex",&format!("x/8i 0x{pc:x}")]);if gdb.is_empty(){return format!("[{}:{section}] no DWARF line; GDB unavailable",path.display())}format!("[ELF {} section={section}; assembly/symbol fallback]\n{gdb}",path.display())}
+fn read(path:&Path)->String{fs::read_to_string(path).unwrap_or_default()}
+fn parse_hex(s:&str)->Option<u64>{u64::from_str_radix(s.trim_start_matches("0x"),16).ok()}
+fn resolve_pc(pc:u64,kernel:&Path,hal:&Path,ntdll:&Path,kr:&[Range],hr:&[Range],modules:&[u64],info:Option<(u64,u32)>)->String{
+ let loc=resolve_elf(kernel,pc,kr);if !loc.is_empty(){return format!("[ntoskrnl]\n{loc}")}let loc=resolve_elf(hal,pc,hr);if !loc.is_empty(){return format!("[HAL]\n{loc}")}
+ if let Some((_,size))=info{if size>0{if let Some(base)=modules.iter().rev().find(|b|**b<=pc&&pc<**b+size as u64){let rva=pc-*base;let p=ntdll.to_string_lossy();let sym=run(&["llvm-symbolizer",&format!("--obj={p}"),"--relative-address","--functions=linkage","--demangle",&format!("0x{rva:x}")]);if !sym.is_empty()&&useful_source_line(&sym){return format!("[NTDLL] base=0x{base:x} RVA=0x{rva:x}\n{sym}")}return format!("[NTDLL] base=0x{base:x} RVA=0x{rva:x}; symbol/source line unavailable")}}}
+ "[unmatched image] PC is outside kernel/HAL executable sections and no loaded NTDLL range matches; inspect captured trap frame/module map.".into()
+}
+pub fn run(args:&[String])->Result<(),String>{
+ let mut opts=std::collections::BTreeMap::new();let mut i=0;while i<args.len(){let k=args[i].strip_prefix("--").ok_or("expected --option")?.to_owned();let v=args.get(i+1).ok_or_else(||format!("--{k} requires a path"))?;opts.insert(k,v.clone());i+=2;}
+ for k in ["trace","serial","kernel","hal","ntdll","gdb"]{if !opts.contains_key(k){return Err(format!("missing --{k}"))}}
+ let path=|k:&str|PathBuf::from(&opts[k]);let trace=path("trace");let serial=path("serial");let kernel=path("kernel");let hal=path("hal");let ntdll=path("ntdll");let gdb=path("gdb");
+ let tr=read(&trace);let ser=read(&serial);let gd=read(&gdb);let kr=elf_exec_ranges(&kernel);let hr=elf_exec_ranges(&hal);let modules:Vec<u64>=ser.match_indices("module=0x").filter_map(|(i,_)|{let tail=&ser[i+9..];let n=tail.chars().take_while(|c|c.is_ascii_hexdigit()).collect::<String>();parse_hex(&n)}).collect();let info=pe_info(&ntdll);
+ let resolve=|pc|resolve_pc(pc,&kernel,&hal,&ntdll,&kr,&hr,&modules,info);
+ println!("=== GDB stopped-CPU RIPs -> source line / symbol ===");let mut pcs=Vec::new();let mut rest=gd.as_str();while let Some(i)=rest.find("rip 0x"){let tail=&rest[i+6..];let h=tail.chars().take_while(|c|c.is_ascii_hexdigit()).collect::<String>();if let Some(pc)=parse_hex(&h){if !pcs.contains(&pc){pcs.push(pc)}}rest=&tail[h.len()..];if h.is_empty(){break}}
+ if pcs.is_empty(){println!("No RIP register records found in GDB snapshot.")}for pc in pcs{println!("\nRIP=0x{pc:x}\n{}",resolve(pc))}
+ println!("\n=== QEMU exception PCs -> source lines / symbols ===");let mut events=Vec::<(u32,u64,u64)>::new();let mut rest=tr.as_str();while let Some(i)=rest.find("v="){let tail=&rest[i+2..];let mut p=tail.split_whitespace();let v=p.next().unwrap_or("").trim_end_matches(|c:char|!c.is_ascii_hexdigit());let epos=tail.find("e=");let ipos=tail.find("pc=");if let (Some(v),Some(ep),Some(ip))=(parse_hex(v),epos,ipos){if v<32{let eraw=&tail[ep+2..];let e=eraw.chars().take_while(|c|c.is_ascii_hexdigit()).collect::<String>();let praw=&tail[ip+3..];let pc=praw.chars().take_while(|c|c.is_ascii_hexdigit()).collect::<String>();if let (Some(e),Some(pc))=(parse_hex(&e),parse_hex(&pc)){events.push((v as u32,e,pc));}}}rest=&tail[tail.len().min(1)..];if tail.is_empty(){break}}
+ if events.is_empty(){println!("No x86 exception vectors 0-31 were recorded; this may be a hang/spin path rather than a CPU exception.");return Ok(())}
+ let mut latest=Vec::new();for e in events.iter().rev(){if !latest.contains(e){latest.push(*e)}if latest.len()==30{break}}
+ for (v,e,pc) in latest{println!("\nvector=0x{v:02x} error=0x{e:x} PC=0x{pc:x}\n{}",resolve(pc))}
+ Ok(())
+}
+#[cfg(test)]mod tests{use super::*;#[test]fn useful_source_line_zero_column(){assert!(useful_source_line("RtlIntegerToUnicodeString\n/home/runner/ntdll/src/native/rtl_string.rs:398:0"));}#[test]fn rejects_unknown_lines(){assert!(!useful_source_line("probe\n??:0"));assert!(!useful_source_line("probe\n??:?"));assert!(!useful_source_line("probe symbol only"));}#[test]fn section_ranges_half_open(){let r=vec![Range{start:0x1000,end:0x1100,name:".text".into()}];assert_eq!(in_ranges(0x1000,&r),Some(".text"));assert_eq!(in_ranges(0x10ff,&r),Some(".text"));assert_eq!(in_ranges(0x1100,&r),None);assert_eq!(in_ranges(0xfff,&r),None);}#[test]fn nonmatching_pc_does_not_require_image(){assert!(resolve_elf(Path::new("/does/not/exist"),0xdeadbeef,&[Range{start:0x1000,end:0x2000,name:".text".into()}]).is_empty());}}
