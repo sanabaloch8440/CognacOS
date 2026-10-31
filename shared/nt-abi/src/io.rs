@@ -31,9 +31,9 @@ impl Default for IO_STATUS_BLOCK {
     }
 }
 
-pub type PDRIVER_DISPATCH = Option<unsafe extern "system" fn(*mut DEVICE_OBJECT, *mut IRP) -> NTSTATUS>;
-pub type PDRIVER_UNLOAD = Option<unsafe extern "system" fn(*mut DRIVER_OBJECT)>;
-pub type PIO_COMPLETION_ROUTINE = Option<unsafe extern "system" fn(*mut DEVICE_OBJECT, *mut IRP, PVOID) -> NTSTATUS>;
+pub type PDRIVER_DISPATCH = Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT, *mut IRP) -> NTSTATUS>;
+pub type PDRIVER_UNLOAD = Option<unsafe extern "win64" fn(*mut DRIVER_OBJECT)>;
+pub type PIO_COMPLETION_ROUTINE = Option<unsafe extern "win64" fn(*mut DEVICE_OBJECT, *mut IRP, PVOID) -> NTSTATUS>;
 
 #[repr(C)]
 pub struct DRIVER_OBJECT {
