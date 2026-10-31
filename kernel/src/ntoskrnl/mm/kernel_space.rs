@@ -21,6 +21,21 @@ const DRIVER_SLOT_PAGES:usize=(DRIVER_SLOT_SIZE/PAGE) as usize;
 fn is_driver_slot_base(address:u64)->bool{DRIVER_SLOT_OFFSETS.iter().any(|offset|BASE+*offset==address)}
 pub fn is_driver_image_base(address:u64)->bool{is_driver_slot_base(address)}
 fn is_driver_reserved_page(page:usize)->bool{let offset=page as u64*PAGE;DRIVER_SLOT_OFFSETS.iter().any(|start|offset>=*start&&offset<*start+DRIVER_SLOT_SIZE)}
+/// A fixed driver slot is usable only as one allocation beginning at its exact base.
+fn driver_slot_extent(start:usize,pages:usize)->bool{pages!=0&&DRIVER_SLOT_OFFSETS.iter().any(|offset|start==(*offset/PAGE) as usize&&pages<=DRIVER_SLOT_PAGES)}
+fn overlaps_driver_slot(start:usize,pages:usize)->bool{let Some(end)=start.checked_add(pages)else{return true};DRIVER_SLOT_OFFSETS.iter().any(|offset|{let slot_start=(*offset/PAGE) as usize;let slot_end=slot_start+DRIVER_SLOT_PAGES;start<slot_end&&slot_start<end})}
+/// Generic allocations must not rely solely on the mutable reservation bitmap.
+fn find_free_extent(bits:&[u64;WORDS],pages:usize)->Option<usize>{
+ if pages==0||pages>PAGES{return None}
+ let mut start=0usize;
+ while start.checked_add(pages).is_some_and(|end|end<=PAGES){
+  let mut n=0usize;
+  while n<pages{let page=start+n;if is_driver_reserved_page(page)||bits[page/64]&(1u64<<(page%64))!=0{break}n+=1;}
+  if n==pages{return Some(start)}
+  start=start.saturating_add(n+1);
+ }
+ None
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error { NotInitialized, Invalid, NoVirtualSpace, NoPhysicalMemory, AlreadyMapped, NotMapped, TableFull }
@@ -388,9 +403,7 @@ pub(crate) fn reclaim_pageable_address(address:u64)->bool {
 pub fn allocate_pages(pages:usize)->Result<*mut u8,Error>{
  if pages==0||pages>MAX_EXTENT_PAGES{return Err(Error::Invalid)} let root=ROOT.load(Ordering::Acquire);if root==0{return Err(Error::NotInitialized)}
  let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
- let bits=unsafe{&mut *BITS.0.get()};let mut start=0;let mut found=None;
- while start+pages<=PAGES {let mut n=0;while n<pages&&bits[(start+n)/64]&(1u64<<((start+n)%64))==0{n+=1}if n==pages{found=Some(start);break}start+=n+1;}
- let start=found.ok_or(Error::NoVirtualSpace)?;for n in 0..pages{bits[(start+n)/64]|=1u64<<((start+n)%64)}
+ let bits=unsafe{&mut *BITS.0.get()};let start=find_free_extent(bits,pages).ok_or(Error::NoVirtualSpace)?;for n in 0..pages{bits[(start+n)/64]|=1u64<<((start+n)%64)}
  let va=BASE+start as u64*PAGE;let mut mapped=0;
  while mapped<pages {
   let pa=match unsafe{crate::memory::allocate_data_page()} {Ok(p)=>p,Err(_)=>{if reclaim_one_locked(root,None)||reclaim_one_locked(root,None){match unsafe{crate::memory::allocate_data_page()}{Ok(p)=>p,Err(_)=>break}}else{break}}};
@@ -410,7 +423,9 @@ pub fn allocate_pages_at(address:u64,pages:usize)->Result<*mut u8,Error>{
  if start.checked_add(pages).is_none_or(|end|end>PAGES){return Err(Error::NoVirtualSpace)}
  let _g=Guard::lock();let table=unsafe{&mut *TABLE.0.get()};let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
  let bits=unsafe{&mut *BITS.0.get()};let mapped_bits=unsafe{&*MAPPED_BITS.0.get()};
- let reserved=is_driver_slot_base(address)&&pages<=DRIVER_SLOT_PAGES;
+ let reserved=driver_slot_extent(start,pages);
+  if overlaps_driver_slot(start,pages)&&!reserved{return Err(Error::AlreadyMapped)}
+  if table.iter().any(|e|e.live&&start<e.start+e.pages&&e.start<start+pages){return Err(Error::AlreadyMapped)}
  if (start..start+pages).any(|n|(bits[n/64]&(1u64<<(n%64))!=0&&!reserved)||mapped_bits[n/64]&(1u64<<(n%64))!=0){return Err(Error::AlreadyMapped)}
  for n in start..start+pages{bits[n/64]|=1u64<<(n%64);}
  let mut mapped=0usize;
@@ -579,9 +594,7 @@ pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
  let _g=Guard::lock();
  let table=unsafe{&mut *TABLE.0.get()};
  let ti=table.iter().position(|e|!e.live).ok_or(Error::TableFull)?;
- let bits=unsafe{&mut *BITS.0.get()};let mut start=0usize;let mut found=None;
- while start+pages<=PAGES { let mut n=0;while n<pages&&bits[(start+n)/64]&(1u64<<((start+n)%64))==0{n+=1;}if n==pages{found=Some(start);break;}start+=n+1; }
- let start=found.ok_or(Error::NoVirtualSpace)?;
+ let bits=unsafe{&mut *BITS.0.get()};let start=find_free_extent(bits,pages).ok_or(Error::NoVirtualSpace)?;
  for n in 0..pages { bits[(start+n)/64]|=1u64<<((start+n)%64); unsafe { (&mut *PAGE_FLAGS.0.get())[start+n] = 1; } }
  table[ti]=Extent{start,pages,pageable:true,owns_frames:true,live:true};
  Ok((BASE+start as u64*PAGE) as *mut u8)
@@ -924,4 +937,6 @@ pub fn is_pageable_address(address:u64)->bool {
 }
 
 pub fn allocation_pages(ptr:*const u8)->Option<usize>{let va=ptr as u64;if ptr.is_null()||va<BASE||(va-BASE)&(PAGE-1)!=0{return None}let start=((va-BASE)/PAGE)as usize;let _g=Guard::lock();unsafe{&*TABLE.0.get()}.iter().find(|e|e.live&&e.start==start).map(|e|e.pages)}
-#[cfg(test)]mod tests{use super::*;#[test]fn arena_geometry(){assert_eq!(BASE&(PAGE-1),0);assert_eq!(PAGES*PAGE as usize,1usize<<33);assert_eq!(ix(BASE)[0],256);assert_eq!(ix(BASE+PAGE)[3],1);for offset in DRIVER_SLOT_OFFSETS{assert!(is_driver_slot_base(BASE+offset));assert!(offset/PAGE+DRIVER_SLOT_PAGES as u64<=PAGES as u64);}}}
+#[cfg(test)]mod tests{use super::*;#[test]fn arena_geometry(){assert_eq!(BASE&(PAGE-1),0);assert_eq!(PAGES*PAGE as usize,1usize<<33);assert_eq!(ix(BASE)[0],256);assert_eq!(ix(BASE+PAGE)[3],1);for offset in DRIVER_SLOT_OFFSETS{assert!(is_driver_slot_base(BASE+offset));assert!(offset/PAGE+DRIVER_SLOT_PAGES as u64<=PAGES as u64);}}
+#[test]fn generic_allocations_never_enter_driver_slots(){let bits=[0u64;WORDS];for pages in [1usize,2,3,8,16,DRIVER_SLOT_PAGES]{let mut occupied=bits;let mut last=0usize;for _ in 0..32{let Some(start)=find_free_extent(&occupied,pages)else{break};assert!(!overlaps_driver_slot(start,pages));last=start+pages;for page in start..last{occupied[page/64]|=1u64<<(page%64);}}assert!(last<=PAGES);}}
+#[test]fn fixed_driver_slot_requires_exact_base_and_bounded_extent(){for offset in DRIVER_SLOT_OFFSETS{let start=(offset/PAGE) as usize;assert!(driver_slot_extent(start,1));assert!(driver_slot_extent(start,DRIVER_SLOT_PAGES));assert!(!driver_slot_extent(start+1,1));assert!(!driver_slot_extent(start,DRIVER_SLOT_PAGES+1));assert!(overlaps_driver_slot(start+1,1));assert!(overlaps_driver_slot(start,DRIVER_SLOT_PAGES));}}}
