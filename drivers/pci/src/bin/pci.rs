@@ -24,6 +24,9 @@ struct PciState {
     ready: AtomicBool,
     bridge_count: AtomicUsize,
     xhci_count: AtomicUsize,
+    function_count: AtomicUsize,
+    functions: UnsafeCell<[[Option<pci::PciFunction>; pci::MAX_PCI_FUNCTIONS]; MAX_WINDOWS]>,
+    function_counts: UnsafeCell<[usize; MAX_WINDOWS]>,
     bridges: UnsafeCell<[[Option<pci::PciBridgeRange>; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS]>,
     bridge_counts: UnsafeCell<[usize; MAX_WINDOWS]>,
     xhci: UnsafeCell<[[Option<pci::XhciPciFunction>; pci::MAX_XHCI_FUNCTIONS]; MAX_WINDOWS]>,
@@ -34,6 +37,9 @@ static STATE: PciState = PciState {
     ready: AtomicBool::new(false),
     bridge_count: AtomicUsize::new(0),
     xhci_count: AtomicUsize::new(0),
+    function_count: AtomicUsize::new(0),
+    functions: UnsafeCell::new([[None; pci::MAX_PCI_FUNCTIONS]; MAX_WINDOWS]),
+    function_counts: UnsafeCell::new([0; MAX_WINDOWS]),
     bridges: UnsafeCell::new([[None; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS]),
     bridge_counts: UnsafeCell::new([0; MAX_WINDOWS]),
     xhci: UnsafeCell::new([[None; pci::MAX_XHCI_FUNCTIONS]; MAX_WINDOWS]),
@@ -57,6 +63,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
 
     let mut total_bridges = 0usize;
     let mut total_xhci = 0usize;
+    let mut total_functions = 0usize;
 
     for i in 0..handoff.window_count as usize {
         let window = &handoff.windows[i];
@@ -75,7 +82,12 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
             Ok(v) => v,
             Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
         };
+        let function_count = match unsafe { pci::scan_functions(window, &mut (*STATE.functions.get())[i]) } {
+            Ok(v) => v,
+            Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+        };
         unsafe {
+            (*STATE.function_counts.get())[i] = function_count;
             (*STATE.bridges.get())[i] = bridges;
             (*STATE.bridge_counts.get())[i] = bridge_count;
             (*STATE.xhci.get())[i] = xhci;
@@ -87,10 +99,14 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         total_xhci = match total_xhci.checked_add(xhci_count) {
             Some(v) => v, None => return STATUS_INSUFFICIENT_RESOURCES,
         };
+        total_functions = match total_functions.checked_add(function_count) {
+            Some(v) => v, None => return STATUS_INSUFFICIENT_RESOURCES,
+        };
     }
 
     STATE.bridge_count.store(total_bridges, Ordering::Release);
     STATE.xhci_count.store(total_xhci, Ordering::Release);
+    STATE.function_count.store(total_functions, Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
     STATUS_SUCCESS
 }
@@ -102,6 +118,37 @@ pub extern "win64" fn CognacPciBridgeCount() -> usize {
 #[unsafe(no_mangle)]
 pub extern "win64" fn CognacPciXhciCount() -> usize {
     if STATE.ready.load(Ordering::Acquire) { STATE.xhci_count.load(Ordering::Acquire) } else { 0 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "win64" fn CognacPciFunctionCount() -> usize {
+    if STATE.ready.load(Ordering::Acquire) { STATE.function_count.load(Ordering::Acquire) } else { 0 }
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciFindAhci(output: *mut pci::PciFunction) -> i32 {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    for window in 0..MAX_WINDOWS {
+        let count = unsafe { (*STATE.function_counts.get())[window] };
+        let functions = unsafe { &(*STATE.functions.get())[window] };
+        for function in functions.iter().take(count).flatten() {
+            if function.header.is_ahci() { unsafe { output.write(*function); } return STATUS_SUCCESS; }
+        }
+    }
+    STATUS_NOT_FOUND
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciFindNvme(output: *mut pci::PciFunction) -> i32 {
+    if output.is_null() { return STATUS_INVALID_PARAMETER; }
+    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    for window in 0..MAX_WINDOWS {
+        let count = unsafe { (*STATE.function_counts.get())[window] };
+        let functions = unsafe { &(*STATE.functions.get())[window] };
+        for function in functions.iter().take(count).flatten() {
+            if function.header.is_nvme() { unsafe { output.write(*function); } return STATUS_SUCCESS; }
+        }
+    }
+    STATUS_NOT_FOUND
 }
 
 #[used]
