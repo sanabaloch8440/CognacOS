@@ -397,6 +397,7 @@ fn apply_imports(image:&mut[u8],rva:u32,size:u32,resolver:crate::pe::ImportResol
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum RegistryDriverLoadError{
  ServiceConfig(crate::ntoskrnl::cm::driver_config::Error),
+ ServiceMetadata(crate::ntoskrnl::cm::service_config::ExtendedConfigError),
  StartTypeUnsupported,NotKernelDriver,ImageResolutionFailed,ImageTooLarge,
  Load(DriverLoadError),
 }
@@ -416,10 +417,15 @@ pub unsafe fn load_registered_service_with_resolver<'h,'p,F>(
  symbol_resolver:crate::pe::ImportResolver,
 )->Result<LoadedDriver,RegistryDriverLoadError>
 where F:FnMut(&[u16],&mut[u8])->Option<usize>{
- let config=crate::ntoskrnl::cm::driver_config::query_service(hive,service_name,path_buffer)
-  .map_err(RegistryDriverLoadError::ServiceConfig)?;
+ let metadata=crate::ntoskrnl::cm::service_config::query_service_details(hive,service_name,path_buffer)
+  .map_err(RegistryDriverLoadError::ServiceMetadata)?;
+ let config=metadata.base;
+ // The existing early-boot loader intentionally handles only Boot/System-start
+ // services. Auto/Demand services are parsed here but deferred to the future
+ // driver initialization/PnP phases rather than being loaded prematurely.
  if config.start>1{return Err(RegistryDriverLoadError::StartTypeUnsupported);}
- if config.service_type!=1&&config.service_type!=2{return Err(RegistryDriverLoadError::NotKernelDriver);}
+ if config.service_type!=crate::ntoskrnl::cm::service_config::SERVICE_KERNEL_DRIVER
+  &&config.service_type!=crate::ntoskrnl::cm::service_config::SERVICE_FILE_SYSTEM_DRIVER{return Err(RegistryDriverLoadError::NotKernelDriver);}
  let len=resolve_image(config.image_path,image_buffer).ok_or(RegistryDriverLoadError::ImageResolutionFailed)?;
  if len==0||len>image_buffer.len(){return Err(RegistryDriverLoadError::ImageTooLarge);}
  unsafe{load_allocated_with_resolver(&image_buffer[..len],driver_object,context,symbol_resolver)}.map_err(RegistryDriverLoadError::Load)
