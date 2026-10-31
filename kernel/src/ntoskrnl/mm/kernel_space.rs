@@ -578,6 +578,9 @@ pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
  Ok((BASE+start as u64*PAGE) as *mut u8)
 }
 
+/// Whether the kernel virtual-memory root has been installed.
+pub fn is_initialized()->bool { ROOT.load(Ordering::Acquire)!=0 }
+
 /// Ensure a RAM direct-map leaf exists before a caller dereferences its alias.
 /// Page-table frames come from the low identity-mapped allocator, so creating a
 /// high-memory alias never recursively faults while zeroing a page-table page.
