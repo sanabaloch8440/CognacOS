@@ -44,7 +44,7 @@ fn validate_manifest(path: &Path) {
 
 fn update_windows11_exports(check: bool) {
     const URL: &str = "https://raw.githubusercontent.com/learn-more/winexports/master/data/exports/nt100_x64_26200/ntdll.dll.json";
-    let output = root.join("ntdll/exports/windows-11-x64-exports.txt");
+    let output = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../ntdll/exports/windows-11-x64-exports.txt");
     let fetched = std::process::Command::new("curl").args(["-fsSL", "-A", "CognacOS-export-audit/1.0", URL]).output()
         .unwrap_or_else(|e| fail!("could not run curl to refresh Windows export inventory: {e}"));
     if !fetched.status.success() { fail!("download of Windows export reference failed: {}", String::from_utf8_lossy(&fetched.stderr)); }
