@@ -20,7 +20,7 @@ use core::{ffi::c_void, ptr};
 use std::{boxed::Box, collections::{HashMap,HashSet}, sync::{Mutex, OnceLock}, vec::Vec};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use ml_kem::{MlKem512, MlKem768, MlKem1024};
-use ml_kem::kem::{Decapsulate as MlKemDecapsulate, Encapsulate as MlKemEncapsulate, Kem as MlKemKem, KeyExport as MlKemKeyExport};
+use ml_kem::kem::{Decapsulate as MlKemDecapsulate, Encapsulate as MlKemEncapsulate, FromSeed as MlKemFromSeed, Kem as MlKemKem, KeyExport as MlKemKeyExport};
 
 pub type NTSTATUS = i32;
 pub type ULONG = u32;
