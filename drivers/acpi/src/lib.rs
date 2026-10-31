@@ -365,9 +365,12 @@ impl DmarUnit {
 pub struct DmarInfo {
     pub host_address_width:u8,pub interrupt_remapping_supported:bool,
     pub units:[DmarUnit;8],pub unit_count:usize,
+    /// Parsed RMRRs from this exact, checksum-validated DMAR table.
+    pub rmrr:DmarRmrrInfo,
 }
 impl DmarInfo {
-    pub const EMPTY:Self=Self{host_address_width:0,interrupt_remapping_supported:false,units:[DmarUnit::EMPTY;8],unit_count:0};
+    pub const EMPTY:Self=Self{host_address_width:0,interrupt_remapping_supported:false,
+        units:[DmarUnit::EMPTY;8],unit_count:0,rmrr:DmarRmrrInfo::EMPTY};
 }
 /// Parse Intel VT-d DMAR DRHD structures and their bounded PCI device scopes.
 pub fn parse_dmar(bytes:&[u8])->Result<DmarInfo,AcpiError>{
@@ -416,6 +419,7 @@ pub fn parse_dmar(bytes:&[u8])->Result<DmarInfo,AcpiError>{
         }
         off+=size;
     }
+    out.rmrr=parse_dmar_rmrr(bytes)?;
     Ok(out)
 }
 /// Determine whether a DRHD explicitly owns a requester. Scope type 1 is a
