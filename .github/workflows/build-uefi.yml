@@ -98,13 +98,13 @@ jobs:
           def_file="$GITHUB_WORKSPACE/dlls/bcrypt/exports/bcrypt-x64.def"
           test -s "$def_file"
           CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc RUSTFLAGS="-C panic=abort -C link-arg=$def_file" cargo build --manifest-path dlls/bcrypt/Cargo.toml --target x86_64-pc-windows-gnu --release --lib
-          mapfile -t dll_candidates < <(find target/x86_64-pc-windows-gnu/release -maxdepth 2 -type f \( -name 'bcrypt.dll' -o -name 'libbcrypt.dll' \) -print)
-          if [[ "${#dll_candidates[@]}" -ne 1 ]]; then
-            echo "Expected exactly one bcrypt cdylib; found ${#dll_candidates[@]}."
+          dll_path="target/x86_64-pc-windows-gnu/release/bcrypt.dll"
+          if [[ ! -s "$dll_path" ]]; then
+            echo "Expected bcrypt cdylib was not produced at $dll_path."
             find target/x86_64-pc-windows-gnu/release -maxdepth 2 -type f -printf '%p\n' | sort
             exit 1
           fi
-          cp "${dll_candidates[0]}" build/bcrypt/bcrypt.dll
+          cp "$dll_path" build/bcrypt/bcrypt.dll
           llvm-readobj --file-headers --coff-exports build/bcrypt/bcrypt.dll | tee build/bcrypt/exports.txt
           grep -Fq "BCryptOpenAlgorithmProvider" build/bcrypt/exports.txt
           grep -Fq "BCryptGenRandom" build/bcrypt/exports.txt
