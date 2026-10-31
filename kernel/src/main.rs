@@ -21,6 +21,7 @@ use cognacos_pci as pci;
 mod dma;
 mod hal;
 mod smp;
+mod platform_drivers;
 pub(crate) use ntoskrnl::ke::{dispatcher, scheduler, thread};
 pub(crate) use ntoskrnl::ob::object_table as object;
 #[path = "ntoskrnl/io/runtime.rs"]
@@ -238,6 +239,7 @@ fn poll_ps2_keyboard_input(){
    }
   }
   KBD_STACK_READY.store(true,Ordering::Release);
+  let _ = platform_drivers::mark_ready(platform_drivers::Stage::KeyboardStack);
   unsafe{serial_write(b"KEYBOARD STACK: PS/2 controller + KbdClass queue initialized; preparing real IRQ1 route.\\r\\n");
   if PS2_IRQ_ROUTE_READY.load(Ordering::Acquire) { let _=enable_ps2_irq_route(); }}
  }
@@ -408,7 +410,9 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
  let requester_key=((path.segment as u32)<<16)|((path.endpoint_bus as u32)<<8)
     |((path.endpoint_device as u32)<<3)|path.endpoint_function as u32;
  if dma::iommu::vtd::segment_is_enabled(path.segment){
-  return dma::iommu::available()&&VT_D_REQUESTER_OWNER.load(core::sync::atomic::Ordering::Acquire)==requester_key;
+  let ready=dma::iommu::available()&&VT_D_REQUESTER_OWNER.load(core::sync::atomic::Ordering::Acquire)==requester_key;
+  if ready { let _ = platform_drivers::mark_ready(platform_drivers::Stage::VtdRequester); }
+  return ready;
  }
  let rsdp=acpi::rsdp_address();
  if rsdp==0{unsafe{serial_write(b"VT-d: RSDP unavailable; DMA remains fail-closed.\r\n");}return false}
@@ -473,6 +477,7 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
   }
  }
  VT_D_REQUESTER_OWNER.store(requester_key,core::sync::atomic::Ordering::Release);
+ let _ = platform_drivers::mark_ready(platform_drivers::Stage::VtdRequester);
  unsafe{serial_write(b"VT-d: exact DRHD and scoped RMRR mappings installed for the full PCI bridge path.\r\n");}
  true
 }
@@ -706,6 +711,7 @@ fn bind_xhci_pe_driver()->bool {
                     if let Some(set)=device_table.set_bus_master { if set(resources.device_object,false).code!=0 { loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); } } }
                     loop { core::arch::asm!("cli; hlt",options(nomem,nostack)); }
                 }
+                let _ = platform_drivers::mark_ready(platform_drivers::Stage::XhciController);
                 let ext=&*extension;
                 serial_write(b"xHCI runtime: events="); serial_write_hex(ext.event_count.load(Ordering::Acquire));
                 serial_write(b" port_changes="); serial_write_hex(ext.port_change_count.load(Ordering::Acquire)); serial_write(b"\r\n");
@@ -1415,6 +1421,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         if info.rsdp_address != 0 {
             match acpi::discover_madt(info.rsdp_address) {
                 Ok(firmware_madt) => {
+                    let _ = platform_drivers::mark_ready(platform_drivers::Stage::Acpi);
                     let discovery = (|| -> Result<usize, hal::HalError> {
                         if hal::cpu_index_for_apic(bsp_apic_id).is_none() { hal::initialize_bsp(bsp_apic_id)?; }
                         let mut discovered = 0usize;
