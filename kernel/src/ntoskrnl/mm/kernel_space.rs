@@ -891,7 +891,7 @@ pub fn self_test() -> bool {
    let protection_ok=matches!(restored_protection,Ok(m) if m.writable==writable&&m.executable==executable&&!m.user_accessible);
    let write_ok=if writable {
     unsafe{swap_test.write(first.wrapping_add(1));}
-    unsafe{swap_test.read()}==first.wrapping_add(1)
+    (unsafe { swap_test.read() }) == first.wrapping_add(1)
    } else { true };
    if !restored||!is_resident||!protection_ok||!write_ok||free_pages(swap_test,1).is_err(){let _=free_pages(p,3);return self_test_fail(line!());}
   }
