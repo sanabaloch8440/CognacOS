@@ -795,6 +795,18 @@ unsafe extern "C" fn service_free_dma(device_object:u64,cpu:u64,device_address:u
     }
 }
 
+unsafe extern "C" fn service_validate_dma(device_object:u64,cpu:u64,device_address:u64,size:u64)->DriverHalStatus {
+    if device_object==0||cpu==0||device_address==0||size==0 {
+        return driver_hal_invalid();
+    }
+    if crate::dma::iommu::common_dma_mapping_valid(device_object as usize,cpu,device_address,size) {
+        driver_hal_success()
+    } else {
+        driver_hal_unsupported()
+    }
+}
+
+
 
 /// Per-vector callback storage. The ISR only queues a KDPC; the executive
 /// dispatches it after the common interrupt dispatcher has issued APIC EOI.
@@ -954,6 +966,7 @@ pub fn driver_device_service_table()->cognacos_hal_contract::DeviceServiceTable 
         version:cognacos_hal_contract::DEVICE_SERVICES_VERSION,
         allocate_dma:if dma_ready {Some(service_allocate_dma)} else {None},
         free_dma:if dma_ready {Some(service_free_dma)} else {None},
+        validate_dma:if dma_ready {Some(service_validate_dma)} else {None},
         register_interrupt:if irq_ready {Some(service_register_interrupt)} else {None},
         unregister_interrupt:if irq_ready {Some(service_unregister_interrupt)} else {None},
         set_interrupt_enabled:if irq_ready {Some(service_set_interrupt_enabled)} else {None},
