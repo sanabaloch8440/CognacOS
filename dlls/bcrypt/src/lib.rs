@@ -60,8 +60,8 @@ fn handle_table() -> &'static Mutex<HashMap<usize, RegisteredHandle>> {
     HANDLE_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 fn register_handle(value: RegisteredHandle) -> Result<*mut c_void, NTSTATUS> {
-    let token = NEXT_HANDLE.fetch_add(16, Ordering::Relaxed);
-    if token == 0 || token > usize::MAX - 16 { return Err(STATUS_NO_MEMORY); }
+    let token = NEXT_HANDLE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(16)).map_err(|_| STATUS_NO_MEMORY)?;
+    if token == 0 { return Err(STATUS_NO_MEMORY); }
     handle_table().lock().map_err(|_| STATUS_NO_MEMORY)?.insert(token, value);
     Ok(token as *mut c_void)
 }
@@ -181,10 +181,6 @@ pub unsafe extern "system" fn BCryptGenRandom(algorithm: *mut c_void, buffer: *m
 }
 
 #[no_mangle]
-
-#[no_mangle]
-
-#[no_mangle]
 pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*const u16,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
  if property.is_null()||result_len.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let name=match unsafe{read_property_name(property)}{Ok(v)=>v,Err(e)=>return e};let p=match algorithm_handle(object){Ok(v)=>v,Err(e)=>return e};
  let (kind,value,wide)=if p.cipher {match name.as_str(){"ObjectLength"=>(0,0,""),"BlockLength"=>(0,16,""),"AlgorithmName"=>(1,0,"AES"),"ChainingMode" if p.gcm=>(1,0,"ChainingModeGCM"),_=>return STATUS_NOT_SUPPORTED}}
@@ -192,6 +188,7 @@ pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*con
  let required=if kind==0{4}else{(wide.encode_utf16().count() as u32+1)*2};unsafe{result_len.write(required)};if output.is_null()||output_len<required{return STATUS_BUFFER_TOO_SMALL;}if kind==0{unsafe{write_u32(output,value)}}else{unsafe{write_wide(output,wide)}}STATUS_SUCCESS
 }
 
+#[no_mangle]
 pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(prf:*mut c_void,password:*const u8,password_len:ULONG,salt:*const u8,salt_len:ULONG,iterations:ULONG,derived:*mut u8,derived_len:ULONG,flags:ULONG)->NTSTATUS {
  if (password.is_null()&&password_len!=0)||(salt.is_null()&&salt_len!=0)||(derived.is_null()&&derived_len!=0)||iterations==0||flags!=0{return STATUS_INVALID_PARAMETER;}
  let p=match algorithm_handle(prf){Ok(v)=>v,Err(e)=>return e};if !p.hmac||p.cipher{return STATUS_INVALID_PARAMETER;}
@@ -262,8 +259,6 @@ fn enum_write_wide(base: *mut u8, offset: usize, value: &str) -> *mut u16 {
 /// Enumerates the SHA-2 hash providers and the system RNG implemented here.
 /// Only operations actually supported by this DLL are advertised.
 #[no_mangle]
-
-#[no_mangle]
 pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut ULONG,list:*mut *mut BcryptAlgorithmIdentifier,flags:ULONG)->NTSTATUS {
  const H:ULONG=2;const R:ULONG=32;if count.is_null()||list.is_null()||flags!=0||operations==0||operations&!(H|R)!=0{return STATUS_INVALID_PARAMETER;}
  let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&H!=0{e.extend([("SHA256",H),("SHA384",H),("SHA512",H)]);}if operations&R!=0{e.push(("RNG",R));}
@@ -287,8 +282,6 @@ pub unsafe extern "system" fn BCryptFreeBuffer(buffer: *mut c_void) {
 
 
 #[no_mangle]
-
-#[no_mangle]
 pub unsafe extern "system" fn BCryptSetProperty(object:*mut c_void,property:*const u16,input:*const u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
  if property.is_null()||input.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let n=match unsafe{read_property_name(property)}{Ok(v)=>v,Err(e)=>return e};if n!="ChainingMode"{return STATUS_NOT_SUPPORTED;}
  let val=unsafe{core::slice::from_raw_parts(input,input_len as usize)};let expected:Vec<u16>="ChainingModeGCM".encode_utf16().chain(core::iter::once(0)).collect();if val.len()!=expected.len()*2{return STATUS_NOT_SUPPORTED;}for(i,u)in expected.iter().enumerate(){if unsafe{ptr::read_unaligned(input.add(i*2).cast::<u16>())}!=*u{return STATUS_NOT_SUPPORTED;}}
@@ -309,7 +302,7 @@ pub unsafe extern "system" fn BCryptGenerateSymmetricKey(algorithm:*mut c_void,o
 }
 unsafe fn auth_info(info:*mut c_void)->Result<(Vec<u8>,Vec<u8>,*mut u8,usize),NTSTATUS>{
  if info.is_null(){return Err(STATUS_INVALID_PARAMETER);}let i=unsafe{&mut *info.cast::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()};
- if i.cbSize as usize!=core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()||i.dwInfoVersion!=1||i.pbNonce.is_null()||i.cbNonce!=12||i.pbTag.is_null()||i.cbTag!=16||(!i.pbAuthData.is_null()&&i.cbAuthData>0)==false&&i.cbAuthData>0||!i.pbMacContext.is_null()||i.cbMacContext!=0||i.dwFlags!=0{return Err(STATUS_INVALID_PARAMETER);}
+ if i.cbSize as usize!=core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()||i.dwInfoVersion!=1||i.pbNonce.is_null()||i.cbNonce!=12||i.pbTag.is_null()||i.cbTag!=16||(i.pbAuthData.is_null()&&i.cbAuthData!=0)||!i.pbMacContext.is_null()||i.cbMacContext!=0||i.dwFlags!=0{return Err(STATUS_INVALID_PARAMETER);}
  let nonce=unsafe{core::slice::from_raw_parts(i.pbNonce,12)}.to_vec();let aad=if i.cbAuthData==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(i.pbAuthData,i.cbAuthData as usize)}.to_vec()};Ok((nonce,aad,i.pbTag,i.cbTag as usize))
 }
 #[no_mangle]
