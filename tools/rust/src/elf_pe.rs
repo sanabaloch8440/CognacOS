@@ -140,6 +140,30 @@ mod tests{
  use super::*;
  #[test] fn rejects_non_elf(){assert!(convert_elf64_to_pe32plus(b"not elf",BASE,false).is_err());}
  #[test] fn rejects_truncated_elf(){let mut b=vec![0;64];b[..4].copy_from_slice(b"\x7fELF");assert!(convert_elf64_to_pe32plus(&b,BASE,false).is_err());}
+ #[test] fn appends_manifest_exports_with_sparse_ordinals(){
+  let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
+  b[16..18].copy_from_slice(&2u16.to_le_bytes());b[18..20].copy_from_slice(&62u16.to_le_bytes());
+  b[24..32].copy_from_slice(&(BASE+0x1000).to_le_bytes());b[32..40].copy_from_slice(&64u64.to_le_bytes());
+  b[52..54].copy_from_slice(&64u16.to_le_bytes());b[54..56].copy_from_slice(&56u16.to_le_bytes());b[56..58].copy_from_slice(&1u16.to_le_bytes());
+  let p=64usize;b[p..p+4].copy_from_slice(&1u32.to_le_bytes());b[p+4..p+8].copy_from_slice(&5u32.to_le_bytes());
+  b[p+8..p+16].copy_from_slice(&0x1000u64.to_le_bytes());b[p+16..p+24].copy_from_slice(&(BASE+0x1000).to_le_bytes());
+  b[p+32..p+40].copy_from_slice(&4u64.to_le_bytes());b[p+40..p+48].copy_from_slice(&0x1000u64.to_le_bytes());
+  b[0x1000..0x1004].copy_from_slice(&[0x90,0x90,0xeb,0xfe]);
+  let mut pe=convert_elf64_to_pe32plus(&b,BASE,false,None).unwrap();
+  append_exports(&mut pe,&[("Alpha".into(),1,BASE+0x1000),("Omega".into(),3,BASE+0x1000)]).unwrap();
+  let peoff=u32at(&pe,0x3c).unwrap() as usize;let opt=peoff+24;
+  assert_eq!(u16at(&pe,peoff+6).unwrap(),2);
+  let er=u32at(&pe,opt+112).unwrap() as usize;
+  assert_eq!(u32at(&pe,opt+116).unwrap()>40,true);
+  let sh=opt+240+40;assert_eq!(&pe[sh..sh+6],b".edata");
+  let raw=u32at(&pe,sh+20).unwrap() as usize;
+  assert_eq!(u32at(&pe,raw+20).unwrap(),3);
+  assert_eq!(u32at(&pe,raw+24).unwrap(),2);
+  let eat=u32at(&pe,raw+28).unwrap() as usize-er;
+  assert_eq!(u32at(&pe,raw+eat).unwrap(),0x1000);
+  assert_eq!(u32at(&pe,raw+eat+4).unwrap(),0);
+  assert_eq!(u32at(&pe,raw+eat+8).unwrap(),0x1000);
+ }
  #[test] fn converts_minimal_static_elf_to_amd64_pe32plus(){
   let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
   b[16..18].copy_from_slice(&2u16.to_le_bytes());b[18..20].copy_from_slice(&62u16.to_le_bytes());
