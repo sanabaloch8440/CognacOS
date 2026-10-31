@@ -186,7 +186,7 @@ unsafe fn translated_ahci_bar_matches(resources: *const u8, physical: u64, minim
     false
 }
 
-unsafe extern "system" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
+unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -221,7 +221,7 @@ unsafe extern "system" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE
     unsafe { (*irp).io_status.status.status = status; (*irp).io_status.information = 0; }
     status
 }
-unsafe extern "system" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
+unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     START_RESOURCES_VALID.store(false, Ordering::Release);
     PREPARED.store(false, Ordering::Release);
     if let Some(ext) = handoff() {
