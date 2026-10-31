@@ -9,8 +9,8 @@ different linker implementations.
 
 - Rust 1.88.0 with the targets listed in `rust-toolchain.toml`
 - LLVM LLD, Clang's linker-driver frontend, `llvm-ar`, and `llvm-readobj`
-- MinGW-w64 headers/import libraries and GCC runtime archives for the Windows
-  GNU target only; no MinGW GCC compiler is invoked
+- MinGW-w64 headers/import libraries and compiler-runtime archives for the
+  Windows GNU target only; the GCC driver is not selected or invoked
 - QEMU and OVMF for boot tests
 
 Clang is used only as a linker driver with `-fuse-ld=lld`; it is not used to
