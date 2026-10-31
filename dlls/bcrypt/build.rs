@@ -25,6 +25,7 @@ fn main() {
     let implemented: BTreeSet<&str> = [
         "BCryptOpenAlgorithmProvider", "BCryptCloseAlgorithmProvider", "BCryptGetProperty", "BCryptHash", "BCryptGetFipsAlgorithmMode",
         "BCryptCreateHash", "BCryptHashData", "BCryptFinishHash", "BCryptDestroyHash", "BCryptDuplicateHash", "BCryptGenRandom", "BCryptDeriveKeyPBKDF2",
+        "BCryptEnumAlgorithms", "BCryptEnumProviders", "BCryptFreeBuffer",
     ].into_iter().collect();
     let mut generated = String::from("// Unsupported exports fail closed with STATUS_NOT_IMPLEMENTED.\n");
     for e in &exports {
