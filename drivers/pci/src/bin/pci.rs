@@ -78,7 +78,7 @@ unsafe extern "system" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -> i32 {
     if driver.is_null() { return STATUS_INVALID_PARAMETER; }
-    let object = unsafe { &*(driver as *const DRIVER_OBJECT) };
+    let object = unsafe { &mut *(driver as *mut DRIVER_OBJECT) };
     if object.driver_extension.is_null() { return STATUS_INVALID_PARAMETER; }
     let handoff = unsafe { &*(object.driver_extension as *const PciDriverHandoff) };
     if handoff.magic != HANDOFF_MAGIC || handoff.version != HANDOFF_VERSION
