@@ -58,7 +58,7 @@ impl HashAlgorithm {
 }
 
 #[derive(Clone)]
-struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, cipher: bool, kdf: bool, rsa: bool, gcm: bool, cbc: bool }
+struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, cipher: bool, kdf: bool, rsa: bool, rng: bool, gcm: bool, cbc: bool }
 #[derive(Clone)]
 struct KeyHandle { key: Vec<u8>, gcm: bool, cbc: bool }
 #[derive(Clone)]
@@ -131,16 +131,21 @@ unsafe fn read_property_name(ptr: *const u16) -> Result<String, NTSTATUS> {
 /// BCryptOpenAlgorithmProvider (SHA-256/384/512 only; no HMAC flag yet).
 #[no_mangle]
 pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void, alg_id: *const u16, implementation: *const u16, flags: ULONG) -> NTSTATUS {
-    if out.is_null() || !implementation.is_null() || flags & !(BCRYPT_ALG_HANDLE_HMAC_FLAG | BCRYPT_MULTI_FLAG) != 0 { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() || flags & !(BCRYPT_ALG_HANDLE_HMAC_FLAG | BCRYPT_MULTI_FLAG) != 0 { return STATUS_INVALID_PARAMETER; }
     if alg_id.is_null() { return STATUS_INVALID_PARAMETER; }
     let mut units=Vec::new();
     for i in 0..64 { let u=unsafe{alg_id.add(i).read()}; if u==0 {break;} units.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
     let name=match String::from_utf16(&units){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
-    let (algorithm,cipher,kdf,rsa_provider)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false,false) }
-    else if name=="PBKDF2" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,true,false) }
-    else if name=="RSA" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,true) }
-    else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false,false),Err(e)=>return e } };
-    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,kdf,rsa:rsa_provider,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
+    if !implementation.is_null() {
+        let mut provider=Vec::new(); for i in 0..64 { let u=unsafe{implementation.add(i).read()}; if u==0 { break; } provider.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
+        match String::from_utf16(&provider).ok().as_deref() { Some("Microsoft Primitive Provider")=>{}, _=>return 0xC0000225_u32 as i32 }
+    }
+    let (algorithm,cipher,kdf,rsa_provider,rng_provider)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false,false,false) }
+    else if name=="PBKDF2" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,true,false,false) }
+    else if name=="RSA" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,true,false) }
+    else if name=="RNG" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,false,true) }
+    else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false,false,false),Err(e)=>return e } };
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,kdf,rsa:rsa_provider,rng:rng_provider,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
@@ -250,9 +255,11 @@ pub unsafe extern "system" fn BCryptProcessMultiOperations(object:*mut c_void,op
 pub unsafe extern "system" fn BCryptDestroyHash(hash:*mut c_void)->NTSTATUS{remove_handle(hash,1)}
 
 
+#[no_mangle]
 pub unsafe extern "system" fn BCryptGenRandom(algorithm: *mut c_void, buffer: *mut u8, length: ULONG, flags: ULONG) -> NTSTATUS {
     if buffer.is_null() && length != 0 { return STATUS_INVALID_PARAMETER; }
-    if !algorithm.is_null() || flags != BCRYPT_USE_SYSTEM_PREFERRED_RNG { return STATUS_INVALID_PARAMETER; }
+    if algorithm.is_null() { if flags != BCRYPT_USE_SYSTEM_PREFERRED_RNG { return STATUS_INVALID_PARAMETER; } }
+    else { if flags != 0 { return STATUS_INVALID_PARAMETER; } let provider=match algorithm_handle(algorithm) { Ok(v)=>v, Err(e)=>return e }; if !provider.rng { return STATUS_INVALID_PARAMETER; } }
     if length == 0 { return STATUS_SUCCESS; }
     match rand::fill(unsafe { core::slice::from_raw_parts_mut(buffer, length as usize) }) { Ok(()) => STATUS_SUCCESS, Err(_) => STATUS_NOT_SUPPORTED }
 }
@@ -318,6 +325,7 @@ pub unsafe extern "system" fn BCryptHash(algorithm:*mut c_void,secret:*const u8,
  else{let d=p.algorithm.digest(data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}STATUS_SUCCESS
 }
 
+#[no_mangle]
 pub unsafe extern "system" fn BCryptGetFipsAlgorithmMode(enabled: *mut u8) -> NTSTATUS {
     if enabled.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { enabled.write(0) };
@@ -338,8 +346,10 @@ struct BcryptAlgorithmIdentifier {
 #[repr(C)]
 struct BcryptProvider {
     name: *mut u16,
-    flags: ULONG,
 }
+
+#[cfg(target_pointer_width = "64")]
+const _: [(); 8] = [(); core::mem::size_of::<BcryptProvider>()];
 
 static ENUM_BUFFERS: std::sync::OnceLock<
     std::sync::Mutex<std::collections::HashMap<usize, Box<[u64]>>>
@@ -373,8 +383,8 @@ fn enum_write_wide(base: *mut u8, offset: usize, value: &str) -> *mut u16 {
 /// Only operations actually supported by this DLL are advertised.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut ULONG,list:*mut *mut BcryptAlgorithmIdentifier,flags:ULONG)->NTSTATUS {
- const H:ULONG=2;const K:ULONG=8;const R:ULONG=32;if count.is_null()||list.is_null()||flags!=0||operations==0||operations&!(H|K|R)!=0{return STATUS_INVALID_PARAMETER;}
- let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&H!=0{e.extend([("SHA256",H),("SHA384",H),("SHA512",H)]);}if operations&K!=0{e.push(("PBKDF2",K));}if operations&R!=0{e.push(("RNG",R));}
+ const H:ULONG=2;const R:ULONG=32;if count.is_null()||list.is_null()||flags!=0||operations==0||operations&!(1|H|4|8|16|R)!=0{return STATUS_INVALID_PARAMETER;}
+ let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&1!=0{e.push(("AES",1));}if operations&H!=0{e.extend([("SHA256",2),("SHA384",2),("SHA512",2)]);}if operations&4!=0{e.push(("RSA",3));}if operations&R!=0{e.push(("RNG",6));}
  let sb=e.len()*core::mem::size_of::<BcryptAlgorithmIdentifier>();let nb:usize=e.iter().map(|(n,_)|(n.encode_utf16().count()+1)*2).sum();let base=match store_enum_buffer(sb+nb){Ok(v)=>v,Err(x)=>return x};let records=base.cast::<BcryptAlgorithmIdentifier>();let mut off=sb;
  for(i,(n,c))in e.iter().enumerate(){let np=enum_write_wide(base,off,n);unsafe{records.add(i).write(BcryptAlgorithmIdentifier{name:np,class:*c,flags:0})};off+=(n.encode_utf16().count()+1)*2;}
  unsafe{count.write(e.len() as ULONG);list.write(records)};STATUS_SUCCESS
@@ -383,9 +393,10 @@ pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut U
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptEnumProviders(count:*mut ULONG,providers:*mut *mut BcryptProvider,flags:ULONG)->NTSTATUS {
- if count.is_null()||providers.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}const P:&str="CognacOS AWS-LC Provider";let sb=core::mem::size_of::<BcryptProvider>();let base=match store_enum_buffer(sb+(P.encode_utf16().count()+1)*2){Ok(v)=>v,Err(e)=>return e};let name=enum_write_wide(base,sb,P);let rec=base.cast::<BcryptProvider>();unsafe{rec.write(BcryptProvider{name,flags:0});count.write(1);providers.write(rec)};STATUS_SUCCESS
+ if count.is_null()||providers.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}const P:&str="CognacOS AWS-LC Provider";let sb=core::mem::size_of::<BcryptProvider>();let base=match store_enum_buffer(sb+(P.encode_utf16().count()+1)*2){Ok(v)=>v,Err(e)=>return e};let name=enum_write_wide(base,sb,P);let rec=base.cast::<BcryptProvider>();unsafe{rec.write(BcryptProvider{name});count.write(1);providers.write(rec)};STATUS_SUCCESS
 }
 
+#[no_mangle]
 pub unsafe extern "system" fn BCryptFreeBuffer(buffer: *mut c_void) {
     if buffer.is_null() { return; }
     if let Ok(mut buffers) = enum_buffers().lock() {
@@ -633,6 +644,20 @@ pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info
     let verifier=VerifyingKey::<Sha256>::new(public);
     match verifier.verify_prehash(unsafe{core::slice::from_raw_parts(hash,hash_len as usize)},&sig){Ok(())=>STATUS_SUCCESS,Err(_)=>STATUS_INVALID_SIGNATURE}
 }
+
+// x64 ABI layout guards: these structures are consumed directly by Windows callers.
+#[cfg(target_pointer_width = "64")]
+const _: [(); 24] = [(); core::mem::size_of::<BcryptAlgorithmIdentifier>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); core::mem::size_of::<BcryptBuffer>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); core::mem::size_of::<BcryptBufferDesc>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 88] = [(); core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 24] = [(); core::mem::size_of::<BcryptMultiHashOperation>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 24] = [(); core::mem::size_of::<BcryptRsaBlobHeader>()];
 
 include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 
