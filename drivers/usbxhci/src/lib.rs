@@ -1219,7 +1219,7 @@ mod controller_power_tests {
    } else {self.regs[i]=v}
    Ok(())
   }
-  fn set_bus_master(&mut self,_enabled:bool)->Result<(),()>{Ok(())}
+  fn set_bus_master(&mut self,_enabled:bool)->Result<(),()>{Err(())}
  }
  impl XhciPlatform for FakePlatform {
   fn dma_mapping_ready(&self,_:DmaAllocation)->bool{true}
