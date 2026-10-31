@@ -245,6 +245,16 @@ pub unsafe extern "system" fn BCryptHash(
     STATUS_SUCCESS
 }
 
+/// Reports whether this build is operating under an enabled FIPS policy.
+/// AWS-LC is currently built in its non-FIPS configuration, so this returns
+/// FALSE rather than claiming a validation that this binary does not possess.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptGetFipsAlgorithmMode(enabled: *mut u8) -> NTSTATUS {
+    if enabled.is_null() { return STATUS_INVALID_PARAMETER; }
+    unsafe { enabled.write(0) };
+    STATUS_SUCCESS
+}
+
 include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 
 #[cfg(test)]

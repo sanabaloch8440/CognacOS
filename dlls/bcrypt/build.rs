@@ -23,7 +23,7 @@ fn main() {
     let actual = fs::read_to_string("exports/bcrypt-x64.def").expect("read bcrypt .def");
     assert_eq!(actual, expected, "bcrypt .def differs from pinned export manifest");
     let implemented: BTreeSet<&str> = [
-        "BCryptOpenAlgorithmProvider", "BCryptCloseAlgorithmProvider", "BCryptGetProperty", "BCryptHash",
+        "BCryptOpenAlgorithmProvider", "BCryptCloseAlgorithmProvider", "BCryptGetProperty", "BCryptHash", "BCryptGetFipsAlgorithmMode",
         "BCryptCreateHash", "BCryptHashData", "BCryptFinishHash", "BCryptDestroyHash", "BCryptDuplicateHash", "BCryptGenRandom", "BCryptDeriveKeyPBKDF2",
     ].into_iter().collect();
     let mut generated = String::from("// Unsupported exports fail closed with STATUS_NOT_IMPLEMENTED.\n");
