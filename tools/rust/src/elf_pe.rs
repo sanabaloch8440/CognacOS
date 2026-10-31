@@ -47,7 +47,7 @@ pub fn convert_elf64_to_pe32plus(blob:&[u8], image_base:u64, dll:bool)->Result<V
  segs.sort_by_key(|s|s.vaddr);
  if image_base&0xffff!=0||segs[0].vaddr-image_base<PAGE{return Err(bad("image base must be 64 KiB aligned with a nonzero section RVA"));}
  let peoff=0x80usize;let optional=240usize;
- let headers=align((peoff+4+20+optional+40*segs.len()) as u64,FILE_ALIGN)? as usize;
+ let headers=align((peoff+4+20+optional+40*(segs.len()+1)) as u64,FILE_ALIGN)? as usize;
  let mut raw_cursor=headers as u64;
  let mut raw_sizes=Vec::new();let mut raw_offsets=Vec::new();
  for s in &segs{let size=if s.filesz==0{0}else{align(s.filesz,FILE_ALIGN)?};raw_sizes.push(size);raw_offsets.push(if size==0{0}else{let x=raw_cursor;raw_cursor=raw_cursor.checked_add(size).ok_or("file size overflow")?;x});}
