@@ -483,6 +483,12 @@ pub fn lookup_mapping(id:RequesterId,iova:u64)->Option<(u64,u8)>{
 /// Remove a requester domain only after all device DMA has been stopped. On
 /// invalidation failure the domain and its page tables remain allocated.
 pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
+ // A firmware RMRR remains part of the live requester contract. It must be
+ // explicitly unmapped after bus mastering is revoked before the context can go.
+ if DMA_MAPS.lock().iter().any(|m|m.used&&m.cookie==0
+    &&requester_for_device(m.device).is_some_and(|r|r.bus==id.bus&&r.device==id.device&&r.function==id.function)) {
+    return STATUS_DEVICE_BUSY;
+ }
  let _guard=LOCK.lock();
  let u=unsafe{&mut*UNIT.0.get()};
  if !u.enabled{return STATUS_DEVICE_NOT_READY}
