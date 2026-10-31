@@ -1184,6 +1184,20 @@ const _: [(); 88] = [(); core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_I
 const _: [(); 24] = [(); core::mem::size_of::<BcryptMultiHashOperation>()];
 #[cfg(target_pointer_width = "64")]
 const _: [(); 24] = [(); core::mem::size_of::<BcryptRsaBlobHeader>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); core::mem::size_of::<CryptContexts>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); core::mem::size_of::<CryptContextFunctions>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); core::mem::size_of::<CryptContextFunctionProviders>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); core::mem::size_of::<CryptProviders>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 32] = [(); core::mem::size_of::<CryptProviderReg>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 56] = [(); core::mem::size_of::<CryptProviderRef>()];
+#[cfg(target_pointer_width = "64")]
+const _: [(); 16] = [(); core::mem::size_of::<CryptProviderRefs>()];
 
 include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 
@@ -1573,6 +1587,16 @@ mod tests {
             *mut c_void, *mut u8, ULONG, ULONG
         ) -> NTSTATUS = BCryptGenRandom;
         let _: unsafe extern "system" fn(*mut u8) -> NTSTATUS = BCryptGetFipsAlgorithmMode;
+        let _: unsafe extern "system" fn(*mut c_void,*mut *mut c_void,ULONG,ULONG)->NTSTATUS = BCryptGenerateKeyPair;
+        let _: unsafe extern "system" fn(*mut c_void,ULONG)->NTSTATUS = BCryptFinalizeKeyPair;
+        let _: unsafe extern "system" fn(*mut c_void,*mut c_void,*mut u8,ULONG,*mut u8,ULONG,*mut ULONG,ULONG)->NTSTATUS = BCryptSignHash;
+        let _: unsafe extern "system" fn(*mut c_void,*mut c_void,*mut u8,ULONG,ULONG)->NTSTATUS = BCryptDeriveKeyCapi;
+        let _: unsafe extern "system" fn(ULONG,*const u16,*const CryptContextConfig)->NTSTATUS = BCryptCreateContext;
+        let _: unsafe extern "system" fn(ULONG,*const u16,ULONG,*const u16,*const u16,ULONG)->NTSTATUS = BCryptAddContextFunctionProvider;
+        let _: unsafe extern "system" fn(*const u16,ULONG,ULONG,*mut ULONG,*mut *mut CryptProviderReg)->NTSTATUS = BCryptQueryProviderRegistration;
+        let _: unsafe extern "system" fn(*const u16,ULONG,*const CryptProviderReg)->NTSTATUS = BCryptRegisterProvider;
+        let _: unsafe extern "system" fn(*const u16)->NTSTATUS = BCryptUnregisterProvider;
+        let _: unsafe extern "system" fn(*const u16,ULONG,*const u16,*const u16,ULONG,ULONG,*mut ULONG,*mut *mut CryptProviderRefs)->NTSTATUS = BCryptResolveProviders;
     }
 
     #[test]
