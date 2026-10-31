@@ -493,7 +493,12 @@ pub unsafe extern "system" fn BCryptFreeBuffer(buffer: *mut c_void) {
 pub unsafe extern "system" fn BCryptSetProperty(object:*mut c_void,property:*const u16,input:*const u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
  if property.is_null()||input.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let n=match unsafe{read_property_name(property)}{Ok(v)=>v,Err(e)=>return e};if n!="ChainingMode"{return STATUS_NOT_SUPPORTED;}
  let val=unsafe{core::slice::from_raw_parts(input,input_len as usize)};let gcm:Vec<u16>="ChainingModeGCM".encode_utf16().chain(core::iter::once(0)).collect();let cbc:Vec<u16>="ChainingModeCBC".encode_utf16().chain(core::iter::once(0)).collect();let matches=|v:&[u16]| val.len()==v.len()*2 && v.iter().enumerate().all(|(i,u)|unsafe{ptr::read_unaligned(input.add(i*2).cast::<u16>())}==*u);let is_gcm=matches(&gcm);let is_cbc=matches(&cbc);if !is_gcm&&!is_cbc{return STATUS_NOT_SUPPORTED;}
- let Ok(mut t)=handle_table().lock()else{return STATUS_NO_MEMORY;};let Some(RegisteredHandle::Algorithm(a))=t.get_mut(&(object as usize))else{return STATUS_INVALID_PARAMETER;};if !a.cipher{return STATUS_INVALID_PARAMETER;}a.gcm=is_gcm;a.cbc=is_cbc;STATUS_SUCCESS
+ let Ok(mut t)=handle_table().lock()else{return STATUS_NO_MEMORY;};
+ match t.get_mut(&(object as usize)) {
+     Some(RegisteredHandle::Algorithm(a)) if a.cipher=>{a.gcm=is_gcm;a.cbc=is_cbc;STATUS_SUCCESS},
+     Some(RegisteredHandle::Key(k))=>{k.gcm=is_gcm;k.cbc=is_cbc;STATUS_SUCCESS},
+     _=>STATUS_INVALID_PARAMETER,
+ }
 }
 
 #[repr(C)]
@@ -505,7 +510,7 @@ pub struct BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptGenerateSymmetricKey(algorithm:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
- if out.is_null()||!object.is_null()||object_len!=0||(secret.is_null()&&secret_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
+ if out.is_null()||!valid_object_buffer(object,object_len)||(secret.is_null()&&secret_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
  let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
  if p.kdf {
      if secret_len>1024*1024{return STATUS_INVALID_PARAMETER;}
