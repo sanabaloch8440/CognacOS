@@ -82,7 +82,8 @@ fn check_csrsrv_def(path: &Path) {
     println!("validated {} unique named CSRSRV exports (inventory-only)", exports.len());
 }
 
-mod elf_pe;\nmod pe_exports;
+mod elf_pe;
+mod pe_exports;
 
 fn main() {
     let mut args = env::args_os().skip(1);
