@@ -1029,6 +1029,40 @@ mod tests {
     }
 
     #[test]
+    fn bcrypt_reusable_hash_flag_resets_hash_state_after_finish() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name=wide("SHA256");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),BCRYPT_HASH_REUSABLE_FLAG)},STATUS_SUCCESS);
+        let mut hash=ptr::null_mut();
+        assert_eq!(unsafe{BCryptCreateHash(provider,&mut hash,ptr::null_mut(),0,ptr::null_mut(),0,BCRYPT_HASH_REUSABLE_FLAG)},STATUS_SUCCESS);
+        let mut output=[0u8;32];
+        assert_eq!(unsafe{BCryptHashData(hash,b"abc".as_ptr(),3,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptFinishHash(hash,output.as_mut_ptr(),32,0)},STATUS_SUCCESS);
+        assert_eq!(output,HashAlgorithm::Sha256.digest(b"abc").as_ref());
+        assert_eq!(unsafe{BCryptHashData(hash,b"def".as_ptr(),3,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptFinishHash(hash,output.as_mut_ptr(),32,0)},STATUS_SUCCESS);
+        assert_eq!(output,HashAlgorithm::Sha256.digest(b"def").as_ref());
+        assert_eq!(unsafe{BCryptDestroyHash(hash)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn non_reusable_hash_handles_are_invalid_after_finish() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name=wide("SHA256");let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mut hash=ptr::null_mut();
+        assert_eq!(unsafe{BCryptCreateHash(provider,&mut hash,ptr::null_mut(),0,ptr::null_mut(),0,0)},STATUS_SUCCESS);
+        let mut output=[0u8;32];
+        assert_eq!(unsafe{BCryptFinishHash(hash,output.as_mut_ptr(),32,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptHashData(hash,b"x".as_ptr(),1,0)},STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe{BCryptFinishHash(hash,output.as_mut_ptr(),32,0)},STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe{BCryptDestroyHash(hash)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn hash_apis_accept_caller_owned_object_buffers() {
         let name="SHA256".encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
         let mut provider=ptr::null_mut();
@@ -1317,7 +1351,7 @@ mod tests {
     #[test]
     fn opaque_handles_reject_forged_stale_and_wrong_type_tokens() {
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(1usize as *mut c_void, 0) }, STATUS_INVALID_PARAMETER);
-        let p = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, kdf: false, rsa: false, rng: false, gcm: false, cbc: false })).unwrap();
+        let p = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, reusable: false, cipher: false, kdf: false, rsa: false, rng: false, gcm: false, cbc: false })).unwrap();
         assert_eq!(unsafe { BCryptDestroyHash(p) }, STATUS_INVALID_PARAMETER);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_INVALID_PARAMETER);
