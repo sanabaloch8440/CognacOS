@@ -238,7 +238,7 @@ pub unsafe extern "system" fn BCryptCreateMultiHash(algorithm:*mut c_void,out:*m
     let key=if secret_len==0 { Vec::new() } else { unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec() };
     let mut states=Vec::new();
     if states.try_reserve_exact(count as usize).is_err(){return STATUS_NO_MEMORY;}
-    for _ in 0..count { states.push(HashHandle{algorithm:provider.algorithm,hmac:provider.hmac,reusable:provider.reusable,finished:false,secret:key.clone(),data:Vec::new()}); }
+    for _ in 0..count { states.push(HashHandle{algorithm:provider.algorithm,hmac:provider.hmac,reusable:true,finished:false,secret:key.clone(),data:Vec::new()}); }
     let token=match register_handle(RegisteredHandle::MultiHash(MultiHashHandle{states})){Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)};STATUS_SUCCESS
 }
