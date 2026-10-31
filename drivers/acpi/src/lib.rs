@@ -476,3 +476,151 @@ mod ntstatus_adapter_tests {
         assert_eq!(error_to_ntstatus(AcpiError::BadChecksum), STATUS_INVALID_PARAMETER);
     }
 }
+
+
+/// Firmware-reserved memory region (ACPI DMAR RMRR). The limit is inclusive,
+/// as encoded by the DMAR table. This is metadata only: the platform must not
+/// expose or reclaim the range until every scoped device has been quiesced and
+/// firmware ownership has been transferred under the platform's RMRR policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmarRmrr {
+    pub base:u64,
+    pub limit:u64,
+    pub segment:u16,
+    pub scopes:[DmarDeviceScope;64],
+    pub scope_count:u8,
+}
+impl DmarRmrr {
+    pub const EMPTY:Self=Self{base:0,limit:0,segment:0,scopes:[DmarDeviceScope::EMPTY;64],scope_count:0};
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DmarRmrrInfo { pub regions:[DmarRmrr;16], pub count:usize }
+impl DmarRmrrInfo {
+    pub const EMPTY:Self=Self{regions:[DmarRmrr::EMPTY;16],count:0};
+}
+
+/// Parse all RMRR structures in a checksum-validated DMAR table. The returned
+/// ranges remain reserved; parsing never changes firmware ownership or maps RAM.
+pub fn parse_dmar_rmrr(bytes:&[u8])->Result<DmarRmrrInfo,AcpiError>{
+    if bytes.len()<48{return Err(AcpiError::Truncated)}
+    if bytes.get(0..4)!=Some(b"DMAR"){return Err(AcpiError::BadSignature)}
+    let length=u32le(bytes,4)? as usize;
+    if length<48||length>bytes.len(){return Err(AcpiError::BadLength)}
+    if !checksum_ok(&bytes[..length]){return Err(AcpiError::BadChecksum)}
+    let mut out=DmarRmrrInfo::EMPTY;
+    let mut off=48usize;
+    while off<length {
+        if off.checked_add(4).filter(|e|*e<=length).is_none(){return Err(AcpiError::MalformedEntry)}
+        let kind=u16::from_le_bytes([bytes[off],bytes[off+1]]);
+        let size=u16::from_le_bytes([bytes[off+2],bytes[off+3]]) as usize;
+        if size<4||off.checked_add(size).filter(|e|*e<=length).is_none(){return Err(AcpiError::MalformedEntry)}
+        if kind==1 {
+            if size<24||out.count==out.regions.len(){return Err(AcpiError::MalformedEntry)}
+            let base=u64::from_le_bytes(bytes[off+8..off+16].try_into().map_err(|_|AcpiError::Truncated)?);
+            let limit=u64::from_le_bytes(bytes[off+16..off+24].try_into().map_err(|_|AcpiError::Truncated)?);
+            if base==0||base&0xfff!=0||limit<base||limit&0xfff!=0||limit.checked_add(1).is_none(){
+                return Err(AcpiError::MalformedEntry)
+            }
+            let mut region=DmarRmrr::EMPTY;
+            region.base=base;region.limit=limit;
+            region.segment=u16::from_le_bytes([bytes[off+6],bytes[off+7]]);
+            let mut cursor=off+24;
+            let end=off+size;
+            while cursor<end {
+                if cursor.checked_add(6).filter(|e|*e<=end).is_none(){return Err(AcpiError::MalformedEntry)}
+                let scope_len=bytes[cursor+1] as usize;
+                if scope_len<8||cursor.checked_add(scope_len).filter(|e|*e<=end).is_none()
+                    ||(scope_len-6)%2!=0{return Err(AcpiError::MalformedEntry)}
+                let count=(scope_len-6)/2;
+                if count==0||count>8||region.scope_count as usize==region.scopes.len(){
+                    return Err(AcpiError::TooManyEntries)
+                }
+                let mut scope=DmarDeviceScope::EMPTY;
+                scope.scope_type=bytes[cursor];scope.enumeration_id=bytes[cursor+4];
+                scope.start_bus=bytes[cursor+5];scope.path_count=count as u8;
+                for n in 0..count {
+                    let p=cursor+6+n*2;let device=bytes[p];let function=bytes[p+1];
+                    if device>=32||function>=8{return Err(AcpiError::MalformedEntry)}
+                    scope.path[n]=DmarPath{device,function};
+                }
+                region.scopes[region.scope_count as usize]=scope;
+                region.scope_count+=1;cursor+=scope_len;
+            }
+            if region.scope_count==0{return Err(AcpiError::MalformedEntry)}
+            out.regions[out.count]=region;out.count+=1;
+        }
+        off+=size;
+    }
+    Ok(out)
+}
+
+/// Match an endpoint's complete PCI path against a DMAR scope. A type-1
+/// endpoint scope must match the entire path; a type-2 sub-hierarchy scope
+/// matches only when its bridge path is a strict prefix of the endpoint path.
+/// The caller supplies paths from the same segment and starting root bus.
+pub fn dmar_scope_matches_path(scope:&DmarDeviceScope, endpoint_start_bus:u8,
+    endpoint_path:&[DmarPath])->bool {
+    let n=scope.path_count as usize;
+    if scope.start_bus!=endpoint_start_bus||n==0||n>scope.path.len()||endpoint_path.len()<n{return false}
+    if scope.scope_type==1&&endpoint_path.len()!=n{return false}
+    if scope.scope_type==2&&endpoint_path.len()<=n{return false}
+    if scope.scope_type!=1&&scope.scope_type!=2{return false}
+    scope.path.iter().take(n).zip(endpoint_path.iter()).all(|(a,b)|a==b)
+}
+
+/// A DMAR DRHD is eligible only for its own segment and a matching full path.
+/// Include-all applies to every requester in that segment, not other segments.
+pub fn dmar_unit_covers_path(unit:&DmarUnit,segment:u16,endpoint_start_bus:u8,
+    endpoint_path:&[DmarPath])->bool {
+    unit.segment==segment&&(unit.include_all||unit.scopes.iter().take(unit.scope_count as usize)
+        .any(|scope|dmar_scope_matches_path(scope,endpoint_start_bus,endpoint_path)))
+}
+
+#[cfg(test)]
+mod rmrr_and_scope_tests {
+    use super::*;
+    fn finish(table:&mut [u8]) {
+        let sum=table.iter().fold(0u8,|a,b|a.wrapping_add(*b));
+        table[9]=table[9].wrapping_sub(sum);
+    }
+    #[test]
+    fn rmrr_parser_preserves_inclusive_page_aligned_range_and_segment() {
+        let mut t=[0u8;80];t[0..4].copy_from_slice(b"DMAR");
+        t[4..8].copy_from_slice(&(80u32).to_le_bytes());t[36]=47;
+        t[48..50].copy_from_slice(&(1u16).to_le_bytes());
+        t[50..52].copy_from_slice(&(32u16).to_le_bytes());
+        t[54..56].copy_from_slice(&(2u16).to_le_bytes());
+        t[56..64].copy_from_slice(&(0x1000u64).to_le_bytes());
+        t[64..72].copy_from_slice(&(0x2fffu64).to_le_bytes());
+        t[72]=1;t[73]=8;t[76]=0;t[77]=0;t[78]=4;t[79]=0;
+        finish(&mut t);
+        let parsed=parse_dmar_rmrr(&t).unwrap();
+        assert_eq!(parsed.count,1);
+        assert_eq!(parsed.regions[0].base,0x1000);
+        assert_eq!(parsed.regions[0].limit,0x2fff);
+        assert_eq!(parsed.regions[0].segment,2);
+        assert_eq!(parsed.regions[0].scope_count,1);
+    }
+    #[test]
+    fn rmrr_rejects_unaligned_or_reversed_ranges() {
+        let mut t=[0u8;80];t[0..4].copy_from_slice(b"DMAR");
+        t[4..8].copy_from_slice(&(80u32).to_le_bytes());t[36]=47;
+        t[48..50].copy_from_slice(&(1u16).to_le_bytes());
+        t[50..52].copy_from_slice(&(32u16).to_le_bytes());
+        t[56..64].copy_from_slice(&(0x1001u64).to_le_bytes());
+        t[64..72].copy_from_slice(&(0x2fffu64).to_le_bytes());
+        t[72]=1;t[73]=8;t[78]=1;finish(&mut t);
+        assert_eq!(parse_dmar_rmrr(&t),Err(AcpiError::MalformedEntry));
+    }
+    #[test]
+    fn bridge_subhierarchy_requires_full_matching_prefix_and_segment() {
+        let mut scope=DmarDeviceScope::EMPTY;
+        scope.scope_type=2;scope.start_bus=0;scope.path_count=1;
+        scope.path[0]=DmarPath{device:3,function:0};
+        let endpoint=[DmarPath{device:3,function:0},DmarPath{device:4,function:1}];
+        assert!(dmar_scope_matches_path(&scope,0,&endpoint));
+        assert!(!dmar_scope_matches_path(&scope,0,&endpoint[..1]));
+        assert!(!dmar_scope_matches_path(&scope,1,&endpoint));
+        assert!(!dmar_scope_matches_path(&scope,0,&[DmarPath{device:3,function:1},endpoint[1]]));
+    }
+}
