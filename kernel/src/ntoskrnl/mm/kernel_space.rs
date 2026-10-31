@@ -578,6 +578,24 @@ pub fn allocate_pageable_pages(pages: usize) -> Result<*mut u8, Error> {
  Ok((BASE+start as u64*PAGE) as *mut u8)
 }
 
+/// Ensure a RAM direct-map leaf exists before a caller dereferences its alias.
+/// Page-table frames come from the low identity-mapped allocator, so creating a
+/// high-memory alias never recursively faults while zeroing a page-table page.
+pub fn ensure_direct_map_page(physical_address:u64)->bool {
+ let physical=physical_address&!(PAGE-1);
+ if physical>=crate::memory::DIRECT_MAP_PHYSICAL_LIMIT
+     ||!crate::memory::is_ram_physical_address(physical){return false}
+ let root=ROOT.load(Ordering::Acquire);if root==0{return false}
+ let page_va=crate::memory::DIRECT_MAP_BASE+physical;
+ let _direct_guard=DirectMapGuard::lock();
+ if unsafe{leaf_ptr(root,page_va)}.is_some_and(|leaf|unsafe{leaf.read_volatile()}&P!=0) {
+  unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}
+  return true
+ }
+ let leaf_flags=NX | if crate::memory::direct_map_page_writable(physical) { W } else { 0 };
+ unsafe{map_with_flags(root,page_va,physical,leaf_flags)}.is_ok()
+}
+
 /// Handle supervisor non-present faults in the RAM direct-map window and the
 /// pageable virtual pool. Pageable extents support demand-zero allocation and
 /// pagefile-backed page-in; unrelated/protection faults remain fatal.
@@ -586,24 +604,14 @@ pub fn handle_page_fault(address:u64,error_code:u64)->bool {
  let page_va=address&!(PAGE-1);let root=ROOT.load(Ordering::Acquire);
  if root==0{return false}
 
- // A supervisor data fault in the high direct-map window may lazily establish
- // a writable, NX mapping, but only if the final UEFI map identifies the target
- // physical page as RAM. Device/MMIO and reserved ranges are never admitted.
+ // High direct-map accesses are restricted to UEFI-described RAM. Prefer the
+ // same eager mapping helper used by physical_access_pointer and allocators.
  let direct_base=crate::memory::DIRECT_MAP_BASE;
  if page_va>=direct_base
      && page_va.wrapping_sub(direct_base)<crate::memory::DIRECT_MAP_PHYSICAL_LIMIT
  {
-  if error_code&1!=0{return false} // not a protection fault: it must be absent
-  let physical=page_va-direct_base;
-  if !crate::memory::is_ram_physical_address(physical){return false}
-  let _direct_guard=DirectMapGuard::lock();
-  // Another CPU may have installed this leaf while this CPU waited.
-  if unsafe{leaf_ptr(root,page_va)}.is_some_and(|leaf|unsafe{leaf.read_volatile()}&P!=0) {
-   unsafe{core::arch::asm!("invlpg [{}]",in(reg)page_va,options(nostack,preserves_flags));}
-   return true
-  }
-  let leaf_flags=NX | if crate::memory::direct_map_page_writable(physical) { W } else { 0 };
-  return unsafe{map_with_flags(root,page_va,physical,leaf_flags)}.is_ok()
+  if error_code&1!=0{return false}
+  return ensure_direct_map_page(page_va-direct_base)
  }
 
  if page_va<BASE||page_va>=BASE+(PAGES as u64)*PAGE{return false}
