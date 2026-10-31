@@ -315,3 +315,96 @@ mod function_header_tests {
         assert_eq!(PciFunctionHeader::parse(&b),Err(PciError::InvalidBdf));
     }
 }
+
+
+/// One PCI-to-PCI bridge's bus-number window, captured from the Type-1 header.
+/// Segment is part of the identity: bus numbers are not globally unique.
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct PciBridgeRange {
+    pub segment:u16,pub primary_bus:u8,pub secondary_bus:u8,pub subordinate_bus:u8,
+    pub device:u8,pub function:u8,
+}
+#[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
+pub struct PciPathElement { pub device:u8,pub function:u8 }
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub struct PciRequesterPath {
+    pub segment:u16,pub root_bus:u8,pub endpoint_bus:u8,pub endpoint_device:u8,
+    pub endpoint_function:u8,pub path:[PciPathElement;8],pub path_count:u8,
+}
+#[derive(Clone,Copy,Debug,PartialEq,Eq)]
+pub enum PciTopologyError { InvalidBdf, InvalidBridgeRange, MissingParentBridge, AmbiguousParentBridge, PathTooDeep, Cycle }
+
+/// Resolve an endpoint's complete bridge path using validated Type-1 primary,
+/// secondary and subordinate bus numbers. The most-specific containing bridge
+/// is selected at each hop; segment mismatches and ambiguous ranges fail closed.
+/// The root_bus argument is the root bus of the ECAM/host bridge hierarchy.
+pub fn resolve_requester_path(segment:u16,root_bus:u8,endpoint_bus:u8,
+    endpoint_device:u8,endpoint_function:u8,bridges:&[PciBridgeRange])
+    ->Result<PciRequesterPath,PciTopologyError> {
+    if endpoint_device>=32||endpoint_function>=8{return Err(PciTopologyError::InvalidBdf)}
+    let mut reverse=[PciPathElement::default();8];
+    let mut count=0usize;
+    let mut bus=endpoint_bus;
+    let mut visited=[false;256];
+    while bus!=root_bus {
+        if visited[bus as usize]{return Err(PciTopologyError::Cycle)}
+        visited[bus as usize]=true;
+        let mut best:Option<PciBridgeRange>=None;
+        for b in bridges.iter().filter(|b|b.segment==segment) {
+            if b.device>=32||b.function>=8||b.secondary_bus<=b.primary_bus
+                ||b.subordinate_bus<b.secondary_bus {
+                return Err(PciTopologyError::InvalidBridgeRange)
+            }
+            if b.secondary_bus<=bus&&bus<=b.subordinate_bus {
+                match best {
+                    None=>best=Some(*b),
+                    Some(old)=>{
+                        let old_width=old.subordinate_bus as u16-old.secondary_bus as u16;
+                        let new_width=b.subordinate_bus as u16-b.secondary_bus as u16;
+                        if new_width<old_width {best=Some(*b)}
+                        else if new_width==old_width{return Err(PciTopologyError::AmbiguousParentBridge)}
+                    }
+                }
+            }
+        }
+        let bridge=best.ok_or(PciTopologyError::MissingParentBridge)?;
+        if count==reverse.len(){return Err(PciTopologyError::PathTooDeep)}
+        reverse[count]=PciPathElement{device:bridge.device,function:bridge.function};
+        count+=1;
+        bus=bridge.primary_bus;
+    }
+    let mut path=[PciPathElement::default();8];
+    for i in 0..count {path[i]=reverse[count-1-i];}
+    if count==path.len(){return Err(PciTopologyError::PathTooDeep)}
+    path[count]=PciPathElement{device:endpoint_device,function:endpoint_function};
+    Ok(PciRequesterPath{segment,root_bus,endpoint_bus,endpoint_device,endpoint_function,
+        path,path_count:(count+1) as u8})
+}
+
+#[cfg(test)]
+mod requester_topology_tests {
+    use super::*;
+    #[test]
+    fn resolves_nested_bridge_path_and_keeps_segment() {
+        let bridges=[
+            PciBridgeRange{segment:4,primary_bus:0,secondary_bus:2,subordinate_bus:20,device:1,function:0},
+            PciBridgeRange{segment:4,primary_bus:2,secondary_bus:7,subordinate_bus:9,device:3,function:1},
+        ];
+        let p=resolve_requester_path(4,0,8,5,0,&bridges).unwrap();
+        assert_eq!(p.segment,4);assert_eq!(p.path_count,3);
+        assert_eq!(p.path[0],PciPathElement{device:1,function:0});
+        assert_eq!(p.path[1],PciPathElement{device:3,function:1});
+        assert_eq!(p.path[2],PciPathElement{device:5,function:0});
+        assert_eq!(resolve_requester_path(0,0,8,5,0,&bridges),Err(PciTopologyError::MissingParentBridge));
+    }
+    #[test]
+    fn rejects_missing_or_ambiguous_bridge_routes() {
+        let none:[PciBridgeRange;0]=[];
+        assert_eq!(resolve_requester_path(0,0,2,1,0,&none),Err(PciTopologyError::MissingParentBridge));
+        let overlap=[
+            PciBridgeRange{segment:0,primary_bus:0,secondary_bus:1,subordinate_bus:8,device:1,function:0},
+            PciBridgeRange{segment:0,primary_bus:0,secondary_bus:1,subordinate_bus:8,device:2,function:0},
+        ];
+        assert_eq!(resolve_requester_path(0,0,4,1,0,&overlap),Err(PciTopologyError::AmbiguousParentBridge));
+    }
+}
