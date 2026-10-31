@@ -229,7 +229,27 @@ pub fn flush_common(adapter:*mut c_void,cpu:*mut u8,length:usize)->Result<(),Dma
  let rec={let s=STATE.lock();s.common.iter().find(|c|c.used&&!c.busy&&c.device==device&&c.cpu==cpu as usize&&length<=c.length).copied().ok_or(DmaError::NotFound)?};
  if unsafe{(b.sync.unwrap())(b.context,device,rec.logical,length as u32,2)}!=OK{return Err(DmaError::AddressMask)}fence(Ordering::SeqCst);unsafe{core::arch::asm!("mfence",options(nostack,preserves_flags));}Ok(())
 }
-#[cfg(test)]mod tests{use super::*;#[test]fn no_backend_fails_closed(){assert!(!available());}}
+#[cfg(test)]mod tests{
+ use super::*;
+ #[test]fn no_backend_fails_closed(){assert!(!available());}
+ #[test]fn common_dma_validation_requires_exact_live_owner_and_span(){
+  let device=usize::MAX-7;
+  let index={
+   let mut state=STATE.lock();
+   let index=state.common.iter().position(|c|!c.used).unwrap();
+   state.common[index]=Common{used:true,busy:false,device,cpu:0x1000,physical:0x2000,
+    logical:0x3000,length:0x1000,pages:1,cookie:0x3000};
+   index
+  };
+  assert!(common_dma_mapping_valid(device,0x1000,0x3000,0x1000));
+  assert!(common_dma_mapping_valid(device,0x1000,0x3000,0x800));
+  assert!(!common_dma_mapping_valid(device,0x1000,0x3001,0x800));
+  assert!(!common_dma_mapping_valid(device,0x1001,0x3000,0x800));
+  assert!(!common_dma_mapping_valid(device+1,0x1000,0x3000,0x800));
+  assert!(!common_dma_mapping_valid(device,0x1000,0x3000,0x1001));
+  STATE.lock().common[index]=Common::EMPTY;
+ }
+}
 
 
 // PCI requester identity registry. DMA_ADAPTER device handles are kernel object
