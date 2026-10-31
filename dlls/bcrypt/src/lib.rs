@@ -883,6 +883,13 @@ pub unsafe extern "system" fn BCryptGenerateKeyPair(algorithm:*mut c_void,out:*m
     if out.is_null() || flags!=0 || !(512..=16384).contains(&bits) || bits%8!=0 { return STATUS_INVALID_PARAMETER; }
     let provider=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
     if !provider.rsa { return STATUS_NOT_SUPPORTED; }
+    if provider.ecdh {
+        if bits != 256 { return STATUS_INVALID_PARAMETER; }
+        let private = P256SecretKey::random(&mut OsRng);
+        let token = match register_handle(RegisteredHandle::EcdhPrivate(EcdhPrivateHandle { key: private.to_bytes().to_vec(), finalized: false })) { Ok(v) => v, Err(e) => return e };
+        unsafe { out.write(token) }; return STATUS_SUCCESS;
+    }
+    if !provider.rsa { return STATUS_NOT_SUPPORTED; }
     let private=match RsaPrivateKey::new(&mut OsRng,bits as usize){Ok(v)=>v,Err(_)=>return STATUS_NO_MEMORY};
     let token=match register_handle(RegisteredHandle::RsaPrivate(RsaPrivateHandle{key:private,finalized:false})){Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)};STATUS_SUCCESS
@@ -897,6 +904,7 @@ pub unsafe extern "system" fn BCryptFinalizeKeyPair(key:*mut c_void,flags:ULONG)
     let mut table=match handle_table().lock(){Ok(v)=>v,Err(_)=>return STATUS_NO_MEMORY};
     match table.get_mut(&(key as usize)){
         Some(RegisteredHandle::RsaPrivate(state)) if !state.finalized=>{state.finalized=true;STATUS_SUCCESS},
+        Some(RegisteredHandle::EcdhPrivate(state)) if !state.finalized=>{state.finalized=true;STATUS_SUCCESS},
         _=>STATUS_INVALID_PARAMETER,
     }
 }
@@ -1509,7 +1517,7 @@ mod tests {
     }
     #[test]
     fn bcrypt_hash_one_shot_sha256_matches_known_answer() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, reusable: false, cipher: false, gcm: false, cbc: false, kdf: false, rsa: false, rng: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, reusable: false, cipher: false, gcm: false, cbc: false, kdf: false, rsa: false, ecdh: false, rng: false })).unwrap();
         let input = b"abc";
         let mut output = [0u8; 32];
         let status = unsafe { BCryptHash(provider, ptr::null(), 0, input.as_ptr(), input.len() as u32, output.as_mut_ptr(), output.len() as u32) };
@@ -1523,7 +1531,7 @@ mod tests {
 
     #[test]
     fn duplicate_hash_preserves_incremental_state() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, reusable: false, cipher: false, kdf: false, rsa: false, rng: false, gcm: false, cbc: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, reusable: false, cipher: false, kdf: false, rsa: false, ecdh: false, rng: false, gcm: false, cbc: false })).unwrap();
         let mut original = ptr::null_mut();
         assert_eq!(unsafe { BCryptCreateHash(provider.cast(), &mut original, ptr::null_mut(), 0, ptr::null_mut(), 0, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptHashData(original, b"ab".as_ptr(), 2, 0) }, STATUS_SUCCESS);
@@ -1841,7 +1849,7 @@ mod tests {
     #[test]
     fn opaque_handles_reject_forged_stale_and_wrong_type_tokens() {
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(1usize as *mut c_void, 0) }, STATUS_INVALID_PARAMETER);
-        let p = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, reusable: false, cipher: false, kdf: false, rsa: false, rng: false, gcm: false, cbc: false })).unwrap();
+        let p = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, reusable: false, cipher: false, kdf: false, rsa: false, ecdh: false, rng: false, gcm: false, cbc: false })).unwrap();
         assert_eq!(unsafe { BCryptDestroyHash(p) }, STATUS_INVALID_PARAMETER);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_INVALID_PARAMETER);
