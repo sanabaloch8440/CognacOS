@@ -114,8 +114,6 @@ unsafe fn read_property_name(ptr: *const u16) -> Result<String, NTSTATUS> {
 
 /// BCryptOpenAlgorithmProvider (SHA-256/384/512 only; no HMAC flag yet).
 #[no_mangle]
-
-#[no_mangle]
 pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void, alg_id: *const u16, implementation: *const u16, flags: ULONG) -> NTSTATUS {
     if out.is_null() || !implementation.is_null() || flags & !BCRYPT_ALG_HANDLE_HMAC_FLAG != 0 { return STATUS_INVALID_PARAMETER; }
     if alg_id.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -297,6 +295,14 @@ pub unsafe extern "system" fn BCryptSetProperty(object:*mut c_void,property:*con
  let Ok(mut t)=handle_table().lock()else{return STATUS_NO_MEMORY;};let Some(RegisteredHandle::Algorithm(a))=t.get_mut(&(object as usize))else{return STATUS_INVALID_PARAMETER;};if !a.cipher{return STATUS_INVALID_PARAMETER;}a.gcm=true;STATUS_SUCCESS
 }
 
+#[repr(C)]
+pub struct BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+    pub cbSize: ULONG, pub dwInfoVersion: ULONG, pub pbNonce: *mut u8, pub cbNonce: ULONG,
+    pub pbAuthData: *mut u8, pub cbAuthData: ULONG, pub pbTag: *mut u8, pub cbTag: ULONG,
+    pub pbMacContext: *mut u8, pub cbMacContext: ULONG, pub cbAAD: ULONG, pub cbData: u64, pub dwFlags: ULONG,
+}
+
+#[no_mangle]
 pub unsafe extern "system" fn BCryptGenerateSymmetricKey(algorithm:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
  if out.is_null()||!object.is_null()||object_len!=0||secret.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};if !p.cipher||!p.gcm||!(secret_len==16||secret_len==32){return STATUS_NOT_SUPPORTED;}
  let key=unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec();let token=match register_handle(RegisteredHandle::Key(KeyHandle{key})){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};STATUS_SUCCESS
@@ -427,7 +433,7 @@ mod tests {
     #[test]
     fn opaque_handles_reject_forged_stale_and_wrong_type_tokens() {
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(1usize as *mut c_void, 0) }, STATUS_INVALID_PARAMETER);
-        let p = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, cipher: false })).unwrap();
+        let p = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, cipher: false, gcm: false })).unwrap();
         assert_eq!(unsafe { BCryptDestroyHash(p) }, STATUS_INVALID_PARAMETER);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_INVALID_PARAMETER);
