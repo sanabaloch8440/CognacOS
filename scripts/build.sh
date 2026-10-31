@@ -38,6 +38,20 @@ setup_toolchain() {
   export CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER=rust-lld
   export CARGO_TARGET_X86_64_UNKNOWN_UEFI_LINKER=rust-lld
   export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+
+  # Persist the same linker selection for subsequent GitHub Actions steps.
+  if [[ -n "${GITHUB_PATH:-}" ]]; then printf '%s\\n' "$shim" >> "$GITHUB_PATH"; fi
+  if [[ -n "${GITHUB_ENV:-}" ]]; then
+    {
+      printf 'CC=clang\\nCXX=clang++\\nAR=llvm-ar\\n'
+      printf 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang\\n'
+      printf 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld\\n'
+      printf 'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link\\n'
+      printf 'CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER=rust-lld\\n'
+      printf 'CARGO_TARGET_X86_64_UNKNOWN_UEFI_LINKER=rust-lld\\n'
+      printf 'CARGO_TARGET_DIR=%s\\n' "$CARGO_TARGET_DIR"
+    } >> "$GITHUB_ENV"
+  fi
 }
 
 install_targets() {
