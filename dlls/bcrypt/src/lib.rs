@@ -362,12 +362,12 @@ mod tests {
             0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
             0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad
         ]);
-        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider.cast(), 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider, 0) }, STATUS_SUCCESS);
     }
 
     #[test]
     fn duplicate_hash_preserves_incremental_state() {
-        let provider = Box::into_raw(Box::new(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false }));
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, cipher: false })).unwrap();
         let mut original = ptr::null_mut();
         assert_eq!(unsafe { BCryptCreateHash(provider.cast(), &mut original, ptr::null_mut(), 0, ptr::null_mut(), 0, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptHashData(original, b"ab".as_ptr(), 2, 0) }, STATUS_SUCCESS);
@@ -429,6 +429,54 @@ mod tests {
     #[test]
     fn free_buffer_ignores_unknown_pointer() {
         unsafe { BCryptFreeBuffer(1usize as *mut c_void) };
+    }
+
+
+    #[test]
+    fn opaque_handles_reject_forged_stale_and_wrong_type_tokens() {
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(1usize as *mut c_void, 0) }, STATUS_INVALID_PARAMETER);
+        let p = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, cipher: false })).unwrap();
+        assert_eq!(unsafe { BCryptDestroyHash(p) }, STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_INVALID_PARAMETER);
+    }
+
+    #[test]
+    fn aes128_gcm_nist_known_answer_and_authentication_failure() {
+        let wide = |s: &str| s.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let aes_name = wide("AES");
+        let mode_name = wide("ChainingMode");
+        let mode = wide("ChainingModeGCM");
+        let mut provider = ptr::null_mut();
+        assert_eq!(unsafe { BCryptOpenAlgorithmProvider(&mut provider, aes_name.as_ptr(), ptr::null(), 0) }, STATUS_SUCCESS);
+        let mode_bytes = unsafe { core::slice::from_raw_parts(mode.as_ptr().cast::<u8>(), mode.len()*2) };
+        assert_eq!(unsafe { BCryptSetProperty(provider, mode_name.as_ptr(), mode_bytes.as_ptr(), mode_bytes.len() as u32, 0) }, STATUS_SUCCESS);
+        let key_bytes = [0u8; 16];
+        let mut key = ptr::null_mut();
+        assert_eq!(unsafe { BCryptGenerateSymmetricKey(provider, &mut key, ptr::null_mut(), 0, key_bytes.as_ptr() as *mut u8, 16, 0) }, STATUS_SUCCESS);
+        let nonce = [0u8; 12];
+        let mut tag = [0u8; 16];
+        let mut info = BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+            cbSize: core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as u32,
+            dwInfoVersion: 1, pbNonce: nonce.as_ptr() as *mut u8, cbNonce: 12,
+            pbAuthData: ptr::null_mut(), cbAuthData: 0, pbTag: tag.as_mut_ptr(), cbTag: 16,
+            pbMacContext: ptr::null_mut(), cbMacContext: 0, cbAAD: 0, cbData: 0, dwFlags: 0,
+        };
+        let mut plain = [0u8; 16];
+        let mut cipher = [0u8; 16];
+        let mut written = 0;
+        assert_eq!(unsafe { BCryptEncrypt(key, plain.as_mut_ptr(), 16, (&mut info as *mut _).cast(), ptr::null_mut(), 0, cipher.as_mut_ptr(), 16, &mut written, 0) }, STATUS_SUCCESS);
+        assert_eq!(written, 16);
+        assert_eq!(cipher, [0x03,0x88,0xda,0xce,0x60,0xb6,0xa3,0x92,0xf3,0x28,0xc2,0xb9,0x71,0xb2,0xfe,0x78]);
+        assert_eq!(tag, [0xab,0x6e,0x47,0xd4,0x2c,0xec,0x13,0xbd,0xf5,0x3a,0x67,0xb2,0x12,0x57,0xbd,0xdf]);
+        let mut recovered = [0u8; 16];
+        assert_eq!(unsafe { BCryptDecrypt(key, cipher.as_mut_ptr(), 16, (&mut info as *mut _).cast(), ptr::null_mut(), 0, recovered.as_mut_ptr(), 16, &mut written, 0) }, STATUS_SUCCESS);
+        assert_eq!(recovered, plain);
+        tag[0] ^= 1;
+        let mut rejected = [0u8; 16];
+        assert_eq!(unsafe { BCryptDecrypt(key, cipher.as_mut_ptr(), 16, (&mut info as *mut _).cast(), ptr::null_mut(), 0, rejected.as_mut_ptr(), 16, &mut written, 0) }, STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe { BCryptDestroyKey(key) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider, 0) }, STATUS_SUCCESS);
     }
 
     #[test]
