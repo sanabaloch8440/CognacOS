@@ -781,6 +781,29 @@ pub unsafe extern "system" fn BCryptImportKey(algorithm:*mut c_void,import_key:*
 pub unsafe extern "system" fn BCryptExportKey(key:*mut c_void,export_key:*mut c_void,blob_type:*const u16,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
     if result_len.is_null() || blob_type.is_null() || !export_key.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
     let name = match unsafe { read_property_name(blob_type) } { Ok(v) => v, Err(e) => return e };
+    if name == "EccPublicBlob" {
+        const MAGIC: ULONG = 0x314B4345;
+        let public = match handle_table().lock() {
+            Ok(table) => match table.get(&(key as usize)) {
+                Some(RegisteredHandle::EcdhPublic(v)) => v.clone(),
+                Some(RegisteredHandle::EcdhPrivate(v)) if v.finalized => match P256SecretKey::from_slice(&v.key) { Ok(secret) => secret.public_key(), Err(_) => return STATUS_INVALID_PARAMETER },
+                _ => return STATUS_INVALID_PARAMETER,
+            },
+            Err(_) => return STATUS_NO_MEMORY,
+        };
+        let point = public.to_encoded_point(false);
+        let coordinates = point.as_bytes();
+        if coordinates.len() != 65 || coordinates[0] != 4 { return STATUS_INVALID_PARAMETER; }
+        const REQUIRED: usize = 72;
+        unsafe { result_len.write(REQUIRED as ULONG); }
+        if output.is_null() || output_len as usize < REQUIRED { return STATUS_BUFFER_TOO_SMALL; }
+        unsafe {
+            ptr::write_unaligned(output.cast::<ULONG>(), MAGIC);
+            ptr::write_unaligned(output.add(4).cast::<ULONG>(), 32);
+            ptr::copy_nonoverlapping(coordinates.as_ptr().add(1), output.add(8), 64);
+        }
+        return STATUS_SUCCESS;
+    }
     if name != BCRYPT_KEY_DATA_BLOB { return STATUS_NOT_SUPPORTED; }
     let state = match key_handle(key) { Ok(v) => v, Err(e) => return e };
     let required = match core::mem::size_of::<BcryptKeyDataBlobHeader>().checked_add(state.key.len()) { Some(v) => v, None => return STATUS_INVALID_PARAMETER };
