@@ -1592,11 +1592,15 @@ mod tests {
             }
         }
         unsafe { BCryptFreeBuffer(list.cast()) };
-        // KDFs and secret-agreement operations are not falsely advertised as
-        // BCryptEnumAlgorithms operation classes.
-        assert_eq!(unsafe { BCryptEnumAlgorithms(8 | 16, &mut count, &mut list, 0) }, STATUS_SUCCESS);
+        // Secret agreement is not advertised; RSA signing is enumerated
+        // separately under the Windows signature interface.
+        assert_eq!(unsafe { BCryptEnumAlgorithms(8, &mut count, &mut list, 0) }, STATUS_SUCCESS);
         assert_eq!(count, 0);
         assert!(list.is_null());
+        assert_eq!(unsafe { BCryptEnumAlgorithms(16, &mut count, &mut list, 0) }, STATUS_SUCCESS);
+        assert_eq!(count, 1);
+        assert_eq!(unsafe { (*list).class }, 5);
+        unsafe { BCryptFreeBuffer(list.cast()) };
         assert_eq!(unsafe { BCryptEnumAlgorithms(0x40, &mut count, &mut list, 0) }, STATUS_SUCCESS);
         assert_eq!(count, 1);
         assert_eq!(unsafe { (*list).class }, 7);
