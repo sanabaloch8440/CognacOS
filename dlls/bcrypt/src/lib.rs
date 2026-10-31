@@ -720,6 +720,21 @@ mod tests {
     }
 
     #[test]
+    fn bcrypt_direct_pbkdf2_uses_64_bit_iteration_abi() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name=wide("SHA256");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),BCRYPT_ALG_HANDLE_HMAC_FLAG)},STATUS_SUCCESS);
+        let mut password=b"password".to_vec();
+        let mut salt=b"salt".to_vec();
+        let mut output=[0u8;32];
+        assert_eq!(unsafe{BCryptDeriveKeyPBKDF2(provider,password.as_mut_ptr(),password.len() as ULONG,salt.as_mut_ptr(),salt.len() as ULONG,4096,output.as_mut_ptr(),output.len() as ULONG,0)},STATUS_SUCCESS);
+        assert_eq!(output,[0x12,0x0f,0xb6,0xcf,0xfc,0xf8,0xb3,0x2c,0x43,0xe7,0x22,0x52,0x56,0xc4,0xf8,0x37,0xa8,0x65,0x48,0xc9,0x2c,0xcc,0x35,0x48,0x08,0x05,0x98,0x7c,0xb7,0x0b,0xe1,0x7b]);
+        assert_eq!(unsafe{BCryptDeriveKeyPBKDF2(provider,password.as_mut_ptr(),password.len() as ULONG,salt.as_mut_ptr(),salt.len() as ULONG,u32::MAX as u64+1,output.as_mut_ptr(),output.len() as ULONG,0)},STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn sha256_known_answer() {
         let got = HashAlgorithm::Sha256.digest(b"abc");
         assert_eq!(got.as_ref(), &[0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad]);
