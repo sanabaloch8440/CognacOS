@@ -179,7 +179,7 @@ pub unsafe extern "system" fn BCryptHashData(hash:*mut c_void,input:*const u8,in
  if (input.is_null()&&input_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
  let Ok(mut table)=handle_table().lock() else{return STATUS_NO_MEMORY;};
  let Some(RegisteredHandle::Hash(state))=table.get_mut(&(hash as usize)) else{return STATUS_INVALID_PARAMETER;};
- if state.data.len().saturating_add(input_len as usize)>64*1024*1024{return STATUS_INVALID_PARAMETER;}
+ if state.data.len().checked_add(input_len as usize).is_none(){return STATUS_INVALID_PARAMETER;}
  if input_len!=0 {if state.data.try_reserve(input_len as usize).is_err(){return STATUS_NO_MEMORY;} state.data.extend_from_slice(unsafe{core::slice::from_raw_parts(input,input_len as usize)});}
  STATUS_SUCCESS
 }
@@ -230,21 +230,32 @@ pub unsafe extern "system" fn BCryptProcessMultiOperations(object:*mut c_void,op
     if count>4096{return STATUS_INVALID_PARAMETER;}
     let mut table=match handle_table().lock(){Ok(v)=>v,Err(_)=>return STATUS_NO_MEMORY};
     let Some(RegisteredHandle::MultiHash(state))=table.get_mut(&(object as usize)) else{return STATUS_INVALID_PARAMETER;};
+    let mut additional=Vec::<usize>::new();
+    if additional.try_reserve_exact(state.states.len()).is_err(){return STATUS_NO_MEMORY;}
+    additional.resize(state.states.len(),0);
     for i in 0..count {
         let op=unsafe{operations.add(i).read_unaligned()};
         if op.iHash as usize>=state.states.len() || (op.pbBuffer.is_null()&&op.cbBuffer!=0) {return STATUS_INVALID_PARAMETER;}
         match op.hashOperation {
-            OP_HASH_DATA => if state.states[op.iHash as usize].data.len().saturating_add(op.cbBuffer as usize)>64*1024*1024{return STATUS_INVALID_PARAMETER;},
+            OP_HASH_DATA => {
+                let slot=&mut additional[op.iHash as usize];
+                *slot=match slot.checked_add(op.cbBuffer as usize){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
+                if state.states[op.iHash as usize].data.len().checked_add(*slot).is_none(){return STATUS_INVALID_PARAMETER;}
+            },
             OP_FINISH_HASH => if op.pbBuffer.is_null() || op.cbBuffer<state.states[op.iHash as usize].algorithm.digest_len() {return STATUS_BUFFER_TOO_SMALL;},
             _=>return STATUS_INVALID_PARAMETER,
         }
+    }
+    // Reserve every affected stream before applying any operation, so an
+    // allocation failure cannot leave a partially processed operation batch.
+    for (hash,extra) in state.states.iter_mut().zip(additional.iter()) {
+        if *extra!=0 && hash.data.try_reserve(*extra).is_err(){return STATUS_NO_MEMORY;}
     }
     for i in 0..count {
         let op=unsafe{operations.add(i).read_unaligned()};
         let hash=&mut state.states[op.iHash as usize];
         if op.hashOperation==OP_HASH_DATA {
             if op.cbBuffer!=0 {
-                if hash.data.try_reserve(op.cbBuffer as usize).is_err(){return STATUS_NO_MEMORY;}
                 hash.data.extend_from_slice(unsafe{core::slice::from_raw_parts(op.pbBuffer,op.cbBuffer as usize)});
             }
         } else {
