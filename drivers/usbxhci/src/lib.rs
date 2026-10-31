@@ -358,6 +358,11 @@ pub struct DmaAllocation {
     pub size: u64,
 }
 pub trait XhciPlatform: XhciRegisterIo {
+    /// Confirm that the returned device address is backed by a live DMA/IOMMU
+    /// mapping for this controller's requester ID, with the requested span pinned.
+    /// The fail-closed default prevents a physical address or CPU pointer from
+    /// being mistaken for a device-visible IOVA.
+    fn dma_mapping_ready(&self, _allocation: DmaAllocation) -> bool { false }
     fn allocate_dma(&mut self, size: u64, alignment: u64, max_device_address: u64) -> Result<DmaAllocation, ()>;
     fn free_dma(&mut self, allocation: DmaAllocation);
     fn register_interrupt(&mut self) -> Result<(), ()>;
@@ -368,6 +373,7 @@ pub trait XhciPlatform: XhciRegisterIo {
 pub enum RuntimeStartError {
     AllocationFailed,
     InvalidAllocation,
+    BusMasterDisableFailed,
     InterruptRegistrationFailed,
     Controller(ControllerInitError),
     InterruptEnableFailed,
@@ -406,6 +412,9 @@ fn free_allocations<P: XhciPlatform>(p: &mut P, a: [Option<DmaAllocation>; 4]) {
 pub fn start_controller<P: XhciPlatform>(
     platform: &mut P, caps: &Capabilities, max_slots: u8, poll_budget: u32,
 ) -> Result<XhciRuntimeResources, RuntimeStartError> {
+    // Clear PCI Command.BME before allocating or touching controller DMA state.
+    // This is deliberately the first hardware operation in the start path.
+    platform.set_bus_master(false).map_err(|_| RuntimeStartError::BusMasterDisableFailed)?;
     if max_slots == 0 || max_slots > caps.max_slots || caps.max_slots > MAX_SLOTS { return Err(RuntimeStartError::InvalidAllocation); }
     let dcbaa_size = (max_slots as u64 + 1).checked_mul(8).ok_or(RuntimeStartError::InvalidAllocation)?;
     let sizes = [dcbaa_size, RUNTIME_RING_BYTES, RUNTIME_RING_BYTES, core::mem::size_of::<ErstEntry>() as u64];
@@ -413,7 +422,8 @@ pub fn start_controller<P: XhciPlatform>(
     let mut allocations: [Option<DmaAllocation>; 4] = [None, None, None, None];
     for i in 0..4 {
         let a = match platform.allocate_dma(sizes[i], aligns[i], u64::MAX) {
-            Ok(a) if valid_allocation(a, sizes[i], aligns[i], u64::MAX) => a,
+            Ok(a) if valid_allocation(a, sizes[i], aligns[i], u64::MAX)
+                && platform.dma_mapping_ready(a) => a,
             Ok(a) => { platform.free_dma(a); free_allocations(platform, allocations); return Err(RuntimeStartError::InvalidAllocation); }
             Err(()) => { free_allocations(platform, allocations); return Err(RuntimeStartError::AllocationFailed); }
         };
@@ -1199,6 +1209,7 @@ mod controller_power_tests {
   fn set_bus_master(&mut self,_enabled:bool)->Result<(),()>{Ok(())}
  }
  impl XhciPlatform for FakePlatform {
+  fn dma_mapping_ready(&self,_:DmaAllocation)->bool{true}
   fn allocate_dma(&mut self,size:u64,alignment:u64,_max:u64)->Result<DmaAllocation,()>{
    let mask=alignment as usize-1;self.next=(self.next+mask)&!mask;
    let end=self.next.checked_add(size as usize).ok_or(())?;if end>self.dma.0.len(){return Err(())}
