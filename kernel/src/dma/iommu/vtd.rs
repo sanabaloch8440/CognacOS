@@ -104,6 +104,24 @@ mod supported_capability_tests{
 }
 
 #[cfg(test)]
+mod global_command_tests {
+ use super::*;
+ #[test]
+ fn root_table_pointer_command_is_not_replayed_when_translation_is_enabled(){
+  // Simulate a readback in which the write-one SRTP bit appears set/undefined.
+  let old=0x8000_0000|SRTP|(1<<25);
+  let base=old&!(TE|SRTP);
+  let install_root=base|SRTP;
+  let enable_translation=base|TE;
+  assert_eq!(install_root&TE,0);
+  assert_ne!(install_root&SRTP,0);
+  assert_ne!(enable_translation&TE,0);
+  assert_eq!(enable_translation&SRTP,0);
+  assert_eq!(enable_translation&(1<<25),1<<25);
+ }
+}
+
+#[cfg(test)]
 mod context_encoding_tests {
     use super::*;
     #[test]
@@ -144,15 +162,27 @@ pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32
   unsafe{(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_INSUFFICIENT_RESOURCES
  }
  unsafe{core::ptr::write_bytes(rv,0,512)};
+ if rp&!VT_D_PAGE_MASK!=0 {
+  unsafe{(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};
+  return STATUS_NOT_SUPPORTED
+ }
  if unsafe{(ops.clean_cache.unwrap())(ops.context,rp,4096)}!=0{unsafe{(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_NOT_SUPPORTED}
- let old=unsafe{r32(mmio,GCMD)};unsafe{w32(mmio,GCMD,old&!TE)};
+ // SRTP is a write-one command, not a persistent GCMD state bit. Clear it
+ // from the value read back from hardware and issue it exactly once while
+ // translation is disabled. Replaying SRTP together with TE can cause
+ // implementations to process TE first and only then reload the root table.
+ let old=unsafe{r32(mmio,GCMD)};
+ let base_gcmd=old&!(TE|SRTP);
+ unsafe{w32(mmio,GCMD,base_gcmd)};
  if !wait32(mmio,GSTS,TES,false){unsafe{(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
- unsafe{w64(mmio,RTADDR,rp);fence(Ordering::SeqCst);w32(mmio,GCMD,(old&!TE)|SRTP)};
+ unsafe{w64(mmio,RTADDR,rp);fence(Ordering::SeqCst);w32(mmio,GCMD,base_gcmd|SRTP)};
  if !wait32(mmio,GSTS,RTPS,true){unsafe{(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
  unsafe{w64(mmio,CCMD,ICC|GLOBAL)};
  if !wait64(mmio,CCMD,ICC){unsafe{(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
- unsafe{w32(mmio,GCMD,(old&!TE)|SRTP|TE)};
- if !wait32(mmio,GSTS,TES,true){unsafe{w32(mmio,GCMD,(old&!TE)|SRTP);let _=wait32(mmio,GSTS,TES,false);(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
+ // Root-table publication and the required cache invalidation are complete;
+ // enable translation without replaying the one-shot SRTP command.
+ unsafe{w32(mmio,GCMD,base_gcmd|TE)};
+ if !wait32(mmio,GSTS,TES,true){unsafe{w32(mmio,GCMD,base_gcmd);let _=wait32(mmio,GSTS,TES,false);(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
  *u=Unit{mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,max_domains,ops:*ops,enabled:true};
  drop(_g);
  let backend_status=unsafe{register_generic_dma_backend()};
