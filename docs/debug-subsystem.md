@@ -71,3 +71,48 @@ crate::ntoskrnl::debug::set_filter(
 ## Validation
 
 The workflow now runs host tests for the structured debug subsystem and the interactive console command parser (in addition to the older kernel diagnostics tests). The boot disk image reserves a dedicated third GPT partition for trace snapshots, separate from the ESP and ext4 data partition. They cover filter independence, record round-tripping, rejection of stale records after ring wraparound, and filtered events not consuming ring slots. QEMU panic/exception output should include the `NTOSKRNL DEBUG TRACE` section when recent records exist. The beep-driver assessment extracts that section if present and explicitly reports when no dump was emitted; it does not treat a missing trace dump as a successful driver test.
+
+
+## Source-level GDB forensics
+
+The structured trace ring is useful for low-overhead postmortem evidence, but it is not a replacement for a live instruction-level debugger. CognacOS now includes reusable GDB commands at `tools/gdb/cognacos-forensics.gdb`. These commands are intentionally read-only: they capture evidence and do not change kernel control flow or auto-continue after a stop.
+
+### Start a deterministic QEMU debug session
+
+1. Build the same kernel image and symbol companion used by the failing CI run. Preserve DWARF information (`-C debuginfo=2` or the project's equivalent) and do not strip the symbol companion.
+2. Start QEMU with the same firmware, disk image, CPU model, RAM, and device arguments as the smoke test, adding `-S -gdb tcp::1234`. `-S` pauses the virtual CPU at reset; `-gdb` exposes the remote GDB stub.
+3. Start GDB with the unstripped ELF/DWARF symbol file, for example:
+
+   ```sh
+   gdb -q -x tools/gdb/cognacos-forensics.gdb path/to/kernel-symbols.elf
+   ```
+
+4. At the GDB prompt, connect and inspect symbols:
+
+   ```gdb
+   target remote :1234
+   info files
+   info functions exception
+   maintenance info sections
+   ```
+
+   If the kernel is relocated or its PE image is loaded at a runtime address different from the ELF link address, apply the correct `symbol-file`/ `add-symbol-file` address mapping before interpreting source lines. Do not assume the PE preferred image base is the runtime base.
+
+5. Set breakpoints at known symbols (especially exception entry and context-switch boundaries), then continue. On a stop, run `cognacos-forensics`; it writes a snapshot to `cognacos-gdb-forensics.txt` containing registers, control registers where supported, source/symbol resolution, nearby machine instructions, stack words, backtrace, locals, and loaded section mappings.
+
+### High-value GDB techniques
+
+- **Catch the first fault, not only the final halt:** break at the page-fault and general-protection exception entry points, and at the common exception dispatcher. Record the original trap frame before the handler changes stacks or registers.
+- **Instruction-level reconstruction:** use `x/16i $rip`, `disassemble /r $rip-32, $rip+64`, `display/i $pc`, and `si`/ `ni` around the first suspicious return or indirect branch. `nexti` can skip a call; use `stepi` when the call target itself matters.
+- **Stack and frame integrity:** compare the saved RSP, return address, stack bounds, and the decoded exception frame at each transition. A backtrace is only as reliable as the unwind metadata and frame state; corroborate it with raw stack words and disassembly.
+- **Conditional breakpoints:** stop only when the fault vector, task ID, CR2, or saved RIP matches the target scenario. Use conditions only after confirming the frame layout and symbol names in the current build.
+- **Watchpoints:** use hardware `watch`/`rwatch`/`awatch` on a specific aligned saved-context slot or function pointer to catch the write that corrupts it. Hardware watchpoint count/width is limited; watch the smallest decisive field.
+- **Reverse debugging:** if the installed GDB and QEMU target support record/replay for this execution mode, test `record full`/ `reverse-stepi`; do not assume reverse execution is available or reliable for every device/interrupt workload.
+- **Automated evidence:** use `set logging enabled on`, `thread apply all bt full` where the target exposes multiple threads, and save the exact image hash, QEMU command line, GDB version, symbol file, and serial log alongside the snapshot.
+
+### Interpretation guardrails
+
+- The GDB remote stub does not itself make the kernel's exception handling, unwind metadata, or symbol relocation correct. Verify symbols against the exact image built by CI.
+- GDB's `bt full`, locals, and arguments may be incomplete or misleading in optimized freestanding code; use DWARF, disassembly, register state, and raw memory together.
+- The `cognacos-forensics` command logs a best-effort snapshot. Some remote targets do not expose CR registers or segment registers through `info registers`; unsupported registers should not be mistaken for a kernel fault.
+- The GDB helper file does not claim that CI already captures a live GDB session. Wiring a live debugger into CI requires a controlled QEMU launch, a deterministic stop condition, symbol relocation handling, and artifact upload; that should be validated separately from this helper.
