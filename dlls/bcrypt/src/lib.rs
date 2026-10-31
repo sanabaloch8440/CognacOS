@@ -848,13 +848,13 @@ struct BcryptPkcs1PaddingInfo { pszAlgId: *const u16 }
 #[cfg(target_pointer_width = "64")]
 const _: [(); 8] = [(); core::mem::size_of::<BcryptPkcs1PaddingInfo>()];
 
-/// Verifies a precomputed digest using the Windows PKCS#1 padding-info ABI.
-/// SHA-256 is currently the supported digest; the padding descriptor is
+/// Verifies a precomputed SHA-2 digest using the Windows PKCS#1 padding-info ABI.
+/// The padding descriptor is
 /// mandatory, as it is for BCryptVerifySignature callers using PKCS#1.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info:*mut c_void,hash:*const u8,hash_len:ULONG,signature:*const u8,signature_len:ULONG,flags:ULONG)->NTSTATUS {
     const BCRYPT_PAD_PKCS1:ULONG=0x00000002;
-    if padding_info.is_null() || hash.is_null() || hash_len!=32 || signature.is_null() || flags!=BCRYPT_PAD_PKCS1 {return STATUS_INVALID_PARAMETER;}
+    if padding_info.is_null() || hash.is_null() || signature.is_null() || flags!=BCRYPT_PAD_PKCS1 {return STATUS_INVALID_PARAMETER;}
     let info=unsafe{&*padding_info.cast::<BcryptPkcs1PaddingInfo>()};
     let alg=match unsafe{HashAlgorithm::from_utf16(info.pszAlgId)}{Ok(v)=>v,Err(e)=>return e};
     let expected_len=alg.digest_len();
