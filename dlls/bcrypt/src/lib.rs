@@ -1015,7 +1015,6 @@ fn registered_providers()->&'static Mutex<HashSet<String>>{REGISTERED_PROVIDERS.
 #[no_mangle] pub unsafe extern "system" fn BCryptEnumRegisteredProviders(size:*mut ULONG,out:*mut *mut CryptProviders)->NTSTATUS{
  if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}let mut names=match registered_providers().lock(){Ok(v)=>v.iter().cloned().collect::<Vec<_>>(),Err(_)=>return STATUS_NO_MEMORY};names.sort();
  let header=core::mem::size_of::<CryptProviders>();let ptr_bytes=names.len()*core::mem::size_of::<*mut u16>();let strings=names.iter().map(|v|(v.encode_utf16().count()+1)*2).sum::<usize>();let total=header+ptr_bytes+strings;
- if unsafe{out.read()}.is_null(){unsafe{size.write(total as ULONG)};return STATUS_BUFFER_TOO_SMALL;}
  let base=match store_enum_buffer(total){Ok(v)=>v,Err(e)=>return e};let array=unsafe{base.add(header).cast::<*mut u16>()};let mut off=header+ptr_bytes;
  for (i,name) in names.iter().enumerate(){let p=enum_write_wide(base,off,name);unsafe{array.add(i).write(p)};off+=(name.encode_utf16().count()+1)*2;}
  unsafe{base.cast::<CryptProviders>().write(CryptProviders{cProviders:names.len() as ULONG,rgpszProviders:array});size.write(total as ULONG);out.write(base.cast())};STATUS_SUCCESS
@@ -1024,7 +1023,6 @@ fn registered_providers()->&'static Mutex<HashSet<String>>{REGISTERED_PROVIDERS.
  if size.is_null()||out.is_null()||!matches!(mode,1|2|3|4){return STATUS_INVALID_PARAMETER;}let name=match config_name(provider){Ok(v)=>v,Err(e)=>return e};
  let found=match registered_providers().lock(){Ok(set)=>set.contains(&name),Err(_)=>return STATUS_NO_MEMORY};if !found{return STATUS_NOT_FOUND;}
  let required=core::mem::size_of::<CryptProviderReg>() as ULONG;unsafe{size.write(required)};
- if unsafe{out.read()}.is_null(){return STATUS_BUFFER_TOO_SMALL;}
  let base=match store_enum_buffer(required as usize){Ok(v)=>v,Err(e)=>return e};
  unsafe{base.cast::<CryptProviderReg>().write(CryptProviderReg{cAliases:0,rgpszAliases:ptr::null_mut(),pUM:ptr::null_mut(),pKM:ptr::null_mut()});out.write(base.cast())};let _=interface;STATUS_SUCCESS
 }
@@ -1088,12 +1086,12 @@ fn output_context_buffer<T>(size:*mut ULONG,out:*mut *mut T,base:*mut u8,total:U
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}let name=match config_name(name){Ok(v)=>v,Err(e)=>return e};
  let cfg=match contexts().lock(){Ok(m)=>match m.get(&name){Some(c)=>c.config,None=>return STATUS_NOT_FOUND},Err(_)=>return STATUS_NO_MEMORY};
  let n=core::mem::size_of::<CryptContextConfig>() as ULONG;unsafe{size.write(n)};
- if unsafe{out.read()}.is_null(){return STATUS_BUFFER_TOO_SMALL;}let base=match store_enum_buffer(n as usize){Ok(v)=>v,Err(e)=>return e};unsafe{base.cast::<CryptContextConfig>().write(cfg);out.write(base.cast())};STATUS_SUCCESS
+ let base=match store_enum_buffer(n as usize){Ok(v)=>v,Err(e)=>return e};unsafe{base.cast::<CryptContextConfig>().write(cfg);out.write(base.cast())};STATUS_SUCCESS
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptEnumContexts(table:ULONG,size:*mut ULONG,out:*mut *mut CryptContexts)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}
  let mut names=match contexts().lock(){Ok(m)=>m.keys().cloned().collect::<Vec<_>>(),Err(_)=>return STATUS_NO_MEMORY};names.sort();
- let (base,total)=match context_list_buffer(&names){Ok(v)=>v,Err(e)=>return e};if unsafe{out.read()}.is_null(){unsafe{size.write(total)};let _=unsafe{BCryptFreeBuffer(base.cast())};return STATUS_BUFFER_TOO_SMALL;}unsafe{size.write(total);out.write(base.cast())};STATUS_SUCCESS
+ let (base,total)=match context_list_buffer(&names){Ok(v)=>v,Err(e)=>return e};unsafe{size.write(total);out.write(base.cast())};STATUS_SUCCESS
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptAddContextFunction(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,position:ULONG)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v) if !v.is_empty()=>v,_=>return STATUS_INVALID_PARAMETER};
