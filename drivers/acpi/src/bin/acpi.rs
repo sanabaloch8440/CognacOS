@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, sync::atomic::{AtomicBool, Ordering}};
+use core::{cell::UnsafeCell, mem::MaybeUninit, sync::atomic::{AtomicBool, Ordering}};
 use cognacos_acpi as acpi;
 use cognacos_nt_abi::{io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
