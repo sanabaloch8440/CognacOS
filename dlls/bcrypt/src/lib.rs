@@ -615,7 +615,7 @@ pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_k
     let e=BigUint::from_bytes_be(&bytes[..h.cb_public_exp as usize]);
     let n=BigUint::from_bytes_be(&bytes[h.cb_public_exp as usize..]);
     let key=match RsaPublicKey::new(n,e){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
-    if key.n().bits()!=h.bit_length as u64 {return STATUS_INVALID_PARAMETER;}
+    if key.n().bits()!=h.bit_length as usize {return STATUS_INVALID_PARAMETER;}
     let token=match register_handle(RegisteredHandle::RsaPublic(key)){Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)};STATUS_SUCCESS
 }
