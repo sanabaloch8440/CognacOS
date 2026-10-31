@@ -397,9 +397,29 @@ pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*con
             "AlgorithmName" => (1, 0, "RSA"),
             _ => return STATUS_NOT_SUPPORTED,
         }
+    } else if let Some(finalized) = match handle_table().lock() {
+        Ok(table) => match table.get(&(object as usize)) {
+            Some(RegisteredHandle::EcdhPublic(_)) => Some(true),
+            Some(RegisteredHandle::EcdhPrivate(v)) => Some(v.finalized),
+            _ => None,
+        },
+        Err(_) => return STATUS_NO_MEMORY,
+    } {
+        match name.as_str() {
+            "ObjectLength" => (0, 0, ""),
+            "KeyLength" | "PublicKeyLength" => (0, if finalized { 256 } else { 0 }, ""),
+            "AlgorithmName" => (1, 0, "ECDH_P256"),
+            _ => return STATUS_NOT_SUPPORTED,
+        }
     } else {
         let p = match algorithm_handle(object) { Ok(v) => v, Err(e) => return e };
-        if p.rng {
+        if p.ecdh {
+            match name.as_str() {
+                "ObjectLength" => (0, 0, ""),
+                "AlgorithmName" => (1, 0, "ECDH_P256"),
+                _ => return STATUS_NOT_SUPPORTED,
+            }
+        } else if p.rng {
             match name.as_str() {
                 "ObjectLength" => (0, 0, ""),
                 "AlgorithmName" => (1, 0, "RNG"),
