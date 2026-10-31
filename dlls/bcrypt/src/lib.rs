@@ -1035,6 +1035,22 @@ mod tests {
     }
 
     #[test]
+    fn aes_chaining_mode_can_be_changed_on_a_key_handle() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let algorithm=wide("AES");let chaining=wide("ChainingMode");let gcm=wide("ChainingModeGCM");let auth=wide("AuthTagLength");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,algorithm.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mut material=[0u8;16];let mut key=ptr::null_mut();
+        assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut key,ptr::null_mut(),0,material.as_mut_ptr(),16,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptSetProperty(key,chaining.as_ptr(),gcm.as_ptr().cast(),(gcm.len()*2) as ULONG,0)},STATUS_SUCCESS);
+        let mut lengths=BcryptKeyLengths{dwMinLength:0,dwMaxLength:0,dwIncrement:0};let mut required=0;
+        assert_eq!(unsafe{BCryptGetProperty(key,auth.as_ptr(),(&mut lengths as *mut BcryptKeyLengths).cast::<u8>(),12,&mut required,0)},STATUS_SUCCESS);
+        assert_eq!(lengths.dwMinLength,12);assert_eq!(lengths.dwMaxLength,16);
+        assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn aes_and_rsa_providers_report_windows_key_length_ranges() {
         let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
         for (algorithm,expected) in [("AES",BcryptKeyLengths{dwMinLength:128,dwMaxLength:256,dwIncrement:64}),("RSA",BcryptKeyLengths{dwMinLength:512,dwMaxLength:16384,dwIncrement:64})] {
