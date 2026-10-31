@@ -67,8 +67,9 @@ fn check_ntdll_def(path: &Path) {
 }
 
 fn check_csrsrv_def(path: &Path) {
+    let source = read(path);
     let mut exports = BTreeMap::<String, u32>::new();
-    for (line_no, raw) in read(path).lines().enumerate() {
+    for (line_no, raw) in source.lines().enumerate() {
         let line = raw.split(';').next().unwrap_or("").trim();
         if line.is_empty() || line.to_ascii_uppercase().starts_with("LIBRARY ") || line.eq_ignore_ascii_case("EXPORTS") { continue; }
         let mut fields = line.split_whitespace();
