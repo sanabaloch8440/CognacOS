@@ -577,6 +577,31 @@ include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 mod tests {
     use super::*;
     #[test]
+    fn bcrypt_key_derivation_pbkdf2_sha256_known_answer() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name=wide("PBKDF2");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let password=b"password";
+        let mut key=ptr::null_mut();
+        assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut key,ptr::null_mut(),0,password.as_ptr() as *mut u8,password.len() as u32,0)},STATUS_SUCCESS);
+        let hash=wide("SHA256");
+        let salt=b"salt";
+        let mut buffers=[
+            BcryptBuffer{cbBuffer:(hash.len()*2) as u32,BufferType:0,pvBuffer:hash.as_ptr() as *mut c_void},
+            BcryptBuffer{cbBuffer:salt.len() as u32,BufferType:15,pvBuffer:salt.as_ptr() as *mut c_void},
+        ];
+        let mut desc=BcryptBufferDesc{ulVersion:0,cBuffers:2,pBuffers:buffers.as_mut_ptr()};
+        let mut output=[0u8;32];
+        let mut written=0;
+        assert_eq!(unsafe{BCryptKeyDerivation(key,&mut desc,output.as_mut_ptr(),32,&mut written,0)},STATUS_SUCCESS);
+        assert_eq!(written,32);
+        assert_eq!(output,[0x12,0x0f,0xb6,0xcf,0xfc,0xf8,0xb3,0x2c,0x43,0xe7,0x22,0x52,0x56,0xc4,0xf8,0x37,0xa8,0x65,0x48,0xc9,0x2c,0xcc,0x35,0x48,0x08,0x05,0x98,0x7c,0xb7,0x0b,0xe1,0x7b]);
+        assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn sha256_known_answer() {
         let got = HashAlgorithm::Sha256.digest(b"abc");
         assert_eq!(got.as_ref(), &[0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad]);
