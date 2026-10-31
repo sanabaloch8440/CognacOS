@@ -587,9 +587,10 @@ pub unsafe extern "system" fn BCryptDeriveKey(secret:*mut c_void,kdf:*const u16,
     for i in 0..64 { let u=unsafe{kdf.add(i).read()}; if u==0 {break;} name.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
     if String::from_utf16(&name).ok().as_deref()!=Some("TRUNCATE") { return STATUS_NOT_SUPPORTED; }
     let material=match handle_table().lock() { Ok(t)=>match t.get(&(secret as usize)){Some(RegisteredHandle::KdfKey(v))=>v.secret.clone(),_=>return STATUS_INVALID_PARAMETER},Err(_)=>return STATUS_NO_MEMORY };
-    let n=core::cmp::min(output_len as usize,material.len());
+    let mut little_endian=material; little_endian.reverse();
+    let n=core::cmp::min(output_len as usize,little_endian.len());
     if n==0 { return STATUS_INVALID_PARAMETER; }
-    unsafe { ptr::copy_nonoverlapping(material.as_ptr(),output,n); result_len.write(n as ULONG); }
+    unsafe { ptr::copy_nonoverlapping(little_endian.as_ptr(),output,n); result_len.write(n as ULONG); }
     STATUS_SUCCESS
 }
 
