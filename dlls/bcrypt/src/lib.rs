@@ -3,11 +3,12 @@
 #![allow(non_snake_case)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-use aws_lc_rs::{digest, hmac, pbkdf2, rand};
+use aws_lc_rs::{aead, digest, hmac, pbkdf2, rand};
 use core::num::NonZeroU32;
 use zeroize::Zeroize;
 use core::{ffi::c_void, ptr};
-use std::{boxed::Box, vec::Vec};
+use std::{boxed::Box, collections::HashMap, sync::{Mutex, OnceLock}, vec::Vec};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub type NTSTATUS = i32;
 pub type ULONG = u32;
@@ -46,7 +47,57 @@ impl HashAlgorithm {
     fn block_len(self) -> u32 { match self { Self::Sha256 => 64, Self::Sha384 | Self::Sha512 => 128 } }
 }
 
-struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool }
+struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, cipher: bool }
+#[derive(Clone)]
+struct KeyHandle { key: Vec<u8> }
+impl Drop for KeyHandle { fn drop(&mut self) { self.key.zeroize(); } }
+#[derive(Clone)]
+enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), Key(KeyHandle) }
+static HANDLE_TABLE: OnceLock<Mutex<HashMap<usize, RegisteredHandle>>> = OnceLock::new();
+static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x10000);
+fn handle_table() -> &'static Mutex<HashMap<usize, RegisteredHandle>> {
+    HANDLE_TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn register_handle(value: RegisteredHandle) -> Result<*mut c_void, NTSTATUS> {
+    let token = NEXT_HANDLE.fetch_add(16, Ordering::Relaxed);
+    if token == 0 || token > usize::MAX - 16 { return Err(STATUS_NO_MEMORY); }
+    handle_table().lock().map_err(|_| STATUS_NO_MEMORY)?.insert(token, value);
+    Ok(token as *mut c_void)
+}
+fn algorithm_handle(token: *mut c_void) -> Result<AlgorithmHandle, NTSTATUS> {
+    if token.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+    match handle_table().lock().map_err(|_| STATUS_NO_MEMORY)?.get(&(token as usize)) {
+        Some(RegisteredHandle::Algorithm(v)) => Ok(v.clone()),
+        _ => Err(STATUS_INVALID_PARAMETER),
+    }
+}
+fn hash_handle(token: *mut c_void) -> Result<HashHandle, NTSTATUS> {
+    if token.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+    match handle_table().lock().map_err(|_| STATUS_NO_MEMORY)?.get(&(token as usize)) {
+        Some(RegisteredHandle::Hash(v)) => Ok(v.clone()),
+        _ => Err(STATUS_INVALID_PARAMETER),
+    }
+}
+fn remove_handle(token: *mut c_void, expected: u8) -> NTSTATUS {
+    if token.is_null() { return STATUS_INVALID_PARAMETER; }
+    let Ok(mut table) = handle_table().lock() else { return STATUS_INVALID_PARAMETER; };
+    let key = token as usize;
+    let valid = matches!((table.get(&key), expected),
+        (Some(RegisteredHandle::Algorithm(_)), 0) |
+        (Some(RegisteredHandle::Hash(_)), 1) |
+        (Some(RegisteredHandle::Key(_)), 2));
+    if !valid { return STATUS_INVALID_PARAMETER; }
+    table.remove(&key);
+    STATUS_SUCCESS
+}
+fn key_handle(token: *mut c_void) -> Result<KeyHandle, NTSTATUS> {
+    if token.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+    match handle_table().lock().map_err(|_| STATUS_NO_MEMORY)?.get(&(token as usize)) {
+        Some(RegisteredHandle::Key(v)) => Ok(v.clone()),
+        _ => Err(STATUS_INVALID_PARAMETER),
+    }
+}
+
 #[derive(Clone)]
 struct HashHandle { algorithm: HashAlgorithm, hmac: bool, secret: Vec<u8>, data: Vec<u8> }
 impl Drop for HashHandle { fn drop(&mut self) { self.secret.zeroize(); self.data.zeroize(); } }
@@ -62,93 +113,67 @@ unsafe fn read_property_name(ptr: *const u16) -> Result<String, NTSTATUS> {
 
 /// BCryptOpenAlgorithmProvider (SHA-256/384/512 only; no HMAC flag yet).
 #[no_mangle]
+
+#[no_mangle]
 pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void, alg_id: *const u16, implementation: *const u16, flags: ULONG) -> NTSTATUS {
     if out.is_null() || !implementation.is_null() || flags & !BCRYPT_ALG_HANDLE_HMAC_FLAG != 0 { return STATUS_INVALID_PARAMETER; }
-    let algorithm = match HashAlgorithm::from_utf16(alg_id) { Ok(a) => a, Err(s) => return s };
-    let handle = Box::new(AlgorithmHandle { algorithm, hmac: flags & BCRYPT_ALG_HANDLE_HMAC_FLAG != 0 });
-    unsafe { out.write(Box::into_raw(handle).cast()) };
-    STATUS_SUCCESS
+    if alg_id.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut units=Vec::new();
+    for i in 0..64 { let u=unsafe{alg_id.add(i).read()}; if u==0 {break;} units.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
+    let name=match String::from_utf16(&units){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
+    let (algorithm,cipher)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true) }
+    else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false),Err(e)=>return e } };
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,cipher})) {Ok(v)=>v,Err(e)=>return e};
+    unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn BCryptCloseAlgorithmProvider(handle: *mut c_void, flags: ULONG) -> NTSTATUS {
-    if handle.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
-    unsafe { drop(Box::from_raw(handle.cast::<AlgorithmHandle>())) };
-    STATUS_SUCCESS
-}
 
 #[no_mangle]
-pub unsafe extern "system" fn BCryptCreateHash(algorithm: *mut c_void, out: *mut *mut c_void, object: *mut u8, object_len: ULONG, secret: *mut u8, secret_len: ULONG, flags: ULONG) -> NTSTATUS {
-    if algorithm.is_null() || out.is_null() || !object.is_null() || object_len != 0 || (secret.is_null() && secret_len != 0) || flags != 0 { return STATUS_INVALID_PARAMETER; }
-    let provider = unsafe { &*algorithm.cast::<AlgorithmHandle>() };
-    if !provider.hmac && secret_len != 0 { return STATUS_INVALID_PARAMETER; }
-    let secret = if secret_len == 0 { Vec::new() } else { unsafe { core::slice::from_raw_parts(secret, secret_len as usize) }.to_vec() };
-    let alg = provider.algorithm;
-    unsafe { out.write(Box::into_raw(Box::new(HashHandle { algorithm: alg, hmac: provider.hmac, secret, data: Vec::new() })).cast()) };
-    STATUS_SUCCESS
+pub unsafe extern "system" fn BCryptCloseAlgorithmProvider(handle:*mut c_void,flags:ULONG)->NTSTATUS {
+ if flags!=0{return STATUS_INVALID_PARAMETER;} remove_handle(handle,0)
 }
 
-#[no_mangle]
-pub unsafe extern "system" fn BCryptHashData(hash: *mut c_void, input: *const u8, input_len: ULONG, flags: ULONG) -> NTSTATUS {
-    if hash.is_null() || (input.is_null() && input_len != 0) || flags != 0 { return STATUS_INVALID_PARAMETER; }
-    let state = unsafe { &mut *hash.cast::<HashHandle>() };
-    if state.data.len().saturating_add(input_len as usize) > 64 * 1024 * 1024 { return STATUS_INVALID_PARAMETER; }
-    if input_len != 0 {
-        if state.data.try_reserve(input_len as usize).is_err() { return STATUS_NO_MEMORY; }
-        state.data.extend_from_slice(unsafe { core::slice::from_raw_parts(input, input_len as usize) });
-    }
-    STATUS_SUCCESS
-}
 
 #[no_mangle]
-pub unsafe extern "system" fn BCryptFinishHash(hash: *mut c_void, output: *mut u8, output_len: ULONG, flags: ULONG) -> NTSTATUS {
-    if hash.is_null() || output.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
-    let state = unsafe { &*hash.cast::<HashHandle>() };
-    if output_len < state.algorithm.digest_len() { return STATUS_BUFFER_TOO_SMALL; }
-    if state.hmac {
-        let key = hmac::Key::new(state.algorithm.hmac_algorithm(), &state.secret);
-        let result = hmac::sign(&key, &state.data);
-        unsafe { ptr::copy_nonoverlapping(result.as_ref().as_ptr(), output, result.as_ref().len()) };
-    } else {
-        let result = state.algorithm.digest(&state.data);
-        unsafe { ptr::copy_nonoverlapping(result.as_ref().as_ptr(), output, result.as_ref().len()) };
-    }
-    STATUS_SUCCESS
+pub unsafe extern "system" fn BCryptCreateHash(algorithm:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
+ if out.is_null()||!object.is_null()||object_len!=0||(secret.is_null()&&secret_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
+ let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e}; if p.cipher{return STATUS_INVALID_PARAMETER;} if !p.hmac&&secret_len!=0{return STATUS_INVALID_PARAMETER;}
+ let key=if secret_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec()};
+ let h=HashHandle{algorithm:p.algorithm,hmac:p.hmac,secret:key,data:Vec::new()};
+ let token=match register_handle(RegisteredHandle::Hash(h)){Ok(v)=>v,Err(e)=>return e}; unsafe{out.write(token)};STATUS_SUCCESS
 }
 
-/// BCryptDuplicateHash duplicates the current hash state. Caller-owned
-/// hash-object storage is not supported yet; the API therefore requires the
-/// documented optional storage pair to be absent.
-#[no_mangle]
-pub unsafe extern "system" fn BCryptDuplicateHash(
-    hash: *mut c_void,
-    out: *mut *mut c_void,
-    object: *mut u8,
-    object_len: ULONG,
-    flags: ULONG,
-) -> NTSTATUS {
-    if hash.is_null() || out.is_null() || !object.is_null() || object_len != 0 || flags != 0 {
-        return STATUS_INVALID_PARAMETER;
-    }
-    let state = unsafe { &*hash.cast::<HashHandle>() };
-    let duplicate = HashHandle {
-        algorithm: state.algorithm,
-        hmac: state.hmac,
-        secret: state.secret.clone(),
-        data: state.data.clone(),
-    };
-    unsafe { out.write(Box::into_raw(Box::new(duplicate)).cast()) };
-    STATUS_SUCCESS
-}
 
 #[no_mangle]
-pub unsafe extern "system" fn BCryptDestroyHash(hash: *mut c_void) -> NTSTATUS {
-    if hash.is_null() { return STATUS_INVALID_PARAMETER; }
-    unsafe { drop(Box::from_raw(hash.cast::<HashHandle>())) };
-    STATUS_SUCCESS
+pub unsafe extern "system" fn BCryptHashData(hash:*mut c_void,input:*const u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
+ if (input.is_null()&&input_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
+ let Ok(mut table)=handle_table().lock() else{return STATUS_NO_MEMORY;};
+ let Some(RegisteredHandle::Hash(state))=table.get_mut(&(hash as usize)) else{return STATUS_INVALID_PARAMETER;};
+ if state.data.len().saturating_add(input_len as usize)>64*1024*1024{return STATUS_INVALID_PARAMETER;}
+ if input_len!=0 {if state.data.try_reserve(input_len as usize).is_err(){return STATUS_NO_MEMORY;} state.data.extend_from_slice(unsafe{core::slice::from_raw_parts(input,input_len as usize)});}
+ STATUS_SUCCESS
 }
 
+
 #[no_mangle]
+pub unsafe extern "system" fn BCryptFinishHash(hash:*mut c_void,output:*mut u8,output_len:ULONG,flags:ULONG)->NTSTATUS {
+ if output.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;} let state=match hash_handle(hash){Ok(v)=>v,Err(e)=>return e};
+ if state.hmac {if output_len<state.algorithm.digest_len(){return STATUS_BUFFER_TOO_SMALL;} let k=hmac::Key::new(state.algorithm.hmac_algorithm(),&state.secret);let d=hmac::sign(&k,&state.data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}
+ else {if output_len<state.algorithm.digest_len(){return STATUS_BUFFER_TOO_SMALL;}let d=state.algorithm.digest(&state.data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};} STATUS_SUCCESS
+}
+
+
+#[no_mangle]
+pub unsafe extern "system" fn BCryptDuplicateHash(hash:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,flags:ULONG)->NTSTATUS {
+ if out.is_null()||!object.is_null()||object_len!=0||flags!=0{return STATUS_INVALID_PARAMETER;}let state=match hash_handle(hash){Ok(v)=>v,Err(e)=>return e};
+ let token=match register_handle(RegisteredHandle::Hash(state)){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};STATUS_SUCCESS
+}
+
+
+#[no_mangle]
+pub unsafe extern "system" fn BCryptDestroyHash(hash:*mut c_void)->NTSTATUS{remove_handle(hash,1)}
+
+
 pub unsafe extern "system" fn BCryptGenRandom(algorithm: *mut c_void, buffer: *mut u8, length: ULONG, flags: ULONG) -> NTSTATUS {
     if buffer.is_null() && length != 0 { return STATUS_INVALID_PARAMETER; }
     if !algorithm.is_null() || flags != BCRYPT_USE_SYSTEM_PREFERRED_RNG { return STATUS_INVALID_PARAMETER; }
@@ -157,98 +182,35 @@ pub unsafe extern "system" fn BCryptGenRandom(algorithm: *mut c_void, buffer: *m
 }
 
 #[no_mangle]
-pub unsafe extern "system" fn BCryptGetProperty(object: *mut c_void, property: *const u16, output: *mut u8, output_len: ULONG, result_len: *mut ULONG, flags: ULONG) -> NTSTATUS {
-    if object.is_null() || property.is_null() || result_len.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
-    let name = match unsafe { read_property_name(property) } { Ok(n) => n, Err(s) => return s };
-    let provider = unsafe { &*object.cast::<AlgorithmHandle>() };
-    let alg = provider.algorithm;
-    let (kind, value) = match name.as_str() {
-        "ObjectLength" => (0, 0), "HashDigestLength" => (0, alg.digest_len()), "HashBlockLength" => (0, alg.block_len()),
-        "AlgorithmName" => (1, 0), "HashMode" if provider.hmac => (1, 0), _ => return STATUS_NOT_SUPPORTED,
-    };
-    let required = if kind == 0 { 4 } else { (alg.provider_name().encode_utf16().count() as u32 + 1) * 2 };
-    unsafe { result_len.write(required) };
-    if output.is_null() || output_len < required { return STATUS_BUFFER_TOO_SMALL; }
-    if kind == 0 { unsafe { write_u32(output, value) }; }
-    else { unsafe { write_wide(output, if name == "HashMode" { "HMAC" } else { alg.provider_name() }) }; }
-    STATUS_SUCCESS
+
+#[no_mangle]
+pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*const u16,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
+ if property.is_null()||result_len.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let name=match unsafe{read_property_name(property)}{Ok(v)=>v,Err(e)=>return e};
+ let p=match algorithm_handle(object){Ok(v)=>v,Err(e)=>return e};
+ if p.cipher {return STATUS_NOT_SUPPORTED;}
+ let (kind,value)=match name.as_str(){"ObjectLength"=>(0,0),"HashDigestLength"=>(0,p.algorithm.digest_len()),"HashBlockLength"=>(0,p.algorithm.block_len()),"AlgorithmName"=>(1,0),"HashMode" if p.hmac=>(1,0),_=>return STATUS_NOT_SUPPORTED};
+ let required=if kind==0{4}else{(p.algorithm.provider_name().encode_utf16().count() as u32+1)*2};unsafe{result_len.write(required)};if output.is_null()||output_len<required{return STATUS_BUFFER_TOO_SMALL;}
+ if kind==0{unsafe{write_u32(output,value)}}else{unsafe{write_wide(output,if name=="HashMode"{"HMAC"}else{p.algorithm.provider_name()})}} STATUS_SUCCESS
 }
 
 
-/// BCryptDeriveKeyPBKDF2: derives key material with the selected HMAC-SHA2 PRF.
 #[no_mangle]
-pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(
-    prf: *mut c_void, password: *const u8, password_len: ULONG,
-    salt: *const u8, salt_len: ULONG, iterations: ULONG,
-    derived: *mut u8, derived_len: ULONG, flags: ULONG,
-) -> NTSTATUS {
-    if prf.is_null() || (password.is_null() && password_len != 0) ||
-       (salt.is_null() && salt_len != 0) || (derived.is_null() && derived_len != 0) ||
-       iterations == 0 || flags != 0 {
-        return STATUS_INVALID_PARAMETER;
-    }
-    let provider = unsafe { &*prf.cast::<AlgorithmHandle>() };
-    if !provider.hmac { return STATUS_INVALID_PARAMETER; }
-    let Some(iterations) = NonZeroU32::new(iterations) else { return STATUS_INVALID_PARAMETER; };
-    let password = if password_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(password, password_len as usize) } };
-    let salt = if salt_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(salt, salt_len as usize) } };
-    let output = if derived_len == 0 { &mut [][..] } else { unsafe { core::slice::from_raw_parts_mut(derived, derived_len as usize) } };
-    pbkdf2::derive(provider.algorithm.pbkdf2_algorithm(), iterations, salt, password, output);
-    STATUS_SUCCESS
+pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(prf:*mut c_void,password:*const u8,password_len:ULONG,salt:*const u8,salt_len:ULONG,iterations:ULONG,derived:*mut u8,derived_len:ULONG,flags:ULONG)->NTSTATUS {
+ if (password.is_null()&&password_len!=0)||(salt.is_null()&&salt_len!=0)||(derived.is_null()&&derived_len!=0)||iterations==0||flags!=0{return STATUS_INVALID_PARAMETER;}
+ let p=match algorithm_handle(prf){Ok(v)=>v,Err(e)=>return e};if !p.hmac||p.cipher{return STATUS_INVALID_PARAMETER;}
+ let nz=NonZeroU32::new(iterations).unwrap();let pass=if password_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(password,password_len as usize)}};let salt=if salt_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(salt,salt_len as usize)}};let out=if derived_len==0{&mut [][..]}else{unsafe{core::slice::from_raw_parts_mut(derived,derived_len as usize)}};
+ pbkdf2::derive(p.algorithm.pbkdf2_algorithm(),nz,salt,pass,out);STATUS_SUCCESS
 }
 
 
-/// BCryptHash: one-shot hashing with the selected CNG provider.
-///
-/// The provider must be opened with BCRYPT_ALG_HANDLE_HMAC_FLAG when a secret
-/// is supplied. Output buffers may be larger than the digest; only the digest
-/// bytes are written.
 #[no_mangle]
-pub unsafe extern "system" fn BCryptHash(
-    algorithm: *mut c_void,
-    secret: *const u8,
-    secret_len: ULONG,
-    input: *const u8,
-    input_len: ULONG,
-    output: *mut u8,
-    output_len: ULONG,
-) -> NTSTATUS {
-    if algorithm.is_null()
-        || (secret.is_null() && secret_len != 0)
-        || (input.is_null() && input_len != 0)
-        || output.is_null()
-    {
-        return STATUS_INVALID_PARAMETER;
-    }
-    let provider = unsafe { &*algorithm.cast::<AlgorithmHandle>() };
-    if !provider.hmac && secret_len != 0 {
-        return STATUS_INVALID_PARAMETER;
-    }
-    let required = provider.algorithm.digest_len();
-    if output_len < required {
-        return STATUS_BUFFER_TOO_SMALL;
-    }
-    let input = if input_len == 0 {
-        &[][..]
-    } else {
-        unsafe { core::slice::from_raw_parts(input, input_len as usize) }
-    };
-    if provider.hmac {
-        let key_bytes = if secret_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(secret, secret_len as usize) } };
-        let key = hmac::Key::new(provider.algorithm.hmac_algorithm(), key_bytes);
-        let digest = hmac::sign(&key, input);
-        unsafe { ptr::copy_nonoverlapping(digest.as_ref().as_ptr(), output, digest.as_ref().len()) };
-    } else {
-        let digest = provider.algorithm.digest(input);
-        unsafe { ptr::copy_nonoverlapping(digest.as_ref().as_ptr(), output, digest.as_ref().len()) };
-    }
-    STATUS_SUCCESS
+pub unsafe extern "system" fn BCryptHash(algorithm:*mut c_void,secret:*const u8,secret_len:ULONG,input:*const u8,input_len:ULONG,output:*mut u8,output_len:ULONG)->NTSTATUS {
+ if (secret.is_null()&&secret_len!=0)||(input.is_null()&&input_len!=0)||output.is_null(){return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};if p.cipher||(!p.hmac&&secret_len!=0){return STATUS_INVALID_PARAMETER;}if output_len<p.algorithm.digest_len(){return STATUS_BUFFER_TOO_SMALL;}
+ let data=if input_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}};
+ if p.hmac{let kbytes=if secret_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}};let k=hmac::Key::new(p.algorithm.hmac_algorithm(),kbytes);let d=hmac::sign(&k,data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}
+ else{let d=p.algorithm.digest(data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}STATUS_SUCCESS
 }
 
-/// Reports whether this build is operating under an enabled FIPS policy.
-/// AWS-LC is currently built in its non-FIPS configuration, so this returns
-/// FALSE rather than claiming a validation that this binary does not possess.
-#[no_mangle]
 pub unsafe extern "system" fn BCryptGetFipsAlgorithmMode(enabled: *mut u8) -> NTSTATUS {
     if enabled.is_null() { return STATUS_INVALID_PARAMETER; }
     unsafe { enabled.write(0) };
@@ -303,75 +265,69 @@ fn enum_write_wide(base: *mut u8, offset: usize, value: &str) -> *mut u16 {
 /// Enumerates the SHA-2 hash providers and the system RNG implemented here.
 /// Only operations actually supported by this DLL are advertised.
 #[no_mangle]
-pub unsafe extern "system" fn BCryptEnumAlgorithms(
-    operations: ULONG,
-    count: *mut ULONG,
-    list: *mut *mut BcryptAlgorithmIdentifier,
-    flags: ULONG,
-) -> NTSTATUS {
-    const HASH_OPERATION: ULONG = 0x00000002;
-    const RNG_OPERATION: ULONG = 0x00000020;
-    if count.is_null() || list.is_null() || flags != 0 ||
-        operations == 0 || operations & !(HASH_OPERATION | RNG_OPERATION) != 0 {
-        return STATUS_INVALID_PARAMETER;
-    }
-    let mut entries: Vec<(&str, ULONG)> = Vec::new();
-    if operations & HASH_OPERATION != 0 {
-        entries.extend([("SHA256", HASH_OPERATION), ("SHA384", HASH_OPERATION), ("SHA512", HASH_OPERATION)]);
-    }
-    if operations & RNG_OPERATION != 0 {
-        entries.push(("RNG", RNG_OPERATION));
-    }
-    let struct_bytes = match entries.len().checked_mul(core::mem::size_of::<BcryptAlgorithmIdentifier>()) {
-        Some(n) => n, None => return STATUS_NO_MEMORY,
-    };
-    let names_bytes: usize = entries.iter().map(|(name, _)| (name.encode_utf16().count() + 1) * 2).sum();
-    let Some(total) = struct_bytes.checked_add(names_bytes) else { return STATUS_NO_MEMORY; };
-    let base = match store_enum_buffer(total) { Ok(p) => p, Err(s) => return s };
-    let records = base.cast::<BcryptAlgorithmIdentifier>();
-    let mut name_offset = struct_bytes;
-    for (index, (name, class)) in entries.iter().enumerate() {
-        let name_ptr = enum_write_wide(base, name_offset, name);
-        unsafe { records.add(index).write(BcryptAlgorithmIdentifier { name: name_ptr, class: *class, flags: 0 }) };
-        name_offset += (name.encode_utf16().count() + 1) * 2;
-    }
-    unsafe { count.write(entries.len() as ULONG); list.write(records); }
-    STATUS_SUCCESS
+
+#[no_mangle]
+pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut ULONG,list:*mut *mut BcryptAlgorithmIdentifier,flags:ULONG)->NTSTATUS {
+ const H:ULONG=2;const R:ULONG=32;if count.is_null()||list.is_null()||flags!=0||operations==0||operations&!(H|R)!=0{return STATUS_INVALID_PARAMETER;}
+ let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&H!=0{e.extend([("SHA256",H),("SHA384",H),("SHA512",H)]);}if operations&R!=0{e.push(("RNG",R));}
+ let sb=e.len()*core::mem::size_of::<BcryptAlgorithmIdentifier>();let nb:usize=e.iter().map(|(n,_)|(n.encode_utf16().count()+1)*2).sum();let base=match store_enum_buffer(sb+nb){Ok(v)=>v,Err(x)=>return x};let records=base.cast::<BcryptAlgorithmIdentifier>();let mut off=sb;
+ for(i,(n,c))in e.iter().enumerate(){let np=enum_write_wide(base,off,n);unsafe{records.add(i).write(BcryptAlgorithmIdentifier{name:np,class:*c,flags:0})};off+=(n.encode_utf16().count()+1)*2;}
+ unsafe{count.write(e.len() as ULONG);list.write(records)};STATUS_SUCCESS
 }
 
-/// Enumerates this DLL's single registered implementation provider.
+
 #[no_mangle]
-pub unsafe extern "system" fn BCryptEnumProviders(
-    count: *mut ULONG,
-    providers: *mut *mut BcryptProvider,
-    flags: ULONG,
-) -> NTSTATUS {
-    if count.is_null() || providers.is_null() || flags != 0 {
-        return STATUS_INVALID_PARAMETER;
-    }
-    const PROVIDER: &str = "CognacOS AWS-LC Provider";
-    let struct_bytes = core::mem::size_of::<BcryptProvider>();
-    let total = struct_bytes + (PROVIDER.encode_utf16().count() + 1) * 2;
-    let base = match store_enum_buffer(total) { Ok(p) => p, Err(s) => return s };
-    let name = enum_write_wide(base, struct_bytes, PROVIDER);
-    let record = base.cast::<BcryptProvider>();
-    unsafe {
-        record.write(BcryptProvider { name, flags: 0 });
-        count.write(1);
-        providers.write(record);
-    }
-    STATUS_SUCCESS
+pub unsafe extern "system" fn BCryptEnumProviders(count:*mut ULONG,providers:*mut *mut BcryptProvider,flags:ULONG)->NTSTATUS {
+ if count.is_null()||providers.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}const P:&str="CognacOS AWS-LC Provider";let sb=core::mem::size_of::<BcryptProvider>();let base=match store_enum_buffer(sb+(P.encode_utf16().count()+1)*2){Ok(v)=>v,Err(e)=>return e};let name=enum_write_wide(base,sb,P);let rec=base.cast::<BcryptProvider>();unsafe{rec.write(BcryptProvider{name,flags:0});count.write(1);providers.write(rec)};STATUS_SUCCESS
 }
 
-/// Releases a buffer returned by a bcrypt enumeration API. Unknown pointers
-/// are ignored rather than dereferenced or passed to the allocator.
-#[no_mangle]
 pub unsafe extern "system" fn BCryptFreeBuffer(buffer: *mut c_void) {
     if buffer.is_null() { return; }
     if let Ok(mut buffers) = enum_buffers().lock() {
         buffers.remove(&(buffer as usize));
     }
 }
+
+
+#[no_mangle]
+pub unsafe extern "system" fn BCryptSetProperty(object:*mut c_void,property:*const u16,input:*const u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
+ if property.is_null()||input.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let n=match unsafe{read_property_name(property)}{Ok(v)=>v,Err(e)=>return e};if n!="ChainingMode"{return STATUS_NOT_SUPPORTED;}
+ let val=unsafe{core::slice::from_raw_parts(input,input_len as usize)};let expected:Vec<u16>="ChainingModeGCM".encode_utf16().chain(core::iter::once(0)).collect();if val.len()!=expected.len()*2{return STATUS_NOT_SUPPORTED;}
+ for(i,u)in expected.iter().enumerate(){if unsafe{ptr::read_unaligned(input.add(i*2).cast::<u16>())}!=*u{return STATUS_NOT_SUPPORTED;}}
+ let Ok(mut t)=handle_table().lock()else{return STATUS_NO_MEMORY;};let Some(RegisteredHandle::Algorithm(a))=t.get_mut(&(object as usize))else{return STATUS_INVALID_PARAMETER;};if !a.cipher{return STATUS_INVALID_PARAMETER;}STATUS_SUCCESS
+}
+
+
+#[repr(C)]
+pub struct BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
+ pub cbSize:ULONG,pub dwInfoVersion:ULONG,pub pbNonce:*mut u8,pub cbNonce:ULONG,
+ pub pbAuthData:*mut u8,pub cbAuthData:ULONG,pub pbTag:*mut u8,pub cbTag:ULONG,
+ pub pbMacContext:*mut u8,pub cbMacContext:ULONG,pub cbAAD:ULONG,pub cbData:u64,pub dwFlags:ULONG,
+}
+#[no_mangle]
+pub unsafe extern "system" fn BCryptGenerateSymmetricKey(algorithm:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
+ if out.is_null()||!object.is_null()||object_len!=0||secret.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};if !p.cipher||!(secret_len==16||secret_len==32){return STATUS_NOT_SUPPORTED;}
+ let key=unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec();let token=match register_handle(RegisteredHandle::Key(KeyHandle{key})){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};STATUS_SUCCESS
+}
+unsafe fn auth_info(info:*mut c_void)->Result<(Vec<u8>,Vec<u8>,*mut u8,usize),NTSTATUS>{
+ if info.is_null(){return Err(STATUS_INVALID_PARAMETER);}let i=unsafe{&mut *info.cast::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()};
+ if i.cbSize as usize!=core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()||i.dwInfoVersion!=1||i.pbNonce.is_null()||i.cbNonce!=12||i.pbTag.is_null()||i.cbTag!=16||(!i.pbAuthData.is_null()&&i.cbAuthData>0)==false&&i.cbAuthData>0||!i.pbMacContext.is_null()||i.cbMacContext!=0||i.dwFlags!=0{return Err(STATUS_INVALID_PARAMETER);}
+ let nonce=unsafe{core::slice::from_raw_parts(i.pbNonce,12)}.to_vec();let aad=if i.cbAuthData==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(i.pbAuthData,i.cbAuthData as usize)}.to_vec()};Ok((nonce,aad,i.pbTag,i.cbTag as usize))
+}
+#[no_mangle]
+pub unsafe extern "system" fn BCryptEncrypt(key:*mut c_void,input:*mut u8,input_len:ULONG,padding_info:*mut c_void,iv:*mut u8,iv_len:ULONG,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
+ if result_len.is_null()||(input.is_null()&&input_len!=0)||flags!=0||!iv.is_null()||iv_len!=0{return STATUS_INVALID_PARAMETER;}let k=match key_handle(key){Ok(v)=>v,Err(e)=>return e};let(nonce,aad,tag,_)=match unsafe{auth_info(padding_info)}{Ok(v)=>v,Err(e)=>return e};unsafe{result_len.write(input_len)};if output.is_null()||output_len<input_len{return STATUS_BUFFER_TOO_SMALL;}
+ let alg=match k.key.len(){16=>&aead::AES_128_GCM,32=>&aead::AES_256_GCM,_=>return STATUS_INVALID_PARAMETER};let unbound=match aead::UnboundKey::new(alg,&k.key){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let less=aead::LessSafeKey::new(unbound);let nonce=match aead::Nonce::try_assume_unique_for_key(&nonce){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
+ let mut buf=if input_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}.to_vec()};let t=match less.seal_in_place_separate_tag(nonce,aead::Aad::from(aad.as_slice()),&mut buf){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};unsafe{ptr::copy_nonoverlapping(buf.as_ptr(),output,input_len as usize);ptr::copy_nonoverlapping(t.as_ref().as_ptr(),tag,16)};STATUS_SUCCESS
+}
+#[no_mangle]
+pub unsafe extern "system" fn BCryptDecrypt(key:*mut c_void,input:*mut u8,input_len:ULONG,padding_info:*mut c_void,iv:*mut u8,iv_len:ULONG,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
+ if result_len.is_null()||(input.is_null()&&input_len!=0)||flags!=0||!iv.is_null()||iv_len!=0{return STATUS_INVALID_PARAMETER;}let k=match key_handle(key){Ok(v)=>v,Err(e)=>return e};let(nonce,aad,tag,_)=match unsafe{auth_info(padding_info)}{Ok(v)=>v,Err(e)=>return e};unsafe{result_len.write(input_len)};if output.is_null()||output_len<input_len{return STATUS_BUFFER_TOO_SMALL;}
+ let alg=match k.key.len(){16=>&aead::AES_128_GCM,32=>&aead::AES_256_GCM,_=>return STATUS_INVALID_PARAMETER};let unbound=match aead::UnboundKey::new(alg,&k.key){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let less=aead::LessSafeKey::new(unbound);let nonce=match aead::Nonce::try_assume_unique_for_key(&nonce){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
+ let mut buf=if input_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}.to_vec()};let tagbytes=unsafe{core::slice::from_raw_parts(tag,16)};let auth=match aead::Tag::try_from(tagbytes){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let plain=match less.open_in_place_separate_tag(nonce,aead::Aad::from(aad.as_slice()),&mut buf,auth){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};unsafe{ptr::copy_nonoverlapping(plain.as_ptr(),output,plain.len())};unsafe{result_len.write(plain.len() as ULONG)};STATUS_SUCCESS
+}
+#[no_mangle]
+pub unsafe extern "system" fn BCryptDestroyKey(key:*mut c_void)->NTSTATUS{remove_handle(key,2)}
 
 include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 
@@ -397,10 +353,10 @@ mod tests {
     }
     #[test]
     fn bcrypt_hash_one_shot_sha256_matches_known_answer() {
-        let provider = Box::into_raw(Box::new(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false }));
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, cipher: false })).unwrap();
         let input = b"abc";
         let mut output = [0u8; 32];
-        let status = unsafe { BCryptHash(provider.cast(), ptr::null(), 0, input.as_ptr(), input.len() as u32, output.as_mut_ptr(), output.len() as u32) };
+        let status = unsafe { BCryptHash(provider, ptr::null(), 0, input.as_ptr(), input.len() as u32, output.as_mut_ptr(), output.len() as u32) };
         assert_eq!(status, STATUS_SUCCESS);
         assert_eq!(output, [
             0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,
