@@ -4,6 +4,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use aws_lc_rs::{aead, digest, hmac, pbkdf2, rand};
+use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey}, signature::hazmat::PrehashVerifier, traits::PublicKeyParts, BigUint, RsaPublicKey};
+use sha2::Sha256;
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{aead::AeadInPlace, AesGcm};
 use aes_gcm::aead::generic_array::typenum::{U12, U16};
@@ -55,7 +57,7 @@ impl HashAlgorithm {
 }
 
 #[derive(Clone)]
-struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, cipher: bool, kdf: bool, gcm: bool, cbc: bool }
+struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, cipher: bool, kdf: bool, rsa: bool, gcm: bool, cbc: bool }
 #[derive(Clone)]
 struct KeyHandle { key: Vec<u8>, gcm: bool, cbc: bool }
 #[derive(Clone)]
@@ -63,7 +65,7 @@ struct KdfKeyHandle { secret: Vec<u8> }
 impl Drop for KdfKeyHandle { fn drop(&mut self) { self.secret.zeroize(); } }
 impl Drop for KeyHandle { fn drop(&mut self) { self.key.zeroize(); } }
 #[derive(Clone)]
-enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle) }
+enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle), RsaPublic(RsaPublicKey) }
 static HANDLE_TABLE: OnceLock<Mutex<HashMap<usize, RegisteredHandle>>> = OnceLock::new();
 static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x10000);
 fn handle_table() -> &'static Mutex<HashMap<usize, RegisteredHandle>> {
@@ -97,7 +99,7 @@ fn remove_handle(token: *mut c_void, expected: u8) -> NTSTATUS {
         (Some(RegisteredHandle::Algorithm(_)), 0) |
         (Some(RegisteredHandle::Hash(_)), 1) |
         (Some(RegisteredHandle::MultiHash(_)), 1) |
-        (Some(RegisteredHandle::Key(_)), 2) | (Some(RegisteredHandle::KdfKey(_)), 2));
+        (Some(RegisteredHandle::Key(_)), 2) | (Some(RegisteredHandle::KdfKey(_)), 2) | (Some(RegisteredHandle::RsaPublic(_)), 2) | (Some(RegisteredHandle::KdfKey(_)), 3));
     if !valid { return STATUS_INVALID_PARAMETER; }
     table.remove(&key);
     STATUS_SUCCESS
@@ -133,10 +135,11 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
     let mut units=Vec::new();
     for i in 0..64 { let u=unsafe{alg_id.add(i).read()}; if u==0 {break;} units.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
     let name=match String::from_utf16(&units){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
-    let (algorithm,cipher,kdf)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false) }
-    else if name=="PBKDF2" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,true) }
-    else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false),Err(e)=>return e } };
-    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,kdf,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
+    let (algorithm,cipher,kdf,rsa_provider)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false,false) }
+    else if name=="PBKDF2" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,true,false) }
+    else if name=="RSA" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,true) }
+    else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false,false),Err(e)=>return e } };
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,kdf,rsa:rsa_provider,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
@@ -571,6 +574,64 @@ pub unsafe extern "system" fn BCryptKeyDerivation(key:*mut c_void,params:*mut Bc
     STATUS_SUCCESS
 }
 
+
+/// Destroys a CNG shared-secret handle. Secret bytes are zeroized by Drop.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptDestroySecret(secret:*mut c_void)->NTSTATUS { remove_handle(secret,3) }
+
+/// BCryptDeriveKey with the CNG RAW_SECRET ("TRUNCATE") KDF.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptDeriveKey(secret:*mut c_void,kdf:*const u16,params:*mut BcryptBufferDesc,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
+    if kdf.is_null() || result_len.is_null() || flags!=0 || output.is_null() || output_len==0 || !params.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut name=Vec::new();
+    for i in 0..64 { let u=unsafe{kdf.add(i).read()}; if u==0 {break;} name.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
+    if String::from_utf16(&name).ok().as_deref()!=Some("TRUNCATE") { return STATUS_NOT_SUPPORTED; }
+    let material=match handle_table().lock() { Ok(t)=>match t.get(&(secret as usize)){Some(RegisteredHandle::KdfKey(v))=>v.secret.clone(),_=>return STATUS_INVALID_PARAMETER},Err(_)=>return STATUS_NO_MEMORY };
+    let n=core::cmp::min(output_len as usize,material.len());
+    if n==0 { return STATUS_INVALID_PARAMETER; }
+    unsafe { ptr::copy_nonoverlapping(material.as_ptr(),output,n); result_len.write(n as ULONG); }
+    STATUS_SUCCESS
+}
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct BcryptRsaBlobHeader { magic:ULONG, bit_length:ULONG, cb_public_exp:ULONG, cb_modulus:ULONG, cb_prime1:ULONG, cb_prime2:ULONG }
+
+/// Imports a Windows BCRYPT_RSAPUBLIC_BLOB into an opaque RSA public-key handle.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_key:*mut c_void,blob_type:*const u16,out:*mut *mut c_void,input:*const u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
+    const BCRYPT_RSAPUBLIC_MAGIC:ULONG=0x31415352;
+    if out.is_null() || import_key.is_null()==false || blob_type.is_null() || input.is_null() || flags!=0 { return STATUS_INVALID_PARAMETER; }
+    let provider=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
+    if !provider.rsa { return STATUS_INVALID_PARAMETER; }
+    let mut name=Vec::new(); for i in 0..64 {let u=unsafe{blob_type.add(i).read()};if u==0{break;}name.push(u);if i==63{return STATUS_INVALID_PARAMETER;}}
+    if String::from_utf16(&name).ok().as_deref()!=Some("RSAPUBLICBLOB") { return STATUS_NOT_SUPPORTED; }
+    if input_len as usize<core::mem::size_of::<BcryptRsaBlobHeader>() { return STATUS_INVALID_PARAMETER; }
+    let h=unsafe{ptr::read_unaligned(input.cast::<BcryptRsaBlobHeader>())};
+    if h.magic!=BCRYPT_RSAPUBLIC_MAGIC || h.bit_length<512 || h.bit_length>16384 || h.cb_public_exp==0 || h.cb_public_exp>8 || h.cb_modulus as u64!=(h.bit_length as u64+7)/8 || h.cb_prime1!=0 || h.cb_prime2!=0 {return STATUS_INVALID_PARAMETER;}
+    let total=core::mem::size_of::<BcryptRsaBlobHeader>().checked_add(h.cb_public_exp as usize).and_then(|v|v.checked_add(h.cb_modulus as usize));
+    if total!=Some(input_len as usize) {return STATUS_INVALID_PARAMETER;}
+    let bytes=unsafe{core::slice::from_raw_parts(input.add(core::mem::size_of::<BcryptRsaBlobHeader>()),input_len as usize-core::mem::size_of::<BcryptRsaBlobHeader>())};
+    let e=BigUint::from_bytes_be(&bytes[..h.cb_public_exp as usize]);
+    let n=BigUint::from_bytes_be(&bytes[h.cb_public_exp as usize..]);
+    let key=match RsaPublicKey::new(n,e){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
+    if key.n().bits()!=h.bit_length as usize {return STATUS_INVALID_PARAMETER;}
+    let token=match register_handle(RegisteredHandle::RsaPublic(key)){Ok(v)=>v,Err(e)=>return e};
+    unsafe{out.write(token)};STATUS_SUCCESS
+}
+
+/// Verifies a precomputed SHA-256 digest using RSA PKCS#1 v1.5.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info:*mut c_void,hash:*const u8,hash_len:ULONG,signature:*const u8,signature_len:ULONG,flags:ULONG)->NTSTATUS {
+    const BCRYPT_PAD_PKCS1:ULONG=0x00000002;
+    if !padding_info.is_null() || hash.is_null() || hash_len!=32 || signature.is_null() || flags!=BCRYPT_PAD_PKCS1 {return STATUS_INVALID_PARAMETER;}
+    let public=match handle_table().lock(){Ok(t)=>match t.get(&(key as usize)){Some(RegisteredHandle::RsaPublic(v))=>v.clone(),_=>return STATUS_INVALID_PARAMETER},Err(_)=>return STATUS_NO_MEMORY};
+    if signature_len as usize!=public.size(){return STATUS_INVALID_PARAMETER;}
+    let sig=match RsaSignature::try_from(unsafe{core::slice::from_raw_parts(signature,signature_len as usize)}){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
+    let verifier=VerifyingKey::<Sha256>::new(public);
+    match verifier.verify_prehash(unsafe{core::slice::from_raw_parts(hash,hash_len as usize)},&sig){Ok(())=>STATUS_SUCCESS,Err(_)=>STATUS_AUTH_TAG_MISMATCH}
+}
+
 include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 
 #[cfg(test)]
@@ -620,7 +681,7 @@ mod tests {
     }
     #[test]
     fn bcrypt_hash_one_shot_sha256_matches_known_answer() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, gcm: false, cbc: false, kdf: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, gcm: false, cbc: false, kdf: false, rsa: false })).unwrap();
         let input = b"abc";
         let mut output = [0u8; 32];
         let status = unsafe { BCryptHash(provider, ptr::null(), 0, input.as_ptr(), input.len() as u32, output.as_mut_ptr(), output.len() as u32) };
@@ -634,7 +695,7 @@ mod tests {
 
     #[test]
     fn duplicate_hash_preserves_incremental_state() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, kdf: false, gcm: false, cbc: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, kdf: false, rsa: false, gcm: false, cbc: false })).unwrap();
         let mut original = ptr::null_mut();
         assert_eq!(unsafe { BCryptCreateHash(provider.cast(), &mut original, ptr::null_mut(), 0, ptr::null_mut(), 0, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptHashData(original, b"ab".as_ptr(), 2, 0) }, STATUS_SUCCESS);
