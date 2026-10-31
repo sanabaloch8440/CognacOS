@@ -407,6 +407,8 @@ unsafe extern "C" fn vtd_quarantine_requester(
 
 static VT_D_REQUESTER_OWNER:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(u32::MAX);
 fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
+ if !platform_drivers::is_ready(platform_drivers::Stage::Acpi)
+    || !platform_drivers::is_ready(platform_drivers::Stage::PciXhciResources) { return false; }
  let requester_key=((path.segment as u32)<<16)|((path.endpoint_bus as u32)<<8)
     |((path.endpoint_device as u32)<<3)|path.endpoint_function as u32;
  if dma::iommu::vtd::segment_is_enabled(path.segment){
@@ -656,6 +658,12 @@ fn bind_xhci_pe_driver()->bool {
     let Some(resources)=ntoskrnl::pnp::xhci_resources() else {
         serial_write(b"xHCI bind: PnP resource record unavailable.\r\n"); return false
     };
+    if !platform_drivers::is_ready(platform_drivers::Stage::PciXhciResources)
+        || !platform_drivers::is_ready(platform_drivers::Stage::VtdRequester)
+        || !platform_drivers::is_ready(platform_drivers::Stage::XhciInterrupt) {
+        serial_write(b"xHCI bind: platform dependency graph is not ready; DMA remains disabled.\r\n");
+        return false;
+    }
     let requester_key=((resources.segment as u32)<<16)|((resources.bus as u32)<<8)
         |((resources.device as u32)<<3)|resources.function as u32;
     if resources.interrupt_vector==0 || resources.bar_virtual==0 || resources.bar_length<0x1000
