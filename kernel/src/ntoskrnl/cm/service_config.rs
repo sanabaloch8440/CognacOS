@@ -40,9 +40,29 @@ pub struct ServiceConfigDetails<'a> {
     pub has_parameters: bool,
 }
 impl<'a> ServiceConfigDetails<'a> {
+    pub fn service_dependency_iter(&self)->MultiSzIter<'_>{MultiSzIter::new(self.service_dependencies())}
+    pub fn group_dependency_iter(&self)->MultiSzIter<'_>{MultiSzIter::new(self.group_dependencies())}
     pub fn group_name(&self)->&[u16]{&self.group[..self.group_len]}
     pub fn service_dependencies(&self)->&[u16]{&self.depend_on_service[..self.depend_on_service_len]}
     pub fn group_dependencies(&self)->&[u16]{&self.depend_on_group[..self.depend_on_group_len]}
+}
+
+
+/// Allocation-free iterator over a validated registry MULTI_SZ value.
+#[derive(Clone,Copy)]
+pub struct MultiSzIter<'a>{data:&'a[u16],offset:usize}
+impl<'a> MultiSzIter<'a>{
+    pub fn new(data:&'a[u16])->Self{Self{data,offset:0}}
+}
+impl<'a> Iterator for MultiSzIter<'a>{
+    type Item=&'a[u16];
+    fn next(&mut self)->Option<Self::Item>{
+        if self.offset>=self.data.len()||self.data[self.offset]==0{self.offset=self.data.len();return None}
+        let start=self.offset;
+        let end=self.data[start..].iter().position(|c|*c==0)?+start;
+        self.offset=end+1;
+        Some(&self.data[start..end])
+    }
 }
 
 fn ascii(s:&str,out:&mut[u16])->Result<usize,ExtendedConfigError>{
@@ -194,4 +214,22 @@ fn active_control_set(hive:&Hive<'_>)->Result<u32,ExtendedConfigError>{
     let mut select=[0u16;16];let n=ascii("Select",&mut select)?;
     let key=hive.find_path(&select[..n])?;
     optional_dword(key,&[67,117,114,114,101,110,116])?.ok_or(ExtendedConfigError::Base(Error::MissingStart))
+}
+
+#[cfg(test)]
+mod multisz_tests{
+    use super::*;
+    #[test]
+    fn iterates_registry_multisz_without_empty_tail(){
+        let data=[65u16,0,66,67,0,0];
+        let mut iter=MultiSzIter::new(&data);
+        assert_eq!(iter.next(),Some(&data[0..1]));
+        assert_eq!(iter.next(),Some(&data[2..4]));
+        assert_eq!(iter.next(),None);
+    }
+    #[test]
+    fn empty_multisz_has_no_items(){
+        let data=[0u16,0];
+        assert_eq!(MultiSzIter::new(&data).next(),None);
+    }
 }
