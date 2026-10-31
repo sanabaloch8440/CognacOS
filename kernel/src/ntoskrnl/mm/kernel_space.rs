@@ -760,7 +760,7 @@ pub fn self_test() -> bool {
  // and translates back to the expected physical page.
  if crate::memory::first_high_conventional_page().is_some() {
   let Some(physical)=crate::memory::first_high_conventional_page() else{return self_test_fail(line!())};
-  let Some(virtual_address)=crate::memory::direct_map_address(physical) else{return self_test_fail(line!())};
+  let Some(virtual_address)=crate::memory::physical_access_pointer(physical).map(|p|p as u64) else{return self_test_fail(line!())};
   let root=ROOT.load(Ordering::Acquire);
   // The direct map is demand-created, so an absent PML4 entry is expected
   // until the first access. Exercise the same non-present supervisor-read
@@ -805,10 +805,10 @@ pub fn self_test() -> bool {
   // above 4 GiB instead of merely exposing a direct-map address for one.
   let Ok(high_page)= (unsafe{crate::memory::allocate_data_page()}) else{return self_test_fail(line!())};
   if high_page<0x1_0000_0000 {let _=unsafe{crate::memory::free_page(high_page)};return self_test_fail(line!())}
-  let Some(alias)=crate::memory::direct_map_address(high_page) else {
+  let Some(alias)=crate::memory::physical_access_pointer(high_page) else {
    let _=unsafe{crate::memory::free_page(high_page)};return self_test_fail(line!())
   };
-  let word=alias as *mut u64;
+  let word=alias.cast::<u64>();
   if unsafe{word.read_volatile()}!=0 {let _=unsafe{crate::memory::free_page(high_page)};return self_test_fail(line!())}
   unsafe{word.write_volatile(0x5244_4f54_4f53_484d);}
   if unsafe{word.read_volatile()}!=0x5244_4f54_4f53_484d {
