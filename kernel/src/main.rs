@@ -373,7 +373,7 @@ extern "C" fn xhci_set_bus_master(device_object:u64,enabled:bool)->bool{
             ||!dma::iommu::vtd::is_enabled()
             ||dma::iommu::common_allocation_count(device_object as usize)<4
             ||!dma::iommu::device_busy(device_object as usize){return false}
-        let Some(id)=dma::iommu::vtd::RequesterId::new(r.bus,r.device,r.function) else{return false};
+        let Some(id)=dma::iommu::vtd::RequesterId::new_segment(0,r.bus,r.device,r.function) else{return false};
         if !dma::iommu::vtd::requester_domain_usable(id){return false}
     }
     let address=0x8000_0000u32|((r.bus as u32)<<16)|((r.device as u32)<<11)
@@ -405,10 +405,9 @@ unsafe extern "C" fn vtd_quarantine_requester(
 
 static VT_D_REQUESTER_OWNER:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(u32::MAX);
 fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
- if path.segment!=0{return false}
  let requester_key=((path.segment as u32)<<16)|((path.endpoint_bus as u32)<<8)
     |((path.endpoint_device as u32)<<3)|path.endpoint_function as u32;
- if dma::iommu::vtd::is_enabled(){
+ if dma::iommu::vtd::segment_is_enabled(path.segment){
   return dma::iommu::available()&&VT_D_REQUESTER_OWNER.load(core::sync::atomic::Ordering::Acquire)==requester_key;
  }
  let rsdp=acpi::rsdp_address();
@@ -443,7 +442,7 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
   return false
  }
  let Some(resources)=ntoskrnl::pnp::xhci_resources() else{return false};
- let Some(requester)=dma::iommu::vtd::RequesterId::new(path.endpoint_bus,path.endpoint_device,path.endpoint_function) else{return false};
+ let Some(requester)=dma::iommu::vtd::RequesterId::new_segment(path.segment,path.endpoint_bus,path.endpoint_device,path.endpoint_function) else{return false};
  // Only firmware-reserved RAM may be identity-mapped as an RMRR. Conventional
  // memory is rejected because the allocator may already have issued its pages.
  for region in info.rmrr.regions.iter().take(info.rmrr.count) {
