@@ -77,6 +77,20 @@ mod tests {
  use super::*;
  #[test] fn rejects_bad_dos_signature(){assert!(parse_pe(b"bad").is_err());}
  #[test] fn rejects_truncated_dos_header(){assert!(parse_pe(b"MZ").is_err());}
+ #[test] fn parses_named_and_ordinal_only_forwarder_exports(){
+  let mut b=vec![0u8;0x400];b[..2].copy_from_slice(b"MZ");b[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+  b[0x80..0x84].copy_from_slice(b"PE\\0\\0");b[0x84..0x86].copy_from_slice(&0x8664u16.to_le_bytes());
+  b[0x86..0x88].copy_from_slice(&1u16.to_le_bytes());b[0x94..0x96].copy_from_slice(&240u16.to_le_bytes());
+  let o=0x98;b[o..o+2].copy_from_slice(&0x20bu16.to_le_bytes());b[o+60..o+64].copy_from_slice(&0x200u32.to_le_bytes());
+  b[o+112..o+116].copy_from_slice(&0x1000u32.to_le_bytes());b[o+116..o+120].copy_from_slice(&0x100u32.to_le_bytes());
+  let sh=o+240;b[sh..sh+8].copy_from_slice(b".edata\\0\\0");b[sh+8..sh+12].copy_from_slice(&0x100u32.to_le_bytes());b[sh+12..sh+16].copy_from_slice(&0x1000u32.to_le_bytes());b[sh+16..sh+20].copy_from_slice(&0x200u32.to_le_bytes());b[sh+20..sh+24].copy_from_slice(&0x200u32.to_le_bytes());
+  let e=0x200;b[e+16..e+20].copy_from_slice(&1u32.to_le_bytes());b[e+20..e+24].copy_from_slice(&2u32.to_le_bytes());b[e+24..e+28].copy_from_slice(&1u32.to_le_bytes());b[e+28..e+32].copy_from_slice(&0x1040u32.to_le_bytes());b[e+32..e+36].copy_from_slice(&0x1048u32.to_le_bytes());b[e+36..e+40].copy_from_slice(&0x104cu32.to_le_bytes());
+  b[0x240..0x244].copy_from_slice(&0x2000u32.to_le_bytes());b[0x244..0x248].copy_from_slice(&0x1060u32.to_le_bytes());
+  b[0x248..0x24c].copy_from_slice(&0x1050u32.to_le_bytes());b[0x24c..0x24e].copy_from_slice(&0u16.to_le_bytes());
+  b[0x250..0x25c].copy_from_slice(b"NamedExport\\0");b[0x260..0x270].copy_from_slice(b"KERNEL32.Sleep\\0");
+  let got=parse_pe(&b).unwrap();assert_eq!(got.get(&1).unwrap().name.as_deref(),Some("NamedExport"));
+  assert_eq!(got.get(&2).unwrap().name,None);assert_eq!(got.get(&2).unwrap().forwarder.as_deref(),Some("KERNEL32.Sleep"));
+ }
  #[test] fn parses_manifest_ordinal_only_and_forwarder_records(){
   let p=std::env::temp_dir().join(format!("cognacos-export-{}.tsv",std::process::id()));
   fs::write(&p,"# test\n1\tNamed\t\n2\t\tKERNEL32.Sleep\n").unwrap();
