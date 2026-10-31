@@ -119,7 +119,7 @@ struct ClassSink { connect: ConnectData }
 impl KeyboardPacketSink for ClassSink {
     fn submit_keyboard_packet(&mut self, packet: KeyboardInputData) -> Result<(), ()> {
         if self.connect.class_service.is_null() { return Err(()); }
-        let service: unsafe extern "system" fn(*mut DEVICE_OBJECT, *const KeyboardInputData, *const KeyboardInputData, *mut u32) =
+        let service: unsafe extern "win64" fn(*mut DEVICE_OBJECT, *const KeyboardInputData, *const KeyboardInputData, *mut u32) =
             unsafe { core::mem::transmute(self.connect.class_service) };
         let input = &packet as *const KeyboardInputData;
         let mut consumed = 0u32;
@@ -241,7 +241,7 @@ unsafe fn resource_list_has_ps2_ports_and_irq(
         && unsafe { contains(translated, Some(expected_vector)) }
 }
 
-unsafe extern "system" fn pnp_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
+unsafe extern "win64" fn pnp_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
     if device.is_null() || irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -268,7 +268,7 @@ unsafe extern "system" fn pnp_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP
     status
 }
 
-unsafe extern "system" fn internal_device_control_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
+unsafe extern "win64" fn internal_device_control_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
     if device.is_null() || irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -303,7 +303,7 @@ unsafe extern "system" fn internal_device_control_dispatch(device: *mut DEVICE_O
     status
 }
 
-unsafe extern "system" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
+unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     let _ = unsafe { I8042StopDevice() };
 }
 
