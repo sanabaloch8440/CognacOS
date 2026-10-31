@@ -188,7 +188,7 @@ pub unsafe extern "win64" fn CognacPciFindAhci(output: *mut pci::PciFunction) ->
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn CognacPciFindNvme(output: *mut pci::PciFunction) -> i32 {
     if output.is_null() { return STATUS_INVALID_PARAMETER; }
-    if !STATE.ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if !STATE.inventory_ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
     for window in 0..MAX_WINDOWS {
         let count = unsafe { (*STATE.function_counts.get())[window] };
         let functions = unsafe { &(*STATE.functions.get())[window] };
