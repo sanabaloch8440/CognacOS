@@ -53,6 +53,41 @@ pub const DIRECT_MAP_PHYSICAL_LIMIT: u64 = 0x0000_6f00_0000_0000;
 
 /// Return true only for physical pages described by UEFI as RAM-like memory.
 /// MMIO, reserved, unusable, and port-I/O descriptors are deliberately excluded.
+
+/// Validate that an entire page-aligned range is backed by firmware-described
+/// RAM which the OS allocator does not own. This is the safe admission rule for
+/// ACPI DMAR RMRRs: conventional-memory pages must first be removed from the
+/// allocator by an earlier boot reservation pass, never reclaimed at runtime.
+pub fn is_firmware_reserved_ram_range(start:u64,length:u64)->bool {
+    if start==0||start&(PAGE_SIZE-1)!=0||length==0||length&(PAGE_SIZE-1)!=0 {
+        return false;
+    }
+    let Some(end)=start.checked_add(length) else{return false};
+    let base=FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire);
+    let entries=FIRMWARE_MAP_ENTRIES.load(core::sync::atomic::Ordering::Acquire);
+    let stride=FIRMWARE_MAP_STRIDE.load(core::sync::atomic::Ordering::Acquire);
+    if base==0||stride<core::mem::size_of::<MemoryDescriptor>(){return false}
+    let mut cursor=start;
+    while cursor<end {
+        let mut covered_until=cursor;
+        for i in 0..entries {
+            let Some(offset)=i.checked_mul(stride) else{return false};
+            let Some(pointer)=(base as usize).checked_add(offset) else{return false};
+            let d=unsafe{ptr::read_unaligned(pointer as *const MemoryDescriptor)};
+            if d.number_of_pages==0||d.kind==EFI_CONVENTIONAL_MEMORY
+                ||!matches!(d.kind,1..=10|14){continue}
+            let Some(bytes)=d.number_of_pages.checked_mul(PAGE_SIZE) else{continue};
+            let Some(region_end)=d.physical_start.checked_add(bytes) else{continue};
+            if cursor>=d.physical_start&&cursor<region_end {
+                covered_until=covered_until.max(region_end.min(end));
+            }
+        }
+        if covered_until==cursor{return false}
+        cursor=covered_until;
+    }
+    true
+}
+
 pub fn is_ram_physical_address(address: u64) -> bool {
     let base = FIRMWARE_MAP.load(core::sync::atomic::Ordering::Acquire);
     let entries = FIRMWARE_MAP_ENTRIES.load(core::sync::atomic::Ordering::Acquire);
