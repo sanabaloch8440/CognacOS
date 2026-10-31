@@ -113,6 +113,13 @@ fn key_handle(token: *mut c_void) -> Result<KeyHandle, NTSTATUS> {
         _ => Err(STATUS_INVALID_PARAMETER),
     }
 }
+fn rsa_public_handle(token: *mut c_void) -> Result<RsaPublicKey, NTSTATUS> {
+    if token.is_null() { return Err(STATUS_INVALID_PARAMETER); }
+    match handle_table().lock().map_err(|_| STATUS_NO_MEMORY)?.get(&(token as usize)) {
+        Some(RegisteredHandle::RsaPublic(v)) => Ok(v.clone()),
+        _ => Err(STATUS_INVALID_PARAMETER),
+    }
+}
 
 #[derive(Clone)]
 struct HashHandle { algorithm: HashAlgorithm, hmac: bool, secret: Vec<u8>, data: Vec<u8> }
@@ -277,6 +284,14 @@ pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*con
             "AlgorithmName" => (1, 0, "AES"),
             "ChainingMode" if k.gcm => (1, 0, "ChainingModeGCM"),
             "ChainingMode" if k.cbc => (1, 0, "ChainingModeCBC"),
+            _ => return STATUS_NOT_SUPPORTED,
+        }
+    } else if let Ok(k) = rsa_public_handle(object) {
+        let bits=k.n().bits() as u32;
+        match name.as_str() {
+            "ObjectLength" => (0, 0, ""),
+            "KeyLength" | "PublicKeyLength" => (0, bits, ""),
+            "AlgorithmName" => (1, 0, "RSA"),
             _ => return STATUS_NOT_SUPPORTED,
         }
     } else {
