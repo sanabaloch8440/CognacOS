@@ -84,13 +84,14 @@ fn check_csrsrv_def(path: &Path) {
     println!("validated {} unique named CSRSRV exports (inventory-only)", exports.len());
 }
 
+mod dll_exports;
 mod elf_pe;
 mod pe_exports;
 mod source_contract;
 
 fn main() {
     let mut args = env::args_os().skip(1);
-    let command = args.next().unwrap_or_else(|| fail!("usage: cognacos-tools <validate-ntoskrnl-manifest|check-ntdll-def|check-csrsrv-def|elf-to-pe32plus|validate-pe-exports|check-wdm-source-contracts|check-xstate-source-contracts> [arguments]"));
+    let command = args.next().unwrap_or_else(|| fail!("usage: cognacos-tools <validate-ntoskrnl-manifest|check-ntdll-def|check-csrsrv-def|elf-to-pe32plus|validate-pe-exports|check-wdm-source-contracts|check-xstate-source-contracts|verify-dll-exports> [arguments]"));
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     match command.to_string_lossy().as_ref() {
         "validate-ntoskrnl-manifest" => validate_manifest(&args.next().map(PathBuf::from).unwrap_or(root.join("kernel/src/ntoskrnl/manifest_19041.json"))),
@@ -98,7 +99,7 @@ fn main() {
         "check-csrsrv-def" => check_csrsrv_def(&args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"))),
         "check-wdm-source-contracts" => source_contract::check_wdm().unwrap_or_else(|e| fail!("{e}")),
         "check-xstate-source-contracts" => source_contract::check_xstate().unwrap_or_else(|e| fail!("{e}")),
-        "validate-pe-exports" => {
+        "verify-dll-exports" => {\n            let specs: Vec<String> = args.collect::<Vec<_>>().into_iter().map(|x| x.to_string_lossy().into_owned()).collect();\n            dll_exports::run(&specs).unwrap_or_else(|e| fail!("DLL export verification failed: {e}"));\n        }\n        "validate-pe-exports" => {
             let pe = args.next().map(PathBuf::from).unwrap_or_else(|| fail!("missing PE image"));
             let manifest = args.next().map(PathBuf::from).unwrap_or_else(|| fail!("missing export manifest"));
             let required: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();
