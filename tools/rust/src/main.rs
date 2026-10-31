@@ -82,16 +82,22 @@ fn check_csrsrv_def(path: &Path) {
     println!("validated {} unique named CSRSRV exports (inventory-only)", exports.len());
 }
 
-mod elf_pe;
+mod elf_pe;\nmod pe_exports;
 
 fn main() {
     let mut args = env::args_os().skip(1);
-    let command = args.next().unwrap_or_else(|| fail!("usage: cognacos-tools <validate-ntoskrnl-manifest|check-ntdll-def|check-csrsrv-def|elf-to-pe32plus> [arguments]"));
+    let command = args.next().unwrap_or_else(|| fail!("usage: cognacos-tools <validate-ntoskrnl-manifest|check-ntdll-def|check-csrsrv-def|elf-to-pe32plus|validate-pe-exports> [arguments]"));
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     match command.to_string_lossy().as_ref() {
         "validate-ntoskrnl-manifest" => validate_manifest(&args.next().map(PathBuf::from).unwrap_or(root.join("kernel/src/ntoskrnl/manifest_19041.json"))),
         "check-ntdll-def" => check_ntdll_def(&args.next().map(PathBuf::from).unwrap_or(root.join("ntdll/exports/ntdll-x64.def"))),
         "check-csrsrv-def" => check_csrsrv_def(&args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"))),
+        "validate-pe-exports" => {
+            let pe = args.next().map(PathBuf::from).unwrap_or_else(|| fail!("missing PE image"));
+            let manifest = args.next().map(PathBuf::from).unwrap_or_else(|| fail!("missing export manifest"));
+            let required: Vec<String> = args.map(|x| x.to_string_lossy().into_owned()).collect();
+            pe_exports::validate(&pe, &manifest, &required).unwrap_or_else(|e| fail!("PE export validation failed: {e}"));
+        }
         "elf-to-pe32plus" => {
             let input = args.next().map(PathBuf::from).unwrap_or_else(|| fail!("missing ELF input"));
             let output = args.next().map(PathBuf::from).unwrap_or_else(|| fail!("missing PE output"));
