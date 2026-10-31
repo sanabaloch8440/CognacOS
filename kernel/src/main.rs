@@ -339,8 +339,8 @@ unsafe fn probe_xhci_bar(bus:u8,device:u8,function:u8)->Option<(u64,u64)> {
 unsafe extern "C" fn vtd_alloc_table(_ctx:*mut core::ffi::c_void,pa_out:*mut u64,va_out:*mut *mut u64)->i32{
  if pa_out.is_null()||va_out.is_null(){return dma::iommu::vtd::STATUS_INVALID_PARAMETER}
  let pa=match unsafe{memory::allocate_contiguous_pages(1)}{Ok(v)=>v,Err(_)=>return dma::iommu::vtd::STATUS_INSUFFICIENT_RESOURCES};
- let Some(va)=memory::direct_map_address(pa)else{let _=unsafe{memory::free_page(pa)};return dma::iommu::vtd::STATUS_INSUFFICIENT_RESOURCES};
- unsafe{pa_out.write(pa);va_out.write(va as *mut u64);}
+ let Some(va)=memory::physical_access_pointer(pa)else{let _=unsafe{memory::free_page(pa)};return dma::iommu::vtd::STATUS_INSUFFICIENT_RESOURCES};
+ unsafe{pa_out.write(pa);va_out.write(va.cast::<u64>());}
  dma::iommu::vtd::STATUS_SUCCESS
 }
 unsafe extern "C" fn vtd_free_table(_ctx:*mut core::ffi::c_void,pa:u64,_va:*mut u64)->i32{
@@ -1152,6 +1152,24 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 halt();
             }
         };
+        // The final UEFI map can still describe PE image backing as
+        // conventional RAM on some firmware/QEMU combinations. Keep every
+        // kernel section out of the physical allocators before any subsystem
+        // can obtain a PFN for page tables, DMA, or ordinary data.
+        if info.kernel_physical_section_count == 0
+            || info.kernel_physical_section_count > info.kernel_physical_sections.len()
+            || info.kernel_physical_sections[..info.kernel_physical_section_count]
+                .iter().any(|(start, end)| *start == 0 || *start >= *end) {
+            serial_write(b"FATAL: invalid PE section physical-backing metadata.\\r\\n");
+            halt();
+        }
+        for &(start, end) in info.kernel_physical_sections[..info.kernel_physical_section_count].iter() {
+            if unsafe { memory::reserve_range(start, end) }.is_err() {
+                serial_write(b"FATAL: cannot reserve kernel image backing from physical allocator.\\r\\n");
+                halt();
+            }
+        }
+
         // Discover NUMA memory proximity domains from firmware before any
         // driver allocation can request node-local pages. ACPI table parsing is
         // bounded to the validated firmware mapping; absence of SRAT remains a
@@ -1201,13 +1219,6 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         }
         // Publish direct-map W^X policy before any high-RAM probe can fault in
         // a leaf. An uninitialized policy intentionally defaults to read-only.
-        if info.kernel_physical_section_count == 0
-            || info.kernel_physical_section_count > info.kernel_physical_sections.len()
-            || info.kernel_physical_sections[..info.kernel_physical_section_count]
-                .iter().any(|(start, end)| *start == 0 || *start >= *end) {
-            serial_write(b"FATAL: invalid PE section physical-backing metadata.\r\n");
-            halt();
-        }
         memory::set_direct_map_readonly_ranges([
             info.kernel_physical_sections[0],
             info.kernel_physical_sections.get(1).copied().unwrap_or((0, 0)),
