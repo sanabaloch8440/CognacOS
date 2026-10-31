@@ -1361,6 +1361,28 @@ mod tests {
     }
 
     #[test]
+    fn aes_gcm_accepts_non_96_bit_nonce_lengths() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let algorithm=wide("AES");let property=wide("ChainingMode");let mode=wide("ChainingModeGCM");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,algorithm.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptSetProperty(provider,property.as_ptr(),mode.as_ptr().cast(),(mode.len()*2) as ULONG,0)},STATUS_SUCCESS);
+        let mut material=[0x72u8;16];let mut key=ptr::null_mut();
+        assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut key,ptr::null_mut(),0,material.as_mut_ptr(),16,0)},STATUS_SUCCESS);
+        for nonce_len in [8usize,16] {
+            let nonce=vec![0x19u8;nonce_len];let mut tag=[0u8;16];
+            let mut info=BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO{cbSize:core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as ULONG,dwInfoVersion:1,pbNonce:nonce.as_ptr() as *mut u8,cbNonce:nonce_len as ULONG,pbAuthData:ptr::null_mut(),cbAuthData:0,pbTag:tag.as_mut_ptr(),cbTag:16,pbMacContext:ptr::null_mut(),cbMacContext:0,cbAAD:0,cbData:0,dwFlags:0};
+            let mut plain=*b"non96bit nonce!!";let mut encrypted=[0u8;16];let mut written=0;
+            assert_eq!(unsafe{BCryptEncrypt(key,plain.as_mut_ptr(),16,(&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(),ptr::null_mut(),0,encrypted.as_mut_ptr(),16,&mut written,0)},STATUS_SUCCESS);
+            let mut recovered=[0u8;16];
+            assert_eq!(unsafe{BCryptDecrypt(key,encrypted.as_mut_ptr(),16,(&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(),ptr::null_mut(),0,recovered.as_mut_ptr(),16,&mut written,0)},STATUS_SUCCESS);
+            assert_eq!(recovered,plain);
+        }
+        assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn aes192_gcm_nist_known_answer_and_roundtrip() {
         let wide = |s: &str| s.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
         let aes_name = wide("AES");
