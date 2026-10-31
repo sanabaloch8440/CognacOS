@@ -97,6 +97,25 @@ run_checks() {
   cargo check --manifest-path drivers/storage/Cargo.toml --target x86_64-unknown-linux-gnu
 }
 
+format_sources() {
+  while IFS= read -r manifest; do
+    cargo fmt --manifest-path "$manifest" --all
+  done < <(find . -name Cargo.toml -not -path './target/*' -not -path './.git/*' -print | sort)
+}
+
+check_format() {
+  while IFS= read -r manifest; do
+    cargo fmt --manifest-path "$manifest" --all -- --check
+  done < <(find . -name Cargo.toml -not -path './target/*' -not -path './.git/*' -print | sort)
+}
+
+lint_core() {
+  cargo clippy --manifest-path shared/nt-abi/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
+  cargo clippy --manifest-path tools/rust/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
+  cargo clippy --manifest-path drivers/acpi/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
+  cargo clippy --manifest-path drivers/pci/Cargo.toml --target x86_64-unknown-linux-gnu --all-targets -- -D warnings
+}
+
 run_tests() {
   cargo test --manifest-path shared/nt-abi/Cargo.toml --target x86_64-unknown-linux-gnu --lib
   cargo test --manifest-path dlls/bcrypt/Cargo.toml --target x86_64-unknown-linux-gnu --lib
@@ -140,10 +159,10 @@ case "${1:-help}" in
     ;;
   *)
     cat <<'USAGE'
-Usage: scripts/build.sh {setup|toolchain|check|test|all}
+Usage: scripts/build.sh {setup|toolchain|format|fmt-check|lint|check|test|all}
   setup     Install supported Rust targets and verify the Rust/LLVM toolchain.
   toolchain  Verify compiler/linker selection without building.
-  check     Run core repository, kernel, UEFI and driver compile checks.
+  format    Format all Rust packages using the pinned rustfmt.\n  fmt-check Verify formatting without modifying files.\n  lint      Run strict Clippy checks on the core libraries and tools.\n  check     Run core repository, kernel, UEFI and driver compile checks.
   test      Run host-side ABI, driver and Rust tooling tests.
   all       Run check followed by test.
 Set CARGO_TARGET_DIR to override the default target/ directory.
