@@ -1045,18 +1045,17 @@ fn registered_providers()->&'static Mutex<HashSet<String>>{REGISTERED_PROVIDERS.
  match registered_providers().lock(){Ok(mut set)=>if set.remove(&name){STATUS_SUCCESS}else{STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptEnumRegisteredProviders(size:*mut ULONG,out:*mut *mut CryptProviders)->NTSTATUS{
- if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}let mut names=match registered_providers().lock(){Ok(v)=>v.iter().cloned().collect::<Vec<_>>(),Err(_)=>return STATUS_NO_MEMORY};names.sort();
+ if size.is_null(){return STATUS_INVALID_PARAMETER;}let mut names=match registered_providers().lock(){Ok(v)=>v.iter().cloned().collect::<Vec<_>>(),Err(_)=>return STATUS_NO_MEMORY};names.sort();
  let header=core::mem::size_of::<CryptProviders>();let ptr_bytes=names.len()*core::mem::size_of::<*mut u16>();let strings=names.iter().map(|v|(v.encode_utf16().count()+1)*2).sum::<usize>();let total=header+ptr_bytes+strings;
- let base=match store_enum_buffer(total){Ok(v)=>v,Err(e)=>return e};let array=unsafe{base.add(header).cast::<*mut u16>()};let mut off=header+ptr_bytes;
+ let base=match unsafe{config_output_buffer(size,out,total)}{Ok(v)=>v,Err(e)=>return e};let array=unsafe{base.add(header).cast::<*mut u16>()};let mut off=header+ptr_bytes;
  for (i,name) in names.iter().enumerate(){let p=enum_write_wide(base,off,name);unsafe{array.add(i).write(p)};off+=(name.encode_utf16().count()+1)*2;}
- unsafe{base.cast::<CryptProviders>().write(CryptProviders{cProviders:names.len() as ULONG,rgpszProviders:array});size.write(total as ULONG);out.write(base.cast())};STATUS_SUCCESS
+ unsafe{base.cast::<CryptProviders>().write(CryptProviders{cProviders:names.len() as ULONG,rgpszProviders:array})};STATUS_SUCCESS
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptQueryProviderRegistration(provider:*const u16,mode:ULONG,interface:ULONG,size:*mut ULONG,out:*mut *mut CryptProviderReg)->NTSTATUS{
- if size.is_null()||out.is_null()||!matches!(mode,1|2|3|4){return STATUS_INVALID_PARAMETER;}let name=match config_name(provider){Ok(v)=>v,Err(e)=>return e};
+ if size.is_null()||!matches!(mode,1|2|3|4){return STATUS_INVALID_PARAMETER;}let name=match config_name(provider){Ok(v)=>v,Err(e)=>return e};
  let found=match registered_providers().lock(){Ok(set)=>set.contains(&name),Err(_)=>return STATUS_NO_MEMORY};if !found{return STATUS_NOT_FOUND;}
- let required=core::mem::size_of::<CryptProviderReg>() as ULONG;unsafe{size.write(required)};
- let base=match store_enum_buffer(required as usize){Ok(v)=>v,Err(e)=>return e};
- unsafe{base.cast::<CryptProviderReg>().write(CryptProviderReg{cAliases:0,rgpszAliases:ptr::null_mut(),pUM:ptr::null_mut(),pKM:ptr::null_mut()});out.write(base.cast())};let _=interface;STATUS_SUCCESS
+ let required=core::mem::size_of::<CryptProviderReg>();let base=match unsafe{config_output_buffer(size,out,required)}{Ok(v)=>v,Err(e)=>return e};
+ unsafe{base.cast::<CryptProviderReg>().write(CryptProviderReg{cAliases:0,rgpszAliases:ptr::null_mut(),pUM:ptr::null_mut(),pKM:ptr::null_mut()})};let _=interface;STATUS_SUCCESS
 }
 
 const CRYPT_LOCAL:ULONG=1;
