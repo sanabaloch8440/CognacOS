@@ -112,7 +112,7 @@ jobs:
           mkdir -p build/bcrypt
           def_file="$GITHUB_WORKSPACE/dlls/bcrypt/exports/bcrypt-x64.def"
           test -s "$def_file"
-          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link RUSTFLAGS="-C panic=abort -C link-arg=/DEF:$def_file -C link-arg=/ENTRY:DllMain -C link-arg=/NODEFAULTLIB" cargo build --manifest-path dlls/bcrypt/Cargo.toml --target x86_64-pc-windows-msvc --release --lib
+          CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link RUSTFLAGS="-C panic=abort -C link-arg=/DEF:$def_file" cargo build --manifest-path dlls/bcrypt/Cargo.toml --target x86_64-pc-windows-msvc --release --lib
           dll_path="target/x86_64-pc-windows-msvc/release/bcrypt.dll"
           if [[ ! -s "$dll_path" ]]; then
             echo "Expected bcrypt cdylib was not produced at $dll_path."
