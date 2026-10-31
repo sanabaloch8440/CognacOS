@@ -102,6 +102,170 @@ pub mod ahci {
         pub fn stopped(&mut self) -> Result<(), StorageError> { if self.state != PortState::Stopping { return Err(StorageError::InvalidState); } self.state=PortState::Stopped; Ok(()) }
         pub fn fail(&mut self) { self.state=PortState::Failed; }
     }
+    pub const CAP2: usize = 0x24;
+    pub const BOHC_BOS: u32 = 1 << 0;
+    pub const BOHC_OOS: u32 = 1 << 1;
+    pub const BOHC_BB: u32 = 1 << 4;
+    pub const CAP_S64A: u32 = 1 << 31;
+    pub const CAP_NCS_SHIFT: u32 = 8;
+    pub const CAP_NP_MASK: u32 = 0x1f;
+    pub const CAP_NCS_MASK: u32 = 0x1f << CAP_NCS_SHIFT;
+    pub const CAP2_BOH: u32 = 1;
+    pub const P_CMD_CLO: u32 = 1 << 3;
+    pub const P_CMD_CLO_SUPPORTED: u32 = 1 << 24;
+
+    pub trait RegisterIo {
+        fn read32(&mut self, offset: usize) -> Result<u32, StorageError>;
+        fn write32(&mut self, offset: usize, value: u32) -> Result<(), StorageError>;
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ControllerInfo {
+        pub version: u32,
+        pub capabilities: u32,
+        pub ports_implemented: u32,
+        pub port_count: u8,
+        pub command_slots: u8,
+        pub supports_64bit_dma: bool,
+    }
+
+    fn poll_clear(io: &mut impl RegisterIo, offset: usize, mask: u32, budget: u32) -> Result<(), StorageError> {
+        for _ in 0..budget {
+            if io.read32(offset)? & mask == 0 { return Ok(()); }
+            core::hint::spin_loop();
+        }
+        Err(StorageError::Timeout)
+    }
+
+    /// Perform the AHCI firmware handoff and host-controller reset without
+    /// allocating DMA memory, enabling interrupts, or starting any port engine.
+    ///
+    /// The caller must first disable PCI bus mastering through the device's
+    /// requester-specific IOMMU/device service. The controller is left in AHCI
+    /// mode with all global and per-port interrupts masked.
+    pub fn initialize_controller(
+        io: &mut impl RegisterIo,
+        mmio_length: u64,
+        poll_budget: u32,
+    ) -> Result<ControllerInfo, StorageError> {
+        if mmio_length < 0x100 || poll_budget == 0 { return Err(StorageError::InvalidArgument); }
+        let capabilities = io.read32(CAP)?;
+        let version = io.read32(VS)?;
+        let cap2 = io.read32(CAP2)?;
+        if capabilities == u32::MAX || version == u32::MAX { return Err(StorageError::DeviceError); }
+
+        if cap2 & CAP2_BOH != 0 {
+            let bohc = io.read32(BOHC as usize)?;
+            if bohc == u32::MAX { return Err(StorageError::DeviceError); }
+            io.write32(BOHC as usize, bohc | BOHC_OOS)?;
+            let mut released = false;
+            for _ in 0..poll_budget {
+                let current = io.read32(BOHC as usize)?;
+                if current & (BOHC_BOS | BOHC_BB) == 0 { released = true; break; }
+                core::hint::spin_loop();
+            }
+            if !released { return Err(StorageError::Timeout); }
+        }
+
+        // Mask interrupts before reset or any register reconfiguration.
+        let ghc = io.read32(GHC)?;
+        if ghc == u32::MAX { return Err(StorageError::DeviceError); }
+        io.write32(GHC, (ghc | GHC_AE) & !GHC_IE)?;
+        io.write32(GHC, ((ghc | GHC_AE) & !GHC_IE) | GHC_HR)?;
+        poll_clear(io, GHC, GHC_HR, poll_budget)?;
+        let after_reset = io.read32(GHC)?;
+        io.write32(GHC, (after_reset | GHC_AE) & !GHC_IE)?;
+
+        let ports = io.read32(PI)?;
+        if ports == u32::MAX { return Err(StorageError::DeviceError); }
+        let port_count = ports.count_ones() as u8;
+        for port in 0u8..32 {
+            if ports & (1u32 << port) == 0 { continue; }
+            let base = port_register_offset(port, 0)?;
+            let last = base.checked_add(P_SERR).and_then(|v| v.checked_add(4)).ok_or(StorageError::Overflow)?;
+            if last as u64 > mmio_length { return Err(StorageError::OutOfRange); }
+            // Interrupts stay masked. Clear write-one-to-clear status registers.
+            io.write32(base + P_IE, 0)?;
+            let is = io.read32(base + P_IS)?;
+            if is != 0 && is != u32::MAX { io.write32(base + P_IS, is)?; }
+            let serr = io.read32(base + P_SERR)?;
+            if serr != 0 && serr != u32::MAX { io.write32(base + P_SERR, serr)?; }
+
+            // Stop the command engine in the AHCI-prescribed order: ST then CR,
+            // followed by FRE then FR. No command/FIS DMA memory is freed here.
+            let command = io.read32(base + P_CMD)?;
+            if command == u32::MAX { return Err(StorageError::DeviceError); }
+            io.write32(base + P_CMD, command & !CMD_ST)?;
+            poll_clear(io, base + P_CMD, CMD_CR, poll_budget)?;
+            let command = io.read32(base + P_CMD)?;
+            io.write32(base + P_CMD, command & !CMD_FRE)?;
+            poll_clear(io, base + P_CMD, CMD_FR, poll_budget)?;
+        }
+        let slots = (((capabilities & CAP_NCS_MASK) >> CAP_NCS_SHIFT) + 1) as u8;
+        Ok(ControllerInfo {
+            version,
+            capabilities,
+            ports_implemented: ports,
+            port_count,
+            command_slots: slots,
+            supports_64bit_dma: capabilities & CAP_S64A != 0,
+        })
+    }
+
+    #[cfg(test)]
+    mod controller_tests {
+        use super::*;
+        struct Fake { regs: [u32; 128], writes: std::vec::Vec<(usize, u32)> }
+        impl Fake {
+            fn new() -> Self {
+                let mut regs = [0u32; 128];
+                regs[CAP / 4] = CAP_S64A | (31 << CAP_NCS_SHIFT) | 3;
+                regs[VS / 4] = 0x0001_0300;
+                regs[CAP2 / 4] = 0;
+                regs[GHC / 4] = GHC_AE | GHC_IE;
+                regs[PI / 4] = 0b101;
+                Self { regs, writes: std::vec::Vec::new() }
+            }
+        }
+        impl RegisterIo for Fake {
+            fn read32(&mut self, offset: usize) -> Result<u32, StorageError> {
+                self.regs.get(offset / 4).copied().ok_or(StorageError::OutOfRange)
+            }
+            fn write32(&mut self, offset: usize, value: u32) -> Result<(), StorageError> {
+                self.writes.push((offset, value));
+                let slot = self.regs.get_mut(offset / 4).ok_or(StorageError::OutOfRange)?;
+                if offset == GHC && value & GHC_HR != 0 { *slot = value & !GHC_HR; }
+                else if offset == GHC { *slot = value; }
+                else if offset == P_IS || offset == P_SERR { *slot &= !value; }
+                else { *slot = value; }
+                Ok(())
+            }
+        }
+        #[test]
+        fn reset_leaves_ahci_enabled_and_interrupts_masked() {
+            let mut fake = Fake::new();
+            let info = initialize_controller(&mut fake, 0x1100, 32).unwrap();
+            assert_eq!(info.port_count, 2);
+            assert_eq!(info.command_slots, 32);
+            assert!(info.supports_64bit_dma);
+            assert_ne!(fake.regs[GHC / 4] & GHC_AE, 0);
+            assert_eq!(fake.regs[GHC / 4] & GHC_IE, 0);
+            assert!(fake.writes.iter().any(|(offset, value)| *offset == GHC && value & GHC_HR != 0));
+        }
+        #[test]
+        fn firmware_ownership_handoff_is_bounded() {
+            let mut fake = Fake::new();
+            fake.regs[CAP2 / 4] = CAP2_BOH;
+            fake.regs[BOHC / 4] = BOHC_BOS;
+            assert_eq!(initialize_controller(&mut fake, 0x1100, 4), Err(StorageError::Timeout));
+        }
+        #[test]
+        fn refuses_mmio_windows_that_do_not_cover_implemented_ports() {
+            let mut fake = Fake::new();
+            assert_eq!(initialize_controller(&mut fake, 0x180, 16), Err(StorageError::OutOfRange));
+        }
+    }
+
     pub fn port_register_offset(port: u8, register: usize) -> Result<usize, StorageError> {
         if port >= 32 || register >= PORT_STRIDE { return Err(StorageError::InvalidArgument); }
         PORT_BASE.checked_add((port as usize).checked_mul(PORT_STRIDE).ok_or(StorageError::Overflow)?)
