@@ -644,11 +644,19 @@ pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_k
     unsafe{out.write(token)};STATUS_SUCCESS
 }
 
-/// Verifies a precomputed SHA-256 digest using RSA PKCS#1 v1.5.
+#[repr(C)]
+struct BcryptPkcs1PaddingInfo { pszAlgId: *const u16 }
+
+/// Verifies a precomputed digest using the Windows PKCS#1 padding-info ABI.
+/// SHA-256 is currently the supported digest; the padding descriptor is
+/// mandatory, as it is for BCryptVerifySignature callers using PKCS#1.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info:*mut c_void,hash:*const u8,hash_len:ULONG,signature:*const u8,signature_len:ULONG,flags:ULONG)->NTSTATUS {
     const BCRYPT_PAD_PKCS1:ULONG=0x00000002;
-    if !padding_info.is_null() || hash.is_null() || hash_len!=32 || signature.is_null() || flags!=BCRYPT_PAD_PKCS1 {return STATUS_INVALID_PARAMETER;}
+    if padding_info.is_null() || hash.is_null() || hash_len!=32 || signature.is_null() || flags!=BCRYPT_PAD_PKCS1 {return STATUS_INVALID_PARAMETER;}
+    let info=unsafe{&*padding_info.cast::<BcryptPkcs1PaddingInfo>()};
+    let alg=match unsafe{HashAlgorithm::from_utf16(info.pszAlgId)}{Ok(v)=>v,Err(e)=>return e};
+    if alg!=HashAlgorithm::Sha256{return STATUS_NOT_SUPPORTED;}
     let public=match handle_table().lock(){Ok(t)=>match t.get(&(key as usize)){Some(RegisteredHandle::RsaPublic(v))=>v.clone(),_=>return STATUS_INVALID_PARAMETER},Err(_)=>return STATUS_NO_MEMORY};
     if signature_len as usize!=public.size(){return STATUS_INVALID_PARAMETER;}
     let sig=match RsaSignature::try_from(unsafe{core::slice::from_raw_parts(signature,signature_len as usize)}){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
