@@ -77,6 +77,17 @@ check_toolchain() {
   fi
 }
 
+build_images() {
+  cargo build --manifest-path kernel/Cargo.toml --target x86_64-unknown-none --release
+  mkdir -p build
+  cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- elf-to-pe32plus \
+    target/x86_64-unknown-none/release/cognacos-kernel build/cognacos-kernel.exe \
+    --export-manifest kernel/src/ntoskrnl/manifest_26100.json
+  cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-pe-exports \
+    build/cognacos-kernel.exe kernel/src/ntoskrnl/manifest_26100.json
+  cargo check --manifest-path bootloader/Cargo.toml --target x86_64-unknown-uefi
+}
+
 run_checks() {
   cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- validate-ntoskrnl-manifest
   cargo run --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- check-ntdll-def
@@ -167,13 +178,13 @@ case "${1:-help}" in
     ;;
   *)
     cat <<'USAGE'
-Usage: scripts/build.sh {setup|toolchain|format|fmt-check|lint|check|test|all}
+Usage: scripts/build.sh {setup|toolchain|format|fmt-check|lint|check|build|test|all}
   setup      Install supported Rust targets and verify the Rust/LLVM toolchain.
   toolchain  Verify compiler/linker selection without building.
   format     Format all Rust packages using the pinned rustfmt.
   fmt-check  Verify formatting without modifying files.
   lint       Run strict Clippy checks on the core libraries and tools.
-  check      Run core repository, kernel, UEFI and driver compile checks.
+  check      Run core repository, kernel, UEFI and driver compile checks.\n  build      Build release kernel PE32+ image and check the UEFI loader.
   test       Run host-side ABI, driver and Rust tooling tests.
   all        Run check followed by test.
 Set CARGO_TARGET_DIR to override the default target/ directory.
