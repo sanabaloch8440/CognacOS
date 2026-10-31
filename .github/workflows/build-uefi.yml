@@ -379,7 +379,7 @@ jobs:
           file build/dlls/kernelbase.dll | grep -q 'PE32+.*DLL'
           file build/dlls/shell32.dll | grep -q 'PE32+.*DLL'
           file build/dlls/msvcrt.dll | grep -q 'PE32+.*DLL'
-          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- verify-dll-exports \\
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- verify-dll-exports \
             --dll kernel32,build/dlls/kernel32.dll,dlls/kernel32/exports/windows-11-x64-exports.tsv \
             --dll kernelbase,build/dlls/kernelbase.dll,dlls/kernelbase/exports/windows-11-x64-exports.tsv \
             --dll shell32,build/dlls/shell32.dll,dlls/shell32/exports/windows-11-x64-exports.tsv \
