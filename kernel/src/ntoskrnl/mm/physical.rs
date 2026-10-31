@@ -74,8 +74,7 @@ pub fn is_firmware_reserved_ram_range(start:u64,length:u64)->bool {
             let Some(offset)=i.checked_mul(stride) else{return false};
             let Some(pointer)=(base as usize).checked_add(offset) else{return false};
             let d=unsafe{ptr::read_unaligned(pointer as *const MemoryDescriptor)};
-            if d.number_of_pages==0||d.kind==EFI_CONVENTIONAL_MEMORY
-                ||!matches!(d.kind,1..=7|9|10|14){continue}
+            if d.number_of_pages==0||!matches!(d.kind,0..=7|9|10|14){continue}
             let Some(bytes)=d.number_of_pages.checked_mul(PAGE_SIZE) else{continue};
             let Some(region_end)=d.physical_start.checked_add(bytes) else{continue};
             if cursor>=d.physical_start&&cursor<region_end {
@@ -85,6 +84,14 @@ pub fn is_firmware_reserved_ram_range(start:u64,length:u64)->bool {
         if covered_until==cursor{return false}
         cursor=covered_until;
     }
+    // A range is safe for firmware DMA only if no page remains available
+    // in either allocator after the early reservation pass.
+    let low = unsafe { &*REGIONS.0.get() };
+    let low_count = REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    if low.iter().take(low_count).any(|r| start < r.end && r.next < end) { return false; }
+    let high = unsafe { &*HIGH_REGIONS.0.get() };
+    let high_count = HIGH_REGION_COUNT.load(core::sync::atomic::Ordering::Acquire);
+    if high.iter().take(high_count).any(|r| start < r.end && r.next < end) { return false; }
     true
 }
 
