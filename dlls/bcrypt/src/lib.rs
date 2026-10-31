@@ -369,8 +369,8 @@ fn enum_write_wide(base: *mut u8, offset: usize, value: &str) -> *mut u16 {
 /// Only operations actually supported by this DLL are advertised.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptEnumAlgorithms(operations:ULONG,count:*mut ULONG,list:*mut *mut BcryptAlgorithmIdentifier,flags:ULONG)->NTSTATUS {
- const H:ULONG=2;const R:ULONG=32;if count.is_null()||list.is_null()||flags!=0||operations==0||operations&!(H|R)!=0{return STATUS_INVALID_PARAMETER;}
- let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&H!=0{e.extend([("SHA256",H),("SHA384",H),("SHA512",H)]);}if operations&R!=0{e.push(("RNG",R));}
+ const H:ULONG=2;const K:ULONG=8;const R:ULONG=32;if count.is_null()||list.is_null()||flags!=0||operations==0||operations&!(H|K|R)!=0{return STATUS_INVALID_PARAMETER;}
+ let mut e:Vec<(&str,ULONG)>=Vec::new();if operations&H!=0{e.extend([("SHA256",H),("SHA384",H),("SHA512",H)]);}if operations&K!=0{e.push(("PBKDF2",K));}if operations&R!=0{e.push(("RNG",R));}
  let sb=e.len()*core::mem::size_of::<BcryptAlgorithmIdentifier>();let nb:usize=e.iter().map(|(n,_)|(n.encode_utf16().count()+1)*2).sum();let base=match store_enum_buffer(sb+nb){Ok(v)=>v,Err(x)=>return x};let records=base.cast::<BcryptAlgorithmIdentifier>();let mut off=sb;
  for(i,(n,c))in e.iter().enumerate(){let np=enum_write_wide(base,off,n);unsafe{records.add(i).write(BcryptAlgorithmIdentifier{name:np,class:*c,flags:0})};off+=(n.encode_utf16().count()+1)*2;}
  unsafe{count.write(e.len() as ULONG);list.write(records)};STATUS_SUCCESS
