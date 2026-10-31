@@ -674,3 +674,33 @@ pub unsafe fn initialize_for_dmar_path(
     }
     unsafe{initialize(ops,unit.register_base,register_len)}
 }
+
+
+/// PCI-topology adapter: carry the segment and the complete bridge path from
+/// the PCI enumerator directly into DMAR ownership selection. The final path
+/// element must be the endpoint BDF discovered by PCI, preventing a bridge BDF
+/// or stale subordinate-bus route from being used as the requester.
+pub unsafe fn initialize_for_pci_path(
+    ops:&PlatformOps,
+    dmar:&cognacos_acpi::DmarInfo,
+    rmrr:&cognacos_acpi::DmarRmrrInfo,
+    path:&cognacos_pci::PciRequesterPath,
+    register_len:u64,
+)->i32 {
+    let count=path.path_count as usize;
+    if count==0||count>8{return STATUS_INVALID_PARAMETER}
+    let last=path.path[count-1];
+    if last.device!=path.endpoint_device||last.function!=path.endpoint_function {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let mut scopes=[cognacos_acpi::DmarPath{device:0,function:0};8];
+    for i in 0..count {
+        scopes[i]=cognacos_acpi::DmarPath {
+            device:path.path[i].device,function:path.path[i].function,
+        };
+    }
+    unsafe {
+        initialize_for_dmar_path(ops,dmar,rmrr,path.segment,path.root_bus,
+            &scopes[..count],register_len)
+    }
+}
