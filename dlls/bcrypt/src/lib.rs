@@ -515,9 +515,17 @@ struct BcryptKeyDataBlobHeader { dwMagic: ULONG, dwVersion: ULONG, cbKeyData: UL
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDuplicateKey(key:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,flags:ULONG)->NTSTATUS {
-    if out.is_null() || !object.is_null() || object_len != 0 || flags != 0 { return STATUS_INVALID_PARAMETER; }
-    let state = match key_handle(key) { Ok(v) => v, Err(e) => return e };
-    match register_handle(RegisteredHandle::Key(state)) { Ok(token) => { unsafe { out.write(token) }; STATUS_SUCCESS }, Err(e) => e }
+    if out.is_null() || !object.is_null() || object_len != 0 || flags != 0 || key.is_null() { return STATUS_INVALID_PARAMETER; }
+    let duplicate=match handle_table().lock() {
+        Ok(table)=>match table.get(&(key as usize)) {
+            Some(RegisteredHandle::Key(v))=>RegisteredHandle::Key(v.clone()),
+            Some(RegisteredHandle::KdfKey(v))=>RegisteredHandle::KdfKey(v.clone()),
+            Some(RegisteredHandle::RsaPublic(v))=>RegisteredHandle::RsaPublic(v.clone()),
+            _=>return STATUS_INVALID_PARAMETER,
+        },
+        Err(_)=>return STATUS_NO_MEMORY,
+    };
+    match register_handle(duplicate) { Ok(token) => { unsafe { out.write(token) }; STATUS_SUCCESS }, Err(e) => e }
 }
 
 #[no_mangle]
