@@ -192,6 +192,7 @@ pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*con
     let name = match unsafe { read_property_name(property) } { Ok(v) => v, Err(e) => return e };
     let (kind, value, wide) = if let Ok(k) = key_handle(object) {
         match name.as_str() {
+            "ObjectLength" => (0, 0, ""),
             "KeyLength" => (0, (k.key.len() as u32) * 8, ""),
             "BlockLength" => (0, 16, ""),
             "AlgorithmName" => (1, 0, "AES"),
