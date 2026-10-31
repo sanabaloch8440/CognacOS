@@ -27,6 +27,9 @@ Microsoft linker is selected.
 # Compile the core kernel, UEFI loader, ABI and driver libraries.
 ./scripts/build.sh check
 
+# Build the release kernel PE32+ image and check the UEFI loader.
+./scripts/build.sh build
+
 # Run host-side ABI, crypto, driver and Rust tooling tests.
 ./scripts/build.sh test
 
