@@ -24,7 +24,7 @@ fn main() {
     assert_eq!(actual, expected, "bcrypt .def differs from pinned export manifest");
     let implemented: BTreeSet<&str> = [
         "BCryptOpenAlgorithmProvider", "BCryptCloseAlgorithmProvider", "BCryptGetProperty", "BCryptHash",
-        "BCryptCreateHash", "BCryptHashData", "BCryptFinishHash", "BCryptDestroyHash", "BCryptGenRandom", "BCryptDeriveKeyPBKDF2",
+        "BCryptCreateHash", "BCryptHashData", "BCryptFinishHash", "BCryptDestroyHash", "BCryptDuplicateHash", "BCryptGenRandom", "BCryptDeriveKeyPBKDF2",
     ].into_iter().collect();
     let mut generated = String::from("// Unsupported exports fail closed with STATUS_NOT_IMPLEMENTED.\n");
     for e in &exports {

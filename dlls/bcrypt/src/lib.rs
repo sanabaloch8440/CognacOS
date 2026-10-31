@@ -47,6 +47,7 @@ impl HashAlgorithm {
 }
 
 struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool }
+#[derive(Clone)]
 struct HashHandle { algorithm: HashAlgorithm, hmac: bool, secret: Vec<u8>, data: Vec<u8> }
 impl Drop for HashHandle { fn drop(&mut self) { self.secret.zeroize(); self.data.zeroize(); } }
 
@@ -113,6 +114,31 @@ pub unsafe extern "system" fn BCryptFinishHash(hash: *mut c_void, output: *mut u
         let result = state.algorithm.digest(&state.data);
         unsafe { ptr::copy_nonoverlapping(result.as_ref().as_ptr(), output, result.as_ref().len()) };
     }
+    STATUS_SUCCESS
+}
+
+/// BCryptDuplicateHash duplicates the current hash state. Caller-owned
+/// hash-object storage is not supported yet; the API therefore requires the
+/// documented optional storage pair to be absent.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptDuplicateHash(
+    hash: *mut c_void,
+    out: *mut *mut c_void,
+    object: *mut u8,
+    object_len: ULONG,
+    flags: ULONG,
+) -> NTSTATUS {
+    if hash.is_null() || out.is_null() || !object.is_null() || object_len != 0 || flags != 0 {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let state = unsafe { &*hash.cast::<HashHandle>() };
+    let duplicate = HashHandle {
+        algorithm: state.algorithm,
+        hmac: state.hmac,
+        secret: state.secret.clone(),
+        data: state.data.clone(),
+    };
+    unsafe { out.write(Box::into_raw(Box::new(duplicate)).cast()) };
     STATUS_SUCCESS
 }
 
