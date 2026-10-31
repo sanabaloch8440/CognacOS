@@ -16,6 +16,7 @@ mod manifest_26100;
 #[path = "io/pnp.rs"] pub(crate) mod pnp;
 pub(crate) mod driver_loader;
 pub(crate) mod driver_order;
+pub(crate) mod driver_init;
 pub(crate) mod runtime_functions;
 pub(crate) mod dbg;
 pub(crate) mod debug;
