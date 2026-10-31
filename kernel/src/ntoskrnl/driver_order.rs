@@ -106,10 +106,6 @@ pub fn schedule_boot_drivers(
 #[cfg(test)]
 mod tests{
     use super::*;
-    const fn w(s:&'static str)-> &'static [u16]{
-        // Tests use explicit UTF-16 literals to keep the core allocation-free.
-        match s { _=>&[] }
-    }
     #[test]
     fn service_dependency_overrides_group_order(){
         let a=[65u16];let b=[66u16];let empty:&[&[u16]]=&[];let dep_a:[&[u16];1]=[&a];
@@ -137,8 +133,6 @@ mod tests{
         let mut out=[0usize;1];let mut state=[0u8;1];
         assert_eq!(schedule_boot_drivers(&nodes,&[],&[],&mut out,&mut state),Err(ScheduleError::MissingServiceDependency));
         let deps_a:[&[u16];1]=[&a];
-        let cycle=[nodes[0],ServiceNode{name:&b,group:&[],tag:None,start_type:0,service_dependencies:&deps_a,group_dependencies:&[]}];
-        let dep_b:[&[u16];1]=[&b];
         let cycle=[ServiceNode{name:&a,group:&[],tag:None,start_type:0,service_dependencies:&dep_b,group_dependencies:&[]},
           ServiceNode{name:&b,group:&[],tag:None,start_type:0,service_dependencies:&deps_a,group_dependencies:&[]}];
         assert_eq!(schedule_boot_drivers(&cycle,&[],&[],&mut [0usize;2],&mut [0u8;2]),Err(ScheduleError::Cycle));
