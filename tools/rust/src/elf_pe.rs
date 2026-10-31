@@ -149,7 +149,7 @@ mod tests{
   b[p+8..p+16].copy_from_slice(&0x1000u64.to_le_bytes());b[p+16..p+24].copy_from_slice(&(BASE+0x1000).to_le_bytes());
   b[p+32..p+40].copy_from_slice(&4u64.to_le_bytes());b[p+40..p+48].copy_from_slice(&0x1000u64.to_le_bytes());
   b[0x1000..0x1004].copy_from_slice(&[0x90,0x90,0xeb,0xfe]);
-  let mut pe=convert_elf64_to_pe32plus(&b,BASE,false,None).unwrap();
+  let mut pe=convert_elf64_to_pe32plus(&b,BASE,false).unwrap();
   append_exports(&mut pe,&[("Alpha".into(),1,BASE+0x1000),("Omega".into(),3,BASE+0x1000)]).unwrap();
   let peoff=u32at(&pe,0x3c).unwrap() as usize;let opt=peoff+24;
   assert_eq!(u16at(&pe,peoff+6).unwrap(),2);
