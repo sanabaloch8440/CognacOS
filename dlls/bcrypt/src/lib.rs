@@ -947,7 +947,8 @@ pub unsafe extern "system" fn BCryptDeriveKeyCapi(hash:*mut c_void,target_alg:*m
     let mut material=Vec::with_capacity(output_len as usize);
     material.extend_from_slice(&digest);
     if output_len as usize>digest.len(){
-        let mut inner=[0x36u8;64];let mut outer=[0x5cu8;64];
+        let block_len=state.algorithm.block_len() as usize;
+        let mut inner=vec![0x36u8;block_len];let mut outer=vec![0x5cu8;block_len];
         for (i,b) in digest.iter().enumerate(){inner[i]^=*b;outer[i]^=*b;}
         let expanded=match state.algorithm {
             HashAlgorithm::Sha256=>{
@@ -1541,6 +1542,30 @@ mod tests {
         assert_eq!(unsafe{BCryptDestroyKey(handle)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptGetProperty(duplicate,property.as_ptr(),(&mut bits as *mut u32).cast(),4,&mut required,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptDestroyKey(duplicate)},STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn local_cng_context_configuration_roundtrips_functions_providers_and_properties() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let context=wide("CognacTest");let function=wide("SHA256");let provider=wide("Microsoft Primitive Provider");
+        let mut cfg=CryptContextConfig{dwFlags:0,dwReserved:0};
+        assert_eq!(unsafe{BCryptCreateContext(CRYPT_LOCAL,context.as_ptr(),&cfg)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptAddContextFunction(CRYPT_LOCAL,context.as_ptr(),2,function.as_ptr(),CRYPT_PRIORITY_BOTTOM)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptAddContextFunctionProvider(CRYPT_LOCAL,context.as_ptr(),2,function.as_ptr(),provider.as_ptr(),CRYPT_PRIORITY_BOTTOM)},STATUS_SUCCESS);
+        let property=wide("TestProperty");let bytes=[1u8,2,3,4];
+        assert_eq!(unsafe{BCryptSetContextFunctionProperty(CRYPT_LOCAL,context.as_ptr(),2,function.as_ptr(),property.as_ptr(),4,bytes.as_ptr())},STATUS_SUCCESS);
+        let mut size=0;let mut value=ptr::null_mut();
+        assert_eq!(unsafe{BCryptQueryContextFunctionProperty(CRYPT_LOCAL,context.as_ptr(),2,function.as_ptr(),property.as_ptr(),&mut size,&mut value)},STATUS_SUCCESS);
+        assert_eq!(size,4);assert_eq!(unsafe{core::slice::from_raw_parts(value,size as usize)},bytes);
+        unsafe{BCryptFreeBuffer(value.cast())};
+        let mut fn_size=0;let mut functions=ptr::null_mut();
+        assert_eq!(unsafe{BCryptEnumContextFunctions(CRYPT_LOCAL,context.as_ptr(),2,&mut fn_size,&mut functions)},STATUS_SUCCESS);
+        assert_eq!(unsafe{(*functions).cFunctions},1);unsafe{BCryptFreeBuffer(functions.cast())};
+        let mut p_size=0;let mut providers=ptr::null_mut();
+        assert_eq!(unsafe{BCryptEnumContextFunctionProviders(CRYPT_LOCAL,context.as_ptr(),2,function.as_ptr(),&mut p_size,&mut providers)},STATUS_SUCCESS);
+        assert_eq!(unsafe{(*providers).cProviders},1);unsafe{BCryptFreeBuffer(providers.cast())};
+        assert_eq!(unsafe{BCryptRemoveContextFunction(CRYPT_LOCAL,context.as_ptr(),2,function.as_ptr())},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDeleteContext(CRYPT_LOCAL,context.as_ptr())},STATUS_SUCCESS);
     }
 
     #[test]
