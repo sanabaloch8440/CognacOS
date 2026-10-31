@@ -150,3 +150,48 @@ pub fn query_service_parameter(
     let n=value.data(out)?;
     Ok(Some((value.kind,n)))
 }
+
+
+/// Read Control\\ServiceGroupOrder\\List from the active ControlSet.
+/// The caller receives the original validated REG_MULTI_SZ UTF-16 sequence.
+pub fn query_service_group_order(hive:&Hive<'_>,out:&mut[u16])->Result<usize,ExtendedConfigError>{
+    let mut control=[0u16;64];let mut n=format_control(active_control_set(hive)?,&mut control)?;
+    for c in "\\Control\\ServiceGroupOrder".encode_utf16(){
+        if n==control.len(){return Err(ExtendedConfigError::BufferTooSmall)}control[n]=c;n+=1;
+    }
+    let key=hive.find_path(&control[..n])?;
+    let value=key.find_value(&[76,105,115,116])?;
+    if value.kind!=7{return Err(ExtendedConfigError::InvalidRegistryType)}
+    let bytes=value.data_len as usize;
+    if bytes<4||bytes%2!=0||bytes>out.len()*2{return Err(ExtendedConfigError::BufferTooSmall)}
+    let mut raw=[0u8;2048];if bytes>raw.len(){return Err(ExtendedConfigError::BufferTooSmall)}
+    value.data(&mut raw[..bytes])?;let units=bytes/2;
+    for i in 0..units{out[i]=u16::from_le_bytes([raw[i*2],raw[i*2+1]])}
+    if out[units-1]!=0||out[units-2]!=0{return Err(ExtendedConfigError::InvalidDependencies)}
+    Ok(units)
+}
+
+/// Read a group's REG_BINARY tag-order array from Control\\GroupOrderList.
+/// The first DWORD is the number of following DWORD tag IDs.
+pub fn query_group_tag_order(hive:&Hive<'_>,group:&[u16],out:&mut[u32])->Result<usize,ExtendedConfigError>{
+    if group.is_empty()||group.len()>128||group.iter().any(|c|*c==0||*c==b'\\' as u16){return Err(ExtendedConfigError::InvalidGroup)}
+    let mut control=[0u16;64];let mut n=format_control(active_control_set(hive)?,&mut control)?;
+    for c in "\\Control\\GroupOrderList".encode_utf16(){
+        if n==control.len(){return Err(ExtendedConfigError::BufferTooSmall)}control[n]=c;n+=1;
+    }
+    let key=hive.find_path(&control[..n])?;
+    let value=key.find_value(group)?;
+    if value.kind!=3||value.data_len<4||value.data_len as usize>4+out.len()*4{return Err(ExtendedConfigError::InvalidRegistryType)}
+    let mut raw=[0u8;1024];let bytes=value.data_len as usize;
+    if bytes>raw.len(){return Err(ExtendedConfigError::BufferTooSmall)}
+    value.data(&mut raw[..bytes])?;
+    let count=u32::from_le_bytes([raw[0],raw[1],raw[2],raw[3]]) as usize;
+    if count>out.len()||bytes!=4+count*4{return Err(ExtendedConfigError::InvalidTag)}
+    for i in 0..count{out[i]=u32::from_le_bytes([raw[4+i*4],raw[5+i*4],raw[6+i*4],raw[7+i*4]])}
+    Ok(count)
+}
+fn active_control_set(hive:&Hive<'_>)->Result<u32,ExtendedConfigError>{
+    let mut select=[0u16;16];let n=ascii("Select",&mut select)?;
+    let key=hive.find_path(&select[..n])?;
+    optional_dword(key,&[67,117,114,114,101,110,116])?.ok_or(ExtendedConfigError::Base(Error::MissingStart))
+}
