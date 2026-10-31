@@ -195,8 +195,14 @@ unsafe extern "system" fn close_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut 
     complete(irp);
     STATUS_SUCCESS
 }
-unsafe extern "system" fn read_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
-    if irp.is_null() { return STATUS_INVALID_PARAMETER; }
+unsafe extern "system" fn read_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
+    if irp.is_null() || device.is_null() { return STATUS_INVALID_PARAMETER; }
+    const DO_BUFFERED_IO: u32 = 0x0000_0004;
+    if unsafe { (*device).flags } & DO_BUFFERED_IO == 0 {
+        unsafe { set_irp_result(irp, STATUS_INVALID_DEVICE_REQUEST, 0); }
+        complete(irp);
+        return STATUS_INVALID_DEVICE_REQUEST;
+    }
     if !KEYBOARD.ready.load(Ordering::Acquire) {
         unsafe { set_irp_result(irp, STATUS_DEVICE_NOT_READY, 0); }
         complete(irp);
@@ -216,20 +222,18 @@ unsafe extern "system" fn read_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut I
         return STATUS_INVALID_PARAMETER;
     }
     let capacity = (length / core::mem::size_of::<KeyboardInputData>()).min(QUEUE_CAPACITY);
-    let result = {
-        let _guard = Guard::acquire();
-        let output = unsafe { core::slice::from_raw_parts_mut(buffer, capacity) };
-        unsafe { &mut *KEYBOARD.stack.get() }.read_packets(output)
-    };
+    let _guard = Guard::acquire();
+    let output = unsafe { core::slice::from_raw_parts_mut(buffer, capacity) };
+    let result = unsafe { &mut *KEYBOARD.stack.get() }.read_packets(output);
     match result {
         Ok(count) if count != 0 => {
             let bytes = count * core::mem::size_of::<KeyboardInputData>();
             unsafe { set_irp_result(irp, STATUS_SUCCESS, bytes); }
+            drop(_guard);
             complete(irp);
             STATUS_SUCCESS
         }
         Ok(_) => {
-            let _guard = Guard::acquire();
             let slots = unsafe { &mut *PENDING.0.get() };
             if let Some(slot) = slots.iter_mut().find(|p| p.is_null()) {
                 *slot = irp;
@@ -247,11 +251,13 @@ unsafe extern "system" fn read_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut I
         }
         Err(cognacos_kbdclass::ClassError::NotOpen) => {
             unsafe { set_irp_result(irp, STATUS_ACCESS_DENIED, 0); }
+            drop(_guard);
             complete(irp);
             STATUS_ACCESS_DENIED
         }
         Err(_) => {
             unsafe { set_irp_result(irp, STATUS_INVALID_PARAMETER, 0); }
+            drop(_guard);
             complete(irp);
             STATUS_INVALID_PARAMETER
         }
