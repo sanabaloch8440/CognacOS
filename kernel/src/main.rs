@@ -587,7 +587,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
                             if !duplicate&&irq_line!=0 {
                                 if let Some(io)=io {
                                     match ntoskrnl::pnp::prepare_xhci_interrupt_route(io.address as u64,io.gsi_base,gsi,bsp_apic_id as u8,active_low,level_triggered) {
-                                        Ok(vector)=>unsafe{serial_write(b"xHCI PnP: masked INTx route prepared; vector=");serial_write_hex(vector as u64);serial_write(b"\r\n");},
+                                        Ok(vector)=>{ let _ = platform_drivers::mark_ready(platform_drivers::Stage::XhciInterrupt); unsafe{serial_write(b"xHCI PnP: masked INTx route prepared; vector=");serial_write_hex(vector as u64);serial_write(b"\r\n");} },
                                         Err(_)=>unsafe{serial_write(b"xHCI PnP: interrupt route preparation failed; controller remains unbound.\r\n");},
                                     }
                                 } else {unsafe{serial_write(b"xHCI PnP: no I/O-APIC owns PCI interrupt GSI; controller remains unbound.\r\n");}}
@@ -607,6 +607,7 @@ fn probe_xhci_pci_function(madt:&acpi::MadtInfo,bsp_apic_id:u32)->bool {
         serial_write(b"QEMU xHCI DEVICE COUNT=");serial_write_hex(found as u64);serial_write(b"\r\n");
     }
     if published {
+        let _ = platform_drivers::mark_ready(platform_drivers::Stage::PciXhciResources);
         unsafe{serial_write(b"PCI xHCI resource discovery and uncached MMIO mapping complete.\r\n");}
         if !bind_xhci_pe_driver() {
             unsafe{serial_write(b"PCI xHCI discovered; PE driver did not bind; bus mastering remains disabled.\r\n");}
@@ -1654,6 +1655,8 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
             serial_write(b"FATAL: guest ATA/GPT/ext4 read/write end-to-end test failed.\r\n");
             halt();
         }
+        let _ = platform_drivers::mark_ready(platform_drivers::Stage::Storage);
+        let _ = platform_drivers::mark_ready(platform_drivers::Stage::ExtFilesystem);
         serial_write(b"Guest ATA/GPT/ext4 read/write end-to-end test passed.\r\n");
 
         // APIC registers are intentionally not enabled here: no firmware MADT
