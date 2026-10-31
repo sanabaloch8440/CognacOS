@@ -35,6 +35,32 @@ static STATE: AcpiState = AcpiState {
     dmar_present: AtomicBool::new(false),
 };
 
+const IRP_MJ_PNP: usize = 0x1b;
+const IRP_MN_START_DEVICE: u8 = 0x00;
+const IRP_MN_STOP_DEVICE: u8 = 0x04;
+const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
+const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
+
+unsafe extern "system" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
+    if irp.is_null() { return STATUS_INVALID_PARAMETER; }
+    let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
+    if stack.is_null() { return STATUS_INVALID_PARAMETER; }
+    let status = match unsafe { (*stack).minor_function } {
+        IRP_MN_START_DEVICE if STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
+        IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
+        // A full ACPI namespace/AML interpreter and PDO publication path is
+        // required before this bus driver can truthfully return BusRelations.
+        IRP_MN_QUERY_DEVICE_RELATIONS => STATUS_NOT_SUPPORTED,
+        IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
+        _ => STATUS_INVALID_DEVICE_REQUEST,
+    };
+    unsafe { (*irp).io_status.status.status = status; (*irp).io_status.information = 0; }
+    status
+}
+unsafe extern "system" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
+    STATE.ready.store(false, Ordering::Release);
+}
+
 /// DriverEntry performs driver-wide firmware validation only. Device objects,
 /// ACPI namespace PDOs, AML evaluation, and per-device resources belong to the
 /// later PnP/ACPI namespace integration path, not to DriverEntry.
@@ -80,6 +106,8 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         Err(_) => return STATUS_INVALID_PARAMETER,
     }
     STATE.ready.store(true, Ordering::Release);
+    object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
+    object.driver_unload = Some(driver_unload);
     STATUS_SUCCESS
 }
 
