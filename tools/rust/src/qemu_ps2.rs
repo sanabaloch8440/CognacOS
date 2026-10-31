@@ -1,4 +1,4 @@
-use std::{env,fs,io::{Read,Write},os::unix::net::UnixStream,path::PathBuf,process::{Child,Command,Stdio},thread,time::{Duration,Instant}};
+use std::{fs,io::{Read,Write},os::unix::net::UnixStream,path::PathBuf,process::{Child,Command,Stdio},thread,time::{Duration,Instant}};
 
 fn arg(args:&[String],name:&str,default:Option<&str>)->Result<String,String>{match args.iter().position(|x|x==name){Some(i)=>args.get(i+1).cloned().ok_or_else(||format!("{name} requires a value")),None=>default.map(str::to_owned).ok_or_else(||format!("missing {name}"))}}
 fn tail(path:&PathBuf,n:usize)->String{fs::read_to_string(path).map(|s|s.lines().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n")).unwrap_or_else(|_|"<serial log not created>".into())}
