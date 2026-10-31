@@ -141,7 +141,7 @@ mod tests{
  #[test] fn rejects_non_elf(){assert!(convert_elf64_to_pe32plus(b"not elf",BASE,false).is_err());}
  #[test] fn rejects_truncated_elf(){let mut b=vec![0;64];b[..4].copy_from_slice(b"\x7fELF");assert!(convert_elf64_to_pe32plus(&b,BASE,false).is_err());}
  #[test] fn appends_manifest_exports_with_sparse_ordinals(){
-  let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
+  let mut b=vec![0u8;0x1004];b[..4].copy_from_slice(b"\x7fELF");b[4..7].copy_from_slice(&[2,1,1]);
   b[16..18].copy_from_slice(&2u16.to_le_bytes());b[18..20].copy_from_slice(&62u16.to_le_bytes());
   b[24..32].copy_from_slice(&(BASE+0x1000).to_le_bytes());b[32..40].copy_from_slice(&64u64.to_le_bytes());
   b[52..54].copy_from_slice(&64u16.to_le_bytes());b[54..56].copy_from_slice(&56u16.to_le_bytes());b[56..58].copy_from_slice(&1u16.to_le_bytes());
