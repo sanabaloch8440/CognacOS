@@ -101,7 +101,7 @@ where F: FnMut(&[u16], &mut [u8]) -> Option<usize> {
         let name_length = (node.name.len() * 2) as u16;
         let driver_name = crate::nt_abi::object::UNICODE_STRING {
             length: name_length,
-            maximum_length: name_length + 2,
+            maximum_length: (name.len() * 2) as u16,
             buffer: name.as_mut_ptr(),
         };
         driver_objects[service_index] = DriverObject {
