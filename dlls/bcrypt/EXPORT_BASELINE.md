@@ -37,7 +37,7 @@ Hash finalization now follows CNG lifecycle rules: ordinary hash handles become 
 
 ## Additional implementation batch
 
-RSA now supports Windows-style unfinalized key-pair creation, explicit `BCryptFinalizeKeyPair`, and SHA-256/384/512 PKCS#1 v1.5 prehash signing. Signing rejects unfinalized handles, supports the documented size-query call (`pbOutput == NULL`), and can be verified with the corresponding public key. RSA key generation uses the OS-backed random source exposed by the Rust `rand` crate; private keys are held in opaque process-local handles. RSA PSS signing, private-key blob import/export, and full CNG key-object storage are still not implemented.
+RSA and RSA_SIGN are recognized as distinct Windows algorithm identifiers. RSA signing is enumerated under the signature interface (class 5), separately from RSA asymmetric encryption (class 3). RSA now supports Windows-style unfinalized key-pair creation, explicit `BCryptFinalizeKeyPair`, and SHA-256/384/512 PKCS#1 v1.5 prehash signing. Signing rejects unfinalized handles, supports the documented size-query call (`pbOutput == NULL`), and can be verified with the corresponding public key. RSA key generation uses the OS-backed random source exposed by the Rust `rand` crate; private keys are held in opaque process-local handles. RSA PSS signing, private-key blob import/export, and full CNG key-object storage are still not implemented.
 
 `BCryptDeriveKeyCapi` is implemented for SHA-2 hash handles, including the legacy two-block ipad/opad expansion for outputs larger than one digest. It does not yet reproduce every legacy CryptoAPI target-algorithm and salt option, so callers requiring exact CAPI interop must still be tested against Windows.
 
