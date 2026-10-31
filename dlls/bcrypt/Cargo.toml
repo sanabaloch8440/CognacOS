@@ -16,6 +16,8 @@ aes = "0.8"
 aes-gcm = "0.10"
 cipher = "0.4"
 zeroize = "1"
+rsa = { version = "0.9", features = ["sha2"] }
+sha2 = { version = "0.10", features = ["oid"] }
 
 [profile.dev]
 panic = "abort"
@@ -25,6 +27,3 @@ panic = "abort"
 lto = true
 codegen-units = 1
 opt-level = "s"
-
-rsa = { version = "0.9", features = ["sha2"] }
-sha2 = { version = "0.10", features = ["oid"] }
