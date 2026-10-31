@@ -740,7 +740,7 @@ mod tests {
 
     #[test]
     fn duplicate_hash_preserves_incremental_state() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, kdf: false, rsa: false, gcm: false, cbc: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, kdf: false, rsa: false, rng: false, gcm: false, cbc: false })).unwrap();
         let mut original = ptr::null_mut();
         assert_eq!(unsafe { BCryptCreateHash(provider.cast(), &mut original, ptr::null_mut(), 0, ptr::null_mut(), 0, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptHashData(original, b"ab".as_ptr(), 2, 0) }, STATUS_SUCCESS);
@@ -800,6 +800,59 @@ mod tests {
     }
 
     #[test]
+    fn rng_provider_and_system_preferred_rng_follow_cng_flags() {
+        let wide = |v: &str| v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name = wide("RNG");
+        let implementation = wide("Microsoft Primitive Provider");
+        let mut provider = ptr::null_mut();
+        assert_eq!(unsafe { BCryptOpenAlgorithmProvider(&mut provider, name.as_ptr(), implementation.as_ptr(), 0) }, STATUS_SUCCESS);
+        let mut bytes = [0u8; 32];
+        assert_eq!(unsafe { BCryptGenRandom(provider, bytes.as_mut_ptr(), bytes.len() as ULONG, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptGenRandom(provider, bytes.as_mut_ptr(), bytes.len() as ULONG, BCRYPT_USE_SYSTEM_PREFERRED_RNG) }, STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider, 0) }, STATUS_SUCCESS);
+        assert_eq!(unsafe { BCryptGenRandom(ptr::null_mut(), bytes.as_mut_ptr(), bytes.len() as ULONG, BCRYPT_USE_SYSTEM_PREFERRED_RNG) }, STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn enum_algorithms_uses_windows_operation_mask_and_interface_classes() {
+        let mut count = 0;
+        let mut list = ptr::null_mut();
+        assert_eq!(unsafe { BCryptEnumAlgorithms(1 | 2 | 4 | 32, &mut count, &mut list, 0) }, STATUS_SUCCESS);
+        assert_eq!(count, 6);
+        let expected = [("AES", 1), ("SHA256", 2), ("SHA384", 2), ("SHA512", 2), ("RSA", 3), ("RNG", 6)];
+        for (i, (name, class)) in expected.iter().enumerate() {
+            unsafe {
+                let entry = &*list.add(i);
+                assert_eq!(entry.class, *class);
+                let mut units = Vec::new();
+                for j in 0..32 {
+                    let u = entry.name.add(j).read_unaligned();
+                    if u == 0 { break; }
+                    units.push(u);
+                }
+                assert_eq!(String::from_utf16(&units).unwrap(), *name);
+            }
+        }
+        unsafe { BCryptFreeBuffer(list.cast()) };
+        // KDFs and secret-agreement operations are not falsely advertised as
+        // BCryptEnumAlgorithms operation classes.
+        assert_eq!(unsafe { BCryptEnumAlgorithms(8 | 16, &mut count, &mut list, 0) }, STATUS_SUCCESS);
+        assert_eq!(count, 0);
+        unsafe { BCryptFreeBuffer(list.cast()) };
+    }
+
+    #[test]
+    fn x64_cng_public_structures_match_windows_layouts() {
+        assert_eq!(core::mem::size_of::<BcryptAlgorithmIdentifier>(), 24);
+        assert_eq!(core::mem::size_of::<BcryptProvider>(), 8);
+        assert_eq!(core::mem::size_of::<BcryptBuffer>(), 16);
+        assert_eq!(core::mem::size_of::<BcryptBufferDesc>(), 16);
+        assert_eq!(core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>(), 88);
+        assert_eq!(core::mem::size_of::<BcryptMultiHashOperation>(), 24);
+        assert_eq!(core::mem::size_of::<BcryptRsaBlobHeader>(), 24);
+    }
+
+    #[test]
     fn free_buffer_ignores_unknown_pointer() {
         unsafe { BCryptFreeBuffer(1usize as *mut c_void) };
     }
@@ -808,7 +861,7 @@ mod tests {
     #[test]
     fn opaque_handles_reject_forged_stale_and_wrong_type_tokens() {
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(1usize as *mut c_void, 0) }, STATUS_INVALID_PARAMETER);
-        let p = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, kdf: false, rsa: false, gcm: false, cbc: false })).unwrap();
+        let p = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, kdf: false, rsa: false, rng: false, gcm: false, cbc: false })).unwrap();
         assert_eq!(unsafe { BCryptDestroyHash(p) }, STATUS_INVALID_PARAMETER);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(p, 0) }, STATUS_INVALID_PARAMETER);
