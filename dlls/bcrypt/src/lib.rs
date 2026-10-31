@@ -1000,6 +1000,38 @@ pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info
 
 
 
+
+#[repr(C)] pub struct CryptProviderRef{pub dwInterface:ULONG,pub pszFunction:*mut u16,pub pszProvider:*mut u16,pub cProperties:ULONG,pub rgpProperties:*mut *mut c_void,pub pUM:*mut c_void,pub pKM:*mut c_void}
+#[repr(C)] pub struct CryptProviderRefs{pub cProviders:ULONG,pub rgpProviders:*mut *mut CryptProviderRef}
+#[no_mangle] pub unsafe extern "system" fn BCryptResolveProviders(context:*const u16,interface:ULONG,function:*const u16,provider:*const u16,mode:ULONG,flags:ULONG,size:*mut ULONG,out:*mut *mut CryptProviderRefs)->NTSTATUS{
+ const CRYPT_MIN_DEPENDENCIES:ULONG=1;const CRYPT_PROCESS_ISOLATE:ULONG=0x0001_0000;
+ if size.is_null()||out.is_null()||!matches!(mode,1|2|3|4)||flags&!(CRYPT_MIN_DEPENDENCIES|CRYPT_PROCESS_ISOLATE)!=0||interface>7{return STATUS_INVALID_PARAMETER;}
+ let context_name=if context.is_null(){None}else{match config_name(context){Ok(v)=>Some(v),Err(e)=>return e}};
+ let function_name=if function.is_null(){None}else{match config_name(function){Ok(v)=>Some(v),Err(e)=>return e}};
+ let provider_name=if provider.is_null(){ "Microsoft Primitive Provider".to_string() }else{match config_name(provider){Ok(v)=>v,Err(e)=>return e}};
+ let registered=match registered_providers().lock(){Ok(v)=>v.contains(&provider_name),Err(_)=>return STATUS_NO_MEMORY};if !registered{return STATUS_NOT_FOUND;}
+ if let (Some(c),Some(f))=(&context_name,&function_name){
+  let found=match contexts().lock(){Ok(m)=>m.get(c).is_some_and(|ctx|ctx.functions.get(&interface).is_some_and(|v|v.contains(f))),Err(_)=>return STATUS_NO_MEMORY};
+  if !found{return STATUS_NOT_FOUND;}
+ }
+ let function_name=function_name.unwrap_or_default();
+ let header=core::mem::size_of::<CryptProviderRefs>();let ptr_bytes=core::mem::size_of::<*mut CryptProviderRef>();
+ let ref_offset=(header+ptr_bytes+7)&!7;let ref_size=core::mem::size_of::<CryptProviderRef>();
+ let fn_off=ref_offset+ref_size;let provider_off=fn_off+(function_name.encode_utf16().count()+1)*2;
+ let total=provider_off+(provider_name.encode_utf16().count()+1)*2;
+ let base=match store_enum_buffer(total){Ok(v)=>v,Err(e)=>return e};
+ let array=unsafe{base.add(header).cast::<*mut CryptProviderRef>()};
+ let reference=unsafe{base.add(ref_offset).cast::<CryptProviderRef>()};
+ let fn_ptr=enum_write_wide(base,fn_off,&function_name);let provider_ptr=enum_write_wide(base,provider_off,&provider_name);
+ unsafe{
+  reference.write(CryptProviderRef{dwInterface:interface,pszFunction:fn_ptr,pszProvider:provider_ptr,cProperties:0,rgpProperties:ptr::null_mut(),pUM:ptr::null_mut(),pKM:ptr::null_mut()});
+  array.write(reference);
+  base.cast::<CryptProviderRefs>().write(CryptProviderRefs{cProviders:1,rgpProviders:array});
+  size.write(total as ULONG);out.write(base.cast());
+ }
+ STATUS_SUCCESS
+}
+
 #[repr(C)] pub struct CryptProviders{pub cProviders:ULONG,pub rgpszProviders:*mut *mut u16}
 #[repr(C)] pub struct CryptProviderReg{pub cAliases:ULONG,pub rgpszAliases:*mut *mut u16,pub pUM:*mut c_void,pub pKM:*mut c_void}
 static REGISTERED_PROVIDERS:OnceLock<Mutex<HashSet<String>>>=OnceLock::new();
