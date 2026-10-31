@@ -7,8 +7,8 @@ PE/COFF modes; the target selects the required object format and ABI.
 ## Prerequisites
 
 - Rust 1.88.0 with the targets listed in `rust-toolchain.toml`
-- LLVM/Clang  (Clang is used only by native C dependencies such as AWS-LC;
-  first-party OS and tooling sources are compiled with `rustc`)
+- LLVM Clang/LLD and `llvm-ar` (Clang is used only as a linker driver; LLD
+  performs every link. All first-party source and crypto primitives are Rust.)
 - LLVM LLD, `llvm-ar`, `llvm-readobj`
 - CMake, NASM, and Perl for the AWS-LC dependency build
 - QEMU and OVMF for boot tests
@@ -45,7 +45,7 @@ are written under `build/` by the CI workflow.
 | `x86_64-unknown-linux-gnu` | rustc (Clang for C dependencies) | LLVM LLD via Clang driver |
 | `x86_64-unknown-none` | rustc | LLVM LLD ELF mode |
 | `x86_64-unknown-uefi` | rustc | LLVM LLD COFF/EFI mode |
-| `x86_64-pc-windows-msvc` | rustc | LLVM LLD `lld-link` mode |\n| `x86_64-pc-windows-gnu` | rustc (Clang for AWS-LC C sources) | LLVM LLD GNU COFF mode |
+| `x86_64-pc-windows-msvc` | rustc | LLVM LLD `lld-link` mode |\n| `x86_64-pc-windows-gnu` | rustc | LLVM LLD GNU COFF mode |
 
 The `lld-link` and `rust-lld` names in the build environment are aliases to
 the Rust toolchain's bundled LLD executable, not separate linkers. The
