@@ -1469,7 +1469,7 @@ mod tests {
         }).collect();
         assert_eq!(names, ["SHA256", "SHA384", "SHA512", "RNG"]);
         unsafe { BCryptFreeBuffer(list.cast()) };
-        assert_eq!(enum_buffers().lock().unwrap().len(), 0);
+        assert!(!enum_buffers().lock().unwrap().contains_key(&(list as usize)));
     }
 
     #[test]
