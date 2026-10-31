@@ -25,6 +25,7 @@ pub const STATUS_NOT_IMPLEMENTED: NTSTATUS = 0xC0000002_u32 as i32;
 pub const STATUS_BUFFER_TOO_SMALL: NTSTATUS = 0xC0000023_u32 as i32;
 pub const STATUS_NO_MEMORY: NTSTATUS = 0xC0000017_u32 as i32;
 pub const STATUS_AUTH_TAG_MISMATCH: NTSTATUS = 0xC000A002_u32 as i32;
+pub const STATUS_INVALID_SIGNATURE: NTSTATUS = 0xC000A000_u32 as i32;
 const BCRYPT_USE_SYSTEM_PREFERRED_RNG: ULONG = 0x00000002;
 const BCRYPT_ALG_HANDLE_HMAC_FLAG: ULONG = 0x00000008;
 const BCRYPT_MULTI_FLAG: ULONG = 0x00000040;
@@ -630,7 +631,7 @@ pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info
     if signature_len as usize!=public.size(){return STATUS_INVALID_PARAMETER;}
     let sig=match RsaSignature::try_from(unsafe{core::slice::from_raw_parts(signature,signature_len as usize)}){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
     let verifier=VerifyingKey::<Sha256>::new(public);
-    match verifier.verify_prehash(unsafe{core::slice::from_raw_parts(hash,hash_len as usize)},&sig){Ok(())=>STATUS_SUCCESS,Err(_)=>STATUS_AUTH_TAG_MISMATCH}
+    match verifier.verify_prehash(unsafe{core::slice::from_raw_parts(hash,hash_len as usize)},&sig){Ok(())=>STATUS_SUCCESS,Err(_)=>STATUS_INVALID_SIGNATURE}
 }
 
 include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
