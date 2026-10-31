@@ -92,7 +92,11 @@ pub unsafe extern "system" fn BCryptCreateHash(algorithm: *mut c_void, out: *mut
 pub unsafe extern "system" fn BCryptHashData(hash: *mut c_void, input: *const u8, input_len: ULONG, flags: ULONG) -> NTSTATUS {
     if hash.is_null() || (input.is_null() && input_len != 0) || flags != 0 { return STATUS_INVALID_PARAMETER; }
     let state = unsafe { &mut *hash.cast::<HashHandle>() };
-    if input_len != 0 { state.data.extend_from_slice(unsafe { core::slice::from_raw_parts(input, input_len as usize) }); }
+    if state.data.len().saturating_add(input_len as usize) > 64 * 1024 * 1024 { return STATUS_INVALID_PARAMETER; }
+    if input_len != 0 {
+        if state.data.try_reserve(input_len as usize).is_err() { return STATUS_NO_MEMORY; }
+        state.data.extend_from_slice(unsafe { core::slice::from_raw_parts(input, input_len as usize) });
+    }
     STATUS_SUCCESS
 }
 
@@ -150,17 +154,17 @@ pub unsafe extern "system" fn BCryptGetProperty(object: *mut c_void, property: *
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(
     prf: *mut c_void, password: *const u8, password_len: ULONG,
-    salt: *const u8, salt_len: ULONG, iterations: u64,
+    salt: *const u8, salt_len: ULONG, iterations: ULONG,
     derived: *mut u8, derived_len: ULONG, flags: ULONG,
 ) -> NTSTATUS {
     if prf.is_null() || (password.is_null() && password_len != 0) ||
        (salt.is_null() && salt_len != 0) || (derived.is_null() && derived_len != 0) ||
-       iterations == 0 || iterations > u32::MAX as u64 || flags != 0 {
+       iterations == 0 || flags != 0 {
         return STATUS_INVALID_PARAMETER;
     }
     let provider = unsafe { &*prf.cast::<AlgorithmHandle>() };
     if !provider.hmac { return STATUS_INVALID_PARAMETER; }
-    let Some(iterations) = NonZeroU32::new(iterations as u32) else { return STATUS_INVALID_PARAMETER; };
+    let Some(iterations) = NonZeroU32::new(iterations) else { return STATUS_INVALID_PARAMETER; };
     let password = if password_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(password, password_len as usize) } };
     let salt = if salt_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(salt, salt_len as usize) } };
     let output = if derived_len == 0 { &mut [][..] } else { unsafe { core::slice::from_raw_parts_mut(derived, derived_len as usize) } };
@@ -188,7 +192,7 @@ mod tests {
     fn pbkdf2_sha256_known_answer() {
         let mut out = [0u8; 32];
         pbkdf2::derive(pbkdf2::PBKDF2_HMAC_SHA256, NonZeroU32::new(1).unwrap(), b"salt", b"password", &mut out);
-        assert_eq!(out, [0x12,0x0f,0xb6,0xcf,0xfc,0xf8,0xb3,0x2c,0x43,0xe7,0x22,0x52,0x56,0xc4,0xf8,0x37,0xa8,0x65,0x48,0xc9,0x2c,0xcc,0x35,0x48,0x08,0x05,0x98,0x7c,0xb7,0x0b,0xbe,0x17,0xb]);
+        assert_eq!(out, [0x12,0x0f,0xb6,0xcf,0xfc,0xf8,0xb3,0x2c,0x43,0xe7,0x22,0x52,0x56,0xc4,0xf8,0x37,0xa8,0x65,0x48,0xc9,0x2c,0xcc,0x35,0x48,0x08,0x05,0x98,0x7c,0xb7,0x0b,0xbe,0x17,0xb7]);
     }
     #[test]
     fn supported_algorithms_have_expected_sizes() { assert_eq!(HashAlgorithm::Sha256.digest_len(),32); assert_eq!(HashAlgorithm::Sha384.digest_len(),48); assert_eq!(HashAlgorithm::Sha512.digest_len(),64); }
