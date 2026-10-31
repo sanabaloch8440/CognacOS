@@ -1104,7 +1104,7 @@ jobs:
             code=/usr/share/OVMF/OVMF_CODE.fd
             vars_template=/usr/share/OVMF/OVMF_VARS.fd
           fi
-          python3 tools/ci/qemu_ps2_keyboard_smoke.py \
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- qemu-ps2-smoke \
             --code "$code" \
             --vars-template "$vars_template" \
             --disk build/cognacos-uefi.img \
