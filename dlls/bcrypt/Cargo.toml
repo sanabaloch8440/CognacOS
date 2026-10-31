@@ -19,7 +19,7 @@ cipher = "0.4"
 zeroize = "1"
 rsa = { version = "0.9", features = ["sha2"] }
 rand = { version = "0.8", features = ["std", "std_rng"] }
-sha2 = { version = "0.10", features = ["oid"] }
+sha2 = { version = "0.10", features = ["oid"] }\np256 = { version = "0.13", features = ["ecdh"] }
 
 [profile.dev]
 panic = "abort"
