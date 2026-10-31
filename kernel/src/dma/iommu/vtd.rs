@@ -708,10 +708,9 @@ pub unsafe fn register_generic_dma_backend()->i32{
 
 
 /// Initialize the single-segment VT-d backend only after resolving the exact
-/// firmware DRHD for the endpoint's complete PCI path. RMRR-scoped devices are
-/// deliberately rejected here: this backend has no firmware-memory reservation
-/// or ownership-transfer hook yet, so starting them would risk losing firmware
-/// state or exposing an unreserved range to DMA.
+/// firmware DRHD for the endpoint's complete PCI path. The PnP caller installs
+/// every matching, firmware-reserved RMRR identity mapping before driver bind;
+/// conventional or unverified ranges remain fail-closed.
 pub unsafe fn initialize_for_dmar_path(
     ops:&PlatformOps,
     dmar:&cognacos_acpi::DmarInfo,
