@@ -22,6 +22,7 @@ pub struct PciDriverHandoff {
 
 struct PciState {
     ready: AtomicBool,
+    inventory_ready: AtomicBool,
     bridge_count: AtomicUsize,
     xhci_count: AtomicUsize,
     function_count: AtomicUsize,
@@ -33,8 +34,11 @@ struct PciState {
     xhci_counts: UnsafeCell<[usize; MAX_WINDOWS]>,
 }
 unsafe impl Sync for PciState {}
+static HANDOFF: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static INVENTORY_BUSY: AtomicBool = AtomicBool::new(false);
 static STATE: PciState = PciState {
     ready: AtomicBool::new(false),
+    inventory_ready: AtomicBool::new(false),
     bridge_count: AtomicUsize::new(0),
     xhci_count: AtomicUsize::new(0),
     function_count: AtomicUsize::new(0),
@@ -52,6 +56,55 @@ const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
 
+/// Enumerate the PCI configuration inventory at the bus PnP discovery
+/// point, not during DriverEntry. This is read-only and still does not publish
+/// child PDOs or claim resources; BusRelations remains gated until those paths
+/// are implemented by the kernel PnP/resource manager.
+#[unsafe(no_mangle)]
+pub unsafe extern "win64" fn CognacPciEnumerateInventory() -> i32 {
+    if !STATE.inventory_ready.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if INVENTORY_BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
+        return STATUS_DEVICE_BUSY;
+    }
+    let result = (|| {
+        let address = HANDOFF.load(Ordering::Acquire);
+        if address == 0 { return STATUS_DEVICE_NOT_READY; }
+        let handoff = unsafe { &*(address as *const PciDriverHandoff) };
+        let mut total_bridges = 0usize;
+        let mut total_xhci = 0usize;
+        let mut total_functions = 0usize;
+        for i in 0..handoff.window_count as usize {
+            let window = &handoff.windows[i];
+            let (bridges, bridge_count) = match unsafe { pci::scan_bridge_ranges(window) } {
+                Ok(v) => v, Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+            };
+            let (xhci, xhci_count) = match unsafe { pci::scan_xhci(window) } {
+                Ok(v) => v, Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+            };
+            let function_count = match unsafe { pci::scan_functions(window, &mut (*STATE.functions.get())[i]) } {
+                Ok(v) => v, Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
+            };
+            unsafe {
+                (*STATE.function_counts.get())[i] = function_count;
+                (*STATE.bridges.get())[i] = bridges;
+                (*STATE.bridge_counts.get())[i] = bridge_count;
+                (*STATE.xhci.get())[i] = xhci;
+                (*STATE.xhci_counts.get())[i] = xhci_count;
+            }
+            total_bridges = match total_bridges.checked_add(bridge_count) { Some(v) => v, None => return STATUS_INSUFFICIENT_RESOURCES };
+            total_xhci = match total_xhci.checked_add(xhci_count) { Some(v) => v, None => return STATUS_INSUFFICIENT_RESOURCES };
+            total_functions = match total_functions.checked_add(function_count) { Some(v) => v, None => return STATUS_INSUFFICIENT_RESOURCES };
+        }
+        STATE.bridge_count.store(total_bridges, Ordering::Release);
+        STATE.xhci_count.store(total_xhci, Ordering::Release);
+        STATE.function_count.store(total_functions, Ordering::Release);
+        STATE.inventory_ready.store(true, Ordering::Release);
+        STATUS_SUCCESS
+    })();
+    INVENTORY_BUSY.store(false, Ordering::Release);
+    result
+}
+
 unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
@@ -61,7 +114,10 @@ unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_
         IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
         // PCI function inventory is read-only until bus-resource arbitration,
         // PDO creation, and BusRelations publication are connected to PnP.
-        IRP_MN_QUERY_DEVICE_RELATIONS => STATUS_NOT_SUPPORTED,
+        IRP_MN_QUERY_DEVICE_RELATIONS => {
+            let _ = unsafe { CognacPciEnumerateInventory() };
+            STATUS_NOT_SUPPORTED
+        },
         IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
         _ => STATUS_INVALID_DEVICE_REQUEST,
     };
@@ -87,10 +143,6 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         return STATUS_INVALID_PARAMETER;
     }
 
-    let mut total_bridges = 0usize;
-    let mut total_xhci = 0usize;
-    let mut total_functions = 0usize;
-
     for i in 0..handoff.window_count as usize {
         let window = &handoff.windows[i];
         if window.validate().is_err() { return STATUS_INVALID_PARAMETER; }
@@ -100,57 +152,24 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
                 return STATUS_INVALID_PARAMETER;
             }
         }
-        let (bridges, bridge_count) = match unsafe { pci::scan_bridge_ranges(window) } {
-            Ok(v) => v,
-            Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
-        };
-        let (xhci, xhci_count) = match unsafe { pci::scan_xhci(window) } {
-            Ok(v) => v,
-            Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
-        };
-        let function_count = match unsafe { pci::scan_functions(window, &mut (*STATE.functions.get())[i]) } {
-            Ok(v) => v,
-            Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
-        };
-        unsafe {
-            (*STATE.function_counts.get())[i] = function_count;
-            (*STATE.bridges.get())[i] = bridges;
-            (*STATE.bridge_counts.get())[i] = bridge_count;
-            (*STATE.xhci.get())[i] = xhci;
-            (*STATE.xhci_counts.get())[i] = xhci_count;
-        }
-        total_bridges = match total_bridges.checked_add(bridge_count) {
-            Some(v) => v, None => return STATUS_INSUFFICIENT_RESOURCES,
-        };
-        total_xhci = match total_xhci.checked_add(xhci_count) {
-            Some(v) => v, None => return STATUS_INSUFFICIENT_RESOURCES,
-        };
-        total_functions = match total_functions.checked_add(function_count) {
-            Some(v) => v, None => return STATUS_INSUFFICIENT_RESOURCES,
-        };
     }
-
-    STATE.bridge_count.store(total_bridges, Ordering::Release);
-    STATE.xhci_count.store(total_xhci, Ordering::Release);
-    STATE.function_count.store(total_functions, Ordering::Release);
+    HANDOFF.store(handoff as *const _ as u64, Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
-    object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
-    object.driver_unload = Some(driver_unload);
     STATUS_SUCCESS
 }
 
 #[unsafe(no_mangle)]
 pub extern "win64" fn CognacPciBridgeCount() -> usize {
-    if STATE.ready.load(Ordering::Acquire) { STATE.bridge_count.load(Ordering::Acquire) } else { 0 }
+    if STATE.inventory_ready.load(Ordering::Acquire) { STATE.bridge_count.load(Ordering::Acquire) } else { 0 }
 }
 #[unsafe(no_mangle)]
 pub extern "win64" fn CognacPciXhciCount() -> usize {
-    if STATE.ready.load(Ordering::Acquire) { STATE.xhci_count.load(Ordering::Acquire) } else { 0 }
+    if STATE.inventory_ready.load(Ordering::Acquire) { STATE.xhci_count.load(Ordering::Acquire) } else { 0 }
 }
 
 #[unsafe(no_mangle)]
 pub extern "win64" fn CognacPciFunctionCount() -> usize {
-    if STATE.ready.load(Ordering::Acquire) { STATE.function_count.load(Ordering::Acquire) } else { 0 }
+    if STATE.inventory_ready.load(Ordering::Acquire) { STATE.function_count.load(Ordering::Acquire) } else { 0 }
 }
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn CognacPciFindAhci(output: *mut pci::PciFunction) -> i32 {
