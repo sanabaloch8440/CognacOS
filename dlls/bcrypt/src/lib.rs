@@ -836,6 +836,29 @@ mod tests {
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
 
+
+    #[test]
+    fn multi_hash_supports_hmac_secret_for_all_hash_states() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name=wide("SHA256");let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),BCRYPT_MULTI_FLAG|BCRYPT_ALG_HANDLE_HMAC_FLAG)},STATUS_SUCCESS);
+        let secret=b"multi-hmac-secret";let mut multi=ptr::null_mut();
+        assert_eq!(unsafe{BCryptCreateMultiHash(provider,&mut multi,2,ptr::null_mut(),0,secret.as_ptr() as *mut u8,secret.len() as u32,0)},STATUS_SUCCESS);
+        let mut a=[0u8;32];let mut b=[0u8;32];
+        let mut ops=[
+            BcryptMultiHashOperation{iHash:0,hashOperation:1,pbBuffer:b"message-a".as_ptr() as *mut u8,cbBuffer:9},
+            BcryptMultiHashOperation{iHash:1,hashOperation:1,pbBuffer:b"message-b".as_ptr() as *mut u8,cbBuffer:9},
+            BcryptMultiHashOperation{iHash:0,hashOperation:2,pbBuffer:a.as_mut_ptr(),cbBuffer:32},
+            BcryptMultiHashOperation{iHash:1,hashOperation:2,pbBuffer:b.as_mut_ptr(),cbBuffer:32},
+        ];
+        assert_eq!(unsafe{BCryptProcessMultiOperations(multi,1,ops.as_mut_ptr(),core::mem::size_of_val(&ops) as u32,0)},STATUS_SUCCESS);
+        let k=hmac::Key::new(hmac::HMAC_SHA256,secret);
+        assert_eq!(a,hmac::sign(&k,b"message-a").as_ref());
+        assert_eq!(b,hmac::sign(&k,b"message-b").as_ref());
+        assert_eq!(unsafe{BCryptDestroyHash(multi)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
     #[test]
     fn supported_algorithms_have_expected_sizes() { assert_eq!(HashAlgorithm::Sha256.digest_len(),32); assert_eq!(HashAlgorithm::Sha384.digest_len(),48); assert_eq!(HashAlgorithm::Sha512.digest_len(),64); }
 }
