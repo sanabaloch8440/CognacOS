@@ -45,7 +45,7 @@ are written under `build/` by the CI workflow.
 | `x86_64-unknown-linux-gnu` | rustc (Clang for C dependencies) | LLVM LLD via Clang driver |
 | `x86_64-unknown-none` | rustc | LLVM LLD ELF mode |
 | `x86_64-unknown-uefi` | rustc | LLVM LLD COFF/EFI mode |
-| `x86_64-pc-windows-msvc` | rustc | LLVM LLD `lld-link` mode |
+| `x86_64-pc-windows-msvc` | rustc | LLVM LLD `lld-link` mode |\n| `x86_64-pc-windows-gnu` | rustc (Clang for AWS-LC C sources) | LLVM LLD GNU COFF mode |
 
 The `lld-link` and `rust-lld` names in the build environment are aliases to
 the Rust toolchain's bundled LLD executable, not separate linkers. The
