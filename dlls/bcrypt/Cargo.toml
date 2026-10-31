@@ -13,6 +13,7 @@ crate-type = ["rlib", "cdylib"]
 [dependencies]
 aws-lc-rs = "1"
 aes = "0.8"
+aes-gcm = "0.10"
 cipher = "0.4"
 zeroize = "1"
 
