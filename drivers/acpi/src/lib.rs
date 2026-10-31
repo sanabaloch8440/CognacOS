@@ -656,3 +656,34 @@ pub fn dmar_rmrr_covers_path(info:&DmarRmrrInfo,segment:u16,root_bus:u8,
         &&r.scopes.iter().take(r.scope_count as usize)
             .any(|s|dmar_scope_matches_path(s,root_bus,endpoint_path)))
 }
+
+
+#[cfg(test)]
+mod dmar_selection_tests {
+    use super::*;
+    #[test]
+    fn explicit_drhd_scope_precedes_include_all_in_same_segment() {
+        let mut info=DmarInfo::EMPTY;info.unit_count=2;
+        info.units[0]=DmarUnit{register_base:0xfee0_0000,segment:0,include_all:true,
+            scopes:[DmarDeviceScope::EMPTY;64],scope_count:0};
+        let mut scope=DmarDeviceScope::EMPTY;scope.scope_type=1;scope.start_bus=0;
+        scope.path_count=1;scope.path[0]=DmarPath{device:5,function:0};
+        info.units[1]=DmarUnit{register_base:0xfed9_0000,segment:0,include_all:false,
+            scopes:{let mut s=[DmarDeviceScope::EMPTY;64];s[0]=scope;s},scope_count:1};
+        let path=[DmarPath{device:5,function:0}];
+        assert_eq!(select_dmar_unit(&info,0,0,&path).unwrap().register_base,0xfed9_0000);
+        assert_eq!(select_dmar_unit(&info,1,0,&path),Err(AcpiError::MissingRoot));
+    }
+    #[test]
+    fn rmrr_applies_only_to_matching_segment_and_path() {
+        let mut info=DmarRmrrInfo::EMPTY;info.count=1;
+        let mut scope=DmarDeviceScope::EMPTY;scope.scope_type=1;scope.start_bus=0;
+        scope.path_count=1;scope.path[0]=DmarPath{device:5,function:0};
+        info.regions[0]=DmarRmrr{base:0x1000,limit:0x2fff,segment:3,
+            scopes:{let mut s=[DmarDeviceScope::EMPTY;64];s[0]=scope;s},scope_count:1};
+        let path=[DmarPath{device:5,function:0}];
+        assert!(dmar_rmrr_covers_path(&info,3,0,&path));
+        assert!(!dmar_rmrr_covers_path(&info,0,0,&path));
+        assert!(!dmar_rmrr_covers_path(&info,3,0,&[DmarPath{device:5,function:1}]));
+    }
+}
