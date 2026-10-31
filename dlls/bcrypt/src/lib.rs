@@ -8,7 +8,7 @@ use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey}, signature::hazmat
 use sha2::{Sha256, Sha384, Sha512};
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{aead::AeadInPlace, AesGcm};
-use aes_gcm::aead::generic_array::typenum::{U12, U13, U14, U15, U16};
+use aes_gcm::aead::generic_array::typenum::{U1, U2, U3, U4, U5, U6, U7, U8, U9, U10, U11, U12, U13, U14, U15, U16};
 use cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
 use core::num::NonZeroU32;
 use zeroize::Zeroize;
@@ -525,29 +525,99 @@ pub unsafe extern "system" fn BCryptGenerateSymmetricKey(algorithm:*mut c_void,o
  unsafe{out.write(token)};STATUS_SUCCESS
 }
 macro_rules! gcm_encrypt_tag {
-    ($aes:ty,$tag:ty,$key:expr,$nonce:expr,$aad:expr,$buffer:expr) => {{
-        type G=AesGcm<$aes,U12,$tag>;
+    ($aes:ty,$nonce_type:ty,$tag:ty,$key:expr,$nonce:expr,$aad:expr,$buffer:expr) => {{
+        type G=AesGcm<$aes,$nonce_type,$tag>;
         let cipher=match G::new_from_slice($key){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
-        let nonce=aes_gcm::Nonce::<U12>::from_slice($nonce);
+        let nonce=aes_gcm::Nonce::<$nonce_type>::from_slice($nonce);
         match cipher.encrypt_in_place_detached(nonce,$aad.as_slice(),$buffer) {
             Ok(value)=>Ok(value.to_vec()),Err(_)=>Err(STATUS_INVALID_PARAMETER)
         }
     }};
 }
 macro_rules! gcm_decrypt_tag {
-    ($aes:ty,$tag:ty,$key:expr,$nonce:expr,$aad:expr,$buffer:expr,$tag_bytes:expr) => {{
-        type G=AesGcm<$aes,U12,$tag>;
+    ($aes:ty,$nonce_type:ty,$tag:ty,$key:expr,$nonce:expr,$aad:expr,$buffer:expr,$tag_bytes:expr) => {{
+        type G=AesGcm<$aes,$nonce_type,$tag>;
         let cipher=match G::new_from_slice($key){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
-        let nonce=aes_gcm::Nonce::<U12>::from_slice($nonce);
+        let nonce=aes_gcm::Nonce::<$nonce_type>::from_slice($nonce);
         let tag=aes_gcm::Tag::<$tag>::from_slice($tag_bytes);
         cipher.decrypt_in_place_detached(nonce,$aad.as_slice(),$buffer,tag).is_ok()
+    }};
+}
+macro_rules! gcm_encrypt_for_nonce {
+    ($aes:ty,$nonce_type:ty,$key:expr,$nonce:expr,$aad:expr,$buffer:expr,$tag_len:expr) => {{
+        match $tag_len {
+            12=>gcm_encrypt_tag!($aes,$nonce_type,U12,$key,$nonce,$aad,$buffer),
+            13=>gcm_encrypt_tag!($aes,$nonce_type,U13,$key,$nonce,$aad,$buffer),
+            14=>gcm_encrypt_tag!($aes,$nonce_type,U14,$key,$nonce,$aad,$buffer),
+            15=>gcm_encrypt_tag!($aes,$nonce_type,U15,$key,$nonce,$aad,$buffer),
+            16=>gcm_encrypt_tag!($aes,$nonce_type,U16,$key,$nonce,$aad,$buffer),
+            _=>Err(STATUS_INVALID_PARAMETER),
+        }
+    }};
+}
+macro_rules! gcm_decrypt_for_nonce {
+    ($aes:ty,$nonce_type:ty,$key:expr,$nonce:expr,$aad:expr,$buffer:expr,$tag_bytes:expr,$tag_len:expr) => {{
+        match $tag_len {
+            12=>gcm_decrypt_tag!($aes,$nonce_type,U12,$key,$nonce,$aad,$buffer,$tag_bytes),
+            13=>gcm_decrypt_tag!($aes,$nonce_type,U13,$key,$nonce,$aad,$buffer,$tag_bytes),
+            14=>gcm_decrypt_tag!($aes,$nonce_type,U14,$key,$nonce,$aad,$buffer,$tag_bytes),
+            15=>gcm_decrypt_tag!($aes,$nonce_type,U15,$key,$nonce,$aad,$buffer,$tag_bytes),
+            16=>gcm_decrypt_tag!($aes,$nonce_type,U16,$key,$nonce,$aad,$buffer,$tag_bytes),
+            _=>false,
+        }
+    }};
+}
+macro_rules! gcm_encrypt_key {
+    ($aes:ty,$key:expr,$nonce:expr,$aad:expr,$buffer:expr,$nonce_len:expr,$tag_len:expr) => {{
+        match $nonce_len {
+            1=>gcm_encrypt_for_nonce!($aes,U1,$key,$nonce,$aad,$buffer,$tag_len),
+            2=>gcm_encrypt_for_nonce!($aes,U2,$key,$nonce,$aad,$buffer,$tag_len),
+            3=>gcm_encrypt_for_nonce!($aes,U3,$key,$nonce,$aad,$buffer,$tag_len),
+            4=>gcm_encrypt_for_nonce!($aes,U4,$key,$nonce,$aad,$buffer,$tag_len),
+            5=>gcm_encrypt_for_nonce!($aes,U5,$key,$nonce,$aad,$buffer,$tag_len),
+            6=>gcm_encrypt_for_nonce!($aes,U6,$key,$nonce,$aad,$buffer,$tag_len),
+            7=>gcm_encrypt_for_nonce!($aes,U7,$key,$nonce,$aad,$buffer,$tag_len),
+            8=>gcm_encrypt_for_nonce!($aes,U8,$key,$nonce,$aad,$buffer,$tag_len),
+            9=>gcm_encrypt_for_nonce!($aes,U9,$key,$nonce,$aad,$buffer,$tag_len),
+            10=>gcm_encrypt_for_nonce!($aes,U10,$key,$nonce,$aad,$buffer,$tag_len),
+            11=>gcm_encrypt_for_nonce!($aes,U11,$key,$nonce,$aad,$buffer,$tag_len),
+            12=>gcm_encrypt_for_nonce!($aes,U12,$key,$nonce,$aad,$buffer,$tag_len),
+            13=>gcm_encrypt_for_nonce!($aes,U13,$key,$nonce,$aad,$buffer,$tag_len),
+            14=>gcm_encrypt_for_nonce!($aes,U14,$key,$nonce,$aad,$buffer,$tag_len),
+            15=>gcm_encrypt_for_nonce!($aes,U15,$key,$nonce,$aad,$buffer,$tag_len),
+            16=>gcm_encrypt_for_nonce!($aes,U16,$key,$nonce,$aad,$buffer,$tag_len),
+            _=>Err(STATUS_INVALID_PARAMETER),
+        }
+    }};
+}
+macro_rules! gcm_decrypt_key {
+    ($aes:ty,$key:expr,$nonce:expr,$aad:expr,$buffer:expr,$tag_bytes:expr,$nonce_len:expr,$tag_len:expr) => {{
+        match $nonce_len {
+            1=>gcm_decrypt_for_nonce!($aes,U1,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            2=>gcm_decrypt_for_nonce!($aes,U2,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            3=>gcm_decrypt_for_nonce!($aes,U3,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            4=>gcm_decrypt_for_nonce!($aes,U4,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            5=>gcm_decrypt_for_nonce!($aes,U5,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            6=>gcm_decrypt_for_nonce!($aes,U6,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            7=>gcm_decrypt_for_nonce!($aes,U7,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            8=>gcm_decrypt_for_nonce!($aes,U8,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            9=>gcm_decrypt_for_nonce!($aes,U9,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            10=>gcm_decrypt_for_nonce!($aes,U10,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            11=>gcm_decrypt_for_nonce!($aes,U11,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            12=>gcm_decrypt_for_nonce!($aes,U12,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            13=>gcm_decrypt_for_nonce!($aes,U13,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            14=>gcm_decrypt_for_nonce!($aes,U14,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            15=>gcm_decrypt_for_nonce!($aes,U15,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            16=>gcm_decrypt_for_nonce!($aes,U16,$key,$nonce,$aad,$buffer,$tag_bytes,$tag_len),
+            _=>false,
+        }
     }};
 }
 
 unsafe fn auth_info(info:*mut c_void)->Result<(Vec<u8>,Vec<u8>,*mut u8,usize),NTSTATUS>{
  if info.is_null(){return Err(STATUS_INVALID_PARAMETER);}let i=unsafe{&mut *info.cast::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()};
- if i.cbSize as usize!=core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()||i.dwInfoVersion!=1||i.pbNonce.is_null()||i.cbNonce!=12||i.pbTag.is_null()||!(12..=16).contains(&i.cbTag)||(i.pbAuthData.is_null()&&i.cbAuthData!=0)||!i.pbMacContext.is_null()||i.cbMacContext!=0||i.dwFlags!=0{return Err(STATUS_INVALID_PARAMETER);}
- let nonce=unsafe{core::slice::from_raw_parts(i.pbNonce,12)}.to_vec();let aad=if i.cbAuthData==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(i.pbAuthData,i.cbAuthData as usize)}.to_vec()};Ok((nonce,aad,i.pbTag,i.cbTag as usize))
+ if i.cbSize as usize!=core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()||i.dwInfoVersion!=1||i.pbNonce.is_null()||!(1..=16).contains(&i.cbNonce)||i.pbTag.is_null()||!(12..=16).contains(&i.cbTag)||(i.pbAuthData.is_null()&&i.cbAuthData!=0)||!i.pbMacContext.is_null()||i.cbMacContext!=0||i.dwFlags!=0{return Err(STATUS_INVALID_PARAMETER);}
+ let nonce=unsafe{core::slice::from_raw_parts(i.pbNonce,i.cbNonce as usize)}.to_vec();let aad=if i.cbAuthData==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(i.pbAuthData,i.cbAuthData as usize)}.to_vec()};Ok((nonce,aad,i.pbTag,i.cbTag as usize))
 }
 
 fn aes_cbc_crypt(key: &[u8], input: &[u8], iv: &mut [u8;16], encrypt: bool, padding: bool) -> Result<Vec<u8>, NTSTATUS> {
@@ -587,22 +657,10 @@ pub unsafe extern "system" fn BCryptEncrypt(key:*mut c_void,input:*mut u8,input_
  if padding_info.is_null(){return unsafe{bcrypt_cbc(key,input,input_len,iv,iv_len,output,output_len,result_len,flags,true)};}
  if result_len.is_null()||(input.is_null()&&input_len!=0)||flags!=0||!iv.is_null()||iv_len!=0{return STATUS_INVALID_PARAMETER;}let k=match key_handle(key){Ok(v)=>v,Err(e)=>return e};if !k.gcm{return STATUS_NOT_SUPPORTED;}let(nonce,aad,tag,_)=match unsafe{auth_info(padding_info)}{Ok(v)=>v,Err(e)=>return e};unsafe{result_len.write(input_len)};if (output.is_null()&&input_len!=0)||output_len<input_len{return STATUS_BUFFER_TOO_SMALL;}
  let mut buf=if input_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}.to_vec()};
- let tag_value=match (k.key.len(),tag_len) {
-     (16,12)=>gcm_encrypt_tag!(Aes128,U12,&k.key,&nonce,&aad,&mut buf),
-     (16,13)=>gcm_encrypt_tag!(Aes128,U13,&k.key,&nonce,&aad,&mut buf),
-     (16,14)=>gcm_encrypt_tag!(Aes128,U14,&k.key,&nonce,&aad,&mut buf),
-     (16,15)=>gcm_encrypt_tag!(Aes128,U15,&k.key,&nonce,&aad,&mut buf),
-     (16,16)=>gcm_encrypt_tag!(Aes128,U16,&k.key,&nonce,&aad,&mut buf),
-     (24,12)=>gcm_encrypt_tag!(Aes192,U12,&k.key,&nonce,&aad,&mut buf),
-     (24,13)=>gcm_encrypt_tag!(Aes192,U13,&k.key,&nonce,&aad,&mut buf),
-     (24,14)=>gcm_encrypt_tag!(Aes192,U14,&k.key,&nonce,&aad,&mut buf),
-     (24,15)=>gcm_encrypt_tag!(Aes192,U15,&k.key,&nonce,&aad,&mut buf),
-     (24,16)=>gcm_encrypt_tag!(Aes192,U16,&k.key,&nonce,&aad,&mut buf),
-     (32,12)=>gcm_encrypt_tag!(Aes256,U12,&k.key,&nonce,&aad,&mut buf),
-     (32,13)=>gcm_encrypt_tag!(Aes256,U13,&k.key,&nonce,&aad,&mut buf),
-     (32,14)=>gcm_encrypt_tag!(Aes256,U14,&k.key,&nonce,&aad,&mut buf),
-     (32,15)=>gcm_encrypt_tag!(Aes256,U15,&k.key,&nonce,&aad,&mut buf),
-     (32,16)=>gcm_encrypt_tag!(Aes256,U16,&k.key,&nonce,&aad,&mut buf),
+ let tag_value=match k.key.len() {
+     16=>gcm_encrypt_key!(Aes128,&k.key,&nonce,&aad,&mut buf,nonce.len(),tag_len),
+     24=>gcm_encrypt_key!(Aes192,&k.key,&nonce,&aad,&mut buf,nonce.len(),tag_len),
+     32=>gcm_encrypt_key!(Aes256,&k.key,&nonce,&aad,&mut buf,nonce.len(),tag_len),
      _=>return STATUS_INVALID_PARAMETER,
  };
  let tag_value=match tag_value{Ok(v)=>v,Err(e)=>return e};
@@ -614,22 +672,10 @@ pub unsafe extern "system" fn BCryptDecrypt(key:*mut c_void,input:*mut u8,input_
  if result_len.is_null()||(input.is_null()&&input_len!=0)||flags!=0||!iv.is_null()||iv_len!=0{return STATUS_INVALID_PARAMETER;}let k=match key_handle(key){Ok(v)=>v,Err(e)=>return e};let(nonce,aad,tag,_)=match unsafe{auth_info(padding_info)}{Ok(v)=>v,Err(e)=>return e};unsafe{result_len.write(input_len)};if output.is_null()||output_len<input_len{return STATUS_BUFFER_TOO_SMALL;}
  let mut buf=if input_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}.to_vec()};
  let tagbytes=unsafe{core::slice::from_raw_parts(tag,tag_len)};
- let valid=match (k.key.len(),tag_len) {
-     (16,12)=>gcm_decrypt_tag!(Aes128,U12,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (16,13)=>gcm_decrypt_tag!(Aes128,U13,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (16,14)=>gcm_decrypt_tag!(Aes128,U14,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (16,15)=>gcm_decrypt_tag!(Aes128,U15,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (16,16)=>gcm_decrypt_tag!(Aes128,U16,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (24,12)=>gcm_decrypt_tag!(Aes192,U12,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (24,13)=>gcm_decrypt_tag!(Aes192,U13,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (24,14)=>gcm_decrypt_tag!(Aes192,U14,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (24,15)=>gcm_decrypt_tag!(Aes192,U15,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (24,16)=>gcm_decrypt_tag!(Aes192,U16,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (32,12)=>gcm_decrypt_tag!(Aes256,U12,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (32,13)=>gcm_decrypt_tag!(Aes256,U13,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (32,14)=>gcm_decrypt_tag!(Aes256,U14,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (32,15)=>gcm_decrypt_tag!(Aes256,U15,&k.key,&nonce,&aad,&mut buf,tagbytes),
-     (32,16)=>gcm_decrypt_tag!(Aes256,U16,&k.key,&nonce,&aad,&mut buf,tagbytes),
+ let valid=match k.key.len() {
+     16=>gcm_decrypt_key!(Aes128,&k.key,&nonce,&aad,&mut buf,tagbytes,nonce.len(),tag_len),
+     24=>gcm_decrypt_key!(Aes192,&k.key,&nonce,&aad,&mut buf,tagbytes,nonce.len(),tag_len),
+     32=>gcm_decrypt_key!(Aes256,&k.key,&nonce,&aad,&mut buf,tagbytes,nonce.len(),tag_len),
      _=>return STATUS_INVALID_PARAMETER,
  };
  if !valid{return STATUS_AUTH_TAG_MISMATCH;}
