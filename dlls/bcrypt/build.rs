@@ -32,7 +32,21 @@ fn main() {
     let mut generated = String::from("// Unsupported exports fail closed with STATUS_NOT_IMPLEMENTED.\n");
     for e in &exports {
         if !implemented.contains(e.name.as_str()) {
-            generated.push_str(&format!("#[export_name = {:?}]\npub extern \"system\" fn cognac_bcrypt_unsupported_{}() -> i32 {{ STATUS_NOT_IMPLEMENTED }}\n", e.name, e.ordinal));
+            let wrapper = match e.name.as_str() {
+                "BCryptDecapsulate" => "key:*mut core::ffi::c_void,ciphertext:*mut u8,ciphertext_len:u32,secret:*mut u8,secret_len:u32,result_len:*mut u32,flags:u32",
+                "BCryptEncapsulate" => "key:*mut core::ffi::c_void,secret:*mut u8,secret_len:u32,secret_result:*mut u32,ciphertext:*mut u8,ciphertext_len:u32,ciphertext_result:*mut u32,flags:u32",
+                "BCryptEnumRegisteredProviders" => "size:*mut u32,providers:*mut *mut core::ffi::c_void",
+                "BCryptQueryProviderRegistration" => "provider:*const u16,mode:u32,interface:u32,size:*mut u32,registration:*mut *mut core::ffi::c_void",
+                "BCryptRegisterConfigChangeNotify" => "event:*mut *mut core::ffi::c_void",
+                "BCryptRegisterProvider" => "provider:*const u16,flags:u32,registration:*mut core::ffi::c_void",
+                "BCryptResolveProviders" => "context:*const u16,interface:u32,function:*const u16,provider:*const u16,mode:u32,flags:u32,size:*mut u32,providers:*mut *mut core::ffi::c_void",
+                "BCryptSecretAgreement" => "private_key:*mut core::ffi::c_void,public_key:*mut core::ffi::c_void,secret:*mut *mut core::ffi::c_void,flags:u32",
+                "BCryptSetAuditingInterface" => "interface:*mut core::ffi::c_void",
+                "BCryptUnregisterConfigChangeNotify" => "event:*mut core::ffi::c_void",
+                "BCryptUnregisterProvider" => "provider:*const u16",
+                _ => "",
+            };
+            generated.push_str(&format!("#[export_name = {:?}]\\npub extern \\"system\\" fn cognac_bcrypt_unsupported_{}({}) -> i32 {{ STATUS_NOT_IMPLEMENTED }}\\n", e.name, e.ordinal, wrapper));
         }
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
