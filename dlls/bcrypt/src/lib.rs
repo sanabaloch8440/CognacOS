@@ -1059,11 +1059,11 @@ static REGISTERED_PROVIDERS:OnceLock<Mutex<HashSet<String>>>=OnceLock::new();
 fn registered_providers()->&'static Mutex<HashSet<String>>{REGISTERED_PROVIDERS.get_or_init(||Mutex::new(["Microsoft Primitive Provider".to_string()].into_iter().collect()))}
 #[no_mangle] pub unsafe extern "system" fn BCryptRegisterProvider(provider:*const u16,flags:ULONG,registration:*const CryptProviderReg)->NTSTATUS{
  if flags&!1!=0||registration.is_null(){return STATUS_INVALID_PARAMETER;}let name=match config_name(provider){Ok(v) if !v.is_empty()=>v,_=>return STATUS_INVALID_PARAMETER};
- match registered_providers().lock(){Ok(mut set)=>{if set.contains(&name)&&flags&1==0{return STATUS_OBJECT_NAME_COLLISION;}set.insert(name);STATUS_SUCCESS},Err(_)=>STATUS_NO_MEMORY}
+ match registered_providers().lock(){Ok(mut set)=>{if set.contains(&name)&&flags&1==0{return STATUS_OBJECT_NAME_COLLISION;}set.insert(name);drop(set);signal_config_change();STATUS_SUCCESS},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptUnregisterProvider(provider:*const u16)->NTSTATUS{
  let name=match config_name(provider){Ok(v)=>v,Err(e)=>return e};if name=="Microsoft Primitive Provider"{return STATUS_NOT_SUPPORTED;}
- match registered_providers().lock(){Ok(mut set)=>if set.remove(&name){STATUS_SUCCESS}else{STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
+ match registered_providers().lock(){Ok(mut set)=>if set.remove(&name){drop(set);signal_config_change();STATUS_SUCCESS}else{STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptEnumRegisteredProviders(size:*mut ULONG,out:*mut *mut CryptProviders)->NTSTATUS{
  if size.is_null(){return STATUS_INVALID_PARAMETER;}let mut names=match registered_providers().lock(){Ok(v)=>v.iter().cloned().collect::<Vec<_>>(),Err(_)=>return STATUS_NO_MEMORY};names.sort();
@@ -1209,15 +1209,15 @@ fn output_context_buffer<T>(size:*mut ULONG,out:*mut *mut T,base:*mut u8,total:U
 #[no_mangle] pub unsafe extern "system" fn BCryptCreateContext(table:ULONG,name:*const u16,cfg:*const CryptContextConfig)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}let name=match config_name(name){Ok(v) if !v.is_empty()=>v,_=>return STATUS_INVALID_PARAMETER};
  let config=if cfg.is_null(){CryptContextConfig::default()}else{unsafe{ptr::read_unaligned(cfg)}};
- match contexts().lock(){Ok(mut m)=>{if m.contains_key(&name){return STATUS_OBJECT_NAME_COLLISION;}m.insert(name,ContextEntry{config,..Default::default()});STATUS_SUCCESS},Err(_)=>STATUS_NO_MEMORY}
+ match contexts().lock(){Ok(mut m)=>{if m.contains_key(&name){return STATUS_OBJECT_NAME_COLLISION;}m.insert(name,ContextEntry{config,..Default::default()});drop(m);signal_config_change();STATUS_SUCCESS},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptDeleteContext(table:ULONG,name:*const u16)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}let name=match config_name(name){Ok(v)=>v,Err(e)=>return e};
- match contexts().lock(){Ok(mut m)=>if m.remove(&name).is_some(){STATUS_SUCCESS}else{STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
+ match contexts().lock(){Ok(mut m)=>if m.remove(&name).is_some(){drop(m);signal_config_change();STATUS_SUCCESS}else{STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptConfigureContext(table:ULONG,name:*const u16,cfg:*const CryptContextConfig)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if cfg.is_null(){return STATUS_INVALID_PARAMETER;}let name=match config_name(name){Ok(v)=>v,Err(e)=>return e};let cfg=unsafe{ptr::read_unaligned(cfg)};
- match contexts().lock(){Ok(mut m)=>match m.get_mut(&name){Some(c)=>{c.config=cfg;STATUS_SUCCESS},None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
+ match contexts().lock(){Ok(mut m)=>match m.get_mut(&name){Some(c)=>{c.config=cfg;drop(m);signal_config_change();STATUS_SUCCESS},None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptQueryContextConfiguration(table:ULONG,name:*const u16,size:*mut ULONG,out:*mut *mut CryptContextConfig)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null(){return STATUS_INVALID_PARAMETER;}let name=match config_name(name){Ok(v)=>v,Err(e)=>return e};
@@ -1231,11 +1231,11 @@ fn output_context_buffer<T>(size:*mut ULONG,out:*mut *mut T,base:*mut u8,total:U
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptAddContextFunction(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,position:ULONG)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v) if !v.is_empty()=>v,_=>return STATUS_INVALID_PARAMETER};
- match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){None=>STATUS_NOT_FOUND,Some(ctx)=>{let list=ctx.functions.entry(interface).or_default();list.retain(|x|x!=&f);if position==CRYPT_PRIORITY_TOP{list.insert(0,f);}else if position==CRYPT_PRIORITY_BOTTOM{list.push(f);}else{let p=(position as usize).min(list.len());list.insert(p,f);}STATUS_SUCCESS}},Err(_)=>STATUS_NO_MEMORY}
+ match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){None=>STATUS_NOT_FOUND,Some(ctx)=>{let list=ctx.functions.entry(interface).or_default();list.retain(|x|x!=&f);if position==CRYPT_PRIORITY_TOP{list.insert(0,f);}else if position==CRYPT_PRIORITY_BOTTOM{list.push(f);}else{let p=(position as usize).min(list.len());list.insert(p,f);}drop(m);signal_config_change();STATUS_SUCCESS}},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptRemoveContextFunction(table:ULONG,context:*const u16,interface:ULONG,function:*const u16)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};
- match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){None=>STATUS_NOT_FOUND,Some(ctx)=>{let Some(list)=ctx.functions.get_mut(&interface)else{return STATUS_NOT_FOUND};let old=list.len();list.retain(|x|x!=&f);if old==list.len(){STATUS_NOT_FOUND}else{STATUS_SUCCESS}}},Err(_)=>STATUS_NO_MEMORY}
+ match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){None=>STATUS_NOT_FOUND,Some(ctx)=>{let Some(list)=ctx.functions.get_mut(&interface)else{return STATUS_NOT_FOUND};let old=list.len();list.retain(|x|x!=&f);if old==list.len(){STATUS_NOT_FOUND}else{drop(m);signal_config_change();STATUS_SUCCESS}}},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptEnumContextFunctions(table:ULONG,context:*const u16,interface:ULONG,size:*mut ULONG,out:*mut *mut CryptContextFunctions)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};
@@ -1244,7 +1244,7 @@ fn output_context_buffer<T>(size:*mut ULONG,out:*mut *mut T,base:*mut u8,total:U
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptConfigureContextFunction(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,cfg:*const CryptContextFunctionConfig)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if cfg.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};let value=unsafe{ptr::read_unaligned(cfg)};
- match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){Some(ctx) if ctx.functions.get(&interface).is_some_and(|v|v.contains(&f))=>{ctx.function_configs.insert((interface,f),value);STATUS_SUCCESS},Some(_)=>STATUS_NOT_FOUND,None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
+ match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){Some(ctx) if ctx.functions.get(&interface).is_some_and(|v|v.contains(&f))=>{ctx.function_configs.insert((interface,f),value);drop(m);signal_config_change();STATUS_SUCCESS},Some(_)=>STATUS_NOT_FOUND,None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptQueryContextFunctionConfiguration(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,size:*mut ULONG,out:*mut *mut CryptContextFunctionConfig)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if size.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};
@@ -1259,15 +1259,15 @@ fn output_context_buffer<T>(size:*mut ULONG,out:*mut *mut T,base:*mut u8,total:U
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptAddContextFunctionProvider(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,provider:*const u16,position:ULONG)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};let p=match config_name(provider){Ok(v) if !v.is_empty()=>v,_=>return STATUS_INVALID_PARAMETER};
- match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){Some(ctx) if ctx.functions.get(&interface).is_some_and(|v|v.contains(&f))=>{let list=ctx.providers.entry((interface,f)).or_insert_with(||vec!["Microsoft Primitive Provider".to_string()]);list.retain(|x|x!=&p);if position==CRYPT_PRIORITY_TOP{list.insert(0,p);}else{list.push(p);}STATUS_SUCCESS},Some(_)=>STATUS_NOT_FOUND,None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
+ match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){Some(ctx) if ctx.functions.get(&interface).is_some_and(|v|v.contains(&f))=>{let list=ctx.providers.entry((interface,f)).or_insert_with(||vec!["Microsoft Primitive Provider".to_string()]);list.retain(|x|x!=&p);if position==CRYPT_PRIORITY_TOP{list.insert(0,p);}else{list.push(p);}drop(m);signal_config_change();STATUS_SUCCESS},Some(_)=>STATUS_NOT_FOUND,None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptRemoveContextFunctionProvider(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,provider:*const u16)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};let p=match config_name(provider){Ok(v)=>v,Err(e)=>return e};
- match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){Some(ctx)=>match ctx.providers.get_mut(&(interface,f)){Some(list)=>{let n=list.len();list.retain(|x|x!=&p);if n==list.len(){STATUS_NOT_FOUND}else{STATUS_SUCCESS}},None=>STATUS_NOT_FOUND},None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
+ match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){Some(ctx)=>match ctx.providers.get_mut(&(interface,f)){Some(list)=>{let n=list.len();list.retain(|x|x!=&p);if n==list.len(){STATUS_NOT_FOUND}else{drop(m);signal_config_change();STATUS_SUCCESS}},None=>STATUS_NOT_FOUND},None=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptSetContextFunctionProperty(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,property:*const u16,len:ULONG,value:*const u8)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if value.is_null()&&len!=0{return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};let p=match config_name(property){Ok(v)=>v,Err(e)=>return e};let bytes=if len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(value,len as usize)}.to_vec()};
- match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){Some(ctx) if ctx.functions.get(&interface).is_some_and(|v|v.contains(&f))=>{ctx.properties.insert((interface,f,p),bytes);STATUS_SUCCESS},_=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
+ match contexts().lock(){Ok(mut m)=>match m.get_mut(&c){Some(ctx) if ctx.functions.get(&interface).is_some_and(|v|v.contains(&f))=>{ctx.properties.insert((interface,f,p),bytes);drop(m);signal_config_change();STATUS_SUCCESS},_=>STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
 }
 #[no_mangle] pub unsafe extern "system" fn BCryptQueryContextFunctionProperty(table:ULONG,context:*const u16,interface:ULONG,function:*const u16,property:*const u16,len:*mut ULONG,value:*mut *mut u8)->NTSTATUS{
  let st=config_table(table);if st!=STATUS_SUCCESS{return st;}if len.is_null()||value.is_null(){return STATUS_INVALID_PARAMETER;}let c=match config_name(context){Ok(v)=>v,Err(e)=>return e};let f=match config_name(function){Ok(v)=>v,Err(e)=>return e};let p=match config_name(property){Ok(v)=>v,Err(e)=>return e};
