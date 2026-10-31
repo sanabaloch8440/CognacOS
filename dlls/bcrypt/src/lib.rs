@@ -25,6 +25,7 @@ pub const STATUS_NO_MEMORY: NTSTATUS = 0xC0000017_u32 as i32;
 pub const STATUS_AUTH_TAG_MISMATCH: NTSTATUS = 0xC000A002_u32 as i32;
 const BCRYPT_USE_SYSTEM_PREFERRED_RNG: ULONG = 0x00000002;
 const BCRYPT_ALG_HANDLE_HMAC_FLAG: ULONG = 0x00000008;
+const BCRYPT_MULTI_FLAG: ULONG = 0x00000040;
 const BCRYPT_BLOCK_PADDING: ULONG = 0x00000001;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,12 +55,12 @@ impl HashAlgorithm {
 }
 
 #[derive(Clone)]
-struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, cipher: bool, gcm: bool, cbc: bool }
+struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, cipher: bool, gcm: bool, cbc: bool }
 #[derive(Clone)]
 struct KeyHandle { key: Vec<u8>, gcm: bool, cbc: bool }
 impl Drop for KeyHandle { fn drop(&mut self) { self.key.zeroize(); } }
 #[derive(Clone)]
-enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), Key(KeyHandle) }
+enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle) }
 static HANDLE_TABLE: OnceLock<Mutex<HashMap<usize, RegisteredHandle>>> = OnceLock::new();
 static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x10000);
 fn handle_table() -> &'static Mutex<HashMap<usize, RegisteredHandle>> {
@@ -92,6 +93,7 @@ fn remove_handle(token: *mut c_void, expected: u8) -> NTSTATUS {
     let valid = matches!((table.get(&key), expected),
         (Some(RegisteredHandle::Algorithm(_)), 0) |
         (Some(RegisteredHandle::Hash(_)), 1) |
+        (Some(RegisteredHandle::MultiHash(_)), 1) |
         (Some(RegisteredHandle::Key(_)), 2));
     if !valid { return STATUS_INVALID_PARAMETER; }
     table.remove(&key);
@@ -107,6 +109,8 @@ fn key_handle(token: *mut c_void) -> Result<KeyHandle, NTSTATUS> {
 
 #[derive(Clone)]
 struct HashHandle { algorithm: HashAlgorithm, hmac: bool, secret: Vec<u8>, data: Vec<u8> }
+#[derive(Clone)]
+struct MultiHashHandle { states: Vec<HashHandle> }
 impl Drop for HashHandle { fn drop(&mut self) { self.secret.zeroize(); self.data.zeroize(); } }
 
 unsafe fn write_u32(out: *mut u8, value: u32) { unsafe { ptr::copy_nonoverlapping(value.to_ne_bytes().as_ptr(), out, 4) }; }
@@ -121,14 +125,14 @@ unsafe fn read_property_name(ptr: *const u16) -> Result<String, NTSTATUS> {
 /// BCryptOpenAlgorithmProvider (SHA-256/384/512 only; no HMAC flag yet).
 #[no_mangle]
 pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void, alg_id: *const u16, implementation: *const u16, flags: ULONG) -> NTSTATUS {
-    if out.is_null() || !implementation.is_null() || flags & !BCRYPT_ALG_HANDLE_HMAC_FLAG != 0 { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() || !implementation.is_null() || flags & !(BCRYPT_ALG_HANDLE_HMAC_FLAG | BCRYPT_MULTI_FLAG) != 0 { return STATUS_INVALID_PARAMETER; }
     if alg_id.is_null() { return STATUS_INVALID_PARAMETER; }
     let mut units=Vec::new();
     for i in 0..64 { let u=unsafe{alg_id.add(i).read()}; if u==0 {break;} units.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
     let name=match String::from_utf16(&units){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
     let (algorithm,cipher)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true) }
     else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false),Err(e)=>return e } };
-    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,cipher,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
