@@ -188,6 +188,10 @@ pub fn query_service_group_order(hive:&Hive<'_>,out:&mut[u16])->Result<usize,Ext
     value.data(&mut raw[..bytes])?;let units=bytes/2;
     for i in 0..units{out[i]=u16::from_le_bytes([raw[i*2],raw[i*2+1]])}
     if out[units-1]!=0||out[units-2]!=0{return Err(ExtendedConfigError::InvalidDependencies)}
+    let mut iter=MultiSzIter::new(&out[..units]);
+    while let Some(group)=iter.next(){
+        if group.is_empty()||group.len()>128||group.iter().any(|c|*c==b'\\\\' as u16||*c==b'/' as u16){return Err(ExtendedConfigError::InvalidGroup)}
+    }
     Ok(units)
 }
 
@@ -207,7 +211,10 @@ pub fn query_group_tag_order(hive:&Hive<'_>,group:&[u16],out:&mut[u32])->Result<
     value.data(&mut raw[..bytes])?;
     let count=u32::from_le_bytes([raw[0],raw[1],raw[2],raw[3]]) as usize;
     if count>out.len()||bytes!=4+count*4{return Err(ExtendedConfigError::InvalidTag)}
-    for i in 0..count{out[i]=u32::from_le_bytes([raw[4+i*4],raw[5+i*4],raw[6+i*4],raw[7+i*4]])}
+    for i in 0..count{
+        out[i]=u32::from_le_bytes([raw[4+i*4],raw[5+i*4],raw[6+i*4],raw[7+i*4]]);
+        if out[..i].contains(&out[i]){return Err(ExtendedConfigError::InvalidTag)}
+    }
     Ok(count)
 }
 fn active_control_set(hive:&Hive<'_>)->Result<u32,ExtendedConfigError>{
