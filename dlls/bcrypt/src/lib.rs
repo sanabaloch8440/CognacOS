@@ -172,6 +172,54 @@ pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(
     STATUS_SUCCESS
 }
 
+
+/// BCryptHash: one-shot hashing with the selected CNG provider.
+///
+/// The provider must be opened with BCRYPT_ALG_HANDLE_HMAC_FLAG when a secret
+/// is supplied. Output buffers may be larger than the digest; only the digest
+/// bytes are written.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptHash(
+    algorithm: *mut c_void,
+    secret: *const u8,
+    secret_len: ULONG,
+    input: *const u8,
+    input_len: ULONG,
+    output: *mut u8,
+    output_len: ULONG,
+) -> NTSTATUS {
+    if algorithm.is_null()
+        || (secret.is_null() && secret_len != 0)
+        || (input.is_null() && input_len != 0)
+        || output.is_null()
+    {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let provider = unsafe { &*algorithm.cast::<AlgorithmHandle>() };
+    if provider.hmac != (secret_len != 0) {
+        return STATUS_INVALID_PARAMETER;
+    }
+    let required = provider.algorithm.digest_len();
+    if output_len < required {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    let input = if input_len == 0 {
+        &[][..]
+    } else {
+        unsafe { core::slice::from_raw_parts(input, input_len as usize) }
+    };
+    if provider.hmac {
+        let key_bytes = unsafe { core::slice::from_raw_parts(secret, secret_len as usize) };
+        let key = hmac::Key::new(provider.algorithm.hmac_algorithm(), key_bytes);
+        let digest = hmac::sign(&key, input);
+        unsafe { ptr::copy_nonoverlapping(digest.as_ref().as_ptr(), output, digest.as_ref().len()) };
+    } else {
+        let digest = provider.algorithm.digest(input);
+        unsafe { ptr::copy_nonoverlapping(digest.as_ref().as_ptr(), output, digest.as_ref().len()) };
+    }
+    STATUS_SUCCESS
+}
+
 include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 
 #[cfg(test)]
