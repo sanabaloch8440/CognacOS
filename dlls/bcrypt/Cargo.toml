@@ -12,6 +12,7 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 aws-lc-rs = "1"
+zeroize = "1"
 
 [profile.dev]
 panic = "abort"
@@ -21,5 +22,3 @@ panic = "abort"
 lto = true
 codegen-units = 1
 opt-level = "s"
-
-zeroize = "1"
