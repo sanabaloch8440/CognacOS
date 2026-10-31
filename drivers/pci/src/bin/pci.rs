@@ -46,6 +46,32 @@ static STATE: PciState = PciState {
     xhci_counts: UnsafeCell::new([0; MAX_WINDOWS]),
 };
 
+const IRP_MJ_PNP: usize = 0x1b;
+const IRP_MN_START_DEVICE: u8 = 0x00;
+const IRP_MN_STOP_DEVICE: u8 = 0x04;
+const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
+const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
+
+unsafe extern "system" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
+    if irp.is_null() { return STATUS_INVALID_PARAMETER; }
+    let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
+    if stack.is_null() { return STATUS_INVALID_PARAMETER; }
+    let status = match unsafe { (*stack).minor_function } {
+        IRP_MN_START_DEVICE if STATE.ready.load(Ordering::Acquire) => STATUS_SUCCESS,
+        IRP_MN_STOP_DEVICE | IRP_MN_REMOVE_DEVICE => STATUS_SUCCESS,
+        // PCI function inventory is read-only until bus-resource arbitration,
+        // PDO creation, and BusRelations publication are connected to PnP.
+        IRP_MN_QUERY_DEVICE_RELATIONS => STATUS_NOT_SUPPORTED,
+        IRP_MN_START_DEVICE => STATUS_DEVICE_NOT_READY,
+        _ => STATUS_INVALID_DEVICE_REQUEST,
+    };
+    unsafe { (*irp).io_status.status.status = status; (*irp).io_status.information = 0; }
+    status
+}
+unsafe extern "system" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
+    STATE.ready.store(false, Ordering::Release);
+}
+
 /// Read-only PCI bus discovery. BAR programming, bus mastering, MMIO mapping,
 /// resource arbitration, and child PDO publication are intentionally deferred
 /// to the PnP manager after it has assigned resources.
@@ -108,6 +134,8 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     STATE.xhci_count.store(total_xhci, Ordering::Release);
     STATE.function_count.store(total_functions, Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
+    object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
+    object.driver_unload = Some(driver_unload);
     STATUS_SUCCESS
 }
 
