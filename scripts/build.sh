@@ -67,10 +67,10 @@ check_toolchain() {
   [[ "$(readlink -f "$(command -v lld-link)")" == "$(readlink -f "$(command -v rust-lld)")" ]] || die "lld-link does not resolve to the same LLD binary"
   printf 'Rust compiler: rustc (all project Rust sources)\n'
   printf 'Linker: LLVM LLD (ELF, UEFI/COFF and PE/COFF driver modes)\n'
-  printf 'C dependency compiler: Clang (third-party C dependencies only)\n'
+  printf 'Linker driver: Clang (delegates all linking to LLVM LLD; no source compilation)\n'
   printf 'Cargo target directory: %s\n' "$CARGO_TARGET_DIR"
   if find . -type f \( -name '*.c' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \) -not -path './target/*' -not -path './.git/*' -print -quit | grep -q .; then
-    printf '%s\n' 'C/C++ sources exist; they are compiled with Clang, never GCC.'
+    die "C/C++ source detected; CognacOS first-party source policy is Rust-only."
   fi
   if command -v gcc >/dev/null 2>&1 && [[ "${COGNACOS_ALLOW_GCC:-0}" != 1 ]]; then
     printf '%s\n' 'Note: GCC is installed on this host but is not selected by the CognacOS build.' 
