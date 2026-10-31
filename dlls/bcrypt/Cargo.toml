@@ -11,7 +11,8 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-aws-lc-rs = "1"
+hmac = "0.12"
+pbkdf2 = "0.12"
 aes = "0.8"
 aes-gcm = "0.10"
 cipher = "0.4"
