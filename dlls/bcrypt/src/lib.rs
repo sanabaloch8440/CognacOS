@@ -106,6 +106,12 @@ enum MlKemKeyHandle {
     Pair512 { dk: ml_kem::DecapsulationKey512, ek: ml_kem::EncapsulationKey512, finalized: bool },
     Pair768 { dk: ml_kem::DecapsulationKey768, ek: ml_kem::EncapsulationKey768, finalized: bool },
     Pair1024 { dk: ml_kem::DecapsulationKey1024, ek: ml_kem::EncapsulationKey1024, finalized: bool },
+    Public512 { ek: ml_kem::EncapsulationKey512 },
+    Public768 { ek: ml_kem::EncapsulationKey768 },
+    Public1024 { ek: ml_kem::EncapsulationKey1024 },
+    Private512 { dk: ml_kem::DecapsulationKey512 },
+    Private768 { dk: ml_kem::DecapsulationKey768 },
+    Private1024 { dk: ml_kem::DecapsulationKey1024 },
 }
 #[derive(Clone)]
 enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle), RsaPublic(RsaPublicKey), RsaPrivate(RsaPrivateHandle), EcdhPublic(P256PublicKey), EcdhPrivate(EcdhPrivateHandle), MlKem(MlKemKeyHandle) }
@@ -1068,6 +1074,45 @@ pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_k
         let token = match register_handle(RegisteredHandle::EcdhPublic(public)) { Ok(v) => v, Err(e) => return e };
         unsafe { out.write(token) }; return STATUS_SUCCESS;
     }
+    if provider.kem {
+        const PUBLIC_MAGIC: ULONG = 0x504B4C4D;
+        const PRIVATE_SEED_MAGIC: ULONG = 0x534B4C4D;
+        if !matches!(blob_name.as_str(),"MLKEM_PUBLIC_BLOB"|"MLKEM_ENCAPSULATION_BLOB"|"MLKEM_PRIVATE_SEED_BLOB") {
+            return STATUS_NOT_SUPPORTED;
+        }
+        if input_len as usize < core::mem::size_of::<BcryptMlKemBlobHeader>() { return STATUS_INVALID_PARAMETER; }
+        let header=unsafe{ptr::read_unaligned(input.cast::<BcryptMlKemBlobHeader>())};
+        let parameter_start=core::mem::size_of::<BcryptMlKemBlobHeader>();
+        if header.cbParameterSet==0 || header.cbParameterSet%2!=0 { return STATUS_INVALID_PARAMETER; }
+        let key_start=match parameter_start.checked_add(header.cbParameterSet as usize){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
+        let total=match key_start.checked_add(header.cbKey as usize){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
+        if total!=input_len as usize { return STATUS_INVALID_PARAMETER; }
+        let parameter_units=unsafe{core::slice::from_raw_parts(input.add(parameter_start).cast::<u16>(),(header.cbParameterSet/2) as usize)};
+        let Some(end)=parameter_units.iter().position(|u|*u==0) else{return STATUS_INVALID_PARAMETER};
+        if end+1!=parameter_units.len(){return STATUS_INVALID_PARAMETER;}
+        let parameter=match String::from_utf16(&parameter_units[..end]){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
+        let level=match parameter.as_str(){"512"=>1,"768"=>2,"1024"=>3,_=>return STATUS_INVALID_PARAMETER};
+        if provider.kem_level!=0 && provider.kem_level!=level{return STATUS_INVALID_PARAMETER;}
+        let key_bytes=unsafe{core::slice::from_raw_parts(input.add(key_start),header.cbKey as usize)};
+        let material=if blob_name=="MLKEM_PRIVATE_SEED_BLOB" {
+            if header.dwMagic!=PRIVATE_SEED_MAGIC || header.cbKey!=64{return STATUS_INVALID_PARAMETER;}
+            let seed:ml_kem::Seed=match key_bytes.try_into(){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
+            match level {
+                1=>{let(dk,_)=MlKem512::from_seed(&seed);MlKemKeyHandle::Private512{dk}},
+                2=>{let(dk,_)=MlKem768::from_seed(&seed);MlKemKeyHandle::Private768{dk}},
+                _=>{let(dk,_)=MlKem1024::from_seed(&seed);MlKemKeyHandle::Private1024{dk}},
+            }
+        } else {
+            if header.dwMagic!=PUBLIC_MAGIC{return STATUS_INVALID_PARAMETER;}
+            match level {
+                1=>{if header.cbKey!=800{return STATUS_INVALID_PARAMETER;}let encoded:ml_kem::Key<ml_kem::EncapsulationKey512>=match key_bytes.try_into(){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let ek=match ml_kem::EncapsulationKey512::new(&encoded){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};MlKemKeyHandle::Public512{ek}},
+                2=>{if header.cbKey!=1184{return STATUS_INVALID_PARAMETER;}let encoded:ml_kem::Key<ml_kem::EncapsulationKey768>=match key_bytes.try_into(){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let ek=match ml_kem::EncapsulationKey768::new(&encoded){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};MlKemKeyHandle::Public768{ek}},
+                _=>{if header.cbKey!=1568{return STATUS_INVALID_PARAMETER;}let encoded:ml_kem::Key<ml_kem::EncapsulationKey1024>=match key_bytes.try_into(){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let ek=match ml_kem::EncapsulationKey1024::new(&encoded){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};MlKemKeyHandle::Public1024{ek}},
+            }
+        };
+        let token=match register_handle(RegisteredHandle::MlKem(material)){Ok(v)=>v,Err(e)=>return e};
+        unsafe{out.write(token)};return STATUS_SUCCESS;
+    }
     if !provider.rsa || blob_name != "RSAPUBLICBLOB" { return STATUS_NOT_SUPPORTED; }
     if (input_len as usize)<core::mem::size_of::<BcryptRsaBlobHeader>() { return STATUS_INVALID_PARAMETER; }
     let h=unsafe{ptr::read_unaligned(input.cast::<BcryptRsaBlobHeader>())};
@@ -1086,10 +1131,10 @@ pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_k
 
 /// Return the fixed FIPS 203 ciphertext size for a generated ML-KEM key.
 fn mlkem_ciphertext_len(key: &MlKemKeyHandle) -> usize {
-    match key { MlKemKeyHandle::Pair512{..} => 768, MlKemKeyHandle::Pair768{..} => 1088, MlKemKeyHandle::Pair1024{..} => 1568, MlKemKeyHandle::Pending{..} => 0 }
+    match key { MlKemKeyHandle::Pair512{..}|MlKemKeyHandle::Public512{..}|MlKemKeyHandle::Private512{..} => 768, MlKemKeyHandle::Pair768{..}|MlKemKeyHandle::Public768{..}|MlKemKeyHandle::Private768{..} => 1088, MlKemKeyHandle::Pair1024{..}|MlKemKeyHandle::Public1024{..}|MlKemKeyHandle::Private1024{..} => 1568, MlKemKeyHandle::Pending{..} => 0 }
 }
 fn mlkem_is_finalized(key: &MlKemKeyHandle) -> bool {
-    match key { MlKemKeyHandle::Pair512{finalized,..}|MlKemKeyHandle::Pair768{finalized,..}|MlKemKeyHandle::Pair1024{finalized,..} => *finalized, MlKemKeyHandle::Pending{..} => false }
+    match key { MlKemKeyHandle::Pair512{finalized,..}|MlKemKeyHandle::Pair768{finalized,..}|MlKemKeyHandle::Pair1024{finalized,..} => *finalized, MlKemKeyHandle::Public512{..}|MlKemKeyHandle::Public768{..}|MlKemKeyHandle::Public1024{..}|MlKemKeyHandle::Private512{..}|MlKemKeyHandle::Private768{..}|MlKemKeyHandle::Private1024{..} => true, MlKemKeyHandle::Pending{..} => false }
 }
 
 /// CNG ML-KEM encapsulation. Output-size queries are supported; key material
@@ -1116,9 +1161,10 @@ pub unsafe extern "system" fn BCryptEncapsulate(
     }
     if secret_len<32 || ciphertext_len<required_ciphertext as ULONG { return STATUS_BUFFER_TOO_SMALL; }
     match material {
-        MlKemKeyHandle::Pair512{ek,..} => { let (ct,ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } },
-        MlKemKeyHandle::Pair768{ek,..} => { let (ct,ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } },
-        MlKemKeyHandle::Pair1024{ek,..} => { let (ct,ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } },
+        MlKemKeyHandle::Pair512{ek,..}|MlKemKeyHandle::Public512{ek} => { let (ct,ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } },
+        MlKemKeyHandle::Pair768{ek,..}|MlKemKeyHandle::Public768{ek} => { let (ct,ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } },
+        MlKemKeyHandle::Pair1024{ek,..}|MlKemKeyHandle::Public1024{ek} => { let (ct,ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } },
+        MlKemKeyHandle::Private512{..}|MlKemKeyHandle::Private768{..}|MlKemKeyHandle::Private1024{..}|MlKemKeyHandle::Pending{..} => return STATUS_INVALID_PARAMETER,
     }
     STATUS_SUCCESS
 }
@@ -1147,13 +1193,18 @@ pub unsafe extern "system" fn BCryptDecapsulate(
     if secret_len<32 { return STATUS_BUFFER_TOO_SMALL; }
     let bytes=unsafe{core::slice::from_raw_parts(ciphertext,ciphertext_len as usize)};
     let copied=match material {
-        MlKemKeyHandle::Pair512{dk,..} => match dk.decapsulate_slice(bytes) {Ok(v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};true},Err(_)=>false},
-        MlKemKeyHandle::Pair768{dk,..} => match dk.decapsulate_slice(bytes) {Ok(v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};true},Err(_)=>false},
-        MlKemKeyHandle::Pair1024{dk,..} => match dk.decapsulate_slice(bytes) {Ok(v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};true},Err(_)=>false},
+        MlKemKeyHandle::Pair512{dk,..}|MlKemKeyHandle::Private512{dk} => match dk.decapsulate_slice(bytes) {Ok(v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};true},Err(_)=>false},
+        MlKemKeyHandle::Pair768{dk,..}|MlKemKeyHandle::Private768{dk} => match dk.decapsulate_slice(bytes) {Ok(v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};true},Err(_)=>false},
+        MlKemKeyHandle::Pair1024{dk,..}|MlKemKeyHandle::Private1024{dk} => match dk.decapsulate_slice(bytes) {Ok(v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};true},Err(_)=>false},
+        MlKemKeyHandle::Public512{..}|MlKemKeyHandle::Public768{..}|MlKemKeyHandle::Public1024{..}|MlKemKeyHandle::Pending{..} => false,
     };
     if !copied { return STATUS_INVALID_PARAMETER; }
     STATUS_SUCCESS
 }
+
+#[repr(C)]
+#[derive(Clone,Copy)]
+struct BcryptMlKemBlobHeader { dwMagic:ULONG, cbParameterSet:ULONG, cbKey:ULONG }
 
 #[repr(C)]
 struct BcryptPkcs1PaddingInfo { pszAlgId: *const u16 }
