@@ -41,7 +41,7 @@ const IRP_MN_STOP_DEVICE: u8 = 0x04;
 const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
 const IRP_MN_QUERY_DEVICE_RELATIONS: u8 = 0x07;
 
-unsafe extern "system" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
+unsafe extern "win64" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
     if irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
@@ -57,7 +57,7 @@ unsafe extern "system" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE
     unsafe { (*irp).io_status.status.status = status; (*irp).io_status.information = 0; }
     status
 }
-unsafe extern "system" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
+unsafe extern "win64" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
     STATE.ready.store(false, Ordering::Release);
 }
 
