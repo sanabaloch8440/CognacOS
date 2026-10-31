@@ -6,6 +6,8 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 use cognacos_storage::Geometry;
+#[cfg(test)]
+extern crate std;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
