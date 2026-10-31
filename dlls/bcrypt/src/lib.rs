@@ -99,7 +99,7 @@ fn remove_handle(token: *mut c_void, expected: u8) -> NTSTATUS {
         (Some(RegisteredHandle::Algorithm(_)), 0) |
         (Some(RegisteredHandle::Hash(_)), 1) |
         (Some(RegisteredHandle::MultiHash(_)), 1) |
-        (Some(RegisteredHandle::Key(_)), 2) | (Some(RegisteredHandle::KdfKey(_)), 2) | (Some(RegisteredHandle::RsaPublic(_)), 2) | (Some(RegisteredHandle::KdfKey(_)), 3));
+        (Some(RegisteredHandle::Key(_)), 2) | (Some(RegisteredHandle::RsaPublic(_)), 2) | (Some(RegisteredHandle::KdfKey(_)), 3));
     if !valid { return STATUS_INVALID_PARAMETER; }
     table.remove(&key);
     STATUS_SUCCESS
@@ -615,7 +615,7 @@ pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_k
     let e=BigUint::from_bytes_be(&bytes[..h.cb_public_exp as usize]);
     let n=BigUint::from_bytes_be(&bytes[h.cb_public_exp as usize..]);
     let key=match RsaPublicKey::new(n,e){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
-    if key.n().bits()!=h.bit_length as usize {return STATUS_INVALID_PARAMETER;}
+    if key.n().bits()!=h.bit_length as u64 {return STATUS_INVALID_PARAMETER;}
     let token=match register_handle(RegisteredHandle::RsaPublic(key)){Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)};STATUS_SUCCESS
 }
@@ -637,6 +637,24 @@ include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bcrypt_raw_secret_derivation_and_destroy() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let provider_name=wide("PBKDF2");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,provider_name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mut secret=ptr::null_mut();
+        let source=b"shared secret material";
+        assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut secret,ptr::null_mut(),0,source.as_ptr() as *mut u8,source.len() as u32,0)},STATUS_SUCCESS);
+        let kdf=wide("TRUNCATE");
+        let mut output=[0u8;8]; let mut written=0;
+        assert_eq!(unsafe{BCryptDeriveKey(secret,kdf.as_ptr(),ptr::null_mut(),output.as_mut_ptr(),output.len() as u32,&mut written,0)},STATUS_SUCCESS);
+        assert_eq!(written,8); assert_eq!(&output,b"shared s");
+        assert_eq!(unsafe{BCryptDestroySecret(secret)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroySecret(secret)},STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
     #[test]
     fn bcrypt_key_derivation_pbkdf2_sha256_known_answer() {
         let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
