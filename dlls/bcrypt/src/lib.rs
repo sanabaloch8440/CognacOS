@@ -1660,11 +1660,11 @@ mod tests {
         let mut required=0;
         assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_INVALID_PARAMETER);
         assert_eq!(unsafe{BCryptFinalizeKeyPair(key,0)},STATUS_SUCCESS);
-        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut _).cast(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_SUCCESS);
         assert_eq!(required,128);
         let mut signature=vec![0u8;required as usize];
-        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut _).cast(),digest.as_ref().as_ptr() as *mut u8,32,signature.as_mut_ptr(),required,&mut required,2)},STATUS_SUCCESS);
-        assert_eq!(unsafe{BCryptVerifySignature(key,(&mut padding as *mut _).cast(),digest.as_ref().as_ptr(),32,signature.as_ptr(),signature.len() as ULONG,2)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_ref().as_ptr() as *mut u8,32,signature.as_mut_ptr(),required,&mut required,2)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptVerifySignature(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_ref().as_ptr(),32,signature.as_ptr(),signature.len() as ULONG,2)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
