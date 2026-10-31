@@ -448,8 +448,18 @@ fn initialize_vtd_from_acpi(path:&pci::PciRequesterPath)->bool{
   if !scoped {continue}
   let Some(length)=region.limit.checked_sub(region.base).and_then(|n|n.checked_add(1)) else{return false};
   let Some(region_end)=region.base.checked_add(length) else{return false};
-  if info.kernel_physical_sections.iter().take(info.kernel_physical_section_count)
-      .any(|(start,end)|region.base<*end&&*start<region_end) {
+  // DMAR's DmarInfo describes firmware tables, not the loaded kernel image.
+  // Use linker-provided physical section boundaries so a firmware RMRR can
+  // never be identity-mapped over live kernel text/data/BSS.
+  let kernel_sections = unsafe {
+   [
+    (core::ptr::addr_of!(__text_phys_start) as u64, core::ptr::addr_of!(__text_phys_end) as u64),
+    (core::ptr::addr_of!(__rodata_phys_start) as u64, core::ptr::addr_of!(__rodata_phys_end) as u64),
+    (core::ptr::addr_of!(__data_phys_start) as u64, core::ptr::addr_of!(__data_phys_end) as u64),
+    (core::ptr::addr_of!(__bss_phys_start) as u64, core::ptr::addr_of!(__bss_phys_end) as u64),
+   ]
+  };
+  if kernel_sections.iter().any(|(start,end)| *start < *end && region.base < *end && *start < region_end) {
    return false;
   }
   if !memory::is_firmware_reserved_ram_range(region.base,length) {
