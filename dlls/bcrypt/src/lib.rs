@@ -1301,7 +1301,7 @@ mod tests {
         for tag_len in 12usize..=16 {
             let nonce=[0x33u8;12];let mut tag=[0u8;16];
             let mut info=BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO{cbSize:core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as ULONG,dwInfoVersion:1,pbNonce:nonce.as_ptr() as *mut u8,cbNonce:12,pbAuthData:ptr::null_mut(),cbAuthData:0,pbTag:tag.as_mut_ptr(),cbTag:tag_len as ULONG,pbMacContext:ptr::null_mut(),cbMacContext:0,cbAAD:0,cbData:0,dwFlags:0};
-            let mut plain=*b"tag length test!!";let mut encrypted=[0u8;16];let mut written=0;
+            let mut plain=*b"tag length test!";let mut encrypted=[0u8;16];let mut written=0;
             assert_eq!(unsafe{BCryptEncrypt(key,plain.as_mut_ptr(),16,(&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(),ptr::null_mut(),0,encrypted.as_mut_ptr(),16,&mut written,0)},STATUS_SUCCESS);
             assert_eq!(written,16);
             let mut recovered=[0u8;16];
