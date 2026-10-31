@@ -16,6 +16,8 @@ pub struct AhciDriverHandoff {
     pub version: u32,
     /// Uncached, non-executable virtual mapping of the assigned AHCI BAR.
     pub mmio_base: u64,
+    /// Physical address from the translated CM_RESOURCE_LIST memory descriptor.
+    pub mmio_physical: u64,
     pub mmio_length: u64,
     /// Stable PCI device-object key for requester-specific DMA and bus-master policy.
     pub device_object: u64,
@@ -26,6 +28,7 @@ struct SharedInfo(UnsafeCell<MaybeUninit<ControllerInfo>>);
 unsafe impl Sync for SharedInfo {}
 static HANDOFF: AtomicU64 = AtomicU64::new(0);
 static PREPARED: AtomicBool = AtomicBool::new(false);
+static START_RESOURCES_VALID: AtomicBool = AtomicBool::new(false);
 static BUSY: AtomicBool = AtomicBool::new(false);
 static INFO: SharedInfo = SharedInfo(UnsafeCell::new(MaybeUninit::uninit()));
 
@@ -65,7 +68,8 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
     let ext = unsafe { &*(object.driver_extension as *const AhciDriverHandoff) };
     if ext.magic != HANDOFF_MAGIC || ext.version != HANDOFF_VERSION
         || (ext.size as usize) < core::mem::size_of::<AhciDriverHandoff>()
-        || ext.mmio_base == 0 || ext.mmio_base & 3 != 0 || ext.mmio_length < 0x1100
+        || ext.mmio_base == 0 || ext.mmio_base & 3 != 0 || ext.mmio_physical == 0
+        || ext.mmio_physical & 0xfff != 0 || ext.mmio_length < 0x1100
         || ext.mmio_length > 0x10000 || ext.device_object == 0
         || ext.hal.is_null() || ext.device.is_null() {
         return STATUS_INVALID_PARAMETER;
@@ -78,6 +82,8 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         return STATUS_NOT_SUPPORTED;
     }
     HANDOFF.store(ext as *const _ as u64, Ordering::Release);
+    object.major_function[IRP_MJ_PNP] = Some(pnp_dispatch);
+    object.driver_unload = Some(driver_unload);
     STATUS_SUCCESS
 }
 
@@ -87,6 +93,7 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
 /// step; this routine never enables bus mastering or starts a port engine.
 #[unsafe(no_mangle)]
 pub unsafe extern "win64" fn CognacStorAhciPrepareController() -> i32 {
+    if !START_RESOURCES_VALID.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
     if BUSY.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
         return STATUS_DEVICE_BUSY;
     }
@@ -120,6 +127,83 @@ pub unsafe extern "win64" fn CognacStorAhciQueryControllerInfo(output: *mut Cont
     if !PREPARED.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
     unsafe { output.write((*INFO.0.get()).assume_init_read()); }
     STATUS_SUCCESS
+}
+
+const IRP_MJ_PNP: usize = 0x1b;
+const IRP_MN_START_DEVICE: u8 = 0x00;
+const IRP_MN_QUERY_REMOVE_DEVICE: u8 = 0x01;
+const IRP_MN_REMOVE_DEVICE: u8 = 0x02;
+const IRP_MN_CANCEL_REMOVE_DEVICE: u8 = 0x03;
+const IRP_MN_STOP_DEVICE: u8 = 0x04;
+const IRP_MN_QUERY_STOP_DEVICE: u8 = 0x05;
+const IRP_MN_CANCEL_STOP_DEVICE: u8 = 0x06;
+const IRP_MN_SURPRISE_REMOVAL: u8 = 0x17;
+
+unsafe fn translated_ahci_bar_matches(resources: *const u8, physical: u64, minimum_length: u64) -> bool {
+    if resources.is_null() { return false; }
+    let full_count = unsafe { core::ptr::read_unaligned(resources.cast::<u32>()) };
+    if full_count == 0 || full_count > 8 { return false; }
+    let mut cursor = 4usize;
+    for _ in 0..full_count {
+        let partial_count = unsafe { core::ptr::read_unaligned(resources.add(cursor + 12).cast::<u32>()) };
+        if partial_count > 64 { return false; }
+        let mut descriptor = cursor + 16;
+        for _ in 0..partial_count {
+            let kind = unsafe { *resources.add(descriptor) };
+            if kind == 3 {
+                let start = unsafe { core::ptr::read_unaligned(resources.add(descriptor + 4).cast::<u64>()) };
+                let length = unsafe { core::ptr::read_unaligned(resources.add(descriptor + 12).cast::<u32>()) } as u64;
+                if start == physical && length >= minimum_length { return true; }
+            }
+            descriptor += 16;
+        }
+        cursor = descriptor;
+        if cursor > 4096 { return false; }
+    }
+    false
+}
+
+unsafe extern "system" fn pnp_dispatch(_device: *mut cognacos_nt_abi::io::DEVICE_OBJECT, irp: *mut cognacos_nt_abi::io::IRP) -> i32 {
+    if irp.is_null() { return STATUS_INVALID_PARAMETER; }
+    let stack = unsafe { (*irp).tail[8] as *mut cognacos_nt_abi::io::IO_STACK_LOCATION };
+    if stack.is_null() { return STATUS_INVALID_PARAMETER; }
+    let status = match unsafe { (*stack).minor_function } {
+        IRP_MN_START_DEVICE => {
+            let Some(ext) = handoff() else { return STATUS_DEVICE_NOT_READY; };
+            let translated = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<*const u8>()) };
+            if unsafe { translated_ahci_bar_matches(translated, ext.mmio_physical, ext.mmio_length) } {
+                START_RESOURCES_VALID.store(true, Ordering::Release);
+                let result = unsafe { CognacStorAhciPrepareController() };
+                if result != STATUS_SUCCESS { START_RESOURCES_VALID.store(false, Ordering::Release); }
+                result
+            } else { STATUS_INVALID_PARAMETER }
+        }
+        IRP_MN_STOP_DEVICE | IRP_MN_SURPRISE_REMOVAL | IRP_MN_REMOVE_DEVICE => {
+            START_RESOURCES_VALID.store(false, Ordering::Release);
+            PREPARED.store(false, Ordering::Release);
+            if let Some(ext) = handoff() {
+                if let Some(device) = unsafe { ext.device.as_ref() } {
+                    if let Some(set) = device.set_bus_master {
+                        if unsafe { set(ext.device_object, false) }.code != 0 { STATUS_DEVICE_NOT_READY } else { STATUS_SUCCESS }
+                    } else { STATUS_NOT_SUPPORTED }
+                } else { STATUS_INVALID_PARAMETER }
+            } else { STATUS_DEVICE_NOT_READY }
+        }
+        IRP_MN_QUERY_REMOVE_DEVICE | IRP_MN_CANCEL_REMOVE_DEVICE
+        | IRP_MN_QUERY_STOP_DEVICE | IRP_MN_CANCEL_STOP_DEVICE => STATUS_SUCCESS,
+        _ => STATUS_INVALID_DEVICE_REQUEST,
+    };
+    unsafe { (*irp).io_status.status.status = status; (*irp).io_status.information = 0; }
+    status
+}
+unsafe extern "system" fn driver_unload(_driver: *mut DRIVER_OBJECT) {
+    START_RESOURCES_VALID.store(false, Ordering::Release);
+    PREPARED.store(false, Ordering::Release);
+    if let Some(ext) = handoff() {
+        if let Some(device) = unsafe { ext.device.as_ref() } {
+            if let Some(set) = device.set_bus_master { let _ = unsafe { set(ext.device_object, false) }; }
+        }
+    }
 }
 
 #[used]
