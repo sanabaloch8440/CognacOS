@@ -81,6 +81,21 @@ impl XhciRegisterIo for Platform<'_> {
     }
 }
 impl XhciPlatform for Platform<'_> {
+    fn dma_mapping_ready(&self, allocation: DmaAllocation) -> bool {
+        // Validate the exact live mapping against this controller's requester
+        // domain. A successful allocation alone does not prove that the IOVA
+        // is currently mapped and pinned for this device.
+        let Some(validate) = self.dev.validate_dma else { return false; };
+        unsafe {
+            validate(
+                self.ext.device_object,
+                allocation.cpu_address,
+                allocation.device_address,
+                allocation.size,
+            ).code == 0
+        }
+    }
+
     fn allocate_dma(&mut self, size: u64, alignment: u64, maximum: u64) -> Result<DmaAllocation, ()> {
         let allocate = self.dev.allocate_dma.ok_or(())?;
         let mut cpu = 0u64;
