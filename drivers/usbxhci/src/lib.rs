@@ -761,6 +761,13 @@ impl XhciRegisterIo for HalBackedXhciPlatform {
     }
 }
 impl XhciPlatform for HalBackedXhciPlatform {
+    fn dma_mapping_ready(&self, allocation: DmaAllocation) -> bool {
+        // HAL DMA allocation is the authority that creates the requester-specific
+        // IOMMU mapping. Requiring both lifetime callbacks prevents accepting a
+        // bare address from an incomplete/legacy service table.
+        self.table().has_dma() && allocation.cpu_address != 0
+            && allocation.device_address != 0 && allocation.size != 0
+    }
     fn allocate_dma(&mut self, size: u64, alignment: u64, max_device_address: u64) -> Result<DmaAllocation, ()> {
         if size == 0 || alignment < 16 || !alignment.is_power_of_two() { return Err(()); }
         let allocate = self.table().allocate_dma.ok_or(())?;
