@@ -14,12 +14,7 @@ setup_toolchain() {
   need cargo
   need rustup
   need clang
-  need clang++
-  need llvm-ar
   need ld.lld
-  need cmake
-  need nasm
-  need perl
 
   local sysroot lld_bin shim
   sysroot="$(rustc --print sysroot)"
@@ -32,11 +27,12 @@ setup_toolchain() {
   ln -sfn "$lld_bin" "$shim/lld-link"
   ln -sfn "$lld_bin" "$shim/ld.lld"
   export PATH="$shim:$PATH"
-  export CC=clang CXX=clang++ AR=llvm-ar
+  unset CC CXX AR
   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang
   export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=lld"
   export CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link
-  export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=rust-lld
+  export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=clang
+  export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS="-C link-arg=--target=x86_64-w64-windows-gnu -C link-arg=-fuse-ld=lld"
   export CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER=rust-lld
   export CARGO_TARGET_X86_64_UNKNOWN_UEFI_LINKER=rust-lld
   export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
@@ -45,11 +41,11 @@ setup_toolchain() {
   if [[ -n "${GITHUB_PATH:-}" ]]; then printf '%s\n' "$shim" >> "$GITHUB_PATH"; fi
   if [[ -n "${GITHUB_ENV:-}" ]]; then
     {
-      printf 'CC=clang\nCXX=clang++\nAR=llvm-ar\n'
       printf 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang\n'
       printf 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=lld\n'
       printf 'CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=lld-link\n'
-      printf 'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=rust-lld\n'
+      printf 'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=clang\n'
+      printf 'CARGO_TARGET_X86_64_PC_WINDOWS_GNU_RUSTFLAGS=-C link-arg=--target=x86_64-w64-windows-gnu -C link-arg=-fuse-ld=lld\n'
       printf 'CARGO_TARGET_X86_64_UNKNOWN_NONE_LINKER=rust-lld\n'
       printf 'CARGO_TARGET_X86_64_UNKNOWN_UEFI_LINKER=rust-lld\n'
       printf 'CARGO_TARGET_DIR=%s\n' "$CARGO_TARGET_DIR"
