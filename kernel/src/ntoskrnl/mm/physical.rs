@@ -414,17 +414,88 @@ fn collect_high_regions(map: *const u8, entries: usize, stride: usize,
     Ok(count)
 }
 
-pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Result<usize, AllocError> {
+fn subtract_reserved_range(
+    regions: &mut [Region; MAX_REGIONS],
+    count: &mut usize,
+    start: u64,
+    end: u64,
+) -> Result<(), AllocError> {
+    let mut rebuilt = [Region::EMPTY; MAX_REGIONS];
+    let mut rebuilt_count = 0usize;
+    for region in regions.iter().take(*count).copied() {
+        if end <= region.next || start >= region.end {
+            if rebuilt_count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
+            rebuilt[rebuilt_count] = region;
+            rebuilt_count += 1;
+            continue;
+        }
+        if region.next < start {
+            if rebuilt_count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
+            rebuilt[rebuilt_count] = Region { next: region.next, end: start.min(region.end) };
+            rebuilt_count += 1;
+        }
+        if end < region.end {
+            if rebuilt_count == MAX_REGIONS { return Err(AllocError::TooManyRegions); }
+            rebuilt[rebuilt_count] = Region { next: end.max(region.next), end: region.end };
+            rebuilt_count += 1;
+        }
+    }
+    regions.copy_from_slice(&rebuilt);
+    *count = rebuilt_count;
+    Ok(())
+}
+
+fn firmware_map_covers_ram(
+    map: *const u8, entries: usize, stride: usize, start: u64, end: u64,
+) -> bool {
+    if map.is_null() || start >= end || stride < core::mem::size_of::<MemoryDescriptor>() {
+        return false;
+    }
+    let mut cursor = start;
+    while cursor < end {
+        let mut covered = cursor;
+        for i in 0..entries {
+            let Some(offset) = i.checked_mul(stride) else { return false; };
+            let Some(address) = (map as usize).checked_add(offset) else { return false; };
+            let d = unsafe { ptr::read_unaligned(address as *const MemoryDescriptor) };
+            if d.number_of_pages == 0 || !matches!(d.kind, 1..=7 | 9 | 10 | 14) { continue; }
+            let Some(bytes) = d.number_of_pages.checked_mul(PAGE_SIZE) else { continue; };
+            let Some(region_end) = d.physical_start.checked_add(bytes) else { continue; };
+            if cursor >= d.physical_start && cursor < region_end {
+                covered = covered.max(region_end.min(end));
+            }
+        }
+        if covered == cursor { return false; }
+        cursor = covered;
+    }
+    true
+}
+
+/// Initialize both physical allocators with firmware-reserved intervals already
+/// removed from their staged free lists. RMRRs are supplied as half-open ranges;
+/// no allocator-visible state is published until every range validates and is
+/// subtracted successfully.
+pub unsafe fn initialize_with_reserved_ranges(
+    map: *const u8, entries: usize, stride: usize, reserved: &[(u64, u64)],
+) -> Result<usize, AllocError> {
     let _guard = MemoryGuard::acquire();
     let mut staged = [Region::EMPTY; MAX_REGIONS];
     let mut staged_high = [Region::EMPTY; MAX_REGIONS];
-    let count = collect_regions(map, entries, stride, &mut staged)?;
-    let high_count = collect_high_regions(map, entries, stride, &mut staged_high)?;
+    let mut count = collect_regions(map, entries, stride, &mut staged)?;
+    let mut high_count = collect_high_regions(map, entries, stride, &mut staged_high)?;
+    for &(raw_start, raw_end) in reserved {
+        if raw_start == 0 || raw_start >= raw_end
+            || raw_start & (PAGE_SIZE - 1) != 0 || raw_end & (PAGE_SIZE - 1) != 0
+            || !firmware_map_covers_ram(map, entries, stride, raw_start, raw_end) {
+            return Err(AllocError::InvalidMap);
+        }
+        subtract_reserved_range(&mut staged, &mut count, raw_start, raw_end)?;
+        subtract_reserved_range(&mut staged_high, &mut high_count, raw_start, raw_end)?;
+    }
     let regions = unsafe { &mut *REGIONS.0.get() };
     regions.copy_from_slice(&staged);
     let high_regions = unsafe { &mut *HIGH_REGIONS.0.get() };
     high_regions.copy_from_slice(&staged_high);
-    // Reinitialization must not retain frames returned by a previous map.
     unsafe { (&mut *FREE_PAGES.0.get()).1 = 0; }
     unsafe { (&mut *HIGH_FREE_PAGES.0.get()).1 = 0; }
     FIRMWARE_MAP.store(map as u64, core::sync::atomic::Ordering::Release);
@@ -433,6 +504,10 @@ pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Resul
     REGION_COUNT.store(count, core::sync::atomic::Ordering::Release);
     HIGH_REGION_COUNT.store(high_count, core::sync::atomic::Ordering::Release);
     Ok(count)
+}
+
+pub unsafe fn initialize(map: *const u8, entries: usize, stride: usize) -> Result<usize, AllocError> {
+    unsafe { initialize_with_reserved_ranges(map, entries, stride, &[]) }
 }
 
 /// Exclude a bootloader-owned physical interval from the early allocator.
