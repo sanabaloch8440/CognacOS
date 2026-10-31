@@ -9,7 +9,7 @@ macro_rules! fail {
 }
 
 fn read(path: &Path) -> String {
-    fs::read_to_string(path).unwrap_or_else(|e| fail("{}: {e}", path.display()))
+    fs::read_to_string(path).unwrap_or_else(|e| fail!("{}: {e}", path.display()))
 }
 
 fn validate_manifest(path: &Path) {
@@ -63,7 +63,7 @@ fn check_ntdll_def(path: &Path) {
     let required = ["NtClose", "NtOpenKey", "NtQueryValueKey", "NtYieldExecution",
         "NtQueryInformationProcess", "NtQueryInformationThread", "NtQuerySystemInformation",
         "RtlGetVersion", "RtlInitUnicodeString", "RtlAllocateHeap", "LdrGetProcedureAddress"];
-    let missing: Vec<_> = required.iter().filter(|name| !names.contains(*name)).copied().collect();
+    let missing: Vec<_> = required.iter().filter(|name| !names.contains(**name)).copied().collect();
     if !missing.is_empty() { fail!("missing required named exports: {}", missing.join(", ")); }
     println!("validated {count} unique named NTDLL exports");
 }
