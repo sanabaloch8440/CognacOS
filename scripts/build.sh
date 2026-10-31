@@ -148,6 +148,18 @@ case "${1:-help}" in
     setup_toolchain
     run_tests
     ;;
+  format)
+    setup_toolchain
+    format_sources
+    ;;
+  fmt-check)
+    setup_toolchain
+    check_format
+    ;;
+  lint)
+    setup_toolchain
+    lint_core
+    ;;
   all)
     setup_toolchain
     run_checks
@@ -160,12 +172,16 @@ case "${1:-help}" in
   *)
     cat <<'USAGE'
 Usage: scripts/build.sh {setup|toolchain|format|fmt-check|lint|check|test|all}
-  setup     Install supported Rust targets and verify the Rust/LLVM toolchain.
+  setup      Install supported Rust targets and verify the Rust/LLVM toolchain.
   toolchain  Verify compiler/linker selection without building.
-  format    Format all Rust packages using the pinned rustfmt.\n  fmt-check Verify formatting without modifying files.\n  lint      Run strict Clippy checks on the core libraries and tools.\n  check     Run core repository, kernel, UEFI and driver compile checks.
-  test      Run host-side ABI, driver and Rust tooling tests.
-  all       Run check followed by test.
+  format     Format all Rust packages using the pinned rustfmt.
+  fmt-check  Verify formatting without modifying files.
+  lint       Run strict Clippy checks on the core libraries and tools.
+  check      Run core repository, kernel, UEFI and driver compile checks.
+  test       Run host-side ABI, driver and Rust tooling tests.
+  all        Run check followed by test.
 Set CARGO_TARGET_DIR to override the default target/ directory.
 USAGE
     ;;
+
 esac
