@@ -1004,7 +1004,7 @@ mod tests {
             let name=wide(algorithm);let property=wide("KeyLengths");let mut provider=ptr::null_mut();
             assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
             let mut actual=BcryptKeyLengths{dwMinLength:0,dwMaxLength:0,dwIncrement:0};let mut required=0;
-            assert_eq!(unsafe{BCryptGetProperty(provider,property.as_ptr(),(&mut actual as *mut _).cast(),12,&mut required,0)},STATUS_SUCCESS);
+            assert_eq!(unsafe{BCryptGetProperty(provider,property.as_ptr(),(&mut actual as *mut BcryptKeyLengths).cast::<u8>(),12,&mut required,0)},STATUS_SUCCESS);
             assert_eq!(required,12);assert_eq!(actual.dwMinLength,expected.dwMinLength);assert_eq!(actual.dwMaxLength,expected.dwMaxLength);assert_eq!(actual.dwIncrement,expected.dwIncrement);
             assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
         }
@@ -1095,7 +1095,7 @@ mod tests {
             let name=algorithm.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
             let info=BcryptPkcs1PaddingInfo{pszAlgId:name.as_ptr()};
             let hash=vec![0u8;length];let signature=[0u8;64];
-            assert_eq!(unsafe{BCryptVerifySignature(key,(&info as *const _).cast_mut().cast(),hash.as_ptr(),length as ULONG,signature.as_ptr(),64,2)},STATUS_INVALID_SIGNATURE);
+            assert_eq!(unsafe{BCryptVerifySignature(key,(&info as *const BcryptPkcs1PaddingInfo) as *mut c_void,hash.as_ptr(),length as ULONG,signature.as_ptr(),64,2)},STATUS_INVALID_SIGNATURE);
         }
         assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
     }
@@ -1227,7 +1227,7 @@ mod tests {
         let nonce=[0u8;12];let mut tag=[0u8;16];
         let mut info=BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO{cbSize:core::mem::size_of::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>() as ULONG,dwInfoVersion:1,pbNonce:nonce.as_ptr() as *mut u8,cbNonce:12,pbAuthData:ptr::null_mut(),cbAuthData:0,pbTag:tag.as_mut_ptr(),cbTag:16,pbMacContext:ptr::null_mut(),cbMacContext:0,cbAAD:0,cbData:0,dwFlags:0};
         let mut plain=[0u8;16];let mut encrypted=[0u8;16];let mut written=0;
-        assert_eq!(unsafe{BCryptEncrypt(key,plain.as_mut_ptr(),16,(&mut info as *mut _).cast(),ptr::null_mut(),0,encrypted.as_mut_ptr(),16,&mut written,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptEncrypt(key,plain.as_mut_ptr(),16,(&mut info as *mut BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO).cast::<c_void>(),ptr::null_mut(),0,encrypted.as_mut_ptr(),16,&mut written,0)},STATUS_SUCCESS);
         assert_eq!(encrypted,[0xce,0xa7,0x40,0x3d,0x4d,0x60,0x6b,0x6e,0x07,0x4e,0xc5,0xd3,0xba,0xf3,0x9d,0x18]);
         assert_eq!(tag,[0xd0,0xd1,0xc8,0xa7,0x99,0x99,0x6b,0xf0,0x26,0x5b,0x98,0xb5,0xd4,0x8a,0xb9,0x19]);
         let mut recovered=[0u8;16];
