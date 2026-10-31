@@ -880,16 +880,15 @@ struct BcryptRsaBlobHeader { magic:ULONG, bit_length:ULONG, cb_public_exp:ULONG,
 /// used by this implementation.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptGenerateKeyPair(algorithm:*mut c_void,out:*mut *mut c_void,bits:ULONG,flags:ULONG)->NTSTATUS {
-    if out.is_null() || flags!=0 || !(512..=16384).contains(&bits) || bits%8!=0 { return STATUS_INVALID_PARAMETER; }
+    if out.is_null() || flags!=0 { return STATUS_INVALID_PARAMETER; }
     let provider=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
-    if !provider.rsa { return STATUS_NOT_SUPPORTED; }
     if provider.ecdh {
         if bits != 256 { return STATUS_INVALID_PARAMETER; }
         let private = P256SecretKey::random(&mut OsRng);
         let token = match register_handle(RegisteredHandle::EcdhPrivate(EcdhPrivateHandle { key: private.to_bytes().to_vec(), finalized: false })) { Ok(v) => v, Err(e) => return e };
         unsafe { out.write(token) }; return STATUS_SUCCESS;
     }
-    if !provider.rsa { return STATUS_NOT_SUPPORTED; }
+    if !provider.rsa || !(512..=16384).contains(&bits) || bits%8!=0 { return STATUS_NOT_SUPPORTED; }
     let private=match RsaPrivateKey::new(&mut OsRng,bits as usize){Ok(v)=>v,Err(_)=>return STATUS_NO_MEMORY};
     let token=match register_handle(RegisteredHandle::RsaPrivate(RsaPrivateHandle{key:private,finalized:false})){Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)};STATUS_SUCCESS
