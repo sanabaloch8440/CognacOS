@@ -58,7 +58,19 @@ pub fn verify(name:&str,pe:&Path,tsv:&Path)->Result<(),String>{
  let forwarders=actual.values().filter(|x|x.forwarder.is_some()).count();let ordinal_only=actual.values().filter(|x|x.name.is_none()).count();
  println!("PASS {name}: {} exports, {forwarders} forwarders, {ordinal_only} ordinal-only exports match names/ordinals/forwarders exactly",actual.len());Ok(())
 }
-pub fn run(specs:&[String])->Result<(),String>{if specs.is_empty(){return Err("at least one --dll NAME,PE,TSV is required".into())}for spec in specs{let (name,rest)=spec.split_once(',').ok_or("invalid --dll specification")?;let (pe,tsv)=rest.split_once(',').ok_or("invalid --dll specification; expected NAME,PE,TSV")?;verify(name,Path::new(pe),Path::new(tsv))?;}Ok(())}
+pub fn run(args:&[String])->Result<(),String>{
+ let mut specs=Vec::new();let mut i=0;
+ while i<args.len(){
+  if args[i]!="--dll"{return Err(format!("unknown argument {}",args[i]))}
+  i+=1;let spec=args.get(i).ok_or("--dll requires NAME,PE,TSV")?;
+  let (name,rest)=spec.split_once(',').ok_or("invalid --dll specification")?;
+  let (pe,tsv)=rest.split_once(',').ok_or("invalid --dll specification; expected NAME,PE,TSV")?;
+  specs.push((name.to_owned(),pe.to_owned(),tsv.to_owned()));i+=1;
+ }
+ if specs.is_empty(){return Err("at least one --dll NAME,PE,TSV is required".into())}
+ for (name,pe,tsv) in specs{verify(&name,Path::new(&pe),Path::new(&tsv))?;}
+ Ok(())
+}
 
 #[cfg(test)]
 mod tests {
