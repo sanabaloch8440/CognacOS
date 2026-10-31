@@ -96,7 +96,10 @@ impl Drop for KeyHandle { fn drop(&mut self) { self.key.zeroize(); } }
 #[derive(Clone)]
 struct RsaPrivateHandle { key: RsaPrivateKey, finalized: bool }
 #[derive(Clone)]
-enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle), RsaPublic(RsaPublicKey), RsaPrivate(RsaPrivateHandle) }
+struct EcdhPrivateHandle { key: Vec<u8>, finalized: bool }
+impl Drop for EcdhPrivateHandle { fn drop(&mut self) { self.key.zeroize(); } }
+#[derive(Clone)]
+enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle), RsaPublic(RsaPublicKey), RsaPrivate(RsaPrivateHandle), EcdhPublic(P256PublicKey), EcdhPrivate(EcdhPrivateHandle) }
 static HANDLE_TABLE: OnceLock<Mutex<HashMap<usize, RegisteredHandle>>> = OnceLock::new();
 static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x10000);
 fn handle_table() -> &'static Mutex<HashMap<usize, RegisteredHandle>> {
