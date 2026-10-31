@@ -672,5 +672,28 @@ mod tests {
     }
 
     #[test]
+    fn key_data_blob_import_rejects_bad_magic_version_length_and_key_size() {
+        let wide=|s:&str|s.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let aes=wide("AES");let mode_name=wide("ChainingMode");let mode=wide("ChainingModeCBC");let blob_name=wide("KeyDataBlob");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,aes.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mb=unsafe{core::slice::from_raw_parts(mode.as_ptr().cast::<u8>(),mode.len()*2)};
+        assert_eq!(unsafe{BCryptSetProperty(provider,mode_name.as_ptr(),mb.as_ptr(),mb.len() as u32,0)},STATUS_SUCCESS);
+        let mut bytes=Vec::new();
+        bytes.extend_from_slice(&BCRYPT_KEY_DATA_BLOB_MAGIC.to_ne_bytes());
+        bytes.extend_from_slice(&BCRYPT_KEY_DATA_BLOB_VERSION1.to_ne_bytes());
+        bytes.extend_from_slice(&16u32.to_ne_bytes());bytes.extend_from_slice(&[0x22;16]);
+        let mut imported=ptr::null_mut();
+        let mut bad=bytes.clone();bad[0]^=1;
+        assert_eq!(unsafe{BCryptImportKey(provider,ptr::null_mut(),blob_name.as_ptr(),&mut imported,ptr::null_mut(),0,bad.as_mut_ptr(),bad.len() as u32,0)},STATUS_INVALID_PARAMETER);
+        let mut bad=bytes.clone();bad[4]=2;
+        assert_eq!(unsafe{BCryptImportKey(provider,ptr::null_mut(),blob_name.as_ptr(),&mut imported,ptr::null_mut(),0,bad.as_mut_ptr(),bad.len() as u32,0)},STATUS_INVALID_PARAMETER);
+        let mut bad=bytes.clone();bad[8]=15;
+        assert_eq!(unsafe{BCryptImportKey(provider,ptr::null_mut(),blob_name.as_ptr(),&mut imported,ptr::null_mut(),0,bad.as_mut_ptr(),bad.len() as u32,0)},STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe{BCryptImportKey(provider,ptr::null_mut(),blob_name.as_ptr(),&mut imported,ptr::null_mut(),0,bytes.as_mut_ptr(),(bytes.len()-1) as u32,0)},STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
     fn supported_algorithms_have_expected_sizes() { assert_eq!(HashAlgorithm::Sha256.digest_len(),32); assert_eq!(HashAlgorithm::Sha384.digest_len(),48); assert_eq!(HashAlgorithm::Sha512.digest_len(),64); }
 }
