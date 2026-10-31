@@ -673,7 +673,7 @@ mod dmar_selection_tests {
         let mut scope=DmarDeviceScope::EMPTY;scope.scope_type=1;scope.start_bus=0;
         scope.path_count=1;scope.path[0]=DmarPath{device:5,function:0};
         info.units[1]=DmarUnit{register_base:0xfed9_0000,segment:0,include_all:false,
-            scopes:{let mut s=[DmarDeviceScope::EMPTY;64];s[0]=scope;s},scope_count:1};
+            scopes:{let mut s=[DmarDeviceScope::EMPTY;16];s[0]=scope;s},scope_count:1};
         let path=[DmarPath{device:5,function:0}];
         assert_eq!(select_dmar_unit(&info,0,0,&path).unwrap().register_base,0xfed9_0000);
         assert_eq!(select_dmar_unit(&info,1,0,&path),Err(AcpiError::MissingRoot));
