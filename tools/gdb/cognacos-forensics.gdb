@@ -21,7 +21,7 @@ set trust-readonly-sections on
 define cognacos-regs
   printf "\n===== General registers =====\n"
   info registers
-  printf "\n===== Segment/control registers (when target supports them) =====\n"
+  printf "\n===== Registers exposed by the target =====\n"
   # info registers reports the register set exposed by this target; do not
   # assume every QEMU/GDB target exposes control or segment registers by name.
 end
@@ -68,11 +68,8 @@ define cognacos-forensics
 end
 
 define cognacos-exception-breaks
-  # Set only symbols that exist in the currently loaded image.
-  break cognacos_isr13
-  break cognacos_isr14
-  break cognacos_page_fault_handler
-  break cognacos_general_protection_fault_handler
+  # Discover matching handlers without failing when a build omits a name.
+  rbreak cognacos_(isr13|isr14|page_fault_handler|general_protection_fault_handler|exception_dispatch)
   info breakpoints
 end
 
