@@ -703,11 +703,13 @@ mod tests {
         assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut key,ptr::null_mut(),0,password.as_ptr() as *mut u8,password.len() as u32,0)},STATUS_SUCCESS);
         let hash=wide("SHA256");
         let salt=b"salt";
+        let iterations:u64=4096;
         let mut buffers=[
             BcryptBuffer{cbBuffer:(hash.len()*2) as u32,BufferType:0,pvBuffer:hash.as_ptr() as *mut c_void},
             BcryptBuffer{cbBuffer:salt.len() as u32,BufferType:15,pvBuffer:salt.as_ptr() as *mut c_void},
+            BcryptBuffer{cbBuffer:core::mem::size_of::<u64>() as u32,BufferType:16,pvBuffer:(&iterations as *const u64) as *mut c_void},
         ];
-        let mut desc=BcryptBufferDesc{ulVersion:0,cBuffers:2,pBuffers:buffers.as_mut_ptr()};
+        let mut desc=BcryptBufferDesc{ulVersion:0,cBuffers:3,pBuffers:buffers.as_mut_ptr()};
         let mut output=[0u8;32];
         let mut written=0;
         assert_eq!(unsafe{BCryptKeyDerivation(key,&mut desc,output.as_mut_ptr(),32,&mut written,0)},STATUS_SUCCESS);
