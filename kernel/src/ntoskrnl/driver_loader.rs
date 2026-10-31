@@ -239,7 +239,7 @@ pub unsafe fn load_allocated_with_resolver(file:&[u8],driver_object:*mut DriverO
  // the final per-section protections and lifetime pins below. This also prevents
  // an image-copy fault from re-entering the pageable fault path during DriverEntry.
  let mapped=if crate::kernel_vm::is_driver_image_base(preferred) {
-  match crate::kernel_vm::allocate_pages_at(preferred as usize,pages) {
+  match crate::kernel_vm::allocate_pages_at(preferred,pages) {
    Ok(address)=>address,
    Err(error)=>{
     crate::serial_write(b"PE driver loader: preferred fixed-base slot allocation failed code=");
