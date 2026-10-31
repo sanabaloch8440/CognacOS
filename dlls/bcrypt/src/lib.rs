@@ -459,10 +459,19 @@ pub struct BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptGenerateSymmetricKey(algorithm:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
- if out.is_null()||!object.is_null()||object_len!=0||secret.is_null()||secret_len==0||flags!=0{return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
- if p.kdf { if secret_len>1024*1024{return STATUS_INVALID_PARAMETER;} let secret=unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec();let token=match register_handle(RegisteredHandle::KdfKey(KdfKeyHandle{secret})){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};return STATUS_SUCCESS; }
+ if out.is_null()||!object.is_null()||object_len!=0||(secret.is_null()&&secret_len!=0)||flags!=0{return STATUS_INVALID_PARAMETER;}
+ let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
+ if p.kdf {
+     if secret_len>1024*1024{return STATUS_INVALID_PARAMETER;}
+     let secret=if secret_len==0{Vec::new()}else{unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec()};
+     let token=match register_handle(RegisteredHandle::KdfKey(KdfKeyHandle{secret})){Ok(v)=>v,Err(e)=>return e};
+     unsafe{out.write(token)};return STATUS_SUCCESS;
+ }
+ if secret_len==0{return STATUS_INVALID_PARAMETER;}
  if !p.cipher||!(p.gcm && (secret_len==16||secret_len==24||secret_len==32) || p.cbc && (secret_len==16||secret_len==24||secret_len==32)){return STATUS_NOT_SUPPORTED;}
- let key=unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec();let token=match register_handle(RegisteredHandle::Key(KeyHandle{key,gcm:p.gcm,cbc:p.cbc})){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};STATUS_SUCCESS
+ let key=unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec();
+ let token=match register_handle(RegisteredHandle::Key(KeyHandle{key,gcm:p.gcm,cbc:p.cbc})){Ok(v)=>v,Err(e)=>return e};
+ unsafe{out.write(token)};STATUS_SUCCESS
 }
 unsafe fn auth_info(info:*mut c_void)->Result<(Vec<u8>,Vec<u8>,*mut u8,usize),NTSTATUS>{
  if info.is_null(){return Err(STATUS_INVALID_PARAMETER);}let i=unsafe{&mut *info.cast::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>()};
@@ -763,6 +772,31 @@ mod tests {
         assert_eq!(unsafe{BCryptDuplicateKey(key,&mut duplicate,ptr::null_mut(),0,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptDestroyKey(duplicate)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn pbkdf2_provider_accepts_an_empty_password() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name=wide("PBKDF2");
+        let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mut key=ptr::null_mut();
+        assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut key,ptr::null_mut(),0,ptr::null_mut(),0,0)},STATUS_SUCCESS);
+        let hash=wide("SHA256");
+        let salt=b"salt";
+        let iterations:u64=1;
+        let mut buffers=[
+            BcryptBuffer{cbBuffer:(hash.len()*2) as u32,BufferType:0,pvBuffer:hash.as_ptr() as *mut c_void},
+            BcryptBuffer{cbBuffer:salt.len() as u32,BufferType:15,pvBuffer:salt.as_ptr() as *mut c_void},
+            BcryptBuffer{cbBuffer:8,BufferType:16,pvBuffer:(&iterations as *const u64) as *mut c_void},
+        ];
+        let mut desc=BcryptBufferDesc{ulVersion:0,cBuffers:3,pBuffers:buffers.as_mut_ptr()};
+        let mut output=[0u8;32];
+        let mut written=0;
+        assert_eq!(unsafe{BCryptKeyDerivation(key,&mut desc,output.as_mut_ptr(),32,&mut written,0)},STATUS_SUCCESS);
+        assert_eq!(written,32);
+        assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
 
