@@ -68,7 +68,9 @@ struct KdfKeyHandle { secret: Vec<u8> }
 impl Drop for KdfKeyHandle { fn drop(&mut self) { self.secret.zeroize(); } }
 impl Drop for KeyHandle { fn drop(&mut self) { self.key.zeroize(); } }
 #[derive(Clone)]
-enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle), RsaPublic(RsaPublicKey), RsaPrivate(RsaPrivateKey) }
+struct RsaPrivateHandle { key: RsaPrivateKey, finalized: bool }
+#[derive(Clone)]
+enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle), RsaPublic(RsaPublicKey), RsaPrivate(RsaPrivateHandle) }
 static HANDLE_TABLE: OnceLock<Mutex<HashMap<usize, RegisteredHandle>>> = OnceLock::new();
 static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x10000);
 fn handle_table() -> &'static Mutex<HashMap<usize, RegisteredHandle>> {
@@ -119,6 +121,7 @@ fn rsa_public_handle(token: *mut c_void) -> Result<RsaPublicKey, NTSTATUS> {
     if token.is_null() { return Err(STATUS_INVALID_PARAMETER); }
     match handle_table().lock().map_err(|_| STATUS_NO_MEMORY)?.get(&(token as usize)) {
         Some(RegisteredHandle::RsaPublic(v)) => Ok(v.clone()),
+        Some(RegisteredHandle::RsaPrivate(v)) if v.finalized => Ok(v.key.to_public_key()),
         _ => Err(STATUS_INVALID_PARAMETER),
     }
 }
@@ -858,7 +861,7 @@ pub unsafe extern "system" fn BCryptGenerateKeyPair(algorithm:*mut c_void,out:*m
     let provider=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
     if !provider.rsa { return STATUS_NOT_SUPPORTED; }
     let private=match RsaPrivateKey::new(&mut OsRng,bits as usize){Ok(v)=>v,Err(_)=>return STATUS_NO_MEMORY};
-    let token=match register_handle(RegisteredHandle::RsaPrivate(private)){Ok(v)=>v,Err(e)=>return e};
+    let token=match register_handle(RegisteredHandle::RsaPrivate(RsaPrivateHandle{key:private,finalized:false})){Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)};STATUS_SUCCESS
 }
 
@@ -869,7 +872,7 @@ pub unsafe extern "system" fn BCryptGenerateKeyPair(algorithm:*mut c_void,out:*m
 pub unsafe extern "system" fn BCryptFinalizeKeyPair(key:*mut c_void,flags:ULONG)->NTSTATUS {
     if flags!=0 || key.is_null(){return STATUS_INVALID_PARAMETER;}
     match handle_table().lock(){
-        Ok(table)=>match table.get(&(key as usize)){Some(RegisteredHandle::RsaPrivate(_))=>STATUS_SUCCESS,_=>STATUS_INVALID_PARAMETER},
+        Ok(table)=>match table.get(&(key as usize)){Some(RegisteredHandle::RsaPrivate(v)) if !v.finalized=>{let mut table=table;match table.get_mut(&(key as usize)){Some(RegisteredHandle::RsaPrivate(state))=>{state.finalized=true;STATUS_SUCCESS},_=>STATUS_INVALID_PARAMETER}},Some(RegisteredHandle::RsaPrivate(_))=>STATUS_INVALID_PARAMETER,_=>STATUS_INVALID_PARAMETER},
         Err(_)=>STATUS_NO_MEMORY,
     }
 }
