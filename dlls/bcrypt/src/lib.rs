@@ -14,7 +14,7 @@ use cipher::{BlockDecrypt, BlockEncrypt, KeyInit, generic_array::GenericArray};
 use core::num::NonZeroU32;
 use zeroize::Zeroize;
 use core::{ffi::c_void, ptr};
-use std::{boxed::Box, collections::HashMap, sync::{Mutex, OnceLock}, vec::Vec};
+use std::{boxed::Box, collections::{HashMap,HashSet}, sync::{Mutex, OnceLock}, vec::Vec};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub type NTSTATUS = i32;
@@ -997,6 +997,36 @@ pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info
     if valid{STATUS_SUCCESS}else{STATUS_INVALID_SIGNATURE}
 }
 
+
+
+#[repr(C)] pub struct CryptProviders{pub cProviders:ULONG,pub rgpszProviders:*mut *mut u16}
+#[repr(C)] pub struct CryptProviderReg{pub cAliases:ULONG,pub rgpszAliases:*mut *mut u16,pub pUM:*mut c_void,pub pKM:*mut c_void}
+static REGISTERED_PROVIDERS:OnceLock<Mutex<HashSet<String>>>=OnceLock::new();
+fn registered_providers()->&'static Mutex<HashSet<String>>{REGISTERED_PROVIDERS.get_or_init(||Mutex::new(["Microsoft Primitive Provider".to_string()].into_iter().collect()))}
+#[no_mangle] pub unsafe extern "system" fn BCryptRegisterProvider(provider:*const u16,flags:ULONG,registration:*const CryptProviderReg)->NTSTATUS{
+ if flags&!1!=0||registration.is_null(){return STATUS_INVALID_PARAMETER;}let name=match config_name(provider){Ok(v) if !v.is_empty()=>v,_=>return STATUS_INVALID_PARAMETER};
+ match registered_providers().lock(){Ok(mut set)=>{if set.contains(&name)&&flags&1==0{return STATUS_OBJECT_NAME_COLLISION;}set.insert(name);STATUS_SUCCESS},Err(_)=>STATUS_NO_MEMORY}
+}
+#[no_mangle] pub unsafe extern "system" fn BCryptUnregisterProvider(provider:*const u16)->NTSTATUS{
+ let name=match config_name(provider){Ok(v)=>v,Err(e)=>return e};if name=="Microsoft Primitive Provider"{return STATUS_NOT_SUPPORTED;}
+ match registered_providers().lock(){Ok(mut set)=>if set.remove(&name){STATUS_SUCCESS}else{STATUS_NOT_FOUND},Err(_)=>STATUS_NO_MEMORY}
+}
+#[no_mangle] pub unsafe extern "system" fn BCryptEnumRegisteredProviders(size:*mut ULONG,out:*mut *mut CryptProviders)->NTSTATUS{
+ if size.is_null()||out.is_null(){return STATUS_INVALID_PARAMETER;}let mut names=match registered_providers().lock(){Ok(v)=>v.iter().cloned().collect::<Vec<_>>(),Err(_)=>return STATUS_NO_MEMORY};names.sort();
+ let header=core::mem::size_of::<CryptProviders>();let ptr_bytes=names.len()*core::mem::size_of::<*mut u16>();let strings=names.iter().map(|v|(v.encode_utf16().count()+1)*2).sum::<usize>();let total=header+ptr_bytes+strings;
+ if unsafe{out.read()}.is_null(){unsafe{size.write(total as ULONG)};return STATUS_BUFFER_TOO_SMALL;}
+ let base=match store_enum_buffer(total){Ok(v)=>v,Err(e)=>return e};let array=unsafe{base.add(header).cast::<*mut u16>()};let mut off=header+ptr_bytes;
+ for (i,name) in names.iter().enumerate(){let p=enum_write_wide(base,off,name);unsafe{array.add(i).write(p)};off+=(name.encode_utf16().count()+1)*2;}
+ unsafe{base.cast::<CryptProviders>().write(CryptProviders{cProviders:names.len() as ULONG,rgpszProviders:array});size.write(total as ULONG);out.write(base.cast())};STATUS_SUCCESS
+}
+#[no_mangle] pub unsafe extern "system" fn BCryptQueryProviderRegistration(provider:*const u16,mode:ULONG,interface:ULONG,size:*mut ULONG,out:*mut *mut CryptProviderReg)->NTSTATUS{
+ if size.is_null()||out.is_null()||!matches!(mode,1|2|3|4){return STATUS_INVALID_PARAMETER;}let name=match config_name(provider){Ok(v)=>v,Err(e)=>return e};
+ let found=match registered_providers().lock(){Ok(set)=>set.contains(&name),Err(_)=>return STATUS_NO_MEMORY};if !found{return STATUS_NOT_FOUND;}
+ let required=core::mem::size_of::<CryptProviderReg>() as ULONG;unsafe{size.write(required)};
+ if unsafe{out.read()}.is_null(){return STATUS_BUFFER_TOO_SMALL;}
+ let base=match store_enum_buffer(required as usize){Ok(v)=>v,Err(e)=>return e};
+ unsafe{base.cast::<CryptProviderReg>().write(CryptProviderReg{cAliases:0,rgpszAliases:ptr::null_mut(),pUM:ptr::null_mut(),pKM:ptr::null_mut()});out.write(base.cast())};let _=interface;STATUS_SUCCESS
+}
 
 const CRYPT_LOCAL:ULONG=1;
 const CRYPT_DOMAIN:ULONG=2;
