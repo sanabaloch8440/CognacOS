@@ -183,7 +183,10 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
         let mut provider=Vec::new(); for i in 0..64 { let u=unsafe{implementation.add(i).read()}; if u==0 { break; } provider.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
         match String::from_utf16(&provider).ok().as_deref() { Some("Microsoft Primitive Provider")=>{}, _=>return 0xC0000225_u32 as i32 }
     }
-    let ecdh_provider = name == "ECDH_P256";\n    let (algorithm,cipher,kdf,rsa_provider,rng_provider)=if ecdh_provider { (HashAlgorithm::Sha256,false,false,false,false) }\n    else if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false,false,false) }
+    let ecdh_provider = name == "ECDH_P256";
+    if ecdh_provider && flags != 0 { return STATUS_INVALID_PARAMETER; }
+    let (algorithm,cipher,kdf,rsa_provider,rng_provider)=if ecdh_provider { (HashAlgorithm::Sha256,false,false,false,false) }
+    else if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false,false,false) }
     else if name=="PBKDF2" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,true,false,false) }
     else if name=="RSA" || name=="RSA_SIGN" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,true,false) }
     else if name=="RNG" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,false,true) }
