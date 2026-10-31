@@ -8,6 +8,30 @@ extern crate std;
 
 pub const HAL_CONTRACT_VERSION: u32 = 1;
 
+/// Small NT I/O-manager service surface passed to native WDM drivers. Keeping
+/// completion in a versioned kernel table avoids static imports from a driver
+/// image while preserving the IoCompleteRequest calling convention.
+pub const KERNEL_IO_SERVICES_VERSION: u32 = 1;
+pub type CompleteIrp = unsafe extern "win64" fn(
+    irp: *mut cognacos_nt_abi::io::IRP,
+    priority_boost: i8,
+);
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct KernelIoServiceTable {
+    pub size: u32,
+    pub version: u32,
+    pub complete_irp: Option<CompleteIrp>,
+}
+impl KernelIoServiceTable {
+    pub const fn compatible(&self) -> bool {
+        self.size as usize >= core::mem::size_of::<Self>()
+            && self.version == KERNEL_IO_SERVICES_VERSION
+            && self.complete_irp.is_some()
+    }
+}
+
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HalStatus { pub code: u32 }
