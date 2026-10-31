@@ -397,6 +397,52 @@ pub unsafe extern "system" fn BCryptDecrypt(key:*mut c_void,input:*mut u8,input_
  let alg=match k.key.len(){16=>&aead::AES_128_GCM,32=>&aead::AES_256_GCM,_=>return STATUS_INVALID_PARAMETER};let unbound=match aead::UnboundKey::new(alg,&k.key){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};let less=aead::LessSafeKey::new(unbound);let nonce=match aead::Nonce::try_assume_unique_for_key(&nonce){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
  let tagbytes=unsafe{core::slice::from_raw_parts(tag,16)};let plain=match less.open_in_place_separate_tag(nonce,aead::Aad::from(aad.as_slice()),tagbytes,&mut buf){Ok(v)=>v,Err(_)=>return STATUS_AUTH_TAG_MISMATCH};unsafe{ptr::copy_nonoverlapping(plain.as_ptr(),output,plain.len());result_len.write(plain.len() as ULONG);let info=&mut *padding_info.cast::<BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO>();info.cbAAD=info.cbAuthData;info.cbData=plain.len() as u64};STATUS_SUCCESS
 }
+const BCRYPT_KEY_DATA_BLOB_MAGIC: ULONG = 0x4d42_444b;
+const BCRYPT_KEY_DATA_BLOB_VERSION1: ULONG = 1;
+const BCRYPT_KEY_DATA_BLOB: &str = "KeyDataBlob";
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct BcryptKeyDataBlobHeader { dwMagic: ULONG, dwVersion: ULONG, cbKeyData: ULONG }
+
+#[no_mangle]
+pub unsafe extern "system" fn BCryptDuplicateKey(key:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,flags:ULONG)->NTSTATUS {
+    if out.is_null() || !object.is_null() || object_len != 0 || flags != 0 { return STATUS_INVALID_PARAMETER; }
+    let state = match key_handle(key) { Ok(v) => v, Err(e) => return e };
+    match register_handle(RegisteredHandle::Key(state)) { Ok(token) => { unsafe { out.write(token) }; STATUS_SUCCESS }, Err(e) => e }
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn BCryptImportKey(algorithm:*mut c_void,import_key:*mut c_void,blob_type:*const u16,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,input:*mut u8,input_len:ULONG,flags:ULONG)->NTSTATUS {
+    if out.is_null() || blob_type.is_null() || !import_key.is_null() || !object.is_null() || object_len != 0 || input.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
+    let name = match unsafe { read_property_name(blob_type) } { Ok(v) => v, Err(e) => return e };
+    if name != BCRYPT_KEY_DATA_BLOB { return STATUS_NOT_SUPPORTED; }
+    let provider = match algorithm_handle(algorithm) { Ok(v) => v, Err(e) => return e };
+    if !provider.cipher || (!provider.cbc && !provider.gcm) { return STATUS_INVALID_PARAMETER; }
+    if (input_len as usize) < core::mem::size_of::<BcryptKeyDataBlobHeader>() { return STATUS_INVALID_PARAMETER; }
+    let header = unsafe { ptr::read_unaligned(input.cast::<BcryptKeyDataBlobHeader>()) };
+    let key_len = header.cbKeyData as usize;
+    let expected = match core::mem::size_of::<BcryptKeyDataBlobHeader>().checked_add(key_len) { Some(v) => v, None => return STATUS_INVALID_PARAMETER };
+    if header.dwMagic != BCRYPT_KEY_DATA_BLOB_MAGIC || header.dwVersion != BCRYPT_KEY_DATA_BLOB_VERSION1 || expected != input_len as usize || !matches!(key_len,16|24|32) { return STATUS_INVALID_PARAMETER; }
+    let key_bytes = unsafe { core::slice::from_raw_parts(input.add(core::mem::size_of::<BcryptKeyDataBlobHeader>()), key_len) }.to_vec();
+    let token = match register_handle(RegisteredHandle::Key(KeyHandle { key:key_bytes, gcm:provider.gcm, cbc:provider.cbc })) { Ok(v) => v, Err(e) => return e };
+    unsafe { out.write(token) }; STATUS_SUCCESS
+}
+
+#[no_mangle]
+pub unsafe extern "system" fn BCryptExportKey(key:*mut c_void,export_key:*mut c_void,blob_type:*const u16,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
+    if result_len.is_null() || blob_type.is_null() || !export_key.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
+    let name = match unsafe { read_property_name(blob_type) } { Ok(v) => v, Err(e) => return e };
+    if name != BCRYPT_KEY_DATA_BLOB { return STATUS_NOT_SUPPORTED; }
+    let state = match key_handle(key) { Ok(v) => v, Err(e) => return e };
+    let required = match core::mem::size_of::<BcryptKeyDataBlobHeader>().checked_add(state.key.len()) { Some(v) => v, None => return STATUS_INVALID_PARAMETER };
+    unsafe { result_len.write(required as ULONG) };
+    if output.is_null() || (output_len as usize) < required { return STATUS_BUFFER_TOO_SMALL; }
+    let header = BcryptKeyDataBlobHeader { dwMagic:BCRYPT_KEY_DATA_BLOB_MAGIC, dwVersion:BCRYPT_KEY_DATA_BLOB_VERSION1, cbKeyData:state.key.len() as ULONG };
+    unsafe { ptr::write_unaligned(output.cast::<BcryptKeyDataBlobHeader>(),header); ptr::copy_nonoverlapping(state.key.as_ptr(),output.add(core::mem::size_of::<BcryptKeyDataBlobHeader>()),state.key.len()); }
+    STATUS_SUCCESS
+}
+
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDestroyKey(key:*mut c_void)->NTSTATUS{remove_handle(key,2)}
 
