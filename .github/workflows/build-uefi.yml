@@ -379,7 +379,7 @@ jobs:
           file build/dlls/kernelbase.dll | grep -q 'PE32+.*DLL'
           file build/dlls/shell32.dll | grep -q 'PE32+.*DLL'
           file build/dlls/msvcrt.dll | grep -q 'PE32+.*DLL'
-          python3 tools/verify_dll_exports.py \
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- verify-dll-exports \\
             --dll kernel32,build/dlls/kernel32.dll,dlls/kernel32/exports/windows-11-x64-exports.tsv \
             --dll kernelbase,build/dlls/kernelbase.dll,dlls/kernelbase/exports/windows-11-x64-exports.tsv \
             --dll shell32,build/dlls/shell32.dll,dlls/shell32/exports/windows-11-x64-exports.tsv \
@@ -390,7 +390,7 @@ jobs:
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:cognac_syssetup_dll_entry -C link-arg=/DEF:$GITHUB_WORKSPACE/dlls/syssetup/exports/syssetup-x64.def -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/dlls/syssetup" cargo build --manifest-path dlls/syssetup/Cargo.toml --lib --target x86_64-pc-windows-msvc --release
           cp target/x86_64-pc-windows-msvc/release/syssetup.dll build/dlls/syssetup.dll
           file build/dlls/syssetup.dll | grep -q 'PE32+.*DLL'
-          python3 tools/verify_dll_exports.py --dll syssetup,build/dlls/syssetup.dll,dlls/syssetup/exports/windows-11-x64-exports.tsv
+          cargo run --quiet --target x86_64-unknown-linux-gnu --manifest-path tools/rust/Cargo.toml -- verify-dll-exports --dll syssetup,build/dlls/syssetup.dll,dlls/syssetup/exports/windows-11-x64-exports.tsv
           llvm-dlltool -m i386:x86-64 -d programs/rundll32/exports/kernel32.def -l programs/rundll32/kernel32.lib
           RUSTFLAGS="-C link-arg=/NODEFAULTLIB -C link-arg=/ENTRY:rundll32_entry -C link-arg=/LIBPATH:$GITHUB_WORKSPACE/programs/rundll32" cargo build --manifest-path programs/rundll32/Cargo.toml --bin rundll32 --target x86_64-pc-windows-msvc --release
           cp target/x86_64-pc-windows-msvc/release/rundll32.exe build/dlls/rundll32.exe
