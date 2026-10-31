@@ -5,7 +5,7 @@
 
 use aws_lc_rs::{aead, digest, hmac, pbkdf2, rand};
 use rsa::{pkcs1v15::{Signature as RsaSignature, VerifyingKey}, signature::hazmat::PrehashVerifier, traits::PublicKeyParts, BigUint, RsaPublicKey};
-use sha2::Sha256;
+use sha2::{Sha256, Sha384, Sha512};
 use aes::{Aes128, Aes192, Aes256};
 use aes_gcm::{aead::AeadInPlace, AesGcm};
 use aes_gcm::aead::generic_array::typenum::{U12, U16};
@@ -713,12 +713,18 @@ pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info
     if padding_info.is_null() || hash.is_null() || hash_len!=32 || signature.is_null() || flags!=BCRYPT_PAD_PKCS1 {return STATUS_INVALID_PARAMETER;}
     let info=unsafe{&*padding_info.cast::<BcryptPkcs1PaddingInfo>()};
     let alg=match unsafe{HashAlgorithm::from_utf16(info.pszAlgId)}{Ok(v)=>v,Err(e)=>return e};
-    if alg!=HashAlgorithm::Sha256{return STATUS_NOT_SUPPORTED;}
-    let public=match handle_table().lock(){Ok(t)=>match t.get(&(key as usize)){Some(RegisteredHandle::RsaPublic(v))=>v.clone(),_=>return STATUS_INVALID_PARAMETER},Err(_)=>return STATUS_NO_MEMORY};
+    let expected_len=alg.digest_len();
+    if hash_len!=expected_len{return STATUS_INVALID_PARAMETER;}
+    let public=match rsa_public_handle(key){Ok(v)=>v,Err(e)=>return e};
     if signature_len as usize!=public.size(){return STATUS_INVALID_PARAMETER;}
     let sig=match RsaSignature::try_from(unsafe{core::slice::from_raw_parts(signature,signature_len as usize)}){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
-    let verifier=VerifyingKey::<Sha256>::new(public);
-    match verifier.verify_prehash(unsafe{core::slice::from_raw_parts(hash,hash_len as usize)},&sig){Ok(())=>STATUS_SUCCESS,Err(_)=>STATUS_INVALID_SIGNATURE}
+    let digest=unsafe{core::slice::from_raw_parts(hash,hash_len as usize)};
+    let valid=match alg {
+        HashAlgorithm::Sha256=>VerifyingKey::<Sha256>::new(public).verify_prehash(digest,&sig).is_ok(),
+        HashAlgorithm::Sha384=>VerifyingKey::<Sha384>::new(public).verify_prehash(digest,&sig).is_ok(),
+        HashAlgorithm::Sha512=>VerifyingKey::<Sha512>::new(public).verify_prehash(digest,&sig).is_ok(),
+    };
+    if valid{STATUS_SUCCESS}else{STATUS_INVALID_SIGNATURE}
 }
 
 // x64 ABI layout guards: these structures are consumed directly by Windows callers.
@@ -996,6 +1002,19 @@ mod tests {
             *mut c_void, *mut u8, ULONG, ULONG
         ) -> NTSTATUS = BCryptGenRandom;
         let _: unsafe extern "system" fn(*mut u8) -> NTSTATUS = BCryptGetFipsAlgorithmMode;
+    }
+
+    #[test]
+    fn rsa_verify_accepts_all_implemented_sha2_pkcs1_padding_descriptors() {
+        let public=RsaPublicKey::new(BigUint::from_bytes_be(&[0xffu8;64]),BigUint::from(65537u32)).unwrap();
+        let key=register_handle(RegisteredHandle::RsaPublic(public)).unwrap();
+        for (algorithm,length) in [("SHA256",32usize),("SHA384",48),("SHA512",64)] {
+            let name=algorithm.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+            let info=BcryptPkcs1PaddingInfo{pszAlgId:name.as_ptr()};
+            let hash=vec![0u8;length];let signature=[0u8;64];
+            assert_eq!(unsafe{BCryptVerifySignature(key,(&info as *const _).cast_mut().cast(),hash.as_ptr(),length as ULONG,signature.as_ptr(),64,2)},STATUS_INVALID_SIGNATURE);
+        }
+        assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
     }
 
     #[test]
