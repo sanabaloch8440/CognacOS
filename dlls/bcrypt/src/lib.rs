@@ -88,7 +88,7 @@ fn derive_pbkdf2(algorithm: HashAlgorithm, iterations: NonZeroU32, salt: &[u8], 
 }
 
 #[derive(Clone)]
-struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, reusable: bool, cipher: bool, kdf: bool, rsa: bool, ecdh: bool, rng: bool, kem_level: u8, gcm: bool, cbc: bool }
+struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, reusable: bool, cipher: bool, kdf: bool, rsa: bool, ecdh: bool, rng: bool, kem: bool, kem_level: u8, gcm: bool, cbc: bool }
 #[derive(Clone)]
 struct KeyHandle { key: Vec<u8>, gcm: bool, cbc: bool }
 #[derive(Clone)]
@@ -197,7 +197,7 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
     }
     let ecdh_provider = name == "ECDH_P256";
     let kem_level = match name.as_str() { "ML-KEM-512" => 1, "ML-KEM-768" => 2, "ML-KEM-1024" => 3, "ML-KEM" => 0, _ => 0 };
-    let kem_provider = name.starts_with("ML-KEM");
+    let kem_provider = matches!(name.as_str(), "ML-KEM" | "ML-KEM-512" | "ML-KEM-768" | "ML-KEM-1024");
     if (ecdh_provider || kem_provider) && flags != 0 { return STATUS_INVALID_PARAMETER; }
     let (algorithm,cipher,kdf,rsa_provider,rng_provider)=if ecdh_provider || kem_provider { (HashAlgorithm::Sha256,false,false,false,false) }
     else if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false,false,false) }
@@ -206,7 +206,7 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
     else if name=="RNG" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,false,false,true) }
     else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false,false,false),Err(e)=>return e } };
     if flags&BCRYPT_HASH_REUSABLE_FLAG!=0 && (cipher||kdf||rsa_provider||rng_provider||kem_provider) { return STATUS_NOT_SUPPORTED; }
-    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,reusable:flags&BCRYPT_HASH_REUSABLE_FLAG!=0,cipher,kdf,rsa:rsa_provider,ecdh:ecdh_provider,rng:rng_provider,kem_level,gcm:false,cbc:cipher})) {Ok(v)=>v,Err(e)=>return e};
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,reusable:flags&BCRYPT_HASH_REUSABLE_FLAG!=0,cipher,kdf,rsa:rsa_provider,ecdh:ecdh_provider,rng:rng_provider,kem:kem_provider,kem_level,gcm:false,cbc:cipher})) {Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
@@ -975,11 +975,12 @@ pub unsafe extern "system" fn BCryptGenerateKeyPair(algorithm:*mut c_void,out:*m
         let token = match register_handle(RegisteredHandle::EcdhPrivate(EcdhPrivateHandle { key: private.to_bytes().to_vec(), finalized: false })) { Ok(v) => v, Err(e) => return e };
         unsafe { out.write(token) }; return STATUS_SUCCESS;
     }
-    if provider.kem_level != 0 || provider.rsa == false && !provider.ecdh {
+    if provider.kem {
         let level = if provider.kem_level != 0 { provider.kem_level } else {
             match bits { 512 => 1, 768 => 2, 1024 => 3, _ => return STATUS_INVALID_PARAMETER }
         };
-        if !matches!(level,1..=3) || !matches!(bits,512|768|1024) { return STATUS_INVALID_PARAMETER; }
+        let expected_bits = match level { 1 => 512, 2 => 768, 3 => 1024, _ => return STATUS_INVALID_PARAMETER };
+        if bits != expected_bits { return STATUS_INVALID_PARAMETER; }
         let material = match level {
             1 => { let (dk,ek)=MlKem512::generate_keypair(); MlKemKeyHandle::Pair512{dk,ek,finalized:false} },
             2 => { let (dk,ek)=MlKem768::generate_keypair(); MlKemKeyHandle::Pair768{dk,ek,finalized:false} },
