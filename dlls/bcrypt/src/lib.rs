@@ -1212,7 +1212,7 @@ pub unsafe extern "system" fn BCryptEncapsulate(
     }
     if secret_len<32 || ciphertext_len<required_ciphertext as ULONG { return STATUS_BUFFER_TOO_SMALL; }
     match material {
-        MlKemKeyHandle::Pair512{ek,..}|MlKemKeyHandle::Public512{ek} => { let (ct,mut ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } ss.zeroize(); },
+        MlKemKeyHandle::Pair512{ek,..}|MlKemKeyHandle::Public512{ek} => { let (ct,mut ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } ss.0.zeroize(); },
         MlKemKeyHandle::Pair768{ek,..}|MlKemKeyHandle::Public768{ek} => { let (ct,mut ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } ss.zeroize(); },
         MlKemKeyHandle::Pair1024{ek,..}|MlKemKeyHandle::Public1024{ek} => { let (ct,mut ss)=ek.encapsulate(); unsafe { ptr::copy_nonoverlapping(ss.as_ref().as_ptr(),secret,32); ptr::copy_nonoverlapping(ct.as_ref().as_ptr(),ciphertext,ct.as_ref().len()); } ss.zeroize(); },
         MlKemKeyHandle::Private512{..}|MlKemKeyHandle::Private768{..}|MlKemKeyHandle::Private1024{..}|MlKemKeyHandle::Pending{..} => return STATUS_INVALID_PARAMETER,
@@ -1244,7 +1244,7 @@ pub unsafe extern "system" fn BCryptDecapsulate(
     if secret_len<32 { return STATUS_BUFFER_TOO_SMALL; }
     let bytes=unsafe{core::slice::from_raw_parts(ciphertext,ciphertext_len as usize)};
     let copied=match material {
-        MlKemKeyHandle::Pair512{dk,..}|MlKemKeyHandle::Private512{dk} => match dk.decapsulate_slice(bytes) {Ok(mut v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};v.zeroize();true},Err(_)=>false},
+        MlKemKeyHandle::Pair512{dk,..}|MlKemKeyHandle::Private512{dk} => match dk.decapsulate_slice(bytes) {Ok(mut v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};v.0.zeroize();true},Err(_)=>false},
         MlKemKeyHandle::Pair768{dk,..}|MlKemKeyHandle::Private768{dk} => match dk.decapsulate_slice(bytes) {Ok(mut v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};v.zeroize();true},Err(_)=>false},
         MlKemKeyHandle::Pair1024{dk,..}|MlKemKeyHandle::Private1024{dk} => match dk.decapsulate_slice(bytes) {Ok(mut v)=>{unsafe{ptr::copy_nonoverlapping(v.as_ref().as_ptr(),secret,32)};v.zeroize();true},Err(_)=>false},
         MlKemKeyHandle::Public512{..}|MlKemKeyHandle::Public768{..}|MlKemKeyHandle::Public1024{..}|MlKemKeyHandle::Pending{..} => false,
