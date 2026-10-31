@@ -269,8 +269,16 @@ unsafe extern "system" fn pnp_dispatch(_device: *mut DEVICE_OBJECT, irp: *mut IR
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
     let status = match unsafe { (*stack).minor_function } {
         IRP_MN_START_DEVICE => STATUS_SUCCESS,
-        IRP_MN_STOP_DEVICE | IRP_MN_SURPRISE_REMOVAL | IRP_MN_REMOVE_DEVICE => {
+        IRP_MN_STOP_DEVICE => {
             cancel_pending_reads(STATUS_DEVICE_NOT_READY);
+            STATUS_SUCCESS
+        }
+        IRP_MN_SURPRISE_REMOVAL | IRP_MN_REMOVE_DEVICE => {
+            cancel_pending_reads(STATUS_DEVICE_NOT_READY);
+            let _guard = Guard::acquire();
+            if KEYBOARD.ready.swap(false, Ordering::AcqRel) {
+                unsafe { &mut *KEYBOARD.stack.get() }.detach_port();
+            }
             STATUS_SUCCESS
         }
         _ => STATUS_INVALID_DEVICE_REQUEST,
