@@ -123,7 +123,8 @@ pub fn direct_map_page_writable(physical_address: u64) -> bool {
 /// Return a demand-mapped direct-map pointer for any UEFI-described RAM page.
 pub fn physical_access_pointer(physical_address: u64) -> Option<*mut u8> {
     let address = direct_map_address(physical_address)?;
-    if !crate::ntoskrnl::mm::kernel_space::ensure_direct_map_page(physical_address) {
+    if crate::ntoskrnl::mm::kernel_space::is_initialized()
+        && !crate::ntoskrnl::mm::kernel_space::ensure_direct_map_page(physical_address) {
         return None;
     }
     Some(address as *mut u8)
@@ -468,7 +469,8 @@ pub unsafe fn allocate_data_page() -> Result<u64, AllocError> {
         // Install the direct-map leaf before touching it. This keeps the
         // allocator's zeroing path out of the exception dispatcher and avoids
         // recursive page faults while a page-in operation owns VM locks.
-        if !crate::ntoskrnl::mm::kernel_space::ensure_direct_map_page(page) {
+        if crate::ntoskrnl::mm::kernel_space::is_initialized()
+            && !crate::ntoskrnl::mm::kernel_space::ensure_direct_map_page(page) {
             let _ = unsafe { free_page(page) };
             return Err(AllocError::InvalidMap);
         }
