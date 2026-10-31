@@ -14,7 +14,7 @@ fn has_raw_bytes_autoref(source: &str, suffix: &str) -> bool {
     source.match_indices("(*").any(|(start, _)| {
         let tail = &source[start + 2..];
         let ident_len = tail.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').map(char::len_utf8).sum::<usize>();
-        ident_len > 0 && tail[ident_len..].starts_with(suffix)
+        ident_len > 0 && tail[ident_len..].strip_prefix(')').is_some_and(|rest| rest.starts_with(suffix))
     })
 }
 fn report(name: &str, errors: Vec<String>) -> Result<(), String> {
