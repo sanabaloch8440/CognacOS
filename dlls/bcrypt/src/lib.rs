@@ -1108,6 +1108,34 @@ mod tests {
     }
 
     #[test]
+    fn aes_cbc_roundtrips_all_windows_aes_key_sizes() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        for key_bytes in [16usize,24,32] {
+            let name=wide("AES");
+            let mut provider=ptr::null_mut();
+            assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+            let property=wide("ChainingMode");
+            let mode=wide("ChainingModeCBC");
+            assert_eq!(unsafe{BCryptSetProperty(provider,property.as_ptr(),mode.as_ptr().cast(),(mode.len()*2) as ULONG,0)},STATUS_SUCCESS);
+            let mut material=vec![0x31u8;key_bytes];
+            let mut key=ptr::null_mut();
+            assert_eq!(unsafe{BCryptGenerateSymmetricKey(provider,&mut key,ptr::null_mut(),0,material.as_mut_ptr(),key_bytes as ULONG,0)},STATUS_SUCCESS);
+            let plain=b"Windows CNG AES CBC ABI test";
+            let mut iv=[0x42u8;16];
+            let mut encrypted=[0u8;64];
+            let mut encrypted_len=0;
+            assert_eq!(unsafe{BCryptEncrypt(key,plain.as_ptr() as *mut u8,plain.len() as ULONG,ptr::null_mut(),iv.as_mut_ptr(),16,encrypted.as_mut_ptr(),64,&mut encrypted_len,BCRYPT_BLOCK_PADDING)},STATUS_SUCCESS);
+            let mut decrypt_iv=[0x42u8;16];
+            let mut decrypted=[0u8;64];
+            let mut decrypted_len=0;
+            assert_eq!(unsafe{BCryptDecrypt(key,encrypted.as_mut_ptr(),encrypted_len,ptr::null_mut(),decrypt_iv.as_mut_ptr(),16,decrypted.as_mut_ptr(),64,&mut decrypted_len,BCRYPT_BLOCK_PADDING)},STATUS_SUCCESS);
+            assert_eq!(&decrypted[..decrypted_len as usize],plain);
+            assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
+            assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
+        }
+    }
+
+    #[test]
     fn symmetric_key_duplicate_and_key_data_blob_roundtrip() {
         let wide = |s:&str| s.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
         let aes_name=wide("AES"); let mode_name=wide("ChainingMode"); let cbc_name=wide("ChainingModeCBC"); let blob_name=wide("KeyDataBlob");
