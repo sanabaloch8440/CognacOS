@@ -876,6 +876,31 @@ pub unsafe extern "system" fn BCryptKeyDerivation(key:*mut c_void,params:*mut Bc
 }
 
 
+/// Derives a zeroizing CNG secret handle from a finalized P-256 private key and peer public key.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptSecretAgreement(private_key:*mut c_void,public_key:*mut c_void,secret:*mut *mut c_void,flags:ULONG)->NTSTATUS {
+    if secret.is_null() || private_key.is_null() || public_key.is_null() || flags != 0 { return STATUS_INVALID_PARAMETER; }
+    let (private, public) = match handle_table().lock() {
+        Ok(table) => {
+            let private = match table.get(&(private_key as usize)) {
+                Some(RegisteredHandle::EcdhPrivate(v)) if v.finalized => v.clone(),
+                _ => return STATUS_INVALID_PARAMETER,
+            };
+            let public = match table.get(&(public_key as usize)) {
+                Some(RegisteredHandle::EcdhPublic(v)) => v.clone(),
+                _ => return STATUS_INVALID_PARAMETER,
+            };
+            (private, public)
+        }
+        Err(_) => return STATUS_NO_MEMORY,
+    };
+    let private = match P256SecretKey::from_slice(&private.key) { Ok(v) => v, Err(_) => return STATUS_INVALID_PARAMETER };
+    let shared = p256::ecdh::diffie_hellman(private.to_nonzero_scalar(), public.as_affine());
+    let token = match register_handle(RegisteredHandle::KdfKey(KdfKeyHandle { secret: shared.raw_secret_bytes().to_vec() })) { Ok(v) => v, Err(e) => return e };
+    unsafe { secret.write(token); }
+    STATUS_SUCCESS
+}
+
 /// Destroys a CNG shared-secret handle. Secret bytes are zeroized by Drop.
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDestroySecret(secret:*mut c_void)->NTSTATUS { remove_handle(secret,3) }
