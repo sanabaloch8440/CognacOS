@@ -42,6 +42,33 @@ fn validate_manifest(path: &Path) {
     println!("validated {} EAT slots: {} named, {} ordinal-only (source {})", exports.len(), named_count, ordinal_count, version);
 }
 
+fn update_windows11_exports(check: bool) {
+    const URL: &str = "https://raw.githubusercontent.com/learn-more/winexports/master/data/exports/nt100_x64_26200/ntdll.dll.json";
+    let output = root.join("ntdll/exports/windows-11-x64-exports.txt");
+    let fetched = std::process::Command::new("curl").args(["-fsSL", "-A", "CognacOS-export-audit/1.0", URL]).output()
+        .unwrap_or_else(|e| fail!("could not run curl to refresh Windows export inventory: {e}"));
+    if !fetched.status.success() { fail!("download of Windows export reference failed: {}", String::from_utf8_lossy(&fetched.stderr)); }
+    let data: Value = serde_json::from_slice(&fetched.stdout).unwrap_or_else(|e| fail!("invalid export reference JSON: {e}"));
+    let mut names = BTreeSet::new();
+    for entry in data["exports"].as_array().unwrap_or_else(|| fail!("reference JSON has no exports array")) {
+        if let Some(name) = entry["name"].as_str().filter(|s| !s.is_empty()) { names.insert(name.to_owned()); }
+    }
+    if names.len() < 2000 { fail!("refusing suspiciously small Windows export inventory ({} names)", names.len()); }
+    let mut sorted: Vec<_> = names.into_iter().collect();
+    sorted.sort_by(|a,b| a.to_lowercase().cmp(&b.to_lowercase()).then_with(|| a.cmp(b)));
+    let version = data["FileVersion"].as_str().unwrap_or("unknown");
+    let mut rendered = format!("# Windows 11 x64 ntdll.dll named exports\n# Reference: {URL}\n# Reference dataset: nt100_x64_26200; PE file version {version} (AMD64).\n# Named exports only: {} entries. Ordinal-only slots are not represented.\n# Inventory only; this is not an ABI-signature database.\n", sorted.len());
+    for name in &sorted { rendered.push_str(name); rendered.push('\n'); }
+    if check {
+        let existing = fs::read_to_string(&output).unwrap_or_default();
+        if existing != rendered { fail!("Windows 11 export inventory is stale; run cognacos-tools update-windows11-exports"); }
+        println!("Windows 11 NTDLL inventory is current ({} named exports)", sorted.len());
+    } else {
+        fs::write(&output, rendered).unwrap_or_else(|e| fail!("{}: {e}", output.display()));
+        println!("Wrote {} named exports to {}", sorted.len(), output.display());
+    }
+}
+
 fn check_ntdll_def(path: &Path) {
     let source = read(path);
     let mut library = false;
@@ -109,7 +136,7 @@ fn main() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     match command.to_string_lossy().as_ref() {
         "validate-ntoskrnl-manifest" => validate_manifest(&args.next().map(PathBuf::from).unwrap_or(root.join("kernel/src/ntoskrnl/manifest_19041.json"))),
-        "check-ntdll-def" => check_ntdll_def(&args.next().map(PathBuf::from).unwrap_or(root.join("ntdll/exports/ntdll-x64.def"))),
+        "update-windows11-exports" => { let check = args.any(|x| x == "--check"); update_windows11_exports(check); },\n        "check-ntdll-def" => check_ntdll_def(&args.next().map(PathBuf::from).unwrap_or(root.join("ntdll/exports/ntdll-x64.def"))),
         "check-csrsrv-def" => {\n            let definition = args.next().map(PathBuf::from).unwrap_or(root.join("csrss/exports/csrsrv-x64.def"));\n            let mut reference = None;\n            while let Some(arg) = args.next() { if arg == "--reference" { reference = Some(args.next().map(PathBuf::from).unwrap_or_else(|| fail!("--reference requires a PE path"))); } else { fail!("unknown CSRSRV option {}", arg.to_string_lossy()); } }\n            check_csrsrv_def(&definition, reference.as_deref());\n        },
         "check-wdm-source-contracts" => source_contract::check_wdm().unwrap_or_else(|e| fail!("{e}")),
         "check-xstate-source-contracts" => source_contract::check_xstate().unwrap_or_else(|e| fail!("{e}")),
