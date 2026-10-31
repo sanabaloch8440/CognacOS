@@ -63,7 +63,7 @@ impl HashAlgorithm {
 fn hmac_digest(algorithm: HashAlgorithm, key: &[u8], data: &[u8]) -> Vec<u8> {
     macro_rules! compute {
         ($digest:ty) => {{
-            let mut mac = Hmac::<$digest>::new_from_slice(key).expect("HMAC accepts arbitrary key lengths");
+            let mut mac = <Hmac<$digest> as Mac>::new_from_slice(key).expect("HMAC accepts arbitrary key lengths");
             mac.update(data);
             mac.finalize().into_bytes().to_vec()
         }};
@@ -233,10 +233,10 @@ pub unsafe extern "system" fn BCryptFinishHash(hash:*mut c_void,output:*mut u8,o
  if output_len!=state.algorithm.digest_len(){return STATUS_INVALID_PARAMETER;}
  if state.hmac {
      let digest=hmac_digest(state.algorithm,&state.secret,&state.data);
-     unsafe{ptr::copy_nonoverlapping(digest.as_ref().as_ptr(),output,digest.as_ref().len())};
+     unsafe{ptr::copy_nonoverlapping(digest.as_slice().as_ptr(),output,digest.as_slice().len())};
  } else {
      let digest=state.algorithm.digest(&state.data);
-     unsafe{ptr::copy_nonoverlapping(digest.as_ref().as_ptr(),output,digest.as_ref().len())};
+     unsafe{ptr::copy_nonoverlapping(digest.as_slice().as_ptr(),output,digest.as_slice().len())};
  }
  if state.reusable {state.data.zeroize();state.data.clear();} else {state.finished=true;}
  STATUS_SUCCESS
@@ -454,8 +454,8 @@ pub unsafe extern "system" fn BCryptDeriveKeyPBKDF2(prf:*mut c_void,password:*mu
 pub unsafe extern "system" fn BCryptHash(algorithm:*mut c_void,secret:*const u8,secret_len:ULONG,input:*const u8,input_len:ULONG,output:*mut u8,output_len:ULONG)->NTSTATUS {
  if (secret.is_null()&&secret_len!=0)||(input.is_null()&&input_len!=0)||output.is_null(){return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};if p.cipher||(!p.hmac&&secret_len!=0){return STATUS_INVALID_PARAMETER;}if output_len<p.algorithm.digest_len(){return STATUS_BUFFER_TOO_SMALL;}
  let data=if input_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(input,input_len as usize)}};
- if p.hmac{let kbytes=if secret_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}};let d=hmac_digest(p.algorithm,kbytes,data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}
- else{let d=p.algorithm.digest(data);unsafe{ptr::copy_nonoverlapping(d.as_ref().as_ptr(),output,d.as_ref().len())};}STATUS_SUCCESS
+ if p.hmac{let kbytes=if secret_len==0{&[][..]}else{unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}};let d=hmac_digest(p.algorithm,kbytes,data);unsafe{ptr::copy_nonoverlapping(d.as_slice().as_ptr(),output,d.as_slice().len())};}
+ else{let d=p.algorithm.digest(data);unsafe{ptr::copy_nonoverlapping(d.as_slice().as_ptr(),output,d.as_slice().len())};}STATUS_SUCCESS
 }
 
 #[no_mangle]
@@ -977,17 +977,17 @@ pub unsafe extern "system" fn BCryptDeriveKeyCapi(hash:*mut c_void,target_alg:*m
             HashAlgorithm::Sha256=>{
                 let a=Sha256::digest([inner.as_slice(),digest.as_slice()].concat());
                 let b=Sha256::digest([outer.as_slice(),a.as_slice()].concat());
-                [a.as_ref(),b.as_ref()].concat()
+                [a.as_slice(),b.as_slice()].concat()
             },
             HashAlgorithm::Sha384=>{
                 let a=Sha384::digest([inner.as_slice(),digest.as_slice()].concat());
                 let b=Sha384::digest([outer.as_slice(),a.as_slice()].concat());
-                [a.as_ref(),b.as_ref()].concat()
+                [a.as_slice(),b.as_slice()].concat()
             },
             HashAlgorithm::Sha512=>{
                 let a=Sha512::digest([inner.as_slice(),digest.as_slice()].concat());
                 let b=Sha512::digest([outer.as_slice(),a.as_slice()].concat());
-                [a.as_ref(),b.as_ref()].concat()
+                [a.as_slice(),b.as_slice()].concat()
             },
         };
         material=expanded;
@@ -1377,10 +1377,10 @@ mod tests {
         let mut output=[0u8;32];
         assert_eq!(unsafe{BCryptHashData(hash,b"abc".as_ptr(),3,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptFinishHash(hash,output.as_mut_ptr(),32,0)},STATUS_SUCCESS);
-        assert_eq!(output.as_slice(),HashAlgorithm::Sha256.digest(b"abc").as_ref());
+        assert_eq!(output.as_slice(),HashAlgorithm::Sha256.digest(b"abc").as_slice());
         assert_eq!(unsafe{BCryptHashData(hash,b"def".as_ptr(),3,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptFinishHash(hash,output.as_mut_ptr(),32,0)},STATUS_SUCCESS);
-        assert_eq!(output.as_slice(),HashAlgorithm::Sha256.digest(b"def").as_ref());
+        assert_eq!(output.as_slice(),HashAlgorithm::Sha256.digest(b"def").as_slice());
         assert_eq!(unsafe{BCryptDestroyHash(hash)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
@@ -1423,12 +1423,12 @@ mod tests {
     #[test]
     fn sha256_known_answer() {
         let got = HashAlgorithm::Sha256.digest(b"abc");
-        assert_eq!(got.as_ref(), &[0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad]);
+        assert_eq!(got.as_slice(), &[0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad]);
     }
     #[test]
     fn hmac_sha256_known_answer() {
         let tag = hmac_digest(HashAlgorithm::Sha256, b"key", b"The quick brown fox jumps over the lazy dog");
-        assert_eq!(tag.as_ref(), &[0xf7,0xbc,0x83,0xf4,0x30,0x53,0x84,0x24,0xb1,0x32,0x98,0xe6,0xaa,0x6f,0xb1,0x43,0xef,0x4d,0x59,0xa1,0x49,0x46,0x17,0x59,0x97,0x47,0x9d,0xbc,0x2d,0x1a,0x3c,0xd8]);
+        assert_eq!(tag.as_slice(), &[0xf7,0xbc,0x83,0xf4,0x30,0x53,0x84,0x24,0xb1,0x32,0x98,0xe6,0xaa,0x6f,0xb1,0x43,0xef,0x4d,0x59,0xa1,0x49,0x46,0x17,0x59,0x97,0x47,0x9d,0xbc,0x2d,0x1a,0x3c,0xd8]);
     }
     #[test]
     fn pbkdf2_sha256_known_answer() {
@@ -1465,7 +1465,7 @@ mod tests {
         assert_eq!(unsafe { BCryptFinishHash(original, a.as_mut_ptr(), 32, 0) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptFinishHash(duplicate, b.as_mut_ptr(), 32, 0) }, STATUS_SUCCESS);
         assert_eq!(a, b);
-        assert_eq!(a, HashAlgorithm::Sha256.digest(b"abc").as_ref());
+        assert_eq!(a, HashAlgorithm::Sha256.digest(b"abc").as_slice());
         assert_eq!(unsafe { BCryptDestroyHash(original) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptDestroyHash(duplicate) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptCloseAlgorithmProvider(provider.cast(), 0) }, STATUS_SUCCESS);
@@ -1739,13 +1739,13 @@ mod tests {
         let mut padding=BcryptPkcs1PaddingInfo{pszAlgId:algorithm.as_ptr()};
         let digest=HashAlgorithm::Sha256.digest(b"cognacos-rsa-sign-test");
         let mut required=0;
-        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_slice().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_INVALID_PARAMETER);
         assert_eq!(unsafe{BCryptFinalizeKeyPair(key,0)},STATUS_SUCCESS);
-        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_slice().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_SUCCESS);
         assert_eq!(required,128);
         let mut signature=vec![0u8;required as usize];
-        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_ref().as_ptr() as *mut u8,32,signature.as_mut_ptr(),required,&mut required,2)},STATUS_SUCCESS);
-        assert_eq!(unsafe{BCryptVerifySignature(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_ref().as_ptr(),32,signature.as_ptr(),signature.len() as ULONG,2)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_slice().as_ptr() as *mut u8,32,signature.as_mut_ptr(),required,&mut required,2)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptVerifySignature(key,(&mut padding as *mut BcryptPkcs1PaddingInfo).cast::<c_void>(),digest.as_slice().as_ptr(),32,signature.as_ptr(),signature.len() as ULONG,2)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
@@ -2071,8 +2071,8 @@ mod tests {
             BcryptMultiHashOperation{iHash:1,hashOperation:2,pbBuffer:b.as_mut_ptr(),cbBuffer:32},
         ];
         assert_eq!(unsafe{BCryptProcessMultiOperations(multi,1,ops.as_mut_ptr(),core::mem::size_of_val(&ops) as u32,0)},STATUS_SUCCESS);
-        assert_eq!(a,HashAlgorithm::Sha256.digest(b"abc").as_ref());
-        assert_eq!(b,HashAlgorithm::Sha256.digest(b"xyz").as_ref());
+        assert_eq!(a,HashAlgorithm::Sha256.digest(b"abc").as_slice());
+        assert_eq!(b,HashAlgorithm::Sha256.digest(b"xyz").as_slice());
         let mut reused=[0u8;32];
         let mut again=[
             BcryptMultiHashOperation{iHash:0,hashOperation:1,pbBuffer:b"abc".as_ptr() as *mut u8,cbBuffer:3},
@@ -2102,7 +2102,7 @@ mod tests {
             BcryptMultiHashOperation{iHash:0,hashOperation:2,pbBuffer:out.as_mut_ptr(),cbBuffer:32},
         ];
         assert_eq!(unsafe{BCryptProcessMultiOperations(multi,1,valid.as_mut_ptr(),core::mem::size_of_val(&valid) as u32,0)},STATUS_SUCCESS);
-        assert_eq!(out,HashAlgorithm::Sha256.digest(b"abc").as_ref());
+        assert_eq!(out,HashAlgorithm::Sha256.digest(b"abc").as_slice());
         assert_eq!(unsafe{BCryptDestroyHash(multi)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
@@ -2123,8 +2123,8 @@ mod tests {
             BcryptMultiHashOperation{iHash:1,hashOperation:2,pbBuffer:b.as_mut_ptr(),cbBuffer:32},
         ];
         assert_eq!(unsafe{BCryptProcessMultiOperations(multi,1,ops.as_mut_ptr(),core::mem::size_of_val(&ops) as u32,0)},STATUS_SUCCESS);
-        assert_eq!(a,hmac_digest(HashAlgorithm::Sha256,secret,b"message-a"));
-        assert_eq!(b,hmac_digest(HashAlgorithm::Sha256,secret,b"message-b"));
+        assert_eq!(a.as_slice(),hmac_digest(HashAlgorithm::Sha256,secret,b"message-a").as_slice());
+        assert_eq!(b.as_slice(),hmac_digest(HashAlgorithm::Sha256,secret,b"message-b").as_slice());
         assert_eq!(unsafe{BCryptDestroyHash(multi)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
