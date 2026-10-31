@@ -133,6 +133,10 @@ mod context_encoding_tests {
         assert_eq!(id.devfn(),255);
         assert!(RequesterId::new(0,32,0).is_none());
         assert!(RequesterId::new(0,0,8).is_none());
+        let other_segment=RequesterId::new_segment(7,0,0x1f,7).unwrap();
+        assert_eq!(other_segment.segment,7);
+        assert_ne!(id,other_segment);
+        assert_eq!(RequesterId::new(0,0x1f,7).unwrap().segment,0);
     }
     #[test]
     fn root_entry_requires_aligned_representable_context_table(){
