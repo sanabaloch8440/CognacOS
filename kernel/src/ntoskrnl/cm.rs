@@ -20,3 +20,5 @@ pub const EXPORTS: &[(&str, u16)] = &[
 #[path = "cm/hive.rs"] pub(crate) mod hive;
 #[path = "cm/hive_writer.rs"] pub(crate) mod hive_writer;
 #[path = "cm/driver_config.rs"] pub(crate) mod driver_config;
+
+#[path = "cm/service_config.rs"] pub(crate) mod service_config;
