@@ -23,18 +23,21 @@ pub struct PlatformOps {
  pub quarantine_requester:Option<unsafe extern "C" fn(*mut core::ffi::c_void,u16,u8,u8,u8)->i32>,
 }
 unsafe impl Send for PlatformOps {} unsafe impl Sync for PlatformOps {}
-#[derive(Clone,Copy)] struct Unit { mmio:u64, length:u64, ecap:u64, root_phys:u64, root_virt:*mut u64, max_domains:u32, ops:PlatformOps, enabled:bool }
+#[derive(Clone,Copy)] struct Unit { segment:u16, mmio:u64, length:u64, ecap:u64, root_phys:u64, root_virt:*mut u64, max_domains:u32, ops:PlatformOps, enabled:bool }
 unsafe impl Send for Unit {} unsafe impl Sync for Unit {}
-struct Store(core::cell::UnsafeCell<Unit>); unsafe impl Sync for Store {}
-static UNIT:Store=Store(core::cell::UnsafeCell::new(Unit{mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),max_domains:0,ops:PlatformOps{size:0,context:core::ptr::null_mut(),alloc_table:None,free_table:None,map_mmio:None,unmap_mmio:None,clean_cache:None,quarantine_requester:None},enabled:false}));
+const EMPTY_OPS:PlatformOps=PlatformOps{size:0,context:core::ptr::null_mut(),alloc_table:None,free_table:None,map_mmio:None,unmap_mmio:None,clean_cache:None,quarantine_requester:None};
+const EMPTY_UNIT:Unit=Unit{segment:u16::MAX,mmio:0,length:0,ecap:0,root_phys:0,root_virt:core::ptr::null_mut(),max_domains:0,ops:EMPTY_OPS,enabled:false};
+struct UnitStore(core::cell::UnsafeCell<[Unit;8]>); unsafe impl Sync for UnitStore {}
+static UNITS:UnitStore=UnitStore(core::cell::UnsafeCell::new([EMPTY_UNIT;8]));
+fn unit_slot(segment:u16)->Option<usize>{unsafe{(&*UNITS.0.get()).iter().position(|u|u.enabled&&u.segment==segment)}}
 #[derive(Clone,Copy)] struct BusContext { physical:u64, virtual_address:*mut u64 }
 unsafe impl Send for BusContext {} unsafe impl Sync for BusContext {}
 const EMPTY_CONTEXT:BusContext=BusContext{physical:0,virtual_address:core::ptr::null_mut()};
-struct ContextStore(core::cell::UnsafeCell<[BusContext;256]>); unsafe impl Sync for ContextStore {}
-static CONTEXTS:ContextStore=ContextStore(core::cell::UnsafeCell::new([EMPTY_CONTEXT;256]));
-#[derive(Clone,Copy)] struct Domain { bus:u8, devfn:u8, id:u16, root_physical:u64, root_virtual:*mut u64, poisoned:bool }
+struct ContextStore(core::cell::UnsafeCell<[[BusContext;256];8]>); unsafe impl Sync for ContextStore {}
+static CONTEXTS:ContextStore=ContextStore(core::cell::UnsafeCell::new([[EMPTY_CONTEXT;256];8]));
+#[derive(Clone,Copy)] struct Domain { segment:u16, bus:u8, devfn:u8, id:u16, root_physical:u64, root_virtual:*mut u64, poisoned:bool }
 unsafe impl Send for Domain {} unsafe impl Sync for Domain {}
-const EMPTY_DOMAIN:Domain=Domain{bus:0,devfn:0,id:0,root_physical:0,root_virtual:core::ptr::null_mut(),poisoned:false};
+const EMPTY_DOMAIN:Domain=Domain{segment:u16::MAX,bus:0,devfn:0,id:0,root_physical:0,root_virtual:core::ptr::null_mut(),poisoned:false};
 struct DomainStore(core::cell::UnsafeCell<[Domain;256]>); unsafe impl Sync for DomainStore {}
 static DOMAINS:DomainStore=DomainStore(core::cell::UnsafeCell::new([EMPTY_DOMAIN;256]));
 static NEXT_DOMAIN:core::sync::atomic::AtomicU16=core::sync::atomic::AtomicU16::new(1);
@@ -66,10 +69,11 @@ pub const VT_D_PRESENT:u64=1;
 pub const VT_D_CONTEXT_AW_4_LEVEL:u64=2;
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub struct RequesterId { pub bus:u8, pub device:u8, pub function:u8 }
+pub struct RequesterId { pub segment:u16, pub bus:u8, pub device:u8, pub function:u8 }
 impl RequesterId {
-    pub const fn new(bus:u8,device:u8,function:u8)->Option<Self>{
-        if device<32&&function<8 {Some(Self{bus,device,function})}else{None}
+    pub const fn new(bus:u8,device:u8,function:u8)->Option<Self>{Self::new_segment(0,bus,device,function)}
+    pub const fn new_segment(segment:u16,bus:u8,device:u8,function:u8)->Option<Self>{
+        if device<32&&function<8 {Some(Self{segment,bus,device,function})}else{None}
     }
     pub const fn devfn(self)->usize{((self.device as usize)<<3)|(self.function as usize)}
 }
@@ -149,9 +153,9 @@ mod context_encoding_tests {
 /// Enable one firmware-described VT-d unit with an empty root table. Devices
 /// must remain bus-master-disabled until per-requester context and second-level
 /// mappings are installed. No identity mapping is created.
-pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32{
+unsafe fn initialize_segment(ops:&PlatformOps,register_pa:u64,register_len:u64,segment:u16)->i32{
  if ops.size<core::mem::size_of::<PlatformOps>() as u32||ops.alloc_table.is_none()||ops.free_table.is_none()||ops.map_mmio.is_none()||ops.unmap_mmio.is_none()||ops.clean_cache.is_none()||ops.quarantine_requester.is_none()||register_pa==0||register_len<0x1000||register_pa.checked_add(register_len).is_none(){return STATUS_INVALID_PARAMETER}
- let _g=LOCK.lock();let u=unsafe{&mut*UNIT.0.get()};if u.enabled{return STATUS_DEVICE_NOT_READY}
+ let _g=LOCK.lock();let units=unsafe{&mut*UNITS.0.get()};let Some(unit_index)=units.iter().position(|u|!u.enabled) else{return STATUS_INSUFFICIENT_RESOURCES};let u=&mut units[unit_index];
  let mut mmio=0; if unsafe{(ops.map_mmio.unwrap())(ops.context,register_pa,register_len,&mut mmio)}!=0||mmio==0{return STATUS_NOT_SUPPORTED}
  let cap=unsafe{r64(mmio,CAP)};let ecap=unsafe{r64(mmio,ECAP)};let iro=((ecap>>8)&0x3ff) as usize*16;
  let Some(max_domains)=supported_domain_count(cap) else{unsafe{(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_NOT_SUPPORTED};
@@ -183,23 +187,27 @@ pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32
  // enable translation without replaying the one-shot SRTP command.
  unsafe{w32(mmio,GCMD,base_gcmd|TE)};
  if !wait32(mmio,GSTS,TES,true){unsafe{w32(mmio,GCMD,base_gcmd);let _=wait32(mmio,GSTS,TES,false);(ops.free_table.unwrap())(ops.context,rp,rv);(ops.unmap_mmio.unwrap())(ops.context,mmio,register_len)};return STATUS_IO_TIMEOUT}
- *u=Unit{mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,max_domains,ops:*ops,enabled:true};
+ *u=Unit{segment,mmio,length:register_len,ecap,root_phys:rp,root_virt:rv,max_domains,ops:*ops,enabled:true};
  drop(_g);
- let backend_status=unsafe{register_generic_dma_backend()};
+ let backend_status=if crate::dma::iommu::available(){STATUS_SUCCESS}else{unsafe{register_generic_dma_backend()}};
  if backend_status!=STATUS_SUCCESS{return backend_status}
  STATUS_SUCCESS
 }
+pub unsafe fn initialize(ops:&PlatformOps,register_pa:u64,register_len:u64)->i32{unsafe{initialize_segment(ops,register_pa,register_len,0)}}
 
 /// Global IOTLB invalidation. A timeout is a hard failure: callers must retain
 /// the DMA pages and must not report teardown as complete.
 pub unsafe fn invalidate_iotlb()->i32{
- let _g=LOCK.lock();let u=unsafe{&mut*UNIT.0.get()};if !u.enabled{return STATUS_DEVICE_NOT_READY}
- let iro=((u.ecap>>8)&0x3ff) as usize*16;if iro.checked_add(0x20).is_none_or(|e|e>u.length as usize){return STATUS_NOT_SUPPORTED}
- unsafe{w64(u.mmio,iro+8,IVT|IIRG_GLOBAL);fence(Ordering::SeqCst)}
- if !wait64(u.mmio,iro+8,IVT){return STATUS_IO_TIMEOUT}STATUS_SUCCESS
+ let _g=LOCK.lock();let units=unsafe{&mut*UNITS.0.get()};let mut any=false;
+ for u in units.iter().filter(|u|u.enabled){any=true;let iro=((u.ecap>>8)&0x3ff) as usize*16;
+  if iro.checked_add(0x20).is_none_or(|e|e>u.length as usize){return STATUS_NOT_SUPPORTED}
+  unsafe{w64(u.mmio,iro+8,IVT|IIRG_GLOBAL);fence(Ordering::SeqCst)}
+  if !wait64(u.mmio,iro+8,IVT){return STATUS_IO_TIMEOUT}
+ }
+ if any{STATUS_SUCCESS}else{STATUS_DEVICE_NOT_READY}
 }
-pub fn is_enabled()->bool{unsafe{(&*UNIT.0.get()).enabled}}
-pub fn root_table_physical()->Option<u64>{let u=unsafe{&*UNIT.0.get()};if u.enabled{Some(u.root_phys)}else{None}}
+pub fn is_enabled()->bool{unsafe{(&*UNITS.0.get()).iter().any(|u|u.enabled)}}
+pub fn root_table_physical()->Option<u64>{unsafe{(&*UNITS.0.get()).iter().find(|u|u.enabled).map(|u|u.root_phys)}}
 
 
 /// Invalidate all cached requester contexts and translations. This is
@@ -223,14 +231,13 @@ unsafe fn invalidate_all_locked(u:&Unit)->i32{
 /// second-level root. It never creates identity mappings.
 pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
  let _guard=LOCK.lock();
- let u=unsafe{&mut*UNIT.0.get()};
- if !u.enabled{return Err(STATUS_DEVICE_NOT_READY)}
+ let units=unsafe{&mut*UNITS.0.get()};let unit_index=unit_slot(id.segment).ok_or(STATUS_DEVICE_NOT_READY)?;let u=&mut units[unit_index];
  let domains=unsafe{&mut*DOMAINS.0.get()};
- if domains.iter().any(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8){return Err(STATUS_INVALID_PARAMETER)}
+ if domains.iter().any(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8){return Err(STATUS_INVALID_PARAMETER)}
  let slot=domains.iter().position(|d|d.id==0).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
  let contexts=unsafe{&mut*CONTEXTS.0.get()};
  let bus=id.bus as usize;
- if contexts[bus].physical==0{
+ if contexts[unit_index][bus].physical==0{
   let(mut pa,mut va)=(0u64,core::ptr::null_mut());
   if unsafe{(u.ops.alloc_table.unwrap())(u.ops.context,&mut pa,&mut va)}!=0||pa==0||pa&0xfff!=0||pa&!VT_D_PAGE_MASK!=0||va.is_null(){
    if pa!=0&&!va.is_null(){let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,pa,va)};}
@@ -246,10 +253,10 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
   if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,u.root_phys,4096)}!=0{
    // Retain the context page because the root entry may be visible to hardware
    // despite a cache-maintenance error.
-   contexts[bus]=BusContext{physical:pa,virtual_address:va};
+   contexts[unit_index][bus]=BusContext{physical:pa,virtual_address:va};
    return Err(STATUS_NOT_SUPPORTED)
   }
-  contexts[bus]=BusContext{physical:pa,virtual_address:va};
+  contexts[unit_index][bus]=BusContext{physical:pa,virtual_address:va};
  }
  let(mut root_pa,mut root_va)=(0u64,core::ptr::null_mut());
  if unsafe{(u.ops.alloc_table.unwrap())(u.ops.context,&mut root_pa,&mut root_va)}!=0||root_pa==0||root_pa&0xfff!=0||root_pa&!VT_D_PAGE_MASK!=0||root_va.is_null(){
@@ -266,23 +273,23 @@ pub unsafe fn create_requester_domain(id:RequesterId)->Result<u16,i32>{
   let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
   return Err(STATUS_INVALID_PARAMETER)
  };
- let entry=unsafe{contexts[bus].virtual_address.add(id.devfn()*2)};
+ let entry=unsafe{contexts[unit_index][bus].virtual_address.add(id.devfn()*2)};
  unsafe{core::ptr::write_volatile(entry,low);core::ptr::write_volatile(entry.add(1),high)};
- if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[bus].physical,4096)}!=0{
+ if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[unit_index][bus].physical,4096)}!=0{
   // Try to retract the context entry. Free the second-level root only after
   // the clear is visible and both context/IOTLB caches are invalidated.
   unsafe{core::ptr::write_volatile(entry,0);core::ptr::write_volatile(entry.add(1),0)};
-  let clear_status=unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[bus].physical,4096)};
+  let clear_status=unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[unit_index][bus].physical,4096)};
   let invalidate_status=if clear_status==0{unsafe{invalidate_all_locked(u)}}else{STATUS_IO_TIMEOUT};
   if clear_status==0&&invalidate_status==STATUS_SUCCESS{
    let _=unsafe{(u.ops.free_table.unwrap())(u.ops.context,root_pa,root_va)};
    return Err(STATUS_NOT_SUPPORTED)
   }
-  domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va,poisoned:true};
+  domains[slot]=Domain{segment:id.segment,bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va,poisoned:true};
   poison_domain(u,id);
   return Err(STATUS_IO_TIMEOUT)
  }
- domains[slot]=Domain{bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va,poisoned:false};
+ domains[slot]=Domain{segment:id.segment,bus:id.bus,devfn:id.devfn() as u8,id:did,root_physical:root_pa,root_virtual:root_va,poisoned:false};
  if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{
   // Keep the domain and every published table page pinned. Quarantine the PCI
   // requester before returning so a caller cannot proceed with uncertain state.
@@ -349,7 +356,7 @@ unsafe fn walk_level(u:&Unit,domain_id:u16,table:*mut u64,table_pa:u64,index:usi
 /// lengths are page-aligned. A global IOTLB invalidation completes publication.
 fn poison_domain(u:&Unit,id:RequesterId){
  let domains=unsafe{&mut*DOMAINS.0.get()};
- if let Some(d)=domains.iter_mut().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8){d.poisoned=true;}
+ if let Some(d)=domains.iter_mut().find(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8){d.poisoned=true;}
  // A failed page-table rollback is not recoverable by returning an error to a
  // caller that may release the backing pages. Require a confirmed PCI bus-master
  // revoke; if the platform cannot prove it, fail-stop before memory is reclaimed.
@@ -379,9 +386,9 @@ pub unsafe fn map_pages(id:RequesterId,iova:u64,physical:u64,length:u64,permissi
   ||permissions==0||permissions&!3!=0||iova.checked_add(length).is_none_or(|e|e>SL_MAX)
   ||physical.checked_add(length).is_none_or(|e|e>SL_MAX){return STATUS_INVALID_PARAMETER}
  let _guard=LOCK.lock();
- let u=unsafe{&*UNIT.0.get()};if !u.enabled{return STATUS_DEVICE_NOT_READY}
+ let units=unsafe{&*UNITS.0.get()};let Some(unit_index)=unit_slot(id.segment) else{return STATUS_DEVICE_NOT_READY};let u=&units[unit_index];
  let domains=unsafe{&*DOMAINS.0.get()};
- let Some(domain)=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8).copied() else{return STATUS_DEVICE_NOT_READY};
+ let Some(domain)=domains.iter().find(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8).copied() else{return STATUS_DEVICE_NOT_READY};
  if domain.poisoned{return STATUS_DEVICE_NOT_READY}
  // Preflight may allocate empty intermediate tables, but never installs a leaf.
  let mut offset=0;
@@ -440,7 +447,7 @@ pub unsafe fn unmap_pages(id:RequesterId,iova:u64,length:u64)->i32{
  let _guard=LOCK.lock();
  let u=unsafe{&*UNIT.0.get()};if !u.enabled{return STATUS_DEVICE_NOT_READY}
  let domains=unsafe{&*DOMAINS.0.get()};
- let Some(domain)=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8).copied() else{return STATUS_DEVICE_NOT_READY};
+ let Some(domain)=domains.iter().find(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8).copied() else{return STATUS_DEVICE_NOT_READY};
  if domain.poisoned{return STATUS_DEVICE_NOT_READY}
  // Validate the entire range before clearing its first PTE.
  let mut offset=0;
@@ -466,7 +473,7 @@ pub fn lookup_mapping(id:RequesterId,iova:u64)->Option<(u64,u8)>{
  if iova>=SL_MAX{return None}
  let _guard=LOCK.lock();
  let domains=unsafe{&*DOMAINS.0.get()};
- let d=domains.iter().find(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8)?;
+ let d=domains.iter().find(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8)?;
  let pages=unsafe{&*TABLE_PAGES.0.get()};
  let indexes=[((iova>>39)&0x1ff)as usize,((iova>>30)&0x1ff)as usize,((iova>>21)&0x1ff)as usize,((iova>>12)&0x1ff)as usize];
  let mut table=d.root_virtual;
@@ -490,18 +497,17 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
     return STATUS_DEVICE_BUSY;
  }
  let _guard=LOCK.lock();
- let u=unsafe{&mut*UNIT.0.get()};
- if !u.enabled{return STATUS_DEVICE_NOT_READY}
+ let units=unsafe{&mut*UNITS.0.get()};let Some(unit_index)=unit_slot(id.segment) else{return STATUS_DEVICE_NOT_READY};let u=&mut units[unit_index];
  let domains=unsafe{&mut*DOMAINS.0.get()};
- let Some(index)=domains.iter().position(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8) else{return STATUS_INVALID_PARAMETER};
+ let Some(index)=domains.iter().position(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8) else{return STATUS_INVALID_PARAMETER};
  let d=domains[index];
  // Close the software admission gate before detaching any hardware context.
  // A failed free/invalidation then leaves an unusable but fully pinned domain.
  domains[index].poisoned=true;
  let contexts=unsafe{&mut*CONTEXTS.0.get()};
- let entry=unsafe{contexts[id.bus as usize].virtual_address.add(id.devfn()*2)};
+ let entry=unsafe{contexts[unit_index][id.bus as usize].virtual_address.add(id.devfn()*2)};
  unsafe{core::ptr::write_volatile(entry,0);core::ptr::write_volatile(entry.add(1),0)};
- if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[id.bus as usize].physical,4096)}!=0{return STATUS_NOT_SUPPORTED}
+ if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,contexts[unit_index][id.bus as usize].physical,4096)}!=0{return STATUS_NOT_SUPPORTED}
  if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{return STATUS_IO_TIMEOUT}
  let pages=unsafe{&mut*TABLE_PAGES.0.get()};
  for page in pages.iter_mut().filter(|p|p.used&&p.domain_id==d.id){
@@ -511,13 +517,13 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
  let status=unsafe{(u.ops.free_table.unwrap())(u.ops.context,d.root_physical,d.root_virtual)};
  if status!=0{return STATUS_NOT_SUPPORTED}
  domains[index]=EMPTY_DOMAIN;
- if !domains.iter().any(|x|x.id!=0&&x.bus==id.bus){
-  let c=contexts[id.bus as usize];
+ if !domains.iter().any(|x|x.id!=0&&x.segment==id.segment&&x.bus==id.bus){
+  let c=contexts[unit_index][id.bus as usize];
   unsafe{core::ptr::write_volatile(u.root_virt.add(id.bus as usize*2),0)};
   if unsafe{(u.ops.clean_cache.unwrap())(u.ops.context,u.root_phys,4096)}!=0{return STATUS_NOT_SUPPORTED}
   if unsafe{invalidate_all_locked(u)}!=STATUS_SUCCESS{return STATUS_IO_TIMEOUT}
   if unsafe{(u.ops.free_table.unwrap())(u.ops.context,c.physical,c.virtual_address)}!=0{return STATUS_NOT_SUPPORTED}
-  contexts[id.bus as usize]=EMPTY_CONTEXT;
+  contexts[unit_index][id.bus as usize]=EMPTY_CONTEXT;
  }
  STATUS_SUCCESS
 }
@@ -527,16 +533,16 @@ pub unsafe fn destroy_requester_domain(id:RequesterId)->i32{
 /// to a device.
 pub fn requester_domain_exists(id:RequesterId)->bool{
  let _guard=LOCK.lock();let domains=unsafe{&*DOMAINS.0.get()};
- domains.iter().any(|d|d.id!=0&&d.bus==id.bus&&d.devfn==id.devfn() as u8)
+ domains.iter().any(|d|d.id!=0&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8)
 }
 pub fn requester_domain_usable(id:RequesterId)->bool{
  let _guard=LOCK.lock();let domains=unsafe{&*DOMAINS.0.get()};
- domains.iter().any(|d|d.id!=0&&!d.poisoned&&d.bus==id.bus&&d.devfn==id.devfn() as u8)
+ domains.iter().any(|d|d.id!=0&&!d.poisoned&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8)
 }
 pub fn requester_domain_root(id:RequesterId)->Option<(u16,u64)>{
  let _guard=LOCK.lock();
  let domains=unsafe{&*DOMAINS.0.get()};
- domains.iter().find(|d|d.id!=0&&!d.poisoned&&d.bus==id.bus&&d.devfn==id.devfn() as u8).map(|d|(d.id,d.root_physical))
+ domains.iter().find(|d|d.id!=0&&!d.poisoned&&d.segment==id.segment&&d.bus==id.bus&&d.devfn==id.devfn() as u8).map(|d|(d.id,d.root_physical))
 }
 
 
@@ -555,8 +561,7 @@ static NEXT_DMA_IOVA:core::sync::atomic::AtomicU64=
 
 fn requester_for_device(device:usize)->Option<RequesterId>{
  let (segment,bus,devfn)=crate::dma::iommu::requester_identity(device)?;
- if segment!=0{return None}
- RequesterId::new(bus,devfn>>3,devfn&7)
+ RequesterId::new_segment(segment,bus,devfn>>3,devfn&7)
 }
 
 unsafe extern "system" fn generic_dma_map(
@@ -728,7 +733,7 @@ pub unsafe fn initialize_for_dmar_path(
 )->i32 {
     // The current domain/context stores are per-bus and therefore support only
     // segment zero. Never silently alias another segment's bus numbers.
-    if segment!=0||endpoint_path.is_empty()||endpoint_path.len()>8 {
+    if endpoint_path.is_empty()||endpoint_path.len()>8 {
         return STATUS_NOT_SUPPORTED;
     }
     let unit=match cognacos_acpi::select_dmar_unit(dmar,segment,root_bus,endpoint_path) {
@@ -739,7 +744,7 @@ pub unsafe fn initialize_for_dmar_path(
     if unit.register_base==0||unit.register_base&0xfff!=0 {
         return STATUS_INVALID_PARAMETER;
     }
-    unsafe{initialize(ops,unit.register_base,register_len)}
+    unsafe{initialize_segment(ops,unit.register_base,register_len,segment)}
 }
 
 
