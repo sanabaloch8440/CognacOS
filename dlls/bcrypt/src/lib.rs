@@ -1081,7 +1081,7 @@ fn registered_providers()->&'static Mutex<HashSet<String>>{REGISTERED_PROVIDERS.
 
 
 static CONFIG_CHANGE_EVENTS: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
-static NEXT_CONFIG_EVENT: AtomicUsize = AtomicUsize::new(0xC0000);
+static NEXT_CONFIG_EVENT: AtomicUsize = AtomicUsize::new(0xC0000);\nstatic CONFIG_CHANGE_GENERATION: AtomicUsize = AtomicUsize::new(0);
 fn config_change_events() -> &'static Mutex<HashSet<usize>> {
     CONFIG_CHANGE_EVENTS.get_or_init(|| Mutex::new(HashSet::new()))
 }
@@ -1315,7 +1315,11 @@ mod tests {
         assert_eq!(unsafe { BCryptRegisterConfigChangeNotify(&mut event) }, STATUS_SUCCESS);
         assert!(!event.is_null());
         assert!(config_change_events().lock().unwrap().contains(&(event as usize)));
-        signal_config_change();
+        let name: Vec<u16> = "CognacOS.Test.ConfigChange.Notify".encode_utf16().chain(core::iter::once(0)).collect();
+        let before = CONFIG_CHANGE_GENERATION.load(Ordering::Acquire);
+        assert_eq!(unsafe { BCryptCreateContext(CRYPT_LOCAL, name.as_ptr(), ptr::null()) }, STATUS_SUCCESS);
+        assert!(CONFIG_CHANGE_GENERATION.load(Ordering::Acquire) > before);
+        assert_eq!(unsafe { BCryptDeleteContext(CRYPT_LOCAL, name.as_ptr()) }, STATUS_SUCCESS);
         assert_eq!(unsafe { BCryptUnregisterConfigChangeNotify(event) }, STATUS_SUCCESS);
         assert!(!config_change_events().lock().unwrap().contains(&(event as usize)));
         assert_eq!(unsafe { BCryptUnregisterConfigChangeNotify(event) }, STATUS_INVALID_PARAMETER);
