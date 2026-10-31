@@ -653,7 +653,7 @@ pub unsafe extern "system" fn BCryptVerifySignature(key:*mut c_void,padding_info
 
 // x64 ABI layout guards: these structures are consumed directly by Windows callers.
 #[cfg(target_pointer_width = "64")]
-const _: [(); 24] = [(); core::mem::size_of::<BcryptAlgorithmIdentifier>()];
+const _: [(); 16] = [(); core::mem::size_of::<BcryptAlgorithmIdentifier>()];
 #[cfg(target_pointer_width = "64")]
 const _: [(); 16] = [(); core::mem::size_of::<BcryptBuffer>()];
 #[cfg(target_pointer_width = "64")]
@@ -849,7 +849,7 @@ mod tests {
 
     #[test]
     fn x64_cng_public_structures_match_windows_layouts() {
-        assert_eq!(core::mem::size_of::<BcryptAlgorithmIdentifier>(), 24);
+        assert_eq!(core::mem::size_of::<BcryptAlgorithmIdentifier>(), 16);
         assert_eq!(core::mem::size_of::<BcryptProvider>(), 8);
         assert_eq!(core::mem::size_of::<BcryptBuffer>(), 16);
         assert_eq!(core::mem::size_of::<BcryptBufferDesc>(), 16);
