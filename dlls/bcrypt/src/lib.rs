@@ -857,6 +857,20 @@ mod tests {
     }
 
     #[test]
+    fn cng_export_function_types_match_windows_x64_prototypes() {
+        let _: unsafe extern "system" fn(
+            *mut c_void, *mut u8, ULONG, *mut u8, ULONG, u64, *mut u8, ULONG, ULONG
+        ) -> NTSTATUS = BCryptDeriveKeyPBKDF2;
+        let _: unsafe extern "system" fn(
+            *const u16, *mut ULONG, *mut *mut BcryptProvider, ULONG
+        ) -> NTSTATUS = BCryptEnumProviders;
+        let _: unsafe extern "system" fn(
+            *mut c_void, *mut u8, ULONG, ULONG
+        ) -> NTSTATUS = BCryptGenRandom;
+        let _: unsafe extern "system" fn(*mut u8) -> NTSTATUS = BCryptGetFipsAlgorithmMode;
+    }
+
+    #[test]
     fn x64_cng_public_structures_match_windows_layouts() {
         assert_eq!(core::mem::size_of::<BcryptAlgorithmIdentifier>(), 16);
         assert_eq!(core::mem::size_of::<BcryptProvider>(), 8);
