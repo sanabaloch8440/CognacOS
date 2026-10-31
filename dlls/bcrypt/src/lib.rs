@@ -280,7 +280,13 @@ pub unsafe extern "system" fn BCryptGetProperty(object:*mut c_void,property:*con
         }
     } else {
         let p = match algorithm_handle(object) { Ok(v) => v, Err(e) => return e };
-        if p.cipher {
+        if p.rng {
+            match name.as_str() {
+                "ObjectLength" => (0, 0, ""),
+                "AlgorithmName" => (1, 0, "RNG"),
+                _ => return STATUS_NOT_SUPPORTED,
+            }
+        } else if p.cipher {
             match name.as_str() {
                 "ObjectLength" => (0, 0, ""),
                 "BlockLength" => (0, 16, ""),
@@ -726,7 +732,7 @@ mod tests {
     }
     #[test]
     fn bcrypt_hash_one_shot_sha256_matches_known_answer() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, gcm: false, cbc: false, kdf: false, rsa: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, gcm: false, cbc: false, kdf: false, rsa: false, rng: false })).unwrap();
         let input = b"abc";
         let mut output = [0u8; 32];
         let status = unsafe { BCryptHash(provider, ptr::null(), 0, input.as_ptr(), input.len() as u32, output.as_mut_ptr(), output.len() as u32) };
