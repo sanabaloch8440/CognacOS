@@ -74,9 +74,13 @@ pub fn is_firmware_reserved_ram_range(start:u64,length:u64)->bool {
             let Some(offset)=i.checked_mul(stride) else{return false};
             let Some(pointer)=(base as usize).checked_add(offset) else{return false};
             let d=unsafe{ptr::read_unaligned(pointer as *const MemoryDescriptor)};
-            if d.number_of_pages==0||!matches!(d.kind,0..=7|9|10|14){continue}
-            let Some(bytes)=d.number_of_pages.checked_mul(PAGE_SIZE) else{continue};
-            let Some(region_end)=d.physical_start.checked_add(bytes) else{continue};
+            if d.number_of_pages==0{continue}
+            let Some(bytes)=d.number_of_pages.checked_mul(PAGE_SIZE) else{return false};
+            let Some(region_end)=d.physical_start.checked_add(bytes) else{return false};
+            let overlaps=start<region_end&&d.physical_start<end;
+            let ram=matches!(d.kind,0..=7|9|10|14);
+            if overlaps&&!ram{return false}
+            if !ram{continue}
             if cursor>=d.physical_start&&cursor<region_end {
                 covered_until=covered_until.max(region_end.min(end));
             }
@@ -465,9 +469,13 @@ fn firmware_map_covers_ram(
             let Some(offset) = i.checked_mul(stride) else { return false; };
             let Some(address) = (map as usize).checked_add(offset) else { return false; };
             let d = unsafe { ptr::read_unaligned(address as *const MemoryDescriptor) };
-            if d.number_of_pages == 0 || !matches!(d.kind, 0..=7 | 9 | 10 | 14) { continue; }
-            let Some(bytes) = d.number_of_pages.checked_mul(PAGE_SIZE) else { continue; };
-            let Some(region_end) = d.physical_start.checked_add(bytes) else { continue; };
+            if d.number_of_pages == 0 { continue; }
+            let Some(bytes) = d.number_of_pages.checked_mul(PAGE_SIZE) else { return false; };
+            let Some(region_end) = d.physical_start.checked_add(bytes) else { return false; };
+            let overlaps = start < region_end && d.physical_start < end;
+            let ram = matches!(d.kind, 0..=7 | 9 | 10 | 14);
+            if overlaps && !ram { return false; }
+            if !ram { continue; }
             if cursor >= d.physical_start && cursor < region_end {
                 covered = covered.max(region_end.min(end));
             }
