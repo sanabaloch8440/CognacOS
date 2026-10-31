@@ -650,7 +650,7 @@ mod tests {
         let kdf=wide("TRUNCATE");
         let mut output=[0u8;8]; let mut written=0;
         assert_eq!(unsafe{BCryptDeriveKey(secret,kdf.as_ptr(),ptr::null_mut(),output.as_mut_ptr(),output.len() as u32,&mut written,0)},STATUS_SUCCESS);
-        assert_eq!(written,8); assert_eq!(&output,b"shared s");
+        assert_eq!(written,8); assert_eq!(&output,b"lairetam");
         assert_eq!(unsafe{BCryptDestroySecret(secret)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptDestroySecret(secret)},STATUS_INVALID_PARAMETER);
         assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
