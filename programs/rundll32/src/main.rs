@@ -5,6 +5,43 @@
 #[cfg(windows)]
 use core::ffi::{c_char, c_void};
 
+// This freestanding PE executable is linked with /NODEFAULTLIB. Supply the
+// two compiler support routines used by LLVM-generated Windows x64 code.
+#[cfg(windows)]
+core::arch::global_asm!(
+    ".text",
+    ".globl __chkstk",
+    "__chkstk:",
+    "push rcx",
+    "push rax",
+    "lea rcx, [rsp + 24]",
+    "cmp rax, 0x1000",
+    "jb 2f",
+    "1:",
+    "sub rcx, 0x1000",
+    "test byte ptr [rcx], 0",
+    "sub rax, 0x1000",
+    "cmp rax, 0x1000",
+    "ja 1b",
+    "2:",
+    "sub rcx, rax",
+    "test byte ptr [rcx], 0",
+    "pop rax",
+    "pop rcx",
+    "ret",
+);
+
+#[cfg(windows)]
+#[no_mangle]
+pub unsafe extern "C" fn memset(dst: *mut u8, value: i32, count: usize) -> *mut u8 {
+    let mut i = 0usize;
+    while i < count {
+        unsafe { core::ptr::write_volatile(dst.add(i), value as u8); }
+        i += 1;
+    }
+    dst
+}
+
 #[cfg(windows)]
 #[link(name = "kernel32")]
 unsafe extern "system" {
