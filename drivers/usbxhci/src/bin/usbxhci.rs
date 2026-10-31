@@ -89,10 +89,20 @@ impl XhciPlatform for Platform<'_> {
         if status.code != 0 || cpu == 0 || device == 0 { return Err(()); }
         Ok(DmaAllocation { cpu_address: cpu, device_address: device, size })
     }
-    fn free_dma(&mut self, allocation: DmaAllocation) {
-        if let Some(free) = self.dev.free_dma {
-            let _ = unsafe { free(self.ext.device_object, allocation.cpu_address, allocation.device_address, allocation.size) };
-        }
+    fn free_dma(&mut self, allocation: DmaAllocation) -> Result<(), ()> {
+        // A missing release service or failed HAL release means the allocation
+        // may still be mapped/reachable by the controller. Propagate failure so
+        // the xHCI core can fail closed instead of recycling potentially live DMA.
+        let free = self.dev.free_dma.ok_or(())?;
+        let status = unsafe {
+            free(
+                self.ext.device_object,
+                allocation.cpu_address,
+                allocation.device_address,
+                allocation.size,
+            )
+        };
+        if status.code == 0 { Ok(()) } else { Err(()) }
     }
     fn register_interrupt(&mut self) -> Result<(), ()> {
         let register = self.dev.register_interrupt.ok_or(())?;
@@ -199,6 +209,9 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         Ok(resources) => resources,
         Err(xhci::RuntimeStartError::AllocationFailed) => return DRIVER_INSUFFICIENT_RESOURCES,
         Err(xhci::RuntimeStartError::InvalidAllocation) => return DRIVER_INVALID_PARAMETER,
+        // start_controller returns this before allocating DMA resources. Do not
+        // continue controller initialization when bus mastering cannot be cleared.
+        Err(xhci::RuntimeStartError::BusMasterDisableFailed) => return DRIVER_DEVICE_NOT_READY,
         Err(xhci::RuntimeStartError::InterruptRegistrationFailed) => return DRIVER_NOT_SUPPORTED,
         Err(xhci::RuntimeStartError::InterruptEnableFailed) => return DRIVER_DEVICE_NOT_READY,
         Err(xhci::RuntimeStartError::Controller(error)) => return match error {
