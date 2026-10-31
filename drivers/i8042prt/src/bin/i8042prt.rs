@@ -55,6 +55,7 @@ unsafe impl Sync for ConnectState {}
 static HANDOFF: AtomicU64 = AtomicU64::new(0);
 static CONNECTED: AtomicBool = AtomicBool::new(false);
 static RUNNING: AtomicBool = AtomicBool::new(false);
+static START_RESOURCES_VALID: AtomicBool = AtomicBool::new(false);
 struct SharedPort(UnsafeCell<Ps2KeyboardPort>);
 unsafe impl Sync for SharedPort {}
 struct SharedDecoder(UnsafeCell<ScanDecoder>);
@@ -152,7 +153,7 @@ extern "C" fn i8042_dpc(_context: u64) {
 pub unsafe extern "win64" fn I8042StartDevice() -> i32 {
     if RUNNING.load(Ordering::Acquire) { return STATUS_SUCCESS; }
     let Some(ext) = handoff() else { return STATUS_DEVICE_NOT_READY; };
-    if !CONNECTED.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
+    if !CONNECTED.load(Ordering::Acquire) || !START_RESOURCES_VALID.load(Ordering::Acquire) { return STATUS_DEVICE_NOT_READY; }
     let Some(device) = (unsafe { ext.device.as_ref() }) else { return STATUS_INVALID_PARAMETER; };
     let Some(register) = device.register_interrupt else { return STATUS_NOT_SUPPORTED; };
     if unsafe { register(ext.interrupt_vector, ext.interrupt_context, Some(i8042_isr), Some(i8042_dpc)) }.code != 0 {
@@ -185,6 +186,7 @@ pub unsafe extern "win64" fn I8042StopDevice() -> i32 {
     let port = unsafe { &mut *PORT.0.get() };
     let suspend_failed = port.state() == KeyboardPortState::Running && port.suspend(&mut io, 100_000).is_err();
     RUNNING.store(false, Ordering::Release);
+    START_RESOURCES_VALID.store(false, Ordering::Release);
     if let Some(unregister) = device.unregister_interrupt {
         if unsafe { unregister(ext.interrupt_vector, ext.interrupt_context) }.code != 0 {
             return STATUS_DEVICE_NOT_READY;
@@ -193,12 +195,67 @@ pub unsafe extern "win64" fn I8042StopDevice() -> i32 {
     if suspend_failed { STATUS_DEVICE_NOT_READY } else { STATUS_SUCCESS }
 }
 
+unsafe fn resource_list_has_ps2_ports_and_irq(
+    raw: *const u8,
+    translated: *const u8,
+    expected_vector: u32,
+) -> bool {
+    if raw.is_null() || translated.is_null() { return false; }
+    unsafe fn read_u32(base: *const u8, offset: usize) -> Option<u32> {
+        Some(unsafe { core::ptr::read_unaligned(base.add(offset).cast::<u32>()) })
+    }
+    unsafe fn contains(base: *const u8, vector: Option<u32>) -> bool {
+        let Some(full_count) = (unsafe { read_u32(base, 0) }) else { return false; };
+        if full_count == 0 || full_count > 8 { return false; }
+        let mut cursor = 4usize;
+        let mut port60 = false;
+        let mut port64 = false;
+        let mut irq = false;
+        for _ in 0..full_count {
+            let Some(partial_count) = (unsafe { read_u32(base, cursor + 12) }) else { return false; };
+            if partial_count > 64 { return false; }
+            let Some(mut descriptor) = cursor.checked_add(16) else { return false; };
+            for _ in 0..partial_count {
+                let kind = unsafe { *base.add(descriptor) };
+                let start = unsafe { core::ptr::read_unaligned(base.add(descriptor + 4).cast::<u64>()) };
+                let length = unsafe { read_u32(base, descriptor + 12) }.unwrap_or(0) as u64;
+                if kind == 1 && vector.is_none() {
+                    let Some(end) = start.checked_add(length) else { return false; };
+                    port60 |= start <= 0x60 && 0x60 < end;
+                    port64 |= start <= 0x64 && 0x64 < end;
+                } else if kind == 2 {
+                    let actual = unsafe { read_u32(base, descriptor + 4) }.unwrap_or(0);
+                    if let Some(wanted) = vector { irq |= actual == wanted; }
+                }
+                descriptor = match descriptor.checked_add(16) { Some(v) => v, None => return false };
+            }
+            cursor = descriptor;
+            if cursor > 4096 { return false; }
+        }
+        if vector.is_some() { irq } else { port60 && port64 }
+    }
+    let raw_count = unsafe { read_u32(raw, 0) }.unwrap_or(0);
+    let translated_count = unsafe { read_u32(translated, 0) }.unwrap_or(0);
+    raw_count == translated_count
+        && unsafe { contains(raw, None) }
+        && unsafe { contains(translated, Some(expected_vector)) }
+}
+
 unsafe extern "system" fn pnp_dispatch(device: *mut DEVICE_OBJECT, irp: *mut IRP) -> i32 {
     if device.is_null() || irp.is_null() { return STATUS_INVALID_PARAMETER; }
     let stack = unsafe { (*irp).tail[8] as *mut IO_STACK_LOCATION };
     if stack.is_null() { return STATUS_INVALID_PARAMETER; }
     let status = match unsafe { (*stack).minor_function } {
-        IRP_MN_START_DEVICE => unsafe { I8042StartDevice() },
+        IRP_MN_START_DEVICE => {
+            let raw = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().cast::<*const u8>()) };
+            let translated = unsafe { core::ptr::read_unaligned((*stack).parameters.as_ptr().add(8).cast::<*const u8>()) };
+            if resource_list_has_ps2_ports_and_irq(raw, translated, handoff().map(|h| h.interrupt_vector).unwrap_or(0)) {
+                START_RESOURCES_VALID.store(true, Ordering::Release);
+                let result = unsafe { I8042StartDevice() };
+                if result != STATUS_SUCCESS { START_RESOURCES_VALID.store(false, Ordering::Release); }
+                result
+            } else { STATUS_INVALID_PARAMETER }
+        },
         IRP_MN_STOP_DEVICE | IRP_MN_SURPRISE_REMOVAL | IRP_MN_REMOVE_DEVICE => unsafe { I8042StopDevice() },
         IRP_MN_QUERY_REMOVE_DEVICE | IRP_MN_CANCEL_REMOVE_DEVICE
         | IRP_MN_QUERY_STOP_DEVICE | IRP_MN_CANCEL_STOP_DEVICE => STATUS_SUCCESS,
