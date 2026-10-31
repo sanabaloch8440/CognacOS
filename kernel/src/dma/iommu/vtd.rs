@@ -672,6 +672,13 @@ pub unsafe fn map_rmrr_identity(device:usize,id:RequesterId,base:u64,length:u64)
  status
 }
 
+/// Report whether a PnP device still owns a firmware-reserved IOVA reservation.
+/// The requester identity must not be unregistered while this is true.
+pub fn requester_has_reserved_rmrr(device:usize)->bool {
+ if device==0{return false}
+ DMA_MAPS.lock().iter().any(|m|m.used&&m.device==device&&m.cookie==0)
+}
+
 /// Remove an RMRR identity mapping only after the caller has stopped the device
 /// and revoked bus mastering. Firmware-owned pages are not freed by this API.
 pub unsafe fn unmap_rmrr_identity(device:usize,id:RequesterId,base:u64,length:u64)->i32 {
