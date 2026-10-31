@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use core::{cell::UnsafeCell, ffi::c_void, mem::MaybeUninit, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
+use core::{cell::UnsafeCell, sync::atomic::{AtomicBool, AtomicUsize, Ordering}};
 use cognacos_pci as pci;
 use cognacos_nt_abi::{io::DRIVER_OBJECT, ntstatus::*, types::PVOID};
 
@@ -24,20 +24,20 @@ struct PciState {
     ready: AtomicBool,
     bridge_count: AtomicUsize,
     xhci_count: AtomicUsize,
-    bridges: UnsafeCell<MaybeUninit<[[Option<pci::PciBridgeRange>; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS]>>,
-    bridge_counts: UnsafeCell<MaybeUninit<[usize; MAX_WINDOWS]>>,
-    xhci: UnsafeCell<MaybeUninit<[[Option<pci::XhciPciFunction>; pci::MAX_XHCI_FUNCTIONS]; MAX_WINDOWS]>>,
-    xhci_counts: UnsafeCell<MaybeUninit<[usize; MAX_WINDOWS]>>,
+    bridges: UnsafeCell<[[Option<pci::PciBridgeRange>; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS]>,
+    bridge_counts: UnsafeCell<[usize; MAX_WINDOWS]>,
+    xhci: UnsafeCell<[[Option<pci::XhciPciFunction>; pci::MAX_XHCI_FUNCTIONS]; MAX_WINDOWS]>,
+    xhci_counts: UnsafeCell<[usize; MAX_WINDOWS]>,
 }
 unsafe impl Sync for PciState {}
 static STATE: PciState = PciState {
     ready: AtomicBool::new(false),
     bridge_count: AtomicUsize::new(0),
     xhci_count: AtomicUsize::new(0),
-    bridges: UnsafeCell::new(MaybeUninit::uninit()),
-    bridge_counts: UnsafeCell::new(MaybeUninit::uninit()),
-    xhci: UnsafeCell::new(MaybeUninit::uninit()),
-    xhci_counts: UnsafeCell::new(MaybeUninit::uninit()),
+    bridges: UnsafeCell::new([[None; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS]),
+    bridge_counts: UnsafeCell::new([0; MAX_WINDOWS]),
+    xhci: UnsafeCell::new([[None; pci::MAX_XHCI_FUNCTIONS]; MAX_WINDOWS]),
+    xhci_counts: UnsafeCell::new([0; MAX_WINDOWS]),
 };
 
 /// Read-only PCI bus discovery. BAR programming, bus mastering, MMIO mapping,
@@ -55,10 +55,6 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         return STATUS_INVALID_PARAMETER;
     }
 
-    let mut bridge_storage = [[None; pci::MAX_PCI_BRIDGES]; MAX_WINDOWS];
-    let mut bridge_counts = [0usize; MAX_WINDOWS];
-    let mut xhci_storage = [[None; pci::MAX_XHCI_FUNCTIONS]; MAX_WINDOWS];
-    let mut xhci_counts = [0usize; MAX_WINDOWS];
     let mut total_bridges = 0usize;
     let mut total_xhci = 0usize;
 
@@ -79,10 +75,12 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
             Ok(v) => v,
             Err(_) => return STATUS_DEVICE_CONFIGURATION_ERROR,
         };
-        bridge_storage[i] = bridges;
-        bridge_counts[i] = bridge_count;
-        xhci_storage[i] = xhci;
-        xhci_counts[i] = xhci_count;
+        unsafe {
+            (*STATE.bridges.get())[i] = bridges;
+            (*STATE.bridge_counts.get())[i] = bridge_count;
+            (*STATE.xhci.get())[i] = xhci;
+            (*STATE.xhci_counts.get())[i] = xhci_count;
+        }
         total_bridges = match total_bridges.checked_add(bridge_count) {
             Some(v) => v, None => return STATUS_INSUFFICIENT_RESOURCES,
         };
@@ -91,12 +89,6 @@ pub unsafe extern "win64" fn DriverEntry(driver: PVOID, _registry_path: PVOID) -
         };
     }
 
-    unsafe {
-        (*STATE.bridges.get()).write(bridge_storage);
-        (*STATE.bridge_counts.get()).write(bridge_counts);
-        (*STATE.xhci.get()).write(xhci_storage);
-        (*STATE.xhci_counts.get()).write(xhci_counts);
-    }
     STATE.bridge_count.store(total_bridges, Ordering::Release);
     STATE.xhci_count.store(total_xhci, Ordering::Release);
     STATE.ready.store(true, Ordering::Release);
