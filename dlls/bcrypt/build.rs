@@ -34,5 +34,5 @@ fn main() {
     }
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR"));
     fs::write(out.join("bcrypt_unsupported_exports.rs"), generated).expect("write unsupported export wrappers");
-    println!("cargo:warning=bcrypt.dll: exact 60-export Windows 11 x64 baseline; 9 implemented APIs, {} fail-closed APIs", exports.len() - implemented.len());
+    println!("cargo:warning=bcrypt.dll: exact 60-export Windows 11 x64 baseline; {} implemented APIs, {} fail-closed APIs", implemented.len(), exports.len() - implemented.len());
 }

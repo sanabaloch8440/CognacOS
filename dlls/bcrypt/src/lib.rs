@@ -81,7 +81,6 @@ pub unsafe extern "system" fn BCryptCloseAlgorithmProvider(handle: *mut c_void, 
 pub unsafe extern "system" fn BCryptCreateHash(algorithm: *mut c_void, out: *mut *mut c_void, object: *mut u8, object_len: ULONG, secret: *mut u8, secret_len: ULONG, flags: ULONG) -> NTSTATUS {
     if algorithm.is_null() || out.is_null() || !object.is_null() || object_len != 0 || (secret.is_null() && secret_len != 0) || flags != 0 { return STATUS_INVALID_PARAMETER; }
     let provider = unsafe { &*algorithm.cast::<AlgorithmHandle>() };
-    if provider.hmac && secret_len == 0 { return STATUS_INVALID_PARAMETER; }
     if !provider.hmac && secret_len != 0 { return STATUS_INVALID_PARAMETER; }
     let secret = if secret_len == 0 { Vec::new() } else { unsafe { core::slice::from_raw_parts(secret, secret_len as usize) }.to_vec() };
     let alg = provider.algorithm;
@@ -222,7 +221,7 @@ pub unsafe extern "system" fn BCryptHash(
         return STATUS_INVALID_PARAMETER;
     }
     let provider = unsafe { &*algorithm.cast::<AlgorithmHandle>() };
-    if provider.hmac != (secret_len != 0) {
+    if !provider.hmac && secret_len != 0 {
         return STATUS_INVALID_PARAMETER;
     }
     let required = provider.algorithm.digest_len();
@@ -235,7 +234,7 @@ pub unsafe extern "system" fn BCryptHash(
         unsafe { core::slice::from_raw_parts(input, input_len as usize) }
     };
     if provider.hmac {
-        let key_bytes = unsafe { core::slice::from_raw_parts(secret, secret_len as usize) };
+        let key_bytes = if secret_len == 0 { &[][..] } else { unsafe { core::slice::from_raw_parts(secret, secret_len as usize) } };
         let key = hmac::Key::new(provider.algorithm.hmac_algorithm(), key_bytes);
         let digest = hmac::sign(&key, input);
         unsafe { ptr::copy_nonoverlapping(digest.as_ref().as_ptr(), output, digest.as_ref().len()) };
