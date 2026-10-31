@@ -1,6 +1,6 @@
 use std::{fs,path::{Path,PathBuf},process::Command};
 
-fn run(args:&[&str])->String{Command::new(args[0]).args(&args[1..]).output().ok().map(|o|{let mut s=String::from_utf8_lossy(&o.stdout).to_string();if !o.stderr.is_empty(){s.push_str(&String::from_utf8_lossy(&o.stderr));}s.trim().to_owned()}).unwrap_or_default()}
+fn command(args:&[&str])->String{Command::new(args[0]).args(&args[1..]).output().ok().map(|o|{let mut s=String::from_utf8_lossy(&o.stdout).to_string();if !o.stderr.is_empty(){s.push_str(&String::from_utf8_lossy(&o.stderr));}s.trim().to_owned()}).unwrap_or_default()}
 fn u16r(b:&[u8],o:usize)->Option<u16>{Some(u16::from_le_bytes(b.get(o..o+2)?.try_into().ok()?))}
 fn u32r(b:&[u8],o:usize)->Option<u32>{Some(u32::from_le_bytes(b.get(o..o+4)?.try_into().ok()?))}
 fn u64r(b:&[u8],o:usize)->Option<u64>{Some(u64::from_le_bytes(b.get(o..o+8)?.try_into().ok()?))}
@@ -15,7 +15,7 @@ fn elf_exec_ranges(path:&Path)->Vec<Range>{let b=match fs::read(path){Ok(x)=>x,E
 }
 fn in_ranges(pc:u64,r:&[Range])->Option<&str>{r.iter().find(|x|x.start<=pc&&pc<x.end).map(|x|x.name.as_str())}
 fn useful_source_line(s:&str)->bool{s.lines().any(|l|{let l=l.trim();let Some((left,right))=l.rsplit_once(':') else{return false};let linepart=if right.parse::<u32>().is_ok(){left.rsplit_once(':').map(|(_,v)|v).unwrap_or(right)}else{right};let source=if right.parse::<u32>().is_ok(){left.rsplit_once(':').map(|(p,_)|p).unwrap_or(left)}else{left};source!="??"&&source!="??/??"&&linepart.parse::<u32>().map(|n|n>0).unwrap_or(false)})}
-fn resolve_elf(path:&Path,pc:u64,r:&[Range])->String{let Some(section)=in_ranges(pc,r)else{return String::new()};if !path.exists(){return String::new()}let p=path.to_string_lossy();let out=run(&["addr2line","-e",&p,"-f","-C","-i",&format!("0x{pc:x}")]);if !out.is_empty()&&useful_source_line(&out){return out.replace("??:0","[no line table: ?? :0]").replace("??:?","[no line table: ?? :?]")}
+fn resolve_elf(path:&Path,pc:u64,r:&[Range])->String{let Some(section)=in_ranges(pc,r)else{return String::new()};if !path.exists(){return String::new()}let p=path.to_string_lossy();let out=command(&["addr2line","-e",&p,"-f","-C","-i",&format!("0x{pc:x}")]);if !out.is_empty()&&useful_source_line(&out){return out.replace("??:0","[no line table: ?? :0]").replace("??:?","[no line table: ?? :?]")}
  let gdb=run(&["gdb","-q","-batch","-ex",&format!("file {p}"),"-ex",&format!("info symbol 0x{pc:x}"),"-ex",&format!("info line *0x{pc:x}"),"-ex",&format!("x/8i 0x{pc:x}")]);if gdb.is_empty(){return format!("[{}:{section}] no DWARF line; GDB unavailable",path.display())}format!("[ELF {} section={section}; assembly/symbol fallback]\n{gdb}",path.display())}
 fn read(path:&Path)->String{fs::read_to_string(path).unwrap_or_default()}
 fn parse_hex(s:&str)->Option<u64>{u64::from_str_radix(s.trim_start_matches("0x"),16).ok()}
