@@ -40,6 +40,13 @@ jobs:
         run: |
           rustup update stable
           rustup target add x86_64-unknown-uefi x86_64-unknown-none x86_64-pc-windows-gnu
+      - name: Run Rust-native repository contract validators
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --manifest-path tools/rust/Cargo.toml -- validate-ntoskrnl-manifest
+          cargo run --manifest-path tools/rust/Cargo.toml -- check-ntdll-def
+          cargo run --manifest-path tools/rust/Cargo.toml -- check-csrsrv-def
       - name: Ensure third-party filesystem sources are absent
         shell: bash
         run: |
