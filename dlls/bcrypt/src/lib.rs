@@ -55,12 +55,15 @@ impl HashAlgorithm {
 }
 
 #[derive(Clone)]
-struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, cipher: bool, gcm: bool, cbc: bool }
+struct AlgorithmHandle { algorithm: HashAlgorithm, hmac: bool, multi: bool, cipher: bool, kdf: bool, gcm: bool, cbc: bool }
 #[derive(Clone)]
 struct KeyHandle { key: Vec<u8>, gcm: bool, cbc: bool }
+#[derive(Clone)]
+struct KdfKeyHandle { secret: Vec<u8> }
+impl Drop for KdfKeyHandle { fn drop(&mut self) { self.secret.zeroize(); } }
 impl Drop for KeyHandle { fn drop(&mut self) { self.key.zeroize(); } }
 #[derive(Clone)]
-enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle) }
+enum RegisteredHandle { Algorithm(AlgorithmHandle), Hash(HashHandle), MultiHash(MultiHashHandle), Key(KeyHandle), KdfKey(KdfKeyHandle) }
 static HANDLE_TABLE: OnceLock<Mutex<HashMap<usize, RegisteredHandle>>> = OnceLock::new();
 static NEXT_HANDLE: AtomicUsize = AtomicUsize::new(0x10000);
 fn handle_table() -> &'static Mutex<HashMap<usize, RegisteredHandle>> {
@@ -94,7 +97,7 @@ fn remove_handle(token: *mut c_void, expected: u8) -> NTSTATUS {
         (Some(RegisteredHandle::Algorithm(_)), 0) |
         (Some(RegisteredHandle::Hash(_)), 1) |
         (Some(RegisteredHandle::MultiHash(_)), 1) |
-        (Some(RegisteredHandle::Key(_)), 2));
+        (Some(RegisteredHandle::Key(_)), 2) | (Some(RegisteredHandle::KdfKey(_)), 2));
     if !valid { return STATUS_INVALID_PARAMETER; }
     table.remove(&key);
     STATUS_SUCCESS
@@ -130,9 +133,10 @@ pub unsafe extern "system" fn BCryptOpenAlgorithmProvider(out: *mut *mut c_void,
     let mut units=Vec::new();
     for i in 0..64 { let u=unsafe{alg_id.add(i).read()}; if u==0 {break;} units.push(u); if i==63{return STATUS_INVALID_PARAMETER;} }
     let name=match String::from_utf16(&units){Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER};
-    let (algorithm,cipher)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true) }
-    else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false),Err(e)=>return e } };
-    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
+    let (algorithm,cipher,kdf)=if name=="AES" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,true,false) }
+    else if name=="PBKDF2" { if flags!=0{return STATUS_INVALID_PARAMETER;} (HashAlgorithm::Sha256,false,true) }
+    else { match HashAlgorithm::from_utf16(alg_id) { Ok(a)=>(a,false,false),Err(e)=>return e } };
+    let token=match register_handle(RegisteredHandle::Algorithm(AlgorithmHandle{algorithm,hmac:flags&BCRYPT_ALG_HANDLE_HMAC_FLAG!=0,multi:flags&BCRYPT_MULTI_FLAG!=0,cipher,kdf,gcm:false,cbc:false})) {Ok(v)=>v,Err(e)=>return e};
     unsafe{out.write(token)}; STATUS_SUCCESS
 }
 
@@ -402,7 +406,9 @@ pub struct BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO {
 
 #[no_mangle]
 pub unsafe extern "system" fn BCryptGenerateSymmetricKey(algorithm:*mut c_void,out:*mut *mut c_void,object:*mut u8,object_len:ULONG,secret:*mut u8,secret_len:ULONG,flags:ULONG)->NTSTATUS {
- if out.is_null()||!object.is_null()||object_len!=0||secret.is_null()||flags!=0{return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};if !p.cipher||!(p.gcm && (secret_len==16||secret_len==24||secret_len==32) || p.cbc && (secret_len==16||secret_len==24||secret_len==32)){return STATUS_NOT_SUPPORTED;}
+ if out.is_null()||!object.is_null()||object_len!=0||secret.is_null()||secret_len==0||flags!=0{return STATUS_INVALID_PARAMETER;}let p=match algorithm_handle(algorithm){Ok(v)=>v,Err(e)=>return e};
+ if p.kdf { if secret_len>1024*1024{return STATUS_INVALID_PARAMETER;} let secret=unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec();let token=match register_handle(RegisteredHandle::KdfKey(KdfKeyHandle{secret})){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};return STATUS_SUCCESS; }
+ if !p.cipher||!(p.gcm && (secret_len==16||secret_len==24||secret_len==32) || p.cbc && (secret_len==16||secret_len==24||secret_len==32)){return STATUS_NOT_SUPPORTED;}
  let key=unsafe{core::slice::from_raw_parts(secret,secret_len as usize)}.to_vec();let token=match register_handle(RegisteredHandle::Key(KeyHandle{key,gcm:p.gcm,cbc:p.cbc})){Ok(v)=>v,Err(e)=>return e};unsafe{out.write(token)};STATUS_SUCCESS
 }
 unsafe fn auth_info(info:*mut c_void)->Result<(Vec<u8>,Vec<u8>,*mut u8,usize),NTSTATUS>{
@@ -510,6 +516,61 @@ pub unsafe extern "system" fn BCryptExportKey(key:*mut c_void,export_key:*mut c_
 #[no_mangle]
 pub unsafe extern "system" fn BCryptDestroyKey(key:*mut c_void)->NTSTATUS{remove_handle(key,2)}
 
+#[repr(C)]
+struct BcryptBuffer { cbBuffer: ULONG, BufferType: ULONG, pvBuffer: *mut c_void }
+#[repr(C)]
+struct BcryptBufferDesc { ulVersion: ULONG, cBuffers: ULONG, pBuffers: *mut BcryptBuffer }
+
+/// Windows CNG PBKDF2 provider entry point. Accepts KDF_HASH_ALGORITHM,
+/// KDF_SALT (or KDF_GENERIC_PARAMETER), and optional KDF_ITERATION_COUNT.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptKeyDerivation(key:*mut c_void,params:*mut BcryptBufferDesc,output:*mut u8,output_len:ULONG,result_len:*mut ULONG,flags:ULONG)->NTSTATUS {
+    const KDF_HASH_ALGORITHM:ULONG=0;
+    const KDF_SALT:ULONG=15;
+    const KDF_ITERATION_COUNT:ULONG=16;
+    const KDF_GENERIC_PARAMETER:ULONG=17;
+    if result_len.is_null() || output.is_null() || output_len==0 || flags!=0 || params.is_null() { return STATUS_INVALID_PARAMETER; }
+    let secret = match handle_table().lock() {
+        Ok(t) => match t.get(&(key as usize)) { Some(RegisteredHandle::KdfKey(v))=>v.secret.clone(), _=>return STATUS_INVALID_PARAMETER },
+        Err(_) => return STATUS_NO_MEMORY,
+    };
+    let desc=unsafe{ptr::read_unaligned(params)};
+    if desc.ulVersion!=0 || desc.cBuffers==0 || desc.cBuffers>16 || desc.pBuffers.is_null() { return STATUS_INVALID_PARAMETER; }
+    let mut algorithm:Option<HashAlgorithm>=None;
+    let mut salt:Option<Vec<u8>>=None;
+    let mut iterations:u64=10_000;
+    for i in 0..desc.cBuffers as usize {
+        let b=unsafe{ptr::read_unaligned(desc.pBuffers.add(i))};
+        if b.pvBuffer.is_null() && b.cbBuffer!=0 { return STATUS_INVALID_PARAMETER; }
+        match b.BufferType {
+            KDF_HASH_ALGORITHM => {
+                if algorithm.is_some() || b.pvBuffer.is_null() || b.cbBuffer<2 || b.cbBuffer%2!=0 { return STATUS_INVALID_PARAMETER; }
+                let units=unsafe{core::slice::from_raw_parts(b.pvBuffer.cast::<u16>(),(b.cbBuffer/2) as usize)};
+                let end=units.iter().position(|u|*u==0).unwrap_or(units.len());
+                let name=match String::from_utf16(&units[..end]) { Ok(v)=>v,Err(_)=>return STATUS_INVALID_PARAMETER };
+                algorithm=Some(match name.as_str() {"SHA256"=>HashAlgorithm::Sha256,"SHA384"=>HashAlgorithm::Sha384,"SHA512"=>HashAlgorithm::Sha512,_=>return STATUS_NOT_SUPPORTED});
+            }
+            KDF_SALT | KDF_GENERIC_PARAMETER => {
+                if salt.is_some() || b.cbBuffer>1024*1024 { return STATUS_INVALID_PARAMETER; }
+                salt=Some(if b.cbBuffer==0 {Vec::new()} else {unsafe{core::slice::from_raw_parts(b.pvBuffer.cast::<u8>(),b.cbBuffer as usize)}.to_vec()});
+            }
+            KDF_ITERATION_COUNT => {
+                if b.pvBuffer.is_null() || b.cbBuffer!=8 { return STATUS_INVALID_PARAMETER; }
+                iterations=unsafe{ptr::read_unaligned(b.pvBuffer.cast::<u64>())};
+            }
+            _ => return STATUS_NOT_SUPPORTED,
+        }
+    }
+    let Some(alg)=algorithm else{return STATUS_INVALID_PARAMETER};
+    let Some(salt)=salt else{return STATUS_INVALID_PARAMETER};
+    if iterations==0 || iterations>u32::MAX as u64 || iterations>10_000_000 { return STATUS_INVALID_PARAMETER; }
+    let nz=match NonZeroU32::new(iterations as u32){Some(v)=>v,None=>return STATUS_INVALID_PARAMETER};
+    let out=unsafe{core::slice::from_raw_parts_mut(output,output_len as usize)};
+    pbkdf2::derive(alg.pbkdf2_algorithm(),nz,&salt,&secret,out);
+    unsafe{result_len.write(output_len)};
+    STATUS_SUCCESS
+}
+
 include!(concat!(env!("OUT_DIR"), "/bcrypt_unsupported_exports.rs"));
 
 #[cfg(test)]
@@ -534,7 +595,7 @@ mod tests {
     }
     #[test]
     fn bcrypt_hash_one_shot_sha256_matches_known_answer() {
-        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, gcm: false, cbc: false })).unwrap();
+        let provider = register_handle(RegisteredHandle::Algorithm(AlgorithmHandle { algorithm: HashAlgorithm::Sha256, hmac: false, multi: false, cipher: false, gcm: false, cbc: false, kdf: false })).unwrap();
         let input = b"abc";
         let mut output = [0u8; 32];
         let status = unsafe { BCryptHash(provider, ptr::null(), 0, input.as_ptr(), input.len() as u32, output.as_mut_ptr(), output.len() as u32) };
