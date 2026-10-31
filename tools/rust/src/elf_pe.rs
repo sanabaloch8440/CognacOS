@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-const BASE: u64 = 0xffff_ffff_7fe0_0000;
+pub const BASE: u64 = 0xffff_ffff_7fe0_0000;
 const PAGE: u64 = 0x1000;
 const FILE_ALIGN: u64 = 0x200;
 const SECT_ALIGN: u64 = 0x1000;
