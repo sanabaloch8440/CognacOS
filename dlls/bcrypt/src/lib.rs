@@ -871,9 +871,10 @@ pub unsafe extern "system" fn BCryptGenerateKeyPair(algorithm:*mut c_void,out:*m
 #[no_mangle]
 pub unsafe extern "system" fn BCryptFinalizeKeyPair(key:*mut c_void,flags:ULONG)->NTSTATUS {
     if flags!=0 || key.is_null(){return STATUS_INVALID_PARAMETER;}
-    match handle_table().lock(){
-        Ok(table)=>match table.get(&(key as usize)){Some(RegisteredHandle::RsaPrivate(v)) if !v.finalized=>{let mut table=table;match table.get_mut(&(key as usize)){Some(RegisteredHandle::RsaPrivate(state))=>{state.finalized=true;STATUS_SUCCESS},_=>STATUS_INVALID_PARAMETER}},Some(RegisteredHandle::RsaPrivate(_))=>STATUS_INVALID_PARAMETER,_=>STATUS_INVALID_PARAMETER},
-        Err(_)=>STATUS_NO_MEMORY,
+    let mut table=match handle_table().lock(){Ok(v)=>v,Err(_)=>return STATUS_NO_MEMORY};
+    match table.get_mut(&(key as usize)){
+        Some(RegisteredHandle::RsaPrivate(state)) if !state.finalized=>{state.finalized=true;STATUS_SUCCESS},
+        _=>STATUS_INVALID_PARAMETER,
     }
 }
 
@@ -928,6 +929,49 @@ pub unsafe extern "system" fn BCryptImportKeyPair(algorithm:*mut c_void,import_k
 struct BcryptPkcs1PaddingInfo { pszAlgId: *const u16 }
 #[cfg(target_pointer_width = "64")]
 const _: [(); 8] = [(); core::mem::size_of::<BcryptPkcs1PaddingInfo>()];
+
+/// CAPI-compatible hash-to-key derivation helper. It supports SHA-2 hash
+/// handles and emits the requested number of bytes using the legacy CryptoAPI
+/// ipad/opad expansion for output longer than one digest block.
+#[no_mangle]
+pub unsafe extern "system" fn BCryptDeriveKeyCapi(hash:*mut c_void,target_alg:*mut c_void,output:*mut u8,output_len:ULONG,flags:ULONG)->NTSTATUS {
+    if output.is_null() || output_len==0 || output_len>128 || flags!=0 {return STATUS_INVALID_PARAMETER;}
+    // The target algorithm is an ALG_ID encoded in the historical handle slot;
+    // this primitive does not inspect provider state through that value.
+    let state=match hash_handle(hash){Ok(v)=>v,Err(e)=>return e};
+    if state.finished{return STATUS_INVALID_PARAMETER;}
+    let digest=if state.hmac{
+        let key=hmac::Key::new(state.algorithm.hmac_algorithm(),&state.secret);
+        hmac::sign(&key,&state.data).as_ref().to_vec()
+    }else{state.algorithm.digest(&state.data).as_ref().to_vec()};
+    let mut material=Vec::with_capacity(output_len as usize);
+    material.extend_from_slice(&digest);
+    if output_len as usize>digest.len(){
+        let mut inner=[0x36u8;64];let mut outer=[0x5cu8;64];
+        for (i,b) in digest.iter().enumerate(){inner[i]^=*b;outer[i]^=*b;}
+        let expanded=match state.algorithm {
+            HashAlgorithm::Sha256=>{
+                let a=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256,&[inner.as_slice(),digest.as_slice()].concat());
+                let b=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256,&[outer.as_slice(),a.as_ref()].concat());
+                [a.as_ref(),b.as_ref()].concat()
+            },
+            HashAlgorithm::Sha384=>{
+                let a=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA384,&[inner.as_slice(),digest.as_slice()].concat());
+                let b=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA384,&[outer.as_slice(),a.as_ref()].concat());
+                [a.as_ref(),b.as_ref()].concat()
+            },
+            HashAlgorithm::Sha512=>{
+                let a=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA512,&[inner.as_slice(),digest.as_slice()].concat());
+                let b=aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA512,&[outer.as_slice(),a.as_ref()].concat());
+                [a.as_ref(),b.as_ref()].concat()
+            },
+        };
+        material=expanded;
+    }
+    unsafe{ptr::copy_nonoverlapping(material.as_ptr(),output,output_len as usize)};
+    let _=target_alg;
+    STATUS_SUCCESS
+}
 
 /// Verifies a precomputed SHA-2 digest using the Windows PKCS#1 padding-info ABI.
 /// The padding descriptor is
@@ -1384,6 +1428,28 @@ mod tests {
         assert_eq!(unsafe{BCryptDestroyKey(handle)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptGetProperty(duplicate,property.as_ptr(),(&mut bits as *mut u32).cast(),4,&mut required,0)},STATUS_SUCCESS);
         assert_eq!(unsafe{BCryptDestroyKey(duplicate)},STATUS_SUCCESS);
+    }
+
+    #[test]
+    fn rsa_generate_finalize_sign_verify_and_destroy_lifecycle() {
+        let wide=|v:&str|v.encode_utf16().chain(core::iter::once(0)).collect::<Vec<u16>>();
+        let name=wide("RSA");let mut provider=ptr::null_mut();
+        assert_eq!(unsafe{BCryptOpenAlgorithmProvider(&mut provider,name.as_ptr(),ptr::null(),0)},STATUS_SUCCESS);
+        let mut key=ptr::null_mut();
+        assert_eq!(unsafe{BCryptGenerateKeyPair(provider,&mut key,1024,0)},STATUS_SUCCESS);
+        let algorithm=wide("SHA256");
+        let mut padding=BcryptPkcs1PaddingInfo{pszAlgId:algorithm.as_ptr()};
+        let digest=HashAlgorithm::Sha256.digest(b"cognacos-rsa-sign-test");
+        let mut required=0;
+        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut _).cast(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_INVALID_PARAMETER);
+        assert_eq!(unsafe{BCryptFinalizeKeyPair(key,0)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut _).cast(),digest.as_ref().as_ptr() as *mut u8,32,ptr::null_mut(),0,&mut required,2)},STATUS_SUCCESS);
+        assert_eq!(required,128);
+        let mut signature=vec![0u8;required as usize];
+        assert_eq!(unsafe{BCryptSignHash(key,(&mut padding as *mut _).cast(),digest.as_ref().as_ptr() as *mut u8,32,signature.as_mut_ptr(),required,&mut required,2)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptVerifySignature(key,(&mut padding as *mut _).cast(),digest.as_ref().as_ptr(),32,signature.as_ptr(),signature.len() as ULONG,2)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptDestroyKey(key)},STATUS_SUCCESS);
+        assert_eq!(unsafe{BCryptCloseAlgorithmProvider(provider,0)},STATUS_SUCCESS);
     }
 
     #[test]
