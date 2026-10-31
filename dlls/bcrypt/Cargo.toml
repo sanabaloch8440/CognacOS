@@ -12,6 +12,9 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 aws-lc-rs = "1"
+aes = "0.8"
+cipher = "0.4"
+padding = "0.2"
 zeroize = "1"
 
 [profile.dev]
