@@ -72,6 +72,15 @@ pub unsafe extern "system" fn RdotDmaRegisterIommuBackend(ops:*mut IommuBackend)
 pub fn available()->bool{backend().is_ok()}
 pub fn device_busy(device:usize)->bool{let s=STATE.lock();s.maps.iter().any(|m|m.used&&m.device==device)||s.common.iter().any(|b|b.used&&b.device==device)}
 pub fn common_allocation_count(device:usize)->usize{let s=STATE.lock();s.common.iter().filter(|c|c.used&&!c.busy&&c.device==device).count()}
+/// Verify the exact live common-buffer record backing a device-visible DMA span.
+/// This is stronger than checking nonzero addresses: it ties the IOVA to the
+/// owning PnP device object and the still-pinned CPU allocation.
+pub fn common_dma_mapping_valid(device:usize,cpu:u64,logical:u64,size:u64)->bool{
+ if device==0||cpu==0||logical==0||size==0{return false}
+ let s=STATE.lock();
+ s.common.iter().any(|c|c.used&&!c.busy&&c.device==device
+  &&c.cpu==cpu as usize&&c.logical==logical&&size<=c.length as u64)
+}
 fn map_one(device:usize,token:usize,irp:usize,physical:u64,length:u32,direction:u8)->Result<u64,DmaError>{
  if device==0||token==0||length==0||physical.checked_add(length as u64).is_none(){return Err(DmaError::InvalidLength)}
  // A DMA adapter handle is not a PCI requester ID. Require PnP to have
